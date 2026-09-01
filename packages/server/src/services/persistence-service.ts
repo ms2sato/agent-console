@@ -59,6 +59,10 @@ export interface PersistedAgentWorker extends PersistedWorkerBase {
   pid: number | null;  // PTY process ID (null when not yet activated after server restart)
   /** See `InternalAgentWorker.deliverInitialPromptOnActivation`. */
   deliverInitialPromptOnActivation: boolean;
+  /** See `InternalAgentWorker.model`. */
+  model: string | null;
+  /** See `InternalAgentWorker.reasoningEffort`. */
+  reasoningEffort: string | null;
 }
 
 export interface PersistedTerminalWorker extends PersistedWorkerBase {
@@ -174,6 +178,10 @@ function migrateSession(old: OldPersistedSession): PersistedSession {
     // never redeliver a prompt this old format never tracked in the first
     // place.
     deliverInitialPromptOnActivation: false,
+    // Legacy pre-migration rows predate the model/reasoning-effort override
+    // concept entirely (agent-surface.md); no override to carry over.
+    model: null,
+    reasoningEffort: null,
   }];
 
   if (isQuick) {

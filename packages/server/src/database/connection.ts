@@ -373,6 +373,10 @@ async function runMigrations(database: Kysely<Database>, dbPath: string): Promis
   if (currentVersion < 36) {
     await migrateToV36(database);
   }
+
+  if (currentVersion < 37) {
+    await migrateToV37(database);
+  }
 }
 
 /**
@@ -2135,6 +2139,47 @@ export async function migrateToV36(database: Kysely<Database>): Promise<void> {
   });
 
   logger.info('Migration to v36 completed');
+}
+
+/**
+ * Migration v37: Add `model` and `reasoning_effort` columns to `workers` --
+ * the worker-persisted model/reasoning-effort override (agent-surface.md Ruling
+ * 3). See docs/design/agent-surface.md "Model & Reasoning-Effort
+ * Parameters".
+ *
+ * Both nullable TEXT, no DEFAULT (unlike `auto_compaction`'s
+ * `NOT NULL DEFAULT 1`): these are genuinely absent-by-default, not
+ * boolean-with-a-meaningful-default -- every pre-existing worker row
+ * correctly backfills to "no override" (NULL), which is the same as never
+ * having set one.
+ *
+ * Meaningful for `agent` (terminal-agent) workers only; other worker types
+ * carry the column but never read it (same convention as `auto_compaction`
+ * and `sdk_session_id`, which are likewise type-scoped columns on this
+ * table).
+ *
+ * @internal Exported for testing.
+ */
+export async function migrateToV37(database: Kysely<Database>): Promise<void> {
+  logger.info('Running migration to v37: Adding model and reasoning_effort columns to workers');
+
+  try {
+    await sql`ALTER TABLE workers ADD COLUMN model TEXT`.execute(database);
+  } catch (error) {
+    if (!isDuplicateColumnError(error)) throw error;
+    logger.info('Column model already exists, skipping');
+  }
+
+  try {
+    await sql`ALTER TABLE workers ADD COLUMN reasoning_effort TEXT`.execute(database);
+  } catch (error) {
+    if (!isDuplicateColumnError(error)) throw error;
+    logger.info('Column reasoning_effort already exists, skipping');
+  }
+
+  await sql`PRAGMA user_version = 37`.execute(database);
+
+  logger.info('Migration to v37 completed');
 }
 
 /**

@@ -111,6 +111,52 @@ describe('CreateWorkerRequestSchema', () => {
     }
   });
 
+  it('should accept agent worker with model and reasoningEffort (Issue #1541)', () => {
+    const result = v.safeParse(CreateWorkerRequestSchema, {
+      type: 'agent',
+      agentId: 'agent-123',
+      model: 'claude-opus-4-6',
+      reasoningEffort: 'high',
+    });
+    expect(result.success).toBe(true);
+    if (result.success && result.output.type === 'agent') {
+      expect(result.output.model).toBe('claude-opus-4-6');
+      expect(result.output.reasoningEffort).toBe('high');
+    }
+  });
+
+  it('should trim model and reasoningEffort', () => {
+    const result = v.safeParse(CreateWorkerRequestSchema, {
+      type: 'agent',
+      agentId: 'agent-123',
+      model: '  claude-opus-4-6  ',
+      reasoningEffort: '  high  ',
+    });
+    expect(result.success).toBe(true);
+    if (result.success && result.output.type === 'agent') {
+      expect(result.output.model).toBe('claude-opus-4-6');
+      expect(result.output.reasoningEffort).toBe('high');
+    }
+  });
+
+  it('should reject agent worker with an empty-string model (boundary: empty is invalid, not absent)', () => {
+    const result = v.safeParse(CreateWorkerRequestSchema, {
+      type: 'agent',
+      agentId: 'agent-123',
+      model: '',
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('should reject agent worker with a whitespace-only reasoningEffort (boundary)', () => {
+    const result = v.safeParse(CreateWorkerRequestSchema, {
+      type: 'agent',
+      agentId: 'agent-123',
+      reasoningEffort: '   ',
+    });
+    expect(result.success).toBe(false);
+  });
+
   it('should reject agent worker without agentId', () => {
     const result = v.safeParse(CreateWorkerRequestSchema, {
       type: 'agent',

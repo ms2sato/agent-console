@@ -49,7 +49,7 @@ import {
   isValidSlug,
   resolveSessionScopePayload,
 } from '../lib/session-data-path.js';
-import { RepositoryNotFoundError } from '../lib/errors.js';
+import { RepositoryNotFoundError, ValidationError } from '../lib/errors.js';
 import type { UserMode } from './user-mode.js';
 import {
   getCurrentBranch as gitGetCurrentBranch,
@@ -847,6 +847,22 @@ export class SessionManager {
     const id = crypto.randomUUID();
     const createdAt = new Date().toISOString();
 
+    // model/reasoningEffort are terminal-agent-only params (agent-surface.md
+    // Ruling 1/3). An embedded-agent selection combined with either param
+    // must be a LOUD error naming the capability, never a silent drop --
+    // silently ignoring a requested setting is an undeclared divergence.
+    // Checked before inserting any DB row, same fail-fast placement as the
+    // slug validation below.
+    if (request.embeddedAgentId && (request.model !== undefined || request.reasoningEffort !== undefined)) {
+      const rejectedParams = [
+        request.model !== undefined ? 'model' : null,
+        request.reasoningEffort !== undefined ? 'reasoningEffort' : null,
+      ].filter((p): p is string => p !== null);
+      throw new ValidationError(
+        `Embedded agents do not support the ${rejectedParams.map((p) => `"${p}"`).join(' or ')} parameter${rejectedParams.length > 1 ? 's' : ''} (terminal-agent-only, Issue #1521 Phase 1).`,
+      );
+    }
+
     // Resolve scope+slug BEFORE inserting any DB row. Worktree sessions that
     // reference an unknown repository must fail fast (see design §6).
     let dataScope: 'quick' | 'repository';
@@ -913,7 +929,12 @@ export class SessionManager {
     // schema).
     const initialWorkerParams: CreateWorkerParams = request.embeddedAgentId
       ? { type: 'embedded-agent', embeddedAgentId: request.embeddedAgentId }
-      : { type: 'agent', agentId: request.agentId ?? CLAUDE_CODE_AGENT_ID };
+      : {
+          type: 'agent',
+          agentId: request.agentId ?? CLAUDE_CODE_AGENT_ID,
+          model: request.model,
+          reasoningEffort: request.reasoningEffort,
+        };
 
     // Use allSettled (not all) so BOTH worker-creation calls are guaranteed
     // to have settled before we decide whether to roll back. With

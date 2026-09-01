@@ -567,6 +567,186 @@ describe('WorkerLifecycleManager', () => {
     });
   });
 
+  // ========== model / reasoningEffort parameter validation and persistence (Issue #1541) ==========
+
+  describe('createWorker: model/reasoningEffort validation and PTY-command propagation', () => {
+    let capableAgentId: string;
+    let capableAgent2Id: string;
+    let incapableAgentId: string;
+
+    beforeEach(async () => {
+      const capable = await agentManager.registerAgent({
+        name: 'Capable Agent',
+        commandTemplate: 'cli {{model:+--model}}{{effort:+--effort}}{{prompt}}',
+      });
+      capableAgentId = capable.id;
+
+      const capable2 = await agentManager.registerAgent({
+        name: 'Capable Agent 2',
+        commandTemplate: 'cli2 {{model:+--model}}{{effort:+--effort}}{{prompt}}',
+      });
+      capableAgent2Id = capable2.id;
+
+      const incapable = await agentManager.registerAgent({
+        name: 'Incapable Agent',
+        commandTemplate: 'cli {{prompt}}',
+      });
+      incapableAgentId = incapable.id;
+    });
+
+    // The real agent-worker PTY spawn is a login shell; the actual command
+    // (containing --model / --effort) is injected later via
+    // `pty.write(pendingCommand + '\r')` once the login-shell sentinel is
+    // observed (worker-manager.ts's setupWorkerEventHandlers), not passed
+    // directly in the spawn argv. Scoped to the MOST RECENTLY spawned PTY
+    // instance only -- restart spawns a fresh login shell/PTY, so checking
+    // only the latest instance (rather than accumulated history across all
+    // instances) is what lets the "agent change drops the override" test
+    // distinguish "the old worker never got it" from "the new worker did".
+    function lastPtyInstanceWrittenCommand(): string {
+      const lastInstance = ptyFactory.instances[ptyFactory.instances.length - 1];
+      return lastInstance?.writtenData.join('') ?? '';
+    }
+
+    it('rejects a model param when the resolved agent has no {{model...}} placeholder', async () => {
+      const session = createTestSession();
+      sessions.set(session.id, session);
+
+      await expect(
+        lifecycleManager.createWorker(session.id, {
+          type: 'agent',
+          agentId: incapableAgentId,
+          model: 'claude-opus-4-6',
+        }),
+      ).rejects.toBeInstanceOf(ValidationError);
+      await expect(
+        lifecycleManager.createWorker(session.id, {
+          type: 'agent',
+          agentId: incapableAgentId,
+          model: 'claude-opus-4-6',
+        }),
+      ).rejects.toThrow(/model/);
+    });
+
+    it('rejects a reasoningEffort param when the resolved agent has no {{effort...}} placeholder', async () => {
+      const session = createTestSession();
+      sessions.set(session.id, session);
+
+      await expect(
+        lifecycleManager.createWorker(session.id, {
+          type: 'agent',
+          agentId: incapableAgentId,
+          reasoningEffort: 'high',
+        }),
+      ).rejects.toBeInstanceOf(ValidationError);
+      await expect(
+        lifecycleManager.createWorker(session.id, {
+          type: 'agent',
+          agentId: incapableAgentId,
+          reasoningEffort: 'high',
+        }),
+      ).rejects.toThrow(/reasoningEffort/);
+    });
+
+    it('accepts a model param for a capable agent and the value reaches the spawned PTY command', async () => {
+      const session = createTestSession();
+      sessions.set(session.id, session);
+
+      const worker = await lifecycleManager.createWorker(session.id, {
+        type: 'agent',
+        agentId: capableAgentId,
+        model: 'claude-opus-4-6',
+      });
+
+      expect(worker).not.toBeNull();
+      expect(lastPtyInstanceWrittenCommand()).toContain("--model 'claude-opus-4-6'");
+    });
+
+    it('accepts a reasoningEffort param for a capable agent and the value reaches the spawned PTY command', async () => {
+      const session = createTestSession();
+      sessions.set(session.id, session);
+
+      const worker = await lifecycleManager.createWorker(session.id, {
+        type: 'agent',
+        agentId: capableAgentId,
+        reasoningEffort: 'high',
+      });
+
+      expect(worker).not.toBeNull();
+      expect(lastPtyInstanceWrittenCommand()).toContain("--effort 'high'");
+    });
+
+    it("restart pin: a same-agent restart preserves the worker's model override verbatim", async () => {
+      const session = createTestSession();
+      sessions.set(session.id, session);
+
+      const worker = await lifecycleManager.createWorker(session.id, {
+        type: 'agent',
+        agentId: capableAgentId,
+        model: 'claude-opus-4-6',
+      });
+
+      await lifecycleManager.restartAgentWorker(session.id, worker!.id, 'fresh');
+
+      expect(lastPtyInstanceWrittenCommand()).toContain("--model 'claude-opus-4-6'");
+    });
+
+    it("restart pin: a same-agent restart preserves the worker's reasoningEffort override verbatim", async () => {
+      const session = createTestSession();
+      sessions.set(session.id, session);
+
+      const worker = await lifecycleManager.createWorker(session.id, {
+        type: 'agent',
+        agentId: capableAgentId,
+        reasoningEffort: 'high',
+      });
+
+      await lifecycleManager.restartAgentWorker(session.id, worker!.id, 'fresh');
+
+      expect(lastPtyInstanceWrittenCommand()).toContain("--effort 'high'");
+    });
+
+    it('an agent CHANGE on restart drops the model override (new agent may be incapable)', async () => {
+      const session = createTestSession();
+      sessions.set(session.id, session);
+
+      const worker = await lifecycleManager.createWorker(session.id, {
+        type: 'agent',
+        agentId: capableAgentId,
+        model: 'claude-opus-4-6',
+      });
+
+      await lifecycleManager.restartAgentWorker(session.id, worker!.id, 'fresh', capableAgent2Id);
+
+      expect(lastPtyInstanceWrittenCommand()).not.toContain('claude-opus-4-6');
+    });
+
+    it(
+      'single-writer pin: validation follows the (possibly DI-overridden) capability accessor, not an ' +
+        'independent re-scan of agent.commandTemplate -- reach measured: this test fails (does not reject) ' +
+        'if createWorker re-derives capability from commandTemplate instead of calling the injected accessor',
+      async () => {
+        const session = createTestSession();
+        sessions.set(session.id, session);
+
+        // capableAgentId's commandTemplate DOES contain {{model...}}, but the
+        // injected accessor is stubbed to disagree and report model: false.
+        const disagreeingCapabilities = () => ({ model: false, reasoningEffort: true });
+        const lifecycleWithStub = new WorkerLifecycleManager(
+          createDeps({ getAgentParameterCapabilitiesImpl: disagreeingCapabilities }),
+        );
+
+        await expect(
+          lifecycleWithStub.createWorker(session.id, {
+            type: 'agent',
+            agentId: capableAgentId,
+            model: 'claude-opus-4-6',
+          }),
+        ).rejects.toBeInstanceOf(ValidationError);
+      },
+    );
+  });
+
   // ========== Worker Deletion ==========
 
   describe('deleteWorker', () => {
@@ -1338,6 +1518,8 @@ describe('WorkerLifecycleManager', () => {
         mcpToken: null,
         promptFile: null,
         deliverInitialPromptOnActivation: false,
+        model: null,
+        reasoningEffort: null,
       };
       session.workers.set(agentWorker.id, agentWorker);
 
@@ -1448,6 +1630,8 @@ describe('WorkerLifecycleManager', () => {
         mcpToken: null,
         promptFile: null,
         deliverInitialPromptOnActivation: false,
+        model: null,
+        reasoningEffort: null,
       };
       session.workers.set(agentWorker.id, agentWorker);
 
@@ -1488,6 +1672,8 @@ describe('WorkerLifecycleManager', () => {
         mcpToken: null,
         promptFile: null,
         deliverInitialPromptOnActivation: false,
+        model: null,
+        reasoningEffort: null,
       };
       session.workers.set(agentWorker.id, agentWorker);
 
@@ -1519,6 +1705,8 @@ describe('WorkerLifecycleManager', () => {
         mcpToken: null,
         promptFile: null,
         deliverInitialPromptOnActivation: false,
+        model: null,
+        reasoningEffort: null,
       };
       session.workers.set(agentWorker.id, agentWorker);
 
@@ -1548,6 +1736,8 @@ describe('WorkerLifecycleManager', () => {
         mcpToken: null,
         promptFile: null,
         deliverInitialPromptOnActivation: false,
+        model: null,
+        reasoningEffort: null,
       };
       session.workers.set(agentWorker.id, agentWorker);
 
@@ -1579,6 +1769,8 @@ describe('WorkerLifecycleManager', () => {
         mcpToken: null,
         promptFile: null,
         deliverInitialPromptOnActivation: false,
+        model: null,
+        reasoningEffort: null,
       };
       session.workers.set(agentWorker.id, agentWorker);
 
@@ -2450,6 +2642,8 @@ describe('WorkerLifecycleManager', () => {
         mcpToken: null,
         promptFile: null,
         deliverInitialPromptOnActivation: false,
+        model: null,
+        reasoningEffort: null,
       };
       session.workers.set(agentWorker.id, agentWorker);
 
@@ -2486,6 +2680,8 @@ describe('WorkerLifecycleManager', () => {
         mcpToken: null,
         promptFile: null,
         deliverInitialPromptOnActivation: false,
+        model: null,
+        reasoningEffort: null,
       };
       session.workers.set(agentWorker.id, agentWorker);
 
@@ -2569,6 +2765,8 @@ describe('WorkerLifecycleManager', () => {
         mcpToken: null,
         promptFile: null,
         deliverInitialPromptOnActivation: false,
+        model: null,
+        reasoningEffort: null,
       };
       session.workers.set(agentWorker.id, agentWorker);
 
@@ -2702,6 +2900,8 @@ describe('WorkerLifecycleManager', () => {
         mcpToken: null,
         promptFile: null,
         deliverInitialPromptOnActivation: false,
+        model: null,
+        reasoningEffort: null,
       };
       session.workers.set(agentWorker.id, agentWorker);
 

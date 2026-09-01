@@ -56,6 +56,10 @@ export interface CreateWorktreeParams {
    * before invoking worktree creation.
    */
   embeddedAgentId?: string;
+  /** Model override for the initial worker (agent-surface.md Ruling 2). See CreateAgentWorkerParamsSchema. */
+  model?: string;
+  /** Reasoning-effort override for the initial worker (agent-surface.md Ruling 2). See CreateAgentWorkerParamsSchema. */
+  reasoningEffort?: string;
   initialPrompt?: string;
   title?: string;
   autoStartSession?: boolean;  // Defaults to true. When false, skip session creation.
@@ -95,7 +99,7 @@ export async function createWorktreeWithSession(
 ): Promise<CreateWorktreeResult> {
   const {
     repoPath, repoId, repoName, setupCommand, branch, baseBranch,
-    useRemote, agentId, embeddedAgentId, initialPrompt, title,
+    useRemote, agentId, embeddedAgentId, model, reasoningEffort, initialPrompt, title,
     autoStartSession = true,
     context,
     requestUsername,
@@ -240,6 +244,8 @@ export async function createWorktreeWithSession(
         locationPath: worktree.path,
         agentId,
         embeddedAgentId,
+        model,
+        reasoningEffort,
         initialPrompt,
         title,
         parentSessionId: context?.parentSessionId,

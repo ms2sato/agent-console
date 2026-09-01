@@ -271,6 +271,32 @@ describe('mappers', () => {
 
       expect(row.deliver_initial_prompt_on_activation).toBe(0);
     });
+
+    it('writes model and reasoning_effort verbatim when the persisted agent worker has an override (Issue #1541)', () => {
+      const worker = buildPersistedAgentWorker({
+        id: 'worker-1',
+        model: 'claude-opus-4-6',
+        reasoningEffort: 'high',
+      });
+
+      const row = toWorkerRow(worker, 'session-1');
+
+      expect(row.model).toBe('claude-opus-4-6');
+      expect(row.reasoning_effort).toBe('high');
+    });
+
+    it('writes model: null and reasoning_effort: null when the persisted agent worker has no override (Issue #1541)', () => {
+      const worker = buildPersistedAgentWorker({
+        id: 'worker-1',
+        model: null,
+        reasoningEffort: null,
+      });
+
+      const row = toWorkerRow(worker, 'session-1');
+
+      expect(row.model).toBeNull();
+      expect(row.reasoning_effort).toBeNull();
+    });
   });
 
   describe('toSessionRow - scope+slug invariants', () => {
@@ -469,6 +495,8 @@ describe('mappers', () => {
         deliver_initial_prompt_on_activation: null,
         sdk_session_id: null,
         auto_compaction: 1,
+        model: null,
+        reasoning_effort: null,
       };
 
       expect(() => toPersistedWorker(dbWorker)).toThrow(DataIntegrityError);
@@ -490,6 +518,8 @@ describe('mappers', () => {
         deliver_initial_prompt_on_activation: null,
         sdk_session_id: null,
         auto_compaction: 1,
+        model: null,
+        reasoning_effort: null,
       };
 
       expect(() => toPersistedWorker(dbWorker)).toThrow(DataIntegrityError);
@@ -511,12 +541,64 @@ describe('mappers', () => {
         deliver_initial_prompt_on_activation: null,
         sdk_session_id: null,
         auto_compaction: 1,
+        model: null,
+        reasoning_effort: null,
       };
 
       const worker = toPersistedWorker(dbWorker);
 
       expect(worker.type).toBe('agent');
       expect((worker as PersistedAgentWorker).agentId).toBe('claude-code-builtin');
+    });
+
+    it('round-trips a non-null model/reasoning_effort override (Issue #1541)', () => {
+      const dbWorker: Worker = {
+        id: 'worker-1',
+        session_id: 'session-1',
+        type: 'agent',
+        name: 'Agent',
+        created_at: '2024-01-01T00:00:00.000Z',
+        updated_at: '2024-01-01T00:00:00.000Z',
+        pid: 1234,
+        agent_id: 'claude-code-builtin',
+        base_commit: null,
+        embedded_agent_id: null,
+        deliver_initial_prompt_on_activation: null,
+        sdk_session_id: null,
+        auto_compaction: 1,
+        model: 'claude-opus-4-6',
+        reasoning_effort: 'high',
+      };
+
+      const worker = toPersistedWorker(dbWorker) as PersistedAgentWorker;
+
+      expect(worker.model).toBe('claude-opus-4-6');
+      expect(worker.reasoningEffort).toBe('high');
+    });
+
+    it('round-trips a NULL model/reasoning_effort as null, never as a third empty-string state (Issue #1541)', () => {
+      const dbWorker: Worker = {
+        id: 'worker-1',
+        session_id: 'session-1',
+        type: 'agent',
+        name: 'Agent',
+        created_at: '2024-01-01T00:00:00.000Z',
+        updated_at: '2024-01-01T00:00:00.000Z',
+        pid: 1234,
+        agent_id: 'claude-code-builtin',
+        base_commit: null,
+        embedded_agent_id: null,
+        deliver_initial_prompt_on_activation: null,
+        sdk_session_id: null,
+        auto_compaction: 1,
+        model: null,
+        reasoning_effort: null,
+      };
+
+      const worker = toPersistedWorker(dbWorker) as PersistedAgentWorker;
+
+      expect(worker.model).toBeNull();
+      expect(worker.reasoningEffort).toBeNull();
     });
 
     it('maps deliver_initial_prompt_on_activation: 1 to deliverInitialPromptOnActivation: true for agent workers (Issue #1236)', () => {
@@ -534,6 +616,8 @@ describe('mappers', () => {
         deliver_initial_prompt_on_activation: 1,
         sdk_session_id: null,
         auto_compaction: 1,
+        model: null,
+        reasoning_effort: null,
       };
 
       const worker = toPersistedWorker(dbWorker);
@@ -556,6 +640,8 @@ describe('mappers', () => {
         deliver_initial_prompt_on_activation: null,
         sdk_session_id: null,
         auto_compaction: 1,
+        model: null,
+        reasoning_effort: null,
       };
 
       const worker = toPersistedWorker(dbWorker);
@@ -578,6 +664,8 @@ describe('mappers', () => {
         deliver_initial_prompt_on_activation: null,
         sdk_session_id: null,
         auto_compaction: 1,
+        model: null,
+        reasoning_effort: null,
       };
 
       const worker = toPersistedWorker(dbWorker);
@@ -601,6 +689,8 @@ describe('mappers', () => {
         deliver_initial_prompt_on_activation: null,
         sdk_session_id: null,
         auto_compaction: 1,
+        model: null,
+        reasoning_effort: null,
       };
 
       const worker = toPersistedWorker(dbWorker);
@@ -624,6 +714,8 @@ describe('mappers', () => {
         deliver_initial_prompt_on_activation: null,
         sdk_session_id: null,
         auto_compaction: 1,
+        model: null,
+        reasoning_effort: null,
       };
 
       expect(() => toPersistedWorker(dbWorker)).toThrow(DataIntegrityError);
@@ -645,6 +737,8 @@ describe('mappers', () => {
         deliver_initial_prompt_on_activation: 1,
         sdk_session_id: null,
         auto_compaction: 1,
+        model: null,
+        reasoning_effort: null,
       };
 
       const worker = toPersistedWorker(dbWorker);
@@ -670,6 +764,8 @@ describe('mappers', () => {
         deliver_initial_prompt_on_activation: null,
         sdk_session_id: null,
         auto_compaction: 1,
+        model: null,
+        reasoning_effort: null,
       };
 
       const worker = toPersistedWorker(dbWorker);

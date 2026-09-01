@@ -45,6 +45,45 @@ describe('CreateWorktreeSessionRequestSchema', () => {
     }
   });
 
+  it('should accept model and reasoningEffort (Issue #1541)', () => {
+    const result = v.safeParse(CreateWorktreeSessionRequestSchema, {
+      type: 'worktree',
+      repositoryId: 'repo-123',
+      worktreeId: 'wt-456',
+      locationPath: '/path/to/worktree',
+      agentId: 'agent-789',
+      model: 'claude-opus-4-6',
+      reasoningEffort: 'high',
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.output.model).toBe('claude-opus-4-6');
+      expect(result.output.reasoningEffort).toBe('high');
+    }
+  });
+
+  it('should reject an empty-string model (boundary: empty is invalid, not absent)', () => {
+    const result = v.safeParse(CreateWorktreeSessionRequestSchema, {
+      type: 'worktree',
+      repositoryId: 'repo-123',
+      worktreeId: 'wt-456',
+      locationPath: '/path/to/worktree',
+      model: '',
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('should reject a whitespace-only reasoningEffort (boundary)', () => {
+    const result = v.safeParse(CreateWorktreeSessionRequestSchema, {
+      type: 'worktree',
+      repositoryId: 'repo-123',
+      worktreeId: 'wt-456',
+      locationPath: '/path/to/worktree',
+      reasoningEffort: '   ',
+    });
+    expect(result.success).toBe(false);
+  });
+
   it('should reject missing repositoryId', () => {
     const result = v.safeParse(CreateWorktreeSessionRequestSchema, {
       type: 'worktree',
@@ -202,6 +241,39 @@ describe('CreateQuickSessionRequestSchema', () => {
       expect(result.output.initialPrompt).toBe('Quick task');
       expect(result.output.title).toBe('Quick Session');
     }
+  });
+
+  it('should accept model and reasoningEffort (Issue #1541)', () => {
+    const result = v.safeParse(CreateQuickSessionRequestSchema, {
+      type: 'quick',
+      locationPath: '/path/to/directory',
+      agentId: 'agent-789',
+      model: 'claude-opus-4-6',
+      reasoningEffort: 'high',
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.output.model).toBe('claude-opus-4-6');
+      expect(result.output.reasoningEffort).toBe('high');
+    }
+  });
+
+  it('should reject an empty-string model (boundary: empty is invalid, not absent)', () => {
+    const result = v.safeParse(CreateQuickSessionRequestSchema, {
+      type: 'quick',
+      locationPath: '/path/to/directory',
+      model: '',
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('should reject a whitespace-only reasoningEffort (boundary)', () => {
+    const result = v.safeParse(CreateQuickSessionRequestSchema, {
+      type: 'quick',
+      locationPath: '/path/to/directory',
+      reasoningEffort: '   ',
+    });
+    expect(result.success).toBe(false);
   });
 
   it('should trim whitespace from locationPath', () => {

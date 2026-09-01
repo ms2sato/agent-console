@@ -460,6 +460,52 @@ describe('SessionManager', () => {
       expect(session.workers.some((w: Worker) => w.type === 'git-diff')).toBe(true);
     });
 
+    it('forwards model to the initial agent worker when the resolved agent supports it (Issue #1541)', async () => {
+      const manager = await getSessionManager();
+
+      const request: CreateSessionRequest = {
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: CLAUDE_CODE_AGENT_ID,
+        model: 'claude-opus-4-6',
+      };
+
+      const session = await manager.createSession(request);
+
+      const agentWorker = session.workers.find((w: Worker) => w.type === 'agent');
+      expect(agentWorker).toBeDefined();
+
+      // model is not part of the public Worker/AgentWorker wire shape (it
+      // drives PTY spawn, not client display) -- verify the persisted
+      // representation instead of the public session response.
+      const persisted = await manager.getSessionRepository().findById(session.id);
+      const persistedAgentWorker = persisted!.workers.find((w: PersistedWorker) => w.type === 'agent');
+      expect(persistedAgentWorker).toBeDefined();
+      expect(persistedAgentWorker && persistedAgentWorker.type === 'agent' ? persistedAgentWorker.model : undefined).toBe('claude-opus-4-6');
+    });
+
+    it('rejects model for the initial agent worker when the resolved agent does not support it (Issue #1541)', async () => {
+      const manager = await getSessionManager();
+
+      // The builtin's real commandTemplate ('claude {{model:+--model}}{{prompt}}')
+      // supports model but not reasoningEffort -- register an agent with
+      // neither to prove the validation reaches session creation's initial
+      // worker, not just the add-worker path.
+      const incapableAgent = await agentManager.registerAgent({
+        name: 'Incapable Agent',
+        commandTemplate: 'echo {{prompt}}',
+      });
+
+      const request: CreateSessionRequest = {
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: incapableAgent.id,
+        reasoningEffort: 'high',
+      };
+
+      await expect(manager.createSession(request)).rejects.toThrow(/reasoningEffort/);
+    });
+
     it('should create a worktree session with parentSessionId and parentWorkerId', async () => {
       const manager = await getSessionManager();
 
@@ -810,6 +856,81 @@ describe('SessionManager', () => {
       // concurrently-created git-diff worker's persistSession call).
       const persisted = await manager.getSessionRepository().findAll();
       expect(persisted).toHaveLength(0);
+    });
+  });
+
+  describe('createSession embeddedAgentId + model/reasoningEffort rejection (Issue #1541 CodeRabbit finding)', () => {
+    const STUB_EMBEDDED_DEF = {
+      id: 'stub-embedded-agent',
+      name: 'Stub Model',
+      provider: { baseUrl: 'http://localhost:11434/v1', model: 'qwen3:32b' },
+      createdBy: 'test-user-id',
+      createdAt: '2024-01-01T00:00:00.000Z',
+      updatedAt: '2024-01-01T00:00:00.000Z',
+    };
+
+    async function getSessionManagerWithEmbedded() {
+      const module = await import(`../session-manager.js?v=${++importCounter}`);
+      return module.SessionManager.create({
+        userMode: new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' }),
+        pathExists: mockPathExists,
+        jobQueue: testJobQueue,
+        agentManager,
+        mcpTokenRegistry: new McpTokenRegistry(),
+        embeddedAgentManager: {
+          getEmbeddedAgent: (id: string) => (id === STUB_EMBEDDED_DEF.id ? STUB_EMBEDDED_DEF : undefined),
+        },
+        repositoryLookup: defaultRepositoryLookup,
+        repositoryEnvLookup: defaultRepositoryEnvLookup,
+      });
+    }
+
+    it('rejects embeddedAgentId + model with a loud error naming the capability', async () => {
+      const manager = await getSessionManagerWithEmbedded();
+
+      await expect(
+        manager.createSession({
+          type: 'quick',
+          locationPath: '/test/path',
+          embeddedAgentId: STUB_EMBEDDED_DEF.id,
+          model: 'opus',
+        }),
+      ).rejects.toThrow(/"model"/);
+
+      // Not silently dropped and not silently succeeded -- no ghost session.
+      expect(manager.getAllSessions()).toHaveLength(0);
+      const persisted = await manager.getSessionRepository().findAll();
+      expect(persisted).toHaveLength(0);
+    });
+
+    it('rejects embeddedAgentId + reasoningEffort with a loud error naming the capability', async () => {
+      const manager = await getSessionManagerWithEmbedded();
+
+      await expect(
+        manager.createSession({
+          type: 'quick',
+          locationPath: '/test/path',
+          embeddedAgentId: STUB_EMBEDDED_DEF.id,
+          reasoningEffort: 'high',
+        }),
+      ).rejects.toThrow(/"reasoningEffort"/);
+
+      expect(manager.getAllSessions()).toHaveLength(0);
+      const persisted = await manager.getSessionRepository().findAll();
+      expect(persisted).toHaveLength(0);
+    });
+
+    it('still succeeds when embeddedAgentId is set alone (no model/reasoningEffort) -- regression guard', async () => {
+      const manager = await getSessionManagerWithEmbedded();
+
+      const session = await manager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        embeddedAgentId: STUB_EMBEDDED_DEF.id,
+      });
+
+      const embeddedWorker = session.workers.find((w: Worker) => w.type === 'embedded-agent');
+      expect(embeddedWorker).toBeDefined();
     });
   });
 

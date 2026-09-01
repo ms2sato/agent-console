@@ -215,4 +215,30 @@ describe('shared index exports', () => {
     expect(wakeupInfo.status).toBe('running');
     expect(wakeupInfo.intervalSeconds).toBe(30);
   });
+
+  it('should re-export getAgentParameterCapabilities and buildAgentParameterTemplateVars (Issue #1541)', async () => {
+    const mod = await import('../index.js');
+
+    // Runtime function exports from types/agent-parameter-capabilities.js
+    // (barrel export added in the same PR) -- verify they are actually
+    // reachable through the public package entry point, not just present in
+    // the source file.
+    expect(typeof mod.getAgentParameterCapabilities).toBe('function');
+    expect(typeof mod.buildAgentParameterTemplateVars).toBe('function');
+
+    const capabilities = mod.getAgentParameterCapabilities({
+      id: 'a',
+      name: 'A',
+      isBuiltIn: false,
+      createdAt: '2026-01-01T00:00:00.000Z',
+      commandTemplate: 'cli {{model:+--model}}{{prompt}}',
+      capabilities: { supportsContinue: false, supportsHeadlessMode: false, supportsActivityDetection: false },
+    });
+    expect(capabilities).toEqual({ model: true, reasoningEffort: false });
+
+    expect(mod.buildAgentParameterTemplateVars({ model: 'opus', reasoningEffort: 'high' })).toEqual({
+      model: 'opus',
+      effort: 'high',
+    });
+  });
 });

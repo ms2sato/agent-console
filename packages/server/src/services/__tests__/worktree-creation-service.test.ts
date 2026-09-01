@@ -194,6 +194,25 @@ describe('createWorktreeWithSession', () => {
     );
   });
 
+  it('forwards model and reasoningEffort to sessionManager.createSession (Issue #1541)', async () => {
+    const sm = createMockSessionManager();
+    const result = await createWorktreeWithSession(
+      { ...DEFAULT_PARAMS, model: 'claude-opus-4-6', reasoningEffort: 'high' },
+      sm,
+      mockWorktreeService,
+    );
+
+    expect(result.success).toBe(true);
+    expect(sm.createSession).toHaveBeenCalledTimes(1);
+    expect(sm.createSession).toHaveBeenCalledWith(
+      expect.objectContaining({
+        model: 'claude-opus-4-6',
+        reasoningEffort: 'high',
+      }),
+      undefined,
+    );
+  });
+
   it('skips fetch when useRemote is false', async () => {
     const sm = createMockSessionManager();
     const result = await createWorktreeWithSession(
