@@ -913,7 +913,12 @@ export class SessionManager {
     // schema).
     const initialWorkerParams: CreateWorkerParams = request.embeddedAgentId
       ? { type: 'embedded-agent', embeddedAgentId: request.embeddedAgentId }
-      : { type: 'agent', agentId: request.agentId ?? CLAUDE_CODE_AGENT_ID };
+      : {
+          type: 'agent',
+          agentId: request.agentId ?? CLAUDE_CODE_AGENT_ID,
+          model: request.model,
+          reasoningEffort: request.reasoningEffort,
+        };
 
     // Use allSettled (not all) so BOTH worker-creation calls are guaranteed
     // to have settled before we decide whether to roll back. With

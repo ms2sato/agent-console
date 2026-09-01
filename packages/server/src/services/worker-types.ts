@@ -192,6 +192,24 @@ export interface InternalAgentWorker extends InternalPtyWorkerBase {
    * and survives server restart.
    */
   deliverInitialPromptOnActivation: boolean;
+  /**
+   * This worker's model override (agent-surface.md Ruling 3), or `null` when no
+   * override is set. A worker's override beats its agent definition's own
+   * template default; `null` means "live-read the template's own default"
+   * (no retroactive effect from later template edits, unlike a set
+   * override, which is a copy taken at set time). Persisted via
+   * `PersistedAgentWorker.model` and survives server restart, idle
+   * eviction, and revival. Merged into the PTY spawn's template vars at
+   * `activateAgentWorkerPty` via `buildAgentParameterTemplateVars`.
+   */
+  model: string | null;
+  /**
+   * This worker's reasoning-effort override (agent-surface.md Ruling 3), or
+   * `null` when no override is set. Same precedence/persistence contract as
+   * `model`. Populates the `{{ effort...}}` template variable, NOT
+   * `{{ reasoningEffort...}}` -- see `buildAgentParameterTemplateVars`.
+   */
+  reasoningEffort: string | null;
 }
 
 /**

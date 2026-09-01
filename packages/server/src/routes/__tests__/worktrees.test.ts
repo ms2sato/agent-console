@@ -812,6 +812,58 @@ describe('Worktrees API', () => {
       expect(sessionRequest.embeddedAgentId).toBeUndefined();
     });
 
+    it('forwards model and reasoningEffort to createWorktreeWithSession (Issue #1541)', async () => {
+      const { mockFn: createSessionMock, captured } = createCapturingSessionMock();
+      (mockWorktreeService as unknown as { createWorktree: ReturnType<typeof mock> }).createWorktree =
+        mock(() => Promise.resolve({ worktreePath: WORKTREE_PATH, index: 1 }));
+
+      app = new Hono<AppBindings>();
+      app.use('*', async (c, next) => {
+        c.set('appContext', asAppContext({
+          repositoryManager: mockRepositoryManager,
+          worktreeService: mockWorktreeService,
+          agentManager: mockAgentManager,
+          embeddedAgentManager: createMockEmbeddedAgentManager('known-embedded-agent'),
+          sessionManager: { createSession: createSessionMock } as unknown as SessionManager,
+          broadcastToApp: () => {},
+          suggestSessionMetadata: mock(async () => ({ branch: '', title: '', error: 'unused' })),
+        }));
+        await next();
+      });
+      app.onError(onApiError);
+      app.route('/api', api);
+
+      const res = await app.request(
+        `/api/repositories/${TEST_REPO.id}/worktrees`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            taskId: 'task-issue-1541-model',
+            mode: 'custom',
+            branch: 'issue-1541-feature',
+            baseBranch: 'main',
+            useRemote: false,
+            agentId: 'claude-code-builtin',
+            model: 'claude-opus-4-6',
+            reasoningEffort: 'high',
+          }),
+        },
+      );
+
+      expect(res.status).toBe(202);
+
+      await captured; // resolves as soon as createSession is invoked -- no sleep needed
+
+      expect(createSessionMock).toHaveBeenCalledTimes(1);
+      const sessionRequest = createSessionMock.mock.calls[0]![0] as unknown as {
+        model?: string;
+        reasoningEffort?: string;
+      };
+      expect(sessionRequest.model).toBe('claude-opus-4-6');
+      expect(sessionRequest.reasoningEffort).toBe('high');
+    });
+
     it('regression: no-agent-specified request still defaults agentId with embeddedAgentId undefined', async () => {
       const { mockFn: createSessionMock, captured } = createCapturingSessionMock();
       (mockWorktreeService as unknown as { createWorktree: ReturnType<typeof mock> }).createWorktree =

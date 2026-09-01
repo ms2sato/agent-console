@@ -852,6 +852,22 @@ export function createMcpApp(deps: McpDependencies): Hono {
           'When true, skip auto-appending callback instructions to the prompt. ' +
             'Use this when you want to include your own custom reporting instructions in the prompt.',
         ),
+      model: z
+        .string()
+        .optional()
+        .describe(
+          "Model override for the initial worker. Only accepted when the selected agent's command " +
+            'template declares a model template variable (e.g. via an optional-argument placeholder); ' +
+            'rejected otherwise. Pass-through, not validated against a model catalog.',
+        ),
+      reasoningEffort: z
+        .string()
+        .optional()
+        .describe(
+          "Reasoning-effort override for the initial worker. Only accepted when the selected agent's " +
+            'command template declares a reasoning-effort template variable; rejected otherwise. ' +
+            'Pass-through, not validated against an accepted-values list.',
+        ),
       templateVars: z
         .record(z.string(), z.string())
         .optional()
@@ -883,6 +899,8 @@ export function createMcpApp(deps: McpDependencies): Hono {
       parentSessionId,
       parentWorkerId,
       skipMessageCallbackPrompt,
+      model,
+      reasoningEffort,
       templateVars,
     }) => {
       try {
@@ -1062,6 +1080,8 @@ export function createMcpApp(deps: McpDependencies): Hono {
           useRemote: useRemote !== false,
           agentId: selectedAgentId,
           embeddedAgentId: selectedEmbeddedAgentId,
+          model,
+          reasoningEffort,
           initialPrompt: effectivePrompt,
           title: effectiveTitle,
           autoStartSession: true,

@@ -2550,6 +2550,83 @@ describe('MCP Server Tools', () => {
       expect(findSpawnCallByCommand('repo-default-agent')).toBeUndefined();
     });
 
+    // -----------------------------------------------------------------------
+    // model / reasoningEffort parameters (Issue #1541)
+    // -----------------------------------------------------------------------
+
+    it('accepts model/reasoningEffort for a capable agent and forwards them into the spawned PTY command', async () => {
+      const capableAgent = await agentManager.registerAgent({
+        name: 'Capable Agent',
+        commandTemplate: 'capable-agent {{model:+--model}}{{effort:+--effort}}{{prompt}}',
+      });
+
+      await setupDelegateEnvironment('feat/model-effort-ok', {
+        defaultAgentId: capableAgent.id,
+      });
+
+      const response = await callTool(app, mcpSessionId, 'delegate_to_worktree', {
+        repositoryId: 'test-repo',
+        prompt: 'Test model/reasoningEffort forwarding',
+        branch: 'feat/model-effort-ok',
+        agentId: capableAgent.id,
+        model: 'claude-opus-4-6',
+        reasoningEffort: 'high',
+        ...(await createValidDelegateParent()),
+      }, nextId++);
+
+      expect(response.result?.isError).toBeUndefined();
+      expect(findSpawnCallByCommand("--model 'claude-opus-4-6'")).toBeDefined();
+      expect(findSpawnCallByCommand("--effort 'high'")).toBeDefined();
+    });
+
+    it('rejects model for an agent whose template has no {{model...}} placeholder', async () => {
+      const incapableAgent = await agentManager.registerAgent({
+        name: 'Incapable Agent',
+        commandTemplate: 'incapable-agent {{prompt}}',
+      });
+
+      await setupDelegateEnvironment('feat/model-rejected', {
+        defaultAgentId: incapableAgent.id,
+      });
+
+      const response = await callTool(app, mcpSessionId, 'delegate_to_worktree', {
+        repositoryId: 'test-repo',
+        prompt: 'Test model rejection',
+        branch: 'feat/model-rejected',
+        agentId: incapableAgent.id,
+        model: 'claude-opus-4-6',
+        ...(await createValidDelegateParent()),
+      }, nextId++);
+
+      expect(response.result?.isError).toBe(true);
+      const data = parseToolResult(response) as { error: string };
+      expect(data.error).toContain('model');
+    });
+
+    it('rejects reasoningEffort for an agent whose template has no {{effort...}} placeholder', async () => {
+      const incapableAgent = await agentManager.registerAgent({
+        name: 'Incapable Agent 2',
+        commandTemplate: 'incapable-agent-2 {{prompt}}',
+      });
+
+      await setupDelegateEnvironment('feat/effort-rejected', {
+        defaultAgentId: incapableAgent.id,
+      });
+
+      const response = await callTool(app, mcpSessionId, 'delegate_to_worktree', {
+        repositoryId: 'test-repo',
+        prompt: 'Test reasoningEffort rejection',
+        branch: 'feat/effort-rejected',
+        agentId: incapableAgent.id,
+        reasoningEffort: 'high',
+        ...(await createValidDelegateParent()),
+      }, nextId++);
+
+      expect(response.result?.isError).toBe(true);
+      const data = parseToolResult(response) as { error: string };
+      expect(data.error).toContain('reasoningEffort');
+    });
+
     it('should return error when repository defaultAgentId references a deleted agent', async () => {
       // Register an agent, then set it as the repository default
       const tempAgent = await agentManager.registerAgent({

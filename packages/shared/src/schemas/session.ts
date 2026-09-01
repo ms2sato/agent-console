@@ -38,6 +38,10 @@ export const CreateWorktreeSessionRequestSchema = v.pipe(
      * See docs/design/shared-orchestrator-session.md.
      */
     shared: v.optional(v.boolean()),
+    /** Model override for the initial worker (agent-surface.md Ruling 2). See CreateAgentWorkerParamsSchema in schemas/worker.ts. */
+    model: v.optional(v.pipe(v.string(), v.trim(), v.minLength(1, 'model must not be empty'))),
+    /** Reasoning-effort override for the initial worker (agent-surface.md Ruling 2). See CreateAgentWorkerParamsSchema in schemas/worker.ts. */
+    reasoningEffort: v.optional(v.pipe(v.string(), v.trim(), v.minLength(1, 'reasoningEffort must not be empty'))),
     templateVars: v.optional(
       v.record(
         v.pipe(
@@ -86,6 +90,10 @@ export const CreateQuickSessionRequestSchema = v.pipe(
      * See docs/design/shared-orchestrator-session.md.
      */
     shared: v.optional(v.boolean()),
+    /** Model override for the initial worker (agent-surface.md Ruling 2). See CreateAgentWorkerParamsSchema in schemas/worker.ts. */
+    model: v.optional(v.pipe(v.string(), v.trim(), v.minLength(1, 'model must not be empty'))),
+    /** Reasoning-effort override for the initial worker (agent-surface.md Ruling 2). See CreateAgentWorkerParamsSchema in schemas/worker.ts. */
+    reasoningEffort: v.optional(v.pipe(v.string(), v.trim(), v.minLength(1, 'reasoningEffort must not be empty'))),
     templateVars: v.optional(
       v.record(
         v.pipe(

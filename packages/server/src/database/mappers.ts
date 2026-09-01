@@ -149,6 +149,8 @@ export function toWorkerRow(worker: PersistedWorker, sessionId: string): NewWork
       base_commit: null,
       embedded_agent_id: null,
       deliver_initial_prompt_on_activation: worker.deliverInitialPromptOnActivation ? 1 : 0,
+      model: worker.model,
+      reasoning_effort: worker.reasoningEffort,
     };
   } else if (worker.type === 'terminal') {
     return {
@@ -216,6 +218,8 @@ export function toPersistedWorker(worker: Worker): PersistedWorker {
       pid: worker.pid ?? null,
       agentId: worker.agent_id,
       deliverInitialPromptOnActivation: worker.deliver_initial_prompt_on_activation === 1,
+      model: worker.model ?? null,
+      reasoningEffort: worker.reasoning_effort ?? null,
     } as PersistedAgentWorker;
   } else if (worker.type === 'terminal') {
     return {

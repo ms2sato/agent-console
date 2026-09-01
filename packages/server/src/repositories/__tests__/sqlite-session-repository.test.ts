@@ -73,6 +73,8 @@ describe('SqliteSessionRepository', () => {
       .addColumn('deliver_initial_prompt_on_activation', 'integer')
       .addColumn('sdk_session_id', 'text')
       .addColumn('auto_compaction', 'integer', (col) => col.notNull().defaultTo(1))
+      .addColumn('model', 'text')
+      .addColumn('reasoning_effort', 'text')
       .execute();
 
     repository = new SqliteSessionRepository(db);

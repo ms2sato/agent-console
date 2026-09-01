@@ -222,6 +222,10 @@ const CreateWorktreeBaseSchema = v.strictObject({
    * to be set on the server. See docs/design/shared-orchestrator-session.md.
    */
   shared: v.optional(v.boolean()),
+  /** Model override for the initial worker (agent-surface.md Ruling 2). See CreateAgentWorkerParamsSchema. */
+  model: v.optional(v.pipe(v.string(), v.trim(), v.minLength(1, 'model must not be empty'))),
+  /** Reasoning-effort override for the initial worker (agent-surface.md Ruling 2). See CreateAgentWorkerParamsSchema. */
+  reasoningEffort: v.optional(v.pipe(v.string(), v.trim(), v.minLength(1, 'reasoningEffort must not be empty'))),
 });
 
 /**

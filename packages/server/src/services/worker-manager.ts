@@ -21,6 +21,7 @@ import type {
   AgentActivityState,
   ExitReason,
 } from '@agent-console/shared';
+import { buildAgentParameterTemplateVars } from '@agent-console/shared';
 import type {
   PersistedWorker,
   PersistedAgentWorker,
@@ -103,6 +104,10 @@ export interface AgentWorkerInitParams {
    * route.
    */
   deliverInitialPromptOnActivation?: boolean;
+  /** See `InternalAgentWorker.model`. `null`/omitted = no override. */
+  model?: string | null;
+  /** See `InternalAgentWorker.reasoningEffort`. `null`/omitted = no override. */
+  reasoningEffort?: string | null;
 }
 
 /**
@@ -344,6 +349,8 @@ export class WorkerManager {
       mcpToken: null,
       promptFile: null,
       deliverInitialPromptOnActivation,
+      model: params.model ?? null,
+      reasoningEffort: params.reasoningEffort ?? null,
     };
 
     return worker;
@@ -560,10 +567,22 @@ export class WorkerManager {
         promptFilePath = filePath;
       }
 
+      // Merge the worker's own persisted model/reasoning-effort override
+      // (agent-surface.md Ruling 3) on top of the generic templateVars mechanism.
+      // This ONE merge point is what makes worker-level persistence apply
+      // uniformly across fresh creation, restart, and server-restart
+      // revival -- all three paths call activateAgentWorkerPty with
+      // worker.model/worker.reasoningEffort already populated from their
+      // respective sources.
+      const effectiveTemplateVars = {
+        ...context?.templateVars,
+        ...buildAgentParameterTemplateVars({ model: worker.model, reasoningEffort: worker.reasoningEffort }),
+      };
+
       const { command, env: templateEnv } = expandTemplate({
         template,
         cwd: locationPath,
-        templateVars: context?.templateVars,
+        templateVars: effectiveTemplateVars,
         ...(promptFilePath !== undefined ? { promptFilePath } : { prompt: initialPrompt }),
       });
 
@@ -1189,6 +1208,11 @@ export class WorkerManager {
             // written at create time by toPersistedWorker, so eligibility
             // survives a server restart.
             deliverInitialPromptOnActivation: pw.deliverInitialPromptOnActivation,
+            // Round-trips from PersistedAgentWorker.model/.reasoningEffort so
+            // a worker's model/reasoning-effort override survives a server
+            // restart (agent-surface.md Ruling 3).
+            model: pw.model,
+            reasoningEffort: pw.reasoningEffort,
           };
           break;
         case 'terminal':
@@ -1285,6 +1309,8 @@ export class WorkerManager {
           agentId: worker.agentId,
           pid: worker.pty?.pid ?? null,
           deliverInitialPromptOnActivation: worker.deliverInitialPromptOnActivation,
+          model: worker.model,
+          reasoningEffort: worker.reasoningEffort,
         };
         return persistedAgent;
       }

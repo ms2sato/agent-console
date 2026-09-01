@@ -59,7 +59,7 @@ const worktrees = new Hono<AppBindings>()
 
     const body = c.req.valid('json');
     const authUser = c.get('authUser');
-    const { taskId, mode, autoStartSession, agentId, embeddedAgentId, initialPrompt, title } = body;
+    const { taskId, mode, autoStartSession, agentId, embeddedAgentId, model, reasoningEffort, initialPrompt, title } = body;
 
     // Validate agent exists before returning accepted (fail fast for invalid config).
     // This terminal agent is always resolved -- it drives `suggestSessionMetadata`'s
@@ -189,6 +189,8 @@ const worktrees = new Hono<AppBindings>()
           useRemote,
           agentId: embeddedAgentId ? undefined : selectedAgentId,
           embeddedAgentId,
+          model,
+          reasoningEffort,
           initialPrompt,
           title: effectiveTitle,
           autoStartSession,

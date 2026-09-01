@@ -21,6 +21,20 @@ const CreateAgentWorkerParamsSchema = v.strictObject({
     v.string(),
     v.minLength(1, 'Agent ID is required')
   ),
+  /**
+   * Model override for this worker's PTY spawn (agent-surface.md Ruling 2).
+   * Pass-through, no value validation beyond non-empty after trim.
+   * Rejected at createWorker() time (ValidationError) unless the resolved
+   * agent's commandTemplate consumes {{ model...}} -- see
+   * getAgentParameterCapabilities in @agent-console/shared.
+   */
+  model: v.optional(v.pipe(v.string(), v.trim(), v.minLength(1, 'model must not be empty'))),
+  /**
+   * Reasoning-effort override for this worker's PTY spawn
+   * (agent-surface.md Ruling 2). Populates the {{ effort...}} template variable, NOT
+   * {{ reasoningEffort...}} -- see buildAgentParameterTemplateVars.
+   */
+  reasoningEffort: v.optional(v.pipe(v.string(), v.trim(), v.minLength(1, 'reasoningEffort must not be empty'))),
 });
 
 /**

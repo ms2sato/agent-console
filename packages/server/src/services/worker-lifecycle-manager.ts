@@ -25,6 +25,7 @@ import type {
   CreateWorkerParams,
   WorkerErrorCode,
 } from '@agent-console/shared';
+import { getAgentParameterCapabilities } from '@agent-console/shared';
 import type {
   InternalWorker,
   InternalPtyWorker,
@@ -64,6 +65,16 @@ const logger = createLogger('worker-lifecycle-manager');
 export interface WorkerLifecycleDeps {
   workerManager: WorkerManager;
   agentManager: AgentManager;
+  /**
+   * Test seam for `getAgentParameterCapabilities` (agent-surface.md Ruling 1).
+   * Defaults to the real shared accessor. Lets a test prove `createWorker`'s
+   * model/reasoningEffort validation follows the accessor's return value
+   * rather than an independent re-scan of `agent.commandTemplate`, without
+   * `mock.module()` on `@agent-console/shared` (prohibited by
+   * `.claude/rules/testing.md` Anti-Pattern #2 -- the shared package is
+   * imported by virtually every other test file in this process).
+   */
+  getAgentParameterCapabilitiesImpl?: typeof getAgentParameterCapabilities;
   /**
    * Embedded-agent definition registry. Only `getEmbeddedAgent` is needed here
    * (interface-segregated): createWorker resolves the definition to validate the
@@ -169,6 +180,42 @@ export class WorkerLifecycleManager {
     const resolver = this.deps.getPathResolver(session);
 
     if (request.type === 'agent') {
+      // Validate model/reasoningEffort against the resolved agent's ACTUAL
+      // capability (agent-surface.md Ruling 1) before anything is
+      // initialized/persisted. This is the ONE validation choke point for
+      // these params -- it covers session-creation's initial worker, the
+      // add-worker route, and (transitively, via createWorktreeWithSession
+      // -> sessionManager.createSession) both the REST worktree-creation
+      // route and MCP delegate_to_worktree. Do not duplicate this
+      // validation at the route/MCP layer.
+      //
+      // Scoped to fire ONLY when a model/reasoningEffort param is actually
+      // present: an unknown/omitted agentId with neither param set must
+      // keep its pre-existing behavior (silent fallback to the default
+      // agent inside initializeAgentWorker) unchanged -- that fallback is
+      // relied on by callers upstream of this method that do not
+      // pre-validate agentId existence (e.g. POST /api/sessions), and
+      // fixing it is out of scope for this Issue.
+      if (request.model !== undefined || request.reasoningEffort !== undefined) {
+        const resolvedAgentId = request.agentId ?? CLAUDE_CODE_AGENT_ID;
+        const resolvedAgent = this.deps.agentManager.getAgent(resolvedAgentId);
+        if (!resolvedAgent) {
+          throw new ValidationError(`Agent not found: ${resolvedAgentId}`);
+        }
+        const getCapabilities = this.deps.getAgentParameterCapabilitiesImpl ?? getAgentParameterCapabilities;
+        const capabilities = getCapabilities(resolvedAgent);
+        if (request.model !== undefined && !capabilities.model) {
+          throw new ValidationError(
+            `Agent "${resolvedAgent.name}" (${resolvedAgent.id}) does not support the "model" parameter -- its command template has no model template placeholder (e.g. {{ model...}}).`,
+          );
+        }
+        if (request.reasoningEffort !== undefined && !capabilities.reasoningEffort) {
+          throw new ValidationError(
+            `Agent "${resolvedAgent.name}" (${resolvedAgent.id}) does not support the "reasoningEffort" parameter -- its command template has no effort template placeholder (e.g. {{ effort...}}).`,
+          );
+        }
+      }
+
       const repositoryEnvVars = await this.deps.getRepositoryEnvVars(sessionId);
       const username = await this.deps.resolveSpawnUsername(session.createdBy);
       // Only the session's initial agent worker (created with a non-empty
@@ -180,6 +227,8 @@ export class WorkerLifecycleManager {
         createdAt,
         agentId: request.agentId,
         deliverInitialPromptOnActivation,
+        model: request.model,
+        reasoningEffort: request.reasoningEffort,
       });
       // Resolved once, before activation; the value below is threaded
       // straight into activateAgentWorkerPty (which never re-derives it).
@@ -522,6 +571,15 @@ export class WorkerLifecycleManager {
       // restart does not change. NOT recomputed from the resolved
       // startupIntent above.
       deliverInitialPromptOnActivation: existingWorker.deliverInitialPromptOnActivation,
+      // model/reasoningEffort (agent-surface.md Ruling 3): a same-agent restart
+      // preserves the worker's override verbatim -- this is the restart-
+      // persistence pin. An agent CHANGE starts fresh with no override: the
+      // new agent is a different definition, possibly incapable of the old
+      // override, so carrying it over risks resurrecting a now-invalid
+      // value. A future phase can add explicit restart-time model/effort
+      // params if wanted; out of scope here.
+      model: isAgentChanged ? null : existingWorker.model,
+      reasoningEffort: isAgentChanged ? null : existingWorker.reasoningEffort,
     });
     // Adopt the epoch minted by resetWorkerOutput so the manifest and the
     // in-memory worker agree from the first live chunk (activation is

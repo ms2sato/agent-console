@@ -144,6 +144,8 @@ describe('PersistenceService', () => {
               pid: 12345,
               createdAt: '2024-01-01T00:00:00.000Z',
               deliverInitialPromptOnActivation: false,
+              model: null,
+              reasoningEffort: null,
             },
           ],
           serverPid: 99999,

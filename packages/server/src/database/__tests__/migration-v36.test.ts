@@ -16,7 +16,7 @@ import { sql, Kysely } from 'kysely';
 import { BunSqliteDialect } from 'kysely-bun-sqlite';
 import { Database as BunDatabase } from 'bun:sqlite';
 import type { Database } from '../schema.js';
-import { initializeDatabase, closeDatabase, migrateToV36 } from '../connection.js';
+import { closeDatabase, migrateToV36 } from '../connection.js';
 import { setupMemfs, cleanupMemfs } from '../../__tests__/utils/mock-fs-helper.js';
 
 const TEST_CONFIG_DIR = '/test/config';
@@ -133,15 +133,21 @@ describe('migration v36 (embedded_agents handoff_* -> compaction_threshold)', ()
 
   it('advances the schema version to 36 via the real production migration path', async () => {
     // KEEP THIS despite its resemblance to the terminal-version assertions
-    // #1405 removed from every other migration-vNN test. Those asserted the
-    // CHAIN's final version, which `migration.test.ts` owns; this asserts
-    // what v36 ITSELF sets (`PRAGMA user_version = 36`), which is v36's own
-    // effect and nobody else's. The two coincide only while v36 is the last
-    // migration -- when v37 lands this will read like a stale duplicate and
-    // it will still be correct, so do not sweep it away by pattern.
-    const db = await initializeDatabase(':memory:');
+    // #1405 removed from every other migration-vNN test. This asserts what
+    // v36 ITSELF sets (`PRAGMA user_version = 36`), which is v36's own
+    // effect and nobody else's -- `migration.test.ts` owns the CHAIN's final
+    // version. v37 landed and proved the header's original prediction wrong:
+    // `initializeDatabase(':memory:')` runs the FULL chain, so once a later
+    // migration exists it reports the chain's final version, not v36's own
+    // effect -- it would NOT "still be correct". Fixed by invoking
+    // `migrateToV36` directly against a seeded v35-shaped db, mirroring this
+    // file's own `migrateToV36(db)` calls below, which genuinely isolates
+    // v36's own PRAGMA write from every migration before or after it.
+    const db = seedV35Database([]);
+    await migrateToV36(db);
     const versionRes = await sql<{ user_version: number }>`PRAGMA user_version`.execute(db);
     expect(versionRes.rows[0]?.user_version).toBe(36);
+    await db.destroy();
   });
 
   it('drops the three handoff_* columns and adds compaction_threshold as a nullable REAL', async () => {

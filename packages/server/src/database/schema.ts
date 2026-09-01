@@ -123,6 +123,20 @@ export interface WorkersTable {
    * docs/design/embedded-agent-worker.md "Compaction".
    */
   auto_compaction: Generated<number>;
+  /**
+   * Worker-persisted model override (agent workers only; null for other
+   * types). Beats the agent definition's own template default; survives
+   * server restart (agent-surface.md Ruling 3). NULL, never an empty string --
+   * the wire schema rejects empty/whitespace input, so the storage layer
+   * never sees a third state between "a real value" and "absent".
+   */
+  model: string | null;
+  /**
+   * Worker-persisted reasoning-effort override (agent workers only; null for
+   * other types). Same persistence contract as `model`. See
+   * docs/design/agent-surface.md "Model & Reasoning-Effort Parameters".
+   */
+  reasoning_effort: string | null;
 }
 
 // Helper types for queries
