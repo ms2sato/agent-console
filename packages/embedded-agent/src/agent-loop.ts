@@ -1105,7 +1105,7 @@ export class AgentLoop {
       // carry the post-compaction size -- but nothing is MUTATED yet, so the
       // failure invariant is untouched: `this.conversation` is still the
       // pre-compaction array at this point.
-      const seed = buildCompactionSeedMessages(newSystemPrompt, summary);
+      const seed = buildCompactionSeedMessages(newSystemPrompt, summary, isPartial ? 'partial' : 'full');
       const postTokens = estimateTokensFromChars(seed);
 
       // Emitted BEFORE the conversation mutation, and with no `await` between
@@ -1128,6 +1128,13 @@ export class AgentLoop {
       // schemas and measures low -- see the design doc's "Measured: `E`
       // under-counts" note), besides mixing a provider count and an estimate
       // in one field.
+      //
+      // `coverage` declares which of those two shapes this is, so consumers
+      // (the seed builder above, and the transcript label) can say so rather
+      // than let the under-report pass as if `preTokens` were the whole
+      // pre-compaction size. `isPartial` is known unconditionally at this
+      // call site -- unlike `preTokens`/`postTokens`, there is no "could not
+      // determine" case, so this field is never optional-spread here.
       // === THE COMMIT POINT ===
       //
       // The last abort check in this method, and the boundary the whole
@@ -1160,6 +1167,7 @@ export class AgentLoop {
         ...(outcome.usage !== undefined ? { preTokens: outcome.usage.promptTokens } : {}),
         postTokens,
         ...(providerStatedWindowTokens !== undefined ? { providerStatedWindowTokens } : {}),
+        coverage: isPartial ? 'partial' : 'full',
       });
 
       this.conversation.splice(0, this.conversation.length, ...seed);

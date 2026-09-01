@@ -348,6 +348,21 @@ export type EmbeddedAgentEvent =
    * own severity to the user. Both are optional for the same reason
    * `summary` is -- an engine that cannot supply them renders the plain
    * marker instead of a fabricated number.
+   *
+   * `preTokens` measures the distillation's INPUT, not the whole
+   * pre-compaction conversation. For a FULL compaction those are the same
+   * number, so this distinction is invisible. For a PARTIAL one (`coverage
+   * === 'partial'`) the input is a narrowed tail suffix, so `preTokens` is
+   * the suffix's size and under-reports the true before-size -- and it does
+   * so exactly in the case that discarded the most, since a smaller input is
+   * what a partial distillation feeds the provider. This is deliberate, not
+   * a bug to fix by fabricating a whole-conversation estimate: `preTokens`
+   * is the only REAL count available at emit time, and an estimate over the
+   * full conversation would report smaller still (see
+   * docs/design/embedded-agent-worker.md's "Measured: `E` under-counts"
+   * note) besides mixing a measurement and a guess in one field. No
+   * whole-conversation-size field is added for this reason -- see
+   * `coverage` below for how the divergence is declared instead.
    */
   | {
       v: 1;
@@ -374,6 +389,29 @@ export type EmbeddedAgentEvent =
        * the degraded path drops under the banner's declaration.
        */
       providerStatedWindowTokens?: number;
+      /**
+       * Whether the distillation summarised the WHOLE conversation
+       * (`'full'`) or only a recent tail suffix of a longer one
+       * (`'partial'`) -- a fact the marker previously had no way to state,
+       * which left both the restore seed's totality claim and the
+       * transcript's before-size display unable to distinguish the two
+       * shapes.
+       *
+       * Three-valued by ABSENCE, and there is deliberately no third literal
+       * for it: missing means UNKNOWN -- a row written before this field
+       * existed -- and NEVER means `'full'`. No consumer may treat absence
+       * as a totality claim: `buildCompactionSeedMessages` (embedded-agent)
+       * and the transcript boundary label (client) both branch on all three
+       * states explicitly rather than defaulting an absent value to
+       * `'full'`.
+       *
+       * Old-client behaviour: strict schemas reject the whole row rather
+       * than dropping an unknown field. See
+       * `packages/shared/src/schemas/index.ts`'s header -- the ordinary path
+       * heals via the schema-version reload, and the degraded path drops
+       * under the banner's declaration.
+       */
+      coverage?: 'full' | 'partial';
     }
   /**
    * RETIRED (Context Handoff, #1122): no engine emits this any more --

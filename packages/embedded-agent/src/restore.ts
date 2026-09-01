@@ -227,7 +227,11 @@ export function reconstructConversation(
     conversation =
       events[boundaryIndex].type === 'restore-failure-boundary'
         ? buildRestoreFailureSeedMessages(systemPrompt)
-        : buildCompactionSeedMessages(systemPrompt, boundarySummary(events[boundaryIndex]));
+        : buildCompactionSeedMessages(
+            systemPrompt,
+            boundarySummary(events[boundaryIndex]),
+            boundaryCoverage(events[boundaryIndex]),
+          );
     windowEvents = events.slice(boundaryIndex + 1);
   }
 
@@ -475,6 +479,18 @@ function boundarySummary(event: EmbeddedAgentStreamEvent): string {
   if (event.type === 'context-compacted') return event.summary ?? '';
   if (event.type === 'context-handoff') return event.distillation;
   return '';
+}
+
+/**
+ * The coverage a boundary event's seed should claim, mirroring
+ * `boundarySummary`'s exact pattern: `context-handoff` has no `coverage`
+ * field at the type level (the member predates the concept entirely), so it
+ * falls through to `undefined` -- the neutral, no-totality-claim state --
+ * same as a `context-compacted` row written before this field existed.
+ */
+function boundaryCoverage(event: EmbeddedAgentStreamEvent): 'full' | 'partial' | undefined {
+  if (event.type === 'context-compacted') return event.coverage;
+  return undefined;
 }
 
 /**

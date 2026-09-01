@@ -1418,7 +1418,16 @@ describe('SdkEngine — discriminant containment (compile-level)', () => {
 // ---------------------------------------------------------------------------
 
 function compactBoundary(
-  metadata: { trigger?: 'manual' | 'auto'; pre_tokens?: number; post_tokens?: number } = {},
+  metadata: {
+    trigger?: 'manual' | 'auto';
+    pre_tokens?: number;
+    post_tokens?: number;
+    // Either present means the SDK kept some messages rather than
+    // summarising everything -- see the SDK's own doc comment on both
+    // fields, quoted in `flushCompactionBoundary`'s doc comment.
+    preserved_messages?: boolean;
+    preserved_segment?: boolean;
+  } = {},
 ): SDKMessage {
   return asSdkMessage({
     type: 'system',
@@ -1427,6 +1436,10 @@ function compactBoundary(
       trigger: metadata.trigger ?? 'auto',
       pre_tokens: metadata.pre_tokens ?? 101565,
       ...(metadata.post_tokens !== undefined ? { post_tokens: metadata.post_tokens } : {}),
+      ...(metadata.preserved_messages === true ? { preserved_messages: { uuids: ['msg-1'] } } : {}),
+      ...(metadata.preserved_segment === true
+        ? { preserved_segment: { anchor_uuid: 'msg-0', leaf_uuid: 'msg-1' } }
+        : {}),
     },
     uuid: '11111111-1111-1111-1111-11111111111a',
     session_id: '22222222-2222-2222-2222-222222222222',
@@ -1541,6 +1554,7 @@ describe('SdkEngine — compaction: the boundary marker', () => {
         summary: 'THE SDK SUMMARY',
         preTokens: 101565,
         postTokens: 25367,
+        coverage: 'full',
       },
     ]);
   });
@@ -1568,7 +1582,12 @@ describe('SdkEngine — compaction: the boundary marker', () => {
 
     const markers = eventsOfType(events, 'context-compacted');
     expect(markers).toHaveLength(1);
-    expect(markers[0]).toMatchObject({ source: 'manual', preTokens: 25331, postTokens: 2033 });
+    expect(markers[0]).toMatchObject({
+      source: 'manual',
+      preTokens: 25331,
+      postTokens: 2033,
+      coverage: 'full',
+    });
     expect('summary' in markers[0]).toBe(false);
   });
 
@@ -1591,6 +1610,63 @@ describe('SdkEngine — compaction: the boundary marker', () => {
     expect(marker).toBeDefined();
     expect('preTokens' in marker).toBe(false);
     expect('postTokens' in marker).toBe(false);
+  });
+
+  it("coverage: 'partial' when the SDK's compact_metadata carries preserved_messages -- some messages were kept, not summarised", async () => {
+    const events: EmbeddedAgentEvent[] = [];
+    const { queryFn } = makeFakeQuery(() =>
+      (async function* (): AsyncGenerator<SDKMessage, void> {
+        yield systemInit();
+        await new Promise<void>((resolve) => setTimeout(resolve, 0));
+        yield compactBoundary({ trigger: 'auto', preserved_messages: true });
+        yield resultSuccess();
+        await new Promise<never>(() => {});
+      })(),
+    );
+    const engine = new SdkEngine(baseDeps({ queryFn, emit: (e) => events.push(e) }));
+
+    await engine.runTurn('u1', 'hello');
+
+    const marker = eventsOfType(events, 'context-compacted')[0];
+    expect(marker).toMatchObject({ coverage: 'partial' });
+  });
+
+  it("coverage: 'partial' when the SDK's compact_metadata carries preserved_segment (the field preserved_messages supersedes)", async () => {
+    const events: EmbeddedAgentEvent[] = [];
+    const { queryFn } = makeFakeQuery(() =>
+      (async function* (): AsyncGenerator<SDKMessage, void> {
+        yield systemInit();
+        await new Promise<void>((resolve) => setTimeout(resolve, 0));
+        yield compactBoundary({ trigger: 'auto', preserved_segment: true });
+        yield resultSuccess();
+        await new Promise<never>(() => {});
+      })(),
+    );
+    const engine = new SdkEngine(baseDeps({ queryFn, emit: (e) => events.push(e) }));
+
+    await engine.runTurn('u1', 'hello');
+
+    const marker = eventsOfType(events, 'context-compacted')[0];
+    expect(marker).toMatchObject({ coverage: 'partial' });
+  });
+
+  it("coverage: 'full' when neither preserved field is present -- the SDK summarised everything", async () => {
+    const events: EmbeddedAgentEvent[] = [];
+    const { queryFn } = makeFakeQuery(() =>
+      (async function* (): AsyncGenerator<SDKMessage, void> {
+        yield systemInit();
+        await new Promise<void>((resolve) => setTimeout(resolve, 0));
+        yield compactBoundary({ trigger: 'auto' });
+        yield resultSuccess();
+        await new Promise<never>(() => {});
+      })(),
+    );
+    const engine = new SdkEngine(baseDeps({ queryFn, emit: (e) => events.push(e) }));
+
+    await engine.runTurn('u1', 'hello');
+
+    const marker = eventsOfType(events, 'context-compacted')[0];
+    expect(marker).toMatchObject({ coverage: 'full' });
   });
 
   it('emits the marker once, before the turn ends, and not again on the next turn', async () => {

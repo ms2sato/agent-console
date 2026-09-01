@@ -600,6 +600,14 @@ export class SdkEngine implements Engine {
    * carries the pair only when both numbers are real -- a compaction that
    * cannot report its severity renders the plain marker rather than a
    * fabricated number (see the event's doc comment in shared).
+   *
+   * `coverage` is derived from `preserved_messages` / `preserved_segment`:
+   * the SDK's own doc comment on both fields states they are "Unset when
+   * compaction summarizes everything (no messagesToKeep)", so either one
+   * present means some messages were kept rather than summarised (partial),
+   * and both absent means the SDK summarised the whole conversation (full).
+   * Unlike `preTokens`/`postTokens`, this is always known here -- the SDK
+   * always states it in `compact_metadata` -- so it is never optional-spread.
    */
   private flushCompactionBoundary(): void {
     const metadata = this.pendingCompactBoundary;
@@ -607,6 +615,8 @@ export class SdkEngine implements Engine {
     this.pendingCompactBoundary = null;
     this.pendingCompactSummary = null;
     if (!metadata) return;
+
+    const isPartial = metadata.preserved_messages !== undefined || metadata.preserved_segment !== undefined;
 
     this.deps.emit({
       v: 1,
@@ -616,6 +626,7 @@ export class SdkEngine implements Engine {
       ...(metadata.post_tokens !== undefined
         ? { preTokens: metadata.pre_tokens, postTokens: metadata.post_tokens }
         : {}),
+      coverage: isPartial ? 'partial' : 'full',
     });
   }
 

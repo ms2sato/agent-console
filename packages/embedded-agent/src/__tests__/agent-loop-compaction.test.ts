@@ -151,6 +151,7 @@ describe('AgentLoop.compact() — failure invariant (polarity, mandatory)', () =
       type: 'context-compacted',
       source: 'manual',
       summary: 'DISTILLATION_SUMMARY',
+      coverage: 'full',
     });
 
     await loop.runTurn('t2', 'next');
@@ -165,6 +166,54 @@ describe('AgentLoop.compact() — failure invariant (polarity, mandatory)', () =
       },
       { role: 'user', content: 'next' },
     ]);
+  });
+});
+
+describe('AgentLoop.compact() — coverage field, both polarities', () => {
+  it("whole-conversation input -> marker carries coverage: 'full'", async () => {
+    const adapter = new ScriptedAdapter([textResponse('DISTILLATION_SUMMARY')]);
+    const { deps, events } = makeDeps({ adapter });
+    const loop = new AgentLoop(deps);
+
+    // No `partial` argument: `compact()` distills the whole conversation.
+    await loop.compact('manual');
+
+    expect(events.find((e) => e.type === 'context-compacted')).toMatchObject({ coverage: 'full' });
+  });
+
+  it("suffix-only input (partial distillation) -> marker carries coverage: 'partial', and the seed states earlier content was discarded", async () => {
+    const adapter = new ScriptedAdapter([textResponse('DISTILLATION_SUMMARY'), textResponse('reply to next')]);
+    // A conversation long enough that a narrow budget can only admit its most
+    // recent message -- mirrors the head(10) + prompt(10) + message(100)
+    // arithmetic `selectPartialDistillationMessages`'s own suite uses.
+    const bigConversation: ChatMessage[] = [
+      { role: 'system', content: 'S'.repeat(40) }, // 10 tokens
+      { role: 'user', content: 'O'.repeat(400) }, // 100 tokens, discarded
+      { role: 'assistant', content: 'D'.repeat(400) }, // 100 tokens, discarded
+      { role: 'user', content: 'R'.repeat(400) }, // 100 tokens, the kept tail
+    ];
+    const { deps, events } = makeDeps({
+      adapter,
+      restoredConversation: bigConversation,
+      loadCompactionPrompt: async () => 'P'.repeat(40), // 10 tokens
+    });
+    const loop = new AgentLoop(deps);
+
+    // Budget 130 admits head(10) + prompt(10) + one 100-token message, but
+    // not a second -- selectPartialDistillationMessages keeps only the tail.
+    await loop.compact('manual', { budgetTokens: 130 });
+
+    const marker = events.find((e) => e.type === 'context-compacted');
+    expect(marker).toMatchObject({ coverage: 'partial' });
+
+    // The seed a subsequent turn actually sends must state the discard
+    // plainly, not fall back to the full-coverage claim.
+    await loop.runTurn('t2', 'next');
+    const messagesForT2 = adapter.capturedMessages.at(-1)!;
+    const seedMessage = messagesForT2.find((m) => m.role === 'user' && m.content !== 'next');
+    expect(seedMessage?.content).toContain('only the most recent portion');
+    expect(seedMessage?.content).toContain('discarded');
+    expect(seedMessage?.content).not.toContain('the earlier part of this conversation, which has been compacted away');
   });
 });
 

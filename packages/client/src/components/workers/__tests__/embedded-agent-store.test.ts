@@ -379,6 +379,38 @@ describe('embedded-agent-store', () => {
     expect('summary' in entry).toBe(false);
   });
 
+  it('folds context-compacted carrying coverage, distinguishing full from partial', async () => {
+    const instance = getOrCreateEmbeddedAgentWorker('s3cov', 'w3cov');
+    const ws = MockWebSocket.getLastInstance();
+    ws!.simulateOpen();
+
+    const data = ndjson({ v: 1, type: 'context-compacted', source: 'auto', coverage: 'partial' });
+    ws!.simulateMessage(historyMessage(data, data.length));
+    await flush();
+
+    const entry = instance.getSnapshot().entries[0];
+    expect(entry).toMatchObject({ kind: 'context-compacted', coverage: 'partial' });
+  });
+
+  it('folds a context-compacted with NO coverage, leaving the field absent rather than defaulting to full', async () => {
+    // A row written before `coverage` existed carries no such field on the
+    // wire. Absent must stay absent here too, for the same reason as
+    // `summary` above: the view branches on presence, and treating a missing
+    // field as `'full'` would be exactly the totality claim this field
+    // exists to prevent for legacy rows.
+    const instance = getOrCreateEmbeddedAgentWorker('s3cov2', 'w3cov2');
+    const ws = MockWebSocket.getLastInstance();
+    ws!.simulateOpen();
+
+    const data = ndjson({ v: 1, type: 'context-compacted', source: 'auto' });
+    ws!.simulateMessage(historyMessage(data, data.length));
+    await flush();
+
+    const entry = instance.getSnapshot().entries[0];
+    expect(entry).toMatchObject({ kind: 'context-compacted', source: 'auto' });
+    expect('coverage' in entry).toBe(false);
+  });
+
   it('REGRESSION (#1401): still folds a LEGACY context-handoff row from a historical stream', async () => {
     // No engine emits `context-handoff` any more, but transcripts written
     // before the compaction swap contain these rows and replay them on every

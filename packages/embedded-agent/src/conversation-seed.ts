@@ -11,19 +11,50 @@ import type { ChatMessage } from './providers/types.js';
  *
  * The legacy boundary deliberately gets this same compaction wording rather
  * than the retired handoff sentence ("This conversation continues from a
- * previous one"). The seed is a prompt to the model, not a historical
- * record: what it must describe accurately is the situation the model is in
- * NOW, and after a restore that situation is identical either way -- a
+ * previous one"): the seed is a prompt to the model, not a historical
+ * record, and after a restore the situation is identical either way -- a
  * conversation whose head is a summary. See
  * docs/design/embedded-agent-worker.md "Compaction boundary" for the full
- * reasoning behind not branching here.
+ * reasoning behind sharing that wording.
+ *
+ * `coverage` branches the sentence's totality claim into three states, three
+ * ways, none of which may fall through to another by accident:
+ *
+ * - `'full'` -- the summary covers everything before it; the only state
+ *   where that claim is verified true by the caller.
+ * - `'partial'` -- the summary covers only the most recent portion of a
+ *   longer conversation, and states plainly that earlier content was
+ *   discarded.
+ * - `undefined` -- the legacy state every row written before `coverage`
+ *   existed carries, and the state a `context-handoff` boundary always
+ *   carries (that member has no `coverage` field at all). Neutral phrasing,
+ *   no totality claim of either shape -- this is what corrects the
+ *   pre-existing "the summary covers everything" overclaim for those rows.
  */
-export function buildCompactionSeedMessages(systemPrompt: string, summary: string): ChatMessage[] {
-  const seedText = `Summary of the earlier part of this conversation, which has been compacted away: ${summary}`;
+export function buildCompactionSeedMessages(
+  systemPrompt: string,
+  summary: string,
+  coverage: 'full' | 'partial' | undefined,
+): ChatMessage[] {
+  const seedText = `${compactionSeedLeadIn(coverage)}${summary}`;
   return [
     { role: 'system', content: systemPrompt },
     { role: 'user', content: seedText },
   ];
+}
+
+function compactionSeedLeadIn(coverage: 'full' | 'partial' | undefined): string {
+  if (coverage === 'partial') {
+    return 'Summary of only the most recent portion of this conversation -- earlier content was discarded and is not covered by this summary: ';
+  }
+  if (coverage === 'full') {
+    return 'Summary of the earlier part of this conversation, which has been compacted away: ';
+  }
+  // Neutral, deliberately making no totality claim: this row predates the
+  // `coverage` field (or is a legacy `context-handoff` boundary, which never
+  // had one), so whether the summary covers everything or only a suffix is
+  // genuinely unknown here.
+  return 'Summary of this conversation up to this point: ';
 }
 
 /**
