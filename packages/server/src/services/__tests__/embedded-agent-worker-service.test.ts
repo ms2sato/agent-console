@@ -1174,6 +1174,26 @@ describe('EmbeddedAgentWorkerService — Transcript Restore (#1123)', () => {
   });
 });
 
+describe('EmbeddedAgentWorkerService.isEvicting', () => {
+  // The commit-point re-check's fuller reach (the actual mid-eviction window
+  // where `evicting === true` while `subprocess !== null`) is pinned in
+  // embedded-agent-idle-eviction-service.test.ts, which already has the
+  // exit-suppressed spawn fake needed to hold that window open. These are
+  // the two boundary cases reachable from this file's plain single-subprocess
+  // fixture.
+  it('returns false for a worker id with no runtime at all (never activated)', () => {
+    const h = setup();
+    expect(h.service.isEvicting('no-such-worker')).toBe(false);
+  });
+
+  it('returns false for a genuinely active, non-evicting worker', async () => {
+    const h = setup();
+    await h.service.activate(h.sessionId, h.workerId);
+
+    expect(h.service.isEvicting(h.workerId)).toBe(false);
+  });
+});
+
 describe('resolveEmbeddedAgentEntryPath', () => {
   it('resolves via the package-resolution branch on this dev checkout and returns an existing path', async () => {
     // This dev checkout has `bun install` wiring @agent-console/embedded-agent
