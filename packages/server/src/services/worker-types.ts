@@ -32,23 +32,18 @@ import type { ActivityDetector } from './activity-detector.js';
  * prefer either.
  *
  * A prior version of this file instead imported `RestoreInfo` type-only FROM
- * `embedded-agent-worker-service.ts`. That closed a real circular
- * dependency -- `embedded-agent-worker-service.ts` -> `internal-types.ts` ->
- * `worker-types.ts` -> (back to) `embedded-agent-worker-service.ts` -- caught
- * by CI's `madge --circular` (Structural Metrics), NOT by `tsc --noEmit`:
- * `tsc` erases type-only imports before its own cycle-shaped diagnostics
- * would apply, but `madge`'s static import-graph analysis parses import
- * statements syntactically and does not distinguish `import type` from a
- * value import -- a type-only edge is exactly as cyclic to it as any other.
- * `session-manager.ts`'s pre-existing `import { type RestoreInfo } from
- * './embedded-agent-worker-service.js'` never hit this because that file
- * sits outside the `internal-types.ts` -> `worker-types.ts` chain
- * `embedded-agent-worker-service.ts` is itself already part of (via its own
- * `import type { InternalSession } from './internal-types.js'`) -- so
- * "referenced, not re-declared" is safe FROM a file outside that chain, and
- * unsafe INTO a file inside it. A future application of that pattern should
- * check which side of this chain the referencing file is on before assuming
- * `tsc --noEmit` clean means cycle-free.
+ * `embedded-agent-worker-service.ts`. That also happened to close a cycle --
+ * `embedded-agent-worker-service.ts` -> `internal-types.ts` ->
+ * `worker-types.ts` -> back to `embedded-agent-worker-service.ts`, every
+ * edge type-only -- that the circularity linter formerly used in CI
+ * rejected outright, because it parsed import statements syntactically and
+ * could not distinguish `import type` from a value import. That linter has
+ * since been retired; dependency-cruiser's `no-circular` rule now permits
+ * an all-type-only ring like that one (see its `viaOnly` clause in
+ * `.dependency-cruiser.cjs`), so reverting to the prior arrangement would
+ * no longer trip CI. The type stays here regardless -- the
+ * design-principles.md reasoning above is the live, independent reason,
+ * not the retired linter's blind spot.
  *
  * `sdkResumed` is R1's addition and is THREE-VALUED -- `undefined` means
  * "this engine has no such concept" (`openai-api` never sets it), `false`

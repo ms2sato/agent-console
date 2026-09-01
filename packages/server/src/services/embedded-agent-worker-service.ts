@@ -443,20 +443,21 @@ interface Runtime {
 }
 
 // `RestoreInfo` moved to worker-types.ts (#1449 CI fix): defining it here and
-// importing it type-only INTO worker-types.ts closed a real circular
-// dependency (embedded-agent-worker-service.ts -> internal-types.ts ->
-// worker-types.ts -> back here), caught by `madge --circular` (Structural
-// Metrics) but invisible to `tsc --noEmit`, which erases type-only imports
-// before any cycle-shaped diagnostic would apply. worker-types.ts is this
-// type's correct home regardless (design-principles.md: a type's address is
-// the scope of the concept it models, not which module first needed it) --
-// see its doc comment there for the full account, including why
-// session-manager.ts's own former `import { type RestoreInfo } from
-// './embedded-agent-worker-service.js'` never hit the same trap. NOT
-// re-exported from here: `worker-types.js` is the single import path (every
-// consumer, including session-manager.ts, was redirected there in the same
-// change) rather than leaving two valid paths to the same type with no
-// reason to prefer one.
+// importing it type-only INTO worker-types.ts used to close a cycle
+// (embedded-agent-worker-service.ts -> internal-types.ts ->
+// worker-types.ts -> back here, every edge type-only) that the circularity
+// linter formerly used in CI rejected outright, parsing imports
+// syntactically with no `import type` distinction. That linter has since
+// been retired; dependency-cruiser's `no-circular` rule now permits an
+// all-type-only ring like that one (its `viaOnly` clause in
+// `.dependency-cruiser.cjs`), so the old arrangement would no longer trip
+// CI either. worker-types.ts is this type's correct home regardless
+// (design-principles.md: a type's address is the scope of the concept it
+// models, not which module first needed it) -- see its doc comment there
+// for the full account. NOT re-exported from here: `worker-types.js` is the
+// single import path (every consumer, including session-manager.ts, was
+// redirected there in the same change) rather than leaving two valid paths
+// to the same type with no reason to prefer one.
 import type { RestoreInfo } from './worker-types.js';
 
 type PipedSubprocess = Subprocess<'pipe', 'pipe', 'pipe'>;

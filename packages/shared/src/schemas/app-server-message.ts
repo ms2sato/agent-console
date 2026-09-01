@@ -460,10 +460,32 @@ export const AppServerMessageSchema = v.variant('type', [
   SchemaVersionMessageSchema,
 ]);
 
-// Inferred type from schema. Lives here (not in types/session.ts) so that
-// deriving it never requires a types -> schemas import: that edge is one
-// hop from `schemas/app-server-message.ts -> schemas/embedded-agent.ts ->
-// types/embedded-agent.ts` closing into a real cycle. See
-// `worker-types.ts`'s `RestoreInfo` doc comment for the sibling case: a
-// type-only import is exactly as cyclic to `madge` as a value import.
+// AppServerMessage lives beside its schema, not in types/session.ts, for
+// two independent, still-current reasons.
+//
+// First: `.dependency-cruiser.cjs`'s `shared-no-types-import-schemas` rule
+// forbids any import from packages/shared/src/types into
+// packages/shared/src/schemas, unconditionally -- deriving this type in
+// types/session.ts would need a type-only import of AppServerMessageSchema
+// from this file, which that rule rejects outright regardless of whether a
+// cycle exists.
+//
+// Second: this placement is a deliberate anti-recurrence guard against a
+// cycle shape that has occurred before -- a type-only import added into
+// types/session.ts from elsewhere in types/ that, combined with a
+// types/session.ts -> schemas/app-server-message.ts edge, would close a
+// ring through schemas/app-server-message.ts -> schemas/embedded-agent.ts
+// -> types/embedded-agent.ts and back. No such closing edge exists in the
+// graph today, so this guard is forward-looking, not a currently live
+// cycle. The circularity linter in place when this guard was written could
+// not distinguish that type-only ring from a value one, so it would have
+// rejected it outright with no allowlist mechanism. That linter has since
+// been retired, and dependency-cruiser's `no-circular` rule would
+// today permit an all-type-only ring like that one (its `viaOnly` clause,
+// see `.dependency-cruiser.cjs`) -- but the layering rule above blocks
+// moving this type regardless of that policy, so the guard's conclusion
+// (keep the type here) still holds even though the retired linter's blind
+// spot is no longer the operative reason. See `worker-types.ts`'s
+// `RestoreInfo` doc comment for the sibling case, where cycle-avoidance
+// (not a layering rule) was the retired linter's actual blind spot.
 export type AppServerMessage = v.InferOutput<typeof AppServerMessageSchema>;
