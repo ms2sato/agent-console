@@ -46,9 +46,14 @@ describe('UI_AGENT_OPERATIONS', () => {
     // Cross-check for `via` claims that name a specific component file, so
     // a future rename doesn't silently leave a stale claim. Only checks
     // entries whose `via` string looks like a bare component name.
+    // Reach measured: renaming `restart`'s `via` claim to a nonexistent
+    // component name made this test fail with the expected/received mismatch
+    // below; restoring it passed again. No other test in this suite would
+    // have caught a stale `via` claim for this entry.
     const componentFileClaims: Partial<Record<keyof typeof UI_AGENT_OPERATIONS, string>> = {
       createSessionWithAgent: 'CreateWorktreeForm.tsx',
       addWorkerToSession: 'AddAgentWorkerMenu.tsx',
+      restart: 'ActiveSessionsSidebar.tsx',
     };
 
     for (const [operation, fileName] of Object.entries(componentFileClaims)) {
