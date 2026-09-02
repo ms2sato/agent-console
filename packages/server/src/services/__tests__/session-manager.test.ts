@@ -973,6 +973,35 @@ describe('SessionManager', () => {
     });
   });
 
+  describe('createSession agentId (terminal) + contextWindowTokens (Issue #1554 -- kind-level reject, mirrors the embeddedAgentId block above)', () => {
+    // contextWindowTokens is not a terminal-agent concept (agent-surface.md
+    // Ruling 4: embedded-only). session-manager.ts's initialWorkerParams
+    // ternary forwards it (rather than dropping it) on the 'agent' arm too,
+    // purely so WorkerLifecycleManager.createWorker's kind-level check --
+    // already pinned directly in worker-lifecycle-manager.test.ts's
+    // "createWorker: embedded-agent model/reasoningEffort/contextWindowTokens
+    // validation" describe block -- can reject it loudly instead of it
+    // silently vanishing. This test proves that forwarding actually happens
+    // through createSession's own layer, not just at createWorker directly.
+    it('rejects contextWindowTokens on a terminal-agent selection, all the way up through createSession (agent-surface.md Ruling 4, kind-level)', async () => {
+      const manager = await getSessionManager();
+
+      await expect(
+        manager.createSession({
+          type: 'quick',
+          locationPath: '/test/path',
+          agentId: CLAUDE_CODE_AGENT_ID,
+          contextWindowTokens: 32000,
+        }),
+      ).rejects.toThrow(/contextWindowTokens/);
+
+      // Not silently dropped and not silently succeeded -- no ghost session.
+      expect(manager.getAllSessions()).toHaveLength(0);
+      const persisted = await manager.getSessionRepository().findAll();
+      expect(persisted).toHaveLength(0);
+    });
+  });
+
   describe('createWorker', () => {
     it('should create a terminal worker in existing session', async () => {
       const manager = await getSessionManager();
