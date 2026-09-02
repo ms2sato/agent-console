@@ -5950,6 +5950,8 @@ describe('SessionManager', () => {
       const STUB_DEF = {
         id: 'stub-def',
         name: 'Stub Model',
+        engine: 'openai-api' as const,
+        isBuiltIn: false,
         provider: { baseUrl: 'http://localhost:11434/v1', model: 'qwen3:32b' },
         createdBy: 'test-user-id',
         createdAt: '2024-01-01T00:00:00.000Z',
