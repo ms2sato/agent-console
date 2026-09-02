@@ -1,7 +1,7 @@
 import { useForm } from 'react-hook-form';
 import { valibotResolver } from '@hookform/resolvers/valibot';
 import { FormField, Input } from '../ui/FormField';
-import { ModelEffortFields } from '../agents/ModelEffortFields';
+import { AgentParameterFields } from '../agents/AgentParameterFields';
 import {
   UnifiedAgentSelector,
   useResolvedEmbeddedAgentId,
@@ -40,6 +40,7 @@ export function QuickSessionForm({
       embeddedAgentId: undefined,
       model: undefined,
       reasoningEffort: undefined,
+      contextWindowTokens: undefined,
     },
     mode: 'onBlur',
   });
@@ -54,11 +55,12 @@ export function QuickSessionForm({
   const resolvedEmbeddedAgentId = useResolvedEmbeddedAgentId(embeddedAgentId);
   const model = watch('model');
   const reasoningEffort = watch('reasoningEffort');
+  const contextWindowTokens = watch('contextWindowTokens');
 
   const handleAgentSelectionChange = (selection: AgentSelection) => {
-    // model/reasoningEffort are terminal-agent-only and gated by the
-    // NEWLY selected agent's capability (ModelEffortFields hides the input
-    // the moment the agent switch makes it inapplicable). Clear both here
+    // model/reasoningEffort/contextWindowTokens are gated by the NEWLY
+    // selected agent's capability (AgentParameterFields hides the input the
+    // moment the agent switch makes it inapplicable). Clear all three here
     // so a stale value from the previous agent never rides along in a
     // submit for a field the user can no longer see or edit.
     switch (selection.kind) {
@@ -67,12 +69,14 @@ export function QuickSessionForm({
         setValue('embeddedAgentId', undefined);
         setValue('model', undefined);
         setValue('reasoningEffort', undefined);
+        setValue('contextWindowTokens', undefined);
         return;
       case 'embedded':
         setValue('embeddedAgentId', selection.embeddedAgentId);
         setValue('agentId', undefined);
         setValue('model', undefined);
         setValue('reasoningEffort', undefined);
+        setValue('contextWindowTokens', undefined);
         return;
     }
   };
@@ -89,6 +93,7 @@ export function QuickSessionForm({
         ...agentFields,
         model: data.model?.trim() || undefined,
         reasoningEffort: data.reasoningEffort?.trim() || undefined,
+        contextWindowTokens: data.contextWindowTokens,
       });
     } catch (err) {
       setError('root', {
@@ -121,10 +126,17 @@ export function QuickSessionForm({
               className="flex-1"
             />
           </div>
-          <ModelEffortFields
-            agentId={resolvedEmbeddedAgentId ? undefined : resolvedAgentId}
+          <AgentParameterFields
+            selection={
+              resolvedEmbeddedAgentId
+                ? { kind: 'embedded', embeddedAgentId: resolvedEmbeddedAgentId }
+                : resolvedAgentId
+                  ? { kind: 'terminal', agentId: resolvedAgentId }
+                  : undefined
+            }
             model={model}
             reasoningEffort={reasoningEffort}
+            contextWindowTokens={contextWindowTokens}
             // CreateQuickSessionRequestSchema (used directly as this form's
             // resolver -- there is no looser client-only schema here, unlike
             // CreateWorktreeForm) requires model/reasoningEffort to be
@@ -132,9 +144,20 @@ export function QuickSessionForm({
             // whitespace-only input to `undefined` immediately so a blank
             // field never fails that constraint at submit time -- trimming
             // here (not just at submit) keeps the value the schema sees in
-            // sync with what onModelChange decided to pass through.
-            onModelChange={(value) => setValue('model', value.trim() || undefined)}
+            // sync with what onModelChange decided to pass through. A
+            // cleared model also clears contextWindowTokens: the field is
+            // only meaningful alongside a model override (agent-surface.md
+            // Ruling 4), so a stale window value must not survive a
+            // model-clear even though AgentParameterFields also stops
+            // rendering the input the moment model is empty -- the value
+            // needs to leave form state, not just the DOM.
+            onModelChange={(value) => {
+              const trimmed = value.trim() || undefined;
+              setValue('model', trimmed);
+              if (!trimmed) setValue('contextWindowTokens', undefined);
+            }}
             onReasoningEffortChange={(value) => setValue('reasoningEffort', value.trim() || undefined)}
+            onContextWindowTokensChange={(value) => setValue('contextWindowTokens', value)}
           />
           {sharedAccountsAvailable && (
             <label className="flex items-center gap-2 text-sm text-gray-400">

@@ -318,6 +318,16 @@ export class WorkerLifecycleManager {
         // embeddedAgentDefinition is guaranteed defined here: the branch
         // dispatch above (request.type === 'embedded-agent' with a
         // resolvable definition) is the only way this code path is reached.
+        //
+        // Reads EMBEDDED_AGENT_ENGINE_PARAMETER_CAPABILITIES directly by
+        // engine rather than going through agent-surface.ts's
+        // getAgentParameterCapabilitiesFor(AgentDirectoryEntry): this branch
+        // already knows the kind statically (it IS the embedded-agent
+        // branch), so there is no kind to dispatch on, and the dispatch
+        // entry's boolean-only AgentParameterCapabilitiesByKind is
+        // insufficient here anyway -- validation below needs the full row
+        // (acceptedValues domain check, reason strings for the error
+        // messages), not just capable/incapable booleans.
         const definition = embeddedAgentDefinition!;
         const getEmbeddedCapabilities =
           this.deps.getEmbeddedAgentParameterCapabilitiesImpl ??

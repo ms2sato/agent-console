@@ -46,6 +46,13 @@ export const CreateWorktreeFormSchema = v.pipe(
     // CreateWorktreeForm.tsx).
     model: v.optional(v.string()),
     reasoningEffort: v.optional(v.string()),
+    // Embedded-agent-only context-window override (agent-surface.md Ruling
+    // 4). AgentParameterFields only renders this input alongside a non-empty
+    // model value, and the cross-field v.forward() check below enforces the
+    // same constraint at the schema level so a value that somehow survives
+    // the render-gating (e.g. a stale draft restore) is still rejected here
+    // rather than reaching CreateWorktreeBaseSchema's server-side check.
+    contextWindowTokens: v.optional(v.pipe(v.number(), v.integer(), v.minValue(1))),
   }),
   // Validate initialPrompt is required when mode is 'prompt'
   v.forward(
@@ -63,6 +70,16 @@ export const CreateWorktreeFormSchema = v.pipe(
       'Branch name is required'
     ),
     ['customBranch']
+  ),
+  // Validate contextWindowTokens requires a model override (agent-surface.md
+  // Ruling 4) -- a declared window with no model change would silently
+  // apply to a model it wasn't declared for.
+  v.forward(
+    v.check(
+      (data) => data.contextWindowTokens == null || !!data.model?.trim(),
+      'contextWindowTokens requires a model override (agent-surface.md Ruling 4)'
+    ),
+    ['contextWindowTokens']
   )
 );
 

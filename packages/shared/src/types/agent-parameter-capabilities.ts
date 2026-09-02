@@ -7,10 +7,11 @@ import type { AgentDefinition } from './agent.js';
  * every consumer (UI, tool validation) calls this; nothing else scans
  * commandTemplate for these substrings.
  *
- * Terminal-only for Phase 1. Phase 2 (embedded agents) widens this to a
- * kind-discriminated union input (AgentDirectoryEntry) with a per-engine
- * capability table for the 'embedded' branch -- do not invent that branch
- * now.
+ * Terminal-only. A kind-dispatching consumer that needs to handle both
+ * terminal and embedded entries uniformly should call
+ * `getAgentParameterCapabilitiesFor` (agent-surface.ts) instead, which
+ * spreads this function's result for the terminal branch rather than
+ * duplicating it.
  */
 export interface AgentParameterCapabilities {
   model: boolean;

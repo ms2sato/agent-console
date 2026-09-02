@@ -3,7 +3,7 @@ import { useForm } from 'react-hook-form';
 import { valibotResolver } from '@hookform/resolvers/valibot';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { FormField, Input, Textarea } from '../ui/FormField';
-import { ModelEffortFields } from '../agents/ModelEffortFields';
+import { AgentParameterFields } from '../agents/AgentParameterFields';
 import { UnifiedAgentSelector, useResolvedEmbeddedAgentId } from '../AgentSelector';
 import { useResolvedAgentId } from '../../hooks/useAgents';
 import { Spinner } from '../ui/Spinner';
@@ -88,6 +88,7 @@ export function CreateWorktreeForm({
       embeddedAgentId: undefined,
       model: undefined,
       reasoningEffort: undefined,
+      contextWindowTokens: undefined,
     },
     mode: 'onBlur',
     shouldUnregister: true,
@@ -194,6 +195,7 @@ export function CreateWorktreeForm({
   const initialPrompt = watch('initialPrompt');
   const model = watch('model');
   const reasoningEffort = watch('reasoningEffort');
+  const contextWindowTokens = watch('contextWindowTokens');
 
   // Auto-switch branchNameMode based on initialPrompt content
   // Keeps the radio selection consistent with available options
@@ -258,6 +260,7 @@ export function CreateWorktreeForm({
           shared: data.shared || undefined,
           model: data.model?.trim() || undefined,
           reasoningEffort: data.reasoningEffort?.trim() || undefined,
+          contextWindowTokens: data.contextWindowTokens,
         };
       case 'custom':
         return {
@@ -273,6 +276,7 @@ export function CreateWorktreeForm({
           shared: data.shared || undefined,
           model: data.model?.trim() || undefined,
           reasoningEffort: data.reasoningEffort?.trim() || undefined,
+          contextWindowTokens: data.contextWindowTokens,
         };
       case 'existing':
         return {
@@ -286,6 +290,7 @@ export function CreateWorktreeForm({
           shared: data.shared || undefined,
           model: data.model?.trim() || undefined,
           reasoningEffort: data.reasoningEffort?.trim() || undefined,
+          contextWindowTokens: data.contextWindowTokens,
         };
     }
     // Exhaustiveness check - compile error if new mode is added
@@ -328,37 +333,56 @@ export function CreateWorktreeForm({
                 agentId={resolvedAgentId}
                 embeddedAgentId={resolvedEmbeddedAgentId}
                 onChange={(selection) => {
-                  // model/reasoningEffort are terminal-agent-only and gated
-                  // by the NEWLY selected agent's capability
-                  // (ModelEffortFields hides the input the moment the agent
-                  // switch makes it inapplicable). Clear both here so a
-                  // stale value from the previous agent never rides along
-                  // in a submit for a field the user can no longer see or
-                  // edit.
+                  // model/reasoningEffort/contextWindowTokens are gated by
+                  // the NEWLY selected agent's capability
+                  // (AgentParameterFields hides the input the moment the
+                  // agent switch makes it inapplicable). Clear all three
+                  // here so a stale value from the previous agent never
+                  // rides along in a submit for a field the user can no
+                  // longer see or edit.
                   switch (selection.kind) {
                     case 'embedded':
                       setValue('embeddedAgentId', selection.embeddedAgentId, { shouldDirty: true });
                       setValue('agentId', undefined, { shouldDirty: true });
                       setValue('model', undefined, { shouldDirty: true });
                       setValue('reasoningEffort', undefined, { shouldDirty: true });
+                      setValue('contextWindowTokens', undefined, { shouldDirty: true });
                       return;
                     case 'terminal':
                       setValue('agentId', selection.agentId, { shouldDirty: true });
                       setValue('embeddedAgentId', undefined, { shouldDirty: true });
                       setValue('model', undefined, { shouldDirty: true });
                       setValue('reasoningEffort', undefined, { shouldDirty: true });
+                      setValue('contextWindowTokens', undefined, { shouldDirty: true });
                       return;
                   }
                 }}
                 priorityAgentId={defaultAgentId ?? undefined}
               />
             </div>
-            <ModelEffortFields
-              agentId={resolvedEmbeddedAgentId ? undefined : resolvedAgentId}
+            <AgentParameterFields
+              selection={
+                resolvedEmbeddedAgentId
+                  ? { kind: 'embedded', embeddedAgentId: resolvedEmbeddedAgentId }
+                  : resolvedAgentId
+                    ? { kind: 'terminal', agentId: resolvedAgentId }
+                    : undefined
+              }
               model={model}
               reasoningEffort={reasoningEffort}
-              onModelChange={(value) => setValue('model', value, { shouldDirty: true })}
+              contextWindowTokens={contextWindowTokens}
+              // A cleared model also clears contextWindowTokens: the field
+              // is only meaningful alongside a model override
+              // (agent-surface.md Ruling 4), so a stale window value must
+              // not survive a model-clear even though AgentParameterFields
+              // also stops rendering the input the moment model is empty --
+              // the value needs to leave form state, not just the DOM.
+              onModelChange={(value) => {
+                setValue('model', value, { shouldDirty: true });
+                if (!value.trim()) setValue('contextWindowTokens', undefined, { shouldDirty: true });
+              }}
               onReasoningEffortChange={(value) => setValue('reasoningEffort', value, { shouldDirty: true })}
+              onContextWindowTokensChange={(value) => setValue('contextWindowTokens', value, { shouldDirty: true })}
             />
           </div>
 
