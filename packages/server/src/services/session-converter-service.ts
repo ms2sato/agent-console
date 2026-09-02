@@ -9,7 +9,9 @@ import type {
   QuickSession,
   Worker,
   SessionActivationState,
+  EmbeddedAgentDefinition,
 } from '@agent-console/shared';
+import { resolveEffectiveContextWindow } from './embedded-agent-context-window.js';
 import type {
   PersistedSession,
   PersistedWorker,
@@ -55,6 +57,12 @@ export interface SessionConverterDeps {
   toPublicWorker: (worker: InternalWorker) => Worker;
   toPersistedWorker: (worker: InternalWorker) => PersistedWorker;
   getServerPid: () => number | null;
+  /**
+   * Definition lookup for embedded-agent wire conversions (#1556).
+   * Optional, matching `WorkerManager`'s `getEmbeddedAgentFn` test-seam
+   * pattern -- existing deps object literals in tests need no change.
+   */
+  getEmbeddedAgent?: (id: string) => EmbeddedAgentDefinition | undefined;
 }
 
 /** Re-export so tests can reference the same type the service expects. */
@@ -241,6 +249,10 @@ export class SessionConverterService {
           embeddedAgentId: w.embeddedAgentId,
           activated: false, // Paused sessions have no active subprocess
           autoCompaction: w.autoCompaction,
+          contextWindowTokens: resolveEffectiveContextWindow(
+            {},
+            (this.deps.getEmbeddedAgent ?? (() => undefined))(w.embeddedAgentId),
+          ),
         };
       } else {
         const _exhaustive: never = w;

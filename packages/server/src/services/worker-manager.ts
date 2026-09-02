@@ -20,6 +20,7 @@ import type {
   EmbeddedAgentWorker,
   AgentActivityState,
   ExitReason,
+  EmbeddedAgentDefinition,
 } from '@agent-console/shared';
 import {
   buildAgentParameterTemplateVars,
@@ -62,6 +63,7 @@ import type { McpTokenRegistry } from '../mcp/mcp-auth.js';
 import { writeUserOwnedSecretFile, rmRecursiveAsUser, shouldElevateForUser, type runAsUser } from './privilege-elevation.js';
 import { lookupOsUser, type LookupOsUserFn } from './os-user-lookup.js';
 import { listDescendantPids, signalPids } from '../lib/process-tree.js';
+import { resolveEffectiveContextWindow } from './embedded-agent-context-window.js';
 import { createLogger } from '../lib/logger.js';
 import { getConfigDir } from '../lib/config.js';
 import * as path from 'node:path';
@@ -288,6 +290,8 @@ export class WorkerManager {
     private listDescendantPidsImpl: typeof listDescendantPids = listDescendantPids,
     /** Test seam for the process-tree signal step in `killWorker`. Defaults to the real implementation. */
     private signalPidsImpl: typeof signalPids = signalPids,
+    /** Definition lookup for embedded-agent wire conversions (#1556). Defaults to "no definition found" so existing test call sites need no change. */
+    private getEmbeddedAgentFn: (id: string) => EmbeddedAgentDefinition | undefined = () => undefined,
   ) {
     this.userMode = userMode;
     this.agentManager = agentManager;
@@ -1308,6 +1312,7 @@ export class WorkerManager {
           embeddedAgentId: worker.embeddedAgentId,
           activated: worker.subprocess !== null,
           autoCompaction: worker.autoCompaction,
+          contextWindowTokens: resolveEffectiveContextWindow({}, this.getEmbeddedAgentFn(worker.embeddedAgentId)),
         };
         return embeddedAgentWorker;
       }

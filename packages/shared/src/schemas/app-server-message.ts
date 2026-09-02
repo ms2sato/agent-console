@@ -44,6 +44,10 @@ const EmbeddedAgentWorkerSchema = v.strictObject({
   // types/worker.ts -- this object is strict, so the field must exist here
   // or it is stripped off the wire with no error on either side.
   autoCompaction: v.boolean(),
+  // Effective context-window token denominator. Mirrors EmbeddedAgentWorker
+  // in types/worker.ts -- this object is strict, so the field must exist
+  // here or it is stripped off the wire with no error on either side.
+  contextWindowTokens: v.optional(v.number()),
 });
 
 const WorkerSchema = v.union([

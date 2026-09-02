@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'bun:test';
-import type { Worker } from '@agent-console/shared';
+import type { Worker, EmbeddedAgentDefinition } from '@agent-console/shared';
 import type { PersistedWorker } from '../persistence-service.js';
 import type { InternalWorker, InternalAgentWorker } from '../worker-types.js';
 import { SessionConverterService, type SessionConverterDeps, type RepositoryDisplayLookup, type SharedAccountLookup } from '../session-converter-service.js';
@@ -15,7 +15,22 @@ import {
   buildPersistedAgentWorker,
   buildPersistedTerminalWorker,
   buildPersistedGitDiffWorker,
+  buildPersistedEmbeddedAgentWorker,
 } from '../../__tests__/utils/build-test-data.js';
+
+function buildTestDefinition(contextWindowTokens?: number): EmbeddedAgentDefinition {
+  return {
+    id: 'def-1',
+    name: 'Test Def',
+    engine: 'openai-api',
+    provider: { baseUrl: 'http://localhost:11434/v1', model: 'qwen3:32b', apiKeyRef: 'openai' },
+    isBuiltIn: false,
+    createdBy: 'user-1',
+    createdAt: '2026-01-01T00:00:00.000Z',
+    updatedAt: '2026-01-01T00:00:00.000Z',
+    ...(contextWindowTokens !== undefined ? { contextWindowTokens } : {}),
+  };
+}
 
 // --- Test suite ---
 
@@ -454,6 +469,81 @@ describe('SessionConverterService', () => {
       if (result.workers[0].type === 'git-diff') {
         expect(result.workers[0].baseCommit).toBe('abc123');
       }
+    });
+
+    describe('embedded-agent worker contextWindowTokens (Issue #1556)', () => {
+      function buildServiceWithGetEmbeddedAgent(
+        getEmbeddedAgent: SessionConverterDeps['getEmbeddedAgent'],
+      ): SessionConverterService {
+        return new SessionConverterService({
+          repositoryDisplayLookup: mockLookup,
+          sharedAccountLookup: mockSharedLookup,
+          usernameLookup: mockUsernameLookup,
+          toPublicWorker: (() => {
+            throw new Error('unreachable');
+          }) as (w: InternalWorker) => Worker,
+          toPersistedWorker: (() => {
+            throw new Error('unreachable');
+          }) as (w: InternalWorker) => PersistedWorker,
+          getServerPid: () => 12345,
+          getEmbeddedAgent,
+        });
+      }
+
+      it('carries the resolved value when the definition declares a window', () => {
+        const withDefinition = buildServiceWithGetEmbeddedAgent(
+          (id) => (id === 'def-1' ? buildTestDefinition(128_000) : undefined),
+        );
+        const persisted = buildPersistedQuickSession({
+          id: 'ps-cw',
+          locationPath: '/tmp/quick',
+          serverPid: null,
+          createdAt: '2026-01-01T00:00:00Z',
+          workers: [buildPersistedEmbeddedAgentWorker({ id: 'pw-cw', embeddedAgentId: 'def-1' })],
+        });
+
+        const result = withDefinition.persistedToPublicSession(persisted);
+
+        expect(result.workers[0].type).toBe('embedded-agent');
+        if (result.workers[0].type === 'embedded-agent') {
+          expect(result.workers[0].contextWindowTokens).toBe(128_000);
+        }
+      });
+
+      it('yields undefined when the definition lookup misses (dangling/deleted definition)', () => {
+        const missingDefinition = buildServiceWithGetEmbeddedAgent(() => undefined);
+        const persisted = buildPersistedQuickSession({
+          id: 'ps-cw-miss',
+          locationPath: '/tmp/quick',
+          serverPid: null,
+          createdAt: '2026-01-01T00:00:00Z',
+          workers: [buildPersistedEmbeddedAgentWorker({ id: 'pw-cw-miss', embeddedAgentId: 'def-1' })],
+        });
+
+        const result = missingDefinition.persistedToPublicSession(persisted);
+
+        expect(result.workers[0].type).toBe('embedded-agent');
+        if (result.workers[0].type === 'embedded-agent') {
+          expect(result.workers[0].contextWindowTokens).toBeUndefined();
+        }
+      });
+
+      it('yields undefined when getEmbeddedAgent is omitted from deps entirely (existing call sites)', () => {
+        const persisted = buildPersistedQuickSession({
+          id: 'ps-cw-nodep',
+          locationPath: '/tmp/quick',
+          serverPid: null,
+          createdAt: '2026-01-01T00:00:00Z',
+          workers: [buildPersistedEmbeddedAgentWorker({ id: 'pw-cw-nodep', embeddedAgentId: 'def-1' })],
+        });
+
+        const result = service.persistedToPublicSession(persisted);
+
+        expect(result.workers[0].type).toBe('embedded-agent');
+        if (result.workers[0].type === 'embedded-agent') {
+          expect(result.workers[0].contextWindowTokens).toBeUndefined();
+        }
+      });
     });
 
     it('includes parentSessionId and parentWorkerId from persisted data', () => {

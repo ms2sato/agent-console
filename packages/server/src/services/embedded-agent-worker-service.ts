@@ -49,6 +49,7 @@ import type { McpTokenRegistry } from '../mcp/mcp-auth.js';
 import type { WorkerOutputFileManager } from '../lib/worker-output-file.js';
 import { spawnAsUser, shellEscape, type SpawnAsUserFn } from './privilege-elevation.js';
 import { IdleEvictionTimers } from './embedded-agent-idle-eviction.js';
+import { resolveEffectiveContextWindow } from './embedded-agent-context-window.js';
 import { loadProviderKey, ProviderKeyStoreError, PROVIDER_KEY_STORE_UI_MESSAGES } from './provider-key-store.js';
 import {
   buildPtyNotificationText,
@@ -947,6 +948,10 @@ export class EmbeddedAgentWorkerService {
 
       const ctx: StreamContext = { sessionId, workerId, worker, resolver };
 
+      // Single writer of the context-window rule (agent-surface.md Ruling
+      // 4): see embedded-agent-context-window.ts.
+      const effectiveContextWindowTokens = resolveEffectiveContextWindow({}, definition);
+
       // Step 6: write the init command as the FIRST stdin line. Branched on
       // `definition.engine` (SDK Engine Phase 1) so each arm's `provider`
       // shape matches the discriminated `EmbeddedAgentCommand` union --
@@ -968,8 +973,8 @@ export class EmbeddedAgentWorkerService {
         // the subprocess is told about compaction.
         compaction: {
           auto: ctx.worker.autoCompaction,
-          ...(definition.contextWindowTokens !== undefined
-            ? { contextWindowTokens: definition.contextWindowTokens }
+          ...(effectiveContextWindowTokens !== undefined
+            ? { contextWindowTokens: effectiveContextWindowTokens }
             : {}),
           ...(definition.compaction?.threshold !== undefined
             ? { threshold: definition.compaction.threshold }

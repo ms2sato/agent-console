@@ -29,6 +29,7 @@ import type {
   InternalTerminalWorker,
 } from '../worker-types.js';
 import type { PersistedAgentWorker, PersistedTerminalWorker, PersistedGitDiffWorker } from '../persistence-service.js';
+import type { EmbeddedAgentDefinition } from '@agent-console/shared';
 import { CLAUDE_CODE_AGENT_ID } from '../agent-manager.js';
 import { SessionDataPathResolver } from '../../lib/session-data-path-resolver.js';
 import { WorkerOutputFileManager } from '../../lib/worker-output-file.js';
@@ -1456,6 +1457,92 @@ describe('WorkerManager', () => {
       if (publicOn.type === 'embedded-agent') expect(publicOn.autoCompaction).toBe(true);
       expect(publicOff.type).toBe('embedded-agent');
       if (publicOff.type === 'embedded-agent') expect(publicOff.autoCompaction).toBe(false);
+    });
+
+    describe('contextWindowTokens (Issue #1556)', () => {
+      function buildTestDefinition(contextWindowTokens?: number): EmbeddedAgentDefinition {
+        return {
+          id: 'def-1',
+          name: 'Test Def',
+          engine: 'openai-api',
+          provider: { baseUrl: 'http://localhost:11434/v1', model: 'qwen3:32b', apiKeyRef: 'openai' },
+          isBuiltIn: false,
+          createdBy: 'user-1',
+          createdAt: '2026-01-01T00:00:00.000Z',
+          updatedAt: '2026-01-01T00:00:00.000Z',
+          ...(contextWindowTokens !== undefined ? { contextWindowTokens } : {}),
+        };
+      }
+
+      it("carries the resolver's value onto the public shape when the definition declares a window", () => {
+        const wmWithDefinition = new WorkerManager(
+          new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' }),
+          agentManager,
+          new WorkerOutputFileManager(),
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          (id) => (id === 'def-1' ? buildTestDefinition(128_000) : undefined),
+        );
+        const worker = buildInternalEmbeddedAgentWorker({ id: 'pub-cw', embeddedAgentId: 'def-1' });
+
+        const publicWorker = wmWithDefinition.toPublicWorker(worker);
+
+        expect(publicWorker.type).toBe('embedded-agent');
+        if (publicWorker.type === 'embedded-agent') {
+          expect(publicWorker.contextWindowTokens).toBe(128_000);
+        }
+      });
+
+      // Reach measurement (workflow.md "every pin's reach is measured"): this
+      // case confirms the resolver is the ONLY source of the field on the
+      // wire object. It intentionally injects a `getEmbeddedAgentFn` whose
+      // underlying definition DOES genuinely declare a window
+      // (`contextWindowTokens: 999_000` below), but the fn itself returns
+      // `undefined` for THIS worker's id -- simulating "the resolver was not
+      // reached / no definition found" (a dangling/deleted definition, or a
+      // wrong-id lookup). If `toPublicWorker`'s embedded-agent case ever
+      // stopped calling the resolver and instead read some other value (or
+      // hard-coded a fallback), this assertion would need to change from
+      // `undefined` to something else -- that is the mutation this pin
+      // catches. A client-side "indeterminate gauge" state keys off exactly
+      // this: absence of the field, never a substituted value.
+      it('yields contextWindowTokens: undefined when the definition lookup misses, even though a definition WITH a window exists elsewhere', () => {
+        const wmMissingDefinition = new WorkerManager(
+          new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' }),
+          agentManager,
+          new WorkerOutputFileManager(),
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          // Genuinely has a window (999_000) but only for a DIFFERENT id --
+          // the worker's own embeddedAgentId ('def-1') misses.
+          (id) => (id === 'some-other-def' ? buildTestDefinition(999_000) : undefined),
+        );
+        const worker = buildInternalEmbeddedAgentWorker({ id: 'pub-cw-miss', embeddedAgentId: 'def-1' });
+
+        const publicWorker = wmMissingDefinition.toPublicWorker(worker);
+
+        expect(publicWorker.type).toBe('embedded-agent');
+        if (publicWorker.type === 'embedded-agent') {
+          expect(publicWorker.contextWindowTokens).toBeUndefined();
+        }
+      });
+
+      it('defaults to contextWindowTokens: undefined when no getEmbeddedAgentFn is injected (existing call sites)', () => {
+        const worker = buildInternalEmbeddedAgentWorker({ id: 'pub-cw-default', embeddedAgentId: 'def-1' });
+
+        const publicWorker = workerManager.toPublicWorker(worker);
+
+        expect(publicWorker.type).toBe('embedded-agent');
+        if (publicWorker.type === 'embedded-agent') {
+          expect(publicWorker.contextWindowTokens).toBeUndefined();
+        }
+      });
     });
   });
 
