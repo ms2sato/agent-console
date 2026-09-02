@@ -299,6 +299,10 @@ async function initializeLoop(
     const loop = new AgentLoop({
       adapter,
       model: init.provider.model,
+      // agent-surface.md Ruling 3 (#1554): the resolved worker-override,
+      // or absent when no override is set for this worker. Pass-through --
+      // no local value validation, the provider is the authority.
+      ...(init.provider.reasoningEffort !== undefined ? { reasoningEffort: init.provider.reasoningEffort } : {}),
       tools,
       executor,
       emit: (event) => io.writeEvent(event),
@@ -464,6 +468,9 @@ async function initializeLoop(
       // activation, a worker with no persisted id, or an id the pre-flight
       // above could not find or could not look up.
       ...(resume !== undefined ? { resume } : {}),
+      // agent-surface.md Ruling 3 (#1554): the resolved worker-override,
+      // or absent when no override is set for this worker.
+      ...(init.provider.effort !== undefined ? { effort: init.provider.effort } : {}),
     });
   } catch (err) {
     const message = `SDK engine construction failed: ${err instanceof Error ? err.message : String(err)}`;

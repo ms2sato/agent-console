@@ -1992,6 +1992,89 @@ describe('EmbeddedAgentWorkerService — the init command\'s compaction config',
   });
 });
 
+function buildSdkDefinition(): EmbeddedAgentDefinition {
+  return {
+    id: 'def-sdk',
+    name: 'Claude',
+    engine: 'claude-sdk',
+    provider: { model: 'claude-sonnet-5' },
+    isBuiltIn: true,
+    createdBy: 'system',
+    createdAt: '2026-01-01T00:00:00.000Z',
+    updatedAt: '2026-01-01T00:00:00.000Z',
+  };
+}
+
+describe('EmbeddedAgentWorkerService — model/reasoningEffort override composition (agent-surface.md Ruling 3, #1554)', () => {
+  it('threads a worker-level model override into the openai-api init command, beating the definition default', async () => {
+    const h = setup();
+    h.worker.model = 'gpt-4o-mini';
+    await h.service.activate(h.sessionId, h.workerId);
+
+    const first = JSON.parse(h.fake.stdinWrites[0]);
+    expect(first.provider.model).toBe('gpt-4o-mini');
+  });
+
+  it('threads a worker-level reasoningEffort override into the openai-api init command as `reasoningEffort`', async () => {
+    const h = setup();
+    h.worker.reasoningEffort = 'medium';
+    await h.service.activate(h.sessionId, h.workerId);
+
+    const first = JSON.parse(h.fake.stdinWrites[0]);
+    expect(first.provider.reasoningEffort).toBe('medium');
+  });
+
+  it('omits `reasoningEffort` entirely on the openai-api arm when no worker override is set', async () => {
+    const h = setup();
+    await h.service.activate(h.sessionId, h.workerId);
+
+    const first = JSON.parse(h.fake.stdinWrites[0]);
+    expect('reasoningEffort' in first.provider).toBe(false);
+  });
+
+  it('threads a worker-level model override into the claude-sdk init command, beating the definition default', async () => {
+    const h = setup({ definition: buildSdkDefinition() });
+    h.worker.model = 'claude-opus-5';
+    await h.service.activate(h.sessionId, h.workerId);
+
+    const first = JSON.parse(h.fake.stdinWrites[0]);
+    expect(first.provider.model).toBe('claude-opus-5');
+  });
+
+  it('threads a worker-level reasoningEffort override into the claude-sdk init command as `effort` (different wire key than the openai-api arm)', async () => {
+    const h = setup({ definition: buildSdkDefinition() });
+    h.worker.reasoningEffort = 'high';
+    await h.service.activate(h.sessionId, h.workerId);
+
+    const first = JSON.parse(h.fake.stdinWrites[0]);
+    expect(first.provider.effort).toBe('high');
+    expect('reasoningEffort' in first.provider).toBe(false);
+  });
+
+  it('omits `effort` entirely on the claude-sdk arm when the override value is outside the accepted domain -- a defensive narrow, not a second validation layer (the LOUD reject happens upstream at creation time, #1554 Wave 2b)', async () => {
+    const h = setup({ definition: buildSdkDefinition() });
+    h.worker.reasoningEffort = 'not-a-real-level';
+    await h.service.activate(h.sessionId, h.workerId);
+
+    const first = JSON.parse(h.fake.stdinWrites[0]);
+    expect('effort' in first.provider).toBe(false);
+  });
+
+  it('live-reads the definition default when no worker override is set -- a definition edit AFTER worker creation is reflected at activation (no copy-at-creation, unlike the context-window override)', async () => {
+    const definition = buildDefinition();
+    const h = setup({ definition });
+    // No worker-level override -- `worker.model` stays `null` (setup's default).
+    // Mutate the DEFINITION after the worker was created, before activation.
+    if (definition.engine === 'openai-api') {
+      definition.provider.model = 'qwen3:72b';
+    }
+    await h.service.activate(h.sessionId, h.workerId);
+
+    const first = JSON.parse(h.fake.stdinWrites[0]);
+    expect(first.provider.model).toBe('qwen3:72b');
+  });
+});
+
 describe('EmbeddedAgentWorkerService.forwardAutoCompaction', () => {
   it('forwards a set-auto-compaction command to a running subprocess', async () => {
     const h = setup();

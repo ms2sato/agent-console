@@ -35,6 +35,20 @@ const CreateAgentWorkerParamsSchema = v.strictObject({
    * {{ reasoningEffort...}} -- see buildAgentParameterTemplateVars.
    */
   reasoningEffort: v.optional(v.pipe(v.string(), v.trim(), v.minLength(1, 'reasoningEffort must not be empty'))),
+  /**
+   * Context-window override. NOT a terminal-agent concept -- always
+   * rejected at createWorker() time (agent-surface.md Ruling 4:
+   * embedded-agent-only, kind-level rejection, not a capability-table row).
+   * Declared here (rather than left off the schema, which would produce a
+   * generic "unrecognized key" 400) so a caller who submits it alongside a
+   * terminal-agent selection gets the same domain-specific ValidationError
+   * as the model/reasoningEffort capability checks above, and so the
+   * session/worktree-creation routes (which carry this field regardless of
+   * whether the initial worker turns out to be terminal or embedded) can
+   * forward it through to the single validation choke point instead of
+   * silently dropping it.
+   */
+  contextWindowTokens: v.optional(v.pipe(v.number(), v.integer(), v.minValue(1))),
 });
 
 /**
@@ -62,6 +76,30 @@ const CreateEmbeddedAgentWorkerParamsSchema = v.strictObject({
   name: v.optional(v.string()),
   type: v.literal('embedded-agent'),
   embeddedAgentId: v.pipe(v.string(), v.minLength(1, 'Embedded agent ID is required')),
+  /**
+   * Model override for this worker (agent-surface.md Ruling 1/2).
+   * Pass-through, no value validation beyond non-empty after trim. Rejected
+   * at createWorker() time (ValidationError) unless the resolved
+   * definition's engine capability table declares `model.capable === true`
+   * -- see EMBEDDED_AGENT_ENGINE_PARAMETER_CAPABILITIES in
+   * @agent-console/shared (embedded-agent-parameter-capabilities.ts).
+   */
+  model: v.optional(v.pipe(v.string(), v.trim(), v.minLength(1, 'model must not be empty'))),
+  /**
+   * Reasoning-effort override for this worker (agent-surface.md Ruling
+   * 1/2). Rejected at createWorker() time unless the engine's capability
+   * table declares `reasoningEffort.capable === true`; when the table also
+   * declares a closed `acceptedValues` list (e.g. claude-sdk's EFFORT_LEVELS),
+   * a value outside that list is rejected too.
+   */
+  reasoningEffort: v.optional(v.pipe(v.string(), v.trim(), v.minLength(1, 'reasoningEffort must not be empty'))),
+  /**
+   * Context-window override for this worker (agent-surface.md Ruling 4).
+   * Only accepted alongside a `model` override -- a declared window with no
+   * model change would silently apply to a model it wasn't declared for.
+   * Rejected at createWorker() time when present without `model`.
+   */
+  contextWindowTokens: v.optional(v.pipe(v.number(), v.integer(), v.minValue(1))),
 });
 
 /**

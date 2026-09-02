@@ -213,6 +213,25 @@ describe('createWorktreeWithSession', () => {
     );
   });
 
+  it('forwards contextWindowTokens to sessionManager.createSession (Issue #1554)', async () => {
+    const sm = createMockSessionManager();
+    const result = await createWorktreeWithSession(
+      { ...DEFAULT_PARAMS, model: 'claude-opus-4-6', contextWindowTokens: 32000 },
+      sm,
+      mockWorktreeService,
+    );
+
+    expect(result.success).toBe(true);
+    expect(sm.createSession).toHaveBeenCalledTimes(1);
+    expect(sm.createSession).toHaveBeenCalledWith(
+      expect.objectContaining({
+        model: 'claude-opus-4-6',
+        contextWindowTokens: 32000,
+      }),
+      undefined,
+    );
+  });
+
   it('skips fetch when useRemote is false', async () => {
     const sm = createMockSessionManager();
     const result = await createWorktreeWithSession(

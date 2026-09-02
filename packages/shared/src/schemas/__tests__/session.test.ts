@@ -84,6 +84,55 @@ describe('CreateWorktreeSessionRequestSchema', () => {
     expect(result.success).toBe(false);
   });
 
+  it('should accept contextWindowTokens as a positive integer (Issue #1554)', () => {
+    const result = v.safeParse(CreateWorktreeSessionRequestSchema, {
+      type: 'worktree',
+      repositoryId: 'repo-123',
+      worktreeId: 'wt-456',
+      locationPath: '/path/to/worktree',
+      embeddedAgentId: 'def-1',
+      model: 'qwen3:32b',
+      contextWindowTokens: 32000,
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.output.contextWindowTokens).toBe(32000);
+    }
+  });
+
+  it('should reject contextWindowTokens of zero (boundary)', () => {
+    const result = v.safeParse(CreateWorktreeSessionRequestSchema, {
+      type: 'worktree',
+      repositoryId: 'repo-123',
+      worktreeId: 'wt-456',
+      locationPath: '/path/to/worktree',
+      contextWindowTokens: 0,
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('should reject a negative contextWindowTokens', () => {
+    const result = v.safeParse(CreateWorktreeSessionRequestSchema, {
+      type: 'worktree',
+      repositoryId: 'repo-123',
+      worktreeId: 'wt-456',
+      locationPath: '/path/to/worktree',
+      contextWindowTokens: -5,
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('should reject a non-integer contextWindowTokens', () => {
+    const result = v.safeParse(CreateWorktreeSessionRequestSchema, {
+      type: 'worktree',
+      repositoryId: 'repo-123',
+      worktreeId: 'wt-456',
+      locationPath: '/path/to/worktree',
+      contextWindowTokens: 1024.5,
+    });
+    expect(result.success).toBe(false);
+  });
+
   it('should reject missing repositoryId', () => {
     const result = v.safeParse(CreateWorktreeSessionRequestSchema, {
       type: 'worktree',
@@ -272,6 +321,47 @@ describe('CreateQuickSessionRequestSchema', () => {
       type: 'quick',
       locationPath: '/path/to/directory',
       reasoningEffort: '   ',
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('should accept contextWindowTokens as a positive integer (Issue #1554)', () => {
+    const result = v.safeParse(CreateQuickSessionRequestSchema, {
+      type: 'quick',
+      locationPath: '/path/to/directory',
+      embeddedAgentId: 'def-1',
+      model: 'qwen3:32b',
+      contextWindowTokens: 32000,
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.output.contextWindowTokens).toBe(32000);
+    }
+  });
+
+  it('should reject contextWindowTokens of zero (boundary)', () => {
+    const result = v.safeParse(CreateQuickSessionRequestSchema, {
+      type: 'quick',
+      locationPath: '/path/to/directory',
+      contextWindowTokens: 0,
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('should reject a negative contextWindowTokens', () => {
+    const result = v.safeParse(CreateQuickSessionRequestSchema, {
+      type: 'quick',
+      locationPath: '/path/to/directory',
+      contextWindowTokens: -5,
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('should reject a non-integer contextWindowTokens', () => {
+    const result = v.safeParse(CreateQuickSessionRequestSchema, {
+      type: 'quick',
+      locationPath: '/path/to/directory',
+      contextWindowTokens: 1024.5,
     });
     expect(result.success).toBe(false);
   });

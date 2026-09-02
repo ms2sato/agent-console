@@ -1,4 +1,5 @@
 import * as v from 'valibot';
+import { EFFORT_LEVELS } from '../types/embedded-agent-parameter-capabilities.js';
 import { EMBEDDED_AGENT_TOOL_NAMES, SDK_RESUME_FAILURE_REASONS } from '../types/embedded-agent.js';
 import { PTY_NOTIFICATION_KINDS } from '../types/system-events.js';
 import type { ExitReason } from '../types/worker.js';
@@ -201,6 +202,12 @@ const EmbeddedAgentInitCommandSchema = v.variant('engine', [
       baseUrl: v.string(),
       model: v.string(),
       apiKey: v.optional(v.string()),
+      // agent-surface.md Ruling 3 (#1554): the resolved worker-override, or
+      // absent when no override is set for this worker. Pass-through to the
+      // provider's chat.completions request body -- no local value
+      // validation at this layer, the provider is the authority. See the
+      // type's doc comment (`EmbeddedAgentCommand`'s openai-api arm).
+      reasoningEffort: v.optional(v.string()),
     }),
     // On the openai-api arm only -- `claude-sdk` carries its own context
     // state through the SDK resume, so a seed there is not representable. See the type's doc comment for what `estimated` means.
@@ -216,6 +223,13 @@ const EmbeddedAgentInitCommandSchema = v.variant('engine', [
     engine: v.literal('claude-sdk'),
     provider: v.strictObject({
       model: v.pipe(v.string(), v.minLength(1)),
+      // agent-surface.md Ruling 3 (#1554): the resolved worker-override
+      // value, or absent when no override is set. Named `effort`, NOT
+      // `reasoningEffort` like the openai-api arm above -- mirrors the SDK's
+      // own `Options.effort` field name. Values are a closed domain
+      // (`EFFORT_LEVELS`), enforced here at the wire boundary too (defense
+      // in depth alongside the worker-creation-time validation).
+      effort: v.optional(v.picklist(EFFORT_LEVELS)),
     }),
     // Transcript Restore, R1. On the claude-sdk arm only -- the other
     // engine has no concept of a resume, so an `openai-api` init carrying

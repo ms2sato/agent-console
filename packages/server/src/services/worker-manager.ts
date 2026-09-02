@@ -1328,7 +1328,7 @@ export class WorkerManager {
           embeddedAgentId: worker.embeddedAgentId,
           activated: worker.subprocess !== null,
           autoCompaction: worker.autoCompaction,
-          contextWindowTokens: resolveEffectiveContextWindow(this.getEmbeddedAgentFn(worker.embeddedAgentId)),
+          contextWindowTokens: resolveEffectiveContextWindow(this.getEmbeddedAgentFn(worker.embeddedAgentId), worker),
         };
         return embeddedAgentWorker;
       }

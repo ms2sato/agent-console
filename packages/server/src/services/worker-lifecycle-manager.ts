@@ -25,7 +25,8 @@ import type {
   CreateWorkerParams,
   WorkerErrorCode,
 } from '@agent-console/shared';
-import { getAgentParameterCapabilities } from '@agent-console/shared';
+import { getAgentParameterCapabilities, EMBEDDED_AGENT_ENGINE_PARAMETER_CAPABILITIES } from '@agent-console/shared';
+import type { EmbeddedAgentEngineParameterCapabilities } from '@agent-console/shared';
 import type {
   InternalWorker,
   InternalPtyWorker,
@@ -75,6 +76,17 @@ export interface WorkerLifecycleDeps {
    * imported by virtually every other test file in this process).
    */
   getAgentParameterCapabilitiesImpl?: typeof getAgentParameterCapabilities;
+  /**
+   * Test seam for `EMBEDDED_AGENT_ENGINE_PARAMETER_CAPABILITIES` (agent-surface.md
+   * Ruling 1, embedded-agent side). Defaults to a lookup against the real
+   * shared table. Lets a test prove `createWorker`'s embedded model/
+   * reasoningEffort validation follows the injected accessor's return value
+   * -- including an INCAPABLE row, which the production table does not
+   * contain today -- rather than the production table's hardcoded shape.
+   */
+  getEmbeddedAgentParameterCapabilitiesImpl?: (
+    engine: 'openai-api' | 'claude-sdk',
+  ) => EmbeddedAgentEngineParameterCapabilities;
   /**
    * Embedded-agent definition registry. Only `getEmbeddedAgent` is needed here
    * (interface-segregated): createWorker resolves the definition to validate the
@@ -216,6 +228,17 @@ export class WorkerLifecycleManager {
         }
       }
 
+      // contextWindowTokens is an embedded-agent-only concept
+      // (agent-surface.md Ruling 4) -- terminal agents have no repository-side
+      // context-window notion at all. This is a kind-level rejection (any
+      // presence is invalid), not a per-agent capability-table row, so it is
+      // gated independently of the model/reasoningEffort block above.
+      if (request.contextWindowTokens !== undefined) {
+        throw new ValidationError(
+          'Agent workers do not support the "contextWindowTokens" parameter -- it is embedded-agent-only (agent-surface.md Ruling 4).',
+        );
+      }
+
       const repositoryEnvVars = await this.deps.getRepositoryEnvVars(sessionId);
       const username = await this.deps.resolveSpawnUsername(session.createdBy);
       // Only the session's initial agent worker (created with a non-empty
@@ -277,6 +300,57 @@ export class WorkerLifecycleManager {
       });
       worker = terminalWorker;
     } else if (request.type === 'embedded-agent') {
+      // Validate model/reasoningEffort/contextWindowTokens against the
+      // resolved definition's ACTUAL per-engine capability (agent-surface.md
+      // Ruling 1/4) before anything is initialized/persisted. Mirrors the
+      // terminal-agent branch's validation above -- this is the SAME single
+      // choke point, just for the embedded-agent kind. embeddedAgentDefinition
+      // was already resolved and validated to exist above (before the branch
+      // dispatch), so no second lookup is needed here.
+      //
+      // Scoped to fire ONLY when a model/reasoningEffort/contextWindowTokens
+      // param is actually present, mirroring the terminal branch's scoping.
+      if (
+        request.model !== undefined ||
+        request.reasoningEffort !== undefined ||
+        request.contextWindowTokens !== undefined
+      ) {
+        // embeddedAgentDefinition is guaranteed defined here: the branch
+        // dispatch above (request.type === 'embedded-agent' with a
+        // resolvable definition) is the only way this code path is reached.
+        const definition = embeddedAgentDefinition!;
+        const getEmbeddedCapabilities =
+          this.deps.getEmbeddedAgentParameterCapabilitiesImpl ??
+          ((engine: 'openai-api' | 'claude-sdk') => EMBEDDED_AGENT_ENGINE_PARAMETER_CAPABILITIES[engine]);
+        const capabilities = getEmbeddedCapabilities(definition.engine);
+
+        if (request.model !== undefined && !capabilities.model.capable) {
+          throw new ValidationError(
+            `Embedded agent "${definition.name}" (engine: ${definition.engine}) does not support the "model" parameter -- ${capabilities.model.reason}`,
+          );
+        }
+        if (request.reasoningEffort !== undefined) {
+          if (!capabilities.reasoningEffort.capable) {
+            throw new ValidationError(
+              `Embedded agent "${definition.name}" (engine: ${definition.engine}) does not support the "reasoningEffort" parameter -- ${capabilities.reasoningEffort.reason}`,
+            );
+          }
+          if (
+            capabilities.reasoningEffort.acceptedValues !== null &&
+            !capabilities.reasoningEffort.acceptedValues.includes(request.reasoningEffort)
+          ) {
+            throw new ValidationError(
+              `Embedded agent "${definition.name}" (engine: ${definition.engine}) does not accept "${request.reasoningEffort}" for "reasoningEffort" -- accepted values: ${capabilities.reasoningEffort.acceptedValues.join(', ')}`,
+            );
+          }
+        }
+        if (request.contextWindowTokens !== undefined && request.model === undefined) {
+          throw new ValidationError(
+            'contextWindowTokens requires an accompanying model override -- agent-surface.md Ruling 4: a declared window without a model change would silently apply to a model it wasn\'t declared for.',
+          );
+        }
+      }
+
       // Embedded-agent worker. The referenced definition was already resolved
       // and validated above. In Phase 1 the subprocess is not spawned and no
       // output file is initialized; the worker persists as deactivated
@@ -289,6 +363,9 @@ export class WorkerLifecycleManager {
         // Only the session's initial embedded-agent worker (created with a
         // non-empty initialPrompt) is eligible for delivery.
         deliverInitialPromptOnActivation: !!initialPrompt?.trim(),
+        model: request.model,
+        reasoningEffort: request.reasoningEffort,
+        contextWindowTokens: request.contextWindowTokens,
       });
     } else {
       // git-diff worker (async initialization for base commit calculation).

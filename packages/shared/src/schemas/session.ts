@@ -42,6 +42,15 @@ export const CreateWorktreeSessionRequestSchema = v.pipe(
     model: v.optional(v.pipe(v.string(), v.trim(), v.minLength(1, 'model must not be empty'))),
     /** Reasoning-effort override for the initial worker (agent-surface.md Ruling 2). See CreateAgentWorkerParamsSchema in schemas/worker.ts. */
     reasoningEffort: v.optional(v.pipe(v.string(), v.trim(), v.minLength(1, 'reasoningEffort must not be empty'))),
+    /**
+     * Context-window override for the initial worker, embedded-agent only
+     * (agent-surface.md Ruling 4). Only meaningful alongside a `model`
+     * override -- a declared window with no model change would silently
+     * apply to a model it wasn't declared for. Cross-field validation
+     * (requires `model` to be present) happens at createWorker(), not here.
+     * See CreateEmbeddedAgentWorkerParamsSchema in schemas/worker.ts.
+     */
+    contextWindowTokens: v.optional(v.pipe(v.number(), v.integer(), v.minValue(1))),
     templateVars: v.optional(
       v.record(
         v.pipe(
@@ -94,6 +103,15 @@ export const CreateQuickSessionRequestSchema = v.pipe(
     model: v.optional(v.pipe(v.string(), v.trim(), v.minLength(1, 'model must not be empty'))),
     /** Reasoning-effort override for the initial worker (agent-surface.md Ruling 2). See CreateAgentWorkerParamsSchema in schemas/worker.ts. */
     reasoningEffort: v.optional(v.pipe(v.string(), v.trim(), v.minLength(1, 'reasoningEffort must not be empty'))),
+    /**
+     * Context-window override for the initial worker, embedded-agent only
+     * (agent-surface.md Ruling 4). Only meaningful alongside a `model`
+     * override -- a declared window with no model change would silently
+     * apply to a model it wasn't declared for. Cross-field validation
+     * (requires `model` to be present) happens at createWorker(), not here.
+     * See CreateEmbeddedAgentWorkerParamsSchema in schemas/worker.ts.
+     */
+    contextWindowTokens: v.optional(v.pipe(v.number(), v.integer(), v.minValue(1))),
     templateVars: v.optional(
       v.record(
         v.pipe(

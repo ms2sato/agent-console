@@ -108,6 +108,13 @@ const PARTIAL_DISTILL_NO_INPUT_REASON =
 export interface AgentLoopDeps {
   adapter: ProviderAdapter;
   model: string;
+  /**
+   * agent-surface.md Ruling 3 (#1554): the resolved worker-override, or
+   * absent when no override is set. Pass-through to every
+   * {@link ProviderRunRequest} this loop issues -- see that type's own
+   * doc comment for the consumption site.
+   */
+  reasoningEffort?: string;
   tools: ToolDefinition[];
   executor: ToolExecutor;
   emit: (event: EmbeddedAgentEvent) => void;
@@ -948,6 +955,7 @@ export class AgentLoop {
 
     for await (const event of this.deps.adapter.run({
       model: this.deps.model,
+      ...(this.deps.reasoningEffort !== undefined ? { reasoningEffort: this.deps.reasoningEffort } : {}),
       messages,
       tools: this.tools,
       signal,

@@ -60,6 +60,12 @@ export interface CreateWorktreeParams {
   model?: string;
   /** Reasoning-effort override for the initial worker (agent-surface.md Ruling 2). See CreateAgentWorkerParamsSchema. */
   reasoningEffort?: string;
+  /**
+   * Context-window override for the initial worker, embedded-agent only
+   * (agent-surface.md Ruling 4). Only meaningful alongside `model`; see
+   * CreateEmbeddedAgentWorkerParamsSchema in schemas/worker.ts.
+   */
+  contextWindowTokens?: number;
   initialPrompt?: string;
   title?: string;
   autoStartSession?: boolean;  // Defaults to true. When false, skip session creation.
@@ -99,7 +105,7 @@ export async function createWorktreeWithSession(
 ): Promise<CreateWorktreeResult> {
   const {
     repoPath, repoId, repoName, setupCommand, branch, baseBranch,
-    useRemote, agentId, embeddedAgentId, model, reasoningEffort, initialPrompt, title,
+    useRemote, agentId, embeddedAgentId, model, reasoningEffort, contextWindowTokens, initialPrompt, title,
     autoStartSession = true,
     context,
     requestUsername,
@@ -246,6 +252,7 @@ export async function createWorktreeWithSession(
         embeddedAgentId,
         model,
         reasoningEffort,
+        contextWindowTokens,
         initialPrompt,
         title,
         parentSessionId: context?.parentSessionId,

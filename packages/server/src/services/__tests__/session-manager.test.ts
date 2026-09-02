@@ -861,7 +861,21 @@ describe('SessionManager', () => {
     });
   });
 
-  describe('createSession embeddedAgentId + model/reasoningEffort rejection (Issue #1541 CodeRabbit finding)', () => {
+  describe('createSession embeddedAgentId + model/reasoningEffort/contextWindowTokens (Issue #1554 -- validation moved to WorkerLifecycleManager.createWorker)', () => {
+    // engine: 'openai-api' is capable:true for both model and reasoningEffort
+    // in the production EMBEDDED_AGENT_ENGINE_PARAMETER_CAPABILITIES table
+    // (embedded-agent-parameter-capabilities.ts) -- so, unlike the deleted
+    // pre-flight blanket reject this describe block used to pin, these
+    // params now REACH createSession successfully. The choke point's own
+    // capability-table validation (including its DI-injectable incapable-row
+    // path, unreachable through production data) is pinned at the
+    // WorkerLifecycleManager layer -- see worker-lifecycle-manager.test.ts's
+    // "createWorker: embedded-agent model/reasoningEffort/contextWindowTokens
+    // validation" describe block. This block only pins that createSession's
+    // initialWorkerParams forwarding (the session-manager-layer half of the
+    // wiring) actually reaches the choke point rather than silently dropping
+    // the value, and that the cross-field contextWindowTokens-without-model
+    // rejection is visible all the way up through createSession.
     const STUB_EMBEDDED_DEF = {
       id: 'stub-embedded-agent',
       name: 'Stub Model',
@@ -889,7 +903,45 @@ describe('SessionManager', () => {
       });
     }
 
-    it('rejects embeddedAgentId + model with a loud error naming the capability', async () => {
+    it('forwards a model override through createSession to the persisted embedded worker (single-writer pin: not silently dropped)', async () => {
+      const manager = await getSessionManagerWithEmbedded();
+
+      const session = await manager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        embeddedAgentId: STUB_EMBEDDED_DEF.id,
+        model: 'opus',
+      });
+
+      const embeddedWorker = session.workers.find((w: Worker) => w.type === 'embedded-agent');
+      expect(embeddedWorker).toBeDefined();
+
+      // model is not part of the public Worker/EmbeddedAgentWorker wire shape
+      // (mirrors the terminal-agent test above) -- verify the persisted
+      // representation instead.
+      const persisted = await manager.getSessionRepository().findById(session.id);
+      const persistedEmbeddedWorker = persisted!.workers.find((w: PersistedWorker) => w.type === 'embedded-agent');
+      expect(persistedEmbeddedWorker).toBeDefined();
+      expect(persistedEmbeddedWorker && persistedEmbeddedWorker.type === 'embedded-agent' ? persistedEmbeddedWorker.model : undefined).toBe('opus');
+    });
+
+    it('forwards a reasoningEffort override through createSession to the persisted embedded worker', async () => {
+      const manager = await getSessionManagerWithEmbedded();
+
+      const session = await manager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        embeddedAgentId: STUB_EMBEDDED_DEF.id,
+        reasoningEffort: 'high',
+      });
+
+      const persisted = await manager.getSessionRepository().findById(session.id);
+      const persistedEmbeddedWorker = persisted!.workers.find((w: PersistedWorker) => w.type === 'embedded-agent');
+      expect(persistedEmbeddedWorker).toBeDefined();
+      expect(persistedEmbeddedWorker && persistedEmbeddedWorker.type === 'embedded-agent' ? persistedEmbeddedWorker.reasoningEffort : undefined).toBe('high');
+    });
+
+    it('rejects contextWindowTokens without an accompanying model override, all the way up through createSession', async () => {
       const manager = await getSessionManagerWithEmbedded();
 
       await expect(
@@ -897,9 +949,9 @@ describe('SessionManager', () => {
           type: 'quick',
           locationPath: '/test/path',
           embeddedAgentId: STUB_EMBEDDED_DEF.id,
-          model: 'opus',
+          contextWindowTokens: 32000,
         }),
-      ).rejects.toThrow(/"model"/);
+      ).rejects.toThrow(/contextWindowTokens/);
 
       // Not silently dropped and not silently succeeded -- no ghost session.
       expect(manager.getAllSessions()).toHaveLength(0);
@@ -907,24 +959,7 @@ describe('SessionManager', () => {
       expect(persisted).toHaveLength(0);
     });
 
-    it('rejects embeddedAgentId + reasoningEffort with a loud error naming the capability', async () => {
-      const manager = await getSessionManagerWithEmbedded();
-
-      await expect(
-        manager.createSession({
-          type: 'quick',
-          locationPath: '/test/path',
-          embeddedAgentId: STUB_EMBEDDED_DEF.id,
-          reasoningEffort: 'high',
-        }),
-      ).rejects.toThrow(/"reasoningEffort"/);
-
-      expect(manager.getAllSessions()).toHaveLength(0);
-      const persisted = await manager.getSessionRepository().findAll();
-      expect(persisted).toHaveLength(0);
-    });
-
-    it('still succeeds when embeddedAgentId is set alone (no model/reasoningEffort) -- regression guard', async () => {
+    it('still succeeds when embeddedAgentId is set alone (no model/reasoningEffort/contextWindowTokens) -- regression guard', async () => {
       const manager = await getSessionManagerWithEmbedded();
 
       const session = await manager.createSession({

@@ -262,6 +262,51 @@ describe('CreateWorktreePromptRequestSchema', () => {
     expect(result.success).toBe(false);
   });
 
+  it('should accept contextWindowTokens as a positive integer (Issue #1554)', () => {
+    const result = v.safeParse(CreateWorktreePromptRequestSchema, {
+      taskId: validTaskId,
+      mode: 'prompt',
+      initialPrompt: 'Fix login bug',
+      embeddedAgentId: 'def-1',
+      model: 'qwen3:32b',
+      contextWindowTokens: 32000,
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.output.contextWindowTokens).toBe(32000);
+    }
+  });
+
+  it('should reject contextWindowTokens of zero (boundary)', () => {
+    const result = v.safeParse(CreateWorktreePromptRequestSchema, {
+      taskId: validTaskId,
+      mode: 'prompt',
+      initialPrompt: 'Fix login bug',
+      contextWindowTokens: 0,
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('should reject a negative contextWindowTokens', () => {
+    const result = v.safeParse(CreateWorktreePromptRequestSchema, {
+      taskId: validTaskId,
+      mode: 'prompt',
+      initialPrompt: 'Fix login bug',
+      contextWindowTokens: -5,
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('should reject a non-integer contextWindowTokens', () => {
+    const result = v.safeParse(CreateWorktreePromptRequestSchema, {
+      taskId: validTaskId,
+      mode: 'prompt',
+      initialPrompt: 'Fix login bug',
+      contextWindowTokens: 1024.5,
+    });
+    expect(result.success).toBe(false);
+  });
+
   it('should trim whitespace from initialPrompt', () => {
     const result = v.safeParse(CreateWorktreePromptRequestSchema, {
       taskId: validTaskId,
