@@ -1854,6 +1854,19 @@ describe('EmbeddedAgentWorkerView', () => {
         await flush();
       });
 
+      // Positive control: proves the registry query actually settled, not
+      // just that we waited some amount of time. This assertion is
+      // DEFINITION-derived (the fixture's `engine: 'openai-api'`), reusing
+      // the exact same registry-resolution-gated element the "renders the
+      // persistent transcript-restore note..." test above (line ~152) pins
+      // -- `isOpenaiApiEngine` in EmbeddedAgentWorkerView.tsx is `false`
+      // until `useEmbeddedAgents` resolves the fetched registry, so this
+      // banner can only be present once the same registry data the
+      // indeterminate-gauge assertion below depends on has actually loaded.
+      expect(
+        screen.getByText(/Conversation is restored automatically after a worker or server restart/i),
+      ).toBeTruthy();
+
       const bar = screen.getByRole('progressbar');
       expect(bar.getAttribute('aria-valuenow')).toBeNull();
       expect(bar.getAttribute('aria-valuemin')).toBeNull();
