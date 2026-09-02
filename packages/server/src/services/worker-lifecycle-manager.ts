@@ -216,6 +216,14 @@ export class WorkerLifecycleManager {
         }
         const getCapabilities = this.deps.getAgentParameterCapabilitiesImpl ?? getAgentParameterCapabilities;
         const capabilities = getCapabilities(resolvedAgent);
+        // Empty-string model/reasoningEffort is intentionally NOT rejected here
+        // (unlike the embedded-agent branch): {{model:+--model}}-style template
+        // placeholders expand an empty override to nothing, same as an absent
+        // one (template.ts's POSIX ${var:+word} semantics) -- no wrong behavior
+        // results. Terminal agents also always reject contextWindowTokens
+        // (kind-level, below), so there is no companion invariant here for an
+        // empty model to silently satisfy. The embedded branch rejects empty
+        // specifically to protect that invariant (agent-surface.md Ruling 4 / R4d).
         if (request.model !== undefined && !capabilities.model) {
           throw new ValidationError(
             `Agent "${resolvedAgent.name}" (${resolvedAgent.id}) does not support the "model" parameter -- its command template has no model template placeholder (e.g. {{ model...}}).`,
