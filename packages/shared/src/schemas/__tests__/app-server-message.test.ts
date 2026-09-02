@@ -743,6 +743,41 @@ describe('AppServerMessageSchema', () => {
       }
     });
 
+    it('should retain contextWindowTokens on an embedded-agent worker when present, and allow it to be omitted (#1556)', () => {
+      const withWindow = expectValid({
+        type: 'session-created',
+        session: {
+          ...worktreeSession,
+          workers: [
+            { id: 'w4', type: 'embedded-agent', name: 'Embedded', createdAt: '2026-01-01T00:00:00Z', embeddedAgentId: 'def-1', activated: true, autoCompaction: true, contextWindowTokens: 128_000 },
+          ],
+        },
+      });
+      if (withWindow.type === 'session-created') {
+        const worker = withWindow.session.workers[0];
+        expect(worker.type).toBe('embedded-agent');
+        // Server-resolved gauge denominator (#1556) must survive the
+        // strictObject parse just like autoCompaction above -- a schema
+        // that forgot this field would silently strip it off the wire.
+        if (worker.type === 'embedded-agent') expect(worker.contextWindowTokens).toBe(128_000);
+      }
+
+      const withoutWindow = expectValid({
+        type: 'session-created',
+        session: {
+          ...worktreeSession,
+          workers: [
+            { id: 'w4', type: 'embedded-agent', name: 'Embedded', createdAt: '2026-01-01T00:00:00Z', embeddedAgentId: 'def-1', activated: true, autoCompaction: true },
+          ],
+        },
+      });
+      if (withoutWindow.type === 'session-created') {
+        const worker = withoutWindow.session.workers[0];
+        expect(worker.type).toBe('embedded-agent');
+        if (worker.type === 'embedded-agent') expect(worker.contextWindowTokens).toBeUndefined();
+      }
+    });
+
     it('should reject an embedded-agent worker with an unknown key', () => {
       expectInvalid({
         type: 'session-created',

@@ -332,6 +332,9 @@ export class SessionManager {
       this.mcpTokenRegistry,
       options.lookupOsUserFn,
       options.runAsUserImpl,
+      undefined,
+      undefined,
+      (id) => embeddedAgentManager.getEmbeddedAgent(id),
     );
     this.workerManager.setOnInitialPromptInjected((sessionId, workerId) => {
       // Fire-and-forget: this callback is invoked synchronously from a PTY
@@ -396,6 +399,7 @@ export class SessionManager {
       toPublicWorker: (w) => this.workerManager.toPublicWorker(w),
       toPersistedWorker: (w) => this.workerManager.toPersistedWorker(w),
       getServerPid: () => getServerPid(),
+      getEmbeddedAgent: (id) => embeddedAgentManager.getEmbeddedAgent(id),
     });
 
     this.workerLifecycleManager = new WorkerLifecycleManager({

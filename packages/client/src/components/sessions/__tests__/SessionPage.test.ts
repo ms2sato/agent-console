@@ -13,7 +13,7 @@ import {
   executeWorkerRestart,
   type WorkerRestartResult,
 } from '../workerRestart';
-import { sessionToPageState, resolveShouldStripScrollback, resolveActiveEmbeddedAgentId, getSessionStopTaskBannerText } from '../SessionPage';
+import { sessionToPageState, resolveShouldStripScrollback, resolveActiveEmbeddedAgentId, resolveActiveEmbeddedContextWindowTokens, getSessionStopTaskBannerText } from '../SessionPage';
 import type { SessionStopTask } from '../../../hooks/useSessionStopTasks';
 import { getTabDotColor, isCloseableTabType, getWorkerTypeLabel, showsActivityBadge } from '../tabAppearance';
 import type { UseTabManagementResult, AddAgentWorkerParams, Tab } from '../hooks/useTabManagement';
@@ -556,6 +556,74 @@ describe('resolveActiveEmbeddedAgentId (Context Handoff Phase A, Issue #1122)', 
     ];
 
     expect(resolveActiveEmbeddedAgentId(workers, null)).toBeUndefined();
+  });
+});
+
+describe('resolveActiveEmbeddedContextWindowTokens (Issue #1556)', () => {
+  // SessionPage.tsx's active-tab render branch passes this value as
+  // EmbeddedAgentWorkerView's `contextWindowTokens` prop -- the compaction
+  // usage gauge's denominator, server-composed and delivered on the
+  // worker's own wire field (not looked up from the embedded-agent
+  // definition registry, see #1556). Mirrors
+  // `resolveActiveEmbeddedAgentId`'s test shape above.
+  it('resolves contextWindowTokens when the active tab worker is embedded-agent type', () => {
+    const embeddedWorker: Worker = {
+      id: 'embedded-worker-1',
+      type: 'embedded-agent',
+      name: 'Local GPT',
+      embeddedAgentId: 'embedded-agent-1',
+      activated: true, autoCompaction: true,
+      contextWindowTokens: 128_000,
+      createdAt: new Date().toISOString(),
+    };
+    const workers: Worker[] = [
+      { id: 'agent-worker-1', type: 'agent', name: 'Claude Code', agentId: 'claude-code', createdAt: new Date().toISOString(), activated: true },
+      embeddedWorker,
+    ];
+
+    expect(resolveActiveEmbeddedContextWindowTokens(workers, 'embedded-worker-1')).toBe(128_000);
+  });
+
+  it('returns undefined when the active embedded-agent worker has no contextWindowTokens configured', () => {
+    const embeddedWorker: Worker = {
+      id: 'embedded-worker-1',
+      type: 'embedded-agent',
+      name: 'Local GPT',
+      embeddedAgentId: 'embedded-agent-1',
+      activated: true, autoCompaction: true,
+      createdAt: new Date().toISOString(),
+    };
+    const workers: Worker[] = [embeddedWorker];
+
+    expect(resolveActiveEmbeddedContextWindowTokens(workers, 'embedded-worker-1')).toBeUndefined();
+  });
+
+  it('returns undefined when the active tab worker is not embedded-agent type', () => {
+    const workers: Worker[] = [
+      { id: 'agent-worker-1', type: 'agent', name: 'Claude Code', agentId: 'claude-code', createdAt: new Date().toISOString(), activated: true },
+    ];
+
+    expect(resolveActiveEmbeddedContextWindowTokens(workers, 'agent-worker-1')).toBeUndefined();
+  });
+
+  it('returns undefined when activeTabId does not match any worker', () => {
+    const workers: Worker[] = [
+      { id: 'agent-worker-1', type: 'agent', name: 'Claude Code', agentId: 'claude-code', createdAt: new Date().toISOString(), activated: true },
+    ];
+
+    expect(resolveActiveEmbeddedContextWindowTokens(workers, 'nonexistent-tab')).toBeUndefined();
+  });
+
+  it('returns undefined for an empty worker list (vacuous boundary)', () => {
+    expect(resolveActiveEmbeddedContextWindowTokens([], 'embedded-worker-1')).toBeUndefined();
+  });
+
+  it('returns undefined when activeTabId is null', () => {
+    const workers: Worker[] = [
+      { id: 'agent-worker-1', type: 'agent', name: 'Claude Code', agentId: 'claude-code', createdAt: new Date().toISOString(), activated: true },
+    ];
+
+    expect(resolveActiveEmbeddedContextWindowTokens(workers, null)).toBeUndefined();
   });
 });
 

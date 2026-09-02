@@ -39,6 +39,21 @@ export interface EmbeddedAgentWorker extends WorkerBase {
    * silently stripped at the boundary.
    */
   autoCompaction: boolean;
+  /**
+   * Effective context-window token denominator for the compaction usage
+   * gauge, resolved server-side (single writer:
+   * `resolveEffectiveContextWindow` in
+   * `packages/server/src/services/embedded-agent-context-window.ts`).
+   * `undefined` when the underlying definition declares no window (or the
+   * definition is missing) -- the gauge must render indeterminate in that
+   * case, never inherit a stale or unrelated value.
+   *
+   * Crossing the wire requires the matching field on
+   * `EmbeddedAgentWorkerSchema` (schemas/app-server-message.ts) -- that
+   * schema is a `strictObject`, so a type-only addition here would be
+   * silently stripped at the boundary.
+   */
+  contextWindowTokens?: number;
 }
 
 export type Worker = AgentWorker | TerminalWorker | GitDiffWorker | EmbeddedAgentWorker;

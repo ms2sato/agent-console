@@ -1,7 +1,7 @@
 import type { EmbeddedAgentContextUsage } from './embedded-agent-store';
 
 interface ContextUsageBarProps {
-  /** `EmbeddedAgentDefinition.contextWindowTokens` -- undefined means no denominator is configured. */
+  /** The worker's effective context-window denominator (agent-surface.md Ruling 4) -- undefined means no denominator is configured. */
   contextWindowTokens: number | undefined;
   contextUsage: EmbeddedAgentContextUsage | null;
   /** The ratio at which compaction fires -- the red band's lower edge. */

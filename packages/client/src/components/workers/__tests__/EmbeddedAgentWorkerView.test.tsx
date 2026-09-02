@@ -68,6 +68,7 @@ function renderView(props: {
   workerId: string;
   embeddedAgentId?: string;
   autoCompaction?: boolean;
+  contextWindowTokens?: number;
 }) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
   return render(
@@ -1831,10 +1832,66 @@ describe('EmbeddedAgentWorkerView', () => {
       expect(bar.getAttribute('aria-valuemax')).toBeNull();
     });
 
+    // Measured reach (#1556): the mutation this pin was verified against is
+    // COMPONENT-side (a client-only unit test cannot reach the server-side
+    // wire conversion). Renaming the `contextWindowTokens` prop below to
+    // `contextWindowTokensProp` and reintroducing
+    //   const contextWindowTokens = contextWindowTokensProp ?? embeddedAgentDefinition?.contextWindowTokens;
+    // (restoring the pre-#1556 registry fallback) makes this test FAIL (1
+    // fail); with the actual production code it PASSES (1 pass). The
+    // `contextWindowTokens` PROP is deliberately omitted here while the
+    // mocked embedded-agent REGISTRY (via `useEmbeddedAgents`, served
+    // through the fetch stub) returns a definition that DOES declare one --
+    // proving the component reads the value from its own wire-sourced prop,
+    // never falls back to looking it up in the definition registry it still
+    // holds for `compaction`/engine-type purposes.
+    //
+    // The `await act(async () => { await flush(); })` wait below plus the
+    // positive-control assertion right after it were also measured:
+    // deleting the flush-wait alone (no component mutation) makes the
+    // positive-control assertion itself fail, confirming the positive
+    // control has genuine detection power independent of the fallback
+    // mutation above.
+    it('renders indeterminate when contextWindowTokens prop is omitted, even though the registry definition declares one (#1556)', async () => {
+      globalThis.fetch = Object.assign(mock(makeEmbeddedViewFetch([embeddedAgentFixture()])), { preconnect: () => {} });
+      renderView({ sessionId: 's-ctx-1b', workerId: 'w-ctx-1b', embeddedAgentId: 'ea-1' });
+
+      // Wait for the `/api/embedded-agents` registry query to actually
+      // settle (and the resulting re-render to happen) before asserting.
+      // Without this, the assertion below could run before a
+      // registry-based fallback bug would have had a chance to surface --
+      // making the pin pass even against a broken implementation.
+      await act(async () => {
+        await flush();
+      });
+
+      // Positive control: proves the registry query actually settled, not
+      // just that we waited some amount of time. This assertion is
+      // DEFINITION-derived (the fixture's `engine: 'openai-api'`), reusing
+      // the exact same registry-resolution-gated element the "renders the
+      // persistent transcript-restore note..." test above (line ~152) pins
+      // -- `isOpenaiApiEngine` in EmbeddedAgentWorkerView.tsx is `false`
+      // until `useEmbeddedAgents` resolves the fetched registry, so this
+      // banner can only be present once the same registry data the
+      // indeterminate-gauge assertion below depends on has actually loaded.
+      expect(
+        screen.getByText(/Conversation is restored automatically after a worker or server restart/i),
+      ).toBeTruthy();
+
+      const bar = screen.getByRole('progressbar');
+      expect(bar.getAttribute('aria-valuenow')).toBeNull();
+      expect(bar.getAttribute('aria-valuemin')).toBeNull();
+      expect(bar.getAttribute('aria-valuemax')).toBeNull();
+    });
+
     it('renders a determinate progressbar with aria-valuenow and colour bands driven by context-usage events', async () => {
       // Fixture threshold is 0.8, so the amber band opens at 0.65.
+      // `contextWindowTokens` is passed explicitly (#1556): the gauge's
+      // denominator now arrives via the worker's own wire field, not a
+      // client-side lookup against the registry's definition, so this test
+      // supplies the same value the fixture used to provide implicitly.
       globalThis.fetch = Object.assign(mock(makeEmbeddedViewFetch([embeddedAgentFixture()])), { preconnect: () => {} });
-      renderView({ sessionId: 's-ctx-2', workerId: 'w-ctx-2', embeddedAgentId: 'ea-1' });
+      renderView({ sessionId: 's-ctx-2', workerId: 'w-ctx-2', embeddedAgentId: 'ea-1', contextWindowTokens: 1000 });
       const ws = MockWebSocket.getLastInstance();
       act(() => {
         ws?.simulateOpen();
@@ -1998,8 +2055,13 @@ describe('EmbeddedAgentWorkerView', () => {
       // Signal 2's own surface. It exists because this signal fires with NO
       // compaction behind it -- there is no boundary line to hang the warning
       // on, and the usage bar is 2px whose meaning lives in a tooltip.
+      // `contextWindowTokens` is passed explicitly (#1556): the row's
+      // "configured for this agent" figure now arrives via the worker's own
+      // wire field, not a client-side lookup against the registry's
+      // definition -- see the renderView call in the determinate-progressbar
+      // test above for the same reasoning.
       globalThis.fetch = Object.assign(mock(makeEmbeddedViewFetch([embeddedAgentFixture()])), { preconnect: () => {} });
-      renderView({ sessionId: 's-clamp', workerId: 'w-clamp', embeddedAgentId: 'ea-1' });
+      renderView({ sessionId: 's-clamp', workerId: 'w-clamp', embeddedAgentId: 'ea-1', contextWindowTokens: 1000 });
       const ws = MockWebSocket.getLastInstance();
       act(() => {
         ws?.simulateOpen();

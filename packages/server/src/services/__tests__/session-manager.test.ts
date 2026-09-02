@@ -748,6 +748,8 @@ describe('SessionManager', () => {
     const STUB_EMBEDDED_DEF = {
       id: 'stub-embedded-agent',
       name: 'Stub Model',
+      engine: 'openai-api' as const,
+      isBuiltIn: false,
       provider: { baseUrl: 'http://localhost:11434/v1', model: 'qwen3:32b' },
       createdBy: 'test-user-id',
       createdAt: '2024-01-01T00:00:00.000Z',
@@ -863,6 +865,8 @@ describe('SessionManager', () => {
     const STUB_EMBEDDED_DEF = {
       id: 'stub-embedded-agent',
       name: 'Stub Model',
+      engine: 'openai-api' as const,
+      isBuiltIn: false,
       provider: { baseUrl: 'http://localhost:11434/v1', model: 'qwen3:32b' },
       createdBy: 'test-user-id',
       createdAt: '2024-01-01T00:00:00.000Z',
@@ -1013,6 +1017,8 @@ describe('SessionManager', () => {
               ? {
                   id: 'stub-def',
                   name: 'Stub Model',
+                  engine: 'openai-api',
+                  isBuiltIn: false,
                   provider: { baseUrl: 'http://localhost:11434/v1', model: 'qwen3:32b' },
                   createdBy: 'test-user-id',
                   createdAt: '2024-01-01T00:00:00.000Z',
@@ -1039,6 +1045,55 @@ describe('SessionManager', () => {
       expect(worker?.type).toBe('embedded-agent');
       expect(worker?.name).toBe('Stub Model');
     });
+
+    it("carries the definition's contextWindowTokens onto the created worker's public shape (#1556)", async () => {
+      // Confirms the getEmbeddedAgentFn wiring threaded from SessionManager
+      // into WorkerManager (constructor) reaches toPublicWorker's
+      // embedded-agent case end-to-end -- not merely that the resolver
+      // function itself works in isolation.
+      const module = await import(`../session-manager.js?v=${++importCounter}`);
+      const manager = await module.SessionManager.create({
+        userMode: new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' }),
+        pathExists: mockPathExists,
+        jobQueue: testJobQueue,
+        agentManager,
+        mcpTokenRegistry: new McpTokenRegistry(),
+        embeddedAgentManager: {
+          getEmbeddedAgent: (id: string) =>
+            id === 'stub-def-cw'
+              ? {
+                  id: 'stub-def-cw',
+                  name: 'Stub Model With Window',
+                  engine: 'openai-api',
+                  isBuiltIn: false,
+                  provider: { baseUrl: 'http://localhost:11434/v1', model: 'qwen3:32b' },
+                  createdBy: 'test-user-id',
+                  createdAt: '2024-01-01T00:00:00.000Z',
+                  updatedAt: '2024-01-01T00:00:00.000Z',
+                  contextWindowTokens: 64_000,
+                }
+              : undefined,
+        },
+        repositoryLookup: defaultRepositoryLookup,
+        repositoryEnvLookup: defaultRepositoryEnvLookup,
+      });
+
+      const session = await manager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+
+      const worker = await manager.createWorker(session.id, {
+        type: 'embedded-agent',
+        embeddedAgentId: 'stub-def-cw',
+      });
+
+      expect(worker?.type).toBe('embedded-agent');
+      if (worker?.type === 'embedded-agent') {
+        expect(worker.contextWindowTokens).toBe(64_000);
+      }
+    });
   });
 
   describe('embedded-agent worker facade', () => {
@@ -1049,6 +1104,8 @@ describe('SessionManager', () => {
     const STUB_DEF = {
       id: 'stub-def',
       name: 'Stub Model',
+      engine: 'openai-api' as const,
+      isBuiltIn: false,
       provider: { baseUrl: 'http://localhost:11434/v1', model: 'qwen3:32b' },
       createdBy: 'test-user-id',
       createdAt: '2024-01-01T00:00:00.000Z',
@@ -1456,6 +1513,8 @@ describe('SessionManager', () => {
     const STUB_DEF = {
       id: 'stub-def',
       name: 'Stub Model',
+      engine: 'openai-api' as const,
+      isBuiltIn: false,
       provider: { baseUrl: 'http://localhost:11434/v1', model: 'qwen3:32b' },
       createdBy: 'test-user-id',
       createdAt: '2024-01-01T00:00:00.000Z',
@@ -2444,6 +2503,8 @@ describe('SessionManager', () => {
     const STUB_DEF = {
       id: 'stub-def-1260',
       name: 'Stub Model',
+      engine: 'openai-api' as const,
+      isBuiltIn: false,
       provider: { baseUrl: 'http://localhost:11434/v1', model: 'qwen3:32b' },
       createdBy: 'test-user-id',
       createdAt: '2024-01-01T00:00:00.000Z',
@@ -5889,6 +5950,8 @@ describe('SessionManager', () => {
       const STUB_DEF = {
         id: 'stub-def',
         name: 'Stub Model',
+        engine: 'openai-api' as const,
+        isBuiltIn: false,
         provider: { baseUrl: 'http://localhost:11434/v1', model: 'qwen3:32b' },
         createdBy: 'test-user-id',
         createdAt: '2024-01-01T00:00:00.000Z',
