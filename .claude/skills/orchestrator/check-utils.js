@@ -109,9 +109,9 @@ function expectedTestExt(sourceExt) {
 // that naturally lives as `.ts` (no runtime need for the JSX-enabling
 // extension) — sibling matching below already accepts any test extension
 // via basename comparison, so this only affects the *suggested* path shown
-// for missing coverage (see Issue #1049). No alternate is offered for
-// other source extensions; the reverse (a `.ts` source suggesting a `.tsx`
-// alternate) is not a real-world case and is out of scope.
+// for missing coverage. No alternate is offered for other source
+// extensions; the reverse (a `.ts` source suggesting a `.tsx` alternate)
+// is not a real-world case and is out of scope.
 function alternateTestExt(sourceExt) {
   return sourceExt === '.tsx' ? '.ts' : null;
 }
@@ -152,9 +152,10 @@ export function isTestFile(filePath) {
  * Pure function — operates on the content string, no filesystem access.
  *
  * Re-export-only files (e.g., `packages/shared/src/index.ts` that only
- * `export * from './foo'`) have no runtime logic to test. Their sibling
- * test would be tautological (PR #694 added one only to silence the
- * coverage rule). This helper detects that pattern so the rule can skip.
+ * `export * from './foo'`) have no runtime logic to test. A sibling test
+ * for one would be tautological — a prior attempt added one purely to
+ * silence the coverage rule. This helper detects the pattern so the rule
+ * can skip it instead.
  *
  * Recognises:
  *   export * from '...';
@@ -214,8 +215,8 @@ export function requiresTestCoverage(filePath) {
 // --- Comment-only diff detection ---
 
 // Language comment syntax by extension. Extensions not listed here default
-// to "not comment-only" (opt-in later per file type, per Issue #1189
-// non-goals) rather than guessing at an unfamiliar comment syntax.
+// to "not comment-only" (an explicit non-goal — opt in a new file type
+// later) rather than guessing at an unfamiliar comment syntax.
 const LINE_COMMENT_PREFIX_BY_EXT = {
   '.ts': '//',
   '.tsx': '//',
@@ -306,7 +307,7 @@ function scanBlockCommentLineStarts(content, ext) {
  * full file content on each side) is supplied, the per-side starting
  * state is seeded from `scanBlockCommentLineStarts` (see that function)
  * using the hunk header's line numbers, so this case is recognised
- * correctly (Issue #1394).
+ * correctly.
  *
  * Seed-derived vs. in-hunk-confirmed trust are NOT equivalent, and this
  * function does not treat them as equivalent. `scanBlockCommentLineStarts`
@@ -512,10 +513,10 @@ function readGitFileContent(ref, filePath, cwd) {
  * for the post-image, and the merge-base of `baseBranch` and `headRef` (the
  * same base the triple-dot diff itself compares against) for the pre-image
  * — and passes them through so `isCommentOnlyDiff` can seed block-comment
- * state for hunks whose opener falls outside the `--unified=0` context
- * (Issue #1394). Either read failing (e.g. the file did not exist on that
- * side) degrades to that side's no-content fail-closed default rather than
- * failing the whole check.
+ * state for hunks whose opener falls outside the `--unified=0` context.
+ * Either read failing (e.g. the file did not exist on that side) degrades
+ * to that side's no-content fail-closed default rather than failing the
+ * whole check.
  *
  * `cwd` defaults to the process's own working directory; tests pass an
  * explicit repo path instead of mutating the shared `process.cwd()` (which
@@ -669,7 +670,7 @@ export function findTestFiles(changedFiles, diffRef = {}) {
 
     // A file that otherwise needs coverage is exempted when its actual diff
     // hunks are comment-only/blank — no behavior changed, so a sibling test
-    // would be tautological (Issue #1189).
+    // would be tautological.
     const isCommentOnly = requiresTestCoverage(prodFile) && isCommentOnlyFileDiff(prodFile, baseRef, cwd, headRef);
     const needsCoverage = requiresTestCoverage(prodFile) && !isCommentOnly;
     const expectedTestPath = dir + '/__tests__/' + fileName + '.test' + expectedTestExt(ext);

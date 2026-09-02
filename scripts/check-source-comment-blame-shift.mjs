@@ -3,14 +3,47 @@
 /**
  * Detector for source-comment blame-shift references.
  *
- * Scans `packages/<pkg>/src/**` for code comments that contain references
- * to transient context — Issue numbers, PR numbers, dated CodeRabbit
- * mentions, and bare cross-references. Such references rot as the
+ * GOVERNED CLASS: comments that EXPLAIN CODE SHAPE — why a branch exists,
+ * why a decision was made, why an edge case is handled a certain way — by
+ * substituting a pointer (an Issue, a PR, a dated review mention) for an
+ * explanation that should stand on its own. Such references rot as the
  * codebase evolves: when an Issue is reorganised, when a PR is rebased
  * away, when a date passes from "recent" to "ancient history" — the
  * pointer in the comment becomes confusing or wrong. The right home for
- * this context is the PR description and the git log (`git blame`,
- * `git log -S`), not in the source itself.
+ * this narrative is the PR description and the git log (`git blame`,
+ * `git log -S`), not in the source itself. The test for whether a hit is
+ * in this class: does the sentence still do its job with the pointer
+ * removed? If yes, it was explanation-by-pointer — rewrite it in place.
+ *
+ * NOT GOVERNED: comments that RECORD VERIFICATION PROVENANCE — a script
+ * whose entire reason for existing IS a specific, named defect (a smoke
+ * script's docstring citing the Issue it reproduces, a measurement date,
+ * the PR that fixed or is fixing it). There the pointer is not standing in
+ * for an explanation; it IS the record, and `test-trigger.md`'s
+ * "Additional Verification" sections require exactly this kind of
+ * citation. Directory is used as a proxy for this genre (every file under
+ * `scripts/smoke/**` is excluded below, citing this same requirement), but
+ * the genre is the actual ground: a file living outside `scripts/smoke/`
+ * whose own subject is a specific defect (and which `test-trigger.md`
+ * registers as a smoke-class check) is excluded by name instead of
+ * rewritten — see EXCLUDED_FILES below.
+ *
+ * APPARATUS-PROVENANCE CITATION CONVENTION: a detector's own docstring
+ * sometimes needs to cite the specific incidents that motivated it (why a
+ * discipline like "never `mock.module()` a cross-file target" exists) or
+ * the specific PRs that built its own baseline. That citation is
+ * provenance, not explanation-by-pointer, in the sense above — but it does
+ * not live in a smoke-registered file this detector already knows to
+ * exclude. The adopted convention for this narrow case: write it as
+ * `Issue NNN` / `PR NNN`, without the `#`. This is not evasion of the
+ * pattern below — it is a declared, intentional citation form, chosen
+ * because GitHub does not auto-link a bare number the way it does `#NNN`
+ * inside this repository's own source (no cross-reference value is lost),
+ * and a human reader loses nothing: the number is still there, still
+ * greppable, still meaningful. This detector's own KNOWN_VIOLATIONS
+ * history below already used this form before it was named as a
+ * convention; naming it here makes that instance the first, not an
+ * unexplained exception.
  *
  * Patterns detected (case-sensitive, only inside `//` line comments or
  * `/* ... *\/` block comments — NOT inside string literals):
@@ -22,6 +55,14 @@
  *   4. `CodeRabbit, YYYY-MM-DD` or `CodeRabbit YYYY-MM-DD`
  *   5. JSDoc / multi-line block comments containing patterns 1 or 2
  *      (handled naturally by scanning each comment line)
+ *
+ * Scope: every `.ts` / `.tsx` / `.js` / `.jsx` file under `packages/<pkg>/src`,
+ * `scripts/`, and `.claude/`, scanned with `dot: true` (Bun.Glob excludes
+ * dot-directories by default, and `.claude/**` IS a dot-directory — see
+ * `isExcludedFile`'s scripts/smoke and EXCLUDED_FILES entries for what is
+ * intentionally carved back out, and this file's own test suite for the
+ * scanned-file-count regression pin that catches a future `dot: true`
+ * removal the same way the violation count alone would not).
  *
  * Output format (one violation per line, stable sorted by file/line/col):
  *
@@ -35,13 +76,17 @@
  *
  * KNOWN_VIOLATIONS started as the inventory of pre-existing violations at
  * the time this detector landed, gated by a cleanup work stream (Issue
- * 898). That cleanup is complete and the repository has zero violations,
- * so KNOWN_VIOLATIONS is now empty: any violation found by this detector
- * fails the check immediately. If a future pre-existing violation needs
- * to be absorbed temporarily (e.g. a large migration), add entries back
- * using the `file:line:col:pattern-name` key format and document a
- * cleanup track per `.claude/rules/workflow.md`'s allowlist-baseline
- * template.
+ * 898). That cleanup is complete, and the widened scope (packages/<pkg>/src
+ * plus scripts/ and .claude/) is ALSO genuinely clean rather than
+ * allowlisted — every widened-scope hit was either rewritten in place
+ * (explanation-by-pointer) or resolved via the apparatus-provenance
+ * convention above (no-`#` citation) or the EXCLUDED_FILES /
+ * scripts/smoke exclusions (registered verification provenance). So
+ * KNOWN_VIOLATIONS is empty: any violation found by this detector fails
+ * the check immediately. If a future pre-existing violation needs to be
+ * absorbed temporarily (e.g. a large migration), add entries back using
+ * the `file:line:col:pattern-name` key format and document a cleanup
+ * track per `.claude/rules/workflow.md`'s allowlist-baseline template.
  *
  * Usage:
  *   bun scripts/check-source-comment-blame-shift.mjs
@@ -55,7 +100,32 @@ const DEFAULT_GLOBS = [
   'packages/*/src/**/*.tsx',
   'packages/*/src/**/*.js',
   'packages/*/src/**/*.jsx',
+  'scripts/**/*.ts',
+  'scripts/**/*.tsx',
+  'scripts/**/*.js',
+  'scripts/**/*.mjs',
+  '.claude/**/*.ts',
+  '.claude/**/*.tsx',
+  '.claude/**/*.js',
+  '.claude/**/*.mjs',
 ];
+
+/**
+ * Files excluded by name rather than by the scripts/smoke directory proxy
+ * below, because their verification-provenance genre (test-trigger.md's
+ * "Additional Verification" registration — a script whose subject IS a
+ * specific defect) applies even though they live outside scripts/smoke/.
+ * Each entry states its test-trigger.md registration as the reason.
+ */
+export const EXCLUDED_FILES = new Set([
+  // Registered in test-trigger.md as "Additional Verification: Preview
+  // Sandbox Real-Browser Check" — the script's entire subject is Issue
+  // 1162's known mXSS gap (a real-Chromium regression runner that
+  // deliberately does NOT fix the gap, only documents/regression-guards
+  // it), so its Issue/PR citations are the verification record itself,
+  // not a substitute for an explanation.
+  'scripts/run-preview-sandbox-browser-check.mjs',
+]);
 
 /**
  * State machine that walks a source string and yields each comment as a
@@ -447,21 +517,31 @@ export function formatViolation(v) {
 
 /**
  * Should a file be excluded from scanning? Test files and `__tests__/`
- * directories are excluded regardless of their location under
- * `packages/<pkg>/src/`.
+ * directories are excluded regardless of location. `scripts/smoke/**` is
+ * excluded as a directory-proxy for the verification-provenance genre (see
+ * this file's header); EXCLUDED_FILES carries the same genre for
+ * individually-registered scripts that live outside that directory.
  *
  * @param {string} file
  * @returns {boolean}
  */
 export function isExcludedFile(file) {
   if (file.includes('/__tests__/')) return true;
-  if (/\.test\.(ts|tsx|js|jsx)$/.test(file)) return true;
-  if (/\.spec\.(ts|tsx|js|jsx)$/.test(file)) return true;
+  if (/\.test\.(ts|tsx|js|jsx|mjs)$/.test(file)) return true;
+  if (/\.spec\.(ts|tsx|js|jsx|mjs)$/.test(file)) return true;
+  if (file.startsWith('scripts/smoke/')) return true;
+  if (EXCLUDED_FILES.has(file)) return true;
   return false;
 }
 
 /**
  * Resolve the default target file list.
+ *
+ * `dot: true` is required to scan into `.claude/` — Bun.Glob otherwise
+ * skips hidden directories, which would silently scan zero files under a
+ * pattern that explicitly names `.claude/**` (the #1487 shape: an
+ * exclusion mechanism hides files while reporting success). See this
+ * file's test suite for the regression pin.
  *
  * @param {object} [options]
  * @param {string} [options.cwd]
@@ -471,7 +551,7 @@ export async function findDefaultFiles({ cwd = process.cwd() } = {}) {
   const set = new Set();
   for (const pattern of DEFAULT_GLOBS) {
     const glob = new Glob(pattern);
-    for await (const file of glob.scan({ cwd, onlyFiles: true })) {
+    for await (const file of glob.scan({ cwd, onlyFiles: true, dot: true })) {
       if (isExcludedFile(file)) continue;
       set.add(file);
     }
