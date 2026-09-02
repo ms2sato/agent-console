@@ -1841,9 +1841,18 @@ describe('EmbeddedAgentWorkerView', () => {
     // reads the value from its own wire-sourced prop, never falls back to
     // looking it up in the definition registry it still holds for
     // `compaction`/engine-type purposes.
-    it('renders indeterminate when contextWindowTokens prop is omitted, even though the registry definition declares one (#1556)', () => {
+    it('renders indeterminate when contextWindowTokens prop is omitted, even though the registry definition declares one (#1556)', async () => {
       globalThis.fetch = Object.assign(mock(makeEmbeddedViewFetch([embeddedAgentFixture()])), { preconnect: () => {} });
       renderView({ sessionId: 's-ctx-1b', workerId: 'w-ctx-1b', embeddedAgentId: 'ea-1' });
+
+      // Wait for the `/api/embedded-agents` registry query to actually
+      // settle (and the resulting re-render to happen) before asserting.
+      // Without this, the assertion below could run before a
+      // registry-based fallback bug would have had a chance to surface --
+      // making the pin pass even against a broken implementation.
+      await act(async () => {
+        await flush();
+      });
 
       const bar = screen.getByRole('progressbar');
       expect(bar.getAttribute('aria-valuenow')).toBeNull();
