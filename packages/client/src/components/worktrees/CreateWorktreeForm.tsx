@@ -383,6 +383,7 @@ export function CreateWorktreeForm({
               }}
               onReasoningEffortChange={(value) => setValue('reasoningEffort', value, { shouldDirty: true })}
               onContextWindowTokensChange={(value) => setValue('contextWindowTokens', value, { shouldDirty: true })}
+              contextWindowTokensError={errors.contextWindowTokens}
             />
           </div>
 

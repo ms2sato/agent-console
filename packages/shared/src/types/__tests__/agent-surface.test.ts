@@ -5,38 +5,59 @@ import type { AgentDirectoryEntry } from '../agent-surface.js';
 import { AGENT_KINDS, getAgentParameterCapabilitiesFor, deriveEmbeddedParameterCapabilities } from '../agent-surface.js';
 import { EMBEDDED_AGENT_ENGINE_PARAMETER_CAPABILITIES } from '../embedded-agent-parameter-capabilities.js';
 
-const modelCapableAgent = {
-  id: 'model-agent',
-  name: 'Model Capable Agent',
-  isBuiltIn: false,
-  commandTemplate: 'mytool {{model:+--model}} {{prompt}}',
-} as unknown as AgentDefinition;
+// Fully-typed fixtures, no `as unknown as` casts (Issue #1554 CodeRabbit
+// Finding 3 / see .claude/rules "ask if the cast is even needed before
+// asking which idiom"). Mirrors the sibling `buildAgent` helper in
+// agent-parameter-capabilities.test.ts (same directory) rather than
+// bypassing the type system via a cast -- both AgentDefinition and
+// EmbeddedAgentDefinition have few enough required fields that a plausible
+// dummy value for each is straightforward.
+function buildAgent(id: string, name: string, commandTemplate: string): AgentDefinition {
+  return {
+    id,
+    name,
+    isBuiltIn: false,
+    createdAt: '2024-01-01T00:00:00.000Z',
+    commandTemplate,
+    capabilities: {
+      supportsContinue: false,
+      supportsHeadlessMode: false,
+      supportsActivityDetection: false,
+    },
+  };
+}
 
-const bothCapableAgent = {
-  id: 'both-agent',
-  name: 'Both Capable Agent',
-  isBuiltIn: false,
-  commandTemplate: 'mytool {{model:+--model}} {{effort:+--effort}} {{prompt}}',
-} as unknown as AgentDefinition;
+function buildEmbeddedAgent(
+  id: string,
+  name: string,
+  engine: 'openai-api' | 'claude-sdk'
+): EmbeddedAgentDefinition {
+  const base = {
+    id,
+    name,
+    isBuiltIn: false,
+    createdBy: 'test-user',
+    createdAt: '2024-01-01T00:00:00.000Z',
+    updatedAt: '2024-01-01T00:00:00.000Z',
+  };
+  return engine === 'openai-api'
+    ? { ...base, engine: 'openai-api', provider: { baseUrl: 'http://localhost:11434/v1', model: 'test-model' } }
+    : { ...base, engine: 'claude-sdk', provider: { model: 'test-model' } };
+}
 
-const incapableAgent = {
-  id: 'plain-agent',
-  name: 'Plain Agent',
-  isBuiltIn: false,
-  commandTemplate: 'mytool {{prompt}}',
-} as unknown as AgentDefinition;
+const modelCapableAgent = buildAgent('model-agent', 'Model Capable Agent', 'mytool {{model:+--model}} {{prompt}}');
 
-const openaiApiDefinition = {
-  id: 'embedded-openai',
-  name: 'Local GPT',
-  engine: 'openai-api',
-} as unknown as EmbeddedAgentDefinition;
+const bothCapableAgent = buildAgent(
+  'both-agent',
+  'Both Capable Agent',
+  'mytool {{model:+--model}} {{effort:+--effort}} {{prompt}}'
+);
 
-const claudeSdkDefinition = {
-  id: 'embedded-claude-sdk',
-  name: 'Claude SDK builtin',
-  engine: 'claude-sdk',
-} as unknown as EmbeddedAgentDefinition;
+const incapableAgent = buildAgent('plain-agent', 'Plain Agent', 'mytool {{prompt}}');
+
+const openaiApiDefinition = buildEmbeddedAgent('embedded-openai', 'Local GPT', 'openai-api');
+
+const claudeSdkDefinition = buildEmbeddedAgent('embedded-claude-sdk', 'Claude SDK builtin', 'claude-sdk');
 
 describe('getAgentParameterCapabilitiesFor', () => {
   describe('terminal entries', () => {

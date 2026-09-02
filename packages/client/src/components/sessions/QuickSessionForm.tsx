@@ -158,6 +158,7 @@ export function QuickSessionForm({
             }}
             onReasoningEffortChange={(value) => setValue('reasoningEffort', value.trim() || undefined)}
             onContextWindowTokensChange={(value) => setValue('contextWindowTokens', value)}
+            contextWindowTokensError={errors.contextWindowTokens}
           />
           {sharedAccountsAvailable && (
             <label className="flex items-center gap-2 text-sm text-gray-400">

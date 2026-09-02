@@ -1,3 +1,4 @@
+import type { FieldError } from 'react-hook-form';
 import type { AgentDirectoryEntry, AgentParameterCapabilitiesByKind } from '@agent-console/shared';
 import { getAgentParameterCapabilitiesFor } from '@agent-console/shared';
 import type { AgentSelection } from '../AgentSelector';
@@ -16,6 +17,15 @@ export interface AgentParameterFieldsProps {
   onModelChange: (value: string) => void;
   onReasoningEffortChange: (value: string) => void;
   onContextWindowTokensChange: (value: number | undefined) => void;
+  /**
+   * The consuming form's react-hook-form validation error for
+   * `contextWindowTokens` (e.g. `formState.errors.contextWindowTokens`),
+   * surfaced via the same `FormField`+`error` pattern every other field in
+   * `QuickSessionForm`/`CreateWorktreeForm` already uses. Without this, a
+   * schema-rejected value (non-integer, non-positive) fails validation at
+   * submit time with no visible feedback -- the form just doesn't submit.
+   */
+  contextWindowTokensError?: FieldError;
   /**
    * Injectable seam for the kind-dispatch capability accessor, defaulting to
    * the real `getAgentParameterCapabilitiesFor` (agent-surface.ts's SINGLE
@@ -76,6 +86,7 @@ export function AgentParameterFields({
   onModelChange,
   onReasoningEffortChange,
   onContextWindowTokensChange,
+  contextWindowTokensError,
   getCapabilitiesImpl = getAgentParameterCapabilitiesFor,
 }: AgentParameterFieldsProps) {
   const { entries } = useAgentDirectory();
@@ -112,13 +123,14 @@ export function AgentParameterFields({
         </FormField>
       )}
       {showContextWindowTokens && (
-        <FormField label="Context window (tokens)">
+        <FormField label="Context window (tokens)" error={contextWindowTokensError}>
           <Input
             type="number"
             inputMode="numeric"
             min={1}
             step={1}
             value={contextWindowTokens ?? ''}
+            error={contextWindowTokensError}
             onChange={(e) => {
               const raw = e.target.value;
               if (raw.trim() === '') {

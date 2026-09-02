@@ -332,6 +332,34 @@ describe('AgentParameterFields', () => {
       expect(onContextWindowTokensChange).toHaveBeenCalledWith(128000);
     });
 
+    it('renders the contextWindowTokensError message (Issue #1554 CodeRabbit Finding 2 -- otherwise an invalid value fails validation with no visible feedback)', async () => {
+      mockDirectoryResponses({ embeddedAgents: [embeddedDefinition] });
+      renderAgentParameterFields({
+        selection: { kind: 'embedded', embeddedAgentId: 'embedded-1' },
+        model: 'gpt-4o',
+        contextWindowTokensError: { type: 'custom', message: 'Must be a whole number' },
+      });
+
+      await waitFor(() => {
+        expect(screen.getByText('Must be a whole number')).toBeTruthy();
+      });
+      const input = screen.getByPlaceholderText('e.g. 128000');
+      expect(input.getAttribute('aria-invalid')).toBe('true');
+    });
+
+    it('does NOT render an error message when contextWindowTokensError is absent (regression guard)', async () => {
+      mockDirectoryResponses({ embeddedAgents: [embeddedDefinition] });
+      renderAgentParameterFields({
+        selection: { kind: 'embedded', embeddedAgentId: 'embedded-1' },
+        model: 'gpt-4o',
+      });
+
+      await waitFor(() => {
+        expect(screen.getByPlaceholderText('e.g. 128000')).toBeTruthy();
+      });
+      expect(screen.queryByRole('alert')).toBeNull();
+    });
+
     it('calls onContextWindowTokensChange with undefined when the field is cleared', async () => {
       // Distinct render from the "parsed number" test above rather than a
       // second fireEvent on the same input: this component doesn't own

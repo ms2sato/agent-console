@@ -873,6 +873,68 @@ describe('WorkerLifecycleManager', () => {
       ).rejects.toThrow(/"reasoningEffort"/);
     });
 
+    it('rejects an empty or whitespace-only model, bypassing valibot the way MCP delegate_to_worktree does (its Zod schema has no .min(1)/trim)', async () => {
+      const session = createTestSession();
+      sessions.set(session.id, session);
+
+      await expect(
+        lifecycleManager.createWorker(session.id, {
+          type: 'embedded-agent',
+          embeddedAgentId: EMBEDDED_AGENT_DEF.id,
+          model: '',
+        }),
+      ).rejects.toBeInstanceOf(ValidationError);
+      await expect(
+        lifecycleManager.createWorker(session.id, {
+          type: 'embedded-agent',
+          embeddedAgentId: EMBEDDED_AGENT_DEF.id,
+          model: '   ',
+        }),
+      ).rejects.toBeInstanceOf(ValidationError);
+    });
+
+    it('rejects an empty or whitespace-only reasoningEffort, bypassing valibot the way MCP delegate_to_worktree does', async () => {
+      const session = createTestSession();
+      sessions.set(session.id, session);
+
+      // Uses EMBEDDED_AGENT_DEF (openai-api), whose reasoningEffort row has
+      // acceptedValues: null (unrestricted pass-through) -- unlike
+      // EMBEDDED_AGENT_DEF_SDK's closed accepted-values list, an empty
+      // string here can ONLY be caught by the emptiness check itself, not by
+      // falling through to the accepted-values rejection.
+      await expect(
+        lifecycleManager.createWorker(session.id, {
+          type: 'embedded-agent',
+          embeddedAgentId: EMBEDDED_AGENT_DEF.id,
+          reasoningEffort: '',
+        }),
+      ).rejects.toBeInstanceOf(ValidationError);
+      await expect(
+        lifecycleManager.createWorker(session.id, {
+          type: 'embedded-agent',
+          embeddedAgentId: EMBEDDED_AGENT_DEF.id,
+          reasoningEffort: '   ',
+        }),
+      ).rejects.toBeInstanceOf(ValidationError);
+    });
+
+    it('rejects contextWindowTokens accompanied only by an empty-string model (Ruling 4d: a declared window must not attach to a semantically-absent model)', async () => {
+      const session = createTestSession();
+      sessions.set(session.id, session);
+
+      // request.model === '' is !== undefined, so without the emptiness check
+      // this would satisfy the contextWindowTokens-requires-model gate and
+      // persist a context window override against no real model change.
+      await expect(
+        lifecycleManager.createWorker(session.id, {
+          type: 'embedded-agent',
+          embeddedAgentId: EMBEDDED_AGENT_DEF.id,
+          model: '',
+          contextWindowTokens: 32000,
+        }),
+      ).rejects.toBeInstanceOf(ValidationError);
+    });
+
     it('rejects contextWindowTokens without an accompanying model override', async () => {
       const session = createTestSession();
       sessions.set(session.id, session);

@@ -334,12 +334,30 @@ export class WorkerLifecycleManager {
           ((engine: 'openai-api' | 'claude-sdk') => EMBEDDED_AGENT_ENGINE_PARAMETER_CAPABILITIES[engine]);
         const capabilities = getEmbeddedCapabilities(definition.engine);
 
-        if (request.model !== undefined && !capabilities.model.capable) {
-          throw new ValidationError(
-            `Embedded agent "${definition.name}" (engine: ${definition.engine}) does not support the "model" parameter -- ${capabilities.model.reason}`,
-          );
+        if (request.model !== undefined) {
+          // Mirror the valibot wire schemas' v.trim() + v.minLength(1, 'model
+          // must not be empty') contract (packages/shared/src/schemas/worker.ts).
+          // Unlike the REST/WS routes, MCP's delegate_to_worktree validates
+          // `model` via a looser Zod schema (z.string().optional(), no
+          // .min(1)/trim), so an empty/whitespace-only value would otherwise
+          // reach this choke point unrejected -- and would also satisfy the
+          // contextWindowTokens-requires-model check below despite being
+          // semantically absent (agent-surface.md Ruling 4 / 4d).
+          if (request.model.trim().length === 0) {
+            throw new ValidationError('model must not be empty');
+          }
+          if (!capabilities.model.capable) {
+            throw new ValidationError(
+              `Embedded agent "${definition.name}" (engine: ${definition.engine}) does not support the "model" parameter -- ${capabilities.model.reason}`,
+            );
+          }
         }
         if (request.reasoningEffort !== undefined) {
+          // Same empty/whitespace gap as `model` above, for the same reason
+          // (MCP's looser Zod schema).
+          if (request.reasoningEffort.trim().length === 0) {
+            throw new ValidationError('reasoningEffort must not be empty');
+          }
           if (!capabilities.reasoningEffort.capable) {
             throw new ValidationError(
               `Embedded agent "${definition.name}" (engine: ${definition.engine}) does not support the "reasoningEffort" parameter -- ${capabilities.reasoningEffort.reason}`,
