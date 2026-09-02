@@ -1335,7 +1335,7 @@ describe('CreateWorktreeForm', () => {
 
   describe('model / reasoningEffort fields (Issue #1541)', () => {
     // Overrides the module-level mockAgentsResponse (which has no
-    // commandTemplate, so ModelEffortFields always renders nothing for it)
+    // commandTemplate, so AgentParameterFields always renders nothing for it)
     // with agents that vary in capability, per getAgentParameterCapabilities.
     function mockAgentsWithCapabilities() {
       mockFetch.mockResolvedValue(
@@ -1437,7 +1437,7 @@ describe('CreateWorktreeForm', () => {
     });
 
     it('clears a previously-typed model value when the agent selection switches to a model-incapable agent', async () => {
-      // Regression guard: ModelEffortFields hides the Model input the
+      // Regression guard: AgentParameterFields hides the Model input the
       // moment the newly-selected agent is incapable, but the underlying
       // form value survived the switch and rode along silently in the
       // submitted request for an agent that doesn't support it.
