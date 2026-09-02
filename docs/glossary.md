@@ -45,7 +45,7 @@ The stored configuration for an AI agent, including command templates and activi
 - **See:** [Agent Surface design](design/agent-surface.md)
 
 ### AgentOperation
-**Implemented (Issue #1160 PR-D).** The discriminator naming a cross-surface action performable against "an agent" (`listAgents`, `resolveAgent`, `createSessionWithAgent`, `addWorkerToSession`, `manageDefinitions`). Single writer: the `AGENT_OPERATIONS` constant in [agent-operations.ts](../packages/shared/src/types/agent-operations.ts). Distinct from [AgentKind](#agentkind): `AgentKind` tags which registry an agent belongs to; `AgentOperation` names what a consumer surface (UI / MCP / embedded-visible) can do to an agent. Each surface owns an exposure table typed `satisfies Record<AgentOperation, SurfaceExposure>`, so adding a new operation is a compile error in every table until it records an explicit exposed/not-exposed decision.
+**Implemented (Issue #1160 PR-D).** The discriminator naming a cross-surface action performable against "an agent" (`listAgents`, `resolveAgent`, `createSessionWithAgent`, `addWorkerToSession`, `manageDefinitions`, `restart`). Single writer: the `AGENT_OPERATIONS` constant in [agent-operations.ts](../packages/shared/src/types/agent-operations.ts). Distinct from [AgentKind](#agentkind): `AgentKind` tags which registry an agent belongs to; `AgentOperation` names what a consumer surface (UI / MCP / embedded-visible) can do to an agent. Each surface owns an exposure table typed `satisfies Record<AgentOperation, SurfaceExposure>`, so adding a new operation is a compile error in every table until it records an explicit exposed/not-exposed decision.
 - **See:** [Agent Surface design](design/agent-surface.md) Mechanism 3
 
 ### SurfaceExposure

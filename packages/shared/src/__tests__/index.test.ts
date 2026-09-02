@@ -120,6 +120,7 @@ describe('shared index exports', () => {
       'createSessionWithAgent',
       'addWorkerToSession',
       'manageDefinitions',
+      'restart',
     ]);
   });
 

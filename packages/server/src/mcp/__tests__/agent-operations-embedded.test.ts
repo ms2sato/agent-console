@@ -35,4 +35,11 @@ describe('EMBEDDED_AGENT_OPERATIONS', () => {
       );
     }
   });
+
+  it("exposes 'restart' via the same shared MCP endpoint as the MCP surface (Issue #1519)", () => {
+    expect(EMBEDDED_AGENT_OPERATIONS.restart).toEqual({
+      exposed: true,
+      via: 'MCP endpoint (shared) — restart_all_agents',
+    });
+  });
 });

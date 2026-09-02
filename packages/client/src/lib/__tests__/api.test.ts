@@ -290,7 +290,7 @@ describe('API Client', () => {
 
   describe('restartAllAgentWorkers', () => {
     it('should call restart-all-agents endpoint', async () => {
-      const mockResult = { restarted: 2, failed: 0, results: [] };
+      const mockResult = { restarted: 2, failed: 0, skipped: 0, results: [] };
       mockFetch.mockResolvedValue(createMockResponse(mockResult));
 
       const result = await restartAllAgentWorkers();

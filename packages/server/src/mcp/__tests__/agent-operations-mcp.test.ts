@@ -32,4 +32,8 @@ describe('MCP_AGENT_OPERATIONS', () => {
 
     expect(registeredNames.has('this_tool_does_not_exist')).toBe(false);
   });
+
+  it("exposes 'restart' via restart_all_agents (Issue #1519)", () => {
+    expect(MCP_AGENT_OPERATIONS.restart).toEqual({ exposed: true, via: 'restart_all_agents' });
+  });
 });
