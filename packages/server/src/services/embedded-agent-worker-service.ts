@@ -950,7 +950,7 @@ export class EmbeddedAgentWorkerService {
 
       // Single writer of the context-window rule (agent-surface.md Ruling
       // 4): see embedded-agent-context-window.ts.
-      const effectiveContextWindowTokens = resolveEffectiveContextWindow({}, definition);
+      const effectiveContextWindowTokens = resolveEffectiveContextWindow(definition);
 
       // Step 6: write the init command as the FIRST stdin line. Branched on
       // `definition.engine` (SDK Engine Phase 1) so each arm's `provider`

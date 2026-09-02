@@ -250,7 +250,6 @@ export class SessionConverterService {
           activated: false, // Paused sessions have no active subprocess
           autoCompaction: w.autoCompaction,
           contextWindowTokens: resolveEffectiveContextWindow(
-            {},
             (this.deps.getEmbeddedAgent ?? (() => undefined))(w.embeddedAgentId),
           ),
         };
