@@ -2005,6 +2005,9 @@ describe('WorkerLifecycleManager', () => {
         deliverInitialPromptOnActivation: false,
         sdkSessionId: null,
         autoCompaction: true,
+        model: null,
+        reasoningEffort: null,
+        contextWindowTokens: null,
       };
       session.workers.set(embeddedWorker.id, embeddedWorker);
 
@@ -2090,6 +2093,9 @@ describe('WorkerLifecycleManager', () => {
         deliverInitialPromptOnActivation: false,
         sdkSessionId: null,
         autoCompaction: true,
+        model: null,
+        reasoningEffort: null,
+        contextWindowTokens: null,
       };
       session.workers.set(embeddedWorker.id, embeddedWorker);
 
@@ -2371,6 +2377,9 @@ describe('WorkerLifecycleManager', () => {
         deliverInitialPromptOnActivation: false,
         sdkSessionId: null,
         autoCompaction: true,
+        model: null,
+        reasoningEffort: null,
+        contextWindowTokens: null,
       };
       session.workers.set(embeddedWorker.id, embeddedWorker);
 

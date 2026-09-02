@@ -285,6 +285,39 @@ export interface InternalEmbeddedAgentWorker extends InternalWorkerBase {
    * and survives server restart.
    */
   autoCompaction: boolean;
+  /**
+   * This worker's model override (agent-surface.md Ruling 3), or `null` when
+   * no override is set. A worker's override beats its embedded-agent
+   * definition's own `provider.model` default; `null` means "live-read the
+   * definition's own default" (no retroactive effect from later definition
+   * edits, unlike a set override, which is a copy taken at set time). Same
+   * precedence/persistence contract as `InternalAgentWorker.model` (the
+   * terminal-agent twin). Persisted via `PersistedEmbeddedAgentWorker.model`
+   * and survives server restart, idle eviction, and revival. Resolved via
+   * `resolveEffectiveModelParams` (`embedded-agent-model-params.ts`), the
+   * single writer for Ruling 3's override-beats-default rule for this and
+   * `reasoningEffort` below.
+   */
+  model: string | null;
+  /**
+   * This worker's reasoning-effort override (agent-surface.md Ruling 3), or
+   * `null` when no override is set. Same precedence/persistence contract as
+   * `model`. Resolved via `resolveEffectiveModelParams`, same as `model`.
+   */
+  reasoningEffort: string | null;
+  /**
+   * This worker's context-window override (agent-surface.md Ruling 4), or
+   * `null` when no override is set. UNLIKE `model`/`reasoningEffort` above,
+   * this is NOT a simple override-beats-default field: it only has meaning
+   * when `model` is also overridden, and it is NEVER inherited from the
+   * definition's own `contextWindowTokens` once a model override is active
+   * (Ruling 4 "do not inherit"). Resolution logic lives in the dedicated
+   * `resolveEffectiveContextWindow` resolver
+   * (`embedded-agent-context-window.ts`), not inline here. Persisted via
+   * `PersistedEmbeddedAgentWorker.contextWindowTokens` and survives server
+   * restart, idle eviction, and revival.
+   */
+  contextWindowTokens: number | null;
 }
 
 /**

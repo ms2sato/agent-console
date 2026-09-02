@@ -137,6 +137,17 @@ export interface WorkersTable {
    * docs/design/agent-surface.md "Model & Reasoning-Effort Parameters".
    */
   reasoning_effort: string | null;
+  /**
+   * Worker-persisted context-window override (embedded-agent workers only;
+   * null for other types). A DIFFERENT fact from
+   * `embedded_agents.context_window_tokens` (the definition-level default):
+   * this is a per-worker override, meaningful only when this same worker's
+   * `model` column is also set (agent-surface.md Ruling 4 -- a model
+   * override with no window of its own means undeclared, never inherited
+   * from the definition). See `resolveEffectiveContextWindow` in
+   * `packages/server/src/services/embedded-agent-context-window.ts`.
+   */
+  context_window_tokens: number | null;
 }
 
 // Helper types for queries

@@ -117,6 +117,9 @@ describe('SessionConverterService', () => {
             deliverInitialPromptOnActivation: w.deliverInitialPromptOnActivation,
             sdkSessionId: w.sdkSessionId,
             autoCompaction: w.autoCompaction,
+            model: w.model,
+            reasoningEffort: w.reasoningEffort,
+            contextWindowTokens: w.contextWindowTokens,
           };
         }
       },

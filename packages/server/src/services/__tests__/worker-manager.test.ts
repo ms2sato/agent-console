@@ -1746,6 +1746,38 @@ describe('WorkerManager', () => {
         expect(persisted.sdkSessionId).toBeNull();
       }
     });
+
+    it("round-trips an embedded-agent worker's model/reasoningEffort/contextWindowTokens override (#1554)", () => {
+      const worker = buildInternalEmbeddedAgentWorker({
+        id: 'embedded-persist-model',
+        embeddedAgentId: 'def-1',
+        model: 'gpt-5-codex',
+        reasoningEffort: 'high',
+        contextWindowTokens: 200_000,
+      });
+
+      const persisted = workerManager.toPersistedWorker(worker);
+
+      expect(persisted.type).toBe('embedded-agent');
+      if (persisted.type === 'embedded-agent') {
+        expect(persisted.model).toBe('gpt-5-codex');
+        expect(persisted.reasoningEffort).toBe('high');
+        expect(persisted.contextWindowTokens).toBe(200_000);
+      }
+    });
+
+    it('persists null for an embedded-agent worker with no model/reasoningEffort/contextWindowTokens override (#1554)', () => {
+      const worker = buildInternalEmbeddedAgentWorker({ id: 'embedded-persist-no-model', embeddedAgentId: 'def-1' });
+
+      const persisted = workerManager.toPersistedWorker(worker);
+
+      expect(persisted.type).toBe('embedded-agent');
+      if (persisted.type === 'embedded-agent') {
+        expect(persisted.model).toBeNull();
+        expect(persisted.reasoningEffort).toBeNull();
+        expect(persisted.contextWindowTokens).toBeNull();
+      }
+    });
   });
 
   // ========== initializeEmbeddedAgentWorker ==========
@@ -1792,6 +1824,51 @@ describe('WorkerManager', () => {
       });
 
       expect(worker.deliverInitialPromptOnActivation).toBe(true);
+    });
+
+    it('defaults model/reasoningEffort/contextWindowTokens to null when omitted (#1554)', () => {
+      const worker = workerManager.initializeEmbeddedAgentWorker({
+        id: 'init-embedded-no-params',
+        name: 'Embedded Agent',
+        createdAt: '2026-01-01T00:00:00.000Z',
+        embeddedAgentId: 'def-1',
+      });
+
+      expect(worker.model).toBeNull();
+      expect(worker.reasoningEffort).toBeNull();
+      expect(worker.contextWindowTokens).toBeNull();
+    });
+
+    it('threads model/reasoningEffort/contextWindowTokens through to the worker when provided (#1554)', () => {
+      const worker = workerManager.initializeEmbeddedAgentWorker({
+        id: 'init-embedded-with-params',
+        name: 'Embedded Agent',
+        createdAt: '2026-01-01T00:00:00.000Z',
+        embeddedAgentId: 'def-1',
+        model: 'gpt-5-codex',
+        reasoningEffort: 'high',
+        contextWindowTokens: 200_000,
+      });
+
+      expect(worker.model).toBe('gpt-5-codex');
+      expect(worker.reasoningEffort).toBe('high');
+      expect(worker.contextWindowTokens).toBe(200_000);
+    });
+
+    it('treats an explicit null for model/reasoningEffort/contextWindowTokens as no override (#1554)', () => {
+      const worker = workerManager.initializeEmbeddedAgentWorker({
+        id: 'init-embedded-explicit-null',
+        name: 'Embedded Agent',
+        createdAt: '2026-01-01T00:00:00.000Z',
+        embeddedAgentId: 'def-1',
+        model: null,
+        reasoningEffort: null,
+        contextWindowTokens: null,
+      });
+
+      expect(worker.model).toBeNull();
+      expect(worker.reasoningEffort).toBeNull();
+      expect(worker.contextWindowTokens).toBeNull();
     });
   });
 
@@ -1959,6 +2036,44 @@ describe('WorkerManager', () => {
       expect(worker.type).toBe('embedded-agent');
       if (worker.type === 'embedded-agent') {
         expect(worker.sdkSessionId).toBe('sdk-sess-restored');
+      }
+    });
+
+    it("should restore an embedded-agent worker's model/reasoningEffort/contextWindowTokens override across a server restart (#1554)", () => {
+      const persistedWorkers = [
+        buildPersistedEmbeddedAgentWorker({
+          id: 'restored-embedded-model',
+          embeddedAgentId: 'def-1',
+          model: 'gpt-5-codex',
+          reasoningEffort: 'high',
+          contextWindowTokens: 200_000,
+        }),
+      ];
+
+      const workers = workerManager.restoreWorkersFromPersistence(persistedWorkers);
+
+      const worker = workers.get('restored-embedded-model')!;
+      expect(worker.type).toBe('embedded-agent');
+      if (worker.type === 'embedded-agent') {
+        expect(worker.model).toBe('gpt-5-codex');
+        expect(worker.reasoningEffort).toBe('high');
+        expect(worker.contextWindowTokens).toBe(200_000);
+      }
+    });
+
+    it('should restore an embedded-agent worker with model/reasoningEffort/contextWindowTokens null when no override was persisted (#1554)', () => {
+      const persistedWorkers = [
+        buildPersistedEmbeddedAgentWorker({ id: 'restored-embedded-no-model', embeddedAgentId: 'def-1' }),
+      ];
+
+      const workers = workerManager.restoreWorkersFromPersistence(persistedWorkers);
+
+      const worker = workers.get('restored-embedded-no-model')!;
+      expect(worker.type).toBe('embedded-agent');
+      if (worker.type === 'embedded-agent') {
+        expect(worker.model).toBeNull();
+        expect(worker.reasoningEffort).toBeNull();
+        expect(worker.contextWindowTokens).toBeNull();
       }
     });
 

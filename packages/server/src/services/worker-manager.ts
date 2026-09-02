@@ -142,6 +142,12 @@ export interface EmbeddedAgentWorkerInitParams {
    * See `docs/design/embedded-agent-worker.md` "Initial prompt delivery".
    */
   deliverInitialPromptOnActivation?: boolean;
+  /** See `InternalEmbeddedAgentWorker.model`. `null`/omitted = no override. */
+  model?: string | null;
+  /** See `InternalEmbeddedAgentWorker.reasoningEffort`. `null`/omitted = no override. */
+  reasoningEffort?: string | null;
+  /** See `InternalEmbeddedAgentWorker.contextWindowTokens`. `null`/omitted = no override. */
+  contextWindowTokens?: number | null;
 }
 
 /**
@@ -410,6 +416,9 @@ export class WorkerManager {
       sdkSessionId: null,
       // Default ON -- a new worker starts with context management enabled.
       autoCompaction: true,
+      model: params.model ?? null,
+      reasoningEffort: params.reasoningEffort ?? null,
+      contextWindowTokens: params.contextWindowTokens ?? null,
     };
 
     return worker;
@@ -1269,6 +1278,13 @@ export class WorkerManager {
             // an explicitly-turned-OFF toggle is not silently re-enabled by a
             // server restart.
             autoCompaction: pw.autoCompaction,
+            // Round-trips from PersistedEmbeddedAgentWorker.model/
+            // .reasoningEffort/.contextWindowTokens so a worker's
+            // model/reasoning-effort/context-window override survives a
+            // server restart (agent-surface.md Rulings 3/4).
+            model: pw.model,
+            reasoningEffort: pw.reasoningEffort,
+            contextWindowTokens: pw.contextWindowTokens,
           };
           break;
         default: {
@@ -1355,6 +1371,9 @@ export class WorkerManager {
           deliverInitialPromptOnActivation: worker.deliverInitialPromptOnActivation,
           sdkSessionId: worker.sdkSessionId,
           autoCompaction: worker.autoCompaction,
+          model: worker.model,
+          reasoningEffort: worker.reasoningEffort,
+          contextWindowTokens: worker.contextWindowTokens,
         };
         return persistedEmbeddedAgent;
       }
