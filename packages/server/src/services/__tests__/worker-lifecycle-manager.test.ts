@@ -46,9 +46,26 @@ const EMBEDDED_AGENT_DEF: EmbeddedAgentDefinition = {
   updatedAt: '2024-01-01T00:00:00.000Z',
 };
 
+// A claude-sdk-engine sibling definition, used by the model/reasoningEffort
+// capability-validation tests below (reasoningEffort's acceptedValues list is
+// only non-null for claude-sdk in the production table).
+const EMBEDDED_AGENT_DEF_SDK: EmbeddedAgentDefinition = {
+  id: 'def-sdk',
+  name: 'Claude SDK Agent',
+  engine: 'claude-sdk',
+  provider: { model: 'claude-opus-4-6' },
+  isBuiltIn: true,
+  createdBy: 'user-1',
+  createdAt: '2024-01-01T00:00:00.000Z',
+  updatedAt: '2024-01-01T00:00:00.000Z',
+};
+
 const embeddedAgentManagerStub = {
-  getEmbeddedAgent: (id: string): EmbeddedAgentDefinition | undefined =>
-    id === EMBEDDED_AGENT_DEF.id ? EMBEDDED_AGENT_DEF : undefined,
+  getEmbeddedAgent: (id: string): EmbeddedAgentDefinition | undefined => {
+    if (id === EMBEDDED_AGENT_DEF.id) return EMBEDDED_AGENT_DEF;
+    if (id === EMBEDDED_AGENT_DEF_SDK.id) return EMBEDDED_AGENT_DEF_SDK;
+    return undefined;
+  },
 };
 
 // Records embedded-agent deactivation calls so the deleteWorker embedded branch
@@ -745,6 +762,254 @@ describe('WorkerLifecycleManager', () => {
         ).rejects.toBeInstanceOf(ValidationError);
       },
     );
+  });
+
+  // ========== embedded-agent model/reasoningEffort/contextWindowTokens validation (Issue #1554) ==========
+
+  describe('createWorker: embedded-agent model/reasoningEffort/contextWindowTokens validation', () => {
+    it('accepts a model override for a capable engine and forwards it to initializeEmbeddedAgentWorker', async () => {
+      const session = createTestSession();
+      sessions.set(session.id, session);
+
+      const worker = await lifecycleManager.createWorker(session.id, {
+        type: 'embedded-agent',
+        embeddedAgentId: EMBEDDED_AGENT_DEF.id,
+        model: 'qwen3:14b',
+      });
+
+      expect(worker).not.toBeNull();
+      const internal = session.workers.get(worker!.id) as InternalEmbeddedAgentWorker;
+      expect(internal.model).toBe('qwen3:14b');
+    });
+
+    it('accepts a reasoningEffort override within the closed accepted-values list for claude-sdk', async () => {
+      const session = createTestSession();
+      sessions.set(session.id, session);
+
+      const worker = await lifecycleManager.createWorker(session.id, {
+        type: 'embedded-agent',
+        embeddedAgentId: EMBEDDED_AGENT_DEF_SDK.id,
+        reasoningEffort: 'high',
+      });
+
+      expect(worker).not.toBeNull();
+      const internal = session.workers.get(worker!.id) as InternalEmbeddedAgentWorker;
+      expect(internal.reasoningEffort).toBe('high');
+    });
+
+    it('rejects a reasoningEffort value outside the closed accepted-values list for claude-sdk', async () => {
+      const session = createTestSession();
+      sessions.set(session.id, session);
+
+      await expect(
+        lifecycleManager.createWorker(session.id, {
+          type: 'embedded-agent',
+          embeddedAgentId: EMBEDDED_AGENT_DEF_SDK.id,
+          reasoningEffort: 'ultra',
+        }),
+      ).rejects.toBeInstanceOf(ValidationError);
+      await expect(
+        lifecycleManager.createWorker(session.id, {
+          type: 'embedded-agent',
+          embeddedAgentId: EMBEDDED_AGENT_DEF_SDK.id,
+          reasoningEffort: 'ultra',
+        }),
+      ).rejects.toThrow(/"ultra"/);
+    });
+
+    it('rejects a model override when the injected capability accessor reports incapable (DI fixture -- production table has no incapable row today)', async () => {
+      const session = createTestSession();
+      sessions.set(session.id, session);
+
+      const incapableCapabilities = () => ({
+        model: { capable: false as const, reason: 'test fixture: model overrides disabled for this engine' },
+        reasoningEffort: { capable: true as const, acceptedValues: null, consumptionSite: 'test fixture' },
+      });
+      const lifecycleWithStub = new WorkerLifecycleManager(
+        createDeps({ getEmbeddedAgentParameterCapabilitiesImpl: incapableCapabilities }),
+      );
+
+      await expect(
+        lifecycleWithStub.createWorker(session.id, {
+          type: 'embedded-agent',
+          embeddedAgentId: EMBEDDED_AGENT_DEF.id,
+          model: 'qwen3:14b',
+        }),
+      ).rejects.toBeInstanceOf(ValidationError);
+      await expect(
+        lifecycleWithStub.createWorker(session.id, {
+          type: 'embedded-agent',
+          embeddedAgentId: EMBEDDED_AGENT_DEF.id,
+          model: 'qwen3:14b',
+        }),
+      ).rejects.toThrow(/"model"/);
+    });
+
+    it('rejects a reasoningEffort override when the injected capability accessor reports incapable (DI fixture)', async () => {
+      const session = createTestSession();
+      sessions.set(session.id, session);
+
+      const incapableCapabilities = () => ({
+        model: { capable: true as const, acceptedValues: null, consumptionSite: 'test fixture' },
+        reasoningEffort: { capable: false as const, reason: 'test fixture: reasoningEffort disabled for this engine' },
+      });
+      const lifecycleWithStub = new WorkerLifecycleManager(
+        createDeps({ getEmbeddedAgentParameterCapabilitiesImpl: incapableCapabilities }),
+      );
+
+      await expect(
+        lifecycleWithStub.createWorker(session.id, {
+          type: 'embedded-agent',
+          embeddedAgentId: EMBEDDED_AGENT_DEF.id,
+          reasoningEffort: 'high',
+        }),
+      ).rejects.toBeInstanceOf(ValidationError);
+      await expect(
+        lifecycleWithStub.createWorker(session.id, {
+          type: 'embedded-agent',
+          embeddedAgentId: EMBEDDED_AGENT_DEF.id,
+          reasoningEffort: 'high',
+        }),
+      ).rejects.toThrow(/"reasoningEffort"/);
+    });
+
+    it('rejects an empty or whitespace-only model, bypassing valibot the way MCP delegate_to_worktree does (its Zod schema has no .min(1)/trim)', async () => {
+      const session = createTestSession();
+      sessions.set(session.id, session);
+
+      await expect(
+        lifecycleManager.createWorker(session.id, {
+          type: 'embedded-agent',
+          embeddedAgentId: EMBEDDED_AGENT_DEF.id,
+          model: '',
+        }),
+      ).rejects.toThrow(/model must not be empty/);
+      await expect(
+        lifecycleManager.createWorker(session.id, {
+          type: 'embedded-agent',
+          embeddedAgentId: EMBEDDED_AGENT_DEF.id,
+          model: '   ',
+        }),
+      ).rejects.toThrow(/model must not be empty/);
+    });
+
+    it('rejects an empty or whitespace-only reasoningEffort, bypassing valibot the way MCP delegate_to_worktree does', async () => {
+      const session = createTestSession();
+      sessions.set(session.id, session);
+
+      // Uses EMBEDDED_AGENT_DEF (openai-api), whose reasoningEffort row has
+      // acceptedValues: null (unrestricted pass-through) -- unlike
+      // EMBEDDED_AGENT_DEF_SDK's closed accepted-values list, an empty
+      // string here can ONLY be caught by the emptiness check itself, not by
+      // falling through to the accepted-values rejection.
+      await expect(
+        lifecycleManager.createWorker(session.id, {
+          type: 'embedded-agent',
+          embeddedAgentId: EMBEDDED_AGENT_DEF.id,
+          reasoningEffort: '',
+        }),
+      ).rejects.toThrow(/reasoningEffort must not be empty/);
+      await expect(
+        lifecycleManager.createWorker(session.id, {
+          type: 'embedded-agent',
+          embeddedAgentId: EMBEDDED_AGENT_DEF.id,
+          reasoningEffort: '   ',
+        }),
+      ).rejects.toThrow(/reasoningEffort must not be empty/);
+    });
+
+    it('rejects contextWindowTokens accompanied only by an empty-string model (Ruling 4d: a declared window must not attach to a semantically-absent model)', async () => {
+      const session = createTestSession();
+      sessions.set(session.id, session);
+
+      // request.model === '' is !== undefined, so without the emptiness check
+      // this would satisfy the contextWindowTokens-requires-model gate and
+      // persist a context window override against no real model change.
+      // The empty-`model` check fires before the contextWindowTokens-requires-
+      // model check (both live in the same block, model first), so the
+      // rejection reason is the same as the plain empty-model case above.
+      await expect(
+        lifecycleManager.createWorker(session.id, {
+          type: 'embedded-agent',
+          embeddedAgentId: EMBEDDED_AGENT_DEF.id,
+          model: '',
+          contextWindowTokens: 32000,
+        }),
+      ).rejects.toThrow(/model must not be empty/);
+    });
+
+    it('rejects contextWindowTokens without an accompanying model override', async () => {
+      const session = createTestSession();
+      sessions.set(session.id, session);
+
+      await expect(
+        lifecycleManager.createWorker(session.id, {
+          type: 'embedded-agent',
+          embeddedAgentId: EMBEDDED_AGENT_DEF.id,
+          contextWindowTokens: 32000,
+        }),
+      ).rejects.toBeInstanceOf(ValidationError);
+      await expect(
+        lifecycleManager.createWorker(session.id, {
+          type: 'embedded-agent',
+          embeddedAgentId: EMBEDDED_AGENT_DEF.id,
+          contextWindowTokens: 32000,
+        }),
+      ).rejects.toThrow(/contextWindowTokens/);
+    });
+
+    it('accepts contextWindowTokens when accompanied by a model override and forwards both', async () => {
+      const session = createTestSession();
+      sessions.set(session.id, session);
+
+      const worker = await lifecycleManager.createWorker(session.id, {
+        type: 'embedded-agent',
+        embeddedAgentId: EMBEDDED_AGENT_DEF.id,
+        model: 'qwen3:14b',
+        contextWindowTokens: 32000,
+      });
+
+      expect(worker).not.toBeNull();
+      const internal = session.workers.get(worker!.id) as InternalEmbeddedAgentWorker;
+      expect(internal.model).toBe('qwen3:14b');
+      expect(internal.contextWindowTokens).toBe(32000);
+    });
+
+    it('rejects contextWindowTokens on a terminal-agent worker (kind-level rejection, agent-surface.md Ruling 4)', async () => {
+      const session = createTestSession();
+      sessions.set(session.id, session);
+
+      await expect(
+        lifecycleManager.createWorker(session.id, {
+          type: 'agent',
+          agentId: CLAUDE_CODE_AGENT_ID,
+          contextWindowTokens: 32000,
+        }),
+      ).rejects.toBeInstanceOf(ValidationError);
+      await expect(
+        lifecycleManager.createWorker(session.id, {
+          type: 'agent',
+          agentId: CLAUDE_CODE_AGENT_ID,
+          contextWindowTokens: 32000,
+        }),
+      ).rejects.toThrow(/contextWindowTokens/);
+    });
+
+    it('still succeeds when embeddedAgentId is set alone (no model/reasoningEffort/contextWindowTokens) -- regression guard', async () => {
+      const session = createTestSession();
+      sessions.set(session.id, session);
+
+      const worker = await lifecycleManager.createWorker(session.id, {
+        type: 'embedded-agent',
+        embeddedAgentId: EMBEDDED_AGENT_DEF.id,
+      });
+
+      expect(worker).not.toBeNull();
+      const internal = session.workers.get(worker!.id) as InternalEmbeddedAgentWorker;
+      expect(internal.model).toBeNull();
+      expect(internal.reasoningEffort).toBeNull();
+      expect(internal.contextWindowTokens).toBeNull();
+    });
   });
 
   // ========== Worker Deletion ==========
@@ -2005,6 +2270,9 @@ describe('WorkerLifecycleManager', () => {
         deliverInitialPromptOnActivation: false,
         sdkSessionId: null,
         autoCompaction: true,
+        model: null,
+        reasoningEffort: null,
+        contextWindowTokens: null,
       };
       session.workers.set(embeddedWorker.id, embeddedWorker);
 
@@ -2090,6 +2358,9 @@ describe('WorkerLifecycleManager', () => {
         deliverInitialPromptOnActivation: false,
         sdkSessionId: null,
         autoCompaction: true,
+        model: null,
+        reasoningEffort: null,
+        contextWindowTokens: null,
       };
       session.workers.set(embeddedWorker.id, embeddedWorker);
 
@@ -2371,6 +2642,9 @@ describe('WorkerLifecycleManager', () => {
         deliverInitialPromptOnActivation: false,
         sdkSessionId: null,
         autoCompaction: true,
+        model: null,
+        reasoningEffort: null,
+        contextWindowTokens: null,
       };
       session.workers.set(embeddedWorker.id, embeddedWorker);
 

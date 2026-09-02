@@ -251,6 +251,7 @@ export class SessionConverterService {
           autoCompaction: w.autoCompaction,
           contextWindowTokens: resolveEffectiveContextWindow(
             (this.deps.getEmbeddedAgent ?? (() => undefined))(w.embeddedAgentId),
+            w,
           ),
         };
       } else {

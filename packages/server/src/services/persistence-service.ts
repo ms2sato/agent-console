@@ -85,6 +85,12 @@ export interface PersistedEmbeddedAgentWorker extends PersistedWorkerBase {
   sdkSessionId: string | null;
   /** See `InternalEmbeddedAgentWorker.autoCompaction`. */
   autoCompaction: boolean;
+  /** See `InternalEmbeddedAgentWorker.model`. */
+  model: string | null;
+  /** See `InternalEmbeddedAgentWorker.reasoningEffort`. */
+  reasoningEffort: string | null;
+  /** See `InternalEmbeddedAgentWorker.contextWindowTokens`. */
+  contextWindowTokens: number | null;
 }
 
 export type PersistedWorker =

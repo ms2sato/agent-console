@@ -39,6 +39,7 @@ import { deleteWorktree, _getDeletionsInProgress } from '../../services/worktree
 import type { SuggestSessionMetadataFn } from '../../services/session-metadata-suggester.js';
 import { AgentDirectory } from '../../services/agent-directory.js';
 import type { AgentDirectoryEntry, EmbeddedAgentDefinition, AppServerMessage } from '@agent-console/shared';
+import type { PersistedWorker } from '../../services/persistence-service.js';
 import type { runAsUser, SpawnAsUserFn, SpawnAsUserOpts, SpawnAsUserResult } from '../../services/privilege-elevation.js';
 
 // Mock session-metadata-suggester to avoid spawning real agent processes.
@@ -2824,6 +2825,70 @@ describe('MCP Server Tools', () => {
         expect(worker!.activated).toBe(true);
       }
       expect(fakeEmbeddedSpawn.captured.length).toBe(1);
+    });
+
+    // -----------------------------------------------------------------------
+    // embedded-agent model / reasoningEffort / contextWindowTokens parameters
+    // (Issue #1554)
+    // -----------------------------------------------------------------------
+
+    it('accepts model/reasoningEffort/contextWindowTokens for an embedded agent and forwards them to the persisted worker', async () => {
+      await setupDelegateEnvironment('feat/embedded-model-params');
+
+      const parentSession = await sessionManager.createSession({
+        type: 'quick',
+        locationPath: TEST_REPO_PATH,
+      }, { createdBy: 'parent-user-embedded-model-params' });
+
+      const response = await callTool(app, mcpSessionId, 'delegate_to_worktree', {
+        repositoryId: 'test-repo',
+        prompt: 'Test embedded-agent model/reasoningEffort/contextWindowTokens forwarding',
+        branch: 'feat/embedded-model-params',
+        agentId: TEST_EMBEDDED_AGENT_DEF.id,
+        model: 'qwen3:14b',
+        reasoningEffort: 'high',
+        contextWindowTokens: 32000,
+        parentSessionId: parentSession.id,
+        parentWorkerId: firstAgentWorkerId(parentSession),
+        skipMessageCallbackPrompt: true,
+      }, nextId++);
+
+      expect(response.result?.isError).toBeUndefined();
+      const data = parseToolResult(response) as { sessionId: string; workerId: string };
+
+      // model/reasoningEffort/contextWindowTokens are not part of the public
+      // Worker/EmbeddedAgentWorker wire shape -- verify the persisted
+      // representation instead (mirrors session-manager.test.ts's pattern).
+      const persisted = await sessionManager.getSessionRepository().findById(data.sessionId);
+      const persistedWorker = persisted!.workers.find((w: PersistedWorker) => w.id === data.workerId);
+      expect(persistedWorker).toBeDefined();
+      expect(persistedWorker && persistedWorker.type === 'embedded-agent' ? persistedWorker.model : undefined).toBe('qwen3:14b');
+      expect(persistedWorker && persistedWorker.type === 'embedded-agent' ? persistedWorker.reasoningEffort : undefined).toBe('high');
+      expect(persistedWorker && persistedWorker.type === 'embedded-agent' ? persistedWorker.contextWindowTokens : undefined).toBe(32000);
+    });
+
+    it('rejects contextWindowTokens without an accompanying model override for an embedded agent (agent-surface.md Ruling 4)', async () => {
+      await setupDelegateEnvironment('feat/embedded-cw-rejected');
+
+      const parentSession = await sessionManager.createSession({
+        type: 'quick',
+        locationPath: TEST_REPO_PATH,
+      }, { createdBy: 'parent-user-embedded-cw-rejected' });
+
+      const response = await callTool(app, mcpSessionId, 'delegate_to_worktree', {
+        repositoryId: 'test-repo',
+        prompt: 'Test contextWindowTokens rejection without model',
+        branch: 'feat/embedded-cw-rejected',
+        agentId: TEST_EMBEDDED_AGENT_DEF.id,
+        contextWindowTokens: 32000,
+        parentSessionId: parentSession.id,
+        parentWorkerId: firstAgentWorkerId(parentSession),
+        skipMessageCallbackPrompt: true,
+      }, nextId++);
+
+      expect(response.result?.isError).toBe(true);
+      const data = parseToolResult(response) as { error: string };
+      expect(data.error).toContain('contextWindowTokens');
     });
 
     it('should return error when agentName matches both a terminal agent and an embedded agent', async () => {

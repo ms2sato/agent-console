@@ -5,6 +5,7 @@ export * from './types/embedded-agent.js';
 export * from './types/agent-surface.js';
 export * from './types/agent-operations.js';
 export * from './types/agent-parameter-capabilities.js';
+export * from './types/embedded-agent-parameter-capabilities.js';
 export * from './types/session.js';
 export * from './types/repository.js';
 export * from './types/worktree-creation.js';

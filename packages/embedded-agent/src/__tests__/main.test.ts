@@ -589,6 +589,111 @@ describe('runLoop — restoredUsage threading (#1419)', () => {
   });
 });
 
+/**
+ * Issue #1554 (agent-surface.md Ruling 3): `init.provider.reasoningEffort`
+ * (openai-api) / `init.provider.effort` (claude-sdk) threading through
+ * `initializeLoop`'s construction call into `AgentLoop` / the SDK engine
+ * factory deps.
+ *
+ * This is a DIFFERENT layer from the adapter/SDK-side consumption tests
+ * (openai-chat-adapter.test.ts, sdk-engine.test.ts) and the server-side
+ * composition tests -- those cover "does the value get consumed correctly
+ * once it reaches the engine", not "does main.ts's construction call
+ * actually pass it along at all". A regression here (e.g. dropping the
+ * spread in `initializeLoop`) would leave both of those neighboring layers
+ * green.
+ *
+ * The openai-api arm has no DI seam for `AgentLoop` itself (it is
+ * constructed directly, not via a factory), so the observable is the
+ * downstream effect: AgentLoop threads `deps.reasoningEffort` into every
+ * `adapter.run()` call (agent-loop.ts, pinned separately in
+ * agent-loop.test.ts) -- a capturing adapter observes whether main.ts's
+ * construction call actually populated that dep.
+ */
+describe('runLoop — reasoningEffort/effort threading (agent-surface.md Ruling 3, #1554)', () => {
+  class CapturingReqAdapter implements ProviderAdapter {
+    readonly requests: ProviderRunRequest[] = [];
+    async *run(req: ProviderRunRequest): AsyncIterable<ProviderEvent> {
+      this.requests.push(req);
+      yield { type: 'text-delta', text: 'hi' };
+      yield { type: 'done', finishReason: 'stop' };
+    }
+  }
+
+  const claudeSdkInitCommand = (overrides: Record<string, unknown> = {}) =>
+    JSON.stringify({
+      v: 1,
+      type: 'init',
+      compaction: { auto: false },
+      engine: 'claude-sdk',
+      mcp: { baseUrl: 'http://mcp/local', token: 'tok' },
+      provider: { model: 'claude-sonnet-5' },
+      context: { sessionId: 's', workerId: 'w', cwd: '/tmp' },
+      maxToolIterations: 5,
+      ...overrides,
+    });
+
+  it('threads init.provider.reasoningEffort into the constructed AgentLoop, reaching the provider request (openai-api engine)', async () => {
+    const adapter = new CapturingReqAdapter();
+    const { io } = makeIo([
+      initCommand({ provider: { baseUrl: 'http://provider/v1', model: 'm', reasoningEffort: 'high' } }),
+      JSON.stringify({ v: 1, type: 'user-message', id: 'u1', text: 'hello' }),
+      JSON.stringify({ v: 1, type: 'shutdown' }),
+    ]);
+    const factories = makeFactories({ createAdapter: () => adapter });
+
+    expect(await runLoop(io, factories)).toBe(0);
+    expect(adapter.requests).toHaveLength(1);
+    expect(adapter.requests[0].reasoningEffort).toBe('high');
+  });
+
+  it('omits the reasoningEffort key entirely from the provider request when init.provider.reasoningEffort is absent (openai-api engine)', async () => {
+    const adapter = new CapturingReqAdapter();
+    const { io } = makeIo([
+      initCommand({ provider: { baseUrl: 'http://provider/v1', model: 'm' } }),
+      JSON.stringify({ v: 1, type: 'user-message', id: 'u1', text: 'hello' }),
+      JSON.stringify({ v: 1, type: 'shutdown' }),
+    ]);
+    const factories = makeFactories({ createAdapter: () => adapter });
+
+    expect(await runLoop(io, factories)).toBe(0);
+    expect(adapter.requests).toHaveLength(1);
+    // Key-absence, not merely an `undefined` value -- see
+    // openai-chat-adapter.test.ts's identically-shaped negative pin for why
+    // an object-level `.toBeUndefined()` check is a weaker guarantee.
+    expect('reasoningEffort' in adapter.requests[0]).toBe(false);
+  });
+
+  it('threads init.provider.effort into the constructed SDK engine deps (claude-sdk engine)', async () => {
+    let capturedDeps: SdkEngineDeps | undefined;
+    const { io } = makeIo([claudeSdkInitCommand({ provider: { model: 'claude-sonnet-5', effort: 'high' } })]);
+    const factories = makeFactories({
+      createSdkEngine: (deps) => {
+        capturedDeps = deps;
+        return new NoopEngine();
+      },
+    });
+
+    expect(await runLoop(io, factories)).toBe(0);
+    expect(capturedDeps?.effort).toBe('high');
+  });
+
+  it('omits the effort key entirely from the SDK engine deps when init.provider.effort is absent (claude-sdk engine)', async () => {
+    let capturedDeps: SdkEngineDeps | undefined;
+    const { io } = makeIo([claudeSdkInitCommand()]);
+    const factories = makeFactories({
+      createSdkEngine: (deps) => {
+        capturedDeps = deps;
+        return new NoopEngine();
+      },
+    });
+
+    expect(await runLoop(io, factories)).toBe(0);
+    expect(capturedDeps).toBeDefined();
+    expect('effort' in capturedDeps!).toBe(false);
+  });
+});
+
 describe('runLoop — engine discriminant containment (SDK Engine Phase 1)', () => {
   // `initializeLoop` narrows `init.engine` at runtime
   // (`if (init.engine === 'openai-api') { ... } else { new SdkEngine(...) }`)

@@ -784,6 +784,75 @@ describe('EmbeddedAgentCommandSchema', () => {
     });
   });
 
+  describe('per-worker model-effort overrides (agent-surface.md Ruling 3, #1554)', () => {
+    const baseFields = {
+      v: 1,
+      type: 'init',
+      compaction: { auto: true },
+      mcp: { baseUrl: 'http://localhost:3457/mcp', token: 'tok' },
+      context: { sessionId: 's1', workerId: 'w1', cwd: '/work' },
+      maxToolIterations: 25,
+    };
+
+    it('parses an openai-api init command carrying reasoningEffort and round-trips the value', () => {
+      const init = {
+        ...baseFields,
+        engine: 'openai-api',
+        provider: { baseUrl: 'http://localhost:11434/v1', model: 'llama3', reasoningEffort: 'high' },
+      };
+      const result = v.safeParse(EmbeddedAgentCommandSchema, init);
+      expect(result.success).toBe(true);
+      if (result.success && result.output.type === 'init' && result.output.engine === 'openai-api') {
+        expect(result.output.provider.reasoningEffort).toBe('high');
+      }
+    });
+
+    it('parses an openai-api init command without reasoningEffort (absent, not required)', () => {
+      const init = {
+        ...baseFields,
+        engine: 'openai-api',
+        provider: { baseUrl: 'http://localhost:11434/v1', model: 'llama3' },
+      };
+      const result = v.safeParse(EmbeddedAgentCommandSchema, init);
+      expect(result.success).toBe(true);
+      if (result.success && result.output.type === 'init' && result.output.engine === 'openai-api') {
+        expect(result.output.provider.reasoningEffort).toBeUndefined();
+      }
+    });
+
+    it('parses a claude-sdk init command carrying a valid effort value', () => {
+      const init = {
+        ...baseFields,
+        engine: 'claude-sdk',
+        provider: { model: 'claude-sonnet-5', effort: 'medium' },
+      };
+      const result = v.safeParse(EmbeddedAgentCommandSchema, init);
+      expect(result.success).toBe(true);
+      if (result.success && result.output.type === 'init' && result.output.engine === 'claude-sdk') {
+        expect(result.output.provider.effort).toBe('medium');
+      }
+    });
+
+    it('parses a claude-sdk init command without effort (absent, not required)', () => {
+      const init = { ...baseFields, engine: 'claude-sdk', provider: { model: 'claude-sonnet-5' } };
+      const result = v.safeParse(EmbeddedAgentCommandSchema, init);
+      expect(result.success).toBe(true);
+      if (result.success && result.output.type === 'init' && result.output.engine === 'claude-sdk') {
+        expect(result.output.provider.effort).toBeUndefined();
+      }
+    });
+
+    it('rejects a claude-sdk init command whose effort value is outside EFFORT_LEVELS (wire-boundary defense in depth)', () => {
+      const init = {
+        ...baseFields,
+        engine: 'claude-sdk',
+        provider: { model: 'claude-sonnet-5', effort: 'ultra' },
+      };
+      const result = v.safeParse(EmbeddedAgentCommandSchema, init);
+      expect(result.success).toBe(false);
+    });
+  });
+
   describe('restoredConversation (Transcript Restore #1123)', () => {
     const baseInit = {
       v: 1,

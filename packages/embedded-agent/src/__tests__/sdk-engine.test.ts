@@ -2055,6 +2055,24 @@ describe('SdkEngine — the re-scoped no-resume pin (R1)', () => {
   });
 });
 
+describe('SdkEngine — effort override (agent-surface.md Ruling 3, #1554)', () => {
+  it('passes `effort` through to query() options when deps carry one', () => {
+    const { queryFn, captured } = makeFakeQuery([]);
+    new SdkEngine(baseDeps({ queryFn, effort: 'high' }));
+    expect(captured.options?.effort).toBe('high');
+  });
+
+  it('omits the `effort` key entirely when deps carry none', () => {
+    const { queryFn, captured } = makeFakeQuery([]);
+    new SdkEngine(baseDeps({ queryFn }));
+    // Absent, not `undefined`: a present-but-undefined key is a different
+    // thing to hand an SDK than no key at all -- mirrors the `resume` pin
+    // above (Object.hasOwn / `in` distinguishes what a plain
+    // `toBeUndefined()` on the value cannot).
+    expect(Object.hasOwn(captured.options as object, 'effort')).toBe(false);
+  });
+});
+
 describe('SdkEngine — a resume the SDK refuses (R1, PS6)', () => {
   // The detector is structural: resume was requested AND no `system:init` ever
   // arrived. Measured shape (design doc §5, PS6): no system:init, one

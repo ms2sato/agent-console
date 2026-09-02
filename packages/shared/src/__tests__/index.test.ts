@@ -242,4 +242,27 @@ describe('shared index exports', () => {
       effort: 'high',
     });
   });
+
+  it('should re-export EMBEDDED_AGENT_ENGINE_PARAMETER_CAPABILITIES and EFFORT_LEVELS (Issue #1554)', async () => {
+    const mod = await import('../index.js');
+
+    // Runtime constant exports from types/embedded-agent-parameter-capabilities.js
+    // (barrel export added in the same PR) -- verify they are actually
+    // reachable through the public package entry point, not just present in
+    // the source file.
+    expect(mod.EMBEDDED_AGENT_ENGINE_PARAMETER_CAPABILITIES).toBeDefined();
+    expect(mod.EFFORT_LEVELS).toEqual(['low', 'medium', 'high', 'xhigh', 'max']);
+
+    // The capability table is the single writer consumed by createWorker's
+    // creation-time validation -- verify its actual per-engine shape is
+    // reachable, not just that the module loaded.
+    expect(mod.EMBEDDED_AGENT_ENGINE_PARAMETER_CAPABILITIES['claude-sdk'].reasoningEffort).toEqual({
+      capable: true,
+      acceptedValues: mod.EFFORT_LEVELS,
+      consumptionSite: 'query() Options.effort (sdk-engine.ts buildOptions)',
+    });
+    expect(mod.EMBEDDED_AGENT_ENGINE_PARAMETER_CAPABILITIES['openai-api'].reasoningEffort.capable).toBe(
+      true,
+    );
+  });
 });

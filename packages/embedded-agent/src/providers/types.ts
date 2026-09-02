@@ -42,6 +42,14 @@ export type ProviderEvent =
 
 export interface ProviderRunRequest {
   model: string;
+  /**
+   * agent-surface.md Ruling 3 (#1554): the resolved worker-override, or
+   * absent when no override is set. Pass-through -- no local value
+   * validation, the provider is the authority. Consumed at
+   * `OpenAIChatAdapter.run()`'s request body composition, keyed
+   * `reasoning_effort` there (the provider's own snake_case convention).
+   */
+  reasoningEffort?: string;
   messages: ChatMessage[];
   tools: ToolDefinition[];
   signal: AbortSignal;

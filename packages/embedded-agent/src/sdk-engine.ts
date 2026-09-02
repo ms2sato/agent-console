@@ -21,6 +21,7 @@ import {
   createSdkMcpServer,
   query,
   tool,
+  type EffortLevel,
   type Options,
   type Query,
   type SDKCompactBoundaryMessage,
@@ -249,6 +250,14 @@ function errorMessage(err: unknown): string {
 export interface SdkEngineDeps {
   cwd: string;
   model: string;
+  /**
+   * agent-surface.md Ruling 3 (#1554): the resolved worker-override, or
+   * absent when no override is set. Closed domain (`EffortLevel`); the
+   * value reaching here has already passed the capability table's
+   * `acceptedValues` check upstream (`embedded-agent-worker-service.ts`'s
+   * `isEffortLevel` narrow) -- this file does no additional validation.
+   */
+  effort?: EffortLevel;
   /** Definition/init `systemPrompt`, appended to the SDK's own default preset. */
   systemPromptAppend?: string;
   enabledTools?: EmbeddedAgentToolName[];
@@ -385,6 +394,7 @@ export class SdkEngine implements Engine {
       executable: 'bun',
       cwd: this.deps.cwd,
       model: this.deps.model,
+      ...(this.deps.effort !== undefined ? { effort: this.deps.effort } : {}),
       // `Compact` is appended to the allowlist here rather than being a
       // member of `enabledToolNames`: it is a self-management tool, outside
       // the capability registry `enabledTools` configures, so no

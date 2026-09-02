@@ -856,17 +856,31 @@ export function createMcpApp(deps: McpDependencies): Hono {
         .string()
         .optional()
         .describe(
-          "Model override for the initial worker. Only accepted when the selected agent's command " +
+          'Model override for the initial worker. For a terminal agent, only accepted when its command ' +
             'template declares a model template variable (e.g. via an optional-argument placeholder); ' +
-            'rejected otherwise. Pass-through, not validated against a model catalog.',
+            "for an embedded agent, accepted per its engine's capability table. Rejected otherwise, " +
+            'naming the reason. Pass-through, not validated against a model catalog.',
         ),
       reasoningEffort: z
         .string()
         .optional()
         .describe(
-          "Reasoning-effort override for the initial worker. Only accepted when the selected agent's " +
-            'command template declares a reasoning-effort template variable; rejected otherwise. ' +
-            'Pass-through, not validated against an accepted-values list.',
+          'Reasoning-effort override for the initial worker. For a terminal agent, only accepted when ' +
+            'its command template declares a reasoning-effort template variable; for an embedded agent, ' +
+            "accepted per its engine's capability table (which may also enforce a closed accepted-values " +
+            'list, e.g. low/medium/high/xhigh/max). Rejected otherwise, naming the reason.',
+        ),
+      contextWindowTokens: z
+        .number()
+        .int()
+        .positive()
+        .optional()
+        .describe(
+          'Context-window override for the initial worker. Only accepted alongside a `model` override ' +
+            'for an embedded agent (agent-surface.md Ruling 4) -- a model override without a declared ' +
+            "window disables automatic compaction rather than silently reusing the previous model's " +
+            'window. Rejected for terminal agents (no repository-side window concept) and rejected ' +
+            'without an accompanying `model` override.',
         ),
       templateVars: z
         .record(z.string(), z.string())
@@ -901,6 +915,7 @@ export function createMcpApp(deps: McpDependencies): Hono {
       skipMessageCallbackPrompt,
       model,
       reasoningEffort,
+      contextWindowTokens,
       templateVars,
     }) => {
       try {
@@ -1082,6 +1097,7 @@ export function createMcpApp(deps: McpDependencies): Hono {
           embeddedAgentId: selectedEmbeddedAgentId,
           model,
           reasoningEffort,
+          contextWindowTokens,
           initialPrompt: effectivePrompt,
           title: effectiveTitle,
           autoStartSession: true,

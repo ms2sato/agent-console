@@ -49,7 +49,7 @@ import {
   isValidSlug,
   resolveSessionScopePayload,
 } from '../lib/session-data-path.js';
-import { RepositoryNotFoundError, ValidationError } from '../lib/errors.js';
+import { RepositoryNotFoundError } from '../lib/errors.js';
 import type { UserMode } from './user-mode.js';
 import {
   getCurrentBranch as gitGetCurrentBranch,
@@ -873,21 +873,11 @@ export class SessionManager {
     const id = crypto.randomUUID();
     const createdAt = new Date().toISOString();
 
-    // model/reasoningEffort are terminal-agent-only params (agent-surface.md
-    // Ruling 1/3). An embedded-agent selection combined with either param
-    // must be a LOUD error naming the capability, never a silent drop --
-    // silently ignoring a requested setting is an undeclared divergence.
-    // Checked before inserting any DB row, same fail-fast placement as the
-    // slug validation below.
-    if (request.embeddedAgentId && (request.model !== undefined || request.reasoningEffort !== undefined)) {
-      const rejectedParams = [
-        request.model !== undefined ? 'model' : null,
-        request.reasoningEffort !== undefined ? 'reasoningEffort' : null,
-      ].filter((p): p is string => p !== null);
-      throw new ValidationError(
-        `Embedded agents do not support the ${rejectedParams.map((p) => `"${p}"`).join(' or ')} parameter${rejectedParams.length > 1 ? 's' : ''} (terminal-agent-only, Issue #1521 Phase 1).`,
-      );
-    }
+    // model/reasoningEffort/contextWindowTokens validation against the
+    // resolved worker kind's actual capability lives at the single choke
+    // point, WorkerLifecycleManager.createWorker (agent-surface.md Ruling
+    // 1/4) -- not here. Do not reintroduce a pre-flight blanket reject in
+    // this method; see that method's own doc comment for the rationale.
 
     // Resolve scope+slug BEFORE inserting any DB row. Worktree sessions that
     // reference an unknown repository must fail fast (see design §6).
@@ -954,12 +944,22 @@ export class SessionManager {
     // agent. Mutually exclusive with `agentId` (enforced by the request
     // schema).
     const initialWorkerParams: CreateWorkerParams = request.embeddedAgentId
-      ? { type: 'embedded-agent', embeddedAgentId: request.embeddedAgentId }
+      ? {
+          type: 'embedded-agent',
+          embeddedAgentId: request.embeddedAgentId,
+          model: request.model,
+          reasoningEffort: request.reasoningEffort,
+          contextWindowTokens: request.contextWindowTokens,
+        }
       : {
           type: 'agent',
           agentId: request.agentId ?? CLAUDE_CODE_AGENT_ID,
           model: request.model,
           reasoningEffort: request.reasoningEffort,
+          // Not a terminal-agent concept (agent-surface.md Ruling 4) --
+          // forwarded (rather than dropped) so createWorker's kind-level
+          // check can reject it loudly instead of it silently vanishing.
+          contextWindowTokens: request.contextWindowTokens,
         };
 
     // Use allSettled (not all) so BOTH worker-creation calls are guaranteed

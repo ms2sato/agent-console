@@ -141,6 +141,51 @@ describe('CreateWorktreeFormSchema', () => {
     });
   });
 
+  describe('contextWindowTokens cross-field validation (agent-surface.md Ruling 4)', () => {
+    it('accepts contextWindowTokens when a model override is present', () => {
+      const result = v.safeParse(CreateWorktreeFormSchema, {
+        branchNameMode: 'custom',
+        customBranch: 'feature/window',
+        model: 'gpt-4o',
+        contextWindowTokens: 128000,
+      });
+      expect(result.success).toBe(true);
+    });
+
+    it('rejects contextWindowTokens when model is absent', () => {
+      const result = v.safeParse(CreateWorktreeFormSchema, {
+        branchNameMode: 'custom',
+        customBranch: 'feature/window',
+        contextWindowTokens: 128000,
+      });
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.issues[0]?.path?.[0]?.key).toBe('contextWindowTokens');
+        expect(result.issues[0]?.message).toBe(
+          'contextWindowTokens requires a model override (agent-surface.md Ruling 4)'
+        );
+      }
+    });
+
+    it('rejects contextWindowTokens when model is present but empty after trim', () => {
+      const result = v.safeParse(CreateWorktreeFormSchema, {
+        branchNameMode: 'custom',
+        customBranch: 'feature/window',
+        model: '   ',
+        contextWindowTokens: 128000,
+      });
+      expect(result.success).toBe(false);
+    });
+
+    it('accepts an absent contextWindowTokens regardless of model', () => {
+      const result = v.safeParse(CreateWorktreeFormSchema, {
+        branchNameMode: 'custom',
+        customBranch: 'feature/no-window',
+      });
+      expect(result.success).toBe(true);
+    });
+  });
+
   describe('v.forward() error path', () => {
     it('should have field path for forwarded v.check() error', () => {
       const result = v.safeParse(CreateWorktreeFormSchema, {

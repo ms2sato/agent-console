@@ -27,7 +27,7 @@ const mockAgentsResponse = {
 };
 
 const mockEmbeddedAgentsResponse = {
-  embeddedAgents: [{ id: 'embedded-1', name: 'Local GPT' }],
+  embeddedAgents: [{ id: 'embedded-1', name: 'Local GPT', engine: 'openai-api' }],
 };
 
 function createMockResponse(body: unknown) {
@@ -441,7 +441,7 @@ describe('QuickSessionForm', () => {
 
   describe('model / reasoningEffort fields (Issue #1541)', () => {
     // Overrides the default mockAgentsResponse (which has no
-    // commandTemplate, so ModelEffortFields always renders nothing for it)
+    // commandTemplate, so AgentParameterFields always renders nothing for it)
     // with agents that vary in capability, per getAgentParameterCapabilities.
     function mockAgentsWithCapabilities() {
       mockFetch.mockResolvedValue(
@@ -600,7 +600,7 @@ describe('QuickSessionForm', () => {
     });
 
     it('clears a previously-typed model value when the agent selection switches to a model-incapable agent', async () => {
-      // Regression guard: ModelEffortFields hides the Model input the
+      // Regression guard: AgentParameterFields hides the Model input the
       // moment the newly-selected agent is incapable, but the underlying
       // form value survived the switch and rode along silently in the
       // submitted request for an agent that doesn't support it.
@@ -634,6 +634,116 @@ describe('QuickSessionForm', () => {
 
       const submitCall = (props.onSubmit as ReturnType<typeof mock>).mock.calls[0];
       expect(submitCall[0].model).toBeUndefined();
+    });
+  });
+
+  describe('contextWindowTokens field (Issue #1554, agent-surface.md Ruling 4)', () => {
+    function mockDirectoryWithEmbedded() {
+      mockFetch.mockImplementation((input: unknown) => {
+        const url = resolveUrl(input);
+        if (url.includes('embedded-agents')) {
+          return Promise.resolve(
+            createMockResponse({
+              embeddedAgents: [{ id: 'embedded-1', name: 'Local GPT', engine: 'openai-api' }],
+            })
+          );
+        }
+        return Promise.resolve(createMockResponse(mockAgentsResponse));
+      });
+    }
+
+    it('includes the typed contextWindowTokens value in the submitted request when set alongside a model override', async () => {
+      mockDirectoryWithEmbedded();
+      const user = userEvent.setup();
+      const { props } = renderQuickSessionForm();
+
+      await waitFor(() => {
+        expect(screen.getByText('Local GPT')).toBeTruthy();
+      });
+
+      const agentSelect = screen.getByRole('combobox');
+      await user.selectOptions(agentSelect, 'embedded:embedded-1');
+
+      const modelInput = await waitFor(() => screen.getByPlaceholderText('e.g. opus'));
+      await user.type(modelInput, 'gpt-4o');
+
+      const windowInput = await waitFor(() => screen.getByPlaceholderText('e.g. 128000'));
+      await user.type(windowInput, '128000');
+
+      await user.click(screen.getByText('Start'));
+
+      await waitFor(() => {
+        expect(props.onSubmit).toHaveBeenCalledTimes(1);
+      });
+
+      const submitCall = (props.onSubmit as ReturnType<typeof mock>).mock.calls[0];
+      expect(submitCall[0]).toMatchObject({
+        embeddedAgentId: 'embedded-1',
+        model: 'gpt-4o',
+        contextWindowTokens: 128000,
+      });
+    });
+
+    it('omits contextWindowTokens from the submitted request when never set', async () => {
+      mockDirectoryWithEmbedded();
+      const user = userEvent.setup();
+      const { props } = renderQuickSessionForm();
+
+      await waitFor(() => {
+        expect(screen.getByText('Local GPT')).toBeTruthy();
+      });
+
+      const agentSelect = screen.getByRole('combobox');
+      await user.selectOptions(agentSelect, 'embedded:embedded-1');
+
+      await user.click(screen.getByText('Start'));
+
+      await waitFor(() => {
+        expect(props.onSubmit).toHaveBeenCalledTimes(1);
+      });
+
+      const submitCall = (props.onSubmit as ReturnType<typeof mock>).mock.calls[0];
+      expect(submitCall[0].contextWindowTokens).toBeUndefined();
+    });
+
+    // Pin (d): clearing model (the CONSUMING form's onModelChange handler,
+    // per Task 2's model-cleared -> window-cleared discipline) also clears
+    // the already-typed contextWindowTokens form-state value, not merely
+    // the DOM input -- a hidden field must not resubmit a stale value.
+    it('(d) clears a previously-typed contextWindowTokens value when the model field is fully cleared', async () => {
+      mockDirectoryWithEmbedded();
+      const user = userEvent.setup();
+      const { props } = renderQuickSessionForm();
+
+      await waitFor(() => {
+        expect(screen.getByText('Local GPT')).toBeTruthy();
+      });
+
+      const agentSelect = screen.getByRole('combobox');
+      await user.selectOptions(agentSelect, 'embedded:embedded-1');
+
+      const modelInput = await waitFor(() => screen.getByPlaceholderText('e.g. opus'));
+      await user.type(modelInput, 'gpt-4o');
+
+      const windowInput = await waitFor(() => screen.getByPlaceholderText('e.g. 128000'));
+      await user.type(windowInput, '128000');
+
+      // Clearing model also hides the window input (AgentParameterFields
+      // render-gating) -- confirm that AND that the value left form state.
+      await user.clear(modelInput);
+      await waitFor(() => {
+        expect(screen.queryByPlaceholderText('e.g. 128000')).toBeNull();
+      });
+
+      await user.click(screen.getByText('Start'));
+
+      await waitFor(() => {
+        expect(props.onSubmit).toHaveBeenCalledTimes(1);
+      });
+
+      const submitCall = (props.onSubmit as ReturnType<typeof mock>).mock.calls[0];
+      expect(submitCall[0].model).toBeUndefined();
+      expect(submitCall[0].contextWindowTokens).toBeUndefined();
     });
   });
 });

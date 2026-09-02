@@ -11,6 +11,8 @@
  * See docs/design/embedded-agent-worker.md Part II for the normative spec.
  */
 
+import type { EffortLevel } from '@anthropic-ai/claude-agent-sdk';
+
 import type { PtyNotificationKind } from './system-events.js';
 import type { ExitReason } from './worker.js';
 
@@ -200,7 +202,17 @@ export interface EmbeddedAgentRestoredUsage {
 export type EmbeddedAgentCommand =
   | (EmbeddedAgentInitCommandBase & {
       engine: 'openai-api';
-      provider: { baseUrl: string; model: string; apiKey?: string };
+      /**
+       * `reasoningEffort` (agent-surface.md Ruling 3, #1554): the resolved
+       * worker-override-beats-definition-default value, or absent when no
+       * override is set for this worker. Pass-through to the provider's
+       * chat.completions request body `reasoning_effort` field
+       * (`openai-chat-adapter.ts`) -- no local value validation at this
+       * layer; not every OpenAI-compatible provider honors it, the provider
+       * is the authority (see `EMBEDDED_AGENT_ENGINE_PARAMETER_CAPABILITIES`
+       * for the capability declaration).
+       */
+      provider: { baseUrl: string; model: string; apiKey?: string; reasoningEffort?: string };
       /**
        * Transcript Restore: the newest authoritative context reading from
        * the persisted log, seeding the restore-boundary compaction check.
@@ -219,7 +231,17 @@ export type EmbeddedAgentCommand =
   | (EmbeddedAgentInitCommandBase & {
       engine: 'claude-sdk';
       // No apiKey -- absent by construction, not merely optional (§3.2).
-      provider: { model: string };
+      /**
+       * `effort` (agent-surface.md Ruling 3, #1554): the resolved
+       * worker-override value, or absent when no override is set. Named
+       * `effort`, NOT `reasoningEffort` like the `openai-api` arm above --
+       * mirrors the SDK's own `Options.effort` field name (one wire field
+       * per parameter, semantics/naming per-engine; see the terminal-agent
+       * precedent, `InternalAgentWorker.reasoningEffort` populating the
+       * `{{ effort... }}` template variable). Values are a closed domain
+       * (`EFFORT_LEVELS`); consumed at `sdk-engine.ts`'s `buildOptions()`.
+       */
+      provider: { model: string; effort?: EffortLevel };
       /**
        * Transcript Restore, R1: resume THIS SDK session instead of starting
        * a fresh one. Present only on a re-activation whose worker carries a

@@ -30,6 +30,7 @@ import * as v from 'valibot';
 import {
   NdjsonLineSplitter,
   EmbeddedAgentEventSchema,
+  EFFORT_LEVELS,
   type EmbeddedAgentDefinition,
   type EmbeddedAgentCommand,
   type EmbeddedAgentServerEvent,
@@ -50,6 +51,7 @@ import type { WorkerOutputFileManager } from '../lib/worker-output-file.js';
 import { spawnAsUser, shellEscape, type SpawnAsUserFn } from './privilege-elevation.js';
 import { IdleEvictionTimers } from './embedded-agent-idle-eviction.js';
 import { resolveEffectiveContextWindow } from './embedded-agent-context-window.js';
+import { resolveEffectiveModelParams } from './embedded-agent-model-params.js';
 import { loadProviderKey, ProviderKeyStoreError, PROVIDER_KEY_STORE_UI_MESSAGES } from './provider-key-store.js';
 import {
   buildPtyNotificationText,
@@ -172,6 +174,25 @@ const KNOWN_EVENT_TYPES = new Set<string>([
 ]);
 /** Cap on the per-chunk stderr text forwarded to the debug logger. */
 const STDERR_LOG_CAP = 2048;
+
+/**
+ * The `claude-sdk` engine's `EmbeddedAgentCommand` arm types its `provider.effort`
+ * field as the SDK's own `EffortLevel` union, but `resolveEffectiveModelParams`
+ * (`embedded-agent-model-params.ts`) is engine-agnostic and returns a bare
+ * `string | null` for `reasoningEffort`. This type-narrows a resolved value at
+ * the `runActivation` composition site, DEFENSIVELY -- not a second validation
+ * layer. The LOUD reject on an invalid value happens upstream, at
+ * creation-time validation (`WorkerLifecycleManager.createWorker`, #1554 Wave
+ * 2b), against the same `EFFORT_LEVELS` domain declared in
+ * `EMBEDDED_AGENT_ENGINE_PARAMETER_CAPABILITIES['claude-sdk'].reasoningEffort`.
+ * By the time a worker-level override reaches here it has already passed
+ * that check; this guard only lets `tsc` see the narrowing rather than
+ * forcing an `as EffortLevel` cast on a value the compiler cannot otherwise
+ * relate to the SDK's closed union.
+ */
+function isEffortLevel(value: string): value is (typeof EFFORT_LEVELS)[number] {
+  return (EFFORT_LEVELS as readonly string[]).includes(value);
+}
 
 /**
  * Marks the small, enumerable set of `runActivation` failure reasons whose
@@ -950,7 +971,14 @@ export class EmbeddedAgentWorkerService {
 
       // Single writer of the context-window rule (agent-surface.md Ruling
       // 4): see embedded-agent-context-window.ts.
-      const effectiveContextWindowTokens = resolveEffectiveContextWindow(definition);
+      const effectiveContextWindowTokens = resolveEffectiveContextWindow(definition, worker);
+
+      // Single writer of the model/reasoning-effort override rule
+      // (agent-surface.md Ruling 3): see embedded-agent-model-params.ts.
+      // Engine-agnostic -- `resolvedModelParams.reasoningEffort` is a bare
+      // `string | null` here; each engine arm below narrows/threads it into
+      // its own `provider` shape.
+      const resolvedModelParams = resolveEffectiveModelParams(definition, worker);
 
       // Step 6: write the init command as the FIRST stdin line. Branched on
       // `definition.engine` (SDK Engine Phase 1) so each arm's `provider`
@@ -988,8 +1016,13 @@ export class EmbeddedAgentWorkerService {
               engine: 'openai-api',
               provider: {
                 baseUrl: definition.provider.baseUrl,
-                model: definition.provider.model,
+                model: resolvedModelParams.model,
                 ...(apiKey !== undefined ? { apiKey } : {}),
+                // Pass-through, no local value validation (the provider is
+                // the authority) -- see EMBEDDED_AGENT_ENGINE_PARAMETER_CAPABILITIES.
+                ...(resolvedModelParams.reasoningEffort !== null
+                  ? { reasoningEffort: resolvedModelParams.reasoningEffort }
+                  : {}),
               },
               // The restore-boundary seed, this arm only: `claude-sdk` carries its own
               // context state through the SDK resume and computes no ratio,
@@ -1001,7 +1034,29 @@ export class EmbeddedAgentWorkerService {
           : {
               ...initCommandShared,
               engine: 'claude-sdk',
-              provider: { model: definition.provider.model },
+              provider: {
+                model: resolvedModelParams.model,
+                // Closed domain (EFFORT_LEVELS); narrowed defensively here,
+                // not re-validated -- see `isEffortLevel`'s doc comment.
+                // The `isEffortLevel` false branch (silently dropping the
+                // value instead of throwing) is UNREACHABLE in production
+                // today: `WorkerLifecycleManager.createWorker`'s embedded
+                // branch already rejects any `reasoningEffort` outside
+                // `capabilities.reasoningEffort.acceptedValues` before a
+                // worker can be created, AND an embedded agent's `engine`
+                // is immutable after creation (no mutation updates it), so
+                // a worker that reaches activation with a `reasoningEffort`
+                // set can only hold a value that was valid for its
+                // `engine` at creation time -- and the engine cannot have
+                // changed since. If a future change makes `engine`
+                // mutable (or otherwise weakens either guarantee above),
+                // re-examine whether this branch is still unreachable
+                // rather than assuming it stays protected.
+                ...(resolvedModelParams.reasoningEffort !== null &&
+                isEffortLevel(resolvedModelParams.reasoningEffort)
+                  ? { effort: resolvedModelParams.reasoningEffort }
+                  : {}),
+              },
               // Transcript Restore, R1. Absent = fresh session, which is
               // what a first-ever activation and a worker with no persisted
               // id both get. The subprocess pre-flights this id before

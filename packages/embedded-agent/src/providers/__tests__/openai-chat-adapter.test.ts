@@ -350,6 +350,50 @@ describe('OpenAIChatAdapter — request body', () => {
     );
     expect(capturedBody).toMatchObject({ stream_options: { include_usage: true } });
   });
+
+  it('omits the reasoning_effort key entirely from the SERIALIZED body when no override is set (agent-surface.md Ruling 3, #1554)', async () => {
+    let capturedRawBody = '';
+    const adapter = new OpenAIChatAdapter({
+      baseUrl: 'http://x/v1',
+      fetchFn: async (_url, init) => {
+        capturedRawBody = String(init?.body);
+        return mockResponse({ body: streamFromChunks(['data: [DONE]\n\n']) });
+      },
+    });
+
+    // No `reasoningEffort` on the request at all.
+    await collect(
+      adapter.run({ model: 'm', messages, tools: [], signal: new AbortController().signal }),
+    );
+    // Assert on the SERIALIZED STRING, not the parsed object -- an
+    // object-level `expect(body.reasoning_effort).toBeUndefined()` would
+    // also pass if the key were present with an `undefined` value, which is
+    // a weaker guarantee than key-absence.
+    expect(capturedRawBody).not.toContain('reasoning_effort');
+  });
+
+  it('includes the snake_case reasoning_effort key in the serialized body when a worker override is set', async () => {
+    let capturedRawBody = '';
+    const adapter = new OpenAIChatAdapter({
+      baseUrl: 'http://x/v1',
+      fetchFn: async (_url, init) => {
+        capturedRawBody = String(init?.body);
+        return mockResponse({ body: streamFromChunks(['data: [DONE]\n\n']) });
+      },
+    });
+
+    await collect(
+      adapter.run({
+        model: 'm',
+        reasoningEffort: 'high',
+        messages,
+        tools: [],
+        signal: new AbortController().signal,
+      }),
+    );
+    expect(capturedRawBody).toContain('"reasoning_effort":"high"');
+    expect(JSON.parse(capturedRawBody)).toMatchObject({ reasoning_effort: 'high' });
+  });
 });
 
 describe('OpenAIChatAdapter — token usage (Context Handoff Phase A)', () => {

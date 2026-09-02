@@ -863,6 +863,58 @@ describe('Worktrees API', () => {
       expect(sessionRequest.reasoningEffort).toBe('high');
     });
 
+    it('forwards contextWindowTokens to createWorktreeWithSession (Issue #1554)', async () => {
+      const { mockFn: createSessionMock, captured } = createCapturingSessionMock();
+      (mockWorktreeService as unknown as { createWorktree: ReturnType<typeof mock> }).createWorktree =
+        mock(() => Promise.resolve({ worktreePath: WORKTREE_PATH, index: 1 }));
+
+      app = new Hono<AppBindings>();
+      app.use('*', async (c, next) => {
+        c.set('appContext', asAppContext({
+          repositoryManager: mockRepositoryManager,
+          worktreeService: mockWorktreeService,
+          agentManager: mockAgentManager,
+          embeddedAgentManager: createMockEmbeddedAgentManager('known-embedded-agent'),
+          agentDirectory: createAgentDirectory('known-embedded-agent'),
+          sessionManager: { createSession: createSessionMock } as unknown as SessionManager,
+          broadcastToApp: () => {},
+          suggestSessionMetadata: mock(async () => ({ branch: '', title: '', error: 'unused' })),
+        }));
+        await next();
+      });
+      app.onError(onApiError);
+      app.route('/api', api);
+
+      const res = await app.request(
+        `/api/repositories/${TEST_REPO.id}/worktrees`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            taskId: 'task-issue-1554-context-window',
+            mode: 'custom',
+            branch: 'issue-1554-feature',
+            baseBranch: 'main',
+            useRemote: false,
+            embeddedAgentId: 'known-embedded-agent',
+            model: 'qwen3:14b',
+            contextWindowTokens: 32000,
+          }),
+        },
+      );
+
+      expect(res.status).toBe(202);
+
+      await captured; // resolves as soon as createSession is invoked -- no sleep needed
+
+      expect(createSessionMock).toHaveBeenCalledTimes(1);
+      const sessionRequest = createSessionMock.mock.calls[0]![0] as Parameters<
+        SessionManager['createSession']
+      >[0];
+      expect(sessionRequest.model).toBe('qwen3:14b');
+      expect(sessionRequest.contextWindowTokens).toBe(32000);
+    });
+
     it('regression: no-agent-specified request still defaults agentId with embeddedAgentId undefined', async () => {
       const { mockFn: createSessionMock, captured } = createCapturingSessionMock();
       (mockWorktreeService as unknown as { createWorktree: ReturnType<typeof mock> }).createWorktree =

@@ -264,6 +264,11 @@ export class OpenAIChatAdapter implements ProviderAdapter {
 
       const body: Record<string, unknown> = {
         model: req.model,
+        // agent-surface.md Ruling 3 (#1554): pass-through, no local value
+        // validation -- the provider is the authority. Snake_case
+        // `reasoning_effort` matches the OpenAI-compatible wire convention;
+        // `req.reasoningEffort` (camelCase) is this codebase's own naming.
+        ...(req.reasoningEffort !== undefined ? { reasoning_effort: req.reasoningEffort } : {}),
         messages: req.messages,
         stream: true,
         stream_options: { include_usage: true },

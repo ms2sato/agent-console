@@ -75,6 +75,7 @@ describe('SqliteSessionRepository', () => {
       .addColumn('auto_compaction', 'integer', (col) => col.notNull().defaultTo(1))
       .addColumn('model', 'text')
       .addColumn('reasoning_effort', 'text')
+      .addColumn('context_window_tokens', 'integer')
       .execute();
 
     repository = new SqliteSessionRepository(db);

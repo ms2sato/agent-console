@@ -86,6 +86,58 @@ describe('CreateWorkerRequestSchema', () => {
     expect(result.success).toBe(false);
   });
 
+  it('should accept embedded-agent worker with model, reasoningEffort, and contextWindowTokens (Issue #1554)', () => {
+    const result = v.safeParse(CreateWorkerRequestSchema, {
+      type: 'embedded-agent',
+      embeddedAgentId: 'def-1',
+      model: 'qwen3:32b',
+      reasoningEffort: 'high',
+      contextWindowTokens: 32000,
+    });
+    expect(result.success).toBe(true);
+    if (result.success && result.output.type === 'embedded-agent') {
+      expect(result.output.model).toBe('qwen3:32b');
+      expect(result.output.reasoningEffort).toBe('high');
+      expect(result.output.contextWindowTokens).toBe(32000);
+    }
+  });
+
+  it('should accept embedded-agent worker with contextWindowTokens as a positive integer boundary (1)', () => {
+    const result = v.safeParse(CreateWorkerRequestSchema, {
+      type: 'embedded-agent',
+      embeddedAgentId: 'def-1',
+      contextWindowTokens: 1,
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it('should reject embedded-agent worker with contextWindowTokens of zero (boundary)', () => {
+    const result = v.safeParse(CreateWorkerRequestSchema, {
+      type: 'embedded-agent',
+      embeddedAgentId: 'def-1',
+      contextWindowTokens: 0,
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('should reject embedded-agent worker with a negative contextWindowTokens', () => {
+    const result = v.safeParse(CreateWorkerRequestSchema, {
+      type: 'embedded-agent',
+      embeddedAgentId: 'def-1',
+      contextWindowTokens: -1,
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('should reject embedded-agent worker with a non-integer contextWindowTokens', () => {
+    const result = v.safeParse(CreateWorkerRequestSchema, {
+      type: 'embedded-agent',
+      embeddedAgentId: 'def-1',
+      contextWindowTokens: 32000.5,
+    });
+    expect(result.success).toBe(false);
+  });
+
   it('should accept agent worker (Issue #1023: terminal agents addable mid-session)', () => {
     const result = v.safeParse(CreateWorkerRequestSchema, {
       type: 'agent',
@@ -170,6 +222,25 @@ describe('CreateWorkerRequestSchema', () => {
       agentId: '',
     });
     expect(result.success).toBe(false);
+  });
+
+  it('should accept agent worker with contextWindowTokens (schema-level -- always rejected at createWorker() as a kind-level check, agent-surface.md Ruling 4)', () => {
+    // Declared on the schema (see CreateAgentWorkerParamsSchema's own doc
+    // comment) so a caller who submits it gets a domain-specific
+    // ValidationError from the choke point rather than a generic
+    // strictObject unknown-key 400. Schema-level parse success here does
+    // NOT imply createWorker() accepts it -- see
+    // worker-lifecycle-manager.test.ts's "rejects contextWindowTokens on a
+    // terminal-agent worker" test for the actual rejection.
+    const result = v.safeParse(CreateWorkerRequestSchema, {
+      type: 'agent',
+      agentId: 'agent-123',
+      contextWindowTokens: 32000,
+    });
+    expect(result.success).toBe(true);
+    if (result.success && result.output.type === 'agent') {
+      expect(result.output.contextWindowTokens).toBe(32000);
+    }
   });
 
   it('should reject agent worker with an unknown key', () => {

@@ -377,6 +377,10 @@ async function runMigrations(database: Kysely<Database>, dbPath: string): Promis
   if (currentVersion < 37) {
     await migrateToV37(database);
   }
+
+  if (currentVersion < 38) {
+    await migrateToV38(database);
+  }
 }
 
 /**
@@ -2180,6 +2184,44 @@ export async function migrateToV37(database: Kysely<Database>): Promise<void> {
   await sql`PRAGMA user_version = 37`.execute(database);
 
   logger.info('Migration to v37 completed');
+}
+
+/**
+ * Migration v38: Add `context_window_tokens` column to `workers` -- the
+ * worker-persisted context-window override (agent-surface.md Ruling 4).
+ * See docs/design/agent-surface.md "Model & Reasoning-Effort Parameters".
+ *
+ * This is a DIFFERENT fact from `embedded_agents.context_window_tokens`
+ * (the definition-level default, migration v34/v36): this column is a
+ * per-WORKER override, meaningful only when that same worker's `model`
+ * column (v37) is also set (Ruling 4 -- a model override with no window of
+ * its own means undeclared, never inherited from the definition). See
+ * `resolveEffectiveContextWindow` in
+ * `packages/server/src/services/embedded-agent-context-window.ts`.
+ *
+ * Nullable INTEGER, no DEFAULT (same rationale as v37's `model` /
+ * `reasoning_effort`): genuinely absent-by-default, not a
+ * boolean-with-a-meaningful-default.
+ *
+ * Meaningful for `embedded-agent` workers only; other worker types carry
+ * the column but never read it (same convention as `auto_compaction` and
+ * `sdk_session_id`).
+ *
+ * @internal Exported for testing.
+ */
+export async function migrateToV38(database: Kysely<Database>): Promise<void> {
+  logger.info('Running migration to v38: Adding context_window_tokens column to workers');
+
+  try {
+    await sql`ALTER TABLE workers ADD COLUMN context_window_tokens INTEGER`.execute(database);
+  } catch (error) {
+    if (!isDuplicateColumnError(error)) throw error;
+    logger.info('Column context_window_tokens already exists, skipping');
+  }
+
+  await sql`PRAGMA user_version = 38`.execute(database);
+
+  logger.info('Migration to v38 completed');
 }
 
 /**

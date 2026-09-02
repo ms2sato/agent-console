@@ -297,6 +297,38 @@ describe('mappers', () => {
       expect(row.model).toBeNull();
       expect(row.reasoning_effort).toBeNull();
     });
+
+    it('writes model, reasoning_effort, and context_window_tokens verbatim when the persisted embedded-agent worker has an override (#1554)', () => {
+      const worker = buildPersistedEmbeddedAgentWorker({
+        id: 'worker-1',
+        embeddedAgentId: 'def-1',
+        model: 'gpt-5-codex',
+        reasoningEffort: 'high',
+        contextWindowTokens: 200_000,
+      });
+
+      const row = toWorkerRow(worker, 'session-1');
+
+      expect(row.model).toBe('gpt-5-codex');
+      expect(row.reasoning_effort).toBe('high');
+      expect(row.context_window_tokens).toBe(200_000);
+    });
+
+    it('writes model/reasoning_effort/context_window_tokens: null when the persisted embedded-agent worker has no override (#1554)', () => {
+      const worker = buildPersistedEmbeddedAgentWorker({
+        id: 'worker-1',
+        embeddedAgentId: 'def-1',
+        model: null,
+        reasoningEffort: null,
+        contextWindowTokens: null,
+      });
+
+      const row = toWorkerRow(worker, 'session-1');
+
+      expect(row.model).toBeNull();
+      expect(row.reasoning_effort).toBeNull();
+      expect(row.context_window_tokens).toBeNull();
+    });
   });
 
   describe('toSessionRow - scope+slug invariants', () => {
@@ -497,6 +529,7 @@ describe('mappers', () => {
         auto_compaction: 1,
         model: null,
         reasoning_effort: null,
+        context_window_tokens: null,
       };
 
       expect(() => toPersistedWorker(dbWorker)).toThrow(DataIntegrityError);
@@ -520,6 +553,7 @@ describe('mappers', () => {
         auto_compaction: 1,
         model: null,
         reasoning_effort: null,
+        context_window_tokens: null,
       };
 
       expect(() => toPersistedWorker(dbWorker)).toThrow(DataIntegrityError);
@@ -543,6 +577,7 @@ describe('mappers', () => {
         auto_compaction: 1,
         model: null,
         reasoning_effort: null,
+        context_window_tokens: null,
       };
 
       const worker = toPersistedWorker(dbWorker);
@@ -568,6 +603,7 @@ describe('mappers', () => {
         auto_compaction: 1,
         model: 'claude-opus-4-6',
         reasoning_effort: 'high',
+        context_window_tokens: null,
       };
 
       const worker = toPersistedWorker(dbWorker) as PersistedAgentWorker;
@@ -593,6 +629,7 @@ describe('mappers', () => {
         auto_compaction: 1,
         model: null,
         reasoning_effort: null,
+        context_window_tokens: null,
       };
 
       const worker = toPersistedWorker(dbWorker) as PersistedAgentWorker;
@@ -618,6 +655,7 @@ describe('mappers', () => {
         auto_compaction: 1,
         model: null,
         reasoning_effort: null,
+        context_window_tokens: null,
       };
 
       const worker = toPersistedWorker(dbWorker);
@@ -642,6 +680,7 @@ describe('mappers', () => {
         auto_compaction: 1,
         model: null,
         reasoning_effort: null,
+        context_window_tokens: null,
       };
 
       const worker = toPersistedWorker(dbWorker);
@@ -666,6 +705,7 @@ describe('mappers', () => {
         auto_compaction: 1,
         model: null,
         reasoning_effort: null,
+        context_window_tokens: null,
       };
 
       const worker = toPersistedWorker(dbWorker);
@@ -691,6 +731,7 @@ describe('mappers', () => {
         auto_compaction: 1,
         model: null,
         reasoning_effort: null,
+        context_window_tokens: null,
       };
 
       const worker = toPersistedWorker(dbWorker);
@@ -716,6 +757,7 @@ describe('mappers', () => {
         auto_compaction: 1,
         model: null,
         reasoning_effort: null,
+        context_window_tokens: null,
       };
 
       expect(() => toPersistedWorker(dbWorker)).toThrow(DataIntegrityError);
@@ -739,6 +781,7 @@ describe('mappers', () => {
         auto_compaction: 1,
         model: null,
         reasoning_effort: null,
+        context_window_tokens: null,
       };
 
       const worker = toPersistedWorker(dbWorker);
@@ -766,11 +809,99 @@ describe('mappers', () => {
         auto_compaction: 1,
         model: null,
         reasoning_effort: null,
+        context_window_tokens: null,
       };
 
       const worker = toPersistedWorker(dbWorker);
 
       expect((worker as PersistedEmbeddedAgentWorker).deliverInitialPromptOnActivation).toBe(false);
+    });
+
+    it('round-trips a non-null model/reasoning_effort/context_window_tokens override for embedded-agent workers (#1554)', () => {
+      const dbWorker: Worker = {
+        id: 'worker-1',
+        session_id: 'session-1',
+        type: 'embedded-agent',
+        name: 'Embedded Agent',
+        created_at: '2024-01-01T00:00:00.000Z',
+        updated_at: '2024-01-01T00:00:00.000Z',
+        pid: null,
+        agent_id: null,
+        base_commit: null,
+        embedded_agent_id: 'def-1',
+        deliver_initial_prompt_on_activation: null,
+        sdk_session_id: null,
+        auto_compaction: 1,
+        model: 'gpt-5-codex',
+        reasoning_effort: 'high',
+        context_window_tokens: 200_000,
+      };
+
+      const worker = toPersistedWorker(dbWorker) as PersistedEmbeddedAgentWorker;
+
+      expect(worker.model).toBe('gpt-5-codex');
+      expect(worker.reasoningEffort).toBe('high');
+      expect(worker.contextWindowTokens).toBe(200_000);
+    });
+
+    it('round-trips a NULL model/reasoning_effort/context_window_tokens as null for embedded-agent workers (#1554)', () => {
+      const dbWorker: Worker = {
+        id: 'worker-1',
+        session_id: 'session-1',
+        type: 'embedded-agent',
+        name: 'Embedded Agent',
+        created_at: '2024-01-01T00:00:00.000Z',
+        updated_at: '2024-01-01T00:00:00.000Z',
+        pid: null,
+        agent_id: null,
+        base_commit: null,
+        embedded_agent_id: 'def-1',
+        deliver_initial_prompt_on_activation: null,
+        sdk_session_id: null,
+        auto_compaction: 1,
+        model: null,
+        reasoning_effort: null,
+        context_window_tokens: null,
+      };
+
+      const worker = toPersistedWorker(dbWorker) as PersistedEmbeddedAgentWorker;
+
+      expect(worker.model).toBeNull();
+      expect(worker.reasoningEffort).toBeNull();
+      expect(worker.contextWindowTokens).toBeNull();
+    });
+
+    // R2b (pre-pr-completeness.md's mapper round-trip requirement, #1554):
+    // a persisted embedded-agent worker's model/reasoningEffort/
+    // contextWindowTokens survive a full PersistedWorker -> DB row ->
+    // PersistedWorker round trip through BOTH mapper directions
+    // (toWorkerRow then toPersistedWorker), not just one direction in
+    // isolation. This is the mapper-layer analogue of the
+    // WorkerManager-layer restore/persist round-trip pins in
+    // worker-manager.test.ts.
+    it('round-trips model/reasoningEffort/contextWindowTokens through toWorkerRow -> toPersistedWorker unchanged (#1554, R2b)', () => {
+      const original = buildPersistedEmbeddedAgentWorker({
+        id: 'worker-roundtrip',
+        embeddedAgentId: 'def-1',
+        model: 'gpt-5-codex',
+        reasoningEffort: 'high',
+        contextWindowTokens: 200_000,
+      });
+
+      const row = toWorkerRow(original, 'session-1');
+      // toWorkerRow returns a NewWorker (Insertable), whose created_at/
+      // updated_at are statically `string | undefined` (Generated<>'s
+      // insert-side shape) even though the values it actually writes are
+      // always concrete strings. Cast to `Worker` (Selectable) the way a
+      // real INSERT-then-SELECT round trip would read the row back, so
+      // toPersistedWorker receives what production actually hands it.
+      const selectRow = row as unknown as Worker;
+
+      const roundTripped = toPersistedWorker(selectRow) as PersistedEmbeddedAgentWorker;
+
+      expect(roundTripped.model).toBe(original.model);
+      expect(roundTripped.reasoningEffort).toBe(original.reasoningEffort);
+      expect(roundTripped.contextWindowTokens).toBe(original.contextWindowTokens);
     });
   });
 

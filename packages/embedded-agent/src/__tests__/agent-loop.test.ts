@@ -18,12 +18,16 @@ class StubAdapter implements ProviderAdapter {
   calls = 0;
   /** Snapshot of the conversation passed to each run() call (frozen at call time). */
   capturedMessages: ChatMessage[][] = [];
+  /** The full request object passed to each run() call, for asserting fields
+   * beyond `messages` (e.g. `reasoningEffort` key presence/absence). */
+  capturedRequests: ProviderRunRequest[] = [];
   constructor(private readonly script: ScriptedResponse[]) {}
 
   async *run(req: ProviderRunRequest): AsyncIterable<ProviderEvent> {
     const idx = this.calls;
     this.calls++;
     this.capturedMessages.push([...req.messages]);
+    this.capturedRequests.push(req);
     const resp = this.script[Math.min(idx, this.script.length - 1)];
     if (resp.kind === 'throw') {
       throw resp.error;
@@ -103,6 +107,7 @@ function makeLoop(
     restoredConversation?: ChatMessage[];
     restoredUsage?: AgentLoopDeps['restoredUsage'];
     compaction?: AgentLoopDeps['compaction'];
+    reasoningEffort?: AgentLoopDeps['reasoningEffort'];
   } = {},
 ): Harness {
   const events: EmbeddedAgentEvent[] = [];
@@ -130,6 +135,7 @@ function makeLoop(
     compaction: opts.compaction ?? { auto: false },
     restoredConversation: opts.restoredConversation,
     restoredUsage: opts.restoredUsage,
+    reasoningEffort: opts.reasoningEffort,
   };
   const loop = new AgentLoop(deps);
   loopRef.current = loop;
@@ -233,6 +239,32 @@ describe('AgentLoop — boundary values', () => {
     const msg = h.events.find((e) => e.type === 'assistant-message');
     expect(msg).toEqual({ v: 1, type: 'assistant-message', turnId: 't1', text: '' });
     expect(h.events.filter((e) => e.type === 'assistant-delta')).toHaveLength(0);
+  });
+});
+
+/**
+ * Issue #1554 (agent-surface.md Ruling 3): `AgentLoopDeps.reasoningEffort`
+ * threading into every `adapter.run()` call inside `runProviderAttempt`.
+ * This is the terminal layer -- main.ts's own threading of
+ * `init.provider.reasoningEffort` into these deps is pinned separately in
+ * main.test.ts, since main.ts has no other observable seam for it.
+ */
+describe('AgentLoop — reasoningEffort deps threading (agent-surface.md Ruling 3, #1554)', () => {
+  it('threads deps.reasoningEffort into the adapter.run() request', async () => {
+    const h = makeLoop([textResponse('hi')], { reasoningEffort: 'high' });
+    await h.loop.runTurn('t1', 'hello');
+    expect(h.adapter.capturedRequests).toHaveLength(1);
+    expect(h.adapter.capturedRequests[0].reasoningEffort).toBe('high');
+  });
+
+  it('omits the reasoningEffort key entirely from the adapter.run() request when deps.reasoningEffort is absent', async () => {
+    const h = makeLoop([textResponse('hi')]);
+    await h.loop.runTurn('t1', 'hello');
+    expect(h.adapter.capturedRequests).toHaveLength(1);
+    // Key-absence, not merely an `undefined` value -- see
+    // openai-chat-adapter.test.ts's identically-shaped negative pin for why
+    // an object-level `.toBeUndefined()` check is a weaker guarantee.
+    expect('reasoningEffort' in h.adapter.capturedRequests[0]).toBe(false);
   });
 });
 

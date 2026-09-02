@@ -180,6 +180,9 @@ export function toWorkerRow(worker: PersistedWorker, sessionId: string): NewWork
       deliver_initial_prompt_on_activation: worker.deliverInitialPromptOnActivation ? 1 : 0,
       sdk_session_id: worker.sdkSessionId,
       auto_compaction: worker.autoCompaction ? 1 : 0,
+      model: worker.model,
+      reasoning_effort: worker.reasoningEffort,
+      context_window_tokens: worker.contextWindowTokens,
     };
   } else {
     return assertNever(worker, `Unknown worker type for worker ${base.id}`);
@@ -257,6 +260,9 @@ export function toPersistedWorker(worker: Worker): PersistedWorker {
       // absent/legacy value must read as ON, matching what the migration's
       // default does for rows it backfilled.
       autoCompaction: worker.auto_compaction !== 0,
+      model: worker.model ?? null,
+      reasoningEffort: worker.reasoning_effort ?? null,
+      contextWindowTokens: worker.context_window_tokens ?? null,
     } as PersistedEmbeddedAgentWorker;
   } else {
     // This should never be reached due to the validation above,
