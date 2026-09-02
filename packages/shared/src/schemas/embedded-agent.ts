@@ -314,6 +314,10 @@ export const EmbeddedAgentEventSchema = v.union([
     // Window drift: THEIR number, stated in the rejection this compaction
     // was forced by. Contrast `appearsClamped` above.
     providerStatedWindowTokens: v.optional(v.pipe(v.number(), v.integer(), v.minValue(1))),
+    // Whether the distillation input was the whole conversation or only a
+    // recent suffix. Absent means UNKNOWN, never 'full' -- see the type's
+    // doc comment for the full three-valued-by-absence reasoning.
+    coverage: v.optional(v.picklist(['full', 'partial'])),
   }),
   /**
    * RETIRED emission, RETAINED parse (#1401). Persisted transcripts written

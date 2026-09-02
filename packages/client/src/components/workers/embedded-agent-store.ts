@@ -112,6 +112,8 @@ export type EmbeddedAgentChatEntry =
        * judgement and therefore carries none.
        */
       providerStatedWindowTokens?: number;
+      /** See the wire event's doc comment: `'full'` | `'partial'` | absent (UNKNOWN, never `'full'`). */
+      coverage?: 'full' | 'partial';
     }
   /**
    * LEGACY, retained deliberately (#1401): no engine emits `context-handoff`
@@ -1276,6 +1278,7 @@ class EmbeddedAgentController implements EmbeddedAgentInstance {
           ...(event.providerStatedWindowTokens !== undefined
             ? { providerStatedWindowTokens: event.providerStatedWindowTokens }
             : {}),
+          ...(event.coverage !== undefined ? { coverage: event.coverage } : {}),
         });
         return true;
       case 'context-handoff':

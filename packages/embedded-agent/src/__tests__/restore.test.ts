@@ -36,6 +36,11 @@ function toolCallsAnsweredImmediately(messages: ChatMessage[]): boolean {
 
 const SEED_PREFIX =
   'Summary of the earlier part of this conversation, which has been compacted away: ';
+// The neutral, no-totality-claim lead-in a boundary with no `coverage`
+// carries: every `context-handoff` (the member has no `coverage` field at
+// the type level) and every `context-compacted` row persisted before that
+// field existed.
+const NEUTRAL_SEED_PREFIX = 'Summary of this conversation up to this point: ';
 
 describe('reconstructConversation — 4c total classification', () => {
   it('reconstructs only the four Mapped event kinds, in order, and skips every Noise kind', () => {
@@ -102,7 +107,7 @@ describe('reconstructConversation — legacy context-handoff boundary (retained,
       { role: 'system', content: SYSTEM_PROMPT },
       {
         role: 'user',
-        content: `${SEED_PREFIX}summary text`,
+        content: `${NEUTRAL_SEED_PREFIX}summary text`,
       },
       { role: 'user', content: 'after1' },
       { role: 'assistant', content: 'reply2' },
@@ -125,7 +130,7 @@ describe('reconstructConversation — legacy context-handoff boundary (retained,
 
     expect(outcome.conversation[1]).toEqual({
       role: 'user',
-      content: `${SEED_PREFIX}second summary`,
+      content: `${NEUTRAL_SEED_PREFIX}second summary`,
     });
     const flattened = JSON.stringify(outcome.conversation);
     expect(flattened).not.toContain('first summary');
@@ -150,7 +155,7 @@ describe('reconstructConversation — context-compacted boundary', () => {
 
     expect(outcome.conversation).toEqual([
       { role: 'system', content: SYSTEM_PROMPT },
-      { role: 'user', content: `${SEED_PREFIX}summary text` },
+      { role: 'user', content: `${NEUTRAL_SEED_PREFIX}summary text` },
       { role: 'user', content: 'after1' },
       { role: 'assistant', content: 'reply2' },
     ]);
@@ -173,7 +178,7 @@ describe('reconstructConversation — context-compacted boundary', () => {
 
     expect(outcome.conversation[1]).toEqual({
       role: 'user',
-      content: `${SEED_PREFIX}newer compaction summary`,
+      content: `${NEUTRAL_SEED_PREFIX}newer compaction summary`,
     });
     const flattened = JSON.stringify(outcome.conversation);
     expect(flattened).not.toContain('old handoff summary');
@@ -195,7 +200,7 @@ describe('reconstructConversation — context-compacted boundary', () => {
 
     expect(outcome.conversation[1]).toEqual({
       role: 'user',
-      content: `${SEED_PREFIX}newer handoff summary`,
+      content: `${NEUTRAL_SEED_PREFIX}newer handoff summary`,
     });
     expect(JSON.stringify(outcome.conversation)).not.toContain('older compaction summary');
   });
@@ -214,10 +219,35 @@ describe('reconstructConversation — context-compacted boundary', () => {
 
     expect(outcome.conversation).toEqual([
       { role: 'system', content: SYSTEM_PROMPT },
-      { role: 'user', content: SEED_PREFIX },
+      { role: 'user', content: NEUTRAL_SEED_PREFIX },
       { role: 'user', content: 'after' },
     ]);
     expect(JSON.stringify(outcome.conversation)).not.toContain('before');
+  });
+
+  it("propagates coverage: 'full' from the persisted event into the reconstructed seed's wording", () => {
+    const events: EmbeddedAgentStreamEvent[] = [
+      { v: 1, type: 'context-compacted', source: 'auto', summary: 'summary text', coverage: 'full' },
+      { v: 1, type: 'user-message', id: 'm1', text: 'after' },
+    ];
+
+    const outcome = reconstructConversation(linesOf(events), SYSTEM_PROMPT, 'true-start');
+
+    expect(outcome.conversation[1]).toEqual({ role: 'user', content: `${SEED_PREFIX}summary text` });
+  });
+
+  it("propagates coverage: 'partial' from the persisted event into the reconstructed seed's wording -- discard stated plainly, no full-coverage claim", () => {
+    const events: EmbeddedAgentStreamEvent[] = [
+      { v: 1, type: 'context-compacted', source: 'auto', summary: 'summary text', coverage: 'partial' },
+      { v: 1, type: 'user-message', id: 'm1', text: 'after' },
+    ];
+
+    const outcome = reconstructConversation(linesOf(events), SYSTEM_PROMPT, 'true-start');
+
+    const seedContent = outcome.conversation[1].content;
+    expect(seedContent).toContain('only the most recent portion');
+    expect(seedContent).toContain('discarded');
+    expect(seedContent).not.toContain(SEED_PREFIX);
   });
 });
 
@@ -1318,7 +1348,9 @@ describe('reconstructConversation — restore-failure-boundary marker (R2, #1447
     // call makes the FIRST assertion above fail (`restoreFailureText` then
     // contains `SEED_PREFIX`). This test is what fails; reach recorded here.
     const compactionStream = linesOf([
-      { v: 1, type: 'context-compacted', source: 'auto', summary: 'the earlier summary' },
+      // coverage: 'full' -- deliberately, so the control still exercises the
+      // SEED_PREFIX phrase rather than the coverage-absent neutral lead-in.
+      { v: 1, type: 'context-compacted', source: 'auto', summary: 'the earlier summary', coverage: 'full' },
       { v: 1, type: 'user-message', id: 'm2', text: 'post-compaction question' },
     ]);
     const compactionOutcome = reconstructConversation(compactionStream, SYSTEM_PROMPT, 'true-start');

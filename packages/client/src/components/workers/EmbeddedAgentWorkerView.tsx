@@ -540,15 +540,45 @@ export function formatTokenCount(tokens: number): string {
  * such a line a lie. The numbers are the point: a startlingly aggressive
  * compaction reports its own severity to the user.
  *
- * Falls back to the bare marker when the engine supplied no figures, rather
- * than printing a fabricated or zeroed one.
+ * `coverage` branches that statement of fact into three shapes, none of
+ * which may fall through to another by accident (mirrors
+ * `conversation-seed.ts`'s `compactionSeedLeadIn`, the sibling branch for the
+ * restore seed's own totality claim):
+ *
+ * - `'full'` -- the only state where `preTokens` IS the whole
+ *   pre-compaction conversation's size, so showing it as "Nk -> Mk" is true.
+ *   Keeps today's exact wording.
+ * - `'partial'` -- `preTokens` is a narrowed tail suffix of a longer
+ *   conversation, not the whole before-size. States plainly that only the
+ *   most recent portion was compacted, so a reader cannot mistake the
+ *   suffix's size for the total.
+ * - `undefined` -- UNKNOWN, the state every row persisted before this field
+ *   existed carries, forever. Never rendered as `'full'`: whatever
+ *   `preTokens` this row carries might itself already be a suffix from a
+ *   partial compaction the row has no way to declare, so the before-size
+ *   number is omitted entirely rather than shown as if it were the total.
+ *
+ * Falls back to the bare marker when the engine supplied no figures at all,
+ * regardless of coverage, rather than printing a fabricated or zeroed one.
  */
 export function formatCompactionBoundaryLabel(
   preTokens: number | undefined,
   postTokens: number | undefined,
+  coverage: 'full' | 'partial' | undefined,
 ): string {
   if (preTokens === undefined || postTokens === undefined) return '— Context compacted —';
-  return `— Context compacted (${formatTokenCount(preTokens)} → ${formatTokenCount(postTokens)}) —`;
+  const pre = formatTokenCount(preTokens);
+  const post = formatTokenCount(postTokens);
+  if (coverage === 'partial') {
+    return `— Compacted the most recent ${pre} of a longer conversation (→ ${post}) —`;
+  }
+  if (coverage === 'full') {
+    return `— Context compacted (${pre} → ${post}) —`;
+  }
+  // Neutral, deliberately making no totality claim: `pre` might already be a
+  // partial-compaction suffix this legacy row has no way to declare, so the
+  // before-size is dropped rather than shown as if it were the whole.
+  return `— Context compacted (before-size unknown → ${post}) —`;
 }
 
 /**
@@ -843,7 +873,7 @@ function ChatEntryRow({ entry, contextWindowTokens }: ChatEntryRowProps) {
       // "One line marking the compaction boundary appears in the
       // transcript." A summary, when the engine produced one, hangs off it
       // as a disclosure rather than expanding the line.
-      const label = formatCompactionBoundaryLabel(entry.preTokens, entry.postTokens);
+      const label = formatCompactionBoundaryLabel(entry.preTokens, entry.postTokens, entry.coverage);
       // When the compaction was forced by a rejection that named the
       // provider's real input limit, that number is the one thing here the
       // operator can act on -- their configured window disagrees with it.

@@ -968,6 +968,44 @@ describe('EmbeddedAgentEventSchema', () => {
     });
   });
 
+  describe('context-compacted coverage field', () => {
+    it("accepts coverage: 'full' and coverage: 'partial'", () => {
+      const base = { v: 1, type: 'context-compacted', source: 'auto' as const };
+      expect(v.safeParse(EmbeddedAgentEventSchema, { ...base, coverage: 'full' }).success).toBe(true);
+      expect(v.safeParse(EmbeddedAgentEventSchema, { ...base, coverage: 'partial' }).success).toBe(true);
+    });
+
+    it('rejects a coverage value outside the two-member picklist', () => {
+      const result = v.safeParse(EmbeddedAgentEventSchema, {
+        v: 1,
+        type: 'context-compacted',
+        source: 'auto',
+        coverage: 'unknown',
+      });
+      expect(result.success).toBe(false);
+    });
+
+    // The wire-compat requirement this field exists under: a legacy row
+    // persisted before `coverage` was added must still parse successfully --
+    // a strict schema must not reject an old row just because a new OPTIONAL
+    // field now exists. Absence, not rejection, is how a legacy row is
+    // distinguished on this field.
+    it('accepts a legacy row with the coverage field entirely absent', () => {
+      const result = v.safeParse(EmbeddedAgentEventSchema, {
+        v: 1,
+        type: 'context-compacted',
+        source: 'auto',
+        summary: 'a legacy summary',
+        preTokens: 1000,
+        postTokens: 100,
+      });
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect('coverage' in result.output).toBe(false);
+      }
+    });
+  });
+
   it('accepts a standalone context-usage event', () => {
     const result = v.safeParse(EmbeddedAgentEventSchema, {
       v: 1,

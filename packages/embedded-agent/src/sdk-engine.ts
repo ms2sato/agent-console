@@ -23,6 +23,7 @@ import {
   tool,
   type Options,
   type Query,
+  type SDKCompactBoundaryMessage,
   type SDKControlGetContextUsageResponse,
   type SDKMessage,
   type SDKUserMessage,
@@ -44,6 +45,43 @@ import type { Engine } from './engine-types.js';
 
 type SystemInitMessage = Extract<SDKMessage, { type: 'system'; subtype: 'init' }>;
 type CompactBoundaryMessage = Extract<SDKMessage, { type: 'system'; subtype: 'compact_boundary' }>;
+
+// === Compile-time Type Assertions ===
+
+/**
+ * Pins that the SDK's own exported `SDKCompactBoundaryMessage` type still
+ * declares `preserved_messages` and `preserved_segment` as keys of
+ * `compact_metadata` -- the two fields `flushCompactionBoundary`'s
+ * `coverage` derivation reads to tell a partial compaction from a full one
+ * (see that method's doc comment for the hazard this pin exists to catch:
+ * silently misreporting partial as full). If a future SDK version renames
+ * or removes either field, this fails to compile instead of silently
+ * reproducing the totality overclaim the `coverage` field exists to remove.
+ *
+ * The constraint is what makes the pin fire, established for exactly this
+ * defect class: an earlier form resolved to `never` on drift and declared a
+ * `const` of that type -- which compiles cleanly, because `declare`
+ * introduces no assignment and so `never` has nothing to reject. Both
+ * halves of the change are required -- `never` becomes `false`, AND `false`
+ * must violate an `extends true` constraint; either alone leaves the pin
+ * inert.
+ *
+ * SCOPE: this pin catches a SHAPE change (a renamed or removed field) only.
+ * A SEMANTICS-only change -- the SDK keeps both field names but silently
+ * stops setting them for a partial compaction, or reverses what their
+ * presence means -- passes this pin unchanged; only
+ * `flushCompactionBoundary`'s doc comment's re-verify instruction covers
+ * that residual, because no type-level check can see a runtime behaviour
+ * change in a third party's implementation.
+ */
+type Assert<T extends true> = T;
+type _CompactMetadataHasPreservedMessages = Assert<
+  'preserved_messages' extends keyof SDKCompactBoundaryMessage['compact_metadata'] ? true : false
+>;
+type _CompactMetadataHasPreservedSegment = Assert<
+  'preserved_segment' extends keyof SDKCompactBoundaryMessage['compact_metadata'] ? true : false
+>;
+export type { _CompactMetadataHasPreservedMessages, _CompactMetadataHasPreservedSegment };
 type ResultMessage = Extract<SDKMessage, { type: 'result' }>;
 type ResultErrorMessage = Exclude<ResultMessage, { subtype: 'success' }>;
 type StreamEvent = Extract<SDKMessage, { type: 'stream_event' }>['event'];
@@ -600,6 +638,29 @@ export class SdkEngine implements Engine {
    * carries the pair only when both numbers are real -- a compaction that
    * cannot report its severity renders the plain marker rather than a
    * fabricated number (see the event's doc comment in shared).
+   *
+   * `coverage` is derived from `preserved_messages` / `preserved_segment`:
+   * the SDK's own doc comment on both fields states they are "Unset when
+   * compaction summarizes everything (no messagesToKeep)", so either one
+   * present means some messages were kept rather than summarised (partial),
+   * and both absent means the SDK summarised the whole conversation (full).
+   * Unlike `preTokens`/`postTokens`, this is always known here -- the SDK
+   * always states it in `compact_metadata` -- so it is never optional-spread.
+   *
+   * THIRD-PARTY PREMISE, NOT OUR OWN: the fall-to-`'full'` direction below
+   * rests entirely on a documented absence-semantics claim about the
+   * currently pinned SDK version's behaviour, not on anything this codebase
+   * controls. If a future SDK version stops setting `preserved_messages` /
+   * `preserved_segment` for a partial compaction, renames them, or reverses
+   * what their presence means, this derivation would misreport a genuine
+   * partial compaction as `'full'` -- silently reintroducing the exact
+   * totality overclaim this field exists to remove. Falling the OTHER way
+   * (mapping an unrecognised shape to `undefined`, i.e. unknown) would be
+   * safe, because the seed builder and the transcript label already treat
+   * `undefined` neutrally; only the fall-to-`'full'` direction is dangerous.
+   * RE-VERIFY THIS on every SDK version bump: confirm `preserved_messages` /
+   * `preserved_segment` are still the fields the SDK sets, and still mean
+   * what this comment says they mean, before trusting this derivation again.
    */
   private flushCompactionBoundary(): void {
     const metadata = this.pendingCompactBoundary;
@@ -607,6 +668,8 @@ export class SdkEngine implements Engine {
     this.pendingCompactBoundary = null;
     this.pendingCompactSummary = null;
     if (!metadata) return;
+
+    const isPartial = metadata.preserved_messages !== undefined || metadata.preserved_segment !== undefined;
 
     this.deps.emit({
       v: 1,
@@ -616,6 +679,7 @@ export class SdkEngine implements Engine {
       ...(metadata.post_tokens !== undefined
         ? { preTokens: metadata.pre_tokens, postTokens: metadata.post_tokens }
         : {}),
+      coverage: isPartial ? 'partial' : 'full',
     });
   }
 

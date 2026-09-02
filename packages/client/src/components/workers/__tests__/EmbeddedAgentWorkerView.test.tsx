@@ -1908,6 +1908,7 @@ describe('EmbeddedAgentWorkerView', () => {
           summary: 'THE SUMMARY',
           preTokens: 102150,
           postTokens: 2710,
+          coverage: 'full',
         });
         ws?.simulateMessage(JSON.stringify({ type: 'history', data, offset: data.length, startOffset: 0, epoch: 1 }));
       });
@@ -1918,6 +1919,61 @@ describe('EmbeddedAgentWorkerView', () => {
       // a preservation promise.
       expect(screen.getByText('— Context compacted (102k → 2.7k) —')).toBeTruthy();
       expect(screen.getByText('THE SUMMARY')).toBeTruthy();
+    });
+
+    it('renders a PARTIAL compaction as a suffix of a longer conversation, end to end', async () => {
+      renderView({ sessionId: 's-ctx-partial', workerId: 'w-ctx-partial' });
+      const ws = MockWebSocket.getLastInstance();
+      act(() => {
+        ws?.simulateOpen();
+      });
+      await flush();
+
+      act(() => {
+        const data = ndjson({
+          v: 1,
+          type: 'context-compacted',
+          source: 'auto',
+          summary: 'THE SUMMARY',
+          preTokens: 102150,
+          postTokens: 2710,
+          coverage: 'partial',
+        });
+        ws?.simulateMessage(JSON.stringify({ type: 'history', data, offset: data.length, startOffset: 0, epoch: 1 }));
+      });
+      await flush();
+
+      expect(screen.getByText(/of a longer conversation/)).toBeTruthy();
+      expect(screen.queryByText('— Context compacted (102k → 2.7k) —')).toBeNull();
+    });
+
+    it('renders an ABSENT-coverage compaction with no before-size totality claim, end to end', async () => {
+      // A row from before `coverage` existed -- the highest-traffic state,
+      // since every row persisted so far carries no such field. Same numbers
+      // as the FULL case above; the rendering must NOT be byte-identical.
+      renderView({ sessionId: 's-ctx-nocov', workerId: 'w-ctx-nocov' });
+      const ws = MockWebSocket.getLastInstance();
+      act(() => {
+        ws?.simulateOpen();
+      });
+      await flush();
+
+      act(() => {
+        const data = ndjson({
+          v: 1,
+          type: 'context-compacted',
+          source: 'auto',
+          summary: 'THE SUMMARY',
+          preTokens: 102150,
+          postTokens: 2710,
+        });
+        ws?.simulateMessage(JSON.stringify({ type: 'history', data, offset: data.length, startOffset: 0, epoch: 1 }));
+      });
+      await flush();
+
+      expect(screen.queryByText('— Context compacted (102k → 2.7k) —')).toBeNull();
+      expect(screen.queryByText(/102k/)).toBeNull();
+      expect(screen.getByText(/2\.7k/)).toBeTruthy();
     });
 
     /*
@@ -2033,6 +2089,7 @@ describe('EmbeddedAgentWorkerView', () => {
           preTokens: 102150,
           postTokens: 2710,
           providerStatedWindowTokens: 983616,
+          coverage: 'full',
         });
         ws?.simulateMessage(JSON.stringify({ type: 'history', data, offset: data.length, startOffset: 0, epoch: 1 }));
       });
@@ -2057,7 +2114,14 @@ describe('EmbeddedAgentWorkerView', () => {
       await flush();
 
       act(() => {
-        const data = ndjson({ v: 1, type: 'context-compacted', source: 'auto', preTokens: 102150, postTokens: 2710 });
+        const data = ndjson({
+          v: 1,
+          type: 'context-compacted',
+          source: 'auto',
+          preTokens: 102150,
+          postTokens: 2710,
+          coverage: 'full',
+        });
         ws?.simulateMessage(JSON.stringify({ type: 'history', data, offset: data.length, startOffset: 0, epoch: 1 }));
       });
       await flush();
@@ -3279,30 +3343,78 @@ describe('formatTokenCount', () => {
 });
 
 describe('formatCompactionBoundaryLabel', () => {
-  it('states what happened, with the numbers', () => {
-    expect(formatCompactionBoundaryLabel(102150, 2710)).toBe(
+  it('states what happened, with the numbers, for a FULL compaction -- byte-identical to the pre-coverage form', () => {
+    // `'full'` is the only state where `preTokens` genuinely is the whole
+    // pre-compaction conversation's size, so this is the ordinary case and
+    // keeps today's exact wording.
+    expect(formatCompactionBoundaryLabel(102150, 2710, 'full')).toBe(
       '— Context compacted (102k → 2.7k) —',
     );
   });
 
-  it('never promises that anything was preserved -- in EITHER label shape', () => {
+  it('reads as a suffix of a longer conversation for a PARTIAL compaction, never as the total', () => {
+    const label = formatCompactionBoundaryLabel(102150, 2710, 'partial');
+    expect(label).toMatch(/of a longer conversation/);
+    expect(label).toContain('102k');
+    expect(label).toContain('2.7k');
+  });
+
+  it('drops the before-size totality claim when coverage is ABSENT -- the state every legacy row carries', () => {
+    // This is the highest-traffic case: every row persisted before this
+    // field existed carries no `coverage` at all, forever. Given the exact
+    // same numbers as the FULL case, the rendering must differ -- a test
+    // that only checked "does not crash" would be vacuous here, since the
+    // whole point is that absence must never read as if it were full.
+    const absent = formatCompactionBoundaryLabel(102150, 2710, undefined);
+    const full = formatCompactionBoundaryLabel(102150, 2710, 'full');
+    expect(absent).not.toBe(full);
+    // Whatever number is shown, it must not be presented as the before-size:
+    // "102k" (the pre-size) must not appear at all, since this row's
+    // `preTokens` might itself already be an undeclared partial-compaction
+    // suffix. Only the after-size is a claim this state can make honestly.
+    expect(absent).not.toContain('102k');
+    expect(absent).toContain('2.7k');
+  });
+
+  it('never promises that anything was preserved -- in ALL FOUR label shapes', () => {
     // The line is a fact, not a guarantee: SDK-side fidelity is measured
     // non-deterministic, so a preservation claim would be falsified by a
     // single counterexample.
     //
-    // Both shapes are checked deliberately. A polarity run found that
+    // All four shapes are checked deliberately. A polarity run found that
     // asserting only the with-numbers branch left the bare-marker fallback
     // unguarded -- which is the branch a future implementer is most likely to
     // "improve" with a reassuring clause, precisely because it has no numbers
-    // to carry the meaning.
+    // to carry the meaning. The 'partial' and absent branches are new
+    // surfaces for the same risk: a "the rest of your history discarded but
+    // don't worry" phrasing would violate the same rule.
     const forbidden = /preserv|retain|kept|safe|nothing (is |was )?lost/;
-    expect(formatCompactionBoundaryLabel(102150, 2710).toLowerCase()).not.toMatch(forbidden);
-    expect(formatCompactionBoundaryLabel(undefined, undefined).toLowerCase()).not.toMatch(forbidden);
+    expect(formatCompactionBoundaryLabel(102150, 2710, 'full').toLowerCase()).not.toMatch(
+      forbidden,
+    );
+    expect(formatCompactionBoundaryLabel(102150, 2710, 'partial').toLowerCase()).not.toMatch(
+      forbidden,
+    );
+    expect(formatCompactionBoundaryLabel(102150, 2710, undefined).toLowerCase()).not.toMatch(
+      forbidden,
+    );
+    expect(formatCompactionBoundaryLabel(undefined, undefined, undefined).toLowerCase()).not.toMatch(
+      forbidden,
+    );
   });
 
-  it('falls back to the bare marker when the engine supplied no figures', () => {
-    expect(formatCompactionBoundaryLabel(undefined, undefined)).toBe('— Context compacted —');
-    expect(formatCompactionBoundaryLabel(102150, undefined)).toBe('— Context compacted —');
-    expect(formatCompactionBoundaryLabel(undefined, 2710)).toBe('— Context compacted —');
+  it('falls back to the bare marker when the engine supplied no figures, regardless of coverage', () => {
+    // No numbers exist either way, so there is nothing for coverage to
+    // qualify -- 'full' is passed here as the arbitrary but harmless choice;
+    // the assertions below confirm the bare-marker branch is reached before
+    // coverage is even consulted.
+    expect(formatCompactionBoundaryLabel(undefined, undefined, 'full')).toBe(
+      '— Context compacted —',
+    );
+    expect(formatCompactionBoundaryLabel(102150, undefined, 'full')).toBe('— Context compacted —');
+    expect(formatCompactionBoundaryLabel(undefined, 2710, 'full')).toBe('— Context compacted —');
+    expect(formatCompactionBoundaryLabel(undefined, undefined, undefined)).toBe(
+      '— Context compacted —',
+    );
   });
 });
