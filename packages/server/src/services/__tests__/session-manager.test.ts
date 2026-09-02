@@ -748,6 +748,8 @@ describe('SessionManager', () => {
     const STUB_EMBEDDED_DEF = {
       id: 'stub-embedded-agent',
       name: 'Stub Model',
+      engine: 'openai-api' as const,
+      isBuiltIn: false,
       provider: { baseUrl: 'http://localhost:11434/v1', model: 'qwen3:32b' },
       createdBy: 'test-user-id',
       createdAt: '2024-01-01T00:00:00.000Z',
@@ -863,6 +865,8 @@ describe('SessionManager', () => {
     const STUB_EMBEDDED_DEF = {
       id: 'stub-embedded-agent',
       name: 'Stub Model',
+      engine: 'openai-api' as const,
+      isBuiltIn: false,
       provider: { baseUrl: 'http://localhost:11434/v1', model: 'qwen3:32b' },
       createdBy: 'test-user-id',
       createdAt: '2024-01-01T00:00:00.000Z',
@@ -1013,6 +1017,8 @@ describe('SessionManager', () => {
               ? {
                   id: 'stub-def',
                   name: 'Stub Model',
+                  engine: 'openai-api',
+                  isBuiltIn: false,
                   provider: { baseUrl: 'http://localhost:11434/v1', model: 'qwen3:32b' },
                   createdBy: 'test-user-id',
                   createdAt: '2024-01-01T00:00:00.000Z',
@@ -1058,6 +1064,8 @@ describe('SessionManager', () => {
               ? {
                   id: 'stub-def-cw',
                   name: 'Stub Model With Window',
+                  engine: 'openai-api',
+                  isBuiltIn: false,
                   provider: { baseUrl: 'http://localhost:11434/v1', model: 'qwen3:32b' },
                   createdBy: 'test-user-id',
                   createdAt: '2024-01-01T00:00:00.000Z',
@@ -1096,6 +1104,8 @@ describe('SessionManager', () => {
     const STUB_DEF = {
       id: 'stub-def',
       name: 'Stub Model',
+      engine: 'openai-api' as const,
+      isBuiltIn: false,
       provider: { baseUrl: 'http://localhost:11434/v1', model: 'qwen3:32b' },
       createdBy: 'test-user-id',
       createdAt: '2024-01-01T00:00:00.000Z',
@@ -1503,6 +1513,8 @@ describe('SessionManager', () => {
     const STUB_DEF = {
       id: 'stub-def',
       name: 'Stub Model',
+      engine: 'openai-api' as const,
+      isBuiltIn: false,
       provider: { baseUrl: 'http://localhost:11434/v1', model: 'qwen3:32b' },
       createdBy: 'test-user-id',
       createdAt: '2024-01-01T00:00:00.000Z',
@@ -2491,6 +2503,8 @@ describe('SessionManager', () => {
     const STUB_DEF = {
       id: 'stub-def-1260',
       name: 'Stub Model',
+      engine: 'openai-api' as const,
+      isBuiltIn: false,
       provider: { baseUrl: 'http://localhost:11434/v1', model: 'qwen3:32b' },
       createdBy: 'test-user-id',
       createdAt: '2024-01-01T00:00:00.000Z',
