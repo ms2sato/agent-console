@@ -163,7 +163,7 @@ function buildDisplayItems(entries: EmbeddedAgentChatEntry[]): DisplayItem[] {
 interface EmbeddedAgentWorkerViewProps {
   sessionId: string;
   workerId: string;
-  /** `EmbeddedAgentWorker.embeddedAgentId` -- looked up against the embedded-agent registry (`useEmbeddedAgents`) for `contextWindowTokens`/`compaction`. Undefined only defensively (every embedded-agent worker carries one). */
+  /** `EmbeddedAgentWorker.embeddedAgentId` -- looked up against the embedded-agent registry (`useEmbeddedAgents`) for `compaction`. Undefined only defensively (every embedded-agent worker carries one). */
   embeddedAgentId?: string;
   /**
    * `EmbeddedAgentWorker.autoCompaction` -- the toggle's SERVER value, which
@@ -173,6 +173,15 @@ interface EmbeddedAgentWorkerViewProps {
    * defensively (every embedded-agent worker carries one).
    */
   autoCompaction?: boolean;
+  /**
+   * `EmbeddedAgentWorker.contextWindowTokens` -- the worker's EFFECTIVE
+   * context-window denominator, composed server-side (agent-surface.md
+   * Ruling 4). Deliberately a prop sourced from the worker's own wire
+   * field, NOT looked up from the embedded-agent definition registry --
+   * see #1556. Undefined means no denominator is configured (indeterminate
+   * gauge).
+   */
+  contextWindowTokens?: number;
   onStatusChange?: (status: ConnectionStatus) => void;
 }
 
@@ -181,6 +190,7 @@ export function EmbeddedAgentWorkerView({
   workerId,
   embeddedAgentId,
   autoCompaction,
+  contextWindowTokens,
   onStatusChange,
 }: EmbeddedAgentWorkerViewProps) {
   const {
@@ -207,7 +217,6 @@ export function EmbeddedAgentWorkerView({
     () => embeddedAgents.find((a) => a.id === embeddedAgentId),
     [embeddedAgents, embeddedAgentId],
   );
-  const contextWindowTokens = embeddedAgentDefinition?.contextWindowTokens;
   const compactionThreshold =
     embeddedAgentDefinition?.compaction?.threshold ?? DEFAULT_COMPACTION_THRESHOLD;
 

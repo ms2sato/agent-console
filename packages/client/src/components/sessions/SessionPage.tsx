@@ -72,6 +72,19 @@ export function resolveActiveEmbeddedAutoCompaction(
   return activeWorker?.type === 'embedded-agent' ? activeWorker.autoCompaction : undefined;
 }
 
+/**
+ * Resolve the `contextWindowTokens` prop for the active tab's worker --
+ * undefined when the active worker isn't an embedded-agent type. Same
+ * extraction rationale as `resolveActiveEmbeddedAgentId` above.
+ */
+export function resolveActiveEmbeddedContextWindowTokens(
+  workers: Worker[],
+  activeTabId: string | null,
+): number | undefined {
+  const activeWorker = workers.find(w => w.id === activeTabId);
+  return activeWorker?.type === 'embedded-agent' ? activeWorker.contextWindowTokens : undefined;
+}
+
 // Error fallback UI for worker tabs
 interface WorkerErrorFallbackProps {
   error: Error;
@@ -490,14 +503,25 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
 
   const shouldStripScrollback = resolveShouldStripScrollback(session.workers, activeTabId, agents);
   // Compaction: resolved so EmbeddedAgentWorkerView can look up the
-  // definition's contextWindowTokens/compaction -- see
+  // definition's compaction threshold and engine type -- see
   // docs/design/embedded-agent-worker.md "Compaction" § UI.
+  // `contextWindowTokens` itself now arrives via the worker's own wire field
+  // (see `resolveActiveEmbeddedContextWindowTokens` below), not this lookup
+  // -- see #1556.
   const activeEmbeddedAgentId = resolveActiveEmbeddedAgentId(session.workers, activeTabId);
   // Compaction: the toggle's SERVER value for the active worker. Read from
   // `session.workers` on every render rather than held locally, so a
   // session-updated broadcast (the server's echo of a PATCH, or another
   // client's change) is what moves the control.
   const activeEmbeddedAutoCompaction = resolveActiveEmbeddedAutoCompaction(
+    session.workers,
+    activeTabId,
+  );
+  // Compaction: the usage gauge's denominator, server-composed via
+  // `resolveEffectiveContextWindow` and delivered on the worker's own wire
+  // field -- not looked up from the embedded-agent definition registry. See
+  // `resolveActiveEmbeddedContextWindowTokens`'s doc comment and #1556.
+  const activeEmbeddedContextWindowTokens = resolveActiveEmbeddedContextWindowTokens(
     session.workers,
     activeTabId,
   );
@@ -571,6 +595,7 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
             workerId={activeTab.id}
             embeddedAgentId={activeEmbeddedAgentId}
             autoCompaction={activeEmbeddedAutoCompaction}
+            contextWindowTokens={activeEmbeddedContextWindowTokens}
             onStatusChange={handleStatusChange}
           />
         ) : activeTab.workerType === 'git-diff' ? (

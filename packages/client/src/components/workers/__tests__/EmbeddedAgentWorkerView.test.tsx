@@ -68,6 +68,7 @@ function renderView(props: {
   workerId: string;
   embeddedAgentId?: string;
   autoCompaction?: boolean;
+  contextWindowTokens?: number;
 }) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
   return render(
@@ -1831,10 +1832,33 @@ describe('EmbeddedAgentWorkerView', () => {
       expect(bar.getAttribute('aria-valuemax')).toBeNull();
     });
 
+    // Measured reach (#1556): mutating the wire conversion to omit
+    // `contextWindowTokens` makes the gauge indeterminate even when the
+    // registry holds a window for that definition. The `contextWindowTokens`
+    // PROP is deliberately omitted here while the mocked embedded-agent
+    // REGISTRY (via `useEmbeddedAgents`, served through the fetch stub)
+    // returns a definition that DOES declare one -- proving the component
+    // reads the value from its own wire-sourced prop, never falls back to
+    // looking it up in the definition registry it still holds for
+    // `compaction`/engine-type purposes.
+    it('renders indeterminate when contextWindowTokens prop is omitted, even though the registry definition declares one (#1556)', () => {
+      globalThis.fetch = Object.assign(mock(makeEmbeddedViewFetch([embeddedAgentFixture()])), { preconnect: () => {} });
+      renderView({ sessionId: 's-ctx-1b', workerId: 'w-ctx-1b', embeddedAgentId: 'ea-1' });
+
+      const bar = screen.getByRole('progressbar');
+      expect(bar.getAttribute('aria-valuenow')).toBeNull();
+      expect(bar.getAttribute('aria-valuemin')).toBeNull();
+      expect(bar.getAttribute('aria-valuemax')).toBeNull();
+    });
+
     it('renders a determinate progressbar with aria-valuenow and colour bands driven by context-usage events', async () => {
       // Fixture threshold is 0.8, so the amber band opens at 0.65.
+      // `contextWindowTokens` is passed explicitly (#1556): the gauge's
+      // denominator now arrives via the worker's own wire field, not a
+      // client-side lookup against the registry's definition, so this test
+      // supplies the same value the fixture used to provide implicitly.
       globalThis.fetch = Object.assign(mock(makeEmbeddedViewFetch([embeddedAgentFixture()])), { preconnect: () => {} });
-      renderView({ sessionId: 's-ctx-2', workerId: 'w-ctx-2', embeddedAgentId: 'ea-1' });
+      renderView({ sessionId: 's-ctx-2', workerId: 'w-ctx-2', embeddedAgentId: 'ea-1', contextWindowTokens: 1000 });
       const ws = MockWebSocket.getLastInstance();
       act(() => {
         ws?.simulateOpen();
@@ -1998,8 +2022,13 @@ describe('EmbeddedAgentWorkerView', () => {
       // Signal 2's own surface. It exists because this signal fires with NO
       // compaction behind it -- there is no boundary line to hang the warning
       // on, and the usage bar is 2px whose meaning lives in a tooltip.
+      // `contextWindowTokens` is passed explicitly (#1556): the row's
+      // "configured for this agent" figure now arrives via the worker's own
+      // wire field, not a client-side lookup against the registry's
+      // definition -- see the renderView call in the determinate-progressbar
+      // test above for the same reasoning.
       globalThis.fetch = Object.assign(mock(makeEmbeddedViewFetch([embeddedAgentFixture()])), { preconnect: () => {} });
-      renderView({ sessionId: 's-clamp', workerId: 'w-clamp', embeddedAgentId: 'ea-1' });
+      renderView({ sessionId: 's-clamp', workerId: 'w-clamp', embeddedAgentId: 'ea-1', contextWindowTokens: 1000 });
       const ws = MockWebSocket.getLastInstance();
       act(() => {
         ws?.simulateOpen();
