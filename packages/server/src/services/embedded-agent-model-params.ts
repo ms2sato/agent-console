@@ -5,8 +5,7 @@ import type { InternalEmbeddedAgentWorker } from './worker-types.js';
  * Resolves an embedded-agent worker's EFFECTIVE `model` / `reasoningEffort`
  * (agent-surface.md Ruling 3 -- "worker override beats definition default").
  * SINGLE WRITER of this rule for these two params: today's only consumer is
- * `EmbeddedAgentWorkerService.runActivation`'s init composition (a later
- * wave wires that call site; this wave only lands the resolver itself).
+ * `EmbeddedAgentWorkerService.runActivation`'s init composition.
  *
  * Distinct from `resolveEffectiveContextWindow`
  * (`embedded-agent-context-window.ts`), which has a DIFFERENT rule (Ruling

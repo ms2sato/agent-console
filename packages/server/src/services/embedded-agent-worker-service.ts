@@ -1038,6 +1038,20 @@ export class EmbeddedAgentWorkerService {
                 model: resolvedModelParams.model,
                 // Closed domain (EFFORT_LEVELS); narrowed defensively here,
                 // not re-validated -- see `isEffortLevel`'s doc comment.
+                // The `isEffortLevel` false branch (silently dropping the
+                // value instead of throwing) is UNREACHABLE in production
+                // today: `WorkerLifecycleManager.createWorker`'s embedded
+                // branch already rejects any `reasoningEffort` outside
+                // `capabilities.reasoningEffort.acceptedValues` before a
+                // worker can be created, AND an embedded agent's `engine`
+                // is immutable after creation (no mutation updates it), so
+                // a worker that reaches activation with a `reasoningEffort`
+                // set can only hold a value that was valid for its
+                // `engine` at creation time -- and the engine cannot have
+                // changed since. If a future change makes `engine`
+                // mutable (or otherwise weakens either guarantee above),
+                // re-examine whether this branch is still unreachable
+                // rather than assuming it stays protected.
                 ...(resolvedModelParams.reasoningEffort !== null &&
                 isEffortLevel(resolvedModelParams.reasoningEffort)
                   ? { effort: resolvedModelParams.reasoningEffort }

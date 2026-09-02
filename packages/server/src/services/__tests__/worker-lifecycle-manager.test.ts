@@ -883,14 +883,14 @@ describe('WorkerLifecycleManager', () => {
           embeddedAgentId: EMBEDDED_AGENT_DEF.id,
           model: '',
         }),
-      ).rejects.toBeInstanceOf(ValidationError);
+      ).rejects.toThrow(/model must not be empty/);
       await expect(
         lifecycleManager.createWorker(session.id, {
           type: 'embedded-agent',
           embeddedAgentId: EMBEDDED_AGENT_DEF.id,
           model: '   ',
         }),
-      ).rejects.toBeInstanceOf(ValidationError);
+      ).rejects.toThrow(/model must not be empty/);
     });
 
     it('rejects an empty or whitespace-only reasoningEffort, bypassing valibot the way MCP delegate_to_worktree does', async () => {
@@ -908,14 +908,14 @@ describe('WorkerLifecycleManager', () => {
           embeddedAgentId: EMBEDDED_AGENT_DEF.id,
           reasoningEffort: '',
         }),
-      ).rejects.toBeInstanceOf(ValidationError);
+      ).rejects.toThrow(/reasoningEffort must not be empty/);
       await expect(
         lifecycleManager.createWorker(session.id, {
           type: 'embedded-agent',
           embeddedAgentId: EMBEDDED_AGENT_DEF.id,
           reasoningEffort: '   ',
         }),
-      ).rejects.toBeInstanceOf(ValidationError);
+      ).rejects.toThrow(/reasoningEffort must not be empty/);
     });
 
     it('rejects contextWindowTokens accompanied only by an empty-string model (Ruling 4d: a declared window must not attach to a semantically-absent model)', async () => {
@@ -925,6 +925,9 @@ describe('WorkerLifecycleManager', () => {
       // request.model === '' is !== undefined, so without the emptiness check
       // this would satisfy the contextWindowTokens-requires-model gate and
       // persist a context window override against no real model change.
+      // The empty-`model` check fires before the contextWindowTokens-requires-
+      // model check (both live in the same block, model first), so the
+      // rejection reason is the same as the plain empty-model case above.
       await expect(
         lifecycleManager.createWorker(session.id, {
           type: 'embedded-agent',
@@ -932,7 +935,7 @@ describe('WorkerLifecycleManager', () => {
           model: '',
           contextWindowTokens: 32000,
         }),
-      ).rejects.toBeInstanceOf(ValidationError);
+      ).rejects.toThrow(/model must not be empty/);
     });
 
     it('rejects contextWindowTokens without an accompanying model override', async () => {
