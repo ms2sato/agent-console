@@ -63,6 +63,15 @@ export const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
  * longer contains `'xhigh'`, so the SDK's own `EffortLevel` union is no
  * longer a subset of it either). Restoring the correct value returns
  * `tsc --noEmit` to a clean exit with no diagnostics.
+ *
+ * This pin is only as fresh as `packages/shared`'s own devDependency pin on
+ * `@anthropic-ai/claude-agent-sdk` (currently 0.3.238) -- it does NOT read
+ * the version `packages/embedded-agent` actually runs at runtime. When
+ * bumping the SDK version in `packages/embedded-agent` (the runtime
+ * consumer), bump `packages/shared`'s devDependency to match in the same
+ * PR, or this pin keeps compiling green against a stale `EffortLevel`
+ * definition that no longer reflects what the running subprocess actually
+ * sends.
  */
 type Assert<T extends true> = T;
 type _EffortLevelsMatchSdk = Assert<(typeof EFFORT_LEVELS)[number] extends EffortLevel ? true : false>;
