@@ -1974,6 +1974,14 @@ describe('EmbeddedAgentWorkerService — the init command\'s compaction config',
     expect(first.compaction).toEqual({ auto: true });
   });
 
+  it('includes contextWindowTokens: 0 (a declared, not merely falsy, value) -- resolveEffectiveContextWindow checks `!== undefined`, not truthiness (#1556)', async () => {
+    const h = setup({ definition: buildDefinition({ contextWindowTokens: 0 }) });
+    await h.service.activate(h.sessionId, h.workerId);
+
+    const first = JSON.parse(h.fake.stdinWrites[0]);
+    expect(first.compaction).toEqual({ auto: true, contextWindowTokens: 0 });
+  });
+
   it('reflects a worker whose toggle is OFF', async () => {
     const h = setup();
     h.worker.autoCompaction = false;
