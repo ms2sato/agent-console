@@ -1832,15 +1832,26 @@ describe('EmbeddedAgentWorkerView', () => {
       expect(bar.getAttribute('aria-valuemax')).toBeNull();
     });
 
-    // Measured reach (#1556): mutating the wire conversion to omit
-    // `contextWindowTokens` makes the gauge indeterminate even when the
-    // registry holds a window for that definition. The `contextWindowTokens`
-    // PROP is deliberately omitted here while the mocked embedded-agent
-    // REGISTRY (via `useEmbeddedAgents`, served through the fetch stub)
-    // returns a definition that DOES declare one -- proving the component
-    // reads the value from its own wire-sourced prop, never falls back to
-    // looking it up in the definition registry it still holds for
-    // `compaction`/engine-type purposes.
+    // Measured reach (#1556): the mutation this pin was verified against is
+    // COMPONENT-side (a client-only unit test cannot reach the server-side
+    // wire conversion). Renaming the `contextWindowTokens` prop below to
+    // `contextWindowTokensProp` and reintroducing
+    //   const contextWindowTokens = contextWindowTokensProp ?? embeddedAgentDefinition?.contextWindowTokens;
+    // (restoring the pre-#1556 registry fallback) makes this test FAIL (1
+    // fail); with the actual production code it PASSES (1 pass). The
+    // `contextWindowTokens` PROP is deliberately omitted here while the
+    // mocked embedded-agent REGISTRY (via `useEmbeddedAgents`, served
+    // through the fetch stub) returns a definition that DOES declare one --
+    // proving the component reads the value from its own wire-sourced prop,
+    // never falls back to looking it up in the definition registry it still
+    // holds for `compaction`/engine-type purposes.
+    //
+    // The `await act(async () => { await flush(); })` wait below plus the
+    // positive-control assertion right after it were also measured:
+    // deleting the flush-wait alone (no component mutation) makes the
+    // positive-control assertion itself fail, confirming the positive
+    // control has genuine detection power independent of the fallback
+    // mutation above.
     it('renders indeterminate when contextWindowTokens prop is omitted, even though the registry definition declares one (#1556)', async () => {
       globalThis.fetch = Object.assign(mock(makeEmbeddedViewFetch([embeddedAgentFixture()])), { preconnect: () => {} });
       renderView({ sessionId: 's-ctx-1b', workerId: 'w-ctx-1b', embeddedAgentId: 'ea-1' });
