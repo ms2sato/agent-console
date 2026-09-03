@@ -178,7 +178,16 @@ export function AddAgentWorkerMenu({
     <div className="relative" ref={containerRef}>
       <button
         type="button"
-        onClick={() => setOpen((prev) => !prev)}
+        onClick={() => {
+          // Toggling the trigger closed must reset the options panel the
+          // same way the outside-click handler does -- otherwise reopening
+          // the menu restores a stale expandedKey/override values and a
+          // subsequent Add could submit them (CodeRabbit finding).
+          setOpen((prev) => {
+            if (prev) resetOptionsState();
+            return !prev;
+          });
+        }}
         className="px-3 py-2 text-gray-400 hover:text-white hover:bg-slate-700"
         title="Add agent worker"
         aria-label="Add agent worker"

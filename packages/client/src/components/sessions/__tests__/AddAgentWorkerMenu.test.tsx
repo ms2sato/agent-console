@@ -611,6 +611,33 @@ describe('AddAgentWorkerMenu', () => {
       expect(screen.queryByPlaceholderText('e.g. opus')).toBeNull();
     });
 
+    it('closing the menu via the "+" trigger button also resets the expanded panel (CodeRabbit finding)', async () => {
+      agentsResponse = { agents: [modelCapableAgent] };
+
+      await renderWithRouter(
+        <AddAgentWorkerMenu onSelect={async () => {}} onSelectShell={async () => {}} />,
+      );
+      const user = userEvent.setup();
+      const trigger = screen.getByRole('button', { name: 'Add agent worker' });
+      await user.click(trigger);
+
+      const toggle = await screen.findByRole('button', { name: 'Options for Model Capable Agent' });
+      await user.click(toggle);
+      const modelInput = await waitFor(() => screen.getByPlaceholderText('e.g. opus'));
+      fireEvent.change(modelInput, { target: { value: 'opus' } });
+
+      // Close the menu via the SAME "+" trigger button used to open it --
+      // not an outside click. This is the exact toggle-closed branch a
+      // stale reset would have missed.
+      await user.click(trigger);
+      expect(screen.queryByRole('menu')).toBeNull();
+
+      await user.click(trigger);
+      const toggleAgain = await screen.findByRole('button', { name: 'Options for Model Capable Agent' });
+      expect(toggleAgain.getAttribute('aria-expanded')).toBe('false');
+      expect(screen.queryByPlaceholderText('e.g. opus')).toBeNull();
+    });
+
     describe('getCapabilitiesImpl seam (single seam, both kinds -- proves the toggle gate and the fields cannot disagree)', () => {
       it('all-false hides the Options toggle for every agent item of both kinds', async () => {
         agentsResponse = { agents: [modelCapableAgent] };
