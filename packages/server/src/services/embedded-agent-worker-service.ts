@@ -37,6 +37,7 @@ import {
   type EmbeddedAgentServerNotification,
   type EmbeddedAgentRestoredMessage,
   type EmbeddedAgentRestoredUsage,
+  type EmbeddedAgentAttachment,
   type AgentActivityState,
   type ExitReason,
   type SdkResumeFailureReason,
@@ -1087,6 +1088,10 @@ export class EmbeddedAgentWorkerService {
                 ...(resolvedModelParams.reasoningEffort !== null
                   ? { reasoningEffort: resolvedModelParams.reasoningEffort }
                   : {}),
+                // Straight pass-through of the definition's own declared
+                // capability flag -- no per-worker override concept exists
+                // for this field (unlike reasoningEffort).
+                supportsImages: definition.provider.supportsImages,
               },
               // The restore-boundary seed, this arm only: `claude-sdk` carries its own
               // context state through the SDK resume and computes no ratio,
@@ -1225,8 +1230,9 @@ export class EmbeddedAgentWorkerService {
     workerId: string,
     text: string,
     clientMessageId?: string,
+    attachments?: EmbeddedAgentAttachment[],
   ): Promise<SendUserMessageResult> {
-    return this.deliverUserTurn(sessionId, workerId, text, { clientMessageId });
+    return this.deliverUserTurn(sessionId, workerId, text, { clientMessageId, attachments });
   }
 
   /**
@@ -1365,6 +1371,7 @@ export class EmbeddedAgentWorkerService {
     opts: {
       clientMessageId?: string;
       notification?: EmbeddedAgentServerNotification;
+      attachments?: EmbeddedAgentAttachment[];
       /**
        * R3: set ONLY by `sendSystemNotification`. When admission finds
        * `runtime.turnActive` true, park these on the queue instead of
@@ -1416,7 +1423,14 @@ export class EmbeddedAgentWorkerService {
     // persisted/broadcast event carries the client's correlation id or the
     // notification marker. Do NOT reuse one object for both -- see
     // docs/design/embedded-agent-worker.md.
-    const command: EmbeddedAgentCommand = { v: 1, type: 'user-message', id, text };
+    const hasAttachments = opts.attachments !== undefined && opts.attachments.length > 0;
+    const command: EmbeddedAgentCommand = {
+      v: 1,
+      type: 'user-message',
+      id,
+      text,
+      ...(hasAttachments ? { attachments: opts.attachments } : {}),
+    };
     const event: EmbeddedAgentServerEvent = {
       v: 1,
       type: 'user-message',
@@ -1424,6 +1438,7 @@ export class EmbeddedAgentWorkerService {
       text,
       ...(opts.clientMessageId !== undefined ? { clientMessageId: opts.clientMessageId } : {}),
       ...(opts.notification !== undefined ? { notification: opts.notification } : {}),
+      ...(hasAttachments ? { attachments: opts.attachments } : {}),
     };
     // Forward BEFORE appending: both calls are synchronous (no await between
     // them, nothing else can interleave), so ordering doesn't affect replay

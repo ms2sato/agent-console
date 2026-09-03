@@ -21,6 +21,8 @@ import {
 import type { ToolCallOutcome } from '../mcp.js';
 import type { Engine } from '../engine-types.js';
 import type { SdkEngineDeps } from '../sdk-engine.js';
+import { buildUserMessageContent } from '../attachment-content.js';
+import type { EmbeddedAgentAttachment } from '@agent-console/shared';
 import { loadInstructions } from '../system-prompt.js';
 
 const mainPath = join(import.meta.dir, '..', 'main.ts');
@@ -635,6 +637,139 @@ describe('runLoop — restoredConversation threading (Transcript Restore #1123)'
     expect(systemMessage.content).not.toContain('STALE_SERVER_PROMPT');
     expect(systemMessage.content).toContain('LOOP_SIDE_INSTRUCTION_MARKER');
     expect(secondMessage).toEqual({ role: 'user', content: 'earlier question' });
+  });
+});
+
+describe('runLoop — image attachment threading (#1571)', () => {
+  const tempDirsForAttachments: string[] = [];
+  afterEach(async () => {
+    await Promise.all(tempDirsForAttachments.splice(0).map((d) => rm(d, { recursive: true, force: true })));
+  });
+  async function makeAttachmentDir(): Promise<string> {
+    const dir = await mkdtemp(join(tmpdir(), 'embedded-agent-main-attach-'));
+    tempDirsForAttachments.push(dir);
+    return dir;
+  }
+
+  const PNG_BASE64 =
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=';
+  const PNG_BYTES = Buffer.from(PNG_BASE64, 'base64');
+
+  const claudeSdkInitCommand = (overrides: Record<string, unknown> = {}) =>
+    JSON.stringify({
+      v: 1,
+      type: 'init',
+      compaction: { auto: false },
+      engine: 'claude-sdk',
+      mcp: { baseUrl: 'http://mcp/local', token: 'tok' },
+      provider: { model: 'claude-sonnet-5' },
+      context: { sessionId: 's', workerId: 'w', cwd: '/tmp' },
+      maxToolIterations: 5,
+      ...overrides,
+    });
+
+  class CapturingRunTurnEngine implements Engine {
+    readonly calls: Array<{ id: string; text: string; attachments?: EmbeddedAgentAttachment[] }> = [];
+    async runTurn(id: string, text: string, attachments?: EmbeddedAgentAttachment[]): Promise<void> {
+      this.calls.push({ id, text, attachments });
+    }
+    cancel(): void {}
+    setAutoCompaction(): void {}
+  }
+
+  it("threads a user-message command's attachments into loop.runTurn's 3rd arg (claude-sdk engine)", async () => {
+    const engine = new CapturingRunTurnEngine();
+    const attachments: EmbeddedAgentAttachment[] = [{ path: '/tmp/shot.png', mimeType: 'image/png' }];
+    const { io } = makeIo([
+      claudeSdkInitCommand(),
+      JSON.stringify({ v: 1, type: 'user-message', id: 'u1', text: 'what is this?', attachments }),
+      JSON.stringify({ v: 1, type: 'shutdown' }),
+    ]);
+    const factories = makeFactories({ createSdkEngine: () => engine });
+
+    expect(await runLoop(io, factories)).toBe(0);
+    expect(engine.calls).toHaveLength(1);
+    expect(engine.calls[0]).toEqual({ id: 'u1', text: 'what is this?', attachments });
+  });
+
+  it('leaves loop.runTurn\'s 3rd arg undefined for a user-message with no attachments', async () => {
+    const engine = new CapturingRunTurnEngine();
+    const { io } = makeIo([
+      claudeSdkInitCommand(),
+      JSON.stringify({ v: 1, type: 'user-message', id: 'u1', text: 'hello' }),
+      JSON.stringify({ v: 1, type: 'shutdown' }),
+    ]);
+    const factories = makeFactories({ createSdkEngine: () => engine });
+
+    expect(await runLoop(io, factories)).toBe(0);
+    expect(engine.calls).toHaveLength(1);
+    expect(engine.calls[0].attachments).toBeUndefined();
+  });
+
+  describe('restore-boundary seeding (openai-api engine)', () => {
+    it("resolves a restored user message's attachments into real ContentPart[] content when the file is present", async () => {
+      const attachDir = await makeAttachmentDir();
+      const filePath = join(attachDir, 'shot.png');
+      await writeFile(filePath, PNG_BYTES);
+      const attachments: EmbeddedAgentAttachment[] = [{ path: filePath, mimeType: 'image/png' }];
+
+      const adapter = new CapturingAdapter();
+      const { io } = makeIo([
+        initCommand({
+          provider: { baseUrl: 'http://provider/v1', model: 'm', supportsImages: true },
+          context: { sessionId: 's', workerId: 'w', cwd: '/tmp', attachmentRoots: [attachDir] },
+          restoredConversation: [
+            { role: 'system', content: 'RESTORED_SYSTEM_PROMPT' },
+            { role: 'user', content: 'what is this?', attachments },
+          ],
+        }),
+        JSON.stringify({ v: 1, type: 'user-message', id: 'u1', text: 'follow-up' }),
+        JSON.stringify({ v: 1, type: 'shutdown' }),
+      ]);
+      const factories = makeFactories({ createAdapter: () => adapter });
+
+      expect(await runLoop(io, factories)).toBe(0);
+      expect(adapter.capturedMessagesCalls).toHaveLength(1);
+      const [, restoredUserMessage] = adapter.capturedMessagesCalls[0];
+
+      // "One seam" pin: the restore path must produce EXACTLY what the SAME
+      // shared function (`buildUserMessageContent`, also used by
+      // agent-loop.ts's live `runUserTurn`) produces for identical inputs --
+      // proving both call sites share one code path rather than each having
+      // their own resolve-then-build logic.
+      const expectedContent = await buildUserMessageContent('what is this?', attachments, [attachDir], true);
+      expect(restoredUserMessage).toEqual({ role: 'user', content: expectedContent });
+      expect(expectedContent).not.toBe('what is this?');
+    });
+
+    it("appends a missing-image note when the restored attachment's file is absent", async () => {
+      const attachDir = await makeAttachmentDir();
+      const goneFilePath = join(attachDir, 'gone.png');
+      const attachments: EmbeddedAgentAttachment[] = [{ path: goneFilePath, mimeType: 'image/png' }];
+
+      const adapter = new CapturingAdapter();
+      const { io } = makeIo([
+        initCommand({
+          provider: { baseUrl: 'http://provider/v1', model: 'm', supportsImages: true },
+          context: { sessionId: 's', workerId: 'w', cwd: '/tmp', attachmentRoots: [attachDir] },
+          restoredConversation: [
+            { role: 'system', content: 'RESTORED_SYSTEM_PROMPT' },
+            { role: 'user', content: 'what is this?', attachments },
+          ],
+        }),
+        JSON.stringify({ v: 1, type: 'user-message', id: 'u1', text: 'follow-up' }),
+        JSON.stringify({ v: 1, type: 'shutdown' }),
+      ]);
+      const factories = makeFactories({ createAdapter: () => adapter });
+
+      expect(await runLoop(io, factories)).toBe(0);
+      expect(adapter.capturedMessagesCalls).toHaveLength(1);
+      const [, restoredUserMessage] = adapter.capturedMessagesCalls[0];
+      expect(restoredUserMessage).toEqual({
+        role: 'user',
+        content: [{ type: 'text', text: 'what is this?\n\n[image no longer available: gone.png]' }],
+      });
+    });
   });
 });
 

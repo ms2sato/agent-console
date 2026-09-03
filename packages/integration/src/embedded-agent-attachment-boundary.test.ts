@@ -196,4 +196,70 @@ describe('Client-Server Boundary: embedded-agent message attachments (Issue #157
       expect(userMessageEvent.text).toContain('Attached files:');
     }
   });
+
+  it('a real multipart POST with a PNG image attachment carries `attachments` on both the subprocess user-message command and the persisted event (Issue #1571)', async () => {
+    const owner = await ctx.userRepository.upsertByOsUid(24681, 'owner2', '/home/owner2');
+
+    const definition = await ctx.embeddedAgentManager.createEmbeddedAgent(
+      { name: 'Local model', provider: { baseUrl: 'http://localhost:11434/v1', model: 'qwen3:32b' } },
+      owner.id,
+    );
+    const session = await ctx.sessionManager.createSession(
+      { type: 'quick', locationPath: '/test/path' },
+      { createdBy: owner.id },
+    );
+    const worker = await ctx.sessionManager.createWorker(session.id, {
+      type: 'embedded-agent',
+      embeddedAgentId: definition.id,
+    });
+    expect(worker).not.toBeNull();
+    const workerId = worker!.id;
+
+    const app = await createTestApp(ctx);
+
+    // A minimal valid 1x1 transparent PNG -- real bytes, not a text stub with
+    // a spoofed mime type, so the wire carries a genuine image attachment.
+    const pngBase64 =
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=';
+    const pngBytes = Buffer.from(pngBase64, 'base64');
+
+    const formData = new FormData();
+    formData.append('toWorkerId', workerId);
+    formData.append('content', 'what is in this image?');
+    formData.append('files', new File([pngBytes], 'screenshot.png', { type: 'image/png' }));
+
+    const res = await app.request(`/api/sessions/${session.id}/messages`, {
+      method: 'POST',
+      body: formData,
+    });
+
+    expect(res.status).toBe(201);
+
+    await waitFor(() => fake.stdinWrites.length >= 2);
+
+    // The subprocess `user-message` command carries `attachments`.
+    const userMessageCommand = JSON.parse(fake.stdinWrites[1]);
+    expect(userMessageCommand.type).toBe('user-message');
+    expect(userMessageCommand.attachments).toHaveLength(1);
+    expect(userMessageCommand.attachments[0].mimeType).toBe('image/png');
+    expect(userMessageCommand.attachments[0].path).toContain(resolveUploadDir());
+    expect(userMessageCommand.attachments[0].path).toMatch(/screenshot\.png$/);
+
+    // The persisted `user-message` event mirrors it.
+    await waitFor(async () => {
+      const hist = await ctx.sessionManager.getWorkerOutputHistory(session.id, workerId, 0);
+      return !!hist && hist.data.includes('user-message');
+    });
+    const history = await ctx.sessionManager.getWorkerOutputHistory(session.id, workerId, 0);
+    expect(history).not.toBeNull();
+
+    const { events, parseFailures } = parseReplayLines(history!.data);
+    expect(parseFailures).toEqual([]);
+
+    const userMessageEvent = events.find((e) => e.type === 'user-message');
+    expect(userMessageEvent).toBeDefined();
+    if (userMessageEvent?.type === 'user-message') {
+      expect(userMessageEvent.attachments).toEqual(userMessageCommand.attachments);
+    }
+  });
 });

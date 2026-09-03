@@ -12,12 +12,13 @@ import { NdjsonLineSplitter, type EmbeddedAgentEvent } from '@agent-console/shar
 import * as v from 'valibot';
 import { EmbeddedAgentCommandSchema } from '@agent-console/shared';
 import { AgentLoop } from './agent-loop.js';
+import { buildUserMessageContent } from './attachment-content.js';
 import { COMPACT_TOOL_NAME } from './compact-tool.js';
 import type { Engine } from './engine-types.js';
 import { loadCompactionPrompt } from './compaction-prompt.js';
 import { McpToolClient, type ToolExecutor } from './mcp.js';
 import { OpenAIChatAdapter } from './providers/openai-chat-adapter.js';
-import type { ProviderAdapter, ToolDefinition } from './providers/types.js';
+import type { ChatMessage, ProviderAdapter, ToolDefinition } from './providers/types.js';
 import { SdkEngine, type SdkEngineDeps } from './sdk-engine.js';
 import { probeSdkSession, type SdkSessionProbe } from './sdk-session-preflight.js';
 import {
@@ -190,7 +191,7 @@ export async function runLoop(io: LoopIO, factories: LoopFactories): Promise<num
         }
         turnActive = true;
         currentTurn = loop
-          .runTurn(command.id, command.text)
+          .runTurn(command.id, command.text, command.attachments)
           .catch((err) => {
             io.logError(`Turn failed: ${err instanceof Error ? err.message : String(err)}`);
           })
@@ -292,6 +293,30 @@ async function initializeLoop(
       }
     }
 
+    // Message-attachment resolution: turn each restored user message's
+    // `attachments` reference into real content, through the SAME
+    // `buildUserMessageContent` seam the live turn path (agent-loop.ts's
+    // `runUserTurn`) uses -- the one shared resolve-then-build call site the
+    // live and restore paths are both required to go through. Non-user
+    // entries (system/assistant/tool) have no attachment concept and pass
+    // through structurally unchanged.
+    let resolvedConversation: ChatMessage[] | undefined;
+    if (restoredConversation) {
+      resolvedConversation = await Promise.all(
+        restoredConversation.map(async (msg): Promise<ChatMessage> => {
+          if (msg.role !== 'user') return msg;
+          if (!msg.attachments || msg.attachments.length === 0) return { role: 'user', content: msg.content };
+          const content = await buildUserMessageContent(
+            msg.content,
+            msg.attachments,
+            init.context.attachmentRoots ?? [],
+            init.provider.supportsImages ?? false,
+          );
+          return { role: 'user', content };
+        }),
+      );
+    }
+
     const loop = new AgentLoop({
       adapter,
       model: init.provider.model,
@@ -304,7 +329,9 @@ async function initializeLoop(
       emit: (event) => io.writeEvent(event),
       systemPrompt,
       maxToolIterations: init.maxToolIterations,
-      restoredConversation,
+      restoredConversation: resolvedConversation,
+      attachmentRoots: init.context.attachmentRoots ?? [],
+      supportsImages: init.provider.supportsImages ?? false,
       // The restore-boundary seed: openai-api arm only, so `init` is narrowed
       // to it by the engine check that already gates this whole branch. Absent when the
       // restored log held no reading -- the loop's estimator fallback stands.
@@ -465,6 +492,7 @@ async function initializeLoop(
       mcp: init.mcp,
       emit: (event) => io.writeEvent(event),
       autoCompaction: init.compaction.auto,
+      attachmentRoots: init.context.attachmentRoots ?? [],
       // Transcript Restore, R1: the ONLY path by which a resume id reaches
       // the engine. Absent means a fresh session -- a first-ever
       // activation, a worker with no persisted id, or an id the pre-flight

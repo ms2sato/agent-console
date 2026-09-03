@@ -268,6 +268,8 @@ export interface EmbeddedAgentsTable {
   context_window_tokens: number | null;
   /** Auto-compaction threshold ratio 0..1 exclusive of 0 (Compaction, migration v36, replacing the three handoff_* columns); null = use DEFAULT_COMPACTION_THRESHOLD downstream */
   compaction_threshold: number | null;
+  /** Per-provider capability flag: 1 = provider declares it can see images, 0/null = cannot (default). NULL for 'claude-sdk' engine rows, same convention as provider_base_url. */
+  provider_supports_images: number | null;
   /** Builtin-definition marker (SDK Engine Phase 1), mirroring agents.is_built_in: 1 for the claude-sdk builtin, 0 for user-created definitions. Builtin definitions cannot be modified or deleted. */
   is_built_in: number;
   /** User UUID (from users table) of the creator */

@@ -791,6 +791,14 @@ function NotificationRow({ entry }: { entry: NotificationEntry }) {
   );
 }
 
+/**
+ * `attachment.path` is an absolute server-side path; the chip shows only
+ * the final path segment, never the full path.
+ */
+function attachmentFileName(path: string): string {
+  return path.split(/[\\/]/).pop() || path;
+}
+
 interface ChatEntryRowProps {
   entry: OutsideEntry;
   /**
@@ -804,17 +812,40 @@ interface ChatEntryRowProps {
 
 function ChatEntryRow({ entry, contextWindowTokens }: ChatEntryRowProps) {
   switch (entry.kind) {
-    case 'user-message':
+    case 'user-message': {
       if (entry.notification) {
         return <NotificationRow entry={entry as NotificationEntry} />;
       }
+      const attachments = entry.attachments;
+      const hasAttachments = attachments !== undefined && attachments.length > 0;
+      // File-only sends (no typed text) are reachable per MessagePanel's
+      // canSend logic, so an attachment-only message must not render an
+      // empty, invisible bubble alongside its chip row.
+      const showBubble = entry.text.length > 0 || !hasAttachments;
       return (
         <div className="flex justify-end">
-          <div className="min-w-0 max-w-[80%] rounded-lg bg-blue-600/80 text-white px-3 py-2 text-sm whitespace-pre-wrap [overflow-wrap:anywhere]">
-            {entry.text}
+          <div className="flex flex-col items-end gap-1 min-w-0 max-w-[80%]">
+            {hasAttachments && (
+              <div className="flex flex-wrap justify-end gap-1">
+                {attachments.map((attachment, index) => (
+                  <span
+                    key={`${attachment.path}-${index}`}
+                    className="inline-flex items-center gap-1 bg-slate-700/60 text-gray-300 text-xs rounded px-2 py-0.5"
+                  >
+                    {attachmentFileName(attachment.path)}
+                  </span>
+                ))}
+              </div>
+            )}
+            {showBubble && (
+              <div className="min-w-0 w-full rounded-lg bg-blue-600/80 text-white px-3 py-2 text-sm whitespace-pre-wrap [overflow-wrap:anywhere]">
+                {entry.text}
+              </div>
+            )}
           </div>
         </div>
       );
+    }
     case 'assistant-message':
       return (
         <div className="flex justify-start">

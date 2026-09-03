@@ -87,9 +87,22 @@ const EmbeddedAgentRestoredToolCallSchema = v.strictObject({
   function: v.strictObject({ name: v.string(), arguments: v.string() }),
 });
 
+/**
+ * Wire-shape for one message attachment, mirroring `EmbeddedAgentAttachment`
+ * in types/embedded-agent.ts.
+ */
+const EmbeddedAgentAttachmentSchema = v.strictObject({
+  path: v.string(),
+  mimeType: v.string(),
+});
+
 const EmbeddedAgentRestoredMessageSchema = v.union([
   v.strictObject({ role: v.literal('system'), content: v.string() }),
-  v.strictObject({ role: v.literal('user'), content: v.string() }),
+  v.strictObject({
+    role: v.literal('user'),
+    content: v.string(),
+    attachments: v.optional(v.array(EmbeddedAgentAttachmentSchema)),
+  }),
   v.strictObject({
     role: v.literal('assistant'),
     content: v.string(),
@@ -102,6 +115,9 @@ export const EmbeddedAgentProviderSchema = v.strictObject({
   baseUrl: v.pipe(v.string(), v.url()),
   model: v.pipe(v.string(), v.minLength(1)),
   apiKeyRef: v.optional(v.pipe(v.string(), v.minLength(1))),
+  // Per-provider capability flag: whether this provider can see image
+  // content parts. Default false/absent -- see the type's doc comment.
+  supportsImages: v.optional(v.boolean()),
 });
 
 /**
@@ -256,6 +272,8 @@ const EmbeddedAgentInitCommandSchema = v.variant('engine', [
       // validation at this layer, the provider is the authority. See the
       // type's doc comment (`EmbeddedAgentCommand`'s openai-api arm).
       reasoningEffort: v.optional(v.string()),
+      // Pass-through of the definition's provider.supportsImages.
+      supportsImages: v.optional(v.boolean()),
     }),
     // On the openai-api arm only -- `claude-sdk` carries its own context
     // state through the SDK resume, so a seed there is not representable. See the type's doc comment for what `estimated` means.
@@ -298,6 +316,9 @@ export const EmbeddedAgentCommandSchema = v.union([
     type: v.literal('user-message'),
     id: v.string(),
     text: v.string(),
+    // Attachment references the subprocess may resolve into real content
+    // parts. Absent/empty = no attachments, unchanged today.
+    attachments: v.optional(v.array(EmbeddedAgentAttachmentSchema)),
   }),
   v.strictObject({ v: v.literal(1), type: v.literal('cancel') }),
   v.strictObject({
@@ -498,6 +519,9 @@ export const EmbeddedAgentServerEventSchema = v.union([
     text: v.string(),
     clientMessageId: v.optional(v.string()),
     notification: v.optional(EmbeddedAgentServerNotificationSchema),
+    // Mirrors the originating EmbeddedAgentCommand's `attachments`. See the
+    // type's doc comment.
+    attachments: v.optional(v.array(EmbeddedAgentAttachmentSchema)),
   }),
   // Transcript Restore, R1 (the local half of #1273). Server-authored --
   // never a synthesized `turn-error`. See the type's doc comment.

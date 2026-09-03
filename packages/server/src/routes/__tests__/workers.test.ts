@@ -20,7 +20,7 @@ import { registerJobHandlers } from '../../jobs/handlers.js';
 import { WorkerOutputFileManager } from '../../lib/worker-output-file.js';
 import { SessionManager } from '../../services/session-manager.js';
 import { JsonSessionRepository } from '../../repositories/index.js';
-import { MAX_MESSAGE_FILES, MAX_TOTAL_FILE_SIZE } from '@agent-console/shared';
+import { MAX_MESSAGE_FILES, MAX_TOTAL_FILE_SIZE, MAX_IMAGE_ATTACHMENT_BYTES } from '@agent-console/shared';
 import { McpTokenRegistry } from '../../mcp/mcp-auth.js';
 import { AgentDirectory } from '../../services/agent-directory.js';
 import type { SpawnAsUserFn, SpawnAsUserOpts, SpawnAsUserResult } from '../../services/privilege-elevation.js';
@@ -358,6 +358,85 @@ describe('Workers API', () => {
 
       const body = (await res.json()) as { error: string };
       expect(body.error).toContain('Total file size exceeds limit');
+    });
+
+    it('should return 400 when an image attachment exceeds the per-image cap, without writing it to disk (Issue #1571)', async () => {
+      const session = await sessionManager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+
+      // Spy on Bun.write, same pattern as the "save uploaded files" test
+      // below -- proves nothing reached disk when validation rejects first.
+      const writtenPaths: string[] = [];
+      const originalBunWrite = Bun.write;
+      Bun.write = ((dest: unknown, input: unknown, options?: unknown) => {
+        if (typeof dest === 'string') {
+          writtenPaths.push(dest);
+        }
+        return originalBunWrite(
+          dest as Parameters<typeof originalBunWrite>[0],
+          input as Parameters<typeof originalBunWrite>[1],
+          options as Parameters<typeof originalBunWrite>[2],
+        );
+      }) as typeof Bun.write;
+
+      try {
+        const formData = new FormData();
+        formData.append('toWorkerId', 'some-worker-id');
+        formData.append('content', 'hello');
+
+        // Stays under MAX_TOTAL_FILE_SIZE (10 MiB) but over MAX_IMAGE_ATTACHMENT_BYTES (5 MiB),
+        // so only the new per-image check can be the cause of rejection.
+        const oversizedImage = new Uint8Array(MAX_IMAGE_ATTACHMENT_BYTES + 1);
+        const file = new File([oversizedImage], 'large-image.png', { type: 'image/png' });
+        formData.append('files', file);
+
+        const res = await app.request(`/api/sessions/${session.id}/messages`, {
+          method: 'POST',
+          body: formData,
+        });
+
+        expect(res.status).toBe(400);
+        const body = (await res.json()) as { error: string };
+        expect(body.error).toContain('Image attachment exceeds');
+        expect(body.error).toContain('large-image.png');
+
+        expect(writtenPaths.length).toBe(0);
+      } finally {
+        Bun.write = originalBunWrite;
+      }
+    });
+
+    it('should NOT reject a non-image file of the same over-cap size (governed only by MAX_TOTAL_FILE_SIZE, Issue #1571)', async () => {
+      const session = await sessionManager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+      const worker = await sessionManager.createWorker(session.id, {
+        type: 'agent',
+        agentId: 'claude-code',
+      });
+      expect(worker).not.toBeNull();
+
+      const formData = new FormData();
+      formData.append('toWorkerId', worker!.id);
+      formData.append('content', 'hello');
+
+      // Same size as the rejected image above, but not an image mime type --
+      // still under MAX_TOTAL_FILE_SIZE, so this must succeed.
+      const oversizedNonImage = new Uint8Array(MAX_IMAGE_ATTACHMENT_BYTES + 1);
+      const file = new File([oversizedNonImage], 'large-file.bin', { type: 'application/octet-stream' });
+      formData.append('files', file);
+
+      const res = await app.request(`/api/sessions/${session.id}/messages`, {
+        method: 'POST',
+        body: formData,
+      });
+
+      expect(res.status).toBe(201);
     });
 
     // Issue #830 removed the in-process readiness cache; ensureUploadDir() now
