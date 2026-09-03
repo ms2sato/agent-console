@@ -71,11 +71,15 @@ describe('PTY-notification-to-plain-user-message containment (Issue #1351, grep-
  * structured notification, and its PTY-backed branch is the only place in
  * the "PR A" scope (the notification queue / create_timer / create_
  * conditional_wakeup seam introduced by #1574) allowed to call
- * `writePtyNotification` directly. Every other DIRECT caller of
- * `writePtyNotification` outside `pty-notification.ts` itself (the
- * function's own defining file, excluded the same way the sibling test
- * above excludes it) must be one of the two categories below -- nothing
- * else.
+ * `writePtyNotification` directly. PR B (#1574) completed the follow-up
+ * migration: the interactive-process EXIT notification (`internal-process`,
+ * `app-context.ts`) and the stdout content-routing notification
+ * (`process-output-router.ts`) both now go through `SessionManager.
+ * deliverWorkerNotification` instead of calling `writePtyNotification`
+ * directly. As a result, every DIRECT caller of `writePtyNotification`
+ * outside `pty-notification.ts` itself (the function's own defining file,
+ * excluded the same way the sibling test above excludes it) is now
+ * PERMANENTLY just the two files below -- nothing else.
  *
  * This is an EXACT-SET assertion, not merely "the app-context.ts callbacks
  * and mcp-server.ts's send_session_message don't call it directly anymore" --
@@ -102,15 +106,6 @@ describe('writePtyNotification direct-caller exact-set (Issue #1574, R1, grep-ba
   const PERMANENTLY_OUT_OF_SCOPE = [
     path.join('services', 'inbound', 'handlers.ts'),
     path.join('routes', 'review-queue.ts'),
-  ];
-
-  // PR B's PENDING migration (run_process): the interactive-process EXIT
-  // notification (`internal-process`, app-context.ts) and the stdout
-  // content-routing notification (process-output-router.ts) are not yet
-  // moved onto the seam -- that is #1574's follow-up PR, not this one.
-  const PENDING_PR_B_MIGRATION = [
-    path.join('app-context.ts'),
-    path.join('services', 'process-output-router.ts'),
   ];
 
   /**
@@ -176,8 +171,8 @@ describe('writePtyNotification direct-caller exact-set (Issue #1574, R1, grep-ba
     return JSON.parse(stdout) as string[];
   }
 
-  it('the full set of direct writePtyNotification callers outside its own defining file is EXACTLY the expected four files -- no more, no fewer', async () => {
-    const expected = [...PERMANENTLY_OUT_OF_SCOPE, ...PENDING_PR_B_MIGRATION].sort();
+  it('the full set of direct writePtyNotification callers outside its own defining file is EXACTLY the two permanently-out-of-scope files -- no more, no fewer', async () => {
+    const expected = [...PERMANENTLY_OUT_OF_SCOPE].sort();
     const actual = await findDirectCallers(SERVER_SRC, [DEFINING_FILE, SEAM_FILE]);
 
     expect(actual).toEqual(expected);

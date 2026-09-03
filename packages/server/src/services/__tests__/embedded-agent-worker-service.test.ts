@@ -496,7 +496,10 @@ describe('EmbeddedAgentWorkerService.activate', () => {
       workerId: h.workerId,
       repositoryId: 'repo-1',
       cwd: '/test/worktree',
-      attachmentRoots: [resolveUploadDir()],
+      // attachmentRoots must include the messages dir so an embedded-agent
+      // worker can Read a run_process outputMode: 'message' notification
+      // file, which lives outside the session's locationPath.
+      attachmentRoots: [resolveUploadDir(), new SessionDataPathResolver('/test/config/repositories/test-repo').getMessagesDir()],
     });
     expect(first.maxToolIterations).toBe(25);
   });
@@ -2447,6 +2450,52 @@ describe('EmbeddedAgentWorkerService — mid-turn notification queue (R3, Issue 
     await waitFor(() => h.worker.activityState === 'idle');
     await new Promise((resolve) => setTimeout(resolve, 10));
     expect(h.fake.stdinWrites.length).toBe(stdinWritesBeforeIdle);
+  });
+
+  it('q6: three internal-process notifications queued mid-turn are delivered over three idles in order (kind-agnostic queue, Issue #1574 PR B)', async () => {
+    // PR A's q1-q5 tests above only exercise the generic mid-turn queue
+    // with internal-timer/internal-conditional-wakeup kinds. This proves the
+    // same FIFO queue integrates correctly with run_process's internal-
+    // process notifications too -- the queue itself has no per-kind branching.
+    function withProcessId(processId: string): PtyNotificationParams {
+      return {
+        kind: 'internal-process',
+        tag: 'internal:process',
+        fields: { processId, command: 'echo hi', message: `chunk ${processId}` },
+        intent: 'triage',
+      };
+    }
+
+    const h = setup();
+    await h.service.activate(h.sessionId, h.workerId);
+    await h.service.sendUserMessage(h.sessionId, h.workerId, 'busy');
+    const stdinWritesBeforeQueue = h.fake.stdinWrites.length;
+
+    expect(await h.service.sendSystemNotification(h.sessionId, h.workerId, withProcessId('proc-1'))).toEqual({
+      ok: true,
+      queued: true,
+    });
+    expect(await h.service.sendSystemNotification(h.sessionId, h.workerId, withProcessId('proc-2'))).toEqual({
+      ok: true,
+      queued: true,
+    });
+    expect(await h.service.sendSystemNotification(h.sessionId, h.workerId, withProcessId('proc-3'))).toEqual({
+      ok: true,
+      queued: true,
+    });
+    expect(h.fake.stdinWrites.length).toBe(stdinWritesBeforeQueue);
+
+    h.fake.pushStdout('{"v":1,"type":"state","state":"idle"}\n');
+    await waitFor(() => h.fake.stdinWrites.length === stdinWritesBeforeQueue + 1);
+    expect(JSON.parse(h.fake.stdinWrites[stdinWritesBeforeQueue]).text).toContain('message="chunk proc-1"');
+
+    h.fake.pushStdout('{"v":1,"type":"state","state":"idle"}\n');
+    await waitFor(() => h.fake.stdinWrites.length === stdinWritesBeforeQueue + 2);
+    expect(JSON.parse(h.fake.stdinWrites[stdinWritesBeforeQueue + 1]).text).toContain('message="chunk proc-2"');
+
+    h.fake.pushStdout('{"v":1,"type":"state","state":"idle"}\n');
+    await waitFor(() => h.fake.stdinWrites.length === stdinWritesBeforeQueue + 3);
+    expect(JSON.parse(h.fake.stdinWrites[stdinWritesBeforeQueue + 2]).text).toContain('message="chunk proc-3"');
   });
 });
 
