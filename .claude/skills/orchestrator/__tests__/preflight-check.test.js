@@ -1,5 +1,23 @@
-import { describe, it, expect } from 'bun:test';
-import { formatCoverageVerdict } from '../preflight-check.js';
+import { describe, it, expect, mock } from 'bun:test';
+import { formatCoverageVerdict, printEmbeddedAgentStdoutWritersCheck } from '../preflight-check.js';
+
+/**
+ * Captures every console.log call made during `fn()` and returns the
+ * joined output, restoring console.log afterward regardless of outcome.
+ */
+function captureConsoleLog(fn) {
+  const lines = [];
+  const original = console.log;
+  console.log = mock((...args) => {
+    lines.push(args.join(' '));
+  });
+  try {
+    fn();
+  } finally {
+    console.log = original;
+  }
+  return lines.join('\n');
+}
 
 describe('formatCoverageVerdict (Issue #1189)', () => {
   it('reports missing coverage when unit gaps exist, regardless of other flags', () => {
@@ -61,5 +79,47 @@ describe('formatCoverageVerdict (Issue #1189)', () => {
       hasCommentOnlyExemptions: false,
     });
     expect(result).toBe('**All production files have corresponding tests.** ✅');
+  });
+});
+
+describe('printEmbeddedAgentStdoutWritersCheck', () => {
+  it('renders the success message when exitCode is 0, regardless of stdout content', () => {
+    const output = captureConsoleLog(() => {
+      printEmbeddedAgentStdoutWritersCheck({ exitCode: 0, stdout: '', stderr: '', spawnFailed: false });
+    });
+    expect(output).toContain('✅ Only the allowlisted wire-protocol writer writes to stdout');
+    expect(output).not.toContain('crashed before producing output');
+    expect(output).not.toContain('Found 0 line(s)');
+  });
+
+  it('renders the crash-specific message, not the empty-violation-report framing, when exitCode is non-zero with empty stdout', () => {
+    const result = {
+      exitCode: 1,
+      stdout: '',
+      stderr: 'TypeError: something exploded',
+      spawnFailed: false,
+    };
+    const output = captureConsoleLog(() => {
+      printEmbeddedAgentStdoutWritersCheck(result);
+    });
+    expect(output).toContain('crashed before producing output (exit 1)');
+    expect(output).toContain('TypeError: something exploded');
+    expect(output).not.toContain('Found 0 line(s)');
+    expect(output).not.toContain('violation(s)');
+  });
+
+  it('renders the normal violation-report branch when exitCode is non-zero with non-empty stdout', () => {
+    const result = {
+      exitCode: 1,
+      stdout: 'packages/embedded-agent/src/foo.ts:12:3 console.log(...)',
+      stderr: '',
+      spawnFailed: false,
+    };
+    const output = captureConsoleLog(() => {
+      printEmbeddedAgentStdoutWritersCheck(result);
+    });
+    expect(output).toContain('Found 1 line(s) of output, including non-allowlisted stdout-writer violation(s)');
+    expect(output).toContain('packages/embedded-agent/src/foo.ts:12:3 console.log(...)');
+    expect(output).not.toContain('crashed before producing output');
   });
 });

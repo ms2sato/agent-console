@@ -19,6 +19,7 @@
     "test:coverage": "bun run --filter '*' test:coverage",
     "check:lang": "bun scripts/check-public-artifacts-language.mjs",
     "check:mock-module": "bun scripts/check-mock-module-poisoners.mjs",
+    "check:embedded-agent-stdout": "bun scripts/check-embedded-agent-stdout-writers.mjs",
     "check:preview-sandbox-browser": "bun scripts/run-preview-sandbox-browser-check.mjs",
     "check:artifact-sandbox-boundary": "bun scripts/smoke/check-artifact-sandbox-boundary.mjs",
     "check:artifact-server-story-e2e": "bun scripts/smoke/check-artifact-server-story-e2e.mjs",
