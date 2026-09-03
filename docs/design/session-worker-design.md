@@ -378,6 +378,57 @@ interface CreateWorkerResponse {
 }
 ```
 
+## Session Memo
+
+Each session has at most one Markdown memo, stored server-side as a single
+file (`MemoService`, see [glossary.md § Memo](../glossary.md#memo) for the
+full concept summary). Two REST endpoints expose it:
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/sessions/:id/memo` | Read the session's memo. `{ content: string \| null }` -- `null` means no memo exists. |
+| PUT | `/api/sessions/:id/memo` | Write (or delete) the session's memo. Body: `{ content: string }` (`UpdateSessionMemoRequestSchema`). Response: `{ content: string \| null }`, same shape as GET. |
+
+**Ownership (Issue #1569, R5).** The ownership check only runs when
+`AUTH_MODE === 'multi-user'`. There, `PUT` requires the authenticated user to
+be either the session's owner (`session.createdBy === authUser.id`) or, for a
+[SharedSession](../glossary.md#sharedsession), any authenticated user
+(`sharedAccountRegistry.isSharedUserId(session.createdBy)`); otherwise the
+route returns 403. In single-user mode (`AUTH_MODE === 'none'`) the check is
+skipped entirely -- `session.createdBy` is nullable (a legacy or
+creator-less session persists it as `undefined`, see
+`packages/server/src/database/mappers.ts`), so an unconditional check would
+403 the single-user owner on their own such sessions instead of trivially
+passing. Skipping the check in single-user mode is what actually makes those
+sessions writable there, not an equality that happens to always hold.
+
+**Empty-content deletes (R4).** A `PUT` whose `content.trim()` is empty
+after trimming deletes the memo file (via `SessionManager.deleteMemo`)
+rather than writing an empty string to disk -- an on-disk empty file would
+make `readMemo` return `''` forever, which is never `null` and therefore
+never renders as "no memo exists". The route returns `{ content: null }` in
+this case.
+
+**Realtime broadcast.** Both the write and delete paths fire the
+`memo-updated` app-socket message (`{ type: 'memo-updated', sessionId,
+content }`, `MemoUpdatedSchema` in
+`packages/shared/src/schemas/app-server-message.ts`) after the underlying
+file operation succeeds. **On the wire, `content: ''` means "the memo was
+deleted"** -- the schema's `content` field is a plain (non-nullable)
+`string`; `null` is a REST-response-only value and never appears in the
+broadcast. Clients must not conflate the two: a REST `GET`/`PUT` response
+uses `null` for "no memo", while the broadcast uses `''` for the same state.
+
+**Concurrent-edit policy (R6, last-write-wins).** The memo editor does not
+merge concurrent edits. If the panel receives a `memo-updated` broadcast
+while the user has unsaved local edits, it keeps the user's typed text as
+the source of truth (never silently overwrites it) and shows a "Load
+latest" affordance so the user can explicitly discard their draft and pull
+the newer content. A `PUT` always overwrites whatever is currently on disk
+-- there is no conflict detection or optimistic-concurrency check at the
+API level. (Client-side implementation of the affordance is out of scope
+for this document's server-focused sections; see the memo panel component.)
+
 ## Server Architecture
 
 ### Before

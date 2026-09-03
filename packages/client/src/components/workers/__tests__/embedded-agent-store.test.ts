@@ -530,6 +530,70 @@ describe('embedded-agent-store', () => {
     expect(entries[0].key).not.toBe(entries[1].key);
   });
 
+  it('exposes a TodoWrite tool-call/tool-result pair delivered via history replay so TodoPanel can render it', async () => {
+    // This test deliberately does double duty, stated explicitly per the
+    // task instructions rather than left implicit:
+    //
+    // 1. It is the client-side half of the "store exposes the entry" AC
+    //    pin -- the packages/integration boundary test for TodoWrite
+    //    (written separately) scopes OUT client-side verification and
+    //    defers it here, following the precedent set by
+    //    embedded-agent-display-history-rotation-boundary.test.ts.
+    // 2. It is TodoPanel's "survives a history replay" pin: entries arrive
+    //    via `historyMessage` (a replayed transcript), not `outputMessage`
+    //    (live streaming), and TodoPanel renders correctly from that
+    //    replayed snapshot.
+    const instance = getOrCreateEmbeddedAgentWorker('s-todo', 'w-todo');
+    const ws = MockWebSocket.getLastInstance();
+    ws!.simulateOpen();
+
+    const data = ndjson(
+      {
+        v: 1,
+        type: 'tool-call',
+        turnId: 't1',
+        callId: 'c1',
+        name: 'TodoWrite',
+        args: {
+          todos: [
+            { content: 'Write the panel', status: 'completed', activeForm: 'Writing the panel' },
+            { content: 'Wire it up', status: 'in_progress', activeForm: 'Wiring it up' },
+          ],
+        },
+      },
+      {
+        v: 1,
+        type: 'tool-result',
+        turnId: 't1',
+        callId: 'c1',
+        ok: true,
+        result: 'Todo list updated: 2 items (0 pending, 1 in progress, 1 completed)',
+      },
+    );
+    ws!.simulateMessage(historyMessage(data, data.length));
+    await flush();
+
+    const entries = instance.getSnapshot().entries;
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({ kind: 'tool-call', name: 'TodoWrite', result: { ok: true } });
+
+    // This file is `.ts`, not `.tsx`, so JSX syntax is unavailable here --
+    // `React.createElement` is the plain-TS equivalent of `<TodoPanel
+    // entries={entries} />`.
+    const React = await import('react');
+    const { render, screen, cleanup } = await import('@testing-library/react');
+    const { TodoPanel } = await import('../TodoPanel');
+    try {
+      render(React.createElement(TodoPanel, { entries }));
+      // in_progress item shows activeForm, not content -- proves the render
+      // actually consumed the store-derived entries, not a placeholder.
+      expect(screen.getByText('Wiring it up')).toBeTruthy();
+      expect(screen.getByText('Write the panel')).toBeTruthy();
+    } finally {
+      cleanup();
+    }
+  });
+
   it('folds server-authored exited events from replayed history (full EmbeddedAgentStreamEvent union)', async () => {
     // Architect pre-directive #3 (Issue #1021): the client MUST parse replayed
     // history with the full EmbeddedAgentStreamEventSchema union, not the

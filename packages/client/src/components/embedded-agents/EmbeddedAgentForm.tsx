@@ -22,7 +22,12 @@ import { FormOverlay } from '../ui/Spinner';
  * risk profile (creating/modifying files) is distinct from Bash's (running
  * arbitrary shell commands) and warrants its own warning copy.
  */
-export const READ_ONLY_TOOL_NAMES: readonly EmbeddedAgentToolName[] = ['Read', 'Glob', 'Grep'];
+export const READ_ONLY_TOOL_NAMES: readonly EmbeddedAgentToolName[] = [
+  'Read',
+  'Glob',
+  'Grep',
+  'TodoWrite',
+];
 export const COMMAND_EXECUTION_TOOL_NAMES: readonly EmbeddedAgentToolName[] = ['Bash'];
 export const FILE_MODIFICATION_TOOL_NAMES: readonly EmbeddedAgentToolName[] = ['Write', 'Edit'];
 
