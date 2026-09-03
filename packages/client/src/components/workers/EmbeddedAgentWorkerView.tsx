@@ -21,7 +21,7 @@ import { ContextUsageBar } from './ContextUsageBar';
 import { TodoPanel } from './TodoPanel';
 import { useEmbeddedAgents } from '../../hooks/useEmbeddedAgents';
 import { logger } from '../../lib/logger';
-import { updateEmbeddedAgentWorker } from '../../lib/api';
+import { updateEmbeddedAgentWorker, sendWorkerMessage } from '../../lib/api';
 import { copyToClipboard } from '../../lib/clipboard';
 
 /** Entries folded into the collapsed-by-default "Working" accordion. */
@@ -528,12 +528,16 @@ export function EmbeddedAgentWorkerView({
         sessionId={sessionId}
         targetWorkerId={workerId}
         newMessage={null}
-        onSend={async (content) => {
-          await sendUserMessage(content);
+        onSend={async (content, files) => {
+          if (files && files.length > 0) {
+            await sendWorkerMessage(sessionId, workerId, content, files);
+          } else {
+            await sendUserMessage(content);
+          }
         }}
         onEscape={cancel}
         slashCompletionEnabled={false}
-        attachmentsEnabled={false}
+        attachmentsEnabled={true}
         cancelState={{ active: isTurnActive, onCancel: cancel }}
       />
     </div>

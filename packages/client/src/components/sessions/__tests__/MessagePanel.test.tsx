@@ -923,7 +923,7 @@ describe('MessagePanel', () => {
 
       const attachButton = view.getByLabelText('Attach files') as HTMLButtonElement;
       expect(attachButton.disabled).toBe(true);
-      expect(attachButton.title).toBe('Enable after Read tool ships — see #1004 FF-1a');
+      expect(attachButton.title).toBe('Attachments are not available for this worker');
     });
 
     it('does not add a file chip on drop when false', async () => {

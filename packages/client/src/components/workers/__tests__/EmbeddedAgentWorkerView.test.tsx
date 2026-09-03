@@ -3469,6 +3469,109 @@ describe('EmbeddedAgentWorkerView', () => {
       expect(screen.getByText('Tasks (0/1 completed)')).toBeTruthy();
     });
   });
+
+  describe('attachments (#1570)', () => {
+    // The server side already fully supports attachments for embedded-agent
+    // workers; this suite pins the client-side onSend branch added in
+    // EmbeddedAgentWorkerView: no files -> WebSocket (`sendUserMessage`,
+    // which carries `clientMessageId`), files present -> REST
+    // (`sendWorkerMessage`, the same function the PTY-worker path uses).
+    // Mocking follows this file's existing convention (fetch-level, not
+    // module-level -- see the auto-compaction toggle tests above) rather
+    // than mocking `../../lib/api`, matching testing.md's "mock at the
+    // lowest level" rule.
+
+    it('sends over the WebSocket (embedded-user-message) and does NOT call the REST messages endpoint when no files are attached', async () => {
+      const fetchMock = mock((input: RequestInfo | URL, _init?: RequestInit) => embeddedViewFetch(input));
+      globalThis.fetch = Object.assign(fetchMock, { preconnect: () => {} });
+      renderView({ sessionId: 's-attach-nofile', workerId: 'w-attach-nofile' });
+      const ws = MockWebSocket.getLastInstance();
+      act(() => {
+        ws?.simulateOpen();
+      });
+
+      const textarea = screen.getByPlaceholderText(
+        'Send message to worker... (Ctrl+Enter to send)',
+      ) as HTMLTextAreaElement;
+      await act(async () => {
+        fireEvent.change(textarea, { target: { value: 'no attachments here' } });
+      });
+      await act(async () => {
+        fireEvent.keyDown(textarea, { key: 'Enter', ctrlKey: true });
+      });
+      await flush();
+
+      const sent = (ws!.send.mock.calls as string[][]).map((c) => JSON.parse(c[0])) as {
+        type: string;
+        text?: string;
+      }[];
+      const sentMessage = sent.find((m) => m.type === 'embedded-user-message');
+      expect(sentMessage?.text).toBe('no attachments here');
+
+      const postedToMessages = fetchMock.mock.calls.some(
+        ([input, init]) =>
+          String(input).endsWith('/messages') && (init as RequestInit | undefined)?.method === 'POST',
+      );
+      expect(postedToMessages).toBe(false);
+    });
+
+    it('sends via the REST messages endpoint (sendWorkerMessage) and does NOT send over the WebSocket when files are attached', async () => {
+      const fetchMock = mock(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = typeof input === 'string' ? input : input.toString();
+        if (url.endsWith('/messages') && init?.method === 'POST') {
+          return new Response(JSON.stringify({ message: { id: 'm1' } }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          });
+        }
+        return embeddedViewFetch(input);
+      });
+      globalThis.fetch = Object.assign(fetchMock, { preconnect: () => {} });
+      renderView({ sessionId: 's-attach-file', workerId: 'w-attach-file' });
+      const ws = MockWebSocket.getLastInstance();
+      act(() => {
+        ws?.simulateOpen();
+      });
+
+      const textarea = screen.getByPlaceholderText(
+        'Send message to worker... (Ctrl+Enter to send)',
+      ) as HTMLTextAreaElement;
+      const mockFile = new File(['file-data'], 'test.png', { type: 'image/png' });
+      await act(async () => {
+        fireEvent.paste(textarea, {
+          clipboardData: { items: [{ type: 'image/png', getAsFile: () => mockFile }] },
+        });
+      });
+      await act(async () => {
+        fireEvent.change(textarea, { target: { value: 'here is a file' } });
+      });
+      await act(async () => {
+        fireEvent.keyDown(textarea, { key: 'Enter', ctrlKey: true });
+      });
+
+      await waitFor(() => {
+        const postCall = fetchMock.mock.calls.find(
+          ([input, init]) =>
+            String(input).endsWith('/messages') && (init as RequestInit | undefined)?.method === 'POST',
+        );
+        expect(postCall).toBeDefined();
+      });
+
+      const postCall = fetchMock.mock.calls.find(
+        ([input, init]) =>
+          String(input).endsWith('/messages') && (init as RequestInit | undefined)?.method === 'POST',
+      )!;
+      expect(String(postCall[0])).toBe('/api/sessions/s-attach-file/messages');
+      const body = (postCall[1] as RequestInit).body as FormData;
+      expect(body.get('toWorkerId')).toBe('w-attach-file');
+      expect(body.get('content')).toBe('here is a file');
+      const uploadedFile = body.get('files') as File;
+      expect(uploadedFile.name).toBe('test.png');
+
+      const sent = (ws!.send.mock.calls as string[][] | undefined)?.map((c) => JSON.parse(c[0])) ?? [];
+      expect(sent.some((m) => m.type === 'embedded-user-message')).toBe(false);
+    });
+  });
 });
 
 describe('formatTokenCount', () => {

@@ -60,6 +60,7 @@ import {
   type PtyNotificationParams,
 } from '../lib/pty-notification.js';
 import { createLogger } from '../lib/logger.js';
+import { resolveUploadDir } from '../lib/message-upload-dir.js';
 import { serverConfig } from '../lib/server-config.js';
 import * as path from 'node:path';
 import { existsSync } from 'node:fs';
@@ -788,6 +789,7 @@ export class EmbeddedAgentWorkerService {
         workerId,
         ...(session.type === 'worktree' ? { repositoryId: session.repositoryId } : {}),
         cwd: session.locationPath,
+        attachmentRoots: [resolveUploadDir()],
       };
       const everActivated = await this.deps.workerOutputFileManager.hasEverBeenActivated(sessionId, workerId, resolver);
       /**

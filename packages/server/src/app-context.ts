@@ -16,7 +16,7 @@ import type { JobQueue } from './jobs/job-queue.js';
 import type { SessionRepository } from './repositories/session-repository.js';
 import type { UserRepository } from './repositories/user-repository.js';
 import type { SessionManager } from './services/session-manager.js';
-import type { runAsUser } from './services/privilege-elevation.js';
+import type { runAsUser, SpawnAsUserFn } from './services/privilege-elevation.js';
 import type { RepositoryManager } from './services/repository-manager.js';
 import type { NotificationManager } from './services/notifications/notification-manager.js';
 import type { AgentManager } from './services/agent-manager.js';
@@ -664,6 +664,17 @@ export interface CreateTestContextOptions {
    * want a real filesystem write should inject an always-success fake here.
    */
   runAsUserImpl?: typeof runAsUser;
+  /**
+   * Test seam for `EmbeddedAgentWorkerService`'s subprocess spawn. Threaded
+   * straight through to `SessionManager.create()`'s own `spawnAsUserFn`
+   * seam. Defaults to `undefined`, which leaves `SessionManager` on its own
+   * default (the real `spawnAsUser`) -- production and every existing test
+   * context are unaffected. Without this, tests that need to fake an
+   * embedded-agent subprocess spawn while going through `createTestContext`
+   * have to construct their own `SessionManager.create(...)` directly,
+   * duplicating this function's context wiring.
+   */
+  spawnAsUserFn?: SpawnAsUserFn;
   /** Callback to broadcast messages to app WebSocket clients (default: no-op). */
   broadcastToApp?: (msg: AppServerMessage) => void;
 }
@@ -768,6 +779,7 @@ export async function createTestContext(
     // unchanged for tests that do not override it.
     ...(overrides?.getMcpBaseUrl ? { getMcpBaseUrl: overrides.getMcpBaseUrl } : {}),
     runAsUserImpl: overrides?.runAsUserImpl,
+    spawnAsUserFn: overrides?.spawnAsUserFn,
     notificationManager,
     annotationService,
     workerOutputFileManager,

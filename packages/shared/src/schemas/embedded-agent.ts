@@ -223,6 +223,7 @@ const EmbeddedAgentInitCommandBaseFields = {
     workerId: v.string(),
     repositoryId: v.optional(v.string()),
     cwd: v.string(),
+    attachmentRoots: v.optional(v.array(v.string())),
   }),
   systemPrompt: v.optional(v.string()),
   enabledTools: v.optional(EnabledToolsSchema),
