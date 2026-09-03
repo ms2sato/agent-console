@@ -593,11 +593,13 @@ export class WorkerManager {
       // respective sources.
       //
       // Gated on the ACTUALLY-SELECTED `template` (not agent.commandTemplate):
-      // a 'continue' startupIntent may select agent.continueTemplate, which
-      // for the builtin Claude Code agent has no model template placeholder
-      // even though commandTemplate does. Substituting an override into a
-      // template that doesn't reference the variable is a silent no-op either
-      // way, but
+      // a 'continue' startupIntent may select agent.continueTemplate, and a
+      // custom agent's continueTemplate may omit the model/effort
+      // placeholder(s) commandTemplate has (the builtin Claude Code agent's
+      // continueTemplate DOES now also substitute the model override, so
+      // its override reaches the continue path too -- see claude-code.ts).
+      // Substituting an override into a template that doesn't reference
+      // the variable is a silent no-op either way, but
       // gating here keeps the merge honest about what actually reaches the
       // spawned command -- this is an internal template-selection detail, not
       // a user-supplied incapable-agent case, so it must NOT throw (that

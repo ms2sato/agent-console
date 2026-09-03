@@ -7,8 +7,7 @@ describe('claudeCodeAgent.commandTemplate', () => {
     expect(claudeCodeAgent.commandTemplate).toBe('claude {{model:+--model}}{{prompt}}');
   });
 
-  it('should leave continueTemplate and headlessTemplate unaffected by the model optional-argument change', () => {
-    expect(claudeCodeAgent.continueTemplate).toBe('claude -c');
+  it('should leave headlessTemplate unaffected by the model optional-argument change', () => {
     expect(claudeCodeAgent.headlessTemplate).toBe('claude -p --output-format text {{prompt}}');
   });
 
@@ -34,5 +33,41 @@ describe('claudeCodeAgent.commandTemplate', () => {
     });
 
     expect(result.command).toBe("claude --model 'claude-sonnet-5' 'do the task'");
+  });
+});
+
+// Issue #1299 PR-2: continueTemplate gained the same {{model:+--model}}
+// optional-argument form commandTemplate already had, so a worker-level
+// model override (agent-surface.md Ruling 3) survives on the continue path
+// too, not only on fresh/deliver activations. Mirrors the commandTemplate
+// byte-identity + model-substitution pair above, against
+// claudeCodeAgent.continueTemplate specifically via expandTemplate -- an
+// executable pin, not only the literal-string assertion below.
+describe('claudeCodeAgent.continueTemplate', () => {
+  it('should use the {{model:+--model}}-c optional-argument form', () => {
+    expect(claudeCodeAgent.continueTemplate).toBe('claude {{model:+--model}}-c');
+  });
+
+  it('should expand to exactly "claude -c" when templateVars has no model', () => {
+    const result = expandTemplate({
+      // continueTemplate is optional on AgentDefinition in general, but the
+      // builtin Claude Code agent always declares one (claude-code.ts).
+      template: claudeCodeAgent.continueTemplate!,
+      cwd: '/repo',
+    });
+
+    expect(result.command).toBe('claude -c');
+  });
+
+  it('should include --model <value> ahead of -c when templateVars provides a model', () => {
+    const result = expandTemplate({
+      // continueTemplate is optional on AgentDefinition in general, but the
+      // builtin Claude Code agent always declares one (claude-code.ts).
+      template: claudeCodeAgent.continueTemplate!,
+      cwd: '/repo',
+      templateVars: { model: 'claude-sonnet-5' },
+    });
+
+    expect(result.command).toBe("claude --model 'claude-sonnet-5' -c");
   });
 });

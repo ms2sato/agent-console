@@ -28,6 +28,7 @@ import type { SpawnAsUserFn, runAsUser, RunAsUserOpts } from '../privilege-eleva
 import type { LookupOsUserFn } from '../os-user-lookup.js';
 import type { sweepOrphanProcesses } from '../orphan-process-sweeper.js';
 import { McpTokenRegistry } from '../../mcp/mcp-auth.js';
+import { isInternalPtyWorker } from '../worker-types.js';
 import { EmbeddedMessageDeliveryError } from '../embedded-agent-worker-service.js';
 
 // Test config directory
@@ -4321,6 +4322,35 @@ describe('SessionManager', () => {
         expect(updatedSession.worktreeId).toBe('final-branch');
       }
     });
+
+    // Issue #1299 PR-2, T5c (Orchestrator-verified addendum to the T5/T5b
+    // product-bug fix above): the model-override drop on the continue
+    // template was PRE-EXISTING on this per-session caller
+    // (RestartSessionDialog's "Continue (-c)" option calls
+    // restartAgentWorker(..., 'continue') directly) -- #1299 only widened
+    // its reach to Restart All. Both callers of continueTemplate are pinned
+    // here, not only the new one. Polarity: with claude-code.ts's
+    // continueTemplate change reverted to the plain 'claude -c' literal,
+    // this assertion fails -- confirmed FAILS. Received `"claude -c\r"`
+    // (no --model at all).
+    it("preserves the worker's model override on an explicit 'continue' restart", async () => {
+      const manager = await getSessionManager();
+      const session = await manager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: CLAUDE_CODE_AGENT_ID,
+        model: 'claude-opus-4-6',
+      });
+      const agentWorker = session.workers.find((w: Worker) => w.type === 'agent')!;
+
+      await manager.restartAgentWorker(session.id, agentWorker.id, 'continue');
+
+      const newestPty = ptyFactory.instances.at(-1);
+      expect(newestPty).toBeDefined();
+      const written = newestPty!.writtenData.join('');
+      expect(written).toContain("--model 'claude-opus-4-6'");
+      expect(written).toContain('-c');
+    });
   });
 
   describe('updateSessionMetadata - no auto-restart on branch rename', () => {
@@ -5899,12 +5929,14 @@ describe('SessionManager', () => {
       expect(sessionIds).toContain(session2.id);
     });
 
-    // Issue #1299 AC required test #1: Restart All still restarts fresh in
-    // PR-1. This catches PR-2's continue-by-default flip ('system') leaking
-    // in early -- a mis-implementation that passes 'system' instead of
-    // 'fresh' would select the continue template ('claude -c') here instead
-    // of the fresh command template.
-    it("restarts with the fresh command template, not the continue template ('claude -c') [POLARITY]", async () => {
+    // Issue #1299 PR-2 AC test T1: inverts the PR-1 pin above -- PR-1
+    // guarded that 'system' had NOT leaked in early (this bulk path still
+    // used 'fresh'); this guards that 'system' HAS landed. With 'fresh'
+    // restored at session-manager.ts:1573 this test fails -- measured:
+    // confirmed FAILS. Received `"claude ''\r"` (the fresh command template
+    // 'claude {{model:+--model}}{{prompt}}' with an empty prompt, not the
+    // continue template).
+    it("restarts with the continue template ('claude -c') when no initial prompt is owed [POLARITY]", async () => {
       const manager = await getSessionManager();
       await manager.createSession({
         type: 'quick',
@@ -5916,10 +5948,233 @@ describe('SessionManager', () => {
 
       const newestPty = ptyFactory.instances.at(-1);
       expect(newestPty).toBeDefined();
-      // The built-in agent's continueTemplate is exactly 'claude -c'; the
-      // commandTemplate ('claude {{model:+--model}}{{prompt}}') never
-      // produces that literal string.
-      expect(newestPty!.writtenData.join('')).not.toContain('claude -c');
+      // 'system' resolves to 'continue' when no initial prompt is owed
+      // (Issue #1299 R2) -- the builtin agent's continueTemplate expands to
+      // exactly 'claude -c' when no model override is set (Issue #1299 PR-2
+      // also gave it a {{model:+--model}} substitution point -- see
+      // claude-code.ts).
+      expect(newestPty!.writtenData.join('')).toContain('claude -c');
+    });
+
+    /**
+     * Command-discriminating fake `runAsUser`, mirroring the pattern already
+     * used at :1717 (`createCapturingRunAsUser` inside the
+     * 'lookupOsUserFn / runAsUserImpl passthrough to WorkerManager' describe
+     * block). Deliberately duplicated here rather than hoisted: it's a 6-line
+     * test-only stub used from a different `describe` block, not worth a
+     * cross-describe refactor for 2 occurrences (workflow.md Duplication Check).
+     */
+    function createCapturingRunAsUser() {
+      const writeCalls: RunAsUserOpts[] = [];
+      const fake: typeof runAsUser = async (opts) => {
+        if (opts.command.includes('cat >')) {
+          writeCalls.push(opts);
+        }
+        return { stdout: '', stderr: '', exitCode: 0, timedOut: false };
+      };
+      return { fake, writeCalls };
+    }
+
+    it('delivers the pending initial prompt instead of continuing when the prompt is owed', async () => {
+      // AC deviation note (Architect-approved, 2026-09-03): the AC's literal
+      // wording says "PTY writtenData contains the prompt text". Verified
+      // against the real mechanism (worker-manager.ts's anti-truncation
+      // design, lib/template.ts's expandTemplate): a delivered initialPrompt
+      // is always injected via `"$(cat '<promptFilePath>')"` command
+      // substitution, never as raw text on the command line (canonical-mode
+      // tty input buffers are too small for a long prompt). writtenData can
+      // only prove the FILE-SUBSTITUTION path was selected (not the continue
+      // template); the raw prompt text is only observable via the write call
+      // that populated that file, captured below the same way
+      // createCapturingRunAsUser() does at :1717.
+      const { fake: fakeRunAsUser, writeCalls } = createCapturingRunAsUser();
+      const module = await import(`../session-manager.js?v=${++importCounter}`);
+      const manager = await module.SessionManager.create({
+        userMode: new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' }),
+        pathExists: mockPathExists,
+        jobQueue: testJobQueue,
+        agentManager,
+        mcpTokenRegistry: new McpTokenRegistry(),
+        repositoryLookup: defaultRepositoryLookup,
+        repositoryEnvLookup: defaultRepositoryEnvLookup,
+        runAsUserImpl: fakeRunAsUser,
+      });
+
+      // Disable sentinel auto-emit so the INITIAL worker's creation-time
+      // delivery attempt never completes -- eligible, but undelivered.
+      ptyFactory.setAutoEmitSentinel(false);
+      const session = await manager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: CLAUDE_CODE_AGENT_ID,
+        initialPrompt: 'UNIQUE_T2_PROMPT_MARKER',
+      });
+      expect(session.initialPromptDelivered).not.toBe(true);
+      const initialWorker = session.workers.find((w: Worker) => w.type === 'agent')!;
+      const baselineWriteCalls = writeCalls.length;
+
+      // Re-enable for the restart's fresh PTY so delivery can complete.
+      ptyFactory.setAutoEmitSentinel(true);
+
+      await manager.restartAllAgentWorkers();
+
+      const newestPty = ptyFactory.instances.at(-1);
+      expect(newestPty).toBeDefined();
+      const written = newestPty!.writtenData.join('');
+      expect(written).not.toContain('claude -c');
+      // Command-substitution syntax for THIS worker's prompt file proves the
+      // deliver path (commandTemplate) was selected, not the continue path.
+      expect(written).toContain('$(cat');
+      expect(written).toContain(`${initialWorker.id}.prompt`);
+
+      // The actual prompt text is only observable via the write call.
+      const newWriteCalls = writeCalls.slice(baselineWriteCalls);
+      expect(newWriteCalls.length).toBeGreaterThan(0);
+      expect(newWriteCalls.some((c) => c.stdin === 'UNIQUE_T2_PROMPT_MARKER')).toBe(true);
+
+      // Polarity note: this test passes under BOTH 'fresh' and 'system' by
+      // design -- both resolve an owed obligation to
+      // 'deliver-initial-prompt'. T3 below is what separates the two.
+    });
+
+    it('continues (does not redeliver) when the initial prompt was already delivered', async () => {
+      const { fake: fakeRunAsUser, writeCalls } = createCapturingRunAsUser();
+      const module = await import(`../session-manager.js?v=${++importCounter}`);
+      const manager = await module.SessionManager.create({
+        userMode: new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' }),
+        pathExists: mockPathExists,
+        jobQueue: testJobQueue,
+        agentManager,
+        mcpTokenRegistry: new McpTokenRegistry(),
+        repositoryLookup: defaultRepositoryLookup,
+        repositoryEnvLookup: defaultRepositoryEnvLookup,
+        runAsUserImpl: fakeRunAsUser,
+      });
+
+      // Default auto-emit sentinel (on) lets creation deliver for real,
+      // setting initialPromptDelivered = true before Restart All runs.
+      const session = await manager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: CLAUDE_CODE_AGENT_ID,
+        initialPrompt: 'UNIQUE_T3_PROMPT_MARKER',
+      });
+      expect(session.initialPromptDelivered).toBe(true);
+      // Baseline taken AFTER creation, which legitimately wrote the prompt
+      // file once. This test protects against a SECOND write on restart, not
+      // "zero writes ever" -- test-trigger.md's unscoped-presence discipline:
+      // a bare "writeCalls is empty" assertion would be wrong here.
+      const baselineWriteCalls = writeCalls.length;
+
+      await manager.restartAllAgentWorkers();
+
+      const newestPty = ptyFactory.instances.at(-1);
+      expect(newestPty).toBeDefined();
+      const written = newestPty!.writtenData.join('');
+      expect(written).toContain('claude -c');
+      expect(written).not.toContain('UNIQUE_T3_PROMPT_MARKER');
+      expect(writeCalls.length).toBe(baselineWriteCalls);
+
+      // Polarity: with 'fresh' restored at session-manager.ts:1573 this test
+      // fails -- measured: confirmed FAILS. Received `"claude ''\r"` (the
+      // fresh command template was selected instead, since 'fresh' never
+      // selects the continue template regardless of whether the prompt was
+      // already delivered).
+    });
+
+    it('treats a whitespace-only initialPrompt as not owed and continues', async () => {
+      const manager = await getSessionManager();
+      await manager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+        initialPrompt: '   ',
+      });
+      // A whitespace-only prompt never satisfies the obligation predicate's
+      // `.trim()` check -- deliverInitialPromptOnActivation is false at
+      // creation for this exact reason (worker-lifecycle-manager.ts computes
+      // it as `!!initialPrompt?.trim()`), so there's nothing to redeliver.
+
+      await manager.restartAllAgentWorkers();
+
+      const newestPty = ptyFactory.instances.at(-1);
+      expect(newestPty).toBeDefined();
+      expect(newestPty!.writtenData.join('')).toContain('claude -c');
+    });
+
+    // Issue #1299 PR-2 AC deviation, paragraph 2 (Architect-ruled product
+    // fix, 2026-09-03 -- see claude-code.ts's continueTemplate comment):
+    // T5's first draft found that under 'system' with no prompt owed, the
+    // restart resolved to 'continue', and the builtin continueTemplate
+    // ('claude -c') had NO {{model}} substitution point at all -- so a
+    // worker's persisted model override (agent-surface.md Ruling 3: "the
+    // override SURVIVES restarts") survived on the row but was silently
+    // absent from the spawned command whenever the continue path was
+    // selected. That gap was PRE-EXISTING on the per-session
+    // RestartSessionDialog "Continue (-c)" path (T5c below pins the other
+    // caller); this PR only widens the continue path's reach from
+    // per-session restart to Restart All, which is why the fix lands here
+    // rather than as a follow-up. The Architect's ruling: fix the template
+    // (`continueTemplate: 'claude {{model:+--model}}-c'`), not the test --
+    // T5 keeps its original written-command assertion.
+    it("preserves the worker's model override across Restart All, including on the command line", async () => {
+      const manager = await getSessionManager();
+      const session = await manager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: CLAUDE_CODE_AGENT_ID,
+        model: 'claude-opus-4-6',
+      });
+      const initialWorker = session.workers.find((w: Worker) => w.type === 'agent')!;
+
+      await manager.restartAllAgentWorkers();
+
+      // No initial prompt owed -> 'system' resolves to 'continue' (T1's
+      // pin) -- continueTemplate now carries {{model:+--model}}, so an
+      // override-bearing worker produces 'claude --model \'x\' -c'.
+      // Polarity: with claude-code.ts's continueTemplate change reverted to
+      // the plain 'claude -c' literal, assertion (b) below fails --
+      // confirmed FAILS. Received `"claude -c\r"` (no --model at all; see
+      // the full-suite polarity re-run in the PR report).
+      const newestPty = ptyFactory.instances.at(-1);
+      expect(newestPty).toBeDefined();
+      const written = newestPty!.writtenData.join('');
+      expect(written).toContain("--model 'claude-opus-4-6'");
+      expect(written).toContain('-c');
+
+      const restarted = manager.getWorker(session.id, initialWorker.id);
+      // getWorker returns the InternalWorker union (not the shared Worker
+      // type used elsewhere in this file). isInternalPtyWorker narrows to
+      // InternalAgentWorker | InternalTerminalWorker; only the former
+      // (type === 'agent') carries `model`, so narrow one step further via
+      // the discriminant rather than casting through the unrelated `Worker`
+      // type.
+      expect(
+        restarted && isInternalPtyWorker(restarted) && restarted.type === 'agent' ? restarted.model : undefined,
+      ).toBe('claude-opus-4-6');
+    });
+
+    // T5b: the boundary control for T5 -- same scenario, no override. Proves
+    // the template change is additive: a no-override worker still produces
+    // the byte-identical 'claude -c' (no --model, no double space) rather
+    // than, say, an empty '--model \'\' -c' artifact from a naive
+    // implementation of the optional-argument form.
+    it('restarts with exactly "claude -c" (no --model, no double space) when no model override is set', async () => {
+      const manager = await getSessionManager();
+      await manager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: CLAUDE_CODE_AGENT_ID,
+      });
+
+      await manager.restartAllAgentWorkers();
+
+      const newestPty = ptyFactory.instances.at(-1);
+      expect(newestPty).toBeDefined();
+      const written = newestPty!.writtenData.join('');
+      expect(written).toContain('claude -c');
+      expect(written).not.toContain('--model');
+      expect(written).not.toContain('claude  -c');
     });
 
     it('should restart the agent worker and report the terminal worker as skipped', async () => {
@@ -6093,6 +6348,13 @@ describe('SessionManager', () => {
         await manager.activateEmbeddedAgentWorker(session.id, worker!.id);
         expect(fakeSpawnAsUserFn).toHaveBeenCalledTimes(1);
 
+        // Issue #1299 PR-2 T6 negative control: spy (not mock) so the real
+        // implementation still runs -- proves no StartupIntentPreference
+        // value is threaded into the embedded-agent path, which has no
+        // parameter to leak one into (activateEmbeddedAgentWorker's real
+        // signature is exactly (sessionId, workerId), no third param exists).
+        const activateSpy = spyOn(manager, 'activateEmbeddedAgentWorker');
+
         // restartAllAgentWorkers awaits deactivate (writes `shutdown` and races
         // the current incarnation's `exited`) then activate, sequentially.
         // Simulating exit synchronously right after issuing the call -- before
@@ -6117,6 +6379,10 @@ describe('SessionManager', () => {
             }),
           ]),
         );
+
+        expect(activateSpy).toHaveBeenCalledTimes(1);
+        expect(activateSpy.mock.calls[0].length).toBe(2);
+        activateSpy.mockRestore();
 
         // Teardown: deactivate the fresh incarnation so nothing outlives the test.
         const teardown = manager.deactivateEmbeddedAgentWorker(session.id, worker!.id);
