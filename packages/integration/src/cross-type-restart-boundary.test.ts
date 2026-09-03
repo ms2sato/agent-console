@@ -54,8 +54,16 @@ interface FakeFileSink {
 /**
  * Fake spawnAsUser for the embedded-agent loop subprocess, so activation
  * (step 10 of restartAgentWorkerAsEmbedded's call order) succeeds without a
- * real provider call. Mirrors `makeFakeEmbeddedSpawn` in
- * `routes/__tests__/workers.test.ts`.
+ * real provider call. Loosely mirrors `makeFakeEmbeddedSpawn` in
+ * `routes/__tests__/workers.test.ts`, with one addition that file's tests
+ * don't need: `kill()` resolves `exited` and closes the stdout/stderr
+ * streams immediately, mirroring a real process's response to SIGTERM/
+ * SIGKILL. Issue #1592's embedded -> agent conversion (case a) calls
+ * `EmbeddedAgentWorkerService.deactivate` for real, which races
+ * `subprocess.exited` against a shutdown-grace timer, then sends SIGTERM
+ * and races again -- without this, `exited` never resolves and `deactivate`
+ * hangs for the full grace-plus-SIGTERM budget (8s) rather than returning
+ * as soon as the (simulated) kill takes effect.
  */
 function makeFakeEmbeddedSpawn(): { fn: SpawnAsUserFn; captured: SpawnAsUserOpts[] } {
   const captured: SpawnAsUserOpts[] = [];
@@ -64,9 +72,17 @@ function makeFakeEmbeddedSpawn(): { fn: SpawnAsUserFn; captured: SpawnAsUserOpts
   let stderrCtrl!: ReadableStreamDefaultController<Uint8Array>;
   const stdout = new ReadableStream<Uint8Array>({ start(c) { stdoutCtrl = c; } });
   const stderr = new ReadableStream<Uint8Array>({ start(c) { stderrCtrl = c; } });
-  const exited = new Promise<number>(() => {});
-  void stdoutCtrl;
-  void stderrCtrl;
+
+  let resolveExited!: (code: number) => void;
+  const exited = new Promise<number>((resolve) => { resolveExited = resolve; });
+  let exitSimulated = false;
+  const simulateExit = (code: number) => {
+    if (exitSimulated) return;
+    exitSimulated = true;
+    resolveExited(code);
+    stdoutCtrl.close();
+    stderrCtrl.close();
+  };
 
   const stdin: FakeFileSink = {
     write: () => 0,
@@ -74,7 +90,16 @@ function makeFakeEmbeddedSpawn(): { fn: SpawnAsUserFn; captured: SpawnAsUserOpts
     flush: () => 0,
   };
 
-  const subprocess = { pid: 9876, exited, stdin, stdout, stderr, kill: () => {} };
+  const subprocess = {
+    pid: 9876,
+    exited,
+    stdin,
+    stdout,
+    stderr,
+    kill: () => {
+      simulateExit(0);
+    },
+  };
 
   const fn: SpawnAsUserFn = (opts) => {
     captured.push(opts);
@@ -197,7 +222,12 @@ describe('Client-Server Boundary: cross-type worker restart (agent -> embedded-a
     }
   });
 
-  it('rejects a reverse-direction (terminal-member) restart against an already-embedded worker (R8: out of scope, must not silently succeed)', async () => {
+  it('rejects a reverse-direction (terminal-member) restart against an already-embedded worker with NO agentId (R2: 400, not a silent success)', async () => {
+    // Post-#1592, the terminal member against an embedded existing worker is
+    // no longer categorically out of scope (R8) -- it is now the entry point
+    // for case (a) (embedded -> agent conversion, see the next test). What
+    // remains rejected is specifically an under-specified terminal member:
+    // no `agentId` to convert to, and no PTY conversation to `continue`.
     const owner = await ctx.userRepository.upsertByOsUid(87002, 'owner2', '/home/owner2');
     const def = await ctx.embeddedAgentManager.createEmbeddedAgent(
       { name: 'Ollama qwen3', provider: { baseUrl: 'http://localhost:11434/v1', model: 'qwen3:32b' } },
@@ -222,16 +252,17 @@ describe('Client-Server Boundary: cross-type worker restart (agent -> embedded-a
     });
     expect(firstRes.status).toBe(200);
 
-    // Second restart: the TERMINAL member (empty body -- today's ordinary
-    // PTY restart shape) against the now-embedded worker. restartAgentWorker's
-    // own existing guard (worker.type !== 'agent' -> null) makes this a 404,
-    // not a silent success or a reverted/corrupted worker.
+    // Second restart: the TERMINAL member (empty body) against the now-
+    // embedded worker, with no agentId. R2's runtime check
+    // (WorkerLifecycleManager.restartAgentWorker) rejects this with a 400
+    // ValidationError -- there is no "current terminal agent" to fall back
+    // to, unlike the agent->agent case.
     const secondRes = await app.request(`/api/sessions/${created.id}/workers/${ptyWorker.id}/restart`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({}),
     });
-    expect(secondRes.status).toBe(404);
+    expect(secondRes.status).toBe(400);
 
     // The worker must still be the embedded-agent worker the first restart
     // produced -- not reverted, not duplicated. (createSession also creates
@@ -243,4 +274,72 @@ describe('Client-Server Boundary: cross-type worker restart (agent -> embedded-a
     const persistedConverted = persistedWorkers.find((w) => w.id === ptyWorker.id);
     expect(persistedConverted?.type).toBe('embedded-agent');
   });
+
+  it('converts an embedded-agent worker back to a PTY agent worker via the terminal member with agentId supplied (case a, Issue #1592: the R8 pin flips to a real conversion)', async () => {
+    const owner = await ctx.userRepository.upsertByOsUid(87003, 'owner3', '/home/owner3');
+    const def = await ctx.embeddedAgentManager.createEmbeddedAgent(
+      { name: 'Ollama qwen3', provider: { baseUrl: 'http://localhost:11434/v1', model: 'qwen3:32b' } },
+      owner.id,
+    );
+
+    const created = await ctx.sessionManager.createSession(
+      { type: 'quick', locationPath: '/test/path', agentId: CLAUDE_CODE_AGENT_ID },
+      { createdBy: owner.id },
+    );
+    const session = ctx.sessionManager.getAllSessions().find((s) => s.id === created.id);
+    if (!session) throw new Error('session not found after creation');
+    const ptyWorker = session.workers.find((w) => w.type === 'agent');
+    if (!ptyWorker) throw new Error('expected an initial PTY agent worker');
+
+    // First restart: convert agent -> embedded-agent.
+    const firstRes = await app.request(`/api/sessions/${created.id}/workers/${ptyWorker.id}/restart`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ embeddedAgentId: def.id }),
+    });
+    expect(firstRes.status).toBe(200);
+
+    capturedBroadcasts.length = 0;
+
+    // Second restart: the TERMINAL member with agentId supplied -- a real
+    // embedded -> agent conversion (case a), not a rejection.
+    const secondRes = await app.request(`/api/sessions/${created.id}/workers/${ptyWorker.id}/restart`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ agentId: CLAUDE_CODE_AGENT_ID }),
+    });
+    expect(secondRes.status).toBe(200);
+    const body = (await secondRes.json()) as { worker: { id: string; type: string; agentId?: string } };
+    expect(body.worker.id).toBe(ptyWorker.id);
+    expect(body.worker.type).toBe('agent');
+    expect(body.worker.agentId).toBe(CLAUDE_CODE_AGENT_ID);
+
+    // Persisted row: type flips back to 'agent'.
+    const rows = await ctx.db.selectFrom('workers').where('session_id', '=', created.id).selectAll().execute();
+    const persistedWorkers: PersistedWorker[] = rows.map((r) => toPersistedWorker(r));
+    expect(persistedWorkers).toHaveLength(2);
+    const persistedConverted = persistedWorkers.find((w) => w.id === ptyWorker.id);
+    expect(persistedConverted?.type).toBe('agent');
+
+    // Broadcast frames parse through the real client-side schemas.
+    const sessionUpdatedFrames = capturedBroadcasts.filter((m) => m.type === 'session-updated');
+    expect(sessionUpdatedFrames).toHaveLength(1);
+    const parsedSessionUpdated = v.safeParse(
+      AppServerMessageSchema,
+      simulateWireTransmission(sessionUpdatedFrames[0]),
+    );
+    expect(parsedSessionUpdated.success).toBe(true);
+    if (parsedSessionUpdated.success && parsedSessionUpdated.output.type === 'session-updated') {
+      const parsedWorker = parsedSessionUpdated.output.session.workers.find((w) => w.id === ptyWorker.id);
+      expect(parsedWorker?.type).toBe('agent');
+    }
+    // Raised timeout: EmbeddedAgentWorkerService.deactivate's first
+    // raceExit races the fake subprocess's `exited` against a real
+    // DEFAULT_SHUTDOWN_GRACE_MS (3s) timer before it ever calls kill() --
+    // the fake never "gracefully" exits on its own (no real process reading
+    // the written shutdown command), so this leg of the real deactivate
+    // path always spends the full grace period even with the kill-resolves-
+    // exit fake above. Default bun:test timeout (5s) does not leave enough
+    // margin alongside the rest of the HTTP round trips in this test.
+  }, 15000);
 });

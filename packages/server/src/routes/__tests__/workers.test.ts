@@ -1412,6 +1412,52 @@ describe('Workers API', () => {
 
       expect(res.status).toBe(400);
     });
+
+    it('rejects a terminal-member restart (no agentId) against an embedded-agent existing worker with 400 (R2 runtime check, Issue #1592)', async () => {
+      const session = await sessionManager.createSession(
+        { type: 'quick', locationPath: '/test/path', agentId: 'claude-code' },
+        { createdBy: 'test-user-id' },
+      );
+      const worker = await sessionManager.createWorker(session.id, {
+        type: 'embedded-agent',
+        embeddedAgentId: 'agent-def-1',
+      });
+      expect(worker).not.toBeNull();
+
+      const res = await app.request(
+        `/api/sessions/${session.id}/workers/${worker!.id}/restart`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({}),
+        }
+      );
+
+      expect(res.status).toBe(400);
+    });
+
+    it("rejects a terminal-member restart with continueConversation: true against an embedded-agent existing worker with 400 (R2 runtime check, Issue #1592)", async () => {
+      const session = await sessionManager.createSession(
+        { type: 'quick', locationPath: '/test/path', agentId: 'claude-code' },
+        { createdBy: 'test-user-id' },
+      );
+      const worker = await sessionManager.createWorker(session.id, {
+        type: 'embedded-agent',
+        embeddedAgentId: 'agent-def-1',
+      });
+      expect(worker).not.toBeNull();
+
+      const res = await app.request(
+        `/api/sessions/${session.id}/workers/${worker!.id}/restart`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ continueConversation: true, agentId: 'claude-code' }),
+        }
+      );
+
+      expect(res.status).toBe(400);
+    });
   });
 
   // ===========================================================================
