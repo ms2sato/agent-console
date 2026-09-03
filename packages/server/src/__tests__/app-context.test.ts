@@ -6,6 +6,29 @@ import {
   shutdownAppContext,
   type AppContext,
 } from '../app-context.js';
+import type { PtyNotificationParams } from '../lib/pty-notification.js';
+import { InterSessionMessageService } from '../services/inter-session-message-service.js';
+
+function createDeferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((res) => {
+    resolve = res;
+  });
+  return { promise, resolve };
+}
+
+async function waitForCondition(
+  cond: () => boolean,
+  timeoutMs = 3000,
+): Promise<void> {
+  const start = Date.now();
+  while (!cond()) {
+    if (Date.now() - start > timeoutMs) {
+      throw new Error('waitForCondition timed out');
+    }
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+}
 
 describe('AppContext', () => {
   let appContext: AppContext | null = null;
@@ -195,6 +218,13 @@ describe('AppContext', () => {
       // notifications through deliverWorkerNotification, so this test must
       // boot the full context via createAppContext() rather than the
       // lighter test factory.
+      //
+      // Since Issue #1591, the wiring goes through `routeProcessExit`'s
+      // per-process delivery tail in process-output-router.ts rather than a
+      // direct inline call -- but the underlying deliverWorkerNotification
+      // call shape (args, kind/tag/fields/intent) is unchanged, so this
+      // remains a valid regression pin for that shape. See the
+      // "routeProcessExit ordering" tests below for the ordering fix itself.
       appContext = await createAppContext({ dbPath: ':memory:' });
 
       const deliverSpy = jest.spyOn(appContext.sessionManager, 'deliverWorkerNotification');
@@ -240,6 +270,126 @@ describe('AppContext', () => {
       expect(params.intent).toBe('inform');
 
       deliverSpy.mockRestore();
+    });
+  });
+
+  describe('routeProcessExit ordering, wiring-level polarity (Issue #1591)', () => {
+    /**
+     * Boots a real `createAppContext` instance, creates a process-target
+     * worker via `createTarget`, stubs both notification-producing seams
+     * `deliverWorkerNotification` (recording seam) and
+     * `interSessionMessageService.sendMessage` (deferred, so the test
+     * controls when the message-mode stdout write "completes") -- then
+     * drives a real `outputMode: 'message'` process through
+     * `interactiveProcessManager.runProcess` and asserts the exit
+     * notification does not fire until the stdout content notification has.
+     *
+     * This is the load-bearing pin for Issue #1591: it exercises the real
+     * `app-context.ts` `onExit` wiring (`routeProcessExit`), not a synthetic
+     * call into `process-output-router.ts` directly.
+     */
+    async function runOrderingPolarityCheck(
+      createTarget: (ctx: AppContext) => Promise<{ sessionId: string; workerId: string }>,
+    ): Promise<void> {
+      const order: string[] = [];
+
+      // `createAppContext` wires `processRouterDeps.sendMessage` via
+      // `interSessionMessageService.sendMessage.bind(interSessionMessageService)`
+      // -- a BOUND reference captured once, at construction time, not a live
+      // per-call property lookup. Spying on `appContext.interSessionMessageService`
+      // AFTER construction (the pattern that works fine for
+      // `deliverWorkerNotification` below, which IS a live lookup) would
+      // therefore never be observed by the already-bound reference. Spy on
+      // the CLASS PROTOTYPE before construction instead, so the bind inside
+      // `createAppContext` picks up the mock through the prototype chain.
+      const deferred = createDeferred<{ messageId: string; path: string }>();
+      const sendMessageSpy = jest
+        .spyOn(InterSessionMessageService.prototype, 'sendMessage')
+        .mockImplementation(async () => deferred.promise);
+
+      appContext = await createAppContext({ dbPath: ':memory:' });
+      const ctx = appContext;
+
+      const deliverSpy = jest
+        .spyOn(ctx.sessionManager, 'deliverWorkerNotification')
+        .mockImplementation(async (_sessionId, _workerId, params: PtyNotificationParams) => {
+          const message = (params.fields as { message: string }).message;
+          order.push(message.startsWith('Process exited') ? 'exit' : 'stdout-brief');
+          return { ok: true };
+        });
+
+      try {
+        const { sessionId, workerId } = await createTarget(ctx);
+
+        const process = await ctx.interactiveProcessManager.runProcess({
+          sessionId,
+          workerId,
+          command: 'echo notify-order',
+          outputMode: 'message',
+        });
+
+        // Poll for the process to reach a terminal state. By this point,
+        // per InteractiveProcessManager's ordering guarantee, the onOutput
+        // callback (hence routeProcessContent) has already been invoked for
+        // the process's stdout, and onExit (hence routeProcessExit) has too
+        // -- but the stdout step is still blocked on `deferred`.
+        await waitForCondition(
+          () => ctx.interactiveProcessManager.getProcess(process.id)?.status === 'exited',
+        );
+
+        // The actual polarity assertion: on unmodified app-context.ts (the
+        // pre-fix onExit calling deliverWorkerNotification directly rather
+        // than through routeProcessExit's delivery tail), `order` would
+        // already contain 'exit' here, because the exit notification never
+        // waited on anything. After the fix, nothing has been recorded yet.
+        expect(order).toEqual([]);
+
+        deferred.resolve({ messageId: 'msg-order', path: '/tmp/messages/order.json' });
+
+        await waitForCondition(() => order.length >= 2);
+
+        expect(order).toEqual(['stdout-brief', 'exit']);
+      } finally {
+        deliverSpy.mockRestore();
+        sendMessageSpy.mockRestore();
+      }
+    }
+
+    it('exit notification waits for a still-pending message-mode stdout notification (PTY-backed target)', async () => {
+      await runOrderingPolarityCheck(async (ctx) => {
+        const session = await ctx.sessionManager.createSession({
+          type: 'quick',
+          locationPath: process.cwd(),
+        });
+        const worker = await ctx.sessionManager.createWorker(session.id, { type: 'terminal' });
+        return { sessionId: session.id, workerId: worker!.id };
+      });
+    });
+
+    it('exit notification waits for a still-pending message-mode stdout notification (embedded-agent target)', async () => {
+      await runOrderingPolarityCheck(async (ctx) => {
+        const session = await ctx.sessionManager.createSession({
+          type: 'quick',
+          locationPath: process.cwd(),
+        });
+        const owner = await ctx.userRepository.upsertByOsUid(
+          900123,
+          'issue-1591-owner',
+          '/home/issue-1591-owner',
+        );
+        const definition = await ctx.embeddedAgentManager.createEmbeddedAgent(
+          {
+            name: 'Issue #1591 ordering test agent',
+            provider: { baseUrl: 'http://localhost:11434/v1', model: 'qwen3:32b' },
+          },
+          owner.id,
+        );
+        const worker = await ctx.sessionManager.createWorker(session.id, {
+          type: 'embedded-agent',
+          embeddedAgentId: definition.id,
+        });
+        return { sessionId: session.id, workerId: worker!.id };
+      });
     });
   });
 });
