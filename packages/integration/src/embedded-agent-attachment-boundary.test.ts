@@ -14,8 +14,9 @@
  *     -> real EmbeddedAgentWorkerService.activate / .sendUserMessage
  *     -> the subprocess (faked at the lowest level, spawnAsUserFn) receives
  *        an `init` command whose `context.attachmentRoots` names the real
- *        upload directory, and a `user-message` command whose `text` is the
- *        labelled fold
+ *        upload directory (plus the session's messages dir, so `Read` can
+ *        also reach `run_process`'s message-mode files), and a
+ *        `user-message` command whose `text` is the labelled fold
  *
  * Neither a unit test on `composeEmbeddedAgentDeliveryText` alone nor a unit
  * test on `EmbeddedAgentWorkerService` alone proves that a REAL multipart
@@ -164,7 +165,9 @@ describe('Client-Server Boundary: embedded-agent message attachments (Issue #157
     await waitFor(() => fake.stdinWrites.length >= 2);
     const initCommand = JSON.parse(fake.stdinWrites[0]);
     expect(initCommand.type).toBe('init');
-    expect(initCommand.context.attachmentRoots).toEqual([resolveUploadDir()]);
+    const resolver = ctx.sessionManager.getPathResolverForSessionId(session.id);
+    expect(resolver).not.toBeNull();
+    expect(initCommand.context.attachmentRoots).toEqual([resolveUploadDir(), resolver!.getMessagesDir()]);
 
     // The SECOND stdin line is the user-message command carrying the
     // labelled fold.

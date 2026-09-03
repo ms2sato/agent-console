@@ -64,8 +64,12 @@ export type Worker = AgentWorker | TerminalWorker | GitDiffWorker | EmbeddedAgen
  * DELIVERY MECHANISM (a PTY write), not about which worker kinds are
  * eligible to be a notification target -- see {@link canReceiveNotifications}
  * for that. After the notification delivery seam (SessionManager.
- * deliverWorkerNotification) was introduced, this predicate's only remaining
- * consumer is that seam's own internal PTY-vs-embedded branch.
+ * deliverWorkerNotification) was introduced, this predicate has two
+ * remaining production consumers outside its own definition: that seam's
+ * own internal PTY-vs-embedded branch, and send_session_message's
+ * explicit-target guard in mcp-server.ts (which combines it with
+ * {@link canReceiveSessionMessages} so terminal workers stay valid explicit
+ * targets).
  */
 export function isPtyBackedWorker(w: Worker): w is AgentWorker | TerminalWorker {
   return w.type === 'agent' || w.type === 'terminal';

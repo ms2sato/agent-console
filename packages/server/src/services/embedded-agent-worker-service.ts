@@ -869,7 +869,7 @@ export class EmbeddedAgentWorkerService {
         workerId,
         ...(session.type === 'worktree' ? { repositoryId: session.repositoryId } : {}),
         cwd: session.locationPath,
-        attachmentRoots: [resolveUploadDir()],
+        attachmentRoots: [resolveUploadDir(), resolver.getMessagesDir()],
       };
       const everActivated = await this.deps.workerOutputFileManager.hasEverBeenActivated(sessionId, workerId, resolver);
       /**

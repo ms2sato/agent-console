@@ -1616,7 +1616,8 @@ export function createMcpApp(deps: McpDependencies): Hono {
     'run_process',
     'Start an interactive script connected to a session. ' +
       'The script drives workflow via STDOUT and blocks on STDIN waiting for responses via write_process_response. ' +
-      'Set outputMode="message" to keep long-paragraph script I/O out of the calling agent\'s PTY conversation. ' +
+      'The worker can be an agent, terminal, or embedded-agent worker. ' +
+      'Set outputMode="message" to keep long-paragraph script I/O out of the calling agent\'s conversation. ' +
       'Processes are volatile and will not survive server restarts.',
     {
       command: z
@@ -1642,9 +1643,10 @@ export function createMcpApp(deps: McpDependencies): Hono {
         .optional()
         .describe(
           'Routing mode for script I/O. ' +
-            '"pty" (default): script stdout is delivered as [internal:process] PTY notifications with full content. ' +
+            '"pty" (default): script stdout is delivered as an [internal:process] notification with full content -- ' +
+            'a PTY write for agent/terminal workers, or a queued turn for embedded-agent workers. ' +
             '"message": script stdout and write_process_response content are routed via inter-session message files ' +
-            '(toSessionId/toWorkerId match this run_process call); the PTY receives only a brief notification with ' +
+            '(toSessionId/toWorkerId match this run_process call); the worker receives only a brief notification with ' +
             'the message file path and byte count. ' +
             'Use "message" for long-paragraph interactive scripts (e.g., acceptance-check.js, sprint-retro.js) to keep the conversation clean.',
         ),
@@ -1659,9 +1661,9 @@ export function createMcpApp(deps: McpDependencies): Hono {
         if (!worker) {
           return errorResult(`Worker ${workerId} not found in session ${sessionId}`);
         }
-        if (!isPtyBackedWorker(worker)) {
+        if (!canReceiveNotifications(worker)) {
           return errorResult(
-            `Worker ${workerId} in session ${sessionId} does not support PTY notifications: requires a PTY-backed worker (agent/terminal)`,
+            `Worker ${workerId} in session ${sessionId} cannot receive notifications: requires an agent, terminal, or embedded-agent worker`,
           );
         }
 
