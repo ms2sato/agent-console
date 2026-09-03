@@ -31,6 +31,8 @@ Before completing any code changes, always verify:
 4. **Review test quality:** When tests are added or modified, evaluate adequacy and coverage
 5. **Manual verification (UI changes only):** When modifying UI components and Chrome DevTools MCP is available, perform manual testing through the browser.
 
+   **The captures must be ATTACHED to the PR, not described.** Save each capture to `.qa-screenshots/` and run `./scripts/upload-qa-screenshots.sh <PR_NUMBER>` (it posts them as a PR comment; link that comment from the PR body). A PASS/FAIL sentence with no image behind it is a claim, not evidence, and the acceptance check treats it as unverified. Full procedure: the `browser-qa` skill, "Screenshot Persistence & PR Upload". (Lesson: Sprint 2026-09-03 — three delegates on the same day, PRs #1563 / #1564 / #1565, each captured the true-path state, compared it against the visual acceptance sentence, wrote PASS in the PR body, and attached nothing. All three had read this step. "Screenshot" was the only mandated QA artifact with no named command next to it, so a description was substituted for it in good faith. Detected by one grep — `gh pr view <N> --json body,comments | grep -c 'qa-screenshots\|user-attachments'` returned 0 for all three against 18 on a control PR — not by any reader of the bodies.)
+
    **Skip threshold.** Browser QA may be omitted when **all** of the following conditions hold:
    - The change is a pure behavior subtraction — removing a conditional branch, a field, or a side-effect with no user-visible rendering.
    - The corresponding server-side contract is covered by existing server or integration tests.

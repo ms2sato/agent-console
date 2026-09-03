@@ -74,8 +74,12 @@ When drafting Acceptance Criteria for an Issue that will be delegated:
   - [ ] Visual acceptance sentence: "<what the screen looks like when the requirement is
         met, in the requester's vocabulary>". Browser QA MUST compare the AFTER captures
         against this sentence and state PASS/FAIL explicitly in the PR body. A DOM-level
-        pin of the same property is complementary, never a substitute.
+        pin of the same property is complementary, never a substitute. The captures MUST
+        be attached to the PR via `./scripts/upload-qa-screenshots.sh <PR_NUMBER>`; a
+        described capture is not evidence.
   ```
+
+  Name the upload command in the clause itself, as above. Every other mandated artifact in an AC arrives with its command (`bun run check:lang`, `preflight-check.js`, `bun run test`); "screenshot" was the one noun that did not, and on 2026-09-03 three delegates independently read "capture and state PASS" as "describe the capture" — PRs #1563 / #1564 / #1565, all with zero images attached. The gap was in the clause, not in the delegates.
 
   (Lesson: Sprint 2026-08-30 Issue [#1511](https://github.com/ms2sato/agent-console/issues/1511) — the requirement was one side rail instead of three. The AC said "chrome", which was read as state ownership; the implementation hoisted the state correctly, every clause passed, CI and CodeRabbit were green, and the screen still showed three rails because each panel returned its own `border-l`. Four parties — implementer, Architect, Orchestrator, and the review bot — were each faithful to the clauses. It was found by the owner, from one screenshot. This clause is the round-trip check on the translation, and it is why the amended AC closed where the original could not.)
 
