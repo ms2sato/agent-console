@@ -33,6 +33,7 @@ import {
   compactToolDefinition,
 } from './compact-tool.js';
 import { pushSyntheticToolError } from './tool-call-repair.js';
+import { assignSyntheticToolCallIds } from './tool-call-ids.js';
 
 const TOOL_RESULT_MAX_BYTES = 16384;
 /**
@@ -146,7 +147,7 @@ export interface AgentLoopDeps {
   restoredUsage?: EmbeddedAgentRestoredUsage;
 }
 
-interface ProviderToolCall {
+export interface ProviderToolCall {
   callId: string;
   name: string;
   argsJson: string;
@@ -739,6 +740,7 @@ export class AgentLoop {
           return 'error';
         }
         turnUsage = outcome.usage;
+        outcome.toolCalls = assignSyntheticToolCallIds(outcome.toolCalls, turnId, iteration);
 
         // Always emit the assistant message, even when the text is empty.
         this.deps.emit({

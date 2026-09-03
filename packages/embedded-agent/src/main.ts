@@ -24,8 +24,6 @@ import {
   assembleSystemPrompt,
   composeSdkSystemPromptAppend,
   loadInstructions,
-  loadOptInInstructions,
-  type InstructionSegment,
   type LoadInstructionsParams,
   type LoadInstructionsResult,
 } from './system-prompt.js';
@@ -102,14 +100,12 @@ export interface McpClientLike extends ToolExecutor {
 export interface LoopFactories {
   createMcpClient(): McpClientLike;
   createAdapter(opts: { baseUrl: string; apiKey?: string }): ProviderAdapter;
+  /** Both engines' single instruction-loading seam as of Phase A (#1343)
+   * (R1) -- the claude-sdk engine no longer has a separate opt-in-only
+   * factory; `loadOptInInstructions` is no longer a member of this interface,
+   * which makes the old SDK-arm call path structurally uncallable rather than
+   * merely untested (see main.test.ts's polarity pin). */
   loadInstructions(params: LoadInstructionsParams): Promise<LoadInstructionsResult>;
-  /** DI seam for the claude-sdk engine's opt-in `instructions[]` layer only
-   * (no AGENTS.md/CLAUDE.md auto-discovery -- see system-prompt.ts's
-   * `loadOptInInstructions` doc comment). Defaults to `loadOptInInstructions`. */
-  loadOptInInstructions(
-    cwd: string,
-    instructionsList: string[] | undefined,
-  ): Promise<InstructionSegment[]>;
   loadCompactionPrompt: typeof loadCompactionPrompt;
   /** DI seam for tests: the claude-sdk engine's construction (which
    * synchronously calls the real SDK's `query()`), so a test can inject a
@@ -426,20 +422,26 @@ async function initializeLoop(
   // the live-probed finding this decouples from. Unlike the openai-api
   // branch above, this function does not emit `ready` itself for this arm.
   //
-  // Instruction loader (§4's compatibility matrix, corrected): the SDK's own
-  // AGENTS.md/CLAUDE.md auto-discovery is deliberately disabled (never runs
-  // for this engine -- see the design doc's corrected row). Only the
-  // definition's explicit opt-in `instructions[]` list is honored, loaded
-  // here (this function is already async, same shape as the openai-api
-  // branch's own `loadInstructions` call above) and composed into the SDK's
-  // `systemPrompt.append` alongside the definition system prompt, BEFORE
-  // `SdkEngine` is constructed -- `SdkEngine`'s constructor stays fully
-  // synchronous (it calls the SDK's own `query()` immediately), so the
+  // Instruction loader (Phase A, R1 -- supersedes the §4
+  // compatibility matrix's original "opt-in instructions[] only" row): the
+  // SDK's own NATIVE settings-derived discovery stays disabled
+  // (`settingSources: []`, unchanged by this PR -- see sdk-engine.ts's
+  // `buildOptions`), but this engine now calls the SAME `loadInstructions`
+  // the openai-api branch above does -- global layer, chain (git-root-to-cwd
+  // AGENTS.md/CLAUDE.md), opt-in `instructions[]`, and the `.claude/rules`
+  // layer -- loaded here (this function is already async, same shape as the
+  // openai-api branch's own `loadInstructions` call above) and composed into
+  // the SDK's `systemPrompt.append` alongside the definition system prompt,
+  // BEFORE `SdkEngine` is constructed -- `SdkEngine`'s constructor stays
+  // fully synchronous (it calls the SDK's own `query()` immediately), so the
   // already-loaded content is passed in as a plain string rather than a file
   // list for the engine to read itself.
   try {
-    const optInSegments = await factories.loadOptInInstructions(init.context.cwd, init.instructions);
-    const systemPromptAppend = composeSdkSystemPromptAppend(optInSegments, init.systemPrompt);
+    const instructions = await factories.loadInstructions({
+      cwd: init.context.cwd,
+      instructionsList: init.instructions,
+    });
+    const systemPromptAppend = composeSdkSystemPromptAppend(instructions, init.systemPrompt);
 
     // Transcript Restore, R1: pre-flight the resume id before constructing.
     // A resume the SDK will refuse does not fail at construction -- it fails
@@ -523,15 +525,47 @@ async function gracefulExit(
   return EXIT_OK;
 }
 
-async function* readStdinLines(): AsyncIterable<string> {
+/**
+ * The one method this module needs from a stream reader. Deliberately NOT
+ * `ReadableStreamDefaultReader<Uint8Array>`: that global type is declared
+ * differently by `@types/node`'s `stream/web` augmentation (used implicitly
+ * once `"node"` is in a tsconfig's `types`) than by `bun-types`' own
+ * augmentation (which adds a `readMany()` member `Bun.stdin.stream()`'s real
+ * reader has but a synthetic test `ReadableStream`'s does not) -- pinning
+ * this function's parameter to either concrete type makes it reject a
+ * reader built from the other. A minimal structural interface accepts both.
+ */
+interface AsyncByteReader {
+  read(): Promise<{ done: boolean; value?: Uint8Array }>;
+}
+
+/**
+ * Reader-loop form, not `for await (... of someStream)`: the same pattern
+ * embedded-agent-worker-service.ts's `readStdout` uses for its own
+ * `ReadableStream<Uint8Array>`. Avoids depending on `ReadableStream`'s
+ * async-iterator typing at all, which packages/integration's DOM-lib
+ * tsconfig doesn't declare the same way Bun's lib does -- a `for await`
+ * form here stopped typechecking once this file became reachable from a
+ * packages/integration test (Phase A's subprocess-boundary integration
+ * case), even though nothing about runtime behavior changed. Takes the
+ * reader (not the stream) so a test can drive it with a synthetic
+ * `ReadableStream` instead of the real `Bun.stdin.stream()`.
+ */
+export async function* readLinesFromReader(reader: AsyncByteReader): AsyncIterable<string> {
   const splitter = new NdjsonLineSplitter();
   const decoder = new TextDecoder();
-  for await (const chunk of Bun.stdin.stream()) {
-    const { lines } = splitter.push(decoder.decode(chunk, { stream: true }));
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    const { lines } = splitter.push(decoder.decode(value, { stream: true }));
     for (const line of lines) yield line;
   }
   const tail = splitter.carry;
   if (tail.length > 0) yield tail;
+}
+
+function readStdinLines(): AsyncIterable<string> {
+  return readLinesFromReader(Bun.stdin.stream().getReader());
 }
 
 function writeEvent(event: EmbeddedAgentEvent): void {
@@ -548,7 +582,6 @@ if (import.meta.main) {
     createMcpClient: () => new McpToolClient(),
     createAdapter: (opts) => new OpenAIChatAdapter(opts),
     loadInstructions,
-    loadOptInInstructions,
     loadCompactionPrompt,
     createSdkEngine: (deps) => new SdkEngine(deps),
     probeSdkSession,

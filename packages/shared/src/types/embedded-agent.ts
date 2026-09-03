@@ -28,17 +28,38 @@ import type { ExitReason } from './worker.js';
 export type EmbeddedAgentEngine = 'openai-api' | 'claude-sdk';
 
 /**
- * Builtin subprocess-local tool names. This is the SINGLE WRITER of builtin
- * tool-name literals in the repo — every other usage must reference this
- * constant or the derived `EmbeddedAgentToolName` type, not a hardcoded list.
+ * Builtin subprocess-local tool names, as a hand-written union type.
+ *
+ * This type intentionally has NO import from schemas/embedded-agent.ts:
+ * packages/shared/src/types must never import packages/shared/src/schemas
+ * (`.dependency-cruiser.cjs`'s `shared-no-types-import-schemas` rule forbids
+ * the edge, and treats a type-only import exactly the same as a value
+ * import -- verified directly: adding a throwaway `import type` from
+ * schemas/embedded-agent.ts here trips the same depcruise error a value
+ * import would).
+ *
+ * The RUNTIME source of truth -- `EMBEDDED_AGENT_TOOL_NAMES` (the SINGLE
+ * WRITER of the tool-name literals) and `DEFAULT_EMBEDDED_AGENT_ENABLED_TOOLS`
+ * -- lives in schemas/embedded-agent.ts instead, so `SCHEMA_VERSION`'s
+ * content hash (over packages/shared/src/schemas/*.ts) tracks the wire
+ * vocabulary; a constant living here would be invisible to that hash even
+ * though it widens what the wire schema accepts. This type is pinned
+ * bidirectionally against that schema's picklist -- see the pin in
+ * schemas/embedded-agent.ts for what happens if the two literal lists drift.
  *
  * `Bash`'s implementation ships in FF-1b (packages/embedded-agent/src/tools/bash.ts);
  * `Write`/`Edit`'s implementations ship in FF-1c
  * (packages/embedded-agent/src/tools/write.ts, edit.ts). All three stay OFF by
- * default — see DEFAULT_EMBEDDED_AGENT_ENABLED_TOOLS below.
+ * default — see DEFAULT_EMBEDDED_AGENT_ENABLED_TOOLS in schemas/embedded-agent.ts.
+ *
+ * `TodoWrite` is a planning/task-list tool: it lets the agent
+ * publish a live task list to the user rather than acting on the filesystem
+ * or a shell, so it stays ON by default alongside the read-only set. On
+ * `claude-sdk` it is the SDK's own native builtin (enabled just by appearing
+ * in the allowlist passed to `query()`); on `openai-api` it is implemented in
+ * packages/embedded-agent/src/tools/todo-write.ts.
  */
-export const EMBEDDED_AGENT_TOOL_NAMES = ['Read', 'Glob', 'Grep', 'Bash', 'Write', 'Edit'] as const;
-export type EmbeddedAgentToolName = (typeof EMBEDDED_AGENT_TOOL_NAMES)[number];
+export type EmbeddedAgentToolName = 'Read' | 'Glob' | 'Grep' | 'Bash' | 'Write' | 'Edit' | 'TodoWrite';
 
 /**
  * Wire-shape for one tool call inside a restored assistant message.
@@ -64,21 +85,6 @@ export type EmbeddedAgentRestoredMessage =
   | { role: 'user'; content: string }
   | { role: 'assistant'; content: string; tool_calls?: EmbeddedAgentRestoredToolCall[] }
   | { role: 'tool'; tool_call_id: string; content: string };
-
-/**
- * Default when a definition's `enabledTools` is absent: read-only tools ON, Bash OFF.
- *
- * Note that a definition that has ever been through the Add/Edit form persists
- * `enabledTools` as an explicit array (never leaves it `undefined`) — so a
- * change to this default does NOT propagate to already-edited definitions.
- * Only definitions that have never been saved through the form (still
- * `undefined` at the DB level) pick up a change here.
- */
-export const DEFAULT_EMBEDDED_AGENT_ENABLED_TOOLS: readonly EmbeddedAgentToolName[] = [
-  'Read',
-  'Glob',
-  'Grep',
-];
 
 /**
  * Ratio of `contextWindowTokens` at which the `openai-api` engine compacts

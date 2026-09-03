@@ -1000,3 +1000,99 @@ describe('AgentLoop — the provider error outcome carries structure inward', ()
     });
   });
 });
+
+/**
+ * Some providers (observed: `opencode-go` / `qwen3.8-flash`) return an EMPTY
+ * `callId` (`""`) for a tool call. When two such calls land in the same
+ * iteration, a downstream consumer keyed by callId cannot tell them apart --
+ * `assignSyntheticToolCallIds` (called once per iteration in `runUserTurn`,
+ * before any consumer reads `outcome.toolCalls`) closes that gap.
+ */
+describe('AgentLoop — empty provider callId synthesis', () => {
+  const twoEmptyCallIdResponse: ScriptedResponse = {
+    kind: 'events',
+    events: [
+      { type: 'tool-call', callId: '', name: 'do_a', argsJson: '{}' },
+      { type: 'tool-call', callId: '', name: 'do_b', argsJson: '{}' },
+      { type: 'done', finishReason: 'tool_calls' },
+    ],
+  };
+
+  it('emits two distinct synthetic ids for two tool calls that both arrive with an empty callId', async () => {
+    const h = makeLoop([twoEmptyCallIdResponse, textResponse('done')]);
+    await h.loop.runTurn('t1', 'hi');
+
+    const toolCallEvents = h.events.filter(
+      (e): e is Extract<EmbeddedAgentEvent, { type: 'tool-call' }> => e.type === 'tool-call',
+    );
+    const toolResultEvents = h.events.filter(
+      (e): e is Extract<EmbeddedAgentEvent, { type: 'tool-result' }> => e.type === 'tool-result',
+    );
+    expect(toolCallEvents).toHaveLength(2);
+    expect(toolResultEvents).toHaveLength(2);
+
+    for (const e of toolCallEvents) {
+      expect(e.callId).toMatch(/^synthetic:t1:0:\d+$/);
+    }
+    expect(toolCallEvents[0]?.callId).not.toBe(toolCallEvents[1]?.callId);
+
+    // Each tool-result's callId matches its corresponding tool-call's callId.
+    expect(toolResultEvents[0]?.callId).toBe(toolCallEvents[0]?.callId);
+    expect(toolResultEvents[1]?.callId).toBe(toolCallEvents[1]?.callId);
+
+    // The internal conversation stays consistent: run a second turn so the
+    // first turn's persisted messages are observable via capturedMessages.
+    await h.loop.runTurn('t2', 'second');
+    const firstTurnConversation = h.adapter.capturedMessages[1]!;
+    const assistantMsg = firstTurnConversation.find(
+      (m) => m.role === 'assistant' && m.tool_calls,
+    );
+    const assistantToolCallIds = (assistantMsg as Extract<ChatMessage, { role: 'assistant' }>)
+      .tool_calls!.map((tc) => tc.id);
+    expect(assistantToolCallIds).toEqual(toolCallEvents.map((e) => e.callId));
+
+    const toolResponseIds = firstTurnConversation
+      .filter((m): m is Extract<ChatMessage, { role: 'tool' }> => m.role === 'tool')
+      .map((m) => m.tool_call_id);
+    expect(toolResponseIds).toEqual(toolCallEvents.map((e) => e.callId));
+    expect(everyToolCallAnswered(firstTurnConversation)).toBe(true);
+  });
+
+  it('answers the second empty-callId call with its synthetic id (not "") when the turn is canceled after the first call\'s result is applied', async () => {
+    const loopRef: { current: AgentLoop | null } = { current: null };
+    let executorCalls = 0;
+    const executor = new StubExecutor({ ok: true, result: 'ok' }, () => {
+      executorCalls++;
+      // Cancel while the SECOND call is executing -- by this point the
+      // first call's tool-result has already been emitted and pushed onto
+      // the conversation (the for-loop's synchronous tail has no await
+      // between finishing one call and starting the next).
+      if (executorCalls === 2) loopRef.current?.cancel();
+    });
+    const h = makeLoop([twoEmptyCallIdResponse], { executor });
+    loopRef.current = h.loop;
+
+    await h.loop.runTurn('t1', 'hi');
+    expect(h.events.find((e) => e.type === 'turn-error')).toMatchObject({ message: 'turn canceled' });
+
+    // Only the first call's tool-result was emitted; the second was
+    // preempted by the cancel.
+    expect(h.events.filter((e) => e.type === 'tool-result')).toHaveLength(1);
+
+    await h.loop.runTurn('t2', 'second');
+    const firstTurnConversation = h.adapter.capturedMessages[1]!;
+    const secondCallSyntheticId = 'synthetic:t1:0:1';
+    const syntheticEntry = firstTurnConversation.find(
+      (m) => m.role === 'tool' && m.tool_call_id === secondCallSyntheticId,
+    );
+    expect(syntheticEntry).toEqual({
+      role: 'tool',
+      tool_call_id: secondCallSyntheticId,
+      content: 'Error: tool call canceled',
+    });
+    expect(
+      firstTurnConversation.some((m) => m.role === 'tool' && m.tool_call_id === ''),
+    ).toBe(false);
+    expect(everyToolCallAnswered(firstTurnConversation)).toBe(true);
+  });
+});
