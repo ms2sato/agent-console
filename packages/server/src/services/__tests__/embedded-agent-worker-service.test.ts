@@ -493,7 +493,10 @@ describe('EmbeddedAgentWorkerService.activate', () => {
       workerId: h.workerId,
       repositoryId: 'repo-1',
       cwd: '/test/worktree',
-      attachmentRoots: [resolveUploadDir()],
+      // attachmentRoots must include the messages dir so an embedded-agent
+      // worker can Read a run_process outputMode: 'message' notification
+      // file, which lives outside the session's locationPath.
+      attachmentRoots: [resolveUploadDir(), new SessionDataPathResolver('/test/config/repositories/test-repo').getMessagesDir()],
     });
     expect(first.maxToolIterations).toBe(25);
   });
