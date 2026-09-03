@@ -461,6 +461,75 @@ describe('embedded-agent-store', () => {
     });
   });
 
+  it('folds two post-fix tool-calls with distinct synthetic callIds, pairing each result correctly', async () => {
+    // Simulates what AgentLoop's synthetic-id fix (#1581) now produces
+    // going forward: two tool-calls in the same turn that both originally
+    // had an empty provider-supplied callId now get distinct synthesized
+    // ids instead. This is the ordinary toolCallIndexByCallId path with
+    // realistic post-fix ids -- not the legacy '' guard below.
+    const instance = getOrCreateEmbeddedAgentWorker('s4-synthetic', 'w4-synthetic');
+    const ws = MockWebSocket.getLastInstance();
+    ws!.simulateOpen();
+
+    const data = ndjson(
+      { v: 1, type: 'tool-call', turnId: 't1', callId: 'synthetic:t1:0:0', name: 'run_process', args: { cmd: 'a' } },
+      { v: 1, type: 'tool-result', turnId: 't1', callId: 'synthetic:t1:0:0', ok: true, result: 'result-a' },
+      { v: 1, type: 'tool-call', turnId: 't1', callId: 'synthetic:t1:0:1', name: 'run_process', args: { cmd: 'b' } },
+      { v: 1, type: 'tool-result', turnId: 't1', callId: 'synthetic:t1:0:1', ok: true, result: 'result-b' },
+    );
+    ws!.simulateMessage(historyMessage(data, data.length));
+    await flush();
+
+    const entries = instance.getSnapshot().entries;
+    expect(entries).toHaveLength(2);
+    expect(entries[0]).toMatchObject({
+      kind: 'tool-call',
+      callId: 'synthetic:t1:0:0',
+      result: { ok: true, result: 'result-a' },
+    });
+    expect(entries[1]).toMatchObject({
+      kind: 'tool-call',
+      callId: 'synthetic:t1:0:1',
+      result: { ok: true, result: 'result-b' },
+    });
+  });
+
+  it('R4: two legacy tool-calls with callId "" pair FIFO with their results and get distinct rendering keys', async () => {
+    // Legacy (pre-#1581) persisted rows: the provider supplied an empty
+    // callId for BOTH tool-calls in the turn. Replayed in the loop's real
+    // sequential emission order (call, its result, call, its result), the
+    // store must pair each result with its OWN call -- not swap them -- and
+    // must not collide the two entries under the same React key.
+    const instance = getOrCreateEmbeddedAgentWorker('s4-legacy', 'w4-legacy');
+    const ws = MockWebSocket.getLastInstance();
+    ws!.simulateOpen();
+
+    const data = ndjson(
+      { v: 1, type: 'tool-call', turnId: 't1', callId: '', name: 'run_process', args: { cmd: 'a' } },
+      { v: 1, type: 'tool-call', turnId: 't1', callId: '', name: 'run_process', args: { cmd: 'b' } },
+      { v: 1, type: 'tool-result', turnId: 't1', callId: '', ok: true, result: 'result-a' },
+      { v: 1, type: 'tool-result', turnId: 't1', callId: '', ok: true, result: 'result-b' },
+    );
+    ws!.simulateMessage(historyMessage(data, data.length));
+    await flush();
+
+    const entries = instance.getSnapshot().entries;
+    expect(entries).toHaveLength(2);
+    expect(entries[0]).toMatchObject({
+      kind: 'tool-call',
+      callId: '',
+      args: { cmd: 'a' },
+      result: { ok: true, result: 'result-a' },
+    });
+    expect(entries[1]).toMatchObject({
+      kind: 'tool-call',
+      callId: '',
+      args: { cmd: 'b' },
+      result: { ok: true, result: 'result-b' },
+    });
+    expect(entries[0].key).not.toBe(entries[1].key);
+  });
+
   it('exposes a TodoWrite tool-call/tool-result pair delivered via history replay so TodoPanel can render it', async () => {
     // This test deliberately does double duty, stated explicitly per the
     // task instructions rather than left implicit:

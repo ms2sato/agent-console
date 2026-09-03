@@ -1375,3 +1375,50 @@ describe('reconstructConversation — restore-failure-boundary marker (R2, #1447
     expect(outcome.conversation.some((m) => String(m.content).includes('third era'))).toBe(true);
   });
 });
+
+/**
+ * Confirmation only -- no production change needed here. `restore.ts` reads
+ * whatever `callId` a persisted `tool-call`/`tool-result` event carries; a
+ * `synthetic:...` id (assigned once, in `AgentLoop`, before any event is
+ * emitted -- see `assignSyntheticToolCallIds` in `tool-call-ids.ts`) is just
+ * an ordinary string to this reader, distinct enough from its sibling to
+ * pair correctly.
+ */
+describe('reconstructConversation — synthetic tool-call ids (empty-callId provider workaround)', () => {
+  it('pairs two synthetic-id tool-call/tool-result rows into two distinct tool messages', () => {
+    const events: EmbeddedAgentStreamEvent[] = [
+      { v: 1, type: 'user-message', id: 'm1', text: 'do two things' },
+      { v: 1, type: 'assistant-message', turnId: 't1', text: '' },
+      {
+        v: 1,
+        type: 'tool-call',
+        turnId: 't1',
+        callId: 'synthetic:t1:0:0',
+        name: 'do_a',
+        args: { a: 1 },
+      },
+      {
+        v: 1,
+        type: 'tool-call',
+        turnId: 't1',
+        callId: 'synthetic:t1:0:1',
+        name: 'do_b',
+        args: { b: 2 },
+      },
+      { v: 1, type: 'tool-result', turnId: 't1', callId: 'synthetic:t1:0:0', ok: true, result: 'result-a' },
+      { v: 1, type: 'tool-result', turnId: 't1', callId: 'synthetic:t1:0:1', ok: true, result: 'result-b' },
+    ];
+
+    const outcome = reconstructConversation(linesOf(events), SYSTEM_PROMPT, 'true-start');
+
+    const toolMessages = outcome.conversation.filter(
+      (m): m is Extract<ChatMessage, { role: 'tool' }> => m.role === 'tool',
+    );
+    expect(toolMessages).toEqual([
+      { role: 'tool', tool_call_id: 'synthetic:t1:0:0', content: 'result-a' },
+      { role: 'tool', tool_call_id: 'synthetic:t1:0:1', content: 'result-b' },
+    ]);
+    expect(toolCallsAnsweredImmediately(outcome.conversation)).toBe(true);
+    expect(outcome.repairedToolCallIds).toEqual([]);
+  });
+});
