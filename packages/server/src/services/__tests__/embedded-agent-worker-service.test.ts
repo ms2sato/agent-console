@@ -1930,7 +1930,7 @@ describe('EmbeddedAgentWorkerService — slash-command interception (#1572)', ()
     expect(userMessageLine).toBeDefined();
     const appended = JSON.parse(userMessageLine!);
     expect(appended.text).toBe('/compact');
-    if (res.ok) expect(appended.id).toBe(res.id);
+    if (res.ok && 'id' in res) expect(appended.id).toBe(res.id);
   });
 
   it('a /compact sent to a claude-sdk worker is NOT intercepted: writes user-message as before', async () => {
