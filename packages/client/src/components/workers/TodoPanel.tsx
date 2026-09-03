@@ -1,4 +1,5 @@
 import { useMemo } from 'react';
+import { SDK_TODO_WRITE_TOOL_NAME } from '@agent-console/shared';
 import type { EmbeddedAgentChatEntry } from './embedded-agent-store.js';
 
 interface TodoItem {
@@ -42,11 +43,21 @@ function parseTodos(args: unknown): TodoItem[] | null {
  * whose own result is `ok: false` (or still pending, `result === null`) does
  * NOT replace the currently-displayed list -- scanning continues past it to
  * find the latest *successful* call.
+ *
+ * Matches either the plain `'TodoWrite'` name (the `openai-api` builtin) or
+ * `SDK_TODO_WRITE_TOOL_NAME` (`'mcp__console__TodoWrite'`, the `claude-sdk`
+ * arm's MCP-served name on the same `console` server that also serves
+ * `Compact`) -- no other tool name drives this panel.
  */
 function findLatestTodos(entries: EmbeddedAgentChatEntry[]): TodoItem[] | null {
   for (let i = entries.length - 1; i >= 0; i--) {
     const entry = entries[i];
-    if (entry.kind !== 'tool-call' || entry.name !== 'TodoWrite') continue;
+    if (
+      entry.kind !== 'tool-call' ||
+      (entry.name !== 'TodoWrite' && entry.name !== SDK_TODO_WRITE_TOOL_NAME)
+    ) {
+      continue;
+    }
     if (entry.result?.ok !== true) continue;
     const todos = parseTodos(entry.args);
     if (todos !== null) return todos;

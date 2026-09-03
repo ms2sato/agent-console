@@ -1,5 +1,6 @@
 import { describe, it, expect, afterEach } from 'bun:test';
 import { render, screen, cleanup } from '@testing-library/react';
+import { SDK_TODO_WRITE_TOOL_NAME } from '@agent-console/shared';
 import { TodoPanel } from '../TodoPanel';
 import type { EmbeddedAgentChatEntry } from '../embedded-agent-store';
 
@@ -11,13 +12,14 @@ function toolCall(
   callId: string,
   args: unknown,
   result: { ok: boolean; result: string } | null,
+  name = 'TodoWrite',
 ): EmbeddedAgentChatEntry {
   return {
     key: `tc-${callId}`,
     kind: 'tool-call',
     turnId: 't1',
     callId,
-    name: 'TodoWrite',
+    name,
     args,
     result,
   };
@@ -134,6 +136,37 @@ describe('TodoPanel', () => {
     expect(details).not.toBeNull();
     expect(details?.open).toBe(false);
     expect(screen.getByText('Tasks (3/3 completed)')).toBeTruthy();
+  });
+
+  it('renders the list when driven by the claude-sdk MCP-served name (mcp__console__TodoWrite)', () => {
+    const entries: EmbeddedAgentChatEntry[] = [
+      toolCall(
+        'c1',
+        { todos: [{ content: 'SDK task', status: 'pending', activeForm: 'Doing SDK task' }] },
+        { ok: true, result: 'ok' },
+        SDK_TODO_WRITE_TOOL_NAME,
+      ),
+    ];
+
+    render(<TodoPanel entries={entries} />);
+
+    expect(screen.getByText('SDK task')).toBeTruthy();
+  });
+
+  it('does not render for a different tool-call name, even with a todos-shaped args payload', () => {
+    const entries: EmbeddedAgentChatEntry[] = [
+      toolCall(
+        'c1',
+        { todos: [{ content: 'Should not appear', status: 'pending', activeForm: 'Doing it' }] },
+        { ok: true, result: 'ok' },
+        'mcp__console__Compact',
+      ),
+    ];
+
+    const { container } = render(<TodoPanel entries={entries} />);
+
+    expect(container.querySelector('details')).toBeNull();
+    expect(screen.queryByText('Should not appear')).toBeNull();
   });
 
   it('renders <details> open by default when not all items are completed', () => {
