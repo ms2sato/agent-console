@@ -10,6 +10,7 @@ import type {
   AppServerMessage,
   ExitReason,
 } from '@agent-console/shared';
+import { isPtyBackedWorker } from '@agent-console/shared';
 import type {
   PersistedSession,
 } from './persistence-service.js';
@@ -42,7 +43,11 @@ import { substituteVariables } from '../lib/template-variables.js';
 import { getConfigDir, getServerPid } from '../lib/config.js';
 import { stopWatching } from './git-diff-service.js';
 import { SessionDataPathResolver } from '../lib/session-data-path-resolver.js';
-import type { PtyNotificationParams } from '../lib/pty-notification.js';
+import {
+  writePtyNotification,
+  type PtyNotificationParams,
+  type WritePtyNotificationParams,
+} from '../lib/pty-notification.js';
 import {
   computeSessionDataBaseDir,
   InvalidSessionDataScopeError,
@@ -773,6 +778,70 @@ export class SessionManager {
     opts?: { replyToSessionId?: string },
   ): Promise<SendUserMessageResult> {
     return this.embeddedAgentWorkerService.sendSystemNotification(sessionId, workerId, params, opts);
+  }
+
+  /**
+   * Single delivery seam for a structured notification (internal-timer,
+   * internal-conditional-wakeup, internal-message, ...) to ANY worker kind
+   * eligible per `canReceiveNotifications` (agent/terminal/embedded-agent).
+   * Callers (the timer/conditional-wakeup callbacks in app-context.ts,
+   * send_session_message in mcp-server.ts) no longer branch on the target
+   * worker's kind themselves -- this method does it once.
+   *
+   * - PTY-backed (agent/terminal): writes via writePtyNotification, exactly
+   *   as the direct calls this method replaces used to. Never throws --
+   *   failures are reported via the return value, matching the best-effort
+   *   semantics those direct calls already had.
+   * - embedded-agent: delegates to sendEmbeddedAgentSystemNotification,
+   *   which activates a dormant worker on delivery and (R3) queues the
+   *   notification instead of failing when the worker is mid-turn.
+   * - Any other worker kind, or an unresolved session/worker: `{ ok: false }`.
+   *
+   * `opts.replyToSessionId` is threaded through to the embedded-agent branch
+   * only -- the PTY-backed branch has never composed a reply-instructions
+   * block from it (send_session_message's PTY path appends that separately,
+   * outside this seam).
+   */
+  async deliverWorkerNotification(
+    sessionId: string,
+    workerId: string,
+    params: PtyNotificationParams,
+    opts: { replyToSessionId?: string } = {},
+  ): Promise<{ ok: true } | { ok: false; error: string }> {
+    const session = this.getSession(sessionId);
+    const worker = session?.workers.find((w) => w.id === workerId);
+    if (!session || !worker) {
+      return { ok: false, error: `Worker ${workerId} not found in session ${sessionId}` };
+    }
+
+    if (isPtyBackedWorker(worker)) {
+      try {
+        // TS does not distribute an object spread over a union type's
+        // discriminant the way this reconstructs WritePtyNotificationParams
+        // from PtyNotificationParams + writeInput -- the cast is safe
+        // because `params` is already a valid member of the union and
+        // `writeInput` is the only field Omit removed.
+        writePtyNotification({
+          ...params,
+          writeInput: (data) => this.writeWorkerInput(sessionId, workerId, data),
+        } as WritePtyNotificationParams);
+        return { ok: true };
+      } catch (err) {
+        const error = err instanceof Error ? err.message : 'PTY notification failed';
+        logger.warn({ sessionId, workerId, err }, 'Failed to deliver PTY notification');
+        return { ok: false, error };
+      }
+    }
+
+    if (worker.type === 'embedded-agent') {
+      const result = await this.sendEmbeddedAgentSystemNotification(sessionId, workerId, params, opts);
+      if (!result.ok) {
+        return { ok: false, error: result.error };
+      }
+      return { ok: true };
+    }
+
+    return { ok: false, error: `Worker ${workerId} in session ${sessionId} cannot receive notifications` };
   }
 
   /** Forward a cancel command to an embedded-agent worker's loop. */

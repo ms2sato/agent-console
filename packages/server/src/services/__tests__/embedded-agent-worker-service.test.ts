@@ -1797,7 +1797,7 @@ describe('EmbeddedAgentWorkerService.sendUserMessage', () => {
     const forwarded = JSON.parse(h.fake.stdinWrites[initWrites]);
     expect(forwarded.type).toBe('user-message');
     expect(forwarded.text).toBe('hello');
-    if (res.ok) expect(forwarded.id).toBe(res.id);
+    if (res.ok && 'id' in res) expect(forwarded.id).toBe(res.id);
 
     // clientMessageId was omitted by the caller: the key must be entirely
     // absent (not present with an `undefined` value) on the appended event.
@@ -2171,6 +2171,181 @@ describe('EmbeddedAgentWorkerService.sendSystemNotification (Issue #1351)', () =
     const appended = JSON.parse(userMessageLine!);
     expect(appended.notification).toEqual({ kind: 'internal-timer' });
     expect('summary' in appended.notification).toBe(false);
+  });
+});
+
+describe('EmbeddedAgentWorkerService — mid-turn notification queue (R3, Issue #1574)', () => {
+  const TIMER_PARAMS: PtyNotificationParams = {
+    kind: 'internal-timer',
+    tag: 'internal:timer',
+    fields: {
+      timerId: 't1',
+      action: 'check the build',
+      fireCount: '1',
+    },
+    intent: 'inform',
+  };
+
+  function withTimerId(timerId: string): PtyNotificationParams {
+    return { ...TIMER_PARAMS, fields: { ...TIMER_PARAMS.fields, timerId } };
+  }
+
+  it('q1: a system notification that arrives mid-turn is queued ({ ok: true, queued: true }), not written to stdin until state:idle, then delivered as the next turn', async () => {
+    const h = setup();
+    await h.service.activate(h.sessionId, h.workerId);
+
+    const first = await h.service.sendUserMessage(h.sessionId, h.workerId, 'busy');
+    expect(first.ok).toBe(true);
+    const stdinWritesBeforeQueue = h.fake.stdinWrites.length;
+
+    const res = await h.service.sendSystemNotification(h.sessionId, h.workerId, TIMER_PARAMS);
+    expect(res).toEqual({ ok: true, queued: true });
+    // Not delivered yet -- still mid the first turn.
+    expect(h.fake.stdinWrites.length).toBe(stdinWritesBeforeQueue);
+
+    h.fake.pushStdout('{"v":1,"type":"state","state":"idle"}\n');
+    await waitFor(() => h.fake.stdinWrites.length > stdinWritesBeforeQueue);
+
+    const forwarded = JSON.parse(h.fake.stdinWrites[stdinWritesBeforeQueue]);
+    expect(forwarded.type).toBe('user-message');
+    expect(forwarded.text).toContain('[internal:timer]');
+
+    const userMessageLine = appendedLines(h.bufferOutput)
+      .map((line) => JSON.parse(line) as { type: string; notification?: { kind: string } })
+      .find((event) => event.type === 'user-message' && event.notification !== undefined);
+    expect(userMessageLine?.notification).toEqual({ kind: 'internal-timer' });
+  });
+
+  it('q2: two queued notifications are delivered in order, one per state:idle event', async () => {
+    const h = setup();
+    await h.service.activate(h.sessionId, h.workerId);
+    await h.service.sendUserMessage(h.sessionId, h.workerId, 'busy');
+    const stdinWritesBeforeQueue = h.fake.stdinWrites.length;
+
+    expect(await h.service.sendSystemNotification(h.sessionId, h.workerId, withTimerId('q-1'))).toEqual({ ok: true, queued: true });
+    expect(await h.service.sendSystemNotification(h.sessionId, h.workerId, withTimerId('q-2'))).toEqual({ ok: true, queued: true });
+    expect(h.fake.stdinWrites.length).toBe(stdinWritesBeforeQueue);
+
+    h.fake.pushStdout('{"v":1,"type":"state","state":"idle"}\n');
+    await waitFor(() => h.fake.stdinWrites.length === stdinWritesBeforeQueue + 1);
+    expect(JSON.parse(h.fake.stdinWrites[stdinWritesBeforeQueue]).text).toContain('timerId=q-1');
+
+    h.fake.pushStdout('{"v":1,"type":"state","state":"idle"}\n');
+    await waitFor(() => h.fake.stdinWrites.length === stdinWritesBeforeQueue + 2);
+    expect(JSON.parse(h.fake.stdinWrites[stdinWritesBeforeQueue + 1]).text).toContain('timerId=q-2');
+  });
+
+  it('q3: the 33rd enqueue drops the oldest entry (FIFO overflow at MAX_PENDING_NOTIFICATIONS=32), keeping the 32 most recent', async () => {
+    const h = setup();
+    await h.service.activate(h.sessionId, h.workerId);
+    await h.service.sendUserMessage(h.sessionId, h.workerId, 'busy');
+
+    // Enqueue 33 -- timerId 'o-1' (oldest) through 'o-33' (newest).
+    for (let i = 1; i <= 33; i++) {
+      expect(await h.service.sendSystemNotification(h.sessionId, h.workerId, withTimerId(`o-${i}`))).toEqual({
+        ok: true,
+        queued: true,
+      });
+    }
+
+    // Flush all remaining entries: 32 idle events (each completes the
+    // previously-flushed turn and starts the next queued one).
+    const deliveredTimerIds: string[] = [];
+    for (let i = 0; i < 32; i++) {
+      const before = h.fake.stdinWrites.length;
+      h.fake.pushStdout('{"v":1,"type":"state","state":"idle"}\n');
+      await waitFor(() => h.fake.stdinWrites.length > before);
+      const forwarded = JSON.parse(h.fake.stdinWrites[before]) as { text: string };
+      const match = forwarded.text.match(/timerId=(o-\d+)/);
+      deliveredTimerIds.push(match ? match[1] : 'NO_MATCH');
+    }
+
+    // 'o-1' (the oldest, dropped on the 33rd enqueue) never appears; the 32
+    // survivors are delivered oldest-remaining-first ('o-2'..'o-33').
+    expect(deliveredTimerIds).toHaveLength(32);
+    expect(deliveredTimerIds).not.toContain('o-1');
+    expect(deliveredTimerIds[0]).toBe('o-2');
+    expect(deliveredTimerIds[31]).toBe('o-33');
+    // No 34th delivery -- the queue is empty after 32 flushes.
+    const stdinWritesAfterAllFlushes = h.fake.stdinWrites.length;
+    h.fake.pushStdout('{"v":1,"type":"state","state":"idle"}\n');
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(h.fake.stdinWrites.length).toBe(stdinWritesAfterAllFlushes);
+  });
+
+  it('q4: a queued notification does not survive the worker exiting and being reactivated (no stranded phantom turn on a later incarnation)', async () => {
+    // Two real incarnations are needed here (one fake subprocess cannot be
+    // exited and then reactivated -- its streams are permanently closed),
+    // so this uses makeMultiChildFakeSpawn (defined below in this file,
+    // hoisted) rather than the single-child `setup()` default.
+    const multi = makeMultiChildFakeSpawn();
+    const h = setup({ spawnAsUserFnOverride: multi.fn });
+
+    await h.service.activate(h.sessionId, h.workerId);
+    await h.service.sendUserMessage(h.sessionId, h.workerId, 'busy');
+    expect(await h.service.sendSystemNotification(h.sessionId, h.workerId, withTimerId('stranded'))).toEqual({
+      ok: true,
+      queued: true,
+    });
+
+    // Kill incarnation 1 WITHOUT ever letting the busy turn go idle -- the
+    // queued notification was never delivered to this incarnation.
+    multi.children[0].simulateExit(1);
+    await waitFor(() => h.worker.subprocess === null);
+
+    // Reactivate incarnation 2 (a brand-new Runtime) and drive it to idle --
+    // if the queue had somehow survived onto the new runtime, this idle
+    // would deliver the stranded notification as a phantom turn.
+    await h.service.activate(h.sessionId, h.workerId);
+    h.bufferOutput.mockClear();
+    multi.children[1].pushStdout('{"v":1,"type":"state","state":"idle"}\n');
+    await waitFor(() => h.bufferOutput.mock.calls.length > 0);
+    // Let any (incorrect) continuation of the same handleLoopLine call
+    // complete before checking for its absence -- deliverUserTurn/
+    // ensureDeliverable resolve via microtasks only for an already-live
+    // subprocess, well within this margin.
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(multi.children[1].stdinWrites.some((w) => w.includes('timerId=stranded'))).toBe(false);
+  });
+
+  it('R4: sendSystemNotification on a dormant (never-activated) worker activates it, and the resulting persisted user-message row carries the notification marker', async () => {
+    // Idle eviction made delivery responsible for waking a worker with no
+    // live subprocess -- see EmbeddedAgentWorkerService.sendUserMessage's
+    // "wakes a worker with no live subprocess instead of rejecting" test
+    // above for the sendUserMessage half; this is the sendSystemNotification
+    // half (Issue #1574 R4, the seam's activation-on-delivery for a timer/
+    // conditional-wakeup target that has been idle-evicted or never activated).
+    const h = setup();
+    expect(h.fake.captured.length).toBe(0);
+
+    const res = await h.service.sendSystemNotification(h.sessionId, h.workerId, withTimerId('wake-me'));
+    expect(res.ok).toBe(true);
+    expect(h.fake.captured.length).toBe(1);
+
+    const userMessageLine = appendedLines(h.bufferOutput)
+      .map((line) => JSON.parse(line) as { type: string; notification?: { kind: string } })
+      .find((event) => event.type === 'user-message' && event.notification !== undefined);
+    expect(userMessageLine?.notification).toEqual({ kind: 'internal-timer' });
+    expect(h.fake.stdinWrites.some((w) => w.includes('timerId=wake-me'))).toBe(true);
+  });
+
+  it('q5 (negative control): human sendUserMessage mid-turn still rejects with TURN_IN_PROGRESS -- it is never queued', async () => {
+    const h = setup();
+    await h.service.activate(h.sessionId, h.workerId);
+
+    const first = await h.service.sendUserMessage(h.sessionId, h.workerId, 'busy');
+    expect(first.ok).toBe(true);
+
+    const second = await h.service.sendUserMessage(h.sessionId, h.workerId, 'also busy');
+    expect(second).toEqual({ ok: false, code: 'TURN_IN_PROGRESS', error: 'turn in progress' });
+
+    // Confirm idle doesn't deliver a phantom second turn -- there was
+    // nothing queued.
+    const stdinWritesBeforeIdle = h.fake.stdinWrites.length;
+    h.fake.pushStdout('{"v":1,"type":"state","state":"idle"}\n');
+    await waitFor(() => h.worker.activityState === 'idle');
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(h.fake.stdinWrites.length).toBe(stdinWritesBeforeIdle);
   });
 });
 
