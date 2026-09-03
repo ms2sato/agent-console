@@ -23,12 +23,25 @@
  * `TodoWrite` args/result shape drifting away from what
  * `EmbeddedAgentStreamEventSchema` accepts.
  *
- * No React client is involved (out of reach for this test suite); the
- * client-side "the store/TodoPanel consumes a TodoWrite tool-call" pin is
- * added separately in packages/client's own test suite
- * (`embedded-agent-store.test.ts`), using that package's own `MockWebSocket`
- * harness -- mirroring the precedent set by
- * embedded-agent-display-history-rotation-boundary.test.ts's header comment.
+ * The plain-`'TodoWrite'` case above does not involve a React client (out of
+ * reach for this test suite); the client-side "the store/TodoPanel consumes
+ * a TodoWrite tool-call" pin for that name is added separately in
+ * packages/client's own test suite (`embedded-agent-store.test.ts`), using
+ * that package's own `MockWebSocket` harness -- mirroring the precedent set
+ * by embedded-agent-display-history-rotation-boundary.test.ts's header
+ * comment.
+ *
+ * A second case below closes a narrower, MCP-specific gap: the `claude-sdk`
+ * arm serves `TodoWrite` through an in-process SDK MCP server under the
+ * namespaced tool name `SDK_TODO_WRITE_TOOL_NAME`
+ * (`'mcp__console__TodoWrite'`), and the panel's own name predicate that
+ * recognizes that name is otherwise only pinned against hand-written literal
+ * fixtures (`TodoPanel.test.tsx`), never against a value that actually
+ * travelled through `EmbeddedAgentStreamEventSchema`. That case reuses this
+ * file's own persistence/replay path, then imports the real
+ * `findLatestTodos` from `TodoPanel.tsx` and derives the rendered list from
+ * the schema-parsed event -- proving the MCP-served name end to end, not
+ * only in the panel's own unit test.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import * as v from 'valibot';
@@ -53,7 +66,9 @@ import type { SpawnAsUserFn, SpawnAsUserOpts, SpawnAsUserResult } from '@agent-c
 import { McpTokenRegistry } from '@agent-console/server/src/mcp/mcp-auth';
 import { defaultRepositoryLookup, defaultRepositoryEnvLookup } from '@agent-console/server/src/__tests__/utils/repository-lookup-mock';
 
-import { EmbeddedAgentStreamEventSchema, type EmbeddedAgentStreamEvent } from '@agent-console/shared';
+import { EmbeddedAgentStreamEventSchema, SDK_TODO_WRITE_TOOL_NAME, type EmbeddedAgentStreamEvent } from '@agent-console/shared';
+import { findLatestTodos } from '@agent-console/client/src/components/workers/TodoPanel';
+import type { EmbeddedAgentChatEntry } from '@agent-console/client/src/components/workers/embedded-agent-store';
 
 const TEST_CONFIG_DIR = '/test/config';
 const ptyFactory = createMockPtyFactory();
@@ -265,5 +280,103 @@ describe('Client-Server Boundary: embedded-agent TodoWrite tool-call/tool-result
     expect(toolResult).toBeDefined();
     expect(toolResult!.ok).toBe(true);
     expect(toolResult!.result).toBe(resultString);
+  });
+
+  it('persists a claude-sdk MCP-served TodoWrite (mcp__console__TodoWrite) call that the real client matcher derives a list from', async () => {
+    const userRepository = new SqliteUserRepository(getDatabase());
+    const owner = await userRepository.upsertByOsUid(24682, 'owner2', '/home/owner2');
+
+    const definition = await embeddedAgentManager.createEmbeddedAgent(
+      { name: 'SDK agent', provider: { baseUrl: 'http://localhost:11434/v1', model: 'qwen3:32b' } },
+      owner.id,
+    );
+    const session = await sessionManager.createSession(
+      { type: 'quick', locationPath: '/test/path' },
+      { createdBy: owner.id },
+    );
+    const worker = await sessionManager.createWorker(session.id, {
+      type: 'embedded-agent',
+      embeddedAgentId: definition.id,
+    });
+    expect(worker).not.toBeNull();
+    const workerId = worker!.id;
+
+    await sessionManager.activateEmbeddedAgentWorker(session.id, workerId);
+    expect(fake.captured.length).toBe(1);
+
+    const todos = [{ content: 'Ship SDK support', status: 'pending' as const, activeForm: 'Shipping SDK support' }];
+    const resultString = 'Todo list updated: 1 item (1 pending, 0 in progress, 0 completed)';
+
+    // Same event sequence shape as the plain-name case above, but the
+    // tool-call carries the claude-sdk arm's MCP-namespaced name instead of
+    // the openai-api builtin's plain 'TodoWrite'.
+    fake.pushStdout(`${JSON.stringify({ v: 1, type: 'ready' })}\n`);
+    fake.pushStdout(`${JSON.stringify({ v: 1, type: 'state', state: 'active' })}\n`);
+    fake.pushStdout(
+      `${JSON.stringify({
+        v: 1,
+        type: 'tool-call',
+        turnId: 't1',
+        callId: 'c1',
+        name: SDK_TODO_WRITE_TOOL_NAME,
+        args: { todos },
+      })}\n`,
+    );
+    fake.pushStdout(
+      `${JSON.stringify({
+        v: 1,
+        type: 'tool-result',
+        turnId: 't1',
+        callId: 'c1',
+        ok: true,
+        result: resultString,
+      })}\n`,
+    );
+    fake.pushStdout(`${JSON.stringify({ v: 1, type: 'state', state: 'idle' })}\n`);
+
+    await waitFor(async () => {
+      const hist = await sessionManager.getWorkerOutputHistory(session.id, workerId, 0);
+      return !!hist && hist.data.includes('tool-result');
+    });
+
+    const read = await sessionManager.getWorkerOutputHistory(session.id, workerId, 0);
+    expect(read).not.toBeNull();
+
+    // (a) + (b): the persisted row parses through the real
+    // EmbeddedAgentStreamEventSchema, and the MCP-namespaced name/args
+    // round-trip byte-for-byte -- this is the same schema
+    // embedded-agent-store.ts uses for its own replay parse, so this IS the
+    // client's worker-stream parse path.
+    const { events, parseFailures } = parseReplayLines(read!.data);
+    expect(parseFailures).toEqual([]);
+
+    const toolCall = events.find((e): e is Extract<EmbeddedAgentStreamEvent, { type: 'tool-call' }> => e.type === 'tool-call');
+    expect(toolCall).toBeDefined();
+    expect(toolCall!.name).toBe(SDK_TODO_WRITE_TOOL_NAME);
+    expect(toolCall!.args).toEqual({ todos });
+
+    const toolResult = events.find(
+      (e): e is Extract<EmbeddedAgentStreamEvent, { type: 'tool-result' }> => e.type === 'tool-result',
+    );
+    expect(toolResult).toBeDefined();
+    expect(toolResult!.ok).toBe(true);
+    expect(toolResult!.result).toBe(resultString);
+
+    // (c): the real client matcher, fed the schema-parsed values (not fresh
+    // literals), derives the same list -- proving the MCP name end to end
+    // through both the wire schema AND the panel's own matcher.
+    const entries: EmbeddedAgentChatEntry[] = [
+      {
+        key: `tc-${toolCall!.callId}`,
+        kind: 'tool-call',
+        turnId: toolCall!.turnId,
+        callId: toolCall!.callId,
+        name: toolCall!.name,
+        args: toolCall!.args,
+        result: { ok: toolResult!.ok, result: toolResult!.result },
+      },
+    ];
+
+    expect(findLatestTodos(entries)).toEqual(todos);
   });
 });

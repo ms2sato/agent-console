@@ -4,12 +4,17 @@
  *
  * The input shape below is deliberately IDENTICAL to the Claude Agent SDK's
  * own native `TodoWriteInput` (`sdk-tools.d.ts`): `{ todos: { content,
- * status, activeForm }[] }`. `claude-sdk` never routes through this file at
- * all -- `TodoWrite` is that engine's own native builtin, enabled simply by
- * appearing in the `tools` allowlist passed to the SDK's `query()` (see
- * `sdk-engine.ts`'s `buildOptions()`). Matching the shape here means one
- * client-side renderer (`TodoPanel`) can consume `tool-call` events from
- * either engine without a translation layer.
+ * status, activeForm }[] }`. `claude-sdk` does NOT route through this file --
+ * measured against the resolved CLI (see
+ * `docs/design/embedded-agent-sdk-engine.md` §4.1/§5.2) -- `TodoWrite` is
+ * silently dropped from that engine's native tool catalog rather than being
+ * reachable simply by appearing in the `tools` allowlist. `sdk-engine.ts`
+ * instead serves the SAME contract via an in-process SDK MCP server
+ * (`createSdkTodoWriteTool`, mirroring `Compact`'s own MCP-served shape),
+ * importing `TodoWriteArgsSchema` and `summarize` from this file rather than
+ * duplicating them. Matching the shape here means one client-side renderer
+ * (`TodoPanel`) can consume `tool-call` events from either engine without a
+ * translation layer.
  *
  * Unlike every other builtin tool in this directory, validation uses valibot
  * rather than the hand-rolled `parseArgs` pattern -- deliberate, so the
@@ -21,7 +26,8 @@
  * fresh subprocess must start with an empty list), so `createTodoWriteTool()`
  * is called fresh by `resolveEnabledBuiltinTools` on every invocation rather
  * than being registered as a shared instance in `BUILTIN_TOOLS` (see
- * index.ts).
+ * index.ts). `createSdkTodoWriteTool` in `sdk-engine.ts` mirrors this same
+ * per-incarnation-closure shape for the claude-sdk engine.
  */
 
 import * as v from 'valibot';
@@ -35,19 +41,51 @@ const TodoItemSchema = v.object({
   activeForm: v.string(),
 });
 
-const TodoWriteArgsSchema = v.object({
+/**
+ * Exported so `sdk-engine.ts`'s `createSdkTodoWriteTool` can validate the
+ * claude-sdk engine's MCP-served `TodoWrite` call through the SAME schema,
+ * rather than re-declaring it -- both engines must reject a malformed
+ * `todos` payload with the identical message.
+ */
+export const TodoWriteArgsSchema = v.object({
   todos: v.array(TodoItemSchema),
 });
 
-type TodoItem = v.InferOutput<typeof TodoItemSchema>;
+export type TodoItem = v.InferOutput<typeof TodoItemSchema>;
 
-function summarize(todos: TodoItem[]): string {
+/**
+ * Exported for the same reason as `TodoWriteArgsSchema` above: `sdk-engine.ts`
+ * composes the identical summary text for the claude-sdk engine's MCP-served
+ * tool result.
+ */
+export function summarize(todos: TodoItem[]): string {
   const total = todos.length;
   const pending = todos.filter((t) => t.status === 'pending').length;
   const inProgress = todos.filter((t) => t.status === 'in_progress').length;
   const completed = todos.filter((t) => t.status === 'completed').length;
   return `Todo list updated: ${total} items (${pending} pending, ${inProgress} in progress, ${completed} completed)`;
 }
+
+/**
+ * Exported so `sdk-engine.ts`'s `createSdkTodoWriteTool` publishes this SAME
+ * unnamespaced name to the SDK's `tool()` factory, which the SDK then
+ * namespaces to `mcp__console__TodoWrite` (`SDK_TODO_WRITE_TOOL_NAME`,
+ * packages/shared/src/types/embedded-agent.ts) -- mirroring
+ * `COMPACT_TOOL_NAME` in compact-tool.ts.
+ */
+export const TODO_WRITE_TOOL_NAME = 'TodoWrite';
+
+/**
+ * Exported so `sdk-engine.ts`'s `createSdkTodoWriteTool` publishes the
+ * IDENTICAL description to the model, rather than an independently-worded
+ * copy that could drift from this one.
+ */
+export const TODO_WRITE_TOOL_DESCRIPTION =
+  "Update the agent's task list, shown to the user as a live progress panel. " +
+  'Replaces the entire list on each call — pass the full set of todos, not just changed ones. ' +
+  "Use status: 'in_progress' for the task currently being worked (normally exactly one), " +
+  "activeForm should be a present-continuous phrasing (e.g. 'Running tests') shown while a task " +
+  "is in_progress, and content an imperative phrasing (e.g. 'Run tests') shown otherwise.";
 
 /**
  * Constructs a fresh `TodoWrite` tool instance with its own private state.
@@ -82,15 +120,10 @@ export function createTodoWriteTool(): BuiltinTool {
   }
 
   return {
-    name: 'TodoWrite',
+    name: TODO_WRITE_TOOL_NAME,
     definition: {
-      name: 'TodoWrite',
-      description:
-        "Update the agent's task list, shown to the user as a live progress panel. " +
-        'Replaces the entire list on each call — pass the full set of todos, not just changed ones. ' +
-        "Use status: 'in_progress' for the task currently being worked (normally exactly one), " +
-        "activeForm should be a present-continuous phrasing (e.g. 'Running tests') shown while a task " +
-        "is in_progress, and content an imperative phrasing (e.g. 'Run tests') shown otherwise.",
+      name: TODO_WRITE_TOOL_NAME,
+      description: TODO_WRITE_TOOL_DESCRIPTION,
       parameters: {
         type: 'object',
         properties: {

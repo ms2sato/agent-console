@@ -33,8 +33,11 @@ import {
   type SyncHookJSONOutput,
 } from '@anthropic-ai/claude-agent-sdk';
 import { spawn } from 'node:child_process';
+import * as v from 'valibot';
+import { z } from 'zod';
 import {
   DEFAULT_EMBEDDED_AGENT_ENABLED_TOOLS,
+  SDK_TODO_WRITE_TOOL_NAME,
   type EmbeddedAgentAttachment,
   type EmbeddedAgentEvent,
   type EmbeddedAgentToolName,
@@ -47,6 +50,13 @@ import {
 import { resolveImageAttachments, buildClaudeSdkUserContent } from './attachment-content.js';
 import type { Engine } from './engine-types.js';
 import type { RuleActivatorLike } from './rule-activation.js';
+import {
+  TodoWriteArgsSchema,
+  TODO_WRITE_TOOL_DESCRIPTION,
+  TODO_WRITE_TOOL_NAME,
+  summarize as summarizeTodos,
+  type TodoItem,
+} from './tools/todo-write.js';
 
 type SystemInitMessage = Extract<SDKMessage, { type: 'system'; subtype: 'init' }>;
 type CompactBoundaryMessage = Extract<SDKMessage, { type: 'system'; subtype: 'compact_boundary' }>;
@@ -180,6 +190,77 @@ export function createSdkCompactTool(onReserve: () => void) {
   return tool(COMPACT_TOOL_NAME, COMPACT_TOOL_DESCRIPTION, {}, async () => {
     onReserve();
     return { content: [{ type: 'text' as const, text: COMPACT_TOOL_SCHEDULED_RESULT }] };
+  });
+}
+
+/**
+ * Builds the `TodoWrite` tool definition for the in-process SDK MCP server:
+ * serves the SAME contract `createTodoWriteTool()` implements
+ * for the openai-api engine (`./tools/todo-write.js`), because the SDK's own
+ * native `TodoWrite` was measured absent from the resolved CLI's reported
+ * tool catalog (docs/design/embedded-agent-sdk-engine.md §4.1/§5.2) -- unlike
+ * `Read`/`Glob`/`Grep`, this name does not reach the model merely by
+ * appearing in `tools:`.
+ *
+ * `inputSchema` mirrors `TodoWriteArgsSchema`'s TOP-LEVEL shape only --
+ * `todos` is an array of objects with `content`/`status`/`activeForm` keys
+ * -- and stays maximally permissive at the LEAF level, where every field is
+ * `z.unknown()`. This split is deliberate, not an oversight: the SDK
+ * converts this zod shape into the JSON Schema it advertises to the model
+ * (via its own MCP tool-catalog machinery), and a bare `z.unknown()` at the
+ * top level gives the model no signal that `todos` must be a real array --
+ * measured live (#1575): a real `claude-sdk-builtin` worker, given no
+ * type hint, consistently sent `todos` as a JSON-*stringified* array
+ * instead of a native one, across six consecutive attempts, and never
+ * completed a single successful call. `z.array(z.object({...}))` fixes
+ * that by advertising the correct top-level structure.
+ *
+ * The leaf fields stay `z.unknown()` so this is NOT a re-declaration of
+ * `TodoWriteArgsSchema`'s full validation semantics in zod: zod-level
+ * parsing runs BEFORE the handler and would reject or reshape a malformed
+ * payload with its OWN error wording if it validated leaf content too,
+ * which would make a malformed call fail with different text than the
+ * openai-api engine's builtin gives for the identical input. A wrong
+ * `status` enum value, a missing key, or a wrong leaf type all still reach
+ * the handler unmodified and are rejected there by the SAME
+ * `v.safeParse(TodoWriteArgsSchema, ...)` call below, mirroring
+ * `todo-write.ts`'s `execute()` body -- so CONTENT-level malformed input
+ * still fails with parity text. Only a STRUCTURAL violation (`todos` not an
+ * array at all -- a string, a number, missing entirely) is now caught one
+ * layer earlier, by the SDK's own MCP protocol-level schema rejection,
+ * before the handler ever runs; that is a different, earlier failure mode
+ * than the handler's parity-checked one, not a regression.
+ *
+ * State (`todos`) lives in this factory's own closure, per-incarnation only
+ * -- the same shape `createTodoWriteTool()` uses, and for the same reason (a
+ * fresh subprocess must start with an empty list). Nothing currently reads
+ * this closure variable back out; kept anyway for parity with the
+ * openai-api builtin's own shape rather than dropped as unused state.
+ */
+export function createSdkTodoWriteTool() {
+  let todos: TodoItem[] = [];
+
+  const inputSchema = {
+    todos: z.array(
+      z.object({
+        content: z.unknown(),
+        status: z.unknown(),
+        activeForm: z.unknown(),
+      }),
+    ),
+  };
+
+  return tool(TODO_WRITE_TOOL_NAME, TODO_WRITE_TOOL_DESCRIPTION, inputSchema, async (args) => {
+    const parsed = v.safeParse(TodoWriteArgsSchema, args);
+    if (!parsed.success) {
+      return {
+        content: [{ type: 'text' as const, text: parsed.issues.map((issue) => issue.message).join('; ') }],
+        isError: true,
+      };
+    }
+    // Full replace, not merge -- mirrors todo-write.ts's execute().
+    todos = parsed.output.todos;
+    return { content: [{ type: 'text' as const, text: summarizeTodos(todos) }] };
   });
 }
 
@@ -500,7 +581,19 @@ export class SdkEngine implements Engine {
       // There is no separate acceptance signal for this array -- the catalog
       // the CLI actually accepted is observable ONLY via what `system:init`
       // reports back (see `handleSystemInit`'s `reportedNonMcp` warn below).
-      tools: [...this.enabledToolNames, SDK_COMPACT_TOOL_NAME],
+      //
+      // `TodoWrite`: unlike `Compact`, this is a real
+      // capability tool governed by `enabledTools` -- its MCP-namespaced
+      // name is appended ONLY when `TodoWrite` is itself enabled, and the
+      // bare `'TodoWrite'` name (already present via `...this.enabledToolNames`
+      // when enabled) stays in the array too, deliberately: a future SDK
+      // build that starts natively recognizing it would still be caught by
+      // `handleSystemInit`'s existing warn below.
+      tools: [
+        ...this.enabledToolNames,
+        SDK_COMPACT_TOOL_NAME,
+        ...(this.allowedToolNames.has('TodoWrite') ? [SDK_TODO_WRITE_TOOL_NAME] : []),
+      ],
       mcpServers: {
         'agent-console': {
           type: 'http',
@@ -514,9 +607,17 @@ export class SdkEngine implements Engine {
         // SDK namespaces it, so the model sees `mcp__console__Compact` while
         // the openai-api engine's model sees plain `Compact`; the contract
         // (no parameters, reservation semantics, result wording) is identical.
+        //
+        // `TodoWrite` rides the SAME server, registered only
+        // when the definition's `enabledTools` includes it -- unlike
+        // `Compact`, a disabled `TodoWrite` must not even be reachable, so
+        // registration is gated the same way the allowlist entry above is.
         [COMPACT_TOOL_SERVER_NAME]: createSdkMcpServer({
           name: COMPACT_TOOL_SERVER_NAME,
-          tools: [createSdkCompactTool(() => this.reserveCompaction())],
+          tools: [
+            createSdkCompactTool(() => this.reserveCompaction()),
+            ...(this.allowedToolNames.has('TodoWrite') ? [createSdkTodoWriteTool()] : []),
+          ],
         }),
       },
       permissionMode: 'bypassPermissions',

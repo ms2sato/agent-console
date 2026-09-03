@@ -1,5 +1,9 @@
 import { describe, it, expect } from 'bun:test';
-import { createTodoWriteTool } from '../todo-write.js';
+import {
+  createTodoWriteTool,
+  TODO_WRITE_TOOL_NAME,
+  TODO_WRITE_TOOL_DESCRIPTION,
+} from '../todo-write.js';
 
 const ctx = { locationPath: '/tmp/does-not-matter-for-this-tool' };
 
@@ -130,5 +134,20 @@ describe('createTodoWriteTool', () => {
     // an empty list should report 0 items, not something left over.
     const followUp = await tool.execute({ todos: [] }, ctx);
     expect(followUp.result).toBe('Todo list updated: 0 items (0 pending, 0 in progress, 0 completed)');
+  });
+
+  // Pins the tool's identity fields against the exported constants that
+  // `sdk-engine.ts`'s `createSdkTodoWriteTool` also consumes (see this
+  // file's header comment). These fields used to be inline string literals;
+  // extracting them into shared constants is only safe if both the top-level
+  // `name` and `definition.name`/`definition.description` actually resolve
+  // to the exported values rather than an independently-typed copy that
+  // could drift from them.
+  it('exposes name and definition fields sourced from the exported constants', () => {
+    const tool = createTodoWriteTool();
+
+    expect(tool.name).toBe(TODO_WRITE_TOOL_NAME);
+    expect(tool.definition.name).toBe(TODO_WRITE_TOOL_NAME);
+    expect(tool.definition.description).toBe(TODO_WRITE_TOOL_DESCRIPTION);
   });
 });
