@@ -42,4 +42,4 @@ bun start
 -   **Code Style:** The project uses 2-space indentation and prefers named exports.
 -   **Schema Validation:** Valibot is used for schema validation, with a convention to use `minLength(1)` before regex validation.
 -   **Monorepo Structure:** The project is organized as a monorepo with `packages/client`, `packages/server`, and `packages/shared` workspaces.
--   **Package Manager:** The project uses `bun` for package management and `pnpm` for lockfile compatibility.
+-   **Package Manager:** The project uses `bun` for package management; `bun.lock` is the only lockfile.
