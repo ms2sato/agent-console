@@ -58,7 +58,15 @@ export interface EmbeddedAgentWorker extends WorkerBase {
 
 export type Worker = AgentWorker | TerminalWorker | GitDiffWorker | EmbeddedAgentWorker;
 
-/** Workers backed by a PTY: can receive injected input / [internal:*] notifications. */
+/**
+ * Workers backed by a PTY: can receive raw injected input / [internal:*]
+ * notifications written directly to a terminal. This predicate is about the
+ * DELIVERY MECHANISM (a PTY write), not about which worker kinds are
+ * eligible to be a notification target -- see {@link canReceiveNotifications}
+ * for that. After the notification delivery seam (SessionManager.
+ * deliverWorkerNotification) was introduced, this predicate's only remaining
+ * consumer is that seam's own internal PTY-vs-embedded branch.
+ */
 export function isPtyBackedWorker(w: Worker): w is AgentWorker | TerminalWorker {
   return w.type === 'agent' || w.type === 'terminal';
 }
@@ -74,6 +82,19 @@ export function isPtyBackedWorker(w: Worker): w is AgentWorker | TerminalWorker 
  */
 export function canReceiveSessionMessages(w: Worker): w is AgentWorker | EmbeddedAgentWorker {
   return w.type === 'agent' || w.type === 'embedded-agent';
+}
+
+/**
+ * Workers that can be the target of a `create_timer` / `create_conditional_wakeup`
+ * notification (delivered via SessionManager.deliverWorkerNotification).
+ * Broader than {@link isPtyBackedWorker}: an embedded-agent worker has no
+ * PTY at all, but the delivery seam routes to it through
+ * EmbeddedAgentWorkerService.sendSystemNotification instead of a PTY write,
+ * so it is eligible here even though isPtyBackedWorker(w) is false for it.
+ * git-diff workers remain excluded -- they represent no running process.
+ */
+export function canReceiveNotifications(w: Worker): w is AgentWorker | TerminalWorker | EmbeddedAgentWorker {
+  return w.type === 'agent' || w.type === 'terminal' || w.type === 'embedded-agent';
 }
 
 // Agent activity state (detected by parsing output)
