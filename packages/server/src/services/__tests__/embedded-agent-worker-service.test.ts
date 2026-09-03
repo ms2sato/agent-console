@@ -1998,6 +1998,42 @@ describe('EmbeddedAgentWorkerService — slash-command interception (#1572)', ()
     if (res.ok && 'id' in res) expect(appended.id).toBe(res.id);
   });
 
+  it('a /compact sent WITH an attachment on an openai-api worker: stdin still gets the bare compact command, and the persisted event carries NO attachments', async () => {
+    // Architect ruling (#1584, on the interaction the #1587 merge created):
+    // `commandOverride` already strips attachments from the WIRE command --
+    // the engine never sees them for a console-handled command. But the
+    // PERSISTED event must mirror that, not just the wire: #1587 documents a
+    // persisted user-message row's `attachments` as "mirrors the originating
+    // command's attachments", and restore re-resolves every row's
+    // attachments from that field. Leaving `attachments` on the persisted
+    // event here would seed a restored conversation with an image the live
+    // turn never actually delivered.
+    //
+    // Polarity: reverting `hasAttachments`'s `opts.commandOverride ===
+    // undefined` guard (i.e. computing it from `opts.attachments` alone,
+    // unscoped) makes the persisted-event assertion below fail -- the row
+    // would carry the attachment despite the wire command omitting it.
+    const h = setup();
+    await h.service.activate(h.sessionId, h.workerId);
+    const initWrites = h.fake.stdinWrites.length;
+    h.bufferOutput.mockClear();
+
+    const attachment = { path: '/tmp/fake-attachment.png', mimeType: 'image/png' };
+    const res = await h.service.sendUserMessage(h.sessionId, h.workerId, '/compact', undefined, [attachment]);
+    expect(res.ok).toBe(true);
+
+    const forwarded = JSON.parse(h.fake.stdinWrites[initWrites]);
+    expect(forwarded).toEqual({ v: 1, type: 'compact' });
+
+    const userMessageLine = appendedLines(h.bufferOutput).find(
+      (line) => JSON.parse(line).type === 'user-message',
+    );
+    expect(userMessageLine).toBeDefined();
+    const appended = JSON.parse(userMessageLine!);
+    expect(appended.text).toBe('/compact');
+    expect(appended).not.toHaveProperty('attachments');
+  });
+
   it('a /compact sent to a claude-sdk worker is NOT intercepted: writes user-message as before', async () => {
     // Required pin 3: the per-engine boundary. claude-sdk's own table entry
     // for `/compact` is `engine`-handled, so this worker must see the

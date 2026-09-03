@@ -1508,7 +1508,20 @@ export class EmbeddedAgentWorkerService {
     // persisted/broadcast event carries the client's correlation id or the
     // notification marker. Do NOT reuse one object for both -- see
     // docs/design/embedded-agent-worker.md.
-    const hasAttachments = opts.attachments !== undefined && opts.attachments.length > 0;
+    // Slash commands (#1572) x attachments (#1587): when `commandOverride` is
+    // set, the WIRE command replaces the whole `user-message` shape with a
+    // payload-free one (e.g. `{type:'compact'}`) -- no attachments were
+    // delivered to the engine. The PERSISTED `event` must mirror that: #1587
+    // documents `attachments` on a persisted user-message row as "mirrors the
+    // originating command's attachments", and restore re-resolves every
+    // persisted row's attachments from that field -- so a `/compact` sent
+    // alongside an attachment would otherwise seed a restored conversation
+    // with an image the live turn never actually delivered. Scoping
+    // `hasAttachments` to `commandOverride === undefined` keeps both the
+    // command (already correct, since `commandOverride` bypasses this
+    // entirely) and the event honest about what was actually sent.
+    const hasAttachments =
+      opts.commandOverride === undefined && opts.attachments !== undefined && opts.attachments.length > 0;
     const command: EmbeddedAgentCommand =
       opts.commandOverride ??
       {
