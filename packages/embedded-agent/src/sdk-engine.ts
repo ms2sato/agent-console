@@ -798,10 +798,10 @@ export class SdkEngine implements Engine {
     for (const block of message.content) {
       if (block.type === 'tool_use') {
         // No empty-callId guard needed here (contrast the `openai-api`
-        // engine's `assignSyntheticToolCallIds`): the Anthropic Messages
-        // API's `tool_use` content block carries a non-optional, non-empty
-        // `id: string` by the SDK's own type contract, not by an
-        // assumption about provider behavior.
+        // engine's `assignSyntheticToolCallIds`): non-optional by the SDK
+        // type (`tool_use.id: string`); non-empty by the Messages API
+        // contract, which every `tool_use` block honours, so unlike the
+        // openai-api adapter there is no empty-id branch to normalise here.
         this.emitToolCall(block.id, block.name, block.input);
       }
     }
