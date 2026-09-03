@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach, mock, spyOn } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, mock, spyOn, setSystemTime } from 'bun:test';
 import * as fs from 'fs';
 import { JOB_TYPES } from '@agent-console/shared';
 import type { CreateSessionRequest, CreateWorkerParams, Session, Worker } from '@agent-console/shared';
@@ -31,6 +31,7 @@ import { McpTokenRegistry } from '../../mcp/mcp-auth.js';
 import { isInternalPtyWorker } from '../worker-types.js';
 import { EmbeddedMessageDeliveryError } from '../embedded-agent-worker-service.js';
 import { composeEmbeddedAgentDeliveryText } from '../session-manager.js';
+import { buildPtyNotificationText, type PtyNotificationParams } from '../../lib/pty-notification.js';
 
 // Test config directory
 const TEST_CONFIG_DIR = '/test/config';
@@ -1560,6 +1561,152 @@ describe('SessionManager', () => {
       const deactivatePromise = manager.deactivateEmbeddedAgentWorker(session.id, worker!.id);
       simulateExit(0);
       await deactivatePromise;
+    });
+  });
+
+  describe('SessionManager.deliverWorkerNotification (Issue #1574, R1 delivery seam)', () => {
+    const TIMER_PARAMS: PtyNotificationParams = {
+      kind: 'internal-timer',
+      tag: 'internal:timer',
+      fields: {
+        timerId: 't1',
+        action: 'check the build',
+        fireCount: '1',
+      },
+      intent: 'inform',
+    };
+
+    const STUB_DEF = {
+      id: 'stub-def-1574',
+      name: 'Stub Model',
+      engine: 'openai-api' as const,
+      isBuiltIn: false,
+      provider: { baseUrl: 'http://localhost:11434/v1', model: 'qwen3:32b' },
+      createdBy: 'test-user-id',
+      createdAt: '2024-01-01T00:00:00.000Z',
+      updatedAt: '2024-01-01T00:00:00.000Z',
+    };
+
+    it('PTY-backed target: writes text BYTE-IDENTICAL to buildPtyNotificationText(params)', async () => {
+      const manager = await getSessionManager();
+      const session = await manager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+      const agentWorker = session.workers.find((w: Worker) => w.type === 'agent')!;
+
+      // Frozen clock: buildPtyNotificationText stamps `new Date().toISOString()`
+      // internally both in production and in this test's own expectedText
+      // computation -- without a frozen clock the two calls could straddle a
+      // millisecond boundary on a loaded CI runner (same pattern as
+      // pty-notification.test.ts / embedded-agent-worker-service.test.ts's
+      // sendSystemNotification tests, Issue #1321).
+      setSystemTime(new Date('2026-01-01T00:00:00.000Z'));
+      let result: Awaited<ReturnType<typeof manager.deliverWorkerNotification>>;
+      let expectedText: string;
+      try {
+        result = await manager.deliverWorkerNotification(session.id, agentWorker.id, TIMER_PARAMS);
+        expectedText = buildPtyNotificationText(TIMER_PARAMS);
+      } finally {
+        setSystemTime();
+      }
+
+      expect(result).toEqual({ ok: true });
+      expect(ptyFactory.instances[0].writtenData.join('')).toContain(expectedText);
+    });
+
+    it('embedded-agent target: routes through sendEmbeddedAgentSystemNotification with the SAME params (activates on delivery, R4)', async () => {
+      const stdin = { write: () => 0, end: () => {}, flush: () => 0 };
+      let stdoutCtrl!: ReadableStreamDefaultController<Uint8Array>;
+      let stderrCtrl!: ReadableStreamDefaultController<Uint8Array>;
+      const stdout = new ReadableStream<Uint8Array>({ start(c) { stdoutCtrl = c; } });
+      const stderr = new ReadableStream<Uint8Array>({ start(c) { stderrCtrl = c; } });
+      let resolveExited!: (code: number) => void;
+      const exited = new Promise<number>((resolve) => { resolveExited = resolve; });
+      let exitSimulated = false;
+      const simulateExit = (code: number) => {
+        if (exitSimulated) return;
+        exitSimulated = true;
+        resolveExited(code);
+        stdoutCtrl.close();
+        stderrCtrl.close();
+      };
+      const subprocess = { pid: 9001, exited, stdin, stdout, stderr, kill: () => {} };
+      const fakeSpawnAsUserFn = mock(() => ({ subprocess, stdin, elevated: false }));
+
+      const module = await import(`../session-manager.js?v=${++importCounter}`);
+      const manager = await module.SessionManager.create({
+        userMode: new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' }),
+        pathExists: mockPathExists,
+        jobQueue: testJobQueue,
+        agentManager,
+        mcpTokenRegistry: new McpTokenRegistry(),
+        embeddedAgentManager: { getEmbeddedAgent: (id: string) => (id === STUB_DEF.id ? STUB_DEF : undefined) },
+        repositoryLookup: defaultRepositoryLookup,
+        repositoryEnvLookup: defaultRepositoryEnvLookup,
+        spawnAsUserFn: fakeSpawnAsUserFn as unknown as SpawnAsUserFn,
+      });
+
+      const session = await manager.createSession(
+        { type: 'quick', locationPath: '/test/path', agentId: 'claude-code' },
+        { createdBy: 'test-user-id' },
+      );
+      const worker = await manager.createWorker(session.id, {
+        type: 'embedded-agent',
+        embeddedAgentId: STUB_DEF.id,
+      });
+      expect(worker).not.toBeNull();
+      expect(fakeSpawnAsUserFn).not.toHaveBeenCalled();
+
+      // Deactivated (dormant) -- deliverWorkerNotification's embedded branch
+      // must activate on delivery (via sendSystemNotification ->
+      // deliverUserTurn -> ensureDeliverable), matching R4.
+      const result = await manager.deliverWorkerNotification(session.id, worker!.id, TIMER_PARAMS);
+      expect(result).toEqual({ ok: true });
+      expect(fakeSpawnAsUserFn).toHaveBeenCalledTimes(1);
+
+      const history = await manager.getWorkerOutputHistory(session.id, worker!.id, 0);
+      expect(history).not.toBeNull();
+      const userMessageLine = (history!.data as string)
+        .split('\n')
+        .filter((line: string) => line.length > 0)
+        .map((line: string) => JSON.parse(line) as { type: string; text?: string; notification?: { kind: string } })
+        .find((event) => event.type === 'user-message');
+      expect(userMessageLine).toBeDefined();
+      expect(userMessageLine!.notification).toEqual({ kind: 'internal-timer' });
+      expect(userMessageLine!.text).toContain('[internal:timer]');
+
+      // Teardown (mirrors the sibling tests in the facade describe block above).
+      const deactivatePromise = manager.deactivateEmbeddedAgentWorker(session.id, worker!.id);
+      simulateExit(0);
+      await deactivatePromise;
+    });
+
+    it('git-diff target: resolves { ok: false } (cannot receive notifications)', async () => {
+      const manager = await getSessionManager();
+      const session = await manager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+      const gitDiffWorker = session.workers.find((w: Worker) => w.type === 'git-diff')!;
+      expect(gitDiffWorker).toBeDefined();
+
+      const result = await manager.deliverWorkerNotification(session.id, gitDiffWorker.id, TIMER_PARAMS);
+      expect(result.ok).toBe(false);
+    });
+
+    it('unresolved worker: resolves { ok: false }', async () => {
+      const manager = await getSessionManager();
+      const session = await manager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+
+      const result = await manager.deliverWorkerNotification(session.id, 'non-existent-worker', TIMER_PARAMS);
+      expect(result.ok).toBe(false);
     });
   });
 
