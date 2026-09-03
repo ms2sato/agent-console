@@ -18,6 +18,7 @@ import { MessagePanel } from '../sessions/MessagePanel';
 import type { ConnectionStatus } from '../terminal/terminal-contract';
 import { PreviewPanel } from './PreviewPanel';
 import { ContextUsageBar } from './ContextUsageBar';
+import { TodoPanel } from './TodoPanel';
 import { useEmbeddedAgents } from '../../hooks/useEmbeddedAgents';
 import { logger } from '../../lib/logger';
 import { updateEmbeddedAgentWorker, sendWorkerMessage } from '../../lib/api';
@@ -520,6 +521,8 @@ export function EmbeddedAgentWorkerView({
         />
         <span>Compact automatically when the context fills up</span>
       </label>
+
+      <TodoPanel entries={entries} />
 
       <MessagePanel
         sessionId={sessionId}

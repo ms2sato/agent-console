@@ -3436,6 +3436,40 @@ describe('EmbeddedAgentWorkerView', () => {
 
   });
 
+  describe('TodoPanel mount (#1573)', () => {
+    // TodoPanel's own derivation logic (which entry wins, glyph/text per
+    // status, open/closed default) is exhaustively covered by
+    // TodoPanel.test.tsx. This suite proves only the wiring: that
+    // EmbeddedAgentWorkerView actually mounts TodoPanel with the live
+    // `entries` from useEmbeddedAgentWorker, so a TodoWrite tool-call
+    // delivered over the worker's own WebSocket reaches the rendered tree.
+    it('renders the derived TodoPanel summary when a TodoWrite tool-call is present in history', async () => {
+      renderView({ sessionId: 's-todo-mount', workerId: 'w-todo-mount' });
+      const ws = MockWebSocket.getLastInstance();
+      act(() => {
+        ws?.simulateOpen();
+      });
+
+      const data = ndjson(
+        {
+          v: 1,
+          type: 'tool-call',
+          turnId: 't1',
+          callId: 'c1',
+          name: 'TodoWrite',
+          args: { todos: [{ content: 'Write tests', status: 'pending', activeForm: 'Writing tests' }] },
+        },
+        { v: 1, type: 'tool-result', turnId: 't1', callId: 'c1', ok: true, result: 'ok' },
+      );
+      act(() => {
+        ws?.simulateMessage(JSON.stringify({ type: 'history', data, offset: data.length, startOffset: 0, epoch: 1 }));
+      });
+      await flush();
+
+      expect(screen.getByText('Tasks (0/1 completed)')).toBeTruthy();
+    });
+  });
+
   describe('attachments (#1570)', () => {
     // The server side already fully supports attachments for embedded-agent
     // workers; this suite pins the client-side onSend branch added in
