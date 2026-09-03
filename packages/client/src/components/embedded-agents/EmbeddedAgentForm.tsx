@@ -78,6 +78,10 @@ const EmbeddedAgentFormRawSchema = v.object({
   // apiKeyRef is optional; empty string means "not set" (converted to
   // undefined/null on submit), same pattern as continueTemplate in AgentForm.
   apiKeyRef: v.optional(v.pipe(v.string(), v.trim())),
+  // Capability flag: whether the provider can accept image content parts.
+  // Unchecked (false) is converted to "omit the key" on submit -- see
+  // AddEmbeddedAgentForm/EditEmbeddedAgentForm's handleSubmit.
+  supportsImages: v.optional(v.boolean()),
 
   systemPrompt: v.optional(v.pipe(v.string(), v.trim())),
 
@@ -177,6 +181,7 @@ export function EmbeddedAgentForm({
       baseUrl: '',
       model: '',
       apiKeyRef: '',
+      supportsImages: false,
       systemPrompt: '',
       maxToolIterationsInput: '',
       enabledTools: [...DEFAULT_EMBEDDED_AGENT_ENABLED_TOOLS],
@@ -245,6 +250,17 @@ export function EmbeddedAgentForm({
             />
             <p className="text-xs text-gray-500 mt-1">
               Leave empty for local LLMs that don't require authentication.
+            </p>
+          </FormField>
+
+          <FormField error={errors.supportsImages as FieldError | undefined}>
+            <label className="flex items-center gap-2 text-sm">
+              <input type="checkbox" {...register('supportsImages')} />
+              Provider can see images
+            </label>
+            <p className="text-xs text-gray-500 mt-1">
+              When on, image attachments are sent to the model as image content. Leave off for
+              providers that cannot see images.
             </p>
           </FormField>
 

@@ -250,6 +250,13 @@ describe('EmbeddedAgentForm', () => {
       ).toBeTruthy();
     });
 
+    it('should render the "Provider can see images" checkbox unchecked by default', () => {
+      renderEmbeddedAgentForm();
+
+      const checkbox = screen.getByRole('checkbox', { name: 'Provider can see images' }) as HTMLInputElement;
+      expect(checkbox.checked).toBe(false);
+    });
+
     it('should show an amber danger warning associated with the Bash checkbox group', () => {
       renderEmbeddedAgentForm();
 
@@ -332,6 +339,23 @@ describe('EmbeddedAgentForm', () => {
       const formData = (props.onSubmit as ReturnType<typeof mock>).mock.calls[0][0] as EmbeddedAgentFormData;
       expect(formData.name).toBe('Existing Embedded Agent');
       expect(formData.apiKeyRef).toBe('');
+    });
+
+    it('pre-fills the "Provider can see images" checkbox as checked when initialData.supportsImages is true', () => {
+      renderEmbeddedAgentForm({
+        mode: 'edit',
+        initialData: { ...initialData, supportsImages: true },
+      });
+
+      const checkbox = screen.getByRole('checkbox', { name: 'Provider can see images' }) as HTMLInputElement;
+      expect(checkbox.checked).toBe(true);
+    });
+
+    it('pre-fills the "Provider can see images" checkbox as unchecked when initialData.supportsImages is absent', () => {
+      renderEmbeddedAgentForm({ mode: 'edit', initialData });
+
+      const checkbox = screen.getByRole('checkbox', { name: 'Provider can see images' }) as HTMLInputElement;
+      expect(checkbox.checked).toBe(false);
     });
   });
 

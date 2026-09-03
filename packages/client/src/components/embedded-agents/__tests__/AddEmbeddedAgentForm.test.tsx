@@ -184,6 +184,39 @@ describe('AddEmbeddedAgentForm', () => {
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: embeddedAgentKeys.all() });
   });
 
+  it('includes provider.supportsImages: true in the POST body when the checkbox is checked', async () => {
+    const user = userEvent.setup();
+    const onSuccess = mock(() => {});
+    renderAddEmbeddedAgentForm({ onSuccess, onCancel: () => {} });
+
+    await fillRequiredFields(user);
+    await user.click(screen.getByRole('checkbox', { name: 'Provider can see images' }));
+    await user.click(screen.getByText('Add Embedded Agent'));
+
+    await waitFor(() => {
+      expect(onSuccess).toHaveBeenCalledTimes(1);
+    });
+
+    const body = (await getLastFetchBody()) as { provider: Record<string, unknown> };
+    expect(body.provider.supportsImages).toBe(true);
+  });
+
+  it('omits provider.supportsImages from the POST body when the checkbox is left unchecked', async () => {
+    const user = userEvent.setup();
+    const onSuccess = mock(() => {});
+    renderAddEmbeddedAgentForm({ onSuccess, onCancel: () => {} });
+
+    await fillRequiredFields(user);
+    await user.click(screen.getByText('Add Embedded Agent'));
+
+    await waitFor(() => {
+      expect(onSuccess).toHaveBeenCalledTimes(1);
+    });
+
+    const body = (await getLastFetchBody()) as { provider: Record<string, unknown> };
+    expect('supportsImages' in body.provider).toBe(false);
+  });
+
   it('shows an error message and does not call onSuccess when the request fails', async () => {
     responseFactory = () => jsonResponse({ error: 'Invalid provider' }, 400);
     const user = userEvent.setup();
