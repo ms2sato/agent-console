@@ -25,9 +25,16 @@ import type {
   SDKUserMessage,
   SyncHookJSONOutput,
 } from '@anthropic-ai/claude-agent-sdk';
-import { createSdkCompactTool, SdkEngine, spawnClaudeCodeProcess, type SdkEngineDeps } from '../sdk-engine.js';
+import {
+  createSdkCompactTool,
+  createSdkTodoWriteTool,
+  SdkEngine,
+  spawnClaudeCodeProcess,
+  type SdkEngineDeps,
+} from '../sdk-engine.js';
 import { composeSdkSystemPromptAppend } from '../system-prompt.js';
 import type { ActivationBlock, RuleActivatorLike } from '../rule-activation.js';
+import { createTodoWriteTool } from '../tools/todo-write.js';
 
 // ---------------------------------------------------------------------------
 // Fixture cast escape hatches
@@ -591,7 +598,17 @@ describe('SdkEngine — construction seam: the query() Options battery (Pin 1(a)
   it('defaults options.tools to the read-only default set when enabledTools is absent', () => {
     const { queryFn, captured } = makeFakeQuery([]);
     new SdkEngine(baseDeps({ queryFn }));
-    expect(captured.options?.tools).toEqual(['Read', 'Glob', 'Grep', 'TodoWrite', 'mcp__console__Compact']);
+    // `TodoWrite` is in the default enabled set (DEFAULT_EMBEDDED_AGENT_ENABLED_TOOLS),
+    // so its MCP-namespaced name (Issue #1575) rides along after `Compact`'s,
+    // in addition to the bare native name already present via `enabledToolNames`.
+    expect(captured.options?.tools).toEqual([
+      'Read',
+      'Glob',
+      'Grep',
+      'TodoWrite',
+      'mcp__console__Compact',
+      'mcp__console__TodoWrite',
+    ]);
   });
 
   it('allowlists ONLY Compact when enabledTools is the explicit empty array', () => {
@@ -2494,6 +2511,98 @@ describe('SdkEngine — compaction: the Compact tool', () => {
     // the ordinary tail exactly once. A `/compact` the SDK declines is still
     // a terminal result, which is why no timeout guard is needed here.
     expect(eventsOfType(events, 'state').filter((e) => e.state === 'idle')).toHaveLength(1);
+  });
+});
+
+describe('SdkEngine — TodoWrite, MCP-served (Issue #1575)', () => {
+  it('registers the namespaced tool name in options.tools when TodoWrite is enabled (default)', () => {
+    const { queryFn, captured } = makeFakeQuery([]);
+    new SdkEngine(baseDeps({ queryFn }));
+
+    expect(captured.options?.mcpServers?.['console']).toBeDefined();
+    expect(captured.options?.tools).toContain('mcp__console__TodoWrite');
+    // The bare native name stays in the array too -- deliberate, see
+    // buildOptions()'s comment: a future SDK that starts natively
+    // recognizing it is still caught by handleSystemInit's existing warn.
+    expect(captured.options?.tools).toContain('TodoWrite');
+  });
+
+  it('does NOT register the namespaced tool name when TodoWrite is not in enabledTools', () => {
+    const { queryFn, captured } = makeFakeQuery([]);
+    new SdkEngine(baseDeps({ queryFn, enabledTools: ['Read', 'Bash'] }));
+
+    expect(captured.options?.tools).not.toContain('mcp__console__TodoWrite');
+    expect(captured.options?.tools).toEqual(['Read', 'Bash', 'mcp__console__Compact']);
+  });
+
+  it('does NOT register the namespaced tool name when enabledTools is the explicit empty array', () => {
+    const { queryFn, captured } = makeFakeQuery([]);
+    new SdkEngine(baseDeps({ queryFn, enabledTools: [] }));
+
+    expect(captured.options?.tools).toEqual(['mcp__console__Compact']);
+  });
+
+  it("the tool's handler validates with the SAME schema and gives the SAME message as the openai-api builtin for malformed input", async () => {
+    const malformed = { todos: 'not-an-array' };
+
+    const sdkDefinition = createSdkTodoWriteTool();
+    const sdkResult = (await sdkDefinition.handler(malformed, undefined)) as {
+      content: { type: 'text'; text: string }[];
+      isError?: boolean;
+    };
+
+    const openaiTool = createTodoWriteTool();
+    const openaiResult = await openaiTool.execute(malformed, {} as never);
+
+    expect(sdkResult.isError).toBe(true);
+    expect(openaiResult.ok).toBe(false);
+    expect(sdkResult.content[0]?.text).toBe(openaiResult.result);
+  });
+
+  it("the tool's handler returns the SAME summary text format as the openai-api builtin for valid input", async () => {
+    const todos = [{ content: 'Run tests', status: 'in_progress' as const, activeForm: 'Running tests' }];
+
+    const sdkDefinition = createSdkTodoWriteTool();
+    const sdkResult = (await sdkDefinition.handler({ todos }, undefined)) as {
+      content: { type: 'text'; text: string }[];
+      isError?: boolean;
+    };
+
+    const openaiTool = createTodoWriteTool();
+    const openaiResult = await openaiTool.execute({ todos }, {} as never);
+
+    expect(sdkResult.isError).toBeUndefined();
+    expect(openaiResult.ok).toBe(true);
+    expect(sdkResult.content[0]?.text).toBe(openaiResult.result);
+    expect(sdkResult.content[0]?.text).toBe('Todo list updated: 1 items (0 pending, 1 in progress, 0 completed)');
+  });
+
+  it('replaces the whole list on each call (full replace, not merge)', async () => {
+    const sdkDefinition = createSdkTodoWriteTool();
+    await sdkDefinition.handler(
+      { todos: [{ content: 'A', status: 'pending' as const, activeForm: 'Doing A' }] },
+      undefined,
+    );
+    const second = (await sdkDefinition.handler({ todos: [] }, undefined)) as {
+      content: { type: 'text'; text: string }[];
+    };
+    expect(second.content[0]?.text).toBe('Todo list updated: 0 items (0 pending, 0 in progress, 0 completed)');
+  });
+
+  it('state does not leak across independent closures (fresh per incarnation, mirroring the openai-api builtin)', async () => {
+    const first = createSdkTodoWriteTool();
+    await first.handler(
+      { todos: [{ content: 'A', status: 'pending' as const, activeForm: 'Doing A' }] },
+      undefined,
+    );
+
+    const second = createSdkTodoWriteTool();
+    const secondResult = (await second.handler({ todos: [] }, undefined)) as {
+      content: { type: 'text'; text: string }[];
+    };
+    // A fresh instance starts with an empty list -- if state leaked via a
+    // shared module-level variable, this would read "1 items" from `first`.
+    expect(secondResult.content[0]?.text).toBe('Todo list updated: 0 items (0 pending, 0 in progress, 0 completed)');
   });
 });
 
