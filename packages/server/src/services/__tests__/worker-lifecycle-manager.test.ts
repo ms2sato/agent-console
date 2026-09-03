@@ -2124,7 +2124,7 @@ describe('WorkerLifecycleManager', () => {
       expect(result).toBeNull();
     });
 
-    it('returns null when the target worker is already an embedded-agent worker (reverse/repeat conversion out of scope)', async () => {
+    it('dispatches to a definition-switch conversion (not null) when the target worker is already an embedded-agent worker under a DIFFERENT definition (Issue #1592, was out of scope pre-#1592)', async () => {
       const session = createTestSession();
       sessions.set(session.id, session);
 
@@ -2136,7 +2136,10 @@ describe('WorkerLifecycleManager', () => {
       const result = await lifecycleManager.restartAgentWorkerAsEmbedded(
         session.id, worker!.id, EMBEDDED_AGENT_DEF_SDK.id
       );
-      expect(result).toBeNull();
+      expect(result).not.toBeNull();
+      expect(result!.type).toBe('embedded-agent');
+      const internal = session.workers.get(worker!.id) as InternalEmbeddedAgentWorker;
+      expect(internal.embeddedAgentId).toBe(EMBEDDED_AGENT_DEF_SDK.id);
     });
 
     it('renames the worktree branch before converting, same as restartAgentWorker', async () => {
@@ -2386,6 +2389,672 @@ describe('WorkerLifecycleManager', () => {
       await new Promise((resolve) => setTimeout(resolve, 150));
 
       expect(slackHandler.send).not.toHaveBeenCalled();
+    });
+  });
+
+  // ========== Cross-Type Worker Restart (embedded-agent -> agent, Issue #1592) ==========
+
+  describe('restartAgentWorker: embedded-agent -> agent conversion (case a, Issue #1592)', () => {
+    async function createEmbeddedFixture(
+      sessionOverrides: Parameters<typeof createTestSession>[0] = {},
+    ): Promise<{ session: InternalSession; workerId: string }> {
+      const session = createTestSession(sessionOverrides);
+      sessions.set(session.id, session);
+      const worker = await lifecycleManager.createWorker(session.id, {
+        type: 'embedded-agent',
+        embeddedAgentId: EMBEDDED_AGENT_DEF.id,
+      });
+      return { session, workerId: worker!.id };
+    }
+
+    it('converts an embedded-agent worker to a PTY agent worker with every R3 identity field correct', async () => {
+      const { session, workerId } = await createEmbeddedFixture();
+      const originalCreatedAt = session.workers.get(workerId)!.createdAt;
+
+      mockPersistSession.mockClear();
+      const converted = await lifecycleManager.restartAgentWorker(
+        session.id, workerId, 'fresh', CLAUDE_CODE_AGENT_ID,
+      );
+
+      expect(converted).not.toBeNull();
+      expect(converted!.id).toBe(workerId);
+      expect(converted!.type).toBe('agent');
+      expect(converted!.createdAt).toBe(originalCreatedAt);
+
+      const internal = session.workers.get(workerId) as InternalAgentWorker;
+      expect(internal.type).toBe('agent');
+      expect(internal.agentId).toBe(CLAUDE_CODE_AGENT_ID);
+      // Eligibility carried over unchanged (worker was created without an
+      // initialPrompt, so it started ineligible).
+      expect(internal.deliverInitialPromptOnActivation).toBe(false);
+      // No model/reasoningEffort override survives a conversion to a
+      // different kind of definition.
+      expect(internal.model).toBeNull();
+      expect(internal.reasoningEffort).toBeNull();
+      // New PTY spawned.
+      expect(internal.pty).not.toBeNull();
+      expect(ptyFactory.instances.length).toBe(1);
+      expect(ptyFactory.instances[0].killed).toBe(false);
+
+      expect(mockPersistSession).toHaveBeenCalled();
+      const persistedSession = mockPersistSession.mock.calls.at(-1)?.[0] as InternalSession;
+      const persistedWorker = persistedSession.workers.get(workerId) as InternalAgentWorker;
+      expect(persistedWorker.type).toBe('agent');
+      expect(persistedWorker.agentId).toBe(CLAUDE_CODE_AGENT_ID);
+    });
+
+    it("rejects a 'continue' startupPreference against an embedded existing worker with ValidationError, leaving it completely untouched", async () => {
+      const { session, workerId } = await createEmbeddedFixture();
+
+      mockDeactivateEmbeddedAgentWorker.mockClear();
+      await expect(
+        lifecycleManager.restartAgentWorker(session.id, workerId, 'continue', CLAUDE_CODE_AGENT_ID),
+      ).rejects.toThrow(ValidationError);
+
+      expect(mockDeactivateEmbeddedAgentWorker).not.toHaveBeenCalled();
+      const internal = session.workers.get(workerId) as InternalEmbeddedAgentWorker;
+      expect(internal.type).toBe('embedded-agent');
+    });
+
+    it('rejects a restart with no agentId against an embedded existing worker with ValidationError, leaving it completely untouched', async () => {
+      const { session, workerId } = await createEmbeddedFixture();
+
+      mockDeactivateEmbeddedAgentWorker.mockClear();
+      await expect(
+        lifecycleManager.restartAgentWorker(session.id, workerId, 'fresh'),
+      ).rejects.toThrow(ValidationError);
+
+      expect(mockDeactivateEmbeddedAgentWorker).not.toHaveBeenCalled();
+      const internal = session.workers.get(workerId) as InternalEmbeddedAgentWorker;
+      expect(internal.type).toBe('embedded-agent');
+    });
+
+    it('rejects an unknown agentId, leaving the embedded worker completely untouched', async () => {
+      const { session, workerId } = await createEmbeddedFixture();
+
+      mockDeactivateEmbeddedAgentWorker.mockClear();
+      await expect(
+        lifecycleManager.restartAgentWorker(session.id, workerId, 'fresh', 'does-not-exist'),
+      ).rejects.toThrow(ValidationError);
+
+      expect(mockDeactivateEmbeddedAgentWorker).not.toHaveBeenCalled();
+      const internal = session.workers.get(workerId) as InternalEmbeddedAgentWorker;
+      expect(internal.type).toBe('embedded-agent');
+      expect(internal.embeddedAgentId).toBe(EMBEDDED_AGENT_DEF.id);
+    });
+
+    it('deletes the output file (content + manifest) before initializing the new PTY worker (call-order pin)', async () => {
+      const wofm = new WorkerOutputFileManager();
+      const originalDelete = wofm.deleteWorkerOutput.bind(wofm);
+      const order: string[] = [];
+      const deleteSpy = spyOn(wofm, 'deleteWorkerOutput').mockImplementation(async (...args: Parameters<typeof originalDelete>) => {
+        order.push('delete');
+        return originalDelete(...args);
+      });
+
+      const manager = new WorkerLifecycleManager(createDeps({ workerOutputFileManager: wofm }));
+      const session = createTestSession();
+      sessions.set(session.id, session);
+      const worker = await manager.createWorker(session.id, { type: 'embedded-agent', embeddedAgentId: EMBEDDED_AGENT_DEF.id });
+
+      const originalInit = workerManager.initializeAgentWorker.bind(workerManager);
+      const initSpy = spyOn(workerManager, 'initializeAgentWorker').mockImplementation((params) => {
+        order.push('initialize');
+        return originalInit(params);
+      });
+
+      try {
+        await manager.restartAgentWorker(session.id, worker!.id, 'fresh', CLAUDE_CODE_AGENT_ID);
+      } finally {
+        initSpy.mockRestore();
+        deleteSpy.mockRestore();
+      }
+
+      expect(order).toEqual(['delete', 'initialize']);
+    });
+
+    it('mints the output file before activating the new PTY (call-order pin)', async () => {
+      const { session, workerId } = await createEmbeddedFixture();
+
+      const order: string[] = [];
+      const wofm = new WorkerOutputFileManager();
+      const originalInitOutput = wofm.initializeWorkerOutput.bind(wofm);
+      const initOutputSpy = spyOn(wofm, 'initializeWorkerOutput').mockImplementation(async (...args: Parameters<typeof originalInitOutput>) => {
+        order.push('init-output');
+        return originalInitOutput(...args);
+      });
+      const activateSpy = spyOn(workerManager, 'activateAgentWorkerPty').mockImplementation(async () => {
+        order.push('activate');
+      });
+
+      const manager = new WorkerLifecycleManager(createDeps({ workerOutputFileManager: wofm }));
+      try {
+        await manager.restartAgentWorker(session.id, workerId, 'fresh', CLAUDE_CODE_AGENT_ID);
+      } finally {
+        initOutputSpy.mockRestore();
+        activateSpy.mockRestore();
+      }
+
+      expect(order).toEqual(['init-output', 'activate']);
+    });
+
+    it('fires onSessionUpdated, then onWorkerRestarted, then activates the PTY, in that order (tail call-order pin)', async () => {
+      const { session, workerId } = await createEmbeddedFixture();
+
+      const order: string[] = [];
+      mockOnSessionUpdated.mockImplementation(() => {
+        order.push('session-updated');
+      });
+      mockOnWorkerRestarted.mockImplementation(() => {
+        order.push('worker-restarted');
+      });
+      const activateSpy = spyOn(workerManager, 'activateAgentWorkerPty').mockImplementation(async () => {
+        order.push('activate');
+      });
+
+      try {
+        await lifecycleManager.restartAgentWorker(session.id, workerId, 'fresh', CLAUDE_CODE_AGENT_ID);
+      } finally {
+        activateSpy.mockRestore();
+      }
+
+      expect(order).toEqual(['session-updated', 'worker-restarted', 'activate']);
+    });
+
+    it('returns null and spawns no PTY when the session is deleted during the deactivate step (async-gap TOCTOU)', async () => {
+      const { session, workerId } = await createEmbeddedFixture();
+
+      const deactivateAndDelete = mock(async (sid: string, _wid: string) => {
+        sessions.delete(sid);
+      });
+      const manager = new WorkerLifecycleManager(createDeps({ deactivateEmbeddedAgentWorker: deactivateAndDelete }));
+
+      const result = await manager.restartAgentWorker(session.id, workerId, 'fresh', CLAUDE_CODE_AGENT_ID);
+
+      expect(result).toBeNull();
+      // No new PTY spawned -- activation happens last, after the re-check.
+      expect(ptyFactory.instances.length).toBe(0);
+    });
+
+    it('propagates activation failure and leaves the worker persisted as type agent with no PTY started', async () => {
+      const { session, workerId } = await createEmbeddedFixture();
+
+      const activationError = new Error('activation boom');
+      const activateSpy = spyOn(workerManager, 'activateAgentWorkerPty').mockImplementation(async () => {
+        throw activationError;
+      });
+
+      try {
+        await expect(
+          lifecycleManager.restartAgentWorker(session.id, workerId, 'fresh', CLAUDE_CODE_AGENT_ID),
+        ).rejects.toThrow(activationError);
+      } finally {
+        activateSpy.mockRestore();
+      }
+
+      const internal = session.workers.get(workerId) as InternalAgentWorker;
+      expect(internal.type).toBe('agent');
+      expect(internal.pty).toBeNull();
+    });
+
+    it("revokes the old embedded worker's MCP token via deactivateEmbeddedAgentWorker before the conversion completes (positive control: the token exists pre-conversion, then is gone)", async () => {
+      // deactivateEmbeddedAgentWorker is injected at the WorkerLifecycleDeps
+      // boundary in this test file (no real EmbeddedAgentWorkerService is
+      // wired here -- see the top-of-file mockDeactivateEmbeddedAgentWorker
+      // comment). This fake models the ONE side effect
+      // (EmbeddedAgentWorkerService.deactivate's real contract: shutdown ->
+      // SIGTERM -> SIGKILL, token revocation via handleExit) this test cares
+      // about, mirroring restartAgentWorkerAsEmbedded's own token-revoke
+      // positive control (which uses killWorker's real revocation instead,
+      // since its source worker is PTY-backed).
+      const registry = new McpTokenRegistry();
+      const { session, workerId } = await createEmbeddedFixture();
+      const token = registry.mint({ sessionId: session.id, workerId, userId: 'owner-1' });
+
+      // Positive control: the token exists before conversion.
+      expect(registry.verify(token)).not.toBeNull();
+
+      const deactivate = mock(async (_sid: string, wid: string) => {
+        registry.revokeByWorker(wid);
+      });
+      const manager = new WorkerLifecycleManager(createDeps({ deactivateEmbeddedAgentWorker: deactivate }));
+
+      await manager.restartAgentWorker(session.id, workerId, 'fresh', CLAUDE_CODE_AGENT_ID);
+
+      expect(deactivate).toHaveBeenCalledWith(session.id, workerId);
+      // Gone after conversion.
+      expect(registry.verify(token)).toBeNull();
+    });
+
+    it('resolves the path resolver before deactivating the existing embedded worker (call-order pin)', async () => {
+      const { session, workerId } = await createEmbeddedFixture();
+
+      const order: string[] = [];
+      const deactivateTracking = mock(async (_sid: string, _wid: string) => {
+        order.push('deactivate');
+      });
+      const manager = new WorkerLifecycleManager(createDeps({
+        deactivateEmbeddedAgentWorker: deactivateTracking,
+        getPathResolver: () => {
+          order.push('resolver');
+          return new SessionDataPathResolver(`${TEST_CONFIG_DIR}/_quick`);
+        },
+      }));
+
+      await manager.restartAgentWorker(session.id, workerId, 'fresh', CLAUDE_CODE_AGENT_ID);
+
+      expect(order).toEqual(['resolver', 'deactivate']);
+    });
+
+    it('leaves the existing embedded worker untouched when the path resolver throws (orphaned session)', async () => {
+      const { session, workerId } = await createEmbeddedFixture();
+
+      const resolverError = new Error('boom: orphaned session');
+      mockDeactivateEmbeddedAgentWorker.mockClear();
+      const manager = new WorkerLifecycleManager(createDeps({
+        getPathResolver: () => {
+          throw resolverError;
+        },
+      }));
+
+      await expect(
+        manager.restartAgentWorker(session.id, workerId, 'fresh', CLAUDE_CODE_AGENT_ID),
+      ).rejects.toThrow(resolverError);
+
+      expect(mockDeactivateEmbeddedAgentWorker).not.toHaveBeenCalled();
+      const internal = session.workers.get(workerId) as InternalEmbeddedAgentWorker;
+      expect(internal.type).toBe('embedded-agent');
+    });
+
+    it('continues the conversion when deleteWorkerOutput fails after the embedded worker is already torn down (non-fatal)', async () => {
+      const { session, workerId } = await createEmbeddedFixture();
+
+      const wofm = new WorkerOutputFileManager();
+      const deleteError = new Error('boom: disk unavailable');
+      const deleteSpy = spyOn(wofm, 'deleteWorkerOutput').mockImplementation(async () => {
+        throw deleteError;
+      });
+
+      const manager = new WorkerLifecycleManager(createDeps({ workerOutputFileManager: wofm }));
+
+      let result: Worker | null;
+      try {
+        result = await manager.restartAgentWorker(session.id, workerId, 'fresh', CLAUDE_CODE_AGENT_ID);
+      } finally {
+        deleteSpy.mockRestore();
+      }
+
+      expect(result).not.toBeNull();
+      expect(result!.type).toBe('agent');
+    });
+
+    it('renames the worktree branch before converting, same as the sibling conversion methods', async () => {
+      const { session, workerId } = await createEmbeddedFixture({ worktreeId: 'original-branch' });
+
+      mockGit.getCurrentBranch.mockImplementation(() => Promise.resolve('original-branch'));
+
+      await lifecycleManager.restartAgentWorker(session.id, workerId, 'fresh', CLAUDE_CODE_AGENT_ID, 'new-branch');
+
+      expect(mockGit.renameBranch).toHaveBeenCalledWith('original-branch', 'new-branch', session.locationPath);
+      expect(session.type).toBe('worktree');
+      if (session.type === 'worktree') {
+        expect(session.worktreeId).toBe('new-branch');
+      }
+    });
+
+    it('redelivers session.initialPrompt to the new PTY worker when eligible and undelivered', async () => {
+      const { session, workerId } = await createEmbeddedFixture({ initialPrompt: 'Do the important thing' });
+      const internal = session.workers.get(workerId) as InternalEmbeddedAgentWorker;
+      internal.deliverInitialPromptOnActivation = true;
+
+      const spy = spyOn(workerManager, 'activateAgentWorkerPty').mockImplementation(async () => {});
+      try {
+        await lifecycleManager.restartAgentWorker(session.id, workerId, 'fresh', CLAUDE_CODE_AGENT_ID);
+
+        expect(spy).toHaveBeenCalledTimes(1);
+        expect(spy.mock.calls[0][1].initialPrompt).toBe('Do the important thing');
+      } finally {
+        spy.mockRestore();
+      }
+    });
+
+    it('does not redeliver session.initialPrompt when session.initialPromptDelivered is already true', async () => {
+      const { session, workerId } = await createEmbeddedFixture({ initialPrompt: 'Do the important thing' });
+      session.initialPromptDelivered = true;
+      const internal = session.workers.get(workerId) as InternalEmbeddedAgentWorker;
+      internal.deliverInitialPromptOnActivation = true;
+
+      const spy = spyOn(workerManager, 'activateAgentWorkerPty').mockImplementation(async () => {});
+      try {
+        await lifecycleManager.restartAgentWorker(session.id, workerId, 'fresh', CLAUDE_CODE_AGENT_ID);
+
+        expect(spy).toHaveBeenCalledTimes(1);
+        expect(spy.mock.calls[0][1].initialPrompt).toBeUndefined();
+      } finally {
+        spy.mockRestore();
+      }
+    });
+  });
+
+  // ========== Cross-Type Worker Restart (embedded-agent -> different embedded-agent definition, Issue #1592) ==========
+
+  describe('restartAgentWorkerAsEmbedded: embedded-agent -> different embedded-agent definition (case b, Issue #1592)', () => {
+    async function createEmbeddedFixture(
+      sessionOverrides: Parameters<typeof createTestSession>[0] = {},
+    ): Promise<{ session: InternalSession; workerId: string }> {
+      const session = createTestSession(sessionOverrides);
+      sessions.set(session.id, session);
+      const worker = await lifecycleManager.createWorker(session.id, {
+        type: 'embedded-agent',
+        embeddedAgentId: EMBEDDED_AGENT_DEF.id,
+      });
+      return { session, workerId: worker!.id };
+    }
+
+    it('converts to the new definition with every R3 field correct, including autoCompaction preserved [POLARITY-relevant]', async () => {
+      const { session, workerId } = await createEmbeddedFixture();
+      const before = session.workers.get(workerId) as InternalEmbeddedAgentWorker;
+      // Non-default value: initializeEmbeddedAgentWorker's own default is
+      // `true`. If the post-construction override in
+      // restartEmbeddedWorkerAsDifferentEmbedded were removed, this
+      // assertion would observe `true` instead -- see this test's own
+      // polarity note below.
+      before.autoCompaction = false;
+      const originalCreatedAt = before.createdAt;
+
+      mockPersistSession.mockClear();
+      const converted = await lifecycleManager.restartAgentWorkerAsEmbedded(
+        session.id, workerId, EMBEDDED_AGENT_DEF_SDK.id,
+      );
+
+      expect(converted).not.toBeNull();
+      expect(converted!.id).toBe(workerId);
+      expect(converted!.type).toBe('embedded-agent');
+      expect(converted!.createdAt).toBe(originalCreatedAt);
+
+      const internal = session.workers.get(workerId) as InternalEmbeddedAgentWorker;
+      expect(internal.embeddedAgentId).toBe(EMBEDDED_AGENT_DEF_SDK.id);
+      expect(internal.name).toBe(EMBEDDED_AGENT_DEF_SDK.name);
+      expect(internal.deliverInitialPromptOnActivation).toBe(false);
+      expect(internal.model).toBeNull();
+      expect(internal.reasoningEffort).toBeNull();
+      expect(internal.contextWindowTokens).toBeNull();
+      expect(internal.sdkSessionId).toBeNull();
+      // R3: autoCompaction is the worker's own toggle, not a definition
+      // property -- it MUST be preserved across the switch, unlike every
+      // other field above.
+      expect(internal.autoCompaction).toBe(false);
+
+      expect(mockPersistSession).toHaveBeenCalled();
+      const persistedSession = mockPersistSession.mock.calls.at(-1)?.[0] as InternalSession;
+      const persistedWorker = persistedSession.workers.get(workerId) as InternalEmbeddedAgentWorker;
+      expect(persistedWorker.embeddedAgentId).toBe(EMBEDDED_AGENT_DEF_SDK.id);
+      expect(persistedWorker.autoCompaction).toBe(false);
+
+      expect(mockActivateEmbeddedAgentWorker).toHaveBeenCalledWith(session.id, workerId);
+    });
+
+    it('rejects an unknown embeddedAgentId with ValidationError, leaving the existing worker completely untouched', async () => {
+      const { session, workerId } = await createEmbeddedFixture();
+
+      mockDeactivateEmbeddedAgentWorker.mockClear();
+      await expect(
+        lifecycleManager.restartAgentWorkerAsEmbedded(session.id, workerId, 'does-not-exist'),
+      ).rejects.toThrow(ValidationError);
+
+      expect(mockDeactivateEmbeddedAgentWorker).not.toHaveBeenCalled();
+      const internal = session.workers.get(workerId) as InternalEmbeddedAgentWorker;
+      expect(internal.embeddedAgentId).toBe(EMBEDDED_AGENT_DEF.id);
+    });
+
+    it('deletes the output file (content + manifest) before initializing the new definition worker (call-order pin)', async () => {
+      const wofm = new WorkerOutputFileManager();
+      const originalDelete = wofm.deleteWorkerOutput.bind(wofm);
+      const order: string[] = [];
+      const deleteSpy = spyOn(wofm, 'deleteWorkerOutput').mockImplementation(async (...args: Parameters<typeof originalDelete>) => {
+        order.push('delete');
+        return originalDelete(...args);
+      });
+
+      const manager = new WorkerLifecycleManager(createDeps({ workerOutputFileManager: wofm }));
+      const session = createTestSession();
+      sessions.set(session.id, session);
+      const worker = await manager.createWorker(session.id, { type: 'embedded-agent', embeddedAgentId: EMBEDDED_AGENT_DEF.id });
+
+      const originalInit = workerManager.initializeEmbeddedAgentWorker.bind(workerManager);
+      const initSpy = spyOn(workerManager, 'initializeEmbeddedAgentWorker').mockImplementation((params) => {
+        order.push('initialize');
+        return originalInit(params);
+      });
+
+      try {
+        await manager.restartAgentWorkerAsEmbedded(session.id, worker!.id, EMBEDDED_AGENT_DEF_SDK.id);
+      } finally {
+        initSpy.mockRestore();
+        deleteSpy.mockRestore();
+      }
+
+      expect(order).toEqual(['delete', 'initialize']);
+    });
+
+    it('fires onSessionUpdated, then onWorkerRestarted, then activates, in that order (tail call-order pin)', async () => {
+      const { session, workerId } = await createEmbeddedFixture();
+
+      const order: string[] = [];
+      mockOnSessionUpdated.mockImplementation(() => {
+        order.push('session-updated');
+      });
+      mockOnWorkerRestarted.mockImplementation(() => {
+        order.push('worker-restarted');
+      });
+      const activateSpy = mock(async (_sid: string, _wid: string) => {
+        order.push('activate');
+      });
+
+      const manager = new WorkerLifecycleManager(createDeps({ activateEmbeddedAgentWorker: activateSpy }));
+      await manager.restartAgentWorkerAsEmbedded(session.id, workerId, EMBEDDED_AGENT_DEF_SDK.id);
+
+      expect(order).toEqual(['session-updated', 'worker-restarted', 'activate']);
+    });
+
+    it('returns null and does not activate when the session is deleted during the deactivate step (async-gap TOCTOU)', async () => {
+      const { session, workerId } = await createEmbeddedFixture();
+
+      const deactivateAndDelete = mock(async (sid: string, _wid: string) => {
+        sessions.delete(sid);
+      });
+      const activateSpy = mock(async (_sid: string, _wid: string) => {});
+      const manager = new WorkerLifecycleManager(createDeps({
+        deactivateEmbeddedAgentWorker: deactivateAndDelete,
+        activateEmbeddedAgentWorker: activateSpy,
+      }));
+
+      const result = await manager.restartAgentWorkerAsEmbedded(session.id, workerId, EMBEDDED_AGENT_DEF_SDK.id);
+
+      expect(result).toBeNull();
+      expect(activateSpy).not.toHaveBeenCalled();
+    });
+
+    it('propagates activation failure and leaves the worker persisted as dormant under the NEW definition', async () => {
+      const { session, workerId } = await createEmbeddedFixture();
+
+      const activationError = new Error('activation boom');
+      const manager = new WorkerLifecycleManager(createDeps({
+        activateEmbeddedAgentWorker: mock(async () => { throw activationError; }),
+      }));
+
+      await expect(
+        manager.restartAgentWorkerAsEmbedded(session.id, workerId, EMBEDDED_AGENT_DEF_SDK.id),
+      ).rejects.toThrow(activationError);
+
+      const internal = session.workers.get(workerId) as InternalEmbeddedAgentWorker;
+      expect(internal.embeddedAgentId).toBe(EMBEDDED_AGENT_DEF_SDK.id);
+      expect(internal.subprocess).toBeNull();
+    });
+
+    it("revokes the old definition's MCP token via deactivateEmbeddedAgentWorker before the conversion completes (positive control)", async () => {
+      const registry = new McpTokenRegistry();
+      const { session, workerId } = await createEmbeddedFixture();
+      const token = registry.mint({ sessionId: session.id, workerId, userId: 'owner-1' });
+
+      expect(registry.verify(token)).not.toBeNull();
+
+      const deactivate = mock(async (_sid: string, wid: string) => {
+        registry.revokeByWorker(wid);
+      });
+      const manager = new WorkerLifecycleManager(createDeps({ deactivateEmbeddedAgentWorker: deactivate }));
+
+      await manager.restartAgentWorkerAsEmbedded(session.id, workerId, EMBEDDED_AGENT_DEF_SDK.id);
+
+      expect(deactivate).toHaveBeenCalledWith(session.id, workerId);
+      expect(registry.verify(token)).toBeNull();
+    });
+
+    it('resolves the path resolver before deactivating the existing worker (call-order pin)', async () => {
+      const { session, workerId } = await createEmbeddedFixture();
+
+      const order: string[] = [];
+      const deactivateTracking = mock(async (_sid: string, _wid: string) => {
+        order.push('deactivate');
+      });
+      const manager = new WorkerLifecycleManager(createDeps({
+        deactivateEmbeddedAgentWorker: deactivateTracking,
+        getPathResolver: () => {
+          order.push('resolver');
+          return new SessionDataPathResolver(`${TEST_CONFIG_DIR}/_quick`);
+        },
+      }));
+
+      await manager.restartAgentWorkerAsEmbedded(session.id, workerId, EMBEDDED_AGENT_DEF_SDK.id);
+
+      expect(order).toEqual(['resolver', 'deactivate']);
+    });
+
+    it('continues the conversion when deleteWorkerOutput fails after the existing worker is already torn down (non-fatal)', async () => {
+      const { session, workerId } = await createEmbeddedFixture();
+
+      const wofm = new WorkerOutputFileManager();
+      const deleteSpy = spyOn(wofm, 'deleteWorkerOutput').mockImplementation(async () => {
+        throw new Error('boom: disk unavailable');
+      });
+
+      const manager = new WorkerLifecycleManager(createDeps({ workerOutputFileManager: wofm }));
+
+      let result: Worker | null;
+      try {
+        result = await manager.restartAgentWorkerAsEmbedded(session.id, workerId, EMBEDDED_AGENT_DEF_SDK.id);
+      } finally {
+        deleteSpy.mockRestore();
+      }
+
+      expect(result).not.toBeNull();
+      expect(result!.type).toBe('embedded-agent');
+    });
+
+    it('renames the worktree branch before converting, same as the sibling conversion methods', async () => {
+      const { session, workerId } = await createEmbeddedFixture({ worktreeId: 'original-branch' });
+
+      mockGit.getCurrentBranch.mockImplementation(() => Promise.resolve('original-branch'));
+
+      await lifecycleManager.restartAgentWorkerAsEmbedded(session.id, workerId, EMBEDDED_AGENT_DEF_SDK.id, 'new-branch');
+
+      expect(mockGit.renameBranch).toHaveBeenCalledWith('original-branch', 'new-branch', session.locationPath);
+      expect(session.type).toBe('worktree');
+      if (session.type === 'worktree') {
+        expect(session.worktreeId).toBe('new-branch');
+      }
+    });
+  });
+
+  // ========== Same-Definition Embedded-Agent Restart (case c, Issue #1592) ==========
+
+  describe('restartAgentWorkerAsEmbedded: embedded-agent -> same definition restart (case c, Issue #1592)', () => {
+    async function createEmbeddedFixture(
+      sessionOverrides: Parameters<typeof createTestSession>[0] = {},
+    ): Promise<{ session: InternalSession; workerId: string }> {
+      const session = createTestSession(sessionOverrides);
+      sessions.set(session.id, session);
+      const worker = await lifecycleManager.createWorker(session.id, {
+        type: 'embedded-agent',
+        embeddedAgentId: EMBEDDED_AGENT_DEF.id,
+      });
+      return { session, workerId: worker!.id };
+    }
+
+    it('calls deactivate then activate, in that order, and deletes nothing (no output-file reset, no notification cleanup)', async () => {
+      const { session, workerId } = await createEmbeddedFixture();
+
+      const order: string[] = [];
+      const deactivateTracking = mock(async (_sid: string, _wid: string) => {
+        order.push('deactivate');
+      });
+      const activateTracking = mock(async (_sid: string, _wid: string) => {
+        order.push('activate');
+      });
+      const wofm = new WorkerOutputFileManager();
+      const deleteSpy = spyOn(wofm, 'deleteWorkerOutput');
+      const resetSpy = spyOn(wofm, 'resetWorkerOutput');
+      const notificationCleanupSpy = mock((_sid: string, _wid: string) => {});
+
+      const manager = new WorkerLifecycleManager(createDeps({
+        deactivateEmbeddedAgentWorker: deactivateTracking,
+        activateEmbeddedAgentWorker: activateTracking,
+        workerOutputFileManager: wofm,
+        notificationManager: { cleanupWorker: notificationCleanupSpy } as unknown as NonNullable<WorkerLifecycleDeps['notificationManager']>,
+      }));
+
+      const result = await manager.restartAgentWorkerAsEmbedded(session.id, workerId, EMBEDDED_AGENT_DEF.id);
+
+      expect(order).toEqual(['deactivate', 'activate']);
+      expect(deleteSpy).not.toHaveBeenCalled();
+      expect(resetSpy).not.toHaveBeenCalled();
+      expect(notificationCleanupSpy).not.toHaveBeenCalled();
+      expect(result).not.toBeNull();
+      expect(result!.id).toBe(workerId);
+      expect(result!.type).toBe('embedded-agent');
+    });
+
+    it('fires onWorkerRestarted unconditionally but does not fire onSessionUpdated when no branch change', async () => {
+      const { session, workerId } = await createEmbeddedFixture();
+
+      mockOnSessionUpdated.mockClear();
+      mockOnWorkerRestarted.mockClear();
+      await lifecycleManager.restartAgentWorkerAsEmbedded(session.id, workerId, EMBEDDED_AGENT_DEF.id);
+
+      expect(mockOnSessionUpdated).not.toHaveBeenCalled();
+      expect(mockOnWorkerRestarted).toHaveBeenCalledWith(session.id, workerId, expect.anything());
+    });
+
+    it('fires onSessionUpdated when the branch changed, same as restartAgentWorker', async () => {
+      const { session, workerId } = await createEmbeddedFixture({ worktreeId: 'original-branch' });
+
+      mockGit.getCurrentBranch.mockImplementation(() => Promise.resolve('original-branch'));
+      mockOnSessionUpdated.mockClear();
+
+      await lifecycleManager.restartAgentWorkerAsEmbedded(session.id, workerId, EMBEDDED_AGENT_DEF.id, 'new-branch');
+
+      expect(mockOnSessionUpdated).toHaveBeenCalled();
+      expect(mockGit.renameBranch).toHaveBeenCalledWith('original-branch', 'new-branch', session.locationPath);
+    });
+
+    it('returns null when the session vanishes during deactivate/activate', async () => {
+      const { session, workerId } = await createEmbeddedFixture();
+
+      const deactivateAndDelete = mock(async (sid: string, _wid: string) => {
+        sessions.delete(sid);
+      });
+      const manager = new WorkerLifecycleManager(createDeps({ deactivateEmbeddedAgentWorker: deactivateAndDelete }));
+
+      const result = await manager.restartAgentWorkerAsEmbedded(session.id, workerId, EMBEDDED_AGENT_DEF.id);
+
+      expect(result).toBeNull();
+    });
+
+    it('returns null when the session does not exist', async () => {
+      const result = await lifecycleManager.restartAgentWorkerAsEmbedded(
+        'non-existent-session', 'worker-1', EMBEDDED_AGENT_DEF.id,
+      );
+      expect(result).toBeNull();
     });
   });
 
