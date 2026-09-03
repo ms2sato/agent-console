@@ -426,6 +426,8 @@ export class SessionManager {
       embeddedAgentManager,
       deactivateEmbeddedAgentWorker: (sessionId, workerId) =>
         this.embeddedAgentWorkerService.deactivate(sessionId, workerId),
+      activateEmbeddedAgentWorker: (sessionId, workerId) =>
+        this.embeddedAgentWorkerService.activate(sessionId, workerId),
       notificationManager: this.notificationManager,
       pathExists: this.pathExists,
       getSession: (id) => this.sessions.get(id),
@@ -1110,6 +1112,24 @@ export class SessionManager {
     return session ? this.toPublicSession(session) : undefined;
   }
 
+  /**
+   * @internal Exported for testing. Sets `initialPromptDelivered` directly on
+   * the LIVE internal session, bypassing the real PTY login-shell-ready
+   * sentinel that flips this flag in production. `getSession()` /
+   * `getAllSessions()` both return a fresh `toPublicSession()` projection
+   * decoupled from the live internal session, so integration tests that need
+   * to simulate "prompt already delivered by a prior PTY activation" (a
+   * precondition a test harness's real PTY provider cannot reliably trigger
+   * inside a test process) have no other way to set up that precondition on
+   * the object production code actually reads. Do not call from production
+   * code; this exists solely as a narrow test seam for that one flag.
+   */
+  setInitialPromptDeliveredForTest(sessionId: string, delivered: boolean): void {
+    const session = this.sessions.get(sessionId);
+    if (!session) throw new Error(`Session not found: ${sessionId}`);
+    session.initialPromptDelivered = delivered;
+  }
+
   async getSessionMetadata(id: string): Promise<PersistedSession | null> {
     return this.sessionRepository.findById(id);
   }
@@ -1373,6 +1393,21 @@ export class SessionManager {
     branch?: string
   ): Promise<Worker | null> {
     return this.workerLifecycleManager.restartAgentWorker(sessionId, workerId, startupPreference, agentId, branch);
+  }
+
+  /**
+   * Restart a PTY `agent` worker AS an embedded-agent worker (cross-type
+   * restart / conversion). Same worker slot/tab, same workerId; see
+   * WorkerLifecycleManager.restartAgentWorkerAsEmbedded for the full
+   * call-order contract.
+   */
+  async restartAgentWorkerAsEmbedded(
+    sessionId: string,
+    workerId: string,
+    embeddedAgentId: string,
+    branch?: string
+  ): Promise<Worker | null> {
+    return this.workerLifecycleManager.restartAgentWorkerAsEmbedded(sessionId, workerId, embeddedAgentId, branch);
   }
 
   /** Restore a PTY worker, activating its PTY if needed after server restart. */

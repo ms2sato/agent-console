@@ -301,7 +301,7 @@ describe('RestartWorkerRequestSchema', () => {
       continueConversation: true,
     });
     expect(result.success).toBe(true);
-    if (result.success) {
+    if (result.success && 'continueConversation' in result.output) {
       expect(result.output.continueConversation).toBe(true);
     }
   });
@@ -311,7 +311,7 @@ describe('RestartWorkerRequestSchema', () => {
       continueConversation: false,
     });
     expect(result.success).toBe(true);
-    if (result.success) {
+    if (result.success && 'continueConversation' in result.output) {
       expect(result.output.continueConversation).toBe(false);
     }
   });
@@ -402,6 +402,83 @@ describe('RestartWorkerRequestSchema', () => {
   });
 });
 
+describe('RestartWorkerRequestSchema: embedded-agent conversion member (cross-type restart)', () => {
+  it('accepts { embeddedAgentId } alone', () => {
+    const result = v.safeParse(RestartWorkerRequestSchema, {
+      embeddedAgentId: 'def-1',
+    });
+    expect(result.success).toBe(true);
+    if (result.success && 'embeddedAgentId' in result.output) {
+      expect(result.output.embeddedAgentId).toBe('def-1');
+    }
+  });
+
+  it('accepts { embeddedAgentId, branch }', () => {
+    const result = v.safeParse(RestartWorkerRequestSchema, {
+      embeddedAgentId: 'def-1',
+      branch: 'feature/convert',
+    });
+    expect(result.success).toBe(true);
+    if (result.success && 'embeddedAgentId' in result.output) {
+      expect(result.output.embeddedAgentId).toBe('def-1');
+      expect(result.output.branch).toBe('feature/convert');
+    }
+  });
+
+  it('rejects { embeddedAgentId, continueConversation } -- continueConversation belongs to the terminal member only', () => {
+    const result = v.safeParse(RestartWorkerRequestSchema, {
+      embeddedAgentId: 'def-1',
+      continueConversation: true,
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects { embeddedAgentId, agentId } -- agentId belongs to the terminal member only', () => {
+    const result = v.safeParse(RestartWorkerRequestSchema, {
+      embeddedAgentId: 'def-1',
+      agentId: 'agent-123',
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects an empty embeddedAgentId', () => {
+    const result = v.safeParse(RestartWorkerRequestSchema, {
+      embeddedAgentId: '',
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('the empty object {} still matches the terminal member (today\'s behavior, unchanged)', () => {
+    const result = v.safeParse(RestartWorkerRequestSchema, {});
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect('embeddedAgentId' in result.output).toBe(false);
+    }
+  });
+
+  // Polarity measurement (workflow.md "TDD for bug fixes" + testing.md's
+  // per-test category table), performed via `git diff
+  // packages/shared/src/schemas/worker.ts > /tmp/schema.patch && git
+  // checkout packages/shared/src/schemas/worker.ts`, re-running this
+  // describe block, then `git apply /tmp/schema.patch` to restore:
+  //
+  // - The two "accepts" tests above are BUG/NEW-MECHANISM-CONTRACT tests:
+  //   they FAILED against the old flat schema (which had no `embeddedAgentId`
+  //   key at all -- strictObject rejected it as unrecognized) and PASS now.
+  //   This is the real polarity flip for the new union member's existence.
+  // - The two "rejects" tests (continueConversation / agentId alongside
+  //   embeddedAgentId) are INVARIANT-PRESERVATION tests: they pass in BOTH
+  //   worlds, but for different reasons. Against the old flat schema,
+  //   `embeddedAgentId` itself is the unrecognized key, so `success: false`
+  //   regardless of which other field accompanies it -- the co-occurrence
+  //   is not what's being rejected there. Against the new union, it's the
+  //   co-occurrence itself that trips strictObject's per-member key check.
+  //   They are not vacuous, though: they would fail against a plausible
+  //   wrong NEW implementation (e.g. one flat object merging both members'
+  //   fields as all-optional instead of a true union), which is the mistake
+  //   they exist to guard.
+});
+
 describe('strict-parse contract (unknown-key rejection)', () => {
   it('CreateWorkerRequestSchema rejects an unknown key', () => {
     const result = v.safeParse(CreateWorkerRequestSchema, {
@@ -423,7 +500,10 @@ describe('strict-parse contract (unknown-key rejection)', () => {
     });
     expect(result.success).toBe(false);
     if (!result.success) {
-      expect(result.issues.some((i) => i.path?.[0]?.key === 'unexpectedField')).toBe(true);
+      // RestartWorkerRequestSchema is now a union (cross-type restart); the
+      // unknown-key issue surfaces on the matching (terminal) branch, same
+      // union-issue shape as CreateWorkerRequestSchema above.
+      expect(JSON.stringify(result.issues)).toContain('unexpectedField');
     }
   });
 });

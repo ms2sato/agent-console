@@ -421,10 +421,32 @@ const workers = new Hono<AppBindings>()
     const sessionId = c.req.param('sessionId');
     const workerId = c.req.param('workerId');
     const body = c.req.valid('json');
+
+    const { sessionManager } = c.get('appContext');
+
+    // The embedded member of the union carries `embeddedAgentId` (absent
+    // from the terminal member) -- a cross-type restart, converting the
+    // existing PTY `agent` worker to an embedded-agent worker in the same
+    // slot. See RestartWorkerRequestSchema / WorkerLifecycleManager.
+    // restartAgentWorkerAsEmbedded for the full contract.
+    if ('embeddedAgentId' in body) {
+      const worker = await sessionManager.restartAgentWorkerAsEmbedded(
+        sessionId,
+        workerId,
+        body.embeddedAgentId,
+        body.branch,
+      );
+
+      if (!worker) {
+        throw new NotFoundError('Worker');
+      }
+
+      return c.json({ worker });
+    }
+
     const { continueConversation = false, agentId, branch } = body;
     const startupPreference: StartupIntentPreference = continueConversation ? 'continue' : 'fresh';
 
-    const { sessionManager } = c.get('appContext');
     const worker = await sessionManager.restartAgentWorker(sessionId, workerId, startupPreference, agentId, branch);
 
     if (!worker) {

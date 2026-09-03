@@ -24,7 +24,8 @@ import type { SessionManager } from '../session-manager.js';
 import { UsernameLookupService } from '../username-lookup.js';
 import type { UserRepository } from '../../repositories/user-repository.js';
 import type { AuthUser } from '@agent-console/shared';
-import type { SpawnAsUserFn, runAsUser, RunAsUserOpts } from '../privilege-elevation.js';
+import type { SpawnAsUserFn, SpawnAsUserOpts, SpawnAsUserResult, runAsUser, RunAsUserOpts } from '../privilege-elevation.js';
+import * as os from 'os';
 import type { LookupOsUserFn } from '../os-user-lookup.js';
 import type { sweepOrphanProcesses } from '../orphan-process-sweeper.js';
 import { McpTokenRegistry } from '../../mcp/mcp-auth.js';
@@ -2161,6 +2162,32 @@ describe('SessionManager', () => {
       expect(retrieved).toBeDefined();
       expect(retrieved?.parentSessionId).toBe('parent-sess-abc');
       expect(retrieved?.parentWorkerId).toBe('parent-wkr-xyz');
+    });
+  });
+
+  describe('setInitialPromptDeliveredForTest', () => {
+    it('sets initialPromptDelivered on the live internal session, visible through getSession', async () => {
+      const manager = await getSessionManager();
+
+      const created = await manager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+
+      expect(manager.getSession(created.id)?.initialPromptDelivered).not.toBe(true);
+
+      manager.setInitialPromptDeliveredForTest(created.id, true);
+
+      expect(manager.getSession(created.id)?.initialPromptDelivered).toBe(true);
+    });
+
+    it('throws for a non-existent session id', async () => {
+      const manager = await getSessionManager();
+
+      expect(() => manager.setInitialPromptDeliveredForTest('non-existent', true)).toThrow(
+        'Session not found: non-existent'
+      );
     });
   });
 
@@ -4611,6 +4638,144 @@ describe('SessionManager', () => {
       const written = newestPty!.writtenData.join('');
       expect(written).toContain("--model 'claude-opus-4-6'");
       expect(written).toContain('-c');
+    });
+  });
+
+  describe('restartAgentWorkerAsEmbedded: multi-user identity + restore-info (cross-type restart)', () => {
+    const STUB_EMBEDDED_DEF = {
+      id: 'cross-type-embedded-def',
+      name: 'Cross-Type Model',
+      engine: 'openai-api' as const,
+      isBuiltIn: false,
+      provider: { baseUrl: 'http://localhost:11434/v1', model: 'qwen3:32b' },
+      createdBy: 'test-user-id',
+      createdAt: '2024-01-01T00:00:00.000Z',
+      updatedAt: '2024-01-01T00:00:00.000Z',
+    };
+
+    /**
+     * Fake spawnAsUser for the embedded-agent loop subprocess. Captures every
+     * spawn's opts so a test can assert the resolved username `spawnAsUser`
+     * was invoked with (R5's multi-user identity check), and captures stdin
+     * writes so the init handshake (which carries the minted MCP token) can
+     * be inspected without duplicating EmbeddedAgentWorkerService's own
+     * mint/serialize logic. Mirrors this file's existing "MCP token registry
+     * sharing (Phase 4)" test.
+     */
+    function makeFakeEmbeddedSpawn(): { fn: SpawnAsUserFn; captured: SpawnAsUserOpts[] } {
+      const captured: SpawnAsUserOpts[] = [];
+      const written: string[] = [];
+      const stdin = { write: (data: string) => { written.push(data); return 0; }, end: () => {}, flush: () => 0 };
+      let stdoutCtrl!: ReadableStreamDefaultController<Uint8Array>;
+      let stderrCtrl!: ReadableStreamDefaultController<Uint8Array>;
+      const stdout = new ReadableStream<Uint8Array>({ start(c) { stdoutCtrl = c; } });
+      const stderr = new ReadableStream<Uint8Array>({ start(c) { stderrCtrl = c; } });
+      void stdoutCtrl;
+      void stderrCtrl;
+      const exited = new Promise<number>(() => {});
+      const subprocess = { pid: 5150, exited, stdin, stdout, stderr, kill: () => {} };
+      const fn: SpawnAsUserFn = (opts) => {
+        captured.push(opts);
+        return { subprocess, stdin, elevated: false } as unknown as SpawnAsUserResult;
+      };
+      return { fn, captured };
+    }
+
+    async function getSessionManagerWithEmbeddedAndSpawn(spawnFn: SpawnAsUserFn) {
+      const module = await import(`../session-manager.js?v=${++importCounter}`);
+      return module.SessionManager.create({
+        userMode: new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' }),
+        pathExists: mockPathExists,
+        jobQueue: testJobQueue,
+        agentManager,
+        mcpTokenRegistry: new McpTokenRegistry(),
+        spawnAsUserFn: spawnFn,
+        embeddedAgentManager: {
+          getEmbeddedAgent: (id: string) => (id === STUB_EMBEDDED_DEF.id ? STUB_EMBEDDED_DEF : undefined),
+        },
+        repositoryLookup: defaultRepositoryLookup,
+        repositoryEnvLookup: defaultRepositoryEnvLookup,
+      });
+    }
+
+    it('R5: activates the converted worker as the session-resolved spawn username', async () => {
+      const spawn = makeFakeEmbeddedSpawn();
+      const manager = await getSessionManagerWithEmbeddedAndSpawn(spawn.fn);
+
+      const session = await manager.createSession(
+        { type: 'quick', locationPath: '/test/path', agentId: 'claude-code' },
+        { createdBy: 'test-user-id' },
+      );
+      const agentWorker = session.workers.find((w: Worker) => w.type === 'agent')!;
+
+      const converted = await manager.restartAgentWorkerAsEmbedded(
+        session.id, agentWorker.id, STUB_EMBEDDED_DEF.id
+      );
+      expect(converted).not.toBeNull();
+      expect(converted?.type).toBe('embedded-agent');
+
+      // resolveSpawnUsername(session.createdBy) resolves to the server
+      // process user here: this helper's SessionManager.create() (mirroring
+      // getSessionManagerWithEmbedded() elsewhere in this file) has no
+      // userRepository configured, so resolveSpawnUsername's `createdBy`
+      // lookup falls through to its os.userInfo() fallback regardless of
+      // the session's createdBy value -- the point being verified is that
+      // restartAgentWorkerAsEmbedded's activation goes through the SAME
+      // resolution SessionManager.activateEmbeddedAgentWorker always uses
+      // (EmbeddedAgentWorkerService.activate), not a special-cased identity.
+      expect(spawn.captured.length).toBe(1);
+      expect(spawn.captured[0]?.username).toBe(os.userInfo().username);
+    });
+
+    it('R5: converts+persists as a dormant worker when the session has no createdBy, and activation fails with the existing "no createdBy" error', async () => {
+      const spawn = makeFakeEmbeddedSpawn();
+      const manager = await getSessionManagerWithEmbeddedAndSpawn(spawn.fn);
+
+      // No second arg -- createdBy left undefined.
+      const session = await manager.createSession({
+        type: 'quick', locationPath: '/test/path', agentId: 'claude-code',
+      });
+      const agentWorker = session.workers.find((w: Worker) => w.type === 'agent')!;
+
+      await expect(
+        manager.restartAgentWorkerAsEmbedded(session.id, agentWorker.id, STUB_EMBEDDED_DEF.id)
+      ).rejects.toThrow('has no createdBy, so an MCP caller identity cannot be minted');
+
+      // Never reached spawnAsUser -- activation failed before spawning.
+      expect(spawn.captured.length).toBe(0);
+
+      // The worker is still persisted as a dormant embedded-agent worker
+      // (converted, not reverted) despite the activation failure.
+      const currentSession = manager.getSession(session.id)!;
+      const convertedWorker = currentSession.workers.find((w: Worker) => w.id === agentWorker.id);
+      expect(convertedWorker?.type).toBe('embedded-agent');
+    });
+
+    it('restore-info is null and no restore-failure marker is present after a first-ever activation on the converted worker', async () => {
+      const spawn = makeFakeEmbeddedSpawn();
+      const manager = await getSessionManagerWithEmbeddedAndSpawn(spawn.fn);
+
+      const session = await manager.createSession(
+        { type: 'quick', locationPath: '/test/path', agentId: 'claude-code' },
+        { createdBy: 'test-user-id' },
+      );
+      const agentWorker = session.workers.find((w: Worker) => w.type === 'agent')!;
+
+      const converted = await manager.restartAgentWorkerAsEmbedded(
+        session.id, agentWorker.id, STUB_EMBEDDED_DEF.id
+      );
+      expect(converted).not.toBeNull();
+
+      // getEmbeddedAgentRestoreInfo(workerId): first-ever activation, nothing
+      // to report.
+      const restoreInfo = manager.getEmbeddedAgentRestoreInfo(session.id, agentWorker.id);
+      expect(restoreInfo).toBeNull();
+
+      // The output file resetWorkerOutput truncated must be genuinely empty
+      // before this activation, so no restore-failure marker of any kind can
+      // appear in it.
+      const history = await manager.getWorkerOutputHistory(session.id, agentWorker.id);
+      expect(history?.data ?? '').not.toContain('restore-failure');
     });
   });
 
