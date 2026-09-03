@@ -6527,6 +6527,56 @@ describe('SessionManager', () => {
       expect(secondCallback).toHaveBeenCalledWith(session.id);
     });
   });
+
+  describe('deleteMemo (Issue #1569)', () => {
+    it('fires onMemoUpdated with an empty string and removes a previously-written memo', async () => {
+      const manager = await getSessionManager();
+      const session = await manager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+
+      const onMemoUpdated = mock((_sessionId: string, _content: string) => {});
+      manager.setSessionLifecycleCallbacks({ onMemoUpdated });
+
+      await manager.writeMemo(session.id, 'some content');
+      expect(await manager.readMemo(session.id)).toBe('some content');
+      onMemoUpdated.mockClear();
+
+      await manager.deleteMemo(session.id);
+
+      expect(onMemoUpdated).toHaveBeenCalledTimes(1);
+      expect(onMemoUpdated).toHaveBeenCalledWith(session.id, '');
+      expect(await manager.readMemo(session.id)).toBeNull();
+    });
+
+    it('tolerates a session that never had a memo written -- resolves and still fires onMemoUpdated', async () => {
+      const manager = await getSessionManager();
+      const session = await manager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+
+      const onMemoUpdated = mock((_sessionId: string, _content: string) => {});
+      manager.setSessionLifecycleCallbacks({ onMemoUpdated });
+
+      await expect(manager.deleteMemo(session.id)).resolves.toBeUndefined();
+
+      expect(onMemoUpdated).toHaveBeenCalledTimes(1);
+      expect(onMemoUpdated).toHaveBeenCalledWith(session.id, '');
+      expect(await manager.readMemo(session.id)).toBeNull();
+    });
+
+    it('throws for an unknown sessionId, matching writeMemo\'s existing not-found contract', async () => {
+      const manager = await getSessionManager();
+
+      await expect(manager.deleteMemo('does-not-exist')).rejects.toThrow(
+        'Session not found: does-not-exist'
+      );
+    });
+  });
 });
 
 /**

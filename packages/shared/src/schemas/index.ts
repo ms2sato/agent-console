@@ -115,6 +115,7 @@ export {
   CreateQuickSessionRequestSchema,
   CreateSessionRequestSchema,
   UpdateSessionRequestSchema,
+  UpdateSessionMemoRequestSchema,
   DeleteSessionRequestSchema,
   RestoreInfoMessageSchema,
   branchNamePattern,
@@ -123,6 +124,7 @@ export {
   type CreateQuickSessionRequest,
   type CreateSessionRequest,
   type UpdateSessionRequest,
+  type UpdateSessionMemoRequest,
   type DeleteSessionRequest,
 } from './session.js';
 

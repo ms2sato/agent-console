@@ -1320,6 +1320,22 @@ export class SessionManager {
   }
 
   /**
+   * Delete the memo for a session and fire the onMemoUpdated lifecycle
+   * callback with an empty string (the wire deletion signal — see R4).
+   * Tolerates a session that has no memo file (MemoService.deleteMemo does
+   * not throw on ENOENT).
+   */
+  async deleteMemo(sessionId: string): Promise<void> {
+    const session = this.sessions.get(sessionId);
+    if (!session) {
+      throw new Error(`Session not found: ${sessionId}`);
+    }
+    const resolver = this.getPathResolverForSession(session);
+    await this.memoService.deleteMemo(sessionId, resolver);
+    this.sessionLifecycleCallbacks?.onMemoUpdated?.(sessionId, '');
+  }
+
+  /**
    * Read a memo for a session.
    *
    * @returns The memo content, or null if no memo exists.

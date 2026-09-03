@@ -4,9 +4,10 @@ import { validateSessionPath } from '../lib/path-validator.js';
 import {
   CreateSessionRequestSchema,
   UpdateSessionRequestSchema,
+  UpdateSessionMemoRequestSchema,
 } from '@agent-console/shared';
 import { createSessionValidationService } from '../services/session-validation-service.js';
-import { InternalError, NotFoundError, ValidationError } from '../lib/errors.js';
+import { ForbiddenError, InternalError, NotFoundError, ValidationError } from '../lib/errors.js';
 import { vValidator, vQueryValidator } from '../middleware/validation.js';
 import { getOrgRepoFromPath } from '../lib/git.js';
 import { resolveSpawnUsername } from '../services/resolve-spawn-username.js';
@@ -119,6 +120,49 @@ const sessions = new Hono<AppBindings>()
 
     const content = await sessionManager.readMemo(sessionId);
     return c.json({ content });
+  })
+  // Write (or delete, on empty content) the memo for a session.
+  // Ownership: the authenticated user must be the session's owner, or the
+  // session must be a shared session (any authenticated user may write to a
+  // shared session's memo). This single check is correct for both
+  // single-user and multi-user mode -- see embedded-agents.ts's PATCH /:id
+  // for the precedent ("In single-user mode there is only one user id, so
+  // the check is trivially satisfied").
+  .put('/:id/memo', vValidator(UpdateSessionMemoRequestSchema), async (c) => {
+    const sessionId = c.req.param('id');
+    const body = c.req.valid('json');
+    const { sessionManager, sharedAccountRegistry } = c.get('appContext');
+    const authUser = c.get('authUser');
+
+    const session = sessionManager.getSession(sessionId);
+    if (!session) {
+      throw new NotFoundError('Session');
+    }
+
+    const isOwner = session.createdBy === authUser.id;
+    const isSharedSession = session.createdBy != null && sharedAccountRegistry.isSharedUserId(session.createdBy);
+    if (!isOwner && !isSharedSession) {
+      throw new ForbiddenError('Only the session owner can write this memo');
+    }
+
+    // R4: a save whose trimmed content is empty DELETES the memo file
+    // rather than writing an empty one. Writing '' would make readMemo
+    // return '' forever instead of null, which the client can no longer
+    // distinguish from "no memo" -- this is a deliberate ruling, not a
+    // bug. The `memo-updated` broadcast still fires, carrying `content: ''`
+    // -- on that wire message `''` (never `null`) is the deletion signal;
+    // `null` is a REST-response-only value. See docs/design/session-worker-design.md#session-memo.
+    if (body.content.trim().length === 0) {
+      await sessionManager.deleteMemo(sessionId);
+      return c.json({ content: null });
+    }
+
+    try {
+      await sessionManager.writeMemo(sessionId, body.content);
+    } catch (err) {
+      throw new ValidationError(err instanceof Error ? err.message : 'Failed to write memo');
+    }
+    return c.json({ content: body.content });
   })
   // Delete a session (synchronous)
   // For worktree sessions with async deletion, use the worktree deletion endpoint instead.

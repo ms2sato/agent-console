@@ -879,6 +879,20 @@ export async function fetchSessionMemo(sessionId: string): Promise<string | null
   return data.content;
 }
 
+/**
+ * Write (or, on empty content, delete) a session's memo. The server is the
+ * source of truth: its response `content` (never the locally-typed `content`
+ * argument) is what callers must write into the query cache -- see R4/R6 in
+ * docs/design/session-worker-design.md#session-memo.
+ */
+export async function updateSessionMemo(sessionId: string, content: string): Promise<{ content: string | null }> {
+  const res = await api.sessions[':id'].memo.$put({ param: { id: sessionId }, json: { content } });
+  if (!res.ok) {
+    await handleApiError(res, 'Failed to update session memo');
+  }
+  return res.json() as Promise<{ content: string | null }>;
+}
+
 // ===========================================================================
 // Session PR Link
 // ===========================================================================
