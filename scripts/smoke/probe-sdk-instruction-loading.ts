@@ -43,7 +43,7 @@
  * Usage: bun scripts/smoke/probe-sdk-instruction-loading.ts [--off] [--project]
  */
 
-import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Options, SettingSource } from '../../packages/embedded-agent/node_modules/@anthropic-ai/claude-agent-sdk';
@@ -141,30 +141,37 @@ interface Canaries {
  */
 function buildScratchRepo(): { dir: string; canaries: Canaries } {
   const dir = mkdtempSync(join(tmpdir(), 'probe-sdk-instructions-'));
-  const canaries: Canaries = {
-    a: nonce('CANARY-ALPHA'),
-    b: nonce('CANARY-BRAVO'),
-    c: nonce('CANARY-CHARLIE'),
-  };
+  try {
+    const canaries: Canaries = {
+      a: nonce('CANARY-ALPHA'),
+      b: nonce('CANARY-BRAVO'),
+      c: nonce('CANARY-CHARLIE'),
+    };
 
-  Bun.spawnSync(['git', 'init', '-q'], { cwd: dir });
+    Bun.spawnSync(['git', 'init', '-q'], { cwd: dir });
 
-  writeFileSync(join(dir, 'CLAUDE.md'), `# Project Instructions\n\nProject canary word: ${canaries.a}\n`);
+    writeFileSync(join(dir, 'CLAUDE.md'), `# Project Instructions\n\nProject canary word: ${canaries.a}\n`);
 
-  mkdirSync(join(dir, '.claude', 'rules'), { recursive: true });
-  writeFileSync(
-    join(dir, '.claude', 'rules', 'unscoped.md'),
-    `# Unscoped Rule\n\nUnscoped-rule canary word: ${canaries.b}\n`,
-  );
-  writeFileSync(
-    join(dir, '.claude', 'rules', 'scoped.md'),
-    `---\npaths: ["src/**"]\n---\n\n# Scoped Rule\n\nScoped-rule canary word: ${canaries.c}\n`,
-  );
+    mkdirSync(join(dir, '.claude', 'rules'), { recursive: true });
+    writeFileSync(
+      join(dir, '.claude', 'rules', 'unscoped.md'),
+      `# Unscoped Rule\n\nUnscoped-rule canary word: ${canaries.b}\n`,
+    );
+    writeFileSync(
+      join(dir, '.claude', 'rules', 'scoped.md'),
+      `---\npaths: ["src/**"]\n---\n\n# Scoped Rule\n\nScoped-rule canary word: ${canaries.c}\n`,
+    );
 
-  mkdirSync(join(dir, 'src'), { recursive: true });
-  writeFileSync(join(dir, 'src', 'x.ts'), 'export const x = 1;\n');
+    mkdirSync(join(dir, 'src'), { recursive: true });
+    writeFileSync(join(dir, 'src', 'x.ts'), 'export const x = 1;\n');
 
-  return { dir, canaries };
+    return { dir, canaries };
+  } catch (err) {
+    // Setup failed after mkdtempSync already created `dir` -- clean it up
+    // before rethrowing, rather than leaking it (CodeRabbit finding).
+    rmSync(dir, { recursive: true, force: true });
+    throw err;
+  }
 }
 
 function askPrompt(canaries: Canaries): string {
@@ -241,77 +248,89 @@ async function runArm(
 async function main(): Promise<number> {
   const selected = parseArgs(process.argv.slice(2));
   const configDir = isolateClaudeConfigDir('instr');
-  const { dir: repoDir, canaries } = buildScratchRepo();
+  let repoDir: string | undefined;
 
-  console.log(`probe-sdk-instruction-loading  started ${stamp()}`);
-  console.log(`items: ${[...selected].join(' ')}`);
-  console.log(`isolated CLAUDE_CONFIG_DIR: ${configDir}`);
-  console.log(`scratch git repo: ${repoDir}`);
-  console.log(`model: ${MODEL}`);
+  try {
+    const built = buildScratchRepo();
+    repoDir = built.dir;
+    const { canaries } = built;
 
-  const sdkPackageJson = await Bun.file(
-    join(import.meta.dir, '../../packages/embedded-agent/node_modules/@anthropic-ai/claude-agent-sdk/package.json'),
-  ).json();
-  console.log(`@anthropic-ai/claude-agent-sdk version: ${sdkPackageJson.version}`);
+    console.log(`probe-sdk-instruction-loading  started ${stamp()}`);
+    console.log(`items: ${[...selected].join(' ')}`);
+    console.log(`isolated CLAUDE_CONFIG_DIR: ${configDir}`);
+    console.log(`scratch git repo: ${repoDir}`);
+    console.log(`model: ${MODEL}`);
 
-  const results: ArmResult[] = [];
-  if (selected.has('--off')) {
-    results.push(await runArm('off', [], repoDir, canaries));
-  }
-  if (selected.has('--project')) {
-    results.push(await runArm('project', ['project'], repoDir, canaries));
-  }
+    const sdkPackageJson = await Bun.file(
+      join(import.meta.dir, '../../packages/embedded-agent/node_modules/@anthropic-ai/claude-agent-sdk/package.json'),
+    ).json();
+    console.log(`@anthropic-ai/claude-agent-sdk version: ${sdkPackageJson.version}`);
 
-  const isolation = verifyIsolation(configDir);
-  h('Isolation check');
-  console.log(`child-created state under the throwaway CLAUDE_CONFIG_DIR: ${isolation.evidence.join(', ') || '(none)'}`);
-  if (!isolation.ok) {
-    console.error(
-      'ISOLATION NOT VERIFIED: the child wrote no state into the throwaway config dir. This probe cannot be trusted without this -- it may have run against the operator\'s real config dir.',
-    );
-    return 2;
-  }
-
-  h('Verdict');
-  let stop = false;
-  for (const r of results) {
-    if (r.label !== 'off') continue;
-    if (r.ask1Found === null || r.ask2Found === null) {
-      console.log(`off arm: INDETERMINATE -- a turn did not settle, no measurement available.`);
-      stop = true;
-      continue;
+    const results: ArmResult[] = [];
+    if (selected.has('--off')) {
+      results.push(await runArm('off', [], repoDir, canaries));
     }
-    const leaked = r.ask1Found.b || r.ask1Found.c || r.ask2Found.b || r.ask2Found.c;
-    if (leaked) {
-      console.log(
-        `off arm: STOP -- settingSources: [] LEAKED a rules canary (ask#1=${JSON.stringify(r.ask1Found)} ask#2=${JSON.stringify(r.ask2Found)}). The SDK loads .claude/rules independently of settingSources; the Phase A design premise is FALSE.`,
+    if (selected.has('--project')) {
+      results.push(await runArm('project', ['project'], repoDir, canaries));
+    }
+
+    const isolation = verifyIsolation(configDir);
+    h('Isolation check');
+    console.log(`child-created state under the throwaway CLAUDE_CONFIG_DIR: ${isolation.evidence.join(', ') || '(none)'}`);
+    if (!isolation.ok) {
+      console.error(
+        'ISOLATION NOT VERIFIED: the child wrote no state into the throwaway config dir. This probe cannot be trusted without this -- it may have run against the operator\'s real config dir.',
       );
-      stop = true;
-    } else {
+      return 2;
+    }
+
+    h('Verdict');
+    let stop = false;
+    for (const r of results) {
+      if (r.label !== 'off') continue;
+      if (r.ask1Found === null || r.ask2Found === null) {
+        console.log(`off arm: INDETERMINATE -- a turn did not settle, no measurement available.`);
+        stop = true;
+        continue;
+      }
+      const leaked = r.ask1Found.b || r.ask1Found.c || r.ask2Found.b || r.ask2Found.c;
+      if (leaked) {
+        console.log(
+          `off arm: STOP -- settingSources: [] LEAKED a rules canary (ask#1=${JSON.stringify(r.ask1Found)} ask#2=${JSON.stringify(r.ask2Found)}). The SDK loads .claude/rules independently of settingSources; the Phase A design premise is FALSE.`,
+        );
+        stop = true;
+      } else {
+        console.log(
+          `off arm: PASS -- no rules canary (B/C) known before or after Read (ask#1=${JSON.stringify(r.ask1Found)} ask#2=${JSON.stringify(r.ask2Found)}). CLAUDE.md canary (A) also ${r.ask1Found.a || r.ask2Found.a ? 'LEAKED (unexpected)' : 'absent (expected)'}.`,
+        );
+      }
+    }
+    for (const r of results) {
+      if (r.label !== 'project') continue;
+      if (r.ask1Found === null || r.ask2Found === null) {
+        console.log(`project arm: INDETERMINATE -- a turn did not settle, no measurement available.`);
+        continue;
+      }
+      const startOk = r.ask1Found.a && r.ask1Found.b && !r.ask1Found.c;
+      const afterOk = r.ask2Found.c;
       console.log(
-        `off arm: PASS -- no rules canary (B/C) known before or after Read (ask#1=${JSON.stringify(r.ask1Found)} ask#2=${JSON.stringify(r.ask2Found)}). CLAUDE.md canary (A) also ${r.ask1Found.a || r.ask2Found.a ? 'LEAKED (unexpected)' : 'absent (expected)'}.`,
+        `project arm: A@start=${r.ask1Found.a} B@start=${r.ask1Found.b} C@start=${r.ask1Found.c} C@afterRead=${r.ask2Found.c}. Positive-control shape ${startOk && afterOk ? 'CONFIRMED' : 'NOT confirmed as expected'} (expected A&B known at start, C unknown at start and known after the Read).`,
       );
     }
-  }
-  for (const r of results) {
-    if (r.label !== 'project') continue;
-    if (r.ask1Found === null || r.ask2Found === null) {
-      console.log(`project arm: INDETERMINATE -- a turn did not settle, no measurement available.`);
-      continue;
-    }
-    const startOk = r.ask1Found.a && r.ask1Found.b && !r.ask1Found.c;
-    const afterOk = r.ask2Found.c;
+
+    const t = totals();
     console.log(
-      `project arm: A@start=${r.ask1Found.a} B@start=${r.ask1Found.b} C@start=${r.ask1Found.c} C@afterRead=${r.ask2Found.c}. Positive-control shape ${startOk && afterOk ? 'CONFIRMED' : 'NOT confirmed as expected'} (expected A&B known at start, C unknown at start and known after the Read).`,
+      `\nfinished ${stamp()}  elapsed=${((Date.now() - startedAt) / 60_000).toFixed(1)} min  cumulative prompt tokens=${t.tokens}  approx cost=$${t.cost.toFixed(4)}`,
     );
+
+    return stop ? 1 : 0;
+  } finally {
+    // Neither the throwaway CLAUDE_CONFIG_DIR nor the scratch repo is
+    // cleaned up by any exit path otherwise (CodeRabbit finding) -- every
+    // reachable return/throw from the try block above goes through here.
+    rmSync(configDir, { recursive: true, force: true });
+    if (repoDir !== undefined) rmSync(repoDir, { recursive: true, force: true });
   }
-
-  const t = totals();
-  console.log(
-    `\nfinished ${stamp()}  elapsed=${((Date.now() - startedAt) / 60_000).toFixed(1)} min  cumulative prompt tokens=${t.tokens}  approx cost=$${t.cost.toFixed(4)}`,
-  );
-
-  return stop ? 1 : 0;
 }
 
 // Guarded (Issue #1479): importing this module must not fire a billed run
