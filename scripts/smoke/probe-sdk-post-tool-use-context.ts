@@ -45,7 +45,8 @@
  *        deterministic filler text (the AC asks only for "the largest size
  *        at which the nonce still arrives" -- a single 40 KB case is
  *        sufficient measurement, not a binary-search sweep). Records
- *        whether the nonce still arrives at that size.
+ *        whether the nonce still arrives at that size. Size configurable
+ *        via --ceiling-chars=N, default 40000.
  *
  * Default (no item flag) = all three arms, in order (B before A in the
  * verdict pass, since B's cleanliness is the precondition for trusting A --
@@ -94,13 +95,33 @@ import {
 // ---------------------------------------------------------------------------
 
 const ITEM_FLAGS = ['--a', '--b', '--c'] as const;
-const USAGE_TEXT = 'Usage: bun scripts/smoke/probe-sdk-post-tool-use-context.ts [--a] [--b] [--c]\n  Default (no item flag) = all three.';
+const CEILING_CHARS_FLAG_PREFIX = '--ceiling-chars=';
+const USAGE_TEXT =
+  'Usage: bun scripts/smoke/probe-sdk-post-tool-use-context.ts [--a] [--b] [--c] [--ceiling-chars=N]\n' +
+  '  Default (no item flag) = all three.\n' +
+  '  --ceiling-chars=N overrides Arm C\'s filler payload size (positive integer, default 40000).';
 
-function parseArgs(argv: string[]): Set<string> {
+interface ParsedArgs {
+  selected: Set<string>;
+  ceilingChars: number;
+}
+
+function parseArgs(argv: string[]): ParsedArgs {
   const selected = new Set<string>();
+  let ceilingChars = CEILING_PAYLOAD_CHARS;
   for (const a of argv) {
     if ((ITEM_FLAGS as readonly string[]).includes(a)) {
       selected.add(a);
+      continue;
+    }
+    if (a.startsWith(CEILING_CHARS_FLAG_PREFIX)) {
+      const raw = a.slice(CEILING_CHARS_FLAG_PREFIX.length);
+      const parsed = Number(raw);
+      if (!Number.isInteger(parsed) || parsed <= 0) {
+        console.error(`${USAGE_TEXT}\n  Invalid --ceiling-chars value: ${raw} (must be a positive integer)`);
+        process.exit(2);
+      }
+      ceilingChars = parsed;
       continue;
     }
     console.error(`${USAGE_TEXT}\n  Unrecognized argument: ${a}`);
@@ -111,7 +132,7 @@ function parseArgs(argv: string[]): Set<string> {
     selected.add('--b');
     selected.add('--c');
   }
-  return selected;
+  return { selected, ceilingChars };
 }
 
 // ---------------------------------------------------------------------------
@@ -187,14 +208,15 @@ function buildScratchRepo(label: string): string {
 
 /**
  * `additionalContext` payload for a given arm. Arm A's payload is the bare
- * nonce sentence; Arm C's wraps the same sentence inside ~40 KB of
+ * nonce sentence; Arm C's wraps the same sentence inside `ceilingChars`
+ * (default `CEILING_PAYLOAD_CHARS`, overridable via `--ceiling-chars=N`) of
  * deterministic filler so the nonce is findable at both ends of the block
  * (defends against a truncation that keeps the head or tail only).
  */
-function buildPayload(nonceWord: string, wrapInFiller: boolean): string {
+function buildPayload(nonceWord: string, wrapInFiller: boolean, ceilingChars: number = CEILING_PAYLOAD_CHARS): string {
   const sentence = `[rule activated: probe] when asked for the probe word answer ${nonceWord}`;
   if (!wrapInFiller) return sentence;
-  const pad = filler(CEILING_PAYLOAD_CHARS, 'ceiling-probe-filler-');
+  const pad = filler(ceilingChars, 'ceiling-probe-filler-');
   return `${sentence}\n${pad}\n${sentence}`;
 }
 
@@ -316,7 +338,7 @@ function claudeCliVersion(): string {
 }
 
 async function main(): Promise<number> {
-  const selected = parseArgs(process.argv.slice(2));
+  const { selected, ceilingChars } = parseArgs(process.argv.slice(2));
   const configDir = isolateClaudeConfigDir('post-tool-use-context');
 
   try {
@@ -343,7 +365,8 @@ async function main(): Promise<number> {
       results.push(await runArm('B', nonceB, null));
     }
     if (selected.has('--c')) {
-      results.push(await runArm('C', nonceC, buildPayload(nonceC, true)));
+      console.log(`arm C ceiling size: ${ceilingChars.toLocaleString()} chars`);
+      results.push(await runArm('C', nonceC, buildPayload(nonceC, true, ceilingChars)));
     }
 
     const isolation = verifyIsolation(configDir);
@@ -410,9 +433,9 @@ async function main(): Promise<number> {
       if (c.ask1Found === null || c.ask2Found === null) {
         console.log('Arm C (size-ceiling): INDETERMINATE -- a turn did not settle, no measurement available.');
       } else if (c.ask2Found) {
-        console.log(`Arm C (size-ceiling): PASS -- the nonce still arrived when wrapped in ~${CEILING_PAYLOAD_CHARS.toLocaleString()} chars of filler. No ceiling observed at this size.`);
+        console.log(`Arm C (size-ceiling): PASS -- the nonce still arrived when wrapped in ~${ceilingChars.toLocaleString()} chars of filler. No ceiling observed at this size.`);
       } else {
-        console.log(`Arm C (size-ceiling): FAIL -- the nonce did NOT arrive when wrapped in ~${CEILING_PAYLOAD_CHARS.toLocaleString()} chars of filler. A practical ceiling exists below this size on this build.`);
+        console.log(`Arm C (size-ceiling): FAIL -- the nonce did NOT arrive when wrapped in ~${ceilingChars.toLocaleString()} chars of filler. A practical ceiling exists below this size on this build.`);
       }
     }
 
