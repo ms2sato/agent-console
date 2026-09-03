@@ -1,6 +1,8 @@
 import { describe, it, expect, mock } from 'bun:test';
 import type { ToolExecutor, ToolCallOutcome } from '../../mcp.js';
 import type { ToolDefinition } from '../../providers/types.js';
+import { RuleActivator, type ActivationBlock, type RuleActivatorLike } from '../../rule-activation.js';
+import type { ScopedRule } from '../../system-prompt.js';
 import { CompositeToolExecutor } from '../composite-executor.js';
 import type { BuiltinTool, BuiltinToolContext } from '../index.js';
 
@@ -8,6 +10,17 @@ function makeMcpStub(tools: ToolDefinition[], callToolFn?: ToolExecutor['callToo
   return {
     listTools: async () => tools,
     callTool: callToolFn ?? (async () => ({ ok: true, result: 'mcp-result' })),
+  };
+}
+
+/** Default double: never matches, never activates -- most tests in this file
+ * are not about rule activation at all, so they use this to keep the
+ * appendix-composition logic exercised by the dedicated describe block below
+ * out of their assertions. */
+function makeNoopRuleActivator(): RuleActivatorLike {
+  return {
+    matchScopedRules: () => [],
+    activate: async () => null,
   };
 }
 
@@ -36,6 +49,7 @@ describe('CompositeToolExecutor', () => {
       mcp,
       builtins: [readTool],
       ctx: { locationPath: '/work' },
+      ruleActivator: makeNoopRuleActivator(),
     });
 
     const tools = await composite.listTools();
@@ -55,6 +69,7 @@ describe('CompositeToolExecutor', () => {
       mcp,
       builtins: [builtinRead],
       ctx: { locationPath: '/work' },
+      ruleActivator: makeNoopRuleActivator(),
       onNameCollision,
     });
 
@@ -76,6 +91,7 @@ describe('CompositeToolExecutor', () => {
       mcp,
       builtins: [readTool],
       ctx: { locationPath: '/work' },
+      ruleActivator: makeNoopRuleActivator(),
     });
 
     const signal = new AbortController().signal;
@@ -94,6 +110,7 @@ describe('CompositeToolExecutor', () => {
       mcp,
       builtins: [readTool],
       ctx: { locationPath: '/work' },
+      ruleActivator: makeNoopRuleActivator(),
     });
 
     const signal = new AbortController().signal;
@@ -114,7 +131,7 @@ describe('CompositeToolExecutor', () => {
     const fakeTool = makeBuiltinTool('FakeTool');
     const mcp = makeMcpStub([]);
     const ctx: BuiltinToolContext = { locationPath: '/some/path' };
-    const composite = new CompositeToolExecutor({ mcp, builtins: [fakeTool], ctx });
+    const composite = new CompositeToolExecutor({ mcp, builtins: [fakeTool], ctx, ruleActivator: makeNoopRuleActivator() });
 
     await composite.callTool('FakeTool', {}, new AbortController().signal);
 
@@ -130,6 +147,7 @@ describe('CompositeToolExecutor', () => {
       mcp,
       builtins: [readTool],
       ctx: { locationPath: '/work' },
+      ruleActivator: makeNoopRuleActivator(),
     });
 
     const signal = new AbortController().signal;
@@ -156,6 +174,7 @@ describe('CompositeToolExecutor', () => {
       mcp,
       builtins: [throwingTool],
       ctx: { locationPath: '/work' },
+      ruleActivator: makeNoopRuleActivator(),
     });
 
     const signal = new AbortController().signal;
@@ -170,5 +189,134 @@ describe('CompositeToolExecutor', () => {
 
     expect(result).toEqual({ ok: false, result: 'locationPath vanished (ENOENT)' });
     expect(mcpCallTool).not.toHaveBeenCalled();
+  });
+});
+
+describe('CompositeToolExecutor — Phase B (#1343 R2) scoped-rule activation appendix', () => {
+  const activationBlock: ActivationBlock = {
+    text: '[rule activated: r1]\n--- Rule (applies to: **/*): /rules/r1.md ---\nCONTENT',
+    skippedForSize: [],
+    activatedNames: ['r1'],
+  };
+
+  it('sets outcome.appendix when a builtin call matches a scoped rule', async () => {
+    const mcp = makeMcpStub([]);
+    const readTool = makeBuiltinTool('Read');
+    const ruleActivator: RuleActivatorLike = {
+      matchScopedRules: (name, args) =>
+        name === 'Read' && (args as { path?: unknown })?.path === 'match.ts' ? ['r1'] : [],
+      activate: async (names) => (names.includes('r1') ? activationBlock : null),
+    };
+    const composite = new CompositeToolExecutor({
+      mcp,
+      builtins: [readTool],
+      ctx: { locationPath: '/work' },
+      ruleActivator,
+    });
+
+    const result = await composite.callTool('Read', { path: 'match.ts' }, new AbortController().signal);
+
+    expect(result).toEqual({
+      ok: true,
+      result: 'Read-result',
+      appendix: activationBlock.text,
+      activatedRules: ['r1'],
+    });
+  });
+
+  it('leaves outcome.appendix unset when the call does not match any scoped rule', async () => {
+    const mcp = makeMcpStub([]);
+    const readTool = makeBuiltinTool('Read');
+    const ruleActivator: RuleActivatorLike = {
+      matchScopedRules: () => [],
+      activate: async () => activationBlock,
+    };
+    const composite = new CompositeToolExecutor({
+      mcp,
+      builtins: [readTool],
+      ctx: { locationPath: '/work' },
+      ruleActivator,
+    });
+
+    const result = await composite.callTool('Read', { path: 'no-match.ts' }, new AbortController().signal);
+
+    expect(result).toEqual({ ok: true, result: 'Read-result' });
+    expect('appendix' in result).toBe(false);
+  });
+
+  it('an MCP-routed call can also receive an appendix, composed the same way as a builtin call', async () => {
+    const mcpCallTool = mock(async (): Promise<ToolCallOutcome> => ({ ok: true, result: 'mcp' }));
+    const mcp = makeMcpStub([], mcpCallTool);
+    const ruleActivator: RuleActivatorLike = {
+      matchScopedRules: () => ['r1'],
+      activate: async () => activationBlock,
+    };
+    const composite = new CompositeToolExecutor({
+      mcp,
+      builtins: [],
+      ctx: { locationPath: '/work' },
+      ruleActivator,
+    });
+
+    const result = await composite.callTool('close_session', {}, new AbortController().signal);
+
+    expect(result).toEqual({
+      ok: true,
+      result: 'mcp',
+      appendix: activationBlock.text,
+      activatedRules: ['r1'],
+    });
+  });
+
+  it('leaves outcome.appendix unset when activate() returns null (e.g. every matched name was size-skipped)', async () => {
+    const mcp = makeMcpStub([]);
+    const readTool = makeBuiltinTool('Read');
+    const ruleActivator: RuleActivatorLike = {
+      matchScopedRules: () => ['too-big'],
+      activate: async () => null, // e.g. every matched name was size-skipped with nothing left over
+    };
+    const composite = new CompositeToolExecutor({
+      mcp,
+      builtins: [readTool],
+      ctx: { locationPath: '/work' },
+      ruleActivator,
+    });
+
+    const result = await composite.callTool('Read', { path: 'x.ts' }, new AbortController().signal);
+
+    expect(result).toEqual({ ok: true, result: 'Read-result' });
+    expect('appendix' in result).toBe(false);
+  });
+
+  it('polarity pin: a Bash call never receives an appendix, even with contrived path-shaped args -- fails if the matcher keys on args instead of tool name', async () => {
+    const mcp = makeMcpStub([]);
+    const bashTool = makeBuiltinTool('Bash');
+    // The REAL RuleActivator, not a stub: this is what actually decides
+    // whether a call can match, and its match table is keyed on tool NAME. A
+    // catch-all glob would match virtually any path if the matcher looked at
+    // `args` first, so this is the shape a broken (args-first) implementation
+    // would get wrong.
+    const catchAllRule: ScopedRule = { name: 'catch-all', origin: '/rules/catch-all.md', globs: ['**/*'] };
+    const ruleActivator = new RuleActivator({
+      scopedRules: [catchAllRule],
+      gitRoot: '/work',
+      cwd: '/work',
+      remainingBudgetBytes: 1_000_000,
+    });
+    const composite = new CompositeToolExecutor({
+      mcp,
+      builtins: [bashTool],
+      ctx: { locationPath: '/work' },
+      ruleActivator,
+    });
+
+    const result = await composite.callTool(
+      'Bash',
+      { path: 'anything.ts', file_path: 'anything.ts', command: 'ls' },
+      new AbortController().signal,
+    );
+
+    expect(result).toEqual({ ok: true, result: 'Bash-result' });
+    expect('appendix' in result).toBe(false);
   });
 });

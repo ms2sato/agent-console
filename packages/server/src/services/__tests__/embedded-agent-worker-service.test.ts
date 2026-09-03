@@ -2944,6 +2944,84 @@ describe('EmbeddedAgentWorkerService — sending `restoredUsage` in the init com
   });
 });
 
+/**
+ * Phase B (#1343 R4): the scoped-rule names the server-side restore
+ * reconstruction collects from a restored window's `tool-result` events'
+ * own `activatedRules` field, forwarded on the `init` command so main.ts
+ * seeds `RuleActivator` without ever parsing `restoredConversation`'s text.
+ * Same arm-containment shape as `restoredUsage` (#1419) above -- the
+ * openai-api-only representability is asserted the same way, on a
+ * claude-sdk worker whose restored log has the exact same activation event.
+ */
+describe('EmbeddedAgentWorkerService — sending `activatedRuleNames` in the init command (#1343 R4)', () => {
+  const streamWith = (...lines: unknown[]) => lines.map((l) => JSON.stringify(l)).join('\n');
+  const COMPLETED_TURN = [
+    { v: 1, type: 'user-message', id: 'm1', text: 'hi there' },
+    { v: 1, type: 'assistant-message', turnId: 't1', text: 'hello back' },
+    { v: 1, type: 'state', state: 'idle' },
+  ];
+  const COMPLETED_TURN_WITH_ACTIVATION = [
+    { v: 1, type: 'user-message', id: 'm1', text: 'read the file' },
+    { v: 1, type: 'assistant-message', turnId: 't1', text: '' },
+    { v: 1, type: 'tool-call', turnId: 't1', callId: 'c1', name: 'Read', args: { path: 'src/x.ts' } },
+    {
+      v: 1,
+      type: 'tool-result',
+      turnId: 't1',
+      callId: 'c1',
+      ok: true,
+      result: 'file contents',
+      activatedRules: ['scoped.md'],
+    },
+    { v: 1, type: 'state', state: 'idle' },
+  ];
+
+  it('sends the scoped-rule names collected from restored tool-result events', async () => {
+    const h = setup({
+      everActivated: true,
+      readHistoryWithOffsetResult: { data: streamWith(...COMPLETED_TURN_WITH_ACTIVATION) },
+    });
+    await h.service.activate(h.sessionId, h.workerId);
+
+    const init = JSON.parse(h.fake.stdinWrites[0]);
+    expect(init.activatedRuleNames).toEqual(['scoped.md']);
+  });
+
+  it('sends nothing when no restored tool-result event carried activatedRules', async () => {
+    const h = setup({ everActivated: true, readHistoryWithOffsetResult: { data: streamWith(...COMPLETED_TURN) } });
+    await h.service.activate(h.sessionId, h.workerId);
+
+    const init = JSON.parse(h.fake.stdinWrites[0]);
+    expect('activatedRuleNames' in init).toBe(false);
+  });
+
+  it('sends nothing on a first-ever activation, which has nothing to restore', async () => {
+    const h = setup({ everActivated: false });
+    await h.service.activate(h.sessionId, h.workerId);
+
+    const init = JSON.parse(h.fake.stdinWrites[0]);
+    expect('activatedRuleNames' in init).toBe(false);
+  });
+
+  it('never sends activatedRuleNames on a claude-sdk worker, even with the same restored activation event', async () => {
+    // Same arm-containment reasoning as restoredUsage (#1419): claude-sdk
+    // resumes its own session state rather than being handed a
+    // reconstruction, so the field is not representable on its arm -- a
+    // server that sent one anyway would be rejected by the subprocess's own
+    // schema at init, killing the worker.
+    const h = setup({
+      definition: SDK_DEFINITION,
+      everActivated: true,
+      readHistoryWithOffsetResult: { data: streamWith(...COMPLETED_TURN_WITH_ACTIVATION) },
+    });
+    await h.service.activate(h.sessionId, h.workerId);
+
+    const init = JSON.parse(h.fake.stdinWrites[0]);
+    expect(init.engine).toBe('claude-sdk');
+    expect('activatedRuleNames' in init).toBe(false);
+  });
+});
+
 describe('EmbeddedAgentWorkerService — restore-info.sdkResumed (R1)', () => {
   it('reports sdkResumed true for a claude-sdk re-activation that asked to resume', async () => {
     const h = setup({

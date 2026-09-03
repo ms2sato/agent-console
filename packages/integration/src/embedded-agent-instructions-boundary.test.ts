@@ -36,7 +36,14 @@ import {
 import { createTestContext, shutdownAppContext } from '@agent-console/server/src/app-context';
 import type { AppContext } from '@agent-console/server/src/app-context';
 
-import { AppServerMessageSchema } from '@agent-console/shared';
+import {
+  AppServerMessageSchema,
+  EmbeddedAgentStreamEventSchema,
+  type EmbeddedAgentEvent,
+  type EmbeddedAgentStreamEvent,
+} from '@agent-console/shared';
+import { WorkerOutputFileManager } from '@agent-console/server/src/lib/worker-output-file';
+import { SessionDataPathResolver } from '@agent-console/server/src/lib/session-data-path-resolver';
 
 import { runLoop, type LoopFactories, type LoopIO, type McpClientLike } from '@agent-console/embedded-agent/src/main';
 import { loadInstructions } from '@agent-console/embedded-agent/src/system-prompt';
@@ -310,5 +317,237 @@ describe('Subprocess system-prompt composition: .claude/rules layer reaches both
 
     expect(await runLoop(io, factories)).toBe(0);
     expect(capturedDeps?.systemPromptAppend).toContain('BOUNDARY_RULE_MARKER');
+  });
+});
+
+/**
+ * Pipeline Connectivity: scoped-rule lazy activation reaches the openai-api
+ * engine's builtin tool call (Issue #1343 Phase B, R1-R3)
+ *
+ * Same subprocess-entry-point boundary as the block above, but exercising the
+ * LAZY half of the rules layer: a scoped rule (`paths:`/`globs:` frontmatter)
+ * is never in the system prompt -- it only activates when a real builtin tool
+ * call's path argument matches. Driven through `runLoop` end-to-end (real
+ * `loadInstructions`, real `RuleActivator`, real `CompositeToolExecutor`),
+ * not a unit test on `rule-activation.ts` alone, per this file's own
+ * Pipeline Connectivity scope note above (1-2 representative cases;
+ * exhaustive match-table coverage is rule-activation.test.ts's job).
+ */
+describe('Subprocess tool-call composition: scoped .claude/rules activation reaches the openai-api engine', () => {
+  const tempDirs: string[] = [];
+  afterEach(() => {
+    for (const d of tempDirs.splice(0)) Bun.spawnSync(['rm', '-rf', d]);
+  });
+
+  /**
+   * Same memfs/real-disk split as `makeScratchRepoWithUnscopedRule` above --
+   * `node:fs/promises` (readdir/stat/realpath, used by `findGitRoot`,
+   * `loadRulesLayer`'s directory listing, and `resolveConfinedPath`'s
+   * confinement checks) resolves against the in-memory `memfs` volume, while
+   * FILE CONTENT is read via `Bun.file(...).text()` (both the rule file's
+   * content, read by `RuleActivator.activate`, and the target file's content,
+   * read by the builtin `Read` tool), which bypasses `node:fs` and reads the
+   * real disk. Every file below is therefore written twice.
+   */
+  async function makeScratchRepoWithScopedRule(): Promise<{ dir: string; matchingFile: string; nonMatchingFile: string }> {
+    const dir = join(tmpdir(), `embedded-agent-rules-boundary-scoped-${randomUUID()}`);
+    tempDirs.push(dir);
+    await mkdir(join(dir, '.git'), { recursive: true });
+    await mkdir(join(dir, '.claude', 'rules'), { recursive: true });
+    await mkdir(join(dir, 'src'), { recursive: true });
+
+    const ruleFile = join(dir, '.claude', 'rules', 'scoped.md');
+    const ruleContent = '---\npaths:\n  - "src/**"\n---\n\nSCOPED_ACTIVATION_MARKER';
+    await writeFile(ruleFile, ruleContent);
+    await Bun.write(ruleFile, ruleContent);
+
+    const matchingFile = join(dir, 'src', 'x.ts');
+    await writeFile(matchingFile, 'export const x = 1;');
+    await Bun.write(matchingFile, 'export const x = 1;');
+
+    const nonMatchingFile = join(dir, 'README.md');
+    await writeFile(nonMatchingFile, 'readme content');
+    await Bun.write(nonMatchingFile, 'readme content');
+
+    return { dir, matchingFile, nonMatchingFile };
+  }
+
+  class StubMcpClient implements McpClientLike {
+    async connect(): Promise<void> {}
+    async listTools(): Promise<ToolDefinition[]> {
+      return [];
+    }
+    async callTool(): Promise<ToolCallOutcome> {
+      return { ok: true, result: 'ok' };
+    }
+  }
+
+  class ReadThenDoneAdapter implements ProviderAdapter {
+    private calls = 0;
+    constructor(private readonly path: string) {}
+    async *run(): AsyncIterable<ProviderEvent> {
+      this.calls += 1;
+      if (this.calls === 1) {
+        yield { type: 'tool-call', callId: 'c1', name: 'Read', argsJson: JSON.stringify({ path: this.path }) };
+        yield { type: 'done', finishReason: 'tool_calls' };
+      } else {
+        yield { type: 'text-delta', text: 'done' };
+        yield { type: 'done', finishReason: 'stop' };
+      }
+    }
+  }
+
+  class NoopEngine implements Engine {
+    async runTurn(): Promise<void> {}
+    cancel(): void {}
+    setAutoCompaction(): void {}
+  }
+
+  interface Captured {
+    io: LoopIO;
+    events: EmbeddedAgentEvent[];
+  }
+
+  // Read does real fs work (genuinely async, not a same-tick microtask); the
+  // drain gap and dropped `shutdown` mirror this repo's own established
+  // pattern for driving a real builtin tool call through `runLoop` (see
+  // main.test.ts's `makeIoWithToolDrainGap`, same rationale).
+  function makeIoWithToolDrainGap(lines: string[]): Captured {
+    const events: EmbeddedAgentEvent[] = [];
+    const io: LoopIO = {
+      async *readCommands() {
+        for (const line of lines) {
+          await new Promise((resolve) => setTimeout(resolve, 0));
+          yield line;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      },
+      writeEvent: (event) => events.push(event),
+      logError: () => {},
+    };
+    return { io, events };
+  }
+
+  function makeFactories(adapter: ProviderAdapter): LoopFactories {
+    return {
+      createMcpClient: () => new StubMcpClient(),
+      createAdapter: () => adapter,
+      loadInstructions,
+      loadCompactionPrompt: async () => ({ content: 'STUB', origin: 'bundled-default' }),
+      createSdkEngine: () => new NoopEngine(),
+      probeSdkSession: async () => 'found',
+    };
+  }
+
+  it('activates a matching scoped rule on a real Read call, appending its block to the tool-result event', async () => {
+    const { dir, matchingFile } = await makeScratchRepoWithScopedRule();
+    const adapter = new ReadThenDoneAdapter(matchingFile);
+    const { io, events } = makeIoWithToolDrainGap([
+      JSON.stringify({
+        v: 1,
+        type: 'init',
+        compaction: { auto: false },
+        engine: 'openai-api',
+        mcp: { baseUrl: 'http://mcp/local', token: 'tok' },
+        provider: { baseUrl: 'http://provider/v1', model: 'm' },
+        context: { sessionId: 's', workerId: 'w', cwd: dir },
+        maxToolIterations: 5,
+      }),
+      JSON.stringify({ v: 1, type: 'user-message', id: 'u1', text: 'read it' }),
+    ]);
+
+    expect(await runLoop(io, makeFactories(adapter))).toBe(0);
+
+    const toolResult = events.find((e) => e.type === 'tool-result');
+    expect(toolResult).toMatchObject({ ok: true });
+    if (toolResult?.type === 'tool-result') {
+      expect(toolResult.result).toContain('[rule activated: scoped.md]');
+      expect(toolResult.result).toContain('SCOPED_ACTIVATION_MARKER');
+    }
+  });
+
+  /**
+   * Q10 (pre-pr-completeness.md): the `activatedRules` field just asserted
+   * in-memory above must survive the REAL serialize/persist/read-back path
+   * -- the actual `WorkerOutputFileManager`, not a spy, driven the same way
+   * the production activation flow drives it (bufferOutput -> forceFlush ->
+   * readHistoryWithOffset), with the persisted NDJSON line parsed back
+   * through the client's REAL replay schema (`EmbeddedAgentStreamEventSchema`).
+   * A schema edit that lands on `EmbeddedAgentEvent`'s TS type but not the
+   * `strictObject` schema would pass the in-memory test above (no parse in
+   * that path) yet fail here (valibot strips/rejects the unknown field on
+   * the read-back parse).
+   */
+  it('the persisted tool-result event, read back from the real output file, carries activatedRules', async () => {
+    const { dir, matchingFile } = await makeScratchRepoWithScopedRule();
+    const adapter = new ReadThenDoneAdapter(matchingFile);
+    const { io, events } = makeIoWithToolDrainGap([
+      JSON.stringify({
+        v: 1,
+        type: 'init',
+        compaction: { auto: false },
+        engine: 'openai-api',
+        mcp: { baseUrl: 'http://mcp/local', token: 'tok' },
+        provider: { baseUrl: 'http://provider/v1', model: 'm' },
+        context: { sessionId: 's', workerId: 'w', cwd: dir },
+        maxToolIterations: 5,
+      }),
+      JSON.stringify({ v: 1, type: 'user-message', id: 'u1', text: 'read it' }),
+    ]);
+
+    expect(await runLoop(io, makeFactories(adapter))).toBe(0);
+
+    const toolResultEvent = events.find((e) => e.type === 'tool-result');
+    if (toolResultEvent?.type !== 'tool-result') throw new Error('expected a tool-result event');
+
+    const workerOutputFileManager = new WorkerOutputFileManager();
+    const resolver = new SessionDataPathResolver(join(dir, '.output-data'));
+    const sessionId = 's';
+    const workerId = 'w';
+    await workerOutputFileManager.initializeWorkerOutput(sessionId, workerId, resolver);
+    for (const event of events) {
+      workerOutputFileManager.bufferOutput(sessionId, workerId, `${JSON.stringify(event)}\n`, resolver);
+    }
+    await workerOutputFileManager.forceFlush(sessionId, workerId);
+
+    const { data } = await workerOutputFileManager.readHistoryWithOffset(sessionId, workerId, resolver, 0);
+    const persistedEvents: EmbeddedAgentStreamEvent[] = [];
+    for (const line of data.split('\n')) {
+      if (line.trim() === '') continue;
+      const parsed = v.safeParse(EmbeddedAgentStreamEventSchema, JSON.parse(line));
+      expect(parsed.success).toBe(true);
+      if (parsed.success) persistedEvents.push(parsed.output);
+    }
+
+    const persistedToolResult = persistedEvents.find((e) => e.type === 'tool-result');
+    if (persistedToolResult?.type !== 'tool-result') throw new Error('expected a persisted tool-result event');
+    expect(persistedToolResult.activatedRules).toEqual(['scoped.md']);
+  });
+
+  it('a non-matching path produces no activation block', async () => {
+    const { dir, nonMatchingFile } = await makeScratchRepoWithScopedRule();
+    const adapter = new ReadThenDoneAdapter(nonMatchingFile);
+    const { io, events } = makeIoWithToolDrainGap([
+      JSON.stringify({
+        v: 1,
+        type: 'init',
+        compaction: { auto: false },
+        engine: 'openai-api',
+        mcp: { baseUrl: 'http://mcp/local', token: 'tok' },
+        provider: { baseUrl: 'http://provider/v1', model: 'm' },
+        context: { sessionId: 's', workerId: 'w', cwd: dir },
+        maxToolIterations: 5,
+      }),
+      JSON.stringify({ v: 1, type: 'user-message', id: 'u1', text: 'read it' }),
+    ]);
+
+    expect(await runLoop(io, makeFactories(adapter))).toBe(0);
+
+    const toolResult = events.find((e) => e.type === 'tool-result');
+    expect(toolResult).toMatchObject({ ok: true });
+    if (toolResult?.type === 'tool-result') {
+      expect(toolResult.result).not.toContain('[rule activated:');
+      expect(toolResult.result).not.toContain('SCOPED_ACTIVATION_MARKER');
+    }
   });
 });

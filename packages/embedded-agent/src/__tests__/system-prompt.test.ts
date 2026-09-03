@@ -16,6 +16,7 @@ import {
   INSTRUCTION_PER_FILE_CAP_BYTES,
   INSTRUCTION_AGGREGATE_CAP_BYTES,
   RULES_LAYER_CAP_BYTES,
+  rulesLayerBytesUsed,
   type SystemPromptContext,
   type LoadInstructionsResult,
 } from '../system-prompt.js';
@@ -885,6 +886,7 @@ describe('loadInstructions — rules layer', () => {
     expect(result.ruleSegments).toEqual([]);
     expect(result.ruleOmissionLine).toBeUndefined();
     expect(result.ruleIndexLine).toBeUndefined();
+    expect(result.scopedRules).toEqual([]);
   });
 
   it('produces no rules layer when cwd is outside any git repository (routine, silent)', async () => {
@@ -915,6 +917,13 @@ describe('loadInstructions — rules layer', () => {
     expect(result.ruleIndexLine).toContain('scoped.md');
     expect(result.ruleIndexLine).toContain('src/**');
     expect(result.ruleOmissionLine).toBeUndefined();
+
+    // Phase B (#1343 R1): the SAME scoped rule, exposed structurally instead
+    // of only summarized into ruleIndexLine -- deliberately WITHOUT content
+    // (see ScopedRule's own doc comment for why).
+    expect(result.scopedRules).toEqual([
+      { name: 'scoped.md', origin: join(rulesDir, 'scoped.md'), globs: ['src/**'] },
+    ]);
   });
 
   it('drops unscoped rule files whole, largest-first, once the total exceeds RULES_LAYER_CAP_BYTES, and declares the exact dropped names in-band', async () => {
@@ -988,6 +997,46 @@ describe('loadInstructions — rules layer', () => {
     expect(ruleIdx).toBeGreaterThan(instructionIdx);
     expect(indexLineIdx).toBeGreaterThan(ruleIdx);
     expect(prompt).not.toContain('SCOPED_CONTENT');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// rulesLayerBytesUsed (Issue #1343 Phase B, R1): how much of
+// RULES_LAYER_CAP_BYTES the eager unscoped layer already consumed -- what
+// main.ts subtracts to compute RuleActivator's remaining lazy-activation
+// budget.
+// ---------------------------------------------------------------------------
+
+describe('rulesLayerBytesUsed', () => {
+  it('is 0 when ruleSegments is absent (hand-built fixture)', () => {
+    expect(rulesLayerBytesUsed({ segments: [] })).toBe(0);
+  });
+
+  it('is 0 when ruleSegments is an empty array', () => {
+    expect(rulesLayerBytesUsed({ segments: [], ruleSegments: [] })).toBe(0);
+  });
+
+  it('sums the UTF-8 byte length of every ruleSegments entry', () => {
+    const result = rulesLayerBytesUsed({
+      segments: [],
+      ruleSegments: [
+        { origin: '/a.md', content: 'abc' }, // 3 bytes
+        { origin: '/b.md', content: 'éé' }, // 2 code points, 2 bytes each in UTF-8 = 4 bytes
+      ],
+    });
+    expect(result).toBe(7);
+  });
+
+  it('matches the real loadInstructions result for a repo with unscoped rules', async () => {
+    const root = await makeTempDir();
+    await mkdir(join(root, '.git'));
+    const rulesDir = join(root, '.claude', 'rules');
+    await mkdir(rulesDir, { recursive: true });
+    await writeFile(join(rulesDir, 'unscoped.md'), 'RULE_CONTENT');
+
+    const result = await loadInstructions({ cwd: root, xdgConfigHome: await isolatedXdgConfigHome() });
+
+    expect(rulesLayerBytesUsed(result)).toBe(new TextEncoder().encode('RULE_CONTENT').length);
   });
 });
 

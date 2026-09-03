@@ -294,6 +294,23 @@ export type EmbeddedAgentCommand =
        * thing that should be representable.
        */
       restoredUsage?: EmbeddedAgentRestoredUsage;
+      /**
+       * Phase B (#1343 R4): the scoped-rule names a restored transcript's
+       * `tool-result` events already carry as ACTIVATED (structurally, via
+       * `EmbeddedAgentEvent`'s `tool-result` member's `activatedRules`
+       * field -- never parsed out of `result`'s human-visible text; see
+       * that field's doc comment for why). The subprocess pre-seeds
+       * `RuleActivator` with these names so an already-delivered rule is
+       * not re-sent after a restart. Absent or empty = nothing to seed.
+       *
+       * Lives on the `openai-api` arm for the same reason `restoredUsage`
+       * does: `claude-sdk` resumes its own session state rather than being
+       * handed a reconstruction (see `EmbeddedAgentInitCommandBase.restoredConversation`'s
+       * doc comment on the claude-sdk branch below), so an init for that
+       * engine carrying seeded rule names is not a thing that should be
+       * representable.
+       */
+      activatedRuleNames?: string[];
     })
   | (EmbeddedAgentInitCommandBase & {
       engine: 'claude-sdk';
@@ -411,7 +428,27 @@ export type EmbeddedAgentEvent =
   | { v: 1; type: 'assistant-thinking-delta'; turnId: string; text: string }  // streamed reasoning/thinking chunk, no terminal counterpart — see turn-cycle doc
   | { v: 1; type: 'assistant-message'; turnId: string; text: string }
   | { v: 1; type: 'tool-call'; turnId: string; callId: string; name: string; args: unknown }
-  | { v: 1; type: 'tool-result'; turnId: string; callId: string; ok: boolean; result: string }
+  | {
+      v: 1;
+      type: 'tool-result';
+      turnId: string;
+      callId: string;
+      ok: boolean;
+      result: string;
+      /**
+       * Phase B (#1343 R4): the scoped-rule names ACTUALLY activated by this
+       * call (never the size-skipped ones), carried structurally alongside
+       * `result`'s human-visible `[rule activated: <name>]` block. Restore
+       * seeding (main.ts) reads this field, never `result`'s text -- a tool
+       * output that happens to CONTAIN that literal substring (another
+       * tool's own file content, coincidentally or maliciously) must never
+       * be misread as a genuine activation marker. `result` itself is
+       * UNCHANGED by this field's existence; this is an additional
+       * structural carrier of the same fact, not a replacement for the
+       * text. Absent when no scoped rule activated on this call.
+       */
+      activatedRules?: string[];
+    }
   | { v: 1; type: 'turn-error'; turnId: string; message: string }
   | { v: 1; type: 'fatal'; message: string }
   /**

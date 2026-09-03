@@ -858,6 +858,13 @@ export class EmbeddedAgentWorkerService {
       // instead of by re-estimating the reconstructed text (which omits the
       // published tool schemas and so is systematically low).
       let restoredUsage: EmbeddedAgentRestoredUsage | undefined;
+      // Phase B (#1343 R4): the scoped-rule names the restored window's
+      // `tool-result` events already carry as ACTIVATED (structurally --
+      // see `RestoreOutcome.activatedRuleNames`'s doc comment). Forwarded to
+      // the subprocess via `init.activatedRuleNames` (openai-api arm only,
+      // same rationale as `restoredUsage` above) so main.ts never has to
+      // parse it back out of restored text.
+      let activatedRuleNames: string[] | undefined;
       let restoreInfo: RestoreInfo | null = null;
       // Transcript Restore, R1: the turn (if any) that the previous
       // incarnation left unanswered. Detected during the same replay that
@@ -933,6 +940,7 @@ export class EmbeddedAgentWorkerService {
           const outcome = reconstructConversation(assembled.data, systemPrompt, assembled.stoppedAt);
           restoredConversation = outcome.conversation as EmbeddedAgentRestoredMessage[];
           restoredUsage = outcome.usageSeed;
+          activatedRuleNames = outcome.activatedRuleNames.length > 0 ? outcome.activatedRuleNames : undefined;
           // `completed: false` -- the new incarnation's `ready` event hasn't
           // fired yet at this point in runActivation; handleLoopLine flips it
           // to true (and re-pushes) once `ready` arrives (#1205).
@@ -1144,6 +1152,13 @@ export class EmbeddedAgentWorkerService {
               // the restored log held no reading, or when there was no
               // restore at all.
               ...(restoredUsage !== undefined ? { restoredUsage } : {}),
+              // Phase B (#1343 R4), this arm only -- same rationale as
+              // `restoredUsage` immediately above: `claude-sdk` resumes its
+              // own session state rather than being handed a
+              // reconstruction, so seeded rule names are not representable
+              // there. Absent when there was no restore, or the restored
+              // window carried no `activatedRules`.
+              ...(activatedRuleNames !== undefined ? { activatedRuleNames } : {}),
             }
           : {
               ...initCommandShared,

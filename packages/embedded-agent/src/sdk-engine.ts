@@ -30,6 +30,7 @@ import {
   type SDKUserMessage,
   type SpawnedProcess,
   type SpawnOptions,
+  type SyncHookJSONOutput,
 } from '@anthropic-ai/claude-agent-sdk';
 import { spawn } from 'node:child_process';
 import {
@@ -45,6 +46,7 @@ import {
 } from './compact-tool.js';
 import { resolveImageAttachments, buildClaudeSdkUserContent } from './attachment-content.js';
 import type { Engine } from './engine-types.js';
+import type { RuleActivatorLike } from './rule-activation.js';
 
 type SystemInitMessage = Extract<SDKMessage, { type: 'system'; subtype: 'init' }>;
 type CompactBoundaryMessage = Extract<SDKMessage, { type: 'system'; subtype: 'compact_boundary' }>;
@@ -303,6 +305,17 @@ export interface SdkEngineDeps {
    * with no attachments.
    */
   attachmentRoots?: string[];
+  /**
+   * Lazy scoped-rule activation (#1343 Phase B, claude-sdk slice): the SAME
+   * `RuleActivator` instance the openai-api engine's `CompositeToolExecutor`
+   * uses (rule-activation.ts's doc comment, "R1: One activator, two
+   * adapters") -- this engine's `PostToolUse` hook (see `buildOptions`) is
+   * the SDK arm's only consumer of it. Required, not optional: main.ts
+   * always constructs one (even when `scopedRules` is empty, in which case
+   * `matchScopedRules` simply never matches anything), so there is no
+   * legitimate "no activator" case to default around.
+   */
+  ruleActivator: RuleActivatorLike;
 }
 
 /**
@@ -527,6 +540,43 @@ export class SdkEngine implements Engine {
                   this.pendingCompactSummary = input.compact_summary;
                 }
                 return { continue: true };
+              },
+            ],
+          },
+        ],
+        // Lazy scoped-rule activation (#1343 Phase B, claude-sdk slice): Task
+        // 0's probe (scripts/smoke/probe-sdk-post-tool-use-context.ts) proved
+        // a `PostToolUse` hook's `additionalContext` reaches the model on
+        // this SDK build, at sizes well past this codebase's own
+        // RULES_LAYER_CAP_BYTES budget (~48KB observed, no ceiling found) --
+        // per the Architect's binding ruling, there is NO separate hook-size
+        // threshold here; `RuleActivator.activate`'s own budget check (see
+        // rule-activation.ts) is the only size gating that exists, identical
+        // to the openai-api engine's `CompositeToolExecutor` path.
+        //
+        // No `matcher` field -- filtering by tool name happens INSIDE the
+        // callback via `RuleActivator.matchScopedRules` itself (which
+        // already returns `[]` for any non-path-typed tool name), the same
+        // way the `PostCompact` hook above has no matcher and filters via
+        // `input.hook_event_name === 'PostCompact'` instead. The vendored
+        // `sdk.d.ts`'s `HookCallbackMatcher.matcher` field has no documented
+        // multi-tool-name syntax, so relying on `RuleActivator`'s own
+        // name-keyed lookup -- already the single source of truth for "which
+        // tools can match" (see rule-activation.ts's R3) -- is more robust
+        // than guessing a matcher string format.
+        PostToolUse: [
+          {
+            hooks: [
+              async (input): Promise<SyncHookJSONOutput> => {
+                if (input.hook_event_name !== 'PostToolUse') return { continue: true };
+                const matched = this.deps.ruleActivator.matchScopedRules(input.tool_name, input.tool_input);
+                if (matched.length === 0) return { continue: true };
+                const activation = await this.deps.ruleActivator.activate(matched);
+                if (activation === null) return { continue: true };
+                return {
+                  continue: true,
+                  hookSpecificOutput: { hookEventName: 'PostToolUse', additionalContext: activation.text },
+                };
               },
             ],
           },

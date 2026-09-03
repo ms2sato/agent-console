@@ -1422,3 +1422,69 @@ describe('reconstructConversation — synthetic tool-call ids (empty-callId prov
     expect(outcome.repairedToolCallIds).toEqual([]);
   });
 });
+
+/**
+ * Phase B (#1343 R4): `activatedRuleNames` is collected from every
+ * `tool-result` event's own `activatedRules` field in the restore window --
+ * structurally, never by parsing `result`'s text. Always present on
+ * `RestoreOutcome`; empty when nothing carried the field.
+ */
+describe('reconstructConversation — activatedRuleNames (#1343 R4)', () => {
+  function toolTurnEvents(callId: string, activatedRules?: string[]): EmbeddedAgentStreamEvent[] {
+    return [
+      { v: 1, type: 'user-message', id: `m-${callId}`, text: 'do something' },
+      { v: 1, type: 'assistant-message', turnId: callId, text: '' },
+      { v: 1, type: 'tool-call', turnId: callId, callId, name: 'Read', args: { path: 'x.ts' } },
+      {
+        v: 1,
+        type: 'tool-result',
+        turnId: callId,
+        callId,
+        ok: true,
+        result: 'file contents',
+        ...(activatedRules !== undefined ? { activatedRules } : {}),
+      },
+    ];
+  }
+
+  it('collects names from a single restored tool-result event', () => {
+    const outcome = reconstructConversation(
+      linesOf(toolTurnEvents('c1', ['scoped.md'])),
+      SYSTEM_PROMPT,
+      'true-start',
+    );
+    expect(outcome.activatedRuleNames).toEqual(['scoped.md']);
+  });
+
+  it('is empty when no restored tool-result event carries the field', () => {
+    const outcome = reconstructConversation(linesOf(toolTurnEvents('c1')), SYSTEM_PROMPT, 'true-start');
+    expect(outcome.activatedRuleNames).toEqual([]);
+  });
+
+  it('is empty for an entirely empty transcript', () => {
+    const outcome = reconstructConversation('', SYSTEM_PROMPT, 'true-start');
+    expect(outcome.activatedRuleNames).toEqual([]);
+  });
+
+  it('accumulates across MULTIPLE restored tool-result events, not just the last one', () => {
+    const events = [...toolTurnEvents('c1', ['a']), ...toolTurnEvents('c2', ['b'])];
+    const outcome = reconstructConversation(linesOf(events), SYSTEM_PROMPT, 'true-start');
+    expect(outcome.activatedRuleNames.sort()).toEqual(['a', 'b']);
+  });
+
+  it('de-duplicates a name activated on more than one restored call', () => {
+    const events = [...toolTurnEvents('c1', ['scoped.md']), ...toolTurnEvents('c2', ['scoped.md'])];
+    const outcome = reconstructConversation(linesOf(events), SYSTEM_PROMPT, 'true-start');
+    expect(outcome.activatedRuleNames).toEqual(['scoped.md']);
+  });
+
+  it('only collects from the window AFTER a compaction boundary -- a pre-boundary activation is discarded with the rest of that history', () => {
+    const events: EmbeddedAgentStreamEvent[] = [
+      ...toolTurnEvents('pre', ['discarded-rule']),
+      { v: 1, type: 'context-compacted', source: 'auto', summary: 'earlier work' },
+      ...toolTurnEvents('post', ['kept-rule']),
+    ];
+    const outcome = reconstructConversation(linesOf(events), SYSTEM_PROMPT, 'true-start');
+    expect(outcome.activatedRuleNames).toEqual(['kept-rule']);
+  });
+});

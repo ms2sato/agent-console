@@ -106,6 +106,30 @@ export interface LoadInstructionsResult {
    * directory, or every rule found is unscoped).
    */
   ruleIndexLine?: string;
+  /**
+   * Phase B (#1343 R1): the SAME scoped rules `ruleIndexLine` above
+   * summarizes, exposed structurally instead of discarded after building that
+   * one line -- `RuleActivator` (rule-activation.ts) reads each rule's own
+   * content lazily, the first time a matching tool call arrives. Optional on
+   * this type only so hand-built test fixtures that don't care about lazy
+   * rule activation can omit it (treated as `[]`); the real `loadInstructions`
+   * always populates it.
+   */
+  scopedRules?: ScopedRule[];
+}
+
+/**
+ * Phase B (#1343 R1): a scoped `.claude/rules/*.md` file's identity and glob
+ * list, carried outward from `loadRulesLayer` for `RuleActivator` to read
+ * lazily -- deliberately WITHOUT `content`, unlike {@link InstructionSegment}.
+ * Reading content eagerly here would defeat the point of lazy activation: the
+ * whole reason this type exists separately is that a scoped rule's content is
+ * NOT loaded until a matching tool call actually arrives.
+ */
+export interface ScopedRule {
+  name: string;
+  origin: string;
+  globs: string[];
 }
 
 export interface AssembleSystemPromptParams {
@@ -249,7 +273,7 @@ async function tryReadTextFile(filePath: string): Promise<ReadTextResult> {
  * exists as either a file (worktree gitfile) or a directory. Returns null
  * when the filesystem root is reached without finding one.
  */
-async function findGitRoot(startDir: string): Promise<string | null> {
+export async function findGitRoot(startDir: string): Promise<string | null> {
   let current = startDir;
   while (true) {
     try {
@@ -535,6 +559,7 @@ interface RulesLayerResult {
   ruleSegments: InstructionSegment[];
   ruleOmissionLine?: string;
   ruleIndexLine?: string;
+  scopedRules: ScopedRule[];
 }
 
 /**
@@ -547,18 +572,18 @@ interface RulesLayerResult {
  */
 async function loadRulesLayer(cwd: string): Promise<RulesLayerResult> {
   const gitRoot = await findGitRoot(cwd);
-  if (gitRoot === null) return { ruleSegments: [] };
+  if (gitRoot === null) return { ruleSegments: [], scopedRules: [] };
 
   const rulesDir = path.join(gitRoot, '.claude', 'rules');
   let entries: string[];
   try {
     entries = (await fsPromises.readdir(rulesDir)).filter((f) => f.endsWith('.md')).sort();
   } catch (err) {
-    if (isErrnoException(err) && err.code === 'ENOENT') return { ruleSegments: [] };
+    if (isErrnoException(err) && err.code === 'ENOENT') return { ruleSegments: [], scopedRules: [] };
     console.warn(
       `Failed to list rules directory ${rulesDir}: ${err instanceof Error ? err.message : String(err)}`,
     );
-    return { ruleSegments: [] };
+    return { ruleSegments: [], scopedRules: [] };
   }
 
   const ruleFiles: RuleFile[] = [];
@@ -606,7 +631,23 @@ async function loadRulesLayer(cwd: string): Promise<RulesLayerResult> {
     ruleIndexLine = `Rules that apply when you touch matching paths: ${items}`;
   }
 
-  return { ruleSegments, ruleOmissionLine, ruleIndexLine };
+  const scopedRules: ScopedRule[] = scoped.map((r) => ({ name: r.name, origin: r.origin, globs: r.globs }));
+
+  return { ruleSegments, ruleOmissionLine, ruleIndexLine, scopedRules };
+}
+
+/**
+ * Phase B (#1343 R1): how many of {@link RULES_LAYER_CAP_BYTES} the eager
+ * unscoped layer already spent for a given `loadInstructions` result -- the
+ * figure `RuleActivator`'s caller (main.ts) subtracts from the cap to compute
+ * the remaining lazy-activation allowance. Summing `ruleSegments`' own byte
+ * lengths here, rather than threading a separate number out of
+ * `loadRulesLayer`'s internal budgeting loop, means this can never drift from
+ * what `ruleSegments` actually contains -- there is exactly one number that
+ * describes "the bytes in these segments", and this computes it directly.
+ */
+export function rulesLayerBytesUsed(instructions: LoadInstructionsResult): number {
+  return (instructions.ruleSegments ?? []).reduce((sum, s) => sum + segmentByteLength(s), 0);
 }
 
 export async function loadInstructions(

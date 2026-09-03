@@ -283,6 +283,10 @@ const EmbeddedAgentInitCommandSchema = v.variant('engine', [
         estimated: v.boolean(),
       }),
     ),
+    // Phase B (#1343 R4): on the openai-api arm only -- see the type's doc
+    // comment (`EmbeddedAgentCommand`'s openai-api arm) for why `claude-sdk`
+    // has no representable analogue.
+    activatedRuleNames: v.optional(v.array(v.string())),
   }),
   v.strictObject({
     ...EmbeddedAgentInitCommandBaseFields,
@@ -373,6 +377,10 @@ export const EmbeddedAgentEventSchema = v.union([
     callId: v.string(),
     ok: v.boolean(),
     result: v.string(),
+    // Phase B (#1343 R4): the scoped-rule names ACTUALLY activated by this
+    // call, structurally -- never parsed from `result`'s text. See the
+    // type's doc comment (`EmbeddedAgentEvent`'s `tool-result` member).
+    activatedRules: v.optional(v.array(v.string())),
   }),
   v.strictObject({
     v: v.literal(1),

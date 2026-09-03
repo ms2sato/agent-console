@@ -23,9 +23,11 @@ import type {
   SDKControlGetContextUsageResponse,
   SDKMessage,
   SDKUserMessage,
+  SyncHookJSONOutput,
 } from '@anthropic-ai/claude-agent-sdk';
 import { createSdkCompactTool, SdkEngine, spawnClaudeCodeProcess, type SdkEngineDeps } from '../sdk-engine.js';
 import { composeSdkSystemPromptAppend } from '../system-prompt.js';
+import type { ActivationBlock, RuleActivatorLike } from '../rule-activation.js';
 
 // ---------------------------------------------------------------------------
 // Fixture cast escape hatches
@@ -269,6 +271,23 @@ function stringifyOptionsForContainment(options: unknown): string {
   });
 }
 
+/**
+ * Default `RuleActivatorLike` for tests that are not about lazy rule
+ * activation: never matches anything, and `activate()` is never expected to
+ * be called against it (the PostToolUse hook only calls `activate` when
+ * `matchScopedRules` returned a non-empty list). The dedicated "PostToolUse
+ * hook: lazy rule activation" describe block below overrides this with a
+ * fake that actually asserts call shape.
+ */
+function noopRuleActivator(): RuleActivatorLike {
+  return {
+    matchScopedRules: () => [],
+    activate: async () => {
+      throw new Error('activate() should never be called when matchScopedRules() returned []');
+    },
+  };
+}
+
 const baseDeps = (overrides: Partial<SdkEngineDeps> = {}): SdkEngineDeps => ({
   cwd: '/tmp/work',
   model: 'claude-sonnet-5',
@@ -279,6 +298,7 @@ const baseDeps = (overrides: Partial<SdkEngineDeps> = {}): SdkEngineDeps => ({
   // below opts in explicitly.
   autoCompaction: false,
   sleep: instantSleep(),
+  ruleActivator: noopRuleActivator(),
   ...overrides,
 });
 
@@ -1809,6 +1829,125 @@ async function firePostCompactHook(options: Options | undefined, summary: string
   }
   return true;
 }
+
+/**
+ * Invokes the `PostToolUse` hook wired into the captured options, exactly as
+ * the SDK would for a real tool call. Returns `null` when no such hook was
+ * registered (regression guard for the hook's own presence), otherwise the
+ * `SyncHookJSONOutput` the callback returned.
+ */
+async function firePostToolUseHook(
+  options: Options | undefined,
+  toolName: string,
+  toolInput: unknown,
+): Promise<SyncHookJSONOutput | null> {
+  const matchers = options?.hooks?.PostToolUse;
+  if (!matchers || matchers.length === 0) return null;
+  let last: SyncHookJSONOutput | null = null;
+  for (const matcher of matchers) {
+    for (const hook of matcher.hooks) {
+      last = (await hook(
+        {
+          hook_event_name: 'PostToolUse',
+          tool_name: toolName,
+          tool_input: toolInput,
+          tool_response: {},
+          tool_use_id: 'call-1',
+          session_id: '22222222-2222-2222-2222-222222222222',
+          transcript_path: '/tmp/transcript.jsonl',
+          cwd: '/tmp/work',
+          permission_mode: 'bypassPermissions',
+        } as Parameters<typeof hook>[0],
+        undefined,
+        { signal: new AbortController().signal },
+      )) as SyncHookJSONOutput;
+    }
+  }
+  return last;
+}
+
+/**
+ * A `RuleActivatorLike` fake that records every call and answers exactly
+ * once per name in `matchOnce` -- mirrors the real `RuleActivator`'s
+ * once-only contract (see rule-activation.ts) so this file's "second call
+ * for the same rule" test does not need a real filesystem-backed activator
+ * to exercise the wiring.
+ */
+function fakeRuleActivator(matchOnce: Record<string, string[]>, blockText = 'RULE BLOCK'): {
+  activator: RuleActivatorLike;
+  matchCalls: { toolName: string; args: unknown }[];
+  activateCalls: string[][];
+} {
+  const matchCalls: { toolName: string; args: unknown }[] = [];
+  const activateCalls: string[][] = [];
+  const alreadyMatched = new Set<string>();
+  const activator: RuleActivatorLike = {
+    matchScopedRules: (toolName, args) => {
+      matchCalls.push({ toolName, args });
+      const names = (matchOnce[toolName] ?? []).filter((n) => !alreadyMatched.has(n));
+      for (const n of names) alreadyMatched.add(n);
+      return names;
+    },
+    activate: async (names) => {
+      activateCalls.push(names);
+      if (names.length === 0) return null;
+      const block: ActivationBlock = { text: blockText, skippedForSize: [], activatedNames: names };
+      return block;
+    },
+  };
+  return { activator, matchCalls, activateCalls };
+}
+
+describe('SdkEngine — PostToolUse hook: lazy rule activation (#1343 Phase B, claude-sdk slice)', () => {
+  it('registers a PostToolUse entry in options.hooks', () => {
+    const { queryFn, captured } = makeFakeQuery([]);
+    new SdkEngine(baseDeps({ queryFn }));
+    expect(captured.options?.hooks?.PostToolUse).toBeDefined();
+    expect(captured.options?.hooks?.PostToolUse?.length).toBeGreaterThan(0);
+  });
+
+  it('returns the activation block as additionalContext for a matching tool_input.file_path', async () => {
+    const { activator, matchCalls, activateCalls } = fakeRuleActivator({ Read: ['workflow'] }, 'THE RULE TEXT');
+    const { queryFn, captured } = makeFakeQuery([]);
+    new SdkEngine(baseDeps({ queryFn, ruleActivator: activator }));
+
+    const result = await firePostToolUseHook(captured.options, 'Read', { file_path: 'src/x.ts' });
+
+    expect(matchCalls).toEqual([{ toolName: 'Read', args: { file_path: 'src/x.ts' } }]);
+    expect(activateCalls).toEqual([['workflow']]);
+    expect(result).toEqual({
+      continue: true,
+      hookSpecificOutput: { hookEventName: 'PostToolUse', additionalContext: 'THE RULE TEXT' },
+    });
+  });
+
+  it('returns { continue: true } with no hookSpecificOutput for a non-matching tool_input', async () => {
+    const { activator, activateCalls } = fakeRuleActivator({ Read: ['workflow'] });
+    const { queryFn, captured } = makeFakeQuery([]);
+    new SdkEngine(baseDeps({ queryFn, ruleActivator: activator }));
+
+    // A Bash call: `RuleActivator.matchScopedRules` never matches Bash, by
+    // construction (R3) -- this fake mirrors that via `matchOnce` having no
+    // 'Bash' key.
+    const result = await firePostToolUseHook(captured.options, 'Bash', { command: 'ls' });
+
+    expect(activateCalls).toEqual([]);
+    expect(result).toEqual({ continue: true });
+  });
+
+  it('returns { continue: true } with no hookSpecificOutput the SECOND time for an already-activated rule', async () => {
+    const { activator, activateCalls } = fakeRuleActivator({ Read: ['workflow'] });
+    const { queryFn, captured } = makeFakeQuery([]);
+    new SdkEngine(baseDeps({ queryFn, ruleActivator: activator }));
+
+    const first = await firePostToolUseHook(captured.options, 'Read', { file_path: 'src/x.ts' });
+    const second = await firePostToolUseHook(captured.options, 'Read', { file_path: 'src/y.ts' });
+
+    expect(first?.hookSpecificOutput).toBeDefined();
+    expect(activateCalls).toEqual([['workflow']]);
+    expect(second).toEqual({ continue: true });
+  });
+});
 
 describe('SdkEngine — compaction: the auto toggle', () => {
   it('composes the worker toggle into the SDK settings, ON', () => {

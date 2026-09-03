@@ -1,7 +1,13 @@
 #!/usr/bin/env bun
 /**
  * Shipping-path E2E for Issue #1343's Phase A slice (project-instruction
- * parity on the SDK arm: one loader, `.claude/rules`, both engines).
+ * parity on the SDK arm: one loader, `.claude/rules`, both engines) AND
+ * Phase B's lazy scoped-rule activation slice (openai-api R1-R5, claude-sdk
+ * R2/R3/R4/R6 -- see `rule-activation.ts`'s header comment for what
+ * "activation" means at the wire level: a
+ * `[rule activated: <name>]\n--- Rule (applies to: ...): <origin> ---\n<content>`
+ * block appended to a `tool-result` event's `result` field on openai-api, or
+ * delivered via a `PostToolUse` hook's `additionalContext` on claude-sdk).
  *
  * Modeled closely on `check-restart-all-embedded.ts` / the idle-eviction
  * smokes -- same disposable-server boilerplate, same real `AppContext` +
@@ -33,10 +39,83 @@
  * strictly less reliable than the deterministic unit pin that already exists
  * for a file this PR does not modify.
  *
- * COST: two real turns (one per engine, no tool call needed -- this content
- * is eagerly loaded into the system prompt at activation, not something a
- * tool call would reveal). Small, but real money and real usage for the
- * `openai-api` arm and real Claude usage for the `claude-sdk` arm -- a
+ * PHASE B ADDITION (lazy scoped-rule activation, both engines)
+ *
+ * `checkScopedRuleActivation` drives a turn sequence per engine against a
+ * NEW scoped rule (`.claude/rules/scoped.md`, `paths: ["src/**"]`, nonce
+ * `SCOPED_NONCE`) that the Phase A checks above never exercise (Phase A's
+ * rule is unscoped and loaded eagerly; this one is loaded lazily, on a
+ * matching tool call):
+ *
+ *   Turn 1: ask for the rule word (U, Phase A's unscoped nonce -- already
+ *     known, eager) and the scoped word (S) -- S must be UNKNOWN (the index
+ *     line names the rule, never its content, until a match; R2/R3).
+ *   Turn 2: `Read src/x.ts` (matches `src/**`), then ask again -- S is now
+ *     known, on BOTH engines.
+ *   Turn 3: a FRESH worker on the SAME repo reads `README.md` (does NOT
+ *     match `src/**`) and is asked for S -- must stay UNKNOWN. Negative
+ *     control for the match rule (R3): reading a non-matching path must
+ *     never activate a scoped rule.
+ *   Turn 4 (openai-api only): reusing the SAME worker from turns 1-2 (NO
+ *     restart in between -- deliberate, see the restore-check paragraph
+ *     below), a SECOND matching `Read src/y.ts` in the same worker. Reads
+ *     the worker's own persisted event history directly and asserts the
+ *     substring `[rule activated: scoped.md]` appears EXACTLY ONCE across
+ *     every `tool-result` event's `result` field -- proving the
+ *     once-per-incarnation guard (`RuleActivator.matchScopedRules`'s
+ *     `this.activated.has(rule.name)` check) actually holds at the
+ *     shipping-path level, not just in the unit tests. claude-sdk has no
+ *     equivalent check here and none is attempted: its activation travels
+ *     through `additionalContext`, injected directly into the SDK's own
+ *     context -- it never lands in a persisted `tool-result` event the way
+ *     openai-api's `appendix` field does, so there is no transcript
+ *     artifact to inspect for the SDK arm. The AC scopes turn 4 to
+ *     openai-api for exactly this reason.
+ *
+ * RESTORE CHECK (R4, openai-api only): run AFTER turn 4, not between turns 2
+ * and 4. The AC leaves the placement open ("your choice, but document
+ * which") -- placing it between turns 2 and 4 would make turn 4's "no
+ * second activation" outcome attributable to EITHER the in-memory `Set`
+ * populated by turn 2's own `activate()` call OR the restore-seeded one
+ * (main.ts re-seeds the `Set` from the persisted transcript on every
+ * restart), and those are two different code paths worth distinguishing
+ * rather than conflating into one turn. Running turn 4 first, with no
+ * restart in between, isolates the in-incarnation guard cleanly; the
+ * restore check that follows then isolates the seeding path just as
+ * cleanly, reusing the SAME worker (already carrying the one persisted
+ * marker from turn 2) rather than spending an extra turn to manufacture a
+ * fresh one. Restarting the worker (deactivate + activate, the same
+ * manual-restart sequence `check-restart-all-embedded.ts` and the
+ * idle-eviction smokes use) after turn 4 gives a clean incarnation
+ * boundary: main.ts's restore-seeding scan finds the ONE persisted
+ * `[rule activated: scoped.md]` marker (from turn 2 -- turn 4 added none)
+ * and pre-seeds the new incarnation's `RuleActivator` with it. A third
+ * matching `Read src/z.ts` in the restarted incarnation is then asserted to
+ * add NO second marker across the worker's FULL history -- R4's
+ * restore-seeding pin at the shipping-path level.
+ *
+ * POLARITY (documentation only -- not re-run against reverted code): before
+ * this PR (`git show c2d03e21`, `53953b6f`, `b6ba4048`), NEITHER engine had
+ * any mechanism to deliver a scoped rule's content at all -- `ToolCallOutcome`
+ * had no `appendix` field, `CompositeToolExecutorDeps` had no
+ * `ruleActivator`, and `sdk-engine.ts`'s `buildOptions` registered no
+ * `PostToolUse` hook. The feature is entirely new code, not a behavior
+ * change to existing code, so turn 2's second ask returning UNKNOWN for S on
+ * unmodified `main` is not a hypothesis worth re-verifying by reverting and
+ * re-running this (billable) script -- it follows directly from the commit
+ * diffs' additions. This mirrors, structurally, what
+ * `probe-sdk-instruction-loading.ts`'s `--project` arm already measured for
+ * its own scoped canary under the NATIVE claude CLI's OWN discovery
+ * mechanism (`settingSources: ['project']`): unknown before a matching Read,
+ * known after -- the same shape, via a different (and, at the time that
+ * probe ran, pre-existing) delivery mechanism.
+ *
+ * COST: 14 real turns total -- 2 from the existing Phase A checks above (1
+ * per engine, unchanged) + 12 from the Phase B additions (claude-sdk: 3
+ * turns for the turn 1/turn 2 worker [ask, Read, ask] + 2 for turn 3's fresh
+ * worker [Read, ask] = 5; openai-api: the same 5, + 1 for turn 4's extra
+ * Read, + 1 for the restore check's post-restart Read = 7). Real money for
+ * the `openai-api` arm and real Claude usage for the `claude-sdk` arm -- a
  * manual tool, never a CI gate.
  *
  * REQUIREMENTS
@@ -74,12 +153,41 @@ import type { AppContext } from '../../packages/server/src/app-context.js';
 const CLAUDE_NONCE = `PROJECT-${Math.floor(Math.random() * 9000 + 1000)}`;
 const RULE_NONCE = `RULE-${Math.floor(Math.random() * 9000 + 1000)}`;
 const IGNORED_NONCE = `IGNORED-${Math.floor(Math.random() * 9000 + 1000)}`;
+const SCOPED_NONCE = `SCOPED-${Math.floor(Math.random() * 9000 + 1000)}`;
 
 const ASK_TEXT =
   'Three words may or may not be available to you right now, in your own context: ' +
   'a "project word", a "rule word", and an "ignored word". For each of the three, ' +
   'either quote it exactly if you can see it verbatim in your own context, or say ' +
   'UNKNOWN if you cannot. Do not guess.';
+
+/**
+ * Phase B: deliberately a SEPARATE ask text from `ASK_TEXT` above rather than
+ * a shared four-word question -- `ASK_TEXT` is Phase A's own three-nonce
+ * check (CLAUDE.md / unscoped rule / rules-not negative control) and this
+ * script must not conflate the two slices' assertions in one reply.
+ */
+const SCOPED_ASK_TEXT =
+  'Two words may or may not be available to you right now, in your own context: ' +
+  'a "rule word" and a "scoped word". For each of the two, either quote it exactly ' +
+  'if you can see it verbatim in your own context, or say UNKNOWN if you cannot. ' +
+  'Do not guess.';
+
+const readPrompt = (relPath: string): string =>
+  `Please use your Read tool to read the file ${relPath} (relative to your working ` +
+  `directory) and tell me its exact contents.`;
+
+/**
+ * `loadRulesLayer` (system-prompt.ts) derives a rule's `name` from its raw
+ * directory-entry filename WITHOUT stripping the `.md` extension (confirmed
+ * against `system-prompt.test.ts`'s
+ * `expect(result.scopedRules).toEqual([{ name: 'scoped.md', ... }])`) -- so
+ * the activation block's header line (rule-activation.ts's
+ * `` `[rule activated: ${r.name}]` ``) names the file `scoped.md`, not the
+ * bare stem `scoped`.
+ */
+const SCOPED_RULE_NAME = 'scoped.md';
+const SCOPED_RULE_ACTIVATION_MARKER = `[rule activated: ${SCOPED_RULE_NAME}]`;
 
 const PROVIDER_BASE_URL = process.env.PROVIDER_BASE_URL ?? 'https://opencode.ai/zen/go/v1';
 const PROVIDER_MODEL = process.env.PROVIDER_MODEL ?? 'qwen3.8-flash';
@@ -108,6 +216,7 @@ async function main(): Promise<void> {
   console.log(`==> CLAUDE.md nonce:        ${CLAUDE_NONCE}`);
   console.log(`==> .claude/rules nonce:    ${RULE_NONCE}`);
   console.log(`==> .claude/rules-not nonce (must NOT appear): ${IGNORED_NONCE}`);
+  console.log(`==> .claude/rules/${SCOPED_RULE_NAME} nonce (lazy, Phase B): ${SCOPED_NONCE}`);
 
   const { createTestContext, shutdownAppContext } = await import('../../packages/server/src/app-context.js');
   const { api } = await import('../../packages/server/src/routes/api.js');
@@ -166,6 +275,7 @@ async function main(): Promise<void> {
     Bun.spawnSync(['mkdir', '-p', path.join(realCwd, '.git')]);
     Bun.spawnSync(['mkdir', '-p', path.join(realCwd, '.claude', 'rules')]);
     Bun.spawnSync(['mkdir', '-p', path.join(realCwd, '.claude', 'rules-not')]);
+    Bun.spawnSync(['mkdir', '-p', path.join(realCwd, 'src')]);
     await Bun.write(path.join(realCwd, 'CLAUDE.md'), `The project word is ${CLAUDE_NONCE}.\n`);
     await Bun.write(
       path.join(realCwd, '.claude', 'rules', 'nonce-rule.md'),
@@ -175,6 +285,22 @@ async function main(): Promise<void> {
       path.join(realCwd, '.claude', 'rules-not', 'ignored.md'),
       `# Should Never Be Read\n\nThe ignored word is ${IGNORED_NONCE}.\n`,
     );
+    // Phase B: a SCOPED rule (paths frontmatter) -- its content must stay
+    // unreachable until a matching tool call activates it (R2/R3).
+    await Bun.write(
+      path.join(realCwd, '.claude', 'rules', SCOPED_RULE_NAME),
+      `---\npaths:\n  - "src/**"\n---\n\n# Scoped Rule\n\nThe scoped word is ${SCOPED_NONCE}.\n`,
+    );
+    // Three distinct, FRESH (never read before) files under the scoped
+    // rule's `src/**` glob -- one per turn that needs an unambiguous "first
+    // Read of a matching path" (turn 2: x.ts, turn 4: y.ts, restore check:
+    // z.ts).
+    await Bun.write(path.join(realCwd, 'src', 'x.ts'), 'export const x = 1;\n');
+    await Bun.write(path.join(realCwd, 'src', 'y.ts'), 'export const y = 2;\n');
+    await Bun.write(path.join(realCwd, 'src', 'z.ts'), 'export const z = 3;\n');
+    // A NON-matching path (root, not under src/**) -- turn 3's negative
+    // control.
+    await Bun.write(path.join(realCwd, 'README.md'), '# Scratch Repo\n\nNothing to see here.\n');
 
     const app = new Hono();
     app.use('*', async (c: { set: (k: string, v: unknown) => void }, next: () => Promise<void>) => {
@@ -299,7 +425,136 @@ async function main(): Promise<void> {
       await ctx!.sessionManager.deactivateEmbeddedAgentWorker(w.sessionId, w.workerId).catch(() => {});
     }
 
-    await checkEngine('openai-api', async () => {
+    /**
+     * Counts (non-overlapping) occurrences of `needle` in `haystack`. Used
+     * below to count `SCOPED_RULE_ACTIVATION_MARKER` occurrences across a
+     * worker's persisted `tool-result` events.
+     */
+    function countOccurrences(haystack: string, needle: string): number {
+      let count = 0;
+      let idx = haystack.indexOf(needle);
+      while (idx !== -1) {
+        count++;
+        idx = haystack.indexOf(needle, idx + needle.length);
+      }
+      return count;
+    }
+
+    /**
+     * Reads a worker's FULL persisted history (never sliced -- the restore
+     * check in particular needs to see markers written before a restart) and
+     * counts how many times the scoped rule's activation marker appears
+     * across every `tool-result` event's `result` field (agent-loop.ts
+     * concatenates `CompositeToolExecutor`'s `appendix` onto that field, see
+     * this file's header comment).
+     */
+    async function countScopedActivationMarkers(sessionId: string, workerId: string): Promise<number> {
+      const events = await readEvents(sessionId, workerId);
+      let count = 0;
+      for (const e of events) {
+        if (e.type !== 'tool-result') continue;
+        const result = typeof e.result === 'string' ? e.result : '';
+        count += countOccurrences(result, SCOPED_RULE_ACTIVATION_MARKER);
+      }
+      return count;
+    }
+
+    /**
+     * Phase B, turns 1-3 (both engines): drives the scoped-rule activation
+     * sequence documented in this file's header comment and returns the
+     * PRIMARY worker (turns 1-2), left ACTIVE, so the openai-api-only caller
+     * can continue with turn 4 + the restore check on the exact same
+     * incarnation. The claude-sdk caller deactivates the returned worker
+     * itself once done (mirroring `checkEngine`'s own cleanup).
+     */
+    async function checkScopedRuleActivation(
+      label: string,
+      makeWorker: () => Promise<{ sessionId: string; workerId: string }>,
+    ): Promise<{ sessionId: string; workerId: string }> {
+      console.log(`==> ${label}: scoped-rule activation (turns 1-3)`);
+      const w = await makeWorker();
+      await ctx!.sessionManager.activateEmbeddedAgentWorker(w.sessionId, w.workerId);
+
+      // Turn 1: ask before any matching tool call in this incarnation.
+      const reply1 = await runTurn(w.sessionId, w.workerId, SCOPED_ASK_TEXT);
+      console.log(`  ${label} turn1 reply: ${reply1.trim().slice(0, 300)}`);
+      expect(
+        reply1.includes(RULE_NONCE),
+        `${label}: unscoped rule word (U) is known before any matching tool call`,
+        `expected ${RULE_NONCE} in: ${reply1.trim().slice(0, 300)}`,
+      );
+      expect(
+        !reply1.includes(SCOPED_NONCE),
+        `${label}: scoped rule word (S) is UNKNOWN before a matching tool call (index line names the rule, not its content)`,
+        `unexpectedly found ${SCOPED_NONCE} in: ${reply1.trim().slice(0, 300)}`,
+      );
+
+      // Turn 2: a matching Read activates the scoped rule.
+      await runTurn(w.sessionId, w.workerId, readPrompt('src/x.ts'));
+      const reply2 = await runTurn(w.sessionId, w.workerId, SCOPED_ASK_TEXT);
+      console.log(`  ${label} turn2 reply: ${reply2.trim().slice(0, 300)}`);
+      expect(
+        reply2.includes(SCOPED_NONCE),
+        `${label}: scoped rule word (S) is known after a matching Read (src/x.ts)`,
+        `expected ${SCOPED_NONCE} in: ${reply2.trim().slice(0, 300)}`,
+      );
+
+      // Turn 3: a FRESH worker on the same repo reads a NON-matching path --
+      // negative control for the match rule (R3).
+      const w3 = await makeWorker();
+      await ctx!.sessionManager.activateEmbeddedAgentWorker(w3.sessionId, w3.workerId);
+      await runTurn(w3.sessionId, w3.workerId, readPrompt('README.md'));
+      const reply3 = await runTurn(w3.sessionId, w3.workerId, SCOPED_ASK_TEXT);
+      console.log(`  ${label} turn3 (negative control) reply: ${reply3.trim().slice(0, 300)}`);
+      expect(
+        !reply3.includes(SCOPED_NONCE),
+        `${label}: negative control -- reading a non-matching path (README.md) never activates the scoped rule`,
+        `unexpectedly found ${SCOPED_NONCE} in: ${reply3.trim().slice(0, 300)}`,
+      );
+      await ctx!.sessionManager.deactivateEmbeddedAgentWorker(w3.sessionId, w3.workerId).catch(() => {});
+
+      return w;
+    }
+
+    /**
+     * Phase B, turn 4 + the R4 restore check -- openai-api only (see this
+     * file's header comment for why claude-sdk has no equivalent). `w` is
+     * the SAME worker `checkScopedRuleActivation` left active after turns
+     * 1-2, still carrying exactly one persisted activation marker.
+     */
+    async function checkOpenAiScopedRuleExtras(w: { sessionId: string; workerId: string }): Promise<void> {
+      console.log('==> openai-api: scoped-rule activation (turn 4 + restore check)');
+
+      // Turn 4: a SECOND matching Read, same incarnation, no restart in
+      // between -- proves the in-memory once-per-incarnation guard.
+      await runTurn(w.sessionId, w.workerId, readPrompt('src/y.ts'));
+      const afterTurn4 = await countScopedActivationMarkers(w.sessionId, w.workerId);
+      expect(
+        afterTurn4 === 1,
+        'openai-api: exactly one activation marker after TWO matching Reads in the same incarnation (once-per-incarnation guard)',
+        `expected 1 occurrence of ${SCOPED_RULE_ACTIVATION_MARKER}, found ${afterTurn4}`,
+      );
+
+      // Restore check (R4): restart the SAME worker (deactivate + activate,
+      // the same manual-restart sequence check-restart-all-embedded.ts and
+      // the idle-eviction smokes use), then a THIRD matching Read in the new
+      // incarnation. main.ts's restore-seeding scan should have pre-marked
+      // the scoped rule as already-activated from the persisted transcript,
+      // so this Read must add NO second marker.
+      await ctx!.sessionManager.deactivateEmbeddedAgentWorker(w.sessionId, w.workerId);
+      await ctx!.sessionManager.activateEmbeddedAgentWorker(w.sessionId, w.workerId);
+      await runTurn(w.sessionId, w.workerId, readPrompt('src/z.ts'));
+      const afterRestore = await countScopedActivationMarkers(w.sessionId, w.workerId);
+      expect(
+        afterRestore === 1,
+        'openai-api: exactly one activation marker across the FULL history after a restart + a third matching Read (R4 restore-seeding pin)',
+        `expected 1 occurrence of ${SCOPED_RULE_ACTIVATION_MARKER}, found ${afterRestore}`,
+      );
+
+      await ctx!.sessionManager.deactivateEmbeddedAgentWorker(w.sessionId, w.workerId).catch(() => {});
+    }
+
+    const makeOpenAiWorker = async (): Promise<{ sessionId: string; workerId: string }> => {
       const session = await ctx!.sessionManager.createSession(
         { type: 'quick', locationPath: realCwd!, agentId: 'claude-code-builtin' },
         { createdBy: owner.id },
@@ -310,9 +565,9 @@ async function main(): Promise<void> {
       });
       if (!worker) throw new Error('createWorker returned null for openai-api');
       return { sessionId: session.id, workerId: worker.id };
-    });
+    };
 
-    await checkEngine('claude-sdk', async () => {
+    const makeClaudeSdkWorker = async (): Promise<{ sessionId: string; workerId: string }> => {
       const session = await ctx!.sessionManager.createSession(
         { type: 'quick', locationPath: realCwd!, agentId: 'claude-code-builtin' },
         { createdBy: owner.id },
@@ -323,7 +578,18 @@ async function main(): Promise<void> {
       });
       if (!worker) throw new Error('createWorker returned null for claude-sdk');
       return { sessionId: session.id, workerId: worker.id };
-    });
+    };
+
+    await checkEngine('openai-api', makeOpenAiWorker);
+    await checkEngine('claude-sdk', makeClaudeSdkWorker);
+
+    const openaiScopedWorker = await checkScopedRuleActivation('openai-api', makeOpenAiWorker);
+    await checkOpenAiScopedRuleExtras(openaiScopedWorker);
+
+    const claudeSdkScopedWorker = await checkScopedRuleActivation('claude-sdk', makeClaudeSdkWorker);
+    await ctx!.sessionManager
+      .deactivateEmbeddedAgentWorker(claudeSdkScopedWorker.sessionId, claudeSdkScopedWorker.workerId)
+      .catch(() => {});
   } finally {
     if (ctx) {
       for (const s of ctx.sessionManager.getAllSessions()) {
