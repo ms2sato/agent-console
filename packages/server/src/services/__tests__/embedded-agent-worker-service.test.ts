@@ -1617,7 +1617,7 @@ describe('EmbeddedAgentWorkerService exit handling — stderr tail (Issue #1454)
     expect(row.stderrTail).toBe('stderr line one\nstderr line two\n');
   });
 
-  it('retains only the LAST STDERR_TAIL_CAP bytes', async () => {
+  it('retains only the LAST STDERR_TAIL_CAP characters', async () => {
     const h = setup();
     await h.service.activate(h.sessionId, h.workerId);
 

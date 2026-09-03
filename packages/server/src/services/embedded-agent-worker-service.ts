@@ -175,10 +175,18 @@ const KNOWN_EVENT_TYPES = new Set<string>([
 /** Cap on the per-chunk stderr text forwarded to the debug logger. */
 const STDERR_LOG_CAP = 2048;
 /**
- * Cap on the retained stderr TAIL attached to an unexpected `exited` row.
- * Distinct from STDERR_LOG_CAP above: that one bounds each per-chunk debug
- * log line; this one bounds the cumulative tail kept for the whole
- * incarnation's lifetime, trimmed from the front as new bytes arrive.
+ * Cap on the retained stderr TAIL attached to an unexpected `exited` row, in
+ * UTF-16 code units (String.prototype.slice's unit) -- NOT bytes; bytes on
+ * the wire may be up to 3x this for non-ASCII stderr. Distinct from
+ * STDERR_LOG_CAP above: that one bounds each per-chunk debug log line; this
+ * one bounds the cumulative tail kept for the whole incarnation's lifetime,
+ * trimmed from the front as new chunks arrive.
+ *
+ * A trim landing inside a surrogate pair yields a lone surrogate in the
+ * retained string. This is an accepted consequence, not a bug: the cap is a
+ * bound, not a byte-accurate contract. JSON.stringify escapes a lone
+ * surrogate (`\uXXXX`) rather than throwing, and the schema accepts the
+ * resulting string, so this cannot break the persisted row.
  */
 const STDERR_TAIL_CAP = 2048;
 
@@ -470,7 +478,8 @@ interface Runtime {
   /** Idle eviction applies to this incarnation's engine -- see {@link isEvictableEngine}. */
   evictable: boolean;
   /**
-   * Last STDERR_TAIL_CAP bytes of this incarnation's stderr, trimmed from the
+   * Last STDERR_TAIL_CAP characters (UTF-16 code units; bytes on the wire may
+   * be up to 3x for non-ASCII) of this incarnation's stderr, trimmed from the
    * front. Attached to the `exited` row only when the exit is `'unexpected'`
    * and this is non-empty.
    */
