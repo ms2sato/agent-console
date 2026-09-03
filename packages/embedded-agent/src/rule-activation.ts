@@ -29,6 +29,20 @@
  * `Compact`, any MCP tool -- never matches, by construction: the matcher is
  * keyed on tool NAME first, so it never inspects `args` for a name outside
  * the two tables below.
+ *
+ * R3's SDK-arm extension (#1343 Phase B, claude-sdk slice): the native
+ * `claude` CLI's own builtin `Read` uses `file_path`, NOT `path` --
+ * openai-api's embedded `Read` tool (a completely different implementation)
+ * uses `path`. This class is shared by BOTH engine adapters (R1: "One
+ * activator, two adapters"), so `FILE_ARG_KEYS` maps a tool name to an
+ * ORDERED array of candidate argument keys rather than a single key --
+ * trying each in turn and using the first string value found. This is safe
+ * for both engines simultaneously: openai-api's `Read` call never carries a
+ * `file_path` key, so trying it and finding nothing is harmless; the native
+ * CLI's `Read` never carries a `path` key. No engine-specific branching is
+ * needed inside this class at all. `NotebookEdit` (`notebook_path`) is an
+ * SDK-arm-only tool -- openai-api has no such builtin, so that key is simply
+ * never present there.
  */
 
 import { Glob } from 'bun';
@@ -67,11 +81,21 @@ export interface RuleActivatorParams {
 
 const encoder = new TextEncoder();
 
-/** R3: builtin tools whose sole path-shaped argument is a FILE to operate on. */
-const FILE_ARG_KEY: Partial<Record<string, string>> = {
-  Read: 'path',
-  Write: 'file_path',
-  Edit: 'file_path',
+/**
+ * R3: builtin tools whose path-shaped argument is a FILE to operate on,
+ * keyed to an ORDERED array of candidate argument names -- see this file's
+ * header comment ("R3's SDK-arm extension") for why an array rather than a
+ * single key. `path` is tried before `file_path` for `Read` purely by
+ * convention (openai-api's own shape listed first); no real tool call is
+ * expected to carry both keys, so the ordering has no observed production
+ * effect -- see `resolveCandidate`'s doc comment for the pinned tie-break
+ * behavior in that hypothetical case.
+ */
+const FILE_ARG_KEYS: Partial<Record<string, readonly string[]>> = {
+  Read: ['path', 'file_path'],
+  Write: ['file_path'],
+  Edit: ['file_path'],
+  NotebookEdit: ['notebook_path'],
 };
 
 /**
@@ -144,19 +168,32 @@ export class RuleActivator implements RuleActivatorLike {
 
   /**
    * Resolves the tool-name-keyed path candidate, or `null` when this tool
-   * name never carries one (the majority of tool names) or the relevant
-   * argument is absent/not-a-string. `args` is deliberately `unknown` here,
-   * not `Record<string, unknown>`: the caller (`CompositeToolExecutor`)
-   * forwards whatever shape a tool call happened to parse to, and this
-   * method must stay tolerant of anything short of throwing.
+   * name never carries one (the majority of tool names) or none of its
+   * candidate arguments are present/a string. `args` is deliberately
+   * `unknown` here, not `Record<string, unknown>`: the caller
+   * (`CompositeToolExecutor`) forwards whatever shape a tool call happened to
+   * parse to, and this method must stay tolerant of anything short of
+   * throwing.
+   *
+   * When a tool name's candidate-key array has more than one entry (`Read`'s
+   * `['path', 'file_path']`), the FIRST key in the array whose value is a
+   * string wins -- so `path` beats `file_path` if a call somehow carried
+   * both. No real tool call is expected to carry both keys (openai-api's
+   * `Read` never has `file_path`; the native CLI's `Read` never has `path`),
+   * so this tie-break has no observed production effect; it exists only so
+   * the behavior is a documented, pinned choice rather than silently
+   * undefined for a shape that should not occur.
    */
   private resolveCandidate(toolName: string, args: unknown): PathCandidate | null {
     const a = typeof args === 'object' && args !== null ? (args as Record<string, unknown>) : {};
 
-    const fileKey = FILE_ARG_KEY[toolName];
-    if (fileKey !== undefined) {
-      const raw = a[fileKey];
-      return typeof raw === 'string' ? this.toRelativeCandidate(raw, false) : null;
+    const fileKeys = FILE_ARG_KEYS[toolName];
+    if (fileKeys !== undefined) {
+      for (const key of fileKeys) {
+        const raw = a[key];
+        if (typeof raw === 'string') return this.toRelativeCandidate(raw, false);
+      }
+      return null;
     }
     if (DIR_ARG_TOOLS.has(toolName)) {
       const raw = a.path;

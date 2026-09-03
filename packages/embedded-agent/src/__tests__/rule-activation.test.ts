@@ -111,6 +111,52 @@ describe('RuleActivator.matchScopedRules — R3 match table', () => {
   });
 });
 
+describe('RuleActivator.matchScopedRules — R3 SDK-arm extension (#1343 Phase B)', () => {
+  it('Read: matches on args.file_path when args.path is absent (the native claude CLI shape)', async () => {
+    const dir = await makeTempDir();
+    const rule = await writeRule(dir, 'r', ['src/**'], 'C');
+    const activator = new RuleActivator({ scopedRules: [rule], gitRoot: dir, cwd: dir, remainingBudgetBytes: 1000 });
+    expect(activator.matchScopedRules('Read', { file_path: 'src/x.ts' })).toEqual(['r']);
+  });
+
+  it('Read: still matches on args.path when present (openai-api shape, regression-guard)', async () => {
+    const dir = await makeTempDir();
+    const rule = await writeRule(dir, 'r', ['src/**'], 'C');
+    const activator = new RuleActivator({ scopedRules: [rule], gitRoot: dir, cwd: dir, remainingBudgetBytes: 1000 });
+    expect(activator.matchScopedRules('Read', { path: 'src/x.ts' })).toEqual(['r']);
+  });
+
+  it('Read: args.path wins over args.file_path when both are present (pinned tie-break, not expected in production)', async () => {
+    const dir = await makeTempDir();
+    const rule = await writeRule(dir, 'r', ['src/**'], 'C');
+    const outsideRule = await writeRule(dir, 'outside', ['lib/**'], 'C2');
+    const activator = new RuleActivator({
+      scopedRules: [rule, outsideRule],
+      gitRoot: dir,
+      cwd: dir,
+      remainingBudgetBytes: 1000,
+    });
+    // `path` (src/x.ts) matches `r`; `file_path` (lib/x.ts) would match
+    // `outside` instead -- only `r` is returned, confirming `path` was the
+    // one actually consulted.
+    expect(activator.matchScopedRules('Read', { path: 'src/x.ts', file_path: 'lib/x.ts' })).toEqual(['r']);
+  });
+
+  it('NotebookEdit: matches on args.notebook_path', async () => {
+    const dir = await makeTempDir();
+    const rule = await writeRule(dir, 'r', ['src/**'], 'C');
+    const activator = new RuleActivator({ scopedRules: [rule], gitRoot: dir, cwd: dir, remainingBudgetBytes: 1000 });
+    expect(activator.matchScopedRules('NotebookEdit', { notebook_path: 'src/x.ipynb' })).toEqual(['r']);
+  });
+
+  it('NotebookEdit: no candidate at all when notebook_path is absent -- never matches', async () => {
+    const dir = await makeTempDir();
+    const rule = await writeRule(dir, 'r', ['**/*'], 'C');
+    const activator = new RuleActivator({ scopedRules: [rule], gitRoot: dir, cwd: dir, remainingBudgetBytes: 1000 });
+    expect(activator.matchScopedRules('NotebookEdit', { cell_id: 'abc' })).toEqual([]);
+  });
+});
+
 describe('RuleActivator.matchScopedRules — path resolution', () => {
   it('resolves a relative candidate against cwd', async () => {
     const dir = await makeTempDir();
