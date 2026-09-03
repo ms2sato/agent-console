@@ -5,7 +5,24 @@ import { RestartSessionDialog } from './sessions/RestartSessionDialog';
 import { DeleteWorktreeDialog } from './sessions/DeleteWorktreeDialog';
 import { PauseSessionDialog } from './sessions/PauseSessionDialog';
 import { InitialPromptDialog } from './sessions/InitialPromptDialog';
-import type { Session, AgentActivityState, AgentWorker } from '@agent-console/shared';
+import type { AgentSelection } from './AgentSelector';
+import type { Session, AgentActivityState } from '@agent-console/shared';
+
+/**
+ * Derive the primary-worker selection for RestartSessionDialog: the first
+ * worker of type 'agent' or 'embedded-agent' in the session. `undefined`
+ * while `session` hasn't loaded yet -- RestartSessionDialog treats that the
+ * same way it always has (don't disable / assume terminal-like defaults
+ * while unknown).
+ */
+function derivePrimarySelection(session: Session | undefined): AgentSelection | undefined {
+  if (!session) return undefined;
+  for (const worker of session.workers) {
+    if (worker.type === 'agent') return { kind: 'terminal', agentId: worker.agentId };
+    if (worker.type === 'embedded-agent') return { kind: 'embedded', embeddedAgentId: worker.embeddedAgentId };
+  }
+  return undefined;
+}
 
 interface SessionSettingsProps {
   sessionId: string;
@@ -75,13 +92,7 @@ export function SessionSettings({
         open={activeDialog === 'restart'}
         onOpenChange={(open) => !open && closeDialog()}
         sessionId={sessionId}
-        currentAgentId={(session?.workers.find((w): w is AgentWorker => w.type === 'agent'))?.agentId}
-        // `undefined` while `session` hasn't loaded yet is not evidence of
-        // absence -- default to true (don't disable) until we actually know.
-        // Once loaded, true iff a PTY `agent` worker exists (#1171 R6(c)):
-        // an embedded-primary session has none, and restarting its primary
-        // worker isn't supported yet.
-        hasAgentWorker={session ? session.workers.some((w) => w.type === 'agent') : true}
+        currentSelection={derivePrimarySelection(session)}
         currentBranch={currentBranch}
         isWorktreeSession={true}
         onBranchChange={onBranchChange}

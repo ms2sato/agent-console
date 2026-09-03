@@ -357,7 +357,7 @@ New Bun workspace package. Depends on `packages/shared` (event types) and `@mode
 **Process contract:**
 
 - stdin: NDJSON commands (server -> loop). First message MUST be `init`; the loop exits with code 2 if the first parsed line is not a valid `init`.
-- stdout: NDJSON events (loop -> server). Nothing else is ever written to stdout (all diagnostics go to stderr).
+- stdout: NDJSON events (loop -> server). Nothing else is ever written to stdout (all diagnostics go to stderr). Mechanically enforced by `scripts/check-embedded-agent-stdout-writers.mjs` (`bun run check:embedded-agent-stdout`).
 - stderr: human-readable logs; the server forwards them to its logger at debug level (size-capped). A bounded tail (last `STDERR_TAIL_CAP` characters -- UTF-16 code units, not bytes and not an overall wire-size bound; JSON-escaping can inflate the serialized size past a simple UTF-8 multiplier) also rides the server-authored `exited` row when the exit is `reason: 'unexpected'` and stderr was non-empty (#1454) -- never on `'managed'` or `'evicted'` -- so the client can show the process's own explanation without reading the server log.
 - Exit: on `shutdown` command or stdin EOF, finish the current write and exit 0. Exit 1 = fatal error (after emitting a `fatal` event if possible). Exit 2 = protocol misuse.
 - The server keeps stdin OPEN for the lifetime of the process (this is a *feeding* `spawnAsUser` consumer, so the `stdin.end()` obligation for fire-and-forget consumers in `elevation-helpers.md` does not apply; the drain obligation does, and is satisfied by the event reader).

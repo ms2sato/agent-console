@@ -51,6 +51,7 @@ import ts from 'typescript';
  * (`normalizeTrivia`, via `ts.getLeadingCommentRanges`) already accounts for
  * the byte range a JSDoc comment occupies, so skipping the subtree here is
  * sufficient — nothing needs to be substituted in its place.
+ *
  * @param {ts.Node} node
  * @param {ts.SourceFile} sourceFile
  * @param {ts.Node[]} out
