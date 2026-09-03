@@ -7,6 +7,7 @@ import {
   type ProcessOutputRouterDeps,
 } from '../process-output-router.js';
 import { SessionDataPathResolver } from '../../lib/session-data-path-resolver.js';
+import type { PtyNotificationParams } from '../../lib/pty-notification.js';
 
 function makeProcess(
   overrides: Partial<InteractiveProcessInfo> = {},
@@ -27,11 +28,14 @@ function makeDeps(
   overrides: Partial<ProcessOutputRouterDeps> = {},
 ): {
   deps: ProcessOutputRouterDeps;
-  writeInput: ReturnType<typeof mock>;
+  deliverNotification: ReturnType<typeof mock>;
   sendMessage: ReturnType<typeof mock>;
   getResolver: ReturnType<typeof mock>;
 } {
-  const writeInput = mock((_sessionId: string, _workerId: string, _data: string) => {});
+  const deliverNotification = mock(
+    async (_sessionId: string, _workerId: string, _params: PtyNotificationParams) =>
+      ({ ok: true }) as { ok: true } | { ok: false; error: string },
+  );
   const sendMessage = mock(async (params: { content: string }) => ({
     messageId: `msg-${Math.random().toString(16).slice(2, 10)}.json`,
     path: `/tmp/messages/${params.content.slice(0, 4)}.json`,
@@ -42,14 +46,12 @@ function makeDeps(
   const deps: ProcessOutputRouterDeps = {
     getResolver:
       overrides.getResolver ?? ((sessionId) => getResolver(sessionId)),
-    writeInput:
-      overrides.writeInput ??
-      ((sessionId, workerId, data) => {
-        writeInput(sessionId, workerId, data);
-      }),
+    deliverNotification:
+      overrides.deliverNotification ??
+      ((sessionId, workerId, params) => deliverNotification(sessionId, workerId, params)),
     sendMessage: overrides.sendMessage ?? ((params) => sendMessage(params)),
   };
-  return { deps, writeInput, sendMessage, getResolver };
+  return { deps, deliverNotification, sendMessage, getResolver };
 }
 
 describe('splitContentIntoChunks', () => {
@@ -141,8 +143,8 @@ describe('splitContentIntoChunks', () => {
 });
 
 describe('routeProcessContent (pty mode)', () => {
-  it('writes the full content as an [internal:process] PTY notification', async () => {
-    const { deps, writeInput, sendMessage } = makeDeps();
+  it('delivers the full content as an [internal-process] notification with the structured params', async () => {
+    const { deps, deliverNotification, sendMessage } = makeDeps();
     const process = makeProcess({ outputMode: 'pty' });
 
     await routeProcessContent(deps, {
@@ -152,32 +154,57 @@ describe('routeProcessContent (pty mode)', () => {
     });
 
     expect(sendMessage).not.toHaveBeenCalled();
-    // writeInput is called twice: once with the notification text, once with \r
-    // (delayed via setTimeout 150ms — only the first call is observed
-    // synchronously after await).
-    expect(writeInput).toHaveBeenCalled();
-    const firstCall = writeInput.mock.calls[0] as [string, string, string];
-    expect(firstCall[0]).toBe('session-1');
-    expect(firstCall[1]).toBe('worker-1');
-    expect(firstCall[2]).toContain('[internal:process]');
-    expect(firstCall[2]).toContain('processId=proc-1');
-    expect(firstCall[2]).toContain('full stdout content');
+    expect(deliverNotification).toHaveBeenCalledTimes(1);
+    const [sessionId, workerId, params] = deliverNotification.mock.calls[0] as [
+      string,
+      string,
+      PtyNotificationParams,
+    ];
+    expect(sessionId).toBe('session-1');
+    expect(workerId).toBe('worker-1');
+    expect(params).toEqual({
+      kind: 'internal-process',
+      tag: 'internal:process',
+      fields: {
+        processId: 'proc-1',
+        command: 'node script.js',
+        message: 'full stdout content',
+      },
+      intent: 'triage',
+    });
   });
 
   it('does nothing for empty content', async () => {
-    const { deps, writeInput, sendMessage } = makeDeps();
+    const { deps, deliverNotification, sendMessage } = makeDeps();
     const process = makeProcess({ outputMode: 'pty' });
 
     await routeProcessContent(deps, { process, content: '', direction: 'stdout' });
 
-    expect(writeInput).not.toHaveBeenCalled();
+    expect(deliverNotification).not.toHaveBeenCalled();
+    expect(sendMessage).not.toHaveBeenCalled();
+  });
+
+  it('logs a warning and does not throw when deliverNotification reports a failure', async () => {
+    const { deps, sendMessage } = makeDeps({
+      deliverNotification: async () => ({ ok: false, error: 'worker gone' }),
+    });
+    const process = makeProcess({ outputMode: 'pty' });
+
+    await expect(
+      routeProcessContent(deps, {
+        process,
+        content: 'full stdout content',
+        direction: 'stdout',
+      }),
+    ).resolves.toBeUndefined();
+
     expect(sendMessage).not.toHaveBeenCalled();
   });
 });
 
 describe('routeProcessContent (message mode)', () => {
   it('calls sendMessage with self-routing target ids and the original content', async () => {
-    const { deps, writeInput, sendMessage } = makeDeps();
+    const { deps, deliverNotification, sendMessage } = makeDeps();
     const process = makeProcess({ outputMode: 'message' });
 
     await routeProcessContent(deps, {
@@ -198,16 +225,28 @@ describe('routeProcessContent (message mode)', () => {
     expect(sendArgs.fromSessionId).toBe('session-1');
     expect(sendArgs.content).toBe('hello from script');
 
-    // Brief PTY notification with file path and bytes.
-    expect(writeInput).toHaveBeenCalled();
-    const firstCall = writeInput.mock.calls[0] as [string, string, string];
-    expect(firstCall[2]).toContain('[internal:process]');
-    expect(firstCall[2]).toContain('stdout via message');
-    expect(firstCall[2]).toContain('bytes=');
+    // Brief notification with file path and bytes, delivered via the same
+    // structured-params seam as the pty branch.
+    expect(deliverNotification).toHaveBeenCalledTimes(1);
+    const [sessionId, workerId, params] = deliverNotification.mock.calls[0] as [
+      string,
+      string,
+      PtyNotificationParams,
+    ];
+    expect(sessionId).toBe('session-1');
+    expect(workerId).toBe('worker-1');
+    expect(params.kind).toBe('internal-process');
+    expect(params.tag).toBe('internal:process');
+    expect(params.intent).toBe('triage');
+    const fields = params.fields as { processId: string; command: string; message: string };
+    expect(fields.processId).toBe('proc-1');
+    expect(fields.command).toBe('node script.js');
+    expect(fields.message).toContain('stdout via message');
+    expect(fields.message).toContain('bytes=');
   });
 
-  it('uses [response via message] phrasing for direction=response', async () => {
-    const { deps, writeInput } = makeDeps();
+  it('uses [response via message] phrasing and inform intent for direction=response', async () => {
+    const { deps, deliverNotification } = makeDeps();
     const process = makeProcess({ outputMode: 'message' });
 
     await routeProcessContent(deps, {
@@ -216,12 +255,14 @@ describe('routeProcessContent (message mode)', () => {
       direction: 'response',
     });
 
-    const firstCall = writeInput.mock.calls[0] as [string, string, string];
-    expect(firstCall[2]).toContain('response via message');
+    const [, , params] = deliverNotification.mock.calls[0] as [string, string, PtyNotificationParams];
+    expect(params.intent).toBe('inform');
+    const fields = params.fields as { message: string };
+    expect(fields.message).toContain('response via message');
   });
 
   it('splits content larger than MESSAGE_CHUNK_TARGET_BYTES into multiple sendMessage calls', async () => {
-    const { deps, sendMessage, writeInput } = makeDeps();
+    const { deps, sendMessage, deliverNotification } = makeDeps();
     const process = makeProcess({ outputMode: 'message' });
 
     // Use a synthetic content >2 chunks. Target is ~60 KB; build ~150 KB.
@@ -241,12 +282,12 @@ describe('routeProcessContent (message mode)', () => {
       .join('');
     expect(reassembled).toBe(content);
 
-    // One brief PTY notification per chunk.
-    expect(writeInput.mock.calls.length).toBeGreaterThanOrEqual(sendMessage.mock.calls.length);
+    // One brief notification per chunk.
+    expect(deliverNotification.mock.calls.length).toBeGreaterThanOrEqual(sendMessage.mock.calls.length);
   });
 
   it('rejects when getResolver returns null so callers can detect the failure', async () => {
-    const { deps, sendMessage, writeInput } = makeDeps({
+    const { deps, sendMessage, deliverNotification } = makeDeps({
       getResolver: () => null,
     });
     const process = makeProcess({ outputMode: 'message' });
@@ -260,14 +301,14 @@ describe('routeProcessContent (message mode)', () => {
     ).rejects.toThrow(/Cannot resolve data path/);
 
     expect(sendMessage).not.toHaveBeenCalled();
-    expect(writeInput).not.toHaveBeenCalled();
+    expect(deliverNotification).not.toHaveBeenCalled();
   });
 
   it('rejects when sendMessage fails so callers can report write failure', async () => {
     const failingSend = mock(async (_params: unknown): Promise<{ messageId: string; path: string }> => {
       throw new Error('disk full');
     });
-    const { deps, writeInput } = makeDeps({
+    const { deps, deliverNotification } = makeDeps({
       sendMessage: (params) => failingSend(params),
     });
     const process = makeProcess({ outputMode: 'message' });
@@ -280,7 +321,25 @@ describe('routeProcessContent (message mode)', () => {
       }),
     ).rejects.toThrow(/disk full/);
 
-    // PTY notification was not emitted for the failed chunk.
-    expect(writeInput).not.toHaveBeenCalled();
+    // Notification was not emitted for the failed chunk.
+    expect(deliverNotification).not.toHaveBeenCalled();
+  });
+
+  it('logs a warning and does not throw when deliverNotification reports a failure after a successful chunk write', async () => {
+    const { deps, sendMessage } = makeDeps({
+      deliverNotification: async () => ({ ok: false, error: 'worker gone' }),
+    });
+    const process = makeProcess({ outputMode: 'message' });
+
+    await expect(
+      routeProcessContent(deps, {
+        process,
+        content: 'a single chunk',
+        direction: 'stdout',
+      }),
+    ).resolves.toBeUndefined();
+
+    // The chunk write itself still succeeded -- only the brief notification failed.
+    expect(sendMessage).toHaveBeenCalledTimes(1);
   });
 });

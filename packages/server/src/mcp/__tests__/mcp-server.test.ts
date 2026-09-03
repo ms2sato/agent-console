@@ -4927,8 +4927,30 @@ describe('MCP Server Tools', () => {
         const data = parseToolResult(response) as { error: string };
 
         expect(response.result?.isError).toBe(true);
-        expect(data.error).toContain('does not support PTY notifications');
-        expect(data.error).toContain('requires a PTY-backed worker (agent/terminal)');
+        expect(data.error).toContain('cannot receive notifications');
+        expect(data.error).toContain('requires an agent, terminal, or embedded-agent worker');
+      });
+
+      it('should start a process when workerId targets an embedded-agent worker (Issue #1574: notification-target parity)', async () => {
+        const session = await sessionManager.createSession(
+          { type: 'quick', locationPath: '/test/path', agentId: 'claude-code' },
+          { createdBy: 'test-user-id' },
+        );
+        const embeddedWorker = await sessionManager.createWorker(session.id, {
+          type: 'embedded-agent',
+          embeddedAgentId: TEST_EMBEDDED_AGENT_DEF.id,
+        });
+        expect(embeddedWorker).toBeDefined();
+
+        const response = await callTool(app, mcpSessionId, 'run_process', {
+          command: 'echo hello',
+          sessionId: session.id,
+          workerId: embeddedWorker!.id,
+        }, nextId++);
+
+        expect(response.result?.isError).toBeUndefined();
+        const data = parseToolResult(response) as { processId: string };
+        expect(data.processId).toBeDefined();
       });
     });
 

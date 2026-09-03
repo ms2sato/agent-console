@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach } from 'bun:test';
+import { describe, it, expect, afterEach, jest } from 'bun:test';
 import { JOB_TYPES, type AppServerMessage, type WorktreeDeletePayload } from '@agent-console/shared';
 import {
   createAppContext,
@@ -184,6 +184,62 @@ describe('AppContext', () => {
         (b) => b.type === 'worktree-deletion-failed' && b.taskId === jobId,
       );
       expect(failedBroadcasts.length).toBe(1);
+    });
+
+    it('routes the interactive-process exit notification through sessionManager.deliverWorkerNotification (Issue #1574 PR B)', async () => {
+      // createTestContext() wires InteractiveProcessManagerClass with no-op
+      // callbacks (see the "Create interactive process manager (no-op
+      // callbacks for tests..." comment in app-context.ts), so it does not
+      // exercise the production onExit wiring this test targets. Only
+      // createAppContext() wires the real callback that forwards exit
+      // notifications through deliverWorkerNotification, so this test must
+      // boot the full context via createAppContext() rather than the
+      // lighter test factory.
+      appContext = await createAppContext({ dbPath: ':memory:' });
+
+      const deliverSpy = jest.spyOn(appContext.sessionManager, 'deliverWorkerNotification');
+
+      // The exit callback forwards process.sessionId/workerId verbatim to
+      // deliverWorkerNotification, which internally looks up the session --
+      // a lookup miss is handled as an `{ok: false}` result and logged as a
+      // warning (see the onExit wiring in app-context.ts), not thrown. A
+      // fabricated pair is therefore sufficient to observe the wiring
+      // itself without needing a real session/worker or a real PTY-backed
+      // agent spawn.
+      const sessionId = 'fake-session-for-exit-wiring-test';
+      const workerId = 'fake-worker-for-exit-wiring-test';
+
+      const process = await appContext.interactiveProcessManager.runProcess({
+        sessionId,
+        workerId,
+        command: 'true',
+      });
+
+      // Poll for the process to reach a terminal state (async exit handling
+      // -- the manager awaits stream flush before invoking onExit).
+      let info = appContext.interactiveProcessManager.getProcess(process.id);
+      for (let i = 0; i < 100 && info?.status !== 'exited'; i++) {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        info = appContext.interactiveProcessManager.getProcess(process.id);
+      }
+      expect(info?.status).toBe('exited');
+
+      expect(deliverSpy).toHaveBeenCalledTimes(1);
+      const [calledSessionId, calledWorkerId, params] = deliverSpy.mock.calls[0] as [
+        string,
+        string,
+        { kind: string; tag: string; fields: { processId: string; command: string; message: string }; intent: string },
+      ];
+      expect(calledSessionId).toBe(sessionId);
+      expect(calledWorkerId).toBe(workerId);
+      expect(params.kind).toBe('internal-process');
+      expect(params.tag).toBe('internal:process');
+      expect(params.fields.processId).toBe(process.id);
+      expect(params.fields.command).toBe('true');
+      expect(params.fields.message).toContain('Process exited with code');
+      expect(params.intent).toBe('inform');
+
+      deliverSpy.mockRestore();
     });
   });
 });

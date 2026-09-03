@@ -10,7 +10,7 @@
 
 import type { InteractiveProcessInfo } from '@agent-console/shared';
 import type { SessionDataPathResolver } from '../lib/session-data-path-resolver.js';
-import { writePtyNotification } from '../lib/pty-notification.js';
+import type { PtyNotificationParams } from '../lib/pty-notification.js';
 import { createLogger } from '../lib/logger.js';
 
 const logger = createLogger('process-output-router');
@@ -32,8 +32,17 @@ export interface ProcessOutputRouterDeps {
    * `null` when the session has no resolvable scope (e.g., already deleted).
    */
   getResolver: (sessionId: string) => SessionDataPathResolver | null;
-  /** Write data to the calling worker's PTY (used for the notification). */
-  writeInput: (sessionId: string, workerId: string, data: string) => void;
+  /**
+   * Deliver a notification to the calling worker via the shared delivery
+   * seam ({@link SessionManager.deliverWorkerNotification}) -- a PTY write
+   * for agent/terminal workers, or a queued turn for embedded-agent
+   * workers.
+   */
+  deliverNotification: (
+    sessionId: string,
+    workerId: string,
+    params: PtyNotificationParams,
+  ) => Promise<{ ok: true } | { ok: false; error: string }>;
   /** Send a message file via the inter-session message service. */
   sendMessage: (params: {
     toSessionId: string;
@@ -135,16 +144,17 @@ export function splitContentIntoChunks(content: string, targetBytes: number): st
  * Route process content according to the process's outputMode.
  *
  * - `'pty'` — emit a single `[internal:process]` notification carrying the
- *   full content (existing behavior). Notification write errors are logged
- *   as warnings and swallowed because they are cosmetic (the calling code
- *   has nowhere to report a failed PTY notification to).
+ *   full content (existing behavior). Delivery failures reported by
+ *   `deliverNotification` (`{ok: false}`) are logged as warnings and
+ *   swallowed because they are cosmetic (the calling code has nowhere to
+ *   report a failed notification to).
  * - `'message'` — split content into <= `MESSAGE_CHUNK_TARGET_BYTES`
- *   chunks, write each chunk via `sendMessage`, and emit a brief PTY
+ *   chunks, write each chunk via `sendMessage`, and emit a brief
  *   notification carrying the file path and byte count for each chunk.
  *   **Routing failures (resolver miss or any chunk's `sendMessage` error)
  *   throw**, so callers awaiting the returned promise can detect that
  *   message-mode delivery did not happen and report a `false` success
- *   to their own caller. Brief PTY notification write errors after a
+ *   to their own caller. Brief notification delivery failures after a
  *   successful chunk write are still cosmetic — they are logged as warnings
  *   and do not throw.
  */
@@ -157,25 +167,20 @@ export async function routeProcessContent(
     return;
   }
 
-  const writeInputForWorker = (data: string) =>
-    deps.writeInput(process.sessionId, process.workerId, data);
-
   if (process.outputMode === 'pty') {
-    try {
-      writePtyNotification({
-        kind: 'internal-process',
-        tag: 'internal:process',
-        fields: {
-          processId: process.id,
-          command: process.command,
-          message: content,
-        },
-        intent: direction === 'stdout' ? 'triage' : 'inform',
-        writeInput: writeInputForWorker,
-      });
-    } catch (err) {
+    const result = await deps.deliverNotification(process.sessionId, process.workerId, {
+      kind: 'internal-process',
+      tag: 'internal:process',
+      fields: {
+        processId: process.id,
+        command: process.command,
+        message: content,
+      },
+      intent: direction === 'stdout' ? 'triage' : 'inform',
+    });
+    if (!result.ok) {
       logger.warn(
-        { processId: process.id, sessionId: process.sessionId, direction, err },
+        { processId: process.id, sessionId: process.sessionId, direction, error: result.error },
         'Failed to deliver process PTY notification',
       );
     }
@@ -192,7 +197,7 @@ export async function routeProcessContent(
 
   const chunks = splitContentIntoChunks(content, MESSAGE_CHUNK_TARGET_BYTES);
   for (const chunk of chunks) {
-    const result = await deps.sendMessage({
+    const sendResult = await deps.sendMessage({
       toSessionId: process.sessionId,
       toWorkerId: process.workerId,
       fromSessionId: process.sessionId,
@@ -203,24 +208,22 @@ export async function routeProcessContent(
     const bytes = Buffer.byteLength(chunk, 'utf-8');
     const summary =
       direction === 'stdout'
-        ? `[stdout via message] path=${result.path} bytes=${bytes}`
-        : `[response via message] path=${result.path} bytes=${bytes}`;
+        ? `[stdout via message] path=${sendResult.path} bytes=${bytes}`
+        : `[response via message] path=${sendResult.path} bytes=${bytes}`;
 
-    try {
-      writePtyNotification({
-        kind: 'internal-process',
-        tag: 'internal:process',
-        fields: {
-          processId: process.id,
-          command: process.command,
-          message: summary,
-        },
-        intent: direction === 'stdout' ? 'triage' : 'inform',
-        writeInput: writeInputForWorker,
-      });
-    } catch (err) {
+    const notifyResult = await deps.deliverNotification(process.sessionId, process.workerId, {
+      kind: 'internal-process',
+      tag: 'internal:process',
+      fields: {
+        processId: process.id,
+        command: process.command,
+        message: summary,
+      },
+      intent: direction === 'stdout' ? 'triage' : 'inform',
+    });
+    if (!notifyResult.ok) {
       logger.warn(
-        { processId: process.id, sessionId: process.sessionId, direction, err },
+        { processId: process.id, sessionId: process.sessionId, direction, error: notifyResult.error },
         'Failed to deliver brief process PTY notification (message file was written)',
       );
     }

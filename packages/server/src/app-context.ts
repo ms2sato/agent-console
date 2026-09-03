@@ -71,7 +71,7 @@ import { TimerManager as TimerManagerClass } from './services/timer-manager.js';
 import { ConditionalWakeupManager as ConditionalWakeupManagerClass } from './services/conditional-wakeup-manager.js';
 import { InteractiveProcessManager as InteractiveProcessManagerClass } from './services/interactive-process-manager.js';
 import { routeProcessContent } from './services/process-output-router.js';
-import { writePtyNotification } from './lib/pty-notification.js';
+import type { PtyNotificationParams } from './lib/pty-notification.js';
 import { WorktreeService as WorktreeServiceClass } from './services/worktree-service.js';
 import { RepositorySlackIntegrationService as RepositorySlackIntegrationServiceClass } from './services/notifications/repository-slack-integration-service.js';
 import { AnnotationService as AnnotationServiceClass } from './services/annotation-service.js';
@@ -487,9 +487,8 @@ export async function createAppContext(
   const processRouterDeps = {
     getResolver: (sessionId: string) =>
       sessionManager.getPathResolverForSessionId(sessionId),
-    writeInput: (sessionId: string, workerId: string, data: string) => {
-      sessionManager.writeWorkerInput(sessionId, workerId, data);
-    },
+    deliverNotification: (sessionId: string, workerId: string, params: PtyNotificationParams) =>
+      sessionManager.deliverWorkerNotification(sessionId, workerId, params),
     sendMessage: interSessionMessageService.sendMessage.bind(interSessionMessageService),
   };
 
@@ -513,11 +512,13 @@ export async function createAppContext(
     },
     (process) => {
       // Exit notifications stay on the PTY in both modes — they are short
-      // and message routing is unnecessary.
-      try {
-        const writeInput = (data: string) =>
-          sessionManager.writeWorkerInput(process.sessionId, process.workerId, data);
-        writePtyNotification({
+      // and message routing is unnecessary. InteractiveProcessManagerClass's
+      // onExit callback is synchronous (fire-and-forget); deliverWorkerNotification
+      // is async, so this stays a `void`-forwarded promise, mirroring the
+      // try/catch-and-warn semantics the direct writePtyNotification call
+      // used to have.
+      void sessionManager
+        .deliverWorkerNotification(process.sessionId, process.workerId, {
           kind: 'internal-process',
           tag: 'internal:process',
           fields: {
@@ -526,14 +527,21 @@ export async function createAppContext(
             message: `Process exited with code ${process.exitCode ?? 'unknown'}`,
           },
           intent: 'inform',
-          writeInput,
+        })
+        .then((result) => {
+          if (!result.ok) {
+            logger.warn(
+              { processId: process.id, sessionId: process.sessionId, error: result.error },
+              'Failed to deliver process exit notification',
+            );
+          }
+        })
+        .catch((err) => {
+          logger.warn(
+            { processId: process.id, sessionId: process.sessionId, err },
+            'Failed to deliver process exit notification',
+          );
         });
-      } catch (err) {
-        logger.warn(
-          { processId: process.id, sessionId: process.sessionId, err },
-          'Failed to deliver process exit notification',
-        );
-      }
     },
     // PTY message injector: echo process response to the worker's PTY (same
     // path as MessagePanel) when outputMode === 'pty'. The manager itself
