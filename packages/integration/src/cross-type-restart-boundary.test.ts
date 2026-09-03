@@ -142,6 +142,13 @@ describe('Client-Server Boundary: cross-type worker restart (agent -> embedded-a
     const ptyWorker = session.workers.find((w) => w.type === 'agent');
     if (!ptyWorker) throw new Error('expected an initial PTY agent worker');
 
+    // createSession's own initial worker creation now also broadcasts
+    // session-updated (Issue #1586, WorkerLifecycleManager.createWorker fires
+    // onSessionUpdated for every newly created worker). This test's assertion
+    // is about the RESTART's broadcast frames specifically, so clear the
+    // setup-time frames before triggering the restart under test.
+    capturedBroadcasts.length = 0;
+
     const res = await app.request(`/api/sessions/${created.id}/workers/${ptyWorker.id}/restart`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },

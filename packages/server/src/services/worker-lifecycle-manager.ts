@@ -450,6 +450,10 @@ export class WorkerLifecycleManager {
 
     await this.deps.persistSession(session);
 
+    // Broadcast session update so all clients learn about the new worker
+    // (mirrors deleteWorker's broadcast after its own persistSession call).
+    this.deps.getSessionLifecycleCallbacks()?.onSessionUpdated?.(this.deps.toPublicSession(session));
+
     logger.info({ workerId, workerType: request.type, sessionId }, 'Worker created');
 
     return this.deps.workerManager.toPublicWorker(worker);
