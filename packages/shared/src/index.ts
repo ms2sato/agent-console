@@ -2,6 +2,7 @@ export * from './types/auth.js';
 export * from './types/agent.js';
 export * from './types/worker.js';
 export * from './types/embedded-agent.js';
+export * from './types/embedded-agent-slash-commands.js';
 export * from './types/agent-surface.js';
 export * from './types/agent-operations.js';
 export * from './types/agent-parameter-capabilities.js';

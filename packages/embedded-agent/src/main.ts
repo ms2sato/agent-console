@@ -39,6 +39,7 @@ const KNOWN_COMMAND_TYPES = new Set([
   'user-message',
   'cancel',
   'set-auto-compaction',
+  'compact',
   'shutdown',
 ]);
 // 500ms buffer over Bash's process-group KILL_GRACE_MS so the SIGTERM ->
@@ -209,6 +210,33 @@ export async function runLoop(io: LoopIO, factories: LoopFactories): Promise<num
       case 'cancel':
         loop.cancel();
         break;
+      /**
+       * Slash commands, `console`-handled arm (#1572): a manual `/compact`
+       * intercepted server-side and delivered as its own command, never as
+       * a `user-message`. Gated on `turnActive` exactly like `user-message`
+       * -- a compaction outside any turn is still "the loop is busy" from
+       * this dispatcher's point of view.
+       */
+      case 'compact': {
+        if (turnActive) {
+          io.logError('Ignoring compact command received while a turn is active');
+          break;
+        }
+        if (!loop.compactNow) {
+          io.logError('Ignoring compact command: engine does not support manual compact');
+          break;
+        }
+        turnActive = true;
+        currentTurn = loop
+          .compactNow()
+          .catch((err) => {
+            io.logError(`Manual compact failed: ${err instanceof Error ? err.message : String(err)}`);
+          })
+          .finally(() => {
+            turnActive = false;
+          });
+        break;
+      }
       case 'shutdown':
         return await gracefulExit(loop, currentTurn);
     }

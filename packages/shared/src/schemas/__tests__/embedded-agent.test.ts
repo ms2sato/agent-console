@@ -637,6 +637,13 @@ describe('EmbeddedAgentCommandSchema', () => {
         .success
     ).toBe(true);
     expect(v.safeParse(EmbeddedAgentCommandSchema, { v: 1, type: 'shutdown' }).success).toBe(true);
+    // Slash commands, console-handled arm (#1572).
+    expect(v.safeParse(EmbeddedAgentCommandSchema, { v: 1, type: 'compact' }).success).toBe(true);
+  });
+
+  it('rejects a compact command carrying an unknown field (strictObject)', () => {
+    const result = v.safeParse(EmbeddedAgentCommandSchema, { v: 1, type: 'compact', source: 'manual' });
+    expect(result.success).toBe(false);
   });
 
   it('parses a user-message command with attachments (Issue #1571)', () => {

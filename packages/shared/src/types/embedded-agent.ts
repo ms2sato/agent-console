@@ -17,6 +17,17 @@ import type { PtyNotificationKind } from './system-events.js';
 import type { ExitReason } from './worker.js';
 
 /**
+ * The two engines an embedded-agent definition can run on
+ * (docs/design/embedded-agent-sdk-engine.md §3.1). Previously repeated as
+ * the ad-hoc literal union `'openai-api' | 'claude-sdk'` at each consumption
+ * site (`EMBEDDED_AGENT_ENGINE_PARAMETER_CAPABILITIES`'s `Record` key,
+ * `fatalLeavesHarnessAlive`'s parameter, etc.) -- named here as the single
+ * writer so a future third engine is added in one place. Existing repeated
+ * literals are left as-is (this alias is additive, not a forced migration).
+ */
+export type EmbeddedAgentEngine = 'openai-api' | 'claude-sdk';
+
+/**
  * Builtin subprocess-local tool names, as a hand-written union type.
  *
  * This type intentionally has NO import from schemas/embedded-agent.ts:
@@ -336,6 +347,17 @@ export type EmbeddedAgentCommand =
    * re-sending the current value is a no-op.
    */
   | { v: 1; type: 'set-auto-compaction'; enabled: boolean }
+  /**
+   * Slash commands, `console`-handled arm (#1572): a manual `/compact`
+   * intercepted by the server (see `EMBEDDED_AGENT_SLASH_COMMANDS` in
+   * `embedded-agent-slash-commands.ts`) rather than forwarded to the engine
+   * as an ordinary user turn. Carries no other payload -- a pure trigger.
+   * Only `openai-api`'s `AgentLoop` implements the corresponding
+   * `Engine.compactNow()`; `claude-sdk`'s own `/compact` is `engine`-handled
+   * (forwarded as a `user-message` the SDK interprets itself), so the
+   * server never sends this command to a `claude-sdk` worker.
+   */
+  | { v: 1; type: 'compact' }
   | { v: 1; type: 'shutdown' };
 
 /**

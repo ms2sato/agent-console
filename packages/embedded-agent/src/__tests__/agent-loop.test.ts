@@ -250,6 +250,27 @@ describe('AgentLoop — boundary values', () => {
 });
 
 /**
+ * Slash commands, `console`-handled arm (#1572): `Engine.compactNow()`'s
+ * implementation for this engine. A thin one-line delegation to the
+ * already-exhaustively-covered `compact('manual')`
+ * (agent-loop-compaction.test.ts) -- this pin exists only to confirm the
+ * delegation itself, not to re-derive compact()'s own behavior.
+ */
+describe('AgentLoop — compactNow (Slash commands, console-handled arm, #1572)', () => {
+  it('delegates to compact("manual"): emits a context-compacted event with source "manual"', async () => {
+    const h = makeLoop([textResponse('DISTILLATION_SUMMARY')]);
+    await h.loop.compactNow();
+
+    expect(h.events.find((e) => e.type === 'context-compacted')).toMatchObject({
+      v: 1,
+      type: 'context-compacted',
+      source: 'manual',
+      summary: 'DISTILLATION_SUMMARY',
+    });
+  });
+});
+
+/**
  * Issue #1554 (agent-surface.md Ruling 3): `AgentLoopDeps.reasoningEffort`
  * threading into every `adapter.run()` call inside `runProviderAttempt`.
  * This is the terminal layer -- main.ts's own threading of

@@ -3574,6 +3574,86 @@ describe('EmbeddedAgentWorkerView', () => {
       expect(sent.some((m) => m.type === 'embedded-user-message')).toBe(false);
     });
   });
+
+  describe('engine-aware slash commands (#1572)', () => {
+    it('offers exactly the claude-sdk table entries in the completion dropdown for a claude-sdk worker', async () => {
+      globalThis.fetch = Object.assign(
+        mock(makeEmbeddedViewFetch([embeddedAgentFixture({ engine: 'claude-sdk' })])),
+        { preconnect: () => {} },
+      );
+      renderView({ sessionId: 's-slash-sdk', workerId: 'w-slash-sdk', embeddedAgentId: 'ea-1' });
+      const ws = MockWebSocket.getLastInstance();
+      act(() => {
+        ws?.simulateOpen();
+      });
+      await act(async () => {
+        await flush();
+      });
+
+      const textarea = screen.getByPlaceholderText('Send message to worker... (Ctrl+Enter to send)');
+      await act(async () => {
+        fireEvent.change(textarea, { target: { value: '/' } });
+      });
+
+      const options = screen.getAllByRole('option');
+      expect(options.map((o) => o.textContent)).toEqual([
+        expect.stringContaining('/compact'),
+        expect.stringContaining('/cost'),
+        expect.stringContaining('/context'),
+      ]);
+    });
+
+    it('offers exactly the openai-api table entry (only /compact) in the completion dropdown for an openai-api worker', async () => {
+      globalThis.fetch = Object.assign(
+        mock(makeEmbeddedViewFetch([embeddedAgentFixture({ engine: 'openai-api' })])),
+        { preconnect: () => {} },
+      );
+      renderView({ sessionId: 's-slash-openai', workerId: 'w-slash-openai', embeddedAgentId: 'ea-1' });
+      const ws = MockWebSocket.getLastInstance();
+      act(() => {
+        ws?.simulateOpen();
+      });
+      await act(async () => {
+        await flush();
+      });
+
+      const textarea = screen.getByPlaceholderText('Send message to worker... (Ctrl+Enter to send)');
+      await act(async () => {
+        fireEvent.change(textarea, { target: { value: '/' } });
+      });
+
+      const options = screen.getAllByRole('option');
+      expect(options).toHaveLength(1);
+      expect(options[0].textContent).toContain('/compact');
+    });
+
+    it('blocks sending an unknown slash command and shows the "send as text" notice instead of forwarding it as prose', async () => {
+      globalThis.fetch = Object.assign(
+        mock(makeEmbeddedViewFetch([embeddedAgentFixture({ engine: 'claude-sdk' })])),
+        { preconnect: () => {} },
+      );
+      renderView({ sessionId: 's-slash-unknown', workerId: 'w-slash-unknown', embeddedAgentId: 'ea-1' });
+      const ws = MockWebSocket.getLastInstance();
+      act(() => {
+        ws?.simulateOpen();
+      });
+      await act(async () => {
+        await flush();
+      });
+
+      const textarea = screen.getByPlaceholderText('Send message to worker... (Ctrl+Enter to send)') as HTMLTextAreaElement;
+      await act(async () => {
+        fireEvent.change(textarea, { target: { value: '/model foo' } });
+      });
+      await act(async () => {
+        fireEvent.keyDown(textarea, { key: 'Enter', ctrlKey: true });
+      });
+
+      const sent = (ws!.send.mock.calls as string[][] | undefined)?.map((c) => JSON.parse(c[0])) ?? [];
+      expect(sent.some((m) => m.type === 'embedded-user-message')).toBe(false);
+      expect(screen.getByRole('alert').textContent).toContain('/model is not a command for this agent; send as text?');
+    });
+  });
 });
 
 describe('formatTokenCount', () => {

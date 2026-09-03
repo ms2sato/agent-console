@@ -1294,6 +1294,19 @@ export class AgentLoop {
     return result.canceled ? 'canceled' : 'failed';
   }
 
+  /**
+   * Slash commands, `console`-handled arm (#1572): `Engine.compactNow()`'s
+   * implementation for this engine. The server intercepts a manual
+   * `/compact` before it reaches this engine as prose (see
+   * `EMBEDDED_AGENT_SLASH_COMMANDS` and `embedded-agent-worker-service.ts`'s
+   * `sendUserMessage`) and calls this instead. `compact('manual')` already
+   * self-brackets with `state: active` / `emitIdle()` -- no additional
+   * state emission is needed here.
+   */
+  async compactNow(): Promise<void> {
+    await this.compact('manual');
+  }
+
   async compact(source: 'auto' | 'manual', partial?: { budgetTokens: number }): Promise<void> {
     const abort = new AbortController();
     this.currentAbort = abort;

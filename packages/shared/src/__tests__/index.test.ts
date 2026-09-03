@@ -265,4 +265,22 @@ describe('shared index exports', () => {
       true,
     );
   });
+
+  it('should re-export EMBEDDED_AGENT_SLASH_COMMANDS (#1572)', async () => {
+    const mod = await import('../index.js');
+
+    // Runtime constant export from types/embedded-agent-slash-commands.js
+    // (barrel export added in the same PR) -- verify it is actually
+    // reachable through the public package entry point, not just present in
+    // the source file.
+    expect(mod.EMBEDDED_AGENT_SLASH_COMMANDS).toBeDefined();
+    expect(mod.EMBEDDED_AGENT_SLASH_COMMANDS['openai-api']).toEqual([
+      { name: '/compact', description: 'Compact this conversation now', handledBy: 'console' },
+    ]);
+    expect(mod.EMBEDDED_AGENT_SLASH_COMMANDS['claude-sdk'].map((c: { name: string }) => c.name)).toEqual([
+      '/compact',
+      '/cost',
+      '/context',
+    ]);
+  });
 });

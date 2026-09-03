@@ -5,7 +5,7 @@ import rehypeSanitize from 'rehype-sanitize';
 import type { Element as HastElement, Text as HastText } from 'hast';
 import type { JSX } from 'react';
 import type { ExtraProps } from 'react-markdown';
-import { DEFAULT_COMPACTION_THRESHOLD } from '@agent-console/shared';
+import { DEFAULT_COMPACTION_THRESHOLD, EMBEDDED_AGENT_SLASH_COMMANDS } from '@agent-console/shared';
 import type {
   PtyNotificationKind,
   EmbeddedAgentServerNotification,
@@ -271,6 +271,13 @@ export function EmbeddedAgentWorkerView({
   // claim while the engine is still unknown.
   const isSdkEngine = embeddedAgentDefinition?.engine === 'claude-sdk';
   const isOpenaiApiEngine = embeddedAgentDefinition?.engine === 'openai-api';
+  // Engine-aware slash commands (#1572): the composer must never offer (or
+  // silently forward) a command the engine doesn't actually honour. Empty
+  // while the engine hasn't resolved yet -- same "don't render a possibly-
+  // wrong state before the engine is known" caution as the notices above.
+  const slashCommands = embeddedAgentDefinition
+    ? EMBEDDED_AGENT_SLASH_COMMANDS[embeddedAgentDefinition.engine]
+    : [];
   // `restoredMessageCount` is not reset to null when `restoring` flips
   // false (see its doc comment in embedded-agent-store.ts), so this is a
   // reliable "this activation/incarnation restored a non-empty prior
@@ -536,7 +543,8 @@ export function EmbeddedAgentWorkerView({
           }
         }}
         onEscape={cancel}
-        slashCompletionEnabled={false}
+        slashCompletionEnabled={true}
+        slashCommands={slashCommands}
         attachmentsEnabled={true}
         cancelState={{ active: isTurnActive, onCancel: cancel }}
       />

@@ -1,4 +1,5 @@
-import { describe, it, expect, mock, afterEach, beforeEach } from 'bun:test';
+import { describe, it, expect, mock, afterEach, beforeEach, spyOn } from 'bun:test';
+import * as shared from '@agent-console/shared';
 import { installMockWebSocket } from '../../../test/mock-websocket';
 
 const TEST_SKILLS = [
@@ -911,6 +912,218 @@ describe('MessagePanel', () => {
       });
 
       expect(view.getByRole('listbox')).toBeTruthy();
+    });
+  });
+
+  describe('slashCommands prop (#1572, engine-aware slash-command gate)', () => {
+    const EMBEDDED_TEST_COMMANDS = [
+      { name: '/compact', description: 'Compact this conversation now' },
+      { name: '/cost', description: 'Show current usage' },
+    ];
+
+    it('blocks the send and shows the unknown-command notice for a command not in the list', async () => {
+      const { container } = await act(async () =>
+        renderWithRouter(
+          <MessagePanel {...defaultProps} slashCompletionEnabled={true} slashCommands={EMBEDDED_TEST_COMMANDS} />,
+        ),
+      );
+      const view = within(container);
+
+      const textarea = view.getByPlaceholderText('Send message to worker... (Ctrl+Enter to send)');
+      await act(async () => {
+        fireEvent.change(textarea, { target: { value: '/foo' } });
+      });
+      const sendButton = view.getByText('Send') as HTMLButtonElement;
+      await act(async () => {
+        fireEvent.click(sendButton);
+      });
+
+      expect(onSendMock).not.toHaveBeenCalled();
+      expect(view.getByRole('alert').textContent).toContain('/foo is not a command for this agent; send as text?');
+    });
+
+    it('"Send as text" sends the original blocked content exactly once', async () => {
+      const { container } = await act(async () =>
+        renderWithRouter(
+          <MessagePanel {...defaultProps} slashCompletionEnabled={true} slashCommands={EMBEDDED_TEST_COMMANDS} />,
+        ),
+      );
+      const view = within(container);
+
+      const textarea = view.getByPlaceholderText('Send message to worker... (Ctrl+Enter to send)');
+      await act(async () => {
+        fireEvent.change(textarea, { target: { value: '/foo' } });
+      });
+      await act(async () => {
+        fireEvent.click(view.getByText('Send'));
+      });
+      expect(onSendMock).not.toHaveBeenCalled();
+
+      await act(async () => {
+        fireEvent.click(view.getByText('Send as text'));
+      });
+
+      expect(onSendMock).toHaveBeenCalledTimes(1);
+      expect(onSendMock.mock.calls[0]).toEqual(['/foo', undefined]);
+      expect(view.queryByRole('alert')).toBeNull();
+    });
+
+    it('sends immediately, with no notice, when the slash command matches a table entry', async () => {
+      const { container } = await act(async () =>
+        renderWithRouter(
+          <MessagePanel {...defaultProps} slashCompletionEnabled={true} slashCommands={EMBEDDED_TEST_COMMANDS} />,
+        ),
+      );
+      const view = within(container);
+
+      const textarea = view.getByPlaceholderText('Send message to worker... (Ctrl+Enter to send)');
+      await act(async () => {
+        fireEvent.change(textarea, { target: { value: '/compact' } });
+      });
+      await act(async () => {
+        fireEvent.click(view.getByText('Send'));
+      });
+
+      expect(onSendMock).toHaveBeenCalledTimes(1);
+      expect(onSendMock.mock.calls[0]).toEqual(['/compact', undefined]);
+      expect(view.queryByRole('alert')).toBeNull();
+    });
+
+    it('sends immediately, with no notice, for a known command name plus trailing text (first-token match contract with the server, Architect ruling #1584)', async () => {
+      const { container } = await act(async () =>
+        renderWithRouter(
+          <MessagePanel {...defaultProps} slashCompletionEnabled={true} slashCommands={EMBEDDED_TEST_COMMANDS} />,
+        ),
+      );
+      const view = within(container);
+
+      const textarea = view.getByPlaceholderText('Send message to worker... (Ctrl+Enter to send)');
+      await act(async () => {
+        fireEvent.change(textarea, { target: { value: '/compact extra' } });
+      });
+      await act(async () => {
+        fireEvent.click(view.getByText('Send'));
+      });
+
+      // The table declares no argument grammar, so the server's
+      // resolveConsoleSlashCommandOverride matches by first token: "/compact
+      // extra" IS intercepted server-side even though it carries trailing
+      // arguments. The client must gate it the same way (send immediately,
+      // trailing text and all) rather than blocking it, or the two sides of
+      // the contract diverge.
+      expect(onSendMock).toHaveBeenCalledTimes(1);
+      expect(onSendMock.mock.calls[0]).toEqual(['/compact extra', undefined]);
+      expect(view.queryByRole('alert')).toBeNull();
+    });
+
+    it('does NOT match a different word that merely shares a prefix with a known command (first-token equality, not startsWith)', async () => {
+      const { container } = await act(async () =>
+        renderWithRouter(
+          <MessagePanel {...defaultProps} slashCompletionEnabled={true} slashCommands={EMBEDDED_TEST_COMMANDS} />,
+        ),
+      );
+      const view = within(container);
+
+      const textarea = view.getByPlaceholderText('Send message to worker... (Ctrl+Enter to send)');
+      await act(async () => {
+        fireEvent.change(textarea, { target: { value: '/compactx' } });
+      });
+      await act(async () => {
+        fireEvent.click(view.getByText('Send'));
+      });
+
+      expect(onSendMock).not.toHaveBeenCalled();
+      expect(view.getByRole('alert').textContent).toContain('/compactx is not a command for this agent; send as text?');
+    });
+
+    it('delegates to the shared matchSlashCommandInList rather than reimplementing the match rule', async () => {
+      // Delegation pin (#1572): spies on the shared package's live binding
+      // of matchSlashCommandInList and forces it to return null for every
+      // call. If handleSend reimplemented the match locally (instead of
+      // calling through the shared function), the spy would have no effect
+      // and the known command below would still send immediately.
+      const spy = spyOn(shared, 'matchSlashCommandInList').mockReturnValue(null);
+      try {
+        const { container } = await act(async () =>
+          renderWithRouter(
+            <MessagePanel {...defaultProps} slashCompletionEnabled={true} slashCommands={EMBEDDED_TEST_COMMANDS} />,
+          ),
+        );
+        const view = within(container);
+
+        const textarea = view.getByPlaceholderText('Send message to worker... (Ctrl+Enter to send)');
+        await act(async () => {
+          fireEvent.change(textarea, { target: { value: '/compact' } });
+        });
+        await act(async () => {
+          fireEvent.click(view.getByText('Send'));
+        });
+
+        expect(onSendMock).not.toHaveBeenCalled();
+        expect(view.getByRole('alert')).toBeTruthy();
+      } finally {
+        spy.mockRestore();
+      }
+    });
+
+    it('sends immediately, unaffected by the gate, for plain non-slash content regardless of the slashCommands prop', async () => {
+      const { container } = await act(async () =>
+        renderWithRouter(
+          <MessagePanel {...defaultProps} slashCompletionEnabled={true} slashCommands={EMBEDDED_TEST_COMMANDS} />,
+        ),
+      );
+      const view = within(container);
+
+      const textarea = view.getByPlaceholderText('Send message to worker... (Ctrl+Enter to send)');
+      await act(async () => {
+        fireEvent.change(textarea, { target: { value: 'hello there' } });
+      });
+      await act(async () => {
+        fireEvent.click(view.getByText('Send'));
+      });
+
+      expect(onSendMock).toHaveBeenCalledTimes(1);
+      expect(onSendMock.mock.calls[0]).toEqual(['hello there', undefined]);
+      expect(view.queryByRole('alert')).toBeNull();
+    });
+
+    it('never gates or shows the notice when the slashCommands prop is omitted (PTY-shaped usage, regression guard)', async () => {
+      const { container } = await act(async () => renderWithRouter(<MessagePanel {...defaultProps} />));
+      const view = within(container);
+
+      const textarea = view.getByPlaceholderText('Send message to worker... (Ctrl+Enter to send)');
+      await act(async () => {
+        fireEvent.change(textarea, { target: { value: '/foo' } });
+      });
+      await act(async () => {
+        fireEvent.click(view.getByText('Send'));
+      });
+
+      expect(onSendMock).toHaveBeenCalledTimes(1);
+      expect(onSendMock.mock.calls[0]).toEqual(['/foo', undefined]);
+      expect(view.queryByRole('alert')).toBeNull();
+    });
+
+    it('offers exactly the entries from the slashCommands prop in the completion dropdown, not the skills query', async () => {
+      const { container } = await act(async () =>
+        renderWithRouter(
+          <MessagePanel {...defaultProps} slashCompletionEnabled={true} slashCommands={EMBEDDED_TEST_COMMANDS} />,
+        ),
+      );
+      const view = within(container);
+
+      const textarea = view.getByPlaceholderText('Send message to worker... (Ctrl+Enter to send)');
+      await act(async () => {
+        fireEvent.change(textarea, { target: { value: '/co' } });
+      });
+
+      const options = view.getAllByRole('option');
+      expect(options.length).toBe(2);
+      const names = options.map((o) => o.textContent);
+      expect(names.some((t) => t?.includes('/compact'))).toBe(true);
+      expect(names.some((t) => t?.includes('/cost'))).toBe(true);
+      // The skills query must never fire when the caller supplies its own list.
+      expect(fetchCalls.some((c) => c.url.endsWith('/api/skills'))).toBe(false);
     });
   });
 

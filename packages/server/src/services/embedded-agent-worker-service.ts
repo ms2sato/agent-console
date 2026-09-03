@@ -31,6 +31,7 @@ import {
   NdjsonLineSplitter,
   EmbeddedAgentEventSchema,
   EFFORT_LEVELS,
+  matchSlashCommand,
   type EmbeddedAgentDefinition,
   type EmbeddedAgentCommand,
   type EmbeddedAgentServerEvent,
@@ -431,6 +432,50 @@ export function fatalLeavesHarnessAlive(engine: EmbeddedAgentDefinition['engine'
  */
 export function isEvictableEngine(engine: EmbeddedAgentDefinition['engine']): boolean {
   return engine === 'claude-sdk' || engine === 'openai-api';
+}
+
+/**
+ * Slash commands, `console`-handled arm (#1572): SINGLE WRITER of the
+ * mapping from a `console`-handled slash-command name (see
+ * `EMBEDDED_AGENT_SLASH_COMMANDS` in `@agent-console/shared`) to the factory
+ * that builds the wire command sent to the subprocess in its place.
+ *
+ * Every `console`-handled entry across the WHOLE table must have a handler
+ * here, for every engine -- mechanically pinned by
+ * `__tests__/embedded-agent-worker-service.test.ts`: this map's keys must
+ * exactly equal the flattened set of `console`-handled command names, so
+ * adding a table entry with no handler (or a handler with no table entry)
+ * fails that test.
+ *
+ * @internal Exported for testing (the mechanical containment pin above).
+ */
+export const CONSOLE_SLASH_COMMAND_HANDLERS: Record<string, () => EmbeddedAgentCommand> = {
+  '/compact': () => ({ v: 1, type: 'compact' }),
+};
+
+/**
+ * Slash commands (#1572): resolves a `console`-handled command override for
+ * the given engine/text, or `null` when `text` does not match one --
+ * TABLE-DRIVEN against `EMBEDDED_AGENT_SLASH_COMMANDS`, deliberately never
+ * hardcoded to a literal command name, so the mechanical containment test
+ * on {@link CONSOLE_SLASH_COMMAND_HANDLERS} stays meaningful. Exported for
+ * that same test; not otherwise part of this service's public surface.
+ *
+ * Matching itself delegates to the shared `matchSlashCommand` (first
+ * whitespace-delimited token of the trimmed text, per that table's "no
+ * argument grammar" contract -- Architect ruling, #1584) rather than
+ * re-implementing it here, so this stays in lockstep with the client's own
+ * gate in `MessagePanel.tsx` -- see `embedded-agent-slash-commands.ts`'s
+ * SINGLE WRITER doc comment.
+ */
+export function resolveConsoleSlashCommandOverride(
+  engine: EmbeddedAgentDefinition['engine'],
+  text: string,
+): EmbeddedAgentCommand | null {
+  const matched = matchSlashCommand(engine, text);
+  if (!matched || matched.handledBy !== 'console') return null;
+  const handler = CONSOLE_SLASH_COMMAND_HANDLERS[matched.name];
+  return handler ? handler() : null;
 }
 
 /** Immutable references shared by the readers, the exit observer, and the command writers. */
@@ -1232,7 +1277,38 @@ export class EmbeddedAgentWorkerService {
     clientMessageId?: string,
     attachments?: EmbeddedAgentAttachment[],
   ): Promise<SendUserMessageResult> {
-    return this.deliverUserTurn(sessionId, workerId, text, { clientMessageId, attachments });
+    // Slash commands (#1572): only user-typed composer input reaches this
+    // check -- sendSystemNotification (below) deliberately never calls it,
+    // since an internal system notification is never a slash command the
+    // console should intercept.
+    const commandOverride = this.resolveConsoleSlashCommand(sessionId, workerId, text);
+    return this.deliverUserTurn(sessionId, workerId, text, {
+      clientMessageId,
+      attachments,
+      ...(commandOverride !== null ? { commandOverride } : {}),
+    });
+  }
+
+  /**
+   * Slash commands (#1572): resolves the worker's current engine (same
+   * definition-lookup path `activate()` uses -- `worker.embeddedAgentId` ->
+   * `getEmbeddedAgent`) and delegates to the table-driven pure resolver.
+   * Returns `null` whenever the worker/definition cannot be resolved here;
+   * `deliverUserTurn`'s own admission check is the authoritative place that
+   * rejects an undeliverable message, so this method fails open into "not a
+   * console command" rather than duplicating that check.
+   */
+  private resolveConsoleSlashCommand(
+    sessionId: string,
+    workerId: string,
+    text: string,
+  ): EmbeddedAgentCommand | null {
+    const session = this.deps.getSession(sessionId);
+    const worker = session?.workers.get(workerId);
+    if (!worker || worker.type !== 'embedded-agent') return null;
+    const definition = this.deps.getEmbeddedAgent(worker.embeddedAgentId);
+    if (!definition) return null;
+    return resolveConsoleSlashCommandOverride(definition.engine, text);
   }
 
   /**
@@ -1373,6 +1449,15 @@ export class EmbeddedAgentWorkerService {
       notification?: EmbeddedAgentServerNotification;
       attachments?: EmbeddedAgentAttachment[];
       /**
+       * Slash commands (#1572): when set, this is the WIRE command sent to
+       * stdin in place of the ordinary `{ type: 'user-message', ... }`
+       * shape -- the PERSISTED `event` below is unaffected and always shows
+       * `text` exactly as typed, matching how an `engine`-handled slash
+       * command (e.g. claude-sdk's own `/compact`) already looks in the
+       * transcript. See `resolveConsoleSlashCommand`.
+       */
+      commandOverride?: EmbeddedAgentCommand;
+      /**
        * R3: set ONLY by `sendSystemNotification`. When admission finds
        * `runtime.turnActive` true, park these on the queue instead of
        * returning TURN_IN_PROGRESS. Human `sendUserMessage` never sets
@@ -1423,14 +1508,29 @@ export class EmbeddedAgentWorkerService {
     // persisted/broadcast event carries the client's correlation id or the
     // notification marker. Do NOT reuse one object for both -- see
     // docs/design/embedded-agent-worker.md.
-    const hasAttachments = opts.attachments !== undefined && opts.attachments.length > 0;
-    const command: EmbeddedAgentCommand = {
-      v: 1,
-      type: 'user-message',
-      id,
-      text,
-      ...(hasAttachments ? { attachments: opts.attachments } : {}),
-    };
+    // Slash commands (#1572) x attachments (#1587): when `commandOverride` is
+    // set, the WIRE command replaces the whole `user-message` shape with a
+    // payload-free one (e.g. `{type:'compact'}`) -- no attachments were
+    // delivered to the engine. The PERSISTED `event` must mirror that: #1587
+    // documents `attachments` on a persisted user-message row as "mirrors the
+    // originating command's attachments", and restore re-resolves every
+    // persisted row's attachments from that field -- so a `/compact` sent
+    // alongside an attachment would otherwise seed a restored conversation
+    // with an image the live turn never actually delivered. Scoping
+    // `hasAttachments` to `commandOverride === undefined` keeps both the
+    // command (already correct, since `commandOverride` bypasses this
+    // entirely) and the event honest about what was actually sent.
+    const hasAttachments =
+      opts.commandOverride === undefined && opts.attachments !== undefined && opts.attachments.length > 0;
+    const command: EmbeddedAgentCommand =
+      opts.commandOverride ??
+      {
+        v: 1,
+        type: 'user-message',
+        id,
+        text,
+        ...(hasAttachments ? { attachments: opts.attachments } : {}),
+      };
     const event: EmbeddedAgentServerEvent = {
       v: 1,
       type: 'user-message',
