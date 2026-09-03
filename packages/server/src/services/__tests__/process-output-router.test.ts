@@ -2,6 +2,8 @@ import { describe, it, expect, mock } from 'bun:test';
 import type { InteractiveProcessInfo } from '@agent-console/shared';
 import {
   routeProcessContent,
+  routeProcessExit,
+  deliveryTails,
   splitContentIntoChunks,
   MESSAGE_CHUNK_TARGET_BYTES,
   type ProcessOutputRouterDeps,
@@ -392,4 +394,172 @@ describe('routeProcessContent (message mode)', () => {
   // already by 'rejects when sendMessage fails so callers can report write
   // failure' above -- confirmed still passing after the fix (see polarity
   // note in the PR description).
+});
+
+describe('routeProcessExit ordering (Issue #1591)', () => {
+  function createDeferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
+    let resolve!: (value: T) => void;
+    const promise = new Promise<T>((res) => {
+      resolve = res;
+    });
+    return { promise, resolve };
+  }
+
+  it('R1: message mode -- exit notification waits for a still-pending stdout content step', async () => {
+    const order: string[] = [];
+    const gate = createDeferred<{ messageId: string; path: string }>();
+    const sendMessage = mock(async (_params: { content: string }) => {
+      return gate.promise;
+    });
+    const deliverNotification = mock(async (_s: string, _w: string, params: PtyNotificationParams) => {
+      const message = (params.fields as { message: string }).message;
+      order.push(message.startsWith('Process exited') ? 'exit' : 'stdout-brief');
+      return { ok: true } as const;
+    });
+    const { deps } = makeDeps({
+      sendMessage: (p) => sendMessage(p),
+      deliverNotification: (s, w, p) => deliverNotification(s, w, p),
+    });
+    const process = makeProcess({ id: 'order-stdout-exit', outputMode: 'message' });
+
+    const stdoutPromise = routeProcessContent(deps, {
+      process,
+      content: 'stdout text',
+      direction: 'stdout',
+    });
+    const exitPromise = routeProcessExit(deps, process);
+
+    // Let the microtask queue turn over. If the fix regressed, the exit
+    // notification does not depend on `gate` at all and would already have
+    // been recorded here.
+    for (let i = 0; i < 5; i++) await Promise.resolve();
+    expect(order).toEqual([]);
+
+    gate.resolve({ messageId: 'msg-1', path: '/tmp/messages/1.json' });
+    await Promise.all([stdoutPromise, exitPromise]);
+
+    expect(order).toEqual(['stdout-brief', 'exit']);
+  });
+
+  it('R1: message mode -- response -> stdout -> exit deliver in enqueue order even when later steps individually resolve faster', async () => {
+    const order: string[] = [];
+    const responseGate = createDeferred<{ messageId: string; path: string }>();
+    let sendMessageCalls = 0;
+    const sendMessage = mock(async (_params: { content: string }) => {
+      sendMessageCalls += 1;
+      if (sendMessageCalls === 1) {
+        return responseGate.promise; // response step: held open
+      }
+      return { messageId: `msg-${sendMessageCalls}`, path: `/tmp/messages/${sendMessageCalls}.json` }; // stdout step: fast
+    });
+    const deliverNotification = mock(async (_s: string, _w: string, params: PtyNotificationParams) => {
+      const message = (params.fields as { message: string }).message;
+      if (message.startsWith('Process exited')) order.push('exit');
+      else if (message.includes('response via message')) order.push('response-brief');
+      else order.push('stdout-brief');
+      return { ok: true } as const;
+    });
+    const { deps } = makeDeps({
+      sendMessage: (p) => sendMessage(p),
+      deliverNotification: (s, w, p) => deliverNotification(s, w, p),
+    });
+    const process = makeProcess({ id: 'order-response-stdout-exit', outputMode: 'message' });
+
+    const responsePromise = routeProcessContent(deps, { process, content: 'response payload', direction: 'response' });
+    const stdoutPromise = routeProcessContent(deps, { process, content: 'stdout text', direction: 'stdout' });
+    const exitPromise = routeProcessExit(deps, process);
+
+    for (let i = 0; i < 5; i++) await Promise.resolve();
+    expect(order).toEqual([]);
+
+    responseGate.resolve({ messageId: 'msg-response', path: '/tmp/messages/response.json' });
+    await Promise.all([responsePromise, stdoutPromise, exitPromise]);
+
+    expect(order).toEqual(['response-brief', 'stdout-brief', 'exit']);
+  });
+
+  it('R1 pty-mode no-regression: exit notification still waits for a still-pending stdout notification', async () => {
+    const order: string[] = [];
+    const gate = createDeferred<{ ok: true }>();
+    let deliverCalls = 0;
+    const deliverNotification = mock(async (_s: string, _w: string, params: PtyNotificationParams) => {
+      deliverCalls += 1;
+      const message = (params.fields as { message: string }).message;
+      if (deliverCalls === 1) {
+        await gate.promise; // stdout notification: held open
+      }
+      order.push(message.startsWith('Process exited') ? 'exit' : 'stdout');
+      return { ok: true } as const;
+    });
+    const { deps } = makeDeps({ deliverNotification: (s, w, p) => deliverNotification(s, w, p) });
+    const process = makeProcess({ id: 'order-pty-stdout-exit', outputMode: 'pty' });
+
+    const stdoutPromise = routeProcessContent(deps, { process, content: 'stdout text', direction: 'stdout' });
+    const exitPromise = routeProcessExit(deps, process);
+
+    for (let i = 0; i < 5; i++) await Promise.resolve();
+    expect(order).toEqual([]);
+
+    gate.resolve({ ok: true });
+    await Promise.all([stdoutPromise, exitPromise]);
+
+    expect(order).toEqual(['stdout', 'exit']);
+  });
+
+  it('R2: a rejected step does not block the next enqueued step, and its own rejection is still observable on its own promise', async () => {
+    const resolver = new SessionDataPathResolver('/tmp/test-base');
+    let getResolverCalls = 0;
+    const { deps, sendMessage } = makeDeps({
+      getResolver: () => {
+        getResolverCalls += 1;
+        return getResolverCalls === 1 ? null : resolver;
+      },
+    });
+    const process = makeProcess({ id: 'order-reject', outputMode: 'message' });
+
+    const first = routeProcessContent(deps, { process, content: 'first (fails)', direction: 'stdout' });
+    const second = routeProcessContent(deps, { process, content: 'second (succeeds)', direction: 'response' });
+
+    await expect(first).rejects.toThrow(/Cannot resolve data path/);
+    await expect(second).resolves.toBeUndefined();
+
+    expect(sendMessage).toHaveBeenCalledTimes(1);
+    expect((sendMessage.mock.calls[0]?.[0] as { content: string }).content).toBe('second (succeeds)');
+  });
+
+  it('R3: deletes the per-process delivery tail entry once the exit step settles', async () => {
+    const process = makeProcess({ id: 'order-cleanup', outputMode: 'pty' });
+    const { deps } = makeDeps();
+
+    await routeProcessContent(deps, { process, content: 'stdout text', direction: 'stdout' });
+    expect(deliveryTails.has('order-cleanup')).toBe(true);
+
+    await routeProcessExit(deps, process);
+    expect(deliveryTails.has('order-cleanup')).toBe(false);
+  });
+
+  it('R3: two interleaved processes keep independent delivery order', async () => {
+    const events: string[] = [];
+    const deliverNotification = mock(async (_s: string, _w: string, params: PtyNotificationParams) => {
+      const fields = params.fields as { processId: string; message: string };
+      events.push(`${fields.processId}:${fields.message.startsWith('Process exited') ? 'exit' : 'stdout'}`);
+      return { ok: true } as const;
+    });
+    const { deps } = makeDeps({ deliverNotification: (s, w, p) => deliverNotification(s, w, p) });
+
+    const procA = makeProcess({ id: 'proc-interleave-A', outputMode: 'pty' });
+    const procB = makeProcess({ id: 'proc-interleave-B', outputMode: 'pty' });
+
+    await Promise.all([
+      routeProcessContent(deps, { process: procA, content: 'A stdout', direction: 'stdout' }),
+      routeProcessContent(deps, { process: procB, content: 'B stdout', direction: 'stdout' }),
+      routeProcessExit(deps, procA),
+      routeProcessExit(deps, procB),
+    ]);
+
+    const aOrder = events.filter((e) => e.startsWith('proc-interleave-A:')).map((e) => e.split(':')[1]);
+    const bOrder = events.filter((e) => e.startsWith('proc-interleave-B:')).map((e) => e.split(':')[1]);
+    expect(aOrder).toEqual(['stdout', 'exit']);
+    expect(bOrder).toEqual(['stdout', 'exit']);
+  });
 });
