@@ -485,7 +485,7 @@ describe('SdkEngine — construction seam: the query() Options battery (Pin 1(a)
   it('carries composed opt-in instruction content into options.systemPrompt.append, ordered before the definition system prompt', () => {
     const { queryFn, captured } = makeFakeQuery([]);
     const segments = [{ origin: '/tmp/work/NOTES.md', content: 'INSTRUCTION_CONTENT' }];
-    const systemPromptAppend = composeSdkSystemPromptAppend(segments, 'Be terse.');
+    const systemPromptAppend = composeSdkSystemPromptAppend({ segments }, 'Be terse.');
     new SdkEngine(baseDeps({ queryFn, systemPromptAppend }));
 
     expect(captured.options?.systemPrompt).toEqual({
@@ -502,7 +502,7 @@ describe('SdkEngine — construction seam: the query() Options battery (Pin 1(a)
 
   it('omits systemPrompt.append when neither instructions nor a definition system prompt are configured (no regression)', () => {
     const { queryFn, captured } = makeFakeQuery([]);
-    const systemPromptAppend = composeSdkSystemPromptAppend([], undefined);
+    const systemPromptAppend = composeSdkSystemPromptAppend({ segments: [] }, undefined);
     expect(systemPromptAppend).toBeUndefined();
 
     new SdkEngine(baseDeps({ queryFn, systemPromptAppend }));
