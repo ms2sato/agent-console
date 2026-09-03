@@ -571,6 +571,33 @@ class EmbeddedAgentController implements EmbeddedAgentInstance {
 
   private handleAppMessage(msg: AppServerMessage): void {
     if (this.disposed) return;
+    if (msg.type === 'session-updated') {
+      // Cross-type restart (embedded-agent -> agent, #1592) converts this
+      // worker away from embedded-agent IN PLACE, keeping its (sessionId,
+      // workerId). Mirrors terminal-store.ts's identical guard for the
+      // reverse direction (agent -> embedded-agent, #1171): the server
+      // broadcasts this session-updated BEFORE the matching worker-restarted
+      // for the same worker (worker-lifecycle-manager.ts's
+      // restartEmbeddedWorkerAsAgent). This controller has no way to learn
+      // the type flip from worker-restarted itself (that message carries no
+      // worker type), so it would otherwise treat the later worker-restarted
+      // as "reconnect the embedded-agent socket" -- but the URL now backs a
+      // PTY `agent` worker. Disposing here, ahead of that message, makes the
+      // later worker-restarted a no-op via the `disposed` guard above.
+      //
+      // NEGATIVE CONTROL, by construction: an embedded->embedded restart
+      // (same-definition restart, case c, or a definition switch, case b)
+      // leaves the worker's type as 'embedded-agent', so this type check
+      // naturally does NOT dispose for either of those cases -- the
+      // existing worker-restarted/epoch-bump handling (already implemented)
+      // picks up the new incarnation without any change here.
+      if (msg.session.id !== this.sessionId) return;
+      const worker = msg.session.workers.find((w) => w.id === this.workerId);
+      if (worker && worker.type !== 'embedded-agent') {
+        this.dispose();
+      }
+      return;
+    }
     if (msg.type === 'session-deleted' && msg.sessionId === this.sessionId) {
       this.dispose();
     }
