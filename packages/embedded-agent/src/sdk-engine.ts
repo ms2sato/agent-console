@@ -345,6 +345,20 @@ export class SdkEngine implements Engine {
    * `handleAssistantMessage` call. See the required pins in
    * `__tests__/sdk-engine.test.ts` for the polarity/no-double-emit
    * measurements this reasoning rests on.
+   *
+   * Architect review, #1584 (F3): does the per-`assistant`-SDKMessage
+   * reset double-emit `assistant-message` on a TOOL-USING turn, where
+   * multiple `assistant` SDKMessages arrive within one turn (one per
+   * completed content block)? Measured against
+   * `__tests__/__fixtures__/tool-turn-real-sequence.ndjson` -- 37 real
+   * `SDKMessage`s captured from two live tool-using turns against the actual
+   * claude-sdk engine (a real `Read` tool call): each `assistant` SDKMessage's
+   * `.content` array contains ONLY the block(s) for that specific occurrence
+   * (thinking-only, text-only, or tool_use-only) -- never cumulative. Across
+   * that real sequence, exactly two `assistant-message` events are produced
+   * (one per `message_stop` boundary, matching the two real turns), and
+   * exactly one `tool-call` event -- no double-emission. Pinned by
+   * `__tests__/sdk-engine.test.ts`'s "Finding #3 (#1584)" describe block.
    */
   private sawTextDelta = false;
 

@@ -15,8 +15,12 @@ describe('matchSlashCommandInList (#1572)', () => {
     expect(matchSlashCommandInList(commands, '/compact')).toEqual(commands[0]);
   });
 
-  it('returns null when the text has trailing arguments (no prefix match)', () => {
-    expect(matchSlashCommandInList(commands, '/compact extra')).toBeNull();
+  it('matches by first token: trailing arguments are ignored (Architect ruling, #1584 -- no argument grammar declared)', () => {
+    expect(matchSlashCommandInList(commands, '/compact extra args')).toEqual(commands[0]);
+  });
+
+  it('does NOT match a different word that merely shares a prefix (first-token equality, not startsWith)', () => {
+    expect(matchSlashCommandInList(commands, '/compactx')).toBeNull();
   });
 
   it('returns null for a command name not in the list', () => {
@@ -25,6 +29,10 @@ describe('matchSlashCommandInList (#1572)', () => {
 
   it('trims leading/trailing whitespace before comparing', () => {
     expect(matchSlashCommandInList(commands, '  /cost  ')).toEqual(commands[1]);
+  });
+
+  it('trims whitespace even when trailing arguments are also present', () => {
+    expect(matchSlashCommandInList(commands, '  /compact extra  ')).toEqual(commands[0]);
   });
 
   it('returns null for an empty list', () => {
@@ -43,7 +51,11 @@ describe('matchSlashCommand (#1572)', () => {
     expect(matchSlashCommand('openai-api', '/cost')).toBeNull();
   });
 
-  it('returns null for trailing-args text even when the base name is known for that engine', () => {
-    expect(matchSlashCommand('claude-sdk', '/compact extra')).toBeNull();
+  it('matches trailing-args text by first token when the base name is known for that engine', () => {
+    expect(matchSlashCommand('claude-sdk', '/compact extra')).toEqual(EMBEDDED_AGENT_SLASH_COMMANDS['claude-sdk'][0]);
+  });
+
+  it('does NOT match a prefix-sharing word (first-token equality, not startsWith)', () => {
+    expect(matchSlashCommand('claude-sdk', '/compactx')).toBeNull();
   });
 });

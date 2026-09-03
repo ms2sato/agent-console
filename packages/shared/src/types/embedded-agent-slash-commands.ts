@@ -17,6 +17,13 @@ import type { EmbeddedAgentEngine } from './embedded-agent.js';
  * this file's `claude-sdk` content is measured from (#1572's own probe,
  * not assumed from the SDK's own advertised `slash_commands` list -- that
  * list only corroborates it; see the per-entry notes below).
+ *
+ * This table declares NO ARGUMENT GRAMMAR for any entry: `name` is just the
+ * bare command token, with no notion of an accepted/rejected argument shape
+ * after it. Matching (see {@link matchSlashCommandInList} below) is
+ * therefore by FIRST TOKEN, not full-text equality -- `/compact extra args`
+ * matches `/compact`, and the trailing tokens are ignored for
+ * `console`-handled commands (Architect ruling, #1584).
  */
 export interface EmbeddedAgentSlashCommand {
   /** Includes the leading slash, e.g. '/compact'. */
@@ -97,15 +104,23 @@ export const EMBEDDED_AGENT_SLASH_COMMANDS: Record<EmbeddedAgentEngine, readonly
 
 /**
  * SINGLE WRITER of "does this text name a known slash command" (#1572).
- * Matches the FULL TRIMMED TEXT exactly against `commands[].name` -- never a
- * prefix or first-token match. A command name followed by trailing
- * arguments (e.g. `/compact extra`) is deliberately NOT a match: the server
- * side of this same contract (`resolveConsoleSlashCommandOverride` in
- * `embedded-agent-worker-service.ts`, via {@link matchSlashCommand} below)
- * only intercepts an exact match, so a client that matched more loosely
- * would let a payload-bearing variant through as if it were the bare
- * command, and it would then reach the engine as literal, un-intercepted
- * prose.
+ * Matches the FIRST WHITESPACE-DELIMITED TOKEN of the trimmed text against
+ * `commands[].name` -- never a substring/prefix match against the whole
+ * token. The table (`EMBEDDED_AGENT_SLASH_COMMANDS`) declares no argument
+ * grammar for any entry, so extra tokens after the command name are simply
+ * ignored for console-handled commands: `/compact extra args` matches
+ * `/compact`, exactly as if the trailing words were not there. A DIFFERENT
+ * word that merely shares a prefix (e.g. `/compactx`) does NOT match --
+ * first-token equality, not `startsWith`. Architect ruling (#1584):
+ * matching by full trimmed text was over-tight for a table with no declared
+ * argument grammar, and would have silently forwarded a payload-bearing
+ * `/compact <instruction>` to the engine as literal prose instead of
+ * recognizing the command underneath it.
+ *
+ * The server side of this same contract (`resolveConsoleSlashCommandOverride`
+ * in `embedded-agent-worker-service.ts`, via {@link matchSlashCommand} below)
+ * observes the identical rule, since it delegates to this same function --
+ * see this file's SINGLE WRITER doc comment above.
  *
  * Takes a plain list rather than an engine so callers that only have a
  * flat command list (e.g. the client's `MessagePanel`, which stays
@@ -120,7 +135,8 @@ export function matchSlashCommandInList<T extends Pick<EmbeddedAgentSlashCommand
   text: string,
 ): T | null {
   const trimmed = text.trim();
-  return commands.find((command) => command.name === trimmed) ?? null;
+  const firstToken = trimmed.split(/\s+/, 1)[0];
+  return commands.find((command) => command.name === firstToken) ?? null;
 }
 
 /**

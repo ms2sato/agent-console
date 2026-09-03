@@ -989,7 +989,7 @@ describe('MessagePanel', () => {
       expect(view.queryByRole('alert')).toBeNull();
     });
 
-    it('blocks the send and shows the unknown-command notice for a known command name plus trailing text (exact-match contract with the server)', async () => {
+    it('sends immediately, with no notice, for a known command name plus trailing text (first-token match contract with the server, Architect ruling #1584)', async () => {
       const { container } = await act(async () =>
         renderWithRouter(
           <MessagePanel {...defaultProps} slashCompletionEnabled={true} slashCommands={EMBEDDED_TEST_COMMANDS} />,
@@ -1005,13 +1005,35 @@ describe('MessagePanel', () => {
         fireEvent.click(view.getByText('Send'));
       });
 
-      // The server's resolveConsoleSlashCommandOverride matches the full
-      // trimmed text exactly, so "/compact extra" is NOT intercepted
-      // server-side even though its first token is a known command name.
-      // The client must gate it the same way rather than sending it
-      // directly, or it silently reaches the engine as literal prose.
+      // The table declares no argument grammar, so the server's
+      // resolveConsoleSlashCommandOverride matches by first token: "/compact
+      // extra" IS intercepted server-side even though it carries trailing
+      // arguments. The client must gate it the same way (send immediately,
+      // trailing text and all) rather than blocking it, or the two sides of
+      // the contract diverge.
+      expect(onSendMock).toHaveBeenCalledTimes(1);
+      expect(onSendMock.mock.calls[0]).toEqual(['/compact extra', undefined]);
+      expect(view.queryByRole('alert')).toBeNull();
+    });
+
+    it('does NOT match a different word that merely shares a prefix with a known command (first-token equality, not startsWith)', async () => {
+      const { container } = await act(async () =>
+        renderWithRouter(
+          <MessagePanel {...defaultProps} slashCompletionEnabled={true} slashCommands={EMBEDDED_TEST_COMMANDS} />,
+        ),
+      );
+      const view = within(container);
+
+      const textarea = view.getByPlaceholderText('Send message to worker... (Ctrl+Enter to send)');
+      await act(async () => {
+        fireEvent.change(textarea, { target: { value: '/compactx' } });
+      });
+      await act(async () => {
+        fireEvent.click(view.getByText('Send'));
+      });
+
       expect(onSendMock).not.toHaveBeenCalled();
-      expect(view.getByRole('alert').textContent).toContain('/compact is not a command for this agent; send as text?');
+      expect(view.getByRole('alert').textContent).toContain('/compactx is not a command for this agent; send as text?');
     });
 
     it('delegates to the shared matchSlashCommandInList rather than reimplementing the match rule', async () => {

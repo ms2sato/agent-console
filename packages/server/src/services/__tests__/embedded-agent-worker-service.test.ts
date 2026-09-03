@@ -1997,6 +1997,14 @@ describe('EmbeddedAgentWorkerService — slash-command interception (#1572)', ()
     expect(resolveConsoleSlashCommandOverride('openai-api', 'please /compact this')).toBeNull();
   });
 
+  it('resolveConsoleSlashCommandOverride matches by first token: trailing arguments are ignored (Architect ruling, #1584)', () => {
+    expect(resolveConsoleSlashCommandOverride('openai-api', '/compact extra args')).toEqual({ v: 1, type: 'compact' });
+  });
+
+  it('resolveConsoleSlashCommandOverride does NOT match a different word that merely shares a prefix', () => {
+    expect(resolveConsoleSlashCommandOverride('openai-api', '/compactx')).toBeNull();
+  });
+
   it('resolveConsoleSlashCommandOverride delegates to the shared matchSlashCommand rather than reimplementing the match rule', () => {
     // Delegation pin (#1572): spies on the shared package's live binding of
     // matchSlashCommand and forces it to return null. If this function

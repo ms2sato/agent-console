@@ -353,9 +353,19 @@ export const MessagePanel = forwardRef<MessagePanelHandle, MessagePanelProps>(
             </ul>
           )}
           {pendingUnknownSlash !== null && (
+            // In normal document flow (NOT `absolute`), unlike the completion
+            // dropdown above -- this pushes the textarea down within
+            // MessagePanel's own rendered box rather than escaping it. An
+            // `absolute bottom-full` notice here would position relative to
+            // this `relative` wrapper and render OVER whatever content the
+            // parent places directly above MessagePanel (e.g.
+            // EmbeddedAgentWorkerView's auto-compaction checkbox row), since
+            // an absolutely-positioned element is removed from the flow and
+            // does not push anything else down (Architect ruling, #1584,
+            // F1).
             <div
               role="alert"
-              className="absolute bottom-full left-0 mb-1 w-full bg-amber-900/40 border border-amber-700/60 rounded shadow-lg px-3 py-1.5 text-xs text-amber-200 flex items-center justify-between gap-2 z-10"
+              className="mb-1 w-full bg-amber-900/40 border border-amber-700/60 rounded shadow-lg px-3 py-1.5 text-xs text-amber-200 flex items-center justify-between gap-2"
             >
               <span>
                 <span className="font-medium">{pendingUnknownSlash.trim().split(/\s+/, 1)[0]}</span>{' '}

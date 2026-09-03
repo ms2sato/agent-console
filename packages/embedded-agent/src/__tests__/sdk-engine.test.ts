@@ -1234,6 +1234,77 @@ describe('SdkEngine — Finding #1 (#1572): synthetic-reply fallback in handleAs
 });
 
 // ---------------------------------------------------------------------------
+// Finding #3 (#1584, Architect review) -- does `sawTextDelta`'s
+// per-`assistant`-SDKMessage reset double-emit `assistant-message` on a
+// tool-using turn, where multiple `assistant` SDKMessages arrive within one
+// turn (one per completed content block)? Driven by a REAL captured
+// sequence, not a hand-authored one, so the interleaving of thinking / text /
+// tool_use content blocks across `assistant` SDKMessages matches what the
+// live SDK actually produces (see the fixture's own header note).
+// ---------------------------------------------------------------------------
+
+describe('SdkEngine — Finding #3 (#1584): no double-emit across a real tool-using turn', () => {
+  it('emits exactly one tool-call and exactly two assistant-message events (one per message_stop boundary) for a real captured tool-using turn', async () => {
+    // Fixture: packages/embedded-agent/src/__tests__/__fixtures__/tool-turn-real-sequence.ndjson
+    // -- 37 real SDKMessages captured from a live claude-sdk conversation that
+    // plants a secret number via a real `Read` tool call, then reports it.
+    // Each `assistant` SDKMessage's `.content` array carries ONLY the
+    // block(s) for that specific occurrence (thinking-only, text-only, or
+    // tool_use-only) -- never cumulative -- which is exactly the shape that
+    // would double-emit `assistant-message` if `sawTextDelta`'s reset were
+    // wrong. Read via readFileSync + JSON.parse per line (NDJSON), fed
+    // directly into makeFakeQuery -- no hand-authored fixture builders, so
+    // this test cannot silently diverge from what the SDK actually sends.
+    const fixturePath = join(import.meta.dir, '__fixtures__', 'tool-turn-real-sequence.ndjson');
+    const rawLines = readFileSync(fixturePath, 'utf8').trim().split('\n');
+    const messages = rawLines.map((line) => JSON.parse(line) as Record<string, unknown>);
+
+    // The real capture's system:init reports the FULL agent-console tool
+    // catalog (Task, Bash, EnterWorktree, ...) -- Pin 2's live containment
+    // check (this file's own "SDK session reported disallowed tool(s)"
+    // fatal path, unrelated to Finding #3) would otherwise terminate the
+    // session before the turn under test even completes. Only the `Read`
+    // tool the fixture's own tool_use block actually calls is relevant to
+    // this test, so the fixture's system:init is adjusted to match the
+    // engine's `enabledTools` below -- this narrows containment scope only,
+    // and does not touch any of the assistant/tool_use/text content this
+    // test asserts on.
+    for (const message of messages) {
+      if (message.type === 'system' && message.subtype === 'init') {
+        message.tools = ['Read'];
+      }
+    }
+
+    const events: EmbeddedAgentEvent[] = [];
+    const { queryFn } = makeFakeQuery(messages as unknown as SDKMessage[]);
+    const engine = new SdkEngine(baseDeps({ emit: (e) => events.push(e), queryFn, enabledTools: ['Read'] }));
+    await engine.runTurn('u1', 'What is the secret number in note.txt?');
+
+    // Double-emission guard: at most (and, per the positive assertion below,
+    // exactly) two assistant-message events -- one per message_stop boundary
+    // in the fixture, never one per content block.
+    const assistantMessages = eventsOfType(events, 'assistant-message');
+    expect(assistantMessages.length).toBeLessThanOrEqual(2);
+    expect(assistantMessages).toEqual([
+      { v: 1, type: 'assistant-message', turnId: 'u1', text: 'Let me check that file.' },
+      { v: 1, type: 'assistant-message', turnId: 'u1', text: 'The secret number is 99.' },
+    ]);
+
+    // Exactly one tool-call for the fixture's single real Read tool_use block.
+    expect(eventsOfType(events, 'tool-call')).toEqual([
+      {
+        v: 1,
+        type: 'tool-call',
+        turnId: 'u1',
+        callId: 'toolu_01AKNi4uvzRofJBkC7CXtx9m',
+        name: 'Read',
+        args: { file_path: 'note.txt' },
+      },
+    ]);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Finding #2 (#1572) -- `/clear`'s `conversation_reset`: declare the
 // divergence instead of silently dropping it.
 // ---------------------------------------------------------------------------
