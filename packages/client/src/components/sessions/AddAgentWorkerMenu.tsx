@@ -201,7 +201,16 @@ export function AddAgentWorkerMenu({
       {open && (
         <div
           role="menu"
-          className="absolute left-0 top-full z-20 mt-1 w-72 max-h-96 overflow-y-auto bg-slate-800 border border-slate-600 rounded shadow-lg"
+          // w-96: w-72 was too narrow once the visible "Options ▼/▲" toggle
+          // label was added -- item name + kind badge + toggle no longer fit,
+          // truncating even short names unrecognizably (e.g. the builtin
+          // embedded agent's "Claude" to "Cla…").
+          // max-h-[80vh]: max-h-96 clipped the Add button when the widest
+          // Options panel (embedded kind: Model, Reasoning effort, Context
+          // window, plus Add) was expanded. The scrollIntoView ref callback
+          // on each panel below handles bringing a freshly-expanded panel
+          // into view regardless of current scroll position.
+          className="absolute left-0 top-full z-20 mt-1 w-96 max-h-[80vh] overflow-y-auto bg-slate-800 border border-slate-600 rounded shadow-lg"
         >
           <button
             role="menuitem"
@@ -251,7 +260,10 @@ export function AddAgentWorkerMenu({
                   )}
                 </div>
                 {isExpanded && (
-                  <div className="px-3 py-2 bg-slate-900/40 border-t border-b border-slate-700 flex flex-col gap-2">
+                  <div
+                    ref={(el) => el?.scrollIntoView({ block: 'nearest' })}
+                    className="px-3 py-2 bg-slate-900/40 border-t border-b border-slate-700 flex flex-col gap-2"
+                  >
                     <AgentParameterFields
                       selection={selection}
                       model={optionsModel}
@@ -309,7 +321,10 @@ export function AddAgentWorkerMenu({
                   )}
                 </div>
                 {isExpanded && (
-                  <div className="px-3 py-2 bg-slate-900/40 border-t border-b border-slate-700 flex flex-col gap-2">
+                  <div
+                    ref={(el) => el?.scrollIntoView({ block: 'nearest' })}
+                    className="px-3 py-2 bg-slate-900/40 border-t border-b border-slate-700 flex flex-col gap-2"
+                  >
                     <AgentParameterFields
                       selection={selection}
                       model={optionsModel}
