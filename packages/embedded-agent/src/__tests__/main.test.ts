@@ -381,6 +381,103 @@ describe('runLoop — builtin tool merging (enabledTools)', () => {
   });
 });
 
+describe('runLoop — attachmentRoots forwarding into the builtin tool ctx (Issue #1570)', () => {
+  // Adapter shaped to drive exactly one builtin tool call, then finish the
+  // turn with plain text. Reused by both the positive and negative-control
+  // cases below -- only `path` and `context.attachmentRoots` differ between
+  // them, and the wiring under test (`initializeLoop`'s
+  // `ctx: { locationPath: init.context.cwd, attachmentRoots:
+  // init.context.attachmentRoots }`) is exercised identically either way.
+  class ReadThenDoneAdapter implements ProviderAdapter {
+    private calls = 0;
+    constructor(private readonly path: string) {}
+    async *run(): AsyncIterable<ProviderEvent> {
+      this.calls += 1;
+      if (this.calls === 1) {
+        yield { type: 'tool-call', callId: 'c1', name: 'Read', argsJson: JSON.stringify({ path: this.path }) };
+        yield { type: 'done', finishReason: 'tool_calls' };
+      } else {
+        yield { type: 'text-delta', text: 'done' };
+        yield { type: 'done', finishReason: 'stop' };
+      }
+    }
+  }
+
+  // `makeIo`'s pacing is enough for the microtask-only StubAdapter turns
+  // used elsewhere in this file, but the Read tool here does REAL fs work
+  // (`fs.realpath`), which is genuinely asynchronous (not a same-tick
+  // microtask). `main.ts`'s `user-message` case never awaits `currentTurn`
+  // before the loop reads its next command, and both stdin EOF and an
+  // explicit `shutdown` reach `gracefulExit`, which calls `loop.cancel()`
+  // unconditionally whenever a turn is still in flight -- discarding an
+  // already-succeeded tool call as "turn canceled" the instant the real fs
+  // work outlives one macrotask. Dropping the `shutdown` command and
+  // appending a real drain delay before EOF gives the fs work enough
+  // wall-clock time to settle first.
+  function makeIoWithToolDrainGap(lines: string[]): Captured {
+    const events: EmbeddedAgentEvent[] = [];
+    const errors: string[] = [];
+    const io: LoopIO = {
+      async *readCommands() {
+        for (const line of lines) {
+          await new Promise((resolve) => setTimeout(resolve, 0));
+          yield line;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      },
+      writeEvent: (event) => events.push(event),
+      logError: (message) => errors.push(message),
+    };
+    return { io, events, errors };
+  }
+
+  it('lets the builtin Read tool open a file outside cwd when it is under init.context.attachmentRoots', async () => {
+    const cwd = await makeTempDir();
+    const attachDir = await makeTempDir();
+    const attachedFile = join(attachDir, 'note.txt');
+    await writeFile(attachedFile, 'ATTACHMENT_CONTENT');
+
+    const adapter = new ReadThenDoneAdapter(attachedFile);
+    const { io, events } = makeIoWithToolDrainGap([
+      initCommand({ context: { sessionId: 's', workerId: 'w', cwd, attachmentRoots: [attachDir] } }),
+      JSON.stringify({ v: 1, type: 'user-message', id: 'u1', text: 'read the attachment' }),
+    ]);
+    const factories = makeFactories({ createAdapter: () => adapter });
+
+    expect(await runLoop(io, factories)).toBe(0);
+
+    const toolResult = events.find((e) => e.type === 'tool-result');
+    expect(toolResult).toMatchObject({ ok: true });
+    if (toolResult?.type === 'tool-result') {
+      expect(toolResult.result).toContain('ATTACHMENT_CONTENT');
+    }
+  });
+
+  it('negative control: the same path is rejected when init.context.attachmentRoots does not include it (attachmentRoots absent)', async () => {
+    const cwd = await makeTempDir();
+    const attachDir = await makeTempDir();
+    const attachedFile = join(attachDir, 'note.txt');
+    await writeFile(attachedFile, 'ATTACHMENT_CONTENT');
+
+    const adapter = new ReadThenDoneAdapter(attachedFile);
+    const { io, events } = makeIoWithToolDrainGap([
+      // No `attachmentRoots` on this init -- same file, same cwd, only the
+      // forwarded confinement root is missing.
+      initCommand({ context: { sessionId: 's', workerId: 'w', cwd } }),
+      JSON.stringify({ v: 1, type: 'user-message', id: 'u1', text: 'read the attachment' }),
+    ]);
+    const factories = makeFactories({ createAdapter: () => adapter });
+
+    expect(await runLoop(io, factories)).toBe(0);
+
+    const toolResult = events.find((e) => e.type === 'tool-result');
+    expect(toolResult).toMatchObject({ ok: false });
+    if (toolResult?.type === 'tool-result') {
+      expect(toolResult.result).toBe('Access outside session location is not permitted.');
+    }
+  });
+});
+
 describe('runLoop — instructions threading into the system prompt (Wave 5-4)', () => {
   it('threads loadInstructions segments into the system prompt reaching the provider request payload', async () => {
     const adapter = new CapturingAdapter();
