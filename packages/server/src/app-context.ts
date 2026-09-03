@@ -398,10 +398,12 @@ export async function createAppContext(
   // 6.5. Create timer manager with persistence
   const timerRepository = new SqliteTimerRepository(db);
   const timerManager = new TimerManagerClass((timer) => {
-    try {
-      const writeInput = (data: string) =>
-        sessionManager.writeWorkerInput(timer.sessionId, timer.workerId, data);
-      writePtyNotification({
+    // TimerManagerClass's onTick callback is synchronous (fire-and-forget);
+    // deliverWorkerNotification is async, so this stays a `void`-forwarded
+    // promise, mirroring the try/catch-and-warn semantics the direct
+    // writePtyNotification call used to have.
+    void sessionManager
+      .deliverWorkerNotification(timer.sessionId, timer.workerId, {
         kind: 'internal-timer',
         tag: 'internal:timer',
         fields: {
@@ -410,14 +412,21 @@ export async function createAppContext(
           fireCount: String(timer.fireCount),
         },
         intent: 'inform',
-        writeInput,
+      })
+      .then((result) => {
+        if (!result.ok) {
+          logger.warn(
+            { timerId: timer.id, sessionId: timer.sessionId, error: result.error },
+            'Failed to deliver timer notification',
+          );
+        }
+      })
+      .catch((err) => {
+        logger.warn(
+          { timerId: timer.id, sessionId: timer.sessionId, err },
+          'Failed to deliver timer notification',
+        );
       });
-    } catch (err) {
-      logger.warn(
-        { timerId: timer.id, sessionId: timer.sessionId, err },
-        'Failed to deliver timer notification',
-      );
-    }
   }, timerRepository);
 
   // 6.6. Wire timer cleanup into session lifecycle
@@ -430,15 +439,16 @@ export async function createAppContext(
 
   // 6.6.2. Create conditional wakeup manager (in-memory, volatile)
   const conditionalWakeupManager = new ConditionalWakeupManagerClass((wakeup) => {
-    try {
-      const writeInput = (data: string) =>
-        sessionManager.writeWorkerInput(wakeup.sessionId, wakeup.workerId, data);
+    const message = (wakeup as any).notificationMessage ||
+      (wakeup.status === 'completed_true' ? wakeup.onTrueMessage :
+       wakeup.onTimeoutMessage || `Conditional wakeup timed out after ${wakeup.timeoutSeconds}s`);
 
-      const message = (wakeup as any).notificationMessage ||
-        (wakeup.status === 'completed_true' ? wakeup.onTrueMessage :
-         wakeup.onTimeoutMessage || `Conditional wakeup timed out after ${wakeup.timeoutSeconds}s`);
-
-      writePtyNotification({
+    // ConditionalWakeupManagerClass's onWakeup callback is synchronous
+    // (fire-and-forget); deliverWorkerNotification is async, so this stays a
+    // `void`-forwarded promise, mirroring the try/catch-and-warn semantics
+    // the direct writePtyNotification call used to have.
+    void sessionManager
+      .deliverWorkerNotification(wakeup.sessionId, wakeup.workerId, {
         kind: 'internal-conditional-wakeup',
         tag: 'internal:conditional-wakeup',
         fields: {
@@ -448,14 +458,21 @@ export async function createAppContext(
           message,
         },
         intent: 'inform',
-        writeInput,
+      })
+      .then((result) => {
+        if (!result.ok) {
+          logger.warn(
+            { wakeupId: wakeup.id, sessionId: wakeup.sessionId, error: result.error },
+            'Failed to deliver conditional wakeup notification',
+          );
+        }
+      })
+      .catch((err) => {
+        logger.warn(
+          { wakeupId: wakeup.id, sessionId: wakeup.sessionId, err },
+          'Failed to deliver conditional wakeup notification',
+        );
       });
-    } catch (err) {
-      logger.warn(
-        { wakeupId: wakeup.id, sessionId: wakeup.sessionId, err },
-        'Failed to deliver conditional wakeup notification',
-      );
-    }
   });
 
   // 6.6.3. Wire conditional wakeup cleanup into session lifecycle

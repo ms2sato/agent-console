@@ -35,7 +35,7 @@ import { getCurrentBranch } from '../lib/git.js';
 import { CLAUDE_CODE_AGENT_ID } from '../services/agent-manager.js';
 import type { SuggestSessionMetadataFn } from '../services/session-metadata-suggester.js';
 import type { InterSessionMessageService } from '../services/inter-session-message-service.js';
-import { writePtyNotification, buildReplyInstructions } from '../lib/pty-notification.js';
+import { buildReplyInstructions } from '../lib/pty-notification.js';
 import { getRemoteUrl, GitError } from '../lib/git.js';
 import { createLogger } from '../lib/logger.js';
 import { serverConfig } from '../lib/server-config.js';
@@ -53,7 +53,12 @@ import {
   createMcpAuthMiddleware,
 } from './mcp-auth.js';
 import type { Session, Worker, AgentActivityState, AppServerMessage } from '@agent-console/shared';
-import { isPtyBackedWorker, canReceiveSessionMessages, CreateBookmarkRequestSchema } from '@agent-console/shared';
+import {
+  isPtyBackedWorker,
+  canReceiveSessionMessages,
+  canReceiveNotifications,
+  CreateBookmarkRequestSchema,
+} from '@agent-console/shared';
 
 const logger = createLogger('mcp');
 
@@ -691,77 +696,74 @@ export function createMcpApp(deps: McpDependencies): Hono {
           resolver,
         });
 
-        // 5. Deliver the notification to the target worker.
+        // 5. Deliver the notification to the target worker via the single
+        //    delivery seam (SessionManager.deliverWorkerNotification), which
+        //    branches on the target's worker kind internally (PTY write vs
+        //    EmbeddedAgentWorkerService.sendSystemNotification -- the latter
+        //    also activates a dormant worker on delivery, so no separate
+        //    activateEmbeddedAgentWorker call is needed here).
         const senderTitle = senderSession.title ?? fromSessionId;
+        const notificationParams = {
+          kind: 'internal-message' as const,
+          tag: 'internal:message' as const,
+          fields: {
+            source: 'session',
+            from: fromSessionId,
+            summary: `Message from session ${senderTitle}`,
+            path: result.path,
+          },
+          intent: 'triage' as const,
+        };
 
         if (resolvedWorker?.type === 'embedded-agent') {
-          // Embedded branch: activate-on-delivery, then deliver the SAME
-          // notification template a PTY-backed worker would receive, via
-          // sendEmbeddedAgentSystemNotification instead of a PTY write.
-          // Unlike the PTY branch below, this is a HARD failure -- no
-          // best-effort try/catch -- the tool call fails with a classified
-          // message rather than silently dropping the notification.
-          try {
-            await sessionManager.activateEmbeddedAgentWorker(toSessionId, resolvedWorkerId);
-          } catch (err) {
-            const message =
-              err instanceof EmbeddedAgentActivationError ? err.message : GENERIC_EMBEDDED_ACTIVATION_FAILURE_MESSAGE;
-            logger.warn(
-              { sessionId: toSessionId, workerId: resolvedWorkerId, err },
-              'Embedded-agent activation failed on send_session_message path',
-            );
-            return errorResult(`Failed to deliver message to embedded agent: ${message}`);
-          }
-
-          const deliveryResult = await sessionManager.sendEmbeddedAgentSystemNotification(
+          // Embedded branch: a HARD failure -- no best-effort try/catch --
+          // the tool call fails with a classified message rather than
+          // silently dropping the notification. `replyToSessionId` is
+          // threaded through so the delivered/persisted text carries reply
+          // instructions, matching what the PTY branch below writes
+          // separately.
+          const deliveryResult = await sessionManager.deliverWorkerNotification(
             toSessionId,
             resolvedWorkerId,
-            {
-              kind: 'internal-message',
-              tag: 'internal:message',
-              fields: {
-                source: 'session',
-                from: fromSessionId,
-                summary: `Message from session ${senderTitle}`,
-                path: result.path,
-              },
-              intent: 'triage',
-            },
+            notificationParams,
             { replyToSessionId: fromSessionId },
           );
           if (!deliveryResult.ok) {
             logger.warn(
-              { toSessionId, toWorkerId: resolvedWorkerId, code: deliveryResult.code },
+              { toSessionId, toWorkerId: resolvedWorkerId, error: deliveryResult.error },
               'Embedded-agent message delivery failed on send_session_message path',
             );
             return errorResult(`Failed to deliver message to embedded agent: ${deliveryResult.error}`);
           }
         } else {
-          // PTY notification (best-effort -- message file is already written)
-          try {
-            const writeInput = (data: string) =>
-              sessionManager.writeWorkerInput(toSessionId, resolvedWorkerId, data);
-
-            writePtyNotification({
-              kind: 'internal-message',
-              tag: 'internal:message',
-              fields: {
-                source: 'session',
-                from: fromSessionId,
-                summary: `Message from session ${senderTitle}`,
-                path: result.path,
-              },
-              intent: 'triage',
-              writeInput,
-            });
-
-            // Append reply instructions so the receiving agent knows how to respond
-            writeInput(buildReplyInstructions(fromSessionId));
-          } catch (notifyErr) {
+          // PTY notification (best-effort -- message file is already
+          // written, so a delivery failure here is logged, not surfaced as
+          // a tool error). The seam's PTY-backed branch does not compose
+          // reply instructions (see deliverWorkerNotification's doc
+          // comment) -- send_session_message is the sole caller that wants
+          // them, so it appends them itself, as a second write, only after
+          // the notification itself was delivered successfully (mirroring
+          // the pre-seam behavior, where a failed notification write never
+          // reached the reply-instructions write either).
+          const deliveryResult = await sessionManager.deliverWorkerNotification(
+            toSessionId,
+            resolvedWorkerId,
+            notificationParams,
+          );
+          if (!deliveryResult.ok) {
             logger.warn(
-              { err: notifyErr, toSessionId, toWorkerId: resolvedWorkerId },
+              { toSessionId, toWorkerId: resolvedWorkerId, error: deliveryResult.error },
               'PTY notification failed (message file was written successfully)',
             );
+          } else {
+            try {
+              sessionManager.writeWorkerInput(toSessionId, resolvedWorkerId, buildReplyInstructions(fromSessionId));
+            } catch (notifyErr) {
+              logger.warn(
+                { err: notifyErr, toSessionId, toWorkerId: resolvedWorkerId },
+                'Reply instructions write failed (message file was written successfully)',
+              );
+            }
           }
         }
 
@@ -1375,7 +1377,9 @@ export function createMcpApp(deps: McpDependencies): Hono {
     'create_timer',
     'Create a periodic timer that sends notifications to a worker at specified intervals. ' +
       'Use this to set up recurring callbacks for monitoring tasks, checking CI status, etc. ' +
-      'The timer fires a [internal:timer] PTY notification on each tick. ' +
+      'The worker can be an agent, terminal, or embedded-agent worker. ' +
+      'The timer fires an [internal:timer] notification on each tick -- delivered as a PTY write for ' +
+      'agent/terminal workers, or as a queued turn for embedded-agent workers. ' +
       'Timers are volatile and will not survive server restarts.',
     {
       sessionId: z.string().describe(
@@ -1409,9 +1413,9 @@ export function createMcpApp(deps: McpDependencies): Hono {
         if (!worker) {
           return errorResult(`Worker ${workerId} not found in session ${sessionId}`);
         }
-        if (!isPtyBackedWorker(worker)) {
+        if (!canReceiveNotifications(worker)) {
           return errorResult(
-            `Worker ${workerId} in session ${sessionId} does not support PTY notifications: requires a PTY-backed worker (agent/terminal)`,
+            `Worker ${workerId} in session ${sessionId} cannot receive notifications: requires an agent, terminal, or embedded-agent worker`,
           );
         }
 
@@ -1466,6 +1470,7 @@ export function createMcpApp(deps: McpDependencies): Hono {
     'create_conditional_wakeup',
     'Create a conditional wakeup that checks a shell command at intervals and sends notification only when the condition becomes true (exit 0) or timeout is reached. ' +
       'Silent polling preserves LLM context windows by avoiding unnecessary notifications. ' +
+      'The worker can be an agent, terminal, or embedded-agent worker. ' +
       'Returns a wakeup ID for cancellation. The wakeup auto-stops after sending one notification.',
     {
       sessionId: z.string().describe(
@@ -1506,9 +1511,9 @@ export function createMcpApp(deps: McpDependencies): Hono {
         if (!worker) {
           return errorResult(`Worker ${workerId} not found in session ${sessionId}`);
         }
-        if (!isPtyBackedWorker(worker)) {
+        if (!canReceiveNotifications(worker)) {
           return errorResult(
-            `Worker ${workerId} in session ${sessionId} does not support PTY notifications: requires a PTY-backed worker (agent/terminal)`,
+            `Worker ${workerId} in session ${sessionId} cannot receive notifications: requires an agent, terminal, or embedded-agent worker`,
           );
         }
 

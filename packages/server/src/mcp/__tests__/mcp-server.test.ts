@@ -348,6 +348,20 @@ function parseToolResult(response: Awaited<ReturnType<typeof callTool>>): unknow
 }
 
 /**
+ * Poll `cond` until it's true or `timeoutMs` elapses. Needed for assertions
+ * that depend on `fakeEmbeddedSpawn.pushLine`'s effect being processed by the
+ * service's background stdout-reader loop, which is not directly awaited by
+ * `callTool` (mirrors `embedded-agent-worker-service.test.ts`'s `waitFor`).
+ */
+async function waitFor(cond: () => boolean, timeoutMs = 1000): Promise<void> {
+  const start = Date.now();
+  while (!cond()) {
+    if (Date.now() - start > timeoutMs) throw new Error('waitFor timed out');
+    await new Promise((resolve) => setTimeout(resolve, 2));
+  }
+}
+
+/**
  * Call an MCP tool expecting a TRANSPORT-level rejection (Issue #1269): a
  * caller with no verified identity under `AGENT_CONSOLE_MCP_AUTH=enforce`
  * never reaches the tool body at all -- `createMcpAuthMiddleware` rejects
@@ -1931,7 +1945,7 @@ describe('MCP Server Tools', () => {
       await deactivatePromise;
     });
 
-    it('should fail with a classified message when the embedded-agent target is mid-turn (TURN_IN_PROGRESS)', async () => {
+    it('should queue (not reject) a message to an embedded-agent target that is mid-turn, delivered as the next turn once the loop reports idle (R3 mid-turn notification queue, Issue #1574)', async () => {
       const session = await sessionManager.createSession(
         { type: 'quick', locationPath: '/test/path', agentId: 'claude-code' },
         // createdBy is required for embedded-agent activation to mint an MCP
@@ -1951,10 +1965,11 @@ describe('MCP Server Tools', () => {
 
       await sessionManager.activateEmbeddedAgentWorker(session.id, embeddedWorker!.id);
       // Admit a turn that never resolves idle, so the second delivery below
-      // hits TURN_IN_PROGRESS without a second activation attempt.
+      // arrives while the worker is busy.
       const first = await sessionManager.sendEmbeddedAgentUserMessage(session.id, embeddedWorker!.id, 'busy');
       expect(first.ok).toBe(true);
       expect(fakeEmbeddedSpawn.captured.length).toBe(1);
+      const stdinWritesBeforeSecondSend = fakeEmbeddedSpawn.stdinWrites.length;
 
       const response = await callTool(app, mcpSessionId, 'send_session_message', {
         toSessionId: session.id,
@@ -1963,13 +1978,30 @@ describe('MCP Server Tools', () => {
         fromSessionId: senderSession.id,
       }, nextId++);
 
-      expect(response.result?.isError).toBe(true);
-      const data = parseToolResult(response) as { error: string };
-      expect(data.error).toContain('turn in progress');
-      // No re-activation attempted (already activated).
+      // R3: the tool call succeeds -- the notification is queued rather than
+      // rejected -- and no re-activation was attempted (already activated).
+      expect(response.result?.isError).toBeUndefined();
+      const data = parseToolResult(response) as { messageId: string; path: string };
+      expect(data.messageId).toBeDefined();
       expect(fakeEmbeddedSpawn.captured.length).toBe(1);
+      // Not delivered yet -- still mid the first turn.
+      expect(fakeEmbeddedSpawn.stdinWrites.length).toBe(stdinWritesBeforeSecondSend);
 
-      // Teardown: clear the turn so afterEach's deactivate isn't rejected.
+      // Resolve the first turn -> idle -> queue flush delivers the queued
+      // notification as the next turn.
+      fakeEmbeddedSpawn.pushLine({ v: 1, type: 'state', state: 'idle' });
+      await waitFor(() => fakeEmbeddedSpawn.stdinWrites.length > stdinWritesBeforeSecondSend);
+
+      const userMessageWrites = fakeEmbeddedSpawn.stdinWrites
+        .map((w) => JSON.parse(w) as { type: string; text?: string })
+        .filter((c) => c.type === 'user-message');
+      expect(userMessageWrites).toHaveLength(2);
+      expect(userMessageWrites[1].text).toContain('[internal:message]');
+      expect(userMessageWrites[1].text).toContain(`from=${senderSession.id}`);
+      expect(userMessageWrites[1].text).toContain(data.path);
+
+      // Teardown: clear the queue-flushed turn so afterEach's deactivate
+      // isn't rejected.
       fakeEmbeddedSpawn.pushLine({ v: 1, type: 'state', state: 'idle' });
     });
 
@@ -4454,8 +4486,31 @@ describe('MCP Server Tools', () => {
         const data = parseToolResult(response) as { error: string };
 
         expect(response.result?.isError).toBe(true);
-        expect(data.error).toContain('does not support PTY notifications');
-        expect(data.error).toContain('requires a PTY-backed worker (agent/terminal)');
+        expect(data.error).toContain('cannot receive notifications');
+        expect(data.error).toContain('requires an agent, terminal, or embedded-agent worker');
+      });
+
+      it('should create a timer when workerId targets a deactivated embedded-agent worker (Issue #1574: notification-target parity)', async () => {
+        const session = await sessionManager.createSession(
+          { type: 'quick', locationPath: '/test/path', agentId: 'claude-code' },
+          { createdBy: 'test-user-id' },
+        );
+        const embeddedWorker = await sessionManager.createWorker(session.id, {
+          type: 'embedded-agent',
+          embeddedAgentId: TEST_EMBEDDED_AGENT_DEF.id,
+        });
+        expect(embeddedWorker).toBeDefined();
+
+        const response = await callTool(app, mcpSessionId, 'create_timer', {
+          sessionId: session.id,
+          workerId: embeddedWorker!.id,
+          intervalSeconds: 60,
+          action: 'Check CI status',
+        }, nextId++);
+
+        expect(response.result?.isError).toBeUndefined();
+        const data = parseToolResult(response) as { timerId: string };
+        expect(data.timerId).toBeDefined();
       });
     });
 
@@ -4580,8 +4635,8 @@ describe('MCP Server Tools', () => {
         const data = parseToolResult(response) as { error: string };
 
         expect(response.result?.isError).toBe(true);
-        expect(data.error).toContain('does not support PTY notifications');
-        expect(data.error).toContain('requires a PTY-backed worker (agent/terminal)');
+        expect(data.error).toContain('cannot receive notifications');
+        expect(data.error).toContain('requires an agent, terminal, or embedded-agent worker');
       });
     });
   });
