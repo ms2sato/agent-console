@@ -69,6 +69,38 @@ function isRuntimeImportClause(importClause) {
 }
 
 /**
+ * Determine whether an `ExportDeclaration` with a module specifier (a
+ * relative re-export, e.g. `export { A } from '../types/y.js'`) represents
+ * at least one runtime (value-carrying) re-export, as opposed to a purely
+ * type-only re-export that cannot change accepted wire values at runtime.
+ * Mirrors `isRuntimeImportClause` above, but the whole-declaration type-only
+ * flag lives directly on `ExportDeclaration` (there is no separate "export
+ * clause" object the way `ImportDeclaration` has `importClause`).
+ *
+ * - A whole-declaration `export type { ... } from '...'` (`isTypeOnly` on
+ *   the declaration itself) never counts, regardless of what it names.
+ * - `export * from '...'` (no export clause at all — a wildcard re-export)
+ *   always counts: like a bare side-effect import, we cannot tell what it
+ *   re-exports without following it, so it is treated as runtime.
+ * - `export * as ns from '...'` (a `NamespaceExport` clause) always counts.
+ * - Named re-exports (`export { A, type B } from '...'`) count if AT LEAST
+ *   ONE named specifier is not itself marked `isTypeOnly` — the same
+ *   per-specifier rule as named imports.
+ * @param {ts.ExportDeclaration} exportDeclaration
+ * @returns {boolean}
+ */
+function isRuntimeExportClause(exportDeclaration) {
+  if (exportDeclaration.isTypeOnly) return false;
+  const exportClause = exportDeclaration.exportClause;
+  if (!exportClause) return true;
+  if (ts.isNamespaceExport(exportClause)) return true;
+  if (ts.isNamedExports(exportClause)) {
+    return exportClause.elements.some((element) => !element.isTypeOnly);
+  }
+  return true;
+}
+
+/**
  * Resolve a relative import specifier (written NodeNext-style with a `.js`
  * extension, e.g. `'../types/embedded-agent.js'`) to the absolute path of
  * the `.ts` source file it actually points at on disk.
@@ -82,14 +114,22 @@ function resolveImportSpecifierToFile(fromFile, specifier) {
 }
 
 /**
- * Parse a single file's top-level import declarations and return the
- * absolute paths of every module it runtime-imports via a RELATIVE
- * specifier (package specifiers, i.e. anything not starting with `.`, are
- * out of scope by construction — they live outside `packages/shared/src`).
+ * Parse a single file's top-level import AND export declarations and
+ * return the absolute paths of every module it runtime-depends-on via a
+ * RELATIVE specifier (package specifiers, i.e. anything not starting with
+ * `.`, are out of scope by construction — they live outside
+ * `packages/shared/src`). Both statement kinds can carry a runtime
+ * dependency on another module: an ordinary `import`, and a relative
+ * re-export (`export { X } from '...'` / `export * from '...'`) — a common
+ * barrel-file pattern where a schema file re-exports a value it never
+ * itself binds a local name to. A dynamic `import('./x.js')` CALL
+ * EXPRESSION is deliberately out of scope: only static `ImportDeclaration`
+ * / `ExportDeclaration` syntax is walked, never an arbitrary expression
+ * that happens to be an import call.
  * @param {string} file absolute path
  * @returns {string[]} absolute paths, not necessarily deduplicated or sorted
  */
-function findRuntimeRelativeImportFiles(file) {
+function findRuntimeRelativeDependencyFiles(file) {
   const content = readFileSync(file, 'utf8');
   const sourceFile = ts.createSourceFile(
     file,
@@ -100,20 +140,32 @@ function findRuntimeRelativeImportFiles(file) {
   );
   const files = [];
   for (const statement of sourceFile.statements) {
-    if (!ts.isImportDeclaration(statement)) continue;
-    if (!ts.isStringLiteral(statement.moduleSpecifier)) continue;
-    const specifier = statement.moduleSpecifier.text;
-    if (!specifier.startsWith('.')) continue;
-    if (!isRuntimeImportClause(statement.importClause)) continue;
-    files.push(resolveImportSpecifierToFile(file, specifier));
+    if (ts.isImportDeclaration(statement)) {
+      if (!ts.isStringLiteral(statement.moduleSpecifier)) continue;
+      const specifier = statement.moduleSpecifier.text;
+      if (!specifier.startsWith('.')) continue;
+      if (!isRuntimeImportClause(statement.importClause)) continue;
+      files.push(resolveImportSpecifierToFile(file, specifier));
+    } else if (ts.isExportDeclaration(statement)) {
+      // A local re-export (`export { X };`, no `from '...'`) has no
+      // moduleSpecifier at all and names nothing outside this file.
+      if (!statement.moduleSpecifier) continue;
+      if (!ts.isStringLiteral(statement.moduleSpecifier)) continue;
+      const specifier = statement.moduleSpecifier.text;
+      if (!specifier.startsWith('.')) continue;
+      if (!isRuntimeExportClause(statement)) continue;
+      files.push(resolveImportSpecifierToFile(file, specifier));
+    }
   }
   return files;
 }
 
 /**
  * Resolve the transitive closure of files that the given schema files
- * runtime-import (directly or indirectly) via relative specifiers, stopping
- * at package specifiers and at files already in `schemaFiles` itself.
+ * runtime-depend-on (directly or indirectly) via relative specifiers —
+ * either an ordinary import or a relative re-export (`export ... from`) —
+ * stopping at package specifiers and at files already in `schemaFiles`
+ * itself.
  *
  * This exists because a wire schema's accepted vocabulary can be built from
  * a constant that lives outside `packages/shared/src/schemas/` (e.g. a
@@ -132,11 +184,11 @@ export function resolveRuntimeImportClosure(schemaFiles) {
   const queue = [...schemaFiles];
   while (queue.length > 0) {
     const file = queue.shift();
-    for (const importedFile of findRuntimeRelativeImportFiles(file)) {
-      if (included.has(importedFile)) continue;
-      included.add(importedFile);
-      closureFiles.push(importedFile);
-      queue.push(importedFile);
+    for (const dependencyFile of findRuntimeRelativeDependencyFiles(file)) {
+      if (included.has(dependencyFile)) continue;
+      included.add(dependencyFile);
+      closureFiles.push(dependencyFile);
+      queue.push(dependencyFile);
     }
   }
   return closureFiles.sort();
