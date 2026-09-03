@@ -196,6 +196,31 @@ export async function restartAgentWorker(
 }
 
 /**
+ * Cross-type restart (#1171): converts a PTY `agent` worker into an
+ * `embedded-agent` worker IN PLACE (same workerId), tearing down the PTY and
+ * activating a real embedded-agent subprocess. Distinct from
+ * `restartAgentWorker` because the wire shape is a separate union member
+ * (`EmbeddedRestartSchema`, `packages/shared/src/schemas/worker.ts`) that
+ * structurally has no `continueConversation` / `agentId` field -- there is no
+ * PTY conversation to continue across kinds.
+ */
+export async function restartWorkerAsEmbeddedAgent(
+  sessionId: string,
+  workerId: string,
+  embeddedAgentId: string,
+  branch?: string
+): Promise<{ worker: Worker }> {
+  const res = await api.sessions[':sessionId'].workers[':workerId'].restart.$post({
+    param: { sessionId, workerId },
+    json: { embeddedAgentId, ...(branch ? { branch } : {}) },
+  });
+  if (!res.ok) {
+    await handleApiError(res, 'Failed to restart worker');
+  }
+  return res.json() as Promise<{ worker: Worker }>;
+}
+
+/**
  * Compaction: set an embedded-agent worker's auto-compaction toggle.
  *
  * The server is the source of truth -- the updated worker comes back in the

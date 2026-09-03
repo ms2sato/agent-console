@@ -260,43 +260,24 @@ describe('UnifiedAgentSelector', () => {
     expect(props.onChange).toHaveBeenCalledWith({ kind: 'terminal', agentId: 'custom-agent' });
   });
 
-  describe('disabledKinds', () => {
-    it('renders embedded options as disabled and shows the restart notice when embedded is disabled', async () => {
-      renderUnifiedAgentSelector({
-        disabledKinds: [{ kind: 'embedded', context: 'restart' }],
-      });
+  // The restart dialog's embedded-disabled scenario shipped in #1171: cross-
+  // type restart is now fully supported, so `RestartSessionDialog` no longer
+  // passes `disabledKinds`, and `NoticeContext` (AgentKindNotice.tsx) has no
+  // registered members anymore -- there is no longer a type-safe way to
+  // construct a `disabledKinds` entry for this test file to exercise. The
+  // generic disabling mechanism itself (`disabledKindSet` / `activeNotices`
+  // in this component) is unchanged and remains available for a future
+  // visible-but-restricted context; it has no current real-world caller to
+  // pin a test against.
 
-      await waitFor(() => {
-        expect(screen.getByText('Local GPT')).toBeTruthy();
-      });
+  it('shows no disabled-kind notice by default (no disabledKinds passed)', async () => {
+    renderUnifiedAgentSelector();
 
-      const embeddedOption = screen.getByText('Local GPT').closest('option') as HTMLOptionElement;
-      expect(embeddedOption.disabled).toBe(true);
-
-      const terminalOption = screen.getByText('Claude Code (built-in)').closest('option') as HTMLOptionElement;
-      expect(terminalOption.disabled).toBe(false);
-
-      expect(screen.getByText(/Restarting into an embedded agent requires cross-type restart support/)).toBeTruthy();
+    await waitFor(() => {
+      expect(screen.getByText('Local GPT')).toBeTruthy();
     });
 
-    it('does not render a notice when the disabled kind has no entries', async () => {
-      mockFetch.mockImplementation((input) => {
-        const url = resolveUrl(input);
-        if (url.includes('embedded-agents')) {
-          return Promise.resolve(createMockResponse({ embeddedAgents: [] }));
-        }
-        return Promise.resolve(createMockResponse(mockAgentsResponse));
-      });
-
-      renderUnifiedAgentSelector({
-        disabledKinds: [{ kind: 'embedded', context: 'restart' }],
-      });
-
-      await waitFor(() => {
-        expect(screen.getByText('Claude Code (built-in)')).toBeTruthy();
-      });
-
-      expect(screen.queryByText(/Restarting into an embedded agent requires/)).toBeNull();
-    });
+    const embeddedOption = screen.getByText('Local GPT').closest('option') as HTMLOptionElement;
+    expect(embeddedOption.disabled).toBe(false);
   });
 });

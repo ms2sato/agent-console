@@ -9,8 +9,8 @@ import {
   AlertDialogAction,
   AlertDialogCancel,
 } from '../ui/alert-dialog';
-import { restartAgentWorker, getSession } from '../../lib/api';
-import { UnifiedAgentSelector, type AgentSelection } from '../AgentSelector';
+import { restartAgentWorker, restartWorkerAsEmbeddedAgent, getSession } from '../../lib/api';
+import { UnifiedAgentSelector, useResolvedEmbeddedAgentId, type AgentSelection } from '../AgentSelector';
 import { useResolvedAgentId } from '../../hooks/useAgents';
 
 export interface RestartSessionDialogProps {
@@ -18,17 +18,41 @@ export interface RestartSessionDialogProps {
   onOpenChange: (open: boolean) => void;
   sessionId: string;
   currentAgentId?: string;
+  /**
+   * Whether the session currently has a PTY `agent` worker to restart.
+   * `undefined`/omitted (parent's `session` hasn't loaded yet) is treated as
+   * `true` (don't disable while unknown). `false` means the session's
+   * primary worker is already `embedded-agent` (no PTY at all) -- restarting
+   * THAT worker isn't supported yet (#1592); see R6(c).
+   */
+  hasAgentWorker?: boolean;
   currentBranch?: string;
   isWorktreeSession?: boolean;
   onSessionRestart?: () => void;
   onBranchChange?: (newBranch: string) => void;
 }
 
+// Cross-type restart (R6(c)): the primary worker of an embedded-primary
+// session (no PTY `agent` worker at all) cannot be restarted through this
+// dialog yet.
+const NO_PTY_WORKER_NOTICE =
+  "Restarting an embedded-agent session's primary worker isn't supported yet — tracked in #1592.";
+
+// Cross-type restart (R6(a)) exact wording, ruled by the Architect -- do not
+// paraphrase.
+const EMBEDDED_SWITCH_NOTICE =
+  'Agent will be switched to an embedded agent. The terminal will be replaced with a chat; its transcript is not carried over.';
+
+type LocalSelection =
+  | { kind: 'terminal'; agentId: string | undefined }
+  | { kind: 'embedded'; embeddedAgentId: string | undefined };
+
 export function RestartSessionDialog({
   open,
   onOpenChange,
   sessionId,
   currentAgentId,
+  hasAgentWorker = true,
   currentBranch,
   isWorktreeSession,
   onSessionRestart,
@@ -36,29 +60,37 @@ export function RestartSessionDialog({
 }: RestartSessionDialogProps) {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [selectedAgentId, setSelectedAgentId] = useState<string | undefined>(currentAgentId);
+  const [selection, setSelection] = useState<LocalSelection>({ kind: 'terminal', agentId: currentAgentId });
   const [branchValue, setBranchValue] = useState(currentBranch ?? '');
-  const resolvedAgentId = useResolvedAgentId(selectedAgentId, currentAgentId);
+  const resolvedAgentId = useResolvedAgentId(
+    selection.kind === 'terminal' ? selection.agentId : undefined,
+    currentAgentId
+  );
+  const resolvedEmbeddedAgentId = useResolvedEmbeddedAgentId(
+    selection.kind === 'embedded' ? selection.embeddedAgentId : undefined
+  );
 
-  // Reset selected agent and branch when dialog opens
+  // Reset selection and branch when dialog opens
   useEffect(() => {
     if (open) {
-      setSelectedAgentId(currentAgentId);
+      setSelection({ kind: 'terminal', agentId: currentAgentId });
       setBranchValue(currentBranch ?? '');
     }
   }, [open, currentAgentId, currentBranch]);
 
-  const isAgentChanged = resolvedAgentId !== currentAgentId;
+  const isEmbeddedSelection = selection.kind === 'embedded';
+  const isAgentChanged = selection.kind === 'terminal' && resolvedAgentId !== currentAgentId;
   const trimmedBranch = branchValue.trim();
   const isBranchEmpty = isWorktreeSession === true && trimmedBranch === '';
   const isBranchChanged = isWorktreeSession === true && trimmedBranch !== '' && trimmedBranch !== (currentBranch ?? '');
 
   const handleRestart = async (continueConversation: boolean) => {
+    if (!hasAgentWorker) return; // submit is disabled for this case; defensive no-op
     setIsSubmitting(true);
     setError(null);
 
     try {
-      // Get the session to find the first agent worker
+      // Get the session to find the agent worker being restarted.
       const session = await getSession(sessionId);
       if (!session) {
         throw new Error('Session not found');
@@ -67,9 +99,18 @@ export function RestartSessionDialog({
       if (!agentWorker) {
         throw new Error('No agent worker found');
       }
-      const agentId = isAgentChanged ? resolvedAgentId : undefined;
       const newBranch = isBranchChanged ? trimmedBranch : undefined;
-      await restartAgentWorker(sessionId, agentWorker.id, continueConversation, agentId, newBranch);
+
+      if (isEmbeddedSelection) {
+        if (!resolvedEmbeddedAgentId) {
+          throw new Error('No embedded agent selected');
+        }
+        await restartWorkerAsEmbeddedAgent(sessionId, agentWorker.id, resolvedEmbeddedAgentId, newBranch);
+      } else {
+        const agentId = isAgentChanged ? resolvedAgentId : undefined;
+        await restartAgentWorker(sessionId, agentWorker.id, continueConversation, agentId, newBranch);
+      }
+
       onOpenChange(false);
       if (newBranch) {
         onBranchChange?.(newBranch);
@@ -89,17 +130,19 @@ export function RestartSessionDialog({
     onOpenChange(false);
   };
 
-  // Embedded agents are visible in the picker (uniform-listing principle,
-  // docs/design/agent-surface.md) but disabled: restart is terminal-only
-  // end-to-end today (RestartWorkerRequestSchema has no embeddedAgentId
-  // field, tracked by #1171, blocked on #1123 transcript restore). Only a
-  // 'terminal' selection ever reaches setSelectedAgentId, so it is
-  // structurally impossible for a submit to carry an embedded id.
-  const handleAgentSelectionChange = (selection: AgentSelection) => {
-    if (selection.kind === 'terminal') {
-      setSelectedAgentId(selection.agentId);
+  const handleAgentSelectionChange = (newSelection: AgentSelection) => {
+    if (newSelection.kind === 'terminal') {
+      setSelection({ kind: 'terminal', agentId: newSelection.agentId });
+    } else {
+      setSelection({ kind: 'embedded', embeddedAgentId: newSelection.embeddedAgentId });
     }
   };
+
+  const submitDisabled =
+    isSubmitting ||
+    isBranchEmpty ||
+    !hasAgentWorker ||
+    (isEmbeddedSelection && !resolvedEmbeddedAgentId);
 
   return (
     <AlertDialog open={open} onOpenChange={handleClose}>
@@ -114,11 +157,12 @@ export function RestartSessionDialog({
           <div className="flex items-center gap-2">
             <span className="text-sm text-gray-400 shrink-0 w-14">Agent:</span>
             <UnifiedAgentSelector
-              agentId={resolvedAgentId}
+              agentId={selection.kind === 'terminal' ? resolvedAgentId : undefined}
+              embeddedAgentId={selection.kind === 'embedded' ? resolvedEmbeddedAgentId : undefined}
               onChange={handleAgentSelectionChange}
               className="flex-1"
               priorityAgentId={currentAgentId}
-              disabledKinds={[{ kind: 'embedded', context: 'restart' }]}
+              disabled={!hasAgentWorker}
             />
           </div>
           {isWorktreeSession && (
@@ -130,23 +174,30 @@ export function RestartSessionDialog({
                 onChange={(e) => setBranchValue(e.target.value)}
                 className="input flex-1"
                 placeholder="Branch name"
+                disabled={!hasAgentWorker}
               />
             </div>
           )}
           {isBranchEmpty && (
             <p className="text-xs text-red-400">Branch name cannot be empty.</p>
           )}
-          {isAgentChanged && isBranchChanged && (
+          {!hasAgentWorker && (
+            <p className="text-xs text-yellow-400">{NO_PTY_WORKER_NOTICE}</p>
+          )}
+          {hasAgentWorker && isEmbeddedSelection && (
+            <p className="text-xs text-yellow-400">{EMBEDDED_SWITCH_NOTICE}</p>
+          )}
+          {hasAgentWorker && !isEmbeddedSelection && isAgentChanged && isBranchChanged && (
             <p className="text-xs text-yellow-400">
               Agent and branch will be changed. The terminal will be restarted.
             </p>
           )}
-          {isAgentChanged && !isBranchChanged && (
+          {hasAgentWorker && !isEmbeddedSelection && isAgentChanged && !isBranchChanged && (
             <p className="text-xs text-yellow-400">
               Agent will be switched. The terminal will be restarted with the new agent.
             </p>
           )}
-          {!isAgentChanged && isBranchChanged && (
+          {hasAgentWorker && !isEmbeddedSelection && !isAgentChanged && isBranchChanged && (
             <p className="text-xs text-yellow-400">
               Branch will be renamed. The terminal will be restarted.
             </p>
@@ -160,13 +211,15 @@ export function RestartSessionDialog({
           <button
             onClick={() => handleRestart(false)}
             className="btn bg-slate-600 hover:bg-slate-500"
-            disabled={isSubmitting || isBranchEmpty}
+            disabled={submitDisabled}
           >
             New Session
           </button>
-          <AlertDialogAction onClick={() => handleRestart(true)} disabled={isSubmitting || isBranchEmpty}>
-            {isSubmitting ? 'Restarting...' : 'Continue (-c)'}
-          </AlertDialogAction>
+          {!isEmbeddedSelection && (
+            <AlertDialogAction onClick={() => handleRestart(true)} disabled={submitDisabled}>
+              {isSubmitting ? 'Restarting...' : 'Continue (-c)'}
+            </AlertDialogAction>
+          )}
         </AlertDialogFooter>
       </AlertDialogContent>
     </AlertDialog>

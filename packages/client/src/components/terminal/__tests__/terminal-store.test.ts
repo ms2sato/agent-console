@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, spyOn } from 'bun:test';
-import type { AppServerMessage } from '@agent-console/shared';
+import type { AppServerMessage, Session, Worker } from '@agent-console/shared';
 import { WS_CLOSE_CODE } from '@agent-console/shared';
 import { MockWebSocket, installMockWebSocket } from '../../../test/mock-websocket';
 import {
@@ -858,6 +858,101 @@ describe('terminal-store', () => {
     expect(_inspect(instance).disposed).toBe(true);
     // getOrCreate returns a fresh instance after disposal.
     expect(getOrCreateTerminal('sd', 'w')).not.toBe(instance);
+  });
+
+  // Cross-type restart (#1171): agent -> embedded-agent conversion happens IN
+  // PLACE (same sessionId/workerId). The server broadcasts session-updated
+  // (worker flipped type) BEFORE worker-restarted for the same worker
+  // (worker-lifecycle-manager.ts's restartAgentWorkerAsEmbedded doc comment,
+  // steps 8-9). A live TerminalController for that worker must dispose on
+  // the type flip rather than let the later worker-restarted reconnect a PTY
+  // WebSocket to a URL that no longer backs a PTY.
+  describe('session-updated worker type flip (cross-type restart)', () => {
+    function makeSession(workers: Worker[], sessionId: string): Session {
+      return {
+        type: 'quick',
+        id: sessionId,
+        locationPath: `/tmp/${sessionId}`,
+        status: 'active',
+        activationState: 'running',
+        createdAt: '2026-01-01T00:00:00Z',
+        workers,
+        isShared: false,
+        recoveryState: 'healthy',
+      };
+    }
+
+    function agentWorker(id: string): Worker {
+      return {
+        id,
+        type: 'agent',
+        name: 'Claude Code',
+        createdAt: '2026-01-01T00:00:00Z',
+        agentId: 'claude-code',
+        activated: true,
+      };
+    }
+
+    function embeddedAgentWorker(id: string): Worker {
+      return {
+        id,
+        type: 'embedded-agent',
+        name: 'Embedded Agent',
+        createdAt: '2026-01-01T00:00:00Z',
+        embeddedAgentId: 'embedded-1',
+        activated: true,
+        autoCompaction: true,
+      };
+    }
+
+    it('disposes on session-updated (type flip) and a later worker-restarted for the same worker is a no-op (no reconnect)', () => {
+      const bus = makeAppBus();
+      _setAppSubscribe(bus.subscribe);
+      const instance = getOrCreateTerminal('flip', 'w');
+      MockWebSocket.getLastInstance()!.simulateOpen();
+      const wsCountBeforeFlip = MockWebSocket.getInstances().length;
+
+      bus.emit({ type: 'session-updated', session: makeSession([embeddedAgentWorker('w')], 'flip') });
+      expect(_inspect(instance).disposed).toBe(true);
+
+      // Matches the documented server ordering: worker-restarted arrives
+      // AFTER session-updated for the same (sessionId, workerId).
+      bus.emit({ type: 'worker-restarted', sessionId: 'flip', workerId: 'w', activityState: 'idle' });
+
+      // No new WebSocket was constructed by the (now-disposed) instance's
+      // worker-restarted handler.
+      expect(MockWebSocket.getInstances().length).toBe(wsCountBeforeFlip);
+    });
+
+    it('negative control: a same-kind restart (worker stays "agent") still reconnects on worker-restarted, no dispose', () => {
+      const bus = makeAppBus();
+      _setAppSubscribe(bus.subscribe);
+      const instance = getOrCreateTerminal('noflip', 'w');
+      const ws1 = MockWebSocket.getLastInstance();
+      ws1!.simulateOpen();
+
+      // session-updated where the worker's type is UNCHANGED (e.g. an
+      // unrelated session field changed) must not dispose the instance.
+      bus.emit({ type: 'session-updated', session: makeSession([agentWorker('w')], 'noflip') });
+      expect(_inspect(instance).disposed).toBe(false);
+
+      bus.emit({ type: 'worker-restarted', sessionId: 'noflip', workerId: 'w', activityState: 'idle' });
+
+      expect(_inspect(instance).disposed).toBe(false);
+      const ws2 = MockWebSocket.getLastInstance();
+      expect(ws2).not.toBe(ws1); // reconnected, exactly as the existing PTY-restart flow expects
+    });
+
+    it('session-updated for a different session is ignored', () => {
+      const bus = makeAppBus();
+      _setAppSubscribe(bus.subscribe);
+      const instance = getOrCreateTerminal('own-session', 'w');
+      MockWebSocket.getLastInstance()!.simulateOpen();
+
+      bus.emit({ type: 'session-updated', session: makeSession([embeddedAgentWorker('w')], 'other-session') });
+
+      expect(_inspect(instance).disposed).toBe(false);
+    });
   });
 
   it('activity message is surfaced in the snapshot', () => {
