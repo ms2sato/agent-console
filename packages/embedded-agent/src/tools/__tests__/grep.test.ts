@@ -104,6 +104,23 @@ describe('grepTool', () => {
     expect(result.result).toBe('Access outside session location is not permitted.');
   });
 
+  it('rejects a root path under ctx.attachmentRoots (#1570: grep.ts never forwards attachmentRoots)', async () => {
+    const attachmentRoot = await fsPromises.mkdtemp(path.join(os.tmpdir(), 'embedded-agent-attach-'));
+    try {
+      await fsPromises.writeFile(path.join(attachmentRoot, 'a.txt'), 'x');
+
+      const result = await grepTool.execute(
+        { pattern: 'x', path: attachmentRoot },
+        { locationPath, attachmentRoots: [attachmentRoot] },
+      );
+
+      expect(result.ok).toBe(false);
+      expect(result.result).toBe('Access outside session location is not permitted.');
+    } finally {
+      await fsPromises.rm(attachmentRoot, { recursive: true, force: true });
+    }
+  });
+
   it('rejects a missing pattern argument', async () => {
     const result = await grepTool.execute({}, { locationPath });
 

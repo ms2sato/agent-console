@@ -245,6 +245,18 @@ interface SessionManagerOptions {
   usernameLookup?: UsernameLookup;
 }
 
+/**
+ * Folds attached file paths into the delivery text as a labelled block, so
+ * the model can tell an attachment from a path the user typed inline.
+ * Exported (pure, no state) so it is directly unit-testable and so its
+ * output shape has a single writer.
+ */
+export function composeEmbeddedAgentDeliveryText(content: string, filePaths: string[]): string {
+  if (filePaths.length === 0) return content;
+  const block = ['Attached files:', ...filePaths.map((p) => `- ${p}`)].join('\n');
+  return content.length > 0 ? `${content}\n\n${block}` : block;
+}
+
 export class SessionManager {
   private sessions: Map<string, InternalSession> = new Map();
   private sessionLifecycleCallbacks?: SessionLifecycleCallbacks;
@@ -644,10 +656,11 @@ export class SessionManager {
       await this.activateEmbeddedAgentWorker(sessionId, toWorkerId);
 
       // Embedded delivery has no file-attachment concept; fold filePaths
-      // into the text (best-effort parity with the PTY branch's typed-lines
-      // behavior) so a same-session composer send with files still delivers
-      // something meaningful.
-      const deliveryText = [content, ...(filePaths ?? [])].filter((s) => s.length > 0).join('\n');
+      // into the text as a labelled block (best-effort parity with the PTY
+      // branch's typed-lines behavior) so a same-session composer send with
+      // files still delivers something meaningful, and so the model can
+      // tell an attachment from a path the user typed inline.
+      const deliveryText = composeEmbeddedAgentDeliveryText(content, filePaths ?? []);
       const result = await this.sendEmbeddedAgentUserMessage(sessionId, toWorkerId, deliveryText);
       if (!result.ok) {
         throw new EmbeddedMessageDeliveryError(result.error, result.code);
