@@ -315,7 +315,7 @@ async function buildChainDirs(cwd: string): Promise<string[]> {
  * rather than fatal for any realistic tree -- but latent is still a defect,
  * not a feature, and this repo's own root holds both files, so this ran on
  * every openai-api activation here even before the SDK arm doubled its
- * reach (Issue #1343). `console.warn` writes to stderr, which the loop's
+ * reach (#1343). `console.warn` writes to stderr, which the loop's
  * own stdout-writing convention never touches.
  */
 async function resolveDirectoryInstructionFile(dir: string): Promise<InstructionSegment | null> {
