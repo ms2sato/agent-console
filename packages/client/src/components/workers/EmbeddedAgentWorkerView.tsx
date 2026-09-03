@@ -456,15 +456,25 @@ export function EmbeddedAgentWorkerView({
           says sending a message resumes it, so a duplicate manual action
           would be redundant. */}
       {currentExit !== null && currentExit.reason !== 'evicted' && (
-        <div className="flex items-center justify-between gap-3 px-4 py-2 bg-slate-800/60 border-t border-slate-700 text-sm text-gray-400 shrink-0">
-          <span>Agent process exited{currentExit.code !== null ? ` (code: ${currentExit.code})` : ''}.</span>
-          <button
-            onClick={restart}
-            className="flex items-center gap-1 text-xs px-2 py-1 rounded bg-slate-700 hover:bg-slate-600 text-gray-200"
-          >
-            <RefreshIcon className="w-3.5 h-3.5" />
-            Restart
-          </button>
+        <div className="px-4 py-2 bg-slate-800/60 border-t border-slate-700 text-sm text-gray-400 shrink-0">
+          <div className="flex items-center justify-between gap-3">
+            <span>Agent process exited{currentExit.code !== null ? ` (code: ${currentExit.code})` : ''}.</span>
+            <button
+              onClick={restart}
+              className="flex items-center gap-1 text-xs px-2 py-1 rounded bg-slate-700 hover:bg-slate-600 text-gray-200"
+            >
+              <RefreshIcon className="w-3.5 h-3.5" />
+              Restart
+            </button>
+          </div>
+          {currentExit.stderrTail !== undefined && (
+            <details className="mt-2">
+              <summary className="cursor-pointer text-xs text-gray-400">Show process output</summary>
+              <pre className="mt-1 max-h-48 overflow-auto whitespace-pre-wrap font-mono text-xs">
+                {currentExit.stderrTail}
+              </pre>
+            </details>
+          )}
         </div>
       )}
 
@@ -862,6 +872,14 @@ function ChatEntryRow({ entry, contextWindowTokens }: ChatEntryRowProps) {
       return (
         <div className="text-sm text-gray-400 bg-slate-800/60 rounded px-3 py-2">
           Agent process exited{entry.code !== null ? ` (code: ${entry.code})` : ''}.
+          {entry.stderrTail !== undefined && (
+            <details className="mt-2">
+              <summary className="cursor-pointer text-xs text-gray-400">Show process output</summary>
+              <pre className="mt-1 max-h-48 overflow-auto whitespace-pre-wrap font-mono text-xs">
+                {entry.stderrTail}
+              </pre>
+            </details>
+          )}
         </div>
       );
     case 'window-clamp':

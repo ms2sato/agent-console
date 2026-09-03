@@ -1594,6 +1594,104 @@ describe('EmbeddedAgentWorkerService exit handling', () => {
   });
 });
 
+/** Pull the single `exited` row out of a test's appended lines, parsed. */
+function findExitedRow(bufferOutput: ReturnType<typeof mock>): Record<string, unknown> {
+  const line = appendedLines(bufferOutput).find((l) => l.includes('"type":"exited"'));
+  if (line === undefined) throw new Error('expected an "exited" row to have been appended');
+  return JSON.parse(line) as Record<string, unknown>;
+}
+
+describe('EmbeddedAgentWorkerService exit handling — stderr tail (Issue #1454)', () => {
+  it('carries the stderr tail on an unexpected exit', async () => {
+    const h = setup();
+    await h.service.activate(h.sessionId, h.workerId);
+    h.recorder.onExit.mockClear();
+
+    h.fake.pushStderr('stderr line one\n');
+    h.fake.pushStderr('stderr line two\n');
+    h.fake.simulateExit(1);
+    await waitFor(() => h.worker.subprocess === null);
+
+    const row = findExitedRow(h.bufferOutput);
+    expect(row.reason).toBe('unexpected');
+    expect(row.stderrTail).toBe('stderr line one\nstderr line two\n');
+  });
+
+  it('retains only the LAST STDERR_TAIL_CAP bytes', async () => {
+    const h = setup();
+    await h.service.activate(h.sessionId, h.workerId);
+
+    const startMarker = 'START_MARKER_XYZ';
+    const endMarker = 'END_MARKER_ABC';
+    const filler = 'x'.repeat(2000);
+    // Total pushed length (~6000 chars) comfortably exceeds the 2048-byte cap,
+    // so the start marker is guaranteed to fall outside the retained window
+    // regardless of exactly where the cap boundary lands.
+    h.fake.pushStderr(startMarker + filler);
+    h.fake.pushStderr(filler);
+    h.fake.pushStderr(filler + endMarker);
+    h.fake.simulateExit(1);
+    await waitFor(() => h.worker.subprocess === null);
+
+    const row = findExitedRow(h.bufferOutput);
+    const tail = row.stderrTail as string;
+    expect(tail.length).toBeLessThanOrEqual(2048);
+    expect(tail).toContain(endMarker);
+    expect(tail).not.toContain(startMarker);
+  });
+
+  it('a managed exit (deactivate) carries no stderrTail even when stderr was written', async () => {
+    const h = setup();
+    await h.service.activate(h.sessionId, h.workerId);
+    h.recorder.onExit.mockClear();
+
+    h.fake.pushStderr('some warning output that must not leak into a managed exit row');
+    const dp = h.service.deactivate(h.sessionId, h.workerId);
+    h.fake.simulateExit(0);
+    await dp;
+
+    const row = findExitedRow(h.bufferOutput);
+    expect(row.reason).toBe('managed');
+    expect(Object.hasOwn(row, 'stderrTail')).toBe(false);
+  });
+
+  it('an unexpected exit with empty stderr has no stderrTail key', async () => {
+    const h = setup();
+    await h.service.activate(h.sessionId, h.workerId);
+    h.recorder.onExit.mockClear();
+
+    h.fake.simulateExit(1);
+    await waitFor(() => h.worker.subprocess === null);
+
+    const row = findExitedRow(h.bufferOutput);
+    expect(row.reason).toBe('unexpected');
+    expect(Object.hasOwn(row, 'stderrTail')).toBe(false);
+  });
+
+  it('the tail is per-incarnation: a fresh incarnation starts with an empty buffer', async () => {
+    const multi = makeMultiChildFakeSpawn();
+    const h = setup({ spawnAsUserFnOverride: multi.fn });
+
+    // Incarnation 1: writes stderr, then exits unexpectedly.
+    await h.service.activate(h.sessionId, h.workerId);
+    multi.children[0].pushStderr('leaked from incarnation 1, must not survive into incarnation 2');
+    multi.children[0].simulateExit(1);
+    await waitFor(() => h.worker.subprocess === null);
+
+    // Incarnation 2: a fresh activation on the same worker, no stderr written.
+    await h.service.activate(h.sessionId, h.workerId);
+    multi.children[1].simulateExit(1);
+    await waitFor(() => h.worker.subprocess === null);
+
+    const rows = appendedLines(h.bufferOutput)
+      .filter((l) => l.includes('"type":"exited"'))
+      .map((l) => JSON.parse(l) as Record<string, unknown>);
+    expect(rows).toHaveLength(2);
+    expect(rows[0]?.stderrTail).toBe('leaked from incarnation 1, must not survive into incarnation 2');
+    expect(Object.hasOwn(rows[1] ?? {}, 'stderrTail')).toBe(false);
+  });
+});
+
 // -----------------------------------------------------------------------
 // Issue #1230: feeding spawnAsUser consumers must close the stdin sink at
 // teardown so the OS pipe fd is released deterministically instead of being
@@ -3096,6 +3194,7 @@ interface FakeChild {
   stdinWrites: string[];
   killSignals: number[];
   pushStdout: (s: string) => void;
+  pushStderr: (s: string) => void;
   simulateExit: (code: number) => void;
   setOnKill: (fn: (signal: number) => void) => void;
 }
@@ -3140,6 +3239,7 @@ function makeMultiChildFakeSpawn(): MultiChildFakeSpawn {
       stdinWrites,
       killSignals,
       pushStdout: stdout.push,
+      pushStderr: stderr.push,
       simulateExit: (code: number) => {
         resolveExited(code);
         stdout.close();

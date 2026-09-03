@@ -657,6 +657,56 @@ describe('EmbeddedAgentWorkerView', () => {
     }
   });
 
+  describe('exited row -- stderr tail disclosure (#1454)', () => {
+    it('renders a "Show process output" disclosure with the raw tail, both on the historical row and the current-state sibling element, when stderrTail is present', async () => {
+      renderView({ sessionId: 's7-stderrtail', workerId: 'w7-stderrtail' });
+      const ws = MockWebSocket.getLastInstance();
+      act(() => {
+        ws?.simulateOpen();
+      });
+
+      const data = ndjson({
+        v: 1,
+        type: 'exited',
+        code: 1,
+        reason: 'unexpected',
+        stderrTail: 'TypeError: Cannot read properties of undefined',
+      });
+      act(() => {
+        ws?.simulateMessage(JSON.stringify({ type: 'history', data, offset: data.length, startOffset: 0, epoch: 1 }));
+      });
+      await flush();
+
+      // Two disclosures: one for the historical row, one for the
+      // current-state sibling element -- mirroring the "renders twice"
+      // shape of "Agent process exited" itself in the sibling tests above.
+      const disclosures = screen.getAllByText('Show process output');
+      expect(disclosures).toHaveLength(2);
+
+      const tails = screen.getAllByText('TypeError: Cannot read properties of undefined');
+      expect(tails).toHaveLength(2);
+      for (const tail of tails) {
+        expect(tail.tagName).toBe('PRE');
+      }
+    });
+
+    it('renders NO disclosure anywhere when stderrTail is absent (managed/evicted exits, or a pre-#1454 server)', async () => {
+      renderView({ sessionId: 's7-nostderrtail', workerId: 'w7-nostderrtail' });
+      const ws = MockWebSocket.getLastInstance();
+      act(() => {
+        ws?.simulateOpen();
+      });
+
+      const data = ndjson({ v: 1, type: 'exited', code: 0 });
+      act(() => {
+        ws?.simulateMessage(JSON.stringify({ type: 'history', data, offset: data.length, startOffset: 0, epoch: 1 }));
+      });
+      await flush();
+
+      expect(screen.queryByText('Show process output')).toBeNull();
+    });
+  });
+
   it('renders a tool-call card paired with its tool-result, including error styling data', async () => {
     renderView({ sessionId: 's8', workerId: 'w8' });
     const ws = MockWebSocket.getLastInstance();

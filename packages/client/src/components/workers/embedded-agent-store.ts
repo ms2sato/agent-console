@@ -73,8 +73,18 @@ export type EmbeddedAgentChatEntry =
    * see EmbeddedAgentServerEvent's `exited` doc comment. The store carries it
    * verbatim so the view has no store-side default to undo, and every
    * consumer tests `reason === 'evicted'` rather than truthiness.
+   *
+   * `stderrTail` mirrors the wire event's field the same way: present only
+   * when the server captured a non-empty tail for an `'unexpected'` exit,
+   * absent otherwise. Never defaulted to `''`.
    */
-  | { key: string; kind: 'exited'; code: number | null; reason?: ExitReason }
+  | {
+      key: string;
+      kind: 'exited';
+      code: number | null;
+      reason?: ExitReason;
+      stderrTail?: string;
+    }
   /**
    * Transcript Restore, R1: the turn identified by `turnId` was cut off by a
    * process boundary and never answered. Server-authored -- deliberately a
@@ -290,7 +300,7 @@ export interface EmbeddedAgentSnapshot {
    * exited-with-reason shape -- see design-principles.md "Define types by
    * what they represent, not where they're used".
    */
-  currentExit: { code: number | null; reason?: ExitReason } | null;
+  currentExit: { code: number | null; reason?: ExitReason; stderrTail?: string } | null;
 }
 
 export interface EmbeddedAgentInstance {
@@ -1219,6 +1229,9 @@ class EmbeddedAgentController implements EmbeddedAgentInstance {
           // `reason` and must stay absent here so the view renders it
           // exactly as it always did.
           ...(event.reason !== undefined ? { reason: event.reason } : {}),
+          // Same absence-preserving treatment for `stderrTail` (#1454):
+          // present only for an 'unexpected' exit with captured output.
+          ...(event.stderrTail !== undefined ? { stderrTail: event.stderrTail } : {}),
         });
         // R1 (#1455): the single set point for `currentExit` -- mirrors the
         // row's own reason handling above (verbatim, absence included).
@@ -1227,6 +1240,7 @@ class EmbeddedAgentController implements EmbeddedAgentInstance {
           currentExit: {
             code: event.code,
             ...(event.reason !== undefined ? { reason: event.reason } : {}),
+            ...(event.stderrTail !== undefined ? { stderrTail: event.stderrTail } : {}),
           },
         });
         // Defensive finalize: the process exited while some turn's thinking
