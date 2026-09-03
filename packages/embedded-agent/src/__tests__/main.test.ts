@@ -296,7 +296,7 @@ describe('runLoop — lifecycle', () => {
 });
 
 describe('runLoop — builtin tool merging (enabledTools)', () => {
-  it('merges the default builtin tools (Read/Glob/Grep) with MCP tools when enabledTools is absent', async () => {
+  it('merges the default builtin tools (Read/Glob/Grep/TodoWrite) with MCP tools when enabledTools is absent', async () => {
     const adapter = new CapturingAdapter();
     const { io } = makeIo([
       initCommand(),
@@ -310,7 +310,7 @@ describe('runLoop — builtin tool merging (enabledTools)', () => {
     const toolNames = adapter.capturedToolsCalls[0].map((t) => t.name).sort();
     // `Compact` sits alongside the builtins but is not one of them: the loop
     // prepends it itself, outside the registry `enabledTools` configures.
-    expect(toolNames).toEqual(['Compact', 'Glob', 'Grep', 'Read']);
+    expect(toolNames).toEqual(['Compact', 'Glob', 'Grep', 'Read', 'TodoWrite']);
   });
 
   it('drops an MCP tool that collides with the reserved Compact name, and says so', async () => {

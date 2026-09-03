@@ -25,8 +25,15 @@ import type { ExitReason } from './worker.js';
  * `Write`/`Edit`'s implementations ship in FF-1c
  * (packages/embedded-agent/src/tools/write.ts, edit.ts). All three stay OFF by
  * default — see DEFAULT_EMBEDDED_AGENT_ENABLED_TOOLS below.
+ *
+ * `TodoWrite` is a planning/task-list tool: it lets the agent
+ * publish a live task list to the user rather than acting on the filesystem
+ * or a shell, so it stays ON by default alongside the read-only set. On
+ * `claude-sdk` it is the SDK's own native builtin (enabled just by appearing
+ * in the allowlist passed to `query()`); on `openai-api` it is implemented in
+ * packages/embedded-agent/src/tools/todo-write.ts.
  */
-export const EMBEDDED_AGENT_TOOL_NAMES = ['Read', 'Glob', 'Grep', 'Bash', 'Write', 'Edit'] as const;
+export const EMBEDDED_AGENT_TOOL_NAMES = ['Read', 'Glob', 'Grep', 'Bash', 'Write', 'Edit', 'TodoWrite'] as const;
 export type EmbeddedAgentToolName = (typeof EMBEDDED_AGENT_TOOL_NAMES)[number];
 
 /**
@@ -55,7 +62,9 @@ export type EmbeddedAgentRestoredMessage =
   | { role: 'tool'; tool_call_id: string; content: string };
 
 /**
- * Default when a definition's `enabledTools` is absent: read-only tools ON, Bash OFF.
+ * Default when a definition's `enabledTools` is absent: read-only tools ON,
+ * `TodoWrite` ON (it writes no files and has no side effects outside the
+ * transcript), Bash/Write/Edit OFF.
  *
  * Note that a definition that has ever been through the Add/Edit form persists
  * `enabledTools` as an explicit array (never leaves it `undefined`) — so a
@@ -67,6 +76,7 @@ export const DEFAULT_EMBEDDED_AGENT_ENABLED_TOOLS: readonly EmbeddedAgentToolNam
   'Read',
   'Glob',
   'Grep',
+  'TodoWrite',
 ];
 
 /**

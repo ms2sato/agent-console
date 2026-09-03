@@ -1,6 +1,6 @@
 /**
  * Registry of builtin subprocess-local tools (Read/Glob/Grep in FF-1a; Bash in
- * FF-1b; Write/Edit in FF-1c).
+ * FF-1b; Write/Edit in FF-1c; TodoWrite in #1573).
  */
 
 import type { EmbeddedAgentToolName } from '@agent-console/shared';
@@ -12,6 +12,7 @@ import { grepTool } from './grep.js';
 import { bashTool } from './bash.js';
 import { writeTool } from './write.js';
 import { editTool } from './edit.js';
+import { createTodoWriteTool } from './todo-write.js';
 
 // Re-exported so existing consumers (composite-executor.ts, main.ts, test
 // files) keep importing these types from './index.js' / '../index.js'
@@ -20,10 +21,16 @@ import { editTool } from './edit.js';
 export type { BuiltinTool, BuiltinToolContext, BuiltinToolResult } from './types.js';
 
 /**
- * Registry of IMPLEMENTED builtin tools. `Bash`, `Write`, and `Edit` stay OFF
- * by default (see `DEFAULT_EMBEDDED_AGENT_ENABLED_TOOLS` in
- * @agent-console/shared) — a definition must opt in explicitly via
- * `enabledTools`.
+ * Registry of IMPLEMENTED builtin tools that are shared, stateless singleton
+ * instances. `Bash`, `Write`, and `Edit` stay OFF by default (see
+ * `DEFAULT_EMBEDDED_AGENT_ENABLED_TOOLS` in @agent-console/shared) — a
+ * definition must opt in explicitly via `enabledTools`.
+ *
+ * `TodoWrite` is deliberately NOT a member of this array: unlike every other
+ * entry here, it carries per-incarnation state (see todo-write.ts), so it is
+ * constructed fresh via `createTodoWriteTool()` inside
+ * `resolveEnabledBuiltinTools` below rather than shared via this module-level
+ * registry.
  */
 export const BUILTIN_TOOLS: readonly BuiltinTool[] = [
   readTool,
@@ -48,6 +55,11 @@ export function resolveEnabledBuiltinTools(
   const names = enabledTools ?? DEFAULT_EMBEDDED_AGENT_ENABLED_TOOLS;
   const tools: BuiltinTool[] = [];
   for (const name of names) {
+    if (name === 'TodoWrite') {
+      // Fresh instance per call -- see the header comment on BUILTIN_TOOLS.
+      tools.push(createTodoWriteTool());
+      continue;
+    }
     const tool = BUILTIN_TOOLS_BY_NAME.get(name);
     if (tool) tools.push(tool);
   }
