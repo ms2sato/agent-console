@@ -1098,6 +1098,8 @@ describe('ActiveSessionsSidebar', () => {
       await waitFor(() => {
         expect(screen.getByText('Restart All Agents')).toBeTruthy();
         expect(screen.getByText(/This will restart all active agent workers/)).toBeTruthy();
+        expect(screen.getByText(/conversations continue/i)).toBeTruthy();
+        expect(screen.getByText(/never received its initial task/i)).toBeTruthy();
       });
     });
 

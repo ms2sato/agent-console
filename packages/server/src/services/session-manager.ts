@@ -1566,11 +1566,11 @@ export class SessionManager {
 
         if (worker.type === 'agent') {
           try {
-            // 'fresh' matches this bulk operation's existing behaviour exactly
-            // (previously the hardcoded boolean `false`). A future
-            // continue-by-default change belongs behind its own preference
-            // value, not here.
-            const restarted = await this.restartAgentWorker(session.id, worker.id, 'fresh');
+            // 'system' resolves per worker: continue the existing
+            // conversation when one exists, or deliver the session's
+            // pending initial prompt when one is still owed -- never a
+            // blanket fresh start.
+            const restarted = await this.restartAgentWorker(session.id, worker.id, 'system');
             if (restarted) {
               results.push({ sessionId: session.id, workerId: worker.id, workerType: 'agent', outcome: 'restarted' });
             } else {
