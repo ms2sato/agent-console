@@ -107,7 +107,24 @@ export class SqliteSessionRepository implements SessionRepository {
               pid: workerRow.pid,
               agent_id: workerRow.agent_id,
               base_commit: workerRow.base_commit,
+              // embedded_agent_id and the fields below are type-discriminant
+              // (only meaningful for 'embedded-agent' rows, toWorkerRow always
+              // writes null for other types). They must be included in the
+              // conflict-update set: a worker restart that changes a worker's
+              // `type` (e.g. 'agent' -> 'embedded-agent', same worker id)
+              // upserts an existing row whose `type` FLIPS, and an omitted
+              // column here would silently leave the PREVIOUS type's stale
+              // value (or null) in place instead of the new type's row shape
+              // -- this doUpdateSet originally listed only fields that could
+              // vary for a same-type restart, an assumption a type-changing
+              // restart breaks.
+              embedded_agent_id: workerRow.embedded_agent_id,
+              deliver_initial_prompt_on_activation: workerRow.deliver_initial_prompt_on_activation,
               sdk_session_id: workerRow.sdk_session_id,
+              auto_compaction: workerRow.auto_compaction,
+              model: workerRow.model,
+              reasoning_effort: workerRow.reasoning_effort,
+              context_window_tokens: workerRow.context_window_tokens,
             })
           )
           .execute();

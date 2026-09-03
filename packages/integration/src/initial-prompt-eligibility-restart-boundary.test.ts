@@ -38,6 +38,13 @@ import { WorkerManager } from '@agent-console/server/src/services/worker-manager
 import { WorkerOutputFileManager } from '@agent-console/server/src/lib/worker-output-file';
 import { toPersistedWorker } from '@agent-console/server/src/database/mappers';
 import type { PersistedWorker } from '@agent-console/server/src/services/persistence-service';
+import type {
+  SpawnAsUserFn,
+  SpawnAsUserOpts,
+  SpawnAsUserResult,
+  RunAsUserOpts,
+  RunAsUserResult,
+} from '@agent-console/server/src/services/privilege-elevation';
 
 describe('Persistence boundary: embedded-agent initial-prompt eligibility survives restart (Issue #1074)', () => {
   let ctx: AppContext;
@@ -142,5 +149,183 @@ describe('Persistence boundary: embedded-agent initial-prompt eligibility surviv
       throw new Error('restored embedded-agent worker not found');
     }
     expect(restoredEmbedded.deliverInitialPromptOnActivation).toBe(false);
+  });
+});
+
+/**
+ * Cross-type restart initial-prompt delivery: an eligible PTY `agent`
+ * worker's carried-over `deliverInitialPromptOnActivation` flag must
+ * actually cause delivery once the CONVERTED embedded-agent worker's real
+ * activation reports `ready` -- not merely survive as a boolean on the
+ * worker object (that half is pinned separately at the
+ * WorkerLifecycleManager unit-test layer).
+ *
+ * Both polarities were verified manually for the "delivers" test: it FAILS
+ * (no `user-message` stdin write; timeout) if
+ * `WorkerLifecycleManager.restartAgentWorkerAsEmbedded`'s
+ * `deliverInitialPromptOnActivation: existingWorker.deliverInitialPromptOnActivation`
+ * carry-over is replaced with a hardcoded `false`, and PASSES with the real
+ * carry-over in place.
+ */
+describe('Cross-type restart: initial-prompt delivery on the converted embedded-agent worker', () => {
+  let ctx: AppContext;
+
+  /** Minimal subset of Bun's FileSink consumed by EmbeddedAgentWorkerService. */
+  interface FakeFileSink {
+    write: (chunk: string | Uint8Array) => number;
+    end: () => void;
+    flush: () => number;
+  }
+
+  function makeFakeEmbeddedSpawn(): {
+    fn: SpawnAsUserFn;
+    stdinWrites: string[];
+    pushStdout: (s: string) => void;
+  } {
+    const stdinWrites: string[] = [];
+    const stdin: FakeFileSink = {
+      write: (chunk) => {
+        stdinWrites.push(typeof chunk === 'string' ? chunk : new TextDecoder().decode(chunk));
+        return 0;
+      },
+      end: () => {},
+      flush: () => 0,
+    };
+
+    let stdoutCtrl!: ReadableStreamDefaultController<Uint8Array>;
+    let stderrCtrl!: ReadableStreamDefaultController<Uint8Array>;
+    const stdout = new ReadableStream<Uint8Array>({ start(c) { stdoutCtrl = c; } });
+    const stderr = new ReadableStream<Uint8Array>({ start(c) { stderrCtrl = c; } });
+    void stderrCtrl;
+    const enc = new TextEncoder();
+    const pushStdout = (s: string) => stdoutCtrl.enqueue(enc.encode(s));
+
+    const exited = new Promise<number>(() => {});
+    const subprocess = { pid: 4200, exited, stdin, stdout, stderr, kill: () => {} };
+
+    const fn: SpawnAsUserFn = (_opts: SpawnAsUserOpts) =>
+      ({ subprocess, stdin, elevated: false }) as unknown as SpawnAsUserResult;
+
+    return { fn, stdinWrites, pushStdout };
+  }
+
+  async function waitFor(cond: () => boolean, timeoutMs = 1000): Promise<void> {
+    const start = Date.now();
+    while (!cond()) {
+      if (Date.now() - start > timeoutMs) {
+        throw new Error('waitFor timed out');
+      }
+      await new Promise((r) => setTimeout(r, 5));
+    }
+  }
+
+  beforeEach(async () => {
+    await setupTestEnvironment();
+  });
+
+  afterEach(async () => {
+    await shutdownAppContext(ctx);
+    await cleanupTestEnvironment();
+  });
+
+  it('delivers the carried-over initial prompt as the converted worker\'s first message once ready fires', async () => {
+    const spawn = makeFakeEmbeddedSpawn();
+    // The initial PTY worker below is created WITH a non-empty
+    // initialPrompt, which triggers a real elevated `cat >` prompt-file
+    // write unconditionally (not gated on auth mode) -- stub it to always
+    // succeed so worker creation doesn't hit the real OS.
+    const stubRunAsUser = async (_opts: RunAsUserOpts): Promise<RunAsUserResult> => ({
+      stdout: '', stderr: '', exitCode: 0, timedOut: false,
+    });
+    ctx = await createTestContext({ spawnAsUserFn: spawn.fn, runAsUserImpl: stubRunAsUser });
+
+    const owner = await ctx.userRepository.upsertByOsUid(55001, 'owner', '/home/owner');
+    const def = await ctx.embeddedAgentManager.createEmbeddedAgent(
+      { name: 'Ollama qwen3', provider: { baseUrl: 'http://localhost:11434/v1', model: 'qwen3:32b' } },
+      owner.id,
+    );
+
+    // The initial PTY agent worker, created WITH an initialPrompt (the only
+    // path that sets deliverInitialPromptOnActivation: true).
+    const created = await ctx.sessionManager.createSession(
+      { type: 'quick', locationPath: '/test/path', agentId: 'claude-code', initialPrompt: 'Do the thing' },
+      { createdBy: owner.id },
+    );
+    const session = ctx.sessionManager.getAllSessions().find((s) => s.id === created.id);
+    if (!session) throw new Error('session not found after creation');
+    const ptyWorker = session.workers.find((w) => w.type === 'agent');
+    if (!ptyWorker) throw new Error('expected an initial PTY agent worker');
+
+    const converted = await ctx.sessionManager.restartAgentWorkerAsEmbedded(
+      created.id, ptyWorker.id, def.id,
+    );
+    expect(converted).not.toBeNull();
+
+    spawn.pushStdout('{"v":1,"type":"ready"}\n');
+    await waitFor(() => spawn.stdinWrites.some((w) => w.includes('"type":"user-message"')));
+
+    const delivered = spawn.stdinWrites.find((w) => w.includes('"type":"user-message"'));
+    expect(delivered).toBeDefined();
+    const parsed = JSON.parse(delivered!);
+    expect(parsed.text).toBe('Do the thing');
+  });
+
+  it('does NOT re-deliver when the session\'s initial prompt was already delivered before conversion', async () => {
+    const spawn = makeFakeEmbeddedSpawn();
+    // The initial PTY worker below is created WITH a non-empty
+    // initialPrompt, which triggers a real elevated `cat >` prompt-file
+    // write unconditionally (not gated on auth mode) -- stub it to always
+    // succeed so worker creation doesn't hit the real OS.
+    const stubRunAsUser = async (_opts: RunAsUserOpts): Promise<RunAsUserResult> => ({
+      stdout: '', stderr: '', exitCode: 0, timedOut: false,
+    });
+    ctx = await createTestContext({ spawnAsUserFn: spawn.fn, runAsUserImpl: stubRunAsUser });
+
+    const owner = await ctx.userRepository.upsertByOsUid(55002, 'owner2', '/home/owner2');
+    const def = await ctx.embeddedAgentManager.createEmbeddedAgent(
+      { name: 'Ollama qwen3', provider: { baseUrl: 'http://localhost:11434/v1', model: 'qwen3:32b' } },
+      owner.id,
+    );
+
+    const created = await ctx.sessionManager.createSession(
+      { type: 'quick', locationPath: '/test/path', agentId: 'claude-code', initialPrompt: 'Do the thing' },
+      { createdBy: owner.id },
+    );
+    const session = ctx.sessionManager.getAllSessions().find((s) => s.id === created.id);
+    if (!session) throw new Error('session not found after creation');
+    const ptyWorker = session.workers.find((w) => w.type === 'agent');
+    if (!ptyWorker) throw new Error('expected an initial PTY agent worker');
+
+    // Simulate the prompt already having been delivered by a prior PTY
+    // activation. Production only flips this flag via a real PTY
+    // login-shell-ready sentinel (session-manager.ts's callback wired in its
+    // constructor), which this harness's real PTY provider does not
+    // reliably emit inside a test process -- and SessionManager.getSession()
+    // / getAllSessions() both return a fresh toPublicSession() projection
+    // (session-converter-service.ts builds a new plain object every call),
+    // decoupled from the live internal session, so mutating either return
+    // value has no effect on what restartAgentWorkerAsEmbedded reads. This
+    // is the SAME limitation initial-prompt-delivered-boundary.test.ts's
+    // header comment documents for the wire-schema half of this exact flag.
+    // Reach into the private `sessions` Map directly to set up this
+    // precondition on the live internal session.
+    const internalSessions = (ctx.sessionManager as unknown as {
+      sessions: Map<string, { initialPromptDelivered?: boolean }>;
+    }).sessions;
+    const internalSession = internalSessions.get(created.id);
+    if (!internalSession) throw new Error('internal session not found');
+    internalSession.initialPromptDelivered = true;
+
+    const converted = await ctx.sessionManager.restartAgentWorkerAsEmbedded(
+      created.id, ptyWorker.id, def.id,
+    );
+    expect(converted).not.toBeNull();
+
+    spawn.pushStdout('{"v":1,"type":"ready"}\n');
+    // Bounded wait for the async delivery-check to settle; no user-message
+    // write should follow.
+    await new Promise((r) => setTimeout(r, 100));
+
+    expect(spawn.stdinWrites.some((w) => w.includes('"type":"user-message"'))).toBe(false);
   });
 });

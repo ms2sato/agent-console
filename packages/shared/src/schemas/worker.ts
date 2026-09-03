@@ -125,9 +125,12 @@ export const UpdateEmbeddedAgentWorkerRequestSchema = v.strictObject({
 });
 
 /**
- * Schema for restarting a worker
+ * Schema for restarting a PTY agent worker as another PTY agent worker
+ * (today's only restart shape, unchanged). `agentId` absent keeps the
+ * worker's current agent; `continueConversation` controls whether the
+ * conversation resumes or starts fresh.
  */
-export const RestartWorkerRequestSchema = v.strictObject({
+const TerminalRestartSchema = v.strictObject({
   continueConversation: v.optional(v.boolean()),
   agentId: v.optional(v.pipe(v.string(), v.minLength(1, 'Agent ID must not be empty'))),
   branch: v.optional(v.pipe(
@@ -137,6 +140,38 @@ export const RestartWorkerRequestSchema = v.strictObject({
     v.regex(branchNamePattern, branchNameErrorMessage)
   )),
 });
+
+/**
+ * Schema for restarting a PTY `agent` worker AS an embedded-agent worker
+ * (cross-type restart, agent-surface.md-style conversion). `continueConversation`
+ * and `agentId` are deliberately ABSENT from this member -- `strictObject`
+ * rejects them at the wire, which IS the "reject continueConversation across
+ * kinds" mechanism (no separate runtime check). No `model`/`reasoningEffort`/
+ * `contextWindowTokens` at restart time either: a converted worker always
+ * starts with no override (mirrors agent-surface.md Ruling 3's restart-time
+ * deferral).
+ */
+const EmbeddedRestartSchema = v.strictObject({
+  embeddedAgentId: v.pipe(v.string(), v.minLength(1, 'Embedded agent ID is required')),
+  branch: v.optional(v.pipe(
+    v.string(),
+    v.trim(),
+    v.minLength(1, 'Branch name cannot be empty'),
+    v.regex(branchNamePattern, branchNameErrorMessage)
+  )),
+});
+
+/**
+ * Schema for restarting a worker. A union rather than a flat object with
+ * optional fields: `strictObject` on each member rejects any key that
+ * belongs to the other member (e.g. `embeddedAgentId` + `continueConversation`
+ * together, or `embeddedAgentId` + `agentId` together) at the wire, before
+ * any application code runs.
+ */
+export const RestartWorkerRequestSchema = v.union([
+  TerminalRestartSchema,
+  EmbeddedRestartSchema,
+]);
 
 // Internal types for server-side worker creation
 export type CreateAgentWorkerParams = v.InferOutput<typeof CreateAgentWorkerParamsSchema>;

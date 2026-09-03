@@ -426,6 +426,8 @@ export class SessionManager {
       embeddedAgentManager,
       deactivateEmbeddedAgentWorker: (sessionId, workerId) =>
         this.embeddedAgentWorkerService.deactivate(sessionId, workerId),
+      activateEmbeddedAgentWorker: (sessionId, workerId) =>
+        this.embeddedAgentWorkerService.activate(sessionId, workerId),
       notificationManager: this.notificationManager,
       pathExists: this.pathExists,
       getSession: (id) => this.sessions.get(id),
@@ -1373,6 +1375,21 @@ export class SessionManager {
     branch?: string
   ): Promise<Worker | null> {
     return this.workerLifecycleManager.restartAgentWorker(sessionId, workerId, startupPreference, agentId, branch);
+  }
+
+  /**
+   * Restart a PTY `agent` worker AS an embedded-agent worker (cross-type
+   * restart / conversion). Same worker slot/tab, same workerId; see
+   * WorkerLifecycleManager.restartAgentWorkerAsEmbedded for the full
+   * call-order contract.
+   */
+  async restartAgentWorkerAsEmbedded(
+    sessionId: string,
+    workerId: string,
+    embeddedAgentId: string,
+    branch?: string
+  ): Promise<Worker | null> {
+    return this.workerLifecycleManager.restartAgentWorkerAsEmbedded(sessionId, workerId, embeddedAgentId, branch);
   }
 
   /** Restore a PTY worker, activating its PTY if needed after server restart. */
