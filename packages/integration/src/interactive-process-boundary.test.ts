@@ -39,6 +39,13 @@ import { deleteWorktree } from '@agent-console/server/src/services/worktree-dele
 import { McpTokenRegistry } from '@agent-console/server/src/mcp/mcp-auth';
 import { defaultRepositoryLookup, defaultRepositoryEnvLookup } from '@agent-console/server/src/__tests__/utils/repository-lookup-mock';
 import { createEmptyEmbeddedAgentSurface } from './test-utils';
+import { EmbeddedAgentManager } from '@agent-console/server/src/services/embedded-agent-manager';
+import { SqliteEmbeddedAgentRepository } from '@agent-console/server/src/repositories/sqlite-embedded-agent-repository';
+import { routeProcessContent } from '@agent-console/server/src/services/process-output-router';
+import type { PtyNotificationParams } from '@agent-console/server/src/lib/pty-notification';
+import type { SpawnAsUserFn, SpawnAsUserOpts, SpawnAsUserResult } from '@agent-console/server/src/services/privilege-elevation';
+import { readdir } from 'node:fs/promises';
+import { join } from 'node:path';
 
 const TEST_CONFIG_DIR = '/test/config';
 const ptyFactory = createMockPtyFactory();
@@ -316,5 +323,292 @@ describe('Interactive Process MCP boundary: shared type contract', () => {
     const listResponse = await callTool(app, mcpSessionId, 'list_processes', {}, nextId++);
     const list = parseToolResult(listResponse) as { processes: unknown[] };
     expect(list.processes).toHaveLength(0);
+  });
+});
+
+// ---------- embedded-agent target (Issue #1574 PR B) ----------
+
+/** Minimal subset of Bun's FileSink consumed by EmbeddedAgentWorkerService. */
+interface FakeFileSink {
+  write: (chunk: string | Uint8Array) => number;
+  end: () => void;
+  flush: () => number;
+}
+
+/**
+ * Fakes the embedded-agent worker's OWN loop subprocess (the `bun`/provider
+ * process an EmbeddedAgentWorkerService activation spawns), mirroring
+ * embedded-agent-notification-boundary.test.ts's helper of the same shape.
+ * This is unrelated to the `run_process` command subprocess itself, which
+ * this file's tests spawn for real via the default `spawnAsUser` -- exactly
+ * as the PTY-worker describe block above already does (e.g. `sleep 30`).
+ */
+function makeFakeSpawn(): {
+  fn: SpawnAsUserFn;
+  captured: SpawnAsUserOpts[];
+  stdinWrites: string[];
+} {
+  const captured: SpawnAsUserOpts[] = [];
+  const stdinWrites: string[] = [];
+  const stdout = new ReadableStream<Uint8Array>({ start() {} });
+  const stderr = new ReadableStream<Uint8Array>({ start() {} });
+  const exited = new Promise<number>(() => {
+    // Never resolves — these tests never deactivate the worker.
+  });
+  const stdin: FakeFileSink = {
+    write: (chunk) => {
+      stdinWrites.push(typeof chunk === 'string' ? chunk : new TextDecoder().decode(chunk));
+      return 0;
+    },
+    end: () => {},
+    flush: () => 0,
+  };
+  const subprocess = { pid: 8888, exited, stdin, stdout, stderr, kill: () => {} };
+  const fn: SpawnAsUserFn = (opts) => {
+    captured.push(opts);
+    return { subprocess, stdin, elevated: false } as unknown as SpawnAsUserResult;
+  };
+  return { fn, captured, stdinWrites };
+}
+
+async function waitFor(cond: () => boolean | Promise<boolean>, timeoutMs = 3000): Promise<void> {
+  const start = Date.now();
+  while (!(await cond())) {
+    if (Date.now() - start > timeoutMs) throw new Error('waitFor timed out');
+    await new Promise((r) => setTimeout(r, 5));
+  }
+}
+
+describe('Interactive Process MCP boundary: embedded-agent target', () => {
+  let app: Hono;
+  let mcpSessionId: string;
+  let sessionManager: SessionManager;
+  let embeddedAgentManager: EmbeddedAgentManager;
+  let interactiveProcessManager: InteractiveProcessManager;
+  let testJobQueue: JobQueue;
+  let fake: ReturnType<typeof makeFakeSpawn>;
+  let nextId: number;
+
+  beforeEach(async () => {
+    await closeDatabase();
+
+    setupMemfs({ [`${TEST_CONFIG_DIR}/.keep`]: '' });
+    process.env.AGENT_CONSOLE_HOME = TEST_CONFIG_DIR;
+
+    await initializeDatabase(':memory:');
+
+    testJobQueue = new JobQueue(getDatabase(), { concurrency: 1 });
+    registerJobHandlers(testJobQueue, new WorkerOutputFileManager());
+
+    resetProcessMock();
+    mockProcess.markAlive(process.pid);
+    ptyFactory.reset();
+    resetGitMocks();
+    fake = makeFakeSpawn();
+
+    const db = getDatabase();
+    const agentManager = await AgentManager.create(new SqliteAgentRepository(db));
+    embeddedAgentManager = await EmbeddedAgentManager.create(new SqliteEmbeddedAgentRepository(db));
+    const sessionRepository = new JsonSessionRepository(`${TEST_CONFIG_DIR}/sessions.json`);
+
+    sessionManager = await SessionManager.create({
+      userMode: new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' }),
+      pathExists: async () => true,
+      sessionRepository,
+      jobQueue: testJobQueue,
+      agentManager,
+      embeddedAgentManager,
+      mcpTokenRegistry: new McpTokenRegistry(),
+      repositoryLookup: defaultRepositoryLookup,
+      repositoryEnvLookup: defaultRepositoryEnvLookup,
+      annotationService: new AnnotationService(),
+      // Test seam: fake the embedded-agent loop subprocess (same DI PR A's
+      // own integration tests use) so activation doesn't spawn a real `bun`
+      // provider process.
+      spawnAsUserFn: fake.fn,
+    });
+
+    const interSessionMessageService = new InterSessionMessageService();
+    const processRouterDeps = {
+      getResolver: (sessionId: string) => sessionManager.getPathResolverForSessionId(sessionId),
+      deliverNotification: (sessionId: string, workerId: string, params: PtyNotificationParams) =>
+        sessionManager.deliverWorkerNotification(sessionId, workerId, params),
+      sendMessage: interSessionMessageService.sendMessage.bind(interSessionMessageService),
+    };
+
+    // Mirrors app-context.ts's 6.7 wiring exactly (stdout -> 'stdout'
+    // direction, ptyMessageInjector = sessionManager, onResponse -> 'response'
+    // direction unless outputMode is 'pty') so this test exercises the real
+    // production callback shape, not a re-implementation of it.
+    interactiveProcessManager = new InteractiveProcessManager(
+      (process, output) => {
+        void routeProcessContent(processRouterDeps, {
+          process,
+          content: output,
+          direction: 'stdout',
+        }).catch(() => {});
+      },
+      () => {},
+      sessionManager,
+      (process, content) => {
+        if (process.outputMode === 'pty') {
+          return;
+        }
+        return routeProcessContent(processRouterDeps, {
+          process,
+          content,
+          direction: 'response',
+        });
+      },
+    );
+
+    const mcpApp = createMcpApp({
+      sessionManager,
+      repositoryManager: await RepositoryManager.create({ jobQueue: testJobQueue }),
+      agentManager,
+      agentDirectory: new AgentDirectory({ terminal: agentManager, embedded: createEmptyEmbeddedAgentSurface() }),
+      timerManager: new TimerManager(() => {}),
+      conditionalWakeupManager: new ConditionalWakeupManager(() => {}),
+      interactiveProcessManager,
+      worktreeService: new WorktreeService({ db }),
+      annotationService: new AnnotationService(),
+      interSessionMessageService,
+      suggestSessionMetadata: mock(
+        async (): ReturnType<SuggestSessionMetadataFn> =>
+          Promise.resolve({ branch: 'feat/test', title: 'Test' })
+      ) as SuggestSessionMetadataFn,
+      createWorktreeWithSession,
+      deleteWorktree,
+      userRepository: new SqliteUserRepository(db),
+      artifactRepository: new SqliteArtifactRepository(db),
+      bookmarkRepository: new SqliteBookmarkRepository(db),
+      broadcastToApp: () => {},
+      findOpenPullRequest: mock(async () => null) as any,
+      fetchPullRequestUrl: mock(async () => null) as any,
+    });
+
+    app = new Hono();
+    app.route('', mcpApp);
+    mcpSessionId = await initializeMcp(app);
+    nextId = 200;
+  });
+
+  afterEach(async () => {
+    interactiveProcessManager.disposeAll();
+    await testJobQueue.stop();
+    await closeDatabase();
+    cleanupMemfs();
+  });
+
+  async function createActivatedEmbeddedWorker(
+    osUid: number,
+    username: string,
+  ): Promise<{ sessionId: string; workerId: string }> {
+    const userRepository = new SqliteUserRepository(getDatabase());
+    const owner = await userRepository.upsertByOsUid(osUid, username, `/home/${username}`);
+    const definition = await embeddedAgentManager.createEmbeddedAgent(
+      { name: 'Local model', provider: { baseUrl: 'http://localhost:11434/v1', model: 'qwen3:32b' } },
+      owner.id,
+    );
+    const session = await sessionManager.createSession(
+      { type: 'quick', locationPath: '/test/path' },
+      { createdBy: owner.id },
+    );
+    const worker = await sessionManager.createWorker(session.id, {
+      type: 'embedded-agent',
+      embeddedAgentId: definition.id,
+    });
+    expect(worker).not.toBeNull();
+    const workerId = worker!.id;
+
+    await sessionManager.activateEmbeddedAgentWorker(session.id, workerId);
+    expect(fake.captured.length).toBe(1);
+
+    return { sessionId: session.id, workerId };
+  }
+
+  it('run_process with outputMode "pty" against an embedded-agent worker delivers full stdout content as a turn on the worker\'s own loop', async () => {
+    const { sessionId, workerId } = await createActivatedEmbeddedWorker(31001, 'proc-pty-owner');
+    const stdinWritesBeforeRun = fake.stdinWrites.length;
+
+    const response = await callTool(app, mcpSessionId, 'run_process', {
+      command: 'echo notify-embedded-pty',
+      sessionId,
+      workerId,
+      outputMode: 'pty',
+    }, nextId++);
+
+    expect(response.result?.isError).toBeUndefined();
+    const data = parseToolResult(response) as { processId: string };
+    expect(typeof data.processId).toBe('string');
+
+    await waitFor(() => fake.stdinWrites.length > stdinWritesBeforeRun);
+    const forwarded = JSON.parse(fake.stdinWrites[stdinWritesBeforeRun]) as { type: string; text: string };
+    expect(forwarded.type).toBe('user-message');
+    expect(forwarded.text).toContain('[internal:process]');
+    expect(forwarded.text).toContain('notify-embedded-pty');
+  });
+
+  it('run_process with outputMode "message" against an embedded-agent worker writes a message file AND delivers only a brief notification to the worker\'s loop', async () => {
+    const { sessionId, workerId } = await createActivatedEmbeddedWorker(31002, 'proc-message-owner');
+    const stdinWritesBeforeRun = fake.stdinWrites.length;
+
+    const response = await callTool(app, mcpSessionId, 'run_process', {
+      command: 'echo notify-embedded-message',
+      sessionId,
+      workerId,
+      outputMode: 'message',
+    }, nextId++);
+
+    expect(response.result?.isError).toBeUndefined();
+    const data = parseToolResult(response) as { processId: string; outputMode: string };
+    expect(data.outputMode).toBe('message');
+
+    const resolver = sessionManager.getPathResolverForSessionId(sessionId);
+    expect(resolver).not.toBeNull();
+    const messageDir = join(resolver!.getMessagesDir(), sessionId, workerId);
+
+    await waitFor(async () => {
+      try {
+        const files = await readdir(messageDir);
+        return files.length > 0;
+      } catch {
+        return false;
+      }
+    });
+    const files = await readdir(messageDir);
+    expect(files.length).toBeGreaterThan(0);
+
+    // The embedded worker's loop receives only the brief path/bytes summary
+    // notification (the file path + byte count), not a re-embedding of the
+    // full stdout content as a separate notification field.
+    await waitFor(() => fake.stdinWrites.length > stdinWritesBeforeRun);
+    const forwarded = JSON.parse(fake.stdinWrites[stdinWritesBeforeRun]) as { type: string; text: string };
+    expect(forwarded.type).toBe('user-message');
+    expect(forwarded.text).toContain('[internal:process]');
+    expect(forwarded.text).toContain('[stdout via message]');
+    expect(forwarded.text).toContain('bytes=');
+  });
+
+  it('write_process_response round trip succeeds for a process targeting an embedded-agent worker (regression guard -- keyed by processId, unrelated to worker kind)', async () => {
+    const { sessionId, workerId } = await createActivatedEmbeddedWorker(31003, 'proc-response-owner');
+
+    const runResponse = await callTool(app, mcpSessionId, 'run_process', {
+      command: 'cat',
+      sessionId,
+      workerId,
+    }, nextId++);
+    expect(runResponse.result?.isError).toBeUndefined();
+    const { processId } = parseToolResult(runResponse) as { processId: string };
+
+    const writeResponse = await callTool(app, mcpSessionId, 'write_process_response', {
+      processId,
+      content: 'hello',
+    }, nextId++);
+
+    expect(writeResponse.result?.isError).toBeUndefined();
+    const writeData = parseToolResult(writeResponse) as { written: boolean; processId: string };
+    expect(writeData.written).toBe(true);
+    expect(writeData.processId).toBe(processId);
   });
 });
