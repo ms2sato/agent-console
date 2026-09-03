@@ -1011,6 +1011,44 @@ export function runCommentBlameShiftCheck({ repoRoot, binary = 'bun' } = {}) {
   };
 }
 
+// --- Embedded-agent stdout-writer check ---
+
+/**
+ * Run scripts/check-embedded-agent-stdout-writers.mjs and return its result.
+ *
+ * The Bun script is the source of truth for the AST-based detection, the
+ * allowlist, and the `file:line:col <token>` output format; this helper
+ * spawns it so that preflight-check.js (which runs under node) can surface
+ * the verdict alongside the other gates.
+ *
+ * @param {object} [options]
+ * @param {string} [options.repoRoot] absolute path to repo root
+ * @param {string} [options.binary] runtime binary (default: 'bun')
+ * @returns {{exitCode: number, stdout: string, stderr: string, spawnFailed: boolean}}
+ */
+export function runEmbeddedAgentStdoutWritersCheck({ repoRoot, binary = 'bun' } = {}) {
+  const root = repoRoot || resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
+  const scriptPath = resolve(root, 'scripts/check-embedded-agent-stdout-writers.mjs');
+  const result = spawnSync(binary, [scriptPath], {
+    cwd: root,
+    encoding: 'utf-8',
+  });
+  if (result.error) {
+    return {
+      exitCode: 1,
+      stdout: '',
+      stderr: `Failed to spawn '${binary}': ${result.error.message}`,
+      spawnFailed: true,
+    };
+  }
+  return {
+    exitCode: result.status ?? 1,
+    stdout: result.stdout ?? '',
+    stderr: result.stderr ?? '',
+    spawnFailed: false,
+  };
+}
+
 // --- CI status check ---
 
 /**

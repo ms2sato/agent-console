@@ -51,11 +51,15 @@ import ts from 'typescript';
  * (`normalizeTrivia`, via `ts.getLeadingCommentRanges`) already accounts for
  * the byte range a JSDoc comment occupies, so skipping the subtree here is
  * sufficient — nothing needs to be substituted in its place.
+ * Exported so other AST-based source scanners (e.g.
+ * scripts/check-embedded-agent-stdout-writers.mjs) can reuse the same
+ * comment/JSDoc-exclusion behavior instead of re-implementing a leaf walk.
+ *
  * @param {ts.Node} node
  * @param {ts.SourceFile} sourceFile
  * @param {ts.Node[]} out
  */
-function collectLeaves(node, sourceFile, out) {
+export function collectLeaves(node, sourceFile, out) {
   if (node.kind >= ts.SyntaxKind.FirstJSDocNode && node.kind <= ts.SyntaxKind.LastJSDocNode) {
     return;
   }

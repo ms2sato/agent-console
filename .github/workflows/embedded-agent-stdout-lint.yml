@@ -1,0 +1,47 @@
+name: Embedded-Agent Stdout Lint
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'packages/embedded-agent/src/**/*.ts'
+      - 'scripts/check-embedded-agent-stdout-writers.mjs'
+      - 'scripts/__tests__/check-embedded-agent-stdout-writers.test.mjs'
+      - 'scripts/schema-source-normalize.mjs'
+      - 'package.json'
+      - '.github/workflows/embedded-agent-stdout-lint.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'packages/embedded-agent/src/**/*.ts'
+      - 'scripts/check-embedded-agent-stdout-writers.mjs'
+      - 'scripts/__tests__/check-embedded-agent-stdout-writers.test.mjs'
+      - 'scripts/schema-source-normalize.mjs'
+      - 'package.json'
+      - '.github/workflows/embedded-agent-stdout-lint.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  embedded-agent-stdout-lint:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.14"
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Run embedded-agent stdout-writer check
+        run: bun run check:embedded-agent-stdout
+
+      - name: Run embedded-agent stdout-writer unit tests
+        run: bun test scripts/__tests__/check-embedded-agent-stdout-writers.test.mjs

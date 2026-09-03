@@ -1,5 +1,6 @@
+import ts from 'typescript';
 import { describe, it, expect } from 'bun:test';
-import { normalizeSchemaSource } from '../schema-source-normalize.mjs';
+import { normalizeSchemaSource, collectLeaves } from '../schema-source-normalize.mjs';
 
 // Polarity matrix rows are cross-referenced by number; see the PR body /
 // Issue #1190 for the full 8-row table this file exercises.
@@ -145,5 +146,25 @@ describe('normalizeSchemaSource — regex literal handling', () => {
     const a = 'const p = /abc/;\n';
     const b = 'const p = /abcd/;\n';
     expect(normalizeSchemaSource(a)).not.toBe(normalizeSchemaSource(b));
+  });
+});
+
+describe('collectLeaves — exported for reuse by other AST-based scanners', () => {
+  it('collects every real token leaf in source order, in original verbatim text', () => {
+    const source = 'const x = 1;\n';
+    const sourceFile = ts.createSourceFile('t.ts', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+    const leaves = [];
+    collectLeaves(sourceFile, sourceFile, leaves);
+    const texts = leaves.map((leaf) => leaf.getText(sourceFile)).filter((t) => t.length > 0);
+    expect(texts).toEqual(['const', 'x', '=', '1', ';']);
+  });
+
+  it('excludes JSDoc comment subtrees from the collected leaves', () => {
+    const source = '/**\n * @param x a thing\n */\nfunction f(x) {}\n';
+    const sourceFile = ts.createSourceFile('t.ts', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+    const leaves = [];
+    collectLeaves(sourceFile, sourceFile, leaves);
+    const texts = leaves.map((leaf) => leaf.getText(sourceFile));
+    expect(texts.some((t) => t.includes('@param'))).toBe(false);
   });
 });
