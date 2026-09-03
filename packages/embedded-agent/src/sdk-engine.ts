@@ -312,6 +312,16 @@ export class SdkEngine implements Engine {
   private iterationText = '';
   private currentTurnDeferred: { resolve: () => void } | null = null;
   private dead = false;
+  /**
+   * Set by `cancel()` when a `runTurn` with attachments is still awaiting
+   * `resolveImageAttachments` -- at that point nothing has been pushed onto
+   * `queue` yet, so `query.interrupt()` has nothing live to interrupt, and
+   * without this flag the pending push would land on the queue anyway once
+   * the resolve settles, silently swallowing the cancel. Reset at the top of
+   * every `runTurn` so a stale flag from a PREVIOUS turn's cancel can never
+   * affect a new one.
+   */
+  private turnCanceledBeforeAttachmentPush = false;
 
   /**
    * Transcript Restore, R1: has this query ever reported a `system:init`?
@@ -487,6 +497,7 @@ export class SdkEngine implements Engine {
     }
     this.currentTurnId = id;
     this.iterationText = '';
+    this.turnCanceledBeforeAttachmentPush = false;
     this.deps.emit({ v: 1, type: 'state', state: 'active' });
 
     // A turn with no attachments must keep pushing onto the queue
@@ -509,6 +520,18 @@ export class SdkEngine implements Engine {
       this.currentTurnDeferred = { resolve };
       void (async () => {
         const resolved = await resolveImageAttachments(attachments, this.deps.attachmentRoots ?? []);
+        // A cancel that lands while the resolve above was still pending has
+        // nothing live on `query` to interrupt (nothing was pushed yet), so
+        // `cancel()` records it here instead. Without this check the push
+        // below would still land on the queue and the SDK would process the
+        // (should-have-been-canceled) message as an ordinary turn.
+        if (this.turnCanceledBeforeAttachmentPush) {
+          this.turnCanceledBeforeAttachmentPush = false;
+          this.deps.emit({ v: 1, type: 'turn-error', turnId: this.requireTurnId(), message: 'turn canceled' });
+          this.deps.emit({ v: 1, type: 'state', state: 'idle' });
+          this.settlePendingTurn();
+          return;
+        }
         const content = buildClaudeSdkUserContent(text, resolved);
         this.queue.push({ type: 'user', message: { role: 'user', content }, parent_tool_use_id: null });
       })();
@@ -547,6 +570,10 @@ export class SdkEngine implements Engine {
     // was part of what was being done.
     this.pendingCompactCommand = false;
     if (this.dead) return;
+    // See `turnCanceledBeforeAttachmentPush`'s doc comment: this covers the
+    // window where an attachment-bearing turn has not pushed anything onto
+    // `query` yet, so `interrupt()` below has nothing live to act on.
+    this.turnCanceledBeforeAttachmentPush = true;
     void this.query.interrupt().catch(() => {
       // Best-effort: the pending turn's eventual settlement happens via the
       // `result` message the interrupt triggers (or, on transport failure,

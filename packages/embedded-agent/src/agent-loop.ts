@@ -692,6 +692,10 @@ export class AgentLoop {
         this.deps.attachmentRoots ?? [],
         this.deps.supportsImages ?? false,
       );
+      if (abort.signal.aborted) {
+        this.emitTurnError(turnId, 'turn canceled');
+        return 'canceled';
+      }
       this.conversation.push({ role: 'user', content });
 
       let malformedReAsks = 0;

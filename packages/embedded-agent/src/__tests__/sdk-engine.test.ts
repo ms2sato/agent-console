@@ -2345,4 +2345,45 @@ describe('SdkEngine — image attachments (#1571, confined to runTurn)', () => {
     // `typeof === 'string'` -- the polarity requirement.
     expect(pushedMessages[0].message).toEqual({ role: 'user', content: 'hello there' });
   });
+
+  it('never pushes onto the queue and settles as canceled when cancel() lands during attachment resolution', async () => {
+    const filePath = join(rootDir, 'shot.png');
+    await fsPromises.writeFile(filePath, PNG_BYTES);
+    const attachments: EmbeddedAgentAttachment[] = [{ path: filePath, mimeType: 'image/png' }];
+
+    const { queryFn, pushedMessages } = makeCapturingQuery([
+      systemInit(),
+      textDeltaEvent('second turn ok'),
+      messageStopEvent(),
+      resultSuccess(),
+    ]);
+    const events: EmbeddedAgentEvent[] = [];
+    const engine = new SdkEngine(
+      baseDeps({ queryFn, attachmentRoots: [rootDir], emit: (e) => events.push(e) }),
+    );
+
+    const turnPromise = engine.runTurn('u1', 'what is in this image?', attachments);
+    // Synchronous, no await in between: `runTurn`'s detached IIFE has already
+    // reached the real fs-read gap inside `resolveImageAttachments` by the
+    // time `runTurn`'s own synchronous prefix returns control here, so
+    // cancel() lands on the pending attachment resolution rather than after
+    // it.
+    engine.cancel();
+    await turnPromise;
+
+    // The message never reached the live SDK queue.
+    expect(pushedMessages).toHaveLength(0);
+    expect(eventsOfType(events, 'turn-error')).toEqual([
+      { v: 1, type: 'turn-error', turnId: 'u1', message: 'turn canceled' },
+    ]);
+    const stateEvents = eventsOfType(events, 'state').map((e) => e.state);
+    expect(stateEvents).toEqual(['active', 'idle']);
+
+    // A subsequent turn for a new turn id is accepted normally -- the
+    // canceled turn settled `currentTurnDeferred` and did not leave the
+    // engine wedged.
+    await engine.runTurn('u2', 'second turn');
+    expect(pushedMessages).toHaveLength(1);
+    expect(pushedMessages[0].message).toEqual({ role: 'user', content: 'second turn' });
+  });
 });

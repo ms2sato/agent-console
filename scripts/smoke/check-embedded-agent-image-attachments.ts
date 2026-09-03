@@ -93,7 +93,7 @@
 // transitively imports server-config.ts is evaluated. Every such import is
 // therefore a DYNAMIC import made from inside main().
 
-import { cpSync, mkdirSync, rmSync } from 'node:fs';
+import { cpSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import type { AppContext } from '../../packages/server/src/app-context.js';
@@ -205,7 +205,10 @@ async function main(): Promise<void> {
   console.log(`==> nonce image captured at: ${pngPath} (not auto-pruned -- see test-trigger.md)`);
 
   const disposableHome = path.join(os.tmpdir(), `ac-1571-image-attachments-smoke-cfg-${crypto.randomUUID()}`);
-  mkdirSync(disposableHome, { recursive: true });
+  // 0o700: this directory holds provider-keys.json (a real API key) --
+  // create it access-restricted from the start rather than narrowing
+  // permissions after the fact, which would leave a TOCTOU window.
+  mkdirSync(disposableHome, { recursive: true, mode: 0o700 });
   process.env.AGENT_CONSOLE_HOME = disposableHome;
 
   const { createTestContext, shutdownAppContext } = await import('../../packages/server/src/app-context.js');
@@ -247,8 +250,14 @@ async function main(): Promise<void> {
     } catch (err) {
       throw new Error(`could not read the provider key store at ${PROVIDER_KEY_FILE}: ${String(err)}`);
     }
-    await Bun.write(path.join(disposableHome, 'provider-keys.json'), JSON.stringify({ [PROVIDER_KEY_REF]: apiKey }));
-    Bun.spawnSync(['chmod', '600', path.join(disposableHome, 'provider-keys.json')]);
+    // 0o600 at write time, not narrowed afterward via a separate `chmod`
+    // spawn: the file is created access-restricted from its first byte,
+    // rather than momentarily world/group-readable while a chmod call is
+    // pending (and whose failure, via `Bun.spawnSync`, was previously never
+    // checked).
+    writeFileSync(path.join(disposableHome, 'provider-keys.json'), JSON.stringify({ [PROVIDER_KEY_REF]: apiKey }), {
+      mode: 0o600,
+    });
 
     realCwd = path.join(os.tmpdir(), `ac-1571-image-attachments-smoke-cwd-${crypto.randomUUID()}`);
     mkdirSync(realCwd, { recursive: true });

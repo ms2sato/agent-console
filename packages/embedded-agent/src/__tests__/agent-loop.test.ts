@@ -1036,6 +1036,41 @@ describe('AgentLoop — image attachments (#1571)', () => {
     // construction, not merely `typeof === 'string'` -- the polarity requirement.
     expect(userMessage).toEqual({ role: 'user', content: 'hello there' });
   });
+
+  it('does not push the user message and settles as canceled when cancel() lands during attachment resolution', async () => {
+    const filePath = path.join(rootDir, 'shot.png');
+    await fsPromises.writeFile(filePath, PNG_BYTES);
+    const attachments: EmbeddedAgentAttachment[] = [{ path: filePath, mimeType: 'image/png' }];
+
+    const h = makeLoop([textResponse('unused'), textResponse('second turn')], {
+      attachmentRoots: [rootDir],
+      supportsImages: true,
+    });
+
+    const turnPromise = h.loop.runTurn('t1', 'what is in this image?', attachments);
+    // Synchronous, no await in between: `runUserTurn`'s synchronous prefix
+    // has already reached the real fs-read gap inside
+    // `buildUserMessageContent` by the time `runTurn`'s own synchronous
+    // prefix returns control here, so cancel() lands on the pending
+    // attachment resolution rather than after it.
+    h.loop.cancel();
+    await turnPromise;
+
+    expect(h.events.find((e) => e.type === 'turn-error')).toMatchObject({ message: 'turn canceled' });
+    // The provider was never called for the canceled turn -- the message
+    // never reached the conversation, so there was nothing to send.
+    expect(h.adapter.calls).toBe(0);
+
+    // A subsequent turn is accepted normally: the canceled turn did not
+    // leave the loop wedged, and the conversation it would have polluted
+    // does not carry the canceled turn's user message forward.
+    await h.loop.runTurn('t2', 'second');
+    const secondTurnMessages = h.adapter.capturedMessages.at(-1)!;
+    expect(secondTurnMessages.some((m) => m.role === 'user' && m.content === 'what is in this image?')).toBe(
+      false,
+    );
+    expect(secondTurnMessages.some((m) => m.role === 'user' && m.content === 'second')).toBe(true);
+  });
 });
 
 describe('AgentLoop — contentCharLength / estimateTokensFromChars on image-bearing messages (#1571)', () => {
