@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import type { EmbeddedAgentDefinition, SdkResumeFailureReason } from '@agent-console/shared';
 import type { SpawnAsUserFn, SpawnAsUserOpts, SpawnAsUserResult } from '../privilege-elevation.js';
 import { SessionDataPathResolver } from '../../lib/session-data-path-resolver.js';
+import { resolveUploadDir } from '../../lib/message-upload-dir.js';
 import { buildPtyNotificationText, buildReplyInstructions, type PtyNotificationParams } from '../../lib/pty-notification.js';
 import {
   buildInternalEmbeddedAgentWorker,
@@ -492,6 +493,7 @@ describe('EmbeddedAgentWorkerService.activate', () => {
       workerId: h.workerId,
       repositoryId: 'repo-1',
       cwd: '/test/worktree',
+      attachmentRoots: [resolveUploadDir()],
     });
     expect(first.maxToolIterations).toBe(25);
   });

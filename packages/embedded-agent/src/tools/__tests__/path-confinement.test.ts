@@ -117,4 +117,39 @@ describe('resolveConfinedPath', () => {
       }
     });
   });
+
+  describe('extraRoots (#1570)', () => {
+    it('confines an absolute path under an extraRoots entry, outside locationPath', async () => {
+      const target = path.join(outsideDir, 'attachment.txt');
+      await fsPromises.writeFile(target, 'hi');
+
+      const result = await resolveConfinedPath(target, locationPath, [outsideDir]);
+      expect(result.ok).toBe(true);
+    });
+
+    it('rejects a path outside BOTH locationPath and every extraRoots entry', async () => {
+      const thirdDir = await fsPromises.mkdtemp(path.join(os.tmpdir(), 'embedded-agent-third-'));
+      try {
+        const target = path.join(thirdDir, 'unrelated.txt');
+        const result = await resolveConfinedPath(target, locationPath, [outsideDir]);
+        expect(result.ok).toBe(false);
+        if (!result.ok) {
+          expect(result.message).toBe(CONFINEMENT_REJECTED_MESSAGE);
+        }
+      } finally {
+        await fsPromises.rm(thirdDir, { recursive: true, force: true });
+      }
+    });
+
+    it('does not crash and does not confine anything when an extraRoots entry does not exist on disk', async () => {
+      const missingRoot = path.join(outsideDir, 'does-not-exist-root');
+      const target = path.join(missingRoot, 'attachment.txt');
+
+      const result = await resolveConfinedPath(target, locationPath, [missingRoot]);
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.message).toBe(CONFINEMENT_REJECTED_MESSAGE);
+      }
+    });
+  });
 });

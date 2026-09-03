@@ -361,7 +361,7 @@ export const MessagePanel = forwardRef<MessagePanelHandle, MessagePanelProps>(
           disabled={!attachmentsEnabled}
           className="text-gray-400 hover:text-white text-sm px-1 py-1 shrink-0 disabled:opacity-40 disabled:cursor-not-allowed"
           aria-label="Attach files"
-          title={attachmentsEnabled ? 'Attach files' : 'Enable after Read tool ships — see #1004 FF-1a'}
+          title={attachmentsEnabled ? 'Attach files' : 'Attachments are not available for this worker'}
         >
           📎
         </button>
