@@ -49,6 +49,7 @@ describe('SqliteEmbeddedAgentRepository', () => {
       .addColumn('provider_base_url', 'text')
       .addColumn('provider_model', 'text', (col) => col.notNull())
       .addColumn('provider_api_key_ref', 'text')
+      .addColumn('provider_supports_images', 'integer')
       .addColumn('system_prompt', 'text')
       .addColumn('max_tool_iterations', 'integer')
       .addColumn('enabled_tools', 'text')

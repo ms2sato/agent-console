@@ -11,11 +11,19 @@
  * no assertion here changes.
  */
 
-import { describe, it, expect, spyOn } from 'bun:test';
+import { describe, it, expect, spyOn, beforeEach, afterEach } from 'bun:test';
 import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
-import type { EmbeddedAgentEvent } from '@agent-console/shared';
-import type { Options, Query, SDKControlGetContextUsageResponse, SDKMessage } from '@anthropic-ai/claude-agent-sdk';
+import * as fsPromises from 'node:fs/promises';
+import * as os from 'node:os';
+import type { EmbeddedAgentAttachment, EmbeddedAgentEvent } from '@agent-console/shared';
+import type {
+  Options,
+  Query,
+  SDKControlGetContextUsageResponse,
+  SDKMessage,
+  SDKUserMessage,
+} from '@anthropic-ai/claude-agent-sdk';
 import { createSdkCompactTool, SdkEngine, spawnClaudeCodeProcess, type SdkEngineDeps } from '../sdk-engine.js';
 import { composeSdkSystemPromptAppend } from '../system-prompt.js';
 
@@ -158,6 +166,56 @@ function makeFakeQuery(
     interruptCallCount: () => interruptCalls,
     contextUsageCallCount: () => contextUsageCalls,
   };
+}
+
+/**
+ * A `queryFn` fake that ALSO drains the live prompt queue (`UserMessageQueue`
+ * is private to `SdkEngine`, so this is the only way to observe what
+ * `runTurn` pushed onto it) while replaying `source`'s canned messages to
+ * carry a turn to completion the ordinary way.
+ *
+ * `source[0]` (conventionally `systemInit()`) is emitted immediately, mirroring
+ * a real connection handshake that precedes any user turn. Every remaining
+ * message in `source` is held until the FIRST message has actually arrived on
+ * the prompt queue -- a real SDK cannot answer a turn it has not received yet,
+ * and without this gate a scripted response that resolves the turn (a
+ * `resultSuccess()`) could race ahead of an async attachment-resolution push
+ * and settle `runTurn`'s promise before `pushedMessages` observes anything.
+ */
+function makeCapturingQuery(source: SDKMessage[]): { queryFn: QueryFn; pushedMessages: SDKUserMessage[] } {
+  const pushedMessages: SDKUserMessage[] = [];
+  const queryFn: QueryFn = (params) => {
+    const promptIterator = (params.prompt as AsyncIterable<SDKUserMessage>)[Symbol.asyncIterator]();
+    const firstMessageArrived = (async () => {
+      const { value } = await promptIterator.next();
+      if (value) pushedMessages.push(value);
+    })();
+    // Drain any further pushes in the background; not exercised by this
+    // file's single-turn scenarios, but keeps the fake queue from stalling.
+    void (async () => {
+      await firstMessageArrived;
+      for (;;) {
+        const { value, done } = await promptIterator.next();
+        if (done) return;
+        if (value) pushedMessages.push(value);
+      }
+    })();
+
+    const gen = (async function* (): AsyncGenerator<SDKMessage, void> {
+      const [first, ...rest] = source;
+      if (first) yield first;
+      await firstMessageArrived;
+      for (const m of rest) yield m;
+      await new Promise<never>(() => {});
+    })();
+    const fake = Object.assign(gen, {
+      interrupt: async () => undefined,
+      close: () => {},
+      getContextUsage: async () => usableContextUsage(1000),
+    });
+    return asQuery(fake);
+  };
+  return { queryFn, pushedMessages };
 }
 
 /** A generator that never yields and never resolves -- models "system:init
@@ -2173,5 +2231,65 @@ describe('SdkEngine — a resume the SDK refuses (R1, PS6)', () => {
     const failures = eventsOfType(events, 'sdk-resume-failed');
     expect(failures).toHaveLength(1);
     expect(failures[0]).toMatchObject({ requestedSdkSessionId: 'sess-gone', reason: 'refused' });
+  });
+});
+
+describe('SdkEngine — image attachments (#1571, confined to runTurn)', () => {
+  const PNG_BASE64 =
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=';
+  const PNG_BYTES = Buffer.from(PNG_BASE64, 'base64');
+
+  let rootDir: string;
+
+  beforeEach(async () => {
+    rootDir = await fsPromises.mkdtemp(join(os.tmpdir(), 'sdk-engine-attach-'));
+  });
+
+  afterEach(async () => {
+    await fsPromises.rm(rootDir, { recursive: true, force: true });
+  });
+
+  it('pushes text+image content blocks (Anthropic shapes) for a turn with one PNG attachment', async () => {
+    const filePath = join(rootDir, 'shot.png');
+    await fsPromises.writeFile(filePath, PNG_BYTES);
+    const attachments: EmbeddedAgentAttachment[] = [{ path: filePath, mimeType: 'image/png' }];
+
+    const { queryFn, pushedMessages } = makeCapturingQuery([
+      systemInit(),
+      textDeltaEvent('I see it'),
+      messageStopEvent(),
+      resultSuccess(),
+    ]);
+    const engine = new SdkEngine(baseDeps({ queryFn, attachmentRoots: [rootDir] }));
+    await engine.runTurn('u1', 'what is in this image?', attachments);
+
+    expect(pushedMessages).toHaveLength(1);
+    expect(pushedMessages[0].message).toEqual({
+      role: 'user',
+      content: [
+        { type: 'text', text: 'what is in this image?' },
+        {
+          type: 'image',
+          source: { type: 'base64', media_type: 'image/png', data: PNG_BYTES.toString('base64') },
+        },
+      ],
+    });
+  });
+
+  it('pushes a plain string, byte-identical to pre-#1571 behavior, for a turn with no attachments', async () => {
+    const { queryFn, pushedMessages } = makeCapturingQuery([
+      systemInit(),
+      textDeltaEvent('ok'),
+      messageStopEvent(),
+      resultSuccess(),
+    ]);
+    const engine = new SdkEngine(baseDeps({ queryFn, attachmentRoots: [rootDir] }));
+    await engine.runTurn('u1', 'hello there');
+
+    expect(pushedMessages).toHaveLength(1);
+    // Explicit shape comparison against the old
+    // `{ role: 'user', content: text }` construction, not merely
+    // `typeof === 'string'` -- the polarity requirement.
+    expect(pushedMessages[0].message).toEqual({ role: 'user', content: 'hello there' });
   });
 });

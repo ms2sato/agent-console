@@ -1880,6 +1880,6 @@ describe('Compaction — a cancel during the turn-boundary compaction aborts the
       { role: 'assistant', content: 'turn reply' },
       { role: 'user', content: 'next' },
     ]);
-    expect(followUp.some((m) => m.content.includes('SUMMARY'))).toBe(false);
+    expect(followUp.some((m) => typeof m.content === 'string' && m.content.includes('SUMMARY'))).toBe(false);
   });
 });

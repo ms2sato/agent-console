@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import * as fsPromises from 'node:fs/promises';
 import * as path from 'node:path';
 import * as os from 'node:os';
-import { resolveConfinedPath, CONFINEMENT_REJECTED_MESSAGE } from '../path-confinement.js';
+import { resolveConfinedPath, isPathWithinRoots, CONFINEMENT_REJECTED_MESSAGE } from '../path-confinement.js';
 
 describe('resolveConfinedPath', () => {
   let locationPath: string;
@@ -151,5 +151,58 @@ describe('resolveConfinedPath', () => {
         expect(result.message).toBe(CONFINEMENT_REJECTED_MESSAGE);
       }
     });
+  });
+});
+
+describe('isPathWithinRoots (#1571)', () => {
+  let rootDir: string;
+  let outsideDir: string;
+
+  beforeEach(async () => {
+    rootDir = await fsPromises.mkdtemp(path.join(os.tmpdir(), 'embedded-agent-attachment-root-'));
+    outsideDir = await fsPromises.mkdtemp(path.join(os.tmpdir(), 'embedded-agent-attachment-outside-'));
+  });
+
+  afterEach(async () => {
+    await fsPromises.rm(rootDir, { recursive: true, force: true });
+    await fsPromises.rm(outsideDir, { recursive: true, force: true });
+  });
+
+  it('resolves a path under one of the roots', async () => {
+    const target = path.join(rootDir, 'attachment.png');
+    await fsPromises.writeFile(target, 'hi');
+
+    const result = await isPathWithinRoots(target, [rootDir]);
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      const resolvedRoot = await fsPromises.realpath(rootDir);
+      expect(result.resolvedPath.startsWith(resolvedRoot)).toBe(true);
+    }
+  });
+
+  it('rejects a path outside all roots', async () => {
+    const target = path.join(outsideDir, 'attachment.png');
+    await fsPromises.writeFile(target, 'hi');
+
+    const result = await isPathWithinRoots(target, [rootDir]);
+    expect(result.ok).toBe(false);
+  });
+
+  it('resolves a path reaching a root via a symlink', async () => {
+    const realTarget = path.join(rootDir, 'attachment.png');
+    await fsPromises.writeFile(realTarget, 'hi');
+    const linkPath = path.join(outsideDir, 'attachment-link.png');
+    await fsPromises.symlink(realTarget, linkPath);
+
+    const result = await isPathWithinRoots(linkPath, [rootDir]);
+    expect(result.ok).toBe(true);
+  });
+
+  it('rejects everything when roots is empty', async () => {
+    const target = path.join(rootDir, 'attachment.png');
+    await fsPromises.writeFile(target, 'hi');
+
+    const result = await isPathWithinRoots(target, []);
+    expect(result.ok).toBe(false);
   });
 });

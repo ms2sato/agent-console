@@ -783,6 +783,44 @@ describe('embedded-agent-store', () => {
     expect('notification' in entries[0]).toBe(false);
   });
 
+  it('folds a user-message carrying an `attachments` field (Issue #1571: embedded image attachments)', async () => {
+    const instance = getOrCreateEmbeddedAgentWorker('s5e', 'w5e');
+    const ws = MockWebSocket.getLastInstance();
+    ws!.simulateOpen();
+
+    const data = ndjson({
+      v: 1,
+      type: 'user-message',
+      id: 'u1',
+      text: 'look at this',
+      attachments: [{ path: '/uploads/session-x/photo.png', mimeType: 'image/png' }],
+    });
+    ws!.simulateMessage(historyMessage(data, data.length));
+    await flush();
+
+    const entries = instance.getSnapshot().entries;
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({
+      kind: 'user-message',
+      id: 'u1',
+      attachments: [{ path: '/uploads/session-x/photo.png', mimeType: 'image/png' }],
+    });
+  });
+
+  it('a user-message with NO `attachments` field folds into an entry where the key is genuinely absent, not an empty array', async () => {
+    const instance = getOrCreateEmbeddedAgentWorker('s5f', 'w5f');
+    const ws = MockWebSocket.getLastInstance();
+    ws!.simulateOpen();
+
+    const data = ndjson({ v: 1, type: 'user-message', id: 'u1', text: 'a real human message' });
+    ws!.simulateMessage(historyMessage(data, data.length));
+    await flush();
+
+    const entries = instance.getSnapshot().entries;
+    expect(entries).toHaveLength(1);
+    expect('attachments' in entries[0]).toBe(false);
+  });
+
   it('ignores state events (recognized but not rendered) without adding an entry', async () => {
     const instance = getOrCreateEmbeddedAgentWorker('s6', 'w6');
     const ws = MockWebSocket.getLastInstance();

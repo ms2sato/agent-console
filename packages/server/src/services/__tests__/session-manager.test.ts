@@ -2308,7 +2308,10 @@ describe('SessionManager', () => {
       });
       const agentWorker = session.workers.find((w: Worker) => w.type === 'agent')!;
 
-      const message = await manager.sendMessage(session.id, null, agentWorker.id, 'check these', ['/tmp/file1.txt', '/tmp/file2.txt']);
+      const message = await manager.sendMessage(session.id, null, agentWorker.id, 'check these', [
+        { path: '/tmp/file1.txt', mimeType: 'text/plain' },
+        { path: '/tmp/file2.txt', mimeType: 'text/plain' },
+      ]);
       expect(message).not.toBeNull();
 
       // First part is sent immediately
@@ -2330,7 +2333,9 @@ describe('SessionManager', () => {
       });
       const agentWorker = session.workers.find((w: Worker) => w.type === 'agent')!;
 
-      const message = await manager.sendMessage(session.id, null, agentWorker.id, '', ['/tmp/file1.txt']);
+      const message = await manager.sendMessage(session.id, null, agentWorker.id, '', [
+        { path: '/tmp/file1.txt', mimeType: 'text/plain' },
+      ]);
       expect(message).not.toBeNull();
 
       // First part (file path) is sent immediately
@@ -2359,7 +2364,10 @@ describe('SessionManager', () => {
       const agentWorker = session.workers.find((w: Worker) => w.type === 'agent')!;
 
       // Send a message with file paths, which schedules delayed writes via setTimeout
-      const message = await manager.sendMessage(session.id, null, agentWorker.id, 'check these', ['/tmp/file1.txt', '/tmp/file2.txt']);
+      const message = await manager.sendMessage(session.id, null, agentWorker.id, 'check these', [
+        { path: '/tmp/file1.txt', mimeType: 'text/plain' },
+        { path: '/tmp/file2.txt', mimeType: 'text/plain' },
+      ]);
       expect(message).not.toBeNull();
 
       const pty = ptyFactory.instances[0];
@@ -2391,7 +2399,10 @@ describe('SessionManager', () => {
       const agentWorker = session.workers.find((w: Worker) => w.type === 'agent')!;
 
       // Send a message with file paths targeting the agent worker, which schedules delayed writes
-      const message = await manager.sendMessage(session.id, null, agentWorker.id, 'check these', ['/tmp/file1.txt', '/tmp/file2.txt']);
+      const message = await manager.sendMessage(session.id, null, agentWorker.id, 'check these', [
+        { path: '/tmp/file1.txt', mimeType: 'text/plain' },
+        { path: '/tmp/file2.txt', mimeType: 'text/plain' },
+      ]);
       expect(message).not.toBeNull();
 
       const pty = ptyFactory.instances[0];
@@ -2448,6 +2459,46 @@ describe('SessionManager', () => {
       expect(injectCalls[0].content).toBe('hello via DI');
       expect(injectCalls[0].sessionId).toBe(session.id);
       expect(injectCalls[0].workerId).toBe(agentWorker.id);
+    });
+
+    it('derives a plain string[] of paths from attachments for injectMessage (PTY branch shape unaffected by Issue #1571)', async () => {
+      const injectCalls: Array<{ filePaths?: string[] }> = [];
+      const mockInjectionService = new PtyMessageInjectionService(
+        () => true,
+        () => true,
+      );
+      const originalInject = mockInjectionService.injectMessage.bind(mockInjectionService);
+      mockInjectionService.injectMessage = (sessionId, workerId, content, filePaths, isAsking) => {
+        injectCalls.push({ filePaths });
+        return originalInject(sessionId, workerId, content, filePaths, isAsking);
+      };
+
+      const module = await import(`../session-manager.js?v=${++importCounter}`);
+      const manager = await module.SessionManager.create({
+        userMode: new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' }),
+        pathExists: mockPathExists,
+        jobQueue: testJobQueue,
+        agentManager,
+        mcpTokenRegistry: new McpTokenRegistry(),
+        ptyMessageInjectionService: mockInjectionService,
+        repositoryLookup: defaultRepositoryLookup,
+        repositoryEnvLookup: defaultRepositoryEnvLookup,
+      });
+
+      const session = await manager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+      const agentWorker = session.workers.find((w: Worker) => w.type === 'agent')!;
+
+      const message = await manager.sendMessage(session.id, null, agentWorker.id, 'check these', [
+        { path: '/tmp/x.png', mimeType: 'image/png' },
+        { path: '/tmp/y.txt', mimeType: 'text/plain' },
+      ]);
+      expect(message).not.toBeNull();
+      expect(injectCalls).toHaveLength(1);
+      expect(injectCalls[0].filePaths).toEqual(['/tmp/x.png', '/tmp/y.txt']);
     });
 
     it('should pass isAsking=true to injectMessage when the target worker is in the asking state (Issue #792)', async () => {
@@ -2690,13 +2741,75 @@ describe('SessionManager', () => {
       const manager = await setupManager(fake, new Map([[STUB_DEF.id, STUB_DEF]]));
       const { sessionId, workerId } = await createEmbeddedWorker(manager);
 
-      const message = await manager.sendMessage(sessionId, null, workerId, 'check these', ['/tmp/a.txt', '/tmp/b.txt']);
+      const message = await manager.sendMessage(sessionId, null, workerId, 'check these', [
+        { path: '/tmp/a.txt', mimeType: 'text/plain' },
+        { path: '/tmp/b.txt', mimeType: 'text/plain' },
+      ]);
       expect(message).not.toBeNull();
 
       const userMessageWrite = fake.stdinWrites
         .map((w) => JSON.parse(w) as { type: string; text?: string })
         .find((c) => c.type === 'user-message');
       expect(userMessageWrite!.text).toBe('check these\n\nAttached files:\n- /tmp/a.txt\n- /tmp/b.txt');
+
+      const deactivatePromise = manager.deactivateEmbeddedAgentWorker(sessionId, workerId);
+      fake.simulateExit(0);
+      await deactivatePromise;
+    });
+
+    it('forwards attachments through to the embedded-agent stdin command and the persisted event (Issue #1571)', async () => {
+      const fake = makeFakeEmbeddedSpawn();
+      const manager = await setupManager(fake, new Map([[STUB_DEF.id, STUB_DEF]]));
+      const { sessionId, workerId } = await createEmbeddedWorker(manager);
+
+      const attachments = [
+        { path: '/tmp/img.png', mimeType: 'image/png' },
+      ];
+      const message = await manager.sendMessage(sessionId, null, workerId, 'see this', attachments);
+      expect(message).not.toBeNull();
+
+      // The subprocess stdin command carries the attachments verbatim.
+      const userMessageCommand = fake.stdinWrites
+        .map((w) => JSON.parse(w) as { type: string; attachments?: unknown })
+        .find((c) => c.type === 'user-message');
+      expect(userMessageCommand!.attachments).toEqual(attachments);
+
+      // The persisted/broadcast event mirrors the same attachments.
+      const history = await manager.getWorkerOutputHistory(sessionId, workerId, 0);
+      expect(history).not.toBeNull();
+      const persistedEvent = (history!.data as string)
+        .split('\n')
+        .filter((line: string) => line.length > 0)
+        .map((line: string) => JSON.parse(line) as { type: string; attachments?: unknown })
+        .find((event) => event.type === 'user-message');
+      expect(persistedEvent?.attachments).toEqual(attachments);
+
+      const deactivatePromise = manager.deactivateEmbeddedAgentWorker(sessionId, workerId);
+      fake.simulateExit(0);
+      await deactivatePromise;
+    });
+
+    it('omits attachments entirely from both the stdin command and the persisted event when none are sent (byte-identical to pre-#1571, polarity pin)', async () => {
+      const fake = makeFakeEmbeddedSpawn();
+      const manager = await setupManager(fake, new Map([[STUB_DEF.id, STUB_DEF]]));
+      const { sessionId, workerId } = await createEmbeddedWorker(manager);
+
+      const message = await manager.sendMessage(sessionId, null, workerId, 'no attachments here');
+      expect(message).not.toBeNull();
+
+      const userMessageCommand = fake.stdinWrites
+        .map((w) => JSON.parse(w) as Record<string, unknown>)
+        .find((c) => c.type === 'user-message');
+      expect('attachments' in userMessageCommand!).toBe(false);
+
+      const history = await manager.getWorkerOutputHistory(sessionId, workerId, 0);
+      expect(history).not.toBeNull();
+      const persistedEvent = (history!.data as string)
+        .split('\n')
+        .filter((line: string) => line.length > 0)
+        .map((line: string) => JSON.parse(line) as Record<string, unknown>)
+        .find((event) => event.type === 'user-message');
+      expect('attachments' in persistedEvent!).toBe(false);
 
       const deactivatePromise = manager.deactivateEmbeddedAgentWorker(sessionId, workerId);
       fake.simulateExit(0);

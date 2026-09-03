@@ -10,6 +10,8 @@ import {
   SendWorkerMessageRequestSchema,
   MAX_MESSAGE_FILES,
   MAX_TOTAL_FILE_SIZE,
+  EMBEDDED_AGENT_IMAGE_MIME_TYPES,
+  MAX_IMAGE_ATTACHMENT_BYTES,
 } from '@agent-console/shared';
 import type { AppBindings } from '../app-context.js';
 import { NotFoundError, ValidationError } from '../lib/errors.js';
@@ -22,7 +24,7 @@ import {
   EmbeddedMessageDeliveryError,
   GENERIC_EMBEDDED_ACTIVATION_FAILURE_MESSAGE,
 } from '../services/embedded-agent-worker-service.js';
-import type { WorkerMessage } from '@agent-console/shared';
+import type { WorkerMessage, EmbeddedAgentAttachment } from '@agent-console/shared';
 import type { StartupIntentPreference } from '../services/startup-intent.js';
 
 const logger = createLogger('api:workers');
@@ -246,6 +248,17 @@ const workers = new Hono<AppBindings>()
       throw new ValidationError(`Total file size exceeds limit (max ${MAX_TOTAL_FILE_SIZE} bytes)`);
     }
 
+    for (const file of files) {
+      if (
+        (EMBEDDED_AGENT_IMAGE_MIME_TYPES as readonly string[]).includes(file.type) &&
+        file.size > MAX_IMAGE_ATTACHMENT_BYTES
+      ) {
+        throw new ValidationError(
+          `Image attachment exceeds the ${MAX_IMAGE_ATTACHMENT_BYTES}-byte limit: ${file.name}`,
+        );
+      }
+    }
+
     // Validate session exists BEFORE writing files to avoid orphan files on disk
     const { sessionManager } = c.get('appContext');
     const session = sessionManager.getSession(sessionId);
@@ -258,6 +271,7 @@ const workers = new Hono<AppBindings>()
 
     // Save files to disk
     const savedPaths: string[] = [];
+    const attachments: EmbeddedAgentAttachment[] = [];
     for (const file of files) {
       // Sanitize filename: remove directory separators to prevent path traversal
       const sanitizedName = file.name.replace(/[/\\]/g, '_');
@@ -266,11 +280,12 @@ const workers = new Hono<AppBindings>()
       const buffer = Buffer.from(await file.arrayBuffer());
       await Bun.write(filePath, buffer);
       savedPaths.push(filePath);
+      attachments.push({ path: filePath, mimeType: file.type });
     }
 
     let message: WorkerMessage | null;
     try {
-      message = await sessionManager.sendMessage(sessionId, null, validated.toWorkerId, validated.content, savedPaths);
+      message = await sessionManager.sendMessage(sessionId, null, validated.toWorkerId, validated.content, attachments);
     } catch (err) {
       // Clean up saved files since the message was not delivered
       await Promise.allSettled(savedPaths.map((p) => unlink(p)));

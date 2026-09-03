@@ -11,6 +11,7 @@ import {
   type AgentActivityState,
   type AppServerMessage,
   type EmbeddedAgentServerNotification,
+  type EmbeddedAgentAttachment,
   type ExitReason,
   type RestorePreservation,
 } from '@agent-console/shared';
@@ -54,6 +55,9 @@ export type EmbeddedAgentChatEntry =
       // EmbeddedAgentServerEvent's `notification` field one-to-one; see that
       // field's doc comment for the discriminator rationale.
       notification?: EmbeddedAgentServerNotification;
+      // Mirrors EmbeddedAgentServerEvent's `attachments` field one-to-one:
+      // present iff the originating send included at least one attachment.
+      attachments?: EmbeddedAgentAttachment[];
     }
   | { key: string; kind: 'assistant-message'; turnId: string; text: string; streaming: boolean }
   | { key: string; kind: 'assistant-thinking'; turnId: string; text: string; streaming: boolean }
@@ -1209,6 +1213,7 @@ class EmbeddedAgentController implements EmbeddedAgentInstance {
           id: event.id,
           text: event.text,
           ...(event.notification !== undefined ? { notification: event.notification } : {}),
+          ...(event.attachments !== undefined ? { attachments: event.attachments } : {}),
         });
         // Confirms THIS client's own sendUserMessage() was accepted -- correlated
         // by clientMessageId, not "any user-message event", so a different

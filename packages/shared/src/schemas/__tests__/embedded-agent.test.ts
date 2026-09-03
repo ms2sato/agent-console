@@ -9,6 +9,7 @@ import {
   EmbeddedAgentEventSchema,
   EmbeddedAgentServerEventSchema,
   EmbeddedAgentStreamEventSchema,
+  EmbeddedAgentProviderSchema,
 } from '../embedded-agent.js';
 import { SDK_RESUME_FAILURE_REASONS } from '../../types/embedded-agent.js';
 
@@ -264,6 +265,31 @@ describe('EmbeddedAgentDefinitionSchema', () => {
       const result = v.safeParse(EmbeddedAgentDefinitionSchema, withoutIsBuiltIn);
       expect(result.success).toBe(false);
     });
+  });
+});
+
+describe('EmbeddedAgentProviderSchema supportsImages (Issue #1571)', () => {
+  const baseProvider = { baseUrl: 'http://localhost:11434/v1', model: 'llama3' };
+
+  it('parses a provider with supportsImages: true', () => {
+    const result = v.safeParse(EmbeddedAgentProviderSchema, { ...baseProvider, supportsImages: true });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.output.supportsImages).toBe(true);
+    }
+  });
+
+  it('parses a provider WITHOUT supportsImages (absent, same as today)', () => {
+    const result = v.safeParse(EmbeddedAgentProviderSchema, baseProvider);
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect('supportsImages' in result.output).toBe(false);
+    }
+  });
+
+  it('rejects a non-boolean supportsImages', () => {
+    const result = v.safeParse(EmbeddedAgentProviderSchema, { ...baseProvider, supportsImages: 'yes' });
+    expect(result.success).toBe(false);
   });
 });
 
@@ -603,6 +629,39 @@ describe('EmbeddedAgentCommandSchema', () => {
     expect(v.safeParse(EmbeddedAgentCommandSchema, { v: 1, type: 'shutdown' }).success).toBe(true);
   });
 
+  it('parses a user-message command with attachments (Issue #1571)', () => {
+    const result = v.safeParse(EmbeddedAgentCommandSchema, {
+      v: 1,
+      type: 'user-message',
+      id: 'm1',
+      text: 'see attached',
+      attachments: [{ path: '/tmp/upload/img.png', mimeType: 'image/png' }],
+    });
+    expect(result.success).toBe(true);
+    if (result.success && result.output.type === 'user-message') {
+      expect(result.output.attachments).toEqual([{ path: '/tmp/upload/img.png', mimeType: 'image/png' }]);
+    }
+  });
+
+  it('parses a user-message command WITHOUT attachments (absent, same as today)', () => {
+    const result = v.safeParse(EmbeddedAgentCommandSchema, { v: 1, type: 'user-message', id: 'm1', text: 'hi' });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect('attachments' in result.output).toBe(false);
+    }
+  });
+
+  it('rejects a user-message command with an attachment carrying an unknown field (strictObject)', () => {
+    const result = v.safeParse(EmbeddedAgentCommandSchema, {
+      v: 1,
+      type: 'user-message',
+      id: 'm1',
+      text: 'see attached',
+      attachments: [{ path: '/tmp/upload/img.png', mimeType: 'image/png', size: 123 }],
+    });
+    expect(result.success).toBe(false);
+  });
+
   it('REJECTS the retired handoff command (#1401)', () => {
     // Commands are not persisted, so nothing replays one -- but a server on
     // an older build could still write it, and it must fail the schema
@@ -654,6 +713,42 @@ describe('EmbeddedAgentCommandSchema', () => {
     expect(result.success).toBe(true);
     if (result.success && result.output.type === 'init') {
       expect(result.output.enabledTools).toEqual(['Read']);
+    }
+  });
+
+  it('parses an openai-api init command with provider.supportsImages: true (Issue #1571)', () => {
+    const init = {
+      v: 1,
+      type: 'init',
+      compaction: { auto: true },
+      engine: 'openai-api',
+      mcp: { baseUrl: 'http://localhost:3457/mcp', token: 'tok' },
+      provider: { baseUrl: 'http://localhost:11434/v1', model: 'llama3', supportsImages: true },
+      context: { sessionId: 's1', workerId: 'w1', cwd: '/work' },
+      maxToolIterations: 25,
+    };
+    const result = v.safeParse(EmbeddedAgentCommandSchema, init);
+    expect(result.success).toBe(true);
+    if (result.success && result.output.type === 'init' && result.output.engine === 'openai-api') {
+      expect(result.output.provider.supportsImages).toBe(true);
+    }
+  });
+
+  it('parses an openai-api init command WITHOUT provider.supportsImages (absent, same as today)', () => {
+    const init = {
+      v: 1,
+      type: 'init',
+      compaction: { auto: true },
+      engine: 'openai-api',
+      mcp: { baseUrl: 'http://localhost:3457/mcp', token: 'tok' },
+      provider: { baseUrl: 'http://localhost:11434/v1', model: 'llama3' },
+      context: { sessionId: 's1', workerId: 'w1', cwd: '/work' },
+      maxToolIterations: 25,
+    };
+    const result = v.safeParse(EmbeddedAgentCommandSchema, init);
+    expect(result.success).toBe(true);
+    if (result.success && result.output.type === 'init' && result.output.engine === 'openai-api') {
+      expect('supportsImages' in result.output.provider).toBe(false);
     }
   });
 
@@ -1379,6 +1474,45 @@ describe('EmbeddedAgentServerEventSchema', () => {
       id: 'm1',
       text: 'hi',
       clientMessageId: 42,
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('parses a user-message event with attachments (Issue #1571)', () => {
+    const result = v.safeParse(EmbeddedAgentServerEventSchema, {
+      v: 1,
+      type: 'user-message',
+      id: 'm1',
+      text: 'see attached',
+      attachments: [{ path: '/tmp/upload/img.png', mimeType: 'image/png' }],
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.output).toEqual({
+        v: 1,
+        type: 'user-message',
+        id: 'm1',
+        text: 'see attached',
+        attachments: [{ path: '/tmp/upload/img.png', mimeType: 'image/png' }],
+      });
+    }
+  });
+
+  it('parses a user-message event WITHOUT attachments (absent, same as today)', () => {
+    const result = v.safeParse(EmbeddedAgentServerEventSchema, { v: 1, type: 'user-message', id: 'm1', text: 'hi' });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect('attachments' in result.output).toBe(false);
+    }
+  });
+
+  it('rejects a user-message event with a malformed attachment (missing mimeType)', () => {
+    const result = v.safeParse(EmbeddedAgentServerEventSchema, {
+      v: 1,
+      type: 'user-message',
+      id: 'm1',
+      text: 'see attached',
+      attachments: [{ path: '/tmp/upload/img.png' }],
     });
     expect(result.success).toBe(false);
   });

@@ -44,13 +44,31 @@ export interface EmbeddedAgentRestoredToolCall {
 }
 
 /**
+ * Wire-shape for one message attachment: an absolute path the subprocess may
+ * read (confined to `attachmentRoots`) plus its MIME type. The subprocess
+ * decides per-attachment whether to build an image content block for it
+ * (image/* under EMBEDDED_AGENT_IMAGE_MIME_TYPES) or leave it path-only
+ * (unchanged for every other type).
+ */
+export interface EmbeddedAgentAttachment {
+  path: string;
+  mimeType: string;
+}
+
+/**
  * Wire-shape for the `init` command's `restoredConversation` field
  * (Transcript Restore, #1123). Structurally identical to embedded-agent's
  * internal `ChatMessage` union -- see EmbeddedAgentRestoredToolCall doc.
+ *
+ * The `user` variant's `content` stays a plain `string` -- it is NOT widened
+ * to carry resolved image content parts. `attachments` is only a reference
+ * the subprocess uses to decide, at restore time, whether to re-resolve the
+ * file into real content; this wire type carries just the reference, never
+ * the resolved shape.
  */
 export type EmbeddedAgentRestoredMessage =
   | { role: 'system'; content: string }
-  | { role: 'user'; content: string }
+  | { role: 'user'; content: string; attachments?: EmbeddedAgentAttachment[] }
   | { role: 'assistant'; content: string; tool_calls?: EmbeddedAgentRestoredToolCall[] }
   | { role: 'tool'; tool_call_id: string; content: string };
 
@@ -129,6 +147,14 @@ export type EmbeddedAgentDefinition =
         baseUrl: string;       // OpenAI-compatible root, e.g. "http://localhost:11434/v1"
         model: string;         // model id passed in the chat.completions request
         apiKeyRef?: string;    // name of a key in the server-side key store; absent = no auth (local LLMs)
+        /**
+         * Per-provider capability flag, operator-declared (not inferred):
+         * whether this provider can see image content parts. Default
+         * false/absent means the provider cannot see images -- gates whether
+         * the subprocess builds `image_url` content parts for this
+         * definition's turns.
+         */
+        supportsImages?: boolean;
       };
     })
   | (EmbeddedAgentDefinitionBase & {
@@ -229,7 +255,14 @@ export type EmbeddedAgentCommand =
        * is the authority (see `EMBEDDED_AGENT_ENGINE_PARAMETER_CAPABILITIES`
        * for the capability declaration).
        */
-      provider: { baseUrl: string; model: string; apiKey?: string; reasoningEffort?: string };
+      provider: {
+        baseUrl: string;
+        model: string;
+        apiKey?: string;
+        reasoningEffort?: string;
+        // Pass-through of the definition's provider.supportsImages.
+        supportsImages?: boolean;
+      };
       /**
        * Transcript Restore: the newest authoritative context reading from
        * the persisted log, seeding the restore-boundary compaction check.
@@ -278,7 +311,17 @@ export type EmbeddedAgentCommand =
        */
       resume?: { sdkSessionId: string };
     })
-  | { v: 1; type: 'user-message'; id: string; text: string }
+  | {
+      v: 1;
+      type: 'user-message';
+      id: string;
+      text: string;
+      // Attachment references the subprocess may resolve into real content
+      // parts (image content blocks for image/* mime types under
+      // EMBEDDED_AGENT_IMAGE_MIME_TYPES; path-only otherwise). Absent/empty
+      // = no attachments, unchanged today.
+      attachments?: EmbeddedAgentAttachment[];
+    }
   | { v: 1; type: 'cancel' }
   /**
    * Compaction: the worker's auto-compaction toggle was changed while the
@@ -556,6 +599,12 @@ export type EmbeddedAgentServerEvent =
       // discriminator -- there is no separate `origin` field that could
       // disagree with it.
       notification?: EmbeddedAgentServerNotification;
+      // Mirrors the originating EmbeddedAgentCommand's `attachments`:
+      // present iff the send included at least one attachment, so the
+      // client can render a filename chip and restore can find the file.
+      // Absent for sends with no attachments and for server-originated
+      // sends (e.g. system notifications), which never carry attachments.
+      attachments?: EmbeddedAgentAttachment[];
     }
   /**
    * Transcript Restore, R1 (the local half of #1273): the turn that was in
