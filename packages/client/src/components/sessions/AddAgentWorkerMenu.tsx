@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useMemo } from 'react';
+import { useState, useRef, useEffect, useMemo, useCallback } from 'react';
 import { Link } from '@tanstack/react-router';
 import { useAgentDirectory } from '../../hooks/useAgentDirectory';
 import { AGENT_KIND_PRESENTATION } from '../agents';
@@ -82,6 +82,16 @@ export function AddAgentWorkerMenu({
   const [optionsContextWindowTokens, setOptionsContextWindowTokens] = useState<
     number | undefined
   >(undefined);
+
+  // Stable ref callback (mount-only via empty deps) so that re-renders
+  // triggered by typing in the panel's inputs do not re-run
+  // scrollIntoView. An inline arrow function here would be a new
+  // reference on every render, causing React to call it with `null` then
+  // the element again on every keystroke, snapping the dropdown's scroll
+  // position back each time.
+  const scrollPanelIntoView = useCallback((el: HTMLDivElement | null) => {
+    el?.scrollIntoView({ block: 'nearest' });
+  }, []);
 
   function resetOptionsState() {
     setExpandedKey(null);
@@ -261,7 +271,7 @@ export function AddAgentWorkerMenu({
                 </div>
                 {isExpanded && (
                   <div
-                    ref={(el) => el?.scrollIntoView({ block: 'nearest' })}
+                    ref={scrollPanelIntoView}
                     className="px-3 py-2 bg-slate-900/40 border-t border-b border-slate-700 flex flex-col gap-2"
                   >
                     <AgentParameterFields
@@ -322,7 +332,7 @@ export function AddAgentWorkerMenu({
                 </div>
                 {isExpanded && (
                   <div
-                    ref={(el) => el?.scrollIntoView({ block: 'nearest' })}
+                    ref={scrollPanelIntoView}
                     className="px-3 py-2 bg-slate-900/40 border-t border-b border-slate-700 flex flex-col gap-2"
                   >
                     <AgentParameterFields
