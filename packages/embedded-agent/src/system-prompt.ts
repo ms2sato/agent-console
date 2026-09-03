@@ -26,6 +26,23 @@ import { isErrnoException } from './type-guards.js';
 
 export const INSTRUCTION_PER_FILE_CAP_BYTES = 16 * 1024;
 export const INSTRUCTION_AGGREGATE_CAP_BYTES = 48 * 1024;
+const RULES_LAYER_CAP_BYTES_DEFAULT = 160 * 1024;
+
+/**
+ * Non-positive or non-numeric env values fall back to the default rather
+ * than surviving as-is -- a bare `Number(env) || default` lets a NEGATIVE
+ * override through unclamped (e.g. `Number('-5') === -5`, which is truthy,
+ * so `-5 || default` evaluates to `-5`), and a negative budget drops every
+ * rule on the very first over-budget check (Architect N1).
+ */
+/** @internal Exported for testing -- takes the raw env value as a parameter
+ * rather than reading `process.env` directly, so a test can exercise the
+ * clamping logic without needing a module re-import per env value. */
+export function parseRulesLayerCapBytes(raw: string | undefined): number {
+  const n = Number(raw);
+  return Number.isFinite(n) && n > 0 ? n : RULES_LAYER_CAP_BYTES_DEFAULT;
+}
+
 /**
  * Separate from {@link INSTRUCTION_AGGREGATE_CAP_BYTES}: rules are never
  * truncated mid-file (R3, Phase A) -- a half rule is worse than
@@ -34,7 +51,7 @@ export const INSTRUCTION_AGGREGATE_CAP_BYTES = 48 * 1024;
  * unscoped-rules total (121 KB as of 2026-09-03) plus headroom; env-overridable
  * for repos with a different rules footprint.
  */
-export const RULES_LAYER_CAP_BYTES = Number(process.env.RULES_LAYER_CAP_BYTES) || 160 * 1024;
+export const RULES_LAYER_CAP_BYTES = parseRulesLayerCapBytes(process.env.RULES_LAYER_CAP_BYTES);
 
 const encoder = new TextEncoder();
 
@@ -198,6 +215,22 @@ export function composeSdkSystemPromptAppend(
 type ReadTextResult =
   | { ok: true; content: string }
   | { ok: false; code: string; message: string };
+
+/**
+ * Resolves symlinks in `p`, falling back to `p` unchanged if `realpath`
+ * fails (e.g. a TOCTOU race where the file vanished between being
+ * discovered and this call). Used to make the R1 dedupe comparison
+ * symlink-transparent -- see its call site's comment for why comparing raw
+ * `path.join` strings against an already-realpath'd `resolveConfinedPath`
+ * result is wrong (Architect F1).
+ */
+async function realpathOrSelf(p: string): Promise<string> {
+  try {
+    return await fsPromises.realpath(p);
+  } catch {
+    return p;
+  }
+}
 
 /** Bun.file().text() wrapper that normalizes the error shape for callers. */
 async function tryReadTextFile(filePath: string): Promise<ReadTextResult> {
@@ -369,6 +402,51 @@ function stripQuotes(s: string): string {
 }
 
 /**
+ * Splits an inline array's inner content on top-level commas only -- commas
+ * inside a quoted string or inside `{}`/`[]`/`()` nesting do not split.
+ * Needed because a brace-expansion glob like `**\/*.{ts,tsx}` contains a
+ * comma that is part of the pattern, not a list separator: a naive
+ * `inner.split(',')` on `["**\/*.{ts,tsx}", "src/**"]` yields three broken
+ * items instead of two (Architect F2).
+ */
+function splitInlineArrayItems(inner: string): string[] {
+  const items: string[] = [];
+  let current = '';
+  let depth = 0;
+  let quote: '"' | "'" | null = null;
+  for (const ch of inner) {
+    if (quote) {
+      current += ch;
+      if (ch === quote) quote = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      quote = ch;
+      current += ch;
+      continue;
+    }
+    if (ch === '{' || ch === '[' || ch === '(') {
+      depth++;
+      current += ch;
+      continue;
+    }
+    if (ch === '}' || ch === ']' || ch === ')') {
+      depth--;
+      current += ch;
+      continue;
+    }
+    if (ch === ',' && depth === 0) {
+      items.push(current.trim());
+      current = '';
+      continue;
+    }
+    current += ch;
+  }
+  if (current.trim().length > 0) items.push(current.trim());
+  return items;
+}
+
+/**
  * R2: parses a rule file's `paths:`/`globs:` frontmatter (either spelling;
  * whichever key appears first wins if a file has both). Returns the glob
  * list, or an empty list when the rule is unscoped -- no frontmatter at all
@@ -401,7 +479,7 @@ export function parseRuleFrontmatter(content: string, origin: string): string[] 
         const inner = inline.slice(1, -1).trim();
         const items = inner.length === 0
           ? []
-          : inner.split(',').map((s) => stripQuotes(s.trim())).filter((s) => s.length > 0);
+          : splitInlineArrayItems(inner).map((s) => stripQuotes(s.trim())).filter((s) => s.length > 0);
         if (items.length === 0) {
           console.warn(`Malformed ${key} frontmatter in ${origin}: empty array; treating as unscoped`);
         }
@@ -538,18 +616,29 @@ export async function loadInstructions(
   const chainRaw = chainResults.filter((s): s is InstructionSegment => s !== null);
 
   // instructions[] layer (opt-in, confined to cwd, capped per-file) --
-  // delegated to loadOptInInstructions. R1 (Phase A): dedupe by
-  // resolved path against the global/chain layers already discovered above,
-  // so a definition whose instructions[] still explicitly lists 'CLAUDE.md'
-  // (the pre-Phase-A builtin's own convention) does not double-load once the
-  // chain tail already resolves the same file.
-  const priorOrigins = new Set<string>([
-    ...(globalRaw !== null ? [globalRaw.origin] : []),
-    ...chainRaw.map((s) => s.origin),
-  ]);
-  const instructionSegments = (await loadOptInInstructions(cwd, params.instructionsList)).filter(
-    (s) => !priorOrigins.has(s.origin),
+  // delegated to loadOptInInstructions. R1 (Phase A): dedupe by REALPATH
+  // against the global/chain layers already discovered above, so a
+  // definition whose instructions[] still explicitly lists 'CLAUDE.md' (the
+  // pre-Phase-A builtin's own convention) does not double-load once the
+  // chain tail already resolves the same file. Architect F1: the opt-in
+  // side's `origin` is already realpath'd (`resolveConfinedPath`'s
+  // `resolvedPath`, path-confinement.ts), but the global/chain side's
+  // `origin` is a plain `path.join` result -- comparing the two AS STRINGS
+  // misses whenever `cwd` (or the global dir) contains a symlink component
+  // (macOS `/tmp` -> `/private/tmp`, `/var/folders/...`, a symlinked
+  // worktree), reproducing the exact double-load this dedupe exists to
+  // prevent. Both sides go through `realpathOrSelf` so the comparison is
+  // symlink-transparent on both ends, not just one.
+  const priorOrigins = new Set<string>(
+    await Promise.all(
+      [...(globalRaw !== null ? [globalRaw.origin] : []), ...chainRaw.map((s) => s.origin)].map(
+        realpathOrSelf,
+      ),
+    ),
   );
+  const instructionsRaw = await loadOptInInstructions(cwd, params.instructionsList);
+  const instructionRealpaths = await Promise.all(instructionsRaw.map((s) => realpathOrSelf(s.origin)));
+  const instructionSegments = instructionsRaw.filter((_, i) => !priorOrigins.has(instructionRealpaths[i]));
 
   // Per-file cap (global/chain only -- instructionSegments is already capped
   // by loadOptInInstructions above).

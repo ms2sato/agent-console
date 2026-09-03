@@ -497,23 +497,47 @@ async function gracefulExit(
   return EXIT_OK;
 }
 
-async function* readStdinLines(): AsyncIterable<string> {
+/**
+ * The one method this module needs from a stream reader. Deliberately NOT
+ * `ReadableStreamDefaultReader<Uint8Array>`: that global type is declared
+ * differently by `@types/node`'s `stream/web` augmentation (used implicitly
+ * once `"node"` is in a tsconfig's `types`) than by `bun-types`' own
+ * augmentation (which adds a `readMany()` member `Bun.stdin.stream()`'s real
+ * reader has but a synthetic test `ReadableStream`'s does not) -- pinning
+ * this function's parameter to either concrete type makes it reject a
+ * reader built from the other. A minimal structural interface accepts both.
+ */
+interface AsyncByteReader {
+  read(): Promise<{ done: boolean; value?: Uint8Array }>;
+}
+
+/**
+ * Reader-loop form, not `for await (... of someStream)`: the same pattern
+ * embedded-agent-worker-service.ts's `readStdout` uses for its own
+ * `ReadableStream<Uint8Array>`. Avoids depending on `ReadableStream`'s
+ * async-iterator typing at all, which packages/integration's DOM-lib
+ * tsconfig doesn't declare the same way Bun's lib does -- a `for await`
+ * form here stopped typechecking once this file became reachable from a
+ * packages/integration test (Phase A's subprocess-boundary integration
+ * case), even though nothing about runtime behavior changed. Takes the
+ * reader (not the stream) so a test can drive it with a synthetic
+ * `ReadableStream` instead of the real `Bun.stdin.stream()`.
+ */
+export async function* readLinesFromReader(reader: AsyncByteReader): AsyncIterable<string> {
   const splitter = new NdjsonLineSplitter();
   const decoder = new TextDecoder();
-  // Cast: packages/integration's tsconfig adds the DOM lib (for
-  // React/happy-dom), and DOM's own ReadableStream type doesn't declare
-  // [Symbol.asyncIterator] the way Bun's lib does -- once this file became
-  // reachable from a packages/integration test (Phase A's
-  // subprocess-boundary integration case), tsc's merged lib type lost the
-  // async-iterator signature here even though nothing about runtime
-  // behavior changed. Purely a cross-package typing artifact.
-  const stdin = Bun.stdin.stream() as unknown as AsyncIterable<Uint8Array>;
-  for await (const chunk of stdin) {
-    const { lines } = splitter.push(decoder.decode(chunk, { stream: true }));
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    const { lines } = splitter.push(decoder.decode(value, { stream: true }));
     for (const line of lines) yield line;
   }
   const tail = splitter.carry;
   if (tail.length > 0) yield tail;
+}
+
+function readStdinLines(): AsyncIterable<string> {
+  return readLinesFromReader(Bun.stdin.stream().getReader());
 }
 
 function writeEvent(event: EmbeddedAgentEvent): void {

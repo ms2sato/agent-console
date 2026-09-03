@@ -12,6 +12,7 @@ import {
   loadInstructions,
   loadOptInInstructions,
   parseRuleFrontmatter,
+  parseRulesLayerCapBytes,
   INSTRUCTION_PER_FILE_CAP_BYTES,
   INSTRUCTION_AGGREGATE_CAP_BYTES,
   RULES_LAYER_CAP_BYTES,
@@ -538,6 +539,28 @@ describe('loadInstructions — dedupe by resolved path (Issue #1343 Phase A, R1)
     expect(result.segments[0]).toEqual({ origin: join(cwd, 'CLAUDE.md'), content: 'CLAUDE_MD_CONTENT' });
   });
 
+  it('dedupes correctly even when cwd is reached via a symlink (Architect F1: realpath both sides of the comparison)', async () => {
+    const realDir = await makeTempDir();
+    await writeFile(join(realDir, 'CLAUDE.md'), 'CLAUDE_MD_CONTENT');
+    const container = await makeTempDir();
+    const symlinkedCwd = join(container, 'link-to-real-dir');
+    await symlink(realDir, symlinkedCwd);
+    tempDirs.push(symlinkedCwd);
+
+    const result = await loadInstructions({
+      cwd: symlinkedCwd,
+      instructionsList: ['CLAUDE.md'],
+      xdgConfigHome: await isolatedXdgConfigHome(),
+    });
+
+    // Chain layer's origin is `<symlinkedCwd>/CLAUDE.md` (no realpath in the
+    // chain walk); the opt-in layer's origin is already realpath'd to
+    // `<realDir>/CLAUDE.md` by resolveConfinedPath. The two strings differ
+    // even though they name the same file -- only a realpath-normalized
+    // comparison on BOTH sides catches this as a duplicate.
+    expect(result.segments).toHaveLength(1);
+  });
+
   it('does not dedupe two DIFFERENT files even if their content happens to be identical (dedupe is by path, not content)', async () => {
     const cwd = await makeTempDir();
     await writeFile(join(cwd, 'CLAUDE.md'), 'SAME_CONTENT');
@@ -806,6 +829,11 @@ describe('parseRuleFrontmatter', () => {
     expect(parseRuleFrontmatter(content, '/r/x.md')).toEqual(['src/**', 'docs/**']);
   });
 
+  it('does not split a comma inside a brace-expansion glob within a quoted inline-array item (Architect F2)', () => {
+    const content = '---\npaths: ["**/*.{ts,tsx}", "src/**"]\n---\n\nBody.\n';
+    expect(parseRuleFrontmatter(content, '/r/x.md')).toEqual(['**/*.{ts,tsx}', 'src/**']);
+  });
+
   it('parses a single unquoted scalar on the same line', () => {
     const content = '---\npaths: src/**\n---\n\nBody.\n';
     expect(parseRuleFrontmatter(content, '/r/x.md')).toEqual(['src/**']);
@@ -960,6 +988,31 @@ describe('loadInstructions — rules layer', () => {
     expect(ruleIdx).toBeGreaterThan(instructionIdx);
     expect(indexLineIdx).toBeGreaterThan(ruleIdx);
     expect(prompt).not.toContain('SCOPED_CONTENT');
+  });
+});
+
+// Architect N1: a bare `Number(env) || default` lets a negative override
+// through unclamped (Number('-5') is truthy), which would drop every rule
+// on the first over-budget check. parseRulesLayerCapBytes clamps.
+describe('parseRulesLayerCapBytes', () => {
+  it('uses the default when the env value is undefined', () => {
+    expect(parseRulesLayerCapBytes(undefined)).toBe(160 * 1024);
+  });
+
+  it('uses a positive numeric override verbatim', () => {
+    expect(parseRulesLayerCapBytes('4096')).toBe(4096);
+  });
+
+  it('falls back to the default for a negative value', () => {
+    expect(parseRulesLayerCapBytes('-5')).toBe(160 * 1024);
+  });
+
+  it('falls back to the default for zero', () => {
+    expect(parseRulesLayerCapBytes('0')).toBe(160 * 1024);
+  });
+
+  it('falls back to the default for a non-numeric value', () => {
+    expect(parseRulesLayerCapBytes('not-a-number')).toBe(160 * 1024);
   });
 });
 

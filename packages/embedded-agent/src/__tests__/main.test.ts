@@ -6,6 +6,7 @@ import * as v from 'valibot';
 import { EmbeddedAgentCommandSchema, type EmbeddedAgentEvent } from '@agent-console/shared';
 import {
   runLoop,
+  readLinesFromReader,
   type LoopFactories,
   type LoopIO,
   type McpClientLike,
@@ -141,6 +142,45 @@ function makeFactories(overrides: Partial<LoopFactories> = {}): LoopFactories {
     ...overrides,
   };
 }
+
+// Architect F3: readStdinLines was rewritten from `for await (... of
+// Bun.stdin.stream())` to a reader-loop (`getReader()`/`read()`) to avoid a
+// cross-package ReadableStream async-iterator typing collision -- this pins
+// that the reader-loop form still reassembles a line split across two
+// stream chunks, the one behavior the rewrite must not change.
+describe('readLinesFromReader', () => {
+  // No explicit ReadableStreamDefaultReader<Uint8Array> return annotation --
+  // that global type is declared differently by @types/node's stream/web
+  // augmentation than by bun-types' own (see readLinesFromReader's
+  // AsyncByteReader comment in main.ts); letting the return type infer
+  // keeps this helper structurally compatible with whichever declaration
+  // TypeScript picks in this file, since readLinesFromReader itself only
+  // requires a `read()` method.
+  function readerFromChunks(chunks: string[]) {
+    const encoder = new TextEncoder();
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        for (const chunk of chunks) controller.enqueue(encoder.encode(chunk));
+        controller.close();
+      },
+    });
+    return stream.getReader();
+  }
+
+  it('reassembles a line split across two chunks', async () => {
+    const reader = readerFromChunks(['{"v":1,"ty', 'pe":"cancel"}\n']);
+    const lines: string[] = [];
+    for await (const line of readLinesFromReader(reader)) lines.push(line);
+    expect(lines).toEqual(['{"v":1,"type":"cancel"}']);
+  });
+
+  it('yields multiple complete lines from one chunk and a trailing unterminated tail at stream end', async () => {
+    const reader = readerFromChunks(['{"a":1}\n{"a":2}\n{"a":3}']);
+    const lines: string[] = [];
+    for await (const line of readLinesFromReader(reader)) lines.push(line);
+    expect(lines).toEqual(['{"a":1}', '{"a":2}', '{"a":3}']);
+  });
+});
 
 describe('runLoop — protocol enforcement', () => {
   it('exits 2 when the first message is not an init', async () => {
