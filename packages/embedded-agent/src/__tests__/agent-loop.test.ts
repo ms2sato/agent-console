@@ -5,6 +5,7 @@ import * as os from 'node:os';
 import type { EmbeddedAgentAttachment, EmbeddedAgentEvent } from '@agent-console/shared';
 import { AgentLoop, type AgentLoopDeps } from '../agent-loop.js';
 import type { ToolCallOutcome, ToolExecutor } from '../mcp.js';
+import { truncateToBytes } from '../truncate.js';
 import {
   ProviderError,
   type ChatMessage,
@@ -418,6 +419,47 @@ describe('AgentLoop — tool-result truncation', () => {
       | undefined;
     expect(result).toBeDefined();
     expect(new TextEncoder().encode(result!.result).length).toBeLessThanOrEqual(16384);
+  });
+});
+
+describe('AgentLoop — Phase B (#1343 R2) tool-result appendix', () => {
+  it('caps the tool result FIRST, then appends the appendix -- the appendix survives whole even when the tool result alone exceeds 16 KiB', async () => {
+    const bigResult = 'r'.repeat(20 * 1024); // ~20 KiB -- exceeds TOOL_RESULT_MAX_BYTES alone
+    const bigAppendix = 'a'.repeat(40 * 1024); // ~40 KiB -- must survive whole, never truncated
+    const executor = new StubExecutor({ ok: true, result: bigResult, appendix: bigAppendix });
+    const h = makeLoop([toolCallResponse('c', 'Read', '{}'), textResponse('done')], { executor });
+
+    await h.loop.runTurn('t1', 'hi');
+
+    const toolResultEvent = h.events.find((e) => e.type === 'tool-result') as { result: string } | undefined;
+    expect(toolResultEvent).toBeDefined();
+
+    // This is the R2 pin: it fails under the naive "concatenate then
+    // truncate" implementation, which would cap the COMBINED string to
+    // 16 KiB and lose almost all of the appendix instead of the whole of it
+    // surviving after a capped tool result.
+    const expectedCombined = `${truncateToBytes(bigResult, 16384).text}\n\n${bigAppendix}`;
+    expect(toolResultEvent!.result).toBe(expectedCombined);
+    expect(toolResultEvent!.result.endsWith(bigAppendix)).toBe(true);
+    expect(new TextEncoder().encode(toolResultEvent!.result).length).toBeGreaterThan(16384);
+
+    // The SAME composed string reaches the pushed conversation message (the
+    // provider-facing side), not just the emitted wire event.
+    const secondTurnMessages = h.adapter.capturedMessages[1];
+    const toolMessage = secondTurnMessages.find((m) => m.role === 'tool' && m.tool_call_id === 'c');
+    expect(toolMessage && toolMessage.role === 'tool' ? toolMessage.content : undefined).toBe(
+      toolResultEvent!.result,
+    );
+  });
+
+  it('omits the appendix entirely when the executor returns none (no regression)', async () => {
+    const executor = new StubExecutor({ ok: true, result: 'plain result' });
+    const h = makeLoop([toolCallResponse('c', 'Read', '{}'), textResponse('done')], { executor });
+
+    await h.loop.runTurn('t1', 'hi');
+
+    const toolResultEvent = h.events.find((e) => e.type === 'tool-result') as { result: string } | undefined;
+    expect(toolResultEvent?.result).toBe('plain result');
   });
 });
 

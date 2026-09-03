@@ -1804,3 +1804,128 @@ describe('runLoop — compaction at the restore boundary (#1411)', () => {
     expect(assistantIndex).toBeGreaterThan(readyIndex);
   });
 });
+
+// Phase B (#1343 R4), openai-api only: a restored transcript that already
+// contains a rule's `[rule activated: <name>]` marker must not re-activate
+// that rule in THIS incarnation, since its content already sits verbatim in
+// the conversation the model is resuming into.
+describe('runLoop — Phase B (#1343 R4) restore-seeding of already-activated scoped rules', () => {
+  class ReadThenDoneAdapter implements ProviderAdapter {
+    private calls = 0;
+    constructor(private readonly path: string) {}
+    async *run(): AsyncIterable<ProviderEvent> {
+      this.calls += 1;
+      if (this.calls === 1) {
+        yield { type: 'tool-call', callId: 'c1', name: 'Read', argsJson: JSON.stringify({ path: this.path }) };
+        yield { type: 'done', finishReason: 'tool_calls' };
+      } else {
+        yield { type: 'text-delta', text: 'done' };
+        yield { type: 'done', finishReason: 'stop' };
+      }
+    }
+  }
+
+  // Read does real fs work -- see the sibling helper's identical comment in
+  // the attachmentRoots describe block above for why the drain gap and the
+  // dropped `shutdown` are both needed.
+  function makeIoWithToolDrainGap(lines: string[]): Captured {
+    const events: EmbeddedAgentEvent[] = [];
+    const errors: string[] = [];
+    const io: LoopIO = {
+      async *readCommands() {
+        for (const line of lines) {
+          await new Promise((resolve) => setTimeout(resolve, 0));
+          yield line;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      },
+      writeEvent: (event) => events.push(event),
+      logError: (message) => errors.push(message),
+    };
+    return { io, events, errors };
+  }
+
+  async function setUpScopedRuleFixture(): Promise<{ cwd: string; readPath: string; ruleOrigin: string }> {
+    const cwd = await makeTempDir();
+    await writeFile(join(cwd, 'x.ts'), 'export const x = 1;');
+    const ruleOrigin = join(cwd, 'scoped-rule-source.md');
+    await writeFile(ruleOrigin, 'SCOPED_RULE_MARKER');
+    return { cwd, readPath: join(cwd, 'x.ts'), ruleOrigin };
+  }
+
+  function stubLoadInstructionsWithScopedRule(ruleOrigin: string): LoopFactories['loadInstructions'] {
+    return async () => ({
+      segments: [],
+      scopedRules: [{ name: 'scoped.md', origin: ruleOrigin, globs: ['**/*'] }],
+    });
+  }
+
+  it('does not re-activate a scoped rule whose marker is already present in a restored role:tool message', async () => {
+    const { cwd, readPath, ruleOrigin } = await setUpScopedRuleFixture();
+    const adapter = new ReadThenDoneAdapter(readPath);
+    const { io, events } = makeIoWithToolDrainGap([
+      initCommand({
+        context: { sessionId: 's', workerId: 'w', cwd },
+        restoredConversation: [
+          { role: 'system', content: 'STALE_SYSTEM_PROMPT' },
+          { role: 'user', content: 'earlier question' },
+          {
+            role: 'assistant',
+            content: '',
+            tool_calls: [{ id: 'prev1', type: 'function', function: { name: 'Read', arguments: JSON.stringify({ path: readPath }) } }],
+          },
+          {
+            role: 'tool',
+            tool_call_id: 'prev1',
+            content:
+              '1\texport const x = 1;\n\n' +
+              `[rule activated: scoped.md]\n--- Rule (applies to: **/*): ${ruleOrigin} ---\nSCOPED_RULE_MARKER`,
+          },
+        ],
+      }),
+      JSON.stringify({ v: 1, type: 'user-message', id: 'u1', text: 'read it again' }),
+    ]);
+    const factories = makeFactories({
+      createAdapter: () => adapter,
+      loadInstructions: stubLoadInstructionsWithScopedRule(ruleOrigin),
+    });
+
+    expect(await runLoop(io, factories)).toBe(0);
+
+    const toolResult = events.find((e) => e.type === 'tool-result');
+    expect(toolResult).toMatchObject({ ok: true });
+    if (toolResult?.type === 'tool-result') {
+      expect(toolResult.result).not.toContain('[rule activated:');
+      expect(toolResult.result).not.toContain('SCOPED_RULE_MARKER');
+    }
+  });
+
+  it('negative control: activates the scoped rule fresh when the restored transcript has NO activation marker (seeding does not always suppress)', async () => {
+    const { cwd, readPath, ruleOrigin } = await setUpScopedRuleFixture();
+    const adapter = new ReadThenDoneAdapter(readPath);
+    const { io, events } = makeIoWithToolDrainGap([
+      initCommand({
+        context: { sessionId: 's', workerId: 'w', cwd },
+        restoredConversation: [
+          { role: 'system', content: 'STALE_SYSTEM_PROMPT' },
+          { role: 'user', content: 'earlier question' },
+          { role: 'assistant', content: 'earlier answer, no tool use' },
+        ],
+      }),
+      JSON.stringify({ v: 1, type: 'user-message', id: 'u1', text: 'read it' }),
+    ]);
+    const factories = makeFactories({
+      createAdapter: () => adapter,
+      loadInstructions: stubLoadInstructionsWithScopedRule(ruleOrigin),
+    });
+
+    expect(await runLoop(io, factories)).toBe(0);
+
+    const toolResult = events.find((e) => e.type === 'tool-result');
+    expect(toolResult).toMatchObject({ ok: true });
+    if (toolResult?.type === 'tool-result') {
+      expect(toolResult.result).toContain('[rule activated: scoped.md]');
+      expect(toolResult.result).toContain('SCOPED_RULE_MARKER');
+    }
+  });
+});

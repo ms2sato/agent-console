@@ -24,12 +24,16 @@ import { probeSdkSession, type SdkSessionProbe } from './sdk-session-preflight.j
 import {
   assembleSystemPrompt,
   composeSdkSystemPromptAppend,
+  findGitRoot,
   loadInstructions,
+  RULES_LAYER_CAP_BYTES,
+  rulesLayerBytesUsed,
   type LoadInstructionsParams,
   type LoadInstructionsResult,
 } from './system-prompt.js';
 import { resolveEnabledBuiltinTools } from './tools/index.js';
 import { CompositeToolExecutor } from './tools/composite-executor.js';
+import { RuleActivator } from './rule-activation.js';
 
 const EXIT_OK = 0;
 const EXIT_FATAL = 1;
@@ -265,6 +269,18 @@ async function initializeLoop(
     const mcp = factories.createMcpClient();
     let tools: ToolDefinition[];
     let executor: ToolExecutor;
+    // Phase B (#1343 R1): the SAME `instructions` result computed above for
+    // the system prompt -- never a second `loadInstructions` call -- is
+    // where `scopedRules` comes from. The remaining lazy-activation budget is
+    // the rules-layer cap minus whatever the eager unscoped layer already
+    // spent (`rulesLayerBytesUsed`), so the two allowances can never overlap.
+    const gitRoot = (await findGitRoot(init.context.cwd)) ?? init.context.cwd;
+    const ruleActivator = new RuleActivator({
+      scopedRules: instructions.scopedRules ?? [],
+      gitRoot,
+      cwd: init.context.cwd,
+      remainingBudgetBytes: RULES_LAYER_CAP_BYTES - rulesLayerBytesUsed(instructions),
+    });
     try {
       await mcp.connect(init.mcp.baseUrl, init.mcp.token);
       const builtins = resolveEnabledBuiltinTools(init.enabledTools);
@@ -272,6 +288,7 @@ async function initializeLoop(
         mcp,
         builtins,
         ctx: { locationPath: init.context.cwd, attachmentRoots: init.context.attachmentRoots },
+        ruleActivator,
         onNameCollision: (name) =>
           io.logError(`Builtin tool "${name}" collides with an MCP tool of the same name; builtin wins`),
       });
@@ -319,6 +336,28 @@ async function initializeLoop(
         // message at index 0).
         restoredConversation = [{ ...first, content: systemPrompt }, ...rest];
       }
+    }
+
+    // Phase B (#1343 R4), openai-api only: a restored transcript that
+    // already contains a rule's `[rule activated: <name>]` marker (written
+    // verbatim into a `role:'tool'` message's content by a PRIOR
+    // incarnation, restore.ts's `event.result` reconstruction) must not
+    // re-activate that rule in THIS incarnation -- its content is already
+    // present in the conversation the model is resuming into. claude-sdk
+    // resume is explicitly out of scope here: the SDK resumes its own
+    // session state rather than being handed a reconstruction, so this
+    // marker-scan never runs on that arm, and a repeated injection there is
+    // an accepted, documented cost-only duplication (see rule-activation.ts).
+    if (restoredConversation) {
+      const seeded = new Set<string>();
+      const activationMarker = /^\[rule activated: (.+)\]$/gm;
+      for (const msg of restoredConversation) {
+        if (msg.role !== 'tool') continue;
+        for (const match of msg.content.matchAll(activationMarker)) {
+          seeded.add(match[1]);
+        }
+      }
+      if (seeded.size > 0) ruleActivator.seedActivated([...seeded]);
     }
 
     // Message-attachment resolution: turn each restored user message's

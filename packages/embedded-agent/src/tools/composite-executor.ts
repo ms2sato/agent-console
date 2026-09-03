@@ -6,12 +6,21 @@
 
 import type { ToolExecutor, ToolCallOutcome } from '../mcp.js';
 import type { ToolDefinition } from '../providers/types.js';
+import type { RuleActivatorLike } from '../rule-activation.js';
 import type { BuiltinTool, BuiltinToolContext } from './index.js';
 
 export interface CompositeToolExecutorDeps {
   mcp: ToolExecutor;
   builtins: BuiltinTool[];
   ctx: BuiltinToolContext;
+  /**
+   * Phase B (#1343 R2): lazy scoped-rule activation, applied uniformly to
+   * EVERY dispatched call -- builtin or MCP alike. The activator itself
+   * decides, keyed on tool name, whether a call can ever produce a match
+   * (see rule-activation.ts's match table), so no special-casing is needed
+   * here beyond calling it the same way for every name.
+   */
+  ruleActivator: RuleActivatorLike;
   /** Fired once per colliding name when listTools() merges; caller logs it (stderr in the loop). */
   onNameCollision?: (name: string) => void;
 }
@@ -39,13 +48,21 @@ export class CompositeToolExecutor implements ToolExecutor {
 
   async callTool(name: string, args: unknown, signal: AbortSignal): Promise<ToolCallOutcome> {
     const builtin = this.deps.builtins.find((t) => t.name === name);
+    let outcome: ToolCallOutcome;
     if (builtin) {
       try {
-        return await builtin.execute(args, this.deps.ctx, signal);
+        outcome = await builtin.execute(args, this.deps.ctx, signal);
       } catch (err) {
-        return { ok: false, result: err instanceof Error ? err.message : String(err) };
+        outcome = { ok: false, result: err instanceof Error ? err.message : String(err) };
       }
+    } else {
+      outcome = await this.deps.mcp.callTool(name, args, signal);
     }
-    return this.deps.mcp.callTool(name, args, signal);
+
+    const matched = this.deps.ruleActivator.matchScopedRules(name, args);
+    if (matched.length === 0) return outcome;
+
+    const activation = await this.deps.ruleActivator.activate(matched);
+    return activation === null ? outcome : { ...outcome, appendix: activation.text };
   }
 }

@@ -15,7 +15,7 @@ import {
   type EmbeddedAgentEvent,
   type EmbeddedAgentRestoredUsage,
 } from '@agent-console/shared';
-import type { ToolExecutor } from './mcp.js';
+import type { ToolExecutor, ToolCallOutcome } from './mcp.js';
 import {
   ProviderError,
   type ProviderErrorDetail,
@@ -849,19 +849,27 @@ export class AgentLoop {
             this.emitTurnError(turnId, 'turn canceled');
             return 'canceled';
           }
+          // The 16 KiB cap applies to the TOOL'S OWN result only -- never to
+          // a Phase B (#1343 R2) scoped-rule activation appendix, which can
+          // run up to the ~160 KiB rules budget. Truncating first and
+          // concatenating after (rather than concatenating then truncating)
+          // is what keeps a rule file from ever being cut mid-content by this
+          // cap; see mcp.ts's `ToolCallOutcome.appendix` doc comment.
           const { text: truncated } = truncateToBytes(result.result, TOOL_RESULT_MAX_BYTES);
+          const withAppendix =
+            result.appendix !== undefined ? `${truncated}\n\n${result.appendix}` : truncated;
           this.deps.emit({
             v: 1,
             type: 'tool-result',
             turnId,
             callId: call.callId,
             ok: result.ok,
-            result: truncated,
+            result: withAppendix,
           });
           this.conversation.push({
             role: 'tool',
             tool_call_id: call.callId,
-            content: truncated,
+            content: withAppendix,
           });
           responded.add(call.callId);
         }
@@ -889,7 +897,7 @@ export class AgentLoop {
     name: string,
     args: Record<string, unknown>,
     signal: AbortSignal,
-  ): Promise<{ ok: boolean; result: string }> {
+  ): Promise<ToolCallOutcome> {
     if (name === COMPACT_TOOL_NAME) {
       this.pendingCompact = true;
       return { ok: true, result: COMPACT_TOOL_SCHEDULED_RESULT };
