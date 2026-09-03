@@ -6,7 +6,7 @@
  * mocking the session-related dependencies (getSession, persistSession, etc.).
  */
 import { describe, it, expect, beforeEach, afterEach, mock, spyOn } from 'bun:test';
-import type { CreateWorkerParams, EmbeddedAgentDefinition, Session } from '@agent-console/shared';
+import type { CreateWorkerParams, EmbeddedAgentDefinition, NotificationContext, Session, Worker } from '@agent-console/shared';
 import { ValidationError } from '../../lib/errors.js';
 import { createMockPtyFactory } from '../../__tests__/utils/mock-pty.js';
 import { setupMemfs, cleanupMemfs } from '../../__tests__/utils/mock-fs-helper.js';
@@ -31,6 +31,8 @@ import { WorkerOutputFileManager } from '../../lib/worker-output-file.js';
 import * as gitDiffService from '../git-diff-service.js';
 import type { InternalEmbeddedAgentWorker } from '../worker-types.js';
 import { McpTokenRegistry } from '../../mcp/mcp-auth.js';
+import { NotificationManager } from '../notifications/notification-manager.js';
+import type { SlackHandler } from '../notifications/slack-handler.js';
 
 const TEST_CONFIG_DIR = '/test/config';
 
@@ -1564,6 +1566,72 @@ describe('WorkerLifecycleManager', () => {
       expect(unchangedDiffWorker.baseCommit).toBe('original-base');
       expect(mockOnDiffBaseCommitChanged).not.toHaveBeenCalled();
     });
+
+    it('resolves the path resolver before killing the existing PTY worker (call-order pin)', async () => {
+      const session = createTestSession();
+      sessions.set(session.id, session);
+
+      const worker = await lifecycleManager.createWorker(session.id, {
+        type: 'agent',
+        agentId: CLAUDE_CODE_AGENT_ID,
+      });
+
+      const order: string[] = [];
+      const originalKill = workerManager.killWorker.bind(workerManager);
+      const killSpy = spyOn(workerManager, 'killWorker').mockImplementation(
+        async (...args: Parameters<typeof originalKill>) => {
+          order.push('kill');
+          return originalKill(...args);
+        }
+      );
+
+      const manager = new WorkerLifecycleManager(createDeps({
+        getPathResolver: () => {
+          order.push('resolver');
+          return new SessionDataPathResolver(`${TEST_CONFIG_DIR}/_quick`);
+        },
+      }));
+
+      try {
+        await manager.restartAgentWorker(session.id, worker!.id, 'continue');
+      } finally {
+        killSpy.mockRestore();
+      }
+
+      expect(order).toEqual(['resolver', 'kill']);
+    });
+
+    it('leaves the existing PTY worker untouched when the path resolver throws (orphaned session)', async () => {
+      const session = createTestSession();
+      sessions.set(session.id, session);
+
+      const worker = await lifecycleManager.createWorker(session.id, {
+        type: 'agent',
+        agentId: CLAUDE_CODE_AGENT_ID,
+      });
+
+      const resolverError = new Error('boom: orphaned session');
+      const killSpy = spyOn(workerManager, 'killWorker');
+      const manager = new WorkerLifecycleManager(createDeps({
+        getPathResolver: () => {
+          throw resolverError;
+        },
+      }));
+
+      try {
+        await expect(
+          manager.restartAgentWorker(session.id, worker!.id, 'continue')
+        ).rejects.toThrow(resolverError);
+      } finally {
+        killSpy.mockRestore();
+      }
+
+      expect(killSpy).not.toHaveBeenCalled();
+      expect(ptyFactory.instances[0].killed).toBe(false);
+      const internal = session.workers.get(worker!.id) as InternalAgentWorker;
+      expect(internal.type).toBe('agent');
+      expect(internal.pty).not.toBeNull();
+    });
   });
 
   // ========== Restart Initial-Prompt Re-delivery (Issue #1236) ==========
@@ -1873,6 +1941,32 @@ describe('WorkerLifecycleManager', () => {
       expect(mockOnWorkerRestarted).toHaveBeenCalledWith(session.id, worker!.id, expect.anything());
     });
 
+    it('fires onSessionUpdated, then onWorkerRestarted, then activates the embedded worker, in that order (tail call-order pin)', async () => {
+      const session = createTestSession();
+      sessions.set(session.id, session);
+
+      const worker = await lifecycleManager.createWorker(session.id, {
+        type: 'agent',
+        agentId: CLAUDE_CODE_AGENT_ID,
+      });
+
+      const order: string[] = [];
+      mockOnSessionUpdated.mockImplementation(() => {
+        order.push('session-updated');
+      });
+      mockOnWorkerRestarted.mockImplementation(() => {
+        order.push('worker-restarted');
+      });
+      const activateSpy = mock(async (_sessionId: string, _workerId: string) => {
+        order.push('activate');
+      });
+
+      const manager = new WorkerLifecycleManager(createDeps({ activateEmbeddedAgentWorker: activateSpy }));
+      await manager.restartAgentWorkerAsEmbedded(session.id, worker!.id, EMBEDDED_AGENT_DEF.id);
+
+      expect(order).toEqual(['session-updated', 'worker-restarted', 'activate']);
+    });
+
     it('returns null and mints no subprocess/token when the session is deleted during the async gap', async () => {
       const session = createTestSession();
       sessions.set(session.id, session);
@@ -2032,8 +2126,194 @@ describe('WorkerLifecycleManager', () => {
       await manager.restartAgentWorkerAsEmbedded(session.id, worker!.id, EMBEDDED_AGENT_DEF.id);
 
       // Gone after conversion (killWorker's revokeAndDeleteMcpToken ran for
-      // the old PTY worker as part of the conversion's step 3).
+      // the old PTY worker as part of the conversion's step 4).
       expect(registry.verify(token)).toBeNull();
+    });
+
+    it('resolves the path resolver before killing the existing PTY worker (call-order pin)', async () => {
+      const session = createTestSession();
+      sessions.set(session.id, session);
+
+      const worker = await lifecycleManager.createWorker(session.id, {
+        type: 'agent',
+        agentId: CLAUDE_CODE_AGENT_ID,
+      });
+
+      const order: string[] = [];
+      const originalKill = workerManager.killWorker.bind(workerManager);
+      const killSpy = spyOn(workerManager, 'killWorker').mockImplementation(
+        async (...args: Parameters<typeof originalKill>) => {
+          order.push('kill');
+          return originalKill(...args);
+        }
+      );
+
+      const manager = new WorkerLifecycleManager(createDeps({
+        getPathResolver: () => {
+          order.push('resolver');
+          return new SessionDataPathResolver(`${TEST_CONFIG_DIR}/_quick`);
+        },
+      }));
+
+      try {
+        await manager.restartAgentWorkerAsEmbedded(session.id, worker!.id, EMBEDDED_AGENT_DEF.id);
+      } finally {
+        killSpy.mockRestore();
+      }
+
+      expect(order).toEqual(['resolver', 'kill']);
+    });
+
+    it('leaves the existing PTY worker untouched when the path resolver throws (orphaned session)', async () => {
+      const session = createTestSession();
+      sessions.set(session.id, session);
+
+      const worker = await lifecycleManager.createWorker(session.id, {
+        type: 'agent',
+        agentId: CLAUDE_CODE_AGENT_ID,
+      });
+
+      const resolverError = new Error('boom: orphaned session');
+      const killSpy = spyOn(workerManager, 'killWorker');
+      const manager = new WorkerLifecycleManager(createDeps({
+        getPathResolver: () => {
+          throw resolverError;
+        },
+      }));
+
+      try {
+        await expect(
+          manager.restartAgentWorkerAsEmbedded(session.id, worker!.id, EMBEDDED_AGENT_DEF.id)
+        ).rejects.toThrow(resolverError);
+      } finally {
+        killSpy.mockRestore();
+      }
+
+      expect(killSpy).not.toHaveBeenCalled();
+      expect(ptyFactory.instances[0].killed).toBe(false);
+      const internal = session.workers.get(worker!.id) as InternalAgentWorker;
+      expect(internal.type).toBe('agent');
+      expect(internal.pty).not.toBeNull();
+    });
+
+    it('continues the conversion when deleteWorkerOutput fails after the PTY is already dead (non-fatal)', async () => {
+      const session = createTestSession();
+      sessions.set(session.id, session);
+
+      const worker = await lifecycleManager.createWorker(session.id, {
+        type: 'agent',
+        agentId: CLAUDE_CODE_AGENT_ID,
+      });
+
+      const wofm = new WorkerOutputFileManager();
+      const deleteError = new Error('boom: disk unavailable');
+      const deleteSpy = spyOn(wofm, 'deleteWorkerOutput').mockImplementation(async () => {
+        throw deleteError;
+      });
+
+      const activateSpy = mock(async (_sessionId: string, _workerId: string) => {});
+      const manager = new WorkerLifecycleManager(createDeps({
+        workerOutputFileManager: wofm,
+        activateEmbeddedAgentWorker: activateSpy,
+      }));
+
+      let result: Worker | null;
+      try {
+        result = await manager.restartAgentWorkerAsEmbedded(session.id, worker!.id, EMBEDDED_AGENT_DEF.id);
+      } finally {
+        deleteSpy.mockRestore();
+      }
+
+      // The conversion completes despite the deletion failure -- nothing left
+      // to abort to, since the PTY is already dead.
+      expect(result).not.toBeNull();
+      expect(result!.type).toBe('embedded-agent');
+
+      expect(mockPersistSession).toHaveBeenCalled();
+      const persistedSession = mockPersistSession.mock.calls.at(-1)?.[0] as InternalSession;
+      const persistedWorker = persistedSession.workers.get(worker!.id) as InternalEmbeddedAgentWorker;
+      expect(persistedWorker.type).toBe('embedded-agent');
+
+      expect(activateSpy).toHaveBeenCalledWith(session.id, worker!.id);
+    });
+
+    it('propagates a persistSession failure with the in-memory map already updated and onSessionUpdated not yet fired', async () => {
+      const session = createTestSession();
+      sessions.set(session.id, session);
+
+      const worker = await lifecycleManager.createWorker(session.id, {
+        type: 'agent',
+        agentId: CLAUDE_CODE_AGENT_ID,
+      });
+
+      const persistError = new Error('boom: db unavailable');
+      const failingPersist = mock(async () => { throw persistError; });
+      mockOnSessionUpdated.mockClear();
+      const manager = new WorkerLifecycleManager(createDeps({
+        persistSession: failingPersist as unknown as (session: InternalSession) => Promise<void>,
+      }));
+
+      await expect(
+        manager.restartAgentWorkerAsEmbedded(session.id, worker!.id, EMBEDDED_AGENT_DEF.id)
+      ).rejects.toThrow(persistError);
+
+      // In-memory map already holds the NEW embedded worker -- set before the
+      // persistSession call that then threw.
+      const internal = session.workers.get(worker!.id) as InternalEmbeddedAgentWorker;
+      expect(internal.type).toBe('embedded-agent');
+
+      // onSessionUpdated is called AFTER persistSession in the method body, so
+      // it must not have fired.
+      expect(mockOnSessionUpdated).not.toHaveBeenCalled();
+    });
+
+    it('clears NotificationManager state during the conversion so a pending PTY-side debounce timer does not fire', async () => {
+      const session = createTestSession();
+      sessions.set(session.id, session);
+
+      const worker = await lifecycleManager.createWorker(session.id, {
+        type: 'agent',
+        agentId: CLAUDE_CODE_AGENT_ID,
+      });
+
+      const slackHandler = {
+        integrationType: 'slack' as const,
+        canHandle: mock((_repositoryId: string) => Promise.resolve(true)),
+        send: mock((_context: NotificationContext, _repositoryId: string) => Promise.resolve()),
+        sendTest: mock((_message: string, _repositoryId: string) => Promise.resolve()),
+        sendToWebhook: mock((_context: NotificationContext, _webhookUrl: string) => Promise.resolve()),
+      };
+      const notificationManager = new NotificationManager(slackHandler as unknown as SlackHandler, {
+        debounceSeconds: 0.05, // 50ms -- short enough for a fast test
+        triggers: {
+          'agent:waiting': true,
+          'agent:idle': true,
+          'agent:active': true,
+          'worker:error': true,
+          'worker:exited': true,
+        },
+      });
+
+      const manager = new WorkerLifecycleManager(createDeps({ notificationManager }));
+
+      // Simulate a pending PTY-side debounce timer for this identity (e.g.
+      // from an activity-state change observed just before the conversion
+      // request arrived).
+      notificationManager.onActivityChange(
+        { id: session.id, repositoryId: session.repositoryId },
+        { id: worker!.id },
+        'idle',
+      );
+      expect(slackHandler.send).not.toHaveBeenCalled();
+
+      await manager.restartAgentWorkerAsEmbedded(session.id, worker!.id, EMBEDDED_AGENT_DEF.id);
+
+      // Wait past what would have been the debounce period. If the pending
+      // timer survived the conversion, it fires here and calls
+      // slackHandler.send -- proving the cleanup did NOT happen.
+      await new Promise((resolve) => setTimeout(resolve, 150));
+
+      expect(slackHandler.send).not.toHaveBeenCalled();
     });
   });
 

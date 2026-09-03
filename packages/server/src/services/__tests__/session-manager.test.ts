@@ -2165,6 +2165,32 @@ describe('SessionManager', () => {
     });
   });
 
+  describe('setInitialPromptDeliveredForTest', () => {
+    it('sets initialPromptDelivered on the live internal session, visible through getSession', async () => {
+      const manager = await getSessionManager();
+
+      const created = await manager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+
+      expect(manager.getSession(created.id)?.initialPromptDelivered).not.toBe(true);
+
+      manager.setInitialPromptDeliveredForTest(created.id, true);
+
+      expect(manager.getSession(created.id)?.initialPromptDelivered).toBe(true);
+    });
+
+    it('throws for a non-existent session id', async () => {
+      const manager = await getSessionManager();
+
+      expect(() => manager.setInitialPromptDeliveredForTest('non-existent', true)).toThrow(
+        'Session not found: non-existent'
+      );
+    });
+  });
+
   describe('isShared wiring (sharedAccountLookup option)', () => {
     // These tests verify that the `sharedAccountLookup` option on
     // SessionManager.create() is forwarded to SessionConverterService and

@@ -307,14 +307,9 @@ describe('Cross-type restart: initial-prompt delivery on the converted embedded-
     // value has no effect on what restartAgentWorkerAsEmbedded reads. This
     // is the SAME limitation initial-prompt-delivered-boundary.test.ts's
     // header comment documents for the wire-schema half of this exact flag.
-    // Reach into the private `sessions` Map directly to set up this
-    // precondition on the live internal session.
-    const internalSessions = (ctx.sessionManager as unknown as {
-      sessions: Map<string, { initialPromptDelivered?: boolean }>;
-    }).sessions;
-    const internalSession = internalSessions.get(created.id);
-    if (!internalSession) throw new Error('internal session not found');
-    internalSession.initialPromptDelivered = true;
+    // Use the narrow test-only accessor to set up this precondition on the
+    // live internal session directly (see its own JSDoc for why).
+    ctx.sessionManager.setInitialPromptDeliveredForTest(created.id, true);
 
     const converted = await ctx.sessionManager.restartAgentWorkerAsEmbedded(
       created.id, ptyWorker.id, def.id,

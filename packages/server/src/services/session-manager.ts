@@ -1112,6 +1112,24 @@ export class SessionManager {
     return session ? this.toPublicSession(session) : undefined;
   }
 
+  /**
+   * @internal Exported for testing. Sets `initialPromptDelivered` directly on
+   * the LIVE internal session, bypassing the real PTY login-shell-ready
+   * sentinel that flips this flag in production. `getSession()` /
+   * `getAllSessions()` both return a fresh `toPublicSession()` projection
+   * decoupled from the live internal session, so integration tests that need
+   * to simulate "prompt already delivered by a prior PTY activation" (a
+   * precondition a test harness's real PTY provider cannot reliably trigger
+   * inside a test process) have no other way to set up that precondition on
+   * the object production code actually reads. Do not call from production
+   * code; this exists solely as a narrow test seam for that one flag.
+   */
+  setInitialPromptDeliveredForTest(sessionId: string, delivered: boolean): void {
+    const session = this.sessions.get(sessionId);
+    if (!session) throw new Error(`Session not found: ${sessionId}`);
+    session.initialPromptDelivered = delivered;
+  }
+
   async getSessionMetadata(id: string): Promise<PersistedSession | null> {
     return this.sessionRepository.findById(id);
   }
