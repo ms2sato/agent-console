@@ -1318,6 +1318,12 @@ export class EmbeddedAgentWorkerService {
    * (turnActive was just cleared, synchronously, with nothing awaited in
    * between), but if it somehow still finds the worker busy, the entry is
    * put back at the head rather than lost.
+   *
+   * No self-deadlock: the `await this.deliverUserTurn(...)` below only
+   * writes the composed notification to the subprocess's stdin and appends
+   * the persisted event -- it never reads or waits on the subprocess's
+   * stdout, so `handleLoopLine` awaiting this method from within the
+   * stdout-line reading loop is never blocked on more stdout arriving.
    */
   private async flushPendingNotification(
     runtime: Runtime,
