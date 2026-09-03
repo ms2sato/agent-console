@@ -49,7 +49,7 @@ function parseTodos(args: unknown): TodoItem[] | null {
  * arm's MCP-served name on the same `console` server that also serves
  * `Compact`) -- no other tool name drives this panel.
  */
-function findLatestTodos(entries: EmbeddedAgentChatEntry[]): TodoItem[] | null {
+export function findLatestTodos(entries: EmbeddedAgentChatEntry[]): TodoItem[] | null {
   for (let i = entries.length - 1; i >= 0; i--) {
     const entry = entries[i];
     if (
