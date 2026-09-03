@@ -202,15 +202,34 @@ export function createSdkCompactTool(onReserve: () => void) {
  * `Read`/`Glob`/`Grep`, this name does not reach the model merely by
  * appearing in `tools:`.
  *
- * `inputSchema` is deliberately a maximally-permissive zod passthrough
- * (`{ todos: z.unknown() }`), NOT a shape mirroring `TodoWriteArgsSchema`'s
- * own structure: zod-level parsing runs BEFORE the handler and would reject
- * or reshape a malformed payload with its OWN error wording, before the
- * handler's `v.safeParse(TodoWriteArgsSchema, ...)` call below ever runs --
+ * `inputSchema` mirrors `TodoWriteArgsSchema`'s TOP-LEVEL shape only --
+ * `todos` is an array of objects with `content`/`status`/`activeForm` keys
+ * -- and stays maximally permissive at the LEAF level, where every field is
+ * `z.unknown()`. This split is deliberate, not an oversight: the SDK
+ * converts this zod shape into the JSON Schema it advertises to the model
+ * (via its own MCP tool-catalog machinery), and a bare `z.unknown()` at the
+ * top level gives the model no signal that `todos` must be a real array --
+ * measured live (#1575): a real `claude-sdk-builtin` worker, given no
+ * type hint, consistently sent `todos` as a JSON-*stringified* array
+ * instead of a native one, across six consecutive attempts, and never
+ * completed a single successful call. `z.array(z.object({...}))` fixes
+ * that by advertising the correct top-level structure.
+ *
+ * The leaf fields stay `z.unknown()` so this is NOT a re-declaration of
+ * `TodoWriteArgsSchema`'s full validation semantics in zod: zod-level
+ * parsing runs BEFORE the handler and would reject or reshape a malformed
+ * payload with its OWN error wording if it validated leaf content too,
  * which would make a malformed call fail with different text than the
- * openai-api engine's builtin gives for the identical input. All real
- * validation happens inside the handler, mirroring `todo-write.ts`'s
- * `execute()` body.
+ * openai-api engine's builtin gives for the identical input. A wrong
+ * `status` enum value, a missing key, or a wrong leaf type all still reach
+ * the handler unmodified and are rejected there by the SAME
+ * `v.safeParse(TodoWriteArgsSchema, ...)` call below, mirroring
+ * `todo-write.ts`'s `execute()` body -- so CONTENT-level malformed input
+ * still fails with parity text. Only a STRUCTURAL violation (`todos` not an
+ * array at all -- a string, a number, missing entirely) is now caught one
+ * layer earlier, by the SDK's own MCP protocol-level schema rejection,
+ * before the handler ever runs; that is a different, earlier failure mode
+ * than the handler's parity-checked one, not a regression.
  *
  * State (`todos`) lives in this factory's own closure, per-incarnation only
  * -- the same shape `createTodoWriteTool()` uses, and for the same reason (a
@@ -221,7 +240,17 @@ export function createSdkCompactTool(onReserve: () => void) {
 export function createSdkTodoWriteTool() {
   let todos: TodoItem[] = [];
 
-  return tool(TODO_WRITE_TOOL_NAME, TODO_WRITE_TOOL_DESCRIPTION, { todos: z.unknown() }, async (args) => {
+  const inputSchema = {
+    todos: z.array(
+      z.object({
+        content: z.unknown(),
+        status: z.unknown(),
+        activeForm: z.unknown(),
+      }),
+    ),
+  };
+
+  return tool(TODO_WRITE_TOOL_NAME, TODO_WRITE_TOOL_DESCRIPTION, inputSchema, async (args) => {
     const parsed = v.safeParse(TodoWriteArgsSchema, args);
     if (!parsed.success) {
       return {

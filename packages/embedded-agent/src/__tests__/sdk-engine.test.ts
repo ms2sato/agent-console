@@ -16,6 +16,7 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import * as fsPromises from 'node:fs/promises';
 import * as os from 'node:os';
+import { z } from 'zod';
 import type { EmbeddedAgentAttachment, EmbeddedAgentEvent } from '@agent-console/shared';
 import type {
   Options,
@@ -2542,8 +2543,14 @@ describe('SdkEngine — TodoWrite, MCP-served (Issue #1575)', () => {
     expect(captured.options?.tools).toEqual(['mcp__console__Compact']);
   });
 
-  it("the tool's handler validates with the SAME schema and gives the SAME message as the openai-api builtin for malformed input", async () => {
-    const malformed = { todos: 'not-an-array' };
+  it("the tool's handler validates with the SAME schema and gives the SAME message as the openai-api builtin for structurally-valid-but-content-invalid input", async () => {
+    // `todos` here is a structurally valid array of objects (passes the SDK
+    // schema's top-level shape, see createSdkTodoWriteTool's doc comment),
+    // but `status` is not one of the picklist values -- a CONTENT violation
+    // the schema's z.unknown() leaves alone, so it reaches the handler's own
+    // v.safeParse(TodoWriteArgsSchema, ...) call, the same one the
+    // openai-api builtin uses.
+    const malformed = { todos: [{ content: 'A', status: 'blocked', activeForm: 'Doing A' }] };
 
     const sdkDefinition = createSdkTodoWriteTool();
     const sdkResult = (await sdkDefinition.handler(malformed, undefined)) as {
@@ -2557,6 +2564,32 @@ describe('SdkEngine — TodoWrite, MCP-served (Issue #1575)', () => {
     expect(sdkResult.isError).toBe(true);
     expect(openaiResult.ok).toBe(false);
     expect(sdkResult.content[0]?.text).toBe(openaiResult.result);
+  });
+
+  it('rejects a STRUCTURALLY invalid payload (todos not an array at all) at the schema level, before the handler ever runs -- a different, earlier-caught failure than the content-validation case above (Issue #1575)', async () => {
+    // The SDK's own MCP request-handling validates a raw zod shape by
+    // wrapping it with z.object(...) and calling .safeParseAsync(...) on the
+    // incoming args BEFORE the registered handler is invoked (this is the
+    // same wrapping z.object() itself performs on a ZodRawShape, and matches
+    // what was observed inspecting the vendored SDK's tool-call validation
+    // path). createSdkTodoWriteTool's returned definition exposes exactly
+    // the raw shape that was handed to the SDK's tool() factory, so
+    // reconstructing that same z.object(...) wrapper here exercises the
+    // production schema through the identical mechanism the SDK itself
+    // uses -- not a hand-rolled duplicate of TodoWriteArgsSchema's own
+    // validation logic.
+    const sdkDefinition = createSdkTodoWriteTool();
+    const schema = z.object(sdkDefinition.inputSchema);
+
+    // This is the exact live-reproduced failure shape from Issue #1575: the
+    // model sent `todos` as a JSON-stringified array instead of a native one.
+    const structurallyInvalid = {
+      todos: '[{"content":"A","activeForm":"Doing A","status":"pending"}]',
+    };
+
+    const result = await schema.safeParseAsync(structurallyInvalid);
+
+    expect(result.success).toBe(false);
   });
 
   it("the tool's handler returns the SAME summary text format as the openai-api builtin for valid input", async () => {
