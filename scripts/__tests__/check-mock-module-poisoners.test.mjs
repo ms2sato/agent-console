@@ -343,15 +343,25 @@ describe('KNOWN_VIOLATIONS / SANCTIONED_LOCATIONS — baseline integrity', () =>
     expect(SANCTIONED_LOCATIONS).toContain('packages/server/src/__tests__/utils/');
   });
 
-  it('whole-repo self-check: running the detector against the live tree with the baked baseline exits 0', () => {
-    const result = spawnSync('bun', [SCRIPT_PATH], {
-      cwd: REPO_ROOT,
-      encoding: 'utf-8',
-      // Cap the subprocess so a hang in the detector does not block the
-      // whole test run for the full bun-test default timeout.
-      timeout: 30_000,
-    });
-    expect(result.stdout).toContain('Found 0 new violations and 0 stale allowlist entries');
-    expect(result.status).toBe(0);
-  });
+  it(
+    'whole-repo self-check: running the detector against the live tree with the baked baseline exits 0',
+    () => {
+      const result = spawnSync('bun', [SCRIPT_PATH], {
+        cwd: REPO_ROOT,
+        encoding: 'utf-8',
+        // Cap the subprocess so a hang in the detector does not block the
+        // whole test run for the full bun-test default timeout.
+        timeout: 30_000,
+      });
+      expect(result.stdout).toContain('Found 0 new violations and 0 stale allowlist entries');
+      expect(result.status).toBe(0);
+    },
+    // The subprocess above is allowed up to 30s, but bun:test's own
+    // per-test timeout defaults to 5s regardless -- the enclosing test
+    // needs its own timeout override to actually honor that budget,
+    // otherwise a whole-repo scan that legitimately takes >5s (this scan's
+    // cost grows with total repo size, not with any defect) fails the test
+    // wrapper before the subprocess itself ever times out.
+    30_000,
+  );
 });
