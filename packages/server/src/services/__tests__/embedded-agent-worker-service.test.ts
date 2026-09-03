@@ -1,8 +1,9 @@
-import { describe, it, expect, mock, setSystemTime } from 'bun:test';
+import { describe, it, expect, mock, setSystemTime, spyOn } from 'bun:test';
 import { randomUUID } from 'node:crypto';
 import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import * as shared from '@agent-console/shared';
 import { EMBEDDED_AGENT_SLASH_COMMANDS, type EmbeddedAgentDefinition, type SdkResumeFailureReason } from '@agent-console/shared';
 import type { SpawnAsUserFn, SpawnAsUserOpts, SpawnAsUserResult } from '../privilege-elevation.js';
 import { SessionDataPathResolver } from '../../lib/session-data-path-resolver.js';
@@ -1994,6 +1995,22 @@ describe('EmbeddedAgentWorkerService — slash-command interception (#1572)', ()
   it('resolveConsoleSlashCommandOverride trims whitespace and returns null for a non-matching string', () => {
     expect(resolveConsoleSlashCommandOverride('openai-api', '  /compact  ')).toEqual({ v: 1, type: 'compact' });
     expect(resolveConsoleSlashCommandOverride('openai-api', 'please /compact this')).toBeNull();
+  });
+
+  it('resolveConsoleSlashCommandOverride delegates to the shared matchSlashCommand rather than reimplementing the match rule', () => {
+    // Delegation pin (#1572): spies on the shared package's live binding of
+    // matchSlashCommand and forces it to return null. If this function
+    // reimplemented the match locally (instead of calling through the
+    // shared function), the spy would have no effect and the assertion
+    // below would fail on the wrong side (the real match would still fire).
+    const spy = spyOn(shared, 'matchSlashCommand').mockReturnValue(null);
+    try {
+      expect(resolveConsoleSlashCommandOverride('openai-api', '/compact')).toBeNull();
+    } finally {
+      spy.mockRestore();
+    }
+    // Sanity: with the spy restored, the real (non-null) behavior returns.
+    expect(resolveConsoleSlashCommandOverride('openai-api', '/compact')).toEqual({ v: 1, type: 'compact' });
   });
 });
 

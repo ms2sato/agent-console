@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef, forwardRef, useImperativeHandle } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import type { WorkerMessage, SkillDefinition } from '@agent-console/shared';
-import { MAX_MESSAGE_FILES, MAX_TOTAL_FILE_SIZE } from '@agent-console/shared';
+import type { WorkerMessage, SkillDefinition, EmbeddedAgentSlashCommand } from '@agent-console/shared';
+import { MAX_MESSAGE_FILES, MAX_TOTAL_FILE_SIZE, matchSlashCommandInList } from '@agent-console/shared';
 import { fetchSkills } from '../../lib/api';
 import { useDraftMessage } from '../../hooks/useDraftMessage';
 import { useMessageTemplates } from '../../hooks/useMessageTemplates';
@@ -25,7 +25,7 @@ interface MessagePanelProps {
    * instead of being sent. PTY callers omit this and keep the existing
    * skills-query behavior unchanged.
    */
-  slashCommands?: readonly { name: string; description: string }[];
+  slashCommands?: readonly Pick<EmbeddedAgentSlashCommand, 'name' | 'description'>[];
   attachmentsEnabled?: boolean;
   cancelState?: { active: boolean; onCancel: () => void };
 }
@@ -180,8 +180,12 @@ export const MessagePanel = forwardRef<MessagePanelHandle, MessagePanelProps>(
     if (slashCommands !== undefined) {
       const trimmed = content.trim();
       if (trimmed.startsWith('/')) {
-        const firstToken = trimmed.split(/\s+/, 1)[0];
-        const isKnown = effectiveSlashCommands.some(cmd => cmd.name === firstToken);
+        // Delegates to the shared matcher (matchSlashCommandInList) rather
+        // than reimplementing the match rule locally, so this stays in sync
+        // with the server's resolveConsoleSlashCommandOverride, which
+        // matches through the same shared function -- see
+        // embedded-agent-slash-commands.ts's SINGLE WRITER doc comment.
+        const isKnown = matchSlashCommandInList(effectiveSlashCommands, content) !== null;
         if (!isKnown) {
           setPendingUnknownSlash(content);
           return;

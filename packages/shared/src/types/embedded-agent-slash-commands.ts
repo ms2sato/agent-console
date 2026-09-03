@@ -94,3 +94,42 @@ export const EMBEDDED_AGENT_SLASH_COMMANDS: Record<EmbeddedAgentEngine, readonly
   ],
   'openai-api': [{ name: '/compact', description: 'Compact this conversation now', handledBy: 'console' }],
 } as const;
+
+/**
+ * SINGLE WRITER of "does this text name a known slash command" (#1572).
+ * Matches the FULL TRIMMED TEXT exactly against `commands[].name` -- never a
+ * prefix or first-token match. A command name followed by trailing
+ * arguments (e.g. `/compact extra`) is deliberately NOT a match: the server
+ * side of this same contract (`resolveConsoleSlashCommandOverride` in
+ * `embedded-agent-worker-service.ts`, via {@link matchSlashCommand} below)
+ * only intercepts an exact match, so a client that matched more loosely
+ * would let a payload-bearing variant through as if it were the bare
+ * command, and it would then reach the engine as literal, un-intercepted
+ * prose.
+ *
+ * Takes a plain list rather than an engine so callers that only have a
+ * flat command list (e.g. the client's `MessagePanel`, which stays
+ * engine-agnostic because it is shared with plain PTY workers) can use it
+ * without needing to know about `EmbeddedAgentEngine` at all. `T` is
+ * constrained to `{ name: string }` rather than the full
+ * `EmbeddedAgentSlashCommand` so callers may pass a narrower shape (e.g.
+ * `Pick<EmbeddedAgentSlashCommand, 'name' | 'description'>`).
+ */
+export function matchSlashCommandInList<T extends Pick<EmbeddedAgentSlashCommand, 'name'>>(
+  commands: readonly T[],
+  text: string,
+): T | null {
+  const trimmed = text.trim();
+  return commands.find((command) => command.name === trimmed) ?? null;
+}
+
+/**
+ * Engine-keyed convenience over {@link matchSlashCommandInList}, delegating
+ * to it rather than re-implementing the match rule -- so a change to the
+ * match semantics (exact-vs-prefix, trim behavior) has exactly one place to
+ * change, and both the client's completion-gate check and the server's
+ * `resolveConsoleSlashCommandOverride` observe it identically.
+ */
+export function matchSlashCommand(engine: EmbeddedAgentEngine, text: string): EmbeddedAgentSlashCommand | null {
+  return matchSlashCommandInList(EMBEDDED_AGENT_SLASH_COMMANDS[engine], text);
+}

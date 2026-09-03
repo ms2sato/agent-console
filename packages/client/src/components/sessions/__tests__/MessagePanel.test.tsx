@@ -1,4 +1,5 @@
-import { describe, it, expect, mock, afterEach, beforeEach } from 'bun:test';
+import { describe, it, expect, mock, afterEach, beforeEach, spyOn } from 'bun:test';
+import * as shared from '@agent-console/shared';
 import { installMockWebSocket } from '../../../test/mock-websocket';
 
 const TEST_SKILLS = [
@@ -986,6 +987,61 @@ describe('MessagePanel', () => {
       expect(onSendMock).toHaveBeenCalledTimes(1);
       expect(onSendMock.mock.calls[0]).toEqual(['/compact', undefined]);
       expect(view.queryByRole('alert')).toBeNull();
+    });
+
+    it('blocks the send and shows the unknown-command notice for a known command name plus trailing text (exact-match contract with the server)', async () => {
+      const { container } = await act(async () =>
+        renderWithRouter(
+          <MessagePanel {...defaultProps} slashCompletionEnabled={true} slashCommands={EMBEDDED_TEST_COMMANDS} />,
+        ),
+      );
+      const view = within(container);
+
+      const textarea = view.getByPlaceholderText('Send message to worker... (Ctrl+Enter to send)');
+      await act(async () => {
+        fireEvent.change(textarea, { target: { value: '/compact extra' } });
+      });
+      await act(async () => {
+        fireEvent.click(view.getByText('Send'));
+      });
+
+      // The server's resolveConsoleSlashCommandOverride matches the full
+      // trimmed text exactly, so "/compact extra" is NOT intercepted
+      // server-side even though its first token is a known command name.
+      // The client must gate it the same way rather than sending it
+      // directly, or it silently reaches the engine as literal prose.
+      expect(onSendMock).not.toHaveBeenCalled();
+      expect(view.getByRole('alert').textContent).toContain('/compact is not a command for this agent; send as text?');
+    });
+
+    it('delegates to the shared matchSlashCommandInList rather than reimplementing the match rule', async () => {
+      // Delegation pin (#1572): spies on the shared package's live binding
+      // of matchSlashCommandInList and forces it to return null for every
+      // call. If handleSend reimplemented the match locally (instead of
+      // calling through the shared function), the spy would have no effect
+      // and the known command below would still send immediately.
+      const spy = spyOn(shared, 'matchSlashCommandInList').mockReturnValue(null);
+      try {
+        const { container } = await act(async () =>
+          renderWithRouter(
+            <MessagePanel {...defaultProps} slashCompletionEnabled={true} slashCommands={EMBEDDED_TEST_COMMANDS} />,
+          ),
+        );
+        const view = within(container);
+
+        const textarea = view.getByPlaceholderText('Send message to worker... (Ctrl+Enter to send)');
+        await act(async () => {
+          fireEvent.change(textarea, { target: { value: '/compact' } });
+        });
+        await act(async () => {
+          fireEvent.click(view.getByText('Send'));
+        });
+
+        expect(onSendMock).not.toHaveBeenCalled();
+        expect(view.getByRole('alert')).toBeTruthy();
+      } finally {
+        spy.mockRestore();
+      }
     });
 
     it('sends immediately, unaffected by the gate, for plain non-slash content regardless of the slashCommands prop', async () => {

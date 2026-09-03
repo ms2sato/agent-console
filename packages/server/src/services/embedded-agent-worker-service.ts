@@ -31,7 +31,7 @@ import {
   NdjsonLineSplitter,
   EmbeddedAgentEventSchema,
   EFFORT_LEVELS,
-  EMBEDDED_AGENT_SLASH_COMMANDS,
+  matchSlashCommand,
   type EmbeddedAgentDefinition,
   type EmbeddedAgentCommand,
   type EmbeddedAgentServerEvent,
@@ -438,17 +438,19 @@ export const CONSOLE_SLASH_COMMAND_HANDLERS: Record<string, () => EmbeddedAgentC
  * hardcoded to a literal command name, so the mechanical containment test
  * on {@link CONSOLE_SLASH_COMMAND_HANDLERS} stays meaningful. Exported for
  * that same test; not otherwise part of this service's public surface.
+ *
+ * Matching itself delegates to the shared `matchSlashCommand` (full trimmed
+ * text, exact match) rather than re-implementing it here, so this stays in
+ * lockstep with the client's own gate in `MessagePanel.tsx` -- see
+ * `embedded-agent-slash-commands.ts`'s SINGLE WRITER doc comment.
  */
 export function resolveConsoleSlashCommandOverride(
   engine: EmbeddedAgentDefinition['engine'],
   text: string,
 ): EmbeddedAgentCommand | null {
-  const trimmed = text.trim();
-  const isConsoleHandled = EMBEDDED_AGENT_SLASH_COMMANDS[engine].some(
-    (command) => command.handledBy === 'console' && command.name === trimmed,
-  );
-  if (!isConsoleHandled) return null;
-  const handler = CONSOLE_SLASH_COMMAND_HANDLERS[trimmed];
+  const matched = matchSlashCommand(engine, text);
+  if (!matched || matched.handledBy !== 'console') return null;
+  const handler = CONSOLE_SLASH_COMMAND_HANDLERS[matched.name];
   return handler ? handler() : null;
 }
 
