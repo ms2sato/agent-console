@@ -1345,15 +1345,22 @@ export class WorkerLifecycleManager {
    * Reached only from restartAgentWorkerAsEmbedded's dispatch, when the
    * requested `embeddedAgentId` matches the existing worker's own.
    *
-   * No explicit `persistSession` call here: both `deactivateEmbeddedAgentWorker`
-   * (via its exit observer, `handleExit`) and `activateEmbeddedAgentWorker`
-   * (via `runActivation`'s success path) already call `persistSession`
-   * internally on their own completion paths -- see
-   * `EmbeddedAgentWorkerService.handleExit` / `.runActivation`. A branch
-   * rename's `session.worktreeId` mutation (step 2, before either call)
-   * rides along for free: `deactivate`/`activate` re-fetch the SAME
-   * in-memory session object via `getSession`, so their own persist call
-   * captures the rename too.
+   * A branch rename (step 2, before either call) is persisted explicitly and
+   * immediately, right after the rename mutates `session.worktreeId` -- it
+   * cannot rely on `deactivateEmbeddedAgentWorker` / `activateEmbeddedAgentWorker`
+   * to carry it along. `deactivate` is a no-op (no persist) when the worker
+   * is not currently activated (`worker.subprocess === null` --
+   * `EmbeddedAgentWorkerService.deactivate`'s own guard), and `activate`
+   * (via `runActivation`) only persists on its success path -- nothing is
+   * persisted if it throws. A dormant worker restarted with a rename would
+   * otherwise leave the branch renamed on disk (the git operation already
+   * ran, unconditionally, above) while the DB row still held the old name.
+   * Beyond the rename, no explicit `persistSession` call is needed here:
+   * both `deactivateEmbeddedAgentWorker` (via its exit observer,
+   * `handleExit`) and `activateEmbeddedAgentWorker` (via `runActivation`'s
+   * success path) already call `persistSession` internally for their own
+   * state, on their own completion paths -- see
+   * `EmbeddedAgentWorkerService.handleExit` / `.runActivation`.
    */
   private async restartEmbeddedWorkerSameDefinition(
     sessionId: string,
@@ -1393,6 +1400,14 @@ export class WorkerLifecycleManager {
           'Failed to update git-diff workers after branch rename'
         );
       }
+
+      // Persist the rename explicitly, before deactivate/activate: a
+      // dormant worker's deactivate() is a no-op (nothing to persist) and
+      // activate() only persists on its own success path, so neither call
+      // can be relied on to carry this mutation -- see the method doc
+      // comment above for the full reasoning. The rename must be durable
+      // even if activation below throws.
+      await this.deps.persistSession(session);
     }
 
     await this.deps.deactivateEmbeddedAgentWorker(sessionId, workerId);

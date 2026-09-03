@@ -3056,6 +3056,40 @@ describe('WorkerLifecycleManager', () => {
       );
       expect(result).toBeNull();
     });
+
+    it('persists a branch rename before deactivate/activate, so it survives a dormant worker activation failure (Architect F1 finding, PR #1599)', async () => {
+      // Dormant worker: deactivate() is modeled as a true no-op (mirrors
+      // EmbeddedAgentWorkerService.deactivate's own guard, which returns
+      // immediately without persisting when worker.subprocess === null).
+      // activate() throws, mirroring an activation failure that occurs
+      // before its own success-path persist runs. Without the fix, the
+      // branch rename would be lost: neither call would have persisted it.
+      const deactivateNoop = mock(async (_sid: string, _wid: string) => {});
+      const activateThrows = mock(async (_sid: string, _wid: string) => {
+        throw new Error('activation failed');
+      });
+
+      const { session, workerId } = await createEmbeddedFixture({ worktreeId: 'original-branch' });
+      mockGit.getCurrentBranch.mockImplementation(() => Promise.resolve('original-branch'));
+      mockPersistSession.mockClear();
+
+      const manager = new WorkerLifecycleManager(createDeps({
+        deactivateEmbeddedAgentWorker: deactivateNoop,
+        activateEmbeddedAgentWorker: activateThrows,
+      }));
+
+      await expect(
+        manager.restartAgentWorkerAsEmbedded(session.id, workerId, EMBEDDED_AGENT_DEF.id, 'new-branch'),
+      ).rejects.toThrow('activation failed');
+
+      expect(mockGit.renameBranch).toHaveBeenCalledWith('original-branch', 'new-branch', session.locationPath);
+      expect(mockPersistSession).toHaveBeenCalled();
+      const persistedSession = mockPersistSession.mock.calls[0][0] as InternalSession;
+      expect(persistedSession.type).toBe('worktree');
+      if (persistedSession.type === 'worktree') {
+        expect(persistedSession.worktreeId).toBe('new-branch');
+      }
+    });
   });
 
   // ========== Update Git-Diff Workers After Branch Rename ==========
