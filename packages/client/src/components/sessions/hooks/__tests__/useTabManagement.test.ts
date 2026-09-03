@@ -454,6 +454,46 @@ describe('useTabManagement', () => {
       expect(navigateToWorker).toHaveBeenCalledWith('new-embedded-1');
     });
 
+    it('addAgentTab forwards model/reasoningEffort/contextWindowTokens overrides verbatim for an embedded-agent worker (Issue #1560)', async () => {
+      const workers = [createAgentWorker('agent-1')];
+      const options = createDefaultOptions({
+        activeSession: { workers },
+        urlWorkerId: 'agent-1',
+      });
+      createWorkerResponse = () => ({
+        worker: {
+          id: 'new-embedded-2',
+          type: 'embedded-agent',
+          name: 'Local GPT',
+          embeddedAgentId: 'embedded-def-1',
+          createdAt: new Date().toISOString(),
+          activated: false, autoCompaction: true,
+        },
+      });
+
+      const { result } = renderHook(() => useTabManagement(options));
+
+      await act(async () => {
+        await result.current.addAgentTab({
+          type: 'embedded-agent',
+          embeddedAgentId: 'embedded-def-1',
+          model: 'gpt-4o',
+          reasoningEffort: 'high',
+          contextWindowTokens: 128000,
+        });
+      });
+
+      const postCalls = findFetchCalls(/\/sessions\/session-1\/workers$/);
+      expect(postCalls).toHaveLength(1);
+      expect(postCalls[0].body).toEqual({
+        type: 'embedded-agent',
+        embeddedAgentId: 'embedded-def-1',
+        model: 'gpt-4o',
+        reasoningEffort: 'high',
+        contextWindowTokens: 128000,
+      });
+    });
+
     it('addAgentTab creates an agent worker and adds tab (Issue #1023)', async () => {
       const workers = [createAgentWorker('agent-1')];
       const navigateToWorker = mock(() => {});
@@ -492,6 +532,44 @@ describe('useTabManagement', () => {
       expect(result.current.tabs).toHaveLength(2);
       expect(result.current.tabs[1].workerType).toBe('agent');
       expect(navigateToWorker).toHaveBeenCalledWith('new-agent-1');
+    });
+
+    it('addAgentTab forwards model/reasoningEffort overrides verbatim for a terminal agent worker (Issue #1560)', async () => {
+      const workers = [createAgentWorker('agent-1')];
+      const options = createDefaultOptions({
+        activeSession: { workers },
+        urlWorkerId: 'agent-1',
+      });
+      createWorkerResponse = () => ({
+        worker: {
+          id: 'new-agent-2',
+          type: 'agent',
+          name: 'Claude Code',
+          agentId: 'claude-code-builtin',
+          createdAt: new Date().toISOString(),
+          activated: true,
+        },
+      });
+
+      const { result } = renderHook(() => useTabManagement(options));
+
+      await act(async () => {
+        await result.current.addAgentTab({
+          type: 'agent',
+          agentId: 'claude-code-builtin',
+          model: 'opus',
+          reasoningEffort: 'high',
+        });
+      });
+
+      const postCalls = findFetchCalls(/\/sessions\/session-1\/workers$/);
+      expect(postCalls).toHaveLength(1);
+      expect(postCalls[0].body).toEqual({
+        type: 'agent',
+        agentId: 'claude-code-builtin',
+        model: 'opus',
+        reasoningEffort: 'high',
+      });
     });
 
     it('addAgentTab surfaces an error via showError on API failure', async () => {
