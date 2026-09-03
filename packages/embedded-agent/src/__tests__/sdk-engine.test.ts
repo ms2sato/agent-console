@@ -676,30 +676,30 @@ describe('SdkEngine — tool-surface containment (Pin 2, S5)', () => {
   // turning a future dogfood run's stderr into a free re-check of whether
   // that has changed.
   it('logs the reported system:init tool catalog when TodoWrite was requested', async () => {
-    const warn = spyOn(console, 'warn').mockImplementation(() => {});
+    const info = spyOn(console, 'info').mockImplementation(() => {});
     try {
       const { queryFn } = makeFakeQuery([systemInit({ tools: ['Read', 'Glob', 'Grep'] })]);
       new SdkEngine(baseDeps({ queryFn, enabledTools: ['Read', 'Glob', 'Grep', 'TodoWrite'] }));
       await flush();
 
-      expect(warn).toHaveBeenCalledWith(
+      expect(info).toHaveBeenCalledWith(
         '[sdk-engine] system:init tool catalog (TodoWrite requested): Read, Glob, Grep',
       );
     } finally {
-      warn.mockRestore();
+      info.mockRestore();
     }
   });
 
   it('does not log the system:init tool catalog when TodoWrite was not requested', async () => {
-    const warn = spyOn(console, 'warn').mockImplementation(() => {});
+    const info = spyOn(console, 'info').mockImplementation(() => {});
     try {
       const { queryFn } = makeFakeQuery([systemInit({ tools: ['Read', 'Glob', 'Grep'] })]);
       new SdkEngine(baseDeps({ queryFn, enabledTools: ['Read', 'Glob', 'Grep'] }));
       await flush();
 
-      expect(warn).not.toHaveBeenCalled();
+      expect(info).not.toHaveBeenCalled();
     } finally {
-      warn.mockRestore();
+      info.mockRestore();
     }
   });
 });

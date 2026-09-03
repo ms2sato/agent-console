@@ -640,7 +640,7 @@ export class SdkEngine implements Engine {
     // the pinned SDK has started reporting it back -- no dedicated probe
     // script needed to notice a change here.
     if (this.allowedToolNames.has('TodoWrite')) {
-      console.warn(`[sdk-engine] system:init tool catalog (TodoWrite requested): ${reportedNonMcp.join(', ')}`);
+      console.info(`[sdk-engine] system:init tool catalog (TodoWrite requested): ${reportedNonMcp.join(', ')}`);
     }
 
     const leaked = reportedNonMcp.filter((name) => !this.allowedToolNames.has(name));

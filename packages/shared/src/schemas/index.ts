@@ -96,6 +96,11 @@ export {
 
 // Embedded agent schemas
 export {
+  // Builtin tool-name constants (single writer -- see the doc comment beside
+  // EMBEDDED_AGENT_TOOL_NAMES in embedded-agent.ts for why these live here
+  // rather than in types/embedded-agent.ts)
+  EMBEDDED_AGENT_TOOL_NAMES,
+  DEFAULT_EMBEDDED_AGENT_ENABLED_TOOLS,
   EmbeddedAgentProviderSchema,
   EmbeddedAgentDefinitionSchema,
   CreateEmbeddedAgentRequestSchema,
