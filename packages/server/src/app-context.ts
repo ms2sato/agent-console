@@ -70,7 +70,7 @@ import { createLogger } from './lib/logger.js';
 import { TimerManager as TimerManagerClass } from './services/timer-manager.js';
 import { ConditionalWakeupManager as ConditionalWakeupManagerClass } from './services/conditional-wakeup-manager.js';
 import { InteractiveProcessManager as InteractiveProcessManagerClass } from './services/interactive-process-manager.js';
-import { routeProcessContent } from './services/process-output-router.js';
+import { routeProcessContent, routeProcessExit } from './services/process-output-router.js';
 import type { PtyNotificationParams } from './lib/pty-notification.js';
 import { WorktreeService as WorktreeServiceClass } from './services/worktree-service.js';
 import { RepositorySlackIntegrationService as RepositorySlackIntegrationServiceClass } from './services/notifications/repository-slack-integration-service.js';
@@ -511,37 +511,14 @@ export async function createAppContext(
       });
     },
     (process) => {
-      // Exit notifications stay on the PTY in both modes — they are short
-      // and message routing is unnecessary. InteractiveProcessManagerClass's
-      // onExit callback is synchronous (fire-and-forget); deliverWorkerNotification
-      // is async, so this stays a `void`-forwarded promise, mirroring the
-      // try/catch-and-warn semantics the direct writePtyNotification call
-      // used to have.
-      void sessionManager
-        .deliverWorkerNotification(process.sessionId, process.workerId, {
-          kind: 'internal-process',
-          tag: 'internal:process',
-          fields: {
-            processId: process.id,
-            command: process.command,
-            message: `Process exited with code ${process.exitCode ?? 'unknown'}`,
-          },
-          intent: 'inform',
-        })
-        .then((result) => {
-          if (!result.ok) {
-            logger.warn(
-              { processId: process.id, sessionId: process.sessionId, error: result.error },
-              'Failed to deliver process exit notification',
-            );
-          }
-        })
-        .catch((err) => {
-          logger.warn(
-            { processId: process.id, sessionId: process.sessionId, err },
-            'Failed to deliver process exit notification',
-          );
-        });
+      // Exit notifications now flow through the same per-process delivery
+      // tail as stdout/response content (routeProcessExit enqueues behind
+      // it), so an exit fired right after a still-in-flight message-mode
+      // stdout write can no longer overtake it on the wire.
+      // InteractiveProcessManagerClass's onExit callback is synchronous
+      // (fire-and-forget); routeProcessExit is async, so this stays a
+      // `void`-forwarded promise.
+      void routeProcessExit(processRouterDeps, process);
     },
     // PTY message injector: echo process response to the worker's PTY (same
     // path as MessagePanel) when outputMode === 'pty'. The manager itself

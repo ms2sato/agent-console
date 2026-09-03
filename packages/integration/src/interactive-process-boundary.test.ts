@@ -41,7 +41,7 @@ import { defaultRepositoryLookup, defaultRepositoryEnvLookup } from '@agent-cons
 import { createEmptyEmbeddedAgentSurface } from './test-utils';
 import { EmbeddedAgentManager } from '@agent-console/server/src/services/embedded-agent-manager';
 import { SqliteEmbeddedAgentRepository } from '@agent-console/server/src/repositories/sqlite-embedded-agent-repository';
-import { routeProcessContent } from '@agent-console/server/src/services/process-output-router';
+import { routeProcessContent, routeProcessExit } from '@agent-console/server/src/services/process-output-router';
 import type { PtyNotificationParams } from '@agent-console/server/src/lib/pty-notification';
 import type { SpawnAsUserFn, SpawnAsUserOpts, SpawnAsUserResult } from '@agent-console/server/src/services/privilege-elevation';
 import { readdir } from 'node:fs/promises';
@@ -343,14 +343,49 @@ interface FakeFileSink {
  * this file's tests spawn for real via the default `spawnAsUser` -- exactly
  * as the PTY-worker describe block above already does (e.g. `sleep 30`).
  */
+/**
+ * A `stdout`/`stderr` ReadableStream this file's fake spawn can push
+ * synthetic loop-protocol lines into (`{ type: 'state', state: 'idle' }`,
+ * etc.) from outside the stream's own `start()` callback. Same shape as the
+ * sibling boundary tests' own `makeControllableStream` helper (e.g.
+ * `embedded-agent-worker-history-boundary.test.ts`), duplicated here per
+ * this codebase's convention of not extracting a shared helper until a
+ * third consumer needs one within the same file family.
+ */
+interface ControllableStream {
+  stream: ReadableStream<Uint8Array>;
+  push: (s: string) => void;
+}
+
+function makeControllableStream(): ControllableStream {
+  let ctrl!: ReadableStreamDefaultController<Uint8Array>;
+  const stream = new ReadableStream<Uint8Array>({
+    start(c) {
+      ctrl = c;
+    },
+  });
+  const enc = new TextEncoder();
+  return { stream, push: (s: string) => ctrl.enqueue(enc.encode(s)) };
+}
+
 function makeFakeSpawn(): {
   fn: SpawnAsUserFn;
   captured: SpawnAsUserOpts[];
   stdinWrites: string[];
+  /**
+   * Push a raw loop-protocol line (already newline-terminated) into the
+   * fake worker's stdout. Needed by the Issue #1591 ordering test: this
+   * fake's stdout otherwise never emits anything on its own, so
+   * `EmbeddedAgentWorkerService`'s mid-turn notification queue (R3) never
+   * sees a `state: idle` event and a second, already-queued notification
+   * (e.g. the exit notification arriving while the first is still "in
+   * flight") would never flush to a second stdin write.
+   */
+  pushStdout: (s: string) => void;
 } {
   const captured: SpawnAsUserOpts[] = [];
   const stdinWrites: string[] = [];
-  const stdout = new ReadableStream<Uint8Array>({ start() {} });
+  const stdout = makeControllableStream();
   const stderr = new ReadableStream<Uint8Array>({ start() {} });
   const exited = new Promise<number>(() => {
     // Never resolves — these tests never deactivate the worker.
@@ -363,12 +398,12 @@ function makeFakeSpawn(): {
     end: () => {},
     flush: () => 0,
   };
-  const subprocess = { pid: 8888, exited, stdin, stdout, stderr, kill: () => {} };
+  const subprocess = { pid: 8888, exited, stdin, stdout: stdout.stream, stderr, kill: () => {} };
   const fn: SpawnAsUserFn = (opts) => {
     captured.push(opts);
     return { subprocess, stdin, elevated: false } as unknown as SpawnAsUserResult;
   };
-  return { fn, captured, stdinWrites };
+  return { fn, captured, stdinWrites, pushStdout: stdout.push };
 }
 
 async function waitFor(cond: () => boolean | Promise<boolean>, timeoutMs = 3000): Promise<void> {
@@ -448,7 +483,9 @@ describe('Interactive Process MCP boundary: embedded-agent target', () => {
           direction: 'stdout',
         }).catch(() => {});
       },
-      () => {},
+      (process) => {
+        void routeProcessExit(processRouterDeps, process);
+      },
       sessionManager,
       (process, content) => {
         if (process.outputMode === 'pty') {
@@ -610,5 +647,42 @@ describe('Interactive Process MCP boundary: embedded-agent target', () => {
     const writeData = parseToolResult(writeResponse) as { written: boolean; processId: string };
     expect(writeData.written).toBe(true);
     expect(writeData.processId).toBe(processId);
+  });
+
+  it('message-mode stdout and exit notifications deliver to the embedded worker\'s loop in call order when the script prints and exits at once (Issue #1591)', async () => {
+    const { sessionId, workerId } = await createActivatedEmbeddedWorker(31004, 'proc-order-owner');
+    const stdinWritesBeforeRun = fake.stdinWrites.length;
+
+    const response = await callTool(app, mcpSessionId, 'run_process', {
+      command: 'printf "line one\\nline two\\n"',
+      sessionId,
+      workerId,
+      outputMode: 'message',
+    }, nextId++);
+    expect(response.result?.isError).toBeUndefined();
+
+    // The brief stdout-via-message notification is admitted immediately
+    // (the worker's turn is idle right after activation) and produces the
+    // first stdin write. The exit notification arrives shortly after, but
+    // R3's mid-turn notification queue parks it (the worker's `turnActive`
+    // is still true) until the loop reports `state: idle` -- this fake's
+    // stdout otherwise never emits anything on its own, so push that event
+    // once the first write is observed to let the queued exit notification
+    // flush as the second stdin write.
+    await waitFor(() => fake.stdinWrites.length >= stdinWritesBeforeRun + 1);
+    fake.pushStdout(`${JSON.stringify({ v: 1, type: 'state', state: 'idle' })}\n`);
+
+    // Two notifications expected: the brief stdout-via-message notification,
+    // then the exit notification.
+    await waitFor(() => fake.stdinWrites.length >= stdinWritesBeforeRun + 2);
+
+    const forwarded = fake.stdinWrites.slice(stdinWritesBeforeRun).map(
+      (raw) => (JSON.parse(raw) as { text: string }).text,
+    );
+    const stdoutIndex = forwarded.findIndex((text) => text.includes('[stdout via message]'));
+    const exitIndex = forwarded.findIndex((text) => text.includes('Process exited'));
+    expect(stdoutIndex).toBeGreaterThanOrEqual(0);
+    expect(exitIndex).toBeGreaterThanOrEqual(0);
+    expect(exitIndex).toBeGreaterThan(stdoutIndex);
   });
 });
