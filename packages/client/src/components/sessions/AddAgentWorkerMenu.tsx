@@ -91,16 +91,17 @@ export function AddAgentWorkerMenu({
   }
 
   function handleToggleOptions(itemKey: string) {
-    setExpandedKey((prev) => {
-      // Both the collapse and the switch-to-a-different-item cases clear
-      // the typed values -- a stale value from a previously expanded item
-      // must never ride along into another item's panel (mirrors
-      // QuickSessionForm.tsx's clear-on-switch).
-      setOptionsModel(undefined);
-      setOptionsReasoningEffort(undefined);
-      setOptionsContextWindowTokens(undefined);
-      return prev === itemKey ? null : itemKey;
-    });
+    // Both the collapse and the switch-to-a-different-item cases clear
+    // the typed values -- a stale value from a previously expanded item
+    // must never ride along into another item's panel (mirrors
+    // QuickSessionForm.tsx's clear-on-switch). These are plain statements,
+    // not nested inside the setExpandedKey updater, because React
+    // StrictMode double-invokes functional updaters and they must stay
+    // pure (no side effects).
+    setOptionsModel(undefined);
+    setOptionsReasoningEffort(undefined);
+    setOptionsContextWindowTokens(undefined);
+    setExpandedKey((prev) => (prev === itemKey ? null : itemKey));
   }
 
   useEffect(() => {
@@ -182,11 +183,12 @@ export function AddAgentWorkerMenu({
           // Toggling the trigger closed must reset the options panel the
           // same way the outside-click handler does -- otherwise reopening
           // the menu restores a stale expandedKey/override values and a
-          // subsequent Add could submit them (CodeRabbit finding).
-          setOpen((prev) => {
-            if (prev) resetOptionsState();
-            return !prev;
-          });
+          // subsequent Add could submit them (CodeRabbit finding). The
+          // reset runs as a plain statement, not inside the setOpen
+          // updater, because React StrictMode double-invokes functional
+          // updaters and they must stay pure (no side effects).
+          if (open) resetOptionsState();
+          setOpen(!open);
         }}
         className="px-3 py-2 text-gray-400 hover:text-white hover:bg-slate-700"
         title="Add agent worker"
@@ -242,9 +244,9 @@ export function AddAgentWorkerMenu({
                       aria-label={`Options for ${agent.name}`}
                       aria-expanded={isExpanded}
                       onClick={() => handleToggleOptions(itemKey)}
-                      className="px-2 py-2 text-gray-400 hover:text-white shrink-0"
+                      className="px-2 py-2 text-gray-400 hover:text-white shrink-0 flex items-center gap-1 text-xs"
                     >
-                      {isExpanded ? '▲' : '▼'}
+                      Options {isExpanded ? '▲' : '▼'}
                     </button>
                   )}
                 </div>
@@ -300,9 +302,9 @@ export function AddAgentWorkerMenu({
                       aria-label={`Options for ${embeddedAgent.name}`}
                       aria-expanded={isExpanded}
                       onClick={() => handleToggleOptions(itemKey)}
-                      className="px-2 py-2 text-gray-400 hover:text-white shrink-0"
+                      className="px-2 py-2 text-gray-400 hover:text-white shrink-0 flex items-center gap-1 text-xs"
                     >
-                      {isExpanded ? '▲' : '▼'}
+                      Options {isExpanded ? '▲' : '▼'}
                     </button>
                   )}
                 </div>
