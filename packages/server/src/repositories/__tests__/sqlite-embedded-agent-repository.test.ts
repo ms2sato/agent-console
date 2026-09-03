@@ -49,6 +49,7 @@ describe('SqliteEmbeddedAgentRepository', () => {
       .addColumn('provider_base_url', 'text')
       .addColumn('provider_model', 'text', (col) => col.notNull())
       .addColumn('provider_api_key_ref', 'text')
+      .addColumn('provider_supports_images', 'integer')
       .addColumn('system_prompt', 'text')
       .addColumn('max_tool_iterations', 'integer')
       .addColumn('enabled_tools', 'text')
@@ -389,6 +390,25 @@ describe('SqliteEmbeddedAgentRepository', () => {
 
       const found = await repository.findById('x');
       expect(found?.isBuiltIn).toBe(true);
+    });
+
+    it('updates provider.supportsImages on conflict (regression guard: onConflict lists columns explicitly)', async () => {
+      await repository.save(
+        buildDefinition({ id: 'x', provider: { baseUrl: 'http://localhost:11434/v1', model: 'm', supportsImages: true } })
+      );
+      await repository.save(
+        buildDefinition({
+          id: 'x',
+          provider: { baseUrl: 'http://localhost:11434/v1', model: 'm' },
+          updatedAt: '2024-06-01T00:00:00.000Z',
+        })
+      );
+
+      const found = await repository.findById('x');
+      if (found?.engine !== 'openai-api') {
+        throw new Error('expected openai-api engine');
+      }
+      expect(found.provider.supportsImages).toBeUndefined();
     });
   });
 

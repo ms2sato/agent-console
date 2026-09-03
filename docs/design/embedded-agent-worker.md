@@ -280,6 +280,7 @@ export interface EmbeddedAgentDefinition {
     baseUrl: string;          // OpenAI-compatible root, e.g. "http://localhost:11434/v1"
     model: string;            // model id passed in the chat.completions request
     apiKeyRef?: string;       // name of a key in the server-side key store; absent = no auth (local LLMs)
+    supportsImages?: boolean; // Issue #1571; operator-declared capability -- can this provider/model see image content parts? Default false/absent
   };
   systemPrompt?: string;      // prepended to every conversation
   maxToolIterations?: number; // per user turn; default 25
@@ -377,7 +378,7 @@ Server -> agent (stdin):
 type EmbeddedAgentCommand =
   | { v: 1; type: 'init';
       mcp: { baseUrl: string; token: string };            // Streamable HTTP endpoint + bearer token (#878)
-      provider: { baseUrl: string; model: string; apiKey?: string };
+      provider: { baseUrl: string; model: string; apiKey?: string; supportsImages?: boolean }; // supportsImages (Issue #1571): openai-api ARM ONLY, operator-declared per-definition capability (default false/absent = cannot see images). Gates whether the loop builds `image_url` content parts for image-mime attachments; when false the model gets the path line plus a one-line "cannot see images" notice instead
       context: { sessionId: string; workerId: string; repositoryId?: string; cwd: string; attachmentRoots?: string[] }; // #1570; extra `Read`-only confinement roots (the shared message-attachment upload dir) beyond `cwd`. `openai-api`-consumed only -- a live probe confirmed claude-sdk's native `Read` tool can already open files outside `cwd` under our production `permissionMode`, so it ignores this field
       systemPrompt?: string;
       maxToolIterations: number;
@@ -386,7 +387,7 @@ type EmbeddedAgentCommand =
       compaction: { auto: boolean; contextWindowTokens?: number; threshold?: number }; // Compaction; `auto` is the WORKER's toggle, the other two the definition's
       restoredUsage?: { promptTokens: number; estimated: boolean }; // #1419; openai-api ARM ONLY. The newest authoritative context reading in the persisted log, seeding the restore-boundary check. Absent = no reading in the log (the estimator fallback stands). `estimated` is the reading's OWN honesty, carried forward unchanged
       resume?: { sdkSessionId: string } }     // Transcript Restore R1 (#1410); claude-sdk ARM ONLY (the real type is engine-discriminated -- an openai-api init carrying one is not representable). Absent = fresh session. The id comes from the workers row and nowhere else
-  | { v: 1; type: 'user-message'; id: string; text: string } // id minted by server, echoed in events
+  | { v: 1; type: 'user-message'; id: string; text: string; attachments?: { path: string; mimeType: string }[] } // id minted by server, echoed in events. attachments (Issue #1571): the message's file attachments, path + mime type; the loop resolves image-mime entries under `context.attachmentRoots` into real content parts (see Provider adapter & tool-call normalization), non-image entries stay path-only in `text` (#1570 semantics, unchanged)
   | { v: 1; type: 'cancel' }                                 // abort the in-flight turn (AbortController)
   | { v: 1; type: 'set-auto-compaction'; enabled: boolean }  // Compaction; reflects a toggle change into a running subprocess. Not gated on turnActive — the flag is only read at the turn boundary
   | { v: 1; type: 'shutdown' };
@@ -416,7 +417,7 @@ Two further event kinds are written into the persisted stream by the SERVER, not
 
 ```ts
 type EmbeddedAgentServerEvent =
-  | { v: 1; type: 'user-message'; id: string; text: string }  // appended when forwarding to stdin
+  | { v: 1; type: 'user-message'; id: string; text: string; attachments?: { path: string; mimeType: string }[] }  // appended when forwarding to stdin. attachments (Issue #1571) mirrors the originating command's field, so the client can render a filename chip and restore can find the file
   | { v: 1; type: 'turn-interrupted'; turnId: string }        // Transcript Restore R1 (#1410); appended at activation for a turn the previous incarnation never answered. Server-authored on purpose -- never a synthesized `turn-error`
   | { v: 1; type: 'exited'; code: number | null; reason?: ExitReason; stderrTail?: string }; // appended when subprocess.exited resolves. reason is three-valued and absence-significant (see ExitReason). stderrTail is present ONLY for reason: 'unexpected' with non-empty stderr -- never on 'managed'/'evicted' -- and holds the last STDERR_TAIL_CAP characters (UTF-16 code units, not bytes and not an overall wire-size bound) (#1454)
 
@@ -734,6 +735,8 @@ export interface ProviderAdapter {
 ```
 
 v1 ships one implementation, `OpenAIChatAdapter`: `POST {baseUrl}/chat/completions` with `stream: true`, SSE parsing, tool-call deltas accumulated by index until complete, `Authorization: Bearer <apiKey>` only when a key is configured. Anthropic and others are post-v1 adapters behind the same interface.
+
+**Image attachments (Issue #1571).** `ChatMessage`'s `user` variant widens to `content: string | ContentPart[]` (`ContentPart = { type: 'text'; text } | { type: 'image_url'; image_url: { url } }`, `providers/types.ts`). A `user-message` command's `attachments` (path + mime type) is resolved by `packages/embedded-agent/src/attachment-content.ts`'s `buildUserMessageContent`: for each attachment whose mime type is in `EMBEDDED_AGENT_IMAGE_MIME_TYPES` and whose path resolves under `context.attachmentRoots`, the file is read and base64-encoded into an `image_url` data-URL part; a missing or unconfined image is instead declared in-band as a `[image no longer available: <basename>]` note appended to the text part. This only happens when `provider.supportsImages` is true (an operator-declared, per-definition capability, default false) — otherwise every image-mime attachment is left as the plain path-line text (#1570 semantics) plus a one-line notice that the model cannot see it. Non-image attachments are always path-only, on both branches. The SAME helper resolves both a LIVE turn's attachments and a restored conversation's (Transcript Restore) past attachments at `main.ts`'s activation-time seeding — restore re-reads the file from disk rather than trusting whatever content shape was persisted, so a since-reaped upload correctly downgrades to the "no longer available" note instead of silently failing. The `claude-sdk` engine builds the equivalent Anthropic content blocks (`{type:'text'}` / `{type:'image', source:{type:'base64', media_type, data}}`) directly in `sdk-engine.ts`'s `runTurn`, unconditionally (no `supportsImages` gate — the SDK has no such capability concept) and only for the live turn (a restored SDK session already holds any image via SDK session resume, so `restoredConversation` is not used for this engine regardless).
 
 **Reasoning/thinking content.** Several OpenAI-Chat-Completions-compatible providers (DeepSeek-R1 API, many vLLM reasoning-parser configs, OpenRouter passthrough, some Ollama models) stream reasoning/thinking content as `choice.delta.reasoning_content` — the same delta-streaming shape as `content`, not a separate message. `OpenAIChatAdapter` reads exactly this field name (no alternate key such as `reasoning` is supported, keeping the surface as minimal as `content` itself) and yields `{ type: 'reasoning-delta', text }` independently of any `text-delta` in the same chunk (a chunk may carry either, both, or neither field). The agent loop maps this 1:1 onto the wire-level `assistant-thinking-delta` event — see [The loop's turn cycle](#the-loops-turn-cycle).
 

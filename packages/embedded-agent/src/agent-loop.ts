@@ -11,6 +11,7 @@
 
 import {
   DEFAULT_COMPACTION_THRESHOLD,
+  type EmbeddedAgentAttachment,
   type EmbeddedAgentEvent,
   type EmbeddedAgentRestoredUsage,
 } from '@agent-console/shared';
@@ -19,6 +20,7 @@ import {
   ProviderError,
   type ProviderErrorDetail,
   type ChatMessage,
+  type ContentPart,
   type ProviderAdapter,
   type ToolCall,
   type ToolDefinition,
@@ -27,6 +29,7 @@ import { isContextOverflowError, extractProviderStatedLimit } from './context-ov
 import { detectClampedReading } from './window-drift.js';
 import { truncateToBytes } from './truncate.js';
 import { buildCompactionSeedMessages } from './conversation-seed.js';
+import { buildUserMessageContent } from './attachment-content.js';
 import {
   COMPACT_TOOL_NAME,
   COMPACT_TOOL_SCHEDULED_RESULT,
@@ -145,6 +148,15 @@ export interface AgentLoopDeps {
    * that turn's own reading supersedes it.
    */
   restoredUsage?: EmbeddedAgentRestoredUsage;
+  /**
+   * Message-attachment resolution: confinement roots a `Read`-eligible
+   * attachment path must resolve under, and whether this definition's
+   * provider can see image content parts. Both default to the closed/absent
+   * state (`[]` / `false`) when omitted, matching pre-existing behavior for a
+   * turn with no attachments.
+   */
+  attachmentRoots?: string[];
+  supportsImages?: boolean;
 }
 
 export interface ProviderToolCall {
@@ -264,13 +276,25 @@ function capToolCallArgsForWire(argsJson: string, parsedValue: Record<string, un
 }
 
 /**
+ * Character length of a message's `.content` for the coarse chars/4
+ * estimator below. A user message's content may be a `ContentPart[]` when it
+ * carries image attachments -- image parts contribute 0 chars to
+ * this fallback estimate, an accepted approximation since this estimator
+ * only ever runs when the provider doesn't report real `usage`.
+ */
+function contentCharLength(content: string | ContentPart[]): number {
+  if (typeof content === 'string') return content.length;
+  return content.reduce((sum, part) => sum + (part.type === 'text' ? part.text.length : 0), 0);
+}
+
+/**
  * Fallback token estimate for providers that ignore `stream_options` and
  * never send `usage`: chars/4 summed over every message's `.content` in the
  * given array, rounded. `tool_calls` on assistant messages are not counted --
  * only `.content` size matters for this coarse estimate.
  */
 function estimateTokensFromChars(messages: ChatMessage[]): number {
-  const totalChars = messages.reduce((sum, m) => sum + m.content.length, 0);
+  const totalChars = messages.reduce((sum, m) => sum + contentCharLength(m.content), 0);
   return Math.round(totalChars / 4);
 }
 
@@ -604,8 +628,8 @@ export class AgentLoop {
    * returned promise, so no user message can interleave between the turn
    * ending and the compaction that follows it.
    */
-  async runTurn(id: string, text: string): Promise<void> {
-    const ending = await this.runUserTurn(id, text);
+  async runTurn(id: string, text: string, attachments?: EmbeddedAgentAttachment[]): Promise<void> {
+    const ending = await this.runUserTurn(id, text, attachments);
     await this.settleCompactionAtTurnBoundary(ending);
   }
 
@@ -651,14 +675,28 @@ export class AgentLoop {
     return usage.promptTokens / windowTokens >= threshold;
   }
 
-  private async runUserTurn(id: string, text: string): Promise<TurnEnding> {
+  private async runUserTurn(
+    id: string,
+    text: string,
+    attachments?: EmbeddedAgentAttachment[],
+  ): Promise<TurnEnding> {
     const turnId = id;
     const abort = new AbortController();
     this.currentAbort = abort;
 
     try {
       this.deps.emit({ v: 1, type: 'state', state: 'active' });
-      this.conversation.push({ role: 'user', content: text });
+      const content = await buildUserMessageContent(
+        text,
+        attachments,
+        this.deps.attachmentRoots ?? [],
+        this.deps.supportsImages ?? false,
+      );
+      if (abort.signal.aborted) {
+        this.emitTurnError(turnId, 'turn canceled');
+        return 'canceled';
+      }
+      this.conversation.push({ role: 'user', content });
 
       let malformedReAsks = 0;
       // One escape per turn. A local, so it resets when the turn ends.

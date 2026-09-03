@@ -1825,6 +1825,71 @@ describe('EmbeddedAgentWorkerService.sendUserMessage', () => {
     expect('clientMessageId' in forwarded).toBe(false);
   });
 
+  it('threads attachments into BOTH the stdin command and the appended/broadcast event (Issue #1571)', async () => {
+    const h = setup();
+    await h.service.activate(h.sessionId, h.workerId);
+    const initWrites = h.fake.stdinWrites.length;
+    h.bufferOutput.mockClear();
+
+    const attachments = [{ path: '/tmp/upload/img.png', mimeType: 'image/png' }];
+    const res = await h.service.sendUserMessage(h.sessionId, h.workerId, 'see this', undefined, attachments);
+    expect(res.ok).toBe(true);
+
+    // Unlike clientMessageId, attachments IS part of the loop protocol -- the
+    // subprocess resolves attachments into content parts (out of scope here,
+    // see embedded-agent's own restore/engine tests), so it must reach stdin.
+    const forwarded = JSON.parse(h.fake.stdinWrites[initWrites]);
+    expect(forwarded.type).toBe('user-message');
+    expect(forwarded.attachments).toEqual(attachments);
+
+    const userMessageLine = appendedLines(h.bufferOutput).find(
+      (line) => JSON.parse(line).type === 'user-message',
+    );
+    expect(userMessageLine).toBeDefined();
+    const appended = JSON.parse(userMessageLine!);
+    expect(appended.attachments).toEqual(attachments);
+  });
+
+  it('omits attachments entirely from BOTH the stdin command and the appended/broadcast event when none are sent (polarity pin, byte-identical to pre-#1571)', async () => {
+    const h = setup();
+    await h.service.activate(h.sessionId, h.workerId);
+    const initWrites = h.fake.stdinWrites.length;
+    h.bufferOutput.mockClear();
+
+    const res = await h.service.sendUserMessage(h.sessionId, h.workerId, 'hello');
+    expect(res.ok).toBe(true);
+
+    const forwarded = JSON.parse(h.fake.stdinWrites[initWrites]);
+    expect('attachments' in forwarded).toBe(false);
+
+    const userMessageLine = appendedLines(h.bufferOutput).find(
+      (line) => JSON.parse(line).type === 'user-message',
+    );
+    expect(userMessageLine).toBeDefined();
+    const appended = JSON.parse(userMessageLine!);
+    expect('attachments' in appended).toBe(false);
+  });
+
+  it('omits attachments when an empty array is sent, same as undefined (polarity pin)', async () => {
+    const h = setup();
+    await h.service.activate(h.sessionId, h.workerId);
+    const initWrites = h.fake.stdinWrites.length;
+    h.bufferOutput.mockClear();
+
+    const res = await h.service.sendUserMessage(h.sessionId, h.workerId, 'hello', undefined, []);
+    expect(res.ok).toBe(true);
+
+    const forwarded = JSON.parse(h.fake.stdinWrites[initWrites]);
+    expect('attachments' in forwarded).toBe(false);
+
+    const userMessageLine = appendedLines(h.bufferOutput).find(
+      (line) => JSON.parse(line).type === 'user-message',
+    );
+    expect(userMessageLine).toBeDefined();
+    const appended = JSON.parse(userMessageLine!);
+    expect('attachments' in appended).toBe(false);
+  });
+
   it('wakes a worker with no live subprocess instead of rejecting (the delivery invariant)', async () => {
     // Idle eviction made delivery responsible for waking: the choke point
     // checks for a live subprocess, deliberately NOT for an evicted marker, so
@@ -2334,6 +2399,26 @@ describe('EmbeddedAgentWorkerService — model/reasoningEffort override composit
 
     const first = JSON.parse(h.fake.stdinWrites[0]);
     expect('effort' in first.provider).toBe(false);
+  });
+
+  it('passes through definition.provider.supportsImages: true into the openai-api init command (Issue #1571, no per-worker override concept)', async () => {
+    const h = setup({
+      definition: buildDefinition({
+        provider: { baseUrl: 'http://localhost:11434/v1', model: 'qwen3:32b', apiKeyRef: 'openai', supportsImages: true },
+      }),
+    });
+    await h.service.activate(h.sessionId, h.workerId);
+
+    const first = JSON.parse(h.fake.stdinWrites[0]);
+    expect(first.provider.supportsImages).toBe(true);
+  });
+
+  it('passes through an unset definition.provider.supportsImages as undefined on the openai-api init command', async () => {
+    const h = setup();
+    await h.service.activate(h.sessionId, h.workerId);
+
+    const first = JSON.parse(h.fake.stdinWrites[0]);
+    expect(first.provider.supportsImages).toBeUndefined();
   });
 
   it('live-reads the definition default when no worker override is set -- a definition edit AFTER worker creation is reflected at activation (no copy-at-creation, unlike the context-window override)', async () => {

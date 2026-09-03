@@ -69,6 +69,23 @@ async function resolveExistingRoots(roots: string[]): Promise<string[]> {
 }
 
 /**
+ * Confine an already-absolute attachment path to one of `roots`, after
+ * following symlinks. Unlike `resolveConfinedPath`, there is no
+ * `locationPath`/relative-resolution concept here -- an attachment path is
+ * always absolute (server-generated, from the shared upload directory), so
+ * confinement is purely "is it under one of these roots".
+ */
+export async function isPathWithinRoots(
+  rawPath: string,
+  roots: string[],
+): Promise<{ ok: true; resolvedPath: string } | { ok: false }> {
+  const resolvedRoots = await resolveExistingRoots(roots);
+  const resolvedPath = await realpathNearestAncestor(rawPath);
+  const confined = resolvedRoots.some((root) => isConfinedWithin(resolvedPath, root));
+  return confined ? { ok: true, resolvedPath } : { ok: false };
+}
+
+/**
  * Resolve `rawPath` (absolute or relative to `locationPath`) and verify it is
  * confined within `locationPath`, OR within one of `extraRoots`, after
  * following symlinks. `extraRoots` lets a caller extend confinement beyond
