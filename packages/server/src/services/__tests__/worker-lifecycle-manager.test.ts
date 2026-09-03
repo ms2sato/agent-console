@@ -595,6 +595,73 @@ describe('WorkerLifecycleManager', () => {
     });
   });
 
+  // ========== onSessionUpdated broadcast on worker creation (Issue #1586) ==========
+  //
+  // createWorker must broadcast onSessionUpdated after persisting, mirroring
+  // deleteWorker's existing broadcast-after-persist pattern (see the
+  // 'should call onSessionUpdated after deletion...' test above). Without
+  // this, a client's in-memory session.workers never learns about a worker
+  // created in the current page session until a reload refetches it.
+
+  describe('createWorker: onSessionUpdated broadcast (Issue #1586)', () => {
+    it('should call onSessionUpdated after creating an agent worker, with the new worker present', async () => {
+      const session = createTestSession();
+      sessions.set(session.id, session);
+
+      mockOnSessionUpdated.mockClear();
+      const worker = await lifecycleManager.createWorker(session.id, {
+        type: 'agent',
+        agentId: CLAUDE_CODE_AGENT_ID,
+      });
+
+      expect(mockOnSessionUpdated).toHaveBeenCalledTimes(1);
+      const broadcastedSession = mockOnSessionUpdated.mock.calls[0][0] as Session;
+      expect(broadcastedSession.workers.find((w) => w.id === worker!.id)).toBeDefined();
+    });
+
+    it('should call onSessionUpdated after creating a terminal worker, with the new worker present', async () => {
+      const session = createTestSession();
+      sessions.set(session.id, session);
+
+      mockOnSessionUpdated.mockClear();
+      const worker = await lifecycleManager.createWorker(session.id, { type: 'terminal' });
+
+      expect(mockOnSessionUpdated).toHaveBeenCalledTimes(1);
+      const broadcastedSession = mockOnSessionUpdated.mock.calls[0][0] as Session;
+      expect(broadcastedSession.workers.find((w) => w.id === worker!.id)).toBeDefined();
+    });
+
+    it('should call onSessionUpdated after creating an embedded-agent worker, with the new worker present', async () => {
+      const session = createTestSession();
+      sessions.set(session.id, session);
+
+      mockOnSessionUpdated.mockClear();
+      const worker = await lifecycleManager.createWorker(session.id, {
+        type: 'embedded-agent',
+        embeddedAgentId: EMBEDDED_AGENT_DEF.id,
+      });
+
+      expect(mockOnSessionUpdated).toHaveBeenCalledTimes(1);
+      const broadcastedSession = mockOnSessionUpdated.mock.calls[0][0] as Session;
+      expect(broadcastedSession.workers.find((w) => w.id === worker!.id)).toBeDefined();
+    });
+
+    it('should NOT call onSessionUpdated when worker creation fails validation (dangling embeddedAgentId)', async () => {
+      const session = createTestSession();
+      sessions.set(session.id, session);
+
+      mockOnSessionUpdated.mockClear();
+      await expect(
+        lifecycleManager.createWorker(session.id, {
+          type: 'embedded-agent',
+          embeddedAgentId: 'does-not-exist',
+        }),
+      ).rejects.toBeInstanceOf(ValidationError);
+
+      expect(mockOnSessionUpdated).not.toHaveBeenCalled();
+    });
+  });
+
   // ========== model / reasoningEffort parameter validation and persistence (Issue #1541) ==========
 
   describe('createWorker: model/reasoningEffort validation and PTY-command propagation', () => {
@@ -1434,6 +1501,11 @@ describe('WorkerLifecycleManager', () => {
         type: 'agent',
         agentId: CLAUDE_CODE_AGENT_ID,
       });
+
+      // createWorker itself broadcasts onSessionUpdated (Issue #1586) --
+      // clear that call so this assertion isolates restartAgentWorker's own
+      // (non-)broadcast behavior.
+      mockOnSessionUpdated.mockClear();
 
       // Restart with same agent ID and no branch change
       await lifecycleManager.restartAgentWorker(

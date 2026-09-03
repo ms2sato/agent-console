@@ -3501,6 +3501,11 @@ describe('SessionManager', () => {
         agentId: 'claude-code',
       });
 
+      // createSession triggers onSessionUpdated via its initial worker creation
+      // (Issue #1586); clear those incidental calls before asserting on the
+      // updateSessionMetadata call under test.
+      onSessionUpdated.mockClear();
+
       await manager.updateSessionMetadata(session.id, { title: 'New Title' });
 
       expect(onSessionUpdated).toHaveBeenCalledTimes(1);
@@ -3571,6 +3576,11 @@ describe('SessionManager', () => {
         agentId: 'claude-code',
       });
       expect(onSessionCreated).toHaveBeenCalledTimes(1);
+
+      // createSession triggers onSessionUpdated via its initial worker creation
+      // (Issue #1586); clear those incidental calls before asserting on the
+      // updateSessionMetadata call under test.
+      onSessionUpdated.mockClear();
 
       // Update
       await manager.updateSessionMetadata(session.id, { title: 'Updated' });
@@ -4409,6 +4419,11 @@ describe('SessionManager', () => {
       });
       const agentWorker = session.workers.find((w: Worker) => w.type === 'agent')!;
 
+      // createSession triggers onSessionUpdated via its initial worker creation
+      // (Issue #1586); clear those incidental calls before asserting on the
+      // restartAgentWorker call under test.
+      onSessionUpdated.mockClear();
+
       await manager.restartAgentWorker(session.id, agentWorker.id, 'fresh', customAgent.id);
 
       // onSessionUpdated should be called for agent switch
@@ -4432,6 +4447,11 @@ describe('SessionManager', () => {
         agentId: 'claude-code',
       });
       const agentWorker = session.workers.find((w: Worker) => w.type === 'agent')!;
+
+      // createSession triggers onSessionUpdated via its initial worker creation
+      // (Issue #1586); clear those incidental calls before asserting on the
+      // restartAgentWorker call under test.
+      onSessionUpdated.mockClear();
 
       await manager.restartAgentWorker(session.id, agentWorker.id, 'fresh');
 
@@ -4508,6 +4528,11 @@ describe('SessionManager', () => {
       });
       const agentWorker = session.workers.find((w: Worker) => w.type === 'agent')!;
 
+      // createSession triggers onSessionUpdated via its initial worker creation
+      // (Issue #1586); clear those incidental calls before asserting on the
+      // restartAgentWorker call under test.
+      onSessionUpdated.mockClear();
+
       await manager.restartAgentWorker(session.id, agentWorker.id, 'fresh', undefined, 'new-branch');
 
       // onSessionUpdated should be called for branch rename
@@ -4559,6 +4584,11 @@ describe('SessionManager', () => {
         agentId: 'claude-code',
       });
       const agentWorker = session.workers.find((w: Worker) => w.type === 'agent')!;
+
+      // createSession triggers onSessionUpdated via its initial worker creation
+      // (Issue #1586); clear those incidental calls before asserting on the
+      // restartAgentWorker call under test.
+      onSessionUpdated.mockClear();
 
       await manager.restartAgentWorker(session.id, agentWorker.id, 'fresh', undefined, 'new-branch');
 

@@ -1,9 +1,15 @@
 import { describe, it, expect, mock, beforeEach, afterEach, afterAll, spyOn } from 'bun:test'
 import type { Session, Worker, AgentActivityState, WorkerActivityInfo, WorkerMessage } from '@agent-console/shared'
 import { renderHook, act } from '@testing-library/react'
-import { createElement, type ReactNode } from 'react'
+import { createElement, type ReactNode, useRef } from 'react'
 import { SessionDataContext, type SessionDataContextValue } from '../../../../contexts/root-contexts'
 import { useSessionPageState, type UseSessionPageStateOptions } from '../useSessionPageState'
+import { useTabManagement } from '../useTabManagement'
+import {
+  resolveActiveEmbeddedAgentId,
+  resolveActiveEmbeddedAutoCompaction,
+  resolveActiveEmbeddedContextWindowTokens,
+} from '../../SessionPage'
 import * as useAppWsModule from '../../../../hooks/useAppWs'
 
 // --- useAppWsEvent spy ---
@@ -40,6 +46,16 @@ type SessionResponse = Session | null | 'throw' | 'throw-server-unavailable'
 
 let getSessionResponse: SessionResponse = null
 
+/**
+ * Configurable response for POST /sessions/:id/workers (createWorker), used
+ * only by the "worker creation without session-updated" describe block below
+ * (Issue #1586). Other tests in this file never trigger a POST, so this
+ * default is never read outside that block.
+ */
+let createWorkerResponse: () => { worker: Worker } = () => {
+  throw new Error('createWorkerResponse not configured for this test')
+}
+
 const mockFetch = mock(async (input: RequestInfo | URL, init?: RequestInit) => {
   const url = input instanceof Request ? input.url : String(input)
   const method = (init?.method ?? (input instanceof Request ? input.method : 'GET')).toUpperCase()
@@ -62,6 +78,14 @@ const mockFetch = mock(async (input: RequestInfo | URL, init?: RequestInit) => {
       })
     }
     return new Response(JSON.stringify({ session: getSessionResponse }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    })
+  }
+
+  // POST /api/sessions/:sessionId/workers -> createWorker (real useTabManagement.addAgentTab path)
+  if (method === 'POST' && /\/sessions\/[^/]+\/workers$/.test(url)) {
+    return new Response(JSON.stringify(createWorkerResponse()), {
       status: 200,
       headers: { 'Content-Type': 'application/json' },
     })
@@ -166,6 +190,9 @@ describe('useSessionPageState', () => {
     capturedCallbacks = {}
     mockFetch.mockClear()
     getSessionResponse = null
+    createWorkerResponse = () => {
+      throw new Error('createWorkerResponse not configured for this test')
+    }
   })
 
   afterEach(() => {
@@ -1126,6 +1153,153 @@ describe('useSessionPageState', () => {
       })
 
       expect(result.current.lastMessage).toBeNull()
+    })
+  })
+
+  describe('worker creation without session-updated (Issue #1586)', () => {
+    // Reproduces the real production wiring SessionPage.tsx uses to break the
+    // circular dependency between the two hooks (see SessionPage.tsx's
+    // `updateTabsFromSessionRef` / `sessionActiveTabIdRef` comment), so that
+    // `addAgentTab`'s real fetch-driven POST and `useSessionPageState`'s real
+    // `session-updated` handling interact exactly as they do in production.
+    function useSessionPageAndTabs(sessionId: string) {
+      // `useRef` (not a plain object literal) is required here: the ref must
+      // keep a STABLE identity across re-renders of this combinator, because
+      // useSessionPageState's callbacks close over the ref object once (via
+      // useCallback) and read `.current` later, from inside a WS event
+      // handler -- exactly SessionPage.tsx's own `updateTabsFromSessionRef` /
+      // `sessionActiveTabIdRef` pattern (see SessionPage.tsx lines ~170-210).
+      // A fresh object per render would silently break that wiring.
+      const activeTabIdRef = useRef<string | null>(null)
+      const updateTabsFromSessionRef = useRef<(w: Worker[]) => void>(() => {})
+
+      const sessionPageState = useSessionPageState({
+        sessionId,
+        updateTabsFromSessionRef,
+        activeTabIdRef,
+      })
+
+      const activeSession = sessionPageState.state.type === 'active' ? sessionPageState.state.session : null
+
+      const tabManagement = useTabManagement({
+        sessionId,
+        activeSession,
+        urlWorkerId: undefined,
+        navigateToWorker: () => {},
+        navigateToSession: () => {},
+        showError: () => {},
+        workerActivityStates: sessionPageState.workerActivityStates,
+        setActivityState: sessionPageState.setActivityState,
+        setExitInfo: () => {},
+      })
+
+      activeTabIdRef.current = tabManagement.activeTabId
+      updateTabsFromSessionRef.current = tabManagement.updateTabsFromSession
+
+      return { sessionPageState, tabManagement }
+    }
+
+    it('does not add the new worker to session.workers from the tab-added response alone (no session-updated delivered)', async () => {
+      const initialSession = createMockSession({ status: 'active' })
+      getSessionResponse = initialSession
+
+      const newEmbeddedWorker: Worker = {
+        id: 'new-embedded-1',
+        type: 'embedded-agent',
+        name: 'Local GPT',
+        embeddedAgentId: 'embedded-def-1',
+        createdAt: new Date().toISOString(),
+        activated: false,
+        autoCompaction: true,
+        contextWindowTokens: 128_000,
+      }
+      createWorkerResponse = () => ({ worker: newEmbeddedWorker })
+
+      const { result } = renderHook(() => useSessionPageAndTabs('session-1'), {
+        wrapper: createContextWrapper(),
+      })
+
+      // Flush initial session load
+      await act(async () => {})
+      expect(result.current.sessionPageState.state.type).toBe('active')
+
+      // Real production path: useTabManagement.addAgentTab -> createWorker POST.
+      // No session-updated WS event is delivered as part of this sequence.
+      await act(async () => {
+        await result.current.tabManagement.addAgentTab({
+          type: 'embedded-agent',
+          embeddedAgentId: 'embedded-def-1',
+        })
+      })
+
+      // This is the stable architectural fact this test guards: the tab was
+      // added (activeTabId moved to the new worker) but session.workers --
+      // owned exclusively by useSessionPageState's session-updated handling
+      // -- is never touched by the tab-added response alone. R1 (server-side,
+      // worker-lifecycle-manager.ts) is what closes this gap by emitting a
+      // session-updated event after worker creation; this test pins the
+      // client-side half of the contract that R1 relies on (session.workers
+      // does NOT update itself from any other signal), so a future client
+      // change that starts mutating session.workers from addAgentTab's
+      // response directly -- reintroducing a second, inconsistent source of
+      // truth -- would break this pin.
+      expect(result.current.tabManagement.activeTabId).toBe('new-embedded-1')
+      const state = result.current.sessionPageState.state
+      const workers = state.type === 'active' ? state.session.workers : []
+      expect(workers.some(w => w.id === 'new-embedded-1')).toBe(false)
+    })
+
+    it('resolves the three embedded-agent derivations once session-updated delivers the new worker (Issue #1586)', async () => {
+      const initialSession = createMockSession({ status: 'active' })
+      getSessionResponse = initialSession
+
+      const newEmbeddedWorker: Worker = {
+        id: 'new-embedded-1',
+        type: 'embedded-agent',
+        name: 'Local GPT',
+        embeddedAgentId: 'embedded-def-1',
+        createdAt: new Date().toISOString(),
+        activated: false,
+        autoCompaction: true,
+        contextWindowTokens: 128_000,
+      }
+      createWorkerResponse = () => ({ worker: newEmbeddedWorker })
+
+      const { result } = renderHook(() => useSessionPageAndTabs('session-1'), {
+        wrapper: createContextWrapper(),
+      })
+
+      await act(async () => {})
+
+      await act(async () => {
+        await result.current.tabManagement.addAgentTab({
+          type: 'embedded-agent',
+          embeddedAgentId: 'embedded-def-1',
+        })
+      })
+
+      // Now deliver the session-updated event through the REAL app-WS message
+      // handling path (the captured onSessionUpdated callback registered by
+      // useSessionPageState's useAppWsEvent call), carrying the session with
+      // the new worker present in session.workers -- what R1 (server-side,
+      // worker-lifecycle-manager.ts createWorker) now emits after worker
+      // creation.
+      const updatedSession: Session = {
+        ...initialSession,
+        workers: [...initialSession.workers, newEmbeddedWorker],
+      }
+
+      act(() => {
+        capturedCallbacks.onSessionUpdated?.(updatedSession)
+      })
+
+      const state = result.current.sessionPageState.state
+      const workers = state.type === 'active' ? state.session.workers : []
+      expect(workers.some(w => w.id === 'new-embedded-1')).toBe(true)
+
+      expect(resolveActiveEmbeddedAgentId(workers, result.current.tabManagement.activeTabId)).toBe('embedded-def-1')
+      expect(resolveActiveEmbeddedAutoCompaction(workers, result.current.tabManagement.activeTabId)).toBe(true)
+      expect(resolveActiveEmbeddedContextWindowTokens(workers, result.current.tabManagement.activeTabId)).toBe(128_000)
     })
   })
 })
