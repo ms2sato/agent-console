@@ -1331,6 +1331,87 @@ describe('Workers API', () => {
       const body = (await res.json()) as { error: string };
       expect(body.error).toContain('Worker');
     });
+
+    it('routes a request body carrying embeddedAgentId to the cross-type conversion path', async () => {
+      const session = await sessionManager.createSession(
+        { type: 'quick', locationPath: '/test/path', agentId: 'claude-code' },
+        { createdBy: 'test-user-id' },
+      );
+      const worker = await sessionManager.createWorker(session.id, {
+        type: 'agent',
+        agentId: 'claude-code',
+      });
+      expect(worker).not.toBeNull();
+
+      const restartSpy = spyOn(sessionManager, 'restartAgentWorkerAsEmbedded');
+      const terminalRestartSpy = spyOn(sessionManager, 'restartAgentWorker');
+      try {
+        const res = await app.request(
+          `/api/sessions/${session.id}/workers/${worker!.id}/restart`,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ embeddedAgentId: 'agent-def-1' }),
+          }
+        );
+
+        expect(res.status).toBe(200);
+        const body = (await res.json()) as { worker: { type: string } };
+        expect(body.worker.type).toBe('embedded-agent');
+
+        expect(restartSpy).toHaveBeenCalledWith(session.id, worker!.id, 'agent-def-1', undefined);
+        expect(terminalRestartSpy).not.toHaveBeenCalled();
+      } finally {
+        restartSpy.mockRestore();
+        terminalRestartSpy.mockRestore();
+      }
+    });
+
+    it('rejects a body carrying both embeddedAgentId and continueConversation with 400 at the schema layer', async () => {
+      const session = await sessionManager.createSession(
+        { type: 'quick', locationPath: '/test/path', agentId: 'claude-code' },
+        { createdBy: 'test-user-id' },
+      );
+      const worker = await sessionManager.createWorker(session.id, {
+        type: 'agent',
+        agentId: 'claude-code',
+      });
+      expect(worker).not.toBeNull();
+
+      const res = await app.request(
+        `/api/sessions/${session.id}/workers/${worker!.id}/restart`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ embeddedAgentId: 'agent-def-1', continueConversation: true }),
+        }
+      );
+
+      expect(res.status).toBe(400);
+    });
+
+    it('rejects a body carrying both embeddedAgentId and agentId with 400 at the schema layer', async () => {
+      const session = await sessionManager.createSession(
+        { type: 'quick', locationPath: '/test/path', agentId: 'claude-code' },
+        { createdBy: 'test-user-id' },
+      );
+      const worker = await sessionManager.createWorker(session.id, {
+        type: 'agent',
+        agentId: 'claude-code',
+      });
+      expect(worker).not.toBeNull();
+
+      const res = await app.request(
+        `/api/sessions/${session.id}/workers/${worker!.id}/restart`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ embeddedAgentId: 'agent-def-1', agentId: 'claude-code' }),
+        }
+      );
+
+      expect(res.status).toBe(400);
+    });
   });
 
   // ===========================================================================

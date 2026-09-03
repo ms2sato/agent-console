@@ -76,6 +76,12 @@ export function SessionSettings({
         onOpenChange={(open) => !open && closeDialog()}
         sessionId={sessionId}
         currentAgentId={(session?.workers.find((w): w is AgentWorker => w.type === 'agent'))?.agentId}
+        // `undefined` while `session` hasn't loaded yet is not evidence of
+        // absence -- default to true (don't disable) until we actually know.
+        // Once loaded, true iff a PTY `agent` worker exists (#1171 R6(c)):
+        // an embedded-primary session has none, and restarting its primary
+        // worker isn't supported yet.
+        hasAgentWorker={session ? session.workers.some((w) => w.type === 'agent') : true}
         currentBranch={currentBranch}
         isWorktreeSession={true}
         onBranchChange={onBranchChange}

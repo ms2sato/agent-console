@@ -7,6 +7,7 @@ import {
   createWorker,
   deleteWorker,
   restartAgentWorker,
+  restartWorkerAsEmbeddedAgent,
   restartAllAgentWorkers,
   fetchRepositories,
   registerRepository,
@@ -285,6 +286,45 @@ describe('API Client', () => {
       const body = await getLastFetchBody();
       expect(body).toEqual({ continueConversation: false });
       expect(body).not.toHaveProperty('agentId');
+    });
+  });
+
+  describe('restartWorkerAsEmbeddedAgent (cross-type restart, #1171)', () => {
+    it('should restart a PTY agent worker as an embedded-agent worker', async () => {
+      const mockWorker = { worker: { id: 'worker-1', type: 'embedded-agent', name: 'Local GPT' } };
+      mockFetch.mockResolvedValue(createMockResponse(mockWorker));
+
+      const result = await restartWorkerAsEmbeddedAgent('session-id', 'worker-id', 'embedded-1');
+
+      expect(getLastFetchUrl()).toContain('/api/sessions/session-id/workers/worker-id/restart');
+      expect(getLastFetchMethod()).toBe('POST');
+      const body = await getLastFetchBody();
+      // Distinct wire shape from restartAgentWorker's: no continueConversation,
+      // no agentId -- EmbeddedRestartSchema structurally rejects both.
+      expect(body).toEqual({ embeddedAgentId: 'embedded-1' });
+      expect(body).not.toHaveProperty('continueConversation');
+      expect(body).not.toHaveProperty('agentId');
+      expect(result).toEqual(mockWorker);
+    });
+
+    it('should pass branch when provided', async () => {
+      const mockWorker = { worker: { id: 'worker-1', type: 'embedded-agent', name: 'Local GPT' } };
+      mockFetch.mockResolvedValue(createMockResponse(mockWorker));
+
+      await restartWorkerAsEmbeddedAgent('session-id', 'worker-id', 'embedded-1', 'feat/new-branch');
+
+      const body = await getLastFetchBody();
+      expect(body).toEqual({ embeddedAgentId: 'embedded-1', branch: 'feat/new-branch' });
+    });
+
+    it('should not include branch when not provided', async () => {
+      const mockWorker = { worker: { id: 'worker-1', type: 'embedded-agent', name: 'Local GPT' } };
+      mockFetch.mockResolvedValue(createMockResponse(mockWorker));
+
+      await restartWorkerAsEmbeddedAgent('session-id', 'worker-id', 'embedded-1');
+
+      const body = await getLastFetchBody();
+      expect(body).not.toHaveProperty('branch');
     });
   });
 

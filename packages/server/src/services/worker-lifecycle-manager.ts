@@ -100,6 +100,16 @@ export interface WorkerLifecycleDeps {
    * A no-op for a worker that was never activated.
    */
   deactivateEmbeddedAgentWorker: (sessionId: string, workerId: string) => Promise<void>;
+  /**
+   * Activate an embedded-agent worker's subprocess (spawn + init handshake).
+   * Called from restartAgentWorkerAsEmbedded after the worker is initialized,
+   * persisted, and every restart broadcast has fired -- the converted worker
+   * is activated immediately rather than left dormant. Throws on failure; the
+   * caller does not catch it (the worker stays a dormant, persisted
+   * embedded-agent worker on activation failure -- see that method's
+   * doc comment).
+   */
+  activateEmbeddedAgentWorker: (sessionId: string, workerId: string) => Promise<void>;
   notificationManager: NotificationManager | null;
   pathExists: (path: string) => Promise<boolean>;
   getSession: (sessionId: string) => InternalSession | undefined;
@@ -664,6 +674,11 @@ export class WorkerLifecycleManager {
     const workerCreatedAt = existingWorker.createdAt;
     const locationPath = session.locationPath;
 
+    // Resolve the path resolver before killing anything -- getPathResolver
+    // can throw for an orphaned session (its own JSDoc), so this fallible
+    // prerequisite must be resolved before the destructive kill below.
+    const resolver = this.deps.getPathResolver(session);
+
     // Kill existing worker
     await this.deps.workerManager.killWorker(existingWorker, sessionId);
 
@@ -671,7 +686,6 @@ export class WorkerLifecycleManager {
     // mints a NEW generation epoch (the stream restarts at 0 under a new
     // generation); the new worker object must carry it so `output` messages and
     // `history` responses agree (§3.4 / §4.5).
-    const resolver = this.deps.getPathResolver(session);
     const newEpoch = await this.deps.workerOutputFileManager.resetWorkerOutput(sessionId, workerId, resolver);
 
     // Create new worker with same ID, preserving original createdAt for tab order
@@ -761,6 +775,246 @@ export class WorkerLifecycleManager {
       { workerId, sessionId, startupPreference, startupIntent, agentId: workerAgentId, previousAgentId: existingWorker.agentId, branch },
       restartReason
     );
+
+    return this.deps.workerManager.toPublicWorker(newWorker);
+  }
+
+  /**
+   * Restart a PTY `agent` worker AS an embedded-agent worker: same worker
+   * slot/tab, same `workerId`, but the underlying mechanism flips from PTY
+   * subprocess to embedded-agent subprocess. This is a conversion, not a
+   * same-kind restart -- see `restartAgentWorker` for the PTY->PTY case,
+   * whose body this method does not modify or call into.
+   *
+   * Call order is load-bearing (mirrors, and diverges from, restartAgentWorker
+   * where noted):
+   *   1. Resolve + validate the embedded-agent definition FIRST, before
+   *      touching the existing PTY worker at all -- an unknown embeddedAgentId
+   *      must leave the PTY worker completely untouched.
+   *   2. Branch rename (identical block to restartAgentWorker's).
+   *   3. Resolve the path resolver -- getPathResolver can throw for an
+   *      orphaned session (its own JSDoc). Resolving it here, alongside the
+   *      worker-metadata capture and before the kill in step 4, means this
+   *      second fallible prerequisite is settled before the destructive PTY
+   *      kill happens, same discipline as step 1's definition validation.
+   *   4. Kill the existing PTY worker -- this also revokes its MCP token and
+   *      deletes its prompt file (killWorker's own contract for
+   *      worker.type === 'agent'). Steps 1-3 are the only fallible
+   *      prerequisites; nothing after this point can leave the PTY worker
+   *      un-killed.
+   *   5. DELETE the output file (content AND manifest) rather than merely
+   *      resetting it -- the embedded worker's NDJSON log and the PTY
+   *      worker's raw terminal bytes share the same on-disk path, so any
+   *      leftover content or manifest before the embedded worker's first
+   *      activation is wrong for it. A plain reset is not enough: it re-mints
+   *      the manifest in place, and `EmbeddedAgentWorkerService.activate`'s
+   *      `hasEverBeenActivated` check is keyed on manifest EXISTENCE, not
+   *      content -- a re-minted-but-present manifest from the PTY worker's
+   *      own original creation (every PTY worker's `initializeWorkerOutput`
+   *      writes one at creation time, long before any conversion) makes the
+   *      embedded engine take its "attempt restore" branch on an empty
+   *      stream, which throws a spurious read-failure and reports
+   *      `getEmbeddedAgentRestoreInfo` as `failed: true` on what is actually
+   *      a first-ever activation. Deleting the manifest outright (the same
+   *      operation `deleteWorkerOutput` already performs for worker
+   *      deletion) makes `hasEverBeenActivated` correctly read false, so
+   *      `activate()` takes its OWN "first-ever activation, nothing to
+   *      restore" branch and mints the fresh epoch + manifest itself.
+   *      NON-FATAL: the PTY worker is already dead (step 4), so aborting here
+   *      would strand the worker mid-conversion with no PTY and no embedded
+   *      worker either. A failure is logged and the method continues -- at
+   *      worst a stale manifest surfaces later as a declared restore-failure
+   *      marker (visible and recoverable), never silent corruption.
+   *   6. Clear NotificationManager's per-worker state for this identity
+   *      (previousState, pending debounce timer) before the embedded worker
+   *      exists. The identity (sessionId:workerId) is reused across the type
+   *      flip, but NotificationManager keys its state on identity alone, so
+   *      without this a pending PTY-side debounce timer could fire after
+   *      conversion, or stale retained state could suppress the embedded
+   *      worker's first notification. restartAgentWorker (PTY->PTY) does not
+   *      do this -- it keeps the same worker kind throughout, so there is no
+   *      state to invalidate. Unconditional: runs whether or not step 5
+   *      succeeded.
+   *   7. Initialize the embedded-agent worker (identity fields per R2: same
+   *      workerId/createdAt, regenerated name, carried-over
+   *      deliverInitialPromptOnActivation, no model/reasoningEffort/
+   *      contextWindowTokens override -- always a different kind of
+   *      definition). No epoch to adopt here (see step 5) -- the worker
+   *      keeps whatever placeholder `initializeEmbeddedAgentWorker` assigns;
+   *      `activate()`'s first-activation branch overwrites it before any
+   *      client-visible output flows, and `epoch` is never part of the
+   *      public worker shape, so the transient value is not observable. This
+   *      is synchronous construction and cannot fail, so it stays after the
+   *      kill.
+   *   8. Re-check the session still exists (async-gap TOCTOU guard). Unlike
+   *      restartAgentWorker's PTY->PTY path, there is nothing to kill here on
+   *      the deleted-session branch: the new embedded worker was never
+   *      activated (no subprocess, no MCP token minted yet).
+   *   9. Persist. If this throws, no special handling is added: the in-memory
+   *      map already holds the new embedded worker (set immediately before
+   *      this call, same as restartAgentWorker's identical window at its own
+   *      persistSession call), onSessionUpdated has not fired yet, and the
+   *      error propagates to the caller as-is -- the DB catches up at the
+   *      next persist.
+   *   10. onSessionUpdated -- fired UNCONDITIONALLY (unlike restartAgentWorker's
+   *       isAgentChanged/hasBranchChange-gated call): the worker's TYPE
+   *       changed, every client must re-render the tab regardless of whether
+   *       branch also changed.
+   *   11. onWorkerRestarted (closes the old worker's PTY sockets client-side).
+   *   12. Activate the new embedded-agent worker immediately. If this throws,
+   *       it propagates to the caller as-is -- the worker stays a dormant,
+   *       persisted embedded-agent worker (already flipped to type
+   *       'embedded-agent' in step 9); this method does NOT attempt to
+   *       resurrect the killed PTY worker.
+   *
+   * Returns null when the session doesn't exist, the target worker doesn't
+   * exist or isn't a PTY `agent` worker (e.g. it's already 'terminal' or
+   * already 'embedded-agent' -- reverse/repeat conversion is out of scope),
+   * or the session was deleted during the async gap.
+   */
+  async restartAgentWorkerAsEmbedded(
+    sessionId: string,
+    workerId: string,
+    embeddedAgentId: string,
+    branch?: string,
+  ): Promise<Worker | null> {
+    const session = this.deps.getSession(sessionId);
+    if (!session) return null;
+
+    const existingWorker = session.workers.get(workerId);
+    if (!existingWorker || existingWorker.type !== 'agent') return null;
+
+    // Resolve and validate the embedded-agent definition FIRST, before
+    // touching anything -- mirrors createWorker's embedded branch (validate
+    // before any initialize/persist).
+    const embeddedAgentDefinition = this.deps.embeddedAgentManager.getEmbeddedAgent(embeddedAgentId);
+    if (!embeddedAgentDefinition) {
+      throw new ValidationError(`Embedded agent definition not found: ${embeddedAgentId}`);
+    }
+
+    // Handle branch rename if requested (must happen before restart) --
+    // identical block to restartAgentWorker's.
+    if (branch && session.type === 'worktree') {
+      try {
+        const currentBranch = await gitGetCurrentBranch(session.locationPath);
+        if (currentBranch !== branch) {
+          await gitRenameBranch(currentBranch, branch, session.locationPath);
+        }
+        session.worktreeId = branch;
+      } catch (err) {
+        logger.error(
+          { sessionId, workerId, branch, locationPath: session.locationPath, err },
+          'Failed to rename branch during worker restart'
+        );
+        throw err;
+      }
+
+      // Update git-diff workers' base commit after successful branch rename.
+      // This is a secondary concern - failure should not abort the restart.
+      try {
+        await this.updateGitDiffWorkersAfterBranchRename(sessionId);
+      } catch (err) {
+        logger.error(
+          { sessionId, err },
+          'Failed to update git-diff workers after branch rename'
+        );
+      }
+    }
+
+    // Capture worker metadata before killing (needed for new worker creation).
+    const workerName = this.generateWorkerName(session, 'embedded-agent', undefined, embeddedAgentDefinition.name);
+    const workerCreatedAt = existingWorker.createdAt;
+
+    // Resolve the path resolver before killing anything -- getPathResolver
+    // can throw for an orphaned session (its own JSDoc), so this fallible
+    // prerequisite must be resolved before the destructive kill below.
+    const resolver = this.deps.getPathResolver(session);
+
+    // Kill existing PTY worker. This also revokes its MCP token and deletes
+    // its prompt file (killWorker's contract for worker.type === 'agent').
+    await this.deps.workerManager.killWorker(existingWorker, sessionId);
+
+    // Delete the output file (content AND manifest) entirely -- see the
+    // method doc comment's step 5 for why a plain resetWorkerOutput is not
+    // enough. This is the SAME operation deleteWorkerOutput already performs
+    // for worker deletion; here it clears the way for the embedded engine's
+    // own "first-ever activation" bootstrap to run cleanly.
+    //
+    // NON-FATAL: the PTY worker is already dead at this point, so a failure
+    // here must not abort the conversion -- there would be nothing left to
+    // recover to. Log and continue; a stale manifest surfaces later (if at
+    // all) as a declared restore-failure marker, not silent corruption.
+    try {
+      await this.deps.workerOutputFileManager.deleteWorkerOutput(sessionId, workerId, resolver);
+    } catch (err) {
+      logger.warn(
+        { sessionId, workerId, err },
+        'Failed to delete PTY worker output before embedded-agent conversion; continuing',
+      );
+    }
+
+    // Clear any per-worker notification state left over from the PTY side of
+    // this identity (previousState, pending debounce timer) before the
+    // embedded-agent replacement is created. The identity (sessionId:workerId)
+    // is reused across the type flip, but NotificationManager's state is
+    // keyed on identity only, so without this a pending PTY-side debounce
+    // timer could fire post-conversion, or stale retained state could
+    // suppress the embedded worker's first notification. restartAgentWorker
+    // (PTY->PTY) does not call this -- it keeps the same worker kind
+    // throughout, so there is no state to invalidate.
+    this.deps.notificationManager?.cleanupWorker(sessionId, workerId);
+
+    // Create the new embedded-agent worker with the same id, preserving
+    // original createdAt for tab order.
+    const newWorker = this.deps.workerManager.initializeEmbeddedAgentWorker({
+      id: workerId,
+      name: workerName,
+      createdAt: workerCreatedAt,
+      embeddedAgentId,
+      // Eligibility carries over unchanged across conversion -- it is a
+      // property of "is this the session's initial worker", which
+      // conversion does not change. NOT recomputed.
+      deliverInitialPromptOnActivation: existingWorker.deliverInitialPromptOnActivation,
+      // No model/reasoningEffort/contextWindowTokens carry-over: this is
+      // always a conversion to a different kind of definition, so there is
+      // no valid override to preserve (agent-surface.md Ruling 3 precedent).
+    });
+
+    // Re-check session still exists after the async gap above. Unlike
+    // restartAgentWorker's PTY->PTY path, there is nothing to kill here on
+    // the deleted-session branch: the new embedded worker was never
+    // activated (no subprocess spawned, no MCP token minted).
+    const currentSession = this.deps.getSession(sessionId);
+    if (!currentSession) {
+      logger.warn(
+        { sessionId, workerId },
+        'Session deleted during worker restart, discarding new embedded-agent worker'
+      );
+      return null;
+    }
+
+    currentSession.workers.set(workerId, newWorker);
+    await this.deps.persistSession(currentSession);
+
+    // Unlike restartAgentWorker's conditional broadcast, this ALWAYS
+    // notifies: the worker's TYPE changed, so every client must re-render
+    // the tab regardless of whether branch also changed.
+    this.deps.getSessionLifecycleCallbacks()?.onSessionUpdated?.(this.deps.toPublicSession(currentSession));
+
+    // Always notify that worker was restarted (closes old PTY sockets client-side).
+    const activityState = this.getWorkerActivityState(sessionId, workerId) ?? 'unknown';
+    this.deps.getSessionLifecycleCallbacks()?.onWorkerRestarted?.(sessionId, workerId, activityState);
+
+    logger.info(
+      { workerId, sessionId, embeddedAgentId, previousAgentId: existingWorker.agentId, branch },
+      'Agent worker converted to embedded-agent worker via restart'
+    );
+
+    // Activate immediately -- don't leave the converted worker dormant. If
+    // this throws, it propagates to the caller: the worker stays persisted
+    // as a dormant embedded-agent worker (already flipped above), never
+    // reverted to PTY.
+    await this.deps.activateEmbeddedAgentWorker(sessionId, workerId);
 
     return this.deps.workerManager.toPublicWorker(newWorker);
   }
