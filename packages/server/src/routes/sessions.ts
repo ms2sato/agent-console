@@ -11,6 +11,7 @@ import { ForbiddenError, InternalError, NotFoundError, ValidationError } from '.
 import { vValidator, vQueryValidator } from '../middleware/validation.js';
 import { getOrgRepoFromPath } from '../lib/git.js';
 import { resolveSpawnUsername } from '../services/resolve-spawn-username.js';
+import { serverConfig } from '../lib/server-config.js';
 import type { AppBindings } from '../app-context.js';
 
 const sessions = new Hono<AppBindings>()
@@ -122,12 +123,14 @@ const sessions = new Hono<AppBindings>()
     return c.json({ content });
   })
   // Write (or delete, on empty content) the memo for a session.
-  // Ownership: the authenticated user must be the session's owner, or the
-  // session must be a shared session (any authenticated user may write to a
-  // shared session's memo). This single check is correct for both
-  // single-user and multi-user mode -- see embedded-agents.ts's PATCH /:id
-  // for the precedent ("In single-user mode there is only one user id, so
-  // the check is trivially satisfied").
+  // Ownership: the check below only runs when AUTH_MODE === 'multi-user'.
+  // In single-user mode (AUTH_MODE === 'none') the check is skipped entirely
+  // -- that is what makes legacy / creator-less sessions (`createdBy`
+  // `undefined`, e.g. rows persisted before this column existed) writable
+  // there. `createdBy` is nullable in the DB (see mappers.ts), so an
+  // unconditional `isOwner`/`isSharedSession` check would 403 the single-user
+  // owner on their own such sessions -- see docs/design/session-worker-design.md#session-memo
+  // for the full ruling (R5).
   .put('/:id/memo', vValidator(UpdateSessionMemoRequestSchema), async (c) => {
     const sessionId = c.req.param('id');
     const body = c.req.valid('json');
@@ -141,7 +144,7 @@ const sessions = new Hono<AppBindings>()
 
     const isOwner = session.createdBy === authUser.id;
     const isSharedSession = session.createdBy != null && sharedAccountRegistry.isSharedUserId(session.createdBy);
-    if (!isOwner && !isSharedSession) {
+    if (serverConfig.AUTH_MODE === 'multi-user' && !isOwner && !isSharedSession) {
       throw new ForbiddenError('Only the session owner can write this memo');
     }
 

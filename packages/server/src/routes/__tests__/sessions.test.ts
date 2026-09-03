@@ -21,6 +21,7 @@ import { JsonSessionRepository } from '../../repositories/index.js';
 import { TEST_AUTH_USER } from '../../__tests__/test-utils.js';
 import { McpTokenRegistry } from '../../mcp/mcp-auth.js';
 import { AgentDirectory } from '../../services/agent-directory.js';
+import { serverConfig } from '../../lib/server-config.js';
 
 // Test config directory
 const TEST_CONFIG_DIR = '/test/config';
@@ -1048,12 +1049,23 @@ describe('Sessions API - PUT /api/sessions/:id/memo (Issue #1569)', () => {
     await setupCommon({ sharedEnabled: false });
     const sessionId = await createQuickSession('someone-else-id');
 
-    const res = await app.request(`/api/sessions/${sessionId}/memo`, {
-      method: 'PUT',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ content: 'hi' }),
-    });
-    expect(res.status).toBe(403);
+    // The ownership check is gated on AUTH_MODE === 'multi-user' (Issue
+    // #1569 R5 fix); set it explicitly so this test actually exercises the
+    // scenario its name describes, rather than relying on whatever mode
+    // happens to be active by default (single-user, which would skip the
+    // check entirely and return 200).
+    const originalAuthMode = serverConfig.AUTH_MODE;
+    (serverConfig as { AUTH_MODE: string }).AUTH_MODE = 'multi-user';
+    try {
+      const res = await app.request(`/api/sessions/${sessionId}/memo`, {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ content: 'hi' }),
+      });
+      expect(res.status).toBe(403);
+    } finally {
+      (serverConfig as { AUTH_MODE: string }).AUTH_MODE = originalAuthMode;
+    }
   });
 
   it('multi-user owner: 200 when session createdBy === authUser.id (normal case, mode stated explicitly)', async () => {
@@ -1082,6 +1094,53 @@ describe('Sessions API - PUT /api/sessions/:id/memo (Issue #1569)', () => {
     });
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ content: 'shared content' });
+  });
+
+  // The check below only runs under AUTH_MODE === 'multi-user'
+  // (route-level fix for the regression these two tests guard: the check
+  // used to run unconditionally, so a legacy/ownerless session -- createdBy
+  // undefined, e.g. a row persisted before this column existed -- 403'd its
+  // own single-user owner). `serverConfig` is a plain (non-frozen) object
+  // despite its `as const` TS typing, so a direct property mutation is a
+  // real runtime override, not a no-op -- the route reads
+  // `serverConfig.AUTH_MODE` live inside the handler on every request.
+  it('single-user mode: createdBy undefined (legacy/ownerless session) -> 200 despite not matching authUser.id', async () => {
+    await setupCommon({ sharedEnabled: false });
+    const session = await sessionManager.createSession({ type: 'quick', locationPath: '/test/path' });
+    expect(session.createdBy).toBeUndefined();
+
+    const originalAuthMode = serverConfig.AUTH_MODE;
+    (serverConfig as { AUTH_MODE: string }).AUTH_MODE = 'none';
+    try {
+      const res = await app.request(`/api/sessions/${session.id}/memo`, {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ content: 'legacy session content' }),
+      });
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ content: 'legacy session content' });
+    } finally {
+      (serverConfig as { AUTH_MODE: string }).AUTH_MODE = originalAuthMode;
+    }
+  });
+
+  it('multi-user, createdBy undefined (legacy/ownerless session), not shared -> 403 (legacy row stays protected in multi-user mode)', async () => {
+    await setupCommon({ sharedEnabled: false });
+    const session = await sessionManager.createSession({ type: 'quick', locationPath: '/test/path' });
+    expect(session.createdBy).toBeUndefined();
+
+    const originalAuthMode = serverConfig.AUTH_MODE;
+    (serverConfig as { AUTH_MODE: string }).AUTH_MODE = 'multi-user';
+    try {
+      const res = await app.request(`/api/sessions/${session.id}/memo`, {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ content: 'hi' }),
+      });
+      expect(res.status).toBe(403);
+    } finally {
+      (serverConfig as { AUTH_MODE: string }).AUTH_MODE = originalAuthMode;
+    }
   });
 
   it('fires the memo-updated broadcast with the written content on a successful PUT', async () => {

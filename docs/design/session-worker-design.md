@@ -389,14 +389,18 @@ full concept summary). Two REST endpoints expose it:
 | GET | `/api/sessions/:id/memo` | Read the session's memo. `{ content: string \| null }` -- `null` means no memo exists. |
 | PUT | `/api/sessions/:id/memo` | Write (or delete) the session's memo. Body: `{ content: string }` (`UpdateSessionMemoRequestSchema`). Response: `{ content: string \| null }`, same shape as GET. |
 
-**Ownership (Issue #1569, R5).** `PUT` requires the authenticated user to be
-either the session's owner (`session.createdBy === authUser.id`) or, for a
+**Ownership (Issue #1569, R5).** The ownership check only runs when
+`AUTH_MODE === 'multi-user'`. There, `PUT` requires the authenticated user to
+be either the session's owner (`session.createdBy === authUser.id`) or, for a
 [SharedSession](../glossary.md#sharedsession), any authenticated user
-(`sharedAccountRegistry.isSharedUserId(session.createdBy)`). Otherwise the
-route returns 403. This is a single check with no `AUTH_MODE` branch --
-single-user mode's `authUser.id` trivially equals every session's
-`createdBy`, so the same code path is correct in both modes (same precedent
-as `PATCH /api/embedded-agents/:id`'s creator-only check).
+(`sharedAccountRegistry.isSharedUserId(session.createdBy)`); otherwise the
+route returns 403. In single-user mode (`AUTH_MODE === 'none'`) the check is
+skipped entirely -- `session.createdBy` is nullable (a legacy or
+creator-less session persists it as `undefined`, see
+`packages/server/src/database/mappers.ts`), so an unconditional check would
+403 the single-user owner on their own such sessions instead of trivially
+passing. Skipping the check in single-user mode is what actually makes those
+sessions writable there, not an equality that happens to always hold.
 
 **Empty-content deletes (R4).** A `PUT` whose `content.trim()` is empty
 after trimming deletes the memo file (via `SessionManager.deleteMemo`)
