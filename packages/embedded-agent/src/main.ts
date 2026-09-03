@@ -24,8 +24,6 @@ import {
   assembleSystemPrompt,
   composeSdkSystemPromptAppend,
   loadInstructions,
-  loadOptInInstructions,
-  type InstructionSegment,
   type LoadInstructionsParams,
   type LoadInstructionsResult,
 } from './system-prompt.js';
@@ -101,14 +99,12 @@ export interface McpClientLike extends ToolExecutor {
 export interface LoopFactories {
   createMcpClient(): McpClientLike;
   createAdapter(opts: { baseUrl: string; apiKey?: string }): ProviderAdapter;
+  /** Both engines' single instruction-loading seam as of Phase A (#1343)
+   * (R1) -- the claude-sdk engine no longer has a separate opt-in-only
+   * factory; `loadOptInInstructions` is no longer a member of this interface,
+   * which makes the old SDK-arm call path structurally uncallable rather than
+   * merely untested (see main.test.ts's polarity pin). */
   loadInstructions(params: LoadInstructionsParams): Promise<LoadInstructionsResult>;
-  /** DI seam for the claude-sdk engine's opt-in `instructions[]` layer only
-   * (no AGENTS.md/CLAUDE.md auto-discovery -- see system-prompt.ts's
-   * `loadOptInInstructions` doc comment). Defaults to `loadOptInInstructions`. */
-  loadOptInInstructions(
-    cwd: string,
-    instructionsList: string[] | undefined,
-  ): Promise<InstructionSegment[]>;
   loadCompactionPrompt: typeof loadCompactionPrompt;
   /** DI seam for tests: the claude-sdk engine's construction (which
    * synchronously calls the real SDK's `query()`), so a test can inject a
@@ -398,20 +394,26 @@ async function initializeLoop(
   // the live-probed finding this decouples from. Unlike the openai-api
   // branch above, this function does not emit `ready` itself for this arm.
   //
-  // Instruction loader (§4's compatibility matrix, corrected): the SDK's own
-  // AGENTS.md/CLAUDE.md auto-discovery is deliberately disabled (never runs
-  // for this engine -- see the design doc's corrected row). Only the
-  // definition's explicit opt-in `instructions[]` list is honored, loaded
-  // here (this function is already async, same shape as the openai-api
-  // branch's own `loadInstructions` call above) and composed into the SDK's
-  // `systemPrompt.append` alongside the definition system prompt, BEFORE
-  // `SdkEngine` is constructed -- `SdkEngine`'s constructor stays fully
-  // synchronous (it calls the SDK's own `query()` immediately), so the
+  // Instruction loader (Phase A, R1 -- supersedes the §4
+  // compatibility matrix's original "opt-in instructions[] only" row): the
+  // SDK's own NATIVE settings-derived discovery stays disabled
+  // (`settingSources: []`, unchanged by this PR -- see sdk-engine.ts's
+  // `buildOptions`), but this engine now calls the SAME `loadInstructions`
+  // the openai-api branch above does -- global layer, chain (git-root-to-cwd
+  // AGENTS.md/CLAUDE.md), opt-in `instructions[]`, and the `.claude/rules`
+  // layer -- loaded here (this function is already async, same shape as the
+  // openai-api branch's own `loadInstructions` call above) and composed into
+  // the SDK's `systemPrompt.append` alongside the definition system prompt,
+  // BEFORE `SdkEngine` is constructed -- `SdkEngine`'s constructor stays
+  // fully synchronous (it calls the SDK's own `query()` immediately), so the
   // already-loaded content is passed in as a plain string rather than a file
   // list for the engine to read itself.
   try {
-    const optInSegments = await factories.loadOptInInstructions(init.context.cwd, init.instructions);
-    const systemPromptAppend = composeSdkSystemPromptAppend(optInSegments, init.systemPrompt);
+    const instructions = await factories.loadInstructions({
+      cwd: init.context.cwd,
+      instructionsList: init.instructions,
+    });
+    const systemPromptAppend = composeSdkSystemPromptAppend(instructions, init.systemPrompt);
 
     // Transcript Restore, R1: pre-flight the resume id before constructing.
     // A resume the SDK will refuse does not fail at construction -- it fails
@@ -498,7 +500,15 @@ async function gracefulExit(
 async function* readStdinLines(): AsyncIterable<string> {
   const splitter = new NdjsonLineSplitter();
   const decoder = new TextDecoder();
-  for await (const chunk of Bun.stdin.stream()) {
+  // Cast: packages/integration's tsconfig adds the DOM lib (for
+  // React/happy-dom), and DOM's own ReadableStream type doesn't declare
+  // [Symbol.asyncIterator] the way Bun's lib does -- once this file became
+  // reachable from a packages/integration test (Phase A's
+  // subprocess-boundary integration case), tsc's merged lib type lost the
+  // async-iterator signature here even though nothing about runtime
+  // behavior changed. Purely a cross-package typing artifact.
+  const stdin = Bun.stdin.stream() as unknown as AsyncIterable<Uint8Array>;
+  for await (const chunk of stdin) {
     const { lines } = splitter.push(decoder.decode(chunk, { stream: true }));
     for (const line of lines) yield line;
   }
@@ -520,7 +530,6 @@ if (import.meta.main) {
     createMcpClient: () => new McpToolClient(),
     createAdapter: (opts) => new OpenAIChatAdapter(opts),
     loadInstructions,
-    loadOptInInstructions,
     loadCompactionPrompt,
     createSdkEngine: (deps) => new SdkEngine(deps),
     probeSdkSession,

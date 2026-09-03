@@ -41,14 +41,16 @@ export const claudeSdkAgent: EmbeddedAgentDefinition = {
   createdBy: CLAUDE_SDK_AGENT_CREATED_BY,
   createdAt: new Date(0).toISOString(), // Epoch time for built-in, matching claude-code.ts's convention
   updatedAt: new Date(0).toISOString(),
-  // The ONLY way (Phase 1) CLAUDE.md content reaches this engine's context:
-  // the SDK's own native CLAUDE.md auto-discovery is disabled via
-  // `settingSources: []` (see docs/design/embedded-agent-sdk-engine.md §4.2),
-  // so this opt-in `instructions[]` entry is what main.ts's `claude-sdk` init
-  // arm resolves (via `loadOptInInstructions`, confined to the worker's cwd)
-  // and composes into `systemPrompt.append`. A worktree with no CLAUDE.md is
-  // handled gracefully -- `loadOptInInstructions` skips a missing file with a
-  // warning, not an error. AGENTS.md is deliberately NOT included here; it
-  // can be added later if requested.
-  instructions: ['CLAUDE.md'],
+  // No `instructions[]` opt-in entry (Phase A, R1). Before this
+  // PR, this builtin baked `instructions: ['CLAUDE.md']` because that was the
+  // ONLY way project-instruction content reached this engine's context --
+  // the SDK's own native discovery is disabled via `settingSources: []` (see
+  // docs/design/embedded-agent-sdk-engine.md §4.2), and this engine's init
+  // arm resolved only that one opt-in file. As of Phase A, `main.ts`'s
+  // `claude-sdk` init arm calls the SAME `loadInstructions` the openai-api
+  // engine uses -- global layer, the git-root-to-cwd AGENTS.md/CLAUDE.md
+  // chain, and the `.claude/rules` layer -- so CLAUDE.md (and AGENTS.md) are
+  // now discovered automatically without needing a per-definition opt-in
+  // entry. A worktree with no CLAUDE.md/AGENTS.md is handled gracefully by
+  // that loader either way.
 };

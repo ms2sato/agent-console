@@ -2,14 +2,18 @@
  * System-prompt assembly for the embedded-agent loop.
  *
  * The prompt is assembled once per activation. `loadInstructions` discovers
- * instruction files across three layers -- global (`~/.config/agent-console`),
- * chain (git root down to cwd), and cwd (the chain's tail) -- plus an opt-in
- * `EmbeddedAgentDefinition.instructions` file list, then `assembleSystemPrompt`
- * concatenates: (1) context preamble -> (2) discovered/opt-in instruction
- * segments, in discovery order -> (3) the operator-configured definition
- * system prompt (last, so it wins on conflict).
+ * instruction files across FOUR layers -- global (`~/.config/agent-console`),
+ * chain (git root down to cwd), an opt-in `EmbeddedAgentDefinition.instructions`
+ * file list, and the `.claude/rules/*.md` rules layer (unscoped rules included,
+ * scoped rules listed in an index line only -- see `loadRulesLayer` below) --
+ * then `assembleSystemPrompt` concatenates: (1) context preamble -> (2)
+ * discovered/opt-in instruction segments, in discovery order -> (3) the rules
+ * layer -> (4) the operator-configured definition system prompt (last, so it
+ * wins on conflict). Used identically by both engines (claude-sdk composes
+ * the same layers via `composeSdkSystemPromptAppend`, minus the preamble --
+ * see its doc comment).
  *
- * See docs/design/embedded-agent-worker.md "AGENTS.md loader" for the
+ * See docs/design/embedded-agent-worker.md "Instruction loader" for the
  * normative spec (discovery order, caps, overflow-drop policy).
  */
 
@@ -22,6 +26,15 @@ import { isErrnoException } from './type-guards.js';
 
 export const INSTRUCTION_PER_FILE_CAP_BYTES = 16 * 1024;
 export const INSTRUCTION_AGGREGATE_CAP_BYTES = 48 * 1024;
+/**
+ * Separate from {@link INSTRUCTION_AGGREGATE_CAP_BYTES}: rules are never
+ * truncated mid-file (R3, Phase A) -- a half rule is worse than
+ * none -- so overflow is handled by dropping whole files largest-first
+ * instead of shrinking survivors. Default sized for this repo's own
+ * unscoped-rules total (121 KB as of 2026-09-03) plus headroom; env-overridable
+ * for repos with a different rules footprint.
+ */
+export const RULES_LAYER_CAP_BYTES = Number(process.env.RULES_LAYER_CAP_BYTES) || 160 * 1024;
 
 const encoder = new TextEncoder();
 
@@ -53,6 +66,29 @@ export interface LoadInstructionsParams {
 export interface LoadInstructionsResult {
   /** Final, capped, overflow-trimmed segments, in concatenation order. */
   segments: InstructionSegment[];
+  /**
+   * R2/R3: unscoped `.claude/rules/*.md` content (no `paths:`/`globs:`
+   * frontmatter), included eagerly -- sorted by file name, never
+   * per-file-truncated, whole-file-dropped largest-first under
+   * {@link RULES_LAYER_CAP_BYTES} when over budget. Optional on this type
+   * only so hand-built test fixtures that don't care about the rules layer
+   * can omit it (treated as `[]`); the real `loadInstructions` always
+   * populates it.
+   */
+  ruleSegments?: InstructionSegment[];
+  /**
+   * R3: declares, in-band, which unscoped rule files were dropped whole to
+   * satisfy {@link RULES_LAYER_CAP_BYTES}. `undefined` when nothing was
+   * dropped (including "no rules directory at all").
+   */
+  ruleOmissionLine?: string;
+  /**
+   * R2: one line listing path-scoped rules (name + globs) that exist but are
+   * NOT included above -- Phase B activates them lazily on a matching tool
+   * call. `undefined` when there are no scoped rules (no `.claude/rules`
+   * directory, or every rule found is unscoped).
+   */
+  ruleIndexLine?: string;
 }
 
 export interface AssembleSystemPromptParams {
@@ -91,10 +127,40 @@ export function formatInstructionSegments(segments: InstructionSegment[]): strin
   return segments.map((segment) => `--- Instructions: ${segment.origin} ---\n${segment.content}`);
 }
 
-export function assembleSystemPrompt(params: AssembleSystemPromptParams): string {
-  const sections: string[] = [buildPreamble(params.context)];
+/**
+ * Formats rule segments the same way, under a distinct `--- Rule: ... ---`
+ * header so the model can tell an unscoped project rule apart from an
+ * instruction file.
+ */
+export function formatRuleSegments(segments: InstructionSegment[]): string[] {
+  return segments.map((segment) => `--- Rule: ${segment.origin} ---\n${segment.content}`);
+}
 
-  sections.push(...formatInstructionSegments(params.instructions.segments));
+/**
+ * The section list both `assembleSystemPrompt` and `composeSdkSystemPromptAppend`
+ * concatenate for the instructions+rules body -- everything `loadInstructions`
+ * produces except the preamble (caller-specific) and the definition system
+ * prompt (appended by each caller after this, so it always wins on conflict).
+ * Single writer of this ordering: instruction segments, then unscoped rule
+ * segments, then the scoped-rules index line if present. All capping already
+ * happened inside `loadInstructions`/`loadRulesLayer` -- nothing here re-caps.
+ */
+function renderInstructionsBody(instructions: LoadInstructionsResult): string[] {
+  const sections = [
+    ...formatInstructionSegments(instructions.segments),
+    ...formatRuleSegments(instructions.ruleSegments ?? []),
+  ];
+  if (instructions.ruleOmissionLine !== undefined) {
+    sections.push(instructions.ruleOmissionLine);
+  }
+  if (instructions.ruleIndexLine !== undefined) {
+    sections.push(instructions.ruleIndexLine);
+  }
+  return sections;
+}
+
+export function assembleSystemPrompt(params: AssembleSystemPromptParams): string {
+  const sections: string[] = [buildPreamble(params.context), ...renderInstructionsBody(params.instructions)];
 
   if (params.definitionSystemPrompt !== undefined && params.definitionSystemPrompt.length > 0) {
     sections.push(params.definitionSystemPrompt);
@@ -105,49 +171,28 @@ export function assembleSystemPrompt(params: AssembleSystemPromptParams): string
 
 /**
  * Composes the SDK engine's `systemPrompt.append` string (main.ts's
- * `claude-sdk` init arm): opt-in instruction segments, formatted the same way
- * `assembleSystemPrompt` renders them, followed by the definition system
- * prompt if present -- mirroring `assembleSystemPrompt`'s section-join
- * convention (including the aggregate-cap-with-warn behavior below), minus
- * the preamble (the SDK engine uses the SDK's own `claude_code` preset
- * preamble instead of ours, so `buildPreamble` must not run here). Returns
- * `undefined` when there is nothing to append, so callers can omit
- * `Options.systemPrompt` entirely rather than passing an empty string (see
- * docs/design/embedded-agent-sdk-engine.md §4's "Instruction loader" row
- * correction).
+ * `claude-sdk` init arm): the SAME `loadInstructions` result the openai-api
+ * arm uses (Phase A, R1) -- global/chain/opt-in segments plus the
+ * rules layer, formatted the same way `assembleSystemPrompt` renders them,
+ * followed by the definition system prompt if present -- minus the preamble
+ * (the SDK engine uses the SDK's own `claude_code` preset preamble instead of
+ * ours, so `buildPreamble` must not run here). All capping already happened
+ * inside `loadInstructions`, so this does no capping of its own -- unlike its
+ * pre-Phase-A shape, which capped an opt-in-only list that had never passed
+ * through `loadInstructions`. Returns `undefined` when there is nothing to
+ * append, so callers can omit `Options.systemPrompt` entirely rather than
+ * passing an empty string (see docs/design/embedded-agent-sdk-engine.md §4's
+ * "Instruction loader" row correction).
  */
 export function composeSdkSystemPromptAppend(
-  segments: InstructionSegment[],
+  instructions: LoadInstructionsResult,
   definitionSystemPrompt: string | undefined,
 ): string | undefined {
-  // Aggregate cap governs the instruction segments only, mirroring
-  // assembleSystemPrompt/loadInstructions -- definitionSystemPrompt is never
-  // subject to it, below or here.
-  const cappedSegments = capAggregateInstructions(segments);
-  const sections = formatInstructionSegments(cappedSegments);
+  const sections = renderInstructionsBody(instructions);
   if (definitionSystemPrompt !== undefined && definitionSystemPrompt.length > 0) {
     sections.push(definitionSystemPrompt);
   }
   return sections.length > 0 ? sections.join('\n\n') : undefined;
-}
-
-/**
- * Applies `INSTRUCTION_AGGREGATE_CAP_BYTES` to a single flat list of
- * instruction segments, dropping from the end (last-to-first) until the
- * total is under the cap -- the same drop policy `loadInstructions` applies
- * to its own `instructionsList` layer. Used by `composeSdkSystemPromptAppend`
- * for the SDK engine's opt-in-only instruction path, which (unlike
- * `loadInstructions`) has no global/chain layers to weigh against, so a
- * single last-to-first pass over the whole list is the complete policy here.
- */
-function capAggregateInstructions(segments: InstructionSegment[]): InstructionSegment[] {
-  const surviving = [...segments];
-  const total = (): number => surviving.reduce((sum, s) => sum + segmentByteLength(s), 0);
-  while (total() > INSTRUCTION_AGGREGATE_CAP_BYTES && surviving.length > 0) {
-    const dropped = surviving.pop();
-    if (dropped !== undefined) logAggregateDrop(dropped);
-  }
-  return surviving;
 }
 
 type ReadTextResult =
@@ -271,11 +316,14 @@ function capSegment(segment: InstructionSegment): InstructionSegment {
 /**
  * Reads the opt-in `instructions[]` layer only -- confined-path-resolved
  * against `cwd`, capped per-file. No global (~/.config/agent-console) or
- * chain (AGENTS.md/CLAUDE.md auto-discovery) layers. Shared by
- * `loadInstructions` (which composes this with the other two layers for the
- * openai-api engine) and the SDK engine (which uses ONLY this layer --
- * AGENTS.md auto-discovery is deliberately out of scope for that engine, see
- * docs/design/embedded-agent-sdk-engine.md §4).
+ * chain (AGENTS.md/CLAUDE.md auto-discovery) layers. Used exclusively by
+ * `loadInstructions`, which composes this with the global/chain/rules layers
+ * for BOTH engines (Phase A, R1 -- the claude-sdk engine no
+ * longer has a separate opt-in-only path; it calls `loadInstructions` the
+ * same as openai-api). `settingSources: []` still disables the SDK's OWN
+ * native settings-derived discovery (see docs/design/embedded-agent-sdk-engine.md
+ * §4) -- this loader is what delivers the equivalent content instead, for
+ * both engines, from outside that mechanism.
  */
 export async function loadOptInInstructions(
   cwd: string,
@@ -310,6 +358,165 @@ function logAggregateDrop(segment: InstructionSegment): void {
   );
 }
 
+const FRONTMATTER_RE = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?/;
+const RULE_SCOPE_KEY_RE = /^(paths|globs):\s*(.*)$/;
+
+function stripQuotes(s: string): string {
+  if ((s.startsWith('"') && s.endsWith('"')) || (s.startsWith("'") && s.endsWith("'"))) {
+    return s.slice(1, -1);
+  }
+  return s;
+}
+
+/**
+ * R2: parses a rule file's `paths:`/`globs:` frontmatter (either spelling;
+ * whichever key appears first wins if a file has both). Returns the glob
+ * list, or an empty list when the rule is unscoped -- no frontmatter at all
+ * (the routine case: most rules in this repo, e.g. `workflow.md`, have none),
+ * frontmatter present but no scoping key, `paths: []` (empty), or a value
+ * this parser cannot make sense of. Only the last two warn -- absence of
+ * scoping is not itself a defect, but a key that IS present and unparseable
+ * is, so it is logged rather than silently swallowed.
+ *
+ * Accepted value shapes: an inline JSON-ish array (`["a", "b"]`), a single
+ * scalar on the same line (`"a"` or bare `a`), or the multi-line YAML list
+ * this repo's own rules actually use:
+ *   paths:
+ *     - "a"
+ *     - "b"
+ */
+export function parseRuleFrontmatter(content: string, origin: string): string[] {
+  const match = content.match(FRONTMATTER_RE);
+  if (!match) return [];
+
+  const lines = match[1].split(/\r?\n/);
+  for (let i = 0; i < lines.length; i++) {
+    const keyMatch = lines[i].match(RULE_SCOPE_KEY_RE);
+    if (!keyMatch) continue;
+    const [, key, rest] = keyMatch;
+    const inline = rest.trim();
+
+    if (inline.length > 0) {
+      if (inline.startsWith('[') && inline.endsWith(']')) {
+        const inner = inline.slice(1, -1).trim();
+        const items = inner.length === 0
+          ? []
+          : inner.split(',').map((s) => stripQuotes(s.trim())).filter((s) => s.length > 0);
+        if (items.length === 0) {
+          console.warn(`Malformed ${key} frontmatter in ${origin}: empty array; treating as unscoped`);
+        }
+        return items;
+      }
+      const scalar = stripQuotes(inline);
+      if (scalar.length === 0) {
+        console.warn(`Malformed ${key} frontmatter in ${origin}: empty value; treating as unscoped`);
+        return [];
+      }
+      return [scalar];
+    }
+
+    // Nothing after the colon -- a multi-line YAML list is expected on the
+    // following lines (`  - "glob"` / `  - glob`).
+    const items: string[] = [];
+    for (let j = i + 1; j < lines.length; j++) {
+      const listMatch = lines[j].match(/^\s*-\s*(.+)$/);
+      if (!listMatch) break;
+      items.push(stripQuotes(listMatch[1].trim()));
+    }
+    if (items.length === 0) {
+      console.warn(`Malformed ${key} frontmatter in ${origin}: no list items found; treating as unscoped`);
+    }
+    return items;
+  }
+
+  return [];
+}
+
+interface RuleFile {
+  origin: string;
+  name: string;
+  content: string;
+  globs: string[];
+}
+
+interface RulesLayerResult {
+  ruleSegments: InstructionSegment[];
+  ruleOmissionLine?: string;
+  ruleIndexLine?: string;
+}
+
+/**
+ * R2/R3: the rules layer. Reads every `<gitRoot>/.claude/rules/*.md`, sorted
+ * by file name. Unscoped rules (no `paths:`/`globs:` frontmatter) are
+ * returned as segments to include eagerly; scoped rules are summarized into
+ * `ruleIndexLine` only -- Phase B (not implemented here) is what activates
+ * them lazily on a matching tool call. No git root, or no `.claude/rules`
+ * directory -- both routine -- produce an empty layer, silently.
+ */
+async function loadRulesLayer(cwd: string): Promise<RulesLayerResult> {
+  const gitRoot = await findGitRoot(cwd);
+  if (gitRoot === null) return { ruleSegments: [] };
+
+  const rulesDir = path.join(gitRoot, '.claude', 'rules');
+  let entries: string[];
+  try {
+    entries = (await fsPromises.readdir(rulesDir)).filter((f) => f.endsWith('.md')).sort();
+  } catch (err) {
+    if (isErrnoException(err) && err.code === 'ENOENT') return { ruleSegments: [] };
+    console.warn(
+      `Failed to list rules directory ${rulesDir}: ${err instanceof Error ? err.message : String(err)}`,
+    );
+    return { ruleSegments: [] };
+  }
+
+  const ruleFiles: RuleFile[] = [];
+  for (const name of entries) {
+    const origin = path.join(rulesDir, name);
+    const read = await tryReadTextFile(origin);
+    if (!read.ok) {
+      console.warn(`Skipping rule file ${origin}: ${read.message}`);
+      continue;
+    }
+    ruleFiles.push({ origin, name, content: read.content, globs: parseRuleFrontmatter(read.content, origin) });
+  }
+
+  const unscoped = ruleFiles.filter((r) => r.globs.length === 0);
+  const scoped = ruleFiles.filter((r) => r.globs.length > 0);
+
+  // R3 budget: whole-file drop, largest-first, no per-file truncation.
+  // Splice-based removal preserves the relative (name) order of survivors.
+  const survivors = [...unscoped];
+  const dropped: RuleFile[] = [];
+  const total = () => survivors.reduce((sum, r) => sum + encoder.encode(r.content).length, 0);
+  while (total() > RULES_LAYER_CAP_BYTES && survivors.length > 0) {
+    let largestIdx = 0;
+    for (let i = 1; i < survivors.length; i++) {
+      if (encoder.encode(survivors[i].content).length > encoder.encode(survivors[largestIdx].content).length) {
+        largestIdx = i;
+      }
+    }
+    const [removed] = survivors.splice(largestIdx, 1);
+    if (removed !== undefined) dropped.push(removed);
+  }
+
+  const ruleSegments: InstructionSegment[] = survivors.map((r) => ({ origin: r.origin, content: r.content }));
+
+  let ruleOmissionLine: string | undefined;
+  if (dropped.length > 0) {
+    const names = dropped.map((r) => r.name).sort().join(', ');
+    console.warn(`Dropped rule file(s) to satisfy the ${RULES_LAYER_CAP_BYTES}-byte rules budget: ${names}`);
+    ruleOmissionLine = `rules omitted for size: ${names}`;
+  }
+
+  let ruleIndexLine: string | undefined;
+  if (scoped.length > 0) {
+    const items = scoped.map((r) => `${r.name} (paths: ${r.globs.join(', ')})`).join('; ');
+    ruleIndexLine = `Rules that apply when you touch matching paths: ${items}`;
+  }
+
+  return { ruleSegments, ruleOmissionLine, ruleIndexLine };
+}
+
 export async function loadInstructions(
   params: LoadInstructionsParams,
 ): Promise<LoadInstructionsResult> {
@@ -331,9 +538,18 @@ export async function loadInstructions(
   const chainRaw = chainResults.filter((s): s is InstructionSegment => s !== null);
 
   // instructions[] layer (opt-in, confined to cwd, capped per-file) --
-  // delegated to loadOptInInstructions, the single confined reader shared
-  // with the SDK engine (main.ts's claude-sdk arm).
-  const instructionSegments = await loadOptInInstructions(cwd, params.instructionsList);
+  // delegated to loadOptInInstructions. R1 (Phase A): dedupe by
+  // resolved path against the global/chain layers already discovered above,
+  // so a definition whose instructions[] still explicitly lists 'CLAUDE.md'
+  // (the pre-Phase-A builtin's own convention) does not double-load once the
+  // chain tail already resolves the same file.
+  const priorOrigins = new Set<string>([
+    ...(globalRaw !== null ? [globalRaw.origin] : []),
+    ...chainRaw.map((s) => s.origin),
+  ]);
+  const instructionSegments = (await loadOptInInstructions(cwd, params.instructionsList)).filter(
+    (s) => !priorOrigins.has(s.origin),
+  );
 
   // Per-file cap (global/chain only -- instructionSegments is already capped
   // by loadOptInInstructions above).
@@ -375,5 +591,9 @@ export async function loadInstructions(
     ...survivingInstructions,
   ];
 
-  return { segments };
+  // Rules layer (R2/R3): independent budget, independent of the aggregate
+  // cap above -- see RULES_LAYER_CAP_BYTES's doc comment.
+  const rulesLayer = await loadRulesLayer(cwd);
+
+  return { segments, ...rulesLayer };
 }

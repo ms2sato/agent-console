@@ -20,7 +20,7 @@ import {
 import type { ToolCallOutcome } from '../mcp.js';
 import type { Engine } from '../engine-types.js';
 import type { SdkEngineDeps } from '../sdk-engine.js';
-import { loadOptInInstructions } from '../system-prompt.js';
+import { loadInstructions } from '../system-prompt.js';
 
 const mainPath = join(import.meta.dir, '..', 'main.ts');
 
@@ -132,7 +132,6 @@ function makeFactories(overrides: Partial<LoopFactories> = {}): LoopFactories {
     createMcpClient: () => new StubMcpClient(),
     createAdapter: () => new StubAdapter(),
     loadInstructions: async () => ({ segments: [] }),
-    loadOptInInstructions: async () => [],
     loadCompactionPrompt: async () => ({ content: 'DEFAULT_COMPACTION_PROMPT_STUB', origin: 'bundled-default' }),
     createSdkEngine: () => new NoopEngine(),
     // R1: default the pre-flight to "the session exists" so the vast
@@ -803,7 +802,7 @@ describe('runLoop — the retired handoff command (#1401)', () => {
   });
 });
 
-describe('runLoop — claude-sdk engine: opt-in instructions threading', () => {
+describe('runLoop — claude-sdk engine: instructions via loadInstructions (Issue #1343 Phase A, R1)', () => {
   const claudeSdkInitCommand = (overrides: Record<string, unknown> = {}) =>
     JSON.stringify({
       v: 1,
@@ -817,16 +816,20 @@ describe('runLoop — claude-sdk engine: opt-in instructions threading', () => {
       ...overrides,
     });
 
-  it('loads the definition instructions[] list via loadOptInInstructions and composes it into systemPromptAppend, ordered before the definition system prompt', async () => {
+  it('calls loadInstructions (not a narrower opt-in-only seam) with cwd and instructionsList, and composes its FULL result -- instruction segments, rule segments, and the rules index line -- into systemPromptAppend, ordered before the definition system prompt', async () => {
     const { io } = makeIo([
       claudeSdkInitCommand({ instructions: ['docs/local-note.md'], systemPrompt: 'OPERATOR_PROMPT' }),
     ]);
     let capturedDeps: SdkEngineDeps | undefined;
     const factories = makeFactories({
-      loadOptInInstructions: async (cwd, instructionsList) => {
-        expect(cwd).toBe('/tmp');
-        expect(instructionsList).toEqual(['docs/local-note.md']);
-        return [{ origin: '/tmp/docs/local-note.md', content: 'INSTRUCTION_MARKER' }];
+      loadInstructions: async (params) => {
+        expect(params.cwd).toBe('/tmp');
+        expect(params.instructionsList).toEqual(['docs/local-note.md']);
+        return {
+          segments: [{ origin: '/tmp/docs/local-note.md', content: 'INSTRUCTION_MARKER' }],
+          ruleSegments: [{ origin: '/tmp/.claude/rules/unscoped.md', content: 'RULE_MARKER' }],
+          ruleIndexLine: 'Rules that apply when you touch matching paths: scoped.md (paths: src/**)',
+        };
       },
       createSdkEngine: (deps) => {
         capturedDeps = deps;
@@ -835,14 +838,21 @@ describe('runLoop — claude-sdk engine: opt-in instructions threading', () => {
     });
 
     expect(await runLoop(io, factories)).toBe(0);
-    expect(capturedDeps?.systemPromptAppend).toContain('INSTRUCTION_MARKER');
-    expect(capturedDeps?.systemPromptAppend).toContain('OPERATOR_PROMPT');
-    const instructionIdx = capturedDeps!.systemPromptAppend!.indexOf('INSTRUCTION_MARKER');
-    const operatorIdx = capturedDeps!.systemPromptAppend!.indexOf('OPERATOR_PROMPT');
-    expect(operatorIdx).toBeGreaterThan(instructionIdx);
+    const append = capturedDeps!.systemPromptAppend!;
+    expect(append).toContain('INSTRUCTION_MARKER');
+    expect(append).toContain('RULE_MARKER');
+    expect(append).toContain('Rules that apply when you touch matching paths');
+    expect(append).toContain('OPERATOR_PROMPT');
+    const instructionIdx = append.indexOf('INSTRUCTION_MARKER');
+    const ruleIdx = append.indexOf('RULE_MARKER');
+    const indexIdx = append.indexOf('Rules that apply');
+    const operatorIdx = append.indexOf('OPERATOR_PROMPT');
+    expect(ruleIdx).toBeGreaterThan(instructionIdx);
+    expect(indexIdx).toBeGreaterThan(ruleIdx);
+    expect(operatorIdx).toBeGreaterThan(indexIdx);
   });
 
-  it('omits systemPromptAppend entirely when neither instructions[] nor a definition system prompt are configured (no regression)', async () => {
+  it('omits systemPromptAppend entirely when loadInstructions returns nothing and no definition system prompt is configured (no regression)', async () => {
     const { io } = makeIo([claudeSdkInitCommand()]);
     let capturedDeps: SdkEngineDeps | undefined;
     const factories = makeFactories({
@@ -856,7 +866,7 @@ describe('runLoop — claude-sdk engine: opt-in instructions threading', () => {
     expect(capturedDeps?.systemPromptAppend).toBeUndefined();
   });
 
-  it('systemPromptAppend contains only the definition system prompt when instructions[] is unconfigured (no regression)', async () => {
+  it('systemPromptAppend contains only the definition system prompt when loadInstructions returns nothing (no regression)', async () => {
     const { io } = makeIo([claudeSdkInitCommand({ systemPrompt: 'OPERATOR_ONLY' })]);
     let capturedDeps: SdkEngineDeps | undefined;
     const factories = makeFactories({
@@ -870,19 +880,37 @@ describe('runLoop — claude-sdk engine: opt-in instructions threading', () => {
     expect(capturedDeps?.systemPromptAppend).toBe('OPERATOR_ONLY');
   });
 
+  // Polarity: before this PR, initializeLoop's claude-sdk branch called
+  // `factories.loadOptInInstructions(...)` directly and never touched
+  // `factories.loadInstructions` at all -- the first test above would FAIL
+  // against that code (its loadInstructions stub would never be invoked, so
+  // `systemPromptAppend` would be undefined rather than containing
+  // INSTRUCTION_MARKER/RULE_MARKER/the index line). This assertion pins the
+  // structural half of that polarity directly: `loadOptInInstructions` is no
+  // longer a member of `LoopFactories` at all, which makes the old call path
+  // uncallable rather than merely untested -- if it ever returns to the
+  // interface, `_NoOptInSeam` collapses to `never` and the assignment below
+  // fails to compile (see workflow.md's "Pins include type-level assertions").
+  it('loadOptInInstructions is not a member of LoopFactories (type-level polarity pin)', () => {
+    type _NoOptInSeam = 'loadOptInInstructions' extends keyof LoopFactories ? never : true;
+    const pin: _NoOptInSeam = true;
+    expect(pin).toBe(true);
+  });
 });
 
-// Phase 1's builtin claude-sdk definition (claude-sdk-builtin.ts) bakes
-// `instructions: ['CLAUDE.md']` -- this is the ONLY way CLAUDE.md content
-// reaches this engine's context (settingSources: [] disables the SDK's own
-// native auto-discovery; see docs/design/embedded-agent-sdk-engine.md §4.2).
-// Unlike the block above (which stubs `loadOptInInstructions` to prove the
-// composition/ordering contract), this block wires in the REAL production
-// `loadOptInInstructions` against a real temp-dir CLAUDE.md file, proving the
-// builtin's configured value actually resolves end-to-end into
-// `systemPromptAppend` -- not just that the composition function honors
+// Phase 1's builtin claude-sdk definition (claude-sdk-builtin.ts) used to
+// bake `instructions: ['CLAUDE.md']` because that was the ONLY way CLAUDE.md
+// content reached this engine's context (settingSources: [] disables the
+// SDK's own native auto-discovery; see
+// docs/design/embedded-agent-sdk-engine.md §4.2). Issue #1343 Phase A (R1)
+// removed that opt-in entry: the SDK arm now calls the SAME `loadInstructions`
+// the openai-api arm uses, so CLAUDE.md is discovered via the chain layer
+// (git-root-to-cwd AGENTS.md/CLAUDE.md resolution) instead of a
+// per-definition opt-in list. This block wires in the REAL production
+// `loadInstructions` against a real temp-dir CLAUDE.md file, proving
+// end-to-end resolution -- not just that the composition function honors
 // whatever segments it's handed.
-describe('runLoop — claude-sdk engine: CLAUDE.md opt-in delivery (builtin definition\'s instructions: ["CLAUDE.md"])', () => {
+describe('runLoop — claude-sdk engine: CLAUDE.md chain-layer delivery (Issue #1343 Phase A, R1)', () => {
   const claudeSdkInitCommand = (cwd: string, overrides: Record<string, unknown> = {}) =>
     JSON.stringify({
       v: 1,
@@ -893,17 +921,16 @@ describe('runLoop — claude-sdk engine: CLAUDE.md opt-in delivery (builtin defi
       provider: { model: 'claude-sonnet-5' },
       context: { sessionId: 's', workerId: 'w', cwd },
       maxToolIterations: 5,
-      instructions: ['CLAUDE.md'],
       ...overrides,
     });
 
-  it('reads a real CLAUDE.md file at cwd via the real loadOptInInstructions and composes its content into systemPromptAppend', async () => {
+  it('reads a real CLAUDE.md file at cwd via the real loadInstructions (no instructions[] opt-in needed) and composes its content into systemPromptAppend', async () => {
     const dir = await makeTempDir();
     await writeFile(join(dir, 'CLAUDE.md'), 'PROJECT_CLAUDE_MD_MARKER');
     const { io } = makeIo([claudeSdkInitCommand(dir)]);
     let capturedDeps: SdkEngineDeps | undefined;
     const factories = makeFactories({
-      loadOptInInstructions, // real production implementation, not a stub
+      loadInstructions, // real production implementation, not a stub
       createSdkEngine: (deps) => {
         capturedDeps = deps;
         return new NoopEngine();
@@ -914,13 +941,13 @@ describe('runLoop — claude-sdk engine: CLAUDE.md opt-in delivery (builtin defi
     expect(capturedDeps?.systemPromptAppend).toContain('PROJECT_CLAUDE_MD_MARKER');
   });
 
-  it('polarity: with instructions: [] (no CLAUDE.md opt-in), systemPromptAppend omits the CLAUDE.md content even though the same file exists on disk', async () => {
+  it('dedupes when instructions[] redundantly lists CLAUDE.md too (R1): the content appears exactly once', async () => {
     const dir = await makeTempDir();
     await writeFile(join(dir, 'CLAUDE.md'), 'PROJECT_CLAUDE_MD_MARKER');
-    const { io } = makeIo([claudeSdkInitCommand(dir, { instructions: [] })]);
+    const { io } = makeIo([claudeSdkInitCommand(dir, { instructions: ['CLAUDE.md'] })]);
     let capturedDeps: SdkEngineDeps | undefined;
     const factories = makeFactories({
-      loadOptInInstructions, // real production implementation, not a stub
+      loadInstructions, // real production implementation, not a stub
       createSdkEngine: (deps) => {
         capturedDeps = deps;
         return new NoopEngine();
@@ -928,7 +955,9 @@ describe('runLoop — claude-sdk engine: CLAUDE.md opt-in delivery (builtin defi
     });
 
     expect(await runLoop(io, factories)).toBe(0);
-    expect(capturedDeps?.systemPromptAppend).toBeUndefined();
+    const append = capturedDeps!.systemPromptAppend!;
+    const occurrences = append.split('PROJECT_CLAUDE_MD_MARKER').length - 1;
+    expect(occurrences).toBe(1);
   });
 });
 
