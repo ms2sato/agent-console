@@ -1889,6 +1889,84 @@ describe('embedded-agent-store', () => {
     expect(_inspect(instance).disposed).toBe(false);
   });
 
+  // Cross-type restart, embedded-agent -> agent (#1592), mirrors
+  // terminal-store.test.ts's "session-updated worker type flip (cross-type
+  // restart)" describe block for the reverse direction (#1171).
+  describe('session-updated worker type flip (cross-type restart, #1592)', () => {
+    function makeSession(workerType: 'agent' | 'embedded-agent', workerId: string, sessionId: string) {
+      const baseWorker = {
+        id: workerId,
+        name: 'Worker',
+        createdAt: '2026-01-01T00:00:00Z',
+      };
+      const worker =
+        workerType === 'agent'
+          ? { ...baseWorker, type: 'agent' as const, agentId: 'claude-code', activated: true }
+          : {
+              ...baseWorker,
+              type: 'embedded-agent' as const,
+              embeddedAgentId: 'embedded-1',
+              activated: true,
+              autoCompaction: true,
+            };
+      return {
+        type: 'quick' as const,
+        id: sessionId,
+        locationPath: `/tmp/${sessionId}`,
+        status: 'active' as const,
+        activationState: 'running' as const,
+        createdAt: '2026-01-01T00:00:00Z',
+        workers: [worker],
+        isShared: false,
+        recoveryState: 'healthy' as const,
+      };
+    }
+
+    it('disposes on session-updated when the worker flipped to type "agent"', () => {
+      const bus = makeAppBus();
+      _setAppSubscribe(bus.subscribe);
+      const instance = getOrCreateEmbeddedAgentWorker('flip', 'w');
+      MockWebSocket.getLastInstance()!.simulateOpen();
+
+      bus.emit({
+        type: 'session-updated',
+        session: makeSession('agent', 'w', 'flip'),
+      } as unknown as AppServerMessage);
+
+      expect(_inspect(instance).disposed).toBe(true);
+    });
+
+    it('negative control: an embedded -> embedded restart (worker stays "embedded-agent") does NOT dispose', () => {
+      const bus = makeAppBus();
+      _setAppSubscribe(bus.subscribe);
+      const instance = getOrCreateEmbeddedAgentWorker('noflip', 'w');
+      MockWebSocket.getLastInstance()!.simulateOpen();
+
+      // Covers both same-definition restart (case c) and a definition
+      // switch (case b): in both, the worker's TYPE stays 'embedded-agent'.
+      bus.emit({
+        type: 'session-updated',
+        session: makeSession('embedded-agent', 'w', 'noflip'),
+      } as unknown as AppServerMessage);
+
+      expect(_inspect(instance).disposed).toBe(false);
+    });
+
+    it('session-updated for a different session is ignored', () => {
+      const bus = makeAppBus();
+      _setAppSubscribe(bus.subscribe);
+      const instance = getOrCreateEmbeddedAgentWorker('own-session', 'w');
+      MockWebSocket.getLastInstance()!.simulateOpen();
+
+      bus.emit({
+        type: 'session-updated',
+        session: makeSession('agent', 'w', 'other-session'),
+      } as unknown as AppServerMessage);
+
+      expect(_inspect(instance).disposed).toBe(false);
+    });
+  });
+
   it('a tool-result for an unknown callId is dropped defensively, not fabricated', async () => {
     const instance = getOrCreateEmbeddedAgentWorker('s20', 'w20');
     const ws = MockWebSocket.getLastInstance();

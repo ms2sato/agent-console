@@ -126,7 +126,7 @@ function renderDialog(props: Partial<RestartSessionDialogProps> = {}) {
     open: true,
     onOpenChange: mock(() => {}),
     sessionId: 'session-1',
-    currentAgentId: 'claude-code',
+    currentSelection: { kind: 'terminal', agentId: 'claude-code' },
   };
 
   const mergedProps = { ...defaultProps, ...props };
@@ -177,7 +177,7 @@ describe('RestartSessionDialog', () => {
         return Promise.resolve(routeFetchByUrl(urlStr));
       });
 
-      renderDialog({ currentAgentId: 'claude-code' });
+      renderDialog({ currentSelection: { kind: 'terminal', agentId: 'claude-code' } });
       await waitForAgentsToLoad();
 
       const options = screen.getAllByRole('option');
@@ -262,7 +262,7 @@ describe('RestartSessionDialog', () => {
   describe('change warnings', () => {
     it('should show agent switch warning when a different agent is selected', async () => {
       const user = userEvent.setup();
-      renderDialog({ currentAgentId: 'claude-code' });
+      renderDialog({ currentSelection: { kind: 'terminal', agentId: 'claude-code' } });
       await waitForAgentsToLoad();
 
       const agentSelect = screen.getByRole('combobox');
@@ -295,7 +295,7 @@ describe('RestartSessionDialog', () => {
       renderDialog({
         isWorktreeSession: true,
         currentBranch: 'feat/old-branch',
-        currentAgentId: 'claude-code',
+        currentSelection: { kind: 'terminal', agentId: 'claude-code' },
       });
       await waitForAgentsToLoad();
 
@@ -352,7 +352,7 @@ describe('RestartSessionDialog', () => {
     it('should pass agentId when agent is changed', async () => {
       const user = userEvent.setup();
       const onSessionRestart = mock(() => {});
-      renderDialog({ currentAgentId: 'claude-code', onSessionRestart });
+      renderDialog({ currentSelection: { kind: 'terminal', agentId: 'claude-code' }, onSessionRestart });
       await waitForAgentsToLoad();
 
       const agentSelect = screen.getByRole('combobox');
@@ -481,7 +481,7 @@ describe('RestartSessionDialog', () => {
     it('should not pass agentId when agent is unchanged', async () => {
       const user = userEvent.setup();
       const onSessionRestart = mock(() => {});
-      renderDialog({ currentAgentId: 'claude-code', onSessionRestart });
+      renderDialog({ currentSelection: { kind: 'terminal', agentId: 'claude-code' }, onSessionRestart });
       await waitForAgentsToLoad();
 
       // Do not change agent - just click restart
@@ -573,7 +573,7 @@ describe('RestartSessionDialog', () => {
       setupMockFetchWithEmbeddedAgents();
       const user = userEvent.setup();
       const onSessionRestart = mock(() => {});
-      renderDialog({ currentAgentId: 'claude-code', onSessionRestart });
+      renderDialog({ currentSelection: { kind: 'terminal', agentId: 'claude-code' }, onSessionRestart });
       await waitForAgentsToLoad();
       await waitFor(() => {
         expect(screen.getByText('Local GPT')).toBeTruthy();
@@ -597,21 +597,184 @@ describe('RestartSessionDialog', () => {
     });
   });
 
-  describe('no PTY agent worker (embedded-primary session, R6(c))', () => {
-    it('shows a graceful notice and disables submit instead of throwing', async () => {
-      const onSessionRestart = mock(() => {});
-      renderDialog({ hasAgentWorker: false, onSessionRestart });
+  // Embedded-primary session cross-type restart, both directions (#1592):
+  // the dialog is now uniform across every worker kind -- there is no more
+  // disabled/notice state for a session whose primary worker is already
+  // embedded-agent (the pre-#1592 R6(c) case above).
+  describe('embedded-primary session cross-type restart (#1592)', () => {
+    const embeddedWorker = {
+      id: 'worker-1',
+      type: 'embedded-agent',
+      embeddedAgentId: 'embedded-1',
+      name: 'Local GPT worker',
+    };
+
+    const twoEmbeddedAgentsResponse = {
+      embeddedAgents: [
+        { id: 'embedded-1', name: 'Local GPT' },
+        { id: 'embedded-2', name: 'Other GPT' },
+      ],
+    };
+
+    function setupMockFetchEmbeddedCurrent() {
+      mockFetch.mockImplementation((...args: unknown[]) => {
+        const urlStr = resolveUrl(args[0]);
+        if (urlStr.includes('/embedded-agents')) {
+          return Promise.resolve(createMockResponse(twoEmbeddedAgentsResponse));
+        }
+        if (urlStr.includes('/agents')) {
+          return Promise.resolve(createMockResponse(mockAgentsResponse));
+        }
+        if (urlStr.includes('/restart')) {
+          return Promise.resolve(createMockResponse(mockRestartResponse));
+        }
+        if (urlStr.includes('/sessions/')) {
+          return Promise.resolve(createMockResponse({
+            session: {
+              id: 'session-1',
+              workers: [embeddedWorker],
+              status: 'running',
+              createdAt: '2026-01-01T00:00:00Z',
+            },
+          }));
+        }
+        return Promise.resolve(createMockResponse({}));
+      });
+    }
+
+    async function waitForEmbeddedAgentsToLoad() {
+      await waitFor(() => {
+        expect(screen.getByText('Local GPT')).toBeTruthy();
+      });
+    }
+
+    describe('embedded -> same embedded (case c)', () => {
+      it('shows "Restart" and "The conversation is kept.", and hides Continue', async () => {
+        setupMockFetchEmbeddedCurrent();
+        renderDialog({ currentSelection: { kind: 'embedded', embeddedAgentId: 'embedded-1' } });
+        await waitForAgentsToLoad();
+        await waitForEmbeddedAgentsToLoad();
+
+        expect(screen.getByText('The conversation is kept.')).toBeTruthy();
+        expect(screen.getByText('Restart')).toBeTruthy();
+        expect(screen.queryByText('Continue (-c)')).toBeNull();
+      });
+
+      it('submits restartWorkerAsEmbeddedAgent with the SAME embeddedAgentId', async () => {
+        setupMockFetchEmbeddedCurrent();
+        const user = userEvent.setup();
+        const onSessionRestart = mock(() => {});
+        renderDialog({
+          currentSelection: { kind: 'embedded', embeddedAgentId: 'embedded-1' },
+          onSessionRestart,
+        });
+        await waitForAgentsToLoad();
+        await waitForEmbeddedAgentsToLoad();
+
+        await user.click(screen.getByText('Restart'));
+
+        await waitFor(() => {
+          expect(onSessionRestart).toHaveBeenCalledTimes(1);
+        });
+        const body = findRestartCallBody();
+        expect(body).toBeTruthy();
+        expect(body!.embeddedAgentId).toBe('embedded-1');
+      });
+    });
+
+    describe('embedded -> different embedded (case b)', () => {
+      it('shows "Switch" and the not-carried-over notice, and hides Continue', async () => {
+        setupMockFetchEmbeddedCurrent();
+        const user = userEvent.setup();
+        renderDialog({ currentSelection: { kind: 'embedded', embeddedAgentId: 'embedded-1' } });
+        await waitForAgentsToLoad();
+        await waitForEmbeddedAgentsToLoad();
+        expect(screen.getByText('Other GPT')).toBeTruthy();
+
+        const agentSelect = screen.getByRole('combobox');
+        await user.selectOptions(agentSelect, 'embedded:embedded-2');
+
+        expect(
+          screen.getByText('The conversation is not carried over to the new agent.')
+        ).toBeTruthy();
+        expect(screen.getByText('Switch')).toBeTruthy();
+        expect(screen.queryByText('Continue (-c)')).toBeNull();
+      });
+
+      it('submits restartWorkerAsEmbeddedAgent with the DIFFERENT embeddedAgentId', async () => {
+        setupMockFetchEmbeddedCurrent();
+        const user = userEvent.setup();
+        const onSessionRestart = mock(() => {});
+        renderDialog({
+          currentSelection: { kind: 'embedded', embeddedAgentId: 'embedded-1' },
+          onSessionRestart,
+        });
+        await waitForAgentsToLoad();
+        await waitForEmbeddedAgentsToLoad();
+
+        const agentSelect = screen.getByRole('combobox');
+        await user.selectOptions(agentSelect, 'embedded:embedded-2');
+        await user.click(screen.getByText('Switch'));
+
+        await waitFor(() => {
+          expect(onSessionRestart).toHaveBeenCalledTimes(1);
+        });
+        const body = findRestartCallBody();
+        expect(body).toBeTruthy();
+        expect(body!.embeddedAgentId).toBe('embedded-2');
+      });
+    });
+
+    describe('embedded -> agent (case a)', () => {
+      it('shows "Switch to terminal" and the terminal-replacement notice, and hides Continue', async () => {
+        setupMockFetchEmbeddedCurrent();
+        const user = userEvent.setup();
+        renderDialog({ currentSelection: { kind: 'embedded', embeddedAgentId: 'embedded-1' } });
+        await waitForAgentsToLoad();
+        await waitForEmbeddedAgentsToLoad();
+
+        const agentSelect = screen.getByRole('combobox');
+        await user.selectOptions(agentSelect, 'terminal:claude-code');
+
+        expect(
+          screen.getByText('The chat is replaced by a terminal; the conversation is not carried over.')
+        ).toBeTruthy();
+        expect(screen.getByText('Switch to terminal')).toBeTruthy();
+        expect(screen.queryByText('Continue (-c)')).toBeNull();
+      });
+
+      it('submits restartAgentWorker with agentId ALWAYS set (no current-agent fallback), continueConversation=false', async () => {
+        setupMockFetchEmbeddedCurrent();
+        const user = userEvent.setup();
+        const onSessionRestart = mock(() => {});
+        renderDialog({
+          currentSelection: { kind: 'embedded', embeddedAgentId: 'embedded-1' },
+          onSessionRestart,
+        });
+        await waitForAgentsToLoad();
+        await waitForEmbeddedAgentsToLoad();
+
+        const agentSelect = screen.getByRole('combobox');
+        await user.selectOptions(agentSelect, 'terminal:claude-code');
+        await user.click(screen.getByText('Switch to terminal'));
+
+        await waitFor(() => {
+          expect(onSessionRestart).toHaveBeenCalledTimes(1);
+        });
+        const body = findRestartCallBody();
+        expect(body).toBeTruthy();
+        expect(body!.agentId).toBe('claude-code');
+        expect(body!.continueConversation).toBe(false);
+      });
+    });
+
+    it('Continue (-c) never renders while the current worker is embedded, regardless of target', async () => {
+      setupMockFetchEmbeddedCurrent();
+      renderDialog({ currentSelection: { kind: 'embedded', embeddedAgentId: 'embedded-1' } });
       await waitForAgentsToLoad();
+      await waitForEmbeddedAgentsToLoad();
 
-      expect(
-        screen.getByText(
-          "Restarting an embedded-agent session's primary worker isn't supported yet — tracked in #1592."
-        )
-      ).toBeTruthy();
-
-      const newSessionButton = screen.getByText('New Session') as HTMLButtonElement;
-      expect(newSessionButton.disabled).toBe(true);
-      expect(onSessionRestart).not.toHaveBeenCalled();
+      expect(screen.queryByText('Continue (-c)')).toBeNull();
     });
   });
 });
