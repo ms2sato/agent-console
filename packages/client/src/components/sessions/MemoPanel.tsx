@@ -41,6 +41,21 @@ export function MemoPanel({ sessionId, isExpanded, onToggleExpanded, compact }: 
   const modeRef = useRef(mode);
   modeRef.current = mode;
 
+  // Bumped every time handleMemoUpdated actually applies an update for this
+  // session. A save's mutationFn snapshots this counter when it starts; if
+  // the counter has moved by the time the save resolves, a concurrent
+  // memo-updated event landed a newer value in the cache while the PUT was
+  // in flight, and the save's own (now-stale) response must not overwrite
+  // it. Deliberately a ref, not state: it is never rendered, only read/bumped
+  // as a plain mutable counter across renders -- same shape as modeRef above.
+  // Note: the server also broadcasts memo-updated for THIS save's own write,
+  // and that frame can legitimately arrive before onSuccess too -- there is
+  // no way to distinguish a self-originated frame from a third party's on
+  // the wire, and no need to: either way the cache already holds the
+  // freshest content, so skipping the save's own (now-redundant) write is
+  // correct. Do not try to filter self-originated frames out of this count.
+  const memoUpdateVersionRef = useRef(0);
+
   // Listen for real-time updates via WebSocket. This stays subscribed with a
   // stable identity (deps unchanged by entering/leaving edit mode); it reads
   // the current mode via modeRef rather than closing over the `mode` state
@@ -50,6 +65,7 @@ export function MemoPanel({ sessionId, isExpanded, onToggleExpanded, compact }: 
     if (sid !== sessionId) {
       return;
     }
+    memoUpdateVersionRef.current += 1;
     queryClient.setQueryData(sessionKeys.memo(sessionId), newContent);
     if (modeRef.current === 'edit') {
       setHasIncomingUpdateWhileEditing(true);
@@ -59,12 +75,21 @@ export function MemoPanel({ sessionId, isExpanded, onToggleExpanded, compact }: 
   useAppWsEvent({ onMemoUpdated: handleMemoUpdated });
 
   const { mutate: saveMemo, isPending: isSaving } = useMutation({
-    mutationFn: (text: string) => updateSessionMemo(sessionId, text),
-    onSuccess: (response) => {
+    mutationFn: async (text: string) => {
+      const versionAtStart = memoUpdateVersionRef.current;
+      const response = await updateSessionMemo(sessionId, text);
+      return { response, versionAtStart };
+    },
+    onSuccess: ({ response, versionAtStart }) => {
       // Server is the source of truth -- write its response, not the
       // locally-typed draft, into the cache. No optimistic update before
-      // this point.
-      queryClient.setQueryData(sessionKeys.memo(sessionId), response.content);
+      // this point. But only if no concurrent memo-updated event landed a
+      // newer value while this save's PUT was in flight -- otherwise this
+      // save's own (now-stale) response would regress the cache past what
+      // the WS event already delivered.
+      if (memoUpdateVersionRef.current === versionAtStart) {
+        queryClient.setQueryData(sessionKeys.memo(sessionId), response.content);
+      }
       setMode('view');
       setHasIncomingUpdateWhileEditing(false);
       setSaveError(null);
@@ -95,6 +120,9 @@ export function MemoPanel({ sessionId, isExpanded, onToggleExpanded, compact }: 
   }
 
   function handleSave() {
+    if (isSaving) {
+      return;
+    }
     saveMemo(draft);
   }
 
@@ -184,9 +212,10 @@ export function MemoPanel({ sessionId, isExpanded, onToggleExpanded, compact }: 
                 value={draft}
                 onChange={(e) => setDraft(e.target.value)}
                 onKeyDown={handleTextareaKeyDown}
+                disabled={isSaving}
                 autoFocus
                 aria-label="Memo content"
-                className="w-full max-h-96 min-h-32 overflow-y-auto bg-slate-900 border border-slate-600 rounded px-2 py-1.5 text-sm text-gray-200 resize-y"
+                className="w-full max-h-96 min-h-32 overflow-y-auto bg-slate-900 border border-slate-600 rounded px-2 py-1.5 text-sm text-gray-200 resize-y disabled:opacity-50"
               />
               <div className="flex items-center gap-2">
                 <button

@@ -355,6 +355,89 @@ describe('MemoPanel', () => {
     });
   });
 
+  // CodeRabbit MAJOR finding: a memo-updated WS event that lands while a
+  // save's PUT is in flight carries the newer content into the cache; the
+  // save's own (now-stale) response must not overwrite it once it resolves.
+  it('a memo-updated event that arrives during an in-flight save wins over the save response', async () => {
+    mockFetch.mockResolvedValue(jsonResponse({ content: '# Existing memo' }));
+
+    await renderWithRouter(<ControlledMemoPanel sessionId="session-1" />);
+    await waitFor(() => expect(screen.getByText('Existing memo')).toBeTruthy());
+
+    fireEvent.click(screen.getByRole('button', { name: 'Edit memo' }));
+    const textarea = await screen.findByLabelText('Memo content');
+    fireEvent.change(textarea, { target: { value: 'Draft before race' } });
+
+    // Hold the PUT open so a WS event can race in ahead of its response.
+    let resolvePut: (value: Response) => void;
+    mockFetch.mockImplementationOnce(
+      () =>
+        new Promise<Response>((resolve) => {
+          resolvePut = resolve;
+        })
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: /^save$/i }));
+
+    await waitFor(() => {
+      const body = findMemoPutCallBody();
+      expect(body).toEqual({ content: 'Draft before race' });
+    });
+
+    // A memo-updated WS event for the same session lands while the PUT is
+    // still pending -- its newer content must win.
+    const ws = MockWebSocket.getLastInstance();
+    act(() => {
+      ws?.simulateOpen();
+      ws?.simulateMessage(
+        JSON.stringify({ type: 'memo-updated', sessionId: 'session-1', content: '# Raced in first' })
+      );
+    });
+
+    // The in-flight save now resolves, carrying the ORIGINAL (pre-race)
+    // content as its response -- this must not regress the cache past what
+    // the WS event just delivered.
+    await act(async () => {
+      resolvePut(jsonResponse({ content: 'Draft before race' }));
+    });
+
+    await waitFor(() => expect(screen.getByText('Raced in first')).toBeTruthy());
+    expect(screen.queryByText('Draft before race')).toBeNull();
+  });
+
+  // CodeRabbit MAJOR finding: the textarea (not just the Save/Cancel
+  // buttons) must be disabled while a save is in flight, otherwise a user
+  // can keep typing (or Ctrl+Enter again) during the save window.
+  it('disables the textarea while a save is in flight', async () => {
+    mockFetch.mockResolvedValue(jsonResponse({ content: '# Existing memo' }));
+
+    await renderWithRouter(<ControlledMemoPanel sessionId="session-1" />);
+    await waitFor(() => expect(screen.getByText('Existing memo')).toBeTruthy());
+
+    fireEvent.click(screen.getByRole('button', { name: 'Edit memo' }));
+    const textarea = await screen.findByLabelText('Memo content');
+    fireEvent.change(textarea, { target: { value: 'Change during save' } });
+
+    let resolvePut: (value: Response) => void;
+    mockFetch.mockImplementationOnce(
+      () =>
+        new Promise<Response>((resolve) => {
+          resolvePut = resolve;
+        })
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: /^save$/i }));
+
+    await waitFor(() => expect(findMemoPutCallBody()).toEqual({ content: 'Change during save' }));
+    expect((screen.getByLabelText('Memo content') as HTMLTextAreaElement).disabled).toBe(true);
+
+    await act(async () => {
+      resolvePut(jsonResponse({ content: 'Change during save' }));
+    });
+
+    await waitFor(() => expect(screen.queryByLabelText('Memo content')).toBeNull());
+  });
+
   // M6: R4 client half -- a broadcast deletion (content: '') renders the
   // same empty state as a null memo, not a blank Markdown body.
   it('renders the empty state when a memo-updated event carries an empty string (broadcast deletion)', async () => {

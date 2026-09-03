@@ -160,7 +160,14 @@ const sessions = new Hono<AppBindings>()
     try {
       await sessionManager.writeMemo(sessionId, body.content);
     } catch (err) {
-      throw new ValidationError(err instanceof Error ? err.message : 'Failed to write memo');
+      // Only the documented cap-exceeded case (MemoService's 256KB limit) is a
+      // client input problem (400). Any other failure (I/O error, permission
+      // error, etc.) is unexpected and must propagate to the default 500 path
+      // rather than being misreported as a validation failure.
+      if (err instanceof Error && err.message.includes('exceeds maximum size')) {
+        throw new ValidationError(err.message);
+      }
+      throw err;
     }
     return c.json({ content: body.content });
   })

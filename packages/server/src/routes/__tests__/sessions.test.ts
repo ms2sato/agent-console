@@ -1005,6 +1005,27 @@ describe('Sessions API - PUT /api/sessions/:id/memo (Issue #1569)', () => {
     expect(body.error).toContain('exceeds maximum size');
   });
 
+  it('single-user: 500 (not 400) when writeMemo fails for a reason other than the size cap', async () => {
+    await setupCommon({ sharedEnabled: false });
+    const sessionId = await createQuickSession(TEST_AUTH_USER.id);
+
+    const writeMemoSpy = spyOn(sessionManager, 'writeMemo').mockRejectedValue(
+      new Error('EACCES: permission denied'),
+    );
+    try {
+      const res = await app.request(`/api/sessions/${sessionId}/memo`, {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ content: 'some content' }),
+      });
+      expect(res.status).toBe(500);
+      const body = (await res.json()) as { error: string };
+      expect(body.error).not.toContain('exceeds maximum size');
+    } finally {
+      writeMemoSpy.mockRestore();
+    }
+  });
+
   it('single-user: whitespace-only content deletes the memo (200, content: null) -- subsequent GET also returns null', async () => {
     await setupCommon({ sharedEnabled: false });
     const sessionId = await createQuickSession(TEST_AUTH_USER.id);
