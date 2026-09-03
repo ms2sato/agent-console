@@ -32,7 +32,7 @@ interface UseEmbeddedAgentWorkerReturn {
   /** Transcript Restore, R4 (#1447 stage 4). See `EmbeddedAgentSnapshot.preservation` doc comment. */
   preservation: RestorePreservation | undefined;
   /** R1 (#1455). See `EmbeddedAgentSnapshot.currentExit` doc comment. */
-  currentExit: { code: number | null; reason?: ExitReason } | null;
+  currentExit: { code: number | null; reason?: ExitReason; stderrTail?: string } | null;
   sendUserMessage: (text: string) => Promise<void>;
   cancel: () => void;
   restart: () => void;

@@ -580,7 +580,25 @@ export type EmbeddedAgentServerEvent =
    * - This is the single identifier for "this exit was an idle eviction".
    *   There is deliberately no parallel boolean to drift against it.
    */
-  | { v: 1; type: 'exited'; code: number | null; reason?: ExitReason }
+  | {
+      v: 1;
+      type: 'exited';
+      code: number | null;
+      reason?: ExitReason;
+      /**
+       * A bounded tail of this incarnation's stderr, present ONLY when
+       * `reason === 'unexpected'` and the subprocess wrote non-empty stderr.
+       * Never present for `'managed'` or `'evicted'` exits -- a routine
+       * deactivate or eviction should never carry leftover stderr as if it
+       * explained anything. Absent means absent, never `''`; consumers test
+       * `stderrTail !== undefined`, mirroring how `reason` is handled above.
+       * Holds the last STDERR_TAIL_CAP characters (UTF-16 code units, not
+       * bytes and not an overall wire-size bound -- JSON-escaping can inflate
+       * the serialized size past a simple UTF-8 multiplier) -- see
+       * embedded-agent-worker-service.ts.
+       */
+      stderrTail?: string;
+    }
   /**
    * Transcript Restore, R2 (#1447 stage 4): a restore attempt failed to
    * reconstruct the persisted transcript (`RestoreReconstructionError` or

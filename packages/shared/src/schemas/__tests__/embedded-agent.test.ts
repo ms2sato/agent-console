@@ -1255,6 +1255,37 @@ describe('EmbeddedAgentServerEventSchema', () => {
     });
   });
 
+  describe("the exited event's `stderrTail` (Issue #1454)", () => {
+    it('parses an exited row that carries a stderrTail string', () => {
+      const result = v.safeParse(EmbeddedAgentServerEventSchema, {
+        v: 1,
+        type: 'exited',
+        code: 1,
+        reason: 'unexpected',
+        stderrTail: 'Error: boom\n    at somewhere.ts:1:1',
+      });
+      expect(result.success).toBe(true);
+      expect((result.output as { stderrTail?: string }).stderrTail).toBe('Error: boom\n    at somewhere.ts:1:1');
+    });
+
+    it('parses an exited row with no stderrTail at all (absent, not empty)', () => {
+      const result = v.safeParse(EmbeddedAgentServerEventSchema, { v: 1, type: 'exited', code: 0, reason: 'managed' });
+      expect(result.success).toBe(true);
+      expect((result.output as { stderrTail?: string }).stderrTail).toBeUndefined();
+    });
+
+    it('rejects a non-string stderrTail', () => {
+      const result = v.safeParse(EmbeddedAgentServerEventSchema, {
+        v: 1,
+        type: 'exited',
+        code: 1,
+        reason: 'unexpected',
+        stderrTail: 12345,
+      });
+      expect(result.success).toBe(false);
+    });
+  });
+
   it('parses a user-message event with the optional clientMessageId field', () => {
     const result = v.safeParse(EmbeddedAgentServerEventSchema, {
       v: 1,

@@ -439,6 +439,9 @@ export const EmbeddedAgentServerEventSchema = v.union([
     // must keep parsing. See the type's doc comment for why consumers test
     // `reason === 'evicted'` instead of truthiness.
     reason: v.optional(ExitReasonSchema),
+    // Optional, present only for an unexpected exit with non-empty stderr;
+    // absent means absent, never ''. See the type's doc comment.
+    stderrTail: v.optional(v.string()),
   }),
   // Transcript Restore, R2 (#1447 stage 4). A reconstruction boundary, the
   // same class as `context-compacted` -- deliberately no `summary` field.

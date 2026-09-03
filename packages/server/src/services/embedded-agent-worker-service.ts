@@ -174,6 +174,26 @@ const KNOWN_EVENT_TYPES = new Set<string>([
 ]);
 /** Cap on the per-chunk stderr text forwarded to the debug logger. */
 const STDERR_LOG_CAP = 2048;
+/**
+ * Cap on the retained stderr TAIL attached to an unexpected `exited` row, in
+ * UTF-16 code units (String.prototype.slice's unit) -- NOT bytes, and NOT an
+ * overall wire-size bound. An unescaped UTF-8 encoding of a non-ASCII code
+ * unit can take up to 3 bytes, but that "up to 3x" figure describes ONLY raw
+ * UTF-8 expansion -- it is not the JSON-safe bound. JSON.stringify escapes
+ * control code units and lone surrogates as six-ASCII-byte `\uXXXX`
+ * sequences, which can inflate the serialized size well past 3x; there is no
+ * fixed multiplier for the actual wire size once JSON escaping is applied.
+ * Distinct from STDERR_LOG_CAP above: that one bounds each per-chunk debug
+ * log line; this one bounds the cumulative tail kept for the whole
+ * incarnation's lifetime, trimmed from the front as new chunks arrive.
+ *
+ * A trim landing inside a surrogate pair yields a lone surrogate in the
+ * retained string. This is an accepted consequence, not a bug: the cap is a
+ * bound, not a byte-accurate contract. JSON.stringify escapes a lone
+ * surrogate (`\uXXXX`) rather than throwing, and the schema accepts the
+ * resulting string, so this cannot break the persisted row.
+ */
+const STDERR_TAIL_CAP = 2048;
 
 /**
  * The `claude-sdk` engine's `EmbeddedAgentCommand` arm types its `provider.effort`
@@ -462,6 +482,14 @@ interface Runtime {
   evicting: boolean;
   /** Idle eviction applies to this incarnation's engine -- see {@link isEvictableEngine}. */
   evictable: boolean;
+  /**
+   * Last STDERR_TAIL_CAP characters (UTF-16 code units, not bytes and not an
+   * overall wire-size bound -- JSON-escaping can inflate the serialized size
+   * past a simple UTF-8 multiplier) of this incarnation's stderr, trimmed
+   * from the front. Attached to the `exited` row only when the exit is
+   * `'unexpected'` and this is non-empty.
+   */
+  stderrTail: string;
 }
 
 // `RestoreInfo` moved to worker-types.ts (#1449 CI fix): defining it here and
@@ -1083,6 +1111,7 @@ export class EmbeddedAgentWorkerService {
         ready: false,
         evicting: false,
         evictable: isEvictableEngine(definition.engine),
+        stderrTail: '',
       };
       this.runtimes.set(workerId, runtime);
 
@@ -1100,7 +1129,7 @@ export class EmbeddedAgentWorkerService {
         this.readStdout(runtime, subprocess).catch((err) => {
           logger.warn({ sessionId, workerId, err }, 'Embedded-agent stdout reader error');
         }),
-        this.readStderr(ctx, subprocess).catch((err) => {
+        this.readStderr(runtime, subprocess).catch((err) => {
           logger.warn({ sessionId, workerId, err }, 'Embedded-agent stderr reader error');
         }),
       ]).then(() => {});
@@ -1594,7 +1623,8 @@ export class EmbeddedAgentWorkerService {
     }
   }
 
-  private async readStderr(ctx: StreamContext, subprocess: PipedSubprocess): Promise<void> {
+  private async readStderr(runtime: Runtime, subprocess: PipedSubprocess): Promise<void> {
+    const { ctx } = runtime;
     const decoder = new TextDecoder();
     const reader = subprocess.stderr.getReader();
     try {
@@ -1603,6 +1633,7 @@ export class EmbeddedAgentWorkerService {
         if (done) break;
         const text = decoder.decode(value, { stream: true });
         if (!text) continue;
+        runtime.stderrTail = (runtime.stderrTail + text).slice(-STDERR_TAIL_CAP);
         logger.debug(
           { sessionId: ctx.sessionId, workerId: ctx.workerId, stderr: text.slice(0, STDERR_LOG_CAP) },
           'Embedded-agent stderr',
@@ -2080,7 +2111,13 @@ export class EmbeddedAgentWorkerService {
         : 'unexpected';
 
     // Append the server-authored exited row so the on-disk log is complete.
-    this.appendEvent(ctx, { v: 1, type: 'exited', code: code ?? null, reason });
+    this.appendEvent(ctx, {
+      v: 1,
+      type: 'exited',
+      code: code ?? null,
+      reason,
+      ...(reason === 'unexpected' && runtime.stderrTail !== '' ? { stderrTail: runtime.stderrTail } : {}),
+    });
 
     // Idle eviction: there is no subprocess left to drop, so any countdown
     // still in flight for this worker is meaningless.

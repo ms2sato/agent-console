@@ -60,6 +60,7 @@ interface Incarnation {
   stdinWrites: string[];
   killSignals: number[];
   pushStdout: (s: string) => void;
+  pushStderr: (s: string) => void;
   simulateExit: (code: number) => void;
   hasExited: () => boolean;
 }
@@ -149,6 +150,9 @@ function makeSpawnFactory(opts?: { exitOnShutdown?: boolean }): SpawnFactory {
       killSignals,
       pushStdout: (s: string) => {
         if (!exited) stdoutCtrl.enqueue(enc.encode(s));
+      },
+      pushStderr: (s: string) => {
+        if (!exited) stderrCtrl.enqueue(enc.encode(s));
       },
       simulateExit,
       hasExited: () => exited,
@@ -683,6 +687,23 @@ describe('idle eviction — exit reason reported to the global exit callback', (
     expect(exitedRows(h.bufferOutput)).toEqual([
       expect.objectContaining({ type: 'exited', reason: 'unexpected' }),
     ]);
+  });
+
+  // Issue #1454: an evicted exit is a routine, server-driven teardown, not a
+  // crash -- it must never carry leftover stderr as if it explained anything,
+  // even when the incarnation happened to write some before its countdown
+  // elapsed.
+  it('an evicted exit carries no stderrTail even when stderr was written', async () => {
+    const h = setup({ idleEvictionMs: 15 });
+    await activateAndReady(h);
+    h.spawn.latest().pushStderr('routine warning noise unrelated to the eviction');
+
+    await waitFor(() => h.worker.subprocess === null, 2000);
+
+    const [row] = exitedRows(h.bufferOutput);
+    expect(row).toBeDefined();
+    expect(row?.reason).toBe('evicted');
+    expect(Object.hasOwn(row ?? {}, 'stderrTail')).toBe(false);
   });
 });
 

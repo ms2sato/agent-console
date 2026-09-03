@@ -514,6 +514,49 @@ describe('embedded-agent-store', () => {
     expect(entry.reason).toBeUndefined();
   });
 
+  it('carries an exited row `stderrTail` through onto the entry when present (#1454)', async () => {
+    const instance = getOrCreateEmbeddedAgentWorker('s5-stderrtail', 'w5-stderrtail');
+    const ws = MockWebSocket.getLastInstance();
+    ws!.simulateOpen();
+
+    const data = ndjson({
+      v: 1,
+      type: 'exited',
+      code: 1,
+      reason: 'unexpected',
+      stderrTail: 'Error: Cannot find module',
+    });
+    ws!.simulateMessage(historyMessage(data, data.length));
+    await flush();
+
+    const entries = instance.getSnapshot().entries;
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({
+      kind: 'exited',
+      code: 1,
+      stderrTail: 'Error: Cannot find module',
+    });
+  });
+
+  it('leaves `stderrTail` ABSENT on the entry when the exited event carries none (#1454)', async () => {
+    // Absence stays absence: an exited row with no stderrTail (a 'managed'
+    // or 'evicted' exit, or a pre-#1454 server) must not gain a
+    // store-invented default like `''`.
+    const instance = getOrCreateEmbeddedAgentWorker('s5-nostderrtail', 'w5-nostderrtail');
+    const ws = MockWebSocket.getLastInstance();
+    ws!.simulateOpen();
+
+    const data = ndjson({ v: 1, type: 'exited', code: 0 });
+    ws!.simulateMessage(historyMessage(data, data.length));
+    await flush();
+
+    const entries = instance.getSnapshot().entries;
+    expect(entries).toHaveLength(1);
+    const entry = entries[0] as Extract<EmbeddedAgentChatEntry, { kind: 'exited' }>;
+    expect(Object.prototype.hasOwnProperty.call(entry, 'stderrTail')).toBe(false);
+    expect(entry.stderrTail).toBeUndefined();
+  });
+
   describe('currentExit (#1455) -- single-writer current-state field', () => {
     it('initializes to null (no affordance) before any exited/ready event has been observed', () => {
       const instance = getOrCreateEmbeddedAgentWorker('s5c-init', 'w5c-init');
@@ -648,6 +691,43 @@ describe('embedded-agent-store', () => {
       await flush();
 
       expect(instance.getSnapshot().currentExit).toBeNull();
+    });
+
+    it('sets currentExit.stderrTail from the exited event when present, verbatim (#1454)', async () => {
+      const instance = getOrCreateEmbeddedAgentWorker('s5c-stderrtail', 'w5c-stderrtail');
+      const ws = MockWebSocket.getLastInstance();
+      ws!.simulateOpen();
+
+      const data = ndjson({
+        v: 1,
+        type: 'exited',
+        code: 1,
+        reason: 'unexpected',
+        stderrTail: 'Error: ENOENT',
+      });
+      ws!.simulateMessage(historyMessage(data, data.length));
+      await flush();
+
+      expect(instance.getSnapshot().currentExit).toEqual({
+        code: 1,
+        reason: 'unexpected',
+        stderrTail: 'Error: ENOENT',
+      });
+    });
+
+    it('leaves currentExit.stderrTail ABSENT when the exited event carries none (#1454)', async () => {
+      const instance = getOrCreateEmbeddedAgentWorker('s5c-nostderrtail', 'w5c-nostderrtail');
+      const ws = MockWebSocket.getLastInstance();
+      ws!.simulateOpen();
+
+      const data = ndjson({ v: 1, type: 'exited', code: 0 });
+      ws!.simulateMessage(historyMessage(data, data.length));
+      await flush();
+
+      const currentExit = instance.getSnapshot().currentExit;
+      expect(currentExit).not.toBeNull();
+      expect(Object.prototype.hasOwnProperty.call(currentExit, 'stderrTail')).toBe(false);
+      expect(currentExit?.stderrTail).toBeUndefined();
     });
   });
 
