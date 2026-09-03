@@ -5,8 +5,8 @@
  * The input shape below is deliberately IDENTICAL to the Claude Agent SDK's
  * own native `TodoWriteInput` (`sdk-tools.d.ts`): `{ todos: { content,
  * status, activeForm }[] }`. `claude-sdk` does NOT route through this file --
- * measured against the resolved CLI (Issue #1575; see
- * `docs/design/embedded-agent-sdk-engine.md` §4.1/§5.2), `TodoWrite` is
+ * measured against the resolved CLI (see
+ * `docs/design/embedded-agent-sdk-engine.md` §4.1/§5.2) -- `TodoWrite` is
  * silently dropped from that engine's native tool catalog rather than being
  * reachable simply by appearing in the `tools` allowlist. `sdk-engine.ts`
  * instead serves the SAME contract via an in-process SDK MCP server

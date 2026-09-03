@@ -194,8 +194,8 @@ export function createSdkCompactTool(onReserve: () => void) {
 }
 
 /**
- * Builds the `TodoWrite` tool definition for the in-process SDK MCP server
- * (Issue #1575): serves the SAME contract `createTodoWriteTool()` implements
+ * Builds the `TodoWrite` tool definition for the in-process SDK MCP server:
+ * serves the SAME contract `createTodoWriteTool()` implements
  * for the openai-api engine (`./tools/todo-write.js`), because the SDK's own
  * native `TodoWrite` was measured absent from the resolved CLI's reported
  * tool catalog (docs/design/embedded-agent-sdk-engine.md §4.1/§5.2) -- unlike
@@ -553,7 +553,7 @@ export class SdkEngine implements Engine {
       // the CLI actually accepted is observable ONLY via what `system:init`
       // reports back (see `handleSystemInit`'s `reportedNonMcp` warn below).
       //
-      // `TodoWrite` (Issue #1575): unlike `Compact`, this is a real
+      // `TodoWrite`: unlike `Compact`, this is a real
       // capability tool governed by `enabledTools` -- its MCP-namespaced
       // name is appended ONLY when `TodoWrite` is itself enabled, and the
       // bare `'TodoWrite'` name (already present via `...this.enabledToolNames`
@@ -579,7 +579,7 @@ export class SdkEngine implements Engine {
         // the openai-api engine's model sees plain `Compact`; the contract
         // (no parameters, reservation semantics, result wording) is identical.
         //
-        // `TodoWrite` (Issue #1575) rides the SAME server, registered only
+        // `TodoWrite` rides the SAME server, registered only
         // when the definition's `enabledTools` includes it -- unlike
         // `Compact`, a disabled `TodoWrite` must not even be reachable, so
         // registration is gated the same way the allowlist entry above is.

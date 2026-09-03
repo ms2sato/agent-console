@@ -56,7 +56,7 @@ export type EmbeddedAgentEngine = 'openai-api' | 'claude-sdk';
  * publish a live task list to the user rather than acting on the filesystem
  * or a shell, so it stays ON by default alongside the read-only set. On
  * `claude-sdk` it is measured absent from the resolved CLI's native tool
- * catalog (Issue #1575), so it is served by an in-process SDK MCP server
+ * catalog, so it is served by an in-process SDK MCP server
  * instead (mirroring `Compact`'s own MCP-served shape) -- see
  * `SDK_TODO_WRITE_TOOL_NAME` below; on `openai-api` it is implemented in
  * packages/embedded-agent/src/tools/todo-write.ts.
@@ -67,8 +67,8 @@ export type EmbeddedAgentToolName = 'Read' | 'Glob' | 'Grep' | 'Bash' | 'Write' 
  * The `TodoWrite` tool's model-visible, namespaced name on the `claude-sdk`
  * engine, where it is served by an in-process SDK MCP server (mirroring
  * `Compact`'s `mcp__console__Compact`) rather than being the SDK's own
- * native builtin (measured absent from the resolved CLI's tool catalog,
- * Issue #1575). `TodoPanel` (packages/client) accepts a `tool-call` entry
+ * native builtin (measured absent from the resolved CLI's tool catalog).
+ * `TodoPanel` (packages/client) accepts a `tool-call` entry
  * named either the plain `'TodoWrite'` (openai-api / a future native SDK
  * tool) or this namespaced name.
  *

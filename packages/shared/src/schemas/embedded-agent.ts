@@ -30,7 +30,7 @@ import type { ExitReason } from '../types/worker.js';
  * publish a live task list to the user rather than acting on the filesystem
  * or a shell, so it stays ON by default alongside the read-only set. On
  * `claude-sdk` it is measured absent from the resolved CLI's native tool
- * catalog (Issue #1575), so it is served by an in-process SDK MCP server
+ * catalog, so it is served by an in-process SDK MCP server
  * instead (mirroring `Compact`'s own MCP-served shape, see
  * `SDK_TODO_WRITE_TOOL_NAME` in types/embedded-agent.ts); on `openai-api` it
  * is implemented in packages/embedded-agent/src/tools/todo-write.ts.
