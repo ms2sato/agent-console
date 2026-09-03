@@ -145,9 +145,9 @@ export function splitContentIntoChunks(content: string, targetBytes: number): st
  *
  * - `'pty'` — emit a single `[internal:process]` notification carrying the
  *   full content (existing behavior). Delivery failures reported by
- *   `deliverNotification` (`{ok: false}`) are logged as warnings and
- *   swallowed because they are cosmetic (the calling code has nowhere to
- *   report a failed notification to).
+ *   `deliverNotification` (`{ok: false}`) or thrown by the call itself are
+ *   logged as warnings and swallowed because they are cosmetic (the calling
+ *   code has nowhere to report a failed notification to).
  * - `'message'` — split content into <= `MESSAGE_CHUNK_TARGET_BYTES`
  *   chunks, write each chunk via `sendMessage`, and emit a brief
  *   notification carrying the file path and byte count for each chunk.
@@ -155,7 +155,8 @@ export function splitContentIntoChunks(content: string, targetBytes: number): st
  *   throw**, so callers awaiting the returned promise can detect that
  *   message-mode delivery did not happen and report a `false` success
  *   to their own caller. Brief notification delivery failures after a
- *   successful chunk write are still cosmetic — they are logged as warnings
+ *   successful chunk write are still cosmetic — whether reported as
+ *   `{ok: false}` or thrown by the call itself, they are logged as warnings
  *   and do not throw.
  */
 export async function routeProcessContent(
@@ -168,19 +169,31 @@ export async function routeProcessContent(
   }
 
   if (process.outputMode === 'pty') {
-    const result = await deps.deliverNotification(process.sessionId, process.workerId, {
-      kind: 'internal-process',
-      tag: 'internal:process',
-      fields: {
-        processId: process.id,
-        command: process.command,
-        message: content,
-      },
-      intent: direction === 'stdout' ? 'triage' : 'inform',
-    });
-    if (!result.ok) {
+    try {
+      const result = await deps.deliverNotification(process.sessionId, process.workerId, {
+        kind: 'internal-process',
+        tag: 'internal:process',
+        fields: {
+          processId: process.id,
+          command: process.command,
+          message: content,
+        },
+        intent: direction === 'stdout' ? 'triage' : 'inform',
+      });
+      if (!result.ok) {
+        logger.warn(
+          { processId: process.id, sessionId: process.sessionId, direction, error: result.error },
+          'Failed to deliver process PTY notification',
+        );
+      }
+    } catch (error) {
       logger.warn(
-        { processId: process.id, sessionId: process.sessionId, direction, error: result.error },
+        {
+          processId: process.id,
+          sessionId: process.sessionId,
+          direction,
+          error: error instanceof Error ? error.message : String(error),
+        },
         'Failed to deliver process PTY notification',
       );
     }
@@ -211,19 +224,36 @@ export async function routeProcessContent(
         ? `[stdout via message] path=${sendResult.path} bytes=${bytes}`
         : `[response via message] path=${sendResult.path} bytes=${bytes}`;
 
-    const notifyResult = await deps.deliverNotification(process.sessionId, process.workerId, {
-      kind: 'internal-process',
-      tag: 'internal:process',
-      fields: {
-        processId: process.id,
-        command: process.command,
-        message: summary,
-      },
-      intent: direction === 'stdout' ? 'triage' : 'inform',
-    });
-    if (!notifyResult.ok) {
+    try {
+      const notifyResult = await deps.deliverNotification(process.sessionId, process.workerId, {
+        kind: 'internal-process',
+        tag: 'internal:process',
+        fields: {
+          processId: process.id,
+          command: process.command,
+          message: summary,
+        },
+        intent: direction === 'stdout' ? 'triage' : 'inform',
+      });
+      if (!notifyResult.ok) {
+        logger.warn(
+          {
+            processId: process.id,
+            sessionId: process.sessionId,
+            direction,
+            error: notifyResult.error,
+          },
+          'Failed to deliver brief process PTY notification (message file was written)',
+        );
+      }
+    } catch (error) {
       logger.warn(
-        { processId: process.id, sessionId: process.sessionId, direction, error: notifyResult.error },
+        {
+          processId: process.id,
+          sessionId: process.sessionId,
+          direction,
+          error: error instanceof Error ? error.message : String(error),
+        },
         'Failed to deliver brief process PTY notification (message file was written)',
       );
     }

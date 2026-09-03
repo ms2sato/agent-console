@@ -200,6 +200,25 @@ describe('routeProcessContent (pty mode)', () => {
 
     expect(sendMessage).not.toHaveBeenCalled();
   });
+
+  it('logs a warning and does not throw when deliverNotification rejects', async () => {
+    const { deps, sendMessage } = makeDeps({
+      deliverNotification: async () => {
+        throw new Error('boom');
+      },
+    });
+    const process = makeProcess({ outputMode: 'pty' });
+
+    await expect(
+      routeProcessContent(deps, {
+        process,
+        content: 'full stdout content',
+        direction: 'stdout',
+      }),
+    ).resolves.toBeUndefined();
+
+    expect(sendMessage).not.toHaveBeenCalled();
+  });
 });
 
 describe('routeProcessContent (message mode)', () => {
@@ -342,4 +361,35 @@ describe('routeProcessContent (message mode)', () => {
     // The chunk write itself still succeeded -- only the brief notification failed.
     expect(sendMessage).toHaveBeenCalledTimes(1);
   });
+
+  it('logs a warning and does not throw when deliverNotification rejects after a successful chunk write', async () => {
+    const { deps, sendMessage } = makeDeps({
+      deliverNotification: async () => {
+        throw new Error('boom');
+      },
+    });
+    const process = makeProcess({ outputMode: 'message' });
+
+    await expect(
+      routeProcessContent(deps, {
+        process,
+        content: 'a single chunk',
+        direction: 'stdout',
+      }),
+    ).resolves.toBeUndefined();
+
+    // The chunk write itself still succeeded -- only the notification rejected.
+    // This is the regression case for write_process_response: a notification
+    // hiccup must not turn its `written: true` result into `written: false`.
+    expect(sendMessage).toHaveBeenCalledTimes(1);
+  });
+
+  // Negative control for the two tests above (per workflow.md's "A check's
+  // existence is not its detection power"): a rejecting sendMessage must
+  // still propagate as a rejection (unchanged behavior), proving the
+  // try/catch added around deliverNotification is scoped to that call only
+  // and is not a blanket try/catch around the whole function. Covered
+  // already by 'rejects when sendMessage fails so callers can report write
+  // failure' above -- confirmed still passing after the fix (see polarity
+  // note in the PR description).
 });
