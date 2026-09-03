@@ -9,6 +9,8 @@ import {
   EmbeddedAgentEventSchema,
   EmbeddedAgentServerEventSchema,
   EmbeddedAgentStreamEventSchema,
+  EMBEDDED_AGENT_TOOL_NAMES,
+  DEFAULT_EMBEDDED_AGENT_ENABLED_TOOLS,
 } from '../embedded-agent.js';
 import { SDK_RESUME_FAILURE_REASONS } from '../../types/embedded-agent.js';
 
@@ -141,6 +143,14 @@ describe('EmbeddedAgentDefinitionSchema', () => {
       enabledTools: ['NotARealTool'],
     });
     expect(result.success).toBe(false);
+  });
+
+  it('accepts TodoWrite in enabledTools (#1573)', () => {
+    const result = v.safeParse(EmbeddedAgentDefinitionSchema, {
+      ...validDefinition,
+      enabledTools: ['Read', 'TodoWrite'],
+    });
+    expect(result.success).toBe(true);
   });
 
   it('accepts a valid instructions array', () => {
@@ -1795,5 +1805,18 @@ describe('init.restoredUsage survives the serialized stdio line (#1419)', () => 
 
     if (parsed.type !== 'init' || parsed.engine !== 'openai-api') throw new Error('unexpected parse output');
     expect(parsed.restoredUsage).toEqual({ promptTokens: 6722, estimated: false });
+  });
+});
+
+describe('EMBEDDED_AGENT_TOOL_NAMES / DEFAULT_EMBEDDED_AGENT_ENABLED_TOOLS (#1573)', () => {
+  it('DEFAULT_EMBEDDED_AGENT_ENABLED_TOOLS is a subset of EMBEDDED_AGENT_TOOL_NAMES', () => {
+    for (const name of DEFAULT_EMBEDDED_AGENT_ENABLED_TOOLS) {
+      expect(EMBEDDED_AGENT_TOOL_NAMES).toContain(name);
+    }
+  });
+
+  it('EMBEDDED_AGENT_TOOL_NAMES includes TodoWrite and DEFAULT_EMBEDDED_AGENT_ENABLED_TOOLS includes it too', () => {
+    expect(EMBEDDED_AGENT_TOOL_NAMES).toContain('TodoWrite');
+    expect(DEFAULT_EMBEDDED_AGENT_ENABLED_TOOLS).toContain('TodoWrite');
   });
 });
