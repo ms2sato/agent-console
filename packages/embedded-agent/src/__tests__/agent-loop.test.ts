@@ -1,5 +1,8 @@
-import { describe, it, expect } from 'bun:test';
-import type { EmbeddedAgentEvent } from '@agent-console/shared';
+import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
+import * as fsPromises from 'node:fs/promises';
+import * as path from 'node:path';
+import * as os from 'node:os';
+import type { EmbeddedAgentAttachment, EmbeddedAgentEvent } from '@agent-console/shared';
 import { AgentLoop, type AgentLoopDeps } from '../agent-loop.js';
 import type { ToolCallOutcome, ToolExecutor } from '../mcp.js';
 import {
@@ -108,6 +111,8 @@ function makeLoop(
     restoredUsage?: AgentLoopDeps['restoredUsage'];
     compaction?: AgentLoopDeps['compaction'];
     reasoningEffort?: AgentLoopDeps['reasoningEffort'];
+    attachmentRoots?: AgentLoopDeps['attachmentRoots'];
+    supportsImages?: AgentLoopDeps['supportsImages'];
   } = {},
 ): Harness {
   const events: EmbeddedAgentEvent[] = [];
@@ -136,6 +141,8 @@ function makeLoop(
     restoredConversation: opts.restoredConversation,
     restoredUsage: opts.restoredUsage,
     reasoningEffort: opts.reasoningEffort,
+    attachmentRoots: opts.attachmentRoots,
+    supportsImages: opts.supportsImages,
   };
   const loop = new AgentLoop(deps);
   loopRef.current = loop;
@@ -998,6 +1005,133 @@ describe('AgentLoop — the provider error outcome carries structure inward', ()
     expect(events.find((e) => e.type === 'turn-error')).toMatchObject({
       message: 'provider responded with HTTP 400: <html>error code: 1010</html>',
     });
+  });
+});
+
+describe('AgentLoop — image attachments (#1571)', () => {
+  const PNG_BASE64 =
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=';
+  const PNG_BYTES = Buffer.from(PNG_BASE64, 'base64');
+
+  let rootDir: string;
+
+  beforeEach(async () => {
+    rootDir = await fsPromises.mkdtemp(path.join(os.tmpdir(), 'agent-loop-attach-'));
+  });
+
+  afterEach(async () => {
+    await fsPromises.rm(rootDir, { recursive: true, force: true });
+  });
+
+  it('pushes a content-block array for a turn with one PNG attachment and supportsImages true', async () => {
+    const filePath = path.join(rootDir, 'shot.png');
+    await fsPromises.writeFile(filePath, PNG_BYTES);
+    const attachments: EmbeddedAgentAttachment[] = [{ path: filePath, mimeType: 'image/png' }];
+
+    const h = makeLoop([textResponse('I see it')], {
+      attachmentRoots: [rootDir],
+      supportsImages: true,
+    });
+
+    await h.loop.runTurn('t1', 'what is in this image?', attachments);
+
+    const sentMessages = h.adapter.capturedMessages[0];
+    const userMessage = sentMessages.find((m) => m.role === 'user');
+    expect(userMessage?.content).toEqual([
+      { type: 'text', text: 'what is in this image?' },
+      { type: 'image_url', image_url: { url: `data:image/png;base64,${PNG_BYTES.toString('base64')}` } },
+    ]);
+  });
+
+  it('pushes a plain string, byte-identical to pre-#1571 behavior, for a turn with no attachments', async () => {
+    const h = makeLoop([textResponse('ok')], {
+      attachmentRoots: [rootDir],
+      supportsImages: true,
+    });
+
+    await h.loop.runTurn('t1', 'hello there');
+
+    const sentMessages = h.adapter.capturedMessages[0];
+    const userMessage = sentMessages.find((m) => m.role === 'user');
+    // Explicit shape comparison against the old `{ role: 'user', content: text }`
+    // construction, not merely `typeof === 'string'` -- the polarity requirement.
+    expect(userMessage).toEqual({ role: 'user', content: 'hello there' });
+  });
+
+  it('does not push the user message and settles as canceled when cancel() lands during attachment resolution', async () => {
+    const filePath = path.join(rootDir, 'shot.png');
+    await fsPromises.writeFile(filePath, PNG_BYTES);
+    const attachments: EmbeddedAgentAttachment[] = [{ path: filePath, mimeType: 'image/png' }];
+
+    const h = makeLoop([textResponse('unused'), textResponse('second turn')], {
+      attachmentRoots: [rootDir],
+      supportsImages: true,
+    });
+
+    const turnPromise = h.loop.runTurn('t1', 'what is in this image?', attachments);
+    // Synchronous, no await in between: `runUserTurn`'s synchronous prefix
+    // has already reached the real fs-read gap inside
+    // `buildUserMessageContent` by the time `runTurn`'s own synchronous
+    // prefix returns control here, so cancel() lands on the pending
+    // attachment resolution rather than after it.
+    h.loop.cancel();
+    await turnPromise;
+
+    expect(h.events.find((e) => e.type === 'turn-error')).toMatchObject({ message: 'turn canceled' });
+    // The provider was never called for the canceled turn -- the message
+    // never reached the conversation, so there was nothing to send.
+    expect(h.adapter.calls).toBe(0);
+
+    // A subsequent turn is accepted normally: the canceled turn did not
+    // leave the loop wedged, and the conversation it would have polluted
+    // does not carry the canceled turn's user message forward.
+    await h.loop.runTurn('t2', 'second');
+    const secondTurnMessages = h.adapter.capturedMessages.at(-1)!;
+    expect(secondTurnMessages.some((m) => m.role === 'user' && m.content === 'what is in this image?')).toBe(
+      false,
+    );
+    expect(secondTurnMessages.some((m) => m.role === 'user' && m.content === 'second')).toBe(true);
+  });
+});
+
+describe('AgentLoop — contentCharLength / estimateTokensFromChars on image-bearing messages (#1571)', () => {
+  it('estimates an image-bearing message using only its text part, not the whole array length', async () => {
+    const rootDir = await fsPromises.mkdtemp(path.join(os.tmpdir(), 'agent-loop-estimate-'));
+    try {
+      const filePath = path.join(rootDir, 'shot.png');
+      const bytes = Buffer.from(
+        'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=',
+        'base64',
+      );
+      await fsPromises.writeFile(filePath, bytes);
+      const attachments: EmbeddedAgentAttachment[] = [{ path: filePath, mimeType: 'image/png' }];
+
+      // Long enough text that its own char count dominates the tiny fixed
+      // overhead below, so the auto-compaction ratio move is attributable to
+      // it rather than to noise.
+      const longText = 'x'.repeat(400);
+
+      const withImage = makeLoop([textResponse('ack')], {
+        attachmentRoots: [rootDir],
+        supportsImages: true,
+      });
+      await withImage.loop.runTurn('t1', longText, attachments);
+      const usage1 = withImage.events.find((e) => e.type === 'context-usage');
+      expect(usage1).toBeDefined();
+
+      const withoutImage = makeLoop([textResponse('ack')]);
+      await withoutImage.loop.runTurn('t1', longText);
+      const usage2 = withoutImage.events.find((e) => e.type === 'context-usage');
+      expect(usage2).toBeDefined();
+
+      // Both runs measure the SAME text length; the image contributes 0 chars
+      // to the coarse estimate, so the two readings must agree.
+      expect(usage1).toMatchObject({
+        promptTokens: (usage2 as { promptTokens: number }).promptTokens,
+      });
+    } finally {
+      await fsPromises.rm(rootDir, { recursive: true, force: true });
+    }
   });
 });
 

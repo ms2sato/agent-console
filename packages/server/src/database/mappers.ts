@@ -547,6 +547,8 @@ export function toEmbeddedAgentRow(def: EmbeddedAgentDefinition): NewEmbeddedAge
     provider_base_url: def.engine === 'openai-api' ? def.provider.baseUrl : null,
     provider_model: def.provider.model,
     provider_api_key_ref: def.engine === 'openai-api' ? (def.provider.apiKeyRef ?? null) : null,
+    // Same null-for-claude-sdk convention as provider_base_url/provider_api_key_ref.
+    provider_supports_images: def.engine === 'openai-api' ? (def.provider.supportsImages ? 1 : 0) : null,
     system_prompt: def.systemPrompt ?? null,
     max_tool_iterations: def.maxToolIterations ?? null,
     enabled_tools: def.enabledTools !== undefined ? JSON.stringify(def.enabledTools) : null,
@@ -653,6 +655,9 @@ export function toEmbeddedAgentDefinition(row: EmbeddedAgentRow): EmbeddedAgentD
         baseUrl: row.provider_base_url,
         model: row.provider_model,
         apiKeyRef: row.provider_api_key_ref ?? undefined,
+        // Absent/false both mean "cannot see images" -- never write a literal
+        // `false`, same "absent = default" convention as apiKeyRef (#1571).
+        supportsImages: row.provider_supports_images === 1 ? true : undefined,
       },
     };
   } else if (row.engine === 'claude-sdk') {

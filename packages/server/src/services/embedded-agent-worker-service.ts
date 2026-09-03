@@ -38,6 +38,7 @@ import {
   type EmbeddedAgentServerNotification,
   type EmbeddedAgentRestoredMessage,
   type EmbeddedAgentRestoredUsage,
+  type EmbeddedAgentAttachment,
   type AgentActivityState,
   type ExitReason,
   type SdkResumeFailureReason,
@@ -1132,6 +1133,10 @@ export class EmbeddedAgentWorkerService {
                 ...(resolvedModelParams.reasoningEffort !== null
                   ? { reasoningEffort: resolvedModelParams.reasoningEffort }
                   : {}),
+                // Straight pass-through of the definition's own declared
+                // capability flag -- no per-worker override concept exists
+                // for this field (unlike reasoningEffort).
+                supportsImages: definition.provider.supportsImages,
               },
               // The restore-boundary seed, this arm only: `claude-sdk` carries its own
               // context state through the SDK resume and computes no ratio,
@@ -1270,6 +1275,7 @@ export class EmbeddedAgentWorkerService {
     workerId: string,
     text: string,
     clientMessageId?: string,
+    attachments?: EmbeddedAgentAttachment[],
   ): Promise<SendUserMessageResult> {
     // Slash commands (#1572): only user-typed composer input reaches this
     // check -- sendSystemNotification (below) deliberately never calls it,
@@ -1278,6 +1284,7 @@ export class EmbeddedAgentWorkerService {
     const commandOverride = this.resolveConsoleSlashCommand(sessionId, workerId, text);
     return this.deliverUserTurn(sessionId, workerId, text, {
       clientMessageId,
+      attachments,
       ...(commandOverride !== null ? { commandOverride } : {}),
     });
   }
@@ -1440,6 +1447,7 @@ export class EmbeddedAgentWorkerService {
     opts: {
       clientMessageId?: string;
       notification?: EmbeddedAgentServerNotification;
+      attachments?: EmbeddedAgentAttachment[];
       /**
        * Slash commands (#1572): when set, this is the WIRE command sent to
        * stdin in place of the ordinary `{ type: 'user-message', ... }`
@@ -1500,7 +1508,16 @@ export class EmbeddedAgentWorkerService {
     // persisted/broadcast event carries the client's correlation id or the
     // notification marker. Do NOT reuse one object for both -- see
     // docs/design/embedded-agent-worker.md.
-    const command: EmbeddedAgentCommand = opts.commandOverride ?? { v: 1, type: 'user-message', id, text };
+    const hasAttachments = opts.attachments !== undefined && opts.attachments.length > 0;
+    const command: EmbeddedAgentCommand =
+      opts.commandOverride ??
+      {
+        v: 1,
+        type: 'user-message',
+        id,
+        text,
+        ...(hasAttachments ? { attachments: opts.attachments } : {}),
+      };
     const event: EmbeddedAgentServerEvent = {
       v: 1,
       type: 'user-message',
@@ -1508,6 +1525,7 @@ export class EmbeddedAgentWorkerService {
       text,
       ...(opts.clientMessageId !== undefined ? { clientMessageId: opts.clientMessageId } : {}),
       ...(opts.notification !== undefined ? { notification: opts.notification } : {}),
+      ...(hasAttachments ? { attachments: opts.attachments } : {}),
     };
     // Forward BEFORE appending: both calls are synchronous (no await between
     // them, nothing else can interleave), so ordering doesn't affect replay

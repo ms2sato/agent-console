@@ -936,8 +936,10 @@ describe('EmbeddedAgentWorkerView', () => {
       expect(assistantBubble).not.toBeNull();
       expect(assistantBubble?.className).not.toMatch(/max-w-/);
 
+      // max-w-[80%] now lives on the wrapper div (not the bubble itself),
+      // so the chip row sharing the same row can share the same cap.
       const userBubble = screen.getByText('hi');
-      expect(userBubble.className).toContain('max-w-[80%]');
+      expect(userBubble.parentElement?.className).toContain('max-w-[80%]');
     });
 
     it('keeps the wrap-enabling classes (.memo-content, min-w-0) on the assistant bubble for a long unbroken token at full width, with no max-w- constraint reintroduced (#1095)', async () => {

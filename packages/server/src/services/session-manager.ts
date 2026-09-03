@@ -9,6 +9,7 @@ import type {
   WorkerMessage,
   AppServerMessage,
   ExitReason,
+  EmbeddedAgentAttachment,
 } from '@agent-console/shared';
 import { isPtyBackedWorker } from '@agent-console/shared';
 import type {
@@ -633,9 +634,15 @@ export class SessionManager {
    * Send a message from the user to a worker via API.
    * If fromWorkerId is null, the message is sent as "User".
    */
-  async sendMessage(sessionId: string, fromWorkerId: string | null, toWorkerId: string, content: string, filePaths?: string[]): Promise<WorkerMessage | null> {
+  async sendMessage(sessionId: string, fromWorkerId: string | null, toWorkerId: string, content: string, attachments?: EmbeddedAgentAttachment[]): Promise<WorkerMessage | null> {
     const session = this.sessions.get(sessionId);
     if (!session) return null;
+
+    // The PTY branch and the delivery-text folding below are path-only and
+    // predate attachments; derive plain paths so both keep their existing,
+    // unchanged behavior. Only the embedded-agent branch forwards the typed
+    // attachment array.
+    const filePaths = (attachments ?? []).map((a) => a.path);
 
     const targetWorker = session.workers.get(toWorkerId);
     if (!targetWorker || targetWorker.type === 'git-diff') return null;
@@ -665,8 +672,8 @@ export class SessionManager {
       // branch's typed-lines behavior) so a same-session composer send with
       // files still delivers something meaningful, and so the model can
       // tell an attachment from a path the user typed inline.
-      const deliveryText = composeEmbeddedAgentDeliveryText(content, filePaths ?? []);
-      const result = await this.sendEmbeddedAgentUserMessage(sessionId, toWorkerId, deliveryText);
+      const deliveryText = composeEmbeddedAgentDeliveryText(content, filePaths);
+      const result = await this.sendEmbeddedAgentUserMessage(sessionId, toWorkerId, deliveryText, undefined, attachments);
       if (!result.ok) {
         throw new EmbeddedMessageDeliveryError(result.error, result.code);
       }
@@ -757,8 +764,9 @@ export class SessionManager {
     workerId: string,
     text: string,
     clientMessageId?: string,
+    attachments?: EmbeddedAgentAttachment[],
   ): Promise<SendUserMessageResult> {
-    return this.embeddedAgentWorkerService.sendUserMessage(sessionId, workerId, text, clientMessageId);
+    return this.embeddedAgentWorkerService.sendUserMessage(sessionId, workerId, text, clientMessageId, attachments);
   }
 
   /**

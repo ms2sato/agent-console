@@ -23,11 +23,14 @@
  * signatures, and `dispose` is optional, so an `AgentLoop` instance is
  * already assignable to `Engine`.
  */
+import type { EmbeddedAgentAttachment } from '@agent-console/shared';
+
 export interface Engine {
   /** Start (or continue) one user turn. Resolves once the turn concludes,
    * successfully or with a turn-level error -- never rejects for an
-   * ordinary turn failure. */
-  runTurn(id: string, text: string): Promise<void>;
+   * ordinary turn failure. `attachments` are resolved into
+   * engine-specific content by each implementation. */
+  runTurn(id: string, text: string, attachments?: EmbeddedAgentAttachment[]): Promise<void>;
   /** Abort the in-flight turn, if any. No-op when no turn is active. */
   cancel(): void;
   /**
