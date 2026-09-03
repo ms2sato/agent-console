@@ -238,6 +238,31 @@ When the orchestrator requests owner approval for a destructive or owner-judgmen
 - **MANDATORY: Every PR must go through both checks.**
   - **Preflight check** (mechanical): `node .claude/skills/orchestrator/preflight-check.js <PR>` — test coverage validation, rule/skill duplication invariant check, and public-artifact language check. CI runs this automatically.
   - **Acceptance check** (human judgment): `node .claude/skills/orchestrator/acceptance-check.js <PR>` via `run_process` — full Q1-Q12 interactive review. **Always required for production code changes.** Never skip this — even when the diff looks trivial. (Lesson: Sprint 2026-04-05c — skipping the full acceptance check caused a UI requirement to be missed on #599.)
+- **MANDATORY: Re-check `SCHEMA_VERSION` against the prospective merge tree before merging.** `SCHEMA_VERSION` is a content hash over the runtime-import closure of `packages/shared/src/schemas/`, so a PR whose committed hash was correct at review time goes stale the moment a sibling merge widens that closure or changes a file inside it — with no merge conflict to prompt anyone, and with the merge-ref CI run as the only signal, on a surface nobody re-reads after review. Merging such a PR turns `main` red on `schema-version.gen.test.ts`. Run the check from your own worktree; it touches no other worktree, creates no branch, and modifies nothing:
+
+  ```bash
+  BR=<head branch of the PR>          # gh pr view <N> --json headRefName --jq .headRefName
+  WT=$PWD                             # the Orchestrator's own worktree, for node_modules
+  SCRATCH=$(mktemp -d)
+  git fetch origin main "$BR"
+  tree=$(git merge-tree --write-tree origin/main "origin/$BR" | head -1)
+  git archive "$tree" | tar -x -C "$SCRATCH"
+  ln -sfn "$WT/node_modules" "$SCRATCH/node_modules"
+  for d in "$WT"/packages/*/node_modules; do
+    [ -e "$d" ] && ln -sfn "$d" "$SCRATCH/packages/$(basename "$(dirname "$d")")/node_modules"
+  done
+  (cd "$SCRATCH" && node scripts/generate-schema-version.mjs --check)
+  echo "SCHEMA_CHECK_EXIT: $?"
+  ```
+
+  The `node_modules` symlinks are required — the generator imports `typescript`. `--check` prints the merge tree's value on success; when it exits 1, run it again with `--print` to get that value, which is the number the comparison below is against. The scratch directory is disposable; nothing writes back into it from the repository.
+
+  **Exit 1 means do NOT merge.** Send the PR back instead: its delegate merges `origin/main` into the branch, regenerates (`node scripts/generate-schema-version.mjs`), confirms the regenerated value differs from BOTH sides — the tell in [`workflow.md`](../../rules/workflow.md) Verification Checklist step 2 — runs the full `bun run test`, and pushes. Re-run this check against the new head before merging.
+
+  **When it is required:** any PR touching `packages/shared/src/schemas/`, a `packages/shared/src/types/` (or other) file inside the runtime-import closure, or `scripts/generate-schema-version.mjs` — and, critically, any PR at all when a sibling PR merged during this PR's review window touched one of those. That last case is the one this check exists for, because the PR's own diff shows nothing to suspect. The check costs seconds, so running it on every merge is cheap and always acceptable; prefer that over deciding whether it applies.
+
+  (Lesson: 2026-09-04 — [#1601](https://github.com/ms2sato/agent-console/pull/1601) widened the hash input to the runtime-import closure and moved `main`'s value to `302828629665d885`. [#1602](https://github.com/ms2sato/agent-console/pull/1602) was reviewed CLEAN with "hash equal to main" verified both ways against the `main` of that hour, and added a constant to `packages/shared/src/types/embedded-agent.ts` — a file inside the closure only after #1601. The merge tree's regenerated value was `9864a6a1095bf63a`, neither `main`'s nor that head's `0a254cc1e2f59aad`. Nothing in either PR was wrong when written; merging as-is would have turned `main` red. The sequence above was measured in both directions on that PR: exit 1 against head `5849d177`, exit 0 against head `a079479d` after its delegate merged `origin/main` and regenerated.)
+
 - **MANDATORY: Merge execution gate — read `mergeStateStatus` immediately before merging, and merge only through a conditional check.** Never issue the merge as an unconditional command on the strength of an earlier "CI looked green" observation:
 
   ```bash
