@@ -150,7 +150,7 @@ describe('loadInstructions — AGENTS.md canonical / CLAUDE.md fallback (a)', ()
     expect(result.segments[0]).toEqual({ origin: join(dir, 'CLAUDE.md'), content: 'claude content' });
   });
 
-  it('picks AGENTS.md when both are present, and debug-logs the choice (not warn)', async () => {
+  it('picks AGENTS.md when both are present, and warn-logs the choice (Architect en-passant: console.debug/log write to STDOUT in Bun, the subprocess NDJSON protocol channel; console.warn writes to stderr instead)', async () => {
     const dir = await makeTempDir();
     await writeFile(join(dir, 'AGENTS.md'), 'agents content');
     await writeFile(join(dir, 'CLAUDE.md'), 'claude content');
@@ -165,8 +165,8 @@ describe('loadInstructions — AGENTS.md canonical / CLAUDE.md fallback (a)', ()
 
       expect(result.segments).toHaveLength(1);
       expect(result.segments[0].origin).toBe(join(dir, 'AGENTS.md'));
-      expect(debugSpy).toHaveBeenCalled();
-      expect(warnSpy).not.toHaveBeenCalled();
+      expect(warnSpy).toHaveBeenCalled();
+      expect(debugSpy).not.toHaveBeenCalled();
     } finally {
       debugSpy.mockRestore();
       warnSpy.mockRestore();

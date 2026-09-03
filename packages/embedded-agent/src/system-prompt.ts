@@ -299,10 +299,24 @@ async function buildChainDirs(cwd: string): Promise<string[]> {
 
 /**
  * Resolve one directory's instruction file: AGENTS.md canonical, CLAUDE.md
- * fallback. Both present -> debug log (normal, e.g. a symlinked pair), pick
+ * fallback. Both present -> log (normal, e.g. a symlinked pair), pick
  * AGENTS.md. Neither present -> null, no log (routine, would be noisy across
  * a deep chain). A candidate that exists but fails to read (EACCES, EISDIR,
  * ...) -> warn log, null (skip, non-fatal).
+ *
+ * The both-present case uses `console.warn` (stderr), not `console.debug`.
+ * In Bun, `console.debug`/`console.log` write to STDOUT, and stdout is the
+ * embedded-agent subprocess's NDJSON protocol channel (see
+ * docs/design/embedded-agent-worker.md's WebSocket & client protocol
+ * section) -- nothing else is ever written there. An unparseable stdout
+ * line counts as a protocol-corruption strike server-side
+ * (`MAX_CONSECUTIVE_PARSE_FAILURES`, embedded-agent-worker-service.ts),
+ * reset on every successfully parsed line, so one stray line here is latent
+ * rather than fatal for any realistic tree -- but latent is still a defect,
+ * not a feature, and this repo's own root holds both files, so this ran on
+ * every openai-api activation here even before the SDK arm doubled its
+ * reach (Issue #1343). `console.warn` writes to stderr, which the loop's
+ * own stdout-writing convention never touches.
  */
 async function resolveDirectoryInstructionFile(dir: string): Promise<InstructionSegment | null> {
   const agentsPath = path.join(dir, 'AGENTS.md');
@@ -311,7 +325,7 @@ async function resolveDirectoryInstructionFile(dir: string): Promise<Instruction
   const agentsResult = await tryReadTextFile(agentsPath);
   if (agentsResult.ok) {
     if (await Bun.file(claudePath).exists()) {
-      console.debug(`Both AGENTS.md and CLAUDE.md present in ${dir}; using AGENTS.md`);
+      console.warn(`Both AGENTS.md and CLAUDE.md present in ${dir}; using AGENTS.md`);
     }
     return { origin: agentsPath, content: agentsResult.content };
   }
