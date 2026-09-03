@@ -195,6 +195,15 @@ const STDERR_LOG_CAP = 2048;
  * resulting string, so this cannot break the persisted row.
  */
 const STDERR_TAIL_CAP = 2048;
+/**
+ * R3, mid-turn notification queue: cap on `Runtime.pendingNotifications`
+ * per worker. A notification that arrives while the queue is already at
+ * this size drops the OLDEST entry (FIFO) to make room for the new one,
+ * logging a warning naming the dropped entry's kind -- bounds memory for a
+ * pathological producer (e.g. a short-interval timer whose target worker
+ * never goes idle) without silently blocking new notifications.
+ */
+const MAX_PENDING_NOTIFICATIONS = 32;
 
 /**
  * The `claude-sdk` engine's `EmbeddedAgentCommand` arm types its `provider.effort`
@@ -268,13 +277,25 @@ export class EmbeddedMessageDeliveryError extends Error {
 }
 
 /**
- * Result of {@link EmbeddedAgentWorkerService.sendUserMessage}. `code` is the
+ * Result of {@link EmbeddedAgentWorkerService.sendUserMessage} /
+ * {@link EmbeddedAgentWorkerService.sendSystemNotification}. `code` is the
  * machine-checkable discriminant callers should switch on; `error` is the
  * human-readable string for logging only (its exact wording is NOT a
  * contract -- callers must not string-match it).
+ *
+ * The `{ ok: true; queued: true }` member (R3, mid-turn notification queue)
+ * is a distinct case from `{ ok: true; id: string }` because a queued
+ * notification has not been delivered as a turn yet -- there is no `id` to
+ * report. Only `sendSystemNotification` can produce it; `sendUserMessage`
+ * (human messages) never sets `queueOnBusy`, so it can only ever resolve to
+ * the `id` member or a failure, exactly as before this type widened. This is
+ * a TYPE-ONLY change -- `SendUserMessageResult` is a server-internal return
+ * type, never serialized over the wire (it is not imported by
+ * packages/shared or any schema file).
  */
 export type SendUserMessageResult =
   | { ok: true; id: string }
+  | { ok: true; queued: true }
   | { ok: false; code: 'NOT_ACTIVATED' | 'TURN_IN_PROGRESS' | 'WRITE_FAILED'; error: string };
 
 export interface EmbeddedAgentWorkerServiceDeps {
@@ -483,6 +504,19 @@ interface Runtime {
   evicting: boolean;
   /** Idle eviction applies to this incarnation's engine -- see {@link isEvictableEngine}. */
   evictable: boolean;
+  /**
+   * R3, mid-turn notification queue: system notifications (timers,
+   * conditional wakeups, inter-session messages) that arrived while
+   * `turnActive` was true, in FIFO arrival order. Delivered ONE per
+   * `state: idle` event, as an ordinary system-notification turn -- never
+   * merged into the turn that was active when they arrived. Capped at
+   * {@link MAX_PENDING_NOTIFICATIONS}; overflow drops the oldest entry.
+   * Cleared (with a warning naming the dropped kinds) on exit -- see
+   * {@link EmbeddedAgentWorkerService.handleExit}. Human `sendUserMessage`
+   * never enqueues here: a busy worker still rejects a human message with
+   * `TURN_IN_PROGRESS`, unchanged from before this queue existed.
+   */
+  pendingNotifications: Array<{ params: PtyNotificationParams; opts: { replyToSessionId?: string } }>;
   /**
    * Last STDERR_TAIL_CAP characters (UTF-16 code units, not bytes and not an
    * overall wire-size bound -- JSON-escaping can inflate the serialized size
@@ -1113,6 +1147,7 @@ export class EmbeddedAgentWorkerService {
         ready: false,
         evicting: false,
         evictable: isEvictableEngine(definition.engine),
+        pendingNotifications: [],
         stderrTail: '',
       };
       this.runtimes.set(workerId, runtime);
@@ -1195,6 +1230,29 @@ export class EmbeddedAgentWorkerService {
   }
 
   /**
+   * Compose a system notification's stdin text and persisted-event marker
+   * from its structured params -- the pure part of what `sendSystemNotification`
+   * does, factored out so the mid-turn queue flush (R3, see
+   * {@link handleLoopLine}'s `state: 'idle'` arm) can recompose the SAME
+   * template from a queued entry's stored `params`/`opts` at flush time,
+   * rather than from a stale pre-composed string captured at enqueue time
+   * (which would carry a stale `buildPtyNotificationText` timestamp).
+   */
+  private composeSystemNotificationTurn(
+    params: PtyNotificationParams,
+    opts: { replyToSessionId?: string },
+  ): { text: string; notification: EmbeddedAgentServerNotification } {
+    const text =
+      buildPtyNotificationText(params) +
+      (opts.replyToSessionId !== undefined ? buildReplyInstructions(opts.replyToSessionId) : '');
+    const summary = extractNotificationSummary(params);
+    return {
+      text,
+      notification: { kind: params.kind, ...(summary !== undefined ? { summary } : {}) },
+    };
+  }
+
+  /**
    * Deliver a system-originated internal notification to the loop as an
    * ordinary user turn, but persist it with a `notification` marker so the
    * client can render it distinctly from a real
@@ -1203,6 +1261,13 @@ export class EmbeddedAgentWorkerService {
    * buildReplyInstructions when `opts.replyToSessionId` is set) happens
    * internally; callers never hand over a pre-composed string. See
    * SessionManager.sendEmbeddedAgentSystemNotification.
+   *
+   * R3, mid-turn notification queue: unlike `sendUserMessage`, a busy worker
+   * does NOT reject this call with TURN_IN_PROGRESS -- `deliverUserTurn` is
+   * told (via `queueOnBusy`) to park it on the worker's pending-notification
+   * queue instead, and this resolves `{ ok: true, queued: true }`. The
+   * queued entry is delivered as the next turn on the worker's next
+   * `state: 'idle'` event (see {@link handleLoopLine}).
    */
   async sendSystemNotification(
     sessionId: string,
@@ -1210,13 +1275,74 @@ export class EmbeddedAgentWorkerService {
     params: PtyNotificationParams,
     opts: { replyToSessionId?: string } = {},
   ): Promise<SendUserMessageResult> {
-    const text =
-      buildPtyNotificationText(params) +
-      (opts.replyToSessionId !== undefined ? buildReplyInstructions(opts.replyToSessionId) : '');
-    const summary = extractNotificationSummary(params);
+    const { text, notification } = this.composeSystemNotificationTurn(params, opts);
     return this.deliverUserTurn(sessionId, workerId, text, {
-      notification: { kind: params.kind, ...(summary !== undefined ? { summary } : {}) },
+      notification,
+      queueOnBusy: { params, replyToSessionId: opts.replyToSessionId },
     });
+  }
+
+  /**
+   * R3: park a notification on the worker's pending queue, dropping the
+   * OLDEST entry (with a warning naming its kind) when already at
+   * {@link MAX_PENDING_NOTIFICATIONS}. A plain synchronous helper (no
+   * `await`) so callers can invoke it from within a synchronous
+   * admission section without breaking that section's check-and-set
+   * guarantee.
+   */
+  private enqueuePendingNotification(
+    runtime: Runtime,
+    workerId: string,
+    params: PtyNotificationParams,
+    opts: { replyToSessionId?: string },
+  ): void {
+    if (runtime.pendingNotifications.length >= MAX_PENDING_NOTIFICATIONS) {
+      const dropped = runtime.pendingNotifications.shift();
+      if (dropped) {
+        logger.warn(
+          { workerId, droppedKind: dropped.params.kind },
+          'Notification queue overflow, dropping oldest',
+        );
+      }
+    }
+    runtime.pendingNotifications.push({ params, opts });
+  }
+
+  /**
+   * R3: deliver the next queued notification (if any) as a fresh turn.
+   * Called right after `runtime.turnActive` is cleared on `state: 'idle'` --
+   * see {@link handleLoopLine}. Delivers at most ONE entry per call; the
+   * next queued entry (if any) waits for the NEXT idle event.
+   *
+   * Defensive re-queue: `deliverUserTurn` should always admit this call
+   * (turnActive was just cleared, synchronously, with nothing awaited in
+   * between), but if it somehow still finds the worker busy, the entry is
+   * put back at the head rather than lost.
+   */
+  private async flushPendingNotification(
+    runtime: Runtime,
+    sessionId: string,
+    workerId: string,
+  ): Promise<void> {
+    const next = runtime.pendingNotifications.shift();
+    if (!next) return;
+
+    const { text, notification } = this.composeSystemNotificationTurn(next.params, next.opts);
+    const result = await this.deliverUserTurn(sessionId, workerId, text, { notification });
+    if (result.ok) return;
+
+    if (result.code === 'TURN_IN_PROGRESS') {
+      logger.warn(
+        { sessionId, workerId, kind: next.params.kind },
+        'Queued notification re-delivery found the worker busy; re-queuing at head',
+      );
+      runtime.pendingNotifications.unshift(next);
+      return;
+    }
+    logger.warn(
+      { sessionId, workerId, kind: next.params.kind, code: result.code, error: result.error },
+      'Failed to deliver queued notification',
+    );
   }
 
   /**
@@ -1230,7 +1356,18 @@ export class EmbeddedAgentWorkerService {
     sessionId: string,
     workerId: string,
     text: string,
-    opts: { clientMessageId?: string; notification?: EmbeddedAgentServerNotification } = {},
+    opts: {
+      clientMessageId?: string;
+      notification?: EmbeddedAgentServerNotification;
+      /**
+       * R3: set ONLY by `sendSystemNotification`. When admission finds
+       * `runtime.turnActive` true, park these on the queue instead of
+       * returning TURN_IN_PROGRESS. Human `sendUserMessage` never sets
+       * this, so a busy worker still rejects a human message exactly as
+       * before this queue existed.
+       */
+      queueOnBusy?: { params: PtyNotificationParams; replyToSessionId?: string };
+    } = {},
   ): Promise<SendUserMessageResult> {
     const failure = await this.ensureDeliverable(sessionId, workerId);
     if (failure !== null) return failure;
@@ -1252,6 +1389,12 @@ export class EmbeddedAgentWorkerService {
     }
     const stdin = worker.stdin;
     if (runtime.turnActive) {
+      if (opts.queueOnBusy) {
+        this.enqueuePendingNotification(runtime, workerId, opts.queueOnBusy.params, {
+          replyToSessionId: opts.queueOnBusy.replyToSessionId,
+        });
+        return { ok: true, queued: true };
+      }
       return { ok: false, code: 'TURN_IN_PROGRESS', error: 'turn in progress' };
     }
     runtime.turnActive = true;
@@ -1698,6 +1841,10 @@ export class EmbeddedAgentWorkerService {
         // the loop is alive; what the bound guards against is a cause so
         // persistent that no turn completes at all.
         this.fatalChainReplacementSpent.delete(ctx.workerId);
+        // R3, mid-turn notification queue: deliver ONE queued notification
+        // (if any) as the next turn now that this one has ended. Sets
+        // `turnActive` back to true when it delivers.
+        await this.flushPendingNotification(runtime, ctx.sessionId, ctx.workerId);
       }
       // Idle eviction: any state report is the worker being alive, so the
       // countdown restarts on all of them -- not only on `idle`. A long
@@ -2124,6 +2271,15 @@ export class EmbeddedAgentWorkerService {
     // Idle eviction: there is no subprocess left to drop, so any countdown
     // still in flight for this worker is meaningless.
     this.idleEviction.clear(workerId);
+
+    // R3, mid-turn notification queue: there is no subprocess left to
+    // deliver into, so anything still queued would otherwise be silently
+    // stranded on a runtime that's about to be dropped.
+    if (runtime.pendingNotifications.length > 0) {
+      const droppedKinds = runtime.pendingNotifications.map((n) => n.params.kind);
+      logger.warn({ workerId, droppedKinds }, 'Clearing pending notification queue on exit');
+      runtime.pendingNotifications = [];
+    }
 
     this.endStdinSafely(worker.stdin);
     worker.subprocess = null;
