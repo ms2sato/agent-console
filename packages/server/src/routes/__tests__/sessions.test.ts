@@ -21,6 +21,7 @@ import { JsonSessionRepository } from '../../repositories/index.js';
 import { TEST_AUTH_USER } from '../../__tests__/test-utils.js';
 import { McpTokenRegistry } from '../../mcp/mcp-auth.js';
 import { AgentDirectory } from '../../services/agent-directory.js';
+import { serverConfig } from '../../lib/server-config.js';
 
 // Test config directory
 const TEST_CONFIG_DIR = '/test/config';
@@ -847,6 +848,334 @@ describe('Sessions API - POST /api/sessions (shared sessions)', () => {
     });
 
     expect(res.status).toBe(400);
+  });
+});
+
+// ===========================================================================
+// PUT /api/sessions/:id/memo (Issue #1569)
+//
+// Ownership: the authenticated user must be the session owner, or the
+// session must be a shared session. Modeled on the "shared sessions" describe
+// block above -- reuses its exact SharedAccountRegistry.create/.createDisabled
+// + asAppContext + real SessionManager scaffolding rather than re-deriving it.
+// ===========================================================================
+describe('Sessions API - PUT /api/sessions/:id/memo (Issue #1569)', () => {
+  let app: Hono<AppBindings>;
+  let sessionManager: SessionManager;
+  let testJobQueue: JobQueue;
+  let sharedAccountRegistry: SharedAccountRegistry;
+  let broadcasts: Array<{ type: string; [key: string]: unknown }>;
+
+  async function setupCommon(opts: { sharedEnabled: boolean }): Promise<void> {
+    await closeDatabase();
+    setupMemfs({
+      [`${TEST_CONFIG_DIR}/.keep`]: '',
+      ['/test/path/.keep']: '',
+    });
+    process.env.AGENT_CONSOLE_HOME = TEST_CONFIG_DIR;
+
+    await initializeDatabase(':memory:');
+
+    testJobQueue = new JobQueue(getDatabase(), { concurrency: 1 });
+    registerJobHandlers(testJobQueue, new WorkerOutputFileManager());
+
+    resetProcessMock();
+    mockProcess.markAlive(process.pid);
+
+    ptyFactory.reset();
+
+    const db = getDatabase();
+    const agentMgr = await AgentManager.create(new SqliteAgentRepository(db));
+    const userRepository = new SqliteUserRepository(db);
+
+    // Insert the test auth user so FK constraints (sessions.created_by → users.id) hold.
+    await db
+      .insertInto('users')
+      .values({
+        id: TEST_AUTH_USER.id,
+        os_uid: null,
+        username: TEST_AUTH_USER.username,
+        home_dir: TEST_AUTH_USER.homeDir,
+        created_at: '2024-01-01T00:00:00.000Z',
+        updated_at: '2024-01-01T00:00:00.000Z',
+      })
+      .onConflict((oc) => oc.column('id').doNothing())
+      .execute();
+
+    if (opts.sharedEnabled) {
+      sharedAccountRegistry = await SharedAccountRegistry.create({
+        username: 'shared-user',
+        userRepository,
+        lookupOsUser: async () => ({ uid: 5051, homeDir: '/home/shared-user' }),
+      });
+    } else {
+      sharedAccountRegistry = SharedAccountRegistry.createDisabled();
+    }
+
+    const sessionRepository = new JsonSessionRepository(`${TEST_CONFIG_DIR}/sessions.json`);
+
+    sessionManager = await SessionManager.create({
+      userMode: new SingleUserMode(ptyFactory.provider, TEST_AUTH_USER),
+      pathExists: async () => true,
+      sessionRepository,
+      jobQueue: testJobQueue,
+      agentManager: agentMgr,
+      mcpTokenRegistry: new McpTokenRegistry(),
+      repositoryLookup: { getRepositorySlug: async () => 'test-repo' },
+      repositoryEnvLookup: {
+        getRepositoryInfo: () => ({ name: 'test-repo', path: '/test/repo' }),
+        getWorktreeIndexNumber: async () => 0,
+      },
+    });
+
+    broadcasts = [];
+    const broadcastToApp = (msg: { type: string; [key: string]: unknown }): void => {
+      broadcasts.push(msg);
+    };
+
+    // Mirrors websocket/routes.ts's production onMemoUpdated -> broadcastToApp
+    // wiring, which this isolated route test does not otherwise set up
+    // (SessionManager.create() alone does not register lifecycle callbacks).
+    sessionManager.setSessionLifecycleCallbacks({
+      onMemoUpdated: (sessionId, content) => {
+        broadcastToApp({ type: 'memo-updated', sessionId, content });
+      },
+    });
+
+    app = new Hono<AppBindings>();
+    app.use('*', async (c, next) => {
+      c.set('appContext', asAppContext({ sessionManager, sharedAccountRegistry, broadcastToApp }));
+      await next();
+    });
+    app.onError(onApiError);
+    app.route('/api', api);
+  }
+
+  afterEach(async () => {
+    await testJobQueue.stop();
+    await closeDatabase();
+    cleanupMemfs();
+    resetProcessMock();
+  });
+
+  async function createQuickSession(createdBy: string): Promise<string> {
+    const session = await sessionManager.createSession({ type: 'quick', locationPath: '/test/path' }, { createdBy });
+    return session.id;
+  }
+
+  it('single-user: 200 happy path -- PUT with non-empty content, then GET returns the same content', async () => {
+    await setupCommon({ sharedEnabled: false });
+    const sessionId = await createQuickSession(TEST_AUTH_USER.id);
+
+    const putRes = await app.request(`/api/sessions/${sessionId}/memo`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ content: '# Notes' }),
+    });
+    expect(putRes.status).toBe(200);
+    expect(await putRes.json()).toEqual({ content: '# Notes' });
+
+    const getRes = await app.request(`/api/sessions/${sessionId}/memo`);
+    expect(getRes.status).toBe(200);
+    expect(await getRes.json()).toEqual({ content: '# Notes' });
+  });
+
+  it('404 for an unknown session id', async () => {
+    await setupCommon({ sharedEnabled: false });
+
+    const res = await app.request('/api/sessions/does-not-exist/memo', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ content: 'hi' }),
+    });
+    expect(res.status).toBe(404);
+  });
+
+  it('single-user: 400 over the MemoService size cap, surfacing the service message', async () => {
+    await setupCommon({ sharedEnabled: false });
+    const sessionId = await createQuickSession(TEST_AUTH_USER.id);
+
+    const oversized = 'x'.repeat(256 * 1024 + 1);
+    const res = await app.request(`/api/sessions/${sessionId}/memo`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ content: oversized }),
+    });
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toContain('exceeds maximum size');
+  });
+
+  it('single-user: 500 (not 400) when writeMemo fails for a reason other than the size cap', async () => {
+    await setupCommon({ sharedEnabled: false });
+    const sessionId = await createQuickSession(TEST_AUTH_USER.id);
+
+    const writeMemoSpy = spyOn(sessionManager, 'writeMemo').mockRejectedValue(
+      new Error('EACCES: permission denied'),
+    );
+    try {
+      const res = await app.request(`/api/sessions/${sessionId}/memo`, {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ content: 'some content' }),
+      });
+      expect(res.status).toBe(500);
+      const body = (await res.json()) as { error: string };
+      expect(body.error).not.toContain('exceeds maximum size');
+    } finally {
+      writeMemoSpy.mockRestore();
+    }
+  });
+
+  it('single-user: whitespace-only content deletes the memo (200, content: null) -- subsequent GET also returns null', async () => {
+    await setupCommon({ sharedEnabled: false });
+    const sessionId = await createQuickSession(TEST_AUTH_USER.id);
+    // Write something first so there's a file for the delete path to remove.
+    await sessionManager.writeMemo(sessionId, 'existing content');
+
+    const res = await app.request(`/api/sessions/${sessionId}/memo`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ content: '   ' }),
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ content: null });
+
+    const getRes = await app.request(`/api/sessions/${sessionId}/memo`);
+    expect(await getRes.json()).toEqual({ content: null });
+  });
+
+  it('multi-user non-owner: 403 when sharedAccountRegistry is disabled and the session createdBy differs from authUser', async () => {
+    await setupCommon({ sharedEnabled: false });
+    const sessionId = await createQuickSession('someone-else-id');
+
+    // The ownership check is gated on AUTH_MODE === 'multi-user' (Issue
+    // #1569 R5 fix); set it explicitly so this test actually exercises the
+    // scenario its name describes, rather than relying on whatever mode
+    // happens to be active by default (single-user, which would skip the
+    // check entirely and return 200).
+    const originalAuthMode = serverConfig.AUTH_MODE;
+    (serverConfig as { AUTH_MODE: string }).AUTH_MODE = 'multi-user';
+    try {
+      const res = await app.request(`/api/sessions/${sessionId}/memo`, {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ content: 'hi' }),
+      });
+      expect(res.status).toBe(403);
+    } finally {
+      (serverConfig as { AUTH_MODE: string }).AUTH_MODE = originalAuthMode;
+    }
+  });
+
+  it('multi-user owner: 200 when session createdBy === authUser.id (normal case, mode stated explicitly)', async () => {
+    await setupCommon({ sharedEnabled: false });
+    const sessionId = await createQuickSession(TEST_AUTH_USER.id);
+
+    const res = await app.request(`/api/sessions/${sessionId}/memo`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ content: 'owner content' }),
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ content: 'owner content' });
+  });
+
+  it('multi-user shared: 200 for a shared session even though authUser.id differs from the shared account id', async () => {
+    await setupCommon({ sharedEnabled: true });
+    const sharedUserId = sharedAccountRegistry.getDefaultUserId();
+    expect(sharedUserId).not.toBeNull();
+    const sessionId = await createQuickSession(sharedUserId!);
+
+    const res = await app.request(`/api/sessions/${sessionId}/memo`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ content: 'shared content' }),
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ content: 'shared content' });
+  });
+
+  // The check below only runs under AUTH_MODE === 'multi-user'
+  // (route-level fix for the regression these two tests guard: the check
+  // used to run unconditionally, so a legacy/ownerless session -- createdBy
+  // undefined, e.g. a row persisted before this column existed -- 403'd its
+  // own single-user owner). `serverConfig` is a plain (non-frozen) object
+  // despite its `as const` TS typing, so a direct property mutation is a
+  // real runtime override, not a no-op -- the route reads
+  // `serverConfig.AUTH_MODE` live inside the handler on every request.
+  it('single-user mode: createdBy undefined (legacy/ownerless session) -> 200 despite not matching authUser.id', async () => {
+    await setupCommon({ sharedEnabled: false });
+    const session = await sessionManager.createSession({ type: 'quick', locationPath: '/test/path' });
+    expect(session.createdBy).toBeUndefined();
+
+    const originalAuthMode = serverConfig.AUTH_MODE;
+    (serverConfig as { AUTH_MODE: string }).AUTH_MODE = 'none';
+    try {
+      const res = await app.request(`/api/sessions/${session.id}/memo`, {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ content: 'legacy session content' }),
+      });
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ content: 'legacy session content' });
+    } finally {
+      (serverConfig as { AUTH_MODE: string }).AUTH_MODE = originalAuthMode;
+    }
+  });
+
+  it('multi-user, createdBy undefined (legacy/ownerless session), not shared -> 403 (legacy row stays protected in multi-user mode)', async () => {
+    await setupCommon({ sharedEnabled: false });
+    const session = await sessionManager.createSession({ type: 'quick', locationPath: '/test/path' });
+    expect(session.createdBy).toBeUndefined();
+
+    const originalAuthMode = serverConfig.AUTH_MODE;
+    (serverConfig as { AUTH_MODE: string }).AUTH_MODE = 'multi-user';
+    try {
+      const res = await app.request(`/api/sessions/${session.id}/memo`, {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ content: 'hi' }),
+      });
+      expect(res.status).toBe(403);
+    } finally {
+      (serverConfig as { AUTH_MODE: string }).AUTH_MODE = originalAuthMode;
+    }
+  });
+
+  it('fires the memo-updated broadcast with the written content on a successful PUT', async () => {
+    await setupCommon({ sharedEnabled: false });
+    const sessionId = await createQuickSession(TEST_AUTH_USER.id);
+
+    const res = await app.request(`/api/sessions/${sessionId}/memo`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ content: 'broadcast me' }),
+    });
+    expect(res.status).toBe(200);
+
+    const memoUpdated = broadcasts.filter((m) => m.type === 'memo-updated');
+    expect(memoUpdated).toHaveLength(1);
+    expect(memoUpdated[0]).toMatchObject({ sessionId, content: 'broadcast me' });
+  });
+
+  it('fires the memo-updated broadcast with content: "" (wire deletion signal, not null) on the delete-on-empty path', async () => {
+    await setupCommon({ sharedEnabled: false });
+    const sessionId = await createQuickSession(TEST_AUTH_USER.id);
+    await sessionManager.writeMemo(sessionId, 'to be deleted');
+    broadcasts.length = 0; // Only interested in the delete trigger below.
+
+    const res = await app.request(`/api/sessions/${sessionId}/memo`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ content: '' }),
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ content: null });
+
+    const memoUpdated = broadcasts.filter((m) => m.type === 'memo-updated');
+    expect(memoUpdated).toHaveLength(1);
+    expect(memoUpdated[0]).toMatchObject({ sessionId, content: '' });
   });
 });
 

@@ -3,6 +3,7 @@ import * as os from 'os';
 import { join as pathJoin } from 'path';
 import { Hono } from 'hono';
 import { onApiError } from '../../lib/error-handler.js';
+import { resolveUploadDir } from '../../lib/message-upload-dir.js';
 import { api } from '../api.js';
 import type { AppBindings } from '../../app-context.js';
 import { asAppContext } from '../../__tests__/test-utils.js';
@@ -405,9 +406,7 @@ describe('Workers API', () => {
 
         expect(writtenPaths.length).toBeGreaterThan(0);
 
-        const euid: number | 'shared' =
-          typeof process.geteuid === 'function' ? process.geteuid() : 'shared';
-        const expectedUploadDir = pathJoin(os.tmpdir(), `agent-console-uploads-${euid}`);
+        const expectedUploadDir = resolveUploadDir();
         const hostSharedLegacy = pathJoin(os.tmpdir(), 'agent-console-uploads');
         for (const filePath of writtenPaths) {
           // Path scoping: per-uid dir under os.tmpdir(), never the host-shared
@@ -446,9 +445,7 @@ describe('Workers API', () => {
       });
       expect(worker).not.toBeNull();
 
-      const euid: number | 'shared' =
-        typeof process.geteuid === 'function' ? process.geteuid() : 'shared';
-      const expectedUploadDir = pathJoin(os.tmpdir(), `agent-console-uploads-${euid}`);
+      const expectedUploadDir = resolveUploadDir();
 
       const { vol } = await import('memfs');
       // The earlier mode-0700 test may have created the dir; remove it before
@@ -523,9 +520,7 @@ describe('Workers API', () => {
       });
       expect(worker).not.toBeNull();
 
-      const euid: number | 'shared' =
-        typeof process.geteuid === 'function' ? process.geteuid() : 'shared';
-      const expectedUploadDir = pathJoin(os.tmpdir(), `agent-console-uploads-${euid}`);
+      const expectedUploadDir = resolveUploadDir();
 
       const { vol } = await import('memfs');
       try {
@@ -604,9 +599,7 @@ describe('Workers API', () => {
       });
       expect(worker).not.toBeNull();
 
-      const euid: number | 'shared' =
-        typeof process.geteuid === 'function' ? process.geteuid() : 'shared';
-      const expectedUploadDir = pathJoin(os.tmpdir(), `agent-console-uploads-${euid}`);
+      const expectedUploadDir = resolveUploadDir();
 
       const { vol } = await import('memfs');
 

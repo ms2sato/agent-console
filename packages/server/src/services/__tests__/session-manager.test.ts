@@ -30,6 +30,7 @@ import type { sweepOrphanProcesses } from '../orphan-process-sweeper.js';
 import { McpTokenRegistry } from '../../mcp/mcp-auth.js';
 import { isInternalPtyWorker } from '../worker-types.js';
 import { EmbeddedMessageDeliveryError } from '../embedded-agent-worker-service.js';
+import { composeEmbeddedAgentDeliveryText } from '../session-manager.js';
 
 // Test config directory
 const TEST_CONFIG_DIR = '/test/config';
@@ -2684,7 +2685,7 @@ describe('SessionManager', () => {
       await deactivatePromise;
     });
 
-    it('folds filePaths into the delivered text (no file-attachment concept for embedded targets)', async () => {
+    it('folds filePaths into the delivered text as a labelled block (no file-attachment concept for embedded targets, #1570)', async () => {
       const fake = makeFakeEmbeddedSpawn();
       const manager = await setupManager(fake, new Map([[STUB_DEF.id, STUB_DEF]]));
       const { sessionId, workerId } = await createEmbeddedWorker(manager);
@@ -2695,7 +2696,7 @@ describe('SessionManager', () => {
       const userMessageWrite = fake.stdinWrites
         .map((w) => JSON.parse(w) as { type: string; text?: string })
         .find((c) => c.type === 'user-message');
-      expect(userMessageWrite!.text).toBe('check these\n/tmp/a.txt\n/tmp/b.txt');
+      expect(userMessageWrite!.text).toBe('check these\n\nAttached files:\n- /tmp/a.txt\n- /tmp/b.txt');
 
       const deactivatePromise = manager.deactivateEmbeddedAgentWorker(sessionId, workerId);
       fake.simulateExit(0);
@@ -6527,6 +6528,56 @@ describe('SessionManager', () => {
       expect(secondCallback).toHaveBeenCalledWith(session.id);
     });
   });
+
+  describe('deleteMemo (Issue #1569)', () => {
+    it('fires onMemoUpdated with an empty string and removes a previously-written memo', async () => {
+      const manager = await getSessionManager();
+      const session = await manager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+
+      const onMemoUpdated = mock((_sessionId: string, _content: string) => {});
+      manager.setSessionLifecycleCallbacks({ onMemoUpdated });
+
+      await manager.writeMemo(session.id, 'some content');
+      expect(await manager.readMemo(session.id)).toBe('some content');
+      onMemoUpdated.mockClear();
+
+      await manager.deleteMemo(session.id);
+
+      expect(onMemoUpdated).toHaveBeenCalledTimes(1);
+      expect(onMemoUpdated).toHaveBeenCalledWith(session.id, '');
+      expect(await manager.readMemo(session.id)).toBeNull();
+    });
+
+    it('tolerates a session that never had a memo written -- resolves and still fires onMemoUpdated', async () => {
+      const manager = await getSessionManager();
+      const session = await manager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+
+      const onMemoUpdated = mock((_sessionId: string, _content: string) => {});
+      manager.setSessionLifecycleCallbacks({ onMemoUpdated });
+
+      await expect(manager.deleteMemo(session.id)).resolves.toBeUndefined();
+
+      expect(onMemoUpdated).toHaveBeenCalledTimes(1);
+      expect(onMemoUpdated).toHaveBeenCalledWith(session.id, '');
+      expect(await manager.readMemo(session.id)).toBeNull();
+    });
+
+    it('throws for an unknown sessionId, matching writeMemo\'s existing not-found contract', async () => {
+      const manager = await getSessionManager();
+
+      await expect(manager.deleteMemo('does-not-exist')).rejects.toThrow(
+        'Session not found: does-not-exist'
+      );
+    });
+  });
 });
 
 /**
@@ -6564,5 +6615,33 @@ describe('SessionManager.getEmbeddedAgentRestoreInfo return type (R1, #1410)', (
     expect(failedInfo.sdkResumed).toBe(false);
     expect(failedInfoNoResume.failed).toBe(true);
     expect('sdkResumed' in failedInfoNoResume).toBe(false);
+  });
+});
+
+describe('composeEmbeddedAgentDeliveryText (#1570)', () => {
+  it('returns content unchanged when there are no attached files', () => {
+    expect(composeEmbeddedAgentDeliveryText('hello', [])).toBe('hello');
+  });
+
+  it('returns empty content unchanged when there are no attached files', () => {
+    expect(composeEmbeddedAgentDeliveryText('', [])).toBe('');
+  });
+
+  it('appends a labelled block for a single attached file', () => {
+    expect(composeEmbeddedAgentDeliveryText('hello', ['/tmp/foo.txt'])).toBe(
+      'hello\n\nAttached files:\n- /tmp/foo.txt',
+    );
+  });
+
+  it('appends a labelled block with one line per attached file, for 3 files', () => {
+    expect(
+      composeEmbeddedAgentDeliveryText('hello', ['/tmp/a.txt', '/tmp/b.png', '/tmp/c.pdf']),
+    ).toBe('hello\n\nAttached files:\n- /tmp/a.txt\n- /tmp/b.png\n- /tmp/c.pdf');
+  });
+
+  it('emits only the labelled block, with no leading blank content, when content is empty but files are present', () => {
+    expect(composeEmbeddedAgentDeliveryText('', ['/tmp/foo.txt'])).toBe(
+      'Attached files:\n- /tmp/foo.txt',
+    );
   });
 });

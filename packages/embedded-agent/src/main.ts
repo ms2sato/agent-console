@@ -242,7 +242,7 @@ async function initializeLoop(
       const composite = new CompositeToolExecutor({
         mcp,
         builtins,
-        ctx: { locationPath: init.context.cwd },
+        ctx: { locationPath: init.context.cwd, attachmentRoots: init.context.attachmentRoots },
         onNameCollision: (name) =>
           io.logError(`Builtin tool "${name}" collides with an MCP tool of the same name; builtin wins`),
       });

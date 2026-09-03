@@ -148,7 +148,24 @@ type EmbeddedAgentInitCommandBase = {
   v: 1;
   type: 'init';
   mcp: { baseUrl: string; token: string };
-  context: { sessionId: string; workerId: string; repositoryId?: string; cwd: string };
+  context: {
+    sessionId: string;
+    workerId: string;
+    repositoryId?: string;
+    cwd: string;
+    /**
+     * Additional confinement roots (besides `cwd`) that the subprocess's
+     * builtin `Read` tool may open. Absent/empty = no extra roots (today's
+     * behavior, unchanged). This exists so `openai-api`'s own `Read` tool
+     * (confined to `cwd` via `resolveConfinedPath`) can reach message
+     * attachments saved to a shared per-OS-user upload directory outside the
+     * session's worktree. `claude-sdk`'s native `Read` tool ignores this
+     * field -- it is not ours to confine, and a live probe confirmed it can
+     * already open files outside `cwd` under our production
+     * `permissionMode`.
+     */
+    attachmentRoots?: string[];
+  };
   systemPrompt?: string;
   // undefined = apply the loop's own default tool set, [] = no builtin tools, explicit array = exact set
   enabledTools?: EmbeddedAgentToolName[];

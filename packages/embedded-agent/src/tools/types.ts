@@ -19,6 +19,14 @@ export interface BuiltinToolContext {
    * observe provider credentials or the MCP bearer token by construction.
    */
   locationPath: string;
+  /**
+   * Additional confinement roots (besides `locationPath`) that the `Read`
+   * tool alone may open — the shared message-attachment upload directory.
+   * Still carries no secrets. `write.ts` / `edit.ts` / `glob.ts` / `grep.ts`
+   * deliberately never forward this to `resolveConfinedPath`, so they
+   * continue to reject any path under it.
+   */
+  attachmentRoots?: string[];
 }
 
 export interface BuiltinToolResult {

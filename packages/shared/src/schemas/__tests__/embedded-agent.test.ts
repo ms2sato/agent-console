@@ -726,6 +726,64 @@ describe('EmbeddedAgentCommandSchema', () => {
     }
   });
 
+  it('parses an init command carrying context.attachmentRoots (Issue #1570)', () => {
+    const init = {
+      v: 1,
+      type: 'init',
+      compaction: { auto: true },
+      engine: 'openai-api',
+      mcp: { baseUrl: 'http://localhost:3457/mcp', token: 'tok' },
+      provider: { baseUrl: 'http://localhost:11434/v1', model: 'llama3' },
+      context: { sessionId: 's1', workerId: 'w1', cwd: '/work', attachmentRoots: ['/tmp/agent-console-uploads-1000'] },
+      maxToolIterations: 25,
+    };
+    const result = v.safeParse(EmbeddedAgentCommandSchema, init);
+    expect(result.success).toBe(true);
+    if (result.success && result.output.type === 'init') {
+      expect(result.output.context.attachmentRoots).toEqual(['/tmp/agent-console-uploads-1000']);
+    }
+  });
+
+  it('parses an init command without context.attachmentRoots (absent, not required -- backward compat)', () => {
+    const init = {
+      v: 1,
+      type: 'init',
+      compaction: { auto: true },
+      engine: 'openai-api',
+      mcp: { baseUrl: 'http://localhost:3457/mcp', token: 'tok' },
+      provider: { baseUrl: 'http://localhost:11434/v1', model: 'llama3' },
+      context: { sessionId: 's1', workerId: 'w1', cwd: '/work' },
+      maxToolIterations: 25,
+    };
+    const result = v.safeParse(EmbeddedAgentCommandSchema, init);
+    expect(result.success).toBe(true);
+    if (result.success && result.output.type === 'init') {
+      expect(result.output.context.attachmentRoots).toBeUndefined();
+    }
+  });
+
+  it('rejects an init command whose context.attachmentRoots is not an array of strings (strictObject pins the shape, Gap-Scan Q10)', () => {
+    const init = {
+      v: 1,
+      type: 'init',
+      compaction: { auto: true },
+      engine: 'openai-api',
+      mcp: { baseUrl: 'http://localhost:3457/mcp', token: 'tok' },
+      provider: { baseUrl: 'http://localhost:11434/v1', model: 'llama3' },
+      // Wrong type entirely (string instead of string[]).
+      context: { sessionId: 's1', workerId: 'w1', cwd: '/work', attachmentRoots: '/tmp/agent-console-uploads-1000' },
+      maxToolIterations: 25,
+    };
+    expect(v.safeParse(EmbeddedAgentCommandSchema, init).success).toBe(false);
+
+    // Right container, wrong element type.
+    const initWrongElement = {
+      ...init,
+      context: { sessionId: 's1', workerId: 'w1', cwd: '/work', attachmentRoots: [123] },
+    };
+    expect(v.safeParse(EmbeddedAgentCommandSchema, initWrongElement).success).toBe(false);
+  });
+
   describe('engine discriminant (SDK Engine Phase 1, docs/design/embedded-agent-sdk-engine.md §3.1)', () => {
     const baseFields = {
       v: 1,

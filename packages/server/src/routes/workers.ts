@@ -1,7 +1,6 @@
 import { Hono } from 'hono';
 import * as v from 'valibot';
 import { join } from 'path';
-import { tmpdir } from 'os';
 import { lstat, mkdir, unlink } from 'fs/promises';
 import { randomUUID } from 'crypto';
 import {
@@ -16,6 +15,7 @@ import type { AppBindings } from '../app-context.js';
 import { NotFoundError, ValidationError } from '../lib/errors.js';
 import { vValidator } from '../middleware/validation.js';
 import { createLogger } from '../lib/logger.js';
+import { resolveUploadDir } from '../lib/message-upload-dir.js';
 import { resolveSpawnUsername } from '../services/resolve-spawn-username.js';
 import {
   EmbeddedAgentActivationError,
@@ -77,11 +77,6 @@ const MULTI_USER_UPLOAD_DIR_MODE = 0o2750;
 interface UploadDirContract {
   mode: number;
   expectedGid: number | null;
-}
-
-function resolveUploadDir(): string {
-  const uid = typeof process.geteuid === 'function' ? process.geteuid() : 'shared';
-  return join(tmpdir(), `agent-console-uploads-${uid}`);
 }
 
 function resolveUploadDirContract(): UploadDirContract {
