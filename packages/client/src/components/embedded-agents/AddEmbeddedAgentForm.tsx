@@ -54,6 +54,7 @@ export function AddEmbeddedAgentForm({ onSuccess, onCancel }: AddEmbeddedAgentFo
         baseUrl: data.baseUrl,
         model: data.model,
         apiKeyRef: data.apiKeyRef || undefined,
+        supportsImages: data.supportsImages ? true : undefined,
       },
       systemPrompt: data.systemPrompt || undefined,
       maxToolIterations: parseMaxToolIterations(data.maxToolIterationsInput),

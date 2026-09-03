@@ -274,6 +274,47 @@ describe('EditEmbeddedAgentForm', () => {
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: embeddedAgentKeys.all() });
   });
 
+  it('PATCHes provider.supportsImages: true when the checkbox is checked', async () => {
+    const user = userEvent.setup();
+    const onSuccess = mock(() => {});
+    renderEditEmbeddedAgentForm({
+      embeddedAgentId: 'embedded-1',
+      initialData,
+      onSuccess,
+      onCancel: () => {},
+    });
+
+    await user.click(screen.getByRole('checkbox', { name: 'Provider can see images' }));
+    await user.click(screen.getByText('Save Changes'));
+
+    await waitFor(() => {
+      expect(onSuccess).toHaveBeenCalledTimes(1);
+    });
+
+    const body = (await getLastFetchBody()) as { provider: Record<string, unknown> };
+    expect(body.provider.supportsImages).toBe(true);
+  });
+
+  it('omits provider.supportsImages from the PATCH body when the checkbox is left unchecked', async () => {
+    const user = userEvent.setup();
+    const onSuccess = mock(() => {});
+    renderEditEmbeddedAgentForm({
+      embeddedAgentId: 'embedded-1',
+      initialData,
+      onSuccess,
+      onCancel: () => {},
+    });
+
+    await user.click(screen.getByText('Save Changes'));
+
+    await waitFor(() => {
+      expect(onSuccess).toHaveBeenCalledTimes(1);
+    });
+
+    const body = (await getLastFetchBody()) as { provider: Record<string, unknown> };
+    expect('supportsImages' in body.provider).toBe(false);
+  });
+
   it('shows an error message and does not call onSuccess when the request fails', async () => {
     responseFactory = () =>
       jsonResponse({ error: 'Only the creator can update this embedded agent' }, 403);
