@@ -4,12 +4,14 @@ import { validateSessionPath } from '../lib/path-validator.js';
 import {
   CreateSessionRequestSchema,
   UpdateSessionRequestSchema,
+  UpdateSessionMemoRequestSchema,
 } from '@agent-console/shared';
 import { createSessionValidationService } from '../services/session-validation-service.js';
-import { InternalError, NotFoundError, ValidationError } from '../lib/errors.js';
+import { ForbiddenError, InternalError, NotFoundError, ValidationError } from '../lib/errors.js';
 import { vValidator, vQueryValidator } from '../middleware/validation.js';
 import { getOrgRepoFromPath } from '../lib/git.js';
 import { resolveSpawnUsername } from '../services/resolve-spawn-username.js';
+import { serverConfig } from '../lib/server-config.js';
 import type { AppBindings } from '../app-context.js';
 
 const sessions = new Hono<AppBindings>()
@@ -119,6 +121,58 @@ const sessions = new Hono<AppBindings>()
 
     const content = await sessionManager.readMemo(sessionId);
     return c.json({ content });
+  })
+  // Write (or delete, on empty content) the memo for a session.
+  // Ownership: the check below only runs when AUTH_MODE === 'multi-user'.
+  // In single-user mode (AUTH_MODE === 'none') the check is skipped entirely
+  // -- that is what makes legacy / creator-less sessions (`createdBy`
+  // `undefined`, e.g. rows persisted before this column existed) writable
+  // there. `createdBy` is nullable in the DB (see mappers.ts), so an
+  // unconditional `isOwner`/`isSharedSession` check would 403 the single-user
+  // owner on their own such sessions -- see docs/design/session-worker-design.md#session-memo
+  // for the full ruling (R5).
+  .put('/:id/memo', vValidator(UpdateSessionMemoRequestSchema), async (c) => {
+    const sessionId = c.req.param('id');
+    const body = c.req.valid('json');
+    const { sessionManager, sharedAccountRegistry } = c.get('appContext');
+    const authUser = c.get('authUser');
+
+    const session = sessionManager.getSession(sessionId);
+    if (!session) {
+      throw new NotFoundError('Session');
+    }
+
+    const isOwner = session.createdBy === authUser.id;
+    const isSharedSession = session.createdBy != null && sharedAccountRegistry.isSharedUserId(session.createdBy);
+    if (serverConfig.AUTH_MODE === 'multi-user' && !isOwner && !isSharedSession) {
+      throw new ForbiddenError('Only the session owner can write this memo');
+    }
+
+    // R4: a save whose trimmed content is empty DELETES the memo file
+    // rather than writing an empty one. Writing '' would make readMemo
+    // return '' forever instead of null, which the client can no longer
+    // distinguish from "no memo" -- this is a deliberate ruling, not a
+    // bug. The `memo-updated` broadcast still fires, carrying `content: ''`
+    // -- on that wire message `''` (never `null`) is the deletion signal;
+    // `null` is a REST-response-only value. See docs/design/session-worker-design.md#session-memo.
+    if (body.content.trim().length === 0) {
+      await sessionManager.deleteMemo(sessionId);
+      return c.json({ content: null });
+    }
+
+    try {
+      await sessionManager.writeMemo(sessionId, body.content);
+    } catch (err) {
+      // Only the documented cap-exceeded case (MemoService's 256KB limit) is a
+      // client input problem (400). Any other failure (I/O error, permission
+      // error, etc.) is unexpected and must propagate to the default 500 path
+      // rather than being misreported as a validation failure.
+      if (err instanceof Error && err.message.includes('exceeds maximum size')) {
+        throw new ValidationError(err.message);
+      }
+      throw err;
+    }
+    return c.json({ content: body.content });
   })
   // Delete a session (synchronous)
   // For worktree sessions with async deletion, use the worktree deletion endpoint instead.
