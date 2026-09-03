@@ -318,6 +318,61 @@ function assistantToolUseMessage(callId: string, name: string, input: unknown): 
   });
 }
 
+/**
+ * Finding #1 (#1572): an `assistant` SDKMessage carrying a TEXT content
+ * block (as opposed to `assistantToolUseMessage`'s `tool_use` block). Used
+ * both for the synthetic-reply shape (no preceding `stream_event` at all)
+ * and, in the double-emit guard test, alongside real `textDeltaEvent`s.
+ */
+function assistantTextMessage(text: string): SDKMessage {
+  return asSdkMessage({
+    type: 'assistant',
+    message: {
+      id: 'msg_1',
+      role: 'assistant',
+      type: 'message',
+      content: [{ type: 'text', text }],
+      stop_reason: 'end_turn',
+      stop_sequence: null,
+      usage: {},
+      container: null,
+      context_management: null,
+      diagnostics: null,
+      model: 'claude-sonnet-5',
+      stop_details: null,
+    },
+    parent_tool_use_id: null,
+    uuid: '11111111-1111-1111-1111-111111111121',
+    session_id: '22222222-2222-2222-2222-222222222222',
+  });
+}
+
+/**
+ * Finding #2 (#1572): the SDK's own `/clear`-shaped message -- a TOP-LEVEL
+ * `conversation_reset`, not a `system` subtype.
+ */
+function conversationResetMessage(): SDKMessage {
+  return asSdkMessage({
+    type: 'conversation_reset',
+    new_conversation_id: '33333333-3333-3333-3333-333333333333',
+    uuid: '11111111-1111-1111-1111-111111111122',
+    session_id: '22222222-2222-2222-2222-222222222222',
+  });
+}
+
+/**
+ * An SDKMessage type this engine still has no mapping for -- used as the
+ * "other unknown types are unaffected" control for Finding #2's
+ * `conversation_reset` case.
+ */
+function rateLimitEventMessage(): SDKMessage {
+  return asSdkMessage({
+    type: 'rate_limit_event',
+    uuid: '11111111-1111-1111-1111-111111111123',
+    session_id: '22222222-2222-2222-2222-222222222222',
+  });
+}
+
 function userToolResultMessage(toolUseId: string, content: string, isError = false): SDKMessage {
   return asSdkMessage({
     type: 'user',
@@ -1052,6 +1107,108 @@ describe('SdkEngine — event mapping (Appendix A.2)', () => {
         }
       });
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Finding #1 (#1572) -- synthetic local-command replies (no stream_event at
+// all) must still reach the transcript via handleAssistantMessage's
+// sawTextDelta-guarded fallback.
+// ---------------------------------------------------------------------------
+
+describe('SdkEngine — Finding #1 (#1572): synthetic-reply fallback in handleAssistantMessage', () => {
+  it('emits assistant-message from a text-only assistant SDKMessage that arrived with NO preceding stream_event (synthetic reply)', async () => {
+    // Required pin 1. Polarity: with the fallback removed (comment out the
+    // `!this.sawTextDelta` block in handleAssistantMessage), this test fails
+    // -- no assistant-message event is emitted at all, matching the bug the
+    // rewritten COMPACT_SLASH_COMMAND comment describes.
+    const events: EmbeddedAgentEvent[] = [];
+    const { queryFn } = makeFakeQuery([
+      systemInit(),
+      assistantTextMessage('Set model to Sonnet 5 for this session only'),
+      resultSuccess(),
+    ]);
+    const engine = new SdkEngine(baseDeps({ emit: (e) => events.push(e), queryFn }));
+    await engine.runTurn('u1', '/model sonnet');
+
+    expect(eventsOfType(events, 'assistant-message')).toEqual([
+      { v: 1, type: 'assistant-message', turnId: 'u1', text: 'Set model to Sonnet 5 for this session only' },
+    ]);
+    // No delta ever streamed for this reply -- confirms the fallback path,
+    // not the ordinary delta-accumulation path, produced the event.
+    expect(eventsOfType(events, 'assistant-delta')).toHaveLength(0);
+  });
+
+  it('does NOT double-emit when a real delta-streamed turn is followed by the text block\'s own assistant SDKMessage', async () => {
+    // Required pin 2 (no-double-emit guard). This is exactly the shape the
+    // fallback must not fire for: `sawTextDelta` was set true by the real
+    // deltas, so the text-carrying `assistant` SDKMessage below must be a
+    // no-op for `assistant-message` emission, and message_stop's own
+    // accumulated-text emit must be the ONLY one.
+    const events: EmbeddedAgentEvent[] = [];
+    const { queryFn } = makeFakeQuery([
+      systemInit(),
+      textDeltaEvent('Hel'),
+      textDeltaEvent('lo!'),
+      assistantTextMessage('Hello!'),
+      messageStopEvent(),
+      resultSuccess(),
+    ]);
+    const engine = new SdkEngine(baseDeps({ emit: (e) => events.push(e), queryFn }));
+    await engine.runTurn('u1', 'hi');
+
+    expect(eventsOfType(events, 'assistant-message')).toEqual([
+      { v: 1, type: 'assistant-message', turnId: 'u1', text: 'Hello!' },
+    ]);
+  });
+
+  it('a /compact sent on an empty/short conversation (synthetic decline, no stream_event) reaches the transcript as an assistant-message row', async () => {
+    // Required pin 3: the rewritten COMPACT_SLASH_COMMAND comment's claim,
+    // pinned end-to-end through this file's existing runTurn harness.
+    const events: EmbeddedAgentEvent[] = [];
+    const { queryFn } = makeFakeQuery([
+      systemInit(),
+      assistantTextMessage('Not enough messages to compact.'),
+      resultSuccess(),
+    ]);
+    const engine = new SdkEngine(baseDeps({ emit: (e) => events.push(e), queryFn }));
+    await engine.runTurn('u1', '/compact');
+
+    expect(eventsOfType(events, 'assistant-message')).toEqual([
+      { v: 1, type: 'assistant-message', turnId: 'u1', text: 'Not enough messages to compact.' },
+    ]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Finding #2 (#1572) -- `/clear`'s `conversation_reset`: declare the
+// divergence instead of silently dropping it.
+// ---------------------------------------------------------------------------
+
+describe('SdkEngine — Finding #2 (#1572): conversation_reset declares the divergence', () => {
+  it('maps a conversation_reset message to a turn-error naming the divergence', async () => {
+    const events: EmbeddedAgentEvent[] = [];
+    const { queryFn } = makeFakeQuery([systemInit(), conversationResetMessage(), resultSuccess()]);
+    const engine = new SdkEngine(baseDeps({ emit: (e) => events.push(e), queryFn }));
+    await engine.runTurn('u1', '/clear');
+
+    expect(eventsOfType(events, 'turn-error')).toEqual([
+      {
+        v: 1,
+        type: 'turn-error',
+        turnId: 'u1',
+        message: "SDK conversation was reset; the transcript above is no longer the model's memory",
+      },
+    ]);
+  });
+
+  it('leaves other still-unmapped message types silently ignored (control: conversation_reset handling did not widen the default case)', async () => {
+    const events: EmbeddedAgentEvent[] = [];
+    const { queryFn } = makeFakeQuery([systemInit(), rateLimitEventMessage(), resultSuccess()]);
+    const engine = new SdkEngine(baseDeps({ emit: (e) => events.push(e), queryFn }));
+    await engine.runTurn('u1', 'hi');
+
+    expect(eventsOfType(events, 'turn-error')).toHaveLength(0);
   });
 });
 

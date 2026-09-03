@@ -258,6 +258,10 @@ export const EmbeddedAgentCommandSchema = v.union([
     type: v.literal('set-auto-compaction'),
     enabled: v.boolean(),
   }),
+  // Slash commands, `console`-handled arm (#1572): a manual `/compact`
+  // intercepted server-side rather than forwarded as prose. No payload
+  // beyond the discriminant -- a pure trigger. See the type's doc comment.
+  v.strictObject({ v: v.literal(1), type: v.literal('compact') }),
   v.strictObject({ v: v.literal(1), type: v.literal('shutdown') }),
 ]);
 

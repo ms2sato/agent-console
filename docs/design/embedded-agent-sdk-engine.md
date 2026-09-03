@@ -175,6 +175,30 @@ The chain is: the accepted-divergence (owner, Q2) rested on PS4 being unprobed �
 
 **See:** [`EmbeddedAgentWorkerView.tsx`](../../packages/client/src/components/workers/EmbeddedAgentWorkerView.tsx); [embedded-agent-worker.md § UI](embedded-agent-worker.md#ui) (the pre-existing generic notice this one sits alongside/replaces).
 
+### 4.4 Slash commands: which SDK builtins pass through (Issue #1572)
+
+**Status:** implementation-grade spec. See `embedded-agent-worker.md` § Slash commands for the cross-engine contract this subsection's findings feed; this subsection records the SDK-specific empirical facts.
+
+**Measured against a real conversation** (`claude --version` 2.1.259; the SDK's own `system:init.claude_code_version` reports 2.1.238 — the two differ on this host, per Issue #1575; `@anthropic-ai/claude-agent-sdk` package version 0.3.238):
+
+| Candidate | Behavior | Table verdict |
+|---|---|---|
+| `/compact` | Honoured. On a real conversation: a genuine distillation turn produces the SDK's own `compact_boundary`, mapped to `context-compacted` (pre-existing, Probe #1400 P2, unaffected by this Issue). On an empty/short conversation: the SDK declines with a SYNTHETIC reply (`model: "<synthetic>"`, 0 tokens, no real API call) — see the synthetic-reply finding below. | `engine` |
+| `/cost` | Honoured. A synthetic real usage report; an alias of `/usage` (confirmed via `system:init.slash_commands`, which lists `usage` but not `cost`). | `engine` |
+| `/context` | Honoured. A synthetic context-usage report — redundant with the client's own context-usage bar, harmless to forward. | `engine` |
+| `/clear` | Honoured, but excluded from the offered table — see the `conversation_reset` finding below. | excluded (state divergence) |
+| `/model <name>` | Honoured, but excluded — synthetic "session-only" reply, does NOT persist (conflicts with agent-surface.md Ruling 3). | excluded (non-persistence) |
+| `/help` | Declined: `"isn't available in this environment."` (absent from `system:init.slash_commands`). | excluded (declined) |
+| `/status` | Declined: same shape as `/help`. | excluded (declined) |
+
+**Finding: synthetic local-command replies arrive with NO `stream_event` at all.** Confirmed with a positive control — an ordinary conversational turn genuinely streams `content_block_delta` `stream_event`s under the identical production `includePartialMessages: true` option; a synthetic local-command reply never does. This engine's event mapping (`handleStreamEvent`'s `text_delta` branch accumulating into `emitAssistantMessage`'s `message_stop`-triggered emit) assumed every assistant text arrives via that path. A synthetic reply skips it entirely: no delta, no `message_stop`, so the ordinary "always emit, even empty" path (`emitAssistantMessage`) never runs. Before the fix, this silently dropped the reply — the user's own `/compact` (or `/model`, or `/cost`) line appeared in the transcript, then nothing.
+
+**Fix: `handleAssistantMessage`'s `sawTextDelta`-guarded fallback.** A private field (`sawTextDelta`) tracks whether a real `content_block_delta` `text_delta` arrived for the assistant response currently in flight, set in `handleStreamEvent` and consulted (then unconditionally reset) in `handleAssistantMessage`. When an `assistant` SDKMessage carries text-type content blocks and `!sawTextDelta`, that text is emitted through the ordinary `assistant-message` event path — the same already-supported shape `handleResult`'s `turn-error` and every other emitter already use, no fabricated preceding delta required. Reset happens ONLY in `handleAssistantMessage`, deliberately not in `emitAssistantMessage` (`message_stop`'s handler): the `tool_use` block's own `assistant` SDKMessage is independently documented (this file's `handleAssistantMessage` doc comment) as able to arrive before OR after `message_stop`'s own emit, and nothing rules out the same race for the text block's message — resetting the flag at `message_stop` risks a double-emit if the text-carrying message arrives after. See `packages/embedded-agent/src/sdk-engine.ts`'s `sawTextDelta` field doc comment for the full ordering argument, and `__tests__/sdk-engine.test.ts`'s "Finding #1" describe block for the pins (including the no-double-emit guard).
+
+**Finding: `/clear` resets the SDK's OWN conversation state, with nothing on our side to match.** The SDK honours `/clear` by emitting a TOP-LEVEL `conversation_reset` message (not a `system` subtype — `SDKConversationResetMessage` in `sdk.d.ts`, also emitted on plan-mode exit and fresh-session flows). Our persisted transcript has no corresponding reset: offering `/clear` via completion would let the SDK's memory silently diverge from what the console displays, with nothing declared. This is why `/clear` is deliberately excluded from `EMBEDDED_AGENT_SLASH_COMMANDS`'s `claude-sdk` row, and why a new `conversation_reset` case in `handleMessage`'s switch maps it to a `turn-error` declaring the divergence instead of falling to the silent `default:` branch every other unmapped SDK message type still uses. This engine forwards ANY text unconditionally (no console-side gate), so a user can still type `/clear` — the new case makes the consequence visible rather than silent.
+
+**Table single-writer note.** This engine's `claude-sdk` row in `EMBEDDED_AGENT_SLASH_COMMANDS` was populated from this probe, not assumed from the SDK's own advertised `system:init.slash_commands` list — that list only corroborates it (it lists `compact`, `cost`/`usage`, `context`, `clear`, `model`, but not `help`/`status`, matching the decline results above).
+
 ## 5. Named premises and hazards
 
 Per the premise-naming discipline; each entry names what the design cannot survive losing and how it is checked. All empirical entries are **version-premised on SDK 2.1.233** — the probes measured that version, and SDK upgrades re-verify them.

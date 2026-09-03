@@ -41,4 +41,15 @@ export interface Engine {
    * native engine has nothing to release beyond normal GC.
    */
   dispose?(): void;
+  /**
+   * Slash commands, `console`-handled arm (#1572): trigger a manual
+   * compaction directly, outside any turn. Optional because only
+   * `AgentLoop` (openai-api engine) implements it -- `claude-sdk`'s
+   * `/compact` is `engine`-handled instead (forwarded as an ordinary user
+   * message the SDK interprets itself; see
+   * `EMBEDDED_AGENT_SLASH_COMMANDS`), so `SdkEngine` never needs this and
+   * the server never sends the `compact` wire command to a `claude-sdk`
+   * worker.
+   */
+  compactNow?(): Promise<void>;
 }

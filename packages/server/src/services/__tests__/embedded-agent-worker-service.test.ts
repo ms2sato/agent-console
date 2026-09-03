@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { EmbeddedAgentDefinition, SdkResumeFailureReason } from '@agent-console/shared';
+import { EMBEDDED_AGENT_SLASH_COMMANDS, type EmbeddedAgentDefinition, type SdkResumeFailureReason } from '@agent-console/shared';
 import type { SpawnAsUserFn, SpawnAsUserOpts, SpawnAsUserResult } from '../privilege-elevation.js';
 import { SessionDataPathResolver } from '../../lib/session-data-path-resolver.js';
 import { resolveUploadDir } from '../../lib/message-upload-dir.js';
@@ -20,6 +20,8 @@ import {
   hasUndeliveredInitialPrompt,
   fatalLeavesHarnessAlive,
   isEvictableEngine,
+  resolveConsoleSlashCommandOverride,
+  CONSOLE_SLASH_COMMAND_HANDLERS,
 } from '../embedded-agent-worker-service.js';
 import {
   ProviderKeyStoreError,
@@ -1891,6 +1893,107 @@ describe('EmbeddedAgentWorkerService.sendUserMessage', () => {
 
     const third = await h.service.sendUserMessage(h.sessionId, h.workerId, 'three');
     expect(third.ok).toBe(true);
+  });
+});
+
+describe('EmbeddedAgentWorkerService — slash-command interception (#1572)', () => {
+  it('a /compact sent to an openai-api worker is intercepted: the command WRITTEN to stdin is {v:1,type:"compact"}, never user-message', async () => {
+    // Required pin 1. Polarity: with the interception removed from
+    // sendUserMessage (route straight to deliverUserTurn with no
+    // commandOverride), this test fails -- the written command would be
+    // `{v:1, type:'user-message', ...}` instead.
+    const h = setup();
+    await h.service.activate(h.sessionId, h.workerId);
+    const initWrites = h.fake.stdinWrites.length;
+
+    const res = await h.service.sendUserMessage(h.sessionId, h.workerId, '/compact');
+    expect(res.ok).toBe(true);
+
+    const forwarded = JSON.parse(h.fake.stdinWrites[initWrites]);
+    expect(forwarded).toEqual({ v: 1, type: 'compact' });
+  });
+
+  it('the persisted transcript still gets a normal user-message event with text "/compact"', async () => {
+    // Required pin 2: the interception changes only the WIRE command, never
+    // the PERSISTED event -- the user sees exactly what they typed.
+    const h = setup();
+    await h.service.activate(h.sessionId, h.workerId);
+    h.bufferOutput.mockClear();
+
+    const res = await h.service.sendUserMessage(h.sessionId, h.workerId, '/compact');
+    expect(res.ok).toBe(true);
+
+    const userMessageLine = appendedLines(h.bufferOutput).find(
+      (line) => JSON.parse(line).type === 'user-message',
+    );
+    expect(userMessageLine).toBeDefined();
+    const appended = JSON.parse(userMessageLine!);
+    expect(appended.text).toBe('/compact');
+    if (res.ok) expect(appended.id).toBe(res.id);
+  });
+
+  it('a /compact sent to a claude-sdk worker is NOT intercepted: writes user-message as before', async () => {
+    // Required pin 3: the per-engine boundary. claude-sdk's own table entry
+    // for `/compact` is `engine`-handled, so this worker must see the
+    // ordinary forwarding path, guarding against a copy-paste bug that
+    // accidentally intercepts the wrong engine.
+    const h = setup({ definition: buildSdkDefinition() });
+    await h.service.activate(h.sessionId, h.workerId);
+    const initWrites = h.fake.stdinWrites.length;
+
+    const res = await h.service.sendUserMessage(h.sessionId, h.workerId, '/compact');
+    expect(res.ok).toBe(true);
+
+    const forwarded = JSON.parse(h.fake.stdinWrites[initWrites]);
+    expect(forwarded.type).toBe('user-message');
+    expect(forwarded.text).toBe('/compact');
+  });
+
+  it('a context-compacted event reported by the subprocess after a compact command was written reaches the persisted stream (round trip)', async () => {
+    // Required pin 4: the outbound interception plus the INBOUND round
+    // trip -- a `context-compacted` boundary the subprocess reports back is
+    // not itself special-cased, but this pins that the ordinary NDJSON
+    // stdout pipeline still carries it through after a `compact` command
+    // (as opposed to a `user-message`) was the one written.
+    const h = setup();
+    await h.service.activate(h.sessionId, h.workerId);
+    h.bufferOutput.mockClear();
+
+    const res = await h.service.sendUserMessage(h.sessionId, h.workerId, '/compact');
+    expect(res.ok).toBe(true);
+
+    h.fake.pushStdout('{"v":1,"type":"context-compacted","source":"manual"}\n');
+    await waitFor(() =>
+      appendedLines(h.bufferOutput).some((line) => JSON.parse(line).type === 'context-compacted'),
+    );
+
+    const compactedLine = appendedLines(h.bufferOutput).find(
+      (line) => JSON.parse(line).type === 'context-compacted',
+    );
+    expect(JSON.parse(compactedLine!)).toMatchObject({ v: 1, type: 'context-compacted', source: 'manual' });
+  });
+
+  it('CONSOLE_SLASH_COMMAND_HANDLERS keys exactly equal the flattened set of console-handled command names in EMBEDDED_AGENT_SLASH_COMMANDS', () => {
+    // Required pin 5 (mechanical containment): fails if a new `console`
+    // entry is added to the shared table with no matching handler here, and
+    // fails if a handler exists with no matching table entry.
+    const consoleHandledNames = new Set<string>();
+    for (const commands of Object.values(EMBEDDED_AGENT_SLASH_COMMANDS)) {
+      for (const command of commands) {
+        if (command.handledBy === 'console') consoleHandledNames.add(command.name);
+      }
+    }
+    expect(new Set(Object.keys(CONSOLE_SLASH_COMMAND_HANDLERS))).toEqual(consoleHandledNames);
+  });
+
+  it('resolveConsoleSlashCommandOverride returns null for a claude-sdk engine even though the same text is console-handled on openai-api', () => {
+    expect(resolveConsoleSlashCommandOverride('claude-sdk', '/compact')).toBeNull();
+    expect(resolveConsoleSlashCommandOverride('openai-api', '/compact')).toEqual({ v: 1, type: 'compact' });
+  });
+
+  it('resolveConsoleSlashCommandOverride trims whitespace and returns null for a non-matching string', () => {
+    expect(resolveConsoleSlashCommandOverride('openai-api', '  /compact  ')).toEqual({ v: 1, type: 'compact' });
+    expect(resolveConsoleSlashCommandOverride('openai-api', 'please /compact this')).toBeNull();
   });
 });
 

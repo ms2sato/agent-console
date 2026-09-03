@@ -900,6 +900,86 @@ describe('runLoop — the retired handoff command (#1401)', () => {
   });
 });
 
+describe('runLoop — the `compact` command (Slash commands, console-handled arm, #1572)', () => {
+  it('dispatches to the real openai-api AgentLoop.compactNow(), emitting context-compacted', async () => {
+    class DistillingAdapter implements ProviderAdapter {
+      async *run(): AsyncIterable<ProviderEvent> {
+        yield { type: 'text-delta', text: 'DISTILLATION_SUMMARY' };
+        yield { type: 'done', finishReason: 'stop' };
+      }
+    }
+    const { io, events } = makeIo([
+      initCommand(),
+      JSON.stringify({ v: 1, type: 'compact' }),
+      JSON.stringify({ v: 1, type: 'shutdown' }),
+    ]);
+
+    expect(
+      await runLoop(io, makeFactories({ createAdapter: () => new DistillingAdapter() })),
+    ).toBe(0);
+
+    expect(events.find((e) => e.type === 'context-compacted')).toMatchObject({
+      v: 1,
+      type: 'context-compacted',
+      source: 'manual',
+      summary: 'DISTILLATION_SUMMARY',
+    });
+  });
+
+  it('logs and ignores a compact command when the engine does not support manual compact (e.g. claude-sdk)', async () => {
+    // The default `makeFactories()` `createSdkEngine` returns a `NoopEngine`,
+    // which -- like the real `SdkEngine` -- has no `compactNow` method: this
+    // engine's own `/compact` is `engine`-handled (forwarded as an ordinary
+    // user message), so the server never sends this wire command to it. This
+    // test only pins main.ts's own defensive branch for the case anyway.
+    const claudeSdkInitCommand = JSON.stringify({
+      v: 1,
+      type: 'init',
+      compaction: { auto: false },
+      engine: 'claude-sdk',
+      mcp: { baseUrl: 'http://mcp/local', token: 'tok' },
+      provider: { model: 'claude-sonnet-5' },
+      context: { sessionId: 's', workerId: 'w', cwd: '/tmp' },
+      maxToolIterations: 5,
+    });
+    const { io, errors, events } = makeIo([claudeSdkInitCommand, JSON.stringify({ v: 1, type: 'compact' })]);
+
+    expect(await runLoop(io, makeFactories())).toBe(0);
+    expect(errors.some((e) => e.includes('does not support manual compact'))).toBe(true);
+    expect(events.some((e) => e.type === 'context-compacted')).toBe(false);
+  });
+
+  it('ignores a compact command received while a turn is already active', async () => {
+    class SlowStubAdapter implements ProviderAdapter {
+      async *run(): AsyncIterable<ProviderEvent> {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        yield { type: 'text-delta', text: 'hi' };
+        yield { type: 'done', finishReason: 'stop' };
+      }
+    }
+    const lines = [
+      initCommand(),
+      JSON.stringify({ v: 1, type: 'user-message', id: 'u1', text: 'hello' }),
+      JSON.stringify({ v: 1, type: 'compact' }),
+      JSON.stringify({ v: 1, type: 'shutdown' }),
+    ];
+    const events: EmbeddedAgentEvent[] = [];
+    const errors: string[] = [];
+    const io: LoopIO = {
+      async *readCommands() {
+        for (const line of lines) yield line;
+      },
+      writeEvent: (event) => events.push(event),
+      logError: (message) => errors.push(message),
+    };
+
+    expect(await runLoop(io, makeFactories({ createAdapter: () => new SlowStubAdapter() }))).toBe(0);
+
+    expect(errors.some((e) => e.includes('Ignoring compact command received while a turn is active'))).toBe(true);
+    expect(events.some((e) => e.type === 'context-compacted')).toBe(false);
+  });
+});
+
 describe('runLoop — claude-sdk engine: opt-in instructions threading', () => {
   const claudeSdkInitCommand = (overrides: Record<string, unknown> = {}) =>
     JSON.stringify({

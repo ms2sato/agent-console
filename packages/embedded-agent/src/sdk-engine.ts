@@ -147,9 +147,20 @@ export const SDK_COMPACT_TOOL_NAME = `mcp__${COMPACT_TOOL_SERVER_NAME}__${COMPAC
  *
  * A conversation too short to compact is answered with an ordinary assistant
  * refusal ("Not enough messages to compact.") and NO boundary. That is a
- * result, not a failure: the refusal is visible in the transcript where the
- * user can read it, and treating a missing boundary as "the command does not
- * exist" would be exactly the wrong inference.
+ * result, not a failure: treating a missing boundary as "the command does
+ * not exist" would be exactly the wrong inference.
+ *
+ * **This comment used to claim "the refusal is visible in the transcript
+ * where the user can read it" -- that was FALSE until Finding #1 (#1572).**
+ * This decline is a SYNTHETIC SDK reply (`model: "<synthetic>"`, no real API
+ * call), and a synthetic reply arrives with NO `stream_event` at all -- no
+ * delta, no `message_stop`, so `emitAssistantMessage`'s ordinary "always
+ * emit" path never ran and the refusal was silently dropped: the user's own
+ * `/compact` line appeared in the transcript, then nothing. It is true now
+ * because `handleAssistantMessage`'s fallback (guarded by `sawTextDelta`,
+ * see that field's doc comment) emits an `assistant-message` for any
+ * `assistant` SDKMessage carrying text that never streamed a delta -- which
+ * is exactly this decline's shape.
  */
 const COMPACT_SLASH_COMMAND = '/compact';
 
@@ -303,6 +314,39 @@ export class SdkEngine implements Engine {
   private iterationText = '';
   private currentTurnDeferred: { resolve: () => void } | null = null;
   private dead = false;
+
+  /**
+   * Finding #1 (#1572): has a real `content_block_delta` `text_delta`
+   * arrived for the assistant response currently in flight? A SYNTHETIC
+   * local-command reply (e.g. `/compact`'s "too short to compact" decline)
+   * never streams any `stream_event` at all -- so `message_stop` never
+   * fires, `emitAssistantMessage` (the ordinary "always emit, even empty"
+   * path) never runs, and the reply would otherwise be silently dropped:
+   * the user's own `/compact` line appears in the transcript, then
+   * nothing. `handleAssistantMessage`'s fallback below is the only place
+   * this text ever reaches the transcript.
+   *
+   * Reset happens ONLY in `handleAssistantMessage`, unconditionally, right
+   * after the fallback check -- deliberately NOT in `emitAssistantMessage`
+   * (the `message_stop` handler). `handleAssistantMessage`'s own doc
+   * comment documents an observed race for `tool_use` blocks: their
+   * `assistant` SDKMessage can arrive before OR AFTER `message_stop`'s own
+   * `assistant-message` emit. Nothing rules out the same race for the TEXT
+   * block's `assistant` SDKMessage. If `emitAssistantMessage` reset this
+   * flag at `message_stop` and the text block's own message arrived later,
+   * the fallback would fire a second time and double-emit text already
+   * delivered via the delta path.
+   *
+   * Resetting only in `handleAssistantMessage` is safe because that method
+   * fires at least once per iteration (one `assistant` SDKMessage per
+   * completed content block, and every response has at least one block):
+   * by the time the NEXT iteration's own deltas could start, this
+   * iteration's flag has already been cleared by its own last
+   * `handleAssistantMessage` call. See the required pins in
+   * `__tests__/sdk-engine.test.ts` for the polarity/no-double-emit
+   * measurements this reasoning rests on.
+   */
+  private sawTextDelta = false;
 
   /**
    * Transcript Restore, R1: has this query ever reported a `system:init`?
@@ -586,6 +630,26 @@ export class SdkEngine implements Engine {
       case 'result':
         await this.handleResult(message);
         return;
+      /**
+       * Finding #2 (#1572): `/clear` (and plan-mode exit / fresh-session
+       * flows) is honoured by the SDK -- it emits this TOP-LEVEL message
+       * type (not a `system` subtype), resetting the SDK's OWN conversation
+       * state. Our persisted transcript has no matching reset, so the SDK's
+       * memory would silently diverge from what the console displays with
+       * nothing declared -- which is exactly why `/clear` is deliberately
+       * excluded from `EMBEDDED_AGENT_SLASH_COMMANDS` (never offered by
+       * completion). This engine forwards ANY text unconditionally, so a
+       * user can still type `/clear` -- this case makes the consequence
+       * visible (a `turn-error`) instead of silent.
+       */
+      case 'conversation_reset':
+        this.deps.emit({
+          v: 1,
+          type: 'turn-error',
+          turnId: this.requireTurnId(),
+          message: "SDK conversation was reset; the transcript above is no longer the model's memory",
+        });
+        return;
       default:
         // Every other SDKMessage type (rate_limit_event, hook/task/
         // notification/etc. system subtypes, ...) has no native counterpart
@@ -698,6 +762,7 @@ export class SdkEngine implements Engine {
       const { delta } = event;
       if (delta.type === 'text_delta') {
         this.iterationText += delta.text;
+        this.sawTextDelta = true;
         this.deps.emit({ v: 1, type: 'assistant-delta', turnId: this.requireTurnId(), text: delta.text });
       } else if (delta.type === 'thinking_delta') {
         this.deps.emit({
@@ -767,8 +832,25 @@ export class SdkEngine implements Engine {
    * `tool-result` that arrived earlier for this exact callId (queued by
    * `handleUserMessage` below because its `tool-call` had not been emitted
    * yet) is flushed right after.
+   *
+   * Finding #1 (#1572): BEFORE the `tool_use` loop, a fallback covers the
+   * case where this message carries real text that never streamed as a
+   * delta (`!this.sawTextDelta`) -- the synthetic-local-command-reply
+   * shape. See `sawTextDelta`'s own doc comment for why the reset below is
+   * unconditional and lives here rather than in `emitAssistantMessage`.
    */
   private handleAssistantMessage(message: AssistantMessagePayload): void {
+    if (!this.sawTextDelta) {
+      const text = message.content
+        .filter((block): block is Extract<typeof block, { type: 'text' }> => block.type === 'text')
+        .map((block) => block.text)
+        .join('');
+      if (text.length > 0) {
+        this.deps.emit({ v: 1, type: 'assistant-message', turnId: this.requireTurnId(), text });
+      }
+    }
+    this.sawTextDelta = false;
+
     for (const block of message.content) {
       if (block.type === 'tool_use') {
         this.emitToolCall(block.id, block.name, block.input);
