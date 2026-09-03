@@ -204,22 +204,38 @@ export const serverConfig = {
   /**
    * Absolute path (or bare command name) used to invoke `bun` when spawning
    * the embedded-agent loop subprocess as a (possibly elevated, cross-user)
-   * OS process. Defaults to the bare command name 'bun', which resolves via
-   * PATH in single-user / dev setups where the server and the spawned
-   * subprocess share the same shell environment.
+   * OS process. Defaults to `process.execPath` -- the absolute path of the
+   * `bun` binary currently running this server process.
    *
-   * In multi-user mode, the subprocess runs inside an elevated login shell
-   * (`sudo -u <user> -i sh -c '...'`) whose non-interactive, non-bash `sh`
-   * (dash on Ubuntu) does not source `.bashrc` -- a user-local `~/.bun/bin/bun`
-   * install is therefore NOT resolvable by bare name inside that shell. Set
-   * this to an absolute path (e.g. '/usr/local/bin/bun') reachable by every
-   * elevation target user; `scripts/setup-multiuser-for-ubuntu.sh` provisions
-   * this path and configures the systemd unit's Environment= accordingly.
+   * Single-user / dev: this default is EXACT by construction. `process.execPath`
+   * is literally the same binary file the server itself is running -- there is
+   * no PATH lookup, and therefore no PATH ambiguity, involved in choosing it.
+   *
+   * This correctness rests on a documented assumption about how the server is
+   * deployed: the current deploy shape is `bun dist/index.js` (or
+   * `bun src/index.ts` in dev), so `process.execPath` IS the bun interpreter
+   * executing this file. If a future deploy shape switches to
+   * `bun build --compile` (producing a standalone compiled binary),
+   * `process.execPath` would resolve to THAT compiled binary instead of a bun
+   * interpreter, and this default would silently become wrong. This is not a
+   * TODO -- it is the boundary of what this default is known to be correct for.
+   *
+   * Multi-user: real deployments set this explicitly via
+   * `scripts/setup-multiuser-for-ubuntu.sh` (unchanged from before this
+   * default changed); the `process.execPath` default only matters for an
+   * unconfigured / dev instance. In multi-user mode, the subprocess runs
+   * inside an elevated login shell (`sudo -u <user> -i sh -c '...'`) whose
+   * non-interactive, non-bash `sh` (dash on Ubuntu) does not source `.bashrc`
+   * -- a user-local `~/.bun/bin/bun` install is therefore NOT resolvable by
+   * bare name inside that shell. Set this to an absolute path (e.g.
+   * '/usr/local/bin/bun') reachable by every elevation target user;
+   * `scripts/setup-multiuser-for-ubuntu.sh` provisions this path and
+   * configures the systemd unit's Environment= accordingly.
    *
    * See .claude/rules/os-environment-coupling.md for the general principle:
    * elevated commands must not resolve binaries by PATH-only name.
    */
-  EMBEDDED_AGENT_BUN_PATH: process.env.EMBEDDED_AGENT_BUN_PATH || 'bun',
+  EMBEDDED_AGENT_BUN_PATH: process.env.EMBEDDED_AGENT_BUN_PATH || process.execPath,
   /**
    * Milliseconds of continuous idleness after which a `claude-sdk` embedded-agent
    * worker's subprocess is evicted. Governs that engine only -- `openai-api`
@@ -290,6 +306,18 @@ export function shouldWarnInsecureAuthCookie(
   config: Pick<ServerConfig, 'AUTH_COOKIE_SECURE' | 'NODE_ENV'> = serverConfig,
 ): boolean {
   return config.AUTH_COOKIE_SECURE === false && config.NODE_ENV === 'production';
+}
+
+/**
+ * Whether to run the boot-time `EMBEDDED_AGENT_BUN_PATH` assessment (Issue
+ * #1291). Gated on multi-user mode only -- single-user's `process.execPath`
+ * default is correct by construction (see the field's own doc comment
+ * above), so running the assessment there would only ever produce noise.
+ */
+export function shouldCheckEmbeddedAgentBunPath(
+  config: Pick<ServerConfig, 'AUTH_MODE'> = serverConfig,
+): boolean {
+  return config.AUTH_MODE === 'multi-user';
 }
 
 /**

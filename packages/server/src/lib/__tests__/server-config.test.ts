@@ -3,6 +3,7 @@ import {
   resolveAuthCookieSecure,
   shouldWarnInsecureAuthCookie,
   shouldLogUnconfiguredPublicOrigin,
+  shouldCheckEmbeddedAgentBunPath,
 } from '../server-config.js';
 
 describe('server-config', () => {
@@ -263,6 +264,30 @@ describe('server-config', () => {
 
       expect(serverConfig.AGENT_CONSOLE_PUBLIC_ORIGIN).toBe('http://localhost:6340');
     });
+
+    it('should default EMBEDDED_AGENT_BUN_PATH to process.execPath when not set (Issue #1291)', async () => {
+      delete process.env.EMBEDDED_AGENT_BUN_PATH;
+
+      const { serverConfig } = await importServerConfig();
+
+      expect(serverConfig.EMBEDDED_AGENT_BUN_PATH).toBe(process.execPath);
+    });
+
+    it('should default EMBEDDED_AGENT_BUN_PATH to process.execPath when set to an empty string', async () => {
+      process.env.EMBEDDED_AGENT_BUN_PATH = '';
+
+      const { serverConfig } = await importServerConfig();
+
+      expect(serverConfig.EMBEDDED_AGENT_BUN_PATH).toBe(process.execPath);
+    });
+
+    it('should use an explicit non-empty EMBEDDED_AGENT_BUN_PATH over the default', async () => {
+      process.env.EMBEDDED_AGENT_BUN_PATH = '/usr/local/bin/bun';
+
+      const { serverConfig } = await importServerConfig();
+
+      expect(serverConfig.EMBEDDED_AGENT_BUN_PATH).toBe('/usr/local/bin/bun');
+    });
   });
 
   describe('resolveAuthCookieSecure', () => {
@@ -350,6 +375,16 @@ describe('server-config', () => {
       expect(
         shouldLogUnconfiguredPublicOrigin({ AGENT_CONSOLE_PUBLIC_ORIGIN: 'http://localhost:3457' })
       ).toBe(false);
+    });
+  });
+
+  describe('shouldCheckEmbeddedAgentBunPath', () => {
+    it("AUTH_MODE='multi-user' -> true", () => {
+      expect(shouldCheckEmbeddedAgentBunPath({ AUTH_MODE: 'multi-user' })).toBe(true);
+    });
+
+    it("AUTH_MODE='none' -> false", () => {
+      expect(shouldCheckEmbeddedAgentBunPath({ AUTH_MODE: 'none' })).toBe(false);
     });
   });
 
