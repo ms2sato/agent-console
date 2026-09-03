@@ -10,37 +10,48 @@
  * may ever reach stdout — any stray line (a debug `console.log`, an
  * accidental `process.stdout.write`) corrupts the channel and counts as a
  * protocol-parse failure server-side. This script enforces that mechanically
- * instead of relying on review: it forbids `console.log(`, `console.info(`,
- * `console.debug(`, `process.stdout.write(`, and `Bun.stdout` anywhere in
+ * instead of relying on review: it forbids `console.log`, `console.info`,
+ * `console.debug`, `process.stdout.write`, and `Bun.stdout` anywhere in
  * `packages/embedded-agent/src/**\/*.ts` (excluding `__tests__/` and
  * `*.test.ts`), with a single allowlisted exception — the protocol writer
  * itself.
  *
- * Detection is AST-based (the `typescript` package's `ts.createSourceFile`),
- * reusing `collectLeaves` from `scripts/schema-source-normalize.mjs` — NOT a
- * regex or hand-rolled comment/string scanner. That module already solved
- * comment/string/regex-literal disambiguation correctly (division-vs-regex,
- * template interpolation, JSDoc subtrees); duplicating it here would only
- * reintroduce the same false-positive risk that module's own header comment
- * warns about.
+ * Detection is AST-node based (the `typescript` package's
+ * `ts.createSourceFile`): the parsed tree is walked for every
+ * `PropertyAccessExpression` / `ElementAccessExpression` node, each is
+ * resolved back to its full dotted/bracketed access chain (root identifier
+ * plus ordered property-name path), and the chain is compared against
+ * FORBIDDEN_CHAINS. This is a real structural match, not a substring scan
+ * against a "code-only" reconstruction of the source text (an earlier
+ * revision of this script used that technique and was replaced after
+ * CodeRabbit found two evasions a substring scan cannot see:
+ * `console.log?.('x')` — optional chaining breaks a literal `console.log(`
+ * substring — and `console.info /* comment *\/ ('x')` — a comment between
+ * the property access and the call parens survives comment-blanking as
+ * whitespace, which also breaks the literal substring. Matching on the AST
+ * node itself is immune to both: `a?.b` and `a.b` are the same
+ * PropertyAccessExpression node kind in TypeScript's AST (see
+ * `resolveAccessChain`'s doc comment), and a comment is trivia that never
+ * becomes part of the node structure at all, so neither evasion has
+ * anywhere to hide.
  *
- * The technique: parse the file, walk to its leaf tokens, and build a
- * same-length "code-only" copy of the source text where every character NOT
- * covered by a leaf's own token text is blanked to a space (newlines are
- * preserved so LINE:COL computed against this copy matches the original
- * exactly). This makes ordinary comments invisible (they are trivia between
- * leaves, never leaves themselves) and lets string / template / regex
- * literal CONTENT be blanked deliberately — see BLANK_LEAF_KINDS — while
- * every other token (including a template literal's `${...}` interpolated
- * expression, which is its own separate leaf) keeps its exact original text
- * and position. The forbidden-token search then runs as a plain substring
- * scan against that code-only copy.
+ * A match no longer requires the access to be immediately followed by a
+ * call — `console.log`, `process.stdout.write`, and `Bun.stdout` are all
+ * flagged as soon as the chain is referenced (a bare `const w = Bun.stdout`
+ * already matched this way even before this rewrite; the rewrite makes the
+ * other four chains consistent with that, which also closes a residual gap
+ * where indirection like `const log = console.log; log('x')` would
+ * otherwise reach stdout through a captured reference the old call-shaped
+ * substring could never see coming).
  *
  * Fail-closed on parse failure: if `ts.createSourceFile` reports parse
- * diagnostics (same `parseDiagnostics` detection technique
- * `normalizeSchemaSource` uses), this script does not silently skip the
- * file — it falls back to a raw substring scan of the file's unmodified
- * text. The worst case is a false positive on a malformed file, never a
+ * diagnostics (checked via the same `parseDiagnostics` runtime-property
+ * technique `schema-source-normalize.mjs`'s `normalizeSchemaSource` uses),
+ * this script does not silently skip the file — it falls back to a raw
+ * literal-substring scan of the file's unmodified text (`FORBIDDEN_TOKENS`,
+ * derived from the same FORBIDDEN_CHAINS table the AST matcher uses, so the
+ * two matchers can never drift out of sync with each other's labels). The
+ * worst case is a false positive on a malformed file, never a
  * silently-skipped real violation.
  *
  * Allowlist: matched by file path + the name of the enclosing named
@@ -66,38 +77,57 @@
 import ts from 'typescript';
 import { Glob } from 'bun';
 
-import { collectLeaves } from './schema-source-normalize.mjs';
-
 const DEFAULT_GLOB = 'packages/embedded-agent/src/**/*.ts';
 
 /**
- * Forbidden stdout-writer tokens, matched as plain substrings against the
- * code-only reconstruction of a file's text (see the header comment).
+ * Single-writer table of forbidden stdout-writer access chains. Both
+ * matchers in this file are derived from it:
+ *
+ *   - The primary AST matcher (`matchForbiddenChain`) compares a resolved
+ *     `{root, segments}` chain against `root`/`segments` here.
+ *   - The parse-failure fallback (`findForbiddenTokenOffsets`) does a plain
+ *     literal-substring scan using `FORBIDDEN_TOKENS`, which is `.map()`ed
+ *     out of this same table below — never hand-maintained separately.
+ *
+ * `root` is the required identifier the chain must resolve back to. No
+ * scope/shadowing resolution is attempted: a locally shadowed `console`
+ * (`const console = {...}; console.log(...)`) still matches, because this
+ * is a purely syntactic identifier-name match. This is an accepted
+ * limitation (see `resolveAccessChain`'s doc comment and the
+ * corresponding test in the sibling test file) — the pre-AST substring
+ * matcher had the identical limitation, so this is not a regression, and
+ * real scope resolution is out of scope for a lint of this size.
+ *
+ * `segments` is the ordered property-name path from `root` to the match
+ * point, e.g. `process.stdout.write` -> root `'process'`, segments
+ * `['stdout', 'write']`. A chain matches only when BOTH root and the full
+ * ordered segment list match exactly — a partial chain (e.g. bare
+ * `process.stdout`, or `Bun.stdout.writer`) does not match on its own,
+ * though a *sub-chain* of it might (see `Bun.stdout.writer()`'s worked
+ * example in `matchForbiddenChain`'s doc comment).
+ *
+ * `token` is the exact label string reported in output — unchanged from
+ * the pre-AST implementation so downstream consumers (allowlist matching,
+ * CLI output format, existing tests) keep working. The trailing `(` on
+ * four of the five labels is a historical artifact of the old call-shaped
+ * substring match and is kept only as a stable label string; it no longer
+ * implies "must be called" (see this file's header comment).
  */
-export const FORBIDDEN_TOKENS = [
-  'console.log(',
-  'console.info(',
-  'console.debug(',
-  'process.stdout.write(',
-  'Bun.stdout',
+export const FORBIDDEN_CHAINS = [
+  { root: 'console', segments: ['log'], token: 'console.log(' },
+  { root: 'console', segments: ['info'], token: 'console.info(' },
+  { root: 'console', segments: ['debug'], token: 'console.debug(' },
+  { root: 'process', segments: ['stdout', 'write'], token: 'process.stdout.write(' },
+  { root: 'Bun', segments: ['stdout'], token: 'Bun.stdout' },
 ];
 
 /**
- * Leaf kinds whose own text is deliberately blanked in the code-only
- * reconstruction: string / template / regex literal CONTENT is never
- * scanned for forbidden tokens, so a literal string like `"console.info("`
- * cannot trip the detector. A template literal's interpolated expression
- * (`${...}`) is a separate leaf of a different kind and is NOT in this set,
- * so `` `${console.info(x)}` `` is still caught.
+ * Forbidden stdout-writer tokens, matched as plain literal substrings —
+ * used ONLY by the parse-failure fallback path. Derived from
+ * FORBIDDEN_CHAINS (see that table's doc comment) so the fallback's labels
+ * can never drift from the primary AST matcher's labels.
  */
-const BLANK_LEAF_KINDS = new Set([
-  ts.SyntaxKind.StringLiteral,
-  ts.SyntaxKind.NoSubstitutionTemplateLiteral,
-  ts.SyntaxKind.TemplateHead,
-  ts.SyntaxKind.TemplateMiddle,
-  ts.SyntaxKind.TemplateTail,
-  ts.SyntaxKind.RegularExpressionLiteral,
-]);
+export const FORBIDDEN_TOKENS = FORBIDDEN_CHAINS.map((chain) => chain.token);
 
 /**
  * The single legitimate stdout writer in the embedded-agent subprocess loop.
@@ -142,42 +172,12 @@ export function assertAllowlistValid(allowlist) {
 assertAllowlistValid(ALLOWLIST);
 
 /**
- * Build a same-length "code-only" copy of `source`: every character is
- * blanked to a space except (a) newlines, preserved so line numbers stay
- * aligned, and (b) the verbatim text of every leaf token that is NOT one of
- * BLANK_LEAF_KINDS. Comments and whitespace (trivia, never leaves) and
- * string/template/regex literal content are therefore both invisible to a
- * substring search run against the result, while every other token keeps
- * its exact original text and offset.
- *
- * @param {string} source
- * @param {ts.SourceFile} sourceFile
- * @returns {string}
- */
-export function buildCodeOnlyText(source, sourceFile) {
-  const chars = source.split('');
-  for (let i = 0; i < chars.length; i++) {
-    if (chars[i] !== '\n') chars[i] = ' ';
-  }
-  const leaves = [];
-  collectLeaves(sourceFile, sourceFile, leaves);
-  for (const leaf of leaves) {
-    if (BLANK_LEAF_KINDS.has(leaf.kind)) continue;
-    const start = leaf.getStart(sourceFile);
-    const end = leaf.getEnd();
-    for (let i = start; i < end; i++) {
-      const ch = source[i];
-      if (ch !== '\n') chars[i] = ch;
-    }
-  }
-  return chars.join('');
-}
-
-/**
  * Find every occurrence of every forbidden token in `text`, as raw
- * character offsets. Overlapping/adjacent occurrences of different tokens
- * (e.g. `Bun.stdout` inside `Bun.stdout.write(`) are all reported
- * independently — the caller is not expected to deduplicate.
+ * character offsets. Used ONLY by the parse-failure fallback path (see this
+ * file's header comment) — the primary path uses `findAstViolations`
+ * instead. Overlapping/adjacent occurrences of different tokens (e.g.
+ * `Bun.stdout` inside `Bun.stdout.write(`) are all reported independently —
+ * the caller is not expected to deduplicate.
  *
  * @param {string} text
  * @returns {Array<{index: number, token: string}>}
@@ -214,6 +214,125 @@ export function offsetToLineCol(text, offset) {
     }
   }
   return { line, col: offset - lineStart + 1 };
+}
+
+/**
+ * Resolve `node` into its full dotted/bracketed access chain: the root
+ * identifier plus the ordered list of property names from the root to
+ * `node` itself.
+ *
+ * `?.` (optional chaining) needs no special-casing here. TypeScript
+ * represents `a?.b` and `a.b` as the exact same `PropertyAccessExpression`
+ * node kind — the only difference is an optional `questionDotToken`
+ * property on the node, which this function never inspects — so
+ * `ts.isPropertyAccessExpression(node)` matches both uniformly. A call's
+ * own `?.` (`f?.()`) is even further out of scope: it lives on the
+ * enclosing `CallExpression`, a different node kind this function never
+ * receives, since a `CallExpression` is not itself a property/element
+ * access node. (Verified empirically against `console.log?.('x')`,
+ * `console?.log('x')`, and `console?.log?.('x')` with a throwaway
+ * `ts.createSourceFile` + node dump before writing this function — all
+ * three place `questionDotToken` on nodes this function is indifferent to
+ * or passes straight through.)
+ *
+ * `ElementAccessExpression` (`console['info']`) is resolved ONLY when its
+ * argument is a `StringLiteral` — a computed key (a variable, an arbitrary
+ * expression, or even a template literal) is deliberately left unresolved
+ * (returns `null`) rather than attempting constant-folding or control-flow
+ * analysis, which this script does not do.
+ *
+ * Returns `null` when the chain does not bottom out in a bare identifier
+ * (e.g. it passes through a call, a parenthesized expression, `this`,
+ * etc., or hits an unresolvable computed element access) — every entry in
+ * FORBIDDEN_CHAINS requires a bare-identifier root, so an unresolvable
+ * chain can never match regardless.
+ *
+ * @param {ts.Expression} node
+ * @returns {{root: string, segments: string[]} | null}
+ */
+export function resolveAccessChain(node) {
+  if (ts.isIdentifier(node)) {
+    return { root: node.text, segments: [] };
+  }
+  if (ts.isPropertyAccessExpression(node)) {
+    const base = resolveAccessChain(node.expression);
+    if (!base) return null;
+    return { root: base.root, segments: [...base.segments, node.name.text] };
+  }
+  if (ts.isElementAccessExpression(node)) {
+    const arg = node.argumentExpression;
+    if (!arg || !ts.isStringLiteral(arg)) return null;
+    const base = resolveAccessChain(node.expression);
+    if (!base) return null;
+    return { root: base.root, segments: [...base.segments, arg.text] };
+  }
+  return null;
+}
+
+/**
+ * @param {string[]} a
+ * @param {string[]} b
+ * @returns {boolean}
+ */
+function segmentsEqual(a, b) {
+  return a.length === b.length && a.every((seg, i) => seg === b[i]);
+}
+
+/**
+ * If `node` is a `PropertyAccessExpression` or `ElementAccessExpression`
+ * whose resolved chain (see `resolveAccessChain`) exactly matches an entry
+ * in FORBIDDEN_CHAINS, return that entry's `token`; otherwise `null`.
+ *
+ * Every such node in the tree is checked independently at its own
+ * position, which is what makes a longer chain's inner sub-chain
+ * detectable without any extra bookkeeping: for `Bun.stdout.writer()`, the
+ * outer `Bun.stdout.writer` access does not match (no FORBIDDEN_CHAINS
+ * entry has segments `['stdout', 'writer']`), but the AST walk in
+ * `findAstViolations` also visits the inner `Bun.stdout` access nested
+ * inside it as a separate node, and THAT one resolves to `{root: 'Bun',
+ * segments: ['stdout']}`, which does match. The same independence is what
+ * prevents double-counting a call's callee: for `process.stdout.write(x)`,
+ * only the outer 3-segment `process.stdout.write` access matches; the
+ * inner `process.stdout` (2 segments) does not appear in the table at all
+ * and is correctly not flagged on its own.
+ *
+ * @param {ts.Node} node
+ * @returns {string | null}
+ */
+export function matchForbiddenChain(node) {
+  if (!ts.isPropertyAccessExpression(node) && !ts.isElementAccessExpression(node)) return null;
+  const chain = resolveAccessChain(node);
+  if (!chain) return null;
+  const entry = FORBIDDEN_CHAINS.find(
+    (candidate) => candidate.root === chain.root && segmentsEqual(candidate.segments, chain.segments),
+  );
+  return entry ? entry.token : null;
+}
+
+/**
+ * Walk the full AST of `sourceFile` and collect every node whose resolved
+ * access chain matches FORBIDDEN_CHAINS (see `matchForbiddenChain`).
+ * Comments and whitespace are trivia the AST never represents as nodes at
+ * all, and string/template literal CONTENT is text belonging to a
+ * `StringLiteral`/`TemplateLiteral`-family leaf node rather than to any
+ * `PropertyAccessExpression`/`ElementAccessExpression` — so both are
+ * naturally invisible to this walk without any separate blanking step.
+ *
+ * @param {ts.SourceFile} sourceFile
+ * @returns {Array<{start: number, token: string}>}
+ */
+export function findAstViolations(sourceFile) {
+  const hits = [];
+  const visit = (node) => {
+    const token = matchForbiddenChain(node);
+    if (token) {
+      hits.push({ start: node.getStart(sourceFile), token });
+    }
+    ts.forEachChild(node, visit);
+  };
+  ts.forEachChild(sourceFile, visit);
+  hits.sort((a, b) => a.start - b.start || a.token.localeCompare(b.token));
+  return hits;
 }
 
 /**
@@ -294,11 +413,10 @@ export function findViolationsInSource(source) {
     }));
   }
 
-  const codeOnlyText = buildCodeOnlyText(source, sourceFile);
-  return findForbiddenTokenOffsets(codeOnlyText).map(({ index, token }) => ({
-    ...offsetToLineCol(source, index),
+  return findAstViolations(sourceFile).map(({ start, token }) => ({
+    ...offsetToLineCol(source, start),
     token,
-    functionName: findEnclosingFunctionName(sourceFile, index),
+    functionName: findEnclosingFunctionName(sourceFile, start),
   }));
 }
 
