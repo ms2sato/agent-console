@@ -54,6 +54,17 @@ export interface ActivationBlock {
   /** Rule names skipped THIS call because their content exceeded the
    * remaining budget -- R2's "[rule not activated for size: <name>]" line. */
   skippedForSize: string[];
+  /**
+   * Rule names ACTUALLY activated by this call (never the size-skipped
+   * ones) -- the structural fact `text`'s `[rule activated: <name>]` lines
+   * ALSO carry as human-visible prose. Threaded onward to
+   * `ToolCallOutcome.activatedRules` and the `tool-result` wire event's
+   * `activatedRules` field so restore-seeding (main.ts) never has to parse
+   * it back out of `text` (#1343 R4 -- a tool output that happens to
+   * CONTAIN the marker substring must never be misread as a real
+   * activation).
+   */
+  activatedNames: string[];
 }
 
 /**
@@ -285,6 +296,10 @@ export class RuleActivator implements RuleActivatorLike {
       sections.push(`[rule not activated for size: ${sortedSkipped.join(', ')}]`);
     }
 
-    return { text: sections.join('\n\n'), skippedForSize };
+    return {
+      text: sections.join('\n\n'),
+      skippedForSize,
+      activatedNames: sortedActivated.map((r) => r.name),
+    };
   }
 }

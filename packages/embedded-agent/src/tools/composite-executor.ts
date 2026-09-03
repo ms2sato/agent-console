@@ -63,6 +63,8 @@ export class CompositeToolExecutor implements ToolExecutor {
     if (matched.length === 0) return outcome;
 
     const activation = await this.deps.ruleActivator.activate(matched);
-    return activation === null ? outcome : { ...outcome, appendix: activation.text };
+    return activation === null
+      ? outcome
+      : { ...outcome, appendix: activation.text, activatedRules: activation.activatedNames };
   }
 }

@@ -228,6 +228,7 @@ describe('RuleActivator.activate — block format', () => {
       `[rule activated: r]\n--- Rule (applies to: src/**, lib/**): ${rule.origin} ---\nTHE CONTENT`,
     );
     expect(block?.skippedForSize).toEqual([]);
+    expect(block?.activatedNames).toEqual(['r']);
   });
 
   it('joins multiple activated rules in NAME order, separated by a blank line', async () => {
@@ -247,6 +248,8 @@ describe('RuleActivator.activate — block format', () => {
       `[rule activated: a]\n--- Rule (applies to: a/**): ${ruleA.origin} ---\nA_CONTENT\n\n` +
         `[rule activated: b]\n--- Rule (applies to: b/**): ${ruleB.origin} ---\nB_CONTENT`,
     );
+    // Same NAME order as `text`'s blocks, not the caller-given order.
+    expect(block?.activatedNames).toEqual(['a', 'b']);
   });
 
   it('activate([]) returns null', async () => {
@@ -275,6 +278,7 @@ describe('RuleActivator.activate — budget exhaustion', () => {
     expect(block).toEqual({
       text: '[rule not activated for size: big]',
       skippedForSize: ['big'],
+      activatedNames: [],
     });
 
     // Not marked activated -- still returned as a fresh match candidate.

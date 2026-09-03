@@ -463,6 +463,59 @@ describe('AgentLoop — Phase B (#1343 R2) tool-result appendix', () => {
   });
 });
 
+describe('AgentLoop — Phase B (#1343 R4) tool-result activatedRules', () => {
+  it('carries outcome.activatedRules onto the emitted tool-result event, structurally alongside the text appendix', async () => {
+    const executor = new StubExecutor({
+      ok: true,
+      result: 'plain result',
+      appendix: '[rule activated: r1]\n--- Rule (applies to: **/*): /rules/r1.md ---\nCONTENT',
+      activatedRules: ['r1'],
+    });
+    const h = makeLoop([toolCallResponse('c', 'Read', '{}'), textResponse('done')], { executor });
+
+    await h.loop.runTurn('t1', 'hi');
+
+    const toolResultEvent = h.events.find((e) => e.type === 'tool-result') as
+      | { activatedRules?: string[] }
+      | undefined;
+    expect(toolResultEvent?.activatedRules).toEqual(['r1']);
+  });
+
+  it('omits activatedRules from the emitted event when the executor outcome has none', async () => {
+    const executor = new StubExecutor({ ok: true, result: 'plain result' });
+    const h = makeLoop([toolCallResponse('c', 'Read', '{}'), textResponse('done')], { executor });
+
+    await h.loop.runTurn('t1', 'hi');
+
+    const toolResultEvent = h.events.find((e) => e.type === 'tool-result') as
+      | { activatedRules?: string[] }
+      | undefined;
+    expect(toolResultEvent).toBeDefined();
+    expect(toolResultEvent && 'activatedRules' in toolResultEvent).toBe(false);
+  });
+
+  it('never pushes activatedRules onto the provider-facing role:tool conversation message', async () => {
+    const executor = new StubExecutor({
+      ok: true,
+      result: 'plain result',
+      appendix: '[rule activated: r1]\n--- Rule (applies to: **/*): /rules/r1.md ---\nCONTENT',
+      activatedRules: ['r1'],
+    });
+    const h = makeLoop([toolCallResponse('c', 'Read', '{}'), textResponse('done')], { executor });
+
+    await h.loop.runTurn('t1', 'hi');
+
+    const secondTurnMessages = h.adapter.capturedMessages[1];
+    const toolMessage = secondTurnMessages.find((m) => m.role === 'tool' && m.tool_call_id === 'c');
+    expect(toolMessage).toEqual({
+      role: 'tool',
+      tool_call_id: 'c',
+      content:
+        'plain result\n\n[rule activated: r1]\n--- Rule (applies to: **/*): /rules/r1.md ---\nCONTENT',
+    });
+  });
+});
+
 describe('AgentLoop — conversation stays valid after an early return', () => {
   it('answers pending tool calls when the turn is canceled mid-tool-execution', async () => {
     // Executor cancels the turn as soon as the (single) tool call executes, so

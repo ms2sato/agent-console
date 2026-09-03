@@ -36,7 +36,14 @@ import {
 import { createTestContext, shutdownAppContext } from '@agent-console/server/src/app-context';
 import type { AppContext } from '@agent-console/server/src/app-context';
 
-import { AppServerMessageSchema, type EmbeddedAgentEvent } from '@agent-console/shared';
+import {
+  AppServerMessageSchema,
+  EmbeddedAgentStreamEventSchema,
+  type EmbeddedAgentEvent,
+  type EmbeddedAgentStreamEvent,
+} from '@agent-console/shared';
+import { WorkerOutputFileManager } from '@agent-console/server/src/lib/worker-output-file';
+import { SessionDataPathResolver } from '@agent-console/server/src/lib/session-data-path-resolver';
 
 import { runLoop, type LoopFactories, type LoopIO, type McpClientLike } from '@agent-console/embedded-agent/src/main';
 import { loadInstructions } from '@agent-console/embedded-agent/src/system-prompt';
@@ -457,6 +464,64 @@ describe('Subprocess tool-call composition: scoped .claude/rules activation reac
       expect(toolResult.result).toContain('[rule activated: scoped.md]');
       expect(toolResult.result).toContain('SCOPED_ACTIVATION_MARKER');
     }
+  });
+
+  /**
+   * Q10 (pre-pr-completeness.md): the `activatedRules` field just asserted
+   * in-memory above must survive the REAL serialize/persist/read-back path
+   * -- the actual `WorkerOutputFileManager`, not a spy, driven the same way
+   * the production activation flow drives it (bufferOutput -> forceFlush ->
+   * readHistoryWithOffset), with the persisted NDJSON line parsed back
+   * through the client's REAL replay schema (`EmbeddedAgentStreamEventSchema`).
+   * A schema edit that lands on `EmbeddedAgentEvent`'s TS type but not the
+   * `strictObject` schema would pass the in-memory test above (no parse in
+   * that path) yet fail here (valibot strips/rejects the unknown field on
+   * the read-back parse).
+   */
+  it('the persisted tool-result event, read back from the real output file, carries activatedRules', async () => {
+    const { dir, matchingFile } = await makeScratchRepoWithScopedRule();
+    const adapter = new ReadThenDoneAdapter(matchingFile);
+    const { io, events } = makeIoWithToolDrainGap([
+      JSON.stringify({
+        v: 1,
+        type: 'init',
+        compaction: { auto: false },
+        engine: 'openai-api',
+        mcp: { baseUrl: 'http://mcp/local', token: 'tok' },
+        provider: { baseUrl: 'http://provider/v1', model: 'm' },
+        context: { sessionId: 's', workerId: 'w', cwd: dir },
+        maxToolIterations: 5,
+      }),
+      JSON.stringify({ v: 1, type: 'user-message', id: 'u1', text: 'read it' }),
+    ]);
+
+    expect(await runLoop(io, makeFactories(adapter))).toBe(0);
+
+    const toolResultEvent = events.find((e) => e.type === 'tool-result');
+    if (toolResultEvent?.type !== 'tool-result') throw new Error('expected a tool-result event');
+
+    const workerOutputFileManager = new WorkerOutputFileManager();
+    const resolver = new SessionDataPathResolver(join(dir, '.output-data'));
+    const sessionId = 's';
+    const workerId = 'w';
+    await workerOutputFileManager.initializeWorkerOutput(sessionId, workerId, resolver);
+    for (const event of events) {
+      workerOutputFileManager.bufferOutput(sessionId, workerId, `${JSON.stringify(event)}\n`, resolver);
+    }
+    await workerOutputFileManager.forceFlush(sessionId, workerId);
+
+    const { data } = await workerOutputFileManager.readHistoryWithOffset(sessionId, workerId, resolver, 0);
+    const persistedEvents: EmbeddedAgentStreamEvent[] = [];
+    for (const line of data.split('\n')) {
+      if (line.trim() === '') continue;
+      const parsed = v.safeParse(EmbeddedAgentStreamEventSchema, JSON.parse(line));
+      expect(parsed.success).toBe(true);
+      if (parsed.success) persistedEvents.push(parsed.output);
+    }
+
+    const persistedToolResult = persistedEvents.find((e) => e.type === 'tool-result');
+    if (persistedToolResult?.type !== 'tool-result') throw new Error('expected a persisted tool-result event');
+    expect(persistedToolResult.activatedRules).toEqual(['scoped.md']);
   });
 
   it('a non-matching path produces no activation block', async () => {

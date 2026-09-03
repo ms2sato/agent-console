@@ -105,6 +105,19 @@ export interface RestoreOutcome {
    * reading at all -- see {@link findRestoredUsageSeed}.
    */
   usageSeed?: EmbeddedAgentRestoredUsage;
+  /**
+   * Phase B (#1343 R4): the scoped-rule names the restored window's
+   * `tool-result` events already carry as ACTIVATED, structurally (each
+   * event's own `activatedRules` field -- never parsed out of `result`'s
+   * text; see that field's doc comment). Collected across the ENTIRE
+   * restore window by {@link replayWindow}, the single place that iterates
+   * every `tool-result` event regardless of which branch built the window.
+   * Always present; empty when no restored event carried the field. The
+   * caller (main.ts, via the `init` command's `activatedRuleNames`) seeds
+   * `RuleActivator` with these names so an already-delivered rule is not
+   * re-sent after a restart.
+   */
+  activatedRuleNames: string[];
 }
 
 /**
@@ -235,7 +248,7 @@ export function reconstructConversation(
     windowEvents = events.slice(boundaryIndex + 1);
   }
 
-  replayWindow(conversation, windowEvents);
+  const { activatedRuleNames } = replayWindow(conversation, windowEvents);
 
   // Taken BEFORE the repair, which is what applies the criterion to the
   // markers it inserts: none of them originates in a transcript line, so
@@ -265,6 +278,7 @@ export function reconstructConversation(
     repairedToolCallIds: repairResult.repairedToolCallIds,
     restoredMessageCount,
     ...(usageSeed !== undefined ? { usageSeed } : {}),
+    activatedRuleNames,
   };
 }
 
@@ -503,10 +517,28 @@ function boundaryCoverage(event: EmbeddedAgentStreamEvent): 'full' | 'partial' |
  * restore-transparent by design, see its type doc comment). Boundary (3,
  * never reached here -- already sliced out by 4b): context-compacted, the
  * legacy context-handoff, and restore-failure-boundary (R2, #1447 stage 4).
+ *
+ * Also returns `activatedRuleNames` (Phase B, #1343 R4): the scoped-rule
+ * names collected from every `tool-result` event's `activatedRules` field in
+ * this window. This function is `reconstructConversation`'s SINGLE call site
+ * for iterating a restore window, so collecting here -- rather than in each
+ * of that function's boundary/no-boundary branches -- is what keeps the
+ * accumulation from being reimplemented (and potentially diverging) per
+ * branch.
  */
-function replayWindow(conversation: ChatMessage[], events: EmbeddedAgentStreamEvent[]): void {
+function replayWindow(
+  conversation: ChatMessage[],
+  events: EmbeddedAgentStreamEvent[],
+): { activatedRuleNames: string[] } {
   let current: Extract<ChatMessage, { role: 'assistant' }> | null = null;
   const knownToolCallIds = new Set<string>();
+  // Phase B (#1343 R4): accumulated across every `tool-result` event in
+  // THIS window, regardless of which branch of `reconstructConversation`
+  // built it -- this function is the single place that iterates the window,
+  // so collecting here (rather than per-branch) cannot diverge across the
+  // boundary/no-boundary shapes. `Set` de-duplicates a name that activated
+  // on more than one restored call.
+  const activatedRuleNames = new Set<string>();
   /**
    * Whether a `user-message` has been replayed in this window yet.
    *
@@ -638,6 +670,9 @@ function replayWindow(conversation: ChatMessage[], events: EmbeddedAgentStreamEv
           );
         }
         conversation.push({ role: 'tool', tool_call_id: event.callId, content: event.result });
+        if (event.activatedRules !== undefined) {
+          for (const name of event.activatedRules) activatedRuleNames.add(name);
+        }
         break;
       case 'assistant-delta':
       case 'assistant-thinking-delta':
@@ -680,6 +715,7 @@ function replayWindow(conversation: ChatMessage[], events: EmbeddedAgentStreamEv
       }
     }
   }
+  return { activatedRuleNames: [...activatedRuleNames] };
 }
 
 /**

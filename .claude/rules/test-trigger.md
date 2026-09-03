@@ -239,7 +239,7 @@ Before implementing the `PostToolUse` hook activation path in `packages/embedded
 
 Two properties of the script that matter when re-running it:
 
-- **It is billable and needs a real, authenticated `claude` CLI** for the invoking OS user — the `claude-sdk` engine runs as the executing user and uses that user's own authentication, so there is no provider key to configure. Six small turns per full run (two per arm). It is a manual gate, never a CI job.
+- **It is billable and needs a real, authenticated `claude` CLI** for the invoking OS user — the `claude-sdk` engine runs as the executing user and uses that user's own authentication, so there is no provider key to configure. Nine small turns per full run (three per arm: ask#1, the Read, ask#2). It is a manual gate, never a CI job.
 - **`--a` / `--b` / `--c` select an arm**; omitted, the default is all three, in order.
 
 ## Additional Verification: Instruction-Loader Parity E2E, Both Engines

@@ -1140,6 +1140,38 @@ describe('EmbeddedAgentEventSchema', () => {
     }
   });
 
+  /**
+   * Phase B (#1343 R4): `tool-result`'s structural `activatedRules` field --
+   * the wire-boundary pin CodeRabbit's Major finding asked for (the
+   * regex-scan predecessor is what this field replaces; see main.ts's
+   * restore-seeding comment). This member's own `strictObject` rejection
+   * case (unlike the sibling members already pinned above/below at lines
+   * ~1267/1315/1369) did not exist before this field was added.
+   */
+  describe('tool-result activatedRules (#1343 R4)', () => {
+    const base = { v: 1, type: 'tool-result', turnId: 't1', callId: 'c1', ok: true, result: 'done' };
+
+    it('parses with activatedRules present (array of strings)', () => {
+      const result = v.safeParse(EmbeddedAgentEventSchema, { ...base, activatedRules: ['scoped.md', 'other.md'] });
+      expect(result.success).toBe(true);
+    });
+
+    it('parses with activatedRules absent', () => {
+      const result = v.safeParse(EmbeddedAgentEventSchema, base);
+      expect(result.success).toBe(true);
+    });
+
+    it('rejects a non-array activatedRules value', () => {
+      const result = v.safeParse(EmbeddedAgentEventSchema, { ...base, activatedRules: 'scoped.md' });
+      expect(result.success).toBe(false);
+    });
+
+    it('rejects an unknown sibling key on the same tool-result event (strictObject)', () => {
+      const result = v.safeParse(EmbeddedAgentEventSchema, { ...base, activatedRules: ['scoped.md'], extra: 'leak' });
+      expect(result.success).toBe(false);
+    });
+  });
+
   describe('window-declaration drift fields', () => {
     /*
      * The two fields are deliberately different SHAPES, because they carry
@@ -1946,6 +1978,33 @@ describe('init.restoredUsage survives the serialized stdio line (#1419)', () => 
 
     if (parsed.type !== 'init' || parsed.engine !== 'openai-api') throw new Error('unexpected parse output');
     expect(parsed.restoredUsage).toEqual({ promptTokens: 6722, estimated: false });
+  });
+});
+
+/**
+ * Phase B (#1343 R4)'s wire addition, same rationale as `restoredUsage`'s
+ * sibling pin immediately above: what a schema-only object-literal test
+ * cannot reach is whether the field survives the actual stdio TRANSPORT
+ * (`JSON.stringify` + `JSON.parse`), not just a `v.parse` call.
+ */
+describe('init.activatedRuleNames survives the serialized stdio line (#1343 R4)', () => {
+  it('round-trips through JSON.stringify + JSON.parse + schema parse', () => {
+    const line = JSON.stringify({
+      v: 1,
+      type: 'init',
+      engine: 'openai-api',
+      compaction: { auto: true, contextWindowTokens: 20_000 },
+      mcp: { baseUrl: 'http://mcp.local', token: 'tok' },
+      provider: { baseUrl: 'http://p/v1', model: 'm' },
+      context: { sessionId: 's', workerId: 'w', cwd: '/tmp/work' },
+      maxToolIterations: 25,
+      activatedRuleNames: ['scoped.md'],
+    });
+
+    const parsed = v.parse(EmbeddedAgentCommandSchema, JSON.parse(line));
+
+    if (parsed.type !== 'init' || parsed.engine !== 'openai-api') throw new Error('unexpected parse output');
+    expect(parsed.activatedRuleNames).toEqual(['scoped.md']);
   });
 });
 

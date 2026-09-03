@@ -1891,7 +1891,7 @@ function fakeRuleActivator(matchOnce: Record<string, string[]>, blockText = 'RUL
     activate: async (names) => {
       activateCalls.push(names);
       if (names.length === 0) return null;
-      const block: ActivationBlock = { text: blockText, skippedForSize: [] };
+      const block: ActivationBlock = { text: blockText, skippedForSize: [], activatedNames: names };
       return block;
     },
   };

@@ -196,6 +196,7 @@ describe('CompositeToolExecutor — Phase B (#1343 R2) scoped-rule activation ap
   const activationBlock: ActivationBlock = {
     text: '[rule activated: r1]\n--- Rule (applies to: **/*): /rules/r1.md ---\nCONTENT',
     skippedForSize: [],
+    activatedNames: ['r1'],
   };
 
   it('sets outcome.appendix when a builtin call matches a scoped rule', async () => {
@@ -215,7 +216,12 @@ describe('CompositeToolExecutor — Phase B (#1343 R2) scoped-rule activation ap
 
     const result = await composite.callTool('Read', { path: 'match.ts' }, new AbortController().signal);
 
-    expect(result).toEqual({ ok: true, result: 'Read-result', appendix: activationBlock.text });
+    expect(result).toEqual({
+      ok: true,
+      result: 'Read-result',
+      appendix: activationBlock.text,
+      activatedRules: ['r1'],
+    });
   });
 
   it('leaves outcome.appendix unset when the call does not match any scoped rule', async () => {
@@ -254,7 +260,12 @@ describe('CompositeToolExecutor — Phase B (#1343 R2) scoped-rule activation ap
 
     const result = await composite.callTool('close_session', {}, new AbortController().signal);
 
-    expect(result).toEqual({ ok: true, result: 'mcp', appendix: activationBlock.text });
+    expect(result).toEqual({
+      ok: true,
+      result: 'mcp',
+      appendix: activationBlock.text,
+      activatedRules: ['r1'],
+    });
   });
 
   it('leaves outcome.appendix unset when activate() returns null (e.g. every matched name was size-skipped)', async () => {

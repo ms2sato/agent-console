@@ -338,26 +338,24 @@ async function initializeLoop(
       }
     }
 
-    // Phase B (#1343 R4), openai-api only: a restored transcript that
-    // already contains a rule's `[rule activated: <name>]` marker (written
-    // verbatim into a `role:'tool'` message's content by a PRIOR
-    // incarnation, restore.ts's `event.result` reconstruction) must not
-    // re-activate that rule in THIS incarnation -- its content is already
-    // present in the conversation the model is resuming into. claude-sdk
+    // Phase B (#1343 R4), openai-api only: a rule already delivered by a
+    // PRIOR incarnation -- its content already present in the conversation
+    // the model is resuming into -- must not be re-activated in THIS
+    // incarnation. `init.activatedRuleNames` is the structural fact the
+    // server-side restore reconstruction (restore.ts's `reconstructConversation`,
+    // via `EmbeddedAgentWorkerService`) collected from the restored window's
+    // `tool-result` events' own `activatedRules` field -- NEVER parsed out
+    // of `restoredConversation`'s text. A restored `role:'tool'` message
+    // whose content happens to CONTAIN the literal `[rule activated: ...]`
+    // substring (another tool's own output, coincidentally or maliciously)
+    // has no effect here: nothing in this file inspects that text. claude-sdk
     // resume is explicitly out of scope here: the SDK resumes its own
-    // session state rather than being handed a reconstruction, so this
-    // marker-scan never runs on that arm, and a repeated injection there is
-    // an accepted, documented cost-only duplication (see rule-activation.ts).
-    if (restoredConversation) {
-      const seeded = new Set<string>();
-      const activationMarker = /^\[rule activated: (.+)\]$/gm;
-      for (const msg of restoredConversation) {
-        if (msg.role !== 'tool') continue;
-        for (const match of msg.content.matchAll(activationMarker)) {
-          seeded.add(match[1]);
-        }
-      }
-      if (seeded.size > 0) ruleActivator.seedActivated([...seeded]);
+    // session state rather than being handed a reconstruction, so
+    // `activatedRuleNames` is never representable on that arm (see the
+    // type's doc comment), and a repeated injection there is an accepted,
+    // documented cost-only duplication (see rule-activation.ts).
+    if (init.activatedRuleNames !== undefined && init.activatedRuleNames.length > 0) {
+      ruleActivator.seedActivated(init.activatedRuleNames);
     }
 
     // Message-attachment resolution: turn each restored user message's

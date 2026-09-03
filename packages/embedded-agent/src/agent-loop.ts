@@ -865,6 +865,12 @@ export class AgentLoop {
             callId: call.callId,
             ok: result.ok,
             result: withAppendix,
+            // Phase B (#1343 R4): the structural companion to the appendix
+            // folded into `withAppendix` above -- restore-seeding
+            // (main.ts) reads THIS field, never `result`'s text. Never
+            // pushed onto the `role: 'tool'` conversation message below,
+            // which the provider sees -- this field is wire-event-only.
+            ...(result.activatedRules !== undefined ? { activatedRules: result.activatedRules } : {}),
           });
           this.conversation.push({
             role: 'tool',

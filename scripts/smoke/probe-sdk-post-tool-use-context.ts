@@ -62,7 +62,8 @@
  *
  * Requirements: a real, authenticated `claude` CLI session for the invoking
  * OS user (this repo's own claude-sdk auth, not a provider key). Billable --
- * six small turns total across all three arms (two turns each).
+ * nine small turns total across all three arms (three turns each: ask#1,
+ * the Read, ask#2).
  *
  * Usage: bun scripts/smoke/probe-sdk-post-tool-use-context.ts [--a] [--b] [--c]
  */
@@ -387,7 +388,11 @@ async function main(): Promise<number> {
     const b = results.find((r) => r.label === 'B');
     let bClean: boolean | null = null;
     if (b) {
-      if (b.ask1Found === null || b.ask2Found === null) {
+      if (b.hookFireCount !== 1) {
+        console.log(
+          `Arm B (negative control): INDETERMINATE -- the PostToolUse hook fired ${b.hookFireCount} time(s), expected exactly 1 (the model may not have called Read, or called it more than once). No measurement available; the pass/fail verdict below cannot be trusted.`,
+        );
+      } else if (b.ask1Found === null || b.ask2Found === null) {
         console.log('Arm B (negative control): INDETERMINATE -- a turn did not settle, no measurement available.');
       } else if (b.ask1Found || b.ask2Found) {
         console.log(
@@ -402,7 +407,11 @@ async function main(): Promise<number> {
 
     const a = results.find((r) => r.label === 'A');
     if (a) {
-      if (a.ask1Found === null || a.ask2Found === null) {
+      if (a.hookFireCount !== 1) {
+        console.log(
+          `Arm A (subject): INDETERMINATE -- the PostToolUse hook fired ${a.hookFireCount} time(s), expected exactly 1 (the model may not have called Read, or called it more than once). No measurement available; the pass/fail verdict below cannot be trusted.`,
+        );
+      } else if (a.ask1Found === null || a.ask2Found === null) {
         console.log('Arm A (subject): INDETERMINATE -- a turn did not settle, no measurement available.');
       } else if (a.ask1Found) {
         console.log(
@@ -430,7 +439,11 @@ async function main(): Promise<number> {
 
     const c = results.find((r) => r.label === 'C');
     if (c) {
-      if (c.ask1Found === null || c.ask2Found === null) {
+      if (c.hookFireCount !== 1) {
+        console.log(
+          `Arm C (size-ceiling): INDETERMINATE -- the PostToolUse hook fired ${c.hookFireCount} time(s), expected exactly 1 (the model may not have called Read, or called it more than once). No measurement available; the pass/fail verdict below cannot be trusted.`,
+        );
+      } else if (c.ask1Found === null || c.ask2Found === null) {
         console.log('Arm C (size-ceiling): INDETERMINATE -- a turn did not settle, no measurement available.');
       } else if (c.ask2Found) {
         console.log(`Arm C (size-ceiling): PASS -- the nonce still arrived when wrapped in ~${ceilingChars.toLocaleString()} chars of filler. No ceiling observed at this size.`);

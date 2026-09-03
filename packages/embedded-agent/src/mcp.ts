@@ -22,6 +22,16 @@ export interface ToolCallOutcome {
    * when no scoped rule matched this call.
    */
   appendix?: string;
+  /**
+   * Phase B (#1343 R4): the scoped-rule names ACTUALLY activated alongside
+   * `appendix` (never the size-skipped ones), threaded through from
+   * `ActivationBlock.activatedNames` -- structural companion to `appendix`,
+   * onward to the `tool-result` wire event's `activatedRules` field. See
+   * that field's doc comment for why restore-seeding depends on this
+   * rather than parsing `appendix`/`result` text. `undefined` when no
+   * scoped rule matched this call, same condition as `appendix`.
+   */
+  activatedRules?: string[];
 }
 
 /** Narrow tool-execution surface the agent loop depends on. */
