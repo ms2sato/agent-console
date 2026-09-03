@@ -6,6 +6,7 @@ export type {
   CreateQuickSessionRequest,
   CreateSessionRequest,
   UpdateSessionRequest,
+  UpdateSessionMemoRequest,
   DeleteSessionRequest,
 } from '../schemas/session.js';
 
