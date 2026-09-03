@@ -18,6 +18,14 @@ interface MessagePanelProps {
   onSend: (content: string, files?: File[]) => Promise<void>;
   onEscape?: () => void;
   slashCompletionEnabled?: boolean;
+  /**
+   * When provided, this list is the completion source instead of the
+   * internal `/api/skills` fetch, and typing a `/`-prefixed line that
+   * matches none of these entries triggers the unknown-command notice
+   * instead of being sent. PTY callers omit this and keep the existing
+   * skills-query behavior unchanged.
+   */
+  slashCommands?: readonly { name: string; description: string }[];
   attachmentsEnabled?: boolean;
   cancelState?: { active: boolean; onCancel: () => void };
 }
@@ -57,6 +65,7 @@ export const MessagePanel = forwardRef<MessagePanelHandle, MessagePanelProps>(
     onSend,
     onEscape,
     slashCompletionEnabled = true,
+    slashCommands,
     attachmentsEnabled = true,
     cancelState,
   }, ref) {
@@ -70,23 +79,25 @@ export const MessagePanel = forwardRef<MessagePanelHandle, MessagePanelProps>(
   const [templateSelectorOpen, setTemplateSelectorOpen] = useState(false);
   const [templateManagerOpen, setTemplateManagerOpen] = useState(false);
   const [templateManagerInitialContent, setTemplateManagerInitialContent] = useState<string | undefined>(undefined);
+  const [pendingUnknownSlash, setPendingUnknownSlash] = useState<string | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const { templates, addTemplate, updateTemplate, deleteTemplate, reorderTemplates } = useMessageTemplates();
 
-  // Fetch slash commands from server
+  // Fetch slash commands from server -- skipped entirely when the caller
+  // supplies its own authoritative list via the `slashCommands` prop.
   const { data: skillsData } = useQuery({
     queryKey: skillKeys.all(),
     queryFn: fetchSkills,
     staleTime: 5 * 60 * 1000, // Skills rarely change
-    enabled: slashCompletionEnabled,
+    enabled: slashCompletionEnabled && slashCommands === undefined,
   });
-  const slashCommands = skillsData?.skills ?? [];
+  const effectiveSlashCommands = slashCommands ?? skillsData?.skills ?? [];
 
   // Slash command completion - derived state
   const isSlashPrefix = content.startsWith('/') && !content.includes(' ');
   const filteredCommands = isSlashPrefix
-    ? slashCommands.filter(cmd => cmd.name.toLowerCase().startsWith(content.toLowerCase()))
+    ? effectiveSlashCommands.filter(cmd => cmd.name.toLowerCase().startsWith(content.toLowerCase()))
     : [];
   const showCompletion = slashCompletionEnabled && isSlashPrefix && filteredCommands.length > 0 && !completionDismissed;
   // Clamp selectedIndex to valid range
@@ -131,8 +142,8 @@ export const MessagePanel = forwardRef<MessagePanelHandle, MessagePanelProps>(
     setFiles(prev => prev.filter((_, i) => i !== index));
   }, []);
 
-  const handleSend = useCallback(async () => {
-    if (!targetWorkerId || (!content.trim() && files.length === 0)) return;
+  const doSend = useCallback(async (contentToSend: string) => {
+    if (!targetWorkerId || (!contentToSend.trim() && files.length === 0)) return;
 
     // Client-side file validation
     const totalSize = files.reduce((sum, f) => sum + f.size, 0);
@@ -144,7 +155,7 @@ export const MessagePanel = forwardRef<MessagePanelHandle, MessagePanelProps>(
 
     setSending(true);
     try {
-      await onSend(content, files.length > 0 ? files : undefined);
+      await onSend(contentToSend, files.length > 0 ? files : undefined);
       clearDraft();
       setFiles([]);
       setHasUnread(false);
@@ -157,7 +168,36 @@ export const MessagePanel = forwardRef<MessagePanelHandle, MessagePanelProps>(
     } finally {
       setSending(false);
     }
-  }, [targetWorkerId, content, files, onError, onSend, clearDraft]);
+  }, [targetWorkerId, files, onError, onSend, clearDraft]);
+
+  const handleSend = useCallback(async () => {
+    if (!targetWorkerId || (!content.trim() && files.length === 0)) return;
+
+    // Engine-aware slash-command gate (#1572): only active when the caller
+    // passed an authoritative `slashCommands` list. A PTY caller (prop
+    // omitted) never gates here -- its underlying CLI handles slash-command
+    // semantics itself.
+    if (slashCommands !== undefined) {
+      const trimmed = content.trim();
+      if (trimmed.startsWith('/')) {
+        const firstToken = trimmed.split(/\s+/, 1)[0];
+        const isKnown = effectiveSlashCommands.some(cmd => cmd.name === firstToken);
+        if (!isKnown) {
+          setPendingUnknownSlash(content);
+          return;
+        }
+      }
+    }
+
+    await doSend(content);
+  }, [targetWorkerId, content, files.length, slashCommands, effectiveSlashCommands, doSend]);
+
+  const sendPendingAsText = useCallback(async () => {
+    if (pendingUnknownSlash === null) return;
+    const textToSend = pendingUnknownSlash;
+    setPendingUnknownSlash(null);
+    await doSend(textToSend);
+  }, [pendingUnknownSlash, doSend]);
 
   const selectCommand = useCallback((command: SkillDefinition) => {
     setContent(command.name + ' ');
@@ -308,6 +348,24 @@ export const MessagePanel = forwardRef<MessagePanelHandle, MessagePanelProps>(
               ))}
             </ul>
           )}
+          {pendingUnknownSlash !== null && (
+            <div
+              role="alert"
+              className="absolute bottom-full left-0 mb-1 w-full bg-amber-900/40 border border-amber-700/60 rounded shadow-lg px-3 py-1.5 text-xs text-amber-200 flex items-center justify-between gap-2 z-10"
+            >
+              <span>
+                <span className="font-medium">{pendingUnknownSlash.trim().split(/\s+/, 1)[0]}</span>{' '}
+                is not a command for this agent; send as text?
+              </span>
+              <button
+                type="button"
+                onClick={() => void sendPendingAsText()}
+                className="shrink-0 text-amber-100 hover:text-white underline"
+              >
+                Send as text
+              </button>
+            </div>
+          )}
           <textarea
             ref={textareaRef}
             value={content}
@@ -315,6 +373,7 @@ export const MessagePanel = forwardRef<MessagePanelHandle, MessagePanelProps>(
               setContent(e.target.value);
               setSelectedIndex(0);
               setCompletionDismissed(false);
+              setPendingUnknownSlash(null);
               handleResize(e.target);
             }}
             onKeyDown={handleKeyDown}

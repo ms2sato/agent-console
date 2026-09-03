@@ -914,6 +914,141 @@ describe('MessagePanel', () => {
     });
   });
 
+  describe('slashCommands prop (#1572, engine-aware slash-command gate)', () => {
+    const EMBEDDED_TEST_COMMANDS = [
+      { name: '/compact', description: 'Compact this conversation now' },
+      { name: '/cost', description: 'Show current usage' },
+    ];
+
+    it('blocks the send and shows the unknown-command notice for a command not in the list', async () => {
+      const { container } = await act(async () =>
+        renderWithRouter(
+          <MessagePanel {...defaultProps} slashCompletionEnabled={true} slashCommands={EMBEDDED_TEST_COMMANDS} />,
+        ),
+      );
+      const view = within(container);
+
+      const textarea = view.getByPlaceholderText('Send message to worker... (Ctrl+Enter to send)');
+      await act(async () => {
+        fireEvent.change(textarea, { target: { value: '/foo' } });
+      });
+      const sendButton = view.getByText('Send') as HTMLButtonElement;
+      await act(async () => {
+        fireEvent.click(sendButton);
+      });
+
+      expect(onSendMock).not.toHaveBeenCalled();
+      expect(view.getByRole('alert').textContent).toContain('/foo is not a command for this agent; send as text?');
+    });
+
+    it('"Send as text" sends the original blocked content exactly once', async () => {
+      const { container } = await act(async () =>
+        renderWithRouter(
+          <MessagePanel {...defaultProps} slashCompletionEnabled={true} slashCommands={EMBEDDED_TEST_COMMANDS} />,
+        ),
+      );
+      const view = within(container);
+
+      const textarea = view.getByPlaceholderText('Send message to worker... (Ctrl+Enter to send)');
+      await act(async () => {
+        fireEvent.change(textarea, { target: { value: '/foo' } });
+      });
+      await act(async () => {
+        fireEvent.click(view.getByText('Send'));
+      });
+      expect(onSendMock).not.toHaveBeenCalled();
+
+      await act(async () => {
+        fireEvent.click(view.getByText('Send as text'));
+      });
+
+      expect(onSendMock).toHaveBeenCalledTimes(1);
+      expect(onSendMock.mock.calls[0]).toEqual(['/foo', undefined]);
+      expect(view.queryByRole('alert')).toBeNull();
+    });
+
+    it('sends immediately, with no notice, when the slash command matches a table entry', async () => {
+      const { container } = await act(async () =>
+        renderWithRouter(
+          <MessagePanel {...defaultProps} slashCompletionEnabled={true} slashCommands={EMBEDDED_TEST_COMMANDS} />,
+        ),
+      );
+      const view = within(container);
+
+      const textarea = view.getByPlaceholderText('Send message to worker... (Ctrl+Enter to send)');
+      await act(async () => {
+        fireEvent.change(textarea, { target: { value: '/compact' } });
+      });
+      await act(async () => {
+        fireEvent.click(view.getByText('Send'));
+      });
+
+      expect(onSendMock).toHaveBeenCalledTimes(1);
+      expect(onSendMock.mock.calls[0]).toEqual(['/compact', undefined]);
+      expect(view.queryByRole('alert')).toBeNull();
+    });
+
+    it('sends immediately, unaffected by the gate, for plain non-slash content regardless of the slashCommands prop', async () => {
+      const { container } = await act(async () =>
+        renderWithRouter(
+          <MessagePanel {...defaultProps} slashCompletionEnabled={true} slashCommands={EMBEDDED_TEST_COMMANDS} />,
+        ),
+      );
+      const view = within(container);
+
+      const textarea = view.getByPlaceholderText('Send message to worker... (Ctrl+Enter to send)');
+      await act(async () => {
+        fireEvent.change(textarea, { target: { value: 'hello there' } });
+      });
+      await act(async () => {
+        fireEvent.click(view.getByText('Send'));
+      });
+
+      expect(onSendMock).toHaveBeenCalledTimes(1);
+      expect(onSendMock.mock.calls[0]).toEqual(['hello there', undefined]);
+      expect(view.queryByRole('alert')).toBeNull();
+    });
+
+    it('never gates or shows the notice when the slashCommands prop is omitted (PTY-shaped usage, regression guard)', async () => {
+      const { container } = await act(async () => renderWithRouter(<MessagePanel {...defaultProps} />));
+      const view = within(container);
+
+      const textarea = view.getByPlaceholderText('Send message to worker... (Ctrl+Enter to send)');
+      await act(async () => {
+        fireEvent.change(textarea, { target: { value: '/foo' } });
+      });
+      await act(async () => {
+        fireEvent.click(view.getByText('Send'));
+      });
+
+      expect(onSendMock).toHaveBeenCalledTimes(1);
+      expect(onSendMock.mock.calls[0]).toEqual(['/foo', undefined]);
+      expect(view.queryByRole('alert')).toBeNull();
+    });
+
+    it('offers exactly the entries from the slashCommands prop in the completion dropdown, not the skills query', async () => {
+      const { container } = await act(async () =>
+        renderWithRouter(
+          <MessagePanel {...defaultProps} slashCompletionEnabled={true} slashCommands={EMBEDDED_TEST_COMMANDS} />,
+        ),
+      );
+      const view = within(container);
+
+      const textarea = view.getByPlaceholderText('Send message to worker... (Ctrl+Enter to send)');
+      await act(async () => {
+        fireEvent.change(textarea, { target: { value: '/co' } });
+      });
+
+      const options = view.getAllByRole('option');
+      expect(options.length).toBe(2);
+      const names = options.map((o) => o.textContent);
+      expect(names.some((t) => t?.includes('/compact'))).toBe(true);
+      expect(names.some((t) => t?.includes('/cost'))).toBe(true);
+      // The skills query must never fire when the caller supplies its own list.
+      expect(fetchCalls.some((c) => c.url.endsWith('/api/skills'))).toBe(false);
+    });
+  });
+
   describe('attachmentsEnabled prop', () => {
     it('disables the Attach button with the expected tooltip when false', async () => {
       const { container } = await act(async () =>
