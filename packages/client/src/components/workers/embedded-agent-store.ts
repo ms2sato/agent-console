@@ -413,6 +413,16 @@ class EmbeddedAgentController implements EmbeddedAgentInstance {
   private openAssistantIndexByTurnId = new Map<string, number>();
   private openThinkingIndexByTurnId = new Map<string, number>();
   private toolCallIndexByCallId = new Map<string, number>();
+  // FIFO of entries-array indices for LEGACY (pre-#1581) persisted tool-call
+  // rows whose provider-supplied callId is empty (''). AgentLoop now
+  // synthesizes a unique id whenever callId is empty, so this queue only
+  // ever gets populated when replaying a transcript recorded before that
+  // fix -- a plain Map keyed by callId can't disambiguate two '' rows in
+  // the same turn (the second `.set('', idx)` clobbers the first), so
+  // pairing falls back to the loop's actual emission order (tool-call, then
+  // that same call's tool-result, one call executing at a time) instead of
+  // an id lookup. See applyToolResult / pushToolCall.
+  private legacyEmptyCallIdQueue: number[] = [];
   private entryKeyCounter = 0;
 
   // Transcript Restore (#1123 / #1205) bookkeeping.
@@ -873,6 +883,7 @@ class EmbeddedAgentController implements EmbeddedAgentInstance {
     this.openAssistantIndexByTurnId.clear();
     this.openThinkingIndexByTurnId.clear();
     this.toolCallIndexByCallId.clear();
+    this.legacyEmptyCallIdQueue = [];
     // Transcript Restore (#1123 / #1205): a fresh load re-derives `restoring`
     // from whatever `restore-info` (re-)arrives afterward -- `restoring` is
     // driven entirely by the next accepted restore-info's `completed` field
@@ -1445,8 +1456,13 @@ class EmbeddedAgentController implements EmbeddedAgentInstance {
   }
 
   private pushToolCall(turnId: string, callId: string, name: string, args: unknown): void {
+    // Legacy (pre-#1581) rows with callId === '' get a disambiguated
+    // rendering key -- the persisted `callId` field itself stays '' verbatim,
+    // only the React key gets a counter suffix, so two such rows in the same
+    // turn don't collide as React siblings. Non-empty ids are unaffected.
+    const key = callId === '' ? `tool--${this.entryKeyCounter++}` : `tool-${callId}`;
     const entry: EmbeddedAgentChatEntry = {
-      key: `tool-${callId}`,
+      key,
       kind: 'tool-call',
       turnId,
       callId,
@@ -1455,11 +1471,16 @@ class EmbeddedAgentController implements EmbeddedAgentInstance {
       result: null,
     };
     this.snapshot.entries.push(entry);
-    this.toolCallIndexByCallId.set(callId, this.snapshot.entries.length - 1);
+    const idx = this.snapshot.entries.length - 1;
+    if (callId === '') {
+      this.legacyEmptyCallIdQueue.push(idx);
+    } else {
+      this.toolCallIndexByCallId.set(callId, idx);
+    }
   }
 
   private applyToolResult(callId: string, result: EmbeddedAgentToolResult): boolean {
-    const idx = this.toolCallIndexByCallId.get(callId);
+    const idx = callId === '' ? this.nextLegacyEmptyCallIdIndex() : this.toolCallIndexByCallId.get(callId);
     if (idx === undefined) {
       // Defensive: a tool-result without a matching tool-call violates the
       // documented protocol invariant. Log and drop rather than fabricate a
@@ -1471,6 +1492,25 @@ class EmbeddedAgentController implements EmbeddedAgentInstance {
     if (existing.kind !== 'tool-call') return false;
     this.snapshot.entries[idx] = { ...existing, result };
     return true;
+  }
+
+  /**
+   * FIFO pairing for legacy (pre-#1581) persisted rows whose callId is
+   * empty: pair with the OLDEST still-unresolved '' tool-call, mirroring the
+   * loop's sequential, one-call-at-a-time execution order that originally
+   * produced these rows (tool-call, then that same call's tool-result, then
+   * the next tool-call, ...). Skips any index already resolved -- shouldn't
+   * normally happen given that sequential emission, but guards against
+   * re-pairing a finished entry rather than trusting queue order alone.
+   */
+  private nextLegacyEmptyCallIdIndex(): number | undefined {
+    while (this.legacyEmptyCallIdQueue.length > 0) {
+      const idx = this.legacyEmptyCallIdQueue.shift();
+      if (idx === undefined) return undefined;
+      const entry = this.snapshot.entries[idx];
+      if (entry?.kind === 'tool-call' && entry.result === null) return idx;
+    }
+    return undefined;
   }
 
   private handleError(message: string, code?: WorkerErrorCode): void {

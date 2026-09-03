@@ -1,6 +1,7 @@
 import * as v from 'valibot';
 import { EFFORT_LEVELS } from '../types/embedded-agent-parameter-capabilities.js';
-import { EMBEDDED_AGENT_TOOL_NAMES, SDK_RESUME_FAILURE_REASONS } from '../types/embedded-agent.js';
+import { SDK_RESUME_FAILURE_REASONS } from '../types/embedded-agent.js';
+import type { EmbeddedAgentToolName } from '../types/embedded-agent.js';
 import { PTY_NOTIFICATION_KINDS } from '../types/system-events.js';
 import type { ExitReason } from '../types/worker.js';
 
@@ -13,13 +14,59 @@ import type { ExitReason } from '../types/worker.js';
 
 // === Definition schemas ===
 
+// Lives here (not types/) because the wire picklist below derives from it,
+// and SCHEMA_VERSION hashes this directory — see generate-schema-version.mjs.
+/**
+ * Builtin subprocess-local tool names. This is the SINGLE WRITER of builtin
+ * tool-name literals in the repo — every other usage must reference this
+ * constant or the derived `EmbeddedAgentToolName` type, not a hardcoded list.
+ *
+ * `Bash`'s implementation ships in FF-1b (packages/embedded-agent/src/tools/bash.ts);
+ * `Write`/`Edit`'s implementations ship in FF-1c
+ * (packages/embedded-agent/src/tools/write.ts, edit.ts). All three stay OFF by
+ * default — see DEFAULT_EMBEDDED_AGENT_ENABLED_TOOLS below.
+ *
+ * `TodoWrite` is a planning/task-list tool: it lets the agent
+ * publish a live task list to the user rather than acting on the filesystem
+ * or a shell, so it stays ON by default alongside the read-only set. On
+ * `claude-sdk` it is the SDK's own native builtin (enabled just by appearing
+ * in the allowlist passed to `query()`); on `openai-api` it is implemented in
+ * packages/embedded-agent/src/tools/todo-write.ts.
+ */
+export const EMBEDDED_AGENT_TOOL_NAMES = ['Read', 'Glob', 'Grep', 'Bash', 'Write', 'Edit', 'TodoWrite'] as const;
+
+/**
+ * Default when a definition's `enabledTools` is absent: read-only tools ON,
+ * `TodoWrite` ON (it writes no files and has no side effects outside the
+ * transcript), Bash/Write/Edit OFF.
+ *
+ * Note that a definition that has ever been through the Add/Edit form persists
+ * `enabledTools` as an explicit array (never leaves it `undefined`) — so a
+ * change to this default does NOT propagate to already-edited definitions.
+ * Only definitions that have never been saved through the form (still
+ * `undefined` at the DB level) pick up a change here.
+ */
+export const DEFAULT_EMBEDDED_AGENT_ENABLED_TOOLS: readonly EmbeddedAgentToolName[] = [
+  'Read',
+  'Glob',
+  'Grep',
+  'TodoWrite',
+];
+
+/**
+ * Single-tool-name wire schema element. Split out from `EnabledToolsSchema`
+ * (the array wrapper below) so it can also serve as the type-level pin target
+ * for `EmbeddedAgentToolName` -- see the Compile-time Type Assertions section.
+ */
+const EnabledToolNameSchema = v.picklist(EMBEDDED_AGENT_TOOL_NAMES);
+
 /**
  * List of enabled builtin tool names. No nullable variant here — nullability
  * (PATCH clear-to-default semantics) is layered on only where needed
  * (`UpdateEmbeddedAgentRequestSchema`).
  */
 const EnabledToolsSchema = v.pipe(
-  v.array(v.picklist(EMBEDDED_AGENT_TOOL_NAMES)),
+  v.array(EnabledToolNameSchema),
   v.check((arr) => new Set(arr).size === arr.length, 'duplicate tool name')
 );
 
@@ -435,6 +482,34 @@ type _AssertExitReasonTypeWidensToSchema = Assert<
   ExitReason extends v.InferOutput<typeof ExitReasonSchema> ? true : false
 >;
 export type { _AssertExitReasonSchemaWidensToType, _AssertExitReasonTypeWidensToSchema };
+
+/**
+ * Bidirectional pin between {@link EnabledToolNameSchema} (a single tool
+ * name) and the hand-written `EmbeddedAgentToolName` in types/embedded-agent.ts.
+ * `EMBEDDED_AGENT_TOOL_NAMES` above is the SINGLE WRITER of the tool-name
+ * literals for the wire (and for SCHEMA_VERSION's hash, which is the whole
+ * reason it lives in this directory); `EmbeddedAgentToolName` cannot import
+ * it back (types/ -> schemas/ is a forbidden depcruise edge — see
+ * `EmbeddedAgentToolName`'s own doc comment in types/embedded-agent.ts), so
+ * the two lists are pinned here instead of one deriving from the other. Same
+ * failure mode as the `ExitReasonSchema`/`ExitReason` pin above if removed.
+ *
+ * Mutation measurement (workflow.md "Testing Requirements" -- reach is
+ * measured, not predicted, not assumed): adding `'Foo'` to
+ * `EmbeddedAgentToolName` only (types/embedded-agent.ts) produced
+ * `error TS2344: Type 'false' does not satisfy the constraint 'true'.` on
+ * `_AssertToolNameTypeWidensToSchema`. Reverting that and instead adding
+ * `'Foo'` to `EMBEDDED_AGENT_TOOL_NAMES` only (this file) produced the same
+ * `TS2344` on `_AssertToolNameSchemaWidensToType`. Both mutations were
+ * reverted; `tsc --noEmit` is clean on the unmodified pair.
+ */
+type _AssertToolNameTypeWidensToSchema = Assert<
+  EmbeddedAgentToolName extends v.InferOutput<typeof EnabledToolNameSchema> ? true : false
+>;
+type _AssertToolNameSchemaWidensToType = Assert<
+  v.InferOutput<typeof EnabledToolNameSchema> extends EmbeddedAgentToolName ? true : false
+>;
+export type { _AssertToolNameTypeWidensToSchema, _AssertToolNameSchemaWidensToType };
 
 export const EmbeddedAgentServerEventSchema = v.union([
   v.strictObject({

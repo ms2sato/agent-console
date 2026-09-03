@@ -172,7 +172,7 @@ describe('EmbeddedAgentForm', () => {
       });
 
       const formData = (props.onSubmit as ReturnType<typeof mock>).mock.calls[0][0] as EmbeddedAgentFormData;
-      expect([...formData.enabledTools].sort()).toEqual(['Bash', 'Glob', 'Grep', 'Read']);
+      expect([...formData.enabledTools].sort()).toEqual(['Bash', 'Glob', 'Grep', 'Read', 'TodoWrite']);
     });
 
     it('should include toggled Write/Edit checkboxes in the submitted enabledTools array', async () => {
@@ -193,7 +193,14 @@ describe('EmbeddedAgentForm', () => {
       });
 
       const formData = (props.onSubmit as ReturnType<typeof mock>).mock.calls[0][0] as EmbeddedAgentFormData;
-      expect([...formData.enabledTools].sort()).toEqual(['Edit', 'Glob', 'Grep', 'Read', 'Write']);
+      expect([...formData.enabledTools].sort()).toEqual([
+        'Edit',
+        'Glob',
+        'Grep',
+        'Read',
+        'TodoWrite',
+        'Write',
+      ]);
     });
 
     it('should show an amber danger warning associated with the File modification checkbox group', () => {

@@ -11,8 +11,11 @@ import {
   composeSdkSystemPromptAppend,
   loadInstructions,
   loadOptInInstructions,
+  parseRuleFrontmatter,
+  parseRulesLayerCapBytes,
   INSTRUCTION_PER_FILE_CAP_BYTES,
   INSTRUCTION_AGGREGATE_CAP_BYTES,
+  RULES_LAYER_CAP_BYTES,
   type SystemPromptContext,
   type LoadInstructionsResult,
 } from '../system-prompt.js';
@@ -147,7 +150,7 @@ describe('loadInstructions — AGENTS.md canonical / CLAUDE.md fallback (a)', ()
     expect(result.segments[0]).toEqual({ origin: join(dir, 'CLAUDE.md'), content: 'claude content' });
   });
 
-  it('picks AGENTS.md when both are present, and debug-logs the choice (not warn)', async () => {
+  it('picks AGENTS.md when both are present, and warn-logs the choice (Architect en-passant: console.debug/log write to STDOUT in Bun, the subprocess NDJSON protocol channel; console.warn writes to stderr instead)', async () => {
     const dir = await makeTempDir();
     await writeFile(join(dir, 'AGENTS.md'), 'agents content');
     await writeFile(join(dir, 'CLAUDE.md'), 'claude content');
@@ -162,8 +165,8 @@ describe('loadInstructions — AGENTS.md canonical / CLAUDE.md fallback (a)', ()
 
       expect(result.segments).toHaveLength(1);
       expect(result.segments[0].origin).toBe(join(dir, 'AGENTS.md'));
-      expect(debugSpy).toHaveBeenCalled();
-      expect(warnSpy).not.toHaveBeenCalled();
+      expect(warnSpy).toHaveBeenCalled();
+      expect(debugSpy).not.toHaveBeenCalled();
     } finally {
       debugSpy.mockRestore();
       warnSpy.mockRestore();
@@ -518,6 +521,62 @@ describe('loadInstructions — instructions[] confinement (h, i, j, k; A9)', () 
   });
 });
 
+describe('loadInstructions — dedupe by resolved path (Issue #1343 Phase A, R1)', () => {
+  it('does not double-load CLAUDE.md when instructions[] redundantly lists it and the chain tail already resolves the same file', async () => {
+    const cwd = await makeTempDir();
+    await writeFile(join(cwd, 'CLAUDE.md'), 'CLAUDE_MD_CONTENT');
+
+    const result = await loadInstructions({
+      cwd,
+      instructionsList: ['CLAUDE.md'],
+      xdgConfigHome: await isolatedXdgConfigHome(),
+    });
+
+    // Chain layer resolves cwd's own CLAUDE.md (buildChainDirs reduces to
+    // [cwd] with no .git present); the opt-in entry for the SAME resolved
+    // path must be dropped rather than appended a second time.
+    expect(result.segments).toHaveLength(1);
+    expect(result.segments[0]).toEqual({ origin: join(cwd, 'CLAUDE.md'), content: 'CLAUDE_MD_CONTENT' });
+  });
+
+  it('dedupes correctly even when cwd is reached via a symlink (Architect F1: realpath both sides of the comparison)', async () => {
+    const realDir = await makeTempDir();
+    await writeFile(join(realDir, 'CLAUDE.md'), 'CLAUDE_MD_CONTENT');
+    const container = await makeTempDir();
+    const symlinkedCwd = join(container, 'link-to-real-dir');
+    await symlink(realDir, symlinkedCwd);
+    tempDirs.push(symlinkedCwd);
+
+    const result = await loadInstructions({
+      cwd: symlinkedCwd,
+      instructionsList: ['CLAUDE.md'],
+      xdgConfigHome: await isolatedXdgConfigHome(),
+    });
+
+    // Chain layer's origin is `<symlinkedCwd>/CLAUDE.md` (no realpath in the
+    // chain walk); the opt-in layer's origin is already realpath'd to
+    // `<realDir>/CLAUDE.md` by resolveConfinedPath. The two strings differ
+    // even though they name the same file -- only a realpath-normalized
+    // comparison on BOTH sides catches this as a duplicate.
+    expect(result.segments).toHaveLength(1);
+  });
+
+  it('does not dedupe two DIFFERENT files even if their content happens to be identical (dedupe is by path, not content)', async () => {
+    const cwd = await makeTempDir();
+    await writeFile(join(cwd, 'CLAUDE.md'), 'SAME_CONTENT');
+    await mkdir(join(cwd, 'docs'));
+    await writeFile(join(cwd, 'docs', 'note.md'), 'SAME_CONTENT');
+
+    const result = await loadInstructions({
+      cwd,
+      instructionsList: ['docs/note.md'],
+      xdgConfigHome: await isolatedXdgConfigHome(),
+    });
+
+    expect(result.segments).toHaveLength(2);
+  });
+});
+
 describe('loadInstructions — non-ENOENT read error is warn-logged, not thrown (m)', () => {
   function makeRejectingBunFile(errorCode: string, message: string) {
     return {
@@ -729,18 +788,246 @@ describe('loadOptInInstructions', () => {
 // prompt if present; no preamble).
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// parseRuleFrontmatter -- boundary pins for the .claude/rules/*.md
+// paths:/globs: frontmatter parser (Issue #1343 Phase A, R2).
+// ---------------------------------------------------------------------------
+
+describe('parseRuleFrontmatter', () => {
+  it('returns [] (unscoped) with no warning when there is no frontmatter at all', () => {
+    const warnSpy = spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      expect(parseRuleFrontmatter('# Just a rule\n\nSome content.\n', '/r/x.md')).toEqual([]);
+      expect(warnSpy).not.toHaveBeenCalled();
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it('returns [] (unscoped) with no warning when frontmatter is present but has no paths/globs key', () => {
+    const warnSpy = spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      expect(parseRuleFrontmatter('---\nsomething: else\n---\n\nBody.\n', '/r/x.md')).toEqual([]);
+      expect(warnSpy).not.toHaveBeenCalled();
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it('parses the multi-line YAML list form under "paths:" (this repo\'s own convention)', () => {
+    const content = '---\npaths:\n  - "packages/server/**"\n  - "scripts/**"\n---\n\nBody.\n';
+    expect(parseRuleFrontmatter(content, '/r/x.md')).toEqual(['packages/server/**', 'scripts/**']);
+  });
+
+  it('parses the multi-line YAML list form under "globs:" (the other accepted spelling)', () => {
+    const content = '---\nglobs:\n  - "**/*.test.ts"\n---\n\nBody.\n';
+    expect(parseRuleFrontmatter(content, '/r/x.md')).toEqual(['**/*.test.ts']);
+  });
+
+  it('parses an inline JSON-ish array on the same line', () => {
+    const content = '---\npaths: ["src/**", "docs/**"]\n---\n\nBody.\n';
+    expect(parseRuleFrontmatter(content, '/r/x.md')).toEqual(['src/**', 'docs/**']);
+  });
+
+  it('does not split a comma inside a brace-expansion glob within a quoted inline-array item (Architect F2)', () => {
+    const content = '---\npaths: ["**/*.{ts,tsx}", "src/**"]\n---\n\nBody.\n';
+    expect(parseRuleFrontmatter(content, '/r/x.md')).toEqual(['**/*.{ts,tsx}', 'src/**']);
+  });
+
+  it('parses a single unquoted scalar on the same line', () => {
+    const content = '---\npaths: src/**\n---\n\nBody.\n';
+    expect(parseRuleFrontmatter(content, '/r/x.md')).toEqual(['src/**']);
+  });
+
+  it('parses a single quoted scalar on the same line', () => {
+    const content = '---\npaths: "src/**"\n---\n\nBody.\n';
+    expect(parseRuleFrontmatter(content, '/r/x.md')).toEqual(['src/**']);
+  });
+
+  it('malformed: empty inline array warns and treats as unscoped', () => {
+    const warnSpy = spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      expect(parseRuleFrontmatter('---\npaths: []\n---\n', '/r/x.md')).toEqual([]);
+      expect(warnSpy).toHaveBeenCalled();
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it('malformed: key present with nothing after the colon and no following list items warns and treats as unscoped', () => {
+    const warnSpy = spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      expect(parseRuleFrontmatter('---\npaths:\nBody starts immediately.\n---\n', '/r/x.md')).toEqual([]);
+      expect(warnSpy).toHaveBeenCalled();
+      expect(warnSpy.mock.calls.some((call) => String(call[0]).includes('/r/x.md'))).toBe(true);
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// loadInstructions — rules layer (Issue #1343 Phase A, R2/R3): every
+// <gitRoot>/.claude/rules/*.md, unscoped included eagerly, scoped listed in
+// an index line only, budget-capped whole-file largest-first.
+// ---------------------------------------------------------------------------
+
+describe('loadInstructions — rules layer', () => {
+  async function makeGitRepo(): Promise<string> {
+    const root = await makeTempDir();
+    await mkdir(join(root, '.git'));
+    return root;
+  }
+
+  it('produces no rules layer when there is no .claude/rules directory at all', async () => {
+    const root = await makeGitRepo();
+    const result = await loadInstructions({ cwd: root, xdgConfigHome: await isolatedXdgConfigHome() });
+    expect(result.ruleSegments).toEqual([]);
+    expect(result.ruleOmissionLine).toBeUndefined();
+    expect(result.ruleIndexLine).toBeUndefined();
+  });
+
+  it('produces no rules layer when cwd is outside any git repository (routine, silent)', async () => {
+    const cwd = await makeTempDir();
+    await mkdir(join(cwd, '.claude', 'rules'), { recursive: true });
+    await writeFile(join(cwd, '.claude', 'rules', 'a.md'), 'UNSCOPED_CONTENT');
+
+    const result = await loadInstructions({ cwd, xdgConfigHome: await isolatedXdgConfigHome() });
+    expect(result.ruleSegments).toEqual([]);
+  });
+
+  it('includes unscoped rules eagerly, in file-name order, and excludes scoped rules but lists them in an index line', async () => {
+    const root = await makeGitRepo();
+    const rulesDir = join(root, '.claude', 'rules');
+    await mkdir(rulesDir, { recursive: true });
+    await writeFile(join(rulesDir, 'b-unscoped.md'), 'B_CONTENT');
+    await writeFile(join(rulesDir, 'a-unscoped.md'), 'A_CONTENT');
+    await writeFile(
+      join(rulesDir, 'scoped.md'),
+      '---\npaths:\n  - "src/**"\n---\n\nSCOPED_CONTENT',
+    );
+
+    const result = await loadInstructions({ cwd: root, xdgConfigHome: await isolatedXdgConfigHome() });
+
+    expect(result.ruleSegments!.map((s) => s.content)).toEqual(['A_CONTENT', 'B_CONTENT']);
+    expect(result.ruleSegments!.some((s) => s.content.includes('SCOPED_CONTENT'))).toBe(false);
+    expect(result.ruleIndexLine).toBeDefined();
+    expect(result.ruleIndexLine).toContain('scoped.md');
+    expect(result.ruleIndexLine).toContain('src/**');
+    expect(result.ruleOmissionLine).toBeUndefined();
+  });
+
+  it('drops unscoped rule files whole, largest-first, once the total exceeds RULES_LAYER_CAP_BYTES, and declares the exact dropped names in-band', async () => {
+    const root = await makeGitRepo();
+    const rulesDir = join(root, '.claude', 'rules');
+    await mkdir(rulesDir, { recursive: true });
+    // Two files that together exceed the cap; "big.md" alone is larger than
+    // half the budget so it is the one dropped (largest-first).
+    const bigSize = Math.floor(RULES_LAYER_CAP_BYTES * 0.7);
+    const smallSize = Math.floor(RULES_LAYER_CAP_BYTES * 0.4);
+    await writeFile(join(rulesDir, 'big.md'), 'x'.repeat(bigSize));
+    await writeFile(join(rulesDir, 'small.md'), 'y'.repeat(smallSize));
+
+    const warnSpy = spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const result = await loadInstructions({ cwd: root, xdgConfigHome: await isolatedXdgConfigHome() });
+
+      expect(result.ruleSegments).toHaveLength(1);
+      expect(result.ruleSegments![0].content).toBe('y'.repeat(smallSize));
+      expect(result.ruleOmissionLine).toBe('rules omitted for size: big.md');
+      expect(warnSpy.mock.calls.some((call) => String(call[0]).includes('big.md'))).toBe(true);
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it('never truncates a rule file mid-content: a single unscoped rule larger than the per-file instruction cap but under the rules budget survives intact', async () => {
+    const root = await makeGitRepo();
+    const rulesDir = join(root, '.claude', 'rules');
+    await mkdir(rulesDir, { recursive: true });
+    const size = INSTRUCTION_PER_FILE_CAP_BYTES + 5000; // > 16 KiB instruction cap, well under the 160 KiB rules cap
+    await writeFile(join(rulesDir, 'large.md'), 'z'.repeat(size));
+
+    const result = await loadInstructions({ cwd: root, xdgConfigHome: await isolatedXdgConfigHome() });
+
+    expect(result.ruleSegments).toHaveLength(1);
+    expect(new TextEncoder().encode(result.ruleSegments![0].content).length).toBe(size);
+    expect(result.ruleOmissionLine).toBeUndefined();
+  });
+
+  it('the aggregate INSTRUCTION_AGGREGATE_CAP_BYTES cap does not apply to the rules layer (independent budgets)', async () => {
+    const root = await makeGitRepo();
+    const rulesDir = join(root, '.claude', 'rules');
+    await mkdir(rulesDir, { recursive: true });
+    // Larger than the 48 KiB instruction aggregate cap, but under the 160 KiB
+    // rules cap -- must survive, proving the two budgets are independent.
+    const size = INSTRUCTION_AGGREGATE_CAP_BYTES + 1000;
+    await writeFile(join(rulesDir, 'r.md'), 'w'.repeat(size));
+
+    const result = await loadInstructions({ cwd: root, xdgConfigHome: await isolatedXdgConfigHome() });
+
+    expect(result.ruleSegments).toHaveLength(1);
+    expect(result.ruleOmissionLine).toBeUndefined();
+  });
+
+  it('rule segments and the rules-layer lines render into the composed system prompt (assembleSystemPrompt), after instruction segments', async () => {
+    const root = await makeGitRepo();
+    await writeFile(join(root, 'CLAUDE.md'), 'INSTRUCTION_CONTENT');
+    const rulesDir = join(root, '.claude', 'rules');
+    await mkdir(rulesDir, { recursive: true });
+    await writeFile(join(rulesDir, 'unscoped.md'), 'RULE_CONTENT');
+    await writeFile(join(rulesDir, 'scoped.md'), '---\npaths:\n  - "src/**"\n---\n\nSCOPED_CONTENT');
+
+    const instructions = await loadInstructions({ cwd: root, xdgConfigHome: await isolatedXdgConfigHome() });
+    const prompt = assembleSystemPrompt({ context, instructions });
+
+    expect(prompt).toContain('--- Rule: ');
+    const instructionIdx = prompt.indexOf('INSTRUCTION_CONTENT');
+    const ruleIdx = prompt.indexOf('RULE_CONTENT');
+    const indexLineIdx = prompt.indexOf('Rules that apply when you touch matching paths');
+    expect(ruleIdx).toBeGreaterThan(instructionIdx);
+    expect(indexLineIdx).toBeGreaterThan(ruleIdx);
+    expect(prompt).not.toContain('SCOPED_CONTENT');
+  });
+});
+
+// Architect N1: a bare `Number(env) || default` lets a negative override
+// through unclamped (Number('-5') is truthy), which would drop every rule
+// on the first over-budget check. parseRulesLayerCapBytes clamps.
+describe('parseRulesLayerCapBytes', () => {
+  it('uses the default when the env value is undefined', () => {
+    expect(parseRulesLayerCapBytes(undefined)).toBe(160 * 1024);
+  });
+
+  it('uses a positive numeric override verbatim', () => {
+    expect(parseRulesLayerCapBytes('4096')).toBe(4096);
+  });
+
+  it('falls back to the default for a negative value', () => {
+    expect(parseRulesLayerCapBytes('-5')).toBe(160 * 1024);
+  });
+
+  it('falls back to the default for zero', () => {
+    expect(parseRulesLayerCapBytes('0')).toBe(160 * 1024);
+  });
+
+  it('falls back to the default for a non-numeric value', () => {
+    expect(parseRulesLayerCapBytes('not-a-number')).toBe(160 * 1024);
+  });
+});
+
 describe('composeSdkSystemPromptAppend', () => {
   it('returns undefined when there are no segments and no definition system prompt', () => {
-    expect(composeSdkSystemPromptAppend([], undefined)).toBeUndefined();
+    expect(composeSdkSystemPromptAppend({ segments: [] }, undefined)).toBeUndefined();
   });
 
   it('returns only the definition system prompt when there are no segments', () => {
-    expect(composeSdkSystemPromptAppend([], 'OPERATOR_PROMPT')).toBe('OPERATOR_PROMPT');
+    expect(composeSdkSystemPromptAppend({ segments: [] }, 'OPERATOR_PROMPT')).toBe('OPERATOR_PROMPT');
   });
 
   it('renders segments using the same "--- Instructions: <origin> ---" delimiter as assembleSystemPrompt, ordered before the definition system prompt', () => {
     const result = composeSdkSystemPromptAppend(
-      [{ origin: '/repo/AGENTS.md', content: 'REPO_MARKER' }],
+      { segments: [{ origin: '/repo/AGENTS.md', content: 'REPO_MARKER' }] },
       'OPERATOR_MARKER',
     );
     expect(result).toContain('--- Instructions: /repo/AGENTS.md ---\nREPO_MARKER');
@@ -751,60 +1038,46 @@ describe('composeSdkSystemPromptAppend', () => {
 
   it('omits the definition system prompt section when it is an empty string (matches assembleSystemPrompt)', () => {
     const result = composeSdkSystemPromptAppend(
-      [{ origin: '/repo/AGENTS.md', content: 'REPO_MARKER' }],
+      { segments: [{ origin: '/repo/AGENTS.md', content: 'REPO_MARKER' }] },
       '',
     );
     expect(result).toBe('--- Instructions: /repo/AGENTS.md ---\nREPO_MARKER');
   });
 
-  describe('aggregate 48 KiB cap (#1342 CodeRabbit follow-up: the SDK-only composition path had no aggregate cap)', () => {
-    it('drops segments last-to-first once the combined total exceeds the aggregate cap, warn-logs the drop, and keeps definitionSystemPrompt outside the cap', () => {
-      const capContent = 'x'.repeat(INSTRUCTION_PER_FILE_CAP_BYTES);
-      // 4 segments x 16384 bytes = 65536 bytes; cap = 49152. Dropping the
-      // last one ("d") brings the total to 49152 <= cap.
-      const segments = [
-        { origin: '/a.md', content: capContent },
-        { origin: '/b.md', content: capContent },
-        { origin: '/c.md', content: capContent },
-        { origin: '/d.md', content: capContent },
-      ];
+  // Issue #1343 Phase A (R1): this function's own aggregate-capping logic
+  // (#1342 CodeRabbit follow-up) moved to loadInstructions -- the SDK arm now
+  // receives an ALREADY-capped LoadInstructionsResult the same way the
+  // openai-api arm does, so composeSdkSystemPromptAppend no longer caps
+  // anything itself. loadInstructions's own aggregate-cap tests (above)
+  // cover that behavior; this describe block only pins that rule segments
+  // and the two rules-layer lines render the same way assembleSystemPrompt
+  // renders them (mirrored through the shared renderInstructionsBody).
+  it('renders rule segments using the "--- Rule: <origin> ---" delimiter, after instruction segments and before the definition system prompt', () => {
+    const result = composeSdkSystemPromptAppend(
+      {
+        segments: [{ origin: '/repo/AGENTS.md', content: 'REPO_MARKER' }],
+        ruleSegments: [{ origin: '/repo/.claude/rules/unscoped.md', content: 'RULE_MARKER' }],
+      },
+      'OPERATOR_MARKER',
+    );
+    expect(result).toContain('--- Rule: /repo/.claude/rules/unscoped.md ---\nRULE_MARKER');
+    const instructionIdx = result!.indexOf('REPO_MARKER');
+    const ruleIdx = result!.indexOf('RULE_MARKER');
+    const operatorIdx = result!.indexOf('OPERATOR_MARKER');
+    expect(ruleIdx).toBeGreaterThan(instructionIdx);
+    expect(operatorIdx).toBeGreaterThan(ruleIdx);
+  });
 
-      const warnSpy = spyOn(console, 'warn').mockImplementation(() => {});
-      try {
-        const result = composeSdkSystemPromptAppend(segments, 'OPERATOR_MARKER');
-
-        expect(result).toContain('--- Instructions: /a.md ---');
-        expect(result).toContain('--- Instructions: /b.md ---');
-        expect(result).toContain('--- Instructions: /c.md ---');
-        expect(result).not.toContain('--- Instructions: /d.md ---');
-        // definitionSystemPrompt is never subject to the cap.
-        expect(result).toContain('OPERATOR_MARKER');
-
-        expect(warnSpy).toHaveBeenCalled();
-        expect(warnSpy.mock.calls.some((call) => String(call[0]).includes('/d.md'))).toBe(true);
-        expect(warnSpy.mock.calls.some((call) => String(call[0]).includes('/c.md'))).toBe(false);
-      } finally {
-        warnSpy.mockRestore();
-      }
-    });
-
-    it('does not drop or warn when segments are comfortably under the aggregate cap', () => {
-      const segments = [
-        { origin: '/a.md', content: 'small content a' },
-        { origin: '/b.md', content: 'small content b' },
-      ];
-
-      const warnSpy = spyOn(console, 'warn').mockImplementation(() => {});
-      try {
-        const result = composeSdkSystemPromptAppend(segments, 'OPERATOR_MARKER');
-
-        expect(result).toContain('--- Instructions: /a.md ---\nsmall content a');
-        expect(result).toContain('--- Instructions: /b.md ---\nsmall content b');
-        expect(result).toContain('OPERATOR_MARKER');
-        expect(warnSpy).not.toHaveBeenCalled();
-      } finally {
-        warnSpy.mockRestore();
-      }
-    });
+  it('renders ruleOmissionLine and ruleIndexLine verbatim when present', () => {
+    const result = composeSdkSystemPromptAppend(
+      {
+        segments: [],
+        ruleOmissionLine: 'rules omitted for size: big.md',
+        ruleIndexLine: 'Rules that apply when you touch matching paths: scoped.md (paths: src/**)',
+      },
+      undefined,
+    );
+    expect(result).toContain('rules omitted for size: big.md');
+    expect(result).toContain('Rules that apply when you touch matching paths: scoped.md (paths: src/**)');
   });
 });

@@ -408,6 +408,17 @@ export class SdkEngine implements Engine {
       // member of `enabledToolNames`: it is a self-management tool, outside
       // the capability registry `enabledTools` configures, so no
       // representable definition can remove it (see compact-tool.ts).
+      //
+      // Measured (pinned SDK 0.3.238): a name in this array that the
+      // resolved CLI does not recognize/support is silently DROPPED, not
+      // rejected -- `query()` neither throws nor errors, it just omits the
+      // name from what it actually enables. `TodoWrite` is one such name on
+      // this pin: `tools: ['TodoWrite', 'Bash']` yields a `system:init`
+      // catalog of `['Bash']` only, confirmed against positive controls
+      // (`['Bash']` and `['Read','Glob','Grep']` both report back correctly).
+      // There is no separate acceptance signal for this array -- the catalog
+      // the CLI actually accepted is observable ONLY via what `system:init`
+      // reports back (see `handleSystemInit`'s `reportedNonMcp` warn below).
       tools: [...this.enabledToolNames, SDK_COMPACT_TOOL_NAME],
       mcpServers: {
         'agent-console': {
@@ -652,6 +663,21 @@ export class SdkEngine implements Engine {
     // check (docs/design/embedded-agent-sdk-engine.md §4.1) -- only the
     // SDK's own withheld BUILTIN tools (WebFetch/WebSearch/Task) are.
     const reportedNonMcp = message.tools.filter((name) => !name.startsWith('mcp__'));
+
+    // Observability for the measured drop noted in buildOptions()'s
+    // `tools:` comment: logged only when this session actually requested
+    // `TodoWrite`, so a future dogfood run's stderr surfaces for free whether
+    // the pinned SDK has started reporting it back -- no dedicated probe
+    // script needed to notice a change here.
+    //
+    // Must use console.warn, never console.info/console.log: this
+    // subprocess's stdout is the NDJSON wire-protocol channel (see
+    // main.ts's header comment), and console.info/console.log write there.
+    // console.warn/console.error correctly route to stderr.
+    if (this.allowedToolNames.has('TodoWrite')) {
+      console.warn(`[sdk-engine] system:init tool catalog (TodoWrite requested): ${reportedNonMcp.join(', ')}`);
+    }
+
     const leaked = reportedNonMcp.filter((name) => !this.allowedToolNames.has(name));
     if (leaked.length > 0) {
       this.handleFatal(
@@ -801,6 +827,11 @@ export class SdkEngine implements Engine {
   private handleAssistantMessage(message: AssistantMessagePayload): void {
     for (const block of message.content) {
       if (block.type === 'tool_use') {
+        // No empty-callId guard needed here (contrast the `openai-api`
+        // engine's `assignSyntheticToolCallIds`): non-optional by the SDK
+        // type (`tool_use.id: string`); non-empty by the Messages API
+        // contract, which every `tool_use` block honours, so unlike the
+        // openai-api adapter there is no empty-id branch to normalise here.
         this.emitToolCall(block.id, block.name, block.input);
       }
     }

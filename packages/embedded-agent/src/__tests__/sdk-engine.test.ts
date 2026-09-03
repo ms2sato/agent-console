@@ -516,7 +516,7 @@ describe('SdkEngine — construction seam: the query() Options battery (Pin 1(a)
   it('defaults options.tools to the read-only default set when enabledTools is absent', () => {
     const { queryFn, captured } = makeFakeQuery([]);
     new SdkEngine(baseDeps({ queryFn }));
-    expect(captured.options?.tools).toEqual(['Read', 'Glob', 'Grep', 'mcp__console__Compact']);
+    expect(captured.options?.tools).toEqual(['Read', 'Glob', 'Grep', 'TodoWrite', 'mcp__console__Compact']);
   });
 
   it('allowlists ONLY Compact when enabledTools is the explicit empty array', () => {
@@ -543,7 +543,7 @@ describe('SdkEngine — construction seam: the query() Options battery (Pin 1(a)
   it('carries composed opt-in instruction content into options.systemPrompt.append, ordered before the definition system prompt', () => {
     const { queryFn, captured } = makeFakeQuery([]);
     const segments = [{ origin: '/tmp/work/NOTES.md', content: 'INSTRUCTION_CONTENT' }];
-    const systemPromptAppend = composeSdkSystemPromptAppend(segments, 'Be terse.');
+    const systemPromptAppend = composeSdkSystemPromptAppend({ segments }, 'Be terse.');
     new SdkEngine(baseDeps({ queryFn, systemPromptAppend }));
 
     expect(captured.options?.systemPrompt).toEqual({
@@ -560,7 +560,7 @@ describe('SdkEngine — construction seam: the query() Options battery (Pin 1(a)
 
   it('omits systemPrompt.append when neither instructions nor a definition system prompt are configured (no regression)', () => {
     const { queryFn, captured } = makeFakeQuery([]);
-    const systemPromptAppend = composeSdkSystemPromptAppend([], undefined);
+    const systemPromptAppend = composeSdkSystemPromptAppend({ segments: [] }, undefined);
     expect(systemPromptAppend).toBeUndefined();
 
     new SdkEngine(baseDeps({ queryFn, systemPromptAppend }));
@@ -725,6 +725,40 @@ describe('SdkEngine — tool-surface containment (Pin 2, S5)', () => {
     expect(events).toEqual([
       { v: 1, type: 'fatal', message: 'SDK engine session already terminated; cannot start a new turn' },
     ]);
+  });
+
+  // Issue #1573 observability: unknown/unavailable tool names in options.tools
+  // are silently dropped by the resolved CLI rather than erroring (measured
+  // against pinned SDK 0.3.238 -- `TodoWrite` is one such name) -- so the
+  // reported system:init catalog is logged whenever TodoWrite was requested,
+  // turning a future dogfood run's stderr into a free re-check of whether
+  // that has changed.
+  it('logs the reported system:init tool catalog when TodoWrite was requested', async () => {
+    const warn = spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const { queryFn } = makeFakeQuery([systemInit({ tools: ['Read', 'Glob', 'Grep'] })]);
+      new SdkEngine(baseDeps({ queryFn, enabledTools: ['Read', 'Glob', 'Grep', 'TodoWrite'] }));
+      await flush();
+
+      expect(warn).toHaveBeenCalledWith(
+        '[sdk-engine] system:init tool catalog (TodoWrite requested): Read, Glob, Grep',
+      );
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('does not log the system:init tool catalog when TodoWrite was not requested', async () => {
+    const warn = spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const { queryFn } = makeFakeQuery([systemInit({ tools: ['Read', 'Glob', 'Grep'] })]);
+      new SdkEngine(baseDeps({ queryFn, enabledTools: ['Read', 'Glob', 'Grep'] }));
+      await flush();
+
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
   });
 });
 
@@ -1023,7 +1057,13 @@ describe('SdkEngine — event mapping (Appendix A.2)', () => {
             systemInit(),
             resultError('error_during_execution', ['[ede_diagnostic] result_type=user'], 'aborted_streaming'),
           ]);
-          const engine = new SdkEngine(baseDeps({ emit: (e) => events.push(e), queryFn }));
+          // enabledTools excludes TodoWrite here (unlike the default) so the
+          // Issue #1573 system:init observability warn (see sdk-engine.ts's
+          // handleSystemInit) does not pollute this spy -- this test is about
+          // turn-error diagnostic preservation, not tool-catalog logging.
+          const engine = new SdkEngine(
+            baseDeps({ emit: (e) => events.push(e), queryFn, enabledTools: ['Read', 'Glob', 'Grep'] }),
+          );
           await engine.runTurn('u1', 'hi');
 
           expect(eventsOfType(events, 'turn-error')).toEqual([
@@ -1047,7 +1087,12 @@ describe('SdkEngine — event mapping (Appendix A.2)', () => {
             systemInit(),
             resultError('error_during_execution', ['boom', 'also this']),
           ]);
-          const engine = new SdkEngine(baseDeps({ emit: (e) => events.push(e), queryFn }));
+          // enabledTools excludes TodoWrite -- see the sibling test above for
+          // why (Issue #1573 observability warn would otherwise pollute this
+          // spy's call count).
+          const engine = new SdkEngine(
+            baseDeps({ emit: (e) => events.push(e), queryFn, enabledTools: ['Read', 'Glob', 'Grep'] }),
+          );
           await engine.runTurn('u1', 'hi');
 
           const turnErrors = eventsOfType(events, 'turn-error');
@@ -1071,7 +1116,11 @@ describe('SdkEngine — event mapping (Appendix A.2)', () => {
         try {
           const events: EmbeddedAgentEvent[] = [];
           const { queryFn } = makeFakeQuery([systemInit(), resultError('error_during_execution', [])]);
-          const engine = new SdkEngine(baseDeps({ emit: (e) => events.push(e), queryFn }));
+          // enabledTools excludes TodoWrite -- see the earlier test in this
+          // describe block for why.
+          const engine = new SdkEngine(
+            baseDeps({ emit: (e) => events.push(e), queryFn, enabledTools: ['Read', 'Glob', 'Grep'] }),
+          );
           await engine.runTurn('u1', 'hi');
 
           expect(eventsOfType(events, 'turn-error')).toEqual([
@@ -1095,7 +1144,11 @@ describe('SdkEngine — event mapping (Appendix A.2)', () => {
             // hide a real failure; the pin proves it does not.
             resultError('error_during_execution', ['a future SDK reason'], 'some_future_reason'),
           ]);
-          const engine = new SdkEngine(baseDeps({ emit: (e) => events.push(e), queryFn }));
+          // enabledTools excludes TodoWrite -- see the first test in this
+          // describe block for why.
+          const engine = new SdkEngine(
+            baseDeps({ emit: (e) => events.push(e), queryFn, enabledTools: ['Read', 'Glob', 'Grep'] }),
+          );
           await engine.runTurn('u1', 'hi');
 
           expect(eventsOfType(events, 'turn-error')).toEqual([
