@@ -36,6 +36,17 @@ describe('TodoPanel', () => {
     expect(screen.queryByText(/Tasks \(/)).toBeNull();
   });
 
+  it('renders nothing when the latest ok TodoWrite entry cleared the list to zero items', () => {
+    const entries: EmbeddedAgentChatEntry[] = [
+      toolCall('c1', { todos: [] }, { ok: true, result: 'ok' }),
+    ];
+
+    const { container } = render(<TodoPanel entries={entries} />);
+
+    expect(container.querySelector('details')).toBeNull();
+    expect(screen.queryByText(/Tasks \(/)).toBeNull();
+  });
+
   it('renders the list with status glyphs and shows activeForm (not content) for the in_progress item', () => {
     const entries: EmbeddedAgentChatEntry[] = [
       toolCall(

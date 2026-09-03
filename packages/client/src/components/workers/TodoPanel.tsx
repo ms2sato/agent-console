@@ -75,7 +75,7 @@ const STATUS_LABEL: Record<TodoItem['status'], string> = {
 export function TodoPanel({ entries }: { entries: EmbeddedAgentChatEntry[] }) {
   const todos = useMemo(() => findLatestTodos(entries), [entries]);
 
-  if (todos === null) return null;
+  if (todos === null || todos.length === 0) return null;
 
   const total = todos.length;
   const completedCount = todos.filter((t) => t.status === 'completed').length;

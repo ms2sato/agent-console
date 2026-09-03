@@ -639,8 +639,13 @@ export class SdkEngine implements Engine {
     // `TodoWrite`, so a future dogfood run's stderr surfaces for free whether
     // the pinned SDK has started reporting it back -- no dedicated probe
     // script needed to notice a change here.
+    //
+    // Must use console.warn, never console.info/console.log: this
+    // subprocess's stdout is the NDJSON wire-protocol channel (see
+    // main.ts's header comment), and console.info/console.log write there.
+    // console.warn/console.error correctly route to stderr.
     if (this.allowedToolNames.has('TodoWrite')) {
-      console.info(`[sdk-engine] system:init tool catalog (TodoWrite requested): ${reportedNonMcp.join(', ')}`);
+      console.warn(`[sdk-engine] system:init tool catalog (TodoWrite requested): ${reportedNonMcp.join(', ')}`);
     }
 
     const leaked = reportedNonMcp.filter((name) => !this.allowedToolNames.has(name));
