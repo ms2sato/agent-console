@@ -339,7 +339,7 @@ How a worker's subprocess exit is classified, on the worker WebSocket `exit` env
 
 **On the persisted event the field is three-valued and must be read as such.** Absent means the row was written before the field existed, and absent renders exactly as it always did; consumers test `reason === 'evicted'` and **never** `!reason` or truthiness — the same discipline `restore-info.sdkResumed` carries, where a negation would have shown a divergence notice on every `openai-api` worker. It is also the *single* identifier for "this exit was an eviction": there is deliberately no parallel boolean.
 
-**Since [#1454](https://github.com/ms2sato/agent-console/issues/1454), an `'unexpected'` row may additionally carry a bounded `stderrTail`** (the process's last `STDERR_TAIL_CAP` characters of stderr — UTF-16 code units; bytes on the wire may be up to 3x for non-ASCII); `'managed'` and `'evicted'` rows never carry one — a routine deactivate or eviction has nothing diagnostic to attach.
+**Since [#1454](https://github.com/ms2sato/agent-console/issues/1454), an `'unexpected'` row may additionally carry a bounded `stderrTail`** (the process's last `STDERR_TAIL_CAP` characters of stderr — UTF-16 code units, not bytes and not an overall wire-size bound); `'managed'` and `'evicted'` rows never carry one — a routine deactivate or eviction has nothing diagnostic to attach.
 - **See:** [Idle eviction in embedded-agent-worker.md](design/embedded-agent-worker.md#idle-eviction-r3-issue-1412)
 
 ### Login-Shell Sentinel

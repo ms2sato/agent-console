@@ -592,8 +592,9 @@ export type EmbeddedAgentServerEvent =
        * deactivate or eviction should never carry leftover stderr as if it
        * explained anything. Absent means absent, never `''`; consumers test
        * `stderrTail !== undefined`, mirroring how `reason` is handled above.
-       * Holds the last STDERR_TAIL_CAP characters (UTF-16 code units; bytes
-       * on the wire may be up to 3x for non-ASCII) -- see
+       * Holds the last STDERR_TAIL_CAP characters (UTF-16 code units, not
+       * bytes and not an overall wire-size bound -- JSON-escaping can inflate
+       * the serialized size past a simple UTF-8 multiplier) -- see
        * embedded-agent-worker-service.ts.
        */
       stderrTail?: string;

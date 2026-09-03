@@ -357,7 +357,7 @@ New Bun workspace package. Depends on `packages/shared` (event types) and `@mode
 
 - stdin: NDJSON commands (server -> loop). First message MUST be `init`; the loop exits with code 2 if the first parsed line is not a valid `init`.
 - stdout: NDJSON events (loop -> server). Nothing else is ever written to stdout (all diagnostics go to stderr).
-- stderr: human-readable logs; the server forwards them to its logger at debug level (size-capped). A bounded tail (last `STDERR_TAIL_CAP` characters -- UTF-16 code units; bytes on the wire may be up to 3x for non-ASCII) also rides the server-authored `exited` row when the exit is `reason: 'unexpected'` and stderr was non-empty (#1454) -- never on `'managed'` or `'evicted'` -- so the client can show the process's own explanation without reading the server log.
+- stderr: human-readable logs; the server forwards them to its logger at debug level (size-capped). A bounded tail (last `STDERR_TAIL_CAP` characters -- UTF-16 code units, not bytes and not an overall wire-size bound; JSON-escaping can inflate the serialized size past a simple UTF-8 multiplier) also rides the server-authored `exited` row when the exit is `reason: 'unexpected'` and stderr was non-empty (#1454) -- never on `'managed'` or `'evicted'` -- so the client can show the process's own explanation without reading the server log.
 - Exit: on `shutdown` command or stdin EOF, finish the current write and exit 0. Exit 1 = fatal error (after emitting a `fatal` event if possible). Exit 2 = protocol misuse.
 - The server keeps stdin OPEN for the lifetime of the process (this is a *feeding* `spawnAsUser` consumer, so the `stdin.end()` obligation for fire-and-forget consumers in `elevation-helpers.md` does not apply; the drain obligation does, and is satisfied by the event reader).
 
@@ -418,7 +418,7 @@ Two further event kinds are written into the persisted stream by the SERVER, not
 type EmbeddedAgentServerEvent =
   | { v: 1; type: 'user-message'; id: string; text: string }  // appended when forwarding to stdin
   | { v: 1; type: 'turn-interrupted'; turnId: string }        // Transcript Restore R1 (#1410); appended at activation for a turn the previous incarnation never answered. Server-authored on purpose -- never a synthesized `turn-error`
-  | { v: 1; type: 'exited'; code: number | null; reason?: ExitReason; stderrTail?: string }; // appended when subprocess.exited resolves. reason is three-valued and absence-significant (see ExitReason). stderrTail is present ONLY for reason: 'unexpected' with non-empty stderr -- never on 'managed'/'evicted' -- and holds the last STDERR_TAIL_CAP characters (UTF-16 code units; bytes on the wire may be up to 3x for non-ASCII) (#1454)
+  | { v: 1; type: 'exited'; code: number | null; reason?: ExitReason; stderrTail?: string }; // appended when subprocess.exited resolves. reason is three-valued and absence-significant (see ExitReason). stderrTail is present ONLY for reason: 'unexpected' with non-empty stderr -- never on 'managed'/'evicted' -- and holds the last STDERR_TAIL_CAP characters (UTF-16 code units, not bytes and not an overall wire-size bound) (#1454)
 
 /** What actually lives in the worker output file and is replayed to clients. */
 export type EmbeddedAgentStreamEvent = EmbeddedAgentEvent | EmbeddedAgentServerEvent;

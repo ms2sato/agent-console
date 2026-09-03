@@ -1624,9 +1624,10 @@ describe('EmbeddedAgentWorkerService exit handling — stderr tail (Issue #1454)
     const startMarker = 'START_MARKER_XYZ';
     const endMarker = 'END_MARKER_ABC';
     const filler = 'x'.repeat(2000);
-    // Total pushed length (~6000 chars) comfortably exceeds the 2048-byte cap,
-    // so the start marker is guaranteed to fall outside the retained window
-    // regardless of exactly where the cap boundary lands.
+    // Total pushed length (~6000 chars) comfortably exceeds the 2048
+    // UTF-16 code-unit cap, so the start marker is guaranteed to fall
+    // outside the retained window regardless of exactly where the cap
+    // boundary lands.
     h.fake.pushStderr(startMarker + filler);
     h.fake.pushStderr(filler);
     h.fake.pushStderr(filler + endMarker);

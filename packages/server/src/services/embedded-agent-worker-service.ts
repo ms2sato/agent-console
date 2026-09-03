@@ -176,11 +176,16 @@ const KNOWN_EVENT_TYPES = new Set<string>([
 const STDERR_LOG_CAP = 2048;
 /**
  * Cap on the retained stderr TAIL attached to an unexpected `exited` row, in
- * UTF-16 code units (String.prototype.slice's unit) -- NOT bytes; bytes on
- * the wire may be up to 3x this for non-ASCII stderr. Distinct from
- * STDERR_LOG_CAP above: that one bounds each per-chunk debug log line; this
- * one bounds the cumulative tail kept for the whole incarnation's lifetime,
- * trimmed from the front as new chunks arrive.
+ * UTF-16 code units (String.prototype.slice's unit) -- NOT bytes, and NOT an
+ * overall wire-size bound. An unescaped UTF-8 encoding of a non-ASCII code
+ * unit can take up to 3 bytes, but that "up to 3x" figure describes ONLY raw
+ * UTF-8 expansion -- it is not the JSON-safe bound. JSON.stringify escapes
+ * control code units and lone surrogates as six-ASCII-byte `\uXXXX`
+ * sequences, which can inflate the serialized size well past 3x; there is no
+ * fixed multiplier for the actual wire size once JSON escaping is applied.
+ * Distinct from STDERR_LOG_CAP above: that one bounds each per-chunk debug
+ * log line; this one bounds the cumulative tail kept for the whole
+ * incarnation's lifetime, trimmed from the front as new chunks arrive.
  *
  * A trim landing inside a surrogate pair yields a lone surrogate in the
  * retained string. This is an accepted consequence, not a bug: the cap is a
@@ -478,10 +483,11 @@ interface Runtime {
   /** Idle eviction applies to this incarnation's engine -- see {@link isEvictableEngine}. */
   evictable: boolean;
   /**
-   * Last STDERR_TAIL_CAP characters (UTF-16 code units; bytes on the wire may
-   * be up to 3x for non-ASCII) of this incarnation's stderr, trimmed from the
-   * front. Attached to the `exited` row only when the exit is `'unexpected'`
-   * and this is non-empty.
+   * Last STDERR_TAIL_CAP characters (UTF-16 code units, not bytes and not an
+   * overall wire-size bound -- JSON-escaping can inflate the serialized size
+   * past a simple UTF-8 multiplier) of this incarnation's stderr, trimmed
+   * from the front. Attached to the `exited` row only when the exit is
+   * `'unexpected'` and this is non-empty.
    */
   stderrTail: string;
 }
