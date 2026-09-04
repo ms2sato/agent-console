@@ -10,6 +10,7 @@ import {
 } from '@agent-console/shared';
 import { FormField, Input, Textarea } from '../ui/FormField';
 import { FormOverlay } from '../ui/Spinner';
+import { isPositiveInteger, POSITIVE_INTEGER_MESSAGE } from '../../lib/positive-integer';
 
 /**
  * UI grouping of `EMBEDDED_AGENT_TOOL_NAMES` into "read-only", "command
@@ -92,8 +93,8 @@ const EmbeddedAgentFormRawSchema = v.object({
       v.string(),
       v.trim(),
       v.check(
-        (val) => !val || (/^\d+$/.test(val) && Number(val) >= 1),
-        'Must be a positive integer'
+        (val) => !val || (/^\d+$/.test(val) && isPositiveInteger(Number(val))),
+        POSITIVE_INTEGER_MESSAGE
       )
     )
   ),
@@ -114,8 +115,8 @@ const EmbeddedAgentFormRawSchema = v.object({
       v.string(),
       v.trim(),
       v.check(
-        (val) => !val || (/^\d+$/.test(val) && Number(val) >= 1),
-        'Must be a positive integer'
+        (val) => !val || (/^\d+$/.test(val) && isPositiveInteger(Number(val))),
+        POSITIVE_INTEGER_MESSAGE
       )
     )
   ),

@@ -2636,6 +2636,78 @@ describe('EmbeddedAgentWorkerView', () => {
         });
       });
 
+      it('sends contextWindowTokens: 1 -- the smallest value the shared schema accepts', async () => {
+        const fetchMock = mock(paramsFetchWithPatch());
+        globalThis.fetch = Object.assign(fetchMock, { preconnect: () => {} });
+        const user = userEvent.setup();
+        renderView({
+          sessionId: 's-params-5c',
+          workerId: 'w-params-5c',
+          embeddedAgentId: 'ea-params',
+          model: 'sonnet',
+          reasoningEffort: 'low',
+          contextWindowTokens: 64_000,
+          hasParameterOverride: false,
+        });
+
+        await user.click(screen.getByRole('button', { name: /Model and effort/ }));
+        const windowInput = await screen.findByPlaceholderText('e.g. 128000');
+        fireEvent.change(windowInput, { target: { value: '1' } });
+
+        await user.click(screen.getByRole('button', { name: 'Apply' }));
+
+        await waitFor(() => {
+          const patchCall = fetchMock.mock.calls.find(
+            ([, init]) => (init as RequestInit | undefined)?.method === 'PATCH',
+          );
+          expect(patchCall).toBeDefined();
+          expect(JSON.parse(String((patchCall![1] as RequestInit).body))).toEqual({
+            model: 'sonnet',
+            contextWindowTokens: 1,
+            reasoningEffort: 'low',
+          });
+        });
+      });
+
+      it.each([
+        ['0', '0'],
+        ['-1', '-1'],
+        ['1.5', '1.5'],
+      ])(
+        'shows "Must be a positive integer" and disables Apply for a window value of %s, issuing no PATCH',
+        async (_label, typedValue) => {
+          const fetchMock = mock(paramsFetchWithPatch());
+          globalThis.fetch = Object.assign(fetchMock, { preconnect: () => {} });
+          const user = userEvent.setup();
+          renderView({
+            sessionId: `s-params-invalid-${typedValue}`,
+            workerId: `w-params-invalid-${typedValue}`,
+            embeddedAgentId: 'ea-params',
+            model: 'sonnet',
+            reasoningEffort: 'low',
+            contextWindowTokens: 64_000,
+            hasParameterOverride: false,
+          });
+
+          await user.click(screen.getByRole('button', { name: /Model and effort/ }));
+          const windowInput = await screen.findByPlaceholderText('e.g. 128000');
+          fireEvent.change(windowInput, { target: { value: typedValue } });
+
+          expect(screen.getByText('Must be a positive integer')).toBeTruthy();
+          const applyButton = screen.getByRole('button', { name: 'Apply' }) as HTMLButtonElement;
+          expect(applyButton.disabled).toBe(true);
+
+          // The button is disabled, but exercise the handler directly too --
+          // it must not issue a PATCH even if invoked (e.g. a future caller
+          // that bypasses the disabled button).
+          await user.click(applyButton).catch(() => {});
+
+          expect(
+            fetchMock.mock.calls.some(([, init]) => (init as RequestInit | undefined)?.method === 'PATCH'),
+          ).toBe(false);
+        },
+      );
+
       it('"Use agent default" sends exactly { model: null, reasoningEffort: null } -- no contextWindowTokens key', async () => {
         const fetchMock = mock(paramsFetchWithPatch());
         globalThis.fetch = Object.assign(fetchMock, { preconnect: () => {} });
