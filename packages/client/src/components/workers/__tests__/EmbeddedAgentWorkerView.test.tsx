@@ -32,12 +32,22 @@ function jsonResponse(body: unknown): Response {
   return new Response(JSON.stringify(body), { status: 200, headers: { 'Content-Type': 'application/json' } });
 }
 
-/** Builds a fetch stub that also serves `/api/embedded-agents` with the given registry (Context Handoff Phase A: `EmbeddedAgentWorkerView` looks up its worker's definition via `useEmbeddedAgents`). */
+/**
+ * Builds a fetch stub that also serves `/api/embedded-agents` with the given
+ * registry (Context Handoff Phase A: `EmbeddedAgentWorkerView` looks up its
+ * worker's definition via `useEmbeddedAgents`) and `/api/agents` with an
+ * empty terminal-agent registry. The latter is needed once the
+ * model/effort control's `AgentParameterFields` opens: it calls
+ * `useAgentDirectory`, which unconditionally queries BOTH registries
+ * (`useAgents` + `useEmbeddedAgents`) regardless of which kind the current
+ * selection resolves to.
+ */
 function makeEmbeddedViewFetch(embeddedAgents: unknown[] = []) {
   return (input: RequestInfo | URL): Promise<Response> => {
     const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
     if (url.endsWith('/api/skills')) return Promise.resolve(jsonResponse({ skills: [] }));
     if (url.endsWith('/api/message-templates')) return Promise.resolve(jsonResponse({ templates: [] }));
+    if (url.endsWith('/api/agents')) return Promise.resolve(jsonResponse({ agents: [] }));
     if (url.endsWith('/api/embedded-agents')) return Promise.resolve(jsonResponse({ embeddedAgents }));
     return Promise.resolve(new Response('null', { status: 404 }));
   };
@@ -69,6 +79,9 @@ function renderView(props: {
   embeddedAgentId?: string;
   autoCompaction?: boolean;
   contextWindowTokens?: number;
+  model?: string;
+  reasoningEffort?: string | null;
+  hasParameterOverride?: boolean;
 }) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
   return render(
@@ -2424,6 +2437,327 @@ describe('EmbeddedAgentWorkerView', () => {
             autoCompaction: false,
           });
         });
+      });
+    });
+
+    describe('the model/effort override control (agent-surface.md Phase 3)', () => {
+      /**
+       * A definition matching every test's `embeddedAgentId` -- resolving
+       * `AgentParameterFields`' internal `useAgentDirectory` lookup is what
+       * makes its inputs render at all (an unresolved selection renders
+       * nothing, per that component's own doc comment).
+       */
+      const paramsDefinition = embeddedAgentFixture({ id: 'ea-params' });
+
+      /** GET-only fetch stub (directory + skills/templates), no PATCH route. */
+      function paramsGetFetch(): (input: RequestInfo | URL, init?: RequestInit) => Promise<Response> {
+        const base = makeEmbeddedViewFetch([paramsDefinition]);
+        return (input: RequestInfo | URL, _init?: RequestInit) => base(input);
+      }
+
+      /** Combines the GET stub above with a PATCH responder for the write tests. */
+      function paramsFetchWithPatch(
+        patchResponse: () => Response | Promise<Response> = () =>
+          new Response(JSON.stringify({ worker: {} }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          }),
+      ) {
+        const get = paramsGetFetch();
+        return async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+          const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+          if (url.includes('/api/sessions/') && init?.method === 'PATCH') {
+            return patchResponse();
+          }
+          return get(input);
+        };
+      }
+
+      it('is closed by default -- the fields are not in the document', () => {
+        globalThis.fetch = Object.assign(mock(paramsGetFetch()), { preconnect: () => {} });
+        renderView({
+          sessionId: 's-params-1',
+          workerId: 'w-params-1',
+          embeddedAgentId: 'ea-params',
+          model: 'opus',
+          reasoningEffort: 'high',
+          hasParameterOverride: false,
+        });
+
+        expect(screen.queryByPlaceholderText('e.g. opus')).toBeNull();
+        expect(
+          screen.getByRole('button', { name: /Model and effort/ }).getAttribute('aria-expanded'),
+        ).toBe('false');
+      });
+
+      it('renders the effective model and effort from the wire props, with none for a null effort', () => {
+        globalThis.fetch = Object.assign(mock(paramsGetFetch()), { preconnect: () => {} });
+        renderView({
+          sessionId: 's-params-2',
+          workerId: 'w-params-2',
+          embeddedAgentId: 'ea-params',
+          model: 'opus',
+          reasoningEffort: null,
+          hasParameterOverride: false,
+        });
+
+        const summary = screen.getByRole('button', { name: /Model and effort/ });
+        expect(summary.textContent).toContain('opus');
+        expect(summary.textContent).toContain('none');
+      });
+
+      it('shows the override badge when hasParameterOverride is true', () => {
+        globalThis.fetch = Object.assign(mock(paramsGetFetch()), { preconnect: () => {} });
+        renderView({
+          sessionId: 's-params-3a',
+          workerId: 'w-params-3a',
+          embeddedAgentId: 'ea-params',
+          model: 'opus',
+          reasoningEffort: 'high',
+          hasParameterOverride: true,
+        });
+
+        expect(screen.getByText('override')).toBeTruthy();
+      });
+
+      it('hides the override badge when hasParameterOverride is false', () => {
+        globalThis.fetch = Object.assign(mock(paramsGetFetch()), { preconnect: () => {} });
+        renderView({
+          sessionId: 's-params-3b',
+          workerId: 'w-params-3b',
+          embeddedAgentId: 'ea-params',
+          model: 'opus',
+          reasoningEffort: 'high',
+          hasParameterOverride: false,
+        });
+
+        expect(screen.queryByText('override')).toBeNull();
+      });
+
+      it('shows "unknown" and disables the write actions when the effective model is unknown, issuing no PATCH', async () => {
+        const fetchMock = mock(paramsGetFetch());
+        globalThis.fetch = Object.assign(fetchMock, { preconnect: () => {} });
+        const user = userEvent.setup();
+        renderView({
+          sessionId: 's-params-4',
+          workerId: 'w-params-4',
+          embeddedAgentId: 'ea-params',
+          reasoningEffort: undefined,
+          hasParameterOverride: undefined,
+        });
+
+        const summary = screen.getByRole('button', { name: /Model and effort/ });
+        expect(summary.textContent).toContain('unknown');
+
+        await user.click(summary);
+
+        const applyButton = (await screen.findByRole('button', { name: 'Apply' })) as HTMLButtonElement;
+        const defaultButton = screen.getByRole('button', { name: 'Use agent default' }) as HTMLButtonElement;
+        expect(applyButton.disabled).toBe(true);
+        expect(defaultButton.disabled).toBe(true);
+
+        await user.click(applyButton).catch(() => {});
+        await user.click(defaultButton).catch(() => {});
+
+        expect(
+          fetchMock.mock.calls.some(([, init]) => (init as RequestInit | undefined)?.method === 'PATCH'),
+        ).toBe(false);
+      });
+
+      it('sends the exact PATCH body on Apply, including contextWindowTokens', async () => {
+        const fetchMock = mock(paramsFetchWithPatch());
+        globalThis.fetch = Object.assign(fetchMock, { preconnect: () => {} });
+        const user = userEvent.setup();
+        renderView({
+          sessionId: 's-params-5',
+          workerId: 'w-params-5',
+          embeddedAgentId: 'ea-params',
+          model: 'sonnet',
+          reasoningEffort: 'low',
+          contextWindowTokens: 64_000,
+          hasParameterOverride: false,
+        });
+
+        await user.click(screen.getByRole('button', { name: /Model and effort/ }));
+        const modelInput = await screen.findByPlaceholderText('e.g. opus');
+        const effortInput = screen.getByPlaceholderText('e.g. high');
+        const windowInput = screen.getByPlaceholderText('e.g. 128000');
+
+        fireEvent.change(modelInput, { target: { value: 'opus' } });
+        fireEvent.change(effortInput, { target: { value: 'high' } });
+        fireEvent.change(windowInput, { target: { value: '128000' } });
+
+        await user.click(screen.getByRole('button', { name: 'Apply' }));
+
+        await waitFor(() => {
+          const patchCall = fetchMock.mock.calls.find(
+            ([, init]) => (init as RequestInit | undefined)?.method === 'PATCH',
+          );
+          expect(patchCall).toBeDefined();
+          expect(String(patchCall![0])).toContain('/api/sessions/s-params-5/workers/w-params-5');
+          expect(JSON.parse(String((patchCall![1] as RequestInit).body))).toEqual({
+            model: 'opus',
+            contextWindowTokens: 128_000,
+            reasoningEffort: 'high',
+          });
+        });
+      });
+
+      it('sends contextWindowTokens: null when the window field is left blank', async () => {
+        const fetchMock = mock(paramsFetchWithPatch());
+        globalThis.fetch = Object.assign(fetchMock, { preconnect: () => {} });
+        const user = userEvent.setup();
+        renderView({
+          sessionId: 's-params-5b',
+          workerId: 'w-params-5b',
+          embeddedAgentId: 'ea-params',
+          model: 'sonnet',
+          reasoningEffort: 'low',
+          contextWindowTokens: 64_000,
+          hasParameterOverride: false,
+        });
+
+        await user.click(screen.getByRole('button', { name: /Model and effort/ }));
+        const windowInput = await screen.findByPlaceholderText('e.g. 128000');
+        fireEvent.change(windowInput, { target: { value: '' } });
+
+        await user.click(screen.getByRole('button', { name: 'Apply' }));
+
+        await waitFor(() => {
+          const patchCall = fetchMock.mock.calls.find(
+            ([, init]) => (init as RequestInit | undefined)?.method === 'PATCH',
+          );
+          expect(patchCall).toBeDefined();
+          expect(JSON.parse(String((patchCall![1] as RequestInit).body))).toEqual({
+            model: 'sonnet',
+            contextWindowTokens: null,
+            reasoningEffort: 'low',
+          });
+        });
+      });
+
+      it('"Use agent default" sends exactly { model: null, reasoningEffort: null } -- no contextWindowTokens key', async () => {
+        const fetchMock = mock(paramsFetchWithPatch());
+        globalThis.fetch = Object.assign(fetchMock, { preconnect: () => {} });
+        const user = userEvent.setup();
+        renderView({
+          sessionId: 's-params-6',
+          workerId: 'w-params-6',
+          embeddedAgentId: 'ea-params',
+          model: 'opus',
+          reasoningEffort: 'high',
+          contextWindowTokens: 128_000,
+          hasParameterOverride: true,
+        });
+
+        await user.click(screen.getByRole('button', { name: /Model and effort/ }));
+        const defaultButton = await screen.findByRole('button', { name: 'Use agent default' });
+        await user.click(defaultButton);
+
+        await waitFor(() => {
+          const patchCall = fetchMock.mock.calls.find(
+            ([, init]) => (init as RequestInit | undefined)?.method === 'PATCH',
+          );
+          expect(patchCall).toBeDefined();
+          const body = JSON.parse(String((patchCall![1] as RequestInit).body));
+          expect(body).toEqual({ model: null, reasoningEffort: null });
+          expect(body).not.toHaveProperty('contextWindowTokens');
+        });
+      });
+
+      it('does not adopt the draft optimistically -- the summary still shows the OLD prop values after a successful Apply', async () => {
+        const fetchMock = mock(paramsFetchWithPatch());
+        globalThis.fetch = Object.assign(fetchMock, { preconnect: () => {} });
+        const user = userEvent.setup();
+        renderView({
+          sessionId: 's-params-7',
+          workerId: 'w-params-7',
+          embeddedAgentId: 'ea-params',
+          model: 'sonnet',
+          reasoningEffort: 'low',
+          hasParameterOverride: false,
+        });
+
+        await user.click(screen.getByRole('button', { name: /Model and effort/ }));
+        const modelInput = await screen.findByPlaceholderText('e.g. opus');
+        fireEvent.change(modelInput, { target: { value: 'opus' } });
+
+        await user.click(screen.getByRole('button', { name: 'Apply' }));
+
+        await waitFor(() => {
+          expect(
+            fetchMock.mock.calls.some(([, init]) => (init as RequestInit | undefined)?.method === 'PATCH'),
+          ).toBe(true);
+        });
+
+        // The server never re-rendered this component with a new `model`
+        // prop (only a session-updated broadcast does that in production),
+        // so the summary must still read the ORIGINAL prop, not the edited
+        // draft -- same "no optimistic value" discipline as the compaction
+        // toggle above.
+        const summary = screen.getByRole('button', { name: /Model and effort/ });
+        expect(summary.textContent).toContain('sonnet');
+        expect(summary.textContent).not.toContain('opus');
+      });
+
+      it('never names an engine or a mechanism in its wording', () => {
+        globalThis.fetch = Object.assign(mock(paramsGetFetch()), { preconnect: () => {} });
+        renderView({
+          sessionId: 's-params-8',
+          workerId: 'w-params-8',
+          embeddedAgentId: 'ea-params',
+          model: 'opus',
+          reasoningEffort: 'high',
+          hasParameterOverride: true,
+        });
+
+        const summary = screen.getByRole('button', { name: /Model and effort/ });
+        expect(summary.textContent).not.toMatch(/engine|SDK|openai|claude/i);
+      });
+
+      it('disables both write buttons while a write is in flight', async () => {
+        let resolvePatch: (value: Response) => void = () => {};
+        const patchPromise = new Promise<Response>((resolve) => {
+          resolvePatch = resolve;
+        });
+        const fetchMock = mock(paramsFetchWithPatch(() => patchPromise));
+        globalThis.fetch = Object.assign(fetchMock, { preconnect: () => {} });
+        const user = userEvent.setup();
+        renderView({
+          sessionId: 's-params-9',
+          workerId: 'w-params-9',
+          embeddedAgentId: 'ea-params',
+          model: 'sonnet',
+          reasoningEffort: null,
+          hasParameterOverride: false,
+        });
+
+        await user.click(screen.getByRole('button', { name: /Model and effort/ }));
+        await screen.findByPlaceholderText('e.g. opus');
+
+        const applyButton = screen.getByRole('button', { name: 'Apply' }) as HTMLButtonElement;
+        const defaultButton = screen.getByRole('button', { name: 'Use agent default' }) as HTMLButtonElement;
+        expect(applyButton.disabled).toBe(false);
+        expect(defaultButton.disabled).toBe(false);
+
+        await user.click(applyButton);
+
+        await waitFor(() => {
+          expect(applyButton.disabled).toBe(true);
+        });
+        expect(defaultButton.disabled).toBe(true);
+
+        resolvePatch(
+          new Response(JSON.stringify({ worker: {} }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          }),
+        );
+
+        await waitFor(() => {
+          expect(applyButton.disabled).toBe(false);
+        });
+        expect(defaultButton.disabled).toBe(false);
       });
     });
   });

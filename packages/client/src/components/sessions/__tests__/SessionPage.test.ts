@@ -13,7 +13,7 @@ import {
   executeWorkerRestart,
   type WorkerRestartResult,
 } from '../workerRestart';
-import { sessionToPageState, resolveShouldStripScrollback, resolveActiveEmbeddedAgentId, resolveActiveEmbeddedContextWindowTokens, getSessionStopTaskBannerText } from '../SessionPage';
+import { sessionToPageState, resolveShouldStripScrollback, resolveActiveEmbeddedAgentId, resolveActiveEmbeddedContextWindowTokens, resolveActiveEmbeddedModel, resolveActiveEmbeddedReasoningEffort, resolveActiveEmbeddedHasParameterOverride, getSessionStopTaskBannerText } from '../SessionPage';
 import type { SessionStopTask } from '../../../hooks/useSessionStopTasks';
 import { getTabDotColor, isCloseableTabType, getWorkerTypeLabel, showsActivityBadge } from '../tabAppearance';
 import type { UseTabManagementResult, AddAgentWorkerParams, Tab } from '../hooks/useTabManagement';
@@ -624,6 +624,164 @@ describe('resolveActiveEmbeddedContextWindowTokens (Issue #1556)', () => {
     ];
 
     expect(resolveActiveEmbeddedContextWindowTokens(workers, null)).toBeUndefined();
+  });
+});
+
+describe('resolveActiveEmbeddedModel (agent-surface.md Phase 3)', () => {
+  // SessionPage.tsx's active-tab render branch passes this value as
+  // EmbeddedAgentWorkerView's `model` prop. Mirrors
+  // `resolveActiveEmbeddedContextWindowTokens`'s test shape above.
+  it('resolves model when the active tab worker is embedded-agent type', () => {
+    const embeddedWorker: Worker = {
+      id: 'embedded-worker-1',
+      type: 'embedded-agent',
+      name: 'Local GPT',
+      embeddedAgentId: 'embedded-agent-1',
+      activated: true, autoCompaction: true, reasoningEffort: null, hasParameterOverride: false,
+      model: 'opus',
+      createdAt: new Date().toISOString(),
+    };
+    const workers: Worker[] = [
+      { id: 'agent-worker-1', type: 'agent', name: 'Claude Code', agentId: 'claude-code', createdAt: new Date().toISOString(), activated: true },
+      embeddedWorker,
+    ];
+
+    expect(resolveActiveEmbeddedModel(workers, 'embedded-worker-1')).toBe('opus');
+  });
+
+  it('returns undefined when the active embedded-agent worker has no resolvable model', () => {
+    const embeddedWorker: Worker = {
+      id: 'embedded-worker-1',
+      type: 'embedded-agent',
+      name: 'Local GPT',
+      embeddedAgentId: 'embedded-agent-1',
+      activated: true, autoCompaction: true, reasoningEffort: null, hasParameterOverride: false,
+      createdAt: new Date().toISOString(),
+    };
+    const workers: Worker[] = [embeddedWorker];
+
+    expect(resolveActiveEmbeddedModel(workers, 'embedded-worker-1')).toBeUndefined();
+  });
+
+  it('returns undefined when the active tab worker is not embedded-agent type', () => {
+    const workers: Worker[] = [
+      { id: 'agent-worker-1', type: 'agent', name: 'Claude Code', agentId: 'claude-code', createdAt: new Date().toISOString(), activated: true },
+    ];
+
+    expect(resolveActiveEmbeddedModel(workers, 'agent-worker-1')).toBeUndefined();
+  });
+
+  it('returns undefined when activeTabId does not match any worker', () => {
+    const workers: Worker[] = [
+      { id: 'agent-worker-1', type: 'agent', name: 'Claude Code', agentId: 'claude-code', createdAt: new Date().toISOString(), activated: true },
+    ];
+
+    expect(resolveActiveEmbeddedModel(workers, 'nonexistent-tab')).toBeUndefined();
+  });
+
+  it('returns undefined for an empty worker list (vacuous boundary)', () => {
+    expect(resolveActiveEmbeddedModel([], 'embedded-worker-1')).toBeUndefined();
+  });
+
+  it('returns undefined when activeTabId is null', () => {
+    const workers: Worker[] = [
+      { id: 'agent-worker-1', type: 'agent', name: 'Claude Code', agentId: 'claude-code', createdAt: new Date().toISOString(), activated: true },
+    ];
+
+    expect(resolveActiveEmbeddedModel(workers, null)).toBeUndefined();
+  });
+});
+
+describe('resolveActiveEmbeddedReasoningEffort (agent-surface.md Phase 3)', () => {
+  // SessionPage.tsx's active-tab render branch passes this value as
+  // EmbeddedAgentWorkerView's `reasoningEffort` prop. Unlike `model`, the
+  // field is REQUIRED on the wire type (`null` means "no effort override"),
+  // so the boundary this resolver has to preserve is null vs. undefined,
+  // not just present vs. absent.
+  it('resolves a non-null reasoningEffort when the active tab worker is embedded-agent type', () => {
+    const embeddedWorker: Worker = {
+      id: 'embedded-worker-1',
+      type: 'embedded-agent',
+      name: 'Local GPT',
+      embeddedAgentId: 'embedded-agent-1',
+      activated: true, autoCompaction: true, reasoningEffort: 'high', hasParameterOverride: true,
+      createdAt: new Date().toISOString(),
+    };
+    const workers: Worker[] = [embeddedWorker];
+
+    expect(resolveActiveEmbeddedReasoningEffort(workers, 'embedded-worker-1')).toBe('high');
+  });
+
+  it('resolves null (not undefined) when the worker carries no effort override', () => {
+    const embeddedWorker: Worker = {
+      id: 'embedded-worker-1',
+      type: 'embedded-agent',
+      name: 'Local GPT',
+      embeddedAgentId: 'embedded-agent-1',
+      activated: true, autoCompaction: true, reasoningEffort: null, hasParameterOverride: false,
+      createdAt: new Date().toISOString(),
+    };
+    const workers: Worker[] = [embeddedWorker];
+
+    expect(resolveActiveEmbeddedReasoningEffort(workers, 'embedded-worker-1')).toBeNull();
+  });
+
+  it('returns undefined when the active tab worker is not embedded-agent type', () => {
+    const workers: Worker[] = [
+      { id: 'agent-worker-1', type: 'agent', name: 'Claude Code', agentId: 'claude-code', createdAt: new Date().toISOString(), activated: true },
+    ];
+
+    expect(resolveActiveEmbeddedReasoningEffort(workers, 'agent-worker-1')).toBeUndefined();
+  });
+
+  it('returns undefined for an empty worker list (vacuous boundary)', () => {
+    expect(resolveActiveEmbeddedReasoningEffort([], 'embedded-worker-1')).toBeUndefined();
+  });
+
+  it('returns undefined when activeTabId is null', () => {
+    const workers: Worker[] = [
+      { id: 'agent-worker-1', type: 'agent', name: 'Claude Code', agentId: 'claude-code', createdAt: new Date().toISOString(), activated: true },
+    ];
+
+    expect(resolveActiveEmbeddedReasoningEffort(workers, null)).toBeUndefined();
+  });
+});
+
+describe('resolveActiveEmbeddedHasParameterOverride (agent-surface.md Phase 3)', () => {
+  // SessionPage.tsx's active-tab render branch passes this value as
+  // EmbeddedAgentWorkerView's `hasParameterOverride` prop.
+  it('resolves hasParameterOverride when the active tab worker is embedded-agent type', () => {
+    const embeddedWorker: Worker = {
+      id: 'embedded-worker-1',
+      type: 'embedded-agent',
+      name: 'Local GPT',
+      embeddedAgentId: 'embedded-agent-1',
+      activated: true, autoCompaction: true, reasoningEffort: null, hasParameterOverride: true,
+      createdAt: new Date().toISOString(),
+    };
+    const workers: Worker[] = [embeddedWorker];
+
+    expect(resolveActiveEmbeddedHasParameterOverride(workers, 'embedded-worker-1')).toBe(true);
+  });
+
+  it('returns undefined when the active tab worker is not embedded-agent type', () => {
+    const workers: Worker[] = [
+      { id: 'agent-worker-1', type: 'agent', name: 'Claude Code', agentId: 'claude-code', createdAt: new Date().toISOString(), activated: true },
+    ];
+
+    expect(resolveActiveEmbeddedHasParameterOverride(workers, 'agent-worker-1')).toBeUndefined();
+  });
+
+  it('returns undefined for an empty worker list (vacuous boundary)', () => {
+    expect(resolveActiveEmbeddedHasParameterOverride([], 'embedded-worker-1')).toBeUndefined();
+  });
+
+  it('returns undefined when activeTabId is null', () => {
+    const workers: Worker[] = [
+      { id: 'agent-worker-1', type: 'agent', name: 'Claude Code', agentId: 'claude-code', createdAt: new Date().toISOString(), activated: true },
+    ];
+
+    expect(resolveActiveEmbeddedHasParameterOverride(workers, null)).toBeUndefined();
   });
 });
 
