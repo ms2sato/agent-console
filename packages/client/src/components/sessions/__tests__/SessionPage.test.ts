@@ -445,7 +445,7 @@ describe('embedded-agent worker in SessionPage page-state', () => {
       type: 'embedded-agent',
       name: 'Local GPT',
       embeddedAgentId: 'embedded-agent-1',
-      activated: true, autoCompaction: true,
+      activated: true, autoCompaction: true, reasoningEffort: null, hasParameterOverride: false,
       createdAt: new Date().toISOString(),
     };
     const session = createMockSession({ status: 'active', workers: [embeddedWorker] });
@@ -519,7 +519,7 @@ describe('resolveActiveEmbeddedAgentId (Context Handoff Phase A, Issue #1122)', 
       type: 'embedded-agent',
       name: 'Local GPT',
       embeddedAgentId: 'embedded-agent-1',
-      activated: true, autoCompaction: true,
+      activated: true, autoCompaction: true, reasoningEffort: null, hasParameterOverride: false,
       createdAt: new Date().toISOString(),
     };
     const workers: Worker[] = [
@@ -572,7 +572,7 @@ describe('resolveActiveEmbeddedContextWindowTokens (Issue #1556)', () => {
       type: 'embedded-agent',
       name: 'Local GPT',
       embeddedAgentId: 'embedded-agent-1',
-      activated: true, autoCompaction: true,
+      activated: true, autoCompaction: true, reasoningEffort: null, hasParameterOverride: false,
       contextWindowTokens: 128_000,
       createdAt: new Date().toISOString(),
     };
@@ -590,7 +590,7 @@ describe('resolveActiveEmbeddedContextWindowTokens (Issue #1556)', () => {
       type: 'embedded-agent',
       name: 'Local GPT',
       embeddedAgentId: 'embedded-agent-1',
-      activated: true, autoCompaction: true,
+      activated: true, autoCompaction: true, reasoningEffort: null, hasParameterOverride: false,
       createdAt: new Date().toISOString(),
     };
     const workers: Worker[] = [embeddedWorker];

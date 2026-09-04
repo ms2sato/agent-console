@@ -1210,7 +1210,7 @@ describe('useSessionPageState', () => {
         embeddedAgentId: 'embedded-def-1',
         createdAt: new Date().toISOString(),
         activated: false,
-        autoCompaction: true,
+        autoCompaction: true, reasoningEffort: null, hasParameterOverride: false,
         contextWindowTokens: 128_000,
       }
       createWorkerResponse = () => ({ worker: newEmbeddedWorker })
@@ -1260,7 +1260,7 @@ describe('useSessionPageState', () => {
         embeddedAgentId: 'embedded-def-1',
         createdAt: new Date().toISOString(),
         activated: false,
-        autoCompaction: true,
+        autoCompaction: true, reasoningEffort: null, hasParameterOverride: false,
         contextWindowTokens: 128_000,
       }
       createWorkerResponse = () => ({ worker: newEmbeddedWorker })

@@ -901,7 +901,7 @@ describe('terminal-store', () => {
         createdAt: '2026-01-01T00:00:00Z',
         embeddedAgentId: 'embedded-1',
         activated: true,
-        autoCompaction: true,
+        autoCompaction: true, reasoningEffort: null, hasParameterOverride: false,
       };
     }
 

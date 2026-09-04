@@ -2302,6 +2302,20 @@ describe('embedded-agent-store — Transcript Restore R1 (#1410)', () => {
       expect(instance.getSnapshot().entries).toHaveLength(0);
     });
   });
+
+  describe('model-params-applied', () => {
+    it('produces no chat row (agent-surface.md Phase 3: server bookkeeping, not something the user reads)', () => {
+      // What the user sees about a parameter change is the effective values
+      // arriving on the next session-updated -- never a transcript row.
+      const instance = getOrCreateEmbeddedAgentWorker('s1', 'w1');
+      const ws = MockWebSocket.getLastInstance();
+      ws!.simulateOpen();
+      ws!.simulateMessage(
+        outputMessage(ndjson({ v: 1, type: 'model-params-applied', applied: false }), 130, 1),
+      );
+      expect(instance.getSnapshot().entries).toHaveLength(0);
+    });
+  });
 });
 
 describe('embedded-agent-store — Transcript Restore failure form (#1449)', () => {

@@ -48,6 +48,15 @@ const EmbeddedAgentWorkerSchema = v.strictObject({
   // in types/worker.ts -- this object is strict, so the field must exist
   // here or it is stripped off the wire with no error on either side.
   contextWindowTokens: v.optional(v.number()),
+  // Effective model / reasoning effort, plus the override flag. Mirror
+  // EmbeddedAgentWorker in types/worker.ts -- this object is strict, so
+  // each field must exist here or it is stripped off the wire with no
+  // error on either side. `model` is OPTIONAL (unresolvable without a
+  // definition, absent means UNKNOWN) while `reasoningEffort` is required
+  // and nullable (never unresolvable); see the type's doc comments.
+  model: v.optional(v.string()),
+  reasoningEffort: v.nullable(v.string()),
+  hasParameterOverride: v.boolean(),
 });
 
 const WorkerSchema = v.union([

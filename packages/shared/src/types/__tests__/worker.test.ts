@@ -42,6 +42,8 @@ const embeddedAgentWorker: EmbeddedAgentWorker = {
   embeddedAgentId: 'def-1',
   activated: false,
   autoCompaction: true,
+  reasoningEffort: null,
+  hasParameterOverride: false,
 };
 
 describe('isPtyBackedWorker', () => {

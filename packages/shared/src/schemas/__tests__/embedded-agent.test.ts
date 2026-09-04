@@ -714,6 +714,79 @@ describe('EmbeddedAgentCommandSchema', () => {
     expect(result.success).toBe(false);
   });
 
+  describe('set-model-params (agent-surface.md Phase 3)', () => {
+    const full = {
+      v: 1,
+      type: 'set-model-params',
+      model: 'gpt-5',
+      reasoningEffort: 'high',
+      contextWindowTokens: 200_000,
+    };
+
+    it('round-trips the full effective triple', () => {
+      const result = v.safeParse(EmbeddedAgentCommandSchema, full);
+      expect(result.success).toBe(true);
+      if (result.success && result.output.type === 'set-model-params') {
+        expect(result.output.model).toBe('gpt-5');
+        expect(result.output.reasoningEffort).toBe('high');
+        expect(result.output.contextWindowTokens).toBe(200_000);
+      }
+    });
+
+    it('round-trips nulls, which mean "no override in effect"', () => {
+      const result = v.safeParse(EmbeddedAgentCommandSchema, {
+        ...full,
+        reasoningEffort: null,
+        contextWindowTokens: null,
+      });
+      expect(result.success).toBe(true);
+      if (result.success && result.output.type === 'set-model-params') {
+        expect(result.output.reasoningEffort).toBeNull();
+        expect(result.output.contextWindowTokens).toBeNull();
+      }
+    });
+
+    it('REJECTS an absent reasoningEffort / contextWindowTokens (full state, not a delta)', () => {
+      // Nullable but REQUIRED is what makes this command full-state: an
+      // absent key would be indistinguishable from "leave it alone", which
+      // is exactly the delta semantics the command exists to avoid.
+      const { reasoningEffort: _effort, ...withoutEffort } = full;
+      const { contextWindowTokens: _window, ...withoutWindow } = full;
+      expect(v.safeParse(EmbeddedAgentCommandSchema, withoutEffort).success).toBe(false);
+      expect(v.safeParse(EmbeddedAgentCommandSchema, withoutWindow).success).toBe(false);
+    });
+
+    it('rejects an absent or empty model', () => {
+      const { model: _model, ...withoutModel } = full;
+      expect(v.safeParse(EmbeddedAgentCommandSchema, withoutModel).success).toBe(false);
+      expect(v.safeParse(EmbeddedAgentCommandSchema, { ...full, model: '' }).success).toBe(false);
+    });
+
+    it('rejects a non-positive or non-integer contextWindowTokens', () => {
+      expect(v.safeParse(EmbeddedAgentCommandSchema, { ...full, contextWindowTokens: 0 }).success).toBe(false);
+      expect(v.safeParse(EmbeddedAgentCommandSchema, { ...full, contextWindowTokens: 1.5 }).success).toBe(false);
+    });
+
+    it('accepts an arbitrary reasoningEffort string -- the closed domain is enforced upstream', () => {
+      // One command shape serves both engines, so claude-sdk's EFFORT_LEVELS
+      // picklist deliberately does NOT appear here; the shared parameter
+      // validator rejects an out-of-domain value before this point.
+      expect(
+        v.safeParse(EmbeddedAgentCommandSchema, { ...full, reasoningEffort: 'ultra' }).success,
+      ).toBe(true);
+    });
+
+    it('rejects an unknown field (strictObject)', () => {
+      expect(
+        v.safeParse(EmbeddedAgentCommandSchema, { ...full, temperature: 0.7 }).success,
+      ).toBe(false);
+    });
+
+    it('rejects a version other than 1', () => {
+      expect(v.safeParse(EmbeddedAgentCommandSchema, { ...full, v: 2 }).success).toBe(false);
+    });
+  });
+
   it('parses an init command carrying enabledTools', () => {
     const init = {
       v: 1,
@@ -1406,6 +1479,66 @@ describe('EmbeddedAgentEventSchema', () => {
         unexpectedField: 'leaked',
       });
       expect(result.success).toBe(false);
+    });
+  });
+
+  describe('model-params-applied (agent-surface.md Phase 3)', () => {
+    it('round-trips an applied report', () => {
+      const result = v.safeParse(EmbeddedAgentEventSchema, {
+        v: 1,
+        type: 'model-params-applied',
+        applied: true,
+      });
+      expect(result.success).toBe(true);
+      if (result.success && result.output.type === 'model-params-applied') {
+        expect(result.output.applied).toBe(true);
+      }
+    });
+
+    it('round-trips an UNapplied report -- a plain boolean, no reason to classify', () => {
+      // `applied: false` reports a genuine engine-side refusal. Both
+      // parameters apply live on both engines, so there is no named cause
+      // (and deliberately no uninhabited picklist / free-form string) here.
+      const result = v.safeParse(EmbeddedAgentEventSchema, {
+        v: 1,
+        type: 'model-params-applied',
+        applied: false,
+      });
+      expect(result.success).toBe(true);
+      if (result.success && result.output.type === 'model-params-applied') {
+        expect(result.output.applied).toBe(false);
+      }
+    });
+
+    it('rejects a reason field (strictObject) -- the classification does not exist', () => {
+      // Reach: this is what keeps a reason from creeping back in as an
+      // untyped passenger. Adding `reason: v.optional(v.string())` to the
+      // schema makes this assertion flip.
+      expect(
+        v.safeParse(EmbeddedAgentEventSchema, {
+          v: 1,
+          type: 'model-params-applied',
+          applied: false,
+          reason: 'effort-requires-restart',
+        }).success,
+      ).toBe(false);
+    });
+
+    it('rejects a missing applied flag', () => {
+      expect(
+        v.safeParse(EmbeddedAgentEventSchema, { v: 1, type: 'model-params-applied' }).success,
+      ).toBe(false);
+    });
+
+    it('rejects an unknown field (strictObject)', () => {
+      expect(
+        v.safeParse(EmbeddedAgentEventSchema, {
+          v: 1,
+          type: 'model-params-applied',
+          applied: true,
+          model: 'gpt-5',
+        }).success,
+      ).toBe(false);
     });
   });
 });

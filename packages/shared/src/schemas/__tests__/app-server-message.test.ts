@@ -712,7 +712,7 @@ describe('AppServerMessageSchema', () => {
             { id: 'w1', type: 'agent', name: 'Agent', agentId: 'claude-code', createdAt: '2026-01-01T00:00:00Z', activated: true },
             { id: 'w2', type: 'terminal', name: 'Terminal', createdAt: '2026-01-01T00:00:00Z', activated: true },
             { id: 'w3', type: 'git-diff', name: 'Diff', createdAt: '2026-01-01T00:00:00Z', baseCommit: 'abc123' },
-            { id: 'w4', type: 'embedded-agent', name: 'Embedded', createdAt: '2026-01-01T00:00:00Z', embeddedAgentId: 'def-1', activated: false, autoCompaction: true },
+            { id: 'w4', type: 'embedded-agent', name: 'Embedded', createdAt: '2026-01-01T00:00:00Z', embeddedAgentId: 'def-1', activated: false, autoCompaction: true, reasoningEffort: null, hasParameterOverride: false },
           ],
         },
       });
@@ -724,7 +724,7 @@ describe('AppServerMessageSchema', () => {
         session: {
           ...worktreeSession,
           workers: [
-            { id: 'w4', type: 'embedded-agent', name: 'Embedded', createdAt: '2026-01-01T00:00:00Z', embeddedAgentId: 'def-1', activated: true, autoCompaction: true },
+            { id: 'w4', type: 'embedded-agent', name: 'Embedded', createdAt: '2026-01-01T00:00:00Z', embeddedAgentId: 'def-1', activated: true, autoCompaction: true, reasoningEffort: null, hasParameterOverride: false },
           ],
         },
       });
@@ -749,7 +749,7 @@ describe('AppServerMessageSchema', () => {
         session: {
           ...worktreeSession,
           workers: [
-            { id: 'w4', type: 'embedded-agent', name: 'Embedded', createdAt: '2026-01-01T00:00:00Z', embeddedAgentId: 'def-1', activated: true, autoCompaction: true, contextWindowTokens: 128_000 },
+            { id: 'w4', type: 'embedded-agent', name: 'Embedded', createdAt: '2026-01-01T00:00:00Z', embeddedAgentId: 'def-1', activated: true, autoCompaction: true, reasoningEffort: null, hasParameterOverride: false, contextWindowTokens: 128_000 },
           ],
         },
       });
@@ -767,7 +767,7 @@ describe('AppServerMessageSchema', () => {
         session: {
           ...worktreeSession,
           workers: [
-            { id: 'w4', type: 'embedded-agent', name: 'Embedded', createdAt: '2026-01-01T00:00:00Z', embeddedAgentId: 'def-1', activated: true, autoCompaction: true },
+            { id: 'w4', type: 'embedded-agent', name: 'Embedded', createdAt: '2026-01-01T00:00:00Z', embeddedAgentId: 'def-1', activated: true, autoCompaction: true, reasoningEffort: null, hasParameterOverride: false },
           ],
         },
       });
@@ -778,13 +778,93 @@ describe('AppServerMessageSchema', () => {
       }
     });
 
+    /**
+     * agent-surface.md Phase 3's three new wire fields, and the OPTIONAL-vs-
+     * REQUIRED asymmetry between them, which is the point of this block:
+     * `model` may be absent (UNKNOWN -- unresolvable without a definition)
+     * while `reasoningEffort` and `hasParameterOverride` may not (always
+     * resolvable, so an absence would be a server bug rather than a state).
+     * Under `strictObject` an absent required field REJECTS the whole
+     * message, so this asymmetry is observable and is asserted in both
+     * directions.
+     */
+    describe('mid-run parameter wire fields (agent-surface.md Phase 3)', () => {
+      const embeddedWorker = (overrides: Record<string, unknown>) => ({
+        type: 'session-created' as const,
+        session: {
+          ...worktreeSession,
+          workers: [
+            {
+              id: 'w4',
+              type: 'embedded-agent',
+              name: 'Embedded',
+              createdAt: '2026-01-01T00:00:00Z',
+              embeddedAgentId: 'def-1',
+              activated: true,
+              autoCompaction: true,
+              reasoningEffort: null,
+              hasParameterOverride: false,
+              ...overrides,
+            },
+          ],
+        },
+      });
+
+      it('retains model / reasoningEffort / hasParameterOverride through the parse', () => {
+        // Same Gap-Scan Q10 pin as autoCompaction above: a schema that
+        // forgot any of these would strip it off the wire with no error on
+        // either side.
+        const output = expectValid(
+          embeddedWorker({ model: 'gpt-5', reasoningEffort: 'high', hasParameterOverride: true }),
+        );
+        if (output.type === 'session-created') {
+          const worker = output.session.workers[0];
+          expect(worker.type).toBe('embedded-agent');
+          if (worker.type === 'embedded-agent') {
+            expect(worker.model).toBe('gpt-5');
+            expect(worker.reasoningEffort).toBe('high');
+            expect(worker.hasParameterOverride).toBe(true);
+          }
+        }
+      });
+
+      it('ACCEPTS a payload with no model at all -- absent means UNKNOWN', () => {
+        const output = expectValid(embeddedWorker({}));
+        if (output.type === 'session-created') {
+          const worker = output.session.workers[0];
+          if (worker.type === 'embedded-agent') expect(worker.model).toBeUndefined();
+        }
+      });
+
+      it('REJECTS a payload missing reasoningEffort, and one missing hasParameterOverride', () => {
+        // The asymmetry with `model` above is deliberate, not incidental:
+        // these two are always resolvable server-side, so their absence is
+        // a defect rather than a legitimate "unknown".
+        const withoutEffort = embeddedWorker({});
+        delete (withoutEffort.session.workers[0] as Record<string, unknown>).reasoningEffort;
+        expectInvalid(withoutEffort);
+
+        const withoutFlag = embeddedWorker({});
+        delete (withoutFlag.session.workers[0] as Record<string, unknown>).hasParameterOverride;
+        expectInvalid(withoutFlag);
+      });
+
+      it('accepts a null reasoningEffort (no effort override in effect)', () => {
+        const output = expectValid(embeddedWorker({ reasoningEffort: null }));
+        if (output.type === 'session-created') {
+          const worker = output.session.workers[0];
+          if (worker.type === 'embedded-agent') expect(worker.reasoningEffort).toBeNull();
+        }
+      });
+    });
+
     it('should reject an embedded-agent worker with an unknown key', () => {
       expectInvalid({
         type: 'session-created',
         session: {
           ...worktreeSession,
           workers: [
-            { id: 'w4', type: 'embedded-agent', name: 'Embedded', createdAt: '2026-01-01T00:00:00Z', embeddedAgentId: 'def-1', activated: true, autoCompaction: true, leaked: 'x' },
+            { id: 'w4', type: 'embedded-agent', name: 'Embedded', createdAt: '2026-01-01T00:00:00Z', embeddedAgentId: 'def-1', activated: true, autoCompaction: true, reasoningEffort: null, hasParameterOverride: false, leaked: 'x' },
           ],
         },
       });

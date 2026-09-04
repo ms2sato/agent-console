@@ -401,6 +401,19 @@ const workers = new Hono<AppBindings>()
         throw new NotFoundError('Session');
       }
 
+      // Every key is optional since the schema was widened for the mid-run
+      // parameter override (agent-surface.md Phase 3), so `autoCompaction`
+      // may legitimately be absent -- the toggle write only runs when the
+      // caller actually asked for it.
+      //
+      // The model / reasoningEffort / contextWindowTokens branch lands in
+      // the next wave. Until it does, a body carrying only those keys is
+      // rejected exactly as it was before the widening, rather than
+      // returning 200 for a request that changed nothing.
+      if (autoCompaction === undefined) {
+        throw new ValidationError('autoCompaction is required');
+      }
+
       const worker = await sessionManager.setEmbeddedAgentAutoCompaction(
         sessionId,
         workerId,

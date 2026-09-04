@@ -1303,6 +1303,31 @@ describe('Workers API', () => {
       const res = await patch(session.id, worker.id, { autoCompaction: true, leaked: 'x' });
       expect(res.status).toBe(400);
     });
+
+    // The schema now accepts a body carrying only the mid-run parameter
+    // fields (agent-surface.md Phase 3), but this handler's branch for them
+    // lands in a later wave. Until it does, the route's behavior for such a
+    // body is unchanged from before the widening: 400, not a 200 that
+    // changed nothing.
+    it('rejects a body that carries only the mid-run parameter fields (branch not yet implemented)', async () => {
+      const { session, worker } = await createEmbeddedWorker();
+      const res = await patch(session.id, worker.id, { model: 'gpt-5', contextWindowTokens: null });
+      expect(res.status).toBe(400);
+    });
+
+    it('still applies autoCompaction when the body ALSO carries parameter fields', async () => {
+      // Guards the shape of the new guard itself: it must gate on
+      // `autoCompaction === undefined`, not on "the body has other keys".
+      const { session, worker } = await createEmbeddedWorker();
+      const res = await patch(session.id, worker.id, {
+        autoCompaction: false,
+        reasoningEffort: 'high',
+      });
+
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { worker: { autoCompaction: boolean } };
+      expect(body.worker.autoCompaction).toBe(false);
+    });
   });
 
   // ===========================================================================

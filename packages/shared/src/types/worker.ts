@@ -54,6 +54,58 @@ export interface EmbeddedAgentWorker extends WorkerBase {
    * silently stripped at the boundary.
    */
   contextWindowTokens?: number;
+  /**
+   * EFFECTIVE model this worker runs on, resolved server-side (single
+   * writer: `resolveEffectiveModelParams` in
+   * `packages/server/src/services/embedded-agent-model-params.ts`) -- the
+   * client never resolves an override against the definition registry
+   * itself, exactly as with `contextWindowTokens` above.
+   *
+   * OPTIONAL for the SAME reason `contextWindowTokens` is: the value is
+   * UNRESOLVABLE when this worker carries no `model` override AND the
+   * definition cannot be looked up (a deleted definition, or the paused-
+   * session converter whose definition lookup is itself optional). Absent
+   * therefore means UNKNOWN, never "the definition's default" -- a control
+   * that edits this value must disable itself on absence rather than
+   * render a guess, the same discipline the compaction toggle already
+   * follows for an unknown wire value.
+   *
+   * Crossing the wire requires the matching field on
+   * `EmbeddedAgentWorkerSchema` (schemas/app-server-message.ts) -- that
+   * schema is a `strictObject`, so a type-only addition here would be
+   * silently stripped at the boundary.
+   */
+  model?: string;
+  /**
+   * EFFECTIVE reasoning effort, resolved server-side by the same single
+   * writer as `model` above. REQUIRED, unlike `model`: it resolves to
+   * `worker.reasoningEffort ?? null` and needs no definition lookup, so it
+   * is never unresolvable. `null` means no effort override is in effect.
+   *
+   * Crossing the wire requires the matching field on
+   * `EmbeddedAgentWorkerSchema` (schemas/app-server-message.ts) -- that
+   * schema is a `strictObject`, so a type-only addition here would be
+   * silently stripped at the boundary.
+   */
+  reasoningEffort: string | null;
+  /**
+   * Whether ANY of this worker's three override fields is set --
+   * `worker.model !== null || worker.reasoningEffort !== null ||
+   * worker.contextWindowTokens !== null`, computed server-side by
+   * `hasEmbeddedAgentParameterOverride`
+   * (`packages/server/src/services/embedded-agent-model-params.ts`).
+   *
+   * Exists so a surface can distinguish "override" from "definition
+   * default" WITHOUT reconstructing the precedence rules: the effective
+   * `model` above is the same string in both cases, so no client-side
+   * comparison can recover the distinction.
+   *
+   * Crossing the wire requires the matching field on
+   * `EmbeddedAgentWorkerSchema` (schemas/app-server-message.ts) -- that
+   * schema is a `strictObject`, so a type-only addition here would be
+   * silently stripped at the boundary.
+   */
+  hasParameterOverride: boolean;
 }
 
 export type Worker = AgentWorker | TerminalWorker | GitDiffWorker | EmbeddedAgentWorker;

@@ -1,5 +1,8 @@
 import { describe, it, expect } from 'bun:test';
-import { resolveEffectiveModelParams } from '../embedded-agent-model-params.js';
+import {
+  resolveEffectiveModelParams,
+  hasEmbeddedAgentParameterOverride,
+} from '../embedded-agent-model-params.js';
 import type { EmbeddedAgentDefinition } from '@agent-console/shared';
 import type { InternalEmbeddedAgentWorker } from '../worker-types.js';
 
@@ -80,4 +83,63 @@ describe('resolveEffectiveModelParams', () => {
       expect(after.model).toBe('gpt-5-codex');
     },
   );
+
+  describe('the undefined-definition overload (agent-surface.md Phase 3 wire conversions)', () => {
+    // The wire conversions may have NO definition (deleted, or the
+    // paused-session converter's optional lookup). That arm's `model` is
+    // `string | undefined` -- the wire's UNKNOWN -- while the activation
+    // arm keeps its precise `string`.
+
+    it('returns model: undefined when there is no definition AND no worker override', () => {
+      const result = resolveEffectiveModelParams(
+        undefined,
+        buildWorker({ model: null, reasoningEffort: null }),
+      );
+
+      expect(result.model).toBeUndefined();
+      expect(result.reasoningEffort).toBeNull();
+    });
+
+    it("returns the worker's own override when there is no definition to fall back on", () => {
+      const result = resolveEffectiveModelParams(
+        undefined,
+        buildWorker({ model: 'gpt-5-codex', reasoningEffort: 'high' }),
+      );
+
+      expect(result.model).toBe('gpt-5-codex');
+      expect(result.reasoningEffort).toBe('high');
+    });
+  });
 });
+
+describe('hasEmbeddedAgentParameterOverride', () => {
+  const worker = (
+    model: string | null,
+    reasoningEffort: string | null,
+    contextWindowTokens: number | null,
+  ): Pick<InternalEmbeddedAgentWorker, 'model' | 'reasoningEffort' | 'contextWindowTokens'> => ({
+    model,
+    reasoningEffort,
+    contextWindowTokens,
+  });
+
+  it('is false when none of the three overrides is set', () => {
+    expect(hasEmbeddedAgentParameterOverride(worker(null, null, null))).toBe(false);
+  });
+
+  it('is true when only the model override is set', () => {
+    expect(hasEmbeddedAgentParameterOverride(worker('gpt-5-codex', null, null))).toBe(true);
+  });
+
+  it('is true when only the reasoningEffort override is set', () => {
+    expect(hasEmbeddedAgentParameterOverride(worker(null, 'high', null))).toBe(true);
+  });
+
+  it('is true when only the contextWindowTokens override is set', () => {
+    // Reachable independently of `model` at THIS layer even though Ruling 4
+    // couples the two at the write boundary -- the flag reports what the
+    // persisted row actually carries, it does not re-litigate the coupling.
+    expect(hasEmbeddedAgentParameterOverride(worker(null, null, 200_000))).toBe(true);
+  });
+});
+

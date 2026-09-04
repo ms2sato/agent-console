@@ -64,6 +64,10 @@ import { writeUserOwnedSecretFile, rmRecursiveAsUser, shouldElevateForUser, type
 import { lookupOsUser, type LookupOsUserFn } from './os-user-lookup.js';
 import { listDescendantPids, signalPids } from '../lib/process-tree.js';
 import { resolveEffectiveContextWindow } from './embedded-agent-context-window.js';
+import {
+  resolveEffectiveModelParams,
+  hasEmbeddedAgentParameterOverride,
+} from './embedded-agent-model-params.js';
 import { createLogger } from '../lib/logger.js';
 import { getConfigDir } from '../lib/config.js';
 import * as path from 'node:path';
@@ -1324,13 +1328,21 @@ export class WorkerManager {
         return gitDiffWorker;
       }
       case 'embedded-agent': {
+        const definition = this.getEmbeddedAgentFn(worker.embeddedAgentId);
+        // Effective model/effort resolved through the single writer, which
+        // returns `model: undefined` when there is no definition to fall
+        // back on -- the wire's "UNKNOWN", not a guessed default.
+        const { model, reasoningEffort } = resolveEffectiveModelParams(definition, worker);
         const embeddedAgentWorker: EmbeddedAgentWorker = {
           ...base,
           type: 'embedded-agent',
           embeddedAgentId: worker.embeddedAgentId,
           activated: worker.subprocess !== null,
           autoCompaction: worker.autoCompaction,
-          contextWindowTokens: resolveEffectiveContextWindow(this.getEmbeddedAgentFn(worker.embeddedAgentId), worker),
+          contextWindowTokens: resolveEffectiveContextWindow(definition, worker),
+          model,
+          reasoningEffort,
+          hasParameterOverride: hasEmbeddedAgentParameterOverride(worker),
         };
         return embeddedAgentWorker;
       }

@@ -686,6 +686,7 @@ function replayWindow(
       case 'sdk-resume-failed':
       case 'turn-interrupted':
       case 'restore-failure-declaration':
+      case 'model-params-applied':
         // Noise: replay-only, contributes nothing to the conversation array.
         // sdk-session-id (SDK Engine Phase 1) carries no conversational
         // content -- it is a bookkeeping marker for the worker's current SDK
@@ -702,6 +703,12 @@ function replayWindow(
         // member below): it declares an asymmetry reconstruction must
         // IGNORE, not a discard it must respect, so it belongs here as
         // ordinary noise rather than in the Boundary group.
+        // model-params-applied (agent-surface.md Phase 3) is the same shape
+        // as sdk-session-id: a report about the PROCESS's configuration, not
+        // about what was said. The persisted `workers` row -- not this
+        // event -- is what a later activation reads its parameters from.
+        // (No restart is implied by it either way; both parameters apply
+        // live on both engines.)
         break;
       case 'context-compacted':
       case 'context-handoff':
