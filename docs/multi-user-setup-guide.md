@@ -1337,6 +1337,48 @@ server user) — this still exercises everything except the actual OS-boundary
 crossing, useful for a quick non-elevated sanity check before running the
 real cross-user version.
 
+### Boot-time `EMBEDDED_AGENT_BUN_PATH` reachability WARN (Issue #1291)
+
+At boot, in `AUTH_MODE=multi-user` only, the server assesses `EMBEDDED_AGENT_BUN_PATH`
+against its own running binary and logs a `WARN` (never a fatal error — the
+server still starts and PTY sessions are unaffected) for anything that looks
+wrong. The check covers four things:
+
+1. **Identity** — does the configured path resolve to the exact same file
+   the server itself is running (`/proc/self/exe`)?
+2. **File reachability** — is the configured file itself executable by
+   users other than its owner (the file's own other-execute mode bit)?
+3. **Every containing directory's traversability** — is EACH ancestor
+   directory in the resolved path, from its immediate parent up to `/`,
+   traversable (other-execute bit set) by users other than its owner? A
+   file can be world-executable while sitting inside a non-traversable
+   directory (e.g. a `0750` home directory) — in that case no other user
+   can ever reach the file, regardless of the file's own mode. This is
+   checked separately from (2) because a file's own permissions say
+   nothing about whether the path leading to it is walkable.
+4. **Readability** — if the configured path (or any containing directory)
+   cannot even be read (`EACCES`, `ENOENT`, etc.), the WARN names the OS
+   error code rather than staying silent — nothing about (1)-(3) is
+   determinable in that state.
+
+**Operator note for hosts where the service user's home is not
+world-traversable** (the common case — `scripts/setup-multiuser-for-ubuntu.sh`
+creates the service user's home at the OS default, typically `0750`): if the
+unit's `Environment=EMBEDDED_AGENT_BUN_PATH=` line is unset or points at the
+service user's own `~/.bun/bin/bun`, the boot WARN fires with the "not
+traversable" or "could not read" message above, because that path sits inside
+the service user's own (non-traversable) home directory — even though the
+*server itself* can execute that binary fine (it owns the directory), no
+*other* elevation-target user can ever reach it. The fix is exactly what
+[Step 4](#step-4-configure-the-service-linux) already provisions: set
+`Environment=EMBEDDED_AGENT_BUN_PATH=/usr/local/bin/bun` (the setup script's
+copy, world-traversable by construction — see
+[`.claude/rules/os-environment-coupling.md`](../.claude/rules/os-environment-coupling.md)
+Discipline 3) in the unit, then restart. A host whose unit was rendered before
+this line existed, or whose `EMBEDDED_AGENT_BUN_PATH` was left unset, will see
+this WARN at every boot until the unit is updated — that is the WARN doing its
+job, not a false positive.
+
 ### Embedded-agent Bash env non-leakage check
 
 Run before claiming multi-user support for the `Bash` builtin tool
