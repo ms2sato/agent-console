@@ -48,36 +48,102 @@ export async function compareBinaryIdentity(
 }
 
 /**
- * `true`  -- the configured path is executable by users other than its owner.
- * `false` -- it is not.
- * `'unknown'` -- the configured value is a bare name, or `io.stat` failed
- *   (e.g. ENOENT).
+ * Splits a resolved (absolute) path into the list of its ancestor
+ * directories, from the immediate parent up to and including `/`. Pure
+ * string manipulation -- no filesystem access.
+ *
+ * e.g. `/home/agentconsole/.bun/bin/bun` ->
+ *   `['/home/agentconsole/.bun/bin', '/home/agentconsole/.bun', '/home/agentconsole', '/home', '/']`
  */
-export type OtherExecutable = boolean | 'unknown';
+export function ancestorDirsOf(resolvedPath: string): string[] {
+  const segments = resolvedPath.split('/').filter((segment) => segment.length > 0);
+  // Drop the last segment (the file itself); what remains are the parent
+  // directory's own path segments.
+  segments.pop();
+  const dirs: string[] = [];
+  for (let i = segments.length; i >= 0; i--) {
+    dirs.push(`/${segments.slice(0, i).join('/')}`);
+  }
+  return dirs;
+}
 
 /**
- * Checks whether the configured `EMBEDDED_AGENT_BUN_PATH` is executable by
- * users other than its owner -- a proxy for "is this file reachable by an
- * elevation-target user other than whichever account owns it". A bare
- * command name is `'unknown'` WITHOUT calling `io.stat`, for the same reason
- * `compareBinaryIdentity` skips `io.realpath` on a bare name: there is no
- * single meaningful file to stat until PATH resolution happens inside the
- * target user's own shell.
+ * `true`      -- the configured path is reachable AND executable by users
+ *   other than its owner: every ancestor directory has its other-execute
+ *   (traverse) bit set, and the file itself has its other-execute bit set.
+ * `'unknown'` -- the configured value is a bare name, or `io.realpath` /
+ *   `io.stat` failed for the file or any ancestor directory (e.g. ENOENT,
+ *   EACCES).
+ * an object -- reachability is blocked at a specific point in the path
+ *   (`blockedAt`), either an ancestor `directory` whose traverse bit is
+ *   unset, or the `file` itself whose execute bit is unset.
+ */
+export type OtherExecutableResult =
+  | true
+  | 'unknown'
+  | { executable: false; blockedAt: string; kind: 'file' | 'directory'; mode: number };
+
+/**
+ * Checks whether the configured `EMBEDDED_AGENT_BUN_PATH` is REACHABLE by
+ * users other than its owner -- a proxy for "can an elevation-target user
+ * other than whichever account owns this file actually get to it". A file's
+ * own mode bits are necessary but not sufficient: every ancestor directory
+ * in the resolved path must also have its other-execute (traverse) bit set,
+ * or a non-owner is blocked from even reaching the file (e.g. a world
+ * -executable file sitting inside a `0750` home directory).
+ *
+ * A bare command name is `'unknown'` WITHOUT calling `io.realpath` or
+ * `io.stat`, for the same reason `compareBinaryIdentity` skips
+ * `io.realpath` on a bare name: there is no single meaningful file to stat
+ * until PATH resolution happens inside the target user's own shell.
  */
 export async function isOtherExecutable(
   configured: string,
-  io: { stat(p: string): Promise<{ mode: number }> },
-): Promise<OtherExecutable> {
+  io: { realpath(p: string): Promise<string>; stat(p: string): Promise<{ mode: number }> },
+): Promise<OtherExecutableResult> {
   if (!configured.startsWith('/')) {
     return 'unknown';
   }
-  let stats: { mode: number };
+  let resolved: string;
   try {
-    stats = await io.stat(configured);
+    resolved = await io.realpath(configured);
   } catch {
     return 'unknown';
   }
-  return (stats.mode & 0o001) !== 0;
+
+  // Walk from the file's immediate parent out to `/`; the FIRST ancestor
+  // whose traverse bit is unset is the one that actually blocks
+  // reachability, so stop there rather than continuing to walk further out.
+  for (const dir of ancestorDirsOf(resolved)) {
+    let dirStat: { mode: number };
+    try {
+      dirStat = await io.stat(dir);
+    } catch {
+      return 'unknown';
+    }
+    if ((dirStat.mode & 0o001) === 0) {
+      // Mask to plain permission bits (with setuid/setgid/sticky preserved):
+      // a real `fs.Stats.mode` also carries the file-type bits (`S_IFDIR` /
+      // `S_IFREG` / etc, e.g. `0o040750` for a directory whose permission
+      // bits are `0o750`), which are not part of what an operator-facing
+      // "mode NNNN" message should ever display. Masking here, at the
+      // source, means every caller of this function's `mode` field gets
+      // plain permission bits for free -- no formatter has to remember to
+      // strip them itself.
+      return { executable: false, blockedAt: dir, kind: 'directory', mode: dirStat.mode & 0o7777 };
+    }
+  }
+
+  let fileStat: { mode: number };
+  try {
+    fileStat = await io.stat(resolved);
+  } catch {
+    return 'unknown';
+  }
+  if ((fileStat.mode & 0o001) === 0) {
+    return { executable: false, blockedAt: resolved, kind: 'file', mode: fileStat.mode & 0o7777 };
+  }
+  return true;
 }
 
 export interface AssessEmbeddedAgentBunPathParams {
@@ -88,7 +154,7 @@ export interface AssessEmbeddedAgentBunPathParams {
 
 export interface AssessEmbeddedAgentBunPathResult {
   identity: BinaryIdentity;
-  otherExecutable: OtherExecutable;
+  otherExecutable: OtherExecutableResult;
   warnings: string[];
 }
 
@@ -103,11 +169,15 @@ const SETUP_SCRIPT_FIX = 're-run scripts/setup-multiuser-for-ubuntu.sh';
  * Warning-count table (see `.claude/rules/test-trigger.md`'s "Idle Eviction"
  * siblings for the shape this pattern follows -- exhaustive branch coverage
  * pinned in the sibling test file):
- *   - same identity      + other-executable true    -> 0 warnings (happy path)
- *   - different identity + other-executable true     -> 1 warning
- *   - same identity      + other-executable false    -> 1 warning
- *   - different identity + other-executable false     -> 2 warnings
+ *   - same identity      + other-executable true                 -> 0 warnings (happy path)
+ *   - different identity + other-executable true                 -> 1 warning
+ *   - same identity      + other-executable blocked (file)        -> 1 warning
+ *   - different identity + other-executable blocked (file)        -> 2 warnings
+ *   - same/different identity + other-executable blocked (dir)    -> 1 or 2 warnings, same shape as the file case
  *   - bare name (unresolvable identity, unknown other-executable) -> 1 warning
+ *   - absolute path that could not be read at all (identity
+ *     unresolvable or other-executable unknown, NOT a bare name)  -> 1 warning (short-circuits the branches above --
+ *     nothing else is determinable when the path itself couldn't be read)
  */
 export async function assessEmbeddedAgentBunPath(
   params: AssessEmbeddedAgentBunPathParams,
@@ -116,8 +186,44 @@ export async function assessEmbeddedAgentBunPath(
   const identity = await compareBinaryIdentity(selfExe, configured, io);
   const otherExecutable = await isOtherExecutable(configured, io);
 
-  const warnings: string[] = [];
   const isBareName = !configured.startsWith('/');
+
+  // The path itself (or one of its ancestors) could not be read at all --
+  // distinct from "readable, but wrong" (the branches below). Nothing else
+  // is determinable in this state, so short-circuit with a single warning
+  // that surfaces the actual OS error code rather than silently returning
+  // no warning at all (the #1291-follow-up EACCES-on-ancestor case).
+  if (!isBareName && (identity === 'unresolvable' || otherExecutable === 'unknown')) {
+    // Deliberate, cheap, second read purely to extract a `.code` for the
+    // message -- the original error is never threaded through
+    // compareBinaryIdentity's / isOtherExecutable's return values. Walks the
+    // same ancestor chain isOtherExecutable does (rather than only
+    // re-statting the resolved file) so the error surfaced here actually
+    // matches WHICH read failed -- an EACCES on a containing directory
+    // (the motivating case for this whole widening) throws inside the
+    // ancestor loop, not at the final file stat, and a re-probe scoped to
+    // only the resolved file would silently under-report it as 'UNKNOWN'.
+    let errorCode = 'UNKNOWN';
+    try {
+      const resolved = await io.realpath(configured);
+      for (const dir of ancestorDirsOf(resolved)) {
+        await io.stat(dir);
+      }
+      await io.stat(resolved);
+    } catch (err) {
+      errorCode = (err as NodeJS.ErrnoException)?.code ?? 'UNKNOWN';
+    }
+    return {
+      identity,
+      otherExecutable,
+      warnings: [
+        `Could not read EMBEDDED_AGENT_BUN_PATH '${configured}': ${errorCode}; verify the path (and every ` +
+          'containing directory) is reachable by every elevation-target user.',
+      ],
+    };
+  }
+
+  const warnings: string[] = [];
 
   if (identity === 'different') {
     warnings.push(
@@ -134,12 +240,22 @@ export async function assessEmbeddedAgentBunPath(
     );
   }
 
-  if (otherExecutable === false) {
-    warnings.push(
-      `EMBEDDED_AGENT_BUN_PATH is configured to '${configured}', which is not executable by other users -- an ` +
-        `elevated activation for a user other than this file's owner will fail with EACCES. ${SETUP_SCRIPT_FIX}, ` +
-        "or fix the file's permissions/location.",
-    );
+  if (typeof otherExecutable === 'object' && otherExecutable.executable === false) {
+    const modeOctal = otherExecutable.mode.toString(8).padStart(4, '0');
+    if (otherExecutable.kind === 'directory') {
+      warnings.push(
+        `EMBEDDED_AGENT_BUN_PATH is configured to '${configured}', but directory ${otherExecutable.blockedAt} ` +
+          `(mode ${modeOctal}) is not traversable by other users -- an elevated activation for a user other than ` +
+          `this directory's owner will fail with EACCES. ${SETUP_SCRIPT_FIX}, or fix the directory's ` +
+          'permissions/location.',
+      );
+    } else {
+      warnings.push(
+        `EMBEDDED_AGENT_BUN_PATH is configured to '${configured}' (mode ${modeOctal}), which is not executable ` +
+          `by other users -- an elevated activation for a user other than this file's owner will fail with ` +
+          `EACCES. ${SETUP_SCRIPT_FIX}, or fix the file's permissions/location.`,
+      );
+    }
   }
 
   return { identity, otherExecutable, warnings };

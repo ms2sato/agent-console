@@ -445,18 +445,23 @@ async function main(): Promise<void> {
     // default has no fixed file to stat. ---
     console.log('==> other-user-executable check (warning-only, not a failure)');
     if (configuredBunCmd.startsWith('/')) {
-      const otherExecutable = await isOtherExecutable(configuredBunCmd, { stat });
-      if (otherExecutable === false) {
+      const otherExecutable = await isOtherExecutable(configuredBunCmd, {
+        realpath: async (p: string) => realpathSync(p),
+        stat,
+      });
+      if (typeof otherExecutable === 'object' && otherExecutable.executable === false) {
         console.warn(
-          `  WARN  ${configuredBunCmd} is not executable by users other than its owner -- an elevated ` +
-            "activation for a target user other than this file's owner will fail with EACCES. Re-run " +
-            "scripts/setup-multiuser-for-ubuntu.sh, or fix the file's permissions/location.",
+          `  WARN  ${configuredBunCmd}: ${otherExecutable.kind} ${otherExecutable.blockedAt} ` +
+            `(mode ${otherExecutable.mode.toString(8)}) is not reachable/executable by users other than its owner -- ` +
+            "an elevated activation for a target user other than this path's owner will fail with EACCES. Re-run " +
+            "scripts/setup-multiuser-for-ubuntu.sh, or fix its permissions/location.",
         );
       } else if (otherExecutable === true) {
-        console.log(`  OK    ${configuredBunCmd} is executable by other users`);
+        console.log(`  OK    ${configuredBunCmd} is reachable and executable by other users`);
       } else {
         console.log(
-          '  skipped: could not stat the configured EMBEDDED_AGENT_BUN_PATH for the other-executable check (non-fatal)',
+          '  skipped: could not resolve/stat the configured EMBEDDED_AGENT_BUN_PATH (or one of its containing ' +
+            'directories) for the other-executable check (non-fatal)',
         );
       }
     } else {
