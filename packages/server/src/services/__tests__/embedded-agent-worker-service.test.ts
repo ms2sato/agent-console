@@ -2691,6 +2691,83 @@ describe('EmbeddedAgentWorkerService.forwardAutoCompaction', () => {
   });
 });
 
+describe('EmbeddedAgentWorkerService.applyModelParams', () => {
+  it('forwards a set-model-params command carrying the whole triple to a running subprocess', async () => {
+    const h = setup();
+    await h.service.activate(h.sessionId, h.workerId);
+    const before = h.fake.stdinWrites.length;
+
+    expect(
+      h.service.applyModelParams(h.workerId, {
+        model: 'qwen3:72b',
+        reasoningEffort: 'high',
+        contextWindowTokens: 32_000,
+      }),
+    ).toBe(true);
+
+    expect(JSON.parse(h.fake.stdinWrites[before])).toEqual({
+      v: 1,
+      type: 'set-model-params',
+      model: 'qwen3:72b',
+      reasoningEffort: 'high',
+      contextWindowTokens: 32_000,
+    });
+  });
+
+  it('carries nulls as nulls, never omitting a key (full state, never a delta)', async () => {
+    // An absent key would be indistinguishable from "leave it alone" on the
+    // subprocess side, which is exactly the delta semantics this command
+    // exists to avoid.
+    const h = setup();
+    await h.service.activate(h.sessionId, h.workerId);
+    const before = h.fake.stdinWrites.length;
+
+    h.service.applyModelParams(h.workerId, {
+      model: 'qwen3:32b',
+      reasoningEffort: null,
+      contextWindowTokens: null,
+    });
+
+    const command = JSON.parse(h.fake.stdinWrites[before]);
+    expect('reasoningEffort' in command).toBe(true);
+    expect('contextWindowTokens' in command).toBe(true);
+    expect(command.reasoningEffort).toBeNull();
+    expect(command.contextWindowTokens).toBeNull();
+  });
+
+  it('forwards even while a turn is in flight (not gated on turnActive)', async () => {
+    // Same reasoning as forwardAutoCompaction above: this is a durable
+    // configuration write that has already been persisted, and gating it
+    // would silently drop the change for the length of a long turn.
+    const h = setup();
+    await h.service.activate(h.sessionId, h.workerId);
+    await h.service.sendUserMessage(h.sessionId, h.workerId, 'a long turn');
+    const before = h.fake.stdinWrites.length;
+
+    expect(
+      h.service.applyModelParams(h.workerId, {
+        model: 'qwen3:72b',
+        reasoningEffort: null,
+        contextWindowTokens: null,
+      }),
+    ).toBe(true);
+    expect(JSON.parse(h.fake.stdinWrites[before]).type).toBe('set-model-params');
+  });
+
+  it('returns false, without throwing, when there is no running subprocess', async () => {
+    // The ordinary pre-activation / post-restart case. The caller has already
+    // persisted the durable values and must not surface this as an error.
+    const h = setup();
+    expect(
+      h.service.applyModelParams(h.workerId, {
+        model: 'qwen3:32b',
+        reasoningEffort: null,
+        contextWindowTokens: null,
+      }),
+    ).toBe(false);
+  });
+});
+
 describe('EmbeddedAgentWorkerService.cancel', () => {
   it('forwards a cancel command', async () => {
     const h = setup();

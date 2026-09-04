@@ -1732,6 +1732,53 @@ export class EmbeddedAgentWorkerService {
   }
 
   /**
+   * agent-surface.md Phase 3: forward a change to the worker's model /
+   * reasoning-effort / context-window override to a RUNNING subprocess, so
+   * the change applies without waiting for the next activation.
+   *
+   * Takes the RESOLVED EFFECTIVE TRIPLE, never the caller's patch: the
+   * command is full state every time (see `EmbeddedAgentCommand`'s
+   * `set-model-params` doc comment), so the subprocess never merges partial
+   * state and never has to know the precedence rules that produced these
+   * values.
+   *
+   * Deliberately NOT gated on `turnActive`, for the same reason
+   * `forwardAutoCompaction` above is not: this is a durable configuration
+   * write that has already been persisted, and each engine decides for
+   * itself when the new values take hold. Gating would silently drop the
+   * change for the duration of a long turn -- exactly when a user is most
+   * likely to reach for the control.
+   *
+   * Returns `false` when there is no live subprocess to tell. That is not a
+   * failure: the durable value is already persisted by the caller and will be
+   * read at the next activation. The caller must not surface it as an error.
+   */
+  applyModelParams(
+    workerId: string,
+    params: { model: string; reasoningEffort: string | null; contextWindowTokens: number | null },
+  ): boolean {
+    const runtime = this.runtimes.get(workerId);
+    const stdin = runtime?.ctx.worker.stdin;
+    if (!runtime || !stdin) return false;
+    try {
+      this.writeCommand(stdin, {
+        v: 1,
+        type: 'set-model-params',
+        model: params.model,
+        reasoningEffort: params.reasoningEffort,
+        contextWindowTokens: params.contextWindowTokens,
+      });
+      return true;
+    } catch (err) {
+      logger.warn(
+        { workerId, err },
+        'Failed to forward model parameters to embedded-agent stdin',
+      );
+      return false;
+    }
+  }
+
+  /**
    * Deliver the session's initialPrompt as this embedded worker's first user
    * message, exactly once, right after the loop reports readiness. Reuses
    * the normal sendUserMessage path (turn admission, transcript append, WS

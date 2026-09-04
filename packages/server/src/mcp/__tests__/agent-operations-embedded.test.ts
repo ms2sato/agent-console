@@ -42,4 +42,15 @@ describe('EMBEDDED_AGENT_OPERATIONS', () => {
       via: 'MCP endpoint (shared) — restart_all_agents',
     });
   });
+
+  it("exposes 'setWorkerParameters' via the same shared MCP endpoint (agent-surface.md Phase 3)", () => {
+    // The self-targeting guard on set_agent_parameters does not make this a
+    // narrower exposure than the MCP surface's: an embedded agent reaches the
+    // same tool on the same endpoint, and the guard is about WHICH worker may
+    // be targeted, not about which callers may see the tool.
+    expect(EMBEDDED_AGENT_OPERATIONS.setWorkerParameters).toEqual({
+      exposed: true,
+      via: 'MCP endpoint (shared) — set_agent_parameters',
+    });
+  });
 });

@@ -11,7 +11,7 @@ import type {
   ExitReason,
   EmbeddedAgentAttachment,
 } from '@agent-console/shared';
-import { isPtyBackedWorker } from '@agent-console/shared';
+import { isPtyBackedWorker, EMBEDDED_AGENT_ENGINE_PARAMETER_CAPABILITIES } from '@agent-console/shared';
 import type {
   PersistedSession,
 } from './persistence-service.js';
@@ -55,7 +55,7 @@ import {
   isValidSlug,
   resolveSessionScopePayload,
 } from '../lib/session-data-path.js';
-import { RepositoryNotFoundError } from '../lib/errors.js';
+import { RepositoryNotFoundError, ValidationError } from '../lib/errors.js';
 import type { UserMode } from './user-mode.js';
 import {
   getCurrentBranch as gitGetCurrentBranch,
@@ -80,6 +80,12 @@ import { SessionConverterService, type SharedAccountLookup } from './session-con
 import { NULL_USERNAME_LOOKUP, type UsernameLookup, UsernameLookupService } from './username-lookup.js';
 import type { RepositoryLookup, RepositoryEnvLookup } from './repository-lookup-types.js';
 import type { StartupIntentPreference } from './startup-intent.js';
+import {
+  resolveEffectiveModelParams,
+  validateEmbeddedAgentParameterOverride,
+  type EmbeddedAgentParameterOverridePatchInput,
+} from './embedded-agent-model-params.js';
+import { resolveEffectiveContextWindow } from './embedded-agent-context-window.js';
 
 /**
  * Callbacks for WebSocket operations.
@@ -272,6 +278,15 @@ export class SessionManager {
   private workerManager: WorkerManager;
   private workerLifecycleManager: WorkerLifecycleManager;
   private embeddedAgentWorkerService: EmbeddedAgentWorkerService;
+  /**
+   * Embedded-agent definition registry (interface-segregated to the one
+   * lookup this class needs). Held as a field -- not only threaded into the
+   * sub-services constructed below -- because the mid-run parameter write
+   * (`setEmbeddedAgentParameters`) has to resolve the worker's definition
+   * itself, both to validate against its engine capability row and to
+   * compose the effective triple it forwards.
+   */
+  private embeddedAgentDefinitions: Pick<EmbeddedAgentManager, 'getEmbeddedAgent'>;
   private mcpTokenRegistry: McpTokenRegistry;
   /**
    * Global activity / worker-exit callbacks. Stored here (not only forwarded to
@@ -328,6 +343,7 @@ export class SessionManager {
     // creation under this default resolves to undefined and is rejected as a
     // dangling reference by WorkerLifecycleManager.createWorker.
     const embeddedAgentManager = options.embeddedAgentManager ?? { getEmbeddedAgent: () => undefined };
+    this.embeddedAgentDefinitions = embeddedAgentManager;
     this.notificationManager = options?.notificationManager ?? null;
     this.userRepository = options?.userRepository ?? null;
     this.repositoryLookup = options.repositoryLookup;
@@ -885,6 +901,93 @@ export class SessionManager {
     worker.autoCompaction = enabled;
     await this.persistSession(session);
     this.embeddedAgentWorkerService.forwardAutoCompaction(workerId, enabled);
+    this.sessionLifecycleCallbacks?.onSessionUpdated?.(this.toPublicSession(session));
+
+    return this.workerManager.toPublicWorker(worker);
+  }
+
+  /**
+   * agent-surface.md Phase 3: set an embedded-agent worker's model /
+   * reasoning-effort / context-window override mid-run.
+   *
+   * Deliberately the SAME write path shape as
+   * `setEmbeddedAgentAutoCompaction` above -- durable write first, live
+   * subprocess told afterwards, broadcast last -- because it is the same
+   * kind of write: durable per-worker configuration, not a per-turn signal.
+   *
+   * PATCH semantics per field (agent-surface.md Ruling 3): an ABSENT key
+   * leaves that override exactly as it is; `null` CLEARS it, so the worker
+   * goes back to live-reading the definition's own default. Clearing `model`
+   * also clears `contextWindowTokens` BY CONSTRUCTION (Ruling 4's
+   * server-side half: the window is a property OF the model override, so
+   * there is nothing for the caller to decide and nothing to ask them for).
+   *
+   * What is forwarded to the subprocess is the RESOLVED EFFECTIVE TRIPLE,
+   * never this patch: a patch that clears the model forwards the
+   * DEFINITION's model, which the patch itself does not contain.
+   *
+   * Throws `ValidationError` (a 400 at the route and a classified error at
+   * the MCP tool) when the values fail the shared validator. Returns `null`
+   * when the session or worker does not exist, or the worker is not an
+   * embedded-agent worker; otherwise the updated public worker.
+   */
+  async setEmbeddedAgentParameters(
+    sessionId: string,
+    workerId: string,
+    patch: EmbeddedAgentParameterOverridePatchInput,
+  ): Promise<Worker | null> {
+    const session = this.sessions.get(sessionId);
+    if (!session) return null;
+    const worker = session.workers.get(workerId);
+    if (!worker || worker.type !== 'embedded-agent') return null;
+
+    const definition = this.embeddedAgentDefinitions.getEmbeddedAgent(worker.embeddedAgentId);
+    if (!definition) {
+      throw new ValidationError(
+        `Embedded agent definition not found: ${worker.embeddedAgentId}`,
+      );
+    }
+
+    // Shared validator (one writer, three callers). Returns the NORMALISED
+    // (trimmed) values, which are what gets persisted -- callers do not
+    // re-trim.
+    const normalized = validateEmbeddedAgentParameterOverride(
+      definition,
+      patch,
+      EMBEDDED_AGENT_ENGINE_PARAMETER_CAPABILITIES[definition.engine],
+    );
+
+    if (normalized.model !== undefined) {
+      worker.model = normalized.model;
+      if (normalized.model === null) {
+        // Ruling 4, server-side half. The validator already rejects a window
+        // sent ALONGSIDE a model clear, so this is the only way the window
+        // can be cleared implicitly -- and it must be, or a stale window
+        // would survive against a model the worker is no longer overriding.
+        worker.contextWindowTokens = null;
+      }
+    }
+    if (normalized.reasoningEffort !== undefined) {
+      worker.reasoningEffort = normalized.reasoningEffort;
+    }
+    if (normalized.contextWindowTokens !== undefined) {
+      worker.contextWindowTokens = normalized.contextWindowTokens;
+    }
+
+    // Persist BEFORE applying. The durable row is the truth in both paths
+    // (a live subprocess reads the command; a dormant one reads the row at
+    // its next activation), so a crash between the two must never leave a
+    // subprocess running values that were never written down.
+    await this.persistSession(session);
+
+    this.embeddedAgentWorkerService.applyModelParams(workerId, {
+      ...resolveEffectiveModelParams(definition, worker),
+      // `undefined` (Ruling 4's "indeterminate": a model override with no
+      // declared window) and `null` are the same instruction on the wire --
+      // there is no window in effect -- and the command declares the field
+      // as nullable-but-required, so the collapse happens here.
+      contextWindowTokens: resolveEffectiveContextWindow(definition, worker) ?? null,
+    });
     this.sessionLifecycleCallbacks?.onSessionUpdated?.(this.toPublicSession(session));
 
     return this.workerManager.toPublicWorker(worker);
