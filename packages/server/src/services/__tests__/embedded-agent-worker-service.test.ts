@@ -29,6 +29,7 @@ import {
   PROVIDER_KEY_STORE_UI_MESSAGES,
   type ProviderKeyStoreErrorKind,
 } from '../provider-key-store.js';
+import { serverConfig } from '../../lib/server-config.js';
 
 const MCP_BASE_URL = 'http://localhost:3457/mcp';
 const ENTRY_PATH = '/install/embedded-agent/src/main.ts';
@@ -456,7 +457,10 @@ describe('EmbeddedAgentWorkerService.activate', () => {
 
     expect(h.fake.captured.length).toBe(1);
     const opts = h.fake.captured[0];
-    expect(opts.command).toBe(`'bun' '${ENTRY_PATH}'`);
+    // Not an override -- exercises the real default, which is
+    // `serverConfig.EMBEDDED_AGENT_BUN_PATH` (`process.execPath` unless
+    // overridden by env, Issue #1291), not a hardcoded bare 'bun'.
+    expect(opts.command).toBe(`'${serverConfig.EMBEDDED_AGENT_BUN_PATH}' '${ENTRY_PATH}'`);
     // Negative assertions: no secrets in the command line.
     expect(opts.command).not.toContain(TOKEN);
     expect(opts.command).not.toContain(API_KEY);
@@ -774,7 +778,10 @@ describe('EmbeddedAgentWorkerService.activate', () => {
     await h.service.activate(h.sessionId, h.workerId);
 
     const command = h.fake.captured[0].command;
-    const match = /^'bun' '(.+)'$/.exec(command);
+    // Not an override -- exercises the real default (see the sibling test
+    // above for why this is `serverConfig.EMBEDDED_AGENT_BUN_PATH`, not 'bun').
+    const escapedBunPath = serverConfig.EMBEDDED_AGENT_BUN_PATH.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const match = new RegExp(`^'${escapedBunPath}' '(.+)'$`).exec(command);
     expect(match).not.toBeNull();
     const resolvedEntry = match![1];
     expect(resolvedEntry.endsWith('packages/embedded-agent/src/main.ts')).toBe(true);

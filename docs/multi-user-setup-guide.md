@@ -586,7 +586,7 @@ target), reference it from the systemd unit with `EnvironmentFile=-`, then
 | `AUTH_COOKIE_SECURE` | _(unset)_ | Tri-state override for the auth cookie's `Secure` attribute, decoupling it from `NODE_ENV`. Unset → follows `NODE_ENV` (default); `false` → never `Secure` (for trusted-network plain-HTTP deployments); `true` → always `Secure`. Invalid values fail fast at startup. See [Plain HTTP on a trusted network](#plain-http-on-a-trusted-network-auth_cookie_secure). |
 | `PTY_PROVIDER` | _(unset; server default `bun-terminal`)_ | Override for the PTY backend. Valid values: `bun-terminal` (default; the `Bun.spawn({ terminal: ... })` provider, Bun ≥ 1.3.5) or `bun-pty` (the bun-pty native shared library). Stage 2 (Issue [#827](https://github.com/ms2sato/agent-console/issues/827)) flipped the compiled default to `bun-terminal`; `bun-pty` remains selectable for one release as a rollback escape hatch, with Stage 3 (Issue [#828](https://github.com/ms2sato/agent-console/issues/828)) removing it. The backend migration was evaluated under Issue [#824](https://github.com/ms2sato/agent-console/issues/824). The bootstrap script exposes this as `--pty-provider <name>` (or env `AGENT_CONSOLE_PTY_PROVIDER`); when unset, the rendered systemd unit omits the entry entirely so the server falls back to its compiled default. Invalid values are rejected at bootstrap time before any system state is touched. |
 | `AGENT_CONSOLE_MCP_AUTH` | _(unset)_ | Mode for missing-MCP-token handling on EVERY `/mcp` request (transport-level gate, Issue #1269): `off`, `warn`, or `enforce`. Unset resolves to `warn` for every `AUTH_MODE`, including multi-user (Sprint 2026-07-16; see Issue #1107 for the enforce-by-default restoration path). Setting `enforce` explicitly while `AUTH_MODE` is not `multi-user` fails server startup with a configuration error: `resolveMcpAuthMode` rejects the combination because MCP bearer tokens for terminal-agent workers are only minted when `AUTH_MODE=multi-user` (`worker-manager.ts`'s mint gate — see [Ruling 2](design/embedded-agent-worker.md#transport-level-authn-gate-issue-1269)), so enforcing without it would reject every terminal-agent MCP call outright; this is a deliberate fail-fast, not a bug. See [MCP authentication mode](#mcp-authentication-mode-agent_console_mcp_auth) below — most deployments should leave this unset. |
-| `EMBEDDED_AGENT_BUN_PATH` | `bun` | Absolute path (or bare command name) used to invoke `bun` when spawning the embedded-agent worker's loop subprocess. Default `bun` resolves via PATH, correct for single-user/dev where the spawned process shares the server's shell environment. Multi-user mode MUST set this to an absolute path (e.g. `/usr/local/bin/bun`) because the subprocess runs inside an elevated, non-interactive login shell that does not source `.bashrc` and cannot resolve a user-local `~/.bun/bin/bun` by bare name (Issue #1221; see [`.claude/rules/os-environment-coupling.md`](../.claude/rules/os-environment-coupling.md)). `scripts/setup-multiuser-for-ubuntu.sh` sets this to the SAME value as `ExecStart` (Issue #1222) — the server process and the embedded-agent subprocess always execute the identical file, so drift between them is structurally impossible; re-run the setup script after a `bun upgrade` to refresh which version that shared file is. |
+| `EMBEDDED_AGENT_BUN_PATH` | `process.execPath` (the running server's own bun binary) | Absolute path (or bare command name) used to invoke `bun` when spawning the embedded-agent worker's loop subprocess. Defaulting to `process.execPath` (Issue #1291) is exact by construction in single-user/dev: it is literally the same binary file the server itself is running, with no PATH lookup involved. Multi-user mode MUST set this to an absolute path (e.g. `/usr/local/bin/bun`) because the subprocess runs inside an elevated, non-interactive login shell that does not source `.bashrc` and cannot resolve a user-local `~/.bun/bin/bun` by bare name (Issue #1221; see [`.claude/rules/os-environment-coupling.md`](../.claude/rules/os-environment-coupling.md)). `scripts/setup-multiuser-for-ubuntu.sh` sets this to the SAME value as `ExecStart` (Issue #1222) — the server process and the embedded-agent subprocess always execute the identical file, so drift between them is structurally impossible; re-run the setup script after a `bun upgrade` to refresh which version that shared file is. |
 
 | `AGENT_CONSOLE_SHARED_USERNAME` | _(unset)_ | OS username of the **Shared Account** that runs [SharedSessions](design/shared-orchestrator-session.md). Unset → shared sessions disabled (`/api/config` reports `sharedAccountsAvailable: false`). Set → the server resolves the account at startup and **fails fast** if it does not exist. Honoured only when `AUTH_MODE=multi-user`. Provision the account with `scripts/setup-shared-account.sh`; see [Shared Account Setup](#shared-account-setup-shared-sessions). |
 
@@ -1336,6 +1336,48 @@ same-user mode where `spawnAsUser` bypasses elevation (target equals the
 server user) — this still exercises everything except the actual OS-boundary
 crossing, useful for a quick non-elevated sanity check before running the
 real cross-user version.
+
+### Boot-time `EMBEDDED_AGENT_BUN_PATH` reachability WARN (Issue #1291)
+
+At boot, in `AUTH_MODE=multi-user` only, the server assesses `EMBEDDED_AGENT_BUN_PATH`
+against its own running binary and logs a `WARN` (never a fatal error — the
+server still starts and PTY sessions are unaffected) for anything that looks
+wrong. The check covers four things:
+
+1. **Identity** — does the configured path resolve to the exact same file
+   the server itself is running (`/proc/self/exe`)?
+2. **File reachability** — is the configured file itself executable by
+   users other than its owner (the file's own other-execute mode bit)?
+3. **Every containing directory's traversability** — is EACH ancestor
+   directory in the resolved path, from its immediate parent up to `/`,
+   traversable (other-execute bit set) by users other than its owner? A
+   file can be world-executable while sitting inside a non-traversable
+   directory (e.g. a `0750` home directory) — in that case no other user
+   can ever reach the file, regardless of the file's own mode. This is
+   checked separately from (2) because a file's own permissions say
+   nothing about whether the path leading to it is walkable.
+4. **Readability** — if the configured path (or any containing directory)
+   cannot even be read (`EACCES`, `ENOENT`, etc.), the WARN names the OS
+   error code rather than staying silent — nothing about (1)-(3) is
+   determinable in that state.
+
+**Operator note for hosts where the service user's home is not
+world-traversable** (the common case — `scripts/setup-multiuser-for-ubuntu.sh`
+creates the service user's home at the OS default, typically `0750`): if the
+unit's `Environment=EMBEDDED_AGENT_BUN_PATH=` line is unset or points at the
+service user's own `~/.bun/bin/bun`, the boot WARN fires with the "not
+traversable" or "could not read" message above, because that path sits inside
+the service user's own (non-traversable) home directory — even though the
+*server itself* can execute that binary fine (it owns the directory), no
+*other* elevation-target user can ever reach it. The fix is exactly what
+[Step 4](#step-4-configure-the-service-linux) already provisions: set
+`Environment=EMBEDDED_AGENT_BUN_PATH=/usr/local/bin/bun` (the setup script's
+copy, world-traversable by construction — see
+[`.claude/rules/os-environment-coupling.md`](../.claude/rules/os-environment-coupling.md)
+Discipline 3) in the unit, then restart. A host whose unit was rendered before
+this line existed, or whose `EMBEDDED_AGENT_BUN_PATH` was left unset, will see
+this WARN at every boot until the unit is updated — that is the WARN doing its
+job, not a false positive.
 
 ### Embedded-agent Bash env non-leakage check
 

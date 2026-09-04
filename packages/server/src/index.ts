@@ -9,7 +9,14 @@ import { createWorktreeWithSession } from './services/worktree-creation-service.
 import { deleteWorktree } from './services/worktree-deletion-service.js';
 import { setupWebSocketRoutes, broadcastToApp } from './websocket/routes.js';
 import { onApiError } from './lib/error-handler.js';
-import { serverConfig, shouldWarnInsecureAuthCookie, shouldLogUnconfiguredPublicOrigin } from './lib/server-config.js';
+import {
+  serverConfig,
+  shouldWarnInsecureAuthCookie,
+  shouldLogUnconfiguredPublicOrigin,
+  shouldCheckEmbeddedAgentBunPath,
+} from './lib/server-config.js';
+import { assessEmbeddedAgentBunPath } from './lib/embedded-agent-bun-path-check.js';
+import { realpath, stat } from 'node:fs/promises';
 import { rootLogger, createLogger } from './lib/logger.js';
 import { getConfigDir } from './lib/config.js';
 import { createAppContext, shutdownAppContext, type AppContext, type AppBindings } from './app-context.js';
@@ -204,6 +211,24 @@ if (shouldWarnInsecureAuthCookie()) {
     'The session cookie will be transmitted over plain HTTP. Only do this on a trusted private network ' +
     '(e.g. Cloudflare WARP / VPN); on an untrusted network this enables session hijack.'
   );
+}
+
+if (shouldCheckEmbeddedAgentBunPath()) {
+  try {
+    const assessment = await assessEmbeddedAgentBunPath({
+      configured: serverConfig.EMBEDDED_AGENT_BUN_PATH,
+      selfExe: '/proc/self/exe',
+      io: { realpath, stat },
+    });
+    for (const warning of assessment.warnings) {
+      logger.warn(warning);
+    }
+  } catch (err) {
+    // Never fatal: this is an advisory boot-time check, not a startup
+    // precondition. Must never prevent the server from starting or block
+    // PTY sessions.
+    logger.warn({ err }, 'Failed to assess EMBEDDED_AGENT_BUN_PATH at boot (non-fatal)');
+  }
 }
 
 if (shouldLogUnconfiguredPublicOrigin()) {

@@ -104,7 +104,7 @@ The failure mode is a plain "command not found" (exit 127) with no indication th
 
 **Fix pattern:**
 
-1. Resolve the binary's absolute path via a config value (env var with a sensible PATH-resolving default for single-user/dev, e.g. `EMBEDDED_AGENT_BUN_PATH` defaulting to `'bun'`), not a hardcoded bare name.
+1. Resolve the binary's absolute path via a config value (env var with a sensible default for single-user/dev, e.g. `EMBEDDED_AGENT_BUN_PATH` defaulting to `process.execPath` — the running server's own binary, exact by construction rather than PATH-resolved, Issue #1291), not a hardcoded bare name.
 2. Have the setup / bootstrap script for elevated (multi-user) deployments copy (not symlink — see Discipline 2's home-directory-permission concern; a service user's HOME is typically mode `0700`, so a symlink target under it is unreachable by other elevation-target users) the binary to a location every elevation-target user can traverse (e.g. `/usr/local/bin/<binary>`), and set the config value to that absolute path in the deployment's systemd unit / environment.
 3. Copy from the SAME binary the elevating/server process itself runs (not an arbitrary system install), to avoid version drift between the server and the elevated subprocess.
 
