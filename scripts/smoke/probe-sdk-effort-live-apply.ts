@@ -125,6 +125,39 @@ import {
   type TurnOutcome,
 } from './probe-sdk-session-harness.js';
 
+/**
+ * The script's exit codes. A single "measured something" code cannot separate
+ * "the premise holds" from "the premise fell", and this probe's own rule
+ * section tells readers to re-run it on every SDK bump -- the moment the
+ * distinction is the entire point of running it.
+ */
+export const PROBE_EXIT = {
+  /** Measured, and PS9 HOLDS. */
+  PREMISE_HOLDS: 0,
+  /**
+   * INCONCLUSIVE: a failed positive control, an `applyFlagSettings` that
+   * threw, a turn that produced no readable level -- or a run that never
+   * selected an arm bearing on PS9, which measured other things conclusively
+   * but produced no reading of the premise.
+   */
+  INCONCLUSIVE: 1,
+  /**
+   * HARNESS failure: bad arguments, an unverified config-dir isolation, an
+   * exception escaping `main`. Nothing about the SDK was measured.
+   */
+  HARNESS: 2,
+  /** Measured, and PS9 is REFUTED. */
+  PREMISE_REFUTED: 3,
+} as const;
+
+/** One line per code, printed with the verdicts so a reader need not look it up. */
+const EXIT_CODE_MEANINGS: Record<number, string> = {
+  [PROBE_EXIT.PREMISE_HOLDS]: 'measured, and PS9 holds',
+  [PROBE_EXIT.INCONCLUSIVE]: 'inconclusive; no reading of PS9 was produced',
+  [PROBE_EXIT.HARNESS]: 'harness failure; nothing was measured',
+  [PROBE_EXIT.PREMISE_REFUTED]: 'measured, and PS9 is REFUTED',
+};
+
 // ---------------------------------------------------------------------------
 // Argument parsing -- done inside main() so importing this module (the
 // import-safety guard under scripts/smoke/__tests__/) never touches argv or
@@ -144,7 +177,7 @@ function parseArgs(argv: string[]): Set<string> {
       continue;
     }
     console.error(`${USAGE_TEXT}\n  Unrecognized argument: ${a}`);
-    process.exit(2);
+    process.exit(PROBE_EXIT.HARNESS);
   }
   if (selected.size === 0) for (const f of ARM_FLAGS) selected.add(f);
   return selected;
@@ -366,11 +399,49 @@ async function applyEffort(s: ProbeSession, level: EffortLevel | null): Promise<
 // Arms
 // ---------------------------------------------------------------------------
 
+/**
+ * An arm's reading ON PS9 -- `applyFlagSettings({ effortLevel })` changes the
+ * effort a LIVE session runs at (embedded-agent-sdk-engine.md 5). Required on
+ * every `ArmResult` rather than optional, so a new arm has to state where it
+ * stands instead of defaulting into silence.
+ *
+ * `null` for a conclusive measurement that does not bear on PS9 at all -- the
+ * `--absent` baseline, which reads a fresh session and asks nothing of the
+ * flag layer -- and for every inconclusive verdict, whose `conclusive: false`
+ * is the fact that matters.
+ */
+type PremiseReading = 'holds' | 'refuted' | null;
+
 interface ArmResult {
   flag: (typeof ARM_FLAGS)[number];
   verdict: string;
   /** True only for a verdict that measured what the arm exists to measure. */
   conclusive: boolean;
+  premise: PremiseReading;
+}
+
+/**
+ * Maps the arms' own verdicts onto {@link PROBE_EXIT}.
+ *
+ * A conclusive REFUTATION outranks an inconclusive sibling arm: the
+ * refutation is a measurement in its own right, and reporting it as
+ * INCONCLUSIVE because some other arm did not settle would hide exactly the
+ * result this mapping exists to surface.
+ *
+ * `PREMISE_HOLDS` requires at least one arm that actually read the premise.
+ * A `--absent`-only run is conclusive and says nothing about PS9, so it exits
+ * INCONCLUSIVE rather than claiming a premise nobody measured.
+ *
+ * @internal Exported for the sibling unit test -- importing this module runs
+ * nothing (see the `import.meta.main` guard at the foot of the file).
+ */
+export function exitCodeFor(
+  results: readonly { conclusive: boolean; premise: PremiseReading }[],
+): number {
+  if (results.some((r) => r.premise === 'refuted')) return PROBE_EXIT.PREMISE_REFUTED;
+  if (!results.every((r) => r.conclusive)) return PROBE_EXIT.INCONCLUSIVE;
+  if (!results.some((r) => r.premise === 'holds')) return PROBE_EXIT.INCONCLUSIVE;
+  return PROBE_EXIT.PREMISE_HOLDS;
 }
 
 /** Runs `body` against a fresh isolated session and always tears it down. */
@@ -417,6 +488,7 @@ async function runSetArm(): Promise<ArmResult> {
       return {
         flag: '--set',
         conclusive: false,
+        premise: null,
         verdict:
           `INCONCLUSIVE -- the positive control turn read ${control ?? 'nothing'} rather than 'low', so the ` +
           'observables do not track Options.effort on this build. Nothing can be concluded from turn 2.',
@@ -426,6 +498,7 @@ async function runSetArm(): Promise<ArmResult> {
       return {
         flag: '--set',
         conclusive: false,
+        premise: null,
         verdict: `INCONCLUSIVE -- applyFlagSettings itself threw (${applyError}); there was no write to measure.`,
       };
     }
@@ -433,6 +506,7 @@ async function runSetArm(): Promise<ArmResult> {
       return {
         flag: '--set',
         conclusive: false,
+        premise: null,
         verdict: 'INCONCLUSIVE -- turn 2 produced no readable level (see its own line above).',
       };
     }
@@ -440,6 +514,8 @@ async function runSetArm(): Promise<ArmResult> {
       return {
         flag: '--set',
         conclusive: true,
+        // The measurement PS9 names, in the affirmative.
+        premise: 'holds',
         verdict:
           "LIVE -- applyFlagSettings({ effortLevel: 'high' }) overrode the query-time Options.effort on a " +
           'running session. An effort change needs no restart on this engine.',
@@ -449,6 +525,9 @@ async function runSetArm(): Promise<ArmResult> {
       return {
         flag: '--set',
         conclusive: true,
+        // PS9 fell. This is the shipped design's load-bearing premise, so a
+        // run that lands here must not exit like a run that merely measured.
+        premise: 'refuted',
         verdict:
           'NOT LIVE -- the flag layer did not override the query-time Options.effort. The restart-based ' +
           'design this probe retired would be required after all; re-open that branch before shipping.',
@@ -457,6 +536,7 @@ async function runSetArm(): Promise<ArmResult> {
     return {
       flag: '--set',
       conclusive: false,
+      premise: null,
       verdict: `UNEXPECTED -- turn 2 ran at '${after}', which is neither the query-time value nor the requested one.`,
     };
   });
@@ -483,6 +563,7 @@ async function runClearArm(): Promise<ArmResult> {
       return {
         flag: '--clear',
         conclusive: false,
+        premise: null,
         verdict:
           `INCONCLUSIVE -- the positive control turn read ${control ?? 'nothing'} rather than 'low'. ` +
           'Nothing can be concluded from the later turns.',
@@ -492,6 +573,7 @@ async function runClearArm(): Promise<ArmResult> {
       return {
         flag: '--clear',
         conclusive: false,
+        premise: null,
         verdict: `INCONCLUSIVE -- an applyFlagSettings call threw (set: ${setError ?? 'ok'}; clear: ${clearError ?? 'ok'}).`,
       };
     }
@@ -499,6 +581,7 @@ async function runClearArm(): Promise<ArmResult> {
       return {
         flag: '--clear',
         conclusive: false,
+        premise: null,
         verdict:
           `INCONCLUSIVE -- turn 2 read ${afterSet ?? 'nothing'} rather than 'medium', so the value being ` +
           'cleared on turn 3 was never established.',
@@ -508,6 +591,9 @@ async function runClearArm(): Promise<ArmResult> {
       return {
         flag: '--clear',
         conclusive: true,
+        // A write to the flag layer that the live session ignored is PS9
+        // failing in the clearing direction, not a mere fallback surprise.
+        premise: 'refuted',
         verdict:
           "IGNORED -- the clear did nothing: turn 3 still ran at 'medium'. A cleared override would stay in " +
           'effect for the life of the process, which the engine must then work around.',
@@ -517,6 +603,9 @@ async function runClearArm(): Promise<ArmResult> {
       return {
         flag: '--clear',
         conclusive: true,
+        // Landing back on the query-time value contradicts the measurement
+        // 5 records and the shipped design rests on.
+        premise: 'refuted',
         verdict:
           "STALE FALLBACK -- clearing fell back to the query-time Options.effort ('low'), which by then is a " +
           'value no persisted row holds. A live clear and a fresh session would diverge.',
@@ -526,12 +615,16 @@ async function runClearArm(): Promise<ArmResult> {
       return {
         flag: '--clear',
         conclusive: false,
+        premise: null,
         verdict: 'INCONCLUSIVE -- turn 3 produced no readable level (see its own line above).',
       };
     }
     return {
       flag: '--clear',
       conclusive: true,
+      // The clear reached the live session and landed on the SDK's own
+      // default -- the fallback 5 records, so PS9 holds in this direction.
+      premise: 'holds',
       verdict:
         `DEFAULT FALLBACK -- clearing fell back to '${afterClear}', which is neither the set value nor the ` +
         "stale query-time one, i.e. the SDK's own default. Compare with the --absent arm.",
@@ -551,12 +644,16 @@ async function runAbsentArm(): Promise<ArmResult> {
       return {
         flag: '--absent',
         conclusive: false,
+        premise: null,
         verdict: 'INCONCLUSIVE -- the turn produced no readable level (see its own line above).',
       };
     }
     return {
       flag: '--absent',
       conclusive: true,
+      // A baseline read of a fresh session: it asks nothing of the flag
+      // layer, so it bears on PS9 in neither direction.
+      premise: null,
       verdict:
         `BASELINE = '${level}' -- a fresh session with no effort override runs at '${level}'. This is the ` +
         'state a restart-without-override would produce, and the value --clear\'s turn 3 must be compared against.',
@@ -610,7 +707,7 @@ async function main(): Promise<number> {
         'ISOLATION NOT VERIFIED: the child wrote no state into the throwaway config dir. This probe cannot be ' +
           "trusted without this -- it may have run against the operator's real config dir.",
       );
-      return 2;
+      return PROBE_EXIT.HARNESS;
     }
 
     h('Verdict');
@@ -631,13 +728,16 @@ async function main(): Promise<number> {
       );
     }
 
+    const code = exitCodeFor(results);
+    console.log(`\nexit code ${code} -- ${EXIT_CODE_MEANINGS[code]}`);
+
     const t = totals();
     console.log(
       `\nfinished ${stamp()}  elapsed=${((Date.now() - startedAt) / 60_000).toFixed(1)} min  ` +
         `cumulative prompt tokens=${t.tokens}  approx cost=$${t.cost.toFixed(4)}`,
     );
 
-    return results.every((r) => r.conclusive) ? 0 : 1;
+    return code;
   } finally {
     // The throwaway CLAUDE_CONFIG_DIR is not cleaned up by any other exit
     // path -- every reachable return/throw from the try block above goes
@@ -655,6 +755,6 @@ if (import.meta.main) {
     .then((code) => process.exit(code))
     .catch((err) => {
       console.error('probe could not run:', err);
-      process.exit(2);
+      process.exit(PROBE_EXIT.HARNESS);
     });
 }

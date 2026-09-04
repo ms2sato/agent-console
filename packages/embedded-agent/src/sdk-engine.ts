@@ -832,6 +832,15 @@ export class SdkEngine implements Engine {
         await this.query.applyFlagSettings({ effortLevel });
         this.deps.emit({ v: 1, type: 'model-params-applied', applied: true });
       } catch (err: unknown) {
+        // A HALF-LANDED change reports `applied: false` here: `setModel`
+        // above may have succeeded and only `applyFlagSettings` thrown, in
+        // which case the live session now carries the new model but the old
+        // effort. That is honest at this event's granularity, which is the
+        // whole triple and not a per-parameter report -- the triple did not
+        // land. It is also not a state worth unwinding: the persisted row
+        // already holds the requested values, so the next activation
+        // composes all of them and converges. Reporting `true` because one
+        // half took would be the misleading answer.
         console.warn(
           `[sdk-engine] failed to apply model=${params.model} effortLevel=${String(effortLevel)} ` +
             `to the live session; the persisted values take effect at the next activation: ${errorMessage(err)}`,

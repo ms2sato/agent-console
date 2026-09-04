@@ -255,7 +255,8 @@ PRs touching `SdkEngine.setModelParams` in `packages/embedded-agent/src/sdk-engi
 Two properties of the script that matter when re-running it:
 
 - **It is billable and needs a real, authenticated `claude` CLI** for the invoking OS user — the `claude-sdk` engine runs as the executing user and uses that user's own authentication, so there is no provider key to configure. Six small turns per full run (two for `--set`, three for `--clear`, one for `--absent`). It is a manual gate, never a CI job.
-- **`--set` / `--clear` / `--absent` select an arm**; omitted, the default is all three, in order. The process exit code is 0 only when every arm selected reached a conclusive measurement — an INCONCLUSIVE arm exits 1, so a run that measured nothing is never mistaken for a run that measured no change.
+- **`--set` / `--clear` / `--absent` select an arm**; omitted, the default is all three, in order.
+- **Four exit codes, and they separate the two outcomes that matter.** `0` = measured, and PS9 HOLDS. `1` = INCONCLUSIVE — a failed positive control, an `applyFlagSettings` that threw, a turn that did not settle, or a run that selected no arm bearing on PS9 (a `--absent`-only run measures a baseline and says nothing about the premise). `2` = HARNESS failure, so nothing about the SDK was measured. `3` = measured, and PS9 is REFUTED. A conclusive refutation outranks an inconclusive sibling arm, because the refutation is a measurement in its own right and is precisely what this script exists to surface on an SDK bump. The mapping is pinned by `scripts/smoke/__tests__/probe-sdk-effort-live-apply.test.ts`, which imports the verdict function directly and never runs the billed measurement.
 
 ## Additional Verification: Instruction-Loader Parity E2E, Both Engines
 

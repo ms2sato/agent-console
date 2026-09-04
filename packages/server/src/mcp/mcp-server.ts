@@ -2306,13 +2306,13 @@ export function createMcpApp(deps: McpDependencies): Hono {
       'restart of your process. Pass null for a field to clear the override and go back to your agent ' +
       "definition's own default. Setting a model requires contextWindowTokens too (pass null to declare no " +
       'window, which leaves compaction inert); clearing the model clears the window with it. Only your OWN ' +
-      'worker can be targeted -- pass your AGENT_CONSOLE_SESSION_ID and AGENT_CONSOLE_WORKER_ID.',
+      'worker can be targeted -- omit sessionId and workerId and they default to your own worker.',
     {
-      sessionId: z.string().describe(
-        "Your own session's ID. Use your AGENT_CONSOLE_SESSION_ID environment variable.",
+      sessionId: z.string().optional().describe(
+        "Your own session's ID. Omit it: it defaults to your own session. Any other session is refused.",
       ),
-      workerId: z.string().describe(
-        "Your own worker's ID. Use your AGENT_CONSOLE_WORKER_ID environment variable. Any other worker is refused.",
+      workerId: z.string().optional().describe(
+        "Your own worker's ID. Omit it: it defaults to your own worker. Any other worker is refused.",
       ),
       model: z.string().nullable().optional().describe(
         'The model to run on. Omit to leave it unchanged; null clears the override.',
@@ -2326,14 +2326,62 @@ export function createMcpApp(deps: McpDependencies): Hono {
           '(pass null to declare no window); must be omitted otherwise.',
       ),
     },
-    async ({ sessionId, workerId, model, reasoningEffort, contextWindowTokens }) => {
+    async ({
+      sessionId: requestedSessionId,
+      workerId: requestedWorkerId,
+      model,
+      reasoningEffort,
+      contextWindowTokens,
+    }) => {
+      const caller = getMcpCallerIdentity();
+
+      // The tokenless refusal runs FIRST, ahead of every other check,
+      // because the id defaults below are derived from the caller identity:
+      // with no identity there is nothing to resolve them from. That
+      // ordering is also what makes the tokenless case the ONLY way the
+      // defaults can be missing.
+      //
+      // A TOKENLESS caller is refused here even in `off` / `warn` mode,
+      // where every other tool in this file proceeds. That is deliberate
+      // and is not a mode check that was forgotten: this tool's entire
+      // contract is "act on the caller's OWN worker", and a caller with no
+      // verified identity has no own worker for the contract to name. There
+      // is nothing to fall back to -- proceeding would mean accepting the
+      // caller's own claim about which worker is theirs, which is exactly
+      // the #878 boundary this tool sits on.
+      //
+      // Safe in every mode because embedded-agent activation mints a token
+      // UNCONDITIONALLY (see EmbeddedAgentWorkerService.runActivation's
+      // "Step 3: mint the MCP token", which hard-fails activation when the
+      // session has no owner to mint from) rather than only under
+      // AUTH_MODE=multi-user. A real embedded caller therefore always
+      // presents one. Do NOT "fix" this to match the other tools.
+      if (!caller) {
+        return errorResult(
+          'set_agent_parameters requires a verified caller identity: it acts on your own worker, and a call ' +
+            'with no bearer token has no own worker to act on. Embedded agents are given one automatically.',
+        );
+      }
+
+      // Both ids default to the caller's own, which is the ONLY pair this
+      // tool ever accepts -- so requiring them was asking the caller to
+      // restate something the bearer token already proves. It was not merely
+      // redundant: a `claude-sdk` agent has no shell tool, so it cannot read
+      // its own AGENT_CONSOLE_SESSION_ID / AGENT_CONSOLE_WORKER_ID, and
+      // "pass your AGENT_CONSOLE_* values" was not actionable unaided.
+      //
+      // Supplying them is still allowed and still checked: the self-target
+      // refusal below is unchanged, so a supplied-but-foreign pair is
+      // refused exactly as before rather than being quietly overwritten with
+      // the caller's own.
+      const sessionId = requestedSessionId ?? caller.sessionId;
+      const workerId = requestedWorkerId ?? caller.workerId;
+
       try {
         const session = sessionManager.getSession(sessionId);
         if (!session) {
           return errorResult(`Session not found: ${sessionId}`);
         }
-
-        const caller = getMcpCallerIdentity();
 
         const authError = checkCallerOwnsSession(
           caller,
@@ -2342,28 +2390,6 @@ export function createMcpApp(deps: McpDependencies): Hono {
           { toolName: 'set_agent_parameters' },
         );
         if (authError) return errorResult(authError.error);
-
-        // A TOKENLESS caller is refused here even in `off` / `warn` mode,
-        // where every other tool in this file proceeds. That is deliberate
-        // and is not a mode check that was forgotten: this tool's entire
-        // contract is "act on the caller's OWN worker", and a caller with no
-        // verified identity has no own worker for the contract to name. There
-        // is nothing to fall back to -- proceeding would mean accepting the
-        // caller's own claim about which worker is theirs, which is exactly
-        // the #878 boundary this tool sits on.
-        //
-        // Safe in every mode because embedded-agent activation mints a token
-        // UNCONDITIONALLY (see EmbeddedAgentWorkerService.runActivation's
-        // "Step 3: mint the MCP token", which hard-fails activation when the
-        // session has no owner to mint from) rather than only under
-        // AUTH_MODE=multi-user. A real embedded caller therefore always
-        // presents one. Do NOT "fix" this to match the other tools.
-        if (!caller) {
-          return errorResult(
-            'set_agent_parameters requires a verified caller identity: it acts on your own worker, and a call ' +
-              'with no bearer token has no own worker to act on. Embedded agents are given one automatically.',
-          );
-        }
 
         // checkCallerOwnsSession proves only that the caller owns the
         // SESSION, so on its own it would accept a SIBLING worker in the same

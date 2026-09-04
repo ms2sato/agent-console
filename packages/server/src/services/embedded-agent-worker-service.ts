@@ -145,36 +145,39 @@ const DEFAULT_SHUTDOWN_GRACE_MS = 3000;
 /** Grace after SIGTERM before escalating to SIGKILL. */
 const DEFAULT_SIGTERM_TIMEOUT_MS = 5000;
 /**
- * The event `type` literals this server build recognizes (the loop-authored
- * `EmbeddedAgentEvent` union). A parseable line whose `type` is NOT in this set
- * is treated as a forward-compat version-skew event (skip + log, no strike),
- * distinct from a recognized type that fails its own schema shape (genuine
- * corruption → counts toward the strike counter). Kept in sync with
- * `EmbeddedAgentEvent` in packages/shared.
+ * The gate on `handleLoopLine`: a parseable line whose `type` is NOT in this
+ * set is treated as a forward-compat version-skew event (skip + log, no
+ * strike), distinct from a recognized type that then fails its own schema
+ * shape, which is genuine corruption and counts toward the strike counter.
+ *
+ * DERIVED, at module load, from `EmbeddedAgentEventSchema`'s union options --
+ * the union the SUBPROCESS writes on stdout, which is the only thing this gate
+ * ever reads. It therefore cannot drift from the shared contract: there is no
+ * second list to fall behind. `EmbeddedAgentServerEvent` is a different union,
+ * written server-side, and never travels through here, so nothing is held out
+ * either. (`context-handoff` is an ordinary member: no engine emits it any
+ * more, and persisted streams written before the compaction swap still carry
+ * it, which is why the shared union kept it.)
+ *
+ * A hand-written list stood here before, under a prose note claiming it was
+ * kept aligned with the shared union. It was not, for four commits:
+ * `model-params-applied` reached the shared union and both engines without
+ * reaching this list, so every occurrence was dropped before schema-parse and
+ * before persistence. The drop is silent by design -- that is the
+ * forward-compat arm working as specified -- so no log, no strike, and no test
+ * could surface it.
+ *
+ * `.options`, `.entries` and `.literal` are all public valibot API; the map
+ * below needs no cast and reaches into no internals.
+ *
+ * @internal Exported so the sibling test can pin the derivation against
+ * vacuity -- an empty or wrong-union result would make this gate drop
+ * everything, which is the failure mode that replaces drift once drift is
+ * impossible. Not part of the service's API.
  */
-const KNOWN_EVENT_TYPES = new Set<string>([
-  'ready',
-  'state',
-  'assistant-delta',
-  'assistant-thinking-delta',
-  'assistant-message',
-  'tool-call',
-  'tool-result',
-  'turn-error',
-  'fatal',
-  'context-usage',
-  'context-compacted',
-  // LEGACY: no engine emits this any more, but a persisted stream written
-  // before the compaction swap replays through this same gate. Removing it
-  // would make every historical row fail the unknown-type check.
-  'context-handoff',
-  'sdk-session-id',
-  // Transcript Restore, R1. `turn-interrupted` is deliberately absent: this
-  // gate only sees lines the subprocess writes on stdout, and that event is
-  // server-authored -- same reason `user-message` and `exited` are not
-  // listed either.
-  'sdk-resume-failed',
-]);
+export const KNOWN_EVENT_TYPES: ReadonlySet<string> = new Set(
+  EmbeddedAgentEventSchema.options.map((option) => option.entries.type.literal),
+);
 /** Cap on the per-chunk stderr text forwarded to the debug logger. */
 const STDERR_LOG_CAP = 2048;
 /**

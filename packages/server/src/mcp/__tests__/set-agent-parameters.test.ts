@@ -283,6 +283,80 @@ describe('set_agent_parameters', () => {
     expect(readWorker(sessionId, workerId).reasoningEffort).toBe('high');
   });
 
+  // ---------- Optional ids, defaulting to the caller's own identity ----------
+
+  /**
+   * `sessionId` / `workerId` are optional and default to the pair the bearer
+   * token already proves. The reason is not tidiness: a `claude-sdk` agent has
+   * no shell tool and so cannot read its own AGENT_CONSOLE_SESSION_ID /
+   * AGENT_CONSOLE_WORKER_ID, which made "pass your AGENT_CONSOLE_* values" an
+   * instruction it could not follow unaided.
+   *
+   * All three cases are pinned because the defaulting must not weaken the
+   * guard: omitting resolves to the caller's own worker, supplying a foreign
+   * pair is still refused (NOT silently rewritten to the caller's own), and
+   * supplying one's own pair still works.
+   */
+  it('acts on the caller\'s own worker when both ids are omitted', async () => {
+    const { sessionId, workerId, userId } = await createEmbeddedWorker();
+    const token = registry.mint({ sessionId, workerId, userId });
+
+    const response = await callTool(
+      app,
+      mcpSessionId,
+      'set_agent_parameters',
+      { reasoningEffort: 'high' },
+      nextId++,
+      authHeader(token),
+    );
+
+    expect(response.result?.isError).toBeUndefined();
+    // The durable state, not just the response: the resolved ids reached the write.
+    expect(readWorker(sessionId, workerId).reasoningEffort).toBe('high');
+  });
+
+  it('still refuses a SUPPLIED foreign worker rather than rewriting it to the caller\'s own', async () => {
+    const { sessionId, workerId, userId, embeddedAgentId } = await createEmbeddedWorker();
+    const sibling = await sessionManager.createWorker(sessionId, {
+      type: 'embedded-agent',
+      embeddedAgentId,
+    });
+    const token = registry.mint({ sessionId, workerId, userId });
+
+    const response = await callTool(
+      app,
+      mcpSessionId,
+      'set_agent_parameters',
+      { sessionId, workerId: sibling!.id, reasoningEffort: 'high' },
+      nextId++,
+      authHeader(token),
+    );
+
+    expect(response.result?.isError).toBe(true);
+    expect((parseToolResult(response) as { error: string }).error).toContain('your own worker');
+    // Neither worker was written: not the named foreign one, and not the
+    // caller's own as a silent substitution for it.
+    expect(readWorker(sessionId, sibling!.id).reasoningEffort).toBeNull();
+    expect(readWorker(sessionId, workerId).reasoningEffort).toBeNull();
+  });
+
+  it('accepts ids that are supplied AND match the caller (the pre-existing call shape)', async () => {
+    const { sessionId, workerId, userId } = await createEmbeddedWorker();
+    const token = registry.mint({ sessionId, workerId, userId });
+
+    const response = await callTool(
+      app,
+      mcpSessionId,
+      'set_agent_parameters',
+      { sessionId, workerId, reasoningEffort: 'high' },
+      nextId++,
+      authHeader(token),
+    );
+
+    expect(response.result?.isError).toBeUndefined();
+    expect(readWorker(sessionId, workerId).reasoningEffort).toBe('high');
+  });
+
   // ---------- The guard, which is stricter than checkCallerOwnsSession ----------
 
   it('refuses a TOKENLESS caller even in off mode, where every other tool proceeds', async () => {

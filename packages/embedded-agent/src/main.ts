@@ -220,6 +220,19 @@ export async function runLoop(io: LoopIO, factories: LoopFactories): Promise<num
         // already running. Gating would silently drop the change for the
         // whole length of a long turn -- exactly the case a mid-run change
         // exists for.
+        //
+        // Two of these arriving in quick succession are NOT serialised, and
+        // that is a deliberate non-goal rather than an oversight. The SDK
+        // arm's implementation is an unawaited async IIFE, so a second
+        // command's SDK writes can in principle interleave with the first's.
+        // Nothing is lost by it: the persisted row is written server-side in
+        // dispatch order, and the next activation composes from that row, so
+        // the durable value is unambiguous and the session converges to it.
+        // The SDK's own control requests also share one channel, which makes
+        // an actual reordering unlikely rather than merely harmless. If an
+        // E2E ever shows the LIVE session settling on the earlier of two
+        // values, this arm and the SDK engine's `setModelParams` are where to
+        // look -- the fix would be a queue here, not a lock further down.
         loop.setModelParams({
           model: command.model,
           reasoningEffort: command.reasoningEffort,
