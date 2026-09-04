@@ -37,6 +37,14 @@ export interface AgentParameterFieldsProps {
    * follows the seam's return value for BOTH kinds, not just one.
    */
   getCapabilitiesImpl?: (entry: AgentDirectoryEntry) => AgentParameterCapabilitiesByKind;
+  /**
+   * Forwarded to every rendered `Input`. Used by a caller that writes
+   * through a slower, server-round-trip path (e.g. a mid-run PATCH) to lock
+   * the fields while a write is in flight or while the effective values are
+   * unknown -- this component has no opinion on why, it just forwards the
+   * flag. Defaults to false.
+   */
+  disabled?: boolean;
 }
 
 function findEntry(
@@ -88,6 +96,7 @@ export function AgentParameterFields({
   onContextWindowTokensChange,
   contextWindowTokensError,
   getCapabilitiesImpl = getAgentParameterCapabilitiesFor,
+  disabled = false,
 }: AgentParameterFieldsProps) {
   const { entries } = useAgentDirectory();
 
@@ -109,6 +118,7 @@ export function AgentParameterFields({
             onChange={(e) => onModelChange(e.target.value)}
             placeholder="e.g. opus"
             className="w-32"
+            disabled={disabled}
           />
         </FormField>
       )}
@@ -119,6 +129,7 @@ export function AgentParameterFields({
             onChange={(e) => onReasoningEffortChange(e.target.value)}
             placeholder="e.g. high"
             className="w-32"
+            disabled={disabled}
           />
         </FormField>
       )}
@@ -142,6 +153,7 @@ export function AgentParameterFields({
             }}
             placeholder="e.g. 128000"
             className="w-32"
+            disabled={disabled}
           />
           <p className="text-xs text-gray-500 mt-1">
             Leave blank to run with an undeclared window (compaction stays inert).

@@ -85,6 +85,49 @@ export function resolveActiveEmbeddedContextWindowTokens(
   return activeWorker?.type === 'embedded-agent' ? activeWorker.contextWindowTokens : undefined;
 }
 
+/**
+ * Resolve the `model` prop for the active tab's worker -- undefined when the
+ * active worker isn't an embedded-agent type. Same extraction rationale as
+ * `resolveActiveEmbeddedAgentId` above. Note `Worker.model` is itself
+ * already `string | undefined` (agent-surface.md Phase 3): absent here can
+ * mean either "not an embedded-agent worker" or "effective model unknown"
+ * -- `EmbeddedAgentWorkerView` treats both identically (disable rather than
+ * guess), so this resolver does not need to distinguish them.
+ */
+export function resolveActiveEmbeddedModel(
+  workers: Worker[],
+  activeTabId: string | null,
+): string | undefined {
+  const activeWorker = workers.find(w => w.id === activeTabId);
+  return activeWorker?.type === 'embedded-agent' ? activeWorker.model : undefined;
+}
+
+/**
+ * Resolve the `reasoningEffort` prop for the active tab's worker --
+ * undefined when the active worker isn't an embedded-agent type. Same
+ * extraction rationale as `resolveActiveEmbeddedAgentId` above.
+ */
+export function resolveActiveEmbeddedReasoningEffort(
+  workers: Worker[],
+  activeTabId: string | null,
+): string | null | undefined {
+  const activeWorker = workers.find(w => w.id === activeTabId);
+  return activeWorker?.type === 'embedded-agent' ? activeWorker.reasoningEffort : undefined;
+}
+
+/**
+ * Resolve the `hasParameterOverride` prop for the active tab's worker --
+ * undefined when the active worker isn't an embedded-agent type. Same
+ * extraction rationale as `resolveActiveEmbeddedAgentId` above.
+ */
+export function resolveActiveEmbeddedHasParameterOverride(
+  workers: Worker[],
+  activeTabId: string | null,
+): boolean | undefined {
+  const activeWorker = workers.find(w => w.id === activeTabId);
+  return activeWorker?.type === 'embedded-agent' ? activeWorker.hasParameterOverride : undefined;
+}
+
 // Error fallback UI for worker tabs
 interface WorkerErrorFallbackProps {
   error: Error;
@@ -525,6 +568,18 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
     session.workers,
     activeTabId,
   );
+  // Phase 3 (agent-surface.md): the mid-run model/effort override control's
+  // effective values, resolved the same way as the compaction fields above
+  // -- read from `session.workers` on every render, never held locally.
+  const activeEmbeddedModel = resolveActiveEmbeddedModel(session.workers, activeTabId);
+  const activeEmbeddedReasoningEffort = resolveActiveEmbeddedReasoningEffort(
+    session.workers,
+    activeTabId,
+  );
+  const activeEmbeddedHasParameterOverride = resolveActiveEmbeddedHasParameterOverride(
+    session.workers,
+    activeTabId,
+  );
   const statusWorkerType = activeTab?.workerType ?? 'agent';
   const statusColor = getConnectionStatusColor(connectionStatus, activityState, statusWorkerType);
   const statusText = getConnectionStatusText(connectionStatus, activityState, exitInfo ?? null, statusWorkerType);
@@ -596,6 +651,9 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
             embeddedAgentId={activeEmbeddedAgentId}
             autoCompaction={activeEmbeddedAutoCompaction}
             contextWindowTokens={activeEmbeddedContextWindowTokens}
+            model={activeEmbeddedModel}
+            reasoningEffort={activeEmbeddedReasoningEffort}
+            hasParameterOverride={activeEmbeddedHasParameterOverride}
             onStatusChange={handleStatusChange}
           />
         ) : activeTab.workerType === 'git-diff' ? (

@@ -9,6 +9,7 @@ import {
   restartAgentWorker,
   restartWorkerAsEmbeddedAgent,
   restartAllAgentWorkers,
+  updateEmbeddedAgentWorker,
   fetchRepositories,
   registerRepository,
   unregisterRepository,
@@ -25,6 +26,8 @@ import {
   ApiError,
 } from '../api';
 import * as capabilitiesModule from '../capabilities';
+import { UpdateEmbeddedAgentWorkerRequestSchema } from '@agent-console/shared';
+import * as v from 'valibot';
 
 // Bun's expect().toEqual() enforces strict generic matching between actual and expected types.
 // Tests use partial mock data intentionally (verifying passthrough, not shape), so we wrap
@@ -81,6 +84,18 @@ async function getLastFetchBody(): Promise<unknown> {
     return text ? JSON.parse(text) : undefined;
   }
   return arg1?.body ? JSON.parse(arg1.body) : undefined;
+}
+
+/**
+ * Asserts a body the client actually sent is accepted by the server's own
+ * wire schema (UpdateEmbeddedAgentWorkerRequestSchema). Checks the issues
+ * array first so a failure reports the schema's own message text instead of
+ * a bare `false`.
+ */
+function expectAcceptedByWireSchema(body: unknown): void {
+  const result = v.safeParse(UpdateEmbeddedAgentWorkerRequestSchema, body);
+  expect(result.issues?.map((issue) => issue.message) ?? []).toEqual([]);
+  expect(result.success).toBe(true);
 }
 
 describe('API Client', () => {
@@ -338,6 +353,80 @@ describe('API Client', () => {
       expect(getLastFetchUrl()).toContain('/api/sessions/restart-all-agents');
       expect(getLastFetchMethod()).toBe('POST');
       expect(result).toEqual(mockResult);
+    });
+  });
+
+  describe('updateEmbeddedAgentWorker (agent-surface.md Phase 3, mid-run model/effort override)', () => {
+    it('sends the compaction-toggle body unchanged (pre-existing shape)', async () => {
+      const mockWorker = { worker: { id: 'worker-1', type: 'embedded-agent', name: 'Local GPT' } };
+      mockFetch.mockResolvedValue(createMockResponse(mockWorker));
+
+      const result = await updateEmbeddedAgentWorker('session-id', 'worker-id', { autoCompaction: true });
+
+      expect(getLastFetchUrl()).toContain('/api/sessions/session-id/workers/worker-id');
+      expect(getLastFetchMethod()).toBe('PATCH');
+      const body = await getLastFetchBody();
+      expect(body).toEqual({ autoCompaction: true });
+      expectAcceptedByWireSchema(body);
+      expect(result).toEqual(mockWorker);
+    });
+
+    it('sends a model override together with its context window (Ruling 4 pairing)', async () => {
+      const mockWorker = { worker: { id: 'worker-1', type: 'embedded-agent', name: 'Local GPT' } };
+      mockFetch.mockResolvedValue(createMockResponse(mockWorker));
+
+      await updateEmbeddedAgentWorker('session-id', 'worker-id', {
+        model: 'opus',
+        contextWindowTokens: 128_000,
+        reasoningEffort: 'high',
+      });
+
+      expect(getLastFetchMethod()).toBe('PATCH');
+      const body = await getLastFetchBody();
+      expect(body).toEqual({ model: 'opus', contextWindowTokens: 128_000, reasoningEffort: 'high' });
+      expectAcceptedByWireSchema(body);
+    });
+
+    it('sends a null context window when the caller declares no window for the model', async () => {
+      const mockWorker = { worker: { id: 'worker-1', type: 'embedded-agent', name: 'Local GPT' } };
+      mockFetch.mockResolvedValue(createMockResponse(mockWorker));
+
+      await updateEmbeddedAgentWorker('session-id', 'worker-id', {
+        model: 'opus',
+        contextWindowTokens: null,
+        reasoningEffort: null,
+      });
+
+      const body = await getLastFetchBody();
+      expect(body).toEqual({ model: 'opus', contextWindowTokens: null, reasoningEffort: null });
+      expectAcceptedByWireSchema(body);
+    });
+
+    it('clears the override with exactly { model: null, reasoningEffort: null } -- no contextWindowTokens key', async () => {
+      const mockWorker = { worker: { id: 'worker-1', type: 'embedded-agent', name: 'Local GPT' } };
+      mockFetch.mockResolvedValue(createMockResponse(mockWorker));
+
+      await updateEmbeddedAgentWorker('session-id', 'worker-id', { model: null, reasoningEffort: null });
+
+      const body = await getLastFetchBody();
+      expect(body).toEqual({ model: null, reasoningEffort: null });
+      expect(body).not.toHaveProperty('contextWindowTokens');
+      expectAcceptedByWireSchema(body);
+    });
+
+    // `updateEmbeddedAgentWorker`'s parameter type makes a model-without-window
+    // body unconstructible at any call site (Ruling 4 pairing is enforced
+    // structurally on the client), so there is no call through the wrapper to
+    // pin here -- calling the schema directly is the point: it confirms the
+    // wire still agrees with the shape the client type forbids, so a future
+    // widening of either side can't drift silently against the other.
+    it('rejects a model override sent without contextWindowTokens (agent-surface.md Ruling 4)', () => {
+      const result = v.safeParse(UpdateEmbeddedAgentWorkerRequestSchema, { model: 'opus' });
+
+      expect(result.success).toBe(false);
+      expect(result.issues?.map((issue) => issue.message)).toEqual([
+        'setting a model requires contextWindowTokens; pass null to declare no window',
+      ]);
     });
   });
 

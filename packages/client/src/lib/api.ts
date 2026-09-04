@@ -221,7 +221,38 @@ export async function restartWorkerAsEmbeddedAgent(
 }
 
 /**
- * Compaction: set an embedded-agent worker's auto-compaction toggle.
+ * A model override change couples with its context-window declaration
+ * (agent-surface.md Ruling 4): a window declared for a model this request
+ * does not itself set would silently apply to whatever model happens to be
+ * in effect, so the pairing is structural here, not just enforced by the
+ * runtime schema. Clearing the model (`model: null`) clears the window by
+ * construction -- the `contextWindowTokens` key cannot even be written in
+ * that branch, matching the wire schema's rejection of a window declared
+ * without a model.
+ */
+export type EmbeddedAgentModelOverrideUpdate =
+  | { model: string; contextWindowTokens: number | null }
+  | { model: null };
+
+/**
+ * The full set of shapes `PATCH /api/sessions/:sessionId/workers/:workerId`
+ * accepts for an embedded-agent worker: the pre-existing compaction toggle,
+ * a model override change (always carrying its window per
+ * `EmbeddedAgentModelOverrideUpdate` above), or a reasoning-effort-only
+ * change. `reasoningEffort` rides alongside a model change as an optional
+ * field rather than a fourth union member, since the "Apply" control always
+ * sends both together.
+ */
+export type UpdateEmbeddedAgentWorkerBody =
+  | { autoCompaction: boolean }
+  | (EmbeddedAgentModelOverrideUpdate & { reasoningEffort?: string | null })
+  | { reasoningEffort: string | null };
+
+/**
+ * Compaction: set an embedded-agent worker's auto-compaction toggle. Also
+ * the write path for the mid-run model / reasoning-effort / context-window
+ * override control (agent-surface.md Phase 3) -- see
+ * `UpdateEmbeddedAgentWorkerBody` above for the accepted shapes.
  *
  * The server is the source of truth -- the updated worker comes back in the
  * response and the change is also broadcast as a session update, so callers
@@ -230,7 +261,7 @@ export async function restartWorkerAsEmbeddedAgent(
 export async function updateEmbeddedAgentWorker(
   sessionId: string,
   workerId: string,
-  update: { autoCompaction: boolean }
+  update: UpdateEmbeddedAgentWorkerBody
 ): Promise<{ worker: Worker }> {
   const res = await api.sessions[':sessionId'].workers[':workerId'].$patch({
     param: { sessionId, workerId },

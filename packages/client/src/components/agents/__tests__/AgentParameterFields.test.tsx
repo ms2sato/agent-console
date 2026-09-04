@@ -559,4 +559,29 @@ describe('AgentParameterFields', () => {
       expect(screen.queryByPlaceholderText('e.g. high')).toBeNull();
     });
   });
+
+  describe('disabled prop', () => {
+    it('forwards disabled to every rendered input', async () => {
+      mockDirectoryResponses({ agents: [modelCapableAgent, effortCapableAgent] });
+      renderAgentParameterFields({
+        selection: { kind: 'terminal', agentId: 'model-agent' },
+        disabled: true,
+      });
+
+      await waitFor(() => {
+        expect(screen.getByPlaceholderText('e.g. opus')).toBeTruthy();
+      });
+      expect((screen.getByPlaceholderText('e.g. opus') as HTMLInputElement).disabled).toBe(true);
+    });
+
+    it('leaves inputs enabled when disabled is omitted (default false)', async () => {
+      mockDirectoryResponses({ agents: [modelCapableAgent] });
+      renderAgentParameterFields({ selection: { kind: 'terminal', agentId: 'model-agent' } });
+
+      await waitFor(() => {
+        expect(screen.getByPlaceholderText('e.g. opus')).toBeTruthy();
+      });
+      expect((screen.getByPlaceholderText('e.g. opus') as HTMLInputElement).disabled).toBe(false);
+    });
+  });
 });
