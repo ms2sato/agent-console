@@ -84,7 +84,7 @@ describe('SessionConverterService', () => {
         } else if (w.type === 'git-diff') {
           return { id: w.id, type: 'git-diff', name: w.name, createdAt: w.createdAt, baseCommit: w.baseCommit };
         } else {
-          return { id: w.id, type: 'embedded-agent', name: w.name, createdAt: w.createdAt, embeddedAgentId: w.embeddedAgentId, activated: w.subprocess !== null, autoCompaction: w.autoCompaction };
+          return { id: w.id, type: 'embedded-agent', name: w.name, createdAt: w.createdAt, embeddedAgentId: w.embeddedAgentId, activated: w.subprocess !== null, autoCompaction: w.autoCompaction, reasoningEffort: null, hasParameterOverride: false };
         }
       },
       toPersistedWorker: (w: InternalWorker): PersistedWorker => {
@@ -545,6 +545,103 @@ describe('SessionConverterService', () => {
         expect(result.workers[0].type).toBe('embedded-agent');
         if (result.workers[0].type === 'embedded-agent') {
           expect(result.workers[0].contextWindowTokens).toBeUndefined();
+        }
+      });
+    });
+
+    describe('embedded-agent worker model / reasoningEffort / hasParameterOverride (agent-surface.md Phase 3)', () => {
+      function buildServiceWithGetEmbeddedAgent(
+        getEmbeddedAgent: SessionConverterDeps['getEmbeddedAgent'],
+      ): SessionConverterService {
+        return new SessionConverterService({
+          repositoryDisplayLookup: mockLookup,
+          sharedAccountLookup: mockSharedLookup,
+          usernameLookup: mockUsernameLookup,
+          toPublicWorker: (() => {
+            throw new Error('unreachable');
+          }) as (w: InternalWorker) => Worker,
+          toPersistedWorker: (() => {
+            throw new Error('unreachable');
+          }) as (w: InternalWorker) => PersistedWorker,
+          getServerPid: () => 12345,
+          getEmbeddedAgent,
+        });
+      }
+
+      function buildPersistedWith(
+        id: string,
+        overrides: Partial<Parameters<typeof buildPersistedEmbeddedAgentWorker>[0]> = {},
+      ) {
+        return buildPersistedQuickSession({
+          id: `ps-${id}`,
+          locationPath: '/tmp/quick',
+          serverPid: null,
+          createdAt: '2026-01-01T00:00:00Z',
+          workers: [
+            buildPersistedEmbeddedAgentWorker({ id: `pw-${id}`, embeddedAgentId: 'def-1', ...overrides }),
+          ],
+        });
+      }
+
+      it("carries the definition's model when the worker has no override", () => {
+        const withDefinition = buildServiceWithGetEmbeddedAgent(
+          (id) => (id === 'def-1' ? buildTestDefinition() : undefined),
+        );
+
+        const result = withDefinition.persistedToPublicSession(buildPersistedWith('mp-def'));
+
+        expect(result.workers[0].type).toBe('embedded-agent');
+        if (result.workers[0].type === 'embedded-agent') {
+          expect(result.workers[0].model).toBe('qwen3:32b');
+          expect(result.workers[0].reasoningEffort).toBeNull();
+          expect(result.workers[0].hasParameterOverride).toBe(false);
+        }
+      });
+
+      it("carries the WORKER's override and flags it, even over a resolvable definition", () => {
+        const withDefinition = buildServiceWithGetEmbeddedAgent(
+          (id) => (id === 'def-1' ? buildTestDefinition() : undefined),
+        );
+
+        const result = withDefinition.persistedToPublicSession(
+          buildPersistedWith('mp-override', {
+            model: 'gpt-5-codex',
+            reasoningEffort: 'high',
+            contextWindowTokens: 200_000,
+          }),
+        );
+
+        expect(result.workers[0].type).toBe('embedded-agent');
+        if (result.workers[0].type === 'embedded-agent') {
+          expect(result.workers[0].model).toBe('gpt-5-codex');
+          expect(result.workers[0].reasoningEffort).toBe('high');
+          expect(result.workers[0].hasParameterOverride).toBe(true);
+        }
+      });
+
+      it('yields model: undefined when getEmbeddedAgent is omitted from deps entirely', () => {
+        // This converter's definition lookup is optional, which is precisely
+        // why `EmbeddedAgentWorker.model` is optional on the wire: absence is
+        // UNKNOWN, never a substituted default.
+        const result = service.persistedToPublicSession(buildPersistedWith('mp-nodep'));
+
+        expect(result.workers[0].type).toBe('embedded-agent');
+        if (result.workers[0].type === 'embedded-agent') {
+          expect(result.workers[0].model).toBeUndefined();
+          expect(result.workers[0].reasoningEffort).toBeNull();
+          expect(result.workers[0].hasParameterOverride).toBe(false);
+        }
+      });
+
+      it("still yields the worker's own model when the definition lookup misses", () => {
+        const result = service.persistedToPublicSession(
+          buildPersistedWith('mp-nodep-override', { model: 'gpt-5-codex' }),
+        );
+
+        expect(result.workers[0].type).toBe('embedded-agent');
+        if (result.workers[0].type === 'embedded-agent') {
+          expect(result.workers[0].model).toBe('gpt-5-codex');
+          expect(result.workers[0].hasParameterOverride).toBe(true);
         }
       });
     });

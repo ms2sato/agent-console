@@ -418,6 +418,12 @@ export class SdkEngine implements Engine {
   private currentTurnDeferred: { resolve: () => void } | null = null;
   private dead = false;
   /**
+   * Serializes {@link setModelParams}'s live writes. See that method's doc
+   * comment for why arrival order has to be preserved; the chain itself is
+   * just "each link starts only after the previous one SETTLES".
+   */
+  private modelParamsChain: Promise<void> = Promise.resolve();
+  /**
    * Set by `cancel()` when a `runTurn` with attachments is still awaiting
    * `resolveImageAttachments` -- at that point nothing has been pushed onto
    * `queue` yet, so `query.interrupt()` has nothing live to interrupt, and
@@ -771,6 +777,127 @@ export class SdkEngine implements Engine {
           `it will take effect at the next activation: ${errorMessage(err)}`,
       );
     });
+  }
+
+  /**
+   * agent-surface.md Phase 3: apply a mid-run model / reasoning-effort /
+   * context-window change to the LIVE SDK session (see
+   * `Engine.setModelParams` for the full-state, never-a-delta contract).
+   *
+   * Both parameters apply live on this engine, measured against the pinned
+   * SDK: `setModel` changes the model for subsequent responses in
+   * streaming-input mode (which this engine uses), and `applyFlagSettings`
+   * overrides a query-time `Options.effort` mid-session. Neither needs a
+   * restart, so no caller has to model one.
+   *
+   * `contextWindowTokens` has nothing to apply HERE and is deliberately not
+   * stored: this engine never passes a window into `query()` (the SDK owns
+   * its own compaction), and the gauge's denominator is composed
+   * server-side from the persisted row, which was written before this
+   * command was sent. It is carried in the payload because the command is
+   * full-state for both engines, not because this one drops it by oversight.
+   *
+   * Local state is updated FIRST, like {@link setAutoCompaction}, so a later
+   * reconstruction composes the current values even if the live write fails.
+   * Unlike that toggle this reports an honest `applied`, so both writes are
+   * awaited before the event is emitted -- and `applied: false` never means
+   * "not saved": the persisted row stays the truth and a later activation
+   * reads the requested values from it.
+   *
+   * SERIALIZED per engine, which is all this method itself does: each call
+   * is appended to {@link modelParamsChain}, and its work starts only once
+   * the previous call's has SETTLED. Two commands arriving in quick
+   * succession each run two awaited live writes, so without the chain they
+   * can interleave -- `A.setModel`, `B.setModel`, `B.applyFlagSettings`,
+   * `A.applyFlagSettings` -- leaving the live session on the EARLIER call's
+   * effort. "The persisted row is the truth and the next activation
+   * converges" does not rescue that: an idle-evicted or long-lived session
+   * can run on stale LIVE values for hours before any activation re-reads
+   * the row, and the stream would meanwhile report `applied: true` for the
+   * update that LOST the race -- making this event's one job, honest
+   * reporting, itself false. Ordering is pinned by the two ordering tests in
+   * `sdk-engine.test.ts` ("applies two rapid changes in call order ..." and
+   * its poisoning sibling).
+   *
+   * Each link emits its OWN event and swallows its OWN failure, so a failed
+   * apply never poisons the chain for the calls behind it.
+   *
+   * {@link dispose} deliberately does NOT drain the chain: a link that runs
+   * after the session is gone finds `this.dead` set inside
+   * {@link applyModelParamsOnce} and reports `applied: false` without
+   * touching the SDK -- the same answer a drain would have produced, with no
+   * shutdown-ordering guarantee needed to reach it.
+   */
+  setModelParams(params: {
+    model: string;
+    reasoningEffort: string | null;
+    contextWindowTokens: number | null;
+  }): void {
+    this.modelParamsChain = this.modelParamsChain
+      .then(() => this.applyModelParamsOnce(params))
+      .catch(() => {
+        // `applyModelParamsOnce` handles its own failures, so reaching here
+        // means something outside the live writes threw (an `emit` consumer,
+        // say). Swallowed rather than left to propagate for one reason: a
+        // rejected `modelParamsChain` rejects every link appended to it
+        // afterwards WITHOUT running its body, which would silently drop
+        // every later parameter change for the life of the engine.
+      });
+  }
+
+  /**
+   * One {@link setModelParams} call's work -- the body that method had
+   * before it became a chain link, moved verbatim. The `this.dead` check
+   * stays HERE, at execution time, which is what lets a chain outlive its
+   * session safely (see {@link setModelParams} on why `dispose` need not
+   * drain).
+   */
+  private async applyModelParamsOnce(
+    params: Parameters<Engine['setModelParams']>[0],
+  ): Promise<void> {
+    // `EffortLevel` is a closed domain and the wire field is `string | null`
+    // (one command shape serves both engines). The narrowing is sound
+    // WITHOUT a re-check here for the same reason `SdkEngineDeps.effort`
+    // needs none: the server's shared parameter validator has already
+    // checked the value against the capability table's `acceptedValues`
+    // before the command was written. `null` is preserved, not widened away
+    // -- it is the value that CLEARS the flag layer below.
+    const effortLevel = params.reasoningEffort as EffortLevel | null;
+    this.deps.model = params.model;
+    this.deps.effort = effortLevel ?? undefined;
+    if (this.dead) {
+      // No live session to write to. The durable value is already persisted
+      // server-side and is read at the next activation, so this is "not
+      // live", never "not saved".
+      this.deps.emit({ v: 1, type: 'model-params-applied', applied: false });
+      return;
+    }
+    try {
+      await this.query.setModel(params.model);
+      // `null`, NOT `undefined`: the SDK documents that `undefined` is
+      // dropped by JSON serialization and has no effect, while `null`
+      // clears the key from the flag layer and falls back to
+      // lower-precedence sources. Translating "no override" to `undefined`
+      // here would be a silent no-op that leaves a previously-set effort
+      // in place.
+      await this.query.applyFlagSettings({ effortLevel });
+      this.deps.emit({ v: 1, type: 'model-params-applied', applied: true });
+    } catch (err: unknown) {
+      // A HALF-LANDED change reports `applied: false` here: `setModel`
+      // above may have succeeded and only `applyFlagSettings` thrown, in
+      // which case the live session now carries the new model but the old
+      // effort. That is honest at this event's granularity, which is the
+      // whole triple and not a per-parameter report -- the triple did not
+      // land. It is also not a state worth unwinding: the persisted row
+      // already holds the requested values, so the next activation
+      // composes all of them and converges. Reporting `true` because one
+      // half took would be the misleading answer.
+      console.warn(
+        `[sdk-engine] failed to apply model=${params.model} effortLevel=${String(effortLevel)} ` +
+          `to the live session; the persisted values take effect at the next activation: ${errorMessage(err)}`,
+      );
+      this.deps.emit({ v: 1, type: 'model-params-applied', applied: false });
+    }
   }
 
   cancel(): void {

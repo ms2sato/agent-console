@@ -1073,6 +1073,67 @@ describe('WorkerLifecycleManager', () => {
       ).rejects.toThrow(/contextWindowTokens/);
     });
 
+    // ---- N2: the shared validator's trim, on the MCP path ----
+    //
+    // MCP's delegate_to_worktree reaches createWorker through a looser Zod
+    // schema (z.string().optional(), no .min(1)/trim), so these values arrive
+    // exactly as the caller typed them. The REST/WS routes cannot reproduce
+    // this -- their valibot schemas trim at the wire -- which is why the pin
+    // lives at this layer rather than at the route.
+
+    it('persists a padded reasoningEffort TRIMMED when it arrives untrimmed (the MCP path)', async () => {
+      // Reach measured 2026-09-04: deleting the `.trim()` from the
+      // reasoningEffort branch of validateEmbeddedAgentParameterOverride
+      // fails this test with
+      //   Expected: "high"  Received: " high "
+      // and fails no other test in this file. Deleting the model branch's
+      // `.trim()` instead fails only the model test below. The two are
+      // independent.
+      const session = createTestSession();
+      sessions.set(session.id, session);
+
+      const worker = await lifecycleManager.createWorker(session.id, {
+        type: 'embedded-agent',
+        embeddedAgentId: EMBEDDED_AGENT_DEF.id,
+        reasoningEffort: ' high ',
+      });
+
+      const internal = session.workers.get(worker!.id) as InternalEmbeddedAgentWorker;
+      expect(internal.reasoningEffort).toBe('high');
+    });
+
+    it('persists a padded model TRIMMED when it arrives untrimmed (the MCP path)', async () => {
+      const session = createTestSession();
+      sessions.set(session.id, session);
+
+      const worker = await lifecycleManager.createWorker(session.id, {
+        type: 'embedded-agent',
+        embeddedAgentId: EMBEDDED_AGENT_DEF.id,
+        model: '  qwen3:14b\n',
+        contextWindowTokens: 32000,
+      });
+
+      const internal = session.workers.get(worker!.id) as InternalEmbeddedAgentWorker;
+      expect(internal.model).toBe('qwen3:14b');
+    });
+
+    it('ACCEPTS a padded value against a closed accepted-values list, because the trim runs first', async () => {
+      // The sharpest form of the N2 polarity: without the trim this call
+      // REJECTS (" high " is not a member of EFFORT_LEVELS), so the test
+      // moves from a thrown ValidationError to a persisted 'high'.
+      const session = createTestSession();
+      sessions.set(session.id, session);
+
+      const worker = await lifecycleManager.createWorker(session.id, {
+        type: 'embedded-agent',
+        embeddedAgentId: EMBEDDED_AGENT_DEF_SDK.id,
+        reasoningEffort: ' high ',
+      });
+
+      const internal = session.workers.get(worker!.id) as InternalEmbeddedAgentWorker;
+      expect(internal.reasoningEffort).toBe('high');
+    });
+
     it('still succeeds when embeddedAgentId is set alone (no model/reasoningEffort/contextWindowTokens) -- regression guard', async () => {
       const session = createTestSession();
       sessions.set(session.id, session);

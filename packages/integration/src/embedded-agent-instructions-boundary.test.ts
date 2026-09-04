@@ -240,6 +240,7 @@ describe('Subprocess system-prompt composition: .claude/rules layer reaches both
     async runTurn(): Promise<void> {}
     cancel(): void {}
     setAutoCompaction(): void {}
+    setModelParams(): void {}
   }
 
   function makeIo(lines: string[]): LoopIO {
@@ -401,6 +402,7 @@ describe('Subprocess tool-call composition: scoped .claude/rules activation reac
     async runTurn(): Promise<void> {}
     cancel(): void {}
     setAutoCompaction(): void {}
+    setModelParams(): void {}
   }
 
   interface Captured {

@@ -38,6 +38,7 @@
     "check:embedded-agent-image-attachments": "bun scripts/smoke/check-embedded-agent-image-attachments.ts",
     "check:sdk-instruction-loading": "bun scripts/smoke/probe-sdk-instruction-loading.ts",
     "check:sdk-post-tool-use-context": "bun scripts/smoke/probe-sdk-post-tool-use-context.ts",
+    "check:sdk-effort-live-apply": "bun scripts/smoke/probe-sdk-effort-live-apply.ts",
     "check:instruction-loader-parity-e2e": "bun scripts/smoke/check-instruction-loader-parity-e2e.ts",
     "hooks:install": "bun scripts/install-hooks.mjs",
     "preinstall": "bun scripts/check-bun-version.mjs",

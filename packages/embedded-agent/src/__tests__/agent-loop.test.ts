@@ -1325,3 +1325,113 @@ describe('AgentLoop — empty provider callId synthesis', () => {
     expect(everyToolCallAnswered(firstTurnConversation)).toBe(true);
   });
 });
+
+/**
+ * agent-surface.md Phase 3: `AgentLoop.setModelParams` — the mid-run model /
+ * reasoning-effort / context-window change.
+ *
+ * The claim this block exists to pin is "no later than the next turn, with
+ * margin": on this engine the values are read when each provider request is
+ * composed and at each compaction boundary, so a change lands on the next
+ * ITERATION of a turn already running, not merely on the next turn. The
+ * mid-turn test drives exactly that — the change is made from inside a tool
+ * call, between two iterations of one turn — because a between-turns test
+ * would pass under an implementation that only applied at a turn boundary.
+ *
+ * Measured reach (each mutation applied alone to `setModelParams`, whole file
+ * re-run):
+ * - dropping `this.deps.model = ...` -> the mid-turn test fails (request 2
+ *   still carries the old model).
+ * - dropping `this.deps.reasoningEffort = ...` -> the mid-turn test fails on
+ *   the new effort, and the clear test fails on the key still being present.
+ * - storing `params.reasoningEffort` as-is instead of `?? undefined` -> the
+ *   clear test fails: `reasoningEffort: null` reaches the request as a
+ *   present key, which the adapter would serialize as `"reasoning_effort":
+ *   null` rather than omitting it.
+ * - dropping `this.deps.compaction.contextWindowTokens = ...` -> the window
+ *   test fails (the second turn does not compact).
+ * - dropping the emit -> the event test fails.
+ */
+describe('AgentLoop — setModelParams (agent-surface.md Phase 3)', () => {
+  /** Scripted response whose `done` carries an exact provider usage reading,
+   * so the auto-compaction ratio's numerator is pinned and the WINDOW is the
+   * only variable across the two turns below. */
+  const textResponseWithUsage = (text: string, promptTokens: number): ScriptedResponse => ({
+    kind: 'events',
+    events: [
+      { type: 'text-delta', text },
+      {
+        type: 'done',
+        finishReason: 'stop',
+        usage: { promptTokens, completionTokens: 1, totalTokens: promptTokens + 1 },
+      },
+    ],
+  });
+
+  it('applies MID-TURN: a change made between two tool iterations reaches the very next provider request of the SAME turn', async () => {
+    const loopRef: { current: AgentLoop | null } = { current: null };
+    const executor = new StubExecutor({ ok: true, result: 'ok' }, () => {
+      loopRef.current?.setModelParams({
+        model: 'model-B',
+        reasoningEffort: 'high',
+        contextWindowTokens: 120000,
+      });
+    });
+    const h = makeLoop([toolCallResponse('c1', 'do_thing', '{}'), textResponse('done')], { executor });
+    loopRef.current = h.loop;
+
+    await h.loop.runTurn('t1', 'hello');
+
+    // Two iterations, one turn: the tool call, then the follow-up.
+    expect(h.adapter.capturedRequests).toHaveLength(2);
+    expect(h.adapter.capturedRequests[0].model).toBe('m');
+    expect('reasoningEffort' in h.adapter.capturedRequests[0]).toBe(false);
+    expect(h.adapter.capturedRequests[1].model).toBe('model-B');
+    expect(h.adapter.capturedRequests[1].reasoningEffort).toBe('high');
+  });
+
+  it('clears an effort override with null: the next request omits the reasoningEffort KEY, it does not carry an undefined value', async () => {
+    const h = makeLoop([textResponse('one'), textResponse('two')], { reasoningEffort: 'high' });
+
+    await h.loop.runTurn('t1', 'hello');
+    h.loop.setModelParams({ model: 'm', reasoningEffort: null, contextWindowTokens: null });
+    await h.loop.runTurn('t2', 'again');
+
+    expect(h.adapter.capturedRequests[0].reasoningEffort).toBe('high');
+    // Key-absence, not merely an `undefined` value: `openai-chat-adapter.ts`
+    // spreads the key in when and only when it is `!== undefined`, and its own
+    // sibling test pins the serialized body against the string
+    // `reasoning_effort`. A `.toBeUndefined()` check here would pass for a
+    // present-but-undefined key too, which is the weaker guarantee.
+    expect('reasoningEffort' in h.adapter.capturedRequests[1]).toBe(false);
+  });
+
+  it('applies a new context window to the NEXT auto-compaction boundary check', async () => {
+    // 900 prompt tokens both turns (scripted, so the numerator never moves).
+    // Turn 1: 900/100000 = 0.009, far below the 0.85 default. Turn 2, after
+    // the window shrinks: 900/1000 = 0.9, above it.
+    const h = makeLoop(
+      [textResponseWithUsage('one', 900), textResponseWithUsage('two', 900), textResponse('SUMMARY')],
+      { compaction: { auto: true, contextWindowTokens: 100000 } },
+    );
+
+    await h.loop.runTurn('t1', 'hello');
+    expect(h.events.find((e) => e.type === 'context-compacted')).toBeUndefined();
+
+    h.loop.setModelParams({ model: 'm', reasoningEffort: null, contextWindowTokens: 1000 });
+    await h.loop.runTurn('t2', 'again');
+
+    expect(h.events.find((e) => e.type === 'context-compacted')).toMatchObject({
+      source: 'auto',
+      summary: 'SUMMARY',
+    });
+  });
+
+  it('reports the change as applied: this engine replaces fields that every consumer re-reads, so it cannot fail', () => {
+    const h = makeLoop([textResponse('hi')]);
+
+    h.loop.setModelParams({ model: 'model-B', reasoningEffort: 'low', contextWindowTokens: 4096 });
+
+    expect(h.events).toEqual([{ v: 1, type: 'model-params-applied', applied: true }]);
+  });
+});

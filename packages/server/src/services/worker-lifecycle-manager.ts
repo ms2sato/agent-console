@@ -41,6 +41,10 @@ import { CLAUDE_CODE_AGENT_ID } from './agent-manager.js';
 import type { AgentManager } from './agent-manager.js';
 import type { EmbeddedAgentManager } from './embedded-agent-manager.js';
 import { ValidationError } from '../lib/errors.js';
+import {
+  validateEmbeddedAgentParameterOverride,
+  type EmbeddedAgentParameterOverrideCreateInput,
+} from './embedded-agent-model-params.js';
 import { resolveStartupIntent, type StartupIntentPreference } from './startup-intent.js';
 import type { NotificationManager } from './notifications/notification-manager.js';
 import type { InterSessionMessageService } from './inter-session-message-service.js';
@@ -332,6 +336,7 @@ export class WorkerLifecycleManager {
       //
       // Scoped to fire ONLY when a model/reasoningEffort/contextWindowTokens
       // param is actually present, mirroring the terminal branch's scoping.
+      let overrides: EmbeddedAgentParameterOverrideCreateInput = {};
       if (
         request.model !== undefined ||
         request.reasoningEffort !== undefined ||
@@ -347,58 +352,28 @@ export class WorkerLifecycleManager {
         // already knows the kind statically (it IS the embedded-agent
         // branch), so there is no kind to dispatch on, and the dispatch
         // entry's boolean-only AgentParameterCapabilitiesByKind is
-        // insufficient here anyway -- validation below needs the full row
-        // (acceptedValues domain check, reason strings for the error
-        // messages), not just capable/incapable booleans.
+        // insufficient here anyway -- the shared validator below needs the
+        // full row (acceptedValues domain check, reason strings for the
+        // error messages), not just capable/incapable booleans.
         const definition = embeddedAgentDefinition!;
         const getEmbeddedCapabilities =
           this.deps.getEmbeddedAgentParameterCapabilitiesImpl ??
           ((engine: 'openai-api' | 'claude-sdk') => EMBEDDED_AGENT_ENGINE_PARAMETER_CAPABILITIES[engine]);
-        const capabilities = getEmbeddedCapabilities(definition.engine);
 
-        if (request.model !== undefined) {
-          // Mirror the valibot wire schemas' v.trim() + v.minLength(1, 'model
-          // must not be empty') contract (packages/shared/src/schemas/worker.ts).
-          // Unlike the REST/WS routes, MCP's delegate_to_worktree validates
-          // `model` via a looser Zod schema (z.string().optional(), no
-          // .min(1)/trim), so an empty/whitespace-only value would otherwise
-          // reach this choke point unrejected -- and would also satisfy the
-          // contextWindowTokens-requires-model check below despite being
-          // semantically absent (agent-surface.md Ruling 4 / 4d).
-          if (request.model.trim().length === 0) {
-            throw new ValidationError('model must not be empty');
-          }
-          if (!capabilities.model.capable) {
-            throw new ValidationError(
-              `Embedded agent "${definition.name}" (engine: ${definition.engine}) does not support the "model" parameter -- ${capabilities.model.reason}`,
-            );
-          }
-        }
-        if (request.reasoningEffort !== undefined) {
-          // Same empty/whitespace gap as `model` above, for the same reason
-          // (MCP's looser Zod schema).
-          if (request.reasoningEffort.trim().length === 0) {
-            throw new ValidationError('reasoningEffort must not be empty');
-          }
-          if (!capabilities.reasoningEffort.capable) {
-            throw new ValidationError(
-              `Embedded agent "${definition.name}" (engine: ${definition.engine}) does not support the "reasoningEffort" parameter -- ${capabilities.reasoningEffort.reason}`,
-            );
-          }
-          if (
-            capabilities.reasoningEffort.acceptedValues !== null &&
-            !capabilities.reasoningEffort.acceptedValues.includes(request.reasoningEffort)
-          ) {
-            throw new ValidationError(
-              `Embedded agent "${definition.name}" (engine: ${definition.engine}) does not accept "${request.reasoningEffort}" for "reasoningEffort" -- accepted values: ${capabilities.reasoningEffort.acceptedValues.join(', ')}`,
-            );
-          }
-        }
-        if (request.contextWindowTokens !== undefined && request.model === undefined) {
-          throw new ValidationError(
-            'contextWindowTokens requires an accompanying model override -- agent-surface.md Ruling 4: a declared window without a model change would silently apply to a model it wasn\'t declared for.',
-          );
-        }
+        // The rules themselves live in the shared writer (one writer, three
+        // callers: here, the mid-run PATCH, and the set_agent_parameters MCP
+        // tool). The resolved capability row is passed IN rather than looked
+        // up inside it, which is what keeps the DI seam above reaching the
+        // validation.
+        overrides = validateEmbeddedAgentParameterOverride(
+          definition,
+          {
+            model: request.model,
+            reasoningEffort: request.reasoningEffort,
+            contextWindowTokens: request.contextWindowTokens,
+          },
+          getEmbeddedCapabilities(definition.engine),
+        );
       }
 
       // Embedded-agent worker. The referenced definition was already resolved
@@ -413,9 +388,12 @@ export class WorkerLifecycleManager {
         // Only the session's initial embedded-agent worker (created with a
         // non-empty initialPrompt) is eligible for delivery.
         deliverInitialPromptOnActivation: !!initialPrompt?.trim(),
-        model: request.model,
-        reasoningEffort: request.reasoningEffort,
-        contextWindowTokens: request.contextWindowTokens,
+        // The NORMALISED (trimmed) values from the shared validator, not the
+        // raw request -- MCP's delegate_to_worktree reaches this path through
+        // a looser Zod schema that does not trim.
+        model: overrides.model,
+        reasoningEffort: overrides.reasoningEffort,
+        contextWindowTokens: overrides.contextWindowTokens,
       });
     } else {
       // git-diff worker (async initialization for base commit calculation).

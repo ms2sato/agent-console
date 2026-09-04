@@ -5117,6 +5117,47 @@ describe('MCP Server Tools', () => {
   });
 
   // ===========================================================================
+  // set_agent_parameters: registration in this createMcpApp wiring
+  // (agent-surface.md Phase 3)
+  //
+  // Full behavior coverage (the own-worker guard, the tokenless refusal, the
+  // terminal-caller classification, Ruling 4 at the wire) lives in the
+  // dedicated __tests__/set-agent-parameters.test.ts, mirroring the artifact
+  // and bookmark tools' own splits. This is only a wiring check.
+  // ===========================================================================
+
+  describe('set_agent_parameters: registration (mcp-server.ts wiring)', () => {
+    it('is registered by createMcpApp with the five documented parameters', async () => {
+      const listRes = await app.request('/mcp', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json, text/event-stream',
+          'Mcp-Session-Id': mcpSessionId,
+        },
+        body: JSON.stringify({ jsonrpc: '2.0', method: 'tools/list', id: nextId++ }),
+      });
+      expect(listRes.status).toBe(200);
+
+      const listBody = (await listRes.json()) as {
+        result?: {
+          tools?: Array<{ name: string; inputSchema?: { properties?: Record<string, unknown> } }>;
+        };
+      };
+      const tool = listBody.result?.tools?.find((t) => t.name === 'set_agent_parameters');
+
+      expect(tool).toBeDefined();
+      expect(Object.keys(tool?.inputSchema?.properties ?? {}).sort()).toEqual([
+        'contextWindowTokens',
+        'model',
+        'reasoningEffort',
+        'sessionId',
+        'workerId',
+      ]);
+    });
+  });
+
+  // ===========================================================================
   // delete_html_artifact: registration in this createMcpApp wiring (Issue #1371)
   //
   // Full behavior coverage (ownership resolution, authz, delete semantics)

@@ -384,6 +384,40 @@ export type EmbeddedAgentCommand =
    */
   | { v: 1; type: 'set-auto-compaction'; enabled: boolean }
   /**
+   * agent-surface.md Phase 3: the worker's model / reasoning-effort /
+   * context-window override was changed while the subprocess was running.
+   * Sent so the change applies without waiting for the next activation,
+   * and -- like `set-auto-compaction` above -- NOT gated on `turnActive`:
+   * a durable configuration write must not be silently dropped because a
+   * turn happened to be in flight, and each engine decides for itself when
+   * the new values take hold.
+   *
+   * FULL STATE, never a delta. The server always sends the whole RESOLVED
+   * effective triple, even for a one-field change, so the subprocess never
+   * merges partial state and never has to know the precedence rules that
+   * produced these values. Not persisted (no command is) and idempotent --
+   * re-sending the current triple is a no-op.
+   *
+   * `model` is a required non-empty string (an effective model always
+   * exists at the point the server sends this). `reasoningEffort` and
+   * `contextWindowTokens` are nullable-but-REQUIRED: `null` means "no
+   * override in effect", which is a value the subprocess must be able to
+   * apply, whereas an absent key would be indistinguishable from "leave it
+   * alone" and would reintroduce delta semantics.
+   *
+   * `reasoningEffort` is `string | null` here rather than the `claude-sdk`
+   * init arm's `EffortLevel` picklist: ONE command shape serves both
+   * engines, and the closed domain is enforced upstream by the shared
+   * parameter validator before a value ever reaches this command.
+   */
+  | {
+      v: 1;
+      type: 'set-model-params';
+      model: string;
+      reasoningEffort: string | null;
+      contextWindowTokens: number | null;
+    }
+  /**
    * Slash commands, `console`-handled arm (#1572): a manual `/compact`
    * intercepted by the server (see `EMBEDDED_AGENT_SLASH_COMMANDS` in
    * `embedded-agent-slash-commands.ts`) rather than forwarded to the engine
@@ -640,7 +674,32 @@ export type EmbeddedAgentEvent =
       requestedSdkSessionId: string;
       /** See {@link SdkResumeFailureReason}. */
       reason: SdkResumeFailureReason;
-    };
+    }
+  /**
+   * agent-surface.md Phase 3: the engine's report on a `set-model-params`
+   * command -- whether it could apply the new triple to the LIVE session.
+   *
+   * BOTH parameters apply live on BOTH engines, so no caller should expect a
+   * restart. On `claude-sdk` the model goes through `Query.setModel` and the
+   * effort through `Query.applyFlagSettings({ effortLevel })`, with `null`
+   * for "no override" -- measured against the installed SDK, including that
+   * clearing falls back to the SDK's own default rather than to a stale
+   * query-time value, which is what a restart-without-override would have
+   * produced anyway.
+   *
+   * `applied: true` is therefore the ordinary case on every path. `applied:
+   * false` remains reachable and is deliberately a plain boolean with NO
+   * accompanying reason: it reports a genuine engine-side refusal (a
+   * `setModel` or `applyFlagSettings` call that threw), which is an honest
+   * failure with no named cause to classify. There is no uninhabited
+   * picklist here and no free-form `reason: string` standing in for one.
+   *
+   * `applied: false` is NEVER a silent no-op: the persisted `workers` row
+   * was written before this command was sent and stays the truth regardless,
+   * so a later activation reads the requested values from it. The event says
+   * "not live", never "not saved".
+   */
+  | { v: 1; type: 'model-params-applied'; applied: boolean };
 
 /**
  * Events the SERVER (not the loop) appends into the persisted stream so the

@@ -24,7 +24,7 @@ import {
   EmbeddedMessageDeliveryError,
   GENERIC_EMBEDDED_ACTIVATION_FAILURE_MESSAGE,
 } from '../services/embedded-agent-worker-service.js';
-import type { WorkerMessage, EmbeddedAgentAttachment } from '@agent-console/shared';
+import type { Worker, WorkerMessage, EmbeddedAgentAttachment } from '@agent-console/shared';
 import type { StartupIntentPreference } from '../services/startup-intent.js';
 
 const logger = createLogger('api:workers');
@@ -394,18 +394,39 @@ const workers = new Hono<AppBindings>()
     async (c) => {
       const sessionId = c.req.param('sessionId');
       const workerId = c.req.param('workerId');
-      const { autoCompaction } = c.req.valid('json');
+      // Rest-destructured rather than picked field by field, so KEY PRESENCE
+      // survives into `params`: the three override fields distinguish absent
+      // ("leave alone") from `null` ("clear"), and rebuilding the object
+      // would flatten one into the other.
+      const { autoCompaction, ...params } = c.req.valid('json');
 
       const { sessionManager } = c.get('appContext');
       if (!sessionManager.getSession(sessionId)) {
         throw new NotFoundError('Session');
       }
 
-      const worker = await sessionManager.setEmbeddedAgentAutoCompaction(
-        sessionId,
-        workerId,
-        autoCompaction,
-      );
+      // Every key is optional since the schema was widened for the mid-run
+      // parameter override (agent-surface.md Phase 3), so each of the two
+      // writes below runs only when the caller actually asked for it. The
+      // schema's own at-least-one-key check is what rules out a body that
+      // asks for neither.
+      let worker: Worker | null = null;
+      if (autoCompaction !== undefined) {
+        worker = await sessionManager.setEmbeddedAgentAutoCompaction(
+          sessionId,
+          workerId,
+          autoCompaction,
+        );
+      }
+      if (Object.keys(params).length > 0) {
+        // Deliberately a SECOND call rather than one merged write: the two
+        // are different concerns with different validation, and the toggle's
+        // write path predates this one. A body carrying both is two durable
+        // writes and two broadcasts, which is correct -- each is independently
+        // meaningful -- not an atomicity gap the caller can observe as a
+        // half-applied parameter set.
+        worker = await sessionManager.setEmbeddedAgentParameters(sessionId, workerId, params);
+      }
       if (!worker) {
         // The session exists (checked above), so a null here means either no
         // such worker or a worker of the wrong type. Both are "there is

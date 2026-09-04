@@ -116,13 +116,98 @@ export const CreateWorkerRequestSchema = v.union([
 /**
  * Schema for updating an embedded-agent worker's own settings.
  *
- * Only `autoCompaction` today. A PATCH rather than a WebSocket command
- * because this is durable per-worker configuration, not a per-turn signal --
- * REST is where this codebase puts durable writes.
+ * A PATCH rather than a WebSocket command because this is durable per-worker
+ * configuration, not a per-turn signal -- REST is where this codebase puts
+ * durable writes. The compaction toggle was the first field; the mid-run
+ * model / reasoning-effort / context-window override (agent-surface.md Phase
+ * 3) reuses the SAME write path rather than adding a second one.
+ *
+ * Every key is OPTIONAL, and `v.optional(v.nullable(...))` is deliberate on
+ * the three override fields: ABSENT and `null` are different instructions.
+ * Absent = leave this override exactly as it is. `null` = CLEAR the
+ * override, so the worker goes back to live-reading the definition's own
+ * default (agent-surface.md Ruling 3). Collapsing the two -- e.g. by using
+ * `v.optional(v.string())` -- would make "clear the model" unexpressible.
+ *
+ * No `v.trim()` here, unlike the creation schemas above: value normalisation
+ * and validation for these three fields is the shared
+ * `validateEmbeddedAgentParameterOverride` writer's job (one writer, three
+ * callers: worker creation, this PATCH, and the MCP tool). Trimming at the
+ * wire would make that writer's own trim unmeasurable.
  */
-export const UpdateEmbeddedAgentWorkerRequestSchema = v.strictObject({
-  autoCompaction: v.boolean(),
-});
+export const UpdateEmbeddedAgentWorkerRequestSchema = v.pipe(
+  v.strictObject({
+    autoCompaction: v.optional(v.boolean()),
+    model: v.optional(v.nullable(v.string())),
+    reasoningEffort: v.optional(v.nullable(v.string())),
+    /**
+     * A non-null window must be a positive integer, matching the declared
+     * window on the creation schemas above and on the `init` command's
+     * `compaction.contextWindowTokens`.
+     */
+    contextWindowTokens: v.optional(v.nullable(v.pipe(v.number(), v.integer(), v.minValue(1)))),
+  }),
+  /**
+   * An empty body is a caller bug, not "no change": this route exists to set
+   * something, and returning 200 for a request that changed nothing would
+   * hide it.
+   */
+  v.check(
+    (body) => Object.keys(body).length > 0,
+    'at least one of autoCompaction, model, reasoningEffort, contextWindowTokens is required',
+  ),
+  /**
+   * agent-surface.md Ruling 4 at the wire: `contextWindowTokens` is a
+   * property OF a model override, never an independent setting.
+   *
+   * The whole of Ruling 4 collapses to one equivalence --
+   * `contextWindowTokens` present IFF (`model` present AND non-null) -- and
+   * the three sentences the ruling states are exactly its three failing
+   * cases, which a reader can check rather than re-derive:
+   *
+   *   1. `model` present and non-null, `contextWindowTokens` absent
+   *      -> right side true, left side false -> REJECT. Setting a model must
+   *      declare a window, or declare `null` for "no window, compaction
+   *      inert".
+   *   2. `model` present and null, `contextWindowTokens` present
+   *      -> right side false, left side true -> REJECT. Clearing the model
+   *      clears the window by construction, so a window alongside it is a
+   *      contradiction.
+   *   3. `contextWindowTokens` present, `model` absent entirely
+   *      -> right side false, left side true -> REJECT. Same coupling: a
+   *      window declared for a model this request does not set would apply
+   *      to whatever model happens to be in effect.
+   *
+   * Three distinct messages rather than one, because the three are different
+   * caller mistakes.
+   */
+  v.rawCheck(({ dataset, addIssue }) => {
+    if (!dataset.typed) return;
+    const body = dataset.value;
+    const modelPresent = 'model' in body;
+    const windowPresent = 'contextWindowTokens' in body;
+
+    if (modelPresent && body.model !== null && !windowPresent) {
+      addIssue({
+        message:
+          'setting a model requires contextWindowTokens; pass null to declare no window',
+      });
+      return;
+    }
+    if (modelPresent && body.model === null && windowPresent) {
+      addIssue({
+        message: 'clearing the model clears the window; omit contextWindowTokens',
+      });
+      return;
+    }
+    if (!modelPresent && windowPresent) {
+      addIssue({
+        message:
+          'contextWindowTokens is a property of a model override; send it together with model',
+      });
+    }
+  }),
+);
 
 /**
  * Schema for restarting a PTY agent worker as another PTY agent worker

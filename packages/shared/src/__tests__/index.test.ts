@@ -121,6 +121,7 @@ describe('shared index exports', () => {
       'addWorkerToSession',
       'manageDefinitions',
       'restart',
+      'setWorkerParameters',
     ]);
   });
 

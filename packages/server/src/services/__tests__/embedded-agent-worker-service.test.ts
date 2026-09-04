@@ -23,6 +23,7 @@ import {
   isEvictableEngine,
   resolveConsoleSlashCommandOverride,
   CONSOLE_SLASH_COMMAND_HANDLERS,
+  KNOWN_EVENT_TYPES,
 } from '../embedded-agent-worker-service.js';
 import {
   ProviderKeyStoreError,
@@ -1363,6 +1364,78 @@ describe('EmbeddedAgentWorkerService stdout stream', () => {
     await waitFor(() => h.fake.killSignals.length > 0);
     expect(h.fake.killSignals).toContain(9);
   });
+
+  /**
+   * agent-surface.md Phase 3. This is the seam that was open: the event was
+   * added to the shared union and emitted by both engines, but never to
+   * `KNOWN_EVENT_TYPES`, so the forward-compat gate dropped every occurrence
+   * before schema-parse and before persistence. Every other test for this
+   * event lives on the EMITTING side, in the schema, or in the client store --
+   * none of them crosses the server's ingestion gate, which is exactly why
+   * four waves of work did not notice.
+   */
+  it('appends a model-params-applied event: the forward-compat gate recognizes it', async () => {
+    const h = setup();
+    await h.service.activate(h.sessionId, h.workerId);
+    h.bufferOutput.mockClear();
+
+    // `applied: false` deliberately -- a refusal is the one thing this event
+    // reports that no other surface carries, so dropping it made a refused
+    // live apply indistinguishable from a successful one.
+    const line = '{"v":1,"type":"model-params-applied","applied":false}';
+    h.fake.pushStdout(`${line}\n`);
+    await waitFor(() => appendedLines(h.bufferOutput).includes(line));
+
+    expect(appendedLines(h.bufferOutput)).toContain(line);
+    // Recognized-and-shape-valid: no strike, so nothing killed the child.
+    expect(h.fake.killSignals).toEqual([]);
+  });
+});
+
+/**
+ * `KNOWN_EVENT_TYPES` is DERIVED from `EmbeddedAgentEventSchema`'s union
+ * options, so it cannot drift from the shared contract -- there is no second
+ * list to fall behind, and no equality left to assert.
+ *
+ * What replaces drift is VACUITY. The derivation walks three valibot fields;
+ * a change to any of them (a union restructured behind a wrapper, a `type`
+ * discriminant renamed, an options array that resolves empty at module load)
+ * would produce an empty or wrong set, and the gate would then drop EVERY
+ * event -- silently, because dropping is what the forward-compat arm is for.
+ * That is what this block pins, and it is the only thing worth pinning here.
+ *
+ * Reach measurement, two mutations, both run (workflow.md: a check's existence
+ * is not its detection power). Each report is the FIRST assertion to fail --
+ * the runner stops there rather than evaluating the rest.
+ *
+ * Reading the wrong union (`EmbeddedAgentServerEventSchema.options` in place
+ * of `EmbeddedAgentEventSchema.options`):
+ *
+ *   expect(received).toContain(expected)
+ *   Expected to contain: "model-params-applied"
+ *   Received: [ "user-message", "turn-interrupted", "exited",
+ *               "restore-failure-boundary", "restore-failure-declaration" ]
+ *
+ * Deriving nothing (`new Set<string>()`):
+ *
+ *   expect(received).toBeGreaterThan(expected)
+ *   Expected: > 0
+ *   Received: 0
+ *
+ * The sibling ingestion test in the stdout-stream block fails under both, by
+ * timing out on an append that never happens.
+ */
+describe('KNOWN_EVENT_TYPES derivation', () => {
+  it('derives a non-empty set from the SUBPROCESS union, not the server-authored one', () => {
+    const derived = [...KNOWN_EVENT_TYPES];
+
+    expect(derived.length).toBeGreaterThan(0);
+    // By name, both directions: a member only the subprocess union has, and a
+    // member only the server-authored union has. Together they identify WHICH
+    // union was read, which a length check alone cannot.
+    expect(derived).toContain('model-params-applied');
+    expect(derived).not.toContain('exited');
+  });
 });
 
 describe('EmbeddedAgentWorkerService initial-prompt delivery (Issue #1068)', () => {
@@ -2688,6 +2761,83 @@ describe('EmbeddedAgentWorkerService.forwardAutoCompaction', () => {
     // persisted the durable value and must not surface this as an error.
     const h = setup();
     expect(h.service.forwardAutoCompaction(h.workerId, false)).toBe(false);
+  });
+});
+
+describe('EmbeddedAgentWorkerService.applyModelParams', () => {
+  it('forwards a set-model-params command carrying the whole triple to a running subprocess', async () => {
+    const h = setup();
+    await h.service.activate(h.sessionId, h.workerId);
+    const before = h.fake.stdinWrites.length;
+
+    expect(
+      h.service.applyModelParams(h.workerId, {
+        model: 'qwen3:72b',
+        reasoningEffort: 'high',
+        contextWindowTokens: 32_000,
+      }),
+    ).toBe(true);
+
+    expect(JSON.parse(h.fake.stdinWrites[before])).toEqual({
+      v: 1,
+      type: 'set-model-params',
+      model: 'qwen3:72b',
+      reasoningEffort: 'high',
+      contextWindowTokens: 32_000,
+    });
+  });
+
+  it('carries nulls as nulls, never omitting a key (full state, never a delta)', async () => {
+    // An absent key would be indistinguishable from "leave it alone" on the
+    // subprocess side, which is exactly the delta semantics this command
+    // exists to avoid.
+    const h = setup();
+    await h.service.activate(h.sessionId, h.workerId);
+    const before = h.fake.stdinWrites.length;
+
+    h.service.applyModelParams(h.workerId, {
+      model: 'qwen3:32b',
+      reasoningEffort: null,
+      contextWindowTokens: null,
+    });
+
+    const command = JSON.parse(h.fake.stdinWrites[before]);
+    expect('reasoningEffort' in command).toBe(true);
+    expect('contextWindowTokens' in command).toBe(true);
+    expect(command.reasoningEffort).toBeNull();
+    expect(command.contextWindowTokens).toBeNull();
+  });
+
+  it('forwards even while a turn is in flight (not gated on turnActive)', async () => {
+    // Same reasoning as forwardAutoCompaction above: this is a durable
+    // configuration write that has already been persisted, and gating it
+    // would silently drop the change for the length of a long turn.
+    const h = setup();
+    await h.service.activate(h.sessionId, h.workerId);
+    await h.service.sendUserMessage(h.sessionId, h.workerId, 'a long turn');
+    const before = h.fake.stdinWrites.length;
+
+    expect(
+      h.service.applyModelParams(h.workerId, {
+        model: 'qwen3:72b',
+        reasoningEffort: null,
+        contextWindowTokens: null,
+      }),
+    ).toBe(true);
+    expect(JSON.parse(h.fake.stdinWrites[before]).type).toBe('set-model-params');
+  });
+
+  it('returns false, without throwing, when there is no running subprocess', async () => {
+    // The ordinary pre-activation / post-restart case. The caller has already
+    // persisted the durable values and must not surface this as an error.
+    const h = setup();
+    expect(
+      h.service.applyModelParams(h.workerId, {
+        model: 'qwen3:32b',
+        reasoningEffort: null,
+        contextWindowTokens: null,
+      }),
+    ).toBe(false);
   });
 });
 

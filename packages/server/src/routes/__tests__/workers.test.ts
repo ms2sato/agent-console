@@ -1303,6 +1303,104 @@ describe('Workers API', () => {
       const res = await patch(session.id, worker.id, { autoCompaction: true, leaked: 'x' });
       expect(res.status).toBe(400);
     });
+
+    // ---- The mid-run parameter branch (agent-surface.md Phase 3) ----
+
+    it('applies a body that carries only the mid-run parameter fields, and returns the updated worker', async () => {
+      const { session, worker } = await createEmbeddedWorker();
+
+      const res = await patch(session.id, worker.id, { model: 'gpt-5', contextWindowTokens: null });
+
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as {
+        worker: { model?: string; contextWindowTokens?: number; hasParameterOverride: boolean };
+      };
+      expect(body.worker.model).toBe('gpt-5');
+      expect(body.worker.hasParameterOverride).toBe(true);
+      // Ruling 4: a model override with no declared window is indeterminate,
+      // NOT the definition's own window.
+      expect(body.worker.contextWindowTokens).toBeUndefined();
+    });
+
+    it('persists the parameter override so a subsequent read sees it', async () => {
+      const { session, worker } = await createEmbeddedWorker();
+
+      await patch(session.id, worker.id, { reasoningEffort: 'high' });
+
+      const readBack = sessionManager
+        .getSession(session.id)!
+        .workers.find((w) => w.id === worker.id)!;
+      expect(readBack.type).toBe('embedded-agent');
+      if (readBack.type === 'embedded-agent') {
+        expect(readBack.reasoningEffort).toBe('high');
+      }
+    });
+
+    it('clears an override when the field is null (absent and null are different instructions)', async () => {
+      const { session, worker } = await createEmbeddedWorker();
+      await patch(session.id, worker.id, { reasoningEffort: 'high' });
+
+      const res = await patch(session.id, worker.id, { reasoningEffort: null });
+
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as {
+        worker: { reasoningEffort: string | null; hasParameterOverride: boolean };
+      };
+      expect(body.worker.reasoningEffort).toBeNull();
+      expect(body.worker.hasParameterOverride).toBe(false);
+    });
+
+    it('applies BOTH writes when the body carries autoCompaction AND parameter fields', async () => {
+      // Guards the shape of the two guards themselves: each must gate on its
+      // own keys, not on "the body has other keys".
+      const { session, worker } = await createEmbeddedWorker();
+      const res = await patch(session.id, worker.id, {
+        autoCompaction: false,
+        reasoningEffort: 'high',
+      });
+
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as {
+        worker: { autoCompaction: boolean; reasoningEffort: string | null };
+      };
+      expect(body.worker.autoCompaction).toBe(false);
+      // The response is the worker AFTER both writes -- the parameter write
+      // runs second and its return value is what the route reports.
+      expect(body.worker.reasoningEffort).toBe('high');
+    });
+
+    it('returns 400 when the shared validator rejects the values (a ValidationError, not a 500)', async () => {
+      const { session, worker } = await createEmbeddedWorker();
+
+      const res = await patch(session.id, worker.id, { reasoningEffort: '   ' });
+
+      expect(res.status).toBe(400);
+    });
+
+    it('returns 404 for a worker of the wrong type on the parameter branch too', async () => {
+      const session = await sessionManager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+      const terminal = await sessionManager.createWorker(session.id, { type: 'terminal' });
+
+      const res = await patch(session.id, terminal!.id, { reasoningEffort: 'high' });
+
+      expect(res.status).toBe(404);
+    });
+
+    it('rejects contextWindowTokens without a model at the wire (Ruling 4, schema-level)', async () => {
+      const { session, worker } = await createEmbeddedWorker();
+      const res = await patch(session.id, worker.id, { contextWindowTokens: 32000 });
+      expect(res.status).toBe(400);
+    });
+
+    it('rejects a non-null model with no contextWindowTokens at the wire (Ruling 4, schema-level)', async () => {
+      const { session, worker } = await createEmbeddedWorker();
+      const res = await patch(session.id, worker.id, { model: 'gpt-5' });
+      expect(res.status).toBe(400);
+    });
   });
 
   // ===========================================================================

@@ -21,6 +21,7 @@ export const AGENT_OPERATIONS = [
   'addWorkerToSession', // add an agent worker to an existing session
   'manageDefinitions', // CRUD on agent definitions
   'restart', // bulk restart of workers with a live process (agent, embedded-agent)
+  'setWorkerParameters', // change a worker's model / reasoning effort / context window mid-run
 ] as const;
 export type AgentOperation = (typeof AGENT_OPERATIONS)[number];
 

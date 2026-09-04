@@ -82,6 +82,7 @@ class NoopEngine implements Engine {
   async runTurn(): Promise<void> {}
   cancel(): void {}
   setAutoCompaction(): void {}
+  setModelParams(): void {}
   async handoff(): Promise<void> {}
 }
 
@@ -675,6 +676,7 @@ describe('runLoop — image attachment threading (#1571)', () => {
     }
     cancel(): void {}
     setAutoCompaction(): void {}
+    setModelParams(): void {}
   }
 
   it("threads a user-message command's attachments into loop.runTurn's 3rd arg (claude-sdk engine)", async () => {
@@ -1991,5 +1993,126 @@ describe('runLoop — Phase B (#1343 R4) restore-seeding of already-activated sc
       expect(toolResult.result).toContain('[rule activated: scoped.md]');
       expect(toolResult.result).toContain('SCOPED_RULE_MARKER');
     }
+  });
+});
+
+/**
+ * agent-surface.md Phase 3: the `set-model-params` command's dispatch through
+ * `runLoop` into `Engine.setModelParams`.
+ *
+ * Two properties, and the second is the one worth a test of its own:
+ *
+ * 1. The command reaches the engine at all (it must be in
+ *    `KNOWN_COMMAND_TYPES`, or the forward-compat branch swallows it as an
+ *    unknown type and nothing downstream ever runs).
+ * 2. It is NOT gated on `turnActive`. A parameter change whose whole point is
+ *    to land mid-run must not be dropped for the length of a long turn, so
+ *    the engine's fake records whether a turn was still in flight when the
+ *    call arrived rather than merely that the call happened.
+ *
+ * Measured reach (both tests): adding `if (turnActive) { ...; break; }` to
+ * main.ts's `set-model-params` arm fails the mid-turn test on
+ * `setModelParamsCalls` being empty, and removing `'set-model-params'` from
+ * `KNOWN_COMMAND_TYPES` fails both. Neither mutation is visible to any other
+ * test in this file.
+ */
+describe('runLoop — set-model-params dispatch (agent-surface.md Phase 3)', () => {
+  interface ModelParams {
+    model: string;
+    reasoningEffort: string | null;
+    contextWindowTokens: number | null;
+  }
+
+  /**
+   * An `Engine` whose `runTurn` stays pending until `setModelParams` is
+   * called. That coupling is deliberate: it makes "the command was dispatched
+   * during the turn" the only way the turn can ever end, so a `turnActive`
+   * gate cannot be mistaken for a slow-but-eventually-delivered command.
+   */
+  class TurnBlockingEngine implements Engine {
+    readonly setModelParamsCalls: Array<{ params: ModelParams; turnInFlight: boolean }> = [];
+    turnInFlight = false;
+    private releaseTurn: (() => void) | null = null;
+
+    runTurn(): Promise<void> {
+      this.turnInFlight = true;
+      return new Promise<void>((resolve) => {
+        this.releaseTurn = () => {
+          this.turnInFlight = false;
+          resolve();
+        };
+      });
+    }
+    cancel(): void {}
+    setAutoCompaction(): void {}
+    setModelParams(params: ModelParams): void {
+      this.setModelParamsCalls.push({ params, turnInFlight: this.turnInFlight });
+      this.releaseTurn?.();
+    }
+  }
+
+  const claudeSdkInitCommand = () =>
+    JSON.stringify({
+      v: 1,
+      type: 'init',
+      compaction: { auto: false },
+      engine: 'claude-sdk',
+      mcp: { baseUrl: 'http://mcp/local', token: 'tok' },
+      provider: { model: 'claude-sonnet-5' },
+      context: { sessionId: 's', workerId: 'w', cwd: '/tmp' },
+      maxToolIterations: 5,
+    });
+
+  it('dispatches the whole triple to Engine.setModelParams WHILE a turn is active (not gated on turnActive)', async () => {
+    const engine = new TurnBlockingEngine();
+    const { io } = makeIo([
+      claudeSdkInitCommand(),
+      JSON.stringify({ v: 1, type: 'user-message', id: 'u1', text: 'a long one' }),
+      JSON.stringify({
+        v: 1,
+        type: 'set-model-params',
+        model: 'claude-opus-5',
+        reasoningEffort: 'high',
+        contextWindowTokens: 120000,
+      }),
+      JSON.stringify({ v: 1, type: 'shutdown' }),
+    ]);
+    const factories = makeFactories({ createSdkEngine: () => engine });
+
+    expect(await runLoop(io, factories)).toBe(0);
+    expect(engine.setModelParamsCalls).toHaveLength(1);
+    expect(engine.setModelParamsCalls[0].params).toEqual({
+      model: 'claude-opus-5',
+      reasoningEffort: 'high',
+      contextWindowTokens: 120000,
+    });
+    // The load-bearing assertion: the turn had NOT ended when the command was
+    // dispatched.
+    expect(engine.setModelParamsCalls[0].turnInFlight).toBe(true);
+  });
+
+  it('passes the nulls through unchanged (no override): the engine, not the dispatcher, decides what null means', async () => {
+    const engine = new TurnBlockingEngine();
+    const { io } = makeIo([
+      claudeSdkInitCommand(),
+      JSON.stringify({
+        v: 1,
+        type: 'set-model-params',
+        model: 'claude-sonnet-5',
+        reasoningEffort: null,
+        contextWindowTokens: null,
+      }),
+      JSON.stringify({ v: 1, type: 'shutdown' }),
+    ]);
+    const factories = makeFactories({ createSdkEngine: () => engine });
+
+    expect(await runLoop(io, factories)).toBe(0);
+    expect(engine.setModelParamsCalls).toHaveLength(1);
+    expect(engine.setModelParamsCalls[0].params).toEqual({
+      model: 'claude-sonnet-5',
+      reasoningEffort: null,
+      contextWindowTokens: null,
+    });
+    expect(engine.setModelParamsCalls[0].turnInFlight).toBe(false);
   });
 });

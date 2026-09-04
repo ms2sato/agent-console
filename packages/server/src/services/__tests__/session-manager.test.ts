@@ -1565,6 +1565,370 @@ describe('SessionManager', () => {
     });
   });
 
+  describe('setEmbeddedAgentParameters (agent-surface.md Phase 3, mid-run model / effort / window)', () => {
+    const PARAM_DEF = {
+      id: 'param-def',
+      name: 'Stub Model',
+      engine: 'openai-api' as const,
+      isBuiltIn: false,
+      provider: { baseUrl: 'http://localhost:11434/v1', model: 'qwen3:32b' },
+      contextWindowTokens: 128_000,
+      createdBy: 'test-user-id',
+      createdAt: '2024-01-01T00:00:00.000Z',
+      updatedAt: '2024-01-01T00:00:00.000Z',
+    };
+
+    /**
+     * Mints a FRESH fake subprocess per spawn (unlike the single-subprocess
+     * fakes elsewhere in this file), because the restart pins below activate
+     * twice, and auto-resolves `exited` the moment `shutdown` is written so a
+     * deactivate resolves through the real exit path rather than the
+     * multi-second grace timeout.
+     */
+    function makeMultiSpawn() {
+      const stdinWrites: string[] = [];
+      const spawnCount = { value: 0 };
+      const events: string[] = [];
+      const fn = (() => {
+        spawnCount.value += 1;
+        let resolveExited!: (code: number) => void;
+        const exited = new Promise<number>((resolve) => {
+          resolveExited = resolve;
+        });
+        let stdoutCtrl!: ReadableStreamDefaultController<Uint8Array>;
+        let stderrCtrl!: ReadableStreamDefaultController<Uint8Array>;
+        const stdout = new ReadableStream<Uint8Array>({ start(c) { stdoutCtrl = c; } });
+        const stderr = new ReadableStream<Uint8Array>({ start(c) { stderrCtrl = c; } });
+        let exitedAlready = false;
+        const finish = () => {
+          if (exitedAlready) return;
+          exitedAlready = true;
+          resolveExited(0);
+          stdoutCtrl.close();
+          stderrCtrl.close();
+        };
+        const stdin = {
+          write: (chunk: string | Uint8Array) => {
+            const text = typeof chunk === 'string' ? chunk : new TextDecoder().decode(chunk);
+            stdinWrites.push(text);
+            events.push(`stdin:${(JSON.parse(text) as { type: string }).type}`);
+            if (text.includes('"shutdown"')) finish();
+            return 0;
+          },
+          end: () => {},
+          flush: () => 0,
+        };
+        const subprocess = { pid: 4242 + spawnCount.value, exited, stdin, stdout, stderr, kill: () => finish() };
+        return { subprocess, stdin, elevated: false };
+      }) as unknown as SpawnAsUserFn;
+      return { fn, stdinWrites, spawnCount, events };
+    }
+
+    async function setupActivated(defs?: Map<string, typeof PARAM_DEF>) {
+      const definitions = defs ?? new Map([[PARAM_DEF.id, { ...PARAM_DEF }]]);
+      const spawn = makeMultiSpawn();
+      const module = await import(`../session-manager.js?v=${++importCounter}`);
+      const manager: SessionManager = await module.SessionManager.create({
+        userMode: new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' }),
+        pathExists: mockPathExists,
+        jobQueue: testJobQueue,
+        agentManager,
+        mcpTokenRegistry: new McpTokenRegistry(),
+        embeddedAgentManager: { getEmbeddedAgent: (id: string) => definitions.get(id) },
+        repositoryLookup: defaultRepositoryLookup,
+        repositoryEnvLookup: defaultRepositoryEnvLookup,
+        spawnAsUserFn: spawn.fn,
+      });
+      const session = await manager.createSession(
+        { type: 'quick', locationPath: '/test/path', agentId: 'claude-code' },
+        { createdBy: 'test-user-id' },
+      );
+      const worker = await manager.createWorker(session.id, {
+        type: 'embedded-agent',
+        embeddedAgentId: PARAM_DEF.id,
+      });
+      return { manager, spawn, definitions, sessionId: session.id, workerId: worker!.id };
+    }
+
+    /** The persisted row for one worker, read back through the repository. */
+    async function readPersistedWorker(manager: SessionManager, sessionId: string, workerId: string) {
+      const persisted = await manager.getSessionRepository().findById(sessionId);
+      return persisted!.workers.find((w) => w.id === workerId) as PersistedWorker & {
+        model: string | null;
+        reasoningEffort: string | null;
+        contextWindowTokens: number | null;
+      };
+    }
+
+    function readPublicWorker(manager: SessionManager, sessionId: string, workerId: string) {
+      const worker = manager.getSession(sessionId)!.workers.find((w) => w.id === workerId)!;
+      if (worker.type !== 'embedded-agent') throw new Error('expected an embedded-agent worker');
+      return worker;
+    }
+
+    it('persists BEFORE forwarding to the subprocess (call-order pin, not merely "both happened")', async () => {
+      const { manager, spawn, sessionId, workerId } = await setupActivated();
+      await manager.activateEmbeddedAgentWorker(sessionId, workerId);
+
+      // Record the two events in call order. A crash between them must never
+      // leave a subprocess running values that were never written down, so
+      // the ORDER is the contract, not the pair.
+      const order: string[] = [];
+      const repository = manager.getSessionRepository();
+      const realSave = repository.save.bind(repository);
+      spyOn(repository, 'save').mockImplementation(async (session) => {
+        order.push('persist');
+        await realSave(session);
+      });
+      const before = spawn.stdinWrites.length;
+
+      await manager.setEmbeddedAgentParameters(sessionId, workerId, {
+        model: 'qwen3:72b',
+        contextWindowTokens: 32_000,
+      });
+
+      order.push(...spawn.stdinWrites
+        .slice(before)
+        .map((line) => `forward:${(JSON.parse(line) as { type: string }).type}`));
+      expect(order).toEqual(['persist', 'forward:set-model-params']);
+    });
+
+    it('forwards the RESOLVED EFFECTIVE triple, which differs from the patch when the patch clears the model', async () => {
+      // The sharpest form: the patch says `model: null` and the forwarded
+      // command says `qwen3:32b` -- a value that appears nowhere in the patch,
+      // and could only come from resolving against the definition.
+      const { manager, spawn, sessionId, workerId } = await setupActivated();
+      await manager.activateEmbeddedAgentWorker(sessionId, workerId);
+      await manager.setEmbeddedAgentParameters(sessionId, workerId, {
+        model: 'qwen3:72b',
+        contextWindowTokens: 32_000,
+      });
+      const before = spawn.stdinWrites.length;
+
+      await manager.setEmbeddedAgentParameters(sessionId, workerId, { model: null });
+
+      expect(JSON.parse(spawn.stdinWrites[before])).toEqual({
+        v: 1,
+        type: 'set-model-params',
+        model: 'qwen3:32b',
+        reasoningEffort: null,
+        // Cleared with the model, and the definition's own 128_000 is NOT
+        // what is forwarded either -- once the model override is gone the
+        // definition's window applies again, which is exactly 128_000 here.
+        contextWindowTokens: 128_000,
+      });
+    });
+
+    it('forwards a partial patch as the whole triple, filling the untouched fields from current state', async () => {
+      const { manager, spawn, sessionId, workerId } = await setupActivated();
+      await manager.activateEmbeddedAgentWorker(sessionId, workerId);
+      await manager.setEmbeddedAgentParameters(sessionId, workerId, {
+        model: 'qwen3:72b',
+        contextWindowTokens: 32_000,
+      });
+      const before = spawn.stdinWrites.length;
+
+      // Only the effort changes; model and window must still be sent.
+      await manager.setEmbeddedAgentParameters(sessionId, workerId, { reasoningEffort: 'high' });
+
+      expect(JSON.parse(spawn.stdinWrites[before])).toEqual({
+        v: 1,
+        type: 'set-model-params',
+        model: 'qwen3:72b',
+        reasoningEffort: 'high',
+        contextWindowTokens: 32_000,
+      });
+    });
+
+    it('broadcasts the session update and returns the updated public worker', async () => {
+      const { manager, sessionId, workerId } = await setupActivated();
+      const updates: Session[] = [];
+      manager.setSessionLifecycleCallbacks({ onSessionUpdated: (session) => { updates.push(session); } });
+
+      const returned = await manager.setEmbeddedAgentParameters(sessionId, workerId, {
+        reasoningEffort: 'high',
+      });
+
+      expect(returned?.type).toBe('embedded-agent');
+      if (returned?.type === 'embedded-agent') {
+        expect(returned.reasoningEffort).toBe('high');
+        expect(returned.hasParameterOverride).toBe(true);
+      }
+      const broadcastWorker = updates.at(-1)!.workers.find((w) => w.id === workerId)!;
+      expect(broadcastWorker.type).toBe('embedded-agent');
+      if (broadcastWorker.type === 'embedded-agent') {
+        expect(broadcastWorker.reasoningEffort).toBe('high');
+      }
+    });
+
+    it('succeeds with no live subprocess (the ordinary pre-activation case) -- the durable write is what matters', async () => {
+      const { manager, spawn, sessionId, workerId } = await setupActivated();
+      expect(spawn.spawnCount.value).toBe(0);
+
+      const returned = await manager.setEmbeddedAgentParameters(sessionId, workerId, {
+        reasoningEffort: 'high',
+      });
+
+      expect(returned).not.toBeNull();
+      expect((await readPersistedWorker(manager, sessionId, workerId)).reasoningEffort).toBe('high');
+    });
+
+    it('returns null for a missing session, a missing worker, and a worker of the wrong type', async () => {
+      const { manager, sessionId } = await setupActivated();
+      const terminal = await manager.createWorker(sessionId, { type: 'terminal' });
+
+      expect(await manager.setEmbeddedAgentParameters('no-such-session', 'w', { reasoningEffort: 'high' })).toBeNull();
+      expect(await manager.setEmbeddedAgentParameters(sessionId, 'no-such-worker', { reasoningEffort: 'high' })).toBeNull();
+      expect(await manager.setEmbeddedAgentParameters(sessionId, terminal!.id, { reasoningEffort: 'high' })).toBeNull();
+    });
+
+    it('propagates a ValidationError from the shared validator (a 400 at the route)', async () => {
+      const { manager, sessionId, workerId } = await setupActivated();
+
+      await expect(
+        manager.setEmbeddedAgentParameters(sessionId, workerId, { contextWindowTokens: 32_000 }),
+      ).rejects.toBeInstanceOf(ValidationError);
+    });
+
+    it('persists the NORMALISED value, not the caller\'s padded one', async () => {
+      const { manager, sessionId, workerId } = await setupActivated();
+
+      await manager.setEmbeddedAgentParameters(sessionId, workerId, { reasoningEffort: '  high  ' });
+
+      expect((await readPersistedWorker(manager, sessionId, workerId)).reasoningEffort).toBe('high');
+    });
+
+    // ---- Ruling 3 / Ruling 4 consequences ----
+
+    it('model: null restores LIVE-READ of the definition -- a definition edit after the clear is visible again', async () => {
+      // Not merely "the field is null": the point of clearing is that the
+      // worker starts tracking the definition again, which only a later
+      // definition EDIT can demonstrate.
+      const definitions = new Map([[PARAM_DEF.id, { ...PARAM_DEF }]]);
+      const { manager, sessionId, workerId } = await setupActivated(definitions);
+
+      await manager.setEmbeddedAgentParameters(sessionId, workerId, {
+        model: 'qwen3:72b',
+        contextWindowTokens: 32_000,
+      });
+      expect(readPublicWorker(manager, sessionId, workerId).model).toBe('qwen3:72b');
+
+      await manager.setEmbeddedAgentParameters(sessionId, workerId, { model: null });
+      definitions.set(PARAM_DEF.id, {
+        ...PARAM_DEF,
+        provider: { ...PARAM_DEF.provider, model: 'qwen3:110b' },
+      });
+
+      expect(readPublicWorker(manager, sessionId, workerId).model).toBe('qwen3:110b');
+    });
+
+    it('clearing the model clears the window with it, by construction (Ruling 4, server-side half)', async () => {
+      const { manager, sessionId, workerId } = await setupActivated();
+      await manager.setEmbeddedAgentParameters(sessionId, workerId, {
+        model: 'qwen3:72b',
+        contextWindowTokens: 32_000,
+      });
+
+      await manager.setEmbeddedAgentParameters(sessionId, workerId, { model: null });
+
+      const row = await readPersistedWorker(manager, sessionId, workerId);
+      expect(row.model).toBeNull();
+      expect(row.contextWindowTokens).toBeNull();
+    });
+
+    it('contextWindowTokens: null alongside a model makes the EFFECTIVE window indeterminate, not the definition\'s', async () => {
+      const { manager, sessionId, workerId } = await setupActivated();
+
+      await manager.setEmbeddedAgentParameters(sessionId, workerId, {
+        model: 'qwen3:72b',
+        contextWindowTokens: null,
+      });
+
+      // The definition declares 128_000; a worker running a DIFFERENT model
+      // must not inherit it.
+      expect(readPublicWorker(manager, sessionId, workerId).contextWindowTokens).toBeUndefined();
+    });
+
+    it('the override survives deactivate -> activate, and the NEW init command reads it from the persisted row', async () => {
+      const { manager, spawn, sessionId, workerId } = await setupActivated();
+      await manager.activateEmbeddedAgentWorker(sessionId, workerId);
+      await manager.setEmbeddedAgentParameters(sessionId, workerId, {
+        model: 'qwen3:72b',
+        reasoningEffort: 'high',
+        contextWindowTokens: 32_000,
+      });
+
+      await manager.deactivateEmbeddedAgentWorker(sessionId, workerId);
+      const before = spawn.stdinWrites.length;
+      await manager.activateEmbeddedAgentWorker(sessionId, workerId);
+
+      const row = await readPersistedWorker(manager, sessionId, workerId);
+      expect(row.model).toBe('qwen3:72b');
+      expect(row.reasoningEffort).toBe('high');
+      expect(row.contextWindowTokens).toBe(32_000);
+
+      const init = JSON.parse(spawn.stdinWrites[before]);
+      expect(init.type).toBe('init');
+      expect(init.provider.model).toBe('qwen3:72b');
+      expect(init.provider.reasoningEffort).toBe('high');
+      expect(init.compaction.contextWindowTokens).toBe(32_000);
+    });
+
+    it('the override survives restartAllAgentWorkers (the same read-back, through the bulk path)', async () => {
+      const { manager, sessionId, workerId } = await setupActivated();
+      await manager.activateEmbeddedAgentWorker(sessionId, workerId);
+      await manager.setEmbeddedAgentParameters(sessionId, workerId, {
+        model: 'qwen3:72b',
+        contextWindowTokens: 32_000,
+      });
+
+      const result = await manager.restartAllAgentWorkers();
+
+      expect(result.results.find((r) => r.workerId === workerId)?.outcome).toBe('restarted');
+      const row = await readPersistedWorker(manager, sessionId, workerId);
+      expect(row.model).toBe('qwen3:72b');
+      expect(row.contextWindowTokens).toBe(32_000);
+    });
+
+    it('clearing an override mid-run and a fresh worker that never had one reach the SAME persisted state', async () => {
+      // The twin of "the override survives a restart": clearing must land on
+      // exactly the state a never-overridden worker is in, not on a
+      // near-miss (e.g. an empty string, or a window left behind). Compared
+      // as whole rows so a field added later is covered without editing this
+      // test.
+      const { manager, sessionId, workerId } = await setupActivated();
+      await manager.setEmbeddedAgentParameters(sessionId, workerId, {
+        model: 'qwen3:72b',
+        reasoningEffort: 'high',
+        contextWindowTokens: 32_000,
+      });
+      await manager.setEmbeddedAgentParameters(sessionId, workerId, {
+        model: null,
+        reasoningEffort: null,
+      });
+
+      const fresh = await manager.createWorker(sessionId, {
+        type: 'embedded-agent',
+        embeddedAgentId: PARAM_DEF.id,
+      });
+
+      const cleared = await readPersistedWorker(manager, sessionId, workerId);
+      const never = await readPersistedWorker(manager, sessionId, fresh!.id);
+      expect({
+        model: cleared.model,
+        reasoningEffort: cleared.reasoningEffort,
+        contextWindowTokens: cleared.contextWindowTokens,
+      }).toEqual({
+        model: never.model,
+        reasoningEffort: never.reasoningEffort,
+        contextWindowTokens: never.contextWindowTokens,
+      });
+      expect(readPublicWorker(manager, sessionId, workerId).hasParameterOverride).toBe(
+        readPublicWorker(manager, sessionId, fresh!.id).hasParameterOverride,
+      );
+    });
+  });
+
   describe('SessionManager.deliverWorkerNotification (Issue #1574, R1 delivery seam)', () => {
     const TIMER_PARAMS: PtyNotificationParams = {
       kind: 'internal-timer',

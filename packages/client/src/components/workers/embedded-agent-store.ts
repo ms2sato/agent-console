@@ -1361,11 +1361,16 @@ class EmbeddedAgentController implements EmbeddedAgentInstance {
         return true;
       case 'sdk-session-id':
       case 'sdk-resume-failed':
+      case 'model-params-applied':
         // Server-side bookkeeping only, no client UI surface: the worker's
-        // current SDK session id, and (R1) the machine-readable half of a
-        // refused resume. What the USER sees about a failed resume is the
-        // engine's own `turn-error` plus the divergence notice driven by
-        // `restore-info.sdkResumed`, not this event. Not chat rows.
+        // current SDK session id, (R1) the machine-readable half of a
+        // refused resume, and (agent-surface.md Phase 3) the engine's report
+        // on whether a mid-run parameter change reached the live session.
+        // What the USER sees about a failed resume is the engine's own
+        // `turn-error` plus the divergence notice driven by
+        // `restore-info.sdkResumed`; what the user sees about a parameter
+        // change is the effective values arriving on the next
+        // `session-updated`. Not chat rows.
         return false;
       case 'restore-failure-boundary':
         // Transcript Restore, R2 (#1447 stage 4): a reconstruction boundary,

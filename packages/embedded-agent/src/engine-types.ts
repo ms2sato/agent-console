@@ -39,6 +39,32 @@ export interface Engine {
    */
   setAutoCompaction(enabled: boolean): void;
   /**
+   * agent-surface.md Phase 3: apply a mid-run model / reasoning-effort /
+   * context-window change without waiting for the next activation.
+   *
+   * The payload is always the FULL effective triple, never a delta. The
+   * server resolves override-versus-definition precedence and sends the
+   * whole state on every change, so an implementation REPLACES its current
+   * values rather than merging: an unchanged field arrives carrying its
+   * current value, and `null` means "no override in effect" (a value to
+   * apply, not a field to skip).
+   *
+   * `reasoningEffort` is `string | null` rather than the `claude-sdk` arm's
+   * closed `EffortLevel` domain because one command shape serves both
+   * engines; the closed domain is enforced by the server's shared parameter
+   * validator before a value ever reaches an engine.
+   *
+   * Returns `void`, like {@link setAutoCompaction}: an engine reports
+   * whether the change reached its LIVE session by emitting the
+   * `model-params-applied` event, not through this return value. Required
+   * (unlike {@link compactNow}) -- both engines implement it.
+   */
+  setModelParams(params: {
+    model: string;
+    reasoningEffort: string | null;
+    contextWindowTokens: number | null;
+  }): void;
+  /**
    * Release any underlying resources held outside process memory (e.g. the
    * SDK engine's `Query`/child `claude` process). Optional because the
    * native engine has nothing to release beyond normal GC.

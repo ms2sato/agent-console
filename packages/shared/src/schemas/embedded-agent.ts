@@ -332,6 +332,21 @@ export const EmbeddedAgentCommandSchema = v.union([
     type: v.literal('set-auto-compaction'),
     enabled: v.boolean(),
   }),
+  // agent-surface.md Phase 3: the mid-run model / reasoning-effort /
+  // context-window change. FULL STATE, never a delta -- `reasoningEffort`
+  // and `contextWindowTokens` are nullable but REQUIRED, so `null` ("no
+  // override in effect") stays distinguishable from an absent key, which
+  // would reintroduce delta semantics. `reasoningEffort` is a plain string
+  // here rather than the init arm's EFFORT_LEVELS picklist: one command
+  // shape serves both engines and the closed domain is enforced upstream by
+  // the shared parameter validator. See the type's doc comment.
+  v.strictObject({
+    v: v.literal(1),
+    type: v.literal('set-model-params'),
+    model: v.pipe(v.string(), v.minLength(1)),
+    reasoningEffort: v.nullable(v.string()),
+    contextWindowTokens: v.nullable(v.pipe(v.number(), v.integer(), v.minValue(1))),
+  }),
   // Slash commands, `console`-handled arm (#1572): a manual `/compact`
   // intercepted server-side rather than forwarded as prose. No payload
   // beyond the discriminant -- a pure trigger. See the type's doc comment.
@@ -445,6 +460,18 @@ export const EmbeddedAgentEventSchema = v.union([
     type: v.literal('sdk-resume-failed'),
     requestedSdkSessionId: v.pipe(v.string(), v.minLength(1)),
     reason: v.picklist(SDK_RESUME_FAILURE_REASONS),
+  }),
+  // agent-surface.md Phase 3: the engine's report on a `set-model-params`
+  // command -- whether the new triple reached the LIVE session. Both
+  // parameters apply live on both engines, so `applied: false` reports a
+  // genuine engine-side refusal and carries NO reason -- deliberately a
+  // plain boolean rather than an uninhabited picklist or a free-form
+  // string. It never means "not saved": the persisted row was written
+  // before the command was sent. See the type's doc comment.
+  v.strictObject({
+    v: v.literal(1),
+    type: v.literal('model-params-applied'),
+    applied: v.boolean(),
   }),
 ]);
 

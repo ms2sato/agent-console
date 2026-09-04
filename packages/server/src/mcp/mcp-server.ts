@@ -58,6 +58,7 @@ import {
   canReceiveSessionMessages,
   canReceiveNotifications,
   CreateBookmarkRequestSchema,
+  UpdateEmbeddedAgentWorkerRequestSchema,
 } from '@agent-console/shared';
 
 const logger = createLogger('mcp');
@@ -2281,6 +2282,169 @@ export function createMcpApp(deps: McpDependencies): Hono {
       } catch (err) {
         const message = err instanceof Error ? err.message : 'Unknown error';
         logger.error({ err, bookmarkId, sessionId }, 'delete_bookmark failed');
+        return errorResult(message);
+      }
+    },
+  );
+
+  // ---------- Tool: set_agent_parameters ----------
+
+  // Tenth session-claiming tool (checkCallerOwnsSession), alongside
+  // send_session_message, delegate_to_worktree, remove_worktree,
+  // create_conditional_wakeup, run_process, create_html_artifact,
+  // delete_html_artifact, create_bookmark, and delete_bookmark. No mechanical
+  // registry enumerates these tools; this comment is the convention-only
+  // marker.
+  //
+  // The ONLY tool in this file whose guard is STRICTER than
+  // checkCallerOwnsSession alone -- see the own-worker and tokenless blocks
+  // in the handler for why.
+  mcpServer.tool(
+    'set_agent_parameters',
+    "Change your own embedded-agent worker's model, reasoning effort, or context window while you are running. " +
+      'The change is persisted immediately and takes effect no later than your next response; it survives a ' +
+      'restart of your process. Pass null for a field to clear the override and go back to your agent ' +
+      "definition's own default. Setting a model requires contextWindowTokens too (pass null to declare no " +
+      'window, which leaves compaction inert); clearing the model clears the window with it. Only your OWN ' +
+      'worker can be targeted -- omit sessionId and workerId and they default to your own worker.',
+    {
+      sessionId: z.string().optional().describe(
+        "Your own session's ID. Omit it: it defaults to your own session. Any other session is refused.",
+      ),
+      workerId: z.string().optional().describe(
+        "Your own worker's ID. Omit it: it defaults to your own worker. Any other worker is refused.",
+      ),
+      model: z.string().nullable().optional().describe(
+        'The model to run on. Omit to leave it unchanged; null clears the override.',
+      ),
+      reasoningEffort: z.string().nullable().optional().describe(
+        'The reasoning-effort level. Omit to leave it unchanged; null clears the override. Accepted values ' +
+          'depend on the engine and are rejected with the accepted list when they do not match.',
+      ),
+      contextWindowTokens: z.number().int().positive().nullable().optional().describe(
+        'The context-window size to measure usage against, in tokens. Required alongside a non-null model ' +
+          '(pass null to declare no window); must be omitted otherwise.',
+      ),
+    },
+    async ({
+      sessionId: requestedSessionId,
+      workerId: requestedWorkerId,
+      model,
+      reasoningEffort,
+      contextWindowTokens,
+    }) => {
+      const caller = getMcpCallerIdentity();
+
+      // The tokenless refusal runs FIRST, ahead of every other check,
+      // because the id defaults below are derived from the caller identity:
+      // with no identity there is nothing to resolve them from. That
+      // ordering is also what makes the tokenless case the ONLY way the
+      // defaults can be missing.
+      //
+      // A TOKENLESS caller is refused here even in `off` / `warn` mode,
+      // where every other tool in this file proceeds. That is deliberate
+      // and is not a mode check that was forgotten: this tool's entire
+      // contract is "act on the caller's OWN worker", and a caller with no
+      // verified identity has no own worker for the contract to name. There
+      // is nothing to fall back to -- proceeding would mean accepting the
+      // caller's own claim about which worker is theirs, which is exactly
+      // the #878 boundary this tool sits on.
+      //
+      // Safe in every mode because embedded-agent activation mints a token
+      // UNCONDITIONALLY (see EmbeddedAgentWorkerService.runActivation's
+      // "Step 3: mint the MCP token", which hard-fails activation when the
+      // session has no owner to mint from) rather than only under
+      // AUTH_MODE=multi-user. A real embedded caller therefore always
+      // presents one. Do NOT "fix" this to match the other tools.
+      if (!caller) {
+        return errorResult(
+          'set_agent_parameters requires a verified caller identity: it acts on your own worker, and a call ' +
+            'with no bearer token has no own worker to act on. Embedded agents are given one automatically.',
+        );
+      }
+
+      // Both ids default to the caller's own, which is the ONLY pair this
+      // tool ever accepts -- so requiring them was asking the caller to
+      // restate something the bearer token already proves. It was not merely
+      // redundant: a `claude-sdk` agent has no shell tool, so it cannot read
+      // its own AGENT_CONSOLE_SESSION_ID / AGENT_CONSOLE_WORKER_ID, and
+      // "pass your AGENT_CONSOLE_* values" was not actionable unaided.
+      //
+      // Supplying them is still allowed and still checked: the self-target
+      // refusal below is unchanged, so a supplied-but-foreign pair is
+      // refused exactly as before rather than being quietly overwritten with
+      // the caller's own.
+      const sessionId = requestedSessionId ?? caller.sessionId;
+      const workerId = requestedWorkerId ?? caller.workerId;
+
+      try {
+        const session = sessionManager.getSession(sessionId);
+        if (!session) {
+          return errorResult(`Session not found: ${sessionId}`);
+        }
+
+        const authError = checkCallerOwnsSession(
+          caller,
+          { sessionId, createdBy: session.createdBy },
+          mcpAuthMode,
+          { toolName: 'set_agent_parameters' },
+        );
+        if (authError) return errorResult(authError.error);
+
+        // checkCallerOwnsSession proves only that the caller owns the
+        // SESSION, so on its own it would accept a SIBLING worker in the same
+        // session. This tool is self-targeting only.
+        if (caller.sessionId !== sessionId || caller.workerId !== workerId) {
+          return errorResult(
+            `set_agent_parameters can only target your own worker (session ${caller.sessionId}, worker ${caller.workerId}); ` +
+              `refusing to change session ${sessionId} worker ${workerId}`,
+          );
+        }
+
+        const worker = session.workers.find((w) => w.id === workerId);
+        if (!worker) {
+          return errorResult(`Worker ${workerId} not found in session ${sessionId}`);
+        }
+        if (worker.type !== 'embedded-agent') {
+          // Classified rather than a generic "wrong worker type": the caller
+          // is a real agent that simply has no runtime parameter path, and
+          // the actionable alternative is a restart.
+          return errorResult(
+            `Worker ${workerId} is a ${worker.type} worker: terminal agents have no runtime parameter path; ` +
+              'restart with a model instead.',
+          );
+        }
+
+        // Ruling 4's coupling is enforced by the SAME wire schema the REST
+        // PATCH uses, rather than restated here -- one writer for the rule,
+        // and identical messages on both surfaces. Only keys the caller
+        // actually sent are put in the object: absent and null are different
+        // instructions, and rebuilding with `undefined` values would collapse
+        // one into the other.
+        const patch = {
+          ...(model !== undefined ? { model } : {}),
+          ...(reasoningEffort !== undefined ? { reasoningEffort } : {}),
+          ...(contextWindowTokens !== undefined ? { contextWindowTokens } : {}),
+        };
+        const parsed = v.safeParse(UpdateEmbeddedAgentWorkerRequestSchema, patch);
+        if (!parsed.success) {
+          return errorResult(parsed.issues.map((issue) => issue.message).join('; '));
+        }
+
+        const updated = await sessionManager.setEmbeddedAgentParameters(sessionId, workerId, parsed.output);
+        if (!updated) {
+          // Unreachable through the checks above (session, worker and type
+          // are all already resolved); a null here would mean the worker went
+          // away between them and the write.
+          return errorResult(`Worker ${workerId} in session ${sessionId} is no longer settable`);
+        }
+
+        logger.info({ sessionId, workerId }, 'Embedded-agent parameters set via MCP');
+
+        return textResult({ worker: updated });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Unknown error';
+        logger.error({ err, sessionId, workerId }, 'set_agent_parameters failed');
         return errorResult(message);
       }
     },

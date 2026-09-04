@@ -57,6 +57,9 @@ describe('reconstructConversation — 4c total classification', () => {
       { v: 1, type: 'turn-error', turnId: 't1', message: 'unrelated noise' },
       { v: 1, type: 'fatal', message: 'unrelated noise' },
       { v: 1, type: 'sdk-session-id', sdkSessionId: 'sdk-sess-1' },
+      // agent-surface.md Phase 3: a report about the PROCESS's configuration,
+      // not about what was said -- Noise, same class as sdk-session-id above.
+      { v: 1, type: 'model-params-applied', applied: false },
       { v: 1, type: 'state', state: 'idle' },
       { v: 1, type: 'exited', code: 0 },
     ];
