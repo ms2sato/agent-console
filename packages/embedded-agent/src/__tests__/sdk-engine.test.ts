@@ -2896,3 +2896,147 @@ describe('SdkEngine — image attachments (#1571, confined to runTurn)', () => {
     expect(pushedMessages[0].message).toEqual({ role: 'user', content: 'second turn' });
   });
 });
+
+// ---------------------------------------------------------------------------
+// Mid-run model / reasoning-effort / context-window change
+// ---------------------------------------------------------------------------
+
+/**
+ * agent-surface.md Phase 3: `SdkEngine.setModelParams`.
+ *
+ * Both parameters apply LIVE on this engine -- `setModel` for the model,
+ * `applyFlagSettings({ effortLevel })` for the effort -- so `applied: true` is
+ * the ordinary outcome and no caller has to model a restart.
+ *
+ * Measured reach (each mutation applied alone, whole file re-run):
+ * - dropping the `await this.query.setModel(...)` call -> 2 failures (the
+ *   live-write test, and the model-rejection test, which then has nothing
+ *   left to reject).
+ * - dropping the `await this.query.applyFlagSettings(...)` call -> 3 failures
+ *   (live-write, clear, and the effort-rejection test).
+ * - passing `effortLevel: effortLevel ?? undefined` instead of the raw `null`
+ *   -> 1 failure, the clear test, on `toBeNull()`. An `undefined` there is
+ *   dropped by JSON serialization, so the flag layer would keep a stale
+ *   effort: the silent no-op that assertion exists to catch, and the reason
+ *   the shape of the assertion (not just its subject) is load-bearing.
+ * - emitting `applied: true` unconditionally after the try/catch -> 2
+ *   failures, both rejection tests.
+ * - removing the `this.dead` early return -> 1 failure, the disposed-engine
+ *   test, on the SDK having been called AND on `applied` being true.
+ */
+describe('SdkEngine — setModelParams (agent-surface.md Phase 3)', () => {
+  interface LiveWriteHandle {
+    queryFn: QueryFn;
+    setModelCalls: (string | undefined)[];
+    flagSettings: Record<string, unknown>[];
+  }
+
+  /** Wraps `makeFakeQuery`'s fake with the two live-write methods this engine
+   * calls (neither is part of the base fake, which only implements what other
+   * describes need), optionally making one of them reject. */
+  function makeLiveWriteQuery(
+    opts: { failOn?: 'setModel' | 'applyFlagSettings' } = {},
+  ): LiveWriteHandle {
+    const setModelCalls: (string | undefined)[] = [];
+    const flagSettings: Record<string, unknown>[] = [];
+    const { queryFn: base } = makeFakeQuery([]);
+    const queryFn: QueryFn = (params) =>
+      asQuery(
+        Object.assign(base(params), {
+          setModel: async (model?: string) => {
+            setModelCalls.push(model);
+            if (opts.failOn === 'setModel') throw new Error('transport gone');
+          },
+          applyFlagSettings: async (settings: Record<string, unknown>) => {
+            flagSettings.push(settings);
+            if (opts.failOn === 'applyFlagSettings') throw new Error('transport gone');
+          },
+        }),
+      );
+    return { queryFn, setModelCalls, flagSettings };
+  }
+
+  it('writes the new model and the new effort to the live session, then reports applied', async () => {
+    const events: EmbeddedAgentEvent[] = [];
+    const { queryFn, setModelCalls, flagSettings } = makeLiveWriteQuery();
+    const engine = new SdkEngine(baseDeps({ queryFn, emit: (e) => events.push(e) }));
+
+    engine.setModelParams({ model: 'claude-opus-5', reasoningEffort: 'medium', contextWindowTokens: 120000 });
+    await flush();
+
+    expect(setModelCalls).toEqual(['claude-opus-5']);
+    expect(flagSettings).toEqual([{ effortLevel: 'medium' }]);
+    expect(eventsOfType(events, 'model-params-applied')).toEqual([
+      { v: 1, type: 'model-params-applied', applied: true },
+    ]);
+  });
+
+  it('clears the effort with an explicit null -- NOT undefined, which the SDK drops in serialization (a silent no-op)', async () => {
+    const events: EmbeddedAgentEvent[] = [];
+    const { queryFn, flagSettings } = makeLiveWriteQuery();
+    const engine = new SdkEngine(
+      baseDeps({ queryFn, effort: 'low', emit: (e) => events.push(e) }),
+    );
+
+    engine.setModelParams({ model: 'claude-sonnet-5', reasoningEffort: null, contextWindowTokens: null });
+    await flush();
+
+    expect(flagSettings).toHaveLength(1);
+    // The load-bearing assertion of this whole describe: `toBeNull()` fails
+    // for `undefined`, where a `toBeUndefined()`/`toEqual` pair would not
+    // distinguish the two. `null` clears the flag layer; `undefined` is
+    // dropped by JSON serialization and leaves the previous effort in place.
+    expect(flagSettings[0].effortLevel).toBeNull();
+    expect('effortLevel' in flagSettings[0]).toBe(true);
+    expect(eventsOfType(events, 'model-params-applied')).toEqual([
+      { v: 1, type: 'model-params-applied', applied: true },
+    ]);
+  });
+
+  it('reports applied: false when a live write rejects -- the persisted values still apply at the next activation', async () => {
+    const events: EmbeddedAgentEvent[] = [];
+    const { queryFn } = makeLiveWriteQuery({ failOn: 'applyFlagSettings' });
+    const engine = new SdkEngine(baseDeps({ queryFn, emit: (e) => events.push(e) }));
+
+    expect(() =>
+      engine.setModelParams({ model: 'claude-opus-5', reasoningEffort: 'high', contextWindowTokens: null }),
+    ).not.toThrow();
+    await flush();
+
+    expect(eventsOfType(events, 'model-params-applied')).toEqual([
+      { v: 1, type: 'model-params-applied', applied: false },
+    ]);
+  });
+
+  it('reports applied: false when the model write rejects, and does not attempt the effort write after it', async () => {
+    const events: EmbeddedAgentEvent[] = [];
+    const { queryFn, flagSettings } = makeLiveWriteQuery({ failOn: 'setModel' });
+    const engine = new SdkEngine(baseDeps({ queryFn, emit: (e) => events.push(e) }));
+
+    engine.setModelParams({ model: 'claude-opus-5', reasoningEffort: 'high', contextWindowTokens: null });
+    await flush();
+
+    expect(flagSettings).toEqual([]);
+    expect(eventsOfType(events, 'model-params-applied')).toEqual([
+      { v: 1, type: 'model-params-applied', applied: false },
+    ]);
+  });
+
+  it('reports applied: false and touches the SDK not at all once the engine is dead', async () => {
+    const events: EmbeddedAgentEvent[] = [];
+    const { queryFn, setModelCalls, flagSettings } = makeLiveWriteQuery();
+    const engine = new SdkEngine(baseDeps({ queryFn, emit: (e) => events.push(e) }));
+    engine.dispose();
+
+    engine.setModelParams({ model: 'claude-opus-5', reasoningEffort: 'high', contextWindowTokens: 120000 });
+    await flush();
+
+    expect(setModelCalls).toEqual([]);
+    expect(flagSettings).toEqual([]);
+    // "Not live", never "not saved": the server persisted the row before
+    // sending the command, and the next activation reads it.
+    expect(eventsOfType(events, 'model-params-applied')).toEqual([
+      { v: 1, type: 'model-params-applied', applied: false },
+    ]);
+  });
+});

@@ -43,6 +43,7 @@ const KNOWN_COMMAND_TYPES = new Set([
   'user-message',
   'cancel',
   'set-auto-compaction',
+  'set-model-params',
   'compact',
   'shutdown',
 ]);
@@ -210,6 +211,20 @@ export async function runLoop(io: LoopIO, factories: LoopFactories): Promise<num
         // the turn boundary, so recording it mid-turn is safe and means the
         // very next boundary already honours it.
         loop.setAutoCompaction(command.enabled);
+        break;
+      case 'set-model-params':
+        // agent-surface.md Phase 3. Deliberately NOT gated on `turnActive`,
+        // same reasoning as `set-auto-compaction` above: the openai-api loop
+        // reads these values when it composes each provider request, so a
+        // mid-turn change lands on the very next iteration of the turn
+        // already running. Gating would silently drop the change for the
+        // whole length of a long turn -- exactly the case a mid-run change
+        // exists for.
+        loop.setModelParams({
+          model: command.model,
+          reasoningEffort: command.reasoningEffort,
+          contextWindowTokens: command.contextWindowTokens,
+        });
         break;
       case 'cancel':
         loop.cancel();

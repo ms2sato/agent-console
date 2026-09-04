@@ -542,6 +542,37 @@ export class AgentLoop {
   }
 
   /**
+   * agent-surface.md Phase 3: apply a mid-run model / reasoning-effort /
+   * context-window change (see `Engine.setModelParams` for the full-state,
+   * never-a-delta contract the server upholds).
+   *
+   * Pure field replacement on `deps`, and it cannot fail: every consumer
+   * reads these values at the moment it needs them rather than caching them
+   * at construction, so replacing them here IS the application.
+   * `runProviderAttempt` composes `model`/`reasoningEffort` into each
+   * `adapter.run()` request, which makes the next provider call -- the next
+   * ITERATION of a turn already running, not merely the next turn -- carry
+   * the new values; `shouldAutoCompact` and the window-drift checks read
+   * `compaction.contextWindowTokens` at each boundary they evaluate.
+   *
+   * `null` (no override) becomes `undefined` rather than being stored as
+   * `null`: `reasoningEffort`'s consumer omits the key from the request when
+   * and only when it is `undefined`, and `contextWindowTokens`'s consumers
+   * treat `undefined` as "no denominator at all". Storing `null` would make
+   * both read as a present value.
+   */
+  setModelParams(params: {
+    model: string;
+    reasoningEffort: string | null;
+    contextWindowTokens: number | null;
+  }): void {
+    this.deps.model = params.model;
+    this.deps.reasoningEffort = params.reasoningEffort ?? undefined;
+    this.deps.compaction.contextWindowTokens = params.contextWindowTokens ?? undefined;
+    this.deps.emit({ v: 1, type: 'model-params-applied', applied: true });
+  }
+
+  /**
    * Compaction at the restore boundary: the SECOND firing point of the same
    * automatic predicate, evaluated once after `init` and before the first
    * user turn. See docs/design/embedded-agent-worker.md "Compaction at the

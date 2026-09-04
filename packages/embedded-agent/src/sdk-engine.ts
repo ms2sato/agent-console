@@ -773,6 +773,74 @@ export class SdkEngine implements Engine {
     });
   }
 
+  /**
+   * agent-surface.md Phase 3: apply a mid-run model / reasoning-effort /
+   * context-window change to the LIVE SDK session (see
+   * `Engine.setModelParams` for the full-state, never-a-delta contract).
+   *
+   * Both parameters apply live on this engine, measured against the pinned
+   * SDK: `setModel` changes the model for subsequent responses in
+   * streaming-input mode (which this engine uses), and `applyFlagSettings`
+   * overrides a query-time `Options.effort` mid-session. Neither needs a
+   * restart, so no caller has to model one.
+   *
+   * `contextWindowTokens` has nothing to apply HERE and is deliberately not
+   * stored: this engine never passes a window into `query()` (the SDK owns
+   * its own compaction), and the gauge's denominator is composed
+   * server-side from the persisted row, which was written before this
+   * command was sent. It is carried in the payload because the command is
+   * full-state for both engines, not because this one drops it by oversight.
+   *
+   * Local state is updated FIRST, like {@link setAutoCompaction}, so a later
+   * reconstruction composes the current values even if the live write fails.
+   * Unlike that toggle this reports an honest `applied`, so both writes are
+   * awaited before the event is emitted -- and `applied: false` never means
+   * "not saved": the persisted row stays the truth and a later activation
+   * reads the requested values from it.
+   */
+  setModelParams(params: {
+    model: string;
+    reasoningEffort: string | null;
+    contextWindowTokens: number | null;
+  }): void {
+    // `EffortLevel` is a closed domain and the wire field is `string | null`
+    // (one command shape serves both engines). The narrowing is sound
+    // WITHOUT a re-check here for the same reason `SdkEngineDeps.effort`
+    // needs none: the server's shared parameter validator has already
+    // checked the value against the capability table's `acceptedValues`
+    // before the command was written. `null` is preserved, not widened away
+    // -- it is the value that CLEARS the flag layer below.
+    const effortLevel = params.reasoningEffort as EffortLevel | null;
+    this.deps.model = params.model;
+    this.deps.effort = effortLevel ?? undefined;
+    if (this.dead) {
+      // No live session to write to. The durable value is already persisted
+      // server-side and is read at the next activation, so this is "not
+      // live", never "not saved".
+      this.deps.emit({ v: 1, type: 'model-params-applied', applied: false });
+      return;
+    }
+    void (async () => {
+      try {
+        await this.query.setModel(params.model);
+        // `null`, NOT `undefined`: the SDK documents that `undefined` is
+        // dropped by JSON serialization and has no effect, while `null`
+        // clears the key from the flag layer and falls back to
+        // lower-precedence sources. Translating "no override" to `undefined`
+        // here would be a silent no-op that leaves a previously-set effort
+        // in place.
+        await this.query.applyFlagSettings({ effortLevel });
+        this.deps.emit({ v: 1, type: 'model-params-applied', applied: true });
+      } catch (err: unknown) {
+        console.warn(
+          `[sdk-engine] failed to apply model=${params.model} effortLevel=${String(effortLevel)} ` +
+            `to the live session; the persisted values take effect at the next activation: ${errorMessage(err)}`,
+        );
+        this.deps.emit({ v: 1, type: 'model-params-applied', applied: false });
+      }
+    })();
+  }
+
   cancel(): void {
     // Compaction: a `Compact` booked during the turn being canceled is
     // discarded. Cancel means "stop what you were doing", and the tool call
