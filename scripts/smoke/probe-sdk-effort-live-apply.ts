@@ -114,6 +114,7 @@ import type {
   SettingSource,
   SyncHookJSONOutput,
 } from '../../packages/embedded-agent/node_modules/@anthropic-ai/claude-agent-sdk';
+import { EFFORT_LEVELS } from '../../packages/shared/src/types/embedded-agent-parameter-capabilities.ts';
 import {
   ProbeSession,
   isolateClaudeConfigDir,
@@ -542,6 +543,80 @@ async function runSetArm(): Promise<ArmResult> {
   });
 }
 
+/**
+ * The `--clear` arm's turn-3 reading, mapped onto a verdict. Reached only
+ * once that arm's positive control and its turn-2 set have both been
+ * established, so every branch here is about the CLEAR and nothing else.
+ *
+ * Extracted from {@link runClearArm} so the mapping is testable without the
+ * billed turns that produce its input -- same reason and same idiom as
+ * {@link exitCodeFor}.
+ *
+ * The DEFAULT-FALLBACK branch is constrained to levels the SDK is known to
+ * have (`EFFORT_LEVELS`, itself pinned both directions against the SDK's own
+ * `EffortLevel` union). "Neither the set value nor the query-time one" is not
+ * on its own enough to call a reading "the SDK's own default": a level this
+ * repository has never heard of -- a later SDK renaming or adding one -- is a
+ * reading nobody has interpreted, and reporting it as a CONCLUSIVE
+ * `premise: 'holds'` would exit 0 on a premise no turn measured. That is the
+ * same failure the exit-code mapping exists to prevent, one level further in,
+ * so an unrecognized level lands on the `--set` arm's UNEXPECTED shape
+ * instead: inconclusive, with the level named.
+ *
+ * @internal Exported for the sibling unit test -- importing this module runs
+ * nothing (see the `import.meta.main` guard at the foot of the file).
+ */
+export function classifyClearFallback(afterClear: string | null): Omit<ArmResult, 'flag'> {
+  if (afterClear === 'medium') {
+    return {
+      conclusive: true,
+      // A write to the flag layer that the live session ignored is PS9
+      // failing in the clearing direction, not a mere fallback surprise.
+      premise: 'refuted',
+      verdict:
+        "IGNORED -- the clear did nothing: turn 3 still ran at 'medium'. A cleared override would stay in " +
+        'effect for the life of the process, which the engine must then work around.',
+    };
+  }
+  if (afterClear === 'low') {
+    return {
+      conclusive: true,
+      // Landing back on the query-time value contradicts the measurement
+      // 5 records and the shipped design rests on.
+      premise: 'refuted',
+      verdict:
+        "STALE FALLBACK -- clearing fell back to the query-time Options.effort ('low'), which by then is a " +
+        'value no persisted row holds. A live clear and a fresh session would diverge.',
+    };
+  }
+  if (afterClear === null) {
+    return {
+      conclusive: false,
+      premise: null,
+      verdict: 'INCONCLUSIVE -- turn 3 produced no readable level (see its own line above).',
+    };
+  }
+  if (!(EFFORT_LEVELS as readonly string[]).includes(afterClear)) {
+    return {
+      conclusive: false,
+      premise: null,
+      verdict:
+        `UNEXPECTED -- turn 3 ran at '${afterClear}', which is not one of the effort levels this repository ` +
+        `knows (${EFFORT_LEVELS.join(', ')}). Nothing is concluded from a level nobody has interpreted; ` +
+        'check whether the SDK renamed or added one, and re-read this arm against the new set.',
+    };
+  }
+  return {
+    conclusive: true,
+    // The clear reached the live session and landed on the SDK's own
+    // default -- the fallback 5 records, so PS9 holds in this direction.
+    premise: 'holds',
+    verdict:
+      `DEFAULT FALLBACK -- clearing fell back to '${afterClear}', which is neither the set value nor the ` +
+      "stale query-time one, i.e. the SDK's own default. Compare with the --absent arm.",
+  };
+}
+
 /** What does clearing the flag layer fall back to? */
 async function runClearArm(): Promise<ArmResult> {
   h("Arm --clear  ('low' at construction -> 'medium' -> null; what does turn 3 run at?)");
@@ -587,48 +662,7 @@ async function runClearArm(): Promise<ArmResult> {
           'cleared on turn 3 was never established.',
       };
     }
-    if (afterClear === 'medium') {
-      return {
-        flag: '--clear',
-        conclusive: true,
-        // A write to the flag layer that the live session ignored is PS9
-        // failing in the clearing direction, not a mere fallback surprise.
-        premise: 'refuted',
-        verdict:
-          "IGNORED -- the clear did nothing: turn 3 still ran at 'medium'. A cleared override would stay in " +
-          'effect for the life of the process, which the engine must then work around.',
-      };
-    }
-    if (afterClear === 'low') {
-      return {
-        flag: '--clear',
-        conclusive: true,
-        // Landing back on the query-time value contradicts the measurement
-        // 5 records and the shipped design rests on.
-        premise: 'refuted',
-        verdict:
-          "STALE FALLBACK -- clearing fell back to the query-time Options.effort ('low'), which by then is a " +
-          'value no persisted row holds. A live clear and a fresh session would diverge.',
-      };
-    }
-    if (afterClear === null) {
-      return {
-        flag: '--clear',
-        conclusive: false,
-        premise: null,
-        verdict: 'INCONCLUSIVE -- turn 3 produced no readable level (see its own line above).',
-      };
-    }
-    return {
-      flag: '--clear',
-      conclusive: true,
-      // The clear reached the live session and landed on the SDK's own
-      // default -- the fallback 5 records, so PS9 holds in this direction.
-      premise: 'holds',
-      verdict:
-        `DEFAULT FALLBACK -- clearing fell back to '${afterClear}', which is neither the set value nor the ` +
-        "stale query-time one, i.e. the SDK's own default. Compare with the --absent arm.",
-    };
+    return { flag: '--clear', ...classifyClearFallback(afterClear) };
   });
 }
 

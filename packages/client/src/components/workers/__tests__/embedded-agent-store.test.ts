@@ -2304,16 +2304,42 @@ describe('embedded-agent-store — Transcript Restore R1 (#1410)', () => {
   });
 
   describe('model-params-applied', () => {
-    it('produces no chat row (agent-surface.md Phase 3: server bookkeeping, not something the user reads)', () => {
+    it('produces no chat row, and the fold keeps reading the stream across it', () => {
       // What the user sees about a parameter change is the effective values
       // arriving on the next session-updated -- never a transcript row.
+      //
+      // The `fatal` line AFTER it is what keeps this test from being
+      // vacuous. "No entries" is ALSO what a line the fold rejected as
+      // garbage produces, so on its own the assertion cannot distinguish
+      // "handled as bookkeeping" from "silently dropped" -- the same
+      // indistinguishability this PR's server-side allowlist derivation
+      // exists to remove. Exactly one entry, and it is the fatal's, is the
+      // pair of facts: the bookkeeping event added no row of its own, and
+      // the stream was still being folded after it.
+      //
+      // Measured reach (each mutation applied alone, this file re-run):
+      // - corrupting the `model-params-applied` line (unparseable JSON, or
+      //   an unknown `type`) -> still PASSES, as it must: a dropped line
+      //   does not stop the fold. That is why the fatal assertion cannot
+      //   substitute for the length assertion, and vice versa.
+      // - aborting the fold at that event (stop reading further lines once
+      //   it is seen) -> FAILS on the fatal entry being absent.
       const instance = getOrCreateEmbeddedAgentWorker('s1', 'w1');
       const ws = MockWebSocket.getLastInstance();
       ws!.simulateOpen();
       ws!.simulateMessage(
-        outputMessage(ndjson({ v: 1, type: 'model-params-applied', applied: false }), 130, 1),
+        outputMessage(
+          ndjson(
+            { v: 1, type: 'model-params-applied', applied: false },
+            { v: 1, type: 'fatal', message: 'boom' },
+          ),
+          130,
+          1,
+        ),
       );
-      expect(instance.getSnapshot().entries).toHaveLength(0);
+      const entries = instance.getSnapshot().entries;
+      expect(entries).toHaveLength(1);
+      expect(entries[0]).toMatchObject({ kind: 'fatal', message: 'boom' });
     });
   });
 });

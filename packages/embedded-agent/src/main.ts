@@ -221,18 +221,15 @@ export async function runLoop(io: LoopIO, factories: LoopFactories): Promise<num
         // whole length of a long turn -- exactly the case a mid-run change
         // exists for.
         //
-        // Two of these arriving in quick succession are NOT serialised, and
-        // that is a deliberate non-goal rather than an oversight. The SDK
-        // arm's implementation is an unawaited async IIFE, so a second
-        // command's SDK writes can in principle interleave with the first's.
-        // Nothing is lost by it: the persisted row is written server-side in
-        // dispatch order, and the next activation composes from that row, so
-        // the durable value is unambiguous and the session converges to it.
-        // The SDK's own control requests also share one channel, which makes
-        // an actual reordering unlikely rather than merely harmless. If an
-        // E2E ever shows the LIVE session settling on the earlier of two
-        // values, this arm and the SDK engine's `setModelParams` are where to
-        // look -- the fix would be a queue here, not a lock further down.
+        // Two of these arriving in quick succession ARE serialised, on both
+        // engines, so the LIVE session settles on the later of the two. The
+        // openai-api engine needs nothing for this -- its apply is a
+        // synchronous field replacement with nothing to interleave -- while
+        // the SDK engine runs two awaited live writes per call and so chains
+        // them (`SdkEngine.setModelParams`; the persisted row converging at
+        // the next activation is NOT enough on its own, since the event
+        // stream would meanwhile report `applied: true` for the update that
+        // lost the race).
         loop.setModelParams({
           model: command.model,
           reasoningEffort: command.reasoningEffort,

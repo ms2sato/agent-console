@@ -560,6 +560,10 @@ export class AgentLoop {
    * and only when it is `undefined`, and `contextWindowTokens`'s consumers
    * treat `undefined` as "no denominator at all". Storing `null` would make
    * both read as a present value.
+   *
+   * Needs no equivalent of `SdkEngine.setModelParams`'s serialization chain:
+   * this apply is synchronous field replacement, so two calls cannot
+   * interleave and the later one is simply the last write.
    */
   setModelParams(params: {
     model: string;

@@ -2933,27 +2933,60 @@ describe('SdkEngine — setModelParams (agent-surface.md Phase 3)', () => {
 
   /** Wraps `makeFakeQuery`'s fake with the two live-write methods this engine
    * calls (neither is part of the base fake, which only implements what other
-   * describes need), optionally making one of them reject. */
+   * describes need), optionally making one of them reject.
+   *
+   * `holdFirstSetModel` is the ordering tests' lever: the FIRST `setModel`
+   * hangs until `releaseFirstSetModel()` is called, which is the only way to
+   * construct the interleaving the chain exists to prevent (a delayed first
+   * call whose second half lands after a later call's). */
   function makeLiveWriteQuery(
-    opts: { failOn?: 'setModel' | 'applyFlagSettings' } = {},
-  ): LiveWriteHandle {
+    opts: {
+      failOn?: 'setModel' | 'applyFlagSettings';
+      /** Fail `applyFlagSettings` for ONE effort value only, which is what
+       * makes two `model-params-applied` events tell each other apart: the
+       * event carries nothing but `applied`, so two successful calls emit
+       * two identical objects and their ORDER is unobservable. */
+      failFlagForEffort?: string;
+      holdFirstSetModel?: boolean;
+      liveModel?: { value: string | undefined };
+    } = {},
+  ): LiveWriteHandle & { releaseFirstSetModel: () => void } {
     const setModelCalls: (string | undefined)[] = [];
     const flagSettings: Record<string, unknown>[] = [];
+    let release: () => void = () => {};
+    const held =
+      opts.holdFirstSetModel === true
+        ? new Promise<void>((resolve) => {
+            release = resolve;
+          })
+        : null;
+    let setModelSeen = 0;
     const { queryFn: base } = makeFakeQuery([]);
     const queryFn: QueryFn = (params) =>
       asQuery(
         Object.assign(base(params), {
           setModel: async (model?: string) => {
             setModelCalls.push(model);
+            setModelSeen += 1;
+            if (held !== null && setModelSeen === 1) await held;
+            // The LIVE session's model, written when the call completes --
+            // the state an interleaving would leave on the wrong value.
+            if (opts.liveModel) opts.liveModel.value = model;
             if (opts.failOn === 'setModel') throw new Error('transport gone');
           },
           applyFlagSettings: async (settings: Record<string, unknown>) => {
             flagSettings.push(settings);
             if (opts.failOn === 'applyFlagSettings') throw new Error('transport gone');
+            if (
+              opts.failFlagForEffort !== undefined &&
+              settings.effortLevel === opts.failFlagForEffort
+            ) {
+              throw new Error('transport gone');
+            }
           },
         }),
       );
-    return { queryFn, setModelCalls, flagSettings };
+    return { queryFn, setModelCalls, flagSettings, releaseFirstSetModel: () => release() };
   }
 
   it('writes the new model and the new effort to the live session, then reports applied', async () => {
@@ -3038,5 +3071,117 @@ describe('SdkEngine — setModelParams (agent-surface.md Phase 3)', () => {
     expect(eventsOfType(events, 'model-params-applied')).toEqual([
       { v: 1, type: 'model-params-applied', applied: false },
     ]);
+  });
+
+  /**
+   * The serialization property. A call's work is two AWAITED live writes, so
+   * two detached calls can interleave as A.setModel, B.setModel,
+   * B.applyFlagSettings, A.applyFlagSettings -- leaving the live session
+   * holding A's values while the stream already reported on B.
+   *
+   * Two fixture choices carry the whole test:
+   * - The fake's FIRST `setModel` hangs until released, which is what makes
+   *   the interleaving REACHABLE. With an unheld fake both calls happen to
+   *   complete in arrival order and the two shapes are indistinguishable.
+   * - The FIRST call's effort write fails (`failFlagForEffort: 'low'`), so
+   *   the two `model-params-applied` events differ. The event carries
+   *   nothing but `applied`, so two successful calls emit two identical
+   *   objects and their order cannot be read at all -- the assertion would
+   *   be vacuous.
+   *
+   * Measured reach (chain reverted to a detached
+   * `void this.applyModelParamsOnce(params)`, this test re-run):
+   * - the mid-test assertion fails first: the second call's event has
+   *   already arrived while the first is still held inside `setModel`.
+   * - with that assertion removed to see the rest, (1) fails --
+   *   `liveModel.value` is `'model-A'`, the earlier call landing LAST, which
+   *   is the defect itself.
+   * - with (1) also removed, (2) fails -- the events arrive
+   *   `[applied: true, applied: false]`, i.e. the second call reporting
+   *   before the first.
+   * Both halves are kept: (1) alone would pass under a race that got lucky,
+   * and (2) is what proves the serialization rather than the outcome.
+   */
+  it('applies two rapid changes in call order, never letting the earlier one land last', async () => {
+    const events: EmbeddedAgentEvent[] = [];
+    const liveModel: { value: string | undefined } = { value: undefined };
+    const { queryFn, releaseFirstSetModel } = makeLiveWriteQuery({
+      holdFirstSetModel: true,
+      failFlagForEffort: 'low',
+      liveModel,
+    });
+    const engine = new SdkEngine(baseDeps({ queryFn, emit: (e) => events.push(e) }));
+
+    engine.setModelParams({ model: 'model-A', reasoningEffort: 'low', contextWindowTokens: null });
+    engine.setModelParams({ model: 'model-B', reasoningEffort: 'high', contextWindowTokens: null });
+    await flush();
+    // Nothing has landed yet: the second call cannot start until the first
+    // has SETTLED, and the first is held inside `setModel`.
+    expect(eventsOfType(events, 'model-params-applied')).toEqual([]);
+    expect(liveModel.value).toBeUndefined();
+
+    releaseFirstSetModel();
+    await flush();
+
+    // (1) The live session ends on the SECOND call's model.
+    expect(liveModel.value).toBe('model-B');
+    // (2) ...and the two reports arrive in CALL order -- the first call's
+    // failed apply first, then the second call's successful one.
+    expect(eventsOfType(events, 'model-params-applied')).toEqual([
+      { v: 1, type: 'model-params-applied', applied: false },
+      { v: 1, type: 'model-params-applied', applied: true },
+    ]);
+  });
+
+  /**
+   * The chain's own failure mode, which the ordering test above cannot
+   * reach: a link that REJECTS leaves `modelParamsChain` rejected, and every
+   * link appended afterwards is then skipped WITHOUT its body running --
+   * silently dropping every later parameter change for the life of the
+   * engine. That is what the trailing `.catch(() => {})` is for.
+   *
+   * The rejection has to come from OUTSIDE the live writes to exist at all:
+   * `applyModelParamsOnce` catches its own `setModel`/`applyFlagSettings`
+   * failures and reports them as `applied: false`. Here the first call's
+   * `emit` consumer throws -- from the catch branch's `applied: false`
+   * emit, which is not itself wrapped -- which is exactly the shape that
+   * escapes.
+   *
+   * Measured reach (dropping the `.catch(() => {})` from the chain):
+   * - FAILS immediately on the escaped `emit consumer blew up` rejection,
+   *   which bun attributes to this test -- the rejected chain has nothing
+   *   left to handle it.
+   * - with that rejection silenced but the chain still left poisoned (a
+   *   `void this.modelParamsChain.catch(() => {})` AFTER the assignment, so
+   *   the field keeps holding the rejected promise), FAILS on the length:
+   *   1 event, not 2. The second call's body never ran.
+   */
+  it('a failed link does not poison the chain: the next call still applies', async () => {
+    const events: EmbeddedAgentEvent[] = [];
+    const { queryFn } = makeLiveWriteQuery({ failOn: 'applyFlagSettings' });
+    let throwOnNextEmit = true;
+    const engine = new SdkEngine(
+      baseDeps({
+        queryFn,
+        emit: (e) => {
+          events.push(e);
+          if (e.type === 'model-params-applied' && throwOnNextEmit) {
+            throwOnNextEmit = false;
+            throw new Error('emit consumer blew up');
+          }
+        },
+      }),
+    );
+
+    engine.setModelParams({ model: 'model-A', reasoningEffort: 'low', contextWindowTokens: null });
+    await flush();
+    expect(eventsOfType(events, 'model-params-applied')).toEqual([
+      { v: 1, type: 'model-params-applied', applied: false },
+    ]);
+
+    // The second call's event is the proof its body ran at all.
+    engine.setModelParams({ model: 'model-B', reasoningEffort: 'high', contextWindowTokens: null });
+    await flush();
+    expect(eventsOfType(events, 'model-params-applied')).toHaveLength(2);
   });
 });
