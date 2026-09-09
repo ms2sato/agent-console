@@ -1578,24 +1578,13 @@ export class SessionManager {
   }
 
   /**
-   * Update session metadata (title and/or branch)
+   * Update session metadata (title)
    */
   async updateSessionMetadata(
     sessionId: string,
-    updates: { title?: string; branch?: string }
-  ): Promise<{ success: boolean; title?: string; branch?: string; error?: string }> {
+    updates: { title?: string }
+  ): Promise<{ success: boolean; title?: string; error?: string }> {
     return this.sessionMetadataService.updateSessionMetadata(sessionId, updates);
-  }
-
-  /**
-   * @deprecated Use updateSessionMetadata instead
-   * Rename the branch for a worktree session
-   */
-  async renameBranch(
-    sessionId: string,
-    newBranch: string
-  ): Promise<{ success: boolean; branch?: string; error?: string }> {
-    return this.sessionMetadataService.renameBranch(sessionId, newBranch);
   }
 
   /**

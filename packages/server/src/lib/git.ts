@@ -290,10 +290,16 @@ export async function gitRefExists(
 
 /**
  * Get current branch name.
+ *
+ * @param requestUser - See {@link git}. Callers on a user-owned worktree
+ *   (multi-user mode) must pass the SESSION'S SPAWN USER
+ *   (`resolveSpawnUsername(session.createdBy)`) — NOT the requesting auth
+ *   user — so a shared session's rename runs as the shared account, not
+ *   the requester (#1622).
  */
-export async function getCurrentBranch(cwd: string): Promise<string> {
+export async function getCurrentBranch(cwd: string, requestUser?: string | null): Promise<string> {
   try {
-    const branch = await git(['branch', '--show-current'], cwd);
+    const branch = await git(['branch', '--show-current'], cwd, DEFAULT_GIT_TIMEOUT_MS, requestUser);
     return branch || '(detached)';
   } catch {
     return '(unknown)';
@@ -417,9 +423,20 @@ export async function refreshDefaultBranch(
 
 /**
  * Rename a branch.
+ *
+ * @param requestUser - See {@link git}. Callers on a user-owned worktree
+ *   (multi-user mode) must pass the SESSION'S SPAWN USER
+ *   (`resolveSpawnUsername(session.createdBy)`) — NOT the requesting auth
+ *   user — so a shared session's rename runs as the shared account, not
+ *   the requester (#1622).
  */
-export async function renameBranch(oldName: string, newName: string, cwd: string): Promise<void> {
-  await git(['branch', '-m', oldName, newName], cwd);
+export async function renameBranch(
+  oldName: string,
+  newName: string,
+  cwd: string,
+  requestUser?: string | null,
+): Promise<void> {
+  await git(['branch', '-m', oldName, newName], cwd, DEFAULT_GIT_TIMEOUT_MS, requestUser);
 }
 
 /**

@@ -582,6 +582,88 @@ export class WorkerLifecycleManager {
     return true;
   }
 
+  /**
+   * Rename a worktree session's branch, if requested, as part of a worker
+   * restart or conversion. Shared by all five restart/conversion call sites
+   * (#1600) -- each one had carried a byte-identical copy of this block.
+   *
+   * Both git calls run as the SESSION'S SPAWN USER
+   * (`resolveSpawnUsername(session.createdBy)`), never the requesting auth
+   * user: a shared session's worktree is owned by the shared account, and a
+   * rename requested by a different human must still run as that account or
+   * it fails with "dubious ownership" in multi-user mode (#1622 R2). This
+   * mirrors the identity PTY spawn and `git worktree add` already use.
+   *
+   * Returns whether a rename was REQUESTED (`branch !== undefined &&
+   * session.type === 'worktree'`) -- the predicate the two `hasBranchChange`
+   * broadcast gates read -- NOT whether the branch name actually changed.
+   * Note this differs from the entry gate below (`branch &&
+   * session.type === 'worktree'`, a truthy check): an empty-string `branch`
+   * skips the git calls but this still returns `true` for it. That mismatch
+   * predates this extraction and is preserved byte-identically (#1600).
+   *
+   * Order is load-bearing: call this BEFORE the first teardown call
+   * (`killWorker` / `deactivateEmbeddedAgentWorker`) at every call site -- a
+   * failed rename must not have already destroyed the existing worker.
+   *
+   * `options.persistOnRename` is set only by
+   * `restartEmbeddedWorkerSameDefinition`, whose own doc comment explains
+   * why: that method's `deactivate`/`activate` calls cannot be relied on to
+   * carry the rename (the #1599 F1 persist).
+   *
+   * Single-user-mode bypass is NOT re-verified at this layer: `deps.
+   * resolveSpawnUsername` always resolves to a non-null username (falling
+   * back to the server-process user via `os.userInfo().username` when
+   * `createdBy` is absent or unresolvable -- see `resolve-spawn-username.ts`),
+   * and it is `runAsUser`'s own internal `shouldElevateForUser`-shaped check
+   * (`AUTH_MODE === 'multi-user' && username !== serverUsername`) that
+   * decides whether to actually elevate. That decision is exercised by
+   * `privilege-elevation.test.ts`'s `shouldElevateForUser` /
+   * `buildSpawnArgs` suites, not re-tested here.
+   */
+  private async renameSessionBranchIfRequested(
+    session: InternalSession,
+    workerId: string,
+    branch: string | undefined,
+    options: { persistOnRename?: boolean } = {},
+  ): Promise<boolean> {
+    const sessionId = session.id;
+
+    if (branch && session.type === 'worktree') {
+      const requestUser = await this.deps.resolveSpawnUsername(session.createdBy);
+      try {
+        const currentBranch = await gitGetCurrentBranch(session.locationPath, requestUser);
+        if (currentBranch !== branch) {
+          await gitRenameBranch(currentBranch, branch, session.locationPath, requestUser);
+        }
+        session.worktreeId = branch;
+      } catch (err) {
+        logger.error(
+          { sessionId, workerId, branch, locationPath: session.locationPath, err },
+          'Failed to rename branch during worker restart'
+        );
+        throw err;
+      }
+
+      // Update git-diff workers' base commit after successful branch rename.
+      // This is a secondary concern - failure should not abort the restart.
+      try {
+        await this.updateGitDiffWorkersAfterBranchRename(sessionId);
+      } catch (err) {
+        logger.error(
+          { sessionId, err },
+          'Failed to update git-diff workers after branch rename'
+        );
+      }
+
+      if (options.persistOnRename) {
+        await this.deps.persistSession(session);
+      }
+    }
+
+    return branch !== undefined && session.type === 'worktree';
+  }
+
   async restartAgentWorker(
     sessionId: string,
     workerId: string,
@@ -644,33 +726,9 @@ export class WorkerLifecycleManager {
       }
     }
 
-    // Handle branch rename if requested (must happen before restart)
-    if (branch && session.type === 'worktree') {
-      try {
-        const currentBranch = await gitGetCurrentBranch(session.locationPath);
-        if (currentBranch !== branch) {
-          await gitRenameBranch(currentBranch, branch, session.locationPath);
-        }
-        session.worktreeId = branch;
-      } catch (err) {
-        logger.error(
-          { sessionId, workerId, branch, locationPath: session.locationPath, err },
-          'Failed to rename branch during worker restart'
-        );
-        throw err;
-      }
-
-      // Update git-diff workers' base commit after successful branch rename.
-      // This is a secondary concern - failure should not abort the agent restart.
-      try {
-        await this.updateGitDiffWorkersAfterBranchRename(sessionId);
-      } catch (err) {
-        logger.error(
-          { sessionId, err },
-          'Failed to update git-diff workers after branch rename'
-        );
-      }
-    }
+    // Handle branch rename if requested (must happen before restart) --
+    // shared helper (#1622/#1600).
+    const hasBranchChange = await this.renameSessionBranchIfRequested(session, workerId, branch);
 
     const isAgentChanged = workerAgentId !== existingWorker.agentId;
 
@@ -762,7 +820,6 @@ export class WorkerLifecycleManager {
     await this.deps.persistSession(currentSession);
 
     // Broadcast session update so all clients learn about agent/name/branch changes
-    const hasBranchChange = branch !== undefined && session.type === 'worktree';
     if (isAgentChanged || hasBranchChange) {
       this.deps.getSessionLifecycleCallbacks()?.onSessionUpdated?.(this.deps.toPublicSession(currentSession));
     }
@@ -915,33 +972,8 @@ export class WorkerLifecycleManager {
     }
 
     // Handle branch rename if requested (must happen before restart) --
-    // identical block to restartAgentWorker's.
-    if (branch && session.type === 'worktree') {
-      try {
-        const currentBranch = await gitGetCurrentBranch(session.locationPath);
-        if (currentBranch !== branch) {
-          await gitRenameBranch(currentBranch, branch, session.locationPath);
-        }
-        session.worktreeId = branch;
-      } catch (err) {
-        logger.error(
-          { sessionId, workerId, branch, locationPath: session.locationPath, err },
-          'Failed to rename branch during worker restart'
-        );
-        throw err;
-      }
-
-      // Update git-diff workers' base commit after successful branch rename.
-      // This is a secondary concern - failure should not abort the restart.
-      try {
-        await this.updateGitDiffWorkersAfterBranchRename(sessionId);
-      } catch (err) {
-        logger.error(
-          { sessionId, err },
-          'Failed to update git-diff workers after branch rename'
-        );
-      }
-    }
+    // shared helper (#1622/#1600).
+    await this.renameSessionBranchIfRequested(session, workerId, branch);
 
     // Capture worker metadata before killing (needed for new worker creation).
     const workerName = this.generateWorkerName(session, 'embedded-agent', undefined, embeddedAgentDefinition.name);
@@ -1137,33 +1169,8 @@ export class WorkerLifecycleManager {
     }
 
     // Handle branch rename if requested (must happen before restart) --
-    // identical block to the sibling methods'.
-    if (branch && session.type === 'worktree') {
-      try {
-        const currentBranch = await gitGetCurrentBranch(session.locationPath);
-        if (currentBranch !== branch) {
-          await gitRenameBranch(currentBranch, branch, session.locationPath);
-        }
-        session.worktreeId = branch;
-      } catch (err) {
-        logger.error(
-          { sessionId, workerId, branch, locationPath: session.locationPath, err },
-          'Failed to rename branch during worker restart'
-        );
-        throw err;
-      }
-
-      // Update git-diff workers' base commit after successful branch rename.
-      // This is a secondary concern - failure should not abort the restart.
-      try {
-        await this.updateGitDiffWorkersAfterBranchRename(sessionId);
-      } catch (err) {
-        logger.error(
-          { sessionId, err },
-          'Failed to update git-diff workers after branch rename'
-        );
-      }
-    }
+    // shared helper (#1622/#1600).
+    await this.renameSessionBranchIfRequested(session, workerId, branch);
 
     // Capture worker metadata before tearing down (needed for new worker creation).
     const workerName = this.generateWorkerName(session, 'agent', agentId);
@@ -1352,41 +1359,12 @@ export class WorkerLifecycleManager {
     if (!existingWorker || existingWorker.type !== 'embedded-agent') return null;
 
     // Handle branch rename if requested (must happen before restart) --
-    // identical block to the sibling methods'.
-    if (branch && session.type === 'worktree') {
-      try {
-        const currentBranch = await gitGetCurrentBranch(session.locationPath);
-        if (currentBranch !== branch) {
-          await gitRenameBranch(currentBranch, branch, session.locationPath);
-        }
-        session.worktreeId = branch;
-      } catch (err) {
-        logger.error(
-          { sessionId, workerId, branch, locationPath: session.locationPath, err },
-          'Failed to rename branch during worker restart'
-        );
-        throw err;
-      }
-
-      // Update git-diff workers' base commit after successful branch rename.
-      // This is a secondary concern - failure should not abort the restart.
-      try {
-        await this.updateGitDiffWorkersAfterBranchRename(sessionId);
-      } catch (err) {
-        logger.error(
-          { sessionId, err },
-          'Failed to update git-diff workers after branch rename'
-        );
-      }
-
-      // Persist the rename explicitly, before deactivate/activate: a
-      // dormant worker's deactivate() is a no-op (nothing to persist) and
-      // activate() only persists on its own success path, so neither call
-      // can be relied on to carry this mutation -- see the method doc
-      // comment above for the full reasoning. The rename must be durable
-      // even if activation below throws.
-      await this.deps.persistSession(session);
-    }
+    // shared helper (#1622/#1600). This call site persists the rename
+    // immediately (see method doc comment above for why deactivate/activate
+    // cannot be relied on to carry it -- the #1599 F1 persist).
+    const hasBranchChange = await this.renameSessionBranchIfRequested(
+      session, workerId, branch, { persistOnRename: true },
+    );
 
     await this.deps.deactivateEmbeddedAgentWorker(sessionId, workerId);
     await this.deps.activateEmbeddedAgentWorker(sessionId, workerId);
@@ -1410,7 +1388,6 @@ export class WorkerLifecycleManager {
     // there is no type/identity change to force a broadcast for -- only
     // fire onSessionUpdated when the branch actually changed, mirroring
     // restartAgentWorker's own hasBranchChange gate.
-    const hasBranchChange = branch !== undefined && session.type === 'worktree';
     if (hasBranchChange) {
       this.deps.getSessionLifecycleCallbacks()?.onSessionUpdated?.(this.deps.toPublicSession(currentSession));
     }
@@ -1512,33 +1489,8 @@ export class WorkerLifecycleManager {
     }
 
     // Handle branch rename if requested (must happen before restart) --
-    // identical block to the sibling methods'.
-    if (branch && session.type === 'worktree') {
-      try {
-        const currentBranch = await gitGetCurrentBranch(session.locationPath);
-        if (currentBranch !== branch) {
-          await gitRenameBranch(currentBranch, branch, session.locationPath);
-        }
-        session.worktreeId = branch;
-      } catch (err) {
-        logger.error(
-          { sessionId, workerId, branch, locationPath: session.locationPath, err },
-          'Failed to rename branch during worker restart'
-        );
-        throw err;
-      }
-
-      // Update git-diff workers' base commit after successful branch rename.
-      // This is a secondary concern - failure should not abort the restart.
-      try {
-        await this.updateGitDiffWorkersAfterBranchRename(sessionId);
-      } catch (err) {
-        logger.error(
-          { sessionId, err },
-          'Failed to update git-diff workers after branch rename'
-        );
-      }
-    }
+    // shared helper (#1622/#1600).
+    await this.renameSessionBranchIfRequested(session, workerId, branch);
 
     // Capture worker metadata before tearing down.
     const workerName = this.generateWorkerName(session, 'embedded-agent', undefined, embeddedAgentDefinition.name);
