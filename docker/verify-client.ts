@@ -114,17 +114,15 @@ function fail(msg: string): never {
   process.exit(1);
 }
 
-// This file has no tsconfig.json of its own, so a type-check against it
-// (see docker/README.md) falls back to TypeScript's default `lib`, which
-// includes `DOM`. Under `lib: DOM`, the global `WebSocket` binding resolves
-// to the DOM constructor overloads (`new (url, protocols?: string |
-// string[])`), which has no `headers` option — Bun's own constructor
-// overload (`new (url, options?: Bun.WebSocketOptions)`, which does accept
-// `headers`) only wins when `DOM` is absent from `lib`. The cast is
-// therefore required here, not a leftover; it is centralized in this one
-// helper so it exists exactly once.
+// `docker/tsconfig.json` scopes this file to a Bun-specific type
+// environment with no `DOM` lib, so the global `WebSocket` binding resolves
+// to Bun's own constructor overload (`new (url, options?:
+// Bun.WebSocketOptions)`, which accepts `headers`) instead of the DOM
+// overload (`new (url, protocols?: string | string[])`, which does not).
+// No cast is needed to construct it — see `tsc -p docker` in
+// docker/README.md.
 function openAuthedWebSocket(wsUrl: string, cookie: string): WebSocket {
-  return new WebSocket(wsUrl, { headers: { Cookie: cookie } } as unknown as string[]);
+  return new WebSocket(wsUrl, { headers: { Cookie: cookie } });
 }
 
 // 1. Login and capture the auth_token cookie from Set-Cookie.
@@ -224,7 +222,7 @@ if (attach) {
   if (sessionRes.status !== 201) {
     fail(`create session returned HTTP ${sessionRes.status}: ${await sessionRes.text()}`);
   }
-  sessionId = (await sessionRes.json()).session.id as string;
+  sessionId = ((await sessionRes.json()) as { session: { id: string } }).session.id;
 
   // 3. Create a terminal worker (spawns `sudo -u <user> -i sh -c 'exec $SHELL -l'`).
   const workerRes = await fetch(`${baseUrl}/api/sessions/${sessionId}/workers`, {
@@ -235,7 +233,7 @@ if (attach) {
   if (workerRes.status !== 201) {
     fail(`create worker returned HTTP ${workerRes.status}: ${await workerRes.text()}`);
   }
-  workerId = (await workerRes.json()).worker.id as string;
+  workerId = ((await workerRes.json()) as { worker: { id: string } }).worker.id;
 
   if (printIds) {
     console.log(`SESSION_ID=${sessionId}`);

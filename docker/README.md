@@ -28,6 +28,7 @@ ports, so they can run **side by side**.
 | `dev-entrypoint.sh` | Dev-stack entrypoint: fixes volume-mountpoint ownership as root, drops to `agentconsole`, runs `bun install`, starts vite + server. |
 | `sudoers-agentconsole` | Grants the service user permission to launch login shells as any non-root user. |
 | `verify-client.ts` | Drives the real shipping path (login → session → terminal worker → WS) and asserts `whoami` inside the PTY; also supports `--attach` (probe an already-existing session/worker) and `--list-session` (assert a session is visible via the app WebSocket's `sessions-sync` frame). |
+| `tsconfig.json` | Scopes `verify-client.ts` to a Bun-specific type environment (no `DOM` lib), so the global `WebSocket` binding resolves to Bun's `headers`-accepting constructor overload instead of the DOM one. Type-check with `tsc -p docker` from the repository root. It borrows Bun's ambient type declarations from `packages/server`'s installed `@types/bun` via `typeRoots`, since `docker/` is not its own workspace member and has no `node_modules` of its own. |
 | `../scripts/verify-multiuser-docker.sh` | One-command verification orchestrator: build, start, run all checks, report. |
 
 ## Dev stack
