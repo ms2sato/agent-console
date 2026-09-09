@@ -5,10 +5,10 @@
  * this test uses a real in-memory sqlite DB only, no real filesystem
  * needed.
  */
-import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
 import { Hono } from 'hono';
 import type { Kysely } from 'kysely';
-import type { AuthUser } from '@agent-console/shared';
+import type { AppServerMessage, AuthUser } from '@agent-console/shared';
 import { BookmarkSchema } from '@agent-console/shared';
 import * as v from 'valibot';
 import type { Database } from '../../database/schema.js';
@@ -50,10 +50,12 @@ function mockUserMode(authenticateResult: AuthUser | null): UserMode {
 function buildApp(
   bookmarkRepository: SqliteBookmarkRepository,
   authenticateResult: AuthUser | null,
+  broadcastToApp: (msg: AppServerMessage) => void = () => {},
 ): Hono<AppBindings> {
   const partialContext: Partial<AppContext> = {
     bookmarkRepository,
     userMode: mockUserMode(authenticateResult),
+    broadcastToApp,
   };
   const app = new Hono<AppBindings>();
   app.use('*', async (c, next) => {
@@ -332,6 +334,47 @@ describe('Bookmark routes', () => {
       });
       expect(res.status).toBe(201);
     });
+
+    // -----------------------------------------------------------------------
+    // Broadcast (realtime refresh trigger)
+    // -----------------------------------------------------------------------
+
+    describe('broadcast (realtime refresh trigger, Issue #1632)', () => {
+      // Reach measurement: commenting out the `emitBookmarkCreated(...)` call
+      // in routes/bookmarks.ts's POST handler makes this test fail (0 calls
+      // seen on mockBroadcastToApp, expected 1).
+      it('emits exactly one bookmark-created trigger with the posted sessionId after a successful create', async () => {
+        const mockBroadcastToApp = mock((_msg: AppServerMessage) => {});
+        const app = buildApp(repository, OWNER, mockBroadcastToApp);
+        const res = await app.request('/api/bookmarks', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ url: 'https://example.com', sessionId: 'session-broadcast-1' }),
+        });
+
+        expect(res.status).toBe(201);
+        const body = (await res.json()) as { bookmark: { id: string } };
+        expect(mockBroadcastToApp).toHaveBeenCalledTimes(1);
+        expect(mockBroadcastToApp).toHaveBeenCalledWith({
+          type: 'bookmark-created',
+          sessionId: 'session-broadcast-1',
+          bookmarkId: body.bookmark.id,
+        });
+      });
+
+      it('emits no trigger when the create is rejected (400, invalid scheme)', async () => {
+        const mockBroadcastToApp = mock((_msg: AppServerMessage) => {});
+        const app = buildApp(repository, OWNER, mockBroadcastToApp);
+        const res = await app.request('/api/bookmarks', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ url: 'javascript:alert(1)', sessionId: 'session-1' }),
+        });
+
+        expect(res.status).toBe(400);
+        expect(mockBroadcastToApp).not.toHaveBeenCalled();
+      });
+    });
   });
 
   // =========================================================================
@@ -398,6 +441,71 @@ describe('Bookmark routes', () => {
       const app = buildApp(repository, null);
       const res = await app.request(`/api/bookmarks/${created.id}`, { method: 'DELETE' });
       expect(res.status).toBe(401);
+    });
+
+    // -----------------------------------------------------------------------
+    // Broadcast (realtime refresh trigger)
+    // -----------------------------------------------------------------------
+    //
+    // Deliberately no route-level test for `sourceSessionId === null` on
+    // delete -- that branch belongs solely to
+    // lib/__tests__/artifact-bookmark-triggers.test.ts (Architect ruling:
+    // testing the writer function again through a route would be redundant
+    // coverage of the same branch, not a new one).
+
+    describe('broadcast (realtime refresh trigger, Issue #1632)', () => {
+      // Reach measurement: commenting out the `emitBookmarkDeleted(...)`
+      // call in routes/bookmarks.ts's DELETE handler makes this test fail
+      // (0 calls seen on mockBroadcastToApp, expected 1).
+      it('emits exactly one bookmark-deleted trigger naming the OWNING session (sourceSessionId) after a successful delete', async () => {
+        const created = await repository.create({
+          id: 'bookmark-to-delete-broadcast',
+          userId: OWNER.id,
+          url: 'https://example.com/bye',
+          title: 'To delete',
+          sourceSessionId: 'session-y',
+          origin: 'user',
+        });
+
+        const mockBroadcastToApp = mock((_msg: AppServerMessage) => {});
+        const app = buildApp(repository, OWNER, mockBroadcastToApp);
+        const res = await app.request(`/api/bookmarks/${created.id}`, { method: 'DELETE' });
+
+        expect(res.status).toBe(200);
+        expect(mockBroadcastToApp).toHaveBeenCalledTimes(1);
+        expect(mockBroadcastToApp).toHaveBeenCalledWith({
+          type: 'bookmark-deleted',
+          sessionId: 'session-y',
+          bookmarkId: created.id,
+        });
+      });
+
+      it('emits no trigger on a non-owner delete (403)', async () => {
+        const created = await repository.create({
+          id: 'bookmark-not-yours-broadcast',
+          userId: OWNER.id,
+          url: 'https://example.com/mine',
+          title: 'Not yours',
+          sourceSessionId: 'session-y',
+          origin: 'user',
+        });
+
+        const mockBroadcastToApp = mock((_msg: AppServerMessage) => {});
+        const app = buildApp(repository, OTHER, mockBroadcastToApp);
+        const res = await app.request(`/api/bookmarks/${created.id}`, { method: 'DELETE' });
+
+        expect(res.status).toBe(403);
+        expect(mockBroadcastToApp).not.toHaveBeenCalled();
+      });
+
+      it('emits no trigger on a not-found delete (404)', async () => {
+        const mockBroadcastToApp = mock((_msg: AppServerMessage) => {});
+        const app = buildApp(repository, OWNER, mockBroadcastToApp);
+        const res = await app.request('/api/bookmarks/does-not-exist', { method: 'DELETE' });
+
+        expect(res.status).toBe(404);
+        expect(mockBroadcastToApp).not.toHaveBeenCalled();
+      });
     });
   });
 });

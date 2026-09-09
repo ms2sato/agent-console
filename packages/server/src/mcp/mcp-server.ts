@@ -38,6 +38,12 @@ import type { InterSessionMessageService } from '../services/inter-session-messa
 import { buildReplyInstructions } from '../lib/pty-notification.js';
 import { getRemoteUrl, GitError } from '../lib/git.js';
 import { createLogger } from '../lib/logger.js';
+import {
+  emitArtifactCreated,
+  emitArtifactDeleted,
+  emitBookmarkCreated,
+  emitBookmarkDeleted,
+} from '../lib/artifact-bookmark-triggers.js';
 import { serverConfig } from '../lib/server-config.js';
 import { resolveRequestUsername } from '../services/resolve-spawn-username.js';
 import {
@@ -2028,7 +2034,7 @@ export function createMcpApp(deps: McpDependencies): Hono {
           'HTML artifact created',
         );
 
-        broadcastToApp({ type: 'artifact-created', sessionId, artifactId: artifact.id });
+        emitArtifactCreated(broadcastToApp, { sessionId, artifactId: artifact.id });
 
         // AGENT_CONSOLE_PUBLIC_ORIGIN is the ONLY source for an absolute
         // URL here. MCP tool calls arrive over the localhost dial-back
@@ -2106,18 +2112,9 @@ export function createMcpApp(deps: McpDependencies): Hono {
 
         logger.info({ artifactId, sessionId, userId: session.createdBy }, 'HTML artifact deleted via MCP');
 
-        // The trigger's sessionId names the OWNING session (whose panel
-        // query this artifact was listed under) -- resolved from the
-        // record, never from the deleting call's own sessionId param. The
-        // two coincide for create but diverge whenever a caller deletes an
-        // artifact from a different session than the one that created it
-        // (e.g. an orchestrator session cleaning up a delegate session's
-        // artifacts) -- using the deleting session there would tell the
-        // WRONG panel to refetch and leave the artifact's actual owning
-        // panel stale. Falls back to the deleting session only in the
-        // (currently unreachable in production, since create_html_artifact
-        // always sets sourceSessionId) case of a null sourceSessionId.
-        broadcastToApp({ type: 'artifact-deleted', sessionId: artifact.sourceSessionId ?? sessionId, artifactId });
+        // Owning-session resolution + fallback rationale: see
+        // lib/artifact-bookmark-triggers.ts's module doc comment.
+        emitArtifactDeleted(broadcastToApp, artifact, artifactId, sessionId);
 
         return textResult({ deleted: true, artifactId });
       } catch (err) {
@@ -2198,7 +2195,7 @@ export function createMcpApp(deps: McpDependencies): Hono {
           'Bookmark created via MCP',
         );
 
-        broadcastToApp({ type: 'bookmark-created', sessionId, bookmarkId: created.id });
+        emitBookmarkCreated(broadcastToApp, { sessionId, bookmarkId: created.id });
 
         // `create` returns the server-internal BookmarkRecord (wire summary
         // + userId + sourceSessionId); strip both before crossing the wire
@@ -2272,11 +2269,9 @@ export function createMcpApp(deps: McpDependencies): Hono {
 
         logger.info({ bookmarkId, sessionId, userId: session.createdBy }, 'Bookmark deleted via MCP');
 
-        // Same rationale as delete_html_artifact: the trigger's sessionId
-        // names the OWNING session (resolved from the record), not the
-        // deleting call's own sessionId param -- see ArtifactRecord's doc
-        // comment for the full explanation of why these diverge.
-        broadcastToApp({ type: 'bookmark-deleted', sessionId: bookmark.sourceSessionId ?? sessionId, bookmarkId });
+        // Owning-session resolution + fallback rationale: see
+        // lib/artifact-bookmark-triggers.ts's module doc comment.
+        emitBookmarkDeleted(broadcastToApp, bookmark, bookmarkId, sessionId);
 
         return textResult({ deleted: true, bookmarkId });
       } catch (err) {

@@ -17,6 +17,7 @@ import type { AppBindings } from '../app-context.js';
 import { NotFoundError, ForbiddenError } from '../lib/errors.js';
 import { vValidator } from '../middleware/validation.js';
 import { CreateBookmarkRequestSchema } from '@agent-console/shared';
+import { emitBookmarkCreated, emitBookmarkDeleted } from '../lib/artifact-bookmark-triggers.js';
 
 const bookmarks = new Hono<AppBindings>()
   // List the authenticated user's own bookmarks, newest first.
@@ -41,7 +42,7 @@ const bookmarks = new Hono<AppBindings>()
   // client displays the URL when title is absent.
   .post('/', vValidator(CreateBookmarkRequestSchema), async (c) => {
     const body = c.req.valid('json');
-    const { bookmarkRepository } = c.get('appContext');
+    const { bookmarkRepository, broadcastToApp } = c.get('appContext');
     const authUser = c.get('authUser');
 
     const created = await bookmarkRepository.create({
@@ -56,6 +57,9 @@ const bookmarks = new Hono<AppBindings>()
       // docs/design/session-bookmarks.md §6.1).
       origin: 'user',
     });
+
+    emitBookmarkCreated(broadcastToApp, { sessionId: body.sessionId, bookmarkId: created.id });
+
     // `create` returns the server-internal BookmarkRecord (wire summary +
     // userId + sourceSessionId); strip both before crossing the wire (see
     // packages/shared/src/types/bookmark.ts's wire-shape JSDoc).
@@ -66,7 +70,7 @@ const bookmarks = new Hono<AppBindings>()
   // survives untouched; deleting a nonexistent id is 404.
   .delete('/:id', async (c) => {
     const id = c.req.param('id');
-    const { bookmarkRepository } = c.get('appContext');
+    const { bookmarkRepository, broadcastToApp } = c.get('appContext');
     const authUser = c.get('authUser');
 
     const bookmark = await bookmarkRepository.findById(id);
@@ -82,6 +86,12 @@ const bookmarks = new Hono<AppBindings>()
       // Deleted between the existence check and delete (race); idempotent 404.
       throw new NotFoundError('Bookmark');
     }
+
+    // Owning-session resolution rationale: see
+    // lib/artifact-bookmark-triggers.ts's module doc comment. No fallback
+    // here -- REST has no "calling session" concept to fall back to.
+    emitBookmarkDeleted(broadcastToApp, bookmark, id);
+
     return c.json({ success: true });
   });
 
