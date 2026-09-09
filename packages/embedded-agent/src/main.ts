@@ -105,7 +105,7 @@ export interface McpClientLike extends ToolExecutor {
 /** Injectable construction of the loop's external dependencies. */
 export interface LoopFactories {
   createMcpClient(): McpClientLike;
-  createAdapter(opts: { baseUrl: string; apiKey?: string }): ProviderAdapter;
+  createAdapter(opts: { baseUrl: string; apiKey?: string; conversationId?: string }): ProviderAdapter;
   /** Both engines' single instruction-loading seam as of Phase A (#1343)
    * (R1) -- the claude-sdk engine no longer has a separate opt-in-only
    * factory; `loadOptInInstructions` is no longer a member of this interface,
@@ -345,6 +345,7 @@ async function initializeLoop(
     const adapter = factories.createAdapter({
       baseUrl: init.provider.baseUrl,
       apiKey: init.provider.apiKey,
+      conversationId: init.context.workerId,
     });
 
     let restoredConversation = init.restoredConversation;
