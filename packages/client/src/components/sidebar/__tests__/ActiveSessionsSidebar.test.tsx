@@ -1098,6 +1098,8 @@ describe('ActiveSessionsSidebar', () => {
       await waitFor(() => {
         expect(screen.getByText('Restart All Agents')).toBeTruthy();
         expect(screen.getByText(/This will restart every active agent worker/)).toBeTruthy();
+        expect(screen.getByText(/terminal agents \(such as Claude Code\)/i)).toBeTruthy();
+        expect(screen.getByText(/embedded agents/i)).toBeTruthy();
         expect(screen.getByText(/conversations continue/i)).toBeTruthy();
         expect(screen.getByText(/never received its initial task/i)).toBeTruthy();
         expect(
