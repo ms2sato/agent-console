@@ -11,14 +11,14 @@
  * A real repository also gives the delete-ownership tests genuine row+file
  * verification instead of asserting mock-call-shape only.
  */
-import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
 import { Hono } from 'hono';
 import * as path from 'path';
 import * as os from 'os';
 import { randomUUID } from 'crypto';
 import type { Kysely } from 'kysely';
 import * as v from 'valibot';
-import type { AuthUser } from '@agent-console/shared';
+import type { AppServerMessage, AuthUser } from '@agent-console/shared';
 import { ArtifactSchema } from '@agent-console/shared';
 import type { Database } from '../../database/schema.js';
 import { createDatabaseForTest } from '../../database/connection.js';
@@ -65,10 +65,12 @@ function mockUserMode(authenticateResult: AuthUser | null): UserMode {
 function buildApp(
   artifactRepository: SqliteArtifactRepository,
   authenticateResult: AuthUser | null,
+  broadcastToApp: (msg: AppServerMessage) => void = () => {},
 ): Hono<AppBindings> {
   const partialContext: Partial<AppContext> = {
     artifactRepository,
     userMode: mockUserMode(authenticateResult),
+    broadcastToApp,
   };
   const app = new Hono<AppBindings>();
   app.use('*', async (c, next) => {
@@ -597,6 +599,69 @@ describe('Artifact routes', () => {
       const app = buildApp(repository, null);
       const res = await app.request(`/api/artifacts/${created.id}`, { method: 'DELETE' });
       expect(res.status).toBe(401);
+    });
+
+    // -----------------------------------------------------------------------
+    // Broadcast (realtime refresh trigger)
+    // -----------------------------------------------------------------------
+    //
+    // Deliberately no route-level test for `sourceSessionId === null` on
+    // delete -- that branch belongs solely to
+    // lib/__tests__/artifact-bookmark-triggers.test.ts (Architect ruling:
+    // testing the writer function again through a route would be redundant
+    // coverage of the same branch, not a new one).
+
+    describe('broadcast (realtime refresh trigger, Issue #1632)', () => {
+      // Reach measurement: commenting out the `emitArtifactDeleted(...)`
+      // call in routes/artifacts.ts's DELETE handler makes this test fail
+      // (0 calls seen on mockBroadcastToApp, expected 1).
+      it('emits exactly one artifact-deleted trigger naming the OWNING session (sourceSessionId) after a successful delete', async () => {
+        const created = await repository.create({
+          id: randomUUID(),
+          userId: OWNER.id,
+          title: 'To delete',
+          content: '<p>bye</p>',
+          sourceSessionId: 'session-y',
+        });
+
+        const mockBroadcastToApp = mock((_msg: AppServerMessage) => {});
+        const app = buildApp(repository, OWNER, mockBroadcastToApp);
+        const res = await app.request(`/api/artifacts/${created.id}`, { method: 'DELETE' });
+
+        expect(res.status).toBe(200);
+        expect(mockBroadcastToApp).toHaveBeenCalledTimes(1);
+        expect(mockBroadcastToApp).toHaveBeenCalledWith({
+          type: 'artifact-deleted',
+          sessionId: 'session-y',
+          artifactId: created.id,
+        });
+      });
+
+      it('emits no trigger on a non-owner delete (403)', async () => {
+        const created = await repository.create({
+          id: randomUUID(),
+          userId: OWNER.id,
+          title: 'Not yours',
+          content: '<p>mine</p>',
+          sourceSessionId: 'session-y',
+        });
+
+        const mockBroadcastToApp = mock((_msg: AppServerMessage) => {});
+        const app = buildApp(repository, OTHER, mockBroadcastToApp);
+        const res = await app.request(`/api/artifacts/${created.id}`, { method: 'DELETE' });
+
+        expect(res.status).toBe(403);
+        expect(mockBroadcastToApp).not.toHaveBeenCalled();
+      });
+
+      it('emits no trigger on a not-found delete (404)', async () => {
+        const mockBroadcastToApp = mock((_msg: AppServerMessage) => {});
+        const app = buildApp(repository, OWNER, mockBroadcastToApp);
+        const res = await app.request('/api/artifacts/does-not-exist', { method: 'DELETE' });
+
+        expect(res.status).toBe(404);
+        expect(mockBroadcastToApp).not.toHaveBeenCalled();
+      });
     });
   });
 });

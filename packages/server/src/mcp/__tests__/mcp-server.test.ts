@@ -1,6 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach, mock, jest } from 'bun:test';
 import { vol } from 'memfs';
 import { Hono } from 'hono';
+import * as path from 'path';
+import * as os from 'os';
 import { setupMemfs, cleanupMemfs } from '../../__tests__/utils/mock-fs-helper.js';
 import { createMockPtyFactory } from '../../__tests__/utils/mock-pty.js';
 import { mockProcess, resetProcessMock } from '../../__tests__/utils/mock-process-helper.js';
@@ -5265,6 +5267,102 @@ describe('MCP Server Tools', () => {
 
       expect(mockBroadcastToApp).toHaveBeenCalledTimes(1);
       expect(mockBroadcastToApp).toHaveBeenCalledWith({ type: 'bookmark-deleted', sessionId: session.id, bookmarkId: created.id });
+    });
+  });
+
+  // ===========================================================================
+  // create_html_artifact / delete_html_artifact: realtime refresh broadcast
+  // wiring (mcp-server.ts wiring, this createMcpApp instance)
+  //
+  // Full behavior coverage (validation, ownership resolution, authz) lives
+  // in the dedicated __tests__/create-html-artifact.test.ts and
+  // delete-html-artifact.test.ts, mirroring the bookmark tools' own split
+  // above. This block exists so a change to mcp-server.ts's broadcastToApp
+  // call sites is caught by THIS file too (its own sibling-test coverage),
+  // not only by the dedicated per-tool files -- unlike bookmarks, artifacts
+  // write real bytes to disk via `SqliteArtifactRepository` (`Bun.write` /
+  // `Bun.file`, see `lib/artifact-storage.ts`'s header comment), which
+  // bypasses this file's process-wide memfs mock. This block therefore
+  // scopes `AGENT_CONSOLE_HOME` to a real `os.tmpdir()`-based directory for
+  // its own tests only, mirroring `create-html-artifact.test.ts`'s own
+  // save/restore pattern, and restores it afterward so no other test in
+  // this file is affected.
+  // ===========================================================================
+
+  describe('create_html_artifact / delete_html_artifact: broadcast wiring (mcp-server.ts)', () => {
+    let savedAgentConsoleHome: string | undefined;
+    let realConfigDir: string | undefined;
+
+    beforeEach(() => {
+      savedAgentConsoleHome = process.env.AGENT_CONSOLE_HOME;
+      realConfigDir = path.join(os.tmpdir(), `agent-console-mcp-server-artifact-broadcast-test-${crypto.randomUUID()}`);
+      process.env.AGENT_CONSOLE_HOME = realConfigDir;
+    });
+
+    afterEach(() => {
+      if (realConfigDir) {
+        Bun.spawnSync(['rm', '-rf', realConfigDir]);
+        realConfigDir = undefined;
+      }
+      if (savedAgentConsoleHome !== undefined) {
+        process.env.AGENT_CONSOLE_HOME = savedAgentConsoleHome;
+      } else {
+        delete process.env.AGENT_CONSOLE_HOME;
+      }
+    });
+
+    it('create_html_artifact emits exactly one artifact-created trigger after a successful create', async () => {
+      const owner = await userRepository.upsertByOsUid(9003, 'artifact-broadcast-owner', '/home/artifact-broadcast-owner');
+      const session = await sessionManager.createSession(
+        { type: 'quick', locationPath: '/test/path' },
+        { createdBy: owner.id },
+      );
+
+      const mockBroadcastToApp = mock(() => {});
+      await remountMcpApp({ broadcastToApp: mockBroadcastToApp });
+
+      const response = await callTool(
+        app,
+        mcpSessionId,
+        'create_html_artifact',
+        { content: '<p>x</p>', sessionId: session.id },
+        nextId++,
+      );
+      expect(response.result?.isError).toBeUndefined();
+      const data = parseToolResult(response) as { artifactId: string };
+
+      expect(mockBroadcastToApp).toHaveBeenCalledTimes(1);
+      expect(mockBroadcastToApp).toHaveBeenCalledWith({ type: 'artifact-created', sessionId: session.id, artifactId: data.artifactId });
+    });
+
+    it('delete_html_artifact emits exactly one artifact-deleted trigger after a successful delete', async () => {
+      const owner = await userRepository.upsertByOsUid(9004, 'artifact-broadcast-owner-2', '/home/artifact-broadcast-owner-2');
+      const session = await sessionManager.createSession(
+        { type: 'quick', locationPath: '/test/path' },
+        { createdBy: owner.id },
+      );
+      const created = await artifactRepository.create({
+        id: 'artifact-broadcast-wiring-1',
+        userId: owner.id,
+        title: 'Broadcast wiring test',
+        content: '<p>x</p>',
+        sourceSessionId: session.id,
+      });
+
+      const mockBroadcastToApp = mock(() => {});
+      await remountMcpApp({ broadcastToApp: mockBroadcastToApp });
+
+      const response = await callTool(
+        app,
+        mcpSessionId,
+        'delete_html_artifact',
+        { artifactId: created.id, sessionId: session.id },
+        nextId++,
+      );
+      expect(response.result?.isError).toBeUndefined();
+
+      expect(mockBroadcastToApp).toHaveBeenCalledTimes(1);
+      expect(mockBroadcastToApp).toHaveBeenCalledWith({ type: 'artifact-deleted', sessionId: session.id, artifactId: created.id });
     });
   });
 
