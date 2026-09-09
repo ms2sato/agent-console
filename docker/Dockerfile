@@ -110,13 +110,32 @@ RUN chmod 0440 /etc/sudoers.d/agentconsole \
 #
 # Test users are added to agent-console-users so the multi-user shared-root
 # layout (Issue #830) is exercised in this verification environment.
+#
+# shared1 is the Shared Account (Issue #1619): a pure execution identity that
+# AGENT_CONSOLE_SHARED_USERNAME names in docker/docker-compose.verification.yml.
+# Shared sessions spawn their PTY as this account while the authenticated
+# human remains the initiator -- see docs/design/shared-orchestrator-session.md.
+# It needs a real login shell (/bin/bash) because the elevation rules file
+# only permits /bin/sh, /bin/bash, /usr/bin/sh, /usr/bin/bash as elevation
+# targets, and it joins agent-console-users so it can traverse the shared
+# data root.
+#
+# Deliberate divergence from production: scripts/setup-shared-account.sh LOCKS
+# the shared account's password because the account itself never logs in.
+# This verification image gives it a known password instead, so the stack's
+# own checks can exercise the account directly; that is safe only because
+# this image is loopback-only and already ships intentionally well-known
+# credentials.
 RUN useradd --create-home --shell /bin/bash alice \
  && useradd --create-home --shell /bin/bash bob \
+ && useradd --create-home --shell /bin/bash shared1 \
  && echo 'alice:alice-password' | chpasswd \
  && echo 'bob:bob-password' | chpasswd \
- && chmod 0700 /home/alice /home/bob \
+ && echo 'shared1:shared1-password' | chpasswd \
+ && chmod 0700 /home/alice /home/bob /home/shared1 \
  && usermod -aG agent-console-users alice \
- && usermod -aG agent-console-users bob
+ && usermod -aG agent-console-users bob \
+ && usermod -aG agent-console-users shared1
 
 # --- Application bundle ---
 WORKDIR /app
@@ -132,6 +151,33 @@ RUN cd dist && bun install
 ENV AGENT_CONSOLE_HOME=/var/lib/agent-console
 RUN install -d -o agentconsole -g agent-console-users -m 2775 "${AGENT_CONSOLE_HOME}" \
  && chown -R agentconsole:agent-console-users /app/dist
+
+# --- Workspace copy for scripts/verify-multiuser-docker.sh --smokes (Issue #1619) ---
+# Why: `scripts/verify-multiuser-docker.sh --smokes` runs the repo's real-host
+# smoke scripts (scripts/smoke/check-*.ts) inside this container as
+# agentconsole; they import production source modules from
+# packages/server/src/** and rely on the workspace `bun install` the builder
+# stage already performed. The runtime bundle in /app/dist alone cannot
+# satisfy them.
+#
+# The builder's /app is copied wholesale (source tree + node_modules + the
+# built dist/) because the workspace's node_modules links are all RELATIVE
+# (packages/server/node_modules/hono -> ../../../node_modules/.bun/...), so
+# relocating the tree to /workspace keeps every resolution intact.
+#
+# Cost: this roughly doubles the image size (the install store is ~1 GB).
+# Accepted deliberately -- this is a local verification image, never a
+# production deployment recipe, and the alternative (bind-mounting a host
+# node_modules) is unusable because bun-pty is a native module built for the
+# container's own glibc.
+#
+# /workspace/dist is a harmless duplicate of the served bundle; the smokes
+# never read it. resolveEmbeddedAgentEntryPath keys off the *running
+# module's* directory (import.meta.dir), which for a smoke is
+# /workspace/packages/server/src/services, so the workspace-package
+# resolution branch is the one exercised -- exactly what
+# check-embedded-agent-elevation.ts asserts.
+COPY --from=builder --chown=agentconsole:agent-console-users /app /workspace
 
 # Server configuration.
 # NOTE: NODE_ENV is intentionally left UNSET. NODE_ENV=production makes the auth

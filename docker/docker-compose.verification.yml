@@ -20,6 +20,18 @@ services:
       dockerfile: docker/Dockerfile
     image: agent-console-multiuser-verify
     container_name: agent-console-multiuser-verify
+    environment:
+      # Shared Account (Issue #1619): names the OS account that shared sessions
+      # spawn their PTY as. `shared1` is created by docker/Dockerfile. The
+      # server resolves it at startup and FAILS FAST if the account is missing,
+      # so /api/config reports "sharedAccountsAvailable": true once it is up.
+      #
+      # The `${VAR-default}` (no colon) form is deliberate: it substitutes the
+      # default only when the variable is UNSET, so an explicitly EMPTY host
+      # value passes an empty string through and the server treats it as unset
+      # (shared sessions disabled). That is how the negative arm of check 8 is
+      # driven:  AGENT_CONSOLE_SHARED_USERNAME= scripts/verify-multiuser-docker.sh --no-build
+      AGENT_CONSOLE_SHARED_USERNAME: ${AGENT_CONSOLE_SHARED_USERNAME-shared1}
     # Bind to loopback only: this stack ships intentionally known test
     # credentials and must never be reachable from the LAN. ${PORT:-8080} keeps
     # the host port in sync with scripts/verify-multiuser-docker.sh's PORT env.
