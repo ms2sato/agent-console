@@ -114,6 +114,19 @@ function fail(msg: string): never {
   process.exit(1);
 }
 
+// This file has no tsconfig.json of its own, so a type-check against it
+// (see docker/README.md) falls back to TypeScript's default `lib`, which
+// includes `DOM`. Under `lib: DOM`, the global `WebSocket` binding resolves
+// to the DOM constructor overloads (`new (url, protocols?: string |
+// string[])`), which has no `headers` option — Bun's own constructor
+// overload (`new (url, options?: Bun.WebSocketOptions)`, which does accept
+// `headers`) only wins when `DOM` is absent from `lib`. The cast is
+// therefore required here, not a leftover; it is centralized in this one
+// helper so it exists exactly once.
+function openAuthedWebSocket(wsUrl: string, cookie: string): WebSocket {
+  return new WebSocket(wsUrl, { headers: { Cookie: cookie } } as unknown as string[]);
+}
+
 // 1. Login and capture the auth_token cookie from Set-Cookie.
 const loginRes = await fetch(`${baseUrl}/api/auth/login`, {
   method: 'POST',
@@ -142,7 +155,7 @@ if (listSessionId !== undefined) {
   // (see `packages/server/src/websocket/app-handler.ts`).
   const wsBase = baseUrl.replace(/^http/, 'ws');
   const wsUrl = `${wsBase}/ws/app`;
-  const ws = new WebSocket(wsUrl, { headers: { Cookie: cookie } } as unknown as string[]);
+  const ws = openAuthedWebSocket(wsUrl, cookie);
 
   const result: Promise<{ ok: boolean; detail: string }> = new Promise((resolve) => {
     const timeout = setTimeout(() => {
@@ -233,7 +246,7 @@ if (attach) {
 // 4. Open the worker WebSocket and run the probe command.
 const wsBase = baseUrl.replace(/^http/, 'ws');
 const wsUrl = `${wsBase}/ws/session/${sessionId}/worker/${workerId}`;
-const ws = new WebSocket(wsUrl, { headers: { Cookie: cookie } } as unknown as string[]);
+const ws = openAuthedWebSocket(wsUrl, cookie);
 
 const probe = `printf '${MARKER}%s\\n' "$(whoami)"\n`;
 let buffer = '';

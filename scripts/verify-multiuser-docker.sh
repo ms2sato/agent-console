@@ -452,6 +452,14 @@ fi
 shared_session_id="$(grep '^SESSION_ID=' "$S8_CLIENT_OUT" | head -n1 | cut -d= -f2)"
 shared_worker_id="$(grep '^WORKER_ID=' "$S8_CLIENT_OUT" | head -n1 | cut -d= -f2)"
 
+# NOTE: unlike checks 6 and 7 above (which intentionally SKIP their
+# dependent sub-checks -- absent from the PASS/FAIL counters -- when a
+# prerequisite id is missing, and are deliberately left unchanged here),
+# check 8's four dependent sub-checks below are recorded as explicit FAILs
+# rather than skipped. This is check 8's own documented contract (the
+# --smokes "never a silent skip" guarantee in docker/README.md): a missing
+# prerequisite must show up as a FAIL in the RESULT count, not vanish from
+# it. Do not "harmonise" this back to the checks 6/7 skip shape.
 if [ -n "$shared_session_id" ]; then
   # Read the row inside the container as agentconsole, straight from the
   # SQLite file the server itself writes to.
@@ -498,7 +506,16 @@ if [ -n "$shared_session_id" ]; then
     bun "${REPO_ROOT}/docker/verify-client.ts" "$BASE_URL" bob bob-password shared1 \
       --attach "$shared_session_id" "$shared_worker_id"
     check "bob can write to the shared session PTY (whoami => shared1)" $?
+  else
+    echo "  DIAGNOSTIC: shared_worker_id is empty (no WORKER_ID in step 2's verify-client.ts output); recording an explicit FAIL instead of skipping."
+    check "bob can write to the shared session PTY (whoami => shared1)" 1
   fi
+else
+  echo "  DIAGNOSTIC: shared_session_id is empty (no SESSION_ID in step 2's verify-client.ts output); recording explicit FAILs for the four dependent check-8 sub-checks instead of skipping them."
+  check "shared session row: created_by is shared1's users.id" 1
+  check "shared session row: initiated_by is alice's users.id" 1
+  check "bob can list the shared session" 1
+  check "bob can write to the shared session PTY (whoami => shared1)" 1
 fi
 
 rm -f "$S8_COOKIE_JAR" "$S8_ALICE_LOGIN_RESP" "$S8_SESSION_RESP" "$S8_CLIENT_OUT" "$S8_DB_OUT"

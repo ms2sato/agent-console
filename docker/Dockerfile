@@ -165,6 +165,10 @@ RUN install -d -o agentconsole -g agent-console-users -m 2775 "${AGENT_CONSOLE_H
 # (packages/server/node_modules/hono -> ../../../node_modules/.bun/...), so
 # relocating the tree to /workspace keeps every resolution intact.
 #
+# /workspace is the build context minus .dockerignore -- what that file
+# excludes is what does not reach the image, so .dockerignore is now a
+# runtime-image concern, not only a build-cache one.
+#
 # Cost: this roughly doubles the image size (the install store is ~1 GB).
 # Accepted deliberately -- this is a local verification image, never a
 # production deployment recipe, and the alternative (bind-mounting a host
