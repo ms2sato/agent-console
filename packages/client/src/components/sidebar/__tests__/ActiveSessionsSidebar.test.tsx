@@ -1097,9 +1097,15 @@ describe('ActiveSessionsSidebar', () => {
 
       await waitFor(() => {
         expect(screen.getByText('Restart All Agents')).toBeTruthy();
-        expect(screen.getByText(/This will restart all active agent workers/)).toBeTruthy();
+        expect(screen.getByText(/This will restart every active agent worker/)).toBeTruthy();
+        expect(screen.getByText(/terminal agents \(such as Claude Code\)/i)).toBeTruthy();
+        expect(screen.getByText(/embedded agents/i)).toBeTruthy();
         expect(screen.getByText(/conversations continue/i)).toBeTruthy();
         expect(screen.getByText(/never received its initial task/i)).toBeTruthy();
+        expect(
+          screen.getByText(/plain terminal \(shell\) workers are left running/i)
+        ).toBeTruthy();
+        expect(screen.queryByText(/Terminal workers will not be affected/)).toBeNull();
       });
     });
 

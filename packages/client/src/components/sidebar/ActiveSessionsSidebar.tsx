@@ -654,7 +654,7 @@ export function ActiveSessionsSidebar({
         open={restartConfirmOpen}
         onOpenChange={setRestartConfirmOpen}
         title="Restart All Agents"
-        description="This will restart all active agent workers across all sessions. Conversations continue; an agent that never received its initial task is restarted with it instead. Terminal workers will not be affected."
+        description="This will restart every active agent worker across all sessions, both terminal agents (such as Claude Code) and embedded agents. Conversations continue by default; an agent that never received its initial task is restarted with it instead. Plain terminal (shell) workers are left running."
         confirmLabel="Restart All"
         onConfirm={() => restartMutation.mutate()}
         isLoading={restartMutation.isPending}
