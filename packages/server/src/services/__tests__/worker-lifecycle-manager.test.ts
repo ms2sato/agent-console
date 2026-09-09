@@ -1578,6 +1578,7 @@ describe('WorkerLifecycleManager', () => {
       mockGit.renameBranch.mockImplementation(() => {
         throw new Error('git branch rename failed');
       });
+      const killSpy = spyOn(workerManager, 'killWorker');
 
       await expect(
         lifecycleManager.restartAgentWorker(
@@ -1590,6 +1591,9 @@ describe('WorkerLifecycleManager', () => {
       if (session.type === 'worktree') {
         expect(session.worktreeId).toBe('original-branch');
       }
+      // Order pin (#1622): the failed rename must short-circuit before the
+      // existing PTY worker is torn down.
+      expect(killSpy).not.toHaveBeenCalled();
     });
 
     it('should not update worktreeId when getCurrentBranch fails', async () => {
@@ -2325,6 +2329,34 @@ describe('WorkerLifecycleManager', () => {
       expect(mockGit.renameBranch).toHaveBeenCalledWith('original-branch', 'new-branch', session.locationPath, 'resolved-spawn-user');
     });
 
+    it('does not kill the existing PTY worker when branch rename fails (order pin, #1622)', async () => {
+      const session = createTestSession({ worktreeId: 'original-branch' });
+      sessions.set(session.id, session);
+
+      const worker = await lifecycleManager.createWorker(session.id, {
+        type: 'agent',
+        agentId: CLAUDE_CODE_AGENT_ID,
+      });
+
+      mockGit.getCurrentBranch.mockImplementation(() => Promise.resolve('original-branch'));
+      mockGit.renameBranch.mockImplementation(() => {
+        throw new Error('git branch rename failed');
+      });
+      const killSpy = spyOn(workerManager, 'killWorker');
+
+      await expect(
+        lifecycleManager.restartAgentWorkerAsEmbedded(
+          session.id, worker!.id, EMBEDDED_AGENT_DEF.id, 'new-branch'
+        )
+      ).rejects.toThrow('git branch rename failed');
+
+      expect(killSpy).not.toHaveBeenCalled();
+      expect(session.type).toBe('worktree');
+      if (session.type === 'worktree') {
+        expect(session.worktreeId).toBe('original-branch');
+      }
+    });
+
     it("revokes the old PTY worker's MCP token on conversion (positive control: the token exists pre-conversion, then is gone)", async () => {
       // A real multi-user PTY activation mints a token via a chain (AUTH_MODE
       // env, lookupOsUserFn, an elevated file write) this file's beforeEach
@@ -2876,6 +2908,26 @@ describe('WorkerLifecycleManager', () => {
       expect(mockGit.renameBranch).toHaveBeenCalledWith('original-branch', 'new-branch', session.locationPath, 'resolved-spawn-user');
     });
 
+    it('does not deactivate the existing embedded worker when branch rename fails (order pin, #1622)', async () => {
+      const { session, workerId } = await createEmbeddedFixture({ worktreeId: 'original-branch' });
+
+      mockGit.getCurrentBranch.mockImplementation(() => Promise.resolve('original-branch'));
+      mockGit.renameBranch.mockImplementation(() => {
+        throw new Error('git branch rename failed');
+      });
+      mockDeactivateEmbeddedAgentWorker.mockClear();
+
+      await expect(
+        lifecycleManager.restartAgentWorker(session.id, workerId, 'fresh', CLAUDE_CODE_AGENT_ID, 'new-branch'),
+      ).rejects.toThrow('git branch rename failed');
+
+      expect(mockDeactivateEmbeddedAgentWorker).not.toHaveBeenCalled();
+      expect(session.type).toBe('worktree');
+      if (session.type === 'worktree') {
+        expect(session.worktreeId).toBe('original-branch');
+      }
+    });
+
     it('redelivers session.initialPrompt to the new PTY worker when eligible and undelivered', async () => {
       const { session, workerId } = await createEmbeddedFixture({ initialPrompt: 'Do the important thing' });
       const internal = session.workers.get(workerId) as InternalEmbeddedAgentWorker;
@@ -3150,6 +3202,26 @@ describe('WorkerLifecycleManager', () => {
 
       expect(resolveSpawnUsernameSpy).toHaveBeenCalledWith('user-abc');
       expect(mockGit.renameBranch).toHaveBeenCalledWith('original-branch', 'new-branch', session.locationPath, 'resolved-spawn-user');
+    });
+
+    it('does not deactivate the existing embedded worker when branch rename fails (order pin, #1622)', async () => {
+      const { session, workerId } = await createEmbeddedFixture({ worktreeId: 'original-branch' });
+
+      mockGit.getCurrentBranch.mockImplementation(() => Promise.resolve('original-branch'));
+      mockGit.renameBranch.mockImplementation(() => {
+        throw new Error('git branch rename failed');
+      });
+      mockDeactivateEmbeddedAgentWorker.mockClear();
+
+      await expect(
+        lifecycleManager.restartAgentWorkerAsEmbedded(session.id, workerId, EMBEDDED_AGENT_DEF_SDK.id, 'new-branch'),
+      ).rejects.toThrow('git branch rename failed');
+
+      expect(mockDeactivateEmbeddedAgentWorker).not.toHaveBeenCalled();
+      expect(session.type).toBe('worktree');
+      if (session.type === 'worktree') {
+        expect(session.worktreeId).toBe('original-branch');
+      }
     });
   });
 
