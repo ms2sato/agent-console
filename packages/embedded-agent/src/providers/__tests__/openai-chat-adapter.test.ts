@@ -6,6 +6,10 @@ import {
   type ProviderEvent,
   type ToolDefinition,
 } from '../types.js';
+// Imported (rather than hardcoded) so this test's expected User-Agent string
+// can never silently drift from packages/embedded-agent/package.json's actual
+// version field.
+import pkg from '../../../package.json';
 
 const encoder = new TextEncoder();
 
@@ -333,6 +337,42 @@ describe('OpenAIChatAdapter — request body', () => {
       noKeyAdapter.run({ model: 'm', messages, tools: [], signal: new AbortController().signal }),
     );
     expect(withoutKey!.get('authorization')).toBeNull();
+  });
+
+  // Reach measured 2026-09-09: commenting out either the `x-opencode-session`
+  // assignment or the `User-Agent` assignment in openai-chat-adapter.ts's
+  // header-building block makes this test fail; restored and re-verified green.
+  it('sends x-opencode-session and a product User-Agent when conversationId is set', async () => {
+    let captured: Headers | null = null;
+    const adapter = new OpenAIChatAdapter({
+      baseUrl: 'http://x/v1',
+      conversationId: 'worker-abc',
+      fetchFn: async (_url, init) => {
+        captured = new Headers(init?.headers);
+        return mockResponse({ body: streamFromChunks(['data: [DONE]\n\n']) });
+      },
+    });
+    await collect(
+      adapter.run({ model: 'm', messages, tools: [], signal: new AbortController().signal }),
+    );
+    expect(captured!.get('x-opencode-session')).toBe('worker-abc');
+    expect(captured!.get('user-agent')).toBe(`agent-console/${pkg.version} (+https://github.com/ms2sato/agent-console)`);
+  });
+
+  it('omits x-opencode-session when conversationId is not set (never sends an empty id)', async () => {
+    let captured: Headers | null = null;
+    const adapter = new OpenAIChatAdapter({
+      baseUrl: 'http://x/v1',
+      fetchFn: async (_url, init) => {
+        captured = new Headers(init?.headers);
+        return mockResponse({ body: streamFromChunks(['data: [DONE]\n\n']) });
+      },
+    });
+    await collect(
+      adapter.run({ model: 'm', messages, tools: [], signal: new AbortController().signal }),
+    );
+    expect(captured!.get('x-opencode-session')).toBeNull();
+    expect(captured!.get('user-agent')).not.toBeNull();
   });
 
   it('sends stream_options: { include_usage: true } so the provider emits a final usage chunk', async () => {
