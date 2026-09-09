@@ -27,7 +27,8 @@ ports, so they can run **side by side**.
 | `docker-compose.verification.yml` | **Verification stack**: runs the baked bundle in `AUTH_MODE=multi-user` on host port `8080`. |
 | `dev-entrypoint.sh` | Dev-stack entrypoint: fixes volume-mountpoint ownership as root, drops to `agentconsole`, runs `bun install`, starts vite + server. |
 | `sudoers-agentconsole` | Grants the service user permission to launch login shells as any non-root user. |
-| `verify-client.ts` | Drives the real shipping path (login → session → terminal worker → WS) and asserts `whoami` inside the PTY. |
+| `verify-client.ts` | Drives the real shipping path (login → session → terminal worker → WS) and asserts `whoami` inside the PTY; also supports `--attach` (probe an already-existing session/worker) and `--list-session` (assert a session is visible via the app WebSocket's `sessions-sync` frame). |
+| `tsconfig.json` | Scopes `verify-client.ts` to a Bun-specific type environment (no `DOM` lib), so the global `WebSocket` binding resolves to Bun's `headers`-accepting constructor overload instead of the DOM one. Type-checked as `typecheck:docker` (`tsc -p docker`), which the root `typecheck` script runs as part of `bun run typecheck` — no separate invocation to remember. It borrows Bun's ambient type declarations from `packages/server`'s installed `@types/bun` via `typeRoots`, since `docker/` is not its own workspace member and has no `node_modules` of its own. |
 | `../scripts/verify-multiuser-docker.sh` | One-command verification orchestrator: build, start, run all checks, report. |
 
 ## Dev stack
@@ -154,6 +155,7 @@ pass/fail summary, and tears the container down. Useful flags:
 
 - `--keep` — leave the container running afterwards (inspect at http://localhost:8080).
 - `--no-build` — reuse the already-built image.
+- `--smokes` — also run the repository's real-host smoke scripts inside the container (see [below](#real-host-smokes-inside-the-container)).
 - `PORT=9090 scripts/verify-multiuser-docker.sh` — map a different host port.
 
 Manual start:
@@ -172,6 +174,66 @@ docker compose -f docker/docker-compose.verification.yml up --build -d
    prints `bob` — never the `agentconsole` service user.
 6. File upload creates the upload dir with mode `2750` (setgid regression, #830).
 7. Worktree creation runs as the requesting user (#838).
+8. **Shared Account**: a shared session (`shared: true`) created by `alice`
+   spawns its terminal as the shared account (`shared1`), not `alice`, so the
+   PTY's `whoami` prints `shared1`; the session row's `created_by` is
+   `shared1`'s `users.id` while `initiated_by` is `alice`'s; and `bob`,
+   logged in separately, both sees the session in the app WebSocket's
+   `sessions-sync` frame and can type into its PTY. This is the
+   shared-session feature's only automated coverage.
+
+   The negative arm is exercised the same way: running with
+   `AGENT_CONSOLE_SHARED_USERNAME=` (explicitly empty) turns the feature
+   off — the compose file uses the `${VAR-default}` no-colon form, so an
+   empty host value passes through unchanged — and check 8 then fails
+   visibly with `HTTP 400` and the server's "Shared sessions are not
+   enabled on this server." body:
+
+   ```bash
+   AGENT_CONSOLE_SHARED_USERNAME= scripts/verify-multiuser-docker.sh --no-build
+   ```
+
+### Real-host smokes inside the container
+
+```bash
+scripts/verify-multiuser-docker.sh --smokes
+```
+
+Combinable with `--keep` and `--no-build`. In addition to the checks above,
+`--smokes` runs the repository's seven real-host smoke scripts
+(`scripts/smoke/check-*.ts`) *inside* the verification container, as the
+service user (`agentconsole`), against target user `alice`:
+
+- `check-multiuser-pty-env.ts`
+- `check-kill-as-user.ts`
+- `check-login-shell-sentinel.ts --elevated`
+- `check-orphan-sweep.ts`
+- `check-delegated-ssh-auth-sock.ts`
+- `check-embedded-agent-elevation.ts`
+- `check-embedded-agent-bash-env.ts`
+
+Each of these smokes states its own requirement as "run as a user with
+elevation privilege for `<target-user>`, where `<target-user>` is a real OS
+user with a login shell" — a requirement this image has had all along
+(`agentconsole` plus the elevation rules file, and `alice` / `bob`). The
+flag turns seven owner-only post-deploy checks into a command anyone can
+rerun after a release.
+
+Each smoke's exit code is printed as it runs, and the run ends with a
+`smoke summary (exit codes)` block. Exit code `2` means "could not run"
+(bad usage / unmet precondition) and is reported as a FAIL with the
+smoke's stderr tail — never as a pass and never as a silent skip.
+
+**Real-host only, deliberately not covered here**: there is no `claude`
+login inside the container, so every billable smoke stays on the dogfood
+host; vendor credentials (e.g. Bedrock) in a shared account's home, and a
+shared session actually completing a turn on them; the
+1Password-socket-*present* branch of `check-delegated-ssh-auth-sock.ts`
+(the container exercises the socket-*absent* branch, which is that
+script's expected path there); and the systemd unit's own environment.
+
+`--smokes` is also the reason this image is roughly 2 GB — see
+[Notes / limitations](#notes--limitations).
 
 ## Test credentials (verification only)
 
@@ -180,6 +242,14 @@ docker compose -f docker/docker-compose.verification.yml up --build -d
 | `agentconsole` | _(none, `nologin`)_ | service user that runs the server |
 | `alice` | `alice-password` | test end user |
 | `bob` | `bob-password` | test end user |
+| `shared1` | `shared1-password` | Shared Account (execution identity for shared sessions) |
+
+In production, [`scripts/setup-shared-account.sh`](../scripts/setup-shared-account.sh)
+LOCKS this account's password, because the account never logs in itself.
+This verification image gives it a known password instead, so the stack's
+own checks (see [What it checks](#what-it-checks), item 8) can exercise it
+directly — safe only because the image is loopback-only and already ships
+well-known credentials.
 
 These passwords are intentionally well-known. **Never expose either stack
 beyond loopback**; they exist solely for local development and verification.
@@ -251,3 +321,14 @@ goes through Docker Hub.
   belongs there.
 - **arm64/amd64**: the image builds natively for the host architecture; the
   `bun-pty` native module is installed inside the runtime stage to match.
+- **Image size**: roughly 2 GB, up from about 0.9 GB before `--smokes`
+  existed. The runtime stage bakes the builder stage's whole workspace at
+  `/workspace` on top of the served `dist/` bundle, because the
+  `--smokes` scripts import production modules from `packages/server/src/**`
+  and need the workspace's `bun install` — the `dist/` bundle alone can't
+  provide that. The cheaper alternative, a host-side `node_modules`
+  bind-mounted in, isn't available here either, for the same reason the dev
+  stack uses container-side named volumes instead of a bind mount (see
+  [How it works](#how-it-works)): `bun-pty` is a native module built against
+  the container's own glibc. Accepted as a trade-off for a local
+  verification image that is explicitly not a production deployment recipe.

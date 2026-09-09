@@ -14,11 +14,45 @@
 #      mode 2750 (setgid + group-rx) -> proves ensureUploadDir() applies
 #      setgid on the real Linux filesystem (Issue #830 follow-up regression
 #      for the JS-layer mode stripping in Bun fs.mkdir / fs.chmod).
+#   7. worktree creation via the API is owned by the requesting user, not
+#      the service account, and `git status` inside it as that user does
+#      not report dubious ownership -> proves `git worktree add` routes
+#      through runAsUser (Issue #838).
+#   8. a shared session (shared: true) spawns its terminal as the shared
+#      account (shared1) rather than the creating user, the session row's
+#      created_by/initiated_by columns route to shared1/alice respectively,
+#      and a second user (bob) can list and write into the shared session
+#      -> proves the Shared Account is a genuine cross-user execution
+#      identity (Issue #1619).
+#
+# --smokes additionally runs seven real-host smoke scripts
+# (scripts/smoke/*.ts) inside the verification container, as the service
+# user (agentconsole), against target user alice, using the workspace copy
+# docker/Dockerfile bakes at /workspace (the smokes import production
+# modules from packages/server/src/**, so the runtime bundle alone cannot
+# host them):
+#   - check-multiuser-pty-env.ts
+#   - check-kill-as-user.ts
+#   - check-login-shell-sentinel.ts
+#   - check-orphan-sweep.ts
+#   - check-delegated-ssh-auth-sock.ts
+#   - check-embedded-agent-elevation.ts
+#   - check-embedded-agent-bash-env.ts
+#
+# Not run here, real-host only: a `claude` login inside the container and
+# therefore every billable smoke; vendor credentials (e.g. Bedrock) in a
+# shared account's home and a shared session completing a real turn on
+# them; the 1Password-socket-present branch of
+# check-delegated-ssh-auth-sock.ts (the container exercises the
+# socket-ABSENT branch, which is the expected path there); and the
+# systemd unit's own environment. A smoke's exit code 2 is reported as a
+# failure, not a skip.
 #
 # Usage (from repo root):
 #   scripts/verify-multiuser-docker.sh            # build + verify + tear down
 #   scripts/verify-multiuser-docker.sh --keep     # leave the container running
 #   scripts/verify-multiuser-docker.sh --no-build # reuse the existing image
+#   scripts/verify-multiuser-docker.sh --smokes   # also run the real-host smokes inside the container
 #
 # Requires: docker, bun (both on the host).
 set -uo pipefail
@@ -29,11 +63,13 @@ PORT="${PORT:-8080}"
 BASE_URL="http://localhost:${PORT}"
 KEEP=0
 BUILD_FLAG="--build"
+SMOKES=0
 
 for arg in "$@"; do
   case "$arg" in
     --keep) KEEP=1 ;;
     --no-build) BUILD_FLAG="" ;;
+    --smokes) SMOKES=1 ;;
     *) echo "unknown argument: $arg" >&2; exit 2 ;;
   esac
 done
@@ -58,6 +94,50 @@ check() { # check <name> <condition-exit-code>
   else
     echo "  [FAIL] $1"; FAIL=$((FAIL + 1))
   fi
+}
+
+run_smoke() { # run_smoke <label> <script> [args...]
+  # Used only by --smokes (section 9). Runs one scripts/smoke/<script>.ts
+  # inside the container as the service user, against the workspace copy
+  # baked at /workspace, and folds its result into the same PASS/FAIL
+  # counters check() uses.
+  local label="$1" script="$2"
+  shift 2
+  local smoke_out smoke_err smoke_rc
+  smoke_out="$(mktemp)"
+  smoke_err="$(mktemp)"
+  echo "  --- ${label} ---"
+  echo "  \$ compose exec -T --user agentconsole -w /workspace agent-console bun scripts/smoke/${script} $*"
+  compose exec -T --user agentconsole -w /workspace agent-console \
+    bun "scripts/smoke/${script}" "$@" >"$smoke_out" 2>"$smoke_err"
+  # Captured directly, no pipe precedes this: docker compose exec propagates
+  # the inner process's real exit code.
+  smoke_rc=$?
+  if [ "$smoke_rc" -eq 2 ]; then
+    echo "  exit=${smoke_rc} (could not run: bad usage / probe-launch failure / unmet precondition)"
+  else
+    echo "  exit=${smoke_rc}"
+  fi
+  # Exit code 2 (could not run) is still non-zero here, so check() reports
+  # it as FAIL, never PASS and never a silent skip.
+  check "$label" "$smoke_rc"
+  if [ "$smoke_rc" -ne 0 ]; then
+    if [ -s "$smoke_err" ]; then
+      echo "  ---- DIAGNOSTIC: ${label} stderr (last 30 lines) ----"
+      tail -n 30 "$smoke_err" | sed 's/^/    /'
+    else
+      echo "  ---- DIAGNOSTIC: ${label} stdout (last 30 lines, stderr was empty) ----"
+      tail -n 30 "$smoke_out" | sed 's/^/    /'
+    fi
+    echo "  -------------------------------------------------"
+  fi
+  # printf -v (not `x="$(printf ...)"`) so the trailing newline survives --
+  # command substitution strips it, which previously collapsed every
+  # smoke's summary line onto one line.
+  local summary_line
+  printf -v summary_line '  %-38s exit=%s\n' "$label" "$smoke_rc"
+  SMOKE_SUMMARY="${SMOKE_SUMMARY}${summary_line}"
+  rm -f "$smoke_out" "$smoke_err"
 }
 
 echo "=== Building and starting the multi-user verification container ==="
@@ -310,6 +390,153 @@ fi
 
 rm -f "$ALICE_COOKIE_JAR" "$ALICE_LOGIN_RESP" "$REPO_RESP" \
   "$WT_TASK_RESP" "$WT_LIST_RESP" "$GIT_STATUS_OUT"
+
+echo
+echo "=== 8. shared session runs as the shared account (#1619) ==="
+# Verifies the Shared Account feature end to end (Issue #1619): a session
+# created with shared:true routes sessions.created_by to the shared OS
+# account (shared1, provisioned by docker/Dockerfile) while
+# sessions.initiated_by records the creating user (alice); the resulting PTY
+# spawns as shared1, not alice; and a second user (bob) can both list and
+# write into the shared session -- proving shared1 is a genuine cross-user
+# execution identity, not merely alice's own session under another label.
+#
+# Step 1 also doubles as the negative arm: with AGENT_CONSOLE_SHARED_USERNAME
+# unset/empty (AGENT_CONSOLE_SHARED_USERNAME= scripts/verify-multiuser-docker.sh
+# --no-build), the create call is refused with HTTP 400 and the response
+# body ("Shared sessions are not enabled on this server.") is echoed below so
+# that refusal is visible in the run log.
+S8_COOKIE_JAR="$(mktemp)"
+S8_ALICE_LOGIN_RESP="$(mktemp)"
+S8_SESSION_RESP="$(mktemp)"
+S8_CLIENT_OUT="$(mktemp)"
+S8_DB_OUT="$(mktemp)"
+
+curl -s -o "$S8_ALICE_LOGIN_RESP" -c "$S8_COOKIE_JAR" -X POST "${BASE_URL}/api/auth/login" \
+  -H 'Content-Type: application/json' \
+  -d '{"username":"alice","password":"alice-password"}' >/dev/null
+
+# alice creates a shared session directly over HTTP; this is the create-time
+# assertion (including the negative arm above). The session created here is
+# used only for this assertion -- step 2 creates its own shared session via
+# verify-client.ts and the remaining sub-checks use that one, so each
+# sub-check stays independent.
+s8_create_code="$(curl -s -o "$S8_SESSION_RESP" -w '%{http_code}' -b "$S8_COOKIE_JAR" -c "$S8_COOKIE_JAR" \
+  -X POST "${BASE_URL}/api/sessions" \
+  -H 'Content-Type: application/json' \
+  -d '{"type":"quick","locationPath":"/home/shared1","shared":true,"title":"verify-shared"}')"
+echo "  POST /api/sessions (shared:true) -> HTTP ${s8_create_code}"
+if [ "$s8_create_code" != "201" ]; then
+  echo "  response body: $(cat "$S8_SESSION_RESP")"
+fi
+s8_create_ok=1
+[ "$s8_create_code" = "201" ] && s8_create_ok=0
+check "alice can create a shared session (201)" "$s8_create_ok"
+
+# The session verify-client.ts creates here is the one every remaining
+# sub-check uses.
+bun "${REPO_ROOT}/docker/verify-client.ts" "$BASE_URL" alice alice-password shared1 /home/shared1 \
+  --shared --print-ids 2>&1 | tee "$S8_CLIENT_OUT"
+# Use PIPESTATUS[0] (bun's exit code), not $?, which after a pipeline is
+# tee's exit code (always 0) and would silently record a failing
+# verify-client.ts run as PASS. Captured on the very next line: nothing
+# may run in between.
+s8_client_exit="${PIPESTATUS[0]}"
+check "shared session terminal runs as shared1" "$s8_client_exit"
+if [ "$s8_client_exit" -ne 0 ]; then
+  echo "  ---- DIAGNOSTIC: server logs (last 60 lines) ----"
+  compose logs --tail 60 agent-console 2>&1 | sed 's/^/    /' || true
+  echo "  -------------------------------------------------"
+fi
+
+shared_session_id="$(grep '^SESSION_ID=' "$S8_CLIENT_OUT" | head -n1 | cut -d= -f2)"
+shared_worker_id="$(grep '^WORKER_ID=' "$S8_CLIENT_OUT" | head -n1 | cut -d= -f2)"
+
+# NOTE: unlike checks 6 and 7 above (which intentionally SKIP their
+# dependent sub-checks -- absent from the PASS/FAIL counters -- when a
+# prerequisite id is missing, and are deliberately left unchanged here),
+# check 8's four dependent sub-checks below are recorded as explicit FAILs
+# rather than skipped. This is check 8's own documented contract (the
+# --smokes "never a silent skip" guarantee in docker/README.md): a missing
+# prerequisite must show up as a FAIL in the RESULT count, not vanish from
+# it. Do not "harmonise" this back to the checks 6/7 skip shape.
+if [ -n "$shared_session_id" ]; then
+  # Read the row inside the container as agentconsole, straight from the
+  # SQLite file the server itself writes to.
+  compose exec -T --user agentconsole -e SHARED_SESSION_ID="$shared_session_id" agent-console \
+    bun -e '
+      import { Database } from "bun:sqlite";
+      const db = new Database(process.env.AGENT_CONSOLE_HOME + "/data.db", { readonly: true });
+      const sessionId = process.env.SHARED_SESSION_ID;
+      const row = db.query("SELECT created_by, initiated_by FROM sessions WHERE id = ?").get(sessionId);
+      console.log("ROW_CREATED_BY=" + (row && row.created_by != null ? row.created_by : ""));
+      console.log("ROW_INITIATED_BY=" + (row && row.initiated_by != null ? row.initiated_by : ""));
+      const shared1 = db.query("SELECT id FROM users WHERE username = ?").get("shared1");
+      console.log("SHARED1_ID=" + (shared1 ? shared1.id : ""));
+      const aliceRow = db.query("SELECT id FROM users WHERE username = ?").get("alice");
+      console.log("ALICE_ID=" + (aliceRow ? aliceRow.id : ""));
+    ' > "$S8_DB_OUT" 2>&1
+  s8_db_exit=$?
+  sed 's/^/  /' "$S8_DB_OUT"
+
+  s8_row_created_by="$(grep '^ROW_CREATED_BY=' "$S8_DB_OUT" | head -n1 | cut -d= -f2)"
+  s8_row_initiated_by="$(grep '^ROW_INITIATED_BY=' "$S8_DB_OUT" | head -n1 | cut -d= -f2)"
+  s8_shared1_id="$(grep '^SHARED1_ID=' "$S8_DB_OUT" | head -n1 | cut -d= -f2)"
+  s8_alice_id="$(grep '^ALICE_ID=' "$S8_DB_OUT" | head -n1 | cut -d= -f2)"
+
+  s8_created_by_ok=1
+  [ "$s8_db_exit" -eq 0 ] && [ -n "$s8_row_created_by" ] && [ "$s8_row_created_by" = "$s8_shared1_id" ] && s8_created_by_ok=0
+  check "shared session row: created_by is shared1's users.id" "$s8_created_by_ok"
+
+  s8_initiated_by_ok=1
+  [ "$s8_db_exit" -eq 0 ] && [ -n "$s8_row_initiated_by" ] && [ "$s8_row_initiated_by" = "$s8_alice_id" ] && s8_initiated_by_ok=0
+  check "shared session row: initiated_by is alice's users.id" "$s8_initiated_by_ok"
+
+  # bob logs in separately and lists sessions; the shared session must be
+  # visible to him even though alice created it. There is no GET
+  # /api/sessions collection route -- session listing is app-WS-only (the
+  # sessions-sync frame on /ws/app) -- so this drives that surface via
+  # verify-client.ts's --list-session mode instead of a curl GET. Do not
+  # "restore" a curl here; it would 200 against the SPA catch-all and the
+  # check would pass vacuously (see PR discussion, Issue #1619).
+  bun "${REPO_ROOT}/docker/verify-client.ts" "$BASE_URL" bob bob-password --list-session "$shared_session_id"
+  check "bob can list the shared session" $?
+
+  if [ -n "$shared_worker_id" ]; then
+    bun "${REPO_ROOT}/docker/verify-client.ts" "$BASE_URL" bob bob-password shared1 \
+      --attach "$shared_session_id" "$shared_worker_id"
+    check "bob can write to the shared session PTY (whoami => shared1)" $?
+  else
+    echo "  DIAGNOSTIC: shared_worker_id is empty (no WORKER_ID in step 2's verify-client.ts output); recording an explicit FAIL instead of skipping."
+    check "bob can write to the shared session PTY (whoami => shared1)" 1
+  fi
+else
+  echo "  DIAGNOSTIC: shared_session_id is empty (no SESSION_ID in step 2's verify-client.ts output); recording explicit FAILs for the four dependent check-8 sub-checks instead of skipping them."
+  check "shared session row: created_by is shared1's users.id" 1
+  check "shared session row: initiated_by is alice's users.id" 1
+  check "bob can list the shared session" 1
+  check "bob can write to the shared session PTY (whoami => shared1)" 1
+fi
+
+rm -f "$S8_COOKIE_JAR" "$S8_ALICE_LOGIN_RESP" "$S8_SESSION_RESP" "$S8_CLIENT_OUT" "$S8_DB_OUT"
+
+if [ "$SMOKES" -eq 1 ]; then
+  echo
+  echo "=== 9. real-host smokes inside the container (--smokes, #1619) ==="
+  SMOKE_SUMMARY=""
+
+  run_smoke "check-multiuser-pty-env" "check-multiuser-pty-env.ts" alice
+  run_smoke "check-kill-as-user" "check-kill-as-user.ts" alice
+  run_smoke "check-login-shell-sentinel" "check-login-shell-sentinel.ts" --elevated alice
+  run_smoke "check-orphan-sweep" "check-orphan-sweep.ts" alice
+  run_smoke "check-delegated-ssh-auth-sock" "check-delegated-ssh-auth-sock.ts" alice
+  run_smoke "check-embedded-agent-elevation" "check-embedded-agent-elevation.ts" alice
+  run_smoke "check-embedded-agent-bash-env" "check-embedded-agent-bash-env.ts" alice
+
+  echo
+  echo "=== smoke summary (exit codes) ==="
+  printf '%s' "$SMOKE_SUMMARY"
+fi
 
 echo
 echo "=================================================="

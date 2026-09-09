@@ -9,3 +9,13 @@ dist
 *.log
 .DS_Store
 packages/client/src/routeTree.gen.ts
+
+# Local environment-file family (the bare file and its dotted-suffix variants,
+# e.g. the .local / .development / .production forms). This is the one
+# category in the build context that can carry real secrets, and the runtime
+# stage now keeps the whole context at /workspace rather than discarding it
+# with the builder stage, so an untracked local one would otherwise ship
+# inside the image. Re-include the committed example so the repository's own
+# tracked template is still part of the build context.
+.env*
+!.env.example
