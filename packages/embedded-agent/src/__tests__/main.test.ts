@@ -967,6 +967,28 @@ describe('runLoop — reasoningEffort/effort threading (agent-surface.md Ruling 
   });
 });
 
+describe('runLoop — conversationId threading into createAdapter (#1621)', () => {
+  // Reach measured 2026-09-09: commenting out the `conversationId:
+  // init.context.workerId,` line in main.ts's createAdapter call makes this
+  // test fail; restored and re-verified green.
+  it('passes conversationId === init.context.workerId to createAdapter', async () => {
+    let capturedOpts: Parameters<LoopFactories['createAdapter']>[0] | undefined;
+    const { io } = makeIo([
+      initCommand(),
+      JSON.stringify({ v: 1, type: 'shutdown' }),
+    ]);
+    const factories = makeFactories({
+      createAdapter: (opts) => {
+        capturedOpts = opts;
+        return new StubAdapter();
+      },
+    });
+
+    expect(await runLoop(io, factories)).toBe(0);
+    expect(capturedOpts?.conversationId).toBe('w');
+  });
+});
+
 describe('runLoop — engine discriminant containment (SDK Engine Phase 1)', () => {
   // `initializeLoop` narrows `init.engine` at runtime
   // (`if (init.engine === 'openai-api') { ... } else { new SdkEngine(...) }`)

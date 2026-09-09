@@ -16,6 +16,9 @@ import {
   type ProviderRunRequest,
   type ToolDefinition,
 } from './types.js';
+import pkg from '../../package.json';
+
+const VERSION = pkg.version;
 
 /**
  * The subset of the fetch signature the adapter uses. Narrower than
@@ -32,6 +35,14 @@ export interface OpenAIChatAdapterOptions {
   idleTimeoutMs?: number;
   /** Absolute ceiling on the whole streaming request. Default 10min. */
   totalTimeoutMs?: number;
+  /**
+   * Sent as `x-opencode-session` on every request when set. The opencode-go
+   * provider gateway rejects requests lacking this header with HTTP 400
+   * `MissingSessionID`. See embedded-agent-worker.md's "Conversation
+   * identifier & gateway headers" for why the worker id is the right value
+   * to pass here.
+   */
+  conversationId?: string;
 }
 
 type AbortReason = 'caller' | 'idle-timeout' | 'total-timeout';
@@ -211,6 +222,7 @@ export class OpenAIChatAdapter implements ProviderAdapter {
   private readonly fetchFn: FetchFn;
   private readonly idleTimeoutMs: number;
   private readonly totalTimeoutMs: number;
+  private readonly conversationId: string | undefined;
 
   constructor(opts: OpenAIChatAdapterOptions) {
     this.baseUrl = opts.baseUrl.replace(/\/+$/, '');
@@ -218,6 +230,7 @@ export class OpenAIChatAdapter implements ProviderAdapter {
     this.fetchFn = opts.fetchFn ?? fetch;
     this.idleTimeoutMs = opts.idleTimeoutMs ?? 60_000;
     this.totalTimeoutMs = opts.totalTimeoutMs ?? 600_000;
+    this.conversationId = opts.conversationId;
   }
 
   async *run(req: ProviderRunRequest): AsyncIterable<ProviderEvent> {
@@ -257,9 +270,13 @@ export class OpenAIChatAdapter implements ProviderAdapter {
       const headers: Record<string, string> = {
         'Content-Type': 'application/json',
         Accept: 'text/event-stream',
+        'User-Agent': `agent-console/${VERSION} (+https://github.com/ms2sato/agent-console)`,
       };
       if (this.apiKey !== undefined) {
         headers.Authorization = `Bearer ${this.apiKey}`;
+      }
+      if (this.conversationId !== undefined) {
+        headers['x-opencode-session'] = this.conversationId;
       }
 
       const body: Record<string, unknown> = {
