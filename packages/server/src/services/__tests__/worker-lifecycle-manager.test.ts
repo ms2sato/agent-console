@@ -1484,6 +1484,85 @@ describe('WorkerLifecycleManager', () => {
       expect(result).toBeNull();
     });
 
+    it('renames the worktree branch before restarting (#1622/#1600 -- restartAgentWorker had no exact-args pin for this before)', async () => {
+      const session = createTestSession({ worktreeId: 'original-branch' });
+      sessions.set(session.id, session);
+
+      const worker = await lifecycleManager.createWorker(session.id, {
+        type: 'agent',
+        agentId: CLAUDE_CODE_AGENT_ID,
+      });
+
+      mockGit.getCurrentBranch.mockImplementation(() => Promise.resolve('original-branch'));
+
+      await lifecycleManager.restartAgentWorker(
+        session.id, worker!.id, 'continue', undefined, 'new-branch'
+      );
+
+      // Reach measured by hand (#1622/#1600): temporarily dropping the
+      // trailing requestUser argument from EITHER the getCurrentBranch call
+      // or the renameBranch call inside
+      // WorkerLifecycleManager.renameSessionBranchIfRequested fails this
+      // test's corresponding assertion alone (verified independently for
+      // each call, then restored). The helper is shared by all five
+      // restart/conversion call sites, so this one hand-verification covers
+      // the helper's own reach; the per-site "resolves the spawn user from
+      // session.createdBy" pins above/below prove each call SITE reaches
+      // the helper.
+      expect(mockGit.getCurrentBranch).toHaveBeenCalledWith(session.locationPath, 'testuser');
+      expect(mockGit.renameBranch).toHaveBeenCalledWith('original-branch', 'new-branch', session.locationPath, 'testuser');
+      expect(session.type).toBe('worktree');
+      if (session.type === 'worktree') {
+        expect(session.worktreeId).toBe('new-branch');
+      }
+    });
+
+    it('resolves the spawn user from session.createdBy for the branch rename (restartAgentWorker, #1622 R2)', async () => {
+      const session = createTestSession({ worktreeId: 'original-branch', createdBy: 'user-abc' });
+      sessions.set(session.id, session);
+
+      const worker = await lifecycleManager.createWorker(session.id, {
+        type: 'agent',
+        agentId: CLAUDE_CODE_AGENT_ID,
+      });
+
+      mockGit.getCurrentBranch.mockImplementation(() => Promise.resolve('original-branch'));
+      const resolveSpawnUsernameSpy = mock(async (_createdBy?: string) => 'resolved-spawn-user');
+      const manager = new WorkerLifecycleManager(createDeps({ resolveSpawnUsername: resolveSpawnUsernameSpy }));
+
+      await manager.restartAgentWorker(
+        session.id, worker!.id, 'continue', undefined, 'new-branch'
+      );
+
+      expect(resolveSpawnUsernameSpy).toHaveBeenCalledWith('user-abc');
+      expect(mockGit.renameBranch).toHaveBeenCalledWith('original-branch', 'new-branch', session.locationPath, 'resolved-spawn-user');
+    });
+
+    it('resolves the spawn user from session.createdBy, not session.initiatedBy, for the branch rename (shared-session identity, #1622 R2)', async () => {
+      const session = createTestSession({
+        worktreeId: 'original-branch',
+        createdBy: 'shared-account-user',
+        initiatedBy: 'requesting-human-user',
+      });
+      sessions.set(session.id, session);
+
+      const worker = await lifecycleManager.createWorker(session.id, {
+        type: 'agent',
+        agentId: CLAUDE_CODE_AGENT_ID,
+      });
+
+      mockGit.getCurrentBranch.mockImplementation(() => Promise.resolve('original-branch'));
+      const resolveSpawnUsernameSpy = mock(async (_createdBy?: string) => 'resolved-spawn-user');
+      const manager = new WorkerLifecycleManager(createDeps({ resolveSpawnUsername: resolveSpawnUsernameSpy }));
+
+      await manager.restartAgentWorker(
+        session.id, worker!.id, 'continue', undefined, 'new-branch'
+      );
+
+      expect(resolveSpawnUsernameSpy.mock.calls[0][0]).toBe(session.createdBy);
+      expect(resolveSpawnUsernameSpy.mock.calls[0][0]).not.toBe(session.initiatedBy);
+    });
+
     it('should throw and not update worktreeId when branch rename fails', async () => {
       const session = createTestSession({ worktreeId: 'original-branch' });
       sessions.set(session.id, session);
@@ -1499,6 +1578,7 @@ describe('WorkerLifecycleManager', () => {
       mockGit.renameBranch.mockImplementation(() => {
         throw new Error('git branch rename failed');
       });
+      const killSpy = spyOn(workerManager, 'killWorker');
 
       await expect(
         lifecycleManager.restartAgentWorker(
@@ -1511,6 +1591,9 @@ describe('WorkerLifecycleManager', () => {
       if (session.type === 'worktree') {
         expect(session.worktreeId).toBe('original-branch');
       }
+      // Order pin (#1622): the failed rename must short-circuit before the
+      // existing PTY worker is torn down.
+      expect(killSpy).not.toHaveBeenCalled();
     });
 
     it('should not update worktreeId when getCurrentBranch fails', async () => {
@@ -2218,10 +2301,59 @@ describe('WorkerLifecycleManager', () => {
         session.id, worker!.id, EMBEDDED_AGENT_DEF.id, 'new-branch'
       );
 
-      expect(mockGit.renameBranch).toHaveBeenCalledWith('original-branch', 'new-branch', session.locationPath);
+      expect(mockGit.renameBranch).toHaveBeenCalledWith('original-branch', 'new-branch', session.locationPath, 'testuser');
       expect(session.type).toBe('worktree');
       if (session.type === 'worktree') {
         expect(session.worktreeId).toBe('new-branch');
+      }
+    });
+
+    it('resolves the spawn user from session.createdBy for the branch rename (restartAgentWorkerAsEmbedded, #1622 R2)', async () => {
+      const session = createTestSession({ worktreeId: 'original-branch', createdBy: 'user-abc' });
+      sessions.set(session.id, session);
+
+      const worker = await lifecycleManager.createWorker(session.id, {
+        type: 'agent',
+        agentId: CLAUDE_CODE_AGENT_ID,
+      });
+
+      mockGit.getCurrentBranch.mockImplementation(() => Promise.resolve('original-branch'));
+      const resolveSpawnUsernameSpy = mock(async (_createdBy?: string) => 'resolved-spawn-user');
+      const manager = new WorkerLifecycleManager(createDeps({ resolveSpawnUsername: resolveSpawnUsernameSpy }));
+
+      await manager.restartAgentWorkerAsEmbedded(
+        session.id, worker!.id, EMBEDDED_AGENT_DEF.id, 'new-branch'
+      );
+
+      expect(resolveSpawnUsernameSpy).toHaveBeenCalledWith('user-abc');
+      expect(mockGit.renameBranch).toHaveBeenCalledWith('original-branch', 'new-branch', session.locationPath, 'resolved-spawn-user');
+    });
+
+    it('does not kill the existing PTY worker when branch rename fails (order pin, #1622)', async () => {
+      const session = createTestSession({ worktreeId: 'original-branch' });
+      sessions.set(session.id, session);
+
+      const worker = await lifecycleManager.createWorker(session.id, {
+        type: 'agent',
+        agentId: CLAUDE_CODE_AGENT_ID,
+      });
+
+      mockGit.getCurrentBranch.mockImplementation(() => Promise.resolve('original-branch'));
+      mockGit.renameBranch.mockImplementation(() => {
+        throw new Error('git branch rename failed');
+      });
+      const killSpy = spyOn(workerManager, 'killWorker');
+
+      await expect(
+        lifecycleManager.restartAgentWorkerAsEmbedded(
+          session.id, worker!.id, EMBEDDED_AGENT_DEF.id, 'new-branch'
+        )
+      ).rejects.toThrow('git branch rename failed');
+
+      expect(killSpy).not.toHaveBeenCalled();
+      expect(session.type).toBe('worktree');
+      if (session.type === 'worktree') {
+        expect(session.worktreeId).toBe('original-branch');
       }
     });
 
@@ -2756,10 +2888,43 @@ describe('WorkerLifecycleManager', () => {
 
       await lifecycleManager.restartAgentWorker(session.id, workerId, 'fresh', CLAUDE_CODE_AGENT_ID, 'new-branch');
 
-      expect(mockGit.renameBranch).toHaveBeenCalledWith('original-branch', 'new-branch', session.locationPath);
+      expect(mockGit.renameBranch).toHaveBeenCalledWith('original-branch', 'new-branch', session.locationPath, 'testuser');
       expect(session.type).toBe('worktree');
       if (session.type === 'worktree') {
         expect(session.worktreeId).toBe('new-branch');
+      }
+    });
+
+    it('resolves the spawn user from session.createdBy for the branch rename (restartEmbeddedWorkerAsAgent, #1622 R2)', async () => {
+      const { session, workerId } = await createEmbeddedFixture({ worktreeId: 'original-branch', createdBy: 'user-abc' });
+
+      mockGit.getCurrentBranch.mockImplementation(() => Promise.resolve('original-branch'));
+      const resolveSpawnUsernameSpy = mock(async (_createdBy?: string) => 'resolved-spawn-user');
+      const manager = new WorkerLifecycleManager(createDeps({ resolveSpawnUsername: resolveSpawnUsernameSpy }));
+
+      await manager.restartAgentWorker(session.id, workerId, 'fresh', CLAUDE_CODE_AGENT_ID, 'new-branch');
+
+      expect(resolveSpawnUsernameSpy).toHaveBeenCalledWith('user-abc');
+      expect(mockGit.renameBranch).toHaveBeenCalledWith('original-branch', 'new-branch', session.locationPath, 'resolved-spawn-user');
+    });
+
+    it('does not deactivate the existing embedded worker when branch rename fails (order pin, #1622)', async () => {
+      const { session, workerId } = await createEmbeddedFixture({ worktreeId: 'original-branch' });
+
+      mockGit.getCurrentBranch.mockImplementation(() => Promise.resolve('original-branch'));
+      mockGit.renameBranch.mockImplementation(() => {
+        throw new Error('git branch rename failed');
+      });
+      mockDeactivateEmbeddedAgentWorker.mockClear();
+
+      await expect(
+        lifecycleManager.restartAgentWorker(session.id, workerId, 'fresh', CLAUDE_CODE_AGENT_ID, 'new-branch'),
+      ).rejects.toThrow('git branch rename failed');
+
+      expect(mockDeactivateEmbeddedAgentWorker).not.toHaveBeenCalled();
+      expect(session.type).toBe('worktree');
+      if (session.type === 'worktree') {
+        expect(session.worktreeId).toBe('original-branch');
       }
     });
 
@@ -3019,10 +3184,43 @@ describe('WorkerLifecycleManager', () => {
 
       await lifecycleManager.restartAgentWorkerAsEmbedded(session.id, workerId, EMBEDDED_AGENT_DEF_SDK.id, 'new-branch');
 
-      expect(mockGit.renameBranch).toHaveBeenCalledWith('original-branch', 'new-branch', session.locationPath);
+      expect(mockGit.renameBranch).toHaveBeenCalledWith('original-branch', 'new-branch', session.locationPath, 'testuser');
       expect(session.type).toBe('worktree');
       if (session.type === 'worktree') {
         expect(session.worktreeId).toBe('new-branch');
+      }
+    });
+
+    it('resolves the spawn user from session.createdBy for the branch rename (restartEmbeddedWorkerAsDifferentEmbedded, #1622 R2)', async () => {
+      const { session, workerId } = await createEmbeddedFixture({ worktreeId: 'original-branch', createdBy: 'user-abc' });
+
+      mockGit.getCurrentBranch.mockImplementation(() => Promise.resolve('original-branch'));
+      const resolveSpawnUsernameSpy = mock(async (_createdBy?: string) => 'resolved-spawn-user');
+      const manager = new WorkerLifecycleManager(createDeps({ resolveSpawnUsername: resolveSpawnUsernameSpy }));
+
+      await manager.restartAgentWorkerAsEmbedded(session.id, workerId, EMBEDDED_AGENT_DEF_SDK.id, 'new-branch');
+
+      expect(resolveSpawnUsernameSpy).toHaveBeenCalledWith('user-abc');
+      expect(mockGit.renameBranch).toHaveBeenCalledWith('original-branch', 'new-branch', session.locationPath, 'resolved-spawn-user');
+    });
+
+    it('does not deactivate the existing embedded worker when branch rename fails (order pin, #1622)', async () => {
+      const { session, workerId } = await createEmbeddedFixture({ worktreeId: 'original-branch' });
+
+      mockGit.getCurrentBranch.mockImplementation(() => Promise.resolve('original-branch'));
+      mockGit.renameBranch.mockImplementation(() => {
+        throw new Error('git branch rename failed');
+      });
+      mockDeactivateEmbeddedAgentWorker.mockClear();
+
+      await expect(
+        lifecycleManager.restartAgentWorkerAsEmbedded(session.id, workerId, EMBEDDED_AGENT_DEF_SDK.id, 'new-branch'),
+      ).rejects.toThrow('git branch rename failed');
+
+      expect(mockDeactivateEmbeddedAgentWorker).not.toHaveBeenCalled();
+      expect(session.type).toBe('worktree');
+      if (session.type === 'worktree') {
+        expect(session.worktreeId).toBe('original-branch');
       }
     });
   });
@@ -3095,7 +3293,20 @@ describe('WorkerLifecycleManager', () => {
       await lifecycleManager.restartAgentWorkerAsEmbedded(session.id, workerId, EMBEDDED_AGENT_DEF.id, 'new-branch');
 
       expect(mockOnSessionUpdated).toHaveBeenCalled();
-      expect(mockGit.renameBranch).toHaveBeenCalledWith('original-branch', 'new-branch', session.locationPath);
+      expect(mockGit.renameBranch).toHaveBeenCalledWith('original-branch', 'new-branch', session.locationPath, 'testuser');
+    });
+
+    it('resolves the spawn user from session.createdBy for the branch rename (restartEmbeddedWorkerSameDefinition, #1622 R2)', async () => {
+      const { session, workerId } = await createEmbeddedFixture({ worktreeId: 'original-branch', createdBy: 'user-abc' });
+
+      mockGit.getCurrentBranch.mockImplementation(() => Promise.resolve('original-branch'));
+      const resolveSpawnUsernameSpy = mock(async (_createdBy?: string) => 'resolved-spawn-user');
+      const manager = new WorkerLifecycleManager(createDeps({ resolveSpawnUsername: resolveSpawnUsernameSpy }));
+
+      await manager.restartAgentWorkerAsEmbedded(session.id, workerId, EMBEDDED_AGENT_DEF.id, 'new-branch');
+
+      expect(resolveSpawnUsernameSpy).toHaveBeenCalledWith('user-abc');
+      expect(mockGit.renameBranch).toHaveBeenCalledWith('original-branch', 'new-branch', session.locationPath, 'resolved-spawn-user');
     });
 
     it('returns null when the session vanishes during deactivate/activate', async () => {
@@ -3143,7 +3354,7 @@ describe('WorkerLifecycleManager', () => {
         manager.restartAgentWorkerAsEmbedded(session.id, workerId, EMBEDDED_AGENT_DEF.id, 'new-branch'),
       ).rejects.toThrow('activation failed');
 
-      expect(mockGit.renameBranch).toHaveBeenCalledWith('original-branch', 'new-branch', session.locationPath);
+      expect(mockGit.renameBranch).toHaveBeenCalledWith('original-branch', 'new-branch', session.locationPath, 'testuser');
       expect(mockPersistSession).toHaveBeenCalled();
       const persistedSession = mockPersistSession.mock.calls[0][0] as InternalSession;
       expect(persistedSession.type).toBe('worktree');

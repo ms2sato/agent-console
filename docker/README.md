@@ -193,6 +193,31 @@ docker compose -f docker/docker-compose.verification.yml up --build -d
    AGENT_CONSOLE_SHARED_USERNAME= scripts/verify-multiuser-docker.sh --no-build
    ```
 
+9. **Worker-restart branch rename uses the session's spawn user, not the
+   requester** (Issue #1622): `POST /workers/:workerId/restart` with a
+   `branch` field runs `git branch --show-current` / `git branch -m` as
+   `resolveSpawnUsername(session.createdBy)` -- the session's spawn user --
+   never the authenticated caller. Two sub-checks, both driving the same
+   restart endpoint against a fresh worktree session (created with
+   `autoStartSession: true`, which auto-creates a PTY `agent` worker via the
+   default terminal agent -- this works with no real `claude` CLI installed,
+   since PTY allocation succeeds independently of whether the exec'd agent
+   command is actually runnable):
+   - **(i)**: restart-with-branch as `alice`, on a worktree session `alice`
+     owns -- verifies the fix in the ordinary case.
+   - **(iii)**: the identity-choice discriminator. A worktree session created
+     with `shared: true` runs as the shared account (`shared1`), but `alice`
+     triggers its restart over HTTP. Only a fix that resolves the
+     *session's* spawn user (not the requester's) passes: a requester-based
+     fix would still try to run git as `alice` against a worktree directory
+     owned by `shared1`, hitting the same "dubious ownership" class of error
+     the original bug report describes. The check reads the renamed branch
+     back **as `shared1`**, not `alice`.
+
+   (Sub-check (ii) -- rename via the session-edit route -- was scoped out:
+   that route no longer accepts a `branch` field, and the code path it would
+   have exercised was found dead and deleted, not fixed.)
+
 ### Real-host smokes inside the container
 
 ```bash
