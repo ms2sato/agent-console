@@ -33,6 +33,12 @@ function extractEmbeddedAgentBunPath(unitText) {
   return m[1];
 }
 
+function extractEmbeddedAgentEntryPath(unitText) {
+  const m = unitText.match(/^Environment=EMBEDDED_AGENT_ENTRY_PATH=(\S+)$/m);
+  if (!m) throw new Error(`Environment=EMBEDDED_AGENT_ENTRY_PATH= line not found in:\n${unitText}`);
+  return m[1];
+}
+
 // Runs --dry-run expecting a non-zero exit (validation rejection), and
 // returns { status, stderr } instead of throwing -- the inverse of
 // renderDryRunUnit()'s "expect success" contract above.
@@ -74,6 +80,37 @@ describe('setup-multiuser-for-ubuntu.sh: single-writer unified bun path (Issue #
     const embeddedAgentPath = extractEmbeddedAgentBunPath(unit);
     expect(execStartPath).toBe(embeddedAgentPath);
     expect(unit).toContain('Environment=PORT=9123');
+  });
+});
+
+// Issue #1668 -- the embedded-agent entry path gets the same "independent
+// knob, but the unified value is what actually gets rendered" treatment as
+// the bun path above. Unlike EMBEDDED_AGENT_BUN_PATH, this literal is
+// duplicated in scripts/update-and-deploy-for-multiuser-ubuntu.sh (no
+// cross-script shared-constant mechanism exists in this codebase) --
+// pinning the exact literal here is what makes the two scripts' values
+// unable to silently drift apart: a future edit to either one alone fails
+// this test.
+describe('setup-multiuser-for-ubuntu.sh: unified embedded-agent entry path (Issue #1668)', () => {
+  it('renders Environment=EMBEDDED_AGENT_ENTRY_PATH= as /usr/local/lib/agent-console/embedded-agent.js', () => {
+    const unit = renderDryRunUnit();
+    const entryPath = extractEmbeddedAgentEntryPath(unit);
+    expect(entryPath).toBe('/usr/local/lib/agent-console/embedded-agent.js');
+  });
+
+  it('keeps the entry path stable across a --port override (unrelated parameter)', () => {
+    const unit = renderDryRunUnit(['--port', '9123']);
+    const entryPath = extractEmbeddedAgentEntryPath(unit);
+    expect(entryPath).toBe('/usr/local/lib/agent-console/embedded-agent.js');
+  });
+
+  it('is an independent value from the unified bun path (different literal, not derived)', () => {
+    const unit = renderDryRunUnit();
+    const bunPath = extractEmbeddedAgentBunPath(unit);
+    const entryPath = extractEmbeddedAgentEntryPath(unit);
+    expect(entryPath).not.toBe(bunPath);
+    expect(entryPath.startsWith('/usr/local/lib/')).toBe(true);
+    expect(bunPath.startsWith('/usr/local/bin/')).toBe(true);
   });
 });
 

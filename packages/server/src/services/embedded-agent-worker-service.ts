@@ -134,6 +134,31 @@ export function resolveEmbeddedAgentEntryPath(
   }
 }
 
+/**
+ * Resolves the entry path {@link EmbeddedAgentWorkerService}'s constructor
+ * should use, applying the same "explicit override wins outright" precedence
+ * `EMBEDDED_AGENT_BUN_PATH` uses for the bun binary: an explicit deps-level
+ * test seam (`depsEntryPath`) wins unconditionally; failing that, a
+ * configured `EMBEDDED_AGENT_ENTRY_PATH` (when set) is used VERBATIM,
+ * WITHOUT ever calling `resolveFn` -- reachability at the deployment target
+ * is the deploy script's concern, not this function's. Only when neither is
+ * set does the 3-tier resolver run.
+ *
+ * Extracted as a standalone, dependency-injected function (rather than
+ * reading `serverConfig` directly inline in the constructor) so this
+ * precedence is unit-testable without the module-load-time
+ * env-var-vs-import-order hazard documented in
+ * `scripts/smoke/check-embedded-agent-elevation.ts`'s header comment for a
+ * sibling case (serverConfig fields are computed once, at import time).
+ */
+export function resolveConstructorEntryPath(
+  depsEntryPath: string | undefined,
+  configuredEntryPath: string | undefined,
+  resolveFn: (baseDir?: string) => EmbeddedAgentEntryResolution = resolveEmbeddedAgentEntryPath,
+): string {
+  return depsEntryPath ?? configuredEntryPath ?? resolveFn().path;
+}
+
 /** Protocol-violation guard: a single NDJSON line larger than this is a crash. */
 const MAX_LINE_BYTES = 1024 * 1024;
 /** Consecutive parse failures tolerated before the loop is treated as corrupt. */
@@ -677,7 +702,7 @@ export class EmbeddedAgentWorkerService {
   constructor(private readonly deps: EmbeddedAgentWorkerServiceDeps) {
     this.spawnAsUserFn = deps.spawnAsUserFn ?? spawnAsUser;
     this.loadProviderKeyFn = deps.loadProviderKeyFn ?? loadProviderKey;
-    this.entryPath = deps.entryPath ?? resolveEmbeddedAgentEntryPath().path;
+    this.entryPath = resolveConstructorEntryPath(deps.entryPath, serverConfig.EMBEDDED_AGENT_ENTRY_PATH);
     this.bunPath = deps.embeddedAgentBunPath ?? serverConfig.EMBEDDED_AGENT_BUN_PATH;
     this.shutdownGraceMs = deps.shutdownGraceMs ?? DEFAULT_SHUTDOWN_GRACE_MS;
     this.sigtermTimeoutMs = deps.sigtermTimeoutMs ?? DEFAULT_SIGTERM_TIMEOUT_MS;

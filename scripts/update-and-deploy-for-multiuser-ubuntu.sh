@@ -21,9 +21,19 @@
 #   4. rsync source-repo -> deploy target (excludes node_modules + .git).
 #   5. Write the deployed-commit marker (.deploy-sha) into the deploy target,
 #      using the SHA captured in step 1 (not a fresh read at this point).
-#   6. bun install --production @ deploy target (runtime deps only).
-#   7. systemctl restart <service> + status snapshot.
-#   8. Health probe via curl.
+#   6. Copy dist/embedded-agent.js (+ .map) from the deploy target -- the
+#      point where the SHA-recheck above has already verified it's correct,
+#      not a second independent read from the source repo -- to a unified,
+#      world-traversable location every elevation-target OS user can reach
+#      (see the "embedded-agent entry path" comment at UNIFIED_ENTRY_PATH
+#      below). Unconditional on every deploy, no hash/mtime gate.
+#   7. bun install --production @ deploy target (runtime deps only).
+#   8. Fail-closed readability check on the unified entry path, immediately
+#      before restarting the service -- refuses to restart into a unit whose
+#      EMBEDDED_AGENT_ENTRY_PATH would point at a file step 6 did not
+#      actually provision.
+#   9. systemctl restart <service> + status snapshot.
+#  10. Health probe via curl.
 #
 # Run as your login user (sudo required for the inner elevation to the
 # service user, and for the system-level systemctl restart).
@@ -67,6 +77,31 @@ SERVICE_NAME="${AGENT_CONSOLE_SERVICE_NAME:-agent-console.service}"
 PORT="${AGENT_CONSOLE_PORT:-8080}"
 HEALTH_URL="http://localhost:${PORT}/api/auth/me"
 
+# Unified, world-traversable location for the bundled embedded-agent
+# subprocess entry: resolveEmbeddedAgentEntryPath()'s own "bundle sibling"
+# branch resolves dist/embedded-agent.js inside the deploy target
+# (/home/<service-user>/agent-console/dist/), which is unreachable to any
+# OTHER elevation-target OS user even though the file itself is
+# world-readable -- the same class of bug the unified bun-binary path fixes
+# for the `bun` binary itself (see scripts/setup-multiuser-for-ubuntu.sh's
+# UNIFIED_BUN_PATH). Deliberately NOT derived from that unified bun path's
+# directory -- a language-runtime binary and an application bundle file are
+# different physical resources that happen to share a reachability
+# requirement, and conventionally live in different FHS locations
+# (/usr/local/bin vs. /usr/local/lib/<project>/).
+#
+# This same literal is duplicated in scripts/setup-multiuser-for-ubuntu.sh
+# (its systemd unit template's Environment=EMBEDDED_AGENT_ENTRY_PATH= line;
+# no cross-script shared-constant mechanism exists in this codebase --
+# scripts/__tests__/setup-multiuser-for-ubuntu.test.mjs pins the rendered
+# unit's value so the two cannot silently drift apart).
+UNIFIED_ENTRY_PATH="/usr/local/lib/agent-console/embedded-agent.js"
+UNIFIED_ENTRY_MAP_PATH="${UNIFIED_ENTRY_PATH}.map"
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/setup-multiuser-checks.sh
+source "$SCRIPT_DIR/lib/setup-multiuser-checks.sh"
+
 echo "==> Config"
 echo "    SERVICE_USER : ${SERVICE_USER}"
 echo "    APP_SOURCE   : ${SRC}"
@@ -85,14 +120,14 @@ sudo -u "${SERVICE_USER}" -- git -C "${SRC}" log --oneline -1
 DEPLOYED_SHA="$(sudo -u "${SERVICE_USER}" -- git -C "${SRC}" rev-parse HEAD)"
 
 echo ""
-echo "==> 1/5 bun install (all deps, build needs dev tooling) @ source-repo"
+echo "==> 1/6 bun install (all deps, build needs dev tooling) @ source-repo"
 sudo -u "${SERVICE_USER}" bash -lc '
   export PATH=$HOME/.bun/bin:$PATH
   cd -- "$1" && bun install
 ' _ "${SRC}"
 
 echo ""
-echo "==> 2/5 NODE_ENV=production bun run build @ source-repo"
+echo "==> 2/6 NODE_ENV=production bun run build @ source-repo"
 sudo -u "${SERVICE_USER}" bash -lc '
   export PATH=$HOME/.bun/bin:$PATH
   cd -- "$1" && NODE_ENV=production bun run build
@@ -105,7 +140,7 @@ if [ "${CURRENT_SHA}" != "${DEPLOYED_SHA}" ]; then
 fi
 
 echo ""
-echo "==> 3/5 rsync source-repo -> deploy target (excludes node_modules, .git)"
+echo "==> 3/6 rsync source-repo -> deploy target (excludes node_modules, .git)"
 sudo -u "${SERVICE_USER}" rsync -a --delete \
   --exclude=node_modules \
   --exclude='.git' \
@@ -118,7 +153,7 @@ if [ "${CURRENT_SHA}" != "${DEPLOYED_SHA}" ]; then
 fi
 
 echo ""
-echo "==> 4/5 write deployed-commit marker (.deploy-sha)"
+echo "==> 4/6 write deployed-commit marker (.deploy-sha)"
 # Written into the deploy target (not the source) so it survives the next
 # rsync --delete; rewritten fresh every deploy. Uses the SHA captured at the
 # top of this script (DEPLOYED_SHA), not a fresh read here -- the
@@ -128,11 +163,42 @@ DEPLOYED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 sudo -u "${SERVICE_USER}" bash -lc 'printf "%s\n%s\n" "$1" "$2" > "$3/.deploy-sha"' _ "${DEPLOYED_SHA}" "${DEPLOYED_AT}" "${DST}"
 
 echo ""
-echo "==> 5/5 bun install --production @ deploy target (runtime deps only)"
+echo "==> 5/6 copy dist/embedded-agent.js (+ .map) to unified entry path"
+# Source is the DEPLOY TARGET, post-rsync, post-SHA-recheck (the point where
+# the check above has already verified it's the intended revision) -- not a
+# second independent read from the source repo, folded in immediately after
+# the marker write above rather than opening a new independent race window.
+# Copied unconditionally on every deploy (matches rsync -a's own semantics
+# and the .deploy-sha marker's own "rewritten fresh every deploy"
+# precedent) -- no hash/mtime gate. Run as root (plain sudo, no -u) so this
+# can read from the deploy target regardless of its own directory
+# permissions and write to the root-owned /usr/local/lib/agent-console/
+# destination; `install -D` creates missing parent directories (mode 0755,
+# world-traversable) and `-m0644` makes the files themselves world-readable
+# -- both properties are what makes the destination reachable by every
+# elevation-target OS user, which is the entire point of this step.
+sudo install -Dm0644 "${DST}/dist/embedded-agent.js" "${UNIFIED_ENTRY_PATH}"
+sudo install -Dm0644 "${DST}/dist/embedded-agent.js.map" "${UNIFIED_ENTRY_MAP_PATH}"
+
+echo ""
+echo "==> 6/6 bun install --production @ deploy target (runtime deps only)"
 sudo -u "${SERVICE_USER}" bash -lc '
   export PATH=$HOME/.bun/bin:$PATH
   cd -- "$1" && bun install --production
 ' _ "${DST}"
+
+echo ""
+echo "==> fail-closed check: unified entry path is readable before restart"
+# Mirrors assert_unified_bun_executable's fail-closed discipline (Issue
+# #1222) for the entry path (Issue #1668): refuses to restart into a unit
+# whose EMBEDDED_AGENT_ENTRY_PATH would point at a file step 5/6 did not
+# actually provision. Always runs after an unconditional copy step (unlike
+# the bun-binary check, this script has no --dry-run preview mode to skip
+# for), so on a normal successful deploy this can never legitimately fail --
+# it exists to catch a partial/interrupted copy rather than a first-run
+# bootstrap ordering gap.
+assert_readable_file "${UNIFIED_ENTRY_PATH}" \
+  "step 5/6 (copy dist/embedded-agent.js to the unified entry path) did not complete -- re-run this script" || exit 1
 
 echo ""
 echo "==> systemctl restart ${SERVICE_NAME}"

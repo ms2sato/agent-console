@@ -45,6 +45,26 @@
  *   - Negative secret assertions against the REAL `/proc/<pid>/cmdline` and
  *     `/proc/<pid>/environ` of the elevated subprocess: neither the MCP
  *     bearer token nor the provider API key must appear in either file.
+ *   - Closing the bundle-sibling gap documented above (OPT-IN, via the
+ *     `EMBEDDED_AGENT_ENTRY_PATH` env var, since this smoke's default
+ *     checkout has no `dist/embedded-agent.js` sibling to exercise): when
+ *     set, a positive `/proc/<pid>/cmdline` assertion, PAIRED in the SAME
+ *     run with the `ready` assertion above (same activation, same pid, no
+ *     separate re-run), confirms the REAL elevated subprocess both received
+ *     the configured path as its spawn argv AND actually executed it all
+ *     the way to a working init handshake as the second OS user -- a
+ *     cmdline match alone would still pass even if that user could not
+ *     read the file at all (the exact production failure Issue #1668
+ *     exists to fix), since argv is set before the OS ever attempts to open
+ *     the file; only the pairing with a real completed handshake proves
+ *     actual execution, not just argv plumbing. Opt in with either:
+ *       # against a real build's bundle sibling:
+ *       bun run build
+ *       EMBEDDED_AGENT_ENTRY_PATH="$(pwd)/dist/embedded-agent.js" \
+ *         bun scripts/smoke/check-embedded-agent-elevation.ts <target-user>
+ *       # or, on a live multi-user host, the real unified path:
+ *       EMBEDDED_AGENT_ENTRY_PATH=/usr/local/lib/agent-console/embedded-agent.js \
+ *         bun scripts/smoke/check-embedded-agent-elevation.ts <target-user>
  *
  * What this smoke does NOT exercise:
  *   - The full user-message / tool-call / final-answer turn. `ready` fires at
@@ -99,7 +119,9 @@
  *      `agent-console` unit / its `/proc/<pid>/exe` cannot be resolved --
  *      the live-server check needs the real production service active,
  *      distinct from an assertion FAILURE which means the service IS
- *      running but on the wrong binary)
+ *      running but on the wrong binary; also fired by the
+ *      EMBEDDED_AGENT_ENTRY_PATH probe-cannot-run guard when it is
+ *      configured but not present on disk)
  *
  * Sync contract: entry-path resolution is imported directly from
  * `resolveEmbeddedAgentEntryPath` (packages/server/src/services/
@@ -176,6 +198,24 @@ async function main(): Promise<void> {
         'smoke cannot run meaningfully without the multi-user setup script\'s bun-copy step having been ' +
         'applied. Run scripts/setup-multiuser-for-ubuntu.sh or manually copy bun to that path, or unset ' +
         'EMBEDDED_AGENT_BUN_PATH to test the single-user default.',
+    );
+    process.exit(2);
+  }
+
+  // --- Same probe-cannot-run guard, for EMBEDDED_AGENT_ENTRY_PATH. Unlike
+  // EMBEDDED_AGENT_BUN_PATH, this one is OPT-IN for this smoke (unset by
+  // default -- see "closing the bundle-sibling gap" in the header comment):
+  // set it to exercise the deployment-correct short-circuit path, either
+  // against a real `bun run build` output (`<repo>/dist/embedded-agent.js`)
+  // or the real unified path on a live multi-user host
+  // (/usr/local/lib/agent-console/embedded-agent.js). Leaving it unset
+  // exercises only the pre-existing package-resolution coverage below.
+  const configuredEntryPath = process.env.EMBEDDED_AGENT_ENTRY_PATH;
+  if (configuredEntryPath && !(await Bun.file(configuredEntryPath).exists())) {
+    console.error(
+      `EMBEDDED_AGENT_ENTRY_PATH=${configuredEntryPath} is configured but does not exist on disk -- run ` +
+        '`bun run build` first to produce dist/embedded-agent.js, or unset EMBEDDED_AGENT_ENTRY_PATH to ' +
+        'test only the default package-resolution path.',
     );
     process.exit(2);
   }
@@ -278,6 +318,20 @@ async function main(): Promise<void> {
       'resolved entry path exists on disk',
       resolution.path,
     );
+    if (configuredEntryPath) {
+      // resolveEmbeddedAgentEntryPath() itself has no knowledge of
+      // EMBEDDED_AGENT_ENTRY_PATH -- the short-circuit happens one layer up,
+      // in EmbeddedAgentWorkerService's constructor (resolveConstructorEntryPath),
+      // which this smoke never constructs directly. This assertion is
+      // therefore unaffected by the env var; the real proof that the
+      // short-circuit reached the actually-spawned process is the
+      // `/proc/<pid>/cmdline` assertion later in this run, paired with the
+      // `ready` assertion below -- see this file's header comment.
+      console.log(
+        `  (informational) EMBEDDED_AGENT_ENTRY_PATH=${configuredEntryPath} is configured but does not ` +
+          "affect this raw resolver call -- see the /proc/<pid>/cmdline assertion below for the real proof.",
+      );
+    }
 
     // --- Assertion 2 (Issue #1222 redesign, replacing the Issue #1221
     // follow-up comparison -- NOT a repoint): before Issue #1222,
@@ -650,6 +704,44 @@ async function main(): Promise<void> {
           ? internalWorker.subprocess?.pid
           : undefined;
       expect(pid !== undefined, 'subprocess pid is known while activated');
+
+      // --- Positive assertion, closing the "bundle-sibling branch is
+      // structurally out of reach" gap documented in this file's header
+      // comment: when EMBEDDED_AGENT_ENTRY_PATH is configured, the SAME
+      // real elevated subprocess whose activation JUST reached `ready`
+      // above (`expect(sawReady, ...)`, same run, same pid, no separate
+      // re-activation) must have been spawned with that configured path as
+      // its argv, not resolveEmbeddedAgentEntryPath()'s own 'package'-branch
+      // result from Assertion 1. This is deliberately NOT a standalone
+      // string-plumbing check: pairing it with `sawReady` in the same run
+      // proves the elevated target user both RECEIVED the configured path
+      // AND actually executed it all the way to a working init handshake --
+      // a cmdline match alone would still pass even if the elevated user
+      // could not read the file at all (the exact failure this fix exists
+      // for), since spawnAsUser's argv is set before the OS ever attempts to
+      // open the file. Skipped (not failed) when EMBEDDED_AGENT_ENTRY_PATH is
+      // unset -- see the header comment's "closing the bundle-sibling gap"
+      // section for how to opt in.
+      if (configuredEntryPath && pid !== undefined) {
+        const cmdlineFile = Bun.file(`/proc/${pid}/cmdline`);
+        const cmdlineRan = await cmdlineFile.exists();
+        const cmdlineContent = cmdlineRan ? await cmdlineFile.text().catch(() => '') : '';
+        expect(
+          cmdlineRan,
+          'EMBEDDED_AGENT_ENTRY_PATH short-circuit /proc/<pid>/cmdline check actually ran (not silently skipped)',
+        );
+        expect(
+          cmdlineContent.includes(configuredEntryPath),
+          'the real elevated subprocess was spawned with the configured EMBEDDED_AGENT_ENTRY_PATH as its argv (short-circuit reached the actual spawn)',
+          `configured='${configuredEntryPath}'; resolver's own package-branch path was '${resolution.path}' (must NOT be what was actually spawned when the short-circuit works)`,
+        );
+      } else if (configuredEntryPath) {
+        expect(false, 'EMBEDDED_AGENT_ENTRY_PATH short-circuit /proc/<pid>/cmdline check actually ran (not silently skipped)', 'pid unknown');
+      } else {
+        console.log(
+          '  skipped: EMBEDDED_AGENT_ENTRY_PATH unset -- no configured short-circuit path to verify against argv.',
+        );
+      }
 
       const secrets: Array<{ label: string; value: string | undefined }> = [
         { label: 'MCP bearer token', value: capturedToken },
