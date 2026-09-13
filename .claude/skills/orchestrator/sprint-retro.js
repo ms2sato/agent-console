@@ -209,7 +209,7 @@ function getSteps() {
       key: 'apply_improvements',
       title: 'Step 4: Apply Process Improvements',
       instructions: [
-        'Based on findings from Steps 3a and 3b:',
+        'Based on findings from Steps 3a, 3b, and 3c (each addition names what it replaces):',
         '  1. List all proposed improvements',
         '  2. For each improvement, identify the target file(s) to modify',
         '     (e.g., CLAUDE.md, skills, rules, agents, memory)',
