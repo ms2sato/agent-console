@@ -119,4 +119,54 @@ describe('writeTool', () => {
     expect(result).toEqual({ ok: false, result: 'aborted' });
     await expect(fsPromises.stat(target)).rejects.toThrow();
   });
+
+  // Memory layer (epic #1636 Phase 2): write.ts forwards memoryRoot -- and
+  // ONLY memoryRoot; the #1570 attachmentRoots rejection above stays true.
+  // Reach: mutating write.ts back to `resolveConfinedPath(filePath,
+  // ctx.locationPath)` fails the first pin; mutating it to forward
+  // `ctx.attachmentRoots` fails the #1570 pin above -- both measured.
+  it('writes a file under ctx.memoryRoot, outside locationPath (memory layer)', async () => {
+    const memoryRoot = await fsPromises.mkdtemp(path.join(os.tmpdir(), 'embedded-agent-memory-'));
+    try {
+      const target = path.join(memoryRoot, 'MEMORY.md');
+
+      const result = await writeTool.execute({ file_path: target, content: '# Memory Index\n' }, { locationPath, memoryRoot });
+
+      expect(result.ok).toBe(true);
+      await expect(fsPromises.readFile(target, 'utf-8')).resolves.toBe('# Memory Index\n');
+    } finally {
+      await fsPromises.rm(memoryRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('still rejects a path outside both locationPath and memoryRoot with the verbatim message', async () => {
+    const memoryRoot = await fsPromises.mkdtemp(path.join(os.tmpdir(), 'embedded-agent-memory-'));
+    const elsewhere = await fsPromises.mkdtemp(path.join(os.tmpdir(), 'embedded-agent-elsewhere-'));
+    try {
+      const result = await writeTool.execute(
+        { file_path: path.join(elsewhere, 'x.txt'), content: 'nope' },
+        { locationPath, memoryRoot },
+      );
+      expect(result.ok).toBe(false);
+      expect(result.result).toBe('Access outside session location is not permitted.');
+      await expect(fsPromises.stat(path.join(elsewhere, 'x.txt'))).rejects.toThrow();
+    } finally {
+      await Promise.all([memoryRoot, elsewhere].map((d) => fsPromises.rm(d, { recursive: true, force: true })));
+    }
+  });
+
+  it('a path under ctx.attachmentRoots stays rejected even when memoryRoot is ALSO set (the two roots are not one list)', async () => {
+    const memoryRoot = await fsPromises.mkdtemp(path.join(os.tmpdir(), 'embedded-agent-memory-'));
+    const attachmentRoot = await fsPromises.mkdtemp(path.join(os.tmpdir(), 'embedded-agent-attach-'));
+    try {
+      const result = await writeTool.execute(
+        { file_path: path.join(attachmentRoot, 'upload.txt'), content: 'nope' },
+        { locationPath, attachmentRoots: [attachmentRoot], memoryRoot },
+      );
+      expect(result.ok).toBe(false);
+      expect(result.result).toBe('Access outside session location is not permitted.');
+    } finally {
+      await Promise.all([memoryRoot, attachmentRoot].map((d) => fsPromises.rm(d, { recursive: true, force: true })));
+    }
+  });
 });

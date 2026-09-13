@@ -24,9 +24,24 @@ export interface BuiltinToolContext {
    * tool alone may open — the shared message-attachment upload directory.
    * Still carries no secrets. `write.ts` / `edit.ts` / `glob.ts` / `grep.ts`
    * deliberately never forward this to `resolveConfinedPath`, so they
-   * continue to reject any path under it.
+   * continue to reject any path under it. (`write.ts` / `edit.ts` DO forward
+   * the separate {@link memoryRoot} field -- a different field precisely so
+   * the two contracts cannot be conflated by a future edit that widens
+   * "extra roots" as one list.)
    */
   attachmentRoots?: string[];
+  /**
+   * Memory layer (epic #1636 Phase 2): the worker's server-owned memory
+   * directory (`init.context.memoryDir`), an additional confinement root
+   * that `read.ts` / `write.ts` / `edit.ts` forward to `resolveConfinedPath`
+   * -- readable, writable, AND editable, unlike an attachment. `glob.ts` /
+   * `grep.ts` deliberately never forward it: the index is the discovery
+   * mechanism, not a directory search (see the design's "Why Glob/Grep are
+   * excluded"). No new tool name, so `enabledTools` stays the single
+   * mutation policy -- a definition with `Write`/`Edit` off has read-only
+   * memory.
+   */
+  memoryRoot?: string;
 }
 
 export interface BuiltinToolResult {

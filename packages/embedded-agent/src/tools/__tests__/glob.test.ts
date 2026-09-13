@@ -106,4 +106,17 @@ describe('globTool', () => {
 
     expect(result).toEqual({ ok: false, result: 'aborted' });
   });
+
+  it('rejects a root path under ctx.memoryRoot (memory layer: glob.ts never forwards memoryRoot -- the index is the discovery mechanism)', async () => {
+    // Reach: mutating glob.ts to forward `[ctx.memoryRoot]` fails -- measured.
+    const memoryRoot = await fsPromises.mkdtemp(path.join(os.tmpdir(), 'embedded-agent-memory-'));
+    try {
+      await fsPromises.writeFile(path.join(memoryRoot, 'topic.md'), 'x');
+      const result = await globTool.execute({ pattern: '*.md', path: memoryRoot }, { locationPath, memoryRoot });
+      expect(result.ok).toBe(false);
+      expect(result.result).toBe('Access outside session location is not permitted.');
+    } finally {
+      await fsPromises.rm(memoryRoot, { recursive: true, force: true });
+    }
+  });
 });

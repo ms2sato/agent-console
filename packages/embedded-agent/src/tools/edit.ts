@@ -79,7 +79,14 @@ async function execute(args: unknown, ctx: BuiltinToolContext, signal?: AbortSig
   }
   const { filePath, oldString, newString, replaceAll } = parsed.value;
 
-  const confinement = await resolveConfinedPath(filePath, ctx.locationPath);
+  // Memory layer: `memoryRoot` is the ONE extra root this tool accepts --
+  // never `attachmentRoots` (attachments stay read-only through the builtin
+  // surface; see BuiltinToolContext's doc comments).
+  const confinement = await resolveConfinedPath(
+    filePath,
+    ctx.locationPath,
+    ctx.memoryRoot !== undefined ? [ctx.memoryRoot] : [],
+  );
   if (!confinement.ok) {
     return { ok: false, result: confinement.message };
   }
