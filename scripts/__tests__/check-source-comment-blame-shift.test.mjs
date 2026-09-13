@@ -680,6 +680,15 @@ describe('findDefaultFiles — live-tree scope integration (R2 count regression 
     // and dot:true as production, isExcludedFile applied the same way
     // findDefaultFiles applies it) -- so a silent drop anywhere under
     // either widened root fails this comparison.
+    //
+    // Reach: this pin's reach is findDefaultFiles's own loop dropping a
+    // file the glob/predicate would otherwise include; it shares its glob
+    // patterns and isExcludedFile with production by design (an
+    // independent glob re-implementation would still need the same
+    // exclusion predicate to compare correctly), so it does NOT catch a
+    // change to DEFAULT_GLOBS or isExcludedFile itself -- those are
+    // covered by this file's other pins (the presence/count tests, and
+    // isExcludedFile's own describe block).
     const independentWidenedFiles = new Set();
     for (const pattern of [
       'scripts/**/*.ts',

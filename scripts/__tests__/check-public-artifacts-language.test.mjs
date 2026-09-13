@@ -635,6 +635,13 @@ describe('findDefaultFiles — live-tree scanned-file-count regression pin (R4, 
     // scan of .claude/** alone, computed here directly with Bun.Glob
     // rather than by importing findDefaultFiles's own output -- so a
     // silent drop anywhere under .claude/ fails this comparison.
+    //
+    // Reach: this pin's reach is findDefaultFiles's own loop dropping a
+    // file the `.claude/**` glob would otherwise include; it targets the
+    // same root pattern as production by design (an independent glob
+    // re-implementation would still need to target `.claude/**`
+    // specifically to compare correctly), so it does NOT catch a change
+    // to DEFAULT_PATTERNS itself -- that would need its own pin.
     const independentClaudeFiles = [];
     const claudeGlob = new Glob('.claude/**');
     for await (const file of claudeGlob.scan({ cwd: REPO_ROOT, onlyFiles: true, dot: true })) {
