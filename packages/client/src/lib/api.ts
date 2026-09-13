@@ -42,6 +42,7 @@ import type {
 } from '@agent-console/shared';
 import {
   ArtifactsListResponseSchema,
+  ConfigResponseSchema,
   NotificationsResponseSchema,
   NotificationsSeenResponseSchema,
   BookmarksListResponseSchema,
@@ -94,7 +95,7 @@ export async function fetchConfig(): Promise<ConfigResponse> {
   if (!res.ok) {
     await handleApiError(res, 'Failed to fetch config');
   }
-  return res.json();
+  return v.parse(ConfigResponseSchema, await res.json());
 }
 
 export interface CreateSessionResponse {

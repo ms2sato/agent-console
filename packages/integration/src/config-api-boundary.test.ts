@@ -35,7 +35,11 @@ import { createFetchBridge, findRequest } from './test-utils';
  */
 function createMockSystemCapabilities(vscodeAvailable: boolean = false): SystemCapabilitiesService {
   const service = new SystemCapabilitiesService();
-  Reflect.set(service, 'capabilities', { vscode: vscodeAvailable });
+  Reflect.set(service, 'capabilities', {
+    vscode: vscodeAvailable,
+    vscodeOpenMode: 'local-spawn',
+    vscodeRemoteHost: null,
+  });
   Reflect.set(service, 'vscodeCommand', vscodeAvailable ? 'code' : null);
   return service;
 }
