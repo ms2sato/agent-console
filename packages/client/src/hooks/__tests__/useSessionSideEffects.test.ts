@@ -661,8 +661,13 @@ describe('useSessionSideEffects - orchestrator-designation-changed cache patch (
     // `id === repositoryId` (e.g. a repository registered after the cache was
     // last populated), the `setQueryData` map callback finds no match and
     // writes back an unchanged list -- silently dropping the designation
-    // change with no future correction. The fallback must be the same
-    // invalidate-then-refetch path used for the no-cache case above.
+    // change with no future correction. The fallback must force a fresh
+    // refetch -- but unlike the no-cache case below, this query is already
+    // populated and actively observed, so a single `refetchQueries` call is
+    // sufficient (a second CodeRabbit finding: chaining the no-cache case's
+    // invalidate-then-refetch dance here would fire a redundant extra
+    // request, since `invalidateQueries` already refetches an active query
+    // on its own).
     const options = createDefaultOptions();
     const { queryClient } = renderWithQueryClient(options);
     const queryKey = repositoryKeys.all();
@@ -693,11 +698,23 @@ describe('useSessionSideEffects - orchestrator-designation-changed cache patch (
     });
 
     // A direct `setQueryData` patch would have silently no-op'd here (no
-    // `repo-a` entry to map over); the fix must instead trigger the same
-    // invalidate-then-refetch fallback as the no-cache case, evidenced by a
-    // second `queryFn` call.
+    // `repo-a` entry to map over); the fix must instead trigger a fresh
+    // refetch, evidenced by a second `queryFn` call.
     await waitFor(() => {
       expect(queryFn).toHaveBeenCalledTimes(2);
     });
+
+    // Unlike the no-cache/in-flight-fetch case above, this query is already
+    // populated and actively observed, so the fallback must issue a single
+    // direct `refetchQueries` call rather than chaining `invalidateQueries`
+    // (whose default `type: 'active'` already triggers its own refetch of
+    // this observed query) into a second explicit `refetchQueries` call.
+    // Flush past the point where that redundant second request would have
+    // resolved, and confirm the count never moves past the one post-event
+    // fetch already observed above.
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    });
+    expect(queryFn).toHaveBeenCalledTimes(2);
   });
 });

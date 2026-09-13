@@ -175,11 +175,15 @@ export function useSessionSideEffects({
     // (e.g. it was registered after the cache was last populated). A direct
     // `setQueryData` patch would silently no-op -- `.map()` finds no matching
     // `r.id` and writes back the same list -- losing the designation change
-    // for that repository with no future correction. Fall back to the same
-    // invalidate-then-refetch path used for the no-cache case above.
+    // for that repository with no future correction. Unlike the no-cache
+    // case above, this query IS populated and (in production) actively
+    // observed, so a single `refetchQueries` call is sufficient -- there's
+    // no in-flight-fetch race to guard against here, and chaining
+    // `invalidateThenRefetch()` would fire a redundant second request
+    // (invalidate already triggers a refetch of an active query on its own).
     const matched = cached.repositories.some((r) => r.id === repositoryId);
     if (!matched) {
-      invalidateThenRefetch();
+      void queryClient.refetchQueries({ queryKey, type: 'all' });
       return;
     }
     queryClient.setQueryData<{ repositories: Repository[] } | undefined>(queryKey, (old) => {
