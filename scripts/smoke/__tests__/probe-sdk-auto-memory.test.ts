@@ -9,20 +9,44 @@
  * module runs nothing (the `import.meta.main` guard at the foot of that
  * file, covered separately by `import-safety.test.ts`), so all seven are
  * testable at zero cost and separately from what they classify.
+ *
+ * Task 0b (Issue #1667) adds `classifyArmEConfig` / `summarizeArmE` /
+ * `resolveArmFConfigKey` / `resolveExtendedTimeoutMs` / `textContainsPath` /
+ * `diffMtimeSnapshots` / `resolveRealConfigDir` (pure, same treatment) and
+ * `seedMemoryTopic` (real but zero-cost, deterministic filesystem I/O
+ * against a real tmpdir -- no LLM turn, no network, matching this file's
+ * "Tests Must Test Production Code" convention for a helper that isn't a
+ * pure function but also isn't billable).
  */
-import { describe, it, expect } from 'bun:test';
+import { describe, it, expect, afterEach } from 'bun:test';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
   PROBE_EXIT,
   exitCodeFor,
   classifyArmA,
   classifyArmC,
   classifyArmD,
+  classifyArmEConfig,
+  summarizeArmE,
+  resolveArmFConfigKey,
+  resolveExtendedTimeoutMs,
+  textContainsPath,
+  diffMtimeSnapshots,
+  resolveRealConfigDir,
+  seedMemoryTopic,
   redactRecallEntry,
   recallPathMatches,
   summarizeRecalls,
+  EXTENDED_TIMEOUT_CAP_MS,
+  WRITE_POLL_TIMEOUT_MS,
+  armFHaltCheck,
   type ArmAInput,
   type ArmCInput,
   type ArmDInput,
+  type ArmEConfigInput,
+  type ArmESummaryInput,
 } from '../probe-sdk-auto-memory.js';
 
 describe('probe-sdk-auto-memory exit codes', () => {
@@ -365,5 +389,361 @@ describe('summarizeRecalls', () => {
   it('contributes nothing for a recall event with an empty memories array', () => {
     const recalls = [{ mode: 'select' as const, memories: [] }];
     expect(summarizeRecalls(recalls, configDir)).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Task 0b (Issue #1667): Arm E awareness classification
+// ---------------------------------------------------------------------------
+
+describe('classifyArmEConfig', () => {
+  it('is inconclusive when the turn did not settle, before anything else is checked', () => {
+    const r = classifyArmEConfig({ settled: false, locationHit: true, accessHit: true });
+    expect(r.conclusive).toBe(false);
+    expect(r.classification).toBe('unaware');
+  });
+
+  it('reads aware-and-reading when both observables hit (all-success boundary)', () => {
+    const r = classifyArmEConfig({ settled: true, locationHit: true, accessHit: true });
+    expect(r).toMatchObject({ classification: 'aware-and-reading', conclusive: true });
+  });
+
+  it('reads aware-prose-only when only ACCESS hits -- NOT absence', () => {
+    const r = classifyArmEConfig({ settled: true, locationHit: false, accessHit: true });
+    expect(r).toMatchObject({ classification: 'aware-prose-only', conclusive: true });
+    expect(r.note).toContain('NOT absence');
+  });
+
+  it('reads told-not-read when only LOCATION hits', () => {
+    const r = classifyArmEConfig({ settled: true, locationHit: true, accessHit: false });
+    expect(r).toMatchObject({ classification: 'told-not-read', conclusive: true });
+  });
+
+  it('reads unaware when neither observable hits (all-failure boundary)', () => {
+    const r = classifyArmEConfig({ settled: true, locationHit: false, accessHit: false });
+    expect(r).toMatchObject({ classification: 'unaware', conclusive: true });
+  });
+});
+
+describe('summarizeArmE', () => {
+  const unaware: ArmEConfigInput = { settled: true, locationHit: false, accessHit: false };
+  const aware: ArmEConfigInput = { settled: true, locationHit: true, accessHit: true };
+  const accessOnly: ArmEConfigInput = { settled: true, locationHit: false, accessHit: true };
+
+  const allUnaware: ArmESummaryInput = { omitted: unaware, preset: unaware, presetExcluded: unaware };
+
+  it('reports no awareness anywhere, a clean control, when every configuration is unaware (all-failure boundary)', () => {
+    const s = summarizeArmE(allUnaware);
+    expect(s.conclusive).toBe(true);
+    expect(s.productionAware).toBe(false);
+    expect(s.awareConfigs).toEqual([]);
+    expect(s.controlClean).toBe(true);
+  });
+
+  it("identifies production's own shape (omitted) as aware when its ACCESS observable hits", () => {
+    const s = summarizeArmE({ ...allUnaware, omitted: accessOnly });
+    expect(s.productionAware).toBe(true);
+    expect(s.awareConfigs).toEqual(['omitted']);
+  });
+
+  it('identifies preset as aware without crediting production when only preset hits (mixed)', () => {
+    const s = summarizeArmE({ ...allUnaware, preset: aware });
+    expect(s.productionAware).toBe(false);
+    expect(s.awareConfigs).toEqual(['preset']);
+  });
+
+  it('lists both awareConfigs when both (i) and (ii) show awareness (all-success boundary)', () => {
+    const s = summarizeArmE({ omitted: aware, preset: aware, presetExcluded: unaware });
+    expect(s.awareConfigs).toEqual(['omitted', 'preset']);
+  });
+
+  it('reports control: NONE AVAILABLE when the (iii) negative control itself surfaces an observable', () => {
+    const s = summarizeArmE({ ...allUnaware, presetExcluded: accessOnly });
+    expect(s.controlClean).toBe(false);
+    expect(s.note).toContain('NONE AVAILABLE');
+  });
+
+  it('reports controlClean=null when the (iii) control turn did not settle', () => {
+    const s = summarizeArmE({ ...allUnaware, presetExcluded: { settled: false, locationHit: false, accessHit: false } });
+    expect(s.controlClean).toBeNull();
+  });
+
+  it('is inconclusive overall when any single configuration did not settle (mixed)', () => {
+    const s = summarizeArmE({ ...allUnaware, preset: { settled: false, locationHit: false, accessHit: false } });
+    expect(s.conclusive).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Task 0b: Arm F configuration selection + Arm G timeout resolution
+// ---------------------------------------------------------------------------
+
+describe('resolveArmFConfigKey', () => {
+  const unaware: ArmEConfigInput = { settled: true, locationHit: false, accessHit: false };
+  const accessOnly: ArmEConfigInput = { settled: true, locationHit: false, accessHit: true };
+
+  it('honors an explicit --f-config override regardless of the Arm E summary', () => {
+    const s = summarizeArmE({ omitted: accessOnly, preset: unaware, presetExcluded: unaware });
+    const r = resolveArmFConfigKey(s, 'preset');
+    expect(r.key).toBe('preset');
+    expect(r.source).toContain('override');
+  });
+
+  it('defaults to omitted when Arm E did not run in this invocation (no summary, no override)', () => {
+    const r = resolveArmFConfigKey(null, undefined);
+    expect(r.key).toBe('omitted');
+    expect(r.source).toContain('no Arm E result');
+  });
+
+  it("prefers (i) omitted when it shows awareness, per the Issue's own rule", () => {
+    const s = summarizeArmE({ omitted: accessOnly, preset: accessOnly, presetExcluded: unaware });
+    const r = resolveArmFConfigKey(s, undefined);
+    expect(r.key).toBe('omitted');
+  });
+
+  it('falls back to (ii) preset when only it shows awareness', () => {
+    const s = summarizeArmE({ omitted: unaware, preset: accessOnly, presetExcluded: unaware });
+    const r = resolveArmFConfigKey(s, undefined);
+    expect(r.key).toBe('preset');
+  });
+
+  it('defaults to omitted, with a distinguishing source, when neither shows awareness (all-failure boundary)', () => {
+    const s = summarizeArmE({ omitted: unaware, preset: unaware, presetExcluded: unaware });
+    const r = resolveArmFConfigKey(s, undefined);
+    expect(r.key).toBe('omitted');
+    expect(r.source).toContain('neither');
+  });
+});
+
+describe('armFHaltCheck', () => {
+  const cleanUnaware: ArmESummaryInput = {
+    omitted: { settled: true, locationHit: false, accessHit: false },
+    preset: { settled: true, locationHit: false, accessHit: false },
+    presetExcluded: { settled: true, locationHit: false, accessHit: false },
+  };
+  const cleanAware: ArmESummaryInput = { ...cleanUnaware, omitted: { settled: true, locationHit: false, accessHit: true } };
+  const dirtyControl: ArmESummaryInput = { ...cleanAware, presetExcluded: { settled: true, locationHit: false, accessHit: true } };
+  const unsettledControl: ArmESummaryInput = { ...cleanAware, presetExcluded: { settled: false, locationHit: false, accessHit: false } };
+
+  it('does not halt when Arm E did not run in this invocation (boundary: null summary)', () => {
+    const r = armFHaltCheck(null, false);
+    expect(r.halt).toBe(false);
+  });
+
+  it("does not halt regardless of Arm E's summary when --force-f overrides", () => {
+    const r = armFHaltCheck(summarizeArmE(cleanUnaware), true);
+    expect(r.halt).toBe(false);
+    expect(r.reason).toContain('override');
+  });
+
+  it('halts when no configuration shows awareness, even with a clean control (all-failure boundary)', () => {
+    const r = armFHaltCheck(summarizeArmE(cleanUnaware), false);
+    expect(r.halt).toBe(true);
+    expect(r.reason).toContain('untestable');
+  });
+
+  it('does not halt when at least one configuration shows awareness and the control is clean (all-success boundary)', () => {
+    const r = armFHaltCheck(summarizeArmE(cleanAware), false);
+    expect(r.halt).toBe(false);
+  });
+
+  it('halts when the (iii) control is NOT clean, even though a configuration shows awareness (mixed)', () => {
+    const r = armFHaltCheck(summarizeArmE(dirtyControl), false);
+    expect(r.halt).toBe(true);
+    expect(r.reason).toContain('NONE AVAILABLE');
+  });
+
+  it('halts when the (iii) control turn never settled', () => {
+    const r = armFHaltCheck(summarizeArmE(unsettledControl), false);
+    expect(r.halt).toBe(true);
+    expect(r.reason).toContain('did not settle');
+  });
+});
+
+describe('resolveExtendedTimeoutMs', () => {
+  it("behaves exactly like Arm F's 60s poll when omitted (boundary: undefined)", () => {
+    expect(resolveExtendedTimeoutMs(undefined)).toBe(WRITE_POLL_TIMEOUT_MS);
+  });
+
+  it("behaves exactly like Arm F's 60s poll when 0 (boundary: explicit zero)", () => {
+    expect(resolveExtendedTimeoutMs(0)).toBe(WRITE_POLL_TIMEOUT_MS);
+  });
+
+  it('passes through a value within the owner-directive cap unchanged', () => {
+    expect(resolveExtendedTimeoutMs(120_000)).toBe(120_000);
+  });
+
+  it('passes through exactly the cap unchanged (boundary)', () => {
+    expect(resolveExtendedTimeoutMs(EXTENDED_TIMEOUT_CAP_MS)).toBe(EXTENDED_TIMEOUT_CAP_MS);
+  });
+
+  it('clamps a value over the owner-directive cap (binding: never exceeds 5 minutes)', () => {
+    expect(resolveExtendedTimeoutMs(999_999)).toBe(EXTENDED_TIMEOUT_CAP_MS);
+    expect(EXTENDED_TIMEOUT_CAP_MS).toBe(300_000);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Task 0b: textContainsPath
+// ---------------------------------------------------------------------------
+
+describe('textContainsPath', () => {
+  it('is true when the text contains the raw path verbatim', () => {
+    expect(textContainsPath('the path is /tmp/foo/bar', '/tmp/foo/bar')).toBe(true);
+  });
+
+  it('is false when the text contains neither the raw nor a resolved form (all-failure boundary)', () => {
+    expect(textContainsPath('I do not know', '/tmp/foo/bar')).toBe(false);
+  });
+
+  it('is false for an empty text (boundary)', () => {
+    expect(textContainsPath('', '/tmp/foo/bar')).toBe(false);
+  });
+
+  it('is true via the resolved (symlink-following) form even when the raw path never appears', async () => {
+    const fs = await import('node:fs');
+    const real = mkdtempSync(join(tmpdir(), 'probe-sdk-automem-textpath-real-'));
+    const linkDir = mkdtempSync(join(tmpdir(), 'probe-sdk-automem-textpath-link-'));
+    const linkPath = join(linkDir, 'memory');
+    try {
+      fs.symlinkSync(real, linkPath, 'dir');
+      const resolved = fs.realpathSync(linkPath);
+      // The text mentions only the RESOLVED path, never the symlink path --
+      // this is exactly the shape a spawned CLI can produce (macOS's /var ->
+      // /private/var), which is why this branch exists at all.
+      expect(textContainsPath(`the memory directory is ${resolved}`, linkPath)).toBe(true);
+    } finally {
+      rmSync(linkPath, { force: true });
+      rmSync(real, { recursive: true, force: true });
+      rmSync(linkDir, { recursive: true, force: true });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Task 0b: diffMtimeSnapshots (real config-location cross-check)
+// ---------------------------------------------------------------------------
+
+describe('diffMtimeSnapshots', () => {
+  // Boundary: both empty.
+  it('reports nothing for two empty snapshots', () => {
+    expect(diffMtimeSnapshots(new Map(), new Map())).toEqual({ added: [], removed: [], changed: [] });
+  });
+
+  it('reports an added path present only in the after snapshot', () => {
+    const before = new Map<string, number>();
+    const after = new Map([['/a', 100]]);
+    expect(diffMtimeSnapshots(before, after)).toEqual({ added: ['/a'], removed: [], changed: [] });
+  });
+
+  it('reports a removed path present only in the before snapshot', () => {
+    const before = new Map([['/a', 100]]);
+    const after = new Map<string, number>();
+    expect(diffMtimeSnapshots(before, after)).toEqual({ added: [], removed: ['/a'], changed: [] });
+  });
+
+  it('reports a changed path whose mtime differs between snapshots', () => {
+    const before = new Map([['/a', 100]]);
+    const after = new Map([['/a', 200]]);
+    expect(diffMtimeSnapshots(before, after)).toEqual({ added: [], removed: [], changed: ['/a'] });
+  });
+
+  it('reports nothing for an unchanged path (single-element, no-op boundary)', () => {
+    const before = new Map([['/a', 100]]);
+    const after = new Map([['/a', 100]]);
+    expect(diffMtimeSnapshots(before, after)).toEqual({ added: [], removed: [], changed: [] });
+  });
+
+  it('reports all three kinds together (mixed, this cross-check\'s own canary shape)', () => {
+    const before = new Map([
+      ['/kept', 100],
+      ['/removed', 100],
+      ['/changed', 100],
+    ]);
+    const after = new Map([
+      ['/kept', 100],
+      ['/changed', 200],
+      ['/added', 300],
+    ]);
+    expect(diffMtimeSnapshots(before, after)).toEqual({ added: ['/added'], removed: ['/removed'], changed: ['/changed'] });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Task 0b: resolveRealConfigDir
+// ---------------------------------------------------------------------------
+
+describe('resolveRealConfigDir', () => {
+  it('uses CLAUDE_CONFIG_DIR when the env var is already set', () => {
+    expect(resolveRealConfigDir({ CLAUDE_CONFIG_DIR: '/custom/config' }, '/home/someone')).toBe('/custom/config');
+  });
+
+  it("falls back to ~/.claude when the env var is unset (measure, don't assume, boundary)", () => {
+    expect(resolveRealConfigDir({}, '/home/someone')).toBe(join('/home/someone', '.claude'));
+  });
+
+  it('falls back to ~/.claude when the env var is set to an empty string (boundary)', () => {
+    expect(resolveRealConfigDir({ CLAUDE_CONFIG_DIR: '' }, '/home/someone')).toBe(join('/home/someone', '.claude'));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Task 0b: seedMemoryTopic (real, zero-cost filesystem I/O -- no LLM turn)
+// ---------------------------------------------------------------------------
+
+describe('seedMemoryTopic', () => {
+  let memoryDir: string;
+
+  afterEach(() => {
+    if (memoryDir) rmSync(memoryDir, { recursive: true, force: true });
+  });
+
+  it('writes a frontmatter-carrying topic file and a new MEMORY.md index when neither existed (boundary: fresh dir)', () => {
+    memoryDir = join(mkdtempSync(join(tmpdir(), 'probe-sdk-automem-seed-')), 'memory');
+    const { topicPath, indexPath } = seedMemoryTopic({
+      memoryDir,
+      topicFilename: 'fact.md',
+      frontmatterName: 'fact',
+      description: 'a test fact',
+      codenameSubject: 'The codename',
+      codenameValue: 'ZEBRA-42',
+      indexTitle: 'Test Fact',
+      indexHook: 'the codename is here.',
+    });
+    const topicContent = readFileSync(topicPath, 'utf8');
+    expect(topicContent).toContain('name: fact');
+    expect(topicContent).toContain('description: a test fact');
+    expect(topicContent).toContain('type: project');
+    expect(topicContent).toContain('The codename is ZEBRA-42.');
+    const indexContent = readFileSync(indexPath, 'utf8');
+    expect(indexContent).toContain('# Memory Index');
+    expect(indexContent).toContain('- [Test Fact](fact.md) — the codename is here.');
+  });
+
+  it('appends to an existing MEMORY.md rather than overwriting a prior entry', () => {
+    memoryDir = join(mkdtempSync(join(tmpdir(), 'probe-sdk-automem-seed-')), 'memory');
+    seedMemoryTopic({
+      memoryDir,
+      topicFilename: 'first.md',
+      frontmatterName: 'first',
+      description: 'first fact',
+      codenameSubject: 'The codename',
+      codenameValue: 'FIRST-1',
+      indexTitle: 'First Fact',
+      indexHook: 'first hook.',
+    });
+    const { indexPath } = seedMemoryTopic({
+      memoryDir,
+      topicFilename: 'second.md',
+      frontmatterName: 'second',
+      description: 'second fact',
+      codenameSubject: 'The codename',
+      codenameValue: 'SECOND-2',
+      indexTitle: 'Second Fact',
+      indexHook: 'second hook.',
+    });
+    const indexContent = readFileSync(indexPath, 'utf8');
+    expect(indexContent).toContain('- [First Fact](first.md) — first hook.');
+    expect(indexContent).toContain('- [Second Fact](second.md) — second hook.');
   });
 });
