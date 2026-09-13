@@ -5,6 +5,7 @@ import { createElement } from 'react';
 import type {
   Session,
   AgentActivityState,
+  Repository,
 } from '@agent-console/shared';
 import type { UseWorktreeCreationTasksReturn } from '../useWorktreeCreationTasks';
 import type { UseWorktreeDeletionTasksReturn } from '../useWorktreeDeletionTasks';
@@ -481,5 +482,105 @@ describe('worktreeInvalidationKeyFor (Issue #1266)', () => {
 
     expect(() => worktreeInvalidationKeyFor(session)).not.toThrow();
     expect(worktreeInvalidationKeyFor(session)).toBeNull();
+  });
+});
+
+/**
+ * Tests for Issue #1643 PR-2's targeted `orchestrator-designation-changed`
+ * cache patch. This handler is registered directly on this always-mounted
+ * hook (not only on routes/index.tsx's onRepositoryUpdated), because
+ * ActiveSessionsSidebar -- which reads Repository.orchestratorSessionId to
+ * render the flag control -- is mounted unconditionally from __root.tsx on
+ * every route, not only the dashboard route.
+ */
+describe('useSessionSideEffects - orchestrator-designation-changed cache patch (Issue #1643)', () => {
+  let restoreWebSocket: () => void;
+  let originalLocation: Location;
+
+  beforeEach(() => {
+    originalLocation = window.location;
+    restoreWebSocket = installMockWebSocket();
+    Object.defineProperty(window, 'location', {
+      value: { protocol: 'http:', host: 'localhost:3000' },
+      writable: true,
+    });
+    resetWebSocket();
+  });
+
+  afterEach(() => {
+    restoreWebSocket();
+    Object.defineProperty(window, 'location', {
+      value: originalLocation,
+      writable: true,
+    });
+  });
+
+  function repository(overrides: Partial<Repository> = {}): Repository {
+    return {
+      id: 'repo-1',
+      name: 'repo-1',
+      path: '/path/to/repo-1',
+      createdAt: new Date().toISOString(),
+      orchestratorSessionId: null,
+      ...overrides,
+    } as Repository;
+  }
+
+  it('patches only the targeted repository, leaving the other repository object reference-equal', () => {
+    const options = createDefaultOptions();
+    const { queryClient } = renderWithQueryClient(options);
+
+    const repoA = repository({ id: 'repo-a', orchestratorSessionId: null });
+    const repoB = repository({ id: 'repo-b', orchestratorSessionId: 'old-session' });
+    queryClient.setQueryData(['repositories'], { repositories: [repoA, repoB] });
+
+    const ws = MockWebSocket.getLastInstance();
+    act(() => {
+      ws?.simulateOpen();
+      ws?.simulateMessage(
+        JSON.stringify({ type: 'orchestrator-designation-changed', repositoryId: 'repo-a', sessionId: 'session-new' })
+      );
+    });
+
+    const cached = queryClient.getQueryData<{ repositories: Repository[] }>(['repositories']);
+    expect(cached?.repositories.find((r) => r.id === 'repo-a')?.orchestratorSessionId).toBe('session-new');
+    // Untouched repository must be the SAME object reference, not just equal by value.
+    expect(cached?.repositories.find((r) => r.id === 'repo-b')).toBe(repoB);
+  });
+
+  it('sets orchestratorSessionId to null when the designation is cleared', () => {
+    const options = createDefaultOptions();
+    const { queryClient } = renderWithQueryClient(options);
+
+    const repoA = repository({ id: 'repo-a', orchestratorSessionId: 'session-old' });
+    queryClient.setQueryData(['repositories'], { repositories: [repoA] });
+
+    const ws = MockWebSocket.getLastInstance();
+    act(() => {
+      ws?.simulateOpen();
+      ws?.simulateMessage(
+        JSON.stringify({ type: 'orchestrator-designation-changed', repositoryId: 'repo-a', sessionId: null })
+      );
+    });
+
+    const cached = queryClient.getQueryData<{ repositories: Repository[] }>(['repositories']);
+    expect(cached?.repositories.find((r) => r.id === 'repo-a')?.orchestratorSessionId).toBeNull();
+  });
+
+  it('is a no-op when the repositories cache has not been populated yet', () => {
+    const options = createDefaultOptions();
+    const { queryClient } = renderWithQueryClient(options);
+
+    const ws = MockWebSocket.getLastInstance();
+    expect(() => {
+      act(() => {
+        ws?.simulateOpen();
+        ws?.simulateMessage(
+          JSON.stringify({ type: 'orchestrator-designation-changed', repositoryId: 'repo-a', sessionId: 'session-new' })
+        );
+      });
+    }).not.toThrow();
+
+    expect(queryClient.getQueryData(['repositories'])).toBeUndefined();
   });
 });

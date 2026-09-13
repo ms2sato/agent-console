@@ -1,11 +1,11 @@
 import { useCallback, useEffect } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
-import type { Session, AgentActivityState, WorkerActivityInfo, WorktreeDeletionCompletedPayload } from '@agent-console/shared';
+import type { Session, AgentActivityState, WorkerActivityInfo, WorktreeDeletionCompletedPayload, Repository } from '@agent-console/shared';
 import type { UseWorktreeCreationTasksReturn } from './useWorktreeCreationTasks';
 import type { UseWorktreeDeletionTasksReturn } from './useWorktreeDeletionTasks';
 import type { UseSessionStopTasksReturn } from './useSessionStopTasks';
 import { useAppWsEvent } from './useAppWs';
-import { worktreeKeys, sessionKeys } from '../lib/query-keys';
+import { worktreeKeys, sessionKeys, repositoryKeys } from '../lib/query-keys';
 import { disconnectSession } from '../lib/worker-websocket';
 import { clearDraftsForSession } from './useDraftMessage';
 import { updateFavicon, hasAnyAskingWorker } from '../lib/favicon-manager';
@@ -135,6 +135,26 @@ export function useSessionSideEffects({
     handleWorkerActivity(sessionId, workerId, activityState);
   }, [handleWorkerActivity]);
 
+  // Targeted, immediate cache patch for a repository's designated-Orchestrator
+  // session change. This is a second, independent, always-mounted listener --
+  // separate from routes/index.tsx's onRepositoryUpdated handler, which is
+  // only mounted on the dashboard route. ActiveSessionsSidebar (which reads
+  // Repository.orchestratorSessionId to render the flag control) is mounted
+  // unconditionally from __root.tsx alongside this hook, so this listener
+  // must not depend on which route is currently active. It is fine and
+  // harmless for both broadcasts to patch the same cache key on the same
+  // change -- setQueryData is idempotent per-call.
+  const handleOrchestratorDesignationChanged = useCallback((repositoryId: string, sessionId: string | null) => {
+    queryClient.setQueryData<{ repositories: Repository[] } | undefined>(repositoryKeys.all(), (old) => {
+      if (!old) return old;
+      return {
+        repositories: old.repositories.map((r) =>
+          r.id === repositoryId ? { ...r, orchestratorSessionId: sessionId } : r
+        ),
+      };
+    });
+  }, [queryClient]);
+
   // Subscribe to app WebSocket events for real-time session updates
   useAppWsEvent({
     onSessionsSync: handleSessionsSyncWithValidation,
@@ -149,6 +169,7 @@ export function useSessionSideEffects({
     onWorktreeCreationFailed: worktreeCreationTasks.handleWorktreeCreationFailed,
     onWorktreeDeletionCompleted: handleWorktreeDeletionCompleted,
     onWorktreeDeletionFailed: worktreeDeletionTasks.handleWorktreeDeletionFailed,
+    onOrchestratorDesignationChanged: handleOrchestratorDesignationChanged,
   });
 
   // Update favicon based on worker activity states

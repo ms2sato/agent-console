@@ -22,6 +22,8 @@ import {
   deleteArtifact,
   fetchNotifications,
   markNotificationsSeen,
+  raiseOrchestratorDesignation,
+  clearOrchestratorDesignation,
   ServerUnavailableError,
   ApiError,
 } from '../api';
@@ -233,6 +235,32 @@ describe('API Client', () => {
 
       expect(getLastFetchUrl()).toContain('/api/sessions/session-id');
       expect(getLastFetchMethod()).toBe('DELETE');
+    });
+  });
+
+  describe('raiseOrchestratorDesignation', () => {
+    it('should POST to the orchestrator-designation endpoint with the session id', async () => {
+      const mockResult = { repositoryId: 'repo-1', orchestratorSessionId: 'session-id' };
+      mockFetch.mockResolvedValue(createMockResponse(mockResult));
+
+      const result = await raiseOrchestratorDesignation('session-id');
+
+      expect(getLastFetchUrl()).toContain('/api/sessions/session-id/orchestrator-designation');
+      expect(getLastFetchMethod()).toBe('POST');
+      expect(result).toEqual(mockResult);
+    });
+  });
+
+  describe('clearOrchestratorDesignation', () => {
+    it('should DELETE the orchestrator-designation endpoint with the session id', async () => {
+      const mockResult = { repositoryId: 'repo-1', cleared: true };
+      mockFetch.mockResolvedValue(createMockResponse(mockResult));
+
+      const result = await clearOrchestratorDesignation('session-id');
+
+      expect(getLastFetchUrl()).toContain('/api/sessions/session-id/orchestrator-designation');
+      expect(getLastFetchMethod()).toBe('DELETE');
+      expect(result).toEqual(mockResult);
     });
   });
 
