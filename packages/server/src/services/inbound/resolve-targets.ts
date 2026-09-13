@@ -66,6 +66,7 @@ export async function resolveTargets(
 
   const sessions = deps.getSessions();
   const targets: EventTarget[] = [];
+  let hasLiveParentTarget = false;
 
   for (const session of sessions) {
     try {
@@ -90,6 +91,15 @@ export async function resolveTargets(
       // Also notify the parent session (e.g., orchestrator)
       if (session.parentSessionId) {
         targets.push({ sessionId: session.parentSessionId });
+
+        // The fallback (below) must not fire merely because the parent
+        // isn't the flag-holder -- it fires only when there is no LIVE
+        // parent to deliver to at all (#1661 case 3: a dead/stale parent
+        // pointer, most commonly left behind by an Orchestrator restart).
+        const parentSession = sessions.find((s) => s.id === session.parentSessionId);
+        if (parentSession && parentSession.activationState === 'running') {
+          hasLiveParentTarget = true;
+        }
       }
     } catch (error) {
       // Distinguish between expected errors (session doesn't match criteria)
@@ -111,6 +121,25 @@ export async function resolveTargets(
     }
   }
 
+  // Shape C fallback (#1661): the three cases where the loop above resolves
+  // to nobody or a dead session -- no matching session at all, a matching
+  // session with no parent, or a matching session whose parent is not
+  // live -- fall back to the repository's designated Orchestrator session,
+  // subject to the same deliverability check `issue:labeled` routing uses.
+  if (targets.length === 0 || !hasLiveParentTarget) {
+    const existingSessionIds = new Set(targets.map((t) => t.sessionId));
+    const fallbackSessionIds = await resolveDesignatedFallbackSessionIds(deps, repositoryName, getOrgRepoFromPath);
+    for (const sessionId of fallbackSessionIds) {
+      // Skip if the designated session is already a genuine match (the
+      // matched session itself, or its live parent) -- it must appear
+      // exactly once, without `fallback: true`, since it legitimately owns
+      // the event's working tree in that case.
+      if (!existingSessionIds.has(sessionId)) {
+        targets.push({ sessionId, fallback: true });
+      }
+    }
+  }
+
   // Deduplicate: a parent may appear multiple times if several children match
   const uniqueTargets = [...new Map(targets.map(t => [t.sessionId, t])).values()];
   return uniqueTargets;
@@ -118,6 +147,75 @@ export async function resolveTargets(
 
 function isMatchingRepository(left: string, right: string): boolean {
   return left.toLowerCase() === right.toLowerCase();
+}
+
+/**
+ * Find every locally-registered repository whose remote matches the
+ * webhook's `repository.full_name`. Extracted from `resolveIssueLabeledTargets`
+ * so `resolveTargets`'s designated-session fallback can reuse the same
+ * repository-matching loop rather than re-deriving it.
+ */
+async function findMatchingRepositories(
+  deps: TargetResolverDependencies,
+  repositoryName: string,
+  getOrgRepoFromPath: (path: string) => Promise<string | null>
+): Promise<Repository[]> {
+  const matched: Repository[] = [];
+
+  for (const repository of deps.getAllRepositories()) {
+    try {
+      const orgRepo = await getOrgRepoFromPath(repository.path);
+      if (!orgRepo) continue;
+      if (isMatchingRepository(orgRepo, repositoryName)) {
+        matched.push(repository);
+      }
+    } catch (error) {
+      if (isExpectedError(error)) {
+        logger.debug(
+          { err: error, repositoryId: repository.id, repositoryName },
+          'Repository does not match criteria for inbound event'
+        );
+      } else {
+        logger.error(
+          { err: error, repositoryId: repository.id, repositoryName },
+          'Unexpected error resolving repository for inbound event'
+        );
+      }
+    }
+  }
+
+  return matched;
+}
+
+/**
+ * Resolve the repository's designated Orchestrator session as a fallback
+ * target (Shape C, #1661) -- eligible only when it currently exists, is
+ * running, and has an agent worker to deliver to. Reuses
+ * `canDeliverToAgentWorker` and `findMatchingRepositories` rather than
+ * re-deriving either check.
+ */
+async function resolveDesignatedFallbackSessionIds(
+  deps: TargetResolverDependencies,
+  repositoryName: string,
+  getOrgRepoFromPath: (path: string) => Promise<string | null>
+): Promise<string[]> {
+  const matchedRepositories = await findMatchingRepositories(deps, repositoryName, getOrgRepoFromPath);
+  const sessions = deps.getSessions();
+  const eligible = new Set<string>();
+
+  for (const repository of matchedRepositories) {
+    const orchestratorSessionId = repository.orchestratorSessionId;
+    if (!orchestratorSessionId) continue;
+
+    const liveSession = sessions.find((s) => s.id === orchestratorSessionId);
+    if (!liveSession) continue;
+    if (liveSession.activationState !== 'running') continue;
+    if (!canDeliverToAgentWorker(liveSession)) continue;
+
+    eligible.add(orchestratorSessionId);
+  }
+
+  return [...eligible];
 }
 
 /**
@@ -139,29 +237,7 @@ async function resolveIssueLabeledTargets(
   repositoryName: string,
   getOrgRepoFromPath: (path: string) => Promise<string | null>
 ): Promise<EventTarget[]> {
-  const matchedRepositories: Repository[] = [];
-
-  for (const repository of deps.getAllRepositories()) {
-    try {
-      const orgRepo = await getOrgRepoFromPath(repository.path);
-      if (!orgRepo) continue;
-      if (isMatchingRepository(orgRepo, repositoryName)) {
-        matchedRepositories.push(repository);
-      }
-    } catch (error) {
-      if (isExpectedError(error)) {
-        logger.debug(
-          { err: error, repositoryId: repository.id, repositoryName },
-          'Repository does not match criteria for issue:labeled event'
-        );
-      } else {
-        logger.error(
-          { err: error, repositoryId: repository.id, repositoryName },
-          'Unexpected error resolving repository for issue:labeled event'
-        );
-      }
-    }
-  }
+  const matchedRepositories = await findMatchingRepositories(deps, repositoryName, getOrgRepoFromPath);
 
   // `event.metadata.labels` is guaranteed present for `issue:labeled`
   // events by construction in the parser (github-service-parser.ts) --

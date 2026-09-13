@@ -226,6 +226,230 @@ describe('resolveTargets', () => {
   });
 });
 
+describe('resolveTargets: designated-session fallback (#1661)', () => {
+  // Shared `agent`-type worker so a designated session satisfies
+  // `canDeliverToAgentWorker` by default (mirrors the sibling
+  // `issue:labeled routing` describe block's `AGENT_WORKER` convention).
+  const AGENT_WORKER = { id: 'worker-1', type: 'agent' as const, name: 'Claude', agentId: 'claude-code-builtin', activated: true, createdAt: '2024-01-01T00:00:00Z' };
+
+  function buildDesignatedSession(overrides: Partial<WorktreeSession> = {}): WorktreeSession {
+    return buildWorktreeSession({
+      id: 'designated-1',
+      repositoryId: 'repo-1',
+      worktreeId: 'designated-worktree',
+      workers: [AGENT_WORKER],
+      ...overrides,
+    });
+  }
+
+  it('positive (load-bearing): branch matches zero sessions, designated session live+deliverable -> sole fallback target', async () => {
+    const repository = buildRepositoryWithDesignation({
+      id: 'repo-1',
+      path: '/path/to/repo',
+      orchestratorSessionId: 'designated-1',
+    });
+    const nonMatchingSession = buildWorktreeSession({ id: 'session-1', repositoryId: 'repo-1', worktreeId: 'feature-branch' });
+    const designatedSession = buildDesignatedSession();
+    const deps: TargetResolverDependencies = {
+      getSessions: () => [nonMatchingSession, designatedSession],
+      getRepository: () => repository,
+      getAllRepositories: () => [repository],
+      getOrgRepoFromPath: mock(() => Promise.resolve('owner/repo')),
+    };
+
+    const targets = await resolveTargets(createEvent({ branch: 'main' }), deps);
+
+    expect(targets).toEqual([{ sessionId: 'designated-1', fallback: true }]);
+  });
+
+  it('boundary: matched session has no parent -> designated session added alongside it', async () => {
+    const repository = buildRepositoryWithDesignation({
+      id: 'repo-1',
+      path: '/path/to/repo',
+      orchestratorSessionId: 'designated-1',
+    });
+    const matchedSession = buildWorktreeSession({ id: 'session-1', repositoryId: 'repo-1', worktreeId: 'feature' });
+    const designatedSession = buildDesignatedSession();
+    const deps: TargetResolverDependencies = {
+      getSessions: () => [matchedSession, designatedSession],
+      getRepository: () => repository,
+      getAllRepositories: () => [repository],
+      getOrgRepoFromPath: mock(() => Promise.resolve('owner/repo')),
+    };
+
+    const targets = await resolveTargets(createEvent({ branch: 'feature' }), deps);
+
+    expect(targets).toEqual([
+      { sessionId: 'session-1' },
+      { sessionId: 'designated-1', fallback: true },
+    ]);
+  });
+
+  it('boundary: matched session has a parentSessionId pointing at a nonexistent session -> designated session added', async () => {
+    const repository = buildRepositoryWithDesignation({
+      id: 'repo-1',
+      path: '/path/to/repo',
+      orchestratorSessionId: 'designated-1',
+    });
+    const matchedSession = buildWorktreeSession({
+      id: 'session-1',
+      repositoryId: 'repo-1',
+      worktreeId: 'feature',
+      parentSessionId: 'dead-parent',
+    });
+    const designatedSession = buildDesignatedSession();
+    const deps: TargetResolverDependencies = {
+      getSessions: () => [matchedSession, designatedSession],
+      getRepository: () => repository,
+      getAllRepositories: () => [repository],
+      getOrgRepoFromPath: mock(() => Promise.resolve('owner/repo')),
+    };
+
+    const targets = await resolveTargets(createEvent({ branch: 'feature' }), deps);
+
+    expect(targets).toEqual([
+      { sessionId: 'session-1' },
+      { sessionId: 'dead-parent' },
+      { sessionId: 'designated-1', fallback: true },
+    ]);
+  });
+
+  it('boundary: matched session has a parent that exists but is not running (hibernated) -> designated session added', async () => {
+    const repository = buildRepositoryWithDesignation({
+      id: 'repo-1',
+      path: '/path/to/repo',
+      orchestratorSessionId: 'designated-1',
+    });
+    const matchedSession = buildWorktreeSession({
+      id: 'session-1',
+      repositoryId: 'repo-1',
+      worktreeId: 'feature',
+      parentSessionId: 'hibernated-parent',
+    });
+    const hibernatedParent = buildWorktreeSession({
+      id: 'hibernated-parent',
+      repositoryId: 'repo-1',
+      worktreeId: 'main',
+      activationState: 'hibernated',
+    });
+    const designatedSession = buildDesignatedSession();
+    const deps: TargetResolverDependencies = {
+      getSessions: () => [matchedSession, hibernatedParent, designatedSession],
+      getRepository: () => repository,
+      getAllRepositories: () => [repository],
+      getOrgRepoFromPath: mock(() => Promise.resolve('owner/repo')),
+    };
+
+    const targets = await resolveTargets(createEvent({ branch: 'feature' }), deps);
+
+    expect(targets).toEqual([
+      { sessionId: 'session-1' },
+      { sessionId: 'hibernated-parent' },
+      { sessionId: 'designated-1', fallback: true },
+    ]);
+  });
+
+  it('boundary: matched session has a live non-Orchestrator parent -> no fallback added, even though a designated session is configured', async () => {
+    const repository = buildRepositoryWithDesignation({
+      id: 'repo-1',
+      path: '/path/to/repo',
+      orchestratorSessionId: 'designated-1',
+    });
+    const matchedSession = buildWorktreeSession({
+      id: 'session-1',
+      repositoryId: 'repo-1',
+      worktreeId: 'feature',
+      parentSessionId: 'live-non-orchestrator-parent',
+    });
+    const liveParent = buildWorktreeSession({
+      id: 'live-non-orchestrator-parent',
+      repositoryId: 'repo-1',
+      worktreeId: 'main',
+      activationState: 'running',
+    });
+    const designatedSession = buildDesignatedSession();
+    const deps: TargetResolverDependencies = {
+      getSessions: () => [matchedSession, liveParent, designatedSession],
+      getRepository: () => repository,
+      getAllRepositories: () => [repository],
+      getOrgRepoFromPath: mock(() => Promise.resolve('owner/repo')),
+    };
+
+    const targets = await resolveTargets(createEvent({ branch: 'feature' }), deps);
+
+    expect(targets).toEqual([
+      { sessionId: 'session-1' },
+      { sessionId: 'live-non-orchestrator-parent' },
+    ]);
+  });
+
+  it('regression: matched session has a live parent that IS the designated session -> unchanged, no duplicate/fallback entry', async () => {
+    const repository = buildRepositoryWithDesignation({
+      id: 'repo-1',
+      path: '/path/to/repo',
+      orchestratorSessionId: 'designated-1',
+    });
+    const matchedSession = buildWorktreeSession({
+      id: 'session-1',
+      repositoryId: 'repo-1',
+      worktreeId: 'feature',
+      parentSessionId: 'designated-1',
+    });
+    const designatedSession = buildDesignatedSession();
+    const deps: TargetResolverDependencies = {
+      getSessions: () => [matchedSession, designatedSession],
+      getRepository: () => repository,
+      getAllRepositories: () => [repository],
+      getOrgRepoFromPath: mock(() => Promise.resolve('owner/repo')),
+    };
+
+    const targets = await resolveTargets(createEvent({ branch: 'feature' }), deps);
+
+    expect(targets).toEqual([
+      { sessionId: 'session-1' },
+      { sessionId: 'designated-1' },
+    ]);
+  });
+
+  it('negative control: same branch-matches-nothing event, no designated session configured -> empty (unchanged from today)', async () => {
+    const repository = buildRepositoryWithDesignation({
+      id: 'repo-1',
+      path: '/path/to/repo',
+      orchestratorSessionId: null,
+    });
+    const nonMatchingSession = buildWorktreeSession({ id: 'session-1', repositoryId: 'repo-1', worktreeId: 'feature-branch' });
+    const deps: TargetResolverDependencies = {
+      getSessions: () => [nonMatchingSession],
+      getRepository: () => repository,
+      getAllRepositories: () => [repository],
+      getOrgRepoFromPath: mock(() => Promise.resolve('owner/repo')),
+    };
+
+    const targets = await resolveTargets(createEvent({ branch: 'main' }), deps);
+
+    expect(targets).toEqual([]);
+  });
+
+  it('negative control: designated session id is set but points at a dead (nonexistent) session -> empty', async () => {
+    const repository = buildRepositoryWithDesignation({
+      id: 'repo-1',
+      path: '/path/to/repo',
+      orchestratorSessionId: 'dead-designated-session',
+    });
+    const nonMatchingSession = buildWorktreeSession({ id: 'session-1', repositoryId: 'repo-1', worktreeId: 'feature-branch' });
+    const deps: TargetResolverDependencies = {
+      getSessions: () => [nonMatchingSession],
+      getRepository: () => repository,
+      getAllRepositories: () => [repository],
+      getOrgRepoFromPath: mock(() => Promise.resolve('owner/repo')),
+    };
+
+    const targets = await resolveTargets(createEvent({ branch: 'main' }), deps);
+
+    expect(targets).toEqual([]);
+  });
+});
+
 describe('resolveTargets: issue:labeled routing', () => {
   // Shared across this describe block's `buildWorktreeSession` calls so a
   // session satisfies `canDeliverToAgentWorker` (Issue #1652) by default --

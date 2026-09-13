@@ -65,6 +65,30 @@
  *      Same D-only assertion shape as scenario 3, on a different issue
  *      number so the two are distinguishable if debugging is needed.
  *
+ *   5. POSITIVE (Issue #1661, main-push fallback): a `workflow_run`
+ *      `completed`/`success` event on `head_branch: 'main'`, matching zero
+ *      registered sessions (neither D's nor T's worktreeId). Routes to D
+ *      (the designated Orchestrator session) via `resolveTargets`'s new
+ *      designated-session fallback -- confirmed by reading D's real worker
+ *      output file for the `[inbound:ci:completed]` tag. T must NOT receive
+ *      it. `head_sha` is omitted so `job-handler.ts`'s `ciCompletionChecker`
+ *      gate never runs (it only fires when `commitSha` is present), avoiding
+ *      a pointless real `gh api` call against a nonexistent repo.
+ *
+ *   6. POSITIVE (Issue #1661, dead-parent fallback): a third worktree
+ *      session O is created with `parentSessionId` pointing at a real
+ *      session P, which is then PAUSED via `POST /:id/pause` -- pausing
+ *      removes P from the live session manager (`getAllSessions()`) while
+ *      preserving its DB row, exactly matching `resolveTargets`'s "parent
+ *      absent from getSessions()" shape without tripping a separate,
+ *      pre-existing `job-handler.ts` defect a literal never-persisted UUID
+ *      would trigger (see this scenario's own in-code comment for the full
+ *      explanation). The same `workflow_run` shape as scenario 5, but with
+ *      `head_branch` matching O's worktreeId, routes to BOTH O (direct
+ *      branch match) and D (fallback, since O's parent P is no longer live)
+ *      -- confirmed by reading both O's and D's real worker output files.
+ *      T must receive neither.
+ *
  * ============================================================================
  * WHAT IS REAL HERE
  * ============================================================================
@@ -79,12 +103,15 @@
  *     `createInboundEventJobHandler`, the real `resolveTargets`, and the
  *     real `AgentWorkerHandler` / `UINotificationHandler`;
  *   - a real disposable git repository with a real `origin` remote, real
- *     `git worktree add` worktrees for D and T, and real
- *     `getOrgRepoFromPath` remote-URL resolution (local-only, no network);
+ *     `git worktree add` worktrees for D, T, and (scenario 6) O and P, and
+ *     real `getOrgRepoFromPath` remote-URL resolution (local-only, no
+ *     network);
  *   - real sessions and real PTY-backed `agent` workers created via the
  *     real `POST /api/sessions` route (the default `claude-code-builtin`
  *     agent, spawned interactively with no prompt sent -- no LLM API call);
- *   - a real `set_orchestrator_session` MCP call over real `/mcp` JSON-RPC.
+ *   - a real `set_orchestrator_session` MCP call over real `/mcp` JSON-RPC;
+ *   - a real `POST /:id/pause` call (scenario 6) to remove session P from
+ *     the live session manager while preserving its DB row.
  *
  * Usage:
  *   bun scripts/smoke/check-webhook-issue-label-routing.ts
@@ -317,6 +344,7 @@ async function main(): Promise<void> {
     // -----------------------------------------------------------------
     console.log('==> seeding an isolated CLAUDE_CONFIG_DIR with pre-trusted worktree paths');
     const claudeConfigDir = path.join(scratchRoot, 'claude-config');
+    const claudeConfigPath = path.join(claudeConfigDir, '.claude.json');
     mkdirSync(claudeConfigDir, { recursive: true, mode: 0o700 });
     const realClaudeConfigPath = path.join(os.homedir(), '.claude.json');
     let baseClaudeConfig: Record<string, unknown> = {};
@@ -327,7 +355,7 @@ async function main(): Promise<void> {
       // proceed with an empty base; the trust-dialog bypass below still
       // applies, though onboarding may then also appear.
     }
-    const isolatedClaudeConfig = {
+    let isolatedClaudeConfig: Record<string, unknown> = {
       ...baseClaudeConfig,
       projects: {
         ...(baseClaudeConfig.projects as Record<string, unknown> | undefined),
@@ -335,11 +363,31 @@ async function main(): Promise<void> {
         [worktreeTDir]: { hasTrustDialogAccepted: true },
       },
     };
-    writeFileSync(
-      path.join(claudeConfigDir, '.claude.json'),
-      JSON.stringify(isolatedClaudeConfig),
-      { mode: 0o600 },
-    );
+
+    /**
+     * Merge one more pre-trusted project path into the in-memory config and
+     * re-write it to disk. Extracted (Issue #1661, scenario 6) so a
+     * worktree created AFTER the disposable server has already started
+     * (session O, added for the dead-parent-fallback scenario) can still be
+     * pre-trusted -- the config file is read by the `claude` CLI process at
+     * its own PTY-spawn time, not just once at server bring-up, so
+     * appending to the same on-disk file the running server's
+     * `CLAUDE_CONFIG_DIR` already points at is sufficient; no server
+     * restart is needed.
+     */
+    function addTrustedProject(projectPath: string): void {
+      isolatedClaudeConfig = {
+        ...isolatedClaudeConfig,
+        projects: {
+          ...(isolatedClaudeConfig.projects as Record<string, unknown> | undefined),
+          [projectPath]: { hasTrustDialogAccepted: true },
+        },
+      };
+      writeFileSync(claudeConfigPath, JSON.stringify(isolatedClaudeConfig), { mode: 0o600 });
+    }
+
+    // Initial write covering D and T.
+    writeFileSync(claudeConfigPath, JSON.stringify(isolatedClaudeConfig), { mode: 0o600 });
 
     // -----------------------------------------------------------------
     // Server bring-up: real child process (see header comment for why).
@@ -675,6 +723,171 @@ async function main(): Promise<void> {
       !afterT4.slice(beforeT4.length).includes('[inbound:issue:labeled]'),
       'SCENARIO 4: T did NOT receive the [inbound:issue:labeled] PTY notification',
       afterT4.slice(beforeT4.length).slice(-500),
+    );
+
+    // ===================================================================
+    // SCENARIO 5 (Issue #1661): main-push fallback. A `workflow_run`
+    // `completed`/`success` event on `head_branch: 'main'` matches zero
+    // registered sessions (neither D's `smoke-branch-d` nor T's
+    // `smoke-branch-t`) -- resolveTargets's designated-session fallback
+    // routes it to D. `head_sha` is omitted so job-handler.ts's
+    // `ciCompletionChecker` gate (only active when `commitSha` is present)
+    // never runs, avoiding a pointless real `gh api` call.
+    // ===================================================================
+    console.log('\n==> SCENARIO 5: workflow_run/completed on main, zero matching sessions (designated-session fallback)');
+    const beforeD5 = readOutputFileSafe(outputPathD);
+    const beforeT5 = readOutputFileSafe(outputPathT);
+    const mainPushRes = await postWebhook(
+      baseUrl,
+      'workflow_run',
+      {
+        action: 'completed',
+        workflow_run: {
+          conclusion: 'success',
+          name: 'Scenario 5 CI',
+          html_url: null,
+          head_branch: 'main',
+          head_sha: null,
+          updated_at: null,
+        },
+        repository: { full_name: `${nonceOrg}/${nonceRepo}` },
+      },
+      webhookSecret,
+    );
+    expect(mainPushRes.status === 200, 'SCENARIO 5: POST /webhooks/github returns 200', `status=${mainPushRes.status}`);
+    await mainPushRes.text();
+
+    const scenario5TagFound = await waitFor(() => {
+      const content = readOutputFileSafe(outputPathD);
+      return content.slice(beforeD5.length).includes('[inbound:ci:completed]');
+    }, 45_000, "D's output file to contain [inbound:ci:completed] (scenario 5)");
+    expect(scenario5TagFound, 'SCENARIO 5: D received the [inbound:ci:completed] PTY notification (fallback)', readOutputFileSafe(outputPathD).slice(beforeD5.length).slice(-500));
+
+    const afterT5 = readOutputFileSafe(outputPathT);
+    expect(
+      !afterT5.slice(beforeT5.length).includes('[inbound:ci:completed]'),
+      'SCENARIO 5: T did NOT receive the [inbound:ci:completed] PTY notification',
+      afterT5.slice(beforeT5.length).slice(-500),
+    );
+
+    // ===================================================================
+    // SCENARIO 6 (Issue #1661): dead-parent fallback. A third worktree
+    // session O is created whose `parentSessionId` points at a REAL session
+    // (P) that is then PAUSED -- `POST /:id/pause` kills P's PTY workers,
+    // persists its paused state, and REMOVES it from the in-memory session
+    // manager (`session-pause-resume-service.ts`'s own header comment:
+    // "Pause: kill PTY workers, persist paused state, remove from memory").
+    // The net effect is exactly `resolveTargets`'s "parent not found in
+    // getSessions()" shape (P is absent from `sessionManager.getAllSessions()`
+    // after pausing, same as a session that was never created) WITHOUT the
+    // DB row being deleted.
+    //
+    // This is deliberately NOT a literal syntactically-valid-but-never-
+    // persisted UUID (e.g. all-zeros), which was the first design tried
+    // here. That version reproduces a SEPARATE, pre-existing defect: when a
+    // resolved target's `sessionId` has no corresponding row in the
+    // `sessions` table at all, `job-handler.ts`'s
+    // `notificationRepository.createPendingNotification()` throws an
+    // uncaught `FOREIGN KEY constraint failed` (the table's `session_id`
+    // column references `sessions(id)`), which crashes and retries the
+    // WHOLE job (all targets, not just the missing one) until it stalls
+    // after 5 attempts -- so the designated-session fallback target
+    // (appended LAST in `resolveTargets`'s target array, after the direct
+    // match and the unconditionally-pushed parent-id target) never gets
+    // processed at all. That defect is orthogonal to this PR's scope (it
+    // lives entirely in `job-handler.ts`'s lack of per-target failure
+    // isolation, not in `resolve-targets.ts` or `handlers.ts`) and is
+    // reported separately rather than silently patched here. The paused-
+    // session construction below tests the same `resolveTargets` code path
+    // (a parent absent from `getSessions()`) without tripping that
+    // unrelated crash, since P's DB row survives the pause.
+    // ===================================================================
+    console.log('\n==> SCENARIO 6: workflow_run/completed matching session O, whose parent P was paused (dead-parent fallback)');
+    const worktreePDir = path.join(scratchRoot, 'worktree-p');
+    git(['worktree', 'add', worktreePDir, '-b', 'smoke-branch-p'], repoDir);
+    addTrustedProject(worktreePDir);
+
+    const sessionP = await createSession(baseUrl, {
+      type: 'worktree',
+      repositoryId: repository.id,
+      worktreeId: 'smoke-branch-p',
+      locationPath: worktreePDir,
+    });
+    console.log(`==> session P created (will be paused to simulate a dead parent): ${sessionP.id}`);
+
+    const worktreeODir = path.join(scratchRoot, 'worktree-o');
+    git(['worktree', 'add', worktreeODir, '-b', 'smoke-branch-o'], repoDir);
+    addTrustedProject(worktreeODir);
+
+    const sessionO = await createSession(baseUrl, {
+      type: 'worktree',
+      repositoryId: repository.id,
+      worktreeId: 'smoke-branch-o',
+      locationPath: worktreeODir,
+      parentSessionId: sessionP.id,
+    });
+    console.log(`==> session O created: ${sessionO.id} (parentSessionId=${sessionP.id})`);
+    const agentWorkerO = sessionO.workers.find((w) => w.type === 'agent');
+    if (!agentWorkerO) bail('session O has no agent worker');
+    const outputPathO = await resolveWorkerOutputPath(sessionO.id, agentWorkerO.id);
+    console.log(`==> O's worker output file: ${outputPathO}`);
+
+    const pauseRes = await fetch(`${baseUrl}/api/sessions/${sessionP.id}/pause`, { method: 'POST' });
+    expect(pauseRes.status === 200, 'SCENARIO 6: session P paused successfully (now absent from the live session manager, DB row preserved)', `status=${pauseRes.status} body=${await pauseRes.text().catch(() => '')}`);
+
+    // Same PTY-startup race as D/T above (see that comment for why this
+    // wait exists at all), scoped to O since it was created well after
+    // D/T's own window. A longer budget than D/T's 8s is used here: by the
+    // time O is created, D, T, and the delegate's PTYs are already running
+    // real `claude` processes, and O's own sentinel-triggered injection
+    // measurably takes longer to settle under that additional load in this
+    // environment (empirically, 8s was insufficient and raced the webhook
+    // write against the still-in-flight `claude` command injection,
+    // corrupting it into a plain shell prompt with no `claude` ever
+    // started -- exactly the failure this wait exists to prevent).
+    console.log('==> waiting for O PTY startup (sentinel-triggered claude command injection) to settle');
+    await Bun.sleep(20_000);
+
+    const beforeD6 = readOutputFileSafe(outputPathD);
+    const beforeT6 = readOutputFileSafe(outputPathT);
+    const beforeO6 = readOutputFileSafe(outputPathO);
+    const deadParentRes = await postWebhook(
+      baseUrl,
+      'workflow_run',
+      {
+        action: 'completed',
+        workflow_run: {
+          conclusion: 'success',
+          name: 'Scenario 6 CI',
+          html_url: null,
+          head_branch: 'smoke-branch-o',
+          head_sha: null,
+          updated_at: null,
+        },
+        repository: { full_name: `${nonceOrg}/${nonceRepo}` },
+      },
+      webhookSecret,
+    );
+    expect(deadParentRes.status === 200, 'SCENARIO 6: POST /webhooks/github returns 200', `status=${deadParentRes.status}`);
+    await deadParentRes.text();
+
+    const scenario6OTagFound = await waitFor(() => {
+      const content = readOutputFileSafe(outputPathO);
+      return content.slice(beforeO6.length).includes('[inbound:ci:completed]');
+    }, 45_000, "O's output file to contain [inbound:ci:completed] (scenario 6, direct match)");
+    expect(scenario6OTagFound, 'SCENARIO 6: O received the [inbound:ci:completed] PTY notification (direct match)', readOutputFileSafe(outputPathO).slice(beforeO6.length).slice(-500));
+
+    const scenario6DTagFound = await waitFor(() => {
+      const content = readOutputFileSafe(outputPathD);
+      return content.slice(beforeD6.length).includes('[inbound:ci:completed]');
+    }, 45_000, "D's output file to contain [inbound:ci:completed] (scenario 6, dead-parent fallback)");
+    expect(scenario6DTagFound, 'SCENARIO 6: D received the [inbound:ci:completed] PTY notification (fallback, O\'s parent P is paused/not live)', readOutputFileSafe(outputPathD).slice(beforeD6.length).slice(-500));
+
+    const afterT6 = readOutputFileSafe(outputPathT);
+    expect(
+      !afterT6.slice(beforeT6.length).includes('[inbound:ci:completed]'),
+      'SCENARIO 6: T did NOT receive the [inbound:ci:completed] PTY notification',
+      afterT6.slice(beforeT6.length).slice(-500),
     );
   } finally {
     if (proc) {
