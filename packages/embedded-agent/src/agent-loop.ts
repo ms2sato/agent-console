@@ -30,6 +30,7 @@ import { detectClampedReading } from './window-drift.js';
 import { truncateToBytes } from './truncate.js';
 import { buildCompactionSeedMessages } from './conversation-seed.js';
 import { buildUserMessageContent } from './attachment-content.js';
+import type { OpenAiApiEngine } from './engine-types.js';
 import {
   COMPACT_TOOL_NAME,
   COMPACT_TOOL_SCHEDULED_RESULT,
@@ -422,7 +423,8 @@ export function selectPartialDistillationMessages(
   return best;
 }
 
-export class AgentLoop {
+export class AgentLoop implements OpenAiApiEngine {
+  readonly kind = 'openai-api' as const;
   private readonly deps: AgentLoopDeps;
   private readonly retryDelaysMs: [number, number];
   private readonly sleep: (ms: number) => Promise<void>;
@@ -1344,7 +1346,7 @@ export class AgentLoop {
   }
 
   /**
-   * Slash commands, `console`-handled arm (#1572): `Engine.compactNow()`'s
+   * Slash commands, `console`-handled arm (#1572): `OpenAiApiEngine.compactNow()`'s
    * implementation for this engine. The server intercepts a manual
    * `/compact` before it reaches this engine as prose (see
    * `EMBEDDED_AGENT_SLASH_COMMANDS` and `embedded-agent-worker-service.ts`'s

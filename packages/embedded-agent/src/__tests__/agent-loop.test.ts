@@ -152,6 +152,13 @@ function makeLoop(
 
 const types = (events: EmbeddedAgentEvent[]) => events.map((e) => e.type);
 
+describe('AgentLoop — kind (Phase 4, #1683 decision 5)', () => {
+  it("is 'openai-api', matching OpenAiApiEngine's discriminant", () => {
+    const h = makeLoop([textResponse('hi')]);
+    expect(h.loop.kind).toBe('openai-api');
+  });
+});
+
 describe('AgentLoop — event ordering', () => {
   it('emits state active -> deltas -> assistant-message -> tool-call -> tool-result -> ... -> state idle', async () => {
     const h = makeLoop([

@@ -528,6 +528,14 @@ function resultError(
   });
 }
 
+describe('SdkEngine — kind (Phase 4, #1683 decision 5)', () => {
+  it("is 'claude-sdk', matching ClaudeSdkEngine's discriminant", () => {
+    const { queryFn } = makeFakeQuery([]);
+    const engine = new SdkEngine(baseDeps({ queryFn }));
+    expect(engine.kind).toBe('claude-sdk');
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Pin 1(a) -- construction seam / Options battery
 // ---------------------------------------------------------------------------

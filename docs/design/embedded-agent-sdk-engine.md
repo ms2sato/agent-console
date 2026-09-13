@@ -59,6 +59,32 @@ Internally, `EmbeddedAgentDefinition` carries an **explicit engine discriminant*
 
 **In SDK mode, no provider secret crosses the server at all.** The init command's `provider.apiKey` is absent — not optional, absent — for this engine. The subprocess runs as the user; the SDK uses the executing account's own claude configuration, exactly as that user's TUI workers already do. The embedded-agent secrets rule (stdin init only) is untouched; this engine simply has fewer secrets to carry. The MCP dial-back token is still delivered via stdin init and configured into the SDK as an MCP server (§4, tools row).
 
+### 3.3 The `Engine` contract's TypeScript shape (Phase 4, #1683, decision 5)
+
+**`Engine` (`packages/embedded-agent/src/engine-types.ts`) keeps exactly the surface both engines share: `runTurn` / `cancel` / `setAutoCompaction` / `setModelParams`.** Before this split, the two methods only one engine ever implements — `AgentLoop.compactNow` (openai-api) and `SdkEngine.dispose` (claude-sdk) — lived on `Engine` itself as OPTIONAL members (`compactNow?` / `dispose?`), which meant every caller had to defensively `?.()` past a case that was actually decided once, at construction, by which arm `initializeLoop` took: an engine either always has `dispose` or never does, and the same is true of `compactNow`. An optional method encodes "maybe, check at the call site" when the true shape is "yes, unconditionally, on exactly this arm" — the same "invalid states unrepresentable" principle §3.1 already applies to `engine` inference, here applied to a method's presence rather than a field's value.
+
+The two methods now live on kind-discriminated interfaces that extend `Engine`:
+
+```ts
+interface OpenAiApiEngine extends Engine {
+  readonly kind: 'openai-api';   // Extract<EmbeddedAgentDefinition['engine'], 'openai-api'> -- never a second literal
+  compactNow(): Promise<void>;
+}
+interface ClaudeSdkEngine extends Engine {
+  readonly kind: 'claude-sdk';   // Extract<EmbeddedAgentDefinition['engine'], 'claude-sdk'>
+  dispose(): void;
+}
+type AnyEngine = OpenAiApiEngine | ClaudeSdkEngine;
+```
+
+`kind` is derived from the wire vocabulary (`EmbeddedAgentDefinition['engine']`, the same single-writer source §3.1's discriminant reads) rather than declared as a second string-literal union — there is exactly one place that names the two engine values. `AgentLoop` implements `OpenAiApiEngine` (`readonly kind = 'openai-api' as const`); `SdkEngine` implements `ClaudeSdkEngine` (`readonly kind = 'claude-sdk' as const`). `main.ts` holds `loop: AnyEngine | null` and narrows on `kind` with an exhaustiveness `never` check at every call site that needs an engine-specific method — the `compact` wire command's dispatch, and shutdown's dispose call.
+
+**What this buys, concretely: the `compact` command on a `claude-sdk` engine can no longer resolve to a silent no-op.** Before the split, `main.ts` checked `if (!loop.compactNow)` and logged-and-dropped the command — a diagnostic-only outcome invisible to the console. The server never sends this command to a `claude-sdk` worker today (its own `/compact` is `engine`-handled, forwarded as an ordinary user message the SDK interprets itself), but the type no longer lets that fact hide behind an optional-chained call: `ClaudeSdkEngine` has no `compactNow` member at all, so the `claude-sdk` arm of the exhaustive switch is a real branch, not defensive coding, and it emits the `COMPACT_TOOL_UNSUPPORTED_RESULT` precedent (decision 4's "declines honestly") — the same `state: active` → `turn-error` → `state: idle` bracket `AgentLoop.compactNow`'s own failure path uses — instead of the old silent drop.
+
+Shutdown mirrors the same shape: `dispose()` is called iff `kind === 'claude-sdk'`; there is no `dispose` on `OpenAiApiEngine` to call, so the `openai-api` branch of that switch is empty by construction rather than by an `?.()` that happened not to find anything.
+
+No wire change accompanies this split: `engine` literals are unchanged, no schema is touched.
+
 ## 4. Compatibility matrix — subsystem × engine
 
 The recorded #1 bug source in this codebase is the partially-transplanted mechanism. The SDK owns the loop, tools, session persistence, and context compaction — colliding with subsystems the native engine built its own machinery for. Every row below is a decision; none is inherited. Values: **mapped** (same contract, different mechanism), **reimplemented** (same outcome, new mechanism), **accepted-divergence** (differs visibly; owner-accepted), **disabled** (off in this engine, with the consequence stated).

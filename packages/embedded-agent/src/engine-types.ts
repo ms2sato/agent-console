@@ -8,7 +8,9 @@
  * function, an enum with behavior -- anything beyond type/interface
  * declarations), it loses the rationale for that exemption. Split the
  * runtime part into its own separate, tested file rather than renaming this
- * one back to `engine.ts`.
+ * one back to `engine.ts`. (A sibling test file DOES still exist,
+ * `__tests__/engine-types.test.ts` -- it hosts a type-level pin, not a
+ * production-behavior test, and does not itself contradict this rationale.)
  *
  * The engine contract `main.ts`'s dispatch loop drives, implemented by both
  * `AgentLoop` (openai-api engine, agent-loop.ts) and `SdkEngine`
@@ -17,13 +19,23 @@
  * emit the same NDJSON event vocabulary upward; `main.ts` only needs this
  * narrow surface to drive either one.
  *
- * `AgentLoop` satisfies this interface structurally with no changes to
- * agent-loop.ts (a hard constraint of the SDK Engine Phase 1 work): it
- * already exposes `runTurn`/`cancel`/`setAutoCompaction` with matching
- * signatures, and `dispose` is optional, so an `AgentLoop` instance is
- * already assignable to `Engine`.
+ * Phase 4 (#1683, decision 5): `Engine` keeps ONLY the surface both engines
+ * share. The two methods only one engine ever had (`AgentLoop.compactNow`,
+ * `SdkEngine.dispose`) moved off `Engine` entirely, onto kind-discriminated
+ * interfaces that extend it -- `OpenAiApiEngine` / `ClaudeSdkEngine`, unioned
+ * as `AnyEngine`. Before this split, both lived on `Engine` as OPTIONAL
+ * members (`dispose?` / `compactNow?`), which meant every caller -- `main.ts`
+ * included -- had to defensively `?.()` past a case that was actually
+ * decided once, at construction, by which arm `initializeLoop` took: an
+ * engine either always has `dispose` or never does, and the same is true of
+ * `compactNow`. An optional method encodes "maybe", when the true shape is
+ * "yes, on exactly this arm" -- exactly the "invalid states unrepresentable"
+ * principle applied to a method's presence rather than a field's value. The
+ * kind-discriminated union makes the presence a compile-time fact `main.ts`
+ * narrows on (with an exhaustiveness check), rather than a runtime
+ * `typeof loop.compactNow === 'function'` guess.
  */
-import type { EmbeddedAgentAttachment } from '@agent-console/shared';
+import type { EmbeddedAgentAttachment, EmbeddedAgentDefinition } from '@agent-console/shared';
 
 export interface Engine {
   /** Start (or continue) one user turn. Resolves once the turn concludes,
@@ -56,29 +68,57 @@ export interface Engine {
    *
    * Returns `void`, like {@link setAutoCompaction}: an engine reports
    * whether the change reached its LIVE session by emitting the
-   * `model-params-applied` event, not through this return value. Required
-   * (unlike {@link compactNow}) -- both engines implement it.
+   * `model-params-applied` event, not through this return value. On `Engine`
+   * itself (unlike `OpenAiApiEngine.compactNow` / `ClaudeSdkEngine.dispose`)
+   * because both engines implement it.
    */
   setModelParams(params: {
     model: string;
     reasoningEffort: string | null;
     contextWindowTokens: number | null;
   }): void;
-  /**
-   * Release any underlying resources held outside process memory (e.g. the
-   * SDK engine's `Query`/child `claude` process). Optional because the
-   * native engine has nothing to release beyond normal GC.
-   */
-  dispose?(): void;
+}
+
+/**
+ * The `openai-api` engine's own surface, implemented by `AgentLoop`
+ * (agent-loop.ts). `kind` is derived from the wire vocabulary
+ * (`EmbeddedAgentDefinition['engine']`) rather than a second string-literal
+ * union -- there is exactly one writer of what the two engine values are.
+ */
+export interface OpenAiApiEngine extends Engine {
+  readonly kind: Extract<EmbeddedAgentDefinition['engine'], 'openai-api'>;
   /**
    * Slash commands, `console`-handled arm (#1572): trigger a manual
-   * compaction directly, outside any turn. Optional because only
-   * `AgentLoop` (openai-api engine) implements it -- `claude-sdk`'s
-   * `/compact` is `engine`-handled instead (forwarded as an ordinary user
-   * message the SDK interprets itself; see
-   * `EMBEDDED_AGENT_SLASH_COMMANDS`), so `SdkEngine` never needs this and
-   * the server never sends the `compact` wire command to a `claude-sdk`
-   * worker.
+   * compaction directly, outside any turn. Only `AgentLoop` (openai-api
+   * engine) implements it -- `claude-sdk`'s own `/compact` is
+   * `engine`-handled instead (forwarded as an ordinary user message the SDK
+   * interprets itself; see `EMBEDDED_AGENT_SLASH_COMMANDS`), so `SdkEngine`
+   * never needs this. The server never sends the `compact` wire command to a
+   * `claude-sdk` worker either, but `main.ts`'s dispatch is exhaustive on
+   * `kind` regardless (decision 4's "declines honestly": an explicit
+   * unsupported result, never a silent no-op, for the case the type system
+   * can no longer hide behind `?.()`).
    */
-  compactNow?(): Promise<void>;
+  compactNow(): Promise<void>;
 }
+
+/**
+ * The `claude-sdk` engine's own surface, implemented by `SdkEngine`
+ * (sdk-engine.ts). `kind` is derived from the wire vocabulary the same way
+ * `OpenAiApiEngine.kind` is.
+ */
+export interface ClaudeSdkEngine extends Engine {
+  readonly kind: Extract<EmbeddedAgentDefinition['engine'], 'claude-sdk'>;
+  /**
+   * Release any underlying resources held outside process memory (the SDK
+   * engine's `Query`/child `claude` process). Only `SdkEngine` implements
+   * this -- the openai-api engine has nothing to release beyond normal GC,
+   * so there is no `dispose` on `OpenAiApiEngine` at all rather than a no-op
+   * implementation of one.
+   */
+  dispose(): void;
+}
+
+/** Either engine `main.ts`'s dispatch loop may be driving, narrowed on
+ * `kind` at every call site that needs an engine-specific method. */
+export type AnyEngine = OpenAiApiEngine | ClaudeSdkEngine;
