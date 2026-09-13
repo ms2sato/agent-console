@@ -296,6 +296,33 @@ picks up the newer version. `scripts/setup-multiuser-for-ubuntu.sh` performs
 this copy automatically on every invocation, before it renders/installs the
 unit.
 
+**Copy the bundled embedded-agent entry to the same globally-reachable
+convention, for the same reason.** `resolveEmbeddedAgentEntryPath()`'s own
+"bundle sibling" branch resolves `dist/embedded-agent.js` next to the
+running server bundle — under this manual layout, that is
+`/home/agentconsole/agent-console/dist/embedded-agent.js`, which is
+unreachable to any OTHER elevation-target user (the same `/home/agentconsole`
+traversal problem the bun-binary copy above solves, applied to the
+application bundle file instead of the language-runtime binary). Copy it to
+a unified location under `/usr/local/lib/`, world-traversable and
+world-readable, deliberately in a *different* FHS directory than
+`/usr/local/bin/bun` (an application bundle and a binary are different
+physical resources that happen to share this reachability requirement):
+
+```bash
+sudo install -Dm0644 /home/agentconsole/agent-console/dist/embedded-agent.js \
+  /usr/local/lib/agent-console/embedded-agent.js
+sudo install -Dm0644 /home/agentconsole/agent-console/dist/embedded-agent.js.map \
+  /usr/local/lib/agent-console/embedded-agent.js.map
+```
+
+The `.map` file is copied too: the elevated subprocess reads its own
+sourcemap for a symbolicated stack trace on an uncaught exception in its own
+stderr. **Re-run this copy after every `bun run build`** (every deploy, in
+practice) — `scripts/update-and-deploy-for-multiuser-ubuntu.sh` performs it
+automatically, unconditionally, on every invocation (see [Iterative
+Updates](#iterative-updates-after-the-initial-setup) below).
+
 ### Step 4: Configure the Service (Linux)
 
 Create a systemd unit file so the server starts automatically and restarts on failure.
@@ -306,6 +333,7 @@ Render the unit from the bundled template at `scripts/agent-console-multiuser.se
 sudo bash -c '
 sed -e "s|{{HOME}}|/home/agentconsole|g" \
     -e "s|{{BUN_PATH}}|/usr/local/bin/bun|g" \
+    -e "s|{{ENTRY_PATH}}|/usr/local/lib/agent-console/embedded-agent.js|g" \
     -e "s|{{PORT}}|8080|g" \
     -e "s|{{AUTH_COOKIE_SECURE}}|false|g" \
     /home/agentconsole/agent-console/scripts/agent-console-multiuser.service.template \
@@ -313,10 +341,11 @@ sed -e "s|{{HOME}}|/home/agentconsole|g" \
 '
 ```
 
-Adjust the four placeholder values for your environment:
+Adjust the five placeholder values for your environment:
 
 - `{{HOME}}` — the service user's home directory (typically `/home/agentconsole`). If you installed Agent Console under a different path, update `{{HOME}}` so both `WorkingDirectory` and the `PATH` environment entry resolve correctly.
 - `{{BUN_PATH}}` — the absolute path to the **unified** bun binary both `ExecStart` and `EMBEDDED_AGENT_BUN_PATH` execute (Issue #1222). This is the `/usr/local/bin/bun` copy from the step above, **not** the service user's own `~/.bun/bin/bun` — the template substitutes the same value into both lines, so passing the service user's own path here would defeat the unification. Must exist and be executable before installing the unit (`scripts/setup-multiuser-for-ubuntu.sh` fails closed on this; a manual render does not, so verify it yourself with `sudo test -x /usr/local/bin/bun`).
+- `{{ENTRY_PATH}}` — the absolute path to the **unified** embedded-agent bundle `EMBEDDED_AGENT_ENTRY_PATH` short-circuits to (Issue #1668). This is the `/usr/local/lib/agent-console/embedded-agent.js` copy from the step above. An independent knob from `{{BUN_PATH}}` (different physical resource, different FHS location) — not derived from it. Unlike `{{BUN_PATH}}`, there is no fail-closed existence check inside the server itself; verify it yourself before restarting -- but **not** with a root-side `test -r`: root bypasses DAC read checks (including parent-directory traversal) so a root-side check passes even when no OTHER elevation-target user could read the file, which is the exact defect Issue #1668 is about. Probe from an unprivileged user's view instead — `runuser -u nobody -- test -r /usr/local/lib/agent-console/embedded-agent.js && echo readable` (root-only, no sudoers policy needed; any real elevation-target user hits the same wall as `nobody` would). This is the same gate `scripts/update-and-deploy-for-multiuser-ubuntu.sh` runs automatically before every restart.
 - `{{PORT}}` — the TCP port the server listens on (e.g. `8080`).
 - `{{AUTH_COOKIE_SECURE}}` — `true` or `false`. Set to `true` if all access is over HTTPS or via `http://localhost`; set to `false` for plain-HTTP access on a trusted network. See [TLS, `NODE_ENV`, and secure contexts](#tls-node_env-and-secure-contexts).
 
@@ -325,6 +354,8 @@ Adjust the four placeholder values for your environment:
 > `AUTH_COOKIE_SECURE` above. `EMBEDDED_AGENT_BUN_PATH={{BUN_PATH}}` (Issue
 > #1222) — the same substitution as `ExecStart`, not an independent value —
 > so it always matches whatever binary the server itself just started from.
+> `EMBEDDED_AGENT_ENTRY_PATH={{ENTRY_PATH}}` (Issue #1668) is a sibling
+> substitution for the embedded-agent bundle file, independent of `{{BUN_PATH}}`.
 
 > **Note**: A separate per-user systemd template
 > (`scripts/agent-console.service.template`) exists for single-user
@@ -531,6 +562,25 @@ The full list of override env vars is documented in the script's top comment.
 The script does not perform `git pull` itself — sync the source-repo to the
 intended commit before invoking, and confirm via the printed HEAD line in the
 script's `==> Pre-check` step before the build proceeds.
+
+**The script also copies `dist/embedded-agent.js` (+ `.map`) to the unified
+entry path on every invocation** (step 5/6, right after the deployed-commit
+marker write, from the deploy target — not a second independent read from
+the source repo), and fails closed on that path's readability right before
+`systemctl restart` (Issue #1668) — the same shape as the bun-binary copy
+above, applied to the application bundle instead of the language-runtime
+binary. No separate operator action is needed for this; it happens
+automatically as part of the ordinary update cycle.
+
+Every deploy script (`update-and-deploy-for-multiuser-ubuntu.sh`,
+`update-and-deploy-for-ubuntu.sh`, `update-and-deploy-for-mac.sh`) writes the
+deployed commit's SHA and an ISO-8601 UTC timestamp to `<deploy-target>/.deploy-sha`
+(line 1: SHA, line 2: timestamp), written after `rsync --delete` so it
+survives the next deploy's rebuild of the target tree. The running server
+reads this marker once at startup and exposes it read-only as `deployedSha` on
+`GET /api/config` (`null` when no marker is present, e.g. `bun run dev`),
+letting an operator confirm which commit a given instance is actually running
+without shelling in to read the file directly.
 
 ## Multiple Repositories on the Same Instance
 
@@ -1184,6 +1234,12 @@ string shape, but only an on-host smoke can confirm what env the elevated
 user actually sees -- which depends on distro `sudo` defaults, sudoers
 config, and the target user's login shell init.
 
+Prerequisite for the unprivileged-user readability checks referenced below
+(both `scripts/update-and-deploy-for-multiuser-ubuntu.sh`'s own automatic
+gate and the manual `runuser -u nobody -- test -r ...` verify commands
+elsewhere in this guide): `runuser` (package `util-linux`, installed by
+default on Debian/Ubuntu) must be present on the host.
+
 ### PTY env propagation check
 
 ```bash
@@ -1320,13 +1376,50 @@ What it verifies:
   `/usr/local/bin/bun` after a `bun upgrade`. That is expected freshness (the
   deployed server deterministically stays on its provisioned version until
   `scripts/setup-multiuser-for-ubuntu.sh` is re-run), not a correctness bug.
+- (Issue #1668, OPT-IN — set `EMBEDDED_AGENT_ENTRY_PATH` before invoking to
+  exercise it, since this smoke's default checkout has no
+  `dist/embedded-agent.js` sibling) When configured, a positive
+  `/proc/<pid>/cmdline` assertion — PAIRED in the same run with the `ready`
+  assertion above (same activation, same pid, no separate re-run) — confirms
+  the real elevated subprocess both received the configured path as its
+  spawn argv AND actually executed it to a working init handshake as the
+  second OS user. This closes the gap the smoke's own header comment
+  documents: without this pairing, `resolveEmbeddedAgentEntryPath()`'s
+  `'bundle'` branch (the one a real bundled production deploy takes) is
+  never exercised by this smoke, only unit-tested against a fixture
+  directory. Opt in with either — note the variable is set via `env`
+  **after** `sudo -u agentconsole`, not as a `VAR=value` prefix before it:
+  under Ubuntu's default `env_reset`, `sudo` resets the environment it
+  hands to the target user, so a prefix assignment placed before `sudo`
+  never reaches `bun` and the smoke would silently fall back to automatic
+  resolution instead of exercising the short-circuit at all:
+  ```bash
+  # against a real build's bundle sibling
+  bun run build
+  sudo -u agentconsole env EMBEDDED_AGENT_ENTRY_PATH="$(pwd)/dist/embedded-agent.js" \
+    bun scripts/smoke/check-embedded-agent-elevation.ts <target-user>
+
+  # or, on a live multi-user host, the real unified path
+  sudo -u agentconsole env EMBEDDED_AGENT_ENTRY_PATH=/usr/local/lib/agent-console/embedded-agent.js \
+    bun scripts/smoke/check-embedded-agent-elevation.ts <target-user>
+  ```
+  **The bundle-sibling form is expected to FAIL against a real second
+  `<target-user>` on a live multi-user host** — the path under the service
+  user's own checkout is exactly the unreachable-to-other-users path Issue
+  #1668 is about, so a real cross-user run reproducing that failure is the
+  smoke's own detection power confirming itself, not a gotcha. Use the
+  unified-path form for an actual pass/fail verification; the
+  bundle-sibling form is for local, same-user (degenerate-mode) iteration
+  only.
 
 Exit codes: `0` all assertions passed, `1` an assertion failed (the system is
 wrong), `2` bad usage or the smoke could not run (missing target-user
 argument, target user unknown, spawn-launch failure; `EMBEDDED_AGENT_BUN_PATH`
 configured to an absolute path that does not exist on disk, meaning the
 bun-binary copy step from the setup guide/script has not been applied yet;
-or — Issue #1222 — `systemctl` / the `agent-console` unit's `MainPID` /
+`EMBEDDED_AGENT_ENTRY_PATH` configured but not present on disk, meaning `bun
+run build` has not been run or the unified copy step has not been applied
+yet; or — Issue #1222 — `systemctl` / the `agent-console` unit's `MainPID` /
 `/proc/<pid>/exe` could not be resolved, meaning the live-process check needs
 the real production service active and reachable, distinct from an assertion
 FAILURE which means the service IS running but on the wrong binary).

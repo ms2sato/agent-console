@@ -32,12 +32,22 @@ function jsonResponse(body: unknown): Response {
   return new Response(JSON.stringify(body), { status: 200, headers: { 'Content-Type': 'application/json' } });
 }
 
-/** Builds a fetch stub that also serves `/api/embedded-agents` with the given registry (Context Handoff Phase A: `EmbeddedAgentWorkerView` looks up its worker's definition via `useEmbeddedAgents`). */
+/**
+ * Builds a fetch stub that also serves `/api/embedded-agents` with the given
+ * registry (Context Handoff Phase A: `EmbeddedAgentWorkerView` looks up its
+ * worker's definition via `useEmbeddedAgents`) and `/api/agents` with an
+ * empty terminal-agent registry. The latter is needed once the
+ * model/effort control's `AgentParameterFields` opens: it calls
+ * `useAgentDirectory`, which unconditionally queries BOTH registries
+ * (`useAgents` + `useEmbeddedAgents`) regardless of which kind the current
+ * selection resolves to.
+ */
 function makeEmbeddedViewFetch(embeddedAgents: unknown[] = []) {
   return (input: RequestInfo | URL): Promise<Response> => {
     const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
     if (url.endsWith('/api/skills')) return Promise.resolve(jsonResponse({ skills: [] }));
     if (url.endsWith('/api/message-templates')) return Promise.resolve(jsonResponse({ templates: [] }));
+    if (url.endsWith('/api/agents')) return Promise.resolve(jsonResponse({ agents: [] }));
     if (url.endsWith('/api/embedded-agents')) return Promise.resolve(jsonResponse({ embeddedAgents }));
     return Promise.resolve(new Response('null', { status: 404 }));
   };
@@ -69,6 +79,9 @@ function renderView(props: {
   embeddedAgentId?: string;
   autoCompaction?: boolean;
   contextWindowTokens?: number;
+  model?: string;
+  reasoningEffort?: string | null;
+  hasParameterOverride?: boolean;
 }) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
   return render(
@@ -657,6 +670,56 @@ describe('EmbeddedAgentWorkerView', () => {
     }
   });
 
+  describe('exited row -- stderr tail disclosure (#1454)', () => {
+    it('renders a "Show process output" disclosure with the raw tail, both on the historical row and the current-state sibling element, when stderrTail is present', async () => {
+      renderView({ sessionId: 's7-stderrtail', workerId: 'w7-stderrtail' });
+      const ws = MockWebSocket.getLastInstance();
+      act(() => {
+        ws?.simulateOpen();
+      });
+
+      const data = ndjson({
+        v: 1,
+        type: 'exited',
+        code: 1,
+        reason: 'unexpected',
+        stderrTail: 'TypeError: Cannot read properties of undefined',
+      });
+      act(() => {
+        ws?.simulateMessage(JSON.stringify({ type: 'history', data, offset: data.length, startOffset: 0, epoch: 1 }));
+      });
+      await flush();
+
+      // Two disclosures: one for the historical row, one for the
+      // current-state sibling element -- mirroring the "renders twice"
+      // shape of "Agent process exited" itself in the sibling tests above.
+      const disclosures = screen.getAllByText('Show process output');
+      expect(disclosures).toHaveLength(2);
+
+      const tails = screen.getAllByText('TypeError: Cannot read properties of undefined');
+      expect(tails).toHaveLength(2);
+      for (const tail of tails) {
+        expect(tail.tagName).toBe('PRE');
+      }
+    });
+
+    it('renders NO disclosure anywhere when stderrTail is absent (managed/evicted exits, or a pre-#1454 server)', async () => {
+      renderView({ sessionId: 's7-nostderrtail', workerId: 'w7-nostderrtail' });
+      const ws = MockWebSocket.getLastInstance();
+      act(() => {
+        ws?.simulateOpen();
+      });
+
+      const data = ndjson({ v: 1, type: 'exited', code: 0 });
+      act(() => {
+        ws?.simulateMessage(JSON.stringify({ type: 'history', data, offset: data.length, startOffset: 0, epoch: 1 }));
+      });
+      await flush();
+
+      expect(screen.queryByText('Show process output')).toBeNull();
+    });
+  });
+
   it('renders a tool-call card paired with its tool-result, including error styling data', async () => {
     renderView({ sessionId: 's8', workerId: 'w8' });
     const ws = MockWebSocket.getLastInstance();
@@ -886,8 +949,10 @@ describe('EmbeddedAgentWorkerView', () => {
       expect(assistantBubble).not.toBeNull();
       expect(assistantBubble?.className).not.toMatch(/max-w-/);
 
+      // max-w-[80%] now lives on the wrapper div (not the bubble itself),
+      // so the chip row sharing the same row can share the same cap.
       const userBubble = screen.getByText('hi');
-      expect(userBubble.className).toContain('max-w-[80%]');
+      expect(userBubble.parentElement?.className).toContain('max-w-[80%]');
     });
 
     it('keeps the wrap-enabling classes (.memo-content, min-w-0) on the assistant bubble for a long unbroken token at full width, with no max-w- constraint reintroduced (#1095)', async () => {
@@ -2374,6 +2439,399 @@ describe('EmbeddedAgentWorkerView', () => {
         });
       });
     });
+
+    describe('the model/effort override control (agent-surface.md Phase 3)', () => {
+      /**
+       * A definition matching every test's `embeddedAgentId` -- resolving
+       * `AgentParameterFields`' internal `useAgentDirectory` lookup is what
+       * makes its inputs render at all (an unresolved selection renders
+       * nothing, per that component's own doc comment).
+       */
+      const paramsDefinition = embeddedAgentFixture({ id: 'ea-params' });
+
+      /** GET-only fetch stub (directory + skills/templates), no PATCH route. */
+      function paramsGetFetch(): (input: RequestInfo | URL, init?: RequestInit) => Promise<Response> {
+        const base = makeEmbeddedViewFetch([paramsDefinition]);
+        return (input: RequestInfo | URL, _init?: RequestInit) => base(input);
+      }
+
+      /** Combines the GET stub above with a PATCH responder for the write tests. */
+      function paramsFetchWithPatch(
+        patchResponse: () => Response | Promise<Response> = () =>
+          new Response(JSON.stringify({ worker: {} }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          }),
+      ) {
+        const get = paramsGetFetch();
+        return async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+          const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+          if (url.includes('/api/sessions/') && init?.method === 'PATCH') {
+            return patchResponse();
+          }
+          return get(input);
+        };
+      }
+
+      it('is closed by default -- the fields are not in the document', () => {
+        globalThis.fetch = Object.assign(mock(paramsGetFetch()), { preconnect: () => {} });
+        renderView({
+          sessionId: 's-params-1',
+          workerId: 'w-params-1',
+          embeddedAgentId: 'ea-params',
+          model: 'opus',
+          reasoningEffort: 'high',
+          hasParameterOverride: false,
+        });
+
+        expect(screen.queryByPlaceholderText('e.g. opus')).toBeNull();
+        expect(
+          screen.getByRole('button', { name: /Model and effort/ }).getAttribute('aria-expanded'),
+        ).toBe('false');
+      });
+
+      it('renders the effective model and effort from the wire props, with none for a null effort', () => {
+        globalThis.fetch = Object.assign(mock(paramsGetFetch()), { preconnect: () => {} });
+        renderView({
+          sessionId: 's-params-2',
+          workerId: 'w-params-2',
+          embeddedAgentId: 'ea-params',
+          model: 'opus',
+          reasoningEffort: null,
+          hasParameterOverride: false,
+        });
+
+        const summary = screen.getByRole('button', { name: /Model and effort/ });
+        expect(summary.textContent).toContain('opus');
+        expect(summary.textContent).toContain('none');
+      });
+
+      it('shows the override badge when hasParameterOverride is true', () => {
+        globalThis.fetch = Object.assign(mock(paramsGetFetch()), { preconnect: () => {} });
+        renderView({
+          sessionId: 's-params-3a',
+          workerId: 'w-params-3a',
+          embeddedAgentId: 'ea-params',
+          model: 'opus',
+          reasoningEffort: 'high',
+          hasParameterOverride: true,
+        });
+
+        expect(screen.getByText('override')).toBeTruthy();
+      });
+
+      it('hides the override badge when hasParameterOverride is false', () => {
+        globalThis.fetch = Object.assign(mock(paramsGetFetch()), { preconnect: () => {} });
+        renderView({
+          sessionId: 's-params-3b',
+          workerId: 'w-params-3b',
+          embeddedAgentId: 'ea-params',
+          model: 'opus',
+          reasoningEffort: 'high',
+          hasParameterOverride: false,
+        });
+
+        expect(screen.queryByText('override')).toBeNull();
+      });
+
+      it('shows "unknown" and disables the write actions when the effective model is unknown, issuing no PATCH', async () => {
+        const fetchMock = mock(paramsGetFetch());
+        globalThis.fetch = Object.assign(fetchMock, { preconnect: () => {} });
+        const user = userEvent.setup();
+        renderView({
+          sessionId: 's-params-4',
+          workerId: 'w-params-4',
+          embeddedAgentId: 'ea-params',
+          reasoningEffort: undefined,
+          hasParameterOverride: undefined,
+        });
+
+        const summary = screen.getByRole('button', { name: /Model and effort/ });
+        expect(summary.textContent).toContain('unknown');
+
+        await user.click(summary);
+
+        const applyButton = (await screen.findByRole('button', { name: 'Apply' })) as HTMLButtonElement;
+        const defaultButton = screen.getByRole('button', { name: 'Use agent default' }) as HTMLButtonElement;
+        expect(applyButton.disabled).toBe(true);
+        expect(defaultButton.disabled).toBe(true);
+
+        await user.click(applyButton).catch(() => {});
+        await user.click(defaultButton).catch(() => {});
+
+        expect(
+          fetchMock.mock.calls.some(([, init]) => (init as RequestInit | undefined)?.method === 'PATCH'),
+        ).toBe(false);
+      });
+
+      it('sends the exact PATCH body on Apply, including contextWindowTokens', async () => {
+        const fetchMock = mock(paramsFetchWithPatch());
+        globalThis.fetch = Object.assign(fetchMock, { preconnect: () => {} });
+        const user = userEvent.setup();
+        renderView({
+          sessionId: 's-params-5',
+          workerId: 'w-params-5',
+          embeddedAgentId: 'ea-params',
+          model: 'sonnet',
+          reasoningEffort: 'low',
+          contextWindowTokens: 64_000,
+          hasParameterOverride: false,
+        });
+
+        await user.click(screen.getByRole('button', { name: /Model and effort/ }));
+        const modelInput = await screen.findByPlaceholderText('e.g. opus');
+        const effortInput = screen.getByPlaceholderText('e.g. high');
+        const windowInput = screen.getByPlaceholderText('e.g. 128000');
+
+        fireEvent.change(modelInput, { target: { value: 'opus' } });
+        fireEvent.change(effortInput, { target: { value: 'high' } });
+        fireEvent.change(windowInput, { target: { value: '128000' } });
+
+        await user.click(screen.getByRole('button', { name: 'Apply' }));
+
+        await waitFor(() => {
+          const patchCall = fetchMock.mock.calls.find(
+            ([, init]) => (init as RequestInit | undefined)?.method === 'PATCH',
+          );
+          expect(patchCall).toBeDefined();
+          expect(String(patchCall![0])).toContain('/api/sessions/s-params-5/workers/w-params-5');
+          expect(JSON.parse(String((patchCall![1] as RequestInit).body))).toEqual({
+            model: 'opus',
+            contextWindowTokens: 128_000,
+            reasoningEffort: 'high',
+          });
+        });
+      });
+
+      it('sends contextWindowTokens: null when the window field is left blank', async () => {
+        const fetchMock = mock(paramsFetchWithPatch());
+        globalThis.fetch = Object.assign(fetchMock, { preconnect: () => {} });
+        const user = userEvent.setup();
+        renderView({
+          sessionId: 's-params-5b',
+          workerId: 'w-params-5b',
+          embeddedAgentId: 'ea-params',
+          model: 'sonnet',
+          reasoningEffort: 'low',
+          contextWindowTokens: 64_000,
+          hasParameterOverride: false,
+        });
+
+        await user.click(screen.getByRole('button', { name: /Model and effort/ }));
+        const windowInput = await screen.findByPlaceholderText('e.g. 128000');
+        fireEvent.change(windowInput, { target: { value: '' } });
+
+        await user.click(screen.getByRole('button', { name: 'Apply' }));
+
+        await waitFor(() => {
+          const patchCall = fetchMock.mock.calls.find(
+            ([, init]) => (init as RequestInit | undefined)?.method === 'PATCH',
+          );
+          expect(patchCall).toBeDefined();
+          expect(JSON.parse(String((patchCall![1] as RequestInit).body))).toEqual({
+            model: 'sonnet',
+            contextWindowTokens: null,
+            reasoningEffort: 'low',
+          });
+        });
+      });
+
+      it('sends contextWindowTokens: 1 -- the smallest value the shared schema accepts', async () => {
+        const fetchMock = mock(paramsFetchWithPatch());
+        globalThis.fetch = Object.assign(fetchMock, { preconnect: () => {} });
+        const user = userEvent.setup();
+        renderView({
+          sessionId: 's-params-5c',
+          workerId: 'w-params-5c',
+          embeddedAgentId: 'ea-params',
+          model: 'sonnet',
+          reasoningEffort: 'low',
+          contextWindowTokens: 64_000,
+          hasParameterOverride: false,
+        });
+
+        await user.click(screen.getByRole('button', { name: /Model and effort/ }));
+        const windowInput = await screen.findByPlaceholderText('e.g. 128000');
+        fireEvent.change(windowInput, { target: { value: '1' } });
+
+        await user.click(screen.getByRole('button', { name: 'Apply' }));
+
+        await waitFor(() => {
+          const patchCall = fetchMock.mock.calls.find(
+            ([, init]) => (init as RequestInit | undefined)?.method === 'PATCH',
+          );
+          expect(patchCall).toBeDefined();
+          expect(JSON.parse(String((patchCall![1] as RequestInit).body))).toEqual({
+            model: 'sonnet',
+            contextWindowTokens: 1,
+            reasoningEffort: 'low',
+          });
+        });
+      });
+
+      it.each([
+        ['0', '0'],
+        ['-1', '-1'],
+        ['1.5', '1.5'],
+      ])(
+        'shows "Must be a positive integer" and disables Apply for a window value of %s, issuing no PATCH',
+        async (_label, typedValue) => {
+          const fetchMock = mock(paramsFetchWithPatch());
+          globalThis.fetch = Object.assign(fetchMock, { preconnect: () => {} });
+          const user = userEvent.setup();
+          renderView({
+            sessionId: `s-params-invalid-${typedValue}`,
+            workerId: `w-params-invalid-${typedValue}`,
+            embeddedAgentId: 'ea-params',
+            model: 'sonnet',
+            reasoningEffort: 'low',
+            contextWindowTokens: 64_000,
+            hasParameterOverride: false,
+          });
+
+          await user.click(screen.getByRole('button', { name: /Model and effort/ }));
+          const windowInput = await screen.findByPlaceholderText('e.g. 128000');
+          fireEvent.change(windowInput, { target: { value: typedValue } });
+
+          expect(screen.getByText('Must be a positive integer')).toBeTruthy();
+          const applyButton = screen.getByRole('button', { name: 'Apply' }) as HTMLButtonElement;
+          expect(applyButton.disabled).toBe(true);
+
+          // The button is disabled, but exercise the handler directly too --
+          // it must not issue a PATCH even if invoked (e.g. a future caller
+          // that bypasses the disabled button).
+          await user.click(applyButton).catch(() => {});
+
+          expect(
+            fetchMock.mock.calls.some(([, init]) => (init as RequestInit | undefined)?.method === 'PATCH'),
+          ).toBe(false);
+        },
+      );
+
+      it('"Use agent default" sends exactly { model: null, reasoningEffort: null } -- no contextWindowTokens key', async () => {
+        const fetchMock = mock(paramsFetchWithPatch());
+        globalThis.fetch = Object.assign(fetchMock, { preconnect: () => {} });
+        const user = userEvent.setup();
+        renderView({
+          sessionId: 's-params-6',
+          workerId: 'w-params-6',
+          embeddedAgentId: 'ea-params',
+          model: 'opus',
+          reasoningEffort: 'high',
+          contextWindowTokens: 128_000,
+          hasParameterOverride: true,
+        });
+
+        await user.click(screen.getByRole('button', { name: /Model and effort/ }));
+        const defaultButton = await screen.findByRole('button', { name: 'Use agent default' });
+        await user.click(defaultButton);
+
+        await waitFor(() => {
+          const patchCall = fetchMock.mock.calls.find(
+            ([, init]) => (init as RequestInit | undefined)?.method === 'PATCH',
+          );
+          expect(patchCall).toBeDefined();
+          const body = JSON.parse(String((patchCall![1] as RequestInit).body));
+          expect(body).toEqual({ model: null, reasoningEffort: null });
+          expect(body).not.toHaveProperty('contextWindowTokens');
+        });
+      });
+
+      it('does not adopt the draft optimistically -- the summary still shows the OLD prop values after a successful Apply', async () => {
+        const fetchMock = mock(paramsFetchWithPatch());
+        globalThis.fetch = Object.assign(fetchMock, { preconnect: () => {} });
+        const user = userEvent.setup();
+        renderView({
+          sessionId: 's-params-7',
+          workerId: 'w-params-7',
+          embeddedAgentId: 'ea-params',
+          model: 'sonnet',
+          reasoningEffort: 'low',
+          hasParameterOverride: false,
+        });
+
+        await user.click(screen.getByRole('button', { name: /Model and effort/ }));
+        const modelInput = await screen.findByPlaceholderText('e.g. opus');
+        fireEvent.change(modelInput, { target: { value: 'opus' } });
+
+        await user.click(screen.getByRole('button', { name: 'Apply' }));
+
+        await waitFor(() => {
+          expect(
+            fetchMock.mock.calls.some(([, init]) => (init as RequestInit | undefined)?.method === 'PATCH'),
+          ).toBe(true);
+        });
+
+        // The server never re-rendered this component with a new `model`
+        // prop (only a session-updated broadcast does that in production),
+        // so the summary must still read the ORIGINAL prop, not the edited
+        // draft -- same "no optimistic value" discipline as the compaction
+        // toggle above.
+        const summary = screen.getByRole('button', { name: /Model and effort/ });
+        expect(summary.textContent).toContain('sonnet');
+        expect(summary.textContent).not.toContain('opus');
+      });
+
+      it('never names an engine or a mechanism in its wording', () => {
+        globalThis.fetch = Object.assign(mock(paramsGetFetch()), { preconnect: () => {} });
+        renderView({
+          sessionId: 's-params-8',
+          workerId: 'w-params-8',
+          embeddedAgentId: 'ea-params',
+          model: 'opus',
+          reasoningEffort: 'high',
+          hasParameterOverride: true,
+        });
+
+        const summary = screen.getByRole('button', { name: /Model and effort/ });
+        expect(summary.textContent).not.toMatch(/engine|SDK|openai|claude/i);
+      });
+
+      it('disables both write buttons while a write is in flight', async () => {
+        let resolvePatch: (value: Response) => void = () => {};
+        const patchPromise = new Promise<Response>((resolve) => {
+          resolvePatch = resolve;
+        });
+        const fetchMock = mock(paramsFetchWithPatch(() => patchPromise));
+        globalThis.fetch = Object.assign(fetchMock, { preconnect: () => {} });
+        const user = userEvent.setup();
+        renderView({
+          sessionId: 's-params-9',
+          workerId: 'w-params-9',
+          embeddedAgentId: 'ea-params',
+          model: 'sonnet',
+          reasoningEffort: null,
+          hasParameterOverride: false,
+        });
+
+        await user.click(screen.getByRole('button', { name: /Model and effort/ }));
+        await screen.findByPlaceholderText('e.g. opus');
+
+        const applyButton = screen.getByRole('button', { name: 'Apply' }) as HTMLButtonElement;
+        const defaultButton = screen.getByRole('button', { name: 'Use agent default' }) as HTMLButtonElement;
+        expect(applyButton.disabled).toBe(false);
+        expect(defaultButton.disabled).toBe(false);
+
+        await user.click(applyButton);
+
+        await waitFor(() => {
+          expect(applyButton.disabled).toBe(true);
+        });
+        expect(defaultButton.disabled).toBe(true);
+
+        resolvePatch(
+          new Response(JSON.stringify({ worker: {} }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          }),
+        );
+
+        await waitFor(() => {
+          expect(applyButton.disabled).toBe(false);
+        });
+        expect(defaultButton.disabled).toBe(false);
+      });
+    });
   });
 
   describe('Transcript Restore (#1123)', () => {
@@ -3384,6 +3842,223 @@ describe('EmbeddedAgentWorkerView', () => {
       expect(screen.queryByText(D2_RE)).toBeNull();
     });
 
+  });
+
+  describe('TodoPanel mount (#1573)', () => {
+    // TodoPanel's own derivation logic (which entry wins, glyph/text per
+    // status, open/closed default) is exhaustively covered by
+    // TodoPanel.test.tsx. This suite proves only the wiring: that
+    // EmbeddedAgentWorkerView actually mounts TodoPanel with the live
+    // `entries` from useEmbeddedAgentWorker, so a TodoWrite tool-call
+    // delivered over the worker's own WebSocket reaches the rendered tree.
+    it('renders the derived TodoPanel summary when a TodoWrite tool-call is present in history', async () => {
+      renderView({ sessionId: 's-todo-mount', workerId: 'w-todo-mount' });
+      const ws = MockWebSocket.getLastInstance();
+      act(() => {
+        ws?.simulateOpen();
+      });
+
+      const data = ndjson(
+        {
+          v: 1,
+          type: 'tool-call',
+          turnId: 't1',
+          callId: 'c1',
+          name: 'TodoWrite',
+          args: { todos: [{ content: 'Write tests', status: 'pending', activeForm: 'Writing tests' }] },
+        },
+        { v: 1, type: 'tool-result', turnId: 't1', callId: 'c1', ok: true, result: 'ok' },
+      );
+      act(() => {
+        ws?.simulateMessage(JSON.stringify({ type: 'history', data, offset: data.length, startOffset: 0, epoch: 1 }));
+      });
+      await flush();
+
+      expect(screen.getByText('Tasks (0/1 completed)')).toBeTruthy();
+    });
+  });
+
+  describe('attachments (#1570)', () => {
+    // The server side already fully supports attachments for embedded-agent
+    // workers; this suite pins the client-side onSend branch added in
+    // EmbeddedAgentWorkerView: no files -> WebSocket (`sendUserMessage`,
+    // which carries `clientMessageId`), files present -> REST
+    // (`sendWorkerMessage`, the same function the PTY-worker path uses).
+    // Mocking follows this file's existing convention (fetch-level, not
+    // module-level -- see the auto-compaction toggle tests above) rather
+    // than mocking `../../lib/api`, matching testing.md's "mock at the
+    // lowest level" rule.
+
+    it('sends over the WebSocket (embedded-user-message) and does NOT call the REST messages endpoint when no files are attached', async () => {
+      const fetchMock = mock((input: RequestInfo | URL, _init?: RequestInit) => embeddedViewFetch(input));
+      globalThis.fetch = Object.assign(fetchMock, { preconnect: () => {} });
+      renderView({ sessionId: 's-attach-nofile', workerId: 'w-attach-nofile' });
+      const ws = MockWebSocket.getLastInstance();
+      act(() => {
+        ws?.simulateOpen();
+      });
+
+      const textarea = screen.getByPlaceholderText(
+        'Send message to worker... (Ctrl+Enter to send)',
+      ) as HTMLTextAreaElement;
+      await act(async () => {
+        fireEvent.change(textarea, { target: { value: 'no attachments here' } });
+      });
+      await act(async () => {
+        fireEvent.keyDown(textarea, { key: 'Enter', ctrlKey: true });
+      });
+      await flush();
+
+      const sent = (ws!.send.mock.calls as string[][]).map((c) => JSON.parse(c[0])) as {
+        type: string;
+        text?: string;
+      }[];
+      const sentMessage = sent.find((m) => m.type === 'embedded-user-message');
+      expect(sentMessage?.text).toBe('no attachments here');
+
+      const postedToMessages = fetchMock.mock.calls.some(
+        ([input, init]) =>
+          String(input).endsWith('/messages') && (init as RequestInit | undefined)?.method === 'POST',
+      );
+      expect(postedToMessages).toBe(false);
+    });
+
+    it('sends via the REST messages endpoint (sendWorkerMessage) and does NOT send over the WebSocket when files are attached', async () => {
+      const fetchMock = mock(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = typeof input === 'string' ? input : input.toString();
+        if (url.endsWith('/messages') && init?.method === 'POST') {
+          return new Response(JSON.stringify({ message: { id: 'm1' } }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          });
+        }
+        return embeddedViewFetch(input);
+      });
+      globalThis.fetch = Object.assign(fetchMock, { preconnect: () => {} });
+      renderView({ sessionId: 's-attach-file', workerId: 'w-attach-file' });
+      const ws = MockWebSocket.getLastInstance();
+      act(() => {
+        ws?.simulateOpen();
+      });
+
+      const textarea = screen.getByPlaceholderText(
+        'Send message to worker... (Ctrl+Enter to send)',
+      ) as HTMLTextAreaElement;
+      const mockFile = new File(['file-data'], 'test.png', { type: 'image/png' });
+      await act(async () => {
+        fireEvent.paste(textarea, {
+          clipboardData: { items: [{ type: 'image/png', getAsFile: () => mockFile }] },
+        });
+      });
+      await act(async () => {
+        fireEvent.change(textarea, { target: { value: 'here is a file' } });
+      });
+      await act(async () => {
+        fireEvent.keyDown(textarea, { key: 'Enter', ctrlKey: true });
+      });
+
+      await waitFor(() => {
+        const postCall = fetchMock.mock.calls.find(
+          ([input, init]) =>
+            String(input).endsWith('/messages') && (init as RequestInit | undefined)?.method === 'POST',
+        );
+        expect(postCall).toBeDefined();
+      });
+
+      const postCall = fetchMock.mock.calls.find(
+        ([input, init]) =>
+          String(input).endsWith('/messages') && (init as RequestInit | undefined)?.method === 'POST',
+      )!;
+      expect(String(postCall[0])).toBe('/api/sessions/s-attach-file/messages');
+      const body = (postCall[1] as RequestInit).body as FormData;
+      expect(body.get('toWorkerId')).toBe('w-attach-file');
+      expect(body.get('content')).toBe('here is a file');
+      const uploadedFile = body.get('files') as File;
+      expect(uploadedFile.name).toBe('test.png');
+
+      const sent = (ws!.send.mock.calls as string[][] | undefined)?.map((c) => JSON.parse(c[0])) ?? [];
+      expect(sent.some((m) => m.type === 'embedded-user-message')).toBe(false);
+    });
+  });
+
+  describe('engine-aware slash commands (#1572)', () => {
+    it('offers exactly the claude-sdk table entries in the completion dropdown for a claude-sdk worker', async () => {
+      globalThis.fetch = Object.assign(
+        mock(makeEmbeddedViewFetch([embeddedAgentFixture({ engine: 'claude-sdk' })])),
+        { preconnect: () => {} },
+      );
+      renderView({ sessionId: 's-slash-sdk', workerId: 'w-slash-sdk', embeddedAgentId: 'ea-1' });
+      const ws = MockWebSocket.getLastInstance();
+      act(() => {
+        ws?.simulateOpen();
+      });
+      await act(async () => {
+        await flush();
+      });
+
+      const textarea = screen.getByPlaceholderText('Send message to worker... (Ctrl+Enter to send)');
+      await act(async () => {
+        fireEvent.change(textarea, { target: { value: '/' } });
+      });
+
+      const options = screen.getAllByRole('option');
+      expect(options.map((o) => o.textContent)).toEqual([
+        expect.stringContaining('/compact'),
+        expect.stringContaining('/cost'),
+        expect.stringContaining('/context'),
+      ]);
+    });
+
+    it('offers exactly the openai-api table entry (only /compact) in the completion dropdown for an openai-api worker', async () => {
+      globalThis.fetch = Object.assign(
+        mock(makeEmbeddedViewFetch([embeddedAgentFixture({ engine: 'openai-api' })])),
+        { preconnect: () => {} },
+      );
+      renderView({ sessionId: 's-slash-openai', workerId: 'w-slash-openai', embeddedAgentId: 'ea-1' });
+      const ws = MockWebSocket.getLastInstance();
+      act(() => {
+        ws?.simulateOpen();
+      });
+      await act(async () => {
+        await flush();
+      });
+
+      const textarea = screen.getByPlaceholderText('Send message to worker... (Ctrl+Enter to send)');
+      await act(async () => {
+        fireEvent.change(textarea, { target: { value: '/' } });
+      });
+
+      const options = screen.getAllByRole('option');
+      expect(options).toHaveLength(1);
+      expect(options[0].textContent).toContain('/compact');
+    });
+
+    it('blocks sending an unknown slash command and shows the "send as text" notice instead of forwarding it as prose', async () => {
+      globalThis.fetch = Object.assign(
+        mock(makeEmbeddedViewFetch([embeddedAgentFixture({ engine: 'claude-sdk' })])),
+        { preconnect: () => {} },
+      );
+      renderView({ sessionId: 's-slash-unknown', workerId: 'w-slash-unknown', embeddedAgentId: 'ea-1' });
+      const ws = MockWebSocket.getLastInstance();
+      act(() => {
+        ws?.simulateOpen();
+      });
+      await act(async () => {
+        await flush();
+      });
+
+      const textarea = screen.getByPlaceholderText('Send message to worker... (Ctrl+Enter to send)') as HTMLTextAreaElement;
+      await act(async () => {
+        fireEvent.change(textarea, { target: { value: '/model foo' } });
+      });
+      await act(async () => {
+        fireEvent.keyDown(textarea, { key: 'Enter', ctrlKey: true });
+      });
+
+      const sent = (ws!.send.mock.calls as string[][] | undefined)?.map((c) => JSON.parse(c[0])) ?? [];
+      expect(sent.some((m) => m.type === 'embedded-user-message')).toBe(false);
+      expect(screen.getByRole('alert').textContent).toContain('/model is not a command for this agent; send as text?');
+    });
   });
 });
 

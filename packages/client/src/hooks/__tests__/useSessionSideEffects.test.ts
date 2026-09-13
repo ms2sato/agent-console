@@ -1,16 +1,17 @@
 import { describe, it, expect, mock, beforeEach, afterEach, spyOn } from 'bun:test';
-import { renderHook, act } from '@testing-library/react';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { renderHook, act, waitFor } from '@testing-library/react';
+import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query';
 import { createElement } from 'react';
 import type {
   Session,
   AgentActivityState,
+  Repository,
 } from '@agent-console/shared';
 import type { UseWorktreeCreationTasksReturn } from '../useWorktreeCreationTasks';
 import type { UseWorktreeDeletionTasksReturn } from '../useWorktreeDeletionTasks';
 import type { UseSessionStopTasksReturn, SessionStopTask } from '../useSessionStopTasks';
 import { useSessionSideEffects, worktreeInvalidationKeyFor } from '../useSessionSideEffects';
-import { worktreeKeys } from '../../lib/query-keys';
+import { worktreeKeys, repositoryKeys } from '../../lib/query-keys';
 import { clearDraftsForSession, _getDraftsMap } from '../useDraftMessage';
 import { _reset as resetWebSocket } from '../../lib/app-websocket';
 import { MockWebSocket, installMockWebSocket } from '../../test/mock-websocket';
@@ -481,5 +482,239 @@ describe('worktreeInvalidationKeyFor (Issue #1266)', () => {
 
     expect(() => worktreeInvalidationKeyFor(session)).not.toThrow();
     expect(worktreeInvalidationKeyFor(session)).toBeNull();
+  });
+});
+
+/**
+ * Tests for Issue #1643 PR-2's targeted `orchestrator-designation-changed`
+ * cache patch. This handler is registered directly on this always-mounted
+ * hook (not only on routes/index.tsx's onRepositoryUpdated), because
+ * ActiveSessionsSidebar -- which reads Repository.orchestratorSessionId to
+ * render the flag control -- is mounted unconditionally from __root.tsx on
+ * every route, not only the dashboard route.
+ */
+describe('useSessionSideEffects - orchestrator-designation-changed cache patch (Issue #1643)', () => {
+  let restoreWebSocket: () => void;
+  let originalLocation: Location;
+
+  beforeEach(() => {
+    originalLocation = window.location;
+    restoreWebSocket = installMockWebSocket();
+    Object.defineProperty(window, 'location', {
+      value: { protocol: 'http:', host: 'localhost:3000' },
+      writable: true,
+    });
+    resetWebSocket();
+  });
+
+  afterEach(() => {
+    restoreWebSocket();
+    Object.defineProperty(window, 'location', {
+      value: originalLocation,
+      writable: true,
+    });
+  });
+
+  function repository(overrides: Partial<Repository> = {}): Repository {
+    return {
+      id: 'repo-1',
+      name: 'repo-1',
+      path: '/path/to/repo-1',
+      createdAt: new Date().toISOString(),
+      orchestratorSessionId: null,
+      ...overrides,
+    } as Repository;
+  }
+
+  it('patches only the targeted repository, leaving the other repository object reference-equal', () => {
+    const options = createDefaultOptions();
+    const { queryClient } = renderWithQueryClient(options);
+
+    const repoA = repository({ id: 'repo-a', orchestratorSessionId: null });
+    const repoB = repository({ id: 'repo-b', orchestratorSessionId: 'old-session' });
+    queryClient.setQueryData(['repositories'], { repositories: [repoA, repoB] });
+
+    const ws = MockWebSocket.getLastInstance();
+    act(() => {
+      ws?.simulateOpen();
+      ws?.simulateMessage(
+        JSON.stringify({ type: 'orchestrator-designation-changed', repositoryId: 'repo-a', sessionId: 'session-new' })
+      );
+    });
+
+    const cached = queryClient.getQueryData<{ repositories: Repository[] }>(['repositories']);
+    expect(cached?.repositories.find((r) => r.id === 'repo-a')?.orchestratorSessionId).toBe('session-new');
+    // Untouched repository must be the SAME object reference, not just equal by value.
+    expect(cached?.repositories.find((r) => r.id === 'repo-b')).toBe(repoB);
+  });
+
+  it('sets orchestratorSessionId to null when the designation is cleared', () => {
+    const options = createDefaultOptions();
+    const { queryClient } = renderWithQueryClient(options);
+
+    const repoA = repository({ id: 'repo-a', orchestratorSessionId: 'session-old' });
+    queryClient.setQueryData(['repositories'], { repositories: [repoA] });
+
+    const ws = MockWebSocket.getLastInstance();
+    act(() => {
+      ws?.simulateOpen();
+      ws?.simulateMessage(
+        JSON.stringify({ type: 'orchestrator-designation-changed', repositoryId: 'repo-a', sessionId: null })
+      );
+    });
+
+    const cached = queryClient.getQueryData<{ repositories: Repository[] }>(['repositories']);
+    expect(cached?.repositories.find((r) => r.id === 'repo-a')?.orchestratorSessionId).toBeNull();
+  });
+
+  it('does not throw when no repositories query has ever been registered', () => {
+    // No Query object exists in the cache at all here (never fetched, never
+    // manually seeded) -- there is nothing to invalidate/refetch, so the
+    // cache correctly stays empty; a later mount fetches fresh data anyway.
+    // This is distinct from the in-flight-fetch race covered below.
+    const options = createDefaultOptions();
+    const { queryClient } = renderWithQueryClient(options);
+
+    const ws = MockWebSocket.getLastInstance();
+    expect(() => {
+      act(() => {
+        ws?.simulateOpen();
+        ws?.simulateMessage(
+          JSON.stringify({ type: 'orchestrator-designation-changed', repositoryId: 'repo-a', sessionId: 'session-new' })
+        );
+      });
+    }).not.toThrow();
+
+    expect(queryClient.getQueryData(repositoryKeys.all())).toBeUndefined();
+  });
+
+  it('forces a fresh refetch when the WS event arrives while an in-flight fetch has no data yet', async () => {
+    // Regression test for CodeRabbit finding (PR #1657): TanStack Query's
+    // `Query.fetch()` reuses an ALREADY-IN-FLIGHT request's promise whenever
+    // `state.data === undefined`, regardless of which QueryClient method
+    // triggers it. So a naive `setQueryData`/`invalidateQueries` call made
+    // while a first fetch is still pending can silently attach to that same
+    // request and resolve with its pre-update (stale) snapshot, dropping the
+    // designation change entirely once that fetch settles.
+    const options = createDefaultOptions();
+    const { queryClient } = renderWithQueryClient(options);
+    const queryKey = repositoryKeys.all();
+
+    const repoAStale = repository({ id: 'repo-a', orchestratorSessionId: null });
+    const repoAFresh = repository({ id: 'repo-a', orchestratorSessionId: 'session-new' });
+
+    let resolveFirstFetch: ((value: { repositories: Repository[] }) => void) | null = null;
+    const queryFn = mock(() => {
+      if (queryFn.mock.calls.length === 1) {
+        // First call: simulate ActiveSessionsSidebar's own useQuery having
+        // started a fetch that has not resolved yet.
+        return new Promise<{ repositories: Repository[] }>((resolve) => {
+          resolveFirstFetch = resolve;
+        });
+      }
+      // Any subsequent call is the forced fresh refetch and must see the
+      // server's already-applied change.
+      return Promise.resolve({ repositories: [repoAFresh] });
+    });
+
+    // Mount a real, actively-observed `useQuery` on the SAME query client,
+    // mirroring ActiveSessionsSidebar's own always-mounted query. This
+    // matters: `invalidateQueries`'s default `type: 'active'` refetch only
+    // matches queries with a live observer -- without one (e.g. a bare
+    // `queryClient.fetchQuery` call), the handler's chained invalidate/
+    // refetch would not actually wait on this in-flight fetch, and the test
+    // would not exercise the race it is meant to guard.
+    const queryWrapper = ({ children }: { children: React.ReactNode }) =>
+      createElement(QueryClientProvider, { client: queryClient }, children);
+    renderHook(() => useQuery({ queryKey, queryFn }), { wrapper: queryWrapper });
+
+    expect(queryClient.getQueryData(queryKey)).toBeUndefined();
+    expect(queryFn).toHaveBeenCalledTimes(1);
+
+    const ws = MockWebSocket.getLastInstance();
+    act(() => {
+      ws?.simulateOpen();
+      ws?.simulateMessage(
+        JSON.stringify({ type: 'orchestrator-designation-changed', repositoryId: 'repo-a', sessionId: 'session-new' })
+      );
+    });
+
+    // Settle the original in-flight fetch with its PRE-update snapshot --
+    // this is the race window the fix must survive.
+    await act(async () => {
+      resolveFirstFetch?.({ repositories: [repoAStale] });
+      await Promise.resolve();
+    });
+
+    await waitFor(() => {
+      expect(queryFn).toHaveBeenCalledTimes(2);
+    });
+    await waitFor(() => {
+      const cached = queryClient.getQueryData<{ repositories: Repository[] }>(queryKey);
+      expect(cached?.repositories.find((r) => r.id === 'repo-a')?.orchestratorSessionId).toBe('session-new');
+    });
+  });
+
+  it('forces a fresh refetch when the cache is populated but does not yet contain the targeted repository', async () => {
+    // Regression test for CodeRabbit finding (PR #1657, outside-diff-range): when
+    // the repositories cache IS populated but none of its entries have
+    // `id === repositoryId` (e.g. a repository registered after the cache was
+    // last populated), the `setQueryData` map callback finds no match and
+    // writes back an unchanged list -- silently dropping the designation
+    // change with no future correction. The fallback must force a fresh
+    // refetch -- but unlike the no-cache case below, this query is already
+    // populated and actively observed, so a single `refetchQueries` call is
+    // sufficient (a second CodeRabbit finding: chaining the no-cache case's
+    // invalidate-then-refetch dance here would fire a redundant extra
+    // request, since `invalidateQueries` already refetches an active query
+    // on its own).
+    const options = createDefaultOptions();
+    const { queryClient } = renderWithQueryClient(options);
+    const queryKey = repositoryKeys.all();
+
+    const repoB = repository({ id: 'repo-b', orchestratorSessionId: null });
+
+    const queryFn = mock(() => Promise.resolve({ repositories: [repoB] }));
+
+    // Mount a real, actively-observed `useQuery` on the SAME query client, for
+    // the same reason as the in-flight-fetch test above: `invalidateQueries`'s
+    // default `type: 'active'` refetch only matches queries with a live
+    // observer.
+    const queryWrapper = ({ children }: { children: React.ReactNode }) =>
+      createElement(QueryClientProvider, { client: queryClient }, children);
+    renderHook(() => useQuery({ queryKey, queryFn }), { wrapper: queryWrapper });
+
+    await waitFor(() => {
+      expect(queryClient.getQueryData<{ repositories: Repository[] }>(queryKey)).toEqual({ repositories: [repoB] });
+    });
+    expect(queryFn).toHaveBeenCalledTimes(1);
+
+    const ws = MockWebSocket.getLastInstance();
+    act(() => {
+      ws?.simulateOpen();
+      ws?.simulateMessage(
+        JSON.stringify({ type: 'orchestrator-designation-changed', repositoryId: 'repo-a', sessionId: 'session-new' })
+      );
+    });
+
+    // A direct `setQueryData` patch would have silently no-op'd here (no
+    // `repo-a` entry to map over); the fix must instead trigger a fresh
+    // refetch, evidenced by a second `queryFn` call.
+    await waitFor(() => {
+      expect(queryFn).toHaveBeenCalledTimes(2);
+    });
+
+    // Unlike the no-cache/in-flight-fetch case above, this query is already
+    // populated and actively observed, so the fallback must issue a single
+    // direct `refetchQueries` call rather than chaining `invalidateQueries`
+    // (whose default `type: 'active'` already triggers its own refetch of
+    // this observed query) into a second explicit `refetchQueries` call.
+    // Flush past the point where that redundant second request would have
+    // resolved, and confirm the count never moves past the one post-event
+    // fetch already observed above.
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    });
+    expect(queryFn).toHaveBeenCalledTimes(2);
   });
 });

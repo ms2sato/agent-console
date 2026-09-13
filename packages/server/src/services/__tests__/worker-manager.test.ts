@@ -503,11 +503,22 @@ describe('WorkerManager', () => {
       expect(mockPty.writtenData).toContain('ls -la\r');
     });
 
-    it('should return false when PTY is not active', () => {
+    it('should return false (not throw) when PTY is not active', () => {
+      // Regression pin (Issue #1652): two call sites now implicitly depend
+      // on this no-throw-on-null-pty contract -- WritePtyNotificationParams
+      // .writeInput's `void` return type means AgentWorkerHandler.handle()
+      // never observes a `false` return here, and
+      // canDeliverToAgentWorker()'s correctness (inbound/handlers.ts) rests
+      // on "an agent worker existing is the actual delivery-success
+      // condition" rather than "and its pty is live". If this ever started
+      // throwing instead of returning false, both would break silently.
       const worker = createTestTerminalWorker();
       // Worker not activated -- pty is null
 
-      const result = workerManager.writeInput(worker, 'hello');
+      let result: boolean | undefined;
+      expect(() => {
+        result = workerManager.writeInput(worker, 'hello');
+      }).not.toThrow();
 
       expect(result).toBe(false);
     });
@@ -1541,6 +1552,101 @@ describe('WorkerManager', () => {
         expect(publicWorker.type).toBe('embedded-agent');
         if (publicWorker.type === 'embedded-agent') {
           expect(publicWorker.contextWindowTokens).toBeUndefined();
+        }
+      });
+    });
+
+    describe('model / reasoningEffort / hasParameterOverride (agent-surface.md Phase 3)', () => {
+      function buildTestDefinition(model: string): EmbeddedAgentDefinition {
+        return {
+          id: 'def-1',
+          name: 'Test Def',
+          engine: 'openai-api',
+          provider: { baseUrl: 'http://localhost:11434/v1', model, apiKeyRef: 'openai' },
+          isBuiltIn: false,
+          createdBy: 'user-1',
+          createdAt: '2026-01-01T00:00:00.000Z',
+          updatedAt: '2026-01-01T00:00:00.000Z',
+        };
+      }
+
+      function buildWorkerManagerWithDefinition(model: string): WorkerManager {
+        return new WorkerManager(
+          new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' }),
+          agentManager,
+          new WorkerOutputFileManager(),
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          (id) => (id === 'def-1' ? buildTestDefinition(model) : undefined),
+        );
+      }
+
+      it("carries the definition's model onto the public shape when the worker has no override", () => {
+        const wm = buildWorkerManagerWithDefinition('qwen3:32b');
+        const worker = buildInternalEmbeddedAgentWorker({ id: 'pub-mp-def', embeddedAgentId: 'def-1' });
+
+        const publicWorker = wm.toPublicWorker(worker);
+
+        expect(publicWorker.type).toBe('embedded-agent');
+        if (publicWorker.type === 'embedded-agent') {
+          expect(publicWorker.model).toBe('qwen3:32b');
+          expect(publicWorker.reasoningEffort).toBeNull();
+          expect(publicWorker.hasParameterOverride).toBe(false);
+        }
+      });
+
+      it("carries the WORKER's override onto the public shape, and flags it as an override", () => {
+        const wm = buildWorkerManagerWithDefinition('qwen3:32b');
+        const worker = buildInternalEmbeddedAgentWorker({
+          id: 'pub-mp-override',
+          embeddedAgentId: 'def-1',
+          model: 'gpt-5-codex',
+          reasoningEffort: 'high',
+          contextWindowTokens: 200_000,
+        });
+
+        const publicWorker = wm.toPublicWorker(worker);
+
+        expect(publicWorker.type).toBe('embedded-agent');
+        if (publicWorker.type === 'embedded-agent') {
+          expect(publicWorker.model).toBe('gpt-5-codex');
+          expect(publicWorker.reasoningEffort).toBe('high');
+          expect(publicWorker.hasParameterOverride).toBe(true);
+        }
+      });
+
+      it('yields model: undefined when the definition lookup misses AND the worker has no override', () => {
+        // Same reach argument as the contextWindowTokens miss case above:
+        // absence is the wire's UNKNOWN, never a substituted default. A
+        // control that edits the model keys off exactly this.
+        const worker = buildInternalEmbeddedAgentWorker({ id: 'pub-mp-miss', embeddedAgentId: 'def-1' });
+
+        const publicWorker = workerManager.toPublicWorker(worker);
+
+        expect(publicWorker.type).toBe('embedded-agent');
+        if (publicWorker.type === 'embedded-agent') {
+          expect(publicWorker.model).toBeUndefined();
+          expect(publicWorker.reasoningEffort).toBeNull();
+          expect(publicWorker.hasParameterOverride).toBe(false);
+        }
+      });
+
+      it("still yields the worker's own model when the definition lookup misses", () => {
+        const worker = buildInternalEmbeddedAgentWorker({
+          id: 'pub-mp-miss-override',
+          embeddedAgentId: 'def-1',
+          model: 'gpt-5-codex',
+        });
+
+        const publicWorker = workerManager.toPublicWorker(worker);
+
+        expect(publicWorker.type).toBe('embedded-agent');
+        if (publicWorker.type === 'embedded-agent') {
+          expect(publicWorker.model).toBe('gpt-5-codex');
+          expect(publicWorker.hasParameterOverride).toBe(true);
         }
       });
     });

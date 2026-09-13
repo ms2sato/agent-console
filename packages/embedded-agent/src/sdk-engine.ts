@@ -30,10 +30,15 @@ import {
   type SDKUserMessage,
   type SpawnedProcess,
   type SpawnOptions,
+  type SyncHookJSONOutput,
 } from '@anthropic-ai/claude-agent-sdk';
 import { spawn } from 'node:child_process';
+import * as v from 'valibot';
+import { z } from 'zod';
 import {
   DEFAULT_EMBEDDED_AGENT_ENABLED_TOOLS,
+  SDK_TODO_WRITE_TOOL_NAME,
+  type EmbeddedAgentAttachment,
   type EmbeddedAgentEvent,
   type EmbeddedAgentToolName,
 } from '@agent-console/shared';
@@ -42,7 +47,16 @@ import {
   COMPACT_TOOL_NAME,
   COMPACT_TOOL_SCHEDULED_RESULT,
 } from './compact-tool.js';
-import type { Engine } from './engine-types.js';
+import { resolveImageAttachments, buildClaudeSdkUserContent } from './attachment-content.js';
+import type { ClaudeSdkEngine, Engine } from './engine-types.js';
+import type { RuleActivatorLike } from './rule-activation.js';
+import {
+  TodoWriteArgsSchema,
+  TODO_WRITE_TOOL_DESCRIPTION,
+  TODO_WRITE_TOOL_NAME,
+  summarize as summarizeTodos,
+  type TodoItem,
+} from './tools/todo-write.js';
 
 type SystemInitMessage = Extract<SDKMessage, { type: 'system'; subtype: 'init' }>;
 type CompactBoundaryMessage = Extract<SDKMessage, { type: 'system'; subtype: 'compact_boundary' }>;
@@ -147,9 +161,20 @@ export const SDK_COMPACT_TOOL_NAME = `mcp__${COMPACT_TOOL_SERVER_NAME}__${COMPAC
  *
  * A conversation too short to compact is answered with an ordinary assistant
  * refusal ("Not enough messages to compact.") and NO boundary. That is a
- * result, not a failure: the refusal is visible in the transcript where the
- * user can read it, and treating a missing boundary as "the command does not
- * exist" would be exactly the wrong inference.
+ * result, not a failure: treating a missing boundary as "the command does
+ * not exist" would be exactly the wrong inference.
+ *
+ * **This comment used to claim "the refusal is visible in the transcript
+ * where the user can read it" -- that was FALSE until Finding #1 (#1572).**
+ * This decline is a SYNTHETIC SDK reply (`model: "<synthetic>"`, no real API
+ * call), and a synthetic reply arrives with NO `stream_event` at all -- no
+ * delta, no `message_stop`, so `emitAssistantMessage`'s ordinary "always
+ * emit" path never ran and the refusal was silently dropped: the user's own
+ * `/compact` line appeared in the transcript, then nothing. It is true now
+ * because `handleAssistantMessage`'s fallback (guarded by `sawTextDelta`,
+ * see that field's doc comment) emits an `assistant-message` for any
+ * `assistant` SDKMessage carrying text that never streamed a delta -- which
+ * is exactly this decline's shape.
  */
 const COMPACT_SLASH_COMMAND = '/compact';
 
@@ -165,6 +190,77 @@ export function createSdkCompactTool(onReserve: () => void) {
   return tool(COMPACT_TOOL_NAME, COMPACT_TOOL_DESCRIPTION, {}, async () => {
     onReserve();
     return { content: [{ type: 'text' as const, text: COMPACT_TOOL_SCHEDULED_RESULT }] };
+  });
+}
+
+/**
+ * Builds the `TodoWrite` tool definition for the in-process SDK MCP server:
+ * serves the SAME contract `createTodoWriteTool()` implements
+ * for the openai-api engine (`./tools/todo-write.js`), because the SDK's own
+ * native `TodoWrite` was measured absent from the resolved CLI's reported
+ * tool catalog (docs/design/embedded-agent-sdk-engine.md §4.1/§5.2) -- unlike
+ * `Read`/`Glob`/`Grep`, this name does not reach the model merely by
+ * appearing in `tools:`.
+ *
+ * `inputSchema` mirrors `TodoWriteArgsSchema`'s TOP-LEVEL shape only --
+ * `todos` is an array of objects with `content`/`status`/`activeForm` keys
+ * -- and stays maximally permissive at the LEAF level, where every field is
+ * `z.unknown()`. This split is deliberate, not an oversight: the SDK
+ * converts this zod shape into the JSON Schema it advertises to the model
+ * (via its own MCP tool-catalog machinery), and a bare `z.unknown()` at the
+ * top level gives the model no signal that `todos` must be a real array --
+ * measured live (#1575): a real `claude-sdk-builtin` worker, given no
+ * type hint, consistently sent `todos` as a JSON-*stringified* array
+ * instead of a native one, across six consecutive attempts, and never
+ * completed a single successful call. `z.array(z.object({...}))` fixes
+ * that by advertising the correct top-level structure.
+ *
+ * The leaf fields stay `z.unknown()` so this is NOT a re-declaration of
+ * `TodoWriteArgsSchema`'s full validation semantics in zod: zod-level
+ * parsing runs BEFORE the handler and would reject or reshape a malformed
+ * payload with its OWN error wording if it validated leaf content too,
+ * which would make a malformed call fail with different text than the
+ * openai-api engine's builtin gives for the identical input. A wrong
+ * `status` enum value, a missing key, or a wrong leaf type all still reach
+ * the handler unmodified and are rejected there by the SAME
+ * `v.safeParse(TodoWriteArgsSchema, ...)` call below, mirroring
+ * `todo-write.ts`'s `execute()` body -- so CONTENT-level malformed input
+ * still fails with parity text. Only a STRUCTURAL violation (`todos` not an
+ * array at all -- a string, a number, missing entirely) is now caught one
+ * layer earlier, by the SDK's own MCP protocol-level schema rejection,
+ * before the handler ever runs; that is a different, earlier failure mode
+ * than the handler's parity-checked one, not a regression.
+ *
+ * State (`todos`) lives in this factory's own closure, per-incarnation only
+ * -- the same shape `createTodoWriteTool()` uses, and for the same reason (a
+ * fresh subprocess must start with an empty list). Nothing currently reads
+ * this closure variable back out; kept anyway for parity with the
+ * openai-api builtin's own shape rather than dropped as unused state.
+ */
+export function createSdkTodoWriteTool() {
+  let todos: TodoItem[] = [];
+
+  const inputSchema = {
+    todos: z.array(
+      z.object({
+        content: z.unknown(),
+        status: z.unknown(),
+        activeForm: z.unknown(),
+      }),
+    ),
+  };
+
+  return tool(TODO_WRITE_TOOL_NAME, TODO_WRITE_TOOL_DESCRIPTION, inputSchema, async (args) => {
+    const parsed = v.safeParse(TodoWriteArgsSchema, args);
+    if (!parsed.success) {
+      return {
+        content: [{ type: 'text' as const, text: parsed.issues.map((issue) => issue.message).join('; ') }],
+        isError: true,
+      };
+    }
+    // Full replace, not merge -- mirrors todo-write.ts's execute().
+    todos = parsed.output.todos;
+    return { content: [{ type: 'text' as const, text: summarizeTodos(todos) }] };
   });
 }
 
@@ -283,6 +379,24 @@ export interface SdkEngineDeps {
   queryFn?: typeof query;
   /** DI seam for tests: the H2 retry-with-settle delay. Defaults to a real setTimeout-based sleep. */
   sleep?: (ms: number) => Promise<void>;
+  /**
+   * Message-attachment resolution: confinement roots an attachment
+   * path must resolve under before its bytes are read into a content block.
+   * Absent/empty = no extra roots, matching pre-existing behavior for a turn
+   * with no attachments.
+   */
+  attachmentRoots?: string[];
+  /**
+   * Lazy scoped-rule activation (#1343 Phase B, claude-sdk slice): the SAME
+   * `RuleActivator` instance the openai-api engine's `CompositeToolExecutor`
+   * uses (rule-activation.ts's doc comment, "R1: One activator, two
+   * adapters") -- this engine's `PostToolUse` hook (see `buildOptions`) is
+   * the SDK arm's only consumer of it. Required, not optional: main.ts
+   * always constructs one (even when `scopedRules` is empty, in which case
+   * `matchScopedRules` simply never matches anything), so there is no
+   * legitimate "no activator" case to default around.
+   */
+  ruleActivator: RuleActivatorLike;
 }
 
 /**
@@ -290,7 +404,8 @@ export interface SdkEngineDeps {
  * docs/design/embedded-agent-sdk-engine.md Appendix A for the per-event
  * mapping this class implements in `handleMessage` and its helpers.
  */
-export class SdkEngine implements Engine {
+export class SdkEngine implements ClaudeSdkEngine {
+  readonly kind = 'claude-sdk' as const;
   private readonly deps: SdkEngineDeps;
   private readonly queryFn: typeof query;
   private readonly sleep: (ms: number) => Promise<void>;
@@ -303,6 +418,69 @@ export class SdkEngine implements Engine {
   private iterationText = '';
   private currentTurnDeferred: { resolve: () => void } | null = null;
   private dead = false;
+  /**
+   * Serializes {@link setModelParams}'s live writes. See that method's doc
+   * comment for why arrival order has to be preserved; the chain itself is
+   * just "each link starts only after the previous one SETTLES".
+   */
+  private modelParamsChain: Promise<void> = Promise.resolve();
+  /**
+   * Set by `cancel()` when a `runTurn` with attachments is still awaiting
+   * `resolveImageAttachments` -- at that point nothing has been pushed onto
+   * `queue` yet, so `query.interrupt()` has nothing live to interrupt, and
+   * without this flag the pending push would land on the queue anyway once
+   * the resolve settles, silently swallowing the cancel. Reset at the top of
+   * every `runTurn` so a stale flag from a PREVIOUS turn's cancel can never
+   * affect a new one.
+   */
+  private turnCanceledBeforeAttachmentPush = false;
+
+  /**
+   * Finding #1 (#1572): has a real `content_block_delta` `text_delta`
+   * arrived for the assistant response currently in flight? A SYNTHETIC
+   * local-command reply (e.g. `/compact`'s "too short to compact" decline)
+   * never streams any `stream_event` at all -- so `message_stop` never
+   * fires, `emitAssistantMessage` (the ordinary "always emit, even empty"
+   * path) never runs, and the reply would otherwise be silently dropped:
+   * the user's own `/compact` line appears in the transcript, then
+   * nothing. `handleAssistantMessage`'s fallback below is the only place
+   * this text ever reaches the transcript.
+   *
+   * Reset happens ONLY in `handleAssistantMessage`, unconditionally, right
+   * after the fallback check -- deliberately NOT in `emitAssistantMessage`
+   * (the `message_stop` handler). `handleAssistantMessage`'s own doc
+   * comment documents an observed race for `tool_use` blocks: their
+   * `assistant` SDKMessage can arrive before OR AFTER `message_stop`'s own
+   * `assistant-message` emit. Nothing rules out the same race for the TEXT
+   * block's `assistant` SDKMessage. If `emitAssistantMessage` reset this
+   * flag at `message_stop` and the text block's own message arrived later,
+   * the fallback would fire a second time and double-emit text already
+   * delivered via the delta path.
+   *
+   * Resetting only in `handleAssistantMessage` is safe because that method
+   * fires at least once per iteration (one `assistant` SDKMessage per
+   * completed content block, and every response has at least one block):
+   * by the time the NEXT iteration's own deltas could start, this
+   * iteration's flag has already been cleared by its own last
+   * `handleAssistantMessage` call. See the required pins in
+   * `__tests__/sdk-engine.test.ts` for the polarity/no-double-emit
+   * measurements this reasoning rests on.
+   *
+   * Architect review, #1584 (F3): does the per-`assistant`-SDKMessage
+   * reset double-emit `assistant-message` on a TOOL-USING turn, where
+   * multiple `assistant` SDKMessages arrive within one turn (one per
+   * completed content block)? Measured against
+   * `__tests__/__fixtures__/tool-turn-real-sequence.ndjson` -- 37 real
+   * `SDKMessage`s captured from two live tool-using turns against the actual
+   * claude-sdk engine (a real `Read` tool call): each `assistant` SDKMessage's
+   * `.content` array contains ONLY the block(s) for that specific occurrence
+   * (thinking-only, text-only, or tool_use-only) -- never cumulative. Across
+   * that real sequence, exactly two `assistant-message` events are produced
+   * (one per `message_stop` boundary, matching the two real turns), and
+   * exactly one `tool-call` event -- no double-emission. Pinned by
+   * `__tests__/sdk-engine.test.ts`'s "Finding #3 (#1584)" describe block.
+   */
+  private sawTextDelta = false;
 
   /**
    * Transcript Restore, R1: has this query ever reported a `system:init`?
@@ -399,7 +577,30 @@ export class SdkEngine implements Engine {
       // member of `enabledToolNames`: it is a self-management tool, outside
       // the capability registry `enabledTools` configures, so no
       // representable definition can remove it (see compact-tool.ts).
-      tools: [...this.enabledToolNames, SDK_COMPACT_TOOL_NAME],
+      //
+      // Measured (pinned SDK 0.3.238): a name in this array that the
+      // resolved CLI does not recognize/support is silently DROPPED, not
+      // rejected -- `query()` neither throws nor errors, it just omits the
+      // name from what it actually enables. `TodoWrite` is one such name on
+      // this pin: `tools: ['TodoWrite', 'Bash']` yields a `system:init`
+      // catalog of `['Bash']` only, confirmed against positive controls
+      // (`['Bash']` and `['Read','Glob','Grep']` both report back correctly).
+      // There is no separate acceptance signal for this array -- the catalog
+      // the CLI actually accepted is observable ONLY via what `system:init`
+      // reports back (see `handleSystemInit`'s `reportedNonMcp` warn below).
+      //
+      // `TodoWrite`: unlike `Compact`, this is a real
+      // capability tool governed by `enabledTools` -- its MCP-namespaced
+      // name is appended ONLY when `TodoWrite` is itself enabled, and the
+      // bare `'TodoWrite'` name (already present via `...this.enabledToolNames`
+      // when enabled) stays in the array too, deliberately: a future SDK
+      // build that starts natively recognizing it would still be caught by
+      // `handleSystemInit`'s existing warn below.
+      tools: [
+        ...this.enabledToolNames,
+        SDK_COMPACT_TOOL_NAME,
+        ...(this.allowedToolNames.has('TodoWrite') ? [SDK_TODO_WRITE_TOOL_NAME] : []),
+      ],
       mcpServers: {
         'agent-console': {
           type: 'http',
@@ -413,9 +614,17 @@ export class SdkEngine implements Engine {
         // SDK namespaces it, so the model sees `mcp__console__Compact` while
         // the openai-api engine's model sees plain `Compact`; the contract
         // (no parameters, reservation semantics, result wording) is identical.
+        //
+        // `TodoWrite` rides the SAME server, registered only
+        // when the definition's `enabledTools` includes it -- unlike
+        // `Compact`, a disabled `TodoWrite` must not even be reachable, so
+        // registration is gated the same way the allowlist entry above is.
         [COMPACT_TOOL_SERVER_NAME]: createSdkMcpServer({
           name: COMPACT_TOOL_SERVER_NAME,
-          tools: [createSdkCompactTool(() => this.reserveCompaction())],
+          tools: [
+            createSdkCompactTool(() => this.reserveCompaction()),
+            ...(this.allowedToolNames.has('TodoWrite') ? [createSdkTodoWriteTool()] : []),
+          ],
         }),
       },
       permissionMode: 'bypassPermissions',
@@ -425,7 +634,18 @@ export class SdkEngine implements Engine {
       // Compaction: the SDK's own auto-compaction IS this engine's automatic
       // compaction; the worker's toggle drives it directly rather than
       // through any machinery of ours.
-      settings: { autoCompactEnabled: this.autoCompaction },
+      //
+      // Auto-memory disabled on this arm: per the ruling in
+      // docs/design/embedded-agent-sdk-engine.md section 4.1 (the second
+      // member of the account-scoped context class), the SDK's own
+      // project-scoped MEMORY.md read channel is not this engine's
+      // continuity mechanism -- it is claude-sdk-only, keyed by cwd (an
+      // Orchestrator working across worktrees would fragment its memory per
+      // worktree), lives in the OS user's own ~/.claude (unreachable across
+      // users in multi-user mode), and would be a second, unmaintained
+      // index in front of our own memory. Measured on SDK 0.3.238: the SDK
+      // loads the project-scoped MEMORY.md at turn start and never writes.
+      settings: { autoCompactEnabled: this.autoCompaction, autoMemoryEnabled: false },
       // The `PostCompact` hook is the only path that carries the summary
       // text; the `compact_boundary` message on the iterator carries the
       // token counts but not the words. Both are needed for one marker --
@@ -443,6 +663,43 @@ export class SdkEngine implements Engine {
             ],
           },
         ],
+        // Lazy scoped-rule activation (#1343 Phase B, claude-sdk slice): Task
+        // 0's probe (scripts/smoke/probe-sdk-post-tool-use-context.ts) proved
+        // a `PostToolUse` hook's `additionalContext` reaches the model on
+        // this SDK build, at sizes well past this codebase's own
+        // RULES_LAYER_CAP_BYTES budget (~48KB observed, no ceiling found) --
+        // per the Architect's binding ruling, there is NO separate hook-size
+        // threshold here; `RuleActivator.activate`'s own budget check (see
+        // rule-activation.ts) is the only size gating that exists, identical
+        // to the openai-api engine's `CompositeToolExecutor` path.
+        //
+        // No `matcher` field -- filtering by tool name happens INSIDE the
+        // callback via `RuleActivator.matchScopedRules` itself (which
+        // already returns `[]` for any non-path-typed tool name), the same
+        // way the `PostCompact` hook above has no matcher and filters via
+        // `input.hook_event_name === 'PostCompact'` instead. The vendored
+        // `sdk.d.ts`'s `HookCallbackMatcher.matcher` field has no documented
+        // multi-tool-name syntax, so relying on `RuleActivator`'s own
+        // name-keyed lookup -- already the single source of truth for "which
+        // tools can match" (see rule-activation.ts's R3) -- is more robust
+        // than guessing a matcher string format.
+        PostToolUse: [
+          {
+            hooks: [
+              async (input): Promise<SyncHookJSONOutput> => {
+                if (input.hook_event_name !== 'PostToolUse') return { continue: true };
+                const matched = this.deps.ruleActivator.matchScopedRules(input.tool_name, input.tool_input);
+                if (matched.length === 0) return { continue: true };
+                const activation = await this.deps.ruleActivator.activate(matched);
+                if (activation === null) return { continue: true };
+                return {
+                  continue: true,
+                  hookSpecificOutput: { hookEventName: 'PostToolUse', additionalContext: activation.text },
+                };
+              },
+            ],
+          },
+        ],
       },
       spawnClaudeCodeProcess,
       // Transcript Restore, R1: present iff the deps carried one. The
@@ -456,7 +713,7 @@ export class SdkEngine implements Engine {
     };
   }
 
-  async runTurn(id: string, text: string): Promise<void> {
+  async runTurn(id: string, text: string, attachments?: EmbeddedAgentAttachment[]): Promise<void> {
     if (this.dead) {
       this.deps.emit({
         v: 1,
@@ -467,10 +724,44 @@ export class SdkEngine implements Engine {
     }
     this.currentTurnId = id;
     this.iterationText = '';
+    this.turnCanceledBeforeAttachmentPush = false;
     this.deps.emit({ v: 1, type: 'state', state: 'active' });
+
+    // A turn with no attachments must keep pushing onto the queue
+    // SYNCHRONOUSLY, before any await -- callers rely on observing the push
+    // immediately after calling `runTurn`, before the next synchronous
+    // statement runs (see "sends /compact at the turn boundary, never
+    // mid-turn" in sdk-engine.test.ts). Attachment resolution needs real fs
+    // work and is unavoidably async, so that path pushes later -- but
+    // `currentTurnDeferred` is installed synchronously in BOTH branches,
+    // before any await, so a `result` message the background consumer
+    // observes for this turn always has somewhere to resolve into, even if
+    // it arrives before the (still-resolving) attachment content is pushed.
+    if (attachments === undefined || attachments.length === 0) {
+      return new Promise<void>((resolve) => {
+        this.currentTurnDeferred = { resolve };
+        this.queue.push({ type: 'user', message: { role: 'user', content: text }, parent_tool_use_id: null });
+      });
+    }
     return new Promise<void>((resolve) => {
       this.currentTurnDeferred = { resolve };
-      this.queue.push({ type: 'user', message: { role: 'user', content: text }, parent_tool_use_id: null });
+      void (async () => {
+        const resolved = await resolveImageAttachments(attachments, this.deps.attachmentRoots ?? []);
+        // A cancel that lands while the resolve above was still pending has
+        // nothing live on `query` to interrupt (nothing was pushed yet), so
+        // `cancel()` records it here instead. Without this check the push
+        // below would still land on the queue and the SDK would process the
+        // (should-have-been-canceled) message as an ordinary turn.
+        if (this.turnCanceledBeforeAttachmentPush) {
+          this.turnCanceledBeforeAttachmentPush = false;
+          this.deps.emit({ v: 1, type: 'turn-error', turnId: this.requireTurnId(), message: 'turn canceled' });
+          this.deps.emit({ v: 1, type: 'state', state: 'idle' });
+          this.settlePendingTurn();
+          return;
+        }
+        const content = buildClaudeSdkUserContent(text, resolved);
+        this.queue.push({ type: 'user', message: { role: 'user', content }, parent_tool_use_id: null });
+      })();
     });
   }
 
@@ -500,12 +791,137 @@ export class SdkEngine implements Engine {
     });
   }
 
+  /**
+   * agent-surface.md Phase 3: apply a mid-run model / reasoning-effort /
+   * context-window change to the LIVE SDK session (see
+   * `Engine.setModelParams` for the full-state, never-a-delta contract).
+   *
+   * Both parameters apply live on this engine, measured against the pinned
+   * SDK: `setModel` changes the model for subsequent responses in
+   * streaming-input mode (which this engine uses), and `applyFlagSettings`
+   * overrides a query-time `Options.effort` mid-session. Neither needs a
+   * restart, so no caller has to model one.
+   *
+   * `contextWindowTokens` has nothing to apply HERE and is deliberately not
+   * stored: this engine never passes a window into `query()` (the SDK owns
+   * its own compaction), and the gauge's denominator is composed
+   * server-side from the persisted row, which was written before this
+   * command was sent. It is carried in the payload because the command is
+   * full-state for both engines, not because this one drops it by oversight.
+   *
+   * Local state is updated FIRST, like {@link setAutoCompaction}, so a later
+   * reconstruction composes the current values even if the live write fails.
+   * Unlike that toggle this reports an honest `applied`, so both writes are
+   * awaited before the event is emitted -- and `applied: false` never means
+   * "not saved": the persisted row stays the truth and a later activation
+   * reads the requested values from it.
+   *
+   * SERIALIZED per engine, which is all this method itself does: each call
+   * is appended to {@link modelParamsChain}, and its work starts only once
+   * the previous call's has SETTLED. Two commands arriving in quick
+   * succession each run two awaited live writes, so without the chain they
+   * can interleave -- `A.setModel`, `B.setModel`, `B.applyFlagSettings`,
+   * `A.applyFlagSettings` -- leaving the live session on the EARLIER call's
+   * effort. "The persisted row is the truth and the next activation
+   * converges" does not rescue that: an idle-evicted or long-lived session
+   * can run on stale LIVE values for hours before any activation re-reads
+   * the row, and the stream would meanwhile report `applied: true` for the
+   * update that LOST the race -- making this event's one job, honest
+   * reporting, itself false. Ordering is pinned by the two ordering tests in
+   * `sdk-engine.test.ts` ("applies two rapid changes in call order ..." and
+   * its poisoning sibling).
+   *
+   * Each link emits its OWN event and swallows its OWN failure, so a failed
+   * apply never poisons the chain for the calls behind it.
+   *
+   * {@link dispose} deliberately does NOT drain the chain: a link that runs
+   * after the session is gone finds `this.dead` set inside
+   * {@link applyModelParamsOnce} and reports `applied: false` without
+   * touching the SDK -- the same answer a drain would have produced, with no
+   * shutdown-ordering guarantee needed to reach it.
+   */
+  setModelParams(params: {
+    model: string;
+    reasoningEffort: string | null;
+    contextWindowTokens: number | null;
+  }): void {
+    this.modelParamsChain = this.modelParamsChain
+      .then(() => this.applyModelParamsOnce(params))
+      .catch(() => {
+        // `applyModelParamsOnce` handles its own failures, so reaching here
+        // means something outside the live writes threw (an `emit` consumer,
+        // say). Swallowed rather than left to propagate for one reason: a
+        // rejected `modelParamsChain` rejects every link appended to it
+        // afterwards WITHOUT running its body, which would silently drop
+        // every later parameter change for the life of the engine.
+      });
+  }
+
+  /**
+   * One {@link setModelParams} call's work -- the body that method had
+   * before it became a chain link, moved verbatim. The `this.dead` check
+   * stays HERE, at execution time, which is what lets a chain outlive its
+   * session safely (see {@link setModelParams} on why `dispose` need not
+   * drain).
+   */
+  private async applyModelParamsOnce(
+    params: Parameters<Engine['setModelParams']>[0],
+  ): Promise<void> {
+    // `EffortLevel` is a closed domain and the wire field is `string | null`
+    // (one command shape serves both engines). The narrowing is sound
+    // WITHOUT a re-check here for the same reason `SdkEngineDeps.effort`
+    // needs none: the server's shared parameter validator has already
+    // checked the value against the capability table's `acceptedValues`
+    // before the command was written. `null` is preserved, not widened away
+    // -- it is the value that CLEARS the flag layer below.
+    const effortLevel = params.reasoningEffort as EffortLevel | null;
+    this.deps.model = params.model;
+    this.deps.effort = effortLevel ?? undefined;
+    if (this.dead) {
+      // No live session to write to. The durable value is already persisted
+      // server-side and is read at the next activation, so this is "not
+      // live", never "not saved".
+      this.deps.emit({ v: 1, type: 'model-params-applied', applied: false });
+      return;
+    }
+    try {
+      await this.query.setModel(params.model);
+      // `null`, NOT `undefined`: the SDK documents that `undefined` is
+      // dropped by JSON serialization and has no effect, while `null`
+      // clears the key from the flag layer and falls back to
+      // lower-precedence sources. Translating "no override" to `undefined`
+      // here would be a silent no-op that leaves a previously-set effort
+      // in place.
+      await this.query.applyFlagSettings({ effortLevel });
+      this.deps.emit({ v: 1, type: 'model-params-applied', applied: true });
+    } catch (err: unknown) {
+      // A HALF-LANDED change reports `applied: false` here: `setModel`
+      // above may have succeeded and only `applyFlagSettings` thrown, in
+      // which case the live session now carries the new model but the old
+      // effort. That is honest at this event's granularity, which is the
+      // whole triple and not a per-parameter report -- the triple did not
+      // land. It is also not a state worth unwinding: the persisted row
+      // already holds the requested values, so the next activation
+      // composes all of them and converges. Reporting `true` because one
+      // half took would be the misleading answer.
+      console.warn(
+        `[sdk-engine] failed to apply model=${params.model} effortLevel=${String(effortLevel)} ` +
+          `to the live session; the persisted values take effect at the next activation: ${errorMessage(err)}`,
+      );
+      this.deps.emit({ v: 1, type: 'model-params-applied', applied: false });
+    }
+  }
+
   cancel(): void {
     // Compaction: a `Compact` booked during the turn being canceled is
     // discarded. Cancel means "stop what you were doing", and the tool call
     // was part of what was being done.
     this.pendingCompactCommand = false;
     if (this.dead) return;
+    // See `turnCanceledBeforeAttachmentPush`'s doc comment: this covers the
+    // window where an attachment-bearing turn has not pushed anything onto
+    // `query` yet, so `interrupt()` below has nothing live to act on.
+    this.turnCanceledBeforeAttachmentPush = true;
     void this.query.interrupt().catch(() => {
       // Best-effort: the pending turn's eventual settlement happens via the
       // `result` message the interrupt triggers (or, on transport failure,
@@ -586,6 +1002,26 @@ export class SdkEngine implements Engine {
       case 'result':
         await this.handleResult(message);
         return;
+      /**
+       * Finding #2 (#1572): `/clear` (and plan-mode exit / fresh-session
+       * flows) is honoured by the SDK -- it emits this TOP-LEVEL message
+       * type (not a `system` subtype), resetting the SDK's OWN conversation
+       * state. Our persisted transcript has no matching reset, so the SDK's
+       * memory would silently diverge from what the console displays with
+       * nothing declared -- which is exactly why `/clear` is deliberately
+       * excluded from `EMBEDDED_AGENT_SLASH_COMMANDS` (never offered by
+       * completion). This engine forwards ANY text unconditionally, so a
+       * user can still type `/clear` -- this case makes the consequence
+       * visible (a `turn-error`) instead of silent.
+       */
+      case 'conversation_reset':
+        this.deps.emit({
+          v: 1,
+          type: 'turn-error',
+          turnId: this.requireTurnId(),
+          message: "SDK conversation was reset; the transcript above is no longer the model's memory",
+        });
+        return;
       default:
         // Every other SDKMessage type (rate_limit_event, hook/task/
         // notification/etc. system subtypes, ...) has no native counterpart
@@ -622,6 +1058,21 @@ export class SdkEngine implements Engine {
     // check (docs/design/embedded-agent-sdk-engine.md §4.1) -- only the
     // SDK's own withheld BUILTIN tools (WebFetch/WebSearch/Task) are.
     const reportedNonMcp = message.tools.filter((name) => !name.startsWith('mcp__'));
+
+    // Observability for the measured drop noted in buildOptions()'s
+    // `tools:` comment: logged only when this session actually requested
+    // `TodoWrite`, so a future dogfood run's stderr surfaces for free whether
+    // the pinned SDK has started reporting it back -- no dedicated probe
+    // script needed to notice a change here.
+    //
+    // Must use console.warn, never console.info/console.log: this
+    // subprocess's stdout is the NDJSON wire-protocol channel (see
+    // main.ts's header comment), and console.info/console.log write there.
+    // console.warn/console.error correctly route to stderr.
+    if (this.allowedToolNames.has('TodoWrite')) {
+      console.warn(`[sdk-engine] system:init tool catalog (TodoWrite requested): ${reportedNonMcp.join(', ')}`);
+    }
+
     const leaked = reportedNonMcp.filter((name) => !this.allowedToolNames.has(name));
     if (leaked.length > 0) {
       this.handleFatal(
@@ -698,6 +1149,7 @@ export class SdkEngine implements Engine {
       const { delta } = event;
       if (delta.type === 'text_delta') {
         this.iterationText += delta.text;
+        this.sawTextDelta = true;
         this.deps.emit({ v: 1, type: 'assistant-delta', turnId: this.requireTurnId(), text: delta.text });
       } else if (delta.type === 'thinking_delta') {
         this.deps.emit({
@@ -767,10 +1219,32 @@ export class SdkEngine implements Engine {
    * `tool-result` that arrived earlier for this exact callId (queued by
    * `handleUserMessage` below because its `tool-call` had not been emitted
    * yet) is flushed right after.
+   *
+   * Finding #1 (#1572): BEFORE the `tool_use` loop, a fallback covers the
+   * case where this message carries real text that never streamed as a
+   * delta (`!this.sawTextDelta`) -- the synthetic-local-command-reply
+   * shape. See `sawTextDelta`'s own doc comment for why the reset below is
+   * unconditional and lives here rather than in `emitAssistantMessage`.
    */
   private handleAssistantMessage(message: AssistantMessagePayload): void {
+    if (!this.sawTextDelta) {
+      const text = message.content
+        .filter((block): block is Extract<typeof block, { type: 'text' }> => block.type === 'text')
+        .map((block) => block.text)
+        .join('');
+      if (text.length > 0) {
+        this.deps.emit({ v: 1, type: 'assistant-message', turnId: this.requireTurnId(), text });
+      }
+    }
+    this.sawTextDelta = false;
+
     for (const block of message.content) {
       if (block.type === 'tool_use') {
+        // No empty-callId guard needed here (contrast the `openai-api`
+        // engine's `assignSyntheticToolCallIds`): non-optional by the SDK
+        // type (`tool_use.id: string`); non-empty by the Messages API
+        // contract, which every `tool_use` block honours, so unlike the
+        // openai-api adapter there is no empty-id branch to normalise here.
         this.emitToolCall(block.id, block.name, block.input);
       }
     }

@@ -189,6 +189,7 @@ export function asAppContext(partial: Partial<AppContext>): AppContext {
     userMode: new SingleUserMode(bunPtyProvider, TEST_AUTH_USER),
     sharedAccountRegistry: SharedAccountRegistry.createDisabled(),
     broadcastToApp: () => {},
+    deployedSha: null,
     ...partial,
   } as AppContext;
 }

@@ -14,11 +14,52 @@
 #      mode 2750 (setgid + group-rx) -> proves ensureUploadDir() applies
 #      setgid on the real Linux filesystem (Issue #830 follow-up regression
 #      for the JS-layer mode stripping in Bun fs.mkdir / fs.chmod).
+#   7. worktree creation via the API is owned by the requesting user, not
+#      the service account, and `git status` inside it as that user does
+#      not report dubious ownership -> proves `git worktree add` routes
+#      through runAsUser (Issue #838).
+#   8. a shared session (shared: true) spawns its terminal as the shared
+#      account (shared1) rather than the creating user, the session row's
+#      created_by/initiated_by columns route to shared1/alice respectively,
+#      and a second user (bob) can list and write into the shared session
+#      -> proves the Shared Account is a genuine cross-user execution
+#      identity (Issue #1619).
+#   9. worker-restart branch rename runs as the SESSION'S SPAWN USER, not
+#      the requester: (i) restart-with-branch on alice's own worktree
+#      session, as alice, renames the branch on disk as alice; (iii) the
+#      same restart call on a SHARED worktree session (spawn user shared1),
+#      made by alice over HTTP, renames the branch on disk as shared1 --
+#      proving the fix threads the session's spawn user through, not the
+#      requester's identity (Issue #1622).
+#
+# --smokes additionally runs seven real-host smoke scripts
+# (scripts/smoke/*.ts) inside the verification container, as the service
+# user (agentconsole), against target user alice, using the workspace copy
+# docker/Dockerfile bakes at /workspace (the smokes import production
+# modules from packages/server/src/**, so the runtime bundle alone cannot
+# host them):
+#   - check-multiuser-pty-env.ts
+#   - check-kill-as-user.ts
+#   - check-login-shell-sentinel.ts
+#   - check-orphan-sweep.ts
+#   - check-delegated-ssh-auth-sock.ts
+#   - check-embedded-agent-elevation.ts
+#   - check-embedded-agent-bash-env.ts
+#
+# Not run here, real-host only: a `claude` login inside the container and
+# therefore every billable smoke; vendor credentials (e.g. Bedrock) in a
+# shared account's home and a shared session completing a real turn on
+# them; the 1Password-socket-present branch of
+# check-delegated-ssh-auth-sock.ts (the container exercises the
+# socket-ABSENT branch, which is the expected path there); and the
+# systemd unit's own environment. A smoke's exit code 2 is reported as a
+# failure, not a skip.
 #
 # Usage (from repo root):
 #   scripts/verify-multiuser-docker.sh            # build + verify + tear down
 #   scripts/verify-multiuser-docker.sh --keep     # leave the container running
 #   scripts/verify-multiuser-docker.sh --no-build # reuse the existing image
+#   scripts/verify-multiuser-docker.sh --smokes   # also run the real-host smokes inside the container
 #
 # Requires: docker, bun (both on the host).
 set -uo pipefail
@@ -29,11 +70,13 @@ PORT="${PORT:-8080}"
 BASE_URL="http://localhost:${PORT}"
 KEEP=0
 BUILD_FLAG="--build"
+SMOKES=0
 
 for arg in "$@"; do
   case "$arg" in
     --keep) KEEP=1 ;;
     --no-build) BUILD_FLAG="" ;;
+    --smokes) SMOKES=1 ;;
     *) echo "unknown argument: $arg" >&2; exit 2 ;;
   esac
 done
@@ -58,6 +101,50 @@ check() { # check <name> <condition-exit-code>
   else
     echo "  [FAIL] $1"; FAIL=$((FAIL + 1))
   fi
+}
+
+run_smoke() { # run_smoke <label> <script> [args...]
+  # Used only by --smokes (section 9). Runs one scripts/smoke/<script>.ts
+  # inside the container as the service user, against the workspace copy
+  # baked at /workspace, and folds its result into the same PASS/FAIL
+  # counters check() uses.
+  local label="$1" script="$2"
+  shift 2
+  local smoke_out smoke_err smoke_rc
+  smoke_out="$(mktemp)"
+  smoke_err="$(mktemp)"
+  echo "  --- ${label} ---"
+  echo "  \$ compose exec -T --user agentconsole -w /workspace agent-console bun scripts/smoke/${script} $*"
+  compose exec -T --user agentconsole -w /workspace agent-console \
+    bun "scripts/smoke/${script}" "$@" >"$smoke_out" 2>"$smoke_err"
+  # Captured directly, no pipe precedes this: docker compose exec propagates
+  # the inner process's real exit code.
+  smoke_rc=$?
+  if [ "$smoke_rc" -eq 2 ]; then
+    echo "  exit=${smoke_rc} (could not run: bad usage / probe-launch failure / unmet precondition)"
+  else
+    echo "  exit=${smoke_rc}"
+  fi
+  # Exit code 2 (could not run) is still non-zero here, so check() reports
+  # it as FAIL, never PASS and never a silent skip.
+  check "$label" "$smoke_rc"
+  if [ "$smoke_rc" -ne 0 ]; then
+    if [ -s "$smoke_err" ]; then
+      echo "  ---- DIAGNOSTIC: ${label} stderr (last 30 lines) ----"
+      tail -n 30 "$smoke_err" | sed 's/^/    /'
+    else
+      echo "  ---- DIAGNOSTIC: ${label} stdout (last 30 lines, stderr was empty) ----"
+      tail -n 30 "$smoke_out" | sed 's/^/    /'
+    fi
+    echo "  -------------------------------------------------"
+  fi
+  # printf -v (not `x="$(printf ...)"`) so the trailing newline survives --
+  # command substitution strips it, which previously collapsed every
+  # smoke's summary line onto one line.
+  local summary_line
+  printf -v summary_line '  %-38s exit=%s\n' "$label" "$smoke_rc"
+  SMOKE_SUMMARY="${SMOKE_SUMMARY}${summary_line}"
+  rm -f "$smoke_out" "$smoke_err"
 }
 
 echo "=== Building and starting the multi-user verification container ==="
@@ -310,6 +397,383 @@ fi
 
 rm -f "$ALICE_COOKIE_JAR" "$ALICE_LOGIN_RESP" "$REPO_RESP" \
   "$WT_TASK_RESP" "$WT_LIST_RESP" "$GIT_STATUS_OUT"
+
+echo
+echo "=== 8. shared session runs as the shared account (#1619) ==="
+# Verifies the Shared Account feature end to end (Issue #1619): a session
+# created with shared:true routes sessions.created_by to the shared OS
+# account (shared1, provisioned by docker/Dockerfile) while
+# sessions.initiated_by records the creating user (alice); the resulting PTY
+# spawns as shared1, not alice; and a second user (bob) can both list and
+# write into the shared session -- proving shared1 is a genuine cross-user
+# execution identity, not merely alice's own session under another label.
+#
+# Step 1 also doubles as the negative arm: with AGENT_CONSOLE_SHARED_USERNAME
+# unset/empty (AGENT_CONSOLE_SHARED_USERNAME= scripts/verify-multiuser-docker.sh
+# --no-build), the create call is refused with HTTP 400 and the response
+# body ("Shared sessions are not enabled on this server.") is echoed below so
+# that refusal is visible in the run log.
+S8_COOKIE_JAR="$(mktemp)"
+S8_ALICE_LOGIN_RESP="$(mktemp)"
+S8_SESSION_RESP="$(mktemp)"
+S8_CLIENT_OUT="$(mktemp)"
+S8_DB_OUT="$(mktemp)"
+
+curl -s -o "$S8_ALICE_LOGIN_RESP" -c "$S8_COOKIE_JAR" -X POST "${BASE_URL}/api/auth/login" \
+  -H 'Content-Type: application/json' \
+  -d '{"username":"alice","password":"alice-password"}' >/dev/null
+
+# alice creates a shared session directly over HTTP; this is the create-time
+# assertion (including the negative arm above). The session created here is
+# used only for this assertion -- step 2 creates its own shared session via
+# verify-client.ts and the remaining sub-checks use that one, so each
+# sub-check stays independent.
+s8_create_code="$(curl -s -o "$S8_SESSION_RESP" -w '%{http_code}' -b "$S8_COOKIE_JAR" -c "$S8_COOKIE_JAR" \
+  -X POST "${BASE_URL}/api/sessions" \
+  -H 'Content-Type: application/json' \
+  -d '{"type":"quick","locationPath":"/home/shared1","shared":true,"title":"verify-shared"}')"
+echo "  POST /api/sessions (shared:true) -> HTTP ${s8_create_code}"
+if [ "$s8_create_code" != "201" ]; then
+  echo "  response body: $(cat "$S8_SESSION_RESP")"
+fi
+s8_create_ok=1
+[ "$s8_create_code" = "201" ] && s8_create_ok=0
+check "alice can create a shared session (201)" "$s8_create_ok"
+
+# The session verify-client.ts creates here is the one every remaining
+# sub-check uses.
+bun "${REPO_ROOT}/docker/verify-client.ts" "$BASE_URL" alice alice-password shared1 /home/shared1 \
+  --shared --print-ids 2>&1 | tee "$S8_CLIENT_OUT"
+# Use PIPESTATUS[0] (bun's exit code), not $?, which after a pipeline is
+# tee's exit code (always 0) and would silently record a failing
+# verify-client.ts run as PASS. Captured on the very next line: nothing
+# may run in between.
+s8_client_exit="${PIPESTATUS[0]}"
+check "shared session terminal runs as shared1" "$s8_client_exit"
+if [ "$s8_client_exit" -ne 0 ]; then
+  echo "  ---- DIAGNOSTIC: server logs (last 60 lines) ----"
+  compose logs --tail 60 agent-console 2>&1 | sed 's/^/    /' || true
+  echo "  -------------------------------------------------"
+fi
+
+shared_session_id="$(grep '^SESSION_ID=' "$S8_CLIENT_OUT" | head -n1 | cut -d= -f2)"
+shared_worker_id="$(grep '^WORKER_ID=' "$S8_CLIENT_OUT" | head -n1 | cut -d= -f2)"
+
+# NOTE: unlike checks 6 and 7 above (which intentionally SKIP their
+# dependent sub-checks -- absent from the PASS/FAIL counters -- when a
+# prerequisite id is missing, and are deliberately left unchanged here),
+# check 8's four dependent sub-checks below are recorded as explicit FAILs
+# rather than skipped. This is check 8's own documented contract (the
+# --smokes "never a silent skip" guarantee in docker/README.md): a missing
+# prerequisite must show up as a FAIL in the RESULT count, not vanish from
+# it. Do not "harmonise" this back to the checks 6/7 skip shape.
+if [ -n "$shared_session_id" ]; then
+  # Read the row inside the container as agentconsole, straight from the
+  # SQLite file the server itself writes to.
+  compose exec -T --user agentconsole -e SHARED_SESSION_ID="$shared_session_id" agent-console \
+    bun -e '
+      import { Database } from "bun:sqlite";
+      const db = new Database(process.env.AGENT_CONSOLE_HOME + "/data.db", { readonly: true });
+      const sessionId = process.env.SHARED_SESSION_ID;
+      const row = db.query("SELECT created_by, initiated_by FROM sessions WHERE id = ?").get(sessionId);
+      console.log("ROW_CREATED_BY=" + (row && row.created_by != null ? row.created_by : ""));
+      console.log("ROW_INITIATED_BY=" + (row && row.initiated_by != null ? row.initiated_by : ""));
+      const shared1 = db.query("SELECT id FROM users WHERE username = ?").get("shared1");
+      console.log("SHARED1_ID=" + (shared1 ? shared1.id : ""));
+      const aliceRow = db.query("SELECT id FROM users WHERE username = ?").get("alice");
+      console.log("ALICE_ID=" + (aliceRow ? aliceRow.id : ""));
+    ' > "$S8_DB_OUT" 2>&1
+  s8_db_exit=$?
+  sed 's/^/  /' "$S8_DB_OUT"
+
+  s8_row_created_by="$(grep '^ROW_CREATED_BY=' "$S8_DB_OUT" | head -n1 | cut -d= -f2)"
+  s8_row_initiated_by="$(grep '^ROW_INITIATED_BY=' "$S8_DB_OUT" | head -n1 | cut -d= -f2)"
+  s8_shared1_id="$(grep '^SHARED1_ID=' "$S8_DB_OUT" | head -n1 | cut -d= -f2)"
+  s8_alice_id="$(grep '^ALICE_ID=' "$S8_DB_OUT" | head -n1 | cut -d= -f2)"
+
+  s8_created_by_ok=1
+  [ "$s8_db_exit" -eq 0 ] && [ -n "$s8_row_created_by" ] && [ "$s8_row_created_by" = "$s8_shared1_id" ] && s8_created_by_ok=0
+  check "shared session row: created_by is shared1's users.id" "$s8_created_by_ok"
+
+  s8_initiated_by_ok=1
+  [ "$s8_db_exit" -eq 0 ] && [ -n "$s8_row_initiated_by" ] && [ "$s8_row_initiated_by" = "$s8_alice_id" ] && s8_initiated_by_ok=0
+  check "shared session row: initiated_by is alice's users.id" "$s8_initiated_by_ok"
+
+  # bob logs in separately and lists sessions; the shared session must be
+  # visible to him even though alice created it. There is no GET
+  # /api/sessions collection route -- session listing is app-WS-only (the
+  # sessions-sync frame on /ws/app) -- so this drives that surface via
+  # verify-client.ts's --list-session mode instead of a curl GET. Do not
+  # "restore" a curl here; it would 200 against the SPA catch-all and the
+  # check would pass vacuously (see PR discussion, Issue #1619).
+  bun "${REPO_ROOT}/docker/verify-client.ts" "$BASE_URL" bob bob-password --list-session "$shared_session_id"
+  check "bob can list the shared session" $?
+
+  if [ -n "$shared_worker_id" ]; then
+    bun "${REPO_ROOT}/docker/verify-client.ts" "$BASE_URL" bob bob-password shared1 \
+      --attach "$shared_session_id" "$shared_worker_id"
+    check "bob can write to the shared session PTY (whoami => shared1)" $?
+  else
+    echo "  DIAGNOSTIC: shared_worker_id is empty (no WORKER_ID in step 2's verify-client.ts output); recording an explicit FAIL instead of skipping."
+    check "bob can write to the shared session PTY (whoami => shared1)" 1
+  fi
+else
+  echo "  DIAGNOSTIC: shared_session_id is empty (no SESSION_ID in step 2's verify-client.ts output); recording explicit FAILs for the four dependent check-8 sub-checks instead of skipping them."
+  check "shared session row: created_by is shared1's users.id" 1
+  check "shared session row: initiated_by is alice's users.id" 1
+  check "bob can list the shared session" 1
+  check "bob can write to the shared session PTY (whoami => shared1)" 1
+fi
+
+rm -f "$S8_COOKIE_JAR" "$S8_ALICE_LOGIN_RESP" "$S8_SESSION_RESP" "$S8_CLIENT_OUT" "$S8_DB_OUT"
+
+echo
+echo "=== 9. worker-restart branch rename uses the session's spawn user, not the requester (#1622) ==="
+# Verifies the #1622 fix: WorkerLifecycleManager.renameSessionBranchIfRequested
+# threads resolveSpawnUsername(session.createdBy) -- the SESSION'S SPAWN USER
+# -- through getCurrentBranch/renameBranch, never the requesting auth user.
+#
+#   (i)   restart-with-branch as alice, on a worktree session alice owns.
+#         This alone cannot distinguish a correct (session-spawn-user) fix
+#         from a plausible-but-wrong (requester-identity) one -- for a
+#         personal session the two identities are the same user.
+#   (iii) restart-with-branch on a SHARED worktree session (spawn user
+#         shared1), triggered over HTTP by alice. This is the identity-choice
+#         discriminator: a requester-based fix would still try to run git as
+#         alice against a worktree directory owned by shared1, hitting the
+#         same "dubious ownership" class of error the original bug report
+#         describes. Only a fix that resolves the SESSION's spawn user passes
+#         this sub-check.
+#
+# (Sub-check (ii) -- rename via the session-edit route -- is deliberately not
+# implemented: that route no longer accepts a `branch` field, and the code
+# path it would have exercised was found dead and deleted, not fixed.)
+#
+# Both worktree sessions here are created with autoStartSession:true (no
+# embeddedAgentId), which auto-creates a PTY `agent` worker via the default
+# terminal agent. This works even though no real `claude` CLI is
+# installed/authenticated in this container: PTY allocation and the login
+# shell spawn happen independently of whether the exec'd agent command is
+# actually runnable (any failure there would only appear in the PTY's own
+# byte stream, never as an HTTP-level error) -- confirmed empirically against
+# this image before writing this check. This mirrors what a real user does
+# through the UI, and needs an `agent`-type worker because
+# POST /workers/:workerId/restart requires the existing worker to be type
+# 'agent' (see WorkerLifecycleManager.restartAgentWorker's early guards).
+#
+# Like check 8, this check's sub-checks are recorded as explicit FAILs (never
+# silently skipped) when a prerequisite (worktree creation, session/worker
+# lookup) is missing -- the same "no silent skip" contract check 8 documents.
+S9_COOKIE_JAR="$(mktemp)"
+S9_ALICE_LOGIN_RESP="$(mktemp)"
+S9_WT_RESP="$(mktemp)"
+S9_WT_LIST_RESP="$(mktemp)"
+S9_BASELINE="$(mktemp)"
+S9_AFTER="$(mktemp)"
+S9_DB_OUT="$(mktemp)"
+S9_RESTART_RESP="$(mktemp)"
+S9_GIT_BRANCH_OUT="$(mktemp)"
+
+curl -s -o "$S9_ALICE_LOGIN_RESP" -c "$S9_COOKIE_JAR" -X POST "${BASE_URL}/api/auth/login" \
+  -H 'Content-Type: application/json' \
+  -d '{"username":"alice","password":"alice-password"}' >/dev/null
+
+# --- sub-check (i): restart-with-branch as alice, on alice's own session ---
+if [ -n "$repo_id" ]; then
+  curl -s -b "$S9_COOKIE_JAR" "${BASE_URL}/api/repositories/${repo_id}/worktrees" \
+    | grep -o '"path":"[^"]*"' | cut -d'"' -f4 | sort > "$S9_BASELINE"
+
+  s9i_task_id="$(uuidgen 2>/dev/null || cat /proc/sys/kernel/random/uuid)"
+  s9i_wt_code="$(curl -s -o "$S9_WT_RESP" -w '%{http_code}' -b "$S9_COOKIE_JAR" -c "$S9_COOKIE_JAR" \
+    -X POST "${BASE_URL}/api/repositories/${repo_id}/worktrees" \
+    -H 'Content-Type: application/json' \
+    -d "{\"taskId\":\"${s9i_task_id}\",\"mode\":\"custom\",\"branch\":\"issue-1622-i\",\"baseBranch\":\"main\",\"useRemote\":false,\"autoStartSession\":true}")"
+  echo "  POST /api/repositories/<id>/worktrees (i, autoStartSession) -> HTTP ${s9i_wt_code}"
+
+  S9I_PATH=""
+  for _ in $(seq 1 30); do
+    sleep 1
+    curl -s -o "$S9_WT_LIST_RESP" -b "$S9_COOKIE_JAR" \
+      "${BASE_URL}/api/repositories/${repo_id}/worktrees" >/dev/null
+    grep -o '"path":"[^"]*"' "$S9_WT_LIST_RESP" | cut -d'"' -f4 | sort > "$S9_AFTER"
+    S9I_PATH="$(comm -13 "$S9_BASELINE" "$S9_AFTER" | head -n1)"
+    if [ -n "$S9I_PATH" ]; then break; fi
+  done
+  s9i_listed_ok=1
+  [ -n "$S9I_PATH" ] && s9i_listed_ok=0
+  check "worktree #1622(i) appears in repo's worktree list" "$s9i_listed_ok"
+
+  if [ -n "$S9I_PATH" ]; then
+    docker compose -f "$COMPOSE_FILE" exec -T --user agentconsole -e S9I_PATH="$S9I_PATH" agent-console \
+      bun -e '
+        import { Database } from "bun:sqlite";
+        const db = new Database(process.env.AGENT_CONSOLE_HOME + "/data.db", { readonly: true });
+        const session = db.query("SELECT id FROM sessions WHERE location_path = ?").get(process.env.S9I_PATH);
+        console.log("SESSION_ID=" + (session ? session.id : ""));
+        if (session) {
+          const worker = db.query("SELECT id FROM workers WHERE session_id = ? AND type = ?").get(session.id, "agent");
+          console.log("WORKER_ID=" + (worker ? worker.id : ""));
+        }
+      ' > "$S9_DB_OUT" 2>&1
+    s9i_session_id="$(grep '^SESSION_ID=' "$S9_DB_OUT" | head -n1 | cut -d= -f2)"
+    s9i_worker_id="$(grep '^WORKER_ID=' "$S9_DB_OUT" | head -n1 | cut -d= -f2)"
+
+    if [ -n "$s9i_session_id" ] && [ -n "$s9i_worker_id" ]; then
+      s9i_restart_code="$(curl -s -o "$S9_RESTART_RESP" -w '%{http_code}' -b "$S9_COOKIE_JAR" -c "$S9_COOKIE_JAR" \
+        -X POST "${BASE_URL}/api/sessions/${s9i_session_id}/workers/${s9i_worker_id}/restart" \
+        -H 'Content-Type: application/json' \
+        -d '{"branch":"issue-1622-i-renamed"}')"
+      echo "  POST /workers/<id>/restart {branch} as alice (i) -> HTTP ${s9i_restart_code}"
+      if [ "$s9i_restart_code" != "200" ]; then
+        echo "  response body: $(cat "$S9_RESTART_RESP")"
+      fi
+      s9i_restart_ok=1
+      [ "$s9i_restart_code" = "200" ] && s9i_restart_ok=0
+      check "restart-with-branch as alice succeeds (#1622 i)" "$s9i_restart_ok"
+
+      docker compose -f "$COMPOSE_FILE" exec -T --user alice agent-console sh -lc "git -C '${S9I_PATH}' branch --show-current" \
+        > "$S9_GIT_BRANCH_OUT" 2>&1
+      s9i_branch_now="$(tr -d '\r\n' < "$S9_GIT_BRANCH_OUT")"
+      echo "  git branch --show-current as alice -> ${s9i_branch_now}"
+      s9i_branch_ok=1
+      [ "$s9i_branch_now" = "issue-1622-i-renamed" ] && s9i_branch_ok=0
+      check "git branch --show-current as alice reflects the rename (#1622 i)" "$s9i_branch_ok"
+    else
+      echo "  DIAGNOSTIC: session/worker id missing for worktree #1622(i) (SESSION_ID='${s9i_session_id}' WORKER_ID='${s9i_worker_id}'); recording explicit FAILs instead of skipping."
+      check "restart-with-branch as alice succeeds (#1622 i)" 1
+      check "git branch --show-current as alice reflects the rename (#1622 i)" 1
+    fi
+  else
+    echo "  ---- DIAGNOSTIC: server logs (last 60 lines) ----"
+    compose logs --tail 60 agent-console 2>&1 | sed 's/^/    /' || true
+    echo "  -------------------------------------------------"
+    echo "  DIAGNOSTIC: worktree #1622(i) never appeared; recording explicit FAILs for its dependent sub-checks instead of skipping."
+    check "restart-with-branch as alice succeeds (#1622 i)" 1
+    check "git branch --show-current as alice reflects the rename (#1622 i)" 1
+  fi
+else
+  echo "  DIAGNOSTIC: repo_id from check 7 is empty; recording explicit FAILs for check 9(i) instead of skipping."
+  check "worktree #1622(i) appears in repo's worktree list" 1
+  check "restart-with-branch as alice succeeds (#1622 i)" 1
+  check "git branch --show-current as alice reflects the rename (#1622 i)" 1
+fi
+
+# --- sub-check (iii): shared-session rename via restart, triggered by alice ---
+if [ -n "$repo_id" ]; then
+  cp "$S9_AFTER" "$S9_BASELINE"
+
+  s9iii_task_id="$(uuidgen 2>/dev/null || cat /proc/sys/kernel/random/uuid)"
+  s9iii_wt_code="$(curl -s -o "$S9_WT_RESP" -w '%{http_code}' -b "$S9_COOKIE_JAR" -c "$S9_COOKIE_JAR" \
+    -X POST "${BASE_URL}/api/repositories/${repo_id}/worktrees" \
+    -H 'Content-Type: application/json' \
+    -d "{\"taskId\":\"${s9iii_task_id}\",\"mode\":\"custom\",\"branch\":\"issue-1622-iii\",\"baseBranch\":\"main\",\"useRemote\":false,\"autoStartSession\":true,\"shared\":true}")"
+  echo "  POST /api/repositories/<id>/worktrees (iii, shared+autoStartSession) -> HTTP ${s9iii_wt_code}"
+
+  S9III_PATH=""
+  for _ in $(seq 1 30); do
+    sleep 1
+    curl -s -o "$S9_WT_LIST_RESP" -b "$S9_COOKIE_JAR" \
+      "${BASE_URL}/api/repositories/${repo_id}/worktrees" >/dev/null
+    grep -o '"path":"[^"]*"' "$S9_WT_LIST_RESP" | cut -d'"' -f4 | sort > "$S9_AFTER"
+    S9III_PATH="$(comm -13 "$S9_BASELINE" "$S9_AFTER" | head -n1)"
+    if [ -n "$S9III_PATH" ]; then break; fi
+  done
+  s9iii_listed_ok=1
+  [ -n "$S9III_PATH" ] && s9iii_listed_ok=0
+  check "worktree #1622(iii) appears in repo's worktree list" "$s9iii_listed_ok"
+
+  if [ -n "$S9III_PATH" ]; then
+    docker compose -f "$COMPOSE_FILE" exec -T --user agentconsole -e S9III_PATH="$S9III_PATH" agent-console \
+      bun -e '
+        import { Database } from "bun:sqlite";
+        const db = new Database(process.env.AGENT_CONSOLE_HOME + "/data.db", { readonly: true });
+        const session = db.query("SELECT id, created_by FROM sessions WHERE location_path = ?").get(process.env.S9III_PATH);
+        console.log("SESSION_ID=" + (session ? session.id : ""));
+        console.log("CREATED_BY=" + (session && session.created_by != null ? session.created_by : ""));
+        if (session) {
+          const worker = db.query("SELECT id FROM workers WHERE session_id = ? AND type = ?").get(session.id, "agent");
+          console.log("WORKER_ID=" + (worker ? worker.id : ""));
+        }
+        const shared1 = db.query("SELECT id FROM users WHERE username = ?").get("shared1");
+        console.log("SHARED1_ID=" + (shared1 ? shared1.id : ""));
+      ' > "$S9_DB_OUT" 2>&1
+    s9iii_session_id="$(grep '^SESSION_ID=' "$S9_DB_OUT" | head -n1 | cut -d= -f2)"
+    s9iii_worker_id="$(grep '^WORKER_ID=' "$S9_DB_OUT" | head -n1 | cut -d= -f2)"
+    s9iii_created_by="$(grep '^CREATED_BY=' "$S9_DB_OUT" | head -n1 | cut -d= -f2)"
+    s9iii_shared1_id="$(grep '^SHARED1_ID=' "$S9_DB_OUT" | head -n1 | cut -d= -f2)"
+
+    s9iii_fixture_ok=1
+    [ -n "$s9iii_created_by" ] && [ "$s9iii_created_by" = "$s9iii_shared1_id" ] && s9iii_fixture_ok=0
+    check "worktree #1622(iii) session's created_by is shared1's users.id (fixture sanity)" "$s9iii_fixture_ok"
+
+    if [ -n "$s9iii_session_id" ] && [ -n "$s9iii_worker_id" ]; then
+      s9iii_restart_code="$(curl -s -o "$S9_RESTART_RESP" -w '%{http_code}' -b "$S9_COOKIE_JAR" -c "$S9_COOKIE_JAR" \
+        -X POST "${BASE_URL}/api/sessions/${s9iii_session_id}/workers/${s9iii_worker_id}/restart" \
+        -H 'Content-Type: application/json' \
+        -d '{"branch":"issue-1622-iii-renamed"}')"
+      echo "  POST /workers/<id>/restart {branch} as alice, session runs as shared1 (iii) -> HTTP ${s9iii_restart_code}"
+      if [ "$s9iii_restart_code" != "200" ]; then
+        echo "  response body: $(cat "$S9_RESTART_RESP")"
+      fi
+      s9iii_restart_ok=1
+      [ "$s9iii_restart_code" = "200" ] && s9iii_restart_ok=0
+      check "shared-session restart-with-branch as alice succeeds (session runs as shared1) (#1622 iii)" "$s9iii_restart_ok"
+
+      # The crux of this sub-check: read the branch as shared1, NOT alice.
+      docker compose -f "$COMPOSE_FILE" exec -T --user shared1 agent-console sh -lc "git -C '${S9III_PATH}' branch --show-current" \
+        > "$S9_GIT_BRANCH_OUT" 2>&1
+      s9iii_branch_now="$(tr -d '\r\n' < "$S9_GIT_BRANCH_OUT")"
+      echo "  git branch --show-current as shared1 -> ${s9iii_branch_now}"
+      if [ "$s9iii_branch_now" != "issue-1622-iii-renamed" ]; then
+        echo "  ---- DIAGNOSTIC: server logs (last 60 lines) ----"
+        compose logs --tail 60 agent-console 2>&1 | sed 's/^/    /' || true
+        echo "  -------------------------------------------------"
+      fi
+      s9iii_branch_ok=1
+      [ "$s9iii_branch_now" = "issue-1622-iii-renamed" ] && s9iii_branch_ok=0
+      check "git branch --show-current as shared1 reflects the rename (#1622 iii, identity-choice discriminator)" "$s9iii_branch_ok"
+    else
+      echo "  DIAGNOSTIC: session/worker id missing for worktree #1622(iii) (SESSION_ID='${s9iii_session_id}' WORKER_ID='${s9iii_worker_id}'); recording explicit FAILs instead of skipping."
+      check "shared-session restart-with-branch as alice succeeds (session runs as shared1) (#1622 iii)" 1
+      check "git branch --show-current as shared1 reflects the rename (#1622 iii, identity-choice discriminator)" 1
+    fi
+  else
+    echo "  ---- DIAGNOSTIC: server logs (last 60 lines) ----"
+    compose logs --tail 60 agent-console 2>&1 | sed 's/^/    /' || true
+    echo "  -------------------------------------------------"
+    echo "  DIAGNOSTIC: worktree #1622(iii) never appeared; recording explicit FAILs for its dependent sub-checks instead of skipping."
+    check "worktree #1622(iii) session's created_by is shared1's users.id (fixture sanity)" 1
+    check "shared-session restart-with-branch as alice succeeds (session runs as shared1) (#1622 iii)" 1
+    check "git branch --show-current as shared1 reflects the rename (#1622 iii, identity-choice discriminator)" 1
+  fi
+else
+  echo "  DIAGNOSTIC: repo_id from check 7 is empty; recording explicit FAILs for check 9(iii) instead of skipping."
+  check "worktree #1622(iii) appears in repo's worktree list" 1
+  check "worktree #1622(iii) session's created_by is shared1's users.id (fixture sanity)" 1
+  check "shared-session restart-with-branch as alice succeeds (session runs as shared1) (#1622 iii)" 1
+  check "git branch --show-current as shared1 reflects the rename (#1622 iii, identity-choice discriminator)" 1
+fi
+
+rm -f "$S9_COOKIE_JAR" "$S9_ALICE_LOGIN_RESP" "$S9_WT_RESP" "$S9_WT_LIST_RESP" \
+  "$S9_BASELINE" "$S9_AFTER" "$S9_DB_OUT" "$S9_RESTART_RESP" "$S9_GIT_BRANCH_OUT"
+
+if [ "$SMOKES" -eq 1 ]; then
+  echo
+  echo "=== 10. real-host smokes inside the container (--smokes, #1619) ==="
+  SMOKE_SUMMARY=""
+
+  run_smoke "check-multiuser-pty-env" "check-multiuser-pty-env.ts" alice
+  run_smoke "check-kill-as-user" "check-kill-as-user.ts" alice
+  run_smoke "check-login-shell-sentinel" "check-login-shell-sentinel.ts" --elevated alice
+  run_smoke "check-orphan-sweep" "check-orphan-sweep.ts" alice
+  run_smoke "check-delegated-ssh-auth-sock" "check-delegated-ssh-auth-sock.ts" alice
+  run_smoke "check-embedded-agent-elevation" "check-embedded-agent-elevation.ts" alice
+  run_smoke "check-embedded-agent-bash-env" "check-embedded-agent-bash-env.ts" alice
+
+  echo
+  echo "=== smoke summary (exit codes) ==="
+  printf '%s' "$SMOKE_SUMMARY"
+fi
 
 echo
 echo "=================================================="

@@ -42,6 +42,7 @@ import type {
 } from '@agent-console/shared';
 import {
   ArtifactsListResponseSchema,
+  ConfigResponseSchema,
   NotificationsResponseSchema,
   NotificationsSeenResponseSchema,
   BookmarksListResponseSchema,
@@ -94,7 +95,7 @@ export async function fetchConfig(): Promise<ConfigResponse> {
   if (!res.ok) {
     await handleApiError(res, 'Failed to fetch config');
   }
-  return res.json();
+  return v.parse(ConfigResponseSchema, await res.json());
 }
 
 export interface CreateSessionResponse {
@@ -196,7 +197,63 @@ export async function restartAgentWorker(
 }
 
 /**
- * Compaction: set an embedded-agent worker's auto-compaction toggle.
+ * Cross-type restart (#1171): converts a PTY `agent` worker into an
+ * `embedded-agent` worker IN PLACE (same workerId), tearing down the PTY and
+ * activating a real embedded-agent subprocess. Distinct from
+ * `restartAgentWorker` because the wire shape is a separate union member
+ * (`EmbeddedRestartSchema`, `packages/shared/src/schemas/worker.ts`) that
+ * structurally has no `continueConversation` / `agentId` field -- there is no
+ * PTY conversation to continue across kinds.
+ */
+export async function restartWorkerAsEmbeddedAgent(
+  sessionId: string,
+  workerId: string,
+  embeddedAgentId: string,
+  branch?: string
+): Promise<{ worker: Worker }> {
+  const res = await api.sessions[':sessionId'].workers[':workerId'].restart.$post({
+    param: { sessionId, workerId },
+    json: { embeddedAgentId, ...(branch ? { branch } : {}) },
+  });
+  if (!res.ok) {
+    await handleApiError(res, 'Failed to restart worker');
+  }
+  return res.json() as Promise<{ worker: Worker }>;
+}
+
+/**
+ * A model override change couples with its context-window declaration
+ * (agent-surface.md Ruling 4): a window declared for a model this request
+ * does not itself set would silently apply to whatever model happens to be
+ * in effect, so the pairing is structural here, not just enforced by the
+ * runtime schema. Clearing the model (`model: null`) clears the window by
+ * construction -- the `contextWindowTokens` key cannot even be written in
+ * that branch, matching the wire schema's rejection of a window declared
+ * without a model.
+ */
+export type EmbeddedAgentModelOverrideUpdate =
+  | { model: string; contextWindowTokens: number | null }
+  | { model: null };
+
+/**
+ * The full set of shapes `PATCH /api/sessions/:sessionId/workers/:workerId`
+ * accepts for an embedded-agent worker: the pre-existing compaction toggle,
+ * a model override change (always carrying its window per
+ * `EmbeddedAgentModelOverrideUpdate` above), or a reasoning-effort-only
+ * change. `reasoningEffort` rides alongside a model change as an optional
+ * field rather than a fourth union member, since the "Apply" control always
+ * sends both together.
+ */
+export type UpdateEmbeddedAgentWorkerBody =
+  | { autoCompaction: boolean }
+  | (EmbeddedAgentModelOverrideUpdate & { reasoningEffort?: string | null })
+  | { reasoningEffort: string | null };
+
+/**
+ * Compaction: set an embedded-agent worker's auto-compaction toggle. Also
+ * the write path for the mid-run model / reasoning-effort / context-window
+ * override control (agent-surface.md Phase 3) -- see
+ * `UpdateEmbeddedAgentWorkerBody` above for the accepted shapes.
  *
  * The server is the source of truth -- the updated worker comes back in the
  * response and the change is also broadcast as a session update, so callers
@@ -205,7 +262,7 @@ export async function restartAgentWorker(
 export async function updateEmbeddedAgentWorker(
   sessionId: string,
   workerId: string,
-  update: { autoCompaction: boolean }
+  update: UpdateEmbeddedAgentWorkerBody
 ): Promise<{ worker: Worker }> {
   const res = await api.sessions[':sessionId'].workers[':workerId'].$patch({
     param: { sessionId, workerId },
@@ -270,6 +327,42 @@ export async function resumeSession(sessionId: string): Promise<Session> {
   return data.session;
 }
 
+
+export interface OrchestratorDesignationResponse {
+  repositoryId: string;
+  orchestratorSessionId: string;
+}
+
+/**
+ * Raise this session's repository's Orchestrator-designation flag (making
+ * this session the designated Orchestrator for its repository).
+ * Only valid for worktree sessions.
+ */
+export async function raiseOrchestratorDesignation(sessionId: string): Promise<OrchestratorDesignationResponse> {
+  const res = await api.sessions[':id']['orchestrator-designation'].$post({ param: { id: sessionId } });
+  if (!res.ok) {
+    await handleApiError(res, 'Failed to set Orchestrator designation');
+  }
+  return res.json() as Promise<OrchestratorDesignationResponse>;
+}
+
+export interface ClearOrchestratorDesignationResponse {
+  repositoryId: string;
+  /** `false` is a normal no-op response (another session already superseded this one), not an error. */
+  cleared: boolean;
+}
+
+/**
+ * Clear this session's repository's Orchestrator-designation flag, but only
+ * if this session currently holds it.
+ */
+export async function clearOrchestratorDesignation(sessionId: string): Promise<ClearOrchestratorDesignationResponse> {
+  const res = await api.sessions[':id']['orchestrator-designation'].$delete({ param: { id: sessionId } });
+  if (!res.ok) {
+    await handleApiError(res, 'Failed to clear Orchestrator designation');
+  }
+  return res.json() as Promise<ClearOrchestratorDesignationResponse>;
+}
 
 export interface UpdateSessionMetadataRequest {
   title?: string;
@@ -877,6 +970,20 @@ export async function fetchSessionMemo(sessionId: string): Promise<string | null
   }
   const data = await res.json() as { content: string | null };
   return data.content;
+}
+
+/**
+ * Write (or, on empty content, delete) a session's memo. The server is the
+ * source of truth: its response `content` (never the locally-typed `content`
+ * argument) is what callers must write into the query cache -- see R4/R6 in
+ * docs/design/session-worker-design.md#session-memo.
+ */
+export async function updateSessionMemo(sessionId: string, content: string): Promise<{ content: string | null }> {
+  const res = await api.sessions[':id'].memo.$put({ param: { id: sessionId }, json: { content } });
+  if (!res.ok) {
+    await handleApiError(res, 'Failed to update session memo');
+  }
+  return res.json() as Promise<{ content: string | null }>;
 }
 
 // ===========================================================================

@@ -1138,4 +1138,110 @@ index abc1234..def5678 100644
       expect(result).toBe('<non-URL remote shape>');
     });
   });
+
+  // =========================================================================
+  // getCurrentBranch / renameBranch requestUser routing (Issue #1622)
+  //
+  // Sibling helpers in this file (fetchRemote, refreshDefaultBranch, etc.)
+  // already accept a trailing `requestUser` and route through `runAsUser` in
+  // multi-user mode. getCurrentBranch/renameBranch did not, so a branch
+  // rename during worker restart on a user-owned worktree failed with
+  // "dubious ownership" -- the direct-spawn path always ran as the server
+  // process user. Model these on the `requestUser routing (Issue #869 /
+  // #870)` block above.
+  // =========================================================================
+  describe('getCurrentBranch / renameBranch requestUser routing (Issue #1622)', () => {
+    describe('getCurrentBranch', () => {
+      it('uses Bun.spawn directly when requestUser is omitted (default path)', async () => {
+        setMockSpawnResult('main\n');
+        const { getCurrentBranch } = await getGitModule();
+
+        const result = await getCurrentBranch('/repo');
+
+        expect(result).toBe('main');
+        expect(spawnCalls.length).toBe(1);
+        expect(spawnCalls[0].args).toEqual(['git', 'branch', '--show-current']);
+        expect(spawnCalls[0].options.cwd).toBe('/repo');
+      });
+
+      it('routes through runAsUser when requestUser is non-empty (elevated path)', async () => {
+        const runAsUserCalls: Array<Record<string, unknown>> = [];
+        const fakeRunAsUser = async (opts: Record<string, unknown>) => {
+          runAsUserCalls.push(opts);
+          return { stdout: 'feature-branch\n', stderr: '', exitCode: 0, timedOut: false };
+        };
+
+        const mod = await getGitModule();
+        mod.__setRunAsUserForTesting(fakeRunAsUser);
+        try {
+          const result = await mod.getCurrentBranch('/repo', 'alice');
+
+          expect(result).toBe('feature-branch');
+          // Direct-spawn path was NOT used.
+          expect(spawnCalls.length).toBe(0);
+          expect(runAsUserCalls.length).toBe(1);
+          expect(runAsUserCalls[0].username).toBe('alice');
+          expect(runAsUserCalls[0].cwd).toBe('/repo');
+          expect(runAsUserCalls[0].command).toBe("'git' 'branch' '--show-current'");
+        } finally {
+          mod.__setRunAsUserForTesting(null);
+        }
+      });
+
+      it('swallows a thrown error into "(unknown)" on the elevated path too', async () => {
+        const fakeRunAsUser = async () => ({
+          stdout: '',
+          stderr: 'fatal: not a git repository\n',
+          exitCode: 128,
+          timedOut: false,
+        });
+
+        const mod = await getGitModule();
+        mod.__setRunAsUserForTesting(fakeRunAsUser);
+        try {
+          const result = await mod.getCurrentBranch('/repo', 'alice');
+
+          expect(result).toBe('(unknown)');
+        } finally {
+          mod.__setRunAsUserForTesting(null);
+        }
+      });
+    });
+
+    describe('renameBranch', () => {
+      it('uses Bun.spawn directly when requestUser is omitted (default path)', async () => {
+        setMockSpawnResult('');
+        const { renameBranch } = await getGitModule();
+
+        await renameBranch('old-name', 'new-name', '/repo');
+
+        expect(spawnCalls.length).toBe(1);
+        expect(spawnCalls[0].args).toEqual(['git', 'branch', '-m', 'old-name', 'new-name']);
+        expect(spawnCalls[0].options.cwd).toBe('/repo');
+      });
+
+      it('routes through runAsUser when requestUser is non-empty (elevated path)', async () => {
+        const runAsUserCalls: Array<Record<string, unknown>> = [];
+        const fakeRunAsUser = async (opts: Record<string, unknown>) => {
+          runAsUserCalls.push(opts);
+          return { stdout: '', stderr: '', exitCode: 0, timedOut: false };
+        };
+
+        const mod = await getGitModule();
+        mod.__setRunAsUserForTesting(fakeRunAsUser);
+        try {
+          await mod.renameBranch('old-name', 'new-name', '/repo', 'alice');
+
+          // Direct-spawn path was NOT used.
+          expect(spawnCalls.length).toBe(0);
+          expect(runAsUserCalls.length).toBe(1);
+          expect(runAsUserCalls[0].username).toBe('alice');
+          expect(runAsUserCalls[0].cwd).toBe('/repo');
+          expect(runAsUserCalls[0].command).toBe("'git' 'branch' '-m' 'old-name' 'new-name'");
+        } finally {
+          mod.__setRunAsUserForTesting(null);
+        }
+      });
+    });
+  });
 });

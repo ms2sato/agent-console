@@ -31,7 +31,7 @@ function makeReference(
     createdAt: '2026-01-01T00:00:00.000Z',
     type: 'embedded-agent',
     embeddedAgentId: 'embedded-1',
-    activated: true, autoCompaction: true,
+    activated: true, autoCompaction: true, reasoningEffort: null, hasParameterOverride: false,
   };
   const session: Session = {
     id: 'session-1',

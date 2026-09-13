@@ -461,6 +461,139 @@ describe('embedded-agent-store', () => {
     });
   });
 
+  it('folds two post-fix tool-calls with distinct synthetic callIds, pairing each result correctly', async () => {
+    // Simulates what AgentLoop's synthetic-id fix (#1581) now produces
+    // going forward: two tool-calls in the same turn that both originally
+    // had an empty provider-supplied callId now get distinct synthesized
+    // ids instead. This is the ordinary toolCallIndexByCallId path with
+    // realistic post-fix ids -- not the legacy '' guard below.
+    const instance = getOrCreateEmbeddedAgentWorker('s4-synthetic', 'w4-synthetic');
+    const ws = MockWebSocket.getLastInstance();
+    ws!.simulateOpen();
+
+    const data = ndjson(
+      { v: 1, type: 'tool-call', turnId: 't1', callId: 'synthetic:t1:0:0', name: 'run_process', args: { cmd: 'a' } },
+      { v: 1, type: 'tool-result', turnId: 't1', callId: 'synthetic:t1:0:0', ok: true, result: 'result-a' },
+      { v: 1, type: 'tool-call', turnId: 't1', callId: 'synthetic:t1:0:1', name: 'run_process', args: { cmd: 'b' } },
+      { v: 1, type: 'tool-result', turnId: 't1', callId: 'synthetic:t1:0:1', ok: true, result: 'result-b' },
+    );
+    ws!.simulateMessage(historyMessage(data, data.length));
+    await flush();
+
+    const entries = instance.getSnapshot().entries;
+    expect(entries).toHaveLength(2);
+    expect(entries[0]).toMatchObject({
+      kind: 'tool-call',
+      callId: 'synthetic:t1:0:0',
+      result: { ok: true, result: 'result-a' },
+    });
+    expect(entries[1]).toMatchObject({
+      kind: 'tool-call',
+      callId: 'synthetic:t1:0:1',
+      result: { ok: true, result: 'result-b' },
+    });
+  });
+
+  it('R4: two legacy tool-calls with callId "" pair FIFO with their results and get distinct rendering keys', async () => {
+    // Legacy (pre-#1581) persisted rows: the provider supplied an empty
+    // callId for BOTH tool-calls in the turn. Replayed in the loop's real
+    // sequential emission order (call, its result, call, its result), the
+    // store must pair each result with its OWN call -- not swap them -- and
+    // must not collide the two entries under the same React key.
+    const instance = getOrCreateEmbeddedAgentWorker('s4-legacy', 'w4-legacy');
+    const ws = MockWebSocket.getLastInstance();
+    ws!.simulateOpen();
+
+    const data = ndjson(
+      { v: 1, type: 'tool-call', turnId: 't1', callId: '', name: 'run_process', args: { cmd: 'a' } },
+      { v: 1, type: 'tool-call', turnId: 't1', callId: '', name: 'run_process', args: { cmd: 'b' } },
+      { v: 1, type: 'tool-result', turnId: 't1', callId: '', ok: true, result: 'result-a' },
+      { v: 1, type: 'tool-result', turnId: 't1', callId: '', ok: true, result: 'result-b' },
+    );
+    ws!.simulateMessage(historyMessage(data, data.length));
+    await flush();
+
+    const entries = instance.getSnapshot().entries;
+    expect(entries).toHaveLength(2);
+    expect(entries[0]).toMatchObject({
+      kind: 'tool-call',
+      callId: '',
+      args: { cmd: 'a' },
+      result: { ok: true, result: 'result-a' },
+    });
+    expect(entries[1]).toMatchObject({
+      kind: 'tool-call',
+      callId: '',
+      args: { cmd: 'b' },
+      result: { ok: true, result: 'result-b' },
+    });
+    expect(entries[0].key).not.toBe(entries[1].key);
+  });
+
+  it('exposes a TodoWrite tool-call/tool-result pair delivered via history replay so TodoPanel can render it', async () => {
+    // This test deliberately does double duty, stated explicitly per the
+    // task instructions rather than left implicit:
+    //
+    // 1. It is the client-side half of the "store exposes the entry" AC
+    //    pin -- the packages/integration boundary test for TodoWrite
+    //    (written separately) scopes OUT client-side verification and
+    //    defers it here, following the precedent set by
+    //    embedded-agent-display-history-rotation-boundary.test.ts.
+    // 2. It is TodoPanel's "survives a history replay" pin: entries arrive
+    //    via `historyMessage` (a replayed transcript), not `outputMessage`
+    //    (live streaming), and TodoPanel renders correctly from that
+    //    replayed snapshot.
+    const instance = getOrCreateEmbeddedAgentWorker('s-todo', 'w-todo');
+    const ws = MockWebSocket.getLastInstance();
+    ws!.simulateOpen();
+
+    const data = ndjson(
+      {
+        v: 1,
+        type: 'tool-call',
+        turnId: 't1',
+        callId: 'c1',
+        name: 'TodoWrite',
+        args: {
+          todos: [
+            { content: 'Write the panel', status: 'completed', activeForm: 'Writing the panel' },
+            { content: 'Wire it up', status: 'in_progress', activeForm: 'Wiring it up' },
+          ],
+        },
+      },
+      {
+        v: 1,
+        type: 'tool-result',
+        turnId: 't1',
+        callId: 'c1',
+        ok: true,
+        result: 'Todo list updated: 2 items (0 pending, 1 in progress, 1 completed)',
+      },
+    );
+    ws!.simulateMessage(historyMessage(data, data.length));
+    await flush();
+
+    const entries = instance.getSnapshot().entries;
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({ kind: 'tool-call', name: 'TodoWrite', result: { ok: true } });
+
+    // This file is `.ts`, not `.tsx`, so JSX syntax is unavailable here --
+    // `React.createElement` is the plain-TS equivalent of `<TodoPanel
+    // entries={entries} />`.
+    const React = await import('react');
+    const { render, screen, cleanup } = await import('@testing-library/react');
+    const { TodoPanel } = await import('../TodoPanel');
+    try {
+      render(React.createElement(TodoPanel, { entries }));
+      // in_progress item shows activeForm, not content -- proves the render
+      // actually consumed the store-derived entries, not a placeholder.
+      expect(screen.getByText('Wiring it up')).toBeTruthy();
+      expect(screen.getByText('Write the panel')).toBeTruthy();
+    } finally {
+      cleanup();
+    }
+  });
+
   it('folds server-authored exited events from replayed history (full EmbeddedAgentStreamEvent union)', async () => {
     // Architect pre-directive #3 (Issue #1021): the client MUST parse replayed
     // history with the full EmbeddedAgentStreamEventSchema union, not the
@@ -512,6 +645,49 @@ describe('embedded-agent-store', () => {
     expect(entry.kind).toBe('exited');
     expect(Object.prototype.hasOwnProperty.call(entry, 'reason')).toBe(false);
     expect(entry.reason).toBeUndefined();
+  });
+
+  it('carries an exited row `stderrTail` through onto the entry when present (#1454)', async () => {
+    const instance = getOrCreateEmbeddedAgentWorker('s5-stderrtail', 'w5-stderrtail');
+    const ws = MockWebSocket.getLastInstance();
+    ws!.simulateOpen();
+
+    const data = ndjson({
+      v: 1,
+      type: 'exited',
+      code: 1,
+      reason: 'unexpected',
+      stderrTail: 'Error: Cannot find module',
+    });
+    ws!.simulateMessage(historyMessage(data, data.length));
+    await flush();
+
+    const entries = instance.getSnapshot().entries;
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({
+      kind: 'exited',
+      code: 1,
+      stderrTail: 'Error: Cannot find module',
+    });
+  });
+
+  it('leaves `stderrTail` ABSENT on the entry when the exited event carries none (#1454)', async () => {
+    // Absence stays absence: an exited row with no stderrTail (a 'managed'
+    // or 'evicted' exit, or a pre-#1454 server) must not gain a
+    // store-invented default like `''`.
+    const instance = getOrCreateEmbeddedAgentWorker('s5-nostderrtail', 'w5-nostderrtail');
+    const ws = MockWebSocket.getLastInstance();
+    ws!.simulateOpen();
+
+    const data = ndjson({ v: 1, type: 'exited', code: 0 });
+    ws!.simulateMessage(historyMessage(data, data.length));
+    await flush();
+
+    const entries = instance.getSnapshot().entries;
+    expect(entries).toHaveLength(1);
+    const entry = entries[0] as Extract<EmbeddedAgentChatEntry, { kind: 'exited' }>;
+    expect(Object.prototype.hasOwnProperty.call(entry, 'stderrTail')).toBe(false);
+    expect(entry.stderrTail).toBeUndefined();
   });
 
   describe('currentExit (#1455) -- single-writer current-state field', () => {
@@ -649,6 +825,43 @@ describe('embedded-agent-store', () => {
 
       expect(instance.getSnapshot().currentExit).toBeNull();
     });
+
+    it('sets currentExit.stderrTail from the exited event when present, verbatim (#1454)', async () => {
+      const instance = getOrCreateEmbeddedAgentWorker('s5c-stderrtail', 'w5c-stderrtail');
+      const ws = MockWebSocket.getLastInstance();
+      ws!.simulateOpen();
+
+      const data = ndjson({
+        v: 1,
+        type: 'exited',
+        code: 1,
+        reason: 'unexpected',
+        stderrTail: 'Error: ENOENT',
+      });
+      ws!.simulateMessage(historyMessage(data, data.length));
+      await flush();
+
+      expect(instance.getSnapshot().currentExit).toEqual({
+        code: 1,
+        reason: 'unexpected',
+        stderrTail: 'Error: ENOENT',
+      });
+    });
+
+    it('leaves currentExit.stderrTail ABSENT when the exited event carries none (#1454)', async () => {
+      const instance = getOrCreateEmbeddedAgentWorker('s5c-nostderrtail', 'w5c-nostderrtail');
+      const ws = MockWebSocket.getLastInstance();
+      ws!.simulateOpen();
+
+      const data = ndjson({ v: 1, type: 'exited', code: 0 });
+      ws!.simulateMessage(historyMessage(data, data.length));
+      await flush();
+
+      const currentExit = instance.getSnapshot().currentExit;
+      expect(currentExit).not.toBeNull();
+      expect(Object.prototype.hasOwnProperty.call(currentExit, 'stderrTail')).toBe(false);
+      expect(currentExit?.stderrTail).toBeUndefined();
+    });
   });
 
   it('folds a user-message server-authored event from replayed history', async () => {
@@ -701,6 +914,44 @@ describe('embedded-agent-store', () => {
     const entries = instance.getSnapshot().entries;
     expect(entries).toHaveLength(1);
     expect('notification' in entries[0]).toBe(false);
+  });
+
+  it('folds a user-message carrying an `attachments` field (Issue #1571: embedded image attachments)', async () => {
+    const instance = getOrCreateEmbeddedAgentWorker('s5e', 'w5e');
+    const ws = MockWebSocket.getLastInstance();
+    ws!.simulateOpen();
+
+    const data = ndjson({
+      v: 1,
+      type: 'user-message',
+      id: 'u1',
+      text: 'look at this',
+      attachments: [{ path: '/uploads/session-x/photo.png', mimeType: 'image/png' }],
+    });
+    ws!.simulateMessage(historyMessage(data, data.length));
+    await flush();
+
+    const entries = instance.getSnapshot().entries;
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({
+      kind: 'user-message',
+      id: 'u1',
+      attachments: [{ path: '/uploads/session-x/photo.png', mimeType: 'image/png' }],
+    });
+  });
+
+  it('a user-message with NO `attachments` field folds into an entry where the key is genuinely absent, not an empty array', async () => {
+    const instance = getOrCreateEmbeddedAgentWorker('s5f', 'w5f');
+    const ws = MockWebSocket.getLastInstance();
+    ws!.simulateOpen();
+
+    const data = ndjson({ v: 1, type: 'user-message', id: 'u1', text: 'a real human message' });
+    ws!.simulateMessage(historyMessage(data, data.length));
+    await flush();
+
+    const entries = instance.getSnapshot().entries;
+    expect(entries).toHaveLength(1);
+    expect('attachments' in entries[0]).toBe(false);
   });
 
   it('ignores state events (recognized but not rendered) without adding an entry', async () => {
@@ -1638,6 +1889,84 @@ describe('embedded-agent-store', () => {
     expect(_inspect(instance).disposed).toBe(false);
   });
 
+  // Cross-type restart, embedded-agent -> agent (#1592), mirrors
+  // terminal-store.test.ts's "session-updated worker type flip (cross-type
+  // restart)" describe block for the reverse direction (#1171).
+  describe('session-updated worker type flip (cross-type restart, #1592)', () => {
+    function makeSession(workerType: 'agent' | 'embedded-agent', workerId: string, sessionId: string) {
+      const baseWorker = {
+        id: workerId,
+        name: 'Worker',
+        createdAt: '2026-01-01T00:00:00Z',
+      };
+      const worker =
+        workerType === 'agent'
+          ? { ...baseWorker, type: 'agent' as const, agentId: 'claude-code', activated: true }
+          : {
+              ...baseWorker,
+              type: 'embedded-agent' as const,
+              embeddedAgentId: 'embedded-1',
+              activated: true,
+              autoCompaction: true,
+            };
+      return {
+        type: 'quick' as const,
+        id: sessionId,
+        locationPath: `/tmp/${sessionId}`,
+        status: 'active' as const,
+        activationState: 'running' as const,
+        createdAt: '2026-01-01T00:00:00Z',
+        workers: [worker],
+        isShared: false,
+        recoveryState: 'healthy' as const,
+      };
+    }
+
+    it('disposes on session-updated when the worker flipped to type "agent"', () => {
+      const bus = makeAppBus();
+      _setAppSubscribe(bus.subscribe);
+      const instance = getOrCreateEmbeddedAgentWorker('flip', 'w');
+      MockWebSocket.getLastInstance()!.simulateOpen();
+
+      bus.emit({
+        type: 'session-updated',
+        session: makeSession('agent', 'w', 'flip'),
+      } as unknown as AppServerMessage);
+
+      expect(_inspect(instance).disposed).toBe(true);
+    });
+
+    it('negative control: an embedded -> embedded restart (worker stays "embedded-agent") does NOT dispose', () => {
+      const bus = makeAppBus();
+      _setAppSubscribe(bus.subscribe);
+      const instance = getOrCreateEmbeddedAgentWorker('noflip', 'w');
+      MockWebSocket.getLastInstance()!.simulateOpen();
+
+      // Covers both same-definition restart (case c) and a definition
+      // switch (case b): in both, the worker's TYPE stays 'embedded-agent'.
+      bus.emit({
+        type: 'session-updated',
+        session: makeSession('embedded-agent', 'w', 'noflip'),
+      } as unknown as AppServerMessage);
+
+      expect(_inspect(instance).disposed).toBe(false);
+    });
+
+    it('session-updated for a different session is ignored', () => {
+      const bus = makeAppBus();
+      _setAppSubscribe(bus.subscribe);
+      const instance = getOrCreateEmbeddedAgentWorker('own-session', 'w');
+      MockWebSocket.getLastInstance()!.simulateOpen();
+
+      bus.emit({
+        type: 'session-updated',
+        session: makeSession('agent', 'w', 'other-session'),
+      } as unknown as AppServerMessage);
+
+      expect(_inspect(instance).disposed).toBe(false);
+    });
+  });
+
   it('a tool-result for an unknown callId is dropped defensively, not fabricated', async () => {
     const instance = getOrCreateEmbeddedAgentWorker('s20', 'w20');
     const ws = MockWebSocket.getLastInstance();
@@ -1971,6 +2300,46 @@ describe('embedded-agent-store — Transcript Restore R1 (#1410)', () => {
         ),
       );
       expect(instance.getSnapshot().entries).toHaveLength(0);
+    });
+  });
+
+  describe('model-params-applied', () => {
+    it('produces no chat row, and the fold keeps reading the stream across it', () => {
+      // What the user sees about a parameter change is the effective values
+      // arriving on the next session-updated -- never a transcript row.
+      //
+      // The `fatal` line AFTER it is what keeps this test from being
+      // vacuous. "No entries" is ALSO what a line the fold rejected as
+      // garbage produces, so on its own the assertion cannot distinguish
+      // "handled as bookkeeping" from "silently dropped" -- the same
+      // indistinguishability this PR's server-side allowlist derivation
+      // exists to remove. Exactly one entry, and it is the fatal's, is the
+      // pair of facts: the bookkeeping event added no row of its own, and
+      // the stream was still being folded after it.
+      //
+      // Measured reach (each mutation applied alone, this file re-run):
+      // - corrupting the `model-params-applied` line (unparseable JSON, or
+      //   an unknown `type`) -> still PASSES, as it must: a dropped line
+      //   does not stop the fold. That is why the fatal assertion cannot
+      //   substitute for the length assertion, and vice versa.
+      // - aborting the fold at that event (stop reading further lines once
+      //   it is seen) -> FAILS on the fatal entry being absent.
+      const instance = getOrCreateEmbeddedAgentWorker('s1', 'w1');
+      const ws = MockWebSocket.getLastInstance();
+      ws!.simulateOpen();
+      ws!.simulateMessage(
+        outputMessage(
+          ndjson(
+            { v: 1, type: 'model-params-applied', applied: false },
+            { v: 1, type: 'fatal', message: 'boom' },
+          ),
+          130,
+          1,
+        ),
+      );
+      const entries = instance.getSnapshot().entries;
+      expect(entries).toHaveLength(1);
+      expect(entries[0]).toMatchObject({ kind: 'fatal', message: 'boom' });
     });
   });
 });

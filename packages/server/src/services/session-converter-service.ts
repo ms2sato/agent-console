@@ -12,6 +12,10 @@ import type {
   EmbeddedAgentDefinition,
 } from '@agent-console/shared';
 import { resolveEffectiveContextWindow } from './embedded-agent-context-window.js';
+import {
+  resolveEffectiveModelParams,
+  hasEmbeddedAgentParameterOverride,
+} from './embedded-agent-model-params.js';
 import type {
   PersistedSession,
   PersistedWorker,
@@ -241,6 +245,11 @@ export class SessionConverterService {
           baseCommit: w.baseCommit,
         };
       } else if (w.type === 'embedded-agent') {
+        const definition = (this.deps.getEmbeddedAgent ?? (() => undefined))(w.embeddedAgentId);
+        // Effective model/effort resolved through the single writer. This
+        // converter's definition lookup is optional, so `model` legitimately
+        // comes back `undefined` here -- the wire's "UNKNOWN".
+        const { model, reasoningEffort } = resolveEffectiveModelParams(definition, w);
         return {
           id: w.id,
           type: 'embedded-agent' as const,
@@ -249,10 +258,10 @@ export class SessionConverterService {
           embeddedAgentId: w.embeddedAgentId,
           activated: false, // Paused sessions have no active subprocess
           autoCompaction: w.autoCompaction,
-          contextWindowTokens: resolveEffectiveContextWindow(
-            (this.deps.getEmbeddedAgent ?? (() => undefined))(w.embeddedAgentId),
-            w,
-          ),
+          contextWindowTokens: resolveEffectiveContextWindow(definition, w),
+          model,
+          reasoningEffort,
+          hasParameterOverride: hasEmbeddedAgentParameterOverride(w),
         };
       } else {
         const _exhaustive: never = w;

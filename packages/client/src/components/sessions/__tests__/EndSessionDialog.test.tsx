@@ -49,7 +49,7 @@ function agentWorker(id: string): Worker {
 }
 
 function embeddedAgentWorker(id: string): Worker {
-  return { id, type: 'embedded-agent', name: 'Embedded Agent', createdAt: '2026-01-01T00:00:00Z', embeddedAgentId: 'embedded-1', activated: true, autoCompaction: true };
+  return { id, type: 'embedded-agent', name: 'Embedded Agent', createdAt: '2026-01-01T00:00:00Z', embeddedAgentId: 'embedded-1', activated: true, autoCompaction: true, reasoningEffort: null, hasParameterOverride: false };
 }
 
 function createMockSessionStopTasks(overrides: Partial<UseSessionStopTasksReturn> = {}): UseSessionStopTasksReturn {

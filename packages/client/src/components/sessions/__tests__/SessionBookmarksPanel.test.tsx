@@ -45,7 +45,7 @@ function jsonResponse(data: unknown, status = 200): Response {
  *
  *   m1  `isExpanded` back to `useState(true)` -- the old default
  *       -> 18 of 19 fail. Not a narrow pin: with the panel open by default,
- *          every test that expands first finds no "Expand bookmarks" button.
+ *          every test that expands first finds no "Expand Bookmarks" button.
  *          This is the polarity check for the change's headline behaviour.
  *
  *          Historical note (unified side-rail refactor): this specific
@@ -84,8 +84,8 @@ function jsonResponse(data: unknown, status = 200): Response {
  * now has to spell out the action that revealed it.
  */
 async function expandPanel(): Promise<void> {
-  fireEvent.click(await screen.findByLabelText('Expand bookmarks'));
-  await waitFor(() => expect(screen.getByLabelText('Collapse bookmarks')).toBeTruthy());
+  fireEvent.click(await screen.findByLabelText('Expand Bookmarks'));
+  await waitFor(() => expect(screen.getByLabelText('Collapse Bookmarks')).toBeTruthy());
 }
 
 async function revealAddForm(): Promise<void> {
@@ -104,7 +104,7 @@ describe('SessionBookmarksPanel', () => {
 
     const { container } = await renderWithRouter(<ControlledBookmarksPanel sessionId="session-1" />);
 
-    expect(container.querySelector('[aria-label="Collapse bookmarks"]')).toBeNull();
+    expect(container.querySelector('[aria-label="Collapse Bookmarks"]')).toBeNull();
     expect(container.textContent).toBe('');
   });
 
@@ -356,13 +356,17 @@ describe('SessionBookmarksPanel', () => {
 
     // The default, asserted before anything is clicked. This is the case that
     // fails against the old `useState(true)`.
-    await waitFor(() => expect(screen.getByLabelText('Expand bookmarks')).toBeTruthy());
-    expect(screen.queryByLabelText('Collapse bookmarks')).toBeNull();
-    expect(screen.queryByText('Example Site')).toBeNull();
+    await waitFor(() => expect(screen.getByLabelText('Expand Bookmarks')).toBeTruthy());
+    expect(screen.queryByLabelText('Collapse Bookmarks')).toBeNull();
+    // The content stays mounted (R4' -- AccordionSectionBody never
+    // unmounts), so absence-from-DOM is no longer the right check for the
+    // collapsed body; aria-hidden is.
+    expect(screen.getByText('Example Site').closest('[aria-hidden]')?.getAttribute('aria-hidden')).toBe('true');
     expect(screen.queryByLabelText('Bookmark URL')).toBeNull();
 
     await expandPanel();
     expect(screen.getByText('Example Site')).toBeTruthy();
+    expect(screen.getByText('Example Site').closest('[aria-hidden="true"]')).toBeNull();
   });
 
   it('the add form is hidden until its button is pressed, and the button toggles it back', async () => {
@@ -390,8 +394,8 @@ describe('SessionBookmarksPanel', () => {
     await expandPanel();
     await revealAddForm();
 
-    fireEvent.click(screen.getByLabelText('Collapse bookmarks'));
-    await waitFor(() => expect(screen.getByLabelText('Expand bookmarks')).toBeTruthy());
+    fireEvent.click(screen.getByLabelText('Collapse Bookmarks'));
+    await waitFor(() => expect(screen.getByLabelText('Expand Bookmarks')).toBeTruthy());
 
     await expandPanel();
     // Re-expanded, and the form is NOT still open from before the collapse.
@@ -399,7 +403,7 @@ describe('SessionBookmarksPanel', () => {
     expect(screen.getByLabelText('Show add bookmark form')).toBeTruthy();
   });
 
-  it('collapses to a thin strip and can be re-expanded', async () => {
+  it('collapses to a header row without a body, and can be re-expanded', async () => {
     mockFetch.mockResolvedValue(
       jsonResponse({
         bookmarks: [
@@ -418,13 +422,50 @@ describe('SessionBookmarksPanel', () => {
     await expandPanel();
     await waitFor(() => expect(screen.getByText('Example Site')).toBeTruthy());
 
-    screen.getByLabelText('Collapse bookmarks').click();
+    screen.getByLabelText('Collapse Bookmarks').click();
 
-    await waitFor(() => expect(screen.getByLabelText('Expand bookmarks')).toBeTruthy());
-    expect(screen.queryByText('Example Site')).toBeNull();
+    await waitFor(() => expect(screen.getByLabelText('Expand Bookmarks')).toBeTruthy());
+    // The content stays mounted (R4' -- AccordionSectionBody never
+    // unmounts), so absence-from-DOM is no longer the right check.
+    const listWrapper = screen.getByText('Example Site').closest('[aria-hidden]');
+    expect(listWrapper?.getAttribute('aria-hidden')).toBe('true');
 
-    screen.getByLabelText('Expand bookmarks').click();
+    screen.getByLabelText('Expand Bookmarks').click();
     await waitFor(() => expect(screen.getByText('Example Site')).toBeTruthy());
+    expect(screen.getByText('Example Site').closest('[aria-hidden="true"]')).toBeNull();
+  });
+
+  it('excludes the delete button from the tab order while collapsed, and restores it when re-expanded (R6)', async () => {
+    mockFetch.mockResolvedValue(
+      jsonResponse({
+        bookmarks: [
+          {
+            id: 'bookmark-1',
+            url: 'https://example.com',
+            title: 'Example Site',
+            createdAt: '2026-08-20T00:00:00.000Z',
+            origin: 'user',
+          },
+        ],
+      })
+    );
+
+    await renderWithRouter(<ControlledBookmarksPanel sessionId="session-1" />);
+    await expandPanel();
+    await waitFor(() => expect(screen.getByText('Example Site')).toBeTruthy());
+
+    const deleteButton = screen.getByLabelText('Delete bookmark Example Site');
+    expect(deleteButton.tabIndex).not.toBe(-1);
+
+    screen.getByLabelText('Collapse Bookmarks').click();
+    await waitFor(() => expect(screen.getByLabelText('Expand Bookmarks')).toBeTruthy());
+
+    expect(deleteButton.tabIndex).toBe(-1);
+
+    screen.getByLabelText('Expand Bookmarks').click();
+    await waitFor(() => expect(screen.getByLabelText('Collapse Bookmarks')).toBeTruthy());
+
+    expect(deleteButton.tabIndex).not.toBe(-1);
   });
 
   it('renders the host as a separate DOM node, not inside the title anchor (design doc §7)', async () => {

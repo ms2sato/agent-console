@@ -11,13 +11,31 @@
  * no assertion here changes.
  */
 
-import { describe, it, expect, spyOn } from 'bun:test';
+import { describe, it, expect, spyOn, beforeEach, afterEach } from 'bun:test';
 import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
-import type { EmbeddedAgentEvent } from '@agent-console/shared';
-import type { Options, Query, SDKControlGetContextUsageResponse, SDKMessage } from '@anthropic-ai/claude-agent-sdk';
-import { createSdkCompactTool, SdkEngine, spawnClaudeCodeProcess, type SdkEngineDeps } from '../sdk-engine.js';
+import * as fsPromises from 'node:fs/promises';
+import * as os from 'node:os';
+import { z } from 'zod';
+import type { EmbeddedAgentAttachment, EmbeddedAgentEvent } from '@agent-console/shared';
+import type {
+  Options,
+  Query,
+  SDKControlGetContextUsageResponse,
+  SDKMessage,
+  SDKUserMessage,
+  SyncHookJSONOutput,
+} from '@anthropic-ai/claude-agent-sdk';
+import {
+  createSdkCompactTool,
+  createSdkTodoWriteTool,
+  SdkEngine,
+  spawnClaudeCodeProcess,
+  type SdkEngineDeps,
+} from '../sdk-engine.js';
 import { composeSdkSystemPromptAppend } from '../system-prompt.js';
+import type { ActivationBlock, RuleActivatorLike } from '../rule-activation.js';
+import { createTodoWriteTool } from '../tools/todo-write.js';
 
 // ---------------------------------------------------------------------------
 // Fixture cast escape hatches
@@ -160,6 +178,56 @@ function makeFakeQuery(
   };
 }
 
+/**
+ * A `queryFn` fake that ALSO drains the live prompt queue (`UserMessageQueue`
+ * is private to `SdkEngine`, so this is the only way to observe what
+ * `runTurn` pushed onto it) while replaying `source`'s canned messages to
+ * carry a turn to completion the ordinary way.
+ *
+ * `source[0]` (conventionally `systemInit()`) is emitted immediately, mirroring
+ * a real connection handshake that precedes any user turn. Every remaining
+ * message in `source` is held until the FIRST message has actually arrived on
+ * the prompt queue -- a real SDK cannot answer a turn it has not received yet,
+ * and without this gate a scripted response that resolves the turn (a
+ * `resultSuccess()`) could race ahead of an async attachment-resolution push
+ * and settle `runTurn`'s promise before `pushedMessages` observes anything.
+ */
+function makeCapturingQuery(source: SDKMessage[]): { queryFn: QueryFn; pushedMessages: SDKUserMessage[] } {
+  const pushedMessages: SDKUserMessage[] = [];
+  const queryFn: QueryFn = (params) => {
+    const promptIterator = (params.prompt as AsyncIterable<SDKUserMessage>)[Symbol.asyncIterator]();
+    const firstMessageArrived = (async () => {
+      const { value } = await promptIterator.next();
+      if (value) pushedMessages.push(value);
+    })();
+    // Drain any further pushes in the background; not exercised by this
+    // file's single-turn scenarios, but keeps the fake queue from stalling.
+    void (async () => {
+      await firstMessageArrived;
+      for (;;) {
+        const { value, done } = await promptIterator.next();
+        if (done) return;
+        if (value) pushedMessages.push(value);
+      }
+    })();
+
+    const gen = (async function* (): AsyncGenerator<SDKMessage, void> {
+      const [first, ...rest] = source;
+      if (first) yield first;
+      await firstMessageArrived;
+      for (const m of rest) yield m;
+      await new Promise<never>(() => {});
+    })();
+    const fake = Object.assign(gen, {
+      interrupt: async () => undefined,
+      close: () => {},
+      getContextUsage: async () => usableContextUsage(1000),
+    });
+    return asQuery(fake);
+  };
+  return { queryFn, pushedMessages };
+}
+
 /** A generator that never yields and never resolves -- models "system:init
  * never arrives" for the ready/system:init decoupling regression guard. */
 function neverYieldingGenerator(): AsyncGenerator<SDKMessage, void> {
@@ -211,6 +279,23 @@ function stringifyOptionsForContainment(options: unknown): string {
   });
 }
 
+/**
+ * Default `RuleActivatorLike` for tests that are not about lazy rule
+ * activation: never matches anything, and `activate()` is never expected to
+ * be called against it (the PostToolUse hook only calls `activate` when
+ * `matchScopedRules` returned a non-empty list). The dedicated "PostToolUse
+ * hook: lazy rule activation" describe block below overrides this with a
+ * fake that actually asserts call shape.
+ */
+function noopRuleActivator(): RuleActivatorLike {
+  return {
+    matchScopedRules: () => [],
+    activate: async () => {
+      throw new Error('activate() should never be called when matchScopedRules() returned []');
+    },
+  };
+}
+
 const baseDeps = (overrides: Partial<SdkEngineDeps> = {}): SdkEngineDeps => ({
   cwd: '/tmp/work',
   model: 'claude-sonnet-5',
@@ -221,6 +306,7 @@ const baseDeps = (overrides: Partial<SdkEngineDeps> = {}): SdkEngineDeps => ({
   // below opts in explicitly.
   autoCompaction: false,
   sleep: instantSleep(),
+  ruleActivator: noopRuleActivator(),
   ...overrides,
 });
 
@@ -318,6 +404,61 @@ function assistantToolUseMessage(callId: string, name: string, input: unknown): 
   });
 }
 
+/**
+ * Finding #1 (#1572): an `assistant` SDKMessage carrying a TEXT content
+ * block (as opposed to `assistantToolUseMessage`'s `tool_use` block). Used
+ * both for the synthetic-reply shape (no preceding `stream_event` at all)
+ * and, in the double-emit guard test, alongside real `textDeltaEvent`s.
+ */
+function assistantTextMessage(text: string): SDKMessage {
+  return asSdkMessage({
+    type: 'assistant',
+    message: {
+      id: 'msg_1',
+      role: 'assistant',
+      type: 'message',
+      content: [{ type: 'text', text }],
+      stop_reason: 'end_turn',
+      stop_sequence: null,
+      usage: {},
+      container: null,
+      context_management: null,
+      diagnostics: null,
+      model: 'claude-sonnet-5',
+      stop_details: null,
+    },
+    parent_tool_use_id: null,
+    uuid: '11111111-1111-1111-1111-111111111121',
+    session_id: '22222222-2222-2222-2222-222222222222',
+  });
+}
+
+/**
+ * Finding #2 (#1572): the SDK's own `/clear`-shaped message -- a TOP-LEVEL
+ * `conversation_reset`, not a `system` subtype.
+ */
+function conversationResetMessage(): SDKMessage {
+  return asSdkMessage({
+    type: 'conversation_reset',
+    new_conversation_id: '33333333-3333-3333-3333-333333333333',
+    uuid: '11111111-1111-1111-1111-111111111122',
+    session_id: '22222222-2222-2222-2222-222222222222',
+  });
+}
+
+/**
+ * An SDKMessage type this engine still has no mapping for -- used as the
+ * "other unknown types are unaffected" control for Finding #2's
+ * `conversation_reset` case.
+ */
+function rateLimitEventMessage(): SDKMessage {
+  return asSdkMessage({
+    type: 'rate_limit_event',
+    uuid: '11111111-1111-1111-1111-111111111123',
+    session_id: '22222222-2222-2222-2222-222222222222',
+  });
+}
+
 function userToolResultMessage(toolUseId: string, content: string, isError = false): SDKMessage {
   return asSdkMessage({
     type: 'user',
@@ -387,6 +528,14 @@ function resultError(
   });
 }
 
+describe('SdkEngine — kind (Phase 4, #1683 decision 5)', () => {
+  it("is 'claude-sdk', matching ClaudeSdkEngine's discriminant", () => {
+    const { queryFn } = makeFakeQuery([]);
+    const engine = new SdkEngine(baseDeps({ queryFn }));
+    expect(engine.kind).toBe('claude-sdk');
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Pin 1(a) -- construction seam / Options battery
 // ---------------------------------------------------------------------------
@@ -405,7 +554,8 @@ describe('SdkEngine — construction seam: the query() Options battery (Pin 1(a)
     expect(options.allowDangerouslySkipPermissions).toBe(true);
     expect(options.includePartialMessages).toBe(true);
     expect(options.settingSources).toEqual([]);
-    expect(options.settings).toEqual({ autoCompactEnabled: false });
+    // Reach measured: removing autoMemoryEnabled from buildOptions fails this line with "expected {…} to equal {…}".
+    expect(options.settings).toEqual({ autoCompactEnabled: false, autoMemoryEnabled: false });
     expect(options.mcpServers?.['agent-console']).toEqual({
       type: 'http',
       url: 'http://mcp.local',
@@ -458,7 +608,17 @@ describe('SdkEngine — construction seam: the query() Options battery (Pin 1(a)
   it('defaults options.tools to the read-only default set when enabledTools is absent', () => {
     const { queryFn, captured } = makeFakeQuery([]);
     new SdkEngine(baseDeps({ queryFn }));
-    expect(captured.options?.tools).toEqual(['Read', 'Glob', 'Grep', 'mcp__console__Compact']);
+    // `TodoWrite` is in the default enabled set (DEFAULT_EMBEDDED_AGENT_ENABLED_TOOLS),
+    // so its MCP-namespaced name (Issue #1575) rides along after `Compact`'s,
+    // in addition to the bare native name already present via `enabledToolNames`.
+    expect(captured.options?.tools).toEqual([
+      'Read',
+      'Glob',
+      'Grep',
+      'TodoWrite',
+      'mcp__console__Compact',
+      'mcp__console__TodoWrite',
+    ]);
   });
 
   it('allowlists ONLY Compact when enabledTools is the explicit empty array', () => {
@@ -485,7 +645,7 @@ describe('SdkEngine — construction seam: the query() Options battery (Pin 1(a)
   it('carries composed opt-in instruction content into options.systemPrompt.append, ordered before the definition system prompt', () => {
     const { queryFn, captured } = makeFakeQuery([]);
     const segments = [{ origin: '/tmp/work/NOTES.md', content: 'INSTRUCTION_CONTENT' }];
-    const systemPromptAppend = composeSdkSystemPromptAppend(segments, 'Be terse.');
+    const systemPromptAppend = composeSdkSystemPromptAppend({ segments }, 'Be terse.');
     new SdkEngine(baseDeps({ queryFn, systemPromptAppend }));
 
     expect(captured.options?.systemPrompt).toEqual({
@@ -502,7 +662,7 @@ describe('SdkEngine — construction seam: the query() Options battery (Pin 1(a)
 
   it('omits systemPrompt.append when neither instructions nor a definition system prompt are configured (no regression)', () => {
     const { queryFn, captured } = makeFakeQuery([]);
-    const systemPromptAppend = composeSdkSystemPromptAppend([], undefined);
+    const systemPromptAppend = composeSdkSystemPromptAppend({ segments: [] }, undefined);
     expect(systemPromptAppend).toBeUndefined();
 
     new SdkEngine(baseDeps({ queryFn, systemPromptAppend }));
@@ -667,6 +827,40 @@ describe('SdkEngine — tool-surface containment (Pin 2, S5)', () => {
     expect(events).toEqual([
       { v: 1, type: 'fatal', message: 'SDK engine session already terminated; cannot start a new turn' },
     ]);
+  });
+
+  // Issue #1573 observability: unknown/unavailable tool names in options.tools
+  // are silently dropped by the resolved CLI rather than erroring (measured
+  // against pinned SDK 0.3.238 -- `TodoWrite` is one such name) -- so the
+  // reported system:init catalog is logged whenever TodoWrite was requested,
+  // turning a future dogfood run's stderr into a free re-check of whether
+  // that has changed.
+  it('logs the reported system:init tool catalog when TodoWrite was requested', async () => {
+    const warn = spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const { queryFn } = makeFakeQuery([systemInit({ tools: ['Read', 'Glob', 'Grep'] })]);
+      new SdkEngine(baseDeps({ queryFn, enabledTools: ['Read', 'Glob', 'Grep', 'TodoWrite'] }));
+      await flush();
+
+      expect(warn).toHaveBeenCalledWith(
+        '[sdk-engine] system:init tool catalog (TodoWrite requested): Read, Glob, Grep',
+      );
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('does not log the system:init tool catalog when TodoWrite was not requested', async () => {
+    const warn = spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const { queryFn } = makeFakeQuery([systemInit({ tools: ['Read', 'Glob', 'Grep'] })]);
+      new SdkEngine(baseDeps({ queryFn, enabledTools: ['Read', 'Glob', 'Grep'] }));
+      await flush();
+
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
   });
 });
 
@@ -965,7 +1159,13 @@ describe('SdkEngine — event mapping (Appendix A.2)', () => {
             systemInit(),
             resultError('error_during_execution', ['[ede_diagnostic] result_type=user'], 'aborted_streaming'),
           ]);
-          const engine = new SdkEngine(baseDeps({ emit: (e) => events.push(e), queryFn }));
+          // enabledTools excludes TodoWrite here (unlike the default) so the
+          // Issue #1573 system:init observability warn (see sdk-engine.ts's
+          // handleSystemInit) does not pollute this spy -- this test is about
+          // turn-error diagnostic preservation, not tool-catalog logging.
+          const engine = new SdkEngine(
+            baseDeps({ emit: (e) => events.push(e), queryFn, enabledTools: ['Read', 'Glob', 'Grep'] }),
+          );
           await engine.runTurn('u1', 'hi');
 
           expect(eventsOfType(events, 'turn-error')).toEqual([
@@ -989,7 +1189,12 @@ describe('SdkEngine — event mapping (Appendix A.2)', () => {
             systemInit(),
             resultError('error_during_execution', ['boom', 'also this']),
           ]);
-          const engine = new SdkEngine(baseDeps({ emit: (e) => events.push(e), queryFn }));
+          // enabledTools excludes TodoWrite -- see the sibling test above for
+          // why (Issue #1573 observability warn would otherwise pollute this
+          // spy's call count).
+          const engine = new SdkEngine(
+            baseDeps({ emit: (e) => events.push(e), queryFn, enabledTools: ['Read', 'Glob', 'Grep'] }),
+          );
           await engine.runTurn('u1', 'hi');
 
           const turnErrors = eventsOfType(events, 'turn-error');
@@ -1013,7 +1218,11 @@ describe('SdkEngine — event mapping (Appendix A.2)', () => {
         try {
           const events: EmbeddedAgentEvent[] = [];
           const { queryFn } = makeFakeQuery([systemInit(), resultError('error_during_execution', [])]);
-          const engine = new SdkEngine(baseDeps({ emit: (e) => events.push(e), queryFn }));
+          // enabledTools excludes TodoWrite -- see the earlier test in this
+          // describe block for why.
+          const engine = new SdkEngine(
+            baseDeps({ emit: (e) => events.push(e), queryFn, enabledTools: ['Read', 'Glob', 'Grep'] }),
+          );
           await engine.runTurn('u1', 'hi');
 
           expect(eventsOfType(events, 'turn-error')).toEqual([
@@ -1037,7 +1246,11 @@ describe('SdkEngine — event mapping (Appendix A.2)', () => {
             // hide a real failure; the pin proves it does not.
             resultError('error_during_execution', ['a future SDK reason'], 'some_future_reason'),
           ]);
-          const engine = new SdkEngine(baseDeps({ emit: (e) => events.push(e), queryFn }));
+          // enabledTools excludes TodoWrite -- see the first test in this
+          // describe block for why.
+          const engine = new SdkEngine(
+            baseDeps({ emit: (e) => events.push(e), queryFn, enabledTools: ['Read', 'Glob', 'Grep'] }),
+          );
           await engine.runTurn('u1', 'hi');
 
           expect(eventsOfType(events, 'turn-error')).toEqual([
@@ -1052,6 +1265,179 @@ describe('SdkEngine — event mapping (Appendix A.2)', () => {
         }
       });
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Finding #1 (#1572) -- synthetic local-command replies (no stream_event at
+// all) must still reach the transcript via handleAssistantMessage's
+// sawTextDelta-guarded fallback.
+// ---------------------------------------------------------------------------
+
+describe('SdkEngine — Finding #1 (#1572): synthetic-reply fallback in handleAssistantMessage', () => {
+  it('emits assistant-message from a text-only assistant SDKMessage that arrived with NO preceding stream_event (synthetic reply)', async () => {
+    // Required pin 1. Polarity: with the fallback removed (comment out the
+    // `!this.sawTextDelta` block in handleAssistantMessage), this test fails
+    // -- no assistant-message event is emitted at all, matching the bug the
+    // rewritten COMPACT_SLASH_COMMAND comment describes.
+    const events: EmbeddedAgentEvent[] = [];
+    const { queryFn } = makeFakeQuery([
+      systemInit(),
+      assistantTextMessage('Set model to Sonnet 5 for this session only'),
+      resultSuccess(),
+    ]);
+    const engine = new SdkEngine(baseDeps({ emit: (e) => events.push(e), queryFn }));
+    await engine.runTurn('u1', '/model sonnet');
+
+    expect(eventsOfType(events, 'assistant-message')).toEqual([
+      { v: 1, type: 'assistant-message', turnId: 'u1', text: 'Set model to Sonnet 5 for this session only' },
+    ]);
+    // No delta ever streamed for this reply -- confirms the fallback path,
+    // not the ordinary delta-accumulation path, produced the event.
+    expect(eventsOfType(events, 'assistant-delta')).toHaveLength(0);
+  });
+
+  it('does NOT double-emit when a real delta-streamed turn is followed by the text block\'s own assistant SDKMessage', async () => {
+    // Required pin 2 (no-double-emit guard). This is exactly the shape the
+    // fallback must not fire for: `sawTextDelta` was set true by the real
+    // deltas, so the text-carrying `assistant` SDKMessage below must be a
+    // no-op for `assistant-message` emission, and message_stop's own
+    // accumulated-text emit must be the ONLY one.
+    const events: EmbeddedAgentEvent[] = [];
+    const { queryFn } = makeFakeQuery([
+      systemInit(),
+      textDeltaEvent('Hel'),
+      textDeltaEvent('lo!'),
+      assistantTextMessage('Hello!'),
+      messageStopEvent(),
+      resultSuccess(),
+    ]);
+    const engine = new SdkEngine(baseDeps({ emit: (e) => events.push(e), queryFn }));
+    await engine.runTurn('u1', 'hi');
+
+    expect(eventsOfType(events, 'assistant-message')).toEqual([
+      { v: 1, type: 'assistant-message', turnId: 'u1', text: 'Hello!' },
+    ]);
+  });
+
+  it('a /compact sent on an empty/short conversation (synthetic decline, no stream_event) reaches the transcript as an assistant-message row', async () => {
+    // Required pin 3: the rewritten COMPACT_SLASH_COMMAND comment's claim,
+    // pinned end-to-end through this file's existing runTurn harness.
+    const events: EmbeddedAgentEvent[] = [];
+    const { queryFn } = makeFakeQuery([
+      systemInit(),
+      assistantTextMessage('Not enough messages to compact.'),
+      resultSuccess(),
+    ]);
+    const engine = new SdkEngine(baseDeps({ emit: (e) => events.push(e), queryFn }));
+    await engine.runTurn('u1', '/compact');
+
+    expect(eventsOfType(events, 'assistant-message')).toEqual([
+      { v: 1, type: 'assistant-message', turnId: 'u1', text: 'Not enough messages to compact.' },
+    ]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Finding #3 (#1584, Architect review) -- does `sawTextDelta`'s
+// per-`assistant`-SDKMessage reset double-emit `assistant-message` on a
+// tool-using turn, where multiple `assistant` SDKMessages arrive within one
+// turn (one per completed content block)? Driven by a REAL captured
+// sequence, not a hand-authored one, so the interleaving of thinking / text /
+// tool_use content blocks across `assistant` SDKMessages matches what the
+// live SDK actually produces (see the fixture's own header note).
+// ---------------------------------------------------------------------------
+
+describe('SdkEngine — Finding #3 (#1584): no double-emit across a real tool-using turn', () => {
+  it('emits exactly one tool-call and exactly two assistant-message events (one per message_stop boundary) for a real captured tool-using turn', async () => {
+    // Fixture: packages/embedded-agent/src/__tests__/__fixtures__/tool-turn-real-sequence.ndjson
+    // -- 37 real SDKMessages captured from a live claude-sdk conversation that
+    // plants a secret number via a real `Read` tool call, then reports it.
+    // Each `assistant` SDKMessage's `.content` array carries ONLY the
+    // block(s) for that specific occurrence (thinking-only, text-only, or
+    // tool_use-only) -- never cumulative -- which is exactly the shape that
+    // would double-emit `assistant-message` if `sawTextDelta`'s reset were
+    // wrong. Read via readFileSync + JSON.parse per line (NDJSON), fed
+    // directly into makeFakeQuery -- no hand-authored fixture builders, so
+    // this test cannot silently diverge from what the SDK actually sends.
+    const fixturePath = join(import.meta.dir, '__fixtures__', 'tool-turn-real-sequence.ndjson');
+    const rawLines = readFileSync(fixturePath, 'utf8').trim().split('\n');
+    const messages = rawLines.map((line) => JSON.parse(line) as Record<string, unknown>);
+
+    // The real capture's system:init reports the FULL agent-console tool
+    // catalog (Task, Bash, EnterWorktree, ...) -- Pin 2's live containment
+    // check (this file's own "SDK session reported disallowed tool(s)"
+    // fatal path, unrelated to Finding #3) would otherwise terminate the
+    // session before the turn under test even completes. Only the `Read`
+    // tool the fixture's own tool_use block actually calls is relevant to
+    // this test, so the fixture's system:init is adjusted to match the
+    // engine's `enabledTools` below -- this narrows containment scope only,
+    // and does not touch any of the assistant/tool_use/text content this
+    // test asserts on.
+    for (const message of messages) {
+      if (message.type === 'system' && message.subtype === 'init') {
+        message.tools = ['Read'];
+      }
+    }
+
+    const events: EmbeddedAgentEvent[] = [];
+    const { queryFn } = makeFakeQuery(messages as unknown as SDKMessage[]);
+    const engine = new SdkEngine(baseDeps({ emit: (e) => events.push(e), queryFn, enabledTools: ['Read'] }));
+    await engine.runTurn('u1', 'What is the secret number in note.txt?');
+
+    // Double-emission guard: at most (and, per the positive assertion below,
+    // exactly) two assistant-message events -- one per message_stop boundary
+    // in the fixture, never one per content block.
+    const assistantMessages = eventsOfType(events, 'assistant-message');
+    expect(assistantMessages.length).toBeLessThanOrEqual(2);
+    expect(assistantMessages).toEqual([
+      { v: 1, type: 'assistant-message', turnId: 'u1', text: 'Let me check that file.' },
+      { v: 1, type: 'assistant-message', turnId: 'u1', text: 'The secret number is 99.' },
+    ]);
+
+    // Exactly one tool-call for the fixture's single real Read tool_use block.
+    expect(eventsOfType(events, 'tool-call')).toEqual([
+      {
+        v: 1,
+        type: 'tool-call',
+        turnId: 'u1',
+        callId: 'toolu_01AKNi4uvzRofJBkC7CXtx9m',
+        name: 'Read',
+        args: { file_path: 'note.txt' },
+      },
+    ]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Finding #2 (#1572) -- `/clear`'s `conversation_reset`: declare the
+// divergence instead of silently dropping it.
+// ---------------------------------------------------------------------------
+
+describe('SdkEngine — Finding #2 (#1572): conversation_reset declares the divergence', () => {
+  it('maps a conversation_reset message to a turn-error naming the divergence', async () => {
+    const events: EmbeddedAgentEvent[] = [];
+    const { queryFn } = makeFakeQuery([systemInit(), conversationResetMessage(), resultSuccess()]);
+    const engine = new SdkEngine(baseDeps({ emit: (e) => events.push(e), queryFn }));
+    await engine.runTurn('u1', '/clear');
+
+    expect(eventsOfType(events, 'turn-error')).toEqual([
+      {
+        v: 1,
+        type: 'turn-error',
+        turnId: 'u1',
+        message: "SDK conversation was reset; the transcript above is no longer the model's memory",
+      },
+    ]);
+  });
+
+  it('leaves other still-unmapped message types silently ignored (control: conversation_reset handling did not widen the default case)', async () => {
+    const events: EmbeddedAgentEvent[] = [];
+    const { queryFn } = makeFakeQuery([systemInit(), rateLimitEventMessage(), resultSuccess()]);
+    const engine = new SdkEngine(baseDeps({ emit: (e) => events.push(e), queryFn }));
+    await engine.runTurn('u1', 'hi');
+
+    expect(eventsOfType(events, 'turn-error')).toHaveLength(0);
   });
 });
 
@@ -1471,17 +1857,136 @@ async function firePostCompactHook(options: Options | undefined, summary: string
   return true;
 }
 
+/**
+ * Invokes the `PostToolUse` hook wired into the captured options, exactly as
+ * the SDK would for a real tool call. Returns `null` when no such hook was
+ * registered (regression guard for the hook's own presence), otherwise the
+ * `SyncHookJSONOutput` the callback returned.
+ */
+async function firePostToolUseHook(
+  options: Options | undefined,
+  toolName: string,
+  toolInput: unknown,
+): Promise<SyncHookJSONOutput | null> {
+  const matchers = options?.hooks?.PostToolUse;
+  if (!matchers || matchers.length === 0) return null;
+  let last: SyncHookJSONOutput | null = null;
+  for (const matcher of matchers) {
+    for (const hook of matcher.hooks) {
+      last = (await hook(
+        {
+          hook_event_name: 'PostToolUse',
+          tool_name: toolName,
+          tool_input: toolInput,
+          tool_response: {},
+          tool_use_id: 'call-1',
+          session_id: '22222222-2222-2222-2222-222222222222',
+          transcript_path: '/tmp/transcript.jsonl',
+          cwd: '/tmp/work',
+          permission_mode: 'bypassPermissions',
+        } as Parameters<typeof hook>[0],
+        undefined,
+        { signal: new AbortController().signal },
+      )) as SyncHookJSONOutput;
+    }
+  }
+  return last;
+}
+
+/**
+ * A `RuleActivatorLike` fake that records every call and answers exactly
+ * once per name in `matchOnce` -- mirrors the real `RuleActivator`'s
+ * once-only contract (see rule-activation.ts) so this file's "second call
+ * for the same rule" test does not need a real filesystem-backed activator
+ * to exercise the wiring.
+ */
+function fakeRuleActivator(matchOnce: Record<string, string[]>, blockText = 'RULE BLOCK'): {
+  activator: RuleActivatorLike;
+  matchCalls: { toolName: string; args: unknown }[];
+  activateCalls: string[][];
+} {
+  const matchCalls: { toolName: string; args: unknown }[] = [];
+  const activateCalls: string[][] = [];
+  const alreadyMatched = new Set<string>();
+  const activator: RuleActivatorLike = {
+    matchScopedRules: (toolName, args) => {
+      matchCalls.push({ toolName, args });
+      const names = (matchOnce[toolName] ?? []).filter((n) => !alreadyMatched.has(n));
+      for (const n of names) alreadyMatched.add(n);
+      return names;
+    },
+    activate: async (names) => {
+      activateCalls.push(names);
+      if (names.length === 0) return null;
+      const block: ActivationBlock = { text: blockText, skippedForSize: [], activatedNames: names };
+      return block;
+    },
+  };
+  return { activator, matchCalls, activateCalls };
+}
+
+describe('SdkEngine — PostToolUse hook: lazy rule activation (#1343 Phase B, claude-sdk slice)', () => {
+  it('registers a PostToolUse entry in options.hooks', () => {
+    const { queryFn, captured } = makeFakeQuery([]);
+    new SdkEngine(baseDeps({ queryFn }));
+    expect(captured.options?.hooks?.PostToolUse).toBeDefined();
+    expect(captured.options?.hooks?.PostToolUse?.length).toBeGreaterThan(0);
+  });
+
+  it('returns the activation block as additionalContext for a matching tool_input.file_path', async () => {
+    const { activator, matchCalls, activateCalls } = fakeRuleActivator({ Read: ['workflow'] }, 'THE RULE TEXT');
+    const { queryFn, captured } = makeFakeQuery([]);
+    new SdkEngine(baseDeps({ queryFn, ruleActivator: activator }));
+
+    const result = await firePostToolUseHook(captured.options, 'Read', { file_path: 'src/x.ts' });
+
+    expect(matchCalls).toEqual([{ toolName: 'Read', args: { file_path: 'src/x.ts' } }]);
+    expect(activateCalls).toEqual([['workflow']]);
+    expect(result).toEqual({
+      continue: true,
+      hookSpecificOutput: { hookEventName: 'PostToolUse', additionalContext: 'THE RULE TEXT' },
+    });
+  });
+
+  it('returns { continue: true } with no hookSpecificOutput for a non-matching tool_input', async () => {
+    const { activator, activateCalls } = fakeRuleActivator({ Read: ['workflow'] });
+    const { queryFn, captured } = makeFakeQuery([]);
+    new SdkEngine(baseDeps({ queryFn, ruleActivator: activator }));
+
+    // A Bash call: `RuleActivator.matchScopedRules` never matches Bash, by
+    // construction (R3) -- this fake mirrors that via `matchOnce` having no
+    // 'Bash' key.
+    const result = await firePostToolUseHook(captured.options, 'Bash', { command: 'ls' });
+
+    expect(activateCalls).toEqual([]);
+    expect(result).toEqual({ continue: true });
+  });
+
+  it('returns { continue: true } with no hookSpecificOutput the SECOND time for an already-activated rule', async () => {
+    const { activator, activateCalls } = fakeRuleActivator({ Read: ['workflow'] });
+    const { queryFn, captured } = makeFakeQuery([]);
+    new SdkEngine(baseDeps({ queryFn, ruleActivator: activator }));
+
+    const first = await firePostToolUseHook(captured.options, 'Read', { file_path: 'src/x.ts' });
+    const second = await firePostToolUseHook(captured.options, 'Read', { file_path: 'src/y.ts' });
+
+    expect(first?.hookSpecificOutput).toBeDefined();
+    expect(activateCalls).toEqual([['workflow']]);
+    expect(second).toEqual({ continue: true });
+  });
+});
+
 describe('SdkEngine — compaction: the auto toggle', () => {
   it('composes the worker toggle into the SDK settings, ON', () => {
     const { queryFn, captured } = makeFakeQuery([]);
     new SdkEngine(baseDeps({ queryFn, autoCompaction: true }));
-    expect(captured.options?.settings).toEqual({ autoCompactEnabled: true });
+    expect(captured.options?.settings).toEqual({ autoCompactEnabled: true, autoMemoryEnabled: false });
   });
 
   it('composes the worker toggle into the SDK settings, OFF', () => {
     const { queryFn, captured } = makeFakeQuery([]);
     new SdkEngine(baseDeps({ queryFn, autoCompaction: false }));
-    expect(captured.options?.settings).toEqual({ autoCompactEnabled: false });
+    expect(captured.options?.settings).toEqual({ autoCompactEnabled: false, autoMemoryEnabled: false });
   });
 
   it('applies a live toggle change to the running session via applyFlagSettings', () => {
@@ -2019,6 +2524,130 @@ describe('SdkEngine — compaction: the Compact tool', () => {
   });
 });
 
+describe('SdkEngine — TodoWrite, MCP-served (Issue #1575)', () => {
+  it('registers the namespaced tool name in options.tools when TodoWrite is enabled (default)', () => {
+    const { queryFn, captured } = makeFakeQuery([]);
+    new SdkEngine(baseDeps({ queryFn }));
+
+    expect(captured.options?.mcpServers?.['console']).toBeDefined();
+    expect(captured.options?.tools).toContain('mcp__console__TodoWrite');
+    // The bare native name stays in the array too -- deliberate, see
+    // buildOptions()'s comment: a future SDK that starts natively
+    // recognizing it is still caught by handleSystemInit's existing warn.
+    expect(captured.options?.tools).toContain('TodoWrite');
+  });
+
+  it('does NOT register the namespaced tool name when TodoWrite is not in enabledTools', () => {
+    const { queryFn, captured } = makeFakeQuery([]);
+    new SdkEngine(baseDeps({ queryFn, enabledTools: ['Read', 'Bash'] }));
+
+    expect(captured.options?.tools).not.toContain('mcp__console__TodoWrite');
+    expect(captured.options?.tools).toEqual(['Read', 'Bash', 'mcp__console__Compact']);
+  });
+
+  it('does NOT register the namespaced tool name when enabledTools is the explicit empty array', () => {
+    const { queryFn, captured } = makeFakeQuery([]);
+    new SdkEngine(baseDeps({ queryFn, enabledTools: [] }));
+
+    expect(captured.options?.tools).toEqual(['mcp__console__Compact']);
+  });
+
+  it("the tool's handler validates with the SAME schema and gives the SAME message as the openai-api builtin for structurally-valid-but-content-invalid input", async () => {
+    // `todos` here is a structurally valid array of objects (passes the SDK
+    // schema's top-level shape, see createSdkTodoWriteTool's doc comment),
+    // but `status` is not one of the picklist values -- a CONTENT violation
+    // the schema's z.unknown() leaves alone, so it reaches the handler's own
+    // v.safeParse(TodoWriteArgsSchema, ...) call, the same one the
+    // openai-api builtin uses.
+    const malformed = { todos: [{ content: 'A', status: 'blocked', activeForm: 'Doing A' }] };
+
+    const sdkDefinition = createSdkTodoWriteTool();
+    const sdkResult = (await sdkDefinition.handler(malformed, undefined)) as {
+      content: { type: 'text'; text: string }[];
+      isError?: boolean;
+    };
+
+    const openaiTool = createTodoWriteTool();
+    const openaiResult = await openaiTool.execute(malformed, {} as never);
+
+    expect(sdkResult.isError).toBe(true);
+    expect(openaiResult.ok).toBe(false);
+    expect(sdkResult.content[0]?.text).toBe(openaiResult.result);
+  });
+
+  it('rejects a STRUCTURALLY invalid payload (todos not an array at all) at the schema level, before the handler ever runs -- a different, earlier-caught failure than the content-validation case above (Issue #1575)', async () => {
+    // The SDK's own MCP request-handling validates a raw zod shape by
+    // wrapping it with z.object(...) and calling .safeParseAsync(...) on the
+    // incoming args BEFORE the registered handler is invoked (this is the
+    // same wrapping z.object() itself performs on a ZodRawShape, and matches
+    // what was observed inspecting the vendored SDK's tool-call validation
+    // path). createSdkTodoWriteTool's returned definition exposes exactly
+    // the raw shape that was handed to the SDK's tool() factory, so
+    // reconstructing that same z.object(...) wrapper here exercises the
+    // production schema through the identical mechanism the SDK itself
+    // uses -- not a hand-rolled duplicate of TodoWriteArgsSchema's own
+    // validation logic.
+    const sdkDefinition = createSdkTodoWriteTool();
+    const schema = z.object(sdkDefinition.inputSchema);
+
+    // This is the exact live-reproduced failure shape from Issue #1575: the
+    // model sent `todos` as a JSON-stringified array instead of a native one.
+    const structurallyInvalid = {
+      todos: '[{"content":"A","activeForm":"Doing A","status":"pending"}]',
+    };
+
+    const result = await schema.safeParseAsync(structurallyInvalid);
+
+    expect(result.success).toBe(false);
+  });
+
+  it("the tool's handler returns the SAME summary text format as the openai-api builtin for valid input", async () => {
+    const todos = [{ content: 'Run tests', status: 'in_progress' as const, activeForm: 'Running tests' }];
+
+    const sdkDefinition = createSdkTodoWriteTool();
+    const sdkResult = (await sdkDefinition.handler({ todos }, undefined)) as {
+      content: { type: 'text'; text: string }[];
+      isError?: boolean;
+    };
+
+    const openaiTool = createTodoWriteTool();
+    const openaiResult = await openaiTool.execute({ todos }, {} as never);
+
+    expect(sdkResult.isError).toBeUndefined();
+    expect(openaiResult.ok).toBe(true);
+    expect(sdkResult.content[0]?.text).toBe(openaiResult.result);
+    expect(sdkResult.content[0]?.text).toBe('Todo list updated: 1 items (0 pending, 1 in progress, 0 completed)');
+  });
+
+  it('replaces the whole list on each call (full replace, not merge)', async () => {
+    const sdkDefinition = createSdkTodoWriteTool();
+    await sdkDefinition.handler(
+      { todos: [{ content: 'A', status: 'pending' as const, activeForm: 'Doing A' }] },
+      undefined,
+    );
+    const second = (await sdkDefinition.handler({ todos: [] }, undefined)) as {
+      content: { type: 'text'; text: string }[];
+    };
+    expect(second.content[0]?.text).toBe('Todo list updated: 0 items (0 pending, 0 in progress, 0 completed)');
+  });
+
+  it('state does not leak across independent closures (fresh per incarnation, mirroring the openai-api builtin)', async () => {
+    const first = createSdkTodoWriteTool();
+    await first.handler(
+      { todos: [{ content: 'A', status: 'pending' as const, activeForm: 'Doing A' }] },
+      undefined,
+    );
+
+    const second = createSdkTodoWriteTool();
+    const secondResult = (await second.handler({ todos: [] }, undefined)) as {
+      content: { type: 'text'; text: string }[];
+    };
+    // A fresh instance starts with an empty list -- if state leaked via a
+    // shared module-level variable, this would read "1 items" from `first`.
+    expect(secondResult.content[0]?.text).toBe('Todo list updated: 0 items (0 pending, 0 in progress, 0 completed)');
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Transcript Restore, R1 (#1410)
 // ---------------------------------------------------------------------------
@@ -2173,5 +2802,395 @@ describe('SdkEngine — a resume the SDK refuses (R1, PS6)', () => {
     const failures = eventsOfType(events, 'sdk-resume-failed');
     expect(failures).toHaveLength(1);
     expect(failures[0]).toMatchObject({ requestedSdkSessionId: 'sess-gone', reason: 'refused' });
+  });
+});
+
+describe('SdkEngine — image attachments (#1571, confined to runTurn)', () => {
+  const PNG_BASE64 =
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=';
+  const PNG_BYTES = Buffer.from(PNG_BASE64, 'base64');
+
+  let rootDir: string;
+
+  beforeEach(async () => {
+    rootDir = await fsPromises.mkdtemp(join(os.tmpdir(), 'sdk-engine-attach-'));
+  });
+
+  afterEach(async () => {
+    await fsPromises.rm(rootDir, { recursive: true, force: true });
+  });
+
+  it('pushes text+image content blocks (Anthropic shapes) for a turn with one PNG attachment', async () => {
+    const filePath = join(rootDir, 'shot.png');
+    await fsPromises.writeFile(filePath, PNG_BYTES);
+    const attachments: EmbeddedAgentAttachment[] = [{ path: filePath, mimeType: 'image/png' }];
+
+    const { queryFn, pushedMessages } = makeCapturingQuery([
+      systemInit(),
+      textDeltaEvent('I see it'),
+      messageStopEvent(),
+      resultSuccess(),
+    ]);
+    const engine = new SdkEngine(baseDeps({ queryFn, attachmentRoots: [rootDir] }));
+    await engine.runTurn('u1', 'what is in this image?', attachments);
+
+    expect(pushedMessages).toHaveLength(1);
+    expect(pushedMessages[0].message).toEqual({
+      role: 'user',
+      content: [
+        { type: 'text', text: 'what is in this image?' },
+        {
+          type: 'image',
+          source: { type: 'base64', media_type: 'image/png', data: PNG_BYTES.toString('base64') },
+        },
+      ],
+    });
+  });
+
+  it('pushes a plain string, byte-identical to pre-#1571 behavior, for a turn with no attachments', async () => {
+    const { queryFn, pushedMessages } = makeCapturingQuery([
+      systemInit(),
+      textDeltaEvent('ok'),
+      messageStopEvent(),
+      resultSuccess(),
+    ]);
+    const engine = new SdkEngine(baseDeps({ queryFn, attachmentRoots: [rootDir] }));
+    await engine.runTurn('u1', 'hello there');
+
+    expect(pushedMessages).toHaveLength(1);
+    // Explicit shape comparison against the old
+    // `{ role: 'user', content: text }` construction, not merely
+    // `typeof === 'string'` -- the polarity requirement.
+    expect(pushedMessages[0].message).toEqual({ role: 'user', content: 'hello there' });
+  });
+
+  it('never pushes onto the queue and settles as canceled when cancel() lands during attachment resolution', async () => {
+    const filePath = join(rootDir, 'shot.png');
+    await fsPromises.writeFile(filePath, PNG_BYTES);
+    const attachments: EmbeddedAgentAttachment[] = [{ path: filePath, mimeType: 'image/png' }];
+
+    const { queryFn, pushedMessages } = makeCapturingQuery([
+      systemInit(),
+      textDeltaEvent('second turn ok'),
+      messageStopEvent(),
+      resultSuccess(),
+    ]);
+    const events: EmbeddedAgentEvent[] = [];
+    const engine = new SdkEngine(
+      baseDeps({ queryFn, attachmentRoots: [rootDir], emit: (e) => events.push(e) }),
+    );
+
+    const turnPromise = engine.runTurn('u1', 'what is in this image?', attachments);
+    // Synchronous, no await in between: `runTurn`'s detached IIFE has already
+    // reached the real fs-read gap inside `resolveImageAttachments` by the
+    // time `runTurn`'s own synchronous prefix returns control here, so
+    // cancel() lands on the pending attachment resolution rather than after
+    // it.
+    engine.cancel();
+    await turnPromise;
+
+    // The message never reached the live SDK queue.
+    expect(pushedMessages).toHaveLength(0);
+    expect(eventsOfType(events, 'turn-error')).toEqual([
+      { v: 1, type: 'turn-error', turnId: 'u1', message: 'turn canceled' },
+    ]);
+    const stateEvents = eventsOfType(events, 'state').map((e) => e.state);
+    expect(stateEvents).toEqual(['active', 'idle']);
+
+    // A subsequent turn for a new turn id is accepted normally -- the
+    // canceled turn settled `currentTurnDeferred` and did not leave the
+    // engine wedged.
+    await engine.runTurn('u2', 'second turn');
+    expect(pushedMessages).toHaveLength(1);
+    expect(pushedMessages[0].message).toEqual({ role: 'user', content: 'second turn' });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Mid-run model / reasoning-effort / context-window change
+// ---------------------------------------------------------------------------
+
+/**
+ * agent-surface.md Phase 3: `SdkEngine.setModelParams`.
+ *
+ * Both parameters apply LIVE on this engine -- `setModel` for the model,
+ * `applyFlagSettings({ effortLevel })` for the effort -- so `applied: true` is
+ * the ordinary outcome and no caller has to model a restart.
+ *
+ * Measured reach (each mutation applied alone, whole file re-run):
+ * - dropping the `await this.query.setModel(...)` call -> 2 failures (the
+ *   live-write test, and the model-rejection test, which then has nothing
+ *   left to reject).
+ * - dropping the `await this.query.applyFlagSettings(...)` call -> 3 failures
+ *   (live-write, clear, and the effort-rejection test).
+ * - passing `effortLevel: effortLevel ?? undefined` instead of the raw `null`
+ *   -> 1 failure, the clear test, on `toBeNull()`. An `undefined` there is
+ *   dropped by JSON serialization, so the flag layer would keep a stale
+ *   effort: the silent no-op that assertion exists to catch, and the reason
+ *   the shape of the assertion (not just its subject) is load-bearing.
+ * - emitting `applied: true` unconditionally after the try/catch -> 2
+ *   failures, both rejection tests.
+ * - removing the `this.dead` early return -> 1 failure, the disposed-engine
+ *   test, on the SDK having been called AND on `applied` being true.
+ */
+describe('SdkEngine — setModelParams (agent-surface.md Phase 3)', () => {
+  interface LiveWriteHandle {
+    queryFn: QueryFn;
+    setModelCalls: (string | undefined)[];
+    flagSettings: Record<string, unknown>[];
+  }
+
+  /** Wraps `makeFakeQuery`'s fake with the two live-write methods this engine
+   * calls (neither is part of the base fake, which only implements what other
+   * describes need), optionally making one of them reject.
+   *
+   * `holdFirstSetModel` is the ordering tests' lever: the FIRST `setModel`
+   * hangs until `releaseFirstSetModel()` is called, which is the only way to
+   * construct the interleaving the chain exists to prevent (a delayed first
+   * call whose second half lands after a later call's). */
+  function makeLiveWriteQuery(
+    opts: {
+      failOn?: 'setModel' | 'applyFlagSettings';
+      /** Fail `applyFlagSettings` for ONE effort value only, which is what
+       * makes two `model-params-applied` events tell each other apart: the
+       * event carries nothing but `applied`, so two successful calls emit
+       * two identical objects and their ORDER is unobservable. */
+      failFlagForEffort?: string;
+      holdFirstSetModel?: boolean;
+      liveModel?: { value: string | undefined };
+    } = {},
+  ): LiveWriteHandle & { releaseFirstSetModel: () => void } {
+    const setModelCalls: (string | undefined)[] = [];
+    const flagSettings: Record<string, unknown>[] = [];
+    let release: () => void = () => {};
+    const held =
+      opts.holdFirstSetModel === true
+        ? new Promise<void>((resolve) => {
+            release = resolve;
+          })
+        : null;
+    let setModelSeen = 0;
+    const { queryFn: base } = makeFakeQuery([]);
+    const queryFn: QueryFn = (params) =>
+      asQuery(
+        Object.assign(base(params), {
+          setModel: async (model?: string) => {
+            setModelCalls.push(model);
+            setModelSeen += 1;
+            if (held !== null && setModelSeen === 1) await held;
+            // The LIVE session's model, written when the call completes --
+            // the state an interleaving would leave on the wrong value.
+            if (opts.liveModel) opts.liveModel.value = model;
+            if (opts.failOn === 'setModel') throw new Error('transport gone');
+          },
+          applyFlagSettings: async (settings: Record<string, unknown>) => {
+            flagSettings.push(settings);
+            if (opts.failOn === 'applyFlagSettings') throw new Error('transport gone');
+            if (
+              opts.failFlagForEffort !== undefined &&
+              settings.effortLevel === opts.failFlagForEffort
+            ) {
+              throw new Error('transport gone');
+            }
+          },
+        }),
+      );
+    return { queryFn, setModelCalls, flagSettings, releaseFirstSetModel: () => release() };
+  }
+
+  it('writes the new model and the new effort to the live session, then reports applied', async () => {
+    const events: EmbeddedAgentEvent[] = [];
+    const { queryFn, setModelCalls, flagSettings } = makeLiveWriteQuery();
+    const engine = new SdkEngine(baseDeps({ queryFn, emit: (e) => events.push(e) }));
+
+    engine.setModelParams({ model: 'claude-opus-5', reasoningEffort: 'medium', contextWindowTokens: 120000 });
+    await flush();
+
+    expect(setModelCalls).toEqual(['claude-opus-5']);
+    expect(flagSettings).toEqual([{ effortLevel: 'medium' }]);
+    expect(eventsOfType(events, 'model-params-applied')).toEqual([
+      { v: 1, type: 'model-params-applied', applied: true },
+    ]);
+  });
+
+  it('clears the effort with an explicit null -- NOT undefined, which the SDK drops in serialization (a silent no-op)', async () => {
+    const events: EmbeddedAgentEvent[] = [];
+    const { queryFn, flagSettings } = makeLiveWriteQuery();
+    const engine = new SdkEngine(
+      baseDeps({ queryFn, effort: 'low', emit: (e) => events.push(e) }),
+    );
+
+    engine.setModelParams({ model: 'claude-sonnet-5', reasoningEffort: null, contextWindowTokens: null });
+    await flush();
+
+    expect(flagSettings).toHaveLength(1);
+    // The load-bearing assertion of this whole describe: `toBeNull()` fails
+    // for `undefined`, where a `toBeUndefined()`/`toEqual` pair would not
+    // distinguish the two. `null` clears the flag layer; `undefined` is
+    // dropped by JSON serialization and leaves the previous effort in place.
+    expect(flagSettings[0].effortLevel).toBeNull();
+    expect('effortLevel' in flagSettings[0]).toBe(true);
+    expect(eventsOfType(events, 'model-params-applied')).toEqual([
+      { v: 1, type: 'model-params-applied', applied: true },
+    ]);
+  });
+
+  it('reports applied: false when a live write rejects -- the persisted values still apply at the next activation', async () => {
+    const events: EmbeddedAgentEvent[] = [];
+    const { queryFn } = makeLiveWriteQuery({ failOn: 'applyFlagSettings' });
+    const engine = new SdkEngine(baseDeps({ queryFn, emit: (e) => events.push(e) }));
+
+    expect(() =>
+      engine.setModelParams({ model: 'claude-opus-5', reasoningEffort: 'high', contextWindowTokens: null }),
+    ).not.toThrow();
+    await flush();
+
+    expect(eventsOfType(events, 'model-params-applied')).toEqual([
+      { v: 1, type: 'model-params-applied', applied: false },
+    ]);
+  });
+
+  it('reports applied: false when the model write rejects, and does not attempt the effort write after it', async () => {
+    const events: EmbeddedAgentEvent[] = [];
+    const { queryFn, flagSettings } = makeLiveWriteQuery({ failOn: 'setModel' });
+    const engine = new SdkEngine(baseDeps({ queryFn, emit: (e) => events.push(e) }));
+
+    engine.setModelParams({ model: 'claude-opus-5', reasoningEffort: 'high', contextWindowTokens: null });
+    await flush();
+
+    expect(flagSettings).toEqual([]);
+    expect(eventsOfType(events, 'model-params-applied')).toEqual([
+      { v: 1, type: 'model-params-applied', applied: false },
+    ]);
+  });
+
+  it('reports applied: false and touches the SDK not at all once the engine is dead', async () => {
+    const events: EmbeddedAgentEvent[] = [];
+    const { queryFn, setModelCalls, flagSettings } = makeLiveWriteQuery();
+    const engine = new SdkEngine(baseDeps({ queryFn, emit: (e) => events.push(e) }));
+    engine.dispose();
+
+    engine.setModelParams({ model: 'claude-opus-5', reasoningEffort: 'high', contextWindowTokens: 120000 });
+    await flush();
+
+    expect(setModelCalls).toEqual([]);
+    expect(flagSettings).toEqual([]);
+    // "Not live", never "not saved": the server persisted the row before
+    // sending the command, and the next activation reads it.
+    expect(eventsOfType(events, 'model-params-applied')).toEqual([
+      { v: 1, type: 'model-params-applied', applied: false },
+    ]);
+  });
+
+  /**
+   * The serialization property. A call's work is two AWAITED live writes, so
+   * two detached calls can interleave as A.setModel, B.setModel,
+   * B.applyFlagSettings, A.applyFlagSettings -- leaving the live session
+   * holding A's values while the stream already reported on B.
+   *
+   * Two fixture choices carry the whole test:
+   * - The fake's FIRST `setModel` hangs until released, which is what makes
+   *   the interleaving REACHABLE. With an unheld fake both calls happen to
+   *   complete in arrival order and the two shapes are indistinguishable.
+   * - The FIRST call's effort write fails (`failFlagForEffort: 'low'`), so
+   *   the two `model-params-applied` events differ. The event carries
+   *   nothing but `applied`, so two successful calls emit two identical
+   *   objects and their order cannot be read at all -- the assertion would
+   *   be vacuous.
+   *
+   * Measured reach (chain reverted to a detached
+   * `void this.applyModelParamsOnce(params)`, this test re-run):
+   * - the mid-test assertion fails first: the second call's event has
+   *   already arrived while the first is still held inside `setModel`.
+   * - with that assertion removed to see the rest, (1) fails --
+   *   `liveModel.value` is `'model-A'`, the earlier call landing LAST, which
+   *   is the defect itself.
+   * - with (1) also removed, (2) fails -- the events arrive
+   *   `[applied: true, applied: false]`, i.e. the second call reporting
+   *   before the first.
+   * Both halves are kept: (1) alone would pass under a race that got lucky,
+   * and (2) is what proves the serialization rather than the outcome.
+   */
+  it('applies two rapid changes in call order, never letting the earlier one land last', async () => {
+    const events: EmbeddedAgentEvent[] = [];
+    const liveModel: { value: string | undefined } = { value: undefined };
+    const { queryFn, releaseFirstSetModel } = makeLiveWriteQuery({
+      holdFirstSetModel: true,
+      failFlagForEffort: 'low',
+      liveModel,
+    });
+    const engine = new SdkEngine(baseDeps({ queryFn, emit: (e) => events.push(e) }));
+
+    engine.setModelParams({ model: 'model-A', reasoningEffort: 'low', contextWindowTokens: null });
+    engine.setModelParams({ model: 'model-B', reasoningEffort: 'high', contextWindowTokens: null });
+    await flush();
+    // Nothing has landed yet: the second call cannot start until the first
+    // has SETTLED, and the first is held inside `setModel`.
+    expect(eventsOfType(events, 'model-params-applied')).toEqual([]);
+    expect(liveModel.value).toBeUndefined();
+
+    releaseFirstSetModel();
+    await flush();
+
+    // (1) The live session ends on the SECOND call's model.
+    expect(liveModel.value).toBe('model-B');
+    // (2) ...and the two reports arrive in CALL order -- the first call's
+    // failed apply first, then the second call's successful one.
+    expect(eventsOfType(events, 'model-params-applied')).toEqual([
+      { v: 1, type: 'model-params-applied', applied: false },
+      { v: 1, type: 'model-params-applied', applied: true },
+    ]);
+  });
+
+  /**
+   * The chain's own failure mode, which the ordering test above cannot
+   * reach: a link that REJECTS leaves `modelParamsChain` rejected, and every
+   * link appended afterwards is then skipped WITHOUT its body running --
+   * silently dropping every later parameter change for the life of the
+   * engine. That is what the trailing `.catch(() => {})` is for.
+   *
+   * The rejection has to come from OUTSIDE the live writes to exist at all:
+   * `applyModelParamsOnce` catches its own `setModel`/`applyFlagSettings`
+   * failures and reports them as `applied: false`. Here the first call's
+   * `emit` consumer throws -- from the catch branch's `applied: false`
+   * emit, which is not itself wrapped -- which is exactly the shape that
+   * escapes.
+   *
+   * Measured reach (dropping the `.catch(() => {})` from the chain):
+   * - FAILS immediately on the escaped `emit consumer blew up` rejection,
+   *   which bun attributes to this test -- the rejected chain has nothing
+   *   left to handle it.
+   * - with that rejection silenced but the chain still left poisoned (a
+   *   `void this.modelParamsChain.catch(() => {})` AFTER the assignment, so
+   *   the field keeps holding the rejected promise), FAILS on the length:
+   *   1 event, not 2. The second call's body never ran.
+   */
+  it('a failed link does not poison the chain: the next call still applies', async () => {
+    const events: EmbeddedAgentEvent[] = [];
+    const { queryFn } = makeLiveWriteQuery({ failOn: 'applyFlagSettings' });
+    let throwOnNextEmit = true;
+    const engine = new SdkEngine(
+      baseDeps({
+        queryFn,
+        emit: (e) => {
+          events.push(e);
+          if (e.type === 'model-params-applied' && throwOnNextEmit) {
+            throwOnNextEmit = false;
+            throw new Error('emit consumer blew up');
+          }
+        },
+      }),
+    );
+
+    engine.setModelParams({ model: 'model-A', reasoningEffort: 'low', contextWindowTokens: null });
+    await flush();
+    expect(eventsOfType(events, 'model-params-applied')).toEqual([
+      { v: 1, type: 'model-params-applied', applied: false },
+    ]);
+
+    // The second call's event is the proof its body ran at all.
+    engine.setModelParams({ model: 'model-B', reasoningEffort: 'high', contextWindowTokens: null });
+    await flush();
+    expect(eventsOfType(events, 'model-params-applied')).toHaveLength(2);
   });
 });

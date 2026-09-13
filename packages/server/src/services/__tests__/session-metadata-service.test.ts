@@ -4,13 +4,11 @@ import {
   buildInternalWorktreeSession,
   buildInternalQuickSession,
   buildPersistedWorktreeSession,
-  buildPersistedQuickSession,
-  buildPersistedAgentWorker,
   buildPersistedGitDiffWorker,
 } from '../../__tests__/utils/build-test-data.js';
 import { SessionMetadataService, type SessionMetadataDeps } from '../session-metadata-service.js';
 import type { InternalSession } from '../internal-types.js';
-import type { PersistedSession, PersistedWorktreeSession, PersistedGitDiffWorker } from '../persistence-service.js';
+import type { PersistedSession, PersistedWorktreeSession } from '../persistence-service.js';
 import type { Session } from '@agent-console/shared';
 import type { SessionRepository } from '../../repositories/session-repository.js';
 
@@ -46,7 +44,6 @@ describe('SessionMetadataService', () => {
 
   beforeEach(() => {
     resetGitMocks();
-    mockGit.getCurrentBranch.mockImplementation(() => Promise.resolve('old-branch'));
 
     deps = createMockDeps();
     service = new SessionMetadataService(deps);
@@ -69,83 +66,6 @@ describe('SessionMetadataService', () => {
       expect(session.title).toBe('New Title');
       expect(deps.persistSession).toHaveBeenCalledWith(session);
       expect(onSessionUpdated).toHaveBeenCalledTimes(1);
-    });
-
-    it('should rename branch for active worktree session', async () => {
-      const session = buildInternalWorktreeSession([], { worktreeId: 'old-branch', locationPath: '/test/path' });
-      deps = createMockDeps({
-        getSession: mock(() => session),
-      });
-      service = new SessionMetadataService(deps);
-
-      const result = await service.updateSessionMetadata('session-1', { branch: 'new-branch' });
-
-      expect(result.success).toBe(true);
-      expect(result.branch).toBe('new-branch');
-      expect(session.worktreeId).toBe('new-branch');
-      expect(mockGit.getCurrentBranch).toHaveBeenCalledWith('/test/path');
-      expect(mockGit.renameBranch).toHaveBeenCalledWith('old-branch', 'new-branch', '/test/path');
-      expect(deps.updateGitDiffWorkersAfterBranchRename).toHaveBeenCalledWith('session-1');
-    });
-
-    it('should fail branch rename for quick session', async () => {
-      const session = buildInternalQuickSession([], { locationPath: '/test/quick-path' });
-      deps = createMockDeps({
-        getSession: mock(() => session),
-      });
-      service = new SessionMetadataService(deps);
-
-      const result = await service.updateSessionMetadata('session-2', { branch: 'new-branch' });
-
-      expect(result.success).toBe(false);
-      expect(result.error).toBe('Can only rename branch for worktree sessions');
-    });
-
-    it('should handle git rename failure for active session', async () => {
-      const session = buildInternalWorktreeSession([], { worktreeId: 'old-branch', locationPath: '/test/path' });
-      deps = createMockDeps({
-        getSession: mock(() => session),
-      });
-      service = new SessionMetadataService(deps);
-      mockGit.renameBranch.mockImplementation(() => Promise.reject(new Error('git error')));
-
-      const result = await service.updateSessionMetadata('session-1', { branch: 'new-branch' });
-
-      expect(result.success).toBe(false);
-      expect(result.error).toBe('git error');
-    });
-
-    it('should succeed even when git-diff update fails for active session', async () => {
-      const session = buildInternalWorktreeSession([], { worktreeId: 'old-branch', locationPath: '/test/path' });
-      deps = createMockDeps({
-        getSession: mock(() => session),
-        updateGitDiffWorkersAfterBranchRename: mock(() => Promise.reject(new Error('diff error'))),
-      });
-      service = new SessionMetadataService(deps);
-
-      const result = await service.updateSessionMetadata('session-1', { branch: 'new-branch' });
-
-      expect(result.success).toBe(true);
-      expect(result.branch).toBe('new-branch');
-    });
-
-    it('should update both title and branch for active session', async () => {
-      const session = buildInternalWorktreeSession([], { worktreeId: 'old-branch', locationPath: '/test/path' });
-      deps = createMockDeps({
-        getSession: mock(() => session),
-      });
-      service = new SessionMetadataService(deps);
-
-      const result = await service.updateSessionMetadata('session-1', {
-        title: 'New Title',
-        branch: 'new-branch',
-      });
-
-      expect(result.success).toBe(true);
-      expect(result.title).toBe('New Title');
-      expect(result.branch).toBe('new-branch');
-      expect(session.title).toBe('New Title');
-      expect(session.worktreeId).toBe('new-branch');
     });
   });
 
@@ -175,138 +95,6 @@ describe('SessionMetadataService', () => {
       expect(saveMock).toHaveBeenCalledTimes(1);
       const savedSession = saveMock.mock.calls[0][0] as PersistedWorktreeSession;
       expect(savedSession.title).toBe('Updated Title');
-    });
-
-    it('should rename branch for inactive worktree session', async () => {
-      const persisted = buildPersistedWorktreeSession({ id: 'session-3', worktreeId: 'old-branch', locationPath: '/test/path' });
-      const saveMock = mock((_session: PersistedSession) => Promise.resolve());
-      deps = createMockDeps({
-        sessionRepository: createMockSessionRepository({
-          findById: mock(() => Promise.resolve(persisted)),
-          save: saveMock,
-        }),
-      });
-      service = new SessionMetadataService(deps);
-
-      const result = await service.updateSessionMetadata('session-3', { branch: 'new-branch' });
-
-      expect(result.success).toBe(true);
-      expect(result.branch).toBe('new-branch');
-      expect(mockGit.renameBranch).toHaveBeenCalledWith('old-branch', 'new-branch', '/test/path');
-      const savedSession = saveMock.mock.calls[0][0] as PersistedWorktreeSession;
-      expect(savedSession.worktreeId).toBe('new-branch');
-    });
-
-    it('should fail branch rename for inactive quick session', async () => {
-      const persisted = buildPersistedQuickSession({ id: 'session-4', locationPath: '/test/quick-path' });
-      deps = createMockDeps({
-        sessionRepository: createMockSessionRepository({
-          findById: mock(() => Promise.resolve(persisted)),
-        }),
-      });
-      service = new SessionMetadataService(deps);
-
-      const result = await service.updateSessionMetadata('session-4', { branch: 'new-branch' });
-
-      expect(result.success).toBe(false);
-      expect(result.error).toBe('Can only rename branch for worktree sessions');
-    });
-
-    it('should keep git-diff workers base spec unchanged on branch rename for inactive session (Issue #800)', async () => {
-      const persisted = buildPersistedWorktreeSession({
-        id: 'session-3',
-        worktreeId: 'old-branch',
-        locationPath: '/test/path',
-        workers: [
-          buildPersistedAgentWorker({ id: 'w1', name: 'Claude' }),
-          buildPersistedGitDiffWorker({ id: 'w2', name: 'Diff', baseCommit: 'merge-base:main' }),
-        ],
-      });
-      const saveMock = mock((_session: PersistedSession) => Promise.resolve());
-      deps = createMockDeps({
-        sessionRepository: createMockSessionRepository({
-          findById: mock(() => Promise.resolve(persisted)),
-          save: saveMock,
-        }),
-      });
-      service = new SessionMetadataService(deps);
-
-      const result = await service.updateSessionMetadata('session-3', { branch: 'new-branch' });
-
-      expect(result.success).toBe(true);
-      const savedSession = saveMock.mock.calls[0][0] as PersistedWorktreeSession;
-      // The branch-agnostic spec re-resolves on every diff, so it must NOT be
-      // frozen to a new hash on rename.
-      expect((savedSession.workers[1] as PersistedGitDiffWorker).baseCommit).toBe('merge-base:main');
-      // Non-git-diff workers should be unchanged
-      expect(savedSession.workers[0].type).toBe('agent');
-      expect(savedSession.worktreeId).toBe('new-branch');
-    });
-
-    it('should update both title and branch for inactive session in single save', async () => {
-      const persisted = buildPersistedWorktreeSession({ id: 'session-3', worktreeId: 'old-branch', locationPath: '/test/path' });
-      const saveMock = mock((_session: PersistedSession) => Promise.resolve());
-      deps = createMockDeps({
-        sessionRepository: createMockSessionRepository({
-          findById: mock(() => Promise.resolve(persisted)),
-          save: saveMock,
-        }),
-      });
-      service = new SessionMetadataService(deps);
-
-      const result = await service.updateSessionMetadata('session-3', {
-        title: 'New Title',
-        branch: 'new-branch',
-      });
-
-      expect(result.success).toBe(true);
-      expect(result.title).toBe('New Title');
-      expect(result.branch).toBe('new-branch');
-      // Only one save call
-      expect(saveMock).toHaveBeenCalledTimes(1);
-      const savedSession = saveMock.mock.calls[0][0] as PersistedWorktreeSession;
-      expect(savedSession.title).toBe('New Title');
-      expect(savedSession.worktreeId).toBe('new-branch');
-    });
-
-    it('should preserve an explicit pinned base spec on branch rename (no re-resolution / freezing)', async () => {
-      const persisted = buildPersistedWorktreeSession({
-        id: 'session-3',
-        worktreeId: 'old-branch',
-        locationPath: '/test/path',
-        workers: [
-          buildPersistedGitDiffWorker({ id: 'w1', name: 'Diff', baseCommit: 'abc1234' }),
-        ],
-      });
-      const saveMock = mock((_session: PersistedSession) => Promise.resolve());
-      deps = createMockDeps({
-        sessionRepository: createMockSessionRepository({
-          findById: mock(() => Promise.resolve(persisted)),
-          save: saveMock,
-        }),
-      });
-      service = new SessionMetadataService(deps);
-
-      await service.updateSessionMetadata('session-3', { branch: 'new-branch' });
-
-      const savedSession = saveMock.mock.calls[0][0] as PersistedWorktreeSession;
-      expect((savedSession.workers[0] as PersistedGitDiffWorker).baseCommit).toBe('abc1234');
-    });
-  });
-
-  describe('renameBranch', () => {
-    it('should delegate to updateSessionMetadata with branch parameter', async () => {
-      const session = buildInternalWorktreeSession([], { worktreeId: 'old-branch', locationPath: '/test/path' });
-      deps = createMockDeps({
-        getSession: mock(() => session),
-      });
-      service = new SessionMetadataService(deps);
-
-      const result = await service.renameBranch('session-1', 'new-branch');
-
-      expect(result.success).toBe(true);
-      expect(result.branch).toBe('new-branch');
-      expect(mockGit.renameBranch).toHaveBeenCalledWith('old-branch', 'new-branch', '/test/path');
     });
   });
 

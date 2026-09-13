@@ -1,7 +1,11 @@
-import { describe, it, expect } from 'bun:test';
-import type { EmbeddedAgentEvent } from '@agent-console/shared';
+import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
+import * as fsPromises from 'node:fs/promises';
+import * as path from 'node:path';
+import * as os from 'node:os';
+import type { EmbeddedAgentAttachment, EmbeddedAgentEvent } from '@agent-console/shared';
 import { AgentLoop, type AgentLoopDeps } from '../agent-loop.js';
 import type { ToolCallOutcome, ToolExecutor } from '../mcp.js';
+import { truncateToBytes } from '../truncate.js';
 import {
   ProviderError,
   type ChatMessage,
@@ -108,6 +112,8 @@ function makeLoop(
     restoredUsage?: AgentLoopDeps['restoredUsage'];
     compaction?: AgentLoopDeps['compaction'];
     reasoningEffort?: AgentLoopDeps['reasoningEffort'];
+    attachmentRoots?: AgentLoopDeps['attachmentRoots'];
+    supportsImages?: AgentLoopDeps['supportsImages'];
   } = {},
 ): Harness {
   const events: EmbeddedAgentEvent[] = [];
@@ -136,6 +142,8 @@ function makeLoop(
     restoredConversation: opts.restoredConversation,
     restoredUsage: opts.restoredUsage,
     reasoningEffort: opts.reasoningEffort,
+    attachmentRoots: opts.attachmentRoots,
+    supportsImages: opts.supportsImages,
   };
   const loop = new AgentLoop(deps);
   loopRef.current = loop;
@@ -143,6 +151,13 @@ function makeLoop(
 }
 
 const types = (events: EmbeddedAgentEvent[]) => events.map((e) => e.type);
+
+describe('AgentLoop — kind (Phase 4, #1683 decision 5)', () => {
+  it("is 'openai-api', matching OpenAiApiEngine's discriminant", () => {
+    const h = makeLoop([textResponse('hi')]);
+    expect(h.loop.kind).toBe('openai-api');
+  });
+});
 
 describe('AgentLoop — event ordering', () => {
   it('emits state active -> deltas -> assistant-message -> tool-call -> tool-result -> ... -> state idle', async () => {
@@ -239,6 +254,27 @@ describe('AgentLoop — boundary values', () => {
     const msg = h.events.find((e) => e.type === 'assistant-message');
     expect(msg).toEqual({ v: 1, type: 'assistant-message', turnId: 't1', text: '' });
     expect(h.events.filter((e) => e.type === 'assistant-delta')).toHaveLength(0);
+  });
+});
+
+/**
+ * Slash commands, `console`-handled arm (#1572): `Engine.compactNow()`'s
+ * implementation for this engine. A thin one-line delegation to the
+ * already-exhaustively-covered `compact('manual')`
+ * (agent-loop-compaction.test.ts) -- this pin exists only to confirm the
+ * delegation itself, not to re-derive compact()'s own behavior.
+ */
+describe('AgentLoop — compactNow (Slash commands, console-handled arm, #1572)', () => {
+  it('delegates to compact("manual"): emits a context-compacted event with source "manual"', async () => {
+    const h = makeLoop([textResponse('DISTILLATION_SUMMARY')]);
+    await h.loop.compactNow();
+
+    expect(h.events.find((e) => e.type === 'context-compacted')).toMatchObject({
+      v: 1,
+      type: 'context-compacted',
+      source: 'manual',
+      summary: 'DISTILLATION_SUMMARY',
+    });
   });
 });
 
@@ -390,6 +426,100 @@ describe('AgentLoop — tool-result truncation', () => {
       | undefined;
     expect(result).toBeDefined();
     expect(new TextEncoder().encode(result!.result).length).toBeLessThanOrEqual(16384);
+  });
+});
+
+describe('AgentLoop — Phase B (#1343 R2) tool-result appendix', () => {
+  it('caps the tool result FIRST, then appends the appendix -- the appendix survives whole even when the tool result alone exceeds 16 KiB', async () => {
+    const bigResult = 'r'.repeat(20 * 1024); // ~20 KiB -- exceeds TOOL_RESULT_MAX_BYTES alone
+    const bigAppendix = 'a'.repeat(40 * 1024); // ~40 KiB -- must survive whole, never truncated
+    const executor = new StubExecutor({ ok: true, result: bigResult, appendix: bigAppendix });
+    const h = makeLoop([toolCallResponse('c', 'Read', '{}'), textResponse('done')], { executor });
+
+    await h.loop.runTurn('t1', 'hi');
+
+    const toolResultEvent = h.events.find((e) => e.type === 'tool-result') as { result: string } | undefined;
+    expect(toolResultEvent).toBeDefined();
+
+    // This is the R2 pin: it fails under the naive "concatenate then
+    // truncate" implementation, which would cap the COMBINED string to
+    // 16 KiB and lose almost all of the appendix instead of the whole of it
+    // surviving after a capped tool result.
+    const expectedCombined = `${truncateToBytes(bigResult, 16384).text}\n\n${bigAppendix}`;
+    expect(toolResultEvent!.result).toBe(expectedCombined);
+    expect(toolResultEvent!.result.endsWith(bigAppendix)).toBe(true);
+    expect(new TextEncoder().encode(toolResultEvent!.result).length).toBeGreaterThan(16384);
+
+    // The SAME composed string reaches the pushed conversation message (the
+    // provider-facing side), not just the emitted wire event.
+    const secondTurnMessages = h.adapter.capturedMessages[1];
+    const toolMessage = secondTurnMessages.find((m) => m.role === 'tool' && m.tool_call_id === 'c');
+    expect(toolMessage && toolMessage.role === 'tool' ? toolMessage.content : undefined).toBe(
+      toolResultEvent!.result,
+    );
+  });
+
+  it('omits the appendix entirely when the executor returns none (no regression)', async () => {
+    const executor = new StubExecutor({ ok: true, result: 'plain result' });
+    const h = makeLoop([toolCallResponse('c', 'Read', '{}'), textResponse('done')], { executor });
+
+    await h.loop.runTurn('t1', 'hi');
+
+    const toolResultEvent = h.events.find((e) => e.type === 'tool-result') as { result: string } | undefined;
+    expect(toolResultEvent?.result).toBe('plain result');
+  });
+});
+
+describe('AgentLoop — Phase B (#1343 R4) tool-result activatedRules', () => {
+  it('carries outcome.activatedRules onto the emitted tool-result event, structurally alongside the text appendix', async () => {
+    const executor = new StubExecutor({
+      ok: true,
+      result: 'plain result',
+      appendix: '[rule activated: r1]\n--- Rule (applies to: **/*): /rules/r1.md ---\nCONTENT',
+      activatedRules: ['r1'],
+    });
+    const h = makeLoop([toolCallResponse('c', 'Read', '{}'), textResponse('done')], { executor });
+
+    await h.loop.runTurn('t1', 'hi');
+
+    const toolResultEvent = h.events.find((e) => e.type === 'tool-result') as
+      | { activatedRules?: string[] }
+      | undefined;
+    expect(toolResultEvent?.activatedRules).toEqual(['r1']);
+  });
+
+  it('omits activatedRules from the emitted event when the executor outcome has none', async () => {
+    const executor = new StubExecutor({ ok: true, result: 'plain result' });
+    const h = makeLoop([toolCallResponse('c', 'Read', '{}'), textResponse('done')], { executor });
+
+    await h.loop.runTurn('t1', 'hi');
+
+    const toolResultEvent = h.events.find((e) => e.type === 'tool-result') as
+      | { activatedRules?: string[] }
+      | undefined;
+    expect(toolResultEvent).toBeDefined();
+    expect(toolResultEvent && 'activatedRules' in toolResultEvent).toBe(false);
+  });
+
+  it('never pushes activatedRules onto the provider-facing role:tool conversation message', async () => {
+    const executor = new StubExecutor({
+      ok: true,
+      result: 'plain result',
+      appendix: '[rule activated: r1]\n--- Rule (applies to: **/*): /rules/r1.md ---\nCONTENT',
+      activatedRules: ['r1'],
+    });
+    const h = makeLoop([toolCallResponse('c', 'Read', '{}'), textResponse('done')], { executor });
+
+    await h.loop.runTurn('t1', 'hi');
+
+    const secondTurnMessages = h.adapter.capturedMessages[1];
+    const toolMessage = secondTurnMessages.find((m) => m.role === 'tool' && m.tool_call_id === 'c');
+    expect(toolMessage).toEqual({
+      role: 'tool',
+      tool_call_id: 'c',
+      content:
+        'plain result\n\n[rule activated: r1]\n--- Rule (applies to: **/*): /rules/r1.md ---\nCONTENT',
+    });
   });
 });
 
@@ -977,5 +1107,338 @@ describe('AgentLoop — the provider error outcome carries structure inward', ()
     expect(events.find((e) => e.type === 'turn-error')).toMatchObject({
       message: 'provider responded with HTTP 400: <html>error code: 1010</html>',
     });
+  });
+});
+
+describe('AgentLoop — image attachments (#1571)', () => {
+  const PNG_BASE64 =
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=';
+  const PNG_BYTES = Buffer.from(PNG_BASE64, 'base64');
+
+  let rootDir: string;
+
+  beforeEach(async () => {
+    rootDir = await fsPromises.mkdtemp(path.join(os.tmpdir(), 'agent-loop-attach-'));
+  });
+
+  afterEach(async () => {
+    await fsPromises.rm(rootDir, { recursive: true, force: true });
+  });
+
+  it('pushes a content-block array for a turn with one PNG attachment and supportsImages true', async () => {
+    const filePath = path.join(rootDir, 'shot.png');
+    await fsPromises.writeFile(filePath, PNG_BYTES);
+    const attachments: EmbeddedAgentAttachment[] = [{ path: filePath, mimeType: 'image/png' }];
+
+    const h = makeLoop([textResponse('I see it')], {
+      attachmentRoots: [rootDir],
+      supportsImages: true,
+    });
+
+    await h.loop.runTurn('t1', 'what is in this image?', attachments);
+
+    const sentMessages = h.adapter.capturedMessages[0];
+    const userMessage = sentMessages.find((m) => m.role === 'user');
+    expect(userMessage?.content).toEqual([
+      { type: 'text', text: 'what is in this image?' },
+      { type: 'image_url', image_url: { url: `data:image/png;base64,${PNG_BYTES.toString('base64')}` } },
+    ]);
+  });
+
+  it('pushes a plain string, byte-identical to pre-#1571 behavior, for a turn with no attachments', async () => {
+    const h = makeLoop([textResponse('ok')], {
+      attachmentRoots: [rootDir],
+      supportsImages: true,
+    });
+
+    await h.loop.runTurn('t1', 'hello there');
+
+    const sentMessages = h.adapter.capturedMessages[0];
+    const userMessage = sentMessages.find((m) => m.role === 'user');
+    // Explicit shape comparison against the old `{ role: 'user', content: text }`
+    // construction, not merely `typeof === 'string'` -- the polarity requirement.
+    expect(userMessage).toEqual({ role: 'user', content: 'hello there' });
+  });
+
+  it('does not push the user message and settles as canceled when cancel() lands during attachment resolution', async () => {
+    const filePath = path.join(rootDir, 'shot.png');
+    await fsPromises.writeFile(filePath, PNG_BYTES);
+    const attachments: EmbeddedAgentAttachment[] = [{ path: filePath, mimeType: 'image/png' }];
+
+    const h = makeLoop([textResponse('unused'), textResponse('second turn')], {
+      attachmentRoots: [rootDir],
+      supportsImages: true,
+    });
+
+    const turnPromise = h.loop.runTurn('t1', 'what is in this image?', attachments);
+    // Synchronous, no await in between: `runUserTurn`'s synchronous prefix
+    // has already reached the real fs-read gap inside
+    // `buildUserMessageContent` by the time `runTurn`'s own synchronous
+    // prefix returns control here, so cancel() lands on the pending
+    // attachment resolution rather than after it.
+    h.loop.cancel();
+    await turnPromise;
+
+    expect(h.events.find((e) => e.type === 'turn-error')).toMatchObject({ message: 'turn canceled' });
+    // The provider was never called for the canceled turn -- the message
+    // never reached the conversation, so there was nothing to send.
+    expect(h.adapter.calls).toBe(0);
+
+    // A subsequent turn is accepted normally: the canceled turn did not
+    // leave the loop wedged, and the conversation it would have polluted
+    // does not carry the canceled turn's user message forward.
+    await h.loop.runTurn('t2', 'second');
+    const secondTurnMessages = h.adapter.capturedMessages.at(-1)!;
+    expect(secondTurnMessages.some((m) => m.role === 'user' && m.content === 'what is in this image?')).toBe(
+      false,
+    );
+    expect(secondTurnMessages.some((m) => m.role === 'user' && m.content === 'second')).toBe(true);
+  });
+});
+
+describe('AgentLoop — contentCharLength / estimateTokensFromChars on image-bearing messages (#1571)', () => {
+  it('estimates an image-bearing message using only its text part, not the whole array length', async () => {
+    const rootDir = await fsPromises.mkdtemp(path.join(os.tmpdir(), 'agent-loop-estimate-'));
+    try {
+      const filePath = path.join(rootDir, 'shot.png');
+      const bytes = Buffer.from(
+        'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=',
+        'base64',
+      );
+      await fsPromises.writeFile(filePath, bytes);
+      const attachments: EmbeddedAgentAttachment[] = [{ path: filePath, mimeType: 'image/png' }];
+
+      // Long enough text that its own char count dominates the tiny fixed
+      // overhead below, so the auto-compaction ratio move is attributable to
+      // it rather than to noise.
+      const longText = 'x'.repeat(400);
+
+      const withImage = makeLoop([textResponse('ack')], {
+        attachmentRoots: [rootDir],
+        supportsImages: true,
+      });
+      await withImage.loop.runTurn('t1', longText, attachments);
+      const usage1 = withImage.events.find((e) => e.type === 'context-usage');
+      expect(usage1).toBeDefined();
+
+      const withoutImage = makeLoop([textResponse('ack')]);
+      await withoutImage.loop.runTurn('t1', longText);
+      const usage2 = withoutImage.events.find((e) => e.type === 'context-usage');
+      expect(usage2).toBeDefined();
+
+      // Both runs measure the SAME text length; the image contributes 0 chars
+      // to the coarse estimate, so the two readings must agree.
+      expect(usage1).toMatchObject({
+        promptTokens: (usage2 as { promptTokens: number }).promptTokens,
+      });
+    } finally {
+      await fsPromises.rm(rootDir, { recursive: true, force: true });
+    }
+  });
+});
+
+/**
+ * Some providers (observed: `opencode-go` / `qwen3.8-flash`) return an EMPTY
+ * `callId` (`""`) for a tool call. When two such calls land in the same
+ * iteration, a downstream consumer keyed by callId cannot tell them apart --
+ * `assignSyntheticToolCallIds` (called once per iteration in `runUserTurn`,
+ * before any consumer reads `outcome.toolCalls`) closes that gap.
+ */
+describe('AgentLoop — empty provider callId synthesis', () => {
+  const twoEmptyCallIdResponse: ScriptedResponse = {
+    kind: 'events',
+    events: [
+      { type: 'tool-call', callId: '', name: 'do_a', argsJson: '{}' },
+      { type: 'tool-call', callId: '', name: 'do_b', argsJson: '{}' },
+      { type: 'done', finishReason: 'tool_calls' },
+    ],
+  };
+
+  it('emits two distinct synthetic ids for two tool calls that both arrive with an empty callId', async () => {
+    const h = makeLoop([twoEmptyCallIdResponse, textResponse('done')]);
+    await h.loop.runTurn('t1', 'hi');
+
+    const toolCallEvents = h.events.filter(
+      (e): e is Extract<EmbeddedAgentEvent, { type: 'tool-call' }> => e.type === 'tool-call',
+    );
+    const toolResultEvents = h.events.filter(
+      (e): e is Extract<EmbeddedAgentEvent, { type: 'tool-result' }> => e.type === 'tool-result',
+    );
+    expect(toolCallEvents).toHaveLength(2);
+    expect(toolResultEvents).toHaveLength(2);
+
+    for (const e of toolCallEvents) {
+      expect(e.callId).toMatch(/^synthetic:t1:0:\d+$/);
+    }
+    expect(toolCallEvents[0]?.callId).not.toBe(toolCallEvents[1]?.callId);
+
+    // Each tool-result's callId matches its corresponding tool-call's callId.
+    expect(toolResultEvents[0]?.callId).toBe(toolCallEvents[0]?.callId);
+    expect(toolResultEvents[1]?.callId).toBe(toolCallEvents[1]?.callId);
+
+    // The internal conversation stays consistent: run a second turn so the
+    // first turn's persisted messages are observable via capturedMessages.
+    await h.loop.runTurn('t2', 'second');
+    const firstTurnConversation = h.adapter.capturedMessages[1]!;
+    const assistantMsg = firstTurnConversation.find(
+      (m) => m.role === 'assistant' && m.tool_calls,
+    );
+    const assistantToolCallIds = (assistantMsg as Extract<ChatMessage, { role: 'assistant' }>)
+      .tool_calls!.map((tc) => tc.id);
+    expect(assistantToolCallIds).toEqual(toolCallEvents.map((e) => e.callId));
+
+    const toolResponseIds = firstTurnConversation
+      .filter((m): m is Extract<ChatMessage, { role: 'tool' }> => m.role === 'tool')
+      .map((m) => m.tool_call_id);
+    expect(toolResponseIds).toEqual(toolCallEvents.map((e) => e.callId));
+    expect(everyToolCallAnswered(firstTurnConversation)).toBe(true);
+  });
+
+  it('answers the second empty-callId call with its synthetic id (not "") when the turn is canceled after the first call\'s result is applied', async () => {
+    const loopRef: { current: AgentLoop | null } = { current: null };
+    let executorCalls = 0;
+    const executor = new StubExecutor({ ok: true, result: 'ok' }, () => {
+      executorCalls++;
+      // Cancel while the SECOND call is executing -- by this point the
+      // first call's tool-result has already been emitted and pushed onto
+      // the conversation (the for-loop's synchronous tail has no await
+      // between finishing one call and starting the next).
+      if (executorCalls === 2) loopRef.current?.cancel();
+    });
+    const h = makeLoop([twoEmptyCallIdResponse], { executor });
+    loopRef.current = h.loop;
+
+    await h.loop.runTurn('t1', 'hi');
+    expect(h.events.find((e) => e.type === 'turn-error')).toMatchObject({ message: 'turn canceled' });
+
+    // Only the first call's tool-result was emitted; the second was
+    // preempted by the cancel.
+    expect(h.events.filter((e) => e.type === 'tool-result')).toHaveLength(1);
+
+    await h.loop.runTurn('t2', 'second');
+    const firstTurnConversation = h.adapter.capturedMessages[1]!;
+    const secondCallSyntheticId = 'synthetic:t1:0:1';
+    const syntheticEntry = firstTurnConversation.find(
+      (m) => m.role === 'tool' && m.tool_call_id === secondCallSyntheticId,
+    );
+    expect(syntheticEntry).toEqual({
+      role: 'tool',
+      tool_call_id: secondCallSyntheticId,
+      content: 'Error: tool call canceled',
+    });
+    expect(
+      firstTurnConversation.some((m) => m.role === 'tool' && m.tool_call_id === ''),
+    ).toBe(false);
+    expect(everyToolCallAnswered(firstTurnConversation)).toBe(true);
+  });
+});
+
+/**
+ * agent-surface.md Phase 3: `AgentLoop.setModelParams` — the mid-run model /
+ * reasoning-effort / context-window change.
+ *
+ * The claim this block exists to pin is "no later than the next turn, with
+ * margin": on this engine the values are read when each provider request is
+ * composed and at each compaction boundary, so a change lands on the next
+ * ITERATION of a turn already running, not merely on the next turn. The
+ * mid-turn test drives exactly that — the change is made from inside a tool
+ * call, between two iterations of one turn — because a between-turns test
+ * would pass under an implementation that only applied at a turn boundary.
+ *
+ * Measured reach (each mutation applied alone to `setModelParams`, whole file
+ * re-run):
+ * - dropping `this.deps.model = ...` -> the mid-turn test fails (request 2
+ *   still carries the old model).
+ * - dropping `this.deps.reasoningEffort = ...` -> the mid-turn test fails on
+ *   the new effort, and the clear test fails on the key still being present.
+ * - storing `params.reasoningEffort` as-is instead of `?? undefined` -> the
+ *   clear test fails: `reasoningEffort: null` reaches the request as a
+ *   present key, which the adapter would serialize as `"reasoning_effort":
+ *   null` rather than omitting it.
+ * - dropping `this.deps.compaction.contextWindowTokens = ...` -> the window
+ *   test fails (the second turn does not compact).
+ * - dropping the emit -> the event test fails.
+ */
+describe('AgentLoop — setModelParams (agent-surface.md Phase 3)', () => {
+  /** Scripted response whose `done` carries an exact provider usage reading,
+   * so the auto-compaction ratio's numerator is pinned and the WINDOW is the
+   * only variable across the two turns below. */
+  const textResponseWithUsage = (text: string, promptTokens: number): ScriptedResponse => ({
+    kind: 'events',
+    events: [
+      { type: 'text-delta', text },
+      {
+        type: 'done',
+        finishReason: 'stop',
+        usage: { promptTokens, completionTokens: 1, totalTokens: promptTokens + 1 },
+      },
+    ],
+  });
+
+  it('applies MID-TURN: a change made between two tool iterations reaches the very next provider request of the SAME turn', async () => {
+    const loopRef: { current: AgentLoop | null } = { current: null };
+    const executor = new StubExecutor({ ok: true, result: 'ok' }, () => {
+      loopRef.current?.setModelParams({
+        model: 'model-B',
+        reasoningEffort: 'high',
+        contextWindowTokens: 120000,
+      });
+    });
+    const h = makeLoop([toolCallResponse('c1', 'do_thing', '{}'), textResponse('done')], { executor });
+    loopRef.current = h.loop;
+
+    await h.loop.runTurn('t1', 'hello');
+
+    // Two iterations, one turn: the tool call, then the follow-up.
+    expect(h.adapter.capturedRequests).toHaveLength(2);
+    expect(h.adapter.capturedRequests[0].model).toBe('m');
+    expect('reasoningEffort' in h.adapter.capturedRequests[0]).toBe(false);
+    expect(h.adapter.capturedRequests[1].model).toBe('model-B');
+    expect(h.adapter.capturedRequests[1].reasoningEffort).toBe('high');
+  });
+
+  it('clears an effort override with null: the next request omits the reasoningEffort KEY, it does not carry an undefined value', async () => {
+    const h = makeLoop([textResponse('one'), textResponse('two')], { reasoningEffort: 'high' });
+
+    await h.loop.runTurn('t1', 'hello');
+    h.loop.setModelParams({ model: 'm', reasoningEffort: null, contextWindowTokens: null });
+    await h.loop.runTurn('t2', 'again');
+
+    expect(h.adapter.capturedRequests[0].reasoningEffort).toBe('high');
+    // Key-absence, not merely an `undefined` value: `openai-chat-adapter.ts`
+    // spreads the key in when and only when it is `!== undefined`, and its own
+    // sibling test pins the serialized body against the string
+    // `reasoning_effort`. A `.toBeUndefined()` check here would pass for a
+    // present-but-undefined key too, which is the weaker guarantee.
+    expect('reasoningEffort' in h.adapter.capturedRequests[1]).toBe(false);
+  });
+
+  it('applies a new context window to the NEXT auto-compaction boundary check', async () => {
+    // 900 prompt tokens both turns (scripted, so the numerator never moves).
+    // Turn 1: 900/100000 = 0.009, far below the 0.85 default. Turn 2, after
+    // the window shrinks: 900/1000 = 0.9, above it.
+    const h = makeLoop(
+      [textResponseWithUsage('one', 900), textResponseWithUsage('two', 900), textResponse('SUMMARY')],
+      { compaction: { auto: true, contextWindowTokens: 100000 } },
+    );
+
+    await h.loop.runTurn('t1', 'hello');
+    expect(h.events.find((e) => e.type === 'context-compacted')).toBeUndefined();
+
+    h.loop.setModelParams({ model: 'm', reasoningEffort: null, contextWindowTokens: 1000 });
+    await h.loop.runTurn('t2', 'again');
+
+    expect(h.events.find((e) => e.type === 'context-compacted')).toMatchObject({
+      source: 'auto',
+      summary: 'SUMMARY',
+    });
+  });
+
+  it('reports the change as applied: this engine replaces fields that every consumer re-reads, so it cannot fail', () => {
+    const h = makeLoop([textResponse('hi')]);
+
+    h.loop.setModelParams({ model: 'model-B', reasoningEffort: 'low', contextWindowTokens: 4096 });
+
+    expect(h.events).toEqual([{ v: 1, type: 'model-params-applied', applied: true }]);
   });
 });

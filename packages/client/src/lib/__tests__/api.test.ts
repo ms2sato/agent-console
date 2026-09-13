@@ -7,7 +7,9 @@ import {
   createWorker,
   deleteWorker,
   restartAgentWorker,
+  restartWorkerAsEmbeddedAgent,
   restartAllAgentWorkers,
+  updateEmbeddedAgentWorker,
   fetchRepositories,
   registerRepository,
   unregisterRepository,
@@ -20,10 +22,14 @@ import {
   deleteArtifact,
   fetchNotifications,
   markNotificationsSeen,
+  raiseOrchestratorDesignation,
+  clearOrchestratorDesignation,
   ServerUnavailableError,
   ApiError,
 } from '../api';
 import * as capabilitiesModule from '../capabilities';
+import { UpdateEmbeddedAgentWorkerRequestSchema } from '@agent-console/shared';
+import * as v from 'valibot';
 
 // Bun's expect().toEqual() enforces strict generic matching between actual and expected types.
 // Tests use partial mock data intentionally (verifying passthrough, not shape), so we wrap
@@ -82,6 +88,18 @@ async function getLastFetchBody(): Promise<unknown> {
   return arg1?.body ? JSON.parse(arg1.body) : undefined;
 }
 
+/**
+ * Asserts a body the client actually sent is accepted by the server's own
+ * wire schema (UpdateEmbeddedAgentWorkerRequestSchema). Checks the issues
+ * array first so a failure reports the schema's own message text instead of
+ * a bare `false`.
+ */
+function expectAcceptedByWireSchema(body: unknown): void {
+  const result = v.safeParse(UpdateEmbeddedAgentWorkerRequestSchema, body);
+  expect(result.issues?.map((issue) => issue.message) ?? []).toEqual([]);
+  expect(result.success).toBe(true);
+}
+
 describe('API Client', () => {
   beforeEach(() => {
     mockFetch.mockReset();
@@ -89,7 +107,19 @@ describe('API Client', () => {
 
   describe('fetchConfig', () => {
     it('should fetch config successfully', async () => {
-      const mockConfig = { homeDir: '/home/user' };
+      const mockConfig = {
+        homeDir: '/home/user',
+        capabilities: {
+          vscode: false,
+          vscodeOpenMode: 'local-spawn' as const,
+          vscodeRemoteHost: null,
+        },
+        serverPid: 1234,
+        serverPort: 3457,
+        authMode: 'none' as const,
+        sharedAccountsAvailable: false,
+        deployedSha: null,
+      };
       mockFetch.mockResolvedValue(createMockResponse(mockConfig));
 
       const result = await fetchConfig();
@@ -220,6 +250,32 @@ describe('API Client', () => {
     });
   });
 
+  describe('raiseOrchestratorDesignation', () => {
+    it('should POST to the orchestrator-designation endpoint with the session id', async () => {
+      const mockResult = { repositoryId: 'repo-1', orchestratorSessionId: 'session-id' };
+      mockFetch.mockResolvedValue(createMockResponse(mockResult));
+
+      const result = await raiseOrchestratorDesignation('session-id');
+
+      expect(getLastFetchUrl()).toContain('/api/sessions/session-id/orchestrator-designation');
+      expect(getLastFetchMethod()).toBe('POST');
+      expect(result).toEqual(mockResult);
+    });
+  });
+
+  describe('clearOrchestratorDesignation', () => {
+    it('should DELETE the orchestrator-designation endpoint with the session id', async () => {
+      const mockResult = { repositoryId: 'repo-1', cleared: true };
+      mockFetch.mockResolvedValue(createMockResponse(mockResult));
+
+      const result = await clearOrchestratorDesignation('session-id');
+
+      expect(getLastFetchUrl()).toContain('/api/sessions/session-id/orchestrator-designation');
+      expect(getLastFetchMethod()).toBe('DELETE');
+      expect(result).toEqual(mockResult);
+    });
+  });
+
   describe('createWorker', () => {
     // Note: Client API only supports creating terminal workers
     // Agent workers are created automatically by the server during session creation
@@ -288,6 +344,45 @@ describe('API Client', () => {
     });
   });
 
+  describe('restartWorkerAsEmbeddedAgent (cross-type restart, #1171)', () => {
+    it('should restart a PTY agent worker as an embedded-agent worker', async () => {
+      const mockWorker = { worker: { id: 'worker-1', type: 'embedded-agent', name: 'Local GPT' } };
+      mockFetch.mockResolvedValue(createMockResponse(mockWorker));
+
+      const result = await restartWorkerAsEmbeddedAgent('session-id', 'worker-id', 'embedded-1');
+
+      expect(getLastFetchUrl()).toContain('/api/sessions/session-id/workers/worker-id/restart');
+      expect(getLastFetchMethod()).toBe('POST');
+      const body = await getLastFetchBody();
+      // Distinct wire shape from restartAgentWorker's: no continueConversation,
+      // no agentId -- EmbeddedRestartSchema structurally rejects both.
+      expect(body).toEqual({ embeddedAgentId: 'embedded-1' });
+      expect(body).not.toHaveProperty('continueConversation');
+      expect(body).not.toHaveProperty('agentId');
+      expect(result).toEqual(mockWorker);
+    });
+
+    it('should pass branch when provided', async () => {
+      const mockWorker = { worker: { id: 'worker-1', type: 'embedded-agent', name: 'Local GPT' } };
+      mockFetch.mockResolvedValue(createMockResponse(mockWorker));
+
+      await restartWorkerAsEmbeddedAgent('session-id', 'worker-id', 'embedded-1', 'feat/new-branch');
+
+      const body = await getLastFetchBody();
+      expect(body).toEqual({ embeddedAgentId: 'embedded-1', branch: 'feat/new-branch' });
+    });
+
+    it('should not include branch when not provided', async () => {
+      const mockWorker = { worker: { id: 'worker-1', type: 'embedded-agent', name: 'Local GPT' } };
+      mockFetch.mockResolvedValue(createMockResponse(mockWorker));
+
+      await restartWorkerAsEmbeddedAgent('session-id', 'worker-id', 'embedded-1');
+
+      const body = await getLastFetchBody();
+      expect(body).not.toHaveProperty('branch');
+    });
+  });
+
   describe('restartAllAgentWorkers', () => {
     it('should call restart-all-agents endpoint', async () => {
       const mockResult = { restarted: 2, failed: 0, skipped: 0, results: [] };
@@ -298,6 +393,80 @@ describe('API Client', () => {
       expect(getLastFetchUrl()).toContain('/api/sessions/restart-all-agents');
       expect(getLastFetchMethod()).toBe('POST');
       expect(result).toEqual(mockResult);
+    });
+  });
+
+  describe('updateEmbeddedAgentWorker (agent-surface.md Phase 3, mid-run model/effort override)', () => {
+    it('sends the compaction-toggle body unchanged (pre-existing shape)', async () => {
+      const mockWorker = { worker: { id: 'worker-1', type: 'embedded-agent', name: 'Local GPT' } };
+      mockFetch.mockResolvedValue(createMockResponse(mockWorker));
+
+      const result = await updateEmbeddedAgentWorker('session-id', 'worker-id', { autoCompaction: true });
+
+      expect(getLastFetchUrl()).toContain('/api/sessions/session-id/workers/worker-id');
+      expect(getLastFetchMethod()).toBe('PATCH');
+      const body = await getLastFetchBody();
+      expect(body).toEqual({ autoCompaction: true });
+      expectAcceptedByWireSchema(body);
+      expect(result).toEqual(mockWorker);
+    });
+
+    it('sends a model override together with its context window (Ruling 4 pairing)', async () => {
+      const mockWorker = { worker: { id: 'worker-1', type: 'embedded-agent', name: 'Local GPT' } };
+      mockFetch.mockResolvedValue(createMockResponse(mockWorker));
+
+      await updateEmbeddedAgentWorker('session-id', 'worker-id', {
+        model: 'opus',
+        contextWindowTokens: 128_000,
+        reasoningEffort: 'high',
+      });
+
+      expect(getLastFetchMethod()).toBe('PATCH');
+      const body = await getLastFetchBody();
+      expect(body).toEqual({ model: 'opus', contextWindowTokens: 128_000, reasoningEffort: 'high' });
+      expectAcceptedByWireSchema(body);
+    });
+
+    it('sends a null context window when the caller declares no window for the model', async () => {
+      const mockWorker = { worker: { id: 'worker-1', type: 'embedded-agent', name: 'Local GPT' } };
+      mockFetch.mockResolvedValue(createMockResponse(mockWorker));
+
+      await updateEmbeddedAgentWorker('session-id', 'worker-id', {
+        model: 'opus',
+        contextWindowTokens: null,
+        reasoningEffort: null,
+      });
+
+      const body = await getLastFetchBody();
+      expect(body).toEqual({ model: 'opus', contextWindowTokens: null, reasoningEffort: null });
+      expectAcceptedByWireSchema(body);
+    });
+
+    it('clears the override with exactly { model: null, reasoningEffort: null } -- no contextWindowTokens key', async () => {
+      const mockWorker = { worker: { id: 'worker-1', type: 'embedded-agent', name: 'Local GPT' } };
+      mockFetch.mockResolvedValue(createMockResponse(mockWorker));
+
+      await updateEmbeddedAgentWorker('session-id', 'worker-id', { model: null, reasoningEffort: null });
+
+      const body = await getLastFetchBody();
+      expect(body).toEqual({ model: null, reasoningEffort: null });
+      expect(body).not.toHaveProperty('contextWindowTokens');
+      expectAcceptedByWireSchema(body);
+    });
+
+    // `updateEmbeddedAgentWorker`'s parameter type makes a model-without-window
+    // body unconstructible at any call site (Ruling 4 pairing is enforced
+    // structurally on the client), so there is no call through the wrapper to
+    // pin here -- calling the schema directly is the point: it confirms the
+    // wire still agrees with the shape the client type forbids, so a future
+    // widening of either side can't drift silently against the other.
+    it('rejects a model override sent without contextWindowTokens (agent-surface.md Ruling 4)', () => {
+      const result = v.safeParse(UpdateEmbeddedAgentWorkerRequestSchema, { model: 'opus' });
+
+      expect(result.success).toBe(false);
+      expect(result.issues?.map((issue) => issue.message)).toEqual([
+        'setting a model requires contextWindowTokens; pass null to declare no window',
+      ]);
     });
   });
 

@@ -1,25 +1,28 @@
 import type { AgentKind } from '@agent-console/shared';
 
-/** Contexts in which an `AgentKind` may need an explanatory notice.
- *  Extend as new visible-but-restricted contexts arise. */
-export type NoticeContext = 'restart';
+/**
+ * Contexts in which an `AgentKind` may need an explanatory notice. Extend as
+ * new visible-but-restricted contexts arise.
+ *
+ * Currently uninhabited: the restart dialog's embedded-agent restriction
+ * (`restart`) shipped in #1171 and no longer needs a notice, and no other
+ * context has registered one yet. `Record<never, ...>` below is valid
+ * TypeScript for this state -- see `AGENT_KIND_CONTEXT_NOTICES`.
+ */
+export type NoticeContext = never;
 
 /**
  * Per-(context, kind) notice text. Only kinds that actually need a notice
- * in a given context have an entry -- terminal has none today.
+ * in a given context have an entry.
  *
  * Typed (not `satisfies`) as `Record<NoticeContext, Partial<Record<AgentKind, string>>>`
  * so every `AgentKind` is a valid index at every `NoticeContext` (returning
  * `undefined` when unregistered) while still gating `NoticeContext`
- * exhaustiveness at compile time -- every context must have an entry here,
- * even if it's `{}`.
+ * exhaustiveness at compile time -- every context must have an entry here.
+ * With `NoticeContext` currently `never`, that requirement is vacuously
+ * satisfied by `{}`.
  */
-export const AGENT_KIND_CONTEXT_NOTICES: Record<NoticeContext, Partial<Record<AgentKind, string>>> = {
-  restart: {
-    embedded:
-      'Restarting into an embedded agent requires cross-type restart support — tracked in #1171; conversation transcript restore (#1123) is its prerequisite.',
-  },
-};
+export const AGENT_KIND_CONTEXT_NOTICES: Record<NoticeContext, Partial<Record<AgentKind, string>>> = {};
 
 export interface AgentKindNoticeProps {
   kind: AgentKind;

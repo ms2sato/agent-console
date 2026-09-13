@@ -104,6 +104,8 @@ Every delegation prompt sent via `delegate_to_worktree` must explicitly include 
 
 The first three are *what* the delegation requires; the fourth is *what the environment makes hard*. Both belong in the prompt because the agent has no other source for them at task-start time.
 
+5. **Delegation hygiene block.** `delegation-prompt.js` emits a "Delegation Hygiene (mandatory)" section that is the single writer for the operational rules delegates broke this sprint (preflight per specialist push as its own invocation; commit WIP before polarity restores; no parallel specialists on one worktree; Architect verdicts arrive by message; `timeout` on smokes; report structural findings when found; Browser QA conditional on the Architect's threshold ruling; stacked PRs use reset+cherry-pick). Do not restate those rules here or in the prompt body — regenerate the prompt so the block is present, and add new items to the script.
+
 (Lesson: Sprint 2026-06-30 — all four items surfaced as gaps. (1) PR #924 and PR #925 retro reports were lost when the Orchestrator removed the worktree after the merge notification without waiting for a retro; the original delegation prompts did not request one. (2) PR #926's integration test gap was approved jointly by the agent and the Orchestrator; the wire-level bug was caught only by owner Browser QA. (3) The Browser QA bridge for PR #926 was negotiated mid-task instead of declared up front. (4) The PR #926 agent ran a permission-denied path read as "NOT FOUND" and reported a wrong root cause; the dev:multiuser rsync timing was discovered mid-debugging. Codifying these four items in the prompt template would have prevented each recovery cycle.)
 
 ### Multi-PR Delivery (Sub-Issue Pattern)
@@ -204,6 +206,8 @@ When the orchestrator requests owner approval for a destructive or owner-judgmen
   - Focus on domain correctness — "Did they do what was asked AND is the result logically sound?"
   - Verify test existence and layer adequacy per test-standards skill
   - **Acceptance criteria <-> test 1:1 verification**: For each acceptance criterion that specifies a test layer, explicitly confirm the corresponding test exists in the PR diff by file name and test case name. Do NOT pass the check if a criterion says "integration test" but only unit tests exist. This is a hard gate, not a judgment call.
+  - **New persisted column → three writers**: when the PR adds a column to a SQLite table, the mapper and the schema are not the whole set — the repository's upsert `onConflict().doUpdateSet()` column list is the third writer, and a column missing there persists on insert but silently never updates. Mechanical check: `grep -n "<column>" packages/server/src/repositories/` must hit the update set as well as the mapper. (Lessons: Sprint 2026-09-03, #1587 `provider_supports_images` — delegate, Architect and Orchestrator all stopped at the mapper, CodeRabbit found it; #1593 the same day — worker upsert lacked the type-discriminator columns, so a cross-type restart left the old kind's values in place. Two instances, one grep.)
+  - **New wire event → four questions, not three**: emit (both engines), schema (the valibot union), consumer (client / store), and **the server's ingestion gate** — an event type absent from the server-side allowlist (`KNOWN_EVENT_TYPES` derivation) is dropped before any consumer sees it, and every other layer's tests still pass. Ask "what CONSUMES this on the way in?" (Lesson: Sprint 2026-09-04, #1612 — `model-params-applied` was emitted, typed, and rendered, and its own shipping-path E2E found it dropped at ingestion; three readers had never asked.)
   - **Comment accuracy verification**: Verify that JSDoc comments, inline comments, and documentation added or modified in the PR accurately describe the actual code behavior. Misleading comments are worse than no comments — flag any discrepancy between comment text and implementation.
   - **Browser check for UI changes**: When the PR modifies client-side components (`packages/client/src/components/`) or acceptance criteria include `manual verification`, the Orchestrator must verify via Chrome DevTools MCP. Start the dev server (`bun run dev`), check the startup log for the actual port (Vite may auto-increment if the default port is in use), navigate to the affected UI, and take screenshots. Use `/browser-qa` skill if available. Do NOT skip this — automated tests alone cannot catch visual/interaction regressions. (Lesson: Sprint 2026-04-05b — port 5173 was in use, Vite silently switched to 5174.)
 - **CI Green + CodeRabbit Complete -> Acceptance Check Flow**:
@@ -238,6 +242,31 @@ When the orchestrator requests owner approval for a destructive or owner-judgmen
 - **MANDATORY: Every PR must go through both checks.**
   - **Preflight check** (mechanical): `node .claude/skills/orchestrator/preflight-check.js <PR>` — test coverage validation, rule/skill duplication invariant check, and public-artifact language check. CI runs this automatically.
   - **Acceptance check** (human judgment): `node .claude/skills/orchestrator/acceptance-check.js <PR>` via `run_process` — full Q1-Q12 interactive review. **Always required for production code changes.** Never skip this — even when the diff looks trivial. (Lesson: Sprint 2026-04-05c — skipping the full acceptance check caused a UI requirement to be missed on #599.)
+- **MANDATORY: Re-check `SCHEMA_VERSION` against the prospective merge tree before merging.** `SCHEMA_VERSION` is a content hash over the runtime-import closure of `packages/shared/src/schemas/`, so a PR whose committed hash was correct at review time goes stale the moment a sibling merge widens that closure or changes a file inside it — with no merge conflict to prompt anyone, and with the merge-ref CI run as the only signal, on a surface nobody re-reads after review. Merging such a PR turns `main` red on `schema-version.gen.test.ts`. Run the check from your own worktree; it touches no other worktree, creates no branch, and modifies nothing:
+
+  ```bash
+  BR=<head branch of the PR>          # gh pr view <N> --json headRefName --jq .headRefName
+  WT=$PWD                             # the Orchestrator's own worktree, for node_modules
+  SCRATCH=$(mktemp -d)
+  git fetch origin main "$BR"
+  tree=$(git merge-tree --write-tree origin/main "origin/$BR" | head -1)
+  git archive "$tree" | tar -x -C "$SCRATCH"
+  ln -sfn "$WT/node_modules" "$SCRATCH/node_modules"
+  for d in "$WT"/packages/*/node_modules; do
+    [ -e "$d" ] && ln -sfn "$d" "$SCRATCH/packages/$(basename "$(dirname "$d")")/node_modules"
+  done
+  (cd "$SCRATCH" && node scripts/generate-schema-version.mjs --check)
+  echo "SCHEMA_CHECK_EXIT: $?"
+  ```
+
+  The `node_modules` symlinks are required — the generator imports `typescript`. `--check` prints the merge tree's value on success; when it exits 1, run it again with `--print` to get that value, which is the number the comparison below is against. The scratch directory is disposable; nothing writes back into it from the repository.
+
+  **Exit 1 means do NOT merge.** Send the PR back instead: its delegate merges `origin/main` into the branch, regenerates (`node scripts/generate-schema-version.mjs`), confirms the regenerated value differs from BOTH sides — the tell in [`workflow.md`](../../rules/workflow.md) Verification Checklist step 2 — runs the full `bun run test`, and pushes. Re-run this check against the new head before merging.
+
+  **When it is required:** any PR touching `packages/shared/src/schemas/`, a `packages/shared/src/types/` (or other) file inside the runtime-import closure, or `scripts/generate-schema-version.mjs` — and, critically, any PR at all when a sibling PR merged during this PR's review window touched one of those. That last case is the one this check exists for, because the PR's own diff shows nothing to suspect. The check costs seconds, so running it on every merge is cheap and always acceptable; prefer that over deciding whether it applies.
+
+  (Lesson: 2026-09-04 — [#1601](https://github.com/ms2sato/agent-console/pull/1601) widened the hash input to the runtime-import closure and moved `main`'s value to `302828629665d885`. [#1602](https://github.com/ms2sato/agent-console/pull/1602) was reviewed CLEAN with "hash equal to main" verified both ways against the `main` of that hour, and added a constant to `packages/shared/src/types/embedded-agent.ts` — a file inside the closure only after #1601. The merge tree's regenerated value was `9864a6a1095bf63a`, neither `main`'s nor that head's `0a254cc1e2f59aad`. Nothing in either PR was wrong when written; merging as-is would have turned `main` red. The sequence above was measured in both directions on that PR: exit 1 against head `5849d177`, exit 0 against head `a079479d` after its delegate merged `origin/main` and regenerated.)
+
 - **MANDATORY: Merge execution gate — read `mergeStateStatus` immediately before merging, and merge only through a conditional check.** Never issue the merge as an unconditional command on the strength of an earlier "CI looked green" observation:
 
   ```bash
@@ -320,6 +349,8 @@ Send rebase instructions via `send_session_message` with specific guidance on wh
 Clean up the completed session's worktree using `remove_worktree` with the session ID. This prevents worktree accumulation and frees disk space.
 
 Only remove worktrees for sessions that have completed their task and whose PR has been merged. Do not remove worktrees with active or pending work.
+
+**A merged PR is not evidence that the worktree's assignment ended — measure the assignment, not the PR.** A worktree's lifetime is the delegate's *allocation*, which can span several PRs (a stacked follow-up, an inventory draft parked on another branch). Before `remove_worktree`, run one check: `gh pr list --state open --author <delegate-login-or-all> --json number,headRefName` against `git -C <worktree> branch --list` (or the delegate's last report), and confirm nothing open still lives there. If something does, leave the worktree and say so. (Lesson: Sprint 2026-09-02 — after #1550 merged and its retro arrived, the cleanup step fired on a worktree that still held draft PR #1544 on another branch; the delegate's `git checkout main` was refused by git's own worktree guard, which is what stopped it, not the procedure.)
 
 **Gotcha: ExitWorktree × squash-merge.** When the Orchestrator's own lightweight worktree (created via `EnterWorktree`) is squash-merged into main, the local branch tip keeps the original commit hashes while main gets a new single squash commit. `ExitWorktree` with `action: "remove"` detects the divergence and refuses with `"N commits will be lost. Confirm with the user, then re-invoke with discard_changes: true"`. This is a false alarm — the *content* is in main, only the *commit identity* differs. Procedure:
 

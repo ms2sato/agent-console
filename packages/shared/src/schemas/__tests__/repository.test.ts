@@ -11,6 +11,7 @@ import {
   DeleteRepositoryRequestSchema,
   PullWorktreeRequestSchema,
   FetchGitHubIssueRequestSchema,
+  UpdateRepositoryRequestSchema,
 } from '../repository';
 
 describe('strict-parse contract (unknown-key rejection)', () => {
@@ -1143,6 +1144,40 @@ describe('PullWorktreeRequestSchema', () => {
     const result = v.safeParse(PullWorktreeRequestSchema, {
       worktreePath: '/path/to/worktree',
       taskId: '   ',
+    });
+    expect(result.success).toBe(false);
+  });
+});
+
+describe('UpdateRepositoryRequestSchema (Issue #1643)', () => {
+  it('accepts issueTriggerLabels', () => {
+    const result = v.safeParse(UpdateRepositoryRequestSchema, {
+      issueTriggerLabels: 'bug, needs-triage',
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.output.issueTriggerLabels).toBe('bug, needs-triage');
+    }
+  });
+
+  it('trims whitespace from issueTriggerLabels', () => {
+    const result = v.safeParse(UpdateRepositoryRequestSchema, {
+      issueTriggerLabels: '  bug, needs-triage  ',
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.output.issueTriggerLabels).toBe('bug, needs-triage');
+    }
+  });
+
+  it('accepts an empty object (all fields optional)', () => {
+    const result = v.safeParse(UpdateRepositoryRequestSchema, {});
+    expect(result.success).toBe(true);
+  });
+
+  it('rejects orchestratorSessionId as an unknown key (must only be settable via a dedicated MCP tool path)', () => {
+    const result = v.safeParse(UpdateRepositoryRequestSchema, {
+      orchestratorSessionId: 'session-1',
     });
     expect(result.success).toBe(false);
   });

@@ -39,6 +39,12 @@ const EditRepositoryFormSchema = v.object({
       v.trim()
     )
   ),
+  issueTriggerLabels: v.optional(
+    v.pipe(
+      v.string(),
+      v.trim()
+    )
+  ),
 });
 
 type EditRepositoryFormData = v.InferOutput<typeof EditRepositoryFormSchema>;
@@ -312,6 +318,7 @@ export function EditRepositoryForm({ repository, onSuccess, onCancel }: EditRepo
       setupCommand: repository.setupCommand ?? '',
       cleanupCommand: repository.cleanupCommand ?? '',
       envVars: repository.envVars ?? '',
+      issueTriggerLabels: repository.issueTriggerLabels ?? '',
     },
     mode: 'onBlur',
   });
@@ -397,6 +404,7 @@ export function EditRepositoryForm({ repository, onSuccess, onCancel }: EditRepo
       setupCommand: data.setupCommand?.trim() ?? '',
       cleanupCommand: data.cleanupCommand?.trim() ?? '',
       envVars: data.envVars?.trim() ?? '',
+      issueTriggerLabels: data.issueTriggerLabels?.trim() ?? '',
       defaultAgentId: selectedAgentId || null,
     });
   };
@@ -502,6 +510,18 @@ export function EditRepositoryForm({ repository, onSuccess, onCancel }: EditRepo
             />
             <p className="text-xs text-gray-500 mt-1">
               Set environment variables for all workers in this repository. Use .env format (KEY=value, one per line).
+            </p>
+          </FormField>
+
+          <FormField label="Issue Trigger Labels (optional)" error={errors.issueTriggerLabels}>
+            <Input
+              {...register('issueTriggerLabels')}
+              placeholder="e.g., agent-console, needs-orchestrator"
+              className="font-mono text-sm"
+              error={errors.issueTriggerLabels}
+            />
+            <p className="text-xs text-gray-500 mt-1">
+              Comma-separated GitHub label names. A labeled Issue on this repository is routed to the designated Orchestrator session when any of its labels match (case-insensitive).
             </p>
           </FormField>
 

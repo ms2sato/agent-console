@@ -29,6 +29,7 @@ import {
   detectIntegrationTestNeeds,
   runCommentBlameShiftCheck,
   runLanguageCheck,
+  runEmbeddedAgentStdoutWritersCheck,
 } from './check-utils.js';
 import { run as runDuplicationCheck } from './rule-skill-duplication-check.js';
 
@@ -83,6 +84,45 @@ function printCommentBlameShiftCheck(result) {
   return 1;
 }
 
+function printEmbeddedAgentStdoutWritersCheck(result) {
+  console.log('## Embedded-Agent Stdout-Writer Check\n');
+  if (result.spawnFailed) {
+    console.log(`❌ Could not run embedded-agent stdout-writer check: ${result.stderr}`);
+    console.log('\nThis check requires Bun on PATH. The CI workflow must include the `oven-sh/setup-bun` step before invoking preflight-check.js.');
+    return 1;
+  }
+  if (result.exitCode === 0) {
+    console.log('✅ Only the allowlisted wire-protocol writer writes to stdout in the embedded-agent subprocess loop.');
+    return 0;
+  }
+  // A non-zero exit with EMPTY stdout can only mean the script crashed
+  // before it printed anything — on a genuine "zero violations" outcome
+  // the script always exits 0 and prints the success line above, and on a
+  // genuine violation report it always prints at least one line to stdout.
+  // Rendering this as "Found 0 line(s)... violation(s)" would be
+  // indistinguishable from a real (but empty) report, so surface the
+  // crash and its stderr instead.
+  if (result.stdout.trim().length === 0) {
+    console.log(`❌ The embedded-agent stdout-writer check crashed before producing output (exit ${result.exitCode}):\n`);
+    console.log('```');
+    console.log(result.stderr.trim().length > 0 ? result.stderr : '(no stderr captured)');
+    console.log('```');
+    console.log('\nRun `bun run check:embedded-agent-stdout` locally to reproduce.');
+    return 1;
+  }
+  const violationLines = result.stdout.split('\n').filter((l) => l.trim().length > 0);
+  console.log(`❌ Found ${violationLines.length} line(s) of output, including non-allowlisted stdout-writer violation(s):\n`);
+  console.log('```');
+  for (const line of violationLines) {
+    console.log(line);
+  }
+  console.log('```');
+  console.log(
+    '\nRun `bun run check:embedded-agent-stdout` locally to reproduce. Only the wire-protocol writer may write to stdout in the embedded-agent subprocess loop — route logs/diagnostics to stderr instead.',
+  );
+  return 1;
+}
+
 // --- Display ---
 
 function printIntegrationTestCoverage(integrationTestNeeds) {
@@ -116,8 +156,8 @@ function printIntegrationTestCoverage(integrationTestNeeds) {
 
 /**
  * Select the coverage-check verdict line. Pure function so the
- * comment-only-exemption wording (Issue #1189) can be unit tested without
- * driving `run()`'s `process.exit()` side effect.
+ * comment-only-exemption wording can be unit tested without driving
+ * `run()`'s `process.exit()` side effect.
  */
 export function formatCoverageVerdict({ hasUnitGaps, gapsCount, hasIntegrationGap, hasCommentOnlyExemptions }) {
   if (hasUnitGaps) return `**${gapsCount} production file(s) missing test coverage.**`;
@@ -195,14 +235,24 @@ function run(changedFiles, diffRef = {}) {
   const blameShiftResult = runCommentBlameShiftCheck();
   const blameShiftExit = printCommentBlameShiftCheck(blameShiftResult);
 
-  if (hasUnitGaps || duplicationExit !== 0 || languageExit !== 0 || blameShiftExit !== 0) {
+  console.log('\n---\n');
+  const embeddedAgentStdoutResult = runEmbeddedAgentStdoutWritersCheck();
+  const embeddedAgentStdoutExit = printEmbeddedAgentStdoutWritersCheck(embeddedAgentStdoutResult);
+
+  if (
+    hasUnitGaps ||
+    duplicationExit !== 0 ||
+    languageExit !== 0 ||
+    blameShiftExit !== 0 ||
+    embeddedAgentStdoutExit !== 0
+  ) {
     process.exit(1);
   }
   process.exit(0);
 }
 
 // --- Exports for testing ---
-export { run };
+export { run, printEmbeddedAgentStdoutWritersCheck };
 
 // --- Entry point ---
 const isMainModule = import.meta.url === `file://${process.argv[1]}` || process.argv[1]?.endsWith('preflight-check.js');

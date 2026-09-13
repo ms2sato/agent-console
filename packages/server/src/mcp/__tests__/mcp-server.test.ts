@@ -1,6 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach, mock, jest } from 'bun:test';
 import { vol } from 'memfs';
 import { Hono } from 'hono';
+import * as path from 'path';
+import * as os from 'os';
 import { setupMemfs, cleanupMemfs } from '../../__tests__/utils/mock-fs-helper.js';
 import { createMockPtyFactory } from '../../__tests__/utils/mock-pty.js';
 import { mockProcess, resetProcessMock } from '../../__tests__/utils/mock-process-helper.js';
@@ -345,6 +347,20 @@ function parseToolResult(response: Awaited<ReturnType<typeof callTool>>): unknow
   const text = response.result?.content?.[0]?.text;
   if (!text) return undefined;
   return JSON.parse(text);
+}
+
+/**
+ * Poll `cond` until it's true or `timeoutMs` elapses. Needed for assertions
+ * that depend on `fakeEmbeddedSpawn.pushLine`'s effect being processed by the
+ * service's background stdout-reader loop, which is not directly awaited by
+ * `callTool` (mirrors `embedded-agent-worker-service.test.ts`'s `waitFor`).
+ */
+async function waitFor(cond: () => boolean, timeoutMs = 1000): Promise<void> {
+  const start = Date.now();
+  while (!cond()) {
+    if (Date.now() - start > timeoutMs) throw new Error('waitFor timed out');
+    await new Promise((resolve) => setTimeout(resolve, 2));
+  }
 }
 
 /**
@@ -1132,6 +1148,37 @@ describe('MCP Server Tools', () => {
 
       const stored = repositoryManager.getRepository('repo-1');
       expect(stored?.description).toBeNull();
+    });
+  });
+
+  // ===========================================================================
+  // set_orchestrator_session / clear_orchestrator_session
+  //
+  // Deep coverage (happy path set/move/clear, stale-clear no-op) lives in
+  // the dedicated orchestrator-session-designation.test.ts, which uses a
+  // real SqliteSessionRepository so `orchestratorSessionId`'s FK to
+  // `sessions.id` (migration v40) is satisfiable. This file's SessionManager
+  // uses JsonSessionRepository (see remountMcpApp above), so the tests here
+  // are limited to paths that reject BEFORE the FK-constrained write.
+  // ===========================================================================
+
+  describe('set_orchestrator_session / clear_orchestrator_session', () => {
+    it('set_orchestrator_session rejects an unknown sessionId', async () => {
+      const response = await callTool(app, mcpSessionId, 'set_orchestrator_session', { sessionId: 'does-not-exist' }, nextId++);
+
+      expect(response.result?.isError).toBe(true);
+      const data = parseToolResult(response) as { error: string };
+      expect(data.error).toContain('does-not-exist');
+    });
+
+    it('clear_orchestrator_session rejects a quick session (no repositoryId)', async () => {
+      const session = await sessionManager.createSession({ type: 'quick', locationPath: TEST_REPO_PATH });
+
+      const response = await callTool(app, mcpSessionId, 'clear_orchestrator_session', { sessionId: session.id }, nextId++);
+
+      expect(response.result?.isError).toBe(true);
+      const data = parseToolResult(response) as { error: string };
+      expect(data.error).toContain('has no repository');
     });
   });
 
@@ -1931,7 +1978,7 @@ describe('MCP Server Tools', () => {
       await deactivatePromise;
     });
 
-    it('should fail with a classified message when the embedded-agent target is mid-turn (TURN_IN_PROGRESS)', async () => {
+    it('should queue (not reject) a message to an embedded-agent target that is mid-turn, delivered as the next turn once the loop reports idle (R3 mid-turn notification queue, Issue #1574)', async () => {
       const session = await sessionManager.createSession(
         { type: 'quick', locationPath: '/test/path', agentId: 'claude-code' },
         // createdBy is required for embedded-agent activation to mint an MCP
@@ -1951,10 +1998,11 @@ describe('MCP Server Tools', () => {
 
       await sessionManager.activateEmbeddedAgentWorker(session.id, embeddedWorker!.id);
       // Admit a turn that never resolves idle, so the second delivery below
-      // hits TURN_IN_PROGRESS without a second activation attempt.
+      // arrives while the worker is busy.
       const first = await sessionManager.sendEmbeddedAgentUserMessage(session.id, embeddedWorker!.id, 'busy');
       expect(first.ok).toBe(true);
       expect(fakeEmbeddedSpawn.captured.length).toBe(1);
+      const stdinWritesBeforeSecondSend = fakeEmbeddedSpawn.stdinWrites.length;
 
       const response = await callTool(app, mcpSessionId, 'send_session_message', {
         toSessionId: session.id,
@@ -1963,13 +2011,30 @@ describe('MCP Server Tools', () => {
         fromSessionId: senderSession.id,
       }, nextId++);
 
-      expect(response.result?.isError).toBe(true);
-      const data = parseToolResult(response) as { error: string };
-      expect(data.error).toContain('turn in progress');
-      // No re-activation attempted (already activated).
+      // R3: the tool call succeeds -- the notification is queued rather than
+      // rejected -- and no re-activation was attempted (already activated).
+      expect(response.result?.isError).toBeUndefined();
+      const data = parseToolResult(response) as { messageId: string; path: string };
+      expect(data.messageId).toBeDefined();
       expect(fakeEmbeddedSpawn.captured.length).toBe(1);
+      // Not delivered yet -- still mid the first turn.
+      expect(fakeEmbeddedSpawn.stdinWrites.length).toBe(stdinWritesBeforeSecondSend);
 
-      // Teardown: clear the turn so afterEach's deactivate isn't rejected.
+      // Resolve the first turn -> idle -> queue flush delivers the queued
+      // notification as the next turn.
+      fakeEmbeddedSpawn.pushLine({ v: 1, type: 'state', state: 'idle' });
+      await waitFor(() => fakeEmbeddedSpawn.stdinWrites.length > stdinWritesBeforeSecondSend);
+
+      const userMessageWrites = fakeEmbeddedSpawn.stdinWrites
+        .map((w) => JSON.parse(w) as { type: string; text?: string })
+        .filter((c) => c.type === 'user-message');
+      expect(userMessageWrites).toHaveLength(2);
+      expect(userMessageWrites[1].text).toContain('[internal:message]');
+      expect(userMessageWrites[1].text).toContain(`from=${senderSession.id}`);
+      expect(userMessageWrites[1].text).toContain(data.path);
+
+      // Teardown: clear the queue-flushed turn so afterEach's deactivate
+      // isn't rejected.
       fakeEmbeddedSpawn.pushLine({ v: 1, type: 'state', state: 'idle' });
     });
 
@@ -4454,8 +4519,31 @@ describe('MCP Server Tools', () => {
         const data = parseToolResult(response) as { error: string };
 
         expect(response.result?.isError).toBe(true);
-        expect(data.error).toContain('does not support PTY notifications');
-        expect(data.error).toContain('requires a PTY-backed worker (agent/terminal)');
+        expect(data.error).toContain('cannot receive notifications');
+        expect(data.error).toContain('requires an agent, terminal, or embedded-agent worker');
+      });
+
+      it('should create a timer when workerId targets a deactivated embedded-agent worker (Issue #1574: notification-target parity)', async () => {
+        const session = await sessionManager.createSession(
+          { type: 'quick', locationPath: '/test/path', agentId: 'claude-code' },
+          { createdBy: 'test-user-id' },
+        );
+        const embeddedWorker = await sessionManager.createWorker(session.id, {
+          type: 'embedded-agent',
+          embeddedAgentId: TEST_EMBEDDED_AGENT_DEF.id,
+        });
+        expect(embeddedWorker).toBeDefined();
+
+        const response = await callTool(app, mcpSessionId, 'create_timer', {
+          sessionId: session.id,
+          workerId: embeddedWorker!.id,
+          intervalSeconds: 60,
+          action: 'Check CI status',
+        }, nextId++);
+
+        expect(response.result?.isError).toBeUndefined();
+        const data = parseToolResult(response) as { timerId: string };
+        expect(data.timerId).toBeDefined();
       });
     });
 
@@ -4580,8 +4668,8 @@ describe('MCP Server Tools', () => {
         const data = parseToolResult(response) as { error: string };
 
         expect(response.result?.isError).toBe(true);
-        expect(data.error).toContain('does not support PTY notifications');
-        expect(data.error).toContain('requires a PTY-backed worker (agent/terminal)');
+        expect(data.error).toContain('cannot receive notifications');
+        expect(data.error).toContain('requires an agent, terminal, or embedded-agent worker');
       });
     });
   });
@@ -4872,8 +4960,30 @@ describe('MCP Server Tools', () => {
         const data = parseToolResult(response) as { error: string };
 
         expect(response.result?.isError).toBe(true);
-        expect(data.error).toContain('does not support PTY notifications');
-        expect(data.error).toContain('requires a PTY-backed worker (agent/terminal)');
+        expect(data.error).toContain('cannot receive notifications');
+        expect(data.error).toContain('requires an agent, terminal, or embedded-agent worker');
+      });
+
+      it('should start a process when workerId targets an embedded-agent worker (Issue #1574: notification-target parity)', async () => {
+        const session = await sessionManager.createSession(
+          { type: 'quick', locationPath: '/test/path', agentId: 'claude-code' },
+          { createdBy: 'test-user-id' },
+        );
+        const embeddedWorker = await sessionManager.createWorker(session.id, {
+          type: 'embedded-agent',
+          embeddedAgentId: TEST_EMBEDDED_AGENT_DEF.id,
+        });
+        expect(embeddedWorker).toBeDefined();
+
+        const response = await callTool(app, mcpSessionId, 'run_process', {
+          command: 'echo hello',
+          sessionId: session.id,
+          workerId: embeddedWorker!.id,
+        }, nextId++);
+
+        expect(response.result?.isError).toBeUndefined();
+        const data = parseToolResult(response) as { processId: string };
+        expect(data.processId).toBeDefined();
       });
     });
 
@@ -5040,6 +5150,47 @@ describe('MCP Server Tools', () => {
   });
 
   // ===========================================================================
+  // set_agent_parameters: registration in this createMcpApp wiring
+  // (agent-surface.md Phase 3)
+  //
+  // Full behavior coverage (the own-worker guard, the tokenless refusal, the
+  // terminal-caller classification, Ruling 4 at the wire) lives in the
+  // dedicated __tests__/set-agent-parameters.test.ts, mirroring the artifact
+  // and bookmark tools' own splits. This is only a wiring check.
+  // ===========================================================================
+
+  describe('set_agent_parameters: registration (mcp-server.ts wiring)', () => {
+    it('is registered by createMcpApp with the five documented parameters', async () => {
+      const listRes = await app.request('/mcp', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json, text/event-stream',
+          'Mcp-Session-Id': mcpSessionId,
+        },
+        body: JSON.stringify({ jsonrpc: '2.0', method: 'tools/list', id: nextId++ }),
+      });
+      expect(listRes.status).toBe(200);
+
+      const listBody = (await listRes.json()) as {
+        result?: {
+          tools?: Array<{ name: string; inputSchema?: { properties?: Record<string, unknown> } }>;
+        };
+      };
+      const tool = listBody.result?.tools?.find((t) => t.name === 'set_agent_parameters');
+
+      expect(tool).toBeDefined();
+      expect(Object.keys(tool?.inputSchema?.properties ?? {}).sort()).toEqual([
+        'contextWindowTokens',
+        'model',
+        'reasoningEffort',
+        'sessionId',
+        'workerId',
+      ]);
+    });
+  });
+
+  // ===========================================================================
   // delete_html_artifact: registration in this createMcpApp wiring (Issue #1371)
   //
   // Full behavior coverage (ownership resolution, authz, delete semantics)
@@ -5147,6 +5298,102 @@ describe('MCP Server Tools', () => {
 
       expect(mockBroadcastToApp).toHaveBeenCalledTimes(1);
       expect(mockBroadcastToApp).toHaveBeenCalledWith({ type: 'bookmark-deleted', sessionId: session.id, bookmarkId: created.id });
+    });
+  });
+
+  // ===========================================================================
+  // create_html_artifact / delete_html_artifact: realtime refresh broadcast
+  // wiring (mcp-server.ts wiring, this createMcpApp instance)
+  //
+  // Full behavior coverage (validation, ownership resolution, authz) lives
+  // in the dedicated __tests__/create-html-artifact.test.ts and
+  // delete-html-artifact.test.ts, mirroring the bookmark tools' own split
+  // above. This block exists so a change to mcp-server.ts's broadcastToApp
+  // call sites is caught by THIS file too (its own sibling-test coverage),
+  // not only by the dedicated per-tool files -- unlike bookmarks, artifacts
+  // write real bytes to disk via `SqliteArtifactRepository` (`Bun.write` /
+  // `Bun.file`, see `lib/artifact-storage.ts`'s header comment), which
+  // bypasses this file's process-wide memfs mock. This block therefore
+  // scopes `AGENT_CONSOLE_HOME` to a real `os.tmpdir()`-based directory for
+  // its own tests only, mirroring `create-html-artifact.test.ts`'s own
+  // save/restore pattern, and restores it afterward so no other test in
+  // this file is affected.
+  // ===========================================================================
+
+  describe('create_html_artifact / delete_html_artifact: broadcast wiring (mcp-server.ts)', () => {
+    let savedAgentConsoleHome: string | undefined;
+    let realConfigDir: string | undefined;
+
+    beforeEach(() => {
+      savedAgentConsoleHome = process.env.AGENT_CONSOLE_HOME;
+      realConfigDir = path.join(os.tmpdir(), `agent-console-mcp-server-artifact-broadcast-test-${crypto.randomUUID()}`);
+      process.env.AGENT_CONSOLE_HOME = realConfigDir;
+    });
+
+    afterEach(() => {
+      if (realConfigDir) {
+        Bun.spawnSync(['rm', '-rf', realConfigDir]);
+        realConfigDir = undefined;
+      }
+      if (savedAgentConsoleHome !== undefined) {
+        process.env.AGENT_CONSOLE_HOME = savedAgentConsoleHome;
+      } else {
+        delete process.env.AGENT_CONSOLE_HOME;
+      }
+    });
+
+    it('create_html_artifact emits exactly one artifact-created trigger after a successful create', async () => {
+      const owner = await userRepository.upsertByOsUid(9003, 'artifact-broadcast-owner', '/home/artifact-broadcast-owner');
+      const session = await sessionManager.createSession(
+        { type: 'quick', locationPath: '/test/path' },
+        { createdBy: owner.id },
+      );
+
+      const mockBroadcastToApp = mock(() => {});
+      await remountMcpApp({ broadcastToApp: mockBroadcastToApp });
+
+      const response = await callTool(
+        app,
+        mcpSessionId,
+        'create_html_artifact',
+        { content: '<p>x</p>', sessionId: session.id },
+        nextId++,
+      );
+      expect(response.result?.isError).toBeUndefined();
+      const data = parseToolResult(response) as { artifactId: string };
+
+      expect(mockBroadcastToApp).toHaveBeenCalledTimes(1);
+      expect(mockBroadcastToApp).toHaveBeenCalledWith({ type: 'artifact-created', sessionId: session.id, artifactId: data.artifactId });
+    });
+
+    it('delete_html_artifact emits exactly one artifact-deleted trigger after a successful delete', async () => {
+      const owner = await userRepository.upsertByOsUid(9004, 'artifact-broadcast-owner-2', '/home/artifact-broadcast-owner-2');
+      const session = await sessionManager.createSession(
+        { type: 'quick', locationPath: '/test/path' },
+        { createdBy: owner.id },
+      );
+      const created = await artifactRepository.create({
+        id: 'artifact-broadcast-wiring-1',
+        userId: owner.id,
+        title: 'Broadcast wiring test',
+        content: '<p>x</p>',
+        sourceSessionId: session.id,
+      });
+
+      const mockBroadcastToApp = mock(() => {});
+      await remountMcpApp({ broadcastToApp: mockBroadcastToApp });
+
+      const response = await callTool(
+        app,
+        mcpSessionId,
+        'delete_html_artifact',
+        { artifactId: created.id, sessionId: session.id },
+        nextId++,
+      );
+      expect(response.result?.isError).toBeUndefined();
+
+      expect(mockBroadcastToApp).toHaveBeenCalledTimes(1);
+      expect(mockBroadcastToApp).toHaveBeenCalledWith({ type: 'artifact-deleted', sessionId: session.id, artifactId: created.id });
     });
   });
 

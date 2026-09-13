@@ -381,6 +381,14 @@ async function runMigrations(database: Kysely<Database>, dbPath: string): Promis
   if (currentVersion < 38) {
     await migrateToV38(database);
   }
+
+  if (currentVersion < 39) {
+    await migrateToV39(database);
+  }
+
+  if (currentVersion < 40) {
+    await migrateToV40(database);
+  }
 }
 
 /**
@@ -2222,6 +2230,70 @@ export async function migrateToV38(database: Kysely<Database>): Promise<void> {
   await sql`PRAGMA user_version = 38`.execute(database);
 
   logger.info('Migration to v38 completed');
+}
+
+/**
+ * Migration v39: Add `provider_supports_images` column to `embedded_agents`.
+ * Nullable INTEGER (0/1) column, same null-for-claude-sdk convention as
+ * `provider_base_url` / `provider_api_key_ref`: a per-provider capability
+ * flag declaring whether the provider can see image content parts.
+ * Absent/null/0 all mean "cannot see images" (default).
+ *
+ * @internal Exported for testing.
+ */
+export async function migrateToV39(database: Kysely<Database>): Promise<void> {
+  logger.info('Running migration to v39: Adding provider_supports_images column to embedded_agents');
+
+  try {
+    await database.schema
+      .alterTable('embedded_agents')
+      .addColumn('provider_supports_images', 'integer')
+      .execute();
+  } catch (error) {
+    if (!isDuplicateColumnError(error)) throw error;
+    logger.info('Column provider_supports_images already exists, skipping');
+  }
+
+  await sql`PRAGMA user_version = 39`.execute(database);
+
+  logger.info('Migration to v39 completed');
+}
+
+/**
+ * Migration v40: Add `orchestrator_session_id` and `issue_trigger_labels`
+ * columns to `repositories`.
+ *
+ * `orchestrator_session_id` is a nullable FK to `sessions(id)` with
+ * `ON DELETE SET NULL` (same idiom as `default_agent_id` -> `agents(id)`,
+ * migration v10): when the flagged session's row is deleted, the pointer
+ * clears automatically with no application code path to get wrong.
+ *
+ * `issue_trigger_labels` is a nullable flat comma-separated string, same
+ * idiom as `env_vars` (migration v5) -- case-insensitive trimmed match is
+ * applied by the reader, not by the schema.
+ *
+ * @internal Exported for testing.
+ */
+export async function migrateToV40(database: Kysely<Database>): Promise<void> {
+  logger.info('Running migration to v40: Adding orchestrator_session_id and issue_trigger_labels columns to repositories');
+
+  try {
+    await sql`ALTER TABLE repositories ADD COLUMN orchestrator_session_id TEXT REFERENCES sessions(id) ON DELETE SET NULL`.execute(database);
+  } catch (error) {
+    if (!isDuplicateColumnError(error)) throw error;
+    logger.info('Column orchestrator_session_id already exists, skipping');
+  }
+
+  try {
+    await sql`ALTER TABLE repositories ADD COLUMN issue_trigger_labels TEXT`.execute(database);
+  } catch (error) {
+    if (!isDuplicateColumnError(error)) throw error;
+    logger.info('Column issue_trigger_labels already exists, skipping');
+  }
+
+  await sql`PRAGMA user_version = 40`.execute(database);
+
+  logger.info('Migration to v40 completed');
 }
 
 /**

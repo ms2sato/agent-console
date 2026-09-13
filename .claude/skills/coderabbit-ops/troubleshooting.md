@@ -2,21 +2,21 @@
 
 Case-by-case dispositions for CodeRabbit issues. The verdict-surface checklist, CLI invocation, and LOW / NITPICK findings policy live in [`SKILL.md`](SKILL.md); this file covers the exception paths.
 
-## The plan's limits are permanent, not incidents
+## Rate limits are real; the number is not yours to assume
 
-**This repository is on CodeRabbit's free plan** (owner-confirmed, 2026-08-28): **one included review per hour** (the remaining count is stated at the end of each review body) and **a hundred changed files per PR**, over which the bot skips the review entirely.
+**When the bot says it is rate-limited, wait until the time it states — that is the whole rule.** Every rate-limited round writes the wait into its own comment: `Next included review available in N minutes`, on the summary comment the bot edits in place (its `updated_at` is the anchor for `N`). Read that line, compute the time, and trigger once when it passes. Do not derive an allowance from this file, from the plan name printed in a review body, or from how many reviews landed in the last hour.
 
-**Do not investigate these as misconfiguration.** A review body can carry `Plan: Pro Plus` next to `You've used all free OSS reviews` — the first is display text, not this repository's contract state.
+This section used to state a plan and an hourly count. Both went stale without anyone noticing: the review body's Run configuration reads `Plan: Essentials`, and on 2026-09-03 the Orchestrator rationed three ready PRs to one review per hour on the strength of the old sentence — an allocation the owner had never asked for — while the bot's own comments were stating the real wait each time. (Owner, same day: do not economise on a limit you have not measured; if the bot says it is limited, waiting for the stated time is fine.)
 
-Three consequences:
+Three things that remain true whatever the number is:
 
-1. **A slot given to one PR is an hour taken from another.** Decide the allocation deliberately rather than letting whichever branch pushes next consume the window. The claim is strongest for a PR with **no genuine round yet** and a large production diff; weakest for one with real rounds already and a small remaining gap — that case has the dual-clean disposition below, and a zero-round PR does not.
-2. **Batch the fixes.** Three pushes in response to one review spends three hours to get two reviews.
-3. **The `docs:` carve-out is an allocation tool.** A retro or spec PR titled `docs:` skips auto-review by config, preserving the window for code PRs waiting on it.
-
-**Over the file cap, no disposition substitutes for the review** — it never started, so there is nothing to have confidence in. Reduce the diff, and before splitting the change itself look for **accidental fan-out**: files touched for reasons unrelated to the change's subject. Removing that is usually right on its own merits and leaves the design intact; splitting a deliberately atomic change does not.
+1. **A retrigger consumes the same allowance as an automatic review.** `@coderabbitai review` is not free polling. Trigger once per stated window, never in a loop, and prefer the automatic review on push when the head is final.
+2. **The authoritative "is it done" signal is the commit status `description`**, read with `gh api repos/<owner>/<repo>/commits/<sha>/status`: `Review in progress` -> `Review completed` (or `Review rate limited`). Do not decide from the LAST PR comment: the completed walkthrough is an in-place EDIT of the original summary comment, while a manual trigger posts a NEW reply ("Review finished... does not re-review already reviewed commits") that becomes ordinally last — a `.[-1]` check mistakes the trigger's own reply for the outcome and waits forever, or fires a needless second trigger. (Instance: PR #1565, 2026-09-03 — the delegate's monitor did exactly this and caught it before the second trigger.)
+3. **The changed-files cap is a separate wall.** Over it the bot skips the review entirely and no disposition substitutes for a review that never started (the cap read 100 on 2026-08-28; read the bot's comment for the current value). Reduce the diff, and before splitting the change itself look for **accidental fan-out**: files touched for reasons unrelated to the change's subject. Removing that is usually right on its own merits and leaves the design intact; splitting a deliberately atomic change does not.
 
 (Sprint 2026-08-28 PR [#1403](https://github.com/ms2sato/agent-console/pull/1403) — 107 files. Twelve were migration tests whose entire diff bumped an assertion `migration.test.ts` already owned: every migration added had been touching every migration test. Removing it took the PR to 95 and let a real review run, which found a Major that an independent audit and the acceptance check had both missed. Splitting the swap itself was rejected — the window where one engine has no context management is measured in review round-trips, not minutes.)
+
+**The `docs:` carve-out is still an allocation tool.** A retro or spec PR titled `docs:` skips auto-review by config, which keeps whatever allowance exists for code PRs.
 
 ## Q: The local CodeRabbit CLI is rate-limited. What do I do?
 

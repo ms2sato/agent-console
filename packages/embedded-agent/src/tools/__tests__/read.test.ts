@@ -40,6 +40,24 @@ describe('readTool', () => {
     expect(result.result).toBe('Access outside session location is not permitted.');
   });
 
+  it('reads a file under ctx.attachmentRoots, outside locationPath (#1570)', async () => {
+    const attachmentRoot = await fsPromises.mkdtemp(path.join(os.tmpdir(), 'embedded-agent-attach-'));
+    try {
+      const target = path.join(attachmentRoot, 'upload.txt');
+      await fsPromises.writeFile(target, 'attached content');
+
+      const result = await readTool.execute(
+        { path: target },
+        { locationPath, attachmentRoots: [attachmentRoot] },
+      );
+
+      expect(result.ok).toBe(true);
+      expect(result.result).toBe('1\tattached content');
+    } finally {
+      await fsPromises.rm(attachmentRoot, { recursive: true, force: true });
+    }
+  });
+
   it('returns a distinct failure shape for a nonexistent file (not the confinement message)', async () => {
     const result = await readTool.execute({ path: 'does-not-exist.txt' }, { locationPath });
 

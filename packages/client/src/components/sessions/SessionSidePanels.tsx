@@ -1,7 +1,8 @@
+import { ChevronLeftIcon, ChevronRightIcon } from '../Icons';
 import { MemoPanel } from './MemoPanel';
 import { SessionArtifactsPanel } from './SessionArtifactsPanel';
 import { SessionBookmarksPanel } from './SessionBookmarksPanel';
-import { useSessionSidePanelsState } from './hooks/useSessionSidePanelsState';
+import { useSessionSidePanelsState, type SessionSidePanelKey } from './hooks/useSessionSidePanelsState';
 
 interface SessionSidePanelsProps {
   sessionId: string;
@@ -9,43 +10,71 @@ interface SessionSidePanelsProps {
 
 /**
  * Single owner of BOTH the Memo / Artifacts / Bookmarks expanded-state
- * record (R1a) AND the shared rail chrome (R1b/R1c) -- exactly one bordered
- * column exists on the page, with each section a row inside it. When every
- * section is collapsed the column shrinks to a single narrow vertical bar
- * holding the section labels (R1d); as soon as any section is expanded the
- * column widens into a normal accordion, with each section a header row and
- * its body stacked directly underneath when open. Multi-open stays
- * unrestricted -- only the duplicated per-panel chrome is removed.
+ * record AND the shared rail chrome -- exactly one bordered column exists
+ * on the page, with each section a row inside it.
+ *
+ * `railOpen` and each section's `expanded` flag are independent: collapsing
+ * the rail is a dedicated toggle button in its own row, separate from any
+ * section's own open/closed state, and it never mutates
+ * `expanded`. When the rail is closed the column shrinks to a single narrow
+ * vertical bar holding the section labels; clicking a section's label there
+ * reopens the rail AND expands that section in one step
+ * (`openRailAndExpandSection`) without disturbing any other section's
+ * state. When the rail is open, each section behaves like an ordinary
+ * accordion header with its body stacked directly underneath when
+ * expanded. Multi-open stays unrestricted -- only the duplicated per-panel
+ * chrome is removed.
  */
 export function SessionSidePanels({ sessionId }: SessionSidePanelsProps) {
-  const { expanded, toggleSection } = useSessionSidePanelsState();
-  const anyExpanded = expanded.memo || expanded.artifacts || expanded.bookmarks;
+  const { railOpen, expanded, toggleRail, toggleSection, openRailAndExpandSection, expandSection } =
+    useSessionSidePanelsState();
+
+  const handleToggle = (key: SessionSidePanelKey) => () =>
+    railOpen ? toggleSection(key) : openRailAndExpandSection(key);
 
   return (
     <div
       className={
-        anyExpanded
+        railOpen
           ? 'hidden md:flex flex-col w-80 border-l border-slate-700 bg-slate-800 shrink-0 overflow-y-auto'
           : 'hidden md:flex flex-col items-center border-l border-slate-700 bg-slate-800 py-2 px-1 shrink-0'
       }
     >
+      <div className={railOpen ? 'flex justify-end px-1 py-1' : 'flex justify-center py-1'}>
+        <button
+          type="button"
+          onClick={toggleRail}
+          aria-expanded={railOpen}
+          aria-label={railOpen ? 'Collapse side panel' : 'Expand side panel'}
+          className="text-gray-400 hover:text-gray-200 cursor-pointer bg-transparent border-none p-1"
+        >
+          {railOpen ? <ChevronRightIcon className="w-4 h-4" /> : <ChevronLeftIcon className="w-4 h-4" />}
+        </button>
+      </div>
       <MemoPanel
         sessionId={sessionId}
         isExpanded={expanded.memo}
-        onToggleExpanded={() => toggleSection('memo')}
-        compact={!anyExpanded}
+        onToggleExpanded={handleToggle('memo')}
+        // Only MemoPanel gets this: it's the only section whose
+        // always-visible header control (Edit) can enter a content-editing
+        // mode while the section is collapsed. Never needs to also open the
+        // rail -- MemoPanel's own `compact` branch returns before rendering
+        // the Edit button at all, so Edit is only reachable when
+        // compact === false, i.e. railOpen === true already.
+        onEnsureExpanded={() => expandSection('memo')}
+        compact={!railOpen}
       />
       <SessionArtifactsPanel
         sessionId={sessionId}
         isExpanded={expanded.artifacts}
-        onToggleExpanded={() => toggleSection('artifacts')}
-        compact={!anyExpanded}
+        onToggleExpanded={handleToggle('artifacts')}
+        compact={!railOpen}
       />
       <SessionBookmarksPanel
         sessionId={sessionId}
         isExpanded={expanded.bookmarks}
-        onToggleExpanded={() => toggleSection('bookmarks')}
-        compact={!anyExpanded}
+        onToggleExpanded={handleToggle('bookmarks')}
+        compact={!railOpen}
       />
     </div>
   );

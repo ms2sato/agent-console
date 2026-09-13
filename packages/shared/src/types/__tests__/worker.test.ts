@@ -2,6 +2,7 @@ import { describe, it, expect } from 'bun:test';
 import {
   isPtyBackedWorker,
   canReceiveSessionMessages,
+  canReceiveNotifications,
   type AgentWorker,
   type TerminalWorker,
   type GitDiffWorker,
@@ -41,6 +42,8 @@ const embeddedAgentWorker: EmbeddedAgentWorker = {
   embeddedAgentId: 'def-1',
   activated: false,
   autoCompaction: true,
+  reasoningEffort: null,
+  hasParameterOverride: false,
 };
 
 describe('isPtyBackedWorker', () => {
@@ -105,6 +108,34 @@ describe('canReceiveSessionMessages', () => {
       expect(w.embeddedAgentId).toBe('def-1');
     } else {
       throw new Error('expected embedded-agent worker to receive session messages');
+    }
+  });
+});
+
+describe('canReceiveNotifications', () => {
+  it('returns true for an agent worker', () => {
+    expect(canReceiveNotifications(agentWorker)).toBe(true);
+  });
+
+  it('returns true for a terminal worker', () => {
+    expect(canReceiveNotifications(terminalWorker)).toBe(true);
+  });
+
+  it('returns true for an embedded-agent worker (notification-target parity, Issue #1574)', () => {
+    expect(canReceiveNotifications(embeddedAgentWorker)).toBe(true);
+  });
+
+  it('returns false for a git-diff worker', () => {
+    expect(canReceiveNotifications(gitDiffWorker)).toBe(false);
+  });
+
+  it('narrows to an embedded-agent worker with an embeddedAgentId field', () => {
+    const w = embeddedAgentWorker as AgentWorker | TerminalWorker | GitDiffWorker | EmbeddedAgentWorker;
+    if (canReceiveNotifications(w) && w.type === 'embedded-agent') {
+      // Type narrowing: `embeddedAgentId` exists only on EmbeddedAgentWorker.
+      expect(w.embeddedAgentId).toBe('def-1');
+    } else {
+      throw new Error('expected embedded-agent worker to receive notifications');
     }
   });
 });

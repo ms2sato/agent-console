@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach, mock, spyOn } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, mock, spyOn, setSystemTime } from 'bun:test';
 import * as fs from 'fs';
 import { JOB_TYPES } from '@agent-console/shared';
 import type { CreateSessionRequest, CreateWorkerParams, Session, Worker } from '@agent-console/shared';
@@ -24,11 +24,15 @@ import type { SessionManager } from '../session-manager.js';
 import { UsernameLookupService } from '../username-lookup.js';
 import type { UserRepository } from '../../repositories/user-repository.js';
 import type { AuthUser } from '@agent-console/shared';
-import type { SpawnAsUserFn, runAsUser, RunAsUserOpts } from '../privilege-elevation.js';
+import type { SpawnAsUserFn, SpawnAsUserOpts, SpawnAsUserResult, runAsUser, RunAsUserOpts } from '../privilege-elevation.js';
+import * as os from 'os';
 import type { LookupOsUserFn } from '../os-user-lookup.js';
 import type { sweepOrphanProcesses } from '../orphan-process-sweeper.js';
 import { McpTokenRegistry } from '../../mcp/mcp-auth.js';
+import { isInternalPtyWorker } from '../worker-types.js';
 import { EmbeddedMessageDeliveryError } from '../embedded-agent-worker-service.js';
+import { composeEmbeddedAgentDeliveryText } from '../session-manager.js';
+import { buildPtyNotificationText, type PtyNotificationParams } from '../../lib/pty-notification.js';
 
 // Test config directory
 const TEST_CONFIG_DIR = '/test/config';
@@ -1561,6 +1565,516 @@ describe('SessionManager', () => {
     });
   });
 
+  describe('setEmbeddedAgentParameters (agent-surface.md Phase 3, mid-run model / effort / window)', () => {
+    const PARAM_DEF = {
+      id: 'param-def',
+      name: 'Stub Model',
+      engine: 'openai-api' as const,
+      isBuiltIn: false,
+      provider: { baseUrl: 'http://localhost:11434/v1', model: 'qwen3:32b' },
+      contextWindowTokens: 128_000,
+      createdBy: 'test-user-id',
+      createdAt: '2024-01-01T00:00:00.000Z',
+      updatedAt: '2024-01-01T00:00:00.000Z',
+    };
+
+    /**
+     * Mints a FRESH fake subprocess per spawn (unlike the single-subprocess
+     * fakes elsewhere in this file), because the restart pins below activate
+     * twice, and auto-resolves `exited` the moment `shutdown` is written so a
+     * deactivate resolves through the real exit path rather than the
+     * multi-second grace timeout.
+     */
+    function makeMultiSpawn() {
+      const stdinWrites: string[] = [];
+      const spawnCount = { value: 0 };
+      const events: string[] = [];
+      const fn = (() => {
+        spawnCount.value += 1;
+        let resolveExited!: (code: number) => void;
+        const exited = new Promise<number>((resolve) => {
+          resolveExited = resolve;
+        });
+        let stdoutCtrl!: ReadableStreamDefaultController<Uint8Array>;
+        let stderrCtrl!: ReadableStreamDefaultController<Uint8Array>;
+        const stdout = new ReadableStream<Uint8Array>({ start(c) { stdoutCtrl = c; } });
+        const stderr = new ReadableStream<Uint8Array>({ start(c) { stderrCtrl = c; } });
+        let exitedAlready = false;
+        const finish = () => {
+          if (exitedAlready) return;
+          exitedAlready = true;
+          resolveExited(0);
+          stdoutCtrl.close();
+          stderrCtrl.close();
+        };
+        const stdin = {
+          write: (chunk: string | Uint8Array) => {
+            const text = typeof chunk === 'string' ? chunk : new TextDecoder().decode(chunk);
+            stdinWrites.push(text);
+            events.push(`stdin:${(JSON.parse(text) as { type: string }).type}`);
+            if (text.includes('"shutdown"')) finish();
+            return 0;
+          },
+          end: () => {},
+          flush: () => 0,
+        };
+        const subprocess = { pid: 4242 + spawnCount.value, exited, stdin, stdout, stderr, kill: () => finish() };
+        return { subprocess, stdin, elevated: false };
+      }) as unknown as SpawnAsUserFn;
+      return { fn, stdinWrites, spawnCount, events };
+    }
+
+    async function setupActivated(defs?: Map<string, typeof PARAM_DEF>) {
+      const definitions = defs ?? new Map([[PARAM_DEF.id, { ...PARAM_DEF }]]);
+      const spawn = makeMultiSpawn();
+      const module = await import(`../session-manager.js?v=${++importCounter}`);
+      const manager: SessionManager = await module.SessionManager.create({
+        userMode: new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' }),
+        pathExists: mockPathExists,
+        jobQueue: testJobQueue,
+        agentManager,
+        mcpTokenRegistry: new McpTokenRegistry(),
+        embeddedAgentManager: { getEmbeddedAgent: (id: string) => definitions.get(id) },
+        repositoryLookup: defaultRepositoryLookup,
+        repositoryEnvLookup: defaultRepositoryEnvLookup,
+        spawnAsUserFn: spawn.fn,
+      });
+      const session = await manager.createSession(
+        { type: 'quick', locationPath: '/test/path', agentId: 'claude-code' },
+        { createdBy: 'test-user-id' },
+      );
+      const worker = await manager.createWorker(session.id, {
+        type: 'embedded-agent',
+        embeddedAgentId: PARAM_DEF.id,
+      });
+      return { manager, spawn, definitions, sessionId: session.id, workerId: worker!.id };
+    }
+
+    /** The persisted row for one worker, read back through the repository. */
+    async function readPersistedWorker(manager: SessionManager, sessionId: string, workerId: string) {
+      const persisted = await manager.getSessionRepository().findById(sessionId);
+      return persisted!.workers.find((w) => w.id === workerId) as PersistedWorker & {
+        model: string | null;
+        reasoningEffort: string | null;
+        contextWindowTokens: number | null;
+      };
+    }
+
+    function readPublicWorker(manager: SessionManager, sessionId: string, workerId: string) {
+      const worker = manager.getSession(sessionId)!.workers.find((w) => w.id === workerId)!;
+      if (worker.type !== 'embedded-agent') throw new Error('expected an embedded-agent worker');
+      return worker;
+    }
+
+    it('persists BEFORE forwarding to the subprocess (call-order pin, not merely "both happened")', async () => {
+      const { manager, spawn, sessionId, workerId } = await setupActivated();
+      await manager.activateEmbeddedAgentWorker(sessionId, workerId);
+
+      // Record the two events in call order. A crash between them must never
+      // leave a subprocess running values that were never written down, so
+      // the ORDER is the contract, not the pair.
+      const order: string[] = [];
+      const repository = manager.getSessionRepository();
+      const realSave = repository.save.bind(repository);
+      spyOn(repository, 'save').mockImplementation(async (session) => {
+        order.push('persist');
+        await realSave(session);
+      });
+      const before = spawn.stdinWrites.length;
+
+      await manager.setEmbeddedAgentParameters(sessionId, workerId, {
+        model: 'qwen3:72b',
+        contextWindowTokens: 32_000,
+      });
+
+      order.push(...spawn.stdinWrites
+        .slice(before)
+        .map((line) => `forward:${(JSON.parse(line) as { type: string }).type}`));
+      expect(order).toEqual(['persist', 'forward:set-model-params']);
+    });
+
+    it('forwards the RESOLVED EFFECTIVE triple, which differs from the patch when the patch clears the model', async () => {
+      // The sharpest form: the patch says `model: null` and the forwarded
+      // command says `qwen3:32b` -- a value that appears nowhere in the patch,
+      // and could only come from resolving against the definition.
+      const { manager, spawn, sessionId, workerId } = await setupActivated();
+      await manager.activateEmbeddedAgentWorker(sessionId, workerId);
+      await manager.setEmbeddedAgentParameters(sessionId, workerId, {
+        model: 'qwen3:72b',
+        contextWindowTokens: 32_000,
+      });
+      const before = spawn.stdinWrites.length;
+
+      await manager.setEmbeddedAgentParameters(sessionId, workerId, { model: null });
+
+      expect(JSON.parse(spawn.stdinWrites[before])).toEqual({
+        v: 1,
+        type: 'set-model-params',
+        model: 'qwen3:32b',
+        reasoningEffort: null,
+        // Cleared with the model, and the definition's own 128_000 is NOT
+        // what is forwarded either -- once the model override is gone the
+        // definition's window applies again, which is exactly 128_000 here.
+        contextWindowTokens: 128_000,
+      });
+    });
+
+    it('forwards a partial patch as the whole triple, filling the untouched fields from current state', async () => {
+      const { manager, spawn, sessionId, workerId } = await setupActivated();
+      await manager.activateEmbeddedAgentWorker(sessionId, workerId);
+      await manager.setEmbeddedAgentParameters(sessionId, workerId, {
+        model: 'qwen3:72b',
+        contextWindowTokens: 32_000,
+      });
+      const before = spawn.stdinWrites.length;
+
+      // Only the effort changes; model and window must still be sent.
+      await manager.setEmbeddedAgentParameters(sessionId, workerId, { reasoningEffort: 'high' });
+
+      expect(JSON.parse(spawn.stdinWrites[before])).toEqual({
+        v: 1,
+        type: 'set-model-params',
+        model: 'qwen3:72b',
+        reasoningEffort: 'high',
+        contextWindowTokens: 32_000,
+      });
+    });
+
+    it('broadcasts the session update and returns the updated public worker', async () => {
+      const { manager, sessionId, workerId } = await setupActivated();
+      const updates: Session[] = [];
+      manager.setSessionLifecycleCallbacks({ onSessionUpdated: (session) => { updates.push(session); } });
+
+      const returned = await manager.setEmbeddedAgentParameters(sessionId, workerId, {
+        reasoningEffort: 'high',
+      });
+
+      expect(returned?.type).toBe('embedded-agent');
+      if (returned?.type === 'embedded-agent') {
+        expect(returned.reasoningEffort).toBe('high');
+        expect(returned.hasParameterOverride).toBe(true);
+      }
+      const broadcastWorker = updates.at(-1)!.workers.find((w) => w.id === workerId)!;
+      expect(broadcastWorker.type).toBe('embedded-agent');
+      if (broadcastWorker.type === 'embedded-agent') {
+        expect(broadcastWorker.reasoningEffort).toBe('high');
+      }
+    });
+
+    it('succeeds with no live subprocess (the ordinary pre-activation case) -- the durable write is what matters', async () => {
+      const { manager, spawn, sessionId, workerId } = await setupActivated();
+      expect(spawn.spawnCount.value).toBe(0);
+
+      const returned = await manager.setEmbeddedAgentParameters(sessionId, workerId, {
+        reasoningEffort: 'high',
+      });
+
+      expect(returned).not.toBeNull();
+      expect((await readPersistedWorker(manager, sessionId, workerId)).reasoningEffort).toBe('high');
+    });
+
+    it('returns null for a missing session, a missing worker, and a worker of the wrong type', async () => {
+      const { manager, sessionId } = await setupActivated();
+      const terminal = await manager.createWorker(sessionId, { type: 'terminal' });
+
+      expect(await manager.setEmbeddedAgentParameters('no-such-session', 'w', { reasoningEffort: 'high' })).toBeNull();
+      expect(await manager.setEmbeddedAgentParameters(sessionId, 'no-such-worker', { reasoningEffort: 'high' })).toBeNull();
+      expect(await manager.setEmbeddedAgentParameters(sessionId, terminal!.id, { reasoningEffort: 'high' })).toBeNull();
+    });
+
+    it('propagates a ValidationError from the shared validator (a 400 at the route)', async () => {
+      const { manager, sessionId, workerId } = await setupActivated();
+
+      await expect(
+        manager.setEmbeddedAgentParameters(sessionId, workerId, { contextWindowTokens: 32_000 }),
+      ).rejects.toBeInstanceOf(ValidationError);
+    });
+
+    it('persists the NORMALISED value, not the caller\'s padded one', async () => {
+      const { manager, sessionId, workerId } = await setupActivated();
+
+      await manager.setEmbeddedAgentParameters(sessionId, workerId, { reasoningEffort: '  high  ' });
+
+      expect((await readPersistedWorker(manager, sessionId, workerId)).reasoningEffort).toBe('high');
+    });
+
+    // ---- Ruling 3 / Ruling 4 consequences ----
+
+    it('model: null restores LIVE-READ of the definition -- a definition edit after the clear is visible again', async () => {
+      // Not merely "the field is null": the point of clearing is that the
+      // worker starts tracking the definition again, which only a later
+      // definition EDIT can demonstrate.
+      const definitions = new Map([[PARAM_DEF.id, { ...PARAM_DEF }]]);
+      const { manager, sessionId, workerId } = await setupActivated(definitions);
+
+      await manager.setEmbeddedAgentParameters(sessionId, workerId, {
+        model: 'qwen3:72b',
+        contextWindowTokens: 32_000,
+      });
+      expect(readPublicWorker(manager, sessionId, workerId).model).toBe('qwen3:72b');
+
+      await manager.setEmbeddedAgentParameters(sessionId, workerId, { model: null });
+      definitions.set(PARAM_DEF.id, {
+        ...PARAM_DEF,
+        provider: { ...PARAM_DEF.provider, model: 'qwen3:110b' },
+      });
+
+      expect(readPublicWorker(manager, sessionId, workerId).model).toBe('qwen3:110b');
+    });
+
+    it('clearing the model clears the window with it, by construction (Ruling 4, server-side half)', async () => {
+      const { manager, sessionId, workerId } = await setupActivated();
+      await manager.setEmbeddedAgentParameters(sessionId, workerId, {
+        model: 'qwen3:72b',
+        contextWindowTokens: 32_000,
+      });
+
+      await manager.setEmbeddedAgentParameters(sessionId, workerId, { model: null });
+
+      const row = await readPersistedWorker(manager, sessionId, workerId);
+      expect(row.model).toBeNull();
+      expect(row.contextWindowTokens).toBeNull();
+    });
+
+    it('contextWindowTokens: null alongside a model makes the EFFECTIVE window indeterminate, not the definition\'s', async () => {
+      const { manager, sessionId, workerId } = await setupActivated();
+
+      await manager.setEmbeddedAgentParameters(sessionId, workerId, {
+        model: 'qwen3:72b',
+        contextWindowTokens: null,
+      });
+
+      // The definition declares 128_000; a worker running a DIFFERENT model
+      // must not inherit it.
+      expect(readPublicWorker(manager, sessionId, workerId).contextWindowTokens).toBeUndefined();
+    });
+
+    it('the override survives deactivate -> activate, and the NEW init command reads it from the persisted row', async () => {
+      const { manager, spawn, sessionId, workerId } = await setupActivated();
+      await manager.activateEmbeddedAgentWorker(sessionId, workerId);
+      await manager.setEmbeddedAgentParameters(sessionId, workerId, {
+        model: 'qwen3:72b',
+        reasoningEffort: 'high',
+        contextWindowTokens: 32_000,
+      });
+
+      await manager.deactivateEmbeddedAgentWorker(sessionId, workerId);
+      const before = spawn.stdinWrites.length;
+      await manager.activateEmbeddedAgentWorker(sessionId, workerId);
+
+      const row = await readPersistedWorker(manager, sessionId, workerId);
+      expect(row.model).toBe('qwen3:72b');
+      expect(row.reasoningEffort).toBe('high');
+      expect(row.contextWindowTokens).toBe(32_000);
+
+      const init = JSON.parse(spawn.stdinWrites[before]);
+      expect(init.type).toBe('init');
+      expect(init.provider.model).toBe('qwen3:72b');
+      expect(init.provider.reasoningEffort).toBe('high');
+      expect(init.compaction.contextWindowTokens).toBe(32_000);
+    });
+
+    it('the override survives restartAllAgentWorkers (the same read-back, through the bulk path)', async () => {
+      const { manager, sessionId, workerId } = await setupActivated();
+      await manager.activateEmbeddedAgentWorker(sessionId, workerId);
+      await manager.setEmbeddedAgentParameters(sessionId, workerId, {
+        model: 'qwen3:72b',
+        contextWindowTokens: 32_000,
+      });
+
+      const result = await manager.restartAllAgentWorkers();
+
+      expect(result.results.find((r) => r.workerId === workerId)?.outcome).toBe('restarted');
+      const row = await readPersistedWorker(manager, sessionId, workerId);
+      expect(row.model).toBe('qwen3:72b');
+      expect(row.contextWindowTokens).toBe(32_000);
+    });
+
+    it('clearing an override mid-run and a fresh worker that never had one reach the SAME persisted state', async () => {
+      // The twin of "the override survives a restart": clearing must land on
+      // exactly the state a never-overridden worker is in, not on a
+      // near-miss (e.g. an empty string, or a window left behind). Compared
+      // as whole rows so a field added later is covered without editing this
+      // test.
+      const { manager, sessionId, workerId } = await setupActivated();
+      await manager.setEmbeddedAgentParameters(sessionId, workerId, {
+        model: 'qwen3:72b',
+        reasoningEffort: 'high',
+        contextWindowTokens: 32_000,
+      });
+      await manager.setEmbeddedAgentParameters(sessionId, workerId, {
+        model: null,
+        reasoningEffort: null,
+      });
+
+      const fresh = await manager.createWorker(sessionId, {
+        type: 'embedded-agent',
+        embeddedAgentId: PARAM_DEF.id,
+      });
+
+      const cleared = await readPersistedWorker(manager, sessionId, workerId);
+      const never = await readPersistedWorker(manager, sessionId, fresh!.id);
+      expect({
+        model: cleared.model,
+        reasoningEffort: cleared.reasoningEffort,
+        contextWindowTokens: cleared.contextWindowTokens,
+      }).toEqual({
+        model: never.model,
+        reasoningEffort: never.reasoningEffort,
+        contextWindowTokens: never.contextWindowTokens,
+      });
+      expect(readPublicWorker(manager, sessionId, workerId).hasParameterOverride).toBe(
+        readPublicWorker(manager, sessionId, fresh!.id).hasParameterOverride,
+      );
+    });
+  });
+
+  describe('SessionManager.deliverWorkerNotification (Issue #1574, R1 delivery seam)', () => {
+    const TIMER_PARAMS: PtyNotificationParams = {
+      kind: 'internal-timer',
+      tag: 'internal:timer',
+      fields: {
+        timerId: 't1',
+        action: 'check the build',
+        fireCount: '1',
+      },
+      intent: 'inform',
+    };
+
+    const STUB_DEF = {
+      id: 'stub-def-1574',
+      name: 'Stub Model',
+      engine: 'openai-api' as const,
+      isBuiltIn: false,
+      provider: { baseUrl: 'http://localhost:11434/v1', model: 'qwen3:32b' },
+      createdBy: 'test-user-id',
+      createdAt: '2024-01-01T00:00:00.000Z',
+      updatedAt: '2024-01-01T00:00:00.000Z',
+    };
+
+    it('PTY-backed target: writes text BYTE-IDENTICAL to buildPtyNotificationText(params)', async () => {
+      const manager = await getSessionManager();
+      const session = await manager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+      const agentWorker = session.workers.find((w: Worker) => w.type === 'agent')!;
+
+      // Frozen clock: buildPtyNotificationText stamps `new Date().toISOString()`
+      // internally both in production and in this test's own expectedText
+      // computation -- without a frozen clock the two calls could straddle a
+      // millisecond boundary on a loaded CI runner (same pattern as
+      // pty-notification.test.ts / embedded-agent-worker-service.test.ts's
+      // sendSystemNotification tests, Issue #1321).
+      setSystemTime(new Date('2026-01-01T00:00:00.000Z'));
+      let result: Awaited<ReturnType<typeof manager.deliverWorkerNotification>>;
+      let expectedText: string;
+      try {
+        result = await manager.deliverWorkerNotification(session.id, agentWorker.id, TIMER_PARAMS);
+        expectedText = buildPtyNotificationText(TIMER_PARAMS);
+      } finally {
+        setSystemTime();
+      }
+
+      expect(result).toEqual({ ok: true });
+      expect(ptyFactory.instances[0].writtenData.join('')).toContain(expectedText);
+    });
+
+    it('embedded-agent target: routes through sendEmbeddedAgentSystemNotification with the SAME params (activates on delivery, R4)', async () => {
+      const stdin = { write: () => 0, end: () => {}, flush: () => 0 };
+      let stdoutCtrl!: ReadableStreamDefaultController<Uint8Array>;
+      let stderrCtrl!: ReadableStreamDefaultController<Uint8Array>;
+      const stdout = new ReadableStream<Uint8Array>({ start(c) { stdoutCtrl = c; } });
+      const stderr = new ReadableStream<Uint8Array>({ start(c) { stderrCtrl = c; } });
+      let resolveExited!: (code: number) => void;
+      const exited = new Promise<number>((resolve) => { resolveExited = resolve; });
+      let exitSimulated = false;
+      const simulateExit = (code: number) => {
+        if (exitSimulated) return;
+        exitSimulated = true;
+        resolveExited(code);
+        stdoutCtrl.close();
+        stderrCtrl.close();
+      };
+      const subprocess = { pid: 9001, exited, stdin, stdout, stderr, kill: () => {} };
+      const fakeSpawnAsUserFn = mock(() => ({ subprocess, stdin, elevated: false }));
+
+      const module = await import(`../session-manager.js?v=${++importCounter}`);
+      const manager = await module.SessionManager.create({
+        userMode: new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' }),
+        pathExists: mockPathExists,
+        jobQueue: testJobQueue,
+        agentManager,
+        mcpTokenRegistry: new McpTokenRegistry(),
+        embeddedAgentManager: { getEmbeddedAgent: (id: string) => (id === STUB_DEF.id ? STUB_DEF : undefined) },
+        repositoryLookup: defaultRepositoryLookup,
+        repositoryEnvLookup: defaultRepositoryEnvLookup,
+        spawnAsUserFn: fakeSpawnAsUserFn as unknown as SpawnAsUserFn,
+      });
+
+      const session = await manager.createSession(
+        { type: 'quick', locationPath: '/test/path', agentId: 'claude-code' },
+        { createdBy: 'test-user-id' },
+      );
+      const worker = await manager.createWorker(session.id, {
+        type: 'embedded-agent',
+        embeddedAgentId: STUB_DEF.id,
+      });
+      expect(worker).not.toBeNull();
+      expect(fakeSpawnAsUserFn).not.toHaveBeenCalled();
+
+      // Deactivated (dormant) -- deliverWorkerNotification's embedded branch
+      // must activate on delivery (via sendSystemNotification ->
+      // deliverUserTurn -> ensureDeliverable), matching R4.
+      const result = await manager.deliverWorkerNotification(session.id, worker!.id, TIMER_PARAMS);
+      expect(result).toEqual({ ok: true });
+      expect(fakeSpawnAsUserFn).toHaveBeenCalledTimes(1);
+
+      const history = await manager.getWorkerOutputHistory(session.id, worker!.id, 0);
+      expect(history).not.toBeNull();
+      const userMessageLine = (history!.data as string)
+        .split('\n')
+        .filter((line: string) => line.length > 0)
+        .map((line: string) => JSON.parse(line) as { type: string; text?: string; notification?: { kind: string } })
+        .find((event) => event.type === 'user-message');
+      expect(userMessageLine).toBeDefined();
+      expect(userMessageLine!.notification).toEqual({ kind: 'internal-timer' });
+      expect(userMessageLine!.text).toContain('[internal:timer]');
+
+      // Teardown (mirrors the sibling tests in the facade describe block above).
+      const deactivatePromise = manager.deactivateEmbeddedAgentWorker(session.id, worker!.id);
+      simulateExit(0);
+      await deactivatePromise;
+    });
+
+    it('git-diff target: resolves { ok: false } (cannot receive notifications)', async () => {
+      const manager = await getSessionManager();
+      const session = await manager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+      const gitDiffWorker = session.workers.find((w: Worker) => w.type === 'git-diff')!;
+      expect(gitDiffWorker).toBeDefined();
+
+      const result = await manager.deliverWorkerNotification(session.id, gitDiffWorker.id, TIMER_PARAMS);
+      expect(result.ok).toBe(false);
+    });
+
+    it('unresolved worker: resolves { ok: false }', async () => {
+      const manager = await getSessionManager();
+      const session = await manager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+
+      const result = await manager.deliverWorkerNotification(session.id, 'non-existent-worker', TIMER_PARAMS);
+      expect(result.ok).toBe(false);
+    });
+  });
+
   describe('MCP token registry sharing (Phase 4)', () => {
     // WorkerManager (terminal-agent PTY path) and EmbeddedAgentWorkerService
     // (embedded-agent path) are both constructed with the SAME
@@ -2015,6 +2529,32 @@ describe('SessionManager', () => {
     });
   });
 
+  describe('setInitialPromptDeliveredForTest', () => {
+    it('sets initialPromptDelivered on the live internal session, visible through getSession', async () => {
+      const manager = await getSessionManager();
+
+      const created = await manager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+
+      expect(manager.getSession(created.id)?.initialPromptDelivered).not.toBe(true);
+
+      manager.setInitialPromptDeliveredForTest(created.id, true);
+
+      expect(manager.getSession(created.id)?.initialPromptDelivered).toBe(true);
+    });
+
+    it('throws for a non-existent session id', async () => {
+      const manager = await getSessionManager();
+
+      expect(() => manager.setInitialPromptDeliveredForTest('non-existent', true)).toThrow(
+        'Session not found: non-existent'
+      );
+    });
+  });
+
   describe('isShared wiring (sharedAccountLookup option)', () => {
     // These tests verify that the `sharedAccountLookup` option on
     // SessionManager.create() is forwarded to SessionConverterService and
@@ -2306,7 +2846,10 @@ describe('SessionManager', () => {
       });
       const agentWorker = session.workers.find((w: Worker) => w.type === 'agent')!;
 
-      const message = await manager.sendMessage(session.id, null, agentWorker.id, 'check these', ['/tmp/file1.txt', '/tmp/file2.txt']);
+      const message = await manager.sendMessage(session.id, null, agentWorker.id, 'check these', [
+        { path: '/tmp/file1.txt', mimeType: 'text/plain' },
+        { path: '/tmp/file2.txt', mimeType: 'text/plain' },
+      ]);
       expect(message).not.toBeNull();
 
       // First part is sent immediately
@@ -2328,7 +2871,9 @@ describe('SessionManager', () => {
       });
       const agentWorker = session.workers.find((w: Worker) => w.type === 'agent')!;
 
-      const message = await manager.sendMessage(session.id, null, agentWorker.id, '', ['/tmp/file1.txt']);
+      const message = await manager.sendMessage(session.id, null, agentWorker.id, '', [
+        { path: '/tmp/file1.txt', mimeType: 'text/plain' },
+      ]);
       expect(message).not.toBeNull();
 
       // First part (file path) is sent immediately
@@ -2357,7 +2902,10 @@ describe('SessionManager', () => {
       const agentWorker = session.workers.find((w: Worker) => w.type === 'agent')!;
 
       // Send a message with file paths, which schedules delayed writes via setTimeout
-      const message = await manager.sendMessage(session.id, null, agentWorker.id, 'check these', ['/tmp/file1.txt', '/tmp/file2.txt']);
+      const message = await manager.sendMessage(session.id, null, agentWorker.id, 'check these', [
+        { path: '/tmp/file1.txt', mimeType: 'text/plain' },
+        { path: '/tmp/file2.txt', mimeType: 'text/plain' },
+      ]);
       expect(message).not.toBeNull();
 
       const pty = ptyFactory.instances[0];
@@ -2389,7 +2937,10 @@ describe('SessionManager', () => {
       const agentWorker = session.workers.find((w: Worker) => w.type === 'agent')!;
 
       // Send a message with file paths targeting the agent worker, which schedules delayed writes
-      const message = await manager.sendMessage(session.id, null, agentWorker.id, 'check these', ['/tmp/file1.txt', '/tmp/file2.txt']);
+      const message = await manager.sendMessage(session.id, null, agentWorker.id, 'check these', [
+        { path: '/tmp/file1.txt', mimeType: 'text/plain' },
+        { path: '/tmp/file2.txt', mimeType: 'text/plain' },
+      ]);
       expect(message).not.toBeNull();
 
       const pty = ptyFactory.instances[0];
@@ -2446,6 +2997,46 @@ describe('SessionManager', () => {
       expect(injectCalls[0].content).toBe('hello via DI');
       expect(injectCalls[0].sessionId).toBe(session.id);
       expect(injectCalls[0].workerId).toBe(agentWorker.id);
+    });
+
+    it('derives a plain string[] of paths from attachments for injectMessage (PTY branch shape unaffected by Issue #1571)', async () => {
+      const injectCalls: Array<{ filePaths?: string[] }> = [];
+      const mockInjectionService = new PtyMessageInjectionService(
+        () => true,
+        () => true,
+      );
+      const originalInject = mockInjectionService.injectMessage.bind(mockInjectionService);
+      mockInjectionService.injectMessage = (sessionId, workerId, content, filePaths, isAsking) => {
+        injectCalls.push({ filePaths });
+        return originalInject(sessionId, workerId, content, filePaths, isAsking);
+      };
+
+      const module = await import(`../session-manager.js?v=${++importCounter}`);
+      const manager = await module.SessionManager.create({
+        userMode: new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' }),
+        pathExists: mockPathExists,
+        jobQueue: testJobQueue,
+        agentManager,
+        mcpTokenRegistry: new McpTokenRegistry(),
+        ptyMessageInjectionService: mockInjectionService,
+        repositoryLookup: defaultRepositoryLookup,
+        repositoryEnvLookup: defaultRepositoryEnvLookup,
+      });
+
+      const session = await manager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+      const agentWorker = session.workers.find((w: Worker) => w.type === 'agent')!;
+
+      const message = await manager.sendMessage(session.id, null, agentWorker.id, 'check these', [
+        { path: '/tmp/x.png', mimeType: 'image/png' },
+        { path: '/tmp/y.txt', mimeType: 'text/plain' },
+      ]);
+      expect(message).not.toBeNull();
+      expect(injectCalls).toHaveLength(1);
+      expect(injectCalls[0].filePaths).toEqual(['/tmp/x.png', '/tmp/y.txt']);
     });
 
     it('should pass isAsking=true to injectMessage when the target worker is in the asking state (Issue #792)', async () => {
@@ -2683,18 +3274,80 @@ describe('SessionManager', () => {
       await deactivatePromise;
     });
 
-    it('folds filePaths into the delivered text (no file-attachment concept for embedded targets)', async () => {
+    it('folds filePaths into the delivered text as a labelled block (no file-attachment concept for embedded targets, #1570)', async () => {
       const fake = makeFakeEmbeddedSpawn();
       const manager = await setupManager(fake, new Map([[STUB_DEF.id, STUB_DEF]]));
       const { sessionId, workerId } = await createEmbeddedWorker(manager);
 
-      const message = await manager.sendMessage(sessionId, null, workerId, 'check these', ['/tmp/a.txt', '/tmp/b.txt']);
+      const message = await manager.sendMessage(sessionId, null, workerId, 'check these', [
+        { path: '/tmp/a.txt', mimeType: 'text/plain' },
+        { path: '/tmp/b.txt', mimeType: 'text/plain' },
+      ]);
       expect(message).not.toBeNull();
 
       const userMessageWrite = fake.stdinWrites
         .map((w) => JSON.parse(w) as { type: string; text?: string })
         .find((c) => c.type === 'user-message');
-      expect(userMessageWrite!.text).toBe('check these\n/tmp/a.txt\n/tmp/b.txt');
+      expect(userMessageWrite!.text).toBe('check these\n\nAttached files:\n- /tmp/a.txt\n- /tmp/b.txt');
+
+      const deactivatePromise = manager.deactivateEmbeddedAgentWorker(sessionId, workerId);
+      fake.simulateExit(0);
+      await deactivatePromise;
+    });
+
+    it('forwards attachments through to the embedded-agent stdin command and the persisted event (Issue #1571)', async () => {
+      const fake = makeFakeEmbeddedSpawn();
+      const manager = await setupManager(fake, new Map([[STUB_DEF.id, STUB_DEF]]));
+      const { sessionId, workerId } = await createEmbeddedWorker(manager);
+
+      const attachments = [
+        { path: '/tmp/img.png', mimeType: 'image/png' },
+      ];
+      const message = await manager.sendMessage(sessionId, null, workerId, 'see this', attachments);
+      expect(message).not.toBeNull();
+
+      // The subprocess stdin command carries the attachments verbatim.
+      const userMessageCommand = fake.stdinWrites
+        .map((w) => JSON.parse(w) as { type: string; attachments?: unknown })
+        .find((c) => c.type === 'user-message');
+      expect(userMessageCommand!.attachments).toEqual(attachments);
+
+      // The persisted/broadcast event mirrors the same attachments.
+      const history = await manager.getWorkerOutputHistory(sessionId, workerId, 0);
+      expect(history).not.toBeNull();
+      const persistedEvent = (history!.data as string)
+        .split('\n')
+        .filter((line: string) => line.length > 0)
+        .map((line: string) => JSON.parse(line) as { type: string; attachments?: unknown })
+        .find((event) => event.type === 'user-message');
+      expect(persistedEvent?.attachments).toEqual(attachments);
+
+      const deactivatePromise = manager.deactivateEmbeddedAgentWorker(sessionId, workerId);
+      fake.simulateExit(0);
+      await deactivatePromise;
+    });
+
+    it('omits attachments entirely from both the stdin command and the persisted event when none are sent (byte-identical to pre-#1571, polarity pin)', async () => {
+      const fake = makeFakeEmbeddedSpawn();
+      const manager = await setupManager(fake, new Map([[STUB_DEF.id, STUB_DEF]]));
+      const { sessionId, workerId } = await createEmbeddedWorker(manager);
+
+      const message = await manager.sendMessage(sessionId, null, workerId, 'no attachments here');
+      expect(message).not.toBeNull();
+
+      const userMessageCommand = fake.stdinWrites
+        .map((w) => JSON.parse(w) as Record<string, unknown>)
+        .find((c) => c.type === 'user-message');
+      expect('attachments' in userMessageCommand!).toBe(false);
+
+      const history = await manager.getWorkerOutputHistory(sessionId, workerId, 0);
+      expect(history).not.toBeNull();
+      const persistedEvent = (history!.data as string)
+        .split('\n')
+        .filter((line: string) => line.length > 0)
+        .map((line: string) => JSON.parse(line) as Record<string, unknown>)
+        .find((event) => event.type === 'user-message');
+      expect('attachments' in persistedEvent!).toBe(false);
 
       const deactivatePromise = manager.deactivateEmbeddedAgentWorker(sessionId, workerId);
       fake.simulateExit(0);
@@ -3212,6 +3865,11 @@ describe('SessionManager', () => {
         agentId: 'claude-code',
       });
 
+      // createSession triggers onSessionUpdated via its initial worker creation
+      // (Issue #1586); clear those incidental calls before asserting on the
+      // updateSessionMetadata call under test.
+      onSessionUpdated.mockClear();
+
       await manager.updateSessionMetadata(session.id, { title: 'New Title' });
 
       expect(onSessionUpdated).toHaveBeenCalledTimes(1);
@@ -3282,6 +3940,11 @@ describe('SessionManager', () => {
         agentId: 'claude-code',
       });
       expect(onSessionCreated).toHaveBeenCalledTimes(1);
+
+      // createSession triggers onSessionUpdated via its initial worker creation
+      // (Issue #1586); clear those incidental calls before asserting on the
+      // updateSessionMetadata call under test.
+      onSessionUpdated.mockClear();
 
       // Update
       await manager.updateSessionMetadata(session.id, { title: 'Updated' });
@@ -4120,6 +4783,11 @@ describe('SessionManager', () => {
       });
       const agentWorker = session.workers.find((w: Worker) => w.type === 'agent')!;
 
+      // createSession triggers onSessionUpdated via its initial worker creation
+      // (Issue #1586); clear those incidental calls before asserting on the
+      // restartAgentWorker call under test.
+      onSessionUpdated.mockClear();
+
       await manager.restartAgentWorker(session.id, agentWorker.id, 'fresh', customAgent.id);
 
       // onSessionUpdated should be called for agent switch
@@ -4143,6 +4811,11 @@ describe('SessionManager', () => {
         agentId: 'claude-code',
       });
       const agentWorker = session.workers.find((w: Worker) => w.type === 'agent')!;
+
+      // createSession triggers onSessionUpdated via its initial worker creation
+      // (Issue #1586); clear those incidental calls before asserting on the
+      // restartAgentWorker call under test.
+      onSessionUpdated.mockClear();
 
       await manager.restartAgentWorker(session.id, agentWorker.id, 'fresh');
 
@@ -4171,8 +4844,12 @@ describe('SessionManager', () => {
       expect(restarted).not.toBeNull();
       expect(restarted?.id).toBe(agentWorker.id);
       // Git operations should have been called
-      expect(mockGit.getCurrentBranch).toHaveBeenCalledWith('/test/path');
-      expect(mockGit.renameBranch).toHaveBeenCalledWith('old-branch', 'new-branch', '/test/path');
+      // resolveSpawnUsername(session.createdBy) falls back to the server
+      // process user here: this helper's SessionManager.create() has no
+      // userRepository configured (see the R5 test's identical rationale
+      // above in this file).
+      expect(mockGit.getCurrentBranch).toHaveBeenCalledWith('/test/path', os.userInfo().username);
+      expect(mockGit.renameBranch).toHaveBeenCalledWith('old-branch', 'new-branch', '/test/path', os.userInfo().username);
       // New PTY should be created
       expect(ptyFactory.instances.length).toBe(ptyCountBefore + 1);
       // worktreeId should be updated
@@ -4218,6 +4895,11 @@ describe('SessionManager', () => {
         agentId: 'claude-code',
       });
       const agentWorker = session.workers.find((w: Worker) => w.type === 'agent')!;
+
+      // createSession triggers onSessionUpdated via its initial worker creation
+      // (Issue #1586); clear those incidental calls before asserting on the
+      // restartAgentWorker call under test.
+      onSessionUpdated.mockClear();
 
       await manager.restartAgentWorker(session.id, agentWorker.id, 'fresh', undefined, 'new-branch');
 
@@ -4271,6 +4953,11 @@ describe('SessionManager', () => {
       });
       const agentWorker = session.workers.find((w: Worker) => w.type === 'agent')!;
 
+      // createSession triggers onSessionUpdated via its initial worker creation
+      // (Issue #1586); clear those incidental calls before asserting on the
+      // restartAgentWorker call under test.
+      onSessionUpdated.mockClear();
+
       await manager.restartAgentWorker(session.id, agentWorker.id, 'fresh', undefined, 'new-branch');
 
       // renameBranch should NOT be called since git branch already matches
@@ -4312,7 +4999,9 @@ describe('SessionManager', () => {
       await manager.restartAgentWorker(session.id, agentWorker.id, 'fresh', undefined, 'final-branch');
 
       // renameBranch should be called to rename from the actual git branch to the requested name
-      expect(mockGit.renameBranch).toHaveBeenCalledWith('intermediate-branch', 'final-branch', '/test/path');
+      // (resolveSpawnUsername falls back to the server process user -- no
+      // userRepository configured, same rationale as the R5 test above).
+      expect(mockGit.renameBranch).toHaveBeenCalledWith('intermediate-branch', 'final-branch', '/test/path', os.userInfo().username);
 
       // worktreeId should be updated to the requested branch
       const updatedSession = manager.getSession(session.id);
@@ -4321,325 +5010,172 @@ describe('SessionManager', () => {
         expect(updatedSession.worktreeId).toBe('final-branch');
       }
     });
+
+    // Issue #1299 PR-2, T5c (Orchestrator-verified addendum to the T5/T5b
+    // product-bug fix above): the model-override drop on the continue
+    // template was PRE-EXISTING on this per-session caller
+    // (RestartSessionDialog's "Continue (-c)" option calls
+    // restartAgentWorker(..., 'continue') directly) -- #1299 only widened
+    // its reach to Restart All. Both callers of continueTemplate are pinned
+    // here, not only the new one. Polarity: with claude-code.ts's
+    // continueTemplate change reverted to the plain 'claude -c' literal,
+    // this assertion fails -- confirmed FAILS. Received `"claude -c\r"`
+    // (no --model at all).
+    it("preserves the worker's model override on an explicit 'continue' restart", async () => {
+      const manager = await getSessionManager();
+      const session = await manager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: CLAUDE_CODE_AGENT_ID,
+        model: 'claude-opus-4-6',
+      });
+      const agentWorker = session.workers.find((w: Worker) => w.type === 'agent')!;
+
+      await manager.restartAgentWorker(session.id, agentWorker.id, 'continue');
+
+      const newestPty = ptyFactory.instances.at(-1);
+      expect(newestPty).toBeDefined();
+      const written = newestPty!.writtenData.join('');
+      expect(written).toContain("--model 'claude-opus-4-6'");
+      expect(written).toContain('-c');
+    });
   });
 
-  describe('updateSessionMetadata - no auto-restart on branch rename', () => {
-    it('should rename branch without restarting agent worker', async () => {
-      const manager = await getSessionManager();
+  describe('restartAgentWorkerAsEmbedded: multi-user identity + restore-info (cross-type restart)', () => {
+    const STUB_EMBEDDED_DEF = {
+      id: 'cross-type-embedded-def',
+      name: 'Cross-Type Model',
+      engine: 'openai-api' as const,
+      isBuiltIn: false,
+      provider: { baseUrl: 'http://localhost:11434/v1', model: 'qwen3:32b' },
+      createdBy: 'test-user-id',
+      createdAt: '2024-01-01T00:00:00.000Z',
+      updatedAt: '2024-01-01T00:00:00.000Z',
+    };
 
-      mockGit.getCurrentBranch.mockImplementation(() => Promise.resolve('old-branch'));
+    /**
+     * Fake spawnAsUser for the embedded-agent loop subprocess. Captures every
+     * spawn's opts so a test can assert the resolved username `spawnAsUser`
+     * was invoked with (R5's multi-user identity check), and captures stdin
+     * writes so the init handshake (which carries the minted MCP token) can
+     * be inspected without duplicating EmbeddedAgentWorkerService's own
+     * mint/serialize logic. Mirrors this file's existing "MCP token registry
+     * sharing (Phase 4)" test.
+     */
+    function makeFakeEmbeddedSpawn(): { fn: SpawnAsUserFn; captured: SpawnAsUserOpts[] } {
+      const captured: SpawnAsUserOpts[] = [];
+      const written: string[] = [];
+      const stdin = { write: (data: string) => { written.push(data); return 0; }, end: () => {}, flush: () => 0 };
+      let stdoutCtrl!: ReadableStreamDefaultController<Uint8Array>;
+      let stderrCtrl!: ReadableStreamDefaultController<Uint8Array>;
+      const stdout = new ReadableStream<Uint8Array>({ start(c) { stdoutCtrl = c; } });
+      const stderr = new ReadableStream<Uint8Array>({ start(c) { stderrCtrl = c; } });
+      void stdoutCtrl;
+      void stderrCtrl;
+      const exited = new Promise<number>(() => {});
+      const subprocess = { pid: 5150, exited, stdin, stdout, stderr, kill: () => {} };
+      const fn: SpawnAsUserFn = (opts) => {
+        captured.push(opts);
+        return { subprocess, stdin, elevated: false } as unknown as SpawnAsUserResult;
+      };
+      return { fn, captured };
+    }
 
-      const session = await manager.createSession({
-        type: 'worktree',
-        locationPath: '/test/path',
-        repositoryId: 'repo-1',
-        worktreeId: 'old-branch',
-        agentId: 'claude-code',
+    async function getSessionManagerWithEmbeddedAndSpawn(spawnFn: SpawnAsUserFn) {
+      const module = await import(`../session-manager.js?v=${++importCounter}`);
+      return module.SessionManager.create({
+        userMode: new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' }),
+        pathExists: mockPathExists,
+        jobQueue: testJobQueue,
+        agentManager,
+        mcpTokenRegistry: new McpTokenRegistry(),
+        spawnAsUserFn: spawnFn,
+        embeddedAgentManager: {
+          getEmbeddedAgent: (id: string) => (id === STUB_EMBEDDED_DEF.id ? STUB_EMBEDDED_DEF : undefined),
+        },
+        repositoryLookup: defaultRepositoryLookup,
+        repositoryEnvLookup: defaultRepositoryEnvLookup,
       });
+    }
 
-      const ptyCountBefore = ptyFactory.instances.length;
+    it('R5: activates the converted worker as the session-resolved spawn username', async () => {
+      const spawn = makeFakeEmbeddedSpawn();
+      const manager = await getSessionManagerWithEmbeddedAndSpawn(spawn.fn);
 
-      const result = await manager.updateSessionMetadata(session.id, { branch: 'new-branch' });
-
-      expect(result.success).toBe(true);
-      expect(result.branch).toBe('new-branch');
-      // Git operations should have been called
-      expect(mockGit.renameBranch).toHaveBeenCalledWith('old-branch', 'new-branch', '/test/path');
-      // No new PTY should be created (no auto-restart)
-      expect(ptyFactory.instances.length).toBe(ptyCountBefore);
-      // No old PTY should be killed (no auto-restart)
-      const agentPty = ptyFactory.instances[0];
-      expect(agentPty.killed).toBe(false);
-    });
-
-    it('should keep the git-diff worker base spec unchanged on active-session rename (Issue #800)', async () => {
-      const manager = await getSessionManager();
-
-      const session = await manager.createSession({
-        type: 'worktree',
-        locationPath: '/test/path',
-        repositoryId: 'repo-1',
-        worktreeId: 'old-branch',
-        agentId: 'claude-code',
-      });
-
-      const gitDiffWorker = session.workers.find((w: Worker) => w.type === 'git-diff')!;
-      expect(gitDiffWorker).toBeDefined();
-      // The base is now persisted as a branch-agnostic SPEC. With default mocks
-      // (default branch 'main', no origin/main ref), computeDefaultBaseSpec
-      // yields 'merge-base:main'.
-      const initialSpec = gitDiffWorker.type === 'git-diff' ? gitDiffWorker.baseCommit : undefined;
-      expect(initialSpec).toBe('merge-base:main');
-
-      mockGit.getCurrentBranch.mockImplementation(() => Promise.resolve('old-branch'));
-
-      const result = await manager.updateSessionMetadata(session.id, { branch: 'new-branch' });
-
-      expect(result.success).toBe(true);
-
-      // The spec re-resolves on every diff, so a rename must NOT change it.
-      const updatedSession = manager.getSession(session.id);
-      const updatedGitDiffWorker = updatedSession?.workers.find((w: Worker) => w.type === 'git-diff');
-      expect(updatedGitDiffWorker?.type).toBe('git-diff');
-      if (updatedGitDiffWorker?.type === 'git-diff') {
-        expect(updatedGitDiffWorker.baseCommit).toBe('merge-base:main');
-      }
-    });
-
-    it('should fire onDiffBaseCommitChanged with the unchanged spec for active sessions after branch rename', async () => {
-      const manager = await getSessionManager();
-
-      const onDiffBaseCommitChanged = mock(() => {});
-      manager.setSessionLifecycleCallbacks({ onDiffBaseCommitChanged });
-
-      const session = await manager.createSession({
-        type: 'worktree',
-        locationPath: '/test/path',
-        repositoryId: 'repo-1',
-        worktreeId: 'old-branch',
-        agentId: 'claude-code',
-      });
-
-      const gitDiffWorker = session.workers.find((w: Worker) => w.type === 'git-diff')!;
-
-      mockGit.getCurrentBranch.mockImplementation(() => Promise.resolve('old-branch'));
-
-      await manager.updateSessionMetadata(session.id, { branch: 'new-branch' });
-
-      // Fires with the unchanged spec so connected clients re-resolve the diff.
-      expect(onDiffBaseCommitChanged).toHaveBeenCalledTimes(1);
-      expect(onDiffBaseCommitChanged).toHaveBeenCalledWith(
-        session.id,
-        gitDiffWorker.id,
-        'merge-base:main',
+      const session = await manager.createSession(
+        { type: 'quick', locationPath: '/test/path', agentId: 'claude-code' },
+        { createdBy: 'test-user-id' },
       );
+      const agentWorker = session.workers.find((w: Worker) => w.type === 'agent')!;
+
+      const converted = await manager.restartAgentWorkerAsEmbedded(
+        session.id, agentWorker.id, STUB_EMBEDDED_DEF.id
+      );
+      expect(converted).not.toBeNull();
+      expect(converted?.type).toBe('embedded-agent');
+
+      // resolveSpawnUsername(session.createdBy) resolves to the server
+      // process user here: this helper's SessionManager.create() (mirroring
+      // getSessionManagerWithEmbedded() elsewhere in this file) has no
+      // userRepository configured, so resolveSpawnUsername's `createdBy`
+      // lookup falls through to its os.userInfo() fallback regardless of
+      // the session's createdBy value -- the point being verified is that
+      // restartAgentWorkerAsEmbedded's activation goes through the SAME
+      // resolution SessionManager.activateEmbeddedAgentWorker always uses
+      // (EmbeddedAgentWorkerService.activate), not a special-cased identity.
+      expect(spawn.captured.length).toBe(1);
+      expect(spawn.captured[0]?.username).toBe(os.userInfo().username);
     });
 
-    it('should keep the persisted git-diff worker base spec unchanged for inactive sessions (Issue #800)', async () => {
-      const manager = await getSessionManager();
+    it('R5: converts+persists as a dormant worker when the session has no createdBy, and activation fails with the existing "no createdBy" error', async () => {
+      const spawn = makeFakeEmbeddedSpawn();
+      const manager = await getSessionManagerWithEmbeddedAndSpawn(spawn.fn);
 
+      // No second arg -- createdBy left undefined.
       const session = await manager.createSession({
-        type: 'worktree',
-        locationPath: '/test/path',
-        repositoryId: 'repo-1',
-        worktreeId: 'old-branch',
-        agentId: 'claude-code',
+        type: 'quick', locationPath: '/test/path', agentId: 'claude-code',
       });
+      const agentWorker = session.workers.find((w: Worker) => w.type === 'agent')!;
 
-      // Pause the session to make it inactive (removed from memory, persisted only)
-      await manager.pauseSession(session.id);
-      expect(manager.getSession(session.id)).toBeUndefined();
+      await expect(
+        manager.restartAgentWorkerAsEmbedded(session.id, agentWorker.id, STUB_EMBEDDED_DEF.id)
+      ).rejects.toThrow('has no createdBy, so an MCP caller identity cannot be minted');
 
-      mockGit.getCurrentBranch.mockImplementation(() => Promise.resolve('old-branch'));
+      // Never reached spawnAsUser -- activation failed before spawning.
+      expect(spawn.captured.length).toBe(0);
 
-      const result = await manager.updateSessionMetadata(session.id, { branch: 'new-branch' });
-
-      expect(result.success).toBe(true);
-      expect(result.branch).toBe('new-branch');
-
-      // The branch-agnostic spec must NOT be frozen / changed on rename.
-      const persisted = await manager.getSessionMetadata(session.id);
-      expect(persisted).not.toBeNull();
-      const persistedGitDiffWorker = persisted!.workers.find((w: PersistedWorker) => w.type === 'git-diff');
-      expect(persistedGitDiffWorker).toBeDefined();
-      expect(persistedGitDiffWorker!.type).toBe('git-diff');
-      if (persistedGitDiffWorker!.type === 'git-diff') {
-        expect(persistedGitDiffWorker!.baseCommit).toBe('merge-base:main');
-      }
-    });
-  });
-
-  describe('updateSessionMetadata - error isolation for git-diff updates', () => {
-    it('should succeed branch rename for active session even when git-diff update fails', async () => {
-      const manager = await getSessionManager();
-
-      const session = await manager.createSession({
-        type: 'worktree',
-        locationPath: '/test/path',
-        repositoryId: 'repo-1',
-        worktreeId: 'old-branch',
-        agentId: 'claude-code',
-      });
-
-      // Configure mocks: getCurrentBranch returns old branch, renameBranch succeeds,
-      // but getMergeBaseSafe throws (causing default-fork-point resolution via resolveBaseSpec to fail)
-      mockGit.getCurrentBranch.mockImplementation(() => Promise.resolve('old-branch'));
-      mockGit.getMergeBaseSafe.mockImplementation(() => {
-        throw new Error('git merge-base failed');
-      });
-
-      const result = await manager.updateSessionMetadata(session.id, { branch: 'new-branch' });
-
-      // Branch rename should still succeed despite git-diff update failure
-      expect(result.success).toBe(true);
-      expect(result.branch).toBe('new-branch');
-
-      // Verify the session's worktreeId was updated
-      const updatedSession = manager.getSession(session.id);
-      expect(updatedSession?.type).toBe('worktree');
-      if (updatedSession?.type === 'worktree') {
-        expect(updatedSession.worktreeId).toBe('new-branch');
-      }
+      // The worker is still persisted as a dormant embedded-agent worker
+      // (converted, not reverted) despite the activation failure.
+      const currentSession = manager.getSession(session.id)!;
+      const convertedWorker = currentSession.workers.find((w: Worker) => w.id === agentWorker.id);
+      expect(convertedWorker?.type).toBe('embedded-agent');
     });
 
-    it('should succeed branch rename for inactive session regardless of git base resolution', async () => {
-      const manager = await getSessionManager();
+    it('restore-info is null and no restore-failure marker is present after a first-ever activation on the converted worker', async () => {
+      const spawn = makeFakeEmbeddedSpawn();
+      const manager = await getSessionManagerWithEmbeddedAndSpawn(spawn.fn);
 
-      const session = await manager.createSession({
-        type: 'worktree',
-        locationPath: '/test/path',
-        repositoryId: 'repo-1',
-        worktreeId: 'old-branch',
-        agentId: 'claude-code',
-      });
+      const session = await manager.createSession(
+        { type: 'quick', locationPath: '/test/path', agentId: 'claude-code' },
+        { createdBy: 'test-user-id' },
+      );
+      const agentWorker = session.workers.find((w: Worker) => w.type === 'agent')!;
 
-      // Pause the session to make it inactive
-      await manager.pauseSession(session.id);
-      expect(manager.getSession(session.id)).toBeUndefined();
+      const converted = await manager.restartAgentWorkerAsEmbedded(
+        session.id, agentWorker.id, STUB_EMBEDDED_DEF.id
+      );
+      expect(converted).not.toBeNull();
 
-      // Branch rename no longer recomputes a base hash (Issue #800), so it must
-      // succeed even if default-branch lookup would fail.
-      mockGit.getCurrentBranch.mockImplementation(() => Promise.resolve('old-branch'));
-      mockGit.getDefaultBranch.mockImplementation(() => {
-        throw new Error('git default branch lookup failed');
-      });
+      // getEmbeddedAgentRestoreInfo(workerId): first-ever activation, nothing
+      // to report.
+      const restoreInfo = manager.getEmbeddedAgentRestoreInfo(session.id, agentWorker.id);
+      expect(restoreInfo).toBeNull();
 
-      const result = await manager.updateSessionMetadata(session.id, { branch: 'new-branch' });
-
-      // Branch rename should still succeed
-      expect(result.success).toBe(true);
-      expect(result.branch).toBe('new-branch');
-
-      // Verify the persisted session has the new branch name
-      const persisted = await manager.getSessionMetadata(session.id);
-      expect(persisted).not.toBeNull();
-      expect(persisted!.type).toBe('worktree');
-      if (persisted!.type === 'worktree') {
-        expect(persisted!.worktreeId).toBe('new-branch');
-      }
-    });
-
-    it('should preserve original git-diff worker base spec on inactive-session rename + title update', async () => {
-      const manager = await getSessionManager();
-
-      const session = await manager.createSession({
-        type: 'worktree',
-        locationPath: '/test/path',
-        repositoryId: 'repo-1',
-        worktreeId: 'old-branch',
-        agentId: 'claude-code',
-      });
-
-      // Record original workers before pausing (git-diff worker has its initial baseCommit)
-      const originalMetadata = await manager.getSessionMetadata(session.id);
-      expect(originalMetadata).not.toBeNull();
-      const originalGitDiffWorker = originalMetadata!.workers.find((w: PersistedWorker) => w.type === 'git-diff');
-      expect(originalGitDiffWorker).toBeDefined();
-      const originalBaseCommit = originalGitDiffWorker!.type === 'git-diff' ? originalGitDiffWorker!.baseCommit : undefined;
-
-      // Pause the session to make it inactive
-      await manager.pauseSession(session.id);
-      expect(manager.getSession(session.id)).toBeUndefined();
-
-      mockGit.getCurrentBranch.mockImplementation(() => Promise.resolve('old-branch'));
-
-      // Update both title and branch
-      const result = await manager.updateSessionMetadata(session.id, {
-        title: 'New Title',
-        branch: 'new-branch',
-      });
-
-      // Branch rename and title update should still succeed
-      expect(result.success).toBe(true);
-      expect(result.title).toBe('New Title');
-      expect(result.branch).toBe('new-branch');
-
-      // Verify the persisted session preserves original workers (baseCommit unchanged)
-      const persisted = await manager.getSessionMetadata(session.id);
-      expect(persisted).not.toBeNull();
-      expect(persisted!.title).toBe('New Title');
-      const persistedGitDiffWorker = persisted!.workers.find((w: PersistedWorker) => w.type === 'git-diff');
-      expect(persistedGitDiffWorker).toBeDefined();
-      if (persistedGitDiffWorker!.type === 'git-diff') {
-        expect(persistedGitDiffWorker!.baseCommit).toBe(originalBaseCommit);
-      }
-    });
-
-    it('should preserve the git-diff worker base spec on inactive-session rename (Issue #800)', async () => {
-      const manager = await getSessionManager();
-
-      const session = await manager.createSession({
-        type: 'worktree',
-        locationPath: '/test/path',
-        repositoryId: 'repo-1',
-        worktreeId: 'old-branch',
-        agentId: 'claude-code',
-      });
-
-      // Capture the initial base spec assigned at creation.
-      const originalMetadata = await manager.getSessionMetadata(session.id);
-      const originalGitDiffWorker = originalMetadata!.workers.find((w: PersistedWorker) => w.type === 'git-diff');
-      const originalBaseSpec = originalGitDiffWorker!.type === 'git-diff' ? originalGitDiffWorker!.baseCommit : undefined;
-
-      // Pause the session to make it inactive
-      await manager.pauseSession(session.id);
-
-      mockGit.getCurrentBranch.mockImplementation(() => Promise.resolve('old-branch'));
-
-      const result = await manager.updateSessionMetadata(session.id, { branch: 'new-branch' });
-
-      expect(result.success).toBe(true);
-
-      // The branch-agnostic spec re-resolves on every diff, so it must NOT be
-      // frozen / changed on rename.
-      const persisted = await manager.getSessionMetadata(session.id);
-      expect(persisted).not.toBeNull();
-      const persistedGitDiffWorker = persisted!.workers.find((w: PersistedWorker) => w.type === 'git-diff');
-      expect(persistedGitDiffWorker).toBeDefined();
-      expect(persistedGitDiffWorker!.type).toBe('git-diff');
-      if (persistedGitDiffWorker!.type === 'git-diff') {
-        expect(persistedGitDiffWorker!.baseCommit).toBe(originalBaseSpec);
-      }
-    });
-  });
-
-  describe('updateSessionMetadata - paused session with both title and branch', () => {
-    it('should persist both title and branch changes for a paused session', async () => {
-      const manager = await getSessionManager();
-
-      // Create a worktree session and pause it
-      const session = await manager.createSession({
-        type: 'worktree',
-        locationPath: '/test/path',
-        repositoryId: 'repo-1',
-        worktreeId: 'old-branch',
-        agentId: 'claude-code',
-      });
-
-      await manager.pauseSession(session.id);
-      expect(manager.getSession(session.id)).toBeUndefined();
-
-      // Configure mocks for branch rename
-      mockGit.getCurrentBranch.mockImplementation(() => Promise.resolve('old-branch'));
-
-      // Update both title and branch at once
-      const result = await manager.updateSessionMetadata(session.id, {
-        title: 'New Title',
-        branch: 'new-branch',
-      });
-
-      expect(result.success).toBe(true);
-      expect(result.title).toBe('New Title');
-      expect(result.branch).toBe('new-branch');
-
-      // Verify BOTH changes are persisted
-      const persisted = await manager.getSessionMetadata(session.id);
-      expect(persisted).not.toBeNull();
-      expect(persisted!.title).toBe('New Title');
-      expect(persisted!.type).toBe('worktree');
-      if (persisted!.type === 'worktree') {
-        expect(persisted!.worktreeId).toBe('new-branch');
-      }
+      // The output file resetWorkerOutput truncated must be genuinely empty
+      // before this activation, so no restore-failure marker of any kind can
+      // appear in it.
+      const history = await manager.getWorkerOutputHistory(session.id, agentWorker.id);
+      expect(history?.data ?? '').not.toContain('restore-failure');
     });
   });
 
@@ -5899,12 +6435,14 @@ describe('SessionManager', () => {
       expect(sessionIds).toContain(session2.id);
     });
 
-    // Issue #1299 AC required test #1: Restart All still restarts fresh in
-    // PR-1. This catches PR-2's continue-by-default flip ('system') leaking
-    // in early -- a mis-implementation that passes 'system' instead of
-    // 'fresh' would select the continue template ('claude -c') here instead
-    // of the fresh command template.
-    it("restarts with the fresh command template, not the continue template ('claude -c') [POLARITY]", async () => {
+    // Issue #1299 PR-2 AC test T1: inverts the PR-1 pin above -- PR-1
+    // guarded that 'system' had NOT leaked in early (this bulk path still
+    // used 'fresh'); this guards that 'system' HAS landed. With 'fresh'
+    // restored at session-manager.ts:1573 this test fails -- measured:
+    // confirmed FAILS. Received `"claude ''\r"` (the fresh command template
+    // 'claude {{model:+--model}}{{prompt}}' with an empty prompt, not the
+    // continue template).
+    it("restarts with the continue template ('claude -c') when no initial prompt is owed [POLARITY]", async () => {
       const manager = await getSessionManager();
       await manager.createSession({
         type: 'quick',
@@ -5916,10 +6454,233 @@ describe('SessionManager', () => {
 
       const newestPty = ptyFactory.instances.at(-1);
       expect(newestPty).toBeDefined();
-      // The built-in agent's continueTemplate is exactly 'claude -c'; the
-      // commandTemplate ('claude {{model:+--model}}{{prompt}}') never
-      // produces that literal string.
-      expect(newestPty!.writtenData.join('')).not.toContain('claude -c');
+      // 'system' resolves to 'continue' when no initial prompt is owed
+      // (Issue #1299 R2) -- the builtin agent's continueTemplate expands to
+      // exactly 'claude -c' when no model override is set (Issue #1299 PR-2
+      // also gave it a {{model:+--model}} substitution point -- see
+      // claude-code.ts).
+      expect(newestPty!.writtenData.join('')).toContain('claude -c');
+    });
+
+    /**
+     * Command-discriminating fake `runAsUser`, mirroring the pattern already
+     * used at :1717 (`createCapturingRunAsUser` inside the
+     * 'lookupOsUserFn / runAsUserImpl passthrough to WorkerManager' describe
+     * block). Deliberately duplicated here rather than hoisted: it's a 6-line
+     * test-only stub used from a different `describe` block, not worth a
+     * cross-describe refactor for 2 occurrences (workflow.md Duplication Check).
+     */
+    function createCapturingRunAsUser() {
+      const writeCalls: RunAsUserOpts[] = [];
+      const fake: typeof runAsUser = async (opts) => {
+        if (opts.command.includes('cat >')) {
+          writeCalls.push(opts);
+        }
+        return { stdout: '', stderr: '', exitCode: 0, timedOut: false };
+      };
+      return { fake, writeCalls };
+    }
+
+    it('delivers the pending initial prompt instead of continuing when the prompt is owed', async () => {
+      // AC deviation note (Architect-approved, 2026-09-03): the AC's literal
+      // wording says "PTY writtenData contains the prompt text". Verified
+      // against the real mechanism (worker-manager.ts's anti-truncation
+      // design, lib/template.ts's expandTemplate): a delivered initialPrompt
+      // is always injected via `"$(cat '<promptFilePath>')"` command
+      // substitution, never as raw text on the command line (canonical-mode
+      // tty input buffers are too small for a long prompt). writtenData can
+      // only prove the FILE-SUBSTITUTION path was selected (not the continue
+      // template); the raw prompt text is only observable via the write call
+      // that populated that file, captured below the same way
+      // createCapturingRunAsUser() does at :1717.
+      const { fake: fakeRunAsUser, writeCalls } = createCapturingRunAsUser();
+      const module = await import(`../session-manager.js?v=${++importCounter}`);
+      const manager = await module.SessionManager.create({
+        userMode: new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' }),
+        pathExists: mockPathExists,
+        jobQueue: testJobQueue,
+        agentManager,
+        mcpTokenRegistry: new McpTokenRegistry(),
+        repositoryLookup: defaultRepositoryLookup,
+        repositoryEnvLookup: defaultRepositoryEnvLookup,
+        runAsUserImpl: fakeRunAsUser,
+      });
+
+      // Disable sentinel auto-emit so the INITIAL worker's creation-time
+      // delivery attempt never completes -- eligible, but undelivered.
+      ptyFactory.setAutoEmitSentinel(false);
+      const session = await manager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: CLAUDE_CODE_AGENT_ID,
+        initialPrompt: 'UNIQUE_T2_PROMPT_MARKER',
+      });
+      expect(session.initialPromptDelivered).not.toBe(true);
+      const initialWorker = session.workers.find((w: Worker) => w.type === 'agent')!;
+      const baselineWriteCalls = writeCalls.length;
+
+      // Re-enable for the restart's fresh PTY so delivery can complete.
+      ptyFactory.setAutoEmitSentinel(true);
+
+      await manager.restartAllAgentWorkers();
+
+      const newestPty = ptyFactory.instances.at(-1);
+      expect(newestPty).toBeDefined();
+      const written = newestPty!.writtenData.join('');
+      expect(written).not.toContain('claude -c');
+      // Command-substitution syntax for THIS worker's prompt file proves the
+      // deliver path (commandTemplate) was selected, not the continue path.
+      expect(written).toContain('$(cat');
+      expect(written).toContain(`${initialWorker.id}.prompt`);
+
+      // The actual prompt text is only observable via the write call.
+      const newWriteCalls = writeCalls.slice(baselineWriteCalls);
+      expect(newWriteCalls.length).toBeGreaterThan(0);
+      expect(newWriteCalls.some((c) => c.stdin === 'UNIQUE_T2_PROMPT_MARKER')).toBe(true);
+
+      // Polarity note: this test passes under BOTH 'fresh' and 'system' by
+      // design -- both resolve an owed obligation to
+      // 'deliver-initial-prompt'. T3 below is what separates the two.
+    });
+
+    it('continues (does not redeliver) when the initial prompt was already delivered', async () => {
+      const { fake: fakeRunAsUser, writeCalls } = createCapturingRunAsUser();
+      const module = await import(`../session-manager.js?v=${++importCounter}`);
+      const manager = await module.SessionManager.create({
+        userMode: new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' }),
+        pathExists: mockPathExists,
+        jobQueue: testJobQueue,
+        agentManager,
+        mcpTokenRegistry: new McpTokenRegistry(),
+        repositoryLookup: defaultRepositoryLookup,
+        repositoryEnvLookup: defaultRepositoryEnvLookup,
+        runAsUserImpl: fakeRunAsUser,
+      });
+
+      // Default auto-emit sentinel (on) lets creation deliver for real,
+      // setting initialPromptDelivered = true before Restart All runs.
+      const session = await manager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: CLAUDE_CODE_AGENT_ID,
+        initialPrompt: 'UNIQUE_T3_PROMPT_MARKER',
+      });
+      expect(session.initialPromptDelivered).toBe(true);
+      // Baseline taken AFTER creation, which legitimately wrote the prompt
+      // file once. This test protects against a SECOND write on restart, not
+      // "zero writes ever" -- test-trigger.md's unscoped-presence discipline:
+      // a bare "writeCalls is empty" assertion would be wrong here.
+      const baselineWriteCalls = writeCalls.length;
+
+      await manager.restartAllAgentWorkers();
+
+      const newestPty = ptyFactory.instances.at(-1);
+      expect(newestPty).toBeDefined();
+      const written = newestPty!.writtenData.join('');
+      expect(written).toContain('claude -c');
+      expect(written).not.toContain('UNIQUE_T3_PROMPT_MARKER');
+      expect(writeCalls.length).toBe(baselineWriteCalls);
+
+      // Polarity: with 'fresh' restored at session-manager.ts:1573 this test
+      // fails -- measured: confirmed FAILS. Received `"claude ''\r"` (the
+      // fresh command template was selected instead, since 'fresh' never
+      // selects the continue template regardless of whether the prompt was
+      // already delivered).
+    });
+
+    it('treats a whitespace-only initialPrompt as not owed and continues', async () => {
+      const manager = await getSessionManager();
+      await manager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+        initialPrompt: '   ',
+      });
+      // A whitespace-only prompt never satisfies the obligation predicate's
+      // `.trim()` check -- deliverInitialPromptOnActivation is false at
+      // creation for this exact reason (worker-lifecycle-manager.ts computes
+      // it as `!!initialPrompt?.trim()`), so there's nothing to redeliver.
+
+      await manager.restartAllAgentWorkers();
+
+      const newestPty = ptyFactory.instances.at(-1);
+      expect(newestPty).toBeDefined();
+      expect(newestPty!.writtenData.join('')).toContain('claude -c');
+    });
+
+    // Issue #1299 PR-2 AC deviation, paragraph 2 (Architect-ruled product
+    // fix, 2026-09-03 -- see claude-code.ts's continueTemplate comment):
+    // T5's first draft found that under 'system' with no prompt owed, the
+    // restart resolved to 'continue', and the builtin continueTemplate
+    // ('claude -c') had NO {{model}} substitution point at all -- so a
+    // worker's persisted model override (agent-surface.md Ruling 3: "the
+    // override SURVIVES restarts") survived on the row but was silently
+    // absent from the spawned command whenever the continue path was
+    // selected. That gap was PRE-EXISTING on the per-session
+    // RestartSessionDialog "Continue (-c)" path (T5c below pins the other
+    // caller); this PR only widens the continue path's reach from
+    // per-session restart to Restart All, which is why the fix lands here
+    // rather than as a follow-up. The Architect's ruling: fix the template
+    // (`continueTemplate: 'claude {{model:+--model}}-c'`), not the test --
+    // T5 keeps its original written-command assertion.
+    it("preserves the worker's model override across Restart All, including on the command line", async () => {
+      const manager = await getSessionManager();
+      const session = await manager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: CLAUDE_CODE_AGENT_ID,
+        model: 'claude-opus-4-6',
+      });
+      const initialWorker = session.workers.find((w: Worker) => w.type === 'agent')!;
+
+      await manager.restartAllAgentWorkers();
+
+      // No initial prompt owed -> 'system' resolves to 'continue' (T1's
+      // pin) -- continueTemplate now carries {{model:+--model}}, so an
+      // override-bearing worker produces 'claude --model \'x\' -c'.
+      // Polarity: with claude-code.ts's continueTemplate change reverted to
+      // the plain 'claude -c' literal, assertion (b) below fails --
+      // confirmed FAILS. Received `"claude -c\r"` (no --model at all; see
+      // the full-suite polarity re-run in the PR report).
+      const newestPty = ptyFactory.instances.at(-1);
+      expect(newestPty).toBeDefined();
+      const written = newestPty!.writtenData.join('');
+      expect(written).toContain("--model 'claude-opus-4-6'");
+      expect(written).toContain('-c');
+
+      const restarted = manager.getWorker(session.id, initialWorker.id);
+      // getWorker returns the InternalWorker union (not the shared Worker
+      // type used elsewhere in this file). isInternalPtyWorker narrows to
+      // InternalAgentWorker | InternalTerminalWorker; only the former
+      // (type === 'agent') carries `model`, so narrow one step further via
+      // the discriminant rather than casting through the unrelated `Worker`
+      // type.
+      expect(
+        restarted && isInternalPtyWorker(restarted) && restarted.type === 'agent' ? restarted.model : undefined,
+      ).toBe('claude-opus-4-6');
+    });
+
+    // T5b: the boundary control for T5 -- same scenario, no override. Proves
+    // the template change is additive: a no-override worker still produces
+    // the byte-identical 'claude -c' (no --model, no double space) rather
+    // than, say, an empty '--model \'\' -c' artifact from a naive
+    // implementation of the optional-argument form.
+    it('restarts with exactly "claude -c" (no --model, no double space) when no model override is set', async () => {
+      const manager = await getSessionManager();
+      await manager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: CLAUDE_CODE_AGENT_ID,
+      });
+
+      await manager.restartAllAgentWorkers();
+
+      const newestPty = ptyFactory.instances.at(-1);
+      expect(newestPty).toBeDefined();
+      const written = newestPty!.writtenData.join('');
+      expect(written).toContain('claude -c');
+      expect(written).not.toContain('--model');
+      expect(written).not.toContain('claude  -c');
     });
 
     it('should restart the agent worker and report the terminal worker as skipped', async () => {
@@ -6093,6 +6854,13 @@ describe('SessionManager', () => {
         await manager.activateEmbeddedAgentWorker(session.id, worker!.id);
         expect(fakeSpawnAsUserFn).toHaveBeenCalledTimes(1);
 
+        // Issue #1299 PR-2 T6 negative control: spy (not mock) so the real
+        // implementation still runs -- proves no StartupIntentPreference
+        // value is threaded into the embedded-agent path, which has no
+        // parameter to leak one into (activateEmbeddedAgentWorker's real
+        // signature is exactly (sessionId, workerId), no third param exists).
+        const activateSpy = spyOn(manager, 'activateEmbeddedAgentWorker');
+
         // restartAllAgentWorkers awaits deactivate (writes `shutdown` and races
         // the current incarnation's `exited`) then activate, sequentially.
         // Simulating exit synchronously right after issuing the call -- before
@@ -6117,6 +6885,10 @@ describe('SessionManager', () => {
             }),
           ]),
         );
+
+        expect(activateSpy).toHaveBeenCalledTimes(1);
+        expect(activateSpy.mock.calls[0].length).toBe(2);
+        activateSpy.mockRestore();
 
         // Teardown: deactivate the fresh incarnation so nothing outlives the test.
         const teardown = manager.deactivateEmbeddedAgentWorker(session.id, worker!.id);
@@ -6261,6 +7033,56 @@ describe('SessionManager', () => {
       expect(secondCallback).toHaveBeenCalledWith(session.id);
     });
   });
+
+  describe('deleteMemo (Issue #1569)', () => {
+    it('fires onMemoUpdated with an empty string and removes a previously-written memo', async () => {
+      const manager = await getSessionManager();
+      const session = await manager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+
+      const onMemoUpdated = mock((_sessionId: string, _content: string) => {});
+      manager.setSessionLifecycleCallbacks({ onMemoUpdated });
+
+      await manager.writeMemo(session.id, 'some content');
+      expect(await manager.readMemo(session.id)).toBe('some content');
+      onMemoUpdated.mockClear();
+
+      await manager.deleteMemo(session.id);
+
+      expect(onMemoUpdated).toHaveBeenCalledTimes(1);
+      expect(onMemoUpdated).toHaveBeenCalledWith(session.id, '');
+      expect(await manager.readMemo(session.id)).toBeNull();
+    });
+
+    it('tolerates a session that never had a memo written -- resolves and still fires onMemoUpdated', async () => {
+      const manager = await getSessionManager();
+      const session = await manager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+
+      const onMemoUpdated = mock((_sessionId: string, _content: string) => {});
+      manager.setSessionLifecycleCallbacks({ onMemoUpdated });
+
+      await expect(manager.deleteMemo(session.id)).resolves.toBeUndefined();
+
+      expect(onMemoUpdated).toHaveBeenCalledTimes(1);
+      expect(onMemoUpdated).toHaveBeenCalledWith(session.id, '');
+      expect(await manager.readMemo(session.id)).toBeNull();
+    });
+
+    it('throws for an unknown sessionId, matching writeMemo\'s existing not-found contract', async () => {
+      const manager = await getSessionManager();
+
+      await expect(manager.deleteMemo('does-not-exist')).rejects.toThrow(
+        'Session not found: does-not-exist'
+      );
+    });
+  });
 });
 
 /**
@@ -6298,5 +7120,33 @@ describe('SessionManager.getEmbeddedAgentRestoreInfo return type (R1, #1410)', (
     expect(failedInfo.sdkResumed).toBe(false);
     expect(failedInfoNoResume.failed).toBe(true);
     expect('sdkResumed' in failedInfoNoResume).toBe(false);
+  });
+});
+
+describe('composeEmbeddedAgentDeliveryText (#1570)', () => {
+  it('returns content unchanged when there are no attached files', () => {
+    expect(composeEmbeddedAgentDeliveryText('hello', [])).toBe('hello');
+  });
+
+  it('returns empty content unchanged when there are no attached files', () => {
+    expect(composeEmbeddedAgentDeliveryText('', [])).toBe('');
+  });
+
+  it('appends a labelled block for a single attached file', () => {
+    expect(composeEmbeddedAgentDeliveryText('hello', ['/tmp/foo.txt'])).toBe(
+      'hello\n\nAttached files:\n- /tmp/foo.txt',
+    );
+  });
+
+  it('appends a labelled block with one line per attached file, for 3 files', () => {
+    expect(
+      composeEmbeddedAgentDeliveryText('hello', ['/tmp/a.txt', '/tmp/b.png', '/tmp/c.pdf']),
+    ).toBe('hello\n\nAttached files:\n- /tmp/a.txt\n- /tmp/b.png\n- /tmp/c.pdf');
+  });
+
+  it('emits only the labelled block, with no leading blank content, when content is empty but files are present', () => {
+    expect(composeEmbeddedAgentDeliveryText('', ['/tmp/foo.txt'])).toBe(
+      'Attached files:\n- /tmp/foo.txt',
+    );
   });
 });

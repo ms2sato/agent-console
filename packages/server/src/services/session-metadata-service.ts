@@ -1,15 +1,18 @@
 /**
- * SessionMetadataService - Handles session metadata updates (title and branch).
+ * SessionMetadataService - Handles session metadata updates (title).
  *
  * Responsibilities:
  * - Update session title for active and inactive sessions
- * - Rename branch for worktree sessions (active and inactive)
  * - Persist metadata changes to the repository
  * - Broadcast updates via session lifecycle callbacks
  *
  * Supports two code paths:
  * - Active sessions: modifies in-memory InternalSession and persists
  * - Inactive sessions: reads from and writes to SessionRepository directly
+ *
+ * Also provides syncBranchFromGit, which updates worktreeId after an
+ * external branch change detected by fs.watch. This does NOT call git
+ * itself -- the branch has already changed in git by the time it runs.
  */
 
 import type { Session } from '@agent-console/shared';
@@ -17,10 +20,6 @@ import type { InternalSession } from './internal-types.js';
 import type { PersistedSession } from './persistence-service.js';
 import type { SessionRepository } from '../repositories/index.js';
 import type { SessionLifecycleCallbacks } from './session-lifecycle-types.js';
-import {
-  getCurrentBranch as gitGetCurrentBranch,
-  renameBranch as gitRenameBranch,
-} from '../lib/git.js';
 import { createLogger } from '../lib/logger.js';
 
 const logger = createLogger('session-metadata');
@@ -49,14 +48,14 @@ export class SessionMetadataService {
   constructor(private readonly deps: SessionMetadataDeps) {}
 
   /**
-   * Update session metadata (title and/or branch).
+   * Update session metadata (title).
    *
    * For active sessions: modifies the in-memory session, persists, and broadcasts.
    * For inactive sessions: reads from and writes to the session repository directly.
    */
   async updateSessionMetadata(
     sessionId: string,
-    updates: { title?: string; branch?: string }
+    updates: { title?: string }
   ): Promise<SessionMetadataUpdateResult> {
     const session = this.deps.getSession(sessionId);
 
@@ -64,18 +63,7 @@ export class SessionMetadataService {
       return this.updateInactiveSession(sessionId, updates);
     }
 
-    return this.updateActiveSession(session, sessionId, updates);
-  }
-
-  /**
-   * @deprecated Use updateSessionMetadata instead
-   * Rename the branch for a worktree session.
-   */
-  async renameBranch(
-    sessionId: string,
-    newBranch: string
-  ): Promise<{ success: boolean; branch?: string; error?: string }> {
-    return this.updateSessionMetadata(sessionId, { branch: newBranch });
+    return this.updateActiveSession(session, updates);
   }
 
   /**
@@ -156,7 +144,7 @@ export class SessionMetadataService {
 
   private async updateInactiveSession(
     sessionId: string,
-    updates: { title?: string; branch?: string }
+    updates: { title?: string }
   ): Promise<SessionMetadataUpdateResult> {
     const metadata = await this.deps.sessionRepository.findById(sessionId);
     if (!metadata) {
@@ -164,47 +152,11 @@ export class SessionMetadataService {
     }
 
     const result: SessionMetadataUpdateResult = { success: true };
-    let updatedTitle: string | undefined;
-    let updatedWorktreeId: string | undefined;
 
-    // Title update
     if (updates.title !== undefined) {
-      updatedTitle = updates.title;
-      result.title = updates.title;
-    }
-
-    // Branch rename for inactive sessions
-    if (updates.branch) {
-      if (metadata.type !== 'worktree') {
-        return { success: false, error: 'Can only rename branch for worktree sessions' };
-      }
-
-      const currentBranch = await gitGetCurrentBranch(metadata.locationPath);
-
-      try {
-        await gitRenameBranch(currentBranch, updates.branch, metadata.locationPath);
-      } catch (error) {
-        const message = error instanceof Error ? error.message : 'Unknown error';
-        return { success: false, error: message };
-      }
-
-      // Git-diff workers persist a branch-agnostic base *spec* that re-resolves
-      // on every diff, so a branch rename does NOT require recomputing or
-      // freezing a base hash here. Leave each worker's spec unchanged.
-      updatedWorktreeId = updates.branch;
-      result.branch = updates.branch;
-    }
-
-    // Persist all updates in a single save
-    if (updatedTitle !== undefined || updatedWorktreeId !== undefined) {
-      const toSave = { ...metadata } as PersistedSession;
-      if (updatedTitle !== undefined) {
-        toSave.title = updatedTitle;
-      }
-      if (updatedWorktreeId !== undefined && toSave.type === 'worktree') {
-        toSave.worktreeId = updatedWorktreeId;
-      }
+      const toSave = { ...metadata, title: updates.title } as PersistedSession;
       await this.deps.sessionRepository.save(toSave);
+      result.title = updates.title;
     }
 
     return result;
@@ -212,40 +164,10 @@ export class SessionMetadataService {
 
   private async updateActiveSession(
     session: InternalSession,
-    sessionId: string,
-    updates: { title?: string; branch?: string }
+    updates: { title?: string }
   ): Promise<SessionMetadataUpdateResult> {
-    // Handle title update
     if (updates.title !== undefined) {
       session.title = updates.title;
-    }
-
-    // Handle branch rename for active session
-    if (updates.branch) {
-      if (session.type !== 'worktree') {
-        return { success: false, error: 'Can only rename branch for worktree sessions' };
-      }
-
-      const currentBranch = await gitGetCurrentBranch(session.locationPath);
-
-      try {
-        await gitRenameBranch(currentBranch, updates.branch, session.locationPath);
-        session.worktreeId = updates.branch;
-
-        // Update git-diff workers' base commit after successful branch rename.
-        // This is a secondary concern - failure should not abort the branch rename.
-        try {
-          await this.deps.updateGitDiffWorkersAfterBranchRename(sessionId);
-        } catch (diffUpdateError) {
-          logger.error(
-            { sessionId, err: diffUpdateError },
-            'Failed to update git-diff workers after branch rename for active session'
-          );
-        }
-      } catch (error) {
-        const message = error instanceof Error ? error.message : 'Unknown error';
-        return { success: false, error: message };
-      }
     }
 
     await this.deps.persistSession(session);
@@ -256,7 +178,6 @@ export class SessionMetadataService {
     return {
       success: true,
       title: updates.title,
-      branch: updates.branch,
     };
   }
 }

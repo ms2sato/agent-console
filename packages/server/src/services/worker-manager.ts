@@ -64,6 +64,10 @@ import { writeUserOwnedSecretFile, rmRecursiveAsUser, shouldElevateForUser, type
 import { lookupOsUser, type LookupOsUserFn } from './os-user-lookup.js';
 import { listDescendantPids, signalPids } from '../lib/process-tree.js';
 import { resolveEffectiveContextWindow } from './embedded-agent-context-window.js';
+import {
+  resolveEffectiveModelParams,
+  hasEmbeddedAgentParameterOverride,
+} from './embedded-agent-model-params.js';
 import { createLogger } from '../lib/logger.js';
 import { getConfigDir } from '../lib/config.js';
 import * as path from 'node:path';
@@ -593,11 +597,13 @@ export class WorkerManager {
       // respective sources.
       //
       // Gated on the ACTUALLY-SELECTED `template` (not agent.commandTemplate):
-      // a 'continue' startupIntent may select agent.continueTemplate, which
-      // for the builtin Claude Code agent has no model template placeholder
-      // even though commandTemplate does. Substituting an override into a
-      // template that doesn't reference the variable is a silent no-op either
-      // way, but
+      // a 'continue' startupIntent may select agent.continueTemplate, and a
+      // custom agent's continueTemplate may omit the model/effort
+      // placeholder(s) commandTemplate has (the builtin Claude Code agent's
+      // continueTemplate DOES now also substitute the model override, so
+      // its override reaches the continue path too -- see claude-code.ts).
+      // Substituting an override into a template that doesn't reference
+      // the variable is a silent no-op either way, but
       // gating here keeps the merge honest about what actually reaches the
       // spawned command -- this is an internal template-selection detail, not
       // a user-supplied incapable-agent case, so it must NOT throw (that
@@ -1322,13 +1328,21 @@ export class WorkerManager {
         return gitDiffWorker;
       }
       case 'embedded-agent': {
+        const definition = this.getEmbeddedAgentFn(worker.embeddedAgentId);
+        // Effective model/effort resolved through the single writer, which
+        // returns `model: undefined` when there is no definition to fall
+        // back on -- the wire's "UNKNOWN", not a guessed default.
+        const { model, reasoningEffort } = resolveEffectiveModelParams(definition, worker);
         const embeddedAgentWorker: EmbeddedAgentWorker = {
           ...base,
           type: 'embedded-agent',
           embeddedAgentId: worker.embeddedAgentId,
           activated: worker.subprocess !== null,
           autoCompaction: worker.autoCompaction,
-          contextWindowTokens: resolveEffectiveContextWindow(this.getEmbeddedAgentFn(worker.embeddedAgentId), worker),
+          contextWindowTokens: resolveEffectiveContextWindow(definition, worker),
+          model,
+          reasoningEffort,
+          hasParameterOverride: hasEmbeddedAgentParameterOverride(worker),
         };
         return embeddedAgentWorker;
       }

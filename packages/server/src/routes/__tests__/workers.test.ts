@@ -3,6 +3,7 @@ import * as os from 'os';
 import { join as pathJoin } from 'path';
 import { Hono } from 'hono';
 import { onApiError } from '../../lib/error-handler.js';
+import { resolveUploadDir } from '../../lib/message-upload-dir.js';
 import { api } from '../api.js';
 import type { AppBindings } from '../../app-context.js';
 import { asAppContext } from '../../__tests__/test-utils.js';
@@ -19,7 +20,7 @@ import { registerJobHandlers } from '../../jobs/handlers.js';
 import { WorkerOutputFileManager } from '../../lib/worker-output-file.js';
 import { SessionManager } from '../../services/session-manager.js';
 import { JsonSessionRepository } from '../../repositories/index.js';
-import { MAX_MESSAGE_FILES, MAX_TOTAL_FILE_SIZE } from '@agent-console/shared';
+import { MAX_MESSAGE_FILES, MAX_TOTAL_FILE_SIZE, MAX_IMAGE_ATTACHMENT_BYTES } from '@agent-console/shared';
 import { McpTokenRegistry } from '../../mcp/mcp-auth.js';
 import { AgentDirectory } from '../../services/agent-directory.js';
 import type { SpawnAsUserFn, SpawnAsUserOpts, SpawnAsUserResult } from '../../services/privilege-elevation.js';
@@ -359,6 +360,85 @@ describe('Workers API', () => {
       expect(body.error).toContain('Total file size exceeds limit');
     });
 
+    it('should return 400 when an image attachment exceeds the per-image cap, without writing it to disk (Issue #1571)', async () => {
+      const session = await sessionManager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+
+      // Spy on Bun.write, same pattern as the "save uploaded files" test
+      // below -- proves nothing reached disk when validation rejects first.
+      const writtenPaths: string[] = [];
+      const originalBunWrite = Bun.write;
+      Bun.write = ((dest: unknown, input: unknown, options?: unknown) => {
+        if (typeof dest === 'string') {
+          writtenPaths.push(dest);
+        }
+        return originalBunWrite(
+          dest as Parameters<typeof originalBunWrite>[0],
+          input as Parameters<typeof originalBunWrite>[1],
+          options as Parameters<typeof originalBunWrite>[2],
+        );
+      }) as typeof Bun.write;
+
+      try {
+        const formData = new FormData();
+        formData.append('toWorkerId', 'some-worker-id');
+        formData.append('content', 'hello');
+
+        // Stays under MAX_TOTAL_FILE_SIZE (10 MiB) but over MAX_IMAGE_ATTACHMENT_BYTES (5 MiB),
+        // so only the new per-image check can be the cause of rejection.
+        const oversizedImage = new Uint8Array(MAX_IMAGE_ATTACHMENT_BYTES + 1);
+        const file = new File([oversizedImage], 'large-image.png', { type: 'image/png' });
+        formData.append('files', file);
+
+        const res = await app.request(`/api/sessions/${session.id}/messages`, {
+          method: 'POST',
+          body: formData,
+        });
+
+        expect(res.status).toBe(400);
+        const body = (await res.json()) as { error: string };
+        expect(body.error).toContain('Image attachment exceeds');
+        expect(body.error).toContain('large-image.png');
+
+        expect(writtenPaths.length).toBe(0);
+      } finally {
+        Bun.write = originalBunWrite;
+      }
+    });
+
+    it('should NOT reject a non-image file of the same over-cap size (governed only by MAX_TOTAL_FILE_SIZE, Issue #1571)', async () => {
+      const session = await sessionManager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+      const worker = await sessionManager.createWorker(session.id, {
+        type: 'agent',
+        agentId: 'claude-code',
+      });
+      expect(worker).not.toBeNull();
+
+      const formData = new FormData();
+      formData.append('toWorkerId', worker!.id);
+      formData.append('content', 'hello');
+
+      // Same size as the rejected image above, but not an image mime type --
+      // still under MAX_TOTAL_FILE_SIZE, so this must succeed.
+      const oversizedNonImage = new Uint8Array(MAX_IMAGE_ATTACHMENT_BYTES + 1);
+      const file = new File([oversizedNonImage], 'large-file.bin', { type: 'application/octet-stream' });
+      formData.append('files', file);
+
+      const res = await app.request(`/api/sessions/${session.id}/messages`, {
+        method: 'POST',
+        body: formData,
+      });
+
+      expect(res.status).toBe(201);
+    });
+
     // Issue #830 removed the in-process readiness cache; ensureUploadDir() now
     // mkdir+lstat-verifies on every upload, so the order of tests within this
     // describe block no longer matters.
@@ -405,9 +485,7 @@ describe('Workers API', () => {
 
         expect(writtenPaths.length).toBeGreaterThan(0);
 
-        const euid: number | 'shared' =
-          typeof process.geteuid === 'function' ? process.geteuid() : 'shared';
-        const expectedUploadDir = pathJoin(os.tmpdir(), `agent-console-uploads-${euid}`);
+        const expectedUploadDir = resolveUploadDir();
         const hostSharedLegacy = pathJoin(os.tmpdir(), 'agent-console-uploads');
         for (const filePath of writtenPaths) {
           // Path scoping: per-uid dir under os.tmpdir(), never the host-shared
@@ -446,9 +524,7 @@ describe('Workers API', () => {
       });
       expect(worker).not.toBeNull();
 
-      const euid: number | 'shared' =
-        typeof process.geteuid === 'function' ? process.geteuid() : 'shared';
-      const expectedUploadDir = pathJoin(os.tmpdir(), `agent-console-uploads-${euid}`);
+      const expectedUploadDir = resolveUploadDir();
 
       const { vol } = await import('memfs');
       // The earlier mode-0700 test may have created the dir; remove it before
@@ -523,9 +599,7 @@ describe('Workers API', () => {
       });
       expect(worker).not.toBeNull();
 
-      const euid: number | 'shared' =
-        typeof process.geteuid === 'function' ? process.geteuid() : 'shared';
-      const expectedUploadDir = pathJoin(os.tmpdir(), `agent-console-uploads-${euid}`);
+      const expectedUploadDir = resolveUploadDir();
 
       const { vol } = await import('memfs');
       try {
@@ -604,9 +678,7 @@ describe('Workers API', () => {
       });
       expect(worker).not.toBeNull();
 
-      const euid: number | 'shared' =
-        typeof process.geteuid === 'function' ? process.geteuid() : 'shared';
-      const expectedUploadDir = pathJoin(os.tmpdir(), `agent-console-uploads-${euid}`);
+      const expectedUploadDir = resolveUploadDir();
 
       const { vol } = await import('memfs');
 
@@ -1231,6 +1303,104 @@ describe('Workers API', () => {
       const res = await patch(session.id, worker.id, { autoCompaction: true, leaked: 'x' });
       expect(res.status).toBe(400);
     });
+
+    // ---- The mid-run parameter branch (agent-surface.md Phase 3) ----
+
+    it('applies a body that carries only the mid-run parameter fields, and returns the updated worker', async () => {
+      const { session, worker } = await createEmbeddedWorker();
+
+      const res = await patch(session.id, worker.id, { model: 'gpt-5', contextWindowTokens: null });
+
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as {
+        worker: { model?: string; contextWindowTokens?: number; hasParameterOverride: boolean };
+      };
+      expect(body.worker.model).toBe('gpt-5');
+      expect(body.worker.hasParameterOverride).toBe(true);
+      // Ruling 4: a model override with no declared window is indeterminate,
+      // NOT the definition's own window.
+      expect(body.worker.contextWindowTokens).toBeUndefined();
+    });
+
+    it('persists the parameter override so a subsequent read sees it', async () => {
+      const { session, worker } = await createEmbeddedWorker();
+
+      await patch(session.id, worker.id, { reasoningEffort: 'high' });
+
+      const readBack = sessionManager
+        .getSession(session.id)!
+        .workers.find((w) => w.id === worker.id)!;
+      expect(readBack.type).toBe('embedded-agent');
+      if (readBack.type === 'embedded-agent') {
+        expect(readBack.reasoningEffort).toBe('high');
+      }
+    });
+
+    it('clears an override when the field is null (absent and null are different instructions)', async () => {
+      const { session, worker } = await createEmbeddedWorker();
+      await patch(session.id, worker.id, { reasoningEffort: 'high' });
+
+      const res = await patch(session.id, worker.id, { reasoningEffort: null });
+
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as {
+        worker: { reasoningEffort: string | null; hasParameterOverride: boolean };
+      };
+      expect(body.worker.reasoningEffort).toBeNull();
+      expect(body.worker.hasParameterOverride).toBe(false);
+    });
+
+    it('applies BOTH writes when the body carries autoCompaction AND parameter fields', async () => {
+      // Guards the shape of the two guards themselves: each must gate on its
+      // own keys, not on "the body has other keys".
+      const { session, worker } = await createEmbeddedWorker();
+      const res = await patch(session.id, worker.id, {
+        autoCompaction: false,
+        reasoningEffort: 'high',
+      });
+
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as {
+        worker: { autoCompaction: boolean; reasoningEffort: string | null };
+      };
+      expect(body.worker.autoCompaction).toBe(false);
+      // The response is the worker AFTER both writes -- the parameter write
+      // runs second and its return value is what the route reports.
+      expect(body.worker.reasoningEffort).toBe('high');
+    });
+
+    it('returns 400 when the shared validator rejects the values (a ValidationError, not a 500)', async () => {
+      const { session, worker } = await createEmbeddedWorker();
+
+      const res = await patch(session.id, worker.id, { reasoningEffort: '   ' });
+
+      expect(res.status).toBe(400);
+    });
+
+    it('returns 404 for a worker of the wrong type on the parameter branch too', async () => {
+      const session = await sessionManager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+      const terminal = await sessionManager.createWorker(session.id, { type: 'terminal' });
+
+      const res = await patch(session.id, terminal!.id, { reasoningEffort: 'high' });
+
+      expect(res.status).toBe(404);
+    });
+
+    it('rejects contextWindowTokens without a model at the wire (Ruling 4, schema-level)', async () => {
+      const { session, worker } = await createEmbeddedWorker();
+      const res = await patch(session.id, worker.id, { contextWindowTokens: 32000 });
+      expect(res.status).toBe(400);
+    });
+
+    it('rejects a non-null model with no contextWindowTokens at the wire (Ruling 4, schema-level)', async () => {
+      const { session, worker } = await createEmbeddedWorker();
+      const res = await patch(session.id, worker.id, { model: 'gpt-5' });
+      expect(res.status).toBe(400);
+    });
   });
 
   // ===========================================================================
@@ -1258,6 +1428,133 @@ describe('Workers API', () => {
 
       const body = (await res.json()) as { error: string };
       expect(body.error).toContain('Worker');
+    });
+
+    it('routes a request body carrying embeddedAgentId to the cross-type conversion path', async () => {
+      const session = await sessionManager.createSession(
+        { type: 'quick', locationPath: '/test/path', agentId: 'claude-code' },
+        { createdBy: 'test-user-id' },
+      );
+      const worker = await sessionManager.createWorker(session.id, {
+        type: 'agent',
+        agentId: 'claude-code',
+      });
+      expect(worker).not.toBeNull();
+
+      const restartSpy = spyOn(sessionManager, 'restartAgentWorkerAsEmbedded');
+      const terminalRestartSpy = spyOn(sessionManager, 'restartAgentWorker');
+      try {
+        const res = await app.request(
+          `/api/sessions/${session.id}/workers/${worker!.id}/restart`,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ embeddedAgentId: 'agent-def-1' }),
+          }
+        );
+
+        expect(res.status).toBe(200);
+        const body = (await res.json()) as { worker: { type: string } };
+        expect(body.worker.type).toBe('embedded-agent');
+
+        expect(restartSpy).toHaveBeenCalledWith(session.id, worker!.id, 'agent-def-1', undefined);
+        expect(terminalRestartSpy).not.toHaveBeenCalled();
+      } finally {
+        restartSpy.mockRestore();
+        terminalRestartSpy.mockRestore();
+      }
+    });
+
+    it('rejects a body carrying both embeddedAgentId and continueConversation with 400 at the schema layer', async () => {
+      const session = await sessionManager.createSession(
+        { type: 'quick', locationPath: '/test/path', agentId: 'claude-code' },
+        { createdBy: 'test-user-id' },
+      );
+      const worker = await sessionManager.createWorker(session.id, {
+        type: 'agent',
+        agentId: 'claude-code',
+      });
+      expect(worker).not.toBeNull();
+
+      const res = await app.request(
+        `/api/sessions/${session.id}/workers/${worker!.id}/restart`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ embeddedAgentId: 'agent-def-1', continueConversation: true }),
+        }
+      );
+
+      expect(res.status).toBe(400);
+    });
+
+    it('rejects a body carrying both embeddedAgentId and agentId with 400 at the schema layer', async () => {
+      const session = await sessionManager.createSession(
+        { type: 'quick', locationPath: '/test/path', agentId: 'claude-code' },
+        { createdBy: 'test-user-id' },
+      );
+      const worker = await sessionManager.createWorker(session.id, {
+        type: 'agent',
+        agentId: 'claude-code',
+      });
+      expect(worker).not.toBeNull();
+
+      const res = await app.request(
+        `/api/sessions/${session.id}/workers/${worker!.id}/restart`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ embeddedAgentId: 'agent-def-1', agentId: 'claude-code' }),
+        }
+      );
+
+      expect(res.status).toBe(400);
+    });
+
+    it('rejects a terminal-member restart (no agentId) against an embedded-agent existing worker with 400 (R2 runtime check, Issue #1592)', async () => {
+      const session = await sessionManager.createSession(
+        { type: 'quick', locationPath: '/test/path', agentId: 'claude-code' },
+        { createdBy: 'test-user-id' },
+      );
+      const worker = await sessionManager.createWorker(session.id, {
+        type: 'embedded-agent',
+        embeddedAgentId: 'agent-def-1',
+      });
+      expect(worker).not.toBeNull();
+
+      const res = await app.request(
+        `/api/sessions/${session.id}/workers/${worker!.id}/restart`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({}),
+        }
+      );
+
+      expect(res.status).toBe(400);
+    });
+
+    it("rejects a terminal-member restart with continueConversation: true against an embedded-agent existing worker with 400 (R2 runtime check, Issue #1592)", async () => {
+      const session = await sessionManager.createSession(
+        { type: 'quick', locationPath: '/test/path', agentId: 'claude-code' },
+        { createdBy: 'test-user-id' },
+      );
+      const worker = await sessionManager.createWorker(session.id, {
+        type: 'embedded-agent',
+        embeddedAgentId: 'agent-def-1',
+      });
+      expect(worker).not.toBeNull();
+
+      const res = await app.request(
+        `/api/sessions/${session.id}/workers/${worker!.id}/restart`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ continueConversation: true, agentId: 'claude-code' }),
+        }
+      );
+
+      expect(res.status).toBe(400);
     });
   });
 

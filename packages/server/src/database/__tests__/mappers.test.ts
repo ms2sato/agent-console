@@ -1261,6 +1261,8 @@ describe('mappers', () => {
       expect(row.setup_command).toBeNull();
       expect(row.cleanup_command).toBeNull();
       expect(row.default_agent_id).toBeNull();
+      expect(row.orchestrator_session_id).toBeNull();
+      expect(row.issue_trigger_labels).toBeNull();
     });
 
     it('should map defaultAgentId to default_agent_id', () => {
@@ -1305,6 +1307,8 @@ describe('mappers', () => {
         env_vars: null,
         description: null,
         default_agent_id: null,
+        orchestrator_session_id: null,
+        issue_trigger_labels: null,
       };
 
       const repository = toRepository(row);
@@ -1317,6 +1321,50 @@ describe('mappers', () => {
       expect(repository.cleanupCommand).toBeNull();
       expect(repository.envVars).toBeNull();
       expect(repository.defaultAgentId).toBeNull();
+      expect(repository.orchestratorSessionId).toBeNull();
+      expect(repository.issueTriggerLabels).toBeNull();
+    });
+
+    it('should map orchestrator_session_id to orchestratorSessionId', () => {
+      const row: RepositoryRow = {
+        id: 'repo-orchestrator',
+        name: 'test-repo',
+        path: '/tmp/test-repo',
+        created_at: '2024-12-01T00:00:00.000Z',
+        updated_at: '2024-12-01T00:00:00.000Z',
+        setup_command: null,
+        cleanup_command: null,
+        env_vars: null,
+        description: null,
+        default_agent_id: null,
+        orchestrator_session_id: 'session-orchestrator-1',
+        issue_trigger_labels: null,
+      };
+
+      const repository = toRepository(row);
+
+      expect(repository.orchestratorSessionId).toBe('session-orchestrator-1');
+    });
+
+    it('should map issue_trigger_labels to issueTriggerLabels', () => {
+      const row: RepositoryRow = {
+        id: 'repo-issue-labels',
+        name: 'test-repo',
+        path: '/tmp/test-repo',
+        created_at: '2024-12-01T00:00:00.000Z',
+        updated_at: '2024-12-01T00:00:00.000Z',
+        setup_command: null,
+        cleanup_command: null,
+        env_vars: null,
+        description: null,
+        default_agent_id: null,
+        orchestrator_session_id: null,
+        issue_trigger_labels: 'bug, needs-triage',
+      };
+
+      const repository = toRepository(row);
+
+      expect(repository.issueTriggerLabels).toBe('bug, needs-triage');
     });
 
     it('should handle created_at correctly', () => {
@@ -1331,6 +1379,8 @@ describe('mappers', () => {
         env_vars: null,
         description: null,
         default_agent_id: null,
+        orchestrator_session_id: null,
+        issue_trigger_labels: null,
       };
 
       const repository = toRepository(row);
@@ -1351,6 +1401,8 @@ describe('mappers', () => {
         env_vars: null,
         description: null,
         default_agent_id: null,
+        orchestrator_session_id: null,
+        issue_trigger_labels: null,
       };
 
       const repository = toRepository(row);
@@ -1370,6 +1422,8 @@ describe('mappers', () => {
         env_vars: null,
         description: null,
         default_agent_id: null,
+        orchestrator_session_id: null,
+        issue_trigger_labels: null,
       };
 
       const repository = toRepository(row);
@@ -1389,6 +1443,8 @@ describe('mappers', () => {
         env_vars: 'FOO=bar\nBAZ=qux',
         description: null,
         default_agent_id: null,
+        orchestrator_session_id: null,
+        issue_trigger_labels: null,
       };
 
       const repository = toRepository(row);
@@ -1725,6 +1781,7 @@ describe('mappers', () => {
         provider_base_url: row.provider_base_url ?? null,
         provider_model: row.provider_model,
         provider_api_key_ref: row.provider_api_key_ref ?? null,
+        provider_supports_images: row.provider_supports_images ?? null,
         system_prompt: row.system_prompt ?? null,
         max_tool_iterations: row.max_tool_iterations ?? null,
         enabled_tools: row.enabled_tools ?? null,
@@ -1751,6 +1808,7 @@ describe('mappers', () => {
         provider_base_url: 'http://localhost:11434/v1',
         provider_model: 'llama3',
         provider_api_key_ref: null,
+        provider_supports_images: null,
         system_prompt: null,
         max_tool_iterations: null,
         enabled_tools: null,
@@ -1769,6 +1827,7 @@ describe('mappers', () => {
       expect(restored.engine).toBe('openai-api');
       if (restored.engine === 'openai-api') {
         expect(restored.provider.apiKeyRef).toBeUndefined();
+        expect(restored.provider.supportsImages).toBeUndefined();
       }
       expect(restored.systemPrompt).toBeUndefined();
       expect(restored.maxToolIterations).toBeUndefined();
@@ -1787,6 +1846,7 @@ describe('mappers', () => {
         provider_base_url: 'http://localhost:11434/v1',
         provider_model: 'llama3',
         provider_api_key_ref: null,
+        provider_supports_images: null,
         system_prompt: null,
         max_tool_iterations: null,
         enabled_tools: '[]',
@@ -1814,6 +1874,7 @@ describe('mappers', () => {
         provider_base_url: 'http://localhost:11434/v1',
         provider_model: 'llama3',
         provider_api_key_ref: null,
+        provider_supports_images: null,
         system_prompt: null,
         max_tool_iterations: null,
         enabled_tools: '["Read"',
@@ -1843,6 +1904,7 @@ describe('mappers', () => {
         provider_base_url: 'http://localhost:11434/v1',
         provider_model: 'llama3',
         provider_api_key_ref: null,
+        provider_supports_images: null,
         system_prompt: null,
         max_tool_iterations: null,
         enabled_tools: null,
@@ -1872,6 +1934,7 @@ describe('mappers', () => {
         provider_base_url: 'http://localhost:11434/v1',
         provider_model: 'llama3',
         provider_api_key_ref: null,
+        provider_supports_images: null,
         system_prompt: null,
         max_tool_iterations: null,
         enabled_tools: '{}',
@@ -1901,6 +1964,7 @@ describe('mappers', () => {
         provider_base_url: 'http://localhost:11434/v1',
         provider_model: 'llama3',
         provider_api_key_ref: null,
+        provider_supports_images: null,
         system_prompt: null,
         max_tool_iterations: null,
         enabled_tools: null,
@@ -1930,6 +1994,7 @@ describe('mappers', () => {
         provider_base_url: 'http://localhost:11434/v1',
         provider_model: 'llama3',
         provider_api_key_ref: null,
+        provider_supports_images: null,
         system_prompt: null,
         max_tool_iterations: null,
         enabled_tools: null,
@@ -1945,6 +2010,61 @@ describe('mappers', () => {
       const restored = toEmbeddedAgentDefinition(selectRow);
 
       expect(restored.compaction).toEqual({ threshold: 0.6 });
+    });
+
+    describe('provider_supports_images round-trip (Issue #1571)', () => {
+      const baseRow: Omit<EmbeddedAgentRow, 'provider_supports_images'> = {
+        id: 'def-images',
+        name: 'ImagesCapable',
+        description: null,
+        engine: 'openai-api',
+        provider_base_url: 'http://localhost:11434/v1',
+        provider_model: 'llama3',
+        provider_api_key_ref: null,
+        system_prompt: null,
+        max_tool_iterations: null,
+        enabled_tools: null,
+        instructions: null,
+        context_window_tokens: null,
+        compaction_threshold: null,
+        created_by: 'user-uuid',
+        is_built_in: 0,
+        created_at: '2026-01-01T00:00:00.000Z',
+        updated_at: '2026-01-01T00:00:00.000Z',
+      };
+
+      it('round-trips provider_supports_images: 1 to supportsImages: true', () => {
+        const selectRow: EmbeddedAgentRow = { ...baseRow, provider_supports_images: 1 };
+
+        const restored = toEmbeddedAgentDefinition(selectRow);
+
+        expect(restored.engine).toBe('openai-api');
+        if (restored.engine === 'openai-api') {
+          expect(restored.provider.supportsImages).toBe(true);
+        }
+      });
+
+      it('round-trips provider_supports_images: 0 to supportsImages: undefined (never a literal false)', () => {
+        const selectRow: EmbeddedAgentRow = { ...baseRow, provider_supports_images: 0 };
+
+        const restored = toEmbeddedAgentDefinition(selectRow);
+
+        expect(restored.engine).toBe('openai-api');
+        if (restored.engine === 'openai-api') {
+          expect(restored.provider.supportsImages).toBeUndefined();
+        }
+      });
+
+      it('round-trips provider_supports_images: null to supportsImages: undefined', () => {
+        const selectRow: EmbeddedAgentRow = { ...baseRow, provider_supports_images: null };
+
+        const restored = toEmbeddedAgentDefinition(selectRow);
+
+        expect(restored.engine).toBe('openai-api');
+        if (restored.engine === 'openai-api') {
+          expect(restored.provider.supportsImages).toBeUndefined();
+        }
+      });
     });
 
     describe('engine/provider round-trip and consistency guard (SDK Engine Phase 1)', () => {
@@ -1966,7 +2086,29 @@ describe('mappers', () => {
         expect(row.provider_base_url).toBeNull();
         expect(row.provider_model).toBe('claude-sonnet-5');
         expect(row.provider_api_key_ref).toBeNull();
+        expect(row.provider_supports_images).toBeNull();
         expect(row.is_built_in).toBe(1);
+      });
+
+      it('writes provider_supports_images null for a claude-sdk row regardless of an (impossible) attempt to set it', () => {
+        // claude-sdk's EmbeddedAgentDefinition arm has no supportsImages field
+        // at all (it is not representable), so this asserts toEmbeddedAgentRow's
+        // own null-for-claude-sdk convention, mirroring provider_base_url /
+        // provider_api_key_ref above (Issue #1571).
+        const sdkDefinition: EmbeddedAgentDefinition = {
+          id: 'def-sdk-images',
+          name: 'Claude',
+          engine: 'claude-sdk',
+          provider: { model: 'claude-sonnet-5' },
+          isBuiltIn: true,
+          createdBy: 'system',
+          createdAt: '2026-01-01T00:00:00.000Z',
+          updatedAt: '2026-01-01T00:00:00.000Z',
+        };
+
+        const row = toEmbeddedAgentRow(sdkDefinition);
+
+        expect(row.provider_supports_images).toBeNull();
       });
 
       it('round-trips a claude-sdk definition through row and back', () => {
@@ -1990,6 +2132,7 @@ describe('mappers', () => {
           provider_base_url: row.provider_base_url ?? null,
           provider_model: row.provider_model,
           provider_api_key_ref: row.provider_api_key_ref ?? null,
+          provider_supports_images: row.provider_supports_images ?? null,
           system_prompt: row.system_prompt ?? null,
           max_tool_iterations: row.max_tool_iterations ?? null,
           enabled_tools: row.enabled_tools ?? null,
@@ -2016,6 +2159,7 @@ describe('mappers', () => {
           provider_base_url: null,
           provider_model: 'llama3',
           provider_api_key_ref: null,
+          provider_supports_images: null,
           system_prompt: null,
           max_tool_iterations: null,
           enabled_tools: null,
@@ -2041,6 +2185,7 @@ describe('mappers', () => {
           provider_base_url: 'http://localhost:11434/v1',
           provider_model: 'claude-sonnet-5',
           provider_api_key_ref: null,
+          provider_supports_images: null,
           system_prompt: null,
           max_tool_iterations: null,
           enabled_tools: null,

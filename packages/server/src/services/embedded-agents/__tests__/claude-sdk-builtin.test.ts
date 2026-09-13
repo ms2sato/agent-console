@@ -34,7 +34,7 @@ describe('claudeSdkAgent', () => {
     expect(claudeSdkAgent.name.length).toBeGreaterThan(0);
   });
 
-  it('opts into CLAUDE.md via instructions[] (the only Phase-1 path into the SDK engine\'s context, since settingSources: [] disables native auto-discovery)', () => {
-    expect(claudeSdkAgent.instructions).toEqual(['CLAUDE.md']);
+  it('has no instructions[] opt-in entry (Issue #1343 Phase A, R1 -- main.ts\'s claude-sdk arm now calls loadInstructions directly, so CLAUDE.md/AGENTS.md are discovered via the chain layer without a per-definition opt-in)', () => {
+    expect(claudeSdkAgent.instructions).toBeUndefined();
   });
 });

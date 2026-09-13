@@ -27,7 +27,7 @@ const api = new Hono<AppBindings>()
   // /config is needed by the client to determine the auth mode before authenticating.
   .route('/auth', auth)
   .get('/config', (c) => {
-    const { systemCapabilities, userMode, sharedAccountRegistry } = c.get('appContext');
+    const { systemCapabilities, userMode, sharedAccountRegistry, deployedSha } = c.get('appContext');
     // In multi-user mode before login, authUser may not be available.
     // Use userMode.authenticate() directly instead of relying on auth middleware.
     const authUser = userMode.authenticate(() => getCookie(c, AUTH_COOKIE_NAME));
@@ -38,6 +38,7 @@ const api = new Hono<AppBindings>()
       serverPort: Number(serverConfig.PORT),
       authMode: serverConfig.AUTH_MODE,
       sharedAccountsAvailable: sharedAccountRegistry.isEnabled(),
+      deployedSha,
     });
   })
   // Auth middleware runs on all remaining API routes.

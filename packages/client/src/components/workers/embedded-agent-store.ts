@@ -11,6 +11,7 @@ import {
   type AgentActivityState,
   type AppServerMessage,
   type EmbeddedAgentServerNotification,
+  type EmbeddedAgentAttachment,
   type ExitReason,
   type RestorePreservation,
 } from '@agent-console/shared';
@@ -54,6 +55,9 @@ export type EmbeddedAgentChatEntry =
       // EmbeddedAgentServerEvent's `notification` field one-to-one; see that
       // field's doc comment for the discriminator rationale.
       notification?: EmbeddedAgentServerNotification;
+      // Mirrors EmbeddedAgentServerEvent's `attachments` field one-to-one:
+      // present iff the originating send included at least one attachment.
+      attachments?: EmbeddedAgentAttachment[];
     }
   | { key: string; kind: 'assistant-message'; turnId: string; text: string; streaming: boolean }
   | { key: string; kind: 'assistant-thinking'; turnId: string; text: string; streaming: boolean }
@@ -73,8 +77,18 @@ export type EmbeddedAgentChatEntry =
    * see EmbeddedAgentServerEvent's `exited` doc comment. The store carries it
    * verbatim so the view has no store-side default to undo, and every
    * consumer tests `reason === 'evicted'` rather than truthiness.
+   *
+   * `stderrTail` mirrors the wire event's field the same way: present only
+   * when the server captured a non-empty tail for an `'unexpected'` exit,
+   * absent otherwise. Never defaulted to `''`.
    */
-  | { key: string; kind: 'exited'; code: number | null; reason?: ExitReason }
+  | {
+      key: string;
+      kind: 'exited';
+      code: number | null;
+      reason?: ExitReason;
+      stderrTail?: string;
+    }
   /**
    * Transcript Restore, R1: the turn identified by `turnId` was cut off by a
    * process boundary and never answered. Server-authored -- deliberately a
@@ -290,7 +304,7 @@ export interface EmbeddedAgentSnapshot {
    * exited-with-reason shape -- see design-principles.md "Define types by
    * what they represent, not where they're used".
    */
-  currentExit: { code: number | null; reason?: ExitReason } | null;
+  currentExit: { code: number | null; reason?: ExitReason; stderrTail?: string } | null;
 }
 
 export interface EmbeddedAgentInstance {
@@ -399,6 +413,16 @@ class EmbeddedAgentController implements EmbeddedAgentInstance {
   private openAssistantIndexByTurnId = new Map<string, number>();
   private openThinkingIndexByTurnId = new Map<string, number>();
   private toolCallIndexByCallId = new Map<string, number>();
+  // FIFO of entries-array indices for LEGACY (pre-#1581) persisted tool-call
+  // rows whose provider-supplied callId is empty (''). AgentLoop now
+  // synthesizes a unique id whenever callId is empty, so this queue only
+  // ever gets populated when replaying a transcript recorded before that
+  // fix -- a plain Map keyed by callId can't disambiguate two '' rows in
+  // the same turn (the second `.set('', idx)` clobbers the first), so
+  // pairing falls back to the loop's actual emission order (tool-call, then
+  // that same call's tool-result, one call executing at a time) instead of
+  // an id lookup. See applyToolResult / pushToolCall.
+  private legacyEmptyCallIdQueue: number[] = [];
   private entryKeyCounter = 0;
 
   // Transcript Restore (#1123 / #1205) bookkeeping.
@@ -547,6 +571,33 @@ class EmbeddedAgentController implements EmbeddedAgentInstance {
 
   private handleAppMessage(msg: AppServerMessage): void {
     if (this.disposed) return;
+    if (msg.type === 'session-updated') {
+      // Cross-type restart (embedded-agent -> agent, #1592) converts this
+      // worker away from embedded-agent IN PLACE, keeping its (sessionId,
+      // workerId). Mirrors terminal-store.ts's identical guard for the
+      // reverse direction (agent -> embedded-agent, #1171): the server
+      // broadcasts this session-updated BEFORE the matching worker-restarted
+      // for the same worker (worker-lifecycle-manager.ts's
+      // restartEmbeddedWorkerAsAgent). This controller has no way to learn
+      // the type flip from worker-restarted itself (that message carries no
+      // worker type), so it would otherwise treat the later worker-restarted
+      // as "reconnect the embedded-agent socket" -- but the URL now backs a
+      // PTY `agent` worker. Disposing here, ahead of that message, makes the
+      // later worker-restarted a no-op via the `disposed` guard above.
+      //
+      // NEGATIVE CONTROL, by construction: an embedded->embedded restart
+      // (same-definition restart, case c, or a definition switch, case b)
+      // leaves the worker's type as 'embedded-agent', so this type check
+      // naturally does NOT dispose for either of those cases -- the
+      // existing worker-restarted/epoch-bump handling (already implemented)
+      // picks up the new incarnation without any change here.
+      if (msg.session.id !== this.sessionId) return;
+      const worker = msg.session.workers.find((w) => w.id === this.workerId);
+      if (worker && worker.type !== 'embedded-agent') {
+        this.dispose();
+      }
+      return;
+    }
     if (msg.type === 'session-deleted' && msg.sessionId === this.sessionId) {
       this.dispose();
     }
@@ -859,6 +910,7 @@ class EmbeddedAgentController implements EmbeddedAgentInstance {
     this.openAssistantIndexByTurnId.clear();
     this.openThinkingIndexByTurnId.clear();
     this.toolCallIndexByCallId.clear();
+    this.legacyEmptyCallIdQueue = [];
     // Transcript Restore (#1123 / #1205): a fresh load re-derives `restoring`
     // from whatever `restore-info` (re-)arrives afterward -- `restoring` is
     // driven entirely by the next accepted restore-info's `completed` field
@@ -1199,6 +1251,7 @@ class EmbeddedAgentController implements EmbeddedAgentInstance {
           id: event.id,
           text: event.text,
           ...(event.notification !== undefined ? { notification: event.notification } : {}),
+          ...(event.attachments !== undefined ? { attachments: event.attachments } : {}),
         });
         // Confirms THIS client's own sendUserMessage() was accepted -- correlated
         // by clientMessageId, not "any user-message event", so a different
@@ -1219,6 +1272,9 @@ class EmbeddedAgentController implements EmbeddedAgentInstance {
           // `reason` and must stay absent here so the view renders it
           // exactly as it always did.
           ...(event.reason !== undefined ? { reason: event.reason } : {}),
+          // Same absence-preserving treatment for `stderrTail` (#1454):
+          // present only for an 'unexpected' exit with captured output.
+          ...(event.stderrTail !== undefined ? { stderrTail: event.stderrTail } : {}),
         });
         // R1 (#1455): the single set point for `currentExit` -- mirrors the
         // row's own reason handling above (verbatim, absence included).
@@ -1227,6 +1283,7 @@ class EmbeddedAgentController implements EmbeddedAgentInstance {
           currentExit: {
             code: event.code,
             ...(event.reason !== undefined ? { reason: event.reason } : {}),
+            ...(event.stderrTail !== undefined ? { stderrTail: event.stderrTail } : {}),
           },
         });
         // Defensive finalize: the process exited while some turn's thinking
@@ -1304,11 +1361,16 @@ class EmbeddedAgentController implements EmbeddedAgentInstance {
         return true;
       case 'sdk-session-id':
       case 'sdk-resume-failed':
+      case 'model-params-applied':
         // Server-side bookkeeping only, no client UI surface: the worker's
-        // current SDK session id, and (R1) the machine-readable half of a
-        // refused resume. What the USER sees about a failed resume is the
-        // engine's own `turn-error` plus the divergence notice driven by
-        // `restore-info.sdkResumed`, not this event. Not chat rows.
+        // current SDK session id, (R1) the machine-readable half of a
+        // refused resume, and (agent-surface.md Phase 3) the engine's report
+        // on whether a mid-run parameter change reached the live session.
+        // What the USER sees about a failed resume is the engine's own
+        // `turn-error` plus the divergence notice driven by
+        // `restore-info.sdkResumed`; what the user sees about a parameter
+        // change is the effective values arriving on the next
+        // `session-updated`. Not chat rows.
         return false;
       case 'restore-failure-boundary':
         // Transcript Restore, R2 (#1447 stage 4): a reconstruction boundary,
@@ -1426,8 +1488,13 @@ class EmbeddedAgentController implements EmbeddedAgentInstance {
   }
 
   private pushToolCall(turnId: string, callId: string, name: string, args: unknown): void {
+    // Legacy (pre-#1581) rows with callId === '' get a disambiguated
+    // rendering key -- the persisted `callId` field itself stays '' verbatim,
+    // only the React key gets a counter suffix, so two such rows in the same
+    // turn don't collide as React siblings. Non-empty ids are unaffected.
+    const key = callId === '' ? `tool--${this.entryKeyCounter++}` : `tool-${callId}`;
     const entry: EmbeddedAgentChatEntry = {
-      key: `tool-${callId}`,
+      key,
       kind: 'tool-call',
       turnId,
       callId,
@@ -1436,11 +1503,16 @@ class EmbeddedAgentController implements EmbeddedAgentInstance {
       result: null,
     };
     this.snapshot.entries.push(entry);
-    this.toolCallIndexByCallId.set(callId, this.snapshot.entries.length - 1);
+    const idx = this.snapshot.entries.length - 1;
+    if (callId === '') {
+      this.legacyEmptyCallIdQueue.push(idx);
+    } else {
+      this.toolCallIndexByCallId.set(callId, idx);
+    }
   }
 
   private applyToolResult(callId: string, result: EmbeddedAgentToolResult): boolean {
-    const idx = this.toolCallIndexByCallId.get(callId);
+    const idx = callId === '' ? this.nextLegacyEmptyCallIdIndex() : this.toolCallIndexByCallId.get(callId);
     if (idx === undefined) {
       // Defensive: a tool-result without a matching tool-call violates the
       // documented protocol invariant. Log and drop rather than fabricate a
@@ -1452,6 +1524,25 @@ class EmbeddedAgentController implements EmbeddedAgentInstance {
     if (existing.kind !== 'tool-call') return false;
     this.snapshot.entries[idx] = { ...existing, result };
     return true;
+  }
+
+  /**
+   * FIFO pairing for legacy (pre-#1581) persisted rows whose callId is
+   * empty: pair with the OLDEST still-unresolved '' tool-call, mirroring the
+   * loop's sequential, one-call-at-a-time execution order that originally
+   * produced these rows (tool-call, then that same call's tool-result, then
+   * the next tool-call, ...). Skips any index already resolved -- shouldn't
+   * normally happen given that sequential emission, but guards against
+   * re-pairing a finished entry rather than trusting queue order alone.
+   */
+  private nextLegacyEmptyCallIdIndex(): number | undefined {
+    while (this.legacyEmptyCallIdQueue.length > 0) {
+      const idx = this.legacyEmptyCallIdQueue.shift();
+      if (idx === undefined) return undefined;
+      const entry = this.snapshot.entries[idx];
+      if (entry?.kind === 'tool-call' && entry.result === null) return idx;
+    }
+    return undefined;
   }
 
   private handleError(message: string, code?: WorkerErrorCode): void {

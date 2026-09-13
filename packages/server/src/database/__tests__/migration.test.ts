@@ -643,7 +643,7 @@ describe('migration', () => {
       // Verify the schema version is the latest
       const { sql } = await import('kysely');
       const result = await sql<{ user_version: number }>`PRAGMA user_version`.execute(db);
-      expect(result.rows[0]?.user_version).toBe(38);
+      expect(result.rows[0]?.user_version).toBe(40);
 
       // Verify description column exists by inserting and reading a repository with description
       await db
@@ -738,7 +738,7 @@ describe('migration', () => {
       // Verify the schema version is the latest
       const { sql } = await import('kysely');
       const result = await sql<{ user_version: number }>`PRAGMA user_version`.execute(db);
-      expect(result.rows[0]?.user_version).toBe(38);
+      expect(result.rows[0]?.user_version).toBe(40);
 
       // First create a repository (foreign key dependency)
       await db
@@ -1263,6 +1263,123 @@ describe('migration', () => {
     });
   });
 
+  describe('schema migration v40: orchestrator_session_id and issue_trigger_labels columns', () => {
+    it('should add a repository row with orchestrator_session_id set to an existing session id', async () => {
+      const db = await initializeDatabase(':memory:');
+
+      await db
+        .insertInto('sessions')
+        .values({
+          id: 'session-orchestrator',
+          type: 'quick',
+          location_path: '/test/orchestrator-session',
+          created_at: '2024-01-01T00:00:00.000Z',
+          server_pid: null,
+          initial_prompt: null,
+          title: null,
+          repository_id: null,
+          worktree_id: null,
+        })
+        .execute();
+
+      await db
+        .insertInto('repositories')
+        .values({
+          id: 'repo-orchestrator-designated',
+          name: 'Orchestrator Designated Repo',
+          path: '/test/orchestrator-designated',
+          created_at: '2024-01-01T00:00:00.000Z',
+          updated_at: '2024-01-01T00:00:00.000Z',
+          orchestrator_session_id: 'session-orchestrator',
+        })
+        .execute();
+
+      const rows = await db.selectFrom('repositories').selectAll().execute();
+
+      expect(rows).toHaveLength(1);
+      expect(rows[0].orchestrator_session_id).toBe('session-orchestrator');
+    });
+
+    it('should set orchestrator_session_id to null when the referenced session is deleted', async () => {
+      const db = await initializeDatabase(':memory:');
+
+      await db
+        .insertInto('sessions')
+        .values({
+          id: 'session-orchestrator-fk',
+          type: 'quick',
+          location_path: '/test/orchestrator-session-fk',
+          created_at: '2024-01-01T00:00:00.000Z',
+          server_pid: null,
+          initial_prompt: null,
+          title: null,
+          repository_id: null,
+          worktree_id: null,
+        })
+        .execute();
+
+      await db
+        .insertInto('repositories')
+        .values({
+          id: 'repo-orchestrator-fk-test',
+          name: 'Orchestrator FK Test Repo',
+          path: '/test/orchestrator-fk-test',
+          created_at: '2024-01-01T00:00:00.000Z',
+          updated_at: '2024-01-01T00:00:00.000Z',
+          orchestrator_session_id: 'session-orchestrator-fk',
+        })
+        .execute();
+
+      await db.deleteFrom('sessions').where('id', '=', 'session-orchestrator-fk').execute();
+
+      const rows = await db.selectFrom('repositories').selectAll().execute();
+      expect(rows).toHaveLength(1);
+      expect(rows[0].orchestrator_session_id).toBeNull();
+    });
+
+    it('should default orchestrator_session_id and issue_trigger_labels to null when not specified', async () => {
+      const db = await initializeDatabase(':memory:');
+
+      await db
+        .insertInto('repositories')
+        .values({
+          id: 'repo-no-orchestrator-fields',
+          name: 'No Orchestrator Fields Repo',
+          path: '/test/no-orchestrator-fields',
+          created_at: '2024-01-01T00:00:00.000Z',
+          updated_at: '2024-01-01T00:00:00.000Z',
+        })
+        .execute();
+
+      const rows = await db.selectFrom('repositories').selectAll().execute();
+
+      expect(rows).toHaveLength(1);
+      expect(rows[0].orchestrator_session_id).toBeNull();
+      expect(rows[0].issue_trigger_labels).toBeNull();
+    });
+
+    it('should persist a non-null issue_trigger_labels string verbatim', async () => {
+      const db = await initializeDatabase(':memory:');
+
+      await db
+        .insertInto('repositories')
+        .values({
+          id: 'repo-issue-trigger-labels',
+          name: 'Issue Trigger Labels Repo',
+          path: '/test/issue-trigger-labels',
+          created_at: '2024-01-01T00:00:00.000Z',
+          updated_at: '2024-01-01T00:00:00.000Z',
+          issue_trigger_labels: 'bug, needs-triage',
+        })
+        .execute();
+
+      const rows = await db.selectFrom('repositories').selectAll().execute();
+
+      expect(rows).toHaveLength(1);
+      expect(rows[0].issue_trigger_labels).toBe('bug, needs-triage');
+    });
+  });
+
   describe('schema migration v12: paused_at column', () => {
     it('should add paused_at column to sessions table', async () => {
       const db = await initializeDatabase(':memory:');
@@ -1439,7 +1556,7 @@ describe('migration', () => {
 
       const { sql } = await import('kysely');
       const result = await sql<{ user_version: number }>`PRAGMA user_version`.execute(db);
-      expect(result.rows[0]?.user_version).toBe(38);
+      expect(result.rows[0]?.user_version).toBe(40);
     });
   });
 
@@ -1477,7 +1594,7 @@ describe('migration', () => {
 
       const { sql } = await import('kysely');
       const result = await sql<{ user_version: number }>`PRAGMA user_version`.execute(db);
-      expect(result.rows[0]?.user_version).toBe(38);
+      expect(result.rows[0]?.user_version).toBe(40);
     });
   });
 

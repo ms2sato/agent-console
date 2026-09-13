@@ -31,12 +31,14 @@ import {
   NdjsonLineSplitter,
   EmbeddedAgentEventSchema,
   EFFORT_LEVELS,
+  matchSlashCommand,
   type EmbeddedAgentDefinition,
   type EmbeddedAgentCommand,
   type EmbeddedAgentServerEvent,
   type EmbeddedAgentServerNotification,
   type EmbeddedAgentRestoredMessage,
   type EmbeddedAgentRestoredUsage,
+  type EmbeddedAgentAttachment,
   type AgentActivityState,
   type ExitReason,
   type SdkResumeFailureReason,
@@ -60,6 +62,7 @@ import {
   type PtyNotificationParams,
 } from '../lib/pty-notification.js';
 import { createLogger } from '../lib/logger.js';
+import { resolveUploadDir } from '../lib/message-upload-dir.js';
 import { serverConfig } from '../lib/server-config.js';
 import * as path from 'node:path';
 import { existsSync } from 'node:fs';
@@ -131,6 +134,31 @@ export function resolveEmbeddedAgentEntryPath(
   }
 }
 
+/**
+ * Resolves the entry path {@link EmbeddedAgentWorkerService}'s constructor
+ * should use, applying the same "explicit override wins outright" precedence
+ * `EMBEDDED_AGENT_BUN_PATH` uses for the bun binary: an explicit deps-level
+ * test seam (`depsEntryPath`) wins unconditionally; failing that, a
+ * configured `EMBEDDED_AGENT_ENTRY_PATH` (when set) is used VERBATIM,
+ * WITHOUT ever calling `resolveFn` -- reachability at the deployment target
+ * is the deploy script's concern, not this function's. Only when neither is
+ * set does the 3-tier resolver run.
+ *
+ * Extracted as a standalone, dependency-injected function (rather than
+ * reading `serverConfig` directly inline in the constructor) so this
+ * precedence is unit-testable without the module-load-time
+ * env-var-vs-import-order hazard documented in
+ * `scripts/smoke/check-embedded-agent-elevation.ts`'s header comment for a
+ * sibling case (serverConfig fields are computed once, at import time).
+ */
+export function resolveConstructorEntryPath(
+  depsEntryPath: string | undefined,
+  configuredEntryPath: string | undefined,
+  resolveFn: (baseDir?: string) => EmbeddedAgentEntryResolution = resolveEmbeddedAgentEntryPath,
+): string {
+  return depsEntryPath ?? configuredEntryPath ?? resolveFn().path;
+}
+
 /** Protocol-violation guard: a single NDJSON line larger than this is a crash. */
 const MAX_LINE_BYTES = 1024 * 1024;
 /** Consecutive parse failures tolerated before the loop is treated as corrupt. */
@@ -142,38 +170,70 @@ const DEFAULT_SHUTDOWN_GRACE_MS = 3000;
 /** Grace after SIGTERM before escalating to SIGKILL. */
 const DEFAULT_SIGTERM_TIMEOUT_MS = 5000;
 /**
- * The event `type` literals this server build recognizes (the loop-authored
- * `EmbeddedAgentEvent` union). A parseable line whose `type` is NOT in this set
- * is treated as a forward-compat version-skew event (skip + log, no strike),
- * distinct from a recognized type that fails its own schema shape (genuine
- * corruption → counts toward the strike counter). Kept in sync with
- * `EmbeddedAgentEvent` in packages/shared.
+ * The gate on `handleLoopLine`: a parseable line whose `type` is NOT in this
+ * set is treated as a forward-compat version-skew event (skip + log, no
+ * strike), distinct from a recognized type that then fails its own schema
+ * shape, which is genuine corruption and counts toward the strike counter.
+ *
+ * DERIVED, at module load, from `EmbeddedAgentEventSchema`'s union options --
+ * the union the SUBPROCESS writes on stdout, which is the only thing this gate
+ * ever reads. It therefore cannot drift from the shared contract: there is no
+ * second list to fall behind. `EmbeddedAgentServerEvent` is a different union,
+ * written server-side, and never travels through here, so nothing is held out
+ * either. (`context-handoff` is an ordinary member: no engine emits it any
+ * more, and persisted streams written before the compaction swap still carry
+ * it, which is why the shared union kept it.)
+ *
+ * A hand-written list stood here before, under a prose note claiming it was
+ * kept aligned with the shared union. It was not, for four commits:
+ * `model-params-applied` reached the shared union and both engines without
+ * reaching this list, so every occurrence was dropped before schema-parse and
+ * before persistence. The drop is silent by design -- that is the
+ * forward-compat arm working as specified -- so no log, no strike, and no test
+ * could surface it.
+ *
+ * `.options`, `.entries` and `.literal` are all public valibot API; the map
+ * below needs no cast and reaches into no internals.
+ *
+ * @internal Exported so the sibling test can pin the derivation against
+ * vacuity -- an empty or wrong-union result would make this gate drop
+ * everything, which is the failure mode that replaces drift once drift is
+ * impossible. Not part of the service's API.
  */
-const KNOWN_EVENT_TYPES = new Set<string>([
-  'ready',
-  'state',
-  'assistant-delta',
-  'assistant-thinking-delta',
-  'assistant-message',
-  'tool-call',
-  'tool-result',
-  'turn-error',
-  'fatal',
-  'context-usage',
-  'context-compacted',
-  // LEGACY: no engine emits this any more, but a persisted stream written
-  // before the compaction swap replays through this same gate. Removing it
-  // would make every historical row fail the unknown-type check.
-  'context-handoff',
-  'sdk-session-id',
-  // Transcript Restore, R1. `turn-interrupted` is deliberately absent: this
-  // gate only sees lines the subprocess writes on stdout, and that event is
-  // server-authored -- same reason `user-message` and `exited` are not
-  // listed either.
-  'sdk-resume-failed',
-]);
+export const KNOWN_EVENT_TYPES: ReadonlySet<string> = new Set(
+  EmbeddedAgentEventSchema.options.map((option) => option.entries.type.literal),
+);
 /** Cap on the per-chunk stderr text forwarded to the debug logger. */
 const STDERR_LOG_CAP = 2048;
+/**
+ * Cap on the retained stderr TAIL attached to an unexpected `exited` row, in
+ * UTF-16 code units (String.prototype.slice's unit) -- NOT bytes, and NOT an
+ * overall wire-size bound. An unescaped UTF-8 encoding of a non-ASCII code
+ * unit can take up to 3 bytes, but that "up to 3x" figure describes ONLY raw
+ * UTF-8 expansion -- it is not the JSON-safe bound. JSON.stringify escapes
+ * control code units and lone surrogates as six-ASCII-byte `\uXXXX`
+ * sequences, which can inflate the serialized size well past 3x; there is no
+ * fixed multiplier for the actual wire size once JSON escaping is applied.
+ * Distinct from STDERR_LOG_CAP above: that one bounds each per-chunk debug
+ * log line; this one bounds the cumulative tail kept for the whole
+ * incarnation's lifetime, trimmed from the front as new chunks arrive.
+ *
+ * A trim landing inside a surrogate pair yields a lone surrogate in the
+ * retained string. This is an accepted consequence, not a bug: the cap is a
+ * bound, not a byte-accurate contract. JSON.stringify escapes a lone
+ * surrogate (`\uXXXX`) rather than throwing, and the schema accepts the
+ * resulting string, so this cannot break the persisted row.
+ */
+const STDERR_TAIL_CAP = 2048;
+/**
+ * R3, mid-turn notification queue: cap on `Runtime.pendingNotifications`
+ * per worker. A notification that arrives while the queue is already at
+ * this size drops the OLDEST entry (FIFO) to make room for the new one,
+ * logging a warning naming the dropped entry's kind -- bounds memory for a
+ * pathological producer (e.g. a short-interval timer whose target worker
+ * never goes idle) without silently blocking new notifications.
+ */
+const MAX_PENDING_NOTIFICATIONS = 32;
 
 /**
  * The `claude-sdk` engine's `EmbeddedAgentCommand` arm types its `provider.effort`
@@ -247,13 +307,25 @@ export class EmbeddedMessageDeliveryError extends Error {
 }
 
 /**
- * Result of {@link EmbeddedAgentWorkerService.sendUserMessage}. `code` is the
+ * Result of {@link EmbeddedAgentWorkerService.sendUserMessage} /
+ * {@link EmbeddedAgentWorkerService.sendSystemNotification}. `code` is the
  * machine-checkable discriminant callers should switch on; `error` is the
  * human-readable string for logging only (its exact wording is NOT a
  * contract -- callers must not string-match it).
+ *
+ * The `{ ok: true; queued: true }` member (R3, mid-turn notification queue)
+ * is a distinct case from `{ ok: true; id: string }` because a queued
+ * notification has not been delivered as a turn yet -- there is no `id` to
+ * report. Only `sendSystemNotification` can produce it; `sendUserMessage`
+ * (human messages) never sets `queueOnBusy`, so it can only ever resolve to
+ * the `id` member or a failure, exactly as before this type widened. This is
+ * a TYPE-ONLY change -- `SendUserMessageResult` is a server-internal return
+ * type, never serialized over the wire (it is not imported by
+ * packages/shared or any schema file).
  */
 export type SendUserMessageResult =
   | { ok: true; id: string }
+  | { ok: true; queued: true }
   | { ok: false; code: 'NOT_ACTIVATED' | 'TURN_IN_PROGRESS' | 'WRITE_FAILED'; error: string };
 
 export interface EmbeddedAgentWorkerServiceDeps {
@@ -390,6 +462,50 @@ export function isEvictableEngine(engine: EmbeddedAgentDefinition['engine']): bo
   return engine === 'claude-sdk' || engine === 'openai-api';
 }
 
+/**
+ * Slash commands, `console`-handled arm (#1572): SINGLE WRITER of the
+ * mapping from a `console`-handled slash-command name (see
+ * `EMBEDDED_AGENT_SLASH_COMMANDS` in `@agent-console/shared`) to the factory
+ * that builds the wire command sent to the subprocess in its place.
+ *
+ * Every `console`-handled entry across the WHOLE table must have a handler
+ * here, for every engine -- mechanically pinned by
+ * `__tests__/embedded-agent-worker-service.test.ts`: this map's keys must
+ * exactly equal the flattened set of `console`-handled command names, so
+ * adding a table entry with no handler (or a handler with no table entry)
+ * fails that test.
+ *
+ * @internal Exported for testing (the mechanical containment pin above).
+ */
+export const CONSOLE_SLASH_COMMAND_HANDLERS: Record<string, () => EmbeddedAgentCommand> = {
+  '/compact': () => ({ v: 1, type: 'compact' }),
+};
+
+/**
+ * Slash commands (#1572): resolves a `console`-handled command override for
+ * the given engine/text, or `null` when `text` does not match one --
+ * TABLE-DRIVEN against `EMBEDDED_AGENT_SLASH_COMMANDS`, deliberately never
+ * hardcoded to a literal command name, so the mechanical containment test
+ * on {@link CONSOLE_SLASH_COMMAND_HANDLERS} stays meaningful. Exported for
+ * that same test; not otherwise part of this service's public surface.
+ *
+ * Matching itself delegates to the shared `matchSlashCommand` (first
+ * whitespace-delimited token of the trimmed text, per that table's "no
+ * argument grammar" contract -- Architect ruling, #1584) rather than
+ * re-implementing it here, so this stays in lockstep with the client's own
+ * gate in `MessagePanel.tsx` -- see `embedded-agent-slash-commands.ts`'s
+ * SINGLE WRITER doc comment.
+ */
+export function resolveConsoleSlashCommandOverride(
+  engine: EmbeddedAgentDefinition['engine'],
+  text: string,
+): EmbeddedAgentCommand | null {
+  const matched = matchSlashCommand(engine, text);
+  if (!matched || matched.handledBy !== 'console') return null;
+  const handler = CONSOLE_SLASH_COMMAND_HANDLERS[matched.name];
+  return handler ? handler() : null;
+}
+
 /** Immutable references shared by the readers, the exit observer, and the command writers. */
 interface StreamContext {
   sessionId: string;
@@ -462,6 +578,27 @@ interface Runtime {
   evicting: boolean;
   /** Idle eviction applies to this incarnation's engine -- see {@link isEvictableEngine}. */
   evictable: boolean;
+  /**
+   * R3, mid-turn notification queue: system notifications (timers,
+   * conditional wakeups, inter-session messages) that arrived while
+   * `turnActive` was true, in FIFO arrival order. Delivered ONE per
+   * `state: idle` event, as an ordinary system-notification turn -- never
+   * merged into the turn that was active when they arrived. Capped at
+   * {@link MAX_PENDING_NOTIFICATIONS}; overflow drops the oldest entry.
+   * Cleared (with a warning naming the dropped kinds) on exit -- see
+   * {@link EmbeddedAgentWorkerService.handleExit}. Human `sendUserMessage`
+   * never enqueues here: a busy worker still rejects a human message with
+   * `TURN_IN_PROGRESS`, unchanged from before this queue existed.
+   */
+  pendingNotifications: Array<{ params: PtyNotificationParams; opts: { replyToSessionId?: string } }>;
+  /**
+   * Last STDERR_TAIL_CAP characters (UTF-16 code units, not bytes and not an
+   * overall wire-size bound -- JSON-escaping can inflate the serialized size
+   * past a simple UTF-8 multiplier) of this incarnation's stderr, trimmed
+   * from the front. Attached to the `exited` row only when the exit is
+   * `'unexpected'` and this is non-empty.
+   */
+  stderrTail: string;
 }
 
 // `RestoreInfo` moved to worker-types.ts (#1449 CI fix): defining it here and
@@ -565,7 +702,7 @@ export class EmbeddedAgentWorkerService {
   constructor(private readonly deps: EmbeddedAgentWorkerServiceDeps) {
     this.spawnAsUserFn = deps.spawnAsUserFn ?? spawnAsUser;
     this.loadProviderKeyFn = deps.loadProviderKeyFn ?? loadProviderKey;
-    this.entryPath = deps.entryPath ?? resolveEmbeddedAgentEntryPath().path;
+    this.entryPath = resolveConstructorEntryPath(deps.entryPath, serverConfig.EMBEDDED_AGENT_ENTRY_PATH);
     this.bunPath = deps.embeddedAgentBunPath ?? serverConfig.EMBEDDED_AGENT_BUN_PATH;
     this.shutdownGraceMs = deps.shutdownGraceMs ?? DEFAULT_SHUTDOWN_GRACE_MS;
     this.sigtermTimeoutMs = deps.sigtermTimeoutMs ?? DEFAULT_SIGTERM_TIMEOUT_MS;
@@ -749,6 +886,13 @@ export class EmbeddedAgentWorkerService {
       // instead of by re-estimating the reconstructed text (which omits the
       // published tool schemas and so is systematically low).
       let restoredUsage: EmbeddedAgentRestoredUsage | undefined;
+      // Phase B (#1343 R4): the scoped-rule names the restored window's
+      // `tool-result` events already carry as ACTIVATED (structurally --
+      // see `RestoreOutcome.activatedRuleNames`'s doc comment). Forwarded to
+      // the subprocess via `init.activatedRuleNames` (openai-api arm only,
+      // same rationale as `restoredUsage` above) so main.ts never has to
+      // parse it back out of restored text.
+      let activatedRuleNames: string[] | undefined;
       let restoreInfo: RestoreInfo | null = null;
       // Transcript Restore, R1: the turn (if any) that the previous
       // incarnation left unanswered. Detected during the same replay that
@@ -760,6 +904,7 @@ export class EmbeddedAgentWorkerService {
         workerId,
         ...(session.type === 'worktree' ? { repositoryId: session.repositoryId } : {}),
         cwd: session.locationPath,
+        attachmentRoots: [resolveUploadDir(), resolver.getMessagesDir()],
       };
       const everActivated = await this.deps.workerOutputFileManager.hasEverBeenActivated(sessionId, workerId, resolver);
       /**
@@ -823,6 +968,7 @@ export class EmbeddedAgentWorkerService {
           const outcome = reconstructConversation(assembled.data, systemPrompt, assembled.stoppedAt);
           restoredConversation = outcome.conversation as EmbeddedAgentRestoredMessage[];
           restoredUsage = outcome.usageSeed;
+          activatedRuleNames = outcome.activatedRuleNames.length > 0 ? outcome.activatedRuleNames : undefined;
           // `completed: false` -- the new incarnation's `ready` event hasn't
           // fired yet at this point in runActivation; handleLoopLine flips it
           // to true (and re-pushes) once `ready` arrives (#1205).
@@ -1023,6 +1169,10 @@ export class EmbeddedAgentWorkerService {
                 ...(resolvedModelParams.reasoningEffort !== null
                   ? { reasoningEffort: resolvedModelParams.reasoningEffort }
                   : {}),
+                // Straight pass-through of the definition's own declared
+                // capability flag -- no per-worker override concept exists
+                // for this field (unlike reasoningEffort).
+                supportsImages: definition.provider.supportsImages,
               },
               // The restore-boundary seed, this arm only: `claude-sdk` carries its own
               // context state through the SDK resume and computes no ratio,
@@ -1030,6 +1180,13 @@ export class EmbeddedAgentWorkerService {
               // the restored log held no reading, or when there was no
               // restore at all.
               ...(restoredUsage !== undefined ? { restoredUsage } : {}),
+              // Phase B (#1343 R4), this arm only -- same rationale as
+              // `restoredUsage` immediately above: `claude-sdk` resumes its
+              // own session state rather than being handed a
+              // reconstruction, so seeded rule names are not representable
+              // there. Absent when there was no restore, or the restored
+              // window carried no `activatedRules`.
+              ...(activatedRuleNames !== undefined ? { activatedRuleNames } : {}),
             }
           : {
               ...initCommandShared,
@@ -1083,6 +1240,8 @@ export class EmbeddedAgentWorkerService {
         ready: false,
         evicting: false,
         evictable: isEvictableEngine(definition.engine),
+        pendingNotifications: [],
+        stderrTail: '',
       };
       this.runtimes.set(workerId, runtime);
 
@@ -1100,7 +1259,7 @@ export class EmbeddedAgentWorkerService {
         this.readStdout(runtime, subprocess).catch((err) => {
           logger.warn({ sessionId, workerId, err }, 'Embedded-agent stdout reader error');
         }),
-        this.readStderr(ctx, subprocess).catch((err) => {
+        this.readStderr(runtime, subprocess).catch((err) => {
           logger.warn({ sessionId, workerId, err }, 'Embedded-agent stderr reader error');
         }),
       ]).then(() => {});
@@ -1159,8 +1318,63 @@ export class EmbeddedAgentWorkerService {
     workerId: string,
     text: string,
     clientMessageId?: string,
+    attachments?: EmbeddedAgentAttachment[],
   ): Promise<SendUserMessageResult> {
-    return this.deliverUserTurn(sessionId, workerId, text, { clientMessageId });
+    // Slash commands (#1572): only user-typed composer input reaches this
+    // check -- sendSystemNotification (below) deliberately never calls it,
+    // since an internal system notification is never a slash command the
+    // console should intercept.
+    const commandOverride = this.resolveConsoleSlashCommand(sessionId, workerId, text);
+    return this.deliverUserTurn(sessionId, workerId, text, {
+      clientMessageId,
+      attachments,
+      ...(commandOverride !== null ? { commandOverride } : {}),
+    });
+  }
+
+  /**
+   * Slash commands (#1572): resolves the worker's current engine (same
+   * definition-lookup path `activate()` uses -- `worker.embeddedAgentId` ->
+   * `getEmbeddedAgent`) and delegates to the table-driven pure resolver.
+   * Returns `null` whenever the worker/definition cannot be resolved here;
+   * `deliverUserTurn`'s own admission check is the authoritative place that
+   * rejects an undeliverable message, so this method fails open into "not a
+   * console command" rather than duplicating that check.
+   */
+  private resolveConsoleSlashCommand(
+    sessionId: string,
+    workerId: string,
+    text: string,
+  ): EmbeddedAgentCommand | null {
+    const session = this.deps.getSession(sessionId);
+    const worker = session?.workers.get(workerId);
+    if (!worker || worker.type !== 'embedded-agent') return null;
+    const definition = this.deps.getEmbeddedAgent(worker.embeddedAgentId);
+    if (!definition) return null;
+    return resolveConsoleSlashCommandOverride(definition.engine, text);
+  }
+
+  /**
+   * Compose a system notification's stdin text and persisted-event marker
+   * from its structured params -- the pure part of what `sendSystemNotification`
+   * does, factored out so the mid-turn queue flush (R3, see
+   * {@link handleLoopLine}'s `state: 'idle'` arm) can recompose the SAME
+   * template from a queued entry's stored `params`/`opts` at flush time,
+   * rather than from a stale pre-composed string captured at enqueue time
+   * (which would carry a stale `buildPtyNotificationText` timestamp).
+   */
+  private composeSystemNotificationTurn(
+    params: PtyNotificationParams,
+    opts: { replyToSessionId?: string },
+  ): { text: string; notification: EmbeddedAgentServerNotification } {
+    const text =
+      buildPtyNotificationText(params) +
+      (opts.replyToSessionId !== undefined ? buildReplyInstructions(opts.replyToSessionId) : '');
+    const summary = extractNotificationSummary(params);
+    return {
+      text,
+      notification: { kind: params.kind, ...(summary !== undefined ? { summary } : {}) },
+    };
   }
 
   /**
@@ -1172,6 +1386,13 @@ export class EmbeddedAgentWorkerService {
    * buildReplyInstructions when `opts.replyToSessionId` is set) happens
    * internally; callers never hand over a pre-composed string. See
    * SessionManager.sendEmbeddedAgentSystemNotification.
+   *
+   * R3, mid-turn notification queue: unlike `sendUserMessage`, a busy worker
+   * does NOT reject this call with TURN_IN_PROGRESS -- `deliverUserTurn` is
+   * told (via `queueOnBusy`) to park it on the worker's pending-notification
+   * queue instead, and this resolves `{ ok: true, queued: true }`. The
+   * queued entry is delivered as the next turn on the worker's next
+   * `state: 'idle'` event (see {@link handleLoopLine}).
    */
   async sendSystemNotification(
     sessionId: string,
@@ -1179,13 +1400,80 @@ export class EmbeddedAgentWorkerService {
     params: PtyNotificationParams,
     opts: { replyToSessionId?: string } = {},
   ): Promise<SendUserMessageResult> {
-    const text =
-      buildPtyNotificationText(params) +
-      (opts.replyToSessionId !== undefined ? buildReplyInstructions(opts.replyToSessionId) : '');
-    const summary = extractNotificationSummary(params);
+    const { text, notification } = this.composeSystemNotificationTurn(params, opts);
     return this.deliverUserTurn(sessionId, workerId, text, {
-      notification: { kind: params.kind, ...(summary !== undefined ? { summary } : {}) },
+      notification,
+      queueOnBusy: { params, replyToSessionId: opts.replyToSessionId },
     });
+  }
+
+  /**
+   * R3: park a notification on the worker's pending queue, dropping the
+   * OLDEST entry (with a warning naming its kind) when already at
+   * {@link MAX_PENDING_NOTIFICATIONS}. A plain synchronous helper (no
+   * `await`) so callers can invoke it from within a synchronous
+   * admission section without breaking that section's check-and-set
+   * guarantee.
+   */
+  private enqueuePendingNotification(
+    runtime: Runtime,
+    workerId: string,
+    params: PtyNotificationParams,
+    opts: { replyToSessionId?: string },
+  ): void {
+    if (runtime.pendingNotifications.length >= MAX_PENDING_NOTIFICATIONS) {
+      const dropped = runtime.pendingNotifications.shift();
+      if (dropped) {
+        logger.warn(
+          { workerId, droppedKind: dropped.params.kind },
+          'Notification queue overflow, dropping oldest',
+        );
+      }
+    }
+    runtime.pendingNotifications.push({ params, opts });
+  }
+
+  /**
+   * R3: deliver the next queued notification (if any) as a fresh turn.
+   * Called right after `runtime.turnActive` is cleared on `state: 'idle'` --
+   * see {@link handleLoopLine}. Delivers at most ONE entry per call; the
+   * next queued entry (if any) waits for the NEXT idle event.
+   *
+   * Defensive re-queue: `deliverUserTurn` should always admit this call
+   * (turnActive was just cleared, synchronously, with nothing awaited in
+   * between), but if it somehow still finds the worker busy, the entry is
+   * put back at the head rather than lost.
+   *
+   * No self-deadlock: the `await this.deliverUserTurn(...)` below only
+   * writes the composed notification to the subprocess's stdin and appends
+   * the persisted event -- it never reads or waits on the subprocess's
+   * stdout, so `handleLoopLine` awaiting this method from within the
+   * stdout-line reading loop is never blocked on more stdout arriving.
+   */
+  private async flushPendingNotification(
+    runtime: Runtime,
+    sessionId: string,
+    workerId: string,
+  ): Promise<void> {
+    const next = runtime.pendingNotifications.shift();
+    if (!next) return;
+
+    const { text, notification } = this.composeSystemNotificationTurn(next.params, next.opts);
+    const result = await this.deliverUserTurn(sessionId, workerId, text, { notification });
+    if (result.ok) return;
+
+    if (result.code === 'TURN_IN_PROGRESS') {
+      logger.warn(
+        { sessionId, workerId, kind: next.params.kind },
+        'Queued notification re-delivery found the worker busy; re-queuing at head',
+      );
+      runtime.pendingNotifications.unshift(next);
+      return;
+    }
+    logger.warn(
+      { sessionId, workerId, kind: next.params.kind, code: result.code, error: result.error },
+      'Failed to deliver queued notification',
+    );
   }
 
   /**
@@ -1199,7 +1487,28 @@ export class EmbeddedAgentWorkerService {
     sessionId: string,
     workerId: string,
     text: string,
-    opts: { clientMessageId?: string; notification?: EmbeddedAgentServerNotification } = {},
+    opts: {
+      clientMessageId?: string;
+      notification?: EmbeddedAgentServerNotification;
+      attachments?: EmbeddedAgentAttachment[];
+      /**
+       * Slash commands (#1572): when set, this is the WIRE command sent to
+       * stdin in place of the ordinary `{ type: 'user-message', ... }`
+       * shape -- the PERSISTED `event` below is unaffected and always shows
+       * `text` exactly as typed, matching how an `engine`-handled slash
+       * command (e.g. claude-sdk's own `/compact`) already looks in the
+       * transcript. See `resolveConsoleSlashCommand`.
+       */
+      commandOverride?: EmbeddedAgentCommand;
+      /**
+       * R3: set ONLY by `sendSystemNotification`. When admission finds
+       * `runtime.turnActive` true, park these on the queue instead of
+       * returning TURN_IN_PROGRESS. Human `sendUserMessage` never sets
+       * this, so a busy worker still rejects a human message exactly as
+       * before this queue existed.
+       */
+      queueOnBusy?: { params: PtyNotificationParams; replyToSessionId?: string };
+    } = {},
   ): Promise<SendUserMessageResult> {
     const failure = await this.ensureDeliverable(sessionId, workerId);
     if (failure !== null) return failure;
@@ -1221,6 +1530,12 @@ export class EmbeddedAgentWorkerService {
     }
     const stdin = worker.stdin;
     if (runtime.turnActive) {
+      if (opts.queueOnBusy) {
+        this.enqueuePendingNotification(runtime, workerId, opts.queueOnBusy.params, {
+          replyToSessionId: opts.queueOnBusy.replyToSessionId,
+        });
+        return { ok: true, queued: true };
+      }
       return { ok: false, code: 'TURN_IN_PROGRESS', error: 'turn in progress' };
     }
     runtime.turnActive = true;
@@ -1236,7 +1551,29 @@ export class EmbeddedAgentWorkerService {
     // persisted/broadcast event carries the client's correlation id or the
     // notification marker. Do NOT reuse one object for both -- see
     // docs/design/embedded-agent-worker.md.
-    const command: EmbeddedAgentCommand = { v: 1, type: 'user-message', id, text };
+    // Slash commands (#1572) x attachments (#1587): when `commandOverride` is
+    // set, the WIRE command replaces the whole `user-message` shape with a
+    // payload-free one (e.g. `{type:'compact'}`) -- no attachments were
+    // delivered to the engine. The PERSISTED `event` must mirror that: #1587
+    // documents `attachments` on a persisted user-message row as "mirrors the
+    // originating command's attachments", and restore re-resolves every
+    // persisted row's attachments from that field -- so a `/compact` sent
+    // alongside an attachment would otherwise seed a restored conversation
+    // with an image the live turn never actually delivered. Scoping
+    // `hasAttachments` to `commandOverride === undefined` keeps both the
+    // command (already correct, since `commandOverride` bypasses this
+    // entirely) and the event honest about what was actually sent.
+    const hasAttachments =
+      opts.commandOverride === undefined && opts.attachments !== undefined && opts.attachments.length > 0;
+    const command: EmbeddedAgentCommand =
+      opts.commandOverride ??
+      {
+        v: 1,
+        type: 'user-message',
+        id,
+        text,
+        ...(hasAttachments ? { attachments: opts.attachments } : {}),
+      };
     const event: EmbeddedAgentServerEvent = {
       v: 1,
       type: 'user-message',
@@ -1244,6 +1581,7 @@ export class EmbeddedAgentWorkerService {
       text,
       ...(opts.clientMessageId !== undefined ? { clientMessageId: opts.clientMessageId } : {}),
       ...(opts.notification !== undefined ? { notification: opts.notification } : {}),
+      ...(hasAttachments ? { attachments: opts.attachments } : {}),
     };
     // Forward BEFORE appending: both calls are synchronous (no await between
     // them, nothing else can interleave), so ordering doesn't affect replay
@@ -1422,6 +1760,53 @@ export class EmbeddedAgentWorkerService {
   }
 
   /**
+   * agent-surface.md Phase 3: forward a change to the worker's model /
+   * reasoning-effort / context-window override to a RUNNING subprocess, so
+   * the change applies without waiting for the next activation.
+   *
+   * Takes the RESOLVED EFFECTIVE TRIPLE, never the caller's patch: the
+   * command is full state every time (see `EmbeddedAgentCommand`'s
+   * `set-model-params` doc comment), so the subprocess never merges partial
+   * state and never has to know the precedence rules that produced these
+   * values.
+   *
+   * Deliberately NOT gated on `turnActive`, for the same reason
+   * `forwardAutoCompaction` above is not: this is a durable configuration
+   * write that has already been persisted, and each engine decides for
+   * itself when the new values take hold. Gating would silently drop the
+   * change for the duration of a long turn -- exactly when a user is most
+   * likely to reach for the control.
+   *
+   * Returns `false` when there is no live subprocess to tell. That is not a
+   * failure: the durable value is already persisted by the caller and will be
+   * read at the next activation. The caller must not surface it as an error.
+   */
+  applyModelParams(
+    workerId: string,
+    params: { model: string; reasoningEffort: string | null; contextWindowTokens: number | null },
+  ): boolean {
+    const runtime = this.runtimes.get(workerId);
+    const stdin = runtime?.ctx.worker.stdin;
+    if (!runtime || !stdin) return false;
+    try {
+      this.writeCommand(stdin, {
+        v: 1,
+        type: 'set-model-params',
+        model: params.model,
+        reasoningEffort: params.reasoningEffort,
+        contextWindowTokens: params.contextWindowTokens,
+      });
+      return true;
+    } catch (err) {
+      logger.warn(
+        { workerId, err },
+        'Failed to forward model parameters to embedded-agent stdin',
+      );
+      return false;
+    }
+  }
+
+  /**
    * Deliver the session's initialPrompt as this embedded worker's first user
    * message, exactly once, right after the loop reports readiness. Reuses
    * the normal sendUserMessage path (turn admission, transcript append, WS
@@ -1594,7 +1979,8 @@ export class EmbeddedAgentWorkerService {
     }
   }
 
-  private async readStderr(ctx: StreamContext, subprocess: PipedSubprocess): Promise<void> {
+  private async readStderr(runtime: Runtime, subprocess: PipedSubprocess): Promise<void> {
+    const { ctx } = runtime;
     const decoder = new TextDecoder();
     const reader = subprocess.stderr.getReader();
     try {
@@ -1603,6 +1989,7 @@ export class EmbeddedAgentWorkerService {
         if (done) break;
         const text = decoder.decode(value, { stream: true });
         if (!text) continue;
+        runtime.stderrTail = (runtime.stderrTail + text).slice(-STDERR_TAIL_CAP);
         logger.debug(
           { sessionId: ctx.sessionId, workerId: ctx.workerId, stderr: text.slice(0, STDERR_LOG_CAP) },
           'Embedded-agent stderr',
@@ -1665,6 +2052,10 @@ export class EmbeddedAgentWorkerService {
         // the loop is alive; what the bound guards against is a cause so
         // persistent that no turn completes at all.
         this.fatalChainReplacementSpent.delete(ctx.workerId);
+        // R3, mid-turn notification queue: deliver ONE queued notification
+        // (if any) as the next turn now that this one has ended. Sets
+        // `turnActive` back to true when it delivers.
+        await this.flushPendingNotification(runtime, ctx.sessionId, ctx.workerId);
       }
       // Idle eviction: any state report is the worker being alive, so the
       // countdown restarts on all of them -- not only on `idle`. A long
@@ -2080,11 +2471,26 @@ export class EmbeddedAgentWorkerService {
         : 'unexpected';
 
     // Append the server-authored exited row so the on-disk log is complete.
-    this.appendEvent(ctx, { v: 1, type: 'exited', code: code ?? null, reason });
+    this.appendEvent(ctx, {
+      v: 1,
+      type: 'exited',
+      code: code ?? null,
+      reason,
+      ...(reason === 'unexpected' && runtime.stderrTail !== '' ? { stderrTail: runtime.stderrTail } : {}),
+    });
 
     // Idle eviction: there is no subprocess left to drop, so any countdown
     // still in flight for this worker is meaningless.
     this.idleEviction.clear(workerId);
+
+    // R3, mid-turn notification queue: there is no subprocess left to
+    // deliver into, so anything still queued would otherwise be silently
+    // stranded on a runtime that's about to be dropped.
+    if (runtime.pendingNotifications.length > 0) {
+      const droppedKinds = runtime.pendingNotifications.map((n) => n.params.kind);
+      logger.warn({ workerId, droppedKinds }, 'Clearing pending notification queue on exit');
+      runtime.pendingNotifications = [];
+    }
 
     this.endStdinSafely(worker.stdin);
     worker.subprocess = null;

@@ -4,8 +4,10 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { Glob } from 'bun';
 import {
   KNOWN_VIOLATIONS,
+  EXCLUDED_FILES,
   findViolationsInSource,
   findDefaultFiles,
   formatViolation,
@@ -296,6 +298,14 @@ describe('isExcludedFile', () => {
     expect(isExcludedFile('packages/server/src/__tests__/bar.ts')).toBe(true);
   });
 
+  // CodeRabbit MINOR (PR review): the includes('/__tests__/') check requires
+  // a leading `/`, so a root-level `__tests__/foo.ts` (no parent directory)
+  // was not excluded. Reach: reverting the startsWith('__tests__/') branch
+  // makes this fail.
+  it('excludes a root-level __tests__/ file with no leading slash', () => {
+    expect(isExcludedFile('__tests__/bar.ts')).toBe(true);
+  });
+
   it('excludes .test.* files', () => {
     expect(isExcludedFile('packages/server/src/foo.test.ts')).toBe(true);
     expect(isExcludedFile('packages/server/src/foo.test.tsx')).toBe(true);
@@ -311,6 +321,27 @@ describe('isExcludedFile', () => {
     expect(isExcludedFile('packages/server/src/foo.ts')).toBe(false);
     expect(isExcludedFile('packages/client/src/components/Bar.tsx')).toBe(false);
     expect(isExcludedFile('packages/shared/src/types.ts')).toBe(false);
+  });
+
+  it('excludes everything under scripts/smoke/ as a directory-proxy for verification provenance', () => {
+    expect(isExcludedFile('scripts/smoke/check-thing.ts')).toBe(true);
+    expect(isExcludedFile('scripts/smoke/probe-other.ts')).toBe(true);
+    expect(isExcludedFile('scripts/smoke/__tests__/import-safety.test.ts')).toBe(true);
+  });
+
+  it('does NOT exclude other scripts/ files just for sharing a prefix with scripts/smoke/', () => {
+    // scripts/smoke-utils.mjs is NOT inside scripts/smoke/ -- the exclusion
+    // is a directory prefix (`scripts/smoke/`), not a bare string prefix
+    // (`scripts/smoke`), which would over-match a sibling name like this.
+    expect(isExcludedFile('scripts/smoke-utils.mjs')).toBe(false);
+    expect(isExcludedFile('scripts/install-hooks.mjs')).toBe(false);
+  });
+
+  it('excludes EXCLUDED_FILES entries by exact name, even outside scripts/smoke/', () => {
+    for (const file of EXCLUDED_FILES) {
+      expect(isExcludedFile(file)).toBe(true);
+    }
+    expect(isExcludedFile('scripts/run-preview-sandbox-browser-check.mjs')).toBe(true);
   });
 });
 
@@ -411,6 +442,96 @@ describe('runCheck — allowlist behaviour', () => {
       rmSync(root, { recursive: true, force: true });
     }
   });
+
+  // Issue #1532's fix in the sibling check-public-artifacts-language.mjs
+  // (PR #1531) established the regression pin that matters here: not
+  // "excluded files are skipped" (already true via the discovery path,
+  // and would stay true with the bug present), but "the SAME file, passed
+  // explicitly, is ALSO skipped" -- which fails against an
+  // isExcludedFile-inside-findDefaultFiles-only implementation and passes
+  // once the exclusion is applied to the final target list regardless of
+  // how it was assembled.
+  it('exclusion is applied uniformly for an explicit files list, not only the default glob path', async () => {
+    const root = makeFixture();
+    try {
+      writeFileSync(
+        join(root, 'packages/server/src/__tests__/foo.ts'),
+        `// Issue #1 -- would be a violation if scanned\n`,
+      );
+      const result = await runCheck({
+        cwd: root,
+        files: ['packages/server/src/__tests__/foo.ts'],
+        allowlist: new Set(),
+      });
+      expect(result.violations).toEqual([]);
+      expect(result.files).toEqual([]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  // CodeRabbit MINOR (PR review): the same uniform-exclusion path, exercised
+  // against a root-level __tests__/ file (no leading slash) passed
+  // explicitly -- the shape isExcludedFile's own fix above addresses.
+  it('excludes a root-level __tests__/ file passed as an explicit path', async () => {
+    const root = makeFixture();
+    try {
+      mkdirSync(join(root, '__tests__'), { recursive: true });
+      writeFileSync(
+        join(root, '__tests__/foo.ts'),
+        `// Issue #1 -- would be a violation if scanned\n`,
+      );
+      const result = await runCheck({
+        cwd: root,
+        files: ['__tests__/foo.ts'],
+        allowlist: new Set(),
+      });
+      expect(result.violations).toEqual([]);
+      expect(result.files).toEqual([]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('exclusion matches an explicit path with a leading ./ the same as the bare form', async () => {
+    const root = makeFixture();
+    try {
+      mkdirSync(join(root, 'scripts/smoke'), { recursive: true });
+      writeFileSync(
+        join(root, 'scripts/smoke/probe.ts'),
+        `// Issue #1 -- registered verification provenance\n`,
+      );
+      const result = await runCheck({
+        cwd: root,
+        files: ['./scripts/smoke/probe.ts'],
+        allowlist: new Set(),
+      });
+      expect(result.violations).toEqual([]);
+      expect(result.files).toEqual([]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('preserves the caller-provided path string for a non-excluded ./ path (normalization is exclusion-matching-only)', async () => {
+    const root = makeFixture();
+    try {
+      writeFileSync(join(root, 'packages/server/src/foo.ts'), `// Issue #1\nconst x = 1;\n`);
+      const result = await runCheck({
+        cwd: root,
+        files: ['./packages/server/src/foo.ts'],
+        allowlist: new Set(),
+      });
+      // Not excluded, so it is scanned and reported under the exact
+      // caller-provided string -- normalization must not rewrite it to
+      // the bare 'packages/server/src/foo.ts' form.
+      expect(result.files).toEqual(['./packages/server/src/foo.ts']);
+      expect(result.violations).toHaveLength(1);
+      expect(result.violations[0].file).toBe('./packages/server/src/foo.ts');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('findDefaultFiles — scan glob', () => {
@@ -446,6 +567,149 @@ describe('findDefaultFiles — scan glob', () => {
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
+  });
+});
+
+describe('findDefaultFiles — scope widening (R2): scripts/ and .claude/ with dot:true', () => {
+  function makeWidenedFixture() {
+    const root = mkdtempSync(join(tmpdir(), 'blame-shift-widened-'));
+    mkdirSync(join(root, 'packages/server/src'), { recursive: true });
+    mkdirSync(join(root, 'scripts/smoke'), { recursive: true });
+    mkdirSync(join(root, '.claude/skills/orchestrator'), { recursive: true });
+    return root;
+  }
+
+  it('R2 presence pin: a known .claude/ file is enumerated -- reach: reverting `dot: true` in findDefaultFiles makes this fail, because Bun.Glob excludes dot-directories by default and `.claude` is one (the #1487 shape: an exclusion silently empties a scanned root while the check still reports success)', async () => {
+    const root = makeWidenedFixture();
+    try {
+      writeFileSync(join(root, '.claude/skills/orchestrator/known-file.js'), 'const x = 1;\n');
+      const files = await findDefaultFiles({ cwd: root });
+      expect(files).toContain('.claude/skills/orchestrator/known-file.js');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('scans scripts/ (positive control) and excludes scripts/smoke/** (directory-proxy exclusion) in the same run', async () => {
+    const root = makeWidenedFixture();
+    try {
+      writeFileSync(join(root, 'scripts/build.mjs'), 'const x = 1;\n');
+      writeFileSync(join(root, 'scripts/smoke/probe.ts'), 'const y = 1;\n');
+      const files = await findDefaultFiles({ cwd: root });
+      expect(files).toContain('scripts/build.mjs');
+      expect(files).not.toContain('scripts/smoke/probe.ts');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('excludes a file registered in EXCLUDED_FILES by exact name, even outside scripts/smoke/', async () => {
+    const root = makeWidenedFixture();
+    try {
+      writeFileSync(join(root, 'scripts/run-preview-sandbox-browser-check.mjs'), 'const x = 1;\n');
+      writeFileSync(join(root, 'scripts/build.mjs'), 'const y = 1;\n');
+      const files = await findDefaultFiles({ cwd: root });
+      expect(files).not.toContain('scripts/run-preview-sandbox-browser-check.mjs');
+      expect(files).toContain('scripts/build.mjs');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('R3 polarity: a planted blame-shift comment in scripts/ and .claude/ is detected by file:line; the identical line inside scripts/smoke/ is NOT flagged (negative control alongside the positive control, same run); removal restores clean', async () => {
+    const root = makeWidenedFixture();
+    try {
+      const plantedLine = '// Issue #1 probe\nconst x = 1;\n';
+      writeFileSync(join(root, 'scripts/build.mjs'), plantedLine);
+      writeFileSync(join(root, '.claude/skills/orchestrator/helper.js'), plantedLine);
+      writeFileSync(join(root, 'scripts/smoke/check-thing.ts'), plantedLine);
+
+      let result = await runCheck({ cwd: root, allowlist: new Set() });
+      const flagged = result.newViolations.map((v) => `${v.file}:${v.line}`);
+      // Positive controls: both newly-widened roots detect the planted line.
+      expect(flagged).toContain('scripts/build.mjs:1');
+      expect(flagged).toContain('.claude/skills/orchestrator/helper.js:1');
+      // Negative control: the exclusion under test.
+      expect(flagged).not.toContain('scripts/smoke/check-thing.ts:1');
+
+      // Removal (of the non-excluded planted lines) restores clean.
+      writeFileSync(join(root, 'scripts/build.mjs'), 'const x = 1;\n');
+      writeFileSync(join(root, '.claude/skills/orchestrator/helper.js'), 'const x = 1;\n');
+      result = await runCheck({ cwd: root, allowlist: new Set() });
+      expect(result.newViolations).toEqual([]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('findDefaultFiles — live-tree scope integration (R2 count regression pin)', () => {
+  it('scans strictly more files than the pre-widening packages/*/src-only scope, includes a known .claude/ file, excludes scripts/smoke/** and the registered EXCLUDED_FILES entry', async () => {
+    const files = await findDefaultFiles({ cwd: REPO_ROOT });
+    expect(files).toContain('.claude/skills/orchestrator/sprint-metrics.js');
+    expect(files).toContain('scripts/install-hooks.mjs');
+    expect(files).not.toContain('scripts/run-preview-sandbox-browser-check.mjs');
+    expect(files.some((f) => f.startsWith('scripts/smoke/'))).toBe(false);
+
+    // Independent control: the OLD (pre-widening) scope, computed here with
+    // the literal pre-widening glob patterns rather than by importing
+    // anything from production (which now implements the WIDENED scope) --
+    // so this is a real historical fact to compare against, not a
+    // duplicate of current production logic.
+    const OLD_GLOBS = [
+      'packages/*/src/**/*.ts',
+      'packages/*/src/**/*.tsx',
+      'packages/*/src/**/*.js',
+      'packages/*/src/**/*.jsx',
+    ];
+    const oldScope = new Set();
+    for (const pattern of OLD_GLOBS) {
+      const glob = new Glob(pattern);
+      for await (const f of glob.scan({ cwd: REPO_ROOT, onlyFiles: true })) {
+        if (isExcludedFile(f)) continue;
+        oldScope.add(f);
+      }
+    }
+    expect(files.length).toBeGreaterThan(oldScope.size);
+
+    // CodeRabbit MINOR (PR review): the presence pins above name exactly
+    // one .claude/ file and one scripts/ file, so an entire dropped
+    // subtree (e.g. .claude/skills/ or scripts/lib/) would not be caught
+    // as long as those two files still scan. Pin the full per-root file
+    // SET against an independent scan of each root alone (same extensions
+    // and dot:true as production, isExcludedFile applied the same way
+    // findDefaultFiles applies it) -- so a silent drop anywhere under
+    // either widened root fails this comparison.
+    //
+    // Reach: this pin's reach is findDefaultFiles's own loop dropping a
+    // file the glob/predicate would otherwise include; it shares its glob
+    // patterns and isExcludedFile with production by design (an
+    // independent glob re-implementation would still need the same
+    // exclusion predicate to compare correctly), so it does NOT catch a
+    // change to DEFAULT_GLOBS or isExcludedFile itself -- those are
+    // covered by this file's other pins (the presence/count tests, and
+    // isExcludedFile's own describe block).
+    const independentWidenedFiles = new Set();
+    for (const pattern of [
+      'scripts/**/*.ts',
+      'scripts/**/*.tsx',
+      'scripts/**/*.js',
+      'scripts/**/*.mjs',
+      '.claude/**/*.ts',
+      '.claude/**/*.tsx',
+      '.claude/**/*.js',
+      '.claude/**/*.mjs',
+    ]) {
+      const glob = new Glob(pattern);
+      for await (const f of glob.scan({ cwd: REPO_ROOT, onlyFiles: true, dot: true })) {
+        if (isExcludedFile(f)) continue;
+        independentWidenedFiles.add(f);
+      }
+    }
+    const scannedWidenedFiles = files.filter(
+      (f) => f.startsWith('scripts/') || f.startsWith('.claude/'),
+    );
+    expect([...scannedWidenedFiles].sort()).toEqual([...independentWidenedFiles].sort());
   });
 });
 

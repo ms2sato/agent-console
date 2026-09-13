@@ -301,7 +301,7 @@ describe('RestartWorkerRequestSchema', () => {
       continueConversation: true,
     });
     expect(result.success).toBe(true);
-    if (result.success) {
+    if (result.success && 'continueConversation' in result.output) {
       expect(result.output.continueConversation).toBe(true);
     }
   });
@@ -311,7 +311,7 @@ describe('RestartWorkerRequestSchema', () => {
       continueConversation: false,
     });
     expect(result.success).toBe(true);
-    if (result.success) {
+    if (result.success && 'continueConversation' in result.output) {
       expect(result.output.continueConversation).toBe(false);
     }
   });
@@ -402,6 +402,83 @@ describe('RestartWorkerRequestSchema', () => {
   });
 });
 
+describe('RestartWorkerRequestSchema: embedded-agent conversion member (cross-type restart)', () => {
+  it('accepts { embeddedAgentId } alone', () => {
+    const result = v.safeParse(RestartWorkerRequestSchema, {
+      embeddedAgentId: 'def-1',
+    });
+    expect(result.success).toBe(true);
+    if (result.success && 'embeddedAgentId' in result.output) {
+      expect(result.output.embeddedAgentId).toBe('def-1');
+    }
+  });
+
+  it('accepts { embeddedAgentId, branch }', () => {
+    const result = v.safeParse(RestartWorkerRequestSchema, {
+      embeddedAgentId: 'def-1',
+      branch: 'feature/convert',
+    });
+    expect(result.success).toBe(true);
+    if (result.success && 'embeddedAgentId' in result.output) {
+      expect(result.output.embeddedAgentId).toBe('def-1');
+      expect(result.output.branch).toBe('feature/convert');
+    }
+  });
+
+  it('rejects { embeddedAgentId, continueConversation } -- continueConversation belongs to the terminal member only', () => {
+    const result = v.safeParse(RestartWorkerRequestSchema, {
+      embeddedAgentId: 'def-1',
+      continueConversation: true,
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects { embeddedAgentId, agentId } -- agentId belongs to the terminal member only', () => {
+    const result = v.safeParse(RestartWorkerRequestSchema, {
+      embeddedAgentId: 'def-1',
+      agentId: 'agent-123',
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects an empty embeddedAgentId', () => {
+    const result = v.safeParse(RestartWorkerRequestSchema, {
+      embeddedAgentId: '',
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('the empty object {} still matches the terminal member (today\'s behavior, unchanged)', () => {
+    const result = v.safeParse(RestartWorkerRequestSchema, {});
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect('embeddedAgentId' in result.output).toBe(false);
+    }
+  });
+
+  // Polarity measurement (workflow.md "TDD for bug fixes" + testing.md's
+  // per-test category table), performed via `git diff
+  // packages/shared/src/schemas/worker.ts > /tmp/schema.patch && git
+  // checkout packages/shared/src/schemas/worker.ts`, re-running this
+  // describe block, then `git apply /tmp/schema.patch` to restore:
+  //
+  // - The two "accepts" tests above are BUG/NEW-MECHANISM-CONTRACT tests:
+  //   they FAILED against the old flat schema (which had no `embeddedAgentId`
+  //   key at all -- strictObject rejected it as unrecognized) and PASS now.
+  //   This is the real polarity flip for the new union member's existence.
+  // - The two "rejects" tests (continueConversation / agentId alongside
+  //   embeddedAgentId) are INVARIANT-PRESERVATION tests: they pass in BOTH
+  //   worlds, but for different reasons. Against the old flat schema,
+  //   `embeddedAgentId` itself is the unrecognized key, so `success: false`
+  //   regardless of which other field accompanies it -- the co-occurrence
+  //   is not what's being rejected there. Against the new union, it's the
+  //   co-occurrence itself that trips strictObject's per-member key check.
+  //   They are not vacuous, though: they would fail against a plausible
+  //   wrong NEW implementation (e.g. one flat object merging both members'
+  //   fields as all-optional instead of a true union), which is the mistake
+  //   they exist to guard.
+});
+
 describe('strict-parse contract (unknown-key rejection)', () => {
   it('CreateWorkerRequestSchema rejects an unknown key', () => {
     const result = v.safeParse(CreateWorkerRequestSchema, {
@@ -423,7 +500,10 @@ describe('strict-parse contract (unknown-key rejection)', () => {
     });
     expect(result.success).toBe(false);
     if (!result.success) {
-      expect(result.issues.some((i) => i.path?.[0]?.key === 'unexpectedField')).toBe(true);
+      // RestartWorkerRequestSchema is now a union (cross-type restart); the
+      // unknown-key issue surfaces on the matching (terminal) branch, same
+      // union-issue shape as CreateWorkerRequestSchema above.
+      expect(JSON.stringify(result.issues)).toContain('unexpectedField');
     }
   });
 });
@@ -434,11 +514,19 @@ describe('UpdateEmbeddedAgentWorkerRequestSchema (Compaction toggle)', () => {
     expect(v.safeParse(UpdateEmbeddedAgentWorkerRequestSchema, { autoCompaction: false }).success).toBe(true);
   });
 
-  it('REQUIRES autoCompaction -- an empty body is not "no change"', () => {
-    // Unlike the definition PATCH, this route has exactly one field and
-    // exists to set it. An empty body would be a caller bug, and accepting
-    // it as a no-op would return 200 for a request that changed nothing.
-    expect(v.safeParse(UpdateEmbeddedAgentWorkerRequestSchema, {}).success).toBe(false);
+  it('rejects an empty body -- an empty body is not "no change"', () => {
+    // Pre-existing assertion, kept. Only the REASON moved: `autoCompaction`
+    // used to be the schema's single required key, so `{}` failed on a
+    // missing field. Since the mid-run parameter widening every key is
+    // optional, and `{}` now fails the at-least-one-key check instead. The
+    // caller-visible outcome is unchanged: an empty body would be a caller
+    // bug, and accepting it as a no-op would return 200 for a request that
+    // changed nothing.
+    const result = v.safeParse(UpdateEmbeddedAgentWorkerRequestSchema, {});
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.issues[0]?.message).toContain('at least one of');
+    }
   });
 
   it('rejects a non-boolean autoCompaction', () => {
@@ -455,5 +543,129 @@ describe('UpdateEmbeddedAgentWorkerRequestSchema (Compaction toggle)', () => {
     if (!result.success) {
       expect(result.issues.some((i) => i.path?.[0]?.key === 'unexpectedField')).toBe(true);
     }
+  });
+
+  describe('mid-run model / reasoning-effort / context-window override (agent-surface.md Phase 3)', () => {
+    it('accepts each field on its own', () => {
+      expect(v.safeParse(UpdateEmbeddedAgentWorkerRequestSchema, { autoCompaction: true }).success).toBe(true);
+      expect(v.safeParse(UpdateEmbeddedAgentWorkerRequestSchema, { reasoningEffort: 'high' }).success).toBe(true);
+      // `model` alone is NOT a valid body -- Ruling 4 couples it to the
+      // window, so its "alone" case is the pair below. Covered explicitly by
+      // the rejection tests further down.
+      expect(
+        v.safeParse(UpdateEmbeddedAgentWorkerRequestSchema, {
+          model: 'gpt-5',
+          contextWindowTokens: 200_000,
+        }).success,
+      ).toBe(true);
+    });
+
+    it('accepts nulls, which CLEAR an override rather than leaving it alone', () => {
+      // The absent-vs-null distinction is the whole reason these fields are
+      // `v.optional(v.nullable(...))` rather than `v.optional(...)`.
+      const cleared = v.safeParse(UpdateEmbeddedAgentWorkerRequestSchema, {
+        model: null,
+        reasoningEffort: null,
+      });
+      expect(cleared.success).toBe(true);
+      if (cleared.success) {
+        expect(cleared.output.model).toBeNull();
+        expect(cleared.output.reasoningEffort).toBeNull();
+        // Absent stays absent: it must be distinguishable from an explicit null.
+        expect('contextWindowTokens' in cleared.output).toBe(false);
+      }
+    });
+
+    it('accepts a model set alongside an explicitly undeclared window (null)', () => {
+      // Ruling 4's "pass null to declare no window": compaction goes inert
+      // and the gauge indeterminate, which is a legitimate declared state.
+      expect(
+        v.safeParse(UpdateEmbeddedAgentWorkerRequestSchema, {
+          model: 'gpt-5',
+          contextWindowTokens: null,
+        }).success,
+      ).toBe(true);
+    });
+
+    it('accepts the empty string for model -- value validation is the shared validator, not the wire', () => {
+      // Deliberately NOT `v.trim()` / `v.minLength(1)` here: normalisation
+      // and rejection belong to the shared parameter validator, so trimming
+      // at the wire would make that writer's own trim unmeasurable.
+      const result = v.safeParse(UpdateEmbeddedAgentWorkerRequestSchema, {
+        model: '  gpt-5  ',
+        contextWindowTokens: null,
+      });
+      expect(result.success).toBe(true);
+      if (result.success) expect(result.output.model).toBe('  gpt-5  ');
+    });
+
+    it('rejects a model set with NO contextWindowTokens key at all (Ruling 4)', () => {
+      const result = v.safeParse(UpdateEmbeddedAgentWorkerRequestSchema, { model: 'gpt-5' });
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.issues[0]?.message).toContain('setting a model requires contextWindowTokens');
+      }
+    });
+
+    it('rejects a model CLEARED alongside a window (Ruling 4)', () => {
+      const result = v.safeParse(UpdateEmbeddedAgentWorkerRequestSchema, {
+        model: null,
+        contextWindowTokens: 200_000,
+      });
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.issues[0]?.message).toContain('clearing the model clears the window');
+      }
+    });
+
+    it('rejects a window with NO model key at all (Ruling 4)', () => {
+      const result = v.safeParse(UpdateEmbeddedAgentWorkerRequestSchema, {
+        contextWindowTokens: 200_000,
+      });
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.issues[0]?.message).toContain('property of a model override');
+      }
+    });
+
+    it('rejects a window cleared with NO model key at all (Ruling 4, same coupling)', () => {
+      // `null` is still "present" for the coupling: the window is never an
+      // independently addressable setting, in either direction.
+      expect(
+        v.safeParse(UpdateEmbeddedAgentWorkerRequestSchema, { contextWindowTokens: null }).success,
+      ).toBe(false);
+    });
+
+    it('rejects a non-positive or non-integer contextWindowTokens', () => {
+      const bodyWith = (contextWindowTokens: unknown) => ({ model: 'gpt-5', contextWindowTokens });
+      expect(v.safeParse(UpdateEmbeddedAgentWorkerRequestSchema, bodyWith(0)).success).toBe(false);
+      expect(v.safeParse(UpdateEmbeddedAgentWorkerRequestSchema, bodyWith(-1)).success).toBe(false);
+      expect(v.safeParse(UpdateEmbeddedAgentWorkerRequestSchema, bodyWith(1.5)).success).toBe(false);
+      expect(v.safeParse(UpdateEmbeddedAgentWorkerRequestSchema, bodyWith('200000')).success).toBe(false);
+      expect(v.safeParse(UpdateEmbeddedAgentWorkerRequestSchema, bodyWith(1)).success).toBe(true);
+    });
+
+    it('rejects an unknown key alongside the new fields (strictObject)', () => {
+      const result = v.safeParse(UpdateEmbeddedAgentWorkerRequestSchema, {
+        model: 'gpt-5',
+        contextWindowTokens: 200_000,
+        temperature: 0.7,
+      });
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.issues.some((i) => i.path?.[0]?.key === 'temperature')).toBe(true);
+      }
+    });
+
+    it('accepts the compaction toggle and a parameter change in one body', () => {
+      expect(
+        v.safeParse(UpdateEmbeddedAgentWorkerRequestSchema, {
+          autoCompaction: false,
+          model: 'gpt-5',
+          contextWindowTokens: 200_000,
+          reasoningEffort: 'medium',
+        }).success,
+      ).toBe(true);
+    });
   });
 });

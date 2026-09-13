@@ -10,7 +10,7 @@
 
 import type { InteractiveProcessInfo } from '@agent-console/shared';
 import type { SessionDataPathResolver } from '../lib/session-data-path-resolver.js';
-import { writePtyNotification } from '../lib/pty-notification.js';
+import type { PtyNotificationParams } from '../lib/pty-notification.js';
 import { createLogger } from '../lib/logger.js';
 
 const logger = createLogger('process-output-router');
@@ -32,8 +32,17 @@ export interface ProcessOutputRouterDeps {
    * `null` when the session has no resolvable scope (e.g., already deleted).
    */
   getResolver: (sessionId: string) => SessionDataPathResolver | null;
-  /** Write data to the calling worker's PTY (used for the notification). */
-  writeInput: (sessionId: string, workerId: string, data: string) => void;
+  /**
+   * Deliver a notification to the calling worker via the shared delivery
+   * seam ({@link SessionManager.deliverWorkerNotification}) -- a PTY write
+   * for agent/terminal workers, or a queued turn for embedded-agent
+   * workers.
+   */
+  deliverNotification: (
+    sessionId: string,
+    workerId: string,
+    params: PtyNotificationParams,
+  ) => Promise<{ ok: true } | { ok: false; error: string }>;
   /** Send a message file via the inter-session message service. */
   sendMessage: (params: {
     toSessionId: string;
@@ -132,23 +141,71 @@ export function splitContentIntoChunks(content: string, targetBytes: number): st
 }
 
 /**
- * Route process content according to the process's outputMode.
+ * Per-process delivery tail. Every notification-producing step for a given
+ * `processId` -- stdout/response content routing and the exit notification
+ * -- is chained behind this promise so steps deliver in the order they were
+ * enqueued, regardless of how long each step's own async work (a resolver
+ * lookup + message-file write for `outputMode: 'message'`, a single
+ * notification call otherwise) takes. Without this, a slow message-mode
+ * stdout write could still be pending when a fast, directly-issued exit
+ * notification arrives, reordering the two on the wire.
+ *
+ * Keyed by `processId` so two processes' deliveries never block each other.
+ * The stored value is an internal bookkeeping promise (always resolves --
+ * see `enqueue`), not the caller-facing promise `routeProcessContent` /
+ * `routeProcessExit` return.
+ *
+ * @internal Exported for testing.
+ */
+export const deliveryTails = new Map<string, Promise<unknown>>();
+
+function noop(): void {}
+
+/**
+ * Enqueue `step` behind the process's existing delivery tail. Returns
+ * `step`'s own promise (not the combined tail): a step that rejects still
+ * surfaces its rejection to whoever awaits the returned promise (callers
+ * rely on this -- e.g. `writeResponse` reports `false` on a rejected
+ * message-mode write), and a rejected step never blocks the NEXT enqueued
+ * step from running (the tail is only ever chained via `.catch(noop)`).
+ */
+function enqueue<T>(processId: string, step: () => Promise<T>): Promise<T> {
+  const previous = deliveryTails.get(processId) ?? Promise.resolve();
+  const result = previous.catch(noop).then(step);
+  deliveryTails.set(processId, result.catch(noop));
+  return result;
+}
+
+/**
+ * Route process content according to the process's outputMode. Enqueues
+ * behind the process's per-process delivery tail (see {@link deliveryTails})
+ * so this content notification delivers before any exit notification
+ * enqueued after it via {@link routeProcessExit}.
  *
  * - `'pty'` — emit a single `[internal:process]` notification carrying the
- *   full content (existing behavior). Notification write errors are logged
- *   as warnings and swallowed because they are cosmetic (the calling code
- *   has nowhere to report a failed PTY notification to).
+ *   full content (existing behavior). Delivery failures reported by
+ *   `deliverNotification` (`{ok: false}`) or thrown by the call itself are
+ *   logged as warnings and swallowed because they are cosmetic (the calling
+ *   code has nowhere to report a failed notification to).
  * - `'message'` — split content into <= `MESSAGE_CHUNK_TARGET_BYTES`
- *   chunks, write each chunk via `sendMessage`, and emit a brief PTY
+ *   chunks, write each chunk via `sendMessage`, and emit a brief
  *   notification carrying the file path and byte count for each chunk.
  *   **Routing failures (resolver miss or any chunk's `sendMessage` error)
  *   throw**, so callers awaiting the returned promise can detect that
  *   message-mode delivery did not happen and report a `false` success
- *   to their own caller. Brief PTY notification write errors after a
- *   successful chunk write are still cosmetic — they are logged as warnings
+ *   to their own caller. Brief notification delivery failures after a
+ *   successful chunk write are still cosmetic — whether reported as
+ *   `{ok: false}` or thrown by the call itself, they are logged as warnings
  *   and do not throw.
  */
 export async function routeProcessContent(
+  deps: ProcessOutputRouterDeps,
+  params: RouteProcessContentParams,
+): Promise<void> {
+  return enqueue(params.process.id, () => deliverProcessContent(deps, params));
+}
+
+async function deliverProcessContent(
   deps: ProcessOutputRouterDeps,
   params: RouteProcessContentParams,
 ): Promise<void> {
@@ -157,12 +214,9 @@ export async function routeProcessContent(
     return;
   }
 
-  const writeInputForWorker = (data: string) =>
-    deps.writeInput(process.sessionId, process.workerId, data);
-
   if (process.outputMode === 'pty') {
     try {
-      writePtyNotification({
+      const result = await deps.deliverNotification(process.sessionId, process.workerId, {
         kind: 'internal-process',
         tag: 'internal:process',
         fields: {
@@ -171,11 +225,21 @@ export async function routeProcessContent(
           message: content,
         },
         intent: direction === 'stdout' ? 'triage' : 'inform',
-        writeInput: writeInputForWorker,
       });
-    } catch (err) {
+      if (!result.ok) {
+        logger.warn(
+          { processId: process.id, sessionId: process.sessionId, direction, error: result.error },
+          'Failed to deliver process PTY notification',
+        );
+      }
+    } catch (error) {
       logger.warn(
-        { processId: process.id, sessionId: process.sessionId, direction, err },
+        {
+          processId: process.id,
+          sessionId: process.sessionId,
+          direction,
+          error: error instanceof Error ? error.message : String(error),
+        },
         'Failed to deliver process PTY notification',
       );
     }
@@ -192,7 +256,7 @@ export async function routeProcessContent(
 
   const chunks = splitContentIntoChunks(content, MESSAGE_CHUNK_TARGET_BYTES);
   for (const chunk of chunks) {
-    const result = await deps.sendMessage({
+    const sendResult = await deps.sendMessage({
       toSessionId: process.sessionId,
       toWorkerId: process.workerId,
       fromSessionId: process.sessionId,
@@ -203,11 +267,11 @@ export async function routeProcessContent(
     const bytes = Buffer.byteLength(chunk, 'utf-8');
     const summary =
       direction === 'stdout'
-        ? `[stdout via message] path=${result.path} bytes=${bytes}`
-        : `[response via message] path=${result.path} bytes=${bytes}`;
+        ? `[stdout via message] path=${sendResult.path} bytes=${bytes}`
+        : `[response via message] path=${sendResult.path} bytes=${bytes}`;
 
     try {
-      writePtyNotification({
+      const notifyResult = await deps.deliverNotification(process.sessionId, process.workerId, {
         kind: 'internal-process',
         tag: 'internal:process',
         fields: {
@@ -216,13 +280,91 @@ export async function routeProcessContent(
           message: summary,
         },
         intent: direction === 'stdout' ? 'triage' : 'inform',
-        writeInput: writeInputForWorker,
       });
-    } catch (err) {
+      if (!notifyResult.ok) {
+        logger.warn(
+          {
+            processId: process.id,
+            sessionId: process.sessionId,
+            direction,
+            error: notifyResult.error,
+          },
+          'Failed to deliver brief process PTY notification (message file was written)',
+        );
+      }
+    } catch (error) {
       logger.warn(
-        { processId: process.id, sessionId: process.sessionId, direction, err },
+        {
+          processId: process.id,
+          sessionId: process.sessionId,
+          direction,
+          error: error instanceof Error ? error.message : String(error),
+        },
         'Failed to deliver brief process PTY notification (message file was written)',
       );
     }
+  }
+}
+
+/**
+ * Compose and enqueue the interactive-process EXIT notification behind the
+ * same per-process delivery tail `routeProcessContent` uses, so it delivers
+ * after any still-in-flight stdout/response routing for the same process.
+ * Moved verbatim from `app-context.ts`'s former inline `onExit` callback
+ * body -- same message text, same {ok:false}-vs-throw warn shape, same
+ * `intent: 'inform'`.
+ *
+ * Never throws: delivery failures (a `{ok:false}` result or a thrown
+ * error) are logged as warnings and swallowed, matching the fire-and-forget
+ * contract `InteractiveProcessManager`'s `ProcessExitCallback` has always
+ * had (the manager calls its `onExit` callback synchronously and does not
+ * await or inspect a return value).
+ *
+ * The cleanup (`deliveryTails.delete`) is chained via `.finally()` on the
+ * SAME promise this function returns -- not as a detached side-effect
+ * chain -- so a caller awaiting the returned promise is guaranteed to
+ * observe the cleanup already applied. A detached `exitPromise.catch(noop)
+ * .finally(...)` side chain would still run the cleanup eventually, but
+ * one microtask hop later than the returned promise's own resolution,
+ * which is late enough for a caller's very next synchronous statement
+ * after `await routeProcessExit(...)` to observe the tail as not yet
+ * deleted.
+ */
+export function routeProcessExit(
+  deps: ProcessOutputRouterDeps,
+  process: InteractiveProcessInfo,
+): Promise<void> {
+  const exitPromise = enqueue(process.id, () => deliverProcessExit(deps, process));
+  return exitPromise.finally(() => {
+    deliveryTails.delete(process.id);
+  });
+}
+
+async function deliverProcessExit(
+  deps: ProcessOutputRouterDeps,
+  process: InteractiveProcessInfo,
+): Promise<void> {
+  try {
+    const result = await deps.deliverNotification(process.sessionId, process.workerId, {
+      kind: 'internal-process',
+      tag: 'internal:process',
+      fields: {
+        processId: process.id,
+        command: process.command,
+        message: `Process exited with code ${process.exitCode ?? 'unknown'}`,
+      },
+      intent: 'inform',
+    });
+    if (!result.ok) {
+      logger.warn(
+        { processId: process.id, sessionId: process.sessionId, error: result.error },
+        'Failed to deliver process exit notification',
+      );
+    }
+  } catch (err) {
+    logger.warn(
+      { processId: process.id, sessionId: process.sessionId, err },
+      'Failed to deliver process exit notification',
+    );
   }
 }

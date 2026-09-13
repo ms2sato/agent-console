@@ -5,7 +5,24 @@ import { RestartSessionDialog } from './sessions/RestartSessionDialog';
 import { DeleteWorktreeDialog } from './sessions/DeleteWorktreeDialog';
 import { PauseSessionDialog } from './sessions/PauseSessionDialog';
 import { InitialPromptDialog } from './sessions/InitialPromptDialog';
-import type { Session, AgentActivityState, AgentWorker } from '@agent-console/shared';
+import type { AgentSelection } from './AgentSelector';
+import type { Session, AgentActivityState } from '@agent-console/shared';
+
+/**
+ * Derive the primary-worker selection for RestartSessionDialog: the first
+ * worker of type 'agent' or 'embedded-agent' in the session. `undefined`
+ * while `session` hasn't loaded yet -- RestartSessionDialog treats that the
+ * same way it always has (don't disable / assume terminal-like defaults
+ * while unknown).
+ */
+function derivePrimarySelection(session: Session | undefined): AgentSelection | undefined {
+  if (!session) return undefined;
+  for (const worker of session.workers) {
+    if (worker.type === 'agent') return { kind: 'terminal', agentId: worker.agentId };
+    if (worker.type === 'embedded-agent') return { kind: 'embedded', embeddedAgentId: worker.embeddedAgentId };
+  }
+  return undefined;
+}
 
 interface SessionSettingsProps {
   sessionId: string;
@@ -75,7 +92,7 @@ export function SessionSettings({
         open={activeDialog === 'restart'}
         onOpenChange={(open) => !open && closeDialog()}
         sessionId={sessionId}
-        currentAgentId={(session?.workers.find((w): w is AgentWorker => w.type === 'agent'))?.agentId}
+        currentSelection={derivePrimarySelection(session)}
         currentBranch={currentBranch}
         isWorktreeSession={true}
         onBranchChange={onBranchChange}

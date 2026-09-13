@@ -5,6 +5,7 @@ export type InboundEventType =
   | 'ci:completed'          // CI/CD pipeline succeeded
   | 'ci:failed'             // CI/CD pipeline failed
   | 'issue:closed'          // Issue was closed
+  | 'issue:labeled'         // Issue opened or an existing Issue got a configured trigger label added
   | 'pr:merged'             // Pull request was merged
   | 'pr:review_comment'     // PR review comment was posted
   | 'pr:changes_requested'  // PR changes requested
@@ -28,6 +29,8 @@ export interface SystemEventMetadata {
   url?: string;
   /** Commit SHA (used for CI completion aggregation) */
   commitSha?: string;
+  /** Label names relevant to the event. For `issue:labeled`: the single ADDED label (labeled action) or the full initial label set (opened action). */
+  labels?: string[];
 }
 
 /**

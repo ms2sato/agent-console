@@ -124,6 +124,23 @@ describe('McpToolClient — callTool', () => {
   });
 });
 
+describe('ToolCallOutcome — appendix field', () => {
+  it('is absent from McpToolClient outcomes and composes via spread the same way CompositeToolExecutor attaches it', async () => {
+    const handle = makeClient({
+      callTool: async () => ({ content: [{ type: 'text', text: 'done' }] }),
+    });
+    const client = await connected(handle);
+
+    const outcome = await client.callTool('t', {}, new AbortController().signal);
+    expect('appendix' in outcome).toBe(false);
+
+    // Mirrors CompositeToolExecutor.callTool's activation-attach line:
+    // `return activation === null ? outcome : { ...outcome, appendix: activation.text };`
+    const withAppendix = { ...outcome, appendix: 'scoped rule text' };
+    expect(withAppendix).toEqual({ ok: true, result: 'done', appendix: 'scoped rule text' });
+  });
+});
+
 describe('McpToolClient — usage before connect', () => {
   it('throws when listTools is called before connect', async () => {
     const client = new McpToolClient({ connectClient: async () => makeClient() });

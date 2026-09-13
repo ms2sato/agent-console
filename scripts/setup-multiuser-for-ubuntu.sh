@@ -33,7 +33,17 @@
 #      SAME /usr/local/bin/bun value (Issue #1222) so the server process and
 #      the embedded-agent subprocess execute the identical file -- version
 #      drift between them becomes structurally impossible, not merely
-#      detected after the fact.
+#      detected after the fact. The unit also gets
+#      Environment=EMBEDDED_AGENT_ENTRY_PATH=/usr/local/lib/agent-console/
+#      embedded-agent.js (Issue #1668) -- an independent knob from
+#      EMBEDDED_AGENT_BUN_PATH (a different physical resource: an
+#      application bundle file, not a binary), short-circuiting the
+#      3-tier resolver that would otherwise resolve a path inside this
+#      service user's own HOME, unreachable to other elevation-target users.
+#      The file at that path is provisioned by
+#      scripts/update-and-deploy-for-multiuser-ubuntu.sh's copy step, not by
+#      this script -- it does not exist yet on a fresh host before the first
+#      deploy.
 #   8. `systemctl daemon-reload && systemctl enable --now agent-console`.
 #
 # Idempotency: a second invocation with the same parameters is a no-op
@@ -323,6 +333,26 @@ source "$SCRIPT_DIR/lib/setup-multiuser-checks.sh"
 # user's bun binary to.
 UNIFIED_BUN_PATH="/usr/local/bin/bun"
 
+# Unified, world-traversable location for the bundled embedded-agent
+# subprocess entry (Issue #1668, the same class of bug UNIFIED_BUN_PATH
+# above fixed for the bun binary): resolveEmbeddedAgentEntryPath()'s own
+# "bundle sibling" branch resolves dist/embedded-agent.js inside the service
+# user's HOME (mode 0750), unreachable to any OTHER elevation-target user
+# even though the file itself is world-readable. Deliberately NOT derived
+# from UNIFIED_BUN_PATH's directory -- a language-runtime binary and an
+# application bundle file are different physical resources that happen to
+# share a reachability requirement, and conventionally live in different FHS
+# locations (/usr/local/bin vs. /usr/local/lib/<project>/). This script only
+# CONSUMES the value (via the systemd template's Environment=
+# EMBEDDED_AGENT_ENTRY_PATH= line, rendered below) -- the file at this path
+# is provisioned by scripts/update-and-deploy-for-multiuser-ubuntu.sh's copy
+# step, not by this script, since dist/embedded-agent.js does not exist yet
+# on a fresh host before the first deploy. This same literal is duplicated
+# in that script (no cross-script shared-constant mechanism exists in this
+# codebase); scripts/__tests__/setup-multiuser-for-ubuntu.test.mjs pins the
+# rendered unit's value so the two cannot silently drift apart.
+UNIFIED_ENTRY_PATH="/usr/local/lib/agent-console/embedded-agent.js"
+
 if [ ! -f "$SUDOERS_TEMPLATE" ]; then
   err "missing template: $SUDOERS_TEMPLATE"
 fi
@@ -398,6 +428,7 @@ render_systemd_unit() {
     -e "s|{{SERVICE_GROUP}}|$SERVICE_GROUP|g" \
     -e "s|{{HOME}}|$service_home|g" \
     -e "s|{{BUN_PATH}}|$UNIFIED_BUN_PATH|g" \
+    -e "s|{{ENTRY_PATH}}|$UNIFIED_ENTRY_PATH|g" \
     -e "s|{{DATA_ROOT}}|$DATA_ROOT|g" \
     -e "s|{{PORT}}|$PORT|g" \
     -e "s|{{AUTH_COOKIE_SECURE}}|$AUTH_COOKIE_SECURE|g" \

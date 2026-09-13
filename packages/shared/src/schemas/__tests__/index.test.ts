@@ -7,4 +7,9 @@ describe('schemas index exports', () => {
     expect(mod.UpdateMessageTemplateRequestSchema).toBeDefined();
     expect(mod.ReorderMessageTemplatesRequestSchema).toBeDefined();
   });
+
+  it('should export UpdateSessionMemoRequestSchema (Issue #1569)', async () => {
+    const mod = await import('../index.js');
+    expect(mod.UpdateSessionMemoRequestSchema).toBeDefined();
+  });
 });

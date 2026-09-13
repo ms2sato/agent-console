@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'bun:test';
+import { Glob } from 'bun';
 import { spawnSync } from 'node:child_process';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -599,6 +600,55 @@ describe('findDefaultFiles + runCheck (integration with a temp tree)', () => {
         rmSync(root, { recursive: true, force: true });
       }
     });
+  });
+});
+
+describe('findDefaultFiles — live-tree scanned-file-count regression pin (R4, mirrors #1538 R2)', () => {
+  it('scans strictly more files than a dot-excluding glob would, and finds a known .claude/ file', async () => {
+    // Reach: reverting `dot: true` in findDefaultFiles makes this fail --
+    // Bun.Glob excludes dot-directories by default, so `.claude/**` would
+    // silently scan 0 files while the check still reports "OK": an
+    // exclusion mechanism hiding an entire scanned root, where the
+    // violation count alone cannot tell the difference from genuine
+    // cleanliness. This checker's `dot: true` was already correct before
+    // this test existed -- this test is the missing regression pin for
+    // that correctness, not a behavior change.
+    const files = await findDefaultFiles({ cwd: REPO_ROOT });
+    expect(files).toContain('.claude/rules/workflow.md');
+
+    // Independent control: the file count a dot-excluding scan of the same
+    // roots would produce, computed here with Bun.Glob's own default
+    // (dot: false) rather than by importing anything from production.
+    let withoutDot = 0;
+    for (const pattern of ['CLAUDE.md', 'docs/**', '.claude/**', 'scripts/**']) {
+      const glob = new Glob(pattern);
+      for await (const _file of glob.scan({ cwd: REPO_ROOT, onlyFiles: true })) {
+        withoutDot++;
+      }
+    }
+    expect(files.length).toBeGreaterThan(withoutDot);
+
+    // CodeRabbit MINOR (PR review): the presence pin above names exactly
+    // one .claude/ file, so an entire dropped subtree (e.g. skills/ or
+    // agents/) would not be caught as long as that one file still scans.
+    // Pin the full .claude/ file SET against an independent dot-inclusive
+    // scan of .claude/** alone, computed here directly with Bun.Glob
+    // rather than by importing findDefaultFiles's own output -- so a
+    // silent drop anywhere under .claude/ fails this comparison.
+    //
+    // Reach: this pin's reach is findDefaultFiles's own loop dropping a
+    // file the `.claude/**` glob would otherwise include; it targets the
+    // same root pattern as production by design (an independent glob
+    // re-implementation would still need to target `.claude/**`
+    // specifically to compare correctly), so it does NOT catch a change
+    // to DEFAULT_PATTERNS itself -- that would need its own pin.
+    const independentClaudeFiles = [];
+    const claudeGlob = new Glob('.claude/**');
+    for await (const file of claudeGlob.scan({ cwd: REPO_ROOT, onlyFiles: true, dot: true })) {
+      independentClaudeFiles.push(file);
+    }
+    const scannedClaudeFiles = files.filter((f) => f.startsWith('.claude/'));
+    expect([...scannedClaudeFiles].sort()).toEqual([...independentClaudeFiles].sort());
   });
 });
 

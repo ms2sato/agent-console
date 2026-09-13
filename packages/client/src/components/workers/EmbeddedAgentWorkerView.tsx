@@ -1,11 +1,12 @@
 import { useRef, useEffect, useMemo, useState } from 'react';
+import type { FieldError } from 'react-hook-form';
 import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeSanitize from 'rehype-sanitize';
 import type { Element as HastElement, Text as HastText } from 'hast';
 import type { JSX } from 'react';
 import type { ExtraProps } from 'react-markdown';
-import { DEFAULT_COMPACTION_THRESHOLD } from '@agent-console/shared';
+import { DEFAULT_COMPACTION_THRESHOLD, EMBEDDED_AGENT_SLASH_COMMANDS } from '@agent-console/shared';
 import type {
   PtyNotificationKind,
   EmbeddedAgentServerNotification,
@@ -18,10 +19,13 @@ import { MessagePanel } from '../sessions/MessagePanel';
 import type { ConnectionStatus } from '../terminal/terminal-contract';
 import { PreviewPanel } from './PreviewPanel';
 import { ContextUsageBar } from './ContextUsageBar';
+import { TodoPanel } from './TodoPanel';
 import { useEmbeddedAgents } from '../../hooks/useEmbeddedAgents';
 import { logger } from '../../lib/logger';
-import { updateEmbeddedAgentWorker } from '../../lib/api';
+import { updateEmbeddedAgentWorker, sendWorkerMessage } from '../../lib/api';
 import { copyToClipboard } from '../../lib/clipboard';
+import { isPositiveInteger, POSITIVE_INTEGER_MESSAGE } from '../../lib/positive-integer';
+import { AgentParameterFields } from '../agents/AgentParameterFields';
 
 /** Entries folded into the collapsed-by-default "Working" accordion. */
 type GroupableEntry = Extract<EmbeddedAgentChatEntry, { kind: 'assistant-thinking' | 'tool-call' }>;
@@ -182,6 +186,33 @@ interface EmbeddedAgentWorkerViewProps {
    * gauge).
    */
   contextWindowTokens?: number;
+  /**
+   * `EmbeddedAgentWorker.model` -- the worker's EFFECTIVE model, resolved
+   * server-side (agent-surface.md Phase 3). Same discipline as
+   * `contextWindowTokens` above: a prop sourced from the worker's own wire
+   * field, never looked up client-side against the definition registry.
+   * Absent means UNKNOWN (never "the definition default"), and the
+   * model/effort control disables its writes rather than render a guess --
+   * same as the compaction toggle's own unknown-value handling.
+   */
+  model?: string;
+  /**
+   * `EmbeddedAgentWorker.reasoningEffort` -- the worker's EFFECTIVE
+   * reasoning effort, resolved by the same server-side writer as `model`
+   * above. `null` means no effort override is in effect. Undefined only
+   * defensively, mirroring `autoCompaction`'s doc comment: every
+   * embedded-agent worker carries this field.
+   */
+  reasoningEffort?: string | null;
+  /**
+   * `EmbeddedAgentWorker.hasParameterOverride` -- whether ANY of the
+   * worker's model/effort/window overrides is set, computed server-side.
+   * Drives the "override" badge; the effective `model`/`reasoningEffort`
+   * values above read the same whether they came from an override or the
+   * definition default, so this is the only client-visible signal that
+   * distinguishes the two.
+   */
+  hasParameterOverride?: boolean;
   onStatusChange?: (status: ConnectionStatus) => void;
 }
 
@@ -191,6 +222,9 @@ export function EmbeddedAgentWorkerView({
   embeddedAgentId,
   autoCompaction,
   contextWindowTokens,
+  model,
+  reasoningEffort,
+  hasParameterOverride,
   onStatusChange,
 }: EmbeddedAgentWorkerViewProps) {
   const {
@@ -237,6 +271,97 @@ export function EmbeddedAgentWorkerView({
     }
   };
 
+  // Model/effort override control (agent-surface.md Phase 3). Closed by
+  // default; the disclosure toggle itself is a local-only UI flag, never
+  // written to the server.
+  const [paramsOpen, setParamsOpen] = useState(false);
+  // Same in-flight discipline as `togglePending` above: disables the
+  // control while a write is outstanding, holds no optimistic value.
+  const [paramsPending, setParamsPending] = useState(false);
+
+  // Draft fields for the "Model" / "Reasoning effort" / "Context window"
+  // inputs, seeded from the EFFECTIVE props and re-synced whenever those
+  // props change -- the React "adjusting state when a prop changes" pattern
+  // (comparing a remembered previous value during render and calling
+  // setState synchronously, NOT a useEffect; see frontend.md's "Avoid
+  // useEffect" table). A useEffect-based sync would run one render late,
+  // letting a stale draft flash briefly after every server-driven update;
+  // this form applies within the same render that observed the change.
+  // The re-sync matters because the server is what actually moves these
+  // values (a successful PATCH round-trips back as a session-updated
+  // broadcast, exactly like the compaction toggle above) -- the draft must
+  // track that, not keep echoing whatever the user last typed here.
+  const effectiveParamsKey = `${model ?? ''}|${reasoningEffort ?? ''}|${contextWindowTokens ?? ''}`;
+  const [seededParamsKey, setSeededParamsKey] = useState(effectiveParamsKey);
+  const [draftModel, setDraftModel] = useState(model ?? '');
+  const [draftReasoningEffort, setDraftReasoningEffort] = useState(reasoningEffort ?? '');
+  const [draftContextWindowTokens, setDraftContextWindowTokens] = useState<number | undefined>(
+    contextWindowTokens,
+  );
+  if (effectiveParamsKey !== seededParamsKey) {
+    setSeededParamsKey(effectiveParamsKey);
+    setDraftModel(model ?? '');
+    setDraftReasoningEffort(reasoningEffort ?? '');
+    setDraftContextWindowTokens(contextWindowTokens);
+  }
+
+  const paramsSummaryModel = model ?? 'unknown';
+  const paramsSummaryEffort =
+    reasoningEffort === null ? 'none' : reasoningEffort === undefined ? 'unknown' : reasoningEffort;
+  // Disables both write actions and the fields themselves: a write with an
+  // unknown effective model would have nothing meaningful to diff against,
+  // and "Use agent default" would silently target whatever model happens to
+  // be in effect (agent-surface.md Ruling 4's exact hazard, restated at this
+  // gate).
+  const paramsControlsDisabled = paramsPending || model === undefined;
+
+  // `draftContextWindowTokens` is `undefined` for a blank field, which is
+  // valid (Apply then sends `contextWindowTokens: null`) -- only a DEFINED
+  // value has to clear `isPositiveInteger`. This reuses the same rule the
+  // creation form's `contextWindowTokensInput` field enforces
+  // (`lib/positive-integer.ts`), rather than re-deriving it a third time,
+  // because it is the identical fact the server's own
+  // `UpdateEmbeddedAgentWorkerRequestSchema` enforces for this field: a
+  // rejected value would otherwise reach the PATCH, 400, and surface
+  // nothing to the user beyond a console `logger.error`.
+  const contextWindowTokensInvalid =
+    draftContextWindowTokens !== undefined && !isPositiveInteger(draftContextWindowTokens);
+  const contextWindowTokensError: FieldError | undefined = contextWindowTokensInvalid
+    ? { type: 'validate', message: POSITIVE_INTEGER_MESSAGE }
+    : undefined;
+
+  const handleApplyParams = async (): Promise<void> => {
+    const trimmedModel = draftModel.trim();
+    if (trimmedModel === '' || contextWindowTokensInvalid) return;
+    setParamsPending(true);
+    try {
+      await updateEmbeddedAgentWorker(sessionId, workerId, {
+        model: trimmedModel,
+        contextWindowTokens: draftContextWindowTokens ?? null,
+        reasoningEffort: draftReasoningEffort.trim() === '' ? null : draftReasoningEffort.trim(),
+      });
+    } catch (err) {
+      logger.error('Failed to update model/effort override', err);
+    } finally {
+      setParamsPending(false);
+    }
+  };
+
+  const handleUseAgentDefault = async (): Promise<void> => {
+    setParamsPending(true);
+    try {
+      // No `contextWindowTokens` key: clearing the model clears the window
+      // by construction (Ruling 4, `UpdateEmbeddedAgentWorkerBody`'s
+      // `{ model: null }` branch) -- sending one here would be rejected at
+      // the wire.
+      await updateEmbeddedAgentWorker(sessionId, workerId, { model: null, reasoningEffort: null });
+    } catch (err) {
+      logger.error('Failed to reset model/effort override', err);
+    } finally {
+      setParamsPending(false);
+    }
+  };
+
   const listRef = useRef<HTMLDivElement>(null);
 
   // Auto-scroll to the newest entry. Component-scoped DOM interaction is an
@@ -270,6 +395,13 @@ export function EmbeddedAgentWorkerView({
   // claim while the engine is still unknown.
   const isSdkEngine = embeddedAgentDefinition?.engine === 'claude-sdk';
   const isOpenaiApiEngine = embeddedAgentDefinition?.engine === 'openai-api';
+  // Engine-aware slash commands (#1572): the composer must never offer (or
+  // silently forward) a command the engine doesn't actually honour. Empty
+  // while the engine hasn't resolved yet -- same "don't render a possibly-
+  // wrong state before the engine is known" caution as the notices above.
+  const slashCommands = embeddedAgentDefinition
+    ? EMBEDDED_AGENT_SLASH_COMMANDS[embeddedAgentDefinition.engine]
+    : [];
   // `restoredMessageCount` is not reset to null when `restoring` flips
   // false (see its doc comment in embedded-agent-store.ts), so this is a
   // reliable "this activation/incarnation restored a non-empty prior
@@ -456,15 +588,25 @@ export function EmbeddedAgentWorkerView({
           says sending a message resumes it, so a duplicate manual action
           would be redundant. */}
       {currentExit !== null && currentExit.reason !== 'evicted' && (
-        <div className="flex items-center justify-between gap-3 px-4 py-2 bg-slate-800/60 border-t border-slate-700 text-sm text-gray-400 shrink-0">
-          <span>Agent process exited{currentExit.code !== null ? ` (code: ${currentExit.code})` : ''}.</span>
-          <button
-            onClick={restart}
-            className="flex items-center gap-1 text-xs px-2 py-1 rounded bg-slate-700 hover:bg-slate-600 text-gray-200"
-          >
-            <RefreshIcon className="w-3.5 h-3.5" />
-            Restart
-          </button>
+        <div className="px-4 py-2 bg-slate-800/60 border-t border-slate-700 text-sm text-gray-400 shrink-0">
+          <div className="flex items-center justify-between gap-3">
+            <span>Agent process exited{currentExit.code !== null ? ` (code: ${currentExit.code})` : ''}.</span>
+            <button
+              onClick={restart}
+              className="flex items-center gap-1 text-xs px-2 py-1 rounded bg-slate-700 hover:bg-slate-600 text-gray-200"
+            >
+              <RefreshIcon className="w-3.5 h-3.5" />
+              Restart
+            </button>
+          </div>
+          {currentExit.stderrTail !== undefined && (
+            <details className="mt-2">
+              <summary className="cursor-pointer text-xs text-gray-400">Show process output</summary>
+              <pre className="mt-1 max-h-48 overflow-auto whitespace-pre-wrap font-mono text-xs">
+                {currentExit.stderrTail}
+              </pre>
+            </details>
+          )}
         </div>
       )}
 
@@ -511,16 +653,87 @@ export function EmbeddedAgentWorkerView({
         <span>Compact automatically when the context fills up</span>
       </label>
 
+      {/* Model/effort override control (agent-surface.md Phase 3). A
+          `<button aria-expanded>` disclosure rather than a `<details>`
+          element: this file's transcript tests pin the accordion count via
+          `document.querySelectorAll('details')` / `document.querySelector
+          ('details')`, and a chrome-level `<details>` here would silently
+          change what those counts mean. `aria-expanded` on a real button is
+          also the more accessible shape for a toggle that isn't disclosing
+          document content.
+
+          The wording never names an engine or a mechanism, same as the
+          compaction toggle above: an Architect ruling (after a measured SDK
+          probe) established both parameters apply live on both engines, so
+          this is one uniform control regardless of which engine the worker
+          runs on. */}
+      <div className="border-t border-slate-800 shrink-0 text-xs text-gray-400">
+        <button
+          type="button"
+          aria-expanded={paramsOpen}
+          onClick={() => setParamsOpen((open) => !open)}
+          className="w-full px-4 py-1.5 flex items-center gap-2 text-left hover:bg-slate-800/60"
+        >
+          <span>Model and effort:</span>
+          <span className="text-gray-300">{paramsSummaryModel}</span>
+          <span className="text-gray-600">/</span>
+          <span className="text-gray-300">{paramsSummaryEffort}</span>
+          {hasParameterOverride === true && (
+            <span className="px-1 py-0.5 rounded bg-blue-900 text-blue-300 text-[10px] uppercase tracking-wide">
+              override
+            </span>
+          )}
+        </button>
+        {paramsOpen && (
+          <div className="px-4 pb-2 flex items-center gap-2 flex-wrap">
+            <AgentParameterFields
+              selection={embeddedAgentId ? { kind: 'embedded', embeddedAgentId } : undefined}
+              model={draftModel}
+              reasoningEffort={draftReasoningEffort}
+              contextWindowTokens={draftContextWindowTokens}
+              onModelChange={setDraftModel}
+              onReasoningEffortChange={setDraftReasoningEffort}
+              onContextWindowTokensChange={setDraftContextWindowTokens}
+              contextWindowTokensError={contextWindowTokensError}
+              disabled={paramsControlsDisabled}
+            />
+            <button
+              type="button"
+              onClick={() => void handleApplyParams()}
+              disabled={paramsControlsDisabled || draftModel.trim() === '' || contextWindowTokensInvalid}
+              className="text-xs px-2 py-1 rounded bg-blue-700 hover:bg-blue-600 disabled:opacity-50 text-white"
+            >
+              Apply
+            </button>
+            <button
+              type="button"
+              onClick={() => void handleUseAgentDefault()}
+              disabled={paramsControlsDisabled}
+              className="text-xs px-2 py-1 rounded bg-slate-700 hover:bg-slate-600 disabled:opacity-50 text-gray-200"
+            >
+              Use agent default
+            </button>
+          </div>
+        )}
+      </div>
+
+      <TodoPanel entries={entries} />
+
       <MessagePanel
         sessionId={sessionId}
         targetWorkerId={workerId}
         newMessage={null}
-        onSend={async (content) => {
-          await sendUserMessage(content);
+        onSend={async (content, files) => {
+          if (files && files.length > 0) {
+            await sendWorkerMessage(sessionId, workerId, content, files);
+          } else {
+            await sendUserMessage(content);
+          }
         }}
         onEscape={cancel}
-        slashCompletionEnabled={false}
-        attachmentsEnabled={false}
+        slashCompletionEnabled={true}
+        slashCommands={slashCommands}
+        attachmentsEnabled={true}
         cancelState={{ active: isTurnActive, onCancel: cancel }}
       />
     </div>
@@ -774,6 +987,14 @@ function NotificationRow({ entry }: { entry: NotificationEntry }) {
   );
 }
 
+/**
+ * `attachment.path` is an absolute server-side path; the chip shows only
+ * the final path segment, never the full path.
+ */
+function attachmentFileName(path: string): string {
+  return path.split(/[\\/]/).pop() || path;
+}
+
 interface ChatEntryRowProps {
   entry: OutsideEntry;
   /**
@@ -787,17 +1008,40 @@ interface ChatEntryRowProps {
 
 function ChatEntryRow({ entry, contextWindowTokens }: ChatEntryRowProps) {
   switch (entry.kind) {
-    case 'user-message':
+    case 'user-message': {
       if (entry.notification) {
         return <NotificationRow entry={entry as NotificationEntry} />;
       }
+      const attachments = entry.attachments;
+      const hasAttachments = attachments !== undefined && attachments.length > 0;
+      // File-only sends (no typed text) are reachable per MessagePanel's
+      // canSend logic, so an attachment-only message must not render an
+      // empty, invisible bubble alongside its chip row.
+      const showBubble = entry.text.length > 0 || !hasAttachments;
       return (
         <div className="flex justify-end">
-          <div className="min-w-0 max-w-[80%] rounded-lg bg-blue-600/80 text-white px-3 py-2 text-sm whitespace-pre-wrap [overflow-wrap:anywhere]">
-            {entry.text}
+          <div className="flex flex-col items-end gap-1 min-w-0 max-w-[80%]">
+            {hasAttachments && (
+              <div className="flex flex-wrap justify-end gap-1">
+                {attachments.map((attachment, index) => (
+                  <span
+                    key={`${attachment.path}-${index}`}
+                    className="inline-flex items-center gap-1 bg-slate-700/60 text-gray-300 text-xs rounded px-2 py-0.5"
+                  >
+                    {attachmentFileName(attachment.path)}
+                  </span>
+                ))}
+              </div>
+            )}
+            {showBubble && (
+              <div className="min-w-0 w-full rounded-lg bg-blue-600/80 text-white px-3 py-2 text-sm whitespace-pre-wrap [overflow-wrap:anywhere]">
+                {entry.text}
+              </div>
+            )}
           </div>
         </div>
       );
+    }
     case 'assistant-message':
       return (
         <div className="flex justify-start">
@@ -862,6 +1106,14 @@ function ChatEntryRow({ entry, contextWindowTokens }: ChatEntryRowProps) {
       return (
         <div className="text-sm text-gray-400 bg-slate-800/60 rounded px-3 py-2">
           Agent process exited{entry.code !== null ? ` (code: ${entry.code})` : ''}.
+          {entry.stderrTail !== undefined && (
+            <details className="mt-2">
+              <summary className="cursor-pointer text-xs text-gray-400">Show process output</summary>
+              <pre className="mt-1 max-h-48 overflow-auto whitespace-pre-wrap font-mono text-xs">
+                {entry.stderrTail}
+              </pre>
+            </details>
+          )}
         </div>
       );
     case 'window-clamp':

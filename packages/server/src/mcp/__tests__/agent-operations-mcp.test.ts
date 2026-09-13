@@ -36,4 +36,20 @@ describe('MCP_AGENT_OPERATIONS', () => {
   it("exposes 'restart' via restart_all_agents (Issue #1519)", () => {
     expect(MCP_AGENT_OPERATIONS.restart).toEqual({ exposed: true, via: 'restart_all_agents' });
   });
+
+  it("exposes 'setWorkerParameters' via set_agent_parameters (agent-surface.md Phase 3)", () => {
+    expect(MCP_AGENT_OPERATIONS.setWorkerParameters).toEqual({
+      exposed: true,
+      via: 'set_agent_parameters',
+    });
+  });
+
+  it('registers set_agent_parameters as a real tool (the via claim above is not self-referential)', async () => {
+    // The generic `via`-cross-check above would also pass if the table named
+    // a tool registered under some OTHER operation's name, since it only asks
+    // whether ANY token matches SOME registered tool. This asserts the
+    // specific registration.
+    const registeredNames = await getRegisteredMcpToolNames();
+    expect(registeredNames.has('set_agent_parameters')).toBe(true);
+  });
 });

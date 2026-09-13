@@ -54,11 +54,75 @@ export interface EmbeddedAgentWorker extends WorkerBase {
    * silently stripped at the boundary.
    */
   contextWindowTokens?: number;
+  /**
+   * EFFECTIVE model this worker runs on, resolved server-side (single
+   * writer: `resolveEffectiveModelParams` in
+   * `packages/server/src/services/embedded-agent-model-params.ts`) -- the
+   * client never resolves an override against the definition registry
+   * itself, exactly as with `contextWindowTokens` above.
+   *
+   * OPTIONAL for the SAME reason `contextWindowTokens` is: the value is
+   * UNRESOLVABLE when this worker carries no `model` override AND the
+   * definition cannot be looked up (a deleted definition, or the paused-
+   * session converter whose definition lookup is itself optional). Absent
+   * therefore means UNKNOWN, never "the definition's default" -- a control
+   * that edits this value must disable itself on absence rather than
+   * render a guess, the same discipline the compaction toggle already
+   * follows for an unknown wire value.
+   *
+   * Crossing the wire requires the matching field on
+   * `EmbeddedAgentWorkerSchema` (schemas/app-server-message.ts) -- that
+   * schema is a `strictObject`, so a type-only addition here would be
+   * silently stripped at the boundary.
+   */
+  model?: string;
+  /**
+   * EFFECTIVE reasoning effort, resolved server-side by the same single
+   * writer as `model` above. REQUIRED, unlike `model`: it resolves to
+   * `worker.reasoningEffort ?? null` and needs no definition lookup, so it
+   * is never unresolvable. `null` means no effort override is in effect.
+   *
+   * Crossing the wire requires the matching field on
+   * `EmbeddedAgentWorkerSchema` (schemas/app-server-message.ts) -- that
+   * schema is a `strictObject`, so a type-only addition here would be
+   * silently stripped at the boundary.
+   */
+  reasoningEffort: string | null;
+  /**
+   * Whether ANY of this worker's three override fields is set --
+   * `worker.model !== null || worker.reasoningEffort !== null ||
+   * worker.contextWindowTokens !== null`, computed server-side by
+   * `hasEmbeddedAgentParameterOverride`
+   * (`packages/server/src/services/embedded-agent-model-params.ts`).
+   *
+   * Exists so a surface can distinguish "override" from "definition
+   * default" WITHOUT reconstructing the precedence rules: the effective
+   * `model` above is the same string in both cases, so no client-side
+   * comparison can recover the distinction.
+   *
+   * Crossing the wire requires the matching field on
+   * `EmbeddedAgentWorkerSchema` (schemas/app-server-message.ts) -- that
+   * schema is a `strictObject`, so a type-only addition here would be
+   * silently stripped at the boundary.
+   */
+  hasParameterOverride: boolean;
 }
 
 export type Worker = AgentWorker | TerminalWorker | GitDiffWorker | EmbeddedAgentWorker;
 
-/** Workers backed by a PTY: can receive injected input / [internal:*] notifications. */
+/**
+ * Workers backed by a PTY: can receive raw injected input / [internal:*]
+ * notifications written directly to a terminal. This predicate is about the
+ * DELIVERY MECHANISM (a PTY write), not about which worker kinds are
+ * eligible to be a notification target -- see {@link canReceiveNotifications}
+ * for that. After the notification delivery seam (SessionManager.
+ * deliverWorkerNotification) was introduced, this predicate has two
+ * remaining production consumers outside its own definition: that seam's
+ * own internal PTY-vs-embedded branch, and send_session_message's
+ * explicit-target guard in mcp-server.ts (which combines it with
+ * {@link canReceiveSessionMessages} so terminal workers stay valid explicit
+ * targets).
+ */
 export function isPtyBackedWorker(w: Worker): w is AgentWorker | TerminalWorker {
   return w.type === 'agent' || w.type === 'terminal';
 }
@@ -74,6 +138,19 @@ export function isPtyBackedWorker(w: Worker): w is AgentWorker | TerminalWorker 
  */
 export function canReceiveSessionMessages(w: Worker): w is AgentWorker | EmbeddedAgentWorker {
   return w.type === 'agent' || w.type === 'embedded-agent';
+}
+
+/**
+ * Workers that can be the target of a `create_timer` / `create_conditional_wakeup`
+ * notification (delivered via SessionManager.deliverWorkerNotification).
+ * Broader than {@link isPtyBackedWorker}: an embedded-agent worker has no
+ * PTY at all, but the delivery seam routes to it through
+ * EmbeddedAgentWorkerService.sendSystemNotification instead of a PTY write,
+ * so it is eligible here even though isPtyBackedWorker(w) is false for it.
+ * git-diff workers remain excluded -- they represent no running process.
+ */
+export function canReceiveNotifications(w: Worker): w is AgentWorker | TerminalWorker | EmbeddedAgentWorker {
+  return w.type === 'agent' || w.type === 'terminal' || w.type === 'embedded-agent';
 }
 
 // Agent activity state (detected by parsing output)

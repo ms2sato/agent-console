@@ -16,7 +16,7 @@ import type { JobQueue } from './jobs/job-queue.js';
 import type { SessionRepository } from './repositories/session-repository.js';
 import type { UserRepository } from './repositories/user-repository.js';
 import type { SessionManager } from './services/session-manager.js';
-import type { runAsUser } from './services/privilege-elevation.js';
+import type { runAsUser, SpawnAsUserFn } from './services/privilege-elevation.js';
 import type { RepositoryManager } from './services/repository-manager.js';
 import type { NotificationManager } from './services/notifications/notification-manager.js';
 import type { AgentManager } from './services/agent-manager.js';
@@ -61,6 +61,7 @@ import { McpTokenRegistry } from './mcp/mcp-auth.js';
 import { SqliteTimerRepository } from './repositories/sqlite-timer-repository.js';
 import { SqliteUserRepository } from './repositories/sqlite-user-repository.js';
 import { SystemCapabilitiesService as SystemCapabilitiesServiceClass } from './services/system-capabilities-service.js';
+import { readDeployedSha } from './lib/deployed-sha.js';
 import { SingleUserMode, MultiUserMode } from './services/user-mode.js';
 import { SharedAccountRegistry } from './services/shared-account-registry.js';
 import { UsernameLookupService } from './services/username-lookup.js';
@@ -70,8 +71,8 @@ import { createLogger } from './lib/logger.js';
 import { TimerManager as TimerManagerClass } from './services/timer-manager.js';
 import { ConditionalWakeupManager as ConditionalWakeupManagerClass } from './services/conditional-wakeup-manager.js';
 import { InteractiveProcessManager as InteractiveProcessManagerClass } from './services/interactive-process-manager.js';
-import { routeProcessContent } from './services/process-output-router.js';
-import { writePtyNotification } from './lib/pty-notification.js';
+import { routeProcessContent, routeProcessExit } from './services/process-output-router.js';
+import type { PtyNotificationParams } from './lib/pty-notification.js';
 import { WorktreeService as WorktreeServiceClass } from './services/worktree-service.js';
 import { RepositorySlackIntegrationService as RepositorySlackIntegrationServiceClass } from './services/notifications/repository-slack-integration-service.js';
 import { AnnotationService as AnnotationServiceClass } from './services/annotation-service.js';
@@ -121,6 +122,14 @@ export interface AppContext {
 
   /** System capabilities (VS Code availability, etc.) */
   systemCapabilities: SystemCapabilitiesService;
+
+  /**
+   * SHA of the commit currently deployed at this instance, read once at
+   * startup from `<cwd>/.deploy-sha` (see `readDeployedSha`). `null` when no
+   * deploy marker is present (e.g. `bun run dev`). Exposed read-only via
+   * `GET /api/config`.
+   */
+  deployedSha: string | null;
 
   /** Agent definition management (built-in + custom agents) */
   agentManager: AgentManager;
@@ -398,10 +407,12 @@ export async function createAppContext(
   // 6.5. Create timer manager with persistence
   const timerRepository = new SqliteTimerRepository(db);
   const timerManager = new TimerManagerClass((timer) => {
-    try {
-      const writeInput = (data: string) =>
-        sessionManager.writeWorkerInput(timer.sessionId, timer.workerId, data);
-      writePtyNotification({
+    // TimerManagerClass's onTick callback is synchronous (fire-and-forget);
+    // deliverWorkerNotification is async, so this stays a `void`-forwarded
+    // promise, mirroring the try/catch-and-warn semantics the direct
+    // writePtyNotification call used to have.
+    void sessionManager
+      .deliverWorkerNotification(timer.sessionId, timer.workerId, {
         kind: 'internal-timer',
         tag: 'internal:timer',
         fields: {
@@ -410,14 +421,21 @@ export async function createAppContext(
           fireCount: String(timer.fireCount),
         },
         intent: 'inform',
-        writeInput,
+      })
+      .then((result) => {
+        if (!result.ok) {
+          logger.warn(
+            { timerId: timer.id, sessionId: timer.sessionId, error: result.error },
+            'Failed to deliver timer notification',
+          );
+        }
+      })
+      .catch((err) => {
+        logger.warn(
+          { timerId: timer.id, sessionId: timer.sessionId, err },
+          'Failed to deliver timer notification',
+        );
       });
-    } catch (err) {
-      logger.warn(
-        { timerId: timer.id, sessionId: timer.sessionId, err },
-        'Failed to deliver timer notification',
-      );
-    }
   }, timerRepository);
 
   // 6.6. Wire timer cleanup into session lifecycle
@@ -430,15 +448,16 @@ export async function createAppContext(
 
   // 6.6.2. Create conditional wakeup manager (in-memory, volatile)
   const conditionalWakeupManager = new ConditionalWakeupManagerClass((wakeup) => {
-    try {
-      const writeInput = (data: string) =>
-        sessionManager.writeWorkerInput(wakeup.sessionId, wakeup.workerId, data);
+    const message = (wakeup as any).notificationMessage ||
+      (wakeup.status === 'completed_true' ? wakeup.onTrueMessage :
+       wakeup.onTimeoutMessage || `Conditional wakeup timed out after ${wakeup.timeoutSeconds}s`);
 
-      const message = (wakeup as any).notificationMessage ||
-        (wakeup.status === 'completed_true' ? wakeup.onTrueMessage :
-         wakeup.onTimeoutMessage || `Conditional wakeup timed out after ${wakeup.timeoutSeconds}s`);
-
-      writePtyNotification({
+    // ConditionalWakeupManagerClass's onWakeup callback is synchronous
+    // (fire-and-forget); deliverWorkerNotification is async, so this stays a
+    // `void`-forwarded promise, mirroring the try/catch-and-warn semantics
+    // the direct writePtyNotification call used to have.
+    void sessionManager
+      .deliverWorkerNotification(wakeup.sessionId, wakeup.workerId, {
         kind: 'internal-conditional-wakeup',
         tag: 'internal:conditional-wakeup',
         fields: {
@@ -448,14 +467,21 @@ export async function createAppContext(
           message,
         },
         intent: 'inform',
-        writeInput,
+      })
+      .then((result) => {
+        if (!result.ok) {
+          logger.warn(
+            { wakeupId: wakeup.id, sessionId: wakeup.sessionId, error: result.error },
+            'Failed to deliver conditional wakeup notification',
+          );
+        }
+      })
+      .catch((err) => {
+        logger.warn(
+          { wakeupId: wakeup.id, sessionId: wakeup.sessionId, err },
+          'Failed to deliver conditional wakeup notification',
+        );
       });
-    } catch (err) {
-      logger.warn(
-        { wakeupId: wakeup.id, sessionId: wakeup.sessionId, err },
-        'Failed to deliver conditional wakeup notification',
-      );
-    }
   });
 
   // 6.6.3. Wire conditional wakeup cleanup into session lifecycle
@@ -470,9 +496,8 @@ export async function createAppContext(
   const processRouterDeps = {
     getResolver: (sessionId: string) =>
       sessionManager.getPathResolverForSessionId(sessionId),
-    writeInput: (sessionId: string, workerId: string, data: string) => {
-      sessionManager.writeWorkerInput(sessionId, workerId, data);
-    },
+    deliverNotification: (sessionId: string, workerId: string, params: PtyNotificationParams) =>
+      sessionManager.deliverWorkerNotification(sessionId, workerId, params),
     sendMessage: interSessionMessageService.sendMessage.bind(interSessionMessageService),
   };
 
@@ -495,28 +520,14 @@ export async function createAppContext(
       });
     },
     (process) => {
-      // Exit notifications stay on the PTY in both modes — they are short
-      // and message routing is unnecessary.
-      try {
-        const writeInput = (data: string) =>
-          sessionManager.writeWorkerInput(process.sessionId, process.workerId, data);
-        writePtyNotification({
-          kind: 'internal-process',
-          tag: 'internal:process',
-          fields: {
-            processId: process.id,
-            command: process.command,
-            message: `Process exited with code ${process.exitCode ?? 'unknown'}`,
-          },
-          intent: 'inform',
-          writeInput,
-        });
-      } catch (err) {
-        logger.warn(
-          { processId: process.id, sessionId: process.sessionId, err },
-          'Failed to deliver process exit notification',
-        );
-      }
+      // Exit notifications now flow through the same per-process delivery
+      // tail as stdout/response content (routeProcessExit enqueues behind
+      // it), so an exit fired right after a still-in-flight message-mode
+      // stdout write can no longer overtake it on the wire.
+      // InteractiveProcessManagerClass's onExit callback is synchronous
+      // (fire-and-forget); routeProcessExit is async, so this stays a
+      // `void`-forwarded promise.
+      void routeProcessExit(processRouterDeps, process);
     },
     // PTY message injector: echo process response to the worker's PTY (same
     // path as MessagePanel) when outputMode === 'pty'. The manager itself
@@ -583,9 +594,12 @@ export async function createAppContext(
     broadcastToApp: options?.broadcastToApp ?? (() => {}),
   });
 
-  // 9. Detect system capabilities
+  // 9. Detect system capabilities and read the deployed-commit marker (if any)
   const systemCapabilities = new SystemCapabilitiesServiceClass();
-  await systemCapabilities.detect();
+  const [, deployedSha] = await Promise.all([
+    systemCapabilities.detect(),
+    readDeployedSha(),
+  ]);
 
   logger.info('All services initialized');
 
@@ -597,6 +611,7 @@ export async function createAppContext(
     repositoryManager,
     notificationManager,
     systemCapabilities,
+    deployedSha,
     agentManager,
     embeddedAgentManager,
     agentDirectory,
@@ -638,6 +653,12 @@ export interface CreateTestContextOptions {
   notificationManager?: NotificationManager;
   /** Custom system capabilities service for mocking */
   systemCapabilities?: SystemCapabilitiesService;
+  /**
+   * Deployed SHA to inject (default: `null`, matching production's
+   * no-marker / `bun run dev` state). Avoids touching the filesystem in
+   * tests that need a non-null value.
+   */
+  deployedSha?: string | null;
   /** Custom user mode for mocking */
   userMode?: UserMode;
   /** Custom shared account registry for mocking */
@@ -664,6 +685,17 @@ export interface CreateTestContextOptions {
    * want a real filesystem write should inject an always-success fake here.
    */
   runAsUserImpl?: typeof runAsUser;
+  /**
+   * Test seam for `EmbeddedAgentWorkerService`'s subprocess spawn. Threaded
+   * straight through to `SessionManager.create()`'s own `spawnAsUserFn`
+   * seam. Defaults to `undefined`, which leaves `SessionManager` on its own
+   * default (the real `spawnAsUser`) -- production and every existing test
+   * context are unaffected. Without this, tests that need to fake an
+   * embedded-agent subprocess spawn while going through `createTestContext`
+   * have to construct their own `SessionManager.create(...)` directly,
+   * duplicating this function's context wiring.
+   */
+  spawnAsUserFn?: SpawnAsUserFn;
   /** Callback to broadcast messages to app WebSocket clients (default: no-op). */
   broadcastToApp?: (msg: AppServerMessage) => void;
 }
@@ -768,6 +800,7 @@ export async function createTestContext(
     // unchanged for tests that do not override it.
     ...(overrides?.getMcpBaseUrl ? { getMcpBaseUrl: overrides.getMcpBaseUrl } : {}),
     runAsUserImpl: overrides?.runAsUserImpl,
+    spawnAsUserFn: overrides?.spawnAsUserFn,
     notificationManager,
     annotationService,
     workerOutputFileManager,
@@ -859,6 +892,7 @@ export async function createTestContext(
     repositoryManager,
     notificationManager,
     systemCapabilities,
+    deployedSha: overrides?.deployedSha ?? null,
     agentManager,
     embeddedAgentManager,
     agentDirectory,

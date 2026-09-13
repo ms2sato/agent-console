@@ -10,6 +10,7 @@ import {
 } from '@agent-console/shared';
 import { FormField, Input, Textarea } from '../ui/FormField';
 import { FormOverlay } from '../ui/Spinner';
+import { isPositiveInteger, POSITIVE_INTEGER_MESSAGE } from '../../lib/positive-integer';
 
 /**
  * UI grouping of `EMBEDDED_AGENT_TOOL_NAMES` into "read-only", "command
@@ -22,7 +23,12 @@ import { FormOverlay } from '../ui/Spinner';
  * risk profile (creating/modifying files) is distinct from Bash's (running
  * arbitrary shell commands) and warrants its own warning copy.
  */
-export const READ_ONLY_TOOL_NAMES: readonly EmbeddedAgentToolName[] = ['Read', 'Glob', 'Grep'];
+export const READ_ONLY_TOOL_NAMES: readonly EmbeddedAgentToolName[] = [
+  'Read',
+  'Glob',
+  'Grep',
+  'TodoWrite',
+];
 export const COMMAND_EXECUTION_TOOL_NAMES: readonly EmbeddedAgentToolName[] = ['Bash'];
 export const FILE_MODIFICATION_TOOL_NAMES: readonly EmbeddedAgentToolName[] = ['Write', 'Edit'];
 
@@ -73,6 +79,10 @@ const EmbeddedAgentFormRawSchema = v.object({
   // apiKeyRef is optional; empty string means "not set" (converted to
   // undefined/null on submit), same pattern as continueTemplate in AgentForm.
   apiKeyRef: v.optional(v.pipe(v.string(), v.trim())),
+  // Capability flag: whether the provider can accept image content parts.
+  // Unchecked (false) is converted to "omit the key" on submit -- see
+  // AddEmbeddedAgentForm/EditEmbeddedAgentForm's handleSubmit.
+  supportsImages: v.optional(v.boolean()),
 
   systemPrompt: v.optional(v.pipe(v.string(), v.trim())),
 
@@ -83,8 +93,8 @@ const EmbeddedAgentFormRawSchema = v.object({
       v.string(),
       v.trim(),
       v.check(
-        (val) => !val || (/^\d+$/.test(val) && Number(val) >= 1),
-        'Must be a positive integer'
+        (val) => !val || (/^\d+$/.test(val) && isPositiveInteger(Number(val))),
+        POSITIVE_INTEGER_MESSAGE
       )
     )
   ),
@@ -105,8 +115,8 @@ const EmbeddedAgentFormRawSchema = v.object({
       v.string(),
       v.trim(),
       v.check(
-        (val) => !val || (/^\d+$/.test(val) && Number(val) >= 1),
-        'Must be a positive integer'
+        (val) => !val || (/^\d+$/.test(val) && isPositiveInteger(Number(val))),
+        POSITIVE_INTEGER_MESSAGE
       )
     )
   ),
@@ -172,6 +182,7 @@ export function EmbeddedAgentForm({
       baseUrl: '',
       model: '',
       apiKeyRef: '',
+      supportsImages: false,
       systemPrompt: '',
       maxToolIterationsInput: '',
       enabledTools: [...DEFAULT_EMBEDDED_AGENT_ENABLED_TOOLS],
@@ -240,6 +251,17 @@ export function EmbeddedAgentForm({
             />
             <p className="text-xs text-gray-500 mt-1">
               Leave empty for local LLMs that don't require authentication.
+            </p>
+          </FormField>
+
+          <FormField error={errors.supportsImages as FieldError | undefined}>
+            <label className="flex items-center gap-2 text-sm">
+              <input type="checkbox" {...register('supportsImages')} />
+              Provider can see images
+            </label>
+            <p className="text-xs text-gray-500 mt-1">
+              When on, image attachments are sent to the model as image content. Leave off for
+              providers that cannot see images.
             </p>
           </FormField>
 

@@ -62,7 +62,7 @@ async function execute(args: unknown, ctx: BuiltinToolContext, signal?: AbortSig
   }
   const { path: rawPath, limit, offset } = parsed.value;
 
-  const confinement = await resolveConfinedPath(rawPath, ctx.locationPath);
+  const confinement = await resolveConfinedPath(rawPath, ctx.locationPath, ctx.attachmentRoots ?? []);
   if (!confinement.ok) {
     return { ok: false, result: confinement.message };
   }

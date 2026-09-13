@@ -5,6 +5,7 @@ import {
   CreateWorktreeSessionRequestSchema,
   CreateQuickSessionRequestSchema,
   UpdateSessionRequestSchema,
+  UpdateSessionMemoRequestSchema,
   RestoreInfoMessageSchema,
 } from '../session';
 
@@ -706,6 +707,45 @@ describe('UpdateSessionRequestSchema', () => {
       branch: 'feature/test',
     });
     // The schema is a strictObject: unknown keys are rejected, not stripped.
+    expect(result.success).toBe(false);
+  });
+});
+
+describe('UpdateSessionMemoRequestSchema (Issue #1569, R3)', () => {
+  it('should validate a valid content string', () => {
+    const result = v.safeParse(UpdateSessionMemoRequestSchema, {
+      content: '# My memo\n\nSome notes.',
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.output.content).toBe('# My memo\n\nSome notes.');
+    }
+  });
+
+  it('should accept an empty string content (deletion is a route-level decision, not a schema-level one)', () => {
+    const result = v.safeParse(UpdateSessionMemoRequestSchema, {
+      content: '',
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it('should reject a missing content field', () => {
+    const result = v.safeParse(UpdateSessionMemoRequestSchema, {});
+    expect(result.success).toBe(false);
+  });
+
+  it('should reject an unknown extra field (strict schema)', () => {
+    const result = v.safeParse(UpdateSessionMemoRequestSchema, {
+      content: 'hello',
+      title: 'not allowed',
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('should reject a non-string content field', () => {
+    const result = v.safeParse(UpdateSessionMemoRequestSchema, {
+      content: 123,
+    });
     expect(result.success).toBe(false);
   });
 });

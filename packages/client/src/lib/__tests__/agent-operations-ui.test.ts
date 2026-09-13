@@ -54,6 +54,7 @@ describe('UI_AGENT_OPERATIONS', () => {
       createSessionWithAgent: 'CreateWorktreeForm.tsx',
       addWorkerToSession: 'AddAgentWorkerMenu.tsx',
       restart: 'ActiveSessionsSidebar.tsx',
+      setWorkerParameters: 'EmbeddedAgentWorkerView.tsx',
     };
 
     for (const [operation, fileName] of Object.entries(componentFileClaims)) {

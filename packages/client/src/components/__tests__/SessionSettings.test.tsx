@@ -6,6 +6,7 @@ import { SessionSettings } from '../SessionSettings';
 import { WorktreeDeletionTasksContext, SessionStopTasksContext } from '../../contexts/root-contexts';
 import type { UseWorktreeDeletionTasksReturn } from '../../hooks/useWorktreeDeletionTasks';
 import type { UseSessionStopTasksReturn } from '../../hooks/useSessionStopTasks';
+import type { Session } from '@agent-console/shared';
 
 // Helper to create mock Response
 function createMockResponse(body: unknown, options: { status?: number; ok?: boolean } = {}) {
@@ -267,6 +268,155 @@ describe('SessionSettings', () => {
 
       const pauseButton = screen.getByRole('button', { name: /Pause/ });
       expect((pauseButton as HTMLButtonElement).disabled).toBe(false);
+    });
+  });
+
+  describe('currentSelection derivation threading to RestartSessionDialog (#1592)', () => {
+    function createEmbeddedPrimarySession(): Session {
+      return {
+        type: 'quick',
+        id: 'test-session-id',
+        locationPath: '/tmp/test-session-id',
+        status: 'active',
+        activationState: 'running',
+        createdAt: '2026-01-01T00:00:00Z',
+        workers: [
+          {
+            id: 'w1',
+            type: 'embedded-agent',
+            name: 'Embedded Agent',
+            createdAt: '2026-01-01T00:00:00Z',
+            embeddedAgentId: 'embedded-1',
+            activated: true,
+            autoCompaction: true, reasoningEffort: null, hasParameterOverride: false,
+          },
+        ],
+        isShared: false,
+        recoveryState: 'healthy',
+      };
+    }
+
+    function createAgentPrimarySession(): Session {
+      return {
+        type: 'quick',
+        id: 'test-session-id',
+        locationPath: '/tmp/test-session-id',
+        status: 'active',
+        activationState: 'running',
+        createdAt: '2026-01-01T00:00:00Z',
+        workers: [
+          {
+            id: 'w1',
+            type: 'agent',
+            name: 'Claude Code',
+            createdAt: '2026-01-01T00:00:00Z',
+            agentId: 'claude-code',
+            activated: true,
+          },
+        ],
+        isShared: false,
+        recoveryState: 'healthy',
+      };
+    }
+
+    async function openRestartDialog() {
+      await act(async () => {
+        fireEvent.click(screen.getByTitle('Session settings'));
+      });
+      await act(async () => {
+        fireEvent.click(screen.getByText('Restart Session'));
+      });
+    }
+
+    it('derives currentSelection={kind:"embedded",...} from an embedded-primary session -- the dialog shows the same-definition case, NOT a disabled notice (#1592 removed R6(c))', async () => {
+      mockFetch.mockImplementation((url: string) => {
+        if (url.includes('/pr-link')) return Promise.resolve(prLinkResponse);
+        if (url.includes('/embedded-agents')) {
+          return Promise.resolve(createMockResponse({ embeddedAgents: [{ id: 'embedded-1', name: 'Local GPT' }] }));
+        }
+        if (url.includes('/agents')) {
+          return Promise.resolve(createMockResponse({ agents: [] }));
+        }
+        return Promise.resolve(new Response());
+      });
+
+      await renderWithRouterAndContext(
+        <SessionSettings {...defaultProps} session={createEmbeddedPrimarySession()} />,
+        mockDeletionTasks
+      );
+
+      await openRestartDialog();
+
+      await waitFor(() => {
+        expect(screen.getByText('The conversation is kept.')).toBeTruthy();
+      });
+
+      // The dialog is uniform now: no more disabled-with-notice state.
+      expect(
+        screen.queryByText(/Restarting an embedded-agent session's primary worker isn't supported yet/)
+      ).toBeNull();
+      const restartButton = screen.getByText('Restart') as HTMLButtonElement;
+      expect(restartButton.disabled).toBe(false);
+    });
+
+    it('derives currentSelection={kind:"terminal",...} from an agent-primary session', async () => {
+      mockFetch.mockImplementation((url: string) => {
+        if (url.includes('/pr-link')) return Promise.resolve(prLinkResponse);
+        if (url.includes('/embedded-agents')) {
+          return Promise.resolve(createMockResponse({ embeddedAgents: [] }));
+        }
+        if (url.includes('/agents')) {
+          return Promise.resolve(createMockResponse({ agents: [{ id: 'claude-code', name: 'Claude Code', isBuiltIn: true }] }));
+        }
+        return Promise.resolve(new Response());
+      });
+
+      await renderWithRouterAndContext(
+        <SessionSettings {...defaultProps} session={createAgentPrimarySession()} />,
+        mockDeletionTasks
+      );
+
+      await openRestartDialog();
+
+      await waitFor(() => {
+        expect(screen.getByText('Claude Code (built-in)')).toBeTruthy();
+      });
+
+      const newSessionButton = screen.getByText('New Session') as HTMLButtonElement;
+      expect(newSessionButton.disabled).toBe(false);
+      expect(screen.getByText('Continue (-c)')).toBeTruthy();
+    });
+
+    it('leaves currentSelection undefined (no notice, not disabled) when the session has no data yet (session undefined)', async () => {
+      mockFetch.mockImplementation((url: string) => {
+        if (url.includes('/pr-link')) return Promise.resolve(prLinkResponse);
+        if (url.includes('/embedded-agents')) {
+          return Promise.resolve(createMockResponse({ embeddedAgents: [] }));
+        }
+        if (url.includes('/agents')) {
+          return Promise.resolve(createMockResponse({ agents: [{ id: 'claude-code', name: 'Claude Code', isBuiltIn: true }] }));
+        }
+        return Promise.resolve(new Response());
+      });
+
+      // defaultProps carries no `session` prop -> RestartSessionDialog's
+      // `currentSelection` is undefined (don't disable while unknown).
+      await renderWithRouterAndContext(
+        <SessionSettings {...defaultProps} />,
+        mockDeletionTasks
+      );
+
+      await openRestartDialog();
+
+      await waitFor(() => {
+        expect(screen.getByText('Claude Code (built-in)')).toBeTruthy();
+      });
+
+      expect(
+        screen.queryByText(/Restarting an embedded-agent session's primary worker isn't supported yet/)
+      ).toBeNull();
+      const newSessionButton = screen.getByText('New Session') as HTMLButtonElement;
+      expect(newSessionButton.disabled).toBe(false);
     });
   });
 });

@@ -35,9 +35,15 @@ import { getCurrentBranch } from '../lib/git.js';
 import { CLAUDE_CODE_AGENT_ID } from '../services/agent-manager.js';
 import type { SuggestSessionMetadataFn } from '../services/session-metadata-suggester.js';
 import type { InterSessionMessageService } from '../services/inter-session-message-service.js';
-import { writePtyNotification, buildReplyInstructions } from '../lib/pty-notification.js';
+import { buildReplyInstructions } from '../lib/pty-notification.js';
 import { getRemoteUrl, GitError } from '../lib/git.js';
 import { createLogger } from '../lib/logger.js';
+import {
+  emitArtifactCreated,
+  emitArtifactDeleted,
+  emitBookmarkCreated,
+  emitBookmarkDeleted,
+} from '../lib/artifact-bookmark-triggers.js';
 import { serverConfig } from '../lib/server-config.js';
 import { resolveRequestUsername } from '../services/resolve-spawn-username.js';
 import {
@@ -53,7 +59,13 @@ import {
   createMcpAuthMiddleware,
 } from './mcp-auth.js';
 import type { Session, Worker, AgentActivityState, AppServerMessage } from '@agent-console/shared';
-import { isPtyBackedWorker, canReceiveSessionMessages, CreateBookmarkRequestSchema } from '@agent-console/shared';
+import {
+  isPtyBackedWorker,
+  canReceiveSessionMessages,
+  canReceiveNotifications,
+  CreateBookmarkRequestSchema,
+  UpdateEmbeddedAgentWorkerRequestSchema,
+} from '@agent-console/shared';
 
 const logger = createLogger('mcp');
 
@@ -516,6 +528,117 @@ export function createMcpApp(deps: McpDependencies): Hono {
     },
   );
 
+  // ---------- Tool: set_orchestrator_session ----------
+
+  // Eleventh session-claiming tool (checkCallerOwnsSession), alongside
+  // send_session_message, delegate_to_worktree, remove_worktree,
+  // create_conditional_wakeup, run_process, create_html_artifact,
+  // delete_html_artifact, create_bookmark, delete_bookmark, and
+  // clear_orchestrator_session. No mechanical registry enumerates these
+  // tools; this comment is the convention-only marker.
+  mcpServer.tool(
+    'set_orchestrator_session',
+    'Flag this session as its repository\'s designated Orchestrator. Webhook-triggered inbound events (e.g. a ' +
+      'labeled GitHub Issue matching the repository\'s configured trigger labels) route to whichever session ' +
+      'currently holds this flag. Raising the flag moves it here even if another session held it before -- a ' +
+      'repository has exactly one designated session at a time. Call this at startup (First Action) so restarting ' +
+      'into a new session id re-flags automatically.',
+    {
+      sessionId: z.string().describe(
+        "The calling session's ID, used to resolve which repository to flag and to verify ownership. Use your own AGENT_CONSOLE_SESSION_ID environment variable.",
+      ),
+    },
+    async ({ sessionId }) => {
+      try {
+        const session = sessionManager.getSession(sessionId);
+        if (!session) {
+          return errorResult(`Session not found: ${sessionId}`);
+        }
+        if (session.type !== 'worktree' || !session.repositoryId) {
+          return errorResult(`Session ${sessionId} has no repository; only a worktree session can hold the Orchestrator designation`);
+        }
+        if (!session.createdBy) {
+          return errorResult(
+            `Session ${sessionId} has no createdBy; setting the Orchestrator designation from an ownerless (legacy) session is not possible`,
+          );
+        }
+        const authError = checkCallerOwnsSession(
+          getMcpCallerIdentity(),
+          { sessionId, createdBy: session.createdBy },
+          mcpAuthMode,
+          { toolName: 'set_orchestrator_session' },
+        );
+        if (authError) return errorResult(authError.error);
+
+        const updated = await repositoryManager.setOrchestratorSession(session.repositoryId, sessionId);
+        if (!updated) {
+          return errorResult(`Repository not found: ${session.repositoryId}`);
+        }
+
+        return textResult({ repositoryId: session.repositoryId, orchestratorSessionId: sessionId });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Unknown error';
+        logger.error({ err, sessionId }, 'set_orchestrator_session failed');
+        return errorResult(message);
+      }
+    },
+  );
+
+  // ---------- Tool: clear_orchestrator_session ----------
+
+  // Twelfth session-claiming tool (checkCallerOwnsSession), alongside
+  // send_session_message, delegate_to_worktree, remove_worktree,
+  // create_conditional_wakeup, run_process, create_html_artifact,
+  // delete_html_artifact, create_bookmark, delete_bookmark, and
+  // set_orchestrator_session. No mechanical registry enumerates these
+  // tools; this comment is the convention-only marker.
+  mcpServer.tool(
+    'clear_orchestrator_session',
+    'Clear this session\'s Orchestrator designation for its repository -- but only if this session still holds ' +
+      'the flag (a stale clear from a session that has already been superseded is a no-op, distinguishable in the ' +
+      'response). Call this on graceful shutdown if you want the repository to have no designated Orchestrator ' +
+      'until a new one flags itself.',
+    {
+      sessionId: z.string().describe(
+        "The calling session's ID. Use your own AGENT_CONSOLE_SESSION_ID environment variable.",
+      ),
+    },
+    async ({ sessionId }) => {
+      try {
+        const session = sessionManager.getSession(sessionId);
+        if (!session) {
+          return errorResult(`Session not found: ${sessionId}`);
+        }
+        if (session.type !== 'worktree' || !session.repositoryId) {
+          return errorResult(`Session ${sessionId} has no repository; only a worktree session can hold the Orchestrator designation`);
+        }
+        if (!session.createdBy) {
+          return errorResult(
+            `Session ${sessionId} has no createdBy; clearing the Orchestrator designation from an ownerless (legacy) session is not possible`,
+          );
+        }
+        const authError = checkCallerOwnsSession(
+          getMcpCallerIdentity(),
+          { sessionId, createdBy: session.createdBy },
+          mcpAuthMode,
+          { toolName: 'clear_orchestrator_session' },
+        );
+        if (authError) return errorResult(authError.error);
+
+        const result = await repositoryManager.clearOrchestratorSession(session.repositoryId, sessionId);
+        if (!result.repository) {
+          return errorResult(`Repository not found: ${session.repositoryId}`);
+        }
+
+        return textResult({ repositoryId: session.repositoryId, cleared: result.cleared });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Unknown error';
+        logger.error({ err, sessionId }, 'clear_orchestrator_session failed');
+        return errorResult(message);
+      }
+    },
+  );
+
   // ---------- Tool: list_sessions ----------
 
   mcpServer.tool(
@@ -691,77 +814,74 @@ export function createMcpApp(deps: McpDependencies): Hono {
           resolver,
         });
 
-        // 5. Deliver the notification to the target worker.
+        // 5. Deliver the notification to the target worker via the single
+        //    delivery seam (SessionManager.deliverWorkerNotification), which
+        //    branches on the target's worker kind internally (PTY write vs
+        //    EmbeddedAgentWorkerService.sendSystemNotification -- the latter
+        //    also activates a dormant worker on delivery, so no separate
+        //    activateEmbeddedAgentWorker call is needed here).
         const senderTitle = senderSession.title ?? fromSessionId;
+        const notificationParams = {
+          kind: 'internal-message' as const,
+          tag: 'internal:message' as const,
+          fields: {
+            source: 'session',
+            from: fromSessionId,
+            summary: `Message from session ${senderTitle}`,
+            path: result.path,
+          },
+          intent: 'triage' as const,
+        };
 
         if (resolvedWorker?.type === 'embedded-agent') {
-          // Embedded branch: activate-on-delivery, then deliver the SAME
-          // notification template a PTY-backed worker would receive, via
-          // sendEmbeddedAgentSystemNotification instead of a PTY write.
-          // Unlike the PTY branch below, this is a HARD failure -- no
-          // best-effort try/catch -- the tool call fails with a classified
-          // message rather than silently dropping the notification.
-          try {
-            await sessionManager.activateEmbeddedAgentWorker(toSessionId, resolvedWorkerId);
-          } catch (err) {
-            const message =
-              err instanceof EmbeddedAgentActivationError ? err.message : GENERIC_EMBEDDED_ACTIVATION_FAILURE_MESSAGE;
-            logger.warn(
-              { sessionId: toSessionId, workerId: resolvedWorkerId, err },
-              'Embedded-agent activation failed on send_session_message path',
-            );
-            return errorResult(`Failed to deliver message to embedded agent: ${message}`);
-          }
-
-          const deliveryResult = await sessionManager.sendEmbeddedAgentSystemNotification(
+          // Embedded branch: a HARD failure -- no best-effort try/catch --
+          // the tool call fails with a classified message rather than
+          // silently dropping the notification. `replyToSessionId` is
+          // threaded through so the delivered/persisted text carries reply
+          // instructions, matching what the PTY branch below writes
+          // separately.
+          const deliveryResult = await sessionManager.deliverWorkerNotification(
             toSessionId,
             resolvedWorkerId,
-            {
-              kind: 'internal-message',
-              tag: 'internal:message',
-              fields: {
-                source: 'session',
-                from: fromSessionId,
-                summary: `Message from session ${senderTitle}`,
-                path: result.path,
-              },
-              intent: 'triage',
-            },
+            notificationParams,
             { replyToSessionId: fromSessionId },
           );
           if (!deliveryResult.ok) {
             logger.warn(
-              { toSessionId, toWorkerId: resolvedWorkerId, code: deliveryResult.code },
+              { toSessionId, toWorkerId: resolvedWorkerId, error: deliveryResult.error },
               'Embedded-agent message delivery failed on send_session_message path',
             );
             return errorResult(`Failed to deliver message to embedded agent: ${deliveryResult.error}`);
           }
         } else {
-          // PTY notification (best-effort -- message file is already written)
-          try {
-            const writeInput = (data: string) =>
-              sessionManager.writeWorkerInput(toSessionId, resolvedWorkerId, data);
-
-            writePtyNotification({
-              kind: 'internal-message',
-              tag: 'internal:message',
-              fields: {
-                source: 'session',
-                from: fromSessionId,
-                summary: `Message from session ${senderTitle}`,
-                path: result.path,
-              },
-              intent: 'triage',
-              writeInput,
-            });
-
-            // Append reply instructions so the receiving agent knows how to respond
-            writeInput(buildReplyInstructions(fromSessionId));
-          } catch (notifyErr) {
+          // PTY notification (best-effort -- message file is already
+          // written, so a delivery failure here is logged, not surfaced as
+          // a tool error). The seam's PTY-backed branch does not compose
+          // reply instructions (see deliverWorkerNotification's doc
+          // comment) -- send_session_message is the sole caller that wants
+          // them, so it appends them itself, as a second write, only after
+          // the notification itself was delivered successfully (mirroring
+          // the pre-seam behavior, where a failed notification write never
+          // reached the reply-instructions write either).
+          const deliveryResult = await sessionManager.deliverWorkerNotification(
+            toSessionId,
+            resolvedWorkerId,
+            notificationParams,
+          );
+          if (!deliveryResult.ok) {
             logger.warn(
-              { err: notifyErr, toSessionId, toWorkerId: resolvedWorkerId },
+              { toSessionId, toWorkerId: resolvedWorkerId, error: deliveryResult.error },
               'PTY notification failed (message file was written successfully)',
             );
+          } else {
+            try {
+              sessionManager.writeWorkerInput(toSessionId, resolvedWorkerId, buildReplyInstructions(fromSessionId));
+            } catch (notifyErr) {
+              logger.warn(
+                { err: notifyErr, toSessionId, toWorkerId: resolvedWorkerId },
+                'Reply instructions write failed (message file was written successfully)',
+              );
+            }
           }
         }
 
@@ -1375,7 +1495,9 @@ export function createMcpApp(deps: McpDependencies): Hono {
     'create_timer',
     'Create a periodic timer that sends notifications to a worker at specified intervals. ' +
       'Use this to set up recurring callbacks for monitoring tasks, checking CI status, etc. ' +
-      'The timer fires a [internal:timer] PTY notification on each tick. ' +
+      'The worker can be an agent, terminal, or embedded-agent worker. ' +
+      'The timer fires an [internal:timer] notification on each tick -- delivered as a PTY write for ' +
+      'agent/terminal workers, or as a queued turn for embedded-agent workers. ' +
       'Timers are volatile and will not survive server restarts.',
     {
       sessionId: z.string().describe(
@@ -1409,9 +1531,9 @@ export function createMcpApp(deps: McpDependencies): Hono {
         if (!worker) {
           return errorResult(`Worker ${workerId} not found in session ${sessionId}`);
         }
-        if (!isPtyBackedWorker(worker)) {
+        if (!canReceiveNotifications(worker)) {
           return errorResult(
-            `Worker ${workerId} in session ${sessionId} does not support PTY notifications: requires a PTY-backed worker (agent/terminal)`,
+            `Worker ${workerId} in session ${sessionId} cannot receive notifications: requires an agent, terminal, or embedded-agent worker`,
           );
         }
 
@@ -1466,6 +1588,7 @@ export function createMcpApp(deps: McpDependencies): Hono {
     'create_conditional_wakeup',
     'Create a conditional wakeup that checks a shell command at intervals and sends notification only when the condition becomes true (exit 0) or timeout is reached. ' +
       'Silent polling preserves LLM context windows by avoiding unnecessary notifications. ' +
+      'The worker can be an agent, terminal, or embedded-agent worker. ' +
       'Returns a wakeup ID for cancellation. The wakeup auto-stops after sending one notification.',
     {
       sessionId: z.string().describe(
@@ -1506,9 +1629,9 @@ export function createMcpApp(deps: McpDependencies): Hono {
         if (!worker) {
           return errorResult(`Worker ${workerId} not found in session ${sessionId}`);
         }
-        if (!isPtyBackedWorker(worker)) {
+        if (!canReceiveNotifications(worker)) {
           return errorResult(
-            `Worker ${workerId} in session ${sessionId} does not support PTY notifications: requires a PTY-backed worker (agent/terminal)`,
+            `Worker ${workerId} in session ${sessionId} cannot receive notifications: requires an agent, terminal, or embedded-agent worker`,
           );
         }
 
@@ -1611,7 +1734,8 @@ export function createMcpApp(deps: McpDependencies): Hono {
     'run_process',
     'Start an interactive script connected to a session. ' +
       'The script drives workflow via STDOUT and blocks on STDIN waiting for responses via write_process_response. ' +
-      'Set outputMode="message" to keep long-paragraph script I/O out of the calling agent\'s PTY conversation. ' +
+      'The worker can be an agent, terminal, or embedded-agent worker. ' +
+      'Set outputMode="message" to keep long-paragraph script I/O out of the calling agent\'s conversation. ' +
       'Processes are volatile and will not survive server restarts.',
     {
       command: z
@@ -1637,9 +1761,10 @@ export function createMcpApp(deps: McpDependencies): Hono {
         .optional()
         .describe(
           'Routing mode for script I/O. ' +
-            '"pty" (default): script stdout is delivered as [internal:process] PTY notifications with full content. ' +
+            '"pty" (default): script stdout is delivered as an [internal:process] notification with full content -- ' +
+            'a PTY write for agent/terminal workers, or a queued turn for embedded-agent workers. ' +
             '"message": script stdout and write_process_response content are routed via inter-session message files ' +
-            '(toSessionId/toWorkerId match this run_process call); the PTY receives only a brief notification with ' +
+            '(toSessionId/toWorkerId match this run_process call); the worker receives only a brief notification with ' +
             'the message file path and byte count. ' +
             'Use "message" for long-paragraph interactive scripts (e.g., acceptance-check.js, sprint-retro.js) to keep the conversation clean.',
         ),
@@ -1654,9 +1779,9 @@ export function createMcpApp(deps: McpDependencies): Hono {
         if (!worker) {
           return errorResult(`Worker ${workerId} not found in session ${sessionId}`);
         }
-        if (!isPtyBackedWorker(worker)) {
+        if (!canReceiveNotifications(worker)) {
           return errorResult(
-            `Worker ${workerId} in session ${sessionId} does not support PTY notifications: requires a PTY-backed worker (agent/terminal)`,
+            `Worker ${workerId} in session ${sessionId} cannot receive notifications: requires an agent, terminal, or embedded-agent worker`,
           );
         }
 
@@ -1951,8 +2076,9 @@ export function createMcpApp(deps: McpDependencies): Hono {
   // Sixth session-claiming tool (checkCallerOwnsSession), alongside
   // send_session_message, delegate_to_worktree, remove_worktree,
   // create_conditional_wakeup, run_process, delete_html_artifact,
-  // create_bookmark, and delete_bookmark. No mechanical registry
-  // enumerates these tools; this comment is the convention-only marker.
+  // create_bookmark, delete_bookmark, set_orchestrator_session, and
+  // clear_orchestrator_session. No mechanical registry enumerates these
+  // tools; this comment is the convention-only marker.
   mcpServer.tool(
     'create_html_artifact',
     'Upload an HTML document (optionally with inline JavaScript/CSS) and receive a URL to view it in a browser. ' +
@@ -2020,7 +2146,7 @@ export function createMcpApp(deps: McpDependencies): Hono {
           'HTML artifact created',
         );
 
-        broadcastToApp({ type: 'artifact-created', sessionId, artifactId: artifact.id });
+        emitArtifactCreated(broadcastToApp, { sessionId, artifactId: artifact.id });
 
         // AGENT_CONSOLE_PUBLIC_ORIGIN is the ONLY source for an absolute
         // URL here. MCP tool calls arrive over the localhost dial-back
@@ -2042,8 +2168,9 @@ export function createMcpApp(deps: McpDependencies): Hono {
   // Seventh session-claiming tool (checkCallerOwnsSession), alongside
   // send_session_message, delegate_to_worktree, remove_worktree,
   // create_conditional_wakeup, run_process, create_html_artifact,
-  // create_bookmark, and delete_bookmark. No mechanical registry
-  // enumerates these tools; this comment is the convention-only marker.
+  // create_bookmark, delete_bookmark, set_orchestrator_session, and
+  // clear_orchestrator_session. No mechanical registry enumerates these
+  // tools; this comment is the convention-only marker.
   mcpServer.tool(
     'delete_html_artifact',
     'Permanently delete a previously created HTML artifact. This is irreversible: any URL already shared for ' +
@@ -2098,18 +2225,9 @@ export function createMcpApp(deps: McpDependencies): Hono {
 
         logger.info({ artifactId, sessionId, userId: session.createdBy }, 'HTML artifact deleted via MCP');
 
-        // The trigger's sessionId names the OWNING session (whose panel
-        // query this artifact was listed under) -- resolved from the
-        // record, never from the deleting call's own sessionId param. The
-        // two coincide for create but diverge whenever a caller deletes an
-        // artifact from a different session than the one that created it
-        // (e.g. an orchestrator session cleaning up a delegate session's
-        // artifacts) -- using the deleting session there would tell the
-        // WRONG panel to refetch and leave the artifact's actual owning
-        // panel stale. Falls back to the deleting session only in the
-        // (currently unreachable in production, since create_html_artifact
-        // always sets sourceSessionId) case of a null sourceSessionId.
-        broadcastToApp({ type: 'artifact-deleted', sessionId: artifact.sourceSessionId ?? sessionId, artifactId });
+        // Owning-session resolution + fallback rationale: see
+        // lib/artifact-bookmark-triggers.ts's module doc comment.
+        emitArtifactDeleted(broadcastToApp, artifact, artifactId, sessionId);
 
         return textResult({ deleted: true, artifactId });
       } catch (err) {
@@ -2125,8 +2243,9 @@ export function createMcpApp(deps: McpDependencies): Hono {
   // Eighth session-claiming tool (checkCallerOwnsSession), alongside
   // send_session_message, delegate_to_worktree, remove_worktree,
   // create_conditional_wakeup, run_process, create_html_artifact,
-  // delete_html_artifact, and delete_bookmark. No mechanical registry
-  // enumerates these tools; this comment is the convention-only marker.
+  // delete_html_artifact, delete_bookmark, set_orchestrator_session, and
+  // clear_orchestrator_session. No mechanical registry enumerates these
+  // tools; this comment is the convention-only marker.
   mcpServer.tool(
     'create_bookmark',
     'Register a URL (plus an optional title) as a bookmark, visible in the session sidebar. ' +
@@ -2190,7 +2309,7 @@ export function createMcpApp(deps: McpDependencies): Hono {
           'Bookmark created via MCP',
         );
 
-        broadcastToApp({ type: 'bookmark-created', sessionId, bookmarkId: created.id });
+        emitBookmarkCreated(broadcastToApp, { sessionId, bookmarkId: created.id });
 
         // `create` returns the server-internal BookmarkRecord (wire summary
         // + userId + sourceSessionId); strip both before crossing the wire
@@ -2210,8 +2329,9 @@ export function createMcpApp(deps: McpDependencies): Hono {
   // Ninth session-claiming tool (checkCallerOwnsSession), alongside
   // send_session_message, delegate_to_worktree, remove_worktree,
   // create_conditional_wakeup, run_process, create_html_artifact,
-  // delete_html_artifact, and create_bookmark. No mechanical registry
-  // enumerates these tools; this comment is the convention-only marker.
+  // delete_html_artifact, create_bookmark, set_orchestrator_session, and
+  // clear_orchestrator_session. No mechanical registry enumerates these
+  // tools; this comment is the convention-only marker.
   mcpServer.tool(
     'delete_bookmark',
     'Permanently delete a previously registered bookmark.',
@@ -2264,16 +2384,178 @@ export function createMcpApp(deps: McpDependencies): Hono {
 
         logger.info({ bookmarkId, sessionId, userId: session.createdBy }, 'Bookmark deleted via MCP');
 
-        // Same rationale as delete_html_artifact: the trigger's sessionId
-        // names the OWNING session (resolved from the record), not the
-        // deleting call's own sessionId param -- see ArtifactRecord's doc
-        // comment for the full explanation of why these diverge.
-        broadcastToApp({ type: 'bookmark-deleted', sessionId: bookmark.sourceSessionId ?? sessionId, bookmarkId });
+        // Owning-session resolution + fallback rationale: see
+        // lib/artifact-bookmark-triggers.ts's module doc comment.
+        emitBookmarkDeleted(broadcastToApp, bookmark, bookmarkId, sessionId);
 
         return textResult({ deleted: true, bookmarkId });
       } catch (err) {
         const message = err instanceof Error ? err.message : 'Unknown error';
         logger.error({ err, bookmarkId, sessionId }, 'delete_bookmark failed');
+        return errorResult(message);
+      }
+    },
+  );
+
+  // ---------- Tool: set_agent_parameters ----------
+
+  // Tenth session-claiming tool (checkCallerOwnsSession), alongside
+  // send_session_message, delegate_to_worktree, remove_worktree,
+  // create_conditional_wakeup, run_process, create_html_artifact,
+  // delete_html_artifact, create_bookmark, delete_bookmark,
+  // set_orchestrator_session, and clear_orchestrator_session. No mechanical
+  // registry enumerates these tools; this comment is the convention-only
+  // marker.
+  //
+  // The ONLY tool in this file whose guard is STRICTER than
+  // checkCallerOwnsSession alone -- see the own-worker and tokenless blocks
+  // in the handler for why.
+  mcpServer.tool(
+    'set_agent_parameters',
+    "Change your own embedded-agent worker's model, reasoning effort, or context window while you are running. " +
+      'The change is persisted immediately and takes effect no later than your next response; it survives a ' +
+      'restart of your process. Pass null for a field to clear the override and go back to your agent ' +
+      "definition's own default. Setting a model requires contextWindowTokens too (pass null to declare no " +
+      'window, which leaves compaction inert); clearing the model clears the window with it. Only your OWN ' +
+      'worker can be targeted -- omit sessionId and workerId and they default to your own worker.',
+    {
+      sessionId: z.string().optional().describe(
+        "Your own session's ID. Omit it: it defaults to your own session. Any other session is refused.",
+      ),
+      workerId: z.string().optional().describe(
+        "Your own worker's ID. Omit it: it defaults to your own worker. Any other worker is refused.",
+      ),
+      model: z.string().nullable().optional().describe(
+        'The model to run on. Omit to leave it unchanged; null clears the override.',
+      ),
+      reasoningEffort: z.string().nullable().optional().describe(
+        'The reasoning-effort level. Omit to leave it unchanged; null clears the override. Accepted values ' +
+          'depend on the engine and are rejected with the accepted list when they do not match.',
+      ),
+      contextWindowTokens: z.number().int().positive().nullable().optional().describe(
+        'The context-window size to measure usage against, in tokens. Required alongside a non-null model ' +
+          '(pass null to declare no window); must be omitted otherwise.',
+      ),
+    },
+    async ({
+      sessionId: requestedSessionId,
+      workerId: requestedWorkerId,
+      model,
+      reasoningEffort,
+      contextWindowTokens,
+    }) => {
+      const caller = getMcpCallerIdentity();
+
+      // The tokenless refusal runs FIRST, ahead of every other check,
+      // because the id defaults below are derived from the caller identity:
+      // with no identity there is nothing to resolve them from. That
+      // ordering is also what makes the tokenless case the ONLY way the
+      // defaults can be missing.
+      //
+      // A TOKENLESS caller is refused here even in `off` / `warn` mode,
+      // where every other tool in this file proceeds. That is deliberate
+      // and is not a mode check that was forgotten: this tool's entire
+      // contract is "act on the caller's OWN worker", and a caller with no
+      // verified identity has no own worker for the contract to name. There
+      // is nothing to fall back to -- proceeding would mean accepting the
+      // caller's own claim about which worker is theirs, which is exactly
+      // the #878 boundary this tool sits on.
+      //
+      // Safe in every mode because embedded-agent activation mints a token
+      // UNCONDITIONALLY (see EmbeddedAgentWorkerService.runActivation's
+      // "Step 3: mint the MCP token", which hard-fails activation when the
+      // session has no owner to mint from) rather than only under
+      // AUTH_MODE=multi-user. A real embedded caller therefore always
+      // presents one. Do NOT "fix" this to match the other tools.
+      if (!caller) {
+        return errorResult(
+          'set_agent_parameters requires a verified caller identity: it acts on your own worker, and a call ' +
+            'with no bearer token has no own worker to act on. Embedded agents are given one automatically.',
+        );
+      }
+
+      // Both ids default to the caller's own, which is the ONLY pair this
+      // tool ever accepts -- so requiring them was asking the caller to
+      // restate something the bearer token already proves. It was not merely
+      // redundant: a `claude-sdk` agent has no shell tool, so it cannot read
+      // its own AGENT_CONSOLE_SESSION_ID / AGENT_CONSOLE_WORKER_ID, and
+      // "pass your AGENT_CONSOLE_* values" was not actionable unaided.
+      //
+      // Supplying them is still allowed and still checked: the self-target
+      // refusal below is unchanged, so a supplied-but-foreign pair is
+      // refused exactly as before rather than being quietly overwritten with
+      // the caller's own.
+      const sessionId = requestedSessionId ?? caller.sessionId;
+      const workerId = requestedWorkerId ?? caller.workerId;
+
+      try {
+        const session = sessionManager.getSession(sessionId);
+        if (!session) {
+          return errorResult(`Session not found: ${sessionId}`);
+        }
+
+        const authError = checkCallerOwnsSession(
+          caller,
+          { sessionId, createdBy: session.createdBy },
+          mcpAuthMode,
+          { toolName: 'set_agent_parameters' },
+        );
+        if (authError) return errorResult(authError.error);
+
+        // checkCallerOwnsSession proves only that the caller owns the
+        // SESSION, so on its own it would accept a SIBLING worker in the same
+        // session. This tool is self-targeting only.
+        if (caller.sessionId !== sessionId || caller.workerId !== workerId) {
+          return errorResult(
+            `set_agent_parameters can only target your own worker (session ${caller.sessionId}, worker ${caller.workerId}); ` +
+              `refusing to change session ${sessionId} worker ${workerId}`,
+          );
+        }
+
+        const worker = session.workers.find((w) => w.id === workerId);
+        if (!worker) {
+          return errorResult(`Worker ${workerId} not found in session ${sessionId}`);
+        }
+        if (worker.type !== 'embedded-agent') {
+          // Classified rather than a generic "wrong worker type": the caller
+          // is a real agent that simply has no runtime parameter path, and
+          // the actionable alternative is a restart.
+          return errorResult(
+            `Worker ${workerId} is a ${worker.type} worker: terminal agents have no runtime parameter path; ` +
+              'restart with a model instead.',
+          );
+        }
+
+        // Ruling 4's coupling is enforced by the SAME wire schema the REST
+        // PATCH uses, rather than restated here -- one writer for the rule,
+        // and identical messages on both surfaces. Only keys the caller
+        // actually sent are put in the object: absent and null are different
+        // instructions, and rebuilding with `undefined` values would collapse
+        // one into the other.
+        const patch = {
+          ...(model !== undefined ? { model } : {}),
+          ...(reasoningEffort !== undefined ? { reasoningEffort } : {}),
+          ...(contextWindowTokens !== undefined ? { contextWindowTokens } : {}),
+        };
+        const parsed = v.safeParse(UpdateEmbeddedAgentWorkerRequestSchema, patch);
+        if (!parsed.success) {
+          return errorResult(parsed.issues.map((issue) => issue.message).join('; '));
+        }
+
+        const updated = await sessionManager.setEmbeddedAgentParameters(sessionId, workerId, parsed.output);
+        if (!updated) {
+          // Unreachable through the checks above (session, worker and type
+          // are all already resolved); a null here would mean the worker went
+          // away between them and the write.
+          return errorResult(`Worker ${workerId} in session ${sessionId} is no longer settable`);
+        }
+
+        logger.info({ sessionId, workerId }, 'Embedded-agent parameters set via MCP');
+
+        return textResult({ worker: updated });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Unknown error';
+        logger.error({ err, sessionId, workerId }, 'set_agent_parameters failed');
         return errorResult(message);
       }
     },

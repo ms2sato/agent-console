@@ -2,11 +2,13 @@ import { describe, it, expect } from 'bun:test';
 import { readFileSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { execSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
   isReExportOnlyContent,
   requiresTestCoverage,
   runLanguageCheck,
+  runEmbeddedAgentStdoutWritersCheck,
   findTestFiles,
   isCommentOnlyDiff,
   isCommentOnlyFileDiff,
@@ -466,6 +468,41 @@ describe('runLanguageCheck', () => {
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
+  });
+});
+
+describe('runEmbeddedAgentStdoutWritersCheck', () => {
+  // Unlike runLanguageCheck's scratch-copy fixture, this script imports the
+  // `typescript` npm package (via scripts/schema-source-normalize.mjs).
+  // Bun resolves a bare specifier by walking up the ancestor directories of
+  // the *script file's own location*, not the spawned process's cwd -- a
+  // scratch fixture rooted outside this repository (e.g. under os.tmpdir())
+  // never reaches this repo's node_modules/typescript and instead silently
+  // resolves an unrelated globally-cached package of the same name. The
+  // real repository root is therefore used directly as repoRoot for the
+  // positive-path assertion below, mirroring
+  // scripts/__tests__/generate-schema-version.test.mjs's "CLI wiring
+  // against the real schemas dir" test, which takes the same approach for
+  // the same dependency reason.
+  const REAL_REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../../..');
+
+  it('returns exitCode 0 with only the allowlisted writer against the real repository', () => {
+    const result = runEmbeddedAgentStdoutWritersCheck({ repoRoot: REAL_REPO_ROOT });
+    expect(result.spawnFailed).toBe(false);
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain('packages/embedded-agent/src/main.ts');
+    expect(result.stdout).toContain('allowlisted');
+  });
+
+  it('flags spawnFailed when the runtime binary cannot be spawned', () => {
+    const result = runEmbeddedAgentStdoutWritersCheck({
+      repoRoot: REAL_REPO_ROOT,
+      binary: 'definitely-not-a-real-binary-xyz',
+    });
+    expect(result.spawnFailed).toBe(true);
+    expect(result.exitCode).toBe(1);
+    expect(result.stdout).toBe('');
+    expect(result.stderr).toMatch(/Failed to spawn 'definitely-not-a-real-binary-xyz'/);
   });
 });
 

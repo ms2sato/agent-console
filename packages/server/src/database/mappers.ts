@@ -435,6 +435,11 @@ export function toRepositoryRow(repository: PersistedRepository): NewRepository 
     env_vars: repository.envVars ?? null,
     description: repository.description ?? null,
     default_agent_id: repository.defaultAgentId ?? null,
+    // `orchestrator_session_id` / `issue_trigger_labels` (added in v40) have no
+    // corresponding fields in the legacy `PersistedRepository` JSON shape this
+    // mapper migrates from; they always start unset for a migrated repository.
+    orchestrator_session_id: null,
+    issue_trigger_labels: null,
   };
 }
 
@@ -455,6 +460,8 @@ export function toRepository(row: RepositoryRow): Repository {
     envVars: row.env_vars ?? null,
     description: row.description ?? null,
     defaultAgentId: row.default_agent_id ?? null,
+    orchestratorSessionId: row.orchestrator_session_id ?? null,
+    issueTriggerLabels: row.issue_trigger_labels ?? null,
     // `clonedSourceRepoPath` is a derived field (not persisted). The serving
     // path (REST / WS) enriches the value via `withRepositoryRemote`; this
     // mapper sets the safe default so the type contract is satisfied at the
@@ -547,6 +554,8 @@ export function toEmbeddedAgentRow(def: EmbeddedAgentDefinition): NewEmbeddedAge
     provider_base_url: def.engine === 'openai-api' ? def.provider.baseUrl : null,
     provider_model: def.provider.model,
     provider_api_key_ref: def.engine === 'openai-api' ? (def.provider.apiKeyRef ?? null) : null,
+    // Same null-for-claude-sdk convention as provider_base_url/provider_api_key_ref.
+    provider_supports_images: def.engine === 'openai-api' ? (def.provider.supportsImages ? 1 : 0) : null,
     system_prompt: def.systemPrompt ?? null,
     max_tool_iterations: def.maxToolIterations ?? null,
     enabled_tools: def.enabledTools !== undefined ? JSON.stringify(def.enabledTools) : null,
@@ -653,6 +662,9 @@ export function toEmbeddedAgentDefinition(row: EmbeddedAgentRow): EmbeddedAgentD
         baseUrl: row.provider_base_url,
         model: row.provider_model,
         apiKeyRef: row.provider_api_key_ref ?? undefined,
+        // Absent/false both mean "cannot see images" -- never write a literal
+        // `false`, same "absent = default" convention as apiKeyRef (#1571).
+        supportsImages: row.provider_supports_images === 1 ? true : undefined,
       },
     };
   } else if (row.engine === 'claude-sdk') {

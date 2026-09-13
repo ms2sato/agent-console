@@ -12,25 +12,28 @@ import { NdjsonLineSplitter, type EmbeddedAgentEvent } from '@agent-console/shar
 import * as v from 'valibot';
 import { EmbeddedAgentCommandSchema } from '@agent-console/shared';
 import { AgentLoop } from './agent-loop.js';
-import { COMPACT_TOOL_NAME } from './compact-tool.js';
-import type { Engine } from './engine-types.js';
+import { buildUserMessageContent } from './attachment-content.js';
+import { COMPACT_TOOL_NAME, COMPACT_TOOL_UNSUPPORTED_RESULT } from './compact-tool.js';
+import type { AnyEngine, ClaudeSdkEngine } from './engine-types.js';
 import { loadCompactionPrompt } from './compaction-prompt.js';
 import { McpToolClient, type ToolExecutor } from './mcp.js';
 import { OpenAIChatAdapter } from './providers/openai-chat-adapter.js';
-import type { ProviderAdapter, ToolDefinition } from './providers/types.js';
+import type { ChatMessage, ProviderAdapter, ToolDefinition } from './providers/types.js';
 import { SdkEngine, type SdkEngineDeps } from './sdk-engine.js';
 import { probeSdkSession, type SdkSessionProbe } from './sdk-session-preflight.js';
 import {
   assembleSystemPrompt,
   composeSdkSystemPromptAppend,
+  findGitRoot,
   loadInstructions,
-  loadOptInInstructions,
-  type InstructionSegment,
+  RULES_LAYER_CAP_BYTES,
+  rulesLayerBytesUsed,
   type LoadInstructionsParams,
   type LoadInstructionsResult,
 } from './system-prompt.js';
 import { resolveEnabledBuiltinTools } from './tools/index.js';
 import { CompositeToolExecutor } from './tools/composite-executor.js';
+import { RuleActivator } from './rule-activation.js';
 
 const EXIT_OK = 0;
 const EXIT_FATAL = 1;
@@ -40,6 +43,8 @@ const KNOWN_COMMAND_TYPES = new Set([
   'user-message',
   'cancel',
   'set-auto-compaction',
+  'set-model-params',
+  'compact',
   'shutdown',
 ]);
 // 500ms buffer over Bash's process-group KILL_GRACE_MS so the SIGTERM ->
@@ -100,21 +105,19 @@ export interface McpClientLike extends ToolExecutor {
 /** Injectable construction of the loop's external dependencies. */
 export interface LoopFactories {
   createMcpClient(): McpClientLike;
-  createAdapter(opts: { baseUrl: string; apiKey?: string }): ProviderAdapter;
+  createAdapter(opts: { baseUrl: string; apiKey?: string; conversationId?: string }): ProviderAdapter;
+  /** Both engines' single instruction-loading seam as of Phase A (#1343)
+   * (R1) -- the claude-sdk engine no longer has a separate opt-in-only
+   * factory; `loadOptInInstructions` is no longer a member of this interface,
+   * which makes the old SDK-arm call path structurally uncallable rather than
+   * merely untested (see main.test.ts's polarity pin). */
   loadInstructions(params: LoadInstructionsParams): Promise<LoadInstructionsResult>;
-  /** DI seam for the claude-sdk engine's opt-in `instructions[]` layer only
-   * (no AGENTS.md/CLAUDE.md auto-discovery -- see system-prompt.ts's
-   * `loadOptInInstructions` doc comment). Defaults to `loadOptInInstructions`. */
-  loadOptInInstructions(
-    cwd: string,
-    instructionsList: string[] | undefined,
-  ): Promise<InstructionSegment[]>;
   loadCompactionPrompt: typeof loadCompactionPrompt;
   /** DI seam for tests: the claude-sdk engine's construction (which
    * synchronously calls the real SDK's `query()`), so a test can inject a
    * factory that throws without needing to reach through to `SdkEngine`'s
    * own `queryFn` seam. Defaults to `(deps) => new SdkEngine(deps)`. */
-  createSdkEngine(deps: SdkEngineDeps): Engine;
+  createSdkEngine(deps: SdkEngineDeps): ClaudeSdkEngine;
   /** DI seam for the R1 resume pre-flight, which otherwise reads the real
    * `~/.claude` of whoever is running. Defaults to `probeSdkSession`. */
   probeSdkSession(sdkSessionId: string, cwd: string): Promise<SdkSessionProbe>;
@@ -137,7 +140,7 @@ function delay(ms: number): Promise<void> {
  * with exit code 1.
  */
 export async function runLoop(io: LoopIO, factories: LoopFactories): Promise<number> {
-  let loop: Engine | null = null;
+  let loop: AnyEngine | null = null;
   let currentTurn: Promise<void> | null = null;
   let turnActive = false;
 
@@ -194,7 +197,7 @@ export async function runLoop(io: LoopIO, factories: LoopFactories): Promise<num
         }
         turnActive = true;
         currentTurn = loop
-          .runTurn(command.id, command.text)
+          .runTurn(command.id, command.text, command.attachments)
           .catch((err) => {
             io.logError(`Turn failed: ${err instanceof Error ? err.message : String(err)}`);
           })
@@ -209,9 +212,80 @@ export async function runLoop(io: LoopIO, factories: LoopFactories): Promise<num
         // very next boundary already honours it.
         loop.setAutoCompaction(command.enabled);
         break;
+      case 'set-model-params':
+        // agent-surface.md Phase 3. Deliberately NOT gated on `turnActive`,
+        // same reasoning as `set-auto-compaction` above: the openai-api loop
+        // reads these values when it composes each provider request, so a
+        // mid-turn change lands on the very next iteration of the turn
+        // already running. Gating would silently drop the change for the
+        // whole length of a long turn -- exactly the case a mid-run change
+        // exists for.
+        //
+        // Two of these arriving in quick succession ARE serialised, on both
+        // engines, so the LIVE session settles on the later of the two. The
+        // openai-api engine needs nothing for this -- its apply is a
+        // synchronous field replacement with nothing to interleave -- while
+        // the SDK engine runs two awaited live writes per call and so chains
+        // them (`SdkEngine.setModelParams`; the persisted row converging at
+        // the next activation is NOT enough on its own, since the event
+        // stream would meanwhile report `applied: true` for the update that
+        // lost the race).
+        loop.setModelParams({
+          model: command.model,
+          reasoningEffort: command.reasoningEffort,
+          contextWindowTokens: command.contextWindowTokens,
+        });
+        break;
       case 'cancel':
         loop.cancel();
         break;
+      /**
+       * Slash commands, `console`-handled arm (#1572): a manual `/compact`
+       * intercepted server-side and delivered as its own command, never as
+       * a `user-message`. Gated on `turnActive` exactly like `user-message`
+       * -- a compaction outside any turn is still "the loop is busy" from
+       * this dispatcher's point of view.
+       */
+      case 'compact': {
+        if (turnActive) {
+          io.logError('Ignoring compact command received while a turn is active');
+          break;
+        }
+        switch (loop.kind) {
+          case 'openai-api':
+            turnActive = true;
+            currentTurn = loop
+              .compactNow()
+              .catch((err) => {
+                io.logError(`Manual compact failed: ${err instanceof Error ? err.message : String(err)}`);
+              })
+              .finally(() => {
+                turnActive = false;
+              });
+            break;
+          case 'claude-sdk': {
+            // The server never sends this command to a claude-sdk worker
+            // today -- its own `/compact` is `engine`-handled instead -- but
+            // `ClaudeSdkEngine` has no `compactNow` member at all, so this
+            // arm is reachable by the type system's own exhaustiveness
+            // requirement rather than defensive coding. Decision 4's
+            // "declines honestly": an explicit unsupported result, never a
+            // silent no-op, brackets exactly like `AgentLoop.compactNow`'s
+            // own `emitTurnError` (state active -> turn-error -> state idle)
+            // so the console sees the same shape it would for a compaction
+            // failure.
+            io.writeEvent({ v: 1, type: 'state', state: 'active' });
+            io.writeEvent({ v: 1, type: 'turn-error', turnId: crypto.randomUUID(), message: COMPACT_TOOL_UNSUPPORTED_RESULT });
+            io.writeEvent({ v: 1, type: 'state', state: 'idle' });
+            break;
+          }
+          default: {
+            const _exhaustive: never = loop;
+            void _exhaustive;
+          }
+        }
+        break;
+      }
       case 'shutdown':
         return await gracefulExit(loop, currentTurn);
     }
@@ -225,7 +299,7 @@ async function initializeLoop(
   io: LoopIO,
   factories: LoopFactories,
   init: InitCommand,
-): Promise<Engine | null> {
+): Promise<AnyEngine | null> {
   if (init.engine === 'openai-api') {
     const instructions = await factories.loadInstructions({
       cwd: init.context.cwd,
@@ -240,13 +314,26 @@ async function initializeLoop(
     const mcp = factories.createMcpClient();
     let tools: ToolDefinition[];
     let executor: ToolExecutor;
+    // Phase B (#1343 R1): the SAME `instructions` result computed above for
+    // the system prompt -- never a second `loadInstructions` call -- is
+    // where `scopedRules` comes from. The remaining lazy-activation budget is
+    // the rules-layer cap minus whatever the eager unscoped layer already
+    // spent (`rulesLayerBytesUsed`), so the two allowances can never overlap.
+    const gitRoot = (await findGitRoot(init.context.cwd)) ?? init.context.cwd;
+    const ruleActivator = new RuleActivator({
+      scopedRules: instructions.scopedRules ?? [],
+      gitRoot,
+      cwd: init.context.cwd,
+      remainingBudgetBytes: RULES_LAYER_CAP_BYTES - rulesLayerBytesUsed(instructions),
+    });
     try {
       await mcp.connect(init.mcp.baseUrl, init.mcp.token);
       const builtins = resolveEnabledBuiltinTools(init.enabledTools);
       const composite = new CompositeToolExecutor({
         mcp,
         builtins,
-        ctx: { locationPath: init.context.cwd },
+        ctx: { locationPath: init.context.cwd, attachmentRoots: init.context.attachmentRoots },
+        ruleActivator,
         onNameCollision: (name) =>
           io.logError(`Builtin tool "${name}" collides with an MCP tool of the same name; builtin wins`),
       });
@@ -278,6 +365,7 @@ async function initializeLoop(
     const adapter = factories.createAdapter({
       baseUrl: init.provider.baseUrl,
       apiKey: init.provider.apiKey,
+      conversationId: init.context.workerId,
     });
 
     let restoredConversation = init.restoredConversation;
@@ -296,6 +384,50 @@ async function initializeLoop(
       }
     }
 
+    // Phase B (#1343 R4), openai-api only: a rule already delivered by a
+    // PRIOR incarnation -- its content already present in the conversation
+    // the model is resuming into -- must not be re-activated in THIS
+    // incarnation. `init.activatedRuleNames` is the structural fact the
+    // server-side restore reconstruction (restore.ts's `reconstructConversation`,
+    // via `EmbeddedAgentWorkerService`) collected from the restored window's
+    // `tool-result` events' own `activatedRules` field -- NEVER parsed out
+    // of `restoredConversation`'s text. A restored `role:'tool'` message
+    // whose content happens to CONTAIN the literal `[rule activated: ...]`
+    // substring (another tool's own output, coincidentally or maliciously)
+    // has no effect here: nothing in this file inspects that text. claude-sdk
+    // resume is explicitly out of scope here: the SDK resumes its own
+    // session state rather than being handed a reconstruction, so
+    // `activatedRuleNames` is never representable on that arm (see the
+    // type's doc comment), and a repeated injection there is an accepted,
+    // documented cost-only duplication (see rule-activation.ts).
+    if (init.activatedRuleNames !== undefined && init.activatedRuleNames.length > 0) {
+      ruleActivator.seedActivated(init.activatedRuleNames);
+    }
+
+    // Message-attachment resolution: turn each restored user message's
+    // `attachments` reference into real content, through the SAME
+    // `buildUserMessageContent` seam the live turn path (agent-loop.ts's
+    // `runUserTurn`) uses -- the one shared resolve-then-build call site the
+    // live and restore paths are both required to go through. Non-user
+    // entries (system/assistant/tool) have no attachment concept and pass
+    // through structurally unchanged.
+    let resolvedConversation: ChatMessage[] | undefined;
+    if (restoredConversation) {
+      resolvedConversation = await Promise.all(
+        restoredConversation.map(async (msg): Promise<ChatMessage> => {
+          if (msg.role !== 'user') return msg;
+          if (!msg.attachments || msg.attachments.length === 0) return { role: 'user', content: msg.content };
+          const content = await buildUserMessageContent(
+            msg.content,
+            msg.attachments,
+            init.context.attachmentRoots ?? [],
+            init.provider.supportsImages ?? false,
+          );
+          return { role: 'user', content };
+        }),
+      );
+    }
+
     const loop = new AgentLoop({
       adapter,
       model: init.provider.model,
@@ -308,7 +440,9 @@ async function initializeLoop(
       emit: (event) => io.writeEvent(event),
       systemPrompt,
       maxToolIterations: init.maxToolIterations,
-      restoredConversation,
+      restoredConversation: resolvedConversation,
+      attachmentRoots: init.context.attachmentRoots ?? [],
+      supportsImages: init.provider.supportsImages ?? false,
       // The restore-boundary seed: openai-api arm only, so `init` is narrowed
       // to it by the engine check that already gates this whole branch. Absent when the
       // restored log held no reading -- the loop's estimator fallback stands.
@@ -398,20 +532,51 @@ async function initializeLoop(
   // the live-probed finding this decouples from. Unlike the openai-api
   // branch above, this function does not emit `ready` itself for this arm.
   //
-  // Instruction loader (§4's compatibility matrix, corrected): the SDK's own
-  // AGENTS.md/CLAUDE.md auto-discovery is deliberately disabled (never runs
-  // for this engine -- see the design doc's corrected row). Only the
-  // definition's explicit opt-in `instructions[]` list is honored, loaded
-  // here (this function is already async, same shape as the openai-api
-  // branch's own `loadInstructions` call above) and composed into the SDK's
-  // `systemPrompt.append` alongside the definition system prompt, BEFORE
-  // `SdkEngine` is constructed -- `SdkEngine`'s constructor stays fully
-  // synchronous (it calls the SDK's own `query()` immediately), so the
+  // Instruction loader (Phase A, R1 -- supersedes the §4
+  // compatibility matrix's original "opt-in instructions[] only" row): the
+  // SDK's own NATIVE settings-derived discovery stays disabled
+  // (`settingSources: []`, unchanged by this PR -- see sdk-engine.ts's
+  // `buildOptions`), but this engine now calls the SAME `loadInstructions`
+  // the openai-api branch above does -- global layer, chain (git-root-to-cwd
+  // AGENTS.md/CLAUDE.md), opt-in `instructions[]`, and the `.claude/rules`
+  // layer -- loaded here (this function is already async, same shape as the
+  // openai-api branch's own `loadInstructions` call above) and composed into
+  // the SDK's `systemPrompt.append` alongside the definition system prompt,
+  // BEFORE `SdkEngine` is constructed -- `SdkEngine`'s constructor stays
+  // fully synchronous (it calls the SDK's own `query()` immediately), so the
   // already-loaded content is passed in as a plain string rather than a file
   // list for the engine to read itself.
   try {
-    const optInSegments = await factories.loadOptInInstructions(init.context.cwd, init.instructions);
-    const systemPromptAppend = composeSdkSystemPromptAppend(optInSegments, init.systemPrompt);
+    const instructions = await factories.loadInstructions({
+      cwd: init.context.cwd,
+      instructionsList: init.instructions,
+    });
+    const systemPromptAppend = composeSdkSystemPromptAppend(instructions, init.systemPrompt);
+
+    // Phase B (#1343 R1), claude-sdk slice: the SAME `instructions` result
+    // computed above for `systemPromptAppend` -- never a second
+    // `loadInstructions` call -- is where `scopedRules` comes from, mirroring
+    // the openai-api arm above exactly. The remaining lazy-activation budget
+    // is the rules-layer cap minus whatever the eager unscoped layer already
+    // spent (`rulesLayerBytesUsed`), so the two allowances can never overlap.
+    //
+    // R4, claude-sdk resume: deliberately NO seeding here, unlike the
+    // openai-api arm's `ruleActivator.seedActivated(...)` call above. The SDK
+    // session already holds the earlier injection in its own resumed
+    // transcript, and this engine has no reconstructed conversation to scan
+    // markers out of -- a fresh `RuleActivator` with an empty activated-set
+    // is constructed on EVERY incarnation, including a resume, and a resumed
+    // incarnation may therefore inject a rule a second time. This is an
+    // accepted, documented cost-only duplication (see rule-activation.ts's
+    // module doc comment) -- do NOT add seeding logic here; that would be a
+    // second writer of state the SDK itself owns.
+    const sdkGitRoot = (await findGitRoot(init.context.cwd)) ?? init.context.cwd;
+    const ruleActivator = new RuleActivator({
+      scopedRules: instructions.scopedRules ?? [],
+      gitRoot: sdkGitRoot,
+      cwd: init.context.cwd,
+      remainingBudgetBytes: RULES_LAYER_CAP_BYTES - rulesLayerBytesUsed(instructions),
+    });
 
     // Transcript Restore, R1: pre-flight the resume id before constructing.
     // A resume the SDK will refuse does not fail at construction -- it fails
@@ -463,6 +628,8 @@ async function initializeLoop(
       mcp: init.mcp,
       emit: (event) => io.writeEvent(event),
       autoCompaction: init.compaction.auto,
+      attachmentRoots: init.context.attachmentRoots ?? [],
+      ruleActivator,
       // Transcript Restore, R1: the ONLY path by which a resume id reaches
       // the engine. Absent means a fresh session -- a first-ever
       // activation, a worker with no persisted id, or an id the pre-flight
@@ -481,29 +648,74 @@ async function initializeLoop(
 }
 
 async function gracefulExit(
-  loop: Engine | null,
+  loop: AnyEngine | null,
   currentTurn: Promise<void> | null,
 ): Promise<number> {
   if (loop !== null && currentTurn !== null) {
     loop.cancel();
     await Promise.race([currentTurn, delay(TURN_DRAIN_TIMEOUT_MS)]);
   }
-  // Releases any resources the engine holds outside process memory (e.g. the
-  // SDK engine's Query/child claude process). A no-op for the native engine
-  // (dispose is optional on Engine; AgentLoop does not implement it).
-  loop?.dispose?.();
+  if (loop !== null) {
+    switch (loop.kind) {
+      case 'openai-api':
+        // Nothing to release beyond normal GC -- there is no `dispose` on
+        // `OpenAiApiEngine` at all (see engine-types.ts).
+        break;
+      case 'claude-sdk':
+        // Releases the SDK engine's Query/child claude process, which
+        // otherwise leaks when this process exits.
+        loop.dispose();
+        break;
+      default: {
+        const _exhaustive: never = loop;
+        void _exhaustive;
+      }
+    }
+  }
   return EXIT_OK;
 }
 
-async function* readStdinLines(): AsyncIterable<string> {
+/**
+ * The one method this module needs from a stream reader. Deliberately NOT
+ * `ReadableStreamDefaultReader<Uint8Array>`: that global type is declared
+ * differently by `@types/node`'s `stream/web` augmentation (used implicitly
+ * once `"node"` is in a tsconfig's `types`) than by `bun-types`' own
+ * augmentation (which adds a `readMany()` member `Bun.stdin.stream()`'s real
+ * reader has but a synthetic test `ReadableStream`'s does not) -- pinning
+ * this function's parameter to either concrete type makes it reject a
+ * reader built from the other. A minimal structural interface accepts both.
+ */
+interface AsyncByteReader {
+  read(): Promise<{ done: boolean; value?: Uint8Array }>;
+}
+
+/**
+ * Reader-loop form, not `for await (... of someStream)`: the same pattern
+ * embedded-agent-worker-service.ts's `readStdout` uses for its own
+ * `ReadableStream<Uint8Array>`. Avoids depending on `ReadableStream`'s
+ * async-iterator typing at all, which packages/integration's DOM-lib
+ * tsconfig doesn't declare the same way Bun's lib does -- a `for await`
+ * form here stopped typechecking once this file became reachable from a
+ * packages/integration test (Phase A's subprocess-boundary integration
+ * case), even though nothing about runtime behavior changed. Takes the
+ * reader (not the stream) so a test can drive it with a synthetic
+ * `ReadableStream` instead of the real `Bun.stdin.stream()`.
+ */
+export async function* readLinesFromReader(reader: AsyncByteReader): AsyncIterable<string> {
   const splitter = new NdjsonLineSplitter();
   const decoder = new TextDecoder();
-  for await (const chunk of Bun.stdin.stream()) {
-    const { lines } = splitter.push(decoder.decode(chunk, { stream: true }));
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    const { lines } = splitter.push(decoder.decode(value, { stream: true }));
     for (const line of lines) yield line;
   }
   const tail = splitter.carry;
   if (tail.length > 0) yield tail;
+}
+
+function readStdinLines(): AsyncIterable<string> {
+  return readLinesFromReader(Bun.stdin.stream().getReader());
 }
 
 function writeEvent(event: EmbeddedAgentEvent): void {
@@ -520,7 +732,6 @@ if (import.meta.main) {
     createMcpClient: () => new McpToolClient(),
     createAdapter: (opts) => new OpenAIChatAdapter(opts),
     loadInstructions,
-    loadOptInInstructions,
     loadCompactionPrompt,
     createSdkEngine: (deps) => new SdkEngine(deps),
     probeSdkSession,

@@ -112,7 +112,7 @@ describe('App Handler', () => {
           locationPath: '/path/1',
           createdAt: '2024-01-01',
           workers: [
-            { id: 'worker-1', type: 'embedded-agent', embeddedAgentId: 'embedded-1', name: 'Embedded Agent', createdAt: '2024-01-01', activated: true, autoCompaction: true },
+            { id: 'worker-1', type: 'embedded-agent', embeddedAgentId: 'embedded-1', name: 'Embedded Agent', createdAt: '2024-01-01', activated: true, autoCompaction: true, reasoningEffort: null, hasParameterOverride: false },
           ],
         }),
       ];

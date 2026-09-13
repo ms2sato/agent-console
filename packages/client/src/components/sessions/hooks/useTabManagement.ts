@@ -1,8 +1,10 @@
 import { useState, useEffect, useCallback, useRef, startTransition } from 'react';
+import * as v from 'valibot';
 import { createWorker, deleteWorker } from '../../../lib/api';
 import { getDefaultTabId, isWorkerIdReady } from '../sessionTabRouting';
 import { isCloseableTabType } from '../tabAppearance';
 import type { Worker, AgentActivityState } from '@agent-console/shared';
+import { CreateWorkerRequestSchema } from '@agent-console/shared';
 import { logger } from '../../../lib/logger';
 
 export interface Tab {
@@ -38,16 +40,27 @@ interface UseTabManagementOptions {
   setExitInfo: (info: { code: number; signal: string | null } | undefined) => void;
 }
 
+type CreateWorkerRequestOutput = v.InferOutput<typeof CreateWorkerRequestSchema>;
+type AgentWorkerRequest = Extract<CreateWorkerRequestOutput, { type: 'agent' }>;
+type EmbeddedAgentWorkerRequest = Extract<CreateWorkerRequestOutput, { type: 'embedded-agent' }>;
+
 /**
  * Params accepted when adding an agent-type worker to a running session, via
  * the unified agent-selection picker (docs/design/embedded-agent-worker.md
  * "UI"). `type: 'agent'` (terminal AgentDefinition-backed) and
  * `type: 'embedded-agent'` are both addable mid-session via
  * `CreateWorkerRequestSchema`. See `AddAgentWorkerMenu.tsx`.
+ *
+ * Derived from `CreateWorkerRequestSchema`'s inferred output (`Pick`/
+ * `Extract`) rather than restating the field list, so a future wire field
+ * addition to the schema cannot silently drift from this type.
  */
 export type AddAgentWorkerParams =
-  | { type: 'embedded-agent'; embeddedAgentId: string }
-  | { type: 'agent'; agentId: string };
+  | Pick<
+      EmbeddedAgentWorkerRequest,
+      'type' | 'embeddedAgentId' | 'model' | 'reasoningEffort' | 'contextWindowTokens'
+    >
+  | Pick<AgentWorkerRequest, 'type' | 'agentId' | 'model' | 'reasoningEffort'>;
 
 export interface UseTabManagementResult {
   tabs: Tab[];

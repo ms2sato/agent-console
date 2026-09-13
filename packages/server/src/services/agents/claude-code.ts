@@ -44,7 +44,13 @@ const claudeCodeAgentBase = {
   id: CLAUDE_CODE_AGENT_ID,
   name: 'Claude Code',
   commandTemplate: 'claude {{model:+--model}}{{prompt}}',
-  continueTemplate: 'claude -c',
+  // {{model:+--model}} expands to '--model <value> ' (trailing space) when a
+  // worker-level model override is set, and to the empty string when unset --
+  // so a no-override worker still produces the byte-identical 'claude -c'
+  // (see agent-surface.md Ruling 3 and worker-manager.ts's per-activation
+  // gate at the effectiveTemplateVars merge, which is what makes the
+  // continue path honour the override).
+  continueTemplate: 'claude {{model:+--model}}-c',
   headlessTemplate: 'claude -p --output-format text {{prompt}}',
   description: 'Anthropic Claude Code - Interactive AI coding assistant',
   isBuiltIn: true,

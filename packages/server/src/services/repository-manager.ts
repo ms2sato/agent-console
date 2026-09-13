@@ -101,6 +101,17 @@ export interface RepositoryLifecycleCallbacks {
   onRepositoryCreated: (repository: Repository) => void | Promise<void>;
   onRepositoryUpdated: (repository: Repository) => void | Promise<void>;
   onRepositoryDeleted: (repositoryId: string) => void;
+  /**
+   * Fired specifically when the repository's designated-Orchestrator
+   * pointer changes (set, moved, or cleared) via
+   * `setOrchestratorSession`/`clearOrchestratorSession`. This is an
+   * ADDITIONAL, lighter-weight signal alongside `onRepositoryUpdated`
+   * (which also fires, since the Repository object's
+   * `orchestratorSessionId` field genuinely changed) -- a flag-focused UI
+   * can react to this without waiting on a full repository refetch.
+   * `sessionId: null` means the designation was cleared.
+   */
+  onOrchestratorDesignationChanged: (repositoryId: string, sessionId: string | null) => void | Promise<void>;
 }
 
 export class RepositoryManager {
@@ -361,6 +372,59 @@ export class RepositoryManager {
     await this.lifecycleCallbacks?.onRepositoryUpdated(updated);
 
     return updated;
+  }
+
+  /**
+   * Set (or move) this repository's designated-Orchestrator session.
+   * @returns the updated repository, or null if the repository doesn't exist
+   */
+  async setOrchestratorSession(repositoryId: string, sessionId: string): Promise<Repository | null> {
+    const repo = this.repositories.get(repositoryId);
+    if (!repo) return null;
+
+    const updated = await this.repository.setOrchestratorSessionId(repositoryId, sessionId);
+    if (!updated) return null;
+
+    this.repositories.set(repositoryId, updated);
+    logger.info({ repositoryId, sessionId }, 'Orchestrator designation set');
+
+    await this.lifecycleCallbacks?.onRepositoryUpdated(updated);
+    // Broadcast the just-re-read persisted value, not the request argument --
+    // `setOrchestratorSessionId`'s UPDATE and its follow-up `findById` are two
+    // separate statements, so a concurrent designation change on the same
+    // repository could interleave between them. Reading `updated` keeps the
+    // broadcast honest about what is actually persisted even if that happens.
+    await this.lifecycleCallbacks?.onOrchestratorDesignationChanged(repositoryId, updated.orchestratorSessionId ?? null);
+
+    return updated;
+  }
+
+  /**
+   * Clear this repository's designated-Orchestrator session, but only if
+   * it currently equals `sessionId` (stale-clear guard -- see
+   * RepositoryRepository.clearOrchestratorSessionId's doc comment).
+   * @returns whether the clear happened, and the resulting repository (or
+   *   null if the repository doesn't exist)
+   */
+  async clearOrchestratorSession(
+    repositoryId: string,
+    sessionId: string
+  ): Promise<{ cleared: boolean; repository: Repository | null }> {
+    const repo = this.repositories.get(repositoryId);
+    if (!repo) return { cleared: false, repository: null };
+
+    const result = await this.repository.clearOrchestratorSessionId(repositoryId, sessionId);
+    if (result.cleared && result.repository) {
+      this.repositories.set(repositoryId, result.repository);
+      logger.info({ repositoryId, sessionId }, 'Orchestrator designation cleared');
+      await this.lifecycleCallbacks?.onRepositoryUpdated(result.repository);
+      // Same principle as setOrchestratorSession: broadcast the re-read
+      // persisted state (`result.repository`, already null-checked by the
+      // enclosing guard) rather than a value assumed from the call site.
+      await this.lifecycleCallbacks?.onOrchestratorDesignationChanged(repositoryId, result.repository.orchestratorSessionId ?? null);
+    }
+
+    return result;
   }
 
   /**

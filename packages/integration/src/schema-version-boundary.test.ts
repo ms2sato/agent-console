@@ -21,8 +21,32 @@
 import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
 import { Hono } from 'hono';
 import * as v from 'valibot';
+import { createHash } from 'node:crypto';
+import * as path from 'node:path';
 
 import { SCHEMA_VERSION, AppServerMessageSchema } from '@agent-console/shared';
+
+// Real generator's own normalization step, used to independently re-derive
+// the wire version at test time. See the "(d)" describe block below for why.
+//
+// NOTE: `computeVersion` itself (also exported by
+// scripts/generate-schema-version.mjs) is deliberately NOT imported here.
+// This file imports @agent-console/server/src/__tests__/test-utils below,
+// whose transitive import of mock-fs-helper.ts registers a process-global
+// `mock.module('node:fs', ...)` swap to memfs (see .claude/rules/testing.md
+// "Anti-Pattern 2: Module-Level Mocking" -- "bun:test's mock.module() is
+// process-global"). `computeVersion` calls `collectSchemaFiles`, which reads
+// the real schemas directory via `node:fs`'s `readdirSync`/`readFileSync`;
+// once memfs is registered, those calls resolve against the (empty) memfs
+// volume instead of the real repo tree and throw ENOENT -- verified by
+// running this exact import+call against this exact test file and observing
+// the failure. `Bun.spawnSync` (below, mirroring the sibling
+// packages/shared/src/__tests__/schema-version.gen.test.ts) runs the
+// generator in a real, separate OS process untouched by this process's
+// module-registry mock, which is why it is used instead for the real value.
+// `normalizeSchemaSource` has no `fs` dependency of its own (pure text
+// transform), so importing and calling it in-process is safe.
+import { normalizeSchemaSource } from '../../../scripts/schema-source-normalize.mjs';
 
 // Import test utilities from the server package (Server Bridge Pattern).
 import {
@@ -65,6 +89,15 @@ const RELOAD_GUARD_KEY = 'agent-console:schema-version-reload-attempted';
 
 /** A server version that is deliberately different from this bundle's. */
 const DRIFTED_VERSION = 'drifted-server-version-0000';
+
+/** Repo root, resolved from this file's location: packages/integration/src -> up 3. */
+const REPO_ROOT = path.resolve(import.meta.dir, '..', '..', '..');
+
+/** The curated wire-schema directory (mirrors SCHEMAS_DIR in the generator). */
+const SCHEMAS_DIR = path.join(REPO_ROOT, 'packages', 'shared', 'src', 'schemas');
+
+/** The real generator script, invoked as a subprocess -- see the import comment above. */
+const GENERATOR = path.join(REPO_ROOT, 'scripts', 'generate-schema-version.mjs');
 
 // === Reusable realistic wire fixtures (shapes mirror the server broadcast) ===
 
@@ -307,6 +340,84 @@ describe('Client-Server Boundary: Schema-version handshake + strict schemas', ()
       expect(reloadMock).not.toHaveBeenCalled();
       expect(getMismatch()).toBe(false);
       expect(window.sessionStorage.getItem(RELOAD_GUARD_KEY)).toBeNull();
+    });
+  });
+
+  // ===========================================================================
+  // (d) The served header equals a freshly-computed, closure-including value
+  //     -- not the compiled-in constant re-imported and compared to itself.
+  //
+  // `scripts/generate-schema-version.mjs`'s `collectSchemaFiles()` hashes the
+  // curated `packages/shared/src/schemas/*.ts` set PLUS its transitive
+  // runtime-import closure (e.g. `packages/shared/src/types/embedded-agent.ts`,
+  // pulled in because a schema's accepted wire vocabulary is partly built from
+  // constants living there). This group proves that widening actually reaches
+  // the wire, through the real middleware -> HTTP response path.
+  // ===========================================================================
+  describe('wire value matches the real, closure-including generator output', () => {
+    it('X-Schema-Version equals computeVersion() run against the real repo tree right now', async () => {
+      const response = await fetch('/api/message-templates', { method: 'GET' });
+      const servedVersion = response.headers.get(SCHEMA_VERSION_HEADER);
+
+      // Invoke the real generator in a real subprocess (`--print` calls
+      // computeVersion() with no args and prints the result) -- see the
+      // import comment above for why this cannot be a direct in-process
+      // call. This re-walks the real schemas dir plus its transitive
+      // runtime-import closure right now and re-hashes every file's current
+      // content: an independently, freshly computed value -- not a re-import
+      // of the compiled SCHEMA_VERSION constant compared to itself.
+      const generatorResult = Bun.spawnSync(['bun', GENERATOR, '--print'], {
+        cwd: REPO_ROOT,
+        stdout: 'pipe',
+        stderr: 'pipe',
+      });
+      expect(new TextDecoder().decode(generatorResult.stderr)).toBe('');
+      const freshClosureVersion = new TextDecoder().decode(generatorResult.stdout).trim();
+
+      expect(servedVersion).toBe(freshClosureVersion);
+
+      // --- Polarity proof --------------------------------------------------
+      // Reconstruct what computeVersion() would have returned BEFORE the
+      // runtime-import-closure widening existed: the exact same hash
+      // algorithm computeVersion() uses today -- sha256 over
+      // "<repo-relative-path>\n<normalized-content>" per file, concatenated
+      // in sorted-filename order, first 16 hex chars (see computeVersion()
+      // in scripts/generate-schema-version.mjs) -- but fed ONLY the
+      // schemas/*.ts files, enumerated directly here (via Bun.Glob, which --
+      // like Bun.file below -- reads the real filesystem directly and is not
+      // routed through the mocked 'node:fs' module) rather than via
+      // collectSchemaFiles() (which already includes the closure; calling it
+      // for this half would defeat the point of reconstructing the old
+      // behavior).
+      //
+      // If the closure widening had never shipped, this schemas-only value
+      // is exactly what computeVersion() would still return today, and it
+      // would still be what the real server serves. Asserting it differs
+      // from both the real served value and the real generator output above
+      // is the proof that this test case can fail against a pre-widening
+      // build: a generator that only hashes
+      // packages/shared/src/schemas/*.ts would serve `schemasOnlyVersion`,
+      // not `freshClosureVersion` -- and this assertion would catch that
+      // regression.
+      const schemasOnlyFileNames = [...new Bun.Glob('*.ts').scanSync({ cwd: SCHEMAS_DIR })].sort();
+
+      const hash = createHash('sha256');
+      for (const name of schemasOnlyFileNames) {
+        const file = path.join(SCHEMAS_DIR, name);
+        const relPath = path.relative(REPO_ROOT, file).split(path.sep).join('/');
+        const content = await Bun.file(file).text();
+        let hashedContent: string;
+        try {
+          hashedContent = normalizeSchemaSource(content);
+        } catch {
+          hashedContent = content;
+        }
+        hash.update(`${relPath}\n${hashedContent}`);
+      }
+      const schemasOnlyVersion = hash.digest('hex').slice(0, 16);
+
+      expect(schemasOnlyVersion).not.toBe(freshClosureVersion);
+      expect(schemasOnlyVersion).not.toBe(servedVersion);
     });
   });
 });

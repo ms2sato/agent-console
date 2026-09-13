@@ -1,12 +1,19 @@
 import { useNavigate, useLocation } from '@tanstack/react-router';
 import { useRef, useCallback, useEffect, useMemo, useState } from 'react';
-import { useMutation } from '@tanstack/react-query';
+import { useMutation, useQuery } from '@tanstack/react-query';
 import type { AgentActivityState, WorktreeCreationTask, WorktreeDeletionTask, Session } from '@agent-console/shared';
 import type { SessionFilterMode } from '../../types/session-filter';
-import { restartAllAgentWorkers, type RestartAllAgentsResult } from '../../lib/api';
+import {
+  restartAllAgentWorkers,
+  fetchRepositories,
+  raiseOrchestratorDesignation,
+  clearOrchestratorDesignation,
+  type RestartAllAgentsResult,
+} from '../../lib/api';
+import { repositoryKeys } from '../../lib/query-keys';
 import { useAuth } from '../../lib/auth';
 import { logger } from '../../lib/logger';
-import { ChevronLeftIcon, ChevronRightIcon, ChevronDownIcon, AlertCircleIcon, RefreshIcon } from '../Icons';
+import { ChevronLeftIcon, ChevronRightIcon, ChevronDownIcon, AlertCircleIcon, RefreshIcon, FlagIcon } from '../Icons';
 import { ConfirmDialog } from '../ui/confirm-dialog';
 import { Spinner } from '../ui/Spinner';
 import { ActivityIndicator } from './ActivityIndicator';
@@ -128,9 +135,18 @@ interface SessionItemProps {
   collapsed: boolean;
   isActive: boolean;
   onClick: () => void;
+  /**
+   * This session's repository's currently-designated Orchestrator session id.
+   * `undefined` when unknown (repositories not loaded yet, or this session's
+   * repository has no entry); `null` when the repository has no designation.
+   * Only meaningful for `session.type === 'worktree'` -- the flag control is
+   * never shown for quick sessions, mirroring the server's own precondition
+   * that a quick session can never hold the designation.
+   */
+  orchestratorSessionId?: string | null;
 }
 
-function SessionItem({ sessionWithActivity, collapsed, isActive, onClick }: SessionItemProps) {
+function SessionItem({ sessionWithActivity, collapsed, isActive, onClick, orchestratorSessionId }: SessionItemProps) {
   const { session, activityState } = sessionWithActivity;
   const { isMultiUser, currentUser } = useAuth();
   const { primary, secondary, tooltip } = getSessionDisplayInfo(session);
@@ -153,6 +169,89 @@ function SessionItem({ sessionWithActivity, collapsed, isActive, onClick }: Sess
     ? 'bg-indigo-500/20 text-indigo-200'
     : 'bg-amber-500/20 text-amber-200';
 
+  const isWorktreeSession = session.type === 'worktree';
+  const isOrchestratorFlagLit = isWorktreeSession && orchestratorSessionId === session.id;
+
+  // Transient, visible feedback for a failed raise/clear request -- mirrors
+  // ActiveSessionsSidebar's own `restartMutation` onError pattern (timed
+  // message + Error-message fallback) rather than only logging, since a
+  // silent re-enable of the button gives the user no indication that a
+  // network error or a server rejection (e.g. 403 for a non-owner in
+  // multi-user `all` mode) occurred.
+  const [orchestratorFlagError, setOrchestratorFlagError] = useState<string | null>(null);
+
+  // Raise/clear mutations for the Orchestrator-designation flag control.
+  // No manual cache patch on success: the server's `orchestrator-designation-changed`
+  // WS broadcast (handled in useSessionSideEffects.ts) patches the
+  // repositories cache for every connected client, including this one.
+  const raiseOrchestratorMutation = useMutation({
+    mutationFn: () => raiseOrchestratorDesignation(session.id),
+    onError: (err) => {
+      logger.error('Failed to set Orchestrator designation:', err);
+      const message = err instanceof Error ? err.message : 'Failed to set Orchestrator designation.';
+      setOrchestratorFlagError(message);
+      setTimeout(() => setOrchestratorFlagError(null), 5000);
+    },
+  });
+  const clearOrchestratorMutation = useMutation({
+    mutationFn: () => clearOrchestratorDesignation(session.id),
+    onError: (err) => {
+      logger.error('Failed to clear Orchestrator designation:', err);
+      const message = err instanceof Error ? err.message : 'Failed to clear Orchestrator designation.';
+      setOrchestratorFlagError(message);
+      setTimeout(() => setOrchestratorFlagError(null), 5000);
+    },
+  });
+  const orchestratorFlagPending = raiseOrchestratorMutation.isPending || clearOrchestratorMutation.isPending;
+
+  const handleOrchestratorFlagClick = (e: React.MouseEvent) => {
+    // Must not also trigger the row's own onClick (navigate to the session).
+    e.stopPropagation();
+    if (isOrchestratorFlagLit) {
+      clearOrchestratorMutation.mutate();
+    } else {
+      raiseOrchestratorMutation.mutate();
+    }
+  };
+
+  const orchestratorFlagButton = isWorktreeSession ? (
+    <button
+      type="button"
+      data-orchestrator-flag
+      data-orchestrator-flag-lit={isOrchestratorFlagLit ? 'true' : 'false'}
+      data-testid={`orchestrator-flag-${session.id}`}
+      onClick={handleOrchestratorFlagClick}
+      disabled={orchestratorFlagPending}
+      // top offset must be derived from the TEXT column's own reference frame,
+      // not the icon column's box stack. The icon column has mt-1.5 + gap-1
+      // between its two rows, but the text column has neither -- its row 2
+      // starts exactly where row 1's line-height ends. So the correct offset
+      // is just: button padding p-3 (0.75rem) + row-1 line-height text-sm
+      // (1.25rem) = 2rem, the point where text-column row 2 begins. The
+      // flag's own box (w-4 h-4 = 1rem) and text-xs's line-height (also 1rem)
+      // are the same height, so placing top at that point makes the two
+      // boxes coincide exactly. Update this expression, not a bare number,
+      // if button padding or row-1's text size/line-height changes.
+      className={`absolute left-3 top-[calc(0.75rem_+_1.25rem)] w-4 h-4 flex items-center justify-center rounded transition-colors disabled:opacity-50 ${
+        isOrchestratorFlagLit
+          ? 'text-amber-400 hover:text-amber-300'
+          : 'text-gray-600 hover:text-gray-400'
+      }`}
+      title={
+        isOrchestratorFlagLit
+          ? 'Clear Orchestrator designation for this repository'
+          : 'Set this session as the Orchestrator for this repository'
+      }
+    >
+      <FlagIcon className="w-3 h-3" filled={isOrchestratorFlagLit} />
+      {orchestratorFlagError && (
+        <span className="absolute top-full left-0 mt-1 max-w-[8rem] break-words text-xs bg-slate-800 text-red-300 px-2 py-1 rounded shadow-lg border border-slate-700 z-50">
+          {orchestratorFlagError}
+        </span>
+      )}
+    </button>
+  ) : null;
+
   if (collapsed) {
     return (
       <button
@@ -172,45 +271,59 @@ function SessionItem({ sessionWithActivity, collapsed, isActive, onClick }: Sess
   }
 
   return (
-    <button
-      onClick={onClick}
-      className={`relative w-full p-3 text-left hover:bg-slate-800 transition-colors ${
-        isActive ? 'bg-slate-800' : ''
-      }`}
-      title={orphanedTooltip}
-    >
-      {showCreatorUsername && (
-        <span
-          data-testid="session-creator-username"
-          className={`absolute top-2 right-2 max-w-[6rem] truncate text-[10px] font-mono px-1.5 py-0.5 rounded ${creatorBadgeColorClass}`}
-          title={session.createdByUsername ?? undefined}
-        >
-          {session.createdByUsername}
-        </span>
-      )}
-      <div className="flex items-start gap-2">
-        {isOrphaned ? (
-          <AlertCircleIcon className="w-3 h-3 text-red-400 mt-1.5 shrink-0" />
-        ) : (
-          <ActivityIndicator state={activityState} className="mt-1.5" />
+    // Wrapping <div> (not a <button>) holds the row <button> and the
+    // Orchestrator-flag <button> as siblings -- a <button> can never be a
+    // DOM descendant of another <button> (invalid HTML), so the flag control
+    // must live outside the row button's boundary rather than nested inside it.
+    <div className="relative">
+      <button
+        onClick={onClick}
+        className={`relative w-full p-3 text-left hover:bg-slate-800 transition-colors ${
+          isActive ? 'bg-slate-800' : ''
+        }`}
+        title={orphanedTooltip}
+      >
+        {showCreatorUsername && (
+          <span
+            data-testid="session-creator-username"
+            className={`absolute top-2 right-2 max-w-[6rem] truncate text-[10px] font-mono px-1.5 py-0.5 rounded ${creatorBadgeColorClass}`}
+            title={session.createdByUsername ?? undefined}
+          >
+            {session.createdByUsername}
+          </span>
         )}
-        <div className={`min-w-0 flex-1 ${showCreatorUsername ? 'pr-20' : ''}`}>
-          <div className="flex items-center gap-1.5 min-w-0">
-            <span className={`text-sm font-medium truncate ${isOrphaned ? 'text-gray-500 line-through' : 'text-gray-300'}`}>
-              {primary}
-            </span>
-            {session.isShared && (
-              <span className="shrink-0 text-[10px] font-medium uppercase tracking-wide px-1.5 py-0.5 rounded bg-indigo-900 text-indigo-300">
-                Shared
-              </span>
+        <div className="flex items-start gap-2">
+          <div className="w-4 shrink-0 flex flex-col items-center mt-1.5 gap-1">
+            <div className="w-4 h-4 flex items-center justify-center">
+              {isOrphaned ? (
+                <AlertCircleIcon className="w-3 h-3 text-red-400" />
+              ) : (
+                <ActivityIndicator state={activityState} />
+              )}
+            </div>
+            {isWorktreeSession && (
+              <span className="w-4 h-4" aria-hidden="true" data-orchestrator-flag-spacer />
             )}
           </div>
-          <div className={`text-xs truncate ${isOrphaned ? 'text-red-400' : 'text-gray-500'}`}>
-            {isOrphaned ? 'Unrecoverable' : secondary}
+          <div className={`min-w-0 flex-1 ${showCreatorUsername ? 'pr-20' : ''}`}>
+            <div className="flex items-center gap-1.5 min-w-0">
+              <span className={`text-sm font-medium truncate ${isOrphaned ? 'text-gray-500 line-through' : 'text-gray-300'}`}>
+                {primary}
+              </span>
+              {session.isShared && (
+                <span className="shrink-0 text-[10px] font-medium uppercase tracking-wide px-1.5 py-0.5 rounded bg-indigo-900 text-indigo-300">
+                  Shared
+                </span>
+              )}
+            </div>
+            <div className={`text-xs truncate ${isOrphaned ? 'text-red-400' : 'text-gray-500'}`}>
+              {isOrphaned ? 'Unrecoverable' : secondary}
+            </div>
           </div>
         </div>
-      </div>
-    </button>
+      </button>
+      {orchestratorFlagButton}
+    </div>
   );
 }
 
@@ -423,6 +536,29 @@ export function ActiveSessionsSidebar({
   const [isResizing, setIsResizing] = useState(false);
   const [pausedExpanded, setPausedExpanded] = useState(false);
   const sidebarRef = useRef<HTMLDivElement>(null);
+
+  // Repository data, needed only to know each repository's currently
+  // designated Orchestrator session for the flag control below.
+  // TanStack Query dedupes this against any other component in the tree
+  // already holding the same query key.
+  const { data: reposData } = useQuery({
+    queryKey: repositoryKeys.all(),
+    queryFn: fetchRepositories,
+  });
+  const repoOrchestratorSessionMap = useMemo(() => {
+    const map = new Map<string, string | null | undefined>();
+    for (const repo of reposData?.repositories ?? []) {
+      map.set(repo.id, repo.orchestratorSessionId);
+    }
+    return map;
+  }, [reposData]);
+  const orchestratorSessionIdFor = useCallback(
+    (session: SessionWithActivity['session']): string | null | undefined =>
+      session.type === 'worktree' && session.repositoryId
+        ? repoOrchestratorSessionMap.get(session.repositoryId)
+        : undefined,
+    [repoOrchestratorSessionMap]
+  );
 
   // Repository grouping. `sessions` is already the mine/shared-filtered
   // list by the time it reaches this component (see routes/__root.tsx), so
@@ -654,7 +790,7 @@ export function ActiveSessionsSidebar({
         open={restartConfirmOpen}
         onOpenChange={setRestartConfirmOpen}
         title="Restart All Agents"
-        description="This will restart all active agent workers across all sessions. Terminal workers will not be affected."
+        description="This will restart every active agent worker across all sessions, both terminal agents (such as Claude Code) and embedded agents. Conversations continue by default; an agent that never received its initial task is restarted with it instead. Plain terminal (shell) workers are left running."
         confirmLabel="Restart All"
         onConfirm={() => restartMutation.mutate()}
         isLoading={restartMutation.isPending}
@@ -744,6 +880,7 @@ export function ActiveSessionsSidebar({
               collapsed={collapsed}
               isActive={session.id === currentSessionId}
               onClick={() => handleSessionClick(session.id)}
+              orchestratorSessionId={orchestratorSessionIdFor(session)}
             />
           ))
         ) : (
@@ -791,6 +928,7 @@ export function ActiveSessionsSidebar({
                         collapsed={collapsed}
                         isActive={session.id === currentSessionId}
                         onClick={() => handleSessionClick(session.id)}
+                        orchestratorSessionId={orchestratorSessionIdFor(session)}
                       />
                     ))}
                 </div>

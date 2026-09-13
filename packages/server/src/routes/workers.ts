@@ -1,7 +1,6 @@
 import { Hono } from 'hono';
 import * as v from 'valibot';
 import { join } from 'path';
-import { tmpdir } from 'os';
 import { lstat, mkdir, unlink } from 'fs/promises';
 import { randomUUID } from 'crypto';
 import {
@@ -11,18 +10,21 @@ import {
   SendWorkerMessageRequestSchema,
   MAX_MESSAGE_FILES,
   MAX_TOTAL_FILE_SIZE,
+  EMBEDDED_AGENT_IMAGE_MIME_TYPES,
+  MAX_IMAGE_ATTACHMENT_BYTES,
 } from '@agent-console/shared';
 import type { AppBindings } from '../app-context.js';
 import { NotFoundError, ValidationError } from '../lib/errors.js';
 import { vValidator } from '../middleware/validation.js';
 import { createLogger } from '../lib/logger.js';
+import { resolveUploadDir } from '../lib/message-upload-dir.js';
 import { resolveSpawnUsername } from '../services/resolve-spawn-username.js';
 import {
   EmbeddedAgentActivationError,
   EmbeddedMessageDeliveryError,
   GENERIC_EMBEDDED_ACTIVATION_FAILURE_MESSAGE,
 } from '../services/embedded-agent-worker-service.js';
-import type { WorkerMessage } from '@agent-console/shared';
+import type { Worker, WorkerMessage, EmbeddedAgentAttachment } from '@agent-console/shared';
 import type { StartupIntentPreference } from '../services/startup-intent.js';
 
 const logger = createLogger('api:workers');
@@ -77,11 +79,6 @@ const MULTI_USER_UPLOAD_DIR_MODE = 0o2750;
 interface UploadDirContract {
   mode: number;
   expectedGid: number | null;
-}
-
-function resolveUploadDir(): string {
-  const uid = typeof process.geteuid === 'function' ? process.geteuid() : 'shared';
-  return join(tmpdir(), `agent-console-uploads-${uid}`);
 }
 
 function resolveUploadDirContract(): UploadDirContract {
@@ -251,6 +248,17 @@ const workers = new Hono<AppBindings>()
       throw new ValidationError(`Total file size exceeds limit (max ${MAX_TOTAL_FILE_SIZE} bytes)`);
     }
 
+    for (const file of files) {
+      if (
+        (EMBEDDED_AGENT_IMAGE_MIME_TYPES as readonly string[]).includes(file.type) &&
+        file.size > MAX_IMAGE_ATTACHMENT_BYTES
+      ) {
+        throw new ValidationError(
+          `Image attachment exceeds the ${MAX_IMAGE_ATTACHMENT_BYTES}-byte limit: ${file.name}`,
+        );
+      }
+    }
+
     // Validate session exists BEFORE writing files to avoid orphan files on disk
     const { sessionManager } = c.get('appContext');
     const session = sessionManager.getSession(sessionId);
@@ -263,6 +271,7 @@ const workers = new Hono<AppBindings>()
 
     // Save files to disk
     const savedPaths: string[] = [];
+    const attachments: EmbeddedAgentAttachment[] = [];
     for (const file of files) {
       // Sanitize filename: remove directory separators to prevent path traversal
       const sanitizedName = file.name.replace(/[/\\]/g, '_');
@@ -271,11 +280,12 @@ const workers = new Hono<AppBindings>()
       const buffer = Buffer.from(await file.arrayBuffer());
       await Bun.write(filePath, buffer);
       savedPaths.push(filePath);
+      attachments.push({ path: filePath, mimeType: file.type });
     }
 
     let message: WorkerMessage | null;
     try {
-      message = await sessionManager.sendMessage(sessionId, null, validated.toWorkerId, validated.content, savedPaths);
+      message = await sessionManager.sendMessage(sessionId, null, validated.toWorkerId, validated.content, attachments);
     } catch (err) {
       // Clean up saved files since the message was not delivered
       await Promise.allSettled(savedPaths.map((p) => unlink(p)));
@@ -384,18 +394,39 @@ const workers = new Hono<AppBindings>()
     async (c) => {
       const sessionId = c.req.param('sessionId');
       const workerId = c.req.param('workerId');
-      const { autoCompaction } = c.req.valid('json');
+      // Rest-destructured rather than picked field by field, so KEY PRESENCE
+      // survives into `params`: the three override fields distinguish absent
+      // ("leave alone") from `null` ("clear"), and rebuilding the object
+      // would flatten one into the other.
+      const { autoCompaction, ...params } = c.req.valid('json');
 
       const { sessionManager } = c.get('appContext');
       if (!sessionManager.getSession(sessionId)) {
         throw new NotFoundError('Session');
       }
 
-      const worker = await sessionManager.setEmbeddedAgentAutoCompaction(
-        sessionId,
-        workerId,
-        autoCompaction,
-      );
+      // Every key is optional since the schema was widened for the mid-run
+      // parameter override (agent-surface.md Phase 3), so each of the two
+      // writes below runs only when the caller actually asked for it. The
+      // schema's own at-least-one-key check is what rules out a body that
+      // asks for neither.
+      let worker: Worker | null = null;
+      if (autoCompaction !== undefined) {
+        worker = await sessionManager.setEmbeddedAgentAutoCompaction(
+          sessionId,
+          workerId,
+          autoCompaction,
+        );
+      }
+      if (Object.keys(params).length > 0) {
+        // Deliberately a SECOND call rather than one merged write: the two
+        // are different concerns with different validation, and the toggle's
+        // write path predates this one. A body carrying both is two durable
+        // writes and two broadcasts, which is correct -- each is independently
+        // meaningful -- not an atomicity gap the caller can observe as a
+        // half-applied parameter set.
+        worker = await sessionManager.setEmbeddedAgentParameters(sessionId, workerId, params);
+      }
       if (!worker) {
         // The session exists (checked above), so a null here means either no
         // such worker or a worker of the wrong type. Both are "there is
@@ -411,10 +442,32 @@ const workers = new Hono<AppBindings>()
     const sessionId = c.req.param('sessionId');
     const workerId = c.req.param('workerId');
     const body = c.req.valid('json');
+
+    const { sessionManager } = c.get('appContext');
+
+    // The embedded member of the union carries `embeddedAgentId` (absent
+    // from the terminal member) -- a cross-type restart, converting the
+    // existing PTY `agent` worker to an embedded-agent worker in the same
+    // slot. See RestartWorkerRequestSchema / WorkerLifecycleManager.
+    // restartAgentWorkerAsEmbedded for the full contract.
+    if ('embeddedAgentId' in body) {
+      const worker = await sessionManager.restartAgentWorkerAsEmbedded(
+        sessionId,
+        workerId,
+        body.embeddedAgentId,
+        body.branch,
+      );
+
+      if (!worker) {
+        throw new NotFoundError('Worker');
+      }
+
+      return c.json({ worker });
+    }
+
     const { continueConversation = false, agentId, branch } = body;
     const startupPreference: StartupIntentPreference = continueConversation ? 'continue' : 'fresh';
 
-    const { sessionManager } = c.get('appContext');
     const worker = await sessionManager.restartAgentWorker(sessionId, workerId, startupPreference, agentId, branch);
 
     if (!worker) {

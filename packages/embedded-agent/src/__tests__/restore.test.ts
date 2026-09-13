@@ -57,6 +57,9 @@ describe('reconstructConversation — 4c total classification', () => {
       { v: 1, type: 'turn-error', turnId: 't1', message: 'unrelated noise' },
       { v: 1, type: 'fatal', message: 'unrelated noise' },
       { v: 1, type: 'sdk-session-id', sdkSessionId: 'sdk-sess-1' },
+      // agent-surface.md Phase 3: a report about the PROCESS's configuration,
+      // not about what was said -- Noise, same class as sdk-session-id above.
+      { v: 1, type: 'model-params-applied', applied: false },
       { v: 1, type: 'state', state: 'idle' },
       { v: 1, type: 'exited', code: 0 },
     ];
@@ -1373,5 +1376,118 @@ describe('reconstructConversation — restore-failure-boundary marker (R2, #1447
     expect(outcome.conversation.some((m) => String(m.content).includes('first era'))).toBe(false);
     expect(outcome.conversation.some((m) => String(m.content).includes('second era'))).toBe(false);
     expect(outcome.conversation.some((m) => String(m.content).includes('third era'))).toBe(true);
+  });
+});
+
+/**
+ * Confirmation only -- no production change needed here. `restore.ts` reads
+ * whatever `callId` a persisted `tool-call`/`tool-result` event carries; a
+ * `synthetic:...` id (assigned once, in `AgentLoop`, before any event is
+ * emitted -- see `assignSyntheticToolCallIds` in `tool-call-ids.ts`) is just
+ * an ordinary string to this reader, distinct enough from its sibling to
+ * pair correctly.
+ */
+describe('reconstructConversation — synthetic tool-call ids (empty-callId provider workaround)', () => {
+  it('pairs two synthetic-id tool-call/tool-result rows into two distinct tool messages', () => {
+    const events: EmbeddedAgentStreamEvent[] = [
+      { v: 1, type: 'user-message', id: 'm1', text: 'do two things' },
+      { v: 1, type: 'assistant-message', turnId: 't1', text: '' },
+      {
+        v: 1,
+        type: 'tool-call',
+        turnId: 't1',
+        callId: 'synthetic:t1:0:0',
+        name: 'do_a',
+        args: { a: 1 },
+      },
+      {
+        v: 1,
+        type: 'tool-call',
+        turnId: 't1',
+        callId: 'synthetic:t1:0:1',
+        name: 'do_b',
+        args: { b: 2 },
+      },
+      { v: 1, type: 'tool-result', turnId: 't1', callId: 'synthetic:t1:0:0', ok: true, result: 'result-a' },
+      { v: 1, type: 'tool-result', turnId: 't1', callId: 'synthetic:t1:0:1', ok: true, result: 'result-b' },
+    ];
+
+    const outcome = reconstructConversation(linesOf(events), SYSTEM_PROMPT, 'true-start');
+
+    const toolMessages = outcome.conversation.filter(
+      (m): m is Extract<ChatMessage, { role: 'tool' }> => m.role === 'tool',
+    );
+    expect(toolMessages).toEqual([
+      { role: 'tool', tool_call_id: 'synthetic:t1:0:0', content: 'result-a' },
+      { role: 'tool', tool_call_id: 'synthetic:t1:0:1', content: 'result-b' },
+    ]);
+    expect(toolCallsAnsweredImmediately(outcome.conversation)).toBe(true);
+    expect(outcome.repairedToolCallIds).toEqual([]);
+  });
+});
+
+/**
+ * Phase B (#1343 R4): `activatedRuleNames` is collected from every
+ * `tool-result` event's own `activatedRules` field in the restore window --
+ * structurally, never by parsing `result`'s text. Always present on
+ * `RestoreOutcome`; empty when nothing carried the field.
+ */
+describe('reconstructConversation — activatedRuleNames (#1343 R4)', () => {
+  function toolTurnEvents(callId: string, activatedRules?: string[]): EmbeddedAgentStreamEvent[] {
+    return [
+      { v: 1, type: 'user-message', id: `m-${callId}`, text: 'do something' },
+      { v: 1, type: 'assistant-message', turnId: callId, text: '' },
+      { v: 1, type: 'tool-call', turnId: callId, callId, name: 'Read', args: { path: 'x.ts' } },
+      {
+        v: 1,
+        type: 'tool-result',
+        turnId: callId,
+        callId,
+        ok: true,
+        result: 'file contents',
+        ...(activatedRules !== undefined ? { activatedRules } : {}),
+      },
+    ];
+  }
+
+  it('collects names from a single restored tool-result event', () => {
+    const outcome = reconstructConversation(
+      linesOf(toolTurnEvents('c1', ['scoped.md'])),
+      SYSTEM_PROMPT,
+      'true-start',
+    );
+    expect(outcome.activatedRuleNames).toEqual(['scoped.md']);
+  });
+
+  it('is empty when no restored tool-result event carries the field', () => {
+    const outcome = reconstructConversation(linesOf(toolTurnEvents('c1')), SYSTEM_PROMPT, 'true-start');
+    expect(outcome.activatedRuleNames).toEqual([]);
+  });
+
+  it('is empty for an entirely empty transcript', () => {
+    const outcome = reconstructConversation('', SYSTEM_PROMPT, 'true-start');
+    expect(outcome.activatedRuleNames).toEqual([]);
+  });
+
+  it('accumulates across MULTIPLE restored tool-result events, not just the last one', () => {
+    const events = [...toolTurnEvents('c1', ['a']), ...toolTurnEvents('c2', ['b'])];
+    const outcome = reconstructConversation(linesOf(events), SYSTEM_PROMPT, 'true-start');
+    expect(outcome.activatedRuleNames.sort()).toEqual(['a', 'b']);
+  });
+
+  it('de-duplicates a name activated on more than one restored call', () => {
+    const events = [...toolTurnEvents('c1', ['scoped.md']), ...toolTurnEvents('c2', ['scoped.md'])];
+    const outcome = reconstructConversation(linesOf(events), SYSTEM_PROMPT, 'true-start');
+    expect(outcome.activatedRuleNames).toEqual(['scoped.md']);
+  });
+
+  it('only collects from the window AFTER a compaction boundary -- a pre-boundary activation is discarded with the rest of that history', () => {
+    const events: EmbeddedAgentStreamEvent[] = [
+      ...toolTurnEvents('pre', ['discarded-rule']),
+      { v: 1, type: 'context-compacted', source: 'auto', summary: 'earlier work' },
+      ...toolTurnEvents('post', ['kept-rule']),
+    ];
+    const outcome = reconstructConversation(linesOf(events), SYSTEM_PROMPT, 'true-start');
+    expect(outcome.activatedRuleNames).toEqual(['kept-rule']);
   });
 });

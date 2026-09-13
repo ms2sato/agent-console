@@ -2,14 +2,22 @@
  * System-prompt assembly for the embedded-agent loop.
  *
  * The prompt is assembled once per activation. `loadInstructions` discovers
- * instruction files across three layers -- global (`~/.config/agent-console`),
- * chain (git root down to cwd), and cwd (the chain's tail) -- plus an opt-in
- * `EmbeddedAgentDefinition.instructions` file list, then `assembleSystemPrompt`
- * concatenates: (1) context preamble -> (2) discovered/opt-in instruction
- * segments, in discovery order -> (3) the operator-configured definition
- * system prompt (last, so it wins on conflict).
+ * instruction files across FIVE layers -- global (`~/.config/agent-console`),
+ * chain (git root down to cwd), an opt-in `EmbeddedAgentDefinition.instructions`
+ * file list, the `.claude/rules/*.md` rules layer (unscoped rules included,
+ * scoped rules listed in an index line only -- see `loadRulesLayer` below),
+ * and the `.claude/skills/**\/SKILL.md` skills layer (every discovered skill
+ * listed as a name + description index line only, so the model can discover
+ * a skill's existence without paying its full body's token cost up front --
+ * see `loadSkillsLayer` below) -- then `assembleSystemPrompt` concatenates: (1)
+ * context preamble -> (2) discovered/opt-in instruction segments, in
+ * discovery order -> (3) the rules layer -> (4) the skills layer -> (5) the
+ * operator-configured definition system prompt (last, so it wins on
+ * conflict). Used identically by both engines (claude-sdk composes the same
+ * layers via `composeSdkSystemPromptAppend`, minus the preamble -- see its
+ * doc comment).
  *
- * See docs/design/embedded-agent-worker.md "AGENTS.md loader" for the
+ * See docs/design/embedded-agent-worker.md "Instruction loader" for the
  * normative spec (discovery order, caps, overflow-drop policy).
  */
 
@@ -22,6 +30,55 @@ import { isErrnoException } from './type-guards.js';
 
 export const INSTRUCTION_PER_FILE_CAP_BYTES = 16 * 1024;
 export const INSTRUCTION_AGGREGATE_CAP_BYTES = 48 * 1024;
+const RULES_LAYER_CAP_BYTES_DEFAULT = 160 * 1024;
+const SKILLS_LAYER_CAP_BYTES_DEFAULT = 16 * 1024;
+
+/**
+ * Non-positive or non-numeric env values fall back to `defaultValue` rather
+ * than surviving as-is -- a bare `Number(env) || default` lets a NEGATIVE
+ * override through unclamped (e.g. `Number('-5') === -5`, which is truthy,
+ * so `-5 || default` evaluates to `-5`), and a negative budget drops every
+ * entry on the very first over-budget check (Architect N1). Shared by the
+ * rules-layer and skills-layer cap parsers below -- both need the identical
+ * clamping rule, just with a different default.
+ */
+function parseCapBytesEnv(raw: string | undefined, defaultValue: number): number {
+  const n = Number(raw);
+  return Number.isFinite(n) && n > 0 ? n : defaultValue;
+}
+
+/** @internal Exported for testing -- takes the raw env value as a parameter
+ * rather than reading `process.env` directly, so a test can exercise the
+ * clamping logic without needing a module re-import per env value. */
+export function parseRulesLayerCapBytes(raw: string | undefined): number {
+  return parseCapBytesEnv(raw, RULES_LAYER_CAP_BYTES_DEFAULT);
+}
+
+/**
+ * Separate from {@link INSTRUCTION_AGGREGATE_CAP_BYTES}: rules are never
+ * truncated mid-file (R3, Phase A) -- a half rule is worse than
+ * none -- so overflow is handled by dropping whole files largest-first
+ * instead of shrinking survivors. Default sized for this repo's own
+ * unscoped-rules total (121 KB as of 2026-09-03) plus headroom; env-overridable
+ * for repos with a different rules footprint.
+ */
+export const RULES_LAYER_CAP_BYTES = parseRulesLayerCapBytes(process.env.RULES_LAYER_CAP_BYTES);
+
+/** @internal Exported for testing -- see {@link parseRulesLayerCapBytes}'s doc comment. */
+export function parseSkillsLayerCapBytes(raw: string | undefined): number {
+  return parseCapBytesEnv(raw, SKILLS_LAYER_CAP_BYTES_DEFAULT);
+}
+
+/**
+ * Same overflow shape as {@link RULES_LAYER_CAP_BYTES} (whole-entry drop,
+ * largest-first, declared in-band -- never truncated), sized much smaller
+ * because a skills-layer entry is a one-line name+description, not a whole
+ * file's content. Uses the SAME env-override mechanism as
+ * {@link RULES_LAYER_CAP_BYTES} (a separate variable, `SKILLS_LAYER_CAP_BYTES`,
+ * through the identical {@link parseCapBytesEnv} clamp) rather than a new
+ * kind of override surface.
+ */
+export const SKILLS_LAYER_CAP_BYTES = parseSkillsLayerCapBytes(process.env.SKILLS_LAYER_CAP_BYTES);
 
 const encoder = new TextEncoder();
 
@@ -53,6 +110,69 @@ export interface LoadInstructionsParams {
 export interface LoadInstructionsResult {
   /** Final, capped, overflow-trimmed segments, in concatenation order. */
   segments: InstructionSegment[];
+  /**
+   * R2/R3: unscoped `.claude/rules/*.md` content (no `paths:`/`globs:`
+   * frontmatter), included eagerly -- sorted by file name, never
+   * per-file-truncated, whole-file-dropped largest-first under
+   * {@link RULES_LAYER_CAP_BYTES} when over budget. Optional on this type
+   * only so hand-built test fixtures that don't care about the rules layer
+   * can omit it (treated as `[]`); the real `loadInstructions` always
+   * populates it.
+   */
+  ruleSegments?: InstructionSegment[];
+  /**
+   * R3: declares, in-band, which unscoped rule files were dropped whole to
+   * satisfy {@link RULES_LAYER_CAP_BYTES}. `undefined` when nothing was
+   * dropped (including "no rules directory at all").
+   */
+  ruleOmissionLine?: string;
+  /**
+   * R2: one line listing path-scoped rules (name + globs) that exist but are
+   * NOT included above -- Phase B activates them lazily on a matching tool
+   * call. `undefined` when there are no scoped rules (no `.claude/rules`
+   * directory, or every rule found is unscoped).
+   */
+  ruleIndexLine?: string;
+  /**
+   * Phase B (#1343 R1): the SAME scoped rules `ruleIndexLine` above
+   * summarizes, exposed structurally instead of discarded after building that
+   * one line -- `RuleActivator` (rule-activation.ts) reads each rule's own
+   * content lazily, the first time a matching tool call arrives. Optional on
+   * this type only so hand-built test fixtures that don't care about lazy
+   * rule activation can omit it (treated as `[]`); the real `loadInstructions`
+   * always populates it.
+   */
+  scopedRules?: ScopedRule[];
+  /**
+   * One line listing every discovered skill's `name` + one-line
+   * `description`, in the same eager style as
+   * {@link ruleIndexLine} -- except a skill has no lazy-activation moment to
+   * defer to (see `loadSkillsLayer`'s doc comment), so this line IS the
+   * skill's presence in the prompt, not a preview of content delivered later.
+   * `undefined` when there are no discovered skills (no `.claude/skills`
+   * directory, no git root, or every discovered entry was dropped for size).
+   */
+  skillIndexLine?: string;
+  /**
+   * Declares, in-band, which skill entries were dropped whole to satisfy
+   * {@link SKILLS_LAYER_CAP_BYTES} -- the skills-layer analog of
+   * {@link ruleOmissionLine}. `undefined` when nothing was dropped.
+   */
+  skillOmissionLine?: string;
+}
+
+/**
+ * Phase B (#1343 R1): a scoped `.claude/rules/*.md` file's identity and glob
+ * list, carried outward from `loadRulesLayer` for `RuleActivator` to read
+ * lazily -- deliberately WITHOUT `content`, unlike {@link InstructionSegment}.
+ * Reading content eagerly here would defeat the point of lazy activation: the
+ * whole reason this type exists separately is that a scoped rule's content is
+ * NOT loaded until a matching tool call actually arrives.
+ */
+export interface ScopedRule {
+  name: string;
+  origin: string;
+  globs: string[];
 }
 
 export interface AssembleSystemPromptParams {
@@ -91,10 +211,48 @@ export function formatInstructionSegments(segments: InstructionSegment[]): strin
   return segments.map((segment) => `--- Instructions: ${segment.origin} ---\n${segment.content}`);
 }
 
-export function assembleSystemPrompt(params: AssembleSystemPromptParams): string {
-  const sections: string[] = [buildPreamble(params.context)];
+/**
+ * Formats rule segments the same way, under a distinct `--- Rule: ... ---`
+ * header so the model can tell an unscoped project rule apart from an
+ * instruction file.
+ */
+export function formatRuleSegments(segments: InstructionSegment[]): string[] {
+  return segments.map((segment) => `--- Rule: ${segment.origin} ---\n${segment.content}`);
+}
 
-  sections.push(...formatInstructionSegments(params.instructions.segments));
+/**
+ * The section list both `assembleSystemPrompt` and `composeSdkSystemPromptAppend`
+ * concatenate for the instructions+rules body -- everything `loadInstructions`
+ * produces except the preamble (caller-specific) and the definition system
+ * prompt (appended by each caller after this, so it always wins on conflict).
+ * Single writer of this ordering: instruction segments, then unscoped rule
+ * segments, then the scoped-rules index line if present, then the skills
+ * index line if present. All capping already happened inside
+ * `loadInstructions`/`loadRulesLayer`/`loadSkillsLayer` -- nothing here
+ * re-caps.
+ */
+function renderInstructionsBody(instructions: LoadInstructionsResult): string[] {
+  const sections = [
+    ...formatInstructionSegments(instructions.segments),
+    ...formatRuleSegments(instructions.ruleSegments ?? []),
+  ];
+  if (instructions.ruleOmissionLine !== undefined) {
+    sections.push(instructions.ruleOmissionLine);
+  }
+  if (instructions.ruleIndexLine !== undefined) {
+    sections.push(instructions.ruleIndexLine);
+  }
+  if (instructions.skillOmissionLine !== undefined) {
+    sections.push(instructions.skillOmissionLine);
+  }
+  if (instructions.skillIndexLine !== undefined) {
+    sections.push(instructions.skillIndexLine);
+  }
+  return sections;
+}
+
+export function assembleSystemPrompt(params: AssembleSystemPromptParams): string {
+  const sections: string[] = [buildPreamble(params.context), ...renderInstructionsBody(params.instructions)];
 
   if (params.definitionSystemPrompt !== undefined && params.definitionSystemPrompt.length > 0) {
     sections.push(params.definitionSystemPrompt);
@@ -105,54 +263,49 @@ export function assembleSystemPrompt(params: AssembleSystemPromptParams): string
 
 /**
  * Composes the SDK engine's `systemPrompt.append` string (main.ts's
- * `claude-sdk` init arm): opt-in instruction segments, formatted the same way
- * `assembleSystemPrompt` renders them, followed by the definition system
- * prompt if present -- mirroring `assembleSystemPrompt`'s section-join
- * convention (including the aggregate-cap-with-warn behavior below), minus
- * the preamble (the SDK engine uses the SDK's own `claude_code` preset
- * preamble instead of ours, so `buildPreamble` must not run here). Returns
- * `undefined` when there is nothing to append, so callers can omit
- * `Options.systemPrompt` entirely rather than passing an empty string (see
- * docs/design/embedded-agent-sdk-engine.md §4's "Instruction loader" row
- * correction).
+ * `claude-sdk` init arm): the SAME `loadInstructions` result the openai-api
+ * arm uses (Phase A, R1) -- global/chain/opt-in segments plus the
+ * rules layer, formatted the same way `assembleSystemPrompt` renders them,
+ * followed by the definition system prompt if present -- minus the preamble
+ * (the SDK engine uses the SDK's own `claude_code` preset preamble instead of
+ * ours, so `buildPreamble` must not run here). All capping already happened
+ * inside `loadInstructions`, so this does no capping of its own -- unlike its
+ * pre-Phase-A shape, which capped an opt-in-only list that had never passed
+ * through `loadInstructions`. Returns `undefined` when there is nothing to
+ * append, so callers can omit `Options.systemPrompt` entirely rather than
+ * passing an empty string (see docs/design/embedded-agent-sdk-engine.md §4's
+ * "Instruction loader" row correction).
  */
 export function composeSdkSystemPromptAppend(
-  segments: InstructionSegment[],
+  instructions: LoadInstructionsResult,
   definitionSystemPrompt: string | undefined,
 ): string | undefined {
-  // Aggregate cap governs the instruction segments only, mirroring
-  // assembleSystemPrompt/loadInstructions -- definitionSystemPrompt is never
-  // subject to it, below or here.
-  const cappedSegments = capAggregateInstructions(segments);
-  const sections = formatInstructionSegments(cappedSegments);
+  const sections = renderInstructionsBody(instructions);
   if (definitionSystemPrompt !== undefined && definitionSystemPrompt.length > 0) {
     sections.push(definitionSystemPrompt);
   }
   return sections.length > 0 ? sections.join('\n\n') : undefined;
 }
 
-/**
- * Applies `INSTRUCTION_AGGREGATE_CAP_BYTES` to a single flat list of
- * instruction segments, dropping from the end (last-to-first) until the
- * total is under the cap -- the same drop policy `loadInstructions` applies
- * to its own `instructionsList` layer. Used by `composeSdkSystemPromptAppend`
- * for the SDK engine's opt-in-only instruction path, which (unlike
- * `loadInstructions`) has no global/chain layers to weigh against, so a
- * single last-to-first pass over the whole list is the complete policy here.
- */
-function capAggregateInstructions(segments: InstructionSegment[]): InstructionSegment[] {
-  const surviving = [...segments];
-  const total = (): number => surviving.reduce((sum, s) => sum + segmentByteLength(s), 0);
-  while (total() > INSTRUCTION_AGGREGATE_CAP_BYTES && surviving.length > 0) {
-    const dropped = surviving.pop();
-    if (dropped !== undefined) logAggregateDrop(dropped);
-  }
-  return surviving;
-}
-
 type ReadTextResult =
   | { ok: true; content: string }
   | { ok: false; code: string; message: string };
+
+/**
+ * Resolves symlinks in `p`, falling back to `p` unchanged if `realpath`
+ * fails (e.g. a TOCTOU race where the file vanished between being
+ * discovered and this call). Used to make the R1 dedupe comparison
+ * symlink-transparent -- see its call site's comment for why comparing raw
+ * `path.join` strings against an already-realpath'd `resolveConfinedPath`
+ * result is wrong (Architect F1).
+ */
+async function realpathOrSelf(p: string): Promise<string> {
+  try {
+    return await fsPromises.realpath(p);
+  } catch {
+    return p;
+  }
+}
 
 /** Bun.file().text() wrapper that normalizes the error shape for callers. */
 async function tryReadTextFile(filePath: string): Promise<ReadTextResult> {
@@ -167,11 +320,45 @@ async function tryReadTextFile(filePath: string): Promise<ReadTextResult> {
 }
 
 /**
+ * How much of a `SKILL.md` file `tryReadSkillFrontmatterPrefix` reads --
+ * generous headroom for a `name:`/`description:` frontmatter block, well
+ * under what any reasonable skill would need for just those two fields.
+ */
+const SKILL_FRONTMATTER_READ_CAP_BYTES = 4 * 1024;
+
+/**
+ * Bounded sibling of {@link tryReadTextFile}, used ONLY by `loadSkillsLayer`'s
+ * per-file loop below. `loadSkillsLayer` never needs a skill's full body --
+ * only its `name:`/`description:` frontmatter -- so reading the whole file
+ * the way `tryReadTextFile` does would make activation latency and memory
+ * use scale with an author-controlled `SKILL.md` size that nothing
+ * downstream ever reads (unlike the rules layer, where the full rule
+ * content genuinely is the payload). `Bun.file(...).slice(0, N)` maps a byte
+ * range without reading the rest of the file, so this stays O(cap) instead
+ * of O(file size). Same error-shape normalization as `tryReadTextFile`, so
+ * callers branch identically on `ok`/`code`/`message`. If a file's closing
+ * frontmatter delimiter falls beyond the cap, {@link FRONTMATTER_RE} simply
+ * fails to match on the truncated prefix and `parseSkillFrontmatter`'s
+ * existing missing-frontmatter fallback (directory name, empty description,
+ * warn) runs -- no separate handling needed for the truncation case itself.
+ */
+async function tryReadSkillFrontmatterPrefix(filePath: string): Promise<ReadTextResult> {
+  try {
+    const content = await Bun.file(filePath).slice(0, SKILL_FRONTMATTER_READ_CAP_BYTES).text();
+    return { ok: true, content };
+  } catch (err) {
+    const code = (isErrnoException(err) ? err.code : undefined) ?? 'UNKNOWN';
+    const message = err instanceof Error ? err.message : String(err);
+    return { ok: false, code, message };
+  }
+}
+
+/**
  * Walk up from `startDir` looking for the nearest ancestor where `.git`
  * exists as either a file (worktree gitfile) or a directory. Returns null
  * when the filesystem root is reached without finding one.
  */
-async function findGitRoot(startDir: string): Promise<string | null> {
+export async function findGitRoot(startDir: string): Promise<string | null> {
   let current = startDir;
   while (true) {
     try {
@@ -221,10 +408,24 @@ async function buildChainDirs(cwd: string): Promise<string[]> {
 
 /**
  * Resolve one directory's instruction file: AGENTS.md canonical, CLAUDE.md
- * fallback. Both present -> debug log (normal, e.g. a symlinked pair), pick
+ * fallback. Both present -> log (normal, e.g. a symlinked pair), pick
  * AGENTS.md. Neither present -> null, no log (routine, would be noisy across
  * a deep chain). A candidate that exists but fails to read (EACCES, EISDIR,
  * ...) -> warn log, null (skip, non-fatal).
+ *
+ * The both-present case uses `console.warn` (stderr), not `console.debug`.
+ * In Bun, `console.debug`/`console.log` write to STDOUT, and stdout is the
+ * embedded-agent subprocess's NDJSON protocol channel (see
+ * docs/design/embedded-agent-worker.md's WebSocket & client protocol
+ * section) -- nothing else is ever written there. An unparseable stdout
+ * line counts as a protocol-corruption strike server-side
+ * (`MAX_CONSECUTIVE_PARSE_FAILURES`, embedded-agent-worker-service.ts),
+ * reset on every successfully parsed line, so one stray line here is latent
+ * rather than fatal for any realistic tree -- but latent is still a defect,
+ * not a feature, and this repo's own root holds both files, so this ran on
+ * every openai-api activation here even before the SDK arm doubled its
+ * reach (#1343). `console.warn` writes to stderr, which the loop's
+ * own stdout-writing convention never touches.
  */
 async function resolveDirectoryInstructionFile(dir: string): Promise<InstructionSegment | null> {
   const agentsPath = path.join(dir, 'AGENTS.md');
@@ -233,7 +434,7 @@ async function resolveDirectoryInstructionFile(dir: string): Promise<Instruction
   const agentsResult = await tryReadTextFile(agentsPath);
   if (agentsResult.ok) {
     if (await Bun.file(claudePath).exists()) {
-      console.debug(`Both AGENTS.md and CLAUDE.md present in ${dir}; using AGENTS.md`);
+      console.warn(`Both AGENTS.md and CLAUDE.md present in ${dir}; using AGENTS.md`);
     }
     return { origin: agentsPath, content: agentsResult.content };
   }
@@ -271,11 +472,14 @@ function capSegment(segment: InstructionSegment): InstructionSegment {
 /**
  * Reads the opt-in `instructions[]` layer only -- confined-path-resolved
  * against `cwd`, capped per-file. No global (~/.config/agent-console) or
- * chain (AGENTS.md/CLAUDE.md auto-discovery) layers. Shared by
- * `loadInstructions` (which composes this with the other two layers for the
- * openai-api engine) and the SDK engine (which uses ONLY this layer --
- * AGENTS.md auto-discovery is deliberately out of scope for that engine, see
- * docs/design/embedded-agent-sdk-engine.md §4).
+ * chain (AGENTS.md/CLAUDE.md auto-discovery) layers. Used exclusively by
+ * `loadInstructions`, which composes this with the global/chain/rules layers
+ * for BOTH engines (Phase A, R1 -- the claude-sdk engine no
+ * longer has a separate opt-in-only path; it calls `loadInstructions` the
+ * same as openai-api). `settingSources: []` still disables the SDK's OWN
+ * native settings-derived discovery (see docs/design/embedded-agent-sdk-engine.md
+ * §4) -- this loader is what delivers the equivalent content instead, for
+ * both engines, from outside that mechanism.
  */
 export async function loadOptInInstructions(
   cwd: string,
@@ -310,6 +514,420 @@ function logAggregateDrop(segment: InstructionSegment): void {
   );
 }
 
+const FRONTMATTER_RE = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?/;
+const RULE_SCOPE_KEY_RE = /^(paths|globs):\s*(.*)$/;
+
+function stripQuotes(s: string): string {
+  if ((s.startsWith('"') && s.endsWith('"')) || (s.startsWith("'") && s.endsWith("'"))) {
+    return s.slice(1, -1);
+  }
+  return s;
+}
+
+/**
+ * Splits an inline array's inner content on top-level commas only -- commas
+ * inside a quoted string or inside `{}`/`[]`/`()` nesting do not split.
+ * Needed because a brace-expansion glob like `**\/*.{ts,tsx}` contains a
+ * comma that is part of the pattern, not a list separator: a naive
+ * `inner.split(',')` on `["**\/*.{ts,tsx}", "src/**"]` yields three broken
+ * items instead of two (Architect F2).
+ */
+function splitInlineArrayItems(inner: string): string[] {
+  const items: string[] = [];
+  let current = '';
+  let depth = 0;
+  let quote: '"' | "'" | null = null;
+  for (const ch of inner) {
+    if (quote) {
+      current += ch;
+      if (ch === quote) quote = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      quote = ch;
+      current += ch;
+      continue;
+    }
+    if (ch === '{' || ch === '[' || ch === '(') {
+      depth++;
+      current += ch;
+      continue;
+    }
+    if (ch === '}' || ch === ']' || ch === ')') {
+      depth--;
+      current += ch;
+      continue;
+    }
+    if (ch === ',' && depth === 0) {
+      items.push(current.trim());
+      current = '';
+      continue;
+    }
+    current += ch;
+  }
+  if (current.trim().length > 0) items.push(current.trim());
+  return items;
+}
+
+/**
+ * R2: parses a rule file's `paths:`/`globs:` frontmatter (either spelling;
+ * whichever key appears first wins if a file has both). Returns the glob
+ * list, or an empty list when the rule is unscoped -- no frontmatter at all
+ * (the routine case: most rules in this repo, e.g. `workflow.md`, have none),
+ * frontmatter present but no scoping key, `paths: []` (empty), or a value
+ * this parser cannot make sense of. Only the last two warn -- absence of
+ * scoping is not itself a defect, but a key that IS present and unparseable
+ * is, so it is logged rather than silently swallowed.
+ *
+ * Accepted value shapes: an inline JSON-ish array (`["a", "b"]`), a single
+ * scalar on the same line (`"a"` or bare `a`), or the multi-line YAML list
+ * this repo's own rules actually use:
+ *   paths:
+ *     - "a"
+ *     - "b"
+ */
+export function parseRuleFrontmatter(content: string, origin: string): string[] {
+  const match = content.match(FRONTMATTER_RE);
+  if (!match) return [];
+
+  const lines = match[1].split(/\r?\n/);
+  for (let i = 0; i < lines.length; i++) {
+    const keyMatch = lines[i].match(RULE_SCOPE_KEY_RE);
+    if (!keyMatch) continue;
+    const [, key, rest] = keyMatch;
+    const inline = rest.trim();
+
+    if (inline.length > 0) {
+      if (inline.startsWith('[') && inline.endsWith(']')) {
+        const inner = inline.slice(1, -1).trim();
+        const items = inner.length === 0
+          ? []
+          : splitInlineArrayItems(inner).map((s) => stripQuotes(s.trim())).filter((s) => s.length > 0);
+        if (items.length === 0) {
+          console.warn(`Malformed ${key} frontmatter in ${origin}: empty array; treating as unscoped`);
+        }
+        return items;
+      }
+      const scalar = stripQuotes(inline);
+      if (scalar.length === 0) {
+        console.warn(`Malformed ${key} frontmatter in ${origin}: empty value; treating as unscoped`);
+        return [];
+      }
+      return [scalar];
+    }
+
+    // Nothing after the colon -- a multi-line YAML list is expected on the
+    // following lines (`  - "glob"` / `  - glob`).
+    const items: string[] = [];
+    for (let j = i + 1; j < lines.length; j++) {
+      const listMatch = lines[j].match(/^\s*-\s*(.+)$/);
+      if (!listMatch) break;
+      items.push(stripQuotes(listMatch[1].trim()));
+    }
+    if (items.length === 0) {
+      console.warn(`Malformed ${key} frontmatter in ${origin}: no list items found; treating as unscoped`);
+    }
+    return items;
+  }
+
+  return [];
+}
+
+/**
+ * Whole-item drop, largest-first, until `items` fits under `capBytes` (or
+ * runs out of items) -- never shrinks a survivor, only removes whole ones.
+ * Splice-based removal preserves the relative order of survivors. Shared by
+ * `loadRulesLayer` (R3) and `loadSkillsLayer` below: both need the identical
+ * "drop the biggest offender until it fits" loop, over different item shapes
+ * -- consolidated here per `.claude/rules/workflow.md`'s duplication check
+ * rather than reimplementing the loop a second time.
+ */
+function dropLargestUntilFits<T>(
+  items: T[],
+  capBytes: number,
+  byteLength: (item: T) => number,
+): { survivors: T[]; dropped: T[] } {
+  const survivors = [...items];
+  const dropped: T[] = [];
+  const total = () => survivors.reduce((sum, item) => sum + byteLength(item), 0);
+  while (total() > capBytes && survivors.length > 0) {
+    let largestIdx = 0;
+    for (let i = 1; i < survivors.length; i++) {
+      if (byteLength(survivors[i]) > byteLength(survivors[largestIdx])) {
+        largestIdx = i;
+      }
+    }
+    const [removed] = survivors.splice(largestIdx, 1);
+    if (removed !== undefined) dropped.push(removed);
+  }
+  return { survivors, dropped };
+}
+
+interface RuleFile {
+  origin: string;
+  name: string;
+  content: string;
+  globs: string[];
+}
+
+interface RulesLayerResult {
+  ruleSegments: InstructionSegment[];
+  ruleOmissionLine?: string;
+  ruleIndexLine?: string;
+  scopedRules: ScopedRule[];
+}
+
+/**
+ * R2/R3: the rules layer. Reads every `<gitRoot>/.claude/rules/*.md`, sorted
+ * by file name. Unscoped rules (no `paths:`/`globs:` frontmatter) are
+ * returned as segments to include eagerly; scoped rules are summarized into
+ * `ruleIndexLine` only -- Phase B (not implemented here) is what activates
+ * them lazily on a matching tool call. No git root, or no `.claude/rules`
+ * directory -- both routine -- produce an empty layer, silently.
+ */
+async function loadRulesLayer(cwd: string): Promise<RulesLayerResult> {
+  const gitRoot = await findGitRoot(cwd);
+  if (gitRoot === null) return { ruleSegments: [], scopedRules: [] };
+
+  const rulesDir = path.join(gitRoot, '.claude', 'rules');
+  let entries: string[];
+  try {
+    entries = (await fsPromises.readdir(rulesDir)).filter((f) => f.endsWith('.md')).sort();
+  } catch (err) {
+    if (isErrnoException(err) && err.code === 'ENOENT') return { ruleSegments: [], scopedRules: [] };
+    console.warn(
+      `Failed to list rules directory ${rulesDir}: ${err instanceof Error ? err.message : String(err)}`,
+    );
+    return { ruleSegments: [], scopedRules: [] };
+  }
+
+  const ruleFiles: RuleFile[] = [];
+  for (const name of entries) {
+    const origin = path.join(rulesDir, name);
+    const read = await tryReadTextFile(origin);
+    if (!read.ok) {
+      console.warn(`Skipping rule file ${origin}: ${read.message}`);
+      continue;
+    }
+    ruleFiles.push({ origin, name, content: read.content, globs: parseRuleFrontmatter(read.content, origin) });
+  }
+
+  const unscoped = ruleFiles.filter((r) => r.globs.length === 0);
+  const scoped = ruleFiles.filter((r) => r.globs.length > 0);
+
+  // R3 budget: whole-file drop, largest-first, no per-file truncation.
+  const { survivors, dropped } = dropLargestUntilFits(
+    unscoped,
+    RULES_LAYER_CAP_BYTES,
+    (r) => encoder.encode(r.content).length,
+  );
+
+  const ruleSegments: InstructionSegment[] = survivors.map((r) => ({ origin: r.origin, content: r.content }));
+
+  let ruleOmissionLine: string | undefined;
+  if (dropped.length > 0) {
+    const names = dropped.map((r) => r.name).sort().join(', ');
+    console.warn(`Dropped rule file(s) to satisfy the ${RULES_LAYER_CAP_BYTES}-byte rules budget: ${names}`);
+    ruleOmissionLine = `rules omitted for size: ${names}`;
+  }
+
+  let ruleIndexLine: string | undefined;
+  if (scoped.length > 0) {
+    const items = scoped.map((r) => `${r.name} (paths: ${r.globs.join(', ')})`).join('; ');
+    ruleIndexLine = `Rules that apply when you touch matching paths: ${items}`;
+  }
+
+  const scopedRules: ScopedRule[] = scoped.map((r) => ({ name: r.name, origin: r.origin, globs: r.globs }));
+
+  return { ruleSegments, ruleOmissionLine, ruleIndexLine, scopedRules };
+}
+
+const SKILL_FRONTMATTER_KEY_RE = /^(name|description):\s*(.*)$/;
+
+interface SkillFrontmatter {
+  name: string;
+  description: string;
+}
+
+/**
+ * Parses a `SKILL.md` file's `name:`/`description:` frontmatter -- the same
+ * shape `.claude/skills/<name>/SKILL.md` files already use for Claude Code's own
+ * skill discovery, read here with the identical {@link FRONTMATTER_RE} block
+ * extractor {@link parseRuleFrontmatter} uses (single-line scalar values
+ * only; this repo's own skill files never span a name/description across
+ * multiple lines). Never throws on a missing or malformed value: a missing
+ * `name` falls back to `fallbackName` (the skill's own directory name, still
+ * identifiable in the index without a frontmatter name), and a missing
+ * `description` renders as a name-only entry -- both warn-logged, mirroring
+ * how {@link parseRuleFrontmatter} treats a malformed scope as unscoped
+ * rather than fatal.
+ */
+export function parseSkillFrontmatter(
+  content: string,
+  origin: string,
+  fallbackName: string,
+): SkillFrontmatter {
+  const match = content.match(FRONTMATTER_RE);
+  if (!match) {
+    console.warn(
+      `Skill file ${origin} has no frontmatter; using directory name "${fallbackName}" with no description`,
+    );
+    return { name: fallbackName, description: '' };
+  }
+
+  let name: string | undefined;
+  let description: string | undefined;
+  for (const line of match[1].split(/\r?\n/)) {
+    const keyMatch = line.match(SKILL_FRONTMATTER_KEY_RE);
+    if (!keyMatch) continue;
+    const [, key, rest] = keyMatch;
+    const value = stripQuotes(rest.trim());
+    if (value.length === 0) continue;
+    if (key === 'name') name = value;
+    else description = value;
+  }
+
+  if (name === undefined) {
+    console.warn(`Skill file ${origin} frontmatter missing "name"; using directory name "${fallbackName}"`);
+    name = fallbackName;
+  }
+  if (description === undefined) {
+    console.warn(`Skill file ${origin} frontmatter missing "description"; listing name only`);
+    description = '';
+  }
+  return { name, description };
+}
+
+interface SkillFile {
+  origin: string;
+  name: string;
+  description: string;
+}
+
+interface SkillsLayerResult {
+  skillIndexLine?: string;
+  skillOmissionLine?: string;
+}
+
+function formatSkillEntry(skill: SkillFile): string {
+  return skill.description.length > 0 ? `${skill.name} -- ${skill.description}` : skill.name;
+}
+
+/**
+ * Recursively collects every `SKILL.md` under `dir`, sorted by full path for
+ * deterministic ordering. This repo's own `.claude/skills/<name>/SKILL.md` files
+ * sit exactly one level down, but the walk does not assume that depth -- a
+ * plugin- or namespace-scoped skill can sit deeper (see the `available-skills`
+ * listing's `plugin:skill` / directory-prefixed names), so discovery is a
+ * recursive claim, not a fixed-depth one. No `.claude/skills` directory at
+ * all -- routine, most repos won't have one yet -- returns `[]` silently,
+ * the same treatment `loadRulesLayer`'s missing-rules-directory case gets.
+ * A symlinked skill directory is NOT followed: `entry.isDirectory()` /
+ * `entry.isFile()` (from `readdir`'s `withFileTypes`, which reports the
+ * dirent's own type without resolving symlinks) are both false for a
+ * symlink, so it silently drops out of the walk rather than being recursed
+ * into or read as `SKILL.md`. Declared here rather than worked around --
+ * following symlinks would need a `stat` call plus a cycle guard, out of
+ * this change's scope.
+ */
+async function findSkillFiles(dir: string): Promise<string[]> {
+  let entries: import('node:fs').Dirent[];
+  try {
+    entries = await fsPromises.readdir(dir, { withFileTypes: true });
+  } catch (err) {
+    if (isErrnoException(err) && err.code === 'ENOENT') return [];
+    console.warn(
+      `Failed to list skills directory ${dir}: ${err instanceof Error ? err.message : String(err)}`,
+    );
+    return [];
+  }
+
+  const results: string[] = [];
+  for (const entry of entries) {
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      results.push(...(await findSkillFiles(full)));
+    } else if (entry.isFile() && entry.name === 'SKILL.md') {
+      results.push(full);
+    }
+  }
+  return results;
+}
+
+/**
+ * Skills-discovery layer: every `SKILL.md` reachable under
+ * `<gitRoot>/.claude/skills/`, parsed for its
+ * `name:`/`description:` frontmatter and composed into a single eager index
+ * line -- name + one-line description per skill, never the skill's full
+ * body. A skill is invoked by the model recognizing relevance from this
+ * name/description pair (the same way a terminal Claude Code session's own
+ * skill listing works), then reading the full `SKILL.md` on demand via the
+ * existing `Read` tool -- there is no lazy-activation moment analogous to a
+ * scoped rule's matching tool call (a skill is chosen by the model's
+ * judgment, not by a path match), so unlike the rules layer above, a
+ * discovered skill is either in the index or explicitly declared dropped for
+ * size; none are held back structurally for later injection. No git root, or
+ * no `.claude/skills` directory, produces an empty layer silently -- both
+ * routine, the same as the rules layer's own absence handling.
+ */
+async function loadSkillsLayer(cwd: string): Promise<SkillsLayerResult> {
+  const gitRoot = await findGitRoot(cwd);
+  if (gitRoot === null) return {};
+
+  const skillsDir = path.join(gitRoot, '.claude', 'skills');
+  const files = (await findSkillFiles(skillsDir)).sort();
+  if (files.length === 0) return {};
+
+  const skills: SkillFile[] = [];
+  for (const origin of files) {
+    const read = await tryReadSkillFrontmatterPrefix(origin);
+    if (!read.ok) {
+      console.warn(`Skipping skill file ${origin}: ${read.message}`);
+      continue;
+    }
+    const fallbackName = path.basename(path.dirname(origin));
+    const { name, description } = parseSkillFrontmatter(read.content, origin, fallbackName);
+    skills.push({ origin, name, description });
+  }
+  if (skills.length === 0) return {};
+
+  const { survivors, dropped } = dropLargestUntilFits(
+    skills,
+    SKILLS_LAYER_CAP_BYTES,
+    (s) => encoder.encode(formatSkillEntry(s)).length,
+  );
+
+  const skillIndexLine =
+    survivors.length > 0
+      ? `Skills available (open the named SKILL.md to read full instructions): ${survivors
+          .map(formatSkillEntry)
+          .join('; ')}`
+      : undefined;
+
+  let skillOmissionLine: string | undefined;
+  if (dropped.length > 0) {
+    const names = dropped.map((s) => s.name).sort().join(', ');
+    console.warn(`Dropped skill entries to satisfy the ${SKILLS_LAYER_CAP_BYTES}-byte skills budget: ${names}`);
+    skillOmissionLine = `skills omitted for size: ${names}`;
+  }
+
+  return { skillIndexLine, skillOmissionLine };
+}
+
+/**
+ * Phase B (#1343 R1): how many of {@link RULES_LAYER_CAP_BYTES} the eager
+ * unscoped layer already spent for a given `loadInstructions` result -- the
+ * figure `RuleActivator`'s caller (main.ts) subtracts from the cap to compute
+ * the remaining lazy-activation allowance. Summing `ruleSegments`' own byte
+ * lengths here, rather than threading a separate number out of
+ * `loadRulesLayer`'s internal budgeting loop, means this can never drift from
+ * what `ruleSegments` actually contains -- there is exactly one number that
+ * describes "the bytes in these segments", and this computes it directly.
+ */
+export function rulesLayerBytesUsed(instructions: LoadInstructionsResult): number {
+  return (instructions.ruleSegments ?? []).reduce((sum, s) => sum + segmentByteLength(s), 0);
+}
+
 export async function loadInstructions(
   params: LoadInstructionsParams,
 ): Promise<LoadInstructionsResult> {
@@ -331,9 +949,29 @@ export async function loadInstructions(
   const chainRaw = chainResults.filter((s): s is InstructionSegment => s !== null);
 
   // instructions[] layer (opt-in, confined to cwd, capped per-file) --
-  // delegated to loadOptInInstructions, the single confined reader shared
-  // with the SDK engine (main.ts's claude-sdk arm).
-  const instructionSegments = await loadOptInInstructions(cwd, params.instructionsList);
+  // delegated to loadOptInInstructions. R1 (Phase A): dedupe by REALPATH
+  // against the global/chain layers already discovered above, so a
+  // definition whose instructions[] still explicitly lists 'CLAUDE.md' (the
+  // pre-Phase-A builtin's own convention) does not double-load once the
+  // chain tail already resolves the same file. Architect F1: the opt-in
+  // side's `origin` is already realpath'd (`resolveConfinedPath`'s
+  // `resolvedPath`, path-confinement.ts), but the global/chain side's
+  // `origin` is a plain `path.join` result -- comparing the two AS STRINGS
+  // misses whenever `cwd` (or the global dir) contains a symlink component
+  // (macOS `/tmp` -> `/private/tmp`, `/var/folders/...`, a symlinked
+  // worktree), reproducing the exact double-load this dedupe exists to
+  // prevent. Both sides go through `realpathOrSelf` so the comparison is
+  // symlink-transparent on both ends, not just one.
+  const priorOrigins = new Set<string>(
+    await Promise.all(
+      [...(globalRaw !== null ? [globalRaw.origin] : []), ...chainRaw.map((s) => s.origin)].map(
+        realpathOrSelf,
+      ),
+    ),
+  );
+  const instructionsRaw = await loadOptInInstructions(cwd, params.instructionsList);
+  const instructionRealpaths = await Promise.all(instructionsRaw.map((s) => realpathOrSelf(s.origin)));
+  const instructionSegments = instructionsRaw.filter((_, i) => !priorOrigins.has(instructionRealpaths[i]));
 
   // Per-file cap (global/chain only -- instructionSegments is already capped
   // by loadOptInInstructions above).
@@ -375,5 +1013,13 @@ export async function loadInstructions(
     ...survivingInstructions,
   ];
 
-  return { segments };
+  // Rules layer (R2/R3): independent budget, independent of the aggregate
+  // cap above -- see RULES_LAYER_CAP_BYTES's doc comment.
+  const rulesLayer = await loadRulesLayer(cwd);
+
+  // Skills layer: independent budget, same shared shape as the
+  // rules layer -- see SKILLS_LAYER_CAP_BYTES's doc comment.
+  const skillsLayer = await loadSkillsLayer(cwd);
+
+  return { segments, ...rulesLayer, ...skillsLayer };
 }

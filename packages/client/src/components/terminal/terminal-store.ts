@@ -1,6 +1,7 @@
 import { Terminal } from '@xterm/headless';
 import {
   WORKER_SERVER_MESSAGE_TYPES,
+  isPtyBackedWorker,
   type WorkerServerMessage,
   type WorkerClientMessage,
   type WorkerErrorCode,
@@ -553,6 +554,25 @@ class TerminalController implements TerminalInstance {
 
   private handleAppMessage(msg: AppServerMessage): void {
     if (this.disposed) return;
+    if (msg.type === 'session-updated') {
+      // Cross-type restart (agent -> embedded-agent, #1171) converts this
+      // worker away from a PTY IN PLACE, keeping its (sessionId, workerId).
+      // The server broadcasts this session-updated BEFORE the matching
+      // worker-restarted for the same worker
+      // (worker-lifecycle-manager.ts's restartAgentWorkerAsEmbedded). This
+      // controller has no way to learn the type flip from worker-restarted
+      // itself (that message carries no worker type), so it would otherwise
+      // treat the later worker-restarted as "reconnect the PTY socket" --
+      // but there is no PTY left to reconnect to; the URL now backs an
+      // embedded-agent worker. Disposing here, ahead of that message, makes
+      // the later worker-restarted a no-op via the `disposed` guard above.
+      if (msg.session.id !== this.sessionId) return;
+      const worker = msg.session.workers.find((w) => w.id === this.workerId);
+      if (worker && !isPtyBackedWorker(worker)) {
+        this.dispose();
+      }
+      return;
+    }
     if (msg.type === 'worker-restarted') {
       if (msg.sessionId !== this.sessionId || msg.workerId !== this.workerId) return;
       this.terminal.reset();

@@ -1053,6 +1053,52 @@ describe('SqliteSessionRepository', () => {
       const types = found?.workers.map((w) => w.type).sort();
       expect(types).toEqual(['agent', 'git-diff', 'terminal']);
     });
+
+    it('correctly upserts a worker whose type FLIPS across two saves with the same id (cross-type restart, Issue #1171)', async () => {
+      // First save: an 'agent' worker.
+      const agentWorker = buildPersistedAgentWorker({
+        id: 'flip-worker',
+        name: 'Claude Agent',
+        agentId: 'custom-agent-id',
+        pid: 12345,
+      });
+      const session = buildPersistedQuickSession({
+        id: 'flip-worker-session',
+        workers: [agentWorker],
+      });
+      await repository.save(session);
+
+      const beforeFlip = await repository.findById('flip-worker-session');
+      expect(beforeFlip?.workers[0]?.type).toBe('agent');
+
+      // Second save: SAME worker id, now an 'embedded-agent' worker (the
+      // shape WorkerLifecycleManager.restartAgentWorkerAsEmbedded produces).
+      // The conflict-update column set must overwrite the type-discriminant
+      // fields, not just the fields a same-type restart could ever touch --
+      // an omitted column here previously left `embedded_agent_id` as its
+      // stale NULL (from the 'agent' row, which always writes null there),
+      // making the row unreadable (toPersistedWorker throws DataIntegrityError
+      // on a null embedded_agent_id for an 'embedded-agent' row).
+      const embeddedWorker = buildPersistedEmbeddedAgentWorker({
+        id: 'flip-worker',
+        name: 'Ollama qwen3',
+        embeddedAgentId: 'def-1',
+      });
+      const sessionAfterFlip = buildPersistedQuickSession({
+        id: 'flip-worker-session',
+        workers: [embeddedWorker],
+      });
+      await repository.save(sessionAfterFlip);
+
+      const afterFlip = await repository.findById('flip-worker-session');
+      expect(afterFlip?.workers.length).toBe(1);
+      const flipped = afterFlip?.workers[0];
+      expect(flipped?.id).toBe('flip-worker');
+      expect(flipped?.type).toBe('embedded-agent');
+      if (flipped?.type === 'embedded-agent') {
+        expect(flipped.embeddedAgentId).toBe('def-1');
+      }
+    });
   });
 
   describe('data integrity handling', () => {

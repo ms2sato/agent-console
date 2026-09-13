@@ -9,7 +9,9 @@ import type {
   WorkerMessage,
   AppServerMessage,
   ExitReason,
+  EmbeddedAgentAttachment,
 } from '@agent-console/shared';
+import { isPtyBackedWorker, EMBEDDED_AGENT_ENGINE_PARAMETER_CAPABILITIES } from '@agent-console/shared';
 import type {
   PersistedSession,
 } from './persistence-service.js';
@@ -42,14 +44,18 @@ import { substituteVariables } from '../lib/template-variables.js';
 import { getConfigDir, getServerPid } from '../lib/config.js';
 import { stopWatching } from './git-diff-service.js';
 import { SessionDataPathResolver } from '../lib/session-data-path-resolver.js';
-import type { PtyNotificationParams } from '../lib/pty-notification.js';
+import {
+  writePtyNotification,
+  type PtyNotificationParams,
+  type WritePtyNotificationParams,
+} from '../lib/pty-notification.js';
 import {
   computeSessionDataBaseDir,
   InvalidSessionDataScopeError,
   isValidSlug,
   resolveSessionScopePayload,
 } from '../lib/session-data-path.js';
-import { RepositoryNotFoundError } from '../lib/errors.js';
+import { RepositoryNotFoundError, ValidationError } from '../lib/errors.js';
 import type { UserMode } from './user-mode.js';
 import {
   getCurrentBranch as gitGetCurrentBranch,
@@ -74,6 +80,12 @@ import { SessionConverterService, type SharedAccountLookup } from './session-con
 import { NULL_USERNAME_LOOKUP, type UsernameLookup, UsernameLookupService } from './username-lookup.js';
 import type { RepositoryLookup, RepositoryEnvLookup } from './repository-lookup-types.js';
 import type { StartupIntentPreference } from './startup-intent.js';
+import {
+  resolveEffectiveModelParams,
+  validateEmbeddedAgentParameterOverride,
+  type EmbeddedAgentParameterOverridePatchInput,
+} from './embedded-agent-model-params.js';
+import { resolveEffectiveContextWindow } from './embedded-agent-context-window.js';
 
 /**
  * Callbacks for WebSocket operations.
@@ -245,6 +257,18 @@ interface SessionManagerOptions {
   usernameLookup?: UsernameLookup;
 }
 
+/**
+ * Folds attached file paths into the delivery text as a labelled block, so
+ * the model can tell an attachment from a path the user typed inline.
+ * Exported (pure, no state) so it is directly unit-testable and so its
+ * output shape has a single writer.
+ */
+export function composeEmbeddedAgentDeliveryText(content: string, filePaths: string[]): string {
+  if (filePaths.length === 0) return content;
+  const block = ['Attached files:', ...filePaths.map((p) => `- ${p}`)].join('\n');
+  return content.length > 0 ? `${content}\n\n${block}` : block;
+}
+
 export class SessionManager {
   private sessions: Map<string, InternalSession> = new Map();
   private sessionLifecycleCallbacks?: SessionLifecycleCallbacks;
@@ -254,6 +278,15 @@ export class SessionManager {
   private workerManager: WorkerManager;
   private workerLifecycleManager: WorkerLifecycleManager;
   private embeddedAgentWorkerService: EmbeddedAgentWorkerService;
+  /**
+   * Embedded-agent definition registry (interface-segregated to the one
+   * lookup this class needs). Held as a field -- not only threaded into the
+   * sub-services constructed below -- because the mid-run parameter write
+   * (`setEmbeddedAgentParameters`) has to resolve the worker's definition
+   * itself, both to validate against its engine capability row and to
+   * compose the effective triple it forwards.
+   */
+  private embeddedAgentDefinitions: Pick<EmbeddedAgentManager, 'getEmbeddedAgent'>;
   private mcpTokenRegistry: McpTokenRegistry;
   /**
    * Global activity / worker-exit callbacks. Stored here (not only forwarded to
@@ -310,6 +343,7 @@ export class SessionManager {
     // creation under this default resolves to undefined and is rejected as a
     // dangling reference by WorkerLifecycleManager.createWorker.
     const embeddedAgentManager = options.embeddedAgentManager ?? { getEmbeddedAgent: () => undefined };
+    this.embeddedAgentDefinitions = embeddedAgentManager;
     this.notificationManager = options?.notificationManager ?? null;
     this.userRepository = options?.userRepository ?? null;
     this.repositoryLookup = options.repositoryLookup;
@@ -408,6 +442,8 @@ export class SessionManager {
       embeddedAgentManager,
       deactivateEmbeddedAgentWorker: (sessionId, workerId) =>
         this.embeddedAgentWorkerService.deactivate(sessionId, workerId),
+      activateEmbeddedAgentWorker: (sessionId, workerId) =>
+        this.embeddedAgentWorkerService.activate(sessionId, workerId),
       notificationManager: this.notificationManager,
       pathExists: this.pathExists,
       getSession: (id) => this.sessions.get(id),
@@ -616,9 +652,15 @@ export class SessionManager {
    * Send a message from the user to a worker via API.
    * If fromWorkerId is null, the message is sent as "User".
    */
-  async sendMessage(sessionId: string, fromWorkerId: string | null, toWorkerId: string, content: string, filePaths?: string[]): Promise<WorkerMessage | null> {
+  async sendMessage(sessionId: string, fromWorkerId: string | null, toWorkerId: string, content: string, attachments?: EmbeddedAgentAttachment[]): Promise<WorkerMessage | null> {
     const session = this.sessions.get(sessionId);
     if (!session) return null;
+
+    // The PTY branch and the delivery-text folding below are path-only and
+    // predate attachments; derive plain paths so both keep their existing,
+    // unchanged behavior. Only the embedded-agent branch forwards the typed
+    // attachment array.
+    const filePaths = (attachments ?? []).map((a) => a.path);
 
     const targetWorker = session.workers.get(toWorkerId);
     if (!targetWorker || targetWorker.type === 'git-diff') return null;
@@ -644,11 +686,12 @@ export class SessionManager {
       await this.activateEmbeddedAgentWorker(sessionId, toWorkerId);
 
       // Embedded delivery has no file-attachment concept; fold filePaths
-      // into the text (best-effort parity with the PTY branch's typed-lines
-      // behavior) so a same-session composer send with files still delivers
-      // something meaningful.
-      const deliveryText = [content, ...(filePaths ?? [])].filter((s) => s.length > 0).join('\n');
-      const result = await this.sendEmbeddedAgentUserMessage(sessionId, toWorkerId, deliveryText);
+      // into the text as a labelled block (best-effort parity with the PTY
+      // branch's typed-lines behavior) so a same-session composer send with
+      // files still delivers something meaningful, and so the model can
+      // tell an attachment from a path the user typed inline.
+      const deliveryText = composeEmbeddedAgentDeliveryText(content, filePaths);
+      const result = await this.sendEmbeddedAgentUserMessage(sessionId, toWorkerId, deliveryText, undefined, attachments);
       if (!result.ok) {
         throw new EmbeddedMessageDeliveryError(result.error, result.code);
       }
@@ -739,8 +782,9 @@ export class SessionManager {
     workerId: string,
     text: string,
     clientMessageId?: string,
+    attachments?: EmbeddedAgentAttachment[],
   ): Promise<SendUserMessageResult> {
-    return this.embeddedAgentWorkerService.sendUserMessage(sessionId, workerId, text, clientMessageId);
+    return this.embeddedAgentWorkerService.sendUserMessage(sessionId, workerId, text, clientMessageId, attachments);
   }
 
   /**
@@ -760,6 +804,70 @@ export class SessionManager {
     opts?: { replyToSessionId?: string },
   ): Promise<SendUserMessageResult> {
     return this.embeddedAgentWorkerService.sendSystemNotification(sessionId, workerId, params, opts);
+  }
+
+  /**
+   * Single delivery seam for a structured notification (internal-timer,
+   * internal-conditional-wakeup, internal-message, ...) to ANY worker kind
+   * eligible per `canReceiveNotifications` (agent/terminal/embedded-agent).
+   * Callers (the timer/conditional-wakeup callbacks in app-context.ts,
+   * send_session_message in mcp-server.ts) no longer branch on the target
+   * worker's kind themselves -- this method does it once.
+   *
+   * - PTY-backed (agent/terminal): writes via writePtyNotification, exactly
+   *   as the direct calls this method replaces used to. Never throws --
+   *   failures are reported via the return value, matching the best-effort
+   *   semantics those direct calls already had.
+   * - embedded-agent: delegates to sendEmbeddedAgentSystemNotification,
+   *   which activates a dormant worker on delivery and (R3) queues the
+   *   notification instead of failing when the worker is mid-turn.
+   * - Any other worker kind, or an unresolved session/worker: `{ ok: false }`.
+   *
+   * `opts.replyToSessionId` is threaded through to the embedded-agent branch
+   * only -- the PTY-backed branch has never composed a reply-instructions
+   * block from it (send_session_message's PTY path appends that separately,
+   * outside this seam).
+   */
+  async deliverWorkerNotification(
+    sessionId: string,
+    workerId: string,
+    params: PtyNotificationParams,
+    opts: { replyToSessionId?: string } = {},
+  ): Promise<{ ok: true } | { ok: false; error: string }> {
+    const session = this.getSession(sessionId);
+    const worker = session?.workers.find((w) => w.id === workerId);
+    if (!session || !worker) {
+      return { ok: false, error: `Worker ${workerId} not found in session ${sessionId}` };
+    }
+
+    if (isPtyBackedWorker(worker)) {
+      try {
+        // TS does not distribute an object spread over a union type's
+        // discriminant the way this reconstructs WritePtyNotificationParams
+        // from PtyNotificationParams + writeInput -- the cast is safe
+        // because `params` is already a valid member of the union and
+        // `writeInput` is the only field Omit removed.
+        writePtyNotification({
+          ...params,
+          writeInput: (data) => this.writeWorkerInput(sessionId, workerId, data),
+        } as WritePtyNotificationParams);
+        return { ok: true };
+      } catch (err) {
+        const error = err instanceof Error ? err.message : 'PTY notification failed';
+        logger.warn({ sessionId, workerId, err }, 'Failed to deliver PTY notification');
+        return { ok: false, error };
+      }
+    }
+
+    if (worker.type === 'embedded-agent') {
+      const result = await this.sendEmbeddedAgentSystemNotification(sessionId, workerId, params, opts);
+      if (!result.ok) {
+        return { ok: false, error: result.error };
+      }
+      return { ok: true };
+    }
+
+    return { ok: false, error: `Worker ${workerId} in session ${sessionId} cannot receive notifications` };
   }
 
   /** Forward a cancel command to an embedded-agent worker's loop. */
@@ -793,6 +901,93 @@ export class SessionManager {
     worker.autoCompaction = enabled;
     await this.persistSession(session);
     this.embeddedAgentWorkerService.forwardAutoCompaction(workerId, enabled);
+    this.sessionLifecycleCallbacks?.onSessionUpdated?.(this.toPublicSession(session));
+
+    return this.workerManager.toPublicWorker(worker);
+  }
+
+  /**
+   * agent-surface.md Phase 3: set an embedded-agent worker's model /
+   * reasoning-effort / context-window override mid-run.
+   *
+   * Deliberately the SAME write path shape as
+   * `setEmbeddedAgentAutoCompaction` above -- durable write first, live
+   * subprocess told afterwards, broadcast last -- because it is the same
+   * kind of write: durable per-worker configuration, not a per-turn signal.
+   *
+   * PATCH semantics per field (agent-surface.md Ruling 3): an ABSENT key
+   * leaves that override exactly as it is; `null` CLEARS it, so the worker
+   * goes back to live-reading the definition's own default. Clearing `model`
+   * also clears `contextWindowTokens` BY CONSTRUCTION (Ruling 4's
+   * server-side half: the window is a property OF the model override, so
+   * there is nothing for the caller to decide and nothing to ask them for).
+   *
+   * What is forwarded to the subprocess is the RESOLVED EFFECTIVE TRIPLE,
+   * never this patch: a patch that clears the model forwards the
+   * DEFINITION's model, which the patch itself does not contain.
+   *
+   * Throws `ValidationError` (a 400 at the route and a classified error at
+   * the MCP tool) when the values fail the shared validator. Returns `null`
+   * when the session or worker does not exist, or the worker is not an
+   * embedded-agent worker; otherwise the updated public worker.
+   */
+  async setEmbeddedAgentParameters(
+    sessionId: string,
+    workerId: string,
+    patch: EmbeddedAgentParameterOverridePatchInput,
+  ): Promise<Worker | null> {
+    const session = this.sessions.get(sessionId);
+    if (!session) return null;
+    const worker = session.workers.get(workerId);
+    if (!worker || worker.type !== 'embedded-agent') return null;
+
+    const definition = this.embeddedAgentDefinitions.getEmbeddedAgent(worker.embeddedAgentId);
+    if (!definition) {
+      throw new ValidationError(
+        `Embedded agent definition not found: ${worker.embeddedAgentId}`,
+      );
+    }
+
+    // Shared validator (one writer, three callers). Returns the NORMALISED
+    // (trimmed) values, which are what gets persisted -- callers do not
+    // re-trim.
+    const normalized = validateEmbeddedAgentParameterOverride(
+      definition,
+      patch,
+      EMBEDDED_AGENT_ENGINE_PARAMETER_CAPABILITIES[definition.engine],
+    );
+
+    if (normalized.model !== undefined) {
+      worker.model = normalized.model;
+      if (normalized.model === null) {
+        // Ruling 4, server-side half. The validator already rejects a window
+        // sent ALONGSIDE a model clear, so this is the only way the window
+        // can be cleared implicitly -- and it must be, or a stale window
+        // would survive against a model the worker is no longer overriding.
+        worker.contextWindowTokens = null;
+      }
+    }
+    if (normalized.reasoningEffort !== undefined) {
+      worker.reasoningEffort = normalized.reasoningEffort;
+    }
+    if (normalized.contextWindowTokens !== undefined) {
+      worker.contextWindowTokens = normalized.contextWindowTokens;
+    }
+
+    // Persist BEFORE applying. The durable row is the truth in both paths
+    // (a live subprocess reads the command; a dormant one reads the row at
+    // its next activation), so a crash between the two must never leave a
+    // subprocess running values that were never written down.
+    await this.persistSession(session);
+
+    this.embeddedAgentWorkerService.applyModelParams(workerId, {
+      ...resolveEffectiveModelParams(definition, worker),
+      // `undefined` (Ruling 4's "indeterminate": a model override with no
+      // declared window) and `null` are the same instruction on the wire --
+      // there is no window in effect -- and the command declares the field
+      // as nullable-but-required, so the collapse happens here.
+      contextWindowTokens: resolveEffectiveContextWindow(definition, worker) ?? null,
+    });
     this.sessionLifecycleCallbacks?.onSessionUpdated?.(this.toPublicSession(session));
 
     return this.workerManager.toPublicWorker(worker);
@@ -1018,6 +1213,24 @@ export class SessionManager {
   getSession(id: string): Session | undefined {
     const session = this.sessions.get(id);
     return session ? this.toPublicSession(session) : undefined;
+  }
+
+  /**
+   * @internal Exported for testing. Sets `initialPromptDelivered` directly on
+   * the LIVE internal session, bypassing the real PTY login-shell-ready
+   * sentinel that flips this flag in production. `getSession()` /
+   * `getAllSessions()` both return a fresh `toPublicSession()` projection
+   * decoupled from the live internal session, so integration tests that need
+   * to simulate "prompt already delivered by a prior PTY activation" (a
+   * precondition a test harness's real PTY provider cannot reliably trigger
+   * inside a test process) have no other way to set up that precondition on
+   * the object production code actually reads. Do not call from production
+   * code; this exists solely as a narrow test seam for that one flag.
+   */
+  setInitialPromptDeliveredForTest(sessionId: string, delivered: boolean): void {
+    const session = this.sessions.get(sessionId);
+    if (!session) throw new Error(`Session not found: ${sessionId}`);
+    session.initialPromptDelivered = delivered;
   }
 
   async getSessionMetadata(id: string): Promise<PersistedSession | null> {
@@ -1285,6 +1498,21 @@ export class SessionManager {
     return this.workerLifecycleManager.restartAgentWorker(sessionId, workerId, startupPreference, agentId, branch);
   }
 
+  /**
+   * Restart a PTY `agent` worker AS an embedded-agent worker (cross-type
+   * restart / conversion). Same worker slot/tab, same workerId; see
+   * WorkerLifecycleManager.restartAgentWorkerAsEmbedded for the full
+   * call-order contract.
+   */
+  async restartAgentWorkerAsEmbedded(
+    sessionId: string,
+    workerId: string,
+    embeddedAgentId: string,
+    branch?: string
+  ): Promise<Worker | null> {
+    return this.workerLifecycleManager.restartAgentWorkerAsEmbedded(sessionId, workerId, embeddedAgentId, branch);
+  }
+
   /** Restore a PTY worker, activating its PTY if needed after server restart. */
   async restoreWorker(sessionId: string, workerId: string): Promise<RestoreWorkerResult> {
     return this.workerLifecycleManager.restoreWorker(sessionId, workerId);
@@ -1320,6 +1548,22 @@ export class SessionManager {
   }
 
   /**
+   * Delete the memo for a session and fire the onMemoUpdated lifecycle
+   * callback with an empty string (the wire deletion signal — see R4).
+   * Tolerates a session that has no memo file (MemoService.deleteMemo does
+   * not throw on ENOENT).
+   */
+  async deleteMemo(sessionId: string): Promise<void> {
+    const session = this.sessions.get(sessionId);
+    if (!session) {
+      throw new Error(`Session not found: ${sessionId}`);
+    }
+    const resolver = this.getPathResolverForSession(session);
+    await this.memoService.deleteMemo(sessionId, resolver);
+    this.sessionLifecycleCallbacks?.onMemoUpdated?.(sessionId, '');
+  }
+
+  /**
    * Read a memo for a session.
    *
    * @returns The memo content, or null if no memo exists.
@@ -1334,24 +1578,13 @@ export class SessionManager {
   }
 
   /**
-   * Update session metadata (title and/or branch)
+   * Update session metadata (title)
    */
   async updateSessionMetadata(
     sessionId: string,
-    updates: { title?: string; branch?: string }
-  ): Promise<{ success: boolean; title?: string; branch?: string; error?: string }> {
+    updates: { title?: string }
+  ): Promise<{ success: boolean; title?: string; error?: string }> {
     return this.sessionMetadataService.updateSessionMetadata(sessionId, updates);
-  }
-
-  /**
-   * @deprecated Use updateSessionMetadata instead
-   * Rename the branch for a worktree session
-   */
-  async renameBranch(
-    sessionId: string,
-    newBranch: string
-  ): Promise<{ success: boolean; branch?: string; error?: string }> {
-    return this.sessionMetadataService.renameBranch(sessionId, newBranch);
   }
 
   /**
@@ -1566,11 +1799,11 @@ export class SessionManager {
 
         if (worker.type === 'agent') {
           try {
-            // 'fresh' matches this bulk operation's existing behaviour exactly
-            // (previously the hardcoded boolean `false`). A future
-            // continue-by-default change belongs behind its own preference
-            // value, not here.
-            const restarted = await this.restartAgentWorker(session.id, worker.id, 'fresh');
+            // 'system' resolves per worker: continue the existing
+            // conversation when one exists, or deliver the session's
+            // pending initial prompt when one is still owed -- never a
+            // blanket fresh start.
+            const restarted = await this.restartAgentWorker(session.id, worker.id, 'system');
             if (restarted) {
               results.push({ sessionId: session.id, workerId: worker.id, workerType: 'agent', outcome: 'restarted' });
             } else {

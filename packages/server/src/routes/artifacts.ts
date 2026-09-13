@@ -17,6 +17,7 @@ import type { AppBindings } from '../app-context.js';
 import { NotFoundError, ForbiddenError } from '../lib/errors.js';
 import { readArtifactFile } from '../lib/artifact-storage.js';
 import { consumeArtifactViewerToken } from '../lib/artifact-viewer-tokens.js';
+import { emitArtifactDeleted } from '../lib/artifact-bookmark-triggers.js';
 
 /**
  * Response headers that reconstruct the blob-URL-equivalent boundary for a
@@ -149,7 +150,7 @@ const artifacts = new Hono<AppBindings>()
   // (row AND file) survives untouched; deleting a nonexistent id is 404.
   .delete('/:id', async (c) => {
     const id = c.req.param('id');
-    const { artifactRepository } = c.get('appContext');
+    const { artifactRepository, broadcastToApp } = c.get('appContext');
     const authUser = c.get('authUser');
 
     const artifact = await artifactRepository.findById(id);
@@ -165,6 +166,12 @@ const artifacts = new Hono<AppBindings>()
       // Deleted between the existence check and delete (race); idempotent 404.
       throw new NotFoundError('Artifact');
     }
+
+    // Owning-session resolution rationale: see
+    // lib/artifact-bookmark-triggers.ts's module doc comment. No fallback
+    // here -- REST has no "calling session" concept to fall back to.
+    emitArtifactDeleted(broadcastToApp, artifact, id);
+
     return c.json({ success: true });
   });
 

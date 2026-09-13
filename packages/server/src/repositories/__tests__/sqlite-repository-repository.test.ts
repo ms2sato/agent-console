@@ -35,6 +35,8 @@ describe('SqliteRepositoryRepository', () => {
       .addColumn('env_vars', 'text')
       .addColumn('description', 'text')
       .addColumn('default_agent_id', 'text')
+      .addColumn('orchestrator_session_id', 'text')
+      .addColumn('issue_trigger_labels', 'text')
       .execute();
 
     repository = new SqliteRepositoryRepository(db);
@@ -57,6 +59,8 @@ describe('SqliteRepositoryRepository', () => {
       cleanupCommand: overrides.cleanupCommand,
       description: overrides.description ?? null,
       defaultAgentId: overrides.defaultAgentId ?? null,
+      orchestratorSessionId: overrides.orchestratorSessionId ?? null,
+      issueTriggerLabels: overrides.issueTriggerLabels ?? null,
       clonedSourceRepoPath: overrides.clonedSourceRepoPath ?? null,
     };
   }
@@ -705,6 +709,85 @@ describe('SqliteRepositoryRepository', () => {
     });
   });
 
+  describe('orchestratorSessionId', () => {
+    it('should round-trip orchestratorSessionId through save() and findById()', async () => {
+      const repo = createRepository({
+        id: 'repo-orchestrator-session',
+        orchestratorSessionId: 'session-orchestrator-1',
+      });
+      await repository.save(repo);
+
+      const found = await repository.findById('repo-orchestrator-session');
+      expect(found?.orchestratorSessionId).toBe('session-orchestrator-1');
+    });
+
+    it('should default orchestratorSessionId to null when not provided', async () => {
+      const repo = createRepository({ id: 'repo-no-orchestrator-session' });
+      await repository.save(repo);
+
+      const found = await repository.findById('repo-no-orchestrator-session');
+      expect(found?.orchestratorSessionId).toBeNull();
+    });
+  });
+
+  describe('issueTriggerLabels', () => {
+    it('should round-trip issueTriggerLabels through save() and findById()', async () => {
+      const repo = createRepository({
+        id: 'repo-issue-labels-save',
+        issueTriggerLabels: 'bug, needs-triage',
+      });
+      await repository.save(repo);
+
+      const found = await repository.findById('repo-issue-labels-save');
+      expect(found?.issueTriggerLabels).toBe('bug, needs-triage');
+    });
+
+    it('should default issueTriggerLabels to null when not provided', async () => {
+      const repo = createRepository({ id: 'repo-no-issue-labels' });
+      await repository.save(repo);
+
+      const found = await repository.findById('repo-no-issue-labels');
+      expect(found?.issueTriggerLabels).toBeNull();
+    });
+
+    it('should set issueTriggerLabels via update()', async () => {
+      const repo = createRepository({ id: 'repo-update-issue-labels' });
+      await repository.save(repo);
+
+      const before = await repository.findById('repo-update-issue-labels');
+      expect(before?.issueTriggerLabels).toBeNull();
+
+      const updated = await repository.update('repo-update-issue-labels', {
+        issueTriggerLabels: 'bug, needs-triage',
+      });
+
+      expect(updated).not.toBeNull();
+      expect(updated?.issueTriggerLabels).toBe('bug, needs-triage');
+    });
+
+    it('should clear issueTriggerLabels via update() when given empty string', async () => {
+      const repo = createRepository({
+        id: 'repo-clear-issue-labels',
+        issueTriggerLabels: 'bug, needs-triage',
+      });
+      await repository.save(repo);
+
+      const updated = await repository.update('repo-clear-issue-labels', {
+        issueTriggerLabels: '',
+      });
+
+      expect(updated).not.toBeNull();
+      expect(updated?.issueTriggerLabels).toBeNull();
+
+      const row = await db
+        .selectFrom('repositories')
+        .where('id', '=', 'repo-clear-issue-labels')
+        .select('issue_trigger_labels')
+        .executeTakeFirst();
+      expect(row?.issue_trigger_labels).toBeNull();
+    });
+  });
+
   describe('edge cases', () => {
     it('should handle paths with special characters', async () => {
       const repo = createRepository({
@@ -738,6 +821,62 @@ describe('SqliteRepositoryRepository', () => {
 
       // Second save with same path should fail
       await expect(repository.save(repo2)).rejects.toThrow();
+    });
+  });
+
+  describe('setOrchestratorSessionId', () => {
+    it('sets the pointer and returns the updated repository', async () => {
+      const repo = createRepository({ id: 'repo-1' });
+      await repository.save(repo);
+
+      const updated = await repository.setOrchestratorSessionId('repo-1', 'session-a');
+
+      expect(updated?.orchestratorSessionId).toBe('session-a');
+      const found = await repository.findById('repo-1');
+      expect(found?.orchestratorSessionId).toBe('session-a');
+    });
+
+    it('moves the pointer to a different session without a separate clear step', async () => {
+      const repo = createRepository({ id: 'repo-1', orchestratorSessionId: 'session-a' });
+      await repository.save(repo);
+
+      const updated = await repository.setOrchestratorSessionId('repo-1', 'session-b');
+
+      expect(updated?.orchestratorSessionId).toBe('session-b');
+    });
+
+    it('returns null when the target repository does not exist', async () => {
+      const updated = await repository.setOrchestratorSessionId('does-not-exist', 'session-a');
+      expect(updated).toBeNull();
+    });
+  });
+
+  describe('clearOrchestratorSessionId', () => {
+    it('clears the pointer when expectedSessionId matches', async () => {
+      const repo = createRepository({ id: 'repo-1', orchestratorSessionId: 'session-a' });
+      await repository.save(repo);
+
+      const result = await repository.clearOrchestratorSessionId('repo-1', 'session-a');
+
+      expect(result.cleared).toBe(true);
+      expect(result.repository?.orchestratorSessionId).toBeNull();
+    });
+
+    it('does not clear (stale-clear guard) when expectedSessionId does not match the current pointer', async () => {
+      const repo = createRepository({ id: 'repo-1', orchestratorSessionId: 'session-b' });
+      await repository.save(repo);
+
+      const result = await repository.clearOrchestratorSessionId('repo-1', 'session-a');
+
+      expect(result.cleared).toBe(false);
+      expect(result.repository?.orchestratorSessionId).toBe('session-b');
+    });
+
+    it('returns cleared=false and repository=null when the repository does not exist', async () => {
+      const result = await repository.clearOrchestratorSessionId('does-not-exist', 'session-a');
+
+      expect(result.cleared).toBe(false);
+      expect(result.repository).toBeNull();
     });
   });
 });

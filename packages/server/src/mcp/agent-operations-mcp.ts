@@ -28,4 +28,5 @@ export const MCP_AGENT_OPERATIONS = {
     reason: 'definition CRUD is an owner/console concern, not a delegation concern',
   },
   restart: { exposed: true, via: 'restart_all_agents' },
+  setWorkerParameters: { exposed: true, via: 'set_agent_parameters' },
 } satisfies Record<AgentOperation, SurfaceExposure>;

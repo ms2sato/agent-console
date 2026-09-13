@@ -9,6 +9,9 @@ import {
   EmbeddedAgentEventSchema,
   EmbeddedAgentServerEventSchema,
   EmbeddedAgentStreamEventSchema,
+  EmbeddedAgentProviderSchema,
+  EMBEDDED_AGENT_TOOL_NAMES,
+  DEFAULT_EMBEDDED_AGENT_ENABLED_TOOLS,
 } from '../embedded-agent.js';
 import { SDK_RESUME_FAILURE_REASONS } from '../../types/embedded-agent.js';
 
@@ -143,6 +146,14 @@ describe('EmbeddedAgentDefinitionSchema', () => {
     expect(result.success).toBe(false);
   });
 
+  it('accepts TodoWrite in enabledTools (#1573)', () => {
+    const result = v.safeParse(EmbeddedAgentDefinitionSchema, {
+      ...validDefinition,
+      enabledTools: ['Read', 'TodoWrite'],
+    });
+    expect(result.success).toBe(true);
+  });
+
   it('accepts a valid instructions array', () => {
     const result = v.safeParse(EmbeddedAgentDefinitionSchema, {
       ...validDefinition,
@@ -264,6 +275,31 @@ describe('EmbeddedAgentDefinitionSchema', () => {
       const result = v.safeParse(EmbeddedAgentDefinitionSchema, withoutIsBuiltIn);
       expect(result.success).toBe(false);
     });
+  });
+});
+
+describe('EmbeddedAgentProviderSchema supportsImages (Issue #1571)', () => {
+  const baseProvider = { baseUrl: 'http://localhost:11434/v1', model: 'llama3' };
+
+  it('parses a provider with supportsImages: true', () => {
+    const result = v.safeParse(EmbeddedAgentProviderSchema, { ...baseProvider, supportsImages: true });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.output.supportsImages).toBe(true);
+    }
+  });
+
+  it('parses a provider WITHOUT supportsImages (absent, same as today)', () => {
+    const result = v.safeParse(EmbeddedAgentProviderSchema, baseProvider);
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect('supportsImages' in result.output).toBe(false);
+    }
+  });
+
+  it('rejects a non-boolean supportsImages', () => {
+    const result = v.safeParse(EmbeddedAgentProviderSchema, { ...baseProvider, supportsImages: 'yes' });
+    expect(result.success).toBe(false);
   });
 });
 
@@ -601,6 +637,46 @@ describe('EmbeddedAgentCommandSchema', () => {
         .success
     ).toBe(true);
     expect(v.safeParse(EmbeddedAgentCommandSchema, { v: 1, type: 'shutdown' }).success).toBe(true);
+    // Slash commands, console-handled arm (#1572).
+    expect(v.safeParse(EmbeddedAgentCommandSchema, { v: 1, type: 'compact' }).success).toBe(true);
+  });
+
+  it('rejects a compact command carrying an unknown field (strictObject)', () => {
+    const result = v.safeParse(EmbeddedAgentCommandSchema, { v: 1, type: 'compact', source: 'manual' });
+    expect(result.success).toBe(false);
+  });
+
+  it('parses a user-message command with attachments (Issue #1571)', () => {
+    const result = v.safeParse(EmbeddedAgentCommandSchema, {
+      v: 1,
+      type: 'user-message',
+      id: 'm1',
+      text: 'see attached',
+      attachments: [{ path: '/tmp/upload/img.png', mimeType: 'image/png' }],
+    });
+    expect(result.success).toBe(true);
+    if (result.success && result.output.type === 'user-message') {
+      expect(result.output.attachments).toEqual([{ path: '/tmp/upload/img.png', mimeType: 'image/png' }]);
+    }
+  });
+
+  it('parses a user-message command WITHOUT attachments (absent, same as today)', () => {
+    const result = v.safeParse(EmbeddedAgentCommandSchema, { v: 1, type: 'user-message', id: 'm1', text: 'hi' });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect('attachments' in result.output).toBe(false);
+    }
+  });
+
+  it('rejects a user-message command with an attachment carrying an unknown field (strictObject)', () => {
+    const result = v.safeParse(EmbeddedAgentCommandSchema, {
+      v: 1,
+      type: 'user-message',
+      id: 'm1',
+      text: 'see attached',
+      attachments: [{ path: '/tmp/upload/img.png', mimeType: 'image/png', size: 123 }],
+    });
+    expect(result.success).toBe(false);
   });
 
   it('REJECTS the retired handoff command (#1401)', () => {
@@ -638,6 +714,79 @@ describe('EmbeddedAgentCommandSchema', () => {
     expect(result.success).toBe(false);
   });
 
+  describe('set-model-params (agent-surface.md Phase 3)', () => {
+    const full = {
+      v: 1,
+      type: 'set-model-params',
+      model: 'gpt-5',
+      reasoningEffort: 'high',
+      contextWindowTokens: 200_000,
+    };
+
+    it('round-trips the full effective triple', () => {
+      const result = v.safeParse(EmbeddedAgentCommandSchema, full);
+      expect(result.success).toBe(true);
+      if (result.success && result.output.type === 'set-model-params') {
+        expect(result.output.model).toBe('gpt-5');
+        expect(result.output.reasoningEffort).toBe('high');
+        expect(result.output.contextWindowTokens).toBe(200_000);
+      }
+    });
+
+    it('round-trips nulls, which mean "no override in effect"', () => {
+      const result = v.safeParse(EmbeddedAgentCommandSchema, {
+        ...full,
+        reasoningEffort: null,
+        contextWindowTokens: null,
+      });
+      expect(result.success).toBe(true);
+      if (result.success && result.output.type === 'set-model-params') {
+        expect(result.output.reasoningEffort).toBeNull();
+        expect(result.output.contextWindowTokens).toBeNull();
+      }
+    });
+
+    it('REJECTS an absent reasoningEffort / contextWindowTokens (full state, not a delta)', () => {
+      // Nullable but REQUIRED is what makes this command full-state: an
+      // absent key would be indistinguishable from "leave it alone", which
+      // is exactly the delta semantics the command exists to avoid.
+      const { reasoningEffort: _effort, ...withoutEffort } = full;
+      const { contextWindowTokens: _window, ...withoutWindow } = full;
+      expect(v.safeParse(EmbeddedAgentCommandSchema, withoutEffort).success).toBe(false);
+      expect(v.safeParse(EmbeddedAgentCommandSchema, withoutWindow).success).toBe(false);
+    });
+
+    it('rejects an absent or empty model', () => {
+      const { model: _model, ...withoutModel } = full;
+      expect(v.safeParse(EmbeddedAgentCommandSchema, withoutModel).success).toBe(false);
+      expect(v.safeParse(EmbeddedAgentCommandSchema, { ...full, model: '' }).success).toBe(false);
+    });
+
+    it('rejects a non-positive or non-integer contextWindowTokens', () => {
+      expect(v.safeParse(EmbeddedAgentCommandSchema, { ...full, contextWindowTokens: 0 }).success).toBe(false);
+      expect(v.safeParse(EmbeddedAgentCommandSchema, { ...full, contextWindowTokens: 1.5 }).success).toBe(false);
+    });
+
+    it('accepts an arbitrary reasoningEffort string -- the closed domain is enforced upstream', () => {
+      // One command shape serves both engines, so claude-sdk's EFFORT_LEVELS
+      // picklist deliberately does NOT appear here; the shared parameter
+      // validator rejects an out-of-domain value before this point.
+      expect(
+        v.safeParse(EmbeddedAgentCommandSchema, { ...full, reasoningEffort: 'ultra' }).success,
+      ).toBe(true);
+    });
+
+    it('rejects an unknown field (strictObject)', () => {
+      expect(
+        v.safeParse(EmbeddedAgentCommandSchema, { ...full, temperature: 0.7 }).success,
+      ).toBe(false);
+    });
+
+    it('rejects a version other than 1', () => {
+      expect(v.safeParse(EmbeddedAgentCommandSchema, { ...full, v: 2 }).success).toBe(false);
+    });
+  });
+
   it('parses an init command carrying enabledTools', () => {
     const init = {
       v: 1,
@@ -654,6 +803,42 @@ describe('EmbeddedAgentCommandSchema', () => {
     expect(result.success).toBe(true);
     if (result.success && result.output.type === 'init') {
       expect(result.output.enabledTools).toEqual(['Read']);
+    }
+  });
+
+  it('parses an openai-api init command with provider.supportsImages: true (Issue #1571)', () => {
+    const init = {
+      v: 1,
+      type: 'init',
+      compaction: { auto: true },
+      engine: 'openai-api',
+      mcp: { baseUrl: 'http://localhost:3457/mcp', token: 'tok' },
+      provider: { baseUrl: 'http://localhost:11434/v1', model: 'llama3', supportsImages: true },
+      context: { sessionId: 's1', workerId: 'w1', cwd: '/work' },
+      maxToolIterations: 25,
+    };
+    const result = v.safeParse(EmbeddedAgentCommandSchema, init);
+    expect(result.success).toBe(true);
+    if (result.success && result.output.type === 'init' && result.output.engine === 'openai-api') {
+      expect(result.output.provider.supportsImages).toBe(true);
+    }
+  });
+
+  it('parses an openai-api init command WITHOUT provider.supportsImages (absent, same as today)', () => {
+    const init = {
+      v: 1,
+      type: 'init',
+      compaction: { auto: true },
+      engine: 'openai-api',
+      mcp: { baseUrl: 'http://localhost:3457/mcp', token: 'tok' },
+      provider: { baseUrl: 'http://localhost:11434/v1', model: 'llama3' },
+      context: { sessionId: 's1', workerId: 'w1', cwd: '/work' },
+      maxToolIterations: 25,
+    };
+    const result = v.safeParse(EmbeddedAgentCommandSchema, init);
+    expect(result.success).toBe(true);
+    if (result.success && result.output.type === 'init' && result.output.engine === 'openai-api') {
+      expect('supportsImages' in result.output.provider).toBe(false);
     }
   });
 
@@ -724,6 +909,64 @@ describe('EmbeddedAgentCommandSchema', () => {
     if (result.success && result.output.type === 'init') {
       expect(result.output.instructions).toBeUndefined();
     }
+  });
+
+  it('parses an init command carrying context.attachmentRoots (Issue #1570)', () => {
+    const init = {
+      v: 1,
+      type: 'init',
+      compaction: { auto: true },
+      engine: 'openai-api',
+      mcp: { baseUrl: 'http://localhost:3457/mcp', token: 'tok' },
+      provider: { baseUrl: 'http://localhost:11434/v1', model: 'llama3' },
+      context: { sessionId: 's1', workerId: 'w1', cwd: '/work', attachmentRoots: ['/tmp/agent-console-uploads-1000'] },
+      maxToolIterations: 25,
+    };
+    const result = v.safeParse(EmbeddedAgentCommandSchema, init);
+    expect(result.success).toBe(true);
+    if (result.success && result.output.type === 'init') {
+      expect(result.output.context.attachmentRoots).toEqual(['/tmp/agent-console-uploads-1000']);
+    }
+  });
+
+  it('parses an init command without context.attachmentRoots (absent, not required -- backward compat)', () => {
+    const init = {
+      v: 1,
+      type: 'init',
+      compaction: { auto: true },
+      engine: 'openai-api',
+      mcp: { baseUrl: 'http://localhost:3457/mcp', token: 'tok' },
+      provider: { baseUrl: 'http://localhost:11434/v1', model: 'llama3' },
+      context: { sessionId: 's1', workerId: 'w1', cwd: '/work' },
+      maxToolIterations: 25,
+    };
+    const result = v.safeParse(EmbeddedAgentCommandSchema, init);
+    expect(result.success).toBe(true);
+    if (result.success && result.output.type === 'init') {
+      expect(result.output.context.attachmentRoots).toBeUndefined();
+    }
+  });
+
+  it('rejects an init command whose context.attachmentRoots is not an array of strings (strictObject pins the shape, Gap-Scan Q10)', () => {
+    const init = {
+      v: 1,
+      type: 'init',
+      compaction: { auto: true },
+      engine: 'openai-api',
+      mcp: { baseUrl: 'http://localhost:3457/mcp', token: 'tok' },
+      provider: { baseUrl: 'http://localhost:11434/v1', model: 'llama3' },
+      // Wrong type entirely (string instead of string[]).
+      context: { sessionId: 's1', workerId: 'w1', cwd: '/work', attachmentRoots: '/tmp/agent-console-uploads-1000' },
+      maxToolIterations: 25,
+    };
+    expect(v.safeParse(EmbeddedAgentCommandSchema, init).success).toBe(false);
+
+    // Right container, wrong element type.
+    const initWrongElement = {
+      ...init,
+      context: { sessionId: 's1', workerId: 'w1', cwd: '/work', attachmentRoots: [123] },
+    };
+    expect(v.safeParse(EmbeddedAgentCommandSchema, initWrongElement).success).toBe(false);
   });
 
   describe('engine discriminant (SDK Engine Phase 1, docs/design/embedded-agent-sdk-engine.md §3.1)', () => {
@@ -970,6 +1213,38 @@ describe('EmbeddedAgentEventSchema', () => {
     }
   });
 
+  /**
+   * Phase B (#1343 R4): `tool-result`'s structural `activatedRules` field --
+   * the wire-boundary pin CodeRabbit's Major finding asked for (the
+   * regex-scan predecessor is what this field replaces; see main.ts's
+   * restore-seeding comment). This member's own `strictObject` rejection
+   * case (unlike the sibling members already pinned above/below at lines
+   * ~1267/1315/1369) did not exist before this field was added.
+   */
+  describe('tool-result activatedRules (#1343 R4)', () => {
+    const base = { v: 1, type: 'tool-result', turnId: 't1', callId: 'c1', ok: true, result: 'done' };
+
+    it('parses with activatedRules present (array of strings)', () => {
+      const result = v.safeParse(EmbeddedAgentEventSchema, { ...base, activatedRules: ['scoped.md', 'other.md'] });
+      expect(result.success).toBe(true);
+    });
+
+    it('parses with activatedRules absent', () => {
+      const result = v.safeParse(EmbeddedAgentEventSchema, base);
+      expect(result.success).toBe(true);
+    });
+
+    it('rejects a non-array activatedRules value', () => {
+      const result = v.safeParse(EmbeddedAgentEventSchema, { ...base, activatedRules: 'scoped.md' });
+      expect(result.success).toBe(false);
+    });
+
+    it('rejects an unknown sibling key on the same tool-result event (strictObject)', () => {
+      const result = v.safeParse(EmbeddedAgentEventSchema, { ...base, activatedRules: ['scoped.md'], extra: 'leak' });
+      expect(result.success).toBe(false);
+    });
+  });
+
   describe('window-declaration drift fields', () => {
     /*
      * The two fields are deliberately different SHAPES, because they carry
@@ -1206,6 +1481,66 @@ describe('EmbeddedAgentEventSchema', () => {
       expect(result.success).toBe(false);
     });
   });
+
+  describe('model-params-applied (agent-surface.md Phase 3)', () => {
+    it('round-trips an applied report', () => {
+      const result = v.safeParse(EmbeddedAgentEventSchema, {
+        v: 1,
+        type: 'model-params-applied',
+        applied: true,
+      });
+      expect(result.success).toBe(true);
+      if (result.success && result.output.type === 'model-params-applied') {
+        expect(result.output.applied).toBe(true);
+      }
+    });
+
+    it('round-trips an UNapplied report -- a plain boolean, no reason to classify', () => {
+      // `applied: false` reports a genuine engine-side refusal. Both
+      // parameters apply live on both engines, so there is no named cause
+      // (and deliberately no uninhabited picklist / free-form string) here.
+      const result = v.safeParse(EmbeddedAgentEventSchema, {
+        v: 1,
+        type: 'model-params-applied',
+        applied: false,
+      });
+      expect(result.success).toBe(true);
+      if (result.success && result.output.type === 'model-params-applied') {
+        expect(result.output.applied).toBe(false);
+      }
+    });
+
+    it('rejects a reason field (strictObject) -- the classification does not exist', () => {
+      // Reach: this is what keeps a reason from creeping back in as an
+      // untyped passenger. Adding `reason: v.optional(v.string())` to the
+      // schema makes this assertion flip.
+      expect(
+        v.safeParse(EmbeddedAgentEventSchema, {
+          v: 1,
+          type: 'model-params-applied',
+          applied: false,
+          reason: 'effort-requires-restart',
+        }).success,
+      ).toBe(false);
+    });
+
+    it('rejects a missing applied flag', () => {
+      expect(
+        v.safeParse(EmbeddedAgentEventSchema, { v: 1, type: 'model-params-applied' }).success,
+      ).toBe(false);
+    });
+
+    it('rejects an unknown field (strictObject)', () => {
+      expect(
+        v.safeParse(EmbeddedAgentEventSchema, {
+          v: 1,
+          type: 'model-params-applied',
+          applied: true,
+          model: 'gpt-5',
+        }).success,
+      ).toBe(false);
+    });
+  });
 });
 
 describe('EmbeddedAgentServerEventSchema', () => {
@@ -1255,6 +1590,37 @@ describe('EmbeddedAgentServerEventSchema', () => {
     });
   });
 
+  describe("the exited event's `stderrTail` (Issue #1454)", () => {
+    it('parses an exited row that carries a stderrTail string', () => {
+      const result = v.safeParse(EmbeddedAgentServerEventSchema, {
+        v: 1,
+        type: 'exited',
+        code: 1,
+        reason: 'unexpected',
+        stderrTail: 'Error: boom\n    at somewhere.ts:1:1',
+      });
+      expect(result.success).toBe(true);
+      expect((result.output as { stderrTail?: string }).stderrTail).toBe('Error: boom\n    at somewhere.ts:1:1');
+    });
+
+    it('parses an exited row with no stderrTail at all (absent, not empty)', () => {
+      const result = v.safeParse(EmbeddedAgentServerEventSchema, { v: 1, type: 'exited', code: 0, reason: 'managed' });
+      expect(result.success).toBe(true);
+      expect((result.output as { stderrTail?: string }).stderrTail).toBeUndefined();
+    });
+
+    it('rejects a non-string stderrTail', () => {
+      const result = v.safeParse(EmbeddedAgentServerEventSchema, {
+        v: 1,
+        type: 'exited',
+        code: 1,
+        reason: 'unexpected',
+        stderrTail: 12345,
+      });
+      expect(result.success).toBe(false);
+    });
+  });
+
   it('parses a user-message event with the optional clientMessageId field', () => {
     const result = v.safeParse(EmbeddedAgentServerEventSchema, {
       v: 1,
@@ -1290,6 +1656,45 @@ describe('EmbeddedAgentServerEventSchema', () => {
       id: 'm1',
       text: 'hi',
       clientMessageId: 42,
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('parses a user-message event with attachments (Issue #1571)', () => {
+    const result = v.safeParse(EmbeddedAgentServerEventSchema, {
+      v: 1,
+      type: 'user-message',
+      id: 'm1',
+      text: 'see attached',
+      attachments: [{ path: '/tmp/upload/img.png', mimeType: 'image/png' }],
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.output).toEqual({
+        v: 1,
+        type: 'user-message',
+        id: 'm1',
+        text: 'see attached',
+        attachments: [{ path: '/tmp/upload/img.png', mimeType: 'image/png' }],
+      });
+    }
+  });
+
+  it('parses a user-message event WITHOUT attachments (absent, same as today)', () => {
+    const result = v.safeParse(EmbeddedAgentServerEventSchema, { v: 1, type: 'user-message', id: 'm1', text: 'hi' });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect('attachments' in result.output).toBe(false);
+    }
+  });
+
+  it('rejects a user-message event with a malformed attachment (missing mimeType)', () => {
+    const result = v.safeParse(EmbeddedAgentServerEventSchema, {
+      v: 1,
+      type: 'user-message',
+      id: 'm1',
+      text: 'see attached',
+      attachments: [{ path: '/tmp/upload/img.png' }],
     });
     expect(result.success).toBe(false);
   });
@@ -1706,5 +2111,45 @@ describe('init.restoredUsage survives the serialized stdio line (#1419)', () => 
 
     if (parsed.type !== 'init' || parsed.engine !== 'openai-api') throw new Error('unexpected parse output');
     expect(parsed.restoredUsage).toEqual({ promptTokens: 6722, estimated: false });
+  });
+});
+
+/**
+ * Phase B (#1343 R4)'s wire addition, same rationale as `restoredUsage`'s
+ * sibling pin immediately above: what a schema-only object-literal test
+ * cannot reach is whether the field survives the actual stdio TRANSPORT
+ * (`JSON.stringify` + `JSON.parse`), not just a `v.parse` call.
+ */
+describe('init.activatedRuleNames survives the serialized stdio line (#1343 R4)', () => {
+  it('round-trips through JSON.stringify + JSON.parse + schema parse', () => {
+    const line = JSON.stringify({
+      v: 1,
+      type: 'init',
+      engine: 'openai-api',
+      compaction: { auto: true, contextWindowTokens: 20_000 },
+      mcp: { baseUrl: 'http://mcp.local', token: 'tok' },
+      provider: { baseUrl: 'http://p/v1', model: 'm' },
+      context: { sessionId: 's', workerId: 'w', cwd: '/tmp/work' },
+      maxToolIterations: 25,
+      activatedRuleNames: ['scoped.md'],
+    });
+
+    const parsed = v.parse(EmbeddedAgentCommandSchema, JSON.parse(line));
+
+    if (parsed.type !== 'init' || parsed.engine !== 'openai-api') throw new Error('unexpected parse output');
+    expect(parsed.activatedRuleNames).toEqual(['scoped.md']);
+  });
+});
+
+describe('EMBEDDED_AGENT_TOOL_NAMES / DEFAULT_EMBEDDED_AGENT_ENABLED_TOOLS (#1573)', () => {
+  it('DEFAULT_EMBEDDED_AGENT_ENABLED_TOOLS is a subset of EMBEDDED_AGENT_TOOL_NAMES', () => {
+    for (const name of DEFAULT_EMBEDDED_AGENT_ENABLED_TOOLS) {
+      expect(EMBEDDED_AGENT_TOOL_NAMES).toContain(name);
+    }
+  });
+
+  it('EMBEDDED_AGENT_TOOL_NAMES includes TodoWrite and DEFAULT_EMBEDDED_AGENT_ENABLED_TOOLS includes it too', () => {
+    expect(EMBEDDED_AGENT_TOOL_NAMES).toContain('TodoWrite');
+    expect(DEFAULT_EMBEDDED_AGENT_ENABLED_TOOLS).toContain('TodoWrite');
   });
 });

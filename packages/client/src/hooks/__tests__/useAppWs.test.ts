@@ -351,6 +351,27 @@ describe('useAppWsEvent', () => {
       expect(consoleErrorSpy).not.toHaveBeenCalled();
     });
 
+    it('should treat an orchestrator-designation-changed frame as a no-op for app event handlers', () => {
+      // Client-side handling for this message is not implemented yet (a
+      // follow-up slice); this pins that the frame parses without invoking
+      // an unrelated callback or surfacing a parse error in the meantime.
+      const onSessionsSync = mock(() => {});
+      const onWorkerActivity = mock(() => {});
+      renderHook(() => useAppWsEvent({ onSessionsSync, onWorkerActivity }));
+
+      const ws = MockWebSocket.getLastInstance();
+      act(() => {
+        ws?.simulateOpen();
+        ws?.simulateMessage(
+          JSON.stringify({ type: 'orchestrator-designation-changed', repositoryId: 'repo-1', sessionId: 'session-1' })
+        );
+      });
+
+      expect(onSessionsSync).not.toHaveBeenCalled();
+      expect(onWorkerActivity).not.toHaveBeenCalled();
+      expect(consoleErrorSpy).not.toHaveBeenCalled();
+    });
+
     it('should call onAgentsSync for agents-sync message', () => {
       const onAgentsSync = mock(() => {});
       renderHook(() => useAppWsEvent({ onAgentsSync }));
@@ -736,6 +757,36 @@ describe('useAppWsEvent', () => {
       });
 
       expect(onBookmarkDeleted).toHaveBeenCalledWith('session-1', 'bookmark-1');
+    });
+
+    it('should call onOrchestratorDesignationChanged for orchestrator-designation-changed message', () => {
+      const onOrchestratorDesignationChanged = mock(() => {});
+      renderHook(() => useAppWsEvent({ onOrchestratorDesignationChanged }));
+
+      const ws = MockWebSocket.getLastInstance();
+      act(() => {
+        ws?.simulateOpen();
+        ws?.simulateMessage(
+          JSON.stringify({ type: 'orchestrator-designation-changed', repositoryId: 'repo-1', sessionId: 'session-1' })
+        );
+      });
+
+      expect(onOrchestratorDesignationChanged).toHaveBeenCalledWith('repo-1', 'session-1');
+    });
+
+    it('should call onOrchestratorDesignationChanged with null sessionId when cleared', () => {
+      const onOrchestratorDesignationChanged = mock(() => {});
+      renderHook(() => useAppWsEvent({ onOrchestratorDesignationChanged }));
+
+      const ws = MockWebSocket.getLastInstance();
+      act(() => {
+        ws?.simulateOpen();
+        ws?.simulateMessage(
+          JSON.stringify({ type: 'orchestrator-designation-changed', repositoryId: 'repo-1', sessionId: null })
+        );
+      });
+
+      expect(onOrchestratorDesignationChanged).toHaveBeenCalledWith('repo-1', null);
     });
   });
 

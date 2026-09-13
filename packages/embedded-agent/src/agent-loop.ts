@@ -11,14 +11,16 @@
 
 import {
   DEFAULT_COMPACTION_THRESHOLD,
+  type EmbeddedAgentAttachment,
   type EmbeddedAgentEvent,
   type EmbeddedAgentRestoredUsage,
 } from '@agent-console/shared';
-import type { ToolExecutor } from './mcp.js';
+import type { ToolExecutor, ToolCallOutcome } from './mcp.js';
 import {
   ProviderError,
   type ProviderErrorDetail,
   type ChatMessage,
+  type ContentPart,
   type ProviderAdapter,
   type ToolCall,
   type ToolDefinition,
@@ -27,12 +29,15 @@ import { isContextOverflowError, extractProviderStatedLimit } from './context-ov
 import { detectClampedReading } from './window-drift.js';
 import { truncateToBytes } from './truncate.js';
 import { buildCompactionSeedMessages } from './conversation-seed.js';
+import { buildUserMessageContent } from './attachment-content.js';
+import type { OpenAiApiEngine } from './engine-types.js';
 import {
   COMPACT_TOOL_NAME,
   COMPACT_TOOL_SCHEDULED_RESULT,
   compactToolDefinition,
 } from './compact-tool.js';
 import { pushSyntheticToolError } from './tool-call-repair.js';
+import { assignSyntheticToolCallIds } from './tool-call-ids.js';
 
 const TOOL_RESULT_MAX_BYTES = 16384;
 /**
@@ -144,9 +149,18 @@ export interface AgentLoopDeps {
    * that turn's own reading supersedes it.
    */
   restoredUsage?: EmbeddedAgentRestoredUsage;
+  /**
+   * Message-attachment resolution: confinement roots a `Read`-eligible
+   * attachment path must resolve under, and whether this definition's
+   * provider can see image content parts. Both default to the closed/absent
+   * state (`[]` / `false`) when omitted, matching pre-existing behavior for a
+   * turn with no attachments.
+   */
+  attachmentRoots?: string[];
+  supportsImages?: boolean;
 }
 
-interface ProviderToolCall {
+export interface ProviderToolCall {
   callId: string;
   name: string;
   argsJson: string;
@@ -263,13 +277,25 @@ function capToolCallArgsForWire(argsJson: string, parsedValue: Record<string, un
 }
 
 /**
+ * Character length of a message's `.content` for the coarse chars/4
+ * estimator below. A user message's content may be a `ContentPart[]` when it
+ * carries image attachments -- image parts contribute 0 chars to
+ * this fallback estimate, an accepted approximation since this estimator
+ * only ever runs when the provider doesn't report real `usage`.
+ */
+function contentCharLength(content: string | ContentPart[]): number {
+  if (typeof content === 'string') return content.length;
+  return content.reduce((sum, part) => sum + (part.type === 'text' ? part.text.length : 0), 0);
+}
+
+/**
  * Fallback token estimate for providers that ignore `stream_options` and
  * never send `usage`: chars/4 summed over every message's `.content` in the
  * given array, rounded. `tool_calls` on assistant messages are not counted --
  * only `.content` size matters for this coarse estimate.
  */
 function estimateTokensFromChars(messages: ChatMessage[]): number {
-  const totalChars = messages.reduce((sum, m) => sum + m.content.length, 0);
+  const totalChars = messages.reduce((sum, m) => sum + contentCharLength(m.content), 0);
   return Math.round(totalChars / 4);
 }
 
@@ -397,7 +423,8 @@ export function selectPartialDistillationMessages(
   return best;
 }
 
-export class AgentLoop {
+export class AgentLoop implements OpenAiApiEngine {
+  readonly kind = 'openai-api' as const;
   private readonly deps: AgentLoopDeps;
   private readonly retryDelaysMs: [number, number];
   private readonly sleep: (ms: number) => Promise<void>;
@@ -517,6 +544,41 @@ export class AgentLoop {
   }
 
   /**
+   * agent-surface.md Phase 3: apply a mid-run model / reasoning-effort /
+   * context-window change (see `Engine.setModelParams` for the full-state,
+   * never-a-delta contract the server upholds).
+   *
+   * Pure field replacement on `deps`, and it cannot fail: every consumer
+   * reads these values at the moment it needs them rather than caching them
+   * at construction, so replacing them here IS the application.
+   * `runProviderAttempt` composes `model`/`reasoningEffort` into each
+   * `adapter.run()` request, which makes the next provider call -- the next
+   * ITERATION of a turn already running, not merely the next turn -- carry
+   * the new values; `shouldAutoCompact` and the window-drift checks read
+   * `compaction.contextWindowTokens` at each boundary they evaluate.
+   *
+   * `null` (no override) becomes `undefined` rather than being stored as
+   * `null`: `reasoningEffort`'s consumer omits the key from the request when
+   * and only when it is `undefined`, and `contextWindowTokens`'s consumers
+   * treat `undefined` as "no denominator at all". Storing `null` would make
+   * both read as a present value.
+   *
+   * Needs no equivalent of `SdkEngine.setModelParams`'s serialization chain:
+   * this apply is synchronous field replacement, so two calls cannot
+   * interleave and the later one is simply the last write.
+   */
+  setModelParams(params: {
+    model: string;
+    reasoningEffort: string | null;
+    contextWindowTokens: number | null;
+  }): void {
+    this.deps.model = params.model;
+    this.deps.reasoningEffort = params.reasoningEffort ?? undefined;
+    this.deps.compaction.contextWindowTokens = params.contextWindowTokens ?? undefined;
+    this.deps.emit({ v: 1, type: 'model-params-applied', applied: true });
+  }
+
+  /**
    * Compaction at the restore boundary: the SECOND firing point of the same
    * automatic predicate, evaluated once after `init` and before the first
    * user turn. See docs/design/embedded-agent-worker.md "Compaction at the
@@ -603,8 +665,8 @@ export class AgentLoop {
    * returned promise, so no user message can interleave between the turn
    * ending and the compaction that follows it.
    */
-  async runTurn(id: string, text: string): Promise<void> {
-    const ending = await this.runUserTurn(id, text);
+  async runTurn(id: string, text: string, attachments?: EmbeddedAgentAttachment[]): Promise<void> {
+    const ending = await this.runUserTurn(id, text, attachments);
     await this.settleCompactionAtTurnBoundary(ending);
   }
 
@@ -650,14 +712,28 @@ export class AgentLoop {
     return usage.promptTokens / windowTokens >= threshold;
   }
 
-  private async runUserTurn(id: string, text: string): Promise<TurnEnding> {
+  private async runUserTurn(
+    id: string,
+    text: string,
+    attachments?: EmbeddedAgentAttachment[],
+  ): Promise<TurnEnding> {
     const turnId = id;
     const abort = new AbortController();
     this.currentAbort = abort;
 
     try {
       this.deps.emit({ v: 1, type: 'state', state: 'active' });
-      this.conversation.push({ role: 'user', content: text });
+      const content = await buildUserMessageContent(
+        text,
+        attachments,
+        this.deps.attachmentRoots ?? [],
+        this.deps.supportsImages ?? false,
+      );
+      if (abort.signal.aborted) {
+        this.emitTurnError(turnId, 'turn canceled');
+        return 'canceled';
+      }
+      this.conversation.push({ role: 'user', content });
 
       let malformedReAsks = 0;
       // One escape per turn. A local, so it resets when the turn ends.
@@ -739,6 +815,7 @@ export class AgentLoop {
           return 'error';
         }
         turnUsage = outcome.usage;
+        outcome.toolCalls = assignSyntheticToolCallIds(outcome.toolCalls, turnId, iteration);
 
         // Always emit the assistant message, even when the text is empty.
         this.deps.emit({
@@ -809,19 +886,33 @@ export class AgentLoop {
             this.emitTurnError(turnId, 'turn canceled');
             return 'canceled';
           }
+          // The 16 KiB cap applies to the TOOL'S OWN result only -- never to
+          // a Phase B (#1343 R2) scoped-rule activation appendix, which can
+          // run up to the ~160 KiB rules budget. Truncating first and
+          // concatenating after (rather than concatenating then truncating)
+          // is what keeps a rule file from ever being cut mid-content by this
+          // cap; see mcp.ts's `ToolCallOutcome.appendix` doc comment.
           const { text: truncated } = truncateToBytes(result.result, TOOL_RESULT_MAX_BYTES);
+          const withAppendix =
+            result.appendix !== undefined ? `${truncated}\n\n${result.appendix}` : truncated;
           this.deps.emit({
             v: 1,
             type: 'tool-result',
             turnId,
             callId: call.callId,
             ok: result.ok,
-            result: truncated,
+            result: withAppendix,
+            // Phase B (#1343 R4): the structural companion to the appendix
+            // folded into `withAppendix` above -- restore-seeding
+            // (main.ts) reads THIS field, never `result`'s text. Never
+            // pushed onto the `role: 'tool'` conversation message below,
+            // which the provider sees -- this field is wire-event-only.
+            ...(result.activatedRules !== undefined ? { activatedRules: result.activatedRules } : {}),
           });
           this.conversation.push({
             role: 'tool',
             tool_call_id: call.callId,
-            content: truncated,
+            content: withAppendix,
           });
           responded.add(call.callId);
         }
@@ -849,7 +940,7 @@ export class AgentLoop {
     name: string,
     args: Record<string, unknown>,
     signal: AbortSignal,
-  ): Promise<{ ok: boolean; result: string }> {
+  ): Promise<ToolCallOutcome> {
     if (name === COMPACT_TOOL_NAME) {
       this.pendingCompact = true;
       return { ok: true, result: COMPACT_TOOL_SCHEDULED_RESULT };
@@ -1252,6 +1343,19 @@ export class AgentLoop {
     );
     if (result.ok) return 'compacted';
     return result.canceled ? 'canceled' : 'failed';
+  }
+
+  /**
+   * Slash commands, `console`-handled arm (#1572): `OpenAiApiEngine.compactNow()`'s
+   * implementation for this engine. The server intercepts a manual
+   * `/compact` before it reaches this engine as prose (see
+   * `EMBEDDED_AGENT_SLASH_COMMANDS` and `embedded-agent-worker-service.ts`'s
+   * `sendUserMessage`) and calls this instead. `compact('manual')` already
+   * self-brackets with `state: active` / `emitIdle()` -- no additional
+   * state emission is needed here.
+   */
+  async compactNow(): Promise<void> {
+    await this.compact('manual');
   }
 
   async compact(source: 'auto' | 'manual', partial?: { budgetTokens: number }): Promise<void> {

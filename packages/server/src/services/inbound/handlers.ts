@@ -3,6 +3,7 @@ import type {
   InboundEventSummary,
   InboundSystemEvent,
   PtyNotificationIntent,
+  Session,
 } from '@agent-console/shared';
 import type { SessionManager } from '../session-manager.js';
 import { triggerRefresh } from '../git-diff-service.js';
@@ -10,11 +11,11 @@ import { writePtyNotification } from '../../lib/pty-notification.js';
 import { createLogger } from '../../lib/logger.js';
 
 /** Event types that AgentWorkerHandler actually handles */
-type AgentWorkerEventType = 'ci:completed' | 'ci:failed' | 'pr:merged' | 'pr:review_comment' | 'pr:changes_requested' | 'pr:comment';
+type AgentWorkerEventType = 'ci:completed' | 'ci:failed' | 'issue:labeled' | 'pr:merged' | 'pr:review_comment' | 'pr:changes_requested' | 'pr:comment';
 
 /** Set of valid AgentWorkerEventType values for runtime validation */
 const AGENT_WORKER_EVENT_TYPES: ReadonlySet<string> = new Set<AgentWorkerEventType>([
-  'ci:completed', 'ci:failed', 'pr:merged', 'pr:review_comment', 'pr:changes_requested', 'pr:comment',
+  'ci:completed', 'ci:failed', 'issue:labeled', 'pr:merged', 'pr:review_comment', 'pr:changes_requested', 'pr:comment',
 ]);
 
 function isAgentWorkerEventType(type: string): type is AgentWorkerEventType {
@@ -24,6 +25,30 @@ function isAgentWorkerEventType(type: string): type is AgentWorkerEventType {
 export interface EventTarget {
   sessionId: string;
   workerId?: string;
+  /**
+   * Set when this target was added as the repository's designated
+   * Orchestrator-session fallback (Shape C, #1661) rather than a direct
+   * branch/worktree match or its live parent. The fallback session's own
+   * working tree has nothing to do with the originating event's tree, so
+   * DiffWorkerHandler must never act on it.
+   */
+  fallback?: true;
+}
+
+/**
+ * Whether AgentWorkerHandler.handle() can deliver a PTY notification to this
+ * session -- i.e. whether it has an `agent`-type worker at all. This is
+ * deliberately NOT "and that worker's pty is non-null": writeWorkerInput
+ * silently no-ops (returns false, logs a warn) rather than throwing when the
+ * pty is null, and WritePtyNotificationParams.writeInput's `void` return type
+ * means handle() never observes that false -- so a worker existing (even
+ * with a currently-null pty) already IS today's actual delivery-success
+ * condition. Single writer: any code that needs to know "can this session
+ * receive an issue:labeled-style PTY notification" calls this, rather than
+ * re-deriving the check.
+ */
+export function canDeliverToAgentWorker(session: Session): boolean {
+  return session.workers.some((worker) => worker.type === 'agent');
 }
 
 export interface InboundEventHandler {
@@ -64,7 +89,7 @@ const handlerLogger = createLogger('inbound-handlers');
 class AgentWorkerHandler implements InboundEventHandler {
   readonly handlerId = 'agent-worker';
   readonly supportedEvents: InboundEventType[] = [
-    'ci:completed', 'ci:failed', 'pr:merged',
+    'ci:completed', 'ci:failed', 'issue:labeled', 'pr:merged',
     'pr:review_comment', 'pr:changes_requested', 'pr:comment',
   ];
 
@@ -73,6 +98,8 @@ class AgentWorkerHandler implements InboundEventHandler {
   async handle(event: InboundSystemEvent, target: EventTarget): Promise<boolean> {
     const session = this.sessionManager.getSession(target.sessionId);
     if (!session) return false;
+
+    if (!target.workerId && !canDeliverToAgentWorker(session)) return false;
 
     const workerId = target.workerId ?? session.workers.find((worker) => worker.type === 'agent')?.id;
     if (!workerId) return false;
@@ -119,6 +146,7 @@ class AgentWorkerHandler implements InboundEventHandler {
       case 'pr:merged':
         return 'inform';
       case 'ci:failed':
+      case 'issue:labeled':
       case 'pr:review_comment':
       case 'pr:changes_requested':
       case 'pr:comment':
@@ -138,6 +166,8 @@ class DiffWorkerHandler implements InboundEventHandler {
   constructor(private sessionManager: InboundSessionManager) {}
 
   async handle(_event: InboundSystemEvent, target: EventTarget): Promise<boolean> {
+    if (target.fallback) return false;
+
     const session = this.sessionManager.getSession(target.sessionId);
     if (!session) return false;
 
@@ -152,7 +182,7 @@ class DiffWorkerHandler implements InboundEventHandler {
 class UINotificationHandler implements InboundEventHandler {
   readonly handlerId = 'ui-notification';
   readonly supportedEvents: InboundEventType[] = [
-    'ci:failed', 'issue:closed', 'pr:merged',
+    'ci:failed', 'issue:closed', 'issue:labeled', 'pr:merged',
     'pr:review_comment', 'pr:changes_requested', 'pr:comment',
   ];
 

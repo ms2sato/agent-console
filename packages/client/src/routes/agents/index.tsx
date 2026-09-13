@@ -351,6 +351,9 @@ function EmbeddedAgentsSection() {
                   model: embeddedAgent.provider.model,
                   apiKeyRef:
                     embeddedAgent.engine === 'openai-api' ? (embeddedAgent.provider.apiKeyRef ?? '') : '',
+                  supportsImages:
+                    embeddedAgent.engine === 'openai-api' &&
+                    embeddedAgent.provider.supportsImages === true,
                   systemPrompt: embeddedAgent.systemPrompt ?? '',
                   maxToolIterationsInput: embeddedAgent.maxToolIterations?.toString() ?? '',
                   enabledTools: embeddedAgent.enabledTools ?? DEFAULT_EMBEDDED_AGENT_ENABLED_TOOLS.slice(),

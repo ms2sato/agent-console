@@ -27,4 +27,8 @@ export const UI_AGENT_OPERATIONS = {
     exposed: true,
     via: 'ActiveSessionsSidebar restart-all button (title="Restart all agents")',
   },
+  setWorkerParameters: {
+    exposed: true,
+    via: 'EmbeddedAgentWorkerView "Model and effort" disclosure',
+  },
 } satisfies Record<AgentOperation, SurfaceExposure>;

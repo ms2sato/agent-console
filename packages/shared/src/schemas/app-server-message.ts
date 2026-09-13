@@ -48,6 +48,15 @@ const EmbeddedAgentWorkerSchema = v.strictObject({
   // in types/worker.ts -- this object is strict, so the field must exist
   // here or it is stripped off the wire with no error on either side.
   contextWindowTokens: v.optional(v.number()),
+  // Effective model / reasoning effort, plus the override flag. Mirror
+  // EmbeddedAgentWorker in types/worker.ts -- this object is strict, so
+  // each field must exist here or it is stripped off the wire with no
+  // error on either side. `model` is OPTIONAL (unresolvable without a
+  // definition, absent means UNKNOWN) while `reasoningEffort` is required
+  // and nullable (never unresolvable); see the type's doc comments.
+  model: v.optional(v.string()),
+  reasoningEffort: v.nullable(v.string()),
+  hasParameterOverride: v.boolean(),
 });
 
 const WorkerSchema = v.union([
@@ -114,6 +123,8 @@ const RepositorySchema = v.strictObject({
   envVars: v.optional(v.nullable(v.string())),
   description: v.optional(v.nullable(v.string())),
   defaultAgentId: v.optional(v.nullable(v.string())),
+  orchestratorSessionId: v.optional(v.nullable(v.string())),
+  issueTriggerLabels: v.optional(v.nullable(v.string())),
   // Required (not optional) so every broadcast carries a defined value;
   // server derives via `withRepositoryRemote` against `getSourceReposDir()`.
   clonedSourceRepoPath: v.nullable(v.string()),
@@ -131,7 +142,7 @@ const WorkerMessageSchema = v.strictObject({
 });
 
 const InboundEventTypeSchema = v.picklist([
-  'ci:completed', 'ci:failed', 'issue:closed',
+  'ci:completed', 'ci:failed', 'issue:closed', 'issue:labeled',
   'pr:merged', 'pr:review_comment', 'pr:changes_requested', 'pr:comment',
 ]);
 
@@ -142,6 +153,7 @@ const SystemEventMetadataSchema = v.strictObject({
   branch: v.optional(v.string()),
   url: v.optional(v.string()),
   commitSha: v.optional(v.string()),
+  labels: v.optional(v.array(v.string())),
 });
 
 const InboundEventSummarySchema = v.strictObject({
@@ -409,6 +421,12 @@ const BookmarkDeletedSchema = v.strictObject({
   bookmarkId: v.string(),
 });
 
+const OrchestratorDesignationChangedSchema = v.strictObject({
+  type: v.literal('orchestrator-designation-changed'),
+  repositoryId: v.string(),
+  sessionId: v.nullable(v.string()),
+});
+
 /**
  * Standalone schema for the schema-version frame sent as the first message on
  * `/ws/app`. Exported separately (not only as part of the envelope) so the
@@ -461,6 +479,7 @@ export const AppServerMessageSchema = v.variant('type', [
   ArtifactDeletedSchema,
   BookmarkCreatedSchema,
   BookmarkDeletedSchema,
+  OrchestratorDesignationChangedSchema,
   SchemaVersionMessageSchema,
 ]);
 

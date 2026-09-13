@@ -17,17 +17,68 @@ import type { PtyNotificationKind } from './system-events.js';
 import type { ExitReason } from './worker.js';
 
 /**
- * Builtin subprocess-local tool names. This is the SINGLE WRITER of builtin
- * tool-name literals in the repo — every other usage must reference this
- * constant or the derived `EmbeddedAgentToolName` type, not a hardcoded list.
+ * The two engines an embedded-agent definition can run on
+ * (docs/design/embedded-agent-sdk-engine.md §3.1). Previously repeated as
+ * the ad-hoc literal union `'openai-api' | 'claude-sdk'` at each consumption
+ * site (`EMBEDDED_AGENT_ENGINE_PARAMETER_CAPABILITIES`'s `Record` key,
+ * `fatalLeavesHarnessAlive`'s parameter, etc.) -- named here as the single
+ * writer so a future third engine is added in one place. Existing repeated
+ * literals are left as-is (this alias is additive, not a forced migration).
+ */
+export type EmbeddedAgentEngine = 'openai-api' | 'claude-sdk';
+
+/**
+ * Builtin subprocess-local tool names, as a hand-written union type.
+ *
+ * This type intentionally has NO import from schemas/embedded-agent.ts:
+ * packages/shared/src/types must never import packages/shared/src/schemas
+ * (`.dependency-cruiser.cjs`'s `shared-no-types-import-schemas` rule forbids
+ * the edge, and treats a type-only import exactly the same as a value
+ * import -- verified directly: adding a throwaway `import type` from
+ * schemas/embedded-agent.ts here trips the same depcruise error a value
+ * import would).
+ *
+ * The RUNTIME source of truth -- `EMBEDDED_AGENT_TOOL_NAMES` (the SINGLE
+ * WRITER of the tool-name literals) and `DEFAULT_EMBEDDED_AGENT_ENABLED_TOOLS`
+ * -- lives in schemas/embedded-agent.ts instead, so `SCHEMA_VERSION`'s
+ * content hash (over packages/shared/src/schemas/*.ts) tracks the wire
+ * vocabulary; a constant living here would be invisible to that hash even
+ * though it widens what the wire schema accepts. This type is pinned
+ * bidirectionally against that schema's picklist -- see the pin in
+ * schemas/embedded-agent.ts for what happens if the two literal lists drift.
  *
  * `Bash`'s implementation ships in FF-1b (packages/embedded-agent/src/tools/bash.ts);
  * `Write`/`Edit`'s implementations ship in FF-1c
  * (packages/embedded-agent/src/tools/write.ts, edit.ts). All three stay OFF by
- * default — see DEFAULT_EMBEDDED_AGENT_ENABLED_TOOLS below.
+ * default — see DEFAULT_EMBEDDED_AGENT_ENABLED_TOOLS in schemas/embedded-agent.ts.
+ *
+ * `TodoWrite` is a planning/task-list tool: it lets the agent
+ * publish a live task list to the user rather than acting on the filesystem
+ * or a shell, so it stays ON by default alongside the read-only set. On
+ * `claude-sdk` it is measured absent from the resolved CLI's native tool
+ * catalog, so it is served by an in-process SDK MCP server
+ * instead (mirroring `Compact`'s own MCP-served shape) -- see
+ * `SDK_TODO_WRITE_TOOL_NAME` below; on `openai-api` it is implemented in
+ * packages/embedded-agent/src/tools/todo-write.ts.
  */
-export const EMBEDDED_AGENT_TOOL_NAMES = ['Read', 'Glob', 'Grep', 'Bash', 'Write', 'Edit'] as const;
-export type EmbeddedAgentToolName = (typeof EMBEDDED_AGENT_TOOL_NAMES)[number];
+export type EmbeddedAgentToolName = 'Read' | 'Glob' | 'Grep' | 'Bash' | 'Write' | 'Edit' | 'TodoWrite';
+
+/**
+ * The `TodoWrite` tool's model-visible, namespaced name on the `claude-sdk`
+ * engine, where it is served by an in-process SDK MCP server (mirroring
+ * `Compact`'s `mcp__console__Compact`) rather than being the SDK's own
+ * native builtin (measured absent from the resolved CLI's tool catalog).
+ * `TodoPanel` (packages/client) accepts a `tool-call` entry
+ * named either the plain `'TodoWrite'` (openai-api / a future native SDK
+ * tool) or this namespaced name.
+ *
+ * Deliberately NOT in schemas/embedded-agent.ts beside
+ * `EMBEDDED_AGENT_TOOL_NAMES`: this constant does not widen what the wire
+ * schema accepts (tool names inside `tool-call` events are plain,
+ * unvalidated strings), so it must not participate in SCHEMA_VERSION's
+ * content hash over packages/shared/src/schemas/*.ts.
+ */
+export const SDK_TODO_WRITE_TOOL_NAME = 'mcp__console__TodoWrite';
 
 /**
  * Wire-shape for one tool call inside a restored assistant message.
@@ -44,30 +95,33 @@ export interface EmbeddedAgentRestoredToolCall {
 }
 
 /**
+ * Wire-shape for one message attachment: an absolute path the subprocess may
+ * read (confined to `attachmentRoots`) plus its MIME type. The subprocess
+ * decides per-attachment whether to build an image content block for it
+ * (image/* under EMBEDDED_AGENT_IMAGE_MIME_TYPES) or leave it path-only
+ * (unchanged for every other type).
+ */
+export interface EmbeddedAgentAttachment {
+  path: string;
+  mimeType: string;
+}
+
+/**
  * Wire-shape for the `init` command's `restoredConversation` field
  * (Transcript Restore, #1123). Structurally identical to embedded-agent's
  * internal `ChatMessage` union -- see EmbeddedAgentRestoredToolCall doc.
+ *
+ * The `user` variant's `content` stays a plain `string` -- it is NOT widened
+ * to carry resolved image content parts. `attachments` is only a reference
+ * the subprocess uses to decide, at restore time, whether to re-resolve the
+ * file into real content; this wire type carries just the reference, never
+ * the resolved shape.
  */
 export type EmbeddedAgentRestoredMessage =
   | { role: 'system'; content: string }
-  | { role: 'user'; content: string }
+  | { role: 'user'; content: string; attachments?: EmbeddedAgentAttachment[] }
   | { role: 'assistant'; content: string; tool_calls?: EmbeddedAgentRestoredToolCall[] }
   | { role: 'tool'; tool_call_id: string; content: string };
-
-/**
- * Default when a definition's `enabledTools` is absent: read-only tools ON, Bash OFF.
- *
- * Note that a definition that has ever been through the Add/Edit form persists
- * `enabledTools` as an explicit array (never leaves it `undefined`) — so a
- * change to this default does NOT propagate to already-edited definitions.
- * Only definitions that have never been saved through the form (still
- * `undefined` at the DB level) pick up a change here.
- */
-export const DEFAULT_EMBEDDED_AGENT_ENABLED_TOOLS: readonly EmbeddedAgentToolName[] = [
-  'Read',
-  'Glob',
-  'Grep',
-];
 
 /**
  * Ratio of `contextWindowTokens` at which the `openai-api` engine compacts
@@ -129,6 +183,14 @@ export type EmbeddedAgentDefinition =
         baseUrl: string;       // OpenAI-compatible root, e.g. "http://localhost:11434/v1"
         model: string;         // model id passed in the chat.completions request
         apiKeyRef?: string;    // name of a key in the server-side key store; absent = no auth (local LLMs)
+        /**
+         * Per-provider capability flag, operator-declared (not inferred):
+         * whether this provider can see image content parts. Default
+         * false/absent means the provider cannot see images -- gates whether
+         * the subprocess builds `image_url` content parts for this
+         * definition's turns.
+         */
+        supportsImages?: boolean;
       };
     })
   | (EmbeddedAgentDefinitionBase & {
@@ -148,7 +210,24 @@ type EmbeddedAgentInitCommandBase = {
   v: 1;
   type: 'init';
   mcp: { baseUrl: string; token: string };
-  context: { sessionId: string; workerId: string; repositoryId?: string; cwd: string };
+  context: {
+    sessionId: string;
+    workerId: string;
+    repositoryId?: string;
+    cwd: string;
+    /**
+     * Additional confinement roots (besides `cwd`) that the subprocess's
+     * builtin `Read` tool may open. Absent/empty = no extra roots (today's
+     * behavior, unchanged). This exists so `openai-api`'s own `Read` tool
+     * (confined to `cwd` via `resolveConfinedPath`) can reach message
+     * attachments saved to a shared per-OS-user upload directory outside the
+     * session's worktree. `claude-sdk`'s native `Read` tool ignores this
+     * field -- it is not ours to confine, and a live probe confirmed it can
+     * already open files outside `cwd` under our production
+     * `permissionMode`.
+     */
+    attachmentRoots?: string[];
+  };
   systemPrompt?: string;
   // undefined = apply the loop's own default tool set, [] = no builtin tools, explicit array = exact set
   enabledTools?: EmbeddedAgentToolName[];
@@ -212,7 +291,14 @@ export type EmbeddedAgentCommand =
        * is the authority (see `EMBEDDED_AGENT_ENGINE_PARAMETER_CAPABILITIES`
        * for the capability declaration).
        */
-      provider: { baseUrl: string; model: string; apiKey?: string; reasoningEffort?: string };
+      provider: {
+        baseUrl: string;
+        model: string;
+        apiKey?: string;
+        reasoningEffort?: string;
+        // Pass-through of the definition's provider.supportsImages.
+        supportsImages?: boolean;
+      };
       /**
        * Transcript Restore: the newest authoritative context reading from
        * the persisted log, seeding the restore-boundary compaction check.
@@ -227,6 +313,23 @@ export type EmbeddedAgentCommand =
        * thing that should be representable.
        */
       restoredUsage?: EmbeddedAgentRestoredUsage;
+      /**
+       * Phase B (#1343 R4): the scoped-rule names a restored transcript's
+       * `tool-result` events already carry as ACTIVATED (structurally, via
+       * `EmbeddedAgentEvent`'s `tool-result` member's `activatedRules`
+       * field -- never parsed out of `result`'s human-visible text; see
+       * that field's doc comment for why). The subprocess pre-seeds
+       * `RuleActivator` with these names so an already-delivered rule is
+       * not re-sent after a restart. Absent or empty = nothing to seed.
+       *
+       * Lives on the `openai-api` arm for the same reason `restoredUsage`
+       * does: `claude-sdk` resumes its own session state rather than being
+       * handed a reconstruction (see `EmbeddedAgentInitCommandBase.restoredConversation`'s
+       * doc comment on the claude-sdk branch below), so an init for that
+       * engine carrying seeded rule names is not a thing that should be
+       * representable.
+       */
+      activatedRuleNames?: string[];
     })
   | (EmbeddedAgentInitCommandBase & {
       engine: 'claude-sdk';
@@ -261,7 +364,17 @@ export type EmbeddedAgentCommand =
        */
       resume?: { sdkSessionId: string };
     })
-  | { v: 1; type: 'user-message'; id: string; text: string }
+  | {
+      v: 1;
+      type: 'user-message';
+      id: string;
+      text: string;
+      // Attachment references the subprocess may resolve into real content
+      // parts (image content blocks for image/* mime types under
+      // EMBEDDED_AGENT_IMAGE_MIME_TYPES; path-only otherwise). Absent/empty
+      // = no attachments, unchanged today.
+      attachments?: EmbeddedAgentAttachment[];
+    }
   | { v: 1; type: 'cancel' }
   /**
    * Compaction: the worker's auto-compaction toggle was changed while the
@@ -270,6 +383,51 @@ export type EmbeddedAgentCommand =
    * re-sending the current value is a no-op.
    */
   | { v: 1; type: 'set-auto-compaction'; enabled: boolean }
+  /**
+   * agent-surface.md Phase 3: the worker's model / reasoning-effort /
+   * context-window override was changed while the subprocess was running.
+   * Sent so the change applies without waiting for the next activation,
+   * and -- like `set-auto-compaction` above -- NOT gated on `turnActive`:
+   * a durable configuration write must not be silently dropped because a
+   * turn happened to be in flight, and each engine decides for itself when
+   * the new values take hold.
+   *
+   * FULL STATE, never a delta. The server always sends the whole RESOLVED
+   * effective triple, even for a one-field change, so the subprocess never
+   * merges partial state and never has to know the precedence rules that
+   * produced these values. Not persisted (no command is) and idempotent --
+   * re-sending the current triple is a no-op.
+   *
+   * `model` is a required non-empty string (an effective model always
+   * exists at the point the server sends this). `reasoningEffort` and
+   * `contextWindowTokens` are nullable-but-REQUIRED: `null` means "no
+   * override in effect", which is a value the subprocess must be able to
+   * apply, whereas an absent key would be indistinguishable from "leave it
+   * alone" and would reintroduce delta semantics.
+   *
+   * `reasoningEffort` is `string | null` here rather than the `claude-sdk`
+   * init arm's `EffortLevel` picklist: ONE command shape serves both
+   * engines, and the closed domain is enforced upstream by the shared
+   * parameter validator before a value ever reaches this command.
+   */
+  | {
+      v: 1;
+      type: 'set-model-params';
+      model: string;
+      reasoningEffort: string | null;
+      contextWindowTokens: number | null;
+    }
+  /**
+   * Slash commands, `console`-handled arm (#1572): a manual `/compact`
+   * intercepted by the server (see `EMBEDDED_AGENT_SLASH_COMMANDS` in
+   * `embedded-agent-slash-commands.ts`) rather than forwarded to the engine
+   * as an ordinary user turn. Carries no other payload -- a pure trigger.
+   * Only `openai-api`'s `AgentLoop` implements the corresponding
+   * `Engine.compactNow()`; `claude-sdk`'s own `/compact` is `engine`-handled
+   * (forwarded as a `user-message` the SDK interprets itself), so the
+   * server never sends this command to a `claude-sdk` worker.
+   */
+  | { v: 1; type: 'compact' }
   | { v: 1; type: 'shutdown' };
 
 /**
@@ -323,7 +481,27 @@ export type EmbeddedAgentEvent =
   | { v: 1; type: 'assistant-thinking-delta'; turnId: string; text: string }  // streamed reasoning/thinking chunk, no terminal counterpart — see turn-cycle doc
   | { v: 1; type: 'assistant-message'; turnId: string; text: string }
   | { v: 1; type: 'tool-call'; turnId: string; callId: string; name: string; args: unknown }
-  | { v: 1; type: 'tool-result'; turnId: string; callId: string; ok: boolean; result: string }
+  | {
+      v: 1;
+      type: 'tool-result';
+      turnId: string;
+      callId: string;
+      ok: boolean;
+      result: string;
+      /**
+       * Phase B (#1343 R4): the scoped-rule names ACTUALLY activated by this
+       * call (never the size-skipped ones), carried structurally alongside
+       * `result`'s human-visible `[rule activated: <name>]` block. Restore
+       * seeding (main.ts) reads this field, never `result`'s text -- a tool
+       * output that happens to CONTAIN that literal substring (another
+       * tool's own file content, coincidentally or maliciously) must never
+       * be misread as a genuine activation marker. `result` itself is
+       * UNCHANGED by this field's existence; this is an additional
+       * structural carrier of the same fact, not a replacement for the
+       * text. Absent when no scoped rule activated on this call.
+       */
+      activatedRules?: string[];
+    }
   | { v: 1; type: 'turn-error'; turnId: string; message: string }
   | { v: 1; type: 'fatal'; message: string }
   /**
@@ -496,7 +674,32 @@ export type EmbeddedAgentEvent =
       requestedSdkSessionId: string;
       /** See {@link SdkResumeFailureReason}. */
       reason: SdkResumeFailureReason;
-    };
+    }
+  /**
+   * agent-surface.md Phase 3: the engine's report on a `set-model-params`
+   * command -- whether it could apply the new triple to the LIVE session.
+   *
+   * BOTH parameters apply live on BOTH engines, so no caller should expect a
+   * restart. On `claude-sdk` the model goes through `Query.setModel` and the
+   * effort through `Query.applyFlagSettings({ effortLevel })`, with `null`
+   * for "no override" -- measured against the installed SDK, including that
+   * clearing falls back to the SDK's own default rather than to a stale
+   * query-time value, which is what a restart-without-override would have
+   * produced anyway.
+   *
+   * `applied: true` is therefore the ordinary case on every path. `applied:
+   * false` remains reachable and is deliberately a plain boolean with NO
+   * accompanying reason: it reports a genuine engine-side refusal (a
+   * `setModel` or `applyFlagSettings` call that threw), which is an honest
+   * failure with no named cause to classify. There is no uninhabited
+   * picklist here and no free-form `reason: string` standing in for one.
+   *
+   * `applied: false` is NEVER a silent no-op: the persisted `workers` row
+   * was written before this command was sent and stays the truth regardless,
+   * so a later activation reads the requested values from it. The event says
+   * "not live", never "not saved".
+   */
+  | { v: 1; type: 'model-params-applied'; applied: boolean };
 
 /**
  * Events the SERVER (not the loop) appends into the persisted stream so the
@@ -539,6 +742,12 @@ export type EmbeddedAgentServerEvent =
       // discriminator -- there is no separate `origin` field that could
       // disagree with it.
       notification?: EmbeddedAgentServerNotification;
+      // Mirrors the originating EmbeddedAgentCommand's `attachments`:
+      // present iff the send included at least one attachment, so the
+      // client can render a filename chip and restore can find the file.
+      // Absent for sends with no attachments and for server-originated
+      // sends (e.g. system notifications), which never carry attachments.
+      attachments?: EmbeddedAgentAttachment[];
     }
   /**
    * Transcript Restore, R1 (the local half of #1273): the turn that was in
@@ -580,7 +789,25 @@ export type EmbeddedAgentServerEvent =
    * - This is the single identifier for "this exit was an idle eviction".
    *   There is deliberately no parallel boolean to drift against it.
    */
-  | { v: 1; type: 'exited'; code: number | null; reason?: ExitReason }
+  | {
+      v: 1;
+      type: 'exited';
+      code: number | null;
+      reason?: ExitReason;
+      /**
+       * A bounded tail of this incarnation's stderr, present ONLY when
+       * `reason === 'unexpected'` and the subprocess wrote non-empty stderr.
+       * Never present for `'managed'` or `'evicted'` exits -- a routine
+       * deactivate or eviction should never carry leftover stderr as if it
+       * explained anything. Absent means absent, never `''`; consumers test
+       * `stderrTail !== undefined`, mirroring how `reason` is handled above.
+       * Holds the last STDERR_TAIL_CAP characters (UTF-16 code units, not
+       * bytes and not an overall wire-size bound -- JSON-escaping can inflate
+       * the serialized size past a simple UTF-8 multiplier) -- see
+       * embedded-agent-worker-service.ts.
+       */
+      stderrTail?: string;
+    }
   /**
    * Transcript Restore, R2 (#1447 stage 4): a restore attempt failed to
    * reconstruct the persisted transcript (`RestoreReconstructionError` or

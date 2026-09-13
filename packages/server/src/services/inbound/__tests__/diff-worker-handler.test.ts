@@ -152,4 +152,34 @@ describe('DiffWorkerHandler', () => {
     expect(result).toBe(true);
     expect(mockTriggerRefresh).toHaveBeenCalledWith('/path/to/worktree');
   });
+
+  it('returns false and does not trigger refresh for a fallback-routed target, even when the session has a git-diff worker (#1661)', async () => {
+    mockTriggerRefresh.mockClear();
+    const session = buildWorktreeSession({
+      id: 'session-1',
+      locationPath: '/path/to/worktree',
+      workers: [createGitDiffWorker()],
+    });
+    const handler = getDiffWorkerHandler(createDeps([session]));
+
+    const result = await handler.handle(createEvent(), { sessionId: 'session-1', fallback: true });
+
+    expect(result).toBe(false);
+    expect(mockTriggerRefresh).not.toHaveBeenCalled();
+  });
+
+  it('triggers refresh for the same session reached as a normal (non-fallback) target -- positive control for the test above', async () => {
+    mockTriggerRefresh.mockClear();
+    const session = buildWorktreeSession({
+      id: 'session-1',
+      locationPath: '/path/to/worktree',
+      workers: [createGitDiffWorker()],
+    });
+    const handler = getDiffWorkerHandler(createDeps([session]));
+
+    const result = await handler.handle(createEvent(), { sessionId: 'session-1' });
+
+    expect(result).toBe(true);
+    expect(mockTriggerRefresh).toHaveBeenCalledWith('/path/to/worktree');
+  });
 });

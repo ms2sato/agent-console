@@ -123,6 +123,24 @@ describe('editTool', () => {
     expect(result.result).toBe('Access outside session location is not permitted.');
   });
 
+  it('rejects a path under ctx.attachmentRoots (#1570: edit.ts never forwards attachmentRoots)', async () => {
+    const attachmentRoot = await fsPromises.mkdtemp(path.join(os.tmpdir(), 'embedded-agent-attach-'));
+    try {
+      const target = path.join(attachmentRoot, 'upload.txt');
+      await fsPromises.writeFile(target, 'a');
+
+      const result = await editTool.execute(
+        { file_path: target, old_string: 'a', new_string: 'b' },
+        { locationPath, attachmentRoots: [attachmentRoot] },
+      );
+
+      expect(result.ok).toBe(false);
+      expect(result.result).toBe('Access outside session location is not permitted.');
+    } finally {
+      await fsPromises.rm(attachmentRoot, { recursive: true, force: true });
+    }
+  });
+
   it('rejects a missing file_path argument', async () => {
     const result = await editTool.execute({ old_string: 'a', new_string: 'b' }, { locationPath });
 

@@ -1,11 +1,13 @@
-import { describe, it, expect, mock, setSystemTime } from 'bun:test';
+import { describe, it, expect, mock, setSystemTime, spyOn } from 'bun:test';
 import { randomUUID } from 'node:crypto';
 import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { EmbeddedAgentDefinition, SdkResumeFailureReason } from '@agent-console/shared';
+import * as shared from '@agent-console/shared';
+import { EMBEDDED_AGENT_SLASH_COMMANDS, type EmbeddedAgentDefinition, type SdkResumeFailureReason } from '@agent-console/shared';
 import type { SpawnAsUserFn, SpawnAsUserOpts, SpawnAsUserResult } from '../privilege-elevation.js';
 import { SessionDataPathResolver } from '../../lib/session-data-path-resolver.js';
+import { resolveUploadDir } from '../../lib/message-upload-dir.js';
 import { buildPtyNotificationText, buildReplyInstructions, type PtyNotificationParams } from '../../lib/pty-notification.js';
 import {
   buildInternalEmbeddedAgentWorker,
@@ -16,9 +18,13 @@ import {
   EmbeddedAgentActivationError,
   EmbeddedMessageDeliveryError,
   resolveEmbeddedAgentEntryPath,
+  resolveConstructorEntryPath,
   hasUndeliveredInitialPrompt,
   fatalLeavesHarnessAlive,
   isEvictableEngine,
+  resolveConsoleSlashCommandOverride,
+  CONSOLE_SLASH_COMMAND_HANDLERS,
+  KNOWN_EVENT_TYPES,
 } from '../embedded-agent-worker-service.js';
 import {
   ProviderKeyStoreError,
@@ -496,6 +502,10 @@ describe('EmbeddedAgentWorkerService.activate', () => {
       workerId: h.workerId,
       repositoryId: 'repo-1',
       cwd: '/test/worktree',
+      // attachmentRoots must include the messages dir so an embedded-agent
+      // worker can Read a run_process outputMode: 'message' notification
+      // file, which lives outside the session's locationPath.
+      attachmentRoots: [resolveUploadDir(), new SessionDataPathResolver('/test/config/repositories/test-repo').getMessagesDir()],
     });
     expect(first.maxToolIterations).toBe(25);
   });
@@ -1261,6 +1271,39 @@ describe('resolveEmbeddedAgentEntryPath', () => {
   });
 });
 
+describe('resolveConstructorEntryPath', () => {
+  it('returns depsEntryPath verbatim and never calls resolveFn, even when configuredEntryPath is also set', () => {
+    const resolveFn = mock(() => ({ path: '/resolved/from/resolver', source: 'package' as const }));
+
+    const result = resolveConstructorEntryPath(
+      '/from/deps/main.ts',
+      '/from/config/embedded-agent.js',
+      resolveFn,
+    );
+
+    expect(result).toBe('/from/deps/main.ts');
+    expect(resolveFn).not.toHaveBeenCalled();
+  });
+
+  it('returns configuredEntryPath verbatim and never calls resolveFn when depsEntryPath is unset', () => {
+    const resolveFn = mock(() => ({ path: '/resolved/from/resolver', source: 'package' as const }));
+
+    const result = resolveConstructorEntryPath(undefined, '/from/config/embedded-agent.js', resolveFn);
+
+    expect(result).toBe('/from/config/embedded-agent.js');
+    expect(resolveFn).not.toHaveBeenCalled();
+  });
+
+  it('calls resolveFn exactly once and returns its .path when both are unset', () => {
+    const resolveFn = mock(() => ({ path: '/resolved/from/resolver', source: 'package' as const }));
+
+    const result = resolveConstructorEntryPath(undefined, undefined, resolveFn);
+
+    expect(result).toBe('/resolved/from/resolver');
+    expect(resolveFn).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe('EmbeddedAgentWorkerService stdout stream', () => {
   it('reassembles a line split across two chunks into exactly one append + fan-out', async () => {
     const h = setup();
@@ -1361,6 +1404,78 @@ describe('EmbeddedAgentWorkerService stdout stream', () => {
     h.fake.pushStdout('x'.repeat(1024 * 1024 + 10));
     await waitFor(() => h.fake.killSignals.length > 0);
     expect(h.fake.killSignals).toContain(9);
+  });
+
+  /**
+   * agent-surface.md Phase 3. This is the seam that was open: the event was
+   * added to the shared union and emitted by both engines, but never to
+   * `KNOWN_EVENT_TYPES`, so the forward-compat gate dropped every occurrence
+   * before schema-parse and before persistence. Every other test for this
+   * event lives on the EMITTING side, in the schema, or in the client store --
+   * none of them crosses the server's ingestion gate, which is exactly why
+   * four waves of work did not notice.
+   */
+  it('appends a model-params-applied event: the forward-compat gate recognizes it', async () => {
+    const h = setup();
+    await h.service.activate(h.sessionId, h.workerId);
+    h.bufferOutput.mockClear();
+
+    // `applied: false` deliberately -- a refusal is the one thing this event
+    // reports that no other surface carries, so dropping it made a refused
+    // live apply indistinguishable from a successful one.
+    const line = '{"v":1,"type":"model-params-applied","applied":false}';
+    h.fake.pushStdout(`${line}\n`);
+    await waitFor(() => appendedLines(h.bufferOutput).includes(line));
+
+    expect(appendedLines(h.bufferOutput)).toContain(line);
+    // Recognized-and-shape-valid: no strike, so nothing killed the child.
+    expect(h.fake.killSignals).toEqual([]);
+  });
+});
+
+/**
+ * `KNOWN_EVENT_TYPES` is DERIVED from `EmbeddedAgentEventSchema`'s union
+ * options, so it cannot drift from the shared contract -- there is no second
+ * list to fall behind, and no equality left to assert.
+ *
+ * What replaces drift is VACUITY. The derivation walks three valibot fields;
+ * a change to any of them (a union restructured behind a wrapper, a `type`
+ * discriminant renamed, an options array that resolves empty at module load)
+ * would produce an empty or wrong set, and the gate would then drop EVERY
+ * event -- silently, because dropping is what the forward-compat arm is for.
+ * That is what this block pins, and it is the only thing worth pinning here.
+ *
+ * Reach measurement, two mutations, both run (workflow.md: a check's existence
+ * is not its detection power). Each report is the FIRST assertion to fail --
+ * the runner stops there rather than evaluating the rest.
+ *
+ * Reading the wrong union (`EmbeddedAgentServerEventSchema.options` in place
+ * of `EmbeddedAgentEventSchema.options`):
+ *
+ *   expect(received).toContain(expected)
+ *   Expected to contain: "model-params-applied"
+ *   Received: [ "user-message", "turn-interrupted", "exited",
+ *               "restore-failure-boundary", "restore-failure-declaration" ]
+ *
+ * Deriving nothing (`new Set<string>()`):
+ *
+ *   expect(received).toBeGreaterThan(expected)
+ *   Expected: > 0
+ *   Received: 0
+ *
+ * The sibling ingestion test in the stdout-stream block fails under both, by
+ * timing out on an append that never happens.
+ */
+describe('KNOWN_EVENT_TYPES derivation', () => {
+  it('derives a non-empty set from the SUBPROCESS union, not the server-authored one', () => {
+    const derived = [...KNOWN_EVENT_TYPES];
+
+    expect(derived.length).toBeGreaterThan(0);
+    // By name, both directions: a member only the subprocess union has, and a
+    // member only the server-authored union has. Together they identify WHICH
+    // union was read, which a length check alone cannot.
+    expect(derived).toContain('model-params-applied');
+    expect(derived).not.toContain('exited');
   });
 });
 
@@ -1601,6 +1716,105 @@ describe('EmbeddedAgentWorkerService exit handling', () => {
   });
 });
 
+/** Pull the single `exited` row out of a test's appended lines, parsed. */
+function findExitedRow(bufferOutput: ReturnType<typeof mock>): Record<string, unknown> {
+  const line = appendedLines(bufferOutput).find((l) => l.includes('"type":"exited"'));
+  if (line === undefined) throw new Error('expected an "exited" row to have been appended');
+  return JSON.parse(line) as Record<string, unknown>;
+}
+
+describe('EmbeddedAgentWorkerService exit handling — stderr tail (Issue #1454)', () => {
+  it('carries the stderr tail on an unexpected exit', async () => {
+    const h = setup();
+    await h.service.activate(h.sessionId, h.workerId);
+    h.recorder.onExit.mockClear();
+
+    h.fake.pushStderr('stderr line one\n');
+    h.fake.pushStderr('stderr line two\n');
+    h.fake.simulateExit(1);
+    await waitFor(() => h.worker.subprocess === null);
+
+    const row = findExitedRow(h.bufferOutput);
+    expect(row.reason).toBe('unexpected');
+    expect(row.stderrTail).toBe('stderr line one\nstderr line two\n');
+  });
+
+  it('retains only the LAST STDERR_TAIL_CAP characters', async () => {
+    const h = setup();
+    await h.service.activate(h.sessionId, h.workerId);
+
+    const startMarker = 'START_MARKER_XYZ';
+    const endMarker = 'END_MARKER_ABC';
+    const filler = 'x'.repeat(2000);
+    // Total pushed length (~6000 chars) comfortably exceeds the 2048
+    // UTF-16 code-unit cap, so the start marker is guaranteed to fall
+    // outside the retained window regardless of exactly where the cap
+    // boundary lands.
+    h.fake.pushStderr(startMarker + filler);
+    h.fake.pushStderr(filler);
+    h.fake.pushStderr(filler + endMarker);
+    h.fake.simulateExit(1);
+    await waitFor(() => h.worker.subprocess === null);
+
+    const row = findExitedRow(h.bufferOutput);
+    const tail = row.stderrTail as string;
+    expect(tail.length).toBeLessThanOrEqual(2048);
+    expect(tail).toContain(endMarker);
+    expect(tail).not.toContain(startMarker);
+  });
+
+  it('a managed exit (deactivate) carries no stderrTail even when stderr was written', async () => {
+    const h = setup();
+    await h.service.activate(h.sessionId, h.workerId);
+    h.recorder.onExit.mockClear();
+
+    h.fake.pushStderr('some warning output that must not leak into a managed exit row');
+    const dp = h.service.deactivate(h.sessionId, h.workerId);
+    h.fake.simulateExit(0);
+    await dp;
+
+    const row = findExitedRow(h.bufferOutput);
+    expect(row.reason).toBe('managed');
+    expect(Object.hasOwn(row, 'stderrTail')).toBe(false);
+  });
+
+  it('an unexpected exit with empty stderr has no stderrTail key', async () => {
+    const h = setup();
+    await h.service.activate(h.sessionId, h.workerId);
+    h.recorder.onExit.mockClear();
+
+    h.fake.simulateExit(1);
+    await waitFor(() => h.worker.subprocess === null);
+
+    const row = findExitedRow(h.bufferOutput);
+    expect(row.reason).toBe('unexpected');
+    expect(Object.hasOwn(row, 'stderrTail')).toBe(false);
+  });
+
+  it('the tail is per-incarnation: a fresh incarnation starts with an empty buffer', async () => {
+    const multi = makeMultiChildFakeSpawn();
+    const h = setup({ spawnAsUserFnOverride: multi.fn });
+
+    // Incarnation 1: writes stderr, then exits unexpectedly.
+    await h.service.activate(h.sessionId, h.workerId);
+    multi.children[0].pushStderr('leaked from incarnation 1, must not survive into incarnation 2');
+    multi.children[0].simulateExit(1);
+    await waitFor(() => h.worker.subprocess === null);
+
+    // Incarnation 2: a fresh activation on the same worker, no stderr written.
+    await h.service.activate(h.sessionId, h.workerId);
+    multi.children[1].simulateExit(1);
+    await waitFor(() => h.worker.subprocess === null);
+
+    const rows = appendedLines(h.bufferOutput)
+      .filter((l) => l.includes('"type":"exited"'))
+      .map((l) => JSON.parse(l) as Record<string, unknown>);
+    expect(rows).toHaveLength(2);
+    expect(rows[0]?.stderrTail).toBe('leaked from incarnation 1, must not survive into incarnation 2');
+    expect(Object.hasOwn(rows[1] ?? {}, 'stderrTail')).toBe(false);
+  });
+});
+
 // -----------------------------------------------------------------------
 // Issue #1230: feeding spawnAsUser consumers must close the stdin sink at
 // teardown so the OS pipe fd is released deterministically instead of being
@@ -1700,7 +1914,7 @@ describe('EmbeddedAgentWorkerService.sendUserMessage', () => {
     const forwarded = JSON.parse(h.fake.stdinWrites[initWrites]);
     expect(forwarded.type).toBe('user-message');
     expect(forwarded.text).toBe('hello');
-    if (res.ok) expect(forwarded.id).toBe(res.id);
+    if (res.ok && 'id' in res) expect(forwarded.id).toBe(res.id);
 
     // clientMessageId was omitted by the caller: the key must be entirely
     // absent (not present with an `undefined` value) on the appended event.
@@ -1729,6 +1943,71 @@ describe('EmbeddedAgentWorkerService.sendUserMessage', () => {
     const forwarded = JSON.parse(h.fake.stdinWrites[initWrites]);
     expect(forwarded.type).toBe('user-message');
     expect('clientMessageId' in forwarded).toBe(false);
+  });
+
+  it('threads attachments into BOTH the stdin command and the appended/broadcast event (Issue #1571)', async () => {
+    const h = setup();
+    await h.service.activate(h.sessionId, h.workerId);
+    const initWrites = h.fake.stdinWrites.length;
+    h.bufferOutput.mockClear();
+
+    const attachments = [{ path: '/tmp/upload/img.png', mimeType: 'image/png' }];
+    const res = await h.service.sendUserMessage(h.sessionId, h.workerId, 'see this', undefined, attachments);
+    expect(res.ok).toBe(true);
+
+    // Unlike clientMessageId, attachments IS part of the loop protocol -- the
+    // subprocess resolves attachments into content parts (out of scope here,
+    // see embedded-agent's own restore/engine tests), so it must reach stdin.
+    const forwarded = JSON.parse(h.fake.stdinWrites[initWrites]);
+    expect(forwarded.type).toBe('user-message');
+    expect(forwarded.attachments).toEqual(attachments);
+
+    const userMessageLine = appendedLines(h.bufferOutput).find(
+      (line) => JSON.parse(line).type === 'user-message',
+    );
+    expect(userMessageLine).toBeDefined();
+    const appended = JSON.parse(userMessageLine!);
+    expect(appended.attachments).toEqual(attachments);
+  });
+
+  it('omits attachments entirely from BOTH the stdin command and the appended/broadcast event when none are sent (polarity pin, byte-identical to pre-#1571)', async () => {
+    const h = setup();
+    await h.service.activate(h.sessionId, h.workerId);
+    const initWrites = h.fake.stdinWrites.length;
+    h.bufferOutput.mockClear();
+
+    const res = await h.service.sendUserMessage(h.sessionId, h.workerId, 'hello');
+    expect(res.ok).toBe(true);
+
+    const forwarded = JSON.parse(h.fake.stdinWrites[initWrites]);
+    expect('attachments' in forwarded).toBe(false);
+
+    const userMessageLine = appendedLines(h.bufferOutput).find(
+      (line) => JSON.parse(line).type === 'user-message',
+    );
+    expect(userMessageLine).toBeDefined();
+    const appended = JSON.parse(userMessageLine!);
+    expect('attachments' in appended).toBe(false);
+  });
+
+  it('omits attachments when an empty array is sent, same as undefined (polarity pin)', async () => {
+    const h = setup();
+    await h.service.activate(h.sessionId, h.workerId);
+    const initWrites = h.fake.stdinWrites.length;
+    h.bufferOutput.mockClear();
+
+    const res = await h.service.sendUserMessage(h.sessionId, h.workerId, 'hello', undefined, []);
+    expect(res.ok).toBe(true);
+
+    const forwarded = JSON.parse(h.fake.stdinWrites[initWrites]);
+    expect('attachments' in forwarded).toBe(false);
+
+    const userMessageLine = appendedLines(h.bufferOutput).find(
+      (line) => JSON.parse(line).type === 'user-message',
+    );
+    expect(userMessageLine).toBeDefined();
+    const appended = JSON.parse(userMessageLine!);
+    expect('attachments' in appended).toBe(false);
   });
 
   it('wakes a worker with no live subprocess instead of rejecting (the delivery invariant)', async () => {
@@ -1797,6 +2076,167 @@ describe('EmbeddedAgentWorkerService.sendUserMessage', () => {
 
     const third = await h.service.sendUserMessage(h.sessionId, h.workerId, 'three');
     expect(third.ok).toBe(true);
+  });
+});
+
+describe('EmbeddedAgentWorkerService — slash-command interception (#1572)', () => {
+  it('a /compact sent to an openai-api worker is intercepted: the command WRITTEN to stdin is {v:1,type:"compact"}, never user-message', async () => {
+    // Required pin 1. Polarity: with the interception removed from
+    // sendUserMessage (route straight to deliverUserTurn with no
+    // commandOverride), this test fails -- the written command would be
+    // `{v:1, type:'user-message', ...}` instead.
+    const h = setup();
+    await h.service.activate(h.sessionId, h.workerId);
+    const initWrites = h.fake.stdinWrites.length;
+
+    const res = await h.service.sendUserMessage(h.sessionId, h.workerId, '/compact');
+    expect(res.ok).toBe(true);
+
+    const forwarded = JSON.parse(h.fake.stdinWrites[initWrites]);
+    expect(forwarded).toEqual({ v: 1, type: 'compact' });
+  });
+
+  it('the persisted transcript still gets a normal user-message event with text "/compact"', async () => {
+    // Required pin 2: the interception changes only the WIRE command, never
+    // the PERSISTED event -- the user sees exactly what they typed.
+    const h = setup();
+    await h.service.activate(h.sessionId, h.workerId);
+    h.bufferOutput.mockClear();
+
+    const res = await h.service.sendUserMessage(h.sessionId, h.workerId, '/compact');
+    expect(res.ok).toBe(true);
+
+    const userMessageLine = appendedLines(h.bufferOutput).find(
+      (line) => JSON.parse(line).type === 'user-message',
+    );
+    expect(userMessageLine).toBeDefined();
+    const appended = JSON.parse(userMessageLine!);
+    expect(appended.text).toBe('/compact');
+    if (res.ok && 'id' in res) expect(appended.id).toBe(res.id);
+  });
+
+  it('a /compact sent WITH an attachment on an openai-api worker: stdin still gets the bare compact command, and the persisted event carries NO attachments', async () => {
+    // Architect ruling (#1584, on the interaction the #1587 merge created):
+    // `commandOverride` already strips attachments from the WIRE command --
+    // the engine never sees them for a console-handled command. But the
+    // PERSISTED event must mirror that, not just the wire: #1587 documents a
+    // persisted user-message row's `attachments` as "mirrors the originating
+    // command's attachments", and restore re-resolves every row's
+    // attachments from that field. Leaving `attachments` on the persisted
+    // event here would seed a restored conversation with an image the live
+    // turn never actually delivered.
+    //
+    // Polarity: reverting `hasAttachments`'s `opts.commandOverride ===
+    // undefined` guard (i.e. computing it from `opts.attachments` alone,
+    // unscoped) makes the persisted-event assertion below fail -- the row
+    // would carry the attachment despite the wire command omitting it.
+    const h = setup();
+    await h.service.activate(h.sessionId, h.workerId);
+    const initWrites = h.fake.stdinWrites.length;
+    h.bufferOutput.mockClear();
+
+    const attachment = { path: '/tmp/fake-attachment.png', mimeType: 'image/png' };
+    const res = await h.service.sendUserMessage(h.sessionId, h.workerId, '/compact', undefined, [attachment]);
+    expect(res.ok).toBe(true);
+
+    const forwarded = JSON.parse(h.fake.stdinWrites[initWrites]);
+    expect(forwarded).toEqual({ v: 1, type: 'compact' });
+
+    const userMessageLine = appendedLines(h.bufferOutput).find(
+      (line) => JSON.parse(line).type === 'user-message',
+    );
+    expect(userMessageLine).toBeDefined();
+    const appended = JSON.parse(userMessageLine!);
+    expect(appended.text).toBe('/compact');
+    expect(appended).not.toHaveProperty('attachments');
+  });
+
+  it('a /compact sent to a claude-sdk worker is NOT intercepted: writes user-message as before', async () => {
+    // Required pin 3: the per-engine boundary. claude-sdk's own table entry
+    // for `/compact` is `engine`-handled, so this worker must see the
+    // ordinary forwarding path, guarding against a copy-paste bug that
+    // accidentally intercepts the wrong engine.
+    const h = setup({ definition: buildSdkDefinition() });
+    await h.service.activate(h.sessionId, h.workerId);
+    const initWrites = h.fake.stdinWrites.length;
+
+    const res = await h.service.sendUserMessage(h.sessionId, h.workerId, '/compact');
+    expect(res.ok).toBe(true);
+
+    const forwarded = JSON.parse(h.fake.stdinWrites[initWrites]);
+    expect(forwarded.type).toBe('user-message');
+    expect(forwarded.text).toBe('/compact');
+  });
+
+  it('a context-compacted event reported by the subprocess after a compact command was written reaches the persisted stream (round trip)', async () => {
+    // Required pin 4: the outbound interception plus the INBOUND round
+    // trip -- a `context-compacted` boundary the subprocess reports back is
+    // not itself special-cased, but this pins that the ordinary NDJSON
+    // stdout pipeline still carries it through after a `compact` command
+    // (as opposed to a `user-message`) was the one written.
+    const h = setup();
+    await h.service.activate(h.sessionId, h.workerId);
+    h.bufferOutput.mockClear();
+
+    const res = await h.service.sendUserMessage(h.sessionId, h.workerId, '/compact');
+    expect(res.ok).toBe(true);
+
+    h.fake.pushStdout('{"v":1,"type":"context-compacted","source":"manual"}\n');
+    await waitFor(() =>
+      appendedLines(h.bufferOutput).some((line) => JSON.parse(line).type === 'context-compacted'),
+    );
+
+    const compactedLine = appendedLines(h.bufferOutput).find(
+      (line) => JSON.parse(line).type === 'context-compacted',
+    );
+    expect(JSON.parse(compactedLine!)).toMatchObject({ v: 1, type: 'context-compacted', source: 'manual' });
+  });
+
+  it('CONSOLE_SLASH_COMMAND_HANDLERS keys exactly equal the flattened set of console-handled command names in EMBEDDED_AGENT_SLASH_COMMANDS', () => {
+    // Required pin 5 (mechanical containment): fails if a new `console`
+    // entry is added to the shared table with no matching handler here, and
+    // fails if a handler exists with no matching table entry.
+    const consoleHandledNames = new Set<string>();
+    for (const commands of Object.values(EMBEDDED_AGENT_SLASH_COMMANDS)) {
+      for (const command of commands) {
+        if (command.handledBy === 'console') consoleHandledNames.add(command.name);
+      }
+    }
+    expect(new Set(Object.keys(CONSOLE_SLASH_COMMAND_HANDLERS))).toEqual(consoleHandledNames);
+  });
+
+  it('resolveConsoleSlashCommandOverride returns null for a claude-sdk engine even though the same text is console-handled on openai-api', () => {
+    expect(resolveConsoleSlashCommandOverride('claude-sdk', '/compact')).toBeNull();
+    expect(resolveConsoleSlashCommandOverride('openai-api', '/compact')).toEqual({ v: 1, type: 'compact' });
+  });
+
+  it('resolveConsoleSlashCommandOverride trims whitespace and returns null for a non-matching string', () => {
+    expect(resolveConsoleSlashCommandOverride('openai-api', '  /compact  ')).toEqual({ v: 1, type: 'compact' });
+    expect(resolveConsoleSlashCommandOverride('openai-api', 'please /compact this')).toBeNull();
+  });
+
+  it('resolveConsoleSlashCommandOverride matches by first token: trailing arguments are ignored (Architect ruling, #1584)', () => {
+    expect(resolveConsoleSlashCommandOverride('openai-api', '/compact extra args')).toEqual({ v: 1, type: 'compact' });
+  });
+
+  it('resolveConsoleSlashCommandOverride does NOT match a different word that merely shares a prefix', () => {
+    expect(resolveConsoleSlashCommandOverride('openai-api', '/compactx')).toBeNull();
+  });
+
+  it('resolveConsoleSlashCommandOverride delegates to the shared matchSlashCommand rather than reimplementing the match rule', () => {
+    // Delegation pin (#1572): spies on the shared package's live binding of
+    // matchSlashCommand and forces it to return null. If this function
+    // reimplemented the match locally (instead of calling through the
+    // shared function), the spy would have no effect and the assertion
+    // below would fail on the wrong side (the real match would still fire).
+    const spy = spyOn(shared, 'matchSlashCommand').mockReturnValue(null);
+    try {
+      expect(resolveConsoleSlashCommandOverride('openai-api', '/compact')).toBeNull();
+    } finally {
+      spy.mockRestore();
+    }
+    // Sanity: with the spy restored, the real (non-null) behavior returns.
+    expect(resolveConsoleSlashCommandOverride('openai-api', '/compact')).toEqual({ v: 1, type: 'compact' });
   });
 });
 
@@ -1952,6 +2392,227 @@ describe('EmbeddedAgentWorkerService.sendSystemNotification (Issue #1351)', () =
   });
 });
 
+describe('EmbeddedAgentWorkerService — mid-turn notification queue (R3, Issue #1574)', () => {
+  const TIMER_PARAMS: PtyNotificationParams = {
+    kind: 'internal-timer',
+    tag: 'internal:timer',
+    fields: {
+      timerId: 't1',
+      action: 'check the build',
+      fireCount: '1',
+    },
+    intent: 'inform',
+  };
+
+  function withTimerId(timerId: string): PtyNotificationParams {
+    return { ...TIMER_PARAMS, fields: { ...TIMER_PARAMS.fields, timerId } };
+  }
+
+  it('q1: a system notification that arrives mid-turn is queued ({ ok: true, queued: true }), not written to stdin until state:idle, then delivered as the next turn', async () => {
+    const h = setup();
+    await h.service.activate(h.sessionId, h.workerId);
+
+    const first = await h.service.sendUserMessage(h.sessionId, h.workerId, 'busy');
+    expect(first.ok).toBe(true);
+    const stdinWritesBeforeQueue = h.fake.stdinWrites.length;
+
+    const res = await h.service.sendSystemNotification(h.sessionId, h.workerId, TIMER_PARAMS);
+    expect(res).toEqual({ ok: true, queued: true });
+    // Not delivered yet -- still mid the first turn.
+    expect(h.fake.stdinWrites.length).toBe(stdinWritesBeforeQueue);
+
+    h.fake.pushStdout('{"v":1,"type":"state","state":"idle"}\n');
+    await waitFor(() => h.fake.stdinWrites.length > stdinWritesBeforeQueue);
+
+    const forwarded = JSON.parse(h.fake.stdinWrites[stdinWritesBeforeQueue]);
+    expect(forwarded.type).toBe('user-message');
+    expect(forwarded.text).toContain('[internal:timer]');
+
+    const userMessageLine = appendedLines(h.bufferOutput)
+      .map((line) => JSON.parse(line) as { type: string; notification?: { kind: string } })
+      .find((event) => event.type === 'user-message' && event.notification !== undefined);
+    expect(userMessageLine?.notification).toEqual({ kind: 'internal-timer' });
+  });
+
+  it('q2: two queued notifications are delivered in order, one per state:idle event', async () => {
+    const h = setup();
+    await h.service.activate(h.sessionId, h.workerId);
+    await h.service.sendUserMessage(h.sessionId, h.workerId, 'busy');
+    const stdinWritesBeforeQueue = h.fake.stdinWrites.length;
+
+    expect(await h.service.sendSystemNotification(h.sessionId, h.workerId, withTimerId('q-1'))).toEqual({ ok: true, queued: true });
+    expect(await h.service.sendSystemNotification(h.sessionId, h.workerId, withTimerId('q-2'))).toEqual({ ok: true, queued: true });
+    expect(h.fake.stdinWrites.length).toBe(stdinWritesBeforeQueue);
+
+    h.fake.pushStdout('{"v":1,"type":"state","state":"idle"}\n');
+    await waitFor(() => h.fake.stdinWrites.length === stdinWritesBeforeQueue + 1);
+    expect(JSON.parse(h.fake.stdinWrites[stdinWritesBeforeQueue]).text).toContain('timerId=q-1');
+
+    h.fake.pushStdout('{"v":1,"type":"state","state":"idle"}\n');
+    await waitFor(() => h.fake.stdinWrites.length === stdinWritesBeforeQueue + 2);
+    expect(JSON.parse(h.fake.stdinWrites[stdinWritesBeforeQueue + 1]).text).toContain('timerId=q-2');
+  });
+
+  it('q3: the 33rd enqueue drops the oldest entry (FIFO overflow at MAX_PENDING_NOTIFICATIONS=32), keeping the 32 most recent', async () => {
+    const h = setup();
+    await h.service.activate(h.sessionId, h.workerId);
+    await h.service.sendUserMessage(h.sessionId, h.workerId, 'busy');
+
+    // Enqueue 33 -- timerId 'o-1' (oldest) through 'o-33' (newest).
+    for (let i = 1; i <= 33; i++) {
+      expect(await h.service.sendSystemNotification(h.sessionId, h.workerId, withTimerId(`o-${i}`))).toEqual({
+        ok: true,
+        queued: true,
+      });
+    }
+
+    // Flush all remaining entries: 32 idle events (each completes the
+    // previously-flushed turn and starts the next queued one).
+    const deliveredTimerIds: string[] = [];
+    for (let i = 0; i < 32; i++) {
+      const before = h.fake.stdinWrites.length;
+      h.fake.pushStdout('{"v":1,"type":"state","state":"idle"}\n');
+      await waitFor(() => h.fake.stdinWrites.length > before);
+      const forwarded = JSON.parse(h.fake.stdinWrites[before]) as { text: string };
+      const match = forwarded.text.match(/timerId=(o-\d+)/);
+      deliveredTimerIds.push(match ? match[1] : 'NO_MATCH');
+    }
+
+    // 'o-1' (the oldest, dropped on the 33rd enqueue) never appears; the 32
+    // survivors are delivered oldest-remaining-first ('o-2'..'o-33').
+    expect(deliveredTimerIds).toHaveLength(32);
+    expect(deliveredTimerIds).not.toContain('o-1');
+    expect(deliveredTimerIds[0]).toBe('o-2');
+    expect(deliveredTimerIds[31]).toBe('o-33');
+    // No 34th delivery -- the queue is empty after 32 flushes.
+    const stdinWritesAfterAllFlushes = h.fake.stdinWrites.length;
+    h.fake.pushStdout('{"v":1,"type":"state","state":"idle"}\n');
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(h.fake.stdinWrites.length).toBe(stdinWritesAfterAllFlushes);
+  });
+
+  it('q4: a queued notification does not survive the worker exiting and being reactivated (no stranded phantom turn on a later incarnation)', async () => {
+    // Two real incarnations are needed here (one fake subprocess cannot be
+    // exited and then reactivated -- its streams are permanently closed),
+    // so this uses makeMultiChildFakeSpawn (defined below in this file,
+    // hoisted) rather than the single-child `setup()` default.
+    const multi = makeMultiChildFakeSpawn();
+    const h = setup({ spawnAsUserFnOverride: multi.fn });
+
+    await h.service.activate(h.sessionId, h.workerId);
+    await h.service.sendUserMessage(h.sessionId, h.workerId, 'busy');
+    expect(await h.service.sendSystemNotification(h.sessionId, h.workerId, withTimerId('stranded'))).toEqual({
+      ok: true,
+      queued: true,
+    });
+
+    // Kill incarnation 1 WITHOUT ever letting the busy turn go idle -- the
+    // queued notification was never delivered to this incarnation.
+    multi.children[0].simulateExit(1);
+    await waitFor(() => h.worker.subprocess === null);
+
+    // Reactivate incarnation 2 (a brand-new Runtime) and drive it to idle --
+    // if the queue had somehow survived onto the new runtime, this idle
+    // would deliver the stranded notification as a phantom turn.
+    await h.service.activate(h.sessionId, h.workerId);
+    h.bufferOutput.mockClear();
+    multi.children[1].pushStdout('{"v":1,"type":"state","state":"idle"}\n');
+    await waitFor(() => h.bufferOutput.mock.calls.length > 0);
+    // Let any (incorrect) continuation of the same handleLoopLine call
+    // complete before checking for its absence -- deliverUserTurn/
+    // ensureDeliverable resolve via microtasks only for an already-live
+    // subprocess, well within this margin.
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(multi.children[1].stdinWrites.some((w) => w.includes('timerId=stranded'))).toBe(false);
+  });
+
+  it('R4: sendSystemNotification on a dormant (never-activated) worker activates it, and the resulting persisted user-message row carries the notification marker', async () => {
+    // Idle eviction made delivery responsible for waking a worker with no
+    // live subprocess -- see EmbeddedAgentWorkerService.sendUserMessage's
+    // "wakes a worker with no live subprocess instead of rejecting" test
+    // above for the sendUserMessage half; this is the sendSystemNotification
+    // half (Issue #1574 R4, the seam's activation-on-delivery for a timer/
+    // conditional-wakeup target that has been idle-evicted or never activated).
+    const h = setup();
+    expect(h.fake.captured.length).toBe(0);
+
+    const res = await h.service.sendSystemNotification(h.sessionId, h.workerId, withTimerId('wake-me'));
+    expect(res.ok).toBe(true);
+    expect(h.fake.captured.length).toBe(1);
+
+    const userMessageLine = appendedLines(h.bufferOutput)
+      .map((line) => JSON.parse(line) as { type: string; notification?: { kind: string } })
+      .find((event) => event.type === 'user-message' && event.notification !== undefined);
+    expect(userMessageLine?.notification).toEqual({ kind: 'internal-timer' });
+    expect(h.fake.stdinWrites.some((w) => w.includes('timerId=wake-me'))).toBe(true);
+  });
+
+  it('q5 (negative control): human sendUserMessage mid-turn still rejects with TURN_IN_PROGRESS -- it is never queued', async () => {
+    const h = setup();
+    await h.service.activate(h.sessionId, h.workerId);
+
+    const first = await h.service.sendUserMessage(h.sessionId, h.workerId, 'busy');
+    expect(first.ok).toBe(true);
+
+    const second = await h.service.sendUserMessage(h.sessionId, h.workerId, 'also busy');
+    expect(second).toEqual({ ok: false, code: 'TURN_IN_PROGRESS', error: 'turn in progress' });
+
+    // Confirm idle doesn't deliver a phantom second turn -- there was
+    // nothing queued.
+    const stdinWritesBeforeIdle = h.fake.stdinWrites.length;
+    h.fake.pushStdout('{"v":1,"type":"state","state":"idle"}\n');
+    await waitFor(() => h.worker.activityState === 'idle');
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(h.fake.stdinWrites.length).toBe(stdinWritesBeforeIdle);
+  });
+
+  it('q6: three internal-process notifications queued mid-turn are delivered over three idles in order (kind-agnostic queue, Issue #1574 PR B)', async () => {
+    // PR A's q1-q5 tests above only exercise the generic mid-turn queue
+    // with internal-timer/internal-conditional-wakeup kinds. This proves the
+    // same FIFO queue integrates correctly with run_process's internal-
+    // process notifications too -- the queue itself has no per-kind branching.
+    function withProcessId(processId: string): PtyNotificationParams {
+      return {
+        kind: 'internal-process',
+        tag: 'internal:process',
+        fields: { processId, command: 'echo hi', message: `chunk ${processId}` },
+        intent: 'triage',
+      };
+    }
+
+    const h = setup();
+    await h.service.activate(h.sessionId, h.workerId);
+    await h.service.sendUserMessage(h.sessionId, h.workerId, 'busy');
+    const stdinWritesBeforeQueue = h.fake.stdinWrites.length;
+
+    expect(await h.service.sendSystemNotification(h.sessionId, h.workerId, withProcessId('proc-1'))).toEqual({
+      ok: true,
+      queued: true,
+    });
+    expect(await h.service.sendSystemNotification(h.sessionId, h.workerId, withProcessId('proc-2'))).toEqual({
+      ok: true,
+      queued: true,
+    });
+    expect(await h.service.sendSystemNotification(h.sessionId, h.workerId, withProcessId('proc-3'))).toEqual({
+      ok: true,
+      queued: true,
+    });
+    expect(h.fake.stdinWrites.length).toBe(stdinWritesBeforeQueue);
+
+    h.fake.pushStdout('{"v":1,"type":"state","state":"idle"}\n');
+    await waitFor(() => h.fake.stdinWrites.length === stdinWritesBeforeQueue + 1);
+    expect(JSON.parse(h.fake.stdinWrites[stdinWritesBeforeQueue]).text).toContain('message="chunk proc-1"');
+
+    h.fake.pushStdout('{"v":1,"type":"state","state":"idle"}\n');
+    await waitFor(() => h.fake.stdinWrites.length === stdinWritesBeforeQueue + 2);
+    expect(JSON.parse(h.fake.stdinWrites[stdinWritesBeforeQueue + 1]).text).toContain('message="chunk proc-2"');
+
+    h.fake.pushStdout('{"v":1,"type":"state","state":"idle"}\n');
+    await waitFor(() => h.fake.stdinWrites.length === stdinWritesBeforeQueue + 3);
+    expect(JSON.parse(h.fake.stdinWrites[stdinWritesBeforeQueue + 2]).text).toContain('message="chunk proc-3"');
+  });
+});
+
 describe('EmbeddedAgentWorkerService — the init command\'s compaction config', () => {
   it('carries the WORKER\'s toggle plus the definition\'s window and threshold', async () => {
     const h = setup({
@@ -2067,6 +2728,26 @@ describe('EmbeddedAgentWorkerService — model/reasoningEffort override composit
     expect('effort' in first.provider).toBe(false);
   });
 
+  it('passes through definition.provider.supportsImages: true into the openai-api init command (Issue #1571, no per-worker override concept)', async () => {
+    const h = setup({
+      definition: buildDefinition({
+        provider: { baseUrl: 'http://localhost:11434/v1', model: 'qwen3:32b', apiKeyRef: 'openai', supportsImages: true },
+      }),
+    });
+    await h.service.activate(h.sessionId, h.workerId);
+
+    const first = JSON.parse(h.fake.stdinWrites[0]);
+    expect(first.provider.supportsImages).toBe(true);
+  });
+
+  it('passes through an unset definition.provider.supportsImages as undefined on the openai-api init command', async () => {
+    const h = setup();
+    await h.service.activate(h.sessionId, h.workerId);
+
+    const first = JSON.parse(h.fake.stdinWrites[0]);
+    expect(first.provider.supportsImages).toBeUndefined();
+  });
+
   it('live-reads the definition default when no worker override is set -- a definition edit AFTER worker creation is reflected at activation (no copy-at-creation, unlike the context-window override)', async () => {
     const definition = buildDefinition();
     const h = setup({ definition });
@@ -2121,6 +2802,83 @@ describe('EmbeddedAgentWorkerService.forwardAutoCompaction', () => {
     // persisted the durable value and must not surface this as an error.
     const h = setup();
     expect(h.service.forwardAutoCompaction(h.workerId, false)).toBe(false);
+  });
+});
+
+describe('EmbeddedAgentWorkerService.applyModelParams', () => {
+  it('forwards a set-model-params command carrying the whole triple to a running subprocess', async () => {
+    const h = setup();
+    await h.service.activate(h.sessionId, h.workerId);
+    const before = h.fake.stdinWrites.length;
+
+    expect(
+      h.service.applyModelParams(h.workerId, {
+        model: 'qwen3:72b',
+        reasoningEffort: 'high',
+        contextWindowTokens: 32_000,
+      }),
+    ).toBe(true);
+
+    expect(JSON.parse(h.fake.stdinWrites[before])).toEqual({
+      v: 1,
+      type: 'set-model-params',
+      model: 'qwen3:72b',
+      reasoningEffort: 'high',
+      contextWindowTokens: 32_000,
+    });
+  });
+
+  it('carries nulls as nulls, never omitting a key (full state, never a delta)', async () => {
+    // An absent key would be indistinguishable from "leave it alone" on the
+    // subprocess side, which is exactly the delta semantics this command
+    // exists to avoid.
+    const h = setup();
+    await h.service.activate(h.sessionId, h.workerId);
+    const before = h.fake.stdinWrites.length;
+
+    h.service.applyModelParams(h.workerId, {
+      model: 'qwen3:32b',
+      reasoningEffort: null,
+      contextWindowTokens: null,
+    });
+
+    const command = JSON.parse(h.fake.stdinWrites[before]);
+    expect('reasoningEffort' in command).toBe(true);
+    expect('contextWindowTokens' in command).toBe(true);
+    expect(command.reasoningEffort).toBeNull();
+    expect(command.contextWindowTokens).toBeNull();
+  });
+
+  it('forwards even while a turn is in flight (not gated on turnActive)', async () => {
+    // Same reasoning as forwardAutoCompaction above: this is a durable
+    // configuration write that has already been persisted, and gating it
+    // would silently drop the change for the length of a long turn.
+    const h = setup();
+    await h.service.activate(h.sessionId, h.workerId);
+    await h.service.sendUserMessage(h.sessionId, h.workerId, 'a long turn');
+    const before = h.fake.stdinWrites.length;
+
+    expect(
+      h.service.applyModelParams(h.workerId, {
+        model: 'qwen3:72b',
+        reasoningEffort: null,
+        contextWindowTokens: null,
+      }),
+    ).toBe(true);
+    expect(JSON.parse(h.fake.stdinWrites[before]).type).toBe('set-model-params');
+  });
+
+  it('returns false, without throwing, when there is no running subprocess', async () => {
+    // The ordinary pre-activation / post-restart case. The caller has already
+    // persisted the durable values and must not surface this as an error.
+    const h = setup();
+    expect(
+      h.service.applyModelParams(h.workerId, {
+        model: 'qwen3:32b',
+        reasoningEffort: null,
+        contextWindowTokens: null,
+      }),
+    ).toBe(false);
   });
 });
 
@@ -2374,6 +3132,84 @@ describe('EmbeddedAgentWorkerService — sending `restoredUsage` in the init com
     const init = JSON.parse(h.fake.stdinWrites[0]);
     expect(init.engine).toBe('claude-sdk');
     expect('restoredUsage' in init).toBe(false);
+  });
+});
+
+/**
+ * Phase B (#1343 R4): the scoped-rule names the server-side restore
+ * reconstruction collects from a restored window's `tool-result` events'
+ * own `activatedRules` field, forwarded on the `init` command so main.ts
+ * seeds `RuleActivator` without ever parsing `restoredConversation`'s text.
+ * Same arm-containment shape as `restoredUsage` (#1419) above -- the
+ * openai-api-only representability is asserted the same way, on a
+ * claude-sdk worker whose restored log has the exact same activation event.
+ */
+describe('EmbeddedAgentWorkerService — sending `activatedRuleNames` in the init command (#1343 R4)', () => {
+  const streamWith = (...lines: unknown[]) => lines.map((l) => JSON.stringify(l)).join('\n');
+  const COMPLETED_TURN = [
+    { v: 1, type: 'user-message', id: 'm1', text: 'hi there' },
+    { v: 1, type: 'assistant-message', turnId: 't1', text: 'hello back' },
+    { v: 1, type: 'state', state: 'idle' },
+  ];
+  const COMPLETED_TURN_WITH_ACTIVATION = [
+    { v: 1, type: 'user-message', id: 'm1', text: 'read the file' },
+    { v: 1, type: 'assistant-message', turnId: 't1', text: '' },
+    { v: 1, type: 'tool-call', turnId: 't1', callId: 'c1', name: 'Read', args: { path: 'src/x.ts' } },
+    {
+      v: 1,
+      type: 'tool-result',
+      turnId: 't1',
+      callId: 'c1',
+      ok: true,
+      result: 'file contents',
+      activatedRules: ['scoped.md'],
+    },
+    { v: 1, type: 'state', state: 'idle' },
+  ];
+
+  it('sends the scoped-rule names collected from restored tool-result events', async () => {
+    const h = setup({
+      everActivated: true,
+      readHistoryWithOffsetResult: { data: streamWith(...COMPLETED_TURN_WITH_ACTIVATION) },
+    });
+    await h.service.activate(h.sessionId, h.workerId);
+
+    const init = JSON.parse(h.fake.stdinWrites[0]);
+    expect(init.activatedRuleNames).toEqual(['scoped.md']);
+  });
+
+  it('sends nothing when no restored tool-result event carried activatedRules', async () => {
+    const h = setup({ everActivated: true, readHistoryWithOffsetResult: { data: streamWith(...COMPLETED_TURN) } });
+    await h.service.activate(h.sessionId, h.workerId);
+
+    const init = JSON.parse(h.fake.stdinWrites[0]);
+    expect('activatedRuleNames' in init).toBe(false);
+  });
+
+  it('sends nothing on a first-ever activation, which has nothing to restore', async () => {
+    const h = setup({ everActivated: false });
+    await h.service.activate(h.sessionId, h.workerId);
+
+    const init = JSON.parse(h.fake.stdinWrites[0]);
+    expect('activatedRuleNames' in init).toBe(false);
+  });
+
+  it('never sends activatedRuleNames on a claude-sdk worker, even with the same restored activation event', async () => {
+    // Same arm-containment reasoning as restoredUsage (#1419): claude-sdk
+    // resumes its own session state rather than being handed a
+    // reconstruction, so the field is not representable on its arm -- a
+    // server that sent one anyway would be rejected by the subprocess's own
+    // schema at init, killing the worker.
+    const h = setup({
+      definition: SDK_DEFINITION,
+      everActivated: true,
+      readHistoryWithOffsetResult: { data: streamWith(...COMPLETED_TURN_WITH_ACTIVATION) },
+    });
+    await h.service.activate(h.sessionId, h.workerId);
+
+    const init = JSON.parse(h.fake.stdinWrites[0]);
+    expect(init.engine).toBe('claude-sdk');
+    expect('activatedRuleNames' in init).toBe(false);
   });
 });
 
@@ -3103,6 +3939,7 @@ interface FakeChild {
   stdinWrites: string[];
   killSignals: number[];
   pushStdout: (s: string) => void;
+  pushStderr: (s: string) => void;
   simulateExit: (code: number) => void;
   setOnKill: (fn: (signal: number) => void) => void;
 }
@@ -3147,6 +3984,7 @@ function makeMultiChildFakeSpawn(): MultiChildFakeSpawn {
       stdinWrites,
       killSignals,
       pushStdout: stdout.push,
+      pushStderr: stderr.push,
       simulateExit: (code: number) => {
         resolveExited(code);
         stdout.close();

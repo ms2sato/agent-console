@@ -62,10 +62,14 @@ export function EditEmbeddedAgentForm({
       // "clear", undefined as "no change").
       description: data.description || null,
       // provider is a whole-object replace on the server; always send it.
+      // supportsImages: undefined when unchecked, omitting the key entirely
+      // (never a literal false) -- same undefined-on-empty handling as
+      // apiKeyRef above, not the top-level null-to-clear PATCH convention.
       provider: {
         baseUrl: data.baseUrl,
         model: data.model,
         apiKeyRef: data.apiKeyRef || undefined,
+        supportsImages: data.supportsImages ? true : undefined,
       },
       systemPrompt: data.systemPrompt || null,
       maxToolIterations: parseMaxToolIterations(data.maxToolIterationsInput) ?? null,

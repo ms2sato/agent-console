@@ -87,6 +87,8 @@ interface UseAppWsEventOptions {
   onBookmarkCreated?: (sessionId: string, bookmarkId: string) => void;
   /** Called when a bookmark is deleted (realtime refresh trigger) */
   onBookmarkDeleted?: (sessionId: string, bookmarkId: string) => void;
+  /** Called when a repository's designated-Orchestrator session changes (null when cleared) */
+  onOrchestratorDesignationChanged?: (repositoryId: string, sessionId: string | null) => void;
 }
 
 /**
@@ -260,6 +262,11 @@ export function useAppWsEvent(options: UseAppWsEventOptions = {}): void {
         case 'schema-version':
           // First-frame wire-schema version. App state is unaffected by this
           // frame; server/client mismatch handling lives in the transport layer.
+          break;
+        case 'orchestrator-designation-changed':
+          // Announces when a repository's designated-Orchestrator session changes.
+          logger.debug(`[WebSocket] orchestrator-designation-changed: repositoryId=${msg.repositoryId}`);
+          optionsRef.current.onOrchestratorDesignationChanged?.(msg.repositoryId, msg.sessionId);
           break;
         default: {
           const _exhaustive: never = msg;

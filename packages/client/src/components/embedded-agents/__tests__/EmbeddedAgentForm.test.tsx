@@ -111,6 +111,28 @@ describe('EmbeddedAgentForm', () => {
       expect(props.onSubmit).not.toHaveBeenCalled();
     });
 
+    it('should show validation error for a maxToolIterationsInput of 0', async () => {
+      // Mirrors the contextWindowTokensInput 0-boundary case below --
+      // the hoisted rule's `>= 1` boundary must still be reached at THIS
+      // call site too. `/^\d+$/` alone accepts "0", so only a correctly
+      // wired isPositiveInteger() call rejects it.
+      const user = userEvent.setup();
+      const { props } = renderEmbeddedAgentForm();
+
+      await user.type(screen.getByPlaceholderText('e.g., Ollama qwen3:32b'), 'My Embedded Agent');
+      await user.type(screen.getByPlaceholderText('http://localhost:11434/v1'), 'http://localhost:11434/v1');
+      await user.type(screen.getByPlaceholderText('e.g., qwen3:32b'), 'qwen3:32b');
+      await user.type(screen.getByPlaceholderText('25'), '0');
+      await user.tab();
+
+      await user.click(screen.getByText('Add Embedded Agent'));
+
+      await waitFor(() => {
+        expect(screen.getByText('Must be a positive integer')).toBeTruthy();
+      });
+      expect(props.onSubmit).not.toHaveBeenCalled();
+    });
+
     it('should submit form with valid data', async () => {
       const user = userEvent.setup();
       const { props } = renderEmbeddedAgentForm();
@@ -172,7 +194,7 @@ describe('EmbeddedAgentForm', () => {
       });
 
       const formData = (props.onSubmit as ReturnType<typeof mock>).mock.calls[0][0] as EmbeddedAgentFormData;
-      expect([...formData.enabledTools].sort()).toEqual(['Bash', 'Glob', 'Grep', 'Read']);
+      expect([...formData.enabledTools].sort()).toEqual(['Bash', 'Glob', 'Grep', 'Read', 'TodoWrite']);
     });
 
     it('should include toggled Write/Edit checkboxes in the submitted enabledTools array', async () => {
@@ -193,7 +215,14 @@ describe('EmbeddedAgentForm', () => {
       });
 
       const formData = (props.onSubmit as ReturnType<typeof mock>).mock.calls[0][0] as EmbeddedAgentFormData;
-      expect([...formData.enabledTools].sort()).toEqual(['Edit', 'Glob', 'Grep', 'Read', 'Write']);
+      expect([...formData.enabledTools].sort()).toEqual([
+        'Edit',
+        'Glob',
+        'Grep',
+        'Read',
+        'TodoWrite',
+        'Write',
+      ]);
     });
 
     it('should show an amber danger warning associated with the File modification checkbox group', () => {
@@ -241,6 +270,13 @@ describe('EmbeddedAgentForm', () => {
       expect(
         screen.getByText('Embedded Agent is an experimental feature. API and behavior may change.'),
       ).toBeTruthy();
+    });
+
+    it('should render the "Provider can see images" checkbox unchecked by default', () => {
+      renderEmbeddedAgentForm();
+
+      const checkbox = screen.getByRole('checkbox', { name: 'Provider can see images' }) as HTMLInputElement;
+      expect(checkbox.checked).toBe(false);
     });
 
     it('should show an amber danger warning associated with the Bash checkbox group', () => {
@@ -325,6 +361,23 @@ describe('EmbeddedAgentForm', () => {
       const formData = (props.onSubmit as ReturnType<typeof mock>).mock.calls[0][0] as EmbeddedAgentFormData;
       expect(formData.name).toBe('Existing Embedded Agent');
       expect(formData.apiKeyRef).toBe('');
+    });
+
+    it('pre-fills the "Provider can see images" checkbox as checked when initialData.supportsImages is true', () => {
+      renderEmbeddedAgentForm({
+        mode: 'edit',
+        initialData: { ...initialData, supportsImages: true },
+      });
+
+      const checkbox = screen.getByRole('checkbox', { name: 'Provider can see images' }) as HTMLInputElement;
+      expect(checkbox.checked).toBe(true);
+    });
+
+    it('pre-fills the "Provider can see images" checkbox as unchecked when initialData.supportsImages is absent', () => {
+      renderEmbeddedAgentForm({ mode: 'edit', initialData });
+
+      const checkbox = screen.getByRole('checkbox', { name: 'Provider can see images' }) as HTMLInputElement;
+      expect(checkbox.checked).toBe(false);
     });
   });
 
@@ -549,6 +602,64 @@ describe('EmbeddedAgentForm', () => {
         expect(screen.getByText('Must be a positive integer')).toBeTruthy();
       });
       expect(props.onSubmit).not.toHaveBeenCalled();
+    });
+
+    it('should show a validation error for a fractional contextWindowTokensInput', async () => {
+      const user = userEvent.setup();
+      const { props } = renderEmbeddedAgentForm();
+
+      await user.type(screen.getByPlaceholderText('e.g., Ollama qwen3:32b'), 'My Embedded Agent');
+      await user.type(screen.getByPlaceholderText('http://localhost:11434/v1'), 'http://localhost:11434/v1');
+      await user.type(screen.getByPlaceholderText('e.g., qwen3:32b'), 'qwen3:32b');
+      await user.type(screen.getByPlaceholderText('e.g., 128000'), '1.5');
+      await user.tab();
+
+      await user.click(screen.getByText('Add Embedded Agent'));
+
+      await waitFor(() => {
+        expect(screen.getByText('Must be a positive integer')).toBeTruthy();
+      });
+      expect(props.onSubmit).not.toHaveBeenCalled();
+    });
+
+    it('should show a validation error for a contextWindowTokensInput of 0', async () => {
+      // `/^\d+$/` alone accepts "0" -- only the hoisted isPositiveInteger()
+      // call's `>= 1` boundary rejects it, so this pins the call site is
+      // actually wired to that function and not just the shape regex.
+      const user = userEvent.setup();
+      const { props } = renderEmbeddedAgentForm();
+
+      await user.type(screen.getByPlaceholderText('e.g., Ollama qwen3:32b'), 'My Embedded Agent');
+      await user.type(screen.getByPlaceholderText('http://localhost:11434/v1'), 'http://localhost:11434/v1');
+      await user.type(screen.getByPlaceholderText('e.g., qwen3:32b'), 'qwen3:32b');
+      await user.type(screen.getByPlaceholderText('e.g., 128000'), '0');
+      await user.tab();
+
+      await user.click(screen.getByText('Add Embedded Agent'));
+
+      await waitFor(() => {
+        expect(screen.getByText('Must be a positive integer')).toBeTruthy();
+      });
+      expect(props.onSubmit).not.toHaveBeenCalled();
+    });
+
+    it('should accept a contextWindowTokensInput of 1 and reach submission', async () => {
+      const user = userEvent.setup();
+      const { props } = renderEmbeddedAgentForm();
+
+      await user.type(screen.getByPlaceholderText('e.g., Ollama qwen3:32b'), 'My Embedded Agent');
+      await user.type(screen.getByPlaceholderText('http://localhost:11434/v1'), 'http://localhost:11434/v1');
+      await user.type(screen.getByPlaceholderText('e.g., qwen3:32b'), 'qwen3:32b');
+      await user.type(screen.getByPlaceholderText('e.g., 128000'), '1');
+
+      await user.click(screen.getByText('Add Embedded Agent'));
+
+      await waitFor(() => {
+        expect(props.onSubmit).toHaveBeenCalledTimes(1);
+      });
+
+      const formData = (props.onSubmit as ReturnType<typeof mock>).mock.calls[0][0] as EmbeddedAgentFormData;
+      expect(formData.contextWindowTokensInput).toBe('1');
     });
 
     it('should show a validation error for a compactionThresholdInput above 100', async () => {

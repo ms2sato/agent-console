@@ -61,6 +61,7 @@ export class SqliteEmbeddedAgentRepository implements EmbeddedAgentRepository {
           provider_base_url: row.provider_base_url,
           provider_model: row.provider_model,
           provider_api_key_ref: row.provider_api_key_ref,
+          provider_supports_images: row.provider_supports_images,
           system_prompt: row.system_prompt,
           max_tool_iterations: row.max_tool_iterations,
           enabled_tools: row.enabled_tools,

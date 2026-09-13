@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'bun:test';
 import * as v from 'valibot';
-import { LoginRequestSchema } from '../auth';
+import { LoginRequestSchema, ConfigResponseSchema } from '../auth';
 
 describe('LoginRequestSchema', () => {
   it('should accept a valid login request', () => {
@@ -55,5 +55,53 @@ describe('LoginRequestSchema', () => {
     if (!result.success) {
       expect(result.issues.some((i) => i.path?.[0]?.key === 'unexpectedField')).toBe(true);
     }
+  });
+});
+
+describe('ConfigResponseSchema', () => {
+  const validSample = {
+    homeDir: '/home/alice',
+    capabilities: {
+      vscode: true,
+      vscodeOpenMode: 'local-spawn',
+      vscodeRemoteHost: null,
+    },
+    serverPid: 1234,
+    serverPort: 3457,
+    authMode: 'none',
+    sharedAccountsAvailable: false,
+    deployedSha: null,
+  };
+
+  it('accepts a valid full sample object with deployedSha: null', () => {
+    const result = v.safeParse(ConfigResponseSchema, validSample);
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.output.deployedSha).toBeNull();
+    }
+  });
+
+  it('accepts a valid full sample object with deployedSha as a string', () => {
+    const result = v.safeParse(ConfigResponseSchema, { ...validSample, deployedSha: 'abc123' });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.output.deployedSha).toBe('abc123');
+    }
+  });
+
+  it('rejects deployedSha of the wrong type (number)', () => {
+    const result = v.safeParse(ConfigResponseSchema, { ...validSample, deployedSha: 123 });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects a missing deployedSha key entirely (required, not optional)', () => {
+    const { deployedSha: _omit, ...withoutDeployedSha } = validSample;
+    const result = v.safeParse(ConfigResponseSchema, withoutDeployedSha);
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects an unknown key (strict-parse contract)', () => {
+    const result = v.safeParse(ConfigResponseSchema, { ...validSample, unexpectedField: 'leaked' });
+    expect(result.success).toBe(false);
   });
 });

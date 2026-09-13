@@ -22,10 +22,20 @@ export interface ToolCall {
   function: { name: string; arguments: string };
 }
 
-/** OpenAI Chat Completions message shapes exchanged with the provider. */
+/** OpenAI Chat Completions content-part shapes for a multi-part user message (image attachments). */
+export type ContentPart =
+  | { type: 'text'; text: string }
+  | { type: 'image_url'; image_url: { url: string } };
+
+/**
+ * OpenAI Chat Completions message shapes exchanged with the provider. Only
+ * the `user` variant's content is ever multi-part -- image attachments are
+ * always delivered on a user turn; the other roles have no
+ * attachment concept and stay plain strings.
+ */
 export type ChatMessage =
   | { role: 'system'; content: string }
-  | { role: 'user'; content: string }
+  | { role: 'user'; content: string | ContentPart[] }
   | { role: 'assistant'; content: string; tool_calls?: ToolCall[] }
   | { role: 'tool'; tool_call_id: string; content: string };
 

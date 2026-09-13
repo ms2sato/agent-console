@@ -237,6 +237,44 @@ export const serverConfig = {
    */
   EMBEDDED_AGENT_BUN_PATH: process.env.EMBEDDED_AGENT_BUN_PATH || process.execPath,
   /**
+   * Absolute path to the embedded-agent subprocess entry (the bundled
+   * `embedded-agent.js`, or an equivalent entry point), used to short-circuit
+   * `resolveEmbeddedAgentEntryPath()`'s own 3-tier resolution.
+   *
+   * Unset (the default): `resolveEmbeddedAgentEntryPath()`'s existing 3-tier
+   * resolution runs unaffected -- single-user / dev setups see no behavior
+   * change.
+   *
+   * Set: the `EmbeddedAgentWorkerService` constructor uses this value
+   * VERBATIM in place of calling `resolveEmbeddedAgentEntryPath()` at all --
+   * mirroring how `EMBEDDED_AGENT_BUN_PATH` above is consumed directly at
+   * that same call site. There is no PATH search and no `existsSync` check
+   * here; reachability at the elevation target is verified by the deploy
+   * script's own fail-closed check, not by this config field.
+   *
+   * Why this exists: in multi-user elevation,
+   * `resolveEmbeddedAgentEntryPath()`'s "bundle sibling" branch resolves a
+   * path inside the service user's HOME (mode 0750), which is unreachable to
+   * any OTHER elevation-target user even though the file itself is
+   * world-readable -- the same class of bug `EMBEDDED_AGENT_BUN_PATH` fixed
+   * for the `bun` binary itself.
+   *
+   * Deliberately NOT derived from `EMBEDDED_AGENT_BUN_PATH`'s directory:
+   * these are two independent knobs for two different physical resources (a
+   * bundle file vs. a binary) with different conventional FHS locations
+   * (`/usr/local/bin` vs. `/usr/local/lib/agent-console/`).
+   *
+   * Empty string is treated as unset (operator-friendly, same
+   * trim-to-undefined convention as `VSCODE_REMOTE_HOST`).
+   *
+   * See .claude/rules/os-environment-coupling.md for the general principle:
+   * elevated commands must not resolve binaries by PATH-only name.
+   */
+  EMBEDDED_AGENT_ENTRY_PATH: (() => {
+    const raw = process.env.EMBEDDED_AGENT_ENTRY_PATH?.trim();
+    return raw || undefined;
+  })(),
+  /**
    * Milliseconds of continuous idleness after which a `claude-sdk` embedded-agent
    * worker's subprocess is evicted. Governs that engine only -- `openai-api`
    * workers are never evicted.

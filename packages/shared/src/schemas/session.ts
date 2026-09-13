@@ -160,6 +160,18 @@ export const UpdateSessionRequestSchema = v.strictObject({
 });
 
 /**
+ * Schema for writing a session's memo (ruling R3).
+ *
+ * No length check here: `MemoService`'s 256KB byte cap
+ * (`packages/server/src/services/memo-service.ts`) is the single writer
+ * of that limit and throws on it; the route surfaces the throw as a 400
+ * `ValidationError` rather than duplicating the cap in this schema.
+ */
+export const UpdateSessionMemoRequestSchema = v.strictObject({
+  content: v.string(),
+});
+
+/**
  * Schema for deleting a session.
  * Quick sessions are deleted synchronously without task management.
  * For worktree sessions with async deletion, use the worktree deletion endpoint instead.
@@ -250,4 +262,5 @@ export type CreateWorktreeSessionRequest = v.InferOutput<typeof CreateWorktreeSe
 export type CreateQuickSessionRequest = v.InferOutput<typeof CreateQuickSessionRequestSchema>;
 export type CreateSessionRequest = v.InferOutput<typeof CreateSessionRequestSchema>;
 export type UpdateSessionRequest = v.InferOutput<typeof UpdateSessionRequestSchema>;
+export type UpdateSessionMemoRequest = v.InferOutput<typeof UpdateSessionMemoRequestSchema>;
 export type DeleteSessionRequest = v.InferOutput<typeof DeleteSessionRequestSchema>;
