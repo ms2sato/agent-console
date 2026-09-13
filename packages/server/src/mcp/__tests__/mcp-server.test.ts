@@ -1152,6 +1152,37 @@ describe('MCP Server Tools', () => {
   });
 
   // ===========================================================================
+  // set_orchestrator_session / clear_orchestrator_session
+  //
+  // Deep coverage (happy path set/move/clear, stale-clear no-op) lives in
+  // the dedicated orchestrator-session-designation.test.ts, which uses a
+  // real SqliteSessionRepository so `orchestratorSessionId`'s FK to
+  // `sessions.id` (migration v40) is satisfiable. This file's SessionManager
+  // uses JsonSessionRepository (see remountMcpApp above), so the tests here
+  // are limited to paths that reject BEFORE the FK-constrained write.
+  // ===========================================================================
+
+  describe('set_orchestrator_session / clear_orchestrator_session', () => {
+    it('set_orchestrator_session rejects an unknown sessionId', async () => {
+      const response = await callTool(app, mcpSessionId, 'set_orchestrator_session', { sessionId: 'does-not-exist' }, nextId++);
+
+      expect(response.result?.isError).toBe(true);
+      const data = parseToolResult(response) as { error: string };
+      expect(data.error).toContain('does-not-exist');
+    });
+
+    it('clear_orchestrator_session rejects a quick session (no repositoryId)', async () => {
+      const session = await sessionManager.createSession({ type: 'quick', locationPath: TEST_REPO_PATH });
+
+      const response = await callTool(app, mcpSessionId, 'clear_orchestrator_session', { sessionId: session.id }, nextId++);
+
+      expect(response.result?.isError).toBe(true);
+      const data = parseToolResult(response) as { error: string };
+      expect(data.error).toContain('has no repository');
+    });
+  });
+
+  // ===========================================================================
   // list_sessions
   // ===========================================================================
 

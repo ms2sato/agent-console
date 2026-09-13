@@ -8,7 +8,27 @@ const logger = createLogger('resolve-targets');
 export interface TargetResolverDependencies {
   getSessions: () => Session[];
   getRepository: (repositoryId: string) => Repository | undefined;
+  getAllRepositories: () => Repository[];
   getOrgRepoFromPath?: (path: string) => Promise<string | null>;
+}
+
+/**
+ * Parse a comma-separated, case-insensitive trigger-label configuration
+ * string into a normalized (lowercased, trimmed) set. Single writer: any
+ * future consumer of `issueTriggerLabels` must call this rather than
+ * re-splitting the string.
+ */
+export function parseTriggerLabels(raw: string | null | undefined): string[] {
+  if (!raw) return [];
+  return raw.split(',').map((s) => s.trim().toLowerCase()).filter((s) => s.length > 0);
+}
+
+/** Does any of `eventLabels` match the repository's configured trigger labels? */
+export function matchesAnyTriggerLabel(eventLabels: string[], triggerLabelsRaw: string | null | undefined): boolean {
+  const configured = parseTriggerLabels(triggerLabelsRaw);
+  if (configured.length === 0) return false; // vacuous-truth boundary: unset config never matches
+  const normalizedEventLabels = eventLabels.map((l) => l.trim().toLowerCase());
+  return normalizedEventLabels.some((l) => configured.includes(l));
 }
 
 /**
@@ -33,9 +53,18 @@ export async function resolveTargets(
     return [];
   }
 
+  const getOrgRepoFromPath = deps.getOrgRepoFromPath ?? getOrgRepoFromPathDefault;
+
+  // `issue:labeled` never fans out to the repository's active sessions --
+  // it routes exclusively to whichever session is flagged as the
+  // repository's designated Orchestrator. Handled as an early return so
+  // the per-session loop below (every other event type) is untouched.
+  if (event.type === 'issue:labeled') {
+    return resolveIssueLabeledTargets(event, deps, repositoryName, getOrgRepoFromPath);
+  }
+
   const sessions = deps.getSessions();
   const targets: EventTarget[] = [];
-  const getOrgRepoFromPath = deps.getOrgRepoFromPath ?? getOrgRepoFromPathDefault;
 
   for (const session of sessions) {
     try {
@@ -88,4 +117,106 @@ export async function resolveTargets(
 
 function isMatchingRepository(left: string, right: string): boolean {
   return left.toLowerCase() === right.toLowerCase();
+}
+
+/**
+ * Resolve targets for an `issue:labeled` event: find EVERY
+ * locally-registered repository whose remote matches the webhook's
+ * `repository.full_name` -- `RepositoryManager.registerRepository` only
+ * rejects a duplicate PATH, not a duplicate git remote, so two independently
+ * registered `Repository` rows (e.g. two clones of the same GitHub repo) can
+ * legitimately resolve to the same remote. For each same-remote candidate,
+ * check whether the event's label(s) match that repository's configured
+ * `issueTriggerLabels` and it has a live designated Orchestrator session --
+ * only then does it contribute a target. Unlike every other event type,
+ * this never fans out across a repository's active sessions or notifies a
+ * parent session.
+ */
+async function resolveIssueLabeledTargets(
+  event: InboundSystemEvent,
+  deps: TargetResolverDependencies,
+  repositoryName: string,
+  getOrgRepoFromPath: (path: string) => Promise<string | null>
+): Promise<EventTarget[]> {
+  const matchedRepositories: Repository[] = [];
+
+  for (const repository of deps.getAllRepositories()) {
+    try {
+      const orgRepo = await getOrgRepoFromPath(repository.path);
+      if (!orgRepo) continue;
+      if (isMatchingRepository(orgRepo, repositoryName)) {
+        matchedRepositories.push(repository);
+      }
+    } catch (error) {
+      if (isExpectedError(error)) {
+        logger.debug(
+          { err: error, repositoryId: repository.id, repositoryName },
+          'Repository does not match criteria for issue:labeled event'
+        );
+      } else {
+        logger.error(
+          { err: error, repositoryId: repository.id, repositoryName },
+          'Unexpected error resolving repository for issue:labeled event'
+        );
+      }
+    }
+  }
+
+  // `event.metadata.labels` is guaranteed present for `issue:labeled`
+  // events by construction in the parser (github-service-parser.ts) --
+  // TypeScript's `labels?: string[]` can't express "present iff type X".
+  const eventLabels = event.metadata.labels ?? [];
+  const sessions = deps.getSessions();
+
+  // Evaluate eligibility (label match, then live-session lookup) for EVERY
+  // same-remote candidate -- one ineligible candidate must never short-circuit
+  // evaluation of the others. Dedup by session id: two same-remote
+  // repositories could in principle designate the same session.
+  const orchestratorSessionIds = new Set<string>();
+  for (const repository of matchedRepositories) {
+    if (!matchesAnyTriggerLabel(eventLabels, repository.issueTriggerLabels)) {
+      logger.info(
+        {
+          repositoryId: repository.id,
+          repositoryName,
+          labels: eventLabels,
+          issueTriggerLabels: repository.issueTriggerLabels,
+        },
+        "issue:labeled event did not match repository's configured trigger labels"
+      );
+      continue;
+    }
+
+    const orchestratorSessionId = repository.orchestratorSessionId;
+    const liveSession = orchestratorSessionId
+      ? sessions.find((s) => s.id === orchestratorSessionId)
+      : undefined;
+
+    if (!orchestratorSessionId || !liveSession) {
+      logger.info(
+        { repositoryId: repository.id, orchestratorSessionId },
+        'issue:labeled event matched repository but no live orchestrator session is designated'
+      );
+      continue;
+    }
+
+    // The designated session existing in `getSessions()` is not enough --
+    // a session survives there with `activationState: 'hibernated'` after
+    // all its PTY workers have exited. Routing to a hibernated session would
+    // silently drop the notification (nothing is listening) while still
+    // reporting the event as delivered. `activationState` is already
+    // computed upstream by `SessionConverterService.toPublicSession()`; read
+    // it off `liveSession` rather than recomputing it here.
+    if (liveSession.activationState !== 'running') {
+      logger.info(
+        { repositoryId: repository.id, orchestratorSessionId, activationState: liveSession.activationState },
+        'issue:labeled event matched repository but the designated orchestrator session is not running'
+      );
+      continue;
+    }
+
+    orchestratorSessionIds.add(orchestratorSessionId);
+  }
+
+  return [...orchestratorSessionIds].map((sessionId) => ({ sessionId }));
 }

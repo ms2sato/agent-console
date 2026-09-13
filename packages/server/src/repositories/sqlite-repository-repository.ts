@@ -50,6 +50,8 @@ export class SqliteRepositoryRepository implements RepositoryRepository {
         env_vars: repository.envVars ?? null,
         description: repository.description ?? null,
         default_agent_id: repository.defaultAgentId ?? null,
+        orchestrator_session_id: repository.orchestratorSessionId ?? null,
+        issue_trigger_labels: repository.issueTriggerLabels ?? null,
       })
       .onConflict((oc) =>
         oc.column('id').doUpdateSet({
@@ -60,6 +62,8 @@ export class SqliteRepositoryRepository implements RepositoryRepository {
           env_vars: repository.envVars ?? null,
           description: repository.description ?? null,
           default_agent_id: repository.defaultAgentId ?? null,
+          orchestrator_session_id: repository.orchestratorSessionId ?? null,
+          issue_trigger_labels: repository.issueTriggerLabels ?? null,
           // Note: created_at is intentionally NOT updated (should never change after insert)
           updated_at: now,
         })
@@ -84,6 +88,7 @@ export class SqliteRepositoryRepository implements RepositoryRepository {
       ['envVars', 'env_vars'],
       ['description', 'description'],
       ['defaultAgentId', 'default_agent_id'],
+      ['issueTriggerLabels', 'issue_trigger_labels'],
     ];
 
     for (const [domainKey, dbColumn] of fieldMap) {
@@ -109,5 +114,36 @@ export class SqliteRepositoryRepository implements RepositoryRepository {
   async delete(id: string): Promise<void> {
     await this.db.deleteFrom('repositories').where('id', '=', id).execute();
     logger.debug({ repositoryId: id }, 'Repository deleted');
+  }
+
+  async setOrchestratorSessionId(id: string, sessionId: string): Promise<Repository | null> {
+    const now = new Date().toISOString();
+    const result = await this.db
+      .updateTable('repositories')
+      .set({ orchestrator_session_id: sessionId, updated_at: now })
+      .where('id', '=', id)
+      .execute();
+
+    if (result[0]?.numUpdatedRows === 0n) {
+      return null;
+    }
+    return this.findById(id);
+  }
+
+  async clearOrchestratorSessionId(
+    id: string,
+    expectedSessionId: string
+  ): Promise<{ cleared: boolean; repository: Repository | null }> {
+    const now = new Date().toISOString();
+    const result = await this.db
+      .updateTable('repositories')
+      .set({ orchestrator_session_id: null, updated_at: now })
+      .where('id', '=', id)
+      .where('orchestrator_session_id', '=', expectedSessionId)
+      .execute();
+
+    const cleared = (result[0]?.numUpdatedRows ?? 0n) > 0n;
+    const repository = await this.findById(id);
+    return { cleared, repository };
   }
 }

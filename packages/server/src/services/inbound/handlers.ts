@@ -10,11 +10,11 @@ import { writePtyNotification } from '../../lib/pty-notification.js';
 import { createLogger } from '../../lib/logger.js';
 
 /** Event types that AgentWorkerHandler actually handles */
-type AgentWorkerEventType = 'ci:completed' | 'ci:failed' | 'pr:merged' | 'pr:review_comment' | 'pr:changes_requested' | 'pr:comment';
+type AgentWorkerEventType = 'ci:completed' | 'ci:failed' | 'issue:labeled' | 'pr:merged' | 'pr:review_comment' | 'pr:changes_requested' | 'pr:comment';
 
 /** Set of valid AgentWorkerEventType values for runtime validation */
 const AGENT_WORKER_EVENT_TYPES: ReadonlySet<string> = new Set<AgentWorkerEventType>([
-  'ci:completed', 'ci:failed', 'pr:merged', 'pr:review_comment', 'pr:changes_requested', 'pr:comment',
+  'ci:completed', 'ci:failed', 'issue:labeled', 'pr:merged', 'pr:review_comment', 'pr:changes_requested', 'pr:comment',
 ]);
 
 function isAgentWorkerEventType(type: string): type is AgentWorkerEventType {
@@ -64,7 +64,7 @@ const handlerLogger = createLogger('inbound-handlers');
 class AgentWorkerHandler implements InboundEventHandler {
   readonly handlerId = 'agent-worker';
   readonly supportedEvents: InboundEventType[] = [
-    'ci:completed', 'ci:failed', 'pr:merged',
+    'ci:completed', 'ci:failed', 'issue:labeled', 'pr:merged',
     'pr:review_comment', 'pr:changes_requested', 'pr:comment',
   ];
 
@@ -119,6 +119,7 @@ class AgentWorkerHandler implements InboundEventHandler {
       case 'pr:merged':
         return 'inform';
       case 'ci:failed':
+      case 'issue:labeled':
       case 'pr:review_comment':
       case 'pr:changes_requested':
       case 'pr:comment':
@@ -152,7 +153,7 @@ class DiffWorkerHandler implements InboundEventHandler {
 class UINotificationHandler implements InboundEventHandler {
   readonly handlerId = 'ui-notification';
   readonly supportedEvents: InboundEventType[] = [
-    'ci:failed', 'issue:closed', 'pr:merged',
+    'ci:failed', 'issue:closed', 'issue:labeled', 'pr:merged',
     'pr:review_comment', 'pr:changes_requested', 'pr:comment',
   ];
 

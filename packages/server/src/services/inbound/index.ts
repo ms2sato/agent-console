@@ -54,6 +54,7 @@ export function initializeInboundIntegration(options: InboundIntegrationOptions)
     resolveTargetsImpl(event, {
       getSessions: () => options.sessionManager.getAllSessions(),
       getRepository: (repositoryId) => options.repositoryManager.getRepository(repositoryId),
+      getAllRepositories: () => options.repositoryManager.getAllRepositories(),
     });
 
   options.jobQueue.registerHandler(

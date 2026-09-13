@@ -422,8 +422,16 @@ describe('AppServerMessageSchema', () => {
           envVars: 'FOO=bar',
           description: 'A repo',
           defaultAgentId: 'claude-code',
+          orchestratorSessionId: 'session-1',
+          issueTriggerLabels: 'bug, needs-triage',
         },
       });
+    });
+
+    it('should accept repository omitting orchestratorSessionId and issueTriggerLabels entirely', () => {
+      // Boundary case: both fields are optional, so a repository object that
+      // never mentions them at all must still parse successfully.
+      expectValid({ type: 'repository-created', repository });
     });
 
     it('should accept repository with clonedSourceRepoPath set to a string', () => {
@@ -553,6 +561,45 @@ describe('AppServerMessageSchema', () => {
         },
       });
     });
+
+    it('should accept issue:labeled as a valid event type', () => {
+      expectValid({
+        type: 'inbound-event',
+        sessionId: 'session-1',
+        event: {
+          type: 'issue:labeled',
+          source: 'github',
+          summary: 'Issue #42 was labeled "bug"',
+          metadata: { repositoryName: 'org/repo' },
+        },
+      });
+    });
+
+    it('should accept metadata.labels as a string array', () => {
+      expectValid({
+        type: 'inbound-event',
+        sessionId: 'session-1',
+        event: {
+          type: 'issue:labeled',
+          source: 'github',
+          summary: 'Issue #42 was labeled "bug"',
+          metadata: { repositoryName: 'org/repo', labels: ['bug', 'orchestrator-trigger'] },
+        },
+      });
+    });
+
+    it('should accept metadata omitting labels entirely (optional field boundary)', () => {
+      expectValid({
+        type: 'inbound-event',
+        sessionId: 'session-1',
+        event: {
+          type: 'ci:completed',
+          source: 'github',
+          summary: 'CI completed',
+          metadata: { repositoryName: 'org/repo' },
+        },
+      });
+    });
   });
 
   describe('worker-restarted', () => {
@@ -629,6 +676,26 @@ describe('AppServerMessageSchema', () => {
     it('should accept valid payload', () => {
       const output = expectValid({ type: 'bookmark-deleted', sessionId: 'session-1', bookmarkId: 'bookmark-1' });
       expect(output.type).toBe('bookmark-deleted');
+    });
+  });
+
+  describe('orchestrator-designation-changed', () => {
+    it('should accept a payload with a string sessionId', () => {
+      const output = expectValid({
+        type: 'orchestrator-designation-changed',
+        repositoryId: 'repo-1',
+        sessionId: 'session-1',
+      });
+      expect(output.type).toBe('orchestrator-designation-changed');
+    });
+
+    it('should accept a payload with a null sessionId (designation cleared)', () => {
+      const output = expectValid({
+        type: 'orchestrator-designation-changed',
+        repositoryId: 'repo-1',
+        sessionId: null,
+      });
+      expect(output.type).toBe('orchestrator-designation-changed');
     });
   });
 

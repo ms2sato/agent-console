@@ -39,6 +39,30 @@ const IssueClosedPayloadSchema = v.object({
   repository: RepositorySchema,
 });
 
+const IssueOpenedPayloadSchema = v.object({
+  action: v.literal('opened'),
+  issue: v.object({
+    number: v.number(),
+    title: v.string(),
+    html_url: v.nullish(v.string()),
+    updated_at: v.nullish(v.string()),
+    labels: v.array(v.object({ name: v.string() })),
+  }),
+  repository: RepositorySchema,
+});
+
+const IssueLabeledPayloadSchema = v.object({
+  action: v.literal('labeled'),
+  label: v.object({ name: v.string() }),
+  issue: v.object({
+    number: v.number(),
+    title: v.string(),
+    html_url: v.nullish(v.string()),
+    updated_at: v.nullish(v.string()),
+  }),
+  repository: RepositorySchema,
+});
+
 const PullRequestMergedPayloadSchema = v.object({
   action: v.literal('closed'),
   pull_request: v.object({
@@ -158,7 +182,7 @@ export class GitHubServiceParser implements ServiceParser {
       case 'workflow_run':
         return this.parseWorkflowRun(body);
       case 'issues':
-        return this.parseIssueClosed(body);
+        return this.parseIssue(body);
       case 'pull_request':
         return this.parsePullRequest(body);
       case 'pull_request_review_comment':
@@ -197,6 +221,37 @@ export class GitHubServiceParser implements ServiceParser {
     };
   }
 
+  /**
+   * Dispatch on `issues` webhook `action`. Every other event type in this
+   * parser (`workflow_run`, `pull_request`, ...) is emitted unconditionally
+   * whenever the payload shape matches -- this parser never looks at
+   * registered repositories or trigger-label configuration, because
+   * matching a webhook's `repository.full_name` against a locally
+   * registered repository requires an expensive async git-remote lookup,
+   * and doing that here (to gate emission) plus again in `resolveTargets`
+   * (to resolve the designated Orchestrator) would duplicate the org/repo
+   * matching algorithm. That matching happens exactly once, in
+   * `resolveTargets`.
+   */
+  private parseIssue(body: unknown): InboundSystemEvent | null {
+    const actionResult = v.safeParse(v.object({ action: v.string() }), body);
+    if (!actionResult.success) {
+      logger.debug({ issues: actionResult.issues }, 'issues payload missing a recognizable action');
+      return null;
+    }
+
+    switch (actionResult.output.action) {
+      case 'closed':
+        return this.parseIssueClosed(body);
+      case 'opened':
+        return this.parseIssueOpened(body);
+      case 'labeled':
+        return this.parseIssueLabeled(body);
+      default:
+        return null;
+    }
+  }
+
   private parseIssueClosed(body: unknown): InboundSystemEvent | null {
     const result = v.safeParse(IssueClosedPayloadSchema, body);
     if (!result.success) {
@@ -216,6 +271,63 @@ export class GitHubServiceParser implements ServiceParser {
       },
       payload: body,
       summary: `Issue #${issue.number} closed: ${issue.title}`,
+    };
+  }
+
+  private parseIssueOpened(body: unknown): InboundSystemEvent | null {
+    const result = v.safeParse(IssueOpenedPayloadSchema, body);
+    if (!result.success) {
+      logger.debug({ issues: result.issues }, 'issues (opened) payload did not match expected schema');
+      return null;
+    }
+
+    const { issue, repository } = result.output;
+
+    // Structural check only: "was any label present at creation" -- NOT
+    // "does it match anyone's configured trigger labels". That match
+    // happens once, in resolveTargets, against event.metadata.labels below.
+    if (issue.labels.length === 0) {
+      return null;
+    }
+
+    const labelNames = issue.labels.map((l) => l.name);
+
+    return {
+      type: 'issue:labeled',
+      source: 'github',
+      timestamp: issue.updated_at ?? new Date().toISOString(),
+      metadata: {
+        repositoryName: repository.full_name,
+        url: issue.html_url ?? undefined,
+        labels: labelNames,
+      },
+      payload: body,
+      summary: `Issue #${issue.number} labeled '${labelNames[0]}': ${issue.title}`,
+    };
+  }
+
+  private parseIssueLabeled(body: unknown): InboundSystemEvent | null {
+    const result = v.safeParse(IssueLabeledPayloadSchema, body);
+    if (!result.success) {
+      logger.debug({ issues: result.issues }, 'issues (labeled) payload did not match expected schema');
+      return null;
+    }
+
+    const { label, issue, repository } = result.output;
+
+    return {
+      type: 'issue:labeled',
+      source: 'github',
+      timestamp: issue.updated_at ?? new Date().toISOString(),
+      metadata: {
+        repositoryName: repository.full_name,
+        url: issue.html_url ?? undefined,
+        // The ADDED label only -- never issue.labels[] (the issue's full
+        // current set).
+        labels: [label.name],
+      },
+      payload: body,
+      summary: `Issue #${issue.number} labeled '${label.name}': ${issue.title}`,
     };
   }
 
