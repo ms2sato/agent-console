@@ -155,7 +155,7 @@ describe('package.json has no check: alias targeting scripts/smoke/ (Issue #1637
   });
 });
 
-describe('every `bun run check:<name>` reference under docs/ and .claude/ resolves to a package.json script (Issue #1637)', () => {
+describe('every `bun run check:<name>` reference under docs/, .claude/, README.md, and non-test scripts/ sources resolves to a package.json script (Issue #1637)', () => {
   const packageJson = JSON.parse(readFileSync(PACKAGE_JSON_PATH, 'utf-8')) as { scripts?: Record<string, string> };
   const definedAliases = new Set(Object.keys(packageJson.scripts ?? {}));
 
