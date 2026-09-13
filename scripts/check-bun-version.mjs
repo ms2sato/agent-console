@@ -9,7 +9,7 @@
 //     AsyncLocalStorage context (e.g. the MCP request scope), so agent worker
 //     PTYs created via MCP `delegate_to_worktree` produce no output at all.
 //     Fixed upstream in Bun 1.3.14. Regression gate:
-//     `bun run check:pty-als-data`.
+//     `bun scripts/smoke/check-pty-als-data.ts`.
 // The higher floor wins: 1.3.14. Bun's `engines` enforcement is advisory
 // (warning only) as of Bun 1.3.x, so we need this explicit check.
 

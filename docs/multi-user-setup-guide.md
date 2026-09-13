@@ -1580,7 +1580,7 @@ other smokes above, this one is not privilege-elevation-specific -- it
 verifies a resource-lifecycle contract of the default `bunTerminalProvider`):
 
 ```bash
-bun run check:pty-fd-leak
+bun scripts/smoke/check-pty-fd-leak.ts
 ```
 
 What it verifies: `bunTerminalProvider` wraps `Bun.spawn({ terminal: ... })`,
