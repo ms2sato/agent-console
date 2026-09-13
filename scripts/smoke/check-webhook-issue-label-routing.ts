@@ -96,7 +96,7 @@
  *      commands failed, etc.)
  */
 import { createHmac } from 'node:crypto';
-import { mkdirSync, rmSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 
@@ -255,7 +255,7 @@ async function main(): Promise<void> {
   process.chdir(REPO_ROOT);
 
   const runId = `${process.pid}-${Date.now()}`;
-  const scratchRoot = path.join(os.tmpdir(), `agent-console-webhook-label-smoke-${runId}`);
+  const scratchRoot = mkdtempSync(path.join(os.tmpdir(), 'agent-console-webhook-label-smoke-'));
   const disposableHome = path.join(scratchRoot, 'home');
   const repoDir = path.join(scratchRoot, 'repo');
   const worktreeDDir = path.join(scratchRoot, 'worktree-d');
@@ -317,7 +317,7 @@ async function main(): Promise<void> {
     // -----------------------------------------------------------------
     console.log('==> seeding an isolated CLAUDE_CONFIG_DIR with pre-trusted worktree paths');
     const claudeConfigDir = path.join(scratchRoot, 'claude-config');
-    mkdirSync(claudeConfigDir, { recursive: true });
+    mkdirSync(claudeConfigDir, { recursive: true, mode: 0o700 });
     const realClaudeConfigPath = path.join(os.homedir(), '.claude.json');
     let baseClaudeConfig: Record<string, unknown> = {};
     try {
@@ -335,7 +335,11 @@ async function main(): Promise<void> {
         [worktreeTDir]: { hasTrustDialogAccepted: true },
       },
     };
-    writeFileSync(path.join(claudeConfigDir, '.claude.json'), JSON.stringify(isolatedClaudeConfig));
+    writeFileSync(
+      path.join(claudeConfigDir, '.claude.json'),
+      JSON.stringify(isolatedClaudeConfig),
+      { mode: 0o600 },
+    );
 
     // -----------------------------------------------------------------
     // Server bring-up: real child process (see header comment for why).

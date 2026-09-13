@@ -389,7 +389,12 @@ export class RepositoryManager {
     logger.info({ repositoryId, sessionId }, 'Orchestrator designation set');
 
     await this.lifecycleCallbacks?.onRepositoryUpdated(updated);
-    await this.lifecycleCallbacks?.onOrchestratorDesignationChanged(repositoryId, sessionId);
+    // Broadcast the just-re-read persisted value, not the request argument --
+    // `setOrchestratorSessionId`'s UPDATE and its follow-up `findById` are two
+    // separate statements, so a concurrent designation change on the same
+    // repository could interleave between them. Reading `updated` keeps the
+    // broadcast honest about what is actually persisted even if that happens.
+    await this.lifecycleCallbacks?.onOrchestratorDesignationChanged(repositoryId, updated.orchestratorSessionId ?? null);
 
     return updated;
   }
@@ -413,7 +418,10 @@ export class RepositoryManager {
       this.repositories.set(repositoryId, result.repository);
       logger.info({ repositoryId, sessionId }, 'Orchestrator designation cleared');
       await this.lifecycleCallbacks?.onRepositoryUpdated(result.repository);
-      await this.lifecycleCallbacks?.onOrchestratorDesignationChanged(repositoryId, null);
+      // Same principle as setOrchestratorSession: broadcast the re-read
+      // persisted state (`result.repository`, already null-checked by the
+      // enclosing guard) rather than a value assumed from the call site.
+      await this.lifecycleCallbacks?.onOrchestratorDesignationChanged(repositoryId, result.repository.orchestratorSessionId ?? null);
     }
 
     return result;

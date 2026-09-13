@@ -1,6 +1,7 @@
-import { describe, it, expect, mock, beforeEach, afterEach } from 'bun:test';
+import { describe, it, expect, mock, spyOn, beforeEach, afterEach } from 'bun:test';
 import { resolveTargets, parseTriggerLabels, matchesAnyTriggerLabel, type TargetResolverDependencies } from '../resolve-targets.js';
 import { GitError } from '../../../lib/git.js';
+import { rootLogger } from '../../../lib/logger.js';
 import type { InboundSystemEvent, Repository, WorktreeSession } from '@agent-console/shared';
 import {
   buildWorktreeSession,
@@ -364,6 +365,170 @@ describe('resolveTargets: issue:labeled routing', () => {
     const targets = await resolveTargets(createIssueLabeledEvent({ labels: ['orchestrator-trigger'] }), deps);
 
     expect(targets).toEqual([]);
+  });
+
+  // -------------------------------------------------------------------
+  // CodeRabbit fix-up (PR #1650): `resolveIssueLabeledTargets` used to
+  // `break` on the FIRST repository whose remote matched the webhook's
+  // `repository.full_name`. `RepositoryManager.registerRepository` only
+  // rejects a duplicate PATH, not a duplicate remote, so two independently
+  // registered repositories can legitimately share the same remote -- if
+  // the ineligible one happened to iterate first, the event was dropped
+  // even though an eligible sibling existed. The fix evaluates every
+  // same-remote candidate instead of stopping at the first.
+  // -------------------------------------------------------------------
+
+  it('evaluates every same-remote repository for eligibility instead of stopping at the first match, regardless of iteration order', async () => {
+    const ineligibleRepo = buildRepositoryWithDesignation({
+      id: 'repo-ineligible',
+      path: '/path/to/repo-ineligible',
+      orchestratorSessionId: 'orchestrator-session-ineligible',
+      // No configured trigger labels -- vacuous-truth boundary, never matches.
+      issueTriggerLabels: null,
+    });
+    const eligibleRepo = buildRepositoryWithDesignation({
+      id: 'repo-eligible',
+      path: '/path/to/repo-eligible',
+      orchestratorSessionId: 'orchestrator-session-eligible',
+      issueTriggerLabels: 'orchestrator-trigger',
+    });
+    const eligibleSession = buildWorktreeSession({
+      id: 'orchestrator-session-eligible',
+      repositoryId: 'repo-eligible',
+      worktreeId: 'main',
+    });
+
+    // Both repositories resolve to the SAME remote (`owner/repo`). Run both
+    // list orders to prove the result does not depend on which repository
+    // `getAllRepositories()` happens to list first.
+    for (const repos of [
+      [ineligibleRepo, eligibleRepo],
+      [eligibleRepo, ineligibleRepo],
+    ]) {
+      const deps: TargetResolverDependencies = {
+        getSessions: () => [eligibleSession],
+        getRepository: () => undefined,
+        getAllRepositories: () => repos,
+        getOrgRepoFromPath: mock(() => Promise.resolve('owner/repo')),
+      };
+
+      const targets = await resolveTargets(createIssueLabeledEvent(), deps);
+
+      expect(targets).toEqual([{ sessionId: 'orchestrator-session-eligible' }]);
+    }
+  });
+
+  it('returns targets from every eligible same-remote repository, deduplicated by session id', async () => {
+    const repoA = buildRepositoryWithDesignation({
+      id: 'repo-a',
+      path: '/path/to/repo-a',
+      orchestratorSessionId: 'orchestrator-session-a',
+      issueTriggerLabels: 'orchestrator-trigger',
+    });
+    const repoB = buildRepositoryWithDesignation({
+      id: 'repo-b',
+      path: '/path/to/repo-b',
+      orchestratorSessionId: 'orchestrator-session-b',
+      issueTriggerLabels: 'orchestrator-trigger',
+    });
+    const sessionA = buildWorktreeSession({ id: 'orchestrator-session-a', repositoryId: 'repo-a', worktreeId: 'main' });
+    const sessionB = buildWorktreeSession({ id: 'orchestrator-session-b', repositoryId: 'repo-b', worktreeId: 'main' });
+
+    const deps: TargetResolverDependencies = {
+      getSessions: () => [sessionA, sessionB],
+      getRepository: () => undefined,
+      getAllRepositories: () => [repoA, repoB],
+      getOrgRepoFromPath: mock(() => Promise.resolve('owner/repo')),
+    };
+
+    const targets = await resolveTargets(createIssueLabeledEvent(), deps);
+
+    expect(targets).toHaveLength(2);
+    expect(new Set(targets.map((t) => t.sessionId))).toEqual(
+      new Set(['orchestrator-session-a', 'orchestrator-session-b'])
+    );
+
+    // Dedup variant: two same-remote repositories designate the SAME
+    // session -- only one target must be returned, not two.
+    const repoC = buildRepositoryWithDesignation({
+      id: 'repo-c',
+      path: '/path/to/repo-c',
+      orchestratorSessionId: 'orchestrator-session-shared',
+      issueTriggerLabels: 'orchestrator-trigger',
+    });
+    const repoD = buildRepositoryWithDesignation({
+      id: 'repo-d',
+      path: '/path/to/repo-d',
+      orchestratorSessionId: 'orchestrator-session-shared',
+      issueTriggerLabels: 'orchestrator-trigger',
+    });
+    const sharedSession = buildWorktreeSession({
+      id: 'orchestrator-session-shared',
+      repositoryId: 'repo-c',
+      worktreeId: 'main',
+    });
+
+    const dedupDeps: TargetResolverDependencies = {
+      getSessions: () => [sharedSession],
+      getRepository: () => undefined,
+      getAllRepositories: () => [repoC, repoD],
+      getOrgRepoFromPath: mock(() => Promise.resolve('owner/repo')),
+    };
+
+    const dedupTargets = await resolveTargets(createIssueLabeledEvent(), dedupDeps);
+    expect(dedupTargets).toEqual([{ sessionId: 'orchestrator-session-shared' }]);
+  });
+
+  // -------------------------------------------------------------------
+  // CodeRabbit fix-up (PR #1650), Fix 3: a session id surviving in
+  // `getSessions()` is not proof anything is listening -- a session with
+  // all PTY workers exited stays in the list with
+  // `activationState: 'hibernated'`. Routing to it would silently drop the
+  // notification while still reporting delivery.
+  // -------------------------------------------------------------------
+
+  it('drops the designated session when it exists but is not running (hibernated), logging a distinct reason', async () => {
+    const repository = buildRepositoryWithDesignation({
+      id: 'repo-1',
+      path: '/path/to/repo',
+      orchestratorSessionId: 'orchestrator-session-1',
+      issueTriggerLabels: 'orchestrator-trigger',
+    });
+    const hibernatedSession = buildWorktreeSession({
+      id: 'orchestrator-session-1',
+      repositoryId: 'repo-1',
+      worktreeId: 'main',
+      activationState: 'hibernated',
+    });
+    const deps: TargetResolverDependencies = {
+      getSessions: () => [hibernatedSession],
+      getRepository: () => repository,
+      getAllRepositories: () => [repository],
+      getOrgRepoFromPath: mock(() => Promise.resolve('owner/repo')),
+    };
+
+    const infoSpy = spyOn(rootLogger, 'info');
+    try {
+      const targets = await resolveTargets(createIssueLabeledEvent(), deps);
+
+      expect(targets).toEqual([]);
+
+      // Zero targets alone can't distinguish this drop reason from
+      // "no live orchestrator session is designated" or "label mismatch" --
+      // assert the specific, textually distinct log message fired.
+      const matchingCall = infoSpy.mock.calls.find(
+        (call) =>
+          call[1] === 'issue:labeled event matched repository but the designated orchestrator session is not running'
+      );
+      expect(matchingCall).toBeDefined();
+      expect(matchingCall?.[0]).toMatchObject({
+        repositoryId: 'repo-1',
+        orchestratorSessionId: 'orchestrator-session-1',
+        activationState: 'hibernated',
+      });
+    } finally {
+      infoSpy.mockRestore();
+    }
   });
 
   it('matches with multiple configured trigger labels, mixed case, and whitespace around commas', async () => {

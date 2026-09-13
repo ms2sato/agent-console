@@ -12,6 +12,7 @@ import { registerJobHandlers } from '../../jobs/handlers.js';
 import { WorkerOutputFileManager } from '../../lib/worker-output-file.js';
 import { initializeDatabase, closeDatabase, getDatabase } from '../../database/connection.js';
 import { SqliteRepositoryRepository } from '../../repositories/index.js';
+import type { RepositoryRepository } from '../../repositories/repository-repository.js';
 import type { RunAsUserOpts, RunAsUserResult } from '../privilege-elevation.js';
 import { buildManualFallbackCommands } from '../repository-manager.js';
 
@@ -1242,6 +1243,102 @@ describe('RepositoryManager', () => {
 
       expect(result.cleared).toBe(false);
       expect(result.repository).toBeNull();
+    });
+
+    // =========================================================================
+    // CodeRabbit fix-up (PR #1650): `setOrchestratorSessionId`/
+    // `clearOrchestratorSessionId` each run an UPDATE followed by a SEPARATE
+    // `findById` read-back -- not atomic within a single JS operation, so a
+    // concurrent designation change on the same repository could interleave
+    // between them. `setOrchestratorSession`/`clearOrchestratorSession` must
+    // broadcast what was actually just read back (`updated` /
+    // `result.repository`), not the request argument. In the non-racing case
+    // the two values coincide, which is exactly why a plain fake that echoes
+    // its input back can't distinguish this fix from the bug it replaces --
+    // the wrapper below makes the repository return a DELIBERATELY DIFFERENT
+    // `orchestratorSessionId` than what was requested, so only reading the
+    // return value (not the argument) makes the assertions below pass.
+    // =========================================================================
+
+    /**
+     * Wraps the real, migration-backed `repositoryRepository` so its
+     * `setOrchestratorSessionId`/`clearOrchestratorSessionId` calls persist
+     * exactly as production would, but the VALUE THEY RETURN carries
+     * `canaryValue` instead of the session id the caller actually requested.
+     * Every other method delegates unchanged.
+     */
+    function wrapWithDivergentDesignationEcho(canaryValue: string | null): RepositoryRepository {
+      return {
+        findAll: () => repositoryRepository.findAll(),
+        findById: (id) => repositoryRepository.findById(id),
+        findByPath: (repoPath) => repositoryRepository.findByPath(repoPath),
+        save: (repository) => repositoryRepository.save(repository),
+        update: (id, updates) => repositoryRepository.update(id, updates),
+        delete: (id) => repositoryRepository.delete(id),
+        setOrchestratorSessionId: async (id, sessionId) => {
+          const updated = await repositoryRepository.setOrchestratorSessionId(id, sessionId);
+          return updated ? { ...updated, orchestratorSessionId: canaryValue } : updated;
+        },
+        clearOrchestratorSessionId: async (id, expectedSessionId) => {
+          const result = await repositoryRepository.clearOrchestratorSessionId(id, expectedSessionId);
+          return result.cleared && result.repository
+            ? { cleared: true, repository: { ...result.repository, orchestratorSessionId: canaryValue } }
+            : result;
+        },
+      };
+    }
+
+    it('setOrchestratorSession broadcasts the value read back from the repository, not the request sessionId', async () => {
+      const module = await import(`../repository-manager.js?v=${++importCounter}`);
+      const manager = await module.RepositoryManager.create({
+        repository: wrapWithDivergentDesignationEcho('canary-session-id'),
+        jobQueue: testJobQueue,
+        runAsUserImpl: runAsUserMock.runAsUserImpl,
+      });
+      const repo = await manager.registerRepository(TEST_REPO_DIR);
+      await insertMinimalSessionRow('session-a');
+
+      const designationCalls: { repositoryId: string; sessionId: string | null }[] = [];
+      manager.setLifecycleCallbacks({
+        ...noopCallbacks(),
+        onOrchestratorDesignationChanged: (repositoryId: string, sessionId: string | null) =>
+          designationCalls.push({ repositoryId, sessionId }),
+      });
+
+      const updated = await manager.setOrchestratorSession(repo.id, 'session-a');
+
+      // The manager's own return value and in-memory cache come from the
+      // same `updated` read-back, so both carry the canary too -- this is
+      // not a broadcast-only quirk, it's the whole point of reading the
+      // repository's return value as the single source of truth.
+      expect(updated?.orchestratorSessionId).toBe('canary-session-id');
+      expect(manager.getRepository(repo.id)?.orchestratorSessionId).toBe('canary-session-id');
+      expect(designationCalls).toEqual([{ repositoryId: repo.id, sessionId: 'canary-session-id' }]);
+    });
+
+    it('clearOrchestratorSession broadcasts the value read back from the repository, not a hardcoded null', async () => {
+      const module = await import(`../repository-manager.js?v=${++importCounter}`);
+      const manager = await module.RepositoryManager.create({
+        repository: wrapWithDivergentDesignationEcho('still-designated-session'),
+        jobQueue: testJobQueue,
+        runAsUserImpl: runAsUserMock.runAsUserImpl,
+      });
+      const repo = await manager.registerRepository(TEST_REPO_DIR);
+      await insertMinimalSessionRow('session-a');
+      await manager.setOrchestratorSession(repo.id, 'session-a');
+
+      const designationCalls: { repositoryId: string; sessionId: string | null }[] = [];
+      manager.setLifecycleCallbacks({
+        ...noopCallbacks(),
+        onOrchestratorDesignationChanged: (repositoryId: string, sessionId: string | null) =>
+          designationCalls.push({ repositoryId, sessionId }),
+      });
+
+      const result = await manager.clearOrchestratorSession(repo.id, 'session-a');
+
+      expect(result.cleared).toBe(true);
+      expect(result.repository?.orchestratorSessionId).toBe('still-designated-session');
+      expect(designationCalls).toEqual([{ repositoryId: repo.id, sessionId: 'still-designated-session' }]);
     });
   });
 });
