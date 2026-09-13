@@ -723,20 +723,35 @@ describe('isAttributableToProbe', () => {
     expect(isAttributableToProbe({ path: `/home/x/.claude/${PROBE_SLUG}-canary-RUN-1.tmp`, content: null }, PROBE_SLUG, nonces)).toBe(true);
   });
 
-  it('is true when the content contains one of this run\'s nonces, even with an unrelated path', () => {
-    expect(isAttributableToProbe({ path: '/home/x/.claude/projects/some-slug/transcript.jsonl', content: 'saw NONCE-A in the turn' }, PROBE_SLUG, nonces)).toBe(true);
+  it('is true when a nonce appears in the content of a path WITH a memory/ segment (the real leak shape)', () => {
+    expect(isAttributableToProbe({ path: '/home/x/.claude/projects/some-slug/memory/leaked.md', content: 'saw NONCE-A in the turn' }, PROBE_SLUG, nonces)).toBe(true);
+  });
+
+  /**
+   * Architect ruling round 2, PR #1676 review: this probe prints every
+   * nonce to stdout, and the delegate session RUNNING it ingests that
+   * stdout as its own tool output, writing it into ITS OWN transcript
+   * .jsonl under the same real config dir. An unscoped nonce-content match
+   * (this test's shape, pre-fix) made that transcript "attributable" and
+   * would false-escalate on every single run -- Task 0's own manual
+   * addendum saw exactly this and dismissed it because it was NOT under a
+   * memory/ subdirectory. This test was WRONG before the fix (it asserted
+   * `true`); it now pins the corrected behavior.
+   */
+  it('is false when a nonce appears in the content of a path with NO memory/ segment (the operator-transcript-echo shape)', () => {
+    expect(isAttributableToProbe({ path: '/home/x/.claude/projects/some-slug/transcript.jsonl', content: 'saw NONCE-A in the turn' }, PROBE_SLUG, nonces)).toBe(false);
   });
 
   it('is false for an unrelated path with no content (a removed path, boundary)', () => {
     expect(isAttributableToProbe({ path: '/home/x/.claude/file-history/backup.json', content: null }, PROBE_SLUG, nonces)).toBe(false);
   });
 
-  it('is false for an unrelated path whose content matches neither nonce (all-failure boundary)', () => {
-    expect(isAttributableToProbe({ path: '/home/x/.claude/projects/other/transcript.jsonl', content: 'ordinary conversation' }, PROBE_SLUG, nonces)).toBe(false);
+  it('is false for a memory/-segmented path whose content matches no nonce (all-failure boundary)', () => {
+    expect(isAttributableToProbe({ path: '/home/x/.claude/projects/other/memory/fact.md', content: 'ordinary conversation' }, PROBE_SLUG, nonces)).toBe(false);
   });
 
-  it('is false against an empty nonce set (boundary: no nonces minted yet)', () => {
-    expect(isAttributableToProbe({ path: '/unrelated/path', content: 'NONCE-A' }, PROBE_SLUG, new Set())).toBe(false);
+  it('is false against an empty nonce set, even under memory/ (boundary: no nonces minted yet)', () => {
+    expect(isAttributableToProbe({ path: '/home/x/.claude/projects/x/memory/fact.md', content: 'NONCE-A' }, PROBE_SLUG, new Set())).toBe(false);
   });
 });
 
@@ -745,9 +760,9 @@ describe('classifyRealTreeDiff', () => {
   const canaryPath = `/home/x/.claude/${PROBE_SLUG}-canary-RUN-1.tmp`;
 
   // Boundary: empty diff.
-  it('reports zero attributable and zero unrelated for an empty diff', () => {
+  it('reports zero attributable, zero unrelated, zero nonce echoes for an empty diff', () => {
     const r = classifyRealTreeDiff({ added: [], removed: [], changed: [] }, new Map(), PROBE_SLUG, nonces);
-    expect(r).toEqual({ attributable: { added: [], removed: [], changed: [] }, unrelatedCount: 0 });
+    expect(r).toEqual({ attributable: { added: [], removed: [], changed: [] }, unrelatedCount: 0, nonceEchoOutsideMemoryCount: 0 });
   });
 
   it('classifies the canary itself as attributable via the slug (the positive control shape)', () => {
@@ -758,28 +773,46 @@ describe('classifyRealTreeDiff', () => {
     expect(r.unrelatedCount).toBe(0);
   });
 
-  it('buckets an unrelated concurrent-session path as unrelated, not attributable (all-failure boundary)', () => {
+  it('buckets an unrelated concurrent-session path (no slug, no nonce) as unrelated, not attributable (all-failure boundary)', () => {
     const otherTranscript = '/home/x/.claude/projects/other-session/transcript.jsonl';
     const diff = { added: [], removed: [], changed: [otherTranscript] };
     const checks = new Map([[otherTranscript, { path: otherTranscript, content: 'unrelated chatter' }]]);
     const r = classifyRealTreeDiff(diff, checks, PROBE_SLUG, nonces);
     expect(r.attributable.changed).toEqual([]);
     expect(r.unrelatedCount).toBe(1);
+    expect(r.nonceEchoOutsideMemoryCount).toBe(0);
   });
 
-  it('splits a mixed diff into attributable and unrelated correctly (mixed)', () => {
+  /**
+   * Architect ruling round 2: the operator's own transcript echoing a run
+   * nonce is unrelated (not attributable, never escalates) but reported
+   * separately from silent unrelated activity, via
+   * `nonceEchoOutsideMemoryCount`.
+   */
+  it('counts an operator-transcript nonce echo as unrelated AND reports it via nonceEchoOutsideMemoryCount', () => {
+    const ownTranscript = '/home/x/.claude/projects/this-delegate/transcript.jsonl';
+    const diff = { added: [], removed: [], changed: [ownTranscript] };
+    const checks = new Map([[ownTranscript, { path: ownTranscript, content: 'the probe printed NONCE-A to stdout' }]]);
+    const r = classifyRealTreeDiff(diff, checks, PROBE_SLUG, nonces);
+    expect(r.attributable.changed).toEqual([]);
+    expect(r.unrelatedCount).toBe(1);
+    expect(r.nonceEchoOutsideMemoryCount).toBe(1);
+  });
+
+  it('splits a mixed diff into attributable, unrelated, and nonce-echo-outside-memory correctly (mixed)', () => {
     const leaked = '/home/x/.claude/projects/some-slug/memory/leaked.md';
     const unrelated1 = '/home/x/.claude/file-history/backup.json';
-    const unrelated2 = '/home/x/.claude/projects/other-session/transcript.jsonl';
-    const diff = { added: [leaked, unrelated1], removed: [], changed: [unrelated2] };
+    const ownTranscript = '/home/x/.claude/projects/other-session/transcript.jsonl';
+    const diff = { added: [leaked, unrelated1], removed: [], changed: [ownTranscript] };
     const checks = new Map([
       [leaked, { path: leaked, content: 'contains NONCE-A' }],
       [unrelated1, { path: unrelated1, content: null }],
-      [unrelated2, { path: unrelated2, content: 'ordinary chatter' }],
+      [ownTranscript, { path: ownTranscript, content: 'echoes NONCE-A but is a transcript, not memory/' }],
     ]);
     const r = classifyRealTreeDiff(diff, checks, PROBE_SLUG, nonces);
     expect(r.attributable).toEqual({ added: [leaked], removed: [], changed: [] });
     expect(r.unrelatedCount).toBe(2);
+    expect(r.nonceEchoOutsideMemoryCount).toBe(1);
   });
 
   it('treats a path missing from the checks map as unreadable/unrelated (defensive default)', () => {

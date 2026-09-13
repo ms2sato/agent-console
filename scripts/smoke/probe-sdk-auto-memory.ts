@@ -326,24 +326,40 @@
  * there (named `${PROBE_SLUG}-canary-<runId>.tmp`) as an in-band positive
  * control. After every selected arm has run, it snapshots again.
  *
- * ATTRIBUTION FILTER (Architect ruling, PR #1676 review, replacing this
- * file's own first version): the real config dir belongs to the OPERATING
- * OS user, whose OTHER live Claude Code sessions write their own
- * transcripts / file-history continuously -- a raw "did anything change"
- * diff is near-certain to fire on a host with any concurrent activity,
- * independent of anything this probe does. `classifyRealTreeDiff` /
- * `isAttributableToProbe` instead count a changed/added/removed path as
- * escalation-worthy ONLY when it is attributable to THIS run: its path
- * contains `PROBE_SLUG` (`probe-sdk-automem`), OR its post-run content
- * contains one of the nonces THIS run minted (`trackedNonce`, tracked in
- * `runNonces` -- every `nonce()` call in this file goes through it, never
- * the harness's `nonce()` directly). Everything else is logged as
- * "unrelated concurrent activity: N paths" and never escalates. The canary
- * is classified through this SAME filter (never a raw `.includes()`), so
- * its own positive control proves the FILTERED detector works, not merely
- * that the raw diff can see a change. Precedent: Task 0's own manual
- * real-tree addendum (#1662) used exactly this slug-match-or-nonce-grep
- * shape by hand.
+ * ATTRIBUTION FILTER (Architect ruling, PR #1676 review, two rounds): the
+ * real config dir belongs to the OPERATING OS user, whose OTHER live Claude
+ * Code sessions write their own transcripts / file-history continuously --
+ * a raw "did anything change" diff is near-certain to fire on a host with
+ * any concurrent activity, independent of anything this probe does.
+ * `classifyRealTreeDiff` / `isAttributableToProbe` instead count a
+ * changed/added/removed path as escalation-worthy ONLY when it is
+ * attributable to THIS run: its path contains `PROBE_SLUG`
+ * (`probe-sdk-automem`, path-wide -- the canary, or any probe-named scratch
+ * artifact), OR its post-run content contains one of the nonces THIS run
+ * minted (`trackedNonce`, tracked in `runNonces` -- every `nonce()` call in
+ * this file goes through it, never the harness's `nonce()` directly) WITHIN
+ * a `memory/` path segment specifically.
+ *
+ * The `memory/`-segment scoping on the nonce-content half is round 2's
+ * fix: this probe prints every nonce to stdout, and the delegate session
+ * RUNNING this probe ingests that stdout as its own tool output, writing
+ * it into ITS OWN transcript `.jsonl` under this same real config dir --
+ * an unscoped nonce-content match would make the OPERATOR's own
+ * conversation transcript "attributable" and false-escalate on every
+ * single run. A transcript is never under `memory/`; only genuine
+ * auto-memory content is. Paths that echo a nonce OUTSIDE `memory/` are
+ * reported separately, informationally, never escalated -- see
+ * `RealTreeDiffClassification.nonceEchoOutsideMemoryCount`.
+ *
+ * Everything not attributable is logged as "unrelated concurrent activity:
+ * N paths" and never escalates. The canary is classified through this SAME
+ * filter (never a raw `.includes()`), so its own positive control proves
+ * the FILTERED detector works, not merely that the raw diff can see a
+ * change. Precedent: Task 0's own manual real-tree addendum (#1662) found
+ * nonce matches ONLY in top-level session `.jsonl` transcripts, explicitly
+ * noted as not under a `memory/` subdirectory and dismissed as ordinary
+ * conversation, not a leak -- this filter mechanizes exactly that
+ * distinction.
  *
  * A failed positive control, or an attributable change surviving the
  * filter, escalates this script's own exit code to `HARNESS` regardless of
@@ -822,37 +838,62 @@ export interface RealTreePathCheck {
   content: string | null;
 }
 
+/** Whether `path` has an exact `memory` path segment (the auto-memory surface, e.g. `.../projects/<slug>/memory/...`) -- segment-based so a directory merely named e.g. `memory-backup` never false-matches. */
+function hasMemorySegment(path: string): boolean {
+  return path.split(sep).includes('memory');
+}
+
+function matchesAnyNonce(content: string, nonces: ReadonlySet<string>): boolean {
+  for (const n of nonces) {
+    if (content.includes(n)) return true;
+  }
+  return false;
+}
+
 /**
  * Whether a changed/added/removed path under the REAL, non-isolated config
- * tree is attributable to THIS probe run -- a slug match on the path itself,
- * or the path's post-run content containing one of the run's own nonces.
- * A removed path (`content === null`) can only be attributed by the slug
- * match; its content is gone.
+ * tree is attributable to THIS probe run -- a slug match on the path itself
+ * (path-wide: the canary, or any probe-named scratch artifact), OR the
+ * path's post-run content containing one of the run's own nonces WITHIN a
+ * `memory/` segment specifically (the auto-memory surface this probe
+ * actually writes to). A removed path (`content === null`) can only be
+ * attributed by the slug match; its content is gone.
  *
- * Architect ruling, PR #1676 review: the real-tree cross-check previously
- * escalated on ANY change under the real config dir, which false-positives
- * on a host where the SAME OS user runs other live Claude Code sessions
- * that continuously write their own transcripts / file-history -- a diff is
- * near-certain there, independent of anything this probe does. Only a path
- * this run can be tied to is worth escalating on; everything else is
- * unrelated concurrent activity, logged as a count, never escalated.
- * Precedent: Task 0's own manual real-tree addendum (#1662) used exactly
- * this slug-match-or-nonce-grep shape by hand.
+ * Architect ruling, PR #1676 review (two rounds): round 1 fixed the
+ * original "escalate on ANY change" design, which false-positives on a host
+ * where the SAME OS user runs other live Claude Code sessions writing their
+ * own transcripts / file-history continuously. Round 2 narrowed the
+ * nonce-content half specifically: this probe prints every nonce to
+ * stdout, and the delegate session RUNNING this probe ingests that stdout
+ * as its own tool output, writing it into ITS OWN transcript `.jsonl`
+ * under this same real config dir -- so an unscoped nonce-content match
+ * would make the operator's own conversation transcript "attributable"
+ * and false-escalate on every single run. Scoping nonce-content matching to
+ * `memory/`-segmented paths closes that: a transcript is never under
+ * `memory/`, only genuine auto-memory content is. Precedent: Task 0's own
+ * manual real-tree addendum (#1662) found nonce matches ONLY in top-level
+ * session `.jsonl` transcripts, explicitly noted as "not under a `memory/`
+ * subdirectory" and dismissed as ordinary conversation, not a leak.
  *
  * @internal Exported for the sibling unit test.
  */
 export function isAttributableToProbe(check: RealTreePathCheck, probeSlug: string, nonces: ReadonlySet<string>): boolean {
   if (check.path.includes(probeSlug)) return true;
   if (check.content === null) return false;
-  for (const n of nonces) {
-    if (check.content.includes(n)) return true;
-  }
-  return false;
+  if (!hasMemorySegment(check.path)) return false;
+  return matchesAnyNonce(check.content, nonces);
 }
 
 export interface RealTreeDiffClassification {
   attributable: MtimeDiff;
   unrelatedCount: number;
+  /**
+   * Among the unrelated paths, how many nonetheless had content matching a
+   * run nonce OUTSIDE any `memory/` segment -- informational only, never
+   * escalated. Expected value: the transcript of the session running this
+   * probe (see `isAttributableToProbe`'s own comment).
+   */
+  nonceEchoOutsideMemoryCount: number;
 }
 
 /**
@@ -871,8 +912,21 @@ export function classifyRealTreeDiff(
   probeSlug: string,
   nonces: ReadonlySet<string>,
 ): RealTreeDiffClassification {
-  const attribute = (paths: readonly string[]): string[] =>
-    paths.filter((p) => isAttributableToProbe(checks.get(p) ?? { path: p, content: null }, probeSlug, nonces));
+  let nonceEchoOutsideMemoryCount = 0;
+  const attribute = (paths: readonly string[]): string[] => {
+    const kept: string[] = [];
+    for (const p of paths) {
+      const check = checks.get(p) ?? { path: p, content: null };
+      if (isAttributableToProbe(check, probeSlug, nonces)) {
+        kept.push(p);
+        continue;
+      }
+      if (check.content !== null && !hasMemorySegment(p) && matchesAnyNonce(check.content, nonces)) {
+        nonceEchoOutsideMemoryCount++;
+      }
+    }
+    return kept;
+  };
   const attributable: MtimeDiff = {
     added: attribute(diff.added),
     removed: attribute(diff.removed),
@@ -880,7 +934,7 @@ export function classifyRealTreeDiff(
   };
   const totalPaths = diff.added.length + diff.removed.length + diff.changed.length;
   const totalAttributable = attributable.added.length + attributable.removed.length + attributable.changed.length;
-  return { attributable, unrelatedCount: totalPaths - totalAttributable };
+  return { attributable, unrelatedCount: totalPaths - totalAttributable, nonceEchoOutsideMemoryCount };
 }
 
 /** Reads a path's content for the attribution filter, `null` when gone or unreadable (never throws). */
@@ -2225,12 +2279,13 @@ async function main(): Promise<number> {
       // this diff at all (present-and-identical in both), nothing to
       // exclude here.
       const classification = classifyRealTreeDiff(runDiff, buildAttributionChecks(runDiff), PROBE_SLUG, runNonces);
-      const { attributable, unrelatedCount } = classification;
+      const { attributable, unrelatedCount, nonceEchoOutsideMemoryCount } = classification;
       realTreeClean = attributable.added.length === 0 && attributable.removed.length === 0 && attributable.changed.length === 0;
       console.log(
         `real-tree cross-check after all arms: clean=${realTreeClean} attributable-added=${JSON.stringify(attributable.added)} ` +
           `attributable-removed=${JSON.stringify(attributable.removed)} attributable-changed=${JSON.stringify(attributable.changed)} ` +
-          `unrelated concurrent activity (not escalated): ${unrelatedCount} path(s)`,
+          `unrelated concurrent activity (not escalated): ${unrelatedCount} path(s), of which ${nonceEchoOutsideMemoryCount} echoed a run nonce outside any memory/ dir ` +
+          `(expected: the transcript of the session running this probe)`,
       );
     } else {
       console.log('real-tree cross-check after all arms: SKIPPED (canary could not be written; see warning above).');
