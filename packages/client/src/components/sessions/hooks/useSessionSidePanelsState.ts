@@ -72,6 +72,7 @@ interface UseSessionSidePanelsStateReturn {
   toggleRail: () => void;
   toggleSection: (key: SessionSidePanelKey) => void;
   openRailAndExpandSection: (key: SessionSidePanelKey) => void;
+  expandSection: (key: SessionSidePanelKey) => void;
 }
 
 /**
@@ -120,11 +121,24 @@ export function useSessionSidePanelsState(): UseSessionSidePanelsStateReturn {
     });
   }, []);
 
+  // One-directional guarantee: only ever sets a section's expanded flag to
+  // true, never toggles or collapses it. Used when an always-visible header
+  // control (e.g. MemoPanel's Edit button) enters a content-editing mode
+  // that must be visible regardless of the section's prior collapsed state.
+  const expandSection = useCallback((key: SessionSidePanelKey) => {
+    setRecord((prev) => {
+      const next: SessionSidePanelsRecord = { ...prev, expanded: { ...prev.expanded, [key]: true } };
+      persistRecord(next);
+      return next;
+    });
+  }, []);
+
   return {
     railOpen: record.railOpen,
     expanded: record.expanded,
     toggleRail,
     toggleSection,
     openRailAndExpandSection,
+    expandSection,
   };
 }

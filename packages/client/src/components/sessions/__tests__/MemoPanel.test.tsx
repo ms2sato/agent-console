@@ -78,6 +78,9 @@ function ControlledMemoPanel({
       sessionId={sessionId}
       isExpanded={isExpanded}
       onToggleExpanded={() => setIsExpanded((v) => !v)}
+      // Mirrors the real container's expandSection: an unconditional
+      // set-true, never a toggle.
+      onEnsureExpanded={() => setIsExpanded(true)}
       compact={compact}
     />
   );
@@ -294,6 +297,29 @@ describe('MemoPanel', () => {
 
     expect(screen.getByLabelText('Collapse Memo')).toBeTruthy();
     expect(screen.getByLabelText('Collapse Memo').getAttribute('aria-expanded')).toBe('true');
+  });
+
+  // CodeRabbit MAJOR finding: MemoPanel's header (title button + Edit
+  // button) renders regardless of the section's own isExpanded state, so
+  // clicking Edit while collapsed used to enter edit mode without ever
+  // expanding the section -- mounting and autofocusing the textarea inside
+  // an aria-hidden collapsed body. onEnsureExpanded guarantees expansion in
+  // the same synchronous update as enterEditMode.
+  it('clicking Edit while the section is collapsed guarantees expansion in the same update, and focuses the textarea outside any aria-hidden ancestor', async () => {
+    mockFetch.mockResolvedValue(jsonResponse({ content: '# Existing memo' }));
+
+    await renderWithRouter(<ControlledMemoPanel sessionId="session-1" initialExpanded={false} />);
+    await waitFor(() => expect(screen.getByLabelText('Expand Memo')).toBeTruthy());
+
+    fireEvent.click(screen.getByRole('button', { name: 'Edit memo' }));
+
+    // No intermediate "edit mode but still collapsed" frame -- the title
+    // button already reports expanded in the same synchronous update.
+    expect(screen.getByLabelText('Collapse Memo').getAttribute('aria-expanded')).toBe('true');
+
+    const textarea = await screen.findByLabelText('Memo content');
+    expect(document.activeElement).toBe(textarea);
+    expect(textarea.closest('[aria-hidden="true"]')).toBeNull();
   });
 
   // M4: Ctrl+Enter saves, Escape behavior depends on whether the draft changed.

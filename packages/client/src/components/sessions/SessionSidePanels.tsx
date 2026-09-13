@@ -26,7 +26,8 @@ interface SessionSidePanelsProps {
  * chrome is removed.
  */
 export function SessionSidePanels({ sessionId }: SessionSidePanelsProps) {
-  const { railOpen, expanded, toggleRail, toggleSection, openRailAndExpandSection } = useSessionSidePanelsState();
+  const { railOpen, expanded, toggleRail, toggleSection, openRailAndExpandSection, expandSection } =
+    useSessionSidePanelsState();
 
   const handleToggle = (key: SessionSidePanelKey) => () =>
     railOpen ? toggleSection(key) : openRailAndExpandSection(key);
@@ -54,6 +55,13 @@ export function SessionSidePanels({ sessionId }: SessionSidePanelsProps) {
         sessionId={sessionId}
         isExpanded={expanded.memo}
         onToggleExpanded={handleToggle('memo')}
+        // Only MemoPanel gets this: it's the only section whose
+        // always-visible header control (Edit) can enter a content-editing
+        // mode while the section is collapsed. Never needs to also open the
+        // rail -- MemoPanel's own `compact` branch returns before rendering
+        // the Edit button at all, so Edit is only reachable when
+        // compact === false, i.e. railOpen === true already.
+        onEnsureExpanded={() => expandSection('memo')}
         compact={!railOpen}
       />
       <SessionArtifactsPanel

@@ -199,6 +199,34 @@ describe('useSessionSidePanelsState', () => {
     });
   });
 
+  describe('expandSection', () => {
+    it('sets the target section to true without touching railOpen or other sections', () => {
+      localStorage.setItem(
+        STORAGE_KEY,
+        JSON.stringify({ railOpen: false, expanded: { memo: false, artifacts: false, bookmarks: true } })
+      );
+      const { result } = renderHook(() => useSessionSidePanelsState());
+
+      act(() => {
+        result.current.expandSection('memo');
+      });
+
+      expect(result.current.railOpen).toBe(false);
+      expect(result.current.expanded).toEqual({ memo: true, artifacts: false, bookmarks: true });
+    });
+
+    it('is idempotent when the target section is already expanded -- it must not flip it back off', () => {
+      const { result } = renderHook(() => useSessionSidePanelsState());
+      expect(result.current.expanded.memo).toBe(true);
+
+      act(() => {
+        result.current.expandSection('memo');
+      });
+
+      expect(result.current.expanded.memo).toBe(true);
+    });
+  });
+
   describe('localStorage error handling', () => {
     // `spyOn(localStorage, 'getItem'/'setItem')` does NOT intercept calls in
     // this Bun test environment -- measured empirically with a standalone

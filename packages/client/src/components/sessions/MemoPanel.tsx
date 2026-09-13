@@ -11,12 +11,16 @@ interface MemoPanelProps {
   sessionId: string;
   isExpanded: boolean;
   onToggleExpanded: () => void;
+  // Guarantees the section is expanded (never collapses it). Called
+  // alongside enterEditMode so the edit-mode textarea is never rendered
+  // inside an aria-hidden collapsed body.
+  onEnsureExpanded: () => void;
   compact: boolean;
 }
 
 type MemoPanelMode = 'view' | 'edit';
 
-export function MemoPanel({ sessionId, isExpanded, onToggleExpanded, compact }: MemoPanelProps) {
+export function MemoPanel({ sessionId, isExpanded, onToggleExpanded, onEnsureExpanded, compact }: MemoPanelProps) {
   const queryClient = useQueryClient();
 
   const { data: content, isPending } = useQuery({
@@ -183,7 +187,10 @@ export function MemoPanel({ sessionId, isExpanded, onToggleExpanded, compact }: 
         <div className="flex items-center gap-1">
           {mode === 'view' && !isEmpty && (
             <button
-              onClick={() => enterEditMode(content ?? '')}
+              onClick={() => {
+                enterEditMode(content ?? '');
+                onEnsureExpanded();
+              }}
               className="text-gray-400 hover:text-gray-200 cursor-pointer bg-transparent border-none p-1 text-xs"
               title="Edit memo"
               aria-label="Edit memo"
@@ -217,7 +224,16 @@ export function MemoPanel({ sessionId, isExpanded, onToggleExpanded, compact }: 
               onChange={(e) => setDraft(e.target.value)}
               onKeyDown={handleTextareaKeyDown}
               disabled={isSaving}
-              autoFocus
+              // Defense-in-depth: the Edit button above guarantees isExpanded
+              // is already true by the time this textarea mounts (React 18
+              // batches both setState calls into one update), so this gate
+              // is a no-op on that path. It only matters for a future defect
+              // path that reaches edit mode without the guarantee -- since
+              // this <textarea> only exists in the mode === 'edit' branch,
+              // every transition into edit mode is a fresh mount, and
+              // autoFocus fires exactly once against isExpanded's value at
+              // that mount.
+              autoFocus={mode === 'edit' && isExpanded}
               tabIndex={isExpanded ? undefined : -1}
               aria-label="Memo content"
               className="w-full max-h-96 min-h-32 overflow-y-auto bg-slate-900 border border-slate-600 rounded px-2 py-1.5 text-sm text-gray-200 resize-y disabled:opacity-50"
