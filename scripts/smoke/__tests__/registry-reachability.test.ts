@@ -8,19 +8,31 @@ import * as path from 'node:path';
  * to be registered (an Additional Verification section in
  * `.claude/rules/test-trigger.md`) and exactly one way to be invoked
  * (`bun scripts/smoke/<file>`, no `package.json` `check:` alias). This file
- * mechanically enforces both halves of that contract:
+ * mechanically enforces every part of that contract:
  *
  *   1. Every `scripts/smoke/*.{ts,mjs}` basename (except a documented
- *      non-entry-point exception) must appear in `test-trigger.md` -- a
- *      script nobody can find is a script nobody re-runs (Issue #671).
- *   2. Every `bun run check:<name>` reference anywhere under `docs/` or
- *      `.claude/` must resolve to an actually-defined `package.json`
+ *      non-entry-point exception) must have its EXACT `bun scripts/smoke/
+ *      <file>` invocation string present in `test-trigger.md`, not merely
+ *      the filename -- a script nobody can find is a script nobody re-runs
+ *      (Issue #671), and a filename that appears without its runnable
+ *      command is exactly as unreachable in practice.
+ *   2. No `package.json` script command may target `scripts/smoke/` -- a
+ *      restored `check:` alias for a smoke must fail this test, not just
+ *      go unmentioned in docs.
+ *   3. Every `bun run check:<name>` reference anywhere under `docs/`,
+ *      `.claude/`, `README.md`, or non-test script sources under
+ *      `scripts/` must resolve to an actually-defined `package.json`
  *      script -- a dangling alias reference is exactly as unreachable as
  *      an unregistered smoke, just in the opposite direction.
  *
  * Glob-driven (not a hardcoded list), same convention as the sibling
  * `import-safety.test.ts`: a future 34th smoke or a future doc reference is
  * covered automatically, with no separate registration step for this pin.
+ *
+ * (CodeRabbit MAJOR on PR #1693 sharpened all three assertions above from
+ * their initial filename-only / docs-and-.claude-only / no-alias-guard
+ * shapes; each per-assertion comment below records the polarity measured
+ * for that specific fix.)
  */
 
 const REPO_ROOT = path.resolve(import.meta.dir, '../../..');
@@ -59,12 +71,22 @@ function hasEntryPointGuard(file: string): boolean {
   return ENTRY_POINT_GUARD.test(content);
 }
 
-function walkFiles(dir: string, exts: string[]): string[] {
+/**
+ * `excludeTestFiles: true` skips `__tests__` directories and `*.test.<ext>`
+ * files -- used only for the `scripts/` source scan (CodeRabbit finding
+ * #2 on PR #1693), so a test fixture's deliberately-bogus `check:`
+ * reference (this file's own polarity-check comment below, or a future
+ * one) is never mistaken for a stale production reference.
+ */
+function walkFiles(dir: string, exts: string[], opts: { excludeTestFiles?: boolean } = {}): string[] {
   const results: string[] = [];
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    if (opts.excludeTestFiles && entry.name === '__tests__') continue;
     const full = path.join(dir, entry.name);
     if (entry.isDirectory()) {
-      results.push(...walkFiles(full, exts));
+      results.push(...walkFiles(full, exts, opts));
+    } else if (opts.excludeTestFiles && /\.test\.[a-z]+$/.test(entry.name)) {
+      continue;
     } else if (exts.some((ext) => entry.name.endsWith(ext))) {
       results.push(full);
     }
@@ -97,8 +119,17 @@ describe('scripts/smoke/* registered in test-trigger.md (Issue #1637)', () => {
   });
 
   for (const file of registered) {
-    it(`${file} is named in test-trigger.md`, () => {
-      expect(testTriggerContent).toContain(file);
+    // Asserts the exact `bun scripts/smoke/<file>` invocation string, not
+    // merely the filename -- the filename alone can appear in a section
+    // without a runnable command (e.g. a passing mention, or a typo'd
+    // command), and that gap is exactly what this pin exists to catch.
+    // Polarity: removing this section's invocation line while leaving the
+    // filename elsewhere in prose flips this assertion (CodeRabbit finding
+    // #1 on PR #1693; measured by deleting one section's invocation
+    // sentence and confirming the corresponding test failed before
+    // restoring it).
+    it(`${file} has its exact \`bun scripts/smoke/${file}\` invocation in test-trigger.md`, () => {
+      expect(testTriggerContent).toContain(`bun scripts/smoke/${file}`);
     });
   }
 
@@ -109,6 +140,21 @@ describe('scripts/smoke/* registered in test-trigger.md (Issue #1637)', () => {
   }
 });
 
+describe('package.json has no check: alias targeting scripts/smoke/ (Issue #1637)', () => {
+  const packageJson = JSON.parse(readFileSync(PACKAGE_JSON_PATH, 'utf-8')) as { scripts?: Record<string, string> };
+  const scripts = packageJson.scripts ?? {};
+  const smokeAliases = Object.entries(scripts).filter(([, command]) => command.includes('scripts/smoke/'));
+
+  // Polarity: restoring any single removed alias (e.g. re-adding
+  // "check:pty-fd-leak": "bun scripts/smoke/check-pty-fd-leak.ts") flips
+  // this assertion (CodeRabbit finding #2 on PR #1693; measured by
+  // temporarily re-adding that exact entry and confirming the assertion
+  // failed before removing it again).
+  it('no package.json script command targets scripts/smoke/', () => {
+    expect(smokeAliases).toEqual([]);
+  });
+});
+
 describe('every `bun run check:<name>` reference under docs/ and .claude/ resolves to a package.json script (Issue #1637)', () => {
   const packageJson = JSON.parse(readFileSync(PACKAGE_JSON_PATH, 'utf-8')) as { scripts?: Record<string, string> };
   const definedAliases = new Set(Object.keys(packageJson.scripts ?? {}));
@@ -117,6 +163,16 @@ describe('every `bun run check:<name>` reference under docs/ and .claude/ resolv
     ...walkFiles(path.join(REPO_ROOT, 'docs'), ['.md']),
     ...walkFiles(path.join(REPO_ROOT, '.claude'), ['.md', '.js', '.mjs']),
     path.join(REPO_ROOT, 'README.md'),
+    // Non-test script sources: a script's own header/comments can carry a
+    // stale self-reference (this PR's own fix to check-bun-version.mjs and
+    // two smoke files' self-referencing comments is exactly this shape).
+    // __tests__ dirs and *.test.<ext> files are excluded so a test
+    // fixture's deliberately-bogus reference is never flagged (CodeRabbit
+    // finding #3 on PR #1693; measured by adding a stale reference to
+    // scripts/check-bun-version.mjs and confirming a new failure appeared,
+    // then confirming an identical reference added to *this test file*,
+    // which lives under scripts/smoke/__tests__/, produces no failure).
+    ...walkFiles(path.join(REPO_ROOT, 'scripts'), ['.ts', '.mjs', '.mts', '.sh'], { excludeTestFiles: true }),
   ];
 
   const CHECK_REF_PATTERN = /bun run (check:[a-z0-9-]+)/g;
