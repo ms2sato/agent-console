@@ -50,26 +50,56 @@
  *     checkout has no `dist/embedded-agent.js` sibling to exercise): when
  *     set, a positive `/proc/<pid>/cmdline` assertion, PAIRED in the SAME
  *     run with the `ready` assertion above (same activation, same pid, no
- *     separate re-run), confirms the REAL elevated subprocess both received
- *     the configured path as its spawn argv AND actually executed it all
- *     the way to a working init handshake as the second OS user -- a
- *     cmdline match alone would still pass even if that user could not
- *     read the file at all (the exact production failure Issue #1668
- *     exists to fix), since argv is set before the OS ever attempts to open
- *     the file; only the pairing with a real completed handshake proves
- *     actual execution, not just argv plumbing. The `/proc/<pid>/cmdline`
- *     read itself happens IMMEDIATELY after activation, not later alongside
- *     the negative /proc checks below -- measured empirically on this host,
- *     the SAME live (non-zombie) pid's `cmdline` reads back correctly right
- *     after spawn but goes empty a couple hundred ms later, once the
- *     bundled entry's heap growth has apparently invalidated the kernel's
- *     cached arg_start/arg_end for that pid. This is an environment quirk in
- *     how long `/proc/<pid>/cmdline` stays readable, not a defect in the
- *     spawn path (the configured path demonstrably DOES reach argv); reading
- *     early and asserting later still pairs both facts for the one
- *     activation under test, per `.claude/rules/os-environment-coupling.md`'s
- *     "don't trust 'should work' reasoning about OS behavior". Opt in with
- *     either:
+ *     separate re-run). NEITHER half alone is the proof:
+ *       - The cmdline match shows the SERVER composed the configured entry
+ *         path into the elevated command -- it does NOT by itself show the
+ *         elevated user could actually open that file, which is #1668's
+ *         actual defect (a world-unreadable path composed into argv would
+ *         still show up in cmdline and still fail to run).
+ *       - The paired `ready` assertion is what proves the child process
+ *         actually executed that entry to a working init handshake as the
+ *         second OS user.
+ *     Only both together prove the short-circuit reached a real, executable
+ *     spawn -- a cmdline match with no completed handshake, or a completed
+ *     handshake with no cmdline match, are both insufficient on their own.
+ *
+ *     The pid this reads is `spawnAsUser`'s own `['sh', '-c', command]`
+ *     process (`buildSpawnArgs` in privilege-elevation.ts) -- in the
+ *     non-elevated (degenerate, same-user) branch this `sh` does NOT exec
+ *     into `bun`; it stays alive as a shell that forked `bun <entry>` as a
+ *     CHILD process and sits in `wait4()` for it (confirmed via
+ *     `ps -o pid,ppid,stat,args --ppid <pid>` on a quiet host: the `sh`'s
+ *     own STAT stayed `S` for the worker's whole activation, with a
+ *     separate-pid `bun <entry>` child alongside it). Reading the wrapper's
+ *     OWN pid is deliberate, not a wrapper-vs-child mismatch: `sh -c`'s
+ *     argv already embeds the full `'bun' '<entry>'` string verbatim
+ *     (`shellEscape`d), so the wrapper's cmdline is sufficient proof of
+ *     composition (the first half above) on its own, and it is the pid
+ *     `internalWorker.subprocess.pid` actually exposes.
+ *
+ *     The read itself happens IMMEDIATELY after activation via a single
+ *     `Bun.file(...).text()` call, not later alongside the negative /proc
+ *     checks below and not via a preceding `.exists()` probe or an external
+ *     `ps` invocation. OBSERVATION, mechanism not identified: on a quiet
+ *     host the wrapper pid's `cmdline` is stable and reads correctly at any
+ *     point during the activation (confirmed via `ps` snapshots taken both
+ *     immediately after spawn and again after `ready`, byte-identical).
+ *     Under this host's OWN sustained swap-exhaustion load, a SINGLE fast
+ *     `.text()` read on that SAME live, non-zombie pid returned the correct
+ *     content in 5/5 repeated runs, while adding ANY extra round trip to the
+ *     same read -- a preceding `.exists()` stat() call, or replacing the
+ *     read with an external `ps -p <pid>` subprocess spawn -- returned EMPTY
+ *     content or "no such process" in 5/5 repeated runs, for the SAME pid,
+ *     in the SAME run, with the process confirmed alive a moment later by
+ *     the very next single-read check. WHY the extra round trip changes the
+ *     result is not established here (an empty `/proc/<pid>/cmdline` read
+ *     for a live, non-zombie, non-exiting task is not a documented outcome
+ *     this comment can explain with confidence -- see `.claude/rules/
+ *     os-environment-coupling.md`'s "don't trust 'should work' reasoning
+ *     about OS behavior": a wrong mechanism stated confidently is worse than
+ *     an unexplained repro). What IS established, by the repro counts above,
+ *     is that the single immediate-post-spawn read is robust to whatever
+ *     this is, regardless of cause. Opt in with either:
  *       # against a real build's bundle sibling:
  *       bun run build
  *       EMBEDDED_AGENT_ENTRY_PATH="$(pwd)/dist/embedded-agent.js" \
@@ -643,22 +673,25 @@ async function main(): Promise<void> {
     console.log(`  spawnAsUser target username: ${targetUsername} (elevated: ${!degenerate})`);
     await ctx.sessionManager.activateEmbeddedAgentWorker(sessionId, workerId);
 
-    // --- Capture the EMBEDDED_AGENT_ENTRY_PATH short-circuit's argv proof
-    // IMMEDIATELY after spawn, not later alongside the negative /proc checks.
-    // Empirically measured on this host: `/proc/<pid>/cmdline` for the SAME
-    // live (non-zombie, State: S) pid reads back the full `sh -c '...'` argv
-    // correctly right after spawn, but goes EMPTY once the bundled
-    // `dist/embedded-agent.js` process has been running for a couple hundred
-    // ms (plausibly once its heap growth invalidates the kernel's cached
-    // arg_start/arg_end for that pid -- a real environment quirk, not a
-    // defect in the spawn path: the configured path DOES reach argv, this
-    // is purely about how long the kernel keeps it readable). Reading here
-    // instead of after `ready` still pairs this fact with the ready
-    // assertion below IN THE SAME RUN, for the SAME pid -- the pairing's
-    // point (per os-environment-coupling.md: a cmdline match alone must not
-    // pass if the elevated user could not actually run the file) does not
-    // depend on which of the two facts is observed first, only that both
-    // hold for the one activation under test.
+    // --- Capture the EMBEDDED_AGENT_ENTRY_PATH short-circuit's argv proof via
+    // a SINGLE fast `.text()` read, IMMEDIATELY after spawn, not later
+    // alongside the negative /proc checks and not preceded by a separate
+    // `.exists()` probe. The pid read here is `spawnAsUser`'s own
+    // `sh -c '...'` wrapper (non-elevated branch never execs; it forks the
+    // real `bun <entry>` as a child and waits on it), whose OWN argv already
+    // embeds the full escaped command -- see the header comment's "closing
+    // the bundle-sibling gap" section for the full `ps`-verified process-tree
+    // evidence and why a two-step read or an external `ps` invocation
+    // intermittently returns empty/not-found for this SAME live pid under
+    // this host's sustained memory pressure (5/5 repro each way; mechanism
+    // not identified -- see header comment), while one direct read does not.
+    // Reading here instead of after `ready` still pairs this fact (the
+    // SERVER composed the configured path into argv) with the ready
+    // assertion below IN THE SAME RUN, for the SAME pid, which is what
+    // proves the child actually executed that entry -- neither half alone
+    // is the proof (see header comment), and pairing them does not depend
+    // on which of the two is observed first, only that both hold for the
+    // one activation under test.
     let earlyEntryPathCmdline: { ran: boolean; content: string } | undefined;
     if (configuredEntryPath) {
       const earlyWorker = ctx.sessionManager.getWorker(sessionId, workerId);
