@@ -22,6 +22,8 @@ import { TEST_AUTH_USER } from '../../__tests__/test-utils.js';
 import { McpTokenRegistry } from '../../mcp/mcp-auth.js';
 import { AgentDirectory } from '../../services/agent-directory.js';
 import { serverConfig } from '../../lib/server-config.js';
+import { RepositoryManager } from '../../services/repository-manager.js';
+import { SqliteRepositoryRepository } from '../../repositories/index.js';
 
 // Test config directory
 const TEST_CONFIG_DIR = '/test/config';
@@ -1347,5 +1349,283 @@ describe('Sessions API - GET /api/sessions/:sessionId/pr-link (Issue #885)', () 
     const res = await app.request('/api/sessions/missing/pr-link');
     expect(res.status).toBe(404);
     expect(mockFetchPullRequestUrl).not.toHaveBeenCalled();
+  });
+});
+
+// ===========================================================================
+// POST/DELETE /api/sessions/:id/orchestrator-designation (Issue #1643 PR-2)
+//
+// Ownership mirrors PUT /api/sessions/:id/memo above: the check only runs
+// when AUTH_MODE === 'multi-user'. Uses a real RepositoryManager backed by
+// SqliteRepositoryRepository (same db as SessionManager) so the flag's
+// persisted state can be asserted directly, mirroring
+// api-repository-slack-integration.test.ts's RepositoryManager.create()
+// pattern.
+// ===========================================================================
+describe('Sessions API - POST/DELETE /api/sessions/:id/orchestrator-designation (Issue #1643 PR-2)', () => {
+  let app: Hono<AppBindings>;
+  let sessionManager: SessionManager;
+  let repositoryManager: RepositoryManager;
+  let testJobQueue: JobQueue;
+  let sharedAccountRegistry: SharedAccountRegistry;
+  const testRepoPath = '/test/repo-path';
+  const testRepositoryId = 'repo-1';
+
+  async function setupCommon(opts: { sharedEnabled: boolean }): Promise<void> {
+    await closeDatabase();
+    setupMemfs({
+      [`${TEST_CONFIG_DIR}/.keep`]: '',
+      ['/test/path/.keep']: '',
+      [`${testRepoPath}/.git/HEAD`]: 'ref: refs/heads/main',
+      [`${testRepoPath}/.git/config`]: '',
+    });
+    process.env.AGENT_CONSOLE_HOME = TEST_CONFIG_DIR;
+
+    await initializeDatabase(':memory:');
+
+    testJobQueue = new JobQueue(getDatabase(), { concurrency: 1 });
+    registerJobHandlers(testJobQueue, new WorkerOutputFileManager());
+
+    resetProcessMock();
+    mockProcess.markAlive(process.pid);
+
+    ptyFactory.reset();
+
+    const db = getDatabase();
+    const agentMgr = await AgentManager.create(new SqliteAgentRepository(db));
+    const userRepository = new SqliteUserRepository(db);
+
+    // Insert the test auth user so FK constraints (sessions.created_by → users.id) hold.
+    await db
+      .insertInto('users')
+      .values({
+        id: TEST_AUTH_USER.id,
+        os_uid: null,
+        username: TEST_AUTH_USER.username,
+        home_dir: TEST_AUTH_USER.homeDir,
+        created_at: '2024-01-01T00:00:00.000Z',
+        updated_at: '2024-01-01T00:00:00.000Z',
+      })
+      .onConflict((oc) => oc.column('id').doNothing())
+      .execute();
+
+    if (opts.sharedEnabled) {
+      sharedAccountRegistry = await SharedAccountRegistry.create({
+        username: 'shared-user',
+        userRepository,
+        lookupOsUser: async () => ({ uid: 5052, homeDir: '/home/shared-user' }),
+      });
+    } else {
+      sharedAccountRegistry = SharedAccountRegistry.createDisabled();
+    }
+
+    const sessionRepository = new JsonSessionRepository(`${TEST_CONFIG_DIR}/sessions.json`);
+
+    sessionManager = await SessionManager.create({
+      userMode: new SingleUserMode(ptyFactory.provider, TEST_AUTH_USER),
+      pathExists: async () => true,
+      sessionRepository,
+      jobQueue: testJobQueue,
+      agentManager: agentMgr,
+      mcpTokenRegistry: new McpTokenRegistry(),
+      repositoryLookup: { getRepositorySlug: async () => 'test-repo' },
+      repositoryEnvLookup: {
+        getRepositoryInfo: () => ({ name: 'test-repo', path: '/test/repo' }),
+        getWorktreeIndexNumber: async () => 0,
+      },
+    });
+
+    // Pre-populate the test repository before initializing RepositoryManager
+    // -- it loads repositories at initialization and caches them in memory.
+    const repositoryRepository = new SqliteRepositoryRepository(db);
+    await repositoryRepository.save({
+      id: testRepositoryId,
+      name: 'test-repo',
+      path: testRepoPath,
+      createdAt: new Date().toISOString(),
+      clonedSourceRepoPath: null,
+    });
+    repositoryManager = await RepositoryManager.create({
+      repository: repositoryRepository,
+      jobQueue: testJobQueue,
+    });
+
+    app = new Hono<AppBindings>();
+    app.use('*', async (c, next) => {
+      c.set('appContext', asAppContext({ sessionManager, repositoryManager, sharedAccountRegistry }));
+      await next();
+    });
+    app.onError(onApiError);
+    app.route('/api', api);
+  }
+
+  afterEach(async () => {
+    await testJobQueue.stop();
+    await closeDatabase();
+    cleanupMemfs();
+    resetProcessMock();
+  });
+
+  async function createWorktreeSession(createdBy: string): Promise<string> {
+    const session = await sessionManager.createSession(
+      {
+        type: 'worktree',
+        locationPath: '/test/path',
+        repositoryId: testRepositoryId,
+        worktreeId: 'feature-branch',
+        agentId: 'claude-code',
+      },
+      { createdBy },
+    );
+
+    // Sessions in this describe block are persisted via JsonSessionRepository
+    // (not the sqlite `sessions` table), but `repositories.orchestrator_session_id`
+    // carries a real `REFERENCES sessions(id)` FK. Insert a matching row so a
+    // session created here can legally become (or already be) the FK target
+    // -- mirrors the minimal insert shape used by
+    // database/__tests__/migration.test.ts's v40 orchestrator_session_id tests.
+    // `created_by` is left null: the route's ownership check reads from the
+    // in-memory JsonSessionRepository-backed session object, not this row.
+    await getDatabase()
+      .insertInto('sessions')
+      .values({
+        id: session.id,
+        type: 'worktree',
+        location_path: '/test/path',
+        server_pid: null,
+        initial_prompt: null,
+        title: null,
+        repository_id: testRepositoryId,
+        worktree_id: 'feature-branch',
+      })
+      .execute();
+
+    return session.id;
+  }
+
+  async function createQuickSession(createdBy: string): Promise<string> {
+    const session = await sessionManager.createSession({ type: 'quick', locationPath: '/test/path' }, { createdBy });
+    return session.id;
+  }
+
+  it('POST: happy path raises the flag (200, repository row updated)', async () => {
+    await setupCommon({ sharedEnabled: false });
+    const sessionId = await createWorktreeSession(TEST_AUTH_USER.id);
+
+    const res = await app.request(`/api/sessions/${sessionId}/orchestrator-designation`, {
+      method: 'POST',
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ repositoryId: testRepositoryId, orchestratorSessionId: sessionId });
+
+    const repo = repositoryManager.getRepository(testRepositoryId);
+    expect(repo?.orchestratorSessionId).toBe(sessionId);
+  });
+
+  it('DELETE: happy path clears the flag while this session still holds it (cleared: true)', async () => {
+    await setupCommon({ sharedEnabled: false });
+    const sessionId = await createWorktreeSession(TEST_AUTH_USER.id);
+    await repositoryManager.setOrchestratorSession(testRepositoryId, sessionId);
+
+    const res = await app.request(`/api/sessions/${sessionId}/orchestrator-designation`, {
+      method: 'DELETE',
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ repositoryId: testRepositoryId, cleared: true });
+
+    const repo = repositoryManager.getRepository(testRepositoryId);
+    expect(repo?.orchestratorSessionId).toBeNull();
+  });
+
+  it('DELETE: stale clear from a session that no longer holds the flag (cleared: false, no-op)', async () => {
+    await setupCommon({ sharedEnabled: false });
+    const holderSessionId = await createWorktreeSession(TEST_AUTH_USER.id);
+    const staleSessionId = await createWorktreeSession(TEST_AUTH_USER.id);
+    await repositoryManager.setOrchestratorSession(testRepositoryId, holderSessionId);
+
+    const res = await app.request(`/api/sessions/${staleSessionId}/orchestrator-designation`, {
+      method: 'DELETE',
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ repositoryId: testRepositoryId, cleared: false });
+
+    // The flag must still point at the original holder -- untouched by the
+    // stale clear attempt.
+    const repo = repositoryManager.getRepository(testRepositoryId);
+    expect(repo?.orchestratorSessionId).toBe(holderSessionId);
+  });
+
+  it('POST: 400 for a session with no repositoryId (quick session)', async () => {
+    await setupCommon({ sharedEnabled: false });
+    const sessionId = await createQuickSession(TEST_AUTH_USER.id);
+
+    const res = await app.request(`/api/sessions/${sessionId}/orchestrator-designation`, {
+      method: 'POST',
+    });
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toContain('worktree session');
+  });
+
+  it('DELETE: 400 for a session with no repositoryId (quick session)', async () => {
+    await setupCommon({ sharedEnabled: false });
+    const sessionId = await createQuickSession(TEST_AUTH_USER.id);
+
+    const res = await app.request(`/api/sessions/${sessionId}/orchestrator-designation`, {
+      method: 'DELETE',
+    });
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toContain('worktree session');
+  });
+
+  it('POST: 404 for an unknown session id', async () => {
+    await setupCommon({ sharedEnabled: false });
+
+    const res = await app.request('/api/sessions/does-not-exist/orchestrator-designation', {
+      method: 'POST',
+    });
+    expect(res.status).toBe(404);
+  });
+
+  it('DELETE: 404 for an unknown session id', async () => {
+    await setupCommon({ sharedEnabled: false });
+
+    const res = await app.request('/api/sessions/does-not-exist/orchestrator-designation', {
+      method: 'DELETE',
+    });
+    expect(res.status).toBe(404);
+  });
+
+  it('POST: multi-user non-owner, non-shared -> 403', async () => {
+    await setupCommon({ sharedEnabled: false });
+    const sessionId = await createWorktreeSession('someone-else-id');
+
+    const originalAuthMode = serverConfig.AUTH_MODE;
+    (serverConfig as { AUTH_MODE: string }).AUTH_MODE = 'multi-user';
+    try {
+      const res = await app.request(`/api/sessions/${sessionId}/orchestrator-designation`, {
+        method: 'POST',
+      });
+      expect(res.status).toBe(403);
+    } finally {
+      (serverConfig as { AUTH_MODE: string }).AUTH_MODE = originalAuthMode;
+    }
+  });
+
+  it('DELETE: multi-user non-owner, non-shared -> 403', async () => {
+    await setupCommon({ sharedEnabled: false });
+    const sessionId = await createWorktreeSession('someone-else-id');
+
+    const originalAuthMode = serverConfig.AUTH_MODE;
+    (serverConfig as { AUTH_MODE: string }).AUTH_MODE = 'multi-user';
+    try {
+      const res = await app.request(`/api/sessions/${sessionId}/orchestrator-designation`, {
+        method: 'DELETE',
+      });
+      expect(res.status).toBe(403);
+    } finally {
+      (serverConfig as { AUTH_MODE: string }).AUTH_MODE = originalAuthMode;
+    }
   });
 });
