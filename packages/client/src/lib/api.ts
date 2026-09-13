@@ -327,6 +327,42 @@ export async function resumeSession(sessionId: string): Promise<Session> {
 }
 
 
+export interface OrchestratorDesignationResponse {
+  repositoryId: string;
+  orchestratorSessionId: string;
+}
+
+/**
+ * Raise this session's repository's Orchestrator-designation flag (making
+ * this session the designated Orchestrator for its repository).
+ * Only valid for worktree sessions.
+ */
+export async function raiseOrchestratorDesignation(sessionId: string): Promise<OrchestratorDesignationResponse> {
+  const res = await api.sessions[':id']['orchestrator-designation'].$post({ param: { id: sessionId } });
+  if (!res.ok) {
+    await handleApiError(res, 'Failed to set Orchestrator designation');
+  }
+  return res.json() as Promise<OrchestratorDesignationResponse>;
+}
+
+export interface ClearOrchestratorDesignationResponse {
+  repositoryId: string;
+  /** `false` is a normal no-op response (another session already superseded this one), not an error. */
+  cleared: boolean;
+}
+
+/**
+ * Clear this session's repository's Orchestrator-designation flag, but only
+ * if this session currently holds it.
+ */
+export async function clearOrchestratorDesignation(sessionId: string): Promise<ClearOrchestratorDesignationResponse> {
+  const res = await api.sessions[':id']['orchestrator-designation'].$delete({ param: { id: sessionId } });
+  if (!res.ok) {
+    await handleApiError(res, 'Failed to clear Orchestrator designation');
+  }
+  return res.json() as Promise<ClearOrchestratorDesignationResponse>;
+}
+
 export interface UpdateSessionMetadataRequest {
   title?: string;
 }

@@ -758,6 +758,36 @@ describe('useAppWsEvent', () => {
 
       expect(onBookmarkDeleted).toHaveBeenCalledWith('session-1', 'bookmark-1');
     });
+
+    it('should call onOrchestratorDesignationChanged for orchestrator-designation-changed message', () => {
+      const onOrchestratorDesignationChanged = mock(() => {});
+      renderHook(() => useAppWsEvent({ onOrchestratorDesignationChanged }));
+
+      const ws = MockWebSocket.getLastInstance();
+      act(() => {
+        ws?.simulateOpen();
+        ws?.simulateMessage(
+          JSON.stringify({ type: 'orchestrator-designation-changed', repositoryId: 'repo-1', sessionId: 'session-1' })
+        );
+      });
+
+      expect(onOrchestratorDesignationChanged).toHaveBeenCalledWith('repo-1', 'session-1');
+    });
+
+    it('should call onOrchestratorDesignationChanged with null sessionId when cleared', () => {
+      const onOrchestratorDesignationChanged = mock(() => {});
+      renderHook(() => useAppWsEvent({ onOrchestratorDesignationChanged }));
+
+      const ws = MockWebSocket.getLastInstance();
+      act(() => {
+        ws?.simulateOpen();
+        ws?.simulateMessage(
+          JSON.stringify({ type: 'orchestrator-designation-changed', repositoryId: 'repo-1', sessionId: null })
+        );
+      });
+
+      expect(onOrchestratorDesignationChanged).toHaveBeenCalledWith('repo-1', null);
+    });
   });
 
   // Note: Reconnection logic is now handled by the singleton module (app-websocket.ts)

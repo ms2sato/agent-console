@@ -44,6 +44,7 @@ import {
   setupTestEnvironment,
   cleanupTestEnvironment,
   getTestConfigDir,
+  createTestApp,
 } from '@agent-console/server/src/__tests__/test-utils';
 import { setupMemfs } from '@agent-console/server/src/__tests__/utils/mock-fs-helper';
 import { createTestContext, shutdownAppContext } from '@agent-console/server/src/app-context';
@@ -277,5 +278,209 @@ describe('Client-Server Boundary: Repository orchestrator designation (Issue #16
       expect('sessionId' in clearParsed.output).toBe(true);
       expect(clearParsed.output.sessionId).toBeNull();
     });
+  });
+});
+
+/**
+ * REST-boundary tests for the raise/clear routes themselves (Issue #1643
+ * Part 2). The describe block above already guards the WIRE-SCHEMA round
+ * trip (RepositoryManager -> JSON -> AppServerMessageSchema.safeParse) for
+ * the fields these routes mutate; it never drives the REST routes
+ * (`POST` / `DELETE /api/sessions/:id/orchestrator-designation`) themselves.
+ * This block closes that gap by driving the real Hono app the same way
+ * `restart-all-agents-boundary.test.ts` does: `createTestApp(ctx)` +
+ * `app.request(...)`, asserting both the response body AND (via a real
+ * `ctx.repositoryManager.getRepository(...)` re-read) the server-side state
+ * change the response claims happened.
+ *
+ * There is no valibot schema on this route (same genre as
+ * `restart-all-agents-boundary.test.ts` -- a REST JSON response, not a
+ * WebSocket app-message), so the client's hand-written
+ * `raiseOrchestratorDesignation` response interface
+ * (`packages/client/src/lib/api.ts`) is mirrored here as a local TS
+ * interface, kept in sync by convention rather than import (packages/client
+ * is a Vite app, not a library package importable from packages/integration).
+ */
+interface RaiseOrchestratorDesignationResult {
+  repositoryId: string;
+  orchestratorSessionId: string;
+}
+
+describe('REST /api/sessions/:id/orchestrator-designation', () => {
+  let ctx: AppContext;
+
+  beforeEach(async () => {
+    await setupTestEnvironment();
+    ctx = await createTestContext();
+
+    setupMemfs({
+      [`${getTestConfigDir()}/.keep`]: '',
+      [`${TEST_REPO_PATH_A}/.git/HEAD`]: 'ref: refs/heads/main',
+      [`${TEST_REPO_PATH_B}/.git/HEAD`]: 'ref: refs/heads/main',
+    });
+  });
+
+  afterEach(async () => {
+    await shutdownAppContext(ctx);
+    await cleanupTestEnvironment();
+  });
+
+  it('raises the flag: 200 + { repositoryId, orchestratorSessionId }, and the repository actually changes server-side', async () => {
+    const owner = await ctx.userRepository.upsertByOsUid(54321, 'owner', '/home/owner');
+    const repository = await ctx.repositoryManager.registerRepository(TEST_REPO_PATH_A);
+    const session = await ctx.sessionManager.createSession(
+      {
+        type: 'worktree',
+        locationPath: TEST_REPO_PATH_A,
+        repositoryId: repository.id,
+        worktreeId: 'main',
+        agentId: 'claude-code-builtin',
+      },
+      { createdBy: owner.id },
+    );
+
+    const app = await createTestApp(ctx);
+    const res = await app.request(`/api/sessions/${session.id}/orchestrator-designation`, {
+      method: 'POST',
+    });
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as RaiseOrchestratorDesignationResult;
+    expect(body).toEqual({ repositoryId: repository.id, orchestratorSessionId: session.id });
+
+    // Not just a plausible-looking response: re-read the repository through
+    // the real manager to confirm the designation actually moved.
+    const reread = ctx.repositoryManager.getRepository(repository.id);
+    expect(reread?.orchestratorSessionId).toBe(session.id);
+  });
+
+  it('clears the flag when the caller is the current holder: 200 + { repositoryId, cleared: true }, repository reverts to null', async () => {
+    const owner = await ctx.userRepository.upsertByOsUid(54321, 'owner', '/home/owner');
+    const repository = await ctx.repositoryManager.registerRepository(TEST_REPO_PATH_A);
+    const session = await ctx.sessionManager.createSession(
+      {
+        type: 'worktree',
+        locationPath: TEST_REPO_PATH_A,
+        repositoryId: repository.id,
+        worktreeId: 'main',
+        agentId: 'claude-code-builtin',
+      },
+      { createdBy: owner.id },
+    );
+
+    const app = await createTestApp(ctx);
+    const raiseRes = await app.request(`/api/sessions/${session.id}/orchestrator-designation`, {
+      method: 'POST',
+    });
+    expect(raiseRes.status).toBe(200);
+
+    const clearRes = await app.request(`/api/sessions/${session.id}/orchestrator-designation`, {
+      method: 'DELETE',
+    });
+    expect(clearRes.status).toBe(200);
+    const body = (await clearRes.json()) as { repositoryId: string; cleared: boolean };
+    expect(body).toEqual({ repositoryId: repository.id, cleared: true });
+
+    const reread = ctx.repositoryManager.getRepository(repository.id);
+    expect(reread?.orchestratorSessionId).toBeNull();
+  });
+
+  it('stale clear from a non-holder session is a no-op: 200 + { cleared: false }, the flag is unmoved', async () => {
+    const owner = await ctx.userRepository.upsertByOsUid(54321, 'owner', '/home/owner');
+    const repository = await ctx.repositoryManager.registerRepository(TEST_REPO_PATH_A);
+    const sessionA = await ctx.sessionManager.createSession(
+      {
+        type: 'worktree',
+        locationPath: TEST_REPO_PATH_A,
+        repositoryId: repository.id,
+        worktreeId: 'main',
+        agentId: 'claude-code-builtin',
+      },
+      { createdBy: owner.id },
+    );
+    const sessionB = await ctx.sessionManager.createSession(
+      {
+        type: 'worktree',
+        locationPath: TEST_REPO_PATH_A,
+        repositoryId: repository.id,
+        worktreeId: 'feature',
+        agentId: 'claude-code-builtin',
+      },
+      { createdBy: owner.id },
+    );
+
+    const app = await createTestApp(ctx);
+
+    // Session A raises the flag; it never passes through session B.
+    const raiseRes = await app.request(`/api/sessions/${sessionA.id}/orchestrator-designation`, {
+      method: 'POST',
+    });
+    expect(raiseRes.status).toBe(200);
+
+    // Session B (never held the flag) attempts to clear it.
+    const clearRes = await app.request(`/api/sessions/${sessionB.id}/orchestrator-designation`, {
+      method: 'DELETE',
+    });
+    expect(clearRes.status).toBe(200);
+    const body = (await clearRes.json()) as { repositoryId: string; cleared: boolean };
+    expect(body).toEqual({ repositoryId: repository.id, cleared: false });
+
+    // The flag must not have moved or cleared -- still session A's.
+    const reread = ctx.repositoryManager.getRepository(repository.id);
+    expect(reread?.orchestratorSessionId).toBe(sessionA.id);
+  });
+
+  it('rejects a non-worktree (quick) session with 400', async () => {
+    const owner = await ctx.userRepository.upsertByOsUid(54321, 'owner', '/home/owner');
+    const session = await ctx.sessionManager.createSession(
+      { type: 'quick', locationPath: '/test/path', agentId: 'claude-code-builtin' },
+      { createdBy: owner.id },
+    );
+
+    const app = await createTestApp(ctx);
+    const res = await app.request(`/api/sessions/${session.id}/orchestrator-designation`, {
+      method: 'POST',
+    });
+
+    expect(res.status).toBe(400);
+  });
+
+  it('returns 404 for an unknown session id', async () => {
+    const app = await createTestApp(ctx);
+    const res = await app.request('/api/sessions/no-such-session-id/orchestrator-designation', {
+      method: 'POST',
+    });
+
+    expect(res.status).toBe(404);
+  });
+
+  it('response shape survives a raw JSON round-trip (no valibot schema guards this route)', async () => {
+    const owner = await ctx.userRepository.upsertByOsUid(54321, 'owner', '/home/owner');
+    const repository = await ctx.repositoryManager.registerRepository(TEST_REPO_PATH_A);
+    const session = await ctx.sessionManager.createSession(
+      {
+        type: 'worktree',
+        locationPath: TEST_REPO_PATH_A,
+        repositoryId: repository.id,
+        worktreeId: 'main',
+        agentId: 'claude-code-builtin',
+      },
+      { createdBy: owner.id },
+    );
+
+    const app = await createTestApp(ctx);
+    const res = await app.request(`/api/sessions/${session.id}/orchestrator-designation`, {
+      method: 'POST',
+    });
+    expect(res.status).toBe(200);
+
+    // Round-trip through raw JSON (mirrors the actual HTTP wire step) rather
+    // than trusting the already-parsed `res.json()` shape.
+    const roundTripped = JSON.parse(JSON.stringify(await res.json())) as Record<string, unknown>;
+
+    expect(typeof roundTripped.repositoryId).toBe('string');
+    expect(roundTripped.repositoryId).toBe(repository.id);
+    expect(typeof roundTripped.orchestratorSessionId).toBe('string');
+    expect(roundTripped.orchestratorSessionId).toBe(session.id);
   });
 });

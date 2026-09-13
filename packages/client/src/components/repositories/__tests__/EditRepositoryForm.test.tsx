@@ -160,7 +160,7 @@ describe('EditRepositoryForm', () => {
 
       // Verify API was called with correct data
       const requestBody = getRepositoryUpdateRequestBody();
-      expect(requestBody).toEqual({ setupCommand: 'bun install', cleanupCommand: '', envVars: '', description: '', defaultAgentId: null });
+      expect(requestBody).toEqual({ setupCommand: 'bun install', cleanupCommand: '', envVars: '', issueTriggerLabels: '', description: '', defaultAgentId: null });
     });
 
     it('should submit with empty string (clears command)', async () => {
@@ -188,7 +188,7 @@ describe('EditRepositoryForm', () => {
 
       // Verify API was called with empty string (server will convert to null)
       const requestBody = getRepositoryUpdateRequestBody();
-      expect(requestBody).toEqual({ setupCommand: '', cleanupCommand: '', envVars: '', description: '', defaultAgentId: null });
+      expect(requestBody).toEqual({ setupCommand: '', cleanupCommand: '', envVars: '', issueTriggerLabels: '', description: '', defaultAgentId: null });
     });
 
     it('should trim whitespace from setupCommand', async () => {
@@ -215,7 +215,7 @@ describe('EditRepositoryForm', () => {
 
       // Verify API was called with trimmed value
       const requestBody = getRepositoryUpdateRequestBody();
-      expect(requestBody).toEqual({ setupCommand: 'bun install', cleanupCommand: '', envVars: '', description: '', defaultAgentId: null });
+      expect(requestBody).toEqual({ setupCommand: 'bun install', cleanupCommand: '', envVars: '', issueTriggerLabels: '', description: '', defaultAgentId: null });
     });
   });
 
@@ -702,6 +702,65 @@ describe('EditRepositoryForm', () => {
       // Verify API was called with cleanupCommand
       const requestBody = getRepositoryUpdateRequestBody();
       expect(requestBody.cleanupCommand).toBe('docker compose down');
+    });
+  });
+
+  describe('issue trigger labels field', () => {
+    it('should render issue trigger labels label', () => {
+      setupMockFetch(createMockResponse({}));
+
+      renderEditRepositoryForm();
+
+      expect(screen.getByText('Issue Trigger Labels (optional)')).toBeTruthy();
+    });
+
+    it('should pre-populate issueTriggerLabels from repository', () => {
+      setupMockFetch(createMockResponse({}));
+
+      const repository = createTestRepository({ issueTriggerLabels: 'agent-console, needs-orchestrator' });
+
+      renderEditRepositoryForm({ repository });
+
+      const labelsInput = screen.getByPlaceholderText(/agent-console, needs-orchestrator/) as HTMLInputElement;
+      expect(labelsInput.value).toBe('agent-console, needs-orchestrator');
+    });
+
+    it('should handle null issueTriggerLabels gracefully', () => {
+      setupMockFetch(createMockResponse({}));
+
+      const repository = createTestRepository({ issueTriggerLabels: null });
+
+      renderEditRepositoryForm({ repository });
+
+      const labelsInput = screen.getByPlaceholderText(/agent-console, needs-orchestrator/) as HTMLInputElement;
+      expect(labelsInput.value).toBe('');
+    });
+
+    it('should include issueTriggerLabels in form submission', async () => {
+      const user = userEvent.setup();
+      const repository = createTestRepository();
+      setupMockFetch(
+        createMockResponse({ repository: { ...repository, issueTriggerLabels: 'agent-console' } })
+      );
+
+      const { props } = renderEditRepositoryForm({ repository });
+
+      // Fill in issue trigger labels
+      const labelsInput = screen.getByPlaceholderText(/agent-console, needs-orchestrator/);
+      await user.type(labelsInput, 'agent-console');
+
+      // Submit form
+      const submitButton = screen.getByText('Save Changes');
+      await user.click(submitButton);
+
+      // Wait for mutation to complete
+      await waitFor(() => {
+        expect(props.onSuccess).toHaveBeenCalledTimes(1);
+      });
+
+      // Verify API was called with issueTriggerLabels
+      const requestBody = getRepositoryUpdateRequestBody();
+      expect(requestBody.issueTriggerLabels).toBe('agent-console');
     });
   });
 

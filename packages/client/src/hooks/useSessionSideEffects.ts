@@ -1,11 +1,11 @@
 import { useCallback, useEffect } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
-import type { Session, AgentActivityState, WorkerActivityInfo, WorktreeDeletionCompletedPayload } from '@agent-console/shared';
+import type { Session, AgentActivityState, WorkerActivityInfo, WorktreeDeletionCompletedPayload, Repository } from '@agent-console/shared';
 import type { UseWorktreeCreationTasksReturn } from './useWorktreeCreationTasks';
 import type { UseWorktreeDeletionTasksReturn } from './useWorktreeDeletionTasks';
 import type { UseSessionStopTasksReturn } from './useSessionStopTasks';
 import { useAppWsEvent } from './useAppWs';
-import { worktreeKeys, sessionKeys } from '../lib/query-keys';
+import { worktreeKeys, sessionKeys, repositoryKeys } from '../lib/query-keys';
 import { disconnectSession } from '../lib/worker-websocket';
 import { clearDraftsForSession } from './useDraftMessage';
 import { updateFavicon, hasAnyAskingWorker } from '../lib/favicon-manager';
@@ -135,6 +135,67 @@ export function useSessionSideEffects({
     handleWorkerActivity(sessionId, workerId, activityState);
   }, [handleWorkerActivity]);
 
+  // Targeted, immediate cache patch for a repository's designated-Orchestrator
+  // session change. This is a second, independent, always-mounted listener --
+  // separate from routes/index.tsx's onRepositoryUpdated handler, which is
+  // only mounted on the dashboard route. ActiveSessionsSidebar (which reads
+  // Repository.orchestratorSessionId to render the flag control) is mounted
+  // unconditionally from __root.tsx alongside this hook, so this listener
+  // must not depend on which route is currently active. It is fine and
+  // harmless for both broadcasts to patch the same cache key on the same
+  // change -- setQueryData is idempotent per-call.
+  const handleOrchestratorDesignationChanged = useCallback((repositoryId: string, sessionId: string | null) => {
+    const queryKey = repositoryKeys.all();
+    // No cached data to patch yet -- most likely an in-flight fetch that has
+    // not resolved. A single `invalidateQueries` (or `refetchQueries`) call
+    // is not enough here: TanStack Query's `Query.fetch()` dedupes by
+    // reusing the ALREADY-IN-FLIGHT request's promise whenever
+    // `state.data === undefined` (this only changes once data has been
+    // fetched at least once), regardless of which QueryClient method
+    // triggered it or its `cancelRefetch` option. So one call just attaches
+    // to that same in-flight request and can still resolve with its
+    // pre-update snapshot, leaving the cache stale for up to the query's
+    // staleTime with no further signal to correct it.
+    // Invalidate first (awaiting that in-flight request, if any), then
+    // explicitly refetch once it has settled -- by then `fetchStatus` is
+    // back to idle, so this second call is a genuinely fresh request that
+    // reflects the change.
+    const invalidateThenRefetch = () => {
+      void queryClient.invalidateQueries({ queryKey }).then(() =>
+        queryClient.refetchQueries({ queryKey, type: 'all' })
+      );
+    };
+
+    const cached = queryClient.getQueryData<{ repositories: Repository[] }>(queryKey);
+    if (!cached) {
+      invalidateThenRefetch();
+      return;
+    }
+    // Cache is populated, but the repository this event names isn't in it yet
+    // (e.g. it was registered after the cache was last populated). A direct
+    // `setQueryData` patch would silently no-op -- `.map()` finds no matching
+    // `r.id` and writes back the same list -- losing the designation change
+    // for that repository with no future correction. Unlike the no-cache
+    // case above, this query IS populated and (in production) actively
+    // observed, so a single `refetchQueries` call is sufficient -- there's
+    // no in-flight-fetch race to guard against here, and chaining
+    // `invalidateThenRefetch()` would fire a redundant second request
+    // (invalidate already triggers a refetch of an active query on its own).
+    const matched = cached.repositories.some((r) => r.id === repositoryId);
+    if (!matched) {
+      void queryClient.refetchQueries({ queryKey, type: 'all' });
+      return;
+    }
+    queryClient.setQueryData<{ repositories: Repository[] } | undefined>(queryKey, (old) => {
+      if (!old) return old;
+      return {
+        repositories: old.repositories.map((r) =>
+          r.id === repositoryId ? { ...r, orchestratorSessionId: sessionId } : r
+        ),
+      };
+    });
+  }, [queryClient]);
+
   // Subscribe to app WebSocket events for real-time session updates
   useAppWsEvent({
     onSessionsSync: handleSessionsSyncWithValidation,
@@ -149,6 +210,7 @@ export function useSessionSideEffects({
     onWorktreeCreationFailed: worktreeCreationTasks.handleWorktreeCreationFailed,
     onWorktreeDeletionCompleted: handleWorktreeDeletionCompleted,
     onWorktreeDeletionFailed: worktreeDeletionTasks.handleWorktreeDeletionFailed,
+    onOrchestratorDesignationChanged: handleOrchestratorDesignationChanged,
   });
 
   // Update favicon based on worker activity states

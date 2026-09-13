@@ -10,7 +10,49 @@ import {
 } from '../../../hooks/useSidebarState';
 import type { SessionWithActivity } from '../../../hooks/useActiveSessionsWithActivity';
 import { setAuthMode, setCurrentUser, setSharedAccountsAvailable, _reset as resetAuth } from '../../../lib/auth';
-import type { AgentActivityState, WorktreeSession, QuickSession, Session } from '@agent-console/shared';
+import type { AgentActivityState, WorktreeSession, QuickSession, Session, Repository } from '@agent-console/shared';
+
+// --- Global fetch mock (Issue #1643 PR-2) ---
+//
+// ActiveSessionsSidebar now always issues a `GET /api/repositories` query
+// (to know each repository's designated-Orchestrator session for the flag
+// control), so every test in this file needs a fetch stub even when it does
+// not itself exercise the flag control. `repositoriesResponse` lets
+// individual tests configure the repositories list; `orchestratorDesignationCalls`
+// records POST/DELETE calls to the raise/clear endpoint so click-behavior
+// tests can assert on them without their own bespoke fetch mock.
+const originalGlobalFetch = globalThis.fetch;
+let repositoriesResponse: { repositories: Repository[] } = { repositories: [] };
+let orchestratorDesignationCalls: Array<{ method: string; sessionId: string }> = [];
+
+function installGlobalFetchMock() {
+  globalThis.fetch = Object.assign(
+    mock(async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const url = input instanceof Request ? input.url : String(input);
+      const method = (input instanceof Request ? input.method : init?.method) ?? 'GET';
+      if (url.includes('/api/repositories') && method === 'GET') {
+        return new Response(JSON.stringify(repositoriesResponse), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      const orchestratorMatch = url.match(/\/api\/sessions\/([^/]+)\/orchestrator-designation$/);
+      if (orchestratorMatch && (method === 'POST' || method === 'DELETE')) {
+        orchestratorDesignationCalls.push({ method, sessionId: orchestratorMatch[1] });
+        const body =
+          method === 'POST'
+            ? { repositoryId: 'repo-1', orchestratorSessionId: orchestratorMatch[1] }
+            : { repositoryId: 'repo-1', cleared: true };
+        return new Response(JSON.stringify(body), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      return new Response('{}', { status: 200, headers: { 'content-type': 'application/json' } });
+    }),
+    { preconnect: () => {} }
+  ) as typeof fetch;
+}
 
 // Helper to create mock worktree session
 function createMockWorktreeSession(
@@ -77,11 +119,15 @@ describe('ActiveSessionsSidebar', () => {
     onToggle = mock(() => {});
     onWidthChange = mock(() => {});
     resetAuth();
+    repositoriesResponse = { repositories: [] };
+    orchestratorDesignationCalls = [];
+    installGlobalFetchMock();
   });
 
   afterEach(() => {
     cleanup();
     resetAuth();
+    globalThis.fetch = originalGlobalFetch;
   });
 
   describe('Rendering', () => {
@@ -1460,5 +1506,267 @@ describe('ActiveSessionsSidebar', () => {
       expect(screen.getByText('No active sessions')).toBeTruthy();
       expect(document.querySelectorAll('[aria-controls^="session-group-"]')).toHaveLength(0);
     });
+  });
+});
+
+describe('Orchestrator flag control (Issue #1643 PR-2)', () => {
+  let onToggle: ReturnType<typeof mock>;
+  let onWidthChange: ReturnType<typeof mock>;
+
+  const defaultProps = () => ({
+    collapsed: false,
+    onToggle,
+    sessions: [] as SessionWithActivity[],
+    width: SIDEBAR_DEFAULT_WIDTH,
+    onWidthChange,
+  });
+
+  beforeEach(() => {
+    onToggle = mock(() => {});
+    onWidthChange = mock(() => {});
+    resetAuth();
+    repositoriesResponse = { repositories: [] };
+    orchestratorDesignationCalls = [];
+    installGlobalFetchMock();
+  });
+
+  afterEach(() => {
+    cleanup();
+    resetAuth();
+    globalThis.fetch = originalGlobalFetch;
+  });
+
+  function repository(overrides: Partial<Repository> = {}): Repository {
+    return {
+      id: 'repo-1',
+      name: 'repo-1',
+      path: '/path/to/repo-1',
+      createdAt: new Date().toISOString(),
+      orchestratorSessionId: null,
+      ...overrides,
+    } as Repository;
+  }
+
+  // AC invariant: a nested <button> is invalid HTML and explicitly ruled out.
+  // This must hold across the whole rendered sidebar, not only the flag
+  // control's own row, since a regression could just as easily reintroduce
+  // nesting elsewhere.
+  it('never nests a <button> inside another <button> anywhere in the sidebar', async () => {
+    repositoriesResponse = { repositories: [repository({ id: 'repo-a', orchestratorSessionId: 'session-a' })] };
+    const sessions = [
+      createSessionWithActivity(
+        createMockWorktreeSession({ id: 'session-a', repositoryId: 'repo-a', repositoryName: 'repo-a' }),
+        'idle'
+      ),
+      createSessionWithActivity(
+        createMockQuickSession({ id: 'quick-1' }),
+        'idle'
+      ),
+    ];
+
+    const { container } = await renderWithRouter(
+      <ActiveSessionsSidebar {...defaultProps()} sessions={sessions} />
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId('orchestrator-flag-session-a')).toBeTruthy();
+    });
+
+    expect(container.querySelectorAll('button button')).toHaveLength(0);
+  });
+
+  it('only renders the flag control for worktree sessions, never quick sessions', async () => {
+    const sessions = [
+      createSessionWithActivity(createMockQuickSession({ id: 'quick-1' }), 'idle'),
+    ];
+
+    await renderWithRouter(<ActiveSessionsSidebar {...defaultProps()} sessions={sessions} />);
+
+    expect(document.querySelectorAll('[data-orchestrator-flag]')).toHaveLength(0);
+  });
+
+  it('renders exactly one lit flag for the repository holding the designation, and none lit otherwise', async () => {
+    repositoriesResponse = { repositories: [repository({ id: 'repo-a', orchestratorSessionId: 'session-a' })] };
+    const sessions = [
+      createSessionWithActivity(
+        createMockWorktreeSession({ id: 'session-a', repositoryId: 'repo-a', repositoryName: 'repo-a' }),
+        'idle'
+      ),
+      createSessionWithActivity(
+        createMockWorktreeSession({ id: 'session-b', repositoryId: 'repo-a', repositoryName: 'repo-a' }),
+        'idle'
+      ),
+    ];
+
+    await renderWithRouter(<ActiveSessionsSidebar {...defaultProps()} sessions={sessions} />);
+
+    await waitFor(() => {
+      const flags = Array.from(document.querySelectorAll('[data-orchestrator-flag]'));
+      expect(flags).toHaveLength(2);
+      const lit = flags.filter((el) => el.getAttribute('data-orchestrator-flag-lit') === 'true');
+      expect(lit).toHaveLength(1);
+      expect(lit[0]).toBe(screen.getByTestId('orchestrator-flag-session-a'));
+    });
+  });
+
+  it('renders zero lit flags when the repository has no designation', async () => {
+    repositoriesResponse = { repositories: [repository({ id: 'repo-a', orchestratorSessionId: null })] };
+    const sessions = [
+      createSessionWithActivity(
+        createMockWorktreeSession({ id: 'session-a', repositoryId: 'repo-a', repositoryName: 'repo-a' }),
+        'idle'
+      ),
+    ];
+
+    await renderWithRouter(<ActiveSessionsSidebar {...defaultProps()} sessions={sessions} />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('orchestrator-flag-session-a')).toBeTruthy();
+    });
+    const lit = document.querySelectorAll('[data-orchestrator-flag-lit="true"]');
+    expect(lit).toHaveLength(0);
+  });
+
+  it('raises the designation when an unlit flag is clicked, without triggering row navigation', async () => {
+    repositoriesResponse = { repositories: [repository({ id: 'repo-a', orchestratorSessionId: null })] };
+    const sessions = [
+      createSessionWithActivity(
+        createMockWorktreeSession({ id: 'session-a', repositoryId: 'repo-a', repositoryName: 'repo-a' }),
+        'idle'
+      ),
+    ];
+
+    const { router } = await renderWithRouter(
+      <ActiveSessionsSidebar {...defaultProps()} sessions={sessions} />
+    );
+
+    const flagButton = await waitFor(() => screen.getByTestId('orchestrator-flag-session-a'));
+    fireEvent.click(flagButton);
+
+    await waitFor(() => {
+      expect(orchestratorDesignationCalls).toContainEqual({ method: 'POST', sessionId: 'session-a' });
+    });
+    // Row navigation must not have fired -- the click must not bubble to
+    // the row's own onClick.
+    expect(router.state.location.pathname).toBe('/');
+  });
+
+  it('clears the designation when a lit flag is clicked, without triggering row navigation', async () => {
+    repositoriesResponse = { repositories: [repository({ id: 'repo-a', orchestratorSessionId: 'session-a' })] };
+    const sessions = [
+      createSessionWithActivity(
+        createMockWorktreeSession({ id: 'session-a', repositoryId: 'repo-a', repositoryName: 'repo-a' }),
+        'idle'
+      ),
+    ];
+
+    const { router } = await renderWithRouter(
+      <ActiveSessionsSidebar {...defaultProps()} sessions={sessions} />
+    );
+
+    const flagButton = await waitFor(() => {
+      const el = screen.getByTestId('orchestrator-flag-session-a');
+      expect(el.getAttribute('data-orchestrator-flag-lit')).toBe('true');
+      return el;
+    });
+    fireEvent.click(flagButton);
+
+    await waitFor(() => {
+      expect(orchestratorDesignationCalls).toContainEqual({ method: 'DELETE', sessionId: 'session-a' });
+    });
+    expect(router.state.location.pathname).toBe('/');
+  });
+
+  // CodeRabbit finding on PR #1657: a failed raise/clear request used to only
+  // re-enable the button, with no visible feedback (e.g. a 403 for a
+  // non-owner's session in multi-user `all` mode, or a network error).
+  it('shows a transient, visible error message when raising the designation fails', async () => {
+    repositoriesResponse = { repositories: [repository({ id: 'repo-a', orchestratorSessionId: null })] };
+    globalThis.fetch = Object.assign(
+      mock(async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+        const url = input instanceof Request ? input.url : String(input);
+        const method = (input instanceof Request ? input.method : init?.method) ?? 'GET';
+        if (url.includes('/api/repositories') && method === 'GET') {
+          return new Response(JSON.stringify(repositoriesResponse), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          });
+        }
+        if (url.match(/\/api\/sessions\/([^/]+)\/orchestrator-designation$/) && method === 'POST') {
+          return new Response(JSON.stringify({ error: 'Not authorized to designate this session' }), {
+            status: 403,
+            headers: { 'content-type': 'application/json' },
+          });
+        }
+        return new Response('{}', { status: 200, headers: { 'content-type': 'application/json' } });
+      }),
+      { preconnect: () => {} }
+    ) as typeof fetch;
+
+    const sessions = [
+      createSessionWithActivity(
+        createMockWorktreeSession({ id: 'session-a', repositoryId: 'repo-a', repositoryName: 'repo-a' }),
+        'idle'
+      ),
+    ];
+
+    const { router } = await renderWithRouter(
+      <ActiveSessionsSidebar {...defaultProps()} sessions={sessions} />
+    );
+
+    const flagButton = await waitFor(() => screen.getByTestId('orchestrator-flag-session-a'));
+    fireEvent.click(flagButton);
+
+    await waitFor(() => {
+      expect(screen.getByText('Not authorized to designate this session')).toBeTruthy();
+    });
+    // The button itself must re-enable (not stuck pending) and row
+    // navigation must not have fired.
+    expect(flagButton.hasAttribute('disabled')).toBe(false);
+    expect(router.state.location.pathname).toBe('/');
+  });
+
+  it('shows a transient, visible error message when clearing the designation fails', async () => {
+    repositoriesResponse = { repositories: [repository({ id: 'repo-a', orchestratorSessionId: 'session-a' })] };
+    globalThis.fetch = Object.assign(
+      mock(async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+        const url = input instanceof Request ? input.url : String(input);
+        const method = (input instanceof Request ? input.method : init?.method) ?? 'GET';
+        if (url.includes('/api/repositories') && method === 'GET') {
+          return new Response(JSON.stringify(repositoriesResponse), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          });
+        }
+        if (url.match(/\/api\/sessions\/([^/]+)\/orchestrator-designation$/) && method === 'DELETE') {
+          return new Response(null, { status: 500 });
+        }
+        return new Response('{}', { status: 200, headers: { 'content-type': 'application/json' } });
+      }),
+      { preconnect: () => {} }
+    ) as typeof fetch;
+
+    const sessions = [
+      createSessionWithActivity(
+        createMockWorktreeSession({ id: 'session-a', repositoryId: 'repo-a', repositoryName: 'repo-a' }),
+        'idle'
+      ),
+    ];
+
+    await renderWithRouter(<ActiveSessionsSidebar {...defaultProps()} sessions={sessions} />);
+
+    const flagButton = await waitFor(() => {
+      const el = screen.getByTestId('orchestrator-flag-session-a');
+      expect(el.getAttribute('data-orchestrator-flag-lit')).toBe('true');
+      return el;
+    });
+    fireEvent.click(flagButton);
+
+    // No server-provided `error`/`message` field on a bare 500 -- falls back
+    // to `handleApiError`'s fallback message + status text.
+    await waitFor(() => {
+      expect(screen.getByText(/Failed to clear Orchestrator designation/)).toBeTruthy();
+    });
+    expect(flagButton.hasAttribute('disabled')).toBe(false);
   });
 });

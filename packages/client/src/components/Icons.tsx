@@ -349,3 +349,23 @@ export function BellIcon({ className = 'w-4 h-4' }: IconProps) {
     </svg>
   );
 }
+
+interface FlagIconProps extends IconProps {
+  /** Filled ("lit") vs outline ("unlit") rendering -- must stay visually
+   * distinct without relying on hover, since the lit state is persistent. */
+  filled?: boolean;
+}
+
+export function FlagIcon({ className = 'w-4 h-4', filled = false }: FlagIconProps) {
+  return (
+    <svg className={className} fill={filled ? 'currentColor' : 'none'} stroke="currentColor" viewBox="0 0 24 24">
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 3v18" />
+      <path
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        strokeWidth={2}
+        d="M5 4c2-1 4-1 6 0s4 1 6 0v6c-2 1-4 1-6 0s-4-1-6 0V4z"
+      />
+    </svg>
+  );
+}
