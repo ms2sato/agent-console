@@ -1,7 +1,9 @@
 import { describe, it, expect } from 'bun:test';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { dirname, resolve } from 'node:path';
+import { dirname, resolve, join } from 'node:path';
+import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const LIB = resolve(__dirname, '..', 'lib', 'setup-multiuser-checks.sh');
@@ -202,32 +204,55 @@ describe('setup-multiuser-checks: assert_readable_by_unprivileged_user (Issue #1
     // The production caller passes an empty string when it is already root
     // (no elevation prefix needed). Confirm an empty third argument does not
     // become a spurious empty command-name argument that breaks the
-    // invocation -- runuser itself is real here (not faked), so this
-    // exercises the no-elevation path against a path this test process can
-    // actually read without needing to actually switch to `nobody` (this
-    // process is not root, so a REAL `runuser -u nobody` would itself be
-    // refused -- which is exactly case 3/4 above, already covered with a
-    // fixture; this case only needs to prove the empty argument disappears
-    // from the command line rather than that runuser succeeds as non-root).
-    const r = runAssertReadableByUnprivilegedUser('/etc/hostname', 'unused hint', '');
-    expect(r.status).toBe(1);
-    expect(r.stderr).toContain('could not run');
-    // Measured (Architect review, PR #1697): quoting `${elevate}` as
-    // `"$elevate"` instead of leaving it unquoted is a mutation this
-    // assertion must catch, and a bare `toContain('could not run')` does
-    // NOT catch it -- both the correct (unquoted) and the mutant (quoted)
-    // shape produce empty stdout and a non-zero exit, so both fall into the
-    // same "could not run" branch. The two are distinguishable only by
-    // WHICH underlying mechanism produced that empty stdout: unquoted, the
-    // empty string vanishes and `runuser` itself runs and refuses with its
-    // own message; quoted, the empty string becomes a literal one-word
-    // command name and the shell reports its own "command not found"
-    // before `runuser` is ever reached. Both halves of this pin are
-    // required -- asserting only the positive half would still pass if a
-    // regression additionally started leaking "command not found" text
-    // alongside a coincidental "may not be used" substring from elsewhere.
-    expect(r.stderr).toContain('may not be used by non-root users');
-    expect(r.stderr).not.toContain('command not found');
+    // invocation.
+    //
+    // CodeRabbit review (PR #1697) on an earlier version of this test: it
+    // called the REAL `runuser` and asserted util-linux's own "may not be
+    // used by non-root users" diagnostic, which assumes the test process is
+    // non-root -- on a root CI runner, real `runuser -u nobody` SUCCEEDS
+    // (root can switch to any user), so the whole test would fail there
+    // regardless of whether the production code is correct. Fixed by
+    // shadowing `runuser` with a fake fixture (same pattern as the
+    // ELEVATE_* fixtures above, just resolved via PATH instead of passed as
+    // the `elevate` argument), independent of the test process's own UID
+    // and of util-linux's exact wording.
+    const fakeRunuserDir = mkdtempSync(join(tmpdir(), 'fake-runuser-'));
+    try {
+      writeFileSync(
+        join(fakeRunuserDir, 'runuser'),
+        '#!/usr/bin/env bash\necho "FAKE_RUNUSER_INVOKED argv=$*" >&2\nexit 1\n',
+        { mode: 0o755 },
+      );
+      const r = spawnSync(
+        LIB,
+        ['assert-readable-by-unprivileged-user', '/etc/hostname', 'unused hint', ''],
+        { encoding: 'utf-8', env: { ...process.env, PATH: `${fakeRunuserDir}:${process.env.PATH}` } },
+      );
+      expect(r.status).toBe(1);
+      expect(r.stderr).toContain('could not run');
+      // The fake only runs at all if PATH resolution found a command
+      // literally named `runuser` -- proving the empty `elevate` argument
+      // vanished via word-splitting rather than becoming argv[0] itself.
+      expect(r.stderr).toContain('FAKE_RUNUSER_INVOKED argv=-u nobody --');
+      // Measured (Architect review, PR #1697): quoting `${elevate}` as
+      // `"$elevate"` instead of leaving it unquoted is a mutation this
+      // assertion must catch, and a bare `toContain('could not run')` does
+      // NOT catch it -- both the correct (unquoted) and the mutant (quoted)
+      // shape produce empty stdout and a non-zero exit, so both fall into
+      // the same "could not run" branch. The two are distinguishable only
+      // by WHICH command actually ran: unquoted, the empty string vanishes
+      // and the fake `runuser` above runs and prints its marker; quoted,
+      // the empty string becomes a literal one-word command name and the
+      // shell reports its own "command not found" *before* anything named
+      // `runuser` is ever reached -- the fake is never invoked, so its
+      // marker is absent. Both halves of this pin are required -- asserting
+      // only the positive half would still pass if a regression
+      // additionally started leaking "command not found" text alongside a
+      // coincidental marker from elsewhere.
+      expect(r.stderr).not.toContain('command not found');
+    } finally {
+      rmSync(fakeRunuserDir, { recursive: true, force: true });
+    }
   });
 
   // Reach measurement (workflow.md "A check's existence is not its
