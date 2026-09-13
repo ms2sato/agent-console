@@ -10,6 +10,7 @@ import {
 } from '../../../hooks/useSidebarState';
 import type { SessionWithActivity } from '../../../hooks/useActiveSessionsWithActivity';
 import { setAuthMode, setCurrentUser, setSharedAccountsAvailable, _reset as resetAuth } from '../../../lib/auth';
+import { repositoryKeys } from '../../../lib/query-keys';
 import type { AgentActivityState, WorktreeSession, QuickSession, Session, Repository } from '@agent-console/shared';
 
 // --- Global fetch mock (Issue #1643 PR-2) ---
@@ -1878,15 +1879,18 @@ describe('Orchestrator flag control (Issue #1643 PR-2)', () => {
       ),
     ];
 
-    await renderWithRouter(
+    const { queryClient } = await renderWithRouter(
       <ActiveSessionsSidebar {...defaultProps()} collapsed={true} sessions={sessions} />
     );
 
-    // Give the repositories query a chance to resolve so a regression that
-    // reintroduces the flag under `collapsed` would actually have rendered
-    // it by the time these assertions run.
+    // Wait for the ACTUAL repositories query to settle in this component's
+    // own QueryClient -- not the `repositoriesResponse` fixture variable,
+    // which is already true synchronously before any fetch or render
+    // happens and so proves nothing about timing. This is the same async
+    // work (queryFn -> QueryClient cache -> re-render) a regression
+    // reintroducing the flag under `collapsed` would race against.
     await waitFor(() => {
-      expect(repositoriesResponse.repositories).toHaveLength(1);
+      expect(queryClient.getQueryState(repositoryKeys.all())?.status).toBe('success');
     });
 
     expect(document.querySelectorAll('[data-orchestrator-flag]')).toHaveLength(0);
