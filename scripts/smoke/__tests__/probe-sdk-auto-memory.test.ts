@@ -45,6 +45,9 @@ import {
   redactRecallEntry,
   recallPathMatches,
   summarizeRecalls,
+  classifyAutoMemoryOffCheck,
+  combineAutoMemoryOffVerdict,
+  parseArgs,
   EXTENDED_TIMEOUT_CAP_MS,
   WRITE_POLL_TIMEOUT_MS,
   type ArmAInput,
@@ -52,6 +55,7 @@ import {
   type ArmDInput,
   type ArmEConfigInput,
   type ArmESummaryInput,
+  type AutoMemoryOffCheckInput,
 } from '../probe-sdk-auto-memory.js';
 
 describe('probe-sdk-auto-memory exit codes', () => {
@@ -917,5 +921,135 @@ describe('seedMemoryTopic', () => {
     const indexContent = readFileSync(indexPath, 'utf8');
     expect(indexContent).toContain('- [First Fact](first.md) — first hook.');
     expect(indexContent).toContain('- [Second Fact](second.md) — second hook.');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #1681: classifyAutoMemoryOffCheck
+// ---------------------------------------------------------------------------
+
+describe('classifyAutoMemoryOffCheck', () => {
+  const clean: AutoMemoryOffCheckInput = { settled: true, locationHit: false, accessHit: false, memoryFilesCount: 0 };
+
+  it('is inconclusive when the turn did not settle, before anything else is checked', () => {
+    const r = classifyAutoMemoryOffCheck({ ...clean, settled: false });
+    expect(r.conclusive).toBe(false);
+    expect(r.note.startsWith('INCONCLUSIVE')).toBe(true);
+  });
+
+  it('reads confirmed-off when all three observables are clean (all-success boundary)', () => {
+    const r = classifyAutoMemoryOffCheck(clean);
+    expect(r).toMatchObject({ classification: 'confirmed-off', conclusive: true });
+  });
+
+  it('reads unexpected-hit when LOCATION hits despite the flag being off', () => {
+    const r = classifyAutoMemoryOffCheck({ ...clean, locationHit: true });
+    expect(r).toMatchObject({ classification: 'unexpected-hit', conclusive: true });
+  });
+
+  it('reads unexpected-hit when ACCESS hits despite the flag being off', () => {
+    const r = classifyAutoMemoryOffCheck({ ...clean, accessHit: true });
+    expect(r).toMatchObject({ classification: 'unexpected-hit', conclusive: true });
+  });
+
+  it('reads unexpected-hit when memoryFiles is non-empty even though neither text observable hit -- the mechanism loaded the file silently, which is a real (partial) hit, not "off"', () => {
+    const r = classifyAutoMemoryOffCheck({ ...clean, memoryFilesCount: 1 });
+    expect(r).toMatchObject({ classification: 'unexpected-hit', conclusive: true });
+    expect(r.note).toContain('memoryFilesCount=1');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// combineAutoMemoryOffVerdict -- the in-run ON control gating the OFF
+// measurement (Architect review, this PR: a control cited from a PAST run's
+// result cannot detect a silently-changed ON behaviour in THIS run).
+// ---------------------------------------------------------------------------
+
+describe('combineAutoMemoryOffVerdict', () => {
+  const cleanOff: AutoMemoryOffCheckInput = { settled: true, locationHit: false, accessHit: false, memoryFilesCount: 0 };
+  const dirtyOff: AutoMemoryOffCheckInput = { settled: true, locationHit: true, accessHit: true, memoryFilesCount: 1 };
+  const awareAndReading = classifyArmEConfig({ settled: true, locationHit: true, accessHit: true });
+
+  it('holds when the ON control confirms aware-and-reading and the OFF turn is clean', () => {
+    const r = combineAutoMemoryOffVerdict(awareAndReading, cleanOff);
+    expect(r).toMatchObject({ conclusive: true, premise: 'holds' });
+    expect(r.note).toContain('confirmed-off');
+    expect(r.note).toContain('in-run ON control confirmed aware-and-reading');
+  });
+
+  it('is refuted when the ON control confirms aware-and-reading but the OFF turn shows a hit', () => {
+    const r = combineAutoMemoryOffVerdict(awareAndReading, dirtyOff);
+    expect(r).toMatchObject({ conclusive: true, premise: 'refuted' });
+    expect(r.note).toContain('unexpected-hit');
+  });
+
+  it('is INCONCLUSIVE -- control failed when the ON control classifies as unaware, without even inspecting the OFF input', () => {
+    const unaware = classifyArmEConfig({ settled: true, locationHit: false, accessHit: false });
+    const r = combineAutoMemoryOffVerdict(unaware, dirtyOff);
+    expect(r.conclusive).toBe(false);
+    expect(r.premise).toBeNull();
+    expect(r.note.startsWith('INCONCLUSIVE')).toBe(true);
+    expect(r.note).toContain('control failed');
+    expect(r.note).toContain('got unaware');
+  });
+
+  it('is INCONCLUSIVE -- control failed when the ON control classifies as aware-prose-only (a real, non-aware-and-reading classification)', () => {
+    const proseOnly = classifyArmEConfig({ settled: true, locationHit: false, accessHit: true });
+    const r = combineAutoMemoryOffVerdict(proseOnly, cleanOff);
+    expect(r.conclusive).toBe(false);
+    expect(r.premise).toBeNull();
+    expect(r.note.startsWith('INCONCLUSIVE')).toBe(true);
+    expect(r.note).toContain('control failed');
+    expect(r.note).toContain('got aware-prose-only');
+  });
+
+  it('is INCONCLUSIVE -- control failed when the ON control classifies as told-not-read', () => {
+    const toldNotRead = classifyArmEConfig({ settled: true, locationHit: true, accessHit: false });
+    const r = combineAutoMemoryOffVerdict(toldNotRead, cleanOff);
+    expect(r.conclusive).toBe(false);
+    expect(r.premise).toBeNull();
+    expect(r.note.startsWith('INCONCLUSIVE')).toBe(true);
+    expect(r.note).toContain('control failed');
+    expect(r.note).toContain('got told-not-read');
+  });
+
+  it("is INCONCLUSIVE -- control failed when the ON control's own turn did not settle (classifyArmEConfig collapses this into 'unaware', conclusive: false)", () => {
+    const unsettled = classifyArmEConfig({ settled: false, locationHit: true, accessHit: true });
+    expect(unsettled.conclusive).toBe(false);
+    const r = combineAutoMemoryOffVerdict(unsettled, cleanOff);
+    expect(r.conclusive).toBe(false);
+    expect(r.premise).toBeNull();
+    expect(r.note.startsWith('INCONCLUSIVE')).toBe(true);
+    expect(r.note).toContain('control failed');
+    expect(r.note).toContain('got unaware');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #1681: parseArgs -- flag parsing for --auto-memory-off
+// ---------------------------------------------------------------------------
+
+describe('parseArgs -- --auto-memory-off', () => {
+  it('defaults autoMemoryOff to false, with the default arm set unaffected (boundary: no args)', () => {
+    const parsed = parseArgs([]);
+    expect(parsed.autoMemoryOff).toBe(false);
+    expect([...parsed.arms].sort()).toEqual(['--a', '--b', '--c', '--d']);
+  });
+
+  it('sets autoMemoryOff to true when --auto-memory-off is passed', () => {
+    const parsed = parseArgs(['--auto-memory-off']);
+    expect(parsed.autoMemoryOff).toBe(true);
+  });
+
+  it('tracks --auto-memory-off as its own field and does NOT pull in the default arms (CodeRabbit MAJOR, PR #1689) -- --auto-memory-off must be a standalone measurement, so it must opt OUT of the arms.size === 0 default-fill the same way --e/--f/--g do', () => {
+    const parsed = parseArgs(['--auto-memory-off']);
+    expect((parsed.arms as Set<string>).has('--auto-memory-off')).toBe(false);
+    expect(parsed.arms.size).toBe(0);
+  });
+
+  it('runs both an explicit arm and the off-check when both are passed', () => {
+    const parsed = parseArgs(['--auto-memory-off', '--a']);
+    expect(parsed.autoMemoryOff).toBe(true);
+    expect([...parsed.arms]).toEqual(['--a']);
   });
 });
