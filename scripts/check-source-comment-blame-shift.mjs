@@ -554,9 +554,9 @@ function normalizeRelativePath(file) {
  *
  * `dot: true` is required to scan into `.claude/` — Bun.Glob otherwise
  * skips hidden directories, which would silently scan zero files under a
- * pattern that explicitly names `.claude/**` (the #1487 shape: an
- * exclusion mechanism hides files while reporting success). See this
- * file's test suite for the regression pin.
+ * pattern that explicitly names `.claude/**`, with the exclusion
+ * mechanism hiding the emptied scan while still reporting success. See
+ * this file's test suite for the regression pin.
  *
  * @param {object} [options]
  * @param {string} [options.cwd]

@@ -607,11 +607,11 @@ describe('findDefaultFiles — live-tree scanned-file-count regression pin (R4, 
   it('scans strictly more files than a dot-excluding glob would, and finds a known .claude/ file', async () => {
     // Reach: reverting `dot: true` in findDefaultFiles makes this fail --
     // Bun.Glob excludes dot-directories by default, so `.claude/**` would
-    // silently scan 0 files while the check still reports "OK" (the same
-    // #1487/#1538 shape: an exclusion mechanism hides an entire scanned
-    // root, and the violation count alone cannot tell the difference from
-    // genuine cleanliness). This checker's `dot: true` was already correct
-    // since #1491/PR #1531 -- this test is the missing regression pin for
+    // silently scan 0 files while the check still reports "OK": an
+    // exclusion mechanism hiding an entire scanned root, where the
+    // violation count alone cannot tell the difference from genuine
+    // cleanliness. This checker's `dot: true` was already correct before
+    // this test existed -- this test is the missing regression pin for
     // that correctness, not a behavior change.
     const files = await findDefaultFiles({ cwd: REPO_ROOT });
     expect(files).toContain('.claude/rules/workflow.md');

@@ -621,10 +621,10 @@ describe('findDefaultFiles — live-tree scope integration (R2 count regression 
     expect(files.some((f) => f.startsWith('scripts/smoke/'))).toBe(false);
 
     // Independent control: the OLD (pre-widening) scope, computed here with
-    // the literal pre-#1538 glob patterns rather than by importing anything
-    // from production (which now implements the WIDENED scope) -- so this
-    // is a real historical fact to compare against, not a duplicate of
-    // current production logic.
+    // the literal pre-widening glob patterns rather than by importing
+    // anything from production (which now implements the WIDENED scope) --
+    // so this is a real historical fact to compare against, not a
+    // duplicate of current production logic.
     const OLD_GLOBS = [
       'packages/*/src/**/*.ts',
       'packages/*/src/**/*.tsx',
