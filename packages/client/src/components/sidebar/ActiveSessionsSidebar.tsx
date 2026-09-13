@@ -172,15 +172,35 @@ function SessionItem({ sessionWithActivity, collapsed, isActive, onClick, orches
   const isWorktreeSession = session.type === 'worktree';
   const isOrchestratorFlagLit = isWorktreeSession && orchestratorSessionId === session.id;
 
+  // Transient, visible feedback for a failed raise/clear request -- mirrors
+  // ActiveSessionsSidebar's own `restartMutation` onError pattern (timed
+  // message + Error-message fallback) rather than only logging, since a
+  // silent re-enable of the button gives the user no indication that a
+  // network error or a server rejection (e.g. 403 for a non-owner in
+  // multi-user `all` mode) occurred.
+  const [orchestratorFlagError, setOrchestratorFlagError] = useState<string | null>(null);
+
   // Raise/clear mutations for the Orchestrator-designation flag control.
   // No manual cache patch on success: the server's `orchestrator-designation-changed`
   // WS broadcast (handled in useSessionSideEffects.ts) patches the
   // repositories cache for every connected client, including this one.
   const raiseOrchestratorMutation = useMutation({
     mutationFn: () => raiseOrchestratorDesignation(session.id),
+    onError: (err) => {
+      logger.error('Failed to set Orchestrator designation:', err);
+      const message = err instanceof Error ? err.message : 'Failed to set Orchestrator designation.';
+      setOrchestratorFlagError(message);
+      setTimeout(() => setOrchestratorFlagError(null), 5000);
+    },
   });
   const clearOrchestratorMutation = useMutation({
     mutationFn: () => clearOrchestratorDesignation(session.id),
+    onError: (err) => {
+      logger.error('Failed to clear Orchestrator designation:', err);
+      const message = err instanceof Error ? err.message : 'Failed to clear Orchestrator designation.';
+      setOrchestratorFlagError(message);
+      setTimeout(() => setOrchestratorFlagError(null), 5000);
+    },
   });
   const orchestratorFlagPending = raiseOrchestratorMutation.isPending || clearOrchestratorMutation.isPending;
 
@@ -214,6 +234,11 @@ function SessionItem({ sessionWithActivity, collapsed, isActive, onClick, orches
       }
     >
       <FlagIcon className="w-3 h-3" filled={isOrchestratorFlagLit} />
+      {orchestratorFlagError && (
+        <span className="absolute top-full right-0 mt-1 whitespace-nowrap text-xs bg-slate-800 text-red-300 px-2 py-1 rounded shadow-lg border border-slate-700 z-50">
+          {orchestratorFlagError}
+        </span>
+      )}
     </button>
   ) : null;
 

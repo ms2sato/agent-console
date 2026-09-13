@@ -145,7 +145,28 @@ export function useSessionSideEffects({
   // harmless for both broadcasts to patch the same cache key on the same
   // change -- setQueryData is idempotent per-call.
   const handleOrchestratorDesignationChanged = useCallback((repositoryId: string, sessionId: string | null) => {
-    queryClient.setQueryData<{ repositories: Repository[] } | undefined>(repositoryKeys.all(), (old) => {
+    const queryKey = repositoryKeys.all();
+    // No cached data to patch yet -- most likely an in-flight fetch that has
+    // not resolved. A single `invalidateQueries` (or `refetchQueries`) call
+    // is not enough here: TanStack Query's `Query.fetch()` dedupes by
+    // reusing the ALREADY-IN-FLIGHT request's promise whenever
+    // `state.data === undefined` (this only changes once data has been
+    // fetched at least once), regardless of which QueryClient method
+    // triggered it or its `cancelRefetch` option. So one call just attaches
+    // to that same in-flight request and can still resolve with its
+    // pre-update snapshot, leaving the cache stale for up to the query's
+    // staleTime with no further signal to correct it.
+    // Invalidate first (awaiting that in-flight request, if any), then
+    // explicitly refetch once it has settled -- by then `fetchStatus` is
+    // back to idle, so this second call is a genuinely fresh request that
+    // reflects the change.
+    if (!queryClient.getQueryData<{ repositories: Repository[] }>(queryKey)) {
+      void queryClient.invalidateQueries({ queryKey }).then(() =>
+        queryClient.refetchQueries({ queryKey, type: 'all' })
+      );
+      return;
+    }
+    queryClient.setQueryData<{ repositories: Repository[] } | undefined>(queryKey, (old) => {
       if (!old) return old;
       return {
         repositories: old.repositories.map((r) =>

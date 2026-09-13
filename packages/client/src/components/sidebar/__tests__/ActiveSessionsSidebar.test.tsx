@@ -1676,4 +1676,97 @@ describe('Orchestrator flag control (Issue #1643 PR-2)', () => {
     });
     expect(router.state.location.pathname).toBe('/');
   });
+
+  // CodeRabbit finding on PR #1657: a failed raise/clear request used to only
+  // re-enable the button, with no visible feedback (e.g. a 403 for a
+  // non-owner's session in multi-user `all` mode, or a network error).
+  it('shows a transient, visible error message when raising the designation fails', async () => {
+    repositoriesResponse = { repositories: [repository({ id: 'repo-a', orchestratorSessionId: null })] };
+    globalThis.fetch = Object.assign(
+      mock(async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+        const url = input instanceof Request ? input.url : String(input);
+        const method = (input instanceof Request ? input.method : init?.method) ?? 'GET';
+        if (url.includes('/api/repositories') && method === 'GET') {
+          return new Response(JSON.stringify(repositoriesResponse), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          });
+        }
+        if (url.match(/\/api\/sessions\/([^/]+)\/orchestrator-designation$/) && method === 'POST') {
+          return new Response(JSON.stringify({ error: 'Not authorized to designate this session' }), {
+            status: 403,
+            headers: { 'content-type': 'application/json' },
+          });
+        }
+        return new Response('{}', { status: 200, headers: { 'content-type': 'application/json' } });
+      }),
+      { preconnect: () => {} }
+    ) as typeof fetch;
+
+    const sessions = [
+      createSessionWithActivity(
+        createMockWorktreeSession({ id: 'session-a', repositoryId: 'repo-a', repositoryName: 'repo-a' }),
+        'idle'
+      ),
+    ];
+
+    const { router } = await renderWithRouter(
+      <ActiveSessionsSidebar {...defaultProps()} sessions={sessions} />
+    );
+
+    const flagButton = await waitFor(() => screen.getByTestId('orchestrator-flag-session-a'));
+    fireEvent.click(flagButton);
+
+    await waitFor(() => {
+      expect(screen.getByText('Not authorized to designate this session')).toBeTruthy();
+    });
+    // The button itself must re-enable (not stuck pending) and row
+    // navigation must not have fired.
+    expect(flagButton.hasAttribute('disabled')).toBe(false);
+    expect(router.state.location.pathname).toBe('/');
+  });
+
+  it('shows a transient, visible error message when clearing the designation fails', async () => {
+    repositoriesResponse = { repositories: [repository({ id: 'repo-a', orchestratorSessionId: 'session-a' })] };
+    globalThis.fetch = Object.assign(
+      mock(async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+        const url = input instanceof Request ? input.url : String(input);
+        const method = (input instanceof Request ? input.method : init?.method) ?? 'GET';
+        if (url.includes('/api/repositories') && method === 'GET') {
+          return new Response(JSON.stringify(repositoriesResponse), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          });
+        }
+        if (url.match(/\/api\/sessions\/([^/]+)\/orchestrator-designation$/) && method === 'DELETE') {
+          return new Response(null, { status: 500 });
+        }
+        return new Response('{}', { status: 200, headers: { 'content-type': 'application/json' } });
+      }),
+      { preconnect: () => {} }
+    ) as typeof fetch;
+
+    const sessions = [
+      createSessionWithActivity(
+        createMockWorktreeSession({ id: 'session-a', repositoryId: 'repo-a', repositoryName: 'repo-a' }),
+        'idle'
+      ),
+    ];
+
+    await renderWithRouter(<ActiveSessionsSidebar {...defaultProps()} sessions={sessions} />);
+
+    const flagButton = await waitFor(() => {
+      const el = screen.getByTestId('orchestrator-flag-session-a');
+      expect(el.getAttribute('data-orchestrator-flag-lit')).toBe('true');
+      return el;
+    });
+    fireEvent.click(flagButton);
+
+    // No server-provided `error`/`message` field on a bare 500 -- falls back
+    // to `handleApiError`'s fallback message + status text.
+    await waitFor(() => {
+      expect(screen.getByText(/Failed to clear Orchestrator designation/)).toBeTruthy();
+    });
+    expect(flagButton.hasAttribute('disabled')).toBe(false);
+  });
 });
