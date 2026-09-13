@@ -58,6 +58,13 @@ import { join } from 'node:path';
 
 export type CompactBoundary = Extract<SDKMessage, { type: 'system'; subtype: 'compact_boundary' }>;
 export type ResultMessage = Extract<SDKMessage, { type: 'result' }>;
+/**
+ * Emitted when the SDK's memory-recall supervisor surfaces content into a
+ * turn (Issue #1658). Added alongside `CompactBoundary` as the same shape of
+ * capture -- a `system` subtype every consuming probe needs the FULL body
+ * of, not just its `type/subtype` label.
+ */
+export type MemoryRecallMessage = Extract<SDKMessage, { type: 'system'; subtype: 'memory_recall' }>;
 
 /** H2 (design doc §5) retry-with-settle, mirroring sdk-engine.ts's constants. */
 const SETTLE_DELAY_MS = 500;
@@ -161,6 +168,7 @@ export class ProbeSession {
   readonly children: SpawnedProcess[] = [];
   readonly allMessages: string[] = [];
   readonly compactBoundaries: CompactBoundary[] = [];
+  readonly memoryRecalls: MemoryRecallMessage[] = [];
   sessionId: string | null = null;
   streamEnded: 'clean' | 'error' | null = null;
   streamError: string | null = null;
@@ -323,6 +331,9 @@ export class ProbeSession {
         }
         if (message.type === 'system' && message.subtype === 'compact_boundary') {
           this.compactBoundaries.push(message);
+        }
+        if (message.type === 'system' && message.subtype === 'memory_recall') {
+          this.memoryRecalls.push(message);
         }
         if (message.type === 'assistant') {
           for (const block of message.message.content) {
