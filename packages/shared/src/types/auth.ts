@@ -1,8 +1,3 @@
-// Re-export the schema-derived response type for `GET /api/config`. The
-// schema (packages/shared/src/schemas/auth.ts) is the single source of
-// truth for its shape; see that file for the field-level doc comments.
-export type { ConfigResponse } from '../schemas/auth.js';
-
 export type AuthMode = 'none' | 'multi-user';
 
 /**

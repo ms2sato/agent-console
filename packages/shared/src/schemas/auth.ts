@@ -22,9 +22,11 @@ export type LoginRequest = v.InferOutput<typeof LoginRequestSchema>;
  * (per docs/design/shared-orchestrator-session.md §UI). Per-session
  * `Session.isShared` is the safe abstraction for client rendering.
  *
- * `ConfigResponse` (packages/shared/src/types/auth.ts) is derived from this
- * schema via `v.InferOutput` so the two cannot drift (pre-pr-completeness.md
- * Q10).
+ * `ConfigResponse` is derived from this schema (below) via `v.InferOutput`
+ * so the two cannot drift (pre-pr-completeness.md Q10). It lives here, not
+ * in `packages/shared/src/types/auth.ts`, because `types/` may not import
+ * from `schemas/` (see `.dependency-cruiser.cjs`'s `shared-no-types-import-schemas`
+ * rule) -- a schema-derived type stays alongside its schema.
  */
 export const ConfigResponseSchema = v.strictObject({
   homeDir: v.string(),

@@ -526,13 +526,13 @@ Union type controlling how the client opens paths in VS Code from the "Open in V
 **Guardrails:** `POST /api/system/open-in-vscode` rejects (400) in `remote-url-scheme` mode so stale clients cannot silently spawn on the wrong host.
 
 - **Aliases:** vscodeOpenMode (`ConfigResponse` field name), Open-in-VSCode mode
-- **See:** Issue [#987](https://github.com/ms2sato/agent-console/issues/987) (introduces the URL-scheme dispatch); [`packages/shared/src/types/auth.ts`](../packages/shared/src/types/auth.ts) (`VSCodeOpenMode`, `ConfigResponse.capabilities`); [`packages/server/src/services/system-capabilities-service.ts`](../packages/server/src/services/system-capabilities-service.ts) (`resolveVSCodeOpenMode`); [`packages/client/src/lib/vscode-url.ts`](../packages/client/src/lib/vscode-url.ts) (`buildVSCodeRemoteUrl`).
+- **See:** Issue [#987](https://github.com/ms2sato/agent-console/issues/987) (introduces the URL-scheme dispatch); [`packages/shared/src/types/auth.ts`](../packages/shared/src/types/auth.ts) (`VSCodeOpenMode`), [`packages/shared/src/schemas/auth.ts`](../packages/shared/src/schemas/auth.ts) (`ConfigResponseSchema.capabilities`); [`packages/server/src/services/system-capabilities-service.ts`](../packages/server/src/services/system-capabilities-service.ts) (`resolveVSCodeOpenMode`); [`packages/client/src/lib/vscode-url.ts`](../packages/client/src/lib/vscode-url.ts) (`buildVSCodeRemoteUrl`).
 
 ### serverPort
 The backend HTTP port the server is bound to, exposed to the client so it can compose absolute URLs pointing at the same server without hard-coding a port. Positive integer.
 
 - **Source of truth:** `serverConfig.PORT` (env-configured; string in env, coerced to `Number(...)` at the response boundary; default `3457`).
-- **Wire:** `/api/config.serverPort` (`packages/server/src/routes/api.ts`), typed on `ConfigResponse.serverPort` in [`packages/shared/src/types/auth.ts`](../packages/shared/src/types/auth.ts).
+- **Wire:** `/api/config.serverPort` (`packages/server/src/routes/api.ts`), typed on `ConfigResponse.serverPort` in [`packages/shared/src/schemas/auth.ts`](../packages/shared/src/schemas/auth.ts) (`ConfigResponseSchema`).
 - **Consumer:** the client caches the value in [`packages/client/src/lib/server-info.ts`](../packages/client/src/lib/server-info.ts) (module-level `setServerPort` / `getServerPort` set once at app init, mirroring the `homeDir` pattern). Used by [`buildMcpInstallCommand`](../packages/client/src/lib/mcp-install-url.ts) to decide whether the current browser origin is same-origin with the backend (production single-port serving / reverse proxy on default 80/443) or split-port (dev with Vite on 5173 proxying `/api` to backend on `serverPort`); the split case composes `${protocol}//${hostname}:${serverPort}/mcp` so the copied install command targets the backend directly.
 - **Related:** [`buildMcpInstallCommand`](../packages/client/src/lib/mcp-install-url.ts), the "Install MCP server in Claude Code" Settings section ([`McpInstallSection`](../packages/client/src/components/settings/McpInstallSection.tsx)).
 - **See:** Issue [#991](https://github.com/ms2sato/agent-console/issues/991).
@@ -542,7 +542,7 @@ The SHA of the commit currently deployed at a running instance, exposed read-onl
 
 - **Source of truth:** `<deploy-target>/.deploy-sha`, a two-line marker (line 1: `git rev-parse HEAD` from the source repo at deploy time; line 2: an ISO-8601 UTC timestamp) written by each `scripts/update-and-deploy-for-*.sh` script AFTER `rsync --delete`, into the deploy target (not the source tree), so it is rewritten fresh every deploy and survives the next deploy's `--delete`.
 - **Read path:** [`readDeployedSha`](../packages/server/src/lib/deployed-sha.ts) reads the marker's first line once at server startup (`process.cwd()` equals the deploy target root, since every deploy's systemd/launchd unit sets `WorkingDirectory` to that same path) and stores it on `AppContext.deployedSha`. `null` when the marker is absent — the expected steady state for `bun run dev`, which never writes it.
-- **Wire:** `/api/config.deployedSha` (`packages/server/src/routes/api.ts`), typed on `ConfigResponse.deployedSha` in [`packages/shared/src/schemas/auth.ts`](../packages/shared/src/schemas/auth.ts) (`ConfigResponseSchema`, re-exported as a type from `packages/shared/src/types/auth.ts`).
+- **Wire:** `/api/config.deployedSha` (`packages/server/src/routes/api.ts`), typed on `ConfigResponse.deployedSha` in [`packages/shared/src/schemas/auth.ts`](../packages/shared/src/schemas/auth.ts) (`ConfigResponseSchema`; `ConfigResponse` is defined here, not in `types/auth.ts` -- `types/` may not import from `schemas/`, see `.dependency-cruiser.cjs`'s `shared-no-types-import-schemas` rule).
 - **See:** Issue [#1638](https://github.com/ms2sato/agent-console/issues/1638).
 
 ### user-accessible host

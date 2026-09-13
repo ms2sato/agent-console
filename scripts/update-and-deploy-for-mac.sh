@@ -60,8 +60,21 @@ echo "==> Cleaning up old logs..."
 rm -rf ~/Library/Logs/agent-console
 mkdir -p ~/Library/Logs/agent-console
 
+echo "==> Capturing source revision..."
+# Captured BEFORE build/rsync and re-verified after each, so the marker
+# never records a revision other than the one actually built and copied
+# (a concurrent push to the source repo mid-deploy would otherwise leave
+# the marker pointing at a SHA rsync never saw).
+DEPLOYED_SHA="$(cd "$PROJECT_DIR" && git rev-parse HEAD)"
+
 echo "==> Building..."
 NODE_ENV=production bun run build
+
+CURRENT_SHA="$(cd "$PROJECT_DIR" && git rev-parse HEAD)"
+if [ "$CURRENT_SHA" != "$DEPLOYED_SHA" ]; then
+    echo "Error: source HEAD changed during build ($DEPLOYED_SHA -> $CURRENT_SHA). Aborting before deploy." >&2
+    exit 1
+fi
 
 echo "==> Deploying files..."
 mkdir -p ~/.agent-console/server
@@ -70,11 +83,17 @@ cp /tmp/agent-console-start.sh ~/.agent-console/server/start.sh
 chmod +x ~/.agent-console/server/start.sh
 rm /tmp/agent-console-start.sh
 
+CURRENT_SHA="$(cd "$PROJECT_DIR" && git rev-parse HEAD)"
+if [ "$CURRENT_SHA" != "$DEPLOYED_SHA" ]; then
+    echo "Error: source HEAD changed during deploy ($DEPLOYED_SHA -> $CURRENT_SHA). Aborting before marker write." >&2
+    exit 1
+fi
+
 echo "==> Writing deployed-commit marker (.deploy-sha)..."
 # Written into the deploy target (not the source) so it survives the next
-# rsync --delete; rewritten fresh every deploy. $PROJECT_DIR is still the
-# source repo's HEAD here (we haven't cd'd away yet).
-DEPLOYED_SHA="$(cd "$PROJECT_DIR" && git rev-parse HEAD)"
+# rsync --delete; rewritten fresh every deploy. Uses the SHA captured above,
+# not a fresh `git rev-parse HEAD` here -- the HEAD-unchanged checks above
+# are what make that captured value trustworthy at this point.
 DEPLOYED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 printf '%s\n%s\n' "$DEPLOYED_SHA" "$DEPLOYED_AT" > ~/.agent-console/server/.deploy-sha
 
