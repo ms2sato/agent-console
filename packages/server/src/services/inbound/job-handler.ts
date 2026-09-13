@@ -25,6 +25,24 @@ export class PermanentHandlerError extends Error {
   }
 }
 
+/**
+ * Whether `error` is the notifications table's FOREIGN KEY constraint
+ * violation -- the permanent, per-target shape (a resolved target's
+ * `sessionId` has no corresponding `sessions` row at all). Everything else
+ * that can fail at the 'persist' step (a transient `SQLITE_BUSY`, an I/O
+ * error, etc.) has NOT yet persisted anything for this unit of work, so it
+ * must propagate and let the job queue retry -- swallowing it here would
+ * silently drop the target instead of giving it a legitimate first-attempt
+ * retry.
+ */
+function isForeignKeyConstraintError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  // bun:sqlite sets `.code` on SQLiteError; fall back to the message text
+  // in case a different driver or wrapping layer doesn't preserve it.
+  const code = (error as { code?: unknown }).code;
+  return code === 'SQLITE_CONSTRAINT_FOREIGNKEY' || error.message.includes('FOREIGN KEY constraint failed');
+}
+
 export interface InboundEventJobDependencies {
   getServiceParser: (serviceId: string) => ServiceParser | null;
   resolveTargets: (event: InboundSystemEvent) => Promise<EventTarget[]>;
@@ -208,6 +226,18 @@ export function createInboundEventJobHandler(deps: InboundEventJobDependencies) 
             );
           }
         } catch (error) {
+          // A 'persist'-step failure that is NOT a foreign-key-constraint
+          // violation has not persisted anything for this unit of work yet
+          // (the idempotency read or the insert itself failed transiently,
+          // e.g. SQLITE_BUSY or an I/O error) -- rethrow so the job queue
+          // retries it as a legitimate first attempt, rather than silently
+          // dropping the target. Everything else (a genuinely dangling
+          // sessionId at 'persist', or any failure at 'handle' once the
+          // pending row already exists) is logged and skipped, unchanged.
+          if (step === 'persist' && !isForeignKeyConstraintError(error)) {
+            throw error;
+          }
+
           logger.error(
             {
               err: error,

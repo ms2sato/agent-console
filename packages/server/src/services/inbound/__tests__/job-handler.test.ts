@@ -651,6 +651,66 @@ describe('createInboundEventJobHandler', () => {
       }
     });
 
+    it('rethrows a persist-step failure that is NOT a foreign-key-constraint violation, so the job queue retries it as a legitimate first attempt', async () => {
+      // reach measured: temporarily reverting the fix to swallow every
+      // 'persist'-step error uniformly (removing the
+      // `isForeignKeyConstraintError` check) makes this test FAIL -- the
+      // job resolves instead of rejecting, because the old, overly-broad
+      // catch logged and swallowed this too. Restoring the real fix makes
+      // it pass again. Measured 2026-09-14 against the code in this PR.
+      const createPendingNotificationMock = mock(async () => {});
+      const markNotificationDeliveredMock = mock(async () => {});
+      const handlerMock = mock(async () => true);
+      const jobHandler = createInboundEventJobHandler({
+        getServiceParser: () => ({
+          serviceId: 'github',
+          authenticate: async () => true,
+          parse: async () => ({
+            type: 'ci:completed',
+            source: 'github',
+            timestamp: '2024-01-01T00:00:00Z',
+            metadata: { repositoryName: 'owner/repo' },
+            payload: { ok: true },
+            summary: 'CI success',
+          }),
+        }),
+        resolveTargets: async () => [{ sessionId: 'irrelevant-session' }],
+        handlers: [
+          {
+            handlerId: 'test-handler',
+            supportedEvents: ['ci:completed'],
+            handle: handlerMock,
+          },
+        ],
+        // This repository is entirely faked -- no real DB, no real FK
+        // constraint. `findInboundEventNotification` throws a plain `Error`
+        // to simulate a transient DB failure (e.g. SQLITE_BUSY, an I/O
+        // error) at the 'persist' step, distinct from the FK-constraint
+        // class covered by the previous test.
+        notificationRepository: {
+          findInboundEventNotification: async () => {
+            throw new Error('simulated transient DB error');
+          },
+          createPendingNotification: createPendingNotificationMock,
+          markNotificationDelivered: markNotificationDeliveredMock,
+        },
+      });
+
+      await expect(
+        jobHandler({
+          jobId: 'job-regress-6',
+          service: 'github',
+          rawPayload: '{}',
+          headers: {},
+          receivedAt: '2024-01-01T00:00:00Z',
+        })
+      ).rejects.toThrow('simulated transient DB error');
+
+      expect(createPendingNotificationMock).not.toHaveBeenCalled();
+      expect(handlerMock).not.toHaveBeenCalled();
+      expect(markNotificationDeliveredMock).not.toHaveBeenCalled();
+    });
+
     it('isolates a handler that throws after the pending row is already created (the "handle" failure class), while a second healthy target is still processed normally', async () => {
       const db = await createDatabaseForTest();
       try {

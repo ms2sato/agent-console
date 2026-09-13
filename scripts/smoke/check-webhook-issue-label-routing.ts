@@ -1027,6 +1027,18 @@ async function main(): Promise<void> {
     // this is the LAST scenario to post a webhook, so "most recently
     // created inbound-event:process job" unambiguously identifies this
     // scenario's own job.
+    //
+    // WARNING FOR WHOEVER ADDS SCENARIO 8: this "most recent job of this
+    // type" query is correct ONLY because scenario 7 is currently the LAST
+    // scenario in this file to post a webhook. If a scenario 8 is added
+    // AFTER this point, this query will silently pick up scenario 8's job
+    // instead of scenario 7's, and this assertion will start measuring the
+    // wrong job with no error -- a false pass, not a loud failure. Before
+    // adding scenario 8, either (a) move this whole job-status assertion
+    // block to run immediately after scenario 8 instead, or (b) scope the
+    // query more precisely (e.g. embed a per-scenario marker in the webhook
+    // payload and match on it, or record the job id from the enqueue
+    // response instead of inferring "most recent").
     const jobsHandle = new BunDatabase(dbPath, { readonly: true });
     let scenario7Job: { status: string; attempts: number } | undefined;
     try {
