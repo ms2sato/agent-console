@@ -1156,7 +1156,8 @@ const USAGE_TEXT =
   '  --f-config <omitted|preset> overrides arm F/G\'s systemPrompt configuration when arm E did not run in the same invocation (default: omitted).\n' +
   `  --extended-timeout <ms> sets arm G's write-poll timeout; omitted or 0 behaves like arm F's 60s poll; clamped to ${EXTENDED_TIMEOUT_CAP_MS}ms (owner directive).\n` +
   '  Selecting --g always also selects --e and --f as prerequisites (its own gate is defined in terms of their results).\n' +
-  '  --auto-memory-off runs a standalone measurement (#1681): configuration (i) with settings.autoMemoryEnabled: false, expecting the mechanism fully suppressed. Billable; never part of the bare default -- select it explicitly.\n' +
+  '  --auto-memory-off runs a standalone measurement (#1681): configuration (i) with settings.autoMemoryEnabled: false, expecting the mechanism fully suppressed. Billable; never part of the bare default -- select it explicitly.' +
+  ' Passing it alone does NOT also pull in the A/B/C/D default -- combine explicitly (e.g. --auto-memory-off --a) if both are wanted.\n' +
   '  These flags only take effect when their arm is selected.';
 
 interface ParsedArgs {
@@ -1222,7 +1223,7 @@ export function parseArgs(argv: string[]): ParsedArgs {
     console.error(`${USAGE_TEXT}\n  Unrecognized argument: ${a}`);
     process.exit(PROBE_EXIT.HARNESS);
   }
-  if (arms.size === 0) for (const f of DEFAULT_ARM_FLAGS) arms.add(f);
+  if (arms.size === 0 && !autoMemoryOff) for (const f of DEFAULT_ARM_FLAGS) arms.add(f);
   // Arm G's own gate ("E showed awareness under production's configuration
   // AND F still shows no write") cannot be evaluated without their results.
   if (arms.has('--g')) {

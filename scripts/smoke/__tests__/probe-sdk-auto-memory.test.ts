@@ -974,9 +974,15 @@ describe('parseArgs -- --auto-memory-off', () => {
     expect(parsed.autoMemoryOff).toBe(true);
   });
 
-  it('tracks --auto-memory-off as its own field, never as a member of arms', () => {
+  it('tracks --auto-memory-off as its own field and does NOT pull in the default arms (CodeRabbit MAJOR, PR #1689) -- --auto-memory-off must be a standalone measurement, so it must opt OUT of the arms.size === 0 default-fill the same way --e/--f/--g do', () => {
     const parsed = parseArgs(['--auto-memory-off']);
     expect((parsed.arms as Set<string>).has('--auto-memory-off')).toBe(false);
-    expect([...parsed.arms].sort()).toEqual(['--a', '--b', '--c', '--d']);
+    expect(parsed.arms.size).toBe(0);
+  });
+
+  it('runs both an explicit arm and the off-check when both are passed', () => {
+    const parsed = parseArgs(['--auto-memory-off', '--a']);
+    expect(parsed.autoMemoryOff).toBe(true);
+    expect([...parsed.arms]).toEqual(['--a']);
   });
 });
