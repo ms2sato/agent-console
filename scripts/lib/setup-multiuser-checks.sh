@@ -75,6 +75,15 @@ assert_readable_file() {
 assert_readable_by_unprivileged_user() {
   local file_path="$1"
   local hint="$2"
+  # Guard BEFORE the probe (Architect ruling): without this, a missing
+  # `runuser` binary makes the probe itself exit 127, which the fail-closed
+  # branch below would misreport as "not readable by an unprivileged user"
+  # -- true-sounding, but naming the wrong cause. The gate stays closed
+  # either way; only the diagnostic changes.
+  if ! command -v runuser >/dev/null; then
+    echo "error: runuser (util-linux) not found -- required for the unprivileged readability gate" >&2
+    return 1
+  fi
   if ! runuser -u nobody -- test -r "$file_path"; then
     echo "error: '$file_path' is not readable by an unprivileged user (probed as 'nobody' via runuser -- any real elevation-target user hits the same wall) -- $hint" >&2
     return 1

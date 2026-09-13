@@ -222,8 +222,15 @@ echo "==> fail-closed check: unified entry path is readable by an elevation-targ
 # mode to skip for), so on a normal successful deploy this can never
 # legitimately fail -- it exists to catch a partial/interrupted copy or an
 # unexpected parent-directory mode, not a first-run bootstrap ordering gap.
+#
+# Gates BOTH files copied in step 5/6, not just the entry point (Architect
+# ruling): the .map file is the second half of that same copy, and a
+# partial copy that dropped it is exactly the kind of interruption this
+# check exists to catch.
 assert_readable_by_unprivileged_user "${UNIFIED_ENTRY_PATH}" \
   "step 5/6 (copy dist/embedded-agent.js to the unified entry path) did not complete, or /usr/local/lib/agent-console/ is not world-traversable -- re-run this script" || exit 1
+assert_readable_by_unprivileged_user "${UNIFIED_ENTRY_MAP_PATH}" \
+  "step 5/6 (copy dist/embedded-agent.js.map to the unified entry path) did not complete, or /usr/local/lib/agent-console/ is not world-traversable -- re-run this script" || exit 1
 
 echo ""
 echo "==> systemctl restart ${SERVICE_NAME}"

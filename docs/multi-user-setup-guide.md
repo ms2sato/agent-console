@@ -1234,6 +1234,12 @@ string shape, but only an on-host smoke can confirm what env the elevated
 user actually sees -- which depends on distro `sudo` defaults, sudoers
 config, and the target user's login shell init.
 
+Prerequisite for the unprivileged-user readability checks referenced below
+(both `scripts/update-and-deploy-for-multiuser-ubuntu.sh`'s own automatic
+gate and the manual `runuser -u nobody -- test -r ...` verify commands
+elsewhere in this guide): `runuser` (package `util-linux`, installed by
+default on Debian/Ubuntu) must be present on the host.
+
 ### PTY env propagation check
 
 ```bash
