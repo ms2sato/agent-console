@@ -349,6 +349,50 @@ describe('resolveTargets: designated-session fallback (#1661)', () => {
     ]);
   });
 
+  it('boundary: matched session has a parent that reads activationState "running" but has no agent-type worker -> designated session added (vacuous-running parent cannot actually receive delivery)', async () => {
+    const repository = buildRepositoryWithDesignation({
+      id: 'repo-1',
+      path: '/path/to/repo',
+      orchestratorSessionId: 'designated-1',
+    });
+    const matchedSession = buildWorktreeSession({
+      id: 'session-1',
+      repositoryId: 'repo-1',
+      worktreeId: 'feature',
+      parentSessionId: 'vacuously-running-parent',
+    });
+    // `computeActivationState` (session-converter-service.ts) reads
+    // 'running' vacuously true when a session has zero agent/terminal-type
+    // workers -- e.g. a worktree session whose only worker is a `git-diff`
+    // worker. `AgentWorkerHandler.handle()` can never deliver to such a
+    // parent (no agent-type worker to resolve a workerId from), so it must
+    // not count as a live parent for the fallback decision.
+    const vacuouslyRunningParent = buildWorktreeSession({
+      id: 'vacuously-running-parent',
+      repositoryId: 'repo-1',
+      worktreeId: 'main',
+      activationState: 'running',
+      workers: [
+        { id: 'worker-1', type: 'git-diff', name: 'Diff', createdAt: '2024-01-01T00:00:00Z', baseCommit: 'abc123' },
+      ],
+    });
+    const designatedSession = buildDesignatedSession();
+    const deps: TargetResolverDependencies = {
+      getSessions: () => [matchedSession, vacuouslyRunningParent, designatedSession],
+      getRepository: () => repository,
+      getAllRepositories: () => [repository],
+      getOrgRepoFromPath: mock(() => Promise.resolve('owner/repo')),
+    };
+
+    const targets = await resolveTargets(createEvent({ branch: 'feature' }), deps);
+
+    expect(targets).toEqual([
+      { sessionId: 'session-1' },
+      { sessionId: 'vacuously-running-parent' },
+      { sessionId: 'designated-1', fallback: true },
+    ]);
+  });
+
   it('boundary: matched session has a live non-Orchestrator parent -> no fallback added, even though a designated session is configured', async () => {
     const repository = buildRepositoryWithDesignation({
       id: 'repo-1',
@@ -366,6 +410,12 @@ describe('resolveTargets: designated-session fallback (#1661)', () => {
       repositoryId: 'repo-1',
       worktreeId: 'main',
       activationState: 'running',
+      // Must have an agent-type worker so this parent is genuinely
+      // deliverable, not merely a vacuous "running" (see the sibling test
+      // above for the vacuous case) -- otherwise this test would not
+      // distinguish "live and deliverable" from "reads running but
+      // undeliverable", the exact bug the fix above corrects for.
+      workers: [AGENT_WORKER],
     });
     const designatedSession = buildDesignatedSession();
     const deps: TargetResolverDependencies = {

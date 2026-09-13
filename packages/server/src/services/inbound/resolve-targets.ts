@@ -97,7 +97,7 @@ export async function resolveTargets(
         // parent to deliver to at all (#1661 case 3: a dead/stale parent
         // pointer, most commonly left behind by an Orchestrator restart).
         const parentSession = sessions.find((s) => s.id === session.parentSessionId);
-        if (parentSession && parentSession.activationState === 'running') {
+        if (parentSession && parentSession.activationState === 'running' && canDeliverToAgentWorker(parentSession)) {
           hasLiveParentTarget = true;
         }
       }
@@ -126,6 +126,19 @@ export async function resolveTargets(
   // session with no parent, or a matching session whose parent is not
   // live -- fall back to the repository's designated Orchestrator session,
   // subject to the same deliverability check `issue:labeled` routing uses.
+  //
+  // Deliberate non-case: `hasLiveParentTarget` is a SINGLE boolean across
+  // the whole loop above, not a per-matched-session decision. On a
+  // branch-less fan-out where multiple sessions match and at least one of
+  // them already has a genuinely live+deliverable parent, no fallback
+  // fires for the event at all -- even if some OTHER matched session in
+  // the same fan-out has a dead or non-deliverable parent. Shape C's
+  // contract is "somebody responsible is told at all", not "every matched
+  // session with a dead parent individually gets a fallback"; firing a
+  // fallback per matched session here would reproduce the noisier
+  // per-target routing the Architect explicitly rejected in favor of this
+  // shape. The "live non-Orchestrator parent" test in this file's fallback
+  // describe block pins this single-boolean semantics.
   if (targets.length === 0 || !hasLiveParentTarget) {
     const existingSessionIds = new Set(targets.map((t) => t.sessionId));
     const fallbackSessionIds = await resolveDesignatedFallbackSessionIds(deps, repositoryName, getOrgRepoFromPath);
