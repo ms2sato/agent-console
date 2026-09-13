@@ -120,7 +120,7 @@ const SCRIPT_NAME = 'check-fatal-incarnation-replacement';
  * Not auto-pruned: see this script's `test-trigger.md` section for the
  * stated lifetime and why.
  *
- * Exported so `check:fatal-incarnation-replacement-artifact-capture` can
+ * Exported so `check-fatal-incarnation-replacement-artifact-capture.ts` can
  * exercise this exact function directly against a synthetic disposable
  * home, without a billed run — see that script's own header for why a
  * billed smoke run is not the right instrument to verify this with.

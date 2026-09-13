@@ -134,8 +134,10 @@
  * NOT needed here since this script does not exercise compaction). Small,
  * but real money -- this is a manual tool, never a CI gate.
  *
- * It is nonetheless registered: `bun run check:embedded-agent-idle-eviction-openai-api`,
- * with the files that oblige a run named in `.claude/rules/test-trigger.md`.
+ * It is nonetheless registered: this file's own Additional Verification
+ * section in `.claude/rules/test-trigger.md` names the files that oblige a
+ * run, and `bun scripts/smoke/check-embedded-agent-idle-eviction-openai-api.ts`
+ * is the one way to invoke it.
  *
  * REQUIREMENTS
  *   - A provider key store resolvable for `PROVIDER_KEY_REF` (default

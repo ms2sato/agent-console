@@ -65,7 +65,7 @@
  * OS user, and `bun install` already run so
  * `@anthropic-ai/claude-agent-sdk` resolves to the version under test. This
  * makes real Anthropic API calls and costs real usage -- a manual tool, not
- * a CI gate (hence no `check:` alias).
+ * a CI gate.
  *
  * Usage: the invocation line is NOT restated here. `USAGE_TEXT` below is its
  * single writer -- the script prints it on any usage error, and the flag list

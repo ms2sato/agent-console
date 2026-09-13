@@ -23,7 +23,8 @@
     ".": {
       "entry": [
         "scripts/check-public-artifacts-language.mjs",
-        "scripts/__tests__/**/*.test.mjs"
+        "scripts/__tests__/**/*.test.mjs",
+        "scripts/smoke/**/*.{ts,mjs}"
       ],
       "project": ["scripts/**/*.mjs"],
       "ignoreDependencies": [
