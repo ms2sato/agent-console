@@ -1457,7 +1457,20 @@ describe('loadInstructions — memory layer (epic #1636 Phase 2)', () => {
     expect(result.memoryUnreadableLine).toBeUndefined();
   });
 
-  it('the header text is the spec\'s fenced block verbatim (path substituted)', () => {
+  it('the header text equals the spec\'s fenced block VERBATIM (independent literal copy, path substituted)', () => {
+    // The literal below is copied from docs/design/embedded-agent-worker.md
+    // "The header text" by hand, NOT derived from formatMemoryHeader -- so a
+    // paraphrase in production cannot ship green. Reach: changing a single
+    // character of `formatMemoryHeader` ("follow." -> "follow:") fails this
+    // pin and ONLY this pin -- measured; the fragment pin below stays green
+    // under that mutation, which is exactly why this literal exists.
+    const expected =
+      '--- Memory: /data/memory/def-1 ---\n' +
+      'This directory is your persistent memory for this agent definition on this repository. It is shared with every user who runs this definition on this repository (on a single-user install that is only you): record knowledge about the work, never one person\'s private details. MEMORY.md is its index; its current contents follow. Each memory is one file holding one fact, with frontmatter (name, description, metadata.type: user | feedback | project | reference). After writing a file, add a one-line pointer to MEMORY.md: `- [Title](file.md) — hook` — re-read MEMORY.md first, then append the line with Edit anchored on the file\'s current tail (never rewrite MEMORY.md with Write; other sessions may be writing it too). Read a topic file with Read when its hook is relevant; never put memory content in MEMORY.md itself.';
+    expect(formatMemoryHeader('/data/memory/def-1')).toBe(expected);
+  });
+
+  it('the header text carries the load-bearing fragments (a readable subset of the verbatim pin above)', () => {
     // Pins the load-bearing sentences the WRITE half depends on, so a
     // paraphrase of the convention cannot ship silently. Reach: dropping
     // any one of the four fragments from `formatMemoryHeader` fails exactly

@@ -9,8 +9,12 @@
  *   branch, activate-on-delivery)
  *     -> real EmbeddedAgentWorkerService.activate
  *     -> real `prepareMemoryDir` (packages/server/src/lib/memory-dir.ts):
- *        resolves the quick-session cwd-slug via a real `realpath`, creates
- *        the directory on the real disk, and verifies its mode
+ *        resolves the quick-session cwd-slug via `realpath`, creates the
+ *        directory, and verifies its mode -- on the TEST PROCESS'S
+ *        filesystem, which is memfs under this suite (`setupTestEnvironment`
+ *        installs it, packages/server/src/__tests__/test-utils.ts), not the
+ *        real disk. The only real-filesystem assertions in this PR are
+ *        `memory-dir.test.ts` run alone.
  *     -> the subprocess (faked at the lowest level, spawnAsUserFn) receives
  *        an `init` command whose `context.memoryDir` names that directory
  *
@@ -151,9 +155,12 @@ describe('Client-Server Boundary: embedded-agent memory layer init.context.memor
     const parsed = v.safeParse(EmbeddedAgentCommandSchema, initCommand);
     expect(parsed.success).toBe(true);
 
-    // The directory must exist on real disk, with the single-user contract's
+    // The directory must exist on the test process's filesystem (memfs
+    // under this suite -- see the header), with the single-user contract's
     // mode, at the moment the init frame was composed -- not merely a path
-    // string that happens to match.
+    // string that happens to match. The wire pin above (real service -> real
+    // init frame -> real strictObject parse) is the Q10 evidence; this is
+    // the activation-time existence/mode contract, not a real-disk claim.
     const { lstat } = await import('node:fs/promises');
     const st = await lstat(expectedMemoryDir);
     expect(st.isDirectory()).toBe(true);

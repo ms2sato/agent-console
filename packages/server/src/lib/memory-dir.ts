@@ -18,6 +18,12 @@
  *     convention (setgid + group-rw), inherited for free from the systemd
  *     unit's `UMask=0002` by calling `mkdir` with NO `mode` argument at all
  *     in multi-user mode — never re-derived, never chmod'd into place.
+ *     The gid check below passes only because the unit template sets
+ *     `Group=<service group>` next to `UMask=0002`: a unit missing `Group=`
+ *     runs with the service user's private group, and every embedded
+ *     activation then fails with the "unexpected group gid" message —
+ *     correct fail-closed behaviour that no fixture here can see; 3b's
+ *     real-host smoke must read the unit's `Group=`.
  */
 import { mkdir, lstat, realpath } from 'fs/promises';
 import * as path from 'path';
