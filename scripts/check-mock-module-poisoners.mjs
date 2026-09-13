@@ -8,7 +8,7 @@
  * any target that another test file imports for real: `bun:test`'s
  * `mock.module()` is process-global and irreversible for the life of the
  * test process, so it poisons every test file loaded afterward in the
- * same process (Issue #970, PR #976, Issue #977, Issue #1225). This repo
+ * same process (Issue 970, PR 976, Issue 977, Issue 1225). This repo
  * has converged on a structural discipline instead of relying on review
  * alone: module-level mocks live in the central mock registry
  * (`packages/server/src/__tests__/test-utils.ts` and
@@ -23,17 +23,18 @@
  * exception) trips this detector and is resolved by an explicit, justified
  * `KNOWN_VIOLATIONS` entry, or preferably by moving the mock into the
  * central registry. Import-graph / export-level merge precision is a
- * documented v2 refinement (see `test-standards.md`'s PR #977 empirical
+ * documented v2 refinement — `test-standards.md` records the empirical
  * finding that `mock.module()` merges the factory's return onto the real
- * module rather than replacing it), warranted only if allowlist-exception
+ * module rather than replacing it — warranted only if allowlist-exception
  * pressure appears.
  *
  * Detection is AST-based (the `typescript` package's `ts.createSourceFile`,
  * the same approach as `scripts/schema-source-normalize.mjs`) — NOT a
- * regex / text scan. PR #1227 added many comments that *mention*
- * `mock.module(` while documenting the prohibition; a text scan would
- * false-positive on every one of them. The AST naturally excludes comments
- * and string literals from being mistaken for a call expression.
+ * regex / text scan. Prose in this repo routinely *mentions*
+ * `mock.module(` while documenting the prohibition (this very file does);
+ * a text scan would false-positive on every one of those mentions. The
+ * AST naturally excludes comments and string literals from being mistaken
+ * for a call expression.
  *
  * A call is flagged when its callee is a static `.module` access — either
  * `PropertyAccessExpression` form (`mock.module(...)`) or the equivalent
@@ -341,12 +342,13 @@ export async function runCheck({ cwd = process.cwd(), files, allowlist = KNOWN_V
 // ---------------------------------------------------------------------------
 // KNOWN_VIOLATIONS — see the file header for the allowlist strategy. Keys
 // are `file + specifier` pairs. The original 8-entry baseline (enumerated
-// against `main` at the time this script landed, Issue #1226) was fully
-// converted to DI seam / spyOn / central-registry migration per the #977
-// playbook in Issue #1238. Empty now; a new justified entry is added the
-// same way -- via the permitted file-exclusive exception in
-// `.claude/rules/testing.md` Anti-Pattern #2 -- and removed in the same PR
-// that converts it. A stale entry left behind fails CI by design.
+// against `main` at the time this script landed, Issue 1226) was fully
+// converted to DI seam / spyOn / central-registry migration per the
+// mock.module()-merge playbook in Issue 1238. Empty now; a new justified
+// entry is added the same way -- via the permitted file-exclusive
+// exception in `.claude/rules/testing.md` Anti-Pattern #2 -- and removed
+// in the same PR that converts it. A stale entry left behind fails CI by
+// design.
 // ---------------------------------------------------------------------------
 export const KNOWN_VIOLATIONS = [];
 

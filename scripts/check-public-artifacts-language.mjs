@@ -30,9 +30,9 @@
  * Greek and Cyrillic used to be blanket-allowed (Greek for math notation,
  * Cyrillic for quoted diff-name identifiers), but that allowance let a
  * whole Cyrillic word substituted for its English look-alike inside
- * otherwise-English prose pass silently (Issue #1450) — a mixed-script
- * rule would have caught only a mixed-script *token*, not a wholly
- * non-Latin word standing alone in a sentence. The allowance is gone;
+ * otherwise-English prose pass silently — a mixed-script rule would have
+ * caught only a mixed-script *token*, not a wholly non-Latin word standing
+ * alone in a sentence. The allowance is gone;
  * a legitimate non-Latin character on a specific line (e.g. a deliberate
  * homograph-attack example) is exempted per-line via the escape marker
  * below instead.
