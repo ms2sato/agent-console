@@ -107,7 +107,19 @@ describe('API Client', () => {
 
   describe('fetchConfig', () => {
     it('should fetch config successfully', async () => {
-      const mockConfig = { homeDir: '/home/user' };
+      const mockConfig = {
+        homeDir: '/home/user',
+        capabilities: {
+          vscode: false,
+          vscodeOpenMode: 'local-spawn' as const,
+          vscodeRemoteHost: null,
+        },
+        serverPid: 1234,
+        serverPort: 3457,
+        authMode: 'none' as const,
+        sharedAccountsAvailable: false,
+        deployedSha: null,
+      };
       mockFetch.mockResolvedValue(createMockResponse(mockConfig));
 
       const result = await fetchConfig();

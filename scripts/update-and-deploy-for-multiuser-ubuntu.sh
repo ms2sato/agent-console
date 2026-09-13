@@ -10,13 +10,20 @@
 #   1. Pre-check: print the source-repo HEAD so the operator confirms the
 #      build will use the intended commit. (The orchestrator is responsible
 #      for syncing the source-repo to the target ref before invoking this
-#      script; this script does NOT git pull on its own.)
+#      script; this script does NOT git pull on its own.) The HEAD SHA is
+#      also captured here for the deployed-commit marker (step 5) and
+#      re-verified unchanged after build and after rsync, aborting before
+#      either the deploy or the marker write on a mismatch -- a concurrent
+#      push to the source repo mid-deploy must not produce a marker that
+#      records a revision rsync never actually copied.
 #   2. bun install (all deps) @ source-repo so build tooling is present.
 #   3. NODE_ENV=production bun run build @ source-repo.
 #   4. rsync source-repo -> deploy target (excludes node_modules + .git).
-#   5. bun install --production @ deploy target (runtime deps only).
-#   6. systemctl restart <service> + status snapshot.
-#   7. Health probe via curl.
+#   5. Write the deployed-commit marker (.deploy-sha) into the deploy target,
+#      using the SHA captured in step 1 (not a fresh read at this point).
+#   6. bun install --production @ deploy target (runtime deps only).
+#   7. systemctl restart <service> + status snapshot.
+#   8. Health probe via curl.
 #
 # Run as your login user (sudo required for the inner elevation to the
 # service user, and for the system-level systemctl restart).
@@ -69,35 +76,63 @@ echo "    HEALTH_URL   : ${HEALTH_URL}"
 echo ""
 
 echo "==> Pre-check: source-repo HEAD"
-sudo -u "${SERVICE_USER}" bash -lc "cd '${SRC}' && git log --oneline -1"
+sudo -u "${SERVICE_USER}" -- git -C "${SRC}" log --oneline -1
+
+# Captured BEFORE build/rsync and re-verified after each, so the marker
+# never records a revision other than the one actually built and copied
+# (a concurrent push to the source repo mid-deploy would otherwise leave
+# the marker pointing at a SHA rsync never saw).
+DEPLOYED_SHA="$(sudo -u "${SERVICE_USER}" -- git -C "${SRC}" rev-parse HEAD)"
 
 echo ""
-echo "==> 1/4 bun install (all deps, build needs dev tooling) @ source-repo"
-sudo -u "${SERVICE_USER}" bash -lc "
-  export PATH=\$HOME/.bun/bin:\$PATH
-  cd '${SRC}' && bun install
-"
+echo "==> 1/5 bun install (all deps, build needs dev tooling) @ source-repo"
+sudo -u "${SERVICE_USER}" bash -lc '
+  export PATH=$HOME/.bun/bin:$PATH
+  cd -- "$1" && bun install
+' _ "${SRC}"
 
 echo ""
-echo "==> 2/4 NODE_ENV=production bun run build @ source-repo"
-sudo -u "${SERVICE_USER}" bash -lc "
-  export PATH=\$HOME/.bun/bin:\$PATH
-  cd '${SRC}' && NODE_ENV=production bun run build
-"
+echo "==> 2/5 NODE_ENV=production bun run build @ source-repo"
+sudo -u "${SERVICE_USER}" bash -lc '
+  export PATH=$HOME/.bun/bin:$PATH
+  cd -- "$1" && NODE_ENV=production bun run build
+' _ "${SRC}"
+
+CURRENT_SHA="$(sudo -u "${SERVICE_USER}" -- git -C "${SRC}" rev-parse HEAD)"
+if [ "${CURRENT_SHA}" != "${DEPLOYED_SHA}" ]; then
+  echo "Error: source HEAD changed during build (${DEPLOYED_SHA} -> ${CURRENT_SHA}). Aborting before deploy." >&2
+  exit 1
+fi
 
 echo ""
-echo "==> 3/4 rsync source-repo -> deploy target (excludes node_modules, .git)"
+echo "==> 3/5 rsync source-repo -> deploy target (excludes node_modules, .git)"
 sudo -u "${SERVICE_USER}" rsync -a --delete \
   --exclude=node_modules \
   --exclude='.git' \
   "${SRC}/" "${DST}/"
 
+CURRENT_SHA="$(sudo -u "${SERVICE_USER}" -- git -C "${SRC}" rev-parse HEAD)"
+if [ "${CURRENT_SHA}" != "${DEPLOYED_SHA}" ]; then
+  echo "Error: source HEAD changed during deploy (${DEPLOYED_SHA} -> ${CURRENT_SHA}). Aborting before marker write." >&2
+  exit 1
+fi
+
 echo ""
-echo "==> 4/4 bun install --production @ deploy target (runtime deps only)"
-sudo -u "${SERVICE_USER}" bash -lc "
-  export PATH=\$HOME/.bun/bin:\$PATH
-  cd '${DST}' && bun install --production
-"
+echo "==> 4/5 write deployed-commit marker (.deploy-sha)"
+# Written into the deploy target (not the source) so it survives the next
+# rsync --delete; rewritten fresh every deploy. Uses the SHA captured at the
+# top of this script (DEPLOYED_SHA), not a fresh read here -- the
+# HEAD-unchanged checks above are what make that captured value trustworthy
+# at this point.
+DEPLOYED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+sudo -u "${SERVICE_USER}" bash -lc 'printf "%s\n%s\n" "$1" "$2" > "$3/.deploy-sha"' _ "${DEPLOYED_SHA}" "${DEPLOYED_AT}" "${DST}"
+
+echo ""
+echo "==> 5/5 bun install --production @ deploy target (runtime deps only)"
+sudo -u "${SERVICE_USER}" bash -lc '
+  export PATH=$HOME/.bun/bin:$PATH
+  cd -- "$1" && bun install --production
+' _ "${DST}"
 
 echo ""
 echo "==> systemctl restart ${SERVICE_NAME}"

@@ -61,6 +61,7 @@ import { McpTokenRegistry } from './mcp/mcp-auth.js';
 import { SqliteTimerRepository } from './repositories/sqlite-timer-repository.js';
 import { SqliteUserRepository } from './repositories/sqlite-user-repository.js';
 import { SystemCapabilitiesService as SystemCapabilitiesServiceClass } from './services/system-capabilities-service.js';
+import { readDeployedSha } from './lib/deployed-sha.js';
 import { SingleUserMode, MultiUserMode } from './services/user-mode.js';
 import { SharedAccountRegistry } from './services/shared-account-registry.js';
 import { UsernameLookupService } from './services/username-lookup.js';
@@ -121,6 +122,14 @@ export interface AppContext {
 
   /** System capabilities (VS Code availability, etc.) */
   systemCapabilities: SystemCapabilitiesService;
+
+  /**
+   * SHA of the commit currently deployed at this instance, read once at
+   * startup from `<cwd>/.deploy-sha` (see `readDeployedSha`). `null` when no
+   * deploy marker is present (e.g. `bun run dev`). Exposed read-only via
+   * `GET /api/config`.
+   */
+  deployedSha: string | null;
 
   /** Agent definition management (built-in + custom agents) */
   agentManager: AgentManager;
@@ -585,9 +594,12 @@ export async function createAppContext(
     broadcastToApp: options?.broadcastToApp ?? (() => {}),
   });
 
-  // 9. Detect system capabilities
+  // 9. Detect system capabilities and read the deployed-commit marker (if any)
   const systemCapabilities = new SystemCapabilitiesServiceClass();
-  await systemCapabilities.detect();
+  const [, deployedSha] = await Promise.all([
+    systemCapabilities.detect(),
+    readDeployedSha(),
+  ]);
 
   logger.info('All services initialized');
 
@@ -599,6 +611,7 @@ export async function createAppContext(
     repositoryManager,
     notificationManager,
     systemCapabilities,
+    deployedSha,
     agentManager,
     embeddedAgentManager,
     agentDirectory,
@@ -640,6 +653,12 @@ export interface CreateTestContextOptions {
   notificationManager?: NotificationManager;
   /** Custom system capabilities service for mocking */
   systemCapabilities?: SystemCapabilitiesService;
+  /**
+   * Deployed SHA to inject (default: `null`, matching production's
+   * no-marker / `bun run dev` state). Avoids touching the filesystem in
+   * tests that need a non-null value.
+   */
+  deployedSha?: string | null;
   /** Custom user mode for mocking */
   userMode?: UserMode;
   /** Custom shared account registry for mocking */
@@ -873,6 +892,7 @@ export async function createTestContext(
     repositoryManager,
     notificationManager,
     systemCapabilities,
+    deployedSha: overrides?.deployedSha ?? null,
     agentManager,
     embeddedAgentManager,
     agentDirectory,
