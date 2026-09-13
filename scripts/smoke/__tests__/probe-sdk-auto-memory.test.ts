@@ -31,6 +31,7 @@ import {
   classifyArmD,
   classifyArmEConfig,
   summarizeArmE,
+  formatMemoryFilesForNote,
   resolveArmFConfigKey,
   armFHaltCheck,
   resolveExtendedTimeoutMs,
@@ -429,12 +430,48 @@ describe('classifyArmEConfig', () => {
   });
 });
 
+describe('formatMemoryFilesForNote', () => {
+  // Boundary: no entries.
+  it('reports an empty array for zero entries', () => {
+    expect(formatMemoryFilesForNote([])).toBe('memoryFiles=[]');
+  });
+
+  it('reports an empty array when entries is undefined (boundary)', () => {
+    expect(formatMemoryFilesForNote(undefined)).toBe('memoryFiles=[]');
+  });
+
+  it('formats a single entry with path/type/tokens', () => {
+    expect(formatMemoryFilesForNote([{ path: '/tmp/x/MEMORY.md', type: 'Project', tokens: 42 }])).toBe(
+      'memoryFiles=[{path=/tmp/x/MEMORY.md, type=Project, tokens=42}]',
+    );
+  });
+
+  it('formats multiple entries, comma-separated, in order (mixed)', () => {
+    const r = formatMemoryFilesForNote([
+      { path: '/tmp/x/MEMORY.md', type: 'Project', tokens: 42 },
+      { path: '/tmp/x/other.md', type: 'User', tokens: 7 },
+    ]);
+    expect(r).toBe('memoryFiles=[{path=/tmp/x/MEMORY.md, type=Project, tokens=42}, {path=/tmp/x/other.md, type=User, tokens=7}]');
+  });
+});
+
 describe('summarizeArmE', () => {
   const unaware: ArmEConfigInput = { settled: true, locationHit: false, accessHit: false };
   const aware: ArmEConfigInput = { settled: true, locationHit: true, accessHit: true };
   const accessOnly: ArmEConfigInput = { settled: true, locationHit: false, accessHit: true };
 
   const allUnaware: ArmESummaryInput = { omitted: unaware, preset: unaware, presetExcluded: unaware };
+
+  it("folds each configuration's memoryFiles entries into the note (Architect request, PR #1676 review)", () => {
+    const withMemoryFiles: ArmEConfigInput = { ...aware, memoryFilesEntries: [{ path: '/tmp/x/MEMORY.md', type: 'Project', tokens: 42 }] };
+    const s = summarizeArmE({ omitted: withMemoryFiles, preset: unaware, presetExcluded: unaware });
+    expect(s.note).toContain('memoryFiles=[{path=/tmp/x/MEMORY.md, type=Project, tokens=42}]');
+  });
+
+  it('folds an empty memoryFiles note when a configuration reports none (boundary)', () => {
+    const s = summarizeArmE(allUnaware);
+    expect(s.note).toContain('memoryFiles=[]');
+  });
 
   it('reports no awareness anywhere, a clean control, when every configuration is unaware (all-failure boundary)', () => {
     const s = summarizeArmE(allUnaware);

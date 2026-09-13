@@ -202,7 +202,12 @@
  *   `pollUsage: true`. Same information (which memory files were loaded into
  *   context and their token cost), different accessor. Arm E reads this (see
  *   `pollUsage: true` on its three measurement turns) rather than leaving the
- *   checklist item as a citation only.
+ *   checklist item as a citation only -- and logs each entry's `path` /
+ *   `type` / `tokens` permanently, one line per entry, plus folds the same
+ *   detail into `summarizeArmE`'s own note (`formatMemoryFilesForNote`), so
+ *   a future reader gets the SDK's own report of what it loaded without
+ *   needing to re-run anything (Architect request, PR #1676 review: a
+ *   count alone cannot answer "is this MEMORY.md or something else").
  *
  * ARM E -- AWARENESS (`--e`). Seeds the SAME MEMORY.md index + topic file as
  * arm A (via the shared `seedMemoryTopic` helper, factored out of arm A's own
@@ -641,10 +646,24 @@ export type ArmEConfigKey = 'omitted' | 'preset' | 'preset-excluded';
 
 export type ArmEClassification = 'aware-and-reading' | 'aware-prose-only' | 'told-not-read' | 'unaware';
 
+/** One `SDKControlGetContextUsageResponse.memoryFiles` entry -- the SDK's own report of a file it loaded into context for a turn. */
+export interface MemoryFileEntry {
+  path: string;
+  type: string;
+  tokens: number;
+}
+
 export interface ArmEConfigInput {
   settled: boolean;
   locationHit: boolean;
   accessHit: boolean;
+  /**
+   * This configuration's `memoryFiles` entries, for the reader (Architect
+   * request, PR #1676 review): folded into `summarizeArmE`'s note so a
+   * future reader gets the SDK's own report of what it loaded without
+   * digging through the raw run log. Does not affect classification.
+   */
+  memoryFilesEntries?: readonly MemoryFileEntry[];
 }
 
 /**
@@ -729,6 +748,19 @@ export interface ArmESummary {
  *
  * @internal Exported for the sibling unit test.
  */
+/**
+ * Renders one configuration's `memoryFiles` entries for `summarizeArmE`'s
+ * note -- the SDK's own report of what it loaded into context, folded into
+ * the durable summary so a future reader gets it without the raw run log
+ * (Architect request, PR #1676 review).
+ *
+ * @internal Exported for the sibling unit test.
+ */
+export function formatMemoryFilesForNote(entries: readonly MemoryFileEntry[] | undefined): string {
+  if (!entries || entries.length === 0) return 'memoryFiles=[]';
+  return `memoryFiles=[${entries.map((e) => `{path=${e.path}, type=${e.type}, tokens=${e.tokens}}`).join(', ')}]`;
+}
+
 export function summarizeArmE(input: ArmESummaryInput): ArmESummary {
   const perConfig: Record<ArmEConfigKey, ReturnType<typeof classifyArmEConfig>> = {
     omitted: classifyArmEConfig(input.omitted),
@@ -750,7 +782,9 @@ export function summarizeArmE(input: ArmESummaryInput): ArmESummary {
         : 'control: NONE AVAILABLE -- the (iii) negative control still surfaced an observable despite excludeDynamicSections, consistent with the SDK doc\'s own note that stripped sections are re-injected as the first user message; do not read (iii) as proof (i)/(ii)\'s awareness came from the dynamic section specifically.';
 
   const note =
-    `(i) omitted: ${perConfig.omitted.note} | (ii) preset: ${perConfig.preset.note} | (iii) preset+excludeDynamicSections: ${perConfig['preset-excluded'].note} | ${controlNote} | ` +
+    `(i) omitted: ${perConfig.omitted.note} ${formatMemoryFilesForNote(input.omitted.memoryFilesEntries)} | ` +
+    `(ii) preset: ${perConfig.preset.note} ${formatMemoryFilesForNote(input.preset.memoryFilesEntries)} | ` +
+    `(iii) preset+excludeDynamicSections: ${perConfig['preset-excluded'].note} ${formatMemoryFilesForNote(input.presetExcluded.memoryFilesEntries)} | ${controlNote} | ` +
     `production's own shape (omitted) ${productionAware ? 'SHOWS awareness' : 'does NOT show awareness'}; awareness-carrying configs: ${awareConfigs.length > 0 ? awareConfigs.join(', ') : '(none)'}.`;
 
   return { conclusive, perConfig, controlClean, awareConfigs, productionAware, note };
@@ -1856,7 +1890,14 @@ async function runArmEConfig(
       `memoryFiles(SDKControlGetContextUsageResponse.memoryFiles)=${memoryFiles.length} memoryFilesMatched=${memoryFilesMatched} ` +
       `text=${JSON.stringify(outcome.text.slice(0, 500))}`,
   );
-  return { settled, locationHit, accessHit, recallFired, memoryFilesMatched, memoryFilesCount: memoryFiles.length };
+  // Architect request, PR #1676 review: log the accessor's own report of
+  // WHAT it loaded (path/type/tokens per entry), not just the count -- the
+  // count alone cannot answer "is this MEMORY.md or something else" without
+  // re-running. One line per entry, permanent (not a one-off debug print).
+  for (const [i, f] of memoryFiles.entries()) {
+    console.log(`E-${key}: memoryFiles[${i}]: path=${f.path} type=${f.type} tokens=${f.tokens}`);
+  }
+  return { settled, locationHit, accessHit, recallFired, memoryFilesMatched, memoryFilesCount: memoryFiles.length, memoryFilesEntries: memoryFiles };
 }
 
 async function runArmE(): Promise<{ verdict: ArmVerdict; summary: ArmESummary | null }> {
