@@ -11,9 +11,10 @@
  * testable at zero cost and separately from what they classify.
  *
  * Task 0b (Issue #1667) adds `classifyArmEConfig` / `summarizeArmE` /
- * `resolveArmFConfigKey` / `resolveExtendedTimeoutMs` / `textContainsPath` /
- * `diffMtimeSnapshots` / `resolveRealConfigDir` (pure, same treatment) and
- * `seedMemoryTopic` (real but zero-cost, deterministic filesystem I/O
+ * `resolveArmFConfigKey` / `armFHaltCheck` / `resolveExtendedTimeoutMs` /
+ * `textContainsPath` / `diffMtimeSnapshots` / `resolveRealConfigDir` /
+ * `isAttributableToProbe` / `classifyRealTreeDiff` (pure, same treatment)
+ * and `seedMemoryTopic` (real but zero-cost, deterministic filesystem I/O
  * against a real tmpdir -- no LLM turn, no network, matching this file's
  * "Tests Must Test Production Code" convention for a helper that isn't a
  * pure function but also isn't billable).
@@ -31,17 +32,20 @@ import {
   classifyArmEConfig,
   summarizeArmE,
   resolveArmFConfigKey,
+  armFHaltCheck,
   resolveExtendedTimeoutMs,
   textContainsPath,
   diffMtimeSnapshots,
   resolveRealConfigDir,
+  isAttributableToProbe,
+  classifyRealTreeDiff,
+  PROBE_SLUG,
   seedMemoryTopic,
   redactRecallEntry,
   recallPathMatches,
   summarizeRecalls,
   EXTENDED_TIMEOUT_CAP_MS,
   WRITE_POLL_TIMEOUT_MS,
-  armFHaltCheck,
   type ArmAInput,
   type ArmCInput,
   type ArmDInput,
@@ -457,6 +461,22 @@ describe('summarizeArmE', () => {
     expect(s.awareConfigs).toEqual(['omitted', 'preset']);
   });
 
+  /**
+   * Architect ruling, PR #1676 review: LOCATION awareness alone
+   * (`told-not-read` -- the model was told the path but did not recall the
+   * seeded title) counts as "shows awareness" for arm F's own premise, even
+   * though ACCESS itself missed. The code already did this
+   * (`classification !== 'unaware'`); this pins it explicitly so a future
+   * edit narrowing to ACCESS-only breaks a test, not just a comment.
+   */
+  it('counts told-not-read (LOCATION only) as awareness, not just ACCESS', () => {
+    const locationOnly: ArmEConfigInput = { settled: true, locationHit: true, accessHit: false };
+    const s = summarizeArmE({ ...allUnaware, omitted: locationOnly });
+    expect(s.perConfig.omitted.classification).toBe('told-not-read');
+    expect(s.productionAware).toBe(true);
+    expect(s.awareConfigs).toEqual(['omitted']);
+  });
+
   it('reports control: NONE AVAILABLE when the (iii) negative control itself surfaces an observable', () => {
     const s = summarizeArmE({ ...allUnaware, presetExcluded: accessOnly });
     expect(s.controlClean).toBe(false);
@@ -547,16 +567,21 @@ describe('armFHaltCheck', () => {
     expect(r.halt).toBe(false);
   });
 
-  it('halts when the (iii) control is NOT clean, even though a configuration shows awareness (mixed)', () => {
+  /**
+   * Architect ruling, PR #1676 review: a dirty (iii) control does NOT halt
+   * -- excludeDynamicSections is documented to re-inject stripped content
+   * as the first user message, so (iii) surfacing an observable is the
+   * EXPECTED result on a doc-conformant build, not evidence F cannot run.
+   */
+  it('does NOT halt when the (iii) control is not clean, as long as a configuration shows awareness (mixed)', () => {
     const r = armFHaltCheck(summarizeArmE(dirtyControl), false);
-    expect(r.halt).toBe(true);
-    expect(r.reason).toContain('NONE AVAILABLE');
+    expect(r.halt).toBe(false);
+    expect(r.reason).toContain('EXPECTED');
   });
 
-  it('halts when the (iii) control turn never settled', () => {
+  it('does NOT halt when the (iii) control turn never settled, as long as a configuration shows awareness', () => {
     const r = armFHaltCheck(summarizeArmE(unsettledControl), false);
-    expect(r.halt).toBe(true);
-    expect(r.reason).toContain('did not settle');
+    expect(r.halt).toBe(false);
   });
 });
 
@@ -684,6 +709,83 @@ describe('resolveRealConfigDir', () => {
 
   it('falls back to ~/.claude when the env var is set to an empty string (boundary)', () => {
     expect(resolveRealConfigDir({ CLAUDE_CONFIG_DIR: '' }, '/home/someone')).toBe(join('/home/someone', '.claude'));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Task 0b (Architect ruling, PR #1676 review): real-tree attribution filter
+// ---------------------------------------------------------------------------
+
+describe('isAttributableToProbe', () => {
+  const nonces = new Set(['NONCE-A', 'NONCE-B']);
+
+  it('is true when the path itself contains the probe slug', () => {
+    expect(isAttributableToProbe({ path: `/home/x/.claude/${PROBE_SLUG}-canary-RUN-1.tmp`, content: null }, PROBE_SLUG, nonces)).toBe(true);
+  });
+
+  it('is true when the content contains one of this run\'s nonces, even with an unrelated path', () => {
+    expect(isAttributableToProbe({ path: '/home/x/.claude/projects/some-slug/transcript.jsonl', content: 'saw NONCE-A in the turn' }, PROBE_SLUG, nonces)).toBe(true);
+  });
+
+  it('is false for an unrelated path with no content (a removed path, boundary)', () => {
+    expect(isAttributableToProbe({ path: '/home/x/.claude/file-history/backup.json', content: null }, PROBE_SLUG, nonces)).toBe(false);
+  });
+
+  it('is false for an unrelated path whose content matches neither nonce (all-failure boundary)', () => {
+    expect(isAttributableToProbe({ path: '/home/x/.claude/projects/other/transcript.jsonl', content: 'ordinary conversation' }, PROBE_SLUG, nonces)).toBe(false);
+  });
+
+  it('is false against an empty nonce set (boundary: no nonces minted yet)', () => {
+    expect(isAttributableToProbe({ path: '/unrelated/path', content: 'NONCE-A' }, PROBE_SLUG, new Set())).toBe(false);
+  });
+});
+
+describe('classifyRealTreeDiff', () => {
+  const nonces = new Set(['NONCE-A']);
+  const canaryPath = `/home/x/.claude/${PROBE_SLUG}-canary-RUN-1.tmp`;
+
+  // Boundary: empty diff.
+  it('reports zero attributable and zero unrelated for an empty diff', () => {
+    const r = classifyRealTreeDiff({ added: [], removed: [], changed: [] }, new Map(), PROBE_SLUG, nonces);
+    expect(r).toEqual({ attributable: { added: [], removed: [], changed: [] }, unrelatedCount: 0 });
+  });
+
+  it('classifies the canary itself as attributable via the slug (the positive control shape)', () => {
+    const diff = { added: [canaryPath], removed: [], changed: [] };
+    const checks = new Map([[canaryPath, { path: canaryPath, content: 'canary content' }]]);
+    const r = classifyRealTreeDiff(diff, checks, PROBE_SLUG, nonces);
+    expect(r.attributable.added).toEqual([canaryPath]);
+    expect(r.unrelatedCount).toBe(0);
+  });
+
+  it('buckets an unrelated concurrent-session path as unrelated, not attributable (all-failure boundary)', () => {
+    const otherTranscript = '/home/x/.claude/projects/other-session/transcript.jsonl';
+    const diff = { added: [], removed: [], changed: [otherTranscript] };
+    const checks = new Map([[otherTranscript, { path: otherTranscript, content: 'unrelated chatter' }]]);
+    const r = classifyRealTreeDiff(diff, checks, PROBE_SLUG, nonces);
+    expect(r.attributable.changed).toEqual([]);
+    expect(r.unrelatedCount).toBe(1);
+  });
+
+  it('splits a mixed diff into attributable and unrelated correctly (mixed)', () => {
+    const leaked = '/home/x/.claude/projects/some-slug/memory/leaked.md';
+    const unrelated1 = '/home/x/.claude/file-history/backup.json';
+    const unrelated2 = '/home/x/.claude/projects/other-session/transcript.jsonl';
+    const diff = { added: [leaked, unrelated1], removed: [], changed: [unrelated2] };
+    const checks = new Map([
+      [leaked, { path: leaked, content: 'contains NONCE-A' }],
+      [unrelated1, { path: unrelated1, content: null }],
+      [unrelated2, { path: unrelated2, content: 'ordinary chatter' }],
+    ]);
+    const r = classifyRealTreeDiff(diff, checks, PROBE_SLUG, nonces);
+    expect(r.attributable).toEqual({ added: [leaked], removed: [], changed: [] });
+    expect(r.unrelatedCount).toBe(2);
+  });
+
+  it('treats a path missing from the checks map as unreadable/unrelated (defensive default)', () => {
+    const r = classifyRealTreeDiff({ added: ['/some/path'], removed: [], changed: [] }, new Map(), PROBE_SLUG, nonces);
+    expect(r.attributable.added).toEqual([]);
+    expect(r.unrelatedCount).toBe(1);
   });
 });
 

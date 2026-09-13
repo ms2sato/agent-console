@@ -242,9 +242,23 @@
  * classification, which is defined purely on the two text observables named
  * in the Issue.
  *
- * ARM F -- SWITCHES (`--f`). Picks whichever of (i)/(ii) arm E's ACCESS
- * observable hit first (i preferred, per the Issue's own "if (i) does, use
- * (i); else (ii)"); when arm F runs without arm E in the same invocation
+ * ORDER CONFOUND, closed (Architect ruling, PR #1676 review): (i)/(ii)/(iii)
+ * run sequentially against the SAME memory dir with `autoMemoryEnabled:
+ * true`, so a write that happens to occur during one configuration's turn
+ * would change what the NEXT configuration observes. The memory dir is
+ * deleted and reseeded IDENTICALLY (same title, same nonce) immediately
+ * before every configuration's turn -- zero extra turns, pure fs I/O -- so
+ * each configuration observes the same freshly-seeded state regardless of
+ * what the previous configuration's turn did. The memory-dir file count is
+ * logged both right after reseeding (the expected baseline) and right after
+ * the turn (evidence of anything that turn itself introduced).
+ *
+ * ARM F -- SWITCHES (`--f`). Picks whichever of (i)/(ii) is classified as
+ * NOT `unaware` first (i preferred, per the Issue's own "if (i) does, use
+ * (i); else (ii)") -- LOCATION awareness alone (`told-not-read`) counts,
+ * not just ACCESS: arm F's premise is "awareness exists under configuration
+ * X", which the model being told the memory-directory path already
+ * establishes; when arm F runs without arm E in the same invocation
  * (cheap standalone dev iteration), a `--f-config <omitted|preset>` override
  * selects it explicitly, defaulting to `omitted` (production's own shape)
  * with a printed warning. Under that configuration, sets
@@ -257,21 +271,32 @@
  * thread into the recall half, which the Issue's Polarity section does not
  * mention.
  *
- * ARM F/G HALT BY DEFAULT (owner ruling, Orchestrator relay, 2026-09-13),
+ * ARM F/G HALT BY DEFAULT (owner ruling, Orchestrator relay, 2026-09-13;
+ * refined by the Architect on this PR's own review -- see below),
  * evaluated by `armFHaltCheck` whenever arm E actually ran in the same
  * invocation: if arm E showed NO configuration ((i) or (ii)) carries
- * awareness, or its own (iii) negative control was not confirmed clean
- * (`control: NONE AVAILABLE`, or (iii)'s own turn never settled), arm F would
- * be measuring the switches against a model that cannot know what to write
- * -- a negative result there is uninterpretable, neither confirming nor
- * refuting the switches. Rather than spend the turns, arm F reports a
- * `HALTED` verdict stating the reason (arm E's own verdict stays
- * `conclusive`, so the run still exits `0`), and arm G reports its own
- * SKIPPED verdict in turn (it cannot run without arm F's write result).
- * `--force-f` overrides the halt for a deliberate operator run anyway; a
- * standalone `--f` invocation with no `--e` in the same run is unaffected
- * (already the operator's own informed choice, per `--f-config`'s existing
- * default).
+ * awareness, arm F would be measuring the switches against a model that
+ * cannot know what to write -- a negative result there is uninterpretable,
+ * neither confirming nor refuting the switches. Rather than spend the
+ * turns, arm F reports a `HALTED` verdict stating the reason (arm E's own
+ * verdict stays `conclusive`, so the run still exits `0`), and arm G
+ * reports its own SKIPPED verdict in turn (it cannot run without arm F's
+ * write result). `--force-f` overrides the halt for a deliberate operator
+ * run anyway; a standalone `--f` invocation with no `--e` in the same run
+ * is unaffected (already the operator's own informed choice, per
+ * `--f-config`'s existing default).
+ *
+ * A dirty or unsettled (iii) control does NOT halt (Architect ruling,
+ * PR #1676 review, overruling this file's own first version): per the
+ * primary-source quote above, `excludeDynamicSections` is DOCUMENTED to
+ * re-inject the stripped sections as the first user message, so (iii)
+ * surfacing an observable is the EXPECTED result on a doc-conformant build
+ * -- treating it as a halt condition would make F/G unreachable without
+ * `--force-f` on any build that behaves as documented. Arm F's own premise
+ * is "awareness exists under configuration X", which (i)/(ii)'s own
+ * observables establish independently of (iii); a dirty (iii) is a caveat
+ * on ATTRIBUTING that awareness to the dynamic section specifically
+ * (already stated in arm E's own note), not a precondition for F to run.
  *
  * ARM G -- TIMESCALE (`--g`). Re-runs arm F's write check ONLY, with a longer
  * poll via `--extended-timeout <ms>` (omitted or `0` behaves exactly like arm
@@ -298,16 +323,34 @@
  * real, non-isolated `CLAUDE_CONFIG_DIR` lives (the env var if already set,
  * else `~/.claude` -- measured via existence, never assumed), recursively
  * snapshots every file's mtime under it, and writes a small canary file
- * there as an in-band positive control (proving the diff mechanism can
- * detect a real change at all -- Task 0's own addendum used the same
- * before/after/positive-control shape against `~/.claude/projects`). After
- * every selected arm has run, it snapshots again and asserts nothing else
- * under that real tree changed. A failed positive control, or a dirty real
- * tree, escalates this script's own exit code to `HARNESS` regardless of
- * what the arms themselves measured -- the isolation claim is a precondition
- * for trusting anything else this script reports. The canary is removed in a
- * `finally` block so it survives an early-throw exit at most as long as the
- * failed run itself.
+ * there (named `${PROBE_SLUG}-canary-<runId>.tmp`) as an in-band positive
+ * control. After every selected arm has run, it snapshots again.
+ *
+ * ATTRIBUTION FILTER (Architect ruling, PR #1676 review, replacing this
+ * file's own first version): the real config dir belongs to the OPERATING
+ * OS user, whose OTHER live Claude Code sessions write their own
+ * transcripts / file-history continuously -- a raw "did anything change"
+ * diff is near-certain to fire on a host with any concurrent activity,
+ * independent of anything this probe does. `classifyRealTreeDiff` /
+ * `isAttributableToProbe` instead count a changed/added/removed path as
+ * escalation-worthy ONLY when it is attributable to THIS run: its path
+ * contains `PROBE_SLUG` (`probe-sdk-automem`), OR its post-run content
+ * contains one of the nonces THIS run minted (`trackedNonce`, tracked in
+ * `runNonces` -- every `nonce()` call in this file goes through it, never
+ * the harness's `nonce()` directly). Everything else is logged as
+ * "unrelated concurrent activity: N paths" and never escalates. The canary
+ * is classified through this SAME filter (never a raw `.includes()`), so
+ * its own positive control proves the FILTERED detector works, not merely
+ * that the raw diff can see a change. Precedent: Task 0's own manual
+ * real-tree addendum (#1662) used exactly this slug-match-or-nonce-grep
+ * shape by hand.
+ *
+ * A failed positive control, or an attributable change surviving the
+ * filter, escalates this script's own exit code to `HARNESS` regardless of
+ * what the arms themselves measured -- the isolation claim is a
+ * precondition for trusting anything else this script reports. The canary
+ * is removed in a `finally` block so it survives an early-throw exit at
+ * most as long as the failed run itself.
  *
  * `--expect-no-write` reports CONFIRMED ABSENCE under arm F and arm G
  * independently, per this Issue's own Polarity section. Arm E's polarity is
@@ -647,7 +690,16 @@ export interface ArmESummary {
   perConfig: Record<ArmEConfigKey, ReturnType<typeof classifyArmEConfig>>;
   /** Whether the (iii) negative control stayed clean (neither observable hit). `null` when (iii)'s own turn did not settle. */
   controlClean: boolean | null;
-  /** (i)/(ii) configurations whose ACCESS observable hit -- the Issue's own definition of "shows awareness". */
+  /**
+   * (i)/(ii) configurations classified as NOT `unaware` -- i.e. either
+   * observable hit (`aware-and-reading` / `aware-prose-only` /
+   * `told-not-read`). LOCATION awareness alone (`told-not-read`) counts:
+   * arm F's premise is "awareness exists under configuration X", which the
+   * model being told the memory-directory path already establishes, even
+   * if it did not also demonstrate reading the seeded entry (Architect
+   * ruling, PR #1676 review -- corrects this comment's earlier,
+   * ACCESS-only wording; the code was always right).
+   */
   awareConfigs: Array<'omitted' | 'preset'>;
   /** Whether PRODUCTION's own shape (`omitted`) shows awareness -- the primary finding this arm exists to produce. */
   productionAware: boolean;
@@ -752,6 +804,104 @@ function snapshotMtimes(dir: string): Map<string, number> {
     }
   }
   return map;
+}
+
+/**
+ * Slug every probe-owned scratch path and the canary carry (Architect
+ * ruling, PR #1676 review) -- matches this file's existing scratch-cwd /
+ * isolated-config-dir naming convention (`buildScratchCwd` /
+ * `isolateClaudeConfigDir`'s own `probe-sdk-automem-...` labels).
+ *
+ * @internal Exported for the sibling unit test.
+ */
+export const PROBE_SLUG = 'probe-sdk-automem';
+
+export interface RealTreePathCheck {
+  path: string;
+  /** Post-run file content, or `null` for a removed path (nothing left to read) or an unreadable one. */
+  content: string | null;
+}
+
+/**
+ * Whether a changed/added/removed path under the REAL, non-isolated config
+ * tree is attributable to THIS probe run -- a slug match on the path itself,
+ * or the path's post-run content containing one of the run's own nonces.
+ * A removed path (`content === null`) can only be attributed by the slug
+ * match; its content is gone.
+ *
+ * Architect ruling, PR #1676 review: the real-tree cross-check previously
+ * escalated on ANY change under the real config dir, which false-positives
+ * on a host where the SAME OS user runs other live Claude Code sessions
+ * that continuously write their own transcripts / file-history -- a diff is
+ * near-certain there, independent of anything this probe does. Only a path
+ * this run can be tied to is worth escalating on; everything else is
+ * unrelated concurrent activity, logged as a count, never escalated.
+ * Precedent: Task 0's own manual real-tree addendum (#1662) used exactly
+ * this slug-match-or-nonce-grep shape by hand.
+ *
+ * @internal Exported for the sibling unit test.
+ */
+export function isAttributableToProbe(check: RealTreePathCheck, probeSlug: string, nonces: ReadonlySet<string>): boolean {
+  if (check.path.includes(probeSlug)) return true;
+  if (check.content === null) return false;
+  for (const n of nonces) {
+    if (check.content.includes(n)) return true;
+  }
+  return false;
+}
+
+export interface RealTreeDiffClassification {
+  attributable: MtimeDiff;
+  unrelatedCount: number;
+}
+
+/**
+ * Splits a raw mtime diff into probe-attributable vs. unrelated concurrent
+ * activity. `checks` supplies each candidate path's post-run content (or
+ * `null`); a path with no entry is treated as unreadable (content `null`).
+ * The canary path must be classified through this SAME function (not a raw
+ * `.includes()` on the diff) so its own positive control proves the
+ * FILTERED detector works, not merely that the raw diff can see a change.
+ *
+ * @internal Exported for the sibling unit test.
+ */
+export function classifyRealTreeDiff(
+  diff: MtimeDiff,
+  checks: ReadonlyMap<string, RealTreePathCheck>,
+  probeSlug: string,
+  nonces: ReadonlySet<string>,
+): RealTreeDiffClassification {
+  const attribute = (paths: readonly string[]): string[] =>
+    paths.filter((p) => isAttributableToProbe(checks.get(p) ?? { path: p, content: null }, probeSlug, nonces));
+  const attributable: MtimeDiff = {
+    added: attribute(diff.added),
+    removed: attribute(diff.removed),
+    changed: attribute(diff.changed),
+  };
+  const totalPaths = diff.added.length + diff.removed.length + diff.changed.length;
+  const totalAttributable = attributable.added.length + attributable.removed.length + attributable.changed.length;
+  return { attributable, unrelatedCount: totalPaths - totalAttributable };
+}
+
+/** Reads a path's content for the attribution filter, `null` when gone or unreadable (never throws). */
+function readForAttribution(path: string): string | null {
+  try {
+    return readFileSync(path, 'utf8');
+  } catch {
+    return null;
+  }
+}
+
+/** Builds the `checks` map `classifyRealTreeDiff` needs from a raw diff -- real I/O, not unit-tested directly (the pure classifier above is). */
+function buildAttributionChecks(diff: MtimeDiff): Map<string, RealTreePathCheck> {
+  const checks = new Map<string, RealTreePathCheck>();
+  for (const p of [...diff.added, ...diff.changed]) {
+    checks.set(p, { path: p, content: readForAttribution(p) });
+  }
+  for (const p of diff.removed) {
+    checks.set(p, { path: p, content: null });
+  }
+  return checks;
 }
 
 // ---------------------------------------------------------------------------
@@ -941,6 +1091,15 @@ const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms
 
 const startedAt = Date.now();
 const perTurn = new Map<string, { tokens: number; cost: number }>();
+
+/** Every nonce minted anywhere in this run (Architect ruling, PR #1676 review) -- feeds the real-tree cross-check's attribution filter. Never call the harness's `nonce()` directly elsewhere in this file; always go through `trackedNonce`. */
+const runNonces = new Set<string>();
+
+function trackedNonce(prefix: string): string {
+  const n = nonce(prefix);
+  runNonces.add(n);
+  return n;
+}
 
 function account(label: string, outcome: Pick<TurnOutcome, 'result'>): void {
   const r = outcome.result;
@@ -1311,7 +1470,7 @@ async function runRecallCheck(p: RecallCheckParams): Promise<Verdict> {
   // (see this file's header -- the algorithm cannot be read from source, so
   // it is discovered empirically). Uses a throwaway fact, distinct from the
   // real nonce measured below.
-  const discoveryFact = nonce(`${p.noncePrefix}-DISCOVERY`);
+  const discoveryFact = trackedNonce(`${p.noncePrefix}-DISCOVERY`);
   const { outcome: discOutcome } = await runMemorySession(p.configDir, p.cwdSeeded, p.settings, writeWorthyPrompt(discoveryFact), `${p.labelPrefix}-discovery`, {
     systemPrompt: p.systemPrompt,
   });
@@ -1325,7 +1484,7 @@ async function runRecallCheck(p: RecallCheckParams): Promise<Verdict> {
   const memoryDir = join(p.configDir, 'projects', slug, 'memory');
   console.log(`${p.labelPrefix}: discovered default memory dir for this cwd: ${memoryDir}`);
 
-  const theNonce = nonce(p.noncePrefix);
+  const theNonce = trackedNonce(p.noncePrefix);
   // Two hand-authored files, in the format documented at
   // https://code.claude.com/docs/en/memory (fetched and read directly, per
   // Architect ruling on PR #1662 -- CodeRabbit correctly flagged that an
@@ -1470,7 +1629,7 @@ export interface WriteCheckParams {
 
 /** Byte-identical to arm C's own original inline logic, parameterized by `settings` / `systemPrompt` / `timeoutMs` so arms F and G can run the exact same check. */
 async function runWriteCheck(p: WriteCheckParams): Promise<Verdict> {
-  const theNonce = nonce(p.noncePrefix);
+  const theNonce = trackedNonce(p.noncePrefix);
   const prompt = p.expectNoWrite ? 'What is 2 + 2? Answer with just the number, nothing else.' : writeWorthyPrompt(theNonce);
   const { outcome } = await runMemorySession(p.configDir, p.cwd, p.settings, prompt, p.labelPrefix, { systemPrompt: p.systemPrompt });
   if (!turnSettled(outcome)) {
@@ -1528,7 +1687,7 @@ async function runArmDRead(): Promise<ArmDReadMeasurement> {
     const overrideDir = mkdtempSync(join(tmpdir(), 'probe-sdk-automem-d-read-override-'));
     const cwd = buildScratchCwd('d-read');
     try {
-      const readNonce = nonce('AUTOMEM-D-READ');
+      const readNonce = trackedNonce('AUTOMEM-D-READ');
       const seedPath = join(overrideDir, 'seed.md');
       writeFileSync(seedPath, `# Seeded fact\n\nThe override codename is ${readNonce}.\n`);
       const { outcome, recallsForTurn } = await runMemorySession(
@@ -1555,7 +1714,7 @@ async function runArmDWrite(): Promise<ArmDWriteMeasurement> {
     const overrideDir = mkdtempSync(join(tmpdir(), 'probe-sdk-automem-d-write-override-'));
     const cwd = buildScratchCwd('d-write');
     try {
-      const writeNonce = nonce('AUTOMEM-D-WRITE');
+      const writeNonce = trackedNonce('AUTOMEM-D-WRITE');
       const { outcome } = await runMemorySession(configDir, cwd, { autoMemoryEnabled: true, autoMemoryDirectory: overrideDir }, writeWorthyPrompt(writeNonce), 'D-write');
       if (!turnSettled(outcome)) {
         return { settled: false, writeFound: false, defaultLeaked: false };
@@ -1653,7 +1812,7 @@ async function runArmE(): Promise<{ verdict: ArmVerdict; summary: ArmESummary | 
     try {
       // Discovery, same shape as the recall check's own: learn the default
       // memory dir for this cwd before seeding it.
-      const discoveryFact = nonce('AUTOMEM-E-DISCOVERY');
+      const discoveryFact = trackedNonce('AUTOMEM-E-DISCOVERY');
       const { outcome: discOutcome } = await runMemorySession(configDir, cwd, { autoMemoryEnabled: true }, writeWorthyPrompt(discoveryFact), 'E-discovery');
       if (!turnSettled(discOutcome)) {
         return { verdict: { arm: 'E', ...inconclusive('the discovery turn did not settle.') }, summary: null };
@@ -1673,24 +1832,46 @@ async function runArmE(): Promise<{ verdict: ArmVerdict; summary: ArmESummary | 
 
       // Nonce-bearing title: arm A's fixed title ("Automem probe seeded
       // fact") is guessable from this repo's own source; a nonce is not.
-      const titleNonce = nonce('AUTOMEM-E-TITLE');
+      // Minted ONCE and reused for every reseed below, so all three
+      // configurations observe byte-identical seeded content.
+      const titleNonce = trackedNonce('AUTOMEM-E-TITLE');
       const indexTitle = `Automem probe seeded fact ${titleNonce}`;
       const topicFilename = 'automem-probe-seeded-fact.md';
-      const { topicPath } = seedMemoryTopic({
-        memoryDir,
-        topicFilename,
-        frontmatterName: 'automem-probe-seeded-fact',
-        description: 'Auto-memory probe Arm E seeded fact (Issue #1667)',
-        codenameSubject: 'The secret project codename',
-        codenameValue: nonce('AUTOMEM-E-CODENAME'),
-        indexTitle,
-        indexHook: 'the secret project codename is recorded here.',
-      });
-      console.log(`E: seeded nonce-bearing index title "${indexTitle}" as a topic file (${topicPath})`);
+      const codenameValue = trackedNonce('AUTOMEM-E-CODENAME');
 
-      const omitted = await runArmEConfig('omitted', configDir, cwd, memoryDir, topicFilename, indexTitle);
-      const preset = await runArmEConfig('preset', configDir, cwd, memoryDir, topicFilename, indexTitle);
-      const presetExcluded = await runArmEConfig('preset-excluded', configDir, cwd, memoryDir, topicFilename, indexTitle);
+      /**
+       * Architect ruling, PR #1676 review: (i)/(ii)/(iii) run sequentially
+       * against the SAME memory dir with `autoMemoryEnabled: true`, so a
+       * write that happens to occur during one configuration's turn would
+       * change what the NEXT configuration observes. Reset (delete the
+       * memory dir) and reseed IDENTICALLY before every configuration --
+       * zero extra turns, pure fs I/O -- so each configuration's turn sees
+       * the same freshly-seeded state regardless of what the previous
+       * configuration's turn did. The memory-dir file count is logged both
+       * before (post-reseed, the expected baseline) and after (post-turn,
+       * evidence of anything the turn itself introduced) each configuration.
+       */
+      async function reseedAndRunArmEConfig(key: ArmEConfigKey): Promise<ArmEConfigRunResult> {
+        rmSync(memoryDir, { recursive: true, force: true });
+        seedMemoryTopic({
+          memoryDir,
+          topicFilename,
+          frontmatterName: 'automem-probe-seeded-fact',
+          description: 'Auto-memory probe Arm E seeded fact (Issue #1667)',
+          codenameSubject: 'The secret project codename',
+          codenameValue,
+          indexTitle,
+          indexHook: 'the secret project codename is recorded here.',
+        });
+        console.log(`E-${key}: reseeded memory dir -- file count before this configuration's turn: ${walkFiles(memoryDir).length}`);
+        const result = await runArmEConfig(key, configDir, cwd, memoryDir, topicFilename, indexTitle);
+        console.log(`E-${key}: memory dir file count after this configuration's turn: ${walkFiles(memoryDir).length}`);
+        return result;
+      }
+
+      const omitted = await reseedAndRunArmEConfig('omitted');
+      const preset = await reseedAndRunArmEConfig('preset');
+      const presetExcluded = await reseedAndRunArmEConfig('preset-excluded');
 
       const summary = summarizeArmE({ omitted, preset, presetExcluded });
       console.log(`E: ${summary.note}`);
@@ -1770,22 +1951,32 @@ export function armFHaltCheck(summary: ArmESummary | null, force: boolean): ArmF
   if (force) {
     return { halt: false, reason: '--force-f override -- running despite the gate.' };
   }
-  if (summary.controlClean !== true) {
-    return {
-      halt: true,
-      reason:
-        summary.controlClean === false
-          ? "Arm E's (iii) negative control was not confirmed clean (control: NONE AVAILABLE) -- no trustworthy baseline to interpret Arm F's result against."
-          : "Arm E's (iii) negative control turn did not settle -- no trustworthy baseline to interpret Arm F's result against.",
-    };
-  }
   if (summary.awareConfigs.length === 0) {
     return {
       halt: true,
       reason: 'no configuration (i omitted, ii preset) carries awareness on this build -- switches are untestable until awareness is established.',
     };
   }
-  return { halt: false, reason: "Arm E confirms at least one configuration carries awareness with a clean (iii) control." };
+  // Architect ruling, PR #1676 review (overrules this function's own
+  // earlier version): a dirty or unsettled (iii) control does NOT halt.
+  // Per the vendored sdk.d.ts, excludeDynamicSections is DOCUMENTED to
+  // re-inject the stripped sections as the first user message, so (iii)
+  // surfacing an observable is the EXPECTED result when the SDK behaves as
+  // documented -- treating it as a halt condition would make F/G
+  // unreachable on any doc-conformant build without --force-f. Arm F's own
+  // premise is "awareness exists under configuration X", which (i)/(ii)'s
+  // own observables establish on their own; (iii)'s cleanliness is a
+  // caveat on ATTRIBUTING that awareness to the dynamic section
+  // specifically (already stated in Arm E's own note), not a precondition
+  // for F to run.
+  if (summary.controlClean !== true) {
+    return {
+      halt: false,
+      reason:
+        "Arm E confirms at least one configuration carries awareness; the (iii) control was not confirmed clean, which is EXPECTED when excludeDynamicSections re-injects as documented -- a caveat on awareness attribution, not a reason F cannot run.",
+    };
+  }
+  return { halt: false, reason: 'Arm E confirms at least one configuration carries awareness with a clean (iii) control.' };
 }
 
 interface ArmFResult {
@@ -1931,21 +2122,23 @@ async function main(): Promise<number> {
   // every selected arm has run. See this file's header: this canary write is
   // the ONE thing this script writes outside its isolated per-arm config
   // dirs, deliberately, as the cross-check's own in-band positive control.
-  const runId = nonce('RUN');
+  const runId = trackedNonce('RUN');
   console.log(`run id: ${runId}`);
   const realConfigDir = resolveRealConfigDir(process.env, homedir());
   h('Real config-location cross-check: snapshot + canary positive control (before any arm)');
   console.log(`real CLAUDE_CONFIG_DIR resolves to: ${realConfigDir} (exists=${existsSync(realConfigDir)})`);
   const beforeSnapshot = snapshotMtimes(realConfigDir);
-  // Owner ruling, 2026-09-13: the name carries this run's id and a
-  // `probe-sdk-auto-memory` prefix (no leading dot, so a crash leaves a
-  // plainly visible, identifiable file rather than one hidden from a bare
-  // `ls`) so an interrupted run's leftover is easy to find and attribute.
-  const canaryPath = join(realConfigDir, `probe-sdk-auto-memory-canary-${runId}.tmp`);
+  // Owner ruling, 2026-09-13: the name carries this run's id and the probe's
+  // own slug (no leading dot, so a crash leaves a plainly visible,
+  // identifiable file rather than one hidden from a bare `ls`) so an
+  // interrupted run's leftover is easy to find and attribute. The slug MUST
+  // match PROBE_SLUG exactly -- it is what lets the attribution filter
+  // below recognize this file as the probe's own, not unrelated activity.
+  const canaryPath = join(realConfigDir, `${PROBE_SLUG}-canary-${runId}.tmp`);
   let canaryWritten = false;
   try {
     mkdirSync(realConfigDir, { recursive: true });
-    writeFileSync(canaryPath, `probe-sdk-auto-memory canary (run ${runId}) -- safe to delete\n`);
+    writeFileSync(canaryPath, `${PROBE_SLUG} canary (run ${runId}) -- safe to delete\n`);
     canaryWritten = true;
   } catch (err) {
     console.log(
@@ -1953,11 +2146,16 @@ async function main(): Promise<number> {
     );
   }
   const afterCanarySnapshot = canaryWritten ? snapshotMtimes(realConfigDir) : beforeSnapshot;
-  const canaryDiff = diffMtimeSnapshots(beforeSnapshot, afterCanarySnapshot);
-  const canaryDetected = canaryWritten && canaryDiff.added.includes(canaryPath);
+  const canaryRawDiff = diffMtimeSnapshots(beforeSnapshot, afterCanarySnapshot);
+  // Architect ruling, PR #1676 review: the positive control must prove the
+  // FILTERED detector works, not merely that the raw diff can see a change
+  // -- so classify through the SAME attribution filter the final check uses
+  // below, rather than a raw `.added.includes(canaryPath)`.
+  const canaryClassification = classifyRealTreeDiff(canaryRawDiff, buildAttributionChecks(canaryRawDiff), PROBE_SLUG, runNonces);
+  const canaryDetected = canaryWritten && canaryClassification.attributable.added.includes(canaryPath);
   console.log(
     `real-tree canary positive control: ${
-      canaryWritten ? (canaryDetected ? 'DETECTED (the diff mechanism can see a real change)' : 'NOT DETECTED -- cross-check untrustworthy this run') : 'SKIPPED (canary could not be written)'
+      canaryWritten ? (canaryDetected ? 'DETECTED (the filtered attribution detector can see a real, attributable change)' : 'NOT DETECTED -- cross-check untrustworthy this run') : 'SKIPPED (canary could not be written)'
     }`,
   );
 
@@ -2023,11 +2221,16 @@ async function main(): Promise<number> {
     if (afterArmsSnapshot) {
       const runDiff = diffMtimeSnapshots(afterCanarySnapshot, afterArmsSnapshot);
       // The canary's own removal above happens AFTER this snapshot, so it is
-      // still present here and deliberately excluded from "unexpected".
-      const unexpectedChanged = runDiff.changed.filter((p) => p !== canaryPath);
-      realTreeClean = runDiff.added.length === 0 && runDiff.removed.length === 0 && unexpectedChanged.length === 0;
+      // still present, unchanged, in both snapshots -- it never appears in
+      // this diff at all (present-and-identical in both), nothing to
+      // exclude here.
+      const classification = classifyRealTreeDiff(runDiff, buildAttributionChecks(runDiff), PROBE_SLUG, runNonces);
+      const { attributable, unrelatedCount } = classification;
+      realTreeClean = attributable.added.length === 0 && attributable.removed.length === 0 && attributable.changed.length === 0;
       console.log(
-        `real-tree cross-check after all arms: clean=${realTreeClean} added=${JSON.stringify(runDiff.added)} removed=${JSON.stringify(runDiff.removed)} changed=${JSON.stringify(unexpectedChanged)}`,
+        `real-tree cross-check after all arms: clean=${realTreeClean} attributable-added=${JSON.stringify(attributable.added)} ` +
+          `attributable-removed=${JSON.stringify(attributable.removed)} attributable-changed=${JSON.stringify(attributable.changed)} ` +
+          `unrelated concurrent activity (not escalated): ${unrelatedCount} path(s)`,
       );
     } else {
       console.log('real-tree cross-check after all arms: SKIPPED (canary could not be written; see warning above).');
@@ -2056,7 +2259,7 @@ async function main(): Promise<number> {
     code = Math.max(code, PROBE_EXIT.HARNESS);
   }
   if (realTreeClean === false) {
-    console.log('\nWARNING: escalating exit code to HARNESS -- the real, non-isolated CLAUDE_CONFIG_DIR tree changed during this run.');
+    console.log('\nWARNING: escalating exit code to HARNESS -- the real, non-isolated CLAUDE_CONFIG_DIR tree changed in a way attributable to this run (slug or nonce match).');
     code = Math.max(code, PROBE_EXIT.HARNESS);
   }
   console.log(`\nexit code ${code} -- ${EXIT_CODE_MEANINGS[code]}`);
