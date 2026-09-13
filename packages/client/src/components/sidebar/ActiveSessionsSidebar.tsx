@@ -222,7 +222,10 @@ function SessionItem({ sessionWithActivity, collapsed, isActive, onClick, orches
       data-testid={`orchestrator-flag-${session.id}`}
       onClick={handleOrchestratorFlagClick}
       disabled={orchestratorFlagPending}
-      className={`absolute left-3 top-[38px] w-4 h-4 flex items-center justify-center rounded transition-colors disabled:opacity-50 ${
+      // top offset = row p-3 (0.75rem) + column mt-1.5 (0.375rem) + dot box h-4
+      // (1rem) + gap-1 (0.25rem). Update this expression, not a bare number, if
+      // any of those four values change.
+      className={`absolute left-3 top-[calc(0.75rem_+_0.375rem_+_1rem_+_0.25rem)] w-4 h-4 flex items-center justify-center rounded transition-colors disabled:opacity-50 ${
         isOrchestratorFlagLit
           ? 'text-amber-400 hover:text-amber-300'
           : 'text-gray-600 hover:text-gray-400'
