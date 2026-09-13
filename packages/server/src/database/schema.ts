@@ -191,6 +191,10 @@ export interface RepositoriesTable {
   description: string | null;
   /** Default agent ID for worktree creation (added in v10) */
   default_agent_id: string | null;
+  /** Session that is this repository's designated Orchestrator (added in v40). ON DELETE SET NULL. */
+  orchestrator_session_id: string | null;
+  /** Comma-separated label names that trigger issue:labeled routing (added in v40). */
+  issue_trigger_labels: string | null;
 }
 
 /** Repository row as returned from SELECT queries */

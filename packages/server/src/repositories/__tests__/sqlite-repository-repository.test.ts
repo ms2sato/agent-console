@@ -35,6 +35,8 @@ describe('SqliteRepositoryRepository', () => {
       .addColumn('env_vars', 'text')
       .addColumn('description', 'text')
       .addColumn('default_agent_id', 'text')
+      .addColumn('orchestrator_session_id', 'text')
+      .addColumn('issue_trigger_labels', 'text')
       .execute();
 
     repository = new SqliteRepositoryRepository(db);
@@ -57,6 +59,8 @@ describe('SqliteRepositoryRepository', () => {
       cleanupCommand: overrides.cleanupCommand,
       description: overrides.description ?? null,
       defaultAgentId: overrides.defaultAgentId ?? null,
+      orchestratorSessionId: overrides.orchestratorSessionId ?? null,
+      issueTriggerLabels: overrides.issueTriggerLabels ?? null,
       clonedSourceRepoPath: overrides.clonedSourceRepoPath ?? null,
     };
   }
@@ -702,6 +706,85 @@ describe('SqliteRepositoryRepository', () => {
       const repos = await repository.findAll();
       const found = repos.find((r) => r.id === 'repo-findall-agent');
       expect(found?.defaultAgentId).toBe('agent-for-findall');
+    });
+  });
+
+  describe('orchestratorSessionId', () => {
+    it('should round-trip orchestratorSessionId through save() and findById()', async () => {
+      const repo = createRepository({
+        id: 'repo-orchestrator-session',
+        orchestratorSessionId: 'session-orchestrator-1',
+      });
+      await repository.save(repo);
+
+      const found = await repository.findById('repo-orchestrator-session');
+      expect(found?.orchestratorSessionId).toBe('session-orchestrator-1');
+    });
+
+    it('should default orchestratorSessionId to null when not provided', async () => {
+      const repo = createRepository({ id: 'repo-no-orchestrator-session' });
+      await repository.save(repo);
+
+      const found = await repository.findById('repo-no-orchestrator-session');
+      expect(found?.orchestratorSessionId).toBeNull();
+    });
+  });
+
+  describe('issueTriggerLabels', () => {
+    it('should round-trip issueTriggerLabels through save() and findById()', async () => {
+      const repo = createRepository({
+        id: 'repo-issue-labels-save',
+        issueTriggerLabels: 'bug, needs-triage',
+      });
+      await repository.save(repo);
+
+      const found = await repository.findById('repo-issue-labels-save');
+      expect(found?.issueTriggerLabels).toBe('bug, needs-triage');
+    });
+
+    it('should default issueTriggerLabels to null when not provided', async () => {
+      const repo = createRepository({ id: 'repo-no-issue-labels' });
+      await repository.save(repo);
+
+      const found = await repository.findById('repo-no-issue-labels');
+      expect(found?.issueTriggerLabels).toBeNull();
+    });
+
+    it('should set issueTriggerLabels via update()', async () => {
+      const repo = createRepository({ id: 'repo-update-issue-labels' });
+      await repository.save(repo);
+
+      const before = await repository.findById('repo-update-issue-labels');
+      expect(before?.issueTriggerLabels).toBeNull();
+
+      const updated = await repository.update('repo-update-issue-labels', {
+        issueTriggerLabels: 'bug, needs-triage',
+      });
+
+      expect(updated).not.toBeNull();
+      expect(updated?.issueTriggerLabels).toBe('bug, needs-triage');
+    });
+
+    it('should clear issueTriggerLabels via update() when given empty string', async () => {
+      const repo = createRepository({
+        id: 'repo-clear-issue-labels',
+        issueTriggerLabels: 'bug, needs-triage',
+      });
+      await repository.save(repo);
+
+      const updated = await repository.update('repo-clear-issue-labels', {
+        issueTriggerLabels: '',
+      });
+
+      expect(updated).not.toBeNull();
+      expect(updated?.issueTriggerLabels).toBeNull();
+
+      const row = await db
+        .selectFrom('repositories')
+        .where('id', '=', 'repo-clear-issue-labels')
+        .select('issue_trigger_labels')
+        .executeTakeFirst();
+      expect(row?.issue_trigger_labels).toBeNull();
     });
   });
 

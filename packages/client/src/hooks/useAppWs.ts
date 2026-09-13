@@ -261,6 +261,12 @@ export function useAppWsEvent(options: UseAppWsEventOptions = {}): void {
           // First-frame wire-schema version. App state is unaffected by this
           // frame; server/client mismatch handling lives in the transport layer.
           break;
+        case 'orchestrator-designation-changed':
+          // Announces when a repository's designated-Orchestrator session
+          // changes. Client-side UI callback wiring is not yet implemented;
+          // only the exhaustive discriminated-union case is satisfied here.
+          logger.debug(`[WebSocket] orchestrator-designation-changed: repositoryId=${msg.repositoryId}`);
+          break;
         default: {
           const _exhaustive: never = msg;
           logger.warn('Unknown message type received:', _exhaustive);

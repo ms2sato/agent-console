@@ -1261,6 +1261,8 @@ describe('mappers', () => {
       expect(row.setup_command).toBeNull();
       expect(row.cleanup_command).toBeNull();
       expect(row.default_agent_id).toBeNull();
+      expect(row.orchestrator_session_id).toBeNull();
+      expect(row.issue_trigger_labels).toBeNull();
     });
 
     it('should map defaultAgentId to default_agent_id', () => {
@@ -1305,6 +1307,8 @@ describe('mappers', () => {
         env_vars: null,
         description: null,
         default_agent_id: null,
+        orchestrator_session_id: null,
+        issue_trigger_labels: null,
       };
 
       const repository = toRepository(row);
@@ -1317,6 +1321,50 @@ describe('mappers', () => {
       expect(repository.cleanupCommand).toBeNull();
       expect(repository.envVars).toBeNull();
       expect(repository.defaultAgentId).toBeNull();
+      expect(repository.orchestratorSessionId).toBeNull();
+      expect(repository.issueTriggerLabels).toBeNull();
+    });
+
+    it('should map orchestrator_session_id to orchestratorSessionId', () => {
+      const row: RepositoryRow = {
+        id: 'repo-orchestrator',
+        name: 'test-repo',
+        path: '/tmp/test-repo',
+        created_at: '2024-12-01T00:00:00.000Z',
+        updated_at: '2024-12-01T00:00:00.000Z',
+        setup_command: null,
+        cleanup_command: null,
+        env_vars: null,
+        description: null,
+        default_agent_id: null,
+        orchestrator_session_id: 'session-orchestrator-1',
+        issue_trigger_labels: null,
+      };
+
+      const repository = toRepository(row);
+
+      expect(repository.orchestratorSessionId).toBe('session-orchestrator-1');
+    });
+
+    it('should map issue_trigger_labels to issueTriggerLabels', () => {
+      const row: RepositoryRow = {
+        id: 'repo-issue-labels',
+        name: 'test-repo',
+        path: '/tmp/test-repo',
+        created_at: '2024-12-01T00:00:00.000Z',
+        updated_at: '2024-12-01T00:00:00.000Z',
+        setup_command: null,
+        cleanup_command: null,
+        env_vars: null,
+        description: null,
+        default_agent_id: null,
+        orchestrator_session_id: null,
+        issue_trigger_labels: 'bug, needs-triage',
+      };
+
+      const repository = toRepository(row);
+
+      expect(repository.issueTriggerLabels).toBe('bug, needs-triage');
     });
 
     it('should handle created_at correctly', () => {
@@ -1331,6 +1379,8 @@ describe('mappers', () => {
         env_vars: null,
         description: null,
         default_agent_id: null,
+        orchestrator_session_id: null,
+        issue_trigger_labels: null,
       };
 
       const repository = toRepository(row);
@@ -1351,6 +1401,8 @@ describe('mappers', () => {
         env_vars: null,
         description: null,
         default_agent_id: null,
+        orchestrator_session_id: null,
+        issue_trigger_labels: null,
       };
 
       const repository = toRepository(row);
@@ -1370,6 +1422,8 @@ describe('mappers', () => {
         env_vars: null,
         description: null,
         default_agent_id: null,
+        orchestrator_session_id: null,
+        issue_trigger_labels: null,
       };
 
       const repository = toRepository(row);
@@ -1389,6 +1443,8 @@ describe('mappers', () => {
         env_vars: 'FOO=bar\nBAZ=qux',
         description: null,
         default_agent_id: null,
+        orchestrator_session_id: null,
+        issue_trigger_labels: null,
       };
 
       const repository = toRepository(row);

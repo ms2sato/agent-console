@@ -9,6 +9,7 @@ export interface RepositoryUpdates {
   envVars?: string | null;
   description?: string | null;
   defaultAgentId?: string | null;
+  issueTriggerLabels?: string | null;
 }
 
 /**

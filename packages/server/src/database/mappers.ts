@@ -435,6 +435,11 @@ export function toRepositoryRow(repository: PersistedRepository): NewRepository 
     env_vars: repository.envVars ?? null,
     description: repository.description ?? null,
     default_agent_id: repository.defaultAgentId ?? null,
+    // `orchestrator_session_id` / `issue_trigger_labels` (added in v40) have no
+    // corresponding fields in the legacy `PersistedRepository` JSON shape this
+    // mapper migrates from; they always start unset for a migrated repository.
+    orchestrator_session_id: null,
+    issue_trigger_labels: null,
   };
 }
 
@@ -455,6 +460,8 @@ export function toRepository(row: RepositoryRow): Repository {
     envVars: row.env_vars ?? null,
     description: row.description ?? null,
     defaultAgentId: row.default_agent_id ?? null,
+    orchestratorSessionId: row.orchestrator_session_id ?? null,
+    issueTriggerLabels: row.issue_trigger_labels ?? null,
     // `clonedSourceRepoPath` is a derived field (not persisted). The serving
     // path (REST / WS) enriches the value via `withRepositoryRemote`; this
     // mapper sets the safe default so the type contract is satisfied at the

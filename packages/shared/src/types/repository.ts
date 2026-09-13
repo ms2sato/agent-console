@@ -9,6 +9,8 @@ export interface Repository {
   envVars?: string | null; // Environment variables in .env format (applied to workers)
   description?: string | null; // Brief description of the repository
   defaultAgentId?: string | null; // Default agent ID for worktree creation
+  orchestratorSessionId?: string | null; // Session flagged as this repository's designated Orchestrator; cleared automatically (DB ON DELETE SET NULL) when that session is deleted
+  issueTriggerLabels?: string | null; // Comma-separated GitHub label names (case-insensitive, trimmed) that route labeled-Issue webhooks to orchestratorSessionId
   /**
    * Equal to `path` when this repository's registered path lives under the
    * shared `source-repos` directory (`getSourceReposDir()`); `null` otherwise.
