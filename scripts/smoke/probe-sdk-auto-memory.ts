@@ -377,6 +377,25 @@
  * independently, per this Issue's own Polarity section. Arm E's polarity is
  * its own (iii) negative control, not a separate `--expect-*` flag.
  *
+ * AUTO-MEMORY-OFF CHECK (`--auto-memory-off`). A standalone, non-lettered
+ * measurement, independent of arms A-G: includes an IN-RUN positive control
+ * before the measurement -- the same seeded dir, configuration (i)
+ * (systemPrompt omitted, production's own shape), `autoMemoryEnabled: true`,
+ * classified via `classifyArmEConfig` and REQUIRED to read
+ * `aware-and-reading`. Any other classification (including an unsettled
+ * control turn) reports INCONCLUSIVE -- control failed, since a silently
+ * changed ON behaviour would make the OFF result below uninterpretable, and
+ * the OFF turn is skipped entirely in that case (`combineAutoMemoryOffVerdict`).
+ * The memory dir is reseeded identically before the measured OFF turn
+ * (`autoMemoryEnabled: false`), expecting the mechanism silent on all three
+ * observables at once: `memoryFiles=[]`, no ACCESS hit, no LOCATION hit
+ * (`classifyAutoMemoryOffCheck`). Task 0b's `aware-and-reading` result (arm
+ * E, configuration (i), `autoMemoryEnabled: true`) is corroborating evidence
+ * from a separate run, not the control itself -- the control now lives in
+ * the same run, so a future SDK version that silently changes the ON
+ * behaviour cannot make a clean OFF result meaningless. Never part of the
+ * bare no-flags default; select it explicitly.
+ *
  * EXIT CODES -- a measurement script, not a pass/fail gate (same shape as
  * `probe-compaction-fidelity.ts`): 0 means every requested arm produced a
  * definite measurement, REGARDLESS of which way any individual measurement
@@ -395,7 +414,7 @@
  * included in the bare no-flags default -- select them explicitly. A manual
  * gate, never a CI job.
  *
- * Usage: bun scripts/smoke/probe-sdk-auto-memory.ts [--a] [--b] [--c] [--d] [--e] [--f] [--g] [--force-f] [--f-config omitted|preset] [--extended-timeout <ms>] [--expect-no-recall] [--expect-no-write]
+ * Usage: bun scripts/smoke/probe-sdk-auto-memory.ts [--a] [--b] [--c] [--d] [--e] [--f] [--g] [--force-f] [--f-config omitted|preset] [--extended-timeout <ms>] [--expect-no-recall] [--expect-no-write] [--auto-memory-off]
  */
 
 import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync, existsSync } from 'node:fs';
@@ -446,7 +465,7 @@ export interface Verdict {
 }
 
 export interface ArmVerdict extends Verdict {
-  arm: 'A' | 'B' | 'C' | 'D' | 'E' | 'F' | 'G';
+  arm: 'A' | 'B' | 'C' | 'D' | 'E' | 'F' | 'G' | 'auto-memory-off';
 }
 
 function inconclusive(note: string): Verdict {
@@ -791,6 +810,94 @@ export function summarizeArmE(input: ArmESummaryInput): ArmESummary {
 }
 
 // ---------------------------------------------------------------------------
+// Auto-memory-off check classification (standalone, non-lettered)
+// ---------------------------------------------------------------------------
+
+export type AutoMemoryOffClassification = 'confirmed-off' | 'unexpected-hit';
+
+export interface AutoMemoryOffCheckInput {
+  settled: boolean;
+  locationHit: boolean;
+  accessHit: boolean;
+  memoryFilesCount: number;
+}
+
+/**
+ * Verdict classifier for the `--auto-memory-off` check: under
+ * configuration (i) (systemPrompt omitted, production's own shape) with
+ * `settings.autoMemoryEnabled: false`, the mechanism must be silent on
+ * every observable at once. A text-level miss (no LOCATION/ACCESS hit)
+ * alongside a non-empty `memoryFiles` would mean the mechanism still loaded
+ * the file into context without the model successfully repeating it back --
+ * itself a real (partial) hit, not "off" -- so all three conditions gate
+ * together.
+ *
+ * @internal Exported for the sibling unit test.
+ */
+export function classifyAutoMemoryOffCheck(
+  input: AutoMemoryOffCheckInput,
+): { classification: AutoMemoryOffClassification; conclusive: boolean; note: string } {
+  if (!input.settled) {
+    return { classification: 'unexpected-hit', conclusive: false, note: 'INCONCLUSIVE -- the auto-memory-off turn did not settle.' };
+  }
+  const clean = !input.locationHit && !input.accessHit && input.memoryFilesCount === 0;
+  if (clean) {
+    return {
+      classification: 'confirmed-off',
+      conclusive: true,
+      note: 'confirmed-off -- settings.autoMemoryEnabled: false suppressed the mechanism entirely: memoryFiles=[], no ACCESS hit, no LOCATION hit.',
+    };
+  }
+  return {
+    classification: 'unexpected-hit',
+    conclusive: true,
+    note: `unexpected-hit -- the mechanism was NOT fully suppressed despite autoMemoryEnabled: false (locationHit=${input.locationHit}, accessHit=${input.accessHit}, memoryFilesCount=${input.memoryFilesCount}).`,
+  };
+}
+
+export interface AutoMemoryOffRunResult {
+  conclusive: boolean;
+  premise: 'holds' | 'refuted' | null;
+  note: string;
+}
+
+/**
+ * Combines the in-run ON positive control's classification with the OFF
+ * measurement's classification into the check's overall verdict. The OFF
+ * measurement is only interpretable when the control demonstrates the
+ * mechanism WOULD have been visible with the flag on -- a control that fails
+ * to read `aware-and-reading` (including an unsettled control turn, which
+ * `classifyArmEConfig` already collapses into `'unaware'` with
+ * `conclusive: false`) makes any OFF result uninterpretable, so this returns
+ * INCONCLUSIVE without even inspecting the OFF input in that case (Architect
+ * review, this PR: citing a PAST run's result as the positive control makes a
+ * clean OFF reading meaningless once the SDK's ON behaviour silently changes;
+ * the control must be re-proven in THIS run).
+ *
+ * @internal Exported for the sibling unit test.
+ */
+export function combineAutoMemoryOffVerdict(
+  onClassification: ReturnType<typeof classifyArmEConfig>,
+  offInput: AutoMemoryOffCheckInput,
+): AutoMemoryOffRunResult {
+  if (onClassification.classification !== 'aware-and-reading') {
+    return {
+      conclusive: false,
+      premise: null,
+      note:
+        `INCONCLUSIVE -- control failed: the in-run ON turn (autoMemoryEnabled: true) did not classify as aware-and-reading ` +
+        `(got ${onClassification.classification}); the OFF measurement is uninterpretable without a working control. ${onClassification.note}`,
+    };
+  }
+  const off = classifyAutoMemoryOffCheck(offInput);
+  return {
+    conclusive: off.conclusive,
+    premise: off.conclusive ? (off.classification === 'confirmed-off' ? 'holds' : 'refuted') : null,
+    note: `${off.note} (in-run ON control confirmed aware-and-reading before this measurement.)`,
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Real config-location cross-check (Task 0b's own first-class assertion)
 // ---------------------------------------------------------------------------
 
@@ -1083,8 +1190,14 @@ const ALL_ARM_FLAGS = [...ARM_FLAGS, ...TASK_0B_ARM_FLAGS] as const;
 type ArmFlag = (typeof ALL_ARM_FLAGS)[number];
 /** Owner directive, 2026-09-13, binding: `--extended-timeout` never exceeds 5 minutes. */
 export const EXTENDED_TIMEOUT_CAP_MS = 300_000;
+/**
+ * Standalone measurement, independent of arms A-G -- tracked as its
+ * own `ParsedArgs` field, never added to `ALL_ARM_FLAGS`, so it is never
+ * part of the bare no-flags default.
+ */
+const AUTO_MEMORY_OFF_FLAG = '--auto-memory-off';
 const USAGE_TEXT =
-  'Usage: bun scripts/smoke/probe-sdk-auto-memory.ts [--a] [--b] [--c] [--d] [--e] [--f] [--g] [--force-f] [--f-config omitted|preset] [--extended-timeout <ms>] [--expect-no-recall] [--expect-no-write]\n' +
+  'Usage: bun scripts/smoke/probe-sdk-auto-memory.ts [--a] [--b] [--c] [--d] [--e] [--f] [--g] [--force-f] [--f-config omitted|preset] [--extended-timeout <ms>] [--expect-no-recall] [--expect-no-write] [--auto-memory-off]\n' +
   '  Default (no --a/--b/--c/--d/--e/--f/--g) = arms A/B/C/D only, in order. Arms E/F/G are NEVER part of the bare default -- select them explicitly.\n' +
   '  --expect-no-recall modifies arm A (skip seeding); --expect-no-write modifies arm C, F, and G (skip the remember-this prompt).\n' +
   '  Arm F/G halt by default when Arm E shows no configuration carries awareness (an unclean (iii) control does NOT halt) --\n' +
@@ -1092,6 +1205,8 @@ const USAGE_TEXT =
   '  --f-config <omitted|preset> overrides arm F/G\'s systemPrompt configuration when arm E did not run in the same invocation (default: omitted).\n' +
   `  --extended-timeout <ms> sets arm G's write-poll timeout; omitted or 0 behaves like arm F's 60s poll; clamped to ${EXTENDED_TIMEOUT_CAP_MS}ms (owner directive).\n` +
   '  Selecting --g always also selects --e and --f as prerequisites (its own gate is defined in terms of their results).\n' +
+  '  --auto-memory-off runs a standalone measurement (#1681): configuration (i) with settings.autoMemoryEnabled: false, expecting the mechanism fully suppressed. Billable; never part of the bare default -- select it explicitly.' +
+  ' Passing it alone does NOT also pull in the A/B/C/D default -- combine explicitly (e.g. --auto-memory-off --a) if both are wanted.\n' +
   '  These flags only take effect when their arm is selected.';
 
 interface ParsedArgs {
@@ -1101,19 +1216,26 @@ interface ParsedArgs {
   fConfigOverride?: 'omitted' | 'preset';
   extendedTimeoutMs?: number;
   forceF: boolean;
+  autoMemoryOff: boolean;
 }
 
-function parseArgs(argv: string[]): ParsedArgs {
+/** @internal Exported for the sibling unit test. */
+export function parseArgs(argv: string[]): ParsedArgs {
   const arms = new Set<ArmFlag>();
   let expectNoRecall = false;
   let expectNoWrite = false;
   let fConfigOverride: 'omitted' | 'preset' | undefined;
   let extendedTimeoutMs: number | undefined;
   let forceF = false;
+  let autoMemoryOff = false;
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if ((ALL_ARM_FLAGS as readonly string[]).includes(a)) {
       arms.add(a as ArmFlag);
+      continue;
+    }
+    if (a === AUTO_MEMORY_OFF_FLAG) {
+      autoMemoryOff = true;
       continue;
     }
     if (a === '--expect-no-recall') {
@@ -1150,14 +1272,14 @@ function parseArgs(argv: string[]): ParsedArgs {
     console.error(`${USAGE_TEXT}\n  Unrecognized argument: ${a}`);
     process.exit(PROBE_EXIT.HARNESS);
   }
-  if (arms.size === 0) for (const f of DEFAULT_ARM_FLAGS) arms.add(f);
+  if (arms.size === 0 && !autoMemoryOff) for (const f of DEFAULT_ARM_FLAGS) arms.add(f);
   // Arm G's own gate ("E showed awareness under production's configuration
   // AND F still shows no write") cannot be evaluated without their results.
   if (arms.has('--g')) {
     arms.add('--e');
     arms.add('--f');
   }
-  return { arms, expectNoRecall, expectNoWrite, fConfigOverride, extendedTimeoutMs, forceF };
+  return { arms, expectNoRecall, expectNoWrite, fConfigOverride, extendedTimeoutMs, forceF, autoMemoryOff };
 }
 
 // ---------------------------------------------------------------------------
@@ -1859,7 +1981,14 @@ interface ArmEConfigRunResult extends ArmEConfigInput {
   memoryFilesCount: number;
 }
 
-/** One configuration's combined turn: both of arm E's required observables read from one answer. */
+/**
+ * One configuration's combined turn: both of arm E's required observables
+ * read from one answer. `autoMemoryEnabled` / `labelPrefix` default to arm
+ * E's own shape (`true` / `'E'`) so arm E's three existing call sites are
+ * unaffected; the `--auto-memory-off` check reuses this same
+ * function with `autoMemoryEnabled: false` and `labelPrefix: 'OFF'` rather
+ * than duplicating its body.
+ */
 async function runArmEConfig(
   key: ArmEConfigKey,
   configDir: string,
@@ -1867,14 +1996,16 @@ async function runArmEConfig(
   memoryDir: string,
   seededTopicFilename: string,
   seededTitle: string,
+  autoMemoryEnabled = true,
+  labelPrefix = 'E',
 ): Promise<ArmEConfigRunResult> {
   const systemPrompt = systemPromptForArmEConfig(key);
-  const { outcome, recallsForTurn } = await runMemorySession(configDir, cwd, { autoMemoryEnabled: true }, armEAskPrompt(), `E-${key}`, {
+  const { outcome, recallsForTurn } = await runMemorySession(configDir, cwd, { autoMemoryEnabled }, armEAskPrompt(), `${labelPrefix}-${key}`, {
     systemPrompt,
     pollUsage: true,
   });
   const settled = turnSettled(outcome);
-  const unsettled = unsettledReason(outcome, `E-${key}`);
+  const unsettled = unsettledReason(outcome, `${labelPrefix}-${key}`);
   if (unsettled) console.log(unsettled);
   const locationHit = settled && textContainsPath(outcome.text, memoryDir);
   const accessHit = settled && outcome.text.includes(seededTitle);
@@ -1886,7 +2017,7 @@ async function runArmEConfig(
   const memoryFiles = outcome.usage?.memoryFiles ?? [];
   const memoryFilesMatched = memoryFiles.some((f) => f.path === join(memoryDir, seededTopicFilename) || basename(f.path) === seededTopicFilename);
   console.log(
-    `E-${key}: settled=${settled} locationHit=${locationHit} accessHit=${accessHit} recallFired(SDKMemoryRecallMessage)=${recallFired} ` +
+    `${labelPrefix}-${key}: settled=${settled} locationHit=${locationHit} accessHit=${accessHit} recallFired(SDKMemoryRecallMessage)=${recallFired} ` +
       `memoryFiles(SDKControlGetContextUsageResponse.memoryFiles)=${memoryFiles.length} memoryFilesMatched=${memoryFilesMatched} ` +
       `text=${JSON.stringify(outcome.text.slice(0, 500))}`,
   );
@@ -1895,7 +2026,7 @@ async function runArmEConfig(
   // count alone cannot answer "is this MEMORY.md or something else" without
   // re-running. One line per entry, permanent (not a one-off debug print).
   for (const [i, f] of memoryFiles.entries()) {
-    console.log(`E-${key}: memoryFiles[${i}]: path=${f.path} type=${f.type} tokens=${f.tokens}`);
+    console.log(`${labelPrefix}-${key}: memoryFiles[${i}]: path=${f.path} type=${f.type} tokens=${f.tokens}`);
   }
   return { settled, locationHit, accessHit, recallFired, memoryFilesMatched, memoryFilesCount: memoryFiles.length, memoryFilesEntries: memoryFiles };
 }
@@ -1971,6 +2102,100 @@ async function runArmE(): Promise<{ verdict: ArmVerdict; summary: ArmESummary | 
       const summary = summarizeArmE({ omitted, preset, presetExcluded });
       console.log(`E: ${summary.note}`);
       return { verdict: { arm: 'E', conclusive: summary.conclusive, premise: null, note: summary.note }, summary };
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Auto-memory-off check (standalone, non-lettered, never part of the
+// bare default -- reuses runArmEConfig / seedMemoryTopic rather than a
+// second copy of arm E's discover-seed-ask shape).
+// ---------------------------------------------------------------------------
+
+async function runAutoMemoryOffCheck(): Promise<ArmVerdict> {
+  h('Auto-memory-off check (#1681) -- does settings.autoMemoryEnabled: false suppress the mechanism entirely under configuration (i)?');
+  return withArmConfigDir('automem-off', async (configDir) => {
+    const cwd = buildScratchCwd('off');
+    try {
+      // Discovery still runs with autoMemoryEnabled: true, same as arm E --
+      // the SDK only creates (and therefore reveals) its default memory
+      // directory for a cwd while the mechanism is on.
+      const discoveryFact = trackedNonce('AUTOMEM-OFF-DISCOVERY');
+      const { outcome: discOutcome } = await runMemorySession(configDir, cwd, { autoMemoryEnabled: true }, writeWorthyPrompt(discoveryFact), 'OFF-discovery');
+      if (!turnSettled(discOutcome)) {
+        return { arm: 'auto-memory-off', ...inconclusive('the discovery turn did not settle.') };
+      }
+      const slug = await discoverSlug(configDir);
+      if (slug === null) {
+        return {
+          arm: 'auto-memory-off',
+          ...inconclusive('no project slug appeared under the isolated config dir after the discovery session -- cannot locate the default memory directory.'),
+        };
+      }
+      const memoryDir = join(configDir, 'projects', slug, 'memory');
+      console.log(`OFF: discovered default memory dir for this cwd: ${memoryDir}`);
+
+      const titleNonce = trackedNonce('AUTOMEM-OFF-TITLE');
+      const indexTitle = `Automem probe seeded fact ${titleNonce}`;
+      const topicFilename = 'automem-probe-seeded-fact.md';
+
+      function reseed(): void {
+        rmSync(memoryDir, { recursive: true, force: true });
+        seedMemoryTopic({
+          memoryDir,
+          topicFilename,
+          frontmatterName: 'automem-probe-seeded-fact',
+          description: 'Auto-memory-off probe seeded fact (#1681)',
+          codenameSubject: 'The secret project codename',
+          codenameValue: trackedNonce('AUTOMEM-OFF-CODENAME'),
+          indexTitle,
+          indexHook: 'the secret project codename is recorded here.',
+        });
+      }
+
+      // In-run positive control (Architect review, this PR): a control
+      // cited from a PAST run's result would say nothing about whether THIS
+      // build's ON behaviour has silently changed. Seed the SAME dir, run
+      // ONE turn with autoMemoryEnabled: true under configuration (i), and
+      // require it to classify as aware-and-reading before spending the
+      // measured OFF turn -- a control that fails makes the OFF result
+      // uninterpretable, so the OFF turn is skipped entirely in that case.
+      reseed();
+      console.log(`OFF: seeded memory dir for the in-run ON control -- file count before the control turn: ${walkFiles(memoryDir).length}`);
+      const onResult = await runArmEConfig('omitted', configDir, cwd, memoryDir, topicFilename, indexTitle, true, 'OFF-control-ON');
+      console.log(`OFF: memory dir file count after the ON control turn: ${walkFiles(memoryDir).length}`);
+      const onClassification = classifyArmEConfig({ settled: onResult.settled, locationHit: onResult.locationHit, accessHit: onResult.accessHit });
+      console.log(`OFF: in-run ON control classification: ${onClassification.note}`);
+
+      if (onClassification.classification !== 'aware-and-reading') {
+        const combined = combineAutoMemoryOffVerdict(onClassification, { settled: false, locationHit: false, accessHit: false, memoryFilesCount: 0 });
+        console.log(`OFF: ${combined.note}`);
+        return { arm: 'auto-memory-off', ...combined };
+      }
+
+      // Control succeeded -- reseed IDENTICALLY (same title, fresh codename
+      // nonce) before the measured OFF turn, so a write during the ON
+      // control's turn cannot leak into what the OFF turn observes (same
+      // discipline as arm E's own reseedAndRunArmEConfig).
+      reseed();
+      console.log(`OFF: reseeded memory dir for the measured OFF turn -- file count before the off turn: ${walkFiles(memoryDir).length}`);
+
+      // The measured turn itself: configuration (i) (systemPrompt omitted,
+      // production's own shape), but autoMemoryEnabled: false -- this is the
+      // whole point of the check.
+      const result = await runArmEConfig('omitted', configDir, cwd, memoryDir, topicFilename, indexTitle, false, 'OFF');
+      console.log(`OFF: memory dir file count after the off turn: ${walkFiles(memoryDir).length}`);
+
+      const combined = combineAutoMemoryOffVerdict(onClassification, {
+        settled: result.settled,
+        locationHit: result.locationHit,
+        accessHit: result.accessHit,
+        memoryFilesCount: result.memoryFilesCount,
+      });
+      console.log(`OFF: ${combined.note}`);
+      return { arm: 'auto-memory-off', ...combined };
     } finally {
       rmSync(cwd, { recursive: true, force: true });
     }
@@ -2203,7 +2428,8 @@ async function main(): Promise<number> {
   console.log(`probe-sdk-auto-memory  started ${stamp()}`);
   console.log(
     `arms: ${[...selected.arms].join(' ')}${selected.expectNoRecall ? ' --expect-no-recall' : ''}${selected.expectNoWrite ? ' --expect-no-write' : ''}${selected.forceF ? ' --force-f' : ''}` +
-      `${selected.fConfigOverride ? ` --f-config ${selected.fConfigOverride}` : ''}${selected.extendedTimeoutMs !== undefined ? ` --extended-timeout ${selected.extendedTimeoutMs}` : ''}`,
+      `${selected.fConfigOverride ? ` --f-config ${selected.fConfigOverride}` : ''}${selected.extendedTimeoutMs !== undefined ? ` --extended-timeout ${selected.extendedTimeoutMs}` : ''}` +
+      `${selected.autoMemoryOff ? ' --auto-memory-off' : ''}`,
   );
   console.log(`model: ${MODEL}`);
 
@@ -2303,6 +2529,10 @@ async function main(): Promise<number> {
         );
       }
     }
+
+    if (selected.autoMemoryOff) {
+      results.push(await runAutoMemoryOffCheck());
+    }
   } finally {
     const afterArmsSnapshot = canaryWritten ? snapshotMtimes(realConfigDir) : null;
     if (canaryWritten) {
@@ -2348,6 +2578,7 @@ async function main(): Promise<number> {
   console.log(`awareness (E):           ${byArm.has('E') ? 'see Arm E note above' : '(not run)'}`);
   console.log(`switches change write (F): ${byArm.has('F') ? holds('F') : '(not run)'}`);
   console.log(`timescale (G):           ${byArm.has('G') ? (byArm.get('G')!.note.startsWith('SKIPPED') ? 'skipped -- gate not met' : holds('G')) : '(not run)'}`);
+  console.log(`auto-memory disabled (#1681):    ${byArm.has('auto-memory-off') ? holds('auto-memory-off') : '(not run)'}`);
 
   let code = exitCodeFor(results);
   if (canaryWritten && !canaryDetected) {

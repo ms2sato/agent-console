@@ -634,7 +634,18 @@ export class SdkEngine implements ClaudeSdkEngine {
       // Compaction: the SDK's own auto-compaction IS this engine's automatic
       // compaction; the worker's toggle drives it directly rather than
       // through any machinery of ours.
-      settings: { autoCompactEnabled: this.autoCompaction },
+      //
+      // Auto-memory disabled on this arm: per the ruling in
+      // docs/design/embedded-agent-sdk-engine.md section 4.1 (the second
+      // member of the account-scoped context class), the SDK's own
+      // project-scoped MEMORY.md read channel is not this engine's
+      // continuity mechanism -- it is claude-sdk-only, keyed by cwd (an
+      // Orchestrator working across worktrees would fragment its memory per
+      // worktree), lives in the OS user's own ~/.claude (unreachable across
+      // users in multi-user mode), and would be a second, unmaintained
+      // index in front of our own memory. Measured on SDK 0.3.238: the SDK
+      // loads the project-scoped MEMORY.md at turn start and never writes.
+      settings: { autoCompactEnabled: this.autoCompaction, autoMemoryEnabled: false },
       // The `PostCompact` hook is the only path that carries the summary
       // text; the `compact_boundary` message on the iterator carries the
       // token counts but not the words. Both are needed for one marker --
