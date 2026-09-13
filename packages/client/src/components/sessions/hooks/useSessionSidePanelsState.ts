@@ -17,12 +17,15 @@ interface SessionSidePanelsRecord {
 const STORAGE_KEY = 'agent-console:session-side-panels-v2';
 const SECTION_KEYS: SessionSidePanelKey[] = ['memo', 'artifacts', 'bookmarks'];
 
-// R3': unified default -- rail open, every section expanded. Applies on
-// first-ever load and whenever storage is unreadable/corrupt; NOT a choice
-// about which section to open on a later load -- any later load restores
-// whatever the user last had open.
+// Default is rail CLOSED, every section expanded. This supersedes #1640's
+// R3' (rail open, every section expanded) by owner directive on 2026-09-13.
+// The storage key is deliberately NOT bumped for this change: the persisted
+// shape is unchanged, so existing browsers keep whatever the user last
+// chose -- this default applies on first-ever load and whenever storage is
+// unreadable/corrupt; NOT a choice about which section to open on a later
+// load -- any later load restores whatever the user last had open.
 const DEFAULT_RECORD: SessionSidePanelsRecord = {
-  railOpen: true,
+  railOpen: false,
   expanded: {
     memo: true,
     artifacts: true,

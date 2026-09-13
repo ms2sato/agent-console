@@ -10,10 +10,10 @@ describe('useSessionSidePanelsState', () => {
   });
 
   describe('initial state', () => {
-    it('defaults to the rail open and all three sections expanded (R3\') when nothing is stored', () => {
+    it('defaults to the rail closed and all three sections expanded when nothing is stored', () => {
       const { result } = renderHook(() => useSessionSidePanelsState());
 
-      expect(result.current.railOpen).toBe(true);
+      expect(result.current.railOpen).toBe(false);
       expect(result.current.expanded).toEqual({ memo: true, artifacts: true, bookmarks: true });
     });
   });
@@ -23,20 +23,20 @@ describe('useSessionSidePanelsState', () => {
       // Hardcoded literal, deliberately not imported from any constant --
       // this is how the test's reach is measured: if the storage-key
       // constant in the hook were reverted to this old literal, the hook
-      // would read this seeded value and diverge from the R3' default,
+      // would read this seeded value and diverge from the default,
       // failing this exact assertion. The seeded value is deliberately
-      // NEW-schema-shaped (it has railOpen + expanded) even though it
-      // represents old-key semantics (all closed) -- so a reverted key
-      // produces a detectably WRONG result (all-closed) rather than falling
+      // NEW-schema-shaped (it has railOpen + expanded) with railOpen TRUE
+      // -- the opposite of the current default -- so a reverted key
+      // produces a detectably WRONG result (rail open) rather than falling
       // through corrupt-storage validation into the same default anyway.
       localStorage.setItem(
         'agent-console:session-side-panels-expanded',
-        JSON.stringify({ railOpen: false, expanded: { memo: false, artifacts: false, bookmarks: false } })
+        JSON.stringify({ railOpen: true, expanded: { memo: false, artifacts: false, bookmarks: false } })
       );
 
       const { result } = renderHook(() => useSessionSidePanelsState());
 
-      expect(result.current.railOpen).toBe(true);
+      expect(result.current.railOpen).toBe(false);
       expect(result.current.expanded).toEqual({ memo: true, artifacts: true, bookmarks: true });
     });
 
@@ -57,7 +57,7 @@ describe('useSessionSidePanelsState', () => {
 
       const { result } = renderHook(() => useSessionSidePanelsState());
 
-      expect(result.current.railOpen).toBe(true);
+      expect(result.current.railOpen).toBe(false);
       expect(result.current.expanded).toEqual({ memo: true, artifacts: true, bookmarks: true });
     });
 
@@ -69,19 +69,19 @@ describe('useSessionSidePanelsState', () => {
 
       const { result } = renderHook(() => useSessionSidePanelsState());
 
-      expect(result.current.railOpen).toBe(true);
+      expect(result.current.railOpen).toBe(false);
       expect(result.current.expanded).toEqual({ memo: true, artifacts: true, bookmarks: true });
     });
 
     it('falls back to the default when expanded is missing a key', () => {
       localStorage.setItem(
         STORAGE_KEY,
-        JSON.stringify({ railOpen: false, expanded: { memo: true, artifacts: false } })
+        JSON.stringify({ railOpen: true, expanded: { memo: true, artifacts: false } })
       );
 
       const { result } = renderHook(() => useSessionSidePanelsState());
 
-      expect(result.current.railOpen).toBe(true);
+      expect(result.current.railOpen).toBe(false);
       expect(result.current.expanded).toEqual({ memo: true, artifacts: true, bookmarks: true });
     });
 
@@ -93,7 +93,7 @@ describe('useSessionSidePanelsState', () => {
 
       const { result } = renderHook(() => useSessionSidePanelsState());
 
-      expect(result.current.railOpen).toBe(true);
+      expect(result.current.railOpen).toBe(false);
       expect(result.current.expanded).toEqual({ memo: true, artifacts: true, bookmarks: true });
     });
   });
@@ -106,14 +106,14 @@ describe('useSessionSidePanelsState', () => {
         result.current.toggleRail();
       });
 
-      expect(result.current.railOpen).toBe(false);
+      expect(result.current.railOpen).toBe(true);
       expect(result.current.expanded).toEqual({ memo: true, artifacts: true, bookmarks: true });
 
       act(() => {
         result.current.toggleRail();
       });
 
-      expect(result.current.railOpen).toBe(true);
+      expect(result.current.railOpen).toBe(false);
       expect(result.current.expanded).toEqual({ memo: true, artifacts: true, bookmarks: true });
     });
 
@@ -125,7 +125,7 @@ describe('useSessionSidePanelsState', () => {
       });
 
       expect(localStorage.getItem(STORAGE_KEY)).toBe(
-        JSON.stringify({ railOpen: false, expanded: { memo: true, artifacts: true, bookmarks: true } })
+        JSON.stringify({ railOpen: true, expanded: { memo: true, artifacts: true, bookmarks: true } })
       );
     });
   });
@@ -138,14 +138,14 @@ describe('useSessionSidePanelsState', () => {
         result.current.toggleSection('memo');
       });
 
-      expect(result.current.railOpen).toBe(true);
+      expect(result.current.railOpen).toBe(false);
       expect(result.current.expanded).toEqual({ memo: false, artifacts: true, bookmarks: true });
 
       act(() => {
         result.current.toggleSection('bookmarks');
       });
 
-      expect(result.current.railOpen).toBe(true);
+      expect(result.current.railOpen).toBe(false);
       expect(result.current.expanded).toEqual({ memo: false, artifacts: true, bookmarks: false });
     });
 
@@ -157,7 +157,7 @@ describe('useSessionSidePanelsState', () => {
       });
 
       expect(localStorage.getItem(STORAGE_KEY)).toBe(
-        JSON.stringify({ railOpen: true, expanded: { memo: false, artifacts: true, bookmarks: true } })
+        JSON.stringify({ railOpen: false, expanded: { memo: false, artifacts: true, bookmarks: true } })
       );
     });
   });
@@ -263,7 +263,7 @@ describe('useSessionSidePanelsState', () => {
       try {
         const { result } = renderHook(() => useSessionSidePanelsState());
 
-        expect(result.current.railOpen).toBe(true);
+        expect(result.current.railOpen).toBe(false);
         expect(result.current.expanded).toEqual({ memo: true, artifacts: true, bookmarks: true });
       } finally {
         Object.defineProperty(globalThis, 'localStorage', {
@@ -296,7 +296,7 @@ describe('useSessionSidePanelsState', () => {
           result.current.toggleRail();
         });
 
-        expect(result.current.railOpen).toBe(false);
+        expect(result.current.railOpen).toBe(true);
       } finally {
         Object.defineProperty(globalThis, 'localStorage', {
           value: original,
@@ -327,7 +327,7 @@ describe('useSessionSidePanelsState', () => {
       const raw = localStorage.getItem('agent-console:session-side-panels-v2');
       expect(raw).not.toBeNull();
       expect(JSON.parse(raw as string)).toEqual({
-        railOpen: false,
+        railOpen: true,
         expanded: { memo: true, artifacts: true, bookmarks: true },
       });
     });

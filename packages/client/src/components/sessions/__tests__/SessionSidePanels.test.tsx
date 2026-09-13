@@ -114,8 +114,16 @@ describe('SessionSidePanels', () => {
     consoleErrorSpy.mockRestore();
   });
 
-  it('starts with all three sections expanded on first render (empty localStorage, new default)', async () => {
+  it('starts with the rail closed (new default), then shows all three sections expanded once opened', async () => {
     await renderWithRouter(<SessionSidePanels sessionId="session-1" />);
+
+    // New default: the rail starts closed, so the compact rail's own
+    // toggle button (not the Memo content) is what's available first.
+    await waitFor(() => expect(screen.getByLabelText('Expand side panel')).toBeTruthy());
+
+    act(() => {
+      screen.getByLabelText('Expand side panel').click();
+    });
 
     await waitFor(() => expect(screen.getByText('Hello Memo')).toBeTruthy());
     expect(screen.getByText(ARTIFACT_TITLE)).toBeTruthy();
@@ -128,19 +136,9 @@ describe('SessionSidePanels', () => {
 
   it('the rail toggle button flips between the wide and narrow rail classes', async () => {
     const { container } = await renderWithRouter(<SessionSidePanels sessionId="session-1" />);
-    await waitFor(() => expect(screen.getByText('Hello Memo')).toBeTruthy());
-
-    const railToggle = screen.getByLabelText('Collapse side panel');
-    expect(railToggle.getAttribute('aria-expanded')).toBe('true');
-
-    const wideColumn = container.querySelector('.w-80');
-    expect(wideColumn).toBeTruthy();
-
-    act(() => {
-      railToggle.click();
-    });
-
     await waitFor(() => expect(screen.getByLabelText('Expand side panel')).toBeTruthy());
+
+    // Starts closed (new default).
     expect(screen.getByLabelText('Expand side panel').getAttribute('aria-expanded')).toBe('false');
     expect(container.querySelector('.w-80')).toBeNull();
 
@@ -149,11 +147,26 @@ describe('SessionSidePanels', () => {
     });
 
     await waitFor(() => expect(screen.getByLabelText('Collapse side panel')).toBeTruthy());
+    expect(screen.getByLabelText('Collapse side panel').getAttribute('aria-expanded')).toBe('true');
     expect(container.querySelector('.w-80')).toBeTruthy();
+
+    act(() => {
+      screen.getByLabelText('Collapse side panel').click();
+    });
+
+    await waitFor(() => expect(screen.getByLabelText('Expand side panel')).toBeTruthy());
+    expect(container.querySelector('.w-80')).toBeNull();
   });
 
   it('clicking a compact section label while the rail is closed reopens the rail with that section expanded, without disturbing an already-expanded section (R5a)', async () => {
     await renderWithRouter(<SessionSidePanels sessionId="session-1" />);
+    await waitFor(() => expect(screen.getByLabelText('Expand side panel')).toBeTruthy());
+
+    // Open the rail first (new default is closed) to set up the
+    // "artifacts collapsed, memo still expanded" starting state.
+    act(() => {
+      screen.getByLabelText('Expand side panel').click();
+    });
     await waitFor(() => expect(screen.getByText('Hello Memo')).toBeTruthy());
 
     // Collapse the artifacts section (it stays collapsed once the rail
@@ -187,10 +200,16 @@ describe('SessionSidePanels', () => {
 
   it('expanding memo and then artifacts leaves both simultaneously open, and a third section opening does not close the first two (multi-open unaffected)', async () => {
     await renderWithRouter(<SessionSidePanels sessionId="session-1" />);
+    await waitFor(() => expect(screen.getByLabelText('Expand side panel')).toBeTruthy());
+
+    // Open the rail first (new default is closed).
+    act(() => {
+      screen.getByLabelText('Expand side panel').click();
+    });
     await waitFor(() => expect(screen.getByText('Hello Memo')).toBeTruthy());
 
-    // All three start expanded by default -- confirm all three, then
-    // collapse-and-reopen bookmarks to prove opening a third section
+    // All three sections start expanded by default -- confirm all three,
+    // then collapse-and-reopen bookmarks to prove opening a third section
     // doesn't disturb the other two.
     expect(screen.getByText('Hello Memo')).toBeTruthy();
     expect(screen.getByText(ARTIFACT_TITLE)).toBeTruthy();
@@ -217,19 +236,20 @@ describe('SessionSidePanels', () => {
 
   it('renders exactly one bordered rail element when the rail is open (all sections expanded, R1c DOM pin)', async () => {
     const { container } = await renderWithRouter(<SessionSidePanels sessionId="session-1" />);
+    await waitFor(() => expect(screen.getByLabelText('Expand side panel')).toBeTruthy());
+
+    // Open the rail first (new default is closed).
+    act(() => {
+      screen.getByLabelText('Expand side panel').click();
+    });
     await waitFor(() => expect(screen.getByText('Hello Memo')).toBeTruthy());
 
     const railElements = container.querySelectorAll('[class*="border-l"]');
     expect(railElements.length).toBe(1);
   });
 
-  it('renders exactly one bordered rail element when the rail is closed (R1b/R1d DOM pin)', async () => {
+  it('renders exactly one bordered rail element when the rail is closed (R1b/R1d DOM pin, matches the new default)', async () => {
     const { container } = await renderWithRouter(<SessionSidePanels sessionId="session-1" />);
-    await waitFor(() => expect(screen.getByText('Hello Memo')).toBeTruthy());
-
-    act(() => {
-      screen.getByLabelText('Collapse side panel').click();
-    });
     await waitFor(() => expect(screen.getByLabelText('Expand side panel')).toBeTruthy());
 
     const railElements = container.querySelectorAll('[class*="border-l"]');
