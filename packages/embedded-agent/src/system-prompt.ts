@@ -788,6 +788,13 @@ function formatSkillEntry(skill: SkillFile): string {
  * recursive claim, not a fixed-depth one. No `.claude/skills` directory at
  * all -- routine, most repos won't have one yet -- returns `[]` silently,
  * the same treatment `loadRulesLayer`'s missing-rules-directory case gets.
+ * A symlinked skill directory is NOT followed: `entry.isDirectory()` /
+ * `entry.isFile()` (from `readdir`'s `withFileTypes`, which reports the
+ * dirent's own type without resolving symlinks) are both false for a
+ * symlink, so it silently drops out of the walk rather than being recursed
+ * into or read as `SKILL.md`. Declared here rather than worked around --
+ * following symlinks would need a `stat` call plus a cycle guard, out of
+ * this change's scope.
  */
 async function findSkillFiles(dir: string): Promise<string[]> {
   let entries: import('node:fs').Dirent[];
