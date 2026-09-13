@@ -61,11 +61,38 @@
  * `verifyIsolation()` check confirms it for session storage generally):
  *
  *   --a  RECALL: seed a nonce directly into the SDK's OWN default
- *        Project-scope memory file (path discovered per the adaptation
+ *        Project-scope memory directory (path discovered per the adaptation
  *        above), ask a fresh session at the same cwd whether it knows the
  *        fact. Observes both the MECHANISM (`SDKMemoryRecallMessage`) and
  *        the OUTCOME (the model's answer), with a negative-control cwd
  *        (nothing seeded) in the same run.
+ *
+ *        SEEDING FORMAT (Architect ruling, 2026-09-13, after a CodeRabbit
+ *        finding on this PR): a single unindexed file is not necessarily
+ *        the format the recall mechanism reads. Fetched
+ *        https://code.claude.com/docs/en/memory directly (not inferred by
+ *        analogy to this repo's own MEMORY.md instance) -- the directory
+ *        holds a `MEMORY.md` INDEX (one line per memory) plus one TOPIC
+ *        FILE per memory, and a topic file that begins with YAML
+ *        frontmatter gets a `type` field (`user`/`feedback`/`project`/
+ *        `reference`). The doc page describes the index in PROSE ("one
+ *        line per memory... MEMORY.md ... keep[s] track of what's stored
+ *        where") without a literal syntax example; this script's exact
+ *        index-line syntax (`- [Title](file.md) — hook`) and topic-file
+ *        frontmatter shape (`name`/`description`/`metadata.type`) come
+ *        from Claude Code's own built-in auto-memory system-prompt
+ *        instructions (present in every session using this feature,
+ *        including the one that authored this script), which the doc
+ *        page's four-type taxonomy corroborates. This arm seeds BOTH
+ *        files, always hand-authored -- never reusing whatever the
+ *        A-discovery turn below happened to write, because each arm must
+ *        test exactly one mechanism (Arm A must not couple its verdict to
+ *        Arm C's write mechanism). A `RECALL DOES NOT WORK` verdict from
+ *        this arm must be read alongside Arm C's independently observed
+ *        write-file layout in the findings comment before being cited as a
+ *        premise refutation -- if Arm C's own write lands in a DIFFERENT
+ *        shape than what this arm assumed, that is evidence the assumed
+ *        format itself needs revisiting, not that recall is broken.
  *   --b  LEAK: at a cwd with nothing ever seeded, ask a broad "what do you
  *        know about me" question and report whether anything surfaces, and
  *        if so, its `scope`/`mode` -- re-deriving #1348's finding under
@@ -119,7 +146,7 @@
  * Usage: bun scripts/smoke/probe-sdk-auto-memory.ts [--a] [--b] [--c] [--d] [--expect-no-recall] [--expect-no-write]
  */
 
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync, existsSync } from 'node:fs';
+import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, join, sep } from 'node:path';
 import type { Options, Settings } from '../../packages/embedded-agent/node_modules/@anthropic-ai/claude-agent-sdk';
@@ -557,6 +584,29 @@ function recallsMentionNonce(recalls: readonly MemoryRecallMessage[], nonceValue
   return recalls.some((r) => r.memories.some((m) => m.path === seededPath || (m.content?.includes(nonceValue) ?? false)));
 }
 
+/**
+ * Whether any observed recall's `path` basename-matches the seeded file,
+ * after the same realpath-or-self normalization `redactRecallEntry` uses
+ * (Architect ruling, PR #1662, CodeRabbit finding on Arm A's seeding
+ * format): "recall happened" is only informative once it is also "recall
+ * happened FOR THE FILE WE SEEDED", rather than some unrelated recall that
+ * happens to surface at the same turn. Basename (not full-path equality)
+ * because the SDK may report the path through a different absolute prefix
+ * than the one this process wrote through (the same symlink-resolution
+ * concern finding #2 fixed for `redactRecallEntry`).
+ *
+ * @internal Exported for the sibling unit test.
+ */
+export function recallPathMatches(recalls: readonly { memories: readonly { path: string }[] }[], seededPath: string): boolean {
+  const seededBasename = basename(resolvedOrSelf(seededPath));
+  return recalls.some((r) => r.memories.some((m) => basename(resolvedOrSelf(m.path)) === seededBasename));
+}
+
+/** Whether any observed recall's inline `content` (when present) mentions the nonce -- independent of which file it came from. */
+function recallContentMatches(recalls: readonly MemoryRecallMessage[], nonceValue: string): boolean {
+  return recalls.some((r) => r.memories.some((m) => m.content?.includes(nonceValue) ?? false));
+}
+
 /** One live SDK turn, logged and accounted for exactly like the sibling probes. */
 async function runMemorySession(
   configDir: string,
@@ -722,13 +772,37 @@ async function runArmA(expectNoRecall: boolean): Promise<ArmVerdict> {
       console.log(`A: discovered default memory dir for this cwd: ${memoryDir}`);
 
       const theNonce = nonce('AUTOMEM-A');
-      const seededPath = join(memoryDir, 'seeded-fact.md');
+      // Two hand-authored files, in the format documented at
+      // https://code.claude.com/docs/en/memory (fetched and read directly,
+      // per Architect ruling on PR #1662 -- CodeRabbit correctly flagged
+      // that an unindexed single file may not match what the recall
+      // mechanism actually reads): an index LINE in MEMORY.md pointing at a
+      // topic file, and the topic file carrying the seeded fact under
+      // frontmatter naming its `type` (the same `user`/`feedback`/
+      // `project`/`reference` taxonomy the docs page itself describes).
+      // Deliberately NOT reusing whatever the A-discovery turn above wrote
+      // (Architect ruling: each arm tests exactly one mechanism, so Arm A
+      // must not couple its own verdict to Arm C's write mechanism) -- these
+      // two files are always hand-authored here, independent of discovery's
+      // own output.
+      const topicFilename = 'automem-probe-seeded-fact.md';
+      const topicPath = join(memoryDir, topicFilename);
+      const indexPath = join(memoryDir, 'MEMORY.md');
       if (!expectNoRecall) {
         mkdirSync(memoryDir, { recursive: true });
-        writeFileSync(seededPath, `# Seeded fact\n\nThe secret project codename is ${theNonce}.\n`);
-        console.log(`A: seeded nonce fact directly at ${seededPath}`);
+        writeFileSync(
+          topicPath,
+          `---\nname: automem-probe-seeded-fact\ndescription: Auto-memory probe Arm A seeded fact (Issue #1658)\nmetadata:\n  type: project\n---\n\nThe secret project codename is ${theNonce}.\n`,
+        );
+        const indexLine = `- [Automem probe seeded fact](${topicFilename}) — the secret project codename is recorded here.\n`;
+        if (existsSync(indexPath)) {
+          appendFileSync(indexPath, indexLine);
+        } else {
+          writeFileSync(indexPath, `# Memory Index\n\n${indexLine}`);
+        }
+        console.log(`A: seeded nonce fact as a topic file (${topicPath}) linked from an index entry in ${indexPath}`);
       } else {
-        console.log('A: [--expect-no-recall] skipping the seed step on purpose.');
+        console.log('A: [--expect-no-recall] skipping the seed step on purpose (no topic file, no index entry written).');
       }
 
       const ask = askAboutPrompt('the secret project codename');
@@ -736,11 +810,20 @@ async function runArmA(expectNoRecall: boolean): Promise<ArmVerdict> {
       const { outcome: ctrlOutcome, recallsForTurn: ctrlRecalls } = await runMemorySession(configDir, cwdControl, { autoMemoryEnabled: true }, ask, 'A-measure-control');
 
       const settled = turnSettled(measOutcome) && turnSettled(ctrlOutcome);
-      const measRecallHit = recallsMentionNonce(measRecalls, theNonce, seededPath);
+      // "Recall happened" only counts once it is also "recall happened FOR
+      // THE FORMAT WE ASSUMED" -- see recallPathMatches's own comment.
+      const measPathMatched = recallPathMatches(measRecalls, topicPath);
+      const measContentMatched = recallContentMatches(measRecalls, theNonce);
+      const measRecallHit = measPathMatched || measContentMatched;
       const measTextHit = measOutcome.text.includes(theNonce);
-      const ctrlRecallHit = recallsMentionNonce(ctrlRecalls, theNonce, seededPath);
+      const ctrlPathMatched = recallPathMatches(ctrlRecalls, topicPath);
+      const ctrlContentMatched = recallContentMatches(ctrlRecalls, theNonce);
+      const ctrlRecallHit = ctrlPathMatched || ctrlContentMatched;
       const ctrlTextHit = ctrlOutcome.text.includes(theNonce);
-      console.log(`A: measSeeded recall=${measRecallHit} text=${measTextHit}; control recall=${ctrlRecallHit} text=${ctrlTextHit}`);
+      console.log(
+        `A: measSeeded recall=${measRecallHit} (pathMatched=${measPathMatched} contentMatched=${measContentMatched}) text=${measTextHit}; ` +
+          `control recall=${ctrlRecallHit} (pathMatched=${ctrlPathMatched} contentMatched=${ctrlContentMatched}) text=${ctrlTextHit}`,
+      );
 
       return { arm: 'A', ...classifyArmA({ settled, expectNoRecall, measRecallHit, measTextHit, ctrlRecallHit, ctrlTextHit }) };
     } finally {

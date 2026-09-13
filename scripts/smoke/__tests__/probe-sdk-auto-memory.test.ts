@@ -3,11 +3,12 @@
  *
  * The probe is billable and needs a real, authenticated `claude` CLI, so its
  * measurement is never run here. `exitCodeFor` / `classifyArmA` /
- * `classifyArmC` / `classifyArmD` / `redactRecallEntry` are pure -- they read
- * only plain booleans/strings, no I/O -- and importing the module runs
- * nothing (the `import.meta.main` guard at the foot of that file, covered
- * separately by `import-safety.test.ts`), so all five are testable at zero
- * cost and separately from what they classify.
+ * `classifyArmC` / `classifyArmD` / `redactRecallEntry` / `recallPathMatches`
+ * are pure -- they read only plain booleans/strings/synthetic recall
+ * objects, no I/O -- and importing the module runs nothing (the
+ * `import.meta.main` guard at the foot of that file, covered separately by
+ * `import-safety.test.ts`), so all six are testable at zero cost and
+ * separately from what they classify.
  */
 import { describe, it, expect } from 'bun:test';
 import {
@@ -17,6 +18,7 @@ import {
   classifyArmC,
   classifyArmD,
   redactRecallEntry,
+  recallPathMatches,
   type ArmAInput,
   type ArmCInput,
   type ArmDInput,
@@ -234,5 +236,47 @@ describe('redactRecallEntry', () => {
     expect('content' in within).toBe(false);
     expect('content' in outside).toBe(false);
     expect(outside.withinIsolatedConfigDir).toBe(false);
+  });
+});
+
+describe('recallPathMatches', () => {
+  const seededPath = '/tmp/probe-sdk-automem-a-seeded/projects/slug/memory/automem-probe-seeded-fact.md';
+
+  // Boundary: empty recall list.
+  it('is false for an empty recall list', () => {
+    expect(recallPathMatches([], seededPath)).toBe(false);
+  });
+
+  it('is true when a recalled memory basename-matches the seeded topic file, even through a different absolute prefix', () => {
+    const recalls = [{ memories: [{ path: '/some/other/resolved/prefix/automem-probe-seeded-fact.md' }] }];
+    expect(recallPathMatches(recalls, seededPath)).toBe(true);
+  });
+
+  /**
+   * The mismatch case (Architect ruling, PR #1662): "recall happened"
+   * becomes "recall happened FOR THE FORMAT WE ASSUMED" only when the
+   * recalled path is the one this arm actually seeded, not an unrelated
+   * memory that happened to surface in the same turn.
+   */
+  it('is false when a recall fired but for a DIFFERENT file (mismatch case)', () => {
+    const recalls = [{ memories: [{ path: '/tmp/probe-sdk-automem-a-seeded/projects/slug/memory/MEMORY.md' }] }];
+    expect(recallPathMatches(recalls, seededPath)).toBe(false);
+  });
+
+  it('is true when at least one of several memories in one recall matches (mixed)', () => {
+    const recalls = [
+      { memories: [{ path: '/unrelated/one.md' }, { path: '/anywhere/automem-probe-seeded-fact.md' }, { path: '/unrelated/two.md' }] },
+    ];
+    expect(recallPathMatches(recalls, seededPath)).toBe(true);
+  });
+
+  it('is true when at least one of several recall events matches (mixed, all-failure-but-one)', () => {
+    const recalls = [{ memories: [{ path: '/unrelated/one.md' }] }, { memories: [{ path: '/anywhere/automem-probe-seeded-fact.md' }] }];
+    expect(recallPathMatches(recalls, seededPath)).toBe(true);
+  });
+
+  it('is false when every recall across every event misses (all-failure)', () => {
+    const recalls = [{ memories: [{ path: '/unrelated/one.md' }] }, { memories: [{ path: '/unrelated/two.md' }] }];
+    expect(recallPathMatches(recalls, seededPath)).toBe(false);
   });
 });
