@@ -654,4 +654,50 @@ describe('useSessionSideEffects - orchestrator-designation-changed cache patch (
       expect(cached?.repositories.find((r) => r.id === 'repo-a')?.orchestratorSessionId).toBe('session-new');
     });
   });
+
+  it('forces a fresh refetch when the cache is populated but does not yet contain the targeted repository', async () => {
+    // Regression test for CodeRabbit finding (PR #1657, outside-diff-range): when
+    // the repositories cache IS populated but none of its entries have
+    // `id === repositoryId` (e.g. a repository registered after the cache was
+    // last populated), the `setQueryData` map callback finds no match and
+    // writes back an unchanged list -- silently dropping the designation
+    // change with no future correction. The fallback must be the same
+    // invalidate-then-refetch path used for the no-cache case above.
+    const options = createDefaultOptions();
+    const { queryClient } = renderWithQueryClient(options);
+    const queryKey = repositoryKeys.all();
+
+    const repoB = repository({ id: 'repo-b', orchestratorSessionId: null });
+
+    const queryFn = mock(() => Promise.resolve({ repositories: [repoB] }));
+
+    // Mount a real, actively-observed `useQuery` on the SAME query client, for
+    // the same reason as the in-flight-fetch test above: `invalidateQueries`'s
+    // default `type: 'active'` refetch only matches queries with a live
+    // observer.
+    const queryWrapper = ({ children }: { children: React.ReactNode }) =>
+      createElement(QueryClientProvider, { client: queryClient }, children);
+    renderHook(() => useQuery({ queryKey, queryFn }), { wrapper: queryWrapper });
+
+    await waitFor(() => {
+      expect(queryClient.getQueryData<{ repositories: Repository[] }>(queryKey)).toEqual({ repositories: [repoB] });
+    });
+    expect(queryFn).toHaveBeenCalledTimes(1);
+
+    const ws = MockWebSocket.getLastInstance();
+    act(() => {
+      ws?.simulateOpen();
+      ws?.simulateMessage(
+        JSON.stringify({ type: 'orchestrator-designation-changed', repositoryId: 'repo-a', sessionId: 'session-new' })
+      );
+    });
+
+    // A direct `setQueryData` patch would have silently no-op'd here (no
+    // `repo-a` entry to map over); the fix must instead trigger the same
+    // invalidate-then-refetch fallback as the no-cache case, evidenced by a
+    // second `queryFn` call.
+    await waitFor(() => {
+      expect(queryFn).toHaveBeenCalledTimes(2);
+    });
+  });
 });

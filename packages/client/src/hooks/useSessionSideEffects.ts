@@ -160,10 +160,26 @@ export function useSessionSideEffects({
     // explicitly refetch once it has settled -- by then `fetchStatus` is
     // back to idle, so this second call is a genuinely fresh request that
     // reflects the change.
-    if (!queryClient.getQueryData<{ repositories: Repository[] }>(queryKey)) {
+    const invalidateThenRefetch = () => {
       void queryClient.invalidateQueries({ queryKey }).then(() =>
         queryClient.refetchQueries({ queryKey, type: 'all' })
       );
+    };
+
+    const cached = queryClient.getQueryData<{ repositories: Repository[] }>(queryKey);
+    if (!cached) {
+      invalidateThenRefetch();
+      return;
+    }
+    // Cache is populated, but the repository this event names isn't in it yet
+    // (e.g. it was registered after the cache was last populated). A direct
+    // `setQueryData` patch would silently no-op -- `.map()` finds no matching
+    // `r.id` and writes back the same list -- losing the designation change
+    // for that repository with no future correction. Fall back to the same
+    // invalidate-then-refetch path used for the no-cache case above.
+    const matched = cached.repositories.some((r) => r.id === repositoryId);
+    if (!matched) {
+      invalidateThenRefetch();
       return;
     }
     queryClient.setQueryData<{ repositories: Repository[] } | undefined>(queryKey, (old) => {
