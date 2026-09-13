@@ -73,6 +73,22 @@
  *        whether the surfaced path lies within this run's own isolated
  *        config dir (this run's own scratch data) or not (a real leak from
  *        elsewhere).
+ *
+ *        SCOPE LIMITATION (Architect ruling, 2026-09-13): because every arm
+ *        runs under an isolated, throwaway `CLAUDE_CONFIG_DIR`, this arm can
+ *        only ever observe a recall whose `path` is NOT rooted under that
+ *        throwaway config dir -- in practice `scope: 'organization'` (an
+ *        https URL) and, in principle, `'team'`. The `'personal'`/User-scope
+ *        channel that #1348 actually observed lives outside any
+ *        `CLAUDE_CONFIG_DIR`-relative path this isolation can redirect, so
+ *        this arm cannot reach it by construction. **A `NO LEAK` result from
+ *        this arm must never be read as covering User-scope** -- #1348
+ *        remains un-re-derived for that channel. A synthetic User-scope seed
+ *        (writing throwaway content into the isolation copy's own User-scope
+ *        location before the run) would close this gap; tracked separately
+ *        as Issue #1663 rather than folded into this arm, since seeding a
+ *        copy of the real memory tree was rejected as unbounded input
+ *        through a billed turn.
  *   --c  WRITE: tell the model something worth remembering, poll for a file
  *        to appear under the default directory within a bounded timeout.
  *   --d  REDIRECT: set `autoMemoryDirectory` explicitly and confirm both a
