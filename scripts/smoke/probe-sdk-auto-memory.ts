@@ -131,23 +131,275 @@
  * "a check's existence is not its detection power", applied to this probe's
  * own apparatus before its numbers are trusted.
  *
+ * ---------------------------------------------------------------------------
+ * TASK 0B (Issue #1667, epic #1636 Phase 2): AWARENESS, SWITCHES, TIMESCALE.
+ * ---------------------------------------------------------------------------
+ *
+ * Task 0 (#1658, arms A-D above) measured all four premises REFUTED. Reading
+ * the vendored `sdk.d.ts` 0.3.238 afterwards (Architect, 2026-09-13, quoted
+ * verbatim below rather than paraphrased) surfaced a confound this script's
+ * original design did not account for: arms A-D never set `Options.systemPrompt`
+ * at all -- the same shape `sdk-engine.ts` uses in production whenever no
+ * `systemPromptAppend` exists -- and what an omitted `systemPrompt` resolves
+ * to is undocumented. If it means "no preset", the model in every arm-A-D run
+ * may simply never have been told the feature exists, which would explain
+ * every REFUTED verdict without any timescale or switch being the cause.
+ * Arms E/F/G separate that confound, cheapest first, each its own stop
+ * condition, before spending anything on the more expensive question.
+ *
+ * PRIMARY SOURCES, quoted from `packages/embedded-agent/node_modules/@anthropic-ai/claude-agent-sdk/sdk.d.ts`
+ * (this repo's own vendored copy, version 0.3.238 -- read directly, not
+ * inferred by analogy, per this Issue's own instruction):
+ *
+ *   `Options.systemPrompt` (L2072-2078):
+ *     "- `{ type: 'preset', preset: 'claude_code' }` - Use Claude Code's
+ *        default system prompt
+ *      - `{ type: 'preset', preset: 'claude_code', append: '...' }` - Use
+ *        default prompt with appended instructions
+ *      - `{ type: 'preset', preset: 'claude_code', excludeDynamicSections: true }` -
+ *        Strip per-user dynamic sections (working directory, auto-memory, git
+ *        status) from the system prompt so it stays static and cacheable
+ *        across users. The stripped content is re-injected as the first user
+ *        message so the model still has access to it."
+ *   This is the THIRD correction this delegate found while implementing (see
+ *   the two above, still accurate for arms A-D): the Issue's own text said
+ *   "what an omitted `systemPrompt` resolves to is not documented" -- true --
+ *   but ALSO framed arm E's negative control (iii) as stripping the section
+ *   "so the model has no way to know" -- not quite right either, per the LAST
+ *   sentence quoted above: the stripped content is RE-INJECTED as the first
+ *   user message. (iii) may therefore not be a clean negative control at all;
+ *   this script evaluates that empirically per-run rather than assuming
+ *   either way (see arm E's `control: NONE AVAILABLE` handling below).
+ *
+ *   The identical field also exists on the wire-level control-initialize
+ *   request (`SDKControlInitializeRequest.excludeDynamicSections`, L3709-3711):
+ *     "When true, omit per-user dynamic sections (working directory,
+ *      auto-memory path) from the cached system prompt and re-inject them as
+ *      the first user message. ... Has no effect when a custom (non-preset)
+ *      system prompt is in use."
+ *
+ *   `Settings.autoDreamEnabled` (L7555-7558):
+ *     "Enable background memory consolidation (auto-dream). When set,
+ *      overrides the server-side default." -- exists, an unknown server-side
+ *      default, never set by arms A-D or by `sdk-engine.ts`.
+ *
+ *   `Settings.autoMemoryDirectory` (L7551-7554) confirms Task 0's own
+ *   empirical-discovery approach was necessary, not just cautious: "When
+ *   unset, defaults to ~/.claude/projects/<sanitized-cwd>/memory/" -- the
+ *   sanitizer itself is undocumented, exactly as Task 0's header already
+ *   found by grepping the vendored bundle for it.
+ *
+ *   A FOURTH correction (this Issue's own checklist item, resolved by
+ *   reading, not assumed): the Issue asked for "`SDKContextUsage.memory_files`
+ *   located and read". `SDKContextUsage.memory_files` (snake_case, L3230-3237)
+ *   is the shape carried on a `system` message's `context_usage` field
+ *   (L3102) -- a message shape this harness's `ProbeSession` does not capture
+ *   today. What IS already wired through this harness is its camelCase
+ *   sibling, `SDKControlGetContextUsageResponse.memoryFiles` (L3383-3387,
+ *   `{ path: string; type: string; tokens: number }[]`), returned by
+ *   `q.getContextUsage()` / `ProbeSession.readUsage()` and threaded as
+ *   `TurnOutcome.usage` whenever a `ProbeSession` is constructed with
+ *   `pollUsage: true`. Same information (which memory files were loaded into
+ *   context and their token cost), different accessor. Arm E reads this (see
+ *   `pollUsage: true` on its three measurement turns) rather than leaving the
+ *   checklist item as a citation only -- and logs each entry's `path` /
+ *   `type` / `tokens` permanently, one line per entry, plus folds the same
+ *   detail into `summarizeArmE`'s own note (`formatMemoryFilesForNote`), so
+ *   a future reader gets the SDK's own report of what it loaded without
+ *   needing to re-run anything (Architect request, PR #1676 review: a
+ *   count alone cannot answer "is this MEMORY.md or something else").
+ *
+ * ARM E -- AWARENESS (`--e`). Seeds the SAME MEMORY.md index + topic file as
+ * arm A (via the shared `seedMemoryTopic` helper, factored out of arm A's own
+ * inline logic so both arms write byte-identical file shapes) into the
+ * discovered default memory dir -- except the index-line TITLE carries this
+ * run's own nonce (arm A's fixed title, "Automem probe seeded fact", is
+ * guessable from this repo's own source; a nonce is not). Runs one turn per
+ * `systemPrompt` configuration, same seeded dir, asking BOTH of arm E's
+ * required observables in a single combined turn (one turn per configuration,
+ * not two, per this Issue's own billing estimate of "three single turns"):
+ *
+ *   (i)   `systemPrompt` omitted entirely -- arms A-D's and production's
+ *         actual shape today.
+ *   (ii)  `{ type: 'preset', preset: 'claude_code' }` explicit.
+ *   (iii) preset with `excludeDynamicSections: true` -- the negative control.
+ *         Per the primary-source quote above, this may still leak via the
+ *         first-user-message re-injection; if it does, this script reports
+ *         `control: NONE AVAILABLE` rather than treating (iii) as a clean
+ *         negative.
+ *
+ * Two observables, both read from ONE turn's answer text per configuration:
+ *   (1) LOCATION -- "quote the absolute path of your auto-memory directory":
+ *       matched against the discovered default memory dir. Proves the model
+ *       was TOLD where memory lives.
+ *   (2) ACCESS -- "what is the title of the entry in your memory index?":
+ *       matched against the nonce-bearing seeded index-line title. Proves the
+ *       model could READ the seeded file, whichever way it learned of it.
+ *
+ * Four-way classification per configuration (`classifyArmEConfig`): both hit
+ * -> aware-and-reading; (2) only -> aware via a prose-only dynamic section,
+ * reading works (NOT absence); (1) only -> told the path but did not read (a
+ * real finding, not a miss); neither -> unaware. This is what stops a
+ * prose-only section from being misread as absence, per this Issue's own
+ * design -- (2) is the primary observable, (1) is the diagnostic for HOW
+ * awareness arrived. `SDKMemoryRecallMessage` events observed during these
+ * turns are logged as bonus mechanism evidence but do not gate the
+ * classification, which is defined purely on the two text observables named
+ * in the Issue.
+ *
+ * ORDER CONFOUND, closed (Architect ruling, PR #1676 review): (i)/(ii)/(iii)
+ * run sequentially against the SAME memory dir with `autoMemoryEnabled:
+ * true`, so a write that happens to occur during one configuration's turn
+ * would change what the NEXT configuration observes. The memory dir is
+ * deleted and reseeded IDENTICALLY (same title, same nonce) immediately
+ * before every configuration's turn -- zero extra turns, pure fs I/O -- so
+ * each configuration observes the same freshly-seeded state regardless of
+ * what the previous configuration's turn did. The memory-dir file count is
+ * logged both right after reseeding (the expected baseline) and right after
+ * the turn (evidence of anything that turn itself introduced).
+ *
+ * ARM F -- SWITCHES (`--f`). Picks whichever of (i)/(ii) is classified as
+ * NOT `unaware` first (i preferred, per the Issue's own "if (i) does, use
+ * (i); else (ii)") -- LOCATION awareness alone (`told-not-read`) counts,
+ * not just ACCESS: arm F's premise is "awareness exists under configuration
+ * X", which the model being told the memory-directory path already
+ * establishes; when arm F runs without arm E in the same invocation
+ * (cheap standalone dev iteration), a `--f-config <omitted|preset>` override
+ * selects it explicitly, defaulting to `omitted` (production's own shape)
+ * with a printed warning. Under that configuration, sets
+ * `Options.settings.autoMemoryEnabled: true` AND `autoDreamEnabled: true`
+ * explicitly, then re-runs arm C's write check UNCHANGED (via the shared
+ * `runWriteCheck` core both arms now call) and arm A's recall check UNCHANGED
+ * (via the shared `runRecallCheck` core both arms now call) under the same
+ * configuration. `--expect-no-write` threads into arm F's write half exactly
+ * as it does for arm C (per this Issue's own Polarity section); it does not
+ * thread into the recall half, which the Issue's Polarity section does not
+ * mention.
+ *
+ * ARM F/G HALT BY DEFAULT (owner ruling, Orchestrator relay, 2026-09-13;
+ * refined by the Architect on this PR's own review -- see below),
+ * evaluated by `armFHaltCheck` whenever arm E actually ran in the same
+ * invocation: if arm E showed NO configuration ((i) or (ii)) carries
+ * awareness, arm F would be measuring the switches against a model that
+ * cannot know what to write -- a negative result there is uninterpretable,
+ * neither confirming nor refuting the switches. Rather than spend the
+ * turns, arm F reports a `HALTED` verdict stating the reason (arm E's own
+ * verdict stays `conclusive`, so the run still exits `0`), and arm G
+ * reports its own SKIPPED verdict in turn (it cannot run without arm F's
+ * write result). `--force-f` overrides the halt for a deliberate operator
+ * run anyway; a standalone `--f` invocation with no `--e` in the same run
+ * is unaffected (already the operator's own informed choice, per
+ * `--f-config`'s existing default).
+ *
+ * A dirty or unsettled (iii) control does NOT halt (Architect ruling,
+ * PR #1676 review, overruling this file's own first version): per the
+ * primary-source quote above, `excludeDynamicSections` is DOCUMENTED to
+ * re-inject the stripped sections as the first user message, so (iii)
+ * surfacing an observable is the EXPECTED result on a doc-conformant build
+ * -- treating it as a halt condition would make F/G unreachable without
+ * `--force-f` on any build that behaves as documented. Arm F's own premise
+ * is "awareness exists under configuration X", which (i)/(ii)'s own
+ * observables establish independently of (iii); a dirty (iii) is a caveat
+ * on ATTRIBUTING that awareness to the dynamic section specifically
+ * (already stated in arm E's own note), not a precondition for F to run.
+ *
+ * ARM G -- TIMESCALE (`--g`). Re-runs arm F's write check ONLY, with a longer
+ * poll via `--extended-timeout <ms>` (omitted or `0` behaves exactly like arm
+ * F's 60 s poll). Runs ONLY when arm E showed awareness under PRODUCTION's
+ * configuration (`omitted`) AND arm F still showed no write -- selecting
+ * `--g` therefore always also selects `--e` and `--f` as prerequisites (both
+ * are cheap; the gate cannot be evaluated without their results), printing a
+ * SKIPPED verdict rather than running when the gate is not met. **Owner
+ * directive, 2026-09-13, binding: `--extended-timeout` is capped at 5 minutes
+ * (300000 ms) regardless of what is requested; this script clamps and warns
+ * rather than trusting the caller.** No teardown arm, no recall re-check --
+ * confirmed before implementation that `pollForContent`'s loop (arm C/F/G's
+ * shared write-poll) makes no repeated LLM turns, only local `fs` reads on an
+ * interval, so a longer window costs wall-clock, not additional billed turns.
+ *
+ * Arm D's `defaultLeaked` observable does not apply as a SEPARATE check to
+ * arm F/G: neither sets an `autoMemoryDirectory` override, so the one
+ * location arm F/G polls already IS "the default location" -- there is no
+ * second location for a write to leak to. Stated here per this Issue's own
+ * boundary-expectations checklist, not silently skipped.
+ *
+ * REAL CONFIG-LOCATION CROSS-CHECK, run around every arm (not just once at
+ * the end): before ANY arm runs, this script resolves where the OPERATOR's
+ * real, non-isolated `CLAUDE_CONFIG_DIR` lives (the env var if already set,
+ * else `~/.claude` -- measured via existence, never assumed), recursively
+ * snapshots every file's mtime under it, and writes a small canary file
+ * there (named `${PROBE_SLUG}-canary-<runId>.tmp`) as an in-band positive
+ * control. After every selected arm has run, it snapshots again.
+ *
+ * ATTRIBUTION FILTER (Architect ruling, PR #1676 review, two rounds): the
+ * real config dir belongs to the OPERATING OS user, whose OTHER live Claude
+ * Code sessions write their own transcripts / file-history continuously --
+ * a raw "did anything change" diff is near-certain to fire on a host with
+ * any concurrent activity, independent of anything this probe does.
+ * `classifyRealTreeDiff` / `isAttributableToProbe` instead count a
+ * changed/added/removed path as escalation-worthy ONLY when it is
+ * attributable to THIS run: its path contains `PROBE_SLUG`
+ * (`probe-sdk-automem`, path-wide -- the canary, or any probe-named scratch
+ * artifact), OR its post-run content contains one of the nonces THIS run
+ * minted (`trackedNonce`, tracked in `runNonces` -- every `nonce()` call in
+ * this file goes through it, never the harness's `nonce()` directly) WITHIN
+ * a `memory/` path segment specifically.
+ *
+ * The `memory/`-segment scoping on the nonce-content half is round 2's
+ * fix: this probe prints every nonce to stdout, and the delegate session
+ * RUNNING this probe ingests that stdout as its own tool output, writing
+ * it into ITS OWN transcript `.jsonl` under this same real config dir --
+ * an unscoped nonce-content match would make the OPERATOR's own
+ * conversation transcript "attributable" and false-escalate on every
+ * single run. A transcript is never under `memory/`; only genuine
+ * auto-memory content is. Paths that echo a nonce OUTSIDE `memory/` are
+ * reported separately, informationally, never escalated -- see
+ * `RealTreeDiffClassification.nonceEchoOutsideMemoryCount`.
+ *
+ * Everything not attributable is logged as "unrelated concurrent activity:
+ * N paths" and never escalates. The canary is classified through this SAME
+ * filter (never a raw `.includes()`), so its own positive control proves
+ * the FILTERED detector works, not merely that the raw diff can see a
+ * change. Precedent: Task 0's own manual real-tree addendum (#1662) found
+ * nonce matches ONLY in top-level session `.jsonl` transcripts, explicitly
+ * noted as not under a `memory/` subdirectory and dismissed as ordinary
+ * conversation, not a leak -- this filter mechanizes exactly that
+ * distinction.
+ *
+ * A failed positive control, or an attributable change surviving the
+ * filter, escalates this script's own exit code to `HARNESS` regardless of
+ * what the arms themselves measured -- the isolation claim is a
+ * precondition for trusting anything else this script reports. The canary
+ * is removed in a `finally` block so it survives an early-throw exit at
+ * most as long as the failed run itself.
+ *
+ * `--expect-no-write` reports CONFIRMED ABSENCE under arm F and arm G
+ * independently, per this Issue's own Polarity section. Arm E's polarity is
+ * its own (iii) negative control, not a separate `--expect-*` flag.
+ *
  * EXIT CODES -- a measurement script, not a pass/fail gate (same shape as
  * `probe-compaction-fidelity.ts`): 0 means every requested arm produced a
  * definite measurement, REGARDLESS of which way any individual measurement
  * came out. 1 means at least one requested arm was inconclusive. 2 means the
  * harness itself failed (no authenticated `claude` CLI, spawn failure,
- * isolation not verified) and nothing was measured.
+ * isolation not verified, OR the real config-location cross-check's own
+ * positive control failed, OR that real tree changed) and nothing in this
+ * run's own measurements can be trusted.
  *
  * Requirements: a real, authenticated `claude` CLI session for the invoking
- * OS user (this repo's own claude-sdk auth, not a provider key). Roughly
- * 6-10 small turns total across the four arms, plus bounded local-filesystem
- * polling for write detection. A manual gate, never a CI job.
+ * OS user (this repo's own claude-sdk auth, not a provider key). Arms A-D:
+ * roughly 6-10 small turns. Arms E/F: three (E) plus two (F) small turns
+ * (~$0.05 + ~$0.10, per this Issue's own billing estimate). Arm G, only when
+ * its gate is met: the same turns as F plus up to 5 minutes of wall-clock
+ * polling (owner-capped), no additional billed turns. E/F/G are NEVER
+ * included in the bare no-flags default -- select them explicitly. A manual
+ * gate, never a CI job.
  *
- * Usage: bun scripts/smoke/probe-sdk-auto-memory.ts [--a] [--b] [--c] [--d] [--expect-no-recall] [--expect-no-write]
+ * Usage: bun scripts/smoke/probe-sdk-auto-memory.ts [--a] [--b] [--c] [--d] [--e] [--f] [--g] [--force-f] [--f-config omitted|preset] [--extended-timeout <ms>] [--expect-no-recall] [--expect-no-write]
  */
 
 import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync, existsSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { basename, join, sep } from 'node:path';
 import type { Options, Settings } from '../../packages/embedded-agent/node_modules/@anthropic-ai/claude-agent-sdk';
 import {
@@ -194,7 +446,7 @@ export interface Verdict {
 }
 
 export interface ArmVerdict extends Verdict {
-  arm: 'A' | 'B' | 'C' | 'D';
+  arm: 'A' | 'B' | 'C' | 'D' | 'E' | 'F' | 'G';
 }
 
 function inconclusive(note: string): Verdict {
@@ -387,6 +639,360 @@ export function classifyArmD(input: ArmDInput): Verdict {
 }
 
 // ---------------------------------------------------------------------------
+// Arm E (awareness) classification -- Task 0b (Issue #1667)
+// ---------------------------------------------------------------------------
+
+export type ArmEConfigKey = 'omitted' | 'preset' | 'preset-excluded';
+
+export type ArmEClassification = 'aware-and-reading' | 'aware-prose-only' | 'told-not-read' | 'unaware';
+
+/** One `SDKControlGetContextUsageResponse.memoryFiles` entry -- the SDK's own report of a file it loaded into context for a turn. */
+export interface MemoryFileEntry {
+  path: string;
+  type: string;
+  tokens: number;
+}
+
+export interface ArmEConfigInput {
+  settled: boolean;
+  locationHit: boolean;
+  accessHit: boolean;
+  /**
+   * This configuration's `memoryFiles` entries, for the reader (Architect
+   * request, PR #1676 review): folded into `summarizeArmE`'s note so a
+   * future reader gets the SDK's own report of what it loaded without
+   * digging through the raw run log. Does not affect classification.
+   */
+  memoryFilesEntries?: readonly MemoryFileEntry[];
+}
+
+/**
+ * Pure four-way classifier for ONE `systemPrompt` configuration's two
+ * observables. Extracted so the decision tree is testable without the
+ * billed turn that produces its input -- same idiom as `classifyArmA` /
+ * `classifyArmC` / `classifyArmD`.
+ *
+ * The four-way split (not a plain hit/miss) is the Issue's own design: (2)
+ * ACCESS is the PRIMARY observable (it proves the model could read the
+ * seeded file), and (1) LOCATION is a diagnostic for HOW awareness arrived,
+ * not a second vote on WHETHER it arrived. Collapsing this to "both must hit
+ * to count as aware" would misclassify a prose-only dynamic section (title
+ * recalled, path never quoted verbatim) as absence -- exactly the confound
+ * this arm exists to separate out.
+ *
+ * @internal Exported for the sibling unit test.
+ */
+export function classifyArmEConfig(input: ArmEConfigInput): { classification: ArmEClassification; conclusive: boolean; note: string } {
+  if (!input.settled) {
+    return { classification: 'unaware', conclusive: false, note: 'INCONCLUSIVE -- the turn for this configuration did not settle.' };
+  }
+  if (input.locationHit && input.accessHit) {
+    return {
+      classification: 'aware-and-reading',
+      conclusive: true,
+      note: 'aware-and-reading -- the model quoted the memory-directory path AND recalled the seeded index title.',
+    };
+  }
+  if (input.accessHit) {
+    return {
+      classification: 'aware-prose-only',
+      conclusive: true,
+      note: 'aware-prose-only -- the model recalled the seeded index title WITHOUT quoting the path; NOT absence, likely a prose-only dynamic section.',
+    };
+  }
+  if (input.locationHit) {
+    return {
+      classification: 'told-not-read',
+      conclusive: true,
+      note: 'told-not-read -- the model quoted the memory-directory path but did NOT recall the seeded index title; a real finding, not a miss.',
+    };
+  }
+  return {
+    classification: 'unaware',
+    conclusive: true,
+    note: 'unaware -- neither observable hit under this configuration.',
+  };
+}
+
+export interface ArmESummaryInput {
+  omitted: ArmEConfigInput;
+  preset: ArmEConfigInput;
+  presetExcluded: ArmEConfigInput;
+}
+
+export interface ArmESummary {
+  conclusive: boolean;
+  perConfig: Record<ArmEConfigKey, ReturnType<typeof classifyArmEConfig>>;
+  /** Whether the (iii) negative control stayed clean (neither observable hit). `null` when (iii)'s own turn did not settle. */
+  controlClean: boolean | null;
+  /**
+   * (i)/(ii) configurations classified as NOT `unaware` -- i.e. either
+   * observable hit (`aware-and-reading` / `aware-prose-only` /
+   * `told-not-read`). LOCATION awareness alone (`told-not-read`) counts:
+   * arm F's premise is "awareness exists under configuration X", which the
+   * model being told the memory-directory path already establishes, even
+   * if it did not also demonstrate reading the seeded entry (Architect
+   * ruling, PR #1676 review -- corrects this comment's earlier,
+   * ACCESS-only wording; the code was always right).
+   */
+  awareConfigs: Array<'omitted' | 'preset'>;
+  /** Whether PRODUCTION's own shape (`omitted`) shows awareness -- the primary finding this arm exists to produce. */
+  productionAware: boolean;
+  note: string;
+}
+
+/**
+ * Combines the three per-configuration classifications into arm E's overall
+ * verdict: which of (i)/(ii) carries awareness, whether (iii) was a clean
+ * negative control, and whether PRODUCTION's own shape shows awareness.
+ *
+ * @internal Exported for the sibling unit test.
+ */
+/**
+ * Renders one configuration's `memoryFiles` entries for `summarizeArmE`'s
+ * note -- the SDK's own report of what it loaded into context, folded into
+ * the durable summary so a future reader gets it without the raw run log
+ * (Architect request, PR #1676 review).
+ *
+ * @internal Exported for the sibling unit test.
+ */
+export function formatMemoryFilesForNote(entries: readonly MemoryFileEntry[] | undefined): string {
+  if (!entries || entries.length === 0) return 'memoryFiles=[]';
+  return `memoryFiles=[${entries.map((e) => `{path=${e.path}, type=${e.type}, tokens=${e.tokens}}`).join(', ')}]`;
+}
+
+export function summarizeArmE(input: ArmESummaryInput): ArmESummary {
+  const perConfig: Record<ArmEConfigKey, ReturnType<typeof classifyArmEConfig>> = {
+    omitted: classifyArmEConfig(input.omitted),
+    preset: classifyArmEConfig(input.preset),
+    'preset-excluded': classifyArmEConfig(input.presetExcluded),
+  };
+  const conclusive = perConfig.omitted.conclusive && perConfig.preset.conclusive && perConfig['preset-excluded'].conclusive;
+  const controlClean = !input.presetExcluded.settled ? null : !input.presetExcluded.locationHit && !input.presetExcluded.accessHit;
+  const awareConfigs: Array<'omitted' | 'preset'> = [];
+  if (perConfig.omitted.classification !== 'unaware') awareConfigs.push('omitted');
+  if (perConfig.preset.classification !== 'unaware') awareConfigs.push('preset');
+  const productionAware = perConfig.omitted.classification !== 'unaware';
+
+  const controlNote =
+    controlClean === null
+      ? 'the (iii) control turn did not settle -- no reading available.'
+      : controlClean
+        ? 'the (iii) negative control stayed clean (neither observable hit) -- a trustworthy negative control.'
+        : 'control: NONE AVAILABLE -- the (iii) negative control still surfaced an observable despite excludeDynamicSections, consistent with the SDK doc\'s own note that stripped sections are re-injected as the first user message; do not read (iii) as proof (i)/(ii)\'s awareness came from the dynamic section specifically.';
+
+  const note =
+    `(i) omitted: ${perConfig.omitted.note} ${formatMemoryFilesForNote(input.omitted.memoryFilesEntries)} | ` +
+    `(ii) preset: ${perConfig.preset.note} ${formatMemoryFilesForNote(input.preset.memoryFilesEntries)} | ` +
+    `(iii) preset+excludeDynamicSections: ${perConfig['preset-excluded'].note} ${formatMemoryFilesForNote(input.presetExcluded.memoryFilesEntries)} | ${controlNote} | ` +
+    `production's own shape (omitted) ${productionAware ? 'SHOWS awareness' : 'does NOT show awareness'}; awareness-carrying configs: ${awareConfigs.length > 0 ? awareConfigs.join(', ') : '(none)'}.`;
+
+  return { conclusive, perConfig, controlClean, awareConfigs, productionAware, note };
+}
+
+// ---------------------------------------------------------------------------
+// Real config-location cross-check (Task 0b's own first-class assertion)
+// ---------------------------------------------------------------------------
+
+/**
+ * Where the OPERATOR's real, non-isolated `CLAUDE_CONFIG_DIR` lives --
+ * measured from the env var this process was actually launched with, before
+ * any arm calls `isolateClaudeConfigDir` (which mutates
+ * `process.env.CLAUDE_CONFIG_DIR` for the rest of THIS process). Must be
+ * captured exactly once, at the very top of `main()`, before any arm runs.
+ * Falls back to `~/.claude` only when the env var is genuinely unset --
+ * "measure, don't assume" per this Issue's own instruction, satisfied by the
+ * caller logging whether the resolved path actually exists before trusting
+ * it (see `main()`).
+ *
+ * @internal Exported for the sibling unit test.
+ */
+export function resolveRealConfigDir(env: NodeJS.ProcessEnv, home: string): string {
+  const fromEnv = env.CLAUDE_CONFIG_DIR;
+  return fromEnv && fromEnv.length > 0 ? fromEnv : join(home, '.claude');
+}
+
+export interface MtimeDiff {
+  added: string[];
+  removed: string[];
+  changed: string[];
+}
+
+/**
+ * Pure diff between two mtime snapshots (`path -> mtimeMs`). Extracted from
+ * the recursive filesystem walk itself so it is testable at zero cost
+ * against fabricated maps -- the walk (`snapshotMtimes`, below) is real I/O
+ * and not separately unit-tested, matching this file's existing convention
+ * of pinning the pure decision logic rather than the I/O around it.
+ *
+ * @internal Exported for the sibling unit test.
+ */
+export function diffMtimeSnapshots(before: ReadonlyMap<string, number>, after: ReadonlyMap<string, number>): MtimeDiff {
+  const added: string[] = [];
+  const changed: string[] = [];
+  for (const [path, mtime] of after) {
+    if (!before.has(path)) added.push(path);
+    else if (before.get(path) !== mtime) changed.push(path);
+  }
+  const removed: string[] = [];
+  for (const path of before.keys()) {
+    if (!after.has(path)) removed.push(path);
+  }
+  return { added, removed, changed };
+}
+
+/** Recursively snapshots every file's mtime under `dir`. Real I/O -- not unit-tested directly; `diffMtimeSnapshots` above is the pure, tested half. */
+function snapshotMtimes(dir: string): Map<string, number> {
+  const map = new Map<string, number>();
+  for (const f of walkFiles(dir)) {
+    try {
+      map.set(f, statSync(f).mtimeMs);
+    } catch {
+      // Vanished between listing and stat (race with something else on the
+      // host) -- not this cross-check's concern, and not evidence of a
+      // change any arm made.
+    }
+  }
+  return map;
+}
+
+/**
+ * Slug every probe-owned scratch path and the canary carry (Architect
+ * ruling, PR #1676 review) -- matches this file's existing scratch-cwd /
+ * isolated-config-dir naming convention (`buildScratchCwd` /
+ * `isolateClaudeConfigDir`'s own `probe-sdk-automem-...` labels).
+ *
+ * @internal Exported for the sibling unit test.
+ */
+export const PROBE_SLUG = 'probe-sdk-automem';
+
+export interface RealTreePathCheck {
+  path: string;
+  /** Post-run file content, or `null` for a removed path (nothing left to read) or an unreadable one. */
+  content: string | null;
+}
+
+/** Whether `path` has an exact `memory` path segment (the auto-memory surface, e.g. `.../projects/<slug>/memory/...`) -- segment-based so a directory merely named e.g. `memory-backup` never false-matches. */
+function hasMemorySegment(path: string): boolean {
+  return path.split(sep).includes('memory');
+}
+
+function matchesAnyNonce(content: string, nonces: ReadonlySet<string>): boolean {
+  for (const n of nonces) {
+    if (content.includes(n)) return true;
+  }
+  return false;
+}
+
+/**
+ * Whether a changed/added/removed path under the REAL, non-isolated config
+ * tree is attributable to THIS probe run -- a slug match on the path itself
+ * (path-wide: the canary, or any probe-named scratch artifact), OR the
+ * path's post-run content containing one of the run's own nonces WITHIN a
+ * `memory/` segment specifically (the auto-memory surface this probe
+ * actually writes to). A removed path (`content === null`) can only be
+ * attributed by the slug match; its content is gone.
+ *
+ * Architect ruling, PR #1676 review (two rounds): round 1 fixed the
+ * original "escalate on ANY change" design, which false-positives on a host
+ * where the SAME OS user runs other live Claude Code sessions writing their
+ * own transcripts / file-history continuously. Round 2 narrowed the
+ * nonce-content half specifically: this probe prints every nonce to
+ * stdout, and the delegate session RUNNING this probe ingests that stdout
+ * as its own tool output, writing it into ITS OWN transcript `.jsonl`
+ * under this same real config dir -- so an unscoped nonce-content match
+ * would make the operator's own conversation transcript "attributable"
+ * and false-escalate on every single run. Scoping nonce-content matching to
+ * `memory/`-segmented paths closes that: a transcript is never under
+ * `memory/`, only genuine auto-memory content is. Precedent: Task 0's own
+ * manual real-tree addendum (#1662) found nonce matches ONLY in top-level
+ * session `.jsonl` transcripts, explicitly noted as "not under a `memory/`
+ * subdirectory" and dismissed as ordinary conversation, not a leak.
+ *
+ * @internal Exported for the sibling unit test.
+ */
+export function isAttributableToProbe(check: RealTreePathCheck, probeSlug: string, nonces: ReadonlySet<string>): boolean {
+  if (check.path.includes(probeSlug)) return true;
+  if (check.content === null) return false;
+  if (!hasMemorySegment(check.path)) return false;
+  return matchesAnyNonce(check.content, nonces);
+}
+
+export interface RealTreeDiffClassification {
+  attributable: MtimeDiff;
+  unrelatedCount: number;
+  /**
+   * Among the unrelated paths, how many nonetheless had content matching a
+   * run nonce OUTSIDE any `memory/` segment -- informational only, never
+   * escalated. Expected value: the transcript of the session running this
+   * probe (see `isAttributableToProbe`'s own comment).
+   */
+  nonceEchoOutsideMemoryCount: number;
+}
+
+/**
+ * Splits a raw mtime diff into probe-attributable vs. unrelated concurrent
+ * activity. `checks` supplies each candidate path's post-run content (or
+ * `null`); a path with no entry is treated as unreadable (content `null`).
+ * The canary path must be classified through this SAME function (not a raw
+ * `.includes()` on the diff) so its own positive control proves the
+ * FILTERED detector works, not merely that the raw diff can see a change.
+ *
+ * @internal Exported for the sibling unit test.
+ */
+export function classifyRealTreeDiff(
+  diff: MtimeDiff,
+  checks: ReadonlyMap<string, RealTreePathCheck>,
+  probeSlug: string,
+  nonces: ReadonlySet<string>,
+): RealTreeDiffClassification {
+  let nonceEchoOutsideMemoryCount = 0;
+  const attribute = (paths: readonly string[]): string[] => {
+    const kept: string[] = [];
+    for (const p of paths) {
+      const check = checks.get(p) ?? { path: p, content: null };
+      if (isAttributableToProbe(check, probeSlug, nonces)) {
+        kept.push(p);
+        continue;
+      }
+      if (check.content !== null && !hasMemorySegment(p) && matchesAnyNonce(check.content, nonces)) {
+        nonceEchoOutsideMemoryCount++;
+      }
+    }
+    return kept;
+  };
+  const attributable: MtimeDiff = {
+    added: attribute(diff.added),
+    removed: attribute(diff.removed),
+    changed: attribute(diff.changed),
+  };
+  const totalPaths = diff.added.length + diff.removed.length + diff.changed.length;
+  const totalAttributable = attributable.added.length + attributable.removed.length + attributable.changed.length;
+  return { attributable, unrelatedCount: totalPaths - totalAttributable, nonceEchoOutsideMemoryCount };
+}
+
+/** Reads a path's content for the attribution filter, `null` when gone or unreadable (never throws). */
+function readForAttribution(path: string): string | null {
+  try {
+    return readFileSync(path, 'utf8');
+  } catch {
+    return null;
+  }
+}
+
+/** Builds the `checks` map `classifyRealTreeDiff` needs from a raw diff -- real I/O, not unit-tested directly (the pure classifier above is). */
+function buildAttributionChecks(diff: MtimeDiff): Map<string, RealTreePathCheck> {
+  const checks = new Map<string, RealTreePathCheck>();
+  for (const p of [...diff.added, ...diff.changed]) {
+    checks.set(p, { path: p, content: readForAttribution(p) });
+  }
+  for (const p of diff.removed) {
+    checks.set(p, { path: p, content: null });
+  }
+  return checks;
+}
+
+// ---------------------------------------------------------------------------
 // Privacy: Arm B's redaction (never logs `content`, ever)
 // ---------------------------------------------------------------------------
 
@@ -470,25 +1076,43 @@ export function summarizeRecalls(
 // ---------------------------------------------------------------------------
 
 const ARM_FLAGS = ['--a', '--b', '--c', '--d'] as const;
-type ArmFlag = (typeof ARM_FLAGS)[number];
+const DEFAULT_ARM_FLAGS = ARM_FLAGS;
+/** Task 0b's arms -- billable additions, deliberately NEVER part of the bare no-flags default (see this file's header). */
+const TASK_0B_ARM_FLAGS = ['--e', '--f', '--g'] as const;
+const ALL_ARM_FLAGS = [...ARM_FLAGS, ...TASK_0B_ARM_FLAGS] as const;
+type ArmFlag = (typeof ALL_ARM_FLAGS)[number];
+/** Owner directive, 2026-09-13, binding: `--extended-timeout` never exceeds 5 minutes. */
+export const EXTENDED_TIMEOUT_CAP_MS = 300_000;
 const USAGE_TEXT =
-  'Usage: bun scripts/smoke/probe-sdk-auto-memory.ts [--a] [--b] [--c] [--d] [--expect-no-recall] [--expect-no-write]\n' +
-  '  Default (no --a/--b/--c/--d) = all four arms, in order.\n' +
-  '  --expect-no-recall modifies arm A (skip seeding); --expect-no-write modifies arm C (skip the remember-this prompt).\n' +
-  '  Both flags only take effect when their arm is selected (explicitly, or by the all-four default).';
+  'Usage: bun scripts/smoke/probe-sdk-auto-memory.ts [--a] [--b] [--c] [--d] [--e] [--f] [--g] [--force-f] [--f-config omitted|preset] [--extended-timeout <ms>] [--expect-no-recall] [--expect-no-write]\n' +
+  '  Default (no --a/--b/--c/--d/--e/--f/--g) = arms A/B/C/D only, in order. Arms E/F/G are NEVER part of the bare default -- select them explicitly.\n' +
+  '  --expect-no-recall modifies arm A (skip seeding); --expect-no-write modifies arm C, F, and G (skip the remember-this prompt).\n' +
+  '  Arm F/G halt by default when Arm E shows no configuration carries awareness (an unclean (iii) control does NOT halt) --\n' +
+  '  --force-f overrides that halt for a deliberate operator run anyway (owner ruling, 2026-09-13).\n' +
+  '  --f-config <omitted|preset> overrides arm F/G\'s systemPrompt configuration when arm E did not run in the same invocation (default: omitted).\n' +
+  `  --extended-timeout <ms> sets arm G's write-poll timeout; omitted or 0 behaves like arm F's 60s poll; clamped to ${EXTENDED_TIMEOUT_CAP_MS}ms (owner directive).\n` +
+  '  Selecting --g always also selects --e and --f as prerequisites (its own gate is defined in terms of their results).\n' +
+  '  These flags only take effect when their arm is selected.';
 
 interface ParsedArgs {
   arms: Set<ArmFlag>;
   expectNoRecall: boolean;
   expectNoWrite: boolean;
+  fConfigOverride?: 'omitted' | 'preset';
+  extendedTimeoutMs?: number;
+  forceF: boolean;
 }
 
 function parseArgs(argv: string[]): ParsedArgs {
   const arms = new Set<ArmFlag>();
   let expectNoRecall = false;
   let expectNoWrite = false;
-  for (const a of argv) {
-    if ((ARM_FLAGS as readonly string[]).includes(a)) {
+  let fConfigOverride: 'omitted' | 'preset' | undefined;
+  let extendedTimeoutMs: number | undefined;
+  let forceF = false;
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    if ((ALL_ARM_FLAGS as readonly string[]).includes(a)) {
       arms.add(a as ArmFlag);
       continue;
     }
@@ -500,11 +1124,40 @@ function parseArgs(argv: string[]): ParsedArgs {
       expectNoWrite = true;
       continue;
     }
+    if (a === '--force-f') {
+      forceF = true;
+      continue;
+    }
+    if (a === '--f-config') {
+      const raw = argv[++i];
+      if (raw !== 'omitted' && raw !== 'preset') {
+        console.error(`${USAGE_TEXT}\n  --f-config must be 'omitted' or 'preset', got: ${raw}`);
+        process.exit(PROBE_EXIT.HARNESS);
+      }
+      fConfigOverride = raw;
+      continue;
+    }
+    if (a === '--extended-timeout') {
+      const raw = argv[++i];
+      const parsed = raw === undefined ? Number.NaN : Number(raw);
+      if (!Number.isFinite(parsed) || parsed < 0) {
+        console.error(`${USAGE_TEXT}\n  --extended-timeout requires a non-negative number of milliseconds, got: ${raw}`);
+        process.exit(PROBE_EXIT.HARNESS);
+      }
+      extendedTimeoutMs = parsed;
+      continue;
+    }
     console.error(`${USAGE_TEXT}\n  Unrecognized argument: ${a}`);
     process.exit(PROBE_EXIT.HARNESS);
   }
-  if (arms.size === 0) for (const f of ARM_FLAGS) arms.add(f);
-  return { arms, expectNoRecall, expectNoWrite };
+  if (arms.size === 0) for (const f of DEFAULT_ARM_FLAGS) arms.add(f);
+  // Arm G's own gate ("E showed awareness under production's configuration
+  // AND F still shows no write") cannot be evaluated without their results.
+  if (arms.has('--g')) {
+    arms.add('--e');
+    arms.add('--f');
+  }
+  return { arms, expectNoRecall, expectNoWrite, fConfigOverride, extendedTimeoutMs, forceF };
 }
 
 // ---------------------------------------------------------------------------
@@ -513,7 +1166,7 @@ function parseArgs(argv: string[]): ParsedArgs {
 
 const MODEL = 'claude-sonnet-5';
 /** How long to wait for a write to land before reporting its absence. Used symmetrically for presence and absence checks -- an absence report carries the same detection budget as a presence report. */
-const WRITE_POLL_TIMEOUT_MS = 60_000;
+export const WRITE_POLL_TIMEOUT_MS = 60_000;
 const WRITE_POLL_INTERVAL_MS = 3_000;
 /** Shorter budget for Arm D's default-location leak check: by the time this runs, the override location has already been polled for the full budget above, so any genuine consolidation delay would have shown up there too. */
 const LEAK_CHECK_TIMEOUT_MS = 10_000;
@@ -526,6 +1179,15 @@ const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms
 
 const startedAt = Date.now();
 const perTurn = new Map<string, { tokens: number; cost: number }>();
+
+/** Every nonce minted anywhere in this run (Architect ruling, PR #1676 review) -- feeds the real-tree cross-check's attribution filter. Never call the harness's `nonce()` directly elsewhere in this file; always go through `trackedNonce`. */
+const runNonces = new Set<string>();
+
+function trackedNonce(prefix: string): string {
+  const n = nonce(prefix);
+  runNonces.add(n);
+  return n;
+}
 
 function account(label: string, outcome: Pick<TurnOutcome, 'result'>): void {
   const r = outcome.result;
@@ -551,9 +1213,16 @@ function h(title: string): void {
   console.log(`\n${'='.repeat(72)}\n${title}   [${stamp()}]\n${'='.repeat(72)}`);
 }
 
-/** Mirrors `sdk-engine.ts`'s `buildOptions` pins for the fields this probe cares about. */
-function buildOptions(cwd: string, settings: Partial<Settings>): Options {
-  return {
+/**
+ * Mirrors `sdk-engine.ts`'s `buildOptions` pins for the fields this probe
+ * cares about. `systemPrompt` is omitted from the returned `Options` object
+ * entirely when not passed (arms A-D's and production's own shape) rather
+ * than passed as `undefined` -- arm E's whole design rests on the difference
+ * between "the key is absent" and "the key is present with an empty value",
+ * so this function must not collapse that distinction itself.
+ */
+function buildOptions(cwd: string, settings: Partial<Settings>, systemPrompt?: Options['systemPrompt']): Options {
+  const base: Options = {
     executable: 'bun',
     cwd,
     model: MODEL,
@@ -563,6 +1232,19 @@ function buildOptions(cwd: string, settings: Partial<Settings>): Options {
     settingSources: [],
     settings: { autoCompactEnabled: false, ...settings },
   };
+  return systemPrompt === undefined ? base : { ...base, systemPrompt };
+}
+
+/** `Options.systemPrompt` for one of arm E's three configurations, or `undefined` for (i) omitted entirely. */
+export function systemPromptForArmEConfig(key: ArmEConfigKey): Options['systemPrompt'] | undefined {
+  switch (key) {
+    case 'omitted':
+      return undefined;
+    case 'preset':
+      return { type: 'preset', preset: 'claude_code' };
+    case 'preset-excluded':
+      return { type: 'preset', preset: 'claude_code', excludeDynamicSections: true };
+  }
 }
 
 function buildScratchCwd(label: string): string {
@@ -608,6 +1290,56 @@ function askAboutPrompt(subject: string): string {
     `Do you currently know ${subject}? If you can see it verbatim in your own context, state it exactly. ` +
     'If you do not know it, say exactly: UNKNOWN. Do not guess.'
   );
+}
+
+/** Arm E's combined turn: both observables asked in one turn (per this Issue's own billing estimate of one turn per configuration). */
+function armEAskPrompt(): string {
+  return (
+    'Please answer two separate questions, each on its own line, in this exact order:\n' +
+    '(1) Quote the absolute path of your auto-memory directory, verbatim, if you know it. If you do not know it, say exactly: UNKNOWN.\n' +
+    '(2) Quote the exact title of the entry in your memory index (e.g. MEMORY.md), verbatim, if you can see one. If you cannot see one, say exactly: UNKNOWN.\n' +
+    'Do not guess either answer.'
+  );
+}
+
+export interface SeedMemoryTopicOptions {
+  memoryDir: string;
+  topicFilename: string;
+  frontmatterName: string;
+  description: string;
+  codenameSubject: string;
+  codenameValue: string;
+  indexTitle: string;
+  indexHook: string;
+}
+
+/**
+ * SINGLE WRITER of the "MEMORY.md index line + linked topic file" shape
+ * (Architect ruling, PR #1662, per https://code.claude.com/docs/en/memory
+ * fetched directly): factored out of arm A's own inline logic so arm E can
+ * seed the byte-identical file shape with a caller-chosen, nonce-bearing
+ * `indexTitle` (arm A's own default title is fixed and guessable from this
+ * repo's own source; arm E's is not). Appends to an existing `MEMORY.md`
+ * rather than overwriting it, so a caller that seeds into an already-seeded
+ * dir (never done today, but kept safe) does not clobber a prior entry.
+ *
+ * @internal Exported for the sibling unit test.
+ */
+export function seedMemoryTopic(opts: SeedMemoryTopicOptions): { topicPath: string; indexPath: string } {
+  mkdirSync(opts.memoryDir, { recursive: true });
+  const topicPath = join(opts.memoryDir, opts.topicFilename);
+  const indexPath = join(opts.memoryDir, 'MEMORY.md');
+  writeFileSync(
+    topicPath,
+    `---\nname: ${opts.frontmatterName}\ndescription: ${opts.description}\nmetadata:\n  type: project\n---\n\n${opts.codenameSubject} is ${opts.codenameValue}.\n`,
+  );
+  const indexLine = `- [${opts.indexTitle}](${opts.topicFilename}) — ${opts.indexHook}\n`;
+  if (existsSync(indexPath)) {
+    appendFileSync(indexPath, indexLine);
+  } else {
+    writeFileSync(indexPath, `# Memory Index\n\n${indexLine}`);
+  }
+  return { topicPath, indexPath };
 }
 
 function recallsMentionNonce(recalls: readonly MemoryRecallMessage[], nonceValue: string, seededPath?: string): boolean {
@@ -665,10 +1397,10 @@ async function runMemorySession(
   settings: Partial<Settings>,
   prompt: string,
   label: string,
-  opts: { redactRecallLogging?: boolean } = {},
+  opts: { redactRecallLogging?: boolean; systemPrompt?: Options['systemPrompt']; pollUsage?: boolean } = {},
 ): Promise<{ outcome: TurnOutcome; recallsForTurn: MemoryRecallMessage[] }> {
-  const options = buildOptions(cwd, settings);
-  const s = new ProbeSession({ label, options, pollUsage: false });
+  const options = buildOptions(cwd, settings, opts.systemPrompt);
+  const s = new ProbeSession({ label, options, pollUsage: opts.pollUsage ?? false });
   try {
     console.log(`${label} ready: ${await s.waitForReady()}`);
     const before = s.memoryRecalls.length;
@@ -794,6 +1526,112 @@ async function pollForContent(
 }
 
 // ---------------------------------------------------------------------------
+// Recall check core -- shared by Arm A and Arm F (Issue #1667's own
+// instruction: "Also run Arm A's recall check under the same configuration",
+// via the SAME core, never a second copy of it).
+// ---------------------------------------------------------------------------
+
+export interface RecallCheckParams {
+  configDir: string;
+  cwdSeeded: string;
+  cwdControl: string;
+  settings: Partial<Settings>;
+  systemPrompt?: Options['systemPrompt'];
+  expectNoRecall: boolean;
+  labelPrefix: string;
+  noncePrefix: string;
+  indexTitle: string;
+  indexHook: string;
+  frontmatterName: string;
+  description: string;
+}
+
+/**
+ * Discovers the default memory dir for `cwdSeeded`, seeds it (unless
+ * `expectNoRecall`), then measures recall at `cwdSeeded` against a
+ * negative-control `cwdControl` -- byte-identical to arm A's own original
+ * inline logic, parameterized by `settings` / `systemPrompt` / naming so arm
+ * F can run the exact same check under its own configuration.
+ */
+async function runRecallCheck(p: RecallCheckParams): Promise<Verdict> {
+  // Discovery: learn the SDK's own default memory directory for cwdSeeded
+  // (see this file's header -- the algorithm cannot be read from source, so
+  // it is discovered empirically). Uses a throwaway fact, distinct from the
+  // real nonce measured below.
+  const discoveryFact = trackedNonce(`${p.noncePrefix}-DISCOVERY`);
+  const { outcome: discOutcome } = await runMemorySession(p.configDir, p.cwdSeeded, p.settings, writeWorthyPrompt(discoveryFact), `${p.labelPrefix}-discovery`, {
+    systemPrompt: p.systemPrompt,
+  });
+  if (!turnSettled(discOutcome)) {
+    return inconclusive('the discovery turn did not settle.');
+  }
+  const slug = await discoverSlug(p.configDir);
+  if (slug === null) {
+    return inconclusive('no project slug appeared under the isolated config dir after the discovery session -- cannot locate the default memory directory.');
+  }
+  const memoryDir = join(p.configDir, 'projects', slug, 'memory');
+  console.log(`${p.labelPrefix}: discovered default memory dir for this cwd: ${memoryDir}`);
+
+  const theNonce = trackedNonce(p.noncePrefix);
+  // Two hand-authored files, in the format documented at
+  // https://code.claude.com/docs/en/memory (fetched and read directly, per
+  // Architect ruling on PR #1662 -- CodeRabbit correctly flagged that an
+  // unindexed single file may not match what the recall mechanism actually
+  // reads): an index LINE in MEMORY.md pointing at a topic file, and the
+  // topic file carrying the seeded fact under frontmatter naming its `type`
+  // (the same `user`/`feedback`/`project`/`reference` taxonomy the docs page
+  // itself describes). Deliberately NOT reusing whatever the discovery turn
+  // above wrote (Architect ruling: each check tests exactly one mechanism,
+  // so recall must not couple its own verdict to the write mechanism) --
+  // these two files are always hand-authored here, independent of
+  // discovery's own output.
+  const topicFilename = 'automem-probe-seeded-fact.md';
+  const topicPath = join(memoryDir, topicFilename);
+  const indexPath = join(memoryDir, 'MEMORY.md');
+  if (!p.expectNoRecall) {
+    seedMemoryTopic({
+      memoryDir,
+      topicFilename,
+      frontmatterName: p.frontmatterName,
+      description: p.description,
+      codenameSubject: 'The secret project codename',
+      codenameValue: theNonce,
+      indexTitle: p.indexTitle,
+      indexHook: p.indexHook,
+    });
+    console.log(`${p.labelPrefix}: seeded nonce fact as a topic file (${topicPath}) linked from an index entry in ${indexPath}`);
+  } else {
+    console.log(`${p.labelPrefix}: [--expect-no-recall] skipping the seed step on purpose (no topic file, no index entry written).`);
+  }
+
+  const ask = askAboutPrompt('the secret project codename');
+  const { outcome: measOutcome, recallsForTurn: measRecalls } = await runMemorySession(p.configDir, p.cwdSeeded, p.settings, ask, `${p.labelPrefix}-measure-seeded`, {
+    systemPrompt: p.systemPrompt,
+  });
+  const { outcome: ctrlOutcome, recallsForTurn: ctrlRecalls } = await runMemorySession(p.configDir, p.cwdControl, p.settings, ask, `${p.labelPrefix}-measure-control`, {
+    systemPrompt: p.systemPrompt,
+  });
+
+  const settled = turnSettled(measOutcome) && turnSettled(ctrlOutcome);
+  // "Recall happened" only counts once it is also "recall happened FOR THE
+  // FORMAT WE ASSUMED" -- see recallPathMatches's own comment.
+  const measPathMatched = recallPathMatches(measRecalls, topicPath);
+  const measContentMatched = recallContentMatches(measRecalls, theNonce);
+  const measRecallHit = measPathMatched || measContentMatched;
+  const measTextHit = measOutcome.text.includes(theNonce);
+  const ctrlPathMatched = recallPathMatches(ctrlRecalls, topicPath);
+  const ctrlContentMatched = recallContentMatches(ctrlRecalls, theNonce);
+  const ctrlRecallHit = ctrlPathMatched || ctrlContentMatched;
+  const ctrlTextHit = ctrlOutcome.text.includes(theNonce);
+  console.log(
+    `${p.labelPrefix}: measSeeded recall=${measRecallHit} (pathMatched=${measPathMatched} contentMatched=${measContentMatched}) text=${measTextHit}; ` +
+      `control recall=${ctrlRecallHit} (pathMatched=${ctrlPathMatched} contentMatched=${ctrlContentMatched}) text=${ctrlTextHit}`,
+  );
+
+  return classifyArmA({ settled, expectNoRecall: p.expectNoRecall, measRecallHit, measTextHit, ctrlRecallHit, ctrlTextHit });
+}
+
+// ---------------------------------------------------------------------------
 // Arm A -- recall
 // ---------------------------------------------------------------------------
 
@@ -803,80 +1641,20 @@ async function runArmA(expectNoRecall: boolean): Promise<ArmVerdict> {
     const cwdSeeded = buildScratchCwd('a-seeded');
     const cwdControl = buildScratchCwd('a-control');
     try {
-      // Discovery: learn the SDK's own default memory directory for
-      // cwdSeeded (see this file's header -- the algorithm cannot be read
-      // from source, so it is discovered empirically). Uses a throwaway
-      // fact, distinct from the real nonce measured below.
-      const discoveryFact = nonce('AUTOMEM-A-DISCOVERY');
-      const { outcome: discOutcome } = await runMemorySession(configDir, cwdSeeded, { autoMemoryEnabled: true }, writeWorthyPrompt(discoveryFact), 'A-discovery');
-      if (!turnSettled(discOutcome)) {
-        return { arm: 'A', ...inconclusive('the discovery turn did not settle.') };
-      }
-      const slug = await discoverSlug(configDir);
-      if (slug === null) {
-        return {
-          arm: 'A',
-          ...inconclusive('no project slug appeared under the isolated config dir after the discovery session -- cannot locate the default memory directory.'),
-        };
-      }
-      const memoryDir = join(configDir, 'projects', slug, 'memory');
-      console.log(`A: discovered default memory dir for this cwd: ${memoryDir}`);
-
-      const theNonce = nonce('AUTOMEM-A');
-      // Two hand-authored files, in the format documented at
-      // https://code.claude.com/docs/en/memory (fetched and read directly,
-      // per Architect ruling on PR #1662 -- CodeRabbit correctly flagged
-      // that an unindexed single file may not match what the recall
-      // mechanism actually reads): an index LINE in MEMORY.md pointing at a
-      // topic file, and the topic file carrying the seeded fact under
-      // frontmatter naming its `type` (the same `user`/`feedback`/
-      // `project`/`reference` taxonomy the docs page itself describes).
-      // Deliberately NOT reusing whatever the A-discovery turn above wrote
-      // (Architect ruling: each arm tests exactly one mechanism, so Arm A
-      // must not couple its own verdict to Arm C's write mechanism) -- these
-      // two files are always hand-authored here, independent of discovery's
-      // own output.
-      const topicFilename = 'automem-probe-seeded-fact.md';
-      const topicPath = join(memoryDir, topicFilename);
-      const indexPath = join(memoryDir, 'MEMORY.md');
-      if (!expectNoRecall) {
-        mkdirSync(memoryDir, { recursive: true });
-        writeFileSync(
-          topicPath,
-          `---\nname: automem-probe-seeded-fact\ndescription: Auto-memory probe Arm A seeded fact (Issue #1658)\nmetadata:\n  type: project\n---\n\nThe secret project codename is ${theNonce}.\n`,
-        );
-        const indexLine = `- [Automem probe seeded fact](${topicFilename}) — the secret project codename is recorded here.\n`;
-        if (existsSync(indexPath)) {
-          appendFileSync(indexPath, indexLine);
-        } else {
-          writeFileSync(indexPath, `# Memory Index\n\n${indexLine}`);
-        }
-        console.log(`A: seeded nonce fact as a topic file (${topicPath}) linked from an index entry in ${indexPath}`);
-      } else {
-        console.log('A: [--expect-no-recall] skipping the seed step on purpose (no topic file, no index entry written).');
-      }
-
-      const ask = askAboutPrompt('the secret project codename');
-      const { outcome: measOutcome, recallsForTurn: measRecalls } = await runMemorySession(configDir, cwdSeeded, { autoMemoryEnabled: true }, ask, 'A-measure-seeded');
-      const { outcome: ctrlOutcome, recallsForTurn: ctrlRecalls } = await runMemorySession(configDir, cwdControl, { autoMemoryEnabled: true }, ask, 'A-measure-control');
-
-      const settled = turnSettled(measOutcome) && turnSettled(ctrlOutcome);
-      // "Recall happened" only counts once it is also "recall happened FOR
-      // THE FORMAT WE ASSUMED" -- see recallPathMatches's own comment.
-      const measPathMatched = recallPathMatches(measRecalls, topicPath);
-      const measContentMatched = recallContentMatches(measRecalls, theNonce);
-      const measRecallHit = measPathMatched || measContentMatched;
-      const measTextHit = measOutcome.text.includes(theNonce);
-      const ctrlPathMatched = recallPathMatches(ctrlRecalls, topicPath);
-      const ctrlContentMatched = recallContentMatches(ctrlRecalls, theNonce);
-      const ctrlRecallHit = ctrlPathMatched || ctrlContentMatched;
-      const ctrlTextHit = ctrlOutcome.text.includes(theNonce);
-      console.log(
-        `A: measSeeded recall=${measRecallHit} (pathMatched=${measPathMatched} contentMatched=${measContentMatched}) text=${measTextHit}; ` +
-          `control recall=${ctrlRecallHit} (pathMatched=${ctrlPathMatched} contentMatched=${ctrlContentMatched}) text=${ctrlTextHit}`,
-      );
-
-      return { arm: 'A', ...classifyArmA({ settled, expectNoRecall, measRecallHit, measTextHit, ctrlRecallHit, ctrlTextHit }) };
+      const verdict = await runRecallCheck({
+        configDir,
+        cwdSeeded,
+        cwdControl,
+        settings: { autoMemoryEnabled: true },
+        expectNoRecall,
+        labelPrefix: 'A',
+        noncePrefix: 'AUTOMEM-A',
+        indexTitle: 'Automem probe seeded fact',
+        indexHook: 'the secret project codename is recorded here.',
+        frontmatterName: 'automem-probe-seeded-fact',
+        description: 'Auto-memory probe Arm A seeded fact (Issue #1658)',
+      });
+      return { arm: 'A', ...verdict };
     } finally {
       rmSync(cwdSeeded, { recursive: true, force: true });
       rmSync(cwdControl, { recursive: true, force: true });
@@ -921,6 +1699,49 @@ async function runArmB(): Promise<ArmVerdict> {
 }
 
 // ---------------------------------------------------------------------------
+// Write check core -- shared by Arm C, Arm F, and Arm G (Issue #1667's own
+// instruction: "re-run Task 0's Arm C write check unchanged", via the SAME
+// core, never a second copy of it).
+// ---------------------------------------------------------------------------
+
+export interface WriteCheckParams {
+  configDir: string;
+  cwd: string;
+  settings: Partial<Settings>;
+  systemPrompt?: Options['systemPrompt'];
+  expectNoWrite: boolean;
+  labelPrefix: string;
+  noncePrefix: string;
+  timeoutMs: number;
+}
+
+/** Byte-identical to arm C's own original inline logic, parameterized by `settings` / `systemPrompt` / `timeoutMs` so arms F and G can run the exact same check. */
+async function runWriteCheck(p: WriteCheckParams): Promise<Verdict> {
+  const theNonce = trackedNonce(p.noncePrefix);
+  const prompt = p.expectNoWrite ? 'What is 2 + 2? Answer with just the number, nothing else.' : writeWorthyPrompt(theNonce);
+  const { outcome } = await runMemorySession(p.configDir, p.cwd, p.settings, prompt, p.labelPrefix, { systemPrompt: p.systemPrompt });
+  if (!turnSettled(outcome)) {
+    return inconclusive('the turn did not settle.');
+  }
+  const slug = await discoverSlug(p.configDir);
+  if (slug === null) {
+    return classifyArmC({ settled: true, slugFound: false, expectNoWrite: p.expectNoWrite, contentFound: false, elapsedMs: 0, timeoutMs: p.timeoutMs });
+  }
+  const memoryDir = join(p.configDir, 'projects', slug, 'memory');
+  const poll = await pollForContent(memoryDir, p.expectNoWrite ? null : theNonce, p.timeoutMs, WRITE_POLL_INTERVAL_MS);
+  console.log(`${p.labelPrefix}: polled ${memoryDir} for up to ${p.timeoutMs}ms -- found=${poll.found} elapsed=${poll.elapsedMs}ms file=${poll.filePath ?? '(none)'}`);
+  return classifyArmC({
+    settled: true,
+    slugFound: true,
+    expectNoWrite: p.expectNoWrite,
+    contentFound: poll.found,
+    filePath: poll.filePath,
+    elapsedMs: poll.elapsedMs,
+    timeoutMs: p.timeoutMs,
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Arm C -- write
 // ---------------------------------------------------------------------------
 
@@ -929,34 +1750,16 @@ async function runArmC(expectNoWrite: boolean): Promise<ArmVerdict> {
   return withArmConfigDir('automem-c', async (configDir) => {
     const cwdC = buildScratchCwd('c');
     try {
-      const theNonce = nonce('AUTOMEM-C');
-      const prompt = expectNoWrite ? 'What is 2 + 2? Answer with just the number, nothing else.' : writeWorthyPrompt(theNonce);
-      const { outcome } = await runMemorySession(configDir, cwdC, { autoMemoryEnabled: true }, prompt, 'C');
-      if (!turnSettled(outcome)) {
-        return { arm: 'C', ...inconclusive('the turn did not settle.') };
-      }
-      const slug = await discoverSlug(configDir);
-      if (slug === null) {
-        return {
-          arm: 'C',
-          ...classifyArmC({ settled: true, slugFound: false, expectNoWrite, contentFound: false, elapsedMs: 0, timeoutMs: WRITE_POLL_TIMEOUT_MS }),
-        };
-      }
-      const memoryDir = join(configDir, 'projects', slug, 'memory');
-      const poll = await pollForContent(memoryDir, expectNoWrite ? null : theNonce, WRITE_POLL_TIMEOUT_MS, WRITE_POLL_INTERVAL_MS);
-      console.log(`C: polled ${memoryDir} for up to ${WRITE_POLL_TIMEOUT_MS}ms -- found=${poll.found} elapsed=${poll.elapsedMs}ms file=${poll.filePath ?? '(none)'}`);
-      return {
-        arm: 'C',
-        ...classifyArmC({
-          settled: true,
-          slugFound: true,
-          expectNoWrite,
-          contentFound: poll.found,
-          filePath: poll.filePath,
-          elapsedMs: poll.elapsedMs,
-          timeoutMs: WRITE_POLL_TIMEOUT_MS,
-        }),
-      };
+      const verdict = await runWriteCheck({
+        configDir,
+        cwd: cwdC,
+        settings: { autoMemoryEnabled: true },
+        expectNoWrite,
+        labelPrefix: 'C',
+        noncePrefix: 'AUTOMEM-C',
+        timeoutMs: WRITE_POLL_TIMEOUT_MS,
+      });
+      return { arm: 'C', ...verdict };
     } finally {
       rmSync(cwdC, { recursive: true, force: true });
     }
@@ -972,7 +1775,7 @@ async function runArmDRead(): Promise<ArmDReadMeasurement> {
     const overrideDir = mkdtempSync(join(tmpdir(), 'probe-sdk-automem-d-read-override-'));
     const cwd = buildScratchCwd('d-read');
     try {
-      const readNonce = nonce('AUTOMEM-D-READ');
+      const readNonce = trackedNonce('AUTOMEM-D-READ');
       const seedPath = join(overrideDir, 'seed.md');
       writeFileSync(seedPath, `# Seeded fact\n\nThe override codename is ${readNonce}.\n`);
       const { outcome, recallsForTurn } = await runMemorySession(
@@ -999,7 +1802,7 @@ async function runArmDWrite(): Promise<ArmDWriteMeasurement> {
     const overrideDir = mkdtempSync(join(tmpdir(), 'probe-sdk-automem-d-write-override-'));
     const cwd = buildScratchCwd('d-write');
     try {
-      const writeNonce = nonce('AUTOMEM-D-WRITE');
+      const writeNonce = trackedNonce('AUTOMEM-D-WRITE');
       const { outcome } = await runMemorySession(configDir, cwd, { autoMemoryEnabled: true, autoMemoryDirectory: overrideDir }, writeWorthyPrompt(writeNonce), 'D-write');
       if (!turnSettled(outcome)) {
         return { settled: false, writeFound: false, defaultLeaked: false };
@@ -1030,6 +1833,367 @@ async function runArmD(): Promise<ArmVerdict> {
 }
 
 // ---------------------------------------------------------------------------
+// Arm E -- awareness (Issue #1667, Task 0b)
+// ---------------------------------------------------------------------------
+
+/**
+ * Whether `text` contains `p`, either as written or via its resolved
+ * (symlink-following) form -- same rationale as `redactRecallEntry`'s
+ * `resolvedOrSelf` use: a spawned CLI may report a resolved path (e.g.
+ * macOS's `/var` -> `/private/var`) even though this process constructed the
+ * unresolved one. Falls back to a plain substring check when `p` does not
+ * exist on disk (the sibling unit test's shape: synthetic paths never
+ * created), matching `resolvedOrSelf`'s own fallback.
+ *
+ * @internal Exported for the sibling unit test.
+ */
+export function textContainsPath(text: string, p: string): boolean {
+  if (text.includes(p)) return true;
+  const resolved = resolvedOrSelf(p);
+  return resolved !== p && text.includes(resolved);
+}
+
+interface ArmEConfigRunResult extends ArmEConfigInput {
+  recallFired: boolean;
+  memoryFilesMatched: boolean;
+  memoryFilesCount: number;
+}
+
+/** One configuration's combined turn: both of arm E's required observables read from one answer. */
+async function runArmEConfig(
+  key: ArmEConfigKey,
+  configDir: string,
+  cwd: string,
+  memoryDir: string,
+  seededTopicFilename: string,
+  seededTitle: string,
+): Promise<ArmEConfigRunResult> {
+  const systemPrompt = systemPromptForArmEConfig(key);
+  const { outcome, recallsForTurn } = await runMemorySession(configDir, cwd, { autoMemoryEnabled: true }, armEAskPrompt(), `E-${key}`, {
+    systemPrompt,
+    pollUsage: true,
+  });
+  const settled = turnSettled(outcome);
+  const unsettled = unsettledReason(outcome, `E-${key}`);
+  if (unsettled) console.log(unsettled);
+  const locationHit = settled && textContainsPath(outcome.text, memoryDir);
+  const accessHit = settled && outcome.text.includes(seededTitle);
+  const recallFired = recallsForTurn.length > 0;
+  // Checklist item: "SDKContextUsage.memory_files accessor located and read"
+  // -- see this file's header for the accessor correction. Read here as a
+  // bonus mechanism observable (does NOT gate classifyArmEConfig, which is
+  // defined purely on the two text observables named in the Issue).
+  const memoryFiles = outcome.usage?.memoryFiles ?? [];
+  const memoryFilesMatched = memoryFiles.some((f) => f.path === join(memoryDir, seededTopicFilename) || basename(f.path) === seededTopicFilename);
+  console.log(
+    `E-${key}: settled=${settled} locationHit=${locationHit} accessHit=${accessHit} recallFired(SDKMemoryRecallMessage)=${recallFired} ` +
+      `memoryFiles(SDKControlGetContextUsageResponse.memoryFiles)=${memoryFiles.length} memoryFilesMatched=${memoryFilesMatched} ` +
+      `text=${JSON.stringify(outcome.text.slice(0, 500))}`,
+  );
+  // Architect request, PR #1676 review: log the accessor's own report of
+  // WHAT it loaded (path/type/tokens per entry), not just the count -- the
+  // count alone cannot answer "is this MEMORY.md or something else" without
+  // re-running. One line per entry, permanent (not a one-off debug print).
+  for (const [i, f] of memoryFiles.entries()) {
+    console.log(`E-${key}: memoryFiles[${i}]: path=${f.path} type=${f.type} tokens=${f.tokens}`);
+  }
+  return { settled, locationHit, accessHit, recallFired, memoryFilesMatched, memoryFilesCount: memoryFiles.length, memoryFilesEntries: memoryFiles };
+}
+
+async function runArmE(): Promise<{ verdict: ArmVerdict; summary: ArmESummary | null }> {
+  h('Arm E -- awareness: does the model know auto-memory exists, under each systemPrompt configuration?');
+  return withArmConfigDir('automem-e', async (configDir) => {
+    const cwd = buildScratchCwd('e');
+    try {
+      // Discovery, same shape as the recall check's own: learn the default
+      // memory dir for this cwd before seeding it.
+      const discoveryFact = trackedNonce('AUTOMEM-E-DISCOVERY');
+      const { outcome: discOutcome } = await runMemorySession(configDir, cwd, { autoMemoryEnabled: true }, writeWorthyPrompt(discoveryFact), 'E-discovery');
+      if (!turnSettled(discOutcome)) {
+        return { verdict: { arm: 'E', ...inconclusive('the discovery turn did not settle.') }, summary: null };
+      }
+      const slug = await discoverSlug(configDir);
+      if (slug === null) {
+        return {
+          verdict: {
+            arm: 'E',
+            ...inconclusive('no project slug appeared under the isolated config dir after the discovery session -- cannot locate the default memory directory.'),
+          },
+          summary: null,
+        };
+      }
+      const memoryDir = join(configDir, 'projects', slug, 'memory');
+      console.log(`E: discovered default memory dir for this cwd: ${memoryDir}`);
+
+      // Nonce-bearing title: arm A's fixed title ("Automem probe seeded
+      // fact") is guessable from this repo's own source; a nonce is not.
+      // Minted ONCE and reused for every reseed below, so all three
+      // configurations observe byte-identical seeded content.
+      const titleNonce = trackedNonce('AUTOMEM-E-TITLE');
+      const indexTitle = `Automem probe seeded fact ${titleNonce}`;
+      const topicFilename = 'automem-probe-seeded-fact.md';
+      const codenameValue = trackedNonce('AUTOMEM-E-CODENAME');
+
+      /**
+       * Architect ruling, PR #1676 review: (i)/(ii)/(iii) run sequentially
+       * against the SAME memory dir with `autoMemoryEnabled: true`, so a
+       * write that happens to occur during one configuration's turn would
+       * change what the NEXT configuration observes. Reset (delete the
+       * memory dir) and reseed IDENTICALLY before every configuration --
+       * zero extra turns, pure fs I/O -- so each configuration's turn sees
+       * the same freshly-seeded state regardless of what the previous
+       * configuration's turn did. The memory-dir file count is logged both
+       * before (post-reseed, the expected baseline) and after (post-turn,
+       * evidence of anything the turn itself introduced) each configuration.
+       */
+      async function reseedAndRunArmEConfig(key: ArmEConfigKey): Promise<ArmEConfigRunResult> {
+        rmSync(memoryDir, { recursive: true, force: true });
+        seedMemoryTopic({
+          memoryDir,
+          topicFilename,
+          frontmatterName: 'automem-probe-seeded-fact',
+          description: 'Auto-memory probe Arm E seeded fact (Issue #1667)',
+          codenameSubject: 'The secret project codename',
+          codenameValue,
+          indexTitle,
+          indexHook: 'the secret project codename is recorded here.',
+        });
+        console.log(`E-${key}: reseeded memory dir -- file count before this configuration's turn: ${walkFiles(memoryDir).length}`);
+        const result = await runArmEConfig(key, configDir, cwd, memoryDir, topicFilename, indexTitle);
+        console.log(`E-${key}: memory dir file count after this configuration's turn: ${walkFiles(memoryDir).length}`);
+        return result;
+      }
+
+      const omitted = await reseedAndRunArmEConfig('omitted');
+      const preset = await reseedAndRunArmEConfig('preset');
+      const presetExcluded = await reseedAndRunArmEConfig('preset-excluded');
+
+      const summary = summarizeArmE({ omitted, preset, presetExcluded });
+      console.log(`E: ${summary.note}`);
+      return { verdict: { arm: 'E', conclusive: summary.conclusive, premise: null, note: summary.note }, summary };
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Arm F -- explicit switches (Issue #1667, Task 0b)
+// ---------------------------------------------------------------------------
+
+interface ArmFConfigChoice {
+  key: 'omitted' | 'preset';
+  source: string;
+}
+
+/**
+ * Picks arm F/G's `systemPrompt` configuration per the Issue's own rule:
+ * "whichever configuration Arm E showed carries awareness (if (i) does, use
+ * (i); else (ii))". When arm E did not run in this invocation (cheap
+ * standalone dev iteration), `--f-config` overrides explicitly; absent both,
+ * defaults to `omitted` (production's own shape) with the choice's `source`
+ * always stated so the reader knows which of the three reasons applied.
+ *
+ * @internal Exported for the sibling unit test.
+ */
+export function resolveArmFConfigKey(summary: ArmESummary | null, override: 'omitted' | 'preset' | undefined): ArmFConfigChoice {
+  if (override) {
+    return { key: override, source: `--f-config override (${override})` };
+  }
+  if (summary === null) {
+    return { key: 'omitted', source: 'no Arm E result in this invocation -- defaulting to omitted (production\'s shape); pass --f-config to override' };
+  }
+  if (summary.awareConfigs.includes('omitted')) {
+    return { key: 'omitted', source: 'Arm E: (i) omitted shows awareness' };
+  }
+  if (summary.awareConfigs.includes('preset')) {
+    return { key: 'preset', source: 'Arm E: (ii) preset shows awareness ((i) omitted did not)' };
+  }
+  return {
+    key: 'omitted',
+    source: 'Arm E: neither (i) omitted nor (ii) preset showed awareness -- defaulting to omitted (production\'s shape); read Arm F/G as measuring the switches in isolation from awareness',
+  };
+}
+
+export interface ArmFGateResult {
+  halt: boolean;
+  reason: string;
+}
+
+/**
+ * Owner ruling (Orchestrator relay, 2026-09-13): Arm F's own premise is
+ * "under the awareness-carrying configuration". If Arm E showed NO
+ * configuration carries awareness, or its own (iii) negative control was
+ * not confirmed clean, running F/G would measure the switches against a
+ * model that cannot know what to write -- a negative result there is
+ * uninterpretable, neither confirming nor refuting the switches. Halt by
+ * default (report the state as its own finding rather than spending F/G
+ * turns); `force` (`--force-f`) is the explicit operator override for a
+ * deliberate run anyway.
+ *
+ * Only fires when Arm E actually ran (a non-null `summary`) in this
+ * invocation. A standalone `--f` run with no `--e` in the same invocation
+ * is already the operator's own informed choice to bypass the gate --
+ * `resolveArmFConfigKey`'s own "no Arm E result" default handles that case
+ * unchanged.
+ *
+ * @internal Exported for the sibling unit test.
+ */
+export function armFHaltCheck(summary: ArmESummary | null, force: boolean): ArmFGateResult {
+  if (summary === null) {
+    return { halt: false, reason: 'Arm E did not run in this invocation -- gate not evaluated.' };
+  }
+  if (force) {
+    return { halt: false, reason: '--force-f override -- running despite the gate.' };
+  }
+  if (summary.awareConfigs.length === 0) {
+    return {
+      halt: true,
+      reason: 'no configuration (i omitted, ii preset) carries awareness on this build -- switches are untestable until awareness is established.',
+    };
+  }
+  // Architect ruling, PR #1676 review (overrules this function's own
+  // earlier version): a dirty or unsettled (iii) control does NOT halt.
+  // Per the vendored sdk.d.ts, excludeDynamicSections is DOCUMENTED to
+  // re-inject the stripped sections as the first user message, so (iii)
+  // surfacing an observable is the EXPECTED result when the SDK behaves as
+  // documented -- treating it as a halt condition would make F/G
+  // unreachable on any doc-conformant build without --force-f. Arm F's own
+  // premise is "awareness exists under configuration X", which (i)/(ii)'s
+  // own observables establish on their own; (iii)'s cleanliness is a
+  // caveat on ATTRIBUTING that awareness to the dynamic section
+  // specifically (already stated in Arm E's own note), not a precondition
+  // for F to run.
+  if (summary.controlClean !== true) {
+    return {
+      halt: false,
+      reason:
+        "Arm E confirms at least one configuration carries awareness; the (iii) control was not confirmed clean, which is EXPECTED when excludeDynamicSections re-injects as documented -- a caveat on awareness attribution, not a reason F cannot run.",
+    };
+  }
+  return { halt: false, reason: 'Arm E confirms at least one configuration carries awareness with a clean (iii) control.' };
+}
+
+interface ArmFResult {
+  verdict: ArmVerdict;
+  /** `true`=write held, `false`=write refuted (conclusively), `null`=inconclusive. Feeds Arm G's gate. */
+  writeHeld: boolean | null;
+}
+
+async function runArmF(expectNoWrite: boolean, configChoice: ArmFConfigChoice): Promise<ArmFResult> {
+  h(
+    `Arm F -- explicit switches (autoMemoryEnabled + autoDreamEnabled) under configuration '${configChoice.key}' (${configChoice.source})${expectNoWrite ? '  [--expect-no-write]' : ''}`,
+  );
+  return withArmConfigDir('automem-f', async (configDir) => {
+    const cwdWrite = buildScratchCwd('f-write');
+    const cwdSeeded = buildScratchCwd('f-recall-seeded');
+    const cwdControl = buildScratchCwd('f-recall-control');
+    try {
+      const settings: Partial<Settings> = { autoMemoryEnabled: true, autoDreamEnabled: true };
+      const systemPrompt = systemPromptForArmEConfig(configChoice.key);
+
+      // Arm C's write check, unchanged, via the shared core.
+      const writeVerdict = await runWriteCheck({
+        configDir,
+        cwd: cwdWrite,
+        settings,
+        systemPrompt,
+        expectNoWrite,
+        labelPrefix: 'F-write',
+        noncePrefix: 'AUTOMEM-F-WRITE',
+        timeoutMs: WRITE_POLL_TIMEOUT_MS,
+      });
+      console.log(`F: write: ${writeVerdict.note}`);
+
+      // Arm A's recall check, unchanged, via the shared core. Deliberately a
+      // SEPARATE cwd from the write check (each check tests exactly one
+      // mechanism -- the recall check's own seeded fact must not collide
+      // with the write check's "remember this" fact in the same directory).
+      const recallVerdict = await runRecallCheck({
+        configDir,
+        cwdSeeded,
+        cwdControl,
+        settings,
+        systemPrompt,
+        expectNoRecall: false,
+        labelPrefix: 'F-recall',
+        noncePrefix: 'AUTOMEM-F-RECALL',
+        indexTitle: 'Automem probe seeded fact (arm F)',
+        indexHook: 'the secret project codename is recorded here.',
+        frontmatterName: 'automem-probe-seeded-fact',
+        description: 'Auto-memory probe Arm F seeded fact (Issue #1667)',
+      });
+      console.log(`F: recall: ${recallVerdict.note}`);
+
+      const conclusive = writeVerdict.conclusive && recallVerdict.conclusive;
+      const writeHeld = writeVerdict.premise === 'holds' ? true : writeVerdict.premise === 'refuted' ? false : null;
+      const note = `configuration='${configChoice.key}' (${configChoice.source}). write: ${writeVerdict.note} recall: ${recallVerdict.note}`;
+      return { verdict: { arm: 'F', conclusive, premise: writeVerdict.premise, note }, writeHeld };
+    } finally {
+      rmSync(cwdWrite, { recursive: true, force: true });
+      rmSync(cwdSeeded, { recursive: true, force: true });
+      rmSync(cwdControl, { recursive: true, force: true });
+    }
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Arm G -- timescale (Issue #1667, Task 0b)
+// ---------------------------------------------------------------------------
+
+/**
+ * Owner directive, 2026-09-13, binding: never exceeds 5 minutes. Omitted or
+ * `0` behaves exactly like Arm F's 60s poll (this file's own boundary
+ * expectation).
+ *
+ * @internal Exported for the sibling unit test.
+ */
+export function resolveExtendedTimeoutMs(requestedMs: number | undefined): number {
+  if (requestedMs === undefined || requestedMs === 0) return WRITE_POLL_TIMEOUT_MS;
+  if (requestedMs > EXTENDED_TIMEOUT_CAP_MS) {
+    console.log(`WARNING: --extended-timeout ${requestedMs}ms exceeds the owner's binding 5-minute cap; clamping to ${EXTENDED_TIMEOUT_CAP_MS}ms.`);
+    return EXTENDED_TIMEOUT_CAP_MS;
+  }
+  return requestedMs;
+}
+
+function armGSkippedVerdict(reason: string): ArmVerdict {
+  return { arm: 'G', conclusive: true, premise: null, note: `SKIPPED -- ${reason}` };
+}
+
+/**
+ * Re-runs arm F's write check ONLY, with a longer poll. No recall re-check,
+ * no teardown arm (per this Issue's own Non-goals). The poll loop itself
+ * (`pollForContent`, shared with arms C/F) makes no repeated LLM turns --
+ * confirmed by reading it before this arm was dispatched, per this Issue's
+ * own instruction -- so a longer window costs wall-clock only, never
+ * additional billed turns.
+ */
+async function runArmG(expectNoWrite: boolean, timeoutMs: number, configChoice: ArmFConfigChoice): Promise<ArmVerdict> {
+  h(`Arm G -- timescale: arm F's write check with an extended ${timeoutMs}ms poll under configuration '${configChoice.key}'${expectNoWrite ? '  [--expect-no-write]' : ''}`);
+  return withArmConfigDir('automem-g', async (configDir) => {
+    const cwd = buildScratchCwd('g-write');
+    try {
+      const settings: Partial<Settings> = { autoMemoryEnabled: true, autoDreamEnabled: true };
+      const systemPrompt = systemPromptForArmEConfig(configChoice.key);
+      const verdict = await runWriteCheck({
+        configDir,
+        cwd,
+        settings,
+        systemPrompt,
+        expectNoWrite,
+        labelPrefix: 'G-write',
+        noncePrefix: 'AUTOMEM-G-WRITE',
+        timeoutMs,
+      });
+      return { arm: 'G', ...verdict };
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
 
@@ -1037,7 +2201,10 @@ async function main(): Promise<number> {
   const selected = parseArgs(process.argv.slice(2));
 
   console.log(`probe-sdk-auto-memory  started ${stamp()}`);
-  console.log(`arms: ${[...selected.arms].join(' ')}${selected.expectNoRecall ? ' --expect-no-recall' : ''}${selected.expectNoWrite ? ' --expect-no-write' : ''}`);
+  console.log(
+    `arms: ${[...selected.arms].join(' ')}${selected.expectNoRecall ? ' --expect-no-recall' : ''}${selected.expectNoWrite ? ' --expect-no-write' : ''}${selected.forceF ? ' --force-f' : ''}` +
+      `${selected.fConfigOverride ? ` --f-config ${selected.fConfigOverride}` : ''}${selected.extendedTimeoutMs !== undefined ? ` --extended-timeout ${selected.extendedTimeoutMs}` : ''}`,
+  );
   console.log(`model: ${MODEL}`);
 
   const sdkPackageJson = await Bun.file(
@@ -1045,11 +2212,126 @@ async function main(): Promise<number> {
   ).json();
   console.log(`@anthropic-ai/claude-agent-sdk version: ${sdkPackageJson.version}`);
 
+  // Real config-location cross-check -- captured BEFORE any arm mutates
+  // process.env.CLAUDE_CONFIG_DIR via isolateClaudeConfigDir, diffed AFTER
+  // every selected arm has run. See this file's header: this canary write is
+  // the ONE thing this script writes outside its isolated per-arm config
+  // dirs, deliberately, as the cross-check's own in-band positive control.
+  const runId = trackedNonce('RUN');
+  console.log(`run id: ${runId}`);
+  const realConfigDir = resolveRealConfigDir(process.env, homedir());
+  h('Real config-location cross-check: snapshot + canary positive control (before any arm)');
+  console.log(`real CLAUDE_CONFIG_DIR resolves to: ${realConfigDir} (exists=${existsSync(realConfigDir)})`);
+  const beforeSnapshot = snapshotMtimes(realConfigDir);
+  // Owner ruling, 2026-09-13: the name carries this run's id and the probe's
+  // own slug (no leading dot, so a crash leaves a plainly visible,
+  // identifiable file rather than one hidden from a bare `ls`) so an
+  // interrupted run's leftover is easy to find and attribute. The slug MUST
+  // match PROBE_SLUG exactly -- it is what lets the attribution filter
+  // below recognize this file as the probe's own, not unrelated activity.
+  const canaryPath = join(realConfigDir, `${PROBE_SLUG}-canary-${runId}.tmp`);
+  let canaryWritten = false;
+  try {
+    mkdirSync(realConfigDir, { recursive: true });
+    writeFileSync(canaryPath, `${PROBE_SLUG} canary (run ${runId}) -- safe to delete\n`);
+    canaryWritten = true;
+  } catch (err) {
+    console.log(
+      `WARNING: could not write the real-tree canary at ${canaryPath}: ${err instanceof Error ? err.message : String(err)} -- the cross-check's positive control cannot run this invocation.`,
+    );
+  }
+  const afterCanarySnapshot = canaryWritten ? snapshotMtimes(realConfigDir) : beforeSnapshot;
+  const canaryRawDiff = diffMtimeSnapshots(beforeSnapshot, afterCanarySnapshot);
+  // Architect ruling, PR #1676 review: the positive control must prove the
+  // FILTERED detector works, not merely that the raw diff can see a change
+  // -- so classify through the SAME attribution filter the final check uses
+  // below, rather than a raw `.added.includes(canaryPath)`.
+  const canaryClassification = classifyRealTreeDiff(canaryRawDiff, buildAttributionChecks(canaryRawDiff), PROBE_SLUG, runNonces);
+  const canaryDetected = canaryWritten && canaryClassification.attributable.added.includes(canaryPath);
+  console.log(
+    `real-tree canary positive control: ${
+      canaryWritten ? (canaryDetected ? 'DETECTED (the filtered attribution detector can see a real, attributable change)' : 'NOT DETECTED -- cross-check untrustworthy this run') : 'SKIPPED (canary could not be written)'
+    }`,
+  );
+
   const results: ArmVerdict[] = [];
-  if (selected.arms.has('--a')) results.push(await runArmA(selected.expectNoRecall));
-  if (selected.arms.has('--b')) results.push(await runArmB());
-  if (selected.arms.has('--c')) results.push(await runArmC(selected.expectNoWrite));
-  if (selected.arms.has('--d')) results.push(await runArmD());
+  let realTreeClean: boolean | null = null;
+
+  try {
+    if (selected.arms.has('--a')) results.push(await runArmA(selected.expectNoRecall));
+    if (selected.arms.has('--b')) results.push(await runArmB());
+    if (selected.arms.has('--c')) results.push(await runArmC(selected.expectNoWrite));
+    if (selected.arms.has('--d')) results.push(await runArmD());
+
+    let armESummary: ArmESummary | null = null;
+    if (selected.arms.has('--e')) {
+      const { verdict, summary } = await runArmE();
+      results.push(verdict);
+      armESummary = summary;
+    }
+
+    let armFWriteHeld: boolean | null = null;
+    let armFConfigChoice: ArmFConfigChoice | null = null;
+    let armFHalted = false;
+    if (selected.arms.has('--f')) {
+      const gate = armFHaltCheck(armESummary, selected.forceF);
+      if (gate.halt) {
+        armFHalted = true;
+        console.log(`F: HALTED -- ${gate.reason}`);
+        results.push({ arm: 'F', conclusive: true, premise: null, note: `HALTED -- ${gate.reason} (pass --force-f to override).` });
+      } else {
+        armFConfigChoice = resolveArmFConfigKey(armESummary, selected.fConfigOverride);
+        const fResult = await runArmF(selected.expectNoWrite, armFConfigChoice);
+        results.push(fResult.verdict);
+        armFWriteHeld = fResult.writeHeld;
+      }
+    }
+
+    if (selected.arms.has('--g')) {
+      const productionAware = armESummary?.productionAware ?? false;
+      const fShowsNoWrite = armFWriteHeld === false;
+      if (armFHalted) {
+        results.push(armGSkippedVerdict('arm F was halted (see its own HALTED verdict above) -- arm G cannot run without a completed arm F write result.'));
+      } else if (productionAware && fShowsNoWrite) {
+        const effectiveTimeout = resolveExtendedTimeoutMs(selected.extendedTimeoutMs);
+        results.push(await runArmG(selected.expectNoWrite, effectiveTimeout, armFConfigChoice ?? { key: 'omitted', source: 'fallback (arm F did not run in this invocation)' }));
+      } else {
+        results.push(
+          armGSkippedVerdict(
+            `gate not met (arm E production-shape awareness=${productionAware}, arm F showed no write=${fShowsNoWrite}); arm G only runs when both hold.`,
+          ),
+        );
+      }
+    }
+  } finally {
+    const afterArmsSnapshot = canaryWritten ? snapshotMtimes(realConfigDir) : null;
+    if (canaryWritten) {
+      try {
+        rmSync(canaryPath, { force: true });
+      } catch {
+        // Best-effort cleanup; a leftover probe-named .tmp file under the
+        // real config dir is harmless and easy to spot, never load-bearing.
+      }
+    }
+    if (afterArmsSnapshot) {
+      const runDiff = diffMtimeSnapshots(afterCanarySnapshot, afterArmsSnapshot);
+      // The canary's own removal above happens AFTER this snapshot, so it is
+      // still present, unchanged, in both snapshots -- it never appears in
+      // this diff at all (present-and-identical in both), nothing to
+      // exclude here.
+      const classification = classifyRealTreeDiff(runDiff, buildAttributionChecks(runDiff), PROBE_SLUG, runNonces);
+      const { attributable, unrelatedCount, nonceEchoOutsideMemoryCount } = classification;
+      realTreeClean = attributable.added.length === 0 && attributable.removed.length === 0 && attributable.changed.length === 0;
+      console.log(
+        `real-tree cross-check after all arms: clean=${realTreeClean} attributable-added=${JSON.stringify(attributable.added)} ` +
+          `attributable-removed=${JSON.stringify(attributable.removed)} attributable-changed=${JSON.stringify(attributable.changed)} ` +
+          `unrelated concurrent activity (not escalated): ${unrelatedCount} path(s), of which ${nonceEchoOutsideMemoryCount} echoed a run nonce outside any memory/ dir ` +
+          `(expected: the transcript of the session running this probe)`,
+      );
+    } else {
+      console.log('real-tree cross-check after all arms: SKIPPED (canary could not be written; see warning above).');
+    }
+  }
 
   h('Verdict');
   for (const r of results) {
@@ -1063,8 +2345,19 @@ async function main(): Promise<number> {
   console.log(`leak scope identified (B): ${byArm.has('B') ? (byArm.get('B')!.note.startsWith('LEAK') ? 'yes -- see scopes above' : 'no leak observed') : '(not run)'}`);
   console.log(`write works (C):         ${byArm.has('C') ? holds('C') : '(not run)'}`);
   console.log(`redirect works (D):      ${byArm.has('D') ? holds('D') : '(not run)'}`);
+  console.log(`awareness (E):           ${byArm.has('E') ? 'see Arm E note above' : '(not run)'}`);
+  console.log(`switches change write (F): ${byArm.has('F') ? holds('F') : '(not run)'}`);
+  console.log(`timescale (G):           ${byArm.has('G') ? (byArm.get('G')!.note.startsWith('SKIPPED') ? 'skipped -- gate not met' : holds('G')) : '(not run)'}`);
 
-  const code = exitCodeFor(results);
+  let code = exitCodeFor(results);
+  if (canaryWritten && !canaryDetected) {
+    console.log("\nWARNING: escalating exit code to HARNESS -- the real-tree cross-check's own positive control failed, so its \"clean\" reading (if any) cannot be trusted.");
+    code = Math.max(code, PROBE_EXIT.HARNESS);
+  }
+  if (realTreeClean === false) {
+    console.log('\nWARNING: escalating exit code to HARNESS -- the real, non-isolated CLAUDE_CONFIG_DIR tree changed in a way attributable to this run (slug or nonce match).');
+    code = Math.max(code, PROBE_EXIT.HARNESS);
+  }
   console.log(`\nexit code ${code} -- ${EXIT_CODE_MEANINGS[code]}`);
 
   const t = totals();

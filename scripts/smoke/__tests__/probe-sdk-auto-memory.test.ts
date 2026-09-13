@@ -9,20 +9,49 @@
  * module runs nothing (the `import.meta.main` guard at the foot of that
  * file, covered separately by `import-safety.test.ts`), so all seven are
  * testable at zero cost and separately from what they classify.
+ *
+ * Task 0b (Issue #1667) adds `classifyArmEConfig` / `summarizeArmE` /
+ * `resolveArmFConfigKey` / `armFHaltCheck` / `resolveExtendedTimeoutMs` /
+ * `textContainsPath` / `diffMtimeSnapshots` / `resolveRealConfigDir` /
+ * `isAttributableToProbe` / `classifyRealTreeDiff` (pure, same treatment)
+ * and `seedMemoryTopic` (real but zero-cost, deterministic filesystem I/O
+ * against a real tmpdir -- no LLM turn, no network, matching this file's
+ * "Tests Must Test Production Code" convention for a helper that isn't a
+ * pure function but also isn't billable).
  */
-import { describe, it, expect } from 'bun:test';
+import { describe, it, expect, afterEach } from 'bun:test';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
   PROBE_EXIT,
   exitCodeFor,
   classifyArmA,
   classifyArmC,
   classifyArmD,
+  classifyArmEConfig,
+  summarizeArmE,
+  formatMemoryFilesForNote,
+  resolveArmFConfigKey,
+  armFHaltCheck,
+  resolveExtendedTimeoutMs,
+  textContainsPath,
+  diffMtimeSnapshots,
+  resolveRealConfigDir,
+  isAttributableToProbe,
+  classifyRealTreeDiff,
+  PROBE_SLUG,
+  seedMemoryTopic,
   redactRecallEntry,
   recallPathMatches,
   summarizeRecalls,
+  EXTENDED_TIMEOUT_CAP_MS,
+  WRITE_POLL_TIMEOUT_MS,
   type ArmAInput,
   type ArmCInput,
   type ArmDInput,
+  type ArmEConfigInput,
+  type ArmESummaryInput,
 } from '../probe-sdk-auto-memory.js';
 
 describe('probe-sdk-auto-memory exit codes', () => {
@@ -365,5 +394,528 @@ describe('summarizeRecalls', () => {
   it('contributes nothing for a recall event with an empty memories array', () => {
     const recalls = [{ mode: 'select' as const, memories: [] }];
     expect(summarizeRecalls(recalls, configDir)).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Task 0b (Issue #1667): Arm E awareness classification
+// ---------------------------------------------------------------------------
+
+describe('classifyArmEConfig', () => {
+  it('is inconclusive when the turn did not settle, before anything else is checked', () => {
+    const r = classifyArmEConfig({ settled: false, locationHit: true, accessHit: true });
+    expect(r.conclusive).toBe(false);
+    expect(r.classification).toBe('unaware');
+  });
+
+  it('reads aware-and-reading when both observables hit (all-success boundary)', () => {
+    const r = classifyArmEConfig({ settled: true, locationHit: true, accessHit: true });
+    expect(r).toMatchObject({ classification: 'aware-and-reading', conclusive: true });
+  });
+
+  it('reads aware-prose-only when only ACCESS hits -- NOT absence', () => {
+    const r = classifyArmEConfig({ settled: true, locationHit: false, accessHit: true });
+    expect(r).toMatchObject({ classification: 'aware-prose-only', conclusive: true });
+    expect(r.note).toContain('NOT absence');
+  });
+
+  it('reads told-not-read when only LOCATION hits', () => {
+    const r = classifyArmEConfig({ settled: true, locationHit: true, accessHit: false });
+    expect(r).toMatchObject({ classification: 'told-not-read', conclusive: true });
+  });
+
+  it('reads unaware when neither observable hits (all-failure boundary)', () => {
+    const r = classifyArmEConfig({ settled: true, locationHit: false, accessHit: false });
+    expect(r).toMatchObject({ classification: 'unaware', conclusive: true });
+  });
+});
+
+describe('formatMemoryFilesForNote', () => {
+  // Boundary: no entries.
+  it('reports an empty array for zero entries', () => {
+    expect(formatMemoryFilesForNote([])).toBe('memoryFiles=[]');
+  });
+
+  it('reports an empty array when entries is undefined (boundary)', () => {
+    expect(formatMemoryFilesForNote(undefined)).toBe('memoryFiles=[]');
+  });
+
+  it('formats a single entry with path/type/tokens', () => {
+    expect(formatMemoryFilesForNote([{ path: '/tmp/x/MEMORY.md', type: 'Project', tokens: 42 }])).toBe(
+      'memoryFiles=[{path=/tmp/x/MEMORY.md, type=Project, tokens=42}]',
+    );
+  });
+
+  it('formats multiple entries, comma-separated, in order (mixed)', () => {
+    const r = formatMemoryFilesForNote([
+      { path: '/tmp/x/MEMORY.md', type: 'Project', tokens: 42 },
+      { path: '/tmp/x/other.md', type: 'User', tokens: 7 },
+    ]);
+    expect(r).toBe('memoryFiles=[{path=/tmp/x/MEMORY.md, type=Project, tokens=42}, {path=/tmp/x/other.md, type=User, tokens=7}]');
+  });
+});
+
+describe('summarizeArmE', () => {
+  const unaware: ArmEConfigInput = { settled: true, locationHit: false, accessHit: false };
+  const aware: ArmEConfigInput = { settled: true, locationHit: true, accessHit: true };
+  const accessOnly: ArmEConfigInput = { settled: true, locationHit: false, accessHit: true };
+
+  const allUnaware: ArmESummaryInput = { omitted: unaware, preset: unaware, presetExcluded: unaware };
+
+  it("folds each configuration's memoryFiles entries into the note (Architect request, PR #1676 review)", () => {
+    const withMemoryFiles: ArmEConfigInput = { ...aware, memoryFilesEntries: [{ path: '/tmp/x/MEMORY.md', type: 'Project', tokens: 42 }] };
+    const s = summarizeArmE({ omitted: withMemoryFiles, preset: unaware, presetExcluded: unaware });
+    expect(s.note).toContain('memoryFiles=[{path=/tmp/x/MEMORY.md, type=Project, tokens=42}]');
+  });
+
+  it('folds an empty memoryFiles note when a configuration reports none (boundary)', () => {
+    const s = summarizeArmE(allUnaware);
+    expect(s.note).toContain('memoryFiles=[]');
+  });
+
+  it('reports no awareness anywhere, a clean control, when every configuration is unaware (all-failure boundary)', () => {
+    const s = summarizeArmE(allUnaware);
+    expect(s.conclusive).toBe(true);
+    expect(s.productionAware).toBe(false);
+    expect(s.awareConfigs).toEqual([]);
+    expect(s.controlClean).toBe(true);
+  });
+
+  it("identifies production's own shape (omitted) as aware when its ACCESS observable hits", () => {
+    const s = summarizeArmE({ ...allUnaware, omitted: accessOnly });
+    expect(s.productionAware).toBe(true);
+    expect(s.awareConfigs).toEqual(['omitted']);
+  });
+
+  it('identifies preset as aware without crediting production when only preset hits (mixed)', () => {
+    const s = summarizeArmE({ ...allUnaware, preset: aware });
+    expect(s.productionAware).toBe(false);
+    expect(s.awareConfigs).toEqual(['preset']);
+  });
+
+  it('lists both awareConfigs when both (i) and (ii) show awareness (all-success boundary)', () => {
+    const s = summarizeArmE({ omitted: aware, preset: aware, presetExcluded: unaware });
+    expect(s.awareConfigs).toEqual(['omitted', 'preset']);
+  });
+
+  /**
+   * Architect ruling, PR #1676 review: LOCATION awareness alone
+   * (`told-not-read` -- the model was told the path but did not recall the
+   * seeded title) counts as "shows awareness" for arm F's own premise, even
+   * though ACCESS itself missed. The code already did this
+   * (`classification !== 'unaware'`); this pins it explicitly so a future
+   * edit narrowing to ACCESS-only breaks a test, not just a comment.
+   */
+  it('counts told-not-read (LOCATION only) as awareness, not just ACCESS', () => {
+    const locationOnly: ArmEConfigInput = { settled: true, locationHit: true, accessHit: false };
+    const s = summarizeArmE({ ...allUnaware, omitted: locationOnly });
+    expect(s.perConfig.omitted.classification).toBe('told-not-read');
+    expect(s.productionAware).toBe(true);
+    expect(s.awareConfigs).toEqual(['omitted']);
+  });
+
+  it('reports control: NONE AVAILABLE when the (iii) negative control itself surfaces an observable', () => {
+    const s = summarizeArmE({ ...allUnaware, presetExcluded: accessOnly });
+    expect(s.controlClean).toBe(false);
+    expect(s.note).toContain('NONE AVAILABLE');
+  });
+
+  it('reports controlClean=null when the (iii) control turn did not settle', () => {
+    const s = summarizeArmE({ ...allUnaware, presetExcluded: { settled: false, locationHit: false, accessHit: false } });
+    expect(s.controlClean).toBeNull();
+  });
+
+  it('is inconclusive overall when any single configuration did not settle (mixed)', () => {
+    const s = summarizeArmE({ ...allUnaware, preset: { settled: false, locationHit: false, accessHit: false } });
+    expect(s.conclusive).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Task 0b: Arm F configuration selection + Arm G timeout resolution
+// ---------------------------------------------------------------------------
+
+describe('resolveArmFConfigKey', () => {
+  const unaware: ArmEConfigInput = { settled: true, locationHit: false, accessHit: false };
+  const accessOnly: ArmEConfigInput = { settled: true, locationHit: false, accessHit: true };
+
+  it('honors an explicit --f-config override regardless of the Arm E summary', () => {
+    const s = summarizeArmE({ omitted: accessOnly, preset: unaware, presetExcluded: unaware });
+    const r = resolveArmFConfigKey(s, 'preset');
+    expect(r.key).toBe('preset');
+    expect(r.source).toContain('override');
+  });
+
+  it('defaults to omitted when Arm E did not run in this invocation (no summary, no override)', () => {
+    const r = resolveArmFConfigKey(null, undefined);
+    expect(r.key).toBe('omitted');
+    expect(r.source).toContain('no Arm E result');
+  });
+
+  it("prefers (i) omitted when it shows awareness, per the Issue's own rule", () => {
+    const s = summarizeArmE({ omitted: accessOnly, preset: accessOnly, presetExcluded: unaware });
+    const r = resolveArmFConfigKey(s, undefined);
+    expect(r.key).toBe('omitted');
+  });
+
+  it('falls back to (ii) preset when only it shows awareness', () => {
+    const s = summarizeArmE({ omitted: unaware, preset: accessOnly, presetExcluded: unaware });
+    const r = resolveArmFConfigKey(s, undefined);
+    expect(r.key).toBe('preset');
+  });
+
+  it('defaults to omitted, with a distinguishing source, when neither shows awareness (all-failure boundary)', () => {
+    const s = summarizeArmE({ omitted: unaware, preset: unaware, presetExcluded: unaware });
+    const r = resolveArmFConfigKey(s, undefined);
+    expect(r.key).toBe('omitted');
+    expect(r.source).toContain('neither');
+  });
+});
+
+describe('armFHaltCheck', () => {
+  const cleanUnaware: ArmESummaryInput = {
+    omitted: { settled: true, locationHit: false, accessHit: false },
+    preset: { settled: true, locationHit: false, accessHit: false },
+    presetExcluded: { settled: true, locationHit: false, accessHit: false },
+  };
+  const cleanAware: ArmESummaryInput = { ...cleanUnaware, omitted: { settled: true, locationHit: false, accessHit: true } };
+  const dirtyControl: ArmESummaryInput = { ...cleanAware, presetExcluded: { settled: true, locationHit: false, accessHit: true } };
+  const unsettledControl: ArmESummaryInput = { ...cleanAware, presetExcluded: { settled: false, locationHit: false, accessHit: false } };
+
+  it('does not halt when Arm E did not run in this invocation (boundary: null summary)', () => {
+    const r = armFHaltCheck(null, false);
+    expect(r.halt).toBe(false);
+  });
+
+  it("does not halt regardless of Arm E's summary when --force-f overrides", () => {
+    const r = armFHaltCheck(summarizeArmE(cleanUnaware), true);
+    expect(r.halt).toBe(false);
+    expect(r.reason).toContain('override');
+  });
+
+  it('halts when no configuration shows awareness, even with a clean control (all-failure boundary)', () => {
+    const r = armFHaltCheck(summarizeArmE(cleanUnaware), false);
+    expect(r.halt).toBe(true);
+    expect(r.reason).toContain('untestable');
+  });
+
+  it('does not halt when at least one configuration shows awareness and the control is clean (all-success boundary)', () => {
+    const r = armFHaltCheck(summarizeArmE(cleanAware), false);
+    expect(r.halt).toBe(false);
+  });
+
+  /**
+   * Architect ruling, PR #1676 review: a dirty (iii) control does NOT halt
+   * -- excludeDynamicSections is documented to re-inject stripped content
+   * as the first user message, so (iii) surfacing an observable is the
+   * EXPECTED result on a doc-conformant build, not evidence F cannot run.
+   */
+  it('does NOT halt when the (iii) control is not clean, as long as a configuration shows awareness (mixed)', () => {
+    const r = armFHaltCheck(summarizeArmE(dirtyControl), false);
+    expect(r.halt).toBe(false);
+    expect(r.reason).toContain('EXPECTED');
+  });
+
+  it('does NOT halt when the (iii) control turn never settled, as long as a configuration shows awareness', () => {
+    const r = armFHaltCheck(summarizeArmE(unsettledControl), false);
+    expect(r.halt).toBe(false);
+  });
+});
+
+describe('resolveExtendedTimeoutMs', () => {
+  it("behaves exactly like Arm F's 60s poll when omitted (boundary: undefined)", () => {
+    expect(resolveExtendedTimeoutMs(undefined)).toBe(WRITE_POLL_TIMEOUT_MS);
+  });
+
+  it("behaves exactly like Arm F's 60s poll when 0 (boundary: explicit zero)", () => {
+    expect(resolveExtendedTimeoutMs(0)).toBe(WRITE_POLL_TIMEOUT_MS);
+  });
+
+  it('passes through a value within the owner-directive cap unchanged', () => {
+    expect(resolveExtendedTimeoutMs(120_000)).toBe(120_000);
+  });
+
+  it('passes through exactly the cap unchanged (boundary)', () => {
+    expect(resolveExtendedTimeoutMs(EXTENDED_TIMEOUT_CAP_MS)).toBe(EXTENDED_TIMEOUT_CAP_MS);
+  });
+
+  it('clamps a value over the owner-directive cap (binding: never exceeds 5 minutes)', () => {
+    expect(resolveExtendedTimeoutMs(999_999)).toBe(EXTENDED_TIMEOUT_CAP_MS);
+    expect(EXTENDED_TIMEOUT_CAP_MS).toBe(300_000);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Task 0b: textContainsPath
+// ---------------------------------------------------------------------------
+
+describe('textContainsPath', () => {
+  it('is true when the text contains the raw path verbatim', () => {
+    expect(textContainsPath('the path is /tmp/foo/bar', '/tmp/foo/bar')).toBe(true);
+  });
+
+  it('is false when the text contains neither the raw nor a resolved form (all-failure boundary)', () => {
+    expect(textContainsPath('I do not know', '/tmp/foo/bar')).toBe(false);
+  });
+
+  it('is false for an empty text (boundary)', () => {
+    expect(textContainsPath('', '/tmp/foo/bar')).toBe(false);
+  });
+
+  it('is true via the resolved (symlink-following) form even when the raw path never appears', async () => {
+    const fs = await import('node:fs');
+    const real = mkdtempSync(join(tmpdir(), 'probe-sdk-automem-textpath-real-'));
+    const linkDir = mkdtempSync(join(tmpdir(), 'probe-sdk-automem-textpath-link-'));
+    const linkPath = join(linkDir, 'memory');
+    try {
+      fs.symlinkSync(real, linkPath, 'dir');
+      const resolved = fs.realpathSync(linkPath);
+      // The text mentions only the RESOLVED path, never the symlink path --
+      // this is exactly the shape a spawned CLI can produce (macOS's /var ->
+      // /private/var), which is why this branch exists at all.
+      expect(textContainsPath(`the memory directory is ${resolved}`, linkPath)).toBe(true);
+    } finally {
+      rmSync(linkPath, { force: true });
+      rmSync(real, { recursive: true, force: true });
+      rmSync(linkDir, { recursive: true, force: true });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Task 0b: diffMtimeSnapshots (real config-location cross-check)
+// ---------------------------------------------------------------------------
+
+describe('diffMtimeSnapshots', () => {
+  // Boundary: both empty.
+  it('reports nothing for two empty snapshots', () => {
+    expect(diffMtimeSnapshots(new Map(), new Map())).toEqual({ added: [], removed: [], changed: [] });
+  });
+
+  it('reports an added path present only in the after snapshot', () => {
+    const before = new Map<string, number>();
+    const after = new Map([['/a', 100]]);
+    expect(diffMtimeSnapshots(before, after)).toEqual({ added: ['/a'], removed: [], changed: [] });
+  });
+
+  it('reports a removed path present only in the before snapshot', () => {
+    const before = new Map([['/a', 100]]);
+    const after = new Map<string, number>();
+    expect(diffMtimeSnapshots(before, after)).toEqual({ added: [], removed: ['/a'], changed: [] });
+  });
+
+  it('reports a changed path whose mtime differs between snapshots', () => {
+    const before = new Map([['/a', 100]]);
+    const after = new Map([['/a', 200]]);
+    expect(diffMtimeSnapshots(before, after)).toEqual({ added: [], removed: [], changed: ['/a'] });
+  });
+
+  it('reports nothing for an unchanged path (single-element, no-op boundary)', () => {
+    const before = new Map([['/a', 100]]);
+    const after = new Map([['/a', 100]]);
+    expect(diffMtimeSnapshots(before, after)).toEqual({ added: [], removed: [], changed: [] });
+  });
+
+  it('reports all three kinds together (mixed, this cross-check\'s own canary shape)', () => {
+    const before = new Map([
+      ['/kept', 100],
+      ['/removed', 100],
+      ['/changed', 100],
+    ]);
+    const after = new Map([
+      ['/kept', 100],
+      ['/changed', 200],
+      ['/added', 300],
+    ]);
+    expect(diffMtimeSnapshots(before, after)).toEqual({ added: ['/added'], removed: ['/removed'], changed: ['/changed'] });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Task 0b: resolveRealConfigDir
+// ---------------------------------------------------------------------------
+
+describe('resolveRealConfigDir', () => {
+  it('uses CLAUDE_CONFIG_DIR when the env var is already set', () => {
+    expect(resolveRealConfigDir({ CLAUDE_CONFIG_DIR: '/custom/config' }, '/home/someone')).toBe('/custom/config');
+  });
+
+  it("falls back to ~/.claude when the env var is unset (measure, don't assume, boundary)", () => {
+    expect(resolveRealConfigDir({}, '/home/someone')).toBe(join('/home/someone', '.claude'));
+  });
+
+  it('falls back to ~/.claude when the env var is set to an empty string (boundary)', () => {
+    expect(resolveRealConfigDir({ CLAUDE_CONFIG_DIR: '' }, '/home/someone')).toBe(join('/home/someone', '.claude'));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Task 0b (Architect ruling, PR #1676 review): real-tree attribution filter
+// ---------------------------------------------------------------------------
+
+describe('isAttributableToProbe', () => {
+  const nonces = new Set(['NONCE-A', 'NONCE-B']);
+
+  it('is true when the path itself contains the probe slug', () => {
+    expect(isAttributableToProbe({ path: `/home/x/.claude/${PROBE_SLUG}-canary-RUN-1.tmp`, content: null }, PROBE_SLUG, nonces)).toBe(true);
+  });
+
+  it('is true when a nonce appears in the content of a path WITH a memory/ segment (the real leak shape)', () => {
+    expect(isAttributableToProbe({ path: '/home/x/.claude/projects/some-slug/memory/leaked.md', content: 'saw NONCE-A in the turn' }, PROBE_SLUG, nonces)).toBe(true);
+  });
+
+  /**
+   * Architect ruling round 2, PR #1676 review: this probe prints every
+   * nonce to stdout, and the delegate session RUNNING it ingests that
+   * stdout as its own tool output, writing it into ITS OWN transcript
+   * .jsonl under the same real config dir. An unscoped nonce-content match
+   * (this test's shape, pre-fix) made that transcript "attributable" and
+   * would false-escalate on every single run -- Task 0's own manual
+   * addendum saw exactly this and dismissed it because it was NOT under a
+   * memory/ subdirectory. This test was WRONG before the fix (it asserted
+   * `true`); it now pins the corrected behavior.
+   */
+  it('is false when a nonce appears in the content of a path with NO memory/ segment (the operator-transcript-echo shape)', () => {
+    expect(isAttributableToProbe({ path: '/home/x/.claude/projects/some-slug/transcript.jsonl', content: 'saw NONCE-A in the turn' }, PROBE_SLUG, nonces)).toBe(false);
+  });
+
+  it('is false for an unrelated path with no content (a removed path, boundary)', () => {
+    expect(isAttributableToProbe({ path: '/home/x/.claude/file-history/backup.json', content: null }, PROBE_SLUG, nonces)).toBe(false);
+  });
+
+  it('is false for a memory/-segmented path whose content matches no nonce (all-failure boundary)', () => {
+    expect(isAttributableToProbe({ path: '/home/x/.claude/projects/other/memory/fact.md', content: 'ordinary conversation' }, PROBE_SLUG, nonces)).toBe(false);
+  });
+
+  it('is false against an empty nonce set, even under memory/ (boundary: no nonces minted yet)', () => {
+    expect(isAttributableToProbe({ path: '/home/x/.claude/projects/x/memory/fact.md', content: 'NONCE-A' }, PROBE_SLUG, new Set())).toBe(false);
+  });
+});
+
+describe('classifyRealTreeDiff', () => {
+  const nonces = new Set(['NONCE-A']);
+  const canaryPath = `/home/x/.claude/${PROBE_SLUG}-canary-RUN-1.tmp`;
+
+  // Boundary: empty diff.
+  it('reports zero attributable, zero unrelated, zero nonce echoes for an empty diff', () => {
+    const r = classifyRealTreeDiff({ added: [], removed: [], changed: [] }, new Map(), PROBE_SLUG, nonces);
+    expect(r).toEqual({ attributable: { added: [], removed: [], changed: [] }, unrelatedCount: 0, nonceEchoOutsideMemoryCount: 0 });
+  });
+
+  it('classifies the canary itself as attributable via the slug (the positive control shape)', () => {
+    const diff = { added: [canaryPath], removed: [], changed: [] };
+    const checks = new Map([[canaryPath, { path: canaryPath, content: 'canary content' }]]);
+    const r = classifyRealTreeDiff(diff, checks, PROBE_SLUG, nonces);
+    expect(r.attributable.added).toEqual([canaryPath]);
+    expect(r.unrelatedCount).toBe(0);
+  });
+
+  it('buckets an unrelated concurrent-session path (no slug, no nonce) as unrelated, not attributable (all-failure boundary)', () => {
+    const otherTranscript = '/home/x/.claude/projects/other-session/transcript.jsonl';
+    const diff = { added: [], removed: [], changed: [otherTranscript] };
+    const checks = new Map([[otherTranscript, { path: otherTranscript, content: 'unrelated chatter' }]]);
+    const r = classifyRealTreeDiff(diff, checks, PROBE_SLUG, nonces);
+    expect(r.attributable.changed).toEqual([]);
+    expect(r.unrelatedCount).toBe(1);
+    expect(r.nonceEchoOutsideMemoryCount).toBe(0);
+  });
+
+  /**
+   * Architect ruling round 2: the operator's own transcript echoing a run
+   * nonce is unrelated (not attributable, never escalates) but reported
+   * separately from silent unrelated activity, via
+   * `nonceEchoOutsideMemoryCount`.
+   */
+  it('counts an operator-transcript nonce echo as unrelated AND reports it via nonceEchoOutsideMemoryCount', () => {
+    const ownTranscript = '/home/x/.claude/projects/this-delegate/transcript.jsonl';
+    const diff = { added: [], removed: [], changed: [ownTranscript] };
+    const checks = new Map([[ownTranscript, { path: ownTranscript, content: 'the probe printed NONCE-A to stdout' }]]);
+    const r = classifyRealTreeDiff(diff, checks, PROBE_SLUG, nonces);
+    expect(r.attributable.changed).toEqual([]);
+    expect(r.unrelatedCount).toBe(1);
+    expect(r.nonceEchoOutsideMemoryCount).toBe(1);
+  });
+
+  it('splits a mixed diff into attributable, unrelated, and nonce-echo-outside-memory correctly (mixed)', () => {
+    const leaked = '/home/x/.claude/projects/some-slug/memory/leaked.md';
+    const unrelated1 = '/home/x/.claude/file-history/backup.json';
+    const ownTranscript = '/home/x/.claude/projects/other-session/transcript.jsonl';
+    const diff = { added: [leaked, unrelated1], removed: [], changed: [ownTranscript] };
+    const checks = new Map([
+      [leaked, { path: leaked, content: 'contains NONCE-A' }],
+      [unrelated1, { path: unrelated1, content: null }],
+      [ownTranscript, { path: ownTranscript, content: 'echoes NONCE-A but is a transcript, not memory/' }],
+    ]);
+    const r = classifyRealTreeDiff(diff, checks, PROBE_SLUG, nonces);
+    expect(r.attributable).toEqual({ added: [leaked], removed: [], changed: [] });
+    expect(r.unrelatedCount).toBe(2);
+    expect(r.nonceEchoOutsideMemoryCount).toBe(1);
+  });
+
+  it('treats a path missing from the checks map as unreadable/unrelated (defensive default)', () => {
+    const r = classifyRealTreeDiff({ added: ['/some/path'], removed: [], changed: [] }, new Map(), PROBE_SLUG, nonces);
+    expect(r.attributable.added).toEqual([]);
+    expect(r.unrelatedCount).toBe(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Task 0b: seedMemoryTopic (real, zero-cost filesystem I/O -- no LLM turn)
+// ---------------------------------------------------------------------------
+
+describe('seedMemoryTopic', () => {
+  let memoryDir: string;
+
+  afterEach(() => {
+    if (memoryDir) rmSync(memoryDir, { recursive: true, force: true });
+  });
+
+  it('writes a frontmatter-carrying topic file and a new MEMORY.md index when neither existed (boundary: fresh dir)', () => {
+    memoryDir = join(mkdtempSync(join(tmpdir(), 'probe-sdk-automem-seed-')), 'memory');
+    const { topicPath, indexPath } = seedMemoryTopic({
+      memoryDir,
+      topicFilename: 'fact.md',
+      frontmatterName: 'fact',
+      description: 'a test fact',
+      codenameSubject: 'The codename',
+      codenameValue: 'ZEBRA-42',
+      indexTitle: 'Test Fact',
+      indexHook: 'the codename is here.',
+    });
+    const topicContent = readFileSync(topicPath, 'utf8');
+    expect(topicContent).toContain('name: fact');
+    expect(topicContent).toContain('description: a test fact');
+    expect(topicContent).toContain('type: project');
+    expect(topicContent).toContain('The codename is ZEBRA-42.');
+    const indexContent = readFileSync(indexPath, 'utf8');
+    expect(indexContent).toContain('# Memory Index');
+    expect(indexContent).toContain('- [Test Fact](fact.md) — the codename is here.');
+  });
+
+  it('appends to an existing MEMORY.md rather than overwriting a prior entry', () => {
+    memoryDir = join(mkdtempSync(join(tmpdir(), 'probe-sdk-automem-seed-')), 'memory');
+    seedMemoryTopic({
+      memoryDir,
+      topicFilename: 'first.md',
+      frontmatterName: 'first',
+      description: 'first fact',
+      codenameSubject: 'The codename',
+      codenameValue: 'FIRST-1',
+      indexTitle: 'First Fact',
+      indexHook: 'first hook.',
+    });
+    const { indexPath } = seedMemoryTopic({
+      memoryDir,
+      topicFilename: 'second.md',
+      frontmatterName: 'second',
+      description: 'second fact',
+      codenameSubject: 'The codename',
+      codenameValue: 'SECOND-2',
+      indexTitle: 'Second Fact',
+      indexHook: 'second hook.',
+    });
+    const indexContent = readFileSync(indexPath, 'utf8');
+    expect(indexContent).toContain('- [First Fact](first.md) — first hook.');
+    expect(indexContent).toContain('- [Second Fact](second.md) — second hook.');
   });
 });
