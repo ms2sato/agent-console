@@ -115,4 +115,35 @@ export class SqliteRepositoryRepository implements RepositoryRepository {
     await this.db.deleteFrom('repositories').where('id', '=', id).execute();
     logger.debug({ repositoryId: id }, 'Repository deleted');
   }
+
+  async setOrchestratorSessionId(id: string, sessionId: string): Promise<Repository | null> {
+    const now = new Date().toISOString();
+    const result = await this.db
+      .updateTable('repositories')
+      .set({ orchestrator_session_id: sessionId, updated_at: now })
+      .where('id', '=', id)
+      .execute();
+
+    if (result[0]?.numUpdatedRows === 0n) {
+      return null;
+    }
+    return this.findById(id);
+  }
+
+  async clearOrchestratorSessionId(
+    id: string,
+    expectedSessionId: string
+  ): Promise<{ cleared: boolean; repository: Repository | null }> {
+    const now = new Date().toISOString();
+    const result = await this.db
+      .updateTable('repositories')
+      .set({ orchestrator_session_id: null, updated_at: now })
+      .where('id', '=', id)
+      .where('orchestrator_session_id', '=', expectedSessionId)
+      .execute();
+
+    const cleared = (result[0]?.numUpdatedRows ?? 0n) > 0n;
+    const repository = await this.findById(id);
+    return { cleared, repository };
+  }
 }

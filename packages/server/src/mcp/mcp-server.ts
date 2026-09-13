@@ -528,6 +528,117 @@ export function createMcpApp(deps: McpDependencies): Hono {
     },
   );
 
+  // ---------- Tool: set_orchestrator_session ----------
+
+  // Eleventh session-claiming tool (checkCallerOwnsSession), alongside
+  // send_session_message, delegate_to_worktree, remove_worktree,
+  // create_conditional_wakeup, run_process, create_html_artifact,
+  // delete_html_artifact, create_bookmark, delete_bookmark, and
+  // clear_orchestrator_session. No mechanical registry enumerates these
+  // tools; this comment is the convention-only marker.
+  mcpServer.tool(
+    'set_orchestrator_session',
+    'Flag this session as its repository\'s designated Orchestrator. Webhook-triggered inbound events (e.g. a ' +
+      'labeled GitHub Issue matching the repository\'s configured trigger labels) route to whichever session ' +
+      'currently holds this flag. Raising the flag moves it here even if another session held it before -- a ' +
+      'repository has exactly one designated session at a time. Call this at startup (First Action) so restarting ' +
+      'into a new session id re-flags automatically.',
+    {
+      sessionId: z.string().describe(
+        "The calling session's ID, used to resolve which repository to flag and to verify ownership. Use your own AGENT_CONSOLE_SESSION_ID environment variable.",
+      ),
+    },
+    async ({ sessionId }) => {
+      try {
+        const session = sessionManager.getSession(sessionId);
+        if (!session) {
+          return errorResult(`Session not found: ${sessionId}`);
+        }
+        if (session.type !== 'worktree' || !session.repositoryId) {
+          return errorResult(`Session ${sessionId} has no repository; only a worktree session can hold the Orchestrator designation`);
+        }
+        if (!session.createdBy) {
+          return errorResult(
+            `Session ${sessionId} has no createdBy; setting the Orchestrator designation from an ownerless (legacy) session is not possible`,
+          );
+        }
+        const authError = checkCallerOwnsSession(
+          getMcpCallerIdentity(),
+          { sessionId, createdBy: session.createdBy },
+          mcpAuthMode,
+          { toolName: 'set_orchestrator_session' },
+        );
+        if (authError) return errorResult(authError.error);
+
+        const updated = await repositoryManager.setOrchestratorSession(session.repositoryId, sessionId);
+        if (!updated) {
+          return errorResult(`Repository not found: ${session.repositoryId}`);
+        }
+
+        return textResult({ repositoryId: session.repositoryId, orchestratorSessionId: sessionId });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Unknown error';
+        logger.error({ err, sessionId }, 'set_orchestrator_session failed');
+        return errorResult(message);
+      }
+    },
+  );
+
+  // ---------- Tool: clear_orchestrator_session ----------
+
+  // Twelfth session-claiming tool (checkCallerOwnsSession), alongside
+  // send_session_message, delegate_to_worktree, remove_worktree,
+  // create_conditional_wakeup, run_process, create_html_artifact,
+  // delete_html_artifact, create_bookmark, delete_bookmark, and
+  // set_orchestrator_session. No mechanical registry enumerates these
+  // tools; this comment is the convention-only marker.
+  mcpServer.tool(
+    'clear_orchestrator_session',
+    'Clear this session\'s Orchestrator designation for its repository -- but only if this session still holds ' +
+      'the flag (a stale clear from a session that has already been superseded is a no-op, distinguishable in the ' +
+      'response). Call this on graceful shutdown if you want the repository to have no designated Orchestrator ' +
+      'until a new one flags itself.',
+    {
+      sessionId: z.string().describe(
+        "The calling session's ID. Use your own AGENT_CONSOLE_SESSION_ID environment variable.",
+      ),
+    },
+    async ({ sessionId }) => {
+      try {
+        const session = sessionManager.getSession(sessionId);
+        if (!session) {
+          return errorResult(`Session not found: ${sessionId}`);
+        }
+        if (session.type !== 'worktree' || !session.repositoryId) {
+          return errorResult(`Session ${sessionId} has no repository; only a worktree session can hold the Orchestrator designation`);
+        }
+        if (!session.createdBy) {
+          return errorResult(
+            `Session ${sessionId} has no createdBy; clearing the Orchestrator designation from an ownerless (legacy) session is not possible`,
+          );
+        }
+        const authError = checkCallerOwnsSession(
+          getMcpCallerIdentity(),
+          { sessionId, createdBy: session.createdBy },
+          mcpAuthMode,
+          { toolName: 'clear_orchestrator_session' },
+        );
+        if (authError) return errorResult(authError.error);
+
+        const result = await repositoryManager.clearOrchestratorSession(session.repositoryId, sessionId);
+        if (!result.repository) {
+          return errorResult(`Repository not found: ${session.repositoryId}`);
+        }
+
+        return textResult({ repositoryId: session.repositoryId, cleared: result.cleared });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Unknown error';
+        logger.error({ err, sessionId }, 'clear_orchestrator_session failed');
+        return errorResult(message);
+      }
+    },
+  );
+
   // ---------- Tool: list_sessions ----------
 
   mcpServer.tool(
@@ -1965,8 +2076,9 @@ export function createMcpApp(deps: McpDependencies): Hono {
   // Sixth session-claiming tool (checkCallerOwnsSession), alongside
   // send_session_message, delegate_to_worktree, remove_worktree,
   // create_conditional_wakeup, run_process, delete_html_artifact,
-  // create_bookmark, and delete_bookmark. No mechanical registry
-  // enumerates these tools; this comment is the convention-only marker.
+  // create_bookmark, delete_bookmark, set_orchestrator_session, and
+  // clear_orchestrator_session. No mechanical registry enumerates these
+  // tools; this comment is the convention-only marker.
   mcpServer.tool(
     'create_html_artifact',
     'Upload an HTML document (optionally with inline JavaScript/CSS) and receive a URL to view it in a browser. ' +
@@ -2056,8 +2168,9 @@ export function createMcpApp(deps: McpDependencies): Hono {
   // Seventh session-claiming tool (checkCallerOwnsSession), alongside
   // send_session_message, delegate_to_worktree, remove_worktree,
   // create_conditional_wakeup, run_process, create_html_artifact,
-  // create_bookmark, and delete_bookmark. No mechanical registry
-  // enumerates these tools; this comment is the convention-only marker.
+  // create_bookmark, delete_bookmark, set_orchestrator_session, and
+  // clear_orchestrator_session. No mechanical registry enumerates these
+  // tools; this comment is the convention-only marker.
   mcpServer.tool(
     'delete_html_artifact',
     'Permanently delete a previously created HTML artifact. This is irreversible: any URL already shared for ' +
@@ -2130,8 +2243,9 @@ export function createMcpApp(deps: McpDependencies): Hono {
   // Eighth session-claiming tool (checkCallerOwnsSession), alongside
   // send_session_message, delegate_to_worktree, remove_worktree,
   // create_conditional_wakeup, run_process, create_html_artifact,
-  // delete_html_artifact, and delete_bookmark. No mechanical registry
-  // enumerates these tools; this comment is the convention-only marker.
+  // delete_html_artifact, delete_bookmark, set_orchestrator_session, and
+  // clear_orchestrator_session. No mechanical registry enumerates these
+  // tools; this comment is the convention-only marker.
   mcpServer.tool(
     'create_bookmark',
     'Register a URL (plus an optional title) as a bookmark, visible in the session sidebar. ' +
@@ -2215,8 +2329,9 @@ export function createMcpApp(deps: McpDependencies): Hono {
   // Ninth session-claiming tool (checkCallerOwnsSession), alongside
   // send_session_message, delegate_to_worktree, remove_worktree,
   // create_conditional_wakeup, run_process, create_html_artifact,
-  // delete_html_artifact, and create_bookmark. No mechanical registry
-  // enumerates these tools; this comment is the convention-only marker.
+  // delete_html_artifact, create_bookmark, set_orchestrator_session, and
+  // clear_orchestrator_session. No mechanical registry enumerates these
+  // tools; this comment is the convention-only marker.
   mcpServer.tool(
     'delete_bookmark',
     'Permanently delete a previously registered bookmark.',
@@ -2287,7 +2402,8 @@ export function createMcpApp(deps: McpDependencies): Hono {
   // Tenth session-claiming tool (checkCallerOwnsSession), alongside
   // send_session_message, delegate_to_worktree, remove_worktree,
   // create_conditional_wakeup, run_process, create_html_artifact,
-  // delete_html_artifact, create_bookmark, and delete_bookmark. No mechanical
+  // delete_html_artifact, create_bookmark, delete_bookmark,
+  // set_orchestrator_session, and clear_orchestrator_session. No mechanical
   // registry enumerates these tools; this comment is the convention-only
   // marker.
   //

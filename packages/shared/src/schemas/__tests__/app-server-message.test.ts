@@ -574,6 +574,32 @@ describe('AppServerMessageSchema', () => {
         },
       });
     });
+
+    it('should accept metadata.labels as a string array', () => {
+      expectValid({
+        type: 'inbound-event',
+        sessionId: 'session-1',
+        event: {
+          type: 'issue:labeled',
+          source: 'github',
+          summary: 'Issue #42 was labeled "bug"',
+          metadata: { repositoryName: 'org/repo', labels: ['bug', 'orchestrator-trigger'] },
+        },
+      });
+    });
+
+    it('should accept metadata omitting labels entirely (optional field boundary)', () => {
+      expectValid({
+        type: 'inbound-event',
+        sessionId: 'session-1',
+        event: {
+          type: 'ci:completed',
+          source: 'github',
+          summary: 'CI completed',
+          metadata: { repositoryName: 'org/repo' },
+        },
+      });
+    });
   });
 
   describe('worker-restarted', () => {

@@ -29,6 +29,8 @@ export interface SystemEventMetadata {
   url?: string;
   /** Commit SHA (used for CI completion aggregation) */
   commitSha?: string;
+  /** Label names relevant to the event. For `issue:labeled`: the single ADDED label (labeled action) or the full initial label set (opened action). */
+  labels?: string[];
 }
 
 /**

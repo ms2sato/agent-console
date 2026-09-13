@@ -823,4 +823,60 @@ describe('SqliteRepositoryRepository', () => {
       await expect(repository.save(repo2)).rejects.toThrow();
     });
   });
+
+  describe('setOrchestratorSessionId', () => {
+    it('sets the pointer and returns the updated repository', async () => {
+      const repo = createRepository({ id: 'repo-1' });
+      await repository.save(repo);
+
+      const updated = await repository.setOrchestratorSessionId('repo-1', 'session-a');
+
+      expect(updated?.orchestratorSessionId).toBe('session-a');
+      const found = await repository.findById('repo-1');
+      expect(found?.orchestratorSessionId).toBe('session-a');
+    });
+
+    it('moves the pointer to a different session without a separate clear step', async () => {
+      const repo = createRepository({ id: 'repo-1', orchestratorSessionId: 'session-a' });
+      await repository.save(repo);
+
+      const updated = await repository.setOrchestratorSessionId('repo-1', 'session-b');
+
+      expect(updated?.orchestratorSessionId).toBe('session-b');
+    });
+
+    it('returns null when the target repository does not exist', async () => {
+      const updated = await repository.setOrchestratorSessionId('does-not-exist', 'session-a');
+      expect(updated).toBeNull();
+    });
+  });
+
+  describe('clearOrchestratorSessionId', () => {
+    it('clears the pointer when expectedSessionId matches', async () => {
+      const repo = createRepository({ id: 'repo-1', orchestratorSessionId: 'session-a' });
+      await repository.save(repo);
+
+      const result = await repository.clearOrchestratorSessionId('repo-1', 'session-a');
+
+      expect(result.cleared).toBe(true);
+      expect(result.repository?.orchestratorSessionId).toBeNull();
+    });
+
+    it('does not clear (stale-clear guard) when expectedSessionId does not match the current pointer', async () => {
+      const repo = createRepository({ id: 'repo-1', orchestratorSessionId: 'session-b' });
+      await repository.save(repo);
+
+      const result = await repository.clearOrchestratorSessionId('repo-1', 'session-a');
+
+      expect(result.cleared).toBe(false);
+      expect(result.repository?.orchestratorSessionId).toBe('session-b');
+    });
+
+    it('returns cleared=false and repository=null when the repository does not exist', async () => {
+      const result = await repository.clearOrchestratorSessionId('does-not-exist', 'session-a');
+
+      expect(result.cleared).toBe(false);
+      expect(result.repository).toBeNull();
+    });
+  });
 });

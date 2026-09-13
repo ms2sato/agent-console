@@ -153,6 +153,7 @@ const SystemEventMetadataSchema = v.strictObject({
   branch: v.optional(v.string()),
   url: v.optional(v.string()),
   commitSha: v.optional(v.string()),
+  labels: v.optional(v.array(v.string())),
 });
 
 const InboundEventSummarySchema = v.strictObject({

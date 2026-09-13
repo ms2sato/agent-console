@@ -1124,4 +1124,124 @@ describe('RepositoryManager', () => {
       expect(manager.getAllRepositories().length).toBe(0);
     });
   });
+
+  describe('setOrchestratorSession / clearOrchestratorSession', () => {
+    function noopCallbacks() {
+      return {
+        onRepositoryCreated: () => {},
+        onRepositoryUpdated: () => {},
+        onRepositoryDeleted: () => {},
+        onOrchestratorDesignationChanged: () => {},
+      };
+    }
+
+    /**
+     * `orchestrator_session_id` is a real FK to `sessions.id` (migration
+     * v40), so a designation-target id must reference an actual row in the
+     * production, migration-backed database this file uses (unlike
+     * `sqlite-repository-repository.test.ts`'s manually-created schema,
+     * which omits the FK). Minimal row: only `id` / `type` / `location_path`
+     * are NOT NULL without a default.
+     */
+    async function insertMinimalSessionRow(id: string): Promise<void> {
+      await getDatabase()
+        .insertInto('sessions')
+        .values({ id, type: 'quick', location_path: '/tmp/test-session' })
+        .execute();
+    }
+
+    it('sets the designation and broadcasts both onRepositoryUpdated and onOrchestratorDesignationChanged', async () => {
+      const manager = await getRepositoryManager();
+      const repo = await manager.registerRepository(TEST_REPO_DIR);
+      await insertMinimalSessionRow('session-a');
+
+      const updatedCalls: Repository[] = [];
+      const designationCalls: { repositoryId: string; sessionId: string | null }[] = [];
+      manager.setLifecycleCallbacks({
+        ...noopCallbacks(),
+        onRepositoryUpdated: (r: Repository) => updatedCalls.push(r),
+        onOrchestratorDesignationChanged: (repositoryId: string, sessionId: string | null) =>
+          designationCalls.push({ repositoryId, sessionId }),
+      });
+
+      const updated = await manager.setOrchestratorSession(repo.id, 'session-a');
+
+      expect(updated?.orchestratorSessionId).toBe('session-a');
+      expect(manager.getRepository(repo.id)?.orchestratorSessionId).toBe('session-a');
+      expect(updatedCalls).toHaveLength(1);
+      expect(updatedCalls[0].orchestratorSessionId).toBe('session-a');
+      expect(designationCalls).toEqual([{ repositoryId: repo.id, sessionId: 'session-a' }]);
+    });
+
+    it('moves the designation to a different session', async () => {
+      const manager = await getRepositoryManager();
+      const repo = await manager.registerRepository(TEST_REPO_DIR);
+      await insertMinimalSessionRow('session-a');
+      await insertMinimalSessionRow('session-b');
+      await manager.setOrchestratorSession(repo.id, 'session-a');
+
+      const updated = await manager.setOrchestratorSession(repo.id, 'session-b');
+
+      expect(updated?.orchestratorSessionId).toBe('session-b');
+    });
+
+    it('returns null when the repository does not exist', async () => {
+      const manager = await getRepositoryManager();
+      await insertMinimalSessionRow('session-a');
+
+      const updated = await manager.setOrchestratorSession('does-not-exist', 'session-a');
+
+      expect(updated).toBeNull();
+    });
+
+    it('clears the designation and broadcasts a null sessionId', async () => {
+      const manager = await getRepositoryManager();
+      const repo = await manager.registerRepository(TEST_REPO_DIR);
+      await insertMinimalSessionRow('session-a');
+      await manager.setOrchestratorSession(repo.id, 'session-a');
+
+      const designationCalls: { repositoryId: string; sessionId: string | null }[] = [];
+      manager.setLifecycleCallbacks({
+        ...noopCallbacks(),
+        onOrchestratorDesignationChanged: (repositoryId: string, sessionId: string | null) =>
+          designationCalls.push({ repositoryId, sessionId }),
+      });
+
+      const result = await manager.clearOrchestratorSession(repo.id, 'session-a');
+
+      expect(result.cleared).toBe(true);
+      expect(result.repository?.orchestratorSessionId).toBeNull();
+      expect(designationCalls).toEqual([{ repositoryId: repo.id, sessionId: null }]);
+    });
+
+    it('does not clear (stale-clear guard) and does not broadcast when sessionId does not match', async () => {
+      const manager = await getRepositoryManager();
+      const repo = await manager.registerRepository(TEST_REPO_DIR);
+      await insertMinimalSessionRow('session-a');
+      await insertMinimalSessionRow('session-b');
+      await manager.setOrchestratorSession(repo.id, 'session-a');
+
+      const designationCalls: { repositoryId: string; sessionId: string | null }[] = [];
+      manager.setLifecycleCallbacks({
+        ...noopCallbacks(),
+        onOrchestratorDesignationChanged: (repositoryId: string, sessionId: string | null) =>
+          designationCalls.push({ repositoryId, sessionId }),
+      });
+
+      const result = await manager.clearOrchestratorSession(repo.id, 'session-b');
+
+      expect(result.cleared).toBe(false);
+      expect(result.repository?.orchestratorSessionId).toBe('session-a');
+      expect(designationCalls).toEqual([]);
+    });
+
+    it('returns cleared=false and repository=null when the repository does not exist', async () => {
+      const manager = await getRepositoryManager();
+
+      const result = await manager.clearOrchestratorSession('does-not-exist', 'session-a');
+
+      expect(result.cleared).toBe(false);
+      expect(result.repository).toBeNull();
+    });
+  });
 });

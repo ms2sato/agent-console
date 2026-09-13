@@ -56,4 +56,23 @@ export interface RepositoryRepository {
    * @param id - The repository ID to delete
    */
   delete(id: string): Promise<void>;
+
+  /**
+   * Set (or move) the repository's designated-Orchestrator session pointer
+   * unconditionally. A repository has exactly one nullable column, so
+   * "raising the flag on another session" needs no separate "lower the old
+   * one" step.
+   */
+  setOrchestratorSessionId(id: string, sessionId: string): Promise<Repository | null>;
+
+  /**
+   * Clear the designated-Orchestrator pointer, but ONLY if it currently
+   * equals `expectedSessionId` -- a stale clear call (e.g. from a session
+   * that no longer holds the flag) must not clobber a session that has
+   * since taken over. Returns whether the clear actually happened.
+   */
+  clearOrchestratorSessionId(
+    id: string,
+    expectedSessionId: string
+  ): Promise<{ cleared: boolean; repository: Repository | null }>;
 }
