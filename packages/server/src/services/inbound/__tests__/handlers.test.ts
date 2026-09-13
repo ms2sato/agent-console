@@ -55,6 +55,30 @@ describe('AgentWorkerHandler: issue:labeled', () => {
   });
 });
 
+describe('AgentWorkerHandler: fallback target (#1661)', () => {
+  it('still delivers a PTY notification when the target is fallback-routed (unlike DiffWorkerHandler)', async () => {
+    let capturedMessage = '';
+    const mockSessionManager: InboundHandlerDependencies['sessionManager'] = {
+      getSession: mock(() => buildWorktreeSession(mockSessionOverrides)),
+      writeWorkerInput: mock((_sessionId: string, _workerId: string, data: string) => {
+        capturedMessage = data;
+        return true;
+      }),
+    };
+
+    const handlers = createInboundHandlers({
+      sessionManager: mockSessionManager,
+      broadcastToApp: () => {},
+    });
+    const agentHandler = handlers.find((h) => h.handlerId === 'agent-worker')!;
+
+    const result = await agentHandler.handle(createIssueLabeledEvent(), { sessionId: 'session-1', fallback: true });
+
+    expect(result).toBe(true);
+    expect(capturedMessage).toContain('[inbound:issue:labeled]');
+  });
+});
+
 describe('UINotificationHandler: issue:labeled', () => {
   it('broadcasts issue:labeled events', async () => {
     let capturedBroadcast: { type: string; sessionId: string; event: InboundEventSummary } | undefined;

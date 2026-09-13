@@ -25,6 +25,14 @@ function isAgentWorkerEventType(type: string): type is AgentWorkerEventType {
 export interface EventTarget {
   sessionId: string;
   workerId?: string;
+  /**
+   * Set when this target was added as the repository's designated
+   * Orchestrator-session fallback (Shape C, #1661) rather than a direct
+   * branch/worktree match or its live parent. The fallback session's own
+   * working tree has nothing to do with the originating event's tree, so
+   * DiffWorkerHandler must never act on it.
+   */
+  fallback?: true;
 }
 
 /**
@@ -158,6 +166,8 @@ class DiffWorkerHandler implements InboundEventHandler {
   constructor(private sessionManager: InboundSessionManager) {}
 
   async handle(_event: InboundSystemEvent, target: EventTarget): Promise<boolean> {
+    if (target.fallback) return false;
+
     const session = this.sessionManager.getSession(target.sessionId);
     if (!session) return false;
 
