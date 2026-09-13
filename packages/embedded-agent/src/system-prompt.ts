@@ -2,16 +2,20 @@
  * System-prompt assembly for the embedded-agent loop.
  *
  * The prompt is assembled once per activation. `loadInstructions` discovers
- * instruction files across FOUR layers -- global (`~/.config/agent-console`),
+ * instruction files across FIVE layers -- global (`~/.config/agent-console`),
  * chain (git root down to cwd), an opt-in `EmbeddedAgentDefinition.instructions`
- * file list, and the `.claude/rules/*.md` rules layer (unscoped rules included,
- * scoped rules listed in an index line only -- see `loadRulesLayer` below) --
- * then `assembleSystemPrompt` concatenates: (1) context preamble -> (2)
- * discovered/opt-in instruction segments, in discovery order -> (3) the rules
- * layer -> (4) the operator-configured definition system prompt (last, so it
- * wins on conflict). Used identically by both engines (claude-sdk composes
- * the same layers via `composeSdkSystemPromptAppend`, minus the preamble --
- * see its doc comment).
+ * file list, the `.claude/rules/*.md` rules layer (unscoped rules included,
+ * scoped rules listed in an index line only -- see `loadRulesLayer` below),
+ * and the `.claude/skills/**\/SKILL.md` skills layer (every discovered skill
+ * listed as a name + description index line only, so the model can discover
+ * a skill's existence without paying its full body's token cost up front --
+ * see `loadSkillsLayer` below) -- then `assembleSystemPrompt` concatenates: (1)
+ * context preamble -> (2) discovered/opt-in instruction segments, in
+ * discovery order -> (3) the rules layer -> (4) the skills layer -> (5) the
+ * operator-configured definition system prompt (last, so it wins on
+ * conflict). Used identically by both engines (claude-sdk composes the same
+ * layers via `composeSdkSystemPromptAppend`, minus the preamble -- see its
+ * doc comment).
  *
  * See docs/design/embedded-agent-worker.md "Instruction loader" for the
  * normative spec (discovery order, caps, overflow-drop policy).
@@ -27,20 +31,27 @@ import { isErrnoException } from './type-guards.js';
 export const INSTRUCTION_PER_FILE_CAP_BYTES = 16 * 1024;
 export const INSTRUCTION_AGGREGATE_CAP_BYTES = 48 * 1024;
 const RULES_LAYER_CAP_BYTES_DEFAULT = 160 * 1024;
+const SKILLS_LAYER_CAP_BYTES_DEFAULT = 16 * 1024;
 
 /**
- * Non-positive or non-numeric env values fall back to the default rather
+ * Non-positive or non-numeric env values fall back to `defaultValue` rather
  * than surviving as-is -- a bare `Number(env) || default` lets a NEGATIVE
  * override through unclamped (e.g. `Number('-5') === -5`, which is truthy,
  * so `-5 || default` evaluates to `-5`), and a negative budget drops every
- * rule on the very first over-budget check (Architect N1).
+ * entry on the very first over-budget check (Architect N1). Shared by the
+ * rules-layer and skills-layer cap parsers below -- both need the identical
+ * clamping rule, just with a different default.
  */
+function parseCapBytesEnv(raw: string | undefined, defaultValue: number): number {
+  const n = Number(raw);
+  return Number.isFinite(n) && n > 0 ? n : defaultValue;
+}
+
 /** @internal Exported for testing -- takes the raw env value as a parameter
  * rather than reading `process.env` directly, so a test can exercise the
  * clamping logic without needing a module re-import per env value. */
 export function parseRulesLayerCapBytes(raw: string | undefined): number {
-  const n = Number(raw);
-  return Number.isFinite(n) && n > 0 ? n : RULES_LAYER_CAP_BYTES_DEFAULT;
+  return parseCapBytesEnv(raw, RULES_LAYER_CAP_BYTES_DEFAULT);
 }
 
 /**
@@ -52,6 +63,22 @@ export function parseRulesLayerCapBytes(raw: string | undefined): number {
  * for repos with a different rules footprint.
  */
 export const RULES_LAYER_CAP_BYTES = parseRulesLayerCapBytes(process.env.RULES_LAYER_CAP_BYTES);
+
+/** @internal Exported for testing -- see {@link parseRulesLayerCapBytes}'s doc comment. */
+export function parseSkillsLayerCapBytes(raw: string | undefined): number {
+  return parseCapBytesEnv(raw, SKILLS_LAYER_CAP_BYTES_DEFAULT);
+}
+
+/**
+ * Same overflow shape as {@link RULES_LAYER_CAP_BYTES} (whole-entry drop,
+ * largest-first, declared in-band -- never truncated), sized much smaller
+ * because a skills-layer entry is a one-line name+description, not a whole
+ * file's content. Uses the SAME env-override mechanism as
+ * {@link RULES_LAYER_CAP_BYTES} (a separate variable, `SKILLS_LAYER_CAP_BYTES`,
+ * through the identical {@link parseCapBytesEnv} clamp) rather than a new
+ * kind of override surface.
+ */
+export const SKILLS_LAYER_CAP_BYTES = parseSkillsLayerCapBytes(process.env.SKILLS_LAYER_CAP_BYTES);
 
 const encoder = new TextEncoder();
 
@@ -116,6 +143,22 @@ export interface LoadInstructionsResult {
    * always populates it.
    */
   scopedRules?: ScopedRule[];
+  /**
+   * One line listing every discovered skill's `name` + one-line
+   * `description`, in the same eager style as
+   * {@link ruleIndexLine} -- except a skill has no lazy-activation moment to
+   * defer to (see `loadSkillsLayer`'s doc comment), so this line IS the
+   * skill's presence in the prompt, not a preview of content delivered later.
+   * `undefined` when there are no discovered skills (no `.claude/skills`
+   * directory, no git root, or every discovered entry was dropped for size).
+   */
+  skillIndexLine?: string;
+  /**
+   * Declares, in-band, which skill entries were dropped whole to satisfy
+   * {@link SKILLS_LAYER_CAP_BYTES} -- the skills-layer analog of
+   * {@link ruleOmissionLine}. `undefined` when nothing was dropped.
+   */
+  skillOmissionLine?: string;
 }
 
 /**
@@ -183,8 +226,10 @@ export function formatRuleSegments(segments: InstructionSegment[]): string[] {
  * produces except the preamble (caller-specific) and the definition system
  * prompt (appended by each caller after this, so it always wins on conflict).
  * Single writer of this ordering: instruction segments, then unscoped rule
- * segments, then the scoped-rules index line if present. All capping already
- * happened inside `loadInstructions`/`loadRulesLayer` -- nothing here re-caps.
+ * segments, then the scoped-rules index line if present, then the skills
+ * index line if present. All capping already happened inside
+ * `loadInstructions`/`loadRulesLayer`/`loadSkillsLayer` -- nothing here
+ * re-caps.
  */
 function renderInstructionsBody(instructions: LoadInstructionsResult): string[] {
   const sections = [
@@ -196,6 +241,12 @@ function renderInstructionsBody(instructions: LoadInstructionsResult): string[] 
   }
   if (instructions.ruleIndexLine !== undefined) {
     sections.push(instructions.ruleIndexLine);
+  }
+  if (instructions.skillOmissionLine !== undefined) {
+    sections.push(instructions.skillOmissionLine);
+  }
+  if (instructions.skillIndexLine !== undefined) {
+    sections.push(instructions.skillIndexLine);
   }
   return sections;
 }
@@ -548,6 +599,36 @@ export function parseRuleFrontmatter(content: string, origin: string): string[] 
   return [];
 }
 
+/**
+ * Whole-item drop, largest-first, until `items` fits under `capBytes` (or
+ * runs out of items) -- never shrinks a survivor, only removes whole ones.
+ * Splice-based removal preserves the relative order of survivors. Shared by
+ * `loadRulesLayer` (R3) and `loadSkillsLayer` below: both need the identical
+ * "drop the biggest offender until it fits" loop, over different item shapes
+ * -- consolidated here per `.claude/rules/workflow.md`'s duplication check
+ * rather than reimplementing the loop a second time.
+ */
+function dropLargestUntilFits<T>(
+  items: T[],
+  capBytes: number,
+  byteLength: (item: T) => number,
+): { survivors: T[]; dropped: T[] } {
+  const survivors = [...items];
+  const dropped: T[] = [];
+  const total = () => survivors.reduce((sum, item) => sum + byteLength(item), 0);
+  while (total() > capBytes && survivors.length > 0) {
+    let largestIdx = 0;
+    for (let i = 1; i < survivors.length; i++) {
+      if (byteLength(survivors[i]) > byteLength(survivors[largestIdx])) {
+        largestIdx = i;
+      }
+    }
+    const [removed] = survivors.splice(largestIdx, 1);
+    if (removed !== undefined) dropped.push(removed);
+  }
+  return { survivors, dropped };
+}
+
 interface RuleFile {
   origin: string;
   name: string;
@@ -601,20 +682,11 @@ async function loadRulesLayer(cwd: string): Promise<RulesLayerResult> {
   const scoped = ruleFiles.filter((r) => r.globs.length > 0);
 
   // R3 budget: whole-file drop, largest-first, no per-file truncation.
-  // Splice-based removal preserves the relative (name) order of survivors.
-  const survivors = [...unscoped];
-  const dropped: RuleFile[] = [];
-  const total = () => survivors.reduce((sum, r) => sum + encoder.encode(r.content).length, 0);
-  while (total() > RULES_LAYER_CAP_BYTES && survivors.length > 0) {
-    let largestIdx = 0;
-    for (let i = 1; i < survivors.length; i++) {
-      if (encoder.encode(survivors[i].content).length > encoder.encode(survivors[largestIdx].content).length) {
-        largestIdx = i;
-      }
-    }
-    const [removed] = survivors.splice(largestIdx, 1);
-    if (removed !== undefined) dropped.push(removed);
-  }
+  const { survivors, dropped } = dropLargestUntilFits(
+    unscoped,
+    RULES_LAYER_CAP_BYTES,
+    (r) => encoder.encode(r.content).length,
+  );
 
   const ruleSegments: InstructionSegment[] = survivors.map((r) => ({ origin: r.origin, content: r.content }));
 
@@ -634,6 +706,171 @@ async function loadRulesLayer(cwd: string): Promise<RulesLayerResult> {
   const scopedRules: ScopedRule[] = scoped.map((r) => ({ name: r.name, origin: r.origin, globs: r.globs }));
 
   return { ruleSegments, ruleOmissionLine, ruleIndexLine, scopedRules };
+}
+
+const SKILL_FRONTMATTER_KEY_RE = /^(name|description):\s*(.*)$/;
+
+interface SkillFrontmatter {
+  name: string;
+  description: string;
+}
+
+/**
+ * Parses a `SKILL.md` file's `name:`/`description:` frontmatter -- the same
+ * shape `.claude/skills/<name>/SKILL.md` files already use for Claude Code's own
+ * skill discovery, read here with the identical {@link FRONTMATTER_RE} block
+ * extractor {@link parseRuleFrontmatter} uses (single-line scalar values
+ * only; this repo's own skill files never span a name/description across
+ * multiple lines). Never throws on a missing or malformed value: a missing
+ * `name` falls back to `fallbackName` (the skill's own directory name, still
+ * identifiable in the index without a frontmatter name), and a missing
+ * `description` renders as a name-only entry -- both warn-logged, mirroring
+ * how {@link parseRuleFrontmatter} treats a malformed scope as unscoped
+ * rather than fatal.
+ */
+export function parseSkillFrontmatter(
+  content: string,
+  origin: string,
+  fallbackName: string,
+): SkillFrontmatter {
+  const match = content.match(FRONTMATTER_RE);
+  if (!match) {
+    console.warn(
+      `Skill file ${origin} has no frontmatter; using directory name "${fallbackName}" with no description`,
+    );
+    return { name: fallbackName, description: '' };
+  }
+
+  let name: string | undefined;
+  let description: string | undefined;
+  for (const line of match[1].split(/\r?\n/)) {
+    const keyMatch = line.match(SKILL_FRONTMATTER_KEY_RE);
+    if (!keyMatch) continue;
+    const [, key, rest] = keyMatch;
+    const value = stripQuotes(rest.trim());
+    if (value.length === 0) continue;
+    if (key === 'name') name = value;
+    else description = value;
+  }
+
+  if (name === undefined) {
+    console.warn(`Skill file ${origin} frontmatter missing "name"; using directory name "${fallbackName}"`);
+    name = fallbackName;
+  }
+  if (description === undefined) {
+    console.warn(`Skill file ${origin} frontmatter missing "description"; listing name only`);
+    description = '';
+  }
+  return { name, description };
+}
+
+interface SkillFile {
+  origin: string;
+  name: string;
+  description: string;
+}
+
+interface SkillsLayerResult {
+  skillIndexLine?: string;
+  skillOmissionLine?: string;
+}
+
+function formatSkillEntry(skill: SkillFile): string {
+  return skill.description.length > 0 ? `${skill.name} -- ${skill.description}` : skill.name;
+}
+
+/**
+ * Recursively collects every `SKILL.md` under `dir`, sorted by full path for
+ * deterministic ordering. This repo's own `.claude/skills/<name>/SKILL.md` files
+ * sit exactly one level down, but the walk does not assume that depth -- a
+ * plugin- or namespace-scoped skill can sit deeper (see the `available-skills`
+ * listing's `plugin:skill` / directory-prefixed names), so discovery is a
+ * recursive claim, not a fixed-depth one. No `.claude/skills` directory at
+ * all -- routine, most repos won't have one yet -- returns `[]` silently,
+ * the same treatment `loadRulesLayer`'s missing-rules-directory case gets.
+ */
+async function findSkillFiles(dir: string): Promise<string[]> {
+  let entries: import('node:fs').Dirent[];
+  try {
+    entries = await fsPromises.readdir(dir, { withFileTypes: true });
+  } catch (err) {
+    if (isErrnoException(err) && err.code === 'ENOENT') return [];
+    console.warn(
+      `Failed to list skills directory ${dir}: ${err instanceof Error ? err.message : String(err)}`,
+    );
+    return [];
+  }
+
+  const results: string[] = [];
+  for (const entry of entries) {
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      results.push(...(await findSkillFiles(full)));
+    } else if (entry.isFile() && entry.name === 'SKILL.md') {
+      results.push(full);
+    }
+  }
+  return results;
+}
+
+/**
+ * Skills-discovery layer: every `SKILL.md` reachable under
+ * `<gitRoot>/.claude/skills/`, parsed for its
+ * `name:`/`description:` frontmatter and composed into a single eager index
+ * line -- name + one-line description per skill, never the skill's full
+ * body. A skill is invoked by the model recognizing relevance from this
+ * name/description pair (the same way a terminal Claude Code session's own
+ * skill listing works), then reading the full `SKILL.md` on demand via the
+ * existing `Read` tool -- there is no lazy-activation moment analogous to a
+ * scoped rule's matching tool call (a skill is chosen by the model's
+ * judgment, not by a path match), so unlike the rules layer above, a
+ * discovered skill is either in the index or explicitly declared dropped for
+ * size; none are held back structurally for later injection. No git root, or
+ * no `.claude/skills` directory, produces an empty layer silently -- both
+ * routine, the same as the rules layer's own absence handling.
+ */
+async function loadSkillsLayer(cwd: string): Promise<SkillsLayerResult> {
+  const gitRoot = await findGitRoot(cwd);
+  if (gitRoot === null) return {};
+
+  const skillsDir = path.join(gitRoot, '.claude', 'skills');
+  const files = (await findSkillFiles(skillsDir)).sort();
+  if (files.length === 0) return {};
+
+  const skills: SkillFile[] = [];
+  for (const origin of files) {
+    const read = await tryReadTextFile(origin);
+    if (!read.ok) {
+      console.warn(`Skipping skill file ${origin}: ${read.message}`);
+      continue;
+    }
+    const fallbackName = path.basename(path.dirname(origin));
+    const { name, description } = parseSkillFrontmatter(read.content, origin, fallbackName);
+    skills.push({ origin, name, description });
+  }
+  if (skills.length === 0) return {};
+
+  const { survivors, dropped } = dropLargestUntilFits(
+    skills,
+    SKILLS_LAYER_CAP_BYTES,
+    (s) => encoder.encode(formatSkillEntry(s)).length,
+  );
+
+  const skillIndexLine =
+    survivors.length > 0
+      ? `Skills available (open the named SKILL.md to read full instructions): ${survivors
+          .map(formatSkillEntry)
+          .join('; ')}`
+      : undefined;
+
+  let skillOmissionLine: string | undefined;
+  if (dropped.length > 0) {
+    const names = dropped.map((s) => s.name).sort().join(', ');
+    console.warn(`Dropped skill entries to satisfy the ${SKILLS_LAYER_CAP_BYTES}-byte skills budget: ${names}`);
+    skillOmissionLine = `skills omitted for size: ${names}`;
+  }
+
+  return { skillIndexLine, skillOmissionLine };
 }
 
 /**
@@ -739,5 +976,9 @@ export async function loadInstructions(
   // cap above -- see RULES_LAYER_CAP_BYTES's doc comment.
   const rulesLayer = await loadRulesLayer(cwd);
 
-  return { segments, ...rulesLayer };
+  // Skills layer: independent budget, same shared shape as the
+  // rules layer -- see SKILLS_LAYER_CAP_BYTES's doc comment.
+  const skillsLayer = await loadSkillsLayer(cwd);
+
+  return { segments, ...rulesLayer, ...skillsLayer };
 }

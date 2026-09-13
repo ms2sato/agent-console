@@ -13,9 +13,12 @@ import {
   loadOptInInstructions,
   parseRuleFrontmatter,
   parseRulesLayerCapBytes,
+  parseSkillFrontmatter,
+  parseSkillsLayerCapBytes,
   INSTRUCTION_PER_FILE_CAP_BYTES,
   INSTRUCTION_AGGREGATE_CAP_BYTES,
   RULES_LAYER_CAP_BYTES,
+  SKILLS_LAYER_CAP_BYTES,
   rulesLayerBytesUsed,
   type SystemPromptContext,
   type LoadInstructionsResult,
@@ -1000,6 +1003,204 @@ describe('loadInstructions — rules layer', () => {
   });
 });
 
+describe('parseSkillFrontmatter', () => {
+  it('parses name and description from a well-formed frontmatter block', () => {
+    const content = '---\nname: browser-qa\ndescription: Manual browser QA via Chrome DevTools MCP.\n---\n\nBody.';
+    expect(parseSkillFrontmatter(content, '/skills/browser-qa/SKILL.md', 'browser-qa')).toEqual({
+      name: 'browser-qa',
+      description: 'Manual browser QA via Chrome DevTools MCP.',
+    });
+  });
+
+  it('strips quotes around name/description values', () => {
+    const content = '---\nname: "quoted-name"\ndescription: \'quoted description\'\n---\n';
+    expect(parseSkillFrontmatter(content, '/x/SKILL.md', 'fallback')).toEqual({
+      name: 'quoted-name',
+      description: 'quoted description',
+    });
+  });
+
+  it('falls back to the directory name and empty description, with a warning, when there is no frontmatter at all', () => {
+    const warnSpy = spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      expect(parseSkillFrontmatter('# Just a heading\n', '/skills/no-frontmatter/SKILL.md', 'no-frontmatter')).toEqual({
+        name: 'no-frontmatter',
+        description: '',
+      });
+      expect(warnSpy).toHaveBeenCalled();
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it('falls back to the directory name, with a warning, when frontmatter is present but has no "name" key', () => {
+    const warnSpy = spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const result = parseSkillFrontmatter(
+        '---\ndescription: only a description\n---\n',
+        '/skills/missing-name/SKILL.md',
+        'missing-name',
+      );
+      expect(result).toEqual({ name: 'missing-name', description: 'only a description' });
+      expect(warnSpy).toHaveBeenCalled();
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it('renders a name-only entry, with a warning (not a crash), when frontmatter is present but has no "description" key', () => {
+    const warnSpy = spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const result = parseSkillFrontmatter('---\nname: no-description\n---\n', '/skills/no-description/SKILL.md', 'no-description');
+      expect(result).toEqual({ name: 'no-description', description: '' });
+      expect(warnSpy).toHaveBeenCalled();
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it('treats an empty "name:" value the same as a missing key (falls back, warns)', () => {
+    const warnSpy = spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const result = parseSkillFrontmatter('---\nname:\ndescription: has a description\n---\n', '/x/SKILL.md', 'fallback-dir');
+      expect(result).toEqual({ name: 'fallback-dir', description: 'has a description' });
+      expect(warnSpy).toHaveBeenCalled();
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+});
+
+describe('loadInstructions — skills layer', () => {
+  async function makeGitRepo(): Promise<string> {
+    const root = await makeTempDir();
+    await mkdir(join(root, '.git'));
+    return root;
+  }
+
+  async function writeSkill(root: string, dirName: string, frontmatter: string): Promise<void> {
+    const dir = join(root, '.claude', 'skills', dirName);
+    await mkdir(dir, { recursive: true });
+    await writeFile(join(dir, 'SKILL.md'), frontmatter);
+  }
+
+  it('produces no skills layer when there is no .claude/skills directory at all', async () => {
+    const root = await makeGitRepo();
+    const result = await loadInstructions({ cwd: root, xdgConfigHome: await isolatedXdgConfigHome() });
+    expect(result.skillIndexLine).toBeUndefined();
+    expect(result.skillOmissionLine).toBeUndefined();
+  });
+
+  it('produces no skills layer when cwd is outside any git repository (routine, silent)', async () => {
+    const cwd = await makeTempDir();
+    await writeSkill(cwd, 'a-skill', '---\nname: a-skill\ndescription: A skill.\n---\n');
+    const result = await loadInstructions({ cwd, xdgConfigHome: await isolatedXdgConfigHome() });
+    expect(result.skillIndexLine).toBeUndefined();
+  });
+
+  it("lists every discovered skill's name and description in one index line", async () => {
+    const root = await makeGitRepo();
+    await writeSkill(root, 'browser-qa', '---\nname: browser-qa\ndescription: Manual browser QA.\n---\n');
+    await writeSkill(root, 'orchestrator', '---\nname: orchestrator\ndescription: Owner-facing role.\n---\n');
+
+    const result = await loadInstructions({ cwd: root, xdgConfigHome: await isolatedXdgConfigHome() });
+
+    expect(result.skillIndexLine).toBeDefined();
+    expect(result.skillIndexLine).toContain('browser-qa');
+    expect(result.skillIndexLine).toContain('Manual browser QA.');
+    expect(result.skillIndexLine).toContain('orchestrator');
+    expect(result.skillIndexLine).toContain('Owner-facing role.');
+    expect(result.skillOmissionLine).toBeUndefined();
+  });
+
+  it('discovers a SKILL.md nested more than one level under .claude/skills (recursive, not fixed-depth)', async () => {
+    const root = await makeGitRepo();
+    await writeSkill(root, join('parent', 'nested-skill'), '---\nname: nested-skill\ndescription: Nested one level deeper.\n---\n');
+
+    const result = await loadInstructions({ cwd: root, xdgConfigHome: await isolatedXdgConfigHome() });
+
+    expect(result.skillIndexLine).toContain('nested-skill');
+    expect(result.skillIndexLine).toContain('Nested one level deeper.');
+  });
+
+  it('handles a skill missing "description" frontmatter gracefully: name-only entry, warn-logged, no crash', async () => {
+    const root = await makeGitRepo();
+    await writeSkill(root, 'no-desc', '---\nname: no-desc\n---\n');
+
+    const warnSpy = spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const result = await loadInstructions({ cwd: root, xdgConfigHome: await isolatedXdgConfigHome() });
+      expect(result.skillIndexLine).toContain('no-desc');
+      expect(warnSpy).toHaveBeenCalled();
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it('drops skill entries whole, largest-first, once the total exceeds SKILLS_LAYER_CAP_BYTES, and declares the exact dropped names in-band', async () => {
+    const root = await makeGitRepo();
+    const bigDescription = 'x'.repeat(Math.floor(SKILLS_LAYER_CAP_BYTES * 0.7));
+    const smallDescription = 'y'.repeat(Math.floor(SKILLS_LAYER_CAP_BYTES * 0.4));
+    await writeSkill(root, 'big-skill', `---\nname: big-skill\ndescription: ${bigDescription}\n---\n`);
+    await writeSkill(root, 'small-skill', `---\nname: small-skill\ndescription: ${smallDescription}\n---\n`);
+
+    const warnSpy = spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const result = await loadInstructions({ cwd: root, xdgConfigHome: await isolatedXdgConfigHome() });
+
+      expect(result.skillIndexLine).toContain('small-skill');
+      expect(result.skillIndexLine).not.toContain('big-skill');
+      expect(result.skillOmissionLine).toBe('skills omitted for size: big-skill');
+      expect(warnSpy.mock.calls.some((call) => String(call[0]).includes('big-skill'))).toBe(true);
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it('the aggregate INSTRUCTION_AGGREGATE_CAP_BYTES cap and RULES_LAYER_CAP_BYTES do not apply to the skills layer (independent budgets)', async () => {
+    const root = await makeGitRepo();
+    await writeSkill(root, 'ordinary-skill', '---\nname: ordinary-skill\ndescription: A short description.\n---\n');
+    const rulesDir = join(root, '.claude', 'rules');
+    await mkdir(rulesDir, { recursive: true });
+    await writeFile(join(rulesDir, 'r.md'), 'w'.repeat(INSTRUCTION_AGGREGATE_CAP_BYTES + 1000));
+
+    const result = await loadInstructions({ cwd: root, xdgConfigHome: await isolatedXdgConfigHome() });
+
+    expect(result.skillIndexLine).toContain('ordinary-skill');
+    expect(result.skillOmissionLine).toBeUndefined();
+  });
+
+  it('skill index and omission lines render into the composed system prompt (assembleSystemPrompt), after the rules layer', async () => {
+    const root = await makeGitRepo();
+    await writeFile(join(root, 'CLAUDE.md'), 'INSTRUCTION_CONTENT');
+    const rulesDir = join(root, '.claude', 'rules');
+    await mkdir(rulesDir, { recursive: true });
+    await writeFile(join(rulesDir, 'unscoped.md'), 'RULE_CONTENT');
+    await writeSkill(root, 'demo-skill', '---\nname: demo-skill\ndescription: Demo skill description.\n---\n');
+
+    const instructions = await loadInstructions({ cwd: root, xdgConfigHome: await isolatedXdgConfigHome() });
+    const prompt = assembleSystemPrompt({ context, instructions });
+
+    const instructionIdx = prompt.indexOf('INSTRUCTION_CONTENT');
+    const ruleIdx = prompt.indexOf('RULE_CONTENT');
+    const skillIdx = prompt.indexOf('demo-skill');
+    expect(ruleIdx).toBeGreaterThan(instructionIdx);
+    expect(skillIdx).toBeGreaterThan(ruleIdx);
+    expect(prompt).toContain('Demo skill description.');
+  });
+
+  it('skill index and omission lines render into composeSdkSystemPromptAppend the same way (no engine branch)', async () => {
+    const root = await makeGitRepo();
+    await writeSkill(root, 'sdk-demo-skill', '---\nname: sdk-demo-skill\ndescription: SDK-visible too.\n---\n');
+
+    const instructions = await loadInstructions({ cwd: root, xdgConfigHome: await isolatedXdgConfigHome() });
+    const result = composeSdkSystemPromptAppend(instructions, undefined);
+
+    expect(result).toContain('sdk-demo-skill');
+    expect(result).toContain('SDK-visible too.');
+  });
+});
+
 // ---------------------------------------------------------------------------
 // rulesLayerBytesUsed (Issue #1343 Phase B, R1): how much of
 // RULES_LAYER_CAP_BYTES the eager unscoped layer already consumed -- what
@@ -1062,6 +1263,30 @@ describe('parseRulesLayerCapBytes', () => {
 
   it('falls back to the default for a non-numeric value', () => {
     expect(parseRulesLayerCapBytes('not-a-number')).toBe(160 * 1024);
+  });
+});
+
+// Same clamping rule as parseRulesLayerCapBytes (shared parseCapBytesEnv),
+// applied to the skills layer's own, much smaller default budget.
+describe('parseSkillsLayerCapBytes', () => {
+  it('uses the default when the env value is undefined', () => {
+    expect(parseSkillsLayerCapBytes(undefined)).toBe(16 * 1024);
+  });
+
+  it('uses a positive numeric override verbatim', () => {
+    expect(parseSkillsLayerCapBytes('4096')).toBe(4096);
+  });
+
+  it('falls back to the default for a negative value', () => {
+    expect(parseSkillsLayerCapBytes('-5')).toBe(16 * 1024);
+  });
+
+  it('falls back to the default for zero', () => {
+    expect(parseSkillsLayerCapBytes('0')).toBe(16 * 1024);
+  });
+
+  it('falls back to the default for a non-numeric value', () => {
+    expect(parseSkillsLayerCapBytes('not-a-number')).toBe(16 * 1024);
   });
 });
 
@@ -1128,5 +1353,24 @@ describe('composeSdkSystemPromptAppend', () => {
     );
     expect(result).toContain('rules omitted for size: big.md');
     expect(result).toContain('Rules that apply when you touch matching paths: scoped.md (paths: src/**)');
+  });
+
+  it('renders skillOmissionLine and skillIndexLine verbatim, after the rules-layer lines', () => {
+    const result = composeSdkSystemPromptAppend(
+      {
+        segments: [],
+        ruleIndexLine: 'Rules that apply when you touch matching paths: scoped.md (paths: src/**)',
+        skillOmissionLine: 'skills omitted for size: big-skill.md',
+        skillIndexLine: 'Skills available (open the named SKILL.md to read full instructions): demo -- A demo skill.',
+      },
+      undefined,
+    );
+    expect(result).toContain('skills omitted for size: big-skill.md');
+    expect(result).toContain('Skills available (open the named SKILL.md to read full instructions): demo -- A demo skill.');
+    const ruleIdx = result!.indexOf('Rules that apply');
+    const skillOmissionIdx = result!.indexOf('skills omitted');
+    const skillIndexIdx = result!.indexOf('Skills available');
+    expect(skillOmissionIdx).toBeGreaterThan(ruleIdx);
+    expect(skillIndexIdx).toBeGreaterThan(skillOmissionIdx);
   });
 });
