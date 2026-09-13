@@ -45,6 +45,7 @@ import {
 } from '@agent-console/shared';
 import { loadInstructions, assembleSystemPrompt } from '@agent-console/embedded-agent/src/system-prompt.js';
 import { reconstructConversation, RestoreReconstructionError } from '@agent-console/embedded-agent/src/restore.js';
+import { prepareMemoryDir, type EnsureMemoryDirFn } from '../lib/memory-dir.js';
 import type { InternalSession } from './internal-types.js';
 import type { InternalEmbeddedAgentWorker } from './worker-types.js';
 import type { SessionDataPathResolver } from '../lib/session-data-path-resolver.js';
@@ -350,6 +351,19 @@ export interface EmbeddedAgentWorkerServiceDeps {
   loadProviderKeyFn?: typeof loadProviderKey;
   /** Test seam for the elevated spawn helper. */
   spawnAsUserFn?: SpawnAsUserFn;
+  /**
+   * Memory layer (epic #1636 Phase 2): resolves, creates, and verifies the
+   * worker's server-owned memory directory before every spawn (fresh
+   * activation, restart, eviction revival) and returns its path, which is
+   * put on `init.context.memoryDir` AND passed to the restore branch's own
+   * `loadInstructions` call. Defaults to `prepareMemoryDir` (lib/memory-dir.ts).
+   * The ONLY test/polarity seam for the layer: 3b's `--expect-no-memory`
+   * smoke wraps it to return `undefined`, which removes the layer at all
+   * three loader call sites at once (`init.context` carries no `memoryDir`,
+   * the loader renders no layer). The production server never returns
+   * `undefined` here -- there is no per-definition memory toggle.
+   */
+  ensureMemoryDirFn?: EnsureMemoryDirFn;
   /** Absolute path to the embedded-agent subprocess entry (resolved from the server install root). */
   entryPath?: string;
   /** Test seam for the configured bun binary path (defaults to serverConfig.EMBEDDED_AGENT_BUN_PATH). */
@@ -693,6 +707,7 @@ export class EmbeddedAgentWorkerService {
   private readonly evictions = new Map<string, Promise<void>>();
   private readonly idleEviction: IdleEvictionTimers;
   private readonly spawnAsUserFn: SpawnAsUserFn;
+  private readonly ensureMemoryDirFn: EnsureMemoryDirFn;
   private readonly loadProviderKeyFn: typeof loadProviderKey;
   private readonly entryPath: string;
   private readonly bunPath: string;
@@ -701,6 +716,7 @@ export class EmbeddedAgentWorkerService {
 
   constructor(private readonly deps: EmbeddedAgentWorkerServiceDeps) {
     this.spawnAsUserFn = deps.spawnAsUserFn ?? spawnAsUser;
+    this.ensureMemoryDirFn = deps.ensureMemoryDirFn ?? prepareMemoryDir;
     this.loadProviderKeyFn = deps.loadProviderKeyFn ?? loadProviderKey;
     this.entryPath = resolveConstructorEntryPath(deps.entryPath, serverConfig.EMBEDDED_AGENT_ENTRY_PATH);
     this.bunPath = deps.embeddedAgentBunPath ?? serverConfig.EMBEDDED_AGENT_BUN_PATH;
@@ -879,6 +895,18 @@ export class EmbeddedAgentWorkerService {
       // underlying error and correctly falls into the failure-with-sidecar
       // path instead).
       const resolver = this.deps.getPathResolver(session);
+      // Memory layer (epic #1636 Phase 2): created + verified BEFORE the
+      // restore branch below (its loader call needs the path) and before the
+      // spawn. A verification failure fails activation loudly.
+      let memoryDir: string | undefined;
+      try {
+        memoryDir = await this.ensureMemoryDirFn({ session, definition, resolver });
+      } catch (err) {
+        throw new EmbeddedAgentActivationError(
+          `Cannot activate embedded-agent worker: memory directory verification failed: ${err instanceof Error ? err.message : String(err)}`,
+          { cause: err },
+        );
+      }
       let restoredConversation: EmbeddedAgentRestoredMessage[] | undefined;
       // The newest authoritative context reading in the log, extracted by the
       // same reconstruction pass. Passed to the subprocess so
@@ -905,6 +933,7 @@ export class EmbeddedAgentWorkerService {
         ...(session.type === 'worktree' ? { repositoryId: session.repositoryId } : {}),
         cwd: session.locationPath,
         attachmentRoots: [resolveUploadDir(), resolver.getMessagesDir()],
+        ...(memoryDir !== undefined ? { memoryDir } : {}),
       };
       const everActivated = await this.deps.workerOutputFileManager.hasEverBeenActivated(sessionId, workerId, resolver);
       /**
@@ -954,7 +983,12 @@ export class EmbeddedAgentWorkerService {
           if (streamText.trim() === '') {
             throw new Error('Persisted stream read returned empty despite a non-zero current offset (read failure)');
           }
-          const instructions = await loadInstructions({ cwd: session.locationPath, instructionsList: definition.instructions });
+          // Memory layer: the third loader call site. NOTE main.ts replaces this
+          // head's content with the subprocess's own site-1 reassembly, so this
+          // is composed and not consumed by the model; passed anyway so there
+          // is one loader path and no engine-gated omission (Architect ruling
+          // on #1691).
+          const instructions = await loadInstructions({ cwd: session.locationPath, instructionsList: definition.instructions, memoryDir });
           const systemPrompt = assembleSystemPrompt({
             context: restoreContext,
             instructions,

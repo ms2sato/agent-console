@@ -227,6 +227,23 @@ type EmbeddedAgentInitCommandBase = {
      * `permissionMode`.
      */
     attachmentRoots?: string[];
+    /**
+     * Memory layer (epic #1636 Phase 2): the absolute path of this worker's
+     * server-owned memory directory (`<session data base dir>/memory/<definitionId>/`,
+     * plus a cwd-slug segment for quick sessions), created and verified by
+     * `EmbeddedAgentWorkerService.activate` before every spawn. The loop
+     * reads `<memoryDir>/MEMORY.md` as the sixth instruction layer and
+     * (openai-api) forwards the path to `Read`/`Write`/`Edit` as
+     * `BuiltinToolContext.memoryRoot`. Optional on the wire ONLY for two
+     * reasons: schema compatibility with existing `init` fixtures and probes
+     * (none of which has a memory directory), and the verification plan's
+     * polarity seam (a server whose `ensureMemoryDirFn` is wrapped to return
+     * `undefined`). The production server ALWAYS sends it -- for every
+     * definition, on every engine, on every activation; there is no
+     * per-definition memory toggle. A production `init` frame without it is
+     * a bug, not a configuration.
+     */
+    memoryDir?: string;
   };
   systemPrompt?: string;
   // undefined = apply the loop's own default tool set, [] = no builtin tools, explicit array = exact set

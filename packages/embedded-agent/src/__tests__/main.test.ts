@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach } from 'bun:test';
 import { join } from 'node:path';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import * as v from 'valibot';
 import { EmbeddedAgentCommandSchema, type EmbeddedAgentEvent } from '@agent-console/shared';
@@ -24,7 +24,7 @@ import { COMPACT_TOOL_UNSUPPORTED_RESULT } from '../compact-tool.js';
 import type { SdkEngineDeps } from '../sdk-engine.js';
 import { buildUserMessageContent } from '../attachment-content.js';
 import type { EmbeddedAgentAttachment } from '@agent-console/shared';
-import { loadInstructions } from '../system-prompt.js';
+import { loadInstructions, formatMemoryHeader, type LoadInstructionsParams } from '../system-prompt.js';
 
 const mainPath = join(import.meta.dir, '..', 'main.ts');
 
@@ -2209,5 +2209,189 @@ describe('runLoop — set-model-params dispatch (agent-surface.md Phase 3)', () 
       contextWindowTokens: null,
     });
     expect(engine.setModelParamsCalls[0].turnInFlight).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Memory layer (epic #1636 Phase 2, PR-3a): `init.context.memoryDir` reaches
+// every `loadInstructions` call site in this file with no engine branch, and
+// (openai-api) the builtin tool ctx as `memoryRoot`. Each pin's reach was
+// measured by mutation; the measurement is in its comment.
+// ---------------------------------------------------------------------------
+describe('runLoop — memory layer: memoryDir at every loader call site, memoryRoot in the tool ctx (epic #1636 Phase 2)', () => {
+  const MEMORY_INDEX_LINE = '- [Sprint state](sprint-state.md) — MEMORY_INDEX_MARKER';
+
+  async function makeSeededMemoryDir(): Promise<string> {
+    const memoryDir = await makeTempDir();
+    await writeFile(join(memoryDir, 'MEMORY.md'), `# Memory Index\n${MEMORY_INDEX_LINE}\n`);
+    await writeFile(join(memoryDir, 'sprint-state.md'), '---\nname: sprint-state\n---\nbody');
+    return memoryDir;
+  }
+
+  it('openai-api: passes memoryDir to loadInstructions at the fresh-activation site AND at reassembleSystemPrompt (the compaction re-read)', async () => {
+    // Reach: dropping `memoryDir` from either call in main.ts fails the
+    // corresponding element of this assertion -- both measured.
+    class DistillingAdapter implements ProviderAdapter {
+      async *run(): AsyncIterable<ProviderEvent> {
+        yield { type: 'text-delta', text: 'SUMMARY' };
+        yield { type: 'done', finishReason: 'stop' };
+      }
+    }
+    const calls: LoadInstructionsParams[] = [];
+    const { io, events } = makeIo([
+      initCommand({ context: { sessionId: 's', workerId: 'w', cwd: '/tmp', memoryDir: '/data/memory/def-1' } }),
+      JSON.stringify({ v: 1, type: 'compact' }),
+      JSON.stringify({ v: 1, type: 'shutdown' }),
+    ]);
+    const factories = makeFactories({
+      createAdapter: () => new DistillingAdapter(),
+      loadInstructions: async (params) => {
+        calls.push(params);
+        return { segments: [] };
+      },
+    });
+
+    expect(await runLoop(io, factories)).toBe(0);
+    expect(events.find((e) => e.type === 'context-compacted')).toBeDefined();
+    expect(calls.map((c) => c.memoryDir)).toEqual(['/data/memory/def-1', '/data/memory/def-1']);
+  });
+
+  it('claude-sdk: passes memoryDir to loadInstructions, and the rendered index reaches systemPromptAppend (real loader)', async () => {
+    // Reach: dropping `memoryDir` from the SDK arm's call fails -- measured.
+    const cwd = await makeTempDir();
+    const memoryDir = await makeSeededMemoryDir();
+    const { io } = makeIo([
+      JSON.stringify({
+        v: 1,
+        type: 'init',
+        compaction: { auto: false },
+        engine: 'claude-sdk',
+        mcp: { baseUrl: 'http://mcp/local', token: 'tok' },
+        provider: { model: 'claude-sonnet-5' },
+        context: { sessionId: 's', workerId: 'w', cwd, memoryDir },
+        maxToolIterations: 5,
+      }),
+    ]);
+    let capturedDeps: SdkEngineDeps | undefined;
+    const factories = makeFactories({
+      loadInstructions, // real production implementation
+      createSdkEngine: (deps) => {
+        capturedDeps = deps;
+        return new NoopEngine();
+      },
+    });
+
+    expect(await runLoop(io, factories)).toBe(0);
+    expect(capturedDeps?.systemPromptAppend).toContain(formatMemoryHeader(memoryDir));
+    expect(capturedDeps?.systemPromptAppend).toContain('MEMORY_INDEX_MARKER');
+  });
+
+  // The restart pin, at the path the model actually sees (Architect ruling
+  // on #1691): main.ts REPLACES a restored conversation's system head with
+  // its own site-1 reassembly, so what a restored openai-api worker's model
+  // reads is site 1's result under restore -- not the server-composed
+  // head. Both halves are deterministic and unbilled.
+  it('restart pin, PRESENT: on init with a restoredConversation (system head) and memoryDir set, AgentLoop\'s index-0 content contains the memory header and the index line (real loader)', async () => {
+    // Reach: dropping `memoryDir` from the fresh-activation call fails the
+    // header assertion; reverting main.ts's head override (keeping the
+    // server's `STALE_SERVER_PROMPT`) fails both -- measured.
+    const cwd = await makeTempDir();
+    const memoryDir = await makeSeededMemoryDir();
+    const adapter = new CapturingAdapter();
+    const { io } = makeIo([
+      initCommand({
+        context: { sessionId: 's', workerId: 'w', cwd, memoryDir },
+        restoredConversation: [
+          { role: 'system', content: 'STALE_SERVER_PROMPT' },
+          { role: 'user', content: 'earlier question' },
+          { role: 'assistant', content: 'earlier answer' },
+        ],
+      }),
+      JSON.stringify({ v: 1, type: 'user-message', id: 'u1', text: 'follow-up' }),
+      JSON.stringify({ v: 1, type: 'shutdown' }),
+    ]);
+    const factories = makeFactories({ createAdapter: () => adapter, loadInstructions });
+
+    expect(await runLoop(io, factories)).toBe(0);
+    const [head, second] = adapter.capturedMessagesCalls[0];
+    expect(head.role).toBe('system');
+    expect(head.content).toContain(formatMemoryHeader(memoryDir));
+    expect(head.content).toContain(MEMORY_INDEX_LINE);
+    expect(head.content).not.toContain('STALE_SERVER_PROMPT');
+    expect(second).toEqual({ role: 'user', content: 'earlier question' });
+  });
+
+  it('restart pin, ABSENT (polarity): the same init without memoryDir yields an index-0 content with no memory header', async () => {
+    // The pre-change world: a server that sends no memoryDir. Reach: this
+    // half is what makes the PRESENT half a measurement rather than a
+    // coincidence -- a loader that rendered the header unconditionally
+    // (mutating `loadInstructions` to call `loadMemoryLayer('')` when
+    // memoryDir is absent) fails it -- measured.
+    const cwd = await makeTempDir();
+    const memoryDir = await makeSeededMemoryDir();
+    void memoryDir; // seeded on disk, deliberately NOT sent
+    const adapter = new CapturingAdapter();
+    const { io } = makeIo([
+      initCommand({
+        context: { sessionId: 's', workerId: 'w', cwd },
+        restoredConversation: [
+          { role: 'system', content: 'STALE_SERVER_PROMPT' },
+          { role: 'user', content: 'earlier question' },
+        ],
+      }),
+      JSON.stringify({ v: 1, type: 'user-message', id: 'u1', text: 'follow-up' }),
+      JSON.stringify({ v: 1, type: 'shutdown' }),
+    ]);
+    const factories = makeFactories({ createAdapter: () => adapter, loadInstructions });
+
+    expect(await runLoop(io, factories)).toBe(0);
+    const [head] = adapter.capturedMessagesCalls[0];
+    expect(head.role).toBe('system');
+    expect(head.content).not.toContain('--- Memory:');
+    expect(head.content).not.toContain('MEMORY_INDEX_MARKER');
+  });
+
+  it('openai-api: populates the builtin tool ctx\'s memoryRoot from init.context.memoryDir, so Write can create MEMORY.md under it (outside cwd)', async () => {
+    // Reach: dropping `memoryRoot: init.context.memoryDir` from the ctx
+    // composition in main.ts fails (the Write is rejected with the verbatim
+    // confinement message) -- measured.
+    const cwd = await makeTempDir();
+    const memoryDir = await makeTempDir();
+    const target = join(memoryDir, 'MEMORY.md');
+    class WriteThenDoneAdapter implements ProviderAdapter {
+      private calls = 0;
+      async *run(): AsyncIterable<ProviderEvent> {
+        this.calls += 1;
+        if (this.calls === 1) {
+          yield {
+            type: 'tool-call',
+            callId: 'c1',
+            name: 'Write',
+            argsJson: JSON.stringify({ file_path: target, content: '# Memory Index\n' }),
+          };
+          yield { type: 'done', finishReason: 'tool_calls' };
+        } else {
+          yield { type: 'text-delta', text: 'done' };
+          yield { type: 'done', finishReason: 'stop' };
+        }
+      }
+    }
+    const events: EmbeddedAgentEvent[] = [];
+    const io: LoopIO = {
+      async *readCommands() {
+        yield initCommand({ enabledTools: ['Write'], context: { sessionId: 's', workerId: 'w', cwd, memoryDir } });
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        yield JSON.stringify({ v: 1, type: 'user-message', id: 'u1', text: 'start the index' });
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      },
+      writeEvent: (event) => events.push(event),
+      logError: () => {},
+    };
+    const factories = makeFactories({ createAdapter: () => new WriteThenDoneAdapter() });
+
+    expect(await runLoop(io, factories)).toBe(0);
+    const toolResult = events.find((e) => e.type === 'tool-result');
+    expect(toolResult).toMatchObject({ ok: true });
+    await expect(readFile(target, 'utf-8')).resolves.toBe('# Memory Index\n');
   });
 });

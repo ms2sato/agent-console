@@ -1,6 +1,7 @@
-import { describe, it, expect, mock, setSystemTime, spyOn } from 'bun:test';
+import { describe, it, expect, mock, setSystemTime, spyOn, afterAll } from 'bun:test';
 import { randomUUID } from 'node:crypto';
-import { mkdir, rm, writeFile } from 'node:fs/promises';
+import { mkdir, rm, writeFile, symlink, unlink } from 'node:fs/promises';
+import { lstatSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import * as shared from '@agent-console/shared';
@@ -8,11 +9,32 @@ import { EMBEDDED_AGENT_SLASH_COMMANDS, type EmbeddedAgentDefinition, type SdkRe
 import type { SpawnAsUserFn, SpawnAsUserOpts, SpawnAsUserResult } from '../privilege-elevation.js';
 import { SessionDataPathResolver } from '../../lib/session-data-path-resolver.js';
 import { resolveUploadDir } from '../../lib/message-upload-dir.js';
+import { computeQuickCwdSlug } from '../../lib/session-data-path.js';
+import type { EnsureMemoryDirFn } from '../../lib/memory-dir.js';
 import { buildPtyNotificationText, buildReplyInstructions, type PtyNotificationParams } from '../../lib/pty-notification.js';
+import type { InternalSession } from '../internal-types.js';
 import {
   buildInternalEmbeddedAgentWorker,
   buildInternalWorktreeSession,
+  buildInternalQuickSession,
 } from '../../__tests__/utils/build-test-data.js';
+
+/**
+ * Memory layer (epic #1636 Phase 2): `getPathResolver` needs a REAL base
+ * directory (not the fake `/test/config/repositories/test-repo` path used
+ * before this layer existed), because `EmbeddedAgentWorkerService.activate`
+ * now calls `ensureMemoryDirFn` (default `prepareMemoryDir`) on every
+ * activation, which performs a real `mkdir` + `lstat` under the resolver's
+ * base dir. A real per-file temp dir, created once at module load and
+ * removed in `afterAll`, keeps every existing (pre-memory-layer) test in
+ * this file passing unmodified.
+ */
+const TEST_BASE_DIR = join(tmpdir(), `ea-worker-service-test-${randomUUID()}`);
+await mkdir(TEST_BASE_DIR, { recursive: true });
+
+afterAll(async () => {
+  await rm(TEST_BASE_DIR, { recursive: true, force: true }).catch(() => {});
+});
 import {
   EmbeddedAgentWorkerService,
   EmbeddedAgentActivationError,
@@ -224,7 +246,7 @@ interface Harness {
   sessionId: string;
   workerId: string;
   worker: ReturnType<typeof buildInternalEmbeddedAgentWorker>;
-  session: ReturnType<typeof buildInternalWorktreeSession>;
+  session: InternalSession;
   fake: FakeSpawn;
   mint: ReturnType<typeof mock>;
   revokeByWorker: ReturnType<typeof mock>;
@@ -290,6 +312,10 @@ function setup(opts?: {
    * (`appendRestoreFailureMarkerThrows: true`).
    */
   sidecarRenameSucceeds?: boolean;
+  /** Memory layer (epic #1636 Phase 2): test/polarity seam override for `ensureMemoryDirFn`. */
+  ensureMemoryDirFnOverride?: EnsureMemoryDirFn;
+  /** Memory layer (epic #1636 Phase 2): build a quick session instead of a worktree session. */
+  quickSession?: boolean;
 }): Harness {
   const definition = 'definition' in (opts ?? {}) ? opts!.definition : buildDefinition();
   const createdBy = opts && 'createdBy' in opts ? opts.createdBy : 'user-1';
@@ -302,11 +328,17 @@ function setup(opts?: {
   if (opts?.sdkSessionId !== undefined) worker.sdkSessionId = opts.sdkSessionId;
   if (opts?.staleEpoch !== undefined) worker.epoch = opts.staleEpoch;
   if (opts?.staleOutputOffset !== undefined) worker.outputOffset = opts.staleOutputOffset;
-  const session = buildInternalWorktreeSession([worker], {
-    createdBy,
-    initialPrompt: opts?.initialPrompt,
-    initialPromptDelivered: opts?.initialPromptDelivered,
-  });
+  const session: InternalSession = opts?.quickSession
+    ? buildInternalQuickSession([worker], {
+        createdBy,
+        initialPrompt: opts?.initialPrompt,
+        initialPromptDelivered: opts?.initialPromptDelivered,
+      })
+    : buildInternalWorktreeSession([worker], {
+        createdBy,
+        initialPrompt: opts?.initialPrompt,
+        initialPromptDelivered: opts?.initialPromptDelivered,
+      });
   const fake = makeFakeSpawn({ endThrows: opts?.spawnEndThrows });
 
   const mint = mock(() => TOKEN);
@@ -379,7 +411,7 @@ function setup(opts?: {
   const service = new EmbeddedAgentWorkerService({
     getSession: (id) => (id === session.id ? session : undefined),
     persistSession: persistSession as never,
-    getPathResolver: () => new SessionDataPathResolver('/test/config/repositories/test-repo'),
+    getPathResolver: () => new SessionDataPathResolver(TEST_BASE_DIR),
     getEmbeddedAgent: () => definition,
     resolveSpawnUsername: async () => USERNAME,
     mcpTokenRegistry: { mint: mint as never, revokeByWorker: revokeByWorker as never },
@@ -394,6 +426,7 @@ function setup(opts?: {
     getMcpBaseUrl: () => MCP_BASE_URL,
     loadProviderKeyFn: loadProviderKeyFn as never,
     spawnAsUserFn: opts?.spawnAsUserFnOverride ?? fake.fn,
+    ensureMemoryDirFn: opts?.ensureMemoryDirFnOverride,
     ...(opts?.omitEntryPath ? {} : { entryPath: ENTRY_PATH }),
     embeddedAgentBunPath: opts?.embeddedAgentBunPathOverride,
     getGlobalActivityCallback: () => globalActivity as never,
@@ -501,7 +534,8 @@ describe('EmbeddedAgentWorkerService.activate', () => {
       // attachmentRoots must include the messages dir so an embedded-agent
       // worker can Read a run_process outputMode: 'message' notification
       // file, which lives outside the session's locationPath.
-      attachmentRoots: [resolveUploadDir(), new SessionDataPathResolver('/test/config/repositories/test-repo').getMessagesDir()],
+      attachmentRoots: [resolveUploadDir(), new SessionDataPathResolver(TEST_BASE_DIR).getMessagesDir()],
+      memoryDir: new SessionDataPathResolver(TEST_BASE_DIR).getMemoryDir('def-1', { kind: 'repository' }),
     });
     expect(first.maxToolIterations).toBe(25);
   });
@@ -4358,5 +4392,147 @@ describe('EmbeddedAgentWorkerService — a refused resume and a fatal from the s
     // a second one means the fatal was not absorbed.
     const shutdowns = fake.children[0].stdinWrites.filter((w) => w.includes('"shutdown"')).length;
     expect(shutdowns).toBe(1);
+  });
+});
+
+// Reach measured (whole describe block): skipping the `ensureMemoryDirFn`
+// call entirely in `runActivation` (leaving `memoryDir` always `undefined`,
+// as if the try/catch block around it were removed) fails 4 of the 6 pins
+// below -- the two seam-polarity tests are unaffected by construction,
+// since they already force `undefined` via their own override.
+describe('EmbeddedAgentWorkerService — memory layer (epic #1636 Phase 2)', () => {
+  // Reach measured: reverting `ensureMemoryDirFn` to a no-op (never called)
+  // fails this pin's `expect(sawExpectedDir).toBe(true)` -- measured while
+  // authoring this test by temporarily stubbing `this.ensureMemoryDirFn` to
+  // `async () => undefined` at the call site and confirming the assertion
+  // below fails.
+  it('worktree session: composes init.context.memoryDir from the resolver and creates the dir (mode 0700) before spawn', async () => {
+    const expectedDir = new SessionDataPathResolver(TEST_BASE_DIR).getMemoryDir('def-1', {
+      kind: 'repository',
+    });
+    let sawExpectedDir = false;
+    const fakeForMemoryLayer = makeFakeSpawn();
+    const wrappedSpawn: SpawnAsUserFn = (opts) => {
+      const st = lstatSync(expectedDir);
+      sawExpectedDir = st.isDirectory() && (st.mode & 0o7777) === 0o700;
+      return fakeForMemoryLayer.fn(opts);
+    };
+    const h = setup({ spawnAsUserFnOverride: wrappedSpawn });
+
+    await h.service.activate(h.sessionId, h.workerId);
+
+    expect(sawExpectedDir).toBe(true);
+    const first = JSON.parse(fakeForMemoryLayer.stdinWrites[0]);
+    expect(first.context.memoryDir).toBe(expectedDir);
+  });
+
+  it('quick session: composes init.context.memoryDir with the quick-session cwd-slug (fallback slug for a nonexistent cwd)', async () => {
+    const h = setup({ quickSession: true });
+    await h.service.activate(h.sessionId, h.workerId);
+
+    const resolver = new SessionDataPathResolver(TEST_BASE_DIR);
+    const expectedSlug = computeQuickCwdSlug('/test/quick');
+    const expectedDir = resolver.getMemoryDir('def-1', { kind: 'quick', cwdSlug: expectedSlug });
+
+    const first = JSON.parse(h.fake.stdinWrites[0]);
+    expect(first.context.memoryDir).toBe(expectedDir);
+  });
+
+  // Reach measured: this test's own assertions fail (activation succeeds,
+  // spawn is called) if `ensureMemoryDir`'s symlink check is removed --
+  // confirmed by the same mutation `memory-dir.test.ts` measures directly
+  // against `ensureMemoryDir` in isolation.
+  it('a pre-created symlink at the memory path fails activation loudly and rolls back (no spawn, token revoked)', async () => {
+    const expectedDir = new SessionDataPathResolver(TEST_BASE_DIR).getMemoryDir('def-1', {
+      kind: 'repository',
+    });
+    await mkdir(join(expectedDir, '..'), { recursive: true });
+    // Earlier tests in this file may have already created `expectedDir` as
+    // an ordinary directory (every default-definition test shares 'def-1').
+    // Remove it first so `symlink` below does not hit EEXIST.
+    await rm(expectedDir, { recursive: true, force: true }).catch(() => {});
+    const bogusTarget = join(expectedDir, '..', 'not-the-memory-dir');
+    await mkdir(bogusTarget, { recursive: true });
+    await symlink(bogusTarget, expectedDir);
+
+    const h = setup();
+    let caught: unknown;
+    try {
+      await h.service.activate(h.sessionId, h.workerId);
+    } catch (err) {
+      caught = err;
+    }
+
+    expect(caught).toBeInstanceOf(EmbeddedAgentActivationError);
+    expect((caught as Error).message).toContain('memory directory verification failed');
+    expect(h.fake.captured.length).toBe(0);
+    expect(h.revokeByWorker).toHaveBeenCalledTimes(1);
+
+    // Cleanup: remove the symlink so later tests reusing 'def-1' under
+    // TEST_BASE_DIR are not affected.
+    await unlink(expectedDir);
+    await rm(bogusTarget, { recursive: true, force: true }).catch(() => {});
+  });
+
+  // Reach measured: reverting to a real `ensureMemoryDirFn` (dropping this
+  // override) makes `'memoryDir' in first.context` true -- confirmed while
+  // authoring this test.
+  it('seam polarity: an ensureMemoryDirFn override returning undefined omits memoryDir from init.context entirely', async () => {
+    const h = setup({ ensureMemoryDirFnOverride: async () => undefined });
+    await h.service.activate(h.sessionId, h.workerId);
+
+    const first = JSON.parse(h.fake.stdinWrites[0]);
+    expect('memoryDir' in first.context).toBe(false);
+  });
+
+  describe('third loader call site (restore branch, openai-api)', () => {
+    // Pins site-3 WIRING only -- that the restore branch's `loadInstructions`
+    // receives `memoryDir` -- via the header the loader always renders when
+    // the path is present. The index CONTENT is deliberately not asserted
+    // here: in the full server suite `fs/promises` is process-globally
+    // swapped for memfs (mock-fs-helper.ts) while the loader reads the index
+    // through `Bun.file` (real fs), so a file this test wrote would be
+    // invisible to the loader in one run and visible in the other -- an
+    // assertion whose meaning depends on the run. The index content is the
+    // loader's own pin (system-prompt.test.ts); what the model actually sees
+    // after a restart is main.test.ts's restart pin (Architect ruling on
+    // #1691: main.ts replaces this head with site 1's reassembly).
+    // Reach: skipping the `ensureMemoryDirFn` call in `runActivation` fails
+    // the PRESENT half; dropping `memoryDir` from the restore branch's
+    // `loadInstructions` call alone fails it too (the header comes only from
+    // that call) -- both measured.
+    const RESTORABLE_STREAM = [
+      JSON.stringify({ v: 1, type: 'user-message', id: 'm1', text: 'hi there' }),
+      JSON.stringify({ v: 1, type: 'assistant-message', turnId: 'm1', text: 'hello back' }),
+      JSON.stringify({ v: 1, type: 'state', state: 'idle' }),
+    ].join('\n');
+
+    it('PRESENT: the restored conversation head carries the memory header for the resolver\'s memoryDir', async () => {
+      const expectedDir = new SessionDataPathResolver(TEST_BASE_DIR).getMemoryDir('def-1', {
+        kind: 'repository',
+      });
+      const h = setup({
+        everActivated: true,
+        readHistoryWithOffsetResult: { data: RESTORABLE_STREAM },
+      });
+      await h.service.activate(h.sessionId, h.workerId);
+
+      const first = JSON.parse(h.fake.stdinWrites[0]);
+      const head = first.restoredConversation[0].content as string;
+      expect(head).toContain(`--- Memory: ${expectedDir} ---`);
+    });
+
+    it('ABSENT (seam polarity): with ensureMemoryDirFn returning undefined, the restored head has no memory header', async () => {
+      const h = setup({
+        everActivated: true,
+        readHistoryWithOffsetResult: { data: RESTORABLE_STREAM },
+        ensureMemoryDirFnOverride: async () => undefined,
+      });
+      await h.service.activate(h.sessionId, h.workerId);
+
+      const first = JSON.parse(h.fake.stdinWrites[0]);
+      const head = first.restoredConversation[0].content as string;
+      expect(head).not.toContain('--- Memory:');
+    });
   });
 });

@@ -2,6 +2,8 @@ import { describe, it, expect } from 'bun:test';
 import * as path from 'path';
 import {
   computeSessionDataBaseDir,
+  computeQuickCwdSlug,
+  isValidSlug,
   InvalidSessionDataScopeError,
   type SessionDataScope,
 } from '../session-data-path.js';
@@ -163,5 +165,62 @@ describe('computeSessionDataBaseDir', () => {
         )
       ).toThrow(InvalidSessionDataScopeError);
     });
+  });
+});
+
+// Removing the hash-suffix branch of computeQuickCwdSlug (returning the
+// sanitized basename alone) fails 'distinct for two different paths with the
+// same basename' below -- measured.
+describe('computeQuickCwdSlug', () => {
+  it('has the shape <basename>-<12 hex chars>', () => {
+    const slug = computeQuickCwdSlug('/home/user/my-project');
+    expect(slug).toMatch(/^my-project-[0-9a-f]{12}$/);
+  });
+
+  it('produces a syntactically valid single-segment slug', () => {
+    const slug = computeQuickCwdSlug('/home/user/my-project');
+    expect(isValidSlug(slug)).toBe(true);
+    expect(slug).not.toContain('/');
+  });
+
+  it('is distinct for /a/b vs /a-b (the SDK collision this design avoids)', () => {
+    const slugAB = computeQuickCwdSlug('/a/b');
+    const slugADashB = computeQuickCwdSlug('/a-b');
+    expect(slugAB).not.toBe(slugADashB);
+  });
+
+  it('is distinct for two different paths with the same basename', () => {
+    const slugX = computeQuickCwdSlug('/x/proj');
+    const slugY = computeQuickCwdSlug('/y/proj');
+    expect(slugX).not.toBe(slugY);
+    // Both share the sanitized basename prefix; only the hash differs.
+    expect(slugX.split('-')[0]).toBe('proj');
+    expect(slugY.split('-')[0]).toBe('proj');
+  });
+
+  it('sanitizes a basename containing spaces and unicode', () => {
+    const slug = computeQuickCwdSlug('/home/user/My Projéct 日本語');
+    expect(slug).toMatch(/^[A-Za-z0-9._-]+$/);
+    expect(isValidSlug(slug)).toBe(true);
+  });
+
+  it("returns 'root-<hash>' for the filesystem root", () => {
+    const slug = computeQuickCwdSlug('/');
+    expect(slug).toMatch(/^root-[0-9a-f]{12}$/);
+  });
+
+  it('is deterministic (same input, same output)', () => {
+    const a = computeQuickCwdSlug('/home/user/repeat-me');
+    const b = computeQuickCwdSlug('/home/user/repeat-me');
+    expect(a).toBe(b);
+  });
+
+  it('never produces "." or ".." as the full slug even for a dot-only basename', () => {
+    const slugDot = computeQuickCwdSlug('/home/user/.');
+    const slugDotDot = computeQuickCwdSlug('/home/user/..');
+    expect(slugDot).not.toBe('.');
+    expect(slugDotDot).not.toBe('..');
+    expect(isValidSlug(slugDot)).toBe(true);
+    expect(isValidSlug(slugDotDot)).toBe(true);
   });
 });

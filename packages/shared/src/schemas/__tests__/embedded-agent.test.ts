@@ -969,6 +969,60 @@ describe('EmbeddedAgentCommandSchema', () => {
     expect(v.safeParse(EmbeddedAgentCommandSchema, initWrongElement).success).toBe(false);
   });
 
+  // Memory layer (epic #1636 Phase 2): `context.memoryDir` on the wire.
+  // Reach: removing the `memoryDir` line from the strictObject fails the
+  // first pin (strictObject REJECTS the whole frame, not strips the field --
+  // pre-pr-completeness Q10's #1554 blast radius) -- measured.
+  it('parses an init command carrying context.memoryDir (memory layer, epic #1636 Phase 2)', () => {
+    const init = {
+      v: 1,
+      type: 'init',
+      compaction: { auto: true },
+      engine: 'openai-api',
+      mcp: { baseUrl: 'http://localhost:3457/mcp', token: 'tok' },
+      provider: { baseUrl: 'http://localhost:11434/v1', model: 'llama3' },
+      context: { sessionId: 's1', workerId: 'w1', cwd: '/work', memoryDir: '/data/repositories/org/repo/memory/def-1' },
+      maxToolIterations: 25,
+    };
+    const result = v.safeParse(EmbeddedAgentCommandSchema, init);
+    expect(result.success).toBe(true);
+    if (result.success && result.output.type === 'init') {
+      expect(result.output.context.memoryDir).toBe('/data/repositories/org/repo/memory/def-1');
+    }
+  });
+
+  it('parses an init command without context.memoryDir (optional on the wire only for fixtures and the polarity seam; production always sends it)', () => {
+    const init = {
+      v: 1,
+      type: 'init',
+      compaction: { auto: true },
+      engine: 'openai-api',
+      mcp: { baseUrl: 'http://localhost:3457/mcp', token: 'tok' },
+      provider: { baseUrl: 'http://localhost:11434/v1', model: 'llama3' },
+      context: { sessionId: 's1', workerId: 'w1', cwd: '/work' },
+      maxToolIterations: 25,
+    };
+    const result = v.safeParse(EmbeddedAgentCommandSchema, init);
+    expect(result.success).toBe(true);
+    if (result.success && result.output.type === 'init') {
+      expect(result.output.context.memoryDir).toBeUndefined();
+    }
+  });
+
+  it('rejects an init command whose context.memoryDir is not a string', () => {
+    const init = {
+      v: 1,
+      type: 'init',
+      compaction: { auto: true },
+      engine: 'openai-api',
+      mcp: { baseUrl: 'http://localhost:3457/mcp', token: 'tok' },
+      provider: { baseUrl: 'http://localhost:11434/v1', model: 'llama3' },
+      context: { sessionId: 's1', workerId: 'w1', cwd: '/work', memoryDir: ['/data/memory'] },
+      maxToolIterations: 25,
+    };
+    expect(v.safeParse(EmbeddedAgentCommandSchema, init).success).toBe(false);
+  });
+
   describe('engine discriminant (SDK Engine Phase 1, docs/design/embedded-agent-sdk-engine.md §3.1)', () => {
     const baseFields = {
       v: 1,
