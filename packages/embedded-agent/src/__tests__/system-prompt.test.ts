@@ -18,7 +18,6 @@ import {
   INSTRUCTION_PER_FILE_CAP_BYTES,
   INSTRUCTION_AGGREGATE_CAP_BYTES,
   RULES_LAYER_CAP_BYTES,
-  SKILLS_LAYER_CAP_BYTES,
   rulesLayerBytesUsed,
   type SystemPromptContext,
   type LoadInstructionsResult,
@@ -1137,18 +1136,48 @@ describe('loadInstructions — skills layer', () => {
     }
   });
 
+  it('falls back gracefully (directory name, no crash) when a SKILL.md\'s frontmatter does not close within the bounded prefix read', async () => {
+    const root = await makeGitRepo();
+    // The closing "---" sits well past the 4 KiB bounded read
+    // (tryReadSkillFrontmatterPrefix), so the truncated prefix never matches
+    // FRONTMATTER_RE -- this must take the SAME graceful path a
+    // no-frontmatter-at-all file takes, not throw or hang.
+    const oversizedDescription = 'x'.repeat(8 * 1024);
+    await writeSkill(
+      root,
+      'huge-frontmatter',
+      `---\nname: huge-frontmatter\ndescription: ${oversizedDescription}\n---\n`,
+    );
+
+    const warnSpy = spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const result = await loadInstructions({ cwd: root, xdgConfigHome: await isolatedXdgConfigHome() });
+      expect(result.skillIndexLine).toContain('huge-frontmatter');
+      expect(warnSpy).toHaveBeenCalled();
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
   it('drops skill entries whole, largest-first, once the total exceeds SKILLS_LAYER_CAP_BYTES, and declares the exact dropped names in-band', async () => {
     const root = await makeGitRepo();
-    const bigDescription = 'x'.repeat(Math.floor(SKILLS_LAYER_CAP_BYTES * 0.7));
-    const smallDescription = 'y'.repeat(Math.floor(SKILLS_LAYER_CAP_BYTES * 0.4));
+    // Each individual description stays comfortably under the 4 KiB bounded
+    // frontmatter read (tryReadSkillFrontmatterPrefix), so every file's
+    // frontmatter parses in full; only their COMBINED formatted size crosses
+    // SKILLS_LAYER_CAP_BYTES (16 KiB default), forcing exactly one drop --
+    // the distinctly largest entry.
+    const fillerDescription = 'y'.repeat(3000);
+    for (let i = 0; i < 5; i++) {
+      await writeSkill(root, `filler-${i}`, `---\nname: filler-${i}\ndescription: ${fillerDescription}\n---\n`);
+    }
+    const bigDescription = 'x'.repeat(3500);
     await writeSkill(root, 'big-skill', `---\nname: big-skill\ndescription: ${bigDescription}\n---\n`);
-    await writeSkill(root, 'small-skill', `---\nname: small-skill\ndescription: ${smallDescription}\n---\n`);
 
     const warnSpy = spyOn(console, 'warn').mockImplementation(() => {});
     try {
       const result = await loadInstructions({ cwd: root, xdgConfigHome: await isolatedXdgConfigHome() });
 
-      expect(result.skillIndexLine).toContain('small-skill');
+      expect(result.skillIndexLine).toContain('filler-0');
       expect(result.skillIndexLine).not.toContain('big-skill');
       expect(result.skillOmissionLine).toBe('skills omitted for size: big-skill');
       expect(warnSpy.mock.calls.some((call) => String(call[0]).includes('big-skill'))).toBe(true);

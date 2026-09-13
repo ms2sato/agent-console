@@ -320,6 +320,40 @@ async function tryReadTextFile(filePath: string): Promise<ReadTextResult> {
 }
 
 /**
+ * How much of a `SKILL.md` file `tryReadSkillFrontmatterPrefix` reads --
+ * generous headroom for a `name:`/`description:` frontmatter block, well
+ * under what any reasonable skill would need for just those two fields.
+ */
+const SKILL_FRONTMATTER_READ_CAP_BYTES = 4 * 1024;
+
+/**
+ * Bounded sibling of {@link tryReadTextFile}, used ONLY by `loadSkillsLayer`'s
+ * per-file loop below. `loadSkillsLayer` never needs a skill's full body --
+ * only its `name:`/`description:` frontmatter -- so reading the whole file
+ * the way `tryReadTextFile` does would make activation latency and memory
+ * use scale with an author-controlled `SKILL.md` size that nothing
+ * downstream ever reads (unlike the rules layer, where the full rule
+ * content genuinely is the payload). `Bun.file(...).slice(0, N)` maps a byte
+ * range without reading the rest of the file, so this stays O(cap) instead
+ * of O(file size). Same error-shape normalization as `tryReadTextFile`, so
+ * callers branch identically on `ok`/`code`/`message`. If a file's closing
+ * frontmatter delimiter falls beyond the cap, {@link FRONTMATTER_RE} simply
+ * fails to match on the truncated prefix and `parseSkillFrontmatter`'s
+ * existing missing-frontmatter fallback (directory name, empty description,
+ * warn) runs -- no separate handling needed for the truncation case itself.
+ */
+async function tryReadSkillFrontmatterPrefix(filePath: string): Promise<ReadTextResult> {
+  try {
+    const content = await Bun.file(filePath).slice(0, SKILL_FRONTMATTER_READ_CAP_BYTES).text();
+    return { ok: true, content };
+  } catch (err) {
+    const code = (isErrnoException(err) ? err.code : undefined) ?? 'UNKNOWN';
+    const message = err instanceof Error ? err.message : String(err);
+    return { ok: false, code, message };
+  }
+}
+
+/**
  * Walk up from `startDir` looking for the nearest ancestor where `.git`
  * exists as either a file (worktree gitfile) or a directory. Returns null
  * when the filesystem root is reached without finding one.
@@ -846,7 +880,7 @@ async function loadSkillsLayer(cwd: string): Promise<SkillsLayerResult> {
 
   const skills: SkillFile[] = [];
   for (const origin of files) {
-    const read = await tryReadTextFile(origin);
+    const read = await tryReadSkillFrontmatterPrefix(origin);
     if (!read.ok) {
       console.warn(`Skipping skill file ${origin}: ${read.message}`);
       continue;
