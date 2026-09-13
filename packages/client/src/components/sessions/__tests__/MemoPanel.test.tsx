@@ -117,7 +117,7 @@ describe('MemoPanel', () => {
 
     const { container } = await renderWithRouter(<ControlledMemoPanel sessionId="session-1" />);
 
-    expect(container.querySelector('[aria-label="Collapse memo"]')).toBeNull();
+    expect(container.querySelector('[aria-label="Collapse Memo"]')).toBeNull();
     expect(container.textContent).toBe('');
   });
 
@@ -141,19 +141,46 @@ describe('MemoPanel', () => {
     expect(screen.getByText('Hello Memo').tagName).toBe('H1');
   });
 
-  it('collapses to a thin strip and can be re-expanded', async () => {
+  it('collapses to a header row without a body, and can be re-expanded', async () => {
     mockFetch.mockResolvedValue(jsonResponse({ content: '# Hello Memo' }));
 
     await renderWithRouter(<ControlledMemoPanel sessionId="session-1" />);
     await waitFor(() => expect(screen.getByText('Hello Memo')).toBeTruthy());
 
-    screen.getByLabelText('Collapse memo').click();
+    screen.getByLabelText('Collapse Memo').click();
 
-    await waitFor(() => expect(screen.getByLabelText('Expand memo')).toBeTruthy());
-    expect(screen.queryByText('Hello Memo')).toBeNull();
+    await waitFor(() => expect(screen.getByLabelText('Expand Memo')).toBeTruthy());
+    // The content stays mounted (R4' -- AccordionSectionBody never
+    // unmounts), so absence-from-DOM is no longer the right check. Instead
+    // confirm the body wrapper is aria-hidden.
+    const memoContentWrapper = screen.getByText('Hello Memo').closest('.memo-content');
+    expect(memoContentWrapper?.closest('[aria-hidden="true"]')).toBeTruthy();
 
-    screen.getByLabelText('Expand memo').click();
+    screen.getByLabelText('Expand Memo').click();
+    await waitFor(() => expect(screen.getByLabelText('Collapse Memo')).toBeTruthy());
+    expect(screen.getByText('Hello Memo').closest('[aria-hidden="true"]')).toBeNull();
+  });
+
+  it('excludes the body\'s interactive descendants from the tab order while collapsed, and restores them when re-expanded (R6)', async () => {
+    mockFetch.mockResolvedValue(jsonResponse({ content: '# Hello Memo' }));
+
+    await renderWithRouter(<ControlledMemoPanel sessionId="session-1" />);
     await waitFor(() => expect(screen.getByText('Hello Memo')).toBeTruthy());
+
+    // Enter edit mode so a concrete interactive control (the textarea) is
+    // present in the body, then collapse.
+    fireEvent.click(screen.getByRole('button', { name: 'Edit memo' }));
+    const textarea = await screen.findByLabelText('Memo content');
+
+    screen.getByLabelText('Collapse Memo').click();
+    await waitFor(() => expect(screen.getByLabelText('Expand Memo')).toBeTruthy());
+
+    expect(textarea.tabIndex).toBe(-1);
+
+    screen.getByLabelText('Expand Memo').click();
+    await waitFor(() => expect(screen.getByLabelText('Collapse Memo')).toBeTruthy());
+
+    expect(screen.getByLabelText('Memo content').tabIndex).not.toBe(-1);
   });
 
   it('updates the rendered content when a memo-updated WebSocket event arrives for this session', async () => {

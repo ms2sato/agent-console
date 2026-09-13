@@ -57,7 +57,7 @@ describe('SessionArtifactsPanel', () => {
 
     const { container } = await renderWithRouter(<ControlledArtifactsPanel sessionId="session-1" />);
 
-    expect(container.querySelector('[aria-label="Collapse artifacts"]')).toBeNull();
+    expect(container.querySelector('[aria-label="Collapse Artifacts"]')).toBeNull();
     expect(container.textContent).toBe('');
   });
 
@@ -91,7 +91,7 @@ describe('SessionArtifactsPanel', () => {
     expect(link.getAttribute('rel')).toBe('noopener noreferrer');
   });
 
-  it('collapses to a thin strip and can be re-expanded', async () => {
+  it('collapses to a header row without a body, and can be re-expanded', async () => {
     mockFetch.mockResolvedValue(
       jsonResponse({
         artifacts: [
@@ -103,12 +103,42 @@ describe('SessionArtifactsPanel', () => {
     await renderWithRouter(<ControlledArtifactsPanel sessionId="session-1" />);
     await waitFor(() => expect(screen.getByText('My Dashboard')).toBeTruthy());
 
-    screen.getByLabelText('Collapse artifacts').click();
+    screen.getByLabelText('Collapse Artifacts').click();
 
-    await waitFor(() => expect(screen.getByLabelText('Expand artifacts')).toBeTruthy());
-    expect(screen.queryByText('My Dashboard')).toBeNull();
+    await waitFor(() => expect(screen.getByLabelText('Expand Artifacts')).toBeTruthy());
+    // The content stays mounted (R4' -- AccordionSectionBody never
+    // unmounts), so absence-from-DOM is no longer the right check.
+    const dashboardWrapper = screen.getByText('My Dashboard').closest('[aria-hidden]');
+    expect(dashboardWrapper?.getAttribute('aria-hidden')).toBe('true');
 
-    screen.getByLabelText('Expand artifacts').click();
+    screen.getByLabelText('Expand Artifacts').click();
     await waitFor(() => expect(screen.getByText('My Dashboard')).toBeTruthy());
+    expect(screen.getByText('My Dashboard').closest('[aria-hidden="true"]')).toBeNull();
+  });
+
+  it('excludes the View link from the tab order while collapsed, and restores it when re-expanded (R6)', async () => {
+    mockFetch.mockResolvedValue(
+      jsonResponse({
+        artifacts: [
+          { id: 'artifact-1', title: 'My Dashboard', createdAt: '2026-08-16T00:00:00.000Z', sizeBytes: 1234 },
+        ],
+      })
+    );
+
+    await renderWithRouter(<ControlledArtifactsPanel sessionId="session-1" />);
+    await waitFor(() => expect(screen.getByText('My Dashboard')).toBeTruthy());
+
+    const link = screen.getByText('View').closest('a')!;
+    expect(link.tabIndex).not.toBe(-1);
+
+    screen.getByLabelText('Collapse Artifacts').click();
+    await waitFor(() => expect(screen.getByLabelText('Expand Artifacts')).toBeTruthy());
+
+    expect(link.tabIndex).toBe(-1);
+
+    screen.getByLabelText('Expand Artifacts').click();
+    await waitFor(() => expect(screen.getByLabelText('Collapse Artifacts')).toBeTruthy());
+
+    expect(link.tabIndex).not.toBe(-1);
   });
 });

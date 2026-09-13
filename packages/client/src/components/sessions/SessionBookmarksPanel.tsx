@@ -1,5 +1,6 @@
 import { useRef, useState } from 'react';
 import { useSessionBookmarks } from './hooks/useSessionBookmarks';
+import { AccordionSectionBody } from './AccordionSectionBody';
 
 interface SessionBookmarksPanelProps {
   sessionId: string;
@@ -98,105 +99,109 @@ export function SessionBookmarksPanel({ sessionId, isExpanded, onToggleExpanded,
   return (
     <div className="flex flex-col border-b border-slate-700">
       <div className="flex items-center justify-between px-3 py-1.5">
-        <span className="text-sm font-medium text-gray-300">Bookmarks</span>
         <button
+          type="button"
           onClick={() => {
             onToggleExpanded();
             setIsFormVisible(false);
           }}
-          className="text-gray-400 hover:text-gray-200 cursor-pointer bg-transparent border-none p-1 text-sm"
-          title={isExpanded ? 'Collapse bookmarks' : 'Expand bookmarks'}
-          aria-label={isExpanded ? 'Collapse bookmarks' : 'Expand bookmarks'}
+          aria-expanded={isExpanded}
+          aria-label={isExpanded ? 'Collapse Bookmarks' : 'Expand Bookmarks'}
+          className="text-sm font-medium text-gray-300 bg-transparent border-none p-0 cursor-pointer text-left"
         >
-          {isExpanded ? '✕' : '▸'}
+          Bookmarks
         </button>
       </div>
-      {isExpanded && (
-        <>
-          {/* Add form, revealed on a deliberate action */}
-          <div className="flex flex-col border-b border-slate-700">
-            <button
-              type="button"
-              onClick={() => setIsFormVisible((visible) => !visible)}
-              aria-expanded={isFormVisible}
-              aria-label={isFormVisible ? 'Hide add bookmark form' : 'Show add bookmark form'}
-              className="text-xs text-gray-400 hover:text-gray-200 cursor-pointer bg-transparent border-none px-3 py-1.5 text-left"
-            >
-              {isFormVisible ? '- New bookmark' : '+ New bookmark'}
-            </button>
-            {isFormVisible && (
-              <form onSubmit={handleSubmit} className="flex flex-col gap-1.5 px-3 pb-2">
-                <input
-                  ref={urlInputRef}
-                  type="text"
-                  value={url}
-                  onChange={(e) => setUrl(e.target.value)}
-                  placeholder="https://example.com"
-                  aria-label="Bookmark URL"
-                  className="bg-slate-900 border border-slate-600 rounded px-2 py-1 text-sm text-gray-200 placeholder:text-slate-500"
-                />
-                <input
-                  type="text"
-                  value={title}
-                  onChange={(e) => setTitle(e.target.value)}
-                  placeholder="Title (optional)"
-                  aria-label="Bookmark title"
-                  className="bg-slate-900 border border-slate-600 rounded px-2 py-1 text-sm text-gray-200 placeholder:text-slate-500"
-                />
-                <button
-                  type="submit"
-                  disabled={url.trim().length === 0 || isAddingBookmark}
-                  className="btn text-xs bg-blue-600 hover:bg-blue-500 disabled:opacity-50 disabled:cursor-not-allowed self-start"
-                >
-                  Add bookmark
-                </button>
-                {error && <span className="text-xs text-red-400">{error}</span>}
-              </form>
-            )}
-          </div>
-
-          {/* Content */}
-          <div className="min-w-0 max-h-96 overflow-y-auto">
-            {bookmarks.map((bookmark) => (
-              <div
-                key={bookmark.id}
-                className="flex items-center justify-between gap-2 px-3 py-2 border-b border-slate-700/50"
+      <AccordionSectionBody isExpanded={isExpanded}>
+        {/* Add form, revealed on a deliberate action */}
+        <div className="flex flex-col border-b border-slate-700">
+          <button
+            type="button"
+            onClick={() => setIsFormVisible((visible) => !visible)}
+            aria-expanded={isFormVisible}
+            aria-label={isFormVisible ? 'Hide add bookmark form' : 'Show add bookmark form'}
+            tabIndex={isExpanded ? undefined : -1}
+            className="text-xs text-gray-400 hover:text-gray-200 cursor-pointer bg-transparent border-none px-3 py-1.5 text-left"
+          >
+            {isFormVisible ? '- New bookmark' : '+ New bookmark'}
+          </button>
+          {isFormVisible && (
+            <form onSubmit={handleSubmit} className="flex flex-col gap-1.5 px-3 pb-2">
+              <input
+                ref={urlInputRef}
+                type="text"
+                value={url}
+                onChange={(e) => setUrl(e.target.value)}
+                placeholder="https://example.com"
+                aria-label="Bookmark URL"
+                tabIndex={isExpanded ? undefined : -1}
+                className="bg-slate-900 border border-slate-600 rounded px-2 py-1 text-sm text-gray-200 placeholder:text-slate-500"
+              />
+              <input
+                type="text"
+                value={title}
+                onChange={(e) => setTitle(e.target.value)}
+                placeholder="Title (optional)"
+                aria-label="Bookmark title"
+                tabIndex={isExpanded ? undefined : -1}
+                className="bg-slate-900 border border-slate-600 rounded px-2 py-1 text-sm text-gray-200 placeholder:text-slate-500"
+              />
+              <button
+                type="submit"
+                disabled={url.trim().length === 0 || isAddingBookmark}
+                tabIndex={isExpanded ? undefined : -1}
+                className="btn text-xs bg-blue-600 hover:bg-blue-500 disabled:opacity-50 disabled:cursor-not-allowed self-start"
               >
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-center gap-1.5">
-                    <a
-                      href={bookmark.url}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="min-w-0 text-sm text-blue-400 hover:text-blue-300 truncate no-underline"
-                      style={{ unicodeBidi: 'isolate' }}
+                Add bookmark
+              </button>
+              {error && <span className="text-xs text-red-400">{error}</span>}
+            </form>
+          )}
+        </div>
+
+        {/* Content */}
+        <div className="min-w-0 max-h-96 overflow-y-auto">
+          {bookmarks.map((bookmark) => (
+            <div
+              key={bookmark.id}
+              className="flex items-center justify-between gap-2 px-3 py-2 border-b border-slate-700/50"
+            >
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-1.5">
+                  <a
+                    href={bookmark.url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    tabIndex={isExpanded ? undefined : -1}
+                    className="min-w-0 text-sm text-blue-400 hover:text-blue-300 truncate no-underline"
+                    style={{ unicodeBidi: 'isolate' }}
+                  >
+                    {bookmark.title ?? bookmark.url}
+                  </a>
+                  {bookmark.origin === 'agent' && (
+                    <span
+                      className="shrink-0 px-1.5 py-0.5 rounded-full bg-amber-500/20 text-amber-400 text-xs font-medium leading-none"
+                      aria-label="Registered by an agent"
                     >
-                      {bookmark.title ?? bookmark.url}
-                    </a>
-                    {bookmark.origin === 'agent' && (
-                      <span
-                        className="shrink-0 px-1.5 py-0.5 rounded-full bg-amber-500/20 text-amber-400 text-xs font-medium leading-none"
-                        aria-label="Registered by an agent"
-                      >
-                        Agent
-                      </span>
-                    )}
-                  </div>
-                  <span className="block break-all text-xs text-gray-500">{bookmarkHost(bookmark.url)}</span>
+                      Agent
+                    </span>
+                  )}
                 </div>
-                <button
-                  onClick={() => deleteBookmark(bookmark.id)}
-                  className="text-gray-400 hover:text-red-400 cursor-pointer bg-transparent border-none p-1 text-xs shrink-0"
-                  title="Delete bookmark"
-                  aria-label={`Delete bookmark ${bookmark.title ?? bookmark.url}`}
-                >
-                  ✕
-                </button>
+                <span className="block break-all text-xs text-gray-500">{bookmarkHost(bookmark.url)}</span>
               </div>
-            ))}
-          </div>
-        </>
-      )}
+              <button
+                onClick={() => deleteBookmark(bookmark.id)}
+                tabIndex={isExpanded ? undefined : -1}
+                className="text-gray-400 hover:text-red-400 cursor-pointer bg-transparent border-none p-1 text-xs shrink-0"
+                title="Delete bookmark"
+                aria-label={`Delete bookmark ${bookmark.title ?? bookmark.url}`}
+              >
+                ✕
+              </button>
+            </div>
+          ))}
+        </div>
+      </AccordionSectionBody>
     </div>
   );
 }
