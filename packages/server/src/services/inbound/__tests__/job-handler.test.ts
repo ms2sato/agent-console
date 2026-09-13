@@ -4,6 +4,12 @@ import type { ServiceParser } from '../service-parser.js';
 import type { InboundEventHandler } from '../handlers.js';
 import type { InboundEventNotification, NewInboundEventNotification } from '../../../database/schema.js';
 import { createInboundEventJobHandler } from '../job-handler.js';
+// Aliased: job-handler.ts's own dependency-interface `InboundEventNotificationRepository`
+// (3 methods) shares its name with the CLASS of the same name imported below
+// from the repository module (which additionally exposes `db` and
+// `deleteNotificationsBySessionId`). The alias avoids that collision when a
+// test needs to type an object against job-handler's narrower interface.
+import type { InboundEventNotificationRepository as JobHandlerNotificationRepository } from '../job-handler.js';
 import type { CICompletionChecker } from '../ci-completion-checker.js';
 import { createDatabaseForTest } from '../../../database/connection.js';
 import { InboundEventNotificationRepository } from '../../../repositories/inbound-event-notification-repository.js';
@@ -709,6 +715,131 @@ describe('createInboundEventJobHandler', () => {
       expect(createPendingNotificationMock).not.toHaveBeenCalled();
       expect(handlerMock).not.toHaveBeenCalled();
       expect(markNotificationDeliveredMock).not.toHaveBeenCalled();
+    });
+
+    it('rethrows a deliver-step failure (markNotificationDelivered throwing after a successful handle) so the job queue retries and the idempotency check safely closes it out on retry, without re-dispatching a sibling that already reached delivered', async () => {
+      // reach measured (half 1, deliver-step rethrow): temporarily dropping
+      // `step === 'deliver'` from the rethrow condition (so a 'deliver'-step
+      // failure is swallowed the way the old code swallowed everything)
+      // makes the FIRST invocation's `.rejects` assertion below FAIL -- the
+      // job resolves instead of rejecting. Restoring the real condition
+      // makes it pass again. Measured 2026-09-14 against the code in this PR.
+      //
+      // reach measured (half 2, idempotency pending-close-out): temporarily
+      // bypassing the 'pending' branch of the idempotency check (the one
+      // that calls `markNotificationDelivered` WITHOUT re-invoking the
+      // handler) makes the SECOND invocation's per-target handler-call-count
+      // assertion below FAIL -- the handler gets re-invoked (falls through
+      // to the ATOMIC SAFETY / handler-dispatch path instead of being closed
+      // out administratively). Restoring the real branch makes it pass
+      // again. Measured 2026-09-14 against the code in this PR.
+      const db = await createDatabaseForTest();
+      try {
+        const repo = new InboundEventNotificationRepository(db);
+        const deliverFailSessionId = 'deliver-fail-session';
+        const siblingSessionId = 'sibling-healthy-session';
+        await createTestSession(db, deliverFailSessionId);
+        await createTestSession(db, siblingSessionId);
+
+        // Wraps the REAL repository (real DB, real FK constraint, real
+        // idempotency reads/writes) so only `markNotificationDelivered`'s
+        // FIRST call for `deliverFailSessionId` is intercepted and made to
+        // throw a plain (non-FK) `Error` -- simulating a transient
+        // bookkeeping-write failure AFTER a real, successful `handle()` call
+        // already persisted a real 'pending' row. Every other call
+        // (including the sibling's, and this target's own second attempt on
+        // retry) delegates straight through to the real repository.
+        let deliverFailAttempts = 0;
+        const wrappedRepo: JobHandlerNotificationRepository = {
+          findInboundEventNotification: (jobId, sessionId, workerId, handlerId) =>
+            repo.findInboundEventNotification(jobId, sessionId, workerId, handlerId),
+          createPendingNotification: (notification) => repo.createPendingNotification(notification),
+          markNotificationDelivered: async (jobId, sessionId, workerId, handlerId) => {
+            if (sessionId === deliverFailSessionId && deliverFailAttempts === 0) {
+              deliverFailAttempts++;
+              throw new Error('simulated transient delivery-bookkeeping error');
+            }
+            return repo.markNotificationDelivered(jobId, sessionId, workerId, handlerId);
+          },
+        };
+
+        const parser: ServiceParser = {
+          serviceId: 'github',
+          authenticate: async () => true,
+          parse: async () => ({
+            type: 'ci:completed',
+            source: 'github',
+            timestamp: '2024-01-01T00:00:00Z',
+            metadata: { repositoryName: 'owner/repo' },
+            payload: { ok: true },
+            summary: 'CI success',
+          }),
+        };
+
+        const handlerMock = mock(async (_event: unknown, _target: { sessionId: string }) => true);
+        const handler: InboundEventHandler = {
+          handlerId: 'test-handler',
+          supportedEvents: ['ci:completed'],
+          handle: handlerMock as unknown as InboundEventHandler['handle'],
+        };
+
+        const jobHandler = createInboundEventJobHandler({
+          getServiceParser: () => parser,
+          // Sibling ordered FIRST so it reaches 'delivered' within THIS
+          // SAME invocation, before the deliver-fail target's failure
+          // aborts the rest of the loop -- this is what makes it "already
+          // delivered before the retry" per the sibling-skip assertion.
+          resolveTargets: async () => [
+            { sessionId: siblingSessionId },
+            { sessionId: deliverFailSessionId },
+          ],
+          handlers: [handler],
+          notificationRepository: wrappedRepo,
+        });
+
+        const jobPayload = {
+          jobId: 'job-regress-7',
+          service: 'github',
+          rawPayload: '{}',
+          headers: {},
+          receivedAt: '2024-01-01T00:00:00Z',
+        };
+
+        // --- Half 1: fresh delivery attempt; markNotificationDelivered
+        // throws for the deliver-fail target after its handler succeeded.
+        await expect(jobHandler(jobPayload)).rejects.toThrow('simulated transient delivery-bookkeeping error');
+
+        expect(
+          handlerMock.mock.calls.filter((call) => call[1].sessionId === deliverFailSessionId)
+        ).toHaveLength(1);
+        expect(
+          handlerMock.mock.calls.filter((call) => call[1].sessionId === siblingSessionId)
+        ).toHaveLength(1);
+
+        const rowsAfterHalf1 = await db.selectFrom('inbound_event_notifications').selectAll().execute();
+        expect(rowsAfterHalf1.find((r) => r.session_id === deliverFailSessionId)?.status).toBe('pending');
+        expect(rowsAfterHalf1.find((r) => r.session_id === siblingSessionId)?.status).toBe('delivered');
+
+        // --- Half 2: retry (same jobId). The idempotency check closes the
+        // deliver-fail target out administratively (markNotificationDelivered
+        // succeeds this time; handler is NOT re-invoked). The sibling --
+        // already 'delivered' -- is skipped entirely, also without
+        // re-invoking its handler.
+        await expect(jobHandler(jobPayload)).resolves.toBeUndefined();
+
+        expect(
+          handlerMock.mock.calls.filter((call) => call[1].sessionId === deliverFailSessionId)
+        ).toHaveLength(1);
+        expect(
+          handlerMock.mock.calls.filter((call) => call[1].sessionId === siblingSessionId)
+        ).toHaveLength(1);
+
+        const rowsAfterHalf2 = await db.selectFrom('inbound_event_notifications').selectAll().execute();
+        expect(rowsAfterHalf2.find((r) => r.session_id === deliverFailSessionId)?.status).toBe('delivered');
+        expect(rowsAfterHalf2.find((r) => r.session_id === siblingSessionId)?.status).toBe('delivered');
+      } finally {
+        await db.destroy();
+      }
     });
 
     it('isolates a handler that throws after the pending row is already created (the "handle" failure class), while a second healthy target is still processed normally', async () => {

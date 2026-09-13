@@ -147,11 +147,24 @@ export function createInboundEventJobHandler(deps: InboundEventJobDependencies) 
         // persisting, or dispatching for one target must not block other
         // targets or fail the whole job (e.g. a target whose session row no
         // longer exists trips the notifications table's FOREIGN KEY
-        // constraint on insert). `step` records which half of the unit of
+        // constraint on insert). `step` records which part of the unit of
         // work failed, for the catch block below: 'persist' means no
-        // notification row exists (or we couldn't check), 'handle' means
-        // the row was already created and stays pending.
-        let step: 'persist' | 'handle' = 'persist';
+        // notification row exists yet (or we couldn't check) -- a target
+        // with no DB row at all trips a permanent FK-constraint violation
+        // here, everything else is transient and safe to retry from
+        // scratch. 'handle' means the pending row exists and
+        // `handler.handle()` itself threw -- the row stays pending, and
+        // there is no bookkeeping-only retry that could safely close it out
+        // without knowing whether delivery actually happened (a distinct,
+        // still-open design question about that terminal state).
+        // 'deliver' means delivery already succeeded
+        // (or, for a retried job, was already marked pending by an earlier
+        // attempt) and only the `markNotificationDelivered` bookkeeping
+        // write itself failed -- a plain UPDATE with no foreign-key class to
+        // carve out, so it always rethrows: the idempotency check above
+        // safely closes it out on the next retry without re-invoking the
+        // handler.
+        let step: 'persist' | 'handle' | 'deliver' = 'persist';
         try {
           // IDEMPOTENCY CHECK: Skip if notification already exists (delivered or pending)
           // This prevents duplicate handler execution on job retry
@@ -178,6 +191,7 @@ export function createInboundEventJobHandler(deps: InboundEventJobDependencies) 
               { jobId: job.jobId, sessionId: target.sessionId, handlerId: handler.handlerId },
               'Found pending notification from previous attempt, marking as delivered'
             );
+            step = 'deliver';
             await deps.notificationRepository.markNotificationDelivered(
               job.jobId,
               target.sessionId,
@@ -207,6 +221,7 @@ export function createInboundEventJobHandler(deps: InboundEventJobDependencies) 
           // Always mark notification as delivered after handler completes
           // Handler returning false means "no action taken" (e.g., session not found),
           // not "failed" - we still want to prevent retry
+          step = 'deliver';
           await deps.notificationRepository.markNotificationDelivered(
             job.jobId,
             target.sessionId,
@@ -226,15 +241,28 @@ export function createInboundEventJobHandler(deps: InboundEventJobDependencies) 
             );
           }
         } catch (error) {
-          // A 'persist'-step failure that is NOT a foreign-key-constraint
-          // violation has not persisted anything for this unit of work yet
-          // (the idempotency read or the insert itself failed transiently,
-          // e.g. SQLITE_BUSY or an I/O error) -- rethrow so the job queue
-          // retries it as a legitimate first attempt, rather than silently
-          // dropping the target. Everything else (a genuinely dangling
-          // sessionId at 'persist', or any failure at 'handle' once the
-          // pending row already exists) is logged and skipped, unchanged.
-          if (step === 'persist' && !isForeignKeyConstraintError(error)) {
+          // Two rethrow classes, both because a retry from here is safe or
+          // necessary; everything else is logged and skipped:
+          // - A 'persist'-step failure that is NOT a foreign-key-constraint
+          //   violation has not persisted anything for this unit of work
+          //   yet (the idempotency read or the insert itself failed
+          //   transiently, e.g. SQLITE_BUSY or an I/O error) -- rethrow so
+          //   the job queue retries it as a legitimate first attempt,
+          //   rather than silently dropping the target. A genuinely
+          //   dangling sessionId (an FK-constraint violation) at 'persist'
+          //   is logged and skipped, unchanged.
+          // - A 'deliver'-step failure means delivery already happened (or,
+          //   on a retry, was already marked pending by an earlier
+          //   attempt) and only the bookkeeping UPDATE failed -- there is
+          //   no foreign-key class to carve out here (the row being
+          //   updated already exists), so it always rethrows. The
+          //   idempotency check above safely closes it out on the next
+          //   retry without re-invoking the handler.
+          // A 'handle'-step failure (handler.handle() itself threw) is
+          // logged and skipped, unchanged -- whether that terminal
+          // 'pending' state needs its own resolution path is a separate,
+          // still-open design question.
+          if ((step === 'persist' && !isForeignKeyConstraintError(error)) || step === 'deliver') {
             throw error;
           }
 
