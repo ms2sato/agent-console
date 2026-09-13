@@ -554,7 +554,8 @@ describe('SdkEngine — construction seam: the query() Options battery (Pin 1(a)
     expect(options.allowDangerouslySkipPermissions).toBe(true);
     expect(options.includePartialMessages).toBe(true);
     expect(options.settingSources).toEqual([]);
-    expect(options.settings).toEqual({ autoCompactEnabled: false });
+    // Reach measured: removing autoMemoryEnabled from buildOptions fails this line with "expected {…} to equal {…}".
+    expect(options.settings).toEqual({ autoCompactEnabled: false, autoMemoryEnabled: false });
     expect(options.mcpServers?.['agent-console']).toEqual({
       type: 'http',
       url: 'http://mcp.local',
@@ -1979,13 +1980,13 @@ describe('SdkEngine — compaction: the auto toggle', () => {
   it('composes the worker toggle into the SDK settings, ON', () => {
     const { queryFn, captured } = makeFakeQuery([]);
     new SdkEngine(baseDeps({ queryFn, autoCompaction: true }));
-    expect(captured.options?.settings).toEqual({ autoCompactEnabled: true });
+    expect(captured.options?.settings).toEqual({ autoCompactEnabled: true, autoMemoryEnabled: false });
   });
 
   it('composes the worker toggle into the SDK settings, OFF', () => {
     const { queryFn, captured } = makeFakeQuery([]);
     new SdkEngine(baseDeps({ queryFn, autoCompaction: false }));
-    expect(captured.options?.settings).toEqual({ autoCompactEnabled: false });
+    expect(captured.options?.settings).toEqual({ autoCompactEnabled: false, autoMemoryEnabled: false });
   });
 
   it('applies a live toggle change to the running session via applyFlagSettings', () => {

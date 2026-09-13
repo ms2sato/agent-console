@@ -45,6 +45,8 @@ import {
   redactRecallEntry,
   recallPathMatches,
   summarizeRecalls,
+  classifyAutoMemoryOffCheck,
+  parseArgs,
   EXTENDED_TIMEOUT_CAP_MS,
   WRITE_POLL_TIMEOUT_MS,
   type ArmAInput,
@@ -52,6 +54,7 @@ import {
   type ArmDInput,
   type ArmEConfigInput,
   type ArmESummaryInput,
+  type AutoMemoryOffCheckInput,
 } from '../probe-sdk-auto-memory.js';
 
 describe('probe-sdk-auto-memory exit codes', () => {
@@ -917,5 +920,63 @@ describe('seedMemoryTopic', () => {
     const indexContent = readFileSync(indexPath, 'utf8');
     expect(indexContent).toContain('- [First Fact](first.md) — first hook.');
     expect(indexContent).toContain('- [Second Fact](second.md) — second hook.');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #1681: classifyAutoMemoryOffCheck
+// ---------------------------------------------------------------------------
+
+describe('classifyAutoMemoryOffCheck', () => {
+  const clean: AutoMemoryOffCheckInput = { settled: true, locationHit: false, accessHit: false, memoryFilesCount: 0 };
+
+  it('is inconclusive when the turn did not settle, before anything else is checked', () => {
+    const r = classifyAutoMemoryOffCheck({ ...clean, settled: false });
+    expect(r.conclusive).toBe(false);
+    expect(r.note.startsWith('INCONCLUSIVE')).toBe(true);
+  });
+
+  it('reads confirmed-off when all three observables are clean (all-success boundary)', () => {
+    const r = classifyAutoMemoryOffCheck(clean);
+    expect(r).toMatchObject({ classification: 'confirmed-off', conclusive: true });
+  });
+
+  it('reads unexpected-hit when LOCATION hits despite the flag being off', () => {
+    const r = classifyAutoMemoryOffCheck({ ...clean, locationHit: true });
+    expect(r).toMatchObject({ classification: 'unexpected-hit', conclusive: true });
+  });
+
+  it('reads unexpected-hit when ACCESS hits despite the flag being off', () => {
+    const r = classifyAutoMemoryOffCheck({ ...clean, accessHit: true });
+    expect(r).toMatchObject({ classification: 'unexpected-hit', conclusive: true });
+  });
+
+  it('reads unexpected-hit when memoryFiles is non-empty even though neither text observable hit -- the mechanism loaded the file silently, which is a real (partial) hit, not "off"', () => {
+    const r = classifyAutoMemoryOffCheck({ ...clean, memoryFilesCount: 1 });
+    expect(r).toMatchObject({ classification: 'unexpected-hit', conclusive: true });
+    expect(r.note).toContain('memoryFilesCount=1');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #1681: parseArgs -- flag parsing for --auto-memory-off
+// ---------------------------------------------------------------------------
+
+describe('parseArgs -- --auto-memory-off', () => {
+  it('defaults autoMemoryOff to false, with the default arm set unaffected (boundary: no args)', () => {
+    const parsed = parseArgs([]);
+    expect(parsed.autoMemoryOff).toBe(false);
+    expect([...parsed.arms].sort()).toEqual(['--a', '--b', '--c', '--d']);
+  });
+
+  it('sets autoMemoryOff to true when --auto-memory-off is passed', () => {
+    const parsed = parseArgs(['--auto-memory-off']);
+    expect(parsed.autoMemoryOff).toBe(true);
+  });
+
+  it('tracks --auto-memory-off as its own field, never as a member of arms', () => {
+    const parsed = parseArgs(['--auto-memory-off']);
+    expect((parsed.arms as Set<string>).has('--auto-memory-off')).toBe(false);
+    expect([...parsed.arms].sort()).toEqual(['--a', '--b', '--c', '--d']);
   });
 });
