@@ -446,9 +446,14 @@ export interface RecallSummaryEntry extends RedactedRecallEntry {
  * line built two independently-shaped serializations of the same events;
  * a careless edit to either one could silently spread a raw `content`
  * field back into a durable log without the other call site's tests
- * catching it. `RecallSummaryEntry`'s explicit shape (no `content` member)
- * makes that impossible to do by accident here -- both call sites use
- * this function's return value directly, never their own reshaping.
+ * catching it. `RecallSummaryEntry` is typed with no `content` member, and
+ * both call sites use this function's return value directly, never their
+ * own reshaping. Note: TypeScript's excess-property checking does not
+ * extend through object spread, so a future edit that wrote
+ * `{ mode, ...m }` (the raw event, `content` and all) instead of
+ * `{ mode, ...redactRecallEntry(m, configDir) }` would still compile --
+ * the sentinel-content test below is what actually catches that mistake,
+ * not the type system alone.
  *
  * @internal Exported for the sibling unit test.
  */
