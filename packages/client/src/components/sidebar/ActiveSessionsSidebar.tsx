@@ -222,10 +222,17 @@ function SessionItem({ sessionWithActivity, collapsed, isActive, onClick, orches
       data-testid={`orchestrator-flag-${session.id}`}
       onClick={handleOrchestratorFlagClick}
       disabled={orchestratorFlagPending}
-      // top offset = row p-3 (0.75rem) + column mt-1.5 (0.375rem) + dot box h-4
-      // (1rem) + gap-1 (0.25rem). Update this expression, not a bare number, if
-      // any of those four values change.
-      className={`absolute left-3 top-[calc(0.75rem_+_0.375rem_+_1rem_+_0.25rem)] w-4 h-4 flex items-center justify-center rounded transition-colors disabled:opacity-50 ${
+      // top offset must be derived from the TEXT column's own reference frame,
+      // not the icon column's box stack. The icon column has mt-1.5 + gap-1
+      // between its two rows, but the text column has neither -- its row 2
+      // starts exactly where row 1's line-height ends. So the correct offset
+      // is just: button padding p-3 (0.75rem) + row-1 line-height text-sm
+      // (1.25rem) = 2rem, the point where text-column row 2 begins. The
+      // flag's own box (w-4 h-4 = 1rem) and text-xs's line-height (also 1rem)
+      // are the same height, so placing top at that point makes the two
+      // boxes coincide exactly. Update this expression, not a bare number,
+      // if button padding or row-1's text size/line-height changes.
+      className={`absolute left-3 top-[calc(0.75rem_+_1.25rem)] w-4 h-4 flex items-center justify-center rounded transition-colors disabled:opacity-50 ${
         isOrchestratorFlagLit
           ? 'text-amber-400 hover:text-amber-300'
           : 'text-gray-600 hover:text-gray-400'
