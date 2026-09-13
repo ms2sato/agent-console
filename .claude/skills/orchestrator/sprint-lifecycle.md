@@ -142,7 +142,9 @@ The Orchestrator proposes ending the sprint, and when the owner approves, conduc
 ```
 run_process({ command: "node .claude/skills/orchestrator/sprint-retro.js" })
 ```
-The script guides you through all retrospective steps interactively via STDIN/STDOUT and instructs you to create a TaskCreate checklist for progress tracking. Do NOT skip the script and attempt the steps manually — the script exists precisely because manual execution leads to step omission.
+The script guides you through all retrospective steps interactively via STDIN/STDOUT and instructs you to create a TaskCreate checklist (or a memo checklist when the tool is absent) for progress tracking. Do NOT skip the script and attempt the steps manually — the script exists precisely because manual execution leads to step omission.
+
+**Step 3c is the compression pass.** Every retro adds to the always-loaded layer (CLAUDE.md, `.claude/rules/*.md`, the skills' `SKILL.md`); nothing removes from it unless a step asks, so the layer only grows. Step 3c measures the surface before the retro PR (two `wc -l` totals, recorded in `project_sprint_status.md` as the next retro's baseline), requires each Step 4 addition to name what it replaces or shortens, and requires the retro PR to be net-non-positive on that surface — or to state its net delta and the reason in the PR body. (Owner directive, 2026-09-13: "adding improvements every sprint makes the skills grow without bound; make compressing and removing part of the retro".)
 
 ### Objective metrics block (Phase 1)
 
