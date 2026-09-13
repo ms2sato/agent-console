@@ -535,6 +535,21 @@ export function isExcludedFile(file) {
 }
 
 /**
+ * Strip a leading `./` (or repeated `./`) so an explicit CLI-supplied path
+ * like `./scripts/build.mjs` compares equal to the bare repo-relative form
+ * Bun.Glob produces and isExcludedFile's checks expect. Only the explicit
+ * `files` argument to runCheck can carry this prefix — findDefaultFiles's
+ * glob output never does — but exclusion matching must be uniform
+ * regardless of how a file was targeted (see runCheck below).
+ *
+ * @param {string} file
+ * @returns {string}
+ */
+function normalizeRelativePath(file) {
+  return file.replace(/^(?:\.\/)+/, '');
+}
+
+/**
  * Resolve the default target file list.
  *
  * `dot: true` is required to scan into `.claude/` — Bun.Glob otherwise
@@ -576,6 +591,11 @@ export async function findViolationsInFile(file, { cwd = process.cwd() } = {}) {
 /**
  * Run the full check across a list of files (or the default glob set).
  *
+ * isExcludedFile is applied here uniformly, regardless of whether the file
+ * list came from the default glob or was passed explicitly — an excluded
+ * file (scripts/smoke/**, EXCLUDED_FILES, __tests__/, *.test.*, *.spec.*)
+ * is never scanned no matter how it was targeted.
+ *
  * @param {object} [options]
  * @param {string} [options.cwd]
  * @param {string[]} [options.files] explicit list (skips the default glob)
@@ -588,7 +608,12 @@ export async function findViolationsInFile(file, { cwd = process.cwd() } = {}) {
  * }>}
  */
 export async function runCheck({ cwd = process.cwd(), files, allowlist = KNOWN_VIOLATIONS } = {}) {
-  const targetFiles = files ?? (await findDefaultFiles({ cwd }));
+  const candidateFiles = files ?? (await findDefaultFiles({ cwd }));
+  // normalizeRelativePath is applied only to the exclusion predicate, not
+  // to the paths used for scanning or reporting — a non-excluded caller
+  // path like `./scripts/build.mjs` must still be scanned and reported
+  // verbatim as `./scripts/build.mjs`, not silently rewritten.
+  const targetFiles = candidateFiles.filter((f) => !isExcludedFile(normalizeRelativePath(f)));
   const violations = [];
   for (const file of targetFiles) {
     const fileViolations = await findViolationsInFile(file, { cwd });

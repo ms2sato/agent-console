@@ -434,6 +434,73 @@ describe('runCheck — allowlist behaviour', () => {
       rmSync(root, { recursive: true, force: true });
     }
   });
+
+  // Issue #1532's fix in the sibling check-public-artifacts-language.mjs
+  // (PR #1531) established the regression pin that matters here: not
+  // "excluded files are skipped" (already true via the discovery path,
+  // and would stay true with the bug present), but "the SAME file, passed
+  // explicitly, is ALSO skipped" -- which fails against an
+  // isExcludedFile-inside-findDefaultFiles-only implementation and passes
+  // once the exclusion is applied to the final target list regardless of
+  // how it was assembled.
+  it('exclusion is applied uniformly for an explicit files list, not only the default glob path', async () => {
+    const root = makeFixture();
+    try {
+      writeFileSync(
+        join(root, 'packages/server/src/__tests__/foo.ts'),
+        `// Issue #1 -- would be a violation if scanned\n`,
+      );
+      const result = await runCheck({
+        cwd: root,
+        files: ['packages/server/src/__tests__/foo.ts'],
+        allowlist: new Set(),
+      });
+      expect(result.violations).toEqual([]);
+      expect(result.files).toEqual([]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('exclusion matches an explicit path with a leading ./ the same as the bare form', async () => {
+    const root = makeFixture();
+    try {
+      mkdirSync(join(root, 'scripts/smoke'), { recursive: true });
+      writeFileSync(
+        join(root, 'scripts/smoke/probe.ts'),
+        `// Issue #1 -- registered verification provenance\n`,
+      );
+      const result = await runCheck({
+        cwd: root,
+        files: ['./scripts/smoke/probe.ts'],
+        allowlist: new Set(),
+      });
+      expect(result.violations).toEqual([]);
+      expect(result.files).toEqual([]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('preserves the caller-provided path string for a non-excluded ./ path (normalization is exclusion-matching-only)', async () => {
+    const root = makeFixture();
+    try {
+      writeFileSync(join(root, 'packages/server/src/foo.ts'), `// Issue #1\nconst x = 1;\n`);
+      const result = await runCheck({
+        cwd: root,
+        files: ['./packages/server/src/foo.ts'],
+        allowlist: new Set(),
+      });
+      // Not excluded, so it is scanned and reported under the exact
+      // caller-provided string -- normalization must not rewrite it to
+      // the bare 'packages/server/src/foo.ts' form.
+      expect(result.files).toEqual(['./packages/server/src/foo.ts']);
+      expect(result.violations).toHaveLength(1);
+      expect(result.violations[0].file).toBe('./packages/server/src/foo.ts');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('findDefaultFiles — scan glob', () => {
