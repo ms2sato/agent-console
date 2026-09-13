@@ -77,7 +77,7 @@ function routeFetchByPanel(): void {
   });
 }
 
-const STORAGE_KEY = 'agent-console:session-side-panels-expanded';
+const STORAGE_KEY = 'agent-console:session-side-panels-v2';
 
 describe('SessionSidePanels', () => {
   let restoreWebSocket: () => void;
@@ -114,92 +114,124 @@ describe('SessionSidePanels', () => {
     consoleErrorSpy.mockRestore();
   });
 
-  it('starts with all three sections collapsed on first render (empty localStorage, R3 default)', async () => {
+  it('starts with all three sections expanded on first render (empty localStorage, new default)', async () => {
     await renderWithRouter(<SessionSidePanels sessionId="session-1" />);
 
-    await waitFor(() => expect(screen.getByLabelText('Expand memo')).toBeTruthy());
-    expect(screen.getByLabelText('Expand artifacts')).toBeTruthy();
-    expect(screen.getByLabelText('Expand bookmarks')).toBeTruthy();
+    await waitFor(() => expect(screen.getByText('Hello Memo')).toBeTruthy());
+    expect(screen.getByText(ARTIFACT_TITLE)).toBeTruthy();
+    expect(screen.getByText(BOOKMARK_TITLE)).toBeTruthy();
 
-    expect(screen.queryByText('Hello Memo')).toBeNull();
-    expect(screen.queryByText(ARTIFACT_TITLE)).toBeNull();
-    // The bookmarks panel is reachable even collapsed via a different route
-    // (there is no separate "collapsed" query for it), so absence of its
-    // list content is the right check here, same as the other two.
-    expect(screen.queryByText(BOOKMARK_TITLE)).toBeNull();
+    expect(screen.getByLabelText('Collapse Memo').getAttribute('aria-expanded')).toBe('true');
+    expect(screen.getByLabelText('Collapse Artifacts').getAttribute('aria-expanded')).toBe('true');
+    expect(screen.getByLabelText('Collapse Bookmarks').getAttribute('aria-expanded')).toBe('true');
   });
 
-  it('expanding memo renders its content while artifacts/bookmarks stay collapsed (cross-component slice isolation)', async () => {
-    await renderWithRouter(<SessionSidePanels sessionId="session-1" />);
-    await waitFor(() => expect(screen.getByLabelText('Expand memo')).toBeTruthy());
+  it('the rail toggle button flips between the wide and narrow rail classes', async () => {
+    const { container } = await renderWithRouter(<SessionSidePanels sessionId="session-1" />);
+    await waitFor(() => expect(screen.getByText('Hello Memo')).toBeTruthy());
 
+    const railToggle = screen.getByLabelText('Collapse side panel');
+    expect(railToggle.getAttribute('aria-expanded')).toBe('true');
+
+    const wideColumn = container.querySelector('.w-80');
+    expect(wideColumn).toBeTruthy();
+
+    act(() => {
+      railToggle.click();
+    });
+
+    await waitFor(() => expect(screen.getByLabelText('Expand side panel')).toBeTruthy());
+    expect(screen.getByLabelText('Expand side panel').getAttribute('aria-expanded')).toBe('false');
+    expect(container.querySelector('.w-80')).toBeNull();
+
+    act(() => {
+      screen.getByLabelText('Expand side panel').click();
+    });
+
+    await waitFor(() => expect(screen.getByLabelText('Collapse side panel')).toBeTruthy());
+    expect(container.querySelector('.w-80')).toBeTruthy();
+  });
+
+  it('clicking a compact section label while the rail is closed reopens the rail with that section expanded, without disturbing an already-expanded section (R5a)', async () => {
+    await renderWithRouter(<SessionSidePanels sessionId="session-1" />);
+    await waitFor(() => expect(screen.getByText('Hello Memo')).toBeTruthy());
+
+    // Collapse the artifacts section (it stays collapsed once the rail
+    // closes), but leave memo expanded.
+    act(() => {
+      screen.getByLabelText('Collapse Artifacts').click();
+    });
+    await waitFor(() => expect(screen.getByLabelText('Expand Artifacts')).toBeTruthy());
+
+    // Close the rail.
+    act(() => {
+      screen.getByLabelText('Collapse side panel').click();
+    });
+    await waitFor(() => expect(screen.getByLabelText('Expand side panel')).toBeTruthy());
+
+    // From the narrow rail, click memo's compact label -- it was already
+    // expanded before the rail closed, and must come back expanded, not
+    // toggled off.
     act(() => {
       screen.getByLabelText('Expand memo').click();
     });
 
+    await waitFor(() => expect(screen.getByLabelText('Collapse side panel')).toBeTruthy());
     await waitFor(() => expect(screen.getByText('Hello Memo')).toBeTruthy());
+    expect(screen.getByLabelText('Collapse Memo').getAttribute('aria-expanded')).toBe('true');
 
-    // The other two sections did not react to memo's toggle: still showing
-    // their own "Expand ..." strip, and their content still absent.
-    expect(screen.getByLabelText('Expand artifacts')).toBeTruthy();
-    expect(screen.getByLabelText('Expand bookmarks')).toBeTruthy();
-    expect(screen.queryByText(ARTIFACT_TITLE)).toBeNull();
-    expect(screen.queryByText(BOOKMARK_TITLE)).toBeNull();
-
-    // The toggle was also persisted to the single shared record -- proof
-    // this test drove the real hook, not a stub.
-    expect(localStorage.getItem(STORAGE_KEY)).toBe(
-      JSON.stringify({ memo: true, artifacts: false, bookmarks: false })
-    );
+    // Artifacts was NOT already expanded before the rail closed -- it stays
+    // collapsed (opening the rail does not force every section open).
+    expect(screen.getByLabelText('Expand Artifacts')).toBeTruthy();
   });
 
-  it('expanding memo and then artifacts renders both simultaneously (multi-open through the real container)', async () => {
+  it('expanding memo and then artifacts leaves both simultaneously open, and a third section opening does not close the first two (multi-open unaffected)', async () => {
     await renderWithRouter(<SessionSidePanels sessionId="session-1" />);
-    await waitFor(() => expect(screen.getByLabelText('Expand memo')).toBeTruthy());
-
-    act(() => {
-      screen.getByLabelText('Expand memo').click();
-    });
     await waitFor(() => expect(screen.getByText('Hello Memo')).toBeTruthy());
 
-    act(() => {
-      screen.getByLabelText('Expand artifacts').click();
-    });
-    await waitFor(() => expect(screen.getByText(ARTIFACT_TITLE)).toBeTruthy());
-
-    // Both are on screen at once; bookmarks remains untouched.
+    // All three start expanded by default -- confirm all three, then
+    // collapse-and-reopen bookmarks to prove opening a third section
+    // doesn't disturb the other two.
     expect(screen.getByText('Hello Memo')).toBeTruthy();
     expect(screen.getByText(ARTIFACT_TITLE)).toBeTruthy();
-    expect(screen.getByLabelText('Expand bookmarks')).toBeTruthy();
-    expect(screen.queryByText(BOOKMARK_TITLE)).toBeNull();
+    expect(screen.getByText(BOOKMARK_TITLE)).toBeTruthy();
+
+    act(() => {
+      screen.getByLabelText('Collapse Bookmarks').click();
+    });
+    await waitFor(() => expect(screen.getByLabelText('Expand Bookmarks')).toBeTruthy());
+
+    act(() => {
+      screen.getByLabelText('Expand Bookmarks').click();
+    });
+
+    await waitFor(() => expect(screen.getByText(BOOKMARK_TITLE)).toBeTruthy());
+    // Memo and artifacts are still open throughout.
+    expect(screen.getByText('Hello Memo')).toBeTruthy();
+    expect(screen.getByText(ARTIFACT_TITLE)).toBeTruthy();
 
     expect(localStorage.getItem(STORAGE_KEY)).toBe(
-      JSON.stringify({ memo: true, artifacts: true, bookmarks: false })
+      JSON.stringify({ railOpen: true, expanded: { memo: true, artifacts: true, bookmarks: true } })
     );
   });
 
-  it('renders exactly one bordered rail element when all sections are collapsed (R1b/R1d DOM pin)', async () => {
+  it('renders exactly one bordered rail element when the rail is open (all sections expanded, R1c DOM pin)', async () => {
     const { container } = await renderWithRouter(<SessionSidePanels sessionId="session-1" />);
-    await waitFor(() => expect(screen.getByLabelText('Expand memo')).toBeTruthy());
+    await waitFor(() => expect(screen.getByText('Hello Memo')).toBeTruthy());
 
-    // The defect this pin exists to catch: each panel used to render its
-    // own `border-l` strip when collapsed, producing three separate rails
-    // instead of one. Only the container may own a `border-l`.
     const railElements = container.querySelectorAll('[class*="border-l"]');
     expect(railElements.length).toBe(1);
   });
 
-  it('still renders exactly one bordered rail element once a section is expanded (R1c DOM pin)', async () => {
+  it('renders exactly one bordered rail element when the rail is closed (R1b/R1d DOM pin)', async () => {
     const { container } = await renderWithRouter(<SessionSidePanels sessionId="session-1" />);
-    await waitFor(() => expect(screen.getByLabelText('Expand memo')).toBeTruthy());
-
-    act(() => {
-      screen.getByLabelText('Expand memo').click();
-    });
     await waitFor(() => expect(screen.getByText('Hello Memo')).toBeTruthy());
 
-    // Sections inside the widened accordion separate with border-b only --
-    // still exactly one border-l on the page, now on the widened column.
+    act(() => {
+      screen.getByLabelText('Collapse side panel').click();
+    });
+    await waitFor(() => expect(screen.getByLabelText('Expand side panel')).toBeTruthy());
+
     const railElements = container.querySelectorAll('[class*="border-l"]');
     expect(railElements.length).toBe(1);
   });

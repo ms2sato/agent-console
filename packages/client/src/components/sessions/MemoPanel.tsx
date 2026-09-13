@@ -5,17 +5,22 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { fetchSessionMemo, updateSessionMemo } from '../../lib/api';
 import { useAppWsEvent } from '../../hooks/useAppWs';
 import { sessionKeys } from '../../lib/query-keys';
+import { AccordionSectionBody } from './AccordionSectionBody';
 
 interface MemoPanelProps {
   sessionId: string;
   isExpanded: boolean;
   onToggleExpanded: () => void;
+  // Guarantees the section is expanded (never collapses it). Called
+  // alongside enterEditMode so the edit-mode textarea is never rendered
+  // inside an aria-hidden collapsed body.
+  onEnsureExpanded: () => void;
   compact: boolean;
 }
 
 type MemoPanelMode = 'view' | 'edit';
 
-export function MemoPanel({ sessionId, isExpanded, onToggleExpanded, compact }: MemoPanelProps) {
+export function MemoPanel({ sessionId, isExpanded, onToggleExpanded, onEnsureExpanded, compact }: MemoPanelProps) {
   const queryClient = useQueryClient();
 
   const { data: content, isPending } = useQuery({
@@ -170,11 +175,22 @@ export function MemoPanel({ sessionId, isExpanded, onToggleExpanded, compact }: 
   return (
     <div className="flex flex-col border-b border-slate-700">
       <div className="flex items-center justify-between px-3 py-1.5">
-        <span className="text-sm font-medium text-gray-300">Memo</span>
+        <button
+          type="button"
+          onClick={onToggleExpanded}
+          aria-expanded={isExpanded}
+          aria-label={isExpanded ? 'Collapse Memo' : 'Expand Memo'}
+          className="text-sm font-medium text-gray-300 bg-transparent border-none p-0 cursor-pointer text-left"
+        >
+          Memo
+        </button>
         <div className="flex items-center gap-1">
           {mode === 'view' && !isEmpty && (
             <button
-              onClick={() => enterEditMode(content ?? '')}
+              onClick={() => {
+                enterEditMode(content ?? '');
+                onEnsureExpanded();
+              }}
               className="text-gray-400 hover:text-gray-200 cursor-pointer bg-transparent border-none p-1 text-xs"
               title="Edit memo"
               aria-label="Edit memo"
@@ -182,77 +198,89 @@ export function MemoPanel({ sessionId, isExpanded, onToggleExpanded, compact }: 
               Edit
             </button>
           )}
-          <button
-            onClick={onToggleExpanded}
-            className="text-gray-400 hover:text-gray-200 cursor-pointer bg-transparent border-none p-1 text-sm"
-            title={isExpanded ? 'Collapse memo' : 'Expand memo'}
-            aria-label={isExpanded ? 'Collapse memo' : 'Expand memo'}
-          >
-            {isExpanded ? '✕' : '▸'}
-          </button>
         </div>
       </div>
-      {isExpanded && (
-        <div className="memo-content min-w-0 max-h-96 overflow-y-auto px-4 py-3 text-sm text-gray-300">
-          {mode === 'edit' ? (
-            <div className="flex flex-col gap-2">
-              {hasIncomingUpdateWhileEditing && (
-                <div className="flex items-center justify-between gap-2 text-xs text-amber-400 bg-amber-500/10 border border-amber-500/30 rounded px-2 py-1">
-                  <span>Memo was updated while you were editing</span>
-                  <button
-                    type="button"
-                    onClick={handleLoadLatest}
-                    className="underline hover:text-amber-300 cursor-pointer bg-transparent border-none p-0"
-                  >
-                    Load latest
-                  </button>
-                </div>
-              )}
-              <textarea
-                value={draft}
-                onChange={(e) => setDraft(e.target.value)}
-                onKeyDown={handleTextareaKeyDown}
-                disabled={isSaving}
-                autoFocus
-                aria-label="Memo content"
-                className="w-full max-h-96 min-h-32 overflow-y-auto bg-slate-900 border border-slate-600 rounded px-2 py-1.5 text-sm text-gray-200 resize-y disabled:opacity-50"
-              />
-              <div className="flex items-center gap-2">
+      <AccordionSectionBody
+        isExpanded={isExpanded}
+        className="memo-content max-h-96 overflow-y-auto px-4 py-3 text-sm text-gray-300"
+      >
+        {mode === 'edit' ? (
+          <div className="flex flex-col gap-2">
+            {hasIncomingUpdateWhileEditing && (
+              <div className="flex items-center justify-between gap-2 text-xs text-amber-400 bg-amber-500/10 border border-amber-500/30 rounded px-2 py-1">
+                <span>Memo was updated while you were editing</span>
                 <button
                   type="button"
-                  onClick={handleSave}
-                  disabled={isSaving}
-                  className="btn text-xs bg-blue-600 hover:bg-blue-500 disabled:opacity-50 disabled:cursor-not-allowed self-start"
+                  onClick={handleLoadLatest}
+                  tabIndex={isExpanded ? undefined : -1}
+                  className="underline hover:text-amber-300 cursor-pointer bg-transparent border-none p-0"
                 >
-                  Save
+                  Load latest
                 </button>
-                <button
-                  type="button"
-                  onClick={handleCancel}
-                  disabled={isSaving}
-                  className="text-xs text-gray-400 hover:text-gray-200 cursor-pointer bg-transparent border-none disabled:opacity-50 disabled:cursor-not-allowed"
-                >
-                  Cancel
-                </button>
-                {saveError && <span className="text-xs text-red-400">{saveError}</span>}
               </div>
-            </div>
-          ) : isEmpty ? (
-            <div className="flex flex-col items-start gap-2">
-              <span className="text-sm text-gray-500">No memo yet.</span>
+            )}
+            <textarea
+              value={draft}
+              onChange={(e) => setDraft(e.target.value)}
+              onKeyDown={handleTextareaKeyDown}
+              disabled={isSaving}
+              // Defense-in-depth: the Edit button above guarantees isExpanded
+              // is already true by the time this textarea mounts (React 18
+              // batches both setState calls into one update), so this gate
+              // is a no-op on that path. It only matters for a future defect
+              // path that reaches edit mode without the guarantee -- since
+              // this <textarea> only exists in the mode === 'edit' branch,
+              // every transition into edit mode is a fresh mount, and
+              // autoFocus fires exactly once against isExpanded's value at
+              // that mount.
+              autoFocus={mode === 'edit' && isExpanded}
+              tabIndex={isExpanded ? undefined : -1}
+              aria-label="Memo content"
+              className="w-full max-h-96 min-h-32 overflow-y-auto bg-slate-900 border border-slate-600 rounded px-2 py-1.5 text-sm text-gray-200 resize-y disabled:opacity-50"
+            />
+            <div className="flex items-center gap-2">
               <button
                 type="button"
-                onClick={() => enterEditMode('')}
-                className="btn text-xs bg-blue-600 hover:bg-blue-500 self-start"
+                onClick={handleSave}
+                disabled={isSaving}
+                tabIndex={isExpanded ? undefined : -1}
+                className="btn text-xs bg-blue-600 hover:bg-blue-500 disabled:opacity-50 disabled:cursor-not-allowed self-start"
               >
-                Write memo
+                Save
               </button>
+              <button
+                type="button"
+                onClick={handleCancel}
+                disabled={isSaving}
+                tabIndex={isExpanded ? undefined : -1}
+                className="text-xs text-gray-400 hover:text-gray-200 cursor-pointer bg-transparent border-none disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                Cancel
+              </button>
+              {saveError && <span className="text-xs text-red-400">{saveError}</span>}
             </div>
-          ) : (
-            <Markdown remarkPlugins={[remarkGfm]}>{content}</Markdown>
-          )}
-        </div>
-      )}
+          </div>
+        ) : isEmpty ? (
+          <div className="flex flex-col items-start gap-2">
+            <span className="text-sm text-gray-500">No memo yet.</span>
+            <button
+              type="button"
+              onClick={() => enterEditMode('')}
+              tabIndex={isExpanded ? undefined : -1}
+              className="btn text-xs bg-blue-600 hover:bg-blue-500 self-start"
+            >
+              Write memo
+            </button>
+          </div>
+        ) : (
+          <Markdown
+            remarkPlugins={[remarkGfm]}
+            components={{ a: (props) => <a {...props} tabIndex={isExpanded ? undefined : -1} /> }}
+          >
+            {content}
+          </Markdown>
+        )}
+      </AccordionSectionBody>
     </div>
   );
 }

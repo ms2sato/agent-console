@@ -1,5 +1,6 @@
 import { useSessionArtifacts } from './hooks/useSessionArtifacts';
 import { formatTimestamp } from '../../lib/format';
+import { AccordionSectionBody } from './AccordionSectionBody';
 
 interface SessionArtifactsPanelProps {
   sessionId: string;
@@ -50,43 +51,42 @@ export function SessionArtifactsPanel({ sessionId, isExpanded, onToggleExpanded,
   return (
     <div className="flex flex-col border-b border-slate-700">
       <div className="flex items-center justify-between px-3 py-1.5">
-        <span className="text-sm font-medium text-gray-300">Artifacts</span>
         <button
+          type="button"
           onClick={onToggleExpanded}
-          className="text-gray-400 hover:text-gray-200 cursor-pointer bg-transparent border-none p-1 text-sm"
-          title={isExpanded ? 'Collapse artifacts' : 'Expand artifacts'}
-          aria-label={isExpanded ? 'Collapse artifacts' : 'Expand artifacts'}
+          aria-expanded={isExpanded}
+          aria-label={isExpanded ? 'Collapse Artifacts' : 'Expand Artifacts'}
+          className="text-sm font-medium text-gray-300 bg-transparent border-none p-0 cursor-pointer text-left"
         >
-          {isExpanded ? '✕' : '▸'}
+          Artifacts
         </button>
       </div>
-      {isExpanded && (
-        <div className="min-w-0 max-h-96 overflow-y-auto">
-          {artifacts.map((artifact) => (
-            <div
-              key={artifact.id}
-              className="flex flex-col gap-0.5 px-3 py-2 border-b border-slate-700/50"
-            >
-              <span className="text-sm text-gray-200 truncate" title={artifact.title}>
-                {artifact.title}
+      <AccordionSectionBody isExpanded={isExpanded} className="min-w-0 max-h-96 overflow-y-auto">
+        {artifacts.map((artifact) => (
+          <div
+            key={artifact.id}
+            className="flex flex-col gap-0.5 px-3 py-2 border-b border-slate-700/50"
+          >
+            <span className="text-sm text-gray-200 truncate" title={artifact.title}>
+              {artifact.title}
+            </span>
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-xs text-slate-500">
+                {formatTimestamp(new Date(artifact.createdAt).getTime())}
               </span>
-              <div className="flex items-center justify-between gap-2">
-                <span className="text-xs text-slate-500">
-                  {formatTimestamp(new Date(artifact.createdAt).getTime())}
-                </span>
-                <a
-                  href={`/artifacts/${artifact.id}`}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="btn text-xs bg-blue-600 hover:bg-blue-500 no-underline"
-                >
-                  View
-                </a>
-              </div>
+              <a
+                href={`/artifacts/${artifact.id}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                tabIndex={isExpanded ? undefined : -1}
+                className="btn text-xs bg-blue-600 hover:bg-blue-500 no-underline"
+              >
+                View
+              </a>
             </div>
-          ))}
-        </div>
-      )}
+          </div>
+        ))}
+      </AccordionSectionBody>
     </div>
   );
 }

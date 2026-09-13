@@ -58,9 +58,11 @@ function wasMemoPutCalled(): boolean {
 // of this file tests a single panel in isolation, standing in for "already
 // inside a wide accordion column" -- the compact/rail-chrome rendering is
 // covered by SessionSidePanels.test.tsx. One test below (M7) exercises
-// compact=true directly, because R1's "always mounted once resolved" change
-// made the compact rail reachable with a null memo for the first time (it
-// used to be unreachable, since the whole component returned null first).
+// compact=true directly, because the empty-state feature narrowed the
+// panel's early return from "pending OR null content" down to "pending"
+// only, which made the compact rail reachable with a null memo for the
+// first time (it used to be unreachable, since the whole component
+// returned null first).
 function ControlledMemoPanel({
   sessionId,
   initialExpanded = true,
@@ -76,6 +78,9 @@ function ControlledMemoPanel({
       sessionId={sessionId}
       isExpanded={isExpanded}
       onToggleExpanded={() => setIsExpanded((v) => !v)}
+      // Mirrors the real container's expandSection: an unconditional
+      // set-true, never a toggle.
+      onEnsureExpanded={() => setIsExpanded(true)}
       compact={compact}
     />
   );
@@ -117,7 +122,7 @@ describe('MemoPanel', () => {
 
     const { container } = await renderWithRouter(<ControlledMemoPanel sessionId="session-1" />);
 
-    expect(container.querySelector('[aria-label="Collapse memo"]')).toBeNull();
+    expect(container.querySelector('[aria-label="Collapse Memo"]')).toBeNull();
     expect(container.textContent).toBe('');
   });
 
@@ -141,19 +146,46 @@ describe('MemoPanel', () => {
     expect(screen.getByText('Hello Memo').tagName).toBe('H1');
   });
 
-  it('collapses to a thin strip and can be re-expanded', async () => {
+  it('collapses to a header row without a body, and can be re-expanded', async () => {
     mockFetch.mockResolvedValue(jsonResponse({ content: '# Hello Memo' }));
 
     await renderWithRouter(<ControlledMemoPanel sessionId="session-1" />);
     await waitFor(() => expect(screen.getByText('Hello Memo')).toBeTruthy());
 
-    screen.getByLabelText('Collapse memo').click();
+    screen.getByLabelText('Collapse Memo').click();
 
-    await waitFor(() => expect(screen.getByLabelText('Expand memo')).toBeTruthy());
-    expect(screen.queryByText('Hello Memo')).toBeNull();
+    await waitFor(() => expect(screen.getByLabelText('Expand Memo')).toBeTruthy());
+    // The content stays mounted (R4' -- AccordionSectionBody never
+    // unmounts), so absence-from-DOM is no longer the right check. Instead
+    // confirm the body wrapper is aria-hidden.
+    const memoContentWrapper = screen.getByText('Hello Memo').closest('.memo-content');
+    expect(memoContentWrapper?.closest('[aria-hidden="true"]')).toBeTruthy();
 
-    screen.getByLabelText('Expand memo').click();
+    screen.getByLabelText('Expand Memo').click();
+    await waitFor(() => expect(screen.getByLabelText('Collapse Memo')).toBeTruthy());
+    expect(screen.getByText('Hello Memo').closest('[aria-hidden="true"]')).toBeNull();
+  });
+
+  it('excludes the body\'s interactive descendants from the tab order while collapsed, and restores them when re-expanded (R6)', async () => {
+    mockFetch.mockResolvedValue(jsonResponse({ content: '# Hello Memo' }));
+
+    await renderWithRouter(<ControlledMemoPanel sessionId="session-1" />);
     await waitFor(() => expect(screen.getByText('Hello Memo')).toBeTruthy());
+
+    // Enter edit mode so a concrete interactive control (the textarea) is
+    // present in the body, then collapse.
+    fireEvent.click(screen.getByRole('button', { name: 'Edit memo' }));
+    const textarea = await screen.findByLabelText('Memo content');
+
+    screen.getByLabelText('Collapse Memo').click();
+    await waitFor(() => expect(screen.getByLabelText('Expand Memo')).toBeTruthy());
+
+    expect(textarea.tabIndex).toBe(-1);
+
+    screen.getByLabelText('Expand Memo').click();
+    await waitFor(() => expect(screen.getByLabelText('Collapse Memo')).toBeTruthy());
+
+    expect(screen.getByLabelText('Memo content').tabIndex).not.toBe(-1);
   });
 
   it('updates the rendered content when a memo-updated WebSocket event arrives for this session', async () => {
@@ -242,6 +274,52 @@ describe('MemoPanel', () => {
     expect(screen.getByText('Existing memo').tagName).toBe('H1');
     expect(screen.queryByLabelText('Memo content')).toBeNull();
     expect(wasMemoPutCalled()).toBe(false);
+  });
+
+  // The "Edit" button is a sibling of the title-toggle button inside the
+  // same header row, and its own onClick must never also fire
+  // onToggleExpanded. A naive check that `getByLabelText('Memo content')`
+  // still finds the textarea after clicking Edit would NOT catch a
+  // regression here: AccordionSectionBody keeps the body mounted (just
+  // aria-hidden) regardless of isExpanded, so the textarea stays queryable
+  // by testing-library even if the section were incorrectly collapsed.
+  // Assert the title button's own aria-expanded state instead.
+  it('clicking Edit does not toggle the section closed', async () => {
+    mockFetch.mockResolvedValue(jsonResponse({ content: '# Existing memo' }));
+
+    await renderWithRouter(<ControlledMemoPanel sessionId="session-1" />);
+    await waitFor(() => expect(screen.getByText('Existing memo')).toBeTruthy());
+
+    expect(screen.getByLabelText('Collapse Memo').getAttribute('aria-expanded')).toBe('true');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Edit memo' }));
+    await screen.findByLabelText('Memo content');
+
+    expect(screen.getByLabelText('Collapse Memo')).toBeTruthy();
+    expect(screen.getByLabelText('Collapse Memo').getAttribute('aria-expanded')).toBe('true');
+  });
+
+  // CodeRabbit MAJOR finding: MemoPanel's header (title button + Edit
+  // button) renders regardless of the section's own isExpanded state, so
+  // clicking Edit while collapsed used to enter edit mode without ever
+  // expanding the section -- mounting and autofocusing the textarea inside
+  // an aria-hidden collapsed body. onEnsureExpanded guarantees expansion in
+  // the same synchronous update as enterEditMode.
+  it('clicking Edit while the section is collapsed guarantees expansion in the same update, and focuses the textarea outside any aria-hidden ancestor', async () => {
+    mockFetch.mockResolvedValue(jsonResponse({ content: '# Existing memo' }));
+
+    await renderWithRouter(<ControlledMemoPanel sessionId="session-1" initialExpanded={false} />);
+    await waitFor(() => expect(screen.getByLabelText('Expand Memo')).toBeTruthy());
+
+    fireEvent.click(screen.getByRole('button', { name: 'Edit memo' }));
+
+    // No intermediate "edit mode but still collapsed" frame -- the title
+    // button already reports expanded in the same synchronous update.
+    expect(screen.getByLabelText('Collapse Memo').getAttribute('aria-expanded')).toBe('true');
+
+    const textarea = await screen.findByLabelText('Memo content');
+    expect(document.activeElement).toBe(textarea);
+    expect(textarea.closest('[aria-hidden="true"]')).toBeNull();
   });
 
   // M4: Ctrl+Enter saves, Escape behavior depends on whether the draft changed.
