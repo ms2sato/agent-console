@@ -136,6 +136,8 @@ Cleaning up afterward: the sandbox guard rejects recursive and force delete flag
 
 (Two delegates rediscovered this independently in Sprint 2026-08-05, on PRs [#1275](https://github.com/ms2sato/agent-console/pull/1275) and [#1283](https://github.com/ms2sato/agent-console/pull/1283).)
 
+The mirror image holds for the instance's own workers: terminal-agent workers spawned by an isolated instance still call the host-registered MCP server (usually production), because Claude Code discovers MCP servers from the host user's `~/.claude.json`, not from the env the spawn injects. See `docs/design/agent-surface.md` "MCP reachability differs by agent kind" before reading their MCP calls as evidence about the isolated instance — and do not let a QA terminal worker call `delegate_to_worktree` or `send_session_message` at all unless the isolated instance has been registered for it.
+
 ## Cross-references
 
 - `scripts/dev.sh` and `scripts/dev-multiuser.sh` — canonical scripts (the prologues are required reading).

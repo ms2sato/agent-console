@@ -256,7 +256,8 @@ function getSteps() {
         '         Step 8 asks "is every merged PR recorded?", never "is every recorded item',
         '         still unresolved?")',
         '',
-        'Reliable execution pattern: create a TaskCreate task "final memory sync (post-merge)"',
+        'Reliable execution pattern: create a TaskCreate task (or, when the session has no',
+        'TaskCreate tool, a memo checklist line) "final memory sync (post-merge)"',
         'tagged with the retro PR number. Mark in_progress when the merge is observed,',
         'completed after the 3 files are updated. Do not rely on memory of "I should sync",',
         'rely on the task list.',
@@ -516,7 +517,8 @@ export async function runGapCandidatesMode({
 async function runRetro({ stdin = process.stdin, metricsRunner = runMetricsBlock } = {}) {
   console.log('=== Sprint Retrospective ===');
   console.log();
-  console.log('Before starting, create a TaskCreate checklist for tracking progress:');
+  console.log('Before starting, create a TaskCreate checklist for tracking progress');
+  console.log("(if TaskCreate is not in this session's tool set, keep the same checklist in the memo):");
 
   const steps = getSteps();
 
@@ -524,7 +526,7 @@ async function runRetro({ stdin = process.stdin, metricsRunner = runMetricsBlock
     console.log(`  - ${step.title}`);
   }
   console.log();
-  console.log('Use TaskCreate for each step, then mark them in_progress/completed as you go.');
+  console.log('Use TaskCreate (or the memo checklist) for each step, then mark them in_progress/completed as you go.');
   console.log();
 
   const responses = {};
