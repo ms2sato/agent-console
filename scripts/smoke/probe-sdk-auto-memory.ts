@@ -1087,7 +1087,7 @@ const USAGE_TEXT =
   'Usage: bun scripts/smoke/probe-sdk-auto-memory.ts [--a] [--b] [--c] [--d] [--e] [--f] [--g] [--force-f] [--f-config omitted|preset] [--extended-timeout <ms>] [--expect-no-recall] [--expect-no-write]\n' +
   '  Default (no --a/--b/--c/--d/--e/--f/--g) = arms A/B/C/D only, in order. Arms E/F/G are NEVER part of the bare default -- select them explicitly.\n' +
   '  --expect-no-recall modifies arm A (skip seeding); --expect-no-write modifies arm C, F, and G (skip the remember-this prompt).\n' +
-  '  Arm F/G halt by default when Arm E shows no configuration carries awareness, or its (iii) control was not confirmed clean --\n' +
+  '  Arm F/G halt by default when Arm E shows no configuration carries awareness (an unclean (iii) control does NOT halt) --\n' +
   '  --force-f overrides that halt for a deliberate operator run anyway (owner ruling, 2026-09-13).\n' +
   '  --f-config <omitted|preset> overrides arm F/G\'s systemPrompt configuration when arm E did not run in the same invocation (default: omitted).\n' +
   `  --extended-timeout <ms> sets arm G's write-poll timeout; omitted or 0 behaves like arm F's 60s poll; clamped to ${EXTENDED_TIMEOUT_CAP_MS}ms (owner directive).\n` +
