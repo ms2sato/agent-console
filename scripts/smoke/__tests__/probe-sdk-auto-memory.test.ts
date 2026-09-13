@@ -180,6 +180,21 @@ describe('classifyArmD', () => {
     expect(r.note).not.toContain('read did NOT recall');
     expect(r.note).toContain('write did NOT appear');
   });
+
+  /**
+   * CodeRabbit finding (PR #1662): `writeFound: false, defaultLeaked: true`
+   * is reachable (the write landed at the default location INSTEAD of the
+   * override -- the strongest possible evidence redirection failed) but the
+   * pre-fix note only said "write did NOT appear at the override", dropping
+   * the leak entirely. This is the case the suite was missing before this
+   * fix -- see the Orchestrator's reach measurement in the PR body/commit.
+   */
+  it('reports the default-location hit even when the override write never landed (writeFound=false, defaultLeaked=true)', () => {
+    const r = classifyArmD({ read: settledRead, write: { settled: true, writeFound: false, defaultLeaked: true } });
+    expect(r).toMatchObject({ conclusive: true, premise: 'refuted' });
+    expect(r.note).toContain('appeared at the DEFAULT location instead of the override');
+    expect(r.note).toContain('write did NOT appear at the override');
+  });
 });
 
 describe('redactRecallEntry', () => {
@@ -197,6 +212,20 @@ describe('redactRecallEntry', () => {
     // Never leak any fragment of the real path.
     expect(r.pathBasename).not.toContain('real-user');
     expect(r.pathBasename).not.toContain('fact.md');
+  });
+
+  /**
+   * CodeRabbit finding (PR #1662): a raw `startsWith` has no separator
+   * boundary, so a SIBLING path that merely shares the prefix string (e.g.
+   * `${configDir}-evil`) would be misreported as contained. Neither
+   * `configDir` nor the entry path exists on disk in this test, so
+   * `resolvedOrSelf` falls back to the raw strings -- this test is exactly
+   * what exercises the separator-boundary fix at that fallback layer.
+   */
+  it('does not treat a sibling path sharing the raw prefix as contained (separator-boundary check)', () => {
+    const r = redactRecallEntry({ path: `${configDir}-evil/fact.md`, scope: 'personal' }, configDir);
+    expect(r.withinIsolatedConfigDir).toBe(false);
+    expect(r.pathBasename).toBe('(redacted -- outside isolated CLAUDE_CONFIG_DIR)');
   });
 
   it('never returns a content field, for either scope shape (organization scope carries a URL path)', () => {

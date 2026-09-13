@@ -119,9 +119,9 @@
  * Usage: bun scripts/smoke/probe-sdk-auto-memory.ts [--a] [--b] [--c] [--d] [--expect-no-recall] [--expect-no-write]
  */
 
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync, existsSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { basename, join } from 'node:path';
+import { basename, join, sep } from 'node:path';
 import type { Options, Settings } from '../../packages/embedded-agent/node_modules/@anthropic-ai/claude-agent-sdk';
 import {
   ProbeSession,
@@ -345,7 +345,13 @@ export function classifyArmD(input: ArmDInput): Verdict {
   const parts: string[] = [];
   if (!readWorks) parts.push('read did NOT recall from the override');
   if (!writeWorks) parts.push('write did NOT appear at the override within the timeout');
-  if (writeWorks && !writeClean) parts.push('write ALSO leaked to the default location, so the override is not exclusive');
+  if (!writeClean) {
+    parts.push(
+      writeWorks
+        ? 'write ALSO leaked to the default location, so the override is not exclusive'
+        : 'write appeared at the DEFAULT location instead of the override, so the override was ignored',
+    );
+  }
   return {
     conclusive: true,
     premise: 'refuted',
@@ -374,8 +380,26 @@ export interface RedactedRecallEntry {
  *
  * @internal Exported for the sibling unit test.
  */
+/**
+ * Resolves symlinks (e.g. macOS's `/var` -> `/private/var`, which `tmpdir()`
+ * returns unresolved but a spawned CLI may report resolved) so a containment
+ * check compares comparable paths. Falls back to the input unchanged when
+ * the path does not exist on disk -- which is exactly the sibling unit
+ * test's shape (synthetic paths that were never created), so existing tests
+ * keep passing unmodified.
+ */
+function resolvedOrSelf(p: string): string {
+  try {
+    return realpathSync(p);
+  } catch {
+    return p;
+  }
+}
+
 export function redactRecallEntry(entry: { path: string; scope: 'personal' | 'team' | 'organization' }, configDir: string): RedactedRecallEntry {
-  const within = entry.path.startsWith(configDir);
+  const resolvedEntry = resolvedOrSelf(entry.path);
+  const resolvedRoot = resolvedOrSelf(configDir).replace(new RegExp(`${sep}+$`), '');
+  const within = resolvedEntry === resolvedRoot || resolvedEntry.startsWith(resolvedRoot + sep);
   return {
     scope: entry.scope,
     withinIsolatedConfigDir: within,
