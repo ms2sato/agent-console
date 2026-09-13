@@ -35,11 +35,19 @@
 #   9. systemctl restart <service> + status snapshot.
 #  10. Health probe via curl.
 #
-# Run as your login user (sudo required for the inner elevation to the
-# service user, and for the system-level systemctl restart).
+# Contract: run this script as the operator's own login user -- do NOT
+# invoke it with a top-level sudo. Every privileged step below elevates
+# itself individually (`sudo -u "${SERVICE_USER}"` for service-user
+# actions, plain `sudo` for root-level actions such as the entry-path copy
+# and `systemctl restart`) -- see the per-step comments. (Issue #1690: an
+# earlier revision of this header claimed both things at once -- "run as
+# your login user" here, a `sudo`-prefixed invocation in Usage below -- and
+# the fail-closed readability gate was built on the stale half, assuming
+# the whole script already ran as root; the operator's first real run
+# proved otherwise.)
 #
 # Usage:
-#   sudo scripts/update-and-deploy-for-multiuser-ubuntu.sh
+#   scripts/update-and-deploy-for-multiuser-ubuntu.sh
 #
 # Env overrides (CLI flags not supported; override via env vars):
 #   AGENT_CONSOLE_SERVICE_USER       Service user owning source + target.
@@ -56,7 +64,7 @@
 #                                    Default: 8080
 #
 # Example with overrides:
-#   sudo AGENT_CONSOLE_PORT=9000 AGENT_CONSOLE_SERVICE_USER=ac-svc \
+#   AGENT_CONSOLE_PORT=9000 AGENT_CONSOLE_SERVICE_USER=ac-svc \
 #     scripts/update-and-deploy-for-multiuser-ubuntu.sh
 #
 # Prerequisites (set up by scripts/setup-multiuser-for-ubuntu.sh):
@@ -76,6 +84,19 @@ DST="${AGENT_CONSOLE_DEPLOY_TARGET_DIR:-/home/${SERVICE_USER}/agent-console}"
 SERVICE_NAME="${AGENT_CONSOLE_SERVICE_NAME:-agent-console.service}"
 PORT="${AGENT_CONSOLE_PORT:-8080}"
 HEALTH_URL="http://localhost:${PORT}/api/auth/me"
+
+# Elevation prefix for the one probe that needs root itself (the
+# unprivileged-readability gate below, via `runuser`) but that this script
+# does not otherwise require at the top level (see the Contract note above
+# -- every OTHER privileged step elevates per-command already). Empty when
+# already root (a supported, if unusual, invocation); the same bare,
+# interactive-capable form every other elevated step in this script uses
+# otherwise -- not a non-interactive flag, so an expired credential cache
+# mid-deploy re-prompts instead of failing the gate outright.
+ELEVATE=""
+if [ "$(id -u)" -ne 0 ]; then
+  ELEVATE="sudo"
+fi
 
 # Unified, world-traversable location for the bundled embedded-agent
 # subprocess entry: resolveEmbeddedAgentEntryPath()'s own "bundle sibling"
@@ -207,15 +228,16 @@ echo "==> fail-closed check: unified entry path is readable by an elevation-targ
 # elevation-target user can actually read.
 #
 # Deliberately NOT assert_readable_file (Architect + CodeRabbit review on
-# this PR): this entire script runs as root (see the Usage line at the top
-# -- `sudo scripts/update-and-deploy-for-multiuser-ubuntu.sh`), and root
-# bypasses DAC read checks (CAP_DAC_READ_SEARCH) including parent-directory
-# traversal -- a plain `[ -r <path> ]` as root is true for ANY existing
-# file regardless of its actual permission bits, so it could never fail for
-# the exact defect Issue #1668 is about. assert_readable_by_unprivileged_user
-# probes via `runuser -u nobody`, an unprivileged user outside this
-# project's shared group, so it actually exercises the same traversal path
-# a real elevation-target user hits.
+# this PR): a ROOT-side check bypasses DAC read checks (CAP_DAC_READ_SEARCH)
+# including parent-directory traversal -- a plain `[ -r <path> ]` as root is
+# true for ANY existing file regardless of its actual permission bits, so it
+# could never fail for the exact defect Issue #1668 is about.
+# assert_readable_by_unprivileged_user probes via `runuser -u nobody`, an
+# unprivileged user outside this project's shared group, so it actually
+# exercises the same traversal path a real elevation-target user hits --
+# but this script itself runs as the operator's own login user (see the
+# Contract note at the top), not as root, so the probe elevates itself for
+# this one call via ${ELEVATE} (Issue #1690).
 #
 # Always runs after the unconditional copy + explicit directory-mode step
 # above (unlike the bun-binary check, this script has no --dry-run preview
@@ -228,9 +250,11 @@ echo "==> fail-closed check: unified entry path is readable by an elevation-targ
 # partial copy that dropped it is exactly the kind of interruption this
 # check exists to catch.
 assert_readable_by_unprivileged_user "${UNIFIED_ENTRY_PATH}" \
-  "step 5/6 (copy dist/embedded-agent.js to the unified entry path) did not complete, or /usr/local/lib/agent-console/ is not world-traversable -- re-run this script" || exit 1
+  "step 5/6 (copy dist/embedded-agent.js to the unified entry path) did not complete, or /usr/local/lib/agent-console/ is not world-traversable -- re-run this script" \
+  "${ELEVATE}" || exit 1
 assert_readable_by_unprivileged_user "${UNIFIED_ENTRY_MAP_PATH}" \
-  "step 5/6 (copy dist/embedded-agent.js.map to the unified entry path) did not complete, or /usr/local/lib/agent-console/ is not world-traversable -- re-run this script" || exit 1
+  "step 5/6 (copy dist/embedded-agent.js.map to the unified entry path) did not complete, or /usr/local/lib/agent-console/ is not world-traversable -- re-run this script" \
+  "${ELEVATE}" || exit 1
 
 echo ""
 echo "==> systemctl restart ${SERVICE_NAME}"

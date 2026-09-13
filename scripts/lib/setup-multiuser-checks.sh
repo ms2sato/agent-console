@@ -49,32 +49,49 @@ assert_readable_file() {
   return 0
 }
 
-# assert_readable_by_unprivileged_user <path> <hint>
+# assert_readable_by_unprivileged_user <path> <hint> [elevate]
 #
 # Fails closed (Issue #1668, Architect ruling): unlike assert_readable_file
 # above, this probes readability from an UNPRIVILEGED user's view via
 # `runuser -u nobody -- test -r <path>`, not the invoking process's own
-# permission. This matters because the caller
-# (update-and-deploy-for-multiuser-ubuntu.sh) runs this check as root (its
-# own usage line: `sudo scripts/update-and-deploy-for-multiuser-ubuntu.sh`),
-# and root bypasses DAC read checks (CAP_DAC_READ_SEARCH), including
-# parent-directory traversal -- a plain `[ -r <path> ]` as root is true for
-# ANY existing file regardless of actual permission bits, so
-# assert_readable_file's own check can never fail for the exact defect
-# Issue #1668 is about (a path unreachable to a non-root elevation-target
-# user, even though root itself can always read it).
+# permission. This matters because a root-side check bypasses DAC read
+# checks (CAP_DAC_READ_SEARCH), including parent-directory traversal -- a
+# plain `[ -r <path> ]` as root is true for ANY existing file regardless of
+# actual permission bits, so assert_readable_file's own check can never
+# fail for the exact defect Issue #1668 is about (a path unreachable to a
+# non-root elevation-target user, even though root itself can always read
+# it).
 #
 # `nobody` is guaranteed outside this project's shared group, so it
 # represents the elevation target's (worst-case) view. `runuser` is
-# root-only and needs no sudoers policy, matching the caller's own
-# already-root context -- no additional privilege grant is required.
+# root-only, so the probe itself needs root -- but the CALLER
+# (update-and-deploy-for-multiuser-ubuntu.sh) runs as the operator's own
+# login user, not as root: every privileged step elevates itself
+# individually, and this probe is no exception. [elevate] (default: empty)
+# is the elevation prefix the caller prepends to reach root for this one
+# call -- empty when the caller is already root (`id -u` = 0), the caller's
+# ordinary bare, interactive-capable elevation form otherwise. It is an
+# explicit parameter, never read from the environment, so the mechanism can
+# be faked at this exact seam in a unit test (see below) without needing
+# real root or a real `runuser` (Issue #1690; #1673's "cannot be faked in a
+# unit test" claim was true only because that PR probed via bare `runuser`
+# with no seam to fake).
 #
-# Cannot be exercised by an unprivileged unit test (runuser itself needs
-# root to switch to another user) -- do not fake it. Real-machine
-# verification only.
+# Readability is decided from the probe's STDOUT, never from its exit code
+# (Issue #1690): `test -r` returning false and the elevation step itself
+# being refused both exit non-zero, and #1673's original
+# `if ! runuser ...; then "not readable" fi` shape could not tell those
+# apart -- an operator with no elevation to `runuser` got a "not readable"
+# diagnostic that had nothing to do with file permissions. The inner `sh -c`
+# instead prints an explicit marker (READABLE / UNREADABLE) that only a
+# successfully-completed test can produce; anything else on stdout (empty,
+# because elevation or `runuser` itself failed before the marker could be
+# printed; or garbage) is reported as "probe could not run", a distinct
+# cause, with the captured stderr attached.
 assert_readable_by_unprivileged_user() {
   local file_path="$1"
   local hint="$2"
+  local elevate="${3:-}"
   # Guard BEFORE the probe (Architect ruling): without this, a missing
   # `runuser` binary makes the probe itself exit 127, which the fail-closed
   # branch below would misreport as "not readable by an unprivileged user"
@@ -84,11 +101,32 @@ assert_readable_by_unprivileged_user() {
     echo "error: runuser (util-linux) not found -- required for the unprivileged readability gate" >&2
     return 1
   fi
-  if ! runuser -u nobody -- test -r "$file_path"; then
-    echo "error: '$file_path' is not readable by an unprivileged user (probed as 'nobody' via runuser -- any real elevation-target user hits the same wall) -- $hint" >&2
-    return 1
-  fi
-  return 0
+
+  local stderr_tmp
+  stderr_tmp="$(mktemp)"
+  local marker
+  # shellcheck disable=SC2086 # $elevate is a single deliberate command-name
+  # word (empty, or the caller's own bare elevation form) -- word-splitting
+  # is how an empty value disappears entirely rather than becoming a
+  # spurious empty argument.
+  marker="$(${elevate} runuser -u nobody -- sh -c 'test -r "$1" && echo READABLE || echo UNREADABLE' _ "$file_path" 2>"$stderr_tmp")"
+  local captured_stderr
+  captured_stderr="$(cat "$stderr_tmp")"
+  rm -f "$stderr_tmp"
+
+  case "$marker" in
+    READABLE)
+      return 0
+      ;;
+    UNREADABLE)
+      echo "error: '$file_path' is not readable by an unprivileged user (probed as 'nobody' via runuser -- any real elevation-target user hits the same wall) -- $hint" >&2
+      return 1
+      ;;
+    *)
+      echo "error: readability probe for '$file_path' could not run -- elevation or runuser itself failed before the readability check could complete (${captured_stderr:-no diagnostic output captured})" >&2
+      return 1
+      ;;
+  esac
 }
 
 # Direct-invocation entry point for tests (Issue #1222, extended #1668): when
