@@ -35,7 +35,15 @@
  *     comparison was replaced rather than repointed). A version difference
  *     between the unified path and the service user's own `~/.bun/bin/bun`
  *     is reported as a WARNING (expected freshness after a `bun upgrade`,
- *     not a failure).
+ *     not a failure). Before comparing the live pid, a positive control runs
+ *     `compareBinaryIdentity` against this smoke process's own
+ *     `/proc/self/exe`, so a later `{ unresolvable: 'self' }` result on the
+ *     LIVE pid is attributable specifically to a permission gap reading
+ *     `/proc/<MainPID>/exe` (needs the unit's own `User=`/`Group=`, or root)
+ *     rather than to some broader failure of `/proc/self/exe` resolution in
+ *     this environment; `{ unresolvable: 'configured' }` is reported
+ *     separately, naming the configured path itself as unreadable. Both are
+ *     probe-cannot-run conditions (exit 2), not assertion failures.
  *   - The loop's init handshake completing end-to-end against a REAL `/mcp`
  *     Streamable-HTTP endpoint, with `AGENT_CONSOLE_MCP_AUTH` left UNSET so
  *     `resolveMcpAuthMode` resolves it to `enforce` via the real Phase 4
@@ -488,16 +496,74 @@ async function main(): Promise<void> {
       // (packages/server/src/lib/embedded-agent-bun-path-check.ts, Issue
       // #1291) -- the same function the boot-time WARN uses -- rather than
       // reimplementing the realpath-and-compare logic here (single writer).
+
+      // Positive control: exercise the IDENTICAL code path against this
+      // smoke process's own /proc/self/exe compared to itself, BEFORE
+      // comparing against the live (other-process) pid below. This makes a
+      // later `{ unresolvable: 'self' }` result on the live pid attributable
+      // specifically to a permission gap reading THAT OTHER process's
+      // /proc/<pid>/exe -- rather than to some broader failure of
+      // /proc/self/exe resolution in this environment, which this control
+      // rules out first.
+      const selfControlIdentity = await compareBinaryIdentity('/proc/self/exe', '/proc/self/exe', {
+        realpath: async (p: string) => realpathSync(p),
+      });
+      if (selfControlIdentity !== 'same') {
+        console.error(
+          "Positive control failed: compareBinaryIdentity('/proc/self/exe', '/proc/self/exe', ...) returned " +
+            `${JSON.stringify(selfControlIdentity)} instead of 'same' -- this environment does not support ` +
+            '/proc/self/exe resolution at all, so nothing about the live-pid comparison below can be trusted here.',
+        );
+        process.exit(2);
+      }
+
       const exeLinkPath = `/proc/${pidRaw}/exe`;
       console.log(`  live server exe (pid ${pidRaw}):    ${exeLinkPath}`);
       console.log(`  configured EMBEDDED_AGENT_BUN_PATH: ${configuredBunCmd}`);
       const identity = await compareBinaryIdentity(exeLinkPath, configuredBunCmd, {
         realpath: async (p: string) => realpathSync(p),
       });
+      if (typeof identity === 'object') {
+        const reason = identity.unresolvable;
+        if (reason === 'self') {
+          // The LIVE server process's own executable could not be read --
+          // this is the permission-gap case: reading ANOTHER process's
+          // /proc/<pid>/exe needs PTRACE_MODE_READ, which (absent
+          // CAP_SYS_PTRACE) requires the reader to share BOTH uid and gid
+          // with the target process, not merely be able to run as it via
+          // sudo. Not an assertion failure -- the probe itself could not run.
+          console.error(
+            `Could not resolve the LIVE server process's own executable '${exeLinkPath}' (pid ${pidRaw}) -- this ` +
+              "is a permission gap, not a proof that the binaries differ. Re-run this smoke AS the " +
+              `${SYSTEMD_UNIT_NAME}.service unit's own identity -- matching BOTH the unit's configured User= and ` +
+              'Group= (or root) -- then retry.',
+          );
+          process.exit(2);
+        } else if (reason === 'configured') {
+          console.error(
+            `Could not resolve the configured EMBEDDED_AGENT_BUN_PATH '${configuredBunCmd}' -- verify the path ` +
+              'exists and is reachable by this smoke process, then re-run.',
+          );
+          process.exit(2);
+        } else if (reason === 'bare') {
+          // Unreachable: this whole branch is gated on
+          // `configuredBunCmd.startsWith('/')` above, and compareBinaryIdentity
+          // only ever returns 'bare' when the CONFIGURED argument itself is
+          // not absolute. Handled anyway so this if/else chain stays
+          // exhaustive and type-safe against a future change to that gate.
+          throw new Error(
+            `internal error: compareBinaryIdentity returned { unresolvable: 'bare' } despite an absolute ` +
+              `configuredBunCmd ('${configuredBunCmd}')`,
+          );
+        } else {
+          const _exhaustive: never = reason;
+          throw new Error(`internal error: unhandled BinaryIdentity unresolvable reason: ${String(_exhaustive)}`);
+        }
+      }
       expect(
         identity === 'same',
         'live agent-console.service process executes the configured EMBEDDED_AGENT_BUN_PATH (Issue #1222 -- unit reinstalled and ExecStart matches what is actually running; compared via the production compareBinaryIdentity helper)',
-        `identity='${identity}' liveExe(raw)='${exeLinkPath}' configured(raw)='${configuredBunCmd}' -- 'unresolvable' means one side could not be realpath'd (permission to read /proc/<pid>/exe, or the configured path missing)`,
+        `identity='${JSON.stringify(identity)}' liveExe(raw)='${exeLinkPath}' configured(raw)='${configuredBunCmd}'`,
       );
     } else {
       console.log(

@@ -1366,7 +1366,12 @@ What it verifies:
   `EMBEDDED_AGENT_BUN_PATH` were unified to the same rendered value, that
   comparison became a file-vs-itself check that could never fail — it was
   **removed**, not repointed. See [`scripts/setup-multiuser-for-ubuntu.sh`
-  §Step 4](#step-4-configure-the-service-linux) above for the unification.
+  §Step 4](#step-4-configure-the-service-linux) above for the unification. An
+  unreadable LIVE process executable (a permission gap reading
+  `/proc/<MainPID>/exe`, needing the unit's own `User=`/`Group=`, or root) and
+  an unreadable CONFIGURED path are distinguished: each is a probe-cannot-run
+  condition (exit 2) with its own message naming what to fix, rather than
+  being reported as though the binaries differ.
 - (Issue #1222, WARNING-only, never fails the smoke) A version difference
   between the configured `EMBEDDED_AGENT_BUN_PATH` and the service user's own
   `~/.bun/bin/bun` is reported, not failed. Unification removes drift

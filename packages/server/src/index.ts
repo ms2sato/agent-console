@@ -217,7 +217,7 @@ if (shouldCheckEmbeddedAgentBunPath()) {
   try {
     const assessment = await assessEmbeddedAgentBunPath({
       configured: serverConfig.EMBEDDED_AGENT_BUN_PATH,
-      selfExe: '/proc/self/exe',
+      selfExe: process.execPath,
       io: { realpath, stat },
     });
     for (const warning of assessment.warnings) {

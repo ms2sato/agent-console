@@ -8,13 +8,32 @@
  * is the single writer for both call sites.
  */
 
+// `node:path`'s `posix.normalize` is pure, synchronous string manipulation
+// (no filesystem access) -- used only to collapse `.`/`..` segments in the
+// CONFIGURED path's own ancestor walk (isOtherExecutable) without following
+// symlinks, which is the whole point of walking that chain separately from
+// the realpath'd one.
+import { posix } from 'node:path';
+
 /**
  * `'same'`      -- both paths resolve (via realpath) to the identical file.
  * `'different'` -- both paths resolve, but to different files.
- * `'unresolvable'` -- the configured value is a bare name (not absolute), or
- *   either side could not be resolved (e.g. ENOENT).
+ * `{ unresolvable: ... }` -- one side could not be resolved at all, and the
+ *   `unresolvable` field names WHICH side, so callers never have to guess who
+ *   to blame:
+ *     - `'bare'`       -- the configured value is a bare, non-absolute name
+ *       (e.g. `'bun'`); PATH resolution differs per elevation-target user, so
+ *       there is nothing a single realpath call could meaningfully resolve.
+ *     - `'self'`       -- the server's OWN running binary (`selfExe`) could
+ *       not be realpath'd (e.g. `/proc/self/exe` does not exist on this OS).
+ *       This is never the configured path's fault.
+ *     - `'configured'` -- the configured `EMBEDDED_AGENT_BUN_PATH` value
+ *       could not be realpath'd (e.g. ENOENT, EACCES on an ancestor).
  */
-export type BinaryIdentity = 'same' | 'different' | 'unresolvable';
+export type BinaryIdentity =
+  | 'same'
+  | 'different'
+  | { unresolvable: 'bare' | 'self' | 'configured' };
 
 /**
  * Compares the server's own running binary (`selfExe`) against the
@@ -23,10 +42,10 @@ export type BinaryIdentity = 'same' | 'different' | 'unresolvable';
  *
  * A bare command name (e.g. `'bun'`, the single-user/dev default's PATH-only
  * form when `process.execPath` itself is unavailable, or a hand-set
- * override) is `'unresolvable'` WITHOUT ever calling `io.realpath` -- a bare
- * name resolves differently per elevation-target user's login shell PATH
- * (the #1221 class), so there is nothing this process's realpath call could
- * meaningfully resolve it to.
+ * override) is `{ unresolvable: 'bare' }` WITHOUT ever calling `io.realpath`
+ * -- a bare name resolves differently per elevation-target user's login
+ * shell PATH (the #1221 class), so there is nothing this process's realpath
+ * call could meaningfully resolve it to.
  */
 export async function compareBinaryIdentity(
   selfExe: string,
@@ -34,15 +53,19 @@ export async function compareBinaryIdentity(
   io: { realpath(p: string): Promise<string> },
 ): Promise<BinaryIdentity> {
   if (!configured.startsWith('/')) {
-    return 'unresolvable';
+    return { unresolvable: 'bare' };
   }
   let selfResolved: string;
-  let configuredResolved: string;
   try {
     selfResolved = await io.realpath(selfExe);
+  } catch {
+    return { unresolvable: 'self' };
+  }
+  let configuredResolved: string;
+  try {
     configuredResolved = await io.realpath(configured);
   } catch {
-    return 'unresolvable';
+    return { unresolvable: 'configured' };
   }
   return selfResolved === configuredResolved ? 'same' : 'different';
 }
@@ -92,6 +115,16 @@ export type OtherExecutableResult =
  * or a non-owner is blocked from even reaching the file (e.g. a world
  * -executable file sitting inside a `0750` home directory).
  *
+ * Walks the ancestor chains of BOTH `configured` (as given, without
+ * following symlinks) AND its realpath'd target (`resolved`). This matters
+ * when `configured` is itself a symlink: a non-traversable directory on
+ * `configured`'s own path blocks an elevation-target user from even
+ * following the symlink in the first place, regardless of how permissive
+ * the symlink's target ancestors are. Checking only the resolved target's
+ * chain would silently miss that (e.g. `configured` sits inside a `0750`
+ * home directory but symlinks out to a fully world-reachable target --
+ * reachable by the file's owner, unreachable by anyone else).
+ *
  * A bare command name is `'unknown'` WITHOUT calling `io.realpath` or
  * `io.stat`, for the same reason `compareBinaryIdentity` skips
  * `io.realpath` on a bare name: there is no single meaningful file to stat
@@ -111,26 +144,41 @@ export async function isOtherExecutable(
     return 'unknown';
   }
 
-  // Walk from the file's immediate parent out to `/`; the FIRST ancestor
-  // whose traverse bit is unset is the one that actually blocks
-  // reachability, so stop there rather than continuing to walk further out.
-  for (const dir of ancestorDirsOf(resolved)) {
-    let dirStat: { mode: number };
-    try {
-      dirStat = await io.stat(dir);
-    } catch {
-      return 'unknown';
-    }
-    if ((dirStat.mode & 0o001) === 0) {
-      // Mask to plain permission bits (with setuid/setgid/sticky preserved):
-      // a real `fs.Stats.mode` also carries the file-type bits (`S_IFDIR` /
-      // `S_IFREG` / etc, e.g. `0o040750` for a directory whose permission
-      // bits are `0o750`), which are not part of what an operator-facing
-      // "mode NNNN" message should ever display. Masking here, at the
-      // source, means every caller of this function's `mode` field gets
-      // plain permission bits for free -- no formatter has to remember to
-      // strip them itself.
-      return { executable: false, blockedAt: dir, kind: 'directory', mode: dirStat.mode & 0o7777 };
+  // Walk `configured`'s own ancestor chain first (it is the FIRST thing an
+  // elevation-target user needs to traverse to even reach the file, symlink
+  // or not), then `resolved`'s ancestor chain (the symlink's target, if
+  // any), skipping directories already checked. `configured` is normalized
+  // (`.`/`..` collapsed syntactically) rather than realpath'd -- realpath
+  // would follow the very symlink whose own containing directories this
+  // chain exists to check. A simple two-pass, order-preserving dedup is
+  // used rather than a single interleaved distance-sorted walk, since the
+  // two chains are not comparable by a single "distance" once they diverge
+  // at a symlink; within each chain, the existing "walk from the file's
+  // immediate parent out to `/`, stop at the FIRST blocker" semantics are
+  // unchanged.
+  const seenDirs = new Set<string>();
+  const ancestorChains = [ancestorDirsOf(posix.normalize(configured)), ancestorDirsOf(resolved)];
+  for (const chain of ancestorChains) {
+    for (const dir of chain) {
+      if (seenDirs.has(dir)) continue;
+      seenDirs.add(dir);
+      let dirStat: { mode: number };
+      try {
+        dirStat = await io.stat(dir);
+      } catch {
+        return 'unknown';
+      }
+      if ((dirStat.mode & 0o001) === 0) {
+        // Mask to plain permission bits (with setuid/setgid/sticky preserved):
+        // a real `fs.Stats.mode` also carries the file-type bits (`S_IFDIR` /
+        // `S_IFREG` / etc, e.g. `0o040750` for a directory whose permission
+        // bits are `0o750`), which are not part of what an operator-facing
+        // "mode NNNN" message should ever display. Masking here, at the
+        // source, means every caller of this function's `mode` field gets
+        // plain permission bits for free -- no formatter has to remember to
+        // strip them itself.
+        return { executable: false, blockedAt: dir, kind: 'directory', mode: dirStat.mode & 0o7777 };
+      }
     }
   }
 
@@ -174,10 +222,14 @@ const SETUP_SCRIPT_FIX = 're-run scripts/setup-multiuser-for-ubuntu.sh';
  *   - same identity      + other-executable blocked (file)        -> 1 warning
  *   - different identity + other-executable blocked (file)        -> 2 warnings
  *   - same/different identity + other-executable blocked (dir)    -> 1 or 2 warnings, same shape as the file case
- *   - bare name (unresolvable identity, unknown other-executable) -> 1 warning
- *   - absolute path that could not be read at all (identity
- *     unresolvable or other-executable unknown, NOT a bare name)  -> 1 warning (short-circuits the branches above --
- *     nothing else is determinable when the path itself couldn't be read)
+ *   - bare name (identity unresolvable:'bare', unknown other-executable) -> 1 warning
+ *   - the server's OWN binary (`selfExe`) could not be resolved (identity
+ *     unresolvable:'self')                                        -> 1 warning, naming `selfExe` -- never blames
+ *     EMBEDDED_AGENT_BUN_PATH (short-circuits before every branch below)
+ *   - absolute configured path that could not be read at all (identity
+ *     unresolvable:'configured' or other-executable unknown, NOT a
+ *     bare name)                                                  -> 1 warning (short-circuits the branches below --
+ *     nothing else is determinable when the configured path couldn't be read)
  */
 export async function assessEmbeddedAgentBunPath(
   params: AssessEmbeddedAgentBunPathParams,
@@ -188,25 +240,60 @@ export async function assessEmbeddedAgentBunPath(
 
   const isBareName = !configured.startsWith('/');
 
-  // The path itself (or one of its ancestors) could not be read at all --
-  // distinct from "readable, but wrong" (the branches below). Nothing else
-  // is determinable in this state, so short-circuit with a single warning
-  // that surfaces the actual OS error code rather than silently returning
-  // no warning at all (the #1291-follow-up EACCES-on-ancestor case).
-  if (!isBareName && (identity === 'unresolvable' || otherExecutable === 'unknown')) {
+  // The server's OWN running binary could not be resolved. This can never be
+  // blamed on the configured EMBEDDED_AGENT_BUN_PATH value -- e.g. `selfExe`
+  // is `/proc/self/exe`, a Linux-only path that does not exist on macOS -- so
+  // it gets its own, narrower warning and short-circuits before any of the
+  // "configured path" branches below, which would otherwise misname this as
+  // a problem with EMBEDDED_AGENT_BUN_PATH even though that path may be
+  // perfectly readable.
+  if (typeof identity === 'object' && identity.unresolvable === 'self') {
+    // Deliberate, cheap, second read purely to extract a `.code` for the
+    // message -- see the analogous re-probe below for why this is not
+    // threaded through compareBinaryIdentity's return value instead.
+    let errorCode = 'UNKNOWN';
+    try {
+      await io.realpath(selfExe);
+    } catch (err) {
+      errorCode = (err as NodeJS.ErrnoException)?.code ?? 'UNKNOWN';
+    }
+    return {
+      identity,
+      otherExecutable,
+      warnings: [
+        `Could not resolve the server's own running binary '${selfExe}': ${errorCode}; the embedded-agent ` +
+          'bun-path identity check could not run at all. This is not a problem with the configured bun path ' +
+          "value -- it is the server process's own executable that could not be resolved.",
+      ],
+    };
+  }
+
+  // The configured path itself (or one of its ancestors) could not be read
+  // at all -- distinct from "readable, but wrong" (the branches below).
+  // Nothing else is determinable in this state, so short-circuit with a
+  // single warning that surfaces the actual OS error code rather than
+  // silently returning no warning at all (the #1291-follow-up
+  // EACCES-on-ancestor case).
+  const configuredUnresolvable = typeof identity === 'object' && identity.unresolvable === 'configured';
+  if (!isBareName && (configuredUnresolvable || otherExecutable === 'unknown')) {
     // Deliberate, cheap, second read purely to extract a `.code` for the
     // message -- the original error is never threaded through
     // compareBinaryIdentity's / isOtherExecutable's return values. Walks the
-    // same ancestor chain isOtherExecutable does (rather than only
-    // re-statting the resolved file) so the error surfaced here actually
-    // matches WHICH read failed -- an EACCES on a containing directory
-    // (the motivating case for this whole widening) throws inside the
-    // ancestor loop, not at the final file stat, and a re-probe scoped to
-    // only the resolved file would silently under-report it as 'UNKNOWN'.
+    // same two ancestor chains isOtherExecutable does (configured's own,
+    // un-realpath'd chain, plus resolved's chain, deduplicated) rather than
+    // only re-statting the resolved file, so the error surfaced here
+    // actually matches WHICH read failed -- an EACCES on a containing
+    // directory on EITHER chain (the motivating case for this whole
+    // widening) throws inside the ancestor loop, not at the final file stat,
+    // and a re-probe scoped to only the resolved file's chain would silently
+    // under-report it as 'UNKNOWN'.
     let errorCode = 'UNKNOWN';
     try {
       const resolved = await io.realpath(configured);
-      for (const dir of ancestorDirsOf(resolved)) {
+      const seenDirs = new Set<string>();
+      for (const dir of [...ancestorDirsOf(posix.normalize(configured)), ...ancestorDirsOf(resolved)]) {
+        if (seenDirs.has(dir)) continue;
+        seenDirs.add(dir);
         await io.stat(dir);
       }
       await io.stat(resolved);
@@ -232,7 +319,7 @@ export async function assessEmbeddedAgentBunPath(
         `different bun than the server itself -- ${SETUP_SCRIPT_FIX}, or set Environment=EMBEDDED_AGENT_BUN_PATH= ` +
         'in the unit to the same binary the server itself runs.',
     );
-  } else if (identity === 'unresolvable' && isBareName) {
+  } else if (typeof identity === 'object' && identity.unresolvable === 'bare') {
     warnings.push(
       `EMBEDDED_AGENT_BUN_PATH is set to the bare name '${configured}', which resolves via each target user's ` +
         'login PATH inside the elevated shell rather than to a fixed file (#1221 class) -- set it to an absolute ' +

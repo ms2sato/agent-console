@@ -23,7 +23,7 @@ describe('compareBinaryIdentity', () => {
     expect(identity).toBe('different');
   });
 
-  it('is "unresolvable" for a bare name, and never calls realpath', async () => {
+  it('is { unresolvable: "bare" } for a bare name, and never calls realpath', async () => {
     let callCount = 0;
     const identity = await compareBinaryIdentity('/proc/self/exe', 'bun', {
       realpath: async (p) => {
@@ -31,28 +31,39 @@ describe('compareBinaryIdentity', () => {
         return p;
       },
     });
-    expect(identity).toBe('unresolvable');
+    expect(identity).toEqual({ unresolvable: 'bare' });
     expect(callCount).toBe(0);
   });
 
-  it('is "unresolvable" when io.realpath throws for the configured side (ENOENT)', async () => {
+  it('is { unresolvable: "configured" } when io.realpath throws for the configured side (ENOENT)', async () => {
     const identity = await compareBinaryIdentity('/proc/self/exe', '/usr/local/bin/bun', {
       realpath: async (p) => {
         if (p === '/usr/local/bin/bun') throw new Error('ENOENT');
         return p;
       },
     });
-    expect(identity).toBe('unresolvable');
+    expect(identity).toEqual({ unresolvable: 'configured' });
   });
 
-  it('is "unresolvable" when io.realpath throws for the self-exe side (ENOENT)', async () => {
+  it('is { unresolvable: "self" } when io.realpath throws for the self-exe side (ENOENT)', async () => {
     const identity = await compareBinaryIdentity('/proc/self/exe', '/usr/local/bin/bun', {
       realpath: async (p) => {
         if (p === '/proc/self/exe') throw new Error('ENOENT');
         return p;
       },
     });
-    expect(identity).toBe('unresolvable');
+    expect(identity).toEqual({ unresolvable: 'self' });
+  });
+
+  it('reports "self" even when the configured side would also throw (self is checked first)', async () => {
+    // Both sides would fail; the discriminant must name the side that is
+    // ACTUALLY checked first (self), not silently pick 'configured'.
+    const identity = await compareBinaryIdentity('/proc/self/exe', '/usr/local/bin/bun', {
+      realpath: async () => {
+        throw new Error('ENOENT');
+      },
+    });
+    expect(identity).toEqual({ unresolvable: 'self' });
   });
 });
 
@@ -138,6 +149,52 @@ describe('isOtherExecutable', () => {
       kind: 'directory',
       mode: 0o750,
     });
+  });
+
+  it('is blocked at a directory on the CONFIGURED path\'s own chain, even though the realpath TARGET chain is fully open (symlink case)', async () => {
+    // `FILE` (`/home/agentconsole/.bun/bin/bun`) is a symlink to `target`; the
+    // realpath TARGET's whole ancestor chain is wide open, but `FILE`'s own
+    // immediate parent tree sits inside a non-world-traversable home
+    // directory ('/home/agentconsole', 0o750) -- an elevation-target user
+    // other than the home's owner cannot even follow the symlink, regardless
+    // of how permissive the target is.
+    const target = '/usr/local/bun/1.3.5/bin/bun';
+    const modeByPath: Record<string, number> = {
+      // configured (FILE)'s own ancestor chain -- blocked at '/home/agentconsole'.
+      '/home/agentconsole/.bun/bin': 0o755,
+      '/home/agentconsole/.bun': 0o755,
+      '/home/agentconsole': 0o750,
+      '/home': 0o755,
+      '/': 0o755,
+      // realpath target's own ancestor chain + the file itself -- fully open.
+      '/usr/local/bun/1.3.5/bin': 0o755,
+      '/usr/local/bun/1.3.5': 0o755,
+      '/usr/local/bun': 0o755,
+      '/usr/local': 0o755,
+      '/usr': 0o755,
+      [target]: 0o755,
+    };
+    const io = {
+      realpath: async (p: string) => (p === FILE ? target : p),
+      stat: async (p: string) => {
+        const mode = modeByPath[p];
+        if (mode === undefined) throw new Error(`fakeIo: no mode configured for ${p}`);
+        return { mode };
+      },
+    };
+    const result = await isOtherExecutable(FILE, io);
+    expect(result).toEqual({
+      executable: false,
+      blockedAt: '/home/agentconsole',
+      kind: 'directory',
+      mode: 0o750,
+    });
+    // reach: before the fix, isOtherExecutable only ever walked `resolved`'s
+    // (the realpath TARGET's) ancestor chain, never `configured`'s (the
+    // symlink's) own chain. This fixture's target chain is fully open, so
+    // the pre-fix implementation would return `true` here, silently missing
+    // that an elevation-target user cannot even traverse
+    // '/home/agentconsole' to follow the symlink in the first place.
   });
 
   it('is "unknown" when io.stat throws for an ancestor directory (EACCES)', async () => {
@@ -265,7 +322,7 @@ describe('assessEmbeddedAgentBunPath', () => {
     expect(result.warnings).toHaveLength(2);
   });
 
-  it('bare name -> 1 warning (unresolvable identity, unknown other-executable)', async () => {
+  it('bare name -> 1 warning (unresolvable:"bare" identity, unknown other-executable)', async () => {
     const bareConfigured = 'bun';
     const result = await assessEmbeddedAgentBunPath({
       configured: bareConfigured,
@@ -275,7 +332,7 @@ describe('assessEmbeddedAgentBunPath', () => {
         stat: async () => ({ mode: 0o755 }),
       },
     });
-    expect(result.identity).toBe('unresolvable');
+    expect(result.identity).toEqual({ unresolvable: 'bare' });
     expect(result.otherExecutable).toBe('unknown');
     expect(result.warnings).toHaveLength(1);
     expect(result.warnings[0]).toContain('EMBEDDED_AGENT_BUN_PATH');
@@ -425,5 +482,35 @@ describe('assessEmbeddedAgentBunPath', () => {
     // neither of the fallback branches fires, so `warnings` becomes `[]`
     // (length 0) instead of the expected 1, and the content assertions on
     // "Could not read" never even run against real output.
+  });
+
+  it('self-side realpath failure -> 1 warning naming the server\'s own binary, never blaming EMBEDDED_AGENT_BUN_PATH or the configured path', async () => {
+    const result = await assessEmbeddedAgentBunPath({
+      configured,
+      selfExe,
+      io: {
+        realpath: async (p) => {
+          if (p === selfExe) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+          return p;
+        },
+        stat: async () => ({ mode: 0o755 }),
+      },
+    });
+    expect(result.identity).toEqual({ unresolvable: 'self' });
+    expect(result.warnings).toHaveLength(1);
+    expect(result.warnings[0]).toContain(selfExe);
+    expect(result.warnings[0]).toContain('ENOENT');
+    expect(result.warnings[0]).not.toContain(configured);
+    expect(result.warnings[0]).not.toContain('EMBEDDED_AGENT_BUN_PATH');
+    // reach: this is the regression test for the bug found in review --
+    // before the fix, compareBinaryIdentity collapsed a self-side realpath
+    // failure into the SAME 'unresolvable' string a configured-side failure
+    // produces, so assessEmbeddedAgentBunPath's short-circuit branch (gated
+    // only on `identity === 'unresolvable'`) always blamed the CONFIGURED
+    // path, producing a warning that read "Could not read
+    // EMBEDDED_AGENT_BUN_PATH '<configured>': ..." even though the
+    // configured path itself was perfectly readable here (io.stat never
+    // throws in this fixture) -- e.g. `selfExe` is `/proc/self/exe`, a
+    // Linux-only path that simply does not exist on macOS.
   });
 });
