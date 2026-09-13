@@ -584,22 +584,43 @@ function recallsMentionNonce(recalls: readonly MemoryRecallMessage[], nonceValue
   return recalls.some((r) => r.memories.some((m) => m.path === seededPath || (m.content?.includes(nonceValue) ?? false)));
 }
 
+/** The trailing N path segments (`slug/memory/basename` for N=3), segment-aligned so a raw substring straddling a separator can never false-match. */
+function trailingSegments(p: string, n: number): string[] {
+  const parts = resolvedOrSelf(p).split(sep).filter((s) => s.length > 0);
+  return parts.slice(-n);
+}
+
 /**
- * Whether any observed recall's `path` basename-matches the seeded file,
- * after the same realpath-or-self normalization `redactRecallEntry` uses
- * (Architect ruling, PR #1662, CodeRabbit finding on Arm A's seeding
- * format): "recall happened" is only informative once it is also "recall
- * happened FOR THE FILE WE SEEDED", rather than some unrelated recall that
- * happens to surface at the same turn. Basename (not full-path equality)
- * because the SDK may report the path through a different absolute prefix
- * than the one this process wrote through (the same symlink-resolution
- * concern finding #2 fixed for `redactRecallEntry`).
+ * Whether any observed recall's `path` matches the seeded file by a
+ * PROJECT-SCOPED suffix, after the same realpath-or-self normalization
+ * `redactRecallEntry` uses (Architect ruling, PR #1662, CodeRabbit finding
+ * on Arm A's seeding format): "recall happened" is only informative once it
+ * is also "recall happened FOR THE FILE WE SEEDED", rather than some
+ * unrelated recall that happens to surface at the same turn.
+ *
+ * NOT full-path equality (a CodeRabbit follow-up finding, PR #1662): the SDK
+ * may report the path through a different absolute prefix than the one this
+ * process wrote through (the same symlink-resolution concern finding #2
+ * fixed for `redactRecallEntry`), and the sibling unit test's
+ * "different-prefix" case is deliberate, not an oversight.
+ *
+ * NOT basename equality either (the CodeRabbit finding this replaces): a
+ * bare basename match lets an UNRELATED memory file under a DIFFERENT
+ * project slug in the same isolated config dir count as a hit. The trailing
+ * three segments (`<slug>/memory/<basename>`) scope the match to the same
+ * project while still tolerating an arbitrary prefix before it. Compared as
+ * segment ARRAYS (never a raw string `endsWith`), so a segment boundary can
+ * never be crossed by a coincidental substring match.
  *
  * @internal Exported for the sibling unit test.
  */
 export function recallPathMatches(recalls: readonly { memories: readonly { path: string }[] }[], seededPath: string): boolean {
-  const seededBasename = basename(resolvedOrSelf(seededPath));
-  return recalls.some((r) => r.memories.some((m) => basename(resolvedOrSelf(m.path)) === seededBasename));
+  const wanted = trailingSegments(seededPath, 3);
+  const sameSuffix = (path: string): boolean => {
+    const got = trailingSegments(path, 3);
+    return got.length === wanted.length && got.every((seg, i) => seg === wanted[i]);
+  };
+  return recalls.some((r) => r.memories.some((m) => sameSuffix(m.path)));
 }
 
 /** Whether any observed recall's inline `content` (when present) mentions the nonce -- independent of which file it came from. */

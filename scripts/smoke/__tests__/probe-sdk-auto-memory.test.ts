@@ -247,8 +247,8 @@ describe('recallPathMatches', () => {
     expect(recallPathMatches([], seededPath)).toBe(false);
   });
 
-  it('is true when a recalled memory basename-matches the seeded topic file, even through a different absolute prefix', () => {
-    const recalls = [{ memories: [{ path: '/some/other/resolved/prefix/automem-probe-seeded-fact.md' }] }];
+  it('is true when the trailing slug/memory/basename suffix matches, even through a different absolute prefix', () => {
+    const recalls = [{ memories: [{ path: '/some/other/resolved/root/projects/slug/memory/automem-probe-seeded-fact.md' }] }];
     expect(recallPathMatches(recalls, seededPath)).toBe(true);
   });
 
@@ -258,20 +258,45 @@ describe('recallPathMatches', () => {
    * recalled path is the one this arm actually seeded, not an unrelated
    * memory that happened to surface in the same turn.
    */
-  it('is false when a recall fired but for a DIFFERENT file (mismatch case)', () => {
+  it('is false when a recall fired but for a DIFFERENT file in the SAME project (mismatch case)', () => {
     const recalls = [{ memories: [{ path: '/tmp/probe-sdk-automem-a-seeded/projects/slug/memory/MEMORY.md' }] }];
+    expect(recallPathMatches(recalls, seededPath)).toBe(false);
+  });
+
+  /**
+   * CodeRabbit follow-up finding (PR #1662): a bare basename match lets an
+   * UNRELATED memory under a DIFFERENT project slug count as a hit. The
+   * filename here is identical to the seeded topic file's basename; only
+   * the slug segment differs, which must be enough to reject it.
+   */
+  it('is false when the basename matches but the project (slug) differs', () => {
+    const recalls = [{ memories: [{ path: '/tmp/probe-sdk-automem-b/projects/DIFFERENT-SLUG/memory/automem-probe-seeded-fact.md' }] }];
+    expect(recallPathMatches(recalls, seededPath)).toBe(false);
+  });
+
+  it('is false when the suffix is too short to have a slug segment at all (a bare basename report)', () => {
+    const recalls = [{ memories: [{ path: '/anywhere/automem-probe-seeded-fact.md' }] }];
     expect(recallPathMatches(recalls, seededPath)).toBe(false);
   });
 
   it('is true when at least one of several memories in one recall matches (mixed)', () => {
     const recalls = [
-      { memories: [{ path: '/unrelated/one.md' }, { path: '/anywhere/automem-probe-seeded-fact.md' }, { path: '/unrelated/two.md' }] },
+      {
+        memories: [
+          { path: '/unrelated/one.md' },
+          { path: '/anywhere/deep/slug/memory/automem-probe-seeded-fact.md' },
+          { path: '/unrelated/two.md' },
+        ],
+      },
     ];
     expect(recallPathMatches(recalls, seededPath)).toBe(true);
   });
 
   it('is true when at least one of several recall events matches (mixed, all-failure-but-one)', () => {
-    const recalls = [{ memories: [{ path: '/unrelated/one.md' }] }, { memories: [{ path: '/anywhere/automem-probe-seeded-fact.md' }] }];
+    const recalls = [
+      { memories: [{ path: '/unrelated/one.md' }] },
+      { memories: [{ path: '/anywhere/deep/slug/memory/automem-probe-seeded-fact.md' }] },
+    ];
     expect(recallPathMatches(recalls, seededPath)).toBe(true);
   });
 
