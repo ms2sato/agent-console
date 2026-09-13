@@ -57,7 +57,19 @@
  *     read the file at all (the exact production failure Issue #1668
  *     exists to fix), since argv is set before the OS ever attempts to open
  *     the file; only the pairing with a real completed handshake proves
- *     actual execution, not just argv plumbing. Opt in with either:
+ *     actual execution, not just argv plumbing. The `/proc/<pid>/cmdline`
+ *     read itself happens IMMEDIATELY after activation, not later alongside
+ *     the negative /proc checks below -- measured empirically on this host,
+ *     the SAME live (non-zombie) pid's `cmdline` reads back correctly right
+ *     after spawn but goes empty a couple hundred ms later, once the
+ *     bundled entry's heap growth has apparently invalidated the kernel's
+ *     cached arg_start/arg_end for that pid. This is an environment quirk in
+ *     how long `/proc/<pid>/cmdline` stays readable, not a defect in the
+ *     spawn path (the configured path demonstrably DOES reach argv); reading
+ *     early and asserting later still pairs both facts for the one
+ *     activation under test, per `.claude/rules/os-environment-coupling.md`'s
+ *     "don't trust 'should work' reasoning about OS behavior". Opt in with
+ *     either:
  *       # against a real build's bundle sibling:
  *       bun run build
  *       EMBEDDED_AGENT_ENTRY_PATH="$(pwd)/dist/embedded-agent.js" \
@@ -631,6 +643,38 @@ async function main(): Promise<void> {
     console.log(`  spawnAsUser target username: ${targetUsername} (elevated: ${!degenerate})`);
     await ctx.sessionManager.activateEmbeddedAgentWorker(sessionId, workerId);
 
+    // --- Capture the EMBEDDED_AGENT_ENTRY_PATH short-circuit's argv proof
+    // IMMEDIATELY after spawn, not later alongside the negative /proc checks.
+    // Empirically measured on this host: `/proc/<pid>/cmdline` for the SAME
+    // live (non-zombie, State: S) pid reads back the full `sh -c '...'` argv
+    // correctly right after spawn, but goes EMPTY once the bundled
+    // `dist/embedded-agent.js` process has been running for a couple hundred
+    // ms (plausibly once its heap growth invalidates the kernel's cached
+    // arg_start/arg_end for that pid -- a real environment quirk, not a
+    // defect in the spawn path: the configured path DOES reach argv, this
+    // is purely about how long the kernel keeps it readable). Reading here
+    // instead of after `ready` still pairs this fact with the ready
+    // assertion below IN THE SAME RUN, for the SAME pid -- the pairing's
+    // point (per os-environment-coupling.md: a cmdline match alone must not
+    // pass if the elevated user could not actually run the file) does not
+    // depend on which of the two facts is observed first, only that both
+    // hold for the one activation under test.
+    let earlyEntryPathCmdline: { ran: boolean; content: string } | undefined;
+    if (configuredEntryPath) {
+      const earlyWorker = ctx.sessionManager.getWorker(sessionId, workerId);
+      const earlyPid =
+        earlyWorker && earlyWorker.type === 'embedded-agent' ? earlyWorker.subprocess?.pid : undefined;
+      if (earlyPid !== undefined) {
+        let content: string | undefined;
+        try {
+          content = await Bun.file(`/proc/${earlyPid}/cmdline`).text();
+        } catch {
+          content = undefined;
+        }
+        earlyEntryPathCmdline = { ran: content !== undefined, content: content ?? '' };
+      }
+    }
+
     // --- Poll the replayed NDJSON history for `ready` (or a loud failure). ---
     // Uses the lightweight `parseStreamEventLine` structural check (see its
     // doc comment) rather than full valibot schema validation.
@@ -722,21 +766,18 @@ async function main(): Promise<void> {
       // open the file. Skipped (not failed) when EMBEDDED_AGENT_ENTRY_PATH is
       // unset -- see the header comment's "closing the bundle-sibling gap"
       // section for how to opt in.
-      if (configuredEntryPath && pid !== undefined) {
-        const cmdlineFile = Bun.file(`/proc/${pid}/cmdline`);
-        const cmdlineRan = await cmdlineFile.exists();
-        const cmdlineContent = cmdlineRan ? await cmdlineFile.text().catch(() => '') : '';
+      if (configuredEntryPath && earlyEntryPathCmdline !== undefined) {
         expect(
-          cmdlineRan,
+          earlyEntryPathCmdline.ran,
           'EMBEDDED_AGENT_ENTRY_PATH short-circuit /proc/<pid>/cmdline check actually ran (not silently skipped)',
         );
         expect(
-          cmdlineContent.includes(configuredEntryPath),
+          earlyEntryPathCmdline.content.includes(configuredEntryPath),
           'the real elevated subprocess was spawned with the configured EMBEDDED_AGENT_ENTRY_PATH as its argv (short-circuit reached the actual spawn)',
-          `configured='${configuredEntryPath}'; resolver's own package-branch path was '${resolution.path}' (must NOT be what was actually spawned when the short-circuit works)`,
+          `configured='${configuredEntryPath}'; resolver's own package-branch path was '${resolution.path}' (must NOT be what was actually spawned when the short-circuit works); captured cmdline='${earlyEntryPathCmdline.content}'`,
         );
       } else if (configuredEntryPath) {
-        expect(false, 'EMBEDDED_AGENT_ENTRY_PATH short-circuit /proc/<pid>/cmdline check actually ran (not silently skipped)', 'pid unknown');
+        expect(false, 'EMBEDDED_AGENT_ENTRY_PATH short-circuit /proc/<pid>/cmdline check actually ran (not silently skipped)', 'pid unknown at spawn time');
       } else {
         console.log(
           '  skipped: EMBEDDED_AGENT_ENTRY_PATH unset -- no configured short-circuit path to verify against argv.',
