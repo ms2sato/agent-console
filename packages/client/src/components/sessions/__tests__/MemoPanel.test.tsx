@@ -58,9 +58,11 @@ function wasMemoPutCalled(): boolean {
 // of this file tests a single panel in isolation, standing in for "already
 // inside a wide accordion column" -- the compact/rail-chrome rendering is
 // covered by SessionSidePanels.test.tsx. One test below (M7) exercises
-// compact=true directly, because R1's "always mounted once resolved" change
-// made the compact rail reachable with a null memo for the first time (it
-// used to be unreachable, since the whole component returned null first).
+// compact=true directly, because the empty-state feature narrowed the
+// panel's early return from "pending OR null content" down to "pending"
+// only, which made the compact rail reachable with a null memo for the
+// first time (it used to be unreachable, since the whole component
+// returned null first).
 function ControlledMemoPanel({
   sessionId,
   initialExpanded = true,
@@ -269,6 +271,29 @@ describe('MemoPanel', () => {
     expect(screen.getByText('Existing memo').tagName).toBe('H1');
     expect(screen.queryByLabelText('Memo content')).toBeNull();
     expect(wasMemoPutCalled()).toBe(false);
+  });
+
+  // The "Edit" button is a sibling of the title-toggle button inside the
+  // same header row, and its own onClick must never also fire
+  // onToggleExpanded. A naive check that `getByLabelText('Memo content')`
+  // still finds the textarea after clicking Edit would NOT catch a
+  // regression here: AccordionSectionBody keeps the body mounted (just
+  // aria-hidden) regardless of isExpanded, so the textarea stays queryable
+  // by testing-library even if the section were incorrectly collapsed.
+  // Assert the title button's own aria-expanded state instead.
+  it('clicking Edit does not toggle the section closed', async () => {
+    mockFetch.mockResolvedValue(jsonResponse({ content: '# Existing memo' }));
+
+    await renderWithRouter(<ControlledMemoPanel sessionId="session-1" />);
+    await waitFor(() => expect(screen.getByText('Existing memo')).toBeTruthy());
+
+    expect(screen.getByLabelText('Collapse Memo').getAttribute('aria-expanded')).toBe('true');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Edit memo' }));
+    await screen.findByLabelText('Memo content');
+
+    expect(screen.getByLabelText('Collapse Memo')).toBeTruthy();
+    expect(screen.getByLabelText('Collapse Memo').getAttribute('aria-expanded')).toBe('true');
   });
 
   // M4: Ctrl+Enter saves, Escape behavior depends on whether the draft changed.
