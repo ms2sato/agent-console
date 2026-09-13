@@ -265,6 +265,40 @@ describe('server-config', () => {
     });
   });
 
+  describe('EMBEDDED_AGENT_ENTRY_PATH', () => {
+    it('should default EMBEDDED_AGENT_ENTRY_PATH to undefined when not set', async () => {
+      delete process.env.EMBEDDED_AGENT_ENTRY_PATH;
+
+      const { serverConfig } = await importServerConfig();
+
+      expect(serverConfig.EMBEDDED_AGENT_ENTRY_PATH).toBeUndefined();
+    });
+
+    it('should treat empty EMBEDDED_AGENT_ENTRY_PATH as unset (operator-friendly)', async () => {
+      process.env.EMBEDDED_AGENT_ENTRY_PATH = '';
+
+      const { serverConfig } = await importServerConfig();
+
+      expect(serverConfig.EMBEDDED_AGENT_ENTRY_PATH).toBeUndefined();
+    });
+
+    it('should trim whitespace around a configured EMBEDDED_AGENT_ENTRY_PATH', async () => {
+      process.env.EMBEDDED_AGENT_ENTRY_PATH = '  /usr/local/lib/agent-console/embedded-agent.js  ';
+
+      const { serverConfig } = await importServerConfig();
+
+      expect(serverConfig.EMBEDDED_AGENT_ENTRY_PATH).toBe('/usr/local/lib/agent-console/embedded-agent.js');
+    });
+
+    it('should expose EMBEDDED_AGENT_ENTRY_PATH when set to a non-empty string', async () => {
+      process.env.EMBEDDED_AGENT_ENTRY_PATH = '/usr/local/lib/agent-console/embedded-agent.js';
+
+      const { serverConfig } = await importServerConfig();
+
+      expect(serverConfig.EMBEDDED_AGENT_ENTRY_PATH).toBe('/usr/local/lib/agent-console/embedded-agent.js');
+    });
+  });
+
   describe('resolveAuthCookieSecure', () => {
     it('unset + production -> true (preserves current behavior)', () => {
       expect(

@@ -18,6 +18,7 @@ import {
   EmbeddedAgentActivationError,
   EmbeddedMessageDeliveryError,
   resolveEmbeddedAgentEntryPath,
+  resolveConstructorEntryPath,
   hasUndeliveredInitialPrompt,
   fatalLeavesHarnessAlive,
   isEvictableEngine,
@@ -1260,6 +1261,39 @@ describe('resolveEmbeddedAgentEntryPath', () => {
     } finally {
       await rm(tmpDir, { recursive: true, force: true });
     }
+  });
+});
+
+describe('resolveConstructorEntryPath', () => {
+  it('returns depsEntryPath verbatim and never calls resolveFn, even when configuredEntryPath is also set', () => {
+    const resolveFn = mock(() => ({ path: '/resolved/from/resolver', source: 'package' as const }));
+
+    const result = resolveConstructorEntryPath(
+      '/from/deps/main.ts',
+      '/from/config/embedded-agent.js',
+      resolveFn,
+    );
+
+    expect(result).toBe('/from/deps/main.ts');
+    expect(resolveFn).not.toHaveBeenCalled();
+  });
+
+  it('returns configuredEntryPath verbatim and never calls resolveFn when depsEntryPath is unset', () => {
+    const resolveFn = mock(() => ({ path: '/resolved/from/resolver', source: 'package' as const }));
+
+    const result = resolveConstructorEntryPath(undefined, '/from/config/embedded-agent.js', resolveFn);
+
+    expect(result).toBe('/from/config/embedded-agent.js');
+    expect(resolveFn).not.toHaveBeenCalled();
+  });
+
+  it('calls resolveFn exactly once and returns its .path when both are unset', () => {
+    const resolveFn = mock(() => ({ path: '/resolved/from/resolver', source: 'package' as const }));
+
+    const result = resolveConstructorEntryPath(undefined, undefined, resolveFn);
+
+    expect(result).toBe('/resolved/from/resolver');
+    expect(resolveFn).toHaveBeenCalledTimes(1);
   });
 });
 
