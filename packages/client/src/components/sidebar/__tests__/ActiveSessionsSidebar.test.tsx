@@ -1796,6 +1796,10 @@ describe('Orchestrator flag control (Issue #1643 PR-2)', () => {
     // not merely absent as a whole-string match.
     expect(classTokens).not.toContain('right-28');
     expect(classTokens).not.toContain('right-2');
+    // Pin the composed vertical-offset token (0.75rem row p-3 + 0.375rem
+    // column mt-1.5 + 1rem dot box h-4 + 0.25rem gap-1), full-token match so
+    // a drift in any one term is caught, not just presence of `top-[calc(`.
+    expect(classTokens).toContain('top-[calc(0.75rem_+_0.375rem_+_1rem_+_0.25rem)]');
   });
 
   it('reserves a spacer slot below the activity indicator for worktree sessions, but not for quick sessions', async () => {
@@ -1859,5 +1863,41 @@ describe('Orchestrator flag control (Issue #1643 PR-2)', () => {
     const classTokens = tooltip.className.split(/\s+/);
     expect(classTokens).toContain('left-0');
     expect(classTokens).not.toContain('right-0');
+  });
+
+  // Collapsed sidebar takes SessionItem's separate early-return branch,
+  // which never renders the flag control or its spacer (per #1657's
+  // existing ruling, restated in #1660's PR body) -- pin that omission
+  // explicitly rather than relying on it never having been tested.
+  it('omits the flag control and its spacer entirely in collapsed mode, while still rendering the row icon', async () => {
+    repositoriesResponse = { repositories: [repository({ id: 'repo-a', orchestratorSessionId: 'session-a' })] };
+    const sessions = [
+      createSessionWithActivity(
+        createMockWorktreeSession({ id: 'session-a', repositoryId: 'repo-a', repositoryName: 'repo-a' }),
+        'idle'
+      ),
+    ];
+
+    await renderWithRouter(
+      <ActiveSessionsSidebar {...defaultProps()} collapsed={true} sessions={sessions} />
+    );
+
+    // Give the repositories query a chance to resolve so a regression that
+    // reintroduces the flag under `collapsed` would actually have rendered
+    // it by the time these assertions run.
+    await waitFor(() => {
+      expect(repositoriesResponse.repositories).toHaveLength(1);
+    });
+
+    expect(document.querySelectorAll('[data-orchestrator-flag]')).toHaveLength(0);
+    expect(document.querySelectorAll('[data-orchestrator-flag-spacer]')).toHaveLength(0);
+
+    // Positive control: the collapsed row itself still rendered, via its
+    // own simpler button (title includes the activity label), same pattern
+    // as the "should show tooltip with activity state label when collapsed"
+    // test above.
+    const buttons = screen.getAllByRole('button');
+    const collapsedRowButton = buttons.find((btn) => btn.getAttribute('title')?.includes('Idle'));
+    expect(collapsedRowButton).toBeTruthy();
   });
 });
