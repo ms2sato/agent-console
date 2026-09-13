@@ -345,7 +345,7 @@ Adjust the five placeholder values for your environment:
 
 - `{{HOME}}` — the service user's home directory (typically `/home/agentconsole`). If you installed Agent Console under a different path, update `{{HOME}}` so both `WorkingDirectory` and the `PATH` environment entry resolve correctly.
 - `{{BUN_PATH}}` — the absolute path to the **unified** bun binary both `ExecStart` and `EMBEDDED_AGENT_BUN_PATH` execute (Issue #1222). This is the `/usr/local/bin/bun` copy from the step above, **not** the service user's own `~/.bun/bin/bun` — the template substitutes the same value into both lines, so passing the service user's own path here would defeat the unification. Must exist and be executable before installing the unit (`scripts/setup-multiuser-for-ubuntu.sh` fails closed on this; a manual render does not, so verify it yourself with `sudo test -x /usr/local/bin/bun`).
-- `{{ENTRY_PATH}}` — the absolute path to the **unified** embedded-agent bundle `EMBEDDED_AGENT_ENTRY_PATH` short-circuits to (Issue #1668). This is the `/usr/local/lib/agent-console/embedded-agent.js` copy from the step above. An independent knob from `{{BUN_PATH}}` (different physical resource, different FHS location) — not derived from it. Unlike `{{BUN_PATH}}`, there is no fail-closed existence check inside the server itself; verify it yourself with `sudo test -r /usr/local/lib/agent-console/embedded-agent.js` before restarting.
+- `{{ENTRY_PATH}}` — the absolute path to the **unified** embedded-agent bundle `EMBEDDED_AGENT_ENTRY_PATH` short-circuits to (Issue #1668). This is the `/usr/local/lib/agent-console/embedded-agent.js` copy from the step above. An independent knob from `{{BUN_PATH}}` (different physical resource, different FHS location) — not derived from it. Unlike `{{BUN_PATH}}`, there is no fail-closed existence check inside the server itself; verify it yourself before restarting -- but **not** with a root-side `test -r`: root bypasses DAC read checks (including parent-directory traversal) so a root-side check passes even when no OTHER elevation-target user could read the file, which is the exact defect Issue #1668 is about. Probe from an unprivileged user's view instead — `runuser -u nobody -- test -r /usr/local/lib/agent-console/embedded-agent.js && echo readable` (root-only, no sudoers policy needed; any real elevation-target user hits the same wall as `nobody` would). This is the same gate `scripts/update-and-deploy-for-multiuser-ubuntu.sh` runs automatically before every restart.
 - `{{PORT}}` — the TCP port the server listens on (e.g. `8080`).
 - `{{AUTH_COOKIE_SECURE}}` — `true` or `false`. Set to `true` if all access is over HTTPS or via `http://localhost`; set to `false` for plain-HTTP access on a trusted network. See [TLS, `NODE_ENV`, and secure contexts](#tls-node_env-and-secure-contexts).
 
@@ -1381,17 +1381,30 @@ What it verifies:
   documents: without this pairing, `resolveEmbeddedAgentEntryPath()`'s
   `'bundle'` branch (the one a real bundled production deploy takes) is
   never exercised by this smoke, only unit-tested against a fixture
-  directory. Opt in with either:
+  directory. Opt in with either — note the variable is set via `env`
+  **after** `sudo -u agentconsole`, not as a `VAR=value` prefix before it:
+  under Ubuntu's default `env_reset`, `sudo` resets the environment it
+  hands to the target user, so a prefix assignment placed before `sudo`
+  never reaches `bun` and the smoke would silently fall back to automatic
+  resolution instead of exercising the short-circuit at all:
   ```bash
   # against a real build's bundle sibling
   bun run build
-  EMBEDDED_AGENT_ENTRY_PATH="$(pwd)/dist/embedded-agent.js" \
-    sudo -u agentconsole bun scripts/smoke/check-embedded-agent-elevation.ts <target-user>
+  sudo -u agentconsole env EMBEDDED_AGENT_ENTRY_PATH="$(pwd)/dist/embedded-agent.js" \
+    bun scripts/smoke/check-embedded-agent-elevation.ts <target-user>
 
   # or, on a live multi-user host, the real unified path
-  EMBEDDED_AGENT_ENTRY_PATH=/usr/local/lib/agent-console/embedded-agent.js \
-    sudo -u agentconsole bun scripts/smoke/check-embedded-agent-elevation.ts <target-user>
+  sudo -u agentconsole env EMBEDDED_AGENT_ENTRY_PATH=/usr/local/lib/agent-console/embedded-agent.js \
+    bun scripts/smoke/check-embedded-agent-elevation.ts <target-user>
   ```
+  **The bundle-sibling form is expected to FAIL against a real second
+  `<target-user>` on a live multi-user host** — the path under the service
+  user's own checkout is exactly the unreachable-to-other-users path Issue
+  #1668 is about, so a real cross-user run reproducing that failure is the
+  smoke's own detection power confirming itself, not a gotcha. Use the
+  unified-path form for an actual pass/fail verification; the
+  bundle-sibling form is for local, same-user (degenerate-mode) iteration
+  only.
 
 Exit codes: `0` all assertions passed, `1` an assertion failed (the system is
 wrong), `2` bad usage or the smoke could not run (missing target-user

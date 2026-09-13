@@ -107,6 +107,18 @@
  *       # or, on a live multi-user host, the real unified path:
  *       EMBEDDED_AGENT_ENTRY_PATH=/usr/local/lib/agent-console/embedded-agent.js \
  *         bun scripts/smoke/check-embedded-agent-elevation.ts <target-user>
+ *     The bundle-sibling form is expected to FAIL against a real second
+ *     <target-user> on a live multi-user host -- the path under this
+ *     checkout's own owner is exactly the unreachable-to-other-users path
+ *     this whole config knob exists to route around, so a real cross-user
+ *     run reproducing that failure is this check's own detection power
+ *     confirming itself, not a gotcha. It is for local, same-user
+ *     (degenerate-mode) iteration only;
+ *     use the unified-path form for an actual pass/fail verification. (When
+ *     invoking via an elevated login shell to reach the target user, set
+ *     the variable via `env` AFTER the user switch, not as a prefix before
+ *     it -- see docs/multi-user-setup-guide.md's Post-deploy Verification
+ *     section for why a prefix silently does not reach `bun`.)
  *
  * What this smoke does NOT exercise:
  *   - The full user-message / tool-call / final-answer turn. `ready` fires at

@@ -49,6 +49,39 @@ assert_readable_file() {
   return 0
 }
 
+# assert_readable_by_unprivileged_user <path> <hint>
+#
+# Fails closed (Issue #1668, Architect ruling): unlike assert_readable_file
+# above, this probes readability from an UNPRIVILEGED user's view via
+# `runuser -u nobody -- test -r <path>`, not the invoking process's own
+# permission. This matters because the caller
+# (update-and-deploy-for-multiuser-ubuntu.sh) runs this check as root (its
+# own usage line: `sudo scripts/update-and-deploy-for-multiuser-ubuntu.sh`),
+# and root bypasses DAC read checks (CAP_DAC_READ_SEARCH), including
+# parent-directory traversal -- a plain `[ -r <path> ]` as root is true for
+# ANY existing file regardless of actual permission bits, so
+# assert_readable_file's own check can never fail for the exact defect
+# Issue #1668 is about (a path unreachable to a non-root elevation-target
+# user, even though root itself can always read it).
+#
+# `nobody` is guaranteed outside this project's shared group, so it
+# represents the elevation target's (worst-case) view. `runuser` is
+# root-only and needs no sudoers policy, matching the caller's own
+# already-root context -- no additional privilege grant is required.
+#
+# Cannot be exercised by an unprivileged unit test (runuser itself needs
+# root to switch to another user) -- do not fake it. Real-machine
+# verification only.
+assert_readable_by_unprivileged_user() {
+  local file_path="$1"
+  local hint="$2"
+  if ! runuser -u nobody -- test -r "$file_path"; then
+    echo "error: '$file_path' is not readable by an unprivileged user (probed as 'nobody' via runuser -- any real elevation-target user hits the same wall) -- $hint" >&2
+    return 1
+  fi
+  return 0
+}
+
 # Direct-invocation entry point for tests (Issue #1222, extended #1668): when
 # this file is executed directly (not sourced), dispatch on an explicit
 # subcommand name rather than argument count -- an arity-based dispatch is an
@@ -74,6 +107,10 @@ if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
     assert-readable-file)
       shift
       assert_readable_file "$@"
+      ;;
+    assert-readable-by-unprivileged-user)
+      shift
+      assert_readable_by_unprivileged_user "$@"
       ;;
     *)
       assert_unified_bun_executable "$@"

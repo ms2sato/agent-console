@@ -173,10 +173,22 @@ echo "==> 5/6 copy dist/embedded-agent.js (+ .map) to unified entry path"
 # precedent) -- no hash/mtime gate. Run as root (plain sudo, no -u) so this
 # can read from the deploy target regardless of its own directory
 # permissions and write to the root-owned /usr/local/lib/agent-console/
-# destination; `install -D` creates missing parent directories (mode 0755,
-# world-traversable) and `-m0644` makes the files themselves world-readable
-# -- both properties are what makes the destination reachable by every
-# elevation-target OS user, which is the entire point of this step.
+# destination.
+#
+# The parent directory's mode is set EXPLICITLY, not left to `install -D`
+# (CodeRabbit + Architect review on this PR): `install -D` derives a missing
+# parent's mode from the caller's umask, and leaves an ALREADY-EXISTING
+# parent's mode untouched entirely -- either way, a root umask other than
+# the conventional 022 (or a directory that predates this step with a
+# stricter mode) silently produces a non-traversable
+# /usr/local/lib/agent-console/, and the file's own `-m0644` cannot
+# compensate for that. `install -d -m0755 <dir>` sets the mode
+# unconditionally on the final path component whether or not it already
+# existed (GNU coreutils), which is what actually makes the destination
+# reachable by every elevation-target OS user -- the fail-closed check
+# below is the PROOF that traversal actually holds, not a restatement of
+# this step's intent.
+sudo install -d -m0755 "$(dirname "${UNIFIED_ENTRY_PATH}")"
 sudo install -Dm0644 "${DST}/dist/embedded-agent.js" "${UNIFIED_ENTRY_PATH}"
 sudo install -Dm0644 "${DST}/dist/embedded-agent.js.map" "${UNIFIED_ENTRY_MAP_PATH}"
 
@@ -188,17 +200,30 @@ sudo -u "${SERVICE_USER}" bash -lc '
 ' _ "${DST}"
 
 echo ""
-echo "==> fail-closed check: unified entry path is readable before restart"
+echo "==> fail-closed check: unified entry path is readable by an elevation-target user before restart"
 # Mirrors assert_unified_bun_executable's fail-closed discipline (Issue
 # #1222) for the entry path (Issue #1668): refuses to restart into a unit
-# whose EMBEDDED_AGENT_ENTRY_PATH would point at a file step 5/6 did not
-# actually provision. Always runs after an unconditional copy step (unlike
-# the bun-binary check, this script has no --dry-run preview mode to skip
-# for), so on a normal successful deploy this can never legitimately fail --
-# it exists to catch a partial/interrupted copy rather than a first-run
-# bootstrap ordering gap.
-assert_readable_file "${UNIFIED_ENTRY_PATH}" \
-  "step 5/6 (copy dist/embedded-agent.js to the unified entry path) did not complete -- re-run this script" || exit 1
+# whose EMBEDDED_AGENT_ENTRY_PATH would point at a file no OTHER
+# elevation-target user can actually read.
+#
+# Deliberately NOT assert_readable_file (Architect + CodeRabbit review on
+# this PR): this entire script runs as root (see the Usage line at the top
+# -- `sudo scripts/update-and-deploy-for-multiuser-ubuntu.sh`), and root
+# bypasses DAC read checks (CAP_DAC_READ_SEARCH) including parent-directory
+# traversal -- a plain `[ -r <path> ]` as root is true for ANY existing
+# file regardless of its actual permission bits, so it could never fail for
+# the exact defect Issue #1668 is about. assert_readable_by_unprivileged_user
+# probes via `runuser -u nobody`, an unprivileged user outside this
+# project's shared group, so it actually exercises the same traversal path
+# a real elevation-target user hits.
+#
+# Always runs after the unconditional copy + explicit directory-mode step
+# above (unlike the bun-binary check, this script has no --dry-run preview
+# mode to skip for), so on a normal successful deploy this can never
+# legitimately fail -- it exists to catch a partial/interrupted copy or an
+# unexpected parent-directory mode, not a first-run bootstrap ordering gap.
+assert_readable_by_unprivileged_user "${UNIFIED_ENTRY_PATH}" \
+  "step 5/6 (copy dist/embedded-agent.js to the unified entry path) did not complete, or /usr/local/lib/agent-console/ is not world-traversable -- re-run this script" || exit 1
 
 echo ""
 echo "==> systemctl restart ${SERVICE_NAME}"
