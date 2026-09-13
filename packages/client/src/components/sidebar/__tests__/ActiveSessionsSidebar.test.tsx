@@ -1797,10 +1797,11 @@ describe('Orchestrator flag control (Issue #1643 PR-2)', () => {
     // not merely absent as a whole-string match.
     expect(classTokens).not.toContain('right-28');
     expect(classTokens).not.toContain('right-2');
-    // Pin the composed vertical-offset token (0.75rem row p-3 + 0.375rem
-    // column mt-1.5 + 1rem dot box h-4 + 0.25rem gap-1), full-token match so
-    // a drift in any one term is caught, not just presence of `top-[calc(`.
-    expect(classTokens).toContain('top-[calc(0.75rem_+_0.375rem_+_1rem_+_0.25rem)]');
+    // Pin the composed vertical-offset token (0.75rem button padding p-3 +
+    // 1.25rem row-1 line-height text-sm = 2rem, the text column's own row-2
+    // start), full-token match so a drift in either term is caught, not just
+    // presence of `top-[calc(`.
+    expect(classTokens).toContain('top-[calc(0.75rem_+_1.25rem)]');
   });
 
   it('reserves a spacer slot below the activity indicator for worktree sessions, but not for quick sessions', async () => {
