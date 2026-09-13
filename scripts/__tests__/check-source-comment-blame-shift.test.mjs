@@ -298,6 +298,14 @@ describe('isExcludedFile', () => {
     expect(isExcludedFile('packages/server/src/__tests__/bar.ts')).toBe(true);
   });
 
+  // CodeRabbit MINOR (PR review): the includes('/__tests__/') check requires
+  // a leading `/`, so a root-level `__tests__/foo.ts` (no parent directory)
+  // was not excluded. Reach: reverting the startsWith('__tests__/') branch
+  // makes this fail.
+  it('excludes a root-level __tests__/ file with no leading slash', () => {
+    expect(isExcludedFile('__tests__/bar.ts')).toBe(true);
+  });
+
   it('excludes .test.* files', () => {
     expect(isExcludedFile('packages/server/src/foo.test.ts')).toBe(true);
     expect(isExcludedFile('packages/server/src/foo.test.tsx')).toBe(true);
@@ -453,6 +461,29 @@ describe('runCheck — allowlist behaviour', () => {
       const result = await runCheck({
         cwd: root,
         files: ['packages/server/src/__tests__/foo.ts'],
+        allowlist: new Set(),
+      });
+      expect(result.violations).toEqual([]);
+      expect(result.files).toEqual([]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  // CodeRabbit MINOR (PR review): the same uniform-exclusion path, exercised
+  // against a root-level __tests__/ file (no leading slash) passed
+  // explicitly -- the shape isExcludedFile's own fix above addresses.
+  it('excludes a root-level __tests__/ file passed as an explicit path', async () => {
+    const root = makeFixture();
+    try {
+      mkdirSync(join(root, '__tests__'), { recursive: true });
+      writeFileSync(
+        join(root, '__tests__/foo.ts'),
+        `// Issue #1 -- would be a violation if scanned\n`,
+      );
+      const result = await runCheck({
+        cwd: root,
+        files: ['__tests__/foo.ts'],
         allowlist: new Set(),
       });
       expect(result.violations).toEqual([]);
@@ -640,6 +671,36 @@ describe('findDefaultFiles — live-tree scope integration (R2 count regression 
       }
     }
     expect(files.length).toBeGreaterThan(oldScope.size);
+
+    // CodeRabbit MINOR (PR review): the presence pins above name exactly
+    // one .claude/ file and one scripts/ file, so an entire dropped
+    // subtree (e.g. .claude/skills/ or scripts/lib/) would not be caught
+    // as long as those two files still scan. Pin the full per-root file
+    // SET against an independent scan of each root alone (same extensions
+    // and dot:true as production, isExcludedFile applied the same way
+    // findDefaultFiles applies it) -- so a silent drop anywhere under
+    // either widened root fails this comparison.
+    const independentWidenedFiles = new Set();
+    for (const pattern of [
+      'scripts/**/*.ts',
+      'scripts/**/*.tsx',
+      'scripts/**/*.js',
+      'scripts/**/*.mjs',
+      '.claude/**/*.ts',
+      '.claude/**/*.tsx',
+      '.claude/**/*.js',
+      '.claude/**/*.mjs',
+    ]) {
+      const glob = new Glob(pattern);
+      for await (const f of glob.scan({ cwd: REPO_ROOT, onlyFiles: true, dot: true })) {
+        if (isExcludedFile(f)) continue;
+        independentWidenedFiles.add(f);
+      }
+    }
+    const scannedWidenedFiles = files.filter(
+      (f) => f.startsWith('scripts/') || f.startsWith('.claude/'),
+    );
+    expect([...scannedWidenedFiles].sort()).toEqual([...independentWidenedFiles].sort());
   });
 });
 

@@ -526,7 +526,7 @@ export function formatViolation(v) {
  * @returns {boolean}
  */
 export function isExcludedFile(file) {
-  if (file.includes('/__tests__/')) return true;
+  if (file.startsWith('__tests__/') || file.includes('/__tests__/')) return true;
   if (/\.test\.(ts|tsx|js|jsx|mjs)$/.test(file)) return true;
   if (/\.spec\.(ts|tsx|js|jsx|mjs)$/.test(file)) return true;
   if (file.startsWith('scripts/smoke/')) return true;

@@ -627,6 +627,21 @@ describe('findDefaultFiles — live-tree scanned-file-count regression pin (R4, 
       }
     }
     expect(files.length).toBeGreaterThan(withoutDot);
+
+    // CodeRabbit MINOR (PR review): the presence pin above names exactly
+    // one .claude/ file, so an entire dropped subtree (e.g. skills/ or
+    // agents/) would not be caught as long as that one file still scans.
+    // Pin the full .claude/ file SET against an independent dot-inclusive
+    // scan of .claude/** alone, computed here directly with Bun.Glob
+    // rather than by importing findDefaultFiles's own output -- so a
+    // silent drop anywhere under .claude/ fails this comparison.
+    const independentClaudeFiles = [];
+    const claudeGlob = new Glob('.claude/**');
+    for await (const file of claudeGlob.scan({ cwd: REPO_ROOT, onlyFiles: true, dot: true })) {
+      independentClaudeFiles.push(file);
+    }
+    const scannedClaudeFiles = files.filter((f) => f.startsWith('.claude/'));
+    expect([...scannedClaudeFiles].sort()).toEqual([...independentClaudeFiles].sort());
   });
 });
 
