@@ -136,6 +136,17 @@ The 80% checkpoint (substantially complete, awaiting verification) follows the s
      Keep concise — the Issue is the source of truth.
      Examples: specific constraints, testing approach, files to avoid. -->
 
+## Delegation Hygiene (mandatory)
+Each line below is a rule a delegate broke in Sprint 2026-09-13; each cost at least one round trip and some cost data. They are operational, not judgment calls.
+- **Preflight per specialist push, as its own invocation.** After every specialist reports done, run \`node .claude/skills/orchestrator/preflight-check.js\` yourself on the committed diff, unfiltered, and read its exit code before any push. Never chain it with the push in one command, and never pipe its output through a grep — a filter on a gate's output is a second gate nobody audits (#1613 lost its \`- ❌\` lines that way; #1578 and #1573 found 4 gaps only because the delegate ran it unprompted).
+- **Commit WIP before any polarity restore.** Restoring a file from HEAD brings back the last COMMIT; an uncommitted specialist fix is gone (#1597 recovered one from a diff still in context — luck, not procedure). Commit first, then restore, then verify.
+- **No parallel specialists on one worktree, and no stash.** The stash stack is shared across every worktree of this repo, and a second specialist's stash sweeps the first one's uncommitted work into it (#1571 recovered via the unreachable-objects scan). Run specialists serially, or give each its own \`isolation: worktree\`.
+- **Architect verdicts arrive as inter-session messages relayed by the Orchestrator, not as GitHub reviews.** \`gh api pulls/N/reviews\` not listing a verdict is not evidence it was fabricated (#1584's specialist stopped for that reason). If a relayed ruling looks suspicious, ask the Orchestrator to confirm; do not discard it.
+- **Every smoke or E2E invocation carries a \`timeout\`** (e.g. \`timeout 900 bun run check:<name>\`). One smoke that did not exit after printing its summary blocked a delegate's tool call for 68 minutes (#1626).
+- **Report a structural finding when you find it, not at the next milestone.** "The runtime image has no source tree" (#1620) is an owner-grade decision and waited 30 minutes for a checkpoint; the checkpoint cadence is for progress, not for findings that change the plan.
+- **Browser QA is conditional on the Architect's threshold ruling.** If the change is text-only or has no rendering change, ask whether \`workflow.md\` step 5's three-condition skip applies before taking captures; if it does not apply, captures are attached with \`scripts/upload-qa-screenshots.sh\` (a PASS sentence without an attached image is not evidence).
+- **A stacked PR after its base squash-merges is rebuilt by resetting to \`origin/main\` and cherry-picking your own commits, never by rebasing onto it** — a rebase replays the base's commits (different patch-ids after squash) and conflicts on every one (#1613).
+
 ## Before You Start (three known traps in this repo, each costing a round trip)
 - **Reading the Issue**: \`gh issue view <N>\` on its own fails here with a Projects-classic GraphQL error — **and still exits 0**, so it looks like it worked. Always pass \`--json\`: \`gh issue view <N> --json title,body --jq '.title, .body'\`. Same root cause as the \`gh pr edit\` failure in step 6.
 - **A fresh worktree has no \`node_modules\`**, so \`bun run test\` dies at \`tsc: command not found\` before running anything. Run \`bun install\` first. This is expected setup, not a dependency change — say so in your report so nobody has to ask.

@@ -181,10 +181,35 @@ function getSteps() {
       ],
     },
     {
+      key: 'compression_pass',
+      title: 'Step 3c: Compression Pass (rules / skills / CLAUDE.md)',
+      instructions: [
+        'Every retro adds text to the always-loaded layer; nothing removes it unless',
+        'a step asks. This step asks. (Owner directive, Sprint 2026-09-13 retro.)',
+        '',
+        '  1. Measure the always-loaded surface BEFORE this retro PR:',
+        '       wc -l CLAUDE.md .claude/rules/*.md | tail -1',
+        '       find .claude/skills -name SKILL.md | xargs wc -l | tail -1',
+        '     and record both totals in project_sprint_status.md next to the sprint',
+        '     label (the next retro reads them as its baseline).',
+        '  2. For each addition Step 4 will make, name what it REPLACES or SHORTENS.',
+        '     Candidates, in order of yield: a lesson paragraph whose rule text now',
+        '     carries the class (keep the one-line pointer, cut the narrative);',
+        '     two rules stating one principle from two instances (merge, keep both',
+        '     citations); a rule whose trigger is mechanically enforced now (a lint,',
+        '     a preflight check) and can shrink to a pointer at the enforcer.',
+        '  3. Target: the retro PR is net-non-positive on the always-loaded surface,',
+        '     or the PR body states the net line delta and why it is justified this',
+        '     time. "It is all useful" is not a justification; every paragraph was.',
+        '  4. Report: before/after totals, what was cut or merged (file + heading),',
+        '     and the net delta of this retro PR.',
+      ],
+    },
+    {
       key: 'apply_improvements',
       title: 'Step 4: Apply Process Improvements',
       instructions: [
-        'Based on findings from Steps 3a and 3b:',
+        'Based on findings from Steps 3a, 3b, and 3c (each addition names what it replaces):',
         '  1. List all proposed improvements',
         '  2. For each improvement, identify the target file(s) to modify',
         '     (e.g., CLAUDE.md, skills, rules, agents, memory)',
@@ -256,7 +281,8 @@ function getSteps() {
         '         Step 8 asks "is every merged PR recorded?", never "is every recorded item',
         '         still unresolved?")',
         '',
-        'Reliable execution pattern: create a TaskCreate task "final memory sync (post-merge)"',
+        'Reliable execution pattern: create a TaskCreate task (or, when the session has no',
+        'TaskCreate tool, a memo checklist line) "final memory sync (post-merge)"',
         'tagged with the retro PR number. Mark in_progress when the merge is observed,',
         'completed after the 3 files are updated. Do not rely on memory of "I should sync",',
         'rely on the task list.',
@@ -516,7 +542,8 @@ export async function runGapCandidatesMode({
 async function runRetro({ stdin = process.stdin, metricsRunner = runMetricsBlock } = {}) {
   console.log('=== Sprint Retrospective ===');
   console.log();
-  console.log('Before starting, create a TaskCreate checklist for tracking progress:');
+  console.log('Before starting, create a TaskCreate checklist for tracking progress');
+  console.log("(if TaskCreate is not in this session's tool set, keep the same checklist in the memo):");
 
   const steps = getSteps();
 
@@ -524,7 +551,7 @@ async function runRetro({ stdin = process.stdin, metricsRunner = runMetricsBlock
     console.log(`  - ${step.title}`);
   }
   console.log();
-  console.log('Use TaskCreate for each step, then mark them in_progress/completed as you go.');
+  console.log('Use TaskCreate (or the memo checklist) for each step, then mark them in_progress/completed as you go.');
   console.log();
 
   const responses = {};
