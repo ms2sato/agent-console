@@ -13,8 +13,8 @@ import * as v from 'valibot';
 import { EmbeddedAgentCommandSchema } from '@agent-console/shared';
 import { AgentLoop } from './agent-loop.js';
 import { buildUserMessageContent } from './attachment-content.js';
-import { COMPACT_TOOL_NAME } from './compact-tool.js';
-import type { Engine } from './engine-types.js';
+import { COMPACT_TOOL_NAME, COMPACT_TOOL_UNSUPPORTED_RESULT } from './compact-tool.js';
+import type { AnyEngine, ClaudeSdkEngine } from './engine-types.js';
 import { loadCompactionPrompt } from './compaction-prompt.js';
 import { McpToolClient, type ToolExecutor } from './mcp.js';
 import { OpenAIChatAdapter } from './providers/openai-chat-adapter.js';
@@ -117,7 +117,7 @@ export interface LoopFactories {
    * synchronously calls the real SDK's `query()`), so a test can inject a
    * factory that throws without needing to reach through to `SdkEngine`'s
    * own `queryFn` seam. Defaults to `(deps) => new SdkEngine(deps)`. */
-  createSdkEngine(deps: SdkEngineDeps): Engine;
+  createSdkEngine(deps: SdkEngineDeps): ClaudeSdkEngine;
   /** DI seam for the R1 resume pre-flight, which otherwise reads the real
    * `~/.claude` of whoever is running. Defaults to `probeSdkSession`. */
   probeSdkSession(sdkSessionId: string, cwd: string): Promise<SdkSessionProbe>;
@@ -140,7 +140,7 @@ function delay(ms: number): Promise<void> {
  * with exit code 1.
  */
 export async function runLoop(io: LoopIO, factories: LoopFactories): Promise<number> {
-  let loop: Engine | null = null;
+  let loop: AnyEngine | null = null;
   let currentTurn: Promise<void> | null = null;
   let turnActive = false;
 
@@ -251,19 +251,39 @@ export async function runLoop(io: LoopIO, factories: LoopFactories): Promise<num
           io.logError('Ignoring compact command received while a turn is active');
           break;
         }
-        if (!loop.compactNow) {
-          io.logError('Ignoring compact command: engine does not support manual compact');
-          break;
+        switch (loop.kind) {
+          case 'openai-api':
+            turnActive = true;
+            currentTurn = loop
+              .compactNow()
+              .catch((err) => {
+                io.logError(`Manual compact failed: ${err instanceof Error ? err.message : String(err)}`);
+              })
+              .finally(() => {
+                turnActive = false;
+              });
+            break;
+          case 'claude-sdk': {
+            // The server never sends this command to a claude-sdk worker
+            // today -- its own `/compact` is `engine`-handled instead -- but
+            // `ClaudeSdkEngine` has no `compactNow` member at all, so this
+            // arm is reachable by the type system's own exhaustiveness
+            // requirement rather than defensive coding. Decision 4's
+            // "declines honestly": an explicit unsupported result, never a
+            // silent no-op, brackets exactly like `AgentLoop.compactNow`'s
+            // own `emitTurnError` (state active -> turn-error -> state idle)
+            // so the console sees the same shape it would for a compaction
+            // failure.
+            io.writeEvent({ v: 1, type: 'state', state: 'active' });
+            io.writeEvent({ v: 1, type: 'turn-error', turnId: crypto.randomUUID(), message: COMPACT_TOOL_UNSUPPORTED_RESULT });
+            io.writeEvent({ v: 1, type: 'state', state: 'idle' });
+            break;
+          }
+          default: {
+            const _exhaustive: never = loop;
+            void _exhaustive;
+          }
         }
-        turnActive = true;
-        currentTurn = loop
-          .compactNow()
-          .catch((err) => {
-            io.logError(`Manual compact failed: ${err instanceof Error ? err.message : String(err)}`);
-          })
-          .finally(() => {
-            turnActive = false;
-          });
         break;
       }
       case 'shutdown':
@@ -279,7 +299,7 @@ async function initializeLoop(
   io: LoopIO,
   factories: LoopFactories,
   init: InitCommand,
-): Promise<Engine | null> {
+): Promise<AnyEngine | null> {
   if (init.engine === 'openai-api') {
     const instructions = await factories.loadInstructions({
       cwd: init.context.cwd,
@@ -628,17 +648,30 @@ async function initializeLoop(
 }
 
 async function gracefulExit(
-  loop: Engine | null,
+  loop: AnyEngine | null,
   currentTurn: Promise<void> | null,
 ): Promise<number> {
   if (loop !== null && currentTurn !== null) {
     loop.cancel();
     await Promise.race([currentTurn, delay(TURN_DRAIN_TIMEOUT_MS)]);
   }
-  // Releases any resources the engine holds outside process memory (e.g. the
-  // SDK engine's Query/child claude process). A no-op for the native engine
-  // (dispose is optional on Engine; AgentLoop does not implement it).
-  loop?.dispose?.();
+  if (loop !== null) {
+    switch (loop.kind) {
+      case 'openai-api':
+        // Nothing to release beyond normal GC -- there is no `dispose` on
+        // `OpenAiApiEngine` at all (see engine-types.ts).
+        break;
+      case 'claude-sdk':
+        // Releases the SDK engine's Query/child claude process, which
+        // otherwise leaks when this process exits.
+        loop.dispose();
+        break;
+      default: {
+        const _exhaustive: never = loop;
+        void _exhaustive;
+      }
+    }
+  }
   return EXIT_OK;
 }
 

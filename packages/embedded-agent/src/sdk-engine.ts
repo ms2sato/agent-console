@@ -48,7 +48,7 @@ import {
   COMPACT_TOOL_SCHEDULED_RESULT,
 } from './compact-tool.js';
 import { resolveImageAttachments, buildClaudeSdkUserContent } from './attachment-content.js';
-import type { Engine } from './engine-types.js';
+import type { ClaudeSdkEngine, Engine } from './engine-types.js';
 import type { RuleActivatorLike } from './rule-activation.js';
 import {
   TodoWriteArgsSchema,
@@ -404,7 +404,8 @@ export interface SdkEngineDeps {
  * docs/design/embedded-agent-sdk-engine.md Appendix A for the per-event
  * mapping this class implements in `handleMessage` and its helpers.
  */
-export class SdkEngine implements Engine {
+export class SdkEngine implements ClaudeSdkEngine {
+  readonly kind = 'claude-sdk' as const;
   private readonly deps: SdkEngineDeps;
   private readonly queryFn: typeof query;
   private readonly sleep: (ms: number) => Promise<void>;

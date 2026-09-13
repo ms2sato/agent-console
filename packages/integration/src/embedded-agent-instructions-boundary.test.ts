@@ -54,7 +54,7 @@ import type {
   ToolDefinition,
 } from '@agent-console/embedded-agent/src/providers/types';
 import type { ToolCallOutcome } from '@agent-console/embedded-agent/src/mcp';
-import type { Engine } from '@agent-console/embedded-agent/src/engine-types';
+import type { ClaudeSdkEngine } from '@agent-console/embedded-agent/src/engine-types';
 import type { SdkEngineDeps } from '@agent-console/embedded-agent/src/sdk-engine';
 
 describe('Client-Server Boundary: EmbeddedAgentDefinition.instructions', () => {
@@ -236,11 +236,13 @@ describe('Subprocess system-prompt composition: .claude/rules layer reaches both
     }
   }
 
-  class NoopEngine implements Engine {
+  class NoopEngine implements ClaudeSdkEngine {
+    readonly kind = 'claude-sdk' as const;
     async runTurn(): Promise<void> {}
     cancel(): void {}
     setAutoCompaction(): void {}
     setModelParams(): void {}
+    dispose(): void {}
   }
 
   function makeIo(lines: string[]): LoopIO {
@@ -398,11 +400,13 @@ describe('Subprocess tool-call composition: scoped .claude/rules activation reac
     }
   }
 
-  class NoopEngine implements Engine {
+  class NoopEngine implements ClaudeSdkEngine {
+    readonly kind = 'claude-sdk' as const;
     async runTurn(): Promise<void> {}
     cancel(): void {}
     setAutoCompaction(): void {}
     setModelParams(): void {}
+    dispose(): void {}
   }
 
   interface Captured {

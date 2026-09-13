@@ -390,7 +390,7 @@ type EmbeddedAgentCommand =
   | { v: 1; type: 'user-message'; id: string; text: string; attachments?: { path: string; mimeType: string }[] } // id minted by server, echoed in events. attachments (Issue #1571): the message's file attachments, path + mime type; the loop resolves image-mime entries under `context.attachmentRoots` into real content parts (see Provider adapter & tool-call normalization), non-image entries stay path-only in `text` (#1570 semantics, unchanged)
   | { v: 1; type: 'cancel' }                                 // abort the in-flight turn (AbortController)
   | { v: 1; type: 'set-auto-compaction'; enabled: boolean }  // Compaction; reflects a toggle change into a running subprocess. Not gated on turnActive — the flag is only read at the turn boundary
-  | { v: 1; type: 'compact' }                                // Slash commands, console-handled arm (#1572); manual /compact intercepted server-side, dispatched to Engine.compactNow() -- only openai-api's AgentLoop implements it, never sent to claude-sdk (see "Slash commands")
+  | { v: 1; type: 'compact' }                                // Slash commands, console-handled arm (#1572); manual /compact intercepted server-side, dispatched to OpenAiApiEngine.compactNow() -- only openai-api's AgentLoop implements it; the server never sends this to claude-sdk, but ClaudeSdkEngine's own dispatch arm emits the explicit COMPACT_TOOL_UNSUPPORTED_RESULT rather than a silent no-op (Phase 4, #1683; see "Slash commands")
   | { v: 1; type: 'shutdown' };
 ```
 

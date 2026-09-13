@@ -19,7 +19,8 @@ import {
   type ToolDefinition,
 } from '../providers/types.js';
 import type { ToolCallOutcome } from '../mcp.js';
-import type { Engine } from '../engine-types.js';
+import type { ClaudeSdkEngine } from '../engine-types.js';
+import { COMPACT_TOOL_UNSUPPORTED_RESULT } from '../compact-tool.js';
 import type { SdkEngineDeps } from '../sdk-engine.js';
 import { buildUserMessageContent } from '../attachment-content.js';
 import type { EmbeddedAgentAttachment } from '@agent-console/shared';
@@ -78,12 +79,13 @@ class CapturingAdapter implements ProviderAdapter {
 /** Default `createSdkEngine` stub for tests that don't exercise the
  * claude-sdk init arm -- a no-op Engine that satisfies the interface without
  * driving any real (or fake) SDK query stream. */
-class NoopEngine implements Engine {
+class NoopEngine implements ClaudeSdkEngine {
+  readonly kind = 'claude-sdk' as const;
   async runTurn(): Promise<void> {}
   cancel(): void {}
   setAutoCompaction(): void {}
   setModelParams(): void {}
-  async handoff(): Promise<void> {}
+  dispose(): void {}
 }
 
 class StubMcpClient implements McpClientLike {
@@ -669,7 +671,8 @@ describe('runLoop — image attachment threading (#1571)', () => {
       ...overrides,
     });
 
-  class CapturingRunTurnEngine implements Engine {
+  class CapturingRunTurnEngine implements ClaudeSdkEngine {
+    readonly kind = 'claude-sdk' as const;
     readonly calls: Array<{ id: string; text: string; attachments?: EmbeddedAgentAttachment[] }> = [];
     async runTurn(id: string, text: string, attachments?: EmbeddedAgentAttachment[]): Promise<void> {
       this.calls.push({ id, text, attachments });
@@ -677,6 +680,7 @@ describe('runLoop — image attachment threading (#1571)', () => {
     cancel(): void {}
     setAutoCompaction(): void {}
     setModelParams(): void {}
+    dispose(): void {}
   }
 
   it("threads a user-message command's attachments into loop.runTurn's 3rd arg (claude-sdk engine)", async () => {
@@ -1124,12 +1128,19 @@ describe('runLoop — the `compact` command (Slash commands, console-handled arm
     });
   });
 
-  it('logs and ignores a compact command when the engine does not support manual compact (e.g. claude-sdk)', async () => {
-    // The default `makeFactories()` `createSdkEngine` returns a `NoopEngine`,
-    // which -- like the real `SdkEngine` -- has no `compactNow` method: this
-    // engine's own `/compact` is `engine`-handled (forwarded as an ordinary
-    // user message), so the server never sends this wire command to it. This
-    // test only pins main.ts's own defensive branch for the case anyway.
+  /**
+   * Phase 4 (#1683, decision 5): `ClaudeSdkEngine` has no `compactNow`
+   * member at all -- the default `makeFactories()` `createSdkEngine` returns
+   * a `NoopEngine` implementing that interface, like the real `SdkEngine`.
+   * This engine's own `/compact` is `engine`-handled (forwarded as an
+   * ordinary user message), so the server never sends this wire command to
+   * it. Before the split, `main.ts`'s dispatch used `loop.compactNow?.()`
+   * behind an `if (!loop.compactNow)` guard that only logged and dropped the
+   * command; the polarity of this test is exactly that guard's replacement,
+   * so it must FAIL against the pre-split code path (which never wrote a
+   * `turn-error` event for this case).
+   */
+  it('emits the explicit unsupported result when a compact command reaches a claude-sdk engine', async () => {
     const claudeSdkInitCommand = JSON.stringify({
       v: 1,
       type: 'init',
@@ -1140,11 +1151,21 @@ describe('runLoop — the `compact` command (Slash commands, console-handled arm
       context: { sessionId: 's', workerId: 'w', cwd: '/tmp' },
       maxToolIterations: 5,
     });
-    const { io, errors, events } = makeIo([claudeSdkInitCommand, JSON.stringify({ v: 1, type: 'compact' })]);
+    const { io, events } = makeIo([claudeSdkInitCommand, JSON.stringify({ v: 1, type: 'compact' })]);
 
     expect(await runLoop(io, makeFactories())).toBe(0);
-    expect(errors.some((e) => e.includes('does not support manual compact'))).toBe(true);
     expect(events.some((e) => e.type === 'context-compacted')).toBe(false);
+    expect(events.find((e) => e.type === 'turn-error')).toMatchObject({
+      v: 1,
+      type: 'turn-error',
+      message: COMPACT_TOOL_UNSUPPORTED_RESULT,
+    });
+    // The active/turn-error/idle bracket, decision 4's "declines honestly"
+    // -- never a silent no-op.
+    expect(events.filter((e) => e.type === 'state').map((e) => (e as { state: string }).state)).toEqual([
+      'active',
+      'idle',
+    ]);
   });
 
   it('ignores a compact command received while a turn is already active', async () => {
@@ -1175,6 +1196,56 @@ describe('runLoop — the `compact` command (Slash commands, console-handled arm
 
     expect(errors.some((e) => e.includes('Ignoring compact command received while a turn is active'))).toBe(true);
     expect(events.some((e) => e.type === 'context-compacted')).toBe(false);
+  });
+});
+
+describe('runLoop — shutdown dispose (Phase 4, #1683 decision 5)', () => {
+  /** Spy `ClaudeSdkEngine` for observing `gracefulExit`'s dispose branch. */
+  class DisposeSpyEngine implements ClaudeSdkEngine {
+    readonly kind = 'claude-sdk' as const;
+    disposeCalls = 0;
+    async runTurn(): Promise<void> {}
+    cancel(): void {}
+    setAutoCompaction(): void {}
+    setModelParams(): void {}
+    dispose(): void {
+      this.disposeCalls += 1;
+    }
+  }
+
+  it('calls dispose exactly once on a claude-sdk engine shutdown', async () => {
+    const engine = new DisposeSpyEngine();
+    const claudeSdkInitCommand = JSON.stringify({
+      v: 1,
+      type: 'init',
+      compaction: { auto: false },
+      engine: 'claude-sdk',
+      mcp: { baseUrl: 'http://mcp/local', token: 'tok' },
+      provider: { model: 'claude-sonnet-5' },
+      context: { sessionId: 's', workerId: 'w', cwd: '/tmp' },
+      maxToolIterations: 5,
+    });
+    const { io } = makeIo([claudeSdkInitCommand, JSON.stringify({ v: 1, type: 'shutdown' })]);
+
+    expect(await runLoop(io, makeFactories({ createSdkEngine: () => engine }))).toBe(0);
+    expect(engine.disposeCalls).toBe(1);
+  });
+
+  /**
+   * `OpenAiApiEngine` (implemented by `AgentLoop`) has no `dispose` member
+   * at all -- not merely an unimplemented optional one, as it was before
+   * the split -- so `gracefulExit`'s `openai-api` branch has nothing to
+   * call: the guarantee that shutdown "calls nothing" on this arm is
+   * enforced by the type checker (an attempted `loop.dispose()` inside that
+   * branch would be a compile error). This test pins the runtime half of
+   * the same fact -- a real `AgentLoop` shuts down cleanly with no
+   * dispose-shaped side effect to observe.
+   */
+  it('calls nothing on an openai-api engine shutdown', async () => {
+    const { io, events } = makeIo([initCommand(), JSON.stringify({ v: 1, type: 'shutdown' })]);
+
+    expect(await runLoop(io, makeFactories())).toBe(0);
+    expect(events.find((e) => e.type === 'ready')).toBeDefined();
   });
 });
 
@@ -2051,7 +2122,8 @@ describe('runLoop — set-model-params dispatch (agent-surface.md Phase 3)', () 
    * during the turn" the only way the turn can ever end, so a `turnActive`
    * gate cannot be mistaken for a slow-but-eventually-delivered command.
    */
-  class TurnBlockingEngine implements Engine {
+  class TurnBlockingEngine implements ClaudeSdkEngine {
+    readonly kind = 'claude-sdk' as const;
     readonly setModelParamsCalls: Array<{ params: ModelParams; turnInFlight: boolean }> = [];
     turnInFlight = false;
     private releaseTurn: (() => void) | null = null;
@@ -2071,6 +2143,7 @@ describe('runLoop — set-model-params dispatch (agent-surface.md Phase 3)', () 
       this.setModelParamsCalls.push({ params, turnInFlight: this.turnInFlight });
       this.releaseTurn?.();
     }
+    dispose(): void {}
   }
 
   const claudeSdkInitCommand = () =>
