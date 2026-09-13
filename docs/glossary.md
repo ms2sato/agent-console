@@ -537,6 +537,14 @@ The backend HTTP port the server is bound to, exposed to the client so it can co
 - **Related:** [`buildMcpInstallCommand`](../packages/client/src/lib/mcp-install-url.ts), the "Install MCP server in Claude Code" Settings section ([`McpInstallSection`](../packages/client/src/components/settings/McpInstallSection.tsx)).
 - **See:** Issue [#991](https://github.com/ms2sato/agent-console/issues/991).
 
+### deployedSha
+The SHA of the commit currently deployed at a running instance, exposed read-only so an operator can confirm what an instance is actually running without shelling in to read the deploy target's filesystem directly.
+
+- **Source of truth:** `<deploy-target>/.deploy-sha`, a two-line marker (line 1: `git rev-parse HEAD` from the source repo at deploy time; line 2: an ISO-8601 UTC timestamp) written by each `scripts/update-and-deploy-for-*.sh` script AFTER `rsync --delete`, into the deploy target (not the source tree), so it is rewritten fresh every deploy and survives the next deploy's `--delete`.
+- **Read path:** [`readDeployedSha`](../packages/server/src/lib/deployed-sha.ts) reads the marker's first line once at server startup (`process.cwd()` equals the deploy target root, since every deploy's systemd/launchd unit sets `WorkingDirectory` to that same path) and stores it on `AppContext.deployedSha`. `null` when the marker is absent — the expected steady state for `bun run dev`, which never writes it.
+- **Wire:** `/api/config.deployedSha` (`packages/server/src/routes/api.ts`), typed on `ConfigResponse.deployedSha` in [`packages/shared/src/schemas/auth.ts`](../packages/shared/src/schemas/auth.ts) (`ConfigResponseSchema`, re-exported as a type from `packages/shared/src/types/auth.ts`).
+- **See:** Issue [#1638](https://github.com/ms2sato/agent-console/issues/1638).
+
 ### user-accessible host
 The hostname the user's browser can actually reach the server (and its sibling ports) at, derived from `window.location.hostname`. When AgentConsole is accessed remotely, `localhost` / `127.0.0.1` on the server side is meaningless to the browser, so the user-accessible host is used instead.
 

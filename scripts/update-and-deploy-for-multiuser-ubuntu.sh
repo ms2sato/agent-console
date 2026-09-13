@@ -14,9 +14,10 @@
 #   2. bun install (all deps) @ source-repo so build tooling is present.
 #   3. NODE_ENV=production bun run build @ source-repo.
 #   4. rsync source-repo -> deploy target (excludes node_modules + .git).
-#   5. bun install --production @ deploy target (runtime deps only).
-#   6. systemctl restart <service> + status snapshot.
-#   7. Health probe via curl.
+#   5. Write the deployed-commit marker (.deploy-sha) into the deploy target.
+#   6. bun install --production @ deploy target (runtime deps only).
+#   7. systemctl restart <service> + status snapshot.
+#   8. Health probe via curl.
 #
 # Run as your login user (sudo required for the inner elevation to the
 # service user, and for the system-level systemctl restart).
@@ -72,28 +73,36 @@ echo "==> Pre-check: source-repo HEAD"
 sudo -u "${SERVICE_USER}" bash -lc "cd '${SRC}' && git log --oneline -1"
 
 echo ""
-echo "==> 1/4 bun install (all deps, build needs dev tooling) @ source-repo"
+echo "==> 1/5 bun install (all deps, build needs dev tooling) @ source-repo"
 sudo -u "${SERVICE_USER}" bash -lc "
   export PATH=\$HOME/.bun/bin:\$PATH
   cd '${SRC}' && bun install
 "
 
 echo ""
-echo "==> 2/4 NODE_ENV=production bun run build @ source-repo"
+echo "==> 2/5 NODE_ENV=production bun run build @ source-repo"
 sudo -u "${SERVICE_USER}" bash -lc "
   export PATH=\$HOME/.bun/bin:\$PATH
   cd '${SRC}' && NODE_ENV=production bun run build
 "
 
 echo ""
-echo "==> 3/4 rsync source-repo -> deploy target (excludes node_modules, .git)"
+echo "==> 3/5 rsync source-repo -> deploy target (excludes node_modules, .git)"
 sudo -u "${SERVICE_USER}" rsync -a --delete \
   --exclude=node_modules \
   --exclude='.git' \
   "${SRC}/" "${DST}/"
 
 echo ""
-echo "==> 4/4 bun install --production @ deploy target (runtime deps only)"
+echo "==> 4/5 write deployed-commit marker (.deploy-sha)"
+# Written into the deploy target (not the source) so it survives the next
+# rsync --delete; rewritten fresh every deploy.
+DEPLOYED_SHA="$(sudo -u "${SERVICE_USER}" bash -lc "cd '${SRC}' && git rev-parse HEAD")"
+DEPLOYED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+sudo -u "${SERVICE_USER}" bash -lc "printf '%s\n%s\n' '${DEPLOYED_SHA}' '${DEPLOYED_AT}' > '${DST}/.deploy-sha'"
+
+echo ""
+echo "==> 5/5 bun install --production @ deploy target (runtime deps only)"
 sudo -u "${SERVICE_USER}" bash -lc "
   export PATH=\$HOME/.bun/bin:\$PATH
   cd '${DST}' && bun install --production

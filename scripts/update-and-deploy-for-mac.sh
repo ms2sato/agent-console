@@ -69,6 +69,15 @@ rsync -av --delete --exclude node_modules dist/ ~/.agent-console/server/
 cp /tmp/agent-console-start.sh ~/.agent-console/server/start.sh
 chmod +x ~/.agent-console/server/start.sh
 rm /tmp/agent-console-start.sh
+
+echo "==> Writing deployed-commit marker (.deploy-sha)..."
+# Written into the deploy target (not the source) so it survives the next
+# rsync --delete; rewritten fresh every deploy. $PROJECT_DIR is still the
+# source repo's HEAD here (we haven't cd'd away yet).
+DEPLOYED_SHA="$(cd "$PROJECT_DIR" && git rev-parse HEAD)"
+DEPLOYED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+printf '%s\n%s\n' "$DEPLOYED_SHA" "$DEPLOYED_AT" > ~/.agent-console/server/.deploy-sha
+
 cd ~/.agent-console/server
 bun install --production
 

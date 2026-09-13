@@ -532,6 +532,16 @@ The script does not perform `git pull` itself — sync the source-repo to the
 intended commit before invoking, and confirm via the printed HEAD line in the
 script's `==> Pre-check` step before the build proceeds.
 
+Every deploy script (`update-and-deploy-for-multiuser-ubuntu.sh`,
+`update-and-deploy-for-ubuntu.sh`, `update-and-deploy-for-mac.sh`) writes the
+deployed commit's SHA and an ISO-8601 UTC timestamp to `<deploy-target>/.deploy-sha`
+(line 1: SHA, line 2: timestamp), written after `rsync --delete` so it
+survives the next deploy's rebuild of the target tree. The running server
+reads this marker once at startup and exposes it read-only as `deployedSha` on
+`GET /api/config` (`null` when no marker is present, e.g. `bun run dev`),
+letting an operator confirm which commit a given instance is actually running
+without shelling in to read the file directly.
+
 ## Multiple Repositories on the Same Instance
 
 A single multi-user (production or dev) instance can host more than one

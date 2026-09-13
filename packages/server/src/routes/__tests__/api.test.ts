@@ -159,3 +159,38 @@ describe('GET /api/config — sharedAccountsAvailable', () => {
     expect(body).not.toHaveProperty('sharedAccounts');
   });
 });
+
+describe('GET /api/config — deployedSha', () => {
+  beforeEach(async () => {
+    await setupTestEnvironment();
+  });
+
+  afterEach(async () => {
+    await cleanupTestEnvironment();
+  });
+
+  it('returns deployedSha: null when no deploy marker was read at startup', async () => {
+    const app = await createTestApp({
+      systemCapabilities: createMockSystemCapabilities(),
+    });
+
+    const res = await app.request('/api/config');
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as ConfigResponse;
+    expect(body.deployedSha).toBeNull();
+  });
+
+  it('returns the injected deployedSha when the app context carries one', async () => {
+    const app = await createTestApp({
+      systemCapabilities: createMockSystemCapabilities(),
+      deployedSha: 'abc123def456',
+    });
+
+    const res = await app.request('/api/config');
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as ConfigResponse;
+    expect(body.deployedSha).toBe('abc123def456');
+  });
+});
