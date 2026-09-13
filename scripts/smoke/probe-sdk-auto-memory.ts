@@ -377,17 +377,24 @@
  * independently, per this Issue's own Polarity section. Arm E's polarity is
  * its own (iii) negative control, not a separate `--expect-*` flag.
  *
- * AUTO-MEMORY-OFF CHECK (`--auto-memory-off`, #1681). A standalone,
- * non-lettered measurement, independent of arms A-G: runs configuration (i)
- * (systemPrompt omitted, production's own shape) with
- * `settings.autoMemoryEnabled: false` against the same seeded-dir shape arm
- * E uses, and expects the mechanism silent on all three observables at
- * once: `memoryFiles=[]`, no ACCESS hit, no LOCATION hit
- * (`classifyAutoMemoryOffCheck`). Reads Task 0b's `aware-and-reading`
- * result (arm E, configuration (i), `autoMemoryEnabled: true`) as its
- * positive control -- the measurement is meaningless unless the same
- * configuration is known to produce a hit when the flag is NOT set. Never
- * part of the bare no-flags default; select it explicitly.
+ * AUTO-MEMORY-OFF CHECK (`--auto-memory-off`). A standalone, non-lettered
+ * measurement, independent of arms A-G: includes an IN-RUN positive control
+ * before the measurement -- the same seeded dir, configuration (i)
+ * (systemPrompt omitted, production's own shape), `autoMemoryEnabled: true`,
+ * classified via `classifyArmEConfig` and REQUIRED to read
+ * `aware-and-reading`. Any other classification (including an unsettled
+ * control turn) reports INCONCLUSIVE -- control failed, since a silently
+ * changed ON behaviour would make the OFF result below uninterpretable, and
+ * the OFF turn is skipped entirely in that case (`combineAutoMemoryOffVerdict`).
+ * The memory dir is reseeded identically before the measured OFF turn
+ * (`autoMemoryEnabled: false`), expecting the mechanism silent on all three
+ * observables at once: `memoryFiles=[]`, no ACCESS hit, no LOCATION hit
+ * (`classifyAutoMemoryOffCheck`). Task 0b's `aware-and-reading` result (arm
+ * E, configuration (i), `autoMemoryEnabled: true`) is corroborating evidence
+ * from a separate run, not the control itself -- the control now lives in
+ * the same run, so a future SDK version that silently changes the ON
+ * behaviour cannot make a clean OFF result meaningless. Never part of the
+ * bare no-flags default; select it explicitly.
  *
  * EXIT CODES -- a measurement script, not a pass/fail gate (same shape as
  * `probe-compaction-fidelity.ts`): 0 means every requested arm produced a
@@ -803,7 +810,7 @@ export function summarizeArmE(input: ArmESummaryInput): ArmESummary {
 }
 
 // ---------------------------------------------------------------------------
-// Auto-memory-off check classification (#1681, standalone, non-lettered)
+// Auto-memory-off check classification (standalone, non-lettered)
 // ---------------------------------------------------------------------------
 
 export type AutoMemoryOffClassification = 'confirmed-off' | 'unexpected-hit';
@@ -816,7 +823,7 @@ export interface AutoMemoryOffCheckInput {
 }
 
 /**
- * Verdict classifier for the `--auto-memory-off` check (#1681): under
+ * Verdict classifier for the `--auto-memory-off` check: under
  * configuration (i) (systemPrompt omitted, production's own shape) with
  * `settings.autoMemoryEnabled: false`, the mechanism must be silent on
  * every observable at once. A text-level miss (no LOCATION/ACCESS hit)
@@ -845,6 +852,48 @@ export function classifyAutoMemoryOffCheck(
     classification: 'unexpected-hit',
     conclusive: true,
     note: `unexpected-hit -- the mechanism was NOT fully suppressed despite autoMemoryEnabled: false (locationHit=${input.locationHit}, accessHit=${input.accessHit}, memoryFilesCount=${input.memoryFilesCount}).`,
+  };
+}
+
+export interface AutoMemoryOffRunResult {
+  conclusive: boolean;
+  premise: 'holds' | 'refuted' | null;
+  note: string;
+}
+
+/**
+ * Combines the in-run ON positive control's classification with the OFF
+ * measurement's classification into the check's overall verdict. The OFF
+ * measurement is only interpretable when the control demonstrates the
+ * mechanism WOULD have been visible with the flag on -- a control that fails
+ * to read `aware-and-reading` (including an unsettled control turn, which
+ * `classifyArmEConfig` already collapses into `'unaware'` with
+ * `conclusive: false`) makes any OFF result uninterpretable, so this returns
+ * INCONCLUSIVE without even inspecting the OFF input in that case (Architect
+ * review, this PR: citing a PAST run's result as the positive control makes a
+ * clean OFF reading meaningless once the SDK's ON behaviour silently changes;
+ * the control must be re-proven in THIS run).
+ *
+ * @internal Exported for the sibling unit test.
+ */
+export function combineAutoMemoryOffVerdict(
+  onClassification: ReturnType<typeof classifyArmEConfig>,
+  offInput: AutoMemoryOffCheckInput,
+): AutoMemoryOffRunResult {
+  if (onClassification.classification !== 'aware-and-reading') {
+    return {
+      conclusive: false,
+      premise: null,
+      note:
+        `INCONCLUSIVE -- control failed: the in-run ON turn (autoMemoryEnabled: true) did not classify as aware-and-reading ` +
+        `(got ${onClassification.classification}); the OFF measurement is uninterpretable without a working control. ${onClassification.note}`,
+    };
+  }
+  const off = classifyAutoMemoryOffCheck(offInput);
+  return {
+    conclusive: off.conclusive,
+    premise: off.conclusive ? (off.classification === 'confirmed-off' ? 'holds' : 'refuted') : null,
+    note: `${off.note} (in-run ON control confirmed aware-and-reading before this measurement.)`,
   };
 }
 
@@ -1142,7 +1191,7 @@ type ArmFlag = (typeof ALL_ARM_FLAGS)[number];
 /** Owner directive, 2026-09-13, binding: `--extended-timeout` never exceeds 5 minutes. */
 export const EXTENDED_TIMEOUT_CAP_MS = 300_000;
 /**
- * Standalone measurement (#1681), independent of arms A-G -- tracked as its
+ * Standalone measurement, independent of arms A-G -- tracked as its
  * own `ParsedArgs` field, never added to `ALL_ARM_FLAGS`, so it is never
  * part of the bare no-flags default.
  */
@@ -1936,7 +1985,7 @@ interface ArmEConfigRunResult extends ArmEConfigInput {
  * One configuration's combined turn: both of arm E's required observables
  * read from one answer. `autoMemoryEnabled` / `labelPrefix` default to arm
  * E's own shape (`true` / `'E'`) so arm E's three existing call sites are
- * unaffected; the `--auto-memory-off` check (#1681) reuses this same
+ * unaffected; the `--auto-memory-off` check reuses this same
  * function with `autoMemoryEnabled: false` and `labelPrefix: 'OFF'` rather
  * than duplicating its body.
  */
@@ -2060,7 +2109,7 @@ async function runArmE(): Promise<{ verdict: ArmVerdict; summary: ArmESummary | 
 }
 
 // ---------------------------------------------------------------------------
-// Auto-memory-off check (#1681, standalone, non-lettered, never part of the
+// Auto-memory-off check (standalone, non-lettered, never part of the
 // bare default -- reuses runArmEConfig / seedMemoryTopic rather than a
 // second copy of arm E's discover-seed-ask shape).
 // ---------------------------------------------------------------------------
@@ -2091,18 +2140,47 @@ async function runAutoMemoryOffCheck(): Promise<ArmVerdict> {
       const titleNonce = trackedNonce('AUTOMEM-OFF-TITLE');
       const indexTitle = `Automem probe seeded fact ${titleNonce}`;
       const topicFilename = 'automem-probe-seeded-fact.md';
-      const codenameValue = trackedNonce('AUTOMEM-OFF-CODENAME');
-      seedMemoryTopic({
-        memoryDir,
-        topicFilename,
-        frontmatterName: 'automem-probe-seeded-fact',
-        description: 'Auto-memory-off probe seeded fact (#1681)',
-        codenameSubject: 'The secret project codename',
-        codenameValue,
-        indexTitle,
-        indexHook: 'the secret project codename is recorded here.',
-      });
-      console.log(`OFF: seeded memory dir -- file count before the off turn: ${walkFiles(memoryDir).length}`);
+
+      function reseed(): void {
+        rmSync(memoryDir, { recursive: true, force: true });
+        seedMemoryTopic({
+          memoryDir,
+          topicFilename,
+          frontmatterName: 'automem-probe-seeded-fact',
+          description: 'Auto-memory-off probe seeded fact (#1681)',
+          codenameSubject: 'The secret project codename',
+          codenameValue: trackedNonce('AUTOMEM-OFF-CODENAME'),
+          indexTitle,
+          indexHook: 'the secret project codename is recorded here.',
+        });
+      }
+
+      // In-run positive control (Architect review, this PR): a control
+      // cited from a PAST run's result would say nothing about whether THIS
+      // build's ON behaviour has silently changed. Seed the SAME dir, run
+      // ONE turn with autoMemoryEnabled: true under configuration (i), and
+      // require it to classify as aware-and-reading before spending the
+      // measured OFF turn -- a control that fails makes the OFF result
+      // uninterpretable, so the OFF turn is skipped entirely in that case.
+      reseed();
+      console.log(`OFF: seeded memory dir for the in-run ON control -- file count before the control turn: ${walkFiles(memoryDir).length}`);
+      const onResult = await runArmEConfig('omitted', configDir, cwd, memoryDir, topicFilename, indexTitle, true, 'OFF-control-ON');
+      console.log(`OFF: memory dir file count after the ON control turn: ${walkFiles(memoryDir).length}`);
+      const onClassification = classifyArmEConfig({ settled: onResult.settled, locationHit: onResult.locationHit, accessHit: onResult.accessHit });
+      console.log(`OFF: in-run ON control classification: ${onClassification.note}`);
+
+      if (onClassification.classification !== 'aware-and-reading') {
+        const combined = combineAutoMemoryOffVerdict(onClassification, { settled: false, locationHit: false, accessHit: false, memoryFilesCount: 0 });
+        console.log(`OFF: ${combined.note}`);
+        return { arm: 'auto-memory-off', ...combined };
+      }
+
+      // Control succeeded -- reseed IDENTICALLY (same title, fresh codename
+      // nonce) before the measured OFF turn, so a write during the ON
+      // control's turn cannot leak into what the OFF turn observes (same
+      // discipline as arm E's own reseedAndRunArmEConfig).
+      reseed();
+      console.log(`OFF: reseeded memory dir for the measured OFF turn -- file count before the off turn: ${walkFiles(memoryDir).length}`);
 
       // The measured turn itself: configuration (i) (systemPrompt omitted,
       // production's own shape), but autoMemoryEnabled: false -- this is the
@@ -2110,19 +2188,14 @@ async function runAutoMemoryOffCheck(): Promise<ArmVerdict> {
       const result = await runArmEConfig('omitted', configDir, cwd, memoryDir, topicFilename, indexTitle, false, 'OFF');
       console.log(`OFF: memory dir file count after the off turn: ${walkFiles(memoryDir).length}`);
 
-      const verdict = classifyAutoMemoryOffCheck({
+      const combined = combineAutoMemoryOffVerdict(onClassification, {
         settled: result.settled,
         locationHit: result.locationHit,
         accessHit: result.accessHit,
         memoryFilesCount: result.memoryFilesCount,
       });
-      console.log(`OFF: ${verdict.note}`);
-      return {
-        arm: 'auto-memory-off',
-        conclusive: verdict.conclusive,
-        premise: verdict.conclusive ? (verdict.classification === 'confirmed-off' ? 'holds' : 'refuted') : null,
-        note: verdict.note,
-      };
+      console.log(`OFF: ${combined.note}`);
+      return { arm: 'auto-memory-off', ...combined };
     } finally {
       rmSync(cwd, { recursive: true, force: true });
     }

@@ -46,6 +46,7 @@ import {
   recallPathMatches,
   summarizeRecalls,
   classifyAutoMemoryOffCheck,
+  combineAutoMemoryOffVerdict,
   parseArgs,
   EXTENDED_TIMEOUT_CAP_MS,
   WRITE_POLL_TIMEOUT_MS,
@@ -955,6 +956,72 @@ describe('classifyAutoMemoryOffCheck', () => {
     const r = classifyAutoMemoryOffCheck({ ...clean, memoryFilesCount: 1 });
     expect(r).toMatchObject({ classification: 'unexpected-hit', conclusive: true });
     expect(r.note).toContain('memoryFilesCount=1');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// combineAutoMemoryOffVerdict -- the in-run ON control gating the OFF
+// measurement (Architect review, this PR: a control cited from a PAST run's
+// result cannot detect a silently-changed ON behaviour in THIS run).
+// ---------------------------------------------------------------------------
+
+describe('combineAutoMemoryOffVerdict', () => {
+  const cleanOff: AutoMemoryOffCheckInput = { settled: true, locationHit: false, accessHit: false, memoryFilesCount: 0 };
+  const dirtyOff: AutoMemoryOffCheckInput = { settled: true, locationHit: true, accessHit: true, memoryFilesCount: 1 };
+  const awareAndReading = classifyArmEConfig({ settled: true, locationHit: true, accessHit: true });
+
+  it('holds when the ON control confirms aware-and-reading and the OFF turn is clean', () => {
+    const r = combineAutoMemoryOffVerdict(awareAndReading, cleanOff);
+    expect(r).toMatchObject({ conclusive: true, premise: 'holds' });
+    expect(r.note).toContain('confirmed-off');
+    expect(r.note).toContain('in-run ON control confirmed aware-and-reading');
+  });
+
+  it('is refuted when the ON control confirms aware-and-reading but the OFF turn shows a hit', () => {
+    const r = combineAutoMemoryOffVerdict(awareAndReading, dirtyOff);
+    expect(r).toMatchObject({ conclusive: true, premise: 'refuted' });
+    expect(r.note).toContain('unexpected-hit');
+  });
+
+  it('is INCONCLUSIVE -- control failed when the ON control classifies as unaware, without even inspecting the OFF input', () => {
+    const unaware = classifyArmEConfig({ settled: true, locationHit: false, accessHit: false });
+    const r = combineAutoMemoryOffVerdict(unaware, dirtyOff);
+    expect(r.conclusive).toBe(false);
+    expect(r.premise).toBeNull();
+    expect(r.note.startsWith('INCONCLUSIVE')).toBe(true);
+    expect(r.note).toContain('control failed');
+    expect(r.note).toContain('got unaware');
+  });
+
+  it('is INCONCLUSIVE -- control failed when the ON control classifies as aware-prose-only (a real, non-aware-and-reading classification)', () => {
+    const proseOnly = classifyArmEConfig({ settled: true, locationHit: false, accessHit: true });
+    const r = combineAutoMemoryOffVerdict(proseOnly, cleanOff);
+    expect(r.conclusive).toBe(false);
+    expect(r.premise).toBeNull();
+    expect(r.note.startsWith('INCONCLUSIVE')).toBe(true);
+    expect(r.note).toContain('control failed');
+    expect(r.note).toContain('got aware-prose-only');
+  });
+
+  it('is INCONCLUSIVE -- control failed when the ON control classifies as told-not-read', () => {
+    const toldNotRead = classifyArmEConfig({ settled: true, locationHit: true, accessHit: false });
+    const r = combineAutoMemoryOffVerdict(toldNotRead, cleanOff);
+    expect(r.conclusive).toBe(false);
+    expect(r.premise).toBeNull();
+    expect(r.note.startsWith('INCONCLUSIVE')).toBe(true);
+    expect(r.note).toContain('control failed');
+    expect(r.note).toContain('got told-not-read');
+  });
+
+  it("is INCONCLUSIVE -- control failed when the ON control's own turn did not settle (classifyArmEConfig collapses this into 'unaware', conclusive: false)", () => {
+    const unsettled = classifyArmEConfig({ settled: false, locationHit: true, accessHit: true });
+    expect(unsettled.conclusive).toBe(false);
+    const r = combineAutoMemoryOffVerdict(unsettled, cleanOff);
+    expect(r.conclusive).toBe(false);
+    expect(r.premise).toBeNull();
+    expect(r.note.startsWith('INCONCLUSIVE')).toBe(true);
+    expect(r.note).toContain('control failed');
+    expect(r.note).toContain('got unaware');
   });
 });
 
