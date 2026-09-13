@@ -227,8 +227,20 @@ describe('resolveTargets', () => {
 });
 
 describe('resolveTargets: issue:labeled routing', () => {
+  // Shared across this describe block's `buildWorktreeSession` calls so a
+  // session satisfies `canDeliverToAgentWorker` (Issue #1652) by default --
+  // tests that specifically want to exercise the no-agent-worker drop
+  // reason build their `workers` array explicitly instead.
+  const AGENT_WORKER = { id: 'worker-1', type: 'agent' as const, name: 'Claude', agentId: 'claude-code-builtin', activated: true, createdAt: '2024-01-01T00:00:00Z' };
+
   function createOrchestratorSession(overrides: Partial<WorktreeSession> = {}): WorktreeSession {
-    return buildWorktreeSession({ id: 'orchestrator-session-1', repositoryId: 'repo-1', worktreeId: 'main', ...overrides });
+    return buildWorktreeSession({
+      id: 'orchestrator-session-1',
+      repositoryId: 'repo-1',
+      worktreeId: 'main',
+      workers: [AGENT_WORKER],
+      ...overrides,
+    });
   }
 
   it('routes to the designated Orchestrator session when the repository matches and the label matches', async () => {
@@ -396,6 +408,7 @@ describe('resolveTargets: issue:labeled routing', () => {
       id: 'orchestrator-session-eligible',
       repositoryId: 'repo-eligible',
       worktreeId: 'main',
+      workers: [AGENT_WORKER],
     });
 
     // Both repositories resolve to the SAME remote (`owner/repo`). Run both
@@ -431,8 +444,8 @@ describe('resolveTargets: issue:labeled routing', () => {
       orchestratorSessionId: 'orchestrator-session-b',
       issueTriggerLabels: 'orchestrator-trigger',
     });
-    const sessionA = buildWorktreeSession({ id: 'orchestrator-session-a', repositoryId: 'repo-a', worktreeId: 'main' });
-    const sessionB = buildWorktreeSession({ id: 'orchestrator-session-b', repositoryId: 'repo-b', worktreeId: 'main' });
+    const sessionA = buildWorktreeSession({ id: 'orchestrator-session-a', repositoryId: 'repo-a', worktreeId: 'main', workers: [AGENT_WORKER] });
+    const sessionB = buildWorktreeSession({ id: 'orchestrator-session-b', repositoryId: 'repo-b', worktreeId: 'main', workers: [AGENT_WORKER] });
 
     const deps: TargetResolverDependencies = {
       getSessions: () => [sessionA, sessionB],
@@ -466,6 +479,7 @@ describe('resolveTargets: issue:labeled routing', () => {
       id: 'orchestrator-session-shared',
       repositoryId: 'repo-c',
       worktreeId: 'main',
+      workers: [AGENT_WORKER],
     });
 
     const dedupDeps: TargetResolverDependencies = {
@@ -525,6 +539,64 @@ describe('resolveTargets: issue:labeled routing', () => {
         repositoryId: 'repo-1',
         orchestratorSessionId: 'orchestrator-session-1',
         activationState: 'hibernated',
+      });
+    } finally {
+      infoSpy.mockRestore();
+    }
+  });
+
+  // -------------------------------------------------------------------
+  // Issue #1652: `activationState === 'running'` is computed vacuously
+  // true when the session has zero agent/terminal-type workers (nothing to
+  // hibernate) -- e.g. a worktree session whose only worker is a
+  // `git-diff` worker. Such a session passed the "not running" check above
+  // and silently swallowed every issue:labeled event, because
+  // AgentWorkerHandler.handle() has no `agent`-type worker to resolve a
+  // workerId from.
+  // -------------------------------------------------------------------
+
+  it('drops the designated session when activationState is (vacuously) running but it has no agent worker to deliver to, logging a distinct reason', async () => {
+    const repository = buildRepositoryWithDesignation({
+      id: 'repo-1',
+      path: '/path/to/repo',
+      orchestratorSessionId: 'orchestrator-session-1',
+      issueTriggerLabels: 'orchestrator-trigger',
+    });
+    const noAgentWorkerSession = buildWorktreeSession({
+      id: 'orchestrator-session-1',
+      repositoryId: 'repo-1',
+      worktreeId: 'main',
+      activationState: 'running',
+      workers: [
+        { id: 'worker-1', type: 'git-diff', name: 'Diff', createdAt: '2024-01-01T00:00:00Z', baseCommit: 'abc123' },
+      ],
+    });
+    const deps: TargetResolverDependencies = {
+      getSessions: () => [noAgentWorkerSession],
+      getRepository: () => repository,
+      getAllRepositories: () => [repository],
+      getOrgRepoFromPath: mock(() => Promise.resolve('owner/repo')),
+    };
+
+    const infoSpy = spyOn(rootLogger, 'info');
+    try {
+      const targets = await resolveTargets(createIssueLabeledEvent(), deps);
+
+      expect(targets).toEqual([]);
+
+      // Zero targets alone can't distinguish this drop reason from the
+      // other three ("not running" / "label mismatch" / "no live session
+      // designated") -- assert the specific, textually distinct log
+      // message fired.
+      const matchingCall = infoSpy.mock.calls.find(
+        (call) =>
+          call[1] ===
+          'issue:labeled event matched repository but the designated orchestrator session has no agent worker to deliver to'
+      );
+      expect(matchingCall).toBeDefined();
+      expect(matchingCall?.[0]).toMatchObject({
+        repositoryId: 'repo-1',
+        orchestratorSessionId: 'orchestrator-session-1',
       });
     } finally {
       infoSpy.mockRestore();

@@ -1,6 +1,6 @@
 import { describe, expect, it, mock } from 'bun:test';
 import type { InboundSystemEvent, InboundEventSummary } from '@agent-console/shared';
-import { createInboundHandlers } from '../handlers.js';
+import { createInboundHandlers, canDeliverToAgentWorker } from '../handlers.js';
 import type { InboundHandlerDependencies } from '../handlers.js';
 import { buildWorktreeSession } from '../../../__tests__/utils/build-test-data.js';
 
@@ -76,6 +76,40 @@ describe('UINotificationHandler: issue:labeled', () => {
     expect(capturedBroadcast!.sessionId).toBe('session-1');
     expect(capturedBroadcast!.event.type).toBe('issue:labeled');
     expect(capturedBroadcast!.event.metadata.labels).toEqual(['orchestrator-trigger']);
+  });
+});
+
+describe('canDeliverToAgentWorker', () => {
+  it('returns true for a session with an agent worker, regardless of PTY liveness', () => {
+    // `Session.workers` is the public Worker union, which has no `pty`
+    // field (that's server-internal state on `InternalPtyWorker`) -- the
+    // public analog of "PTY not currently live" is `activated: false`
+    // (set when a worker is hibernated). The predicate must not depend on
+    // this either way, matching handlers.ts's Step 1 finding that
+    // writeWorkerInput no-ops (rather than throwing) on a null pty.
+    const session = buildWorktreeSession({
+      workers: [
+        { id: 'worker-1', type: 'agent', name: 'Claude', agentId: 'claude-code-builtin', activated: false, createdAt: '2024-01-01T00:00:00Z' },
+      ],
+    });
+
+    expect(canDeliverToAgentWorker(session)).toBe(true);
+  });
+
+  it('returns false for a session with only a git-diff worker', () => {
+    const session = buildWorktreeSession({
+      workers: [
+        { id: 'worker-1', type: 'git-diff', name: 'Diff', createdAt: '2024-01-01T00:00:00Z', baseCommit: 'abc123' },
+      ],
+    });
+
+    expect(canDeliverToAgentWorker(session)).toBe(false);
+  });
+
+  it('returns false for a session with zero workers', () => {
+    const session = buildWorktreeSession({ workers: [] });
+
+    expect(canDeliverToAgentWorker(session)).toBe(false);
   });
 });
 

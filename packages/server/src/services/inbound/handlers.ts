@@ -3,6 +3,7 @@ import type {
   InboundEventSummary,
   InboundSystemEvent,
   PtyNotificationIntent,
+  Session,
 } from '@agent-console/shared';
 import type { SessionManager } from '../session-manager.js';
 import { triggerRefresh } from '../git-diff-service.js';
@@ -24,6 +25,22 @@ function isAgentWorkerEventType(type: string): type is AgentWorkerEventType {
 export interface EventTarget {
   sessionId: string;
   workerId?: string;
+}
+
+/**
+ * Whether AgentWorkerHandler.handle() can deliver a PTY notification to this
+ * session -- i.e. whether it has an `agent`-type worker at all. This is
+ * deliberately NOT "and that worker's pty is non-null": writeWorkerInput
+ * silently no-ops (returns false, logs a warn) rather than throwing when the
+ * pty is null, and WritePtyNotificationParams.writeInput's `void` return type
+ * means handle() never observes that false -- so a worker existing (even
+ * with a currently-null pty) already IS today's actual delivery-success
+ * condition. Single writer: any code that needs to know "can this session
+ * receive an issue:labeled-style PTY notification" calls this, rather than
+ * re-deriving the check.
+ */
+export function canDeliverToAgentWorker(session: Session): boolean {
+  return session.workers.some((worker) => worker.type === 'agent');
 }
 
 export interface InboundEventHandler {
@@ -73,6 +90,8 @@ class AgentWorkerHandler implements InboundEventHandler {
   async handle(event: InboundSystemEvent, target: EventTarget): Promise<boolean> {
     const session = this.sessionManager.getSession(target.sessionId);
     if (!session) return false;
+
+    if (!target.workerId && !canDeliverToAgentWorker(session)) return false;
 
     const workerId = target.workerId ?? session.workers.find((worker) => worker.type === 'agent')?.id;
     if (!workerId) return false;

@@ -503,11 +503,22 @@ describe('WorkerManager', () => {
       expect(mockPty.writtenData).toContain('ls -la\r');
     });
 
-    it('should return false when PTY is not active', () => {
+    it('should return false (not throw) when PTY is not active', () => {
+      // Regression pin (Issue #1652): two call sites now implicitly depend
+      // on this no-throw-on-null-pty contract -- WritePtyNotificationParams
+      // .writeInput's `void` return type means AgentWorkerHandler.handle()
+      // never observes a `false` return here, and
+      // canDeliverToAgentWorker()'s correctness (inbound/handlers.ts) rests
+      // on "an agent worker existing is the actual delivery-success
+      // condition" rather than "and its pty is live". If this ever started
+      // throwing instead of returning false, both would break silently.
       const worker = createTestTerminalWorker();
       // Worker not activated -- pty is null
 
-      const result = workerManager.writeInput(worker, 'hello');
+      let result: boolean | undefined;
+      expect(() => {
+        result = workerManager.writeInput(worker, 'hello');
+      }).not.toThrow();
 
       expect(result).toBe(false);
     });

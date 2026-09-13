@@ -1,5 +1,6 @@
 import type { Repository, Session, InboundSystemEvent } from '@agent-console/shared';
 import type { EventTarget } from './handlers.js';
+import { canDeliverToAgentWorker } from './handlers.js';
 import { getOrgRepoFromPath as getOrgRepoFromPathDefault, GitError } from '../../lib/git.js';
 import { createLogger } from '../../lib/logger.js';
 
@@ -211,6 +212,21 @@ async function resolveIssueLabeledTargets(
       logger.info(
         { repositoryId: repository.id, orchestratorSessionId, activationState: liveSession.activationState },
         'issue:labeled event matched repository but the designated orchestrator session is not running'
+      );
+      continue;
+    }
+
+    // `activationState: 'running'` is computed vacuously true when the
+    // session has zero agent/terminal-type workers (nothing to hibernate) --
+    // e.g. a worktree session whose only worker is a `git-diff` worker. Such
+    // a session passes the check above but AgentWorkerHandler.handle() can
+    // never deliver to it (no `agent`-type worker to resolve a workerId
+    // from). Check the same single-writer predicate handle() uses, so this
+    // routing decision and the actual delivery capability never drift apart.
+    if (!canDeliverToAgentWorker(liveSession)) {
+      logger.info(
+        { repositoryId: repository.id, orchestratorSessionId },
+        'issue:labeled event matched repository but the designated orchestrator session has no agent worker to deliver to'
       );
       continue;
     }
