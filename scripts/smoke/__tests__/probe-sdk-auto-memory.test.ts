@@ -4,11 +4,11 @@
  * The probe is billable and needs a real, authenticated `claude` CLI, so its
  * measurement is never run here. `exitCodeFor` / `classifyArmA` /
  * `classifyArmC` / `classifyArmD` / `redactRecallEntry` / `recallPathMatches`
- * are pure -- they read only plain booleans/strings/synthetic recall
- * objects, no I/O -- and importing the module runs nothing (the
- * `import.meta.main` guard at the foot of that file, covered separately by
- * `import-safety.test.ts`), so all six are testable at zero cost and
- * separately from what they classify.
+ * / `summarizeRecalls` are pure -- they read only plain
+ * booleans/strings/synthetic recall objects, no I/O -- and importing the
+ * module runs nothing (the `import.meta.main` guard at the foot of that
+ * file, covered separately by `import-safety.test.ts`), so all seven are
+ * testable at zero cost and separately from what they classify.
  */
 import { describe, it, expect } from 'bun:test';
 import {
@@ -19,6 +19,7 @@ import {
   classifyArmD,
   redactRecallEntry,
   recallPathMatches,
+  summarizeRecalls,
   type ArmAInput,
   type ArmCInput,
   type ArmDInput,
@@ -303,5 +304,66 @@ describe('recallPathMatches', () => {
   it('is false when every recall across every event misses (all-failure)', () => {
     const recalls = [{ memories: [{ path: '/unrelated/one.md' }] }, { memories: [{ path: '/unrelated/two.md' }] }];
     expect(recallPathMatches(recalls, seededPath)).toBe(false);
+  });
+});
+
+describe('summarizeRecalls', () => {
+  const configDir = '/tmp/probe-sdk-automem-xyz';
+  /** Never a real secret in a test, but shaped like one -- the assertion is that this substring never reaches the output. */
+  const SENTINEL_CONTENT = 'SENTINEL-DO-NOT-LEAK-9f3a2b1c';
+
+  // Boundary: empty recall list.
+  it('is an empty array for an empty recall list', () => {
+    expect(summarizeRecalls([], configDir)).toEqual([]);
+  });
+
+  /**
+   * CodeRabbit finding (PR #1662): this is the single writer for BOTH
+   * `runArmB`'s summaries and `runMemorySession`'s redacted log line, so its
+   * return shape is pinned at the SERIALIZATION boundary -- not just via
+   * `redactRecallEntry`'s own per-entry test -- against a `content` field
+   * being spread back in by a careless future edit to either call site.
+   */
+  it('retains mode/scope/withinIsolatedConfigDir/pathBasename and drops content entirely, for both scope shapes', () => {
+    const recalls = [
+      {
+        mode: 'select' as const,
+        memories: [
+          { path: `${configDir}/projects/slug/memory/fact.md`, scope: 'personal' as const, content: SENTINEL_CONTENT },
+        ],
+      },
+      {
+        mode: 'synthesize' as const,
+        memories: [{ path: 'https://example.invalid/org/memory', scope: 'organization' as const, content: SENTINEL_CONTENT }],
+      },
+    ];
+    const result = summarizeRecalls(recalls, configDir);
+
+    expect(result).toEqual([
+      { mode: 'select', scope: 'personal', withinIsolatedConfigDir: true, pathBasename: 'fact.md' },
+      { mode: 'synthesize', scope: 'organization', withinIsolatedConfigDir: false, pathBasename: '(redacted -- outside isolated CLAUDE_CONFIG_DIR)' },
+    ]);
+    for (const entry of result) {
+      expect('content' in entry).toBe(false);
+    }
+    const serialized = JSON.stringify(result);
+    expect(serialized).not.toContain(SENTINEL_CONTENT);
+    expect(serialized).not.toContain('content');
+  });
+
+  it('flattens multiple memories across multiple recall events, in order (mixed)', () => {
+    const recalls = [
+      { mode: 'select' as const, memories: [{ path: `${configDir}/a.md`, scope: 'personal' as const }, { path: '/outside/b.md', scope: 'team' as const }] },
+      { mode: 'synthesize' as const, memories: [{ path: `${configDir}/c.md`, scope: 'personal' as const }] },
+    ];
+    const result = summarizeRecalls(recalls, configDir);
+    expect(result.map((r) => r.pathBasename)).toEqual(['a.md', '(redacted -- outside isolated CLAUDE_CONFIG_DIR)', 'c.md']);
+    expect(result.map((r) => r.mode)).toEqual(['select', 'select', 'synthesize']);
+  });
+
+  // Boundary: a recall event with no memories at all contributes nothing.
+  it('contributes nothing for a recall event with an empty memories array', () => {
+    const recalls = [{ mode: 'select' as const, memories: [] }];
+    expect(summarizeRecalls(recalls, configDir)).toEqual([]);
   });
 });

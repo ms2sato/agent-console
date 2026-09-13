@@ -434,6 +434,31 @@ export function redactRecallEntry(entry: { path: string; scope: 'personal' | 'te
   };
 }
 
+export interface RecallSummaryEntry extends RedactedRecallEntry {
+  mode: 'select' | 'synthesize';
+}
+
+/**
+ * SINGLE WRITER (CodeRabbit finding, PR #1662) for the redacted recall
+ * REPORT shape -- flattening every `memories[]` entry across every recall
+ * event into one array, each entry passed through `redactRecallEntry`.
+ * Before this, `runArmB`'s summaries and `runMemorySession`'s redacted log
+ * line built two independently-shaped serializations of the same events;
+ * a careless edit to either one could silently spread a raw `content`
+ * field back into a durable log without the other call site's tests
+ * catching it. `RecallSummaryEntry`'s explicit shape (no `content` member)
+ * makes that impossible to do by accident here -- both call sites use
+ * this function's return value directly, never their own reshaping.
+ *
+ * @internal Exported for the sibling unit test.
+ */
+export function summarizeRecalls(
+  recalls: readonly { mode: 'select' | 'synthesize'; memories: readonly { path: string; scope: 'personal' | 'team' | 'organization' }[] }[],
+  configDir: string,
+): RecallSummaryEntry[] {
+  return recalls.flatMap((r) => r.memories.map((m) => ({ mode: r.mode, ...redactRecallEntry(m, configDir) })));
+}
+
 // ---------------------------------------------------------------------------
 // Argument parsing -- done inside main() so importing this module (Issue
 // #1479's import-safety guard) never touches argv or calls process.exit.
@@ -650,7 +675,7 @@ async function runMemorySession(
     const recallsForTurn = s.memoryRecalls.slice(before);
     if (recallsForTurn.length > 0) {
       const shown = opts.redactRecallLogging
-        ? recallsForTurn.map((r) => ({ mode: r.mode, memories: r.memories.map((m) => redactRecallEntry(m, configDir)) }))
+        ? summarizeRecalls(recallsForTurn, configDir)
         : recallsForTurn.map((r) => ({ mode: r.mode, memories: r.memories.map((m) => ({ scope: m.scope, path: m.path })) }));
       console.log(`${label}: ${recallsForTurn.length} SDKMemoryRecallMessage(s) observed: ${JSON.stringify(shown)}`);
     }
@@ -873,7 +898,7 @@ async function runArmB(): Promise<ArmVerdict> {
       if (!turnSettled(outcome)) {
         return { arm: 'B', ...inconclusive('the turn did not settle.') };
       }
-      const summaries = recallsForTurn.flatMap((r) => r.memories.map((m) => ({ mode: r.mode, ...redactRecallEntry(m, configDir) })));
+      const summaries = summarizeRecalls(recallsForTurn, configDir);
       console.log(`B: ${summaries.length} memori(es) surfaced for an UNSEEDED cwd: ${JSON.stringify(summaries)}`);
       return {
         arm: 'B',
