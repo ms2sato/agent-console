@@ -80,14 +80,32 @@
  *      session P, which is then PAUSED via `POST /:id/pause` -- pausing
  *      removes P from the live session manager (`getAllSessions()`) while
  *      preserving its DB row, exactly matching `resolveTargets`'s "parent
- *      absent from getSessions()" shape without tripping a separate,
- *      pre-existing `job-handler.ts` defect a literal never-persisted UUID
- *      would trigger (see this scenario's own in-code comment for the full
- *      explanation). The same `workflow_run` shape as scenario 5, but with
+ *      absent from getSessions()" shape without tripping a separate
+ *      `job-handler.ts` defect a literal never-persisted UUID would trigger
+ *      (see this scenario's own in-code comment for the full explanation --
+ *      that defect is now fixed, Issue #1677, and scenario 7 below exercises
+ *      it directly). The same `workflow_run` shape as scenario 5, but with
  *      `head_branch` matching O's worktreeId, routes to BOTH O (direct
  *      branch match) and D (fallback, since O's parent P is no longer live)
  *      -- confirmed by reading both O's and D's real worker output files.
  *      T must receive neither.
+ *
+ *   7. POSITIVE (Issue #1677, deleted-parent fallback + no job retry): a
+ *      fourth worktree session Q is created with `parentSessionId` pointing
+ *      at a real session R, which is then genuinely DELETED via
+ *      `DELETE /api/sessions/:id` -- unlike scenario 6's pause, this removes
+ *      R's row from the `sessions` table entirely, reproducing the exact
+ *      FOREIGN KEY-constraint shape Issue #1677 fixed (a resolved target
+ *      whose `sessionId` has no corresponding `sessions` row at all). The
+ *      same `workflow_run` shape as scenarios 5-6, with `head_branch`
+ *      matching Q's worktreeId, routes to BOTH Q (direct branch match) and D
+ *      (fallback, since Q's parent R no longer exists) -- confirmed by
+ *      reading both Q's and D's real worker output files; T must receive
+ *      neither. This scenario additionally opens a read-only handle on the
+ *      disposable server's own `jobs` table and asserts the job that
+ *      processed this webhook has `status = 'completed'` and `attempts = 0`
+ *      -- direct proof that Issue #1677's per-target failure isolation
+ *      stopped this defect from crashing and retrying the whole job.
  *
  * ============================================================================
  * WHAT IS REAL HERE
@@ -103,15 +121,17 @@
  *     `createInboundEventJobHandler`, the real `resolveTargets`, and the
  *     real `AgentWorkerHandler` / `UINotificationHandler`;
  *   - a real disposable git repository with a real `origin` remote, real
- *     `git worktree add` worktrees for D, T, and (scenario 6) O and P, and
- *     real `getOrgRepoFromPath` remote-URL resolution (local-only, no
- *     network);
+ *     `git worktree add` worktrees for D, T, (scenario 6) O and P, and
+ *     (scenario 7) Q and R, and real `getOrgRepoFromPath` remote-URL
+ *     resolution (local-only, no network);
  *   - real sessions and real PTY-backed `agent` workers created via the
  *     real `POST /api/sessions` route (the default `claude-code-builtin`
  *     agent, spawned interactively with no prompt sent -- no LLM API call);
  *   - a real `set_orchestrator_session` MCP call over real `/mcp` JSON-RPC;
  *   - a real `POST /:id/pause` call (scenario 6) to remove session P from
- *     the live session manager while preserving its DB row.
+ *     the live session manager while preserving its DB row;
+ *   - a real `DELETE /api/sessions/:id` call (scenario 7) to remove session
+ *     R's row from the `sessions` table entirely.
  *
  * Usage:
  *   bun scripts/smoke/check-webhook-issue-label-routing.ts
@@ -437,6 +457,14 @@ async function main(): Promise<void> {
     const { computeSessionDataBaseDir } = await import('../../packages/server/src/lib/session-data-path.ts');
     const { SessionDataPathResolver } = await import('../../packages/server/src/lib/session-data-path-resolver.ts');
     const dbPath = configModule.getDbPath();
+
+    // `@agent-console/shared` is not resolvable as a bare specifier from a
+    // root-level script (only workspace packages get a `node_modules/
+    // @agent-console/shared` symlink from `bun install`) -- imported here by
+    // its actual source path instead, same convention as the server-module
+    // imports directly above (scenario 7's job-status assertions need the
+    // real `JOB_TYPES` / `JOB_STATUS` constants, not re-typed string literals).
+    const { JOB_TYPES, JOB_STATUS } = await import('../../packages/shared/src/types/job.ts');
 
     // -----------------------------------------------------------------
     // Repository registration + trigger-label configuration.
@@ -784,23 +812,27 @@ async function main(): Promise<void> {
     //
     // This is deliberately NOT a literal syntactically-valid-but-never-
     // persisted UUID (e.g. all-zeros), which was the first design tried
-    // here. That version reproduces a SEPARATE, pre-existing defect: when a
-    // resolved target's `sessionId` has no corresponding row in the
-    // `sessions` table at all, `job-handler.ts`'s
-    // `notificationRepository.createPendingNotification()` throws an
+    // here. That version reproduces a SEPARATE defect: when a resolved
+    // target's `sessionId` has no corresponding row in the `sessions` table
+    // at all, `job-handler.ts`'s
+    // `notificationRepository.createPendingNotification()` used to throw an
     // uncaught `FOREIGN KEY constraint failed` (the table's `session_id`
-    // column references `sessions(id)`), which crashes and retries the
-    // WHOLE job (all targets, not just the missing one) until it stalls
+    // column references `sessions(id)`), which crashed and retried the
+    // WHOLE job (all targets, not just the missing one) until it stalled
     // after 5 attempts -- so the designated-session fallback target
     // (appended LAST in `resolveTargets`'s target array, after the direct
-    // match and the unconditionally-pushed parent-id target) never gets
-    // processed at all. That defect is orthogonal to this PR's scope (it
-    // lives entirely in `job-handler.ts`'s lack of per-target failure
-    // isolation, not in `resolve-targets.ts` or `handlers.ts`) and is
-    // reported separately rather than silently patched here. The paused-
-    // session construction below tests the same `resolveTargets` code path
-    // (a parent absent from `getSessions()`) without tripping that
-    // unrelated crash, since P's DB row survives the pause.
+    // match and the unconditionally-pushed parent-id target) never got
+    // processed at all. That defect has since been fixed (Issue #1677,
+    // per-target failure isolation in `job-handler.ts`) and is now
+    // exercised directly by scenario 7 below, which genuinely deletes its
+    // parent session's row instead of routing around the crash. The paused-
+    // session construction here still exists because it tests a DIFFERENT
+    // shape than scenario 7: a parent whose DB row is intact but which is
+    // absent from the live session manager (`getSessions()`) -- e.g. a
+    // paused session -- rather than a parent with no DB row at all. Both
+    // shapes hit the same "parent absent from getSessions()" branch in
+    // `resolveTargets`, but only the genuinely-deleted-row shape used to
+    // trip the FK crash, which is why two separate scenarios exist.
     // ===================================================================
     console.log('\n==> SCENARIO 6: workflow_run/completed matching session O, whose parent P was paused (dead-parent fallback)');
     const worktreePDir = path.join(scratchRoot, 'worktree-p');
@@ -889,6 +921,124 @@ async function main(): Promise<void> {
       'SCENARIO 6: T did NOT receive the [inbound:ci:completed] PTY notification',
       afterT6.slice(beforeT6.length).slice(-500),
     );
+
+    // ===================================================================
+    // SCENARIO 7 (Issue #1677): deleted-parent fallback + no job retry. A
+    // fourth worktree session Q is created whose `parentSessionId` points at
+    // a REAL session (R) that is then genuinely DELETED via
+    // `DELETE /api/sessions/:id` -- unlike scenario 6's pause, this removes
+    // R's row from the `sessions` table entirely. `resolveTargets`
+    // unconditionally pushes `{ sessionId: session.parentSessionId }` for
+    // the fallback target regardless of whether that row still exists, so
+    // this reproduces the exact shape `job-handler.ts`'s
+    // `notificationRepository.createPendingNotification()` used to crash on
+    // with an uncaught `FOREIGN KEY constraint failed` (Issue #1677, fixed
+    // by wrapping each target/handler unit of work in its own try/catch so
+    // one dangling target no longer fails -- and job-level-retries -- the
+    // whole job).
+    // ===================================================================
+    console.log('\n==> SCENARIO 7: workflow_run/completed matching session Q, whose parent R was DELETED (deleted-parent fallback, no job retry)');
+    const worktreeRDir = path.join(scratchRoot, 'worktree-r');
+    git(['worktree', 'add', worktreeRDir, '-b', 'smoke-branch-r'], repoDir);
+    addTrustedProject(worktreeRDir);
+
+    const sessionR = await createSession(baseUrl, {
+      type: 'worktree',
+      repositoryId: repository.id,
+      worktreeId: 'smoke-branch-r',
+      locationPath: worktreeRDir,
+    });
+    console.log(`==> session R created (will be DELETED to simulate a dead parent with no DB row): ${sessionR.id}`);
+
+    const worktreeQDir = path.join(scratchRoot, 'worktree-q');
+    git(['worktree', 'add', worktreeQDir, '-b', 'smoke-branch-q'], repoDir);
+    addTrustedProject(worktreeQDir);
+
+    const sessionQ = await createSession(baseUrl, {
+      type: 'worktree',
+      repositoryId: repository.id,
+      worktreeId: 'smoke-branch-q',
+      locationPath: worktreeQDir,
+      parentSessionId: sessionR.id,
+    });
+    console.log(`==> session Q created: ${sessionQ.id} (parentSessionId=${sessionR.id})`);
+    const agentWorkerQ = sessionQ.workers.find((w) => w.type === 'agent');
+    if (!agentWorkerQ) bail('session Q has no agent worker');
+    const outputPathQ = await resolveWorkerOutputPath(sessionQ.id, agentWorkerQ.id);
+    console.log(`==> Q's worker output file: ${outputPathQ}`);
+
+    const deleteRes = await fetch(`${baseUrl}/api/sessions/${sessionR.id}`, { method: 'DELETE' });
+    expect(deleteRes.status === 200, 'SCENARIO 7: session R deleted successfully (row removed from sessions table entirely)', `status=${deleteRes.status} body=${await deleteRes.text().catch(() => '')}`);
+
+    // Same PTY-startup race as O above (see scenario 6's comment for why
+    // this wait exists at all), scoped to Q since it was created well after
+    // D/T/O's own windows and under the same additional load.
+    console.log('==> waiting for Q PTY startup (sentinel-triggered claude command injection) to settle');
+    await Bun.sleep(20_000);
+
+    const beforeD7 = readOutputFileSafe(outputPathD);
+    const beforeT7 = readOutputFileSafe(outputPathT);
+    const beforeQ7 = readOutputFileSafe(outputPathQ);
+    const deletedParentRes = await postWebhook(
+      baseUrl,
+      'workflow_run',
+      {
+        action: 'completed',
+        workflow_run: {
+          conclusion: 'success',
+          name: 'Scenario 7 CI',
+          html_url: null,
+          head_branch: 'smoke-branch-q',
+          head_sha: null,
+          updated_at: null,
+        },
+        repository: { full_name: `${nonceOrg}/${nonceRepo}` },
+      },
+      webhookSecret,
+    );
+    expect(deletedParentRes.status === 200, 'SCENARIO 7: POST /webhooks/github returns 200', `status=${deletedParentRes.status}`);
+    await deletedParentRes.text();
+
+    const scenario7QTagFound = await waitFor(() => {
+      const content = readOutputFileSafe(outputPathQ);
+      return content.slice(beforeQ7.length).includes('[inbound:ci:completed]');
+    }, 45_000, "Q's output file to contain [inbound:ci:completed] (scenario 7, direct match)");
+    expect(scenario7QTagFound, 'SCENARIO 7: Q received the [inbound:ci:completed] PTY notification (direct match)', readOutputFileSafe(outputPathQ).slice(beforeQ7.length).slice(-500));
+
+    const scenario7DTagFound = await waitFor(() => {
+      const content = readOutputFileSafe(outputPathD);
+      return content.slice(beforeD7.length).includes('[inbound:ci:completed]');
+    }, 45_000, "D's output file to contain [inbound:ci:completed] (scenario 7, deleted-parent fallback)");
+    expect(scenario7DTagFound, 'SCENARIO 7: D received the [inbound:ci:completed] PTY notification (fallback, Q\'s parent R no longer exists)', readOutputFileSafe(outputPathD).slice(beforeD7.length).slice(-500));
+
+    const afterT7 = readOutputFileSafe(outputPathT);
+    expect(
+      !afterT7.slice(beforeT7.length).includes('[inbound:ci:completed]'),
+      'SCENARIO 7: T did NOT receive the [inbound:ci:completed] PTY notification',
+      afterT7.slice(beforeT7.length).slice(-500),
+    );
+
+    // The actual point of scenario 7: prove the job that processed this
+    // webhook completed on its FIRST attempt, with no job-level retry.
+    // Before Issue #1677's fix, the dangling target's FK-constraint crash
+    // would have thrown out of the whole job, and the job queue would have
+    // scheduled a retry (incrementing `attempts`) up to `max_attempts`
+    // times. Reads the disposable server's own `jobs` table directly --
+    // this is the LAST scenario to post a webhook, so "most recently
+    // created inbound-event:process job" unambiguously identifies this
+    // scenario's own job.
+    const jobsHandle = new BunDatabase(dbPath, { readonly: true });
+    let scenario7Job: { status: string; attempts: number } | undefined;
+    try {
+      scenario7Job = jobsHandle
+        .query('SELECT status, attempts FROM jobs WHERE type = ? ORDER BY created_at DESC LIMIT 1')
+        .get(JOB_TYPES.INBOUND_EVENT_PROCESS) as { status: string; attempts: number } | undefined;
+    } finally {
+      jobsHandle.close();
+    }
+    expect(scenario7Job !== undefined, 'SCENARIO 7: an inbound-event:process job row exists', JSON.stringify(scenario7Job));
+    expect(scenario7Job?.status === JOB_STATUS.COMPLETED, 'SCENARIO 7: the job completed (status=completed)', JSON.stringify(scenario7Job));
+    expect(scenario7Job?.attempts === 0, 'SCENARIO 7: the job completed on its first attempt (attempts=0, no job-level retry)', JSON.stringify(scenario7Job));
   } finally {
     if (proc) {
       proc.kill();

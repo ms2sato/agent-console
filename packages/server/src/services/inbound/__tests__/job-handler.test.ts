@@ -1,9 +1,30 @@
 import { describe, expect, it, mock, beforeEach } from 'bun:test';
+import type { Kysely } from 'kysely';
 import type { ServiceParser } from '../service-parser.js';
 import type { InboundEventHandler } from '../handlers.js';
 import type { InboundEventNotification, NewInboundEventNotification } from '../../../database/schema.js';
 import { createInboundEventJobHandler } from '../job-handler.js';
 import type { CICompletionChecker } from '../ci-completion-checker.js';
+import { createDatabaseForTest } from '../../../database/connection.js';
+import { InboundEventNotificationRepository } from '../../../repositories/inbound-event-notification-repository.js';
+import type { Database } from '../../../database/schema.js';
+
+async function createTestSession(db: Kysely<Database>, sessionId: string): Promise<void> {
+  await db
+    .insertInto('sessions')
+    .values({
+      id: sessionId,
+      type: 'worktree',
+      location_path: '/test/path',
+      created_at: '2024-01-01T00:00:00Z',
+      server_pid: null,
+      initial_prompt: null,
+      title: null,
+      repository_id: null,
+      worktree_id: null,
+    })
+    .execute();
+}
 
 // Mock functions with proper return types
 const mockFindInboundEventNotification = mock<() => Promise<InboundEventNotification | null>>(
@@ -570,5 +591,298 @@ describe('createInboundEventJobHandler', () => {
     expect(handlerMock).toHaveBeenCalledTimes(1);
     const passedEvent = handlerMock.mock.calls[0][0];
     expect(passedEvent.summary).toBe('CI success');
+  });
+
+  describe('per-target failure isolation (real DB, FK-backed repository)', () => {
+    it('isolates a dangling target (FOREIGN KEY constraint failure) from other targets in the same event', async () => {
+      const db = await createDatabaseForTest();
+      try {
+        const repo = new InboundEventNotificationRepository(db);
+        await createTestSession(db, 'healthy-session');
+        // 'dangling-session' deliberately has NO row in `sessions`.
+
+        const parser: ServiceParser = {
+          serviceId: 'github',
+          authenticate: async () => true,
+          parse: async () => ({
+            type: 'ci:completed',
+            source: 'github',
+            timestamp: '2024-01-01T00:00:00Z',
+            metadata: { repositoryName: 'owner/repo' },
+            payload: { ok: true },
+            summary: 'CI success',
+          }),
+        };
+
+        const handlerMock = mock(async () => true);
+        const handler: InboundEventHandler = {
+          handlerId: 'test-handler',
+          supportedEvents: ['ci:completed'],
+          handle: handlerMock,
+        };
+
+        const jobHandler = createInboundEventJobHandler({
+          getServiceParser: () => parser,
+          resolveTargets: async () => [
+            { sessionId: 'dangling-session' },
+            { sessionId: 'healthy-session' },
+          ],
+          handlers: [handler],
+          notificationRepository: repo,
+        });
+
+        await expect(
+          jobHandler({
+            jobId: 'job-regress-1',
+            service: 'github',
+            rawPayload: '{}',
+            headers: {},
+            receivedAt: '2024-01-01T00:00:00Z',
+          })
+        ).resolves.toBeUndefined();
+
+        const rows = await db.selectFrom('inbound_event_notifications').selectAll().execute();
+        expect(rows).toHaveLength(1);
+        expect(rows[0].session_id).toBe('healthy-session');
+        expect(rows[0].status).toBe('delivered');
+        expect(handlerMock).toHaveBeenCalledTimes(1);
+      } finally {
+        await db.destroy();
+      }
+    });
+
+    it('isolates a handler that throws after the pending row is already created (the "handle" failure class), while a second healthy target is still processed normally', async () => {
+      const db = await createDatabaseForTest();
+      try {
+        const repo = new InboundEventNotificationRepository(db);
+        // Both sessions are healthy rows -- this test is about a handler
+        // throwing AFTER the pending notification row was persisted, not
+        // about a dangling session_id (that is the 'persist' class, covered
+        // by the previous test).
+        await createTestSession(db, 'failing-session');
+        await createTestSession(db, 'healthy-session-2');
+
+        const parser: ServiceParser = {
+          serviceId: 'github',
+          authenticate: async () => true,
+          parse: async () => ({
+            type: 'ci:completed',
+            source: 'github',
+            timestamp: '2024-01-01T00:00:00Z',
+            metadata: { repositoryName: 'owner/repo' },
+            payload: { ok: true },
+            summary: 'CI success',
+          }),
+        };
+
+        const handlerMock = mock(async (_event: unknown, target: { sessionId: string }) => {
+          if (target.sessionId === 'failing-session') {
+            throw new Error('boom');
+          }
+          return true;
+        });
+        const handler: InboundEventHandler = {
+          handlerId: 'test-handler',
+          supportedEvents: ['ci:completed'],
+          handle: handlerMock as unknown as InboundEventHandler['handle'],
+        };
+
+        const jobHandler = createInboundEventJobHandler({
+          getServiceParser: () => parser,
+          resolveTargets: async () => [
+            { sessionId: 'failing-session' },
+            { sessionId: 'healthy-session-2' },
+          ],
+          handlers: [handler],
+          notificationRepository: repo,
+        });
+
+        // (a) The job resolves without throwing -- the handler failure is
+        // isolated and does not propagate out of the job.
+        await expect(
+          jobHandler({
+            jobId: 'job-regress-5',
+            service: 'github',
+            rawPayload: '{}',
+            headers: {},
+            receivedAt: '2024-01-01T00:00:00Z',
+          })
+        ).resolves.toBeUndefined();
+
+        const rows = await db.selectFrom('inbound_event_notifications').selectAll().execute();
+        expect(rows).toHaveLength(2);
+
+        // (b) The failing target's notification row WAS created and stays
+        // 'pending' -- it is never flipped to 'delivered', since the fix no
+        // longer relies on job-level retry to close it out. This is the
+        // current, intended behavior for a handler that throws after its
+        // pending row was persisted.
+        const failingRow = rows.find((row) => row.session_id === 'failing-session');
+        expect(failingRow).toBeDefined();
+        expect(failingRow?.status).toBe('pending');
+
+        // (c) The second, healthy target/handler pair in the same event is
+        // still processed normally -- proving the 'handle' failure class is
+        // isolated exactly like the 'persist' failure class above.
+        const healthyRow = rows.find((row) => row.session_id === 'healthy-session-2');
+        expect(healthyRow).toBeDefined();
+        expect(healthyRow?.status).toBe('delivered');
+        expect(handlerMock).toHaveBeenCalledTimes(2);
+      } finally {
+        await db.destroy();
+      }
+    });
+
+    it('resolves without error and does nothing when there are zero targets', async () => {
+      const db = await createDatabaseForTest();
+      try {
+        const repo = new InboundEventNotificationRepository(db);
+
+        const parser: ServiceParser = {
+          serviceId: 'github',
+          authenticate: async () => true,
+          parse: async () => ({
+            type: 'ci:completed',
+            source: 'github',
+            timestamp: '2024-01-01T00:00:00Z',
+            metadata: { repositoryName: 'owner/repo' },
+            payload: { ok: true },
+            summary: 'CI success',
+          }),
+        };
+
+        const handlerMock = mock(async () => true);
+        const handler: InboundEventHandler = {
+          handlerId: 'test-handler',
+          supportedEvents: ['ci:completed'],
+          handle: handlerMock,
+        };
+
+        const jobHandler = createInboundEventJobHandler({
+          getServiceParser: () => parser,
+          resolveTargets: async () => [],
+          handlers: [handler],
+          notificationRepository: repo,
+        });
+
+        await expect(
+          jobHandler({
+            jobId: 'job-regress-2',
+            service: 'github',
+            rawPayload: '{}',
+            headers: {},
+            receivedAt: '2024-01-01T00:00:00Z',
+          })
+        ).resolves.toBeUndefined();
+
+        const rows = await db.selectFrom('inbound_event_notifications').selectAll().execute();
+        expect(rows).toHaveLength(0);
+        expect(handlerMock).not.toHaveBeenCalled();
+      } finally {
+        await db.destroy();
+      }
+    });
+
+    it('resolves without error when the only target is dangling', async () => {
+      const db = await createDatabaseForTest();
+      try {
+        const repo = new InboundEventNotificationRepository(db);
+        // 'only-dangling' deliberately has NO row in `sessions`.
+
+        const parser: ServiceParser = {
+          serviceId: 'github',
+          authenticate: async () => true,
+          parse: async () => ({
+            type: 'ci:completed',
+            source: 'github',
+            timestamp: '2024-01-01T00:00:00Z',
+            metadata: { repositoryName: 'owner/repo' },
+            payload: { ok: true },
+            summary: 'CI success',
+          }),
+        };
+
+        const handlerMock = mock(async () => true);
+        const handler: InboundEventHandler = {
+          handlerId: 'test-handler',
+          supportedEvents: ['ci:completed'],
+          handle: handlerMock,
+        };
+
+        const jobHandler = createInboundEventJobHandler({
+          getServiceParser: () => parser,
+          resolveTargets: async () => [{ sessionId: 'only-dangling' }],
+          handlers: [handler],
+          notificationRepository: repo,
+        });
+
+        await expect(
+          jobHandler({
+            jobId: 'job-regress-3',
+            service: 'github',
+            rawPayload: '{}',
+            headers: {},
+            receivedAt: '2024-01-01T00:00:00Z',
+          })
+        ).resolves.toBeUndefined();
+
+        const rows = await db.selectFrom('inbound_event_notifications').selectAll().execute();
+        expect(rows).toHaveLength(0);
+        expect(handlerMock).not.toHaveBeenCalled();
+      } finally {
+        await db.destroy();
+      }
+    });
+
+    it('resolves without error when all targets are dangling', async () => {
+      const db = await createDatabaseForTest();
+      try {
+        const repo = new InboundEventNotificationRepository(db);
+        // 'dangling-a' and 'dangling-b' deliberately have NO rows in `sessions`.
+
+        const parser: ServiceParser = {
+          serviceId: 'github',
+          authenticate: async () => true,
+          parse: async () => ({
+            type: 'ci:completed',
+            source: 'github',
+            timestamp: '2024-01-01T00:00:00Z',
+            metadata: { repositoryName: 'owner/repo' },
+            payload: { ok: true },
+            summary: 'CI success',
+          }),
+        };
+
+        const handlerMock = mock(async () => true);
+        const handler: InboundEventHandler = {
+          handlerId: 'test-handler',
+          supportedEvents: ['ci:completed'],
+          handle: handlerMock,
+        };
+
+        const jobHandler = createInboundEventJobHandler({
+          getServiceParser: () => parser,
+          resolveTargets: async () => [{ sessionId: 'dangling-a' }, { sessionId: 'dangling-b' }],
+          handlers: [handler],
+          notificationRepository: repo,
+        });
+
+        await expect(
+          jobHandler({
+            jobId: 'job-regress-4',
+            service: 'github',
+            rawPayload: '{}',
+            headers: {},
+            receivedAt: '2024-01-01T00:00:00Z',
+          })
+        ).resolves.toBeUndefined();
+
+        const rows = await db.selectFrom('inbound_event_notifications').selectAll().execute();
+        expect(rows).toHaveLength(0);
+        expect(handlerMock).not.toHaveBeenCalled();
+      } finally {
+        await db.destroy();
+      }
+    });
   });
 });

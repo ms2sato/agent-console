@@ -25,21 +25,6 @@ export class PermanentHandlerError extends Error {
   }
 }
 
-/**
- * Error indicating a handler execution failure.
- *
- * This error is thrown when a handler fails during execution (e.g., network timeout,
- * WebSocket disconnection). Under the current at-most-once delivery semantics,
- * handler failures are intentionally NOT retried. The pending notification record
- * prevents duplicate execution if the job itself is retried.
- */
-export class HandlerExecutionError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = 'HandlerExecutionError';
-  }
-}
-
 export interface InboundEventJobDependencies {
   getServiceParser: (serviceId: string) => ServiceParser | null;
   resolveTargets: (event: InboundSystemEvent) => Promise<EventTarget[]>;
@@ -140,98 +125,101 @@ export function createInboundEventJobHandler(deps: InboundEventJobDependencies) 
       for (const handler of handlers) {
         const workerId = target.workerId ?? 'all';
 
-        // IDEMPOTENCY CHECK: Skip if notification already exists (delivered or pending)
-        // This prevents duplicate handler execution on job retry
-        const existingNotification = await deps.notificationRepository.findInboundEventNotification(
-          job.jobId,
-          target.sessionId,
-          workerId,
-          handler.handlerId
-        );
+        // Isolate this target/handler unit of work: a failure resolving,
+        // persisting, or dispatching for one target must not block other
+        // targets or fail the whole job (e.g. a target whose session row no
+        // longer exists trips the notifications table's FOREIGN KEY
+        // constraint on insert). `step` records which half of the unit of
+        // work failed, for the catch block below: 'persist' means no
+        // notification row exists (or we couldn't check), 'handle' means
+        // the row was already created and stays pending.
+        let step: 'persist' | 'handle' = 'persist';
+        try {
+          // IDEMPOTENCY CHECK: Skip if notification already exists (delivered or pending)
+          // This prevents duplicate handler execution on job retry
+          const existingNotification = await deps.notificationRepository.findInboundEventNotification(
+            job.jobId,
+            target.sessionId,
+            workerId,
+            handler.handlerId
+          );
 
-        if (existingNotification) {
-          if (existingNotification.status === 'delivered') {
-            // Already delivered - skip this handler/target combination
+          if (existingNotification) {
+            if (existingNotification.status === 'delivered') {
+              // Already delivered - skip this handler/target combination
+              logger.debug(
+                { jobId: job.jobId, sessionId: target.sessionId, handlerId: handler.handlerId },
+                'Notification already delivered, skipping handler'
+              );
+              continue;
+            }
+            // Status is 'pending' - previous attempt started but didn't complete
+            // The handler may have already executed, so we should NOT retry the handler
+            // Just mark it as delivered to complete the job
             logger.debug(
               { jobId: job.jobId, sessionId: target.sessionId, handlerId: handler.handlerId },
-              'Notification already delivered, skipping handler'
+              'Found pending notification from previous attempt, marking as delivered'
+            );
+            await deps.notificationRepository.markNotificationDelivered(
+              job.jobId,
+              target.sessionId,
+              workerId,
+              handler.handlerId
             );
             continue;
           }
-          // Status is 'pending' - previous attempt started but didn't complete
-          // The handler may have already executed, so we should NOT retry the handler
-          // Just mark it as delivered to complete the job
-          logger.debug(
-            { jobId: job.jobId, sessionId: target.sessionId, handlerId: handler.handlerId },
-            'Found pending notification from previous attempt, marking as delivered'
-          );
+
+          // ATOMIC SAFETY: Create pending notification BEFORE handler execution
+          // This ensures that if handler succeeds but update fails, we don't retry the handler
+          const notificationId = crypto.randomUUID();
+          await deps.notificationRepository.createPendingNotification({
+            id: notificationId,
+            job_id: job.jobId,
+            session_id: target.sessionId,
+            worker_id: workerId,
+            handler_id: handler.handlerId,
+            event_type: event.type,
+            event_summary: event.summary,
+            created_at: new Date().toISOString(),
+          });
+
+          step = 'handle';
+          const handled = await handler.handle(event, target);
+
+          // Always mark notification as delivered after handler completes
+          // Handler returning false means "no action taken" (e.g., session not found),
+          // not "failed" - we still want to prevent retry
           await deps.notificationRepository.markNotificationDelivered(
             job.jobId,
             target.sessionId,
             workerId,
             handler.handlerId
           );
-          continue;
-        }
 
-        // ATOMIC SAFETY: Create pending notification BEFORE handler execution
-        // This ensures that if handler succeeds but update fails, we don't retry the handler
-        const notificationId = crypto.randomUUID();
-        await deps.notificationRepository.createPendingNotification({
-          id: notificationId,
-          job_id: job.jobId,
-          session_id: target.sessionId,
-          worker_id: workerId,
-          handler_id: handler.handlerId,
-          event_type: event.type,
-          event_summary: event.summary,
-          created_at: new Date().toISOString(),
-        });
-
-        let handled = false;
-        try {
-          handled = await handler.handle(event, target);
+          if (handled) {
+            logger.info(
+              { jobId: job.jobId, handlerId: handler.handlerId, sessionId: target.sessionId, workerId },
+              'Handler processed inbound event'
+            );
+          } else {
+            logger.debug(
+              { jobId: job.jobId, handlerId: handler.handlerId, sessionId: target.sessionId, workerId },
+              'Handler skipped inbound event (returned false)'
+            );
+          }
         } catch (error) {
-          // Handler execution failures are transient by default
-          // (e.g., temporary network issues, WebSocket disconnection)
-          // The pending notification record remains, so on retry we will
-          // skip the handler and just mark it as delivered
-          logger.warn(
+          logger.error(
             {
               err: error,
+              step,
               jobId: job.jobId,
               handlerId: handler.handlerId,
               sessionId: target.sessionId,
-              workerId: workerId,
+              workerId,
               eventType: event.type,
               eventSummary: event.summary,
             },
-            'Inbound event handler failed'
-          );
-          throw new HandlerExecutionError(
-            `Handler ${handler.handlerId} failed for session ${target.sessionId}: ${error instanceof Error ? error.message : String(error)}`
-          );
-        }
-
-        // Always mark notification as delivered after handler completes
-        // Handler returning false means "no action taken" (e.g., session not found),
-        // not "failed" - we still want to prevent retry
-        await deps.notificationRepository.markNotificationDelivered(
-          job.jobId,
-          target.sessionId,
-          workerId,
-          handler.handlerId
-        );
-
-        if (handled) {
-          logger.info(
-            { jobId: job.jobId, handlerId: handler.handlerId, sessionId: target.sessionId, workerId },
-            'Handler processed inbound event'
-          );
-        } else {
-          logger.debug(
-            { jobId: job.jobId, handlerId: handler.handlerId, sessionId: target.sessionId, workerId },
-            'Handler skipped inbound event (returned false)'
+            'Failed to process inbound event notification for target; skipping'
           );
         }
       }
