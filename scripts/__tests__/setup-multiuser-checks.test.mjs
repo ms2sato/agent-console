@@ -198,7 +198,7 @@ describe('setup-multiuser-checks: assert_readable_by_unprivileged_user (Issue #1
     expect(r.stderr).not.toContain('not readable by an unprivileged user');
   });
 
-  it('id -u = 0 shape: an empty elevate prefix runs runuser directly, unaffected by word-splitting', () => {
+  it('id -u = 0 shape: an empty elevate prefix disappears via unquoted word-splitting, so runuser itself runs (not an empty-string command)', () => {
     // The production caller passes an empty string when it is already root
     // (no elevation prefix needed). Confirm an empty third argument does not
     // become a spurious empty command-name argument that breaks the
@@ -211,11 +211,23 @@ describe('setup-multiuser-checks: assert_readable_by_unprivileged_user (Issue #1
     // from the command line rather than that runuser succeeds as non-root).
     const r = runAssertReadableByUnprivilegedUser('/etc/hostname', 'unused hint', '');
     expect(r.status).toBe(1);
-    // "command not found"-shaped failure would show up as "could not run"
-    // with no such diagnostic; runuser's own refusal is what must appear,
-    // proving `runuser` (not some mis-split empty-string command) is what
-    // actually ran.
     expect(r.stderr).toContain('could not run');
+    // Measured (Architect review, PR #1697): quoting `${elevate}` as
+    // `"$elevate"` instead of leaving it unquoted is a mutation this
+    // assertion must catch, and a bare `toContain('could not run')` does
+    // NOT catch it -- both the correct (unquoted) and the mutant (quoted)
+    // shape produce empty stdout and a non-zero exit, so both fall into the
+    // same "could not run" branch. The two are distinguishable only by
+    // WHICH underlying mechanism produced that empty stdout: unquoted, the
+    // empty string vanishes and `runuser` itself runs and refuses with its
+    // own message; quoted, the empty string becomes a literal one-word
+    // command name and the shell reports its own "command not found"
+    // before `runuser` is ever reached. Both halves of this pin are
+    // required -- asserting only the positive half would still pass if a
+    // regression additionally started leaking "command not found" text
+    // alongside a coincidental "may not be used" substring from elsewhere.
+    expect(r.stderr).toContain('may not be used by non-root users');
+    expect(r.stderr).not.toContain('command not found');
   });
 
   // Reach measurement (workflow.md "A check's existence is not its

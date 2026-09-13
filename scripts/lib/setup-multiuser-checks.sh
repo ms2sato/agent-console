@@ -53,8 +53,11 @@ assert_readable_file() {
 #
 # Fails closed (Issue #1668, Architect ruling): unlike assert_readable_file
 # above, this probes readability from an UNPRIVILEGED user's view via
-# `runuser -u nobody -- test -r <path>`, not the invoking process's own
-# permission. This matters because a root-side check bypasses DAC read
+# `<elevate> runuser -u nobody -- sh -c 'test -r "$1" && echo READABLE ||
+# echo UNREADABLE' _ <path>` (Issue #1690: the marker-based form below, not
+# a bare `runuser -u nobody -- test -r <path>` whose exit code is checked
+# directly), not the invoking process's own permission. This matters because
+# a root-side check bypasses DAC read
 # checks (CAP_DAC_READ_SEARCH), including parent-directory traversal -- a
 # plain `[ -r <path> ]` as root is true for ANY existing file regardless of
 # actual permission bits, so assert_readable_file's own check can never
