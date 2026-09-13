@@ -1568,11 +1568,16 @@ describe('Orchestrator flag control (Issue #1643 PR-2)', () => {
       <ActiveSessionsSidebar {...defaultProps()} sessions={sessions} />
     );
 
-    await waitFor(() => {
-      expect(screen.getByTestId('orchestrator-flag-session-a')).toBeTruthy();
-    });
+    const flagButton = await waitFor(() => screen.getByTestId('orchestrator-flag-session-a'));
 
     expect(container.querySelectorAll('button button')).toHaveLength(0);
+    // The flag button must remain a DOM sibling of the row <button> (both
+    // children of the same wrapping `relative` <div>), not merely absent
+    // from inside it -- this still holds after the flag moved from
+    // top-right to below the activity indicator (Issue #1660).
+    const rowButton = flagButton.parentElement?.querySelector('button:not([data-orchestrator-flag])');
+    expect(rowButton).toBeTruthy();
+    expect(rowButton?.parentElement).toBe(flagButton.parentElement);
   });
 
   it('only renders the flag control for worktree sessions, never quick sessions', async () => {
@@ -1768,5 +1773,91 @@ describe('Orchestrator flag control (Issue #1643 PR-2)', () => {
       expect(screen.getByText(/Failed to clear Orchestrator designation/)).toBeTruthy();
     });
     expect(flagButton.hasAttribute('disabled')).toBe(false);
+  });
+
+  // Issue #1660: the flag moved from top-right (coupled to
+  // `showCreatorUsername`'s right-28/right-2 toggle) to directly below the
+  // activity indicator, left-aligned under it.
+  it('positions the flag left-aligned under the indicator column, not top-right beside the creator badge', async () => {
+    repositoriesResponse = { repositories: [repository({ id: 'repo-a', orchestratorSessionId: null })] };
+    const sessions = [
+      createSessionWithActivity(
+        createMockWorktreeSession({ id: 'session-a', repositoryId: 'repo-a', repositoryName: 'repo-a' }),
+        'idle'
+      ),
+    ];
+
+    await renderWithRouter(<ActiveSessionsSidebar {...defaultProps()} sessions={sessions} />);
+
+    const flagButton = await waitFor(() => screen.getByTestId('orchestrator-flag-session-a'));
+    const classTokens = flagButton.className.split(/\s+/);
+    expect(classTokens).toContain('left-3');
+    // Token match, not substring: `right-28`/`right-2` must be fully gone,
+    // not merely absent as a whole-string match.
+    expect(classTokens).not.toContain('right-28');
+    expect(classTokens).not.toContain('right-2');
+  });
+
+  it('reserves a spacer slot below the activity indicator for worktree sessions, but not for quick sessions', async () => {
+    repositoriesResponse = { repositories: [repository({ id: 'repo-a', orchestratorSessionId: null })] };
+    const sessions = [
+      createSessionWithActivity(
+        createMockWorktreeSession({ id: 'session-a', repositoryId: 'repo-a', repositoryName: 'repo-a' }),
+        'idle'
+      ),
+      createSessionWithActivity(createMockQuickSession({ id: 'quick-1' }), 'idle'),
+    ];
+
+    await renderWithRouter(<ActiveSessionsSidebar {...defaultProps()} sessions={sessions} />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('orchestrator-flag-session-a')).toBeTruthy();
+    });
+
+    // Exactly one spacer: the worktree session's row reserves room for its
+    // flag button; the quick session's row (no flag control) does not.
+    expect(document.querySelectorAll('[data-orchestrator-flag-spacer]')).toHaveLength(1);
+  });
+
+  it('anchors the error tooltip to the left edge, not the right, now that the flag sits near the sidebar\'s left side', async () => {
+    repositoriesResponse = { repositories: [repository({ id: 'repo-a', orchestratorSessionId: 'session-a' })] };
+    globalThis.fetch = Object.assign(
+      mock(async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+        const url = input instanceof Request ? input.url : String(input);
+        const method = (input instanceof Request ? input.method : init?.method) ?? 'GET';
+        if (url.includes('/api/repositories') && method === 'GET') {
+          return new Response(JSON.stringify(repositoriesResponse), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          });
+        }
+        if (url.match(/\/api\/sessions\/([^/]+)\/orchestrator-designation$/) && method === 'DELETE') {
+          return new Response(null, { status: 500 });
+        }
+        return new Response('{}', { status: 200, headers: { 'content-type': 'application/json' } });
+      }),
+      { preconnect: () => {} }
+    ) as typeof fetch;
+
+    const sessions = [
+      createSessionWithActivity(
+        createMockWorktreeSession({ id: 'session-a', repositoryId: 'repo-a', repositoryName: 'repo-a' }),
+        'idle'
+      ),
+    ];
+
+    await renderWithRouter(<ActiveSessionsSidebar {...defaultProps()} sessions={sessions} />);
+
+    const flagButton = await waitFor(() => {
+      const el = screen.getByTestId('orchestrator-flag-session-a');
+      expect(el.getAttribute('data-orchestrator-flag-lit')).toBe('true');
+      return el;
+    });
+    fireEvent.click(flagButton);
+
+    const tooltip = await waitFor(() => screen.getByText(/Failed to clear Orchestrator designation/));
+    const classTokens = tooltip.className.split(/\s+/);
+    expect(classTokens).toContain('left-0');
+    expect(classTokens).not.toContain('right-0');
   });
 });

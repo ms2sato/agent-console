@@ -222,7 +222,7 @@ function SessionItem({ sessionWithActivity, collapsed, isActive, onClick, orches
       data-testid={`orchestrator-flag-${session.id}`}
       onClick={handleOrchestratorFlagClick}
       disabled={orchestratorFlagPending}
-      className={`absolute top-2 ${showCreatorUsername ? 'right-28' : 'right-2'} p-0.5 rounded transition-colors disabled:opacity-50 ${
+      className={`absolute left-3 top-[38px] w-4 h-4 flex items-center justify-center rounded transition-colors disabled:opacity-50 ${
         isOrchestratorFlagLit
           ? 'text-amber-400 hover:text-amber-300'
           : 'text-gray-600 hover:text-gray-400'
@@ -235,7 +235,7 @@ function SessionItem({ sessionWithActivity, collapsed, isActive, onClick, orches
     >
       <FlagIcon className="w-3 h-3" filled={isOrchestratorFlagLit} />
       {orchestratorFlagError && (
-        <span className="absolute top-full right-0 mt-1 whitespace-nowrap text-xs bg-slate-800 text-red-300 px-2 py-1 rounded shadow-lg border border-slate-700 z-50">
+        <span className="absolute top-full left-0 mt-1 max-w-[8rem] break-words text-xs bg-slate-800 text-red-300 px-2 py-1 rounded shadow-lg border border-slate-700 z-50">
           {orchestratorFlagError}
         </span>
       )}
@@ -283,11 +283,18 @@ function SessionItem({ sessionWithActivity, collapsed, isActive, onClick, orches
           </span>
         )}
         <div className="flex items-start gap-2">
-          {isOrphaned ? (
-            <AlertCircleIcon className="w-3 h-3 text-red-400 mt-1.5 shrink-0" />
-          ) : (
-            <ActivityIndicator state={activityState} className="mt-1.5" />
-          )}
+          <div className="w-4 shrink-0 flex flex-col items-center mt-1.5 gap-1">
+            <div className="w-4 h-4 flex items-center justify-center">
+              {isOrphaned ? (
+                <AlertCircleIcon className="w-3 h-3 text-red-400" />
+              ) : (
+                <ActivityIndicator state={activityState} />
+              )}
+            </div>
+            {isWorktreeSession && (
+              <span className="w-4 h-4" aria-hidden="true" data-orchestrator-flag-spacer />
+            )}
+          </div>
           <div className={`min-w-0 flex-1 ${showCreatorUsername ? 'pr-20' : ''}`}>
             <div className="flex items-center gap-1.5 min-w-0">
               <span className={`text-sm font-medium truncate ${isOrphaned ? 'text-gray-500 line-through' : 'text-gray-300'}`}>
