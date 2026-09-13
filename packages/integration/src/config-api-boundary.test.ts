@@ -100,5 +100,28 @@ describe('Client-Server Boundary: Config API', () => {
       expect(result).toHaveProperty('sharedAccountsAvailable');
       expect(typeof result.sharedAccountsAvailable).toBe('boolean');
     });
+
+    it('round-trips deployedSha: null (the default / bun run dev case)', async () => {
+      // No override -- createTestApp/asAppContext defaults AppContext.deployedSha
+      // to null (packages/server/src/__tests__/test-utils.ts), matching what a
+      // running instance with no `.deploy-sha` marker reports.
+      const result = await fetchConfig();
+
+      expect(result).toHaveProperty('deployedSha');
+      expect(result.deployedSha).toBeNull();
+    });
+
+    it('round-trips a non-null deployedSha through the real HTTP + valibot parse path', async () => {
+      app = await createTestApp({
+        systemCapabilities: createMockSystemCapabilities(),
+        deployedSha: '974df65551b05017a8025fd9882108f5337ae277',
+      });
+      bridge.restore();
+      bridge = createFetchBridge(app);
+
+      const result = await fetchConfig();
+
+      expect(result.deployedSha).toBe('974df65551b05017a8025fd9882108f5337ae277');
+    });
   });
 });
