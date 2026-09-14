@@ -1,12 +1,18 @@
 import { describe, it, expect } from 'bun:test';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { dirname, resolve } from 'node:path';
+import { dirname, resolve, join } from 'node:path';
+import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const LIB = resolve(__dirname, '..', 'lib', 'setup-multiuser-checks.sh');
 const NOT_EXECUTABLE_FIXTURE = resolve(__dirname, 'fixtures', 'assert-not-executable-check.sh');
 const NOT_READABLE_FIXTURE = resolve(__dirname, 'fixtures', 'assert-not-readable-check.sh');
+const ELEVATE_READABLE_FIXTURE = resolve(__dirname, 'fixtures', 'elevate-prints-readable.sh');
+const ELEVATE_UNREADABLE_FIXTURE = resolve(__dirname, 'fixtures', 'elevate-prints-unreadable.sh');
+const ELEVATE_FAILS_SILENTLY_FIXTURE = resolve(__dirname, 'fixtures', 'elevate-fails-silently.sh');
+const ELEVATE_ABSENT = resolve(__dirname, 'fixtures', 'elevate-does-not-exist-for-test.sh');
 
 // assert_unified_bun_executable is a pure, side-effect-free function split
 // out of scripts/setup-multiuser-for-ubuntu.sh (Issue #1222 Ruling 2) so its
@@ -96,5 +102,177 @@ describe('setup-multiuser-checks: assert_readable_file (Issue #1668 fail-closed 
     const r = runAssert('/etc/hostname');
     expect(r.status).toBe(1);
     expect(r.stderr).toContain('missing or not executable');
+  });
+});
+
+// assert_readable_by_unprivileged_user (Issue #1668, elevated + re-read
+// #1690): probes readability from `nobody`'s view via
+// `<elevate> runuser -u nobody -- sh -c '...'`, reading the answer from a
+// stdout marker (READABLE / UNREADABLE), never from the exit code -- #1673's
+// original exit-code-based check misattributed an elevation refusal (the
+// operator's own invocation is unprivileged; `runuser` itself needs root)
+// to "not readable", which had nothing to do with file permissions.
+//
+// `<elevate>` is the THIRD argument, an explicit parameter never read from
+// the environment (Issue #1690's whole point: #1673 called this "cannot be
+// faked in a unit test" because it shelled out to bare `runuser` with no
+// seam to substitute). Each fixture below stands in for `<elevate>` itself
+// -- the function invokes it as `"$elevate" runuser -u nobody -- sh -c
+// '...' _ "<path>"`, and the fixture ignores every one of those trailing
+// arguments and just prints what a real elevation+runuser+sh -c chain would
+// have produced in each scenario. This lets all four cases run with no real
+// root and no real `runuser`.
+function runAssertReadableByUnprivilegedUser(path, hint, elevate) {
+  return spawnSync(
+    LIB,
+    ['assert-readable-by-unprivileged-user', path, hint, elevate],
+    { encoding: 'utf-8' },
+  );
+}
+
+describe('setup-multiuser-checks: assert_readable_by_unprivileged_user (Issue #1668 + #1690 elevated fail-closed guard)', () => {
+  it('the runuser-missing guard still fires before any elevation is attempted', () => {
+    // Strip only the directories that provide `runuser` (typically
+    // /usr/sbin, /sbin) from PATH -- a fully empty PATH would also hide
+    // `bash`/`env` themselves and fail the LIB script's own shebang lookup
+    // (exit 127), which is a harness failure, not the guard this test
+    // targets.
+    const pathWithoutSbin = (process.env.PATH ?? '')
+      .split(':')
+      .filter((dir) => dir !== '/usr/sbin' && dir !== '/sbin')
+      .join(':');
+    const r = spawnSync(
+      LIB,
+      ['assert-readable-by-unprivileged-user', '/some/path', 'some hint', ELEVATE_READABLE_FIXTURE],
+      { encoding: 'utf-8', env: { ...process.env, PATH: pathWithoutSbin } },
+    );
+    expect(r.status).toBe(1);
+    expect(r.stderr).toContain('runuser (util-linux) not found');
+  });
+
+  it('case 1/4: elevate + runuser + test -r all succeed and print READABLE -> passes (exit 0, no stderr)', () => {
+    const r = runAssertReadableByUnprivilegedUser(
+      '/usr/local/lib/agent-console/embedded-agent.js',
+      'unused hint',
+      ELEVATE_READABLE_FIXTURE,
+    );
+    expect(r.status).toBe(0);
+    expect(r.stderr).toBe('');
+  });
+
+  it('case 2/4: the chain succeeds but the file itself is unreadable -> the real fail-closed gate (exit 1, "not readable")', () => {
+    const r = runAssertReadableByUnprivilegedUser(
+      '/some/unreadable/path',
+      'step 5/6 did not complete',
+      ELEVATE_UNREADABLE_FIXTURE,
+    );
+    expect(r.status).toBe(1);
+    expect(r.stderr).toContain('not readable by an unprivileged user');
+    expect(r.stderr).toContain('step 5/6 did not complete');
+    // Distinct from case 3/4 below: this is the readability gate itself,
+    // not a "probe could not run" mechanism failure.
+    expect(r.stderr).not.toContain('could not run');
+  });
+
+  it('case 3/4: elevation is refused before runuser ever runs -> reported as a distinct "probe could not run" cause, not "not readable" (Issue #1690\'s actual bug)', () => {
+    const r = runAssertReadableByUnprivilegedUser(
+      '/usr/local/lib/agent-console/embedded-agent.js',
+      'step 5/6 did not complete',
+      ELEVATE_FAILS_SILENTLY_FIXTURE,
+    );
+    expect(r.status).toBe(1);
+    expect(r.stderr).toContain('could not run');
+    // The underlying mechanism's own stderr is surfaced, not swallowed.
+    expect(r.stderr).toContain('elevation refused (simulated)');
+    // This is the exact misattribution Issue #1690 fixes: a mechanism
+    // failure must never be reported as the readability verdict.
+    expect(r.stderr).not.toContain('not readable by an unprivileged user');
+  });
+
+  it('case 4/4: the elevation prefix itself does not exist (exit 127) -> the same distinct "probe could not run" cause', () => {
+    const r = runAssertReadableByUnprivilegedUser(
+      '/usr/local/lib/agent-console/embedded-agent.js',
+      'step 5/6 did not complete',
+      ELEVATE_ABSENT,
+    );
+    expect(r.status).toBe(1);
+    expect(r.stderr).toContain('could not run');
+    expect(r.stderr).not.toContain('not readable by an unprivileged user');
+  });
+
+  it('id -u = 0 shape: an empty elevate prefix disappears via unquoted word-splitting, so runuser itself runs (not an empty-string command)', () => {
+    // The production caller passes an empty string when it is already root
+    // (no elevation prefix needed). Confirm an empty third argument does not
+    // become a spurious empty command-name argument that breaks the
+    // invocation.
+    //
+    // CodeRabbit review (PR #1697) on an earlier version of this test: it
+    // called the REAL `runuser` and asserted util-linux's own "may not be
+    // used by non-root users" diagnostic, which assumes the test process is
+    // non-root -- on a root CI runner, real `runuser -u nobody` SUCCEEDS
+    // (root can switch to any user), so the whole test would fail there
+    // regardless of whether the production code is correct. Fixed by
+    // shadowing `runuser` with a fake fixture (same pattern as the
+    // ELEVATE_* fixtures above, just resolved via PATH instead of passed as
+    // the `elevate` argument), independent of the test process's own UID
+    // and of util-linux's exact wording.
+    const fakeRunuserDir = mkdtempSync(join(tmpdir(), 'fake-runuser-'));
+    try {
+      writeFileSync(
+        join(fakeRunuserDir, 'runuser'),
+        '#!/usr/bin/env bash\necho "FAKE_RUNUSER_INVOKED argv=$*" >&2\nexit 1\n',
+        { mode: 0o755 },
+      );
+      const r = spawnSync(
+        LIB,
+        ['assert-readable-by-unprivileged-user', '/etc/hostname', 'unused hint', ''],
+        { encoding: 'utf-8', env: { ...process.env, PATH: `${fakeRunuserDir}:${process.env.PATH}` } },
+      );
+      expect(r.status).toBe(1);
+      expect(r.stderr).toContain('could not run');
+      // The fake only runs at all if PATH resolution found a command
+      // literally named `runuser` -- proving the empty `elevate` argument
+      // vanished via word-splitting rather than becoming argv[0] itself.
+      expect(r.stderr).toContain('FAKE_RUNUSER_INVOKED argv=-u nobody --');
+      // Measured (Architect review, PR #1697): quoting `${elevate}` as
+      // `"$elevate"` instead of leaving it unquoted is a mutation this
+      // assertion must catch, and a bare `toContain('could not run')` does
+      // NOT catch it -- both the correct (unquoted) and the mutant (quoted)
+      // shape produce empty stdout and a non-zero exit, so both fall into
+      // the same "could not run" branch. The two are distinguishable only
+      // by WHICH command actually ran: unquoted, the empty string vanishes
+      // and the fake `runuser` above runs and prints its marker; quoted,
+      // the empty string becomes a literal one-word command name and the
+      // shell reports its own "command not found" *before* anything named
+      // `runuser` is ever reached -- the fake is never invoked, so its
+      // marker is absent. Both halves of this pin are required -- asserting
+      // only the positive half would still pass if a regression
+      // additionally started leaking "command not found" text alongside a
+      // coincidental marker from elsewhere.
+      expect(r.stderr).not.toContain('command not found');
+    } finally {
+      rmSync(fakeRunuserDir, { recursive: true, force: true });
+    }
+  });
+
+  // Reach measurement (workflow.md "A check's existence is not its
+  // detection power"): swap the marker-based verdict for an exit-code-based
+  // one (the shape #1673 originally shipped) and confirm the "probe could
+  // not run" case (fixture 3/4 above) collapses into "unreadable" -- the
+  // exact misattribution #1690 exists to remove. `test -r ... || echo
+  // UNREADABLE` always exits 0 on its own account (the `||` absorbs
+  // `test`'s failure), so the ONLY way the overall chain can exit non-zero
+  // is if elevation or `runuser` itself failed before the inner `sh -c` ever
+  // ran -- meaning an exit-code check cannot tell "mechanism failed" apart
+  // from "file is unreadable" at all: both are just "non-zero exit, no
+  // information about which of the two happened".
+  it('[reach measurement] the fails-silently fixture exits non-zero with empty stdout -- a bare exit-code check cannot distinguish it from "unreadable"', () => {
+    const r = spawnSync(ELEVATE_FAILS_SILENTLY_FIXTURE, [], { encoding: 'utf-8' });
+    expect(r.status).not.toBe(0);
+    expect(r.stdout).toBe('');
+    // The marker-based check above tells the two apart via this exact gap:
+    // no READABLE/UNREADABLE marker on stdout at all. An exit-code-only
+    // check has no equivalent signal and would report "not readable" here,
+    // which is false -- the readability check never ran.
   });
 });
