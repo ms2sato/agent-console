@@ -1,0 +1,97 @@
+# Tier-3 verification image for Agent Console: systemd as PID 1 in a container.
+#
+# Purpose: run the multi-user SETUP script, the DEPLOY script (as the
+# operator account), the unit's health checks and the elevation smoke against
+# the REAL systemd unit's MainPID -- the "systemd unit's own environment"
+# residue that the tier-2 image (docker/Dockerfile, no systemd) cannot reach.
+# Spec: docs/design/elevation-verification-tiers.md (Task 0 measured this
+# exact image on a GitHub ubuntu-latest runner; the numbers there are
+# runner-only until the workstation recipe has been run).
+#
+# NEVER run a container of this image on the dogfood host. Booting systemd as
+# PID 1 needs CAP_SYS_ADMIN + a writable host cgroup tree in the host cgroup
+# namespace + an AppArmor opt-out, which is root-equivalent on the host. The
+# driver (scripts/verify-multiuser-systemd.sh) refuses to run unless CI=true
+# or AC_TIER3_HOST_OK=1 is set; the only Docker action a delegate may take on
+# the dogfood host with this file is `docker build` for syntax.
+#
+# NO application and NO service-user elevation rules are baked here: the
+# setup script installs both at container runtime, exactly as on a real
+# host. The only file installed at build time is the OPERATOR's rules file
+# (see the owner's line below), because the deploy script's contract is
+# "run as the operator's own login user; every privileged step elevates
+# itself" and that contract is what tier 3 exists to verify.
+#
+# Build context is docker/ (not the repo root): the runner's checkout is
+# bind-mounted read-only at /src at run time instead of being copied in.
+
+FROM ubuntu:24.04
+ARG BUN_VERSION=1.3.14
+
+# `container=docker` lets systemd detect the container (ConditionVirtualization)
+# and skip the units that cannot work here.
+ENV DEBIAN_FRONTEND=noninteractive \
+    container=docker
+
+# Why `ubuntu-minimal` and not just `systemd`: `ubuntu:24.04` ships WITHOUT
+# the package set a real Ubuntu host has (measured in Task 0: `ls /usr/bin/su*`
+# lists only `su` and `sum`, and `dpkg -s ubuntu-minimal` reports "not
+# installed"), while scripts/setup-multiuser-for-ubuntu.sh assumes a real
+# host (its step 1 installs only pamtester). `apt-cache depends ubuntu-minimal`
+# lists, among its declared dependencies, `init` (-> systemd-sysv) and the
+# elevation binary every real Ubuntu host has -- installing the distro
+# metapackage makes this a real Ubuntu base rather than a docker-trimmed one,
+# and keeps the elevation binary's package name out of this file.
+#
+# The rest mirrors docker/Dockerfile's runtime deps plus what the setup and
+# deploy scripts need at runtime (rsync, git, util-linux for runuser) and
+# what the driver reads (procps, curl).
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+      ubuntu-minimal systemd systemd-sysv dbus \
+      pamtester libpam-modules libpam-runtime login passwd \
+      git rsync curl unzip ca-certificates procps util-linux \
+ && rm -rf /var/lib/apt/lists/*
+
+# bun pinned at the UNIFIED path the setup script's step 7 asserts on and the
+# rendered unit's ExecStart uses (/usr/local/bin/bun), so a real install can
+# proceed even though the service user in this image has no ~/.bun of its own.
+# Consequence, stated so nobody reads more into a green run than it holds:
+# the setup script's step 6b (copy the service user's ~/.bun/bin/bun to the
+# unified path) warns and skips here, and the elevation smoke's freshness
+# check (service-user bun vs unified bun) reports `skipped` -- the driver
+# logs both as NOT EXERCISED with this reason.
+RUN curl -fsSL https://bun.sh/install | BUN_INSTALL=/usr/local bash -s "bun-v${BUN_VERSION}" \
+ && /usr/local/bin/bun --version
+
+# Users:
+# - alice:    a login-shell user, the elevation smoke's <target-user>.
+# - deployer: the OPERATOR account that runs the deploy script. Not named
+#             `operator` because Ubuntu reserves that name as a stock system
+#             account (uid 37; `useradd operator` exits 9).
+# Both are added to the shared group by the setup script (--add-user), not here.
+RUN useradd --create-home --shell /bin/bash alice \
+ && useradd --create-home --shell /bin/bash deployer
+
+# Units that cannot work in a container (no udev, no kernel module loading,
+# no kernel pseudo-filesystems to mount, no console getty). Masking them keeps
+# `systemctl is-system-running` at `running` instead of `degraded`.
+RUN systemctl mask \
+      systemd-udevd.service systemd-udevd-control.socket systemd-udevd-kernel.socket \
+      systemd-modules-load.service systemd-firstboot.service \
+      sys-kernel-config.mount sys-kernel-debug.mount sys-kernel-tracing.mount \
+      getty.target console-getty.service
+
+# --- OWNER'S LINE (not a delegate's to write; see the design note's "operator
+# rule" ruling): install docker/deployer-elevation-rules into the elevation
+# rules drop-in directory as `deployer`, mode 0440, syntax-checked -- the same
+# three-step shape docker/Dockerfile uses for the service user's rules file.
+# Until that line exists, scripts/verify-multiuser-systemd.sh's preflight
+# exits 2 naming it, and the deploy script would stop at its first elevated
+# step with a password prompt.
+# --- end of the owner's line ---
+
+# systemd's clean-shutdown signal; `docker stop` then stops every unit
+# (including the deployed agent-console.service) before PID 1 exits.
+STOPSIGNAL SIGRTMIN+3
+CMD ["/lib/systemd/systemd"]
