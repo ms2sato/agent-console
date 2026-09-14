@@ -137,8 +137,8 @@ export function useSessionSideEffects({
 
   // Targeted, immediate cache patch for a repository's designated-Orchestrator
   // session change. This is a second, independent, always-mounted listener --
-  // separate from routes/index.tsx's onRepositoryUpdated handler, which is
-  // only mounted on the dashboard route. ActiveSessionsSidebar (which reads
+  // separate from useRepositoryRegistrySync's onRepositoryUpdated handler
+  // (also root-mounted). ActiveSessionsSidebar (which reads
   // Repository.orchestratorSessionId to render the flag control) is mounted
   // unconditionally from __root.tsx alongside this hook, so this listener
   // must not depend on which route is currently active. It is fine and
