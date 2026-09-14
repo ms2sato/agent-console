@@ -1,0 +1,93 @@
+name: Verify Multi-User systemd Stack (tier 3)
+
+# Tier-3 verification: boots docker/Dockerfile.systemd with systemd as PID 1
+# on an EPHEMERAL runner and runs scripts/verify-multiuser-systemd.sh -- the
+# multi-user setup script (--dry-run, --force), the deploy script as the
+# operator account, the unit's health, the #1690 readability-gate helper
+# cases and the elevation smoke against the real unit's MainPID. Spec and
+# the measured boot set: docs/design/elevation-verification-tiers.md.
+#
+# Why a runner and never the dogfood host: the boot set (CAP_SYS_ADMIN +
+# host cgroupns + a writable host cgroup tree + apparmor=unconfined) is
+# root-equivalent on the host that lends it. The driver refuses to run
+# unless CI=true (set by GitHub on every runner) or AC_TIER3_HOST_OK=1.
+#
+# Triggers (Issue #1706 AC 6):
+# - `push` on main and on the landing branch -- GitHub only dispatches a
+#   workflow that exists on the DEFAULT branch (measured in Task 0:
+#   `gh workflow run` returns 404 for a file that lives only on a feature
+#   branch), so the landing PR proves the workflow through a push trigger
+#   on its own branch. Drop that branch from the list at review or after
+#   merge; later PRs are covered by `pull_request` + the paths filter.
+# - the paths filter: the setup / deploy scripts, their shared lib, the unit
+#   template, the elevation rules template (`scripts/*-agent-console.template`
+#   is that file; its name carries the elevation literal so it is spelled as
+#   a glob here), docker/**, the elevation smoke, this driver, this file.
+# - `workflow_dispatch` for a manual re-run once the file is on main.
+#
+# Cost: ~3 min real (Task 0 measured 2 min 11 s checkout-to-teardown), so a
+# 15-minute timeout is generous; a run that needs more is stuck, not slow.
+
+on:
+  push:
+    branches:
+      - main
+      - feat/1706-tier3-systemd-verification-stack
+    paths:
+      - 'docker/**'
+      - 'scripts/setup-*'
+      - 'scripts/update-and-deploy-*'
+      - 'scripts/lib/**'
+      - 'scripts/agent-console-multiuser.service.template'
+      - 'scripts/*-agent-console.template'
+      - 'scripts/smoke/check-embedded-agent-elevation.ts'
+      - 'scripts/verify-multiuser-systemd.sh'
+      - '.github/workflows/verify-multiuser-systemd.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'docker/**'
+      - 'scripts/setup-*'
+      - 'scripts/update-and-deploy-*'
+      - 'scripts/lib/**'
+      - 'scripts/agent-console-multiuser.service.template'
+      - 'scripts/*-agent-console.template'
+      - 'scripts/smoke/check-embedded-agent-elevation.ts'
+      - 'scripts/verify-multiuser-systemd.sh'
+      - '.github/workflows/verify-multiuser-systemd.yml'
+  workflow_dispatch:
+
+# This job only checks out the repo and builds / runs docker on the runner;
+# it never writes to the repo, comments, or pushes.
+permissions:
+  contents: read
+
+concurrency:
+  group: verify-multiuser-systemd-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tier3:
+    name: systemd stack (setup, deploy as operator, MainPID smoke)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # This job never pushes; drop the auto-persisted git credentials.
+          persist-credentials: false
+
+      # No bun setup on the runner: every bun invocation happens inside the
+      # container (the image pins bun 1.3.14 at /usr/local/bin/bun). Docker
+      # + compose v2 are preinstalled on ubuntu-latest. CI=true is set by
+      # GitHub and is what opens the driver's never-on-the-dogfood-host gate.
+      - name: Build the systemd image, boot it, run setup / deploy / smokes
+        env:
+          # --- OWNER'S LINE: AC_TIER3_ELEVATE is the bare elevation command
+          # the #1690 helper cases pass as their elevation prefix (the
+          # helper's third argument). Its value is the elevation literal and
+          # is therefore the owner's to write, not a delegate's. Until it is
+          # set, the driver's preflight exits 2 naming it. ---
+          AC_TIER3_ELEVATE: ''
+        run: scripts/verify-multiuser-systemd.sh
