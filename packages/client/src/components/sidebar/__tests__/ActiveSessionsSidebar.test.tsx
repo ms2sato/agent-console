@@ -1698,12 +1698,12 @@ describe('Orchestrator flag control (Issue #1643 PR-2)', () => {
     expect(router.state.location.pathname).toBe('/');
   });
 
-  // Issue #1692: clearing a repository's designation leaves it with no
-  // designated Orchestrator at all, breaking labeled-Issue webhook routing
-  // and the #1661 fallback until someone re-designates -- so the confirm
-  // dialog's copy must state that consequence exactly, not just "are you
-  // sure". Full-string match, not a substring/regex presence check, since
-  // this sentence is also the Issue's visual acceptance criterion verified
+  // Clearing a repository's designation leaves it with no designated
+  // Orchestrator at all, breaking labeled-Issue webhook routing and the
+  // fallback-notification path until someone re-designates -- so the
+  // confirm dialog's copy must state that consequence exactly, not just
+  // "are you sure". Full-string match, not a substring/regex presence
+  // check, since this sentence is also the visual acceptance criterion verified
   // verbatim in Browser QA.
   it('shows a confirmation dialog with the exact clear-consequence copy when a lit flag is clicked', async () => {
     repositoriesResponse = { repositories: [repository({ id: 'repo-a', orchestratorSessionId: 'session-a' })] };

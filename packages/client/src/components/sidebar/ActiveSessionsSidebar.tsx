@@ -180,9 +180,9 @@ function SessionItem({ sessionWithActivity, collapsed, isActive, onClick, orches
   // multi-user `all` mode) occurred.
   const [orchestratorFlagError, setOrchestratorFlagError] = useState<string | null>(null);
 
-  // Issue #1692: clearing an already-designated repository's Orchestrator
-  // leaves it with NO designated Orchestrator, which breaks labeled-Issue
-  // webhook routing and the #1661 fallback until someone re-designates. This
+  // Clearing an already-designated repository's Orchestrator leaves it with
+  // NO designated Orchestrator, which breaks labeled-Issue webhook routing
+  // and the fallback-notification path until someone re-designates. This
   // dialog gates that DELETE behind an explicit confirm; the raise/swap POST
   // path stays dialog-free (unchanged).
   const [clearConfirmOpen, setClearConfirmOpen] = useState(false);
