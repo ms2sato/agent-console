@@ -1,5 +1,5 @@
 import { describe, it, expect, mock, beforeEach, afterEach } from 'bun:test';
-import { screen, fireEvent, cleanup, waitFor } from '@testing-library/react';
+import { screen, fireEvent, cleanup, waitFor, act } from '@testing-library/react';
 import { userEvent } from '@testing-library/user-event';
 import { renderWithRouter } from '../../../test/renderWithRouter';
 import { ActiveSessionsSidebar, formatRestartMessage } from '../ActiveSessionsSidebar';
@@ -9,8 +9,11 @@ import {
   SIDEBAR_DEFAULT_WIDTH,
 } from '../../../hooks/useSidebarState';
 import type { SessionWithActivity } from '../../../hooks/useActiveSessionsWithActivity';
+import { useRepositoryRegistrySync } from '../../../hooks/useRepositoryRegistrySync';
 import { setAuthMode, setCurrentUser, setSharedAccountsAvailable, _reset as resetAuth } from '../../../lib/auth';
 import { repositoryKeys } from '../../../lib/query-keys';
+import { _reset as resetWebSocket } from '../../../lib/app-websocket';
+import { MockWebSocket, installMockWebSocket } from '../../../test/mock-websocket';
 import type { AgentActivityState, WorktreeSession, QuickSession, Session, Repository } from '@agent-console/shared';
 
 // --- Global fetch mock (Issue #1643 PR-2) ---
@@ -102,6 +105,15 @@ function createSessionWithActivity(
   activityState: AgentActivityState = 'idle'
 ): SessionWithActivity {
   return { session, activityState };
+}
+
+// Mounts the app-wide repository registry sync hook (normally mounted in
+// routes/__root.tsx) alongside the sidebar under the same QueryClient, so a
+// test can exercise the errored-query-repair path (Issue #1700) without
+// re-implementing the WS-driven cache write.
+function RepositoryRegistrySyncMounter() {
+  useRepositoryRegistrySync();
+  return null;
 }
 
 describe('ActiveSessionsSidebar', () => {
@@ -1904,5 +1916,153 @@ describe('Orchestrator flag control (Issue #1643 PR-2)', () => {
     const buttons = screen.getAllByRole('button');
     const collapsedRowButton = buttons.find((btn) => btn.getAttribute('title')?.includes('Idle'));
     expect(collapsedRowButton).toBeTruthy();
+  });
+
+  // Issue #1700: the sidebar's repositories query used to only ever be kept
+  // fresh by handlers wired on the Dashboard route. On any other route, a
+  // server restart's `repositories-sync` reconnect frame was never consumed,
+  // so an errored repositories query stayed errored forever. This test
+  // mounts the app-wide fix (`useRepositoryRegistrySync`) alongside the
+  // sidebar and drives the errored-query-repair path end to end.
+  it('after the repositories query is in error state, a repositories-sync payload restores the lit flag without any refetch', async () => {
+    const restoreWebSocket = installMockWebSocket();
+    resetWebSocket();
+    globalThis.fetch = Object.assign(
+      mock(async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+        const url = input instanceof Request ? input.url : String(input);
+        const method = (input instanceof Request ? input.method : init?.method) ?? 'GET';
+        if (url.includes('/api/repositories') && method === 'GET') {
+          // Polarity guard: GET /api/repositories always fails in this test.
+          // If the fix were invalidate-only, this rejecting fetch is the
+          // only way an active observer could ever re-fetch, and the flag
+          // must NOT relight through that path -- only via the WS payload's
+          // direct `setQueryData` write.
+          return new Response(null, { status: 500 });
+        }
+        return new Response('{}', { status: 200, headers: { 'content-type': 'application/json' } });
+      }),
+      { preconnect: () => {} }
+    ) as typeof fetch;
+
+    try {
+      const sessions = [
+        createSessionWithActivity(
+          createMockWorktreeSession({ id: 'session-a', repositoryId: 'repo-a', repositoryName: 'repo-a' }),
+          'idle'
+        ),
+      ];
+
+      const { queryClient } = await renderWithRouter(
+        <>
+          <RepositoryRegistrySyncMounter />
+          <ActiveSessionsSidebar {...defaultProps()} sessions={sessions} />
+        </>
+      );
+
+      await waitFor(() => {
+        expect(queryClient.getQueryState(repositoryKeys.all())?.status).toBe('error');
+      });
+
+      const ws = MockWebSocket.getLastInstance();
+      act(() => {
+        ws?.simulateOpen();
+        ws?.simulateMessage(
+          JSON.stringify({
+            type: 'repositories-sync',
+            // clonedSourceRepoPath is required (nullable) by the WS wire
+            // schema (v.strictObject in app-server-message.ts), unlike the
+            // REST-mock `repository()` helper above whose payload never
+            // passes through schema validation.
+            repositories: [repository({ id: 'repo-a', orchestratorSessionId: 'session-a', clonedSourceRepoPath: null })],
+          }),
+        );
+      });
+
+      await waitFor(() => {
+        const flags = Array.from(document.querySelectorAll('[data-orchestrator-flag]'));
+        expect(flags).toHaveLength(1);
+        const lit = flags.filter((el) => el.getAttribute('data-orchestrator-flag-lit') === 'true');
+        expect(lit).toHaveLength(1);
+        expect(lit[0]).toBe(screen.getByTestId('orchestrator-flag-session-a'));
+      });
+    } finally {
+      restoreWebSocket();
+    }
+  });
+
+  // Issue #1700 correction: TanStack Query retains the last successful
+  // `data` across an error for an already-populated query (it does not
+  // reset to `undefined`), so the reachable-in-production shape is not
+  // "error state repairs itself" (the test above) but "a query that already
+  // has correct cached data receives a corrected value via the WS payload,
+  // while never entering an error state at all". This test drives that
+  // shape directly: cache starts populated and correct, a
+  // `repositories-sync` payload arrives with a *different* designation, and
+  // the previously-lit flag must go dark while the newly-designated
+  // session's flag lights up.
+  it('when the cache holds a stale designation, a repositories-sync payload with a corrected designation relights exactly the newly-designated session\'s flag', async () => {
+    const restoreWebSocket = installMockWebSocket();
+    resetWebSocket();
+    repositoriesResponse = { repositories: [repository({ id: 'repo-a', orchestratorSessionId: 'session-a' })] };
+    installGlobalFetchMock();
+
+    try {
+      const sessions = [
+        createSessionWithActivity(
+          createMockWorktreeSession({ id: 'session-a', repositoryId: 'repo-a', repositoryName: 'repo-a' }),
+          'idle'
+        ),
+        createSessionWithActivity(
+          createMockWorktreeSession({ id: 'session-b', repositoryId: 'repo-a', repositoryName: 'repo-a' }),
+          'idle'
+        ),
+      ];
+
+      await renderWithRouter(
+        <>
+          <RepositoryRegistrySyncMounter />
+          <ActiveSessionsSidebar {...defaultProps()} sessions={sessions} />
+        </>
+      );
+
+      // Starting state: session-a's flag is the sole lit flag.
+      await waitFor(() => {
+        const flags = Array.from(document.querySelectorAll('[data-orchestrator-flag]'));
+        expect(flags).toHaveLength(2);
+        const lit = flags.filter((el) => el.getAttribute('data-orchestrator-flag-lit') === 'true');
+        expect(lit).toHaveLength(1);
+        expect(lit[0]).toBe(screen.getByTestId('orchestrator-flag-session-a'));
+      });
+
+      const ws = MockWebSocket.getLastInstance();
+      act(() => {
+        ws?.simulateOpen();
+        ws?.simulateMessage(
+          JSON.stringify({
+            type: 'repositories-sync',
+            // clonedSourceRepoPath is required (nullable) by the WS wire
+            // schema (v.strictObject in app-server-message.ts), unlike the
+            // REST-mock `repository()` helper above whose payload never
+            // passes through schema validation.
+            repositories: [repository({ id: 'repo-a', orchestratorSessionId: 'session-b', clonedSourceRepoPath: null })],
+          }),
+        );
+      });
+
+      // Ending state: the designation moved -- session-b's flag is now the
+      // sole lit flag, and session-a's flag (still present) is dark.
+      await waitFor(() => {
+        const flags = Array.from(document.querySelectorAll('[data-orchestrator-flag]'));
+        expect(flags).toHaveLength(2);
+        const lit = flags.filter((el) => el.getAttribute('data-orchestrator-flag-lit') === 'true');
+        expect(lit).toHaveLength(1);
+        expect(lit[0]).toBe(screen.getByTestId('orchestrator-flag-session-b'));
+      });
+      expect(
+        screen.getByTestId('orchestrator-flag-session-a').getAttribute('data-orchestrator-flag-lit')
+      ).toBe('false');
+    } finally {
+      restoreWebSocket();
+    }
   });
 });

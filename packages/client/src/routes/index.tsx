@@ -256,36 +256,6 @@ export function DashboardPage() {
     queryClient.invalidateQueries({ queryKey: agentKeys.detail(agentId) });
   }, [queryClient]);
 
-  // Handle initial repository sync from WebSocket
-  const handleRepositoriesSync = useCallback(() => {
-    logger.debug('[Sync] Repositories sync received');
-    queryClient.invalidateQueries({ queryKey: repositoryKeys.all() });
-  }, [queryClient]);
-
-  // Handle new repository created
-  const handleRepositoryCreated = useCallback(() => {
-    logger.debug('[Repository] Created');
-    queryClient.invalidateQueries({ queryKey: repositoryKeys.all() });
-  }, [queryClient]);
-
-  // Handle repository deleted
-  const handleRepositoryDeleted = useCallback((repositoryId: string) => {
-    logger.debug(`[Repository] Deleted: ${repositoryId}`);
-    queryClient.invalidateQueries({ queryKey: repositoryKeys.all() });
-    queryClient.invalidateQueries({ queryKey: repositoryKeys.detail(repositoryId) });
-  }, [queryClient]);
-
-  // Handle repository updated
-  const handleRepositoryUpdated = useCallback((repository: Repository) => {
-    logger.debug(`[Repository] Updated: ${repository.id}`);
-    queryClient.setQueryData<{ repositories: Repository[] } | undefined>(repositoryKeys.all(), (old) => {
-      if (!old) return old;
-      return { repositories: old.repositories.map(r => r.id === repository.id ? repository : r) };
-    });
-    // Invalidate detail cache to refetch with full server-shaped response (includes remoteUrl)
-    queryClient.invalidateQueries({ queryKey: repositoryKeys.detail(repository.id) });
-  }, [queryClient]);
-
   // Handle worktree pull completed
   const handleWorktreePullCompleted = useCallback((payload: WorktreePullCompletedPayload) => {
     logger.debug(`[Pull] Completed: ${payload.worktreePath} (${payload.commitsPulled} commits)`);
@@ -425,10 +395,6 @@ export function DashboardPage() {
     onAgentCreated: handleAgentCreated,
     onAgentUpdated: handleAgentUpdated,
     onAgentDeleted: handleAgentDeleted,
-    onRepositoriesSync: handleRepositoriesSync,
-    onRepositoryCreated: handleRepositoryCreated,
-    onRepositoryDeleted: handleRepositoryDeleted,
-    onRepositoryUpdated: handleRepositoryUpdated,
     onWorktreePullCompleted: handleWorktreePullCompleted,
     onWorktreePullFailed: handleWorktreePullFailed,
   });

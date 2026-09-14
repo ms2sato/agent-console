@@ -15,6 +15,7 @@ import { useAppWsState } from '../hooks/useAppWs';
 import { useSessionState } from '../hooks/useSessionState';
 import { useSessionSideEffects } from '../hooks/useSessionSideEffects';
 import { useEmbeddedAgentRegistrySync } from '../hooks/useEmbeddedAgentRegistrySync';
+import { useRepositoryRegistrySync } from '../hooks/useRepositoryRegistrySync';
 import { useSidebarState } from '../hooks/useSidebarState';
 import { useActiveSessionsWithActivity } from '../hooks/useActiveSessionsWithActivity';
 import { useWorktreeCreationTasks } from '../hooks/useWorktreeCreationTasks';
@@ -116,6 +117,13 @@ function RootLayout() {
   // Keep the embedded-agent registry query cache fresh regardless of route
   // (the picker that consumes it lives on session pages, not the Dashboard).
   useEmbeddedAgentRegistrySync();
+
+  // Keep the repository registry query cache fresh regardless of route.
+  // This is the repository cache's app-wide equivalent: the sidebar that
+  // reads it (Orchestrator-flag rendering) renders on every route, not just
+  // the Dashboard, so a server restart's reconnect sync must be consumed
+  // here too.
+  useRepositoryRegistrySync();
 
   // Sidebar state
   const { collapsed, toggle, width, setWidth } = useSidebarState();
