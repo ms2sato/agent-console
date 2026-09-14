@@ -180,6 +180,13 @@ function SessionItem({ sessionWithActivity, collapsed, isActive, onClick, orches
   // multi-user `all` mode) occurred.
   const [orchestratorFlagError, setOrchestratorFlagError] = useState<string | null>(null);
 
+  // Issue #1692: clearing an already-designated repository's Orchestrator
+  // leaves it with NO designated Orchestrator, which breaks labeled-Issue
+  // webhook routing and the #1661 fallback until someone re-designates. This
+  // dialog gates that DELETE behind an explicit confirm; the raise/swap POST
+  // path stays dialog-free (unchanged).
+  const [clearConfirmOpen, setClearConfirmOpen] = useState(false);
+
   // Raise/clear mutations for the Orchestrator-designation flag control.
   // No manual cache patch on success: the server's `orchestrator-designation-changed`
   // WS broadcast (handled in useSessionSideEffects.ts) patches the
@@ -195,11 +202,15 @@ function SessionItem({ sessionWithActivity, collapsed, isActive, onClick, orches
   });
   const clearOrchestratorMutation = useMutation({
     mutationFn: () => clearOrchestratorDesignation(session.id),
+    onSuccess: () => {
+      setClearConfirmOpen(false);
+    },
     onError: (err) => {
       logger.error('Failed to clear Orchestrator designation:', err);
       const message = err instanceof Error ? err.message : 'Failed to clear Orchestrator designation.';
       setOrchestratorFlagError(message);
       setTimeout(() => setOrchestratorFlagError(null), 5000);
+      setClearConfirmOpen(false);
     },
   });
   const orchestratorFlagPending = raiseOrchestratorMutation.isPending || clearOrchestratorMutation.isPending;
@@ -208,7 +219,7 @@ function SessionItem({ sessionWithActivity, collapsed, isActive, onClick, orches
     // Must not also trigger the row's own onClick (navigate to the session).
     e.stopPropagation();
     if (isOrchestratorFlagLit) {
-      clearOrchestratorMutation.mutate();
+      setClearConfirmOpen(true);
     } else {
       raiseOrchestratorMutation.mutate();
     }
@@ -323,6 +334,18 @@ function SessionItem({ sessionWithActivity, collapsed, isActive, onClick, orches
         </div>
       </button>
       {orchestratorFlagButton}
+      {isWorktreeSession && (
+        <ConfirmDialog
+          open={clearConfirmOpen}
+          onOpenChange={setClearConfirmOpen}
+          title={`Clear Orchestrator designation for ${session.repositoryName}?`}
+          description="This repository will have no designated Orchestrator; labeled-Issue webhooks and fallback notifications will not be delivered until one is set."
+          confirmLabel="Clear"
+          variant="danger"
+          onConfirm={() => clearOrchestratorMutation.mutate()}
+          isLoading={clearOrchestratorMutation.isPending}
+        />
+      )}
     </div>
   );
 }
