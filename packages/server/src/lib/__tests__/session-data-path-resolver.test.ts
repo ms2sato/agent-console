@@ -44,6 +44,13 @@ describe('SessionDataPathResolver', () => {
     const resolver = new SessionDataPathResolver(quickBase);
     expect(resolver.getOutputsDir()).toBe(`${quickBase}/outputs`);
   });
+
+  // Memory layer (epic #1636 Phase 2, CodeRabbit MAJOR fix): `getBaseDir`
+  // is exposed only so `ensureMemoryDir` can walk from the trusted base.
+  it('exposes the constructor baseDir via getBaseDir', () => {
+    const resolver = new SessionDataPathResolver(BASE_DIR);
+    expect(resolver.getBaseDir()).toBe(BASE_DIR);
+  });
 });
 
 // Memory layer (epic #1636 Phase 2). Removing the `scope.kind === 'quick'`

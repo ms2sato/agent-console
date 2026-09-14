@@ -20,6 +20,7 @@ import {
   formatMemoryHeader,
   MEMORY_ABSENT_INDEX_LINE,
   MEMORY_LAYER_CAP_BYTES,
+  MEMORY_INDEX_READ_CAP_BYTES,
   MEMORY_LAYER_MAX_ENTRIES,
   MEMORY_DECLARATION_MAX_NAMES,
   INSTRUCTION_PER_FILE_CAP_BYTES,
@@ -1527,6 +1528,115 @@ describe('loadInstructions — memory layer (epic #1636 Phase 2)', () => {
     } finally {
       warnSpy.mockRestore();
     }
+  });
+
+  describe('bounded index read (MEMORY_INDEX_READ_CAP_BYTES)', () => {
+    // Polarity, measured: mutating the loader back to an unbounded
+    // `tryReadTextFile` read (and `indexTruncated = false`) fails the
+    // READ_CAP+1 and mid-line declaration pins and the 1 MB case -- whose
+    // drop loop then took 95 s (the quadratic cost the bound exists for,
+    // measured on this host) against its 5 s ceiling; bounded, the same
+    // case runs in well under a second. The size == READ_CAP boundary pin
+    // passes in both worlds by design (it fixes the bound's LOWER edge).
+    // ASCII-only so `.length` equals the UTF-8 byte length in this block.
+    const LINE = '- [E](e.md) - 0123456789'; // 24 bytes + newline = 25
+
+    /** Exactly `total` bytes of complete index lines ending in a newline. */
+    function indexOfExactly(total: number): string {
+      const header = '# Memory Index\n';
+      let body = header;
+      while (body.length + LINE.length + 1 <= total) body += `${LINE}\n`;
+      // Pad the last line so the total lands exactly on `total` bytes.
+      const remaining = total - body.length;
+      if (remaining > 0) body += `${'- [P](p.md) - '.padEnd(remaining - 1, 'p')}\n`;
+      return body;
+    }
+
+    it('size == READ_CAP: nothing is declared and nothing discarded (boundary)', async () => {
+      const memoryDir = await makeMemoryDir();
+      const content = indexOfExactly(MEMORY_INDEX_READ_CAP_BYTES);
+      expect(new TextEncoder().encode(content).length).toBe(MEMORY_INDEX_READ_CAP_BYTES);
+      await writeFile(join(memoryDir, 'MEMORY.md'), content);
+      const warnSpy = spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        const result = await loadWithMemory(memoryDir);
+        expect(result.memoryOmissionLine ?? '').not.toContain('truncated');
+        // The whole index survives the 16 KiB budget? No -- it is 4x over,
+        // so lines are dropped by the ordinary largest-first policy; what
+        // this pin fixes is that the READ was complete: the last line of the
+        // file (the padded `p.md` one) was seen by the drop loop.
+        expect(result.memoryOmissionLine).toBeDefined();
+        expect(result.memoryOmissionLine).toContain('memory index lines omitted for size');
+        // The padded final line is the shortest, so largest-first keeps it:
+        // its presence in the SEGMENT proves the read reached the file's end.
+        expect(result.memorySegment).toContain('p.md');
+      } finally {
+        warnSpy.mockRestore();
+      }
+    });
+
+    it('size == READ_CAP + 1 at a line boundary: declares 1 byte not read and discards nothing', async () => {
+      const memoryDir = await makeMemoryDir();
+      await writeFile(join(memoryDir, 'MEMORY.md'), `${indexOfExactly(MEMORY_INDEX_READ_CAP_BYTES)}x`);
+      const warnSpy = spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        const result = await loadWithMemory(memoryDir);
+        expect(result.memoryOmissionLine).toContain(
+          `memory index truncated for size: 1 bytes past the first ${MEMORY_INDEX_READ_CAP_BYTES} not read`,
+        );
+        expect(result.memorySegment).toContain('p.md'); // the last complete line was still read (and, being shortest, kept)
+        expect(warnSpy.mock.calls.some((call) => String(call[0]).includes('truncated for size'))).toBe(true);
+      } finally {
+        warnSpy.mockRestore();
+      }
+    });
+
+    it('cut mid-line: the partial last segment is discarded and counted with the unread remainder', async () => {
+      const memoryDir = await makeMemoryDir();
+      // A small index whose LAST line straddles the read cap: the prefix
+      // holds `- [TAIL](tail.md) — ` plus part of the hook; the rest is past
+      // the cap.
+      const head = indexOfExactly(MEMORY_INDEX_READ_CAP_BYTES - 10);
+      const straddler = `- [TAIL](tail.md) - ${'t'.repeat(40)}\n`;
+      await writeFile(join(memoryDir, 'MEMORY.md'), head + straddler);
+      const warnSpy = spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        const result = await loadWithMemory(memoryDir);
+        // 10 bytes of the straddler were read (the partial segment), the
+        // remaining straddler.length - 10 bytes were not; both are declared.
+        const expectedUnread = straddler.length - 10 + 10;
+        expect(result.memoryOmissionLine).toContain(
+          `memory index truncated for size: ${expectedUnread} bytes past the first ${MEMORY_INDEX_READ_CAP_BYTES} not read`,
+        );
+        expect(result.memorySegment).not.toContain('tail.md');
+        expect(result.memoryOmissionLine).not.toContain('tail.md');
+      } finally {
+        warnSpy.mockRestore();
+      }
+    });
+
+    it('a ~1 MB index still renders the header plus surviving lines, with the truncation declared', async () => {
+      const memoryDir = await makeMemoryDir();
+      const lines: string[] = ['# Memory Index'];
+      for (let i = 0; lines.length * 25 < 1024 * 1024; i++) lines.push(LINE);
+      await writeFile(join(memoryDir, 'MEMORY.md'), `${lines.join('\n')}\n`);
+      const warnSpy = spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        const started = Date.now();
+        const result = await loadWithMemory(memoryDir);
+        expect(Date.now() - started).toBeLessThan(5000);
+        expect(result.memorySegment).toContain(formatMemoryHeader(memoryDir));
+        expect(result.memorySegment).toContain(LINE);
+        expect(result.memoryOmissionLine).toMatch(/memory index truncated for size: \d+ bytes past the first \d+ not read/);
+        // What survived fits the KEEP budget (sum of line bytes, the cap's
+        // own accounting), not merely the READ cap.
+        const body = result.memorySegment!.slice(formatMemoryHeader(memoryDir).length + 1);
+        const lineBytes = body.split('\n').reduce((sum, l) => sum + new TextEncoder().encode(l).length, 0);
+        expect(lineBytes).toBeLessThanOrEqual(MEMORY_LAYER_CAP_BYTES);
+      } finally {
+        warnSpy.mockRestore();
+      }
+    });
   });
 
   it('counts dropped lines that lack the convention\'s link shape instead of naming them', async () => {

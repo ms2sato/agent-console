@@ -4463,15 +4463,19 @@ describe('EmbeddedAgentWorkerService — memory layer (epic #1636 Phase 2)', () 
       caught = err;
     }
 
-    expect(caught).toBeInstanceOf(EmbeddedAgentActivationError);
-    expect((caught as Error).message).toContain('memory directory verification failed');
-    expect(h.fake.captured.length).toBe(0);
-    expect(h.revokeByWorker).toHaveBeenCalledTimes(1);
-
-    // Cleanup: remove the symlink so later tests reusing 'def-1' under
-    // TEST_BASE_DIR are not affected.
-    await unlink(expectedDir);
-    await rm(bogusTarget, { recursive: true, force: true }).catch(() => {});
+    try {
+      expect(caught).toBeInstanceOf(EmbeddedAgentActivationError);
+      expect((caught as Error).message).toContain('memory directory verification failed');
+      expect(h.fake.captured.length).toBe(0);
+      expect(h.revokeByWorker).toHaveBeenCalledTimes(1);
+    } finally {
+      // Runs even when an assertion above fails: the symlink sits at
+      // `memory/def-1`, which every default-definition test in this file
+      // shares, so leaving it behind would turn one failure into a cascade
+      // of unrelated verification failures that hides its own cause.
+      await unlink(expectedDir).catch(() => {});
+      await rm(bogusTarget, { recursive: true, force: true }).catch(() => {});
+    }
   });
 
   // Reach measured: reverting to a real `ensureMemoryDirFn` (dropping this

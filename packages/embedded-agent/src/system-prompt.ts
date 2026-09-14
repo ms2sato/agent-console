@@ -103,6 +103,23 @@ export function parseMemoryLayerCapBytes(raw: string | undefined): number {
  */
 export const MEMORY_LAYER_CAP_BYTES = parseMemoryLayerCapBytes(process.env.MEMORY_LAYER_CAP_BYTES);
 
+/**
+ * Memory layer: how many bytes of `MEMORY.md` the loader READS -- distinct
+ * from {@link MEMORY_LAYER_CAP_BYTES}, which is how many it KEEPS. Two
+ * reasons for the 4x headroom: (1) the spec's overflow policy is "drop whole
+ * index lines largest-first", and choosing the largest among lines requires
+ * having read them -- an index up to 4x the budget is still trimmed by that
+ * policy in full rather than by file position; (2) it bounds the drop loop:
+ * `dropLargestUntilFits` is O(removals x survivors) with a UTF-8 encode per
+ * line per iteration, so an unbounded read of a model- or group-member-
+ * written file with many short lines is quadratic in its size (a 10 MB
+ * index of 20-byte lines is ~1e11 encode operations at every activation and
+ * compaction re-read); at 64 KiB the worst case is ~(READ_CAP / shortest
+ * line)^2 ~ 1e7, trivial. Content past this cap is never read; it is
+ * DECLARED in-band (`memory index truncated for size: ...`) and warn-logged.
+ */
+export const MEMORY_INDEX_READ_CAP_BYTES = 4 * MEMORY_LAYER_CAP_BYTES;
+
 /** @internal Exported for testing -- see {@link parseRulesLayerCapBytes}'s doc comment. */
 export function parseMemoryLayerMaxEntries(raw: string | undefined): number {
   return parseCapBytesEnv(raw, MEMORY_LAYER_MAX_ENTRIES_DEFAULT);
@@ -406,31 +423,31 @@ async function tryReadTextFile(filePath: string): Promise<ReadTextResult> {
 }
 
 /**
- * How much of a `SKILL.md` file `tryReadSkillFrontmatterPrefix` reads --
+ * How much of a `SKILL.md` file `tryReadTextPrefix` reads for the skills layer --
  * generous headroom for a `name:`/`description:` frontmatter block, well
  * under what any reasonable skill would need for just those two fields.
  */
 const SKILL_FRONTMATTER_READ_CAP_BYTES = 4 * 1024;
 
 /**
- * Bounded sibling of {@link tryReadTextFile}, used ONLY by `loadSkillsLayer`'s
- * per-file loop below. `loadSkillsLayer` never needs a skill's full body --
- * only its `name:`/`description:` frontmatter -- so reading the whole file
- * the way `tryReadTextFile` does would make activation latency and memory
- * use scale with an author-controlled `SKILL.md` size that nothing
- * downstream ever reads (unlike the rules layer, where the full rule
- * content genuinely is the payload). `Bun.file(...).slice(0, N)` maps a byte
- * range without reading the rest of the file, so this stays O(cap) instead
- * of O(file size). Same error-shape normalization as `tryReadTextFile`, so
- * callers branch identically on `ok`/`code`/`message`. If a file's closing
- * frontmatter delimiter falls beyond the cap, {@link FRONTMATTER_RE} simply
- * fails to match on the truncated prefix and `parseSkillFrontmatter`'s
- * existing missing-frontmatter fallback (directory name, empty description,
- * warn) runs -- no separate handling needed for the truncation case itself.
+ * Bounded sibling of {@link tryReadTextFile}: reads at most `capBytes` of
+ * the file. `Bun.file(...).slice(0, N)` maps a byte range without reading
+ * the rest of the file, so a read stays O(cap) instead of O(file size) --
+ * the property both callers need when the file's size is author- or
+ * model-controlled and nothing downstream reads past the cap. Same
+ * error-shape normalization as `tryReadTextFile`, so callers branch
+ * identically on `ok`/`code`/`message`.
+ *
+ * Callers: `loadSkillsLayer`'s per-file loop (only a `SKILL.md`'s
+ * `name:`/`description:` frontmatter is needed -- if the closing delimiter
+ * falls beyond the cap, {@link FRONTMATTER_RE} simply fails to match and
+ * `parseSkillFrontmatter`'s missing-frontmatter fallback runs), and
+ * `loadMemoryLayer`'s index read ({@link MEMORY_INDEX_READ_CAP_BYTES}, which
+ * detects and declares the remainder itself).
  */
-async function tryReadSkillFrontmatterPrefix(filePath: string): Promise<ReadTextResult> {
+async function tryReadTextPrefix(filePath: string, capBytes: number): Promise<ReadTextResult> {
   try {
-    const content = await Bun.file(filePath).slice(0, SKILL_FRONTMATTER_READ_CAP_BYTES).text();
+    const content = await Bun.file(filePath).slice(0, capBytes).text();
     return { ok: true, content };
   } catch (err) {
     const code = (isErrnoException(err) ? err.code : undefined) ?? 'UNKNOWN';
@@ -966,7 +983,7 @@ async function loadSkillsLayer(cwd: string): Promise<SkillsLayerResult> {
 
   const skills: SkillFile[] = [];
   for (const origin of files) {
-    const read = await tryReadSkillFrontmatterPrefix(origin);
+    const read = await tryReadTextPrefix(origin, SKILL_FRONTMATTER_READ_CAP_BYTES);
     if (!read.ok) {
       console.warn(`Skipping skill file ${origin}: ${read.message}`);
       continue;
@@ -1105,12 +1122,27 @@ interface MemoryLayerResult {
  */
 async function loadMemoryLayer(memoryDir: string): Promise<MemoryLayerResult> {
   const indexPath = path.join(memoryDir, MEMORY_INDEX_FILE_NAME);
-  const indexRead = await tryReadTextFile(indexPath);
+  // Bounded read (MEMORY_INDEX_READ_CAP_BYTES): the file is model-written,
+  // so its size is not ours to trust at activation time. `Bun.file().size`
+  // is a stat, not a read; it tells us whether anything lies past the cap.
+  const indexFile = Bun.file(indexPath);
+  const indexRead = await tryReadTextPrefix(indexPath, MEMORY_INDEX_READ_CAP_BYTES);
+  const indexSizeBytes = indexRead.ok ? indexFile.size : 0;
+  const indexTruncated = indexRead.ok && indexSizeBytes > MEMORY_INDEX_READ_CAP_BYTES;
 
   let indexLines: string[] = [];
   let indexUnreadable = false;
+  let unreadBytes = 0;
   if (indexRead.ok) {
     indexLines = indexRead.content.replace(/\r?\n$/, '').split(/\r?\n/);
+    if (indexTruncated) {
+      // The prefix may end mid-line. Unless it ends exactly at a line
+      // boundary, its last segment is a partial line: discarded rather than
+      // rendered as if complete, and its bytes are counted with the unread
+      // remainder in the declaration.
+      const partial = indexRead.content.endsWith('\n') ? '' : (indexLines.pop() ?? '');
+      unreadBytes = indexSizeBytes - MEMORY_INDEX_READ_CAP_BYTES + encoder.encode(partial).length;
+    }
   } else if (indexRead.code !== 'ENOENT') {
     // Exists but cannot be read: declared below via the listing (it is a
     // regular file the access check also fails on), and rendered as the
@@ -1153,6 +1185,11 @@ async function loadMemoryLayer(memoryDir: string): Promise<MemoryLayerResult> {
         `Dropped ${dropped.length} memory index line(s) to satisfy the ${MEMORY_LAYER_CAP_BYTES}-byte memory budget: ${memoryOmissionLine}`,
       );
     }
+  }
+  if (indexTruncated) {
+    const truncation = `memory index truncated for size: ${unreadBytes} bytes past the first ${MEMORY_INDEX_READ_CAP_BYTES} not read`;
+    memoryOmissionLine = memoryOmissionLine === undefined ? truncation : `${memoryOmissionLine}; ${truncation}`;
+    console.warn(`Memory index ${indexPath} is ${indexSizeBytes} bytes; ${truncation}`);
   }
 
   // Listing: one readdir, one access check per regular file, bounded.

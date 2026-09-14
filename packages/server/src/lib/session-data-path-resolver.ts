@@ -52,6 +52,11 @@ export class SessionDataPathResolver {
     return path.join(this.getOutputsDir(), sessionId, `${workerId}.log`);
   }
 
+  /** Exposed only so `ensureMemoryDir` can walk from the trusted base. */
+  getBaseDir(): string {
+    return this.baseDir;
+  }
+
   /**
    * Memory layer (epic #1636 Phase 2). Single writer of the memory path,
    * alongside `getOutputsDir` / `getMessagesDir` / `getMemosDir` above.
