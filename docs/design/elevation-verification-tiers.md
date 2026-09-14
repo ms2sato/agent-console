@@ -1,0 +1,264 @@
+# Elevation-Verification Tiers
+
+Study note for Issue [#1701](https://github.com/ms2sato/agent-console/issues/1701). Design only: this document specifies the tiers, the one-command post-deploy check, and the rule text; it changes no production code, no rule, and no workflow. The measurements it rests on (Task 0) were taken on a GitHub-hosted `ubuntu-latest` runner with a throwaway workflow that no longer exists; the run URLs, the image Ids and the exact flag set are recorded in [Task 0](#task-0--measured-stop-gate) so the evidence can be re-read.
+
+Why `docs/design/` and not a section of the setup guide: the tier table, the draft rule text and the cost table are cross-cutting specification (they bind `test-trigger.md`, `os-environment-coupling.md`, `docker/README.md` and two deploy scripts at once), while `docs/multi-user-setup-guide.md` is operator how-to. The guide gets a one-paragraph pointer when Issue (c) below lands; this document stays the single writer of the tier definitions.
+
+## Context
+
+Owner directive (2026-09-14): the elevation-requiring verification steps the owner keeps running by hand on the production host should be taken off the owner wherever a container can run them. The owner-run instances on the day of the directive:
+
+| # | Owner-run item (production host) | Source |
+|---|---|---|
+| O1 | Deploy-gate helper, three cases: elevated real bundle / `chmod 000` negative / root with an empty prefix | PR [#1697](https://github.com/ms2sato/agent-console/pull/1697) |
+| O2 | `check-embedded-agent-elevation.ts` as the service user WITH and WITHOUT the unit's group, against the live `MainPID` | PR [#1566](https://github.com/ms2sato/agent-console/pull/1566) |
+| O3 | `setup-multiuser-for-ubuntu.sh --dry-run` then `--force` (unit re-render after template drift) | Issue [#1688](https://github.com/ms2sato/agent-console/issues/1688) |
+| O4 | `update-and-deploy-for-multiuser-ubuntu.sh` itself | every deploy |
+| O5 | `systemctl restart` + health probe | every deploy |
+| O6 | `journalctl` greps for the boot lines (bun-path WARN, auth mode, listening) | every deploy |
+
+What already exists: `docker/docker-compose.verification.yml` + `scripts/verify-multiuser-docker.sh --smokes` runs the seven real-host smokes inside a bun-based container as the service user with the real elevation rules. Its README names two residues: (i) billable smokes (no `claude` login in-container) and (ii) **the systemd unit's own environment**. O1-O6 all fall in residue (ii): the verification image has no systemd, so nothing that reads `systemctl show`, renders a unit, or restarts one can run there.
+
+The Architect's ruling (Issue #1701, 2026-09-14) is "container first, host only for the production-state residue": close residue (ii) with a systemd-as-PID-1 container (Q1), collapse what stays owner-run to one command per deploy (Q2), and land the shape as a tier table in `os-environment-coupling.md` (Q3). The ruling required the systemd-in-a-container premise to be MEASURED, not cited. That measurement is Task 0.
+
+## Task 0 -- measured STOP gate
+
+**Every number in this section was measured on a GitHub-hosted `ubuntu-latest` runner only.** No workstation has run this stack yet; the workstation half is the owner's, see [Workstation recipe](#workstation-recipe-owner-run-not-yet-measured). Desktop Docker differs in ways that can change the least-privilege flag set (rootless mode, cgroup v1 hosts, Docker Desktop's VM), so nothing below may be read as "works on a workstation" until someone runs the recipe there.
+
+### Apparatus (deleted after the measurement)
+
+- Scratch branch `scratch/1701-task0-a` (never merged, deleted after this note was written) carried two files: `docker/Dockerfile.systemd` and `.github/workflows/scratch-1701-task0.yml`.
+- Two runs of the workflow `scratch-1701-task0`, both green end to end:
+  - Run 1: <https://github.com/ms2sato/agent-console/actions/runs/34793027820> (scratch commit `29df16a92cf9335427a9b5a63e2c2cc457434269`; ladder A -> B -> C, so it recorded only that A fails and B boots).
+  - Run 2: <https://github.com/ms2sato/agent-console/actions/runs/34793347993> (scratch commit `be836866dc09d14e5b25db2882d36dde0e7bf82c`; ladder split into A -> A+apparmor -> A+seccomp -> B -> C, with the failing rung's console and exit code captured via `docker run -t` + `docker inspect`). Run 2 is the one the ladder table below cites; every other step's numbers are given for both runs.
+- Runner facts (identical in both runs): `ubuntu-latest` = Ubuntu 24.04.5 LTS, kernel `6.17.0-1022-azure`, 4 vCPU, 15 GB RAM, Docker `28.0.4` (client and server), `cgroupdriver=systemd cgroupversion=2`, `/sys/fs/cgroup` is `cgroup2fs`, security options `apparmor`, `seccomp` (profile `builtin`), `cgroupns`; storage `overlay2`.
+- Image: built on the runner from the Dockerfile below, no registry push (so no `RepoDigests`; the Id is recorded instead, and it differs per build because apt layers carry timestamps): run 1 `sha256:05438f59b35aa5aa21b93099d83860e89c9248ef479fdfd59a17b6541268d2f3`, run 2 `sha256:3a4cd2fb10e497c6178734a59c4c05c6c8c8c3d8e5345458b19d5e91edfb2f13`; `arch=amd64`, `size_bytes=392563948` (393 MB) in both runs.
+- Trigger: `push` scoped to the scratch branch name. `workflow_dispatch` alone could not be used -- GitHub only dispatches workflows that exist on the DEFAULT branch (measured: `gh workflow run` and the REST `dispatches` endpoint both return 404 for a file that exists only on a feature branch). This is a property of GitHub, not of the stack, and it is one input to Issue (a)'s workflow design: the paths-filtered workflow must live on `main` before `workflow_dispatch` works.
+- The workflow contained no elevation literal: it drives `docker build`, `docker run`, and `docker exec --user <root|agentconsole|agentconsole:agent-console-users>` only. Every command that elevates runs inside the container, from the repository's existing scripts.
+
+`docker/Dockerfile.systemd` as measured (reproduced here because the branch is gone):
+
+- `FROM ubuntu:24.04`; `ARG BUN_VERSION=1.3.14`; `ENV container=docker`.
+- `apt-get install --no-install-recommends ubuntu-minimal systemd systemd-sysv dbus pamtester libpam-modules libpam-runtime login passwd git rsync curl unzip ca-certificates procps util-linux`.
+- bun pinned at the unified path: `curl -fsSL https://bun.sh/install | BUN_INSTALL=/usr/local bash -s "bun-v${BUN_VERSION}"` (so `/usr/local/bin/bun` exists before the setup script's step 7 asserts on it).
+- Users: `alice` (login shell `/bin/bash`, the smoke's `<target-user>`) and `deployer` (the operator; the OS account is not named `operator` because Ubuntu reserves that name as a stock system account, uid 37 -- `useradd operator` exits 9).
+- Masked units that cannot work in a container: `systemd-udevd.service` + its two sockets, `systemd-modules-load.service`, `systemd-firstboot.service`, `sys-kernel-{config,debug,tracing}.mount`, `getty.target`, `console-getty.service`.
+- `STOPSIGNAL SIGRTMIN+3`; `CMD ["/lib/systemd/systemd"]`.
+- NO application baked, NO elevation rules baked: the setup script installs both at container runtime, exactly as on a real host.
+
+**Why the base differs from `docker/Dockerfile` (one sentence, per the Orchestrator's acceptance condition):** `ubuntu:24.04` ships without the package set a real Ubuntu host has -- measured with `ls /usr/bin/su*` (only `su` and `sum`) and `dpkg -s ubuntu-minimal` ("not installed") -- and `scripts/setup-multiuser-for-ubuntu.sh` assumes a real host (its step 1 installs only `pamtester`), so the image installs the distro metapackage `ubuntu-minimal`, whose declared dependencies (`apt-cache depends ubuntu-minimal`) include `init` (-> `systemd-sysv`) and the elevation binary; this makes the container a real Ubuntu base rather than a docker-trimmed one, and no file on the scratch branch names the elevation binary.
+
+### Boot ladder -- least privilege first
+
+The ladder was climbed in this order and stopped at the first rung where `systemctl is-system-running` reached `running` or `degraded` AND `/proc/1/comm` inside the container read `systemd`:
+
+| Rung | `docker run` flags | Result |
+|---|---|---|
+| A (least privilege, the Issue's set) | `--cap-add SYS_ADMIN --cgroupns=host -v /sys/fs/cgroup:/sys/fs/cgroup:rw --tmpfs /run --tmpfs /run/lock -e container=docker` | **FAILED**, both runs. Container exited with code `255` within seconds; `docker logs` (run 2, with a tty): `systemd 255.4-1ubuntu8.17 running in system mode (... +APPARMOR ... +SECCOMP ...)` / `Detected virtualization docker.` / `Failed to fork off sandboxing environment for executing generators: Protocol error` / `[!!!!!!] Failed to start up manager.` / `Exiting PID 1...`. Run 1 (no tty) showed only "container is not running" with an empty log, which is why run 2 added `-t`. |
+| **A + apparmor** | A + `--security-opt apparmor=unconfined` | **BOOTED** (run 2): `is-system-running=running` after 2 s, `/proc/1/comm` = `systemd`, zero failed units, `/proc/1/cgroup` = `0::/system.slice/docker-<id>.scope/init.scope`. **This is the least-privilege set Issue (a) ships with.** |
+| A + seccomp | A + `--security-opt seccomp=unconfined` | not reached (the ladder stops at the first booting rung). Since A+apparmor boots with the default seccomp profile in place, seccomp is not what blocks A. |
+| B | A + `--security-opt seccomp=unconfined --security-opt apparmor=unconfined` | BOOTED (run 1, where it was the second rung): `running` after 1 s. Superseded by A+apparmor, which is strictly narrower. |
+| C | `--privileged --cgroupns=host -v /sys/fs/cgroup:/sys/fs/cgroup:rw --tmpfs /run --tmpfs /run/lock -e container=docker` | not reached in either run. `--privileged` is NOT needed on this runner. |
+
+What was measured, and only that: with the default Docker AppArmor profile in place, systemd 255 prints `Failed to fork off sandboxing environment for executing generators: Protocol error` and exits 255 before starting any unit; with `--security-opt apparmor=unconfined` added and nothing else changed (same capability set, Docker's default seccomp profile still applied), it boots to `running` in 2 s. So on this runner the AppArmor profile is the discriminator; seccomp is not (A+apparmor boots with it on), and no capability beyond `CAP_SYS_ADMIN` is needed (`--privileged` was never reached). WHY the profile refuses that particular fork is not established here and is deliberately not guessed at (`os-environment-coupling.md`: a wrong mechanism stated confidently is worse than an unexplained repro). This is a fact about `ubuntu-latest` (AppArmor enabled, Docker 28.0.4, kernel 6.17 azure); a host without AppArmor may boot on A itself, and a host with a different profile may need more -- the workstation recipe exists to measure that.
+
+### What ran inside, in order, and what it proved
+
+All steps are `docker exec` into the same booted container; the runner's checkout is bind-mounted read-only at `/src`.
+
+| Step | Identity | Command (inside the container) | Expected | Measured |
+|---|---|---|---|---|
+| S1 | root | `scripts/setup-multiuser-for-ubuntu.sh --dry-run --repo-source /src --add-user alice --add-user deployer` | exit 0, rendered rules + unit printed, no state change | exit 0; all 8 steps previewed, the rules fragment passed the syntax check (`parsed OK`), the rendered unit showed `ExecStart=/usr/local/bin/bun run start`, `Environment=EMBEDDED_AGENT_BUN_PATH=/usr/local/bin/bun`, `Environment=EMBEDDED_AGENT_ENTRY_PATH=/usr/local/lib/agent-console/embedded-agent.js`; "(dry run; no system state was modified)". 0 s. |
+| S2 | root | same with `--force` | exit 0: pamtester present, service user + shared group created, rules file installed after its syntax check, data root `2775`, app rsynced + `bun install --production`, unit rendered + `enable --now` | exit 0 in 2 s. `agentconsole` = `uid=999 gid=993(agentconsole) groups=993,42(shadow),992(agent-console-users)`; `agent-console-users:x:992:agentconsole,alice,deployer`; `/var/lib/agent-console` and `.../source-repos` = `agentconsole:agent-console-users 2775`; rules file installed `mode=440 owner=root:root`; `606 packages installed [1436.00ms]`; step 6b warned `/home/agentconsole/.bun/bin/bun not found; skipping copy` (expected: the image pins bun at the unified path, the service user has no `~/.bun`); step 7's fail-closed check passed on the preinstalled `/usr/local/bin/bun`; unit installed; `systemctl enable --now` created the `multi-user.target.wants` symlink. **Finding:** 8 s later the unit was `activating` with `Result=exit-code`, `NRestarts=1`, journal: `error: Module not found "dist/index.js"` -- setup alone installs the app without building it (`bun run start` = `bun dist/index.js`), so a fresh host crash-loops (`Restart=on-failure`, 5 s) until the first deploy. The setup guide's Quick Setup says "3. Open the URL printed at the end" right after the bootstrap; on a fresh host that URL does not answer until `update-and-deploy-for-multiuser-ubuntu.sh` has run once. Not a Task 0 failure (the AC asks for `--force` to complete, which it did) but a documentation / script-ordering gap to file. |
+| S3 | agentconsole | `cp -a /src /var/lib/agent-console/source-repos/agent-console` (the source-repo the deploy script builds from) | owned by the service user | `agentconsole:agent-console-users 755`, HEAD = the scratch commit. 0-1 s. (A `cp -a` rather than `git clone` because the runner checkout at `/src` is owned by the runner uid and git refuses "dubious ownership" of a foreign-owned source; the copy is owned by the service user, which is exactly what the deploy script requires.) |
+| S4 | root | `scripts/update-and-deploy-for-multiuser-ubuntu.sh` (**deploy as root**, see below) | exit 0: `bun install`, build, rsync, `.deploy-sha`, entry-path copy, `--production` install, #1690 readability gate, `systemctl restart`, health probe | exit 0 in 25 s (run 1) / 35 s (run 2). `1148 packages installed [778.00ms]` (the service user's bun cache was warm from S2); shared + client (`built in 3.38s`) + server builds; rsync; `.deploy-sha` written; entry + map copied to `/usr/local/lib/agent-console/` (`root:root 755` dir, `644` file); `--production` install at the target; the #1690 gate ran as root with an empty prefix (`READABLE` for both files, no output); `systemctl restart` -> `Active: active (running)`, `Main PID: 583 (bun)`, CGroup tree `583 /usr/local/bin/bun run start` -> `585 bun dist/index.js`; `http://localhost:8080/api/auth/me OK`; `==> Done.` |
+| S5 | root | `systemctl is-active` / `show -p MainPID -p User -p Group -p ExecStart` / `readlink /proc/<MainPID>/exe` / `curl /api/config` | `active`, MainPID > 0, exe = `/usr/local/bin/bun`, `authMode: multi-user` | `active`; `MainPID=583`, `User=agentconsole`, `Group=agent-console-users`, `ExecStart={ path=/usr/local/bin/bun ; argv[]=/usr/local/bin/bun run start ... }`; `Environment=` carries `EMBEDDED_AGENT_BUN_PATH=/usr/local/bin/bun` and `EMBEDDED_AGENT_ENTRY_PATH=...`; `/proc/583/status`: `Uid: 999`, `Gid: 992`, `Groups: 42 992`; `/api/config` -> `"authMode":"multi-user"`, `"deployedSha":"29df16a9..."`; `/api/auth/me` -> HTTP 200. Journal digest: `User mode initialized` with `authMode: multi-user`, `ptyProvider: bun-terminal`; `Server starting` with `env: production`; the `AUTH_COOKIE_SECURE=false` warning (level 40); `AGENT_CONSOLE_PUBLIC_ORIGIN is not set` (info); `Server listening` on 8080; **no `EMBEDDED_AGENT_BUN_PATH` warning** -- the unit's bun and the embedded agent's bun are the same file, as #1222 intends. |
+| S6 | `agentconsole:agent-console-users` | `EMBEDDED_AGENT_BUN_PATH=/usr/local/bin/bun bun scripts/smoke/check-embedded-agent-elevation.ts alice` | exit 0; Assertion 2 `OK live agent-console.service process executes the configured EMBEDDED_AGENT_BUN_PATH` | **exit 0, `PASSED: 11 assertion(s) passed`, 1-2 s.** `id` = `uid=999(agentconsole) gid=992(agent-console-users)`. Lines: `resolved source: package`; `configured (/usr/local/bin/bun): 1.3.14`; `live server exe (pid 583): /proc/583/exe`; **`OK live agent-console.service process executes the configured EMBEDDED_AGENT_BUN_PATH (Issue #1222 ...)`**; freshness check `skipped: could not spawn the service-user bun binary` (no `~/.bun` for the service user in this image -- see the limitations list); `OK /usr/local/bin/bun is reachable and executable by other users`; `spawnAsUser target username: alice (elevated: true)`; `OK reached ready (init handshake incl. real MCP call under AGENT_CONSOLE_MCP_AUTH=enforce)`; both `/proc` negative secret checks ran and passed. This is O2's "with the group" run, and the AC's "Assertion 2 reads `same`". |
+| S7 | `agentconsole` (primary gid = `agentconsole`, not the unit's `Group=`) | same command | exit 2; stderr names `User=` AND `Group=`; NO `FAIL ... identity=` line (polarity of the exit-2 classification, PR #1566 R2) | **exit 2, polarity confirmed, 1 s.** `id` = `uid=999(agentconsole) gid=993(agentconsole) groups=993,42(shadow),992(agent-console-users)` -- the same uid, the shared group only supplementary, exactly the runner-fact #1688 measured on the dogfood host. stderr: `Could not resolve the LIVE server process's own executable '/proc/583/exe' (pid 583) -- this is a permission gap, not a proof that the binaries differ. Re-run this smoke AS the agent-console.service unit's own identity -- matching BOTH the unit's configured User= and Group= (or root) -- then retry.` The workflow grepped for that sentence and for the absence of any `FAIL` line, and printed `POLARITY OK`. This is O2's "without the group" run. |
+| S8 | `agentconsole:agent-console-users` | S6 + `EMBEDDED_AGENT_ENTRY_PATH=/usr/local/lib/agent-console/embedded-agent.js` | exit 0; the #1668 cross-user cmdline + `ready` pair against the unified entry path | **exit 0, `PASSED: 13 assertion(s) passed`, 1 s.** Adds `OK EMBEDDED_AGENT_ENTRY_PATH short-circuit /proc/<pid>/cmdline check actually ran` and `OK the real elevated subprocess was spawned with the configured EMBEDDED_AGENT_ENTRY_PATH as its argv (short-circuit reached the actual spawn)`, paired with `ready` in the same activation as `alice` -- the cross-user proof #1668's unified path exists for, which the tier-2 container cannot give (no unit, no deploy). |
+
+Three limitations of this apparatus, so nobody reads more into the table than it holds:
+
+- **Step 6b of the setup script (copy the service user's own `~/.bun/bin/bun` to the unified path) was not exercised** -- the image pins bun at `/usr/local/bin/bun` and the service user has no `~/.bun`, so 6b warned and skipped, step 7's fail-closed check passed on the preinstalled binary, and the smoke's freshness check (service-user bun vs unified bun) was `skipped`. On a real host the service user installs bun into its own home first. Issue (a) should decide whether the image mirrors that (install bun as the service user during the driver's first step, so 6b's copy and the freshness check both run) or keeps the pinned unified binary and documents 6b as a tier-4-only path.
+- **The deploy script ran as root**, see the paragraph below.
+- **Nothing here touched a real second host's quirks** (a real `/etc/pam.d`, a real `/etc/skel`, a real 1Password socket). Tier 3 verifies the scripts' behaviour against a real systemd and real elevation; it does not replace the tier-4 residue.
+
+**Deploy as root, not as the operator -- explicitly NOT measured in Task 0.** The deploy script's real contract is "run as the operator's own login user; every privileged step elevates itself" (#1690). Measuring that contract needs a passwordless elevation rule for the operator account inside the image. That rule is a new file that must carry the elevation literal, and per the delegate-sandbox discipline it is the owner's line to write, not a delegate's -- so Task 0 ran the deploy script as root (its documented "supported, if unusual" invocation, where `ELEVATE=""`). The timing labelled "deploy as root" below therefore measures the script's dominant cost (`bun install` + `bun run build`) but not its self-elevation shape. **Ruling (Architect, PR #1703 review):** the rule is
+
+```
+deployer ALL=(ALL:ALL) NOPASSWD: ALL
+```
+
+in a SECOND rules file under `docker/` (sibling of the existing service-user rules file), installed by `Dockerfile.systemd` the way `docker/Dockerfile` installs the existing one (copy into the elevation rules drop-in directory, mode `0440`, syntax-checked). Reason: on a real host the operator IS an admin account; tier 3 verifies the deploy script's self-elevation contract under that reality; a command-enumerated least-privilege rule is a policy this product does not ship and would drift on every new elevated step. The file stays the owner's line to write, because its install path carries the elevation literal; a delegate who finds it missing stops and reports (Issue (a) AC item 3 makes the driver exit 2 naming this line). Task 0 did not need it.
+
+### Cost table (measured on the runner only)
+
+| Item | Measured | Notes |
+|---|---|---|
+| Runner | `ubuntu-latest` (Ubuntu 24.04.5, kernel 6.17.0-1022-azure, 4 vCPU, 15 GB, Docker 28.0.4, cgroup v2, AppArmor + seccomp on) | both runs |
+| Image size | **393 MB** (`size_bytes=392563948`); layers: base 110 MB, apt 298 MB, bun 92 MB (per `docker image history`, uncompressed) | vs. roughly 2 GB for `docker/Dockerfile` with `/workspace` baked, 0.9 GB before `--smokes` existed. The Issue estimated "+200-300 MB over the current one"; measured, the systemd image is about 1.6 GB SMALLER than the current verification image, because it bakes no application -- the app is installed at runtime into the container's writable layer (`du -sh` at teardown, run 2: 832 MB at `/home/agentconsole/agent-console`, 248 MB at `/var/lib/agent-console` -- so the disk footprint of one run is comparable to the current image's, it just is not paid at build time or shipped as layers). |
+| `docker build` | 26 s (run 1) / 39 s (run 2) | no layer cache on a fresh runner; dominated by apt |
+| systemd boot to `is-system-running` | 1-2 s (A+apparmor, run 2; B, run 1) | the Issue estimated 2-5 s |
+| setup `--dry-run` | 0 s (sub-second) | |
+| setup `--force` | 2 s | includes rsync of the checkout and `bun install --production` (606 packages, 1.4 s on the runner's network) |
+| deploy as root | 25 s (run 1) / 35 s (run 2) | `bun install` (1148 packages, 0.8 s, warm cache) + `bun run build` (client 3.4 s) + rsync + restart + 2 s sleep. The Issue estimated 3-5 min for this step; on the runner it is under a minute. |
+| smoke S6 | 1-2 s | |
+| smoke S7 (exit 2) | 1 s | |
+| smoke S8 | 1 s | |
+| container stop (`SIGRTMIN+3`) | 0-3 s | |
+| **whole job** | **2 min 18 s** (run 1) / **2 min 11 s** (run 2), checkout to teardown, of which the failed rung A cost 31-61 s of boot-wait timeout that Issue (a)'s driver will not pay | the Issue's estimate was 6-10 min. A paths-filtered workflow at this cost can afford to run on every matching PR, not only on `main`. |
+
+## The tiers
+
+| Tier | Where | Privilege needed | What runs there |
+|---|---|---|---|
+| 1 | unit / memfs, CI on every PR | none | pure logic with injectable io: `assessEmbeddedAgentBunPath` / `compareBinaryIdentity`, `ensureMemoryDir`, the `scripts/lib/setup-multiuser-checks.sh` helpers via fixtures (`setup-multiuser-checks.test.mjs`, `update-and-deploy-for-multiuser-ubuntu.test.mjs`) |
+| 2 | verification container, no systemd (`docker/Dockerfile` + `docker-compose.verification.yml`, existing) | `docker` group only | the seven real-host smokes, PTY / elevation isolation, uploads, worktrees, shared sessions (`verify-multiuser-docker.sh --smokes`) |
+| 3 | systemd stack: systemd as PID 1 in a container, **ephemeral CI runner or a personal workstation ONLY** | container privilege (the rung measured above), never granted on the dogfood host | setup script (`--dry-run`, `--force`), deploy script, unit render + drift detection (#1688), elevation-rules install, MainPID identity, wrong-gid / right-gid classification |
+| 4 | production host, owner-run, once per deploy | the owner's own elevation | the deploy command with its built-in post-deploy verification (Q2); billable smokes |
+
+### Today's owner-run items, each assigned
+
+| Item | Tier after this design | Why |
+|---|---|---|
+| O1 deploy-gate helper, three cases | 3 (all three), plus 1 for the fixture-faked seam | the helper's behaviour against a real `runuser` and a real unprivileged `nobody` is code behaviour; the container has both. Task 0 exercised the root / empty-prefix case (S4 ran the deploy script as root, so its two gate calls ran with `ELEVATE=""` and passed). The elevated real-bundle case needs the operator's rule line (Issue (a)); the `chmod 000` negative is the same helper with a different input and runs in the same stack once that line exists. |
+| O2 smoke with / without the unit's group | 3 | measured directly: S6 and S7. |
+| O3 setup `--dry-run` / `--force` | 3 for the script's behaviour; 4 only when the deploy command's drift detection (Q2 / #1688) says THE host's unit must be re-rendered | measured: S1, S2. |
+| O4 deploy script | 3 for its code behaviour (as the operator once the owner's rule line exists; as root today); 4 for the deploy of THE unit | measured as root: S4. |
+| O5 `systemctl restart` + health | 3 (behaviour); 4 (this host, folded into the one command) | measured: S4 tail, S5. |
+| O6 `journalctl` greps | 3 for "the lines exist"; 4 folded into the one command's journal digest | measured: S5 digest. |
+
+### The rule: never on the dogfood host
+
+A container that boots systemd as PID 1 needs either `--privileged` or `CAP_SYS_ADMIN` plus a read-write bind of the host's cgroup tree in the host cgroup namespace. Either grant makes the container root-equivalent on its host: `CAP_SYS_ADMIN` in the host cgroup namespace with a writable host cgroup tree is the capability class that container-escape techniques are built on (the specific technique is not the point; the grant is), and `--privileged` removes every remaining wall. The measured set adds `apparmor=unconfined` on top, which removes the one wall that was still standing. Anyone who can start such a container -- in practice anyone in the `docker` group -- has root on the machine the container runs on. The dogfood host is where the production unit, the owner's real accounts, and every delegate's worktree live; it must never be the host that lends that privilege. **Tier 3 therefore runs on ephemeral GitHub runners (discarded after the job) and on a personal workstation whose only user is its owner. Tier 2 may stay on the dogfood host because it needs the `docker` group only and no privilege flag.** A delegate on the dogfood host drives tier 3 by pushing a branch, never by `docker run`; this study obeyed that rule -- the local `docker build` for Dockerfile syntax was the only Docker action taken here, and no container of this image was ever started on the host.
+
+## Q2 -- what stays owner-run, and the one command
+
+Genuinely production-host state (a property of THE unit on THE host, not of the code) is:
+
+1. the deploy of the unit itself (rsync into the service home, `systemctl restart`);
+2. post-deploy health of that unit;
+3. the `MainPID` identity of that unit's process and the readability of that host's `/usr/local/lib/agent-console/` by an unprivileged user;
+4. the billable smokes (no `claude` login anywhere but the dogfood host) -- **permanent residue**, see [Q13](#q13-self-pass--what-task-0-proved-and-what-this-note-only-argues).
+
+Everything else the owner ran by hand is code behaviour and moves to tier 3. Items 1-3 collapse into one invocation: `scripts/update-and-deploy-for-multiuser-ubuntu.sh` (already the operator's one command) grows a post-deploy verification block in place of today's step 10, run in the same invocation, as the same operator user, printed as one PASS / FAIL screen. The setup script is run only when that block's drift detection says the unit must be re-rendered.
+
+### Post-deploy verification -- checks enumerated
+
+Convention (from `os-environment-coupling.md` Discipline 1 and every smoke): exit `0` = all checks passed; `1` = a check ran and the system is wrong; `2` = a check could not run (a mechanism failure, never reported as a system failure). The block runs every check, prints one line per check, and exits with the worst code observed.
+
+| Check | Reads | PASS | FAIL (1) | CANNOT RUN (2) |
+|---|---|---|---|---|
+| V1 unit drift (#1688) | `^Environment=KEY=` keys in `scripts/agent-console-multiuser.service.template` vs `systemctl show -p Environment --value <unit>` (drop-ins included); `ExecStart` vs the template's unified bun | every template key present; `ExecStart` = `/usr/local/bin/bun` | a template key missing -> FAIL naming the key and both remedies (`setup --dry-run` then `--force`; or a `.service.d/` drop-in). `ExecStart` differing is a WARN in this version, promoted to FAIL by V3 | `systemctl show` unavailable |
+| V2 entry path (#1668, #1690) | `assert_readable_by_unprivileged_user` on `embedded-agent.js` and `.map`, elevated for that one `runuser -u nobody` call | `READABLE` marker | `UNREADABLE` marker | no marker (elevation or `runuser` refused) -- the existing distinction |
+| V3 MainPID identity (#1222, #1291) | `systemctl show -p MainPID -p User -p Group`; then, as the unit's `User` AND `Group` (elevated for that one call the #1690 way: `(elevation prefix) runuser -u <User> -g <Group> -- /usr/local/bin/bun <identity entry> <MainPID> <configured>`), `compareBinaryIdentity('/proc/<MainPID>/exe', <EMBEDDED_AGENT_BUN_PATH from the unit's Environment>)`, printed as a stdout marker `SAME` / `DIFFERENT` / `UNRESOLVABLE:<self|configured>` | `SAME` | `DIFFERENT` (the unit runs a binary other than the one the embedded agent will spawn -- the #1688 failure shape) | `UNRESOLVABLE:self` even under the right uid+gid, `MainPID` = 0, or no marker. The identity entry is a ten-line `scripts/lib/` bun script that imports the production `compareBinaryIdentity` (single writer; the smoke's Assertion 2 stays the tier-3 instrument for the same function) |
+| V4 unit active | `systemctl is-active <unit>` after the restart | `active` | anything else, with `systemctl status` and the last 20 journal lines attached | -- |
+| V5 health | `GET /api/config` (no auth) | HTTP 200 and `"authMode":"multi-user"` | any other status or a different `authMode` | `curl` missing |
+| V6 journal digest | `journalctl -u <unit> --since <restart timestamp> -o cat` | the three lines the code emits on purpose are present: `Server starting` (with `env: production`), `User mode initialized` (with `authMode: multi-user`), `Server listening`; NO `EMBEDDED_AGENT_BUN_PATH` warning from `assessEmbeddedAgentBunPath`; the `AUTH_COOKIE_SECURE=false` warning is printed as INFO (an operator choice, not a fault) | a bun-path warning present (the unit was re-rendered but the binary the unit runs still differs from the one the embedded agent will spawn), or a required line absent | `journalctl` unavailable |
+
+Two boundaries of this spec, stated so the implementer does not widen it:
+
+- **The deploy script never renders the unit** (#1688: the setup script is the unit's single writer). V1 detects and names; the operator runs `setup --dry-run` then `--force`, then the deploy command again.
+- **No new boot line is added to the server for this**: the observables V6 reads exist in `packages/server/src/index.ts` (`Server starting`, `Server listening`, the `assessEmbeddedAgentBunPath` warnings) and `packages/server/src/app-context.ts` (`User mode initialized`) today; there is deliberately no boot line for `EMBEDDED_AGENT_ENTRY_PATH`, which is why V2 reads the file and V1 reads the unit's `Environment` instead of the journal.
+
+## Draft rule text for `os-environment-coupling.md`
+
+To be landed by its own PR (Issue (c)), as a new top-level section after Discipline 3, titled **Discipline 4: Verification tiers for elevation-coupled code**. Draft:
+
+> ## Discipline 4: Verification tiers for elevation-coupled code
+>
+> Code that runs, renders, installs, or reads the multi-user systemd unit, the elevation rules, or the deploy scripts is verified at one of four tiers. Put each check at the LOWEST tier that can observe it; a check placed higher than it needs to be is an owner-run ritual waiting to happen.
+>
+> | Tier | Where | What belongs there |
+> |---|---|---|
+> | 1 | unit / memfs, every PR's CI | pure logic with injectable io (`assessEmbeddedAgentBunPath`, `ensureMemoryDir`, the `scripts/lib/setup-multiuser-checks.sh` helpers via fixtures) |
+> | 2 | the verification container, no systemd (`scripts/verify-multiuser-docker.sh --smokes`) | the seven real-host smokes, PTY / elevation isolation, uploads, worktrees, shared sessions |
+> | 3 | the systemd stack, systemd as PID 1 in a privileged container (`scripts/verify-multiuser-systemd.sh`), **ephemeral runner or personal workstation ONLY** | the setup script, the deploy script, unit render + drift detection, elevation-rules install, `MainPID` identity, wrong-gid / right-gid classification |
+> | 4 | the production host, owner-run, once per deploy | the deploy command with its built-in post-deploy verification; billable smokes |
+>
+> **Tier 3 never runs on the dogfood host.** Booting systemd as PID 1 needs `--privileged` or `CAP_SYS_ADMIN` with a writable host cgroup tree; either is root-equivalent on the host, and the dogfood host carries the production unit and every real account. A delegate drives tier 3 by pushing a branch that the paths-filtered workflow picks up, never by `docker run` on the host. Tier 2 may run on the dogfood host (it needs the `docker` group only).
+>
+> **What tier 4 keeps is a property of THE host, not of the code**: the deploy of the unit, its health, its `MainPID` identity, the readability of that host's `/usr/local/lib`, and the billable smokes. When a new owner-run check appears, ask which of those it is; if it is none of them, it belongs at tier 3 or lower and its appearance at tier 4 is a gap to file.
+>
+> **The elevation literal is handled by the exec shape, not by an allowlist and not by obfuscation.** A tier-3 driver reaches root, the service user, and the operator through `docker compose exec --user <root|operator|service-user>`; the only files that carry the literal are the ones that already do (the elevation-rules file under `docker/`, the setup and deploy scripts). A delegate who needs a new one stops and reports it as the owner's line to write.
+>
+> Cross-references: `docs/design/elevation-verification-tiers.md` (the study that measured the tier-3 premise; single writer of the tier definitions), `test-trigger.md`'s per-smoke sections (each names its tier), `docker/README.md`'s residue paragraph (names the tiers instead of listing residue).
+
+## Q13 self-pass -- what Task 0 PROVED, and what this note only ARGUES
+
+**Proved with a real systemd, on a GitHub ubuntu runner (measured, two runs, URLs above):** (1) systemd 255 boots as PID 1 in a `ubuntu:24.04`-based container with `CAP_SYS_ADMIN` + host cgroupns + a writable cgroup tree + tmpfs `/run`,`/run/lock` + `apparmor=unconfined`, and does NOT boot without the AppArmor opt-out (exact error text recorded). (2) `setup-multiuser-for-ubuntu.sh --dry-run` and `--force` complete on that systemd, from the repository's own script with its own rules template, and the unit it renders is enabled and started. (3) `update-and-deploy-for-multiuser-ubuntu.sh` completes (as root), including the #1690 readability gate and the restart, and the unit is `active` afterwards. (4) `systemctl show -p MainPID` resolves a live pid whose `/proc/<pid>/exe` is the unified bun. (5) `check-embedded-agent-elevation.ts`'s Assertion 2 reads `same` when run as the unit's `User=` AND `Group=`, and the same smoke exits `2` naming both when run with the wrong primary gid -- the polarity of PR #1566's R2 classification, previously demonstrated only by the owner on the dogfood host. (6) The #1668 unified entry path is composed into a real elevated spawn as a second OS user and reaches `ready` (S8). (7) All of that costs ~2 minutes and 393 MB on a runner.
+
+**Only argued, not measured:**
+
+- That the same flag set boots on a workstation (rootless Docker, Docker Desktop's VM, and cgroup-v1 hosts are all different kernels or different daemons from the runner's). The workstation recipe below is a copy-paste block with expected output; it becomes a measured item of Issue (a), and workstation support is not claimed until someone runs it.
+- That the deploy script's operator-identity contract (per-step self-elevation, the #1690 gate elevating itself) holds inside the stack: Task 0 ran the script as root because the operator's rule is the owner's line to write.
+- That the #1688 drift arm (edit an `Environment=` key in the live unit, expect the deploy command to refuse, expect `setup --force` to re-render) behaves as specified: #1688 is not implemented yet, so there was nothing to measure; it lands as the drift arm of Issue (b), which absorbs #1688.
+- That the post-deploy verification block's V1-V6 have the exit codes specified: they are a spec here, and Issue (b) implements and measures them, at tier 3 first.
+- The cost estimates for Issue (a)'s paths-filtered workflow beyond this one run: one measurement on one runner is a point, not a distribution.
+
+**Permanent residue, named:** the billable smokes (`scripts/smoke/check-embedded-agent-idle-eviction*.ts`, `check-fatal-incarnation-replacement.ts`, `check-restart-all-embedded.ts`, `check-instruction-loader-parity-e2e.ts`, `check-embedded-agent-image-attachments.ts`, `check-restore-boundary-usage-seed.ts`, and the `probe-sdk-*` family) need a real, authenticated `claude` CLI or a provider key for the invoking OS user. No container in this design carries either, by decision, not by omission -- so they stay at tier 4 for as long as that decision stands. This is the residue every tier table in this note carries in its last row.
+
+## Workstation recipe (owner-run, not yet measured)
+
+One command block, run from a checkout of a branch that carries `docker/Dockerfile.systemd` (Issue (a) lands it on `main`; until then, recreate the file from the "as measured" bullet list above). Expected output follows each command. Nothing here needs an elevation literal on the host side; everything that elevates runs inside the container from the repository's own scripts.
+
+```bash
+# 0. Facts to paste back with the result.
+uname -r; docker version --format 'server={{.Server.Version}}'; docker info --format 'cgroup={{.CgroupVersion}} rootless={{.SecurityOptions}}'
+# expected: cgroup=2 -- on cgroup=1 the flag set below is expected to differ; report it.
+
+# 1. Build (no app baked; ~1-2 min on a warm apt mirror).
+docker build -f docker/Dockerfile.systemd -t ac-systemd-task0 docker/
+docker image inspect ac-systemd-task0 --format 'size={{.Size}} id={{.Id}}'
+
+# 2. Boot with the least-privilege set measured on the runner (A + apparmor opt-out).
+#    Try it first WITHOUT `--security-opt apparmor=unconfined`: a host with no AppArmor
+#    may boot on the bare set, which is a smaller privilege grant. If a rung fails,
+#    paste `docker logs ac-sysd` (the -t is what makes systemd's console land there)
+#    and `docker inspect ac-sysd --format '{{.State.ExitCode}}'`, then try the next rung
+#    from the ladder table above.
+docker run -d -t --name ac-sysd --cap-add SYS_ADMIN --cgroupns=host \
+  -v /sys/fs/cgroup:/sys/fs/cgroup:rw --tmpfs /run --tmpfs /run/lock \
+  -e container=docker --security-opt apparmor=unconfined \
+  -v "$PWD:/src:ro" ac-systemd-task0
+for i in $(seq 1 60); do s=$(docker exec ac-sysd systemctl is-system-running 2>/dev/null); case "$s" in running|degraded) break;; esac; sleep 1; done
+echo "is-system-running=$s pid1=$(docker exec ac-sysd cat /proc/1/comm)"
+# expected: is-system-running=running (or degraded) pid1=systemd
+
+# 3. Setup, then a source-repo copy, then deploy as root.
+docker exec -u root -w /src ac-sysd bash scripts/setup-multiuser-for-ubuntu.sh --dry-run --repo-source /src --add-user alice --add-user deployer
+docker exec -u root -w /src ac-sysd bash scripts/setup-multiuser-for-ubuntu.sh --force   --repo-source /src --add-user alice --add-user deployer
+docker exec -u agentconsole ac-sysd sh -c 'cp -a /src /var/lib/agent-console/source-repos/agent-console'
+docker exec -u root -w /var/lib/agent-console/source-repos/agent-console ac-sysd bash scripts/update-and-deploy-for-multiuser-ubuntu.sh
+# expected: the deploy script ends with "http://localhost:8080/api/auth/me OK" and "==> Done."
+
+# 4. MainPID resolves and the unit runs the unified bun.
+docker exec ac-sysd sh -c 'systemctl is-active agent-console; systemctl show -p MainPID -p User -p Group --value agent-console; readlink -f /proc/$(systemctl show -p MainPID --value agent-console)/exe'
+# expected: active / <pid> / agentconsole / agent-console-users / /usr/local/bin/bun
+
+# 5. The smoke, right identity (User+Group) -> exit 0 with Assertion 2 OK.
+docker exec -u agentconsole:agent-console-users -w /var/lib/agent-console/source-repos/agent-console \
+  -e EMBEDDED_AGENT_BUN_PATH=/usr/local/bin/bun ac-sysd bun scripts/smoke/check-embedded-agent-elevation.ts alice; echo "exit=$?"
+# expected: "OK    live agent-console.service process executes the configured EMBEDDED_AGENT_BUN_PATH ..." and exit=0
+
+# 6. The smoke, wrong gid (User only) -> exit 2 naming User= and Group=, no FAIL line.
+docker exec -u agentconsole -w /var/lib/agent-console/source-repos/agent-console \
+  -e EMBEDDED_AGENT_BUN_PATH=/usr/local/bin/bun ac-sysd bun scripts/smoke/check-embedded-agent-elevation.ts alice; echo "exit=$?"
+# expected: "Could not resolve the LIVE server process's own executable ... matching BOTH the unit's configured User= and Group= (or root)" and exit=2
+
+# 7. Tear down.
+docker stop -t 20 ac-sysd && docker rm ac-sysd
+```
+
+Paste back: step 0's facts, which rung booted (and the console text of any rung that did not), the `exit=` of steps 5 and 6, and the wall-clock of steps 1 and 3.
+
+## Implementation Issues to file next
+
+Each with a one-line scope; filed by the Orchestrator after the Architect's review of this note, not by the study.
+
+- **(a) Tier-3 stack:** `docker/Dockerfile.systemd` (as measured above, with the owner's one-line operator rule added) + `scripts/verify-multiuser-systemd.sh` (the driver: setup `--dry-run` / `--force` as root, deploy as the operator, `is-active` + health, the elevation smoke as the service user with the unit's group; NO drift arm here, see the addendum) + a paths-filtered workflow (`scripts/setup-*`, `scripts/update-and-deploy-*`, `scripts/lib/**`, the unit template, the rules template, `docker/**`, `scripts/smoke/check-embedded-agent-elevation.ts`) plus `workflow_dispatch`. Own measured items: the workstation recipe above, run once and its rung recorded; and the runner's least-privilege rung re-confirmed on the landed workflow. Landing wrinkle (measured in Task 0): `workflow_dispatch` only works for a workflow present on the default branch, so the first landing PR needs either a `push` trigger on its own branch (as the scratch workflow used) or a manual run right after merge to prove the workflow itself; the paths filter covers later PRs. The #1688 drift arm (edit a template `Environment=` key in the live unit, expect the deploy command's refusal, `setup --force`, expect the re-render) is NOT part of (a): it lands with (b), which absorbs #1688 -- a driver arm cannot exercise a detection that does not exist yet.
+
+  **AC addendum for Issue (a) (Architect, PR #1703 review), so the Issue can be filed from this note:** (1) the driver refuses to run unless `CI=true` or `AC_TIER3_HOST_OK=1` is set, with a refusal message citing Discipline 4 -- the never-on-the-dogfood-host rule becomes mechanical, not a sentence; (2) it asserts the A+apparmor rung boots and records `docker info`'s security options and cgroup version in the job log (the "runner-only" label on every number stays until the workstation recipe has been run); (3) the deploy script runs as `deployer`; if the operator's rules file is absent the driver exits 2 naming the owner's line (the ruling above); (4) the three #1690 helper cases run explicitly in the stack -- elevated against the real bundle -> `READABLE`; a `chmod 000` copy -> `UNREADABLE`, exit 1; root with an empty prefix -> pass; (5) a smoke exit 2 fails the job, never skips (the `verify-multiuser-docker.sh --smokes` convention); (6) workflow triggers: `push` on the landing branch for the PR's own proof, the paths filter, and `workflow_dispatch`; (7) NO drift arm yet -- it lands with (b), which absorbs #1688; (8) the owner's workstation recipe run is a checklist item that does not gate merge. Estimated 4 files plus the owner's rules file.
+- **(b) One-command post-deploy verification:** `update-and-deploy-for-multiuser-ubuntu.sh` step 10 replaced by the V1-V6 block above (exit 0/1/2), the `compareBinaryIdentity` identity entry under `scripts/lib/`, fixture-driven tests at tier 1 for every marker branch, and the block measured at tier 3 before the owner runs it once at tier 4. The setup script is then run only on V1's say-so. Absorbs #1688: the drift arm of the tier-3 driver lands here, not in (a).
+- **(c) Rule landing + pointers:** Discipline 4 text above into `os-environment-coupling.md`; `docker/README.md`'s residue paragraph rewritten to name the tiers; each `test-trigger.md` smoke section gains its tier in one clause; `docs/multi-user-setup-guide.md`'s Post-deploy Verification section points at the one command. Docs-only.
+- **(d) Fresh-host first-boot gap (ruled, see above):** the setup script's step 6 installs the application (`bun install --production`) without building it, so on a fresh host the unit step 8 enables crash-loops until `update-and-deploy-for-multiuser-ubuntu.sh` has run once. Measured at tier 3 (S2, both runs), 8 s after `enable --now`: `systemctl is-active` = `activating`, `Result=exit-code`, `NRestarts=1` and climbing every 5 s (`RestartSec=5`), journal: `bun[343]: $ NODE_ENV=production bun dist/index.js` / `bun[345]: error: Module not found "dist/index.js"` / `bun[343]: error: script "start" exited with code 1` / `systemd[1]: agent-console.service: Main process exited, code=exited, status=1/FAILURE` / `agent-console.service: Failed with result 'exit-code'` / `Scheduled restart job, restart counter is at 1`. The guide anchor: `docs/multi-user-setup-guide.md` "Quick Setup with the Bootstrap Script (Linux)", step "3. Open the URL printed at the end" -- on a fresh host that URL does not answer; the setup script's own closing "Verification commands" (`curl -fsS http://localhost:<port>/api/config`) fails the same way. **Ruling (Architect, PR #1703 review): option (ii) plus one structural guard.** The setup script must NOT grow a build (it would duplicate the deploy script's steps 1-2 and make `--force` heavy). The actual defect is `enable --now` of a unit whose `dist/index.js` does not exist, which manufactures a crash loop under `Restart=on-failure` every 5 s. So: step 8 runs `enable --now` only when `<install>/dist/index.js` exists; otherwise it runs `enable` alone and prints "built artifact absent -- run scripts/update-and-deploy-for-multiuser-ubuntu.sh once to build and start the unit". The guide's Quick Setup step 3 and the script's closing "Verification commands" say the same. Tier-1 pin: the setup script's static / fixture tests cover both branches; tier 3 reproduces the pre-fix crash loop (S2) as the polarity. Existing provisioned hosts are unaffected (their `dist/index.js` exists). No owner action is needed to reproduce the defect: the tier-3 stack reproduces it in under a minute.

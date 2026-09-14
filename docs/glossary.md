@@ -646,6 +646,13 @@ A per-worker incarnation identifier: the creation timestamp (milliseconds) minte
 
 The `request-history-range` / `history-range` worker-WebSocket message pair for paging older history upward. A request names a `beforeOffset` (fetch bytes strictly before this Absolute Stream Offset), an optional `maxBytes` hint, and a `requestId` echoed back for correlation. The server answers with one storage unit's worth of bytes (a single Archive Segment or the live window — never stitched across a boundary), a `hasMore` flag (`startOffset > firstAvailableOffset`), and the Worker Epoch captured under the per-worker lock. Defined in [terminal-history-paging.md](design/terminal-history-paging.md) §5.
 
+## Verification
+
+### Verification Tier
+**Design (Issue [#1701](https://github.com/ms2sato/agent-console/issues/1701) study; the tier table lands in `os-environment-coupling.md` by its own PR).** One of four places an elevation-coupled check (anything that reads, renders, installs, or restarts the multi-user systemd unit, the elevation rules, or the deploy scripts) is run, chosen as the LOWEST tier that can observe it: **Tier 1** = unit / memfs on every PR's CI (pure logic with injectable io); **Tier 2** = the verification container without systemd (`scripts/verify-multiuser-docker.sh --smokes`; `docker` group only, may run on the dogfood host); **Tier 3** = the systemd stack -- systemd as PID 1 inside a container (`docker/Dockerfile.systemd`, to be landed), which needs container privilege and therefore runs on ephemeral CI runners or a personal workstation ONLY, never on the dogfood host; **Tier 4** = the production host, owner-run, once per deploy -- the deploy command with its built-in post-deploy verification, plus the billable smokes (permanent residue: no container carries a `claude` login or a provider key). What tier 4 keeps is a property of THE host (the deploy of the unit, its health, its `MainPID` identity, that host's `/usr/local/lib` readability), never code behaviour; a new owner-run check that is none of those is a gap to file.
+- **Aliases:** tier 1-4, systemd stack (tier 3), production-state residue (tier 4)
+- **See:** [`docs/design/elevation-verification-tiers.md`](design/elevation-verification-tiers.md) (single writer of the tier definitions and the Task 0 measurement they rest on)
+
 ## Roles
 
 ### Orchestrator
