@@ -58,7 +58,12 @@ cd agent-console
 sudo scripts/setup-multiuser-for-ubuntu.sh --port 8080 \
   --add-user alice --add-user bob
 
-# 3. Open the URL printed at the end. Default: http://<host>:8080/
+# 3. On a FRESH host the application has not been built yet (Issue #1707),
+#    so the bootstrap script enables the unit without starting it. Run the
+#    deploy script once to build and start it:
+sudo scripts/update-and-deploy-for-multiuser-ubuntu.sh
+
+# 4. Open the URL printed at the end. Default: http://<host>:8080/
 ```
 
 The script is **idempotent**: a second invocation with the same parameters is

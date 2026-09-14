@@ -276,3 +276,49 @@ describe('setup-multiuser-checks: assert_readable_by_unprivileged_user (Issue #1
     // which is false -- the readability check never ran.
   });
 });
+
+// dist_artifact_present (Issue #1707): the mode decision Step 8 of
+// setup-multiuser-for-ubuntu.sh uses to avoid `enable --now`ing a unit whose
+// dist/index.js does not exist yet -- that manufactures a crash loop under
+// Restart=on-failure on a fresh host (measured in
+// docs/design/elevation-verification-tiers.md Task 0 S2, both runs:
+// NRestarts climbing every 5s, Result=exit-code). A pure predicate over an
+// arbitrary path, so it needs no service user / root, unlike Step 8 itself.
+function runDistArtifactPresent(distIndexPath) {
+  return spawnSync(LIB, ['dist-artifact-present', distIndexPath], { encoding: 'utf-8' });
+}
+
+describe('setup-multiuser-checks: dist_artifact_present (Issue #1707 pre-enable-now guard)', () => {
+  it('present branch: exits 0 with no stderr when dist/index.js exists', () => {
+    // Any existing file stands in for dist/index.js -- the function only
+    // checks `-f`, not content.
+    const r = runDistArtifactPresent('/bin/true');
+    expect(r.status).toBe(0);
+    expect(r.stderr).toBe('');
+  });
+
+  it('absent branch: exits 1 and prints the exact build-first remedy message when dist/index.js does not exist', () => {
+    const r = runDistArtifactPresent('/nonexistent/dist/index.js');
+    expect(r.status).toBe(1);
+    expect(r.stderr.trim()).toBe(
+      'built artifact absent -- run scripts/update-and-deploy-for-multiuser-ubuntu.sh once to build and start the unit',
+    );
+  });
+
+  // Polarity (workflow.md TDD requirement, applied as a new-mechanism
+  // contract per testing.md's category table: this mechanism did not exist
+  // before Issue #1707, so both branches must fail against the pre-fix
+  // script). Measured by hand against the pre-fix
+  // scripts/lib/setup-multiuser-checks.sh (git show HEAD before this PR's
+  // commit, i.e. the version with no `dist-artifact-present` subcommand and
+  // no `dist_artifact_present` function): the unrecognized subcommand name
+  // falls through to the dispatcher's default case, which forwards it as
+  // the bun-path argument to assert_unified_bun_executable. Both the
+  // present-file and absent-file cases produced exit 1 with the UNRELATED
+  // Issue #1222 "unified bun binary ... is missing or not executable"
+  // message (naming the literal string "dist-artifact-present" as the
+  // missing path, not the file argument at all) -- neither the present
+  // branch's "exit 0, no stderr" contract nor the absent branch's exact
+  // remedy message existed pre-fix. Both tests above therefore flip
+  // polarity: they fail against unmodified code and pass against the fix.
+});

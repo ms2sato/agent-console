@@ -44,7 +44,15 @@
 #      scripts/update-and-deploy-for-multiuser-ubuntu.sh's copy step, not by
 #      this script -- it does not exist yet on a fresh host before the first
 #      deploy.
-#   8. `systemctl daemon-reload && systemctl enable --now agent-console`.
+#   8. `systemctl daemon-reload && systemctl enable [--now] agent-console`.
+#      `--now` is passed only when <install>/dist/index.js already exists
+#      (Issue #1707) -- on a fresh host, before
+#      scripts/update-and-deploy-for-multiuser-ubuntu.sh has built it once,
+#      starting the unit immediately would crash-loop under
+#      Restart=on-failure. The script instead enables the unit (so it starts
+#      on the next boot / after the first deploy) and prints the remedy.
+#      Existing provisioned hosts are unaffected: the file already exists,
+#      so `--now` runs exactly as before.
 #
 # Idempotency: a second invocation with the same parameters is a no-op
 # (existing user / group / dir / unit / sudoers are detected and re-verified).
@@ -748,12 +756,23 @@ fi
 # Step 8 — daemon-reload + enable
 # ---------------------------------------------------------------------------
 
-heading "Step 8/8 — systemctl daemon-reload + enable --now"
+heading "Step 8/8 — systemctl daemon-reload + enable"
+# DIST_ARTIFACT_PRESENT tracks the Issue #1707 decision for the "Final
+# summary" section below, which needs to know whether it should warn that
+# the curl check will fail on a fresh host -- it defaults to 1 (present) so
+# --dry-run (which never reaches the real branch below) does not print a
+# spurious warning.
+DIST_ARTIFACT_PRESENT=1
 if [ "$DRY_RUN" -eq 1 ]; then
   echo "    --dry-run: skipping systemctl"
 else
   run systemctl daemon-reload
-  run systemctl enable --now agent-console
+  if dist_artifact_present "$APP_DIR/dist/index.js"; then
+    run systemctl enable --now agent-console
+  else
+    DIST_ARTIFACT_PRESENT=0
+    run systemctl enable agent-console
+  fi
 fi
 
 # ---------------------------------------------------------------------------
@@ -769,6 +788,13 @@ if [ "$DRY_RUN" -eq 0 ]; then
 fi
 echo "  curl -fsS http://localhost:$PORT/api/config"
 echo ""
+if [ "$DRY_RUN" -eq 0 ] && [ "$DIST_ARTIFACT_PRESENT" -eq 0 ]; then
+  echo "  (the unit is enabled but not started -- dist/index.js does not exist yet, so"
+  echo "   the curl check above will fail until"
+  echo "   scripts/update-and-deploy-for-multiuser-ubuntu.sh has run once to build and"
+  echo "   start it)"
+  echo ""
+fi
 echo "Add additional users with:"
 echo "  sudo scripts/add-multiuser-user.sh <username>"
 echo ""
