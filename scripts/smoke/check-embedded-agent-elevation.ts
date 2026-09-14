@@ -35,7 +35,15 @@
  *     comparison was replaced rather than repointed). A version difference
  *     between the unified path and the service user's own `~/.bun/bin/bun`
  *     is reported as a WARNING (expected freshness after a `bun upgrade`,
- *     not a failure).
+ *     not a failure). Before comparing the live pid, a positive control runs
+ *     `compareBinaryIdentity` against this smoke process's own
+ *     `/proc/self/exe`, so a later `{ unresolvable: 'self' }` result on the
+ *     LIVE pid is attributable specifically to a permission gap reading
+ *     `/proc/<MainPID>/exe` (needs the unit's own `User=`/`Group=`, or root)
+ *     rather than to some broader failure of `/proc/self/exe` resolution in
+ *     this environment; `{ unresolvable: 'configured' }` is reported
+ *     separately, naming the configured path itself as unreadable. Both are
+ *     probe-cannot-run conditions (exit 2), not assertion failures.
  *   - The loop's init handshake completing end-to-end against a REAL `/mcp`
  *     Streamable-HTTP endpoint, with `AGENT_CONSOLE_MCP_AUTH` left UNSET so
  *     `resolveMcpAuthMode` resolves it to `enforce` via the real Phase 4
@@ -166,8 +174,11 @@
  *      fired by the EMBEDDED_AGENT_BUN_PATH probe-cannot-run guard below when
  *      an absolute EMBEDDED_AGENT_BUN_PATH is configured but not present on
  *      disk -- the multi-user setup script's bun-copy step was not applied --
- *      and, symmetrically, when the default 'bun' (bare-name, PATH-resolved)
- *      cannot be resolved at all, e.g. under a real `sudo` invocation whose
+ *      and, symmetrically, when this smoke's own bare-name fallback ('bun',
+ *      used when the operator's environment has no EMBEDDED_AGENT_BUN_PATH
+ *      set at all -- NOT the production server's own default, which since
+ *      Issue #1291 is `process.execPath`, an absolute path) cannot be
+ *      resolved at all, e.g. under a real `sudo` invocation whose
  *      secure_path excludes a user-local ~/.bun/bin; also fired by the
  *      Issue #1222 live-process assertion when `systemctl` / the
  *      `agent-console` unit / its `/proc/<pid>/exe` cannot be resolved --
@@ -186,6 +197,15 @@
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { realpathSync } from 'node:fs';
+import { stat } from 'node:fs/promises';
+// `compareBinaryIdentity` / `isOtherExecutable` are pure (no filesystem
+// access at import time, no top-level side effects) and do not transitively
+// import server-config.ts, so this is safe as a static import above the
+// env-var prelude below -- unlike the deferred dynamic imports further down.
+import {
+  compareBinaryIdentity,
+  isOtherExecutable,
+} from '../../packages/server/src/lib/embedded-agent-bun-path-check.js';
 // Type-only imports are erased at compile time -- they do NOT trigger module
 // evaluation, so they are safe above the env-var prelude despite the module
 // they point at (app-context.ts) transitively importing server-config.ts, and
@@ -412,10 +432,14 @@ async function main(): Promise<void> {
     // binary -- both cases the OLD comparison could never detect (it only
     // ever inspected two config-derived strings, never what was actually
     // running). Only meaningful when EMBEDDED_AGENT_BUN_PATH is configured
-    // to an absolute path (the multi-user contract); the
-    // single-user/degenerate default ('bun', PATH-resolved) has no unified
-    // path to verify against -- Issue #1222 Ruling 2 explicitly scopes
-    // unification to multi-user (the single-user template is unchanged). ---
+    // to an absolute path (the multi-user contract); the smoke's own
+    // bare-name fallback ('bun', used only when the operator's environment
+    // has EMBEDDED_AGENT_BUN_PATH unset -- since Issue #1291 the production
+    // server's own default is `process.execPath`, an absolute path, so this
+    // fallback exists purely for the smoke's own degenerate-mode probing)
+    // has no unified path to verify against -- Issue #1222 Ruling 2
+    // explicitly scopes unification to multi-user (the single-user template
+    // is unchanged). ---
     console.log('==> configured bun-path resolvability check');
     const configuredBunCmd = process.env.EMBEDDED_AGENT_BUN_PATH || 'bun';
     let configuredVersionResult: ReturnType<typeof Bun.spawnSync>;
@@ -424,14 +448,16 @@ async function main(): Promise<void> {
     } catch (err) {
       // Bun.spawnSync throws synchronously (rather than returning a non-zero
       // exit code) when the executable cannot be resolved via PATH at all.
-      // Reached via the default 'bun' (bare-name, PATH-resolved) branch when
-      // no absolute EMBEDDED_AGENT_BUN_PATH is configured: e.g. under a real
-      // `sudo` invocation, the elevated child's PATH is sudo's own
-      // secure_path, which does not include a user-local ~/.bun/bin -- so
-      // 'bun' is unresolvable until the multi-user setup script's bun-copy
-      // step has provisioned /usr/local/bin/bun AND EMBEDDED_AGENT_BUN_PATH
-      // has been set to point at it. Not a real assertion failure; the
-      // environment simply isn't ready to run this smoke meaningfully yet.
+      // Reached via this smoke's own bare-name fallback ('bun', bare-name,
+      // PATH-resolved -- NOT the production server's default, see above)
+      // branch when no absolute EMBEDDED_AGENT_BUN_PATH is configured: e.g.
+      // under a real `sudo` invocation, the elevated child's PATH is sudo's
+      // own secure_path, which does not include a user-local ~/.bun/bin --
+      // so 'bun' is unresolvable until the multi-user setup script's
+      // bun-copy step has provisioned /usr/local/bin/bun AND
+      // EMBEDDED_AGENT_BUN_PATH has been set to point at it. Not a real
+      // assertion failure; the environment simply isn't ready to run this
+      // smoke meaningfully yet.
       console.error(
         `Could not execute '${configuredBunCmd} --version' (${err instanceof Error ? err.message : String(err)}) -- ` +
           'this smoke cannot run meaningfully without a resolvable bun binary. If EMBEDDED_AGENT_BUN_PATH is unset, ' +
@@ -466,41 +492,85 @@ async function main(): Promise<void> {
         );
         process.exit(2);
       }
+      // Comparison delegated to the production `compareBinaryIdentity`
+      // (packages/server/src/lib/embedded-agent-bun-path-check.ts, Issue
+      // #1291) -- the same function the boot-time WARN uses -- rather than
+      // reimplementing the realpath-and-compare logic here (single writer).
+
+      // Positive control: exercise the IDENTICAL code path against this
+      // smoke process's own /proc/self/exe compared to itself, BEFORE
+      // comparing against the live (other-process) pid below. This makes a
+      // later `{ unresolvable: 'self' }` result on the live pid attributable
+      // specifically to a permission gap reading THAT OTHER process's
+      // /proc/<pid>/exe -- rather than to some broader failure of
+      // /proc/self/exe resolution in this environment, which this control
+      // rules out first.
+      const selfControlIdentity = await compareBinaryIdentity('/proc/self/exe', '/proc/self/exe', {
+        realpath: async (p: string) => realpathSync(p),
+      });
+      if (selfControlIdentity !== 'same') {
+        console.error(
+          "Positive control failed: compareBinaryIdentity('/proc/self/exe', '/proc/self/exe', ...) returned " +
+            `${JSON.stringify(selfControlIdentity)} instead of 'same' -- this environment does not support ` +
+            '/proc/self/exe resolution at all, so nothing about the live-pid comparison below can be trusted here.',
+        );
+        process.exit(2);
+      }
+
       const exeLinkPath = `/proc/${pidRaw}/exe`;
-      let liveExePath: string;
-      let configuredRealPath: string;
-      try {
-        liveExePath = realpathSync(exeLinkPath);
-      } catch (err) {
-        console.error(
-          `Could not resolve '${exeLinkPath}' (${err instanceof Error ? err.message : String(err)}) -- ` +
-            'the smoke must run with permission to read the server process\'s /proc entry (e.g. as the ' +
-            'service user itself, or root).',
-        );
-        process.exit(2);
+      console.log(`  live server exe (pid ${pidRaw}):    ${exeLinkPath}`);
+      console.log(`  configured EMBEDDED_AGENT_BUN_PATH: ${configuredBunCmd}`);
+      const identity = await compareBinaryIdentity(exeLinkPath, configuredBunCmd, {
+        realpath: async (p: string) => realpathSync(p),
+      });
+      if (typeof identity === 'object') {
+        const reason = identity.unresolvable;
+        if (reason === 'self') {
+          // The LIVE server process's own executable could not be read --
+          // this is the permission-gap case: reading ANOTHER process's
+          // /proc/<pid>/exe needs PTRACE_MODE_READ, which (absent
+          // CAP_SYS_PTRACE) requires the reader to share BOTH uid and gid
+          // with the target process, not merely be able to run as it via
+          // sudo. Not an assertion failure -- the probe itself could not run.
+          console.error(
+            `Could not resolve the LIVE server process's own executable '${exeLinkPath}' (pid ${pidRaw}) -- this ` +
+              "is a permission gap, not a proof that the binaries differ. Re-run this smoke AS the " +
+              `${SYSTEMD_UNIT_NAME}.service unit's own identity -- matching BOTH the unit's configured User= and ` +
+              'Group= (or root) -- then retry.',
+          );
+          process.exit(2);
+        } else if (reason === 'configured') {
+          console.error(
+            `Could not resolve the configured EMBEDDED_AGENT_BUN_PATH '${configuredBunCmd}' -- verify the path ` +
+              'exists and is reachable by this smoke process, then re-run.',
+          );
+          process.exit(2);
+        } else if (reason === 'bare') {
+          // Unreachable: this whole branch is gated on
+          // `configuredBunCmd.startsWith('/')` above, and compareBinaryIdentity
+          // only ever returns 'bare' when the CONFIGURED argument itself is
+          // not absolute. Handled anyway so this if/else chain stays
+          // exhaustive and type-safe against a future change to that gate.
+          throw new Error(
+            `internal error: compareBinaryIdentity returned { unresolvable: 'bare' } despite an absolute ` +
+              `configuredBunCmd ('${configuredBunCmd}')`,
+          );
+        } else {
+          const _exhaustive: never = reason;
+          throw new Error(`internal error: unhandled BinaryIdentity unresolvable reason: ${String(_exhaustive)}`);
+        }
       }
-      try {
-        configuredRealPath = realpathSync(configuredBunCmd);
-      } catch (err) {
-        // Already covered by the top-of-file probe-cannot-run guard for the
-        // common case (configured path missing entirely); this catches the
-        // narrower race where it existed at that check but not now.
-        console.error(
-          `Could not resolve configured EMBEDDED_AGENT_BUN_PATH '${configuredBunCmd}' (${err instanceof Error ? err.message : String(err)}).`,
-        );
-        process.exit(2);
-      }
-      console.log(`  live server exe (pid ${pidRaw}):    ${liveExePath}`);
-      console.log(`  configured EMBEDDED_AGENT_BUN_PATH: ${configuredRealPath}`);
       expect(
-        liveExePath === configuredRealPath,
-        'live agent-console.service process executes the configured EMBEDDED_AGENT_BUN_PATH (Issue #1222 -- unit reinstalled and ExecStart matches what is actually running)',
-        `live='${liveExePath}' configured='${configuredRealPath}'`,
+        identity === 'same',
+        'live agent-console.service process executes the configured EMBEDDED_AGENT_BUN_PATH (Issue #1222 -- unit reinstalled and ExecStart matches what is actually running; compared via the production compareBinaryIdentity helper)',
+        `identity='${JSON.stringify(identity)}' liveExe(raw)='${exeLinkPath}' configured(raw)='${configuredBunCmd}'`,
       );
     } else {
       console.log(
-        '  skipped: EMBEDDED_AGENT_BUN_PATH is unset (default \'bun\', PATH-resolved) -- no unified path to verify ' +
-          '(Issue #1222 Ruling 2 scopes unification to multi-user deployments only).',
+        '  skipped: EMBEDDED_AGENT_BUN_PATH is not an absolute path in this smoke\'s own environment -- no ' +
+          'unified path to verify (Issue #1222 Ruling 2 scopes unification to multi-user deployments only; ' +
+          'the production server\'s own default is process.execPath, an absolute path, since Issue #1291 -- ' +
+          'this branch is reached only via this smoke\'s own bare-name fallback or an explicit bare override).',
       );
     }
 
@@ -536,6 +606,42 @@ async function main(): Promise<void> {
       }
     } catch {
       console.log('  skipped: could not spawn the service-user bun binary for the freshness check (non-fatal)');
+    }
+
+    // --- Other-user-executable check (Issue #1291, warning-only, not a
+    // failure): a configured EMBEDDED_AGENT_BUN_PATH that is not executable
+    // by users other than its owner means an elevated activation for any
+    // target user other than the file's owner will fail with EACCES --
+    // absent from this smoke prior to #1291. Uses the same production
+    // `isOtherExecutable` (packages/server/src/lib/embedded-agent-bun-path-check.ts)
+    // the boot-time WARN uses. Only meaningful for an absolute path (mirrors
+    // the identity check's absolute-path gate above); the single-user/dev
+    // default has no fixed file to stat. ---
+    console.log('==> other-user-executable check (warning-only, not a failure)');
+    if (configuredBunCmd.startsWith('/')) {
+      const otherExecutable = await isOtherExecutable(configuredBunCmd, {
+        realpath: async (p: string) => realpathSync(p),
+        stat,
+      });
+      if (typeof otherExecutable === 'object' && otherExecutable.executable === false) {
+        console.warn(
+          `  WARN  ${configuredBunCmd}: ${otherExecutable.kind} ${otherExecutable.blockedAt} ` +
+            `(mode ${otherExecutable.mode.toString(8)}) is not reachable/executable by users other than its owner -- ` +
+            "an elevated activation for a target user other than this path's owner will fail with EACCES. Re-run " +
+            "scripts/setup-multiuser-for-ubuntu.sh, or fix its permissions/location.",
+        );
+      } else if (otherExecutable === true) {
+        console.log(`  OK    ${configuredBunCmd} is reachable and executable by other users`);
+      } else {
+        console.log(
+          '  skipped: could not resolve/stat the configured EMBEDDED_AGENT_BUN_PATH (or one of its containing ' +
+            'directories) for the other-executable check (non-fatal)',
+        );
+      }
+    } else {
+      console.log(
+        '  skipped: EMBEDDED_AGENT_BUN_PATH is not an absolute path in this smoke\'s own environment -- no path to stat.',
+      );
     }
 
     // --- Resolve the REAL target OS user (uid + home) via the production lookup. ---
