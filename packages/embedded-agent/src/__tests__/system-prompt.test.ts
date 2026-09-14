@@ -3,7 +3,7 @@
 // comment, so no assertion here changes.
 import { describe, it, expect, afterEach, spyOn } from 'bun:test';
 import * as fsPromises from 'node:fs/promises';
-import { mkdtemp, mkdir, writeFile, rm, symlink } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, rm, symlink, chmod } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -15,6 +15,14 @@ import {
   parseRulesLayerCapBytes,
   parseSkillFrontmatter,
   parseSkillsLayerCapBytes,
+  parseMemoryLayerCapBytes,
+  parseMemoryLayerMaxEntries,
+  formatMemoryHeader,
+  MEMORY_ABSENT_INDEX_LINE,
+  MEMORY_LAYER_CAP_BYTES,
+  MEMORY_INDEX_READ_CAP_BYTES,
+  MEMORY_LAYER_MAX_ENTRIES,
+  MEMORY_DECLARATION_MAX_NAMES,
   INSTRUCTION_PER_FILE_CAP_BYTES,
   INSTRUCTION_AGGREGATE_CAP_BYTES,
   RULES_LAYER_CAP_BYTES,
@@ -1401,5 +1409,470 @@ describe('composeSdkSystemPromptAppend', () => {
     const skillIndexIdx = result!.indexOf('Skills available');
     expect(skillOmissionIdx).toBeGreaterThan(ruleIdx);
     expect(skillIndexIdx).toBeGreaterThan(skillOmissionIdx);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Memory layer (epic #1636 Phase 2, PR-3a). Every pin below was reach-measured
+// by mutating system-prompt.ts and watching the pin fail; the measurement is
+// recorded in each test's own comment (workflow.md, "Every pin's reach is
+// measured, not predicted").
+// ---------------------------------------------------------------------------
+describe('loadInstructions — memory layer (epic #1636 Phase 2)', () => {
+  async function makeMemoryDir(): Promise<string> {
+    return makeTempDir();
+  }
+
+  async function loadWithMemory(memoryDir: string | undefined) {
+    const cwd = await makeTempDir();
+    return loadInstructions({ cwd, xdgConfigHome: await isolatedXdgConfigHome(), memoryDir });
+  }
+
+  const INDEX_LINE = '- [Sprint state](sprint-state.md) — where the sprint stands';
+
+  it('is empty and silent when memoryDir is absent (no segment, no declarations, no warn)', async () => {
+    // Reach: mutating `loadInstructions` to call `loadMemoryLayer('')` when
+    // memoryDir is absent (rendering a header for an empty path) fails
+    // `memorySegment` toBeUndefined -- measured.
+    const warnSpy = spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const result = await loadWithMemory(undefined);
+      expect(result.memorySegment).toBeUndefined();
+      expect(result.memoryOmissionLine).toBeUndefined();
+      expect(result.memoryUnreadableLine).toBeUndefined();
+      expect(warnSpy.mock.calls.some((call) => String(call[0]).toLowerCase().includes('memory'))).toBe(false);
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it('renders the verbatim header even when MEMORY.md does not exist yet, with the absent-index line in place of the index', async () => {
+    // Reach: mutating `loadMemoryLayer` to return `{}` on ENOENT (an absent
+    // layer instead of an absent index) fails the header assertion;
+    // mutating the absent line's text fails the second -- both measured.
+    const memoryDir = await makeMemoryDir();
+    const result = await loadWithMemory(memoryDir);
+    expect(result.memorySegment).toBe(`${formatMemoryHeader(memoryDir)}\n${MEMORY_ABSENT_INDEX_LINE}`);
+    expect(result.memorySegment).toContain(`--- Memory: ${memoryDir} ---`);
+    expect(result.memorySegment).toContain('(no MEMORY.md yet — create it with your first entry)');
+    expect(result.memoryUnreadableLine).toBeUndefined();
+  });
+
+  it('the header text equals the spec\'s fenced block VERBATIM (independent literal copy, path substituted)', () => {
+    // The literal below is copied from docs/design/embedded-agent-worker.md
+    // "The header text" by hand, NOT derived from formatMemoryHeader -- so a
+    // paraphrase in production cannot ship green. Reach: changing a single
+    // character of `formatMemoryHeader` ("follow." -> "follow:") fails this
+    // pin and ONLY this pin -- measured; the fragment pin below stays green
+    // under that mutation, which is exactly why this literal exists.
+    const expected =
+      '--- Memory: /data/memory/def-1 ---\n' +
+      'This directory is your persistent memory for this agent definition on this repository. It is shared with every user who runs this definition on this repository (on a single-user install that is only you): record knowledge about the work, never one person\'s private details. MEMORY.md is its index; its current contents follow. Each memory is one file holding one fact, with frontmatter (name, description, metadata.type: user | feedback | project | reference). After writing a file, add a one-line pointer to MEMORY.md: `- [Title](file.md) — hook` — re-read MEMORY.md first, then append the line with Edit anchored on the file\'s current tail (never rewrite MEMORY.md with Write; other sessions may be writing it too). Read a topic file with Read when its hook is relevant; never put memory content in MEMORY.md itself.';
+    expect(formatMemoryHeader('/data/memory/def-1')).toBe(expected);
+  });
+
+  it('the header text carries the load-bearing fragments (a readable subset of the verbatim pin above)', () => {
+    // Pins the load-bearing sentences the WRITE half depends on, so a
+    // paraphrase of the convention cannot ship silently. Reach: dropping
+    // any one of the four fragments from `formatMemoryHeader` fails exactly
+    // its own assertion -- measured on the "never rewrite" fragment.
+    const header = formatMemoryHeader('/data/memory/def-1');
+    expect(header.startsWith('--- Memory: /data/memory/def-1 ---\n')).toBe(true);
+    expect(header).toContain(
+      'It is shared with every user who runs this definition on this repository (on a single-user install that is only you)',
+    );
+    expect(header).toContain('metadata.type: user | feedback | project | reference');
+    expect(header).toContain('`- [Title](file.md) — hook`');
+    expect(header).toContain("append the line with Edit anchored on the file's current tail");
+    expect(header).toContain('never rewrite MEMORY.md with Write');
+  });
+
+  it('renders the MEMORY.md index content under the header when the file exists', async () => {
+    // Reach: mutating the segment to omit `body` fails -- measured.
+    const memoryDir = await makeMemoryDir();
+    await writeFile(join(memoryDir, 'MEMORY.md'), `# Memory Index\n\n${INDEX_LINE}\n`);
+    await writeFile(join(memoryDir, 'sprint-state.md'), '---\nname: sprint-state\n---\nbody');
+    const result = await loadWithMemory(memoryDir);
+    expect(result.memorySegment).toBe(`${formatMemoryHeader(memoryDir)}\n# Memory Index\n\n${INDEX_LINE}`);
+    expect(result.memoryOmissionLine).toBeUndefined();
+    expect(result.memoryUnreadableLine).toBeUndefined();
+  });
+
+  it('drops whole index lines largest-first over MEMORY_LAYER_CAP_BYTES and declares the dropped link targets in-band (never a truncation mid-line)', async () => {
+    // The index is 5 ordinary lines plus one line whose hook alone exceeds
+    // the whole 16 KiB budget, so exactly that one line must go -- and its
+    // link target, not its title or hook, is what the declaration names.
+    // Reach: mutating `dropLargestUntilFits`'s call to pass `0` as the byte
+    // length keeps every line and fails the omission assertion; mutating
+    // the declaration to name the whole line instead of the target fails
+    // the toBe -- both measured.
+    const memoryDir = await makeMemoryDir();
+    const bigHook = 'h'.repeat(MEMORY_LAYER_CAP_BYTES + 1);
+    const lines = [
+      '# Memory Index',
+      '- [One](one.md) — first',
+      '- [Two](two.md) — second',
+      `- [Huge](huge.md) — ${bigHook}`,
+      '- [Three](three.md) — third',
+    ];
+    await writeFile(join(memoryDir, 'MEMORY.md'), `${lines.join('\n')}\n`);
+    const warnSpy = spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const result = await loadWithMemory(memoryDir);
+      expect(result.memoryOmissionLine).toBe('memory index lines omitted for size: huge.md');
+      expect(result.memorySegment).toContain('- [One](one.md) — first');
+      expect(result.memorySegment).toContain('- [Three](three.md) — third');
+      expect(result.memorySegment).not.toContain('huge.md');
+      expect(result.memorySegment).not.toContain('hhhh');
+      expect(warnSpy.mock.calls.some((call) => String(call[0]).includes('huge.md'))).toBe(true);
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  describe('bounded index read (MEMORY_INDEX_READ_CAP_BYTES)', () => {
+    // Polarity, measured: mutating the loader back to an unbounded
+    // `tryReadTextFile` read (and `indexTruncated = false`) fails the
+    // READ_CAP+1 and mid-line declaration pins and the 1 MB case -- whose
+    // drop loop then took 95 s (the quadratic cost the bound exists for,
+    // measured on this host) against its 5 s ceiling; bounded, the same
+    // case runs in well under a second. The size == READ_CAP boundary pin
+    // passes in both worlds by design (it fixes the bound's LOWER edge).
+    // ASCII-only so `.length` equals the UTF-8 byte length in this block.
+    const LINE = '- [E](e.md) - 0123456789'; // 24 bytes + newline = 25
+
+    /** Exactly `total` bytes of complete index lines ending in a newline. */
+    function indexOfExactly(total: number): string {
+      const header = '# Memory Index\n';
+      let body = header;
+      while (body.length + LINE.length + 1 <= total) body += `${LINE}\n`;
+      // Pad the last line so the total lands exactly on `total` bytes.
+      const remaining = total - body.length;
+      if (remaining > 0) body += `${'- [P](p.md) - '.padEnd(remaining - 1, 'p')}\n`;
+      return body;
+    }
+
+    it('size == READ_CAP: nothing is declared and nothing discarded (boundary)', async () => {
+      const memoryDir = await makeMemoryDir();
+      const content = indexOfExactly(MEMORY_INDEX_READ_CAP_BYTES);
+      expect(new TextEncoder().encode(content).length).toBe(MEMORY_INDEX_READ_CAP_BYTES);
+      await writeFile(join(memoryDir, 'MEMORY.md'), content);
+      const warnSpy = spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        const result = await loadWithMemory(memoryDir);
+        expect(result.memoryOmissionLine ?? '').not.toContain('truncated');
+        // The whole index survives the 16 KiB budget? No -- it is 4x over,
+        // so lines are dropped by the ordinary largest-first policy; what
+        // this pin fixes is that the READ was complete: the last line of the
+        // file (the padded `p.md` one) was seen by the drop loop.
+        expect(result.memoryOmissionLine).toBeDefined();
+        expect(result.memoryOmissionLine).toContain('memory index lines omitted for size');
+        // The padded final line is the shortest, so largest-first keeps it:
+        // its presence in the SEGMENT proves the read reached the file's end.
+        expect(result.memorySegment).toContain('p.md');
+      } finally {
+        warnSpy.mockRestore();
+      }
+    });
+
+    it('size == READ_CAP + 1 at a line boundary: declares 1 byte not read and discards nothing', async () => {
+      const memoryDir = await makeMemoryDir();
+      await writeFile(join(memoryDir, 'MEMORY.md'), `${indexOfExactly(MEMORY_INDEX_READ_CAP_BYTES)}x`);
+      const warnSpy = spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        const result = await loadWithMemory(memoryDir);
+        expect(result.memoryOmissionLine).toContain(
+          `memory index truncated for size: 1 bytes past the first ${MEMORY_INDEX_READ_CAP_BYTES} not read`,
+        );
+        expect(result.memorySegment).toContain('p.md'); // the last complete line was still read (and, being shortest, kept)
+        expect(warnSpy.mock.calls.some((call) => String(call[0]).includes('truncated for size'))).toBe(true);
+      } finally {
+        warnSpy.mockRestore();
+      }
+    });
+
+    it('cut mid-line: the partial last segment is discarded and counted with the unread remainder', async () => {
+      const memoryDir = await makeMemoryDir();
+      // A small index whose LAST line straddles the read cap: the prefix
+      // holds `- [TAIL](tail.md) — ` plus part of the hook; the rest is past
+      // the cap.
+      const head = indexOfExactly(MEMORY_INDEX_READ_CAP_BYTES - 10);
+      const straddler = `- [TAIL](tail.md) - ${'t'.repeat(40)}\n`;
+      await writeFile(join(memoryDir, 'MEMORY.md'), head + straddler);
+      const warnSpy = spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        const result = await loadWithMemory(memoryDir);
+        // 10 bytes of the straddler were read (the partial segment), the
+        // remaining straddler.length - 10 bytes were not; both are declared.
+        const expectedUnread = straddler.length - 10 + 10;
+        expect(result.memoryOmissionLine).toContain(
+          `memory index truncated for size: ${expectedUnread} bytes past the first ${MEMORY_INDEX_READ_CAP_BYTES} not read`,
+        );
+        expect(result.memorySegment).not.toContain('tail.md');
+        expect(result.memoryOmissionLine).not.toContain('tail.md');
+      } finally {
+        warnSpy.mockRestore();
+      }
+    });
+
+    it('a ~1 MB index still renders the header plus surviving lines, with the truncation declared', async () => {
+      const memoryDir = await makeMemoryDir();
+      const lines: string[] = ['# Memory Index'];
+      for (let i = 0; lines.length * 25 < 1024 * 1024; i++) lines.push(LINE);
+      await writeFile(join(memoryDir, 'MEMORY.md'), `${lines.join('\n')}\n`);
+      const warnSpy = spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        const started = Date.now();
+        const result = await loadWithMemory(memoryDir);
+        expect(Date.now() - started).toBeLessThan(5000);
+        expect(result.memorySegment).toContain(formatMemoryHeader(memoryDir));
+        expect(result.memorySegment).toContain(LINE);
+        expect(result.memoryOmissionLine).toMatch(/memory index truncated for size: \d+ bytes past the first \d+ not read/);
+        // What survived fits the KEEP budget (sum of line bytes, the cap's
+        // own accounting), not merely the READ cap.
+        const body = result.memorySegment!.slice(formatMemoryHeader(memoryDir).length + 1);
+        const lineBytes = body.split('\n').reduce((sum, l) => sum + new TextEncoder().encode(l).length, 0);
+        expect(lineBytes).toBeLessThanOrEqual(MEMORY_LAYER_CAP_BYTES);
+      } finally {
+        warnSpy.mockRestore();
+      }
+    });
+  });
+
+  it('counts dropped lines that lack the convention\'s link shape instead of naming them', async () => {
+    // Reach: mutating the unshaped branch to push the raw line into
+    // `targets` fails the toBe -- measured.
+    const memoryDir = await makeMemoryDir();
+    await writeFile(join(memoryDir, 'MEMORY.md'), `# Memory Index\nfree text ${'z'.repeat(MEMORY_LAYER_CAP_BYTES + 1)}\n`);
+    const warnSpy = spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const result = await loadWithMemory(memoryDir);
+      expect(result.memoryOmissionLine).toBe(
+        'memory index lines omitted for size: 1 line(s) without a link target',
+      );
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it('declares a file the running user cannot read (memory files unreadable), never skipping it silently', async () => {
+    // umask-077 residue: a topic file another user wrote with 0600. Skipped
+    // when running as root (root reads everything; the access check cannot
+    // fail). Reach: mutating the loop to `continue` on an access failure
+    // without recording it fails the toBe -- measured.
+    if (typeof process.geteuid === 'function' && process.geteuid() === 0) return;
+    const memoryDir = await makeMemoryDir();
+    await writeFile(join(memoryDir, 'MEMORY.md'), `# Memory Index\n- [Locked](locked.md) — hidden\n`);
+    await writeFile(join(memoryDir, 'locked.md'), 'secret');
+    await chmod(join(memoryDir, 'locked.md'), 0o000);
+    const warnSpy = spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const result = await loadWithMemory(memoryDir);
+      expect(result.memoryUnreadableLine).toBe('memory files unreadable: locked.md');
+      expect(warnSpy.mock.calls.some((call) => String(call[0]).includes('memory files unreadable: locked.md'))).toBe(true);
+    } finally {
+      warnSpy.mockRestore();
+      await chmod(join(memoryDir, 'locked.md'), 0o600);
+    }
+  });
+
+  it('an unreadable MEMORY.md is declared the same way AND renders as the absent-index line', async () => {
+    if (typeof process.geteuid === 'function' && process.geteuid() === 0) return;
+    // Reach: mutating the non-ENOENT read failure to render `''` as the
+    // body instead of the absent line fails the segment assertion --
+    // measured.
+    const memoryDir = await makeMemoryDir();
+    await writeFile(join(memoryDir, 'MEMORY.md'), '# Memory Index\n');
+    await chmod(join(memoryDir, 'MEMORY.md'), 0o000);
+    const warnSpy = spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const result = await loadWithMemory(memoryDir);
+      expect(result.memorySegment).toBe(`${formatMemoryHeader(memoryDir)}\n${MEMORY_ABSENT_INDEX_LINE}`);
+      expect(result.memoryUnreadableLine).toBe('memory files unreadable: MEMORY.md');
+    } finally {
+      warnSpy.mockRestore();
+      await chmod(join(memoryDir, 'MEMORY.md'), 0o600);
+    }
+  });
+
+  it('declares regular files no index line points at (memory files not in the index) -- the recoverable form of a lost index update', async () => {
+    // `./`-prefixed targets count as indexed; MEMORY.md itself is never
+    // "not in the index". Reach: mutating `indexedTargets` to be empty
+    // fails (indexed.md would be declared); mutating the MEMORY.md
+    // exclusion fails (MEMORY.md would be declared) -- both measured.
+    const memoryDir = await makeMemoryDir();
+    await writeFile(
+      join(memoryDir, 'MEMORY.md'),
+      '# Memory Index\n- [A](indexed.md) — a\n- [B](./dot-indexed.md) — b\n',
+    );
+    await writeFile(join(memoryDir, 'indexed.md'), 'a');
+    await writeFile(join(memoryDir, 'dot-indexed.md'), 'b');
+    await writeFile(join(memoryDir, 'orphan-2.md'), 'lost');
+    await writeFile(join(memoryDir, 'orphan-1.md'), 'lost');
+    await mkdir(join(memoryDir, 'a-directory'));
+    const warnSpy = spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const result = await loadWithMemory(memoryDir);
+      expect(result.memoryUnreadableLine).toBe('memory files not in the index: orphan-1.md, orphan-2.md');
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it('stops the access-check scan at MEMORY_LAYER_MAX_ENTRIES and declares the unchecked count', async () => {
+    // 500 checked + 3 past the cap. The three past the cap are named so
+    // they sort LAST (the scan takes the first N sorted names): they are
+    // not in the index and must NOT appear in the not-in-index declaration
+    // -- proving they were neither access-checked nor index-matched, not
+    // merely that a count was printed. Reach: mutating `checked` to
+    // `files` (no slice) fails both assertions -- measured.
+    const memoryDir = await makeMemoryDir();
+    const indexLines: string[] = [];
+    const writes: Promise<void>[] = [];
+    for (let i = 0; i < MEMORY_LAYER_MAX_ENTRIES - 1; i++) {
+      const name = `entry-${String(i).padStart(4, '0')}.md`;
+      indexLines.push(`- [E${i}](${name}) — e`);
+      writes.push(writeFile(join(memoryDir, name), 'x'));
+    }
+    for (const name of ['zz-past-cap-1.md', 'zz-past-cap-2.md', 'zz-past-cap-3.md']) {
+      writes.push(writeFile(join(memoryDir, name), 'x'));
+    }
+    await Promise.all(writes);
+    await writeFile(join(memoryDir, 'MEMORY.md'), `# Memory Index\n${indexLines.join('\n')}\n`);
+    const warnSpy = spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const result = await loadWithMemory(memoryDir);
+      const total = MEMORY_LAYER_MAX_ENTRIES + 3;
+      expect(result.memoryUnreadableLine).toBe(`memory directory has ${total} files; 3 not checked`);
+      expect(result.memoryUnreadableLine).not.toContain('zz-past-cap');
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it('every declaration lists at most MEMORY_DECLARATION_MAX_NAMES names plus a count', async () => {
+    // 25 orphans: exactly 20 named, "and 5 more (25 total)". Reach:
+    // mutating `formatMemoryDeclaration` to skip the slice fails -- measured.
+    const memoryDir = await makeMemoryDir();
+    await writeFile(join(memoryDir, 'MEMORY.md'), '# Memory Index\n');
+    const names: string[] = [];
+    for (let i = 0; i < MEMORY_DECLARATION_MAX_NAMES + 5; i++) {
+      names.push(`orphan-${String(i).padStart(2, '0')}.md`);
+    }
+    await Promise.all(names.map((n) => writeFile(join(memoryDir, n), 'x')));
+    const warnSpy = spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const result = await loadWithMemory(memoryDir);
+      const shown = names.slice(0, MEMORY_DECLARATION_MAX_NAMES).join(', ');
+      expect(result.memoryUnreadableLine).toBe(
+        `memory files not in the index: ${shown}, and 5 more (${MEMORY_DECLARATION_MAX_NAMES + 5} total)`,
+      );
+      expect(result.memoryUnreadableLine).not.toContain('orphan-24.md');
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it('declarations are warn-logged to stderr, never written to stdout (the NDJSON channel)', async () => {
+    // Reach: mutating the declaration log to `console.log` fails the
+    // stdout assertion -- measured.
+    const memoryDir = await makeMemoryDir();
+    await writeFile(join(memoryDir, 'MEMORY.md'), '# Memory Index\n');
+    await writeFile(join(memoryDir, 'orphan.md'), 'x');
+    const warnSpy = spyOn(console, 'warn').mockImplementation(() => {});
+    const logSpy = spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      await loadWithMemory(memoryDir);
+      expect(warnSpy.mock.calls.some((call) => String(call[0]).includes('memory files not in the index: orphan.md'))).toBe(true);
+      expect(logSpy).not.toHaveBeenCalled();
+    } finally {
+      warnSpy.mockRestore();
+      logSpy.mockRestore();
+    }
+  });
+
+  it('the memory layer\'s budget is independent of the instructions aggregate cap, the rules cap, and the skills cap', async () => {
+    // Reach: mutating `loadMemoryLayer` to use `SKILLS_LAYER_CAP_BYTES`
+    // does NOT fail this pin (same default) -- recorded as a known limit;
+    // the independence proven here is from the aggregate cap only, which
+    // a `INSTRUCTION_AGGREGATE_CAP_BYTES + 1000`-byte rule file exhausts
+    // without touching the memory index.
+    const root = await makeTempDir();
+    await mkdir(join(root, '.git'));
+    const rulesDir = join(root, '.claude', 'rules');
+    await mkdir(rulesDir, { recursive: true });
+    await writeFile(join(rulesDir, 'r.md'), 'w'.repeat(INSTRUCTION_AGGREGATE_CAP_BYTES + 1000));
+    const memoryDir = await makeMemoryDir();
+    await writeFile(join(memoryDir, 'MEMORY.md'), `# Memory Index\n${INDEX_LINE}\n`);
+    await writeFile(join(memoryDir, 'sprint-state.md'), 'x');
+    const result = await loadInstructions({ cwd: root, xdgConfigHome: await isolatedXdgConfigHome(), memoryDir });
+    expect(result.memorySegment).toContain(INDEX_LINE);
+    expect(result.memoryOmissionLine).toBeUndefined();
+  });
+});
+
+describe('parseMemoryLayerCapBytes / parseMemoryLayerMaxEntries', () => {
+  // Same clamp as the rules/skills parsers (Architect N1): a non-positive
+  // or non-numeric override falls back to the default. Reach: mutating the
+  // shared clamp to `Number(raw) || default` fails the '-5' cases -- measured.
+  it('defaults to 16 KiB / 500', () => {
+    expect(parseMemoryLayerCapBytes(undefined)).toBe(16 * 1024);
+    expect(parseMemoryLayerMaxEntries(undefined)).toBe(500);
+  });
+
+  it('honours a positive override', () => {
+    expect(parseMemoryLayerCapBytes('4096')).toBe(4096);
+    expect(parseMemoryLayerMaxEntries('10')).toBe(10);
+  });
+
+  it('falls back on a negative, zero, or non-numeric override', () => {
+    expect(parseMemoryLayerCapBytes('-5')).toBe(16 * 1024);
+    expect(parseMemoryLayerCapBytes('0')).toBe(16 * 1024);
+    expect(parseMemoryLayerCapBytes('not-a-number')).toBe(16 * 1024);
+    expect(parseMemoryLayerMaxEntries('-5')).toBe(500);
+    expect(parseMemoryLayerMaxEntries('0')).toBe(500);
+    expect(parseMemoryLayerMaxEntries('nope')).toBe(500);
+  });
+});
+
+describe('memory layer — position in the rendered order (single writer: renderInstructionsBody)', () => {
+  const fixture: LoadInstructionsResult = {
+    segments: [{ origin: '/repo/AGENTS.md', content: 'INSTRUCTION_MARKER' }],
+    ruleSegments: [{ origin: '/repo/.claude/rules/a.md', content: 'RULE_MARKER' }],
+    ruleIndexLine: 'Rules that apply when you touch matching paths: scoped.md (paths: src/**)',
+    skillOmissionLine: 'skills omitted for size: big-skill',
+    skillIndexLine: 'Skills available (open the named SKILL.md to read full instructions): demo -- A demo skill.',
+    memoryUnreadableLine: 'memory files unreadable: locked.md',
+    memoryOmissionLine: 'memory index lines omitted for size: huge.md',
+    memorySegment: '--- Memory: /data/memory/def ---\nHEADER\n- [One](one.md) — MEMORY_INDEX_MARKER',
+  };
+
+  function assertOrder(rendered: string): void {
+    const idx = (s: string) => {
+      const i = rendered.indexOf(s);
+      expect(i).toBeGreaterThanOrEqual(0);
+      return i;
+    };
+    const skillsIdx = idx('Skills available');
+    const unreadableIdx = idx('memory files unreadable');
+    const omissionIdx = idx('memory index lines omitted');
+    const segmentIdx = idx('--- Memory: /data/memory/def ---');
+    const definitionIdx = idx('DEFINITION_PROMPT_MARKER');
+    expect(unreadableIdx).toBeGreaterThan(skillsIdx);
+    expect(omissionIdx).toBeGreaterThan(unreadableIdx);
+    expect(segmentIdx).toBeGreaterThan(omissionIdx);
+    expect(definitionIdx).toBeGreaterThan(segmentIdx);
+  }
+
+  it('assembleSystemPrompt: after the skills index, unreadable -> omission -> segment, before definitionSystemPrompt', () => {
+    // Reach: swapping the omission/segment push order in
+    // `renderInstructionsBody` fails; moving the memory pushes above the
+    // skills index fails; appending the memory segment after the definition
+    // prompt in `assembleSystemPrompt` fails -- all three measured.
+    assertOrder(assembleSystemPrompt({ context, instructions: fixture, definitionSystemPrompt: 'DEFINITION_PROMPT_MARKER' }));
+  });
+
+  it('composeSdkSystemPromptAppend: the identical order (same single writer)', () => {
+    assertOrder(composeSdkSystemPromptAppend(fixture, 'DEFINITION_PROMPT_MARKER')!);
   });
 });

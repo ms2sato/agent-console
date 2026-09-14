@@ -301,9 +301,14 @@ async function initializeLoop(
   init: InitCommand,
 ): Promise<AnyEngine | null> {
   if (init.engine === 'openai-api') {
+    // Memory layer (epic #1636 Phase 2): `memoryDir` is passed at every
+    // `loadInstructions` call site with no engine branch -- here, in
+    // `reassembleSystemPrompt` below, in the claude-sdk arm, and in the
+    // server's restore branch (embedded-agent-worker-service.ts).
     const instructions = await factories.loadInstructions({
       cwd: init.context.cwd,
       instructionsList: init.instructions,
+      memoryDir: init.context.memoryDir,
     });
     const systemPrompt = assembleSystemPrompt({
       context: init.context,
@@ -332,7 +337,13 @@ async function initializeLoop(
       const composite = new CompositeToolExecutor({
         mcp,
         builtins,
-        ctx: { locationPath: init.context.cwd, attachmentRoots: init.context.attachmentRoots },
+        ctx: {
+          locationPath: init.context.cwd,
+          attachmentRoots: init.context.attachmentRoots,
+          // Memory layer: the WRITE half's confinement root (Read/Write/Edit
+          // only -- see BuiltinToolContext.memoryRoot).
+          memoryRoot: init.context.memoryDir,
+        },
         ruleActivator,
         onNameCollision: (name) =>
           io.logError(`Builtin tool "${name}" collides with an MCP tool of the same name; builtin wins`),
@@ -458,6 +469,7 @@ async function initializeLoop(
         const reloadedInstructions = await factories.loadInstructions({
           cwd: init.context.cwd,
           instructionsList: init.instructions,
+          memoryDir: init.context.memoryDir,
         });
         return assembleSystemPrompt({
           context: init.context,
@@ -550,6 +562,7 @@ async function initializeLoop(
     const instructions = await factories.loadInstructions({
       cwd: init.context.cwd,
       instructionsList: init.instructions,
+      memoryDir: init.context.memoryDir,
     });
     const systemPromptAppend = composeSdkSystemPromptAppend(instructions, init.systemPrompt);
 

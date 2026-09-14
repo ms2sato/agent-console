@@ -2,23 +2,27 @@
  * System-prompt assembly for the embedded-agent loop.
  *
  * The prompt is assembled once per activation. `loadInstructions` discovers
- * instruction files across FIVE layers -- global (`~/.config/agent-console`),
+ * instruction files across SIX layers -- global (`~/.config/agent-console`),
  * chain (git root down to cwd), an opt-in `EmbeddedAgentDefinition.instructions`
  * file list, the `.claude/rules/*.md` rules layer (unscoped rules included,
  * scoped rules listed in an index line only -- see `loadRulesLayer` below),
- * and the `.claude/skills/**\/SKILL.md` skills layer (every discovered skill
+ * the `.claude/skills/**\/SKILL.md` skills layer (every discovered skill
  * listed as a name + description index line only, so the model can discover
  * a skill's existence without paying its full body's token cost up front --
- * see `loadSkillsLayer` below) -- then `assembleSystemPrompt` concatenates: (1)
- * context preamble -> (2) discovered/opt-in instruction segments, in
- * discovery order -> (3) the rules layer -> (4) the skills layer -> (5) the
+ * see `loadSkillsLayer` below), and the memory layer (the agent's own
+ * `<memoryDir>/MEMORY.md` index under a verbatim header, topic files never
+ * loaded eagerly -- see `loadMemoryLayer` below) -- then
+ * `assembleSystemPrompt` concatenates: (1) context preamble -> (2)
+ * discovered/opt-in instruction segments, in discovery order -> (3) the
+ * rules layer -> (4) the skills layer -> (5) the memory layer -> (6) the
  * operator-configured definition system prompt (last, so it wins on
  * conflict). Used identically by both engines (claude-sdk composes the same
  * layers via `composeSdkSystemPromptAppend`, minus the preamble -- see its
  * doc comment).
  *
  * See docs/design/embedded-agent-worker.md "Instruction loader" for the
- * normative spec (discovery order, caps, overflow-drop policy).
+ * normative spec (discovery order, caps, overflow-drop policy) and "Memory
+ * layer (epic #1636 Phase 2)" for the sixth layer.
  */
 
 import * as fsPromises from 'node:fs/promises';
@@ -32,6 +36,8 @@ export const INSTRUCTION_PER_FILE_CAP_BYTES = 16 * 1024;
 export const INSTRUCTION_AGGREGATE_CAP_BYTES = 48 * 1024;
 const RULES_LAYER_CAP_BYTES_DEFAULT = 160 * 1024;
 const SKILLS_LAYER_CAP_BYTES_DEFAULT = 16 * 1024;
+const MEMORY_LAYER_CAP_BYTES_DEFAULT = 16 * 1024;
+const MEMORY_LAYER_MAX_ENTRIES_DEFAULT = 500;
 
 /**
  * Non-positive or non-numeric env values fall back to `defaultValue` rather
@@ -39,8 +45,8 @@ const SKILLS_LAYER_CAP_BYTES_DEFAULT = 16 * 1024;
  * override through unclamped (e.g. `Number('-5') === -5`, which is truthy,
  * so `-5 || default` evaluates to `-5`), and a negative budget drops every
  * entry on the very first over-budget check (Architect N1). Shared by the
- * rules-layer and skills-layer cap parsers below -- both need the identical
- * clamping rule, just with a different default.
+ * rules-layer, skills-layer, and memory-layer cap parsers below -- all need
+ * the identical clamping rule, just with a different default.
  */
 function parseCapBytesEnv(raw: string | undefined, defaultValue: number): number {
   const n = Number(raw);
@@ -80,6 +86,56 @@ export function parseSkillsLayerCapBytes(raw: string | undefined): number {
  */
 export const SKILLS_LAYER_CAP_BYTES = parseSkillsLayerCapBytes(process.env.SKILLS_LAYER_CAP_BYTES);
 
+/** @internal Exported for testing -- see {@link parseRulesLayerCapBytes}'s doc comment. */
+export function parseMemoryLayerCapBytes(raw: string | undefined): number {
+  return parseCapBytesEnv(raw, MEMORY_LAYER_CAP_BYTES_DEFAULT);
+}
+
+/**
+ * Memory layer (epic #1636 Phase 2): the budget for the `MEMORY.md` index
+ * alone -- a fourth budget, independent of the three above. Sized like
+ * {@link SKILLS_LAYER_CAP_BYTES}, not like the rules cap, because an index
+ * line is one pointer, not a file's content (Claude Code's own auto-memory
+ * instructions keep `MEMORY.md` under 200 lines). Overflow drops WHOLE index
+ * lines largest-first and declares them in-band (`loadMemoryLayer`); a line
+ * is the unit, never a truncation mid-line. Same env-override clamp as its
+ * siblings, through {@link parseCapBytesEnv}.
+ */
+export const MEMORY_LAYER_CAP_BYTES = parseMemoryLayerCapBytes(process.env.MEMORY_LAYER_CAP_BYTES);
+
+/**
+ * Memory layer: how many bytes of `MEMORY.md` the loader READS -- distinct
+ * from {@link MEMORY_LAYER_CAP_BYTES}, which is how many it KEEPS. Two
+ * reasons for the 4x headroom: (1) the spec's overflow policy is "drop whole
+ * index lines largest-first", and choosing the largest among lines requires
+ * having read them -- an index up to 4x the budget is still trimmed by that
+ * policy in full rather than by file position; (2) it bounds the drop loop:
+ * `dropLargestUntilFits` is O(removals x survivors) with a UTF-8 encode per
+ * line per iteration, so an unbounded read of a model- or group-member-
+ * written file with many short lines is quadratic in its size (a 10 MB
+ * index of 20-byte lines is ~1e11 encode operations at every activation and
+ * compaction re-read); at 64 KiB the worst case is ~(READ_CAP / shortest
+ * line)^2 ~ 1e7, trivial. Content past this cap is never read; it is
+ * DECLARED in-band (`memory index truncated for size: ...`) and warn-logged.
+ */
+export const MEMORY_INDEX_READ_CAP_BYTES = 4 * MEMORY_LAYER_CAP_BYTES;
+
+/** @internal Exported for testing -- see {@link parseRulesLayerCapBytes}'s doc comment. */
+export function parseMemoryLayerMaxEntries(raw: string | undefined): number {
+  return parseCapBytesEnv(raw, MEMORY_LAYER_MAX_ENTRIES_DEFAULT);
+}
+
+/**
+ * Memory layer: how many `memoryDir` entries the activation-time listing
+ * access-checks before it stops and declares the remainder unchecked, so an
+ * activation's cost is O(min(entries, cap)) and a runaway directory degrades
+ * to a declared partial view rather than an unbounded stat loop. Not a byte
+ * budget, but clamped through the same {@link parseCapBytesEnv} rule (a
+ * non-positive or non-numeric override falls back to the default) rather
+ * than a second kind of override surface.
+ */
+export const MEMORY_LAYER_MAX_ENTRIES = parseMemoryLayerMaxEntries(process.env.MEMORY_LAYER_MAX_ENTRIES);
+
 const encoder = new TextEncoder();
 
 export interface SystemPromptContext {
@@ -105,6 +161,15 @@ export interface LoadInstructionsParams {
   homeDir?: string;
   /** Test override; defaults to process.env.XDG_CONFIG_HOME. */
   xdgConfigHome?: string;
+  /**
+   * Memory layer (epic #1636 Phase 2): the worker's server-owned memory
+   * directory (`init.context.memoryDir`). Absent = the layer is empty and
+   * silent (the same treatment a missing `.claude/rules` directory gets).
+   * Present = the header is ALWAYS rendered, even before `MEMORY.md` exists,
+   * because the WRITE half depends on the model knowing the path and the
+   * convention on its very first activation.
+   */
+  memoryDir?: string;
 }
 
 export interface LoadInstructionsResult {
@@ -159,6 +224,31 @@ export interface LoadInstructionsResult {
    * {@link ruleOmissionLine}. `undefined` when nothing was dropped.
    */
   skillOmissionLine?: string;
+  /**
+   * Memory layer: the rendered header (verbatim from the spec, path
+   * substituted) followed by the `MEMORY.md` index content -- or the
+   * absent-index line when the file does not exist or cannot be read.
+   * `undefined` only when `memoryDir` was not supplied.
+   */
+  memorySegment?: string;
+  /**
+   * Memory layer: declares, in-band, which index lines were dropped whole to
+   * satisfy {@link MEMORY_LAYER_CAP_BYTES} -- the memory-layer analog of
+   * {@link skillOmissionLine}. `undefined` when nothing was dropped.
+   */
+  memoryOmissionLine?: string;
+  /**
+   * Memory layer: the activation-time LISTING's declarations, rendered as
+   * one block -- `memory files unreadable: <names>`, `memory files not in
+   * the index: <names>`, and `memory directory has <N> files; <M> not
+   * checked` -- one line each, newline-joined, in that order, only the ones
+   * that apply. One field rather than three because they are three facts
+   * from ONE `readdir` (see `loadMemoryLayer`) and they render at ONE
+   * position in the layer order; "line" here is the sibling-field sense
+   * (a declared-in-band block, not a segment). `undefined` when the listing
+   * found nothing to declare.
+   */
+  memoryUnreadableLine?: string;
 }
 
 /**
@@ -227,9 +317,13 @@ export function formatRuleSegments(segments: InstructionSegment[]): string[] {
  * prompt (appended by each caller after this, so it always wins on conflict).
  * Single writer of this ordering: instruction segments, then unscoped rule
  * segments, then the scoped-rules index line if present, then the skills
- * index line if present. All capping already happened inside
- * `loadInstructions`/`loadRulesLayer`/`loadSkillsLayer` -- nothing here
- * re-caps.
+ * index line if present, then the memory layer (its listing declarations,
+ * its omission line, then the segment -- last among the discovered layers
+ * because it is the agent's own, most specific and most recent knowledge;
+ * the definition system prompt each caller appends after this still wins
+ * on conflict). All capping already happened inside
+ * `loadInstructions`/`loadRulesLayer`/`loadSkillsLayer`/`loadMemoryLayer`
+ * -- nothing here re-caps.
  */
 function renderInstructionsBody(instructions: LoadInstructionsResult): string[] {
   const sections = [
@@ -247,6 +341,15 @@ function renderInstructionsBody(instructions: LoadInstructionsResult): string[] 
   }
   if (instructions.skillIndexLine !== undefined) {
     sections.push(instructions.skillIndexLine);
+  }
+  if (instructions.memoryUnreadableLine !== undefined) {
+    sections.push(instructions.memoryUnreadableLine);
+  }
+  if (instructions.memoryOmissionLine !== undefined) {
+    sections.push(instructions.memoryOmissionLine);
+  }
+  if (instructions.memorySegment !== undefined) {
+    sections.push(instructions.memorySegment);
   }
   return sections;
 }
@@ -320,31 +423,31 @@ async function tryReadTextFile(filePath: string): Promise<ReadTextResult> {
 }
 
 /**
- * How much of a `SKILL.md` file `tryReadSkillFrontmatterPrefix` reads --
+ * How much of a `SKILL.md` file `tryReadTextPrefix` reads for the skills layer --
  * generous headroom for a `name:`/`description:` frontmatter block, well
  * under what any reasonable skill would need for just those two fields.
  */
 const SKILL_FRONTMATTER_READ_CAP_BYTES = 4 * 1024;
 
 /**
- * Bounded sibling of {@link tryReadTextFile}, used ONLY by `loadSkillsLayer`'s
- * per-file loop below. `loadSkillsLayer` never needs a skill's full body --
- * only its `name:`/`description:` frontmatter -- so reading the whole file
- * the way `tryReadTextFile` does would make activation latency and memory
- * use scale with an author-controlled `SKILL.md` size that nothing
- * downstream ever reads (unlike the rules layer, where the full rule
- * content genuinely is the payload). `Bun.file(...).slice(0, N)` maps a byte
- * range without reading the rest of the file, so this stays O(cap) instead
- * of O(file size). Same error-shape normalization as `tryReadTextFile`, so
- * callers branch identically on `ok`/`code`/`message`. If a file's closing
- * frontmatter delimiter falls beyond the cap, {@link FRONTMATTER_RE} simply
- * fails to match on the truncated prefix and `parseSkillFrontmatter`'s
- * existing missing-frontmatter fallback (directory name, empty description,
- * warn) runs -- no separate handling needed for the truncation case itself.
+ * Bounded sibling of {@link tryReadTextFile}: reads at most `capBytes` of
+ * the file. `Bun.file(...).slice(0, N)` maps a byte range without reading
+ * the rest of the file, so a read stays O(cap) instead of O(file size) --
+ * the property both callers need when the file's size is author- or
+ * model-controlled and nothing downstream reads past the cap. Same
+ * error-shape normalization as `tryReadTextFile`, so callers branch
+ * identically on `ok`/`code`/`message`.
+ *
+ * Callers: `loadSkillsLayer`'s per-file loop (only a `SKILL.md`'s
+ * `name:`/`description:` frontmatter is needed -- if the closing delimiter
+ * falls beyond the cap, {@link FRONTMATTER_RE} simply fails to match and
+ * `parseSkillFrontmatter`'s missing-frontmatter fallback runs), and
+ * `loadMemoryLayer`'s index read ({@link MEMORY_INDEX_READ_CAP_BYTES}, which
+ * detects and declares the remainder itself).
  */
-async function tryReadSkillFrontmatterPrefix(filePath: string): Promise<ReadTextResult> {
+async function tryReadTextPrefix(filePath: string, capBytes: number): Promise<ReadTextResult> {
   try {
-    const content = await Bun.file(filePath).slice(0, SKILL_FRONTMATTER_READ_CAP_BYTES).text();
+    const content = await Bun.file(filePath).slice(0, capBytes).text();
     return { ok: true, content };
   } catch (err) {
     const code = (isErrnoException(err) ? err.code : undefined) ?? 'UNKNOWN';
@@ -880,7 +983,7 @@ async function loadSkillsLayer(cwd: string): Promise<SkillsLayerResult> {
 
   const skills: SkillFile[] = [];
   for (const origin of files) {
-    const read = await tryReadSkillFrontmatterPrefix(origin);
+    const read = await tryReadTextPrefix(origin, SKILL_FRONTMATTER_READ_CAP_BYTES);
     if (!read.ok) {
       console.warn(`Skipping skill file ${origin}: ${read.message}`);
       continue;
@@ -912,6 +1015,251 @@ async function loadSkillsLayer(cwd: string): Promise<SkillsLayerResult> {
   }
 
   return { skillIndexLine, skillOmissionLine };
+}
+
+/**
+ * Memory layer (epic #1636 Phase 2): the header rendered ABOVE the
+ * `MEMORY.md` index, verbatim from docs/design/embedded-agent-worker.md
+ * "The header text" with only the path substituted -- the convention is
+ * stated in-band where the model can act on it, and the cross-user property
+ * from the spec's keying section is stated where it matters.
+ */
+export function formatMemoryHeader(memoryDir: string): string {
+  return (
+    `--- Memory: ${memoryDir} ---\n` +
+    'This directory is your persistent memory for this agent definition on this repository. ' +
+    'It is shared with every user who runs this definition on this repository (on a single-user install that is only you): ' +
+    "record knowledge about the work, never one person's private details. " +
+    'MEMORY.md is its index; its current contents follow. ' +
+    'Each memory is one file holding one fact, with frontmatter (name, description, metadata.type: user | feedback | project | reference). ' +
+    'After writing a file, add a one-line pointer to MEMORY.md: `- [Title](file.md) — hook` — ' +
+    "re-read MEMORY.md first, then append the line with Edit anchored on the file's current tail " +
+    '(never rewrite MEMORY.md with Write; other sessions may be writing it too). ' +
+    'Read a topic file with Read when its hook is relevant; never put memory content in MEMORY.md itself.'
+  );
+}
+
+/** Rendered in place of the index when `MEMORY.md` is absent or unreadable. */
+export const MEMORY_ABSENT_INDEX_LINE = '(no MEMORY.md yet — create it with your first entry)';
+
+export const MEMORY_INDEX_FILE_NAME = 'MEMORY.md';
+
+/**
+ * How many names an in-band memory declaration lists before it falls back to
+ * "and N more" -- every declaration this layer renders is bounded by it, so a
+ * runaway directory cannot turn a one-line declaration into the prompt's
+ * largest section.
+ */
+export const MEMORY_DECLARATION_MAX_NAMES = 20;
+
+/**
+ * The index convention's line shape, `- [Title](file.md) — hook`: the link
+ * target is what an omission declaration names, because it is the pointer's
+ * identity (the title and hook are free text; the target is what the model
+ * would `Read`). Only the leading list marker + link are matched -- the hook
+ * and its separator are free-form and not part of the shape.
+ */
+const MEMORY_INDEX_LINK_RE = /^\s*[-*]\s*\[[^\]]*\]\(([^)\s]+)\)/;
+
+function memoryIndexLinkTarget(line: string): string | null {
+  const match = line.match(MEMORY_INDEX_LINK_RE);
+  if (!match) return null;
+  const target = match[1];
+  return target.startsWith('./') ? target.slice(2) : target;
+}
+
+/**
+ * `<label>: a, b, c` for up to {@link MEMORY_DECLARATION_MAX_NAMES} names;
+ * past that, the first 20 sorted names plus a count of the rest, so the
+ * declaration stays one bounded line however large the directory is.
+ */
+function formatMemoryDeclaration(label: string, names: string[]): string {
+  const sorted = [...names].sort();
+  if (sorted.length <= MEMORY_DECLARATION_MAX_NAMES) {
+    return `${label}: ${sorted.join(', ')}`;
+  }
+  const shown = sorted.slice(0, MEMORY_DECLARATION_MAX_NAMES).join(', ');
+  return `${label}: ${shown}, and ${sorted.length - MEMORY_DECLARATION_MAX_NAMES} more (${sorted.length} total)`;
+}
+
+interface MemoryLayerResult {
+  memorySegment: string;
+  memoryOmissionLine?: string;
+  memoryUnreadableLine?: string;
+}
+
+/**
+ * Memory layer (epic #1636 Phase 2, READ half): reads exactly ONE file,
+ * `<memoryDir>/MEMORY.md`, and renders it under {@link formatMemoryHeader}.
+ * Topic files are NEVER loaded eagerly -- the model opens them on demand
+ * with `Read`, the same way it opens a `SKILL.md` from the skills index. The
+ * index is the presence of memory in the prompt; the topic files are its
+ * content.
+ *
+ * The header is ALWAYS rendered once `memoryDir` is supplied, even when
+ * `MEMORY.md` does not exist yet (rendered as {@link MEMORY_ABSENT_INDEX_LINE},
+ * not as an absent layer): the WRITE half depends on the model knowing the
+ * path and the convention on its very first activation.
+ *
+ * Over {@link MEMORY_LAYER_CAP_BYTES}, whole index lines are dropped
+ * largest-first through the shared {@link dropLargestUntilFits} loop and the
+ * loss is declared in-band (`memory index lines omitted for size: ...`,
+ * naming the dropped lines' link targets, or counting the ones without the
+ * convention's shape) -- the same declared-omission shape the rules and
+ * skills layers have. The index's non-list lines (heading, blanks) count
+ * toward the budget but are never the largest line in any realistic index.
+ *
+ * The activation-time listing -- one non-recursive `readdir` plus one access
+ * check per regular file, bounded by {@link MEMORY_LAYER_MAX_ENTRIES}, no
+ * topic content read -- declares, never silently skips: files the running
+ * user cannot read (the umask-077 residue of a shared directory; the model
+ * must know an index entry it cannot open is a permissions fact, not a
+ * missing memory), files no index line points at (the visible, recoverable
+ * form of a lost index update under last-writer-wins), and entries past the
+ * cap that were not checked at all. Every declaration is also warn-logged to
+ * stderr -- never stdout, which is the subprocess's NDJSON channel (see
+ * `resolveDirectoryInstructionFile`'s doc comment).
+ */
+async function loadMemoryLayer(memoryDir: string): Promise<MemoryLayerResult> {
+  const indexPath = path.join(memoryDir, MEMORY_INDEX_FILE_NAME);
+  // Bounded read (MEMORY_INDEX_READ_CAP_BYTES): the file is model-written,
+  // so its size is not ours to trust at activation time. `Bun.file().size`
+  // is a stat, not a read; it tells us whether anything lies past the cap.
+  const indexFile = Bun.file(indexPath);
+  const indexRead = await tryReadTextPrefix(indexPath, MEMORY_INDEX_READ_CAP_BYTES);
+  const indexSizeBytes = indexRead.ok ? indexFile.size : 0;
+  const indexTruncated = indexRead.ok && indexSizeBytes > MEMORY_INDEX_READ_CAP_BYTES;
+
+  let indexLines: string[] = [];
+  let indexUnreadable = false;
+  let unreadBytes = 0;
+  if (indexRead.ok) {
+    indexLines = indexRead.content.replace(/\r?\n$/, '').split(/\r?\n/);
+    if (indexTruncated) {
+      // The prefix may end mid-line. Unless it ends exactly at a line
+      // boundary, its last segment is a partial line: discarded rather than
+      // rendered as if complete, and its bytes are counted with the unread
+      // remainder in the declaration.
+      const partial = indexRead.content.endsWith('\n') ? '' : (indexLines.pop() ?? '');
+      unreadBytes = indexSizeBytes - MEMORY_INDEX_READ_CAP_BYTES + encoder.encode(partial).length;
+    }
+  } else if (indexRead.code !== 'ENOENT') {
+    // Exists but cannot be read: declared below via the listing (it is a
+    // regular file the access check also fails on), and rendered as the
+    // absent-index line -- a permissions fact, not a missing memory.
+    indexUnreadable = true;
+    console.warn(`Failed to read memory index ${indexPath}: ${indexRead.message}`);
+  }
+
+  // Cap: whole-line drop, largest-first, declared in-band.
+  let memoryOmissionLine: string | undefined;
+  let surviving = indexLines;
+  if (indexLines.length > 0) {
+    const { survivors, dropped } = dropLargestUntilFits(
+      indexLines,
+      MEMORY_LAYER_CAP_BYTES,
+      (line) => encoder.encode(line).length,
+    );
+    surviving = survivors;
+    if (dropped.length > 0) {
+      const targets: string[] = [];
+      let unshaped = 0;
+      for (const line of dropped) {
+        const target = memoryIndexLinkTarget(line);
+        if (target !== null) targets.push(target);
+        else unshaped += 1;
+      }
+      const parts: string[] = [];
+      if (targets.length > 0) {
+        parts.push(formatMemoryDeclaration('memory index lines omitted for size', targets));
+      }
+      if (unshaped > 0) {
+        parts.push(
+          targets.length > 0
+            ? `and ${unshaped} line(s) without a link target`
+            : `memory index lines omitted for size: ${unshaped} line(s) without a link target`,
+        );
+      }
+      memoryOmissionLine = parts.join(', ');
+      console.warn(
+        `Dropped ${dropped.length} memory index line(s) to satisfy the ${MEMORY_LAYER_CAP_BYTES}-byte memory budget: ${memoryOmissionLine}`,
+      );
+    }
+  }
+  if (indexTruncated) {
+    const truncation = `memory index truncated for size: ${unreadBytes} bytes past the first ${MEMORY_INDEX_READ_CAP_BYTES} not read`;
+    memoryOmissionLine = memoryOmissionLine === undefined ? truncation : `${memoryOmissionLine}; ${truncation}`;
+    console.warn(`Memory index ${indexPath} is ${indexSizeBytes} bytes; ${truncation}`);
+  }
+
+  // Listing: one readdir, one access check per regular file, bounded.
+  const declarations: string[] = [];
+  let entries: import('node:fs').Dirent[] = [];
+  try {
+    entries = await fsPromises.readdir(memoryDir, { withFileTypes: true });
+  } catch (err) {
+    // The server creates and verifies this directory before every spawn, so
+    // an unlistable directory here is a fact worth declaring, not a routine
+    // absence -- but never fatal: the header still tells the model the path.
+    const message = err instanceof Error ? err.message : String(err);
+    console.warn(`Failed to list memory directory ${memoryDir}: ${message}`);
+    declarations.push(`memory directory could not be listed: ${message}`);
+  }
+
+  const files = entries.filter((e) => e.isFile()).map((e) => e.name).sort();
+  const checked = files.slice(0, MEMORY_LAYER_MAX_ENTRIES);
+  const unchecked = files.length - checked.length;
+
+  const indexedTargets = new Set<string>();
+  for (const line of indexLines) {
+    const target = memoryIndexLinkTarget(line);
+    if (target !== null) indexedTargets.add(target);
+  }
+
+  const unreadable: string[] = [];
+  const notInIndex: string[] = [];
+  for (const name of checked) {
+    let readable = true;
+    try {
+      await fsPromises.access(path.join(memoryDir, name), fsPromises.constants.R_OK);
+    } catch {
+      readable = false;
+    }
+    if (!readable) {
+      unreadable.push(name);
+      continue;
+    }
+    if (name !== MEMORY_INDEX_FILE_NAME && !indexedTargets.has(name)) {
+      notInIndex.push(name);
+    }
+  }
+  if (indexUnreadable && !unreadable.includes(MEMORY_INDEX_FILE_NAME)) {
+    // The read above failed for a reason `access` did not reproduce (e.g. a
+    // race, or EISDIR); declare it under the same line anyway.
+    unreadable.push(MEMORY_INDEX_FILE_NAME);
+  }
+
+  if (unreadable.length > 0) {
+    declarations.push(formatMemoryDeclaration('memory files unreadable', unreadable));
+  }
+  if (notInIndex.length > 0) {
+    declarations.push(formatMemoryDeclaration('memory files not in the index', notInIndex));
+  }
+  if (unchecked > 0) {
+    declarations.push(`memory directory has ${files.length} files; ${unchecked} not checked`);
+  }
+  for (const declaration of declarations) {
+    console.warn(`Memory layer (${memoryDir}): ${declaration}`);
+  }
+
+  const body = indexRead.ok ? surviving.join('\n') : MEMORY_ABSENT_INDEX_LINE;
+  const memorySegment = `${formatMemoryHeader(memoryDir)}\n${body}`;
+
+  return {
+    memorySegment,
+    ...(memoryOmissionLine !== undefined ? { memoryOmissionLine } : {}),
+    ...(declarations.length > 0 ? { memoryUnreadableLine: declarations.join('\n') } : {}),
+  };
 }
 
 /**
@@ -1021,5 +1369,9 @@ export async function loadInstructions(
   // rules layer -- see SKILLS_LAYER_CAP_BYTES's doc comment.
   const skillsLayer = await loadSkillsLayer(cwd);
 
-  return { segments, ...rulesLayer, ...skillsLayer };
+  // Memory layer (epic #1636 Phase 2): a fourth independent budget; empty
+  // and silent when no memoryDir was supplied -- see loadMemoryLayer.
+  const memoryLayer = params.memoryDir !== undefined ? await loadMemoryLayer(params.memoryDir) : {};
+
+  return { segments, ...rulesLayer, ...skillsLayer, ...memoryLayer };
 }

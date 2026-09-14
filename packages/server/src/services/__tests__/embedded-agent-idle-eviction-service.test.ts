@@ -9,7 +9,11 @@
  * a single test, and the sibling file's single-subprocess fake cannot express
  * that.
  */
-import { describe, it, expect, mock } from 'bun:test';
+import { describe, it, expect, mock, afterAll } from 'bun:test';
+import { randomUUID } from 'node:crypto';
+import { mkdir, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import type { EmbeddedAgentDefinition, ExitReason } from '@agent-console/shared';
 import type { SpawnAsUserFn, SpawnAsUserOpts, SpawnAsUserResult } from '../privilege-elevation.js';
 import { SessionDataPathResolver } from '../../lib/session-data-path-resolver.js';
@@ -22,6 +26,21 @@ import {
   EmbeddedAgentActivationError,
   GENERIC_EMBEDDED_ACTIVATION_FAILURE_MESSAGE,
 } from '../embedded-agent-worker-service.js';
+
+/**
+ * Memory layer (epic #1636 Phase 2): `getPathResolver` needs a REAL base
+ * directory (not the fake `/test/config/repositories/test-repo` path used
+ * before this layer existed), because `EmbeddedAgentWorkerService.activate`
+ * now calls `ensureMemoryDirFn` (default `prepareMemoryDir`) on every
+ * activation, which performs a real `mkdir` + `lstat` under the resolver's
+ * base dir. See `embedded-agent-worker-service.test.ts`'s sibling comment.
+ */
+const TEST_BASE_DIR = join(tmpdir(), `ea-idle-eviction-test-${randomUUID()}`);
+await mkdir(TEST_BASE_DIR, { recursive: true });
+
+afterAll(async () => {
+  await rm(TEST_BASE_DIR, { recursive: true, force: true }).catch(() => {});
+});
 
 const MCP_BASE_URL = 'http://localhost:3457/mcp';
 const ENTRY_PATH = '/install/embedded-agent/src/main.ts';
@@ -242,7 +261,7 @@ function setup(opts?: {
   const service = new EmbeddedAgentWorkerService({
     getSession: (id) => (id === session.id ? session : undefined),
     persistSession: (async () => {}) as never,
-    getPathResolver: () => new SessionDataPathResolver('/test/config/repositories/test-repo'),
+    getPathResolver: () => new SessionDataPathResolver(TEST_BASE_DIR),
     getEmbeddedAgent: () => opts?.definition ?? SDK_DEFINITION,
     resolveSpawnUsername: async () => USERNAME,
     mcpTokenRegistry: { mint: (() => 'mcp-token') as never, revokeByWorker: (() => {}) as never },

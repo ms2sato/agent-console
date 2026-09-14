@@ -242,6 +242,10 @@ const EmbeddedAgentInitCommandBaseFields = {
     repositoryId: v.optional(v.string()),
     cwd: v.string(),
     attachmentRoots: v.optional(v.array(v.string())),
+    // Memory layer (epic #1636 Phase 2). `strictObject` means omitting this
+    // line would REJECT every production `init` frame at the subprocess
+    // boundary, not strip the field -- see the type's doc comment.
+    memoryDir: v.optional(v.string()),
   }),
   systemPrompt: v.optional(v.string()),
   enabledTools: v.optional(EnabledToolsSchema),

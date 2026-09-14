@@ -150,4 +150,42 @@ describe('readTool', () => {
       expect(result.result).not.toContain('�');
     });
   });
+
+  // Memory layer (epic #1636 Phase 2): memoryRoot is a SECOND extra root,
+  // beside attachmentRoots. Reach: mutating read.ts to forward only
+  // `ctx.attachmentRoots ?? []` fails the first pin; mutating it to forward
+  // `[ctx.memoryRoot]` unconditionally (dropping attachmentRoots) fails the
+  // sibling #1570 pin above -- both measured.
+  it('reads a file under ctx.memoryRoot, outside locationPath (memory layer)', async () => {
+    const memoryRoot = await fsPromises.mkdtemp(path.join(os.tmpdir(), 'embedded-agent-memory-'));
+    try {
+      const target = path.join(memoryRoot, 'topic.md');
+      await fsPromises.writeFile(target, 'a remembered fact');
+
+      const result = await readTool.execute({ path: target }, { locationPath, memoryRoot });
+
+      expect(result.ok).toBe(true);
+      expect(result.result).toBe('1\ta remembered fact');
+    } finally {
+      await fsPromises.rm(memoryRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('still rejects a path outside locationPath, attachmentRoots, AND memoryRoot with the verbatim message', async () => {
+    const memoryRoot = await fsPromises.mkdtemp(path.join(os.tmpdir(), 'embedded-agent-memory-'));
+    const attachmentRoot = await fsPromises.mkdtemp(path.join(os.tmpdir(), 'embedded-agent-attach-'));
+    const elsewhere = await fsPromises.mkdtemp(path.join(os.tmpdir(), 'embedded-agent-elsewhere-'));
+    try {
+      const target = path.join(elsewhere, 'x.txt');
+      await fsPromises.writeFile(target, 'x');
+      const result = await readTool.execute(
+        { path: target },
+        { locationPath, attachmentRoots: [attachmentRoot], memoryRoot },
+      );
+      expect(result.ok).toBe(false);
+      expect(result.result).toBe('Access outside session location is not permitted.');
+    } finally {
+      await Promise.all([memoryRoot, attachmentRoot, elsewhere].map((d) => fsPromises.rm(d, { recursive: true, force: true })));
+    }
+  });
 });

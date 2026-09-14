@@ -9,6 +9,7 @@
  * See docs/design/session-data-path.md for the full specification.
  */
 import * as path from 'path';
+import { createHash } from 'crypto';
 
 export type SessionDataScope = 'quick' | 'repository';
 
@@ -117,6 +118,29 @@ export function computeSessionDataBaseDir(
   // Exhaustive check — reachable only if a caller passes an invalid scope
   // value via a type cast.
   throw new InvalidSessionDataScopeError(`unknown scope: ${String(scope)}`);
+}
+
+/**
+ * Compute the `cwd-slug` used to key a quick session's memory directory
+ * (epic #1636 Phase 2, `docs/design/embedded-agent-worker.md` "Keying").
+ *
+ * `<sanitized basename of realCwd>-<first 12 hex chars of sha256(realCwd)>`.
+ * The basename keeps the directory human-recognizable when browsing the
+ * data root; the hash makes two different paths with the same basename
+ * distinct — the SDK's own lossy replace-everything-with-`-` slug collides
+ * on `/a/b` vs `/a-b`. The result always satisfies {@link SLUG_PATTERN}'s
+ * single-segment grammar (no `/`) and is never `.` / `..` (the hash suffix
+ * guarantees a non-degenerate result even when the basename is empty).
+ *
+ * Pure function — does not touch the filesystem. Callers pass an already
+ * realpath'd `cwd`; this function does not resolve symlinks itself.
+ */
+export function computeQuickCwdSlug(realCwd: string): string {
+  const rawBasename = path.basename(realCwd);
+  const sanitized = rawBasename.replace(/[^A-Za-z0-9._-]/g, '-').slice(0, 64);
+  const basename = sanitized.length > 0 ? sanitized : 'root';
+  const hash = createHash('sha256').update(realCwd).digest('hex').slice(0, 12);
+  return `${basename}-${hash}`;
 }
 
 /**

@@ -141,6 +141,19 @@ describe('resolveConfinedPath', () => {
       }
     });
 
+    it('confines a path under the SECOND of two extraRoots (memory layer: attachmentRoots + memoryRoot forwarded together by Read)', async () => {
+      // Reach: mutating `resolveExistingRoots(extraRoots)` to
+      // `resolveExistingRoots(extraRoots.slice(0, 1))` fails -- measured.
+      const memoryRoot = await fsPromises.mkdtemp(path.join(os.tmpdir(), 'embedded-agent-memory-'));
+      try {
+        const target = path.join(memoryRoot, 'MEMORY.md');
+        const result = await resolveConfinedPath(target, locationPath, [outsideDir, memoryRoot]);
+        expect(result.ok).toBe(true);
+      } finally {
+        await fsPromises.rm(memoryRoot, { recursive: true, force: true });
+      }
+    });
+
     it('does not crash and does not confine anything when an extraRoots entry does not exist on disk', async () => {
       const missingRoot = path.join(outsideDir, 'does-not-exist-root');
       const target = path.join(missingRoot, 'attachment.txt');

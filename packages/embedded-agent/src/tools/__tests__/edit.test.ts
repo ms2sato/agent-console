@@ -231,4 +231,138 @@ describe('editTool', () => {
     expect(result).toEqual({ ok: false, result: 'aborted' });
     await expect(fsPromises.readFile(target, 'utf-8')).resolves.toBe('hello world');
   });
+
+  // Memory layer (epic #1636 Phase 2): edit.ts forwards memoryRoot -- and
+  // ONLY memoryRoot; the #1570 attachmentRoots rejection above stays true.
+  // Reach: mutating edit.ts back to `resolveConfinedPath(filePath,
+  // ctx.locationPath)` fails the first pin; mutating it to forward
+  // `ctx.attachmentRoots` fails the #1570 pin above -- both measured.
+  it('edits a file under ctx.memoryRoot, outside locationPath (memory layer)', async () => {
+    const memoryRoot = await fsPromises.mkdtemp(path.join(os.tmpdir(), 'embedded-agent-memory-'));
+    try {
+      const target = path.join(memoryRoot, 'MEMORY.md');
+      await fsPromises.writeFile(target, '# Memory Index\n- [A](a.md) — a\n');
+
+      const result = await editTool.execute(
+        { file_path: target, old_string: '- [A](a.md) — a\n', new_string: '- [A](a.md) — a\n- [B](b.md) — b\n' },
+        { locationPath, memoryRoot },
+      );
+
+      expect(result.ok).toBe(true);
+      await expect(fsPromises.readFile(target, 'utf-8')).resolves.toBe('# Memory Index\n- [A](a.md) — a\n- [B](b.md) — b\n');
+    } finally {
+      await fsPromises.rm(memoryRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('a path under ctx.attachmentRoots stays rejected even when memoryRoot is ALSO set (the two roots are not one list)', async () => {
+    const memoryRoot = await fsPromises.mkdtemp(path.join(os.tmpdir(), 'embedded-agent-memory-'));
+    const attachmentRoot = await fsPromises.mkdtemp(path.join(os.tmpdir(), 'embedded-agent-attach-'));
+    try {
+      const target = path.join(attachmentRoot, 'upload.txt');
+      await fsPromises.writeFile(target, 'a');
+      const result = await editTool.execute(
+        { file_path: target, old_string: 'a', new_string: 'b' },
+        { locationPath, attachmentRoots: [attachmentRoot], memoryRoot },
+      );
+      expect(result.ok).toBe(false);
+      expect(result.result).toBe('Access outside session location is not permitted.');
+    } finally {
+      await Promise.all([memoryRoot, attachmentRoot].map((d) => fsPromises.rm(d, { recursive: true, force: true })));
+    }
+  });
+
+  // Memory layer, concurrency mitigation 2 (docs/design/embedded-agent-worker.md
+  // "Concurrent writers"): two Edits racing on one MEMORY.md through the
+  // real atomicWrite. The index-append convention anchors `old_string` on
+  // the file's current tail, so it is a compare-and-swap on the anchor.
+  describe('two Edits on one file (memory-index append convention)', () => {
+    const INDEX = '# Memory Index\n- [A](a.md) — a\n';
+    const TAIL = '- [A](a.md) — a\n';
+
+    it('sequential, anchor MOVED: a second Edit anchored on a tail line the first Edit rewrote is rejected with the verbatim zero-match message, and the file is the first Edit\'s whole result', async () => {
+      // The compare-and-swap is on the anchor BYTES: it fires when another
+      // writer changed the anchored line (here: the first Edit rewrote the
+      // tail line's hook while appending). Reach: mutating `countOccurrences`
+      // to report 1 when it finds 0 makes the loser "succeed" -- fails the
+      // rejection pin AND the final-content pin -- measured.
+      const target = path.join(locationPath, 'MEMORY.md');
+      await fsPromises.writeFile(target, INDEX);
+
+      const first = await editTool.execute(
+        { file_path: target, old_string: TAIL, new_string: `- [A](a.md) — a (revised)\n- [B](b.md) — b\n` },
+        { locationPath },
+      );
+      expect(first.ok).toBe(true);
+
+      // The second writer re-read BEFORE the first landed (its anchor is the
+      // old tail line), and now finds that line gone.
+      const second = await editTool.execute(
+        { file_path: target, old_string: TAIL, new_string: `${TAIL}- [C](c.md) — c\n` },
+        { locationPath },
+      );
+      expect(second.ok).toBe(false);
+      expect(second.result).toBe('not-found: old_string does not match any content in the file');
+      await expect(fsPromises.readFile(target, 'utf-8')).resolves.toBe('# Memory Index\n- [A](a.md) — a (revised)\n- [B](b.md) — b\n');
+    });
+
+    it('sequential, pure APPEND by the other writer: the stale tail anchor still matches (substring, not EOF), so the second line is inserted after it -- both lines survive, none is lost', async () => {
+      // Recorded as a measured limit of mitigation 2, not a defect: `Edit`
+      // has no end-of-file anchor, so another writer's append never removes
+      // an earlier tail from the file. The outcome is a reorder (the late
+      // line lands before the earlier writer's), never a lost line -- which
+      // is the property the convention actually needs. A lost line needs
+      // both writers to have read the SAME content before either renamed
+      // (the concurrent case below), or a `Write` rewrite. Reach: mutating
+      // `Edit` to replace the LAST occurrence only (EOF-anchored semantics)
+      // would still pass this pin; mutating `countOccurrences` to 0 fails
+      // it -- measured.
+      const target = path.join(locationPath, 'MEMORY.md');
+      await fsPromises.writeFile(target, INDEX);
+
+      const first = await editTool.execute(
+        { file_path: target, old_string: TAIL, new_string: `${TAIL}- [B](b.md) — b\n` },
+        { locationPath },
+      );
+      expect(first.ok).toBe(true);
+      const second = await editTool.execute(
+        { file_path: target, old_string: TAIL, new_string: `${TAIL}- [C](c.md) — c\n` },
+        { locationPath },
+      );
+      expect(second.ok).toBe(true);
+      await expect(fsPromises.readFile(target, 'utf-8')).resolves.toBe(`${INDEX}- [C](c.md) — c\n- [B](b.md) — b\n`);
+    });
+
+    it('concurrent (Promise.all): the file is never torn -- it ends as exactly one writer\'s WHOLE result, and no temp file is left behind', async () => {
+      // Both Edits read the same content before either renames, so both
+      // may report ok (that is the accepted lost-update class); what the
+      // pin guards is that the file is one whole outcome, never a mix. Reach
+      // MEASURED HONESTLY: replacing atomicWrite's temp+rename with a direct
+      // `Bun.write(resolvedPath, content)` did NOT fail this pin at this
+      // file size (a small single write is not observably torn) -- the pin's
+      // reach is the whole-file-outcome and temp-cleanup assertions, not
+      // atomicity itself, which no deterministic test at this size can
+      // measure. Mutating atomicWrite to skip the temp-file cleanup on a
+      // forced rename failure is covered by atomic-write.test.ts.
+      const target = path.join(locationPath, 'MEMORY.md');
+      await fsPromises.writeFile(target, INDEX);
+
+      const [b, c] = await Promise.all([
+        editTool.execute({ file_path: target, old_string: TAIL, new_string: `${TAIL}- [B](b.md) — b\n` }, { locationPath }),
+        editTool.execute({ file_path: target, old_string: TAIL, new_string: `${TAIL}- [C](c.md) — c\n` }, { locationPath }),
+      ]);
+      expect(b.ok || c.ok).toBe(true);
+
+      const finalContent = await fsPromises.readFile(target, 'utf-8');
+      const wholeOutcomes = [
+        `${INDEX}- [B](b.md) — b\n`,
+        `${INDEX}- [C](c.md) — c\n`,
+        `${INDEX}- [B](b.md) — b\n- [C](c.md) — c\n`,
+        `${INDEX}- [C](c.md) — c\n- [B](b.md) — b\n`,
+      ];
+      expect(wholeOutcomes).toContain(finalContent);
+      const leftovers = (await fsPromises.readdir(locationPath)).filter((n) => n.includes('.tmp-'));
+      expect(leftovers).toEqual([]);
+    });
+  });
 });
