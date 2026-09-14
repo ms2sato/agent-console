@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'bun:test';
 import { spawnSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 
@@ -176,5 +177,47 @@ describe('setup-multiuser-for-ubuntu.sh: --public-origin validation', () => {
     const { status, stderr } = runDryRunExpectingFailure(['--public-origin', 'http://user:pass@host.com']);
     expect(status).not.toBe(0);
     expect(stderr).toContain('invalid --public-origin');
+  });
+});
+
+// Step 8 enable-guard call-site pin (Issue #1707, Architect-required
+// #1673/#1690-shape static pin on PR #1710 review): the guard's actual
+// runtime behavior (dist_artifact_present) is unit-tested against the lib
+// file directly in setup-multiuser-checks.test.mjs, which cannot see
+// whether Step 8 in THIS script still calls it, still offers both systemctl
+// forms, or still checks it before -- not after -- the --now invocation. A
+// static source-text pin on the exact call site is what catches a future
+// edit that quietly drops the guard or reverts to unconditional --now,
+// mirroring update-and-deploy-for-multiuser-ubuntu.test.mjs's
+// "runs both gates before the actual restart command, not after" pin.
+//
+// Polarity (measured by hand): reverting Step 8 to the pre-#1707 shape --
+// deleting the `if dist_artifact_present ...; then ... else ... fi` wrapper
+// and its DIST_ARTIFACT_PRESENT bookkeeping, leaving only the unconditional
+// `run systemctl enable --now agent-console` -- makes both the
+// dist_artifact_present-call assertion and the "both forms present"
+// assertion fail (dist_artifact_present is absent from the text entirely,
+// and the plain `systemctl enable agent-console` form -- with no --now --
+// never appears). The ordering assertion is vacuously inapplicable in that
+// reverted text (indexOf returns -1), which the `toBeGreaterThan(-1)`
+// assertions on the same two calls already catch first.
+describe('setup-multiuser-for-ubuntu.sh: Step 8 enable-guard call site (Issue #1707)', () => {
+  const scriptText = readFileSync(SCRIPT, 'utf-8');
+
+  it('calls dist_artifact_present on $APP_DIR/dist/index.js', () => {
+    expect(scriptText).toContain('dist_artifact_present "$APP_DIR/dist/index.js"');
+  });
+
+  it('offers both the --now and the enable-only systemctl forms', () => {
+    expect(scriptText).toContain('systemctl enable --now agent-console');
+    expect(scriptText).toContain('systemctl enable agent-console');
+  });
+
+  it('checks the guard BEFORE the --now invocation, not after', () => {
+    const guardIdx = scriptText.indexOf('dist_artifact_present "$APP_DIR/dist/index.js"');
+    const enableNowIdx = scriptText.indexOf('systemctl enable --now agent-console');
+    expect(guardIdx).toBeGreaterThan(-1);
+    expect(enableNowIdx).toBeGreaterThan(-1);
+    expect(guardIdx).toBeLessThan(enableNowIdx);
   });
 });
