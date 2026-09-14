@@ -6,7 +6,7 @@
  * point (same rationale as `workers-upload-dir-real-fs.test.ts`).
  */
 import { describe, it, expect, afterEach } from 'bun:test';
-import { mkdir, rm, symlink, writeFile, lstat, chmod } from 'fs/promises';
+import { mkdir, rm, symlink, writeFile, lstat, chmod, readdir } from 'fs/promises';
 import { isMemfsActive } from '../../__tests__/utils/memfs-detection.js';
 import { tmpdir } from 'os';
 import { join } from 'path';
@@ -196,11 +196,16 @@ describe('ensureMemoryDir — single-user contract', () => {
     expect((caught as Error).message).toMatch(/symlink/);
     expect((caught as Error).message).toContain(memoryPath);
 
-    // The symlink itself must still be standing (never followed into and
-    // written through) -- if it were, `bogusTarget` would have gained a
-    // `def-1` entry.
-    const bogusTargetSt = await lstat(bogusTarget);
-    expect(bogusTargetSt.isDirectory()).toBe(true);
+    // Rejection must happen BEFORE any write through the link: the symlink
+    // itself is still a symlink, and its target gained NO entry. ABSENCE
+    // pin (CodeRabbit, 9f3a9a5b): the earlier `isDirectory()` check on the
+    // target let an implementation that writes through the link and throws
+    // afterwards pass. Polarity measured: prepending
+    // `mkdir(dir, { recursive: true, mode })` to the walk (write-through,
+    // then verify) fails this assertion and the quick-shape one below, and
+    // nothing else in this file distinguishes that implementation.
+    expect((await lstat(memoryPath)).isSymbolicLink()).toBe(true);
+    expect(await readdir(bogusTarget)).toEqual([]);
   });
 
   // Quick-session shape: the symlinked segment sits one level ABOVE the
@@ -233,6 +238,9 @@ describe('ensureMemoryDir — single-user contract', () => {
     expect(caught).toBeInstanceOf(MemoryDirVerificationError);
     expect((caught as Error).message).toMatch(/symlink/);
     expect((caught as Error).message).toContain(defPath);
+    // No write through the link: the target gained no cwd-slug entry.
+    expect((await lstat(defPath)).isSymbolicLink()).toBe(true);
+    expect(await readdir(bogusTarget)).toEqual([]);
   });
 
   // POLARITY, measured: same revert. Under the old shape, `trustedBase`
