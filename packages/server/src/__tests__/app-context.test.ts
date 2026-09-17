@@ -7,6 +7,7 @@ import {
   type AppContext,
 } from '../app-context.js';
 import type { PtyNotificationParams } from '../lib/pty-notification.js';
+import { rootLogger } from '../lib/logger.js';
 import { InterSessionMessageService } from '../services/inter-session-message-service.js';
 import type { EnsureMemoryDirFn } from '../lib/memory-dir.js';
 import type { SpawnAsUserFn, SpawnAsUserOpts, SpawnAsUserResult } from '../services/privilege-elevation.js';
@@ -182,6 +183,59 @@ describe('AppContext', () => {
       } finally {
         shutdownSpy.mockRestore();
         stopSpy.mockRestore();
+      }
+    });
+
+    it('P4: logs flush failures once as an aggregate and continues teardown (Issue #1730)', async () => {
+      appContext = await createTestContext();
+
+      const originalStop = appContext.jobQueue.stop.bind(appContext.jobQueue);
+      const shutdownSpy = spyOn(appContext.workerOutputFileManager, 'shutdown').mockResolvedValue({
+        failures: [{ sessionId: 's', workerId: 'w', phase: 'pre-commit', error: new Error('forced'), retainedBytes: 5 }],
+      });
+      const stopSpy = spyOn(appContext.jobQueue, 'stop').mockImplementation(async () => originalStop());
+      // Same pattern this file's #1719 sibling test above relies on for
+      // `workerOutputFileManager`/`jobQueue` spies, applied to the root
+      // logger: `app-context.ts`'s `logger` is `createLogger('app-context')`
+      // = `rootLogger.child({ service: 'app-context' })`, and
+      // `worker-output-file.test.ts`'s shutdown-latch pin (Pin C) already
+      // confirmed `spyOn(rootLogger, 'warn')` observes a pino child logger's
+      // calls via the prototype chain, and `worker-manager.test.ts` relies
+      // on the same for `error`.
+      const errorSpy = spyOn(rootLogger, 'error');
+
+      try {
+        await shutdownAppContext(appContext);
+        appContext = null;
+
+        const flushFailureCalls = errorSpy.mock.calls.filter(
+          (call) => call[1] === 'worker output flush failed at shutdown; buffered output retained in memory, not on disk',
+        );
+        // Mutation measured: removing the `logger.error(...)` call for
+        // non-empty `failures` in `shutdownAppContext` -> this fails (0
+        // calls); restored -> passes. Measured both with this file alone
+        // (`bun test src/__tests__/app-context.test.ts`) and under the
+        // directory run (`bun test src/__tests__`): same result.
+        expect(flushFailureCalls).toHaveLength(1);
+        // `error` is intentionally omitted from the logged failure entries:
+        // the ruled log shape is `{ sessionId, workerId, phase, retainedBytes }`
+        // per failure, and the underlying error was already logged with its
+        // worker identity by `flushLocked`'s own `logger.error` at the point
+        // of failure.
+        expect(flushFailureCalls[0]![0]).toEqual({
+          failures: [{ sessionId: 's', workerId: 'w', phase: 'pre-commit', retainedBytes: 5 }],
+        });
+
+        // Mutation measured: making `shutdownAppContext` throw when
+        // `failures.length > 0` instead of logging and continuing ->
+        // `jobQueue.stop()` is never reached, this assertion fails;
+        // restored -> passes. Measured alone and under the directory run:
+        // same result.
+        expect(stopSpy).toHaveBeenCalledTimes(1);
+      } finally {
+        shutdownSpy.mockRestore();
+        stopSpy.mockRestore();
+        errorSpy.mockRestore();
       }
     });
   });

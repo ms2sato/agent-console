@@ -715,7 +715,7 @@ describe('WorkerOutputFileManager', () => {
     });
 
     it('should complete successfully with no pending buffers', async () => {
-      await expect(manager.flushAll()).resolves.toBeUndefined();
+      await expect(manager.flushAll()).resolves.toEqual({ failures: [] });
     });
   });
 

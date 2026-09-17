@@ -24,6 +24,13 @@
  * `isMemfsActive()` from `../../__tests__/utils/memfs-detection.js`. Both
  * pins below passed, and both of their named mutations failed, under that
  * memfs-active directory run as well as when this file is run alone.
+ *
+ * Pins P1, P2, and P3 (Issue #1730) extend this file to cover the
+ * retain-and-report contract added to `shutdown()`'s underlying flush: a
+ * pre-commit I/O failure retains the bytes and reports them (P1), a
+ * post-commit failure never requeues them (P2), and the recurring
+ * timer/threshold flush path stays best-effort (drop-on-failure) throughout,
+ * unaffected by the new retain mode (P3).
  */
 import { describe, it, expect, beforeEach, afterEach, spyOn } from 'bun:test';
 import * as fs from 'fs/promises';
@@ -31,6 +38,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { WorkerOutputFileManager } from '../worker-output-file.js';
 import { SessionDataPathResolver } from '../session-data-path-resolver.js';
+import type { WorkerOutputManifest } from '../worker-output-manifest.js';
 
 const FLUSH_INTERVAL_MS = 20;
 
@@ -144,7 +152,7 @@ describe('WorkerOutputFileManager shutdown (real fs, Issue #1719)', () => {
       // this call is delayed, not its start.
       const realPromise = real();
       await deferred;
-      await realPromise;
+      return realPromise;
     });
 
     try {
@@ -183,5 +191,148 @@ describe('WorkerOutputFileManager shutdown (real fs, Issue #1719)', () => {
     } finally {
       flushAllSpy.mockRestore();
     }
+  });
+
+  // Pin P1 (Issue #1730): a PRE-COMMIT flush failure at shutdown retains the
+  // bytes in memory (rather than dropping them) and reports the failure via
+  // `shutdown()`'s returned `{ failures }`. Forces the failure by blocking
+  // the worker's directory with a regular file at the exact path
+  // `flushLocked`'s `mkdir -p` needs, so the mkdir fails before any append --
+  // i.e. before the durable commit point.
+  //
+  // Mutation measured: (i) removing the `pending.buffer = dataToWrite +
+  // pending.buffer;` restore line from `flushLocked`'s `retain` branch -->
+  // the second flush below writes nothing (file stays absent) --> fails;
+  // restored --> passes. (ii) removing the outcome-collection loop in
+  // `flushAll` (so `failures` stays `[]` regardless of what `flushBuffer`
+  // resolves) --> the `r.failures` assertions below fail (P2's do too, for
+  // the same reason); restored --> passes. Both measured alone (real fs,
+  // `bun test src/lib/__tests__/worker-output-file-shutdown.test.ts`) and
+  // under the memfs-substituted directory run (`bun test src/lib/__tests__`
+  // from packages/server): 1 fail / 2 fail respectively in both.
+  it('P1: pre-commit flush failure at shutdown retains the bytes and reports them', async () => {
+    const sessionId = 'session-p1';
+    const workerId = 'worker-p1';
+    const data = 'retained on pre-commit failure';
+
+    await fs.mkdir(resolver.getOutputsDir(), { recursive: true });
+    const blocker = path.join(resolver.getOutputsDir(), sessionId);
+    await fs.writeFile(blocker, '');
+
+    manager.bufferOutput(sessionId, workerId, data, resolver);
+
+    const r = await manager.shutdown();
+    expect(r.failures).toHaveLength(1);
+    expect(r.failures[0]).toMatchObject({ sessionId, workerId, phase: 'pre-commit', retainedBytes: data.length });
+
+    // Unblock and flush again. `manager` is `closed` after `shutdown()`, but
+    // `flushAll()` does not consult `closed` (only `bufferOutput` does), so
+    // this second, best-effort-default flush still runs and durably writes
+    // the bytes `shutdown()` had retained in memory.
+    await fs.unlink(blocker);
+    await manager.flushAll();
+
+    const filePath = manager.getOutputFilePath(sessionId, workerId, resolver);
+    const content = await fs.readFile(filePath, 'utf-8');
+    expect(content).toBe(data);
+  });
+
+  // Pin P2 (Issue #1730): a POST-COMMIT flush failure never requeues the
+  // buffered bytes, regardless of `mode` -- they are already durably on
+  // disk, so requeuing would duplicate them on the next flush. Forces the
+  // failure by making `cutSegment` (the step that runs strictly after the
+  // durable append, when the live file exceeds `fileMaxSize`) throw.
+  //
+  // Mutation measured: moving `committed = true` from directly after the
+  // `fs.appendFile` to after the `cutSegment` call (so the forced throw is
+  // classified pre-commit and, in `retain` mode, the bytes are requeued)
+  // --> `phase` reads `'pre-commit'` and the second flush appends `data`
+  // again (`data + data`) --> fails; the alternative mutation, dropping the
+  // `!committed &&` guard so `retain` mode requeues unconditionally --> the
+  // same duplicate --> fails. Restored --> passes. Both measured alone
+  // (real fs) and under the memfs-substituted directory run: same result.
+  //
+  // Spying on a private method: `worker-output-file-display-fill.test.ts`'s
+  // `WithArchiveWalk` / `WithDecompress` casts (`WorkerOutputFileManager &
+  // { method: (...args: never[]) => ReturnType }`) are this suite's usual
+  // pattern, but neither of those call sites replaces the implementation --
+  // this one needs `.mockImplementation()` to force a throw, and the
+  // intersection form's `never[]` rest parameter makes bun-types' generic
+  // `Mock<T>.mockImplementation` resolve its parameter type to `never`
+  // (measured directly). `as unknown as WithCutSegment`, naming the real
+  // parameter types instead of `never[]`, sidesteps that -- same runtime
+  // effect (spyOn mutates the live object's property regardless of the cast
+  // used to reach it), different type-only path.
+  it('P2: post-commit flush failure does not requeue or duplicate the already-committed bytes', async () => {
+    const sessionId = 'session-p2';
+    const workerId = 'worker-p2';
+    const data = 'committed once, not duplicated';
+
+    // fileMaxSize: 1 so the size check after every append always exceeds it,
+    // guaranteeing `cutSegment` runs on the very first flush.
+    const p2 = new WorkerOutputFileManager({ flushInterval: FLUSH_INTERVAL_MS, fileMaxSize: 1 });
+
+    interface WithCutSegment {
+      cutSegment: (sessionId: string, workerId: string, resolver: SessionDataPathResolver, manifest: WorkerOutputManifest) => Promise<void>;
+    }
+    const cutSpy = spyOn(p2 as unknown as WithCutSegment, 'cutSegment').mockImplementation(() => {
+      throw new Error('cutSegment forced failure (P2)');
+    });
+
+    try {
+      p2.bufferOutput(sessionId, workerId, data, resolver);
+
+      const r = await p2.shutdown();
+      expect(r.failures).toHaveLength(1);
+      expect(r.failures[0]).toMatchObject({ sessionId, workerId, phase: 'post-commit', retainedBytes: 0 });
+
+      cutSpy.mockRestore();
+
+      // A second flush finds nothing pending (the failed bytes were never
+      // requeued) so it does nothing; the file still holds `data` exactly
+      // once from the original, already-committed append. With
+      // `fileMaxSize: 1` the real `cutSegment` would run again here if there
+      // were pending bytes to flush -- there are none, so it does not.
+      await p2.flushAll();
+
+      const filePath = p2.getOutputFilePath(sessionId, workerId, resolver);
+      const content = await fs.readFile(filePath, 'utf-8');
+      expect(content).toBe(data);
+    } finally {
+      cutSpy.mockRestore();
+    }
+  });
+
+  // Pin P3 (Issue #1730): the recurring interval flush path stays
+  // best-effort (drop-on-failure), unaffected by `shutdown()`'s new retain
+  // mode -- ruling 3 ("best-effort stays best-effort" for every caller other
+  // than `shutdown()`) stays honest under this same failure shape as P1.
+  //
+  // Mutation measured: passing `'retain'` instead of `'best-effort'` from
+  // the timer path's `flushBuffer` call in `bufferOutput` --> the bytes
+  // survive the timer's failed flush and the file reappears after the
+  // second, unblocked flush below --> this test fails (`fs.stat` resolves
+  // instead of rejecting). Restored --> passes. Measured alone (real fs)
+  // and under the memfs-substituted directory run: same result.
+  it('P3: the interval flush path drops on failure (best-effort, unchanged by #1730)', async () => {
+    const sessionId = 'session-p3';
+    const workerId = 'worker-p3';
+    const data = 'dropped by the interval flush';
+
+    await fs.mkdir(resolver.getOutputsDir(), { recursive: true });
+    const blocker = path.join(resolver.getOutputsDir(), sessionId);
+    await fs.writeFile(blocker, '');
+
+    manager.bufferOutput(sessionId, workerId, data, resolver);
+
+    // Let the interval timer's best-effort flush fire and fail (dropping the
+    // data) before shutdown or any explicit flush is called.
+    await new Promise((resolveTimer) => setTimeout(resolveTimer, FLUSH_INTERVAL_MS * 3));
+
+    await fs.unlink(blocker);
+    await manager.flushAll();
+
+    const filePath = manager.getOutputFilePath(sessionId, workerId, resolver);
+    await expect(fs.stat(filePath)).rejects.toMatchObject({ code: 'ENOENT' });
   });
 });

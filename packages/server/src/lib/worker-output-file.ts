@@ -187,6 +187,41 @@ function containsBoundary(text: string): boolean {
   return false;
 }
 
+/**
+ * How `flushLocked` should handle a pending buffer it could not durably
+ * write. `'best-effort'` drops the bytes (today's long-standing behaviour,
+ * used by every recurring/bounded-lifetime flush path); `'retain'` restores
+ * them to the pending buffer so a caller with a finite, reportable end (only
+ * `shutdown()`) can surface the loss instead of silently swallowing it. See
+ * `flushLocked`'s own doc comment for the full rationale of why retention is
+ * not the default.
+ */
+export type FlushMode = 'best-effort' | 'retain';
+
+/**
+ * The two facts a failed flush reports beyond "it failed": which side of the
+ * durable commit point the failure happened on, and how many bytes (if any)
+ * were restored to the pending buffer as a result. Shared shape between
+ * `FlushOutcome`'s failure branch and `FlushFailure` (which adds the
+ * worker identity) so the two never drift independently.
+ */
+type FlushFailureDetail = {
+  phase: 'pre-commit' | 'post-commit';
+  error: unknown;
+  retainedBytes: number;
+};
+
+/** Result of a single worker's flush attempt (`flushLocked` / `flushBuffer`). */
+export type FlushOutcome = { ok: true } | ({ ok: false } & FlushFailureDetail);
+
+/** One worker's flush failure, as reported by `flushAll()` / `shutdown()`. */
+export type FlushFailure = { sessionId: string; workerId: string } & FlushFailureDetail;
+
+/** Aggregate result of `flushAll()` / `shutdown()`: every worker that failed to flush. */
+export interface ShutdownResult {
+  failures: FlushFailure[];
+}
+
 export class WorkerOutputFileManager {
   /** Pending buffers waiting to be flushed: sessionId/workerId -> PendingFlush */
   private pendingFlushes = new Map<string, PendingFlush>();
@@ -571,7 +606,7 @@ export class WorkerOutputFileManager {
 
     // Flush immediately if buffer exceeds threshold
     if (pending.buffer.length >= this.config.flushThreshold) {
-      void this.flushBuffer(sessionId, workerId).catch((err) => {
+      void this.flushBuffer(sessionId, workerId, 'best-effort').catch((err) => {
         logger.error({ sessionId, workerId, err }, 'Failed to flush buffer on threshold');
       });
       return;
@@ -580,7 +615,7 @@ export class WorkerOutputFileManager {
     // Schedule flush if not already scheduled
     if (!pending.timer) {
       pending.timer = setTimeout(() => {
-        void this.flushBuffer(sessionId, workerId).catch((err) => {
+        void this.flushBuffer(sessionId, workerId, 'best-effort').catch((err) => {
           logger.error({ sessionId, workerId, err }, 'Failed to flush buffer on timer');
         });
       }, this.config.flushInterval);
@@ -591,9 +626,9 @@ export class WorkerOutputFileManager {
    * Flush buffered output to file (public entry — acquires the lock).
    * The size threshold triggers an archive cut when the live file overflows.
    */
-  private async flushBuffer(sessionId: string, workerId: string): Promise<void> {
+  private async flushBuffer(sessionId: string, workerId: string, mode: FlushMode): Promise<FlushOutcome> {
     const key = this.getKey(sessionId, workerId);
-    return this.runExclusive(key, () => this.flushLocked(sessionId, workerId));
+    return this.runExclusive(key, () => this.flushLocked(sessionId, workerId, mode));
   }
 
   /**
@@ -606,7 +641,7 @@ export class WorkerOutputFileManager {
    * that would ever flush the pending buffer.
    */
   async forceFlush(sessionId: string, workerId: string): Promise<void> {
-    await this.flushBuffer(sessionId, workerId);
+    await this.flushBuffer(sessionId, workerId, 'best-effort');
   }
 
   /**
@@ -647,7 +682,7 @@ export class WorkerOutputFileManager {
   ): Promise<{ epoch: number; offset: number }> {
     const key = this.getKey(sessionId, workerId);
     return this.runExclusive(key, async () => {
-      await this.flushLocked(sessionId, workerId);
+      await this.flushLocked(sessionId, workerId, 'best-effort');
 
       const manifest = await this.loadManifestWithRecovery(sessionId, workerId, resolver);
       const filePath = this.getOutputFilePath(sessionId, workerId, resolver);
@@ -668,13 +703,37 @@ export class WorkerOutputFileManager {
   /**
    * Flush the pending buffer. MUST be called inside the serialization domain.
    * Legacy `.log.gz` files are migrated to `.log` on first write.
+   *
+   * `mode` decides what happens to `dataToWrite` when the flush fails:
+   * - `'best-effort'` (used by the interval timer path, the threshold path,
+   *   `forceFlush`, `appendRestoreFailureMarker`'s pre-flush, and
+   *   `getCurrentOffset`'s pre-flush) drops the bytes on failure, exactly
+   *   like the original behaviour this method has always had. This stays
+   *   the default for every recurring or bounded-lifetime caller because a
+   *   permanently failing disk (EACCES, ENOSPC) would otherwise grow
+   *   `pending.buffer` without bound and retry every interval for the life
+   *   of the process -- a memory hazard traded for bytes that cannot land on
+   *   disk anyway. Retention is only meaningful where there is no next
+   *   interval and a caller can actually report the loss, i.e. shutdown.
+   * - `'retain'` (used only by `shutdown()`, via `flushAll('retain')`)
+   *   restores the bytes to `pending.buffer` on a PRE-COMMIT failure, so the
+   *   caller can report exactly how many bytes were lost instead of them
+   *   silently vanishing.
+   *
+   * The commit point is the durable write to the live file -- the
+   * `fs.appendFile` on the hot path, or the legacy-migration `fs.writeFile`
+   * before its `unlink`. `committed` tracks whether that write completed.
+   * A failure AFTER the commit point (the subsequent `fs.stat` or
+   * `cutSegment`) never requeues the bytes regardless of `mode`: they are
+   * already durably on disk, and requeuing would duplicate them on the next
+   * flush.
    */
-  private async flushLocked(sessionId: string, workerId: string): Promise<void> {
+  private async flushLocked(sessionId: string, workerId: string, mode: FlushMode): Promise<FlushOutcome> {
     const key = this.getKey(sessionId, workerId);
     const pending = this.pendingFlushes.get(key);
 
     if (!pending || pending.buffer.length === 0) {
-      return;
+      return { ok: true };
     }
 
     // Clear timer and take buffer content
@@ -688,6 +747,7 @@ export class WorkerOutputFileManager {
     const resolver = pending.resolver;
     const filePath = this.getOutputFilePath(sessionId, workerId, resolver);
 
+    let committed = false;
     try {
       await fs.mkdir(path.dirname(filePath), { recursive: true });
 
@@ -705,6 +765,7 @@ export class WorkerOutputFileManager {
         const decompressed = gunzipSync(rawBuffer);
         const existingContent = new TextDecoder('utf-8').decode(decompressed);
         await fs.writeFile(filePath, existingContent + dataToWrite, 'utf-8');
+        committed = true;
         await fs.unlink(actualFile.path).catch((err) => {
           if (!(isErrnoException(err) && err.code === 'ENOENT')) {
             logger.warn({ sessionId, workerId, path: actualFile.path, err }, 'Failed to delete legacy compressed file during migration');
@@ -713,14 +774,31 @@ export class WorkerOutputFileManager {
       } else {
         // Simple append to the live file (hot path — append is not fsync'd).
         await fs.appendFile(filePath, dataToWrite, 'utf-8');
+        committed = true;
       }
 
       const stats = await fs.stat(filePath);
       if (stats.size > this.config.fileMaxSize) {
         await this.cutSegment(sessionId, workerId, resolver, manifest);
       }
+      return { ok: true };
     } catch (error) {
-      logger.error({ sessionId, workerId, err: error }, 'Failed to flush output to file');
+      logger.error({ sessionId, workerId, err: error, mode, committed }, 'Failed to flush output to file');
+
+      if (!committed && mode === 'retain') {
+        // Order-preserving: any bytes that arrived (via bufferOutput) into
+        // the now-emptied pending.buffer WHILE this flush was awaiting I/O
+        // are newer than dataToWrite, so they belong after it, not before.
+        pending.buffer = dataToWrite + pending.buffer;
+        return { ok: false, phase: 'pre-commit', error, retainedBytes: dataToWrite.length };
+      }
+      if (!committed) {
+        // 'best-effort': drop, exactly like the original behaviour.
+        return { ok: false, phase: 'pre-commit', error, retainedBytes: 0 };
+      }
+      // Committed: the bytes are on disk. Never requeue -- a requeue here
+      // would duplicate them on the next flush, regardless of `mode`.
+      return { ok: false, phase: 'post-commit', error, retainedBytes: 0 };
     }
   }
 
@@ -1311,7 +1389,7 @@ export class WorkerOutputFileManager {
   async getCurrentOffset(sessionId: string, workerId: string, resolver: SessionDataPathResolver): Promise<number> {
     const key = this.getKey(sessionId, workerId);
     return this.runExclusive(key, async () => {
-      await this.flushLocked(sessionId, workerId);
+      await this.flushLocked(sessionId, workerId, 'best-effort');
       try {
         const manifest = await this.loadManifestWithRecovery(sessionId, workerId, resolver);
         const liveBuffer = await this.readLiveBuffer(sessionId, workerId, resolver);
@@ -1911,15 +1989,30 @@ export class WorkerOutputFileManager {
 
   /**
    * Force flush all pending buffers.
-   * Called by `shutdown()`.
+   *
+   * `mode` defaults to `'best-effort'` (the historical behaviour, still what
+   * every caller other than `shutdown()` gets) and is threaded into each
+   * worker's `flushBuffer`/`flushLocked` call. The result reports every
+   * worker that failed to flush rather than throwing -- a throw here would
+   * abort `shutdownAppContext` mid-teardown, leaving the job queue and the
+   * database open, which is worse than the flush defect this exists to
+   * surface. Called by `shutdown()` with `'retain'`.
    */
-  async flushAll(): Promise<void> {
+  async flushAll(mode: FlushMode = 'best-effort'): Promise<ShutdownResult> {
+    const failures: FlushFailure[] = [];
     const flushPromises: Promise<void>[] = [];
     for (const key of this.pendingFlushes.keys()) {
       const [sessionId, workerId] = key.split('/');
-      flushPromises.push(this.flushBuffer(sessionId, workerId));
+      flushPromises.push(
+        this.flushBuffer(sessionId, workerId, mode).then((outcome) => {
+          if (!outcome.ok) {
+            failures.push({ sessionId, workerId, phase: outcome.phase, error: outcome.error, retainedBytes: outcome.retainedBytes });
+          }
+        }),
+      );
     }
     await Promise.all(flushPromises);
+    return { failures };
   }
 
   /**
@@ -1937,9 +2030,17 @@ export class WorkerOutputFileManager {
    * `shutdown()` addresses this in two halves: close first, so nothing can
    * be scheduled behind the flush; then flush what was already buffered,
    * because those bytes are real output and must still land.
+   *
+   * Flushes with `'retain'`: a pre-commit failure restores the pending bytes
+   * to memory in stream order and reports them via the returned
+   * `{ failures }` (each entry's `retainedBytes`); a post-commit failure
+   * reports `retainedBytes: 0` and never requeues (the bytes are already on
+   * disk). Nothing re-flushes retained bytes after this call returns --
+   * there is no next interval once shutdown has run, so the returned report
+   * is the value, not a promise of a future retry.
    */
-  async shutdown(): Promise<void> {
+  async shutdown(): Promise<ShutdownResult> {
     this.closed = true;
-    await this.flushAll();
+    return this.flushAll('retain');
   }
 }
