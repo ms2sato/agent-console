@@ -2599,8 +2599,8 @@ export function createMcpApp(deps: McpDependencies): Hono {
       //
       // Supplying them is still allowed and still checked: `resolveSelfIdentity`
       // is now the single writer of both the defaulting AND the own-pair
-      // refusal (Issue #1696 generalises this tool's own precedent into that
-      // shared helper), so a supplied-but-foreign pair is refused exactly as
+      // refusal (the helper generalises this tool's own precedent, so the two
+      // share one implementation), so a supplied-but-foreign pair is refused exactly as
       // before rather than being quietly overwritten with the caller's own.
       const self = resolveSelfIdentity(
         caller,

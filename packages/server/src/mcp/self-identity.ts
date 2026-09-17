@@ -9,9 +9,9 @@
  * though a bearer-token-verified caller (`McpCallerIdentity`) already PROVES
  * that identity. `set_agent_parameters` established the precedent this
  * module generalises: its own inline `requestedSessionId ?? caller.sessionId`
- * defaulting plus an explicit own-pair refusal (Issue #1696 migrates that
- * tool onto this module too, so the precedent and its generalisation share
- * one implementation instead of two).
+ * defaulting plus an explicit own-pair refusal (that tool is migrated onto
+ * this module too, so the precedent and its generalisation share one
+ * implementation instead of two).
  *
  * This module resolves IDENTITY ONLY. It runs upstream of, and has nothing
  * to do with, AUTHORIZATION: `checkCallerOwnsSession` (does the caller own
@@ -23,7 +23,7 @@
  * A terminal agent (no bearer token, `getMcpCallerIdentity()` returns
  * `null`) is unaffected as long as it supplies the argument itself: the
  * contract's case 4 below passes the caller-supplied value through
- * unchanged, matching pre-#1696 behavior exactly.
+ * unchanged, matching the behavior before this helper existed, exactly.
  *
  * Spec: docs/design/embedded-agent-worker.md "MCP caller identity".
  */
@@ -60,7 +60,7 @@ export type SelfPairResolution =
  *    so it is refused as a mismatch rather than silently treated as
  *    "not supplied" (deliberate boundary case).
  * 4. caller absent + argument present (any string, including `''` --
- *    unchanged from pre-#1696 behavior; the tool's own downstream
+ *    unchanged from before this helper existed; the tool's own downstream
  *    session/worker lookups handle an empty id the same way they always
  *    did) -> the argument, verbatim.
  * 5. caller absent + argument `undefined` -> refused: there is nothing to
