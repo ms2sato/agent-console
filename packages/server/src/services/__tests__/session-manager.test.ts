@@ -1342,6 +1342,61 @@ describe('SessionManager', () => {
       await deactivatePromise;
     });
 
+    it('forwards the ensureMemoryDirFn option through to EmbeddedAgentWorkerService (test/polarity seam, Issue #1709 PR-3b)', async () => {
+      // Mutation measured: dropping `ensureMemoryDirFn: options.ensureMemoryDirFn`
+      // from the EmbeddedAgentWorkerService construction in
+      // session-manager.ts fails this test -- the override never reaches
+      // the service, its default `prepareMemoryDir` runs instead, and
+      // `context.memoryDir` is present in the captured init frame.
+      const stdinWrites: string[] = [];
+      const stdin = {
+        write: (chunk: string | Uint8Array) => {
+          stdinWrites.push(typeof chunk === 'string' ? chunk : new TextDecoder().decode(chunk));
+          return 0;
+        },
+        end: () => {},
+        flush: () => 0,
+      };
+      const stdout = new ReadableStream<Uint8Array>({ start() {} });
+      const stderr = new ReadableStream<Uint8Array>({ start() {} });
+      const exited = new Promise<number>(() => {
+        // Never resolves -- this test never deactivates the worker.
+      });
+      const subprocess = { pid: 4244, exited, stdin, stdout, stderr, kill: () => {} };
+      const fakeSpawnAsUserFn = mock(() => ({ subprocess, stdin, elevated: false }));
+
+      const module = await import(`../session-manager.js?v=${++importCounter}`);
+      const manager = await module.SessionManager.create({
+        userMode: new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' }),
+        pathExists: mockPathExists,
+        jobQueue: testJobQueue,
+        agentManager,
+        mcpTokenRegistry: new McpTokenRegistry(),
+        embeddedAgentManager: { getEmbeddedAgent: (id: string) => (id === 'stub-def' ? STUB_DEF : undefined) },
+        repositoryLookup: defaultRepositoryLookup,
+        repositoryEnvLookup: defaultRepositoryEnvLookup,
+        spawnAsUserFn: fakeSpawnAsUserFn as unknown as SpawnAsUserFn,
+        ensureMemoryDirFn: async () => undefined,
+      });
+
+      const session = await manager.createSession(
+        { type: 'quick', locationPath: '/test/path', agentId: 'claude-code' },
+        { createdBy: 'test-user-id' },
+      );
+      const worker = await manager.createWorker(session.id, {
+        type: 'embedded-agent',
+        embeddedAgentId: 'stub-def',
+      });
+      expect(worker).not.toBeNull();
+
+      await manager.activateEmbeddedAgentWorker(session.id, worker!.id);
+
+      expect(stdinWrites.length).toBeGreaterThanOrEqual(1);
+      const initCommand = JSON.parse(stdinWrites[0]) as { type: string; context: Record<string, unknown> };
+      expect(initCommand.type).toBe('init');
+      expect('memoryDir' in initCommand.context).toBe(false);
+    });
+
     it('auto-activates a revived embedded-agent worker with an undelivered initial-prompt obligation on resumeSession (Issue #1264)', async () => {
       // Proves SessionManager's real wiring (activateEmbeddedAgentWorker dep
       // passed to SessionPauseResumeService, session-manager.ts) actually

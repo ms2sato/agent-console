@@ -30,6 +30,7 @@ import {
   type SendUserMessageResult,
 } from './embedded-agent-worker-service.js';
 import type { SpawnAsUserFn, runAsUser } from './privilege-elevation.js';
+import type { EnsureMemoryDirFn } from '../lib/memory-dir.js';
 import type { LookupOsUserFn } from './os-user-lookup.js';
 import type { sweepOrphanProcesses } from './orphan-process-sweeper.js';
 import { CLAUDE_CODE_AGENT_ID } from './agent-manager.js';
@@ -183,6 +184,14 @@ interface SessionManagerOptions {
    * `EmbeddedAgentWorkerService` test seam.
    */
   spawnAsUserFn?: SpawnAsUserFn;
+  /**
+   * Test/polarity seam for the memory layer's single injectable point
+   * (`EmbeddedAgentWorkerServiceDeps.ensureMemoryDirFn`); `undefined` leaves
+   * the service on its default `prepareMemoryDir`. The billed smoke
+   * `scripts/smoke/check-embedded-agent-memory-layer.ts --expect-no-memory`
+   * passes `async () => undefined` here.
+   */
+  ensureMemoryDirFn?: EnsureMemoryDirFn;
   /**
    * Test seam for WorkerManager's OS user lookup (used to resolve the
    * destination directory for a multi-user-mode MCP token file or prompt
@@ -405,6 +414,7 @@ export class SessionManager {
       workerOutputFileManager,
       getMcpBaseUrl,
       spawnAsUserFn: options.spawnAsUserFn,
+      ensureMemoryDirFn: options.ensureMemoryDirFn,
       getGlobalActivityCallback: () => this.globalActivityCallback,
       getGlobalWorkerExitCallback: () => this.globalWorkerExitCallback,
     });

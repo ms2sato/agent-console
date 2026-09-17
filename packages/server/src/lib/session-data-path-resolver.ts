@@ -5,7 +5,7 @@
  * `session-data-path.ts`. See `docs/design/session-data-path.md` for the spec.
  */
 import * as path from 'path';
-import { InvalidSessionDataScopeError } from './session-data-path.js';
+import { assertValidSegment } from './session-data-path.js';
 
 /**
  * Discriminates the two `memoryDir` shapes the memory layer (epic #1636
@@ -17,17 +17,6 @@ import { InvalidSessionDataScopeError } from './session-data-path.js';
  * the table this type mirrors.
  */
 export type MemoryDirScope = { kind: 'repository' } | { kind: 'quick'; cwdSlug: string };
-
-/** A single path segment: no `/`, and never `.` / `..`. */
-const SEGMENT_PATTERN = /^[A-Za-z0-9._-]+$/;
-
-function assertValidSegment(value: string, label: string): void {
-  if (!SEGMENT_PATTERN.test(value) || value === '.' || value === '..') {
-    throw new InvalidSessionDataScopeError(
-      `${label} ${JSON.stringify(value)} is not a valid single path segment`
-    );
-  }
-}
 
 export class SessionDataPathResolver {
   constructor(private readonly baseDir: string) {}

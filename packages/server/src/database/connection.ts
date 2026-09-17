@@ -190,15 +190,24 @@ export function getGlobalDatabase(): Kysely<Database> | null {
 
 /**
  * Create a standalone database for testing.
- * Uses an in-memory SQLite database with all migrations applied.
+ * Defaults to an in-memory SQLite database with all migrations applied.
  * Does NOT modify the global `db` variable, ensuring test isolation.
  *
+ * @param dbPath - Filesystem path for the database, or `:memory:` (default).
+ *   A file path lets a second `createDatabaseForTest` call against the same
+ *   path load rows a first call persisted -- used by tests / smokes that
+ *   need to verify data survives a fresh boot (e.g. a real startup path
+ *   loading a definition through its repository), which an in-memory
+ *   database cannot do since each call gets its own isolated instance.
+ *   The migration pre-flight backup (see `runMigrations` below) is always
+ *   skipped for this factory, regardless of `dbPath` -- it never touches
+ *   `fs/promises`.
  * @returns A new Kysely database instance for testing
  */
-export async function createDatabaseForTest(): Promise<Kysely<Database>> {
-  logger.debug('Creating in-memory database for test');
+export async function createDatabaseForTest(dbPath: string = IN_MEMORY_DB_PATH): Promise<Kysely<Database>> {
+  logger.debug({ dbPath }, 'Creating database for test');
 
-  const bunDb = new BunDatabase(':memory:');
+  const bunDb = new BunDatabase(dbPath);
 
   const database = new Kysely<Database>({
     dialect: new BunSqliteDialect({ database: bunDb }),
@@ -207,7 +216,24 @@ export async function createDatabaseForTest(): Promise<Kysely<Database>> {
   // Enable foreign key constraints
   await sql`PRAGMA foreign_keys = ON`.execute(database);
 
-  // Run schema migrations
+  // Run schema migrations. Deliberately pass the `:memory:` sentinel here
+  // even when `bunDb` itself is file-backed (a real `dbPath`): a test
+  // database is never a pre-existing production file, so the v19 migration
+  // pre-flight backup (`backupDatabaseFile`) has nothing worth protecting.
+  // Passing `IN_MEMORY_DB_PATH` skips that backup's `fsPromises.copyFile`
+  // call entirely, which is also what keeps this factory correct when run
+  // inside the full server test suite: `bun:sqlite`'s `BunDatabase` writes
+  // the real file to real disk regardless of `dbPath`, but `fs/promises`
+  // itself is process-globally mocked to memfs the moment any sibling test
+  // file in the same process imports `test-utils.js` (see
+  // `.claude/rules/testing.md` Anti-Pattern #2) -- so `copyFile(dbPath, ...)`
+  // would look for the real file on the virtual filesystem and fail with
+  // ENOENT, even though the real file exists on real disk. Passing
+  // `dbPath` here would only be correct in isolation, never in the full
+  // suite. This skip is local to THIS factory only --
+  // the production path (`initializeDatabase` / `doInitializeDatabase`
+  // above) is untouched and still passes its real `dbPath` into
+  // `runMigrations`, so the v19 backup still runs for real installs.
   await runMigrations(database, IN_MEMORY_DB_PATH);
 
   return database;

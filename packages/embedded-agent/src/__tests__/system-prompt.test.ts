@@ -1467,15 +1467,15 @@ describe('loadInstructions — memory layer (epic #1636 Phase 2)', () => {
     // under that mutation, which is exactly why this literal exists.
     const expected =
       '--- Memory: /data/memory/def-1 ---\n' +
-      'This directory is your persistent memory for this agent definition on this repository. It is shared with every user who runs this definition on this repository (on a single-user install that is only you): record knowledge about the work, never one person\'s private details. MEMORY.md is its index; its current contents follow. Each memory is one file holding one fact, with frontmatter (name, description, metadata.type: user | feedback | project | reference). After writing a file, add a one-line pointer to MEMORY.md: `- [Title](file.md) — hook` — re-read MEMORY.md first, then append the line with Edit anchored on the file\'s current tail (never rewrite MEMORY.md with Write; other sessions may be writing it too). Read a topic file with Read when its hook is relevant; never put memory content in MEMORY.md itself.';
+      'This directory is your persistent memory for this agent definition on this repository. It is shared with every user who runs this definition on this repository (on a single-user install that is only you): record knowledge about the work, never one person\'s private details. MEMORY.md is its index; its current contents follow. Each memory is one file holding one fact, with frontmatter (name, description, metadata.type: user | feedback | project | reference). After writing a file, add a one-line pointer to MEMORY.md: `- [Title](file.md) — hook` — if MEMORY.md does not exist yet, create it with Write containing that line; otherwise re-read MEMORY.md first, then append the line with Edit anchored on the file\'s current tail (never overwrite an existing MEMORY.md with Write; other sessions may be writing it too). Read a topic file with Read when its hook is relevant; never put memory content in MEMORY.md itself.';
     expect(formatMemoryHeader('/data/memory/def-1')).toBe(expected);
   });
 
   it('the header text carries the load-bearing fragments (a readable subset of the verbatim pin above)', () => {
     // Pins the load-bearing sentences the WRITE half depends on, so a
     // paraphrase of the convention cannot ship silently. Reach: dropping
-    // any one of the four fragments from `formatMemoryHeader` fails exactly
-    // its own assertion -- measured on the "never rewrite" fragment.
+    // any one of the fragments from `formatMemoryHeader` fails exactly
+    // its own assertion -- measured on the "never overwrite an existing" fragment.
     const header = formatMemoryHeader('/data/memory/def-1');
     expect(header.startsWith('--- Memory: /data/memory/def-1 ---\n')).toBe(true);
     expect(header).toContain(
@@ -1483,8 +1483,9 @@ describe('loadInstructions — memory layer (epic #1636 Phase 2)', () => {
     );
     expect(header).toContain('metadata.type: user | feedback | project | reference');
     expect(header).toContain('`- [Title](file.md) — hook`');
+    expect(header).toContain('if MEMORY.md does not exist yet, create it with Write containing that line');
     expect(header).toContain("append the line with Edit anchored on the file's current tail");
-    expect(header).toContain('never rewrite MEMORY.md with Write');
+    expect(header).toContain('never overwrite an existing MEMORY.md with Write');
   });
 
   it('renders the MEMORY.md index content under the header when the file exists', async () => {

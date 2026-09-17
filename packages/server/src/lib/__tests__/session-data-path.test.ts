@@ -1,9 +1,12 @@
 import { describe, it, expect } from 'bun:test';
 import * as path from 'path';
+import * as os from 'os';
+import * as fsPromises from 'fs/promises';
 import {
   computeSessionDataBaseDir,
   computeQuickCwdSlug,
   isValidSlug,
+  buildDefinitionMemoryCleanupTargets,
   InvalidSessionDataScopeError,
   type SessionDataScope,
 } from '../session-data-path.js';
@@ -222,5 +225,104 @@ describe('computeQuickCwdSlug', () => {
     expect(slugDotDot).not.toBe('..');
     expect(isValidSlug(slugDot)).toBe(true);
     expect(isValidSlug(slugDotDot)).toBe(true);
+  });
+});
+
+describe('buildDefinitionMemoryCleanupTargets', () => {
+  async function makeTempConfigDir(): Promise<string> {
+    const dir = path.join(
+      os.tmpdir(),
+      `session-data-path-defmem-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}`
+    );
+    await fsPromises.mkdir(dir, { recursive: true });
+    return dir;
+  }
+
+  it('finds both slug shapes plus the _quick shape, and excludes a different definitionId', async () => {
+    const configDir = await makeTempConfigDir();
+    try {
+      const definitionId = 'def-target';
+      const otherDefinitionId = 'def-other';
+
+      const quickTarget = path.join(configDir, '_quick', 'memory', definitionId);
+      const flatTarget = path.join(configDir, 'repositories', 'flat', 'memory', definitionId);
+      const nestedTarget = path.join(configDir, 'repositories', 'org', 'repo', 'memory', definitionId);
+      const otherTarget = path.join(configDir, 'repositories', 'flat', 'memory', otherDefinitionId);
+
+      await fsPromises.mkdir(quickTarget, { recursive: true });
+      await fsPromises.mkdir(flatTarget, { recursive: true });
+      await fsPromises.mkdir(nestedTarget, { recursive: true });
+      await fsPromises.mkdir(otherTarget, { recursive: true });
+
+      const targets = await buildDefinitionMemoryCleanupTargets({ configDir, definitionId });
+
+      // Deterministic order: _quick first, then repository targets sorted by path.
+      expect(targets).toEqual([quickTarget, flatTarget, nestedTarget]);
+      expect(targets).not.toContain(otherTarget);
+    } finally {
+      await fsPromises.rm(configDir, { recursive: true, force: true });
+    }
+  });
+
+  it('returns an empty array when neither _quick nor repositories exists', async () => {
+    const configDir = await makeTempConfigDir();
+    try {
+      const targets = await buildDefinitionMemoryCleanupTargets({
+        configDir,
+        definitionId: 'def-empty',
+      });
+      expect(targets).toEqual([]);
+    } finally {
+      await fsPromises.rm(configDir, { recursive: true, force: true });
+    }
+  });
+
+  it('excludes a matching path that is a regular file or a symlink to a real directory, and leaves the symlink target untouched', async () => {
+    const configDir = await makeTempConfigDir();
+    try {
+      const definitionId = 'def-excl';
+
+      // A regular file sitting where a memory dir would be.
+      const fileMemoryParent = path.join(configDir, 'repositories', 'file-repo', 'memory');
+      await fsPromises.mkdir(fileMemoryParent, { recursive: true });
+      const fileTarget = path.join(fileMemoryParent, definitionId);
+      await fsPromises.writeFile(fileTarget, 'not a directory');
+
+      // A symlink to a real directory sitting where a memory dir would be.
+      const realDir = path.join(configDir, 'real-memory-dir');
+      await fsPromises.mkdir(realDir, { recursive: true });
+      const symlinkMemoryParent = path.join(configDir, 'repositories', 'symlink-repo', 'memory');
+      await fsPromises.mkdir(symlinkMemoryParent, { recursive: true });
+      const symlinkTarget = path.join(symlinkMemoryParent, definitionId);
+      await fsPromises.symlink(realDir, symlinkTarget, 'dir');
+
+      const targets = await buildDefinitionMemoryCleanupTargets({ configDir, definitionId });
+
+      expect(targets).not.toContain(fileTarget);
+      expect(targets).not.toContain(symlinkTarget);
+      expect(targets).toEqual([]);
+
+      // The symlink's real target must survive -- the function only lstats,
+      // it never follows or removes anything itself.
+      const realDirStillExists = await fsPromises
+        .lstat(realDir)
+        .then(() => true)
+        .catch(() => false);
+      expect(realDirStillExists).toBe(true);
+    } finally {
+      await fsPromises.rm(configDir, { recursive: true, force: true });
+    }
+  });
+
+  it('throws InvalidSessionDataScopeError on a malformed definitionId before touching the filesystem', async () => {
+    // configDir does not exist -- a read attempt would throw a different
+    // (ENOENT-shaped) error, so throwing InvalidSessionDataScopeError proves
+    // the validation ran first.
+    const configDir = path.join(os.tmpdir(), 'session-data-path-defmem-does-not-exist');
+    for (const badId of ['', 'a/b', '.', '..', '../x']) {
+      await expect(
+        buildDefinitionMemoryCleanupTargets({ configDir, definitionId: badId })
+      ).rejects.toThrow(InvalidSessionDataScopeError);
+    }
   });
 });

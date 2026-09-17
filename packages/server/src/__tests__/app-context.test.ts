@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach, jest } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, afterAll, jest } from 'bun:test';
 import { JOB_TYPES, type AppServerMessage, type WorktreeDeletePayload } from '@agent-console/shared';
 import {
   createAppContext,
@@ -8,6 +8,13 @@ import {
 } from '../app-context.js';
 import type { PtyNotificationParams } from '../lib/pty-notification.js';
 import { InterSessionMessageService } from '../services/inter-session-message-service.js';
+import type { EnsureMemoryDirFn } from '../lib/memory-dir.js';
+import type { SpawnAsUserFn, SpawnAsUserOpts, SpawnAsUserResult } from '../services/privilege-elevation.js';
+import { mkdir, realpath, rm } from 'node:fs/promises';
+import * as path from 'node:path';
+import * as os from 'node:os';
+import { SqliteEmbeddedAgentRepository } from '../repositories/sqlite-embedded-agent-repository.js';
+import type { EmbeddedAgentDefinition } from '@agent-console/shared';
 
 function createDeferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
   let resolve!: (value: T) => void;
@@ -390,6 +397,295 @@ describe('AppContext', () => {
         });
         return { sessionId: session.id, workerId: worker!.id };
       });
+    });
+  });
+
+  describe('ensureMemoryDirFn test/polarity seam (Issue #1709 PR-3b)', () => {
+    /**
+     * Uses a REAL, isolated `AGENT_CONSOLE_HOME` temp directory scoped to
+     * this describe block only -- NOT memfs. This file also gains a
+     * file-backed-`dbPath` describe below whose real-file `bun:sqlite`
+     * migrations do their own recursive-backup copy via `fs/promises`
+     * (`backupDatabaseFile` in `connection.ts`); `bun:test`'s `mock.module`
+     * is process-global and permanent for the life of the test process (see
+     * `.claude/rules/testing.md` Anti-Pattern #2), so importing memfs
+     * anywhere in this file -- even scoped to a single describe's
+     * `beforeEach` -- would silently redirect that real-disk copy at a
+     * virtual filesystem that never saw the real sqlite file, breaking the
+     * dbPath describe with an unrelated ENOENT. Real embedded-agent
+     * activation (`sendMessage`'s activate-on-delivery path) composes and
+     * verifies a real memory directory (`ensureMemoryDir`) that works fine
+     * against a real temp directory, so memfs was never load-bearing here --
+     * `packages/integration/src/embedded-agent-memory-boundary.test.ts`
+     * uses memfs only because ITS suite already runs everything through
+     * `test-utils.js` for unrelated reasons, not because this specific
+     * assertion requires a virtual filesystem.
+     */
+    // `WorkerOutputFileManager` buffers appended output and flushes it on
+    // its own `WORKER_OUTPUT_FLUSH_INTERVAL` timer (default 100ms,
+    // `server-config.ts`) rather than synchronously, and this timer is not
+    // observed to be cancelled by `deactivateEmbeddedAgentWorker` /
+    // `shutdownAppContext` for a worker whose fake subprocess never
+    // attached a real WebSocket client -- so a per-test removal of
+    // `memoryHomeDir` can race a flush that fires afterward, recreating a
+    // `_quick/outputs/...` file with no exception raised (the `rm` itself
+    // succeeds; something merely writes into the directory again later).
+    // Every directory this describe creates is instead collected here and
+    // removed once in `afterAll` after a bounded wait, which empirically
+    // closes the race when this describe's own tests are the only thing
+    // keeping the process alive afterward. This is cleanup hygiene only --
+    // it never affects the pass/fail of any assertion above, which has
+    // already run by the time this fires -- and it is a BEST-EFFORT pass
+    // (`.catch(() => {})` below): a `bun run test` invocation that keeps
+    // the process alive with unrelated async work past this wait can still
+    // let the same stray write land after this `rm` has already run,
+    // leaving a uniquely-named, harmless leftover directory under the
+    // real `os.tmpdir()`. This is a discovered pre-existing resource
+    // question (does something legitimately need this flush timer alive
+    // past deactivation, or should deactivation cancel it) rather than
+    // something this test suite should try to defeat with more retries.
+    const memoryHomeDirs: string[] = [];
+    let memoryHomeDir: string;
+    let originalAgentConsoleHome: string | undefined;
+
+    beforeEach(async () => {
+      originalAgentConsoleHome = process.env.AGENT_CONSOLE_HOME;
+      memoryHomeDir = path.join(
+        os.tmpdir(),
+        `app-context-memory-seam-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+      );
+      memoryHomeDirs.push(memoryHomeDir);
+      await mkdir(memoryHomeDir, { recursive: true });
+      process.env.AGENT_CONSOLE_HOME = memoryHomeDir;
+    });
+
+    afterEach(async () => {
+      if (appContext) {
+        await shutdownAppContext(appContext);
+        appContext = null;
+      }
+      if (originalAgentConsoleHome === undefined) {
+        delete process.env.AGENT_CONSOLE_HOME;
+      } else {
+        process.env.AGENT_CONSOLE_HOME = originalAgentConsoleHome;
+      }
+    });
+
+    afterAll(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      for (const dir of memoryHomeDirs) {
+        await rm(dir, { recursive: true, force: true }).catch(() => {});
+      }
+    });
+
+    /** Minimal subset of Bun's FileSink consumed by EmbeddedAgentWorkerService. */
+    interface FakeFileSink {
+      write: (chunk: string | Uint8Array) => number;
+      end: () => void;
+      flush: () => number;
+    }
+
+    /**
+     * Exitable fake streams/exited-promise (mirrors `makeFakeSpawn` in
+     * `session-manager.test.ts`'s "threads the spawnAsUserFn option through"
+     * test): lets `activateAndCaptureInit` deactivate the worker afterward
+     * instead of leaving a background stdout/stderr reader and the
+     * exit-observer's `subprocess.exited` await pending forever, which was
+     * observed to leak a stray `outputs/<workerId>/*.log` write racing this
+     * describe's real-tmp-dir cleanup.
+     */
+    function makeFakeSpawn(): {
+      fn: SpawnAsUserFn;
+      stdinWrites: string[];
+      simulateExit: (code: number) => void;
+    } {
+      const stdinWrites: string[] = [];
+      let stdoutCtrl!: ReadableStreamDefaultController<Uint8Array>;
+      let stderrCtrl!: ReadableStreamDefaultController<Uint8Array>;
+      const stdout = new ReadableStream<Uint8Array>({ start(c) { stdoutCtrl = c; } });
+      const stderr = new ReadableStream<Uint8Array>({ start(c) { stderrCtrl = c; } });
+      let resolveExited!: (code: number) => void;
+      const exited = new Promise<number>((resolve) => { resolveExited = resolve; });
+      let exitSimulated = false;
+      const simulateExit = (code: number) => {
+        if (exitSimulated) return;
+        exitSimulated = true;
+        resolveExited(code);
+        stdoutCtrl.close();
+        stderrCtrl.close();
+      };
+      const stdin: FakeFileSink = {
+        write: (chunk) => {
+          stdinWrites.push(typeof chunk === 'string' ? chunk : new TextDecoder().decode(chunk));
+          return 0;
+        },
+        end: () => {},
+        flush: () => 0,
+      };
+      const subprocess = { pid: 9997, exited, stdin, stdout, stderr, kill: () => {} };
+      const fn: SpawnAsUserFn = (_opts: SpawnAsUserOpts) =>
+        ({ subprocess, stdin, elevated: false }) as unknown as SpawnAsUserResult;
+      return { fn, stdinWrites, simulateExit };
+    }
+
+    /**
+     * Drives a real quick-session embedded-agent worker through activation
+     * (`sendMessage`'s activate-on-delivery path), returns the parsed `init`
+     * command captured off the faked subprocess's stdin -- the same wire
+     * shape `embedded-agent-memory-boundary.test.ts` asserts against -- and
+     * deactivates the worker before returning (see `makeFakeSpawn`'s doc
+     * comment for why).
+     */
+    async function activateAndCaptureInit(
+      overrides?: { ensureMemoryDirFn?: EnsureMemoryDirFn },
+    ): Promise<{ type: string; context: Record<string, unknown> }> {
+      const fake = makeFakeSpawn();
+      appContext = await createTestContext({ spawnAsUserFn: fake.fn, ...overrides });
+
+      const owner = await appContext.userRepository.upsertByOsUid(
+        24681,
+        'seam-owner',
+        '/home/seam-owner',
+      );
+      const definition = await appContext.embeddedAgentManager.createEmbeddedAgent(
+        { name: 'Seam agent', provider: { baseUrl: 'http://localhost:11434/v1', model: 'qwen3:32b' } },
+        owner.id,
+      );
+      const scratch = path.join(memoryHomeDir, 'quick-seam-cwd');
+      await mkdir(scratch, { recursive: true });
+      const realCwd = await realpath(scratch);
+      const session = await appContext.sessionManager.createSession(
+        { type: 'quick', locationPath: realCwd },
+        { createdBy: owner.id },
+      );
+      const worker = await appContext.sessionManager.createWorker(session.id, {
+        type: 'embedded-agent',
+        embeddedAgentId: definition.id,
+      });
+      expect(worker).not.toBeNull();
+
+      await appContext.sessionManager.sendMessage(session.id, null, worker!.id, 'hello');
+
+      await waitForCondition(() => fake.stdinWrites.length >= 1);
+      const initCommand = JSON.parse(fake.stdinWrites[0]) as { type: string; context: Record<string, unknown> };
+
+      // Teardown: same pattern as `EmbeddedAgentWorkerService.deactivate
+      // escalation` -- issue deactivate, then simulate the exit immediately
+      // so the grace-timeout race resolves via the real exit path.
+      const deactivatePromise = appContext.sessionManager.deactivateEmbeddedAgentWorker(session.id, worker!.id);
+      fake.simulateExit(0);
+      await deactivatePromise;
+
+      return initCommand;
+    }
+
+    it('omits context.memoryDir from the init frame when ensureMemoryDirFn is overridden to resolve undefined', async () => {
+      // Mutation measured: dropping `ensureMemoryDirFn: options.ensureMemoryDirFn`
+      // from SessionManager's construction of EmbeddedAgentWorkerService
+      // (session-manager.ts) fails this test -- the override never reaches
+      // the service, its default `prepareMemoryDir` runs instead, and
+      // `context.memoryDir` is present.
+      const initCommand = await activateAndCaptureInit({
+        ensureMemoryDirFn: async () => undefined,
+      });
+
+      expect(initCommand.type).toBe('init');
+      expect('memoryDir' in initCommand.context).toBe(false);
+    });
+
+    it('includes context.memoryDir in the init frame with no override -- the polarity of the seam above', async () => {
+      const initCommand = await activateAndCaptureInit();
+
+      expect(initCommand.type).toBe('init');
+      expect(typeof initCommand.context.memoryDir).toBe('string');
+    });
+  });
+
+  describe('createTestContext dbPath option (file-backed test database)', () => {
+    /**
+     * `bun:sqlite`'s `Database` does its file I/O through a native binding,
+     * never through Node's `fs` module -- so it is unaffected by the
+     * process-global memfs mock other describes in this file install via
+     * `test-utils.js`. Cleanup of the real tmp file below therefore uses a
+     * spawned `rm -f` rather than `node:fs/promises`, which -- once memfs
+     * has been installed anywhere in this process -- would silently target
+     * the virtual filesystem instead of the real one and leave the real
+     * file behind.
+     */
+    function makeTmpDbPath(): string {
+      return path.join(os.tmpdir(), `app-context-dbpath-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}.sqlite`);
+    }
+
+    function removeTmpDbPath(dbPath: string): void {
+      // `dbPath*` also catches the `<dbPath>.bak.v18-to-v19.<timestamp>`
+      // sibling `backupDatabaseFile` (connection.ts) writes when a
+      // fresh file-backed database runs the full migration chain.
+      Bun.spawnSync(['sh', '-c', `rm -f -- ${dbPath}*`]);
+    }
+
+    function buildDefinition(id: string, name: string): EmbeddedAgentDefinition {
+      const now = new Date().toISOString();
+      return {
+        id,
+        name,
+        engine: 'openai-api',
+        provider: { baseUrl: 'http://localhost:11434/v1', model: 'qwen3:32b' },
+        isBuiltIn: false,
+        createdBy: 'test-user-id',
+        createdAt: now,
+        updatedAt: now,
+      };
+    }
+
+    it('a second context booted with the same dbPath loads a row the first context persisted', async () => {
+      // Mutation measured: reverting `createDatabaseForTest` to always pass
+      // ':memory:' to `new BunDatabase(...)` (ignoring the `dbPath`
+      // parameter) fails this test -- ctx2 boots a fresh, empty in-memory
+      // database and never sees `persisted-def`.
+      //
+      // This test is ALSO the memfs polarity pin for `createDatabaseForTest`
+      // passing `IN_MEMORY_DB_PATH` (not the real `dbPath`) into
+      // `runMigrations` (`connection.ts`): with `runMigrations` given the
+      // real `dbPath` instead, this test still passes when the file is run
+      // alone, but FAILS under the full server suite (`cd packages/server
+      // && bun test src/`), because some sibling test file's import of
+      // `test-utils.js` mocks `fs/promises` to memfs process-wide before
+      // this test runs, and the v19 migration's pre-flight backup
+      // (`backupDatabaseFile`) then tries to `copyFile` the real,
+      // real-disk-backed sqlite file through that virtual filesystem:
+      // `ENOENT: no such file or directory, open
+      // '.../app-context-dbpath-<...>.sqlite'` from memfs's own
+      // `_copyFile`. With the `IN_MEMORY_DB_PATH` sentinel (the actual
+      // production code), this test passes in both isolation and the full
+      // suite. Reproduced 2026-09-17.
+      const dbPath = makeTmpDbPath();
+      try {
+        const ctx1 = await createTestContext({ dbPath });
+        await new SqliteEmbeddedAgentRepository(ctx1.db).save(buildDefinition('persisted-def', 'Persisted'));
+        await shutdownAppContext(ctx1);
+
+        const ctx2 = await createTestContext({ dbPath });
+        try {
+          expect(ctx2.embeddedAgentManager.getEmbeddedAgent('persisted-def')?.name).toBe('Persisted');
+        } finally {
+          await shutdownAppContext(ctx2);
+        }
+      } finally {
+        removeTmpDbPath(dbPath);
+      }
+    });
+
+    it('two contexts without dbPath do not share data -- the polarity of the option above', async () => {
+      const ctx1 = await createTestContext();
+      await new SqliteEmbeddedAgentRepository(ctx1.db).save(buildDefinition('not-shared-def', 'NotShared'));
+      await shutdownAppContext(ctx1);
+
+      const ctx2 = await createTestContext();
+      try {
+        expect(ctx2.embeddedAgentManager.getEmbeddedAgent('not-shared-def')).toBeUndefined();
+      } finally {
+        await shutdownAppContext(ctx2);
+      }
     });
   });
 });

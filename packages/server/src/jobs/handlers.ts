@@ -12,11 +12,14 @@ import {
   type CleanupSessionOutputsPayload,
   type CleanupWorkerOutputPayload,
   type CleanupRepositoryPayload,
+  type CleanupDefinitionMemoryPayload,
 } from './job-types.js';
 import type { WorkerOutputFileManager } from '../lib/worker-output-file.js';
 import { SessionDataPathResolver } from '../lib/session-data-path-resolver.js';
 import {
   computeSessionDataBaseDir,
+  buildDefinitionMemoryCleanupTargets,
+  assertValidSegment,
   InvalidSessionDataScopeError,
 } from '../lib/session-data-path.js';
 import { getConfigDir, getRepositoriesDir } from '../lib/config.js';
@@ -259,6 +262,71 @@ export function registerJobHandlers(
           );
           // Do NOT rethrow -- one bad target must not abort the rest of the
           // loop or trigger a full-job retry.
+        }
+      }
+    }
+  );
+
+  // Epic #1636 Phase 2 (memory layer): remove every memory directory of a
+  // deleted embedded-agent definition. Every memory directory, and every
+  // path segment above it, is server-owned (`ensureMemoryDir` verifies uid
+  // = the server process; the directory is `2775` with no sticky bit in
+  // multi-user mode, `0700` in single-user) -- so the server can unlink any
+  // entry under it regardless of which OS user actually wrote to it, and
+  // this handler NEVER consults `rmRecursiveAsUserImpl` / `shouldElevateForUser`,
+  // mirroring the unconditional `fs.rm` contract `sessionDataDirs` already
+  // has above (#1301 S3). The one exception the ownership contract does not
+  // cover is an off-convention nested subdirectory created by an elevated
+  // user with a non-group-writable mode; that target fails with EACCES, is
+  // logged, and is left for the quota/GC follow-up tracked in #1685 rather
+  // than retried here.
+  jobQueue.registerHandler<CleanupDefinitionMemoryPayload>(
+    JOB_TYPES.CLEANUP_DEFINITION_MEMORY,
+    async ({ definitionId }) => {
+      // Job payloads have no valibot schema pair -- `JobQueue` JSON.parses
+      // the persisted payload straight into this handler with no validation
+      // layer in between. This re-check is therefore LOAD-BEARING, not
+      // defensive: it is the ONLY validation `definitionId` ever receives
+      // before being used to build filesystem paths.
+      try {
+        assertValidSegment(definitionId, 'definitionId');
+      } catch (err) {
+        if (err instanceof InvalidSessionDataScopeError) {
+          logger.warn(
+            { definitionId, err: err.message },
+            'cleanup:definition-memory received a malformed definitionId; skipping',
+          );
+          return;
+        }
+        throw err;
+      }
+
+      const targets = await buildDefinitionMemoryCleanupTargets({
+        configDir: getConfigDir(),
+        definitionId,
+      });
+
+      if (targets.length === 0) {
+        logger.debug({ definitionId }, 'cleanup:definition-memory found no memory directories to remove');
+        return;
+      }
+
+      for (const target of targets) {
+        try {
+          await fs.rm(target, { recursive: true });
+          logger.info({ definitionId, target }, 'cleanup:definition-memory removed memory directory');
+        } catch (error) {
+          if (error instanceof Error && 'code' in error && (error as NodeJS.ErrnoException).code === 'ENOENT') {
+            logger.debug({ definitionId, target }, 'cleanup:definition-memory target does not exist, skipping');
+            continue;
+          }
+          logger.error(
+            { definitionId, target, err: error },
+            'cleanup:definition-memory removal failed for target; continuing with remaining targets',
+          );
+          // Do NOT rethrow -- one bad target must not abort the rest of the
+          // loop or trigger a full-job retry (per-target isolation, same
+          // contract as sessionDataDirs above).
         }
       }
     }

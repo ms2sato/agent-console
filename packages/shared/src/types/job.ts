@@ -59,6 +59,12 @@ export const JOB_TYPES = {
    * Payload: InboundEventJobPayload
    */
   INBOUND_EVENT_PROCESS: 'inbound-event:process',
+
+  /**
+   * Remove every memory directory of a deleted embedded-agent definition.
+   * Payload: CleanupDefinitionMemoryPayload
+   */
+  CLEANUP_DEFINITION_MEMORY: 'cleanup:definition-memory',
 } as const;
 
 /**
@@ -149,6 +155,23 @@ export interface WorktreeDeletePayload {
 }
 
 /**
+ * Payload for cleanup:definition-memory job (epic #1636 Phase 2, memory layer).
+ *
+ * Deliberately carries NO `requestUsername`: every memory directory and every
+ * segment above it is server-owned (`ensureMemoryDir` verifies uid = server;
+ * the directory is `2775` with no sticky bit in multi-user mode, `0700` in
+ * single-user), so the server unlinks any entry regardless of the file's
+ * owner and the handler removes the tree with plain `fs.rm` as the server --
+ * the same contract `CleanupRepositoryPayload.sessionDataDirs` has (#1301 S3).
+ * The target list is built by `buildDefinitionMemoryCleanupTargets` in
+ * `packages/server/src/lib/session-data-path.ts` at handler time, never
+ * carried on the payload.
+ */
+export interface CleanupDefinitionMemoryPayload {
+  definitionId: string;
+}
+
+/**
  * Payload for inbound-event:process job.
  */
 export interface InboundEventJobPayload {
@@ -167,7 +190,8 @@ export type JobPayload =
   | CleanupWorkerOutputPayload
   | CleanupRepositoryPayload
   | WorktreeDeletePayload
-  | InboundEventJobPayload;
+  | InboundEventJobPayload
+  | CleanupDefinitionMemoryPayload;
 
 /**
  * Error fallback when job payload JSON parsing fails (corrupted data).

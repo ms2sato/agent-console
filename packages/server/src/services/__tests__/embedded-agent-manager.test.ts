@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach } from 'bun:test';
-import type { EmbeddedAgentDefinition } from '@agent-console/shared';
+import { JOB_TYPES, type EmbeddedAgentDefinition } from '@agent-console/shared';
 import type { EmbeddedAgentRepository } from '../../repositories/embedded-agent-repository.js';
+import type { JobQueue } from '../../jobs/index.js';
 import {
   EmbeddedAgentManager,
   type EmbeddedAgentLifecycleCallbacks,
@@ -15,6 +16,11 @@ import { claudeSdkAgent, CLAUDE_SDK_AGENT_ID } from '../embedded-agents/claude-s
 class InMemoryEmbeddedAgentRepository implements EmbeddedAgentRepository {
   private defs = new Map<string, EmbeddedAgentDefinition>();
   failSave = false;
+  /** Throws from `delete()` when set, to test the pre-enqueue failure path. */
+  failDelete = false;
+  /** Fires after a successful `delete()`, so tests can assert call ordering
+   *  against the manager's own job-queue enqueue. */
+  onDelete?: (id: string) => void;
 
   async findAll(): Promise<EmbeddedAgentDefinition[]> {
     return Array.from(this.defs.values());
@@ -32,7 +38,11 @@ class InMemoryEmbeddedAgentRepository implements EmbeddedAgentRepository {
   }
 
   async delete(id: string): Promise<void> {
+    if (this.failDelete) {
+      throw new Error('delete failed');
+    }
     this.defs.delete(id);
+    this.onDelete?.(id);
   }
 
   // Test helper: current persisted state
@@ -52,6 +62,24 @@ function createCallbackRecorder() {
     onEmbeddedAgentDeleted: (id) => deleted.push(id),
   };
   return { created, updated, deleted, callbacks };
+}
+
+/**
+ * Fake `JobQueue` capturing every `enqueue` call's `(type, payload)`, plus
+ * an optional `order` array so tests can interleave enqueue calls with
+ * other recorded events (repository writes, lifecycle callbacks) to assert
+ * relative ordering.
+ */
+function createFakeJobQueue(order?: string[]) {
+  const calls: Array<{ type: string; payload: unknown }> = [];
+  const jobQueue = {
+    enqueue: async (type: string, payload: unknown) => {
+      order?.push('enqueue');
+      calls.push({ type, payload });
+      return 'job-id';
+    },
+  } as unknown as JobQueue;
+  return { jobQueue, calls };
 }
 
 const VALID_PROVIDER = {
@@ -448,6 +476,94 @@ describe('EmbeddedAgentManager', () => {
 
       expect(result).toBe(false);
       expect(manager.getEmbeddedAgent(CLAUDE_SDK_AGENT_ID)).toEqual(claudeSdkAgent);
+    });
+  });
+
+  describe('deleteEmbeddedAgent with a job queue (Issue #1709)', () => {
+    it('enqueues exactly one cleanup:definition-memory job, after repository.delete and before the lifecycle callback', async () => {
+      // Mutation measured: enqueuing BEFORE `this.repository.delete(id)`
+      // (instead of after) fails the `order` assertion below --
+      // 'enqueue' would appear before 'repository.delete'.
+      const order: string[] = [];
+      repository.onDelete = () => order.push('repository.delete');
+      const { jobQueue, calls } = createFakeJobQueue(order);
+
+      const manager = await EmbeddedAgentManager.create(repository, { jobQueue });
+      const created = await manager.createEmbeddedAgent(
+        { name: 'ToDelete', provider: VALID_PROVIDER },
+        'user-1'
+      );
+      const { deleted, callbacks } = createCallbackRecorder();
+      manager.setLifecycleCallbacks({
+        ...callbacks,
+        onEmbeddedAgentDeleted: (id) => {
+          order.push('callback');
+          callbacks.onEmbeddedAgentDeleted(id);
+        },
+      });
+
+      const result = await manager.deleteEmbeddedAgent(created.id);
+
+      expect(result).toBe(true);
+      expect(calls).toEqual([
+        { type: JOB_TYPES.CLEANUP_DEFINITION_MEMORY, payload: { definitionId: created.id } },
+      ]);
+      expect(order).toEqual(['repository.delete', 'enqueue', 'callback']);
+      expect(deleted).toEqual([created.id]);
+    });
+
+    it('does not enqueue and leaves the map unchanged when repository.delete throws', async () => {
+      // Mutation measured: moving the enqueue call BEFORE
+      // `this.repository.delete(id)` fails this test -- `calls` would be
+      // non-empty even though the delete rejected.
+      const { jobQueue, calls } = createFakeJobQueue();
+      const manager = await EmbeddedAgentManager.create(repository, { jobQueue });
+      const created = await manager.createEmbeddedAgent(
+        { name: 'ToDelete', provider: VALID_PROVIDER },
+        'user-1'
+      );
+      repository.failDelete = true;
+
+      await expect(manager.deleteEmbeddedAgent(created.id)).rejects.toThrow('delete failed');
+
+      expect(calls).toEqual([]);
+      expect(manager.getEmbeddedAgent(created.id)).toEqual(created);
+    });
+
+    it('does not enqueue for a built-in id', async () => {
+      // Mutation measured: moving the enqueue call above the
+      // `existing.isBuiltIn` guard fails this test -- `calls` would contain
+      // an entry for CLAUDE_SDK_AGENT_ID even though built-ins are never
+      // deletable.
+      const { jobQueue, calls } = createFakeJobQueue();
+      const manager = await EmbeddedAgentManager.create(repository, { jobQueue });
+
+      const result = await manager.deleteEmbeddedAgent(CLAUDE_SDK_AGENT_ID);
+
+      expect(result).toBe(false);
+      expect(calls).toEqual([]);
+    });
+
+    it('deletes without throwing and still fires the lifecycle callback when created with jobQueue: null, or with no options at all', async () => {
+      // Mutation measured: removing the `if (this.jobQueue)` guard (calling
+      // `this.jobQueue.enqueue(...)` unconditionally) fails this test with
+      // a TypeError ("Cannot read properties of null") for both factories.
+      const factories: Array<() => Promise<EmbeddedAgentManager>> = [
+        () => EmbeddedAgentManager.create(repository, { jobQueue: null }),
+        () => EmbeddedAgentManager.create(repository),
+      ];
+      for (const createManager of factories) {
+        const manager = await createManager();
+        const created = await manager.createEmbeddedAgent(
+          { name: 'ToDelete', provider: VALID_PROVIDER },
+          'user-1'
+        );
+        const { deleted, callbacks } = createCallbackRecorder();
+        manager.setLifecycleCallbacks(callbacks);
+
+        await expect(manager.deleteEmbeddedAgent(created.id)).resolves.toBe(true);
+        expect(deleted).toEqual([created.id]);
+      }
     });
   });
 

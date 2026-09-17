@@ -4,12 +4,14 @@ import {
   type UpdateEmbeddedAgentRequest,
   type AgentDirectoryEntry,
   type AgentSurface,
+  type CleanupDefinitionMemoryPayload,
 } from '@agent-console/shared';
 import { createLogger } from '../lib/logger.js';
 import { initializeDatabase } from '../database/connection.js';
 import type { EmbeddedAgentRepository } from '../repositories/embedded-agent-repository.js';
 import { SqliteEmbeddedAgentRepository } from '../repositories/sqlite-embedded-agent-repository.js';
 import { claudeSdkAgent, CLAUDE_SDK_AGENT_ID } from './embedded-agents/claude-sdk-builtin.js';
+import { JOB_TYPES, type JobQueue } from '../jobs/index.js';
 
 const logger = createLogger('embedded-agent-manager');
 
@@ -37,14 +39,18 @@ export class EmbeddedAgentManager implements AgentSurface<'embedded'> {
   private embeddedAgents: Map<string, EmbeddedAgentDefinition> = new Map();
   private lifecycleCallbacks: EmbeddedAgentLifecycleCallbacks | null = null;
   private repository: EmbeddedAgentRepository;
+  private jobQueue: JobQueue | null = null;
 
   /**
    * Create an EmbeddedAgentManager instance with async initialization.
    * This is the preferred way to create an EmbeddedAgentManager.
    */
-  static async create(repository?: EmbeddedAgentRepository): Promise<EmbeddedAgentManager> {
+  static async create(
+    repository?: EmbeddedAgentRepository,
+    options?: { jobQueue?: JobQueue | null }
+  ): Promise<EmbeddedAgentManager> {
     const repo = repository ?? new SqliteEmbeddedAgentRepository(await initializeDatabase());
-    const manager = new EmbeddedAgentManager(repo);
+    const manager = new EmbeddedAgentManager(repo, options?.jobQueue ?? null);
     await manager.initialize();
     return manager;
   }
@@ -52,8 +58,9 @@ export class EmbeddedAgentManager implements AgentSurface<'embedded'> {
   /**
    * Private constructor - use EmbeddedAgentManager.create() for async initialization.
    */
-  private constructor(repository: EmbeddedAgentRepository) {
+  private constructor(repository: EmbeddedAgentRepository, jobQueue: JobQueue | null = null) {
     this.repository = repository;
+    this.jobQueue = jobQueue;
   }
 
   /**
@@ -288,6 +295,22 @@ export class EmbeddedAgentManager implements AgentSurface<'embedded'> {
     this.embeddedAgents.delete(id);
 
     logger.info({ embeddedAgentId: id, name: existing.name }, 'Embedded agent deleted');
+
+    // Enqueue memory-directory cleanup AFTER the row and the in-memory entry
+    // are both gone -- the row's absence is what makes the directory
+    // unreachable through the ordinary create/activate path, so removal
+    // must follow it, the same ordering discipline
+    // `RepositoryManager.cleanupRepositoryData` uses for repository data.
+    // Enqueued here, from the manager, never from the WS lifecycle callback
+    // below (that callback is a broadcast site, not a place to trigger
+    // side effects). Built-in definitions never reach this point (guarded
+    // above). No job queue (e.g. unit tests constructing the manager
+    // without one) means no enqueue and no throw -- deletion still
+    // succeeds.
+    if (this.jobQueue) {
+      const payload: CleanupDefinitionMemoryPayload = { definitionId: id };
+      await this.jobQueue.enqueue(JOB_TYPES.CLEANUP_DEFINITION_MEMORY, payload);
+    }
 
     // Callback fires after successful delete - clients will receive state update
     // only after database write is confirmed

@@ -16,6 +16,7 @@ import type {
   CleanupRepositoryPayload,
   CleanupSessionOutputsPayload,
   CleanupWorkerOutputPayload,
+  CleanupDefinitionMemoryPayload,
 } from '@agent-console/shared';
 import type { JobQueue, JobHandler } from '../job-queue.js';
 import { registerJobHandlers } from '../handlers.js';
@@ -597,6 +598,153 @@ describe('cleanup job handlers', () => {
           await fsPromises.rm(baseDir, { recursive: true, force: true });
         }
       });
+    });
+  });
+
+  describe('CLEANUP_DEFINITION_MEMORY (Issue #1709, S3 contract)', () => {
+    async function runPayload(payload: CleanupDefinitionMemoryPayload): Promise<void> {
+      const handler = handlers.get(JOB_TYPES.CLEANUP_DEFINITION_MEMORY)!;
+      await handler(payload);
+    }
+
+    it('removes all three memory-dir shapes and leaves a different definition dir intact', async () => {
+      // Mutation measured: dropping the `_quick`-first candidate from
+      // `buildDefinitionMemoryCleanupTargets` (returning only the
+      // repository-scoped candidates) fails this test -- `quickTarget`
+      // survives the `rejects.toThrow()` assertion below.
+      const baseDir = path.join(os.tmpdir(), `cleanup-handler-defmem-${process.pid}-${Date.now()}`);
+      process.env.AGENT_CONSOLE_HOME = baseDir;
+      const definitionId = 'def-a';
+      const otherDefinitionId = 'def-b';
+
+      const quickTarget = path.join(baseDir, '_quick', 'memory', definitionId);
+      const flatTarget = path.join(baseDir, 'repositories', 'flat', 'memory', definitionId);
+      const nestedTarget = path.join(baseDir, 'repositories', 'org', 'repo', 'memory', definitionId);
+      const otherTarget = path.join(baseDir, 'repositories', 'flat', 'memory', otherDefinitionId);
+
+      await fsPromises.mkdir(quickTarget, { recursive: true });
+      await fsPromises.mkdir(flatTarget, { recursive: true });
+      await fsPromises.mkdir(nestedTarget, { recursive: true });
+      await fsPromises.mkdir(otherTarget, { recursive: true });
+
+      try {
+        await runPayload({ definitionId });
+
+        await expect(fsPromises.access(quickTarget)).rejects.toThrow();
+        await expect(fsPromises.access(flatTarget)).rejects.toThrow();
+        await expect(fsPromises.access(nestedTarget)).rejects.toThrow();
+        // A different definition's memory dir must survive.
+        await fsPromises.access(otherTarget);
+      } finally {
+        process.env.AGENT_CONSOLE_HOME = TEST_CONFIG;
+        await fsPromises.rm(baseDir, { recursive: true, force: true });
+      }
+    });
+
+    it('is idempotent: running against a missing target, or the same target twice, resolves without throwing', async () => {
+      // Mutation measured: removing the `code === 'ENOENT'` branch (so any
+      // fs.rm error is treated the same as the generic per-target-isolation
+      // catch) still leaves this test passing (the generic catch also
+      // swallows ENOENT and never rethrows) -- this test alone does not
+      // distinguish the two branches; the per-target isolation test below
+      // covers the non-ENOENT-error path and its "continues on failure"
+      // behavior specifically.
+      const baseDir = path.join(os.tmpdir(), `cleanup-handler-defmem-idempotent-${process.pid}-${Date.now()}`);
+      process.env.AGENT_CONSOLE_HOME = baseDir;
+      try {
+        // baseDir has no _quick / repositories yet -- empty home.
+        await expect(runPayload({ definitionId: 'def-none' })).resolves.toBeUndefined();
+        await expect(runPayload({ definitionId: 'def-none' })).resolves.toBeUndefined();
+
+        const target = path.join(baseDir, '_quick', 'memory', 'def-real');
+        await fsPromises.mkdir(target, { recursive: true });
+        await runPayload({ definitionId: 'def-real' });
+        await expect(fsPromises.access(target)).rejects.toThrow();
+        // Second run against the now-removed target must not throw.
+        await expect(runPayload({ definitionId: 'def-real' })).resolves.toBeUndefined();
+      } finally {
+        process.env.AGENT_CONSOLE_HOME = TEST_CONFIG;
+        await fsPromises.rm(baseDir, { recursive: true, force: true }).catch(() => {});
+      }
+    });
+
+    it('isolates a single failing target -- the remaining target is still removed and the handler does not throw', async () => {
+      // Mutation measured: removing the `try/catch` around the per-target
+      // `fs.rm` call (letting a non-ENOENT error propagate) fails this test
+      // -- `runPayload` then rejects instead of resolving, and `okTarget`
+      // is never reached because the `for` loop throws on the first
+      // (failing) target.
+      const baseDir = path.join(os.tmpdir(), `cleanup-handler-defmem-isolation-${process.pid}-${Date.now()}`);
+      process.env.AGENT_CONSOLE_HOME = baseDir;
+      const definitionId = 'def-isolate';
+      const failingTarget = path.join(baseDir, 'repositories', 'failing-repo', 'memory', definitionId);
+      const okTarget = path.join(baseDir, 'repositories', 'ok-repo', 'memory', definitionId);
+      await fsPromises.mkdir(failingTarget, { recursive: true });
+      await fsPromises.mkdir(okTarget, { recursive: true });
+      await fsPromises.writeFile(path.join(failingTarget, 'marker'), 'f');
+      await fsPromises.writeFile(path.join(okTarget, 'marker'), 'k');
+
+      // Force a non-ENOENT failure on `failingTarget` by revoking its own
+      // read/execute permission, so `fs.rm`'s internal readdir throws EACCES
+      // rather than the idempotent ENOENT path.
+      await fsPromises.chmod(failingTarget, 0o000);
+
+      try {
+        await expect(runPayload({ definitionId })).resolves.toBeUndefined();
+        await expect(fsPromises.access(okTarget)).rejects.toThrow();
+      } finally {
+        await fsPromises.chmod(failingTarget, 0o755).catch(() => {});
+        process.env.AGENT_CONSOLE_HOME = TEST_CONFIG;
+        await fsPromises.rm(baseDir, { recursive: true, force: true });
+      }
+    });
+
+    it('never routes through rmRecursiveAsUser, even under AUTH_MODE=multi-user', async () => {
+      // Mutation measured: routing the removal loop through
+      // `rmRecursiveAsUserImpl(target, null, {...})` instead of a direct
+      // `fs.rm` fails this test -- `rmRecursiveAsUserMock.calls.length`
+      // becomes 1 instead of the asserted 0.
+      process.env.AUTH_MODE = 'multi-user';
+      const baseDir = path.join(os.tmpdir(), `cleanup-handler-defmem-multiuser-${process.pid}-${Date.now()}`);
+      process.env.AGENT_CONSOLE_HOME = baseDir;
+      const definitionId = 'def-multiuser';
+      const target = path.join(baseDir, '_quick', 'memory', definitionId);
+      await fsPromises.mkdir(target, { recursive: true });
+
+      try {
+        await runPayload({ definitionId });
+
+        expect(rmRecursiveAsUserMock.calls.length).toBe(0);
+        // And the direct path really did remove it.
+        await expect(fsPromises.access(target)).rejects.toThrow();
+      } finally {
+        process.env.AGENT_CONSOLE_HOME = TEST_CONFIG;
+        await fsPromises.rm(baseDir, { recursive: true, force: true });
+      }
+    });
+
+    it('resolves without throwing and touches nothing for a malformed definitionId', async () => {
+      // Mutation measured: removing the `assertValidSegment` re-validation
+      // (passing `definitionId` straight to `buildDefinitionMemoryCleanupTargets`)
+      // fails this test -- `buildDefinitionMemoryCleanupTargets` itself also
+      // validates via `assertValidSegment`, so the handler would reject with
+      // an uncaught `InvalidSessionDataScopeError` instead of resolving
+      // (the `resolves.toBeUndefined()` assertion below fails).
+      const baseDir = path.join(os.tmpdir(), `cleanup-handler-defmem-malformed-${process.pid}-${Date.now()}`);
+      process.env.AGENT_CONSOLE_HOME = baseDir;
+      // A real directory at the shape a naive, unvalidated path.join with
+      // '..' would collapse into, so "untouched" is a meaningful assertion
+      // rather than vacuously true because nothing existed to remove.
+      const decoyTarget = path.join(baseDir, 'repositories', 'flat', 'memory', 'x');
+      await fsPromises.mkdir(decoyTarget, { recursive: true });
+
+      try {
+        await expect(runPayload({ definitionId: '../x' })).resolves.toBeUndefined();
+        await fsPromises.access(decoyTarget);
+      } finally {
+        process.env.AGENT_CONSOLE_HOME = TEST_CONFIG;
+        await fsPromises.rm(baseDir, { recursive: true, force: true });
+      }
     });
   });
 });

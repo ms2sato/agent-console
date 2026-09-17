@@ -1023,6 +1023,13 @@ async function loadSkillsLayer(cwd: string): Promise<SkillsLayerResult> {
  * "The header text" with only the path substituted -- the convention is
  * stated in-band where the model can act on it, and the cross-user property
  * from the spec's keying section is stated where it matters.
+ *
+ * The first-entry clause exists because Edit cannot create a file that does
+ * not exist yet, and a literal reader of the earlier wording -- which only
+ * described the append-with-Edit / never-Write-rewrite step -- had no
+ * permitted way to create the index on a fresh memoryDir: measured in the
+ * memory-layer smoke, where the model read the nonce, found MEMORY.md
+ * absent, and wrote nothing.
  */
 export function formatMemoryHeader(memoryDir: string): string {
   return (
@@ -1033,8 +1040,9 @@ export function formatMemoryHeader(memoryDir: string): string {
     'MEMORY.md is its index; its current contents follow. ' +
     'Each memory is one file holding one fact, with frontmatter (name, description, metadata.type: user | feedback | project | reference). ' +
     'After writing a file, add a one-line pointer to MEMORY.md: `- [Title](file.md) — hook` — ' +
-    "re-read MEMORY.md first, then append the line with Edit anchored on the file's current tail " +
-    '(never rewrite MEMORY.md with Write; other sessions may be writing it too). ' +
+    'if MEMORY.md does not exist yet, create it with Write containing that line; ' +
+    "otherwise re-read MEMORY.md first, then append the line with Edit anchored on the file's current tail " +
+    '(never overwrite an existing MEMORY.md with Write; other sessions may be writing it too). ' +
     'Read a topic file with Read when its hook is relevant; never put memory content in MEMORY.md itself.'
   );
 }
