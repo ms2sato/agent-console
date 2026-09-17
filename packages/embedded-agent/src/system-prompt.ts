@@ -291,11 +291,10 @@ function buildPreamble(context: SystemPromptContext): string {
     lines.push(`Repository ID: ${context.repositoryId}`);
   }
   lines.push(
-    'When an MCP tool requires a sessionId or workerId (for example write_memo or get_session_status), use the Session ID / Worker ID above. ' +
-      'Arguments that name your OWN session or worker (fromSessionId, parentSessionId / parentWorkerId, and the ' +
-      'sessionId / workerId of create_timer, create_conditional_wakeup, run_process, the artifact and bookmark tools, ' +
-      'and set_orchestrator_session / clear_orchestrator_session) may be omitted: your bearer token supplies them, ' +
-      'and a different value is refused.',
+    // Kept short on purpose: this preamble's length feeds the restore-boundary
+    // compaction estimate (see main.test.ts's calibrated ~433-char figure).
+    'Arguments naming your OWN session or worker (fromSessionId, parentSessionId/parentWorkerId, your own ' +
+      'sessionId/workerId) may be omitted: your bearer token supplies them. Other sessionId arguments use the Session ID above.',
   );
   lines.push(
     'HTML/SVG code blocks you write may be rendered in a sandboxed preview; keep them static only -- no <script> tags and no inline event handler attributes (onclick, onload, etc.), since these are stripped before rendering and will not run.',

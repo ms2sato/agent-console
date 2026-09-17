@@ -81,8 +81,8 @@ describe('assembleSystemPrompt', () => {
   it('tells the model self-identity arguments may be omitted (bearer token) while required ids still use the stated Session ID', () => {
     const prompt = assembleSystemPrompt({ context, instructions: emptyInstructions });
     expect(prompt).toContain('may be omitted: your bearer token supplies them');
-    expect(prompt).toContain('use the Session ID / Worker ID above');
-    expect(prompt).not.toContain('use the Session ID above.');
+    expect(prompt).toContain('Other sessionId arguments use the Session ID above');
+    expect(prompt).not.toContain('When an MCP tool accepts a sessionId or fromSessionId argument');
   });
 
   it('includes the sandboxed HTML/SVG preview guidance (#1097), naming both stripped vectors', () => {
