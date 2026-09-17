@@ -67,6 +67,10 @@
 
 import * as os from 'node:os';
 import * as path from 'node:path';
+// No transitive server-config.ts import (pure node:fs/promises + node:os +
+// node:path + Bun.spawn), so this is safe as a static import above the
+// env-var prelude, same as the type-only import below.
+import { createDisposableMultiUserHome } from './disposable-multi-user-home.js';
 // Type-only imports are erased at compile time -- safe above the env-var
 // prelude despite the module they point at transitively importing
 // server-config.ts.
@@ -205,6 +209,7 @@ async function main(): Promise<void> {
   let stubServer: ReturnType<typeof Bun.serve> | undefined;
   let realCwd: string | undefined;
   let realConfigDir: string | undefined;
+  let prevUmask: number | undefined;
   let sessionId: string | undefined;
   let workerId: string | undefined;
 
@@ -266,9 +271,31 @@ async function main(): Promise<void> {
     // --- Real temp provider-keys.json (0600), AGENT_CONSOLE_HOME pointed at a
     // real temp dir BEFORE any activation reads it via loadProviderKey/getConfigDir.
     // getConfigDir() reads process.env.AGENT_CONSOLE_HOME at CALL time (not
-    // module load time), so this override is safe post-import. ---
-    realConfigDir = path.join(os.tmpdir(), `ac-embedded-bash-smoke-cfg-${crypto.randomUUID()}`);
-    Bun.spawnSync(['mkdir', '-p', realConfigDir]);
+    // module load time), so this override is safe post-import.
+    //
+    // The disposable home must carry the production data root's 2775 setgid
+    // contract (Issue #1713) -- a plain `mkdir -p` home is 755, and the
+    // memory layer's verification (memory-dir.ts) fails closed against it,
+    // since AUTH_MODE=multi-user is forced above. See
+    // disposable-multi-user-home.ts's header for why. ---
+    const homeResult = await createDisposableMultiUserHome('ac-embedded-bash-smoke-cfg-');
+    if (!homeResult.ok) {
+      // Routed through SmokeSetupError (not a direct process.exit(2)) --
+      // ctx and stubServer already exist by this point, and this class
+      // exists precisely so a setup/launch failure here still runs the
+      // finally block's other cleanup (deactivate/shutdownAppContext/stop
+      // servers) before exiting 2, unlike the earlier osUser-lookup guard
+      // above which runs before either resource is created. The helper
+      // itself already removed the failed mkdtemp directory (best-effort)
+      // before returning, so there is nothing left for this smoke's own
+      // cleanup to do for the home; ok:false also never touched
+      // process.umask(), so there is no prevUmask to capture.
+      throw new SmokeSetupError(
+        `cannot build a disposable AGENT_CONSOLE_HOME satisfying the multi-user data-root 2775 contract: ${homeResult.reason}`,
+      );
+    }
+    realConfigDir = homeResult.path;
+    prevUmask = homeResult.prevUmask;
     process.env.AGENT_CONSOLE_HOME = realConfigDir;
     const apiKeyRef = 'smoke-provider-key';
     const fakeApiKey = `smoke-test-fake-key-${crypto.randomUUID()}`;
@@ -519,6 +546,13 @@ async function main(): Promise<void> {
     }
   } finally {
     console.log('==> cleanup');
+    // Restore the umask createDisposableMultiUserHome() changed, first --
+    // it was applied unconditionally (regardless of ok/false) the moment
+    // that call returned, so nothing else in this block should run under
+    // the smoke's own 0o002 override.
+    if (prevUmask !== undefined) {
+      process.umask(prevUmask);
+    }
     if (ctx && sessionId && workerId) {
       try {
         await ctx.sessionManager.deactivateEmbeddedAgentWorker(sessionId, workerId);
