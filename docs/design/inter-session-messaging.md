@@ -131,7 +131,9 @@ The calling agent includes content expectations in the delegation prompt if need
   toSessionId: string;       // Target session ID
   toWorkerId?: string;       // Target worker ID (optional)
   content: string;           // Message content (free-form)
-  fromSessionId: string;     // Sender session ID (from AGENT_CONSOLE_SESSION_ID env var)
+  fromSessionId?: string;    // Sender session ID. Optional for an embedded caller (defaults to the
+                             // bearer token's session; a different value is refused -- Issue #1696);
+                             // required for a terminal caller (AGENT_CONSOLE_SESSION_ID env var)
 }
 
 // Output (success)

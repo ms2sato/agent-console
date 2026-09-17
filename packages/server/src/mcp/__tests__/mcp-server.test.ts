@@ -3065,11 +3065,11 @@ describe('MCP Server Tools', () => {
       expect(agentPrompt).toContain('\n---\n');
       expect(agentPrompt).toContain('Task completion');
       expect(agentPrompt).toContain('send_session_message');
-      // Issue #1694 (C8): the callback names BOTH identity sources, because a
-      // Bash-less claude-sdk worker has no environment to read and must fall
-      // back to the Session ID its system-prompt preamble states.
+      // Issue #1696: fromSessionId is now optional for embedded agents (the
+      // bearer token identifies them); only terminal agents need to source
+      // AGENT_CONSOLE_SESSION_ID from their environment.
       expect(agentPrompt).toContain(
-        'fromSessionId: your session id (AGENT_CONSOLE_SESSION_ID in your environment, or the Session ID stated in your system prompt)',
+        'fromSessionId: omit it if you are an embedded agent (your bearer token identifies you); terminal agents pass AGENT_CONSOLE_SESSION_ID',
       );
       expect(agentPrompt).toContain('You have a parent session');
 
@@ -3135,17 +3135,21 @@ describe('MCP Server Tools', () => {
     //
     // Polarity note: the two "only one id provided" cases below assert on
     // the SDK's own schema-validation wording ("Invalid arguments for tool
-    // delegate_to_worktree" / naming the specific missing field), NOT just
-    // `isError: true`. A bare `isError: true` check does not discriminate
-    // this fix from the OLD runtime XOR guard, which also produced
-    // `isError: true` (with a different, custom message) for exactly this
-    // "one id present, one missing" shape -- verified empirically by
-    // running these two tests against the pre-fix production code, where
-    // a bare `isError` assertion passed for the wrong reason. Only the
-    // "both omitted" case was reachable-but-successful pre-fix (the XOR
-    // guard is satisfied when both are absent), so it alone needed no
-    // wording assertion to fail pre-fix correctly.
-    it('should reject the call when only parentSessionId is provided (parentWorkerId missing) -- schema-required (Issue #1293 T1)', async () => {
+    // delegate_to_worktree" / naming the specific missing field). Issue
+    // #1696 made parentSessionId/parentWorkerId optional again at the schema
+    // layer -- they now default to the caller's own identity via
+    // `resolveSelfIdentity` when a bearer token is presented -- so a
+    // tokenless call with a partial or absent pair is no longer a SCHEMA
+    // violation (the SDK's "Invalid arguments" wording is gone); it is
+    // refused by `resolveSelfIdentity`'s case 5 instead ("requires
+    // <argName> for a caller without a bearer token"), returned as the
+    // tool's ordinary `{"error": "..."}` JSON payload via `errorResult`.
+    //
+    // Polarity note: the assertion is on the SPECIFIC wording the helper
+    // produces, not just `isError: true` -- a bare `isError: true` does not
+    // discriminate this refusal from any other unrelated error the handler
+    // could produce for the same call.
+    it('should reject the call when only parentSessionId is provided (parentWorkerId missing), tokenless -- resolveSelfIdentity case 5 (Issue #1696)', async () => {
       await setupDelegateEnvironment('feat/partial-caller');
 
       const response = await callTool(app, mcpSessionId, 'delegate_to_worktree', {
@@ -3153,50 +3157,43 @@ describe('MCP Server Tools', () => {
         prompt: 'Test partial parent IDs',
         branch: 'feat/partial-caller',
         parentSessionId: 'caller-session-123',
-        // parentWorkerId is intentionally omitted -- now a schema violation
+        // parentWorkerId is intentionally omitted -- no bearer token to default from
       }, nextId++);
 
-      // The SDK's schema-rejection text is a plain string, not the tool's
-      // usual `{"error": "..."}` JSON payload -- parseToolResult() would
-      // throw JSON.parse on it, so read the raw content text directly.
       expect(response.result?.isError).toBe(true);
-      const message = response.result?.content?.[0]?.text ?? '';
-      expect(message).toContain('Invalid arguments for tool delegate_to_worktree');
-      expect(message).toContain('parentWorkerId');
+      const data = parseToolResult(response) as { error: string };
+      expect(data.error).toContain('requires parentWorkerId for a caller without a bearer token');
     });
 
-    it('should reject the call when only parentWorkerId is provided (parentSessionId missing) -- schema-required (Issue #1293 T1)', async () => {
+    it('should reject the call when only parentWorkerId is provided (parentSessionId missing), tokenless -- resolveSelfIdentity case 5 (Issue #1696)', async () => {
       await setupDelegateEnvironment('feat/partial-worker');
 
       const response = await callTool(app, mcpSessionId, 'delegate_to_worktree', {
         repositoryId: 'test-repo',
         prompt: 'Test partial parent IDs',
         branch: 'feat/partial-worker',
-        // parentSessionId is intentionally omitted -- now a schema violation
+        // parentSessionId is intentionally omitted -- no bearer token to default from
         parentWorkerId: 'caller-worker-456',
       }, nextId++);
 
       expect(response.result?.isError).toBe(true);
-      const message = response.result?.content?.[0]?.text ?? '';
-      expect(message).toContain('Invalid arguments for tool delegate_to_worktree');
-      expect(message).toContain('parentSessionId');
+      const data = parseToolResult(response) as { error: string };
+      expect(data.error).toContain('requires parentSessionId for a caller without a bearer token');
     });
 
-    it('should reject the call when both parentSessionId and parentWorkerId are omitted -- schema-required (Issue #1293 T1)', async () => {
+    it('should reject the call when both parentSessionId and parentWorkerId are omitted, tokenless -- resolveSelfIdentity case 5 (Issue #1696)', async () => {
       await setupDelegateEnvironment('feat/no-caller');
 
       const response = await callTool(app, mcpSessionId, 'delegate_to_worktree', {
         repositoryId: 'test-repo',
         prompt: 'Normal delegation without caller IDs',
         branch: 'feat/no-caller',
-        // parentSessionId and parentWorkerId are both intentionally omitted
+        // parentSessionId and parentWorkerId are both intentionally omitted, no bearer token
       }, nextId++);
 
-      if (response.error) {
-        expect(response.error).toBeDefined();
-      } else {
-        expect(response.result?.isError).toBe(true);
-      }
+      expect(response.result?.isError).toBe(true);
+      const data = parseToolResult(response) as { error: string };
+      expect(data.error).toContain('requires parentSessionId for a caller without a bearer token');
     });
 
     it('should inherit createdBy from parent session', async () => {
@@ -3227,6 +3224,71 @@ describe('MCP Server Tools', () => {
       expect(childSession).toBeDefined();
       expect(childSession!.createdBy).toBe('parent-user-abc');
     });
+
+    it(
+      'should inherit createdBy from the TOKEN session\'s parent when parentSessionId/parentWorkerId are both ' +
+        'omitted (resolveSelfIdentity defaulting, Issue #1696) -- equality with the token session\'s createdBy, ' +
+        'not merely non-null',
+      async () => {
+        // Polarity note: on pre-#1696 code, parentSessionId/parentWorkerId
+        // were schema-required (`z.string().min(1, ...)`), so this exact
+        // call -- omitting both -- is refused by the MCP SDK's own zod
+        // validation ("Invalid arguments for tool delegate_to_worktree")
+        // before the handler, let alone `resolveSelfIdentity`, is ever
+        // reached. This test fails on that tree.
+        await setupDelegateEnvironment('feat/self-identity-default');
+
+        // The parent session whose identity the bearer token proves.
+        const parent = await sessionManager.createSession(
+          { type: 'quick', locationPath: TEST_REPO_PATH },
+          { createdBy: 'token-parent-user-xyz' },
+        );
+        const parentAgentWorkerId = firstAgentWorkerId(parent);
+
+        const registry = new McpTokenRegistry();
+        const token = registry.mint({
+          sessionId: parent.id,
+          workerId: parentAgentWorkerId,
+          userId: 'token-parent-user-xyz',
+        });
+        await remountMcpApp({ mcpAuthMode: 'enforce', mcpTokenRegistry: registry });
+
+        const response = await callTool(
+          app,
+          mcpSessionId,
+          'delegate_to_worktree',
+          {
+            repositoryId: 'test-repo',
+            prompt: 'Test resolveSelfIdentity defaulting for the delegate pair',
+            branch: 'feat/self-identity-default',
+            // parentSessionId and parentWorkerId are BOTH intentionally
+            // omitted -- resolveSelfIdentity must default the pair to the
+            // bearer token's own (sessionId, workerId).
+          },
+          nextId++,
+          { Authorization: `Bearer ${token}` },
+        );
+
+        expect(response.result?.isError).toBeUndefined();
+        const data = parseToolResult(response) as { sessionId: string };
+
+        const childSession = sessionManager.getSession(data.sessionId);
+        expect(childSession).toBeDefined();
+        // The inheritance path: equality with the TOKEN session's
+        // createdBy specifically, not merely "is non-null".
+        expect(childSession!.createdBy).toBe(parent.createdBy);
+        expect(childSession!.createdBy).toBe('token-parent-user-xyz');
+        expect(childSession!.parentSessionId).toBe(parent.id);
+        expect(childSession!.parentWorkerId).toBe(parentAgentWorkerId);
+
+        // The callback-prompt block was composed with the RESOLVED
+        // (defaulted) pair, not an empty/omitted one.
+        const agentPrompt = getAgentPromptForSession(data.sessionId);
+        expect(agentPrompt).toContain(`toSessionId: "${parent.id}"`);
+        expect(agentPrompt).toContain(`toWorkerId: "${parentAgentWorkerId}"`);
+        expect(agentPrompt).toContain('[Message Callback Instructions]');
+      },
+    );
 
     it('errors (S3a) naming the id when parentSessionId does not resolve to any session (Issue #1293 T2)', async () => {
       await setupDelegateEnvironment('feat/stale-parent');

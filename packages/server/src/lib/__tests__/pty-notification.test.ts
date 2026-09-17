@@ -319,18 +319,23 @@ describe('buildPtyNotificationText', () => {
 });
 
 describe('buildReplyInstructions', () => {
-  // Issue #1694 (C8): the reply instructions name BOTH identity sources. A
-  // Bash-less claude-sdk embedded worker has no AGENT_CONSOLE_* environment
-  // to read and must fall back to the Session ID its system-prompt preamble
-  // states; a terminal agent or a Bash-enabled worker reads the env var.
-  // Reach measured: reverting the fromSessionId line to the pre-#1694
-  // "Use your AGENT_CONSOLE_SESSION_ID environment variable" fails here.
-  it('names both identity sources for fromSessionId (env var OR the system-prompt Session ID)', () => {
+  // Issue #1696: fromSessionId is a self-identity argument that defaults to
+  // the bearer token's session (resolveSelfIdentity), so the reply
+  // instructions tell an embedded agent to OMIT it -- restating an id the
+  // token already proves was the anti-pattern -- and a terminal agent (no
+  // token) to pass the env var. Reach measured: reverting the line to either
+  // superseded wording (pre-#1694 env-only, or #1694's "or the Session ID
+  // stated in your system prompt") fails here.
+  it('tells an embedded agent to OMIT fromSessionId (the bearer token identifies it) and a terminal agent to pass the env var', () => {
     const text = buildReplyInstructions('sender-123');
     expect(text).toContain('toSessionId: "sender-123"');
     expect(text).toContain(
-      '- fromSessionId: your session id (AGENT_CONSOLE_SESSION_ID in your environment, or the Session ID stated in your system prompt)',
+      '- fromSessionId: omit it if you are an embedded agent (your bearer token identifies you); terminal agents pass AGENT_CONSOLE_SESSION_ID',
     );
+    // Neither superseded wording: the pre-#1694 env-only line, nor the
+    // #1694 "read it from your system prompt" line that #1696 retired
+    // (restating an id the token already proves was the anti-pattern).
     expect(text).not.toContain('Use your AGENT_CONSOLE_SESSION_ID environment variable');
+    expect(text).not.toContain('Session ID stated in your system prompt');
   });
 });

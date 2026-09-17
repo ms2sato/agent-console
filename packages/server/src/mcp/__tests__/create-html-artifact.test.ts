@@ -324,6 +324,14 @@ describe('create_html_artifact', () => {
 
   // ---------- Authorization: checkCallerOwnsSession (session-claiming, sixth tool) ----------
   //
+  // Issue #1696: the impersonation case below is now refused by
+  // resolveSelfIdentity's self-identity mismatch (a caller-supplied
+  // sessionId that differs from the bearer token's own sessionId), which
+  // runs BEFORE session lookup / checkCallerOwnsSession -- not by
+  // checkCallerOwnsSession itself. checkCallerOwnsSession is still reached,
+  // and still the one that refuses, when the claimed sessionId EQUALS the
+  // token's own sessionId but the session's owner differs.
+  //
   // Session resolution / ownerless-session checks are covered above under
   // "attribution" (they run before the authz check in the tool's
   // resolution order and are unaffected by it). This block covers the
@@ -332,8 +340,9 @@ describe('create_html_artifact', () => {
 
   describe('authorization (checkCallerOwnsSession)', () => {
     it(
-      'enforce mode: a caller whose verified identity belongs to a DIFFERENT session is rejected when claiming ' +
-        'another user\'s sessionId (impersonation), and no artifact is created',
+      'enforce mode: a caller whose verified identity belongs to a DIFFERENT session is rejected via the ' +
+        'self-identity mismatch (resolveSelfIdentity, Issue #1696) when claiming another user\'s sessionId ' +
+        '(impersonation), and no artifact is created',
       async () => {
         const registry = new McpTokenRegistry();
         await mountMcpApp({ mcpAuthMode: 'enforce', mcpTokenRegistry: registry });
@@ -357,7 +366,8 @@ describe('create_html_artifact', () => {
 
         expect(response.result?.isError).toBe(true);
         const data = parseToolResult(response) as { error: string };
-        expect(data.error).toContain('identity mismatch');
+        expect(data.error).toContain('can only act as your own session');
+        expect(data.error).toContain(sessionAId);
         expect(data.error).toContain(sessionBId);
 
         // No artifact was created for either user -- the authz gate ran

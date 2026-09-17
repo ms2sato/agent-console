@@ -421,26 +421,36 @@ describe('set_agent_parameters', () => {
     expect(readWorker(sessionId, sibling!.id).reasoningEffort).toBeNull();
   });
 
-  it("refuses another user's session with the ownership mismatch, before the own-worker check", async () => {
-    const a = await createEmbeddedWorker(9002, 'params-owner-a');
-    const b = await createEmbeddedWorker(9003, 'params-owner-b');
-    expect(a.userId).not.toBe(b.userId);
-    const tokenA = registry.mint({ sessionId: a.sessionId, workerId: a.workerId, userId: a.userId });
+  it(
+    "refuses another user's session via the self-identity check (resolveSelfIdentity, Issue #1696), before " +
+      'checkCallerOwnsSession or the own-worker check are ever reached',
+    async () => {
+      const a = await createEmbeddedWorker(9002, 'params-owner-a');
+      const b = await createEmbeddedWorker(9003, 'params-owner-b');
+      expect(a.userId).not.toBe(b.userId);
+      const tokenA = registry.mint({ sessionId: a.sessionId, workerId: a.workerId, userId: a.userId });
 
-    const response = await callTool(
-      app,
-      mcpSessionId,
-      'set_agent_parameters',
-      { sessionId: b.sessionId, workerId: b.workerId, reasoningEffort: 'high' },
-      nextId++,
-      authHeader(tokenA),
-    );
+      const response = await callTool(
+        app,
+        mcpSessionId,
+        'set_agent_parameters',
+        { sessionId: b.sessionId, workerId: b.workerId, reasoningEffort: 'high' },
+        nextId++,
+        authHeader(tokenA),
+      );
 
-    expect(response.result?.isError).toBe(true);
-    const data = parseToolResult(response) as { error: string };
-    expect(data.error).toContain('identity mismatch');
-    expect(readWorker(b.sessionId, b.workerId).reasoningEffort).toBeNull();
-  });
+      expect(response.result?.isError).toBe(true);
+      const data = parseToolResult(response) as { error: string };
+      // resolveSelfIdentity's session-half mismatch fires before session
+      // lookup, so this is refused with the self-identity message, not
+      // checkCallerOwnsSession's "identity mismatch" (which is never
+      // reached for a foreign sessionId).
+      expect(data.error).toContain('can only act as your own session');
+      expect(data.error).toContain(a.sessionId);
+      expect(data.error).toContain(b.sessionId);
+      expect(readWorker(b.sessionId, b.workerId).reasoningEffort).toBeNull();
+    },
+  );
 
   it('refuses a TERMINAL-agent caller with a classified message naming the alternative', async () => {
     const owner = await userRepository.upsertByOsUid(9004, 'terminal-owner', '/home/terminal-owner');

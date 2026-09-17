@@ -58,6 +58,7 @@ import {
   checkCallerOwnsSession,
   createMcpAuthMiddleware,
 } from './mcp-auth.js';
+import { resolveSelfIdentity } from './self-identity.js';
 import type { Session, Worker, AgentActivityState, AppServerMessage } from '@agent-console/shared';
 import {
   isPtyBackedWorker,
@@ -180,7 +181,7 @@ You have a parent session that delegated this task to you. Use the \`send_sessio
 Common parameters for all messages:
 - toSessionId: "${parentSessionId}"
 - toWorkerId: "${parentWorkerId}"
-- fromSessionId: your session id (AGENT_CONSOLE_SESSION_ID in your environment, or the Session ID stated in your system prompt)
+- fromSessionId: omit it if you are an embedded agent (your bearer token identifies you); terminal agents pass AGENT_CONSOLE_SESSION_ID
 
 When to send a message:
 
@@ -545,11 +546,18 @@ export function createMcpApp(deps: McpDependencies): Hono {
       'automatically; you may not be the only recipient -- decide whether an event is yours and coordinate ' +
       'through send_session_message when acting.',
     {
-      sessionId: z.string().describe(
-        "The calling session's ID, used to resolve which repository to flag and to verify ownership. Use your session id (AGENT_CONSOLE_SESSION_ID in your environment, or the Session ID stated in your system prompt).",
+      sessionId: z.string().optional().describe(
+        "The calling session's ID, used to resolve which repository to flag and to verify ownership. " +
+          'Optional for embedded agents (defaults to your own session, proven by your bearer token; a ' +
+          'different value is refused). Required for terminal agents: your session id ' +
+          '(AGENT_CONSOLE_SESSION_ID in your environment).',
       ),
     },
-    async ({ sessionId }) => {
+    async ({ sessionId: requestedSessionId }) => {
+      const self = resolveSelfIdentity(getMcpCallerIdentity(), { sessionId: requestedSessionId }, 'set_orchestrator_session');
+      if (!self.ok) return errorResult(self.error);
+      const sessionId = self.sessionId;
+
       try {
         const session = sessionManager.getSession(sessionId);
         if (!session) {
@@ -599,11 +607,17 @@ export function createMcpApp(deps: McpDependencies): Hono {
       'this session was not designated). Other sessions\' designations are unaffected. Call this before retiring ' +
       'so a paused incarnation does not stay designated.',
     {
-      sessionId: z.string().describe(
-        "The calling session's ID. Use your session id (AGENT_CONSOLE_SESSION_ID in your environment, or the Session ID stated in your system prompt).",
+      sessionId: z.string().optional().describe(
+        "The calling session's ID. Optional for embedded agents (defaults to your own session, proven by " +
+          'your bearer token; a different value is refused). Required for terminal agents: your session id ' +
+          '(AGENT_CONSOLE_SESSION_ID in your environment).',
       ),
     },
-    async ({ sessionId }) => {
+    async ({ sessionId: requestedSessionId }) => {
+      const self = resolveSelfIdentity(getMcpCallerIdentity(), { sessionId: requestedSessionId }, 'clear_orchestrator_session');
+      if (!self.ok) return errorResult(self.error);
+      const sessionId = self.sessionId;
+
       try {
         const session = sessionManager.getSession(sessionId);
         if (!session) {
@@ -727,18 +741,30 @@ export function createMcpApp(deps: McpDependencies): Hono {
     'Send a message to a worker in another session via file. ' +
       'The message is written as a file and the target worker receives a PTY notification. ' +
       'If toWorkerId is omitted and the session has exactly one agent worker, it is auto-selected. ' +
-      'The calling agent uses your session id (AGENT_CONSOLE_SESSION_ID in your environment, or the Session ID stated in your system prompt).',
+      'fromSessionId is optional for embedded agents (your bearer token identifies you); terminal agents ' +
+      'pass their session id (AGENT_CONSOLE_SESSION_ID in your environment).',
     {
       toSessionId: z.string().describe('Target session ID'),
       toWorkerId: z.string().optional().describe(
         'Target worker ID. If omitted, auto-selects the sole agent worker in the target session.',
       ),
       content: z.string().describe('Message content (free-form)'),
-      fromSessionId: z.string().describe(
-        'The sender session ID: your session id (AGENT_CONSOLE_SESSION_ID in your environment, or the Session ID stated in your system prompt).',
+      fromSessionId: z.string().optional().describe(
+        'The sender session ID. Optional for embedded agents (defaults to your own session, proven by your ' +
+          'bearer token; a different value is refused). Required for terminal agents: your session id ' +
+          '(AGENT_CONSOLE_SESSION_ID in your environment).',
       ),
     },
-    async ({ toSessionId, toWorkerId, content, fromSessionId }) => {
+    async ({ toSessionId, toWorkerId, content, fromSessionId: requestedFromSessionId }) => {
+      const self = resolveSelfIdentity(
+        getMcpCallerIdentity(),
+        { sessionId: requestedFromSessionId },
+        'send_session_message',
+        { sessionId: 'fromSessionId' },
+      );
+      if (!self.ok) return errorResult(self.error);
+      const fromSessionId = self.sessionId;
+
       try {
         // 1. Validate target session
         const targetSession = sessionManager.getSession(toSessionId);
@@ -791,7 +817,8 @@ export function createMcpApp(deps: McpDependencies): Hono {
           return errorResult(
             `Sender session ${fromSessionId} not found. ` +
               `fromSessionId must reference an existing session — ` +
-              `agents should source it from your session id (AGENT_CONSOLE_SESSION_ID in your environment, or the Session ID stated in your system prompt).`,
+              `agents should source it from your session id (AGENT_CONSOLE_SESSION_ID in your environment); ` +
+              `embedded agents may omit it (the bearer token identifies you).`,
           );
         }
 
@@ -909,10 +936,10 @@ export function createMcpApp(deps: McpDependencies): Hono {
       'Use this to delegate work to a new agent running in an isolated worktree. ' +
       'Note: once started, the worktree and session persist on the server even if the MCP client disconnects. ' +
       'To delegate to a repository other than your own, use list_repositories to discover available repositories. ' +
-      'Requires parentSessionId and parentWorkerId: your own session id and worker id (AGENT_CONSOLE_SESSION_ID / ' +
-      'AGENT_CONSOLE_WORKER_ID in your environment, or the Session ID / Worker ID stated in your system prompt; every ' +
-      'legitimate caller holds both). The parent session determines the delegated ' +
-      "session's ownership (createdBy inheritance) -- this is not a reporting convenience. By default, callback " +
+      'parentSessionId and parentWorkerId are optional for embedded agents (they default to your own session ' +
+      'and worker, proven by your bearer token; a different pair is refused) and required for terminal agents ' +
+      '(AGENT_CONSOLE_SESSION_ID / AGENT_CONSOLE_WORKER_ID in your environment). The parent session determines ' +
+      "the delegated session's ownership (createdBy inheritance) -- this is not a reporting convenience. By default, callback " +
       'instructions are appended to the prompt so the delegated agent reports results back via send_session_message; ' +
       'set skipMessageCallbackPrompt to suppress that.',
     {
@@ -955,18 +982,22 @@ export function createMcpApp(deps: McpDependencies): Hono {
         .describe('Branch from origin/<baseBranch> instead of local branch. Defaults to true when omitted.'),
       parentSessionId: z
         .string()
-        .min(1, 'parentSessionId must be non-empty')
+        .optional()
         .describe(
-          "Required. The parent session's ID: your session id (AGENT_CONSOLE_SESSION_ID in your environment, or the Session ID stated in your system prompt). " +
+          "The parent session's ID: your session id. Optional for embedded agents (defaults to your own " +
+            'session, proven by your bearer token; a different value is refused). Required for terminal agents: ' +
+            'AGENT_CONSOLE_SESSION_ID in your environment. ' +
             "The parent session determines the delegated session's ownership (createdBy is inherited from it) -- " +
             'this is not just a reporting convenience. Callback instructions are appended to the prompt (unless ' +
             'skipMessageCallbackPrompt is set) so the delegated agent reports results back via send_session_message.',
         ),
       parentWorkerId: z
         .string()
-        .min(1, 'parentWorkerId must be non-empty')
+        .optional()
         .describe(
-          "Required. The parent session's worker ID: your worker id (AGENT_CONSOLE_WORKER_ID in your environment, or the Worker ID stated in your system prompt). " +
+          "The parent session's worker ID: your worker id. Optional for embedded agents (defaults to your own " +
+            'worker, proven by your bearer token; a different value is refused). Required for terminal agents: ' +
+            'AGENT_CONSOLE_WORKER_ID in your environment. ' +
             'Must name an existing worker in that session capable of receiving send_session_message ' +
             '(an agent or embedded-agent worker).',
         ),
@@ -1035,20 +1066,32 @@ export function createMcpApp(deps: McpDependencies): Hono {
       agentName,
       title,
       useRemote,
-      parentSessionId,
-      parentWorkerId,
+      parentSessionId: requestedParentSessionId,
+      parentWorkerId: requestedParentWorkerId,
       skipMessageCallbackPrompt,
       model,
       reasoningEffort,
       contextWindowTokens,
       templateVars,
     }) => {
+      const self = resolveSelfIdentity(
+        getMcpCallerIdentity(),
+        { sessionId: requestedParentSessionId, workerId: requestedParentWorkerId },
+        'delegate_to_worktree',
+        { sessionId: 'parentSessionId', workerId: 'parentWorkerId' },
+      );
+      if (!self.ok) return errorResult(self.error);
+      const parentSessionId = self.sessionId;
+      const parentWorkerId = self.workerId;
+
       try {
         // Build effective prompt with optional callback instructions.
-        // parentSessionId/parentWorkerId are required by the schema, so the
-        // only thing gating the append is skipMessageCallbackPrompt -- the
-        // old truthy check on both ids is now dead code since the schema
-        // makes their absence unrepresentable.
+        // parentSessionId/parentWorkerId are always resolved to a concrete
+        // pair by resolveSelfIdentity above (defaulted from the caller's own
+        // identity, or refused), so the only thing gating the append is
+        // skipMessageCallbackPrompt -- their absence is unrepresentable past
+        // this point, the same guarantee the old schema-required shape gave,
+        // now provided by the helper instead of the schema.
         const effectivePrompt = skipMessageCallbackPrompt
           ? prompt
           : buildMessageCallbackPrompt(prompt, parentSessionId, parentWorkerId);
@@ -1093,11 +1136,11 @@ export function createMcpApp(deps: McpDependencies): Hono {
 
         // Resolve the parent session and inherit its createdBy for
         // ownership. Both checks below are required-but-unresolvable
-        // errors: the schema only guarantees the ids are non-empty
-        // strings, not that they name a real, owned session. A stale
-        // parentSessionId or a legacy parent with no createdBy used to
-        // degrade silently to a null-owned, dead-agent session -- the
-        // incident this Issue closes.
+        // errors: resolveSelfIdentity above only guarantees a concrete
+        // (possibly caller-supplied) pair of ids, not that they name a
+        // real, owned session. A stale parentSessionId or a legacy parent
+        // with no createdBy used to degrade silently to a null-owned,
+        // dead-agent session -- the incident this Issue closes.
         //
         // Guard order is load-bearing: session-exists -> createdBy-set ->
         // caller-owns -> worker-resolves. Several tests assert an earlier
@@ -1505,13 +1548,17 @@ export function createMcpApp(deps: McpDependencies): Hono {
       'agent/terminal workers, or as a queued turn for embedded-agent workers. ' +
       'Timers are volatile and will not survive server restarts.',
     {
-      sessionId: z.string().describe(
+      sessionId: z.string().optional().describe(
         'The session to receive timer notifications. ' +
-          'Use your session id (AGENT_CONSOLE_SESSION_ID in your environment, or the Session ID stated in your system prompt) for your own session.',
+          'Optional for embedded agents (defaults to your own session, proven by your bearer token; a ' +
+          'different value is refused). Required for terminal agents: your session id ' +
+          '(AGENT_CONSOLE_SESSION_ID in your environment).',
       ),
-      workerId: z.string().describe(
+      workerId: z.string().optional().describe(
         'The worker to receive timer notifications. ' +
-          'Use your worker id (AGENT_CONSOLE_WORKER_ID in your environment, or the Worker ID stated in your system prompt) for your own worker.',
+          'Optional for embedded agents (defaults to your own worker, proven by your bearer token; a ' +
+          'different value is refused). Required for terminal agents: your worker id ' +
+          '(AGENT_CONSOLE_WORKER_ID in your environment).',
       ),
       intervalSeconds: z
         .number()
@@ -1525,7 +1572,15 @@ export function createMcpApp(deps: McpDependencies): Hono {
         .max(500, 'Action must be under 500 characters')
         .describe('Description of what to do on each tick (included in the notification)'),
     },
-    async ({ sessionId, workerId, intervalSeconds, action }) => {
+    async ({ sessionId: requestedSessionId, workerId: requestedWorkerId, intervalSeconds, action }) => {
+      const self = resolveSelfIdentity(
+        getMcpCallerIdentity(),
+        { sessionId: requestedSessionId, workerId: requestedWorkerId },
+        'create_timer',
+      );
+      if (!self.ok) return errorResult(self.error);
+      const { sessionId, workerId } = self;
+
       try {
         // Validate session and worker exist
         const session = sessionManager.getSession(sessionId);
@@ -1596,13 +1651,17 @@ export function createMcpApp(deps: McpDependencies): Hono {
       'The worker can be an agent, terminal, or embedded-agent worker. ' +
       'Returns a wakeup ID for cancellation. The wakeup auto-stops after sending one notification.',
     {
-      sessionId: z.string().describe(
+      sessionId: z.string().optional().describe(
         'The session to receive wakeup notifications. ' +
-          'Use your session id (AGENT_CONSOLE_SESSION_ID in your environment, or the Session ID stated in your system prompt) for your own session.',
+          'Optional for embedded agents (defaults to your own session, proven by your bearer token; a ' +
+          'different value is refused). Required for terminal agents: your session id ' +
+          '(AGENT_CONSOLE_SESSION_ID in your environment).',
       ),
-      workerId: z.string().describe(
-        'The worker to receive the wakeup. ' +
-          'Usually the current agent worker. Use your worker id (AGENT_CONSOLE_WORKER_ID in your environment, or the Worker ID stated in your system prompt) for your own worker.',
+      workerId: z.string().optional().describe(
+        'The worker to receive the wakeup. Usually the current agent worker. ' +
+          'Optional for embedded agents (defaults to your own worker, proven by your bearer token; a ' +
+          'different value is refused). Required for terminal agents: your worker id ' +
+          '(AGENT_CONSOLE_WORKER_ID in your environment).',
       ),
       intervalSeconds: z.number().int().min(30).max(86400).describe(
         'How often to check the condition (30-86400 seconds). ' +
@@ -1623,7 +1682,23 @@ export function createMcpApp(deps: McpDependencies): Hono {
         'Optional message to send on timeout. If omitted, uses a default timeout message.',
       ),
     },
-    async ({ sessionId, workerId, intervalSeconds, conditionScript, onTrueMessage, timeoutSeconds, onTimeoutMessage }) => {
+    async ({
+      sessionId: requestedSessionId,
+      workerId: requestedWorkerId,
+      intervalSeconds,
+      conditionScript,
+      onTrueMessage,
+      timeoutSeconds,
+      onTimeoutMessage,
+    }) => {
+      const self = resolveSelfIdentity(
+        getMcpCallerIdentity(),
+        { sessionId: requestedSessionId, workerId: requestedWorkerId },
+        'create_conditional_wakeup',
+      );
+      if (!self.ok) return errorResult(self.error);
+      const { sessionId, workerId } = self;
+
       try {
         // Validate session and worker exist
         const session = sessionManager.getSession(sessionId);
@@ -1747,13 +1822,17 @@ export function createMcpApp(deps: McpDependencies): Hono {
         .string()
         .min(1, 'Command is required')
         .describe('Command to execute (e.g., "node acceptance-check.js 526")'),
-      sessionId: z.string().describe(
+      sessionId: z.string().optional().describe(
         'The session to receive STDOUT notifications. ' +
-          'Use your session id (AGENT_CONSOLE_SESSION_ID in your environment, or the Session ID stated in your system prompt) for your own session.',
+          'Optional for embedded agents (defaults to your own session, proven by your bearer token; a ' +
+          'different value is refused). Required for terminal agents: your session id ' +
+          '(AGENT_CONSOLE_SESSION_ID in your environment).',
       ),
-      workerId: z.string().describe(
+      workerId: z.string().optional().describe(
         'The worker to receive STDOUT notifications. ' +
-          'Use your worker id (AGENT_CONSOLE_WORKER_ID in your environment, or the Worker ID stated in your system prompt) for your own worker.',
+          'Optional for embedded agents (defaults to your own worker, proven by your bearer token; a ' +
+          'different value is refused). Required for terminal agents: your worker id ' +
+          '(AGENT_CONSOLE_WORKER_ID in your environment).',
       ),
       cwd: z
         .string()
@@ -1774,7 +1853,15 @@ export function createMcpApp(deps: McpDependencies): Hono {
             'Use "message" for long-paragraph interactive scripts (e.g., acceptance-check.js, sprint-retro.js) to keep the conversation clean.',
         ),
     },
-    async ({ command, sessionId, workerId, cwd, outputMode }) => {
+    async ({ command, sessionId: requestedSessionId, workerId: requestedWorkerId, cwd, outputMode }) => {
+      const self = resolveSelfIdentity(
+        getMcpCallerIdentity(),
+        { sessionId: requestedSessionId, workerId: requestedWorkerId },
+        'run_process',
+      );
+      if (!self.ok) return errorResult(self.error);
+      const { sessionId, workerId } = self;
+
       try {
         const session = sessionManager.getSession(sessionId);
         if (!session) {
@@ -2098,12 +2185,18 @@ export function createMcpApp(deps: McpDependencies): Hono {
           'then falls back to the literal "Untitled". Markup is stripped and the result is capped at ' +
           `${MAX_TITLE_LENGTH} characters; titles are always plain text.`,
       ),
-      sessionId: z.string().describe(
+      sessionId: z.string().optional().describe(
         "The calling session's ID, used to attribute the artifact to that session's owner (session.createdBy). " +
-          'Use your session id (AGENT_CONSOLE_SESSION_ID in your environment, or the Session ID stated in your system prompt).',
+          'Optional for embedded agents (defaults to your own session, proven by your bearer token; a ' +
+          'different value is refused). Required for terminal agents: your session id ' +
+          '(AGENT_CONSOLE_SESSION_ID in your environment).',
       ),
     },
-    async ({ content, title, sessionId }) => {
+    async ({ content, title, sessionId: requestedSessionId }) => {
+      const self = resolveSelfIdentity(getMcpCallerIdentity(), { sessionId: requestedSessionId }, 'create_html_artifact');
+      if (!self.ok) return errorResult(self.error);
+      const sessionId = self.sessionId;
+
       try {
         const contentByteLength = Buffer.byteLength(content, 'utf-8');
         if (contentByteLength > MAX_ARTIFACT_CONTENT_BYTES) {
@@ -2183,12 +2276,18 @@ export function createMcpApp(deps: McpDependencies): Hono {
       're-create is NOT equivalent (the URL changes); an in-place update is not available yet.',
     {
       artifactId: z.string().describe('The id of the artifact to delete, as returned by create_html_artifact.'),
-      sessionId: z.string().describe(
+      sessionId: z.string().optional().describe(
         "The calling session's ID, used to resolve that session's owner (session.createdBy) for the ownership " +
-          'check. Use your session id (AGENT_CONSOLE_SESSION_ID in your environment, or the Session ID stated in your system prompt).',
+          'check. Optional for embedded agents (defaults to your own session, proven by your bearer token; a ' +
+          'different value is refused). Required for terminal agents: your session id ' +
+          '(AGENT_CONSOLE_SESSION_ID in your environment).',
       ),
     },
-    async ({ artifactId, sessionId }) => {
+    async ({ artifactId, sessionId: requestedSessionId }) => {
+      const self = resolveSelfIdentity(getMcpCallerIdentity(), { sessionId: requestedSessionId }, 'delete_html_artifact');
+      if (!self.ok) return errorResult(self.error);
+      const sessionId = self.sessionId;
+
       try {
         // Resolve the calling session. Ownership comparison below MUST
         // derive from session.createdBy, NEVER from getMcpCallerIdentity()
@@ -2260,12 +2359,18 @@ export function createMcpApp(deps: McpDependencies): Hono {
       title: z.string().optional().describe(
         'Optional display title (max 200 characters). When omitted, the client displays the URL instead.',
       ),
-      sessionId: z.string().describe(
+      sessionId: z.string().optional().describe(
         "The calling session's ID, used to attribute the bookmark to that session's owner (session.createdBy). " +
-          'Use your session id (AGENT_CONSOLE_SESSION_ID in your environment, or the Session ID stated in your system prompt).',
+          'Optional for embedded agents (defaults to your own session, proven by your bearer token; a ' +
+          'different value is refused). Required for terminal agents: your session id ' +
+          '(AGENT_CONSOLE_SESSION_ID in your environment).',
       ),
     },
-    async ({ url, title, sessionId }) => {
+    async ({ url, title, sessionId: requestedSessionId }) => {
+      const self = resolveSelfIdentity(getMcpCallerIdentity(), { sessionId: requestedSessionId }, 'create_bookmark');
+      if (!self.ok) return errorResult(self.error);
+      const sessionId = self.sessionId;
+
       try {
         // CreateBookmarkRequestSchema is the SINGLE writer of scheme and
         // length validation (docs/design/session-bookmarks.md §8) -- the
@@ -2342,12 +2447,18 @@ export function createMcpApp(deps: McpDependencies): Hono {
     'Permanently delete a previously registered bookmark.',
     {
       bookmarkId: z.string().describe('The id of the bookmark to delete, as returned by create_bookmark.'),
-      sessionId: z.string().describe(
+      sessionId: z.string().optional().describe(
         "The calling session's ID, used to resolve that session's owner (session.createdBy) for the ownership " +
-          'check. Use your session id (AGENT_CONSOLE_SESSION_ID in your environment, or the Session ID stated in your system prompt).',
+          'check. Optional for embedded agents (defaults to your own session, proven by your bearer token; a ' +
+          'different value is refused). Required for terminal agents: your session id ' +
+          '(AGENT_CONSOLE_SESSION_ID in your environment).',
       ),
     },
-    async ({ bookmarkId, sessionId }) => {
+    async ({ bookmarkId, sessionId: requestedSessionId }) => {
+      const self = resolveSelfIdentity(getMcpCallerIdentity(), { sessionId: requestedSessionId }, 'delete_bookmark');
+      if (!self.ok) return errorResult(self.error);
+      const sessionId = self.sessionId;
+
       try {
         // Resolve the calling session. Ownership comparison below MUST
         // derive from session.createdBy, NEVER from getMcpCallerIdentity()
@@ -2486,12 +2597,18 @@ export function createMcpApp(deps: McpDependencies): Hono {
       // its own AGENT_CONSOLE_SESSION_ID / AGENT_CONSOLE_WORKER_ID, and
       // "pass your AGENT_CONSOLE_* values" was not actionable unaided.
       //
-      // Supplying them is still allowed and still checked: the self-target
-      // refusal below is unchanged, so a supplied-but-foreign pair is
-      // refused exactly as before rather than being quietly overwritten with
-      // the caller's own.
-      const sessionId = requestedSessionId ?? caller.sessionId;
-      const workerId = requestedWorkerId ?? caller.workerId;
+      // Supplying them is still allowed and still checked: `resolveSelfIdentity`
+      // is now the single writer of both the defaulting AND the own-pair
+      // refusal (the helper generalises this tool's own precedent, so the two
+      // share one implementation), so a supplied-but-foreign pair is refused exactly as
+      // before rather than being quietly overwritten with the caller's own.
+      const self = resolveSelfIdentity(
+        caller,
+        { sessionId: requestedSessionId, workerId: requestedWorkerId },
+        'set_agent_parameters',
+      );
+      if (!self.ok) return errorResult(self.error);
+      const { sessionId, workerId } = self;
 
       try {
         const session = sessionManager.getSession(sessionId);
@@ -2499,6 +2616,14 @@ export function createMcpApp(deps: McpDependencies): Hono {
           return errorResult(`Session not found: ${sessionId}`);
         }
 
+        // `resolveSelfIdentity` above already proved (sessionId, workerId)
+        // is the caller's OWN pair, so this call is reached only with
+        // sessionId === caller.sessionId. It still has a job: it compares the
+        // token's userId against the session's createdBy, which is a
+        // separate fact (a token whose identity does not own the session it
+        // names is refused here, same as at every other call site), and it
+        // runs on the RESOLVED id, after the helper, in the same order as
+        // every other tool in this file.
         const authError = checkCallerOwnsSession(
           caller,
           { sessionId, createdBy: session.createdBy },
@@ -2506,16 +2631,6 @@ export function createMcpApp(deps: McpDependencies): Hono {
           { toolName: 'set_agent_parameters' },
         );
         if (authError) return errorResult(authError.error);
-
-        // checkCallerOwnsSession proves only that the caller owns the
-        // SESSION, so on its own it would accept a SIBLING worker in the same
-        // session. This tool is self-targeting only.
-        if (caller.sessionId !== sessionId || caller.workerId !== workerId) {
-          return errorResult(
-            `set_agent_parameters can only target your own worker (session ${caller.sessionId}, worker ${caller.workerId}); ` +
-              `refusing to change session ${sessionId} worker ${workerId}`,
-          );
-        }
 
         const worker = session.workers.find((w) => w.id === workerId);
         if (!worker) {
