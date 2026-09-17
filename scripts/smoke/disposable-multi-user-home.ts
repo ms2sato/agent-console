@@ -91,48 +91,60 @@ export async function createDisposableMultiUserHome(
   // its callers to get right).
   const removeFailedHome = () => rm(home, { recursive: true, force: true }).catch(() => {});
 
-  const chmodProc = Bun.spawn(['chmod', '2775', home], { stdout: 'pipe', stderr: 'pipe' });
-  const chmodExit = await chmodProc.exited;
-  if (chmodExit !== 0) {
-    const stderr = await new Response(chmodProc.stderr).text();
-    await removeFailedHome();
-    return {
-      ok: false,
-      reason:
-        `chmod 2775 ${home} failed (exit ${chmodExit}): ${stderr.trim()} -- ` +
-        `the filesystem backing ${tmpdir()} may not support chmod(1)`,
-      path: home,
-    };
-  }
+  // Everything below is wrapped so an UNEXPECTED throw (chmodProc.exited
+  // rejecting, lstat throwing on some exotic filesystem, etc. -- distinct
+  // from the three EXPECTED failure shapes each already handled by their
+  // own `ok: false` return) still removes the mkdtemp'd home before
+  // propagating, rather than leaking a directory that no caller's own
+  // `ok: false` branch was ever reached to clean up (CodeRabbit MINOR,
+  // PR #1715 second review pass).
+  try {
+    const chmodProc = Bun.spawn(['chmod', '2775', home], { stdout: 'pipe', stderr: 'pipe' });
+    const chmodExit = await chmodProc.exited;
+    if (chmodExit !== 0) {
+      const stderr = await new Response(chmodProc.stderr).text();
+      await removeFailedHome();
+      return {
+        ok: false,
+        reason:
+          `chmod 2775 ${home} failed (exit ${chmodExit}): ${stderr.trim()} -- ` +
+          `the filesystem backing ${tmpdir()} may not support chmod(1)`,
+        path: home,
+      };
+    }
 
-  const st = await lstat(home);
-  const actualMode = st.mode & 0o7777;
-  if (actualMode !== MULTI_USER_HOME_MODE) {
-    await removeFailedHome();
-    return {
-      ok: false,
-      reason:
-        `${home} has mode ${actualMode.toString(8)} after chmod 2775 (expected 2775) -- ` +
-        `the filesystem backing ${tmpdir()} refuses the setgid bit, so a multi-user smoke's ` +
-        'disposable home cannot emulate the production data-root contract here',
-      path: home,
-    };
-  }
-  if (typeof process.getgid === 'function' && st.gid !== process.getgid()) {
-    await removeFailedHome();
-    return {
-      ok: false,
-      reason:
-        `${home} has gid ${st.gid} (expected ${process.getgid()}, this process's own gid) -- ` +
-        `the filesystem backing ${tmpdir()} assigns a fresh directory's group ownership ` +
-        'differently than this process expects',
-      path: home,
-    };
-  }
+    const st = await lstat(home);
+    const actualMode = st.mode & 0o7777;
+    if (actualMode !== MULTI_USER_HOME_MODE) {
+      await removeFailedHome();
+      return {
+        ok: false,
+        reason:
+          `${home} has mode ${actualMode.toString(8)} after chmod 2775 (expected 2775) -- ` +
+          `the filesystem backing ${tmpdir()} refuses the setgid bit, so a multi-user smoke's ` +
+          'disposable home cannot emulate the production data-root contract here',
+        path: home,
+      };
+    }
+    if (typeof process.getgid === 'function' && st.gid !== process.getgid()) {
+      await removeFailedHome();
+      return {
+        ok: false,
+        reason:
+          `${home} has gid ${st.gid} (expected ${process.getgid()}, this process's own gid) -- ` +
+          `the filesystem backing ${tmpdir()} assigns a fresh directory's group ownership ` +
+          'differently than this process expects',
+        path: home,
+      };
+    }
 
-  // Only now, right before returning ok:true -- nothing between this call
-  // and the return, so this state change and the caller's ability to
-  // restore it can never be split by an intervening throw.
-  const prevUmask = process.umask(MULTI_USER_UMASK);
-  return { ok: true, path: home, prevUmask };
+    // Only now, right before returning ok:true -- nothing between this
+    // call and the return, so this state change and the caller's ability
+    // to restore it can never be split by an intervening throw.
+    const prevUmask = process.umask(MULTI_USER_UMASK);
+    return { ok: true, path: home, prevUmask };
+  } catch (err) {
+    await removeFailedHome();
+    throw err;
+  }
 }
