@@ -101,4 +101,40 @@ describe('SessionDataPathResolver.getMemoryDir', () => {
       resolver.getMemoryDir('def-1', { kind: 'quick', cwdSlug: 'a/b' }),
     ).toThrow(InvalidSessionDataScopeError);
   });
+
+  // Issue #1709: `getMemoryDir` validates via `assertValidSegment` imported
+  // from `session-data-path.js` -- the SHARED single writer of the segment
+  // grammar, not a private copy in this file. Pinning the exact error
+  // message (not just the error class, already covered above) is what
+  // catches a future re-fork: reintroducing a private
+  // `assertValidSegment`/`SEGMENT_PATTERN` copy in the resolver with even a
+  // slightly different message text (e.g. dropping the quoted value, or
+  // rewording "is not a valid single path segment") fails this assertion
+  // while the class-only checks above would stay green. Mutation measured:
+  // a local copy of `assertValidSegment` in this file that throws
+  // `InvalidSessionDataScopeError('bad definitionId')` instead of the
+  // shared writer's message fails this test.
+  it('rejects a multi-segment definitionId with the shared writer\'s exact message', () => {
+    const resolver = new SessionDataPathResolver(BASE_DIR);
+    let caught: unknown;
+    try {
+      resolver.getMemoryDir('a/b', { kind: 'repository' });
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(InvalidSessionDataScopeError);
+    expect((caught as Error).message).toBe('definitionId "a/b" is not a valid single path segment');
+  });
+
+  it('rejects a dot definitionId with the shared writer\'s exact message', () => {
+    const resolver = new SessionDataPathResolver(BASE_DIR);
+    let caught: unknown;
+    try {
+      resolver.getMemoryDir('.', { kind: 'repository' });
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(InvalidSessionDataScopeError);
+    expect((caught as Error).message).toBe('definitionId "." is not a valid single path segment');
+  });
 });
