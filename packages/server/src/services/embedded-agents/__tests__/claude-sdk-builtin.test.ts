@@ -37,4 +37,16 @@ describe('claudeSdkAgent', () => {
   it('has no instructions[] opt-in entry (Issue #1343 Phase A, R1 -- main.ts\'s claude-sdk arm now calls loadInstructions directly, so CLAUDE.md/AGENTS.md are discovered via the chain layer without a per-definition opt-in)', () => {
     expect(claudeSdkAgent.instructions).toBeUndefined();
   });
+
+  // Mutation measurements (epic 1636 Phase 2, owner decision 2026-09-17):
+  // (1) deleting the `enabledTools` field entirely from claude-sdk-builtin.ts
+  //     -> `claudeSdkAgent.enabledTools` becomes `undefined` -> this test
+  //     fails (`undefined` is not `toEqual` the array).
+  // (2) dropping `TodoWrite` from the array -> fails (array shape mismatch).
+  // (3) adding `Bash` to the array -> fails, because `toEqual` (not
+  //     `toContain`) rejects extra members too.
+  // All three were run against production, observed failing, then reverted.
+  it('opts into Write and Edit explicitly, keeps TodoWrite, leaves Bash off (epic 1636 Phase 2 WRITE half)', () => {
+    expect(claudeSdkAgent.enabledTools).toEqual(['Read', 'Glob', 'Grep', 'TodoWrite', 'Write', 'Edit']);
+  });
 });

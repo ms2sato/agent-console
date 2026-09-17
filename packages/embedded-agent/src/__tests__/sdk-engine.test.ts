@@ -2552,6 +2552,31 @@ describe('SdkEngine — TodoWrite, MCP-served (Issue #1575)', () => {
     expect(captured.options?.tools).toEqual(['mcp__console__Compact']);
   });
 
+  // The `@agent-console/embedded-agent` package has no dependency on
+  // `@agent-console/server` (checked: packages/embedded-agent/package.json's
+  // `dependencies` list, and no other test in this file imports across that
+  // boundary), so this array is a literal mirror of
+  // `claudeSdkAgent.enabledTools` in
+  // packages/server/src/services/embedded-agents/claude-sdk-builtin.ts
+  // (epic 1636 Phase 2 opt-in), not an import of it.
+  //
+  // Mutation measurement: temporarily removed 'TodoWrite' from this array ->
+  // the `mcp__console__TodoWrite` assertion below failed as expected (the
+  // `Write`/`Edit`/mcpServers assertions were unaffected by that specific
+  // mutation, confirming this test isolates the TodoWrite-registration
+  // dependency it targets). Reverted after observing the failure.
+  it('registers Write, Edit, and the namespaced TodoWrite tool for the claude-sdk builtin\'s enabledTools array (epic 1636 Phase 2)', () => {
+    const { queryFn, captured } = makeFakeQuery([]);
+    new SdkEngine(
+      baseDeps({ queryFn, enabledTools: ['Read', 'Glob', 'Grep', 'TodoWrite', 'Write', 'Edit'] })
+    );
+
+    expect(captured.options?.tools).toContain('Write');
+    expect(captured.options?.tools).toContain('Edit');
+    expect(captured.options?.tools).toContain('mcp__console__TodoWrite');
+    expect(captured.options?.mcpServers?.['console']).toBeDefined();
+  });
+
   it("the tool's handler validates with the SAME schema and gives the SAME message as the openai-api builtin for structurally-valid-but-content-invalid input", async () => {
     // `todos` here is a structurally valid array of objects (passes the SDK
     // schema's top-level shape, see createSdkTodoWriteTool's doc comment),

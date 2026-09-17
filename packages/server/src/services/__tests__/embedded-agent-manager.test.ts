@@ -135,6 +135,28 @@ describe('EmbeddedAgentManager', () => {
       expect(manager.getAllEmbeddedAgents()).toEqual([claudeSdkAgent]);
       expect(repository.getAllSaved()).toEqual([claudeSdkAgent]);
     });
+
+    // Mutation measurement (epic 1636 Phase 2, upgrade-path pin): temporarily
+    // added an `if (await repository.findById(CLAUDE_SDK_AGENT_ID)) return;`
+    // guard before the `save(claudeSdkAgent)` call in
+    // `EmbeddedAgentManager.initialize()` (simulating "only save on the very
+    // first startup"). This test failed as expected (the seeded row's
+    // `enabledTools: undefined` was never overwritten). Reverted after
+    // observing the failure.
+    it('upgrades a pre-existing persisted row missing enabledTools (an install that predates the Write/Edit opt-in) to the current definition on next startup', async () => {
+      // Simulate a DB row persisted by a prior server version, before this
+      // builtin carried an `enabledTools` field at all.
+      const staleRow: EmbeddedAgentDefinition = {
+        ...claudeSdkAgent,
+        enabledTools: undefined,
+      };
+      await repository.save(staleRow);
+
+      await getManager(); // initialize() re-upserts claudeSdkAgent unconditionally
+
+      const persisted = await repository.findById(CLAUDE_SDK_AGENT_ID);
+      expect(persisted?.enabledTools).toEqual(['Read', 'Glob', 'Grep', 'TodoWrite', 'Write', 'Edit']);
+    });
   });
 
   describe('createEmbeddedAgent', () => {

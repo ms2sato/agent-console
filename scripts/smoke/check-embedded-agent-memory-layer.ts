@@ -90,11 +90,14 @@
  *       is reachable ONLY through the single builtin, `claude-sdk-builtin`),
  *       so there is no public creation path for a `claude-sdk` definition
  *       carrying `Write`/`Edit` in its `enabledTools`, which the WRITE half
- *       under test needs (see SMOKE_ENABLED_TOOLS: the builtin has no
- *       Write/Edit, so its memory is read-only by policy and it is the
- *       subject of no arm). Both claude-sdk definitions (D1 the subject, D2
- *       the same-repository control) are therefore smoke-persisted rows
- *       shaped like the builtin plus SMOKE_ENABLED_TOOLS. This substitutes
+ *       under test needs (see SMOKE_ENABLED_TOOLS: the builtin carried no
+ *       `enabledTools` at all until the owner's 2026-09-17 opt-in added
+ *       Write/Edit -- this smoke still does not use the builtin as its
+ *       subject, since there is still no public creation path for a SECOND
+ *       `claude-sdk` definition). Both claude-sdk definitions (D1 the
+ *       subject, D2 the same-repository control) are therefore
+ *       smoke-persisted rows shaped like the builtin plus
+ *       SMOKE_ENABLED_TOOLS. This substitutes
  *       the ABSENT creation path -- it sits upstream of, and outside, the
  *       activation chain under test. The rows reach that chain through REAL
  *       production machinery, never a hand-assembled shortcut: (i) a
@@ -217,11 +220,14 @@ const MEMORY_INDEX_LINK_RE = /^\s*[-*]\s*\[[^\]]*\]\(([^)\s]+)\)/;
  * existing `Write`/`Edit` tools under `enabledTools` -- the design's named
  * mechanism -- and a definition without them has read-only memory by policy on
  * either engine (the SDK arm builds its `tools:` list from `enabledTools` too,
- * `sdk-engine.ts`). The builtin `claude-sdk-builtin` carries no `enabledTools`
- * (the default set has no Write/Edit), so it is no longer the subject of any
- * arm here: measured on run 4, it answered a `Write` with "No such tool
- * available: Write" and wrote through the `run_process` MCP shell instead --
- * the route the mechanism pins below now reject.
+ * `sdk-engine.ts`). The builtin `claude-sdk-builtin` carried no `enabledTools`
+ * at all until the owner's 2026-09-17 opt-in: measured on run 4, it answered
+ * a `Write` with "No such tool available: Write" and wrote through the
+ * `run_process` MCP shell instead -- the route the mechanism pins below now
+ * reject. This smoke deliberately keeps its OWN Write-enabled definitions
+ * (`SMOKE_ENABLED_TOOLS`) rather than switching to reference the builtin's
+ * array directly, so the smoke's subject does not silently drift if a future
+ * product decision changes the builtin's tool list again.
  */
 const SMOKE_ENABLED_TOOLS = ['Read', 'Write', 'Edit', 'Glob', 'Grep'] as const;
 

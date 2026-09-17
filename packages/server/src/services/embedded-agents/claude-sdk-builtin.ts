@@ -53,4 +53,24 @@ export const claudeSdkAgent: EmbeddedAgentDefinition = {
   // now discovered automatically without needing a per-definition opt-in
   // entry. A worktree with no CLAUDE.md/AGENTS.md is handled gracefully by
   // that loader either way.
+  //
+  // Explicit `enabledTools`, opting into Write/Edit (epic 1636 Phase 2). This
+  // builtin used to carry no `enabledTools` at all, which fell back to
+  // `DEFAULT_EMBEDDED_AGENT_ENABLED_TOOLS` (Read/Glob/Grep/TodoWrite, no
+  // Write/Edit) -- so the memory layer's WRITE half was unreachable on the
+  // only production `claude-sdk` engine definition. Measured 2026-09-17 in
+  // the memory-layer smoke (check-embedded-agent-memory-layer.ts) run 4: the
+  // SDK answered a `Write` tool call with "No such tool available: Write"
+  // and the model fell back to writing through the `run_process` MCP tool
+  // instead. Owner decision 2026-09-17 authorizes this opt-in. Written as a
+  // literal array rather than spreading `DEFAULT_EMBEDDED_AGENT_ENABLED_TOOLS`
+  // -- per that constant's own doc comment, an explicit array is a pinned
+  // snapshot that never tracks the default again, so a future default change
+  // is a conscious edit here, not something inherited silently. `TodoWrite`
+  // stays (dropping it would silently remove the Orchestrator's todo tool on
+  // this engine -- see sdk-engine.ts, which registers the in-process MCP
+  // TodoWrite tool only when `TodoWrite` is present in `enabledTools`).
+  // `Bash` deliberately stays OFF -- see Issue 1045 for the MCP
+  // `run_process` sandboxing route, out of scope here.
+  enabledTools: ['Read', 'Glob', 'Grep', 'TodoWrite', 'Write', 'Edit'],
 };
