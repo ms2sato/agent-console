@@ -303,3 +303,99 @@ describe('.github/workflows/verify-multiuser-systemd.yml: triggers per AC 6 and 
     expect(wf).not.toMatch(/^\s+CI:/m);
   });
 });
+
+// Issue #1717: section 7 consumes the deploy script's own V1-V6 screen and
+// the 7b drift arm (#1688) is present and ordered. Static source-text pins
+// on the driver, same discipline as the deploy-script pins in
+// update-and-deploy-for-multiuser-ubuntu.test.mjs: the arm itself runs only
+// on a runner (nothing here boots a container).
+describe('verify-multiuser-systemd.sh: section 7 consumes the V1-V6 screen; the 7b drift arm is present and ordered (Issue #1717 / #1688)', () => {
+  const driver = readFileSync(DRIVER, 'utf-8');
+  const idxOf = (needle) => {
+    const i = driver.indexOf(needle);
+    expect(i).toBeGreaterThan(-1);
+    return i;
+  };
+
+  it('main runs the sections in order: run_deploy -> post_deploy_checks -> drift_arm -> helper_cases -> run_smokes', () => {
+    expect(driver).toContain('  run_deploy\n  post_deploy_checks\n  drift_arm\n  helper_cases\n  run_smokes\n');
+    expect(driver).toMatch(/^drift_arm\(\) \{/m);
+    // Placed after section 7 in the file too (the AC's "new section, after 7").
+    expect(idxOf('drift_arm() {')).toBeGreaterThan(idxOf('post_deploy_checks() {'));
+    expect(idxOf('drift_arm() {')).toBeLessThan(idxOf('helper_cases() {'));
+  });
+
+  it('section 7 asserts the six PASS lines by label plus the RESULT line, via one shared helper, instead of re-implementing the checks', () => {
+    for (const label of ['V1 unit-env-drift', 'V2 entry-path-readable', 'V3 mainpid-identity', 'V4 unit-active', 'V5 health', 'V6 journal-digest']) {
+      expect(driver).toContain(`  "${label}"`);
+    }
+    expect(driver).toContain('grep -q "^  PASS  ${label}\\$" "$out" || rc=$?');
+    expect(driver).toContain("grep -q '^  RESULT: 6 PASS, 0 FAIL, 0 SKIP -> exit 0$' \"$out\" || rc=$?");
+    expect(driver).toContain('assert_six_pass "$DEPLOY_OUT" "deploy #1"');
+    // The old per-check re-implementation and the old /api/auth/me probe
+    // assertion are gone.
+    expect(driver).not.toContain('/api/auth/me');
+    expect(driver).not.toContain('expect "systemctl is-active ${UNIT} = active"');
+    expect(driver).not.toContain('expect "MainPID executes the unified bun');
+    expect(driver).not.toContain('NOT HERE: the #1688 drift arm');
+  });
+
+  it('the drift arm removes ONE template key from the live unit file with sed + daemon-reload and records why a drop-in cannot do it', () => {
+    const arm = driver.slice(idxOf('drift_arm() {'), idxOf('helper_cases() {'));
+    expect(arm).toContain("sed -i '/^Environment=EMBEDDED_AGENT_ENTRY_PATH=/d' '${unit_file}' && systemctl daemon-reload");
+    // The rationale is recorded in the function's own comment (wrapped across
+    // two lines, hence two needles).
+    expect(arm).toContain('drop-in cannot unset one key visibly to `systemctl show -p Environment`');
+    expect(arm).toContain('`UnsetEnvironment=` is applied at exec time');
+    expect(arm).toContain("absent from 'systemctl show -p Environment' after sed + daemon-reload");
+  });
+
+  it('the drift arm asserts deploy #2 exits 1 on V1 naming the key, with NO restart (no restart line, ActiveEnterTimestampMonotonic unchanged, no V2-V6 line)', () => {
+    const arm = driver.slice(idxOf('drift_arm() {'), idxOf('helper_cases() {'));
+    const order = [
+      'ts_before="$(cexec --user root "$SERVICE" systemctl show -p ActiveEnterTimestampMonotonic --value "$UNIT"',
+      'expect "drift: deploy #2 exits 1 (V1 FAIL, the worst code)" test "$rc" -eq 1',
+      "grep -q '^  FAIL  V1 unit-env-drift: .*EMBEDDED_AGENT_ENTRY_PATH' \"$out\"",
+      "grep -q 'setup-multiuser-for-ubuntu.sh --dry-run' \"$out\"",
+      "grep -q 'service.d/\\*.conf drop-in' \"$out\"",
+      "check \"drift: no '==> systemctl restart' line -- the deploy stopped before the restart\" \"$restarted\"",
+      'check "drift: no V2-V6 line -- nothing after V1 ran" "$v_after_v1"',
+      'expect "drift: ActiveEnterTimestampMonotonic unchanged (${ts_before}) -- the unit was NOT restarted" test "$ts_after" = "$ts_before"',
+    ];
+    let prev = -1;
+    for (const needle of order) {
+      const i = arm.indexOf(needle);
+      expect(i).toBeGreaterThan(prev);
+      prev = i;
+    }
+  });
+
+  it('the drift arm then runs setup --force (same flags as 4b), asserts the key is back, and asserts deploy #3 exits 0 with the six PASS lines and a real restart', () => {
+    const arm = driver.slice(idxOf('drift_arm() {'), idxOf('helper_cases() {'));
+    const order = [
+      'bash scripts/setup-multiuser-for-ubuntu.sh --force --repo-source /src --add-user alice --add-user deployer',
+      'check "drift: setup --force exits 0" "$rc"',
+      "present again in 'systemctl show -p Environment' (the unit was re-rendered)",
+      'check "drift: deploy #3 exits 0" "$rc"',
+      'assert_six_pass "$out" "drift: deploy #3"',
+      'test "$ts_after" != "$ts_before"',
+    ];
+    let prev = -1;
+    for (const needle of order) {
+      const i = arm.indexOf(needle);
+      expect(i).toBeGreaterThan(prev);
+      prev = i;
+    }
+    // The flags match section 4b's setup --force exactly (one source of the
+    // container's unit parameters).
+    const setupForce = 'bash scripts/setup-multiuser-for-ubuntu.sh --force --repo-source /src --add-user alice --add-user deployer';
+    expect(driver.indexOf(setupForce)).toBeLessThan(idxOf('drift_arm() {'));
+    expect(arm).toContain(setupForce);
+  });
+
+  it('every deploy invocation in the driver runs as `deployer` (never root), so the screen is the operator-path screen', () => {
+    const deployCalls = driver.match(/cexec --user \S+ -w "\$SRC" "\$SERVICE" bash scripts\/update-and-deploy-for-multiuser-ubuntu\.sh/g) ?? [];
+    expect(deployCalls).toHaveLength(3);
+    for (const c of deployCalls) expect(c).toContain('--user deployer ');
+  });
+});

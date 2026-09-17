@@ -55,11 +55,27 @@
 #      NOT EXERCISED (the image pins bun at the unified path)
 #   5. cp -a /src -> the shared source-repos dir, as the service user
 #   6. update-and-deploy-for-multiuser-ubuntu.sh as `deployer` (uid != 0, so
-#      the script's own per-step self-elevation is what runs)
-#   7. is-active, MainPID/User/Group/ExecStart, /proc/<MainPID>/exe read AS
-#      the unit's User+Group (root in-container lacks CAP_SYS_PTRACE and
-#      cannot read another uid's exe link -- Task 0's root readlink printed
-#      nothing), /api/config authMode, journal digest
+#      the script's own per-step self-elevation is what runs); expect exit 0
+#   7. the deploy script's OWN post-deploy verification screen (Issue #1717:
+#      V1 unit-env-drift, V2 entry-path-readable, V3 mainpid-identity, V4
+#      unit-active, V5 health, V6 journal-digest) is consumed, not
+#      re-implemented: six `  PASS  V<n> <name>` lines and `RESULT: 6 PASS`.
+#      The facts behind them (MainPID/User/Group/ExecStart, /proc/<MainPID>/
+#      exe read AS the unit's User+Group -- root in-container lacks
+#      CAP_SYS_PTRACE and cannot read another uid's exe link, Task 0's root
+#      readlink printed nothing --, /api/config, the journal) are still
+#      printed for the log
+#  7b. the #1688 drift arm: one template `Environment=` key is removed from
+#      the live unit file (sed + daemon-reload -- a drop-in cannot unset ONE
+#      key visibly to `systemctl show -p Environment`, see the function);
+#      the deploy script, run again as `deployer`, must exit 1 on V1's FAIL
+#      line naming the key BEFORE restarting (ActiveEnterTimestampMonotonic
+#      unchanged, no `==> systemctl restart` line); `setup --force` must
+#      re-render the unit (the key is back in `show -p Environment`); a
+#      third deploy must exit 0 with the six PASS lines again. V3's
+#      DIFFERENT arm is NOT driven here (it needs a second bun binary); its
+#      marker-to-verdict table is pinned at tier 1 instead
+#      (scripts/__tests__/setup-multiuser-checks.test.mjs)
 #   8. the three #1690 helper cases, explicitly: (1) elevated (deployer +
 #      AC_TIER3_ELEVATE) against the real bundle -> READABLE; (2) the same
 #      call against a chmod 000 copy -> UNREADABLE, exit 1; (3) root with an
@@ -72,8 +88,6 @@
 #      --smokes convention).
 #  10. writable-layer footprint (the honest per-run number), summary,
 #      teardown (compose down; --keep leaves the container up)
-#
-# NO drift arm here (Issue #1688 lands with Issue (b) of the note).
 #
 # Usage (from repo root, on a runner / workstation only):
 #   scripts/verify-multiuser-systemd.sh              # build + run + tear down
@@ -333,66 +347,182 @@ copy_source() {
 
 # --- 6. deploy as the operator ---------------------------------------------
 
+# The deploy script's captured output, kept across sections 6 and 7 (section
+# 7 consumes the verification screen it printed).
+DEPLOY_OUT=""
+
 run_deploy() {
   step_start "6. update-and-deploy-for-multiuser-ubuntu.sh as deployer (uid != 0: per-step self-elevation)"
   cexec --user deployer "$SERVICE" id | sed 's/^/  id: /'
-  local out rc=0
-  out="$(mktemp)"
-  cexec --user deployer -w "$SRC" "$SERVICE" bash scripts/update-and-deploy-for-multiuser-ubuntu.sh 2>&1 | tee "$out" || rc=${PIPESTATUS[0]}
+  local rc=0
+  DEPLOY_OUT="$(mktemp)"
+  cexec --user deployer -w "$SRC" "$SERVICE" bash scripts/update-and-deploy-for-multiuser-ubuntu.sh 2>&1 | tee "$DEPLOY_OUT" || rc=${PIPESTATUS[0]}
   check "deploy script as deployer exits 0" "$rc"
   # The shipping-path form of #1690 case (1): the script's own readability
   # gate ran with a NON-EMPTY elevation prefix (the caller is not root) and
   # returned READABLE, or the script would have exited 1 before the restart.
   rc=0
-  { grep -q '==> fail-closed check: unified entry path is readable' "$out" \
-    && grep -q '==> systemctl restart' "$out"; } || rc=$?
+  { grep -q '==> fail-closed check: unified entry path is readable' "$DEPLOY_OUT" \
+    && grep -q '==> systemctl restart' "$DEPLOY_OUT"; } || rc=$?
   check "deploy's own #1690 gate ran as a non-root caller and reached the restart (shipping-path form of case 1)" "$rc"
-  rc=0
-  { grep -q "/api/auth/me OK" "$out" && grep -q '==> Done.' "$out"; } || rc=$?
-  check "deploy's health probe printed OK and the script printed Done." "$rc"
-  rm -f "$out"
   step_end deploy_as_deployer
+}
+
+# The six checks of the deploy script's post-deploy verification (Issue
+# #1717), by the label each prints on its screen line.
+V_LABELS=(
+  "V1 unit-env-drift"
+  "V2 entry-path-readable"
+  "V3 mainpid-identity"
+  "V4 unit-active"
+  "V5 health"
+  "V6 journal-digest"
+)
+
+# assert_six_pass <deploy-output-file> <prefix>: one check() per V label
+# (`  PASS  <label>` present, anchored at line start so a FAIL line that
+# quotes another check's name cannot satisfy it) plus the RESULT line.
+assert_six_pass() {
+  local out="$1" prefix="$2" label rc
+  for label in "${V_LABELS[@]}"; do
+    rc=0
+    grep -q "^  PASS  ${label}\$" "$out" || rc=$?
+    check "${prefix}: screen has '  PASS  ${label}'" "$rc"
+  done
+  rc=0
+  grep -q '^  RESULT: 6 PASS, 0 FAIL, 0 SKIP -> exit 0$' "$out" || rc=$?
+  check "${prefix}: RESULT line is 6 PASS, 0 FAIL, 0 SKIP -> exit 0" "$rc"
 }
 
 # --- 7. post-deploy checks -------------------------------------------------
 
 post_deploy_checks() {
-  step_start "7. unit active, MainPID identity, health, journal digest"
-  local active pid
-  active="$(cexec --user root "$SERVICE" systemctl is-active "$UNIT" | tr -d '\r' || true)"
-  echo "  is-active=${active}"
-  expect "systemctl is-active ${UNIT} = active" test "$active" = "active"
+  step_start "7. the deploy script's own post-deploy verification screen (V1-V6), consumed"
+  # Issue #1717: the deploy script now prints the screen this section used to
+  # re-implement (is-active, MainPID identity, /api/config, journal digest).
+  # What tier 3 asserts is that the SHIPPING PATH -- the deploy script run as
+  # the operator, its checks elevating through the same prefix a real
+  # operator's would -- produced six PASS lines. The facts behind them are
+  # still printed below for the log, unasserted.
+  echo "  --- the screen (from section 6's output) ---"
+  grep -E '^  (PASS|FAIL|SKIP)  V[1-6] |^        (WARN|INFO): |^  RESULT: ' "$DEPLOY_OUT" | sed 's/^/  /' || true
+  assert_six_pass "$DEPLOY_OUT" "deploy #1"
+  local rc=0
+  grep -q '==> Done.' "$DEPLOY_OUT" || rc=$?
+  check "deploy #1: the script printed Done. after the screen" "$rc"
+  # V1's own line is printed twice: once when it runs (before the restart)
+  # and once on the final screen. The first occurrence must precede the
+  # restart line, and the RESULT screen must follow it -- the static pin's
+  # claim, observed on the real run.
+  local v1_line restart_line result_line
+  v1_line="$(grep -n '^  PASS  V1 unit-env-drift$' "$DEPLOY_OUT" | head -n 1 | cut -d: -f1)"
+  restart_line="$(grep -n '==> systemctl restart' "$DEPLOY_OUT" | head -n 1 | cut -d: -f1)"
+  result_line="$(grep -n '^  RESULT: ' "$DEPLOY_OUT" | head -n 1 | cut -d: -f1)"
+  rc=0
+  { [ -n "$v1_line" ] && [ -n "$restart_line" ] && [ -n "$result_line" ] \
+    && [ "$v1_line" -lt "$restart_line" ] && [ "$restart_line" -lt "$result_line" ]; } || rc=$?
+  check "deploy #1: V1 printed BEFORE the restart line, the RESULT screen after it" "$rc"
+  rm -f "$DEPLOY_OUT"
+
+  echo "  --- facts behind the screen (printed, not asserted here) ---"
+  local pid
   cexec --user root "$SERVICE" systemctl show -p MainPID -p User -p Group -p ExecStart --no-pager "$UNIT" | sed 's/^/  /'
   cexec --user root "$SERVICE" systemctl show -p Environment --value "$UNIT" | tr ' ' '\n' | grep -E '^EMBEDDED_AGENT_' | sed 's/^/  Environment: /' || true
   pid="$(cexec --user root "$SERVICE" systemctl show -p MainPID --value "$UNIT" | tr -d '\r' || true)"
-  echo "  MAINPID=${pid}"
-  expect "MainPID > 0" test "${pid:-0}" -gt 0
   # Read AS the unit's own User+Group: /proc/<pid>/exe is PTRACE_MODE_READ
   # gated, and in-container root has no CAP_SYS_PTRACE (Task 0's root-side
   # readlink printed nothing). The matching uid+gid is exactly the identity
-  # the smoke's Assertion 2 needs, and the mismatched-gid run below is its
-  # polarity.
+  # V3 and the smoke's Assertion 2 use, and the mismatched-gid run in 9b is
+  # its polarity.
   local exe
-  exe="$(cexec --user agentconsole:agent-console-users "$SERVICE" readlink -f "/proc/${pid}/exe" | tr -d '\r' || true)"
-  echo "  /proc/${pid}/exe (read as agentconsole:agent-console-users) = ${exe}"
-  expect "MainPID executes the unified bun ${UNIFIED_BUN}" test "$exe" = "$UNIFIED_BUN"
-  cexec --user root "$SERVICE" grep -E '^(Uid|Gid|Groups):' "/proc/${pid}/status" | sed 's/^/  /' || true
+  exe="$(cexec --user agentconsole:agent-console-users "$SERVICE" readlink -f "/proc/${pid:-0}/exe" | tr -d '\r' || true)"
+  echo "  /proc/${pid:-?}/exe (read as agentconsole:agent-console-users) = ${exe}"
+  cexec --user root "$SERVICE" grep -E '^(Uid|Gid|Groups):' "/proc/${pid:-0}/status" | sed 's/^/  /' || true
   local cfg
   cfg="$(cexec --user root "$SERVICE" curl -sS -m 5 http://localhost:8080/api/config || true)"
   echo "  /api/config: ${cfg}"
-  expect "/api/config reports authMode=multi-user" grep -q '"authMode":"multi-user"' <<<"$cfg"
   cexec --user root "$SERVICE" stat -c '  %U:%G %a %n' /usr/local/lib/agent-console "$UNIFIED_ENTRY" "${UNIFIED_ENTRY}.map"
   cexec --user root "$SERVICE" cat "${DEPLOY_TARGET}/.deploy-sha" | sed 's/^/  .deploy-sha: /'
   echo "  --- journal digest (last 80 lines, filtered) ---"
-  local journal
-  journal="$(cexec --user root "$SERVICE" journalctl -u "$UNIT" --no-pager -n 80 || true)"
-  echo "$journal" | grep -E 'Server starting|User mode initialized|Server listening|EMBEDDED_AGENT|"level":(40|50)' | cut -c1-200 | sed 's/^/  /' || true
-  expect "journal has 'Server listening'" grep -q 'Server listening' <<<"$journal"
-  expect "journal has 'User mode initialized' with authMode multi-user" grep -q '"authMode":"multi-user".*User mode initialized' <<<"$journal"
-  local bun_warn=0
-  grep -q '"level":40.*EMBEDDED_AGENT_BUN_PATH' <<<"$journal" && bun_warn=1
-  check "journal has NO EMBEDDED_AGENT_BUN_PATH warning (unit bun == embedded-agent bun)" "$bun_warn"
+  cexec --user root "$SERVICE" journalctl -u "$UNIT" --no-pager -n 80 2>/dev/null \
+    | grep -E 'Server starting|User mode initialized|Server listening|EMBEDDED_AGENT|"level":(40|50)' | cut -c1-200 | sed 's/^/  /' || true
   step_end post_deploy
+}
+
+# --- 7b. the #1688 drift arm ----------------------------------------------
+
+drift_arm() {
+  step_start "7b. #1688 drift arm: remove one template key from the live unit -> deploy refuses BEFORE restart -> setup --force re-renders -> deploy passes"
+  local unit_file="/etc/systemd/system/${UNIT}.service"
+  local ts_before ts_after env_now rc out
+  ts_before="$(cexec --user root "$SERVICE" systemctl show -p ActiveEnterTimestampMonotonic --value "$UNIT" | tr -d '\r')"
+  echo "  ActiveEnterTimestampMonotonic before the arm: ${ts_before}"
+
+  # Inject the drift: delete ONE template `Environment=` line from the live
+  # unit FILE and daemon-reload. Recorded here because the AC offered a
+  # drop-in as the alternative and it does not work for this purpose: a
+  # drop-in cannot unset one key visibly to `systemctl show -p Environment`
+  # -- `UnsetEnvironment=` is applied at exec time and leaves the Environment
+  # property (what V1 reads, drop-ins merged) unchanged, and an empty
+  # `Environment=` in a drop-in resets EVERY key, not one. Editing the unit
+  # file is also the shape #1688 found on the dogfood host (a unit rendered
+  # before the key existed), just produced by subtraction instead of age.
+  cexec --user root "$SERVICE" sh -c "sed -i '/^Environment=EMBEDDED_AGENT_ENTRY_PATH=/d' '${unit_file}' && systemctl daemon-reload"
+  env_now="$(cexec --user root "$SERVICE" systemctl show -p Environment --value "$UNIT" | tr -d '\r')"
+  rc=0
+  case " ${env_now} " in *" EMBEDDED_AGENT_ENTRY_PATH="*) rc=1 ;; esac
+  check "drift injected: EMBEDDED_AGENT_ENTRY_PATH absent from 'systemctl show -p Environment' after sed + daemon-reload" "$rc"
+  expect "drift injected: the unit is still active (daemon-reload restarts nothing)" test "$(cexec --user root "$SERVICE" systemctl is-active "$UNIT" | tr -d '\r')" = "active"
+
+  # Deploy #2 as the operator: must stop on V1 BEFORE the restart.
+  echo "  --- deploy #2 (expect: V1 FAIL, exit 1, no restart) ---"
+  out="$(mktemp)"
+  rc=0
+  cexec --user deployer -w "$SRC" "$SERVICE" bash scripts/update-and-deploy-for-multiuser-ubuntu.sh >"$out" 2>&1 || rc=$?
+  grep -E '^  (PASS|FAIL|SKIP)  V[1-6] |^        |^  RESULT: |^Error: |^==> (systemctl restart|Done)' "$out" | cut -c1-220 | sed 's/^/  /' || true
+  expect "drift: deploy #2 exits 1 (V1 FAIL, the worst code)" test "$rc" -eq 1
+  expect "drift: V1 FAIL line names EMBEDDED_AGENT_ENTRY_PATH" grep -q '^  FAIL  V1 unit-env-drift: .*EMBEDDED_AGENT_ENTRY_PATH' "$out"
+  expect "drift: the canonical remedy (setup --dry-run then --force) is named" grep -q 'setup-multiuser-for-ubuntu.sh --dry-run' "$out"
+  expect "drift: the bridge remedy (a .service.d drop-in) is named" grep -q 'service.d/\*.conf drop-in' "$out"
+  expect "drift: the refusal names the single-writer rule (this script never renders the unit)" grep -q 'never renders the unit' "$out"
+  local restarted=0
+  grep -q '==> systemctl restart' "$out" && restarted=1
+  check "drift: no '==> systemctl restart' line -- the deploy stopped before the restart" "$restarted"
+  local v_after_v1=0
+  grep -qE '^  (PASS|FAIL|SKIP)  V[2-6] ' "$out" && v_after_v1=1
+  check "drift: no V2-V6 line -- nothing after V1 ran" "$v_after_v1"
+  ts_after="$(cexec --user root "$SERVICE" systemctl show -p ActiveEnterTimestampMonotonic --value "$UNIT" | tr -d '\r')"
+  echo "  ActiveEnterTimestampMonotonic after deploy #2: ${ts_after}"
+  expect "drift: ActiveEnterTimestampMonotonic unchanged (${ts_before}) -- the unit was NOT restarted" test "$ts_after" = "$ts_before"
+  expect "drift: the unit is still active after the refused deploy" test "$(cexec --user root "$SERVICE" systemctl is-active "$UNIT" | tr -d '\r')" = "active"
+  rm -f "$out"
+
+  # The canonical remedy V1 names: setup --force (same flags as section 4b)
+  # re-renders the unit -- the setup script is its single writer.
+  echo "  --- setup --force (the remedy V1 named) ---"
+  out="$(mktemp)"
+  rc=0
+  cexec --user root -w /src "$SERVICE" bash scripts/setup-multiuser-for-ubuntu.sh --force --repo-source /src --add-user alice --add-user deployer >"$out" 2>&1 || rc=$?
+  grep -E 'Step 7|Step 8|install -m 0644|already up to date|differs|daemon-reload|enable' "$out" | sed 's/^/  setup: /' || true
+  check "drift: setup --force exits 0" "$rc"
+  rm -f "$out"
+  env_now="$(cexec --user root "$SERVICE" systemctl show -p Environment --value "$UNIT" | tr -d '\r')"
+  rc=1
+  case " ${env_now} " in *" EMBEDDED_AGENT_ENTRY_PATH="*) rc=0 ;; esac
+  check "drift: EMBEDDED_AGENT_ENTRY_PATH present again in 'systemctl show -p Environment' (the unit was re-rendered)" "$rc"
+
+  # Deploy #3: the ordinary path again, exit 0 with the six PASS lines.
+  echo "  --- deploy #3 (expect: exit 0, six PASS lines) ---"
+  out="$(mktemp)"
+  rc=0
+  cexec --user deployer -w "$SRC" "$SERVICE" bash scripts/update-and-deploy-for-multiuser-ubuntu.sh >"$out" 2>&1 || rc=$?
+  grep -E '^  (PASS|FAIL|SKIP)  V[1-6] |^        (WARN|INFO): |^  RESULT: ' "$out" | cut -c1-220 | sed 's/^/  /' || true
+  check "drift: deploy #3 exits 0" "$rc"
+  assert_six_pass "$out" "drift: deploy #3"
+  ts_after="$(cexec --user root "$SERVICE" systemctl show -p ActiveEnterTimestampMonotonic --value "$UNIT" | tr -d '\r')"
+  expect "drift: deploy #3 DID restart the unit (ActiveEnterTimestampMonotonic moved past ${ts_before})" test "$ts_after" != "$ts_before"
+  rm -f "$out"
+  step_end drift_arm
 }
 
 # --- 8. the three #1690 helper cases ---------------------------------------
@@ -540,6 +670,7 @@ main() {
   copy_source
   run_deploy
   post_deploy_checks
+  drift_arm
   helper_cases
   run_smokes
   footprint
@@ -549,7 +680,6 @@ main() {
   echo "  tier-3 stack summary (runner-only measurement)"
   printf '%s' "$SUMMARY"
   echo "  NOT EXERCISED: setup step 6b + the smoke's freshness check (image pins bun at ${UNIFIED_BUN})"
-  echo "  NOT HERE: the #1688 drift arm (Issue (b) of the note)"
   echo "  RESULT: ${PASS} passed, ${FAIL} failed, $(( $(date +%s) - run_t0 ))s"
   echo "=================================================="
   [ "$FAIL" -eq 0 ]

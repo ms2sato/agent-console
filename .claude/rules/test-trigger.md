@@ -9,6 +9,7 @@ globs:
   - "packages/shared/src/**/*.ts"
   - "packages/embedded-agent/src/**/*.ts"
   - ".claude/hooks/**/*.sh"
+  - "scripts/lib/**/*.ts"
   - "!**/*.test.ts"
   - "!**/*.test.tsx"
   - "!**/*.test.mjs"
@@ -32,6 +33,7 @@ When modifying production files matching these patterns, corresponding test file
 | `packages/shared/src/**/*.ts` | `.../__tests__/*.test.ts` or sibling `*.test.ts` |
 | `packages/embedded-agent/src/**/*.ts` | `.../__tests__/*.test.ts` or sibling `*.test.ts` |
 | `.claude/hooks/**/*.sh` | `.claude/hooks/__tests__/*.test.mjs` or sibling `*.test.mjs` |
+| `scripts/lib/**/*.ts` | `.../__tests__/*.test.ts` or sibling `*.test.ts` (the bun entries the shell lib shells out to, e.g. `embedded-agent-bun-identity.ts`; the `.sh` lib itself is covered by `scripts/__tests__/setup-multiuser-checks.test.mjs` via its subcommand dispatcher) |
 
 ## Exceptions
 

@@ -82,3 +82,100 @@ describe('update-and-deploy-for-multiuser-ubuntu.sh: unified entry path readabil
     expect(scriptText).not.toContain('sudo AGENT_CONSOLE_PORT=9000 AGENT_CONSOLE_SERVICE_USER=ac-svc');
   });
 });
+
+// Post-deploy verification V1-V6 (Issue #1717, absorbing #1688). Same
+// static-source-text discipline as above: the checks themselves are
+// fixture-tested in scripts/__tests__/setup-multiuser-checks.test.mjs (one
+// describe per check), the tier-3 driver proves the shipping path on a
+// runner (scripts/verify-multiuser-systemd.sh section 7 + the 7b drift arm);
+// what THIS file pins is the sequencing this script owns -- which check runs
+// on which side of the restart, when the journal timestamp is taken, and
+// that the worst verification code is the script's exit.
+describe('update-and-deploy-for-multiuser-ubuntu.sh: post-deploy verification V1-V6 sequencing (Issue #1717)', () => {
+  const scriptText = readFileSync(SCRIPT, 'utf-8');
+  const restartIdx = scriptText.indexOf('sudo systemctl restart "${SERVICE_NAME}"');
+  const idxOf = (needle) => {
+    const i = scriptText.indexOf(needle);
+    expect(i).toBeGreaterThan(-1);
+    return i;
+  };
+
+  it('V1 (unit-env-drift) is called BEFORE the restart, reading the template and the unit name, and stops the script on any non-zero code (fail-closed, #1688)', () => {
+    const v1 = idxOf('verify_check "V1 unit-env-drift" unit_env_drift "${UNIT_TEMPLATE}" "${SERVICE_NAME}" systemctl || V1_RC=$?');
+    expect(v1).toBeLessThan(restartIdx);
+    const abort = idxOf('exit "${V1_RC}"');
+    expect(abort).toBeGreaterThan(v1);
+    expect(abort).toBeLessThan(restartIdx);
+    expect(scriptText).toContain('if [ "${V1_RC}" -ne 0 ]; then');
+    // The deploy script never renders the unit -- setup is the single writer.
+    expect(scriptText).not.toMatch(/render_systemd_unit|--render-unit-only/);
+    expect(scriptText).toContain('UNIT_TEMPLATE="$SCRIPT_DIR/agent-console-multiuser.service.template"');
+  });
+
+  it('V1 runs AFTER both readability gates (the AC\'s placement: between the gates and the restart)', () => {
+    const v1 = idxOf('verify_check "V1 unit-env-drift"');
+    const mapGate = idxOf('assert_readable_by_unprivileged_user "${UNIFIED_ENTRY_MAP_PATH}"');
+    expect(v1).toBeGreaterThan(mapGate);
+  });
+
+  it('the journal --since timestamp is captured IMMEDIATELY before the restart: after V1, before the restart line, nothing but comments between them', () => {
+    const sinceLine = 'RESTART_SINCE="$(date \'+%Y-%m-%d %H:%M:%S\')"';
+    const since = idxOf(sinceLine);
+    expect(since).toBeGreaterThan(idxOf('verify_check "V1 unit-env-drift"'));
+    expect(since).toBeLessThan(restartIdx);
+    const between = scriptText.slice(since + sinceLine.length, restartIdx);
+    expect(between.trim()).toBe('');
+    // ...and the captured value is what V6 reads, not a fresh `date` after
+    // the restart.
+    expect(scriptText).toContain('journal_digest "${SERVICE_NAME}" "${RESTART_SINCE}" journalctl "${ELEVATE}"');
+    expect(scriptText.indexOf('RESTART_SINCE=', since + 1)).toBe(-1);
+  });
+
+  it('V2-V6 are called AFTER the restart, in order, each with `|| true` so every check runs', () => {
+    const calls = [
+      'verify_check "V2 entry-path-readable" entry_path_readable "${UNIFIED_ENTRY_PATH}" "${UNIFIED_ENTRY_MAP_PATH}" "${ELEVATE}" || true',
+      'verify_check "V3 mainpid-identity" mainpid_identity "${SERVICE_NAME}" "${CONFIGURED_BUN}" "${ELEVATE}" systemctl || true',
+      'verify_check "V4 unit-active" unit_active "${SERVICE_NAME}" systemctl journalctl "${ELEVATE}" || true',
+      'verify_check "V5 health" health "${PORT}" 10 curl || true',
+      'verify_check "V6 journal-digest" journal_digest "${SERVICE_NAME}" "${RESTART_SINCE}" journalctl "${ELEVATE}" || true',
+    ];
+    let prev = restartIdx;
+    for (const call of calls) {
+      const i = idxOf(call);
+      expect(i).toBeGreaterThan(prev);
+      prev = i;
+    }
+  });
+
+  it('V3\'s <configured-bun> comes from V1\'s single read (the live EMBEDDED_AGENT_BUN_PATH value), not from the template or a second systemctl call', () => {
+    const extract = idxOf('CONFIGURED_BUN="$(printf \'%s\\n\' "${VERIFY_LAST_STDOUT}" | sed -n \'s/^EMBEDDED_AGENT_BUN_PATH=//p\' | head -n 1)"');
+    expect(extract).toBeGreaterThan(idxOf('verify_check "V1 unit-env-drift"'));
+    expect(extract).toBeLessThan(restartIdx);
+  });
+
+  it('the old /api/auth/me probe and HEALTH_URL are gone; V5 probes /api/config through the lib', () => {
+    expect(scriptText).not.toContain('/api/auth/me');
+    expect(scriptText).not.toContain('HEALTH_URL');
+    expect(scriptText).not.toMatch(/^\s*if curl /m);
+  });
+
+  it('the worst verification code is the script\'s LAST exit, after the six-line screen', () => {
+    const lines = scriptText.trimEnd().split('\n');
+    expect(lines[lines.length - 1]).toBe('exit "${VERIFY_EXIT}"');
+    expect(lines[lines.length - 2]).toBe('echo "==> Done."');
+    const screen = idxOf('verify_print_screen\nVERIFY_EXIT="$(verify_exit_code)"');
+    expect(screen).toBeGreaterThan(idxOf('verify_check "V6 journal-digest"'));
+    // The mapping: any FAIL -> 1; else any SKIP -> 2; else 0.
+    expect(scriptText).toContain('if [ "$VERIFY_FAIL" -gt 0 ]; then\n    echo 1\n  elif [ "$VERIFY_SKIP" -gt 0 ]; then\n    echo 2\n  else\n    echo 0\n  fi');
+  });
+
+  it('the screen line shape is `  PASS  <label>` / `  FAIL  <label>: <reason>` / `  SKIP  <label>: cannot run: <reason>`', () => {
+    expect(scriptText).toContain('line="  PASS  ${label}"');
+    expect(scriptText).toContain('line="  FAIL  ${label}: $(head -n 1 "$err")"');
+    expect(scriptText).toContain('line="  SKIP  ${label}: cannot run: $(head -n 1 "$err" | sed \'s/^cannot run: //\')"');
+  });
+
+  it('the status snapshot after the restart cannot abort the script before the screen (a non-active unit is V4\'s verdict)', () => {
+    expect(scriptText).toContain('sudo systemctl status "${SERVICE_NAME}" --no-pager | head -10 || true');
+  });
+});
