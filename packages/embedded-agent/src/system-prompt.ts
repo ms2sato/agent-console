@@ -291,10 +291,10 @@ function buildPreamble(context: SystemPromptContext): string {
     lines.push(`Repository ID: ${context.repositoryId}`);
   }
   lines.push(
-    // Kept short on purpose: the assembled preamble's length feeds the
-    // restore-boundary compaction estimate in main.test.ts (its fixtures are
-    // calibrated to a ~597-char assembly and sit inside a token band whose
-    // ceiling is 601 chars here; lengthening this sentence moves them out).
+    // Kept short on purpose: every openai-api request carries this preamble.
+    // Its length is NOT load-bearing for main.test.ts's restore-boundary
+    // compaction band -- those fixtures are sized from the assembled prompt
+    // at test time, so a sentence gaining a word moves nothing there.
     'Arguments naming your OWN session or worker (fromSessionId, parentSessionId, ...) may be omitted: your bearer ' +
       'token supplies them. write_memo takes YOUR session (Session ID above); get_session_status, close_session ' +
       'and toSessionId take a TARGET session.',
