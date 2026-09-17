@@ -18,7 +18,7 @@
 # NO application and NO service-user elevation rules are baked here: the
 # setup script installs both at container runtime, exactly as on a real
 # host. The only file installed at build time is the OPERATOR's rules file
-# (see the owner's line below), because the deploy script's contract is
+# (see the operator rule below), because the deploy script's contract is
 # "run as the operator's own login user; every privileged step elevates
 # itself" and that contract is what tier 3 exists to verify.
 #
@@ -40,8 +40,8 @@ ENV DEBIAN_FRONTEND=noninteractive \
 # host (its step 1 installs only pamtester). `apt-cache depends ubuntu-minimal`
 # lists, among its declared dependencies, `init` (-> systemd-sysv) and the
 # elevation binary every real Ubuntu host has -- installing the distro
-# metapackage makes this a real Ubuntu base rather than a docker-trimmed one,
-# and keeps the elevation binary's package name out of this file.
+# metapackage makes this a real Ubuntu base rather than a docker-trimmed one
+# without naming that package here.
 #
 # The rest mirrors docker/Dockerfile's runtime deps plus what the setup and
 # deploy scripts need at runtime (rsync, git, util-linux for runuser) and
@@ -82,14 +82,19 @@ RUN systemctl mask \
       sys-kernel-config.mount sys-kernel-debug.mount sys-kernel-tracing.mount \
       getty.target console-getty.service
 
-# --- OWNER'S LINE (not a delegate's to write; see the design note's "operator
-# rule" ruling): install docker/deployer-elevation-rules into the elevation
-# rules drop-in directory as `deployer`, mode 0440, syntax-checked -- the same
-# three-step shape docker/Dockerfile uses for the service user's rules file.
-# Until that line exists, scripts/verify-multiuser-systemd.sh's preflight
-# exits 2 naming it, and the deploy script would stop at its first elevated
-# step with a password prompt.
-# --- end of the owner's line ---
+# --- Operator rule (design note, "operator rule" ruling): the deploy script's
+# contract is "run as the operator's own login user; every privileged step
+# elevates itself", and on a real host the operator IS an admin account, so
+# `deployer` gets an unrestricted passwordless rule -- a command-enumerated
+# rule would be a policy this product does not ship and would drift on every
+# new elevated step. Installed the same three-step way docker/Dockerfile
+# installs the service user's rules file (bare COPY source: the build context
+# is docker/). scripts/verify-multiuser-systemd.sh's preflight requires this
+# COPY line to exist; without it the deploy step would stop at its first
+# elevated command with a password prompt.
+COPY deployer-elevation-rules /etc/sudoers.d/deployer
+RUN chmod 0440 /etc/sudoers.d/deployer \
+ && visudo -cf /etc/sudoers.d/deployer
 
 # systemd's clean-shutdown signal; `docker stop` then stops every unit
 # (including the deployed agent-console.service) before PID 1 exits.

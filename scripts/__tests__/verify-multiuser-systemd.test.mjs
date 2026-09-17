@@ -16,10 +16,11 @@ const WORKFLOW_FILE = resolve(__dirname, '..', '..', '.github', 'workflows', 've
 // nothing here boots a container, and nothing here may. What these tests
 // establish is the ORDER the driver enforces before it touches docker:
 //
-//   gate (CI=true | AC_TIER3_HOST_OK=1)  ->  owner-lines preflight  ->  docker
+//   gate (CI=true | AC_TIER3_HOST_OK=1)  ->  rules-file preflight  ->  docker
 //
 // with a positive control proving the third arrow: when the gate is open
-// and every owner's line is present, the driver DOES reach docker. Without
+// and the rules file, its COPY line and AC_TIER3_ELEVATE are all present,
+// the driver DOES reach docker. Without
 // that control, "no docker call" in the negative cases would be
 // indistinguishable from a driver that never calls docker at all.
 //
@@ -106,13 +107,13 @@ describe('verify-multiuser-systemd.sh: never-on-the-dogfood-host gate (AC 1)', (
     expect(dockerCalls(fx.log)).toEqual([]);
   });
 
-  it('the refusal is decided BEFORE the owner-lines preflight (a refused run names no missing file)', () => {
+  it('the refusal is decided BEFORE the rules-file preflight (a refused run names no missing file)', () => {
     const missing = fixtureRepo({ rulesFile: false, dockerfileInstalls: false });
     try {
       const r = runDriver(missing.root, {});
       expect(r.status).toBe(2);
       expect(r.stderr).toContain('REFUSING TO RUN');
-      expect(r.stderr).not.toContain("owner's line missing");
+      expect(r.stderr).not.toMatch(/error: missing/);
       expect(dockerCalls(missing.log)).toEqual([]);
     } finally {
       rmSync(missing.root, { recursive: true, force: true });
@@ -120,7 +121,7 @@ describe('verify-multiuser-systemd.sh: never-on-the-dogfood-host gate (AC 1)', (
   });
 });
 
-describe("verify-multiuser-systemd.sh: owner's-lines preflight (AC 3), gate open via CI=true", () => {
+describe('verify-multiuser-systemd.sh: rules-file preflight (AC 3), gate open via CI=true', () => {
   const cases = [
     {
       name: 'the operator rules file docker/deployer-elevation-rules is absent',
@@ -153,12 +154,12 @@ describe("verify-multiuser-systemd.sh: owner's-lines preflight (AC 3), gate open
   ];
 
   for (const c of cases) {
-    it(`exits 2 naming the owner's line and never calls docker when ${c.name}`, () => {
+    it(`exits 2 naming the missing item and never calls docker when ${c.name}`, () => {
       const fx = fixtureRepo(c.fixture);
       try {
         const r = runDriver(fx.root, { CI: 'true', ...c.env });
         expect(r.status).toBe(2);
-        expect(r.stderr).toContain("owner's line missing");
+        expect(r.stderr).toMatch(/error: missing/);
         for (const s of c.names) expect(r.stderr).toContain(s);
         for (const s of c.notNamed) expect(r.stderr).not.toContain(s);
         expect(r.stderr).not.toContain('REFUSING TO RUN');
@@ -183,7 +184,7 @@ describe("verify-multiuser-systemd.sh: owner's-lines preflight (AC 3), gate open
     }
   });
 
-  it('POSITIVE CONTROL: with the gate open and every owner line present, the driver reaches docker (the fake records the call and fails the run)', () => {
+  it('POSITIVE CONTROL: with the gate open and the rules file, its COPY line and AC_TIER3_ELEVATE present, the driver reaches docker (the fake records the call and fails the run)', () => {
     const fx = fixtureRepo({ rulesFile: true, dockerfileInstalls: true });
     try {
       const r = runDriver(fx.root, { CI: 'true', AC_TIER3_ELEVATE: 'fake-elevate' });
@@ -191,7 +192,7 @@ describe("verify-multiuser-systemd.sh: owner's-lines preflight (AC 3), gate open
       // what matters is WHY it stopped: past the gate, past the preflight,
       // at a docker call.
       expect(r.stderr).not.toContain('REFUSING TO RUN');
-      expect(r.stderr).not.toContain("owner's line missing");
+      expect(r.stderr).not.toMatch(/error: missing/);
       const calls = dockerCalls(fx.log);
       expect(calls.length).toBeGreaterThan(0);
       // The first thing the driver asks docker is the host facts it records

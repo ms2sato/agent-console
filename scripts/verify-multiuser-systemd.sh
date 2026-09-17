@@ -34,13 +34,14 @@
 # Every step is a `docker compose exec --user <root|deployer|agentconsole|
 # agentconsole:agent-console-users>`: the exec shape carries no elevation
 # literal, and everything that elevates runs INSIDE the container from the
-# repository's own scripts. Three inputs carry the literal and are the
-# OWNER's lines, not a delegate's (see the preflight below): the operator's
-# rules file docker/deployer-elevation-rules, the Dockerfile line that
-# installs it, and the AC_TIER3_ELEVATE env value the workflow passes in.
+# repository's own scripts. Three inputs carry (or install) the elevation
+# literal and are checked by the preflight below before docker is touched:
+# the operator's rules file docker/deployer-elevation-rules, the Dockerfile
+# COPY line that installs it, and the AC_TIER3_ELEVATE env value the
+# workflow passes in (the helper cases' elevation prefix).
 #
 # Steps (each timed, printed as `STEP <name> <n>s`):
-#   0. gate (CI=true | AC_TIER3_HOST_OK=1) and owner-lines preflight
+#   0. gate (CI=true | AC_TIER3_HOST_OK=1) and the rules-file preflight
 #   1. host facts: docker info (security options, cgroup version), kernel
 #   2. docker compose build (docker/Dockerfile.systemd, no app baked)
 #   3. boot + assertion (is-system-running, /proc/1/comm, failed units)
@@ -76,7 +77,8 @@
 #
 # Exit codes (os-environment-coupling.md Discipline 1): 0 = every check
 # passed; 1 = a check ran and the system is wrong; 2 = the stack could not
-# run (gate refused, an owner's line missing, docker unavailable, the boot
+# run (gate refused, the rules file / its COPY line / AC_TIER3_ELEVATE
+# missing, docker unavailable, the boot
 # set did not boot).
 #
 # Requires: docker with compose v2 on the host. bun is NOT needed on the
@@ -87,9 +89,8 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 COMPOSE_FILE="${REPO_ROOT}/docker/docker-compose.systemd.yml"
 DOCKERFILE="${REPO_ROOT}/docker/Dockerfile.systemd"
 WORKFLOW_FILE=".github/workflows/verify-multiuser-systemd.yml"
-# The operator's rules file (the owner's line #1). Its CONTENT carries no
-# elevation literal; only its install destination does, which is why the
-# install line lives in the Dockerfile as the owner's line #2.
+# The operator's rules file. Its CONTENT carries no elevation literal; only
+# its install destination (the Dockerfile's COPY line) does.
 RULES_FILE_REL="docker/deployer-elevation-rules"
 RULES_FILE="${REPO_ROOT}/${RULES_FILE_REL}"
 SERVICE="systemd"
@@ -171,21 +172,21 @@ EOF
 preflight() {
   local missing=0
   if [ ! -f "$RULES_FILE" ]; then
-    echo "error: owner's line missing: ${RULES_FILE_REL} (the operator's elevation rules file for 'deployer'; content per the design note's 'operator rule' ruling)" >&2
+    echo "error: missing rules file: ${RULES_FILE_REL} (the operator's elevation rules file for 'deployer'; content per the design note's 'operator rule' ruling)" >&2
     missing=1
   fi
   # Anchored on a COPY instruction: the Dockerfile's own placeholder comment
   # names the file too, and a comment installs nothing.
   if ! grep -Eq '^COPY[[:space:]].*deployer-elevation-rules' "$DOCKERFILE"; then
-    echo "error: owner's line missing: docker/Dockerfile.systemd does not install ${RULES_FILE_REL} (COPY into the elevation rules drop-in directory as 'deployer', chmod 0440, syntax check -- the shape docker/Dockerfile uses for the service user's rules)" >&2
+    echo "error: missing install line: docker/Dockerfile.systemd does not install ${RULES_FILE_REL} (COPY into the elevation rules drop-in directory as 'deployer', chmod 0440, syntax check -- the shape docker/Dockerfile uses for the service user's rules)" >&2
     missing=1
   fi
   if [ -z "${AC_TIER3_ELEVATE:-}" ]; then
-    echo "error: owner's line missing: AC_TIER3_ELEVATE is unset (the bare elevation command the #1690 helper cases pass as their elevation prefix; set it in ${WORKFLOW_FILE}'s step env, or in the environment on a workstation)" >&2
+    echo "error: missing elevation prefix: AC_TIER3_ELEVATE is unset (the bare elevation command the #1690 helper cases pass as their elevation prefix; set it in ${WORKFLOW_FILE}'s step env, or in the environment on a workstation)" >&2
     missing=1
   fi
   if [ "$missing" -ne 0 ]; then
-    echo "error: the deploy step runs as 'deployer' and the helper cases elevate as 'deployer'; without the line(s) above they cannot run. Not a stack failure: exit 2." >&2
+    echo "error: the deploy step runs as 'deployer' and the helper cases elevate as 'deployer'; without the item(s) above they cannot run. Not a stack failure: exit 2." >&2
     exit 2
   fi
   if ! command -v docker >/dev/null; then

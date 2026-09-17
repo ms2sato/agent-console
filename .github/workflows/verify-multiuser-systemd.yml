@@ -84,10 +84,9 @@ jobs:
       # GitHub and is what opens the driver's never-on-the-dogfood-host gate.
       - name: Build the systemd image, boot it, run setup / deploy / smokes
         env:
-          # --- OWNER'S LINE: AC_TIER3_ELEVATE is the bare elevation command
-          # the #1690 helper cases pass as their elevation prefix (the
-          # helper's third argument). Its value is the elevation literal and
-          # is therefore the owner's to write, not a delegate's. Until it is
-          # set, the driver's preflight exits 2 naming it. ---
-          AC_TIER3_ELEVATE: ''
+          # AC_TIER3_ELEVATE is the bare elevation command the #1690 helper
+          # cases pass as their elevation prefix (the helper's third
+          # argument), run inside the container as `deployer`. The driver's
+          # preflight exits 2 naming this slot when it is empty.
+          AC_TIER3_ELEVATE: sudo
         run: scripts/verify-multiuser-systemd.sh
