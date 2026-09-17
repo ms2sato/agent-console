@@ -43,7 +43,8 @@
 #   - check-login-shell-sentinel.ts
 #   - check-orphan-sweep.ts
 #   - check-delegated-ssh-auth-sock.ts
-#   - check-embedded-agent-elevation.ts
+#   - check-embedded-agent-elevation.ts (default arm, AGENT_CONSOLE_MCP_AUTH=enforce)
+#   - check-embedded-agent-elevation.ts --auth-mode warn (polarity arm, Issue #1738)
 #   - check-embedded-agent-bash-env.ts
 #
 # Not run here, real-host only: a `claude` login inside the container and
@@ -768,6 +769,11 @@ if [ "$SMOKES" -eq 1 ]; then
   run_smoke "check-orphan-sweep" "check-orphan-sweep.ts" alice
   run_smoke "check-delegated-ssh-auth-sock" "check-delegated-ssh-auth-sock.ts" alice
   run_smoke "check-embedded-agent-elevation" "check-embedded-agent-elevation.ts" alice
+  # Polarity arm (Issue #1738): same apparatus, AGENT_CONSOLE_MCP_AUTH=warn,
+  # inverted E1 expectation (tokenless /mcp call accepted + exact warn line
+  # logged). Both arms in one run is what measures that the default arm's
+  # 401 is the gate's doing and not the environment's.
+  run_smoke "check-embedded-agent-elevation:warn" "check-embedded-agent-elevation.ts" alice --auth-mode warn
   run_smoke "check-embedded-agent-bash-env" "check-embedded-agent-bash-env.ts" alice
 
   echo

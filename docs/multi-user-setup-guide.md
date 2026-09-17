@@ -1444,9 +1444,11 @@ explicitly by the script itself (the multi-user default is `warn` until Issue
 #1107 restores the `enforce` default, so the script does not rely on an unset
 value resolving to `enforce`; nothing needs to be set in the environment you
 run the command from), against a real `/mcp` endpoint running in `enforce`
-mode. Note that the smoke proves enforcement does not break token delivery,
-not enforcement itself (a tokenless call being refused) -- that assertion is
-Issue #1738:
+mode -- and it proves enforcement itself, not only that enforcement leaves
+token delivery working (Issue #1738; see the E1/E2 bullet below). Its
+`--auth-mode warn` flag runs the same apparatus with the inverse assertion
+(the polarity arm); the tier-2 verification container runs both arms, this
+step runs the default one:
 
 ```bash
 sudo -u agentconsole bun scripts/smoke/check-embedded-agent-elevation.ts <target-user>
@@ -1464,6 +1466,15 @@ What it verifies:
   (see [MCP authentication mode](#mcp-authentication-mode-agent_console_mcp_auth)
   above; opt-in only since Sprint 2026-07-16, tracked by Issue #1107) does
   not break the already-working embedded-agent token delivery.
+- (Issue #1738) Enforcement itself, read back from the running instance:
+  after `ready`, the same JSON-RPC `tools/call` of `list_sessions` is sent
+  to the real `/mcp` port twice — tokenless (E1: refused with HTTP 401 and
+  the gate's exact `AGENT_CONSOLE_MCP_AUTH=enforce` message, no warn line
+  logged) and with the bearer token the loop itself presented (E2: admitted,
+  200, a result). `--auth-mode warn` asserts the inverse of E1 (accepted,
+  200, the gate's exact warn line logged) with E2 still admitted, so either
+  arm run against the other's assertions fails — the effective mode is what
+  the gate does to a tokenless call, not a configured string echoed back.
 - Negative: neither the MCP bearer token nor the provider API key appear in
   `/proc/<pid>/cmdline` or `/proc/<pid>/environ` of the elevated subprocess,
   with an "actually executed" guard so a silently-skipped check (process

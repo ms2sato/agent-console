@@ -239,7 +239,12 @@ service user (`agentconsole`), against target user `alice`:
 - `check-login-shell-sentinel.ts --elevated`
 - `check-orphan-sweep.ts`
 - `check-delegated-ssh-auth-sock.ts`
-- `check-embedded-agent-elevation.ts`
+- `check-embedded-agent-elevation.ts` (default arm, `AGENT_CONSOLE_MCP_AUTH=enforce`:
+  a tokenless `/mcp` call is refused with 401, the worker's own token admits it)
+- `check-embedded-agent-elevation.ts --auth-mode warn` (the polarity arm, Issue
+  #1738: the same tokenless call is accepted with 200 and the gate's exact warn
+  line is logged; both arms in one run is the measurement that the 401 above is
+  the gate's, not the environment's)
 - `check-embedded-agent-bash-env.ts`
 
 Each of these smokes states its own requirement as "run as a user with
