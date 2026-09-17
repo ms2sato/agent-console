@@ -5,6 +5,7 @@ import { vol, fs as memfs } from 'memfs';
 import { WorkerOutputFileManager } from '../worker-output-file.js';
 import { SessionDataPathResolver } from '../session-data-path-resolver.js';
 import { buildInternalEmbeddedAgentWorker } from '../../__tests__/utils/build-test-data.js';
+import { rootLogger } from '../logger.js';
 
 // Test-specific config values for worker output file tests
 // Note: These are used directly in the tests that need smaller values
@@ -715,6 +716,59 @@ describe('WorkerOutputFileManager', () => {
 
     it('should complete successfully with no pending buffers', async () => {
       await expect(manager.flushAll()).resolves.toBeUndefined();
+    });
+  });
+
+  describe('shutdown (Issue #1719: flush-after-shutdown reappearance)', () => {
+    it('drops post-shutdown output, warns once per key, and counts every drop', async () => {
+      // Confirmed by a standalone probe: spyOn(rootLogger, 'warn') observes a
+      // pino child logger's .warn() calls (the child inherits the spied
+      // method via the prototype chain), the same pattern worker-manager.test.ts
+      // already relies on for `error`.
+      const warnSpy = spyOn(rootLogger, 'warn');
+      try {
+        await manager.shutdown();
+
+        const filePath = manager.getOutputFilePath('session-shutdown', 'worker-shutdown', quickResolver);
+
+        // Mutation measured: removing the `if (this.closed) { ... }` latch
+        // branch from bufferOutput -> this assertion fails (the file gets
+        // written after the flush interval); restored -> passes.
+        manager.bufferOutput('session-shutdown', 'worker-shutdown', 'dropped after shutdown', quickResolver);
+        await new Promise((resolve) => setTimeout(resolve, TEST_WORKER_OUTPUT_FLUSH_INTERVAL * 2));
+        expect(vol.existsSync(filePath)).toBe(false);
+        expect(manager.droppedAfterShutdownCount).toBe(1);
+
+        // Mutation measured: removing ONLY the `logger.warn(...)` call (keeping
+        // the drop itself) -> the warn-count assertions below fail while the
+        // drop-count assertion above still passes; restored -> both pass.
+        const warnCallsForKey = () =>
+          warnSpy.mock.calls.filter(
+            (call) => (call[0] as Record<string, unknown>)?.sessionId === 'session-shutdown' && call[1] === 'output after shutdown dropped',
+          );
+        expect(warnCallsForKey().length).toBe(1);
+        expect(warnCallsForKey()[0]![0]).toMatchObject({
+          sessionId: 'session-shutdown',
+          workerId: 'worker-shutdown',
+          droppedBytes: 'dropped after shutdown'.length,
+        });
+
+        // A second call for the SAME key: counter advances, no second warn.
+        manager.bufferOutput('session-shutdown', 'worker-shutdown', 'more dropped bytes', quickResolver);
+        expect(manager.droppedAfterShutdownCount).toBe(2);
+        expect(warnCallsForKey().length).toBe(1);
+
+        // A DIFFERENT key: its own first drop warns once more.
+        manager.bufferOutput('session-shutdown-2', 'worker-shutdown', 'dropped too', quickResolver);
+        expect(manager.droppedAfterShutdownCount).toBe(3);
+        expect(
+          warnSpy.mock.calls.filter(
+            (call) => (call[0] as Record<string, unknown>)?.sessionId === 'session-shutdown-2' && call[1] === 'output after shutdown dropped',
+          ).length,
+        ).toBe(1);
+      } finally {
+        warnSpy.mockRestore();
+      }
     });
   });
 

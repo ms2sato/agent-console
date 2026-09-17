@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach, afterAll, jest } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, jest, spyOn } from 'bun:test';
 import { JOB_TYPES, type AppServerMessage, type WorktreeDeletePayload } from '@agent-console/shared';
 import {
   createAppContext,
@@ -147,6 +147,42 @@ describe('AppContext', () => {
 
       // Clean up
       await shutdownAppContext(context2);
+    });
+
+    it('flushes and closes workerOutputFileManager before stopping the job queue (Issue #1719)', async () => {
+      appContext = await createTestContext();
+
+      const order: string[] = [];
+      // Capture the real implementations BEFORE spying, so the mocks below
+      // can call through and leave the context genuinely shut down.
+      const originalShutdown = appContext.workerOutputFileManager.shutdown.bind(appContext.workerOutputFileManager);
+      const originalStop = appContext.jobQueue.stop.bind(appContext.jobQueue);
+      const shutdownSpy = spyOn(appContext.workerOutputFileManager, 'shutdown').mockImplementation(async () => {
+        order.push('workerOutputFileManager.shutdown');
+        return originalShutdown();
+      });
+      const stopSpy = spyOn(appContext.jobQueue, 'stop').mockImplementation(async () => {
+        order.push('jobQueue.stop');
+        return originalStop();
+      });
+
+      try {
+        await shutdownAppContext(appContext);
+        appContext = null;
+
+        expect(shutdownSpy).toHaveBeenCalledTimes(1);
+        expect(stopSpy).toHaveBeenCalledTimes(1);
+        // Mutation measured: removing the `await context.workerOutputFileManager.shutdown();`
+        // call from `shutdownAppContext` fails this test (shutdownSpy is
+        // never called, order is `['jobQueue.stop']`); swapping its position
+        // to AFTER `jobQueue.stop()` fails the order assertion below
+        // (`['jobQueue.stop', 'workerOutputFileManager.shutdown']`);
+        // restored -> passes.
+        expect(order).toEqual(['workerOutputFileManager.shutdown', 'jobQueue.stop']);
+      } finally {
+        shutdownSpy.mockRestore();
+        stopSpy.mockRestore();
+      }
     });
   });
 
@@ -421,30 +457,20 @@ describe('AppContext', () => {
      * `test-utils.js` for unrelated reasons, not because this specific
      * assertion requires a virtual filesystem.
      */
-    // `WorkerOutputFileManager` buffers appended output and flushes it on
-    // its own `WORKER_OUTPUT_FLUSH_INTERVAL` timer (default 100ms,
-    // `server-config.ts`) rather than synchronously, and this timer is not
-    // observed to be cancelled by `deactivateEmbeddedAgentWorker` /
-    // `shutdownAppContext` for a worker whose fake subprocess never
-    // attached a real WebSocket client -- so a per-test removal of
-    // `memoryHomeDir` can race a flush that fires afterward, recreating a
-    // `_quick/outputs/...` file with no exception raised (the `rm` itself
-    // succeeds; something merely writes into the directory again later).
-    // Every directory this describe creates is instead collected here and
-    // removed once in `afterAll` after a bounded wait, which empirically
-    // closes the race when this describe's own tests are the only thing
-    // keeping the process alive afterward. This is cleanup hygiene only --
-    // it never affects the pass/fail of any assertion above, which has
-    // already run by the time this fires -- and it is a BEST-EFFORT pass
-    // (`.catch(() => {})` below): a `bun run test` invocation that keeps
-    // the process alive with unrelated async work past this wait can still
-    // let the same stray write land after this `rm` has already run,
-    // leaving a uniquely-named, harmless leftover directory under the
-    // real `os.tmpdir()`. This is a discovered pre-existing resource
-    // question (does something legitimately need this flush timer alive
-    // past deactivation, or should deactivation cancel it) rather than
-    // something this test suite should try to defeat with more retries.
-    const memoryHomeDirs: string[] = [];
+    // `WorkerOutputFileManager` used to buffer appended output and flush it
+    // on its own `WORKER_OUTPUT_FLUSH_INTERVAL` timer (default 100ms,
+    // `server-config.ts`) without ever being told the context was shutting
+    // down, so a pending timer for a worker whose fake subprocess never
+    // attached a real WebSocket client could fire AFTER a per-test removal
+    // of `memoryHomeDir`, recreating a `_quick/outputs/...` file under a home
+    // that no longer existed (Issue #1719's flush-after-shutdown
+    // reappearance). `shutdownAppContext` now calls
+    // `context.workerOutputFileManager.shutdown()`, which flushes every
+    // pending buffer and then closes the manager to further writes -- so by
+    // the time `afterEach` below removes `memoryHomeDir`, no timer remains
+    // that could resurrect it. Per-test removal right after
+    // `shutdownAppContext` is therefore safe; no bounded wait or deferred,
+    // once-per-file cleanup is needed anymore.
     let memoryHomeDir: string;
     let originalAgentConsoleHome: string | undefined;
 
@@ -454,7 +480,6 @@ describe('AppContext', () => {
         os.tmpdir(),
         `app-context-memory-seam-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}`,
       );
-      memoryHomeDirs.push(memoryHomeDir);
       await mkdir(memoryHomeDir, { recursive: true });
       process.env.AGENT_CONSOLE_HOME = memoryHomeDir;
     });
@@ -469,13 +494,7 @@ describe('AppContext', () => {
       } else {
         process.env.AGENT_CONSOLE_HOME = originalAgentConsoleHome;
       }
-    });
-
-    afterAll(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 500));
-      for (const dir of memoryHomeDirs) {
-        await rm(dir, { recursive: true, force: true }).catch(() => {});
-      }
+      await rm(memoryHomeDir, { recursive: true, force: true });
     });
 
     /** Minimal subset of Bun's FileSink consumed by EmbeddedAgentWorkerService. */
@@ -490,9 +509,10 @@ describe('AppContext', () => {
      * `session-manager.test.ts`'s "threads the spawnAsUserFn option through"
      * test): lets `activateAndCaptureInit` deactivate the worker afterward
      * instead of leaving a background stdout/stderr reader and the
-     * exit-observer's `subprocess.exited` await pending forever, which was
-     * observed to leak a stray `outputs/<workerId>/*.log` write racing this
-     * describe's real-tmp-dir cleanup.
+     * exit-observer's `subprocess.exited` await pending forever; before
+     * `shutdownAppContext` flushed and closed the output manager, such a
+     * dangling worker was also the source of the stray-write race this
+     * describe used to work around.
      */
     function makeFakeSpawn(): {
       fn: SpawnAsUserFn;
