@@ -1700,14 +1700,14 @@ describe('runLoop — compaction at the restore boundary (#1411)', () => {
   const WINDOW = 1000;
 
   /** Restored conversation of roughly `chars` characters past the system
-   * message, which `main.ts` replaces with its own ~565-char assembly (measured; the preamble length is load-bearing for the band arithmetic below). */
+   * message, which `main.ts` replaces with its own ~597-char assembly (measured; the preamble length is load-bearing for the band arithmetic below -- its ceiling is 601 chars). */
   const restoredOf = (...contents: string[]) => [
     { role: 'system', content: 'SERVER_SIDE_PLACEHOLDER' },
     ...contents.map((content, i) => ({ role: i % 2 === 0 ? 'user' : 'assistant', content })),
   ];
 
   it('emits the context-compacted marker BEFORE ready, and ready exactly once', async () => {
-    // ~565-char system prompt + 3000 chars => ~891 estimated tokens, inside
+    // ~597-char system prompt + 3000 chars => ~899 estimated tokens, inside
     // the [850, 900] full-compaction band for a 1000-token window.
     const { io, events } = makeIo([
       initCommand({
@@ -1789,7 +1789,7 @@ describe('runLoop — compaction at the restore boundary (#1411)', () => {
   });
 
   it('E2E: a restored conversation past the window is partially distilled, and the first user turn does not go over the window', async () => {
-    // ~565 system + 4000 + 4000 + 400 = ~8965 chars => ~2241 tokens against a
+    // ~597 system + 4000 + 4000 + 400 = ~8997 chars => ~2249 tokens against a
     // 1000-token window: far past the 0.9 full-distill ceiling, so the
     // distillation input itself must be narrowed to the 700-token budget.
     const adapter = new WindowedAdapter(WINDOW, 'DISTILLED');

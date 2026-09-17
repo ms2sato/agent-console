@@ -66,6 +66,7 @@
  */
 import { describe, it, expect } from 'bun:test';
 import { resolveSelfIdentity } from '../self-identity.js';
+import type { SelfPairResolution, SelfSessionResolution } from '../self-identity.js';
 import type { McpCallerIdentity } from '../mcp-auth.js';
 
 const caller: McpCallerIdentity = {
@@ -73,6 +74,35 @@ const caller: McpCallerIdentity = {
   workerId: 'caller-worker',
   userId: 'caller-user',
 };
+
+// Type-level pin for the overloads (workflow.md: a type pin must fail tsc
+// under its own drift -- `Assert<T extends true>` rejects `false`, and
+// `never` is not admitted either). The pair overload is selected by the
+// PRESENCE of the `workerId` key -- including a key whose value is
+// `undefined`, which is exactly the case-1 call shape every pair tool
+// makes -- and the session-only overload by the key's absence. The aliases
+// are exported so `noUnusedLocals` does not reject them.
+//
+// Reach, measured with `bun x tsc --noEmit -p packages/server`:
+// - Swapping the overload order (session-only declared first): `pairProbe`
+//   resolves to SelfSessionResolution because `undefined` satisfies an
+//   optional `never`; `_PairOverload` reports TS2344 on its own line, and
+//   two case-1 pair assertions below additionally fail with TS2769.
+// - Widening the session-only overload's `workerId?: never` to
+//   `workerId?: string` while the pair overload stays first: tsc exit 0.
+//   NOT detected, and not detectable by any call -- with the pair overload
+//   first, a literal carrying the key never reaches the session overload,
+//   so the `never` is a statement of intent rather than a load-bearing
+//   constraint. The order is what carries the discriminator; the pin
+//   guards that.
+type Assert<T extends true> = T;
+const pairProbe = resolveSelfIdentity(caller, { sessionId: 's', workerId: undefined }, 'probe');
+const sessionProbe = resolveSelfIdentity(caller, { sessionId: 's' }, 'probe');
+export type _PairOverload = Assert<typeof pairProbe extends SelfPairResolution ? true : false>;
+export type _SessionOverload = Assert<typeof sessionProbe extends SelfSessionResolution ? true : false>;
+export type _SessionOverloadHasNoWorkerId = Assert<
+  'workerId' extends keyof Extract<typeof sessionProbe, { ok: true }> ? false : true
+>;
 
 describe('resolveSelfIdentity', () => {
   describe('session half', () => {

@@ -77,18 +77,23 @@ export type SelfPairResolution =
  * The session half is evaluated FIRST; when it refuses, the worker half is
  * never looked at and its refusal (if any) is never computed or returned.
  */
+// The overloads mirror the runtime key-presence discriminator: the pair
+// overload REQUIRES the `workerId` key (value may be undefined) and is
+// declared first, since with exactOptionalPropertyTypes off an optional
+// `workerId?: string` would also accept the session-only literal; the
+// session-only overload forbids the key outright (`workerId?: never`).
 export function resolveSelfIdentity(
   caller: McpCallerIdentity | null,
-  requested: { sessionId?: string },
-  toolName: string,
-  argNames?: SelfIdentityArgNames,
-): SelfSessionResolution;
-export function resolveSelfIdentity(
-  caller: McpCallerIdentity | null,
-  requested: { sessionId?: string; workerId?: string },
+  requested: { sessionId?: string; workerId: string | undefined },
   toolName: string,
   argNames?: SelfIdentityArgNames,
 ): SelfPairResolution;
+export function resolveSelfIdentity(
+  caller: McpCallerIdentity | null,
+  requested: { sessionId?: string; workerId?: never },
+  toolName: string,
+  argNames?: SelfIdentityArgNames,
+): SelfSessionResolution;
 export function resolveSelfIdentity(
   caller: McpCallerIdentity | null,
   requested: { sessionId?: string; workerId?: string },

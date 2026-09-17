@@ -291,10 +291,13 @@ function buildPreamble(context: SystemPromptContext): string {
     lines.push(`Repository ID: ${context.repositoryId}`);
   }
   lines.push(
-    // Kept short on purpose: this preamble's length feeds the restore-boundary
-    // compaction estimate (see main.test.ts's calibrated ~433-char figure).
-    'Arguments naming your OWN session or worker (fromSessionId, parentSessionId/parentWorkerId, your own ' +
-      'sessionId/workerId) may be omitted: your bearer token supplies them. Other sessionId arguments use the Session ID above.',
+    // Kept short on purpose: the assembled preamble's length feeds the
+    // restore-boundary compaction estimate in main.test.ts (its fixtures are
+    // calibrated to a ~597-char assembly and sit inside a token band whose
+    // ceiling is 601 chars here; lengthening this sentence moves them out).
+    'Arguments naming your OWN session or worker (fromSessionId, parentSessionId, ...) may be omitted: your bearer ' +
+      'token supplies them. write_memo takes YOUR session (Session ID above); get_session_status, close_session ' +
+      'and toSessionId take a TARGET session.',
   );
   lines.push(
     'HTML/SVG code blocks you write may be rendered in a sandboxed preview; keep them static only -- no <script> tags and no inline event handler attributes (onclick, onload, etc.), since these are stripped before rendering and will not run.',
