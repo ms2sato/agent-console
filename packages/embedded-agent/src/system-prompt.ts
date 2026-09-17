@@ -291,7 +291,11 @@ function buildPreamble(context: SystemPromptContext): string {
     lines.push(`Repository ID: ${context.repositoryId}`);
   }
   lines.push(
-    'When an MCP tool accepts a sessionId or fromSessionId argument, use the Session ID above.',
+    'When an MCP tool requires a sessionId or workerId (for example write_memo or get_session_status), use the Session ID / Worker ID above. ' +
+      'Arguments that name your OWN session or worker (fromSessionId, parentSessionId / parentWorkerId, and the ' +
+      'sessionId / workerId of create_timer, create_conditional_wakeup, run_process, the artifact and bookmark tools, ' +
+      'and set_orchestrator_session / clear_orchestrator_session) may be omitted: your bearer token supplies them, ' +
+      'and a different value is refused.',
   );
   lines.push(
     'HTML/SVG code blocks you write may be rendered in a sandboxed preview; keep them static only -- no <script> tags and no inline event handler attributes (onclick, onload, etc.), since these are stripped before rendering and will not run.',

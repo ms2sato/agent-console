@@ -322,11 +322,20 @@ describe('delete_html_artifact', () => {
   });
 
   // ---------- Authorization: checkCallerOwnsSession (session-claiming, seventh tool) ----------
+  //
+  // Issue #1696: the impersonation case below is now refused by
+  // resolveSelfIdentity's self-identity mismatch (a caller-supplied
+  // sessionId that differs from the bearer token's own sessionId), which
+  // runs BEFORE session lookup / checkCallerOwnsSession -- not by
+  // checkCallerOwnsSession itself. checkCallerOwnsSession is still reached,
+  // and still the one that refuses, when the claimed sessionId EQUALS the
+  // token's own sessionId but the session's owner differs.
 
   describe('authorization (checkCallerOwnsSession)', () => {
     it(
-      'enforce mode: a caller whose verified identity belongs to a DIFFERENT session is rejected when claiming ' +
-        "another user's sessionId (impersonation), and the artifact is not deleted",
+      'enforce mode: a caller whose verified identity belongs to a DIFFERENT session is rejected via the ' +
+        "self-identity mismatch (resolveSelfIdentity, Issue #1696) when claiming another user's sessionId " +
+        '(impersonation), and the artifact is not deleted',
       async () => {
         // Session A: the caller's OWN session/identity, minted into the bearer token.
         const { sessionId: sessionAId, userId: userAId, workerId: workerAId } = await createOwnedSession(7006, 'artifact-owner-e');
@@ -352,7 +361,8 @@ describe('delete_html_artifact', () => {
 
         expect(response.result?.isError).toBe(true);
         const data = parseToolResult(response) as { error: string };
-        expect(data.error).toContain('identity mismatch');
+        expect(data.error).toContain('can only act as your own session');
+        expect(data.error).toContain(sessionAId);
         expect(data.error).toContain(sessionBId);
 
         // The authz gate ran BEFORE the artifact-ownership comparison and

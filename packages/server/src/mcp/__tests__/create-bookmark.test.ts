@@ -329,11 +329,24 @@ describe('create_bookmark', () => {
   });
 
   // ---------- Authorization: checkCallerOwnsSession (session-claiming tool) ----------
+  //
+  // Issue #1696: the impersonation case below is now refused by
+  // resolveSelfIdentity's self-identity mismatch (a caller-supplied
+  // sessionId that differs from the bearer token's own sessionId), which
+  // runs BEFORE session lookup / checkCallerOwnsSession -- not by
+  // checkCallerOwnsSession itself. checkCallerOwnsSession is still reached,
+  // and still the one that refuses, when the claimed sessionId EQUALS the
+  // token's own sessionId but the session's owner differs (a token whose
+  // sessionId matches but whose userId is foreign to that session's
+  // createdBy) -- see 'enforce mode: a caller claiming their OWN session
+  // succeeds' below for the success path and the sibling tests in this file
+  // that exercise a same-session-foreign-owner token directly.
 
   describe('authorization (checkCallerOwnsSession)', () => {
     it(
-      'enforce mode: a caller whose verified identity belongs to a DIFFERENT session is rejected when claiming ' +
-        "another user's sessionId (impersonation), and no bookmark is created",
+      'enforce mode: a caller whose verified identity belongs to a DIFFERENT session is rejected via the ' +
+        "self-identity mismatch (resolveSelfIdentity, Issue #1696) when claiming another user's sessionId " +
+        '(impersonation), and no bookmark is created',
       async () => {
         const registry = new McpTokenRegistry();
         await mountMcpApp({ mcpAuthMode: 'enforce', mcpTokenRegistry: registry });
@@ -355,7 +368,8 @@ describe('create_bookmark', () => {
 
         expect(response.result?.isError).toBe(true);
         const data = parseToolResult(response) as { error: string };
-        expect(data.error).toContain('identity mismatch');
+        expect(data.error).toContain('can only act as your own session');
+        expect(data.error).toContain(sessionAId);
         expect(data.error).toContain(sessionBId);
 
         expect(await bookmarkRepository.findByUserId(userAId)).toHaveLength(0);

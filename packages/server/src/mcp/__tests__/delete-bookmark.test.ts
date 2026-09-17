@@ -309,11 +309,20 @@ describe('delete_bookmark', () => {
   });
 
   // ---------- Authorization: checkCallerOwnsSession (session-claiming tool) ----------
+  //
+  // Issue #1696: the impersonation case below is now refused by
+  // resolveSelfIdentity's self-identity mismatch (a caller-supplied
+  // sessionId that differs from the bearer token's own sessionId), which
+  // runs BEFORE session lookup / checkCallerOwnsSession -- not by
+  // checkCallerOwnsSession itself. checkCallerOwnsSession is still reached,
+  // and still the one that refuses, when the claimed sessionId EQUALS the
+  // token's own sessionId but the session's owner differs.
 
   describe('authorization (checkCallerOwnsSession)', () => {
     it(
-      'enforce mode: a caller whose verified identity belongs to a DIFFERENT session is rejected when claiming ' +
-        "another user's sessionId (impersonation), and the bookmark is not deleted",
+      'enforce mode: a caller whose verified identity belongs to a DIFFERENT session is rejected via the ' +
+        "self-identity mismatch (resolveSelfIdentity, Issue #1696) when claiming another user's sessionId " +
+        '(impersonation), and the bookmark is not deleted',
       async () => {
         const { sessionId: sessionAId, userId: userAId, workerId: workerAId } = await createOwnedSession(9007, 'bookmark-owner-f');
         const { sessionId: sessionBId } = await createOwnedSession(9008, 'bookmark-owner-g');
@@ -334,7 +343,8 @@ describe('delete_bookmark', () => {
 
         expect(response.result?.isError).toBe(true);
         const data = parseToolResult(response) as { error: string };
-        expect(data.error).toContain('identity mismatch');
+        expect(data.error).toContain('can only act as your own session');
+        expect(data.error).toContain(sessionAId);
         expect(data.error).toContain(sessionBId);
 
         expect(await bookmarkRepository.findById(bookmarkId)).not.toBeNull();

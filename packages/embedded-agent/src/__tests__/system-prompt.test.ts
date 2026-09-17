@@ -72,6 +72,19 @@ describe('assembleSystemPrompt', () => {
     expect(prompt).toContain('fromSessionId');
   });
 
+  // Issue #1696: self-identity MCP arguments default to the bearer token, so
+  // the preamble must tell the model it MAY OMIT them (restating an id the
+  // token proves was the anti-pattern) while still directing the ids that
+  // remain required (write_memo etc.) to the stated Session ID / Worker ID.
+  // Reach measured: reverting the sentence to the pre-#1696 "use the Session
+  // ID above" for every sessionId/fromSessionId fails both assertions below.
+  it('tells the model self-identity arguments may be omitted (bearer token) while required ids still use the stated Session ID', () => {
+    const prompt = assembleSystemPrompt({ context, instructions: emptyInstructions });
+    expect(prompt).toContain('may be omitted: your bearer token supplies them');
+    expect(prompt).toContain('use the Session ID / Worker ID above');
+    expect(prompt).not.toContain('use the Session ID above.');
+  });
+
   it('includes the sandboxed HTML/SVG preview guidance (#1097), naming both stripped vectors', () => {
     const prompt = assembleSystemPrompt({ context, instructions: emptyInstructions });
     expect(prompt).toContain('sandboxed preview');
