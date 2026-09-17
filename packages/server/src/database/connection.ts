@@ -15,7 +15,7 @@ import { getRemoteUrl, parseOrgRepo } from '../lib/git.js';
 import { createLogger } from '../lib/logger.js';
 import { isValidSlug } from '../lib/session-data-path.js';
 import { toSessionRow, toWorkerRow, toRepositoryRow, toAgentRow } from './mappers.js';
-import { addDatetime } from './schema-helpers.js';
+import { addDatetime, ISO8601_GLOB_PATTERN, NOW_ISO8601 } from './schema-helpers.js';
 
 const logger = createLogger('database');
 
@@ -418,6 +418,10 @@ async function runMigrations(database: Kysely<Database>, dbPath: string): Promis
 
   if (currentVersion < 41) {
     await migrateToV41(database);
+  }
+
+  if (currentVersion < 43) {
+    await migrateToV43(database, dbPath);
   }
 }
 
@@ -1199,6 +1203,13 @@ async function migrateToV18(database: Kysely<Database>): Promise<void> {
  * Idempotent: if user_version is already >= 19 the function returns early.
  * pre-v14 NULL `created_by` rows are preserved as NULL — the FK is satisfied
  * by NULL.
+ *
+ * Note: the hand-written `CREATE TABLE sessions_new` below dropped the two
+ * `addDatetime()`-provided ISO8601 CHECK constraints on `created_at` /
+ * `updated_at` and changed their DEFAULT from the ISO8601
+ * `strftime(...)` expression to the plain `datetime('now')` (no `T`, no
+ * `Z`) -- every other `addDatetime()` table kept both; only this rebuild
+ * lost them. Corrected by `migrateToV43`.
  *
  * @param database - Kysely database handle to migrate.
  * @param dbPath   - Filesystem path of the database. Defaults to `:memory:`
@@ -2396,6 +2407,216 @@ export async function migrateToV41(database: Kysely<Database>): Promise<void> {
   await sql`PRAGMA user_version = 41`.execute(database);
 
   logger.info('Migration to v41 completed');
+}
+
+/**
+ * Migration v43: restore the two ISO8601 CHECK constraints and the correct
+ * ISO8601 DEFAULT expression on `sessions.created_at` / `sessions.updated_at`.
+ *
+ * Every table built with the `addDatetime()` helper (`sessions`, `workers`,
+ * `repositories`, `agents`, `repository_slack_integrations`, `worktrees`)
+ * gets, per datetime column, a `DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ',
+ * 'now'))` plus a `CHECK (<col> IS NULL OR <col> GLOB '????-??-??T??:??:??*Z')`
+ * constraint. `sessions` is the one exception: migration v19's hand-written
+ * `CREATE TABLE sessions_new` (needed to add the `created_by` FK constraint,
+ * since SQLite has no `ALTER TABLE ADD CONSTRAINT`) reproduced every column
+ * except `created_at` / `updated_at`, which it rebuilt with a plain
+ * `DEFAULT (datetime('now'))` and no CHECK at all. Every sibling
+ * `addDatetime()` table still has both; only `sessions` lost them, silently,
+ * since dropping a CHECK constraint has no observable effect until a
+ * malformed value is inserted.
+ *
+ * The new DDL below is the live (post-v20, post-v24) 21-column `sessions`
+ * shape with exactly two changes: `created_at` / `updated_at` regain the
+ * ISO8601 `DEFAULT`, and two `CONSTRAINT ..._iso8601 CHECK (...)` clauses are
+ * appended, both built from the same `ISO8601_GLOB_PATTERN` /
+ * `NOW_ISO8601` constants `addDatetime()` itself uses (single source, no
+ * hand-copied GLOB literal).
+ *
+ * Unlike v19/v41 (pure additive rebuilds), this rebuild can fail: existing
+ * data may already contain a `created_at` / `updated_at` value that does not
+ * match the ISO8601 GLOB shape (e.g. rows written while v19's `datetime('now')`
+ * DEFAULT was in effect, or any other non-conforming string). Rather than
+ * silently rewriting or dropping that data, this migration runs a pre-flight
+ * check for such rows and aborts the migration (throwing, before the table
+ * rebuild) if any are found, so an operator can normalize the data first.
+ *
+ * Sequence (mirrors v19/v41's table-recreation pattern):
+ *   1. Pre-flight backup of the database file (skipped for `:memory:`).
+ *   2. PRAGMA foreign_keys = OFF (must be outside transaction)
+ *   3. Snapshot existing index/trigger DDL on the sessions table
+ *   4. Inside a transaction:
+ *      a. Pre-flight data check: abort (throw, rolling back the transaction)
+ *         if any row's created_at/updated_at does not match the ISO8601 GLOB
+ *         shape.
+ *      b. Create sessions_new with the two CHECK constraints and the
+ *         corrected DEFAULT.
+ *      c. Copy all rows from sessions to sessions_new.
+ *      d. Drop sessions.
+ *      e. Rename sessions_new to sessions.
+ *      f. Recreate the captured indexes/triggers.
+ *      g. PRAGMA foreign_key_check (rolls back on violation)
+ *      h. PRAGMA user_version = 43
+ *   5. PRAGMA foreign_keys = ON
+ *
+ * Idempotent: if user_version is already >= 43 the function returns early.
+ *
+ * @param database - Kysely database handle to migrate.
+ * @param dbPath   - Filesystem path of the database. Defaults to `:memory:`
+ *                   so direct test invocations against an in-memory Kysely
+ *                   instance opt out of the backup step automatically.
+ *
+ * @internal Exported for testing.
+ */
+export async function migrateToV43(
+  database: Kysely<Database>,
+  dbPath: string = IN_MEMORY_DB_PATH
+): Promise<void> {
+  // Idempotency guard: mirrors migrateToV19's guard above.
+  const versionResult = await sql<{ user_version: number }>`PRAGMA user_version`.execute(database);
+  const currentVersion = versionResult.rows[0]?.user_version ?? 0;
+  if (currentVersion >= 43) {
+    logger.info({ currentVersion }, 'Skipping migration to v43: already applied');
+    return;
+  }
+
+  // Take a pre-flight backup BEFORE any schema mutation, same rationale as
+  // v19: a copy failure aborts the migration so user_version stays at the
+  // pre-migration version and the caller can investigate without a
+  // partially-rebuilt sessions table. `currentVersion` (computed above for
+  // the idempotency guard) is the actual pre-migration version rather than a
+  // hardcoded literal, so the backup filename stays correct whether v43 runs
+  // directly after v41 (this branch, today) or after v42 (once the sibling
+  // v42 migration lands and this branch rebases).
+  const backupPath = await backupDatabaseFile(dbPath, currentVersion, 43);
+  if (backupPath !== null) {
+    logger.info({ backupPath }, 'Database backup created');
+  }
+
+  logger.info('Running migration to v43: Restoring ISO8601 CHECK constraints on sessions.created_at/updated_at');
+
+  await sql`PRAGMA foreign_keys = OFF`.execute(database);
+
+  try {
+    // Snapshot non-automatic indexes and triggers attached to the sessions
+    // table BEFORE dropping it, same as v19/v41.
+    const objectsResult = await sql<{
+      type: string;
+      name: string;
+      sql: string | null;
+    }>`
+      SELECT type, name, sql
+      FROM sqlite_master
+      WHERE tbl_name = 'sessions'
+        AND type IN ('index', 'trigger')
+        AND name NOT LIKE 'sqlite_autoindex%'
+    `.execute(database);
+    const objectsToRestore = objectsResult.rows.filter((row) => row.sql !== null);
+
+    await database.transaction().execute(async (trx) => {
+      // Pre-flight data check: unlike v19/v41, this rebuild's new CHECK
+      // constraints can reject existing data. Abort before touching the
+      // schema rather than silently rewriting or dropping non-conforming
+      // rows.
+      const preflight = await sql<{ n: number }>`
+        SELECT count(*) AS n FROM sessions
+        WHERE (created_at IS NOT NULL AND created_at NOT GLOB '${sql.raw(ISO8601_GLOB_PATTERN)}')
+           OR (updated_at IS NOT NULL AND updated_at NOT GLOB '${sql.raw(ISO8601_GLOB_PATTERN)}')
+      `.execute(trx);
+      const nonConformingCount = preflight.rows[0]?.n ?? 0;
+      if (nonConformingCount > 0) {
+        throw new Error(
+          `Migration to v43 aborted: ${nonConformingCount} sessions row(s) carry a non-ISO8601 created_at/updated_at; normalize them first (see docs/multi-user-setup-guide.md#v43-pre-flight-normalize-non-iso8601-session-timestamps)`
+        );
+      }
+
+      // Step 1: create the new table under a temporary name. Column order
+      // and types mirror the live (post-v20/v24) sessions schema; the only
+      // changes are the corrected DEFAULT on created_at/updated_at and the
+      // two appended CHECK constraints.
+      await sql`
+        CREATE TABLE sessions_new (
+          id TEXT PRIMARY KEY,
+          type TEXT NOT NULL,
+          location_path TEXT NOT NULL,
+          server_pid INTEGER,
+          created_at TEXT NOT NULL DEFAULT ${NOW_ISO8601},
+          updated_at TEXT NOT NULL DEFAULT ${NOW_ISO8601},
+          initial_prompt TEXT,
+          title TEXT,
+          repository_id TEXT,
+          worktree_id TEXT,
+          paused_at TEXT,
+          parent_session_id TEXT,
+          parent_worker_id TEXT,
+          created_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+          data_scope TEXT,
+          data_scope_slug TEXT,
+          recovery_state TEXT NOT NULL DEFAULT 'healthy',
+          orphaned_at INTEGER,
+          orphaned_reason TEXT,
+          initiated_by TEXT,
+          initial_prompt_delivered INTEGER,
+          CONSTRAINT sessions_created_at_iso8601 CHECK (created_at IS NULL OR created_at GLOB '${sql.raw(ISO8601_GLOB_PATTERN)}'),
+          CONSTRAINT sessions_updated_at_iso8601 CHECK (updated_at IS NULL OR updated_at GLOB '${sql.raw(ISO8601_GLOB_PATTERN)}')
+        )
+      `.execute(trx);
+
+      // Step 2: copy data. Listing columns explicitly guards against any
+      // future column-order drift between the old and new tables.
+      await sql`
+        INSERT INTO sessions_new (
+          id, type, location_path, server_pid, created_at, updated_at,
+          initial_prompt, title, repository_id, worktree_id, paused_at,
+          parent_session_id, parent_worker_id, created_by, data_scope,
+          data_scope_slug, recovery_state, orphaned_at, orphaned_reason,
+          initiated_by, initial_prompt_delivered
+        )
+        SELECT
+          id, type, location_path, server_pid, created_at, updated_at,
+          initial_prompt, title, repository_id, worktree_id, paused_at,
+          parent_session_id, parent_worker_id, created_by, data_scope,
+          data_scope_slug, recovery_state, orphaned_at, orphaned_reason,
+          initiated_by, initial_prompt_delivered
+        FROM sessions
+      `.execute(trx);
+
+      // Step 3: drop the original table. Indexes and triggers attached to it
+      // are dropped automatically by SQLite; we recreate them in step 5.
+      await sql`DROP TABLE sessions`.execute(trx);
+
+      // Step 4: rename the new table into place. As with v19, dependent FK
+      // declarations (workers.session_id, inbound_event_notifications.session_id,
+      // repository_orchestrator_sessions.session_id) continue to reference
+      // `sessions` because no dependent table references `sessions_new`.
+      await sql`ALTER TABLE sessions_new RENAME TO sessions`.execute(trx);
+
+      // Step 5: recreate captured indexes/triggers.
+      for (const obj of objectsToRestore) {
+        await sql.raw(obj.sql as string).execute(trx);
+      }
+
+      // Step 6: verify the rebuild left no dangling FK references.
+      const fkCheck = await sql<{ table: string; rowid: number; parent: string; fkid: number }>`
+        PRAGMA foreign_key_check
+      `.execute(trx);
+      if (fkCheck.rows.length > 0) {
+        throw new Error(
+          `Foreign key check failed after v43 migration: ${JSON.stringify(fkCheck.rows)}`
+        );
+      }
+
+      // Step 7: bump the schema version inside the transaction so that a
+      // failure anywhere above (including the pre-flight check) leaves the
+      // version unchanged.
+      await sql`PRAGMA user_version = 43`.execute(trx);
+    });
+  } finally {
+    // Always re-enable FK enforcement, even if the migration failed.
+    await sql`PRAGMA foreign_keys = ON`.execute(database);
+  }
+
+  logger.info('Migration to v43 completed');
 }
 
 /**

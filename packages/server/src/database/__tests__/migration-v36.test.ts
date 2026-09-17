@@ -18,6 +18,7 @@ import { Database as BunDatabase } from 'bun:sqlite';
 import type { Database } from '../schema.js';
 import { closeDatabase, migrateToV36 } from '../connection.js';
 import { setupMemfs, cleanupMemfs } from '../../__tests__/utils/mock-fs-helper.js';
+import { expectRebuiltTableDdl } from './helpers/ddl-pin.js';
 
 const TEST_CONFIG_DIR = '/test/config';
 
@@ -166,6 +167,43 @@ describe('migration v36 (embedded_agents handoff_* -> compaction_threshold)', ()
     expect(threshold!.type.toUpperCase()).toBe('REAL');
     expect(threshold!.notnull).toBe(0);
     expect(threshold!.dflt_value).toBeNull();
+
+    await db.destroy();
+  });
+
+  it("embedded_agents carries no ISO8601 CHECK -- it never used addDatetime(), unlike sessions", async () => {
+    // `embedded_agents` has always used raw `datetime('now')` defaults
+    // (never `addDatetime()`), so this table-rebuild migration correctly
+    // carries no CHECK constraint on created_at/updated_at. Recorded here so
+    // a future silent drop on THIS table (the same shape as migration v19's
+    // silent drop on `sessions`, corrected by migration v43) would be caught
+    // the same way.
+    const db = seedV35Database([]);
+    await migrateToV36(db);
+
+    await expectRebuiltTableDdl(db, 'embedded_agents', {
+      expectedColumns: [
+        { cid: 0, name: 'id', type: 'TEXT', notnull: 0, dflt_value: null, pk: 1 },
+        { cid: 1, name: 'name', type: 'TEXT', notnull: 1, dflt_value: null, pk: 0 },
+        { cid: 2, name: 'description', type: 'TEXT', notnull: 0, dflt_value: null, pk: 0 },
+        { cid: 3, name: 'engine', type: 'TEXT', notnull: 1, dflt_value: "'openai-api'", pk: 0 },
+        { cid: 4, name: 'provider_base_url', type: 'TEXT', notnull: 0, dflt_value: null, pk: 0 },
+        { cid: 5, name: 'provider_model', type: 'TEXT', notnull: 1, dflt_value: null, pk: 0 },
+        { cid: 6, name: 'provider_api_key_ref', type: 'TEXT', notnull: 0, dflt_value: null, pk: 0 },
+        { cid: 7, name: 'system_prompt', type: 'TEXT', notnull: 0, dflt_value: null, pk: 0 },
+        { cid: 8, name: 'max_tool_iterations', type: 'INTEGER', notnull: 0, dflt_value: null, pk: 0 },
+        { cid: 9, name: 'enabled_tools', type: 'TEXT', notnull: 0, dflt_value: null, pk: 0 },
+        { cid: 10, name: 'instructions', type: 'TEXT', notnull: 0, dflt_value: null, pk: 0 },
+        { cid: 11, name: 'context_window_tokens', type: 'INTEGER', notnull: 0, dflt_value: null, pk: 0 },
+        { cid: 12, name: 'compaction_threshold', type: 'REAL', notnull: 0, dflt_value: null, pk: 0 },
+        { cid: 13, name: 'is_built_in', type: 'INTEGER', notnull: 1, dflt_value: '0', pk: 0 },
+        { cid: 14, name: 'created_by', type: 'TEXT', notnull: 1, dflt_value: null, pk: 0 },
+        { cid: 15, name: 'created_at', type: 'TEXT', notnull: 1, dflt_value: "datetime('now')", pk: 0 },
+        { cid: 16, name: 'updated_at', type: 'TEXT', notnull: 1, dflt_value: "datetime('now')", pk: 0 },
+      ],
+      mustContain: ["datetime('now')"],
+      mustNotContain: ['iso8601'],
+    });
 
     await db.destroy();
   });

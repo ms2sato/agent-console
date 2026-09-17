@@ -24,6 +24,7 @@ import {
   backupDatabaseFile,
 } from '../connection.js';
 import { setupMemfs, cleanupMemfs } from '../../__tests__/utils/mock-fs-helper.js';
+import { expectRebuiltTableDdl, type PragmaTableInfoRow } from './helpers/ddl-pin.js';
 
 const TEST_CONFIG_DIR = '/test/config';
 
@@ -344,6 +345,46 @@ describe('migration v19 (sessions.created_by FK constraint)', () => {
 
     const afterNames = afterObjects.rows.map(r => r.name);
     expect(afterNames).toContain('test_sessions_type_idx');
+
+    await db.destroy();
+  });
+
+  it('pins the historical defect this rebuild introduced: no ISO8601 CHECK, plain datetime(\'now\') DEFAULT', async () => {
+    // This pins v19's own (unmodified) rebuilt DDL. It must keep passing
+    // even after migration v43 exists, because THIS test's fixture only
+    // runs migrations up through v19 (via seedV18Database + migrateToV19),
+    // never v43 -- v43 corrects the defect on top of a v42-shaped database,
+    // it does not change what v19 itself produces when invoked in isolation.
+    const db = await seedV18Database({ users: [], sessions: [] });
+    await migrateToV19(db);
+
+    const expectedColumns: PragmaTableInfoRow[] = [
+      { cid: 0, name: 'id', type: 'TEXT', notnull: 0, dflt_value: null, pk: 1 },
+      { cid: 1, name: 'type', type: 'TEXT', notnull: 1, dflt_value: null, pk: 0 },
+      { cid: 2, name: 'location_path', type: 'TEXT', notnull: 1, dflt_value: null, pk: 0 },
+      { cid: 3, name: 'server_pid', type: 'INTEGER', notnull: 0, dflt_value: null, pk: 0 },
+      { cid: 4, name: 'created_at', type: 'TEXT', notnull: 1, dflt_value: "datetime('now')", pk: 0 },
+      { cid: 5, name: 'updated_at', type: 'TEXT', notnull: 1, dflt_value: "datetime('now')", pk: 0 },
+      { cid: 6, name: 'initial_prompt', type: 'TEXT', notnull: 0, dflt_value: null, pk: 0 },
+      { cid: 7, name: 'title', type: 'TEXT', notnull: 0, dflt_value: null, pk: 0 },
+      { cid: 8, name: 'repository_id', type: 'TEXT', notnull: 0, dflt_value: null, pk: 0 },
+      { cid: 9, name: 'worktree_id', type: 'TEXT', notnull: 0, dflt_value: null, pk: 0 },
+      { cid: 10, name: 'paused_at', type: 'TEXT', notnull: 0, dflt_value: null, pk: 0 },
+      { cid: 11, name: 'parent_session_id', type: 'TEXT', notnull: 0, dflt_value: null, pk: 0 },
+      { cid: 12, name: 'parent_worker_id', type: 'TEXT', notnull: 0, dflt_value: null, pk: 0 },
+      { cid: 13, name: 'created_by', type: 'TEXT', notnull: 0, dflt_value: null, pk: 0 },
+      { cid: 14, name: 'data_scope', type: 'TEXT', notnull: 0, dflt_value: null, pk: 0 },
+      { cid: 15, name: 'data_scope_slug', type: 'TEXT', notnull: 0, dflt_value: null, pk: 0 },
+      { cid: 16, name: 'recovery_state', type: 'TEXT', notnull: 1, dflt_value: "'healthy'", pk: 0 },
+      { cid: 17, name: 'orphaned_at', type: 'INTEGER', notnull: 0, dflt_value: null, pk: 0 },
+      { cid: 18, name: 'orphaned_reason', type: 'TEXT', notnull: 0, dflt_value: null, pk: 0 },
+    ];
+
+    await expectRebuiltTableDdl(db, 'sessions', {
+      expectedColumns,
+      mustContain: ["datetime('now')"],
+      mustNotContain: ['iso8601'],
+    });
 
     await db.destroy();
   });
