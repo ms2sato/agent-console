@@ -1,5 +1,5 @@
 import { describe, it, expect, mock, beforeEach, afterEach } from 'bun:test';
-import { screen, fireEvent, cleanup, waitFor, act } from '@testing-library/react';
+import { screen, fireEvent, cleanup, waitFor, act, within } from '@testing-library/react';
 import { userEvent } from '@testing-library/user-event';
 import { renderWithRouter } from '../../../test/renderWithRouter';
 import { ActiveSessionsSidebar, formatRestartMessage } from '../ActiveSessionsSidebar';
@@ -1689,10 +1689,112 @@ describe('Orchestrator flag control (Issue #1643 PR-2)', () => {
     });
     fireEvent.click(flagButton);
 
+    const dialog = await waitFor(() => screen.getByRole('alertdialog'));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Clear' }));
+
     await waitFor(() => {
       expect(orchestratorDesignationCalls).toContainEqual({ method: 'DELETE', sessionId: 'session-a' });
     });
     expect(router.state.location.pathname).toBe('/');
+  });
+
+  // Clearing a repository's designation leaves it with no designated
+  // Orchestrator at all, breaking labeled-Issue webhook routing and the
+  // fallback-notification path until someone re-designates -- so the
+  // confirm dialog's copy must state that consequence exactly, not just
+  // "are you sure". Full-string match, not a substring/regex presence
+  // check, since this sentence is also the visual acceptance criterion verified
+  // verbatim in Browser QA.
+  it('shows a confirmation dialog with the exact clear-consequence copy when a lit flag is clicked', async () => {
+    repositoriesResponse = { repositories: [repository({ id: 'repo-a', orchestratorSessionId: 'session-a' })] };
+    const sessions = [
+      createSessionWithActivity(
+        createMockWorktreeSession({ id: 'session-a', repositoryId: 'repo-a', repositoryName: 'repo-a' }),
+        'idle'
+      ),
+    ];
+
+    await renderWithRouter(<ActiveSessionsSidebar {...defaultProps()} sessions={sessions} />);
+
+    const flagButton = await waitFor(() => {
+      const el = screen.getByTestId('orchestrator-flag-session-a');
+      expect(el.getAttribute('data-orchestrator-flag-lit')).toBe('true');
+      return el;
+    });
+    fireEvent.click(flagButton);
+
+    const dialog = await waitFor(() => screen.getByRole('alertdialog'));
+    expect(
+      within(dialog).getByText(
+        'This repository will have no designated Orchestrator; labeled-Issue webhooks and fallback notifications will not be delivered until one is set.'
+      )
+    ).toBeTruthy();
+    expect(within(dialog).getByText('Clear Orchestrator designation for repo-a?')).toBeTruthy();
+    // No DELETE has fired yet -- the dialog only opened, it did not confirm.
+    expect(orchestratorDesignationCalls).toEqual([]);
+  });
+
+  it('issues no request when the clear confirmation dialog is cancelled', async () => {
+    repositoriesResponse = { repositories: [repository({ id: 'repo-a', orchestratorSessionId: 'session-a' })] };
+    const sessions = [
+      createSessionWithActivity(
+        createMockWorktreeSession({ id: 'session-a', repositoryId: 'repo-a', repositoryName: 'repo-a' }),
+        'idle'
+      ),
+    ];
+
+    await renderWithRouter(<ActiveSessionsSidebar {...defaultProps()} sessions={sessions} />);
+
+    const flagButton = await waitFor(() => {
+      const el = screen.getByTestId('orchestrator-flag-session-a');
+      expect(el.getAttribute('data-orchestrator-flag-lit')).toBe('true');
+      return el;
+    });
+    fireEvent.click(flagButton);
+
+    const dialog = await waitFor(() => screen.getByRole('alertdialog'));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
+
+    await waitFor(() => {
+      expect(screen.queryByRole('alertdialog')).toBeNull();
+    });
+    expect(orchestratorDesignationCalls).toEqual([]);
+    // The flag remains lit (unchanged) and clickable again.
+    expect(flagButton.getAttribute('data-orchestrator-flag-lit')).toBe('true');
+    expect(flagButton.hasAttribute('disabled')).toBe(false);
+  });
+
+  // Polarity measured: fails when the swap (raise) path also opens
+  // setClearConfirmOpen(true) (reverted after measuring) -- see
+  // handleOrchestratorFlagClick's `else` branch in ActiveSessionsSidebar.tsx.
+  it('raising the designation (swap) never opens a confirmation dialog', async () => {
+    repositoriesResponse = { repositories: [repository({ id: 'repo-a', orchestratorSessionId: 'session-a' })] };
+    const sessions = [
+      createSessionWithActivity(
+        createMockWorktreeSession({ id: 'session-a', repositoryId: 'repo-a', repositoryName: 'repo-a' }),
+        'idle'
+      ),
+      createSessionWithActivity(
+        createMockWorktreeSession({ id: 'session-b', repositoryId: 'repo-a', repositoryName: 'repo-a' }),
+        'idle'
+      ),
+    ];
+
+    await renderWithRouter(<ActiveSessionsSidebar {...defaultProps()} sessions={sessions} />);
+
+    const unlitFlagButton = await waitFor(() => {
+      const el = screen.getByTestId('orchestrator-flag-session-b');
+      expect(el.getAttribute('data-orchestrator-flag-lit')).toBe('false');
+      return el;
+    });
+    fireEvent.click(unlitFlagButton);
+
+    expect(screen.queryByRole('alertdialog')).toBeNull();
+
+    await waitFor(() => {
+      expect(orchestratorDesignationCalls).toContainEqual({ method: 'POST', sessionId: 'session-b' });
+    });
+    expect(screen.queryByRole('alertdialog')).toBeNull();
   });
 
   // CodeRabbit finding on PR #1657: a failed raise/clear request used to only
@@ -1779,6 +1881,9 @@ describe('Orchestrator flag control (Issue #1643 PR-2)', () => {
       return el;
     });
     fireEvent.click(flagButton);
+
+    const dialog = await waitFor(() => screen.getByRole('alertdialog'));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Clear' }));
 
     // No server-provided `error`/`message` field on a bare 500 -- falls back
     // to `handleApiError`'s fallback message + status text.
@@ -1872,6 +1977,9 @@ describe('Orchestrator flag control (Issue #1643 PR-2)', () => {
       return el;
     });
     fireEvent.click(flagButton);
+
+    const dialog = await waitFor(() => screen.getByRole('alertdialog'));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Clear' }));
 
     const tooltip = await waitFor(() => screen.getByText(/Failed to clear Orchestrator designation/));
     const classTokens = tooltip.className.split(/\s+/);

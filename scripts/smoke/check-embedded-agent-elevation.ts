@@ -206,6 +206,10 @@ import {
   compareBinaryIdentity,
   isOtherExecutable,
 } from '../../packages/server/src/lib/embedded-agent-bun-path-check.js';
+// No transitive server-config.ts import (pure node:fs/promises + node:os +
+// node:path + Bun.spawn), so this is safe as a static import above the
+// env-var prelude, same as the two imports above.
+import { createDisposableMultiUserHome } from './disposable-multi-user-home.js';
 // Type-only imports are erased at compile time -- they do NOT trigger module
 // evaluation, so they are safe above the env-var prelude despite the module
 // they point at (app-context.ts) transitively importing server-config.ts, and
@@ -241,6 +245,18 @@ function parseStreamEventLine(line: string): { type: string } | undefined {
 // (SYSTEMD_TARGET = /etc/systemd/system/agent-console.service). Used by the
 // live-process assertion below to resolve the actual running server's PID.
 const SYSTEMD_UNIT_NAME = 'agent-console';
+
+/**
+ * Marks a setup/launch failure (e.g. the disposable home's 2775 contract
+ * verification) distinct from an unexpected exception during the actual
+ * probe run. Caught separately in `main()`'s catch block so a setup failure
+ * still runs the `finally` block's cleanup before exiting `2` (per this
+ * script's documented exit-code contract), instead of either bypassing
+ * cleanup via a bare `process.exit(2)` or being folded into `failures` and
+ * exiting `1` like a genuine assertion failure. Same shape and rationale as
+ * `check-embedded-agent-bash-env.ts`'s identically-named class.
+ */
+class SmokeSetupError extends Error {}
 
 const failures: string[] = [];
 let passes = 0;
@@ -373,6 +389,7 @@ async function main(): Promise<void> {
   let stubServer: ReturnType<typeof Bun.serve> | undefined;
   let realCwd: string | undefined;
   let realConfigDir: string | undefined;
+  let prevUmask: number | undefined;
   let sessionId: string | undefined;
   let workerId: string | undefined;
 
@@ -689,9 +706,30 @@ async function main(): Promise<void> {
     // --- Real temp provider-keys.json (0600), AGENT_CONSOLE_HOME pointed at a
     // real temp dir BEFORE any activation reads it via loadProviderKey/getConfigDir.
     // getConfigDir() reads process.env.AGENT_CONSOLE_HOME at CALL time (not
-    // module load time), so this override is safe post-import. ---
-    realConfigDir = path.join(os.tmpdir(), `ac-embedded-smoke-cfg-${crypto.randomUUID()}`);
-    Bun.spawnSync(['mkdir', '-p', realConfigDir]);
+    // module load time), so this override is safe post-import.
+    //
+    // The disposable home must carry the production data root's 2775 setgid
+    // contract (Issue #1713) -- a plain `mkdir -p` home is 755, and the
+    // memory layer's verification (memory-dir.ts) fails closed against it,
+    // since AUTH_MODE=multi-user is forced above. See
+    // disposable-multi-user-home.ts's header for why. ---
+    const homeResult = await createDisposableMultiUserHome('ac-embedded-smoke-cfg-');
+    if (!homeResult.ok) {
+      // Routed through SmokeSetupError (not a bare process.exit(2)) --
+      // ctx and stubServer already exist by this point (created above,
+      // before this check), and this class exists precisely so a
+      // setup/launch failure here still runs the finally block's other
+      // cleanup (deactivate/shutdownAppContext/stop servers) before
+      // exiting 2. The helper itself already removed the failed mkdtemp
+      // directory (best-effort) before returning, so there is nothing left
+      // for this smoke's own cleanup to do for the home; ok:false also
+      // never touched process.umask(), so there is no prevUmask to capture.
+      throw new SmokeSetupError(
+        `cannot build a disposable AGENT_CONSOLE_HOME satisfying the multi-user data-root 2775 contract: ${homeResult.reason}`,
+      );
+    }
+    realConfigDir = homeResult.path;
+    prevUmask = homeResult.prevUmask;
     process.env.AGENT_CONSOLE_HOME = realConfigDir;
     const apiKeyRef = 'smoke-provider-key';
     const fakeApiKey = `smoke-test-fake-key-${crypto.randomUUID()}`;
@@ -970,10 +1008,23 @@ async function main(): Promise<void> {
       }
     }
   } catch (err) {
-    console.error('PROBE ERROR:', err instanceof Error ? (err.stack ?? err.message) : String(err));
-    failures.push('unexpected exception during smoke run');
+    if (err instanceof SmokeSetupError) {
+      console.error('PROBE FAILED: smoke could not run to completion (setup/launch failure)');
+      console.error(err.stack ?? err.message);
+      process.exitCode = 2;
+    } else {
+      console.error('PROBE ERROR:', err instanceof Error ? (err.stack ?? err.message) : String(err));
+      failures.push('unexpected exception during smoke run');
+    }
   } finally {
     console.log('==> cleanup');
+    // Restore the umask createDisposableMultiUserHome() changed, first --
+    // it was applied unconditionally (regardless of ok/false) the moment
+    // that call returned, so nothing else in this block should run under
+    // the smoke's own 0o002 override.
+    if (prevUmask !== undefined) {
+      process.umask(prevUmask);
+    }
     if (ctx && sessionId && workerId) {
       try {
         await ctx.sessionManager.deactivateEmbeddedAgentWorker(sessionId, workerId);
@@ -1007,6 +1058,12 @@ async function main(): Promise<void> {
   }
 
   console.log();
+  if (process.exitCode === 2) {
+    // Setup/launch failure was already logged above; finally-block cleanup
+    // has already run (normal try/catch/finally ordering) by the time we
+    // reach this point.
+    process.exit(2);
+  }
   if (failures.length > 0) {
     console.error(`FAILED: ${failures.length} assertion(s) failed`);
     process.exit(1);
