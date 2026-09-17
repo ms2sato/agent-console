@@ -93,6 +93,10 @@ describe('set_orchestrator_session / clear_orchestrator_session', () => {
     await closeDatabase();
     setupMemfs({
       [`${TEST_REPO_PATH}/.git/HEAD`]: 'ref: refs/heads/main',
+      // The data root must exist before any session-data writer runs: the
+      // trusted-root walker verifies it and never creates it (production
+      // creates it at boot; session-data-path.md section 2).
+      [TEST_CONFIG_DIR]: null,
     });
     process.env.AGENT_CONSOLE_HOME = TEST_CONFIG_DIR;
 

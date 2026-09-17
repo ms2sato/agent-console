@@ -58,7 +58,7 @@ describe('WorkerOutputFileManager shutdown (real fs, Issue #1719)', () => {
     const tmpBase = os.tmpdir();
     await fs.mkdir(tmpBase, { recursive: true });
     home = await fs.mkdtemp(path.join(tmpBase, 'ac-worker-output-shutdown-'));
-    resolver = new SessionDataPathResolver(`${home}/_quick`);
+    resolver = new SessionDataPathResolver(`${home}/_quick`, home);
     manager = new WorkerOutputFileManager({ flushInterval: FLUSH_INTERVAL_MS });
   });
 

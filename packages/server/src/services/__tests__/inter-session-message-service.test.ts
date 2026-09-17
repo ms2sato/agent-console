@@ -8,10 +8,11 @@ import {
   MAX_MESSAGE_CONTENT_BYTES,
 } from '../inter-session-message-service.js';
 import { SessionDataPathResolver } from '../../lib/session-data-path-resolver.js';
+import { TrustedDirVerificationError } from '../../lib/trusted-dir.js';
 
 const TEST_CONFIG_DIR = '/test/config';
-const quickResolver = new SessionDataPathResolver(`${TEST_CONFIG_DIR}/_quick`);
-const repoResolver = new SessionDataPathResolver(`${TEST_CONFIG_DIR}/repositories/org/repo`);
+const quickResolver = new SessionDataPathResolver(`${TEST_CONFIG_DIR}/_quick`, TEST_CONFIG_DIR);
+const repoResolver = new SessionDataPathResolver(`${TEST_CONFIG_DIR}/repositories/org/repo`, TEST_CONFIG_DIR);
 
 describe('InterSessionMessageService', () => {
   let service: InterSessionMessageService;
@@ -27,6 +28,31 @@ describe('InterSessionMessageService', () => {
   });
 
   describe('sendMessage', () => {
+    // ADOPTION PIN for the trusted-root walker (docs/design/session-data-path.md
+    // section 2): `<root>/_quick` is pre-planted as a symlink to
+    // `<root>/elsewhere` BEFORE the send. `assertWithinDir`'s string check
+    // passes (the path string IS under the messages dir); only the inode
+    // walk can see the redirect. Measured: restoring
+    // `fs.mkdir(dir, { recursive: true })` in `sendMessage` fails this pin --
+    // the send resolves and `elsewhere` gains `messages/`.
+    it('adoption pin: rejects a pre-planted symlink at <root>/_quick and writes nothing through it', async () => {
+      const elsewhere = `${TEST_CONFIG_DIR}/elsewhere`;
+      vol.mkdirSync(elsewhere);
+      vol.symlinkSync(elsewhere, `${TEST_CONFIG_DIR}/_quick`);
+
+      await expect(
+        service.sendMessage({
+          toSessionId: 'session-target',
+          toWorkerId: 'worker-1',
+          fromSessionId: 'session-sender',
+          content: 'hello',
+          resolver: quickResolver,
+        }),
+      ).rejects.toThrow(TrustedDirVerificationError);
+      expect(vol.lstatSync(`${TEST_CONFIG_DIR}/_quick`).isSymbolicLink()).toBe(true);
+      expect(vol.readdirSync(elsewhere)).toEqual([]);
+    });
+
     it('should create correct directory structure', async () => {
       await service.sendMessage({
         toSessionId: 'session-target',

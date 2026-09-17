@@ -19,7 +19,7 @@ import {
 } from '../worker-output-manifest.js';
 
 const CONFIG_DIR = '/test/config';
-const resolver = new SessionDataPathResolver(`${CONFIG_DIR}/_quick`);
+const resolver = new SessionDataPathResolver(`${CONFIG_DIR}/_quick`, CONFIG_DIR);
 const S = 'session-1';
 const W = 'w-1';
 
@@ -60,7 +60,9 @@ describe('WorkerOutputFileManager — segmented archive', () => {
   let manager: WorkerOutputFileManager;
 
   beforeEach(() => {
-    setupMemfs({});
+    // The trusted root (`CONFIG_DIR`) must exist in the volume: the walker
+    // verifies it and never creates it (session-data-path.md section 2).
+    setupMemfs({ [CONFIG_DIR]: null });
     process.env.AGENT_CONSOLE_HOME = CONFIG_DIR;
     manager = makeManager();
   });
@@ -254,14 +256,16 @@ describe('WorkerOutputFileManager — segmented archive', () => {
       const oldEpoch = await manager.initializeWorkerOutput(S, W, resolver, 1000);
       expect(oldEpoch).toBe(1000);
 
-      // Break every dir/manifest write for this reset: point the worker dir under
-      // a regular file so mkdir(dir) throws in BOTH the try and the catch's
-      // best-effort persist. The manifest path stays real so the old epoch is
-      // still read for the guard.
-      const blocker = path.join(workerDir, 'blocker-file');
-      vol.writeFileSync(blocker, 'x');
-      const seam = manager as unknown as { getWorkerDir: () => string };
-      seam.getWorkerDir = () => path.join(blocker, 'sub'); // under a file -> ENOTDIR
+      // Break every manifest write for this reset: make the worker dir
+      // read-only (memfs enforces mode bits against the caller's uid), so the
+      // durable manifest write throws EACCES in BOTH the try and the catch's
+      // best-effort persist. The dir stays a real, correctly-owned directory
+      // so the trusted-dir walker accepts it -- a walker REJECTION is a
+      // different failure class that propagates by design (see the
+      // `trusted-root walker adoption` pins in worker-output-file.test.ts)
+      // and is deliberately not what this test drives. The manifest path
+      // stays readable so the old epoch is still read for the guard.
+      vol.chmodSync(workerDir, 0o555);
 
       const ret = await manager.resetWorkerOutput(S, W, resolver);
 
@@ -555,6 +559,18 @@ describe('WorkerOutputFileManager — segmented archive', () => {
  * dominant outcome of every rotation, not an edge case.
  */
 describe('WorkerOutputFileManager — the archive cut lands on a line boundary', () => {
+  // This block used to run against whatever the previous block's
+  // `cleanupMemfs()` left (an empty volume) and rely on a recursive mkdir
+  // to create everything from `/`. The trusted-dir walker never creates
+  // its root, so the root is seeded here explicitly.
+  beforeEach(() => {
+    setupMemfs({ [CONFIG_DIR]: null });
+  });
+
+  afterEach(() => {
+    cleanupMemfs();
+  });
+
   /** One whole NDJSON record of a given index, trailing newline included. */
   const record = (i: number) => `${JSON.stringify({ v: 1, type: 'user-message', id: `m${i}`, text: `body-${i}` })}\n`;
 

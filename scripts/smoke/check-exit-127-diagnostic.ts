@@ -147,7 +147,9 @@ async function main(): Promise<void> {
 
   try {
     smokeDir = await mkdtemp(path.join(tmpdir(), 'agent-console-smoke-1294-'));
-    const resolver = new SessionDataPathResolver(smokeDir);
+    // The disposable dir IS the session base here (no `_quick` segment), so
+    // the trusted root the walker verifies from is its parent, `tmpdir()`.
+    const resolver = new SessionDataPathResolver(smokeDir, tmpdir());
 
     // Real SQLite, in-memory -- mirrors worker-manager.test.ts's AgentManager
     // construction exactly, minus the memfs test-file wrapper.

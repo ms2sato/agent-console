@@ -961,6 +961,62 @@ When [Issue #834](https://github.com/ms2sato/agent-console/issues/834)
 requesting user directly and neither the auto-apply nor the manual fallback
 is required.
 
+## Data-root ownership pre-deploy check (Linux multi-user)
+
+Every session-data directory below `${DATA_ROOT}` (`_quick/`,
+`repositories/<slug>/`, and the `outputs/`, `memos/`, `messages/`, `memory/`
+trees under them) is created by the server through a trusted-root walker
+(`ensureTrustedDirChain`, `packages/server/src/lib/trusted-dir.ts`;
+[design](design/session-data-path.md) section 2). The walker creates each
+segment non-recursively and `lstat`-verifies it on every write: a symlink
+or a non-directory at any segment is rejected, and so is any directory
+**not owned by the service user** — a group member can pre-plant a real
+directory at `${DATA_ROOT}/_quick` as easily as a symlink, and the owner uid
+is what distinguishes the server's own directory from a planted one. The
+walker **fails closed**: the write is refused and the session-data operation
+that needed it (an agent activation, a memo save, an inter-session message)
+errors out.
+
+That check also fails on a legitimately mis-owned tree left behind by an
+earlier deploy (for example a `repositories/` created while the unit ran as
+a different account, or a directory an operator created by hand as
+themselves). Before deploying a build that carries the walker onto an
+existing data root, confirm that nothing above a session base is owned by
+anyone but the service user:
+
+```bash
+# Expect NO output. Every directory printed is one the walker will refuse.
+sudo find /var/lib/agent-console -maxdepth 2 -type d ! -user agentconsole
+```
+
+Substitute your `AGENT_CONSOLE_DATA_ROOT` / `AGENT_CONSOLE_SERVICE_USER`
+overrides for the defaults. `source-repos/` and the clones under it appear
+in that listing only because of `-maxdepth 2`; they are NOT walked by the
+server (the setup script owns the directory, and interactive users clone
+into it), so a `source-repos/<repo>` entry owned by an interactive user is
+expected and needs no change. If the listing prints a `_quick`,
+`repositories`, or `repositories/<slug>` entry, re-own it before deploying:
+
+```bash
+sudo chown agentconsole:agent-console-users /var/lib/agent-console/<printed-dir>
+```
+
+A mismatch that reaches the running server is logged at `error` level by
+the `trusted-dir` logger, with this exact message shape (the uid, the
+expected uid, and the path vary):
+
+```text
+Trusted directory segment has unexpected owner uid=1001 (expected 998): /var/lib/agent-console/repositories/org/repo
+```
+
+The sibling rejections use the same prefix: `Trusted directory segment is a
+symlink: <path>` and `Trusted directory segment is not a directory: <path>`.
+Search the journal for `Trusted directory segment` to find any of them:
+
+```bash
+sudo journalctl -u agent-console --since "10 min ago" | grep "Trusted directory segment"
+```
+
 ## Shared source-repos directory (Linux multi-user)
 
 The bootstrap script (`scripts/setup-multiuser-for-ubuntu.sh`) creates an

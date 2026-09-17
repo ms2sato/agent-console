@@ -700,7 +700,7 @@ async function main(engine: EngineSelection, expectNoMemory: boolean): Promise<v
       const slug = await ctx!.repositoryManager.getRepositorySlug(repositoryId);
       if (!slug) throw new Error(`could not resolve repository slug for ${repositoryId}`);
       const baseDir = computeSessionDataBaseDir(home!, 'repository', slug);
-      return new SessionDataPathResolver(baseDir).getMemoryDir(definitionId, { kind: 'repository' });
+      return new SessionDataPathResolver(baseDir, home!).getMemoryDir(definitionId, { kind: 'repository' });
     };
 
     const activateAndCapture = async (

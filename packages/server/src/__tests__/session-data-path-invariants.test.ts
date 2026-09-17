@@ -4,7 +4,7 @@
  *
  * These tests scan production source to detect regressions to the old
  * silent-fallback pattern:
- *   - `new SessionDataPathResolver()` without a baseDir (only the new single-arg constructor exists)
+ *   - `new SessionDataPathResolver()` without a baseDir (the constructor takes `(baseDir, trustedRoot)`, both required)
  *   - `repositoryName` field in job-payload literals (new payloads use `{scope, slug}`)
  */
 import { describe, it, expect } from 'bun:test';

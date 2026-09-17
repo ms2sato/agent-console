@@ -31,7 +31,7 @@ import { reconstructConversation, RestoreReconstructionError } from '@agent-cons
 import type { EmbeddedAgentStreamEvent } from '@agent-console/shared';
 
 const CONFIG_DIR = '/test/config';
-const resolver = new SessionDataPathResolver(`${CONFIG_DIR}/_frag`);
+const resolver = new SessionDataPathResolver(`${CONFIG_DIR}/_frag`, CONFIG_DIR);
 const S = 'session-frag';
 const W = 'w-frag';
 const SYSTEM_PROMPT = 'You are a helpful assistant.';
@@ -67,7 +67,9 @@ async function rotateSplittingInside(records: string[], splitAt: number): Promis
 }
 
 describe('rotation -> restore: a fragment head no longer poisons the gate', () => {
-  beforeEach(() => setupMemfs());
+  // The trusted root (`CONFIG_DIR`) must exist in the volume: the walker
+  // verifies it and never creates it (session-data-path.md section 2).
+  beforeEach(() => setupMemfs({ [CONFIG_DIR]: null }));
   afterEach(() => cleanupMemfs());
 
   /**

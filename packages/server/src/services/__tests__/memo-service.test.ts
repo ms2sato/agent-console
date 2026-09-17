@@ -2,12 +2,13 @@ import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { vol } from 'memfs';
 import { setupMemfs, cleanupMemfs } from '../../__tests__/utils/mock-fs-helper.js';
 import { MemoService } from '../memo-service.js';
+import { TrustedDirVerificationError } from '../../lib/trusted-dir.js';
 import { SessionDataPathResolver } from '../../lib/session-data-path-resolver.js';
 
 const TEST_CONFIG_DIR = '/test/config';
 const ORIGINAL_AGENT_CONSOLE_HOME = process.env.AGENT_CONSOLE_HOME;
-const quickResolver = new SessionDataPathResolver(`${TEST_CONFIG_DIR}/_quick`);
-const repoResolver = new SessionDataPathResolver(`${TEST_CONFIG_DIR}/repositories/org/repo`);
+const quickResolver = new SessionDataPathResolver(`${TEST_CONFIG_DIR}/_quick`, TEST_CONFIG_DIR);
+const repoResolver = new SessionDataPathResolver(`${TEST_CONFIG_DIR}/repositories/org/repo`, TEST_CONFIG_DIR);
 
 describe('MemoService', () => {
   let service: MemoService;
@@ -28,6 +29,25 @@ describe('MemoService', () => {
   });
 
   describe('writeMemo', () => {
+    // ADOPTION PIN for the trusted-root walker (docs/design/session-data-path.md
+    // section 2): `<root>/_quick` is pre-planted as a symlink to
+    // `<root>/elsewhere` BEFORE the write. memfs stamps every node with
+    // `process.getuid()`, so the walker's uid check is satisfied and only
+    // the symlink check can fire -- which is the point. Measured: restoring
+    // `fs.mkdir(memosDir, { recursive: true })` in `writeMemo` fails this
+    // pin -- the write resolves and `elsewhere` gains `memos/`.
+    it('adoption pin: rejects a pre-planted symlink at <root>/_quick and writes nothing through it', async () => {
+      const elsewhere = `${TEST_CONFIG_DIR}/elsewhere`;
+      vol.mkdirSync(elsewhere);
+      vol.symlinkSync(elsewhere, `${TEST_CONFIG_DIR}/_quick`);
+
+      await expect(service.writeMemo('session-1', '# My Memo', quickResolver)).rejects.toThrow(
+        TrustedDirVerificationError,
+      );
+      expect(vol.lstatSync(`${TEST_CONFIG_DIR}/_quick`).isSymbolicLink()).toBe(true);
+      expect(vol.readdirSync(elsewhere)).toEqual([]);
+    });
+
     it('should create the memos directory and write the file', async () => {
       const filePath = await service.writeMemo('session-1', '# My Memo', quickResolver);
 

@@ -1,5 +1,7 @@
 /**
- * SessionDataPathResolver — thin wrapper around a precomputed base directory.
+ * SessionDataPathResolver — thin wrapper around a precomputed base directory
+ * and the trusted root every path under it is verified against on the inode
+ * chain at creation time (`ensureTrustedDirChain` in `trusted-dir.ts`).
  *
  * The base directory is always computed via `computeSessionDataBaseDir` in
  * `session-data-path.ts`. See `docs/design/session-data-path.md` for the spec.
@@ -19,7 +21,10 @@ import { assertValidSegment } from './session-data-path.js';
 export type MemoryDirScope = { kind: 'repository' } | { kind: 'quick'; cwdSlug: string };
 
 export class SessionDataPathResolver {
-  constructor(private readonly baseDir: string) {}
+  constructor(
+    private readonly baseDir: string,
+    private readonly trustedRoot: string,
+  ) {}
 
   getMessagesDir(): string {
     return path.join(this.baseDir, 'messages');
@@ -41,9 +46,18 @@ export class SessionDataPathResolver {
     return path.join(this.getOutputsDir(), sessionId, `${workerId}.log`);
   }
 
-  /** Exposed only so `ensureMemoryDir` can walk from the trusted base. */
+  /** Exposed so `ensureMemoryDir` and every other session-data creator can walk from the trusted base. */
   getBaseDir(): string {
     return this.baseDir;
+  }
+
+  /**
+   * The root every session-data path is verified against on the inode
+   * chain (`ensureTrustedDirChain` in `trusted-dir.ts`). Production passes
+   * the same `configDir` the base was computed from.
+   */
+  getTrustedRoot(): string {
+    return this.trustedRoot;
   }
 
   /**

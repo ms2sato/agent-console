@@ -5403,6 +5403,12 @@ describe('MCP Server Tools', () => {
       savedAgentConsoleHome = process.env.AGENT_CONSOLE_HOME;
       realConfigDir = path.join(os.tmpdir(), `agent-console-mcp-server-artifact-broadcast-test-${crypto.randomUUID()}`);
       process.env.AGENT_CONSOLE_HOME = realConfigDir;
+      // The data root must exist before any session-data writer runs: the
+      // trusted-root walker verifies it and never creates it (production
+      // creates it at boot; session-data-path.md section 2). The walker goes
+      // through `fs/promises`, which this file's outer `setupMemfs` has
+      // routed to the memfs volume -- so the root is seeded there.
+      vol.mkdirSync(realConfigDir, { recursive: true });
     });
 
     afterEach(() => {

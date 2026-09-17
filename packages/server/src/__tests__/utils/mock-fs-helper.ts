@@ -31,8 +31,12 @@ mock.module('node:fs/promises', () => fs.promises);
 /**
  * Sets up memfs with the given file structure.
  * Call this in beforeEach before any fs operations.
+ *
+ * A `null` value creates an empty DIRECTORY at that path (memfs
+ * `fromJSON` semantics) -- e.g. `{ '/test/config': null }` for a trusted
+ * root that `ensureTrustedDirChain` verifies but never creates.
  */
-export function setupMemfs(files: Record<string, string> = {}): void {
+export function setupMemfs(files: Record<string, string | null> = {}): void {
   // Reset volume
   vol.reset();
 

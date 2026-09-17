@@ -4,6 +4,7 @@ import { setupMemfs, cleanupMemfs } from '../../__tests__/utils/mock-fs-helper.j
 import { vol, fs as memfs } from 'memfs';
 import { WorkerOutputFileManager } from '../worker-output-file.js';
 import { SessionDataPathResolver } from '../session-data-path-resolver.js';
+import { TrustedDirVerificationError } from '../trusted-dir.js';
 import { buildInternalEmbeddedAgentWorker } from '../../__tests__/utils/build-test-data.js';
 import { rootLogger } from '../logger.js';
 
@@ -14,15 +15,17 @@ const TEST_WORKER_OUTPUT_FLUSH_INTERVAL = 100; // 100ms (same as default)
 const TEST_WORKER_OUTPUT_FLUSH_THRESHOLD = 256; // 256 bytes for easier testing
 
 const TEST_CONFIG_DIR_FIXTURE = '/test/config';
-const quickResolver = new SessionDataPathResolver(`${TEST_CONFIG_DIR_FIXTURE}/_quick`);
-const repoResolver = new SessionDataPathResolver(`${TEST_CONFIG_DIR_FIXTURE}/repositories/org/repo`);
+const quickResolver = new SessionDataPathResolver(`${TEST_CONFIG_DIR_FIXTURE}/_quick`, TEST_CONFIG_DIR_FIXTURE);
+const repoResolver = new SessionDataPathResolver(`${TEST_CONFIG_DIR_FIXTURE}/repositories/org/repo`, TEST_CONFIG_DIR_FIXTURE);
 
 describe('WorkerOutputFileManager', () => {
   const TEST_CONFIG_DIR = '/test/config';
   let manager: WorkerOutputFileManager;
 
   beforeEach(() => {
-    setupMemfs({});
+    // The trusted root (`TEST_CONFIG_DIR`) must exist in the volume: the walker
+    // verifies it and never creates it (session-data-path.md section 2).
+    setupMemfs({ [TEST_CONFIG_DIR]: null });
     process.env.AGENT_CONSOLE_HOME = TEST_CONFIG_DIR;
     manager = new WorkerOutputFileManager({
       flushThreshold: TEST_WORKER_OUTPUT_FLUSH_THRESHOLD,
@@ -44,6 +47,55 @@ describe('WorkerOutputFileManager', () => {
     it('should handle special characters in IDs', () => {
       const path = manager.getOutputFilePath('session_123', 'worker-abc', quickResolver);
       expect(path).toBe(`${TEST_CONFIG_DIR}/_quick/outputs/session_123/worker-abc.log`);
+    });
+  });
+
+  // ADOPTION PINS for the trusted-root walker (docs/design/session-data-path.md
+  // section 2): `<root>/_quick` is pre-planted as a symlink to
+  // `<root>/elsewhere` BEFORE the call, for the two entry points that create
+  // `outputs/<sessionId>` -- `initializeWorkerOutput` (activation) and the
+  // flush path (`bufferOutput` + `forceFlush`). memfs stamps every node with
+  // `process.getuid()`, so only the symlink check can fire.
+  describe('trusted-root walker adoption', () => {
+    const elsewhere = `${TEST_CONFIG_DIR}/elsewhere`;
+
+    function plantSymlinkedQuickBase(): void {
+      vol.mkdirSync(TEST_CONFIG_DIR, { recursive: true });
+      vol.mkdirSync(elsewhere);
+      vol.symlinkSync(elsewhere, `${TEST_CONFIG_DIR}/_quick`);
+    }
+
+    // Measured: restoring `fs.mkdir(path.dirname(filePath), { recursive: true })`
+    // at the top of `initializeWorkerOutput`'s try block fails this pin --
+    // the call resolves with an epoch and `elsewhere` gains `outputs/`.
+    // Also measured, on the two `instanceof TrustedDirVerificationError`
+    // rethrows in that method's catch block: deleting EITHER one alone is
+    // NOT detected (the outer one short-circuits before the best-effort
+    // path, and the inner one catches the walker's second rejection inside
+    // it -- each is the other's backstop); deleting BOTH fails the `rejects`
+    // half (the best-effort path returns a minted epoch instead of
+    // propagating) while the readdir half still passes -- which is why both
+    // halves are asserted.
+    it('initializeWorkerOutput rejects with TrustedDirVerificationError and writes nothing through the link', async () => {
+      plantSymlinkedQuickBase();
+      await expect(manager.initializeWorkerOutput('session-link', 'worker-link', quickResolver)).rejects.toThrow(
+        TrustedDirVerificationError,
+      );
+      expect(vol.lstatSync(`${TEST_CONFIG_DIR}/_quick`).isSymbolicLink()).toBe(true);
+      expect(vol.readdirSync(elsewhere)).toEqual([]);
+    });
+
+    // Measured: restoring `fs.mkdir(path.dirname(filePath), { recursive: true })`
+    // in `flushLocked` fails this pin -- the flush lands
+    // `outputs/session-link/worker-link.log` inside `elsewhere`. The flush
+    // itself is best-effort (its catch reports `{ ok: false }` and never
+    // writes), so the pin here is the readdir, not a thrown error.
+    it('flush writes nothing through the link (best-effort flush reports failure instead)', async () => {
+      plantSymlinkedQuickBase();
+      manager.bufferOutput('session-link', 'worker-link', 'never lands', quickResolver);
+      await manager.forceFlush('session-link', 'worker-link');
+      expect(vol.lstatSync(`${TEST_CONFIG_DIR}/_quick`).isSymbolicLink()).toBe(true);
+      expect(vol.readdirSync(elsewhere)).toEqual([]);
     });
   });
 

@@ -125,6 +125,11 @@ describe('delete_html_artifact', () => {
     testConfigDir = path.join(os.tmpdir(), `${TEST_CONFIG_DIR_PREFIX}${randomUUID()}`);
     setupMemfs({
       [`${TEST_REPO_PATH}/.git/HEAD`]: 'ref: refs/heads/main',
+      // The data root must exist before any session-data writer runs: the
+      // trusted-root walker verifies it and never creates it (production
+      // creates it at boot; session-data-path.md section 2). It is created
+      // in the memfs volume, which is what `fs/promises` resolves to here.
+      [testConfigDir]: null,
     });
     process.env.AGENT_CONSOLE_HOME = testConfigDir;
 
