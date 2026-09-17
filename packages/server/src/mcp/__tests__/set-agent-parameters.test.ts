@@ -159,6 +159,7 @@ describe('set_agent_parameters', () => {
       name: 'test-repo',
       path: TEST_REPO_PATH,
       createdAt: new Date().toISOString(),
+      orchestratorSessionIds: [],
       clonedSourceRepoPath: null,
     });
     repositoryManager = await RepositoryManager.create({ repository: sqliteRepoRepo, jobQueue: testJobQueue });

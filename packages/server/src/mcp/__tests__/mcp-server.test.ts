@@ -660,6 +660,7 @@ describe('MCP Server Tools', () => {
       name,
       path: repoPath,
       createdAt: new Date().toISOString(),
+      orchestratorSessionIds: [],
       clonedSourceRepoPath: null,
     });
     // Ensure the path exists in memfs so RepositoryManager.initialize()
@@ -881,6 +882,7 @@ describe('MCP Server Tools', () => {
         await sqliteRepoRepo.save({
           ...repo,
           createdAt: new Date().toISOString(),
+          orchestratorSessionIds: [],
           clonedSourceRepoPath: null,
         });
       }
@@ -978,6 +980,7 @@ describe('MCP Server Tools', () => {
         await sqliteRepoRepo.save({
           ...repo,
           createdAt: new Date().toISOString(),
+          orchestratorSessionIds: [],
           clonedSourceRepoPath: null,
         });
       }
@@ -1154,12 +1157,13 @@ describe('MCP Server Tools', () => {
   // ===========================================================================
   // set_orchestrator_session / clear_orchestrator_session
   //
-  // Deep coverage (happy path set/move/clear, stale-clear no-op) lives in
-  // the dedicated orchestrator-session-designation.test.ts, which uses a
-  // real SqliteSessionRepository so `orchestratorSessionId`'s FK to
-  // `sessions.id` (migration v40) is satisfiable. This file's SessionManager
-  // uses JsonSessionRepository (see remountMcpApp above), so the tests here
-  // are limited to paths that reject BEFORE the FK-constrained write.
+  // Deep coverage (happy path add/add-second/remove, no-holder-check) lives
+  // in the dedicated orchestrator-session-designation.test.ts, which uses a
+  // real SqliteSessionRepository so `repository_orchestrator_sessions`'s FK
+  // to `sessions.id` (migration v41) is satisfiable. This file's
+  // SessionManager uses JsonSessionRepository (see remountMcpApp above), so
+  // the tests here are limited to paths that reject BEFORE the
+  // FK-constrained write.
   // ===========================================================================
 
   describe('set_orchestrator_session / clear_orchestrator_session', () => {
@@ -2136,6 +2140,7 @@ describe('MCP Server Tools', () => {
         await sqliteRepoRepo.save({
           ...repo,
           createdAt: new Date().toISOString(),
+          orchestratorSessionIds: [],
           clonedSourceRepoPath: null,
         });
       }
@@ -3805,6 +3810,7 @@ describe('MCP Server Tools', () => {
         name: 'test',
         path: TEST_REPO_PATH,
         createdAt: new Date().toISOString(),
+        orchestratorSessionIds: [],
         clonedSourceRepoPath: null,
       });
       repositoryManager = await RepositoryManager.create({
@@ -3921,6 +3927,7 @@ describe('MCP Server Tools', () => {
         name: 'test',
         path: TEST_REPO_PATH,
         createdAt: new Date().toISOString(),
+        orchestratorSessionIds: [],
         clonedSourceRepoPath: null,
       });
       repositoryManager = await RepositoryManager.create({
@@ -4058,6 +4065,7 @@ describe('MCP Server Tools', () => {
         name: 'test-repo',
         path: repoPath,
         createdAt: new Date().toISOString(),
+        orchestratorSessionIds: [],
         clonedSourceRepoPath: null,
       });
       repositoryManager = await RepositoryManager.create({

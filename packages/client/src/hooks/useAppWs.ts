@@ -87,8 +87,17 @@ interface UseAppWsEventOptions {
   onBookmarkCreated?: (sessionId: string, bookmarkId: string) => void;
   /** Called when a bookmark is deleted (realtime refresh trigger) */
   onBookmarkDeleted?: (sessionId: string, bookmarkId: string) => void;
-  /** Called when a repository's designated-Orchestrator session changes (null when cleared) */
-  onOrchestratorDesignationChanged?: (repositoryId: string, sessionId: string | null) => void;
+  /**
+   * Called when a repository's set of designated-Orchestrator sessions
+   * changes. Carries the repository's full re-read designated set; the
+   * client never derives the set from `action` locally.
+   */
+  onOrchestratorDesignationChanged?: (
+    repositoryId: string,
+    orchestratorSessionIds: string[],
+    changedSessionId: string,
+    action: 'added' | 'removed'
+  ) => void;
 }
 
 /**
@@ -264,9 +273,16 @@ export function useAppWsEvent(options: UseAppWsEventOptions = {}): void {
           // frame; server/client mismatch handling lives in the transport layer.
           break;
         case 'orchestrator-designation-changed':
-          // Announces when a repository's designated-Orchestrator session changes.
-          logger.debug(`[WebSocket] orchestrator-designation-changed: repositoryId=${msg.repositoryId}`);
-          optionsRef.current.onOrchestratorDesignationChanged?.(msg.repositoryId, msg.sessionId);
+          // Announces when a repository's set of designated-Orchestrator sessions changes.
+          logger.debug(
+            `[WebSocket] orchestrator-designation-changed: repositoryId=${msg.repositoryId} changedSessionId=${msg.changedSessionId} action=${msg.action}`
+          );
+          optionsRef.current.onOrchestratorDesignationChanged?.(
+            msg.repositoryId,
+            msg.orchestratorSessionIds,
+            msg.changedSessionId,
+            msg.action
+          );
           break;
         default: {
           const _exhaustive: never = msg;

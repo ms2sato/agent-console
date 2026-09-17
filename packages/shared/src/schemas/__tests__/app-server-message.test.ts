@@ -64,6 +64,9 @@ const repository = {
   name: 'my-repo',
   path: '/path/to/repo',
   createdAt: '2026-01-01T00:00:00Z',
+  // Issue #1716: required (not optional) on the wire -- the set of
+  // sessions designated as this repository's Orchestrators.
+  orchestratorSessionIds: [],
   // Issue #905: required (not optional) on the wire so every broadcast
   // carries a defined value; server derives via getSourceReposDir().
   clonedSourceRepoPath: null,
@@ -422,16 +425,23 @@ describe('AppServerMessageSchema', () => {
           envVars: 'FOO=bar',
           description: 'A repo',
           defaultAgentId: 'claude-code',
-          orchestratorSessionId: 'session-1',
+          orchestratorSessionIds: ['session-1', 'session-2'],
           issueTriggerLabels: 'bug, needs-triage',
         },
       });
     });
 
-    it('should accept repository omitting orchestratorSessionId and issueTriggerLabels entirely', () => {
-      // Boundary case: both fields are optional, so a repository object that
-      // never mentions them at all must still parse successfully.
+    it('should accept repository omitting issueTriggerLabels entirely (still optional)', () => {
+      // Boundary case: issueTriggerLabels stays optional, so a repository
+      // object that never mentions it must still parse successfully.
+      // orchestratorSessionIds is required (Issue #1716) and is present on
+      // the shared `repository` fixture as `[]`.
       expectValid({ type: 'repository-created', repository });
+    });
+
+    it('should reject a repository missing orchestratorSessionIds entirely (Issue #1716: required, not optional)', () => {
+      const { orchestratorSessionIds: _omit, ...withoutDesignation } = repository;
+      expectInvalid({ type: 'repository-created', repository: withoutDesignation });
     });
 
     it('should accept repository with clonedSourceRepoPath set to a string', () => {
@@ -680,22 +690,53 @@ describe('AppServerMessageSchema', () => {
   });
 
   describe('orchestrator-designation-changed', () => {
-    it('should accept a payload with a string sessionId', () => {
+    it('should accept a payload for the added action', () => {
       const output = expectValid({
         type: 'orchestrator-designation-changed',
         repositoryId: 'repo-1',
-        sessionId: 'session-1',
+        orchestratorSessionIds: ['session-1'],
+        changedSessionId: 'session-1',
+        action: 'added',
       });
       expect(output.type).toBe('orchestrator-designation-changed');
     });
 
-    it('should accept a payload with a null sessionId (designation cleared)', () => {
+    it('should accept a payload for the removed action, including an empty resulting set', () => {
       const output = expectValid({
         type: 'orchestrator-designation-changed',
         repositoryId: 'repo-1',
-        sessionId: null,
+        orchestratorSessionIds: [],
+        changedSessionId: 'session-1',
+        action: 'removed',
       });
       expect(output.type).toBe('orchestrator-designation-changed');
+    });
+
+    it('should reject an unknown action value', () => {
+      expectInvalid({
+        type: 'orchestrator-designation-changed',
+        repositoryId: 'repo-1',
+        orchestratorSessionIds: ['session-1'],
+        changedSessionId: 'session-1',
+        action: 'set',
+      });
+    });
+
+    it('should reject the old single-session payload shape (a bare sessionId field)', () => {
+      expectInvalid({
+        type: 'orchestrator-designation-changed',
+        repositoryId: 'repo-1',
+        sessionId: 'session-1',
+      });
+    });
+
+    it('should reject a payload missing orchestratorSessionIds', () => {
+      expectInvalid({
+        type: 'orchestrator-designation-changed',
+        repositoryId: 'repo-1',
+        changedSessionId: 'session-1',
+        action: 'added',
+      });
     });
   });
 

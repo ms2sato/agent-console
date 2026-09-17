@@ -12,7 +12,26 @@ export class SqliteRepositoryRepository implements RepositoryRepository {
 
   async findAll(): Promise<Repository[]> {
     const rows = await this.db.selectFrom('repositories').selectAll().execute();
-    return rows.map((row) => toRepository(row));
+    const designationRows = await this.db
+      .selectFrom('repository_orchestrator_sessions')
+      .select(['repository_id', 'session_id'])
+      .orderBy('created_at', 'asc')
+      .orderBy('session_id', 'asc')
+      .execute();
+
+    // Group in memory rather than one query per repository -- one query
+    // over `repositories`, one over `repository_orchestrator_sessions`.
+    const byRepositoryId = new Map<string, string[]>();
+    for (const designation of designationRows) {
+      const list = byRepositoryId.get(designation.repository_id);
+      if (list) {
+        list.push(designation.session_id);
+      } else {
+        byRepositoryId.set(designation.repository_id, [designation.session_id]);
+      }
+    }
+
+    return rows.map((row) => toRepository(row, byRepositoryId.get(row.id) ?? []));
   }
 
   async findById(id: string): Promise<Repository | null> {
@@ -22,7 +41,9 @@ export class SqliteRepositoryRepository implements RepositoryRepository {
       .selectAll()
       .executeTakeFirst();
 
-    return row ? toRepository(row) : null;
+    if (!row) return null;
+    const orchestratorSessionIds = await this.listOrchestratorSessionIds(id);
+    return toRepository(row, orchestratorSessionIds);
   }
 
   async findByPath(path: string): Promise<Repository | null> {
@@ -32,11 +53,16 @@ export class SqliteRepositoryRepository implements RepositoryRepository {
       .selectAll()
       .executeTakeFirst();
 
-    return row ? toRepository(row) : null;
+    if (!row) return null;
+    const orchestratorSessionIds = await this.listOrchestratorSessionIds(row.id);
+    return toRepository(row, orchestratorSessionIds);
   }
 
   async save(repository: Repository): Promise<void> {
     const now = new Date().toISOString();
+    // Deliberately does NOT touch `repository_orchestrator_sessions`:
+    // designations are managed only through `addOrchestratorSession` /
+    // `removeOrchestratorSession`, never as a side effect of a general save.
     await this.db
       .insertInto('repositories')
       .values({
@@ -50,7 +76,6 @@ export class SqliteRepositoryRepository implements RepositoryRepository {
         env_vars: repository.envVars ?? null,
         description: repository.description ?? null,
         default_agent_id: repository.defaultAgentId ?? null,
-        orchestrator_session_id: repository.orchestratorSessionId ?? null,
         issue_trigger_labels: repository.issueTriggerLabels ?? null,
       })
       .onConflict((oc) =>
@@ -62,7 +87,6 @@ export class SqliteRepositoryRepository implements RepositoryRepository {
           env_vars: repository.envVars ?? null,
           description: repository.description ?? null,
           default_agent_id: repository.defaultAgentId ?? null,
-          orchestrator_session_id: repository.orchestratorSessionId ?? null,
           issue_trigger_labels: repository.issueTriggerLabels ?? null,
           // Note: created_at is intentionally NOT updated (should never change after insert)
           updated_at: now,
@@ -116,34 +140,53 @@ export class SqliteRepositoryRepository implements RepositoryRepository {
     logger.debug({ repositoryId: id }, 'Repository deleted');
   }
 
-  async setOrchestratorSessionId(id: string, sessionId: string): Promise<Repository | null> {
-    const now = new Date().toISOString();
+  async addOrchestratorSession(
+    id: string,
+    sessionId: string
+  ): Promise<{ added: boolean; repository: Repository | null }> {
+    // Check with findById first: `repository_id` carries a real FK, so an
+    // insert against an unknown repository would throw a raw FK error
+    // instead of the caller's expected `repository: null` shape.
+    const existing = await this.findById(id);
+    if (!existing) {
+      return { added: false, repository: null };
+    }
+
     const result = await this.db
-      .updateTable('repositories')
-      .set({ orchestrator_session_id: sessionId, updated_at: now })
-      .where('id', '=', id)
+      .insertInto('repository_orchestrator_sessions')
+      .values({ repository_id: id, session_id: sessionId })
+      .onConflict((oc) => oc.columns(['repository_id', 'session_id']).doNothing())
       .execute();
 
-    if (result[0]?.numUpdatedRows === 0n) {
-      return null;
-    }
-    return this.findById(id);
+    const added = (result[0]?.numInsertedOrUpdatedRows ?? 0n) > 0n;
+    logger.debug({ repositoryId: id, sessionId, added }, 'Orchestrator session designation add attempted');
+    return { added, repository: await this.findById(id) };
   }
 
-  async clearOrchestratorSessionId(
+  async removeOrchestratorSession(
     id: string,
-    expectedSessionId: string
-  ): Promise<{ cleared: boolean; repository: Repository | null }> {
-    const now = new Date().toISOString();
+    sessionId: string
+  ): Promise<{ removed: boolean; repository: Repository | null }> {
     const result = await this.db
-      .updateTable('repositories')
-      .set({ orchestrator_session_id: null, updated_at: now })
-      .where('id', '=', id)
-      .where('orchestrator_session_id', '=', expectedSessionId)
+      .deleteFrom('repository_orchestrator_sessions')
+      .where('repository_id', '=', id)
+      .where('session_id', '=', sessionId)
       .execute();
 
-    const cleared = (result[0]?.numUpdatedRows ?? 0n) > 0n;
-    const repository = await this.findById(id);
-    return { cleared, repository };
+    const removed = (result[0]?.numDeletedRows ?? 0n) > 0n;
+    logger.debug({ repositoryId: id, sessionId, removed }, 'Orchestrator session designation remove attempted');
+    return { removed, repository: await this.findById(id) };
+  }
+
+  async listOrchestratorSessionIds(id: string): Promise<string[]> {
+    const rows = await this.db
+      .selectFrom('repository_orchestrator_sessions')
+      .select('session_id')
+      .where('repository_id', '=', id)
+      .orderBy('created_at', 'asc')
+      .orderBy('session_id', 'asc')
+      .execute();
+
+    return rows.map((row) => row.session_id);
   }
 }

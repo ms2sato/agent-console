@@ -11,7 +11,8 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import * as fs from 'fs';
 import * as path from 'path';
-import { initializeDatabase, closeDatabase, migrateFromJson } from '../connection.js';
+import { sql } from 'kysely';
+import { initializeDatabase, closeDatabase, migrateFromJson, migrateToV41 } from '../connection.js';
 import { setupMemfs, cleanupMemfs } from '../../__tests__/utils/mock-fs-helper.js';
 import { mockGit } from '../../__tests__/utils/mock-git-helper.js';
 
@@ -643,7 +644,7 @@ describe('migration', () => {
       // Verify the schema version is the latest
       const { sql } = await import('kysely');
       const result = await sql<{ user_version: number }>`PRAGMA user_version`.execute(db);
-      expect(result.rows[0]?.user_version).toBe(40);
+      expect(result.rows[0]?.user_version).toBe(41);
 
       // Verify description column exists by inserting and reading a repository with description
       await db
@@ -738,7 +739,7 @@ describe('migration', () => {
       // Verify the schema version is the latest
       const { sql } = await import('kysely');
       const result = await sql<{ user_version: number }>`PRAGMA user_version`.execute(db);
-      expect(result.rows[0]?.user_version).toBe(40);
+      expect(result.rows[0]?.user_version).toBe(41);
 
       // First create a repository (foreign key dependency)
       await db
@@ -1380,6 +1381,139 @@ describe('migration', () => {
     });
   });
 
+  describe('schema migration v41: repository_orchestrator_sessions', () => {
+    async function insertMinimalSession(db: Awaited<ReturnType<typeof initializeDatabase>>, id: string): Promise<void> {
+      await db
+        .insertInto('sessions')
+        .values({
+          id,
+          type: 'quick',
+          location_path: `/test/${id}`,
+          created_at: '2024-01-01T00:00:00.000Z',
+          server_pid: null,
+          initial_prompt: null,
+          title: null,
+          repository_id: null,
+          worktree_id: null,
+        })
+        .execute();
+    }
+
+    async function insertMinimalRepository(db: Awaited<ReturnType<typeof initializeDatabase>>, id: string): Promise<void> {
+      await db
+        .insertInto('repositories')
+        .values({
+          id,
+          name: `Repo ${id}`,
+          path: `/test/${id}`,
+          created_at: '2024-01-01T00:00:00.000Z',
+          updated_at: '2024-01-01T00:00:00.000Z',
+        })
+        .execute();
+    }
+
+    // reach: dropping the composite primary key constraint fails this test
+    // (the second, plain INSERT would succeed instead of throwing).
+    it('has a composite primary key on (repository_id, session_id); a duplicate INSERT OR IGNORE is a no-op, a duplicate plain INSERT throws', async () => {
+      const db = await initializeDatabase(':memory:');
+      await insertMinimalSession(db, 'session-v41-pk');
+      await insertMinimalRepository(db, 'repo-v41-pk');
+
+      await db
+        .insertInto('repository_orchestrator_sessions')
+        .values({ repository_id: 'repo-v41-pk', session_id: 'session-v41-pk' })
+        .execute();
+
+      await db
+        .insertInto('repository_orchestrator_sessions')
+        .values({ repository_id: 'repo-v41-pk', session_id: 'session-v41-pk' })
+        .onConflict((oc) => oc.columns(['repository_id', 'session_id']).doNothing())
+        .execute();
+
+      const rows = await db.selectFrom('repository_orchestrator_sessions').selectAll().execute();
+      expect(rows).toHaveLength(1);
+
+      await expect(
+        db
+          .insertInto('repository_orchestrator_sessions')
+          .values({ repository_id: 'repo-v41-pk', session_id: 'session-v41-pk' })
+          .execute()
+      ).rejects.toThrow();
+    });
+
+    // reach: removing the `INSERT OR IGNORE ... SELECT ... WHERE
+    // orchestrator_session_id IS NOT NULL` backfill statement (or the
+    // follow-up `UPDATE repositories SET orchestrator_session_id = NULL`)
+    // fails this test.
+    it('backfills an existing orchestrator_session_id value into the join table and clears the dead column', async () => {
+      const db = await initializeDatabase(':memory:');
+      await insertMinimalSession(db, 'session-v41-backfill');
+      await insertMinimalRepository(db, 'repo-v41-backfill');
+
+      // Simulate a database that carries a value in the now-dead column, as
+      // v40 application code would have written before the storage move.
+      // `db` is already at v41 (initializeDatabase ran the full chain), so
+      // calling migrateToV41 again directly exercises its backfill logic
+      // against a value that only exists AFTER the migration first ran --
+      // safe because the migration's own table-create is `ifNotExists` and
+      // its backfill INSERT is `OR IGNORE`.
+      await sql`UPDATE repositories SET orchestrator_session_id = ${'session-v41-backfill'} WHERE id = ${'repo-v41-backfill'}`.execute(db);
+
+      await migrateToV41(db);
+
+      const designationRows = await db
+        .selectFrom('repository_orchestrator_sessions')
+        .selectAll()
+        .where('repository_id', '=', 'repo-v41-backfill')
+        .execute();
+      expect(designationRows).toHaveLength(1);
+      expect(designationRows[0].session_id).toBe('session-v41-backfill');
+
+      const repoRow = await db
+        .selectFrom('repositories')
+        .select('orchestrator_session_id')
+        .where('id', '=', 'repo-v41-backfill')
+        .executeTakeFirst();
+      expect(repoRow?.orchestrator_session_id).toBeNull();
+    });
+
+    // reach: dropping `ON DELETE CASCADE` on either foreign key fails this
+    // test (the designation row would survive as an orphan).
+    it('CASCADEs a designation row on session delete and on repository delete', async () => {
+      const db = await initializeDatabase(':memory:');
+      await insertMinimalSession(db, 'session-v41-cascade');
+      await insertMinimalRepository(db, 'repo-v41-cascade');
+      await db
+        .insertInto('repository_orchestrator_sessions')
+        .values({ repository_id: 'repo-v41-cascade', session_id: 'session-v41-cascade' })
+        .execute();
+
+      await db.deleteFrom('sessions').where('id', '=', 'session-v41-cascade').execute();
+
+      const rowsAfterSessionDelete = await db
+        .selectFrom('repository_orchestrator_sessions')
+        .selectAll()
+        .where('repository_id', '=', 'repo-v41-cascade')
+        .execute();
+      expect(rowsAfterSessionDelete).toEqual([]);
+
+      await insertMinimalSession(db, 'session-v41-cascade-2');
+      await db
+        .insertInto('repository_orchestrator_sessions')
+        .values({ repository_id: 'repo-v41-cascade', session_id: 'session-v41-cascade-2' })
+        .execute();
+
+      await db.deleteFrom('repositories').where('id', '=', 'repo-v41-cascade').execute();
+
+      const rowsAfterRepoDelete = await db
+        .selectFrom('repository_orchestrator_sessions')
+        .selectAll()
+        .where('repository_id', '=', 'repo-v41-cascade')
+        .execute();
+      expect(rowsAfterRepoDelete).toEqual([]);
+    });
+  });
+
   describe('schema migration v12: paused_at column', () => {
     it('should add paused_at column to sessions table', async () => {
       const db = await initializeDatabase(':memory:');
@@ -1556,7 +1690,7 @@ describe('migration', () => {
 
       const { sql } = await import('kysely');
       const result = await sql<{ user_version: number }>`PRAGMA user_version`.execute(db);
-      expect(result.rows[0]?.user_version).toBe(40);
+      expect(result.rows[0]?.user_version).toBe(41);
     });
   });
 
@@ -1594,7 +1728,7 @@ describe('migration', () => {
 
       const { sql } = await import('kysely');
       const result = await sql<{ user_version: number }>`PRAGMA user_version`.execute(db);
-      expect(result.rows[0]?.user_version).toBe(40);
+      expect(result.rows[0]?.user_version).toBe(41);
     });
   });
 

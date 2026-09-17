@@ -86,7 +86,8 @@ When the orchestrator session approaches context-window saturation **before the 
 2. **Mirror the same content into `memory/project_sprint_status.md`.** The memo and the memory file overlap deliberately — memo is at-a-glance during the session, memory persists across sessions.
 3. **Update the front-matter `description`** in the memory file to capture the *next-action signal* (e.g., "Wave 1 done. Remaining = brewing #X + retro. Owner pending = 1-A/B"). That description is what the next session's MEMORY.md index loads into ambient context — if it stays at the previous sprint's "complete" state, the next orchestrator misclassifies the situation as Sprint Start.
 4. **Update `memory/MEMORY.md`** Sprint status pointer line to the same next-action signal text. `MEMORY.md` is a hand-maintained index — its pointer line is duplicated content from the memory file's `description`, not auto-derived. If only the memory file's `description` is updated and `MEMORY.md`'s line is left stale, the new session loads the stale line first (it is a top-200-lines auto-load) and may never read past it. Both must be flipped together. (This is the same root cause the rule itself documents.)
-5. **Owner closes the current session.** The next orchestrator session reads MEMORY.md → memory file → memo, then resumes.
+5. **Lower your own Orchestrator designation.** Call `clear_orchestrator_session` for your own session before the owner closes it. The designation is a set per repository (Issue #1716): a paused or retired incarnation stays designated — lit in the sidebar, skipped by routing while it is not running, and never auto-removed — until it is deleted or lowers its own flag. Lowering it yourself is what keeps the set honest for the next incarnation and for anyone reading the sidebar.
+6. **Owner closes the current session.** The next orchestrator session reads MEMORY.md → memory file → memo, then resumes.
 
 **Procedure (next orchestrator on pick-up):**
 

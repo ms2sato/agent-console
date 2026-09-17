@@ -14,7 +14,7 @@ function mockRepository(overrides: Partial<Repository> = {}): Repository {
     name: 'repo-1',
     path: '/path/to/repo-1',
     createdAt: '2024-01-01',
-    orchestratorSessionId: null,
+    orchestratorSessionIds: [],
     clonedSourceRepoPath: null,
     ...overrides,
   } as Repository;
@@ -70,7 +70,7 @@ describe('useRepositoryRegistrySync', () => {
     const invalidateSpy = spyOn(queryClient, 'invalidateQueries');
     renderWithQueryClient();
 
-    const repo = mockRepository({ id: 'repo-a', orchestratorSessionId: 'session-a' });
+    const repo = mockRepository({ id: 'repo-a', orchestratorSessionIds: ['session-a'] });
     const ws = MockWebSocket.getLastInstance();
     act(() => {
       ws?.simulateOpen();

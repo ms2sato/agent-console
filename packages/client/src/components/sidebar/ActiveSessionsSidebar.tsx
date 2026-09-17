@@ -136,17 +136,19 @@ interface SessionItemProps {
   isActive: boolean;
   onClick: () => void;
   /**
-   * This session's repository's currently-designated Orchestrator session id.
-   * `undefined` when unknown (repositories not loaded yet, or this session's
-   * repository has no entry); `null` when the repository has no designation.
-   * Only meaningful for `session.type === 'worktree'` -- the flag control is
-   * never shown for quick sessions, mirroring the server's own precondition
-   * that a quick session can never hold the designation.
+   * This session's repository's currently-designated set of Orchestrator
+   * session ids. `undefined` when unknown (repositories not loaded yet, or
+   * this session's repository has no entry); an empty array when the
+   * repository has no designation. Several sessions of one repository may
+   * be designated at once. Only meaningful for `session.type === 'worktree'`
+   * -- the flag control is never shown for quick sessions, mirroring the
+   * server's own precondition that a quick session can never hold the
+   * designation.
    */
-  orchestratorSessionId?: string | null;
+  orchestratorSessionIds?: string[];
 }
 
-function SessionItem({ sessionWithActivity, collapsed, isActive, onClick, orchestratorSessionId }: SessionItemProps) {
+function SessionItem({ sessionWithActivity, collapsed, isActive, onClick, orchestratorSessionIds }: SessionItemProps) {
   const { session, activityState } = sessionWithActivity;
   const { isMultiUser, currentUser } = useAuth();
   const { primary, secondary, tooltip } = getSessionDisplayInfo(session);
@@ -170,7 +172,12 @@ function SessionItem({ sessionWithActivity, collapsed, isActive, onClick, orches
     : 'bg-amber-500/20 text-amber-200';
 
   const isWorktreeSession = session.type === 'worktree';
-  const isOrchestratorFlagLit = isWorktreeSession && orchestratorSessionId === session.id;
+  const isOrchestratorFlagLit = isWorktreeSession && (orchestratorSessionIds?.includes(session.id) ?? false);
+  // True only when this session is the SOLE remaining designation on its
+  // repository -- the case where clearing it leaves the repository with no
+  // designated Orchestrator at all.
+  const isLastDesignation =
+    isOrchestratorFlagLit && orchestratorSessionIds !== undefined && orchestratorSessionIds.length === 1;
 
   // Transient, visible feedback for a failed raise/clear request -- mirrors
   // ActiveSessionsSidebar's own `restartMutation` onError pattern (timed
@@ -180,11 +187,13 @@ function SessionItem({ sessionWithActivity, collapsed, isActive, onClick, orches
   // multi-user `all` mode) occurred.
   const [orchestratorFlagError, setOrchestratorFlagError] = useState<string | null>(null);
 
-  // Clearing an already-designated repository's Orchestrator leaves it with
-  // NO designated Orchestrator, which breaks labeled-Issue webhook routing
-  // and the fallback-notification path until someone re-designates. This
-  // dialog gates that DELETE behind an explicit confirm; the raise/swap POST
-  // path stays dialog-free (unchanged).
+  // This dialog gates a DELETE that would leave the repository with NO
+  // designated Orchestrator at all -- which breaks labeled-Issue webhook
+  // routing and the fallback-notification path until someone re-designates.
+  // That consequence only holds when this session is the LAST designation
+  // on its repository; removing one of several is dialog-free, because the
+  // repository still has at least one designated Orchestrator afterward.
+  // The add path is always dialog-free (unchanged).
   const [clearConfirmOpen, setClearConfirmOpen] = useState(false);
 
   // Raise/clear mutations for the Orchestrator-designation flag control.
@@ -218,10 +227,12 @@ function SessionItem({ sessionWithActivity, collapsed, isActive, onClick, orches
   const handleOrchestratorFlagClick = (e: React.MouseEvent) => {
     // Must not also trigger the row's own onClick (navigate to the session).
     e.stopPropagation();
-    if (isOrchestratorFlagLit) {
+    if (!isOrchestratorFlagLit) {
+      raiseOrchestratorMutation.mutate();
+    } else if (isLastDesignation) {
       setClearConfirmOpen(true);
     } else {
-      raiseOrchestratorMutation.mutate();
+      clearOrchestratorMutation.mutate();
     }
   };
 
@@ -250,8 +261,8 @@ function SessionItem({ sessionWithActivity, collapsed, isActive, onClick, orches
       }`}
       title={
         isOrchestratorFlagLit
-          ? 'Clear Orchestrator designation for this repository'
-          : 'Set this session as the Orchestrator for this repository'
+          ? 'Remove this session from the Orchestrator designation for this repository'
+          : 'Add this session to the Orchestrator designation for this repository'
       }
     >
       <FlagIcon className="w-3 h-3" filled={isOrchestratorFlagLit} />
@@ -561,7 +572,7 @@ export function ActiveSessionsSidebar({
   const sidebarRef = useRef<HTMLDivElement>(null);
 
   // Repository data, needed only to know each repository's currently
-  // designated Orchestrator session for the flag control below.
+  // designated set of Orchestrator sessions for the flag control below.
   // TanStack Query dedupes this against any other component in the tree
   // already holding the same query key.
   const { data: reposData } = useQuery({
@@ -569,14 +580,14 @@ export function ActiveSessionsSidebar({
     queryFn: fetchRepositories,
   });
   const repoOrchestratorSessionMap = useMemo(() => {
-    const map = new Map<string, string | null | undefined>();
+    const map = new Map<string, string[]>();
     for (const repo of reposData?.repositories ?? []) {
-      map.set(repo.id, repo.orchestratorSessionId);
+      map.set(repo.id, repo.orchestratorSessionIds);
     }
     return map;
   }, [reposData]);
-  const orchestratorSessionIdFor = useCallback(
-    (session: SessionWithActivity['session']): string | null | undefined =>
+  const orchestratorSessionIdsFor = useCallback(
+    (session: SessionWithActivity['session']): string[] | undefined =>
       session.type === 'worktree' && session.repositoryId
         ? repoOrchestratorSessionMap.get(session.repositoryId)
         : undefined,
@@ -903,7 +914,7 @@ export function ActiveSessionsSidebar({
               collapsed={collapsed}
               isActive={session.id === currentSessionId}
               onClick={() => handleSessionClick(session.id)}
-              orchestratorSessionId={orchestratorSessionIdFor(session)}
+              orchestratorSessionIds={orchestratorSessionIdsFor(session)}
             />
           ))
         ) : (
@@ -951,7 +962,7 @@ export function ActiveSessionsSidebar({
                         collapsed={collapsed}
                         isActive={session.id === currentSessionId}
                         onClick={() => handleSessionClick(session.id)}
-                        orchestratorSessionId={orchestratorSessionIdFor(session)}
+                        orchestratorSessionIds={orchestratorSessionIdsFor(session)}
                       />
                     ))}
                 </div>

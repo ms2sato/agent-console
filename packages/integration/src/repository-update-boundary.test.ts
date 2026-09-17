@@ -168,6 +168,7 @@ describe('update_repository MCP boundary: SQLite round-trip', () => {
       name: 'my-repo',
       path: TEST_REPO_PATH,
       createdAt: new Date().toISOString(),
+      orchestratorSessionIds: [],
       clonedSourceRepoPath: null,
       description: 'initial description',
     });

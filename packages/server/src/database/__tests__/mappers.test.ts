@@ -1261,7 +1261,9 @@ describe('mappers', () => {
       expect(row.setup_command).toBeNull();
       expect(row.cleanup_command).toBeNull();
       expect(row.default_agent_id).toBeNull();
-      expect(row.orchestrator_session_id).toBeNull();
+      // reach: reintroducing a write to the dead v40 column in
+      // toRepositoryRow fails this test (the key would be present again).
+      expect('orchestrator_session_id' in row).toBe(false);
       expect(row.issue_trigger_labels).toBeNull();
     });
 
@@ -1321,11 +1323,11 @@ describe('mappers', () => {
       expect(repository.cleanupCommand).toBeNull();
       expect(repository.envVars).toBeNull();
       expect(repository.defaultAgentId).toBeNull();
-      expect(repository.orchestratorSessionId).toBeNull();
+      expect(repository.orchestratorSessionIds).toEqual([]);
       expect(repository.issueTriggerLabels).toBeNull();
     });
 
-    it('should map orchestrator_session_id to orchestratorSessionId', () => {
+    it('should default orchestratorSessionIds to [] when the second argument is omitted', () => {
       const row: RepositoryRow = {
         id: 'repo-orchestrator',
         name: 'test-repo',
@@ -1337,13 +1339,38 @@ describe('mappers', () => {
         env_vars: null,
         description: null,
         default_agent_id: null,
-        orchestrator_session_id: 'session-orchestrator-1',
+        orchestrator_session_id: null,
         issue_trigger_labels: null,
       };
 
       const repository = toRepository(row);
 
-      expect(repository.orchestratorSessionId).toBe('session-orchestrator-1');
+      // reach: reading the dead v40 column (`row.orchestrator_session_id`)
+      // instead of the second argument fails this test.
+      expect(repository.orchestratorSessionIds).toEqual([]);
+    });
+
+    it('should use the provided orchestratorSessionIds array (Issue #1716)', () => {
+      const row: RepositoryRow = {
+        id: 'repo-orchestrator',
+        name: 'test-repo',
+        path: '/tmp/test-repo',
+        created_at: '2024-12-01T00:00:00.000Z',
+        updated_at: '2024-12-01T00:00:00.000Z',
+        setup_command: null,
+        cleanup_command: null,
+        env_vars: null,
+        description: null,
+        default_agent_id: null,
+        orchestrator_session_id: null,
+        issue_trigger_labels: null,
+      };
+
+      const repository = toRepository(row, ['session-a', 'session-b']);
+
+      // reach: dropping or reordering the second argument on the way to
+      // the returned object fails this test.
+      expect(repository.orchestratorSessionIds).toEqual(['session-a', 'session-b']);
     });
 
     it('should map issue_trigger_labels to issueTriggerLabels', () => {

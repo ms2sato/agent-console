@@ -71,6 +71,7 @@ describe('initializeInboundIntegration', () => {
       name: 'test-repo',
       path: TEST_REPO_PATH,
       createdAt: new Date().toISOString(),
+      orchestratorSessionIds: [],
       clonedSourceRepoPath: null,
     });
     repositoryManager = await RepositoryManager.create({ repository: sqliteRepoRepo });
@@ -148,7 +149,7 @@ describe('initializeInboundIntegration', () => {
       repositoryId: TEST_REPO_ID,
       worktreeId: 'main',
     });
-    await repositoryManager.setOrchestratorSession(TEST_REPO_ID, orchestratorSession.id);
+    await repositoryManager.addOrchestratorSession(TEST_REPO_ID, orchestratorSession.id);
     await repositoryManager.updateRepository(TEST_REPO_ID, { issueTriggerLabels: 'orchestrator-trigger' });
 
     const broadcastToApp = mock(() => {});
@@ -184,7 +185,7 @@ describe('initializeInboundIntegration', () => {
       repositoryId: TEST_REPO_ID,
       worktreeId: 'main',
     });
-    await repositoryManager.setOrchestratorSession(TEST_REPO_ID, orchestratorSession.id);
+    await repositoryManager.addOrchestratorSession(TEST_REPO_ID, orchestratorSession.id);
     // issueTriggerLabels intentionally left unset.
 
     const broadcastToApp = mock(() => {});

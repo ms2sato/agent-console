@@ -248,6 +248,7 @@ describe('delegate_to_worktree: embedded-agent auto-activation (Issue #1260 PR-1
       name: 'test-repo',
       path: TEST_REPO_PATH,
       createdAt: new Date().toISOString(),
+      orchestratorSessionIds: [],
       clonedSourceRepoPath: null,
     });
     repositoryManager = await RepositoryManager.create({ repository: sqliteRepoRepo, jobQueue: testJobQueue });

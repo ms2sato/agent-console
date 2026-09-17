@@ -5,6 +5,7 @@ import { Database as BunDatabase } from 'bun:sqlite';
 import { SqliteRepositoryRepository } from '../sqlite-repository-repository.js';
 import type { Database } from '../../database/schema.js';
 import type { Repository } from '@agent-console/shared';
+import { createDatabaseForTest } from '../../database/connection.js';
 
 const NOW_ISO8601 = sql`(strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))`;
 
@@ -39,6 +40,21 @@ describe('SqliteRepositoryRepository', () => {
       .addColumn('issue_trigger_labels', 'text')
       .execute();
 
+    // Modeled on migration v41's shape (Issue #1716), minus the two FK
+    // declarations -- this manually-built schema (unlike
+    // `createDatabaseForTest()`) never declares FKs anywhere else either
+    // (see `repositories` above, whose `orchestrator_session_id` column has
+    // no `REFERENCES` clause). The primary key constraint IS declared: the
+    // add-idempotent tests below rely on `onConflict` resolving against a
+    // real unique constraint.
+    await db.schema
+      .createTable('repository_orchestrator_sessions')
+      .addColumn('repository_id', 'text', (col) => col.notNull())
+      .addColumn('session_id', 'text', (col) => col.notNull())
+      .addColumn('created_at', 'text', (col) => col.notNull().defaultTo(NOW_ISO8601))
+      .addPrimaryKeyConstraint('repository_orchestrator_sessions_pk', ['repository_id', 'session_id'])
+      .execute();
+
     repository = new SqliteRepositoryRepository(db);
   });
 
@@ -59,7 +75,10 @@ describe('SqliteRepositoryRepository', () => {
       cleanupCommand: overrides.cleanupCommand,
       description: overrides.description ?? null,
       defaultAgentId: overrides.defaultAgentId ?? null,
-      orchestratorSessionId: overrides.orchestratorSessionId ?? null,
+      // `save()` never writes this (Issue #1716: designations are managed
+      // only through add/remove); present only to satisfy the required
+      // `Repository.orchestratorSessionIds` field shape.
+      orchestratorSessionIds: overrides.orchestratorSessionIds ?? [],
       issueTriggerLabels: overrides.issueTriggerLabels ?? null,
       clonedSourceRepoPath: overrides.clonedSourceRepoPath ?? null,
     };
@@ -709,24 +728,202 @@ describe('SqliteRepositoryRepository', () => {
     });
   });
 
-  describe('orchestratorSessionId', () => {
-    it('should round-trip orchestratorSessionId through save() and findById()', async () => {
-      const repo = createRepository({
-        id: 'repo-orchestrator-session',
-        orchestratorSessionId: 'session-orchestrator-1',
-      });
+  describe('orchestrator-session designations (Issue #1716)', () => {
+    it('hydrates orchestratorSessionIds to [] when the repository has no designations', async () => {
+      const repo = createRepository({ id: 'repo-no-designations' });
       await repository.save(repo);
 
-      const found = await repository.findById('repo-orchestrator-session');
-      expect(found?.orchestratorSessionId).toBe('session-orchestrator-1');
+      const found = await repository.findById('repo-no-designations');
+      // reach: reading the second argument as `?? ['stale']` (or any
+      // non-empty fallback) fails this test.
+      expect(found?.orchestratorSessionIds).toEqual([]);
     });
 
-    it('should default orchestratorSessionId to null when not provided', async () => {
-      const repo = createRepository({ id: 'repo-no-orchestrator-session' });
+    it('add() is idempotent: a second add of the same pair reports added:false and leaves the list unchanged', async () => {
+      const repo = createRepository({ id: 'repo-idempotent-add' });
       await repository.save(repo);
 
-      const found = await repository.findById('repo-no-orchestrator-session');
-      expect(found?.orchestratorSessionId).toBeNull();
+      const first = await repository.addOrchestratorSession('repo-idempotent-add', 'session-a');
+      expect(first.added).toBe(true);
+      expect(first.repository?.orchestratorSessionIds).toEqual(['session-a']);
+
+      const second = await repository.addOrchestratorSession('repo-idempotent-add', 'session-a');
+      // reach: an add that always reports `added: true` (or that inserts a
+      // duplicate row instead of relying on `onConflict ... doNothing()`)
+      // fails this test.
+      expect(second.added).toBe(false);
+      expect(second.repository?.orchestratorSessionIds).toEqual(['session-a']);
+    });
+
+    it('add() returns repository:null when the target repository does not exist', async () => {
+      const result = await repository.addOrchestratorSession('does-not-exist', 'session-a');
+      expect(result.added).toBe(false);
+      expect(result.repository).toBeNull();
+    });
+
+    it('adding two different sessions to the same repository accumulates a set, not a single pointer', async () => {
+      const repo = createRepository({ id: 'repo-multi-designation' });
+      await repository.save(repo);
+
+      await repository.addOrchestratorSession('repo-multi-designation', 'session-a');
+      const result = await repository.addOrchestratorSession('repo-multi-designation', 'session-b');
+
+      expect(result.added).toBe(true);
+      expect(new Set(result.repository?.orchestratorSessionIds)).toEqual(new Set(['session-a', 'session-b']));
+    });
+
+    it('remove() is idempotent: removing an absent pair reports removed:false and leaves the list untouched', async () => {
+      const repo = createRepository({ id: 'repo-idempotent-remove' });
+      await repository.save(repo);
+      await repository.addOrchestratorSession('repo-idempotent-remove', 'session-a');
+
+      const result = await repository.removeOrchestratorSession('repo-idempotent-remove', 'session-does-not-exist');
+
+      // reach: a remove that reports `removed: true` unconditionally (or
+      // that deletes an unrelated row) fails this test.
+      expect(result.removed).toBe(false);
+      expect(result.repository?.orchestratorSessionIds).toEqual(['session-a']);
+    });
+
+    it('remove() removes exactly the targeted (repository, session) pair, leaving other designations of the same repository intact', async () => {
+      const repo = createRepository({ id: 'repo-remove-one-of-two' });
+      await repository.save(repo);
+      await repository.addOrchestratorSession('repo-remove-one-of-two', 'session-a');
+      await repository.addOrchestratorSession('repo-remove-one-of-two', 'session-b');
+
+      const result = await repository.removeOrchestratorSession('repo-remove-one-of-two', 'session-a');
+
+      expect(result.removed).toBe(true);
+      expect(result.repository?.orchestratorSessionIds).toEqual(['session-b']);
+    });
+
+    it('lists orchestratorSessionIds ordered by created_at then session_id (deterministic wire order)', async () => {
+      const repo = createRepository({ id: 'repo-ordering' });
+      await repository.save(repo);
+
+      // Insert directly via raw SQL with explicit, out-of-insertion-order
+      // `created_at` values so the returned order can only be explained by
+      // the ORDER BY clause, not by insertion order.
+      await sql`
+        INSERT INTO repository_orchestrator_sessions (repository_id, session_id, created_at)
+        VALUES
+          (${'repo-ordering'}, ${'session-later'}, ${'2024-06-01T00:00:00.000Z'}),
+          (${'repo-ordering'}, ${'session-earlier'}, ${'2024-01-01T00:00:00.000Z'})
+      `.execute(db);
+
+      const ids = await repository.listOrchestratorSessionIds('repo-ordering');
+
+      // reach: an unordered (or insertion-order) `SELECT` fails this test.
+      expect(ids).toEqual(['session-earlier', 'session-later']);
+    });
+
+    it('orders by session_id as a tiebreaker when created_at is equal', async () => {
+      const repo = createRepository({ id: 'repo-tie-ordering' });
+      await repository.save(repo);
+
+      const sameTimestamp = '2024-03-01T00:00:00.000Z';
+      await sql`
+        INSERT INTO repository_orchestrator_sessions (repository_id, session_id, created_at)
+        VALUES
+          (${'repo-tie-ordering'}, ${'session-z'}, ${sameTimestamp}),
+          (${'repo-tie-ordering'}, ${'session-a'}, ${sameTimestamp})
+      `.execute(db);
+
+      const ids = await repository.listOrchestratorSessionIds('repo-tie-ordering');
+
+      expect(ids).toEqual(['session-a', 'session-z']);
+    });
+
+    it('save() does not touch the designation table (designations are managed only through add/remove)', async () => {
+      const repo = createRepository({ id: 'repo-save-preserves-designations' });
+      await repository.save(repo);
+      await repository.addOrchestratorSession('repo-save-preserves-designations', 'session-a');
+
+      // Re-save (the onConflict upsert path) with an unrelated field
+      // changed -- the designation must survive untouched.
+      await repository.save({ ...repo, description: 'updated via a second save()' });
+
+      const found = await repository.findById('repo-save-preserves-designations');
+      // reach: a `save()` that writes to `repository_orchestrator_sessions`
+      // (e.g. clearing it, or re-deriving it from the Repository argument)
+      // fails this test.
+      expect(found?.orchestratorSessionIds).toEqual(['session-a']);
+      expect(found?.description).toBe('updated via a second save()');
+    });
+
+    it('findAll hydrates each repository with its own designation set', async () => {
+      const repoA = createRepository({ id: 'repo-findall-a', path: '/path/findall-a' });
+      const repoB = createRepository({ id: 'repo-findall-b', path: '/path/findall-b' });
+      await repository.save(repoA);
+      await repository.save(repoB);
+
+      await repository.addOrchestratorSession('repo-findall-a', 'session-a1');
+      await repository.addOrchestratorSession('repo-findall-a', 'session-a2');
+      await repository.addOrchestratorSession('repo-findall-b', 'session-b1');
+
+      const all = await repository.findAll();
+      const foundA = all.find((r) => r.id === 'repo-findall-a');
+      const foundB = all.find((r) => r.id === 'repo-findall-b');
+
+      // reach: a `findAll()` that hydrates every repository with the SAME
+      // (e.g. the first repository's, or a concatenated) designation set
+      // fails this test.
+      expect(foundA?.orchestratorSessionIds).toEqual(['session-a1', 'session-a2']);
+      expect(foundB?.orchestratorSessionIds).toEqual(['session-b1']);
+    });
+  });
+
+  describe('orchestrator-session designation CASCADE (Issue #1716, real migrated DB)', () => {
+    // Unlike this file's other describes, CASCADE behavior needs REAL
+    // foreign-key constraints -- the manually-built schema above declares
+    // none (mirroring `repositories.orchestrator_session_id`'s own lack of
+    // a `REFERENCES` clause in this file). `createDatabaseForTest()` runs
+    // the real migration chain (FK-declared table, `PRAGMA foreign_keys =
+    // ON`), so it is the only fixture in this file that can prove CASCADE.
+    let cascadeDb: Kysely<Database>;
+    let cascadeRepository: SqliteRepositoryRepository;
+
+    beforeEach(async () => {
+      cascadeDb = await createDatabaseForTest();
+      cascadeRepository = new SqliteRepositoryRepository(cascadeDb);
+    });
+
+    afterEach(async () => {
+      await cascadeDb.destroy();
+    });
+
+    async function insertMinimalSession(id: string): Promise<void> {
+      await cascadeDb.insertInto('sessions').values({ id, type: 'quick', location_path: '/tmp/cascade-test' }).execute();
+    }
+
+    it('a deleted session removes its designation row (ON DELETE CASCADE on session_id)', async () => {
+      await cascadeRepository.save(createRepository({ id: 'repo-cascade-session', path: '/path/cascade-session' }));
+      await insertMinimalSession('session-cascade-target');
+      await cascadeRepository.addOrchestratorSession('repo-cascade-session', 'session-cascade-target');
+
+      await cascadeDb.deleteFrom('sessions').where('id', '=', 'session-cascade-target').execute();
+
+      // reach: dropping `ON DELETE CASCADE` on the `session_id` foreign key
+      // fails this test (the designation row would survive as an orphan).
+      const ids = await cascadeRepository.listOrchestratorSessionIds('repo-cascade-session');
+      expect(ids).toEqual([]);
+    });
+
+    it('a deleted repository removes its designation rows (ON DELETE CASCADE on repository_id)', async () => {
+      await cascadeRepository.save(createRepository({ id: 'repo-cascade-repo', path: '/path/cascade-repo' }));
+      await insertMinimalSession('session-survives-repo-delete');
+      await cascadeRepository.addOrchestratorSession('repo-cascade-repo', 'session-survives-repo-delete');
+
+      await cascadeRepository.delete('repo-cascade-repo');
+
+      // reach: dropping `ON DELETE CASCADE` on the `repository_id` foreign
+      // key fails this test (the row would survive, orphaned).
+      const orphanRows = await cascadeDb
+        .selectFrom('repository_orchestrator_sessions')
+        .selectAll()
+        .where('repository_id', '=', 'repo-cascade-repo')
+        .execute();
+      expect(orphanRows).toEqual([]);
     });
   });
 
@@ -824,59 +1021,4 @@ describe('SqliteRepositoryRepository', () => {
     });
   });
 
-  describe('setOrchestratorSessionId', () => {
-    it('sets the pointer and returns the updated repository', async () => {
-      const repo = createRepository({ id: 'repo-1' });
-      await repository.save(repo);
-
-      const updated = await repository.setOrchestratorSessionId('repo-1', 'session-a');
-
-      expect(updated?.orchestratorSessionId).toBe('session-a');
-      const found = await repository.findById('repo-1');
-      expect(found?.orchestratorSessionId).toBe('session-a');
-    });
-
-    it('moves the pointer to a different session without a separate clear step', async () => {
-      const repo = createRepository({ id: 'repo-1', orchestratorSessionId: 'session-a' });
-      await repository.save(repo);
-
-      const updated = await repository.setOrchestratorSessionId('repo-1', 'session-b');
-
-      expect(updated?.orchestratorSessionId).toBe('session-b');
-    });
-
-    it('returns null when the target repository does not exist', async () => {
-      const updated = await repository.setOrchestratorSessionId('does-not-exist', 'session-a');
-      expect(updated).toBeNull();
-    });
-  });
-
-  describe('clearOrchestratorSessionId', () => {
-    it('clears the pointer when expectedSessionId matches', async () => {
-      const repo = createRepository({ id: 'repo-1', orchestratorSessionId: 'session-a' });
-      await repository.save(repo);
-
-      const result = await repository.clearOrchestratorSessionId('repo-1', 'session-a');
-
-      expect(result.cleared).toBe(true);
-      expect(result.repository?.orchestratorSessionId).toBeNull();
-    });
-
-    it('does not clear (stale-clear guard) when expectedSessionId does not match the current pointer', async () => {
-      const repo = createRepository({ id: 'repo-1', orchestratorSessionId: 'session-b' });
-      await repository.save(repo);
-
-      const result = await repository.clearOrchestratorSessionId('repo-1', 'session-a');
-
-      expect(result.cleared).toBe(false);
-      expect(result.repository?.orchestratorSessionId).toBe('session-b');
-    });
-
-    it('returns cleared=false and repository=null when the repository does not exist', async () => {
-      const result = await repository.clearOrchestratorSessionId('does-not-exist', 'session-a');
-
-      expect(result.cleared).toBe(false);
-      expect(result.repository).toBeNull();
-    });
-  });
 });

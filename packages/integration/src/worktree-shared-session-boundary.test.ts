@@ -138,6 +138,7 @@ describe('createWorktreeWithSession: shared-session Session.isShared derivation 
       name: 'test-repo',
       path: TEST_REPO_PATH,
       createdAt: new Date().toISOString(),
+      orchestratorSessionIds: [],
       clonedSourceRepoPath: null,
       description: null,
     });

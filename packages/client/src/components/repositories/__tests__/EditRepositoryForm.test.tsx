@@ -89,6 +89,7 @@ function createTestRepository(overrides: Partial<Repository> = {}): Repository {
     cleanupCommand: null,
     description: null,
     defaultAgentId: null,
+    orchestratorSessionIds: [],
     clonedSourceRepoPath: null,
     ...overrides,
   };

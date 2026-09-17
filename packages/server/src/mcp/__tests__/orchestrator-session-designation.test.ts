@@ -114,11 +114,12 @@ describe('set_orchestrator_session / clear_orchestrator_session', () => {
 
     // Unlike sibling MCP test harnesses (e.g. create-bookmark.test.ts), this
     // suite needs sessions that actually exist in the SQL `sessions` table:
-    // `orchestrator_session_id` is a real FK to `sessions.id` (migration
-    // v40). `JsonSessionRepository` (used elsewhere in this test family)
-    // only persists to a JSON file, never populating that table -- matches
-    // production's own wiring in app-context.ts, which uses
-    // SqliteSessionRepository, not the JSON fallback.
+    // `repository_orchestrator_sessions.session_id` is a real FK to
+    // `sessions.id` (migration v41). `JsonSessionRepository` (used
+    // elsewhere in this test family) only persists to a JSON file, never
+    // populating that table -- matches production's own wiring in
+    // app-context.ts, which uses SqliteSessionRepository, not the JSON
+    // fallback.
     const sessionRepository = new SqliteSessionRepository(db);
     sessionManager = await SessionManager.create({
       userMode: new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' }),
@@ -146,6 +147,7 @@ describe('set_orchestrator_session / clear_orchestrator_session', () => {
       name: 'test-repo',
       path: TEST_REPO_PATH,
       createdAt: new Date().toISOString(),
+      orchestratorSessionIds: [],
       clonedSourceRepoPath: null,
     });
     repositoryManager = await RepositoryManager.create({ repository: sqliteRepoRepo, jobQueue: testJobQueue });
@@ -191,29 +193,68 @@ describe('set_orchestrator_session / clear_orchestrator_session', () => {
     return { sessionId: session.id };
   }
 
-  describe('happy path: set, move, clear', () => {
-    it('sets, moves to a different session, then clears the designation', async () => {
+  describe('happy path: add, add-second, remove-one, remove-last (Issue #1716)', () => {
+    it('adds two sessions to the set, then removes one, then removes the other', async () => {
       const { sessionId: sessionA } = await createWorktreeSession(9001, 'orchestrator-a', 'main');
       const { sessionId: sessionB } = await createWorktreeSession(9002, 'orchestrator-b', 'feature');
 
-      const setResponse = await callTool(app, mcpSessionId, 'set_orchestrator_session', { sessionId: sessionA }, nextId++);
-      expect(setResponse.result?.isError).toBeUndefined();
-      let data = parseToolResult(setResponse) as { repositoryId: string; orchestratorSessionId: string };
+      const addAResponse = await callTool(app, mcpSessionId, 'set_orchestrator_session', { sessionId: sessionA }, nextId++);
+      expect(addAResponse.result?.isError).toBeUndefined();
+      let data = parseToolResult(addAResponse) as { repositoryId: string; orchestratorSessionIds: string[] };
       expect(data.repositoryId).toBe(TEST_REPO_ID);
-      expect(data.orchestratorSessionId).toBe(sessionA);
-      expect(repositoryManager.getRepository(TEST_REPO_ID)?.orchestratorSessionId).toBe(sessionA);
+      expect(data.orchestratorSessionIds).toEqual([sessionA]);
+      expect(repositoryManager.getRepository(TEST_REPO_ID)?.orchestratorSessionIds).toEqual([sessionA]);
 
-      const moveResponse = await callTool(app, mcpSessionId, 'set_orchestrator_session', { sessionId: sessionB }, nextId++);
-      expect(moveResponse.result?.isError).toBeUndefined();
-      data = parseToolResult(moveResponse) as { repositoryId: string; orchestratorSessionId: string };
-      expect(data.orchestratorSessionId).toBe(sessionB);
-      expect(repositoryManager.getRepository(TEST_REPO_ID)?.orchestratorSessionId).toBe(sessionB);
+      const addBResponse = await callTool(app, mcpSessionId, 'set_orchestrator_session', { sessionId: sessionB }, nextId++);
+      expect(addBResponse.result?.isError).toBeUndefined();
+      data = parseToolResult(addBResponse) as { repositoryId: string; orchestratorSessionIds: string[] };
+      // Adding B does not move or remove A -- both are designated at once.
+      // Set membership only, not array order: two real consecutive calls
+      // can legitimately land the same millisecond `created_at`, at which
+      // point the ordering tiebreak is session_id (a random UUID) --
+      // exact-order semantics are pinned precisely elsewhere, with
+      // explicit distinct `created_at` values
+      // (`sqlite-repository-repository.test.ts`).
+      expect(new Set(data.orchestratorSessionIds)).toEqual(new Set([sessionA, sessionB]));
+      expect(new Set(repositoryManager.getRepository(TEST_REPO_ID)?.orchestratorSessionIds)).toEqual(new Set([sessionA, sessionB]));
 
-      const clearResponse = await callTool(app, mcpSessionId, 'clear_orchestrator_session', { sessionId: sessionB }, nextId++);
-      expect(clearResponse.result?.isError).toBeUndefined();
-      const clearData = parseToolResult(clearResponse) as { repositoryId: string; cleared: boolean };
-      expect(clearData.cleared).toBe(true);
-      expect(repositoryManager.getRepository(TEST_REPO_ID)?.orchestratorSessionId).toBeNull();
+      const removeAResponse = await callTool(app, mcpSessionId, 'clear_orchestrator_session', { sessionId: sessionA }, nextId++);
+      expect(removeAResponse.result?.isError).toBeUndefined();
+      const removeAData = parseToolResult(removeAResponse) as { repositoryId: string; removed: boolean; orchestratorSessionIds: string[] };
+      expect(removeAData.removed).toBe(true);
+      expect(removeAData.orchestratorSessionIds).toEqual([sessionB]);
+      expect(repositoryManager.getRepository(TEST_REPO_ID)?.orchestratorSessionIds).toEqual([sessionB]);
+
+      const removeBResponse = await callTool(app, mcpSessionId, 'clear_orchestrator_session', { sessionId: sessionB }, nextId++);
+      expect(removeBResponse.result?.isError).toBeUndefined();
+      const removeBData = parseToolResult(removeBResponse) as { repositoryId: string; removed: boolean; orchestratorSessionIds: string[] };
+      expect(removeBData.removed).toBe(true);
+      expect(removeBData.orchestratorSessionIds).toEqual([]);
+      expect(repositoryManager.getRepository(TEST_REPO_ID)?.orchestratorSessionIds).toEqual([]);
+    });
+
+    it('add is idempotent: adding the same session twice returns the same one-element set', async () => {
+      const { sessionId } = await createWorktreeSession(9007, 'orchestrator-idempotent-add', 'main');
+
+      await callTool(app, mcpSessionId, 'set_orchestrator_session', { sessionId }, nextId++);
+      const secondResponse = await callTool(app, mcpSessionId, 'set_orchestrator_session', { sessionId }, nextId++);
+
+      expect(secondResponse.result?.isError).toBeUndefined();
+      const data = parseToolResult(secondResponse) as { orchestratorSessionIds: string[] };
+      expect(data.orchestratorSessionIds).toEqual([sessionId]);
+    });
+
+    it('clear is idempotent: clearing a session that is not designated reports removed:false', async () => {
+      const { sessionId: sessionA } = await createWorktreeSession(9008, 'orchestrator-idempotent-clear-a', 'main');
+      const { sessionId: sessionB } = await createWorktreeSession(9009, 'orchestrator-idempotent-clear-b', 'feature');
+      await callTool(app, mcpSessionId, 'set_orchestrator_session', { sessionId: sessionA }, nextId++);
+
+      const response = await callTool(app, mcpSessionId, 'clear_orchestrator_session', { sessionId: sessionB }, nextId++);
+
+      expect(response.result?.isError).toBeUndefined();
+      const data = parseToolResult(response) as { removed: boolean; orchestratorSessionIds: string[] };
+      expect(data.removed).toBe(false);
+      expect(data.orchestratorSessionIds).toEqual([sessionA]);
     });
   });
 
@@ -247,22 +288,29 @@ describe('set_orchestrator_session / clear_orchestrator_session', () => {
     });
   });
 
-  describe('stale-clear no-op', () => {
-    it('a stale clear from a superseded session is a no-op, distinguishable in the response', async () => {
+  describe('no holder check: a second session designating itself never supersedes the first', () => {
+    it("B's add does not clobber A's designation -- A remains genuinely removable (removed: true), not stale", async () => {
       const { sessionId: sessionA } = await createWorktreeSession(9005, 'orchestrator-a-stale', 'main');
       const { sessionId: sessionB } = await createWorktreeSession(9006, 'orchestrator-b-stale', 'feature');
 
       await callTool(app, mcpSessionId, 'set_orchestrator_session', { sessionId: sessionA }, nextId++);
-      // B takes over.
+      // Unlike the pre-#1716 single-session pointer, B's add does NOT move
+      // the flag away from A -- both are designated at once.
       await callTool(app, mcpSessionId, 'set_orchestrator_session', { sessionId: sessionB }, nextId++);
+      // Set membership, not array order -- see the sibling test's comment
+      // on why two real consecutive calls can share a `created_at` tick.
+      expect(new Set(repositoryManager.getRepository(TEST_REPO_ID)?.orchestratorSessionIds)).toEqual(new Set([sessionA, sessionB]));
 
-      // A's stale clear must not clobber B's designation.
+      // A's clear is a genuine removal (removed: true), not a no-op --
+      // there is no "stale" state under the set model, since nobody's
+      // designation is silently moved by someone else's add.
       const response = await callTool(app, mcpSessionId, 'clear_orchestrator_session', { sessionId: sessionA }, nextId++);
 
       expect(response.result?.isError).toBeUndefined();
-      const data = parseToolResult(response) as { cleared: boolean };
-      expect(data.cleared).toBe(false);
-      expect(repositoryManager.getRepository(TEST_REPO_ID)?.orchestratorSessionId).toBe(sessionB);
+      const data = parseToolResult(response) as { removed: boolean; orchestratorSessionIds: string[] };
+      expect(data.removed).toBe(true);
+      expect(data.orchestratorSessionIds).toEqual([sessionB]);
+      expect(repositoryManager.getRepository(TEST_REPO_ID)?.orchestratorSessionIds).toEqual([sessionB]);
     });
   });
 });

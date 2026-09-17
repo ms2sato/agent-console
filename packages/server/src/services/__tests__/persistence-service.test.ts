@@ -60,6 +60,28 @@ describe('PersistenceService', () => {
       expect(loaded).toEqual(testRepos);
     });
 
+    it('never carries an Orchestrator designation through the legacy JSON record: a persisted repository with orchestratorSessionIds maps to a row without the dead column, and the set is not round-tripped as a designation', async () => {
+      // reach: writing `orchestrator_session_id` from `toRepositoryRow` again
+      // (the pre-v41 mapper shape) fails the `not.toHaveProperty` assertion;
+      // designations must only ever enter storage through
+      // `RepositoryRepository.addOrchestratorSession`, never via the
+      // JSON-to-SQLite migration path this record feeds.
+      const { toRepositoryRow } = await import('../../database/mappers.js');
+      const persisted = {
+        id: 'legacy-1',
+        name: 'legacy-repo',
+        path: '/path/to/legacy',
+        createdAt: '2024-01-01T00:00:00.000Z',
+        orchestratorSessionIds: ['session-that-must-not-be-written'],
+        clonedSourceRepoPath: null,
+      };
+
+      const row = toRepositoryRow(persisted);
+      expect(row).not.toHaveProperty('orchestrator_session_id');
+      expect(row).not.toHaveProperty('orchestratorSessionIds');
+      expect(row.id).toBe('legacy-1');
+    });
+
     it('should overwrite repositories on save', async () => {
       const service = await getPersistenceService();
 

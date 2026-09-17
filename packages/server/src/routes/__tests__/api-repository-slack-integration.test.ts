@@ -50,6 +50,7 @@ describe('Repository Slack Integration API', () => {
       name: 'test-repo',
       path: testRepoPath,
       createdAt: new Date().toISOString(),
+      orchestratorSessionIds: [],
       clonedSourceRepoPath: null,
     });
 

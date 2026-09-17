@@ -351,10 +351,10 @@ describe('useAppWsEvent', () => {
       expect(consoleErrorSpy).not.toHaveBeenCalled();
     });
 
-    it('should treat an orchestrator-designation-changed frame as a no-op for app event handlers', () => {
-      // Client-side handling for this message is not implemented yet (a
-      // follow-up slice); this pins that the frame parses without invoking
-      // an unrelated callback or surfacing a parse error in the meantime.
+    it('should treat an orchestrator-designation-changed frame as a no-op for unrelated app event handlers', () => {
+      // This message only invokes onOrchestratorDesignationChanged; this pins
+      // that an unrelated callback is left untouched and the frame parses
+      // without surfacing a parse error.
       const onSessionsSync = mock(() => {});
       const onWorkerActivity = mock(() => {});
       renderHook(() => useAppWsEvent({ onSessionsSync, onWorkerActivity }));
@@ -363,7 +363,13 @@ describe('useAppWsEvent', () => {
       act(() => {
         ws?.simulateOpen();
         ws?.simulateMessage(
-          JSON.stringify({ type: 'orchestrator-designation-changed', repositoryId: 'repo-1', sessionId: 'session-1' })
+          JSON.stringify({
+            type: 'orchestrator-designation-changed',
+            repositoryId: 'repo-1',
+            orchestratorSessionIds: ['session-1'],
+            changedSessionId: 'session-1',
+            action: 'added',
+          })
         );
       });
 
@@ -759,7 +765,7 @@ describe('useAppWsEvent', () => {
       expect(onBookmarkDeleted).toHaveBeenCalledWith('session-1', 'bookmark-1');
     });
 
-    it('should call onOrchestratorDesignationChanged for orchestrator-designation-changed message', () => {
+    it('should call onOrchestratorDesignationChanged with all four fields when a session is added', () => {
       const onOrchestratorDesignationChanged = mock(() => {});
       renderHook(() => useAppWsEvent({ onOrchestratorDesignationChanged }));
 
@@ -767,14 +773,25 @@ describe('useAppWsEvent', () => {
       act(() => {
         ws?.simulateOpen();
         ws?.simulateMessage(
-          JSON.stringify({ type: 'orchestrator-designation-changed', repositoryId: 'repo-1', sessionId: 'session-1' })
+          JSON.stringify({
+            type: 'orchestrator-designation-changed',
+            repositoryId: 'repo-1',
+            orchestratorSessionIds: ['session-1', 'session-2'],
+            changedSessionId: 'session-2',
+            action: 'added',
+          })
         );
       });
 
-      expect(onOrchestratorDesignationChanged).toHaveBeenCalledWith('repo-1', 'session-1');
+      expect(onOrchestratorDesignationChanged).toHaveBeenCalledWith(
+        'repo-1',
+        ['session-1', 'session-2'],
+        'session-2',
+        'added'
+      );
     });
 
-    it('should call onOrchestratorDesignationChanged with null sessionId when cleared', () => {
+    it('should call onOrchestratorDesignationChanged with all four fields when a session is removed', () => {
       const onOrchestratorDesignationChanged = mock(() => {});
       renderHook(() => useAppWsEvent({ onOrchestratorDesignationChanged }));
 
@@ -782,11 +799,17 @@ describe('useAppWsEvent', () => {
       act(() => {
         ws?.simulateOpen();
         ws?.simulateMessage(
-          JSON.stringify({ type: 'orchestrator-designation-changed', repositoryId: 'repo-1', sessionId: null })
+          JSON.stringify({
+            type: 'orchestrator-designation-changed',
+            repositoryId: 'repo-1',
+            orchestratorSessionIds: [],
+            changedSessionId: 'session-1',
+            action: 'removed',
+          })
         );
       });
 
-      expect(onOrchestratorDesignationChanged).toHaveBeenCalledWith('repo-1', null);
+      expect(onOrchestratorDesignationChanged).toHaveBeenCalledWith('repo-1', [], 'session-1', 'removed');
     });
   });
 

@@ -14,6 +14,7 @@ function createTestRepository(overrides?: Partial<Repository>): Repository {
     createdAt: '2024-01-01T00:00:00Z',
     description: null,
     defaultAgentId: null,
+    orchestratorSessionIds: [],
     clonedSourceRepoPath: null,
     ...overrides,
   };
