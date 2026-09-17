@@ -483,6 +483,12 @@ export class WorktreeService {
     // failure throws `TrustedDirVerificationError` out of this method
     // unwrapped -- deliberately before the `try` below, whose catch tears
     // down git state for a git failure, which an integrity rejection is not.
+    // A symlink swapped in AFTER this walk and before `git worktree add`
+    // reads the path is the walker's accepted residue (R7 in trusted-dir.ts's
+    // header: pre-planted is defended, a race in that window is inside the
+    // team-of-trust model the `2775` data-root contract already accepts) --
+    // the same residue every session-data writer carries; no descriptor
+    // chain is attempted here by decision.
     await ensureTrustedDirChain(getConfigDir(), repoWorktreeDir, resolveAncestorContract());
 
     // Allocate index from DB records
