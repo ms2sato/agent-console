@@ -1,5 +1,5 @@
 import { useRef, useState, type RefObject } from 'react';
-import { describe, it, expect, spyOn, afterEach } from 'bun:test';
+import { describe, it, expect, mock, afterEach } from 'bun:test';
 import { render, screen, fireEvent, cleanup, renderHook } from '@testing-library/react';
 import { useModalDrawerFocus, getTabbables } from '../useModalDrawerFocus';
 
@@ -149,26 +149,36 @@ describe('useModalDrawerFocus', () => {
 
   it('does not call .focus() on a saved element that was removed from the DOM before close', () => {
     // Reach (measured): removing the `saved.isConnected` check (keeping only
-    // `saved instanceof HTMLElement`) fails this test -- the spy is then
+    // `saved instanceof HTMLElement`) fails this test -- the mock is then
     // called once even though the element is disconnected. Calling .focus()
     // on a disconnected element does not throw and does not move
     // `document.activeElement` in happy-dom, so a "no throw" / "focus
-    // unchanged" assertion alone has zero reach here; the spy is what
+    // unchanged" assertion alone has zero reach here; the mock is what
     // actually observes the guard.
+    //
+    // An own-property mock is used here instead of `spyOn(trigger, 'focus')`
+    // because, in the FULL client test process (not this file in isolation),
+    // an earlier test file leaves `HTMLElement.prototype.focus` as an
+    // accessor property, and bun:test's `spyOn` does not support spying on
+    // accessor properties -- making a `spyOn`-based version of this test
+    // order-dependent on which other test files ran first in the process.
+    // Defining `focus` directly as an own data property on `trigger` never
+    // touches the prototype, so it is unaffected by that.
     render(<ToggleHarness removableTrigger />);
     const trigger = screen.getByText('trigger');
     trigger.focus();
     fireEvent.click(trigger);
     expect(document.activeElement).toBe(screen.getByText('A'));
 
-    const focusSpy = spyOn(trigger, 'focus');
+    const focusMock = mock(() => {});
+    Object.defineProperty(trigger, 'focus', { value: focusMock, configurable: true, writable: true });
     fireEvent.click(screen.getByText('remove-trigger'));
     expect(trigger.isConnected).toBe(false);
 
     expect(() => {
       fireEvent.click(screen.getByText('A'));
     }).not.toThrow();
-    expect(focusSpy).not.toHaveBeenCalled();
+    expect(focusMock).not.toHaveBeenCalled();
   });
 
   it('returns the closed and open containerProps shapes', () => {
