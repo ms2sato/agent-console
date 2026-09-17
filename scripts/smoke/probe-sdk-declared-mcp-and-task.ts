@@ -224,11 +224,14 @@ export const RESERVED_MCP_SERVER_NAMES = ['agent-console', 'console'] as const;
 /**
  * Server-name prefix of the executing account's claude.ai connectors
  * (section 4.1's accepted class, measured present under `settingSources: []`
- * on three SDK versions). HYPOTHESIS about the naming, taken from this
- * host's own interactive tool catalog (`mcp__claude_ai_Google_Drive__*`,
- * `mcp__claude_ai_Claude_Docs__*`); every arm prints the raw `mcp_servers`
- * names so a connector that does not match this prefix is visible as an
- * "ambient" entry rather than silently misfiled.
+ * on three SDK versions). A NAMING HYPOTHESIS inferred from this host's own
+ * interactive tool catalog (`mcp__claude_ai_Google_Drive__*`,
+ * `mcp__claude_ai_Claude_Docs__*`), NOT from `sdk.d.ts`, which names no such
+ * prefix (Architect ruling, PR #1727). Every arm therefore prints BOTH
+ * partitions raw -- connector names and non-connector names -- so a reader
+ * can re-partition, and every leak / exactness verdict rests on the
+ * NON-connector partition alone; whether strict mode drops the connector
+ * class is recorded as a measurement, never folded into a verdict.
  */
 export const ACCOUNT_CONNECTOR_PREFIX = 'claude_ai_';
 
@@ -324,14 +327,14 @@ export function classifyP0(
     return {
       arm: 'P0',
       conclusive: true,
-      verdict: `LEAK -- today's battery (settingSources: []) reports undeclared ${what}`,
+      verdict: `LEAK -- today's battery (settingSources: []) reports NON-connector ${what} (connectors, set aside: ${JSON.stringify(reading.accountConnectorServers)})`,
       stops: [`P0 pre-existing leak: undeclared MCP surface reaches today's claude-sdk battery (${what}); file as its own Issue`],
     };
   }
   return {
     arm: 'P0',
     conclusive: true,
-    verdict: `NO LEAK -- today's battery reports ${JSON.stringify(subject.mcpServers.map((s) => s.name))} (account connectors: ${JSON.stringify(reading.accountConnectorServers)}); control saw ${ambientName}`,
+    verdict: `NO LEAK -- the NON-connector partition is empty; all mcp_servers=${JSON.stringify(subject.mcpServers.map((s) => s.name))}, connectors set aside=${JSON.stringify(reading.accountConnectorServers)}; control saw ${ambientName}`,
     stops: [],
   };
 }
@@ -705,6 +708,12 @@ function logInit(label: string, init: SystemInitMessage | null): void {
   console.log(`${label}: agents = ${JSON.stringify(init.agents ?? null)}`);
   console.log(`${label}: tools (non-mcp) = ${JSON.stringify(init.tools.filter((t) => !t.startsWith('mcp__')))}`);
   console.log(`${label}: tools (mcp) = ${JSON.stringify(init.tools.filter((t) => t.startsWith('mcp__')))}`);
+  // Both partitions, raw, on every init (Architect ruling, PR #1727): the
+  // `claude_ai_` prefix is a hypothesis, so the reader must be able to
+  // re-partition from the log alone.
+  const partition = classifyBaseline({ tools: [...init.tools], mcpServers: init.mcp_servers.map((s) => ({ name: s.name, status: s.status })) });
+  console.log(`${label}: partition connectorServers = ${JSON.stringify(partition.accountConnectorServers)} connectorTools = ${JSON.stringify(partition.accountConnectorTools)}`);
+  console.log(`${label}: partition nonConnectorServers = ${JSON.stringify(partition.undeclaredServers)} nonConnectorTools = ${JSON.stringify(partition.undeclaredMcpTools)}`);
 }
 
 async function readPostStatus(s: ProbeSession, label: string): Promise<McpServerStatus[]> {
