@@ -2354,7 +2354,7 @@ export async function migrateToV40(database: Kysely<Database>): Promise<void> {
  * worth doing on the production DB only as part of a later migration that
  * already needs a `repositories` rebuild for some other reason, not for
  * this zero-functional-gain cleanup alone; tracked as a follow-up Issue.
- * Dropped by v42 (Issue #1725).
+ * Dropped by `migrateToV42` below, once such a rebuild was needed.
  * The column's value is backfilled into the new table below and then
  * cleared to NULL so nothing in the running system can ever read a stale
  * value back out of it -- see `mappers.ts`'s `toRepositoryRow` (stops
@@ -2405,7 +2405,7 @@ export async function migrateToV41(database: Kysely<Database>): Promise<void> {
 
 /**
  * Migration v42: Drop the dead `orchestrator_session_id` column from
- * `repositories` (Issue #1725, deferred from #1716's v41 migration above).
+ * `repositories`, deferred from the v41 migration above.
  *
  * SQLite's `ALTER TABLE ... DROP COLUMN` refuses a column that participates
  * in a foreign key, so this is a table rebuild -- the same pattern as

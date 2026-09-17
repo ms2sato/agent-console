@@ -578,9 +578,9 @@ export type NewBookmark = Insertable<BookmarksTable>;
  * Repository-orchestrator-session designation table (migration v41;
  * see docs/design/shared-orchestrator-session.md, "Designation in multi-user"). A repository's Orchestrator designation is a SET of sessions, not
  * a single nullable pointer -- the v40 single-session column this table
- * replaced (`repositories.orchestrator_session_id`) was dropped in v42
- * (Issue #1725) -- so this table carries one row per (repository,
- * session) designation pair. Composite primary key on
+ * replaced (`repositories.orchestrator_session_id`) was later dropped by
+ * a table-rebuild migration -- so this table carries one row per
+ * (repository, session) designation pair. Composite primary key on
  * `(repository_id, session_id)`; both foreign keys `ON DELETE CASCADE` so a
  * deleted repository or a deleted session removes its designation rows
  * automatically, with no application code path to get wrong.
