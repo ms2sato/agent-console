@@ -124,7 +124,7 @@ const RepositorySchema = v.strictObject({
   description: v.optional(v.nullable(v.string())),
   defaultAgentId: v.optional(v.nullable(v.string())),
   // Required (not optional): the set of sessions designated as this
-  // repository's Orchestrators (Issue #1716). Zero designations is `[]`,
+  // repository's Orchestrators (see docs/design/shared-orchestrator-session.md, "Designation in multi-user"). Zero designations is `[]`,
   // never an absent key.
   orchestratorSessionIds: v.array(v.string()),
   issueTriggerLabels: v.optional(v.nullable(v.string())),
@@ -428,7 +428,7 @@ const OrchestratorDesignationChangedSchema = v.strictObject({
   type: v.literal('orchestrator-designation-changed'),
   repositoryId: v.string(),
   // The full re-read set after the change, so a client never needs to
-  // reconcile an add/remove delta locally (Issue #1716).
+  // reconcile an add/remove delta locally (see docs/design/shared-orchestrator-session.md, "Designation in multi-user").
   orchestratorSessionIds: v.array(v.string()),
   // The single session whose add/remove caused this broadcast.
   changedSessionId: v.string(),

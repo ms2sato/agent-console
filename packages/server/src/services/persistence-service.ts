@@ -36,7 +36,7 @@ export interface PersistedRepository {
   description?: string | null;
   defaultAgentId?: string | null;
   /**
-   * The repository's designated-Orchestrator session set (Issue #1716).
+   * The repository's designated-Orchestrator session set (see docs/design/shared-orchestrator-session.md, "Designation in multi-user").
    * NOT persisted in this legacy JSON shape -- designations live in the
    * `repository_orchestrator_sessions` table (migration v41), populated
    * only through `RepositoryRepository.addOrchestratorSession` /

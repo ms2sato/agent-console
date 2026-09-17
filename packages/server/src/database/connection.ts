@@ -2330,7 +2330,7 @@ export async function migrateToV40(database: Kysely<Database>): Promise<void> {
  * Migration v41: Create `repository_orchestrator_sessions` -- moves the
  * repository's designated-Orchestrator pointer from a single nullable
  * column (`repositories.orchestrator_session_id`, v40) to a proper
- * many-to-many join table (Issue #1716). A repository now has a SET of
+ * many-to-many join table (see docs/design/shared-orchestrator-session.md, "Designation in multi-user"). A repository now has a SET of
  * designated sessions: any eligible session may add itself and remove
  * itself; nobody's designation is silently moved by someone else's add.
  *

@@ -59,7 +59,7 @@ export interface RepositoryRepository {
 
   /**
    * Add `sessionId` to the repository's designated-Orchestrator SET
-   * (Issue #1716). No holder check anywhere: any session may add itself,
+   * (see docs/design/shared-orchestrator-session.md, "Designation in multi-user"). No holder check anywhere: any session may add itself,
    * and nobody's designation is changed by anyone else's add. Idempotent --
    * adding a pair that already exists is a no-op (`added: false`).
    * `repository: null` when the repository row does not exist.

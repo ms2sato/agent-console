@@ -577,8 +577,8 @@ export type BookmarkRow = Selectable<BookmarksTable>;
 export type NewBookmark = Insertable<BookmarksTable>;
 
 /**
- * Repository-orchestrator-session designation table (migration v41, Issue
- * #1716). A repository's Orchestrator designation is a SET of sessions, not
+ * Repository-orchestrator-session designation table (migration v41;
+ * see docs/design/shared-orchestrator-session.md, "Designation in multi-user"). A repository's Orchestrator designation is a SET of sessions, not
  * a single nullable pointer -- see the dead `RepositoriesTable.orchestrator_session_id`
  * doc comment above -- so this table carries one row per (repository,
  * session) designation pair. Composite primary key on

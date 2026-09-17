@@ -9,7 +9,7 @@ export interface Repository {
   envVars?: string | null; // Environment variables in .env format (applied to workers)
   description?: string | null; // Brief description of the repository
   defaultAgentId?: string | null; // Default agent ID for worktree creation
-  orchestratorSessionIds: string[]; // The set of sessions designated as this repository's Orchestrators (Issue #1716); sorted by designation time then id; a designation disappears with its session (DB ON DELETE CASCADE)
+  orchestratorSessionIds: string[]; // The set of sessions designated as this repository's Orchestrators (see docs/design/shared-orchestrator-session.md, "Designation in multi-user"); sorted by designation time then id; a designation disappears with its session (DB ON DELETE CASCADE)
   issueTriggerLabels?: string | null; // Comma-separated GitHub label names (case-insensitive, trimmed) that route labeled-Issue webhooks to every live session in orchestratorSessionIds
   /**
    * Equal to `path` when this repository's registered path lives under the

@@ -300,7 +300,7 @@ async function resolveIssueLabeledTargets(
       }
 
       // Keep the "not running" / "no agent worker" message text and field
-      // shape byte-for-byte identical to the pre-#1716 single-session
+      // shape byte-for-byte identical to the pre-set-model single-session
       // messages (only the `orchestratorSessionId` field name changes, from
       // the repository's single column to the per-session loop variable) --
       // downstream consumers (including this file's own tests) match on

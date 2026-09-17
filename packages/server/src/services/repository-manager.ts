@@ -104,7 +104,7 @@ export interface RepositoryLifecycleCallbacks {
   /**
    * Fired specifically when the repository's designated-Orchestrator SET
    * changes (one session added or removed) via
-   * `addOrchestratorSession`/`removeOrchestratorSession` (Issue #1716).
+   * `addOrchestratorSession`/`removeOrchestratorSession` (see docs/design/shared-orchestrator-session.md, "Designation in multi-user").
    * This is an ADDITIONAL, lighter-weight signal alongside
    * `onRepositoryUpdated` (which also fires, since the Repository object's
    * `orchestratorSessionIds` field genuinely changed) -- a flag-focused UI
@@ -385,7 +385,7 @@ export class RepositoryManager {
 
   /**
    * Add `sessionId` to this repository's designated-Orchestrator SET
-   * (Issue #1716). No holder check: any eligible session may add itself,
+   * (see docs/design/shared-orchestrator-session.md, "Designation in multi-user"). No holder check: any eligible session may add itself,
    * and nobody's designation is changed by anyone else's add. Idempotent --
    * adding an already-present pair fires no callback.
    * @returns the re-read repository, or null if the repository doesn't exist

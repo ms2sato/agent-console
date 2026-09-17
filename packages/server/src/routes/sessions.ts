@@ -291,7 +291,7 @@ const sessions = new Hono<AppBindings>()
     return c.json({ commits });
   })
   // Add this session to its repository's designated-Orchestrator SET
-  // (Issue #1716). Idempotent; other sessions' designations are unaffected.
+  // (see docs/design/shared-orchestrator-session.md, "Designation in multi-user"). Idempotent; other sessions' designations are unaffected.
   // Ownership mirrors PUT /:id/memo above: the check only runs when
   // AUTH_MODE === 'multi-user'; single-user mode skips it entirely.
   .post('/:id/orchestrator-designation', async (c) => {
