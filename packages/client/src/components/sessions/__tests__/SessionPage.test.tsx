@@ -11,9 +11,11 @@ import { installMockWebSocket } from '../../../test/mock-websocket';
 import type { Session } from '@agent-console/shared';
 
 /**
- * Gate test for the mobile drawer trigger (Issue #1712): renders the REAL
- * `SessionPage`, not a harness, so this exercises the actual JS-gated
- * rail-vs-drawer swap wired up in SessionPage.tsx itself.
+ * Component-render tests for `SessionPage` (the sibling `SessionPage.test.ts`
+ * covers its exported pure helpers without JSX; `SessionPage.keyboard.test.tsx`
+ * drives a harness). This file renders the REAL `SessionPage`, not a harness,
+ * so it exercises the actual JS-gated rail-vs-drawer swap wired up in
+ * SessionPage.tsx itself.
  *
  * Fetch-level mock (testing.md Anti-Pattern #2), routed by URL substring --
  * same pattern as SessionSidePanels.test.tsx / SessionSidePanelsDrawer.test.tsx.
