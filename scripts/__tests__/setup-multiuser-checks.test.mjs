@@ -818,3 +818,78 @@ describe('setup-multiuser-checks: journal-digest (V6, the three boot lines and t
     expect(r.stderr).toContain('cannot run');
   });
 });
+
+// SIGPIPE under the caller's `set -o pipefail` (CodeRabbit Major on PR
+// #1720, CONFIRMED by reproduction): the lib is SOURCED by
+// update-and-deploy-for-multiuser-ubuntu.sh, which runs `set -euo pipefail`,
+// so every `printf ... | grep ... | grep -q` inside V1 / V6 inherits
+// pipefail. `grep -q` exits on its first match; if the upstream stage still
+// has more than a pipe buffer (64 KiB) left to write, it gets SIGPIPE
+// (status 141), pipefail makes 141 the pipeline's status, and the `||`
+// branch records a PRESENT line as missing -- a false JOURNAL_MISSING (a
+// false deploy FAIL) or a false DRIFT_MISSING (a false refusal to restart).
+// The lib spawned directly has no pipefail, so these cases go through the
+// run-lib-under-pipefail.sh fixture (`bash -o pipefail <lib>`), and the
+// large input goes through FAKE_JOURNAL_FILE (one env var cannot carry it).
+//
+// Polarity, measured: with the pre-fix `grep -q` forms and this exact
+// 3000-line file (~168 KiB), the pipefail run printed
+// `JOURNAL_MISSING:Server starting (env: production)` three runs out of
+// three; the same input without pipefail printed JOURNAL_OK. After the fix
+// (`grep ... >/dev/null`, which consumes its whole input), JOURNAL_OK under
+// pipefail three out of three. V1 likewise: the pre-fix `grep -q` with a
+// ~80 KiB token list under pipefail printed a false DRIFT_MISSING naming a
+// DIFFERENT random subset of the nine present keys on each of three runs
+// (which is what a race on the pipe buffer looks like); the fixed lib prints
+// DRIFT_NONE.
+describe('setup-multiuser-checks: pipefail-safety of V1 / V6 on inputs larger than a pipe buffer', () => {
+  const RUN_UNDER_PIPEFAIL = resolve(__dirname, 'fixtures', 'run-lib-under-pipefail.sh');
+  const STARTING = '{"level":30,"time":1789606070057,"pid":554,"hostname":"h","service":"server","port":8080,"env":"production","pid":554,"msg":"Server starting"}';
+  const USER_MODE = '{"level":30,"time":1789606070060,"pid":554,"hostname":"h","service":"server","authMode":"multi-user","ptyProvider":"bun","msg":"User mode initialized"}';
+  const LISTENING = '{"level":30,"time":1789606070061,"pid":554,"hostname":"h","service":"server","port":8080,"msg":"Server listening"}';
+
+  it('V6: a journal with thousands of matching "Server starting" lines (>64 KiB) is still JOURNAL_OK under pipefail', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'v6-pipefail-'));
+    try {
+      const file = join(dir, 'journal.txt');
+      const big = [...Array(3000).fill(STARTING), USER_MODE, LISTENING].join('\n') + '\n';
+      expect(big.length).toBeGreaterThan(64 * 1024);
+      writeFileSync(file, big);
+      const r = spawnSync(
+        RUN_UNDER_PIPEFAIL,
+        ['journal-digest', UNIT, '2026-09-17 00:47:49', FAKE_JOURNALCTL, ''],
+        { encoding: 'utf-8', env: { ...process.env, FAKE_JOURNAL_FILE: file } },
+      );
+      expect(r.status).toBe(0);
+      expect(markerOf(r)).toBe('JOURNAL_OK');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('V1: a live Environment with thousands of tokens (>64 KiB) still finds every template key under pipefail', () => {
+    // The nine template keys first, then enough filler tokens that the
+    // token list printf writes exceeds the pipe buffer while grep looks for
+    // the first key.
+    const filler = Array.from({ length: 2500 }, (_, i) => `FILLER_${i}=${'x'.repeat(20)}`).join(' ');
+    const env = `${LIVE_ENV_ALL_KEYS} ${filler}`;
+    expect(env.length).toBeGreaterThan(64 * 1024);
+    const r = spawnSync(
+      RUN_UNDER_PIPEFAIL,
+      ['unit-env-drift', TEMPLATE, UNIT, FAKE_SYSTEMCTL],
+      { encoding: 'utf-8', env: { ...process.env, FAKE_ENVIRONMENT: env, FAKE_EXECSTART: EXECSTART_UNIFIED } },
+    );
+    expect(r.status).toBe(0);
+    expect(markerOf(r)).toBe('DRIFT_NONE');
+  });
+
+  it('control: the same pipefail fixture still reports a genuinely absent line (the fix did not blunt detection)', () => {
+    const r = spawnSync(
+      RUN_UNDER_PIPEFAIL,
+      ['journal-digest', UNIT, '2026-09-17 00:47:49', FAKE_JOURNALCTL, ''],
+      { encoding: 'utf-8', env: { ...process.env, FAKE_JOURNAL_LINES: [STARTING, USER_MODE].join('\n') } },
+    );
+    expect(r.status).toBe(1);
+    expect(markerOf(r)).toBe('JOURNAL_MISSING:Server listening');
+  });
+});

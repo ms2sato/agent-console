@@ -286,7 +286,12 @@ unit_env_drift() {
   while IFS= read -r key; do
     [ -n "$key" ] || continue
     value="$(printf '%s\n' "$live_tokens" | sed -n "s/^${key}=//p" | head -n 1)"
-    if printf '%s\n' "$live_tokens" | grep -q "^${key}="; then
+    # `grep >/dev/null`, not `grep -q`: the check runs under the caller's
+    # `set -o pipefail`, and `-q` exits on the first match, which can SIGPIPE
+    # the upstream printf (status 141) on a large token list and turn a
+    # present key into a false DRIFT_MISSING. A grep that consumes its whole
+    # input has no early exit to trigger that.
+    if printf '%s\n' "$live_tokens" | grep "^${key}=" >/dev/null; then
       present="${present}${key}=${value}"$'\n'
     else
       missing="${missing:+${missing},}${key}"
@@ -608,12 +613,19 @@ journal_digest() {
   fi
   rm -f "$stderr_tmp"
 
+  # Every match below is `grep ... >/dev/null`, never `grep -q`: this check
+  # runs under the caller's `set -o pipefail` on an unbounded journal, and a
+  # `-q` that exits on the first match can SIGPIPE the upstream stage
+  # (status 141) once the buffer exceeds the pipe size -- measured: 3000
+  # matching lines (~168 KiB) turned a present `Server starting` into a
+  # false JOURNAL_MISSING, i.e. a false deploy FAIL. A grep that reads its
+  # whole input has no early exit to trigger that.
   local missing=""
-  printf '%s\n' "$lines" | grep -F 'Server starting' | grep -q '"env":"production"' \
+  printf '%s\n' "$lines" | grep -F 'Server starting' | grep '"env":"production"' >/dev/null \
     || missing="${missing:+${missing};}Server starting (env: production)"
-  printf '%s\n' "$lines" | grep -F 'User mode initialized' | grep -q '"authMode":"multi-user"' \
+  printf '%s\n' "$lines" | grep -F 'User mode initialized' | grep '"authMode":"multi-user"' >/dev/null \
     || missing="${missing:+${missing};}User mode initialized (authMode: multi-user)"
-  printf '%s\n' "$lines" | grep -q -F 'Server listening' \
+  printf '%s\n' "$lines" | grep -F 'Server listening' >/dev/null \
     || missing="${missing:+${missing};}Server listening"
   local bun_warning cookie_warning
   bun_warning="$(printf '%s\n' "$lines" | grep -F '"level":40' | grep -E 'EMBEDDED_AGENT_BUN_PATH|bun-path identity check could not run' | head -n 1 | cut -c1-300 || true)"

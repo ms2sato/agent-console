@@ -8,6 +8,10 @@
 #
 #   FAKE_JOURNALCTL_FAIL=1  exit 1 with a diagnostic on stderr
 #   FAKE_JOURNAL_LINES      the `-o cat` output to print (multi-line)
+#   FAKE_JOURNAL_FILE       a file whose contents are printed instead (for
+#                           inputs larger than one environment variable can
+#                           carry, e.g. the 64 KiB-plus journals the SIGPIPE
+#                           case needs)
 #   FAKE_ARGV_LOG           when set, this fixture's own argv is appended to
 #                           that file, so a test can pin that `--since <ts>`
 #                           and `-u <unit>` actually reached journalctl
@@ -19,4 +23,8 @@ if [ "${FAKE_JOURNALCTL_FAIL:-0}" = "1" ]; then
   echo "fake-journalctl: No journal files were opened due to insufficient permissions (simulated)" >&2
   exit 1
 fi
-printf '%s\n' "${FAKE_JOURNAL_LINES:-}"
+if [ -n "${FAKE_JOURNAL_FILE:-}" ]; then
+  cat "$FAKE_JOURNAL_FILE"
+else
+  printf '%s\n' "${FAKE_JOURNAL_LINES:-}"
+fi
