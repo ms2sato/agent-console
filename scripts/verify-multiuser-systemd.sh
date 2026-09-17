@@ -316,7 +316,8 @@ run_setup() {
   rm -f "$out"
   echo "  --- post-setup facts ---"
   cexec --user root "$SERVICE" sh -c 'id agentconsole; getent group agent-console-users; stat -c "%U:%G %a %n" /var/lib/agent-console /var/lib/agent-console/source-repos /home/agentconsole /usr/local/bin/bun' | sed 's/^/  /'
-  echo "  (the unit is expected to crash-loop here until the first deploy: dist/index.js does not exist yet -- Issue (d) of the note, not this stack's concern)"
+  echo "  (no dist/index.js exists yet, so setup step 8 enables the unit without starting it -- the deploy's restart below is what starts it; the note's Issue (d) shape)"
+  cexec --user root "$SERVICE" sh -c 'systemctl is-enabled agent-console; systemctl is-active agent-console' | sed 's/^/  unit after setup: /' || true
   step_end setup_force
 }
 
