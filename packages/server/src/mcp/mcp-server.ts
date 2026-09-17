@@ -909,8 +909,9 @@ export function createMcpApp(deps: McpDependencies): Hono {
       'Use this to delegate work to a new agent running in an isolated worktree. ' +
       'Note: once started, the worktree and session persist on the server even if the MCP client disconnects. ' +
       'To delegate to a repository other than your own, use list_repositories to discover available repositories. ' +
-      'Requires parentSessionId and parentWorkerId, from your own AGENT_CONSOLE_SESSION_ID / AGENT_CONSOLE_WORKER_ID ' +
-      'environment variables (every legitimate caller holds both). The parent session determines the delegated ' +
+      'Requires parentSessionId and parentWorkerId: your own session id and worker id (AGENT_CONSOLE_SESSION_ID / ' +
+      'AGENT_CONSOLE_WORKER_ID in your environment, or the Session ID / Worker ID stated in your system prompt; every ' +
+      'legitimate caller holds both). The parent session determines the delegated ' +
       "session's ownership (createdBy inheritance) -- this is not a reporting convenience. By default, callback " +
       'instructions are appended to the prompt so the delegated agent reports results back via send_session_message; ' +
       'set skipMessageCallbackPrompt to suppress that.',
@@ -1601,7 +1602,7 @@ export function createMcpApp(deps: McpDependencies): Hono {
       ),
       workerId: z.string().describe(
         'The worker to receive the wakeup. ' +
-          'Usually the current agent worker. Use AGENT_CONSOLE_WORKER_ID if available.',
+          'Usually the current agent worker. Use your worker id (AGENT_CONSOLE_WORKER_ID in your environment, or the Worker ID stated in your system prompt) for your own worker.',
       ),
       intervalSeconds: z.number().int().min(30).max(86400).describe(
         'How often to check the condition (30-86400 seconds). ' +

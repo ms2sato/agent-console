@@ -1439,8 +1439,11 @@ Like the PTY env check, this script imports the production command builders
 Run before claiming multi-user support for
 [EmbeddedAgentWorker](glossary.md#embeddedagentworker). It spawns the real
 embedded-agent loop as a real second OS user via the production `spawnAsUser`,
-with `AUTH_MODE=multi-user` and `AGENT_CONSOLE_MCP_AUTH=enforce` forced on,
-against a real `/mcp` endpoint running in `enforce` mode:
+with `AUTH_MODE=multi-user` forced on and `AGENT_CONSOLE_MCP_AUTH` deliberately
+left UNSET -- the smoke exercises the real multi-user default resolution to
+`enforce` (`resolveMcpAuthMode`), so do not set it in the environment you run
+the command from -- against a real `/mcp` endpoint that therefore runs in
+`enforce` mode:
 
 ```bash
 sudo -u agentconsole bun scripts/smoke/check-embedded-agent-elevation.ts <target-user>
