@@ -65,6 +65,27 @@ export type ResultMessage = Extract<SDKMessage, { type: 'result' }>;
  * of, not just its `type/subtype` label.
  */
 export type MemoryRecallMessage = Extract<SDKMessage, { type: 'system'; subtype: 'memory_recall' }>;
+/**
+ * The session's `system/init` message, kept in FULL (Issue #1726). Its
+ * `tools: string[]` and `mcp_servers: { name, status }[]` fields are the
+ * observables the declared-MCP / `Task` probe reads, and the label-only
+ * `allMessages` trace cannot carry them. Same additive shape as
+ * `MemoryRecallMessage` above.
+ */
+export type SystemInitMessage = Extract<SDKMessage, { type: 'system'; subtype: 'init' }>;
+/**
+ * One `tool_use` block observed on an `assistant` message (Issue #1726).
+ * `parentToolUseId` is non-null when the block was produced INSIDE a
+ * subagent started by that tool use (`sdk.d.ts`'s `SDKAssistantMessage`
+ * doc) -- which is what lets a probe attribute a tool call to a child
+ * rather than to the main thread without reading any prose.
+ */
+export interface ObservedToolUse {
+  name: string;
+  id: string;
+  parentToolUseId: string | null;
+  input: unknown;
+}
 
 /** H2 (design doc §5) retry-with-settle, mirroring sdk-engine.ts's constants. */
 const SETTLE_DELAY_MS = 500;
@@ -169,6 +190,10 @@ export class ProbeSession {
   readonly allMessages: string[] = [];
   readonly compactBoundaries: CompactBoundary[] = [];
   readonly memoryRecalls: MemoryRecallMessage[] = [];
+  /** The full `system/init` body, or `null` until one arrives (Issue #1726). */
+  systemInit: SystemInitMessage | null = null;
+  /** Every `tool_use` block seen on `assistant` messages, in order (Issue #1726). */
+  readonly toolUses: ObservedToolUse[] = [];
   sessionId: string | null = null;
   streamEnded: 'clean' | 'error' | null = null;
   streamError: string | null = null;
@@ -326,6 +351,7 @@ export class ProbeSession {
         const carried = (message as { session_id?: string }).session_id;
         if (carried && !this.sessionId) this.sessionId = carried;
         if (message.type === 'system' && message.subtype === 'init') {
+          this.systemInit = message;
           this.initResolve?.();
           this.initResolve = null;
         }
@@ -338,6 +364,17 @@ export class ProbeSession {
         if (message.type === 'assistant') {
           for (const block of message.message.content) {
             if (block.type === 'text') this.turnText += block.text;
+            // Deduplicated by block id: under `includePartialMessages` the CLI
+            // may re-emit a completed block, and a probe counting tool uses
+            // must see each call once.
+            if (block.type === 'tool_use' && !this.toolUses.some((t) => t.id === block.id)) {
+              this.toolUses.push({
+                name: block.name,
+                id: block.id,
+                parentToolUseId: message.parent_tool_use_id,
+                input: block.input,
+              });
+            }
           }
         }
         if (message.type === 'result') {
