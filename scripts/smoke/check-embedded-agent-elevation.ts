@@ -5,9 +5,10 @@
  * Drives the REAL shipping path -- `SessionManager.activateEmbeddedAgentWorker`
  * spawning the REAL embedded-agent loop subprocess via the REAL production
  * `spawnAsUser` -- against a REAL second OS user, with `AUTH_MODE=multi-user`
- * forced on and `AGENT_CONSOLE_MCP_AUTH=enforce` set explicitly (the
- * multi-user default is `warn` until Issue #1107 lands -- see the "Note on
- * AGENT_CONSOLE_MCP_AUTH" below). This is the smoke bullet referenced by
+ * forced on and `AGENT_CONSOLE_MCP_AUTH` set explicitly by the `--auth-mode`
+ * flag (default `enforce`; the resolver's own default is `warn` for every
+ * AUTH_MODE since Issue #1107 -- see the "Note on AGENT_CONSOLE_MCP_AUTH"
+ * below). This is the smoke bullet referenced by
  * docs/design/embedded-agent-worker.md Part II Testing plan.
  *
  * What this smoke exercises:
@@ -45,13 +46,37 @@
  *     this environment; `{ unresolvable: 'configured' }` is reported
  *     separately, naming the configured path itself as unreadable. Both are
  *     probe-cannot-run conditions (exit 2), not assertion failures.
- *   - The loop's init handshake completing end-to-end against a REAL `/mcp`
- *     Streamable-HTTP endpoint running in `enforce` mode
- *     (`AGENT_CONSOLE_MCP_AUTH=enforce`, set explicitly) -- proving
- *     enforcement does not break the already-working embedded-agent token
- *     delivery (Phase 2). What this does NOT yet prove is enforcement
- *     itself (a tokenless call refused, a warn-mode run failing the smoke);
- *     that assertion is Issue #1738.
+ *   - MCP enforce handshake AND enforcement, read back from the running
+ *     instance (Issue #1738). The loop's init handshake completes
+ *     end-to-end against a REAL `/mcp` Streamable-HTTP endpoint whose gate
+ *     mode is set explicitly by `--auth-mode` (default `enforce`, because
+ *     `resolveMcpAuthMode` defaults to `warn` for every AUTH_MODE since
+ *     Issue #1107 -- an unset value would silently run this whole smoke in
+ *     warn mode). Then, after `ready` and before teardown, against the real
+ *     Hono app on its real port, the same JSON-RPC `tools/call` of
+ *     `list_sessions` is sent twice:
+ *       E1  tokenless. Under `enforce`: refused with HTTP 401 and the
+ *           gate's exact message ("MCP authentication required: no bearer
+ *           token presented (AGENT_CONSOLE_MCP_AUTH=enforce)"), and the
+ *           gate's warn line was NOT logged. Under `--auth-mode warn`:
+ *           ACCEPTED with HTTP 200 and a result, and the gate's exact warn
+ *           line ("MCP request without verified caller identity;
+ *           proceeding (AGENT_CONSOLE_MCP_AUTH=warn)") was logged exactly
+ *           once -- observed through a recording pass-through installed on
+ *           `rootLogger.warn`, the parent the `mcp-auth` child logger
+ *           resolves to.
+ *       E2  `Authorization: Bearer <the token the loop itself presented>`
+ *           (captured from the real /mcp request the init handshake made).
+ *           Both arms: HTTP 200 with a JSON-RPC result -- under `enforce`
+ *           this is what turns "the token hit /mcp" into "the token is
+ *           what admits the call", since E1 was refused on the same
+ *           endpoint a moment earlier.
+ *     The two arms are one apparatus with inverted E1 expectations, so
+ *     running either arm against the other's assertion set FAILS: that is
+ *     the polarity, measured by running BOTH arms in the tier-2 container.
+ *     The effective mode is thereby READ BACK by observable behaviour (401
+ *     vs 200 on the same tokenless call) -- deliberately no mode-echo
+ *     endpoint, which would only read back a configured string.
  *   - Negative secret assertions against the REAL `/proc/<pid>/cmdline` and
  *     `/proc/<pid>/environ` of the elevated subprocess: neither the MCP
  *     bearer token nor the provider API key must appear in either file.
@@ -149,20 +174,25 @@
  *     never dialed. The `provider.baseUrl` field is only present because the
  *     embedded-agent definition schema requires it.
  *
- * Note on AGENT_CONSOLE_MCP_AUTH: this smoke sets it to `enforce`
- * EXPLICITLY, next to `AUTH_MODE=multi-user`. An earlier revision left it
- * unset on the premise that "unset + multi-user resolves to enforce"; that
- * default flip landed and was then reverted (Issue #1107 is the open item to
- * restore it), and `resolveMcpAuthMode` returns `warn` for an unset value
- * regardless of `AUTH_MODE` (`packages/server/src/mcp/__tests__/
- * mcp-auth.test.ts` pins exactly that) -- so every run under the old premise
- * exercised the `/mcp` boundary in `warn` mode while claiming `enforce`
- * (found by CodeRabbit on PR #1736; Issue #1738 tracks the follow-up that
- * adds a real enforcement assertion with polarity). Setting the value
- * explicitly is what makes the "enforce" in this file's assertions true.
+ * Note on AGENT_CONSOLE_MCP_AUTH: this smoke sets it EXPLICITLY from the
+ * `--auth-mode` flag (default `enforce`), next to `AUTH_MODE=multi-user`. An
+ * earlier revision left it unset on the premise that "unset + multi-user
+ * resolves to enforce"; that default flip landed and was then reverted
+ * (Issue #1107 is the open item to restore it), and `resolveMcpAuthMode`
+ * returns `warn` for an unset value regardless of `AUTH_MODE`
+ * (`packages/server/src/mcp/__tests__/mcp-auth.test.ts` pins exactly that)
+ * -- so every run under the old premise exercised the `/mcp` boundary in
+ * `warn` mode while claiming `enforce` (found by CodeRabbit on PR #1736;
+ * Issue #1738 then added the E1/E2 read-back and the `--auth-mode warn`
+ * polarity arm above). Setting the value explicitly is what makes the
+ * "enforce" in this file's assertions true; E1 is what proves it.
  *
  * Usage:
+ *   bun scripts/smoke/check-embedded-agent-elevation.ts <target-user> [--auth-mode enforce|warn]
+ *   # default arm (enforce): E1 refused 401, E2 admitted 200
  *   bun scripts/smoke/check-embedded-agent-elevation.ts <target-user>
+ *   # polarity arm (warn): E1 accepted 200 + exact warn line logged, E2 admitted 200
+ *   bun scripts/smoke/check-embedded-agent-elevation.ts <target-user> --auth-mode warn
  *
  * Requirements:
  *   - Run as a user with elevation privilege for <target-user> (a working,
@@ -176,7 +206,7 @@
  *     assertion below fails by design.
  *   - Degenerate mode: passing the CURRENT process user as <target-user>
  *     exercises the entire pipeline (entry resolution, real subprocess, real
- *     MCP enforce handshake, /proc negative checks) EXCEPT the actual
+ *     MCP handshake + E1/E2 gate read-back, /proc negative checks) EXCEPT the actual
  *     cross-user `sudo` boundary crossing, since `spawnAsUser` bypasses
  *     elevation when the target user equals the server-process user. Useful
  *     when no second OS user + configured elevation is available.
@@ -184,7 +214,8 @@
  * Exit codes:
  *   0  all assertions passed
  *   1  one or more assertions failed (system is wrong)
- *   2  bad usage / cannot run (missing target user, launch failure; also
+ *   2  bad usage / cannot run (missing target user, an unknown flag or an
+ *      `--auth-mode` value other than enforce|warn, launch failure; also
  *      fired by the EMBEDDED_AGENT_BUN_PATH probe-cannot-run guard below when
  *      an absolute EMBEDDED_AGENT_BUN_PATH is configured but not present on
  *      disk -- the multi-user setup script's bun-copy step was not applied --
@@ -272,6 +303,76 @@ const SYSTEMD_UNIT_NAME = 'agent-console';
  */
 class SmokeSetupError extends Error {}
 
+/**
+ * The two `/mcp` gate modes this smoke can drive. `off` is deliberately not
+ * offered: it has no observable of its own at the boundary (a tokenless call
+ * is admitted silently, indistinguishable from `warn` minus the log line),
+ * and nothing in this smoke's contract is about `off`.
+ */
+export type SmokeAuthMode = 'enforce' | 'warn';
+
+/**
+ * The gate's exact texts, copied from `evaluateMcpAuthGate` in
+ * `packages/server/src/mcp/mcp-auth.ts`. Asserted by string EQUALITY (not
+ * `includes`) so a reworded gate message fails here loudly rather than being
+ * matched by a looser substring. Deliberately NOT imported from mcp-auth.ts:
+ * the point of E1 and the warn arm is to read the gate's behaviour back
+ * from the running instance, and an assertion that compares the gate's
+ * output against the gate's own constant would pass under any rewording,
+ * including one that broke the contract these lines document.
+ */
+const ENFORCE_REFUSAL_TEXT =
+  'MCP authentication required: no bearer token presented (AGENT_CONSOLE_MCP_AUTH=enforce)';
+const WARN_LOG_LINE = 'MCP request without verified caller identity; proceeding (AGENT_CONSOLE_MCP_AUTH=warn)';
+
+function printUsageAndExit(reason: string): never {
+  console.error(`error: ${reason}`);
+  console.error('usage: bun scripts/smoke/check-embedded-agent-elevation.ts <target-user> [--auth-mode enforce|warn]');
+  process.exit(2);
+}
+
+/**
+ * `<target-user>` is the sole positional; `--auth-mode <enforce|warn>` (or
+ * `--auth-mode=<value>`) selects BOTH the value written to
+ * `AGENT_CONSOLE_MCP_AUTH` and the assertion set applied to the tokenless
+ * `/mcp` call, so the two arms are one apparatus with inverted expectations
+ * (the sibling `--expect-*` convention, here as a mode selector because the
+ * inverse world is a real supported configuration rather than a removed
+ * fix). Default `enforce`. A leading `--` (the form the sibling smokes
+ * accept for `bun script -- --flag`) is tolerated. Exported for
+ * `__tests__/check-embedded-agent-elevation.test.ts` (import-safe: the only
+ * top-level invocation in this file is behind `import.meta.main`).
+ */
+export function parseArgs(argv: string[]): { targetUsername: string; authMode: SmokeAuthMode } {
+  const args = argv[0] === '--' ? argv.slice(1) : argv;
+  let targetUsername: string | undefined;
+  let authMode: SmokeAuthMode = 'enforce';
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    let modeValue: string | undefined;
+    if (arg === '--auth-mode') {
+      modeValue = args[++i];
+    } else if (arg.startsWith('--auth-mode=')) {
+      modeValue = arg.slice('--auth-mode='.length);
+    } else if (arg.startsWith('--')) {
+      printUsageAndExit(`unknown flag: ${arg}`);
+    } else if (targetUsername === undefined) {
+      targetUsername = arg;
+      continue;
+    } else {
+      printUsageAndExit(`unexpected extra argument: ${arg}`);
+    }
+    if (modeValue !== 'enforce' && modeValue !== 'warn') {
+      printUsageAndExit(`invalid --auth-mode value: ${String(modeValue)} (expected enforce|warn)`);
+    }
+    authMode = modeValue;
+  }
+  if (!targetUsername) {
+    printUsageAndExit('missing <target-user>');
+  }
+  return { targetUsername, authMode };
+}
+
 const failures: string[] = [];
 let passes = 0;
 const expect = (cond: boolean, label: string, detail?: string): void => {
@@ -331,11 +432,7 @@ async function main(): Promise<void> {
   // documented in check-multiuser-pty-env.ts). Neutralize at script start.
   process.chdir('/');
 
-  const targetUsername = process.argv[2];
-  if (!targetUsername) {
-    console.error('usage: bun scripts/smoke/check-embedded-agent-elevation.ts <target-user>');
-    process.exit(2);
-  }
+  const { targetUsername, authMode } = parseArgs(process.argv.slice(2));
 
   // --- CRITICAL ordering: env vars must be set before ANY module that reads
   // `serverConfig.AUTH_MODE` is evaluated. `packages/server/src/lib/
@@ -358,17 +455,21 @@ async function main(): Promise<void> {
   // `console.log(serverConfig.AUTH_MODE)` placed as the first line inside
   // `main()` printed 'multi-user' (not 'none'), confirming this ordering holds.
   //
-  // `AGENT_CONSOLE_MCP_AUTH=enforce` is set EXPLICITLY (see the "Note on
-  // AGENT_CONSOLE_MCP_AUTH" header comment above: the multi-user default is
-  // `warn` until Issue #1107, so an unset value would run the `/mcp` boundary
-  // in warn mode). Unlike `AUTH_MODE`, it carries no module-load-time
-  // ordering hazard: `resolveMcpAuthMode`'s `rawValue` parameter defaults to
-  // `process.env.AGENT_CONSOLE_MCP_AUTH` evaluated at CALL time (a JS default
-  // parameter, not a module-load-time IIFE), and it is only called later,
-  // from inside `main()`, once `createMcpApp` builds the `/mcp` route --
-  // setting it here, before the deferred imports, is sufficient.
+  // `AGENT_CONSOLE_MCP_AUTH` is set EXPLICITLY from the `--auth-mode` flag
+  // (default `enforce` -- see the "Note on AGENT_CONSOLE_MCP_AUTH" header
+  // comment above: the resolver's default is `warn` for every AUTH_MODE
+  // since Issue #1107, so an unset value would run the `/mcp` boundary in
+  // warn mode while this file's assertions talk about enforce). The `warn`
+  // arm is the polarity arm: same apparatus, inverted assertions on the
+  // same tokenless call. Unlike `AUTH_MODE`, this variable carries no
+  // module-load-time ordering hazard: `resolveMcpAuthMode`'s `rawValue`
+  // parameter defaults to `process.env.AGENT_CONSOLE_MCP_AUTH` evaluated at
+  // CALL time (a JS default parameter, not a module-load-time IIFE), and it
+  // is only called later, from inside `main()`, once `createMcpApp` builds
+  // the `/mcp` route -- setting it here, before the deferred imports, is
+  // sufficient.
   process.env.AUTH_MODE = 'multi-user';
-  process.env.AGENT_CONSOLE_MCP_AUTH = 'enforce';
+  process.env.AGENT_CONSOLE_MCP_AUTH = authMode;
 
   // --- Deferred imports: everything below transitively imports server-config.ts,
   // so it must be dynamically imported AFTER the env vars above are set.
@@ -387,6 +488,28 @@ async function main(): Promise<void> {
   const { runAsUser, shellEscape } = await import(
     '../../packages/server/src/services/privilege-elevation.js'
   );
+  // The warn arm's observable is a LOG LINE, not an HTTP status, so the
+  // smoke needs an instrument on the server's logger. `mcp-auth.ts` logs
+  // through `createLogger('mcp-auth')`, a pino child of `rootLogger`; pino
+  // builds a child with `Object.create(parent)` and, absent a per-child
+  // level, never defines its own level methods -- so the child's `warn`
+  // resolves through the prototype chain to whatever `rootLogger.warn` is
+  // AT CALL TIME. Replacing that one property with a recording pass-through
+  // therefore observes the gate's `log.warn(...)` without touching
+  // mcp-auth.ts (the same seam the unit tests use via `spyOn(rootLogger,
+  // ...)`; `bun:test`'s spyOn is not importable outside the test runner, so
+  // this is the hand-rolled equivalent). The pass-through keeps the real
+  // sink working, and `this` is forwarded so the child's own bindings still
+  // apply. Installed BEFORE the app server exists, so no warn from the
+  // gate can predate the instrument.
+  const { rootLogger } = await import('../../packages/server/src/lib/logger.js');
+  const recordedWarnLines: string[] = [];
+  const originalRootWarn = rootLogger.warn;
+  rootLogger.warn = function recordingWarn(this: unknown, ...args: unknown[]) {
+    const msg = args.find((a): a is string => typeof a === 'string');
+    if (msg !== undefined) recordedWarnLines.push(msg);
+    return Reflect.apply(originalRootWarn, this, args);
+  } as typeof rootLogger.warn;
 
   // `hono` is only hoisted under packages/server/node_modules (and
   // packages/client, packages/shared), not under any node_modules ancestor of
@@ -804,7 +927,10 @@ async function main(): Promise<void> {
 
     appServer = Bun.serve({ fetch: app.fetch, port: 0 });
     mcpBaseUrl = `http://localhost:${appServer.port}/mcp`;
-    console.log(`==> real app server on :${appServer.port}, /mcp under AGENT_CONSOLE_MCP_AUTH=enforce (set explicitly; the multi-user default is warn until #1107)`);
+    console.log(
+      `==> real app server on :${appServer.port}, /mcp under AGENT_CONSOLE_MCP_AUTH=${authMode} ` +
+        `(set explicitly by --auth-mode; the resolver's default is warn for every AUTH_MODE since #1107)`,
+    );
 
     // Subprocess cwd must exist on the REAL filesystem.
     realCwd = path.join(os.tmpdir(), `ac-embedded-smoke-cwd-${crypto.randomUUID()}`);
@@ -928,7 +1054,7 @@ async function main(): Promise<void> {
     if (!sawReady) {
       console.error(
         'PROBE FAILED: did not reach `ready` within 30s -- this could mean elevation failed,' +
-          ' MCP enforce auth failed, or the loop crashed. Observed event types: ' +
+          ` the MCP handshake failed under AGENT_CONSOLE_MCP_AUTH=${authMode}, or the loop crashed. Observed event types: ` +
           JSON.stringify(lastEvents.map((e) => e.type)),
       );
       const internalWorkerForStderr = ctx.sessionManager.getWorker(sessionId, workerId);
@@ -936,7 +1062,10 @@ async function main(): Promise<void> {
         console.error(`  subprocess pid: ${internalWorkerForStderr.subprocess.pid}`);
       }
     }
-    expect(sawReady, 'reached `ready` (init handshake incl. real MCP call under AGENT_CONSOLE_MCP_AUTH=enforce, set explicitly -- the multi-user default is warn until #1107)');
+    expect(
+      sawReady,
+      `reached \`ready\` (init handshake incl. real MCP call under AGENT_CONSOLE_MCP_AUTH=${authMode}, set explicitly by --auth-mode)`,
+    );
 
     // --- Real bearer token hit the real /mcp endpoint (mirrors the E2E test's assertion). ---
     expect(capturedMcpAuth.length > 0, 'the init-minted MCP bearer token hit the real /mcp endpoint');
@@ -945,6 +1074,118 @@ async function main(): Promise<void> {
       const match = /^Bearer\s+([0-9a-f]{64})$/.exec(capturedMcpAuth[0]);
       expect(match !== null, 'captured Authorization header has the expected Bearer <64-hex> shape', capturedMcpAuth[0]);
       capturedToken = match?.[1];
+    }
+
+    // --- The `/mcp` gate, read back from the running instance by its
+    // observable behaviour (Issue #1738). Everything above proves the
+    // worker's token REACHED /mcp; nothing above proves the token is what
+    // ADMITS a call, because a warn-mode gate admits a tokenless call too
+    // and the handshake looks identical from the loop's side. So, against
+    // the REAL Hono app on its REAL port (not `app.fetch` in-process -- the
+    // same TCP path the loop itself used), the same JSON-RPC `tools/call`
+    // of `list_sessions` (a tool that claims no session, so the transport
+    // gate is the ONLY thing that can refuse it) is sent twice:
+    //
+    //   E1  tokenless   -- enforce: HTTP 401 + the gate's exact refusal text
+    //                      warn:    HTTP 200 + a result, AND the gate's exact
+    //                               warn line was logged (string equality
+    //                               on the recorded `rootLogger.warn` calls)
+    //   E2  Bearer <the token captured in capturedMcpAuth[0]>
+    //                   -- both arms: HTTP 200 + a JSON-RPC result (not an
+    //                      error object) -- the token is what admits E2
+    //                      under enforce, where E1 was refused a moment
+    //                      earlier on the SAME endpoint.
+    //
+    // The two arms are one apparatus with inverted expectations on E1: the
+    // enforce arm run with the warn arm's assertion set FAILS (401 !== 200,
+    // no warn line recorded) and vice versa (200 !== 401), which is the
+    // polarity -- measured by running BOTH arms in the tier-2 container
+    // (PR body). The enforce arm ALSO asserts that no warn line was recorded
+    // at all: that is the negative control on the logger instrument itself,
+    // proving a `recordedWarnLines` hit in the warn arm is the gate's, not
+    // ambient noise the instrument would have captured in either mode.
+    //
+    // This is also why no mode-echo endpoint exists: the mode is what the
+    // gate DOES to a tokenless call, and reading that back is stronger than
+    // reading back a string the process was configured with.
+    //
+    // Ordering: after `ready` (the token exists only once the loop's init
+    // handshake minted and used it -- E2 needs the captured header) and
+    // before teardown (the token is revoked at deactivation, so E2 after
+    // the `finally` block would be measuring revocation, not admission).
+    console.log(`==> /mcp gate read-back (E1 tokenless, E2 own token) under AGENT_CONSOLE_MCP_AUTH=${authMode}`);
+    const gateCall = async (
+      authorizationHeader: string | undefined,
+    ): Promise<{ status: number; body: unknown; text: string }> => {
+      const headers: Record<string, string> = {
+        'Content-Type': 'application/json',
+        Accept: 'application/json, text/event-stream',
+      };
+      if (authorizationHeader !== undefined) headers.Authorization = authorizationHeader;
+      const res = await fetch(mcpBaseUrl, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          method: 'tools/call',
+          params: { name: 'list_sessions', arguments: {} },
+          id: 1,
+        }),
+      });
+      const text = await res.text();
+      let body: unknown;
+      try {
+        body = JSON.parse(text);
+      } catch {
+        body = undefined;
+      }
+      return { status: res.status, body, text };
+    };
+    const hasJsonRpcResult = (body: unknown): boolean =>
+      typeof body === 'object' &&
+      body !== null &&
+      'result' in body &&
+      !('error' in body) &&
+      typeof (body as { result: unknown }).result === 'object';
+    const errorTextOf = (body: unknown): string | undefined =>
+      typeof body === 'object' && body !== null && typeof (body as { error?: unknown }).error === 'string'
+        ? (body as { error: string }).error
+        : undefined;
+
+    const warnLinesBeforeE1 = recordedWarnLines.filter((l) => l === WARN_LOG_LINE).length;
+    const e1 = await gateCall(undefined);
+    const warnLinesAfterE1 = recordedWarnLines.filter((l) => l === WARN_LOG_LINE).length;
+    console.log(`  E1 tokenless tools/call list_sessions -> HTTP ${e1.status} ${e1.text.slice(0, 200)}`);
+    console.log(`  gate warn lines recorded (exact text): before E1=${warnLinesBeforeE1}, after E1=${warnLinesAfterE1}`);
+    if (authMode === 'enforce') {
+      expect(e1.status === 401, 'E1 (enforce): tokenless /mcp call is refused with HTTP 401', `got HTTP ${e1.status}`);
+      expect(
+        errorTextOf(e1.body) === ENFORCE_REFUSAL_TEXT,
+        'E1 (enforce): refusal body carries the gate\'s exact enforce message',
+        `got ${e1.text.slice(0, 300)}`,
+      );
+      expect(
+        warnLinesAfterE1 === 0,
+        'E1 (enforce): the gate\'s warn line was NOT logged (negative control on the logger instrument)',
+        `recorded ${warnLinesAfterE1} exact-match warn line(s)`,
+      );
+    } else {
+      expect(e1.status === 200, 'E1 (warn): tokenless /mcp call is ACCEPTED with HTTP 200', `got HTTP ${e1.status}`);
+      expect(hasJsonRpcResult(e1.body), 'E1 (warn): accepted call returned a JSON-RPC result', e1.text.slice(0, 300));
+      expect(
+        warnLinesAfterE1 === warnLinesBeforeE1 + 1,
+        'E1 (warn): exactly one gate warn line with the exact text was logged for the tokenless call',
+        `before=${warnLinesBeforeE1} after=${warnLinesAfterE1}; all recorded warn lines: ${JSON.stringify(recordedWarnLines)}`,
+      );
+    }
+
+    if (capturedToken === undefined) {
+      expect(false, 'E2: own-token /mcp call actually ran', 'no captured token to present');
+    } else {
+      const e2 = await gateCall(`Bearer ${capturedToken}`);
+      console.log(`  E2 own-token tools/call list_sessions -> HTTP ${e2.status} ${e2.text.slice(0, 200)}`);
+      expect(e2.status === 200, `E2 (${authMode}): the worker's own bearer token admits the same call (HTTP 200)`, `got HTTP ${e2.status}`);
+      expect(hasJsonRpcResult(e2.body), `E2 (${authMode}): admitted call returned a JSON-RPC result, not an error`, e2.text.slice(0, 300));
     }
 
     // --- Negative secret assertions against the REAL /proc of the elevated subprocess. ---
