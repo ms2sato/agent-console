@@ -201,11 +201,13 @@ async function findMatchingRepositories(
 }
 
 /**
- * Resolve the repository's designated Orchestrator session as a fallback
- * target (Shape C, #1661) -- eligible only when it currently exists, is
- * running, and has an agent worker to deliver to. Reuses
+ * Resolve the repository's designated-Orchestrator SESSIONS as fallback
+ * targets (Shape C, #1661) -- every session in `orchestratorSessionIds` is
+ * eligible independently, subject to the same three exclusions per session
+ * (not found / not running / no agent worker to deliver to). Reuses
  * `canDeliverToAgentWorker` and `findMatchingRepositories` rather than
- * re-deriving either check.
+ * re-deriving either check. No ordering guarantee beyond dedup (via the
+ * returned `Set`).
  */
 async function resolveDesignatedFallbackSessionIds(
   deps: TargetResolverDependencies,
@@ -217,15 +219,14 @@ async function resolveDesignatedFallbackSessionIds(
   const eligible = new Set<string>();
 
   for (const repository of matchedRepositories) {
-    const orchestratorSessionId = repository.orchestratorSessionId;
-    if (!orchestratorSessionId) continue;
+    for (const orchestratorSessionId of repository.orchestratorSessionIds) {
+      const liveSession = sessions.find((s) => s.id === orchestratorSessionId);
+      if (!liveSession) continue;
+      if (liveSession.activationState !== 'running') continue;
+      if (!canDeliverToAgentWorker(liveSession)) continue;
 
-    const liveSession = sessions.find((s) => s.id === orchestratorSessionId);
-    if (!liveSession) continue;
-    if (liveSession.activationState !== 'running') continue;
-    if (!canDeliverToAgentWorker(liveSession)) continue;
-
-    eligible.add(orchestratorSessionId);
+      eligible.add(orchestratorSessionId);
+    }
   }
 
   return [...eligible];
@@ -239,10 +240,10 @@ async function resolveDesignatedFallbackSessionIds(
  * registered `Repository` rows (e.g. two clones of the same GitHub repo) can
  * legitimately resolve to the same remote. For each same-remote candidate,
  * check whether the event's label(s) match that repository's configured
- * `issueTriggerLabels` and it has a live designated Orchestrator session --
- * only then does it contribute a target. Unlike every other event type,
- * this never fans out across a repository's active sessions or notifies a
- * parent session.
+ * `issueTriggerLabels`; when they do, deliver to EVERY live session in that
+ * repository's designated-Orchestrator SET (`orchestratorSessionIds`), not
+ * just one. Unlike every other event type, this never fans out across a
+ * repository's active sessions or notifies a parent session.
  */
 async function resolveIssueLabeledTargets(
   event: InboundSystemEvent,
@@ -258,10 +259,12 @@ async function resolveIssueLabeledTargets(
   const eventLabels = event.metadata.labels ?? [];
   const sessions = deps.getSessions();
 
-  // Evaluate eligibility (label match, then live-session lookup) for EVERY
-  // same-remote candidate -- one ineligible candidate must never short-circuit
-  // evaluation of the others. Dedup by session id: two same-remote
-  // repositories could in principle designate the same session.
+  // Evaluate eligibility (label match, then per-session live lookup) for
+  // EVERY same-remote candidate -- one ineligible candidate must never
+  // short-circuit evaluation of the others. Dedup by session id: two
+  // same-remote repositories could in principle designate the same session,
+  // and a single repository's set can never contain duplicates by
+  // construction (the row store's composite primary key).
   const orchestratorSessionIds = new Set<string>();
   for (const repository of matchedRepositories) {
     if (!matchesAnyTriggerLabel(eventLabels, repository.issueTriggerLabels)) {
@@ -277,50 +280,66 @@ async function resolveIssueLabeledTargets(
       continue;
     }
 
-    const orchestratorSessionId = repository.orchestratorSessionId;
-    const liveSession = orchestratorSessionId
-      ? sessions.find((s) => s.id === orchestratorSessionId)
-      : undefined;
-
-    if (!orchestratorSessionId || !liveSession) {
+    if (repository.orchestratorSessionIds.length === 0) {
       logger.info(
-        { repositoryId: repository.id, orchestratorSessionId },
-        'issue:labeled event matched repository but no live orchestrator session is designated'
+        { repositoryId: repository.id },
+        'issue:labeled event matched repository but it has no designated orchestrator sessions'
       );
       continue;
     }
 
-    // The designated session existing in `getSessions()` is not enough --
-    // a session survives there with `activationState: 'hibernated'` after
-    // all its PTY workers have exited. Routing to a hibernated session would
-    // silently drop the notification (nothing is listening) while still
-    // reporting the event as delivered. `activationState` is already
-    // computed upstream by `SessionConverterService.toPublicSession()`; read
-    // it off `liveSession` rather than recomputing it here.
-    if (liveSession.activationState !== 'running') {
-      logger.info(
-        { repositoryId: repository.id, orchestratorSessionId, activationState: liveSession.activationState },
-        'issue:labeled event matched repository but the designated orchestrator session is not running'
-      );
-      continue;
-    }
+    for (const orchestratorSessionId of repository.orchestratorSessionIds) {
+      const liveSession = sessions.find((s) => s.id === orchestratorSessionId);
 
-    // `activationState: 'running'` is computed vacuously true when the
-    // session has zero agent/terminal-type workers (nothing to hibernate) --
-    // e.g. a worktree session whose only worker is a `git-diff` worker. Such
-    // a session passes the check above but AgentWorkerHandler.handle() can
-    // never deliver to it (no `agent`-type worker to resolve a workerId
-    // from). Check the same single-writer predicate handle() uses, so this
-    // routing decision and the actual delivery capability never drift apart.
-    if (!canDeliverToAgentWorker(liveSession)) {
-      logger.info(
-        { repositoryId: repository.id, orchestratorSessionId },
-        'issue:labeled event matched repository but the designated orchestrator session has no agent worker to deliver to'
-      );
-      continue;
-    }
+      if (!liveSession) {
+        logger.info(
+          { repositoryId: repository.id, orchestratorSessionId },
+          'issue:labeled event matched repository but a designated orchestrator session is not a live session'
+        );
+        continue;
+      }
 
-    orchestratorSessionIds.add(orchestratorSessionId);
+      // Keep the "not running" / "no agent worker" message text and field
+      // shape byte-for-byte identical to the pre-#1716 single-session
+      // messages (only the `orchestratorSessionId` field name changes, from
+      // the repository's single column to the per-session loop variable) --
+      // downstream consumers (including this file's own tests) match on
+      // the exact string.
+
+      // The designated session existing in `getSessions()` is not enough --
+      // a session survives there with `activationState: 'hibernated'` after
+      // all its PTY workers have exited. Routing to a hibernated session
+      // would silently drop the notification (nothing is listening) while
+      // still reporting the event as delivered. `activationState` is
+      // already computed upstream by
+      // `SessionConverterService.toPublicSession()`; read it off
+      // `liveSession` rather than recomputing it here.
+      if (liveSession.activationState !== 'running') {
+        logger.info(
+          { repositoryId: repository.id, orchestratorSessionId, activationState: liveSession.activationState },
+          'issue:labeled event matched repository but the designated orchestrator session is not running'
+        );
+        continue;
+      }
+
+      // `activationState: 'running'` is computed vacuously true when the
+      // session has zero agent/terminal-type workers (nothing to hibernate)
+      // -- e.g. a worktree session whose only worker is a `git-diff`
+      // worker. Such a session passes the check above but
+      // AgentWorkerHandler.handle() can never deliver to it (no
+      // `agent`-type worker to resolve a workerId from). Check the same
+      // single-writer predicate handle() uses, so this routing decision and
+      // the actual delivery capability never drift apart.
+      if (!canDeliverToAgentWorker(liveSession)) {
+        logger.info(
+          { repositoryId: repository.id, orchestratorSessionId },
+          'issue:labeled event matched repository but the designated orchestrator session has no agent worker to deliver to'
+        );
+        continue;
+      }
+
+      orchestratorSessionIds.add(orchestratorSessionId);
+    }
   }
 
   return [...orchestratorSessionIds].map((sessionId) => ({ sessionId }));

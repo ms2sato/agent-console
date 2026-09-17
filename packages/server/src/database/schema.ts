@@ -21,6 +21,7 @@ export interface Database {
   artifacts: ArtifactsTable;
   user_notification_cursor: UserNotificationCursorTable;
   bookmarks: BookmarksTable;
+  repository_orchestrator_sessions: RepositoryOrchestratorSessionsTable;
 }
 
 /**
@@ -191,7 +192,7 @@ export interface RepositoriesTable {
   description: string | null;
   /** Default agent ID for worktree creation (added in v10) */
   default_agent_id: string | null;
-  /** Session that is this repository's designated Orchestrator (added in v40). ON DELETE SET NULL. */
+  /** DEAD since v41: designations live in repository_orchestrator_sessions; always NULL; dropped by a later rebuild migration */
   orchestrator_session_id: string | null;
   /** Comma-separated label names that trigger issue:labeled routing (added in v40). */
   issue_trigger_labels: string | null;
@@ -574,3 +575,30 @@ export interface BookmarksTable {
 export type BookmarkRow = Selectable<BookmarksTable>;
 /** Bookmark data for INSERT queries */
 export type NewBookmark = Insertable<BookmarksTable>;
+
+/**
+ * Repository-orchestrator-session designation table (migration v41, Issue
+ * #1716). A repository's Orchestrator designation is a SET of sessions, not
+ * a single nullable pointer -- see the dead `RepositoriesTable.orchestrator_session_id`
+ * doc comment above -- so this table carries one row per (repository,
+ * session) designation pair. Composite primary key on
+ * `(repository_id, session_id)`; both foreign keys `ON DELETE CASCADE` so a
+ * deleted repository or a deleted session removes its designation rows
+ * automatically, with no application code path to get wrong.
+ */
+export interface RepositoryOrchestratorSessionsTable {
+  /** Foreign key to repositories.id. ON DELETE CASCADE. Part of the composite primary key. */
+  repository_id: string;
+  /** Foreign key to sessions.id. ON DELETE CASCADE. Part of the composite primary key. */
+  session_id: string;
+  /**
+   * Designation timestamp as ISO 8601 string (has DEFAULT); used to order
+   * the set deterministically on the wire (`created_at ASC, session_id ASC`).
+   */
+  created_at: Generated<string>;
+}
+
+/** Repository-orchestrator-session designation row as returned from SELECT queries */
+export type RepositoryOrchestratorSessionRow = Selectable<RepositoryOrchestratorSessionsTable>;
+/** Repository-orchestrator-session designation data for INSERT queries */
+export type NewRepositoryOrchestratorSession = Insertable<RepositoryOrchestratorSessionsTable>;

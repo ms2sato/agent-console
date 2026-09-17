@@ -123,7 +123,10 @@ const RepositorySchema = v.strictObject({
   envVars: v.optional(v.nullable(v.string())),
   description: v.optional(v.nullable(v.string())),
   defaultAgentId: v.optional(v.nullable(v.string())),
-  orchestratorSessionId: v.optional(v.nullable(v.string())),
+  // Required (not optional): the set of sessions designated as this
+  // repository's Orchestrators (Issue #1716). Zero designations is `[]`,
+  // never an absent key.
+  orchestratorSessionIds: v.array(v.string()),
   issueTriggerLabels: v.optional(v.nullable(v.string())),
   // Required (not optional) so every broadcast carries a defined value;
   // server derives via `withRepositoryRemote` against `getSourceReposDir()`.
@@ -424,7 +427,12 @@ const BookmarkDeletedSchema = v.strictObject({
 const OrchestratorDesignationChangedSchema = v.strictObject({
   type: v.literal('orchestrator-designation-changed'),
   repositoryId: v.string(),
-  sessionId: v.nullable(v.string()),
+  // The full re-read set after the change, so a client never needs to
+  // reconcile an add/remove delta locally (Issue #1716).
+  orchestratorSessionIds: v.array(v.string()),
+  // The single session whose add/remove caused this broadcast.
+  changedSessionId: v.string(),
+  action: v.picklist(['added', 'removed']),
 });
 
 /**

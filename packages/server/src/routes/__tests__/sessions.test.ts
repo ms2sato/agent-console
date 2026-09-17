@@ -1443,6 +1443,7 @@ describe('Sessions API - POST/DELETE /api/sessions/:id/orchestrator-designation 
       name: 'test-repo',
       path: testRepoPath,
       createdAt: new Date().toISOString(),
+      orchestratorSessionIds: [],
       clonedSourceRepoPath: null,
     });
     repositoryManager = await RepositoryManager.create({
@@ -1479,11 +1480,12 @@ describe('Sessions API - POST/DELETE /api/sessions/:id/orchestrator-designation 
     );
 
     // Sessions in this describe block are persisted via JsonSessionRepository
-    // (not the sqlite `sessions` table), but `repositories.orchestrator_session_id`
-    // carries a real `REFERENCES sessions(id)` FK. Insert a matching row so a
-    // session created here can legally become (or already be) the FK target
-    // -- mirrors the minimal insert shape used by
-    // database/__tests__/migration.test.ts's v40 orchestrator_session_id tests.
+    // (not the sqlite `sessions` table), but
+    // `repository_orchestrator_sessions.session_id` carries a real
+    // `REFERENCES sessions(id)` FK (migration v41). Insert a matching row so
+    // a session created here can legally become (or already be) the FK
+    // target -- mirrors the minimal insert shape used by
+    // database/__tests__/migration.test.ts's v41 tests.
     // `created_by` is left null: the route's ownership check reads from the
     // in-memory JsonSessionRepository-backed session object, not this row.
     await getDatabase()
@@ -1508,7 +1510,7 @@ describe('Sessions API - POST/DELETE /api/sessions/:id/orchestrator-designation 
     return session.id;
   }
 
-  it('POST: happy path raises the flag (200, repository row updated)', async () => {
+  it('POST: happy path adds this session to the set (200, repository row updated)', async () => {
     await setupCommon({ sharedEnabled: false });
     const sessionId = await createWorktreeSession(TEST_AUTH_USER.id);
 
@@ -1516,43 +1518,84 @@ describe('Sessions API - POST/DELETE /api/sessions/:id/orchestrator-designation 
       method: 'POST',
     });
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ repositoryId: testRepositoryId, orchestratorSessionId: sessionId });
+    expect(await res.json()).toEqual({ repositoryId: testRepositoryId, orchestratorSessionIds: [sessionId] });
 
     const repo = repositoryManager.getRepository(testRepositoryId);
-    expect(repo?.orchestratorSessionId).toBe(sessionId);
+    expect(repo?.orchestratorSessionIds).toEqual([sessionId]);
   });
 
-  it('DELETE: happy path clears the flag while this session still holds it (cleared: true)', async () => {
+  it('POST: is idempotent -- a second POST from the same session returns 200 with the same (unchanged) set', async () => {
     await setupCommon({ sharedEnabled: false });
     const sessionId = await createWorktreeSession(TEST_AUTH_USER.id);
-    await repositoryManager.setOrchestratorSession(testRepositoryId, sessionId);
+    await app.request(`/api/sessions/${sessionId}/orchestrator-designation`, { method: 'POST' });
 
     const res = await app.request(`/api/sessions/${sessionId}/orchestrator-designation`, {
-      method: 'DELETE',
+      method: 'POST',
     });
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ repositoryId: testRepositoryId, cleared: true });
-
-    const repo = repositoryManager.getRepository(testRepositoryId);
-    expect(repo?.orchestratorSessionId).toBeNull();
+    expect(await res.json()).toEqual({ repositoryId: testRepositoryId, orchestratorSessionIds: [sessionId] });
   });
 
-  it('DELETE: stale clear from a session that no longer holds the flag (cleared: false, no-op)', async () => {
+  it('POST: two sessions both adding themselves results in a set containing both', async () => {
     await setupCommon({ sharedEnabled: false });
-    const holderSessionId = await createWorktreeSession(TEST_AUTH_USER.id);
-    const staleSessionId = await createWorktreeSession(TEST_AUTH_USER.id);
-    await repositoryManager.setOrchestratorSession(testRepositoryId, holderSessionId);
+    const sessionA = await createWorktreeSession(TEST_AUTH_USER.id);
+    const sessionB = await createWorktreeSession(TEST_AUTH_USER.id);
 
-    const res = await app.request(`/api/sessions/${staleSessionId}/orchestrator-designation`, {
+    await app.request(`/api/sessions/${sessionA}/orchestrator-designation`, { method: 'POST' });
+    const res = await app.request(`/api/sessions/${sessionB}/orchestrator-designation`, { method: 'POST' });
+
+    // Set membership only -- exact `created_at ASC, session_id ASC` order
+    // is pinned precisely (with explicit, distinct `created_at` values) by
+    // `sqlite-repository-repository.test.ts`'s ordering tests. Two real
+    // consecutive calls here can legitimately land the same millisecond
+    // `created_at`, at which point the tiebreak is session_id (a random
+    // UUID), so asserting a specific array order would be flaky.
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { repositoryId: string; orchestratorSessionIds: string[] };
+    expect(body.repositoryId).toBe(testRepositoryId);
+    expect(new Set(body.orchestratorSessionIds)).toEqual(new Set([sessionA, sessionB]));
+
+    const repo = repositoryManager.getRepository(testRepositoryId);
+    expect(new Set(repo?.orchestratorSessionIds)).toEqual(new Set([sessionA, sessionB]));
+  });
+
+  it('DELETE: happy path removes this session from the set (removed: true), leaving other designations intact', async () => {
+    await setupCommon({ sharedEnabled: false });
+    const sessionA = await createWorktreeSession(TEST_AUTH_USER.id);
+    const sessionB = await createWorktreeSession(TEST_AUTH_USER.id);
+    await repositoryManager.addOrchestratorSession(testRepositoryId, sessionA);
+    await repositoryManager.addOrchestratorSession(testRepositoryId, sessionB);
+
+    const res = await app.request(`/api/sessions/${sessionA}/orchestrator-designation`, {
       method: 'DELETE',
     });
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ repositoryId: testRepositoryId, cleared: false });
+    expect(await res.json()).toEqual({ repositoryId: testRepositoryId, removed: true, orchestratorSessionIds: [sessionB] });
 
-    // The flag must still point at the original holder -- untouched by the
-    // stale clear attempt.
     const repo = repositoryManager.getRepository(testRepositoryId);
-    expect(repo?.orchestratorSessionId).toBe(holderSessionId);
+    expect(repo?.orchestratorSessionIds).toEqual([sessionB]);
+  });
+
+  it('DELETE: removing a session that is not designated is idempotent (removed: false), other designations untouched', async () => {
+    await setupCommon({ sharedEnabled: false });
+    const holderSessionId = await createWorktreeSession(TEST_AUTH_USER.id);
+    const notDesignatedSessionId = await createWorktreeSession(TEST_AUTH_USER.id);
+    await repositoryManager.addOrchestratorSession(testRepositoryId, holderSessionId);
+
+    const res = await app.request(`/api/sessions/${notDesignatedSessionId}/orchestrator-designation`, {
+      method: 'DELETE',
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      repositoryId: testRepositoryId,
+      removed: false,
+      orchestratorSessionIds: [holderSessionId],
+    });
+
+    // The set must still contain the original holder -- untouched by the
+    // no-op remove attempt.
+    const repo = repositoryManager.getRepository(testRepositoryId);
+    expect(repo?.orchestratorSessionIds).toEqual([holderSessionId]);
   });
 
   it('POST: 400 for a session with no repositoryId (quick session)', async () => {

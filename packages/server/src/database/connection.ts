@@ -415,6 +415,10 @@ async function runMigrations(database: Kysely<Database>, dbPath: string): Promis
   if (currentVersion < 40) {
     await migrateToV40(database);
   }
+
+  if (currentVersion < 41) {
+    await migrateToV41(database);
+  }
 }
 
 /**
@@ -2320,6 +2324,78 @@ export async function migrateToV40(database: Kysely<Database>): Promise<void> {
   await sql`PRAGMA user_version = 40`.execute(database);
 
   logger.info('Migration to v40 completed');
+}
+
+/**
+ * Migration v41: Create `repository_orchestrator_sessions` -- moves the
+ * repository's designated-Orchestrator pointer from a single nullable
+ * column (`repositories.orchestrator_session_id`, v40) to a proper
+ * many-to-many join table (Issue #1716). A repository now has a SET of
+ * designated sessions: any eligible session may add itself and remove
+ * itself; nobody's designation is silently moved by someone else's add.
+ *
+ * CASCADE on both sides:
+ *  - `session_id ON DELETE CASCADE` makes the v40 property "a deleted
+ *    session's designation disappears" structural -- v40 achieved the same
+ *    outcome via `ON DELETE SET NULL` on a single column; here each row IS
+ *    a designation, so the row is simply removed with it.
+ *  - `repository_id ON DELETE CASCADE` mirrors every other child table of
+ *    `repositories` (e.g. `repository_slack_integrations`, migration v22).
+ *
+ * `repositories.orchestrator_session_id` is deliberately NOT dropped by
+ * this migration: it carries a `REFERENCES sessions(id)` constraint, and
+ * SQLite's `ALTER TABLE ... DROP COLUMN` refuses to drop a column that
+ * participates in a foreign key. The only way to remove it is the
+ * v19-style full table rebuild (create `_new`, copy, drop, rename) --
+ * worth doing on the production DB only as part of a later migration that
+ * already needs a `repositories` rebuild for some other reason, not for
+ * this zero-functional-gain cleanup alone; tracked as a follow-up Issue.
+ * The column's value is backfilled into the new table below and then
+ * cleared to NULL so nothing in the running system can ever read a stale
+ * value back out of it -- see `mappers.ts`'s `toRepositoryRow` (stops
+ * writing it) and `schema.ts`'s updated doc comment on the now-dead
+ * column.
+ *
+ * @internal Exported for testing.
+ */
+export async function migrateToV41(database: Kysely<Database>): Promise<void> {
+  logger.info('Running migration to v41: Creating repository_orchestrator_sessions table');
+
+  await database.schema
+    .createTable('repository_orchestrator_sessions')
+    .ifNotExists()
+    .addColumn('repository_id', 'text', (col) =>
+      col.notNull().references('repositories.id').onDelete('cascade')
+    )
+    .addColumn('session_id', 'text', (col) =>
+      col.notNull().references('sessions.id').onDelete('cascade')
+    )
+    .addColumn('created_at', 'text', (col) =>
+      col.notNull().defaultTo(sql`(strftime('%Y-%m-%dT%H:%M:%fZ','now'))`)
+    )
+    .addPrimaryKeyConstraint('repository_orchestrator_sessions_pk', ['repository_id', 'session_id'])
+    .execute();
+
+  await database.schema
+    .createIndex('idx_repository_orchestrator_sessions_session_id')
+    .ifNotExists()
+    .on('repository_orchestrator_sessions')
+    .column('session_id')
+    .execute();
+
+  // Backfill: every pre-v41 repository row's single designation (if any)
+  // becomes a one-row set. `INSERT OR IGNORE` makes this idempotent under
+  // the `currentVersion < 41` dispatch guard being re-run.
+  await sql`
+    INSERT OR IGNORE INTO repository_orchestrator_sessions (repository_id, session_id)
+    SELECT id, orchestrator_session_id FROM repositories WHERE orchestrator_session_id IS NOT NULL
+  `.execute(database);
+
+  await sql`UPDATE repositories SET orchestrator_session_id = NULL`.execute(database);
+
+  await sql`PRAGMA user_version = 41`.execute(database);
+
+  logger.info('Migration to v41 completed');
 }
 
 /**

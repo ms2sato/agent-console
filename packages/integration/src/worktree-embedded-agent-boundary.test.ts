@@ -125,6 +125,7 @@ describe('createWorktreeWithSession: embedded-agent worker creation boundary', (
       name: 'test-repo',
       path: TEST_REPO_PATH,
       createdAt: new Date().toISOString(),
+      orchestratorSessionIds: [],
       clonedSourceRepoPath: null,
       description: null,
     });

@@ -435,10 +435,12 @@ export function toRepositoryRow(repository: PersistedRepository): NewRepository 
     env_vars: repository.envVars ?? null,
     description: repository.description ?? null,
     default_agent_id: repository.defaultAgentId ?? null,
-    // `orchestrator_session_id` / `issue_trigger_labels` (added in v40) have no
-    // corresponding fields in the legacy `PersistedRepository` JSON shape this
-    // mapper migrates from; they always start unset for a migrated repository.
-    orchestrator_session_id: null,
+    // `issue_trigger_labels` (added in v40) has no corresponding field in
+    // the legacy `PersistedRepository` JSON shape this mapper migrates
+    // from; it always starts unset for a migrated repository.
+    // The old single-session designation column (added in v40, dead since
+    // v41 -- see `schema.ts`'s doc comment on it) is intentionally NOT
+    // written here: designations since v41 live in a separate join table.
     issue_trigger_labels: null,
   };
 }
@@ -447,9 +449,14 @@ export function toRepositoryRow(repository: PersistedRepository): NewRepository 
  * Convert a database repository row to a Repository domain object.
  *
  * @param row - The database repository row
+ * @param orchestratorSessionIds - The repository's designated-Orchestrator
+ *   session set, already hydrated from `repository_orchestrator_sessions`
+ *   by the caller (row store). Defaults to `[]` for call sites that never
+ *   hydrate designations (e.g. legacy fixtures) rather than making every
+ *   caller pass an empty array explicitly.
  * @returns The Repository object
  */
-export function toRepository(row: RepositoryRow): Repository {
+export function toRepository(row: RepositoryRow, orchestratorSessionIds: string[] = []): Repository {
   return {
     id: row.id,
     name: row.name,
@@ -460,7 +467,7 @@ export function toRepository(row: RepositoryRow): Repository {
     envVars: row.env_vars ?? null,
     description: row.description ?? null,
     defaultAgentId: row.default_agent_id ?? null,
-    orchestratorSessionId: row.orchestrator_session_id ?? null,
+    orchestratorSessionIds,
     issueTriggerLabels: row.issue_trigger_labels ?? null,
     // `clonedSourceRepoPath` is a derived field (not persisted). The serving
     // path (REST / WS) enriches the value via `withRepositoryRemote`; this

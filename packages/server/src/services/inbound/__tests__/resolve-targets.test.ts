@@ -46,7 +46,7 @@ function createDefaultRepository(): Repository {
 /**
  * `buildPersistedRepository` builds `PersistedRepository` (the legacy JSON
  * migration-only shape), which deliberately does NOT declare
- * `orchestratorSessionId` / `issueTriggerLabels` (see
+ * `orchestratorSessionIds` / `issueTriggerLabels` (see
  * `persistence-service.ts`'s `PersistedRepository` and `mappers.ts`'s
  * `toRepositoryRow` comment: a migrated repository always starts with both
  * unset). Tests exercising `issue:labeled` routing need a full `Repository`
@@ -56,12 +56,12 @@ function createDefaultRepository(): Repository {
 function buildRepositoryWithDesignation(overrides: {
   id: string;
   path: string;
-  orchestratorSessionId?: string | null;
+  orchestratorSessionIds?: string[];
   issueTriggerLabels?: string | null;
 }): Repository {
   return {
     ...buildPersistedRepository({ id: overrides.id, path: overrides.path }),
-    orchestratorSessionId: overrides.orchestratorSessionId ?? null,
+    orchestratorSessionIds: overrides.orchestratorSessionIds ?? [],
     issueTriggerLabels: overrides.issueTriggerLabels ?? null,
   };
 }
@@ -246,7 +246,7 @@ describe('resolveTargets: designated-session fallback (#1661)', () => {
     const repository = buildRepositoryWithDesignation({
       id: 'repo-1',
       path: '/path/to/repo',
-      orchestratorSessionId: 'designated-1',
+      orchestratorSessionIds: ['designated-1'],
     });
     const nonMatchingSession = buildWorktreeSession({ id: 'session-1', repositoryId: 'repo-1', worktreeId: 'feature-branch' });
     const designatedSession = buildDesignatedSession();
@@ -266,7 +266,7 @@ describe('resolveTargets: designated-session fallback (#1661)', () => {
     const repository = buildRepositoryWithDesignation({
       id: 'repo-1',
       path: '/path/to/repo',
-      orchestratorSessionId: 'designated-1',
+      orchestratorSessionIds: ['designated-1'],
     });
     const matchedSession = buildWorktreeSession({ id: 'session-1', repositoryId: 'repo-1', worktreeId: 'feature' });
     const designatedSession = buildDesignatedSession();
@@ -289,7 +289,7 @@ describe('resolveTargets: designated-session fallback (#1661)', () => {
     const repository = buildRepositoryWithDesignation({
       id: 'repo-1',
       path: '/path/to/repo',
-      orchestratorSessionId: 'designated-1',
+      orchestratorSessionIds: ['designated-1'],
     });
     const matchedSession = buildWorktreeSession({
       id: 'session-1',
@@ -318,7 +318,7 @@ describe('resolveTargets: designated-session fallback (#1661)', () => {
     const repository = buildRepositoryWithDesignation({
       id: 'repo-1',
       path: '/path/to/repo',
-      orchestratorSessionId: 'designated-1',
+      orchestratorSessionIds: ['designated-1'],
     });
     const matchedSession = buildWorktreeSession({
       id: 'session-1',
@@ -353,7 +353,7 @@ describe('resolveTargets: designated-session fallback (#1661)', () => {
     const repository = buildRepositoryWithDesignation({
       id: 'repo-1',
       path: '/path/to/repo',
-      orchestratorSessionId: 'designated-1',
+      orchestratorSessionIds: ['designated-1'],
     });
     const matchedSession = buildWorktreeSession({
       id: 'session-1',
@@ -397,7 +397,7 @@ describe('resolveTargets: designated-session fallback (#1661)', () => {
     const repository = buildRepositoryWithDesignation({
       id: 'repo-1',
       path: '/path/to/repo',
-      orchestratorSessionId: 'designated-1',
+      orchestratorSessionIds: ['designated-1'],
     });
     const matchedSession = buildWorktreeSession({
       id: 'session-1',
@@ -437,7 +437,7 @@ describe('resolveTargets: designated-session fallback (#1661)', () => {
     const repository = buildRepositoryWithDesignation({
       id: 'repo-1',
       path: '/path/to/repo',
-      orchestratorSessionId: 'designated-1',
+      orchestratorSessionIds: ['designated-1'],
     });
     const matchedSession = buildWorktreeSession({
       id: 'session-1',
@@ -465,7 +465,7 @@ describe('resolveTargets: designated-session fallback (#1661)', () => {
     const repository = buildRepositoryWithDesignation({
       id: 'repo-1',
       path: '/path/to/repo',
-      orchestratorSessionId: null,
+      orchestratorSessionIds: [],
     });
     const nonMatchingSession = buildWorktreeSession({ id: 'session-1', repositoryId: 'repo-1', worktreeId: 'feature-branch' });
     const deps: TargetResolverDependencies = {
@@ -484,7 +484,7 @@ describe('resolveTargets: designated-session fallback (#1661)', () => {
     const repository = buildRepositoryWithDesignation({
       id: 'repo-1',
       path: '/path/to/repo',
-      orchestratorSessionId: 'dead-designated-session',
+      orchestratorSessionIds: ['dead-designated-session'],
     });
     const nonMatchingSession = buildWorktreeSession({ id: 'session-1', repositoryId: 'repo-1', worktreeId: 'feature-branch' });
     const deps: TargetResolverDependencies = {
@@ -497,6 +497,100 @@ describe('resolveTargets: designated-session fallback (#1661)', () => {
     const targets = await resolveTargets(createEvent({ branch: 'main' }), deps);
 
     expect(targets).toEqual([]);
+  });
+
+  // -------------------------------------------------------------------
+  // Set-model boundary cases (Issue #1716): the four cases re-pinned for
+  // both this fallback and `issue:labeled` routing below.
+  // -------------------------------------------------------------------
+
+  it('set-model boundary: designated set is [] -> no fallback target (same as no designation at all)', async () => {
+    const repository = buildRepositoryWithDesignation({
+      id: 'repo-1',
+      path: '/path/to/repo',
+      orchestratorSessionIds: [],
+    });
+    const nonMatchingSession = buildWorktreeSession({ id: 'session-1', repositoryId: 'repo-1', worktreeId: 'feature-branch' });
+    const deps: TargetResolverDependencies = {
+      getSessions: () => [nonMatchingSession],
+      getRepository: () => repository,
+      getAllRepositories: () => [repository],
+      getOrgRepoFromPath: mock(() => Promise.resolve('owner/repo')),
+    };
+
+    const targets = await resolveTargets(createEvent({ branch: 'main' }), deps);
+
+    expect(targets).toEqual([]);
+  });
+
+  it('set-model boundary: two designated, one hibernated -> exactly the live one is a fallback target', async () => {
+    const repository = buildRepositoryWithDesignation({
+      id: 'repo-1',
+      path: '/path/to/repo',
+      orchestratorSessionIds: ['designated-live', 'designated-hibernated'],
+    });
+    const nonMatchingSession = buildWorktreeSession({ id: 'session-1', repositoryId: 'repo-1', worktreeId: 'feature-branch' });
+    const liveDesignated = buildDesignatedSession({ id: 'designated-live' });
+    const hibernatedDesignated = buildDesignatedSession({ id: 'designated-hibernated', activationState: 'hibernated' });
+    const deps: TargetResolverDependencies = {
+      getSessions: () => [nonMatchingSession, liveDesignated, hibernatedDesignated],
+      getRepository: () => repository,
+      getAllRepositories: () => [repository],
+      getOrgRepoFromPath: mock(() => Promise.resolve('owner/repo')),
+    };
+
+    const targets = await resolveTargets(createEvent({ branch: 'main' }), deps);
+
+    expect(targets).toEqual([{ sessionId: 'designated-live', fallback: true }]);
+  });
+
+  it('set-model boundary: three designated, all live -> three fallback targets', async () => {
+    const repository = buildRepositoryWithDesignation({
+      id: 'repo-1',
+      path: '/path/to/repo',
+      orchestratorSessionIds: ['designated-1', 'designated-2', 'designated-3'],
+    });
+    const nonMatchingSession = buildWorktreeSession({ id: 'session-1', repositoryId: 'repo-1', worktreeId: 'feature-branch' });
+    const designated1 = buildDesignatedSession({ id: 'designated-1' });
+    const designated2 = buildDesignatedSession({ id: 'designated-2' });
+    const designated3 = buildDesignatedSession({ id: 'designated-3' });
+    const deps: TargetResolverDependencies = {
+      getSessions: () => [nonMatchingSession, designated1, designated2, designated3],
+      getRepository: () => repository,
+      getAllRepositories: () => [repository],
+      getOrgRepoFromPath: mock(() => Promise.resolve('owner/repo')),
+    };
+
+    const targets = await resolveTargets(createEvent({ branch: 'main' }), deps);
+
+    expect(new Set(targets.map((t) => t.sessionId))).toEqual(new Set(['designated-1', 'designated-2', 'designated-3']));
+    expect(targets.every((t) => t.fallback)).toBe(true);
+    expect(targets).toHaveLength(3);
+  });
+
+  it('set-model boundary: two same-remote rows designating the same session -> one fallback target (deduplicated)', async () => {
+    const repositoryA = buildRepositoryWithDesignation({
+      id: 'repo-a',
+      path: '/path/to/repo-a',
+      orchestratorSessionIds: ['designated-shared'],
+    });
+    const repositoryB = buildRepositoryWithDesignation({
+      id: 'repo-b',
+      path: '/path/to/repo-b',
+      orchestratorSessionIds: ['designated-shared'],
+    });
+    const nonMatchingSession = buildWorktreeSession({ id: 'session-1', repositoryId: 'repo-a', worktreeId: 'feature-branch' });
+    const sharedDesignated = buildDesignatedSession({ id: 'designated-shared' });
+    const deps: TargetResolverDependencies = {
+      getSessions: () => [nonMatchingSession, sharedDesignated],
+      getRepository: () => repositoryA,
+      getAllRepositories: () => [repositoryA, repositoryB],
+      getOrgRepoFromPath: mock(() => Promise.resolve('owner/repo')),
+    };
+
+    const targets = await resolveTargets(createEvent({ branch: 'main' }), deps);
+
+    expect(targets).toEqual([{ sessionId: 'designated-shared', fallback: true }]);
   });
 });
 
@@ -521,7 +615,7 @@ describe('resolveTargets: issue:labeled routing', () => {
     const repository = buildRepositoryWithDesignation({
       id: 'repo-1',
       path: '/path/to/repo',
-      orchestratorSessionId: 'orchestrator-session-1',
+      orchestratorSessionIds: ['orchestrator-session-1'],
       issueTriggerLabels: 'orchestrator-trigger',
     });
     const orchestratorSession = createOrchestratorSession();
@@ -541,7 +635,7 @@ describe('resolveTargets: issue:labeled routing', () => {
     const repository = buildRepositoryWithDesignation({
       id: 'repo-1',
       path: '/path/to/repo',
-      orchestratorSessionId: 'orchestrator-session-1',
+      orchestratorSessionIds: ['orchestrator-session-1'],
       issueTriggerLabels: 'orchestrator-trigger',
     });
     const orchestratorSession = createOrchestratorSession();
@@ -562,7 +656,7 @@ describe('resolveTargets: issue:labeled routing', () => {
     const repository = buildRepositoryWithDesignation({
       id: 'repo-1',
       path: '/path/to/repo',
-      orchestratorSessionId: 'orchestrator-session-1',
+      orchestratorSessionIds: ['orchestrator-session-1'],
       issueTriggerLabels: 'some-other-label',
     });
     const orchestratorSession = createOrchestratorSession();
@@ -578,7 +672,7 @@ describe('resolveTargets: issue:labeled routing', () => {
     expect(targets).toEqual([]);
   });
 
-  it('returns empty when the repository matches and the label matches but orchestratorSessionId is unset', async () => {
+  it('returns empty when the repository matches and the label matches but orchestratorSessionIds is empty', async () => {
     const repository = buildRepositoryWithDesignation({
       id: 'repo-1',
       path: '/path/to/repo',
@@ -596,11 +690,11 @@ describe('resolveTargets: issue:labeled routing', () => {
     expect(targets).toEqual([]);
   });
 
-  it('returns empty (not thrown) when orchestratorSessionId is set but that session no longer exists', async () => {
+  it('returns empty (not thrown) when a designated session id is set but that session no longer exists', async () => {
     const repository = buildRepositoryWithDesignation({
       id: 'repo-1',
       path: '/path/to/repo',
-      orchestratorSessionId: 'stale-session-id',
+      orchestratorSessionIds: ['stale-session-id'],
       issueTriggerLabels: 'orchestrator-trigger',
     });
     const deps: TargetResolverDependencies = {
@@ -619,7 +713,7 @@ describe('resolveTargets: issue:labeled routing', () => {
     const repository = buildRepositoryWithDesignation({
       id: 'repo-1',
       path: '/path/to/repo',
-      orchestratorSessionId: 'orchestrator-session-1',
+      orchestratorSessionIds: ['orchestrator-session-1'],
       issueTriggerLabels: 'orchestrator-trigger',
     });
     const deps: TargetResolverDependencies = {
@@ -638,7 +732,7 @@ describe('resolveTargets: issue:labeled routing', () => {
     const repository = buildRepositoryWithDesignation({
       id: 'repo-1',
       path: '/path/to/repo',
-      orchestratorSessionId: 'orchestrator-session-1',
+      orchestratorSessionIds: ['orchestrator-session-1'],
       issueTriggerLabels: null,
     });
     const deps: TargetResolverDependencies = {
@@ -668,14 +762,14 @@ describe('resolveTargets: issue:labeled routing', () => {
     const ineligibleRepo = buildRepositoryWithDesignation({
       id: 'repo-ineligible',
       path: '/path/to/repo-ineligible',
-      orchestratorSessionId: 'orchestrator-session-ineligible',
+      orchestratorSessionIds: ['orchestrator-session-ineligible'],
       // No configured trigger labels -- vacuous-truth boundary, never matches.
       issueTriggerLabels: null,
     });
     const eligibleRepo = buildRepositoryWithDesignation({
       id: 'repo-eligible',
       path: '/path/to/repo-eligible',
-      orchestratorSessionId: 'orchestrator-session-eligible',
+      orchestratorSessionIds: ['orchestrator-session-eligible'],
       issueTriggerLabels: 'orchestrator-trigger',
     });
     const eligibleSession = buildWorktreeSession({
@@ -709,13 +803,13 @@ describe('resolveTargets: issue:labeled routing', () => {
     const repoA = buildRepositoryWithDesignation({
       id: 'repo-a',
       path: '/path/to/repo-a',
-      orchestratorSessionId: 'orchestrator-session-a',
+      orchestratorSessionIds: ['orchestrator-session-a'],
       issueTriggerLabels: 'orchestrator-trigger',
     });
     const repoB = buildRepositoryWithDesignation({
       id: 'repo-b',
       path: '/path/to/repo-b',
-      orchestratorSessionId: 'orchestrator-session-b',
+      orchestratorSessionIds: ['orchestrator-session-b'],
       issueTriggerLabels: 'orchestrator-trigger',
     });
     const sessionA = buildWorktreeSession({ id: 'orchestrator-session-a', repositoryId: 'repo-a', worktreeId: 'main', workers: [AGENT_WORKER] });
@@ -740,13 +834,13 @@ describe('resolveTargets: issue:labeled routing', () => {
     const repoC = buildRepositoryWithDesignation({
       id: 'repo-c',
       path: '/path/to/repo-c',
-      orchestratorSessionId: 'orchestrator-session-shared',
+      orchestratorSessionIds: ['orchestrator-session-shared'],
       issueTriggerLabels: 'orchestrator-trigger',
     });
     const repoD = buildRepositoryWithDesignation({
       id: 'repo-d',
       path: '/path/to/repo-d',
-      orchestratorSessionId: 'orchestrator-session-shared',
+      orchestratorSessionIds: ['orchestrator-session-shared'],
       issueTriggerLabels: 'orchestrator-trigger',
     });
     const sharedSession = buildWorktreeSession({
@@ -779,7 +873,7 @@ describe('resolveTargets: issue:labeled routing', () => {
     const repository = buildRepositoryWithDesignation({
       id: 'repo-1',
       path: '/path/to/repo',
-      orchestratorSessionId: 'orchestrator-session-1',
+      orchestratorSessionIds: ['orchestrator-session-1'],
       issueTriggerLabels: 'orchestrator-trigger',
     });
     const hibernatedSession = buildWorktreeSession({
@@ -833,7 +927,7 @@ describe('resolveTargets: issue:labeled routing', () => {
     const repository = buildRepositoryWithDesignation({
       id: 'repo-1',
       path: '/path/to/repo',
-      orchestratorSessionId: 'orchestrator-session-1',
+      orchestratorSessionIds: ['orchestrator-session-1'],
       issueTriggerLabels: 'orchestrator-trigger',
     });
     const noAgentWorkerSession = buildWorktreeSession({
@@ -881,7 +975,7 @@ describe('resolveTargets: issue:labeled routing', () => {
     const repository = buildRepositoryWithDesignation({
       id: 'repo-1',
       path: '/path/to/repo',
-      orchestratorSessionId: 'orchestrator-session-1',
+      orchestratorSessionIds: ['orchestrator-session-1'],
       issueTriggerLabels: ' Bug ,  Orchestrator-Trigger,needs-triage ',
     });
     const deps: TargetResolverDependencies = {
@@ -894,6 +988,61 @@ describe('resolveTargets: issue:labeled routing', () => {
     const targets = await resolveTargets(createIssueLabeledEvent({ labels: ['Orchestrator-Trigger'] }), deps);
 
     expect(targets).toEqual([{ sessionId: 'orchestrator-session-1' }]);
+  });
+
+  // -------------------------------------------------------------------
+  // Set-model boundary cases (Issue #1716), mirroring the fallback
+  // describe block's own set of four. "row with [] -> nothing" is already
+  // covered above ('...orchestratorSessionIds is empty'); "two same-remote
+  // rows designating the same session -> one target" is already covered
+  // above ('returns targets from every eligible same-remote repository,
+  // deduplicated by session id').
+  // -------------------------------------------------------------------
+
+  it('set-model boundary: two designated, one hibernated -> exactly the live one is delivered', async () => {
+    const repository = buildRepositoryWithDesignation({
+      id: 'repo-1',
+      path: '/path/to/repo',
+      orchestratorSessionIds: ['orchestrator-live', 'orchestrator-hibernated'],
+      issueTriggerLabels: 'orchestrator-trigger',
+    });
+    const liveSession = createOrchestratorSession({ id: 'orchestrator-live' });
+    const hibernatedSession = createOrchestratorSession({ id: 'orchestrator-hibernated', activationState: 'hibernated' });
+    const deps: TargetResolverDependencies = {
+      getSessions: () => [liveSession, hibernatedSession],
+      getRepository: () => repository,
+      getAllRepositories: () => [repository],
+      getOrgRepoFromPath: mock(() => Promise.resolve('owner/repo')),
+    };
+
+    const targets = await resolveTargets(createIssueLabeledEvent(), deps);
+
+    expect(targets).toEqual([{ sessionId: 'orchestrator-live' }]);
+  });
+
+  it('set-model boundary: three designated, all live -> three targets, one per designated session', async () => {
+    const repository = buildRepositoryWithDesignation({
+      id: 'repo-1',
+      path: '/path/to/repo',
+      orchestratorSessionIds: ['orchestrator-1', 'orchestrator-2', 'orchestrator-3'],
+      issueTriggerLabels: 'orchestrator-trigger',
+    });
+    const session1 = createOrchestratorSession({ id: 'orchestrator-1' });
+    const session2 = createOrchestratorSession({ id: 'orchestrator-2' });
+    const session3 = createOrchestratorSession({ id: 'orchestrator-3' });
+    const deps: TargetResolverDependencies = {
+      getSessions: () => [session1, session2, session3],
+      getRepository: () => repository,
+      getAllRepositories: () => [repository],
+      getOrgRepoFromPath: mock(() => Promise.resolve('owner/repo')),
+    };
+
+    const targets = await resolveTargets(createIssueLabeledEvent(), deps);
+
+    expect(new Set(targets.map((t) => t.sessionId))).toEqual(
+      new Set(['orchestrator-1', 'orchestrator-2', 'orchestrator-3'])
+    );
+    expect(targets).toHaveLength(3);
   });
 });
 

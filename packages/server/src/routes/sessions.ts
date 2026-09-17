@@ -290,7 +290,8 @@ const sessions = new Hono<AppBindings>()
     const commits = await getBranchCommits(baseRef, session.locationPath);
     return c.json({ commits });
   })
-  // Raise this session's repository's Orchestrator-designation flag.
+  // Add this session to its repository's designated-Orchestrator SET
+  // (Issue #1716). Idempotent; other sessions' designations are unaffected.
   // Ownership mirrors PUT /:id/memo above: the check only runs when
   // AUTH_MODE === 'multi-user'; single-user mode skips it entirely.
   .post('/:id/orchestrator-designation', async (c) => {
@@ -313,16 +314,17 @@ const sessions = new Hono<AppBindings>()
       throw new ValidationError('Only a worktree session can hold the Orchestrator designation');
     }
 
-    const updated = await repositoryManager.setOrchestratorSession(session.repositoryId, sessionId);
+    const updated = await repositoryManager.addOrchestratorSession(session.repositoryId, sessionId);
     if (!updated) {
       throw new NotFoundError('Repository');
     }
 
-    return c.json({ repositoryId: session.repositoryId, orchestratorSessionId: sessionId });
+    return c.json({ repositoryId: session.repositoryId, orchestratorSessionIds: updated.orchestratorSessionIds });
   })
-  // Clear this session's repository's Orchestrator-designation flag, but
-  // only if this session currently holds it. A stale clear (another session
-  // already superseded it) is a no-op response, not an error.
+  // Remove this session from its repository's designated-Orchestrator SET.
+  // Idempotent -- removing a session that is not currently designated is a
+  // no-op response (`removed: false`), not an error; other sessions'
+  // designations are unaffected.
   .delete('/:id/orchestrator-designation', async (c) => {
     const sessionId = c.req.param('id');
     const { sessionManager, repositoryManager, sharedAccountRegistry } = c.get('appContext');
@@ -343,12 +345,16 @@ const sessions = new Hono<AppBindings>()
       throw new ValidationError('Only a worktree session can hold the Orchestrator designation');
     }
 
-    const result = await repositoryManager.clearOrchestratorSession(session.repositoryId, sessionId);
+    const result = await repositoryManager.removeOrchestratorSession(session.repositoryId, sessionId);
     if (!result.repository) {
       throw new NotFoundError('Repository');
     }
 
-    return c.json({ repositoryId: session.repositoryId, cleared: result.cleared });
+    return c.json({
+      repositoryId: session.repositoryId,
+      removed: result.removed,
+      orchestratorSessionIds: result.repository.orchestratorSessionIds,
+    });
   })
   .get('/:sessionId/pr-link', async (c) => {
     const sessionId = c.req.param('sessionId');

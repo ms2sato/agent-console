@@ -1181,6 +1181,13 @@ describe('UpdateRepositoryRequestSchema (Issue #1643)', () => {
     });
     expect(result.success).toBe(false);
   });
+
+  it('rejects orchestratorSessionIds as an unknown key (Issue #1716: must only be settable via the dedicated add/remove route)', () => {
+    const result = v.safeParse(UpdateRepositoryRequestSchema, {
+      orchestratorSessionIds: ['session-1'],
+    });
+    expect(result.success).toBe(false);
+  });
 });
 
 describe('FetchGitHubIssueRequestSchema', () => {

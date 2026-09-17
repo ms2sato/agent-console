@@ -33,6 +33,7 @@ const TEST_REPO: Repository = {
   name: 'test-repo',
   path: REPO_PATH,
   createdAt: new Date().toISOString(),
+  orchestratorSessionIds: [],
   clonedSourceRepoPath: null,
 };
 

@@ -58,21 +58,33 @@ export interface RepositoryRepository {
   delete(id: string): Promise<void>;
 
   /**
-   * Set (or move) the repository's designated-Orchestrator session pointer
-   * unconditionally. A repository has exactly one nullable column, so
-   * "raising the flag on another session" needs no separate "lower the old
-   * one" step.
+   * Add `sessionId` to the repository's designated-Orchestrator SET
+   * (Issue #1716). No holder check anywhere: any session may add itself,
+   * and nobody's designation is changed by anyone else's add. Idempotent --
+   * adding a pair that already exists is a no-op (`added: false`).
+   * `repository: null` when the repository row does not exist.
    */
-  setOrchestratorSessionId(id: string, sessionId: string): Promise<Repository | null>;
+  addOrchestratorSession(
+    id: string,
+    sessionId: string
+  ): Promise<{ added: boolean; repository: Repository | null }>;
 
   /**
-   * Clear the designated-Orchestrator pointer, but ONLY if it currently
-   * equals `expectedSessionId` -- a stale clear call (e.g. from a session
-   * that no longer holds the flag) must not clobber a session that has
-   * since taken over. Returns whether the clear actually happened.
+   * Remove `sessionId` from the repository's designated-Orchestrator SET.
+   * No holder check anywhere: any session may remove itself (or be removed
+   * as part of session deletion cascade), and nobody's designation is
+   * changed by anyone else's remove. Idempotent -- removing a pair that is
+   * not present is a no-op (`removed: false`).
    */
-  clearOrchestratorSessionId(
+  removeOrchestratorSession(
     id: string,
-    expectedSessionId: string
-  ): Promise<{ cleared: boolean; repository: Repository | null }>;
+    sessionId: string
+  ): Promise<{ removed: boolean; repository: Repository | null }>;
+
+  /**
+   * List the repository's designated-Orchestrator session ids, ordered by
+   * designation time then session id (`created_at ASC, session_id ASC`) for
+   * a deterministic wire representation.
+   */
+  listOrchestratorSessionIds(id: string): Promise<string[]>;
 }

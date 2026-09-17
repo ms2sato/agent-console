@@ -487,9 +487,18 @@ export async function setupWebSocketRoutes(
       logger.debug({ repositoryId }, 'Broadcasting repository-deleted');
       broadcastToApp({ type: 'repository-deleted', repositoryId });
     },
-    onOrchestratorDesignationChanged: (repositoryId, sessionId) => {
-      logger.debug({ repositoryId, sessionId }, 'Broadcasting orchestrator-designation-changed');
-      broadcastToApp({ type: 'orchestrator-designation-changed', repositoryId, sessionId });
+    onOrchestratorDesignationChanged: (repositoryId, orchestratorSessionIds, changedSessionId, action) => {
+      logger.debug(
+        { repositoryId, orchestratorSessionIds, changedSessionId, action },
+        'Broadcasting orchestrator-designation-changed'
+      );
+      broadcastToApp({
+        type: 'orchestrator-designation-changed',
+        repositoryId,
+        orchestratorSessionIds,
+        changedSessionId,
+        action,
+      });
     },
   });
   completedSteps.add('setRepositoryLifecycleCallbacks');

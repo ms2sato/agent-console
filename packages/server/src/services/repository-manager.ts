@@ -102,16 +102,24 @@ export interface RepositoryLifecycleCallbacks {
   onRepositoryUpdated: (repository: Repository) => void | Promise<void>;
   onRepositoryDeleted: (repositoryId: string) => void;
   /**
-   * Fired specifically when the repository's designated-Orchestrator
-   * pointer changes (set, moved, or cleared) via
-   * `setOrchestratorSession`/`clearOrchestratorSession`. This is an
-   * ADDITIONAL, lighter-weight signal alongside `onRepositoryUpdated`
-   * (which also fires, since the Repository object's
-   * `orchestratorSessionId` field genuinely changed) -- a flag-focused UI
+   * Fired specifically when the repository's designated-Orchestrator SET
+   * changes (one session added or removed) via
+   * `addOrchestratorSession`/`removeOrchestratorSession` (Issue #1716).
+   * This is an ADDITIONAL, lighter-weight signal alongside
+   * `onRepositoryUpdated` (which also fires, since the Repository object's
+   * `orchestratorSessionIds` field genuinely changed) -- a flag-focused UI
    * can react to this without waiting on a full repository refetch.
-   * `sessionId: null` means the designation was cleared.
+   * `orchestratorSessionIds` is the full re-read set after the change (never
+   * derived from the call's argument -- see the callers' comments);
+   * `changedSessionId` is the single session whose add/remove caused this
+   * broadcast, and `action` says which.
    */
-  onOrchestratorDesignationChanged: (repositoryId: string, sessionId: string | null) => void | Promise<void>;
+  onOrchestratorDesignationChanged: (
+    repositoryId: string,
+    orchestratorSessionIds: string[],
+    changedSessionId: string,
+    action: 'added' | 'removed'
+  ) => void | Promise<void>;
 }
 
 export class RepositoryManager {
@@ -254,6 +262,7 @@ export class RepositoryManager {
       createdAt: new Date().toISOString(),
       description: options?.description ?? null,
       defaultAgentId: null,
+      orchestratorSessionIds: [],
       // Derived at serving time via `withRepositoryRemote`. The in-memory
       // copy carries `null` so the type contract is satisfied; the REST / WS
       // layer recomputes against `getSourceReposDir()` per request.
@@ -375,53 +384,74 @@ export class RepositoryManager {
   }
 
   /**
-   * Set (or move) this repository's designated-Orchestrator session.
-   * @returns the updated repository, or null if the repository doesn't exist
+   * Add `sessionId` to this repository's designated-Orchestrator SET
+   * (Issue #1716). No holder check: any eligible session may add itself,
+   * and nobody's designation is changed by anyone else's add. Idempotent --
+   * adding an already-present pair fires no callback.
+   * @returns the re-read repository, or null if the repository doesn't exist
    */
-  async setOrchestratorSession(repositoryId: string, sessionId: string): Promise<Repository | null> {
+  async addOrchestratorSession(repositoryId: string, sessionId: string): Promise<Repository | null> {
     const repo = this.repositories.get(repositoryId);
     if (!repo) return null;
 
-    const updated = await this.repository.setOrchestratorSessionId(repositoryId, sessionId);
-    if (!updated) return null;
+    const result = await this.repository.addOrchestratorSession(repositoryId, sessionId);
+    if (!result.repository) return null;
 
-    this.repositories.set(repositoryId, updated);
-    logger.info({ repositoryId, sessionId }, 'Orchestrator designation set');
+    this.repositories.set(repositoryId, result.repository);
 
-    await this.lifecycleCallbacks?.onRepositoryUpdated(updated);
-    // Broadcast the just-re-read persisted value, not the request argument --
-    // `setOrchestratorSessionId`'s UPDATE and its follow-up `findById` are two
-    // separate statements, so a concurrent designation change on the same
-    // repository could interleave between them. Reading `updated` keeps the
-    // broadcast honest about what is actually persisted even if that happens.
-    await this.lifecycleCallbacks?.onOrchestratorDesignationChanged(repositoryId, updated.orchestratorSessionId ?? null);
+    if (result.added) {
+      logger.info({ repositoryId, sessionId }, 'Orchestrator session designation added');
 
-    return updated;
+      await this.lifecycleCallbacks?.onRepositoryUpdated(result.repository);
+      // Broadcast the just-re-read persisted set, not a value derived from
+      // the request argument -- `addOrchestratorSession`'s INSERT and its
+      // follow-up `findById` are two separate statements, so a concurrent
+      // designation change on the same repository could interleave between
+      // them. Reading `result.repository` keeps the broadcast honest about
+      // what is actually persisted even if that happens.
+      await this.lifecycleCallbacks?.onOrchestratorDesignationChanged(
+        repositoryId,
+        result.repository.orchestratorSessionIds,
+        sessionId,
+        'added'
+      );
+    }
+
+    return result.repository;
   }
 
   /**
-   * Clear this repository's designated-Orchestrator session, but only if
-   * it currently equals `sessionId` (stale-clear guard -- see
-   * RepositoryRepository.clearOrchestratorSessionId's doc comment).
-   * @returns whether the clear happened, and the resulting repository (or
+   * Remove `sessionId` from this repository's designated-Orchestrator SET.
+   * No holder check: any eligible session may remove itself, and nobody's
+   * designation is changed by anyone else's remove. Idempotent -- removing
+   * an absent pair fires no callback.
+   * @returns whether the remove happened, and the resulting repository (or
    *   null if the repository doesn't exist)
    */
-  async clearOrchestratorSession(
+  async removeOrchestratorSession(
     repositoryId: string,
     sessionId: string
-  ): Promise<{ cleared: boolean; repository: Repository | null }> {
+  ): Promise<{ removed: boolean; repository: Repository | null }> {
     const repo = this.repositories.get(repositoryId);
-    if (!repo) return { cleared: false, repository: null };
+    if (!repo) return { removed: false, repository: null };
 
-    const result = await this.repository.clearOrchestratorSessionId(repositoryId, sessionId);
-    if (result.cleared && result.repository) {
+    const result = await this.repository.removeOrchestratorSession(repositoryId, sessionId);
+    if (result.repository) {
       this.repositories.set(repositoryId, result.repository);
-      logger.info({ repositoryId, sessionId }, 'Orchestrator designation cleared');
+    }
+
+    if (result.removed && result.repository) {
+      logger.info({ repositoryId, sessionId }, 'Orchestrator session designation removed');
       await this.lifecycleCallbacks?.onRepositoryUpdated(result.repository);
-      // Same principle as setOrchestratorSession: broadcast the re-read
-      // persisted state (`result.repository`, already null-checked by the
-      // enclosing guard) rather than a value assumed from the call site.
-      await this.lifecycleCallbacks?.onOrchestratorDesignationChanged(repositoryId, result.repository.orchestratorSessionId ?? null);
+      // Same principle as addOrchestratorSession: broadcast the re-read
+      // persisted set (`result.repository`, already null-checked above)
+      // rather than a value assumed from the call site.
+      await this.lifecycleCallbacks?.onOrchestratorDesignationChanged(
+        repositoryId,
+        result.repository.orchestratorSessionIds,
+        sessionId,
+        'removed'
+      );
     }
 
     return result;

@@ -1,7 +1,8 @@
 /**
- * Client-Server Boundary Test: Repository.orchestratorSessionId /
+ * Client-Server Boundary Test: Repository.orchestratorSessionIds /
  * issueTriggerLabels, and the orchestrator-designation-changed broadcast
- * (Issue #1643)
+ * (Issue #1716 -- the Orchestrator designation is a SET of sessions per
+ * repository, not a single nullable pointer).
  *
  * Regression guard for the same failure shape as Issue #914 + #927
  * (`created-by-username-boundary.test.ts`): a field can be populated
@@ -11,19 +12,22 @@
  * the client unit tests (which use pre-built mock objects that bypass
  * parsing entirely) can catch this class of gap.
  *
- * This PR introduced TWO new wire surfaces that need the same guard:
+ * Two wire surfaces need this guard:
  *
- *   1. `Repository.orchestratorSessionId` / `Repository.issueTriggerLabels`
- *      -- new optional fields on the existing `Repository` shape, riding
- *      along on every `repository-created` / `repository-updated` /
- *      `repositories-sync` broadcast.
- *   2. `orchestrator-designation-changed` -- a brand-new message variant
- *      fired specifically when `RepositoryManager.setOrchestratorSession` /
- *      `clearOrchestratorSession` changes the designation.
+ *   1. `Repository.orchestratorSessionIds` -- a REQUIRED array field on the
+ *      existing `Repository` shape, riding along on every
+ *      `repository-created` / `repository-updated` / `repositories-sync`
+ *      broadcast.
+ *   2. `orchestrator-designation-changed` -- fired specifically when
+ *      `RepositoryManager.addOrchestratorSession` /
+ *      `removeOrchestratorSession` changes the designation set, carrying
+ *      the FULL re-read set (`orchestratorSessionIds`), the single session
+ *      that changed (`changedSessionId`), and which direction
+ *      (`action: 'added' | 'removed'`).
  *
  * Both exercise the real chain:
- *   server RepositoryManager (real registerRepository / updateRepository /
- *     setOrchestratorSession / clearOrchestratorSession)
+ *   server RepositoryManager (real registerRepository /
+ *     addOrchestratorSession / removeOrchestratorSession)
  *     -> the real broadcast shape (mirrors packages/server/src/websocket/
  *        routes.ts's `broadcastToApp` calls)
  *     -> JSON serialize (wire transmission simulation)
@@ -31,11 +35,10 @@
  *        packages/client/src/lib/app-websocket.ts:parseMessage)
  *   assert both fields (and the new message) survive end-to-end.
  *
- * Stashing `orchestratorSessionId` / `issueTriggerLabels` from
- * `RepositorySchema`, or `OrchestratorDesignationChangedSchema` from the
- * `AppServerMessageSchema` variant list (both in
- * packages/shared/src/schemas/app-server-message.ts), causes the
- * corresponding assertions below to fail.
+ * Stashing `orchestratorSessionIds` from `RepositorySchema`, or
+ * `OrchestratorDesignationChangedSchema` from the `AppServerMessageSchema`
+ * variant list (both in packages/shared/src/schemas/app-server-message.ts),
+ * causes the corresponding assertions below to fail.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import * as v from 'valibot';
@@ -56,7 +59,7 @@ import type { AppServerMessage, Repository } from '@agent-console/shared';
 const TEST_REPO_PATH_A = '/test/repo-a';
 const TEST_REPO_PATH_B = '/test/repo-b';
 
-describe('Client-Server Boundary: Repository orchestrator designation (Issue #1643)', () => {
+describe('Client-Server Boundary: Repository orchestrator designation (Issue #1716)', () => {
   let ctx: AppContext;
 
   beforeEach(async () => {
@@ -81,108 +84,19 @@ describe('Client-Server Boundary: Repository orchestrator designation (Issue #16
     await cleanupTestEnvironment();
   });
 
-  describe('Repository.orchestratorSessionId / issueTriggerLabels', () => {
-    it('survive the server -> JSON wire -> AppServerMessageSchema.safeParse round-trip when set', async () => {
-      // 1. Seed a user + session, so setOrchestratorSession has a real
-      //    session id to point at (the field's own semantics; unrelated to
-      //    which repository it designates).
-      const owner = await ctx.userRepository.upsertByOsUid(54321, 'owner', '/home/owner');
-      const session = await ctx.sessionManager.createSession(
-        { type: 'quick', locationPath: '/test/path', agentId: 'claude-code-builtin' },
-        { createdBy: owner.id },
-      );
-
-      // 2. Register a real repository through the real manager (the same
-      //    path production uses -- this also populates the in-memory
-      //    `this.repositories` map that later calls read from).
+  describe('Repository.orchestratorSessionIds', () => {
+    it('round-trips as [] through the server -> JSON wire -> AppServerMessageSchema.safeParse chain when never designated', async () => {
       const registered = await ctx.repositoryManager.registerRepository(TEST_REPO_PATH_A);
 
-      // 3. Set issueTriggerLabels via the generic update path, and
-      //    orchestratorSessionId via the dedicated designation path -- both
-      //    are real production entry points.
-      const afterUpdate = await ctx.repositoryManager.updateRepository(registered.id, {
-        issueTriggerLabels: 'bug, needs-triage',
-      });
-      expect(afterUpdate).not.toBeNull();
-
-      const afterDesignation = await ctx.repositoryManager.setOrchestratorSession(
-        registered.id,
-        session.id,
-      );
-      expect(afterDesignation).not.toBeNull();
-
-      // Sanity check: server-side state already carries both fields before
+      // Sanity check: server-side state already carries the field before
       // any wire / schema round-trip. If this fails, the regression is in
       // the manager, not the schema.
-      const repository = afterDesignation as Repository;
-      expect(repository.issueTriggerLabels).toBe('bug, needs-triage');
-      expect(repository.orchestratorSessionId).toBe(session.id);
-
-      // 4. Construct the actual wire payload shape a real broadcast would
-      //    send (mirrors the server's
-      //    `broadcastToApp({ type: 'repository-updated', repository: enriched })`
-      //    in packages/server/src/websocket/routes.ts, whose `enriched`
-      //    value is `withRepositoryRemote(repository)` -- reproduced here
-      //    inline via the one required-but-derived field
-      //    (`clonedSourceRepoPath`) rather than invoking `withRepositoryRemote`
-      //    itself, since that helper shells out to real `git` and this test
-      //    is only exercising the schema boundary).
-      const wirePayload = JSON.parse(
-        JSON.stringify({
-          type: 'repository-updated',
-          repository: { ...repository, clonedSourceRepoPath: null },
-        }),
-      );
-
-      // 5. Apply the SAME parser the client uses in app-websocket.ts.
-      const parsed = v.safeParse(AppServerMessageSchema, wirePayload);
-
-      expect(parsed.success).toBe(true);
-      if (!parsed.success) {
-        throw new Error(
-          `safeParse failed unexpectedly: ${JSON.stringify(parsed.issues.map((i) => i.message))}`,
-        );
-      }
-      if (parsed.output.type !== 'repository-updated') {
-        throw new Error(`Expected repository-updated, got: ${parsed.output.type}`);
-      }
-
-      const parsedRepository = parsed.output.repository;
-      // The crucial assertions: both fields must survive the schema parser.
-      // Without their schema entries, valibot's `v.strictObject` rejects the
-      // WHOLE payload (an unrecognized field), so `parsed.success` would be
-      // `false` rather than the fields merely being absent.
-      expect('orchestratorSessionId' in parsedRepository).toBe(true);
-      expect('issueTriggerLabels' in parsedRepository).toBe(true);
-      expect(parsedRepository.orchestratorSessionId).toBe(session.id);
-      expect(parsedRepository.issueTriggerLabels).toBe('bug, needs-triage');
-    });
-
-    it('survive the round-trip as null when never set (boundary case)', async () => {
-      // A fresh repository that never had either field set. The mapper
-      // (`toRepository` in packages/server/src/database/mappers.ts) reads
-      // an unset column as `row.orchestrator_session_id ?? null`, i.e. the
-      // in-memory / wire value is `null`, not `undefined`.
-      const registered = await ctx.repositoryManager.registerRepository(TEST_REPO_PATH_B);
-      expect(registered.orchestratorSessionId).toBeUndefined();
-      expect(registered.issueTriggerLabels).toBeUndefined();
-
-      // Re-read through the real repository layer (mirrors what a fresh
-      // process restart / SQLite read would produce) to get the mapper's
-      // actual null-coalesced shape rather than the freshly-constructed
-      // in-memory object's shape.
-      const freshRead = await ctx.repositoryManager.updateRepository(registered.id, {
-        description: 'no orchestrator designation set',
-      });
-      expect(freshRead).not.toBeNull();
-      const repository = freshRead as Repository;
-      expect(repository.orchestratorSessionId).toBeNull();
-      expect(repository.issueTriggerLabels).toBeNull();
+      expect(registered.orchestratorSessionIds).toEqual([]);
 
       const wirePayload = JSON.parse(
         JSON.stringify({
           type: 'repository-created',
-          repository: { ...repository, clonedSourceRepoPath: null },
+          repository: { ...registered, clonedSourceRepoPath: null },
         }),
       );
 
@@ -198,14 +112,89 @@ describe('Client-Server Boundary: Repository orchestrator designation (Issue #16
         throw new Error(`Expected repository-created, got: ${parsed.output.type}`);
       }
 
-      const parsedRepository = parsed.output.repository;
-      expect(parsedRepository.orchestratorSessionId ?? null).toBeNull();
-      expect(parsedRepository.issueTriggerLabels ?? null).toBeNull();
+      // The crucial assertion: the field must survive the schema parser AS
+      // A REQUIRED KEY carrying `[]`, not merely be absent. Without its
+      // schema entry, valibot's `v.strictObject` rejects the WHOLE payload
+      // (an unrecognized field), so `parsed.success` would be `false`
+      // rather than the field merely being missing.
+      expect('orchestratorSessionIds' in parsed.output.repository).toBe(true);
+      expect(parsed.output.repository.orchestratorSessionIds).toEqual([]);
+    });
+
+    it('round-trips a one-session set', async () => {
+      const owner = await ctx.userRepository.upsertByOsUid(54321, 'owner', '/home/owner');
+      const session = await ctx.sessionManager.createSession(
+        { type: 'quick', locationPath: '/test/path', agentId: 'claude-code-builtin' },
+        { createdBy: owner.id },
+      );
+      const registered = await ctx.repositoryManager.registerRepository(TEST_REPO_PATH_A);
+
+      const afterDesignation = await ctx.repositoryManager.addOrchestratorSession(registered.id, session.id);
+      expect(afterDesignation).not.toBeNull();
+      const repository = afterDesignation as Repository;
+      expect(repository.orchestratorSessionIds).toEqual([session.id]);
+
+      const wirePayload = JSON.parse(
+        JSON.stringify({
+          type: 'repository-updated',
+          repository: { ...repository, clonedSourceRepoPath: null },
+        }),
+      );
+      const parsed = v.safeParse(AppServerMessageSchema, wirePayload);
+
+      expect(parsed.success).toBe(true);
+      if (!parsed.success) {
+        throw new Error(
+          `safeParse failed unexpectedly: ${JSON.stringify(parsed.issues.map((i) => i.message))}`,
+        );
+      }
+      if (parsed.output.type !== 'repository-updated') {
+        throw new Error(`Expected repository-updated, got: ${parsed.output.type}`);
+      }
+      expect(parsed.output.repository.orchestratorSessionIds).toEqual([session.id]);
+    });
+
+    it('round-trips a two-session set', async () => {
+      const owner = await ctx.userRepository.upsertByOsUid(54321, 'owner', '/home/owner');
+      const sessionA = await ctx.sessionManager.createSession(
+        { type: 'quick', locationPath: '/test/path-a', agentId: 'claude-code-builtin' },
+        { createdBy: owner.id },
+      );
+      const sessionB = await ctx.sessionManager.createSession(
+        { type: 'quick', locationPath: '/test/path-b', agentId: 'claude-code-builtin' },
+        { createdBy: owner.id },
+      );
+      const registered = await ctx.repositoryManager.registerRepository(TEST_REPO_PATH_A);
+
+      await ctx.repositoryManager.addOrchestratorSession(registered.id, sessionA.id);
+      const afterSecondDesignation = await ctx.repositoryManager.addOrchestratorSession(registered.id, sessionB.id);
+      expect(afterSecondDesignation).not.toBeNull();
+      const repository = afterSecondDesignation as Repository;
+      expect(new Set(repository.orchestratorSessionIds)).toEqual(new Set([sessionA.id, sessionB.id]));
+
+      const wirePayload = JSON.parse(
+        JSON.stringify({
+          type: 'repository-updated',
+          repository: { ...repository, clonedSourceRepoPath: null },
+        }),
+      );
+      const parsed = v.safeParse(AppServerMessageSchema, wirePayload);
+
+      expect(parsed.success).toBe(true);
+      if (!parsed.success) {
+        throw new Error(
+          `safeParse failed unexpectedly: ${JSON.stringify(parsed.issues.map((i) => i.message))}`,
+        );
+      }
+      if (parsed.output.type !== 'repository-updated') {
+        throw new Error(`Expected repository-updated, got: ${parsed.output.type}`);
+      }
+      expect(new Set(parsed.output.repository.orchestratorSessionIds)).toEqual(new Set([sessionA.id, sessionB.id]));
     });
   });
 
   describe('orchestrator-designation-changed broadcast', () => {
-    it('survives the round-trip for both the set (non-null) and clear (null) cases', async () => {
+    it('survives the round-trip for both the added and removed actions, carrying orchestratorSessionIds and changedSessionId', async () => {
       const captured: unknown[] = [];
       const broadcastToApp = (msg: AppServerMessage): void => {
         captured.push(msg);
@@ -216,13 +205,19 @@ describe('Client-Server Boundary: Repository orchestrator designation (Issue #16
       // does not wire `RepositoryManager.setLifecycleCallbacks` by default,
       // so this test wires a minimal set (no-ops for the callbacks this
       // test doesn't exercise) plus the real capturing broadcast for the
-      // two callbacks under test.
+      // callback under test.
       ctx.repositoryManager.setLifecycleCallbacks({
         onRepositoryCreated: () => {},
         onRepositoryUpdated: () => {},
         onRepositoryDeleted: () => {},
-        onOrchestratorDesignationChanged: (repositoryId, sessionId) => {
-          broadcastToApp({ type: 'orchestrator-designation-changed', repositoryId, sessionId });
+        onOrchestratorDesignationChanged: (repositoryId, orchestratorSessionIds, changedSessionId, action) => {
+          broadcastToApp({
+            type: 'orchestrator-designation-changed',
+            repositoryId,
+            orchestratorSessionIds,
+            changedSessionId,
+            action,
+          });
         },
       });
 
@@ -233,80 +228,85 @@ describe('Client-Server Boundary: Repository orchestrator designation (Issue #16
       );
       const registered = await ctx.repositoryManager.registerRepository(TEST_REPO_PATH_A);
 
-      // --- Set (non-null) case ---
-      await ctx.repositoryManager.setOrchestratorSession(registered.id, session.id);
+      // --- added case ---
+      await ctx.repositoryManager.addOrchestratorSession(registered.id, session.id);
 
       expect(captured).toHaveLength(1);
-      const setWirePayload = JSON.parse(JSON.stringify(captured[0]));
-      const setParsed = v.safeParse(AppServerMessageSchema, setWirePayload);
+      const addWirePayload = JSON.parse(JSON.stringify(captured[0]));
+      const addParsed = v.safeParse(AppServerMessageSchema, addWirePayload);
 
-      expect(setParsed.success).toBe(true);
-      if (!setParsed.success) {
+      expect(addParsed.success).toBe(true);
+      if (!addParsed.success) {
         throw new Error(
-          `safeParse failed unexpectedly (set case): ${JSON.stringify(setParsed.issues.map((i) => i.message))}`,
+          `safeParse failed unexpectedly (added case): ${JSON.stringify(addParsed.issues.map((i) => i.message))}`,
         );
       }
-      if (setParsed.output.type !== 'orchestrator-designation-changed') {
-        throw new Error(`Expected orchestrator-designation-changed, got: ${setParsed.output.type}`);
+      if (addParsed.output.type !== 'orchestrator-designation-changed') {
+        throw new Error(`Expected orchestrator-designation-changed, got: ${addParsed.output.type}`);
       }
-      expect(setParsed.output.repositoryId).toBe(registered.id);
-      expect(setParsed.output.sessionId).toBe(session.id);
+      expect(addParsed.output.repositoryId).toBe(registered.id);
+      expect(addParsed.output.orchestratorSessionIds).toEqual([session.id]);
+      expect(addParsed.output.changedSessionId).toBe(session.id);
+      expect(addParsed.output.action).toBe('added');
 
-      // --- Clear (null) case ---
-      const clearResult = await ctx.repositoryManager.clearOrchestratorSession(
-        registered.id,
-        session.id,
-      );
-      expect(clearResult.cleared).toBe(true);
+      // --- removed case ---
+      const removeResult = await ctx.repositoryManager.removeOrchestratorSession(registered.id, session.id);
+      expect(removeResult.removed).toBe(true);
 
       expect(captured).toHaveLength(2);
-      const clearWirePayload = JSON.parse(JSON.stringify(captured[1]));
-      const clearParsed = v.safeParse(AppServerMessageSchema, clearWirePayload);
+      const removeWirePayload = JSON.parse(JSON.stringify(captured[1]));
+      const removeParsed = v.safeParse(AppServerMessageSchema, removeWirePayload);
 
-      expect(clearParsed.success).toBe(true);
-      if (!clearParsed.success) {
+      expect(removeParsed.success).toBe(true);
+      if (!removeParsed.success) {
         throw new Error(
-          `safeParse failed unexpectedly (clear case): ${JSON.stringify(clearParsed.issues.map((i) => i.message))}`,
+          `safeParse failed unexpectedly (removed case): ${JSON.stringify(removeParsed.issues.map((i) => i.message))}`,
         );
       }
-      if (clearParsed.output.type !== 'orchestrator-designation-changed') {
-        throw new Error(`Expected orchestrator-designation-changed, got: ${clearParsed.output.type}`);
+      if (removeParsed.output.type !== 'orchestrator-designation-changed') {
+        throw new Error(`Expected orchestrator-designation-changed, got: ${removeParsed.output.type}`);
       }
-      // `sessionId` on this schema is `v.nullable(v.string())`, NOT
-      // `v.optional` -- the clear case must produce a real `null`, not an
-      // absent key. `'sessionId' in parsedOutput` distinguishes the two.
-      expect('sessionId' in clearParsed.output).toBe(true);
-      expect(clearParsed.output.sessionId).toBeNull();
+      // `orchestratorSessionIds` is required (not optional/nullable), and
+      // the removed case must produce a real `[]`, not an absent key.
+      expect('orchestratorSessionIds' in removeParsed.output).toBe(true);
+      expect(removeParsed.output.orchestratorSessionIds).toEqual([]);
+      expect(removeParsed.output.changedSessionId).toBe(session.id);
+      expect(removeParsed.output.action).toBe('removed');
     });
   });
 });
 
 /**
- * REST-boundary tests for the raise/clear routes themselves (Issue #1643
- * Part 2). The describe block above already guards the WIRE-SCHEMA round
- * trip (RepositoryManager -> JSON -> AppServerMessageSchema.safeParse) for
- * the fields these routes mutate; it never drives the REST routes
- * (`POST` / `DELETE /api/sessions/:id/orchestrator-designation`) themselves.
- * This block closes that gap by driving the real Hono app the same way
- * `restart-all-agents-boundary.test.ts` does: `createTestApp(ctx)` +
- * `app.request(...)`, asserting both the response body AND (via a real
+ * REST-boundary tests for the add/remove routes themselves (Issue #1716).
+ * The describe blocks above already guard the WIRE-SCHEMA round trip
+ * (RepositoryManager -> JSON -> AppServerMessageSchema.safeParse) for the
+ * fields these routes mutate; they never drive the REST routes
+ * (`POST` / `DELETE /api/sessions/:id/orchestrator-designation`)
+ * themselves. This block closes that gap by driving the real Hono app the
+ * same way `restart-all-agents-boundary.test.ts` does: `createTestApp(ctx)`
+ * + `app.request(...)`, asserting both the response body AND (via a real
  * `ctx.repositoryManager.getRepository(...)` re-read) the server-side state
  * change the response claims happened.
  *
  * There is no valibot schema on this route (same genre as
  * `restart-all-agents-boundary.test.ts` -- a REST JSON response, not a
- * WebSocket app-message), so the client's hand-written
- * `raiseOrchestratorDesignation` response interface
- * (`packages/client/src/lib/api.ts`) is mirrored here as a local TS
- * interface, kept in sync by convention rather than import (packages/client
+ * WebSocket app-message), so the client's hand-written response interfaces
+ * (`packages/client/src/lib/api.ts`) are mirrored here as local TS
+ * interfaces, kept in sync by convention rather than import (packages/client
  * is a Vite app, not a library package importable from packages/integration).
  */
-interface RaiseOrchestratorDesignationResult {
+interface AddOrchestratorDesignationResult {
   repositoryId: string;
-  orchestratorSessionId: string;
+  orchestratorSessionIds: string[];
 }
 
-describe('REST /api/sessions/:id/orchestrator-designation', () => {
+interface RemoveOrchestratorDesignationResult {
+  repositoryId: string;
+  removed: boolean;
+  orchestratorSessionIds: string[];
+}
+
+describe('REST /api/sessions/:id/orchestrator-designation (Issue #1716)', () => {
   let ctx: AppContext;
 
   beforeEach(async () => {
@@ -325,19 +325,23 @@ describe('REST /api/sessions/:id/orchestrator-designation', () => {
     await cleanupTestEnvironment();
   });
 
-  it('raises the flag: 200 + { repositoryId, orchestratorSessionId }, and the repository actually changes server-side', async () => {
-    const owner = await ctx.userRepository.upsertByOsUid(54321, 'owner', '/home/owner');
-    const repository = await ctx.repositoryManager.registerRepository(TEST_REPO_PATH_A);
-    const session = await ctx.sessionManager.createSession(
+  async function createWorktreeSession(ownerId: string, repositoryId: string, worktreeId: string) {
+    return ctx.sessionManager.createSession(
       {
         type: 'worktree',
         locationPath: TEST_REPO_PATH_A,
-        repositoryId: repository.id,
-        worktreeId: 'main',
+        repositoryId,
+        worktreeId,
         agentId: 'claude-code-builtin',
       },
-      { createdBy: owner.id },
+      { createdBy: ownerId },
     );
+  }
+
+  it('POST adds this session to the set: 200 + { repositoryId, orchestratorSessionIds }, and the repository actually changes server-side', async () => {
+    const owner = await ctx.userRepository.upsertByOsUid(54321, 'owner', '/home/owner');
+    const repository = await ctx.repositoryManager.registerRepository(TEST_REPO_PATH_A);
+    const session = await createWorktreeSession(owner.id, repository.id, 'main');
 
     const app = await createTestApp(ctx);
     const res = await app.request(`/api/sessions/${session.id}/orchestrator-designation`, {
@@ -345,89 +349,97 @@ describe('REST /api/sessions/:id/orchestrator-designation', () => {
     });
 
     expect(res.status).toBe(200);
-    const body = (await res.json()) as RaiseOrchestratorDesignationResult;
-    expect(body).toEqual({ repositoryId: repository.id, orchestratorSessionId: session.id });
+    const body = (await res.json()) as AddOrchestratorDesignationResult;
+    expect(body).toEqual({ repositoryId: repository.id, orchestratorSessionIds: [session.id] });
 
     // Not just a plausible-looking response: re-read the repository through
-    // the real manager to confirm the designation actually moved.
+    // the real manager to confirm the designation actually persisted.
     const reread = ctx.repositoryManager.getRepository(repository.id);
-    expect(reread?.orchestratorSessionId).toBe(session.id);
+    expect(reread?.orchestratorSessionIds).toEqual([session.id]);
   });
 
-  it('clears the flag when the caller is the current holder: 200 + { repositoryId, cleared: true }, repository reverts to null', async () => {
+  it('POST is idempotent: a second POST from the same session returns 200 with the same set unchanged', async () => {
     const owner = await ctx.userRepository.upsertByOsUid(54321, 'owner', '/home/owner');
     const repository = await ctx.repositoryManager.registerRepository(TEST_REPO_PATH_A);
-    const session = await ctx.sessionManager.createSession(
-      {
-        type: 'worktree',
-        locationPath: TEST_REPO_PATH_A,
-        repositoryId: repository.id,
-        worktreeId: 'main',
-        agentId: 'claude-code-builtin',
-      },
-      { createdBy: owner.id },
-    );
+    const session = await createWorktreeSession(owner.id, repository.id, 'main');
 
     const app = await createTestApp(ctx);
-    const raiseRes = await app.request(`/api/sessions/${session.id}/orchestrator-designation`, {
+    await app.request(`/api/sessions/${session.id}/orchestrator-designation`, { method: 'POST' });
+
+    const res = await app.request(`/api/sessions/${session.id}/orchestrator-designation`, {
       method: 'POST',
     });
-    expect(raiseRes.status).toBe(200);
-
-    const clearRes = await app.request(`/api/sessions/${session.id}/orchestrator-designation`, {
-      method: 'DELETE',
-    });
-    expect(clearRes.status).toBe(200);
-    const body = (await clearRes.json()) as { repositoryId: string; cleared: boolean };
-    expect(body).toEqual({ repositoryId: repository.id, cleared: true });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as AddOrchestratorDesignationResult;
+    expect(body).toEqual({ repositoryId: repository.id, orchestratorSessionIds: [session.id] });
 
     const reread = ctx.repositoryManager.getRepository(repository.id);
-    expect(reread?.orchestratorSessionId).toBeNull();
+    expect(reread?.orchestratorSessionIds).toEqual([session.id]);
   });
 
-  it('stale clear from a non-holder session is a no-op: 200 + { cleared: false }, the flag is unmoved', async () => {
+  it('a second session POSTing results in a set with both present', async () => {
     const owner = await ctx.userRepository.upsertByOsUid(54321, 'owner', '/home/owner');
     const repository = await ctx.repositoryManager.registerRepository(TEST_REPO_PATH_A);
-    const sessionA = await ctx.sessionManager.createSession(
-      {
-        type: 'worktree',
-        locationPath: TEST_REPO_PATH_A,
-        repositoryId: repository.id,
-        worktreeId: 'main',
-        agentId: 'claude-code-builtin',
-      },
-      { createdBy: owner.id },
-    );
-    const sessionB = await ctx.sessionManager.createSession(
-      {
-        type: 'worktree',
-        locationPath: TEST_REPO_PATH_A,
-        repositoryId: repository.id,
-        worktreeId: 'feature',
-        agentId: 'claude-code-builtin',
-      },
-      { createdBy: owner.id },
-    );
+    const sessionA = await createWorktreeSession(owner.id, repository.id, 'main');
+    const sessionB = await createWorktreeSession(owner.id, repository.id, 'feature');
 
     const app = await createTestApp(ctx);
+    await app.request(`/api/sessions/${sessionA.id}/orchestrator-designation`, { method: 'POST' });
+    const res = await app.request(`/api/sessions/${sessionB.id}/orchestrator-designation`, { method: 'POST' });
 
-    // Session A raises the flag; it never passes through session B.
-    const raiseRes = await app.request(`/api/sessions/${sessionA.id}/orchestrator-designation`, {
-      method: 'POST',
-    });
-    expect(raiseRes.status).toBe(200);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as AddOrchestratorDesignationResult;
+    expect(body.repositoryId).toBe(repository.id);
+    // Set membership only, not array order: two real consecutive requests
+    // can legitimately land the same `created_at` tick, at which point the
+    // ordering tiebreak is session_id (a random UUID).
+    expect(new Set(body.orchestratorSessionIds)).toEqual(new Set([sessionA.id, sessionB.id]));
 
-    // Session B (never held the flag) attempts to clear it.
-    const clearRes = await app.request(`/api/sessions/${sessionB.id}/orchestrator-designation`, {
+    const reread = ctx.repositoryManager.getRepository(repository.id);
+    expect(new Set(reread?.orchestratorSessionIds)).toEqual(new Set([sessionA.id, sessionB.id]));
+  });
+
+  it('DELETE removes one session, leaving the other: 200 + { removed: true, orchestratorSessionIds: [other] }', async () => {
+    const owner = await ctx.userRepository.upsertByOsUid(54321, 'owner', '/home/owner');
+    const repository = await ctx.repositoryManager.registerRepository(TEST_REPO_PATH_A);
+    const sessionA = await createWorktreeSession(owner.id, repository.id, 'main');
+    const sessionB = await createWorktreeSession(owner.id, repository.id, 'feature');
+
+    const app = await createTestApp(ctx);
+    await app.request(`/api/sessions/${sessionA.id}/orchestrator-designation`, { method: 'POST' });
+    await app.request(`/api/sessions/${sessionB.id}/orchestrator-designation`, { method: 'POST' });
+
+    const res = await app.request(`/api/sessions/${sessionA.id}/orchestrator-designation`, {
       method: 'DELETE',
     });
-    expect(clearRes.status).toBe(200);
-    const body = (await clearRes.json()) as { repositoryId: string; cleared: boolean };
-    expect(body).toEqual({ repositoryId: repository.id, cleared: false });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as RemoveOrchestratorDesignationResult;
+    expect(body).toEqual({ repositoryId: repository.id, removed: true, orchestratorSessionIds: [sessionB.id] });
 
-    // The flag must not have moved or cleared -- still session A's.
     const reread = ctx.repositoryManager.getRepository(repository.id);
-    expect(reread?.orchestratorSessionId).toBe(sessionA.id);
+    expect(reread?.orchestratorSessionIds).toEqual([sessionB.id]);
+  });
+
+  it('DELETE again on the same session is idempotent: 200 + { removed: false }, remaining designation untouched', async () => {
+    const owner = await ctx.userRepository.upsertByOsUid(54321, 'owner', '/home/owner');
+    const repository = await ctx.repositoryManager.registerRepository(TEST_REPO_PATH_A);
+    const sessionA = await createWorktreeSession(owner.id, repository.id, 'main');
+    const sessionB = await createWorktreeSession(owner.id, repository.id, 'feature');
+
+    const app = await createTestApp(ctx);
+    await app.request(`/api/sessions/${sessionA.id}/orchestrator-designation`, { method: 'POST' });
+    await app.request(`/api/sessions/${sessionB.id}/orchestrator-designation`, { method: 'POST' });
+    await app.request(`/api/sessions/${sessionA.id}/orchestrator-designation`, { method: 'DELETE' });
+
+    const res = await app.request(`/api/sessions/${sessionA.id}/orchestrator-designation`, {
+      method: 'DELETE',
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as RemoveOrchestratorDesignationResult;
+    expect(body).toEqual({ repositoryId: repository.id, removed: false, orchestratorSessionIds: [sessionB.id] });
+
+    const reread = ctx.repositoryManager.getRepository(repository.id);
+    expect(reread?.orchestratorSessionIds).toEqual([sessionB.id]);
   });
 
   it('rejects a non-worktree (quick) session with 400', async () => {
@@ -454,33 +466,32 @@ describe('REST /api/sessions/:id/orchestrator-designation', () => {
     expect(res.status).toBe(404);
   });
 
-  it('response shape survives a raw JSON round-trip (no valibot schema guards this route)', async () => {
+  it('both the POST and DELETE response shapes survive a raw JSON round-trip (no valibot schema guards this route)', async () => {
     const owner = await ctx.userRepository.upsertByOsUid(54321, 'owner', '/home/owner');
     const repository = await ctx.repositoryManager.registerRepository(TEST_REPO_PATH_A);
-    const session = await ctx.sessionManager.createSession(
-      {
-        type: 'worktree',
-        locationPath: TEST_REPO_PATH_A,
-        repositoryId: repository.id,
-        worktreeId: 'main',
-        agentId: 'claude-code-builtin',
-      },
-      { createdBy: owner.id },
-    );
+    const session = await createWorktreeSession(owner.id, repository.id, 'main');
 
     const app = await createTestApp(ctx);
-    const res = await app.request(`/api/sessions/${session.id}/orchestrator-designation`, {
+
+    const postRes = await app.request(`/api/sessions/${session.id}/orchestrator-designation`, {
       method: 'POST',
     });
-    expect(res.status).toBe(200);
+    expect(postRes.status).toBe(200);
+    const postRoundTripped = JSON.parse(JSON.stringify(await postRes.json())) as Record<string, unknown>;
+    expect(typeof postRoundTripped.repositoryId).toBe('string');
+    expect(postRoundTripped.repositoryId).toBe(repository.id);
+    expect(Array.isArray(postRoundTripped.orchestratorSessionIds)).toBe(true);
+    expect(postRoundTripped.orchestratorSessionIds).toEqual([session.id]);
 
-    // Round-trip through raw JSON (mirrors the actual HTTP wire step) rather
-    // than trusting the already-parsed `res.json()` shape.
-    const roundTripped = JSON.parse(JSON.stringify(await res.json())) as Record<string, unknown>;
-
-    expect(typeof roundTripped.repositoryId).toBe('string');
-    expect(roundTripped.repositoryId).toBe(repository.id);
-    expect(typeof roundTripped.orchestratorSessionId).toBe('string');
-    expect(roundTripped.orchestratorSessionId).toBe(session.id);
+    const deleteRes = await app.request(`/api/sessions/${session.id}/orchestrator-designation`, {
+      method: 'DELETE',
+    });
+    expect(deleteRes.status).toBe(200);
+    const deleteRoundTripped = JSON.parse(JSON.stringify(await deleteRes.json())) as Record<string, unknown>;
+    expect(typeof deleteRoundTripped.repositoryId).toBe('string');
+    expect(deleteRoundTripped.repositoryId).toBe(repository.id);
+    expect(deleteRoundTripped.removed).toBe(true);
+    expect(Array.isArray(deleteRoundTripped.orchestratorSessionIds)).toBe(true);
+    expect(deleteRoundTripped.orchestratorSessionIds).toEqual([]);
   });
 });

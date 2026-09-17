@@ -36,6 +36,17 @@ export interface PersistedRepository {
   description?: string | null;
   defaultAgentId?: string | null;
   /**
+   * The repository's designated-Orchestrator session set (Issue #1716).
+   * NOT persisted in this legacy JSON shape -- designations live in the
+   * `repository_orchestrator_sessions` table (migration v41), populated
+   * only through `RepositoryRepository.addOrchestratorSession` /
+   * `removeOrchestratorSession`, never through the JSON migration path.
+   * Declared here (always `[]`) purely so `PersistedRepository` remains
+   * structurally compatible with `Repository`'s now-required field, same
+   * rationale as `clonedSourceRepoPath` below.
+   */
+  orchestratorSessionIds: string[];
+  /**
    * Derived field surfaced at serving time. Carries `null` in the persisted
    * JSON record; `withRepositoryRemote` recomputes the value against
    * `getSourceReposDir()` on every read. Kept in the persisted shape

@@ -1097,6 +1097,7 @@ describe('RepositoryManager', () => {
           name: 'repo',
           path: TEST_REPO_DIR,
           createdAt: '2024-01-01T00:00:00.000Z',
+          orchestratorSessionIds: [],
           clonedSourceRepoPath: null,
         },
       ];
@@ -1116,6 +1117,7 @@ describe('RepositoryManager', () => {
           name: 'missing',
           path: '/non/existent/path',
           createdAt: '2024-01-01T00:00:00.000Z',
+          orchestratorSessionIds: [],
           clonedSourceRepoPath: null,
         },
       ];
@@ -1126,7 +1128,7 @@ describe('RepositoryManager', () => {
     });
   });
 
-  describe('setOrchestratorSession / clearOrchestratorSession', () => {
+  describe('addOrchestratorSession / removeOrchestratorSession (Issue #1716)', () => {
     function noopCallbacks() {
       return {
         onRepositoryCreated: () => {},
@@ -1137,12 +1139,12 @@ describe('RepositoryManager', () => {
     }
 
     /**
-     * `orchestrator_session_id` is a real FK to `sessions.id` (migration
-     * v40), so a designation-target id must reference an actual row in the
-     * production, migration-backed database this file uses (unlike
-     * `sqlite-repository-repository.test.ts`'s manually-created schema,
-     * which omits the FK). Minimal row: only `id` / `type` / `location_path`
-     * are NOT NULL without a default.
+     * `repository_orchestrator_sessions.session_id` is a real FK to
+     * `sessions.id` (migration v41), so a designation-target id must
+     * reference an actual row in the production, migration-backed database
+     * this file uses (unlike `sqlite-repository-repository.test.ts`'s
+     * manually-created schema, which omits the FK). Minimal row: only
+     * `id` / `type` / `location_path` are NOT NULL without a default.
      */
     async function insertMinimalSessionRow(id: string): Promise<void> {
       await getDatabase()
@@ -1151,123 +1153,150 @@ describe('RepositoryManager', () => {
         .execute();
     }
 
-    it('sets the designation and broadcasts both onRepositoryUpdated and onOrchestratorDesignationChanged', async () => {
+    it('adds the designation and broadcasts both onRepositoryUpdated and onOrchestratorDesignationChanged with action "added"', async () => {
       const manager = await getRepositoryManager();
       const repo = await manager.registerRepository(TEST_REPO_DIR);
       await insertMinimalSessionRow('session-a');
 
       const updatedCalls: Repository[] = [];
-      const designationCalls: { repositoryId: string; sessionId: string | null }[] = [];
+      const designationCalls: { repositoryId: string; orchestratorSessionIds: string[]; changedSessionId: string; action: 'added' | 'removed' }[] = [];
       manager.setLifecycleCallbacks({
         ...noopCallbacks(),
         onRepositoryUpdated: (r: Repository) => updatedCalls.push(r),
-        onOrchestratorDesignationChanged: (repositoryId: string, sessionId: string | null) =>
-          designationCalls.push({ repositoryId, sessionId }),
+        onOrchestratorDesignationChanged: (repositoryId: string, orchestratorSessionIds: string[], changedSessionId: string, action: 'added' | 'removed') =>
+          designationCalls.push({ repositoryId, orchestratorSessionIds, changedSessionId, action }),
       });
 
-      const updated = await manager.setOrchestratorSession(repo.id, 'session-a');
+      const updated = await manager.addOrchestratorSession(repo.id, 'session-a');
 
-      expect(updated?.orchestratorSessionId).toBe('session-a');
-      expect(manager.getRepository(repo.id)?.orchestratorSessionId).toBe('session-a');
+      expect(updated?.orchestratorSessionIds).toEqual(['session-a']);
+      expect(manager.getRepository(repo.id)?.orchestratorSessionIds).toEqual(['session-a']);
       expect(updatedCalls).toHaveLength(1);
-      expect(updatedCalls[0].orchestratorSessionId).toBe('session-a');
-      expect(designationCalls).toEqual([{ repositoryId: repo.id, sessionId: 'session-a' }]);
+      expect(updatedCalls[0].orchestratorSessionIds).toEqual(['session-a']);
+      expect(designationCalls).toEqual([
+        { repositoryId: repo.id, orchestratorSessionIds: ['session-a'], changedSessionId: 'session-a', action: 'added' },
+      ]);
     });
 
-    it('moves the designation to a different session', async () => {
+    it('adding a second session accumulates a set -- the first designation is unaffected', async () => {
       const manager = await getRepositoryManager();
       const repo = await manager.registerRepository(TEST_REPO_DIR);
       await insertMinimalSessionRow('session-a');
       await insertMinimalSessionRow('session-b');
-      await manager.setOrchestratorSession(repo.id, 'session-a');
+      await manager.addOrchestratorSession(repo.id, 'session-a');
 
-      const updated = await manager.setOrchestratorSession(repo.id, 'session-b');
+      const updated = await manager.addOrchestratorSession(repo.id, 'session-b');
 
-      expect(updated?.orchestratorSessionId).toBe('session-b');
+      expect(new Set(updated?.orchestratorSessionIds)).toEqual(new Set(['session-a', 'session-b']));
+    });
+
+    it('is idempotent: adding an already-designated session fires no callback', async () => {
+      const manager = await getRepositoryManager();
+      const repo = await manager.registerRepository(TEST_REPO_DIR);
+      await insertMinimalSessionRow('session-a');
+      await manager.addOrchestratorSession(repo.id, 'session-a');
+
+      const designationCalls: unknown[] = [];
+      const updatedCalls: unknown[] = [];
+      manager.setLifecycleCallbacks({
+        ...noopCallbacks(),
+        onRepositoryUpdated: (r: Repository) => updatedCalls.push(r),
+        onOrchestratorDesignationChanged: (...args: unknown[]) => designationCalls.push(args),
+      });
+
+      const updated = await manager.addOrchestratorSession(repo.id, 'session-a');
+
+      expect(updated?.orchestratorSessionIds).toEqual(['session-a']);
+      expect(updatedCalls).toEqual([]);
+      expect(designationCalls).toEqual([]);
     });
 
     it('returns null when the repository does not exist', async () => {
       const manager = await getRepositoryManager();
       await insertMinimalSessionRow('session-a');
 
-      const updated = await manager.setOrchestratorSession('does-not-exist', 'session-a');
+      const updated = await manager.addOrchestratorSession('does-not-exist', 'session-a');
 
       expect(updated).toBeNull();
     });
 
-    it('clears the designation and broadcasts a null sessionId', async () => {
-      const manager = await getRepositoryManager();
-      const repo = await manager.registerRepository(TEST_REPO_DIR);
-      await insertMinimalSessionRow('session-a');
-      await manager.setOrchestratorSession(repo.id, 'session-a');
-
-      const designationCalls: { repositoryId: string; sessionId: string | null }[] = [];
-      manager.setLifecycleCallbacks({
-        ...noopCallbacks(),
-        onOrchestratorDesignationChanged: (repositoryId: string, sessionId: string | null) =>
-          designationCalls.push({ repositoryId, sessionId }),
-      });
-
-      const result = await manager.clearOrchestratorSession(repo.id, 'session-a');
-
-      expect(result.cleared).toBe(true);
-      expect(result.repository?.orchestratorSessionId).toBeNull();
-      expect(designationCalls).toEqual([{ repositoryId: repo.id, sessionId: null }]);
-    });
-
-    it('does not clear (stale-clear guard) and does not broadcast when sessionId does not match', async () => {
+    it('removes a designation and broadcasts the re-read set with action "removed"', async () => {
       const manager = await getRepositoryManager();
       const repo = await manager.registerRepository(TEST_REPO_DIR);
       await insertMinimalSessionRow('session-a');
       await insertMinimalSessionRow('session-b');
-      await manager.setOrchestratorSession(repo.id, 'session-a');
+      await manager.addOrchestratorSession(repo.id, 'session-a');
+      await manager.addOrchestratorSession(repo.id, 'session-b');
 
-      const designationCalls: { repositoryId: string; sessionId: string | null }[] = [];
+      const designationCalls: { repositoryId: string; orchestratorSessionIds: string[]; changedSessionId: string; action: 'added' | 'removed' }[] = [];
       manager.setLifecycleCallbacks({
         ...noopCallbacks(),
-        onOrchestratorDesignationChanged: (repositoryId: string, sessionId: string | null) =>
-          designationCalls.push({ repositoryId, sessionId }),
+        onOrchestratorDesignationChanged: (repositoryId: string, orchestratorSessionIds: string[], changedSessionId: string, action: 'added' | 'removed') =>
+          designationCalls.push({ repositoryId, orchestratorSessionIds, changedSessionId, action }),
       });
 
-      const result = await manager.clearOrchestratorSession(repo.id, 'session-b');
+      const result = await manager.removeOrchestratorSession(repo.id, 'session-a');
 
-      expect(result.cleared).toBe(false);
-      expect(result.repository?.orchestratorSessionId).toBe('session-a');
+      expect(result.removed).toBe(true);
+      expect(result.repository?.orchestratorSessionIds).toEqual(['session-b']);
+      expect(designationCalls).toEqual([
+        { repositoryId: repo.id, orchestratorSessionIds: ['session-b'], changedSessionId: 'session-a', action: 'removed' },
+      ]);
+    });
+
+    it('is idempotent: removing an absent designation fires no callback and does not touch other designations', async () => {
+      const manager = await getRepositoryManager();
+      const repo = await manager.registerRepository(TEST_REPO_DIR);
+      await insertMinimalSessionRow('session-a');
+      await insertMinimalSessionRow('session-b');
+      await manager.addOrchestratorSession(repo.id, 'session-a');
+
+      const designationCalls: unknown[] = [];
+      manager.setLifecycleCallbacks({
+        ...noopCallbacks(),
+        onOrchestratorDesignationChanged: (...args: unknown[]) => designationCalls.push(args),
+      });
+
+      const result = await manager.removeOrchestratorSession(repo.id, 'session-b');
+
+      expect(result.removed).toBe(false);
+      expect(result.repository?.orchestratorSessionIds).toEqual(['session-a']);
       expect(designationCalls).toEqual([]);
     });
 
-    it('returns cleared=false and repository=null when the repository does not exist', async () => {
+    it('returns removed=false and repository=null when the repository does not exist', async () => {
       const manager = await getRepositoryManager();
 
-      const result = await manager.clearOrchestratorSession('does-not-exist', 'session-a');
+      const result = await manager.removeOrchestratorSession('does-not-exist', 'session-a');
 
-      expect(result.cleared).toBe(false);
+      expect(result.removed).toBe(false);
       expect(result.repository).toBeNull();
     });
 
     // =========================================================================
-    // CodeRabbit fix-up (PR #1650): `setOrchestratorSessionId`/
-    // `clearOrchestratorSessionId` each run an UPDATE followed by a SEPARATE
-    // `findById` read-back -- not atomic within a single JS operation, so a
-    // concurrent designation change on the same repository could interleave
-    // between them. `setOrchestratorSession`/`clearOrchestratorSession` must
-    // broadcast what was actually just read back (`updated` /
-    // `result.repository`), not the request argument. In the non-racing case
-    // the two values coincide, which is exactly why a plain fake that echoes
-    // its input back can't distinguish this fix from the bug it replaces --
-    // the wrapper below makes the repository return a DELIBERATELY DIFFERENT
-    // `orchestratorSessionId` than what was requested, so only reading the
-    // return value (not the argument) makes the assertions below pass.
+    // CodeRabbit fix-up (PR #1650), preserved under the set model (Issue
+    // #1716): the row store's add/remove each run an INSERT/DELETE followed
+    // by a SEPARATE `findById` read-back -- not atomic within a single JS
+    // operation, so a concurrent designation change on the same repository
+    // could interleave between them. `addOrchestratorSession`/
+    // `removeOrchestratorSession` must broadcast what was actually just read
+    // back (`result.repository`), not a value derived from the request
+    // argument. In the non-racing case the two values coincide, which is
+    // exactly why a plain fake that echoes its input back can't distinguish
+    // this fix from the bug it replaces -- the wrapper below makes the
+    // repository return a DELIBERATELY DIFFERENT `orchestratorSessionIds`
+    // than what was actually persisted, so only reading the return value
+    // (not the argument) makes the assertions below pass.
     // =========================================================================
 
     /**
      * Wraps the real, migration-backed `repositoryRepository` so its
-     * `setOrchestratorSessionId`/`clearOrchestratorSessionId` calls persist
+     * `addOrchestratorSession`/`removeOrchestratorSession` calls persist
      * exactly as production would, but the VALUE THEY RETURN carries
-     * `canaryValue` instead of the session id the caller actually requested.
-     * Every other method delegates unchanged.
+     * `canaryIds` instead of the actually-persisted set. Every other method
+     * delegates unchanged.
      */
-    function wrapWithDivergentDesignationEcho(canaryValue: string | null): RepositoryRepository {
+    function wrapWithDivergentDesignationEcho(canaryIds: string[]): RepositoryRepository {
       return {
         findAll: () => repositoryRepository.findAll(),
         findById: (id) => repositoryRepository.findById(id),
@@ -1275,70 +1304,77 @@ describe('RepositoryManager', () => {
         save: (repository) => repositoryRepository.save(repository),
         update: (id, updates) => repositoryRepository.update(id, updates),
         delete: (id) => repositoryRepository.delete(id),
-        setOrchestratorSessionId: async (id, sessionId) => {
-          const updated = await repositoryRepository.setOrchestratorSessionId(id, sessionId);
-          return updated ? { ...updated, orchestratorSessionId: canaryValue } : updated;
-        },
-        clearOrchestratorSessionId: async (id, expectedSessionId) => {
-          const result = await repositoryRepository.clearOrchestratorSessionId(id, expectedSessionId);
-          return result.cleared && result.repository
-            ? { cleared: true, repository: { ...result.repository, orchestratorSessionId: canaryValue } }
+        addOrchestratorSession: async (id, sessionId) => {
+          const result = await repositoryRepository.addOrchestratorSession(id, sessionId);
+          return result.repository
+            ? { added: result.added, repository: { ...result.repository, orchestratorSessionIds: canaryIds } }
             : result;
         },
+        removeOrchestratorSession: async (id, sessionId) => {
+          const result = await repositoryRepository.removeOrchestratorSession(id, sessionId);
+          return result.repository
+            ? { removed: result.removed, repository: { ...result.repository, orchestratorSessionIds: canaryIds } }
+            : result;
+        },
+        listOrchestratorSessionIds: (id) => repositoryRepository.listOrchestratorSessionIds(id),
       };
     }
 
-    it('setOrchestratorSession broadcasts the value read back from the repository, not the request sessionId', async () => {
+    it('addOrchestratorSession broadcasts the set read back from the repository, not a value derived from the request sessionId', async () => {
       const module = await import(`../repository-manager.js?v=${++importCounter}`);
       const manager = await module.RepositoryManager.create({
-        repository: wrapWithDivergentDesignationEcho('canary-session-id'),
+        repository: wrapWithDivergentDesignationEcho(['canary-session-id']),
         jobQueue: testJobQueue,
         runAsUserImpl: runAsUserMock.runAsUserImpl,
       });
       const repo = await manager.registerRepository(TEST_REPO_DIR);
       await insertMinimalSessionRow('session-a');
 
-      const designationCalls: { repositoryId: string; sessionId: string | null }[] = [];
+      const designationCalls: { repositoryId: string; orchestratorSessionIds: string[]; changedSessionId: string; action: 'added' | 'removed' }[] = [];
       manager.setLifecycleCallbacks({
         ...noopCallbacks(),
-        onOrchestratorDesignationChanged: (repositoryId: string, sessionId: string | null) =>
-          designationCalls.push({ repositoryId, sessionId }),
+        onOrchestratorDesignationChanged: (repositoryId: string, orchestratorSessionIds: string[], changedSessionId: string, action: 'added' | 'removed') =>
+          designationCalls.push({ repositoryId, orchestratorSessionIds, changedSessionId, action }),
       });
 
-      const updated = await manager.setOrchestratorSession(repo.id, 'session-a');
+      const updated = await manager.addOrchestratorSession(repo.id, 'session-a');
 
       // The manager's own return value and in-memory cache come from the
-      // same `updated` read-back, so both carry the canary too -- this is
-      // not a broadcast-only quirk, it's the whole point of reading the
+      // same read-back, so both carry the canary too -- this is not a
+      // broadcast-only quirk, it's the whole point of reading the
       // repository's return value as the single source of truth.
-      expect(updated?.orchestratorSessionId).toBe('canary-session-id');
-      expect(manager.getRepository(repo.id)?.orchestratorSessionId).toBe('canary-session-id');
-      expect(designationCalls).toEqual([{ repositoryId: repo.id, sessionId: 'canary-session-id' }]);
+      expect(updated?.orchestratorSessionIds).toEqual(['canary-session-id']);
+      expect(manager.getRepository(repo.id)?.orchestratorSessionIds).toEqual(['canary-session-id']);
+      expect(designationCalls).toEqual([
+        { repositoryId: repo.id, orchestratorSessionIds: ['canary-session-id'], changedSessionId: 'session-a', action: 'added' },
+      ]);
     });
 
-    it('clearOrchestratorSession broadcasts the value read back from the repository, not a hardcoded null', async () => {
+    it('removeOrchestratorSession broadcasts the set read back from the repository, not a hardcoded value', async () => {
       const module = await import(`../repository-manager.js?v=${++importCounter}`);
       const manager = await module.RepositoryManager.create({
-        repository: wrapWithDivergentDesignationEcho('still-designated-session'),
+        repository: wrapWithDivergentDesignationEcho(['still-designated-session']),
         jobQueue: testJobQueue,
         runAsUserImpl: runAsUserMock.runAsUserImpl,
       });
       const repo = await manager.registerRepository(TEST_REPO_DIR);
       await insertMinimalSessionRow('session-a');
-      await manager.setOrchestratorSession(repo.id, 'session-a');
+      await manager.addOrchestratorSession(repo.id, 'session-a');
 
-      const designationCalls: { repositoryId: string; sessionId: string | null }[] = [];
+      const designationCalls: { repositoryId: string; orchestratorSessionIds: string[]; changedSessionId: string; action: 'added' | 'removed' }[] = [];
       manager.setLifecycleCallbacks({
         ...noopCallbacks(),
-        onOrchestratorDesignationChanged: (repositoryId: string, sessionId: string | null) =>
-          designationCalls.push({ repositoryId, sessionId }),
+        onOrchestratorDesignationChanged: (repositoryId: string, orchestratorSessionIds: string[], changedSessionId: string, action: 'added' | 'removed') =>
+          designationCalls.push({ repositoryId, orchestratorSessionIds, changedSessionId, action }),
       });
 
-      const result = await manager.clearOrchestratorSession(repo.id, 'session-a');
+      const result = await manager.removeOrchestratorSession(repo.id, 'session-a');
 
-      expect(result.cleared).toBe(true);
-      expect(result.repository?.orchestratorSessionId).toBe('still-designated-session');
-      expect(designationCalls).toEqual([{ repositoryId: repo.id, sessionId: 'still-designated-session' }]);
+      expect(result.removed).toBe(true);
+      expect(result.repository?.orchestratorSessionIds).toEqual(['still-designated-session']);
+      expect(designationCalls).toEqual([
+        { repositoryId: repo.id, orchestratorSessionIds: ['still-designated-session'], changedSessionId: 'session-a', action: 'removed' },
+      ]);
     });
   });
 });

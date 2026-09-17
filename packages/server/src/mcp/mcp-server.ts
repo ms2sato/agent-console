@@ -538,11 +538,12 @@ export function createMcpApp(deps: McpDependencies): Hono {
   // tools; this comment is the convention-only marker.
   mcpServer.tool(
     'set_orchestrator_session',
-    'Flag this session as its repository\'s designated Orchestrator. Webhook-triggered inbound events (e.g. a ' +
-      'labeled GitHub Issue matching the repository\'s configured trigger labels) route to whichever session ' +
-      'currently holds this flag. Raising the flag moves it here even if another session held it before -- a ' +
-      'repository has exactly one designated session at a time. Call this at startup (First Action) so restarting ' +
-      'into a new session id re-flags automatically.',
+    'Add this session to its repository\'s designated-Orchestrator set. Webhook-triggered inbound events (e.g. a ' +
+      'labeled GitHub Issue matching the repository\'s configured trigger labels) are delivered to EVERY live ' +
+      'designated session; other sessions\' designations are unaffected by this call (nobody\'s flag moves). ' +
+      'Idempotent. Call this at startup (First Action) so restarting into a new session id re-designates ' +
+      'automatically; you may not be the only recipient -- decide whether an event is yours and coordinate ' +
+      'through send_session_message when acting.',
     {
       sessionId: z.string().describe(
         "The calling session's ID, used to resolve which repository to flag and to verify ownership. Use your own AGENT_CONSOLE_SESSION_ID environment variable.",
@@ -570,12 +571,12 @@ export function createMcpApp(deps: McpDependencies): Hono {
         );
         if (authError) return errorResult(authError.error);
 
-        const updated = await repositoryManager.setOrchestratorSession(session.repositoryId, sessionId);
+        const updated = await repositoryManager.addOrchestratorSession(session.repositoryId, sessionId);
         if (!updated) {
           return errorResult(`Repository not found: ${session.repositoryId}`);
         }
 
-        return textResult({ repositoryId: session.repositoryId, orchestratorSessionId: sessionId });
+        return textResult({ repositoryId: session.repositoryId, orchestratorSessionIds: updated.orchestratorSessionIds });
       } catch (err) {
         const message = err instanceof Error ? err.message : 'Unknown error';
         logger.error({ err, sessionId }, 'set_orchestrator_session failed');
@@ -594,10 +595,9 @@ export function createMcpApp(deps: McpDependencies): Hono {
   // tools; this comment is the convention-only marker.
   mcpServer.tool(
     'clear_orchestrator_session',
-    'Clear this session\'s Orchestrator designation for its repository -- but only if this session still holds ' +
-      'the flag (a stale clear from a session that has already been superseded is a no-op, distinguishable in the ' +
-      'response). Call this on graceful shutdown if you want the repository to have no designated Orchestrator ' +
-      'until a new one flags itself.',
+    'Remove this session from its repository\'s designated-Orchestrator set. Idempotent (`removed: false` when ' +
+      'this session was not designated). Other sessions\' designations are unaffected. Call this before retiring ' +
+      'so a paused incarnation does not stay designated.',
     {
       sessionId: z.string().describe(
         "The calling session's ID. Use your own AGENT_CONSOLE_SESSION_ID environment variable.",
@@ -625,12 +625,16 @@ export function createMcpApp(deps: McpDependencies): Hono {
         );
         if (authError) return errorResult(authError.error);
 
-        const result = await repositoryManager.clearOrchestratorSession(session.repositoryId, sessionId);
+        const result = await repositoryManager.removeOrchestratorSession(session.repositoryId, sessionId);
         if (!result.repository) {
           return errorResult(`Repository not found: ${session.repositoryId}`);
         }
 
-        return textResult({ repositoryId: session.repositoryId, cleared: result.cleared });
+        return textResult({
+          repositoryId: session.repositoryId,
+          removed: result.removed,
+          orchestratorSessionIds: result.repository.orchestratorSessionIds,
+        });
       } catch (err) {
         const message = err instanceof Error ? err.message : 'Unknown error';
         logger.error({ err, sessionId }, 'clear_orchestrator_session failed');
