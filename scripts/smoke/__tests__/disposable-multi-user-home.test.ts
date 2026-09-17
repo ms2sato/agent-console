@@ -47,15 +47,16 @@ describe('createDisposableMultiUserHome (real fs, Linux only)', () => {
     }
 
     const result = await createDisposableMultiUserHome('disposable-multi-user-home-test-');
-    umaskRestores.push(result.prevUmask);
+    cleanupPaths.push(result.path);
     if (!result.ok) {
       // A tmpfs that genuinely refuses setgid is exactly the "cannot run"
       // case this helper exists to report loudly -- fail the test with the
       // reason rather than silently skipping, since CI's own /tmp is
-      // expected to honour setgid.
+      // expected to honour setgid. ok:false never touches process.umask(),
+      // so there is nothing to push onto umaskRestores here.
       throw new Error(`createDisposableMultiUserHome returned ok:false unexpectedly: ${result.reason}`);
     }
-    cleanupPaths.push(result.path);
+    umaskRestores.push(result.prevUmask);
 
     const homeSt = await lstat(result.path);
     expect(homeSt.mode & 0o7777).toBe(0o2775);

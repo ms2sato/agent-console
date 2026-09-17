@@ -279,22 +279,23 @@ async function main(): Promise<void> {
     // since AUTH_MODE=multi-user is forced above. See
     // disposable-multi-user-home.ts's header for why. ---
     const homeResult = await createDisposableMultiUserHome('ac-embedded-bash-smoke-cfg-');
-    // Captured before the ok-check, unconditionally: createDisposableMultiUserHome
-    // already changed process.umask() by the time it returns EITHER branch,
-    // so the finally block's restore must see it even on the throw below.
-    prevUmask = homeResult.prevUmask;
     if (!homeResult.ok) {
       // Routed through SmokeSetupError (not a direct process.exit(2)) --
       // ctx and stubServer already exist by this point, and this class
       // exists precisely so a setup/launch failure here still runs the
-      // finally block's cleanup (and this smoke's own umask restore)
-      // before exiting 2, unlike the earlier osUser-lookup guard above
-      // which runs before either resource is created.
+      // finally block's other cleanup (deactivate/shutdownAppContext/stop
+      // servers) before exiting 2, unlike the earlier osUser-lookup guard
+      // above which runs before either resource is created. The helper
+      // itself already removed the failed mkdtemp directory (best-effort)
+      // before returning, so there is nothing left for this smoke's own
+      // cleanup to do for the home; ok:false also never touched
+      // process.umask(), so there is no prevUmask to capture.
       throw new SmokeSetupError(
         `cannot build a disposable AGENT_CONSOLE_HOME satisfying the multi-user data-root 2775 contract: ${homeResult.reason}`,
       );
     }
     realConfigDir = homeResult.path;
+    prevUmask = homeResult.prevUmask;
     process.env.AGENT_CONSOLE_HOME = realConfigDir;
     const apiKeyRef = 'smoke-provider-key';
     const fakeApiKey = `smoke-test-fake-key-${crypto.randomUUID()}`;

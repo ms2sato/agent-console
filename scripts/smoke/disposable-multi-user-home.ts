@@ -30,30 +30,38 @@
  * some tmpfs mounts) produce a silent `755` that only surfaces later as a
  * `MemoryDirVerificationError` deep inside embedded-agent activation.
  */
-import { mkdtemp, lstat } from 'node:fs/promises';
+import { mkdtemp, lstat, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 const MULTI_USER_HOME_MODE = 0o2775;
 const MULTI_USER_UMASK = 0o002;
 
+/**
+ * `ok: false` changes NO process state -- verification failing means this
+ * function never touches `process.umask()`, so there is no previous mask
+ * to hand back and nothing for the caller to restore on this branch.
+ */
 export type CreateDisposableMultiUserHomeResult =
   | { ok: true; path: string; prevUmask: number }
-  | { ok: false; reason: string; path: string; prevUmask: number };
+  | { ok: false; reason: string; path: string };
 
 /**
  * Creates a fresh `mkdtemp` directory under `os.tmpdir()`, chmods it to
  * `2775` via the `chmod` BINARY -- Bun's `fs.chmod` drops the setgid bit
  * (see `packages/server/src/routes/workers.ts` L55-56's identical note on
- * `ensureUploadDir`) -- sets `process.umask(0o002)` to emulate the
- * production unit's `UMask=0002`, and VERIFIES the result actually carries
- * `2775` and the expected gid before handing it back.
+ * `ensureUploadDir`) -- VERIFIES the result actually carries `2775` and the
+ * expected gid, and only THEN sets `process.umask(0o002)` to emulate the
+ * production unit's `UMask=0002` before handing it back.
  *
- * `process.umask(0o002)` is always applied, and the PREVIOUS umask is
- * always returned as `prevUmask`, on both the `ok: true` and `ok: false`
- * branches -- the umask change has already happened by the time
- * verification runs, so the caller must restore it (`process.umask(prevUmask)`)
- * in a `finally` regardless of which branch it gets.
+ * `process.umask(0o002)` is called ONLY on the success path, immediately
+ * before `return { ok: true, ... }`, with nothing between the call and the
+ * return -- verification does not need it (the home's own mode comes from
+ * the `chmod` above; the umask only matters for children created later),
+ * and calling it any earlier would risk a thrown `lstat` losing track of
+ * the previous mask between the call and a caller that never received it.
+ * `ok: false` therefore never changes `process.umask()` and carries no
+ * `prevUmask` to restore.
  *
  * `ok: false` means the filesystem backing `os.tmpdir()` does not honour
  * the `2775` contract here (e.g. a tmpfs mount that refuses setgid, or a
@@ -61,7 +69,10 @@ export type CreateDisposableMultiUserHomeResult =
  * this process's own gid) -- a loud, structured "cannot run" result naming
  * the filesystem, for the caller to map to exit 2, rather than a silent
  * `755` that would only surface much later as a `MemoryDirVerificationError`
- * deep inside embedded-agent activation.
+ * deep inside embedded-agent activation. The helper removes the mkdtemp'd
+ * directory itself before every `ok: false` return (best-effort), so no
+ * caller can forget to clean up a home that never became usable; `path` is
+ * still included in the result for diagnostics/logging.
  *
  * @param prefix passed to `mkdtemp` (e.g. `'ac-embedded-smoke-cfg-'`).
  */
@@ -70,30 +81,34 @@ export async function createDisposableMultiUserHome(
 ): Promise<CreateDisposableMultiUserHomeResult> {
   const home = await mkdtemp(join(tmpdir(), prefix));
 
+  // Best-effort removal of the mkdtemp'd home on any `ok: false` return
+  // below -- a directory that never became a valid 2775 contract home has
+  // nothing worth keeping, and cleaning it up HERE means no caller can
+  // forget to (CodeRabbit MAJOR/MINOR on PR #1715, folded into one fix per
+  // the Architect's ruling: the caller-side cleanup this originally relied
+  // on required every caller to remember to assign the path before its own
+  // ok-check, which is exactly the kind of thing a helper should not ask
+  // its callers to get right).
+  const removeFailedHome = () => rm(home, { recursive: true, force: true }).catch(() => {});
+
   const chmodProc = Bun.spawn(['chmod', '2775', home], { stdout: 'pipe', stderr: 'pipe' });
   const chmodExit = await chmodProc.exited;
-
-  // The umask change is applied here, unconditionally, BEFORE either
-  // verification check below -- both `ok: false` branches still return it
-  // so the caller can restore it, since by the time either check can fail
-  // the umask has already been changed for the whole process.
-  const prevUmask = process.umask(MULTI_USER_UMASK);
-
   if (chmodExit !== 0) {
     const stderr = await new Response(chmodProc.stderr).text();
+    await removeFailedHome();
     return {
       ok: false,
       reason:
         `chmod 2775 ${home} failed (exit ${chmodExit}): ${stderr.trim()} -- ` +
         `the filesystem backing ${tmpdir()} may not support chmod(1)`,
       path: home,
-      prevUmask,
     };
   }
 
   const st = await lstat(home);
   const actualMode = st.mode & 0o7777;
   if (actualMode !== MULTI_USER_HOME_MODE) {
+    await removeFailedHome();
     return {
       ok: false,
       reason:
@@ -101,10 +116,10 @@ export async function createDisposableMultiUserHome(
         `the filesystem backing ${tmpdir()} refuses the setgid bit, so a multi-user smoke's ` +
         'disposable home cannot emulate the production data-root contract here',
       path: home,
-      prevUmask,
     };
   }
   if (typeof process.getgid === 'function' && st.gid !== process.getgid()) {
+    await removeFailedHome();
     return {
       ok: false,
       reason:
@@ -112,9 +127,12 @@ export async function createDisposableMultiUserHome(
         `the filesystem backing ${tmpdir()} assigns a fresh directory's group ownership ` +
         'differently than this process expects',
       path: home,
-      prevUmask,
     };
   }
 
+  // Only now, right before returning ok:true -- nothing between this call
+  // and the return, so this state change and the caller's ability to
+  // restore it can never be split by an intervening throw.
+  const prevUmask = process.umask(MULTI_USER_UMASK);
   return { ok: true, path: home, prevUmask };
 }

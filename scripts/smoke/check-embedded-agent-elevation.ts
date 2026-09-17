@@ -246,6 +246,18 @@ function parseStreamEventLine(line: string): { type: string } | undefined {
 // live-process assertion below to resolve the actual running server's PID.
 const SYSTEMD_UNIT_NAME = 'agent-console';
 
+/**
+ * Marks a setup/launch failure (e.g. the disposable home's 2775 contract
+ * verification) distinct from an unexpected exception during the actual
+ * probe run. Caught separately in `main()`'s catch block so a setup failure
+ * still runs the `finally` block's cleanup before exiting `2` (per this
+ * script's documented exit-code contract), instead of either bypassing
+ * cleanup via a bare `process.exit(2)` or being folded into `failures` and
+ * exiting `1` like a genuine assertion failure. Same shape and rationale as
+ * `check-embedded-agent-bash-env.ts`'s identically-named class.
+ */
+class SmokeSetupError extends Error {}
+
 const failures: string[] = [];
 let passes = 0;
 const expect = (cond: boolean, label: string, detail?: string): void => {
@@ -703,10 +715,18 @@ async function main(): Promise<void> {
     // disposable-multi-user-home.ts's header for why. ---
     const homeResult = await createDisposableMultiUserHome('ac-embedded-smoke-cfg-');
     if (!homeResult.ok) {
-      console.error(
-        `PROBE FAILED: cannot build a disposable AGENT_CONSOLE_HOME satisfying the multi-user data-root 2775 contract: ${homeResult.reason}`,
+      // Routed through SmokeSetupError (not a bare process.exit(2)) --
+      // ctx and stubServer already exist by this point (created above,
+      // before this check), and this class exists precisely so a
+      // setup/launch failure here still runs the finally block's other
+      // cleanup (deactivate/shutdownAppContext/stop servers) before
+      // exiting 2. The helper itself already removed the failed mkdtemp
+      // directory (best-effort) before returning, so there is nothing left
+      // for this smoke's own cleanup to do for the home; ok:false also
+      // never touched process.umask(), so there is no prevUmask to capture.
+      throw new SmokeSetupError(
+        `cannot build a disposable AGENT_CONSOLE_HOME satisfying the multi-user data-root 2775 contract: ${homeResult.reason}`,
       );
-      process.exit(2);
     }
     realConfigDir = homeResult.path;
     prevUmask = homeResult.prevUmask;
