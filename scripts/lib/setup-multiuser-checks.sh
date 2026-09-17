@@ -132,6 +132,34 @@ assert_readable_by_unprivileged_user() {
   esac
 }
 
+# dist_artifact_present <dist_index_path>
+#
+# Issue #1707: reports whether the built artifact Step 8 needs before it may
+# safely `enable --now` the systemd unit already exists. The unit's
+# ExecStart runs `bun run start` -> `bun dist/index.js`; enabling with
+# `--now` before that file has ever been built manufactures a crash loop
+# under Restart=on-failure (NRestarts climbing every 5s, Result=exit-code --
+# measured in docs/design/elevation-verification-tiers.md Task 0 S2, both
+# runs). Existing provisioned hosts are unaffected: the file already exists
+# there (a prior deploy created it), so `--now` still runs exactly as today.
+#
+# Returns 0 when the artifact exists (Step 8 may pass --now) or 1 when it
+# does not (Step 8 must `enable` alone). This is a decision predicate, not a
+# fail-closed guard like assert_unified_bun_executable above -- a return of 1
+# is the ordinary, recoverable state of a fresh host before the first
+# deploy, not an error, and callers must not treat it as one (no `err` /
+# script-abort on this branch). When absent, prints the build-first remedy
+# message to stderr exactly once here, so callers never need their own copy
+# of the message text.
+dist_artifact_present() {
+  local dist_index_path="$1"
+  if [ -f "$dist_index_path" ]; then
+    return 0
+  fi
+  echo "built artifact absent -- run scripts/update-and-deploy-for-multiuser-ubuntu.sh once to build and start the unit" >&2
+  return 1
+}
+
 # Direct-invocation entry point for tests (Issue #1222, extended #1668): when
 # this file is executed directly (not sourced), dispatch on an explicit
 # subcommand name rather than argument count -- an arity-based dispatch is an
@@ -161,6 +189,10 @@ if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
     assert-readable-by-unprivileged-user)
       shift
       assert_readable_by_unprivileged_user "$@"
+      ;;
+    dist-artifact-present)
+      shift
+      dist_artifact_present "$@"
       ;;
     *)
       assert_unified_bun_executable "$@"
