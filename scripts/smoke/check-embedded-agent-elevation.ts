@@ -1008,8 +1008,14 @@ async function main(): Promise<void> {
       }
     }
   } catch (err) {
-    console.error('PROBE ERROR:', err instanceof Error ? (err.stack ?? err.message) : String(err));
-    failures.push('unexpected exception during smoke run');
+    if (err instanceof SmokeSetupError) {
+      console.error('PROBE FAILED: smoke could not run to completion (setup/launch failure)');
+      console.error(err.stack ?? err.message);
+      process.exitCode = 2;
+    } else {
+      console.error('PROBE ERROR:', err instanceof Error ? (err.stack ?? err.message) : String(err));
+      failures.push('unexpected exception during smoke run');
+    }
   } finally {
     console.log('==> cleanup');
     // Restore the umask createDisposableMultiUserHome() changed, first --
@@ -1052,6 +1058,12 @@ async function main(): Promise<void> {
   }
 
   console.log();
+  if (process.exitCode === 2) {
+    // Setup/launch failure was already logged above; finally-block cleanup
+    // has already run (normal try/catch/finally ordering) by the time we
+    // reach this point.
+    process.exit(2);
+  }
   if (failures.length > 0) {
     console.error(`FAILED: ${failures.length} assertion(s) failed`);
     process.exit(1);
