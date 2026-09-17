@@ -199,6 +199,7 @@ class AgentWorkerHandler implements InboundEventHandler {
         return 'inform';
       case 'ci:failed':
       case 'issue:closed':
+      case 'issue:labeled':
       case 'pr:review_comment':
       case 'pr:changes_requested':
       case 'pr:comment':

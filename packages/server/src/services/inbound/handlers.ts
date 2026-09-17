@@ -123,19 +123,35 @@ class AgentWorkerHandler implements InboundEventHandler {
       return false;
     }
 
-    const result = await this.sessionManager.deliverWorkerNotification(sessionId, workerId, {
-      kind: 'inbound-event',
-      tag: `inbound:${event.type}`,
-      fields: {
-        type: event.type,
-        source: event.source,
-        repo: event.metadata.repositoryName ?? 'unknown',
-        branch: event.metadata.branch ?? 'unknown',
-        url: event.metadata.url ?? 'N/A',
-        summary: event.summary,
-      },
-      intent: this.resolveIntent(event.type),
-    });
+    // The seam's PTY branch never throws (writePtyNotification's own
+    // failures are caught inside SessionManager.deliverWorkerNotification
+    // and reported via `{ ok: false }`), but the embedded-agent branch can
+    // reject (e.g. an activation failure surfacing through
+    // ensureDeliverable, or an onData callback throwing). This handler's
+    // contract to job-handler.ts is "false, never a rejection" -- catch
+    // here so both failure shapes end up in the same place.
+    let result: Awaited<ReturnType<InboundSessionManager['deliverWorkerNotification']>>;
+    try {
+      result = await this.sessionManager.deliverWorkerNotification(sessionId, workerId, {
+        kind: 'inbound-event',
+        tag: `inbound:${event.type}`,
+        fields: {
+          type: event.type,
+          source: event.source,
+          repo: event.metadata.repositoryName ?? 'unknown',
+          branch: event.metadata.branch ?? 'unknown',
+          url: event.metadata.url ?? 'N/A',
+          summary: event.summary,
+        },
+        intent: this.resolveIntent(event.type),
+      });
+    } catch (err) {
+      handlerLogger.warn(
+        { err, sessionId, workerId, eventType: event.type },
+        'notification delivery failed for inbound event',
+      );
+      return false;
+    }
     if (!result.ok) {
       handlerLogger.warn(
         { error: result.error, sessionId, workerId, eventType: event.type },

@@ -362,6 +362,47 @@ describe('AgentWorkerHandler: notification delivery failure (Issue #1739)', () =
       warnSpy.mockRestore();
     }
   });
+
+  it('resolves false (does not reject) and logs a warning exactly once when deliverWorkerNotification REJECTS -- e.g. an embedded-agent activation failure surfacing through ensureDeliverable', async () => {
+    const mockSessionManager: InboundHandlerDependencies['sessionManager'] = {
+      getSession: mock(() => buildWorktreeSession(mockSessionOverrides)),
+      deliverWorkerNotification: mock(async () => {
+        throw new Error('activation exploded');
+      }),
+    };
+
+    const handlers = createInboundHandlers({
+      sessionManager: mockSessionManager,
+      broadcastToApp: () => {},
+    });
+    const agentHandler = handlers.find((h) => h.handlerId === 'agent-worker')!;
+
+    const warnSpy = spyOn(rootLogger, 'warn');
+    try {
+      // The seam's PTY branch never throws -- only the embedded-agent
+      // branch can reject. `handle()`'s contract to job-handler.ts is
+      // "false, never a rejection", so `await` must resolve, not throw.
+      const result = await agentHandler.handle(createIssueLabeledEvent(), { sessionId: 'session-1' });
+
+      expect(result).toBe(false);
+      expect(warnSpy).toHaveBeenCalledTimes(1);
+      const [context, message] = warnSpy.mock.calls[0];
+      expect(message).toBe('notification delivery failed for inbound event');
+      expect(context).toMatchObject({
+        sessionId: 'session-1',
+        workerId: 'worker-1',
+        eventType: 'issue:labeled',
+      });
+      expect((context as { err: unknown }).err).toBeInstanceOf(Error);
+      expect(((context as { err: Error }).err).message).toBe('activation exploded');
+      // Reach (measured 2026-09-17): removing the try/catch around the
+      // `deliverWorkerNotification` call (keeping the `if (!result.ok)`
+      // branch) -> FAILS -- the test rejects with "activation exploded"
+      // instead of `handle()` resolving `false`. Restored afterwards.
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
 });
 
 describe('DiffWorkerHandler: issue:labeled', () => {
