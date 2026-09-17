@@ -116,6 +116,26 @@ function RepositoryRegistrySyncMounter() {
   return null;
 }
 
+// Snapshot of every rendered Orchestrator flag as `testid -> lit`, in DOM
+// order. The two WS-relight tests below poll on this inside `waitFor`
+// instead of asserting element identity, and the reason is a measurement,
+// not style: a FAILING `expect(elementA).toBe(elementB)` inside this
+// rendered tree costs ~3236 ms of SYNCHRONOUS work (bun's expect formats
+// both happy-dom elements -- React fiber and props references included --
+// for the failure message; 167 ms even for two bare buttons in an empty
+// document). A `waitFor` whose first pass fails through such an assertion
+// therefore blocks the event loop for ~3 s before its second pass can even
+// run, which is what pushed the stale-designation test past the 5000 ms cap
+// under host load. Comparing strings makes every interim failure cost
+// microseconds, so the wait scales with the DOM mutation, not with the
+// diagnostics.
+function orchestratorFlagStates(): Array<[string, string | null]> {
+  return Array.from(document.querySelectorAll('[data-orchestrator-flag]')).map((el) => [
+    el.getAttribute('data-testid') ?? '',
+    el.getAttribute('data-orchestrator-flag-lit'),
+  ]);
+}
+
 describe('ActiveSessionsSidebar', () => {
   let onToggle: ReturnType<typeof mock>;
   let onWidthChange: ReturnType<typeof mock>;
@@ -2193,12 +2213,9 @@ describe('Orchestrator flag control (Issue #1643 PR-2)', () => {
         );
       });
 
+      // Polled as strings, not element identity -- see `orchestratorFlagStates`.
       await waitFor(() => {
-        const flags = Array.from(document.querySelectorAll('[data-orchestrator-flag]'));
-        expect(flags).toHaveLength(1);
-        const lit = flags.filter((el) => el.getAttribute('data-orchestrator-flag-lit') === 'true');
-        expect(lit).toHaveLength(1);
-        expect(lit[0]).toBe(screen.getByTestId('orchestrator-flag-session-a'));
+        expect(orchestratorFlagStates()).toEqual([['orchestrator-flag-session-a', 'true']]);
       });
     } finally {
       restoreWebSocket();
@@ -2215,6 +2232,24 @@ describe('Orchestrator flag control (Issue #1643 PR-2)', () => {
   // `repositories-sync` payload arrives with a *different* designation, and
   // the previously-lit flag must go dark while the newly-designated
   // session's flag lights up.
+  //
+  // Timing (Issue 1731). This test used to hit the 5000 ms cap under host
+  // load. Measured with `performance.now()` at four points, 3 runs alone /
+  // 3 runs inside the full file, quiet host (load 1.0-1.5), before the fix:
+  //   render:      48-54 ms alone, 2.7-4.1 ms in-file
+  //   start wait:  62-65 ms alone, 4.5-5.7 ms in-file
+  //   simulate:    ~1 ms
+  //   relight:     2559-3130 ms alone, 2879-3633 ms in-file  (93-99 %)
+  // The relight wait was not React or polling: its first `waitFor` pass ran
+  // before the re-render, failed at `expect(lit[0]).toBe(<element>)`, and
+  // that one failing element comparison cost 3236 ms synchronously (see
+  // `orchestratorFlagStates`). With the assertion below, relight settles in
+  // single-digit ms; after `act(simulateMessage)` the cache already holds the
+  // corrected designation and one async `act` tick commits the re-render.
+  // Polarity, measured with the 1704 `setQueryData` replaced by the pre-fix
+  // `invalidateQueries`: the DOM never relights and the bounded `waitFor`
+  // fails via the relight assertion at 1548-1636 ms (3 runs), i.e. its own
+  // 1500 ms timeout, not the 5000 ms cap.
   it('when the cache holds a stale designation, a repositories-sync payload with a corrected designation relights exactly the newly-designated session\'s flag', async () => {
     const restoreWebSocket = installMockWebSocket();
     resetWebSocket();
@@ -2233,21 +2268,30 @@ describe('Orchestrator flag control (Issue #1643 PR-2)', () => {
         ),
       ];
 
-      await renderWithRouter(
+      const { queryClient } = await renderWithRouter(
         <>
           <RepositoryRegistrySyncMounter />
           <ActiveSessionsSidebar {...defaultProps()} sessions={sessions} />
         </>
       );
 
-      // Starting state: session-a's flag is the sole lit flag.
+      // Starting state. Settle on the query itself (the same signal the
+      // collapsed-mode test above uses) rather than on the rendered flags,
+      // then read the flags once: after `success` the cache holds the
+      // fixture's designation and the sidebar's re-render is what the
+      // bounded wait below observes.
       await waitFor(() => {
-        const flags = Array.from(document.querySelectorAll('[data-orchestrator-flag]'));
-        expect(flags).toHaveLength(2);
-        const lit = flags.filter((el) => el.getAttribute('data-orchestrator-flag-lit') === 'true');
-        expect(lit).toHaveLength(1);
-        expect(lit[0]).toBe(screen.getByTestId('orchestrator-flag-session-a'));
+        expect(queryClient.getQueryState(repositoryKeys.all())?.status).toBe('success');
       });
+      await waitFor(
+        () => {
+          expect(orchestratorFlagStates()).toEqual([
+            ['orchestrator-flag-session-a', 'true'],
+            ['orchestrator-flag-session-b', 'false'],
+          ]);
+        },
+        { timeout: 1500 }
+      );
 
       const ws = MockWebSocket.getLastInstance();
       act(() => {
@@ -2263,20 +2307,24 @@ describe('Orchestrator flag control (Issue #1643 PR-2)', () => {
           }),
         );
       });
+      // One re-render tick: the handler's `setQueryData` already ran inside
+      // the `act` above; this lets TanStack Query's observer notification and
+      // React's commit land before the single bounded wait below.
+      await act(async () => {});
 
       // Ending state: the designated set changed to session-b -- session-b's
       // flag is now the sole lit flag, and session-a's flag (still present)
-      // is dark.
-      await waitFor(() => {
-        const flags = Array.from(document.querySelectorAll('[data-orchestrator-flag]'));
-        expect(flags).toHaveLength(2);
-        const lit = flags.filter((el) => el.getAttribute('data-orchestrator-flag-lit') === 'true');
-        expect(lit).toHaveLength(1);
-        expect(lit[0]).toBe(screen.getByTestId('orchestrator-flag-session-b'));
-      });
-      expect(
-        screen.getByTestId('orchestrator-flag-session-a').getAttribute('data-orchestrator-flag-lit')
-      ).toBe('false');
+      // is dark. Polled as strings, not element identity -- see
+      // `orchestratorFlagStates`.
+      await waitFor(
+        () => {
+          expect(orchestratorFlagStates()).toEqual([
+            ['orchestrator-flag-session-a', 'false'],
+            ['orchestrator-flag-session-b', 'true'],
+          ]);
+        },
+        { timeout: 1500 }
+      );
     } finally {
       restoreWebSocket();
     }
