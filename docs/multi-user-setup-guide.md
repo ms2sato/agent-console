@@ -1149,6 +1149,45 @@ installs at the time of #838 had a small number of pre-existing worktrees
 costs less than a database-aware migration script. A scripted variant can
 be added later if installs in the wild accumulate many pre-#838 worktrees.
 
+## v43 Pre-Flight: Normalize Non-ISO8601 Session Timestamps
+
+Migration v43 re-adds the two ISO8601 `CHECK` constraints on
+`sessions.created_at` / `sessions.updated_at` that were silently dropped
+during an earlier table rebuild (migration v19). Every production insert
+path has always written both timestamps explicitly in the correct ISO8601
+shape, so this migration's own pre-flight check is expected to find
+nothing on any real deployment -- but the migration aborts rather than
+silently rewriting data if it does find a row that would violate the new
+constraint.
+
+If the server fails to start after an upgrade with an error containing
+`Migration to v43 aborted: N sessions row(s) carry a non-ISO8601
+created_at/updated_at`, find the offending rows first (read-only, safe to
+run at any time, while the server is stopped):
+
+```sql
+SELECT id, created_at, updated_at FROM sessions
+WHERE (created_at IS NOT NULL AND created_at NOT GLOB '????-??-??T??:??:??*Z')
+   OR (updated_at IS NOT NULL AND updated_at NOT GLOB '????-??-??T??:??:??*Z');
+```
+
+Run it against the data directory's `data.db` with the `sqlite3` CLI (or
+any SQLite client). A pre-flight backup of `data.db` is taken automatically
+before this check runs (the same convention every table-rebuild migration
+in this codebase follows), so the pre-upgrade database is preserved even
+though the upgrade itself did not proceed.
+
+For each offending row, decide the correct ISO8601 value (UTC,
+`YYYY-MM-DDTHH:MM:SS.sssZ`) from the row's actual creation/update time,
+then update it directly, for example:
+
+```sql
+UPDATE sessions SET created_at = '2024-01-01T00:00:00.000Z' WHERE id = '<session-id>';
+```
+
+Re-run the query above until it returns zero rows, then restart the
+server -- migration v43 will proceed on the next startup.
+
 ## Embedded-Agent Credentials (provider keys, MCP tokens)
 
 Applies to deployments using [EmbeddedAgentWorker](glossary.md#embeddedagentworker)
