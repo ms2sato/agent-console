@@ -46,7 +46,7 @@ When modifying production files matching these patterns, corresponding test file
 
 ## Registering a smoke script (applies to every section below)
 
-**A new `scripts/smoke/*` script gets exactly one way to be registered and one way to be invoked.** Registration is an Additional Verification section here, in the same PR that adds the script — the sections below are instances of that rule, not a closed list; a sixth smoke needs a sixth section. Invocation is `bun scripts/smoke/<file>` — there is no `package.json` `check:` alias for any smoke; two spellings for the same script was the defect Issue [#1637](https://github.com/ms2sato/agent-console/issues/1637) closed.
+**A new `scripts/smoke/*` script gets exactly one way to be registered and one way to be invoked.** Registration is an Additional Verification section here, in the same PR that adds the script — the sections below are instances of that rule, not a closed list; a sixth smoke needs a sixth section, and names its verification tier in one clause (Discipline 4 of `os-environment-coupling.md`). Invocation is `bun scripts/smoke/<file>` — there is no `package.json` `check:` alias for any smoke; two spellings for the same script was the defect Issue [#1637](https://github.com/ms2sato/agent-console/issues/1637) closed.
 
 Do not read "this is a manual gate, never a CI job" as a reason to skip registration. **Every smoke listed below is a manual gate.** Registration is about *reachability* — a script nobody can find is a script nobody re-runs after the change that would have broken it — while automation is about CI, and the two decisions are independent. When a script is billable or needs an authenticated CLI, say so in its section, so a future reader knows the cost before running it rather than after.
 
@@ -58,11 +58,11 @@ Do not read "this is a manual gate, never a CI job" as a reason to skip registra
 
 ## Additional Verification: Preview Sandbox Real-Browser Check
 
-PRs touching `packages/client/src/lib/preview-sandbox.ts`, `packages/client/src/lib/__fixtures__/preview-sandbox-corpus.ts`, or `packages/client/src/components/workers/PreviewPanel.tsx` must run `bun run check:preview-sandbox-browser` locally before pushing. This runs `scripts/run-preview-sandbox-browser-check.mjs`, which re-verifies the mXSS regression corpus against a real Chromium browser — `bun:test`'s happy-dom environment does not reproduce Chromium's HTML5 parsing edge cases (see `.claude/rules/os-environment-coupling.md`). This check is a real-browser regression gate, not a sibling-test requirement, so it is not part of the `preflight-check.js` coverage patterns above.
+PRs touching `packages/client/src/lib/preview-sandbox.ts`, `packages/client/src/lib/__fixtures__/preview-sandbox-corpus.ts`, or `packages/client/src/components/workers/PreviewPanel.tsx` must run `bun run check:preview-sandbox-browser` locally before pushing. This runs `scripts/run-preview-sandbox-browser-check.mjs`, which re-verifies the mXSS regression corpus against a real Chromium browser — `bun:test`'s happy-dom environment does not reproduce Chromium's HTML5 parsing edge cases (see `.claude/rules/os-environment-coupling.md`). This check is a real-browser regression gate, not a sibling-test requirement, so it is not part of the `preflight-check.js` coverage patterns above. **Verification tier (Discipline 4 of `os-environment-coupling.md`):** Unprivileged (no tier-2/3/4 residue; any machine with bun) — the real-Chromium requirement above is a browser dependency, not an elevation tier.
 
 ## Additional Verification: PTY Master FD Leak Check
 
-PRs touching `packages/server/src/lib/pty-provider.ts` or `packages/server/src/services/worker-manager.ts`'s `detachPty` must run `bun scripts/smoke/check-pty-fd-leak.ts` locally before pushing. It drives 100 real spawn/kill cycles through the production `bunTerminalProvider` and asserts that the process's ptmx-fd count (`/proc/self/fd`) and the kernel-wide allocated-pty counter (`/proc/sys/kernel/pty/nr`) stay flat — confirming `BunTerminalPtyAdapter.dispose()` actually releases the `Bun.Terminal` master-fd handle deterministically, rather than relying on the object becoming unreachable and incidentally GC-finalized (unsound in production, where `InternalPtyWorker.pty` stays reachable via session/worker maps for the life of the worker) (see Issue #1196). This check is a real-fd regression gate, not a sibling-test requirement, so it is not part of the `preflight-check.js` coverage patterns above.
+PRs touching `packages/server/src/lib/pty-provider.ts` or `packages/server/src/services/worker-manager.ts`'s `detachPty` must run `bun scripts/smoke/check-pty-fd-leak.ts` locally before pushing. It drives 100 real spawn/kill cycles through the production `bunTerminalProvider` and asserts that the process's ptmx-fd count (`/proc/self/fd`) and the kernel-wide allocated-pty counter (`/proc/sys/kernel/pty/nr`) stay flat — confirming `BunTerminalPtyAdapter.dispose()` actually releases the `Bun.Terminal` master-fd handle deterministically, rather than relying on the object becoming unreachable and incidentally GC-finalized (unsound in production, where `InternalPtyWorker.pty` stays reachable via session/worker maps for the life of the worker) (see Issue #1196). This check is a real-fd regression gate, not a sibling-test requirement, so it is not part of the `preflight-check.js` coverage patterns above. **Verification tier (Discipline 4 of `os-environment-coupling.md`):** Unprivileged (no tier-2/3/4 residue; any machine with bun).
 
 ## Additional Verification: Artifact Sandbox Boundary Real-Browser Check
 
@@ -70,11 +70,15 @@ PRs touching `packages/server/src/routes/artifacts.ts` (the `ARTIFACT_SERVING_CS
 
 Those same PRs must also run `bun scripts/smoke/check-artifact-server-story-e2e.mjs`, the real-HTTP server-story E2E for `docs/design/html-artifacts.md` §8's per-surface E2E (terminal half) and the create→serve→list→delete→serve round trip: it boots its own disposable multi-user-mode server instance, creates an artifact via a real `/mcp` JSON-RPC call (the actual terminal-agent-shaped call), verifies the artifact's stored `user_id` against the session's `createdBy` via a direct read of the disposable instance's SQLite file (the wire responses never expose `userId`), then drives the full `GET /:id` (exact CSP header) → `GET /` (list) → `DELETE /:id` → `GET /:id` (404) sequence as real HTTP. This check is a real-HTTP regression gate for the routes' shipping-path caller, not a sibling-test requirement, so it is not part of the `preflight-check.js` coverage patterns above.
 
+**Verification tier (Discipline 4 of `os-environment-coupling.md`), both scripts above:** Unprivileged (no tier-2/3/4 residue; any machine with bun) — the real-Chromium requirement of `check-artifact-sandbox-boundary.mjs` is a browser dependency, not an elevation tier.
+
 ## Additional Verification: Fatal Incarnation Replacement Real-Tree E2E
 
 PRs touching `handleEngineFatal` / `collectFatalIncarnation` / `fatalLeavesHarnessAlive` / the `fatalChainReplacementSpent` set in `packages/server/src/services/embedded-agent-worker-service.ts`, or that file's `deactivate` escalation, must run `bun scripts/smoke/check-fatal-incarnation-replacement.ts` locally before pushing. This is the real-process E2E for the defect where a `claude-sdk` worker's `claude` grandchild dies while its harness stays alive: it boots a disposable server instance with a real `AppContext` and a real `/mcp` on a real port, drives a real `claude-sdk` incarnation through a real `sh` -> `bun` -> `claude` tree, and SIGKILLs **only the grandchild** -- the one death shape that produces no OS exit for the server to observe. It then asserts the incarnation is replaced, the stranded processes are gone, the dead incarnation's MCP token no longer verifies **against the token registry itself** (no frame can substitute for that), and that the conversation survived the process boundary by recalling a word planted before the kill. A mid-turn kill covers the `turn-interrupted` marker, and a whole-tree kill in the same run is the positive control proving the healthy path was not what changed.
 
 This is a real-process regression gate for a defect the unit layer structurally cannot catch -- the wedge only exists because a live harness hides a dead engine, and every fake spawn has an exit the observer sees. It is not a sibling-test requirement, so it is not part of the `preflight-check.js` coverage patterns above.
+
+**Verification tier (Discipline 4 of `os-environment-coupling.md`):** Tier 4 (billable; dogfood host only -- permanent residue) for `check-fatal-incarnation-replacement.ts` itself; its companion `check-fatal-incarnation-replacement-artifact-capture.ts` below is Unprivileged (no tier-2/3/4 residue; any machine with bun) — it has no `## Additional Verification:` section of its own.
 
 Two properties of the script that matter when re-running it:
 
@@ -98,6 +102,8 @@ Two properties of the script that matter when re-running it:
 
 **Do not weaken the graceful-exit assertion without re-measuring its reach.** The script asserts the `exited` row's `code` is `0` — that eviction went through the shutdown protocol rather than a signal — and that assertion exists because a mutation measurement showed the rest of the script could not tell the two apart. Replacing the deactivation call with a direct `SIGKILL` of the harness, which is exactly the hazard-line violation Issue [#1414](https://github.com/ms2sato/agent-console/issues/1414) makes dangerous, **passed all twenty other assertions**: the child dies anyway when it loses its stdio pipes, the exit observer still fires, and the reason is still `evicted`. Only the settle latency (1 ms against 253 ms) and the exit code moved, and the exit code is the one that separates them deterministically. The script's own comments carry that measurement and the negative control's known limit.
 
+**Verification tier (Discipline 4 of `os-environment-coupling.md`):** Tier 4 (billable; dogfood host only -- permanent residue).
+
 ## Additional Verification: Idle Eviction, `openai-api` Revival Mechanism E2E
 
 PRs touching the `isEvictableEngine` predicate or the `evictable` assignment in `packages/server/src/services/embedded-agent-worker-service.ts`, or the `openai-api` reconstruction path in `packages/embedded-agent/src/restore.ts`, must run `bun scripts/smoke/check-embedded-agent-idle-eviction-openai-api.ts` locally before pushing. This is the shipping-path E2E for extending idle eviction to `openai-api` (Issue [#1502](https://github.com/ms2sato/agent-console/issues/1502)).
@@ -113,6 +119,8 @@ Two properties of the script that matter when re-running it:
 
 **It has a polarity mode.** `bun scripts/smoke/check-embedded-agent-idle-eviction-openai-api.ts -- --expect-not-evictable`, run against a tree with the `isEvictableEngine` fix reverted to `definition.engine === 'claude-sdk'`, asserts A is NOT evicted within its threshold — this is literally the pre-#1502 bug, so the polarity mode doubles as the "confirm the apparatus reaches the defect" check `workflow.md`'s "A check's existence is not its detection power" requires.
 
+**Verification tier (Discipline 4 of `os-environment-coupling.md`):** Tier 4 (billable; dogfood host only -- permanent residue).
+
 ## Additional Verification: Restart-All Embedded-Worker Real-Provider E2E
 
 PRs touching `SessionManager.restartAllAgentWorkers` in `packages/server/src/services/session-manager.ts`, or `EmbeddedAgentWorkerService.isEvicting` in `packages/server/src/services/embedded-agent-worker-service.ts`, must run `bun scripts/smoke/check-restart-all-embedded.ts` locally before pushing. This is the shipping-path E2E for restart-all's inclusion of embedded-agent workers (Issue [#1519](https://github.com/ms2sato/agent-console/issues/1519)): it boots a disposable server instance with a real `AppContext` and a real `/mcp` on a real port, drives two real `claude-sdk` embedded-agent workers through real `sh` -> `bun` -> `claude` trees, and calls the real `SessionManager.restartAllAgentWorkers()` -- the same method both `restart_all_agents` and `POST /api/sessions/restart-all-agents` call.
@@ -123,6 +131,8 @@ Two properties of the script that matter when re-running it:
 
 - **It is billable and needs a real, authenticated `claude` CLI** for the invoking OS user, same resolution as its idle-eviction sibling — the `claude-sdk` builtin runs as the executing user and uses that user's own authentication. Three real turns per run (plant, recall, recall-control). It is a manual gate, never a CI job.
 - **No idle-threshold parameter.** Unlike the idle-eviction siblings, restart-all is not time-driven, so there is nothing analogous to `--idle-ms` to substitute.
+
+**Verification tier (Discipline 4 of `os-environment-coupling.md`):** Tier 4 (billable; dogfood host only -- permanent residue).
 
 ## Additional Verification: Restore-Failure Declaration (R6) Smoke
 
@@ -137,6 +147,8 @@ PRs touching the R1 catch-block routing or the R6 write in `packages/server/src/
 **It has a polarity mode.** `bun scripts/smoke/check-restore-failure-declaration.ts -- --expect-no-declaration` wraps `workerOutputFileManager.resetWorkerOutput` to strip `persistentMarkerLine` from every call before delegating to the real implementation -- simulating "the R6 fix is absent" at the exact call site the fix uses, without touching source -- and asserts the fresh file is EMPTY. A run that finds the marker anyway under this flag is reported as a polarity failure. Use it to confirm the apparatus still reaches the defect before trusting a green run, per `workflow.md`'s "A check's existence is not its detection power".
 
 **test-trigger.md's own "the conversation must use a tool" rule (below) does not apply to this script**, and its header comment says so explicitly: the established conversation in Case 1 never survives the forced reset that is the scenario under test, so no activation here ever reconstructs it, and there is no tool-call ordering to protect.
+
+**Verification tier (Discipline 4 of `os-environment-coupling.md`):** Unprivileged (no tier-2/3/4 residue; any machine with bun) — free and deterministic, no elevation, no billing.
 
 ## Restore E2E and smoke: the conversation must use a tool
 
@@ -196,6 +208,8 @@ Two properties of the script that matter when re-running it:
 
 Each case additionally asserts the persisted `user-message` server event actually carries `attachments: [{ path, mimeType: 'image/png' }]` for the message that used the image -- a passing recall is not credited to the model unless the attachment demonstrably reached the wire.
 
+**Verification tier (Discipline 4 of `os-environment-coupling.md`):** Tier 4 (billable; dogfood host only -- permanent residue).
+
 ## Additional Verification: Restore-Boundary Usage-Seed Real-Provider E2E
 
 PRs touching `findRestoredUsageSeed` / `reconstructConversation`'s `usageSeed` in `packages/embedded-agent/src/restore.ts`, `AgentLoop`'s `resolveRestoreBoundaryUsage` / `compactAtRestoreBoundaryIfNeeded` in `packages/embedded-agent/src/agent-loop.ts`, or the `restoredUsage` field on the `init` command (`packages/shared/src/{types,schemas}/embedded-agent.ts`, and where `packages/server/src/services/embedded-agent-worker-service.ts` composes it) must run `bun scripts/smoke/check-restore-boundary-usage-seed.ts` locally before pushing. This is the real-provider E2E for the restore-boundary compaction check: it boots a disposable server instance with a real `AppContext` and a real `/mcp` on a real port, creates a real `openai-api` definition with a deliberately conservative declared window, grows a conversation with **real billed turns** until the provider's own reported `prompt_tokens` clears the threshold, then restarts the worker and asserts the activation decided on the persisted **measurement** rather than on `estimateTokensFromChars`.
@@ -208,6 +222,8 @@ Two properties of the script that matter when re-running it:
 - **It has a polarity mode.** `bun scripts/smoke/check-restore-boundary-usage-seed.ts -- --expect-underfire`, run against a tree whose fix is removed (`git checkout origin/main -- packages/` and back), **asserts the defect reproduces** rather than merely tolerating a failure — a run that silently compacts is reported as a polarity failure. Use it to confirm the apparatus still reaches the defect before trusting a green run, per `workflow.md`'s "A check's existence is not its detection power".
 
 **What it does not reach, and why that is arithmetic rather than effort.** The Issue's full wedge ends in a provider 400 no `Compact` can escape. Reaching it needs the declared window to be both honest and small: with `G` the tool-schema gap and `T` the threshold, `W < G / (1 - T)` — about 37,500 tokens at the measured defaults. The smallest context window across the dev instance's provider catalogue is 196,608, and that model silently truncates rather than erroring, so the 400 is unreachable there. The downstream link (a turn ending in error settles no compaction) is pinned in `packages/embedded-agent/src/__tests__/agent-loop-compaction.test.ts` instead, where a turn's ending is directly constructible.
+
+**Verification tier (Discipline 4 of `os-environment-coupling.md`):** Tier 4 (billable; dogfood host only -- permanent residue).
 
 ## Additional Verification: Compaction Identifier-Fidelity Probe
 
@@ -222,6 +238,8 @@ Two properties of the script that matter when re-running it:
 - **It is billable and needs a provider key**, same resolution as `check-restore-boundary-usage-seed.ts` (`PROVIDER_KEY_REF`, default `opencode-go`, read from the single-user dev home; override with `PROVIDER_KEY_FILE`). It is a manual gate, never a CI job. A run is a handful of small turns per `--n` repetition — cents, not dollars.
 - **`--prompt-file <path>` selects the arm.** Omitted, the run measures the CURRENT bundled `DEFAULT_COMPACTION_PROMPT` (the PRE arm). Passed, the run measures the file's content instead, delivered through the exact same repo-layer override path `loadCompactionPrompt()` reads in production (`<cwd>/.agent-console/compaction-prompt.md`) — there is no test-only fork of the loader. `--n <count>` repeats the arm and aggregates a retention rate; comparing a PRE run against a POST run (pointed at a candidate revised prompt) is how a change to the clause is evaluated before it ships.
 
+**Verification tier (Discipline 4 of `os-environment-coupling.md`):** Tier 4 (billable; dogfood host only -- permanent residue).
+
 ## Additional Verification: SDK Instruction-Loading Premise Probe
 
 Before changing the SDK arm's `settingSources` value in `packages/embedded-agent/src/sdk-engine.ts`'s `buildOptions`, or before relying on any claim about what the SDK's native `settingSources: []` does or does not suppress, run `bun scripts/smoke/probe-sdk-instruction-loading.ts` against a real, authenticated `claude` CLI session. This is the Task 0 gate probe for Issue [#1343](https://github.com/ms2sato/agent-console/issues/1343)'s scoped section (project-instruction parity on the SDK arm): it drives two real SDK sessions against a scratch git repo containing three unguessable canary tokens — `CLAUDE.md` (canary A), `.claude/rules/unscoped.md` with no frontmatter (canary B), and `.claude/rules/scoped.md` with `paths: ["src/**"]` (canary C) — and asks the model, before and after a real `Read src/x.ts` tool call, whether it knows any of the three.
@@ -232,6 +250,8 @@ Two properties of the script that matter when re-running it:
 
 - **It is billable and needs a real, authenticated `claude` CLI** for the invoking OS user — the `claude-sdk` engine runs as the executing user and uses that user's own authentication, so there is no provider key to configure. Six small turns per full run (three per arm). It is a manual gate, never a CI job.
 - **`--off` / `--project` select an arm**; omitted, the default is both, in order.
+
+**Verification tier (Discipline 4 of `os-environment-coupling.md`):** Tier 4 (billable; dogfood host only -- permanent residue).
 
 ## Additional Verification: SDK PostToolUse Context-Injection Premise Probe
 
@@ -245,6 +265,8 @@ Two properties of the script that matter when re-running it:
 
 - **It is billable and needs a real, authenticated `claude` CLI** for the invoking OS user — the `claude-sdk` engine runs as the executing user and uses that user's own authentication, so there is no provider key to configure. Nine small turns per full run (three per arm: ask#1, the Read, ask#2). It is a manual gate, never a CI job.
 - **`--a` / `--b` / `--c` select an arm**; omitted, the default is all three, in order.
+
+**Verification tier (Discipline 4 of `os-environment-coupling.md`):** Tier 4 (billable; dogfood host only -- permanent residue).
 
 ## Additional Verification: SDK Live Effort-Apply Premise Probe
 
@@ -261,6 +283,8 @@ Two properties of the script that matter when re-running it:
 - **It is billable and needs a real, authenticated `claude` CLI** for the invoking OS user — the `claude-sdk` engine runs as the executing user and uses that user's own authentication, so there is no provider key to configure. Six small turns per full run (two for `--set`, three for `--clear`, one for `--absent`). It is a manual gate, never a CI job.
 - **`--set` / `--clear` / `--absent` select an arm**; omitted, the default is all three, in order.
 - **Four exit codes, and they separate the two outcomes that matter.** `0` = measured, and PS9 HOLDS. `1` = INCONCLUSIVE — a failed positive control, an `applyFlagSettings` that threw, a turn that did not settle, or a run that selected no arm bearing on PS9 (a `--absent`-only run measures a baseline and says nothing about the premise). `2` = HARNESS failure, so nothing about the SDK was measured. `3` = measured, and PS9 is REFUTED. A conclusive refutation outranks an inconclusive sibling arm, because the refutation is a measurement in its own right and is precisely what this script exists to surface on an SDK bump. The mapping is pinned by `scripts/smoke/__tests__/probe-sdk-effort-live-apply.test.ts`, which imports the verdict function directly and never runs the billed measurement.
+
+**Verification tier (Discipline 4 of `os-environment-coupling.md`):** Tier 4 (billable; dogfood host only -- permanent residue).
 
 ## Additional Verification: SDK Auto-Memory Premise Probe
 
@@ -295,6 +319,8 @@ Two properties of the script that matter when re-running it:
 - Billing: arm E is three single turns (~$0.05), arm F is two turns (~$0.10) when not halted, arm G (only when its gate is met) reuses arm F's turns plus up to 5 minutes of wall-clock polling, no additional billed turns.
 - **`--auto-memory-off` (Issue #1681) is a standalone, non-lettered measurement, independent of arms A-G and NEVER part of the bare default.** Includes an in-run positive control before the measurement: the same seeded dir, configuration (i), `autoMemoryEnabled: true`, classified via `classifyArmEConfig` and REQUIRED to read `aware-and-reading` — any other classification (including an unsettled control turn) reports `INCONCLUSIVE -- control failed`, since a silently-changed ON behaviour would make the OFF result below uninterpretable, and the OFF turn is skipped entirely in that case (`combineAutoMemoryOffVerdict`). The memory dir is reseeded identically before the measured OFF turn (`autoMemoryEnabled: false`), expecting the mechanism silent on all three observables at once (`memoryFiles=[]`, no ACCESS hit, no LOCATION hit — `classifyAutoMemoryOffCheck`). Task 0b's `aware-and-reading` result (arm E, configuration (i), `autoMemoryEnabled: true`) is corroborating evidence from a separate run, not the control itself — the control now lives in the same run. Discovery + ON control + OFF turn = roughly $0.15 total.
 
+**Verification tier (Discipline 4 of `os-environment-coupling.md`):** Tier 4 (billable; dogfood host only -- permanent residue).
+
 ## Additional Verification: Instruction-Loader Parity E2E, Both Engines
 
 PRs touching `loadInstructions` / `loadRulesLayer` / `parseRuleFrontmatter` / `RULES_LAYER_CAP_BYTES` in `packages/embedded-agent/src/system-prompt.ts`, `main.ts`'s `initializeLoop` (either init arm's instruction-loading call), or `packages/server/src/services/embedded-agents/claude-sdk-builtin.ts`'s `instructions`/lack thereof, must run `bun scripts/smoke/check-instruction-loader-parity-e2e.ts` locally before pushing. This is the shipping-path E2E for Phase A (project-instruction parity on the SDK arm; Issue [#1343](https://github.com/ms2sato/agent-console/issues/1343)): it boots a disposable server instance with a real `AppContext` and a real `/mcp` on a real port, drives one real `openai-api` worker and one real `claude-sdk` worker (both real embedded-agent subprocesses, both against the SAME scratch git repo), and asks each a single first-turn question about three pieces of content: a `CLAUDE.md` nonce (the pre-existing chain layer, re-confirmed as a no-regression baseline), an unscoped `.claude/rules/*.md` nonce (R2, new), and a negative-control nonce planted under `.claude/rules-not/*.md` (same file shape, wrong directory name -- must never be honoured on either engine).
@@ -305,6 +331,8 @@ Two properties of the script that matter when re-running it:
 
 - **It is billable and needs BOTH:** a real, authenticated `claude` CLI for the invoking OS user (the `claude-sdk` arm), and a provider key resolvable for `PROVIDER_KEY_REF` (default `opencode-go`, read from the single-user dev home; override with `PROVIDER_KEY_FILE`) for the `openai-api` arm. Two small real turns total. It is a manual gate, never a CI job.
 - **It does not re-verify `settingSources: []`.** That pin is unchanged by Phase A (`sdk-engine.ts` is not touched) and is already covered deterministically by `sdk-engine.test.ts`'s unit-level `expect(options.settingSources).toEqual([])`, which runs in the ordinary test suite -- intercepting the same fact from a live billed SDK session here would be strictly less reliable, not more, for a file this class of PR does not modify.
+
+**Verification tier (Discipline 4 of `os-environment-coupling.md`):** Tier 4 (billable; dogfood host only -- permanent residue).
 
 ## Additional Verification: Labeled-Issue Webhook Routing Shipping-Path E2E
 
@@ -322,6 +350,8 @@ PRs touching `packages/server/src/routes/webhooks.ts`, `packages/server/src/serv
 
 This is a real-process regression gate for the shipping webhook->job-queue->handler chain, not a sibling-test requirement, so it is not part of the `preflight-check.js` coverage patterns above. It is a manual gate, never a CI job (same as this file's other real-child-process smokes).
 
+**Verification tier (Discipline 4 of `os-environment-coupling.md`):** Unprivileged (no tier-2/3/4 residue; any machine with bun) — free and deterministic, no `claude` CLI, no provider key.
+
 ## Additional Verification: Memory Layer Cross-Session Recall E2E, both engines
 
 PRs touching the memory layer's READ half (`loadMemoryLayer` in `packages/embedded-agent/src/system-prompt.ts`), its WRITE half (`BuiltinToolContext.memoryRoot` in `packages/embedded-agent/src/tools/types.ts` and its three forwarders `read.ts` / `write.ts` / `edit.ts`), the memory path writer (`SessionDataPathResolver.getMemoryDir` in `packages/server/src/lib/session-data-path-resolver.ts`), the activation-time directory creation + verification (`packages/server/src/lib/memory-dir.ts`, or `EmbeddedAgentWorkerService`'s `ensureMemoryDirFn` dep in `packages/server/src/services/embedded-agent-worker-service.ts`), or the definition-deletion job (`CLEANUP_DEFINITION_MEMORY` in `packages/server/src/jobs/handlers.ts` and `buildDefinitionMemoryCleanupTargets` in `packages/server/src/lib/session-data-path.ts`) must run `bun scripts/smoke/check-embedded-agent-memory-layer.ts` locally before pushing. This is the shipping-path E2E for the memory layer (epic [#1636](https://github.com/ms2sato/agent-console/issues/1636) Phase 2; spec `docs/design/embedded-agent-worker.md` "Verification plan for PR-3"): it boots a disposable server instance with a real `AppContext` and a real `/mcp` on a real port, registers two real disposable git repositories (one with a fake `origin` remote, so both slug shapes the Session Data Path design produces are exercised), and per engine drives four real embedded-agent workers in four real worktree sessions -- A plants, B recalls, C and D are the controls.
@@ -337,6 +367,8 @@ Two properties of the script that matter when re-running it:
 - **It is billable and needs BOTH** a real, authenticated `claude` CLI for the invoking OS user (the `claude-sdk` arm) and a provider key resolvable for `PROVIDER_KEY_REF` (default `opencode-go`, read from the single-user dev home; override with `PROVIDER_KEY_FILE`) for the `openai-api` arm. Roughly four small turns per engine (plant, recall, two controls) plus two per engine for the polarity run. It is a manual gate, never a CI job.
 - **`--engine openai-api|claude-sdk|both` selects the arm** (default `both`); a single-engine run needs only that engine's credential.
 
+**Verification tier (Discipline 4 of `os-environment-coupling.md`):** Tier 4 (billable; dogfood host only -- permanent residue).
+
 ## Backfilled sections (Issue #1637)
 
 **The fourteen sections below register the fifteen scripts that had no `check:` alias and no section before Issue #1637 — the old "alias + section" rule never caught them** (one section, "SDK H2 Transport-Settle Probe Pair", covers two sibling files). Each section's touch-trigger list (the "PRs touching ..." clause) is derived MECHANICALLY from that script's own `import` statements and spawn targets at backfill time — not authored from design knowledge of why the script was originally written, since these fifteen predate this delegate's involvement. Purpose and requirements are lifted from the script's own header comment; where a header is silent on a fact (e.g. billing cost), that is stated as "not stated in the script header" rather than guessed. A future author touching one of these scripts substantively should expand its section with first-hand detail, the way every pre-existing section above does.
@@ -347,11 +379,15 @@ PRs touching `buildElevationArgs` / `shellEscape` in `packages/server/src/servic
 
 Requires elevation rights for `<target-user>` (a real OS user with a login shell); a `.1password/agent.sock` in that user's home exercises the socket-existence branch, otherwise the absent-socket branch is verified instead. It is a manual gate, never a CI job.
 
+**Verification tier (Discipline 4 of `os-environment-coupling.md`):** Tier 2 (the verification container's `--smokes` run).
+
 ## Additional Verification: Multi-User PTY Env Propagation Smoke
 
 PRs touching `buildElevationArgs` in `packages/server/src/services/elevation-args.ts` (the general argv shape, not just the SSH_AUTH_SOCK option above) must run `bun scripts/smoke/check-multiuser-pty-env.ts <target-user>` locally before pushing. Same construction as the SSH_AUTH_SOCK smoke -- imports `buildElevationArgs` directly and runs the real `sudo` argv against a real target user -- but asserts the general env-propagation contract (PATH / HOME / USER / SHELL and the rest of the login shell's init) rather than one specific fallback. Per the script's own header, its "sync contract" is `NONE`: because both production and this smoke call the same helper, a new env export in production is covered automatically.
 
 Requires sudo privilege for `<target-user>` (a real OS user with a login shell). It is a manual gate, never a CI job.
+
+**Verification tier (Discipline 4 of `os-environment-coupling.md`):** Tier 2 (the verification container's `--smokes` run).
 
 ## Additional Verification: Embedded-Agent `Bash` Tool Env Non-Leakage Smoke
 
@@ -361,6 +397,8 @@ The disposable `AGENT_CONSOLE_HOME` this smoke builds emulates the production da
 
 Requires elevation privilege for `<target-user>` and `bun install` already run (so `@agent-console/embedded-agent` resolves in the server package's workspace). It is a manual gate, never a CI job.
 
+**Verification tier (Discipline 4 of `os-environment-coupling.md`):** Tier 2 (the verification container's `--smokes` run).
+
 ## Additional Verification: Embedded-Agent Worker Elevation (Phase 4) Smoke
 
 PRs touching `SessionManager.activateEmbeddedAgentWorker`'s elevated-spawn path, `resolveEmbeddedAgentEntryPath()`, or the `AGENT_CONSOLE_MCP_AUTH` default-flip resolution (`resolveMcpAuthMode`), must run `bun scripts/smoke/check-embedded-agent-elevation.ts <target-user>` locally before pushing. This is the smoke bullet referenced by `docs/design/embedded-agent-worker.md` Part II's Testing plan: it drives the REAL shipping path -- `SessionManager.activateEmbeddedAgentWorker` spawning the real embedded-agent loop subprocess via the real production `spawnAsUser` -- against a real second OS user, with `AUTH_MODE=multi-user` forced on and `AGENT_CONSOLE_MCP_AUTH` left unset so the real default-flip resolves it to `enforce`.
@@ -369,11 +407,15 @@ The disposable `AGENT_CONSOLE_HOME` this smoke builds emulates the production da
 
 Passing the current process user as `<target-user>` exercises the entire pipeline except the actual cross-user `sudo` boundary crossing (a degraded but still useful mode when no second OS user is configured). Requires elevation privilege for `<target-user>` and `bun install` already run. It is a manual gate, never a CI job.
 
+**Verification tier (Discipline 4 of `os-environment-coupling.md`):** Tier 2 (the verification container's `--smokes` run) and Tier 3 (systemd stack, against the real MainPID) — `scripts/verify-multiuser-systemd.sh` step 9 runs this exact smoke against the real unit's `MainPID`.
+
 ## Additional Verification: `killAsUser` Real-Elevation Smoke
 
 PRs touching `spawnAsUser` / `killAsUser` in `packages/server/src/services/privilege-elevation.ts` must run `bun scripts/smoke/check-kill-as-user.ts <target-user>` locally before pushing (Issue #1197 Part A). It drives the real production helpers against a real long-lived `sleep` process spawned as `<target-user>`, asserts a real elevated `SIGTERM` via `killAsUser` actually terminates the targeted PID, and asserts a negative case: a second, unrelated `sleep` process survives the call, proving the helper signals exactly the targeted PID rather than something broader like a name-based `pkill`.
 
 Requires elevation privilege for `<target-user>`; passing the current process user as `<target-user>` runs in a degraded mode that skips the real `sudo` boundary. It is a manual gate, never a CI job.
+
+**Verification tier (Discipline 4 of `os-environment-coupling.md`):** Tier 2 (the verification container's `--smokes` run).
 
 ## Additional Verification: Orphan-Process Sweep Real-Elevation Smoke
 
@@ -381,11 +423,15 @@ PRs touching `spawnAsUser` in `packages/server/src/services/privilege-elevation.
 
 Requires elevation privilege for `<target-user>`; passing the current process user as `<target-user>` runs in a degraded mode that skips the real `sudo` boundary. It is a manual gate, never a CI job.
 
+**Verification tier (Discipline 4 of `os-environment-coupling.md`):** Tier 2 (the verification container's `--smokes` run).
+
 ## Additional Verification: Login-Shell Sentinel Protocol Smoke
 
 PRs touching the login-shell sentinel PTY protocol -- `buildDirectSentinelShellCommand` / `buildElevatedSentinelCommand` (`packages/server/src/services/sentinel-spawn-command.ts`), `bunPtyProvider`, or `getUnsetEnvPrefix` in `packages/server/src/services/env-filter.ts` -- must run `bun scripts/smoke/check-login-shell-sentinel.ts` (direct mode) and, when elevation is available, `bun scripts/smoke/check-login-shell-sentinel.ts --elevated <target-user>` locally before pushing. It spawns a REAL PTY running a real login shell via the same production `bunPtyProvider` and command builders that `MultiUserMode` / `SingleUserMode` use, waits for the sentinel line, injects a probe command, and asserts the observable end state.
 
 Direct mode requires only a login shell resolvable via `$SHELL` for the current user; `--elevated` mode requires elevation privilege for `<target-user>`. It is a manual gate, never a CI job.
+
+**Verification tier (Discipline 4 of `os-environment-coupling.md`):** Tier 2 (the verification container's `--smokes` run).
 
 ## Additional Verification: Exit-127 Spawn-Failure Diagnostic Smoke
 
@@ -393,11 +439,15 @@ PRs touching `appendSpawnFailureNotification`, `WorkerManager.activateAgentWorke
 
 Free and deterministic -- no elevation, no billed CLI. It is a manual gate, never a CI job.
 
+**Verification tier (Discipline 4 of `os-environment-coupling.md`):** Unprivileged (no tier-2/3/4 residue; any machine with bun).
+
 ## Additional Verification: PTY + AsyncLocalStorage Data-Delivery Regression Smoke
 
 Before any Bun runtime upgrade or floor change to `MIN_BUN_VERSION` in `scripts/check-bun-version.mjs`, or when touching `bunTerminalProvider` / `BunTerminalPtyAdapter` in `packages/server/src/lib/pty-provider.ts`, run `bun scripts/smoke/check-pty-als-data.ts` locally. On Bun 1.3.5-1.3.13, `Bun.spawn({ terminal })`'s `terminal.data` callback never fires when the spawn happens inside an active `AsyncLocalStorage` context (e.g. the MCP request scope agent-worker PTYs are created under) -- zero bytes ever reach JS. This smoke spawns real PTYs inside an active ALS scope via the real `bunTerminalProvider` and asserts the completion marker is observed on every cycle; it is the designated canary this repo's own `MIN_BUN_VERSION` floor comment points at.
 
 Free and deterministic (no elevation, no billed CLI, ~15 seconds). It is a manual gate, never a CI job.
+
+**Verification tier (Discipline 4 of `os-environment-coupling.md`):** Unprivileged (no tier-2/3/4 residue; any machine with bun).
 
 ## Additional Verification: PTY Pre-Attach Output Buffer Smoke
 
@@ -405,11 +455,15 @@ PRs touching `bunTerminalProvider` / `BunTerminalPtyAdapter`'s pre-attach data b
 
 Free and deterministic (no elevation, no billed CLI). It is a manual gate, never a CI job.
 
+**Verification tier (Discipline 4 of `os-environment-coupling.md`):** Unprivileged (no tier-2/3/4 residue; any machine with bun).
+
 ## Additional Verification: Stdin-Sink FD Leak Smoke
 
 PRs touching `InteractiveProcessManager`'s or `EmbeddedAgentWorkerService`'s stdin-feeding teardown (the `endStdinSafely` helper each maintains per `.claude/rules/elevation-helpers.md`'s "feeding-consumer teardown obligation"), or `spawnAsUser` in `packages/server/src/services/privilege-elevation.ts`, must run `bun scripts/smoke/check-stdin-sink-leak.ts` locally before pushing (Issue #1230). It imports the production `InteractiveProcessManager` and `spawnAsUser` directly and drives real long-lived `spawnAsUser` consumers through their stdin lifecycle, asserting the underlying `FileSink`'s write-end fd is released deterministically at teardown rather than left for incidental GC -- the same unsound-pattern concern `check-pty-fd-leak.ts` verifies for the PTY master-fd handle.
 
 Linux-only (reads `/proc` directly); free and deterministic otherwise. It is a manual gate, never a CI job.
+
+**Verification tier (Discipline 4 of `os-environment-coupling.md`):** Unprivileged (no tier-2/3/4 residue; any machine with bun) — the Linux-only note above is a `/proc` dependency, not an elevation tier.
 
 ## Additional Verification: SDK Compaction Premises Probe
 
@@ -417,11 +471,15 @@ Before changing any of the compaction-related surface named in `docs/design/embe
 
 Requires a real, authenticated `claude` CLI session and `bun install` already run. It is a manual re-verification tool, run by hand on SDK bumps, never a CI job.
 
+**Verification tier (Discipline 4 of `os-environment-coupling.md`):** Tier 4 (billable; dogfood host only -- permanent residue).
+
 ## Additional Verification: SDK Resume (PS4) Premises Probe
 
 Before relying on any claim about whether `Options.resume` restores a session's conversation across a process kill, run `bun scripts/smoke/probe-sdk-resume.ts` against a real, authenticated `claude` CLI session (docs/design/embedded-agent-sdk-engine.md §5's PS4; Issue #1400). Item flags (`--basic`, default; `--invalid`; `--post-compact`) cover the idle-kill-then-resume pass condition, the negative "resume an unknown session id" case (R1/#1410's PS6/PS7 premises), and the eviction-x-compaction composite, each with same-run positive controls (a pre-kill recall, a post-resume ordinary turn, and a fresh-session-without-resume negative control -- see the script's own header for the full CTRL-* list). Shares its live-session harness with `probe-sdk-compaction.ts` via `probe-sdk-session-harness.ts`.
 
 Requires a real, authenticated `claude` CLI session and `bun install` already run. It is a manual re-verification tool, never a CI job.
+
+**Verification tier (Discipline 4 of `os-environment-coupling.md`):** Tier 4 (billable; dogfood host only -- permanent residue).
 
 ## Additional Verification: SDK H2 Transport-Settle Probe Pair
 
@@ -430,6 +488,8 @@ Before relying on any claim about whether calling `Query.getContextUsage()` imme
 **Read together with its sibling, `bun scripts/smoke/probe-sdk-h2-transport-settle-negative-control.ts [trials]`, which deliberately uses a WRONG methodology** (breaking the `for await` loop on the `result` message before calling `getContextUsage()`) that reliably reproduces a false-positive of the same error on every SDK version tested, regardless of whether the real race is present -- existing specifically so a future re-prober who reaches for the "obvious" break-on-result pattern sees it fail first and understands why before drawing any conclusion about the SDK's real transport behavior. The negative control's expected, correct outcome is every trial reproducing the artifact; a clean run there means the artifact stopped reproducing and is itself worth investigating, not that the SDK improved.
 
 Both require a real, authenticated `claude` CLI session and `bun install` already run so `@anthropic-ai/claude-agent-sdk` resolves to the version under test. Both are manual re-verification tools, run by hand on SDK bumps, never a CI job.
+
+**Verification tier (Discipline 4 of `os-environment-coupling.md`):** Tier 4 (billable; dogfood host only -- permanent residue).
 
 ## Exceptions to the reachability rule
 

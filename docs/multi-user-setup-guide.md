@@ -35,6 +35,13 @@ Browser (User: alice) ──> Agent Console Server (agentconsole)
 > then verifies authentication and per-user PTY isolation with a single command
 > (`scripts/verify-multiuser-docker.sh`). Use it to see the whole setup working
 > before reproducing it on a real host.
+>
+> This Docker verification is **tier 2** of `.claude/rules/os-environment-coupling.md`
+> Discipline 4 (`docker` group only, no privilege flag). The systemd stack
+> (`scripts/verify-multiuser-systemd.sh`) is **tier 3** and must never run on
+> the host that carries the production unit; the deploy command's own
+> post-deploy screen below is **tier 4**. See Discipline 4 for the full tier
+> table.
 
 ## Quick Setup with the Bootstrap Script (Linux)
 
@@ -482,7 +489,10 @@ curl -X POST http://localhost:8080/api/auth/login \
 
 > For an automated, end-to-end version of these three checks (plus per-user PTY
 > isolation), run the Docker verification: `scripts/verify-multiuser-docker.sh`
-> (see [`docker/README.md`](../docker/README.md)).
+> (see [`docker/README.md`](../docker/README.md)). This is tier 2 of
+> `.claude/rules/os-environment-coupling.md` Discipline 4; the systemd stack
+> is tier 3 and must never run on the host that carries the production unit;
+> the deploy command's screen (below) is tier 4.
 
 ## Re-running the bootstrap script against an existing deployment
 
