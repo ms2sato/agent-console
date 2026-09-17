@@ -946,7 +946,7 @@ The [Tool surface symmetry check](../../.claude/rules/pre-pr-completeness.md) (Q
 - **No recall supervisor of our own.** Nothing selects or synthesizes memories for the model; the index is loaded whole (under its cap) and the model decides what to open.
 - **No consolidation / "dream".** Nothing rewrites, merges, or prunes topic files on the model's behalf.
 - **No `~/.claude` interaction, in either direction.** The layer never reads a user's `~/.claude` memory and never writes there; PR-1 closes the SDK's own read of it on the `claude-sdk` arm. Whether the SDK's flag also governs personal-scope recall is [#1663](https://github.com/ms2sato/agent-console/issues/1663)'s question, not this layer's.
-- **No migration of the TUI Orchestrator's existing memory.** Phase 6 decides whether to seed from it, and how.
+- **No migration of the TUI Orchestrator's existing memory.** Phase 6 decides whether to seed from it, and how. The Phase 6 readiness study — every Orchestrator skill step mapped onto this worker's builtin, the blockers to file, and the scripted first run — is [embedded-orchestrator-readiness.md](embedded-orchestrator-readiness.md).
 - **No per-user memory, and no per-definition toggle.** Memory is the role's (see Keying); every definition has one. A toggle is a revisit with an address — the first Phase 6 observation that a definition should not carry memory.
 - **No `Glob`/`Grep` over the memory directory** (see WRITE half).
 - **Not a compaction or restore mechanism.** Compaction summaries and transcript restore are unchanged; the memory is what the model chose to write, not a record of the conversation.
