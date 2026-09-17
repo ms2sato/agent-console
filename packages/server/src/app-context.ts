@@ -109,6 +109,14 @@ export interface AppContext {
   /** Background job queue for async task processing */
   jobQueue: JobQueue;
 
+  /**
+   * File-based worker output persistence (buffering, archival, restore
+   * reads). Exposed on `AppContext` so `shutdownAppContext` can flush and
+   * close it deterministically before the job queue and database go away
+   * (the flush-after-shutdown reappearance).
+   */
+  workerOutputFileManager: WorkerOutputFileManager;
+
   /** Session persistence repository */
   sessionRepository: SessionRepository;
 
@@ -607,6 +615,7 @@ export async function createAppContext(
   return {
     db,
     jobQueue,
+    workerOutputFileManager,
     sessionRepository,
     sessionManager,
     repositoryManager,
@@ -908,6 +917,7 @@ export async function createTestContext(
   return {
     db,
     jobQueue,
+    workerOutputFileManager,
     sessionRepository,
     sessionManager,
     repositoryManager,
@@ -965,6 +975,13 @@ export async function shutdownAppContext(
   // pending setTimeout alive after the process tries to exit would block the
   // event loop; the eviction is purely an in-memory bookkeeping concern.
   context.repositoryCloneService.dispose();
+
+  // Flush and close worker output persistence before the job queue and the
+  // database go away. Process disposal above (interactiveProcessManager /
+  // conditionalWakeupManager) runs first so any last append from a managed
+  // process lands in the buffer before it is flushed here; the queue and db
+  // are stopped last. Order is pinned by app-context.test.ts.
+  await context.workerOutputFileManager.shutdown();
 
   // Stop job queue
   await context.jobQueue.stop();

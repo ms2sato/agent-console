@@ -211,6 +211,25 @@ export class WorkerOutputFileManager {
 
   private readonly config: WorkerOutputFileConfig;
 
+  /**
+   * True once `shutdown()` has run. While true, `bufferOutput` drops any new
+   * data instead of buffering/scheduling it -- a context that has shut down
+   * owns no session-data tree, so post-shutdown bytes have nowhere safe to
+   * land.
+   */
+  private closed = false;
+
+  /** Count of `bufferOutput` calls dropped after `shutdown()` (test/observability). */
+  private droppedAfterShutdown = 0;
+
+  /** Keys already warned about a post-shutdown drop, so each key warns once. */
+  private warnedAfterShutdown = new Set<string>();
+
+  /** Number of bufferOutput calls dropped after shutdown(); exposed for tests. */
+  get droppedAfterShutdownCount(): number {
+    return this.droppedAfterShutdown;
+  }
+
   constructor(config?: Partial<WorkerOutputFileConfig>) {
     this.config = {
       flushThreshold: config?.flushThreshold ?? serverConfig.WORKER_OUTPUT_FLUSH_THRESHOLD,
@@ -525,6 +544,20 @@ export class WorkerOutputFileManager {
    */
   bufferOutput(sessionId: string, workerId: string, data: string, resolver: SessionDataPathResolver, epochHint?: number): void {
     const key = this.getKey(sessionId, workerId);
+
+    if (this.closed) {
+      // No buffering, no timer: a closed manager owns no session-data tree to
+      // (re-)create, and `flushLocked`'s `mkdir -p` would otherwise resurrect
+      // the directory a shut-down context just gave up ownership of. Warn
+      // once per (session, worker) key rather than once per dropped call.
+      this.droppedAfterShutdown++;
+      if (!this.warnedAfterShutdown.has(key)) {
+        this.warnedAfterShutdown.add(key);
+        logger.warn({ sessionId, workerId, droppedBytes: data.length }, 'output after shutdown dropped');
+      }
+      return;
+    }
+
     let pending = this.pendingFlushes.get(key);
 
     if (!pending) {
@@ -1878,7 +1911,7 @@ export class WorkerOutputFileManager {
 
   /**
    * Force flush all pending buffers.
-   * Useful for graceful shutdown.
+   * Called by `shutdown()`.
    */
   async flushAll(): Promise<void> {
     const flushPromises: Promise<void>[] = [];
@@ -1887,5 +1920,28 @@ export class WorkerOutputFileManager {
       flushPromises.push(this.flushBuffer(sessionId, workerId));
     }
     await Promise.all(flushPromises);
+  }
+
+  /**
+   * Flush every pending buffer, then close the manager to further writes.
+   *
+   * Measured reproduction (the flush-after-shutdown reappearance): the
+   * app-context seam tests activated an embedded-agent worker with a fake
+   * spawn that emitted a few NDJSON lines and never attached a WS client,
+   * deactivated it, ran `shutdownAppContext`, then removed the disposable
+   * `AGENT_CONSOLE_HOME`. Within one `WORKER_OUTPUT_FLUSH_INTERVAL` (~100ms)
+   * a `_quick/outputs/<session>/<worker>.log` reappeared under the removed
+   * home, because the pending timer's `flushLocked` still ran and its
+   * `mkdir -p` recreated the tree before writing.
+   *
+   * `shutdown()` addresses this in two halves: flush first, because
+   * already-buffered bytes are real output and must land; close second,
+   * because a context that has shut down owns no session-data tree, so any
+   * later bytes are dropped and declared -- one warn per (session, worker)
+   * key -- rather than silently written.
+   */
+  async shutdown(): Promise<void> {
+    await this.flushAll();
+    this.closed = true;
   }
 }
