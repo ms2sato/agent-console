@@ -157,6 +157,7 @@ So, when you add a panel to SessionPage:
    - Redundancy (duplicate labels, unnecessary descriptions)
    - Responsiveness (does mobile fallback work?)
    - Accessibility (buttons reachable, text readable)
+     - Modal overlays (drawers): use `useModalDrawerFocus` (`packages/client/src/hooks/useModalDrawerFocus.ts`) -- it owns Escape-to-close, body scroll lock, focus save/restore, and the Tab-trap / inert focus boundary; do not re-implement any of the four in a component.
 6. Stop the dev server after verification
 
 ### What to Check

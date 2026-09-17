@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { describe, it, expect, mock, beforeEach, afterEach, afterAll, spyOn } from 'bun:test';
 import { screen, cleanup, waitFor, act, fireEvent, renderHook } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { renderWithRouter } from '../../../test/renderWithRouter';
 import { SessionSidePanelsDrawer } from '../SessionSidePanelsDrawer';
 import { useSessionSidePanelsState } from '../hooks/useSessionSidePanelsState';
@@ -105,6 +106,53 @@ function routeFetchEmpty(): void {
     }
     return Promise.resolve(jsonResponse({}, 404));
   });
+}
+
+/**
+ * Like `routeFetchByPanel`, but every request's promise stays pending until
+ * the returned `resolveAll()` is called -- used to pin the F3 "panels are
+ * still null" window deterministically instead of racing a real microtask
+ * queue.
+ */
+function routeFetchDeferred(): { resolveAll: () => void } {
+  const resolvers: Array<() => void> = [];
+  mockFetch.mockImplementation((input: RequestInfo | URL) => {
+    const url = urlToString(input);
+    return new Promise<Response>((resolve) => {
+      resolvers.push(() => {
+        if (url.includes('/memo')) {
+          resolve(jsonResponse({ content: MEMO_CONTENT }));
+        } else if (url.includes('/artifacts')) {
+          resolve(
+            jsonResponse({
+              artifacts: [
+                { id: 'artifact-1', title: ARTIFACT_TITLE, createdAt: '2026-08-16T00:00:00.000Z', sizeBytes: 1234 },
+              ],
+            })
+          );
+        } else if (url.includes('/bookmarks')) {
+          resolve(
+            jsonResponse({
+              bookmarks: [
+                {
+                  id: 'bookmark-1',
+                  url: 'https://example.com',
+                  title: BOOKMARK_TITLE,
+                  createdAt: '2026-08-20T00:00:00.000Z',
+                  origin: 'user',
+                },
+              ],
+            })
+          );
+        } else {
+          resolve(jsonResponse({}, 404));
+        }
+      });
+    });
+  });
+  return {
+    resolveAll: () => resolvers.forEach((fn) => fn()),
+  };
 }
 
 const STORAGE_KEY = 'agent-console:session-side-panels-v2';
@@ -341,6 +389,193 @@ describe('SessionSidePanelsDrawer', () => {
       const { result } = renderHook(() => useSessionSidePanelsState());
       expect(result.current.expanded.artifacts).toBe(false);
       expect(result.current.railOpen).toBe(false);
+    });
+  });
+
+  describe('Focus boundary', () => {
+    it('moves focus to the first real header on Tab once the panels have loaded (the container is the initial fallback focus target per F3)', async () => {
+      // Reach (measured): removing the ENTIRE non-shift Tab boundary
+      // branch in useModalDrawerFocus.ts does NOT fail this test -- the
+      // dialog directly wraps the panels with nothing tabbable preceding
+      // Memo's header in document order, so ordinary DOM Tab traversal
+      // from the container already lands on it, same coincidence as
+      // MobileSidebarDrawer.test.tsx's "moves focus to the first tabbable
+      // when Tab is pressed from the container itself". Genuine reach for
+      // this boundary logic is covered by the F2 test below instead
+      // (wrap-from-last, where the container is no longer the starting
+      // point and natural DOM order does not coincidentally agree). This
+      // test is kept as a behavioral pin documenting the real, correct F3
+      // outcome: all three panels are still `null` (pending) at the
+      // moment the initial-focus effect runs, so the dialog container --
+      // not any header -- is what receives focus on open; see the
+      // dedicated F3 pending-case test below for the deliberate "does not
+      // steal focus back later" pin.
+      routeFetchEmpty();
+      await renderWithRouter(<SessionSidePanelsDrawer sessionId="session-1" open={true} onClose={() => {}} />);
+      const dialog = await waitFor(() => screen.getByRole('dialog'));
+      expect(document.activeElement).toBe(dialog);
+
+      const memoHeader = await waitFor(() => screen.getByLabelText('Collapse Memo'));
+      const user = userEvent.setup();
+      await user.tab();
+      expect(document.activeElement).toBe(memoHeader);
+    });
+
+    it('wraps Tab and Shift+Tab across the two real headers when Memo and Bookmarks are collapsed, skipping the collapsed-body tabindex=-1 controls (F2)', async () => {
+      routeFetchEmpty();
+      localStorage.setItem(
+        STORAGE_KEY,
+        JSON.stringify({ railOpen: false, expanded: { memo: false, artifacts: false, bookmarks: false } })
+      );
+      await renderWithRouter(<SessionSidePanelsDrawer sessionId="session-1" open={true} onClose={() => {}} />);
+      const memoHeader = await waitFor(() => screen.getByLabelText('Expand Memo'));
+      const bookmarksHeader = screen.getByLabelText('Expand Bookmarks');
+      // Artifacts is empty, so its panel renders nothing regardless of its
+      // (also collapsed) expanded flag -- only Memo and Bookmarks headers
+      // exist in the tab order.
+      expect(screen.queryByLabelText('Collapse Artifacts')).toBeNull();
+      expect(screen.queryByLabelText('Expand Artifacts')).toBeNull();
+
+      const user = userEvent.setup();
+
+      // Reach (measured): dropping getTabbables' tabindex="-1" filter fails
+      // THIS assertion (the wrap-from-last case). Focusing the LAST header
+      // and wrapping forward is what gives this mutation real reach: the
+      // mutated tabbables array gains the collapsed body's hidden controls
+      // (e.g. "Write memo"), which shifts the last real header's index away
+      // from `tabbables.length - 1`, so our own boundary check no longer
+      // fires and the browser's native Tab algorithm takes over instead --
+      // and since "Write memo" itself still carries a REAL tabindex="-1"
+      // attribute, user-event's own algorithm skips it and wraps at the
+      // document level (per F4) rather than landing back on Memo.
+      act(() => {
+        bookmarksHeader.focus();
+      });
+      await user.tab();
+      expect(document.activeElement).toBe(memoHeader);
+
+      // Reach (measured): NONE. Focusing Memo (first, not a boundary) and
+      // tabbing forward is NOT affected by getTabbables' tabindex filter:
+      // this is the "let the browser move focus sequentially" middle case,
+      // where our own trap handler never calls preventDefault, and
+      // user-event's own algorithm already skips the collapsed body's
+      // real tabindex="-1" "Write memo" button regardless of what our
+      // getTabbables filter does. Kept as a behavioral pin (it documents
+      // the real, correct F2 outcome -- the drawer's Tab order never stops
+      // on a collapsed control -- via the code path a keyboard user would
+      // actually exercise), with the mutation's genuine reach covered by
+      // the wrap-from-last case above instead.
+      act(() => {
+        memoHeader.focus();
+      });
+      await user.tab();
+      expect(document.activeElement).toBe(bookmarksHeader);
+
+      // Reach (measured): dropping the Shift+Tab boundary branch
+      // (`if (activeIndex <= 0) { ... }`) fails this assertion.
+      act(() => {
+        memoHeader.focus();
+      });
+      await user.tab({ shift: true });
+      expect(document.activeElement).toBe(bookmarksHeader);
+    });
+
+    it('keeps focus on the dialog container across the pending-query boundary (the initial-focus effect does not re-run when children later render)', async () => {
+      // Reach (measured): this pin has reach for the `?? container`
+      // fallback, and none for the deps-array premise its name is about.
+      //
+      // Fallback (`(first ?? container).focus()`): removing it with the
+      // realistic `first?.focus()` form (a no-op when there is nothing to
+      // focus, leaving `document.activeElement` wherever it already was)
+      // fails the FIRST assertion below -- `expect(document.activeElement)
+      // .toBe(dialog)` right after open, while all three panels are still
+      // `null` and `getTabbables` therefore returns nothing. Without the
+      // fallback, nothing calls `.focus()` at all at that point, so
+      // `document.activeElement` stays at whatever the test environment's
+      // default was instead of moving to the dialog.
+      //
+      // Deps array (the AC's named mutation, "add `children` to the
+      // deps"): NONE, for the reason below. `useModalDrawerFocus` is
+      // called inside `SessionSidePanelsDrawer` itself (the parent), and a
+      // React effect only re-runs when the COMPONENT INSTANCE THAT
+      // DECLARED IT re-renders. `MemoPanel` / `SessionArtifactsPanel` /
+      // `SessionBookmarksPanel` each own their query's pending state
+      // locally (`useQuery` inside the CHILD component) -- when a child's
+      // query resolves, only that child re-renders; `SessionSidePanelsDrawer`
+      // itself does not, since none of ITS OWN hooks changed. So even with
+      // the AC's named mutation applied (dropping the initial-focus
+      // effect's dependency array entirely -- `useModalDrawerFocus` takes
+      // no `children` param, so "add `children` to the deps" is
+      // equivalent to removing the deps array for a hook with nothing
+      // children-shaped to add), the effect still only runs once here:
+      // there is no second render of the PARENT for it to re-run on.
+      // Measured: applying that exact mutation (with the fallback intact)
+      // to this test file leaves THIS test (and 18 others) green -- the
+      // one exception is the sibling "does not steal focus back to the
+      // first tabbable when the drawer itself re-renders while open"
+      // test right after this one, which is where the deps-array premise
+      // has its genuine, measured reach.
+      const { resolveAll } = routeFetchDeferred();
+      await renderWithRouter(<SessionSidePanelsDrawer sessionId="session-1" open={true} onClose={() => {}} />);
+      const dialog = await waitFor(() => screen.getByRole('dialog'));
+      expect(document.activeElement).toBe(dialog);
+
+      await act(async () => {
+        resolveAll();
+      });
+      await waitFor(() => expect(screen.getByLabelText('Collapse Memo')).toBeTruthy());
+      expect(document.activeElement).toBe(dialog);
+    });
+
+    it('does not steal focus back to the first tabbable when the drawer itself re-renders while open (e.g. a section is toggled)', async () => {
+      // Reach (measured): the AC's named mutation for this pin is "add
+      // `children` to the effect deps"; for `useModalDrawerFocus` (no
+      // `children` param) that is equivalent to dropping the
+      // focus-save/initial-focus/restore effect's dependency array
+      // entirely (`}, [open, containerRef]);` -> `});`), the mutation
+      // actually applied and measured below. Unlike the sibling test
+      // above, THIS scenario reaches it: `useSessionSidePanelsState` is
+      // the drawer's OWN state hook (not a child's), so clicking a header
+      // -- an ordinary user interaction, not a data-loading side effect --
+      // re-renders `SessionSidePanelsDrawer` itself while `open` stays
+      // `true`. With the deps array intact, the effect does not re-run on
+      // that render. With it dropped, the effect re-runs and re-focuses
+      // the first tabbable, stealing focus away from wherever the user
+      // had since moved it.
+      await renderWithRouter(<SessionSidePanelsDrawer sessionId="session-1" open={true} onClose={() => {}} />);
+      await waitFor(() => expect(screen.getByLabelText('Edit memo')).toBeTruthy());
+
+      const editButton = screen.getByLabelText('Edit memo');
+      act(() => {
+        editButton.focus();
+      });
+      expect(document.activeElement).toBe(editButton);
+
+      act(() => {
+        screen.getByLabelText('Collapse Bookmarks').click();
+      });
+      expect(document.activeElement).toBe(editButton);
+    });
+
+    it('is inert while closed', async () => {
+      // Reach (measured): removing `inert` from the hook's containerProps
+      // (hardcoding it to `undefined` always) fails this test; see
+      // MobileSidebarDrawer.test.tsx's "is inert while closed and not
+      // inert while open" for the same measurement against the shared
+      // hook, plus the full happy-dom/user-event DOM-level-only caveat
+      // this pin inherits unchanged.
+      await renderWithRouter(<SessionSidePanelsDrawer sessionId="session-1" open={false} onClose={() => {}} />);
+      const dialog = document.querySelector('[role="dialog"]');
+      expect(dialog).toBeTruthy();
+      expect(dialog!.hasAttribute('inert')).toBe(true);
+      expect(dialog!.getAttribute('inert')).toBe('');
+      expect(dialog!.getAttribute('aria-hidden')).toBe('true');
+    });
+
+    it('is not inert while open', async () => {
+      await renderWithRouter(<SessionSidePanelsDrawer sessionId="session-1" open={true} onClose={() => {}} />);
+      const dialog = await waitFor(() => screen.getByRole('dialog'));
+      expect(dialog.hasAttribute('inert')).toBe(false);
     });
   });
 });
