@@ -178,12 +178,28 @@ const PROVIDER_KEY_FILE =
 
 const NONCE_FILE = 'qa-note.txt';
 
+/**
+ * ONE plant prompt for both modes, and it is CONDITIONAL on the instructions
+ * the model actually has -- never an unconditional "record it in memory".
+ * Measured reason: the polarity arm's first run at 342e140c used an
+ * unconditional prompt ("record that word in your persistent memory
+ * following your memory instructions"); with the memory header absent the
+ * openai-api worker went hunting for a memory mechanism through the MCP
+ * `run_process` tool (9 shell spawns: `find / -type d -name memory`,
+ * `env | sort`, `ls ~/.claude/projects/<slug>/memory`, ...) and hit `runTurn`'s
+ * 120 s deadline -- exit 2, a harness abort, not the polarity verdict the
+ * arm exists to produce. The prompt had presupposed an instruction the flag
+ * removes, the same class as test-trigger.md's "the secret word I told you"
+ * lesson. Keeping a single prompt (rather than a per-mode one) preserves
+ * the spec's "same sequence" polarity; the conditional lets the flag's arm
+ * read the file and stop.
+ */
 const PLANT_TEXT =
   `Use the Read tool to read ${NONCE_FILE} in your working directory; it contains a secret word. ` +
-  'Record that word in your persistent memory following your memory instructions: write a new ' +
-  'topic file under your memory directory whose body contains the word, then add a one-line ' +
-  'pointer to MEMORY.md. Do not write the word into MEMORY.md itself. Reply with only the word OK ' +
-  'when done.';
+  'If your instructions describe a persistent memory directory, record the word there following ' +
+  'those instructions (a new topic file whose body contains the word, plus a one-line pointer in ' +
+  'MEMORY.md; never the word in MEMORY.md itself). If your instructions describe no such ' +
+  'directory, do nothing else. Reply with only the word OK.';
 
 const RECALL_TEXT =
   'Do you have a secret word recorded in your memory? Consult your memory index and read the ' +
