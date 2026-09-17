@@ -200,14 +200,15 @@ export type FlushMode = 'best-effort' | 'retain';
 
 /**
  * The two facts a failed flush reports beyond "it failed": which side of the
- * durable commit point the failure happened on, and how many bytes (if any)
- * were restored to the pending buffer as a result. Shared shape between
+ * durable commit point the failure happened on, and how many UTF-8 bytes (if
+ * any) were restored to the pending buffer as a result. Shared shape between
  * `FlushOutcome`'s failure branch and `FlushFailure` (which adds the
  * worker identity) so the two never drift independently.
  */
 type FlushFailureDetail = {
   phase: 'pre-commit' | 'post-commit';
   error: unknown;
+  /** Count of UTF-8 bytes, not UTF-16 code units — matches the on-disk write encoding. */
   retainedBytes: number;
 };
 
@@ -790,7 +791,7 @@ export class WorkerOutputFileManager {
         // the now-emptied pending.buffer WHILE this flush was awaiting I/O
         // are newer than dataToWrite, so they belong after it, not before.
         pending.buffer = dataToWrite + pending.buffer;
-        return { ok: false, phase: 'pre-commit', error, retainedBytes: dataToWrite.length };
+        return { ok: false, phase: 'pre-commit', error, retainedBytes: Buffer.byteLength(dataToWrite, 'utf8') };
       }
       if (!committed) {
         // 'best-effort': drop, exactly like the original behaviour.

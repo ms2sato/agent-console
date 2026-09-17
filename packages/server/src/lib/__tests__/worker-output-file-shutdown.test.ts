@@ -206,14 +206,23 @@ describe('WorkerOutputFileManager shutdown (real fs, Issue #1719)', () => {
   // restored --> passes. (ii) removing the outcome-collection loop in
   // `flushAll` (so `failures` stays `[]` regardless of what `flushBuffer`
   // resolves) --> the `r.failures` assertions below fail (P2's do too, for
-  // the same reason); restored --> passes. Both measured alone (real fs,
-  // `bun test src/lib/__tests__/worker-output-file-shutdown.test.ts`) and
-  // under the memfs-substituted directory run (`bun test src/lib/__tests__`
-  // from packages/server): 1 fail / 2 fail respectively in both.
+  // the same reason); restored --> passes. (iii) reverting
+  // `retainedBytes: Buffer.byteLength(dataToWrite, 'utf8')` back to
+  // `dataToWrite.length` (UTF-16 code units) --> `data` below contains
+  // multibyte characters whose UTF-8 byte length differs from its `.length`,
+  // so the `retainedBytes` assertion fails; restored --> passes. All three
+  // measured alone (real fs, `bun test
+  // src/lib/__tests__/worker-output-file-shutdown.test.ts`) and under the
+  // memfs-substituted directory run (`bun test src/lib/__tests__` from
+  // packages/server): 1 fail / 2 fail / 1 fail respectively in both.
   it('P1: pre-commit flush failure at shutdown retains the bytes and reports them', async () => {
     const sessionId = 'session-p1';
     const workerId = 'worker-p1';
-    const data = 'retained on pre-commit failure';
+    // Three CJK characters (escaped so the file stays ASCII) make the UTF-8
+    // byte length diverge from the UTF-16 `.length` -- without them the
+    // `retainedBytes` assertion could not tell the two apart.
+    const data = 'retained on pre-commit failure -- \u65e5\u672c\u8a9e';
+    expect(Buffer.byteLength(data, 'utf8')).not.toBe(data.length);
 
     await fs.mkdir(resolver.getOutputsDir(), { recursive: true });
     const blocker = path.join(resolver.getOutputsDir(), sessionId);
@@ -223,7 +232,7 @@ describe('WorkerOutputFileManager shutdown (real fs, Issue #1719)', () => {
 
     const r = await manager.shutdown();
     expect(r.failures).toHaveLength(1);
-    expect(r.failures[0]).toMatchObject({ sessionId, workerId, phase: 'pre-commit', retainedBytes: data.length });
+    expect(r.failures[0]).toMatchObject({ sessionId, workerId, phase: 'pre-commit', retainedBytes: Buffer.byteLength(data, 'utf8') });
 
     // Unblock and flush again. `manager` is `closed` after `shutdown()`, but
     // `flushAll()` does not consult `closed` (only `bufferOutput` does), so
@@ -250,19 +259,33 @@ describe('WorkerOutputFileManager shutdown (real fs, Issue #1719)', () => {
   // again (`data + data`) --> fails; the alternative mutation, dropping the
   // `!committed &&` guard so `retain` mode requeues unconditionally --> the
   // same duplicate --> fails. Restored --> passes. Both measured alone
-  // (real fs) and under the memfs-substituted directory run: same result.
+  // (real fs, `bun test src/lib/__tests__/worker-output-file-shutdown.test.ts`)
+  // and under the memfs-substituted directory run (`bun test
+  // src/lib/__tests__` from packages/server): same result in both.
   //
-  // Spying on a private method: `worker-output-file-display-fill.test.ts`'s
-  // `WithArchiveWalk` / `WithDecompress` casts (`WorkerOutputFileManager &
-  // { method: (...args: never[]) => ReturnType }`) are this suite's usual
-  // pattern, but neither of those call sites replaces the implementation --
-  // this one needs `.mockImplementation()` to force a throw, and the
-  // intersection form's `never[]` rest parameter makes bun-types' generic
-  // `Mock<T>.mockImplementation` resolve its parameter type to `never`
-  // (measured directly). `as unknown as WithCutSegment`, naming the real
-  // parameter types instead of `never[]`, sidesteps that -- same runtime
-  // effect (spyOn mutates the live object's property regardless of the cast
-  // used to reach it), different type-only path.
+  // Seam attempted first, and rejected: a directory pre-created at the exact
+  // first-cut segment path (`${workerId}.seg-0.log.gz`), so `cutSegment`'s
+  // `writeFileDurable(segPath, gz)` fails its `fs.rename(tmpPath, segPath)`
+  // step onto an existing directory (EISDIR/ENOTDIR on the real fs) strictly
+  // AFTER the append has already committed, with no access to anything
+  // private. Measured: it fails deterministically when this file runs ALONE
+  // (real fs), but under the memfs-substituted directory run (`bun test
+  // src/lib/__tests__`) memfs's `rename` does not reject a file renamed onto
+  // a directory the way the real fs does, so `cutSegment` completes without
+  // error and `r.failures` comes back empty. Per this suite's own "must fail
+  // deterministically under BOTH invocations" bar, the fs seam is not
+  // viable; the private-method spy below is used instead.
+  //
+  // Spying on the private method: the cast is the single-step intersection
+  // this suite already uses for private seams (`WithArchiveWalk` /
+  // `WithDecompress` in `worker-output-file-display-fill.test.ts`), never a
+  // cast through `unknown`. `mockRejectedValue` rather than
+  // `mockImplementation`: bun-types resolves `Mock<T>`'s `mockImplementation`
+  // parameter to `never` for a member reached through such an intersection
+  // (measured: TS2345 with both a `never[]` rest signature and the real
+  // parameter list), while `mockRejectedValue(value: unknown)` is
+  // T-independent. A rejected promise surfaces at `await this.cutSegment(...)`
+  // exactly like a throw would.
   it('P2: post-commit flush failure does not requeue or duplicate the already-committed bytes', async () => {
     const sessionId = 'session-p2';
     const workerId = 'worker-p2';
@@ -272,12 +295,10 @@ describe('WorkerOutputFileManager shutdown (real fs, Issue #1719)', () => {
     // guaranteeing `cutSegment` runs on the very first flush.
     const p2 = new WorkerOutputFileManager({ flushInterval: FLUSH_INTERVAL_MS, fileMaxSize: 1 });
 
-    interface WithCutSegment {
+    type WithCutSegment = WorkerOutputFileManager & {
       cutSegment: (sessionId: string, workerId: string, resolver: SessionDataPathResolver, manifest: WorkerOutputManifest) => Promise<void>;
-    }
-    const cutSpy = spyOn(p2 as unknown as WithCutSegment, 'cutSegment').mockImplementation(() => {
-      throw new Error('cutSegment forced failure (P2)');
-    });
+    };
+    const cutSpy = spyOn(p2 as WithCutSegment, 'cutSegment').mockRejectedValue(new Error('cutSegment forced failure (P2)'));
 
     try {
       p2.bufferOutput(sessionId, workerId, data, resolver);
@@ -292,7 +313,10 @@ describe('WorkerOutputFileManager shutdown (real fs, Issue #1719)', () => {
       // requeued) so it does nothing; the file still holds `data` exactly
       // once from the original, already-committed append. With
       // `fileMaxSize: 1` the real `cutSegment` would run again here if there
-      // were pending bytes to flush -- there are none, so it does not.
+      // were pending bytes to flush -- there are none, so it does not. A
+      // `.tmp` file from the failed durable write is not produced by this
+      // seam (the spy rejects before `writeFileDurable` runs), so there is
+      // nothing to clean up here, unlike the rejected directory seam above.
       await p2.flushAll();
 
       const filePath = p2.getOutputFilePath(sessionId, workerId, resolver);

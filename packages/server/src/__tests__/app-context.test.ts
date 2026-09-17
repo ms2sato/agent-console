@@ -209,7 +209,7 @@ describe('AppContext', () => {
         appContext = null;
 
         const flushFailureCalls = errorSpy.mock.calls.filter(
-          (call) => call[1] === 'worker output flush failed at shutdown; buffered output retained in memory, not on disk',
+          (call) => call[1] === 'worker output flush failed at shutdown; see failures for phase and retainedBytes',
         );
         // Mutation measured: removing the `logger.error(...)` call for
         // non-empty `failures` in `shutdownAppContext` -> this fails (0

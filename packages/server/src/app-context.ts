@@ -983,18 +983,20 @@ export async function shutdownAppContext(
   // process lands in the buffer before it is flushed here; the queue and db
   // are stopped last. Order is pinned by app-context.test.ts.
   //
-  // `shutdown()` flushes with retain-and-report: on failure it keeps the
-  // unwritten bytes in memory (reported via `retainedBytes`) rather than
-  // silently dropping them. Any failures are logged once
-  // here, as a single aggregate entry, and teardown continues unconditionally
-  // to `jobQueue.stop()` and the database close below -- throwing on a disk
-  // failure at this point would leave the queue and the database open, which
-  // is worse than the flush defect this is reporting.
+  // `shutdown()` flushes with retain-and-report: a pre-commit failure keeps
+  // the unwritten bytes in memory (reported via `retainedBytes`) rather than
+  // silently dropping them; a post-commit failure reports `retainedBytes: 0`
+  // because the bytes already landed on disk before the failure occurred (a
+  // later step, such as segment rotation, is what failed). Any failures are
+  // logged once here, as a single aggregate entry, and teardown continues
+  // unconditionally to `jobQueue.stop()` and the database close below --
+  // throwing on a disk failure at this point would leave the queue and the
+  // database open, which is worse than the flush defect this is reporting.
   const { failures } = await context.workerOutputFileManager.shutdown();
   if (failures.length > 0) {
     logger.error(
       { failures: failures.map(({ sessionId, workerId, phase, retainedBytes }) => ({ sessionId, workerId, phase, retainedBytes })) },
-      'worker output flush failed at shutdown; buffered output retained in memory, not on disk',
+      'worker output flush failed at shutdown; see failures for phase and retainedBytes',
     );
   }
 
