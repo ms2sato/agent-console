@@ -1,5 +1,5 @@
 import { describe, expect, it, jest, mock, setSystemTime, spyOn } from 'bun:test';
-import { formatFieldValue, writePtyNotification, buildPtyNotificationText } from '../pty-notification.js';
+import { formatFieldValue, writePtyNotification, buildPtyNotificationText, buildReplyInstructions } from '../pty-notification.js';
 
 describe('formatFieldValue', () => {
   it('returns simple value as-is', () => {
@@ -315,5 +315,22 @@ describe('buildPtyNotificationText', () => {
     expect(result).toContain('username=testuser');
     expect(result).toContain('exitCode=127');
     expect(result).toContain('intent=triage');
+  });
+});
+
+describe('buildReplyInstructions', () => {
+  // Issue #1694 (C8): the reply instructions name BOTH identity sources. A
+  // Bash-less claude-sdk embedded worker has no AGENT_CONSOLE_* environment
+  // to read and must fall back to the Session ID its system-prompt preamble
+  // states; a terminal agent or a Bash-enabled worker reads the env var.
+  // Reach measured: reverting the fromSessionId line to the pre-#1694
+  // "Use your AGENT_CONSOLE_SESSION_ID environment variable" fails here.
+  it('names both identity sources for fromSessionId (env var OR the system-prompt Session ID)', () => {
+    const text = buildReplyInstructions('sender-123');
+    expect(text).toContain('toSessionId: "sender-123"');
+    expect(text).toContain(
+      '- fromSessionId: your session id (AGENT_CONSOLE_SESSION_ID in your environment, or the Session ID stated in your system prompt)',
+    );
+    expect(text).not.toContain('Use your AGENT_CONSOLE_SESSION_ID environment variable');
   });
 });

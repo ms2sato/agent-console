@@ -955,6 +955,31 @@ describe('runLoop — reasoningEffort/effort threading (agent-surface.md Ruling 
     expect(capturedDeps?.effort).toBe('high');
   });
 
+  // Issue #1694 (C5): main.ts's claude-sdk init arm composes the SDK
+  // append from `init.context` too, so the identity preamble (Session ID /
+  // Worker ID) reaches `SdkEngineDeps.systemPromptAppend` even for an init
+  // with no instructions and no definition system prompt -- the exact case
+  // that used to produce `undefined` and leave a Bash-less SDK worker with
+  // no identity source. Reach measured: reverting the call site to the
+  // pre-#1694 two-argument `composeSdkSystemPromptAppend(instructions,
+  // init.systemPrompt)` shape does not compile; making it pass a context
+  // with the wrong ids (e.g. `{ ...init.context, sessionId: 'x' }`) fails
+  // the Session ID assertion.
+  it('composes the identity preamble from init.context into the SDK engine deps systemPromptAppend (claude-sdk engine)', async () => {
+    let capturedDeps: SdkEngineDeps | undefined;
+    const { io } = makeIo([claudeSdkInitCommand({ context: { sessionId: 'sess-main-1694', workerId: 'work-main-1694', cwd: '/tmp' } })]);
+    const factories = makeFactories({
+      createSdkEngine: (deps) => {
+        capturedDeps = deps;
+        return new NoopEngine();
+      },
+    });
+
+    expect(await runLoop(io, factories)).toBe(0);
+    expect(capturedDeps?.systemPromptAppend).toContain('Session ID: sess-main-1694');
+    expect(capturedDeps?.systemPromptAppend).toContain('Worker ID: work-main-1694');
+  });
+
   it('omits the effort key entirely from the SDK engine deps when init.provider.effort is absent (claude-sdk engine)', async () => {
     let capturedDeps: SdkEngineDeps | undefined;
     const { io } = makeIo([claudeSdkInitCommand()]);
@@ -1299,7 +1324,12 @@ describe('runLoop — claude-sdk engine: instructions via loadInstructions (Issu
     expect(operatorIdx).toBeGreaterThan(indexIdx);
   });
 
-  it('omits systemPromptAppend entirely when loadInstructions returns nothing and no definition system prompt is configured (no regression)', async () => {
+  // Issue #1694 (C5) changed the two "no regression" pins below: the append
+  // is never omitted any more, because the identity preamble is always
+  // composed (a Bash-less SDK worker's only identity source). What the pins
+  // still guard is that NOTHING ELSE is appended when loadInstructions
+  // returns nothing -- no instruction/rule/skill/memory section.
+  it('systemPromptAppend is the identity preamble alone when loadInstructions returns nothing and no definition system prompt is configured', async () => {
     const { io } = makeIo([claudeSdkInitCommand()]);
     let capturedDeps: SdkEngineDeps | undefined;
     const factories = makeFactories({
@@ -1310,10 +1340,16 @@ describe('runLoop — claude-sdk engine: instructions via loadInstructions (Issu
     });
 
     expect(await runLoop(io, factories)).toBe(0);
-    expect(capturedDeps?.systemPromptAppend).toBeUndefined();
+    const append = capturedDeps?.systemPromptAppend;
+    expect(append).toBeDefined();
+    expect(append).toContain('Session ID: s');
+    expect(append).toContain('Worker ID: w');
+    expect(append).not.toContain('--- Instructions:');
+    expect(append).not.toContain('--- Rule:');
+    expect(append).not.toContain('\n\n\n');
   });
 
-  it('systemPromptAppend contains only the definition system prompt when loadInstructions returns nothing (no regression)', async () => {
+  it('systemPromptAppend is the identity preamble followed by only the definition system prompt when loadInstructions returns nothing', async () => {
     const { io } = makeIo([claudeSdkInitCommand({ systemPrompt: 'OPERATOR_ONLY' })]);
     let capturedDeps: SdkEngineDeps | undefined;
     const factories = makeFactories({
@@ -1324,7 +1360,10 @@ describe('runLoop — claude-sdk engine: instructions via loadInstructions (Issu
     });
 
     expect(await runLoop(io, factories)).toBe(0);
-    expect(capturedDeps?.systemPromptAppend).toBe('OPERATOR_ONLY');
+    const append = capturedDeps?.systemPromptAppend ?? '';
+    expect(append.endsWith('\n\nOPERATOR_ONLY')).toBe(true);
+    expect(append).toContain('Session ID: s');
+    expect(append).not.toContain('--- Instructions:');
   });
 
   // Polarity: before this PR, initializeLoop's claude-sdk branch called

@@ -464,6 +464,34 @@ describe('WorkerManager', () => {
       });
       expect(worker.pty).not.toBeNull();
     });
+
+    // Issue #1694 (C3 parity): the terminal arm's AgentConsoleContext (now
+    // typed from agent-console-env.ts, the same module whose
+    // buildAgentConsoleEnv maps it) still reaches the PTY spawn env as the
+    // identity keys with the terminal BASE_URL shape -- an origin with no
+    // path. The embedded arm's C3 test pins the identical shape from its
+    // side, so both arms are asserted against one rule. Reach measured:
+    // appending `/mcp` to the context's baseUrl in worker-manager.ts fails
+    // here (pathname !== '/').
+    it('spawns the agent PTY with the identity env at the terminal BASE_URL shape (origin, no path) -- Issue #1694 parity', async () => {
+      const worker = createTestAgentWorker('agent-identity');
+      await workerManager.activateAgentWorkerPty(worker, {
+        ...defaultAgentActivationParams,
+        sessionId: 'sess-identity',
+        context: { parentSessionId: 'parent-s', parentWorkerId: 'parent-w' },
+      });
+
+      // The mock records its args as `unknown[]`; one direct cast at the
+      // read site (no `unknown` intermediate) narrows the options arg.
+      const lastCall = ptyFactory.spawn.mock.calls[ptyFactory.spawn.mock.calls.length - 1];
+      const env = (lastCall[2] as { env?: Record<string, string> } | undefined)?.env;
+      expect(env).toBeDefined();
+      expect(env!.AGENT_CONSOLE_SESSION_ID).toBe('sess-identity');
+      expect(env!.AGENT_CONSOLE_WORKER_ID).toBe('agent-identity');
+      expect(env!.AGENT_CONSOLE_PARENT_SESSION_ID).toBe('parent-s');
+      expect(env!.AGENT_CONSOLE_PARENT_WORKER_ID).toBe('parent-w');
+      expect(new URL(env!.AGENT_CONSOLE_BASE_URL).pathname).toBe('/');
+    });
   });
 
   describe('activateTerminalWorkerPty', () => {
