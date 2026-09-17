@@ -189,7 +189,7 @@ When the orchestrator requests owner approval for a destructive or owner-judgmen
 - If satisfactory, summarize the result for the owner
 
 ## 6. Acceptance Check
-- **Trigger**: Every `[inbound:ci:completed]` event for a PR under the Orchestrator's responsibility. On first CI green, run the full acceptance check (run_process Q1-Q11). On subsequent CI greens (after feedback/fixes), re-read the latest diff (`gh pr diff`) and re-evaluate against acceptance criteria. Never rely on previously-read diffs.
+- **Trigger**: Every `[inbound:ci:completed]` event for a PR under the Orchestrator's responsibility. An inbound event delivered to you as a designated Orchestrator may have reached other designated sessions of the same repository too (Issue #1716): you may not be the only recipient; decide whether the event is yours, and coordinate through `send_session_message` when acting. On first CI green, run the full acceptance check (run_process Q1-Q11). On subsequent CI greens (after feedback/fixes), re-read the latest diff (`gh pr diff`) and re-evaluate against acceptance criteria. Never rely on previously-read diffs.
 - **IMPORTANT: The Orchestrator performs acceptance checks directly.** Do NOT delegate to sub-agents — the accuracy loss from delegation outweighs the time saved.
 - **Run the acceptance check via Interactive Process**: Use `run_process` to start the acceptance check script:
   ```

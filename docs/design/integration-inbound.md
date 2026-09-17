@@ -499,6 +499,31 @@ Sessions are matched to webhooks by comparing repository identifiers.
 
 **Recommendation**: Start with runtime resolution. Add caching if performance becomes an issue (unlikely with typical session counts).
 
+### Designated Orchestrator sessions
+
+A Repository row holds a SET of designated Orchestrator sessions (`repository_orchestrator_sessions`, Issue [#1716](https://github.com/ms2sato/agent-console/issues/1716); the model itself — add/remove of one's own session, multi-delivery with self-selection — is specified in [shared-orchestrator-session.md § Designation in multi-user](./shared-orchestrator-session.md#designation-in-multi-user)). On the wire it is `Repository.orchestratorSessionIds: string[]`. This section is what `resolveTargets` (`packages/server/src/services/inbound/resolve-targets.ts`) does with it.
+
+**Two paths read the set.**
+
+1. **`issue:labeled` routes ONLY to designated sessions.** The event never fans out to a repository's active sessions and never notifies a parent session. For every locally-registered repository whose remote matches the webhook's `repository.full_name` (there can be several — `registerRepository` rejects a duplicate path, not a duplicate remote), the event's label(s) are matched against that row's `issueTriggerLabels` (comma-separated, case-insensitive, trimmed; an unset configuration never matches). A matching row contributes every one of its designated sessions that passes the per-session exclusions below. A row with zero designations contributes nothing (logged: matched repository, no designated orchestrator sessions).
+2. **The #1661 fallback, for every other event type.** When the per-session loop resolves to nobody, or to a matching session with no parent, or to a matching session whose parent is not live, the event falls back to the designated sessions of every matched row — the same iteration and the same per-session exclusions as path 1 — each appended with `fallback: true` unless that session is already a genuine target. `hasLiveParentTarget` is a single boolean across the whole loop (Shape C's contract is "somebody responsible is told", not "every dead parent gets its own fallback").
+
+**Per-session exclusions, evaluated for each designated session independently, each with its own log reason.** One ineligible session never short-circuits the others on the same row, and one ineligible row never short-circuits the other rows.
+
+| The designated session… | Skipped, logged as |
+|---|---|
+| is not in `getSessions()` (deleted, or paused — a paused session's DB row survives but it is absent from the live session manager) | not a live session |
+| has `activationState !== 'running'` (hibernated: all its PTY workers have exited) | not running |
+| fails `canDeliverToAgentWorker` (no `agent`-type worker — e.g. a worktree session whose only worker is `git-diff`, which computes `running` vacuously) | no agent worker to deliver to |
+
+Targets are collected into a `Set` keyed by session id, so a session designated on two same-remote rows is delivered to once. There is no precedence among designated sessions and no ordering guarantee beyond the deduplication; each recipient decides for itself whether the event is its responsibility, and recipients coordinate through `send_session_message` when they act.
+
+**Hibernated designated sessions are SKIPPED, never auto-removed (ruling, #1716 §5).** `activationState: 'hibernated'` is derived, not stored — it means "all PTY workers gone" (`session-converter-service.ts`) — and it is transient: the auto-resume path brings such a session back with no operator action, so an auto-removal on hibernation would silently drop a designation minutes before it became deliverable again. The only removal the system performs is the `ON DELETE CASCADE` on session deletion. A stale designation on a retired incarnation is visible in the sidebar (the flag stays lit) and is the owner's, or the retiring Orchestrator's (`clear_orchestrator_session` before retiring), to lower.
+
+**Boundary values** (pinned in `services/inbound/__tests__/resolve-targets*.test.ts` for both paths): a row with `[]` yields no target from that row; two designated with one hibernated yields exactly the live one; two same-remote rows designating the same session yield one target; three designated, all live, yield three targets.
+
+The shipping-path E2E for both paths is `bun scripts/smoke/check-webhook-issue-label-routing.ts` (scenarios 3–7; registered in `.claude/rules/test-trigger.md`).
+
 ### Service Parser Interface
 
 Service parsers authenticate webhooks and convert raw payloads to `InboundSystemEvent`.

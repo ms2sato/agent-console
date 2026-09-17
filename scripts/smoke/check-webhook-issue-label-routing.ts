@@ -50,8 +50,11 @@
  *      cased differently than the repository's configured trigger-label
  *      config, exercising `matchesAnyTriggerLabel`'s case-insensitive
  *      compare rather than an exact-string match a naive `===` would also
- *      pass). Routes exclusively to D (the designated Orchestrator session)
- *      -- confirmed by reading D's real worker output file for the
+ *      pass). Routes exclusively to the repository's DESIGNATED SET -- D
+ *      and D2, both designated via real `set_orchestrator_session` calls
+ *      (Issue #1716: a Repository row holds a set of designated sessions,
+ *      and delivery goes to every live one) -- confirmed by reading both
+ *      D's and D2's real worker output files for the
  *      `[inbound:issue:labeled]` PTY-notification tag. T (a plain worktree
  *      session of the same repository) and the delegate (a `quick` child
  *      session of D) must NOT receive it -- this is the whole point of R2's
@@ -62,16 +65,28 @@
  *      single added-label shape) that includes the matching trigger label
  *      among others -- exercises `parseIssueOpened`'s full-label-set
  *      matching path, distinct from scenario 3's added-label-only path.
- *      Same D-only assertion shape as scenario 3, on a different issue
- *      number so the two are distinguishable if debugging is needed.
+ *      Same D-and-D2-not-T assertion shape as scenario 3, on a different
+ *      issue number so the two are distinguishable if debugging is needed.
+ *
+ *   4b. POSITIVE (Issue #1716, hibernated designated session is SKIPPED,
+ *      never auto-removed): D2 is PAUSED via `POST /:id/pause` (absent
+ *      from the live session manager, DB row preserved) and the scenario 3
+ *      shape is posted again. Only D receives; D2's output file and T's
+ *      are unchanged; the server's own stdout contains the exact
+ *      per-session skip reason `resolveIssueLabeledTargets` logs for a
+ *      designated session that is not live (attribution, not silence);
+ *      and `GET /api/repositories/:id` still lists D2 in
+ *      `orchestratorSessionIds` -- routing skipped it, nothing removed it.
+ *      D2 stays paused for scenarios 5-7, which therefore also exercise
+ *      "a designated-but-not-live session is skipped by the fallback".
  *
  *   5. POSITIVE (Issue #1661, main-push fallback): a `workflow_run`
  *      `completed`/`success` event on `head_branch: 'main'`, matching zero
  *      registered sessions (neither D's nor T's worktreeId). Routes to D
- *      (the designated Orchestrator session) via `resolveTargets`'s new
+ *      (the live designated Orchestrator session) via `resolveTargets`'s
  *      designated-session fallback -- confirmed by reading D's real worker
  *      output file for the `[inbound:ci:completed]` tag. T must NOT receive
- *      it. `head_sha` is omitted so `job-handler.ts`'s `ciCompletionChecker`
+ *      it, and neither must the paused D2 (designated, skipped). `head_sha` is omitted so `job-handler.ts`'s `ciCompletionChecker`
  *      gate never runs (it only fires when `commitSha` is present), avoiding
  *      a pointless real `gh api` call against a nonexistent repo.
  *
@@ -121,15 +136,18 @@
  *     `createInboundEventJobHandler`, the real `resolveTargets`, and the
  *     real `AgentWorkerHandler` / `UINotificationHandler`;
  *   - a real disposable git repository with a real `origin` remote, real
- *     `git worktree add` worktrees for D, T, (scenario 6) O and P, and
+ *     `git worktree add` worktrees for D, D2, T, (scenario 6) O and P, and
  *     (scenario 7) Q and R, and real `getOrgRepoFromPath` remote-URL
  *     resolution (local-only, no network);
  *   - real sessions and real PTY-backed `agent` workers created via the
  *     real `POST /api/sessions` route (the default `claude-code-builtin`
  *     agent, spawned interactively with no prompt sent -- no LLM API call);
- *   - a real `set_orchestrator_session` MCP call over real `/mcp` JSON-RPC;
- *   - a real `POST /:id/pause` call (scenario 6) to remove session P from
- *     the live session manager while preserving its DB row;
+ *   - two real `set_orchestrator_session` MCP calls (D, then D2) over real
+ *     `/mcp` JSON-RPC, and a real `GET /api/repositories/:id` read of the
+ *     resulting designated set;
+ *   - real `POST /:id/pause` calls (scenario 4b: D2; scenario 6: P) to
+ *     remove a session from the live session manager while preserving its
+ *     DB row;
  *   - a real `DELETE /api/sessions/:id` call (scenario 7) to remove session
  *     R's row from the `sessions` table entirely.
  *
@@ -306,6 +324,7 @@ async function main(): Promise<void> {
   const disposableHome = path.join(scratchRoot, 'home');
   const repoDir = path.join(scratchRoot, 'repo');
   const worktreeDDir = path.join(scratchRoot, 'worktree-d');
+  const worktreeD2Dir = path.join(scratchRoot, 'worktree-d2');
   const worktreeTDir = path.join(scratchRoot, 'worktree-t');
   mkdirSync(disposableHome, { recursive: true });
   mkdirSync(repoDir, { recursive: true });
@@ -334,6 +353,7 @@ async function main(): Promise<void> {
     git(['commit', '--allow-empty', '-q', '-m', 'init'], repoDir);
     git(['remote', 'add', 'origin', `https://github.com/${nonceOrg}/${nonceRepo}.git`], repoDir);
     git(['worktree', 'add', worktreeDDir, '-b', 'smoke-branch-d'], repoDir);
+    git(['worktree', 'add', worktreeD2Dir, '-b', 'smoke-branch-d2'], repoDir);
     git(['worktree', 'add', worktreeTDir, '-b', 'smoke-branch-t'], repoDir);
 
     // -----------------------------------------------------------------
@@ -380,6 +400,7 @@ async function main(): Promise<void> {
       projects: {
         ...(baseClaudeConfig.projects as Record<string, unknown> | undefined),
         [worktreeDDir]: { hasTrustDialogAccepted: true },
+        [worktreeD2Dir]: { hasTrustDialogAccepted: true },
         [worktreeTDir]: { hasTrustDialogAccepted: true },
       },
     };
@@ -406,7 +427,7 @@ async function main(): Promise<void> {
       writeFileSync(claudeConfigPath, JSON.stringify(isolatedClaudeConfig), { mode: 0o600 });
     }
 
-    // Initial write covering D and T.
+    // Initial write covering D, D2 and T.
     writeFileSync(claudeConfigPath, JSON.stringify(isolatedClaudeConfig), { mode: 0o600 });
 
     // -----------------------------------------------------------------
@@ -495,7 +516,7 @@ async function main(): Promise<void> {
     // interactive `claude` PTY worker with no prompt ever sent (no LLM
     // API call, no cost).
     // -----------------------------------------------------------------
-    console.log('\n==> creating sessions D (designated orchestrator) and T (plain worktree)');
+    console.log('\n==> creating sessions D and D2 (both to be designated orchestrators) and T (plain worktree)');
     const sessionD = await createSession(baseUrl, {
       type: 'worktree',
       repositoryId: repository.id,
@@ -503,6 +524,14 @@ async function main(): Promise<void> {
       locationPath: worktreeDDir,
     });
     console.log(`==> session D created: ${sessionD.id} (workers: ${JSON.stringify(sessionD.workers.map((w) => w.type))})`);
+
+    const sessionD2 = await createSession(baseUrl, {
+      type: 'worktree',
+      repositoryId: repository.id,
+      worktreeId: 'smoke-branch-d2',
+      locationPath: worktreeD2Dir,
+    });
+    console.log(`==> session D2 created: ${sessionD2.id} (workers: ${JSON.stringify(sessionD2.workers.map((w) => w.type))})`);
 
     const sessionT = await createSession(baseUrl, {
       type: 'worktree',
@@ -520,19 +549,46 @@ async function main(): Promise<void> {
     console.log(`==> delegate session created: ${delegateSession.id} (parentSessionId=${sessionD.id})`);
 
     const agentWorkerD = sessionD.workers.find((w) => w.type === 'agent');
+    const agentWorkerD2 = sessionD2.workers.find((w) => w.type === 'agent');
     const agentWorkerT = sessionT.workers.find((w) => w.type === 'agent');
     if (!agentWorkerD) bail('session D has no agent worker');
+    if (!agentWorkerD2) bail('session D2 has no agent worker');
     if (!agentWorkerT) bail('session T has no agent worker');
 
     // -----------------------------------------------------------------
-    // Designate D as the repository's Orchestrator via a real MCP call.
+    // Designate D AND D2 as the repository's Orchestrators via real MCP
+    // calls (Issue #1716: each call adds the calling session to the row's
+    // designated SET; D2's add must leave D's designation in place).
     // -----------------------------------------------------------------
-    console.log('\n==> designating D as the repository Orchestrator via set_orchestrator_session');
+    console.log('\n==> designating D and D2 as repository Orchestrators via set_orchestrator_session');
     const mcpSessionId = await initializeMcp(baseUrl);
-    const designateResult = (await callMcpTool(baseUrl, mcpSessionId, 'set_orchestrator_session', {
+    const designateResultD = (await callMcpTool(baseUrl, mcpSessionId, 'set_orchestrator_session', {
       sessionId: sessionD.id,
-    })) as { repositoryId: string; orchestratorSessionId: string };
-    expect(designateResult.orchestratorSessionId === sessionD.id, 'set_orchestrator_session designates D', JSON.stringify(designateResult));
+    })) as { repositoryId: string; orchestratorSessionIds: string[] };
+    expect(
+      Array.isArray(designateResultD.orchestratorSessionIds) && designateResultD.orchestratorSessionIds.includes(sessionD.id),
+      'set_orchestrator_session adds D to the designated set',
+      JSON.stringify(designateResultD),
+    );
+    const designateResultD2 = (await callMcpTool(baseUrl, mcpSessionId, 'set_orchestrator_session', {
+      sessionId: sessionD2.id,
+    })) as { repositoryId: string; orchestratorSessionIds: string[] };
+    expect(
+      Array.isArray(designateResultD2.orchestratorSessionIds) &&
+        designateResultD2.orchestratorSessionIds.includes(sessionD.id) &&
+        designateResultD2.orchestratorSessionIds.includes(sessionD2.id) &&
+        designateResultD2.orchestratorSessionIds.length === 2,
+      "set_orchestrator_session adds D2 WITHOUT displacing D (set is exactly {D, D2})",
+      JSON.stringify(designateResultD2),
+    );
+
+    /** Read the designated set back through the real REST route (the same row the routing reads). */
+    async function readDesignatedSet(): Promise<string[]> {
+      const res = await fetch(`${baseUrl}/api/repositories/${repository.id}`);
+      if (!res.ok) bail(`GET /api/repositories/:id failed (status ${res.status}): ${await res.text()}`);
+      const body = (await res.json()) as { repository: { orchestratorSessionIds: string[] } };
+      return body.repository.orchestratorSessionIds;
+    }
 
     // -----------------------------------------------------------------
     // Worker output file path derivation -- read `data_scope` /
@@ -560,8 +616,10 @@ async function main(): Promise<void> {
     }
 
     const outputPathD = await resolveWorkerOutputPath(sessionD.id, agentWorkerD.id);
+    const outputPathD2 = await resolveWorkerOutputPath(sessionD2.id, agentWorkerD2.id);
     const outputPathT = await resolveWorkerOutputPath(sessionT.id, agentWorkerT.id);
     console.log(`==> D's worker output file: ${outputPathD}`);
+    console.log(`==> D2's worker output file: ${outputPathD2}`);
     console.log(`==> T's worker output file: ${outputPathT}`);
 
     function readOutputFileSafe(p: string): string {
@@ -584,7 +642,7 @@ async function main(): Promise<void> {
     // running `claude` TUI. Wait out that startup window up front so every
     // scenario below observes a stable, already-running `claude` process.
     // Measured empirically in this environment; not a documented contract.
-    console.log('==> waiting for D/T PTY startup (sentinel-triggered claude command injection) to settle');
+    console.log('==> waiting for D/D2/T PTY startup (sentinel-triggered claude command injection) to settle');
     await Bun.sleep(8_000);
 
     async function countNotificationRows(eventType: string, sessionIds: string[]): Promise<Record<string, number>> {
@@ -670,10 +728,12 @@ async function main(): Promise<void> {
     );
 
     // ===================================================================
-    // SCENARIO 3: matching label, `labeled` action -- D only.
+    // SCENARIO 3: matching label, `labeled` action -- D and D2 (the
+    // designated set), never T.
     // ===================================================================
-    console.log('\n==> SCENARIO 3: issues/labeled, matching label (D only)');
+    console.log('\n==> SCENARIO 3: issues/labeled, matching label (D and D2, not T)');
     const beforeD3 = readOutputFileSafe(outputPathD);
+    const beforeD23 = readOutputFileSafe(outputPathD2);
     const beforeT3 = readOutputFileSafe(outputPathT);
     const labeledMatchRes = await postWebhook(
       baseUrl,
@@ -702,6 +762,12 @@ async function main(): Promise<void> {
     }, 45_000, "D's output file to contain [inbound:issue:labeled]");
     expect(scenario3TagFound, 'SCENARIO 3: D received the [inbound:issue:labeled] PTY notification', readOutputFileSafe(outputPathD).slice(beforeD3.length).slice(-500));
 
+    const scenario3D2TagFound = await waitFor(() => {
+      const content = readOutputFileSafe(outputPathD2);
+      return content.slice(beforeD23.length).includes('[inbound:issue:labeled]');
+    }, 45_000, "D2's output file to contain [inbound:issue:labeled]");
+    expect(scenario3D2TagFound, 'SCENARIO 3: D2 (second designated session) ALSO received the [inbound:issue:labeled] PTY notification', readOutputFileSafe(outputPathD2).slice(beforeD23.length).slice(-500));
+
     const afterT3 = readOutputFileSafe(outputPathT);
     expect(
       !afterT3.slice(beforeT3.length).includes('[inbound:issue:labeled]'),
@@ -716,10 +782,12 @@ async function main(): Promise<void> {
     );
 
     // ===================================================================
-    // SCENARIO 4: matching label, `opened` action (full label set) -- D only.
+    // SCENARIO 4: matching label, `opened` action (full label set) -- D and
+    // D2, never T.
     // ===================================================================
-    console.log('\n==> SCENARIO 4: issues/opened, full label set including the matching label (D only)');
+    console.log('\n==> SCENARIO 4: issues/opened, full label set including the matching label (D and D2, not T)');
     const beforeD4 = readOutputFileSafe(outputPathD);
+    const beforeD24 = readOutputFileSafe(outputPathD2);
     const beforeT4 = readOutputFileSafe(outputPathT);
     const openedRes = await postWebhook(
       baseUrl,
@@ -746,11 +814,85 @@ async function main(): Promise<void> {
     }, 45_000, "D's output file to contain [inbound:issue:labeled] (scenario 4)");
     expect(scenario4TagFound, 'SCENARIO 4: D received the [inbound:issue:labeled] PTY notification', readOutputFileSafe(outputPathD).slice(beforeD4.length).slice(-500));
 
+    const scenario4D2TagFound = await waitFor(() => {
+      const content = readOutputFileSafe(outputPathD2);
+      return content.slice(beforeD24.length).includes('[inbound:issue:labeled]');
+    }, 45_000, "D2's output file to contain [inbound:issue:labeled] (scenario 4)");
+    expect(scenario4D2TagFound, 'SCENARIO 4: D2 (second designated session) ALSO received the [inbound:issue:labeled] PTY notification', readOutputFileSafe(outputPathD2).slice(beforeD24.length).slice(-500));
+
     const afterT4 = readOutputFileSafe(outputPathT);
     expect(
       !afterT4.slice(beforeT4.length).includes('[inbound:issue:labeled]'),
       'SCENARIO 4: T did NOT receive the [inbound:issue:labeled] PTY notification',
       afterT4.slice(beforeT4.length).slice(-500),
+    );
+
+    // ===================================================================
+    // SCENARIO 4b (Issue #1716): a designated session that is not live is
+    // SKIPPED by routing and never auto-removed. Pause D2 (its DB row
+    // survives; it leaves the live session manager, so
+    // `resolveIssueLabeledTargets` finds no live session for that id), post
+    // the scenario 3 shape again, and assert: D still receives, D2 and T
+    // do not, the server logged the per-session skip reason for D2 (the
+    // negative result is attributed to the code path, not to silence), and
+    // the row STILL lists D2 as designated.
+    // ===================================================================
+    console.log('\n==> SCENARIO 4b: issues/labeled, matching label, with D2 PAUSED (D only; D2 skipped, still designated)');
+    const pauseD2Res = await fetch(`${baseUrl}/api/sessions/${sessionD2.id}/pause`, { method: 'POST' });
+    expect(pauseD2Res.status === 200, 'SCENARIO 4b: session D2 paused successfully (absent from the live session manager, DB row preserved)', `status=${pauseD2Res.status} body=${await pauseD2Res.text().catch(() => '')}`);
+
+    const beforeD4b = readOutputFileSafe(outputPathD);
+    const beforeD24b = readOutputFileSafe(outputPathD2);
+    const beforeT4b = readOutputFileSafe(outputPathT);
+    const stdoutLenBefore4b = stdoutBuf.length;
+    const pausedRes = await postWebhook(
+      baseUrl,
+      'issues',
+      {
+        action: 'labeled',
+        label: { name: webhookTriggerLabel },
+        issue: { number: 1005, title: 'Scenario 4b matching label with D2 paused', html_url: null, updated_at: null },
+        repository: { full_name: `${nonceOrg}/${nonceRepo}` },
+      },
+      webhookSecret,
+    );
+    expect(pausedRes.status === 200, 'SCENARIO 4b: POST /webhooks/github returns 200', `status=${pausedRes.status}`);
+    await pausedRes.text();
+
+    const scenario4bTagFound = await waitFor(() => {
+      const content = readOutputFileSafe(outputPathD);
+      return content.slice(beforeD4b.length).includes('[inbound:issue:labeled]');
+    }, 45_000, "D's output file to contain [inbound:issue:labeled] (scenario 4b)");
+    expect(scenario4bTagFound, 'SCENARIO 4b: D (the live designated session) received the [inbound:issue:labeled] PTY notification', readOutputFileSafe(outputPathD).slice(beforeD4b.length).slice(-500));
+
+    const afterD24b = readOutputFileSafe(outputPathD2);
+    expect(
+      !afterD24b.slice(beforeD24b.length).includes('[inbound:issue:labeled]'),
+      'SCENARIO 4b: the paused D2 did NOT receive the [inbound:issue:labeled] PTY notification',
+      afterD24b.slice(beforeD24b.length).slice(-500),
+    );
+    const afterT4b = readOutputFileSafe(outputPathT);
+    expect(
+      !afterT4b.slice(beforeT4b.length).includes('[inbound:issue:labeled]'),
+      'SCENARIO 4b: T did NOT receive the [inbound:issue:labeled] PTY notification',
+      afterT4b.slice(beforeT4b.length).slice(-500),
+    );
+    // Exact wording confirmed by reading resolve-targets.ts's per-session
+    // skip log call directly (a paused session is absent from
+    // `getSessions()`, so this is the "not a live session" reason, not the
+    // "not running" one a hibernated-but-present session would produce).
+    const stdoutSince4b = stdoutBuf.slice(stdoutLenBefore4b);
+    expect(
+      stdoutSince4b.includes('issue:labeled event matched repository but a designated orchestrator session is not a live session') &&
+        stdoutSince4b.includes(sessionD2.id),
+      "SCENARIO 4b: server stdout contains resolve-targets.ts's per-session 'not a live session' skip reason naming D2",
+      `stdout tail: ${stdoutSince4b.slice(-2000)}`,
+    );
+    const designatedAfterPause = await readDesignatedSet();
+    expect(
+      designatedAfterPause.includes(sessionD2.id) && designatedAfterPause.includes(sessionD.id),
+      'SCENARIO 4b: D2 is STILL in the designated set after being skipped (routing never auto-removes a designation)',
+      JSON.stringify(designatedAfterPause),
     );
 
     // ===================================================================
@@ -764,6 +906,7 @@ async function main(): Promise<void> {
     // ===================================================================
     console.log('\n==> SCENARIO 5: workflow_run/completed on main, zero matching sessions (designated-session fallback)');
     const beforeD5 = readOutputFileSafe(outputPathD);
+    const beforeD25 = readOutputFileSafe(outputPathD2);
     const beforeT5 = readOutputFileSafe(outputPathT);
     const mainPushRes = await postWebhook(
       baseUrl,
@@ -796,6 +939,12 @@ async function main(): Promise<void> {
       !afterT5.slice(beforeT5.length).includes('[inbound:ci:completed]'),
       'SCENARIO 5: T did NOT receive the [inbound:ci:completed] PTY notification',
       afterT5.slice(beforeT5.length).slice(-500),
+    );
+    const afterD25 = readOutputFileSafe(outputPathD2);
+    expect(
+      !afterD25.slice(beforeD25.length).includes('[inbound:ci:completed]'),
+      'SCENARIO 5: the paused-but-still-designated D2 did NOT receive the fallback (skipped by the same per-session exclusion)',
+      afterD25.slice(beforeD25.length).slice(-500),
     );
 
     // ===================================================================

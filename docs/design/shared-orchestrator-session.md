@@ -20,7 +20,7 @@ This document specifies how to add shared-account sessions on top of the existin
 
 ## Orchestrator is a Skill, Not a Session Type
 
-The `/orchestrator` skill (`.claude/skills/orchestrator/`) loads a set of behaviours — leadership cadence, delegation pattern, sprint lifecycle procedures. Any session can invoke it. There is no `sessions.type = 'orchestrator'`, no `repositories.orchestrator_session_id`, no claim/release API. Discovery of the Orchestrator-role session is by title; routing from humans to the Orchestrator is by clicking the session in the session list and typing into its PTY terminal.
+The `/orchestrator` skill (`.claude/skills/orchestrator/`) loads a set of behaviours — leadership cadence, delegation pattern, sprint lifecycle procedures. Any session can invoke it. There is no `sessions.type = 'orchestrator'`. Since #1643 there IS per-repository routing state — since #1716 the `repository_orchestrator_sessions` set (the v40 `repositories.orchestrator_session_id` column is dead and always NULL) — to which a session adds and from which it removes ITSELF through `POST`/`DELETE /api/sessions/:id/orchestrator-designation` and the `set_orchestrator_session` / `clear_orchestrator_session` MCP tools. It names which sessions receive labeled-Issue webhooks and serve as the fallback targets for other inbound events — every live designated session, each deciding for itself whether the event is its responsibility and coordinating with the others through `send_session_message` when it acts. It is routing state on the Repository row, not a session class — any session, shared or personal, can hold it, and holding it changes nothing about the session's identity, class, or permissions. Human discovery of "the Orchestrator" is still by title; routing from humans to the Orchestrator is by clicking the session in the session list and typing into its PTY terminal. See [Designation in multi-user](#designation-in-multi-user) for the model.
 
 Consequently:
 
@@ -40,7 +40,7 @@ The **session class** here is "shared" (distinguished from "personal" by whose O
 
 ## Non-Goals
 
-- **Product-level "Orchestrator" entity.** Orchestrator remains a skill. No DB column, no UI badge, no designation API tied specifically to orchestration.
+- **A product-level Orchestrator SESSION TYPE.** The designation set (`repository_orchestrator_sessions`), its UI flag, and its API exist (#1643, set semantics since #1716) but are per-repository routing state, not a session class; the Orchestrator remains a skill.
 - **Per-participant access control on shared sessions.** Initial permission model is open to all authenticated users.
 - **Internal billing / usage dashboard inside Agent Console.** External Anthropic console dashboards cover usage visibility.
 - **Automatic credential rotation.** Rotation is a manual operational procedure (see below).
@@ -311,6 +311,21 @@ The `/orchestrator` skill adds three short lines, stated as contract rather than
 ```
 
 Anything more elaborate — when to delegate vs handle directly, how to phrase callback responses — is general Orchestrator judgment, not mechanics of this feature, and does not belong in the convention.
+
+### Designation in multi-user
+
+Owner ruling 2026-09-17 (Issue [#1716](https://github.com/ms2sato/agent-console/issues/1716)), superseding #1643's "per-repository flag on exactly one session; raising it elsewhere moves it" for multi-user. That earlier rule was written for intuitive handover in single-user; under it, any user could silently take another session's flag (the authorization checked the target session, not the holder). The model that replaces it:
+
+> A Repository row has a SET of designated sessions. Any session that may hold the designation (worktree session on that row; caller owns it or it is shared) may ADD itself and REMOVE itself; nobody's flag is changed by anyone else's add, so the displacement question is void. Inbound delivery goes to EVERY live designated session of every matched row (`issue:labeled` directly; other events through the #1661 fallback), deduplicated by session id; each receiving session decides whether the event is its responsibility, and recipients coordinate through `send_session_message` when they act. Zero designations on a row = no `issue:labeled` delivery and no fallback for that row (today's behaviour). Multi-delivery is the owner's explicit acceptance, not a residue.
+
+Mechanics, in one place:
+
+- **Storage** — `repository_orchestrator_sessions (repository_id, session_id, created_at)`, `PRIMARY KEY (repository_id, session_id)`, `ON DELETE CASCADE` on both foreign keys (a deleted session's designation disappears; a deleted repository's designations disappear). The v40 column `repositories.orchestrator_session_id` is dead since v41 (backfilled into the table, then set to NULL; dropped by a later rebuild migration — it carries a `REFERENCES` constraint, which SQLite's `DROP COLUMN` refuses). On the wire, `Repository.orchestratorSessionIds: string[]` (sorted by designation time, then id).
+- **API / MCP** — `POST /api/sessions/:id/orchestrator-designation` adds THIS session; `DELETE` removes THIS session; both idempotent; `set_orchestrator_session` / `clear_orchestrator_session` are the same two operations under their historical names. There is no operation that changes another session's designation. **Authorization is the existing rule on the TARGET session** (owner, or shared, in multi-user; single-user skips it) and there is no current-holder check, because no one else's flag moves. A shared session's flag may therefore be lowered by anyone who can type into it — that is the open shared-session model of the [Permission Model](#permission-model-initial-open), not an oversight.
+- **Broadcast** — `orchestrator-designation-changed { repositoryId, orchestratorSessionIds, changedSessionId, action: 'added' | 'removed' }` carries the re-read full set, so clients patch their cache from the broadcast and never derive the set themselves.
+- **Routing** — see [integration-inbound.md § Designated Orchestrator sessions](./integration-inbound.md#designated-orchestrator-sessions): per matched row, every designated session is evaluated separately (not found / not running / no agent worker each skip that one session, logged with its own reason), and targets are deduplicated by session id across rows. A hibernated designated session is skipped, never auto-removed.
+- **Lifecycle** — the only removal the system performs is the CASCADE on session deletion. An Orchestrator retiring an incarnation calls `clear_orchestrator_session` for its own session first; a stale flag on a paused incarnation stays lit in the sidebar and is the owner's or that Orchestrator's to lower. The sidebar's confirmation dialog appears only when lowering the LAST designation on a row (the row then has no designated Orchestrator); lowering one of several is dialog-free.
+- **Non-goals (Boundaries of #1716)** — no precedence rule among designated sessions, no per-user dimension, no admin role, no change to `issueTriggerLabels` semantics.
 
 ## Permission Model (Initial: Open)
 
