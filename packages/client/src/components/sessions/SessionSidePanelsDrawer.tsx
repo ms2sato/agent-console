@@ -1,4 +1,5 @@
-import { useEffect, useRef } from 'react';
+import { useRef } from 'react';
+import { useModalDrawerFocus } from '../../hooks/useModalDrawerFocus';
 import { MemoPanel } from './MemoPanel';
 import { SessionArtifactsPanel } from './SessionArtifactsPanel';
 import { SessionBookmarksPanel } from './SessionBookmarksPanel';
@@ -33,49 +34,19 @@ interface SessionSidePanelsDrawerProps {
  * form to render, and MemoPanel's Edit button (only reachable when
  * `compact === false`) stays reachable on a phone.
  *
- * Structurally modeled on `MobileSidebarDrawer` (same three effects:
- * Escape-to-close, body scroll lock, focus save/restore), but
- * right-anchored instead of left-anchored, and with no header/close
- * button of its own -- the panels' own `border-b` separators are the only
- * internal chrome, since the drawer is already a bordered overlay and
- * doesn't need a second nested bordered column like the desktop rail.
+ * The focus boundary, Escape-to-close, body scroll lock, and focus
+ * save/restore are all owned by the shared `useModalDrawerFocus` hook --
+ * the same one `MobileSidebarDrawer` uses. This drawer differs from that
+ * one only in anchoring (right vs. left), the children it renders, and
+ * its chrome (no header/close button of its own -- the panels' own
+ * `border-b` separators are the only internal chrome, since the drawer is
+ * already a bordered overlay and doesn't need a second nested bordered
+ * column like the desktop rail).
  */
 export function SessionSidePanelsDrawer({ sessionId, open, onClose }: SessionSidePanelsDrawerProps) {
-  const savedFocusRef = useRef<Element | null>(null);
   const drawerRef = useRef<HTMLDivElement>(null);
+  const { containerProps } = useModalDrawerFocus({ open, onClose, containerRef: drawerRef });
   const { expanded, toggleSection, expandSection } = useSessionSidePanelsState();
-
-  useEffect(() => {
-    if (!open) return;
-
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
-    };
-    document.addEventListener('keydown', handleKeyDown);
-    return () => document.removeEventListener('keydown', handleKeyDown);
-  }, [open, onClose]);
-
-  useEffect(() => {
-    if (!open) return;
-    const original = document.body.style.overflow;
-    document.body.style.overflow = 'hidden';
-    return () => {
-      document.body.style.overflow = original;
-    };
-  }, [open]);
-
-  useEffect(() => {
-    if (open) {
-      savedFocusRef.current = document.activeElement;
-      const firstFocusable = drawerRef.current?.querySelector<HTMLElement>(
-        'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
-      );
-      firstFocusable?.focus();
-    } else if (savedFocusRef.current instanceof HTMLElement) {
-      savedFocusRef.current.focus();
-      savedFocusRef.current = null;
-    }
-  }, [open]);
 
   return (
     <>
@@ -89,12 +60,11 @@ export function SessionSidePanelsDrawer({ sessionId, open, onClose }: SessionSid
       <div
         ref={drawerRef}
         role="dialog"
-        aria-modal={open || undefined}
-        aria-hidden={!open}
         aria-label="Session panels"
         className={`fixed top-0 right-0 z-50 h-full w-80 max-w-[100vw] flex flex-col overflow-y-auto bg-slate-800 border-l border-slate-700 transition-transform duration-300 ${
           open ? 'translate-x-0' : 'translate-x-full'
         }`}
+        {...containerProps}
       >
         <MemoPanel
           sessionId={sessionId}
