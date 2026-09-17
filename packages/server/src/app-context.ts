@@ -113,7 +113,8 @@ export interface AppContext {
    * File-based worker output persistence (buffering, archival, restore
    * reads). Exposed on `AppContext` so `shutdownAppContext` can flush and
    * close it deterministically before the job queue and database go away
-   * (the flush-after-shutdown reappearance).
+   * (the flush-after-shutdown reappearance). Exposed for shutdown; services
+   * keep receiving it via deps -- no other consumer should reach through it.
    */
   workerOutputFileManager: WorkerOutputFileManager;
 

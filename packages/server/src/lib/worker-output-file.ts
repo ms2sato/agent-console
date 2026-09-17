@@ -1934,14 +1934,12 @@ export class WorkerOutputFileManager {
    * home, because the pending timer's `flushLocked` still ran and its
    * `mkdir -p` recreated the tree before writing.
    *
-   * `shutdown()` addresses this in two halves: flush first, because
-   * already-buffered bytes are real output and must land; close second,
-   * because a context that has shut down owns no session-data tree, so any
-   * later bytes are dropped and declared -- one warn per (session, worker)
-   * key -- rather than silently written.
+   * `shutdown()` addresses this in two halves: close first, so nothing can
+   * be scheduled behind the flush; then flush what was already buffered,
+   * because those bytes are real output and must still land.
    */
   async shutdown(): Promise<void> {
-    await this.flushAll();
     this.closed = true;
+    await this.flushAll();
   }
 }

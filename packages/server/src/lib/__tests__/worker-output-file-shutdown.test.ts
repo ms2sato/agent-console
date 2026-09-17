@@ -25,7 +25,7 @@
  * pins below passed, and both of their named mutations failed, under that
  * memfs-active directory run as well as when this file is run alone.
  */
-import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, spyOn } from 'bun:test';
 import * as fs from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
@@ -108,5 +108,80 @@ describe('WorkerOutputFileManager shutdown (real fs, Issue #1719)', () => {
 
     const outputsDir = resolver.getOutputsDir();
     await expect(fs.stat(outputsDir)).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  // Pin D: the ordering hole between `this.closed = true` and `await
+  // this.flushAll()` inside `shutdown()` (Architect review, PR #1728). A
+  // `bufferOutput` call arriving WHILE `flushAll()` is still in flight must
+  // see the already-flipped `closed` latch and be dropped, not buffered and
+  // timer-scheduled -- because `flushLocked` never consults `closed`, a
+  // timer scheduled behind the flush would run to completion regardless of
+  // shutdown having since finished, resurrecting the tree.
+  //
+  // Uses its own manager with a LONGER flush interval than Pin A/B's 20ms.
+  // The mutation below reproduces the hole by scheduling a real timer for
+  // the interleaved call; that timer fires one interval after the call, and
+  // with a 20ms interval the real flush-plus-home-removal sequence in this
+  // test could plausibly take longer than that, letting the timer land
+  // while `home` still exists and be removed along with it -- a flaky
+  // detection either way. 200ms makes the pre-fix timer reliably outlive
+  // the removal below, so the mutation's failure is deterministic.
+  it('drops a bufferOutput call that arrives while flushAll is still in flight', async () => {
+    const pinDManager = new WorkerOutputFileManager({ flushInterval: 200 });
+
+    let resolveDeferred!: () => void;
+    const deferred = new Promise<void>((resolve) => {
+      resolveDeferred = resolve;
+    });
+
+    // Captured BEFORE spying, so calling it below still runs the real
+    // implementation -- the mock only wraps timing around it.
+    const real = pinDManager.flushAll.bind(pinDManager);
+    const flushAllSpy = spyOn(pinDManager, 'flushAll').mockImplementation(async () => {
+      // Call through FIRST so the real flushAll's synchronous key snapshot
+      // (the `for (const key of this.pendingFlushes.keys())` loop) happens
+      // immediately, exactly as it would unmocked -- only the RETURN of
+      // this call is delayed, not its start.
+      const realPromise = real();
+      await deferred;
+      await realPromise;
+    });
+
+    try {
+      pinDManager.bufferOutput('session-d', 'worker-d1', 'first key', resolver);
+
+      const shutdownPromise = pinDManager.shutdown();
+
+      // Interleaved: arrives while the mocked flushAll above is paused on
+      // `deferred` -- i.e. after the fix's `this.closed = true` has already
+      // run (synchronously, before shutdown()'s first await) but before
+      // flushAll has returned.
+      pinDManager.bufferOutput('session-d', 'worker-d2', 'second key', resolver);
+
+      resolveDeferred();
+      await shutdownPromise;
+
+      await fs.rm(home, { recursive: true, force: true });
+
+      // Mutation measured: restoring the old order (`await this.flushAll();`
+      // before `this.closed = true;`) means `this.closed` is still `false`
+      // when the interleaved `bufferOutput` call above runs, so it buffers
+      // the second key's data and schedules a real timer; that timer fires
+      // ~200ms later regardless of `closed` flipping afterward (`flushLocked`
+      // never consults it), recreating the outputs tree after the removal
+      // above -> `droppedAfterShutdownCount` is 0 AND the dir reappears ->
+      // this test fails. Restored (closed-first) -> passes. Measured both
+      // alone (real fs, `bun test
+      // src/lib/__tests__/worker-output-file-shutdown.test.ts`) and under
+      // the memfs-substituted directory run (`bun test src/lib/__tests__`
+      // from packages/server): same result in both.
+      await new Promise((resolveTimer) => setTimeout(resolveTimer, 600));
+
+      const outputsDir = resolver.getOutputsDir();
+      await expect(fs.stat(outputsDir)).rejects.toMatchObject({ code: 'ENOENT' });
+      expect(pinDManager.droppedAfterShutdownCount).toBe(1);
+    } finally {
+      flushAllSpy.mockRestore();
+    }
   });
 });
