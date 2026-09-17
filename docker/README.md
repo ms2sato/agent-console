@@ -10,7 +10,8 @@ application runs:
 | Stack | Compose file | What runs | When to use |
 |------|---------------|-----------|-------------|
 | **Dev** (default) | `docker-compose.yml` | vite + `bun --watch` against the **bind-mounted repo** (HMR, live server reload) | Daily multi-user development and debugging. `docker` group membership is enough to start/restart/inspect it — no privilege elevation. **Browser QA through this stack is currently blocked**: the vite `/ws` proxy hangs inside a container (Issue [#1211](https://github.com/ms2sato/agent-console/issues/1211), root-caused to a Bun-engine issue, not fixable by vite config). Use the **Verification** stack or `scripts/dev-multiuser.sh` for WS-dependent QA until that's resolved upstream. |
-| **Verification** | `docker-compose.verification.yml` | The **built `dist/` bundle**, baked into the image, production-like | CI E2E (`scripts/verify-multiuser-docker.sh`) and pre-release verification of the standalone bundle. |
+| **Verification** | `docker-compose.verification.yml` | The **built `dist/` bundle**, baked into the image, production-like | CI E2E (`scripts/verify-multiuser-docker.sh`) and pre-release verification of the standalone bundle. Tier 2 of `.claude/rules/os-environment-coupling.md` Discipline 4 (no systemd; `docker` group only, no privilege flag). |
+| **Systemd (tier 3)** | `docker-compose.systemd.yml` | `docker/Dockerfile.systemd`: systemd as PID 1, no application baked, driven by `scripts/verify-multiuser-systemd.sh` | The setup script, the deploy script (as the operator), unit render + drift detection, `MainPID` identity — the "systemd unit's own environment" residue this file's Verification stack cannot reach. **Ephemeral CI runner or a personal workstation ONLY, never the dogfood host** — see [Systemd stack (tier 3)](#systemd-stack-tier-3) below. |
 
 Both stacks use distinct project names, container names, volumes, and host
 ports, so they can run **side by side**.
@@ -30,6 +31,10 @@ ports, so they can run **side by side**.
 | `verify-client.ts` | Drives the real shipping path (login → session → terminal worker → WS) and asserts `whoami` inside the PTY; also supports `--attach` (probe an already-existing session/worker) and `--list-session` (assert a session is visible via the app WebSocket's `sessions-sync` frame). |
 | `tsconfig.json` | Scopes `verify-client.ts` to a Bun-specific type environment (no `DOM` lib), so the global `WebSocket` binding resolves to Bun's `headers`-accepting constructor overload instead of the DOM one. Type-checked as `typecheck:docker` (`tsc -p docker`), which the root `typecheck` script runs as part of `bun run typecheck` — no separate invocation to remember. It borrows Bun's ambient type declarations from `packages/server`'s installed `@types/bun` via `typeRoots`, since `docker/` is not its own workspace member and has no `node_modules` of its own. |
 | `../scripts/verify-multiuser-docker.sh` | One-command verification orchestrator: build, start, run all checks, report. |
+| `Dockerfile.systemd` | Tier-3 image: systemd as PID 1, no application and no service-user elevation rules baked (the setup script installs both at container runtime); the operator's rules file (`deployer-elevation-rules` below) IS baked, since the deploy script's self-elevation contract is what tier 3 exists to verify. See [Systemd stack (tier 3)](#systemd-stack-tier-3). |
+| `docker-compose.systemd.yml` | **Systemd stack**: boots `Dockerfile.systemd` with the least-privilege flag set measured in `docs/design/elevation-verification-tiers.md`'s Task 0. |
+| `deployer-elevation-rules` | The operator's passwordless elevation rule (`deployer ALL=(ALL:ALL) NOPASSWD: ALL`), installed into the tier-3 image at build time so the deploy script's per-step self-elevation contract (#1690) can be verified for real. |
+| `../scripts/verify-multiuser-systemd.sh` | Tier-3 driver: setup `--dry-run`/`--force` as root, deploy as the operator, the #1688 drift arm, the three #1690 helper cases, and `check-embedded-agent-elevation.ts` against the real unit's `MainPID`. Refuses to run unless `AC_TIER3_RUNNER=github-hosted` or `AC_TIER3_HOST_OK=1` is set — never on the dogfood host. |
 
 ## Dev stack
 
@@ -249,16 +254,53 @@ Each smoke's exit code is printed as it runs, and the run ends with a
 (bad usage / unmet precondition) and is reported as a FAIL with the
 smoke's stderr tail — never as a pass and never as a silent skip.
 
-**Real-host only, deliberately not covered here**: there is no `claude`
-login inside the container, so every billable smoke stays on the dogfood
-host; vendor credentials (e.g. Bedrock) in a shared account's home, and a
-shared session actually completing a turn on them; the
+**Named by tier, not by residue list** (`.claude/rules/os-environment-coupling.md`
+Discipline 4): this image and its `--smokes` run are **tier 2** — the seven
+real-host smokes, PTY / elevation isolation, uploads, worktrees, and shared
+sessions, needing the `docker` group only, no privilege flag. What tier 2
+cannot reach is the systemd unit's own environment (setup script, deploy
+script, unit render + drift detection, `MainPID` identity) — that is
+**tier 3**, the systemd stack below, run on an ephemeral CI runner or a
+personal workstation only, never the dogfood host. **Tier 4** is the
+production host, owner-run, once per deploy: the billable smokes (there is
+no `claude` login inside this container, so every billable smoke stays on
+the dogfood host), vendor credentials (e.g. Bedrock) in a shared account's
+home and a shared session actually completing a turn on them, and the
 1Password-socket-*present* branch of `check-delegated-ssh-auth-sock.ts`
-(the container exercises the socket-*absent* branch, which is that
-script's expected path there); and the systemd unit's own environment.
+(this container exercises the socket-*absent* branch, which is that
+script's expected path here).
 
 `--smokes` is also the reason this image is roughly 2 GB — see
 [Notes / limitations](#notes--limitations).
+
+## Systemd stack (tier 3)
+
+`docker-compose.systemd.yml` boots `Dockerfile.systemd` — systemd as PID 1,
+least privilege (`--cap-add SYS_ADMIN --cgroupns=host -v /sys/fs/cgroup:/sys/fs/cgroup:rw
+--tmpfs /run --tmpfs /run/lock -e container=docker --security-opt apparmor=unconfined`,
+measured in `docs/design/elevation-verification-tiers.md`'s Task 0; `--privileged`
+was never reached) — and is driven end to end by
+[`scripts/verify-multiuser-systemd.sh`](../scripts/verify-multiuser-systemd.sh):
+the multi-user setup script (`--dry-run` then `--force`), the deploy script run
+as the operator (`deployer`, per its own passwordless elevation rule baked into
+the image), the #1688 unit-drift arm, the three #1690 readability-gate helper
+cases, and `check-embedded-agent-elevation.ts` against the real unit's live
+`MainPID`.
+
+```bash
+scripts/verify-multiuser-systemd.sh
+```
+
+**Never run a container of this image on the dogfood host.** Booting systemd
+as PID 1 needs `CAP_SYS_ADMIN` plus a writable host cgroup tree in the host
+cgroup namespace plus an AppArmor opt-out — root-equivalent on the host that
+lends them. The driver refuses to run unless `AC_TIER3_RUNNER=github-hosted`
+(set by `.github/workflows/verify-multiuser-systemd.yml` from GitHub's own
+`runner.environment` context) or `AC_TIER3_HOST_OK=1` (an explicit workstation
+opt-in) is set; `CI=true` is deliberately NOT accepted, since any self-hosted
+runner sets it too. See `.claude/rules/os-environment-coupling.md` Discipline 4
+and `docs/design/elevation-verification-tiers.md` ("The rule: never on the
+dogfood host") for the full rationale.
 
 ## Test credentials (verification only)
 
