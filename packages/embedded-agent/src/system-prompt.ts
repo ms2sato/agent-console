@@ -17,7 +17,7 @@
  * rules layer -> (4) the skills layer -> (5) the memory layer -> (6) the
  * operator-configured definition system prompt (last, so it wins on
  * conflict). Used identically by both engines (claude-sdk composes the same
- * layers via `composeSdkSystemPromptAppend`, minus the preamble -- see its
+ * layers, preamble included, via `composeSdkSystemPromptAppend` -- see its
  * doc comment).
  *
  * See docs/design/embedded-agent-worker.md "Instruction loader" for the
@@ -271,6 +271,15 @@ export interface AssembleSystemPromptParams {
   definitionSystemPrompt?: string;
 }
 
+/**
+ * The identity preamble: the ONE place the model is told its own Session ID /
+ * Worker ID / Repository ID. Rendered first by BOTH engines
+ * (`assembleSystemPrompt` for openai-api, `composeSdkSystemPromptAppend` for
+ * claude-sdk) -- a claude-sdk worker without Bash (the default
+ * `enabledTools`) has no `AGENT_CONSOLE_*` environment to read, so this text
+ * is its only identity source; the env vars the loop subprocess carries are
+ * the same ids stated here, for workers that do have a shell.
+ */
 function buildPreamble(context: SystemPromptContext): string {
   const lines = [
     'You are an embedded agent running inside agent-console.',
@@ -313,8 +322,9 @@ export function formatRuleSegments(segments: InstructionSegment[]): string[] {
 /**
  * The section list both `assembleSystemPrompt` and `composeSdkSystemPromptAppend`
  * concatenate for the instructions+rules body -- everything `loadInstructions`
- * produces except the preamble (caller-specific) and the definition system
- * prompt (appended by each caller after this, so it always wins on conflict).
+ * produces except the preamble (rendered by each caller before this) and the
+ * definition system prompt (appended by each caller after this, so it always
+ * wins on conflict).
  * Single writer of this ordering: instruction segments, then unscoped rule
  * segments, then the scoped-rules index line if present, then the skills
  * index line if present, then the memory layer (its listing declarations,
@@ -366,28 +376,27 @@ export function assembleSystemPrompt(params: AssembleSystemPromptParams): string
 
 /**
  * Composes the SDK engine's `systemPrompt.append` string (main.ts's
- * `claude-sdk` init arm): the SAME `loadInstructions` result the openai-api
- * arm uses (Phase A, R1) -- global/chain/opt-in segments plus the
- * rules layer, formatted the same way `assembleSystemPrompt` renders them,
- * followed by the definition system prompt if present -- minus the preamble
- * (the SDK engine uses the SDK's own `claude_code` preset preamble instead of
- * ours, so `buildPreamble` must not run here). All capping already happened
- * inside `loadInstructions`, so this does no capping of its own -- unlike its
- * pre-Phase-A shape, which capped an opt-in-only list that had never passed
- * through `loadInstructions`. Returns `undefined` when there is nothing to
- * append, so callers can omit `Options.systemPrompt` entirely rather than
- * passing an empty string (see docs/design/embedded-agent-sdk-engine.md §4's
- * "Instruction loader" row correction).
+ * `claude-sdk` init arm): the identity preamble (`buildPreamble`, the same
+ * single writer `assembleSystemPrompt` uses -- it goes AFTER the SDK's own
+ * `claude_code` preset preamble, which is where an `append`-shaped SDK
+ * option composes, and that preset does not know this worker's ids), then
+ * the SAME `loadInstructions` result the openai-api arm uses (Phase A, R1)
+ * -- global/chain/opt-in segments plus the rules layer, formatted the same
+ * way `assembleSystemPrompt` renders them -- followed by the definition
+ * system prompt if present. Same parameter shape as `assembleSystemPrompt`
+ * so the two callers cannot drift on what they feed in. All capping already
+ * happened inside `loadInstructions`, so this does no capping of its own --
+ * unlike its pre-Phase-A shape, which capped an opt-in-only list that had
+ * never passed through `loadInstructions`. Because the preamble is always
+ * present the result is never empty, so `Options.systemPrompt` is always
+ * set on the SDK arm (see docs/design/embedded-agent-sdk-engine.md §4.2).
  */
-export function composeSdkSystemPromptAppend(
-  instructions: LoadInstructionsResult,
-  definitionSystemPrompt: string | undefined,
-): string | undefined {
-  const sections = renderInstructionsBody(instructions);
-  if (definitionSystemPrompt !== undefined && definitionSystemPrompt.length > 0) {
-    sections.push(definitionSystemPrompt);
+export function composeSdkSystemPromptAppend(params: AssembleSystemPromptParams): string {
+  const sections: string[] = [buildPreamble(params.context), ...renderInstructionsBody(params.instructions)];
+  if (params.definitionSystemPrompt !== undefined && params.definitionSystemPrompt.length > 0) {
+    sections.push(params.definitionSystemPrompt);
   }
-  return sections.length > 0 ? sections.join('\n\n') : undefined;
+  return sections.join('\n\n');
 }
 
 type ReadTextResult =

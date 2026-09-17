@@ -47,7 +47,8 @@ import type {
 import type { SessionCreationContext } from './internal-types.js';
 import type { StartupIntent } from './startup-intent.js';
 import type { SessionDataPathResolver } from '../lib/session-data-path-resolver.js';
-import type { UserMode, AgentConsoleContext } from './user-mode.js';
+import type { UserMode } from './user-mode.js';
+import type { AgentConsoleContext } from './agent-console-env.js';
 import { ActivityDetector } from './activity-detector.js';
 import { CLAUDE_CODE_AGENT_ID } from './agent-manager.js';
 import type { AgentManager } from './agent-manager.js';

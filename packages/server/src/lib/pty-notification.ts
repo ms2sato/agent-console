@@ -219,5 +219,5 @@ export function buildReplyInstructions(senderSessionId: string): string {
   const safeId = JSON.stringify(senderSessionId);
   return `\n[Reply Instructions] To reply, use the send_session_message MCP tool with:
 - toSessionId: ${safeId}
-- fromSessionId: Use your AGENT_CONSOLE_SESSION_ID environment variable`;
+- fromSessionId: your session id (AGENT_CONSOLE_SESSION_ID in your environment, or the Session ID stated in your system prompt)`;
 }

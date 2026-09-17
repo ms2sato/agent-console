@@ -564,7 +564,11 @@ async function initializeLoop(
       instructionsList: init.instructions,
       memoryDir: init.context.memoryDir,
     });
-    const systemPromptAppend = composeSdkSystemPromptAppend(instructions, init.systemPrompt);
+    const systemPromptAppend = composeSdkSystemPromptAppend({
+      context: init.context,
+      instructions,
+      definitionSystemPrompt: init.systemPrompt,
+    });
 
     // Phase B (#1343 R1), claude-sdk slice: the SAME `instructions` result
     // computed above for `systemPromptAppend` -- never a second

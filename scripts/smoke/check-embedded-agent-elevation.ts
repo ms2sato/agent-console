@@ -53,6 +53,14 @@
  *   - Negative secret assertions against the REAL `/proc/<pid>/cmdline` and
  *     `/proc/<pid>/environ` of the elevated subprocess: neither the MCP
  *     bearer token nor the provider API key must appear in either file.
+ *   - (Issue #1694) A POSITIVE identity assertion in the same run: scanning
+ *     `/proc/*\/environ` AS THE TARGET USER via the real `runAsUser` with
+ *     the orphan sweep's exact match semantics (`grep -Fxz`), at least one
+ *     live process carries `AGENT_CONSOLE_SESSION_ID=<activated sessionId>`
+ *     -- the worker's own identity reached the elevated tree (and that tree
+ *     is therefore in the sweep's population) -- while a never-activated id
+ *     matches zero processes (negative control). See the assertion's own
+ *     comment for why the wrapper pid's environ cannot carry it.
  *   - Closing the bundle-sibling gap documented above (OPT-IN, via the
  *     `EMBEDDED_AGENT_ENTRY_PATH` env var, since this smoke's default
  *     checkout has no `dist/embedded-agent.js` sibling to exercise): when
@@ -365,6 +373,12 @@ async function main(): Promise<void> {
   const { createMcpApp } = await import('../../packages/server/src/mcp/mcp-server.js');
   const { resolveEmbeddedAgentEntryPath } = await import(
     '../../packages/server/src/services/embedded-agent-worker-service.js'
+  );
+  // Issue #1694: the positive /proc environ assertion scans AS THE TARGET
+  // USER through the real elevation primitive (see the assertion's comment
+  // for why the server process cannot read the elevated tree's environ).
+  const { runAsUser, shellEscape } = await import(
+    '../../packages/server/src/services/privilege-elevation.js'
   );
 
   // `hono` is only hoisted under packages/server/node_modules (and
@@ -1006,6 +1020,81 @@ async function main(): Promise<void> {
         );
         expect(!leaked, `${secret.label} does NOT appear in /proc/${pid}/cmdline or /environ`);
       }
+
+      // --- Issue #1694 POSITIVE identity assertion: some live process in
+      // the elevated tree carries the EXACT NUL-delimited record
+      // `AGENT_CONSOLE_SESSION_ID=<activated sessionId>` in its
+      // /proc/<pid>/environ -- the same fixed-string whole-record match
+      // (`grep -Fxz`) the orphan-process sweep uses
+      // (`orphan-process-sweeper.ts`'s `buildSweepScript`), so a pass here
+      // is also the proof that the embedded loop tree is now in that
+      // sweep's population (C6). Scanned AS THE TARGET USER through the real
+      // `runAsUser` (elevated when the target is a second OS user; the
+      // bypass branch when degenerate) because `/proc/<pid>/environ` of
+      // another user's process is EACCES for the server process -- the
+      // negative secret checks above read the outer wrapper pid's environ,
+      // which is the SERVER's environment on the elevated branch and
+      // therefore can never carry the injected identity; only the inner
+      // login shell and the loop it execs do. The scan script is the
+      // sweeper's scan phase without the kill: single-line `sh -s` command,
+      // multi-line script over stdin (`.claude/rules/elevation-helpers.md`,
+      // "Multi-line elevated commands").
+      //
+      // Negative control in the same run: a marker for a session id that
+      // was never activated must match ZERO processes, so the positive
+      // result above is attributable to this activation and not to a
+      // scanner that matches everything (workflow.md sub-pattern 9).
+      //
+      // Polarity, measured in the tier-2 container (PR #1694's body): on
+      // main before the fix the positive half FAILS (no process carries
+      // the record -- the loop inherited nothing on the elevated branch);
+      // with the fix it passes.
+      console.log('==> /proc positive identity assertion (AGENT_CONSOLE_SESSION_ID record, scanned as the target user)');
+      const scanScript = (marker: string): string =>
+        [
+          'set -u',
+          `marker=${shellEscape(marker)}`,
+          'matches=0',
+          'for envfile in /proc/[0-9]*/environ; do',
+          '  [ -e "$envfile" ] || continue',
+          '  if grep -Fxzq -- "$marker" "$envfile" 2>/dev/null; then',
+          '    matches=$((matches + 1))',
+          '  fi',
+          'done',
+          'echo "MATCHES=$matches"',
+          '',
+        ].join('\n');
+      const countMatches = async (marker: string): Promise<number | undefined> => {
+        const result = await runAsUser({
+          username: targetUsername,
+          command: 'sh -s',
+          stdin: scanScript(marker),
+          cwd: '/',
+          timeoutMs: 30_000,
+        });
+        const m = /^MATCHES=(\d+)\s*$/m.exec(result.stdout);
+        if (result.exitCode !== 0 || result.timedOut || m === null) {
+          console.error(
+            `  scan as ${targetUsername} did not produce a MATCHES line: exit=${result.exitCode} timedOut=${result.timedOut} stderr=${result.stderr.slice(0, 500)}`,
+          );
+          return undefined;
+        }
+        return Number(m[1]);
+      };
+      const identityMatches = await countMatches(`AGENT_CONSOLE_SESSION_ID=${sessionId}`);
+      const controlMatches = await countMatches(`AGENT_CONSOLE_SESSION_ID=${crypto.randomUUID()}`);
+      expect(identityMatches !== undefined, 'the /proc environ scan as the target user actually ran (identity marker)');
+      expect(controlMatches !== undefined, 'the /proc environ scan as the target user actually ran (never-activated control marker)');
+      expect(
+        controlMatches === 0,
+        'negative control: a never-activated session id matches no process',
+        `matches=${controlMatches}`,
+      );
+      expect(
+        identityMatches !== undefined && identityMatches >= 1,
+        `a live process in the elevated tree carries the exact record AGENT_CONSOLE_SESSION_ID=${sessionId} (sweeper match semantics)`,
+        `matches=${identityMatches}`,
+      );
     }
   } catch (err) {
     if (err instanceof SmokeSetupError) {

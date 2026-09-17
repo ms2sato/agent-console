@@ -317,6 +317,9 @@ function setup(opts?: {
   ensureMemoryDirFnOverride?: EnsureMemoryDirFn;
   /** Memory layer (epic #1636 Phase 2): build a quick session instead of a worktree session. */
   quickSession?: boolean;
+  /** Issue #1694 (C3): a delegated session's parent ids, undefined by default (no parent). */
+  parentSessionId?: string;
+  parentWorkerId?: string;
 }): Harness {
   const definition = 'definition' in (opts ?? {}) ? opts!.definition : buildDefinition();
   const createdBy = opts && 'createdBy' in opts ? opts.createdBy : 'user-1';
@@ -329,16 +332,22 @@ function setup(opts?: {
   if (opts?.sdkSessionId !== undefined) worker.sdkSessionId = opts.sdkSessionId;
   if (opts?.staleEpoch !== undefined) worker.epoch = opts.staleEpoch;
   if (opts?.staleOutputOffset !== undefined) worker.outputOffset = opts.staleOutputOffset;
+  const parentIds = {
+    ...(opts?.parentSessionId !== undefined ? { parentSessionId: opts.parentSessionId } : {}),
+    ...(opts?.parentWorkerId !== undefined ? { parentWorkerId: opts.parentWorkerId } : {}),
+  };
   const session: InternalSession = opts?.quickSession
     ? buildInternalQuickSession([worker], {
         createdBy,
         initialPrompt: opts?.initialPrompt,
         initialPromptDelivered: opts?.initialPromptDelivered,
+        ...parentIds,
       })
     : buildInternalWorktreeSession([worker], {
         createdBy,
         initialPrompt: opts?.initialPrompt,
         initialPromptDelivered: opts?.initialPromptDelivered,
+        ...parentIds,
       });
   const fake = makeFakeSpawn({ endThrows: opts?.spawnEndThrows });
 
@@ -486,7 +495,7 @@ function expectRestoreSuccess<T extends { failed?: boolean }>(info: T | null | u
 }
 
 describe('EmbeddedAgentWorkerService.activate', () => {
-  it('spawns once with a secret-free argv, no env, correct cwd and username', async () => {
+  it('spawns once with a secret-free argv, a secret-free identity env, correct cwd and username', async () => {
     const h = setup();
     await h.service.activate(h.sessionId, h.workerId);
 
@@ -499,11 +508,112 @@ describe('EmbeddedAgentWorkerService.activate', () => {
     // Negative assertions: no secrets in the command line.
     expect(opts.command).not.toContain(TOKEN);
     expect(opts.command).not.toContain(API_KEY);
-    // No env channel at all (secrets travel only over stdin).
-    expect('env' in opts).toBe(false);
-    expect(opts.env).toBeUndefined();
+    // Issue #1694: the env channel carries identity ONLY -- secrets still
+    // travel exclusively over stdin. Every env value is checked, not just the
+    // known keys, so a future key cannot smuggle either secret in.
+    expect(opts.env).toBeDefined();
+    for (const value of Object.values(opts.env ?? {})) {
+      expect(value).not.toContain(TOKEN);
+      expect(value).not.toContain(API_KEY);
+    }
+    for (const value of Object.values(opts.baseEnv ?? {})) {
+      expect(value).not.toContain(TOKEN);
+      expect(value).not.toContain(API_KEY);
+    }
     expect(opts.cwd).toBe('/test/worktree');
     expect(opts.username).toBe(USERNAME);
+  });
+
+  // Issue #1694: the embedded worker's OWN AGENT_CONSOLE_* identity is
+  // injected at spawn (C1 / C3 / C6). Reach measured per test.
+  describe('identity env at spawn (Issue #1694)', () => {
+    it('C3: env carries BASE_URL (origin of the MCP dial-back URL, no /mcp path), SESSION_ID and WORKER_ID equal to init.context, and REPOSITORY_ID for a worktree session', async () => {
+      // Reach: dropping `env:` from the spawnAsUserFn call fails (env
+      // undefined); passing the raw `getMcpBaseUrl()` as baseUrl fails the
+      // no-path assertion; swapping sessionId/workerId fails the
+      // init.context equality.
+      const h = setup();
+      await h.service.activate(h.sessionId, h.workerId);
+
+      const opts = h.fake.captured[0];
+      const init = JSON.parse(h.fake.stdinWrites[0]);
+      expect(opts.env?.AGENT_CONSOLE_SESSION_ID).toBe(init.context.sessionId);
+      expect(opts.env?.AGENT_CONSOLE_WORKER_ID).toBe(init.context.workerId);
+      expect(opts.env?.AGENT_CONSOLE_REPOSITORY_ID).toBe('repo-1');
+      // The terminal shape: `http://localhost:<PORT>`, never the `/mcp` URL
+      // the init line carries.
+      expect(opts.env?.AGENT_CONSOLE_BASE_URL).toBe('http://localhost:3457');
+      expect(new URL(opts.env!.AGENT_CONSOLE_BASE_URL).pathname).toBe('/');
+      expect(init.mcp.baseUrl).toBe(MCP_BASE_URL);
+      // Never the terminal arm's token-file channel on this arm.
+      expect('AGENT_CONSOLE_MCP_TOKEN_FILE' in (opts.env ?? {})).toBe(false);
+    });
+
+    it('C3: a quick session (no repository) omits REPOSITORY_ID rather than sending an empty value', async () => {
+      const h = setup({ quickSession: true });
+      await h.service.activate(h.sessionId, h.workerId);
+
+      const opts = h.fake.captured[0];
+      expect('AGENT_CONSOLE_REPOSITORY_ID' in (opts.env ?? {})).toBe(false);
+      expect(opts.env?.AGENT_CONSOLE_SESSION_ID).toBe(h.sessionId);
+    });
+
+    it('C3: PARENT_SESSION_ID / PARENT_WORKER_ID are present when the session has them (a delegated session)', async () => {
+      // Reach: dropping the parentSessionId / parentWorkerId spreads from the
+      // buildAgentConsoleEnv call fails here.
+      const h = setup({ parentSessionId: 'parent-sess-9', parentWorkerId: 'parent-work-9' });
+      await h.service.activate(h.sessionId, h.workerId);
+
+      const opts = h.fake.captured[0];
+      expect(opts.env?.AGENT_CONSOLE_PARENT_SESSION_ID).toBe('parent-sess-9');
+      expect(opts.env?.AGENT_CONSOLE_PARENT_WORKER_ID).toBe('parent-work-9');
+    });
+
+    it('C1 polarity: a stale PARENT_SESSION_ID in the SERVER environment does not reach the composed spawn env for a session without a parent', async () => {
+      // The bug this PR fixes, in its non-elevated shape: before #1694 the
+      // loop inherited `process.env` wholesale, so a server started from a
+      // delegated session leaked ITS parent ids into every embedded worker.
+      // Reach: reverting `baseEnv: getCleanChildProcessEnv()` to omitting
+      // baseEnv fails here (the composed env -- baseEnv layered under env,
+      // which is what `spawnAsUser` does on the non-elevated branch -- would
+      // carry the seeded stale value, and the C3 assertion above would still
+      // pass, which is why this test exists separately).
+      const previous = process.env.AGENT_CONSOLE_PARENT_SESSION_ID;
+      process.env.AGENT_CONSOLE_PARENT_SESSION_ID = 'stale';
+      try {
+        const h = setup();
+        await h.service.activate(h.sessionId, h.workerId);
+
+        const opts = h.fake.captured[0];
+        // What spawnAsUser's non-elevated branch composes: `{ ...baseEnv, ...env }`.
+        expect(opts.baseEnv).toBeDefined();
+        const composed = { ...opts.baseEnv, ...opts.env };
+        expect('AGENT_CONSOLE_PARENT_SESSION_ID' in composed).toBe(false);
+        expect(Object.values(composed)).not.toContain('stale');
+        // And the base is the clean one: no AGENT_CONSOLE_* key at all comes
+        // from it, and the server-only config is gone.
+        for (const key of Object.keys(opts.baseEnv ?? {})) {
+          expect(key.startsWith('AGENT_CONSOLE_')).toBe(false);
+        }
+        expect('PORT' in (opts.baseEnv ?? {})).toBe(false);
+      } finally {
+        if (previous === undefined) delete process.env.AGENT_CONSOLE_PARENT_SESSION_ID;
+        else process.env.AGENT_CONSOLE_PARENT_SESSION_ID = previous;
+      }
+    });
+
+    it('C6: the spawn env carries the exact AGENT_CONSOLE_SESSION_ID=<sessionId> record the orphan sweep matches on', async () => {
+      // The sweeper greps `/proc/<pid>/environ` for this exact NUL-delimited
+      // record; an embedded loop tree is in its population from this PR on.
+      // Reach measured: omitting `env:` from the spawnAsUserFn call fails
+      // here; swapping the sessionId / workerId values fails here.
+      const h = setup();
+      await h.service.activate(h.sessionId, h.workerId);
+
+      const opts = h.fake.captured[0];
+      const environRecords = Object.entries(opts.env ?? {}).map(([k, v]) => `${k}=${v}`);
+      expect(environRecords).toContain(`AGENT_CONSOLE_SESSION_ID=${h.sessionId}`);
+    });
   });
 
   it('pins a configured EMBEDDED_AGENT_BUN_PATH override into the elevated argv verbatim (Issue #1221)', async () => {

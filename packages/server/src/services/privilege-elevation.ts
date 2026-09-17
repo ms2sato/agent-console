@@ -212,8 +212,9 @@ export function buildSpawnArgs(
   }
 
   // Elevated branch: `sudo -i` resets env and chdirs to target HOME, so cwd
-  // and env MUST be interpolated into the inner command. Mirror of
-  // user-mode.ts:493-500.
+  // and env MUST be interpolated into the inner command. Mirror of the
+  // export shape user-mode.ts's elevated PTY path builds via
+  // `buildElevationArgs`.
   const innerCommand = buildInnerCommand(command, cwd, env);
   const args: string[] = ['sudo', '-u', username];
   if (preserveEnv.length > 0) {
@@ -479,6 +480,18 @@ export interface SpawnAsUserOpts {
   cwd?: string;
   env?: Record<string, string>;
   /**
+   * Non-elevated branch only: the environment `env` is layered over.
+   * Defaults to `process.env` -- the server's own environment, inherited
+   * unchanged, which is today's behaviour for every caller that omits it.
+   * Pass a pre-filtered base (e.g. `getCleanChildProcessEnv()`, the same
+   * helper the terminal direct spawn path uses) when the child must NOT
+   * inherit the server's own `AGENT_CONSOLE_*` identity or server-only
+   * config. Ignored on the elevated branch: the login-shell reset performed
+   * by the elevation helper is already a clean base there, and `env` is
+   * exported inside the inner command instead.
+   */
+  baseEnv?: Record<string, string>;
+  /**
    * Env-var names to preserve across the elevated shell via
    * `--preserve-env=NAME1,NAME2,...`. Defaults to `['FORCE_COLOR']`. An empty
    * array suppresses the flag entirely. Ignored when elevation is bypassed.
@@ -561,8 +574,10 @@ export function spawnAsUser(
   //   outer spawn pins to SUDO_NEUTRAL_CWD and does not forward `opts.env`
   //   (it would be reset by `sudo -i` anyway).
   // - Non-elevated: cwd / env flow through spawn options as usual; `opts.env`
-  //   is layered over `process.env` because `Bun.spawn`'s `env` option
-  //   REPLACES (not merges) the child environment.
+  //   is layered over `opts.baseEnv` (default `process.env`) because
+  //   `Bun.spawn`'s `env` option REPLACES (not merges) the child
+  //   environment. When neither is given the option is left unset and the
+  //   child inherits `process.env` exactly as before.
   const spawnOptions: Parameters<typeof Bun.spawn>[1] = {
     stdin: 'pipe',
     stdout: 'pipe',
@@ -574,8 +589,8 @@ export function spawnAsUser(
     if (opts.cwd !== undefined) {
       spawnOptions.cwd = opts.cwd;
     }
-    if (opts.env !== undefined) {
-      spawnOptions.env = { ...process.env, ...opts.env };
+    if (opts.env !== undefined || opts.baseEnv !== undefined) {
+      spawnOptions.env = { ...(opts.baseEnv ?? process.env), ...opts.env };
     }
   }
 
