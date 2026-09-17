@@ -964,38 +964,59 @@ is required.
 ## Data-root ownership pre-deploy check (Linux multi-user)
 
 Every session-data directory below `${DATA_ROOT}` (`_quick/`,
-`repositories/<slug>/`, and the `outputs/`, `memos/`, `messages/`, `memory/`
-trees under them) is created by the server through a trusted-root walker
+`repositories/<org>/<repo>/` — three levels, the slug is `<org>/<repo>` —
+and the `outputs/`, `memos/`, `messages/`, `memory/` trees under them) is
+created by the server through a trusted-root walker
 (`ensureTrustedDirChain`, `packages/server/src/lib/trusted-dir.ts`;
-[design](design/session-data-path.md) section 2). The walker creates each
-segment non-recursively and `lstat`-verifies it on every write: a symlink
-or a non-directory at any segment is rejected, and so is any directory
-**not owned by the service user** — a group member can pre-plant a real
-directory at `${DATA_ROOT}/_quick` as easily as a symlink, and the owner uid
-is what distinguishes the server's own directory from a planted one. The
-walker **fails closed**: the write is refused and the session-data operation
-that needed it (an agent activation, a memo save, an inter-session message)
-errors out.
+[design](design/session-data-path.md) section 2), and so is the worktree
+base directory `repositories/<org>/<repo>/worktrees/` (the `wt-NNN-XXXX`
+directories below it are created by `git worktree add` as the requesting
+user and are NOT walked). The walker creates each segment non-recursively
+and `lstat`-verifies it on every write: a symlink or a non-directory at any
+segment is rejected, and so is any directory **not owned by the service
+user** — a group member can pre-plant a real directory at
+`${DATA_ROOT}/_quick` as easily as a symlink, and the owner uid is what
+distinguishes the server's own directory from a planted one. The walker
+**fails closed**: the write is refused and the operation that needed it (an
+agent activation, a memo save, an inter-session message, a worktree
+creation) errors out.
 
 That check also fails on a legitimately mis-owned tree left behind by an
 earlier deploy (for example a `repositories/` created while the unit ran as
 a different account, or a directory an operator created by hand as
 themselves). Before deploying a build that carries the walker onto an
-existing data root, confirm that nothing above a session base is owned by
-anyone but the service user:
+existing data root, list every directory under the two walked trees that is
+owned by anyone but the service user:
 
 ```bash
-# Expect NO output. Every directory printed is one the walker will refuse.
-sudo find /var/lib/agent-console -maxdepth 2 -type d ! -user agentconsole
+sudo find /var/lib/agent-console/_quick /var/lib/agent-console/repositories \
+  -maxdepth 5 -type d ! -user agentconsole ! -path '*/worktrees/*'
 ```
 
 Substitute your `AGENT_CONSOLE_DATA_ROOT` / `AGENT_CONSOLE_SERVICE_USER`
-overrides for the defaults. `source-repos/` and the clones under it appear
-in that listing only because of `-maxdepth 2`; they are NOT walked by the
-server (the setup script owns the directory, and interactive users clone
-into it), so a `source-repos/<repo>` entry owned by an interactive user is
-expected and needs no change. If the listing prints a `_quick`,
-`repositories`, or `repositories/<slug>` entry, re-own it before deploying:
+overrides for the defaults. The start points are the two trees the walker
+runs in, so `source-repos/` (setup-script-owned; interactive users clone
+into it) and any other top-level directory an operator keeps under the data
+root never appear. `-maxdepth 5` (counted from each start point) reaches the
+deepest walked segments: `repositories/<org>/<repo>/messages/<session>/<worker>`
+(depth 5), `repositories/<org>/<repo>/memory/<definition>` (depth 4), and
+under `_quick` the `memory/<definition>/<cwd-slug>` and
+`messages/<session>/<worker>` trees (depth 3). The `-path`
+exclusion skips the `wt-NNN-XXXX` directories under `worktrees/` (created by
+`git worktree add` as the requesting user); `worktrees` itself is still
+listed.
+
+**Read the listing by position, not by count — only an entry at a walked
+position needs re-owning.** The walked positions are `_quick`,
+`repositories`, `repositories/<org>`, `repositories/<org>/<repo>`,
+`repositories/<org>/<repo>/worktrees`, and the `outputs/`, `memos/`,
+`messages/`, `memory/` directories under `_quick` or under `<org>/<repo>`
+together with the session / worker / definition directories the server
+creates below them. Anything else the command prints — a `templates/`
+directory, an operator's ad-hoc directory under a repository directory or
+under `outputs/` — sits at a position the walker never creates or verifies,
+and needs no change. Re-own each entry at a walked position before
+deploying:
 
 ```bash
 sudo chown agentconsole:agent-console-users /var/lib/agent-console/<printed-dir>
