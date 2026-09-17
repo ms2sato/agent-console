@@ -17,6 +17,7 @@ import type { SessionRepository } from './repositories/session-repository.js';
 import type { UserRepository } from './repositories/user-repository.js';
 import type { SessionManager } from './services/session-manager.js';
 import type { runAsUser, SpawnAsUserFn } from './services/privilege-elevation.js';
+import type { EnsureMemoryDirFn } from './lib/memory-dir.js';
 import type { RepositoryManager } from './services/repository-manager.js';
 import type { NotificationManager } from './services/notifications/notification-manager.js';
 import type { AgentManager } from './services/agent-manager.js';
@@ -311,7 +312,7 @@ export async function createAppContext(
 
   // 4.1. Create embedded-agent manager (separate registry from AgentManager)
   const embeddedAgentRepository = new SqliteEmbeddedAgentRepository(db);
-  const embeddedAgentManager = await EmbeddedAgentManagerClass.create(embeddedAgentRepository);
+  const embeddedAgentManager = await EmbeddedAgentManagerClass.create(embeddedAgentRepository, { jobQueue });
 
   // 4.1.1. Cross-registry query adapter (agent-surface migration PR-A).
   // Stateless composite over agentManager + embeddedAgentManager.
@@ -647,6 +648,15 @@ export async function createAppContext(
  * Options for creating a test context.
  */
 export interface CreateTestContextOptions {
+  /**
+   * File path for the test database; default in-memory. Used by smokes
+   * that need a second boot to read what a first boot persisted
+   * (`scripts/smoke/check-embedded-agent-memory-layer.ts` seeds a
+   * `claude-sdk` definition row through the real repository, then boots the
+   * context under test so `EmbeddedAgentManager.initialize()` loads it
+   * through the real startup path).
+   */
+  dbPath?: string;
   /** Custom session repository for mocking */
   sessionRepository?: SessionRepository;
   /** Custom notification manager for mocking */
@@ -696,6 +706,15 @@ export interface CreateTestContextOptions {
    * duplicating this function's context wiring.
    */
   spawnAsUserFn?: SpawnAsUserFn;
+  /**
+   * Test/polarity seam for the memory layer's single injectable point
+   * (`EmbeddedAgentWorkerServiceDeps.ensureMemoryDirFn`); `undefined` leaves
+   * the service on its default `prepareMemoryDir`. The billed smoke
+   * `scripts/smoke/check-embedded-agent-memory-layer.ts --expect-no-memory`
+   * passes `async () => undefined` here. Test-context override only -- there
+   * is no `createAppContext` (production) counterpart.
+   */
+  ensureMemoryDirFn?: EnsureMemoryDirFn;
   /** Callback to broadcast messages to app WebSocket clients (default: no-op). */
   broadcastToApp?: (msg: AppServerMessage) => void;
 }
@@ -712,9 +731,10 @@ export interface CreateTestContextOptions {
 export async function createTestContext(
   overrides?: CreateTestContextOptions
 ): Promise<AppContext> {
-  // Use standalone in-memory database for test isolation
+  // Standalone database for test isolation -- in-memory by default, or a
+  // file path when `overrides.dbPath` is set (see CreateTestContextOptions).
   // This does NOT modify the global db variable, preventing test interference
-  const db = await createDatabaseForTest();
+  const db = await createDatabaseForTest(overrides?.dbPath);
 
   // Create job queue and worker output file manager
   const workerOutputFileManager = new WorkerOutputFileManager();
@@ -748,7 +768,7 @@ export async function createTestContext(
 
   // Create embedded-agent manager (separate registry from AgentManager)
   const embeddedAgentRepository = new SqliteEmbeddedAgentRepository(db);
-  const embeddedAgentManager = await EmbeddedAgentManagerClass.create(embeddedAgentRepository);
+  const embeddedAgentManager = await EmbeddedAgentManagerClass.create(embeddedAgentRepository, { jobQueue });
 
   // Cross-registry query adapter (agent-surface migration PR-A). Stateless
   // composite over agentManager + embeddedAgentManager.
@@ -801,6 +821,7 @@ export async function createTestContext(
     ...(overrides?.getMcpBaseUrl ? { getMcpBaseUrl: overrides.getMcpBaseUrl } : {}),
     runAsUserImpl: overrides?.runAsUserImpl,
     spawnAsUserFn: overrides?.spawnAsUserFn,
+    ensureMemoryDirFn: overrides?.ensureMemoryDirFn,
     notificationManager,
     annotationService,
     workerOutputFileManager,

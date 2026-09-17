@@ -10,6 +10,11 @@
  */
 import * as path from 'path';
 import { createHash } from 'crypto';
+import { readdir, lstat } from 'fs/promises';
+import type { Dirent } from 'fs';
+import { createLogger } from './logger.js';
+
+const logger = createLogger('session-data-path');
 
 export type SessionDataScope = 'quick' | 'repository';
 
@@ -32,6 +37,30 @@ export class InvalidSessionDataScopeError extends Error {
  * `..`, leading slashes, backslashes, null bytes, and whitespace.
  */
 const SLUG_PATTERN = /^[A-Za-z0-9._-]+(\/[A-Za-z0-9._-]+)?$/;
+
+/**
+ * A single path segment: no `/`, and never `.` / `..`.
+ *
+ * Single writer of the segment grammar shared by
+ * `SessionDataPathResolver.getMemoryDir` (`session-data-path-resolver.ts`,
+ * which imports {@link assertValidSegment} from here rather than keeping its
+ * own copy) and {@link buildDefinitionMemoryCleanupTargets} below.
+ */
+const SEGMENT_PATTERN = /^[A-Za-z0-9._-]+$/;
+
+/**
+ * Validate that `value` is a single path segment (no `/`, never `.` / `..`).
+ *
+ * @throws {InvalidSessionDataScopeError} if `value` is not a valid single
+ *   path segment.
+ */
+export function assertValidSegment(value: string, label: string): void {
+  if (!SEGMENT_PATTERN.test(value) || value === '.' || value === '..') {
+    throw new InvalidSessionDataScopeError(
+      `${label} ${JSON.stringify(value)} is not a valid single path segment`
+    );
+  }
+}
 
 /**
  * Returns true if `s` is a syntactically valid slug for use as
@@ -118,6 +147,99 @@ export function computeSessionDataBaseDir(
   // Exhaustive check — reachable only if a caller passes an invalid scope
   // value via a type cast.
   throw new InvalidSessionDataScopeError(`unknown scope: ${String(scope)}`);
+}
+
+function isEnoent(err: unknown): boolean {
+  return err instanceof Error && 'code' in err && (err as NodeJS.ErrnoException).code === 'ENOENT';
+}
+
+/**
+ * Build the list of memory directories to remove for a deleted
+ * embedded-agent definition (epic #1636 Phase 2, `cleanup:definition-memory`
+ * job). This is the SINGLE writer of that target list — the job handler
+ * calls this function and nothing else to decide what to remove.
+ *
+ * Walks the tree at CALL TIME (never from memory) across every memory-dir
+ * shape `docs/design/embedded-agent-worker.md` "Q7 lifecycle" documents
+ * today:
+ *   - `<configDir>/_quick/memory/<definitionId>` (quick sessions)
+ *   - `<configDir>/repositories/<a>/memory/<definitionId>` (single-segment
+ *     repository slug)
+ *   - `<configDir>/repositories/<a>/<b>/memory/<definitionId>` (two-segment
+ *     `org/repo` repository slug)
+ *
+ * If the Session Data Path design (`docs/design/session-data-path.md`) ever
+ * adds a third slug shape, this walk must gain it in the same PR.
+ *
+ * Every directory entry encountered while walking `<a>` / `<b>` is checked
+ * with `entry.isDirectory()` from `readdir(..., { withFileTypes: true })`,
+ * which is `false` for a symlink — so a symlinked directory is never walked
+ * into. Each final candidate path is independently `lstat`ed (never
+ * followed): a missing path (`ENOENT`) is silently not a target; a regular
+ * file or a symlink at that exact path is EXCLUDED and warn-logged rather
+ * than removed; only a real directory is returned. A missing `_quick` or
+ * `repositories` directory contributes nothing and never throws — the
+ * function only throws for a malformed `definitionId` (checked up front) or
+ * an unexpected (non-`ENOENT`) filesystem error.
+ *
+ * Returns targets in a deterministic order: `_quick` first, then
+ * repository-scoped targets sorted by path.
+ */
+export async function buildDefinitionMemoryCleanupTargets(params: {
+  configDir: string;
+  definitionId: string;
+}): Promise<string[]> {
+  assertValidSegment(params.definitionId, 'definitionId');
+
+  const quickCandidate = path.join(params.configDir, '_quick', 'memory', params.definitionId);
+
+  const repositoriesDir = path.join(params.configDir, 'repositories');
+  let topEntries: Dirent[] = [];
+  try {
+    topEntries = await readdir(repositoriesDir, { withFileTypes: true });
+  } catch (err) {
+    if (!isEnoent(err)) throw err;
+  }
+
+  const repositoryCandidates: string[] = [];
+  for (const entry of topEntries) {
+    if (!entry.isDirectory()) continue;
+    const aDir = path.join(repositoriesDir, entry.name);
+    repositoryCandidates.push(path.join(aDir, 'memory', params.definitionId));
+
+    let subEntries: Dirent[] = [];
+    try {
+      subEntries = await readdir(aDir, { withFileTypes: true });
+    } catch (err) {
+      if (!isEnoent(err)) throw err;
+    }
+    for (const subEntry of subEntries) {
+      if (!subEntry.isDirectory()) continue;
+      repositoryCandidates.push(path.join(aDir, subEntry.name, 'memory', params.definitionId));
+    }
+  }
+  repositoryCandidates.sort();
+
+  const candidates = [quickCandidate, ...repositoryCandidates];
+  const targets: string[] = [];
+  for (const candidate of candidates) {
+    let stats;
+    try {
+      stats = await lstat(candidate);
+    } catch (err) {
+      if (isEnoent(err)) continue;
+      throw err;
+    }
+    if (!stats.isDirectory()) {
+      logger.warn(
+        { candidate },
+        'Skipping definition-memory cleanup candidate: not a real directory (file or symlink)'
+      );
+      continue;
+    }
+    targets.push(candidate);
+  }
+  return targets;
 }
 
 /**

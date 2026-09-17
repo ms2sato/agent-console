@@ -26,4 +26,5 @@ export {
   type CleanupWorkerOutputPayload,
   type CleanupRepositoryPayload,
   type InboundEventJobPayload,
+  type CleanupDefinitionMemoryPayload,
 } from './job-types.js';

@@ -190,15 +190,21 @@ export function getGlobalDatabase(): Kysely<Database> | null {
 
 /**
  * Create a standalone database for testing.
- * Uses an in-memory SQLite database with all migrations applied.
+ * Defaults to an in-memory SQLite database with all migrations applied.
  * Does NOT modify the global `db` variable, ensuring test isolation.
  *
+ * @param dbPath - Filesystem path for the database, or `:memory:` (default).
+ *   A file path lets a second `createDatabaseForTest` call against the same
+ *   path load rows a first call persisted -- used by tests / smokes that
+ *   need to verify data survives a fresh boot (e.g. a real startup path
+ *   loading a definition through its repository), which an in-memory
+ *   database cannot do since each call gets its own isolated instance.
  * @returns A new Kysely database instance for testing
  */
-export async function createDatabaseForTest(): Promise<Kysely<Database>> {
-  logger.debug('Creating in-memory database for test');
+export async function createDatabaseForTest(dbPath: string = IN_MEMORY_DB_PATH): Promise<Kysely<Database>> {
+  logger.debug({ dbPath }, 'Creating database for test');
 
-  const bunDb = new BunDatabase(':memory:');
+  const bunDb = new BunDatabase(dbPath);
 
   const database = new Kysely<Database>({
     dialect: new BunSqliteDialect({ database: bunDb }),
@@ -208,7 +214,7 @@ export async function createDatabaseForTest(): Promise<Kysely<Database>> {
   await sql`PRAGMA foreign_keys = ON`.execute(database);
 
   // Run schema migrations
-  await runMigrations(database, IN_MEMORY_DB_PATH);
+  await runMigrations(database, dbPath);
 
   return database;
 }
