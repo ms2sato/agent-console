@@ -60,12 +60,16 @@ describe('PersistenceService', () => {
       expect(loaded).toEqual(testRepos);
     });
 
-    it('never carries an Orchestrator designation through the legacy JSON record: a persisted repository with orchestratorSessionIds maps to a row without the dead column, and the set is not round-tripped as a designation', async () => {
-      // reach: writing `orchestrator_session_id` from `toRepositoryRow` again
-      // (the pre-v41 mapper shape) fails the `not.toHaveProperty` assertion;
-      // designations must only ever enter storage through
-      // `RepositoryRepository.addOrchestratorSession`, never via the
-      // JSON-to-SQLite migration path this record feeds.
+    it('never carries an Orchestrator designation through the legacy JSON record: a persisted repository with orchestratorSessionIds maps to a row without the dropped column, and the set is not round-tripped as a designation', async () => {
+      // reach: the v40 `orchestrator_session_id` column was dropped in v42
+      // (Issue #1725), so `NewRepository` no longer has the field and the
+      // type system rejects a reintroduced write at compile time; this
+      // `not.toHaveProperty` assertion is kept as a defensive runtime pin
+      // (it still compiles: `toHaveProperty` accepts an arbitrary string)
+      // in case a future spread reintroduces the raw camelCase-to-snake_case
+      // mapping outside `toRepositoryRow`. Designations must only ever enter
+      // storage through `RepositoryRepository.addOrchestratorSession`, never
+      // via the JSON-to-SQLite migration path this record feeds.
       const { toRepositoryRow } = await import('../../database/mappers.js');
       const persisted = {
         id: 'legacy-1',

@@ -3,14 +3,20 @@ import { sql, CreateTableBuilder, ColumnDefinitionBuilder } from 'kysely';
 /**
  * ISO 8601 datetime format pattern for SQLite CHECK constraint.
  * Matches: YYYY-MM-DDTHH:mm:ss.sssZ (with optional milliseconds)
+ *
+ * Exported so a table-rebuild migration (e.g. `migrateToV42`) that must
+ * reproduce a live table's CHECK constraint verbatim in raw SQL can import
+ * this constant instead of hand-copying the GLOB literal a second time.
  */
-const ISO8601_GLOB_PATTERN = '????-??-??T??:??:??*Z';
+export const ISO8601_GLOB_PATTERN = '????-??-??T??:??:??*Z';
 
 /**
  * SQL expression for current UTC time in ISO 8601 format.
  * Used as DEFAULT value for datetime columns.
+ *
+ * Exported for the same reason as `ISO8601_GLOB_PATTERN` above.
  */
-const NOW_ISO8601 = sql`(strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))`;
+export const NOW_ISO8601 = sql`(strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))`;
 
 /**
  * Options for addDatetime helper.

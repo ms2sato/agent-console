@@ -1261,9 +1261,9 @@ describe('mappers', () => {
       expect(row.setup_command).toBeNull();
       expect(row.cleanup_command).toBeNull();
       expect(row.default_agent_id).toBeNull();
-      // reach: reintroducing a write to the dead v40 column in
-      // toRepositoryRow fails this test (the key would be present again).
-      expect('orchestrator_session_id' in row).toBe(false);
+      // The v40 `orchestrator_session_id` column was dropped in v42 (Issue
+      // #1725); `NewRepository` no longer has the field, so the type system
+      // rejects a reintroduced write at compile time. No runtime pin needed.
       expect(row.issue_trigger_labels).toBeNull();
     });
 
@@ -1309,7 +1309,6 @@ describe('mappers', () => {
         env_vars: null,
         description: null,
         default_agent_id: null,
-        orchestrator_session_id: null,
         issue_trigger_labels: null,
       };
 
@@ -1339,14 +1338,14 @@ describe('mappers', () => {
         env_vars: null,
         description: null,
         default_agent_id: null,
-        orchestrator_session_id: null,
         issue_trigger_labels: null,
       };
 
       const repository = toRepository(row);
 
-      // reach: reading the dead v40 column (`row.orchestrator_session_id`)
-      // instead of the second argument fails this test.
+      // reach: `RepositoryRow` no longer has an `orchestrator_session_id`
+      // field to read (dropped in v42); `toRepository` must default from
+      // the second argument alone.
       expect(repository.orchestratorSessionIds).toEqual([]);
     });
 
@@ -1362,7 +1361,6 @@ describe('mappers', () => {
         env_vars: null,
         description: null,
         default_agent_id: null,
-        orchestrator_session_id: null,
         issue_trigger_labels: null,
       };
 
@@ -1385,7 +1383,6 @@ describe('mappers', () => {
         env_vars: null,
         description: null,
         default_agent_id: null,
-        orchestrator_session_id: null,
         issue_trigger_labels: 'bug, needs-triage',
       };
 
@@ -1406,7 +1403,6 @@ describe('mappers', () => {
         env_vars: null,
         description: null,
         default_agent_id: null,
-        orchestrator_session_id: null,
         issue_trigger_labels: null,
       };
 
@@ -1428,7 +1424,6 @@ describe('mappers', () => {
         env_vars: null,
         description: null,
         default_agent_id: null,
-        orchestrator_session_id: null,
         issue_trigger_labels: null,
       };
 
@@ -1449,7 +1444,6 @@ describe('mappers', () => {
         env_vars: null,
         description: null,
         default_agent_id: null,
-        orchestrator_session_id: null,
         issue_trigger_labels: null,
       };
 
@@ -1470,7 +1464,6 @@ describe('mappers', () => {
         env_vars: 'FOO=bar\nBAZ=qux',
         description: null,
         default_agent_id: null,
-        orchestrator_session_id: null,
         issue_trigger_labels: null,
       };
 
