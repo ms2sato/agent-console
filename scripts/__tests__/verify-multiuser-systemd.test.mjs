@@ -304,12 +304,12 @@ describe('.github/workflows/verify-multiuser-systemd.yml: triggers per AC 6 and 
   });
 });
 
-// Issue #1717: section 7 consumes the deploy script's own V1-V6 screen and
-// the 7b drift arm (#1688) is present and ordered. Static source-text pins
-// on the driver, same discipline as the deploy-script pins in
-// update-and-deploy-for-multiuser-ubuntu.test.mjs: the arm itself runs only
-// on a runner (nothing here boots a container).
-describe('verify-multiuser-systemd.sh: section 7 consumes the V1-V6 screen; the 7b drift arm is present and ordered (Issue #1717 / #1688)', () => {
+// Issue #1717: section 7 consumes the deploy script's own V0-V6 screen (V0
+// added by Issue #1754) and the 7b drift arm (#1688) is present and
+// ordered. Static source-text pins on the driver, same discipline as the
+// deploy-script pins in update-and-deploy-for-multiuser-ubuntu.test.mjs: the
+// arm itself runs only on a runner (nothing here boots a container).
+describe('verify-multiuser-systemd.sh: section 7 consumes the V0-V6 screen; the 7b drift arm and the 7c ownership-polarity arm are present and ordered (Issue #1717 / #1688 / #1754)', () => {
   const driver = readFileSync(DRIVER, 'utf-8');
   const idxOf = (needle) => {
     const i = driver.indexOf(needle);
@@ -317,21 +317,28 @@ describe('verify-multiuser-systemd.sh: section 7 consumes the V1-V6 screen; the 
     return i;
   };
 
-  it('main runs the sections in order: run_deploy -> post_deploy_checks -> drift_arm -> helper_cases -> run_smokes', () => {
-    expect(driver).toContain('  run_deploy\n  post_deploy_checks\n  drift_arm\n  helper_cases\n  run_smokes\n');
+  it('main runs the sections in order: run_deploy -> post_deploy_checks -> drift_arm -> ownership_polarity_arm -> helper_cases -> run_smokes', () => {
+    expect(driver).toContain('  run_deploy\n  post_deploy_checks\n  drift_arm\n  ownership_polarity_arm\n  helper_cases\n  run_smokes\n');
     expect(driver).toMatch(/^drift_arm\(\) \{/m);
-    // Placed after section 7 in the file too (the AC's "new section, after 7").
+    expect(driver).toMatch(/^ownership_polarity_arm\(\) \{/m);
+    // Placed after section 7 in the file too (the AC's "new section, after 7"),
+    // and 7c after 7b.
     expect(idxOf('drift_arm() {')).toBeGreaterThan(idxOf('post_deploy_checks() {'));
-    expect(idxOf('drift_arm() {')).toBeLessThan(idxOf('helper_cases() {'));
+    expect(idxOf('ownership_polarity_arm() {')).toBeGreaterThan(idxOf('drift_arm() {'));
+    expect(idxOf('ownership_polarity_arm() {')).toBeLessThan(idxOf('helper_cases() {'));
   });
 
-  it('section 7 asserts the six PASS lines by label plus the RESULT line, via one shared helper, instead of re-implementing the checks', () => {
-    for (const label of ['V1 unit-env-drift', 'V2 entry-path-readable', 'V3 mainpid-identity', 'V4 unit-active', 'V5 health', 'V6 journal-digest']) {
+  it('section 7 asserts the seven PASS lines by label (V0 first) plus the RESULT line, via one shared helper, instead of re-implementing the checks', () => {
+    for (const label of ['V0 data-root-ownership', 'V1 unit-env-drift', 'V2 entry-path-readable', 'V3 mainpid-identity', 'V4 unit-active', 'V5 health', 'V6 journal-digest']) {
       expect(driver).toContain(`  "${label}"`);
     }
+    // V0 is first in V_LABELS.
+    expect(driver).toMatch(/V_LABELS=\(\s*\n\s*"V0 data-root-ownership"/);
     expect(driver).toContain('grep -q "^  PASS  ${label}\\$" "$out" || rc=$?');
-    expect(driver).toContain("grep -q '^  RESULT: 6 PASS, 0 FAIL, 0 SKIP -> exit 0$' \"$out\" || rc=$?");
-    expect(driver).toContain('assert_six_pass "$DEPLOY_OUT" "deploy #1"');
+    expect(driver).toContain("grep -q '^  RESULT: 7 PASS, 0 FAIL, 0 SKIP -> exit 0$' \"$out\" || rc=$?");
+    expect(driver).toContain('assert_seven_pass "$DEPLOY_OUT" "deploy #1"');
+    expect(driver).not.toContain('assert_six_pass');
+    expect(driver).not.toMatch(/RESULT: 6 PASS/);
     // The old per-check re-implementation and the old /api/auth/me probe
     // assertion are gone.
     expect(driver).not.toContain('/api/auth/me');
@@ -341,7 +348,7 @@ describe('verify-multiuser-systemd.sh: section 7 consumes the V1-V6 screen; the 
   });
 
   it('the drift arm removes ONE template key from the live unit file with sed + daemon-reload and records why a drop-in cannot do it', () => {
-    const arm = driver.slice(idxOf('drift_arm() {'), idxOf('helper_cases() {'));
+    const arm = driver.slice(idxOf('drift_arm() {'), idxOf('ownership_polarity_arm() {'));
     expect(arm).toContain("sed -i '/^Environment=EMBEDDED_AGENT_ENTRY_PATH=/d' '${unit_file}' && systemctl daemon-reload");
     // The rationale is recorded in the function's own comment (wrapped across
     // two lines, hence two needles).
@@ -350,11 +357,12 @@ describe('verify-multiuser-systemd.sh: section 7 consumes the V1-V6 screen; the 
     expect(arm).toContain("absent from 'systemctl show -p Environment' after sed + daemon-reload");
   });
 
-  it('the drift arm asserts deploy #2 exits 1 on V1 naming the key, with NO restart (no restart line, ActiveEnterTimestampMonotonic unchanged, no V2-V6 line)', () => {
-    const arm = driver.slice(idxOf('drift_arm() {'), idxOf('helper_cases() {'));
+  it('the drift arm asserts deploy #2 exits 1 on V1 naming the key, with V0 unaffected and NO restart (no restart line, ActiveEnterTimestampMonotonic unchanged, no V2-V6 line)', () => {
+    const arm = driver.slice(idxOf('drift_arm() {'), idxOf('ownership_polarity_arm() {'));
     const order = [
       'ts_before="$(cexec --user root "$SERVICE" systemctl show -p ActiveEnterTimestampMonotonic --value "$UNIT"',
       'expect "drift: deploy #2 exits 1 (V1 FAIL, the worst code)" test "$rc" -eq 1',
+      "grep -q '^  PASS  V0 data-root-ownership$' \"$out\"",
       "grep -q '^  FAIL  V1 unit-env-drift: .*EMBEDDED_AGENT_ENTRY_PATH' \"$out\"",
       "grep -q 'setup-multiuser-for-ubuntu.sh --dry-run' \"$out\"",
       "grep -q 'service.d/\\*.conf drop-in' \"$out\"",
@@ -370,14 +378,14 @@ describe('verify-multiuser-systemd.sh: section 7 consumes the V1-V6 screen; the 
     }
   });
 
-  it('the drift arm then runs setup --force (same flags as 4b), asserts the key is back, and asserts deploy #3 exits 0 with the six PASS lines and a real restart', () => {
-    const arm = driver.slice(idxOf('drift_arm() {'), idxOf('helper_cases() {'));
+  it('the drift arm then runs setup --force (same flags as 4b), asserts the key is back, and asserts deploy #3 exits 0 with the seven PASS lines and a real restart', () => {
+    const arm = driver.slice(idxOf('drift_arm() {'), idxOf('ownership_polarity_arm() {'));
     const order = [
       'bash scripts/setup-multiuser-for-ubuntu.sh --force --repo-source /src --add-user alice --add-user deployer',
       'check "drift: setup --force exits 0" "$rc"',
       "present again in 'systemctl show -p Environment' (the unit was re-rendered)",
       'check "drift: deploy #3 exits 0" "$rc"',
-      'assert_six_pass "$out" "drift: deploy #3"',
+      'assert_seven_pass "$out" "drift: deploy #3"',
       'test "$ts_after" != "$ts_before"',
     ];
     let prev = -1;
@@ -395,7 +403,93 @@ describe('verify-multiuser-systemd.sh: section 7 consumes the V1-V6 screen; the 
 
   it('every deploy invocation in the driver runs as `deployer` (never root), so the screen is the operator-path screen', () => {
     const deployCalls = driver.match(/cexec --user \S+ -w "\$SRC" "\$SERVICE" bash scripts\/update-and-deploy-for-multiuser-ubuntu\.sh/g) ?? [];
-    expect(deployCalls).toHaveLength(3);
+    // deploy #1 (run_deploy) + #2/#3 (drift_arm) + #4/#5 (ownership_polarity_arm).
+    expect(deployCalls).toHaveLength(5);
     for (const c of deployCalls) expect(c).toContain('--user deployer ');
+  });
+});
+
+// The 7c ownership-polarity arm (#1754), pinned the way 7b is pinned above.
+describe('verify-multiuser-systemd.sh: 7c ownership-polarity arm is present and ordered (Issue #1754)', () => {
+  const driver = readFileSync(DRIVER, 'utf-8');
+  const idxOf = (needle) => {
+    const i = driver.indexOf(needle);
+    expect(i).toBeGreaterThan(-1);
+    return i;
+  };
+  const arm = () => driver.slice(idxOf('ownership_polarity_arm() {'), idxOf('helper_cases() {'));
+
+  it('synthesizes repositories/<org>/<repo>/worktrees, re-owns it to the service user, and proves a positive control (OWNERSHIP_OK) via a direct helper probe before any injection', () => {
+    const a = arm();
+    expect(a).toContain('install -d -m 2775 -o agentconsole -g agent-console-users');
+    expect(a).toContain('chown -R agentconsole:agent-console-users "$org_dir"');
+    expect(a).toContain('bash "$HELPER" data-root-ownership "$DATA_ROOT" agentconsole find');
+    expect(a).toContain('control_marker="$(head -n 1 "$probe_out" | tr -d \'\\r\')"');
+    const order = [
+      'chown -R agentconsole:agent-console-users "$org_dir"',
+      'bash "$HELPER" data-root-ownership "$DATA_ROOT" agentconsole find >"$probe_out" 2>&1',
+      'expect "7c: positive control -- a clean synthesized tree PASSes V0 (OWNERSHIP_OK) before any injection"',
+    ];
+    let prev = -1;
+    for (const needle of order) {
+      const i = a.indexOf(needle);
+      expect(i).toBeGreaterThan(prev);
+      prev = i;
+    }
+  });
+
+  it('creates the non-walked control (templates dir, chown deployer) BEFORE injecting the org-dir misownership, and the injection is non-recursive', () => {
+    const a = arm();
+    const order = [
+      'chown deployer "$templates_dir"',
+      'chown deployer "$org_dir"',
+      'echo "  --- deploy #4',
+    ];
+    let prev = -1;
+    for (const needle of order) {
+      const i = a.indexOf(needle);
+      expect(i).toBeGreaterThan(prev);
+      prev = i;
+    }
+    // Non-recursive: the injection (`chown deployer "$org_dir"`, no `-R`)
+    // and the restore (`chown agentconsole:agent-console-users "$org_dir"`,
+    // no `-R`) both target the org dir alone; only the initial setup step
+    // above them uses `-R`.
+    expect(a).not.toMatch(/chown -R deployer/);
+    expect(a).toContain('chown agentconsole:agent-console-users "$org_dir"');
+  });
+
+  it('deploy #4 asserts V0 FAIL naming the org dir, the chown remedy, no restart, and no V1-V6 line (fail-closed, before restart)', () => {
+    const a = arm();
+    const order = [
+      'expect "7c: deploy #4 exits 1 (V0 FAIL, the worst code)" test "$rc" -eq 1',
+      'expect "7c: V0 FAIL line names ${org_dir}"',
+      'expect "7c: the chown remedy line names ${org_dir}"',
+      'check "7c: no \'==> systemctl restart\' line -- the deploy stopped before the restart" "$restarted"',
+      'check "7c: no V1-V6 line -- nothing after V0 ran" "$v_after_v0"',
+    ];
+    let prev = -1;
+    for (const needle of order) {
+      const i = a.indexOf(needle);
+      expect(i).toBeGreaterThan(prev);
+      prev = i;
+    }
+  });
+
+  it('deploy #5 asserts the seven PASS lines, the templates-dir INFO line, an OWNERSHIP_OK marker probe (never NO_TREES), and the control staying mis-owned', () => {
+    const a = arm();
+    expect(a).toContain('assert_seven_pass "$out" "7c: deploy #5"');
+    const order = [
+      'assert_seven_pass "$out" "7c: deploy #5"',
+      'expect "7c: V0\'s INFO line names the non-walked control as ignored"',
+      'expect "7c: post-#5 marker is OWNERSHIP_OK, not OWNERSHIP_NO_TREES (the tree stays)"',
+      'expect "7c: the non-walked control is still owned by deployer (nobody auto-fixed it)"',
+    ];
+    let prev = -1;
+    for (const needle of order) {
+      const i = a.indexOf(needle);
+      expect(i).toBeGreaterThan(prev);
+      prev = i;
+    }
   });
 });

@@ -581,19 +581,20 @@ script's `==> Pre-check` step before the build proceeds.
 
 ### The post-deploy screen and its exit code
 
-The script ends with a six-line screen, one line per check, and exits with
+The script ends with a seven-line screen, one line per check, and exits with
 the worst code it observed. Read the screen; the exit code is the same
 information for automation:
 
 ```
 ==> Post-deploy verification
+  PASS  V0 data-root-ownership
   PASS  V1 unit-env-drift
   PASS  V2 entry-path-readable
   PASS  V3 mainpid-identity
   PASS  V4 unit-active
   PASS  V5 health
   PASS  V6 journal-digest
-  RESULT: 6 PASS, 0 FAIL, 0 SKIP -> exit 0
+  RESULT: 7 PASS, 0 FAIL, 0 SKIP -> exit 0
 ```
 
 | Line | Meaning | Exit code contribution |
@@ -607,12 +608,13 @@ Exit `0` = every check passed. Exit `1` = at least one FAIL. Exit `2` = at
 least one SKIP and no FAIL. Every check runs even after a failure, so the
 screen is always complete.
 
-The six checks (spec: the "Post-deploy verification -- checks enumerated"
+The seven checks (spec: the "Post-deploy verification -- checks enumerated"
 table in `docs/design/elevation-verification-tiers.md`; each is a
 fixture-tested subcommand of `scripts/lib/setup-multiuser-checks.sh`):
 
 | Check | What it reads | Runs |
 |---|---|---|
+| V0 `data-root-ownership` | mechanizes the "Data-root ownership pre-deploy check" below: every directory at a walked position under the data root is owned by the service user (an unprivileged `find`, pruned below `worktrees/`) | **before the restart, fail-closed** -- a FAIL here aborts the deploy with no restart |
 | V1 `unit-env-drift` | every `Environment=KEY=` in `scripts/agent-console-multiuser.service.template` is present in the live unit's effective environment (`systemctl show -p Environment`, drop-ins included); `ExecStart` on a binary other than `EMBEDDED_AGENT_BUN_PATH` is a WARN | **before the restart, fail-closed** -- a FAIL here aborts the deploy with no restart |
 | V2 `entry-path-readable` | `/usr/local/lib/agent-console/embedded-agent.js` and its `.map` are readable by an unprivileged user (`runuser -u nobody`) | after the restart |
 | V3 `mainpid-identity` | the unit's main process runs the same binary as `EMBEDDED_AGENT_BUN_PATH` (the production `compareBinaryIdentity`, run as the unit's `User=` and `Group=`) | after the restart |
@@ -646,7 +648,7 @@ sudo bash scripts/setup-multiuser-for-ubuntu.sh --dry-run --force --port <live-p
 # 2. Apply it.
 sudo bash scripts/setup-multiuser-for-ubuntu.sh --force --port <live-port>
 
-# 3. Deploy again: V1 passes, the restart happens, V2-V6 run.
+# 3. Deploy again: V0 and V1 pass, the restart happens, V2-V6 run.
 scripts/update-and-deploy-for-multiuser-ubuntu.sh
 ```
 
@@ -1021,6 +1023,12 @@ deploying:
 ```bash
 sudo chown agentconsole:agent-console-users /var/lib/agent-console/<printed-dir>
 ```
+
+The deploy script's `V0 data-root-ownership` check applies this list
+mechanically, before every restart -- see "The post-deploy screen and its
+exit code" above. Running the command above by hand is still useful for a
+pre-deploy preview; V0 is what makes it a deploy-time gate rather than a
+step an operator can forget.
 
 A mismatch that reaches the running server is logged at `error` level by
 the `trusted-dir` logger, with this exact message shape (the uid, the
@@ -1403,13 +1411,13 @@ configured vendor.
 ## Post-deploy Verification (smoke tests)
 
 **The first thing to read after a deploy is the deploy script's own
-six-line screen** (`  PASS  V1 unit-env-drift` ... `RESULT: 6 PASS`), printed
-at the end of `scripts/update-and-deploy-for-multiuser-ubuntu.sh` and
-described under "Iterative Updates" above: unit drift, entry-path
-readability, MainPID identity, unit active, health, journal digest, in one
-invocation as the operator. The smokes below stay as they are -- they go
-further (real elevated spawns, PTY env, orphan sweeps) and are run by hand
-when the code paths they cover change.
+seven-line screen** (`  PASS  V0 data-root-ownership` ... `RESULT: 7 PASS`),
+printed at the end of `scripts/update-and-deploy-for-multiuser-ubuntu.sh` and
+described under "Iterative Updates" above: data-root ownership, unit drift,
+entry-path readability, MainPID identity, unit active, health, journal
+digest, in one invocation as the operator. The smokes below stay as they are
+-- they go further (real elevated spawns, PTY env, orphan sweeps) and are
+run by hand when the code paths they cover change.
 
 Run the smokes after every deploy that touches a privilege-elevation code path
 (`packages/server/src/services/user-mode.ts`, `env-filter.ts`, or

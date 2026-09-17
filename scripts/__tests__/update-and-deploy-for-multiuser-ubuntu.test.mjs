@@ -83,15 +83,17 @@ describe('update-and-deploy-for-multiuser-ubuntu.sh: unified entry path readabil
   });
 });
 
-// Post-deploy verification V1-V6 (Issue #1717, absorbing #1688). Same
-// static-source-text discipline as above: the checks themselves are
-// fixture-tested in scripts/__tests__/setup-multiuser-checks.test.mjs (one
-// describe per check), the tier-3 driver proves the shipping path on a
-// runner (scripts/verify-multiuser-systemd.sh section 7 + the 7b drift arm);
-// what THIS file pins is the sequencing this script owns -- which check runs
-// on which side of the restart, when the journal timestamp is taken, and
-// that the worst verification code is the script's exit.
-describe('update-and-deploy-for-multiuser-ubuntu.sh: post-deploy verification V1-V6 sequencing (Issue #1717)', () => {
+// Post-deploy verification V0-V6 (Issue #1717, absorbing #1688; V0 added by
+// Issue #1754). Same static-source-text discipline as above: the checks
+// themselves are fixture-tested in
+// scripts/__tests__/setup-multiuser-checks.test.mjs (one describe per
+// check), the tier-3 driver proves the shipping path on a runner
+// (scripts/verify-multiuser-systemd.sh section 7 + the 7b drift arm + the
+// 7c ownership-polarity arm); what THIS file pins is the sequencing this
+// script owns -- which check runs on which side of the restart, when the
+// journal timestamp is taken, and that the worst verification code is the
+// script's exit.
+describe('update-and-deploy-for-multiuser-ubuntu.sh: post-deploy verification V0-V6 sequencing (Issue #1717 / #1754)', () => {
   const scriptText = readFileSync(SCRIPT, 'utf-8');
   const restartIdx = scriptText.indexOf('sudo systemctl restart "${SERVICE_NAME}"');
   const idxOf = (needle) => {
@@ -99,6 +101,19 @@ describe('update-and-deploy-for-multiuser-ubuntu.sh: post-deploy verification V1
     expect(i).toBeGreaterThan(-1);
     return i;
   };
+
+  it('V0 (data-root-ownership) is called BEFORE the restart, between both readability gates and V1, and stops the script on any non-zero code (fail-closed, #1754)', () => {
+    const mapGate = idxOf('assert_readable_by_unprivileged_user "${UNIFIED_ENTRY_MAP_PATH}"');
+    const v0 = idxOf('verify_check "V0 data-root-ownership" data_root_ownership "${DATA_ROOT}" "${SERVICE_USER}" find || V0_RC=$?');
+    const v1 = idxOf('verify_check "V1 unit-env-drift" unit_env_drift "${UNIT_TEMPLATE}" "${SERVICE_NAME}" systemctl || V1_RC=$?');
+    expect(v0).toBeGreaterThan(mapGate);
+    expect(v0).toBeLessThan(v1);
+    expect(v0).toBeLessThan(restartIdx);
+    const abort = idxOf('exit "${V0_RC}"');
+    expect(abort).toBeGreaterThan(v0);
+    expect(abort).toBeLessThan(v1);
+    expect(scriptText).toContain('if [ "${V0_RC}" -ne 0 ]; then');
+  });
 
   it('V1 (unit-env-drift) is called BEFORE the restart, reading the template and the unit name, and stops the script on any non-zero code (fail-closed, #1688)', () => {
     const v1 = idxOf('verify_check "V1 unit-env-drift" unit_env_drift "${UNIT_TEMPLATE}" "${SERVICE_NAME}" systemctl || V1_RC=$?');
@@ -112,10 +127,12 @@ describe('update-and-deploy-for-multiuser-ubuntu.sh: post-deploy verification V1
     expect(scriptText).toContain('UNIT_TEMPLATE="$SCRIPT_DIR/agent-console-multiuser.service.template"');
   });
 
-  it('V1 runs AFTER both readability gates (the AC\'s placement: between the gates and the restart)', () => {
+  it('V1 runs AFTER both readability gates AND V0 (the AC\'s placement: gates -> V0 -> V1 -> restart)', () => {
+    const v0 = idxOf('verify_check "V0 data-root-ownership"');
     const v1 = idxOf('verify_check "V1 unit-env-drift"');
     const mapGate = idxOf('assert_readable_by_unprivileged_user "${UNIFIED_ENTRY_MAP_PATH}"');
-    expect(v1).toBeGreaterThan(mapGate);
+    expect(v0).toBeGreaterThan(mapGate);
+    expect(v1).toBeGreaterThan(v0);
   });
 
   it('the journal --since timestamp is captured IMMEDIATELY before the restart: after V1, before the restart line, nothing but comments between them', () => {
@@ -159,7 +176,7 @@ describe('update-and-deploy-for-multiuser-ubuntu.sh: post-deploy verification V1
     expect(scriptText).not.toMatch(/^\s*if curl /m);
   });
 
-  it('the worst verification code is the script\'s LAST exit, after the six-line screen', () => {
+  it('the worst verification code is the script\'s LAST exit, after the seven-line screen', () => {
     const lines = scriptText.trimEnd().split('\n');
     expect(lines[lines.length - 1]).toBe('exit "${VERIFY_EXIT}"');
     expect(lines[lines.length - 2]).toBe('echo "==> Done."');
