@@ -1114,6 +1114,11 @@ async function main(): Promise<void> {
     // before teardown (the token is revoked at deactivation, so E2 after
     // the `finally` block would be measuring revocation, not admission).
     console.log(`==> /mcp gate read-back (E1 tokenless, E2 own token) under AGENT_CONSOLE_MCP_AUTH=${authMode}`);
+    // Bounded like the `ready` wait above (30s): the tier-2 driver awaits
+    // this process directly with no outer timeout, so a /mcp request that
+    // never settles must become an assertion FAILURE here (status 0, the
+    // remaining checks and teardown still run), not a hung verification.
+    const GATE_CALL_TIMEOUT_MS = 10_000;
     const gateCall = async (
       authorizationHeader: string | undefined,
     ): Promise<{ status: number; body: unknown; text: string }> => {
@@ -1122,16 +1127,23 @@ async function main(): Promise<void> {
         Accept: 'application/json, text/event-stream',
       };
       if (authorizationHeader !== undefined) headers.Authorization = authorizationHeader;
-      const res = await fetch(mcpBaseUrl, {
-        method: 'POST',
-        headers,
-        body: JSON.stringify({
-          jsonrpc: '2.0',
-          method: 'tools/call',
-          params: { name: 'list_sessions', arguments: {} },
-          id: 1,
-        }),
-      });
+      let res: Response;
+      try {
+        res = await fetch(mcpBaseUrl, {
+          method: 'POST',
+          headers,
+          signal: AbortSignal.timeout(GATE_CALL_TIMEOUT_MS),
+          body: JSON.stringify({
+            jsonrpc: '2.0',
+            method: 'tools/call',
+            params: { name: 'list_sessions', arguments: {} },
+            id: 1,
+          }),
+        });
+      } catch (err) {
+        const reason = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
+        return { status: 0, body: undefined, text: `(no HTTP response within ${GATE_CALL_TIMEOUT_MS}ms: ${reason})` };
+      }
       const text = await res.text();
       let body: unknown;
       try {
