@@ -2,7 +2,7 @@ import { describe, it, expect } from 'bun:test';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve, join } from 'node:path';
-import { mkdtempSync, writeFileSync, rmSync, readFileSync, existsSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -891,5 +891,233 @@ describe('setup-multiuser-checks: pipefail-safety of V1 / V6 on inputs larger th
     );
     expect(r.status).toBe(1);
     expect(markerOf(r)).toBe('JOURNAL_MISSING:Server listening');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// V0 data-root-ownership (Issue #1754): the mechanical form of the setup
+// guide's "Data-root ownership pre-deploy check". <find-cmd> is the #1690
+// seam, faked by fixtures/fake-find.sh; the walked/non-walked position
+// classification is real shell code exercised for real against the fake's
+// output. Start-point existence ([ -d ] on <root>/_quick and
+// <root>/repositories) is real filesystem state, so every case below runs
+// against a real mkdtemp root.
+//
+// Shared contract under test: same three-way marker convention as V1-V6
+// above (0 = PASS, 1 = FAIL, 2 = cannot run), with its own markers:
+// OWNERSHIP_OK | OWNERSHIP_NO_TREES (both rc 0) | OWNERSHIP_MISOWNED:<n>
+// (rc 1).
+// ---------------------------------------------------------------------------
+describe('setup-multiuser-checks: data-root-ownership (V0, Issue #1754)', () => {
+  const FAKE_FIND = resolve(__dirname, 'fixtures', 'fake-find.sh');
+  const SVC = 'agentconsole';
+
+  function makeRoot(...trees) {
+    const dir = mkdtempSync(join(tmpdir(), 'v0-ownership-'));
+    for (const t of trees) {
+      mkdirSync(join(dir, t), { recursive: true });
+    }
+    return dir;
+  }
+
+  function rootGroup(dir) {
+    return spawnSync('stat', ['-c', '%G', dir], { encoding: 'utf-8' }).stdout.trim();
+  }
+
+  function v0(root, env = {}) {
+    return runLib(['data-root-ownership', root, SVC, FAKE_FIND], env);
+  }
+
+  it('(a) empty listing -> OWNERSHIP_OK, rc 0, no stderr', () => {
+    const root = makeRoot('_quick', 'repositories');
+    try {
+      const r = v0(root, { FAKE_FIND_LINES: '' });
+      expect(r.status).toBe(0);
+      expect(markerOf(r)).toBe('OWNERSHIP_OK');
+      expect(r.stderr).toBe('');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('(b) three walked paths (the dogfood shape) -> OWNERSHIP_MISOWNED:3, rc 1, the three absolute paths on stdout lines 2-4 in order, chown remedies name the root\'s own group', () => {
+    const root = makeRoot('repositories');
+    try {
+      const p1 = join(root, 'repositories', 'ms2sato');
+      const p2 = join(root, 'repositories', 'ms2sato', 'agent-console');
+      const p3 = join(root, 'repositories', 'ms2sato', 'agent-console', 'worktrees');
+      const r = v0(root, { FAKE_FIND_LINES: [p1, p2, p3].join('\n') });
+      expect(r.status).toBe(1);
+      expect(markerOf(r)).toBe('OWNERSHIP_MISOWNED:3');
+      const stdoutLines = r.stdout.replace(/\n$/, '').split('\n');
+      expect(stdoutLines.slice(1)).toEqual([p1, p2, p3]);
+      const group = rootGroup(root);
+      expect(r.stderr).toContain(`chown ${SVC}:${group} ${p1}`);
+      expect(r.stderr).toContain(`chown ${SVC}:${group} ${p2}`);
+      expect(r.stderr).toContain(`chown ${SVC}:${group} ${p3}`);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('(c) one walked + two non-walked -> OWNERSHIP_MISOWNED:1 and two INFO: ignored (not walked) lines [polarity: replacing any one pattern with a catch-all (e.g. ".*") makes every printed path match, and the count becomes 3 -- measured]', () => {
+    const root = makeRoot('repositories');
+    try {
+      const walked = join(root, 'repositories', 'org', 'repo');
+      const nonWalked1 = join(root, 'repositories', 'org', 'repo', 'templates');
+      const nonWalked2 = join(root, 'qa', 'x');
+      const r = v0(root, { FAKE_FIND_LINES: [walked, nonWalked1, nonWalked2].join('\n') });
+      expect(r.status).toBe(1);
+      expect(markerOf(r)).toBe('OWNERSHIP_MISOWNED:1');
+      expect(r.stderr).toContain(`INFO: ignored (not walked): ${nonWalked1}`);
+      expect(r.stderr).toContain(`INFO: ignored (not walked): ${nonWalked2}`);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('(d) _quick/memory/<def>/<slug> is walked but repositories/<org>/<repo>/memory/<def>/<slug> is NOT (the F5 getMemoryDir asymmetry)', () => {
+    const root = makeRoot('_quick', 'repositories');
+    try {
+      const quickMemory = join(root, '_quick', 'memory', 'def', 'slug');
+      const repoMemory = join(root, 'repositories', 'org', 'repo', 'memory', 'def', 'slug');
+      const r = v0(root, { FAKE_FIND_LINES: [quickMemory, repoMemory].join('\n') });
+      expect(r.status).toBe(1);
+      expect(markerOf(r)).toBe('OWNERSHIP_MISOWNED:1');
+      const stdoutLines = r.stdout.replace(/\n$/, '').split('\n');
+      expect(stdoutLines.slice(1)).toEqual([quickMemory]);
+      expect(r.stderr).toContain(`INFO: ignored (not walked): ${repoMemory}`);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('(e) find itself fails (no walked path printed) -> cannot run, rc 2', () => {
+    const root = makeRoot('repositories');
+    try {
+      const r = v0(root, { FAKE_FIND_FAIL: '1' });
+      expect(r.status).toBe(2);
+      expect(r.stderr).toContain('cannot run: find failed');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('(f) find prints a walked hit THEN fails (a real permission error after real hits) -> FAIL outranks cannot-run, rc 1', () => {
+    const root = makeRoot('repositories');
+    try {
+      const walked = join(root, 'repositories', 'org');
+      const r = v0(root, { FAKE_FIND_LINES: walked, FAKE_FIND_FAIL_AFTER: '1' });
+      expect(r.status).toBe(1);
+      expect(markerOf(r)).toBe('OWNERSHIP_MISOWNED:1');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('(g) neither start point exists -> OWNERSHIP_NO_TREES, rc 0, one INFO line, and the fake find was NOT invoked', () => {
+    const root = mkdtempSync(join(tmpdir(), 'v0-ownership-'));
+    const argvOut = join(root, 'argv.out');
+    try {
+      const r = v0(root, { FAKE_FIND_ARGV_OUT: argvOut });
+      expect(r.status).toBe(0);
+      expect(markerOf(r)).toBe('OWNERSHIP_NO_TREES');
+      expect(r.stderr).toContain('INFO:');
+      expect(existsSync(argvOut)).toBe(false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('(h) only repositories exists -> find invoked with that single start point', () => {
+    const root = makeRoot('repositories');
+    const argvOut = join(root, 'argv.out');
+    try {
+      const r = v0(root, { FAKE_FIND_ARGV_OUT: argvOut, FAKE_FIND_LINES: '' });
+      expect(r.status).toBe(0);
+      expect(markerOf(r)).toBe('OWNERSHIP_OK');
+      const argv = readFileSync(argvOut, 'utf-8').split('\n').filter(Boolean);
+      expect(argv[0]).toBe(join(root, 'repositories'));
+      expect(argv).not.toContain(join(root, '_quick'));
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('argv shape: both start points, -maxdepth 5, and the -prune group PRECEDING the -type d ! -user predicate (order is what makes prune effective)', () => {
+    const root = makeRoot('_quick', 'repositories');
+    const argvOut = join(root, 'argv.out');
+    try {
+      const r = v0(root, { FAKE_FIND_ARGV_OUT: argvOut, FAKE_FIND_LINES: '' });
+      expect(r.status).toBe(0);
+      const argv = readFileSync(argvOut, 'utf-8').split('\n').filter(Boolean);
+      expect(argv[0]).toBe(join(root, '_quick'));
+      expect(argv[1]).toBe(join(root, 'repositories'));
+      expect(argv).toEqual([
+        join(root, '_quick'),
+        join(root, 'repositories'),
+        '-maxdepth',
+        '5',
+        '(',
+        '-path',
+        '*/worktrees/*',
+        '-prune',
+        ')',
+        '-o',
+        '-type',
+        'd',
+        '!',
+        '-user',
+        SVC,
+        '-print',
+      ]);
+      const pruneIdx = argv.indexOf('-prune');
+      const typeIdx = argv.indexOf('-type');
+      const userIdx = argv.indexOf('-user');
+      expect(pruneIdx).toBeGreaterThan(-1);
+      expect(typeIdx).toBeGreaterThan(pruneIdx);
+      expect(userIdx).toBeGreaterThan(typeIdx);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('find binary missing -> cannot run, rc 2', () => {
+    const root = makeRoot('repositories');
+    try {
+      const r = runLib(['data-root-ownership', root, SVC, '/nonexistent/find-for-test']);
+      expect(r.status).toBe(2);
+      expect(r.stderr).toContain('cannot run');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+// SIGPIPE-class safety for V0 under the caller's `set -o pipefail`, the same
+// discipline as the V1 / V6 section above: 300 printed paths, none walked,
+// counted exactly via a whole-input `while read` loop (never a `grep -q` at
+// a pipeline tail) rather than truncated by an early-exiting consumer.
+describe('setup-multiuser-checks: pipefail-safety of V0 on inputs larger than a pipe buffer', () => {
+  const RUN_UNDER_PIPEFAIL = resolve(__dirname, 'fixtures', 'run-lib-under-pipefail.sh');
+  const FAKE_FIND = resolve(__dirname, 'fixtures', 'fake-find.sh');
+
+  it('300 printed non-walked paths are counted exactly (OWNERSHIP_OK, not truncated) under pipefail', () => {
+    const root = mkdtempSync(join(tmpdir(), 'v0-pipefail-'));
+    try {
+      mkdirSync(join(root, 'repositories'), { recursive: true });
+      const lines = Array.from({ length: 300 }, (_, i) => join(root, 'qa', `nonwalked-${i}`));
+      const r = spawnSync(
+        RUN_UNDER_PIPEFAIL,
+        ['data-root-ownership', root, 'agentconsole', FAKE_FIND],
+        { encoding: 'utf-8', env: { ...process.env, FAKE_FIND_LINES: lines.join('\n') } },
+      );
+      expect(r.status).toBe(0);
+      expect(markerOf(r)).toBe('OWNERSHIP_OK');
+      const infoLines = r.stderr.trim().split('\n').filter((l) => l.startsWith('INFO: ignored'));
+      expect(infoLines.length).toBe(300);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });
