@@ -36,15 +36,14 @@ describe('SqliteRepositoryRepository', () => {
       .addColumn('env_vars', 'text')
       .addColumn('description', 'text')
       .addColumn('default_agent_id', 'text')
-      .addColumn('orchestrator_session_id', 'text')
       .addColumn('issue_trigger_labels', 'text')
       .execute();
 
     // Modeled on migration v41's shape (Issue #1716), minus the two FK
     // declarations -- this manually-built schema (unlike
     // `createDatabaseForTest()`) never declares FKs anywhere else either
-    // (see `repositories` above, whose `orchestrator_session_id` column has
-    // no `REFERENCES` clause). The primary key constraint IS declared: the
+    // (see `repositories` above, whose `default_agent_id` column has no
+    // `REFERENCES` clause). The primary key constraint IS declared: the
     // add-idempotent tests below rely on `onConflict` resolving against a
     // real unique constraint.
     await db.schema
@@ -876,8 +875,8 @@ describe('SqliteRepositoryRepository', () => {
   describe('orchestrator-session designation CASCADE (Issue #1716, real migrated DB)', () => {
     // Unlike this file's other describes, CASCADE behavior needs REAL
     // foreign-key constraints -- the manually-built schema above declares
-    // none (mirroring `repositories.orchestrator_session_id`'s own lack of
-    // a `REFERENCES` clause in this file). `createDatabaseForTest()` runs
+    // none (mirroring `repositories.default_agent_id`'s own lack of a
+    // `REFERENCES` clause in this file). `createDatabaseForTest()` runs
     // the real migration chain (FK-declared table, `PRAGMA foreign_keys =
     // ON`), so it is the only fixture in this file that can prove CASCADE.
     let cascadeDb: Kysely<Database>;
