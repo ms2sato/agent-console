@@ -1638,12 +1638,16 @@ describe('Orchestrator flag control (Issue #1643 PR-2)', () => {
 
     await renderWithRouter(<ActiveSessionsSidebar {...defaultProps()} sessions={sessions} />);
 
+    // Polled as strings, not element identity -- see `orchestratorFlagStates`
+    // and the sidebar relight measurement in this PR's body. This test's own
+    // assertion normally succeeds on the first `waitFor` pass, so the whole
+    // file's total time moved only slightly: 2.46/2.15/2.28 s before this
+    // change vs 2.16/2.01/2.27 s after (3 runs each, whole-file `bun test`).
     await waitFor(() => {
-      const flags = Array.from(document.querySelectorAll('[data-orchestrator-flag]'));
-      expect(flags).toHaveLength(2);
-      const lit = flags.filter((el) => el.getAttribute('data-orchestrator-flag-lit') === 'true');
-      expect(lit).toHaveLength(1);
-      expect(lit[0]).toBe(screen.getByTestId('orchestrator-flag-session-a'));
+      expect(orchestratorFlagStates()).toEqual([
+        ['orchestrator-flag-session-a', 'true'],
+        ['orchestrator-flag-session-b', 'false'],
+      ]);
     });
   });
 
