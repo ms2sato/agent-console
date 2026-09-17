@@ -1,19 +1,48 @@
 import { useEffect, useRef, type RefObject } from 'react';
 
+// Module-level, not per-hook-instance: `MobileSidebarDrawer` (mounted from
+// `routes/__root.tsx`) and `SessionSidePanelsDrawer` (mounted from
+// `SessionPage.tsx`) each hold their own independent `open` state, so two
+// `useModalDrawerFocus` instances can legitimately be open AT THE SAME
+// TIME (e.g. both drawers opened on the same narrow viewport). A
+// per-instance snapshot/restore of `document.body.style.overflow` breaks
+// in that case: closing the first drawer restores the ORIGINAL overflow
+// while the second is still open (unlocking the scroll early), and closing
+// the second then either re-locks nothing or restores its own stale
+// snapshot -- either way the two instances fight over one shared piece of
+// global state. A module-level reference count fixes this without adding
+// any coordination BETWEEN the two drawers: each instance's effect only
+// ever increments/decrements the shared counter and reads/writes the
+// shared `document.body.style.overflow`, so the lock is applied exactly
+// once (on the transition from 0 to 1 open drawers) and released exactly
+// once (on the transition from 1 to 0), regardless of which drawer opened
+// or closed first, or how many are open at once. Deliberately no mutual
+// exclusion (e.g. closing one drawer when another opens) -- that is a
+// separate, unrelated UX concern this fix does not address.
+let scrollLockCount = 0;
+let scrollLockOriginalOverflow = '';
+
 /**
  * Returns the tabbable descendants of `container`, in document order.
  *
  * Selects every element that could be a tab stop (`a[href]`, `button`,
  * `input`, `select`, `textarea`, `[tabindex]`) and then filters out
  * anything that is actually excluded from the tab order:
- *   - `tabindex="-1"`, checked as a POST-selection filter rather than
- *     folded into the selector. `button, [href], input, select, textarea,
- *     [tabindex]:not([tabindex="-1"])` looks equivalent but is not: a
- *     `<button tabindex="-1">` still matches the bare `button` alternative
- *     in that selector list, so the `:not([tabindex="-1"])` clause (only
- *     attached to the `[tabindex]` alternative) never runs against it. A
- *     filter applied after selection is the only construction that
- *     excludes an element regardless of which alternative matched it.
+ *   - any negative `tabIndex` (read via the property, which normalises the
+ *     attribute -- not only the literal `-1`), checked as a POST-selection
+ *     filter rather than folded into the selector. `button, [href], input,
+ *     select, textarea, [tabindex]:not([tabindex="-1"])` looks equivalent
+ *     but is not: a `<button tabindex="-1">` still matches the bare
+ *     `button` alternative in that selector list, so the
+ *     `:not([tabindex="-1"])` clause (only attached to the `[tabindex]`
+ *     alternative) never runs against it. A filter applied after selection
+ *     is the only construction that excludes an element regardless of
+ *     which alternative matched it. Reading the `tabIndex` PROPERTY rather
+ *     than the raw attribute string also means `tabindex="-2"` and other
+ *     invalid/negative values are excluded too, not only the literal
+ *     `"-1"` -- the property normalises them.
+ *   - `<input type="hidden">`: never a tab stop in any browser, and the
+ *     `input` selector alternative above matches it regardless of type.
  *   - `disabled`.
  *   - any element that is, or has an ancestor (walking up to but
  *     excluding `container` itself) that is, `[inert]` or `[hidden]`.
@@ -34,7 +63,8 @@ export function getTabbables(container: HTMLElement): HTMLElement[] {
     container.querySelectorAll<HTMLElement>('a[href], button, input, select, textarea, [tabindex]')
   );
   return candidates.filter((el) => {
-    if (el.getAttribute('tabindex') === '-1') return false;
+    if (el.tabIndex < 0) return false;
+    if (el instanceof HTMLInputElement && el.type === 'hidden') return false;
     if (el.hasAttribute('disabled')) return false;
     // Starts at `el` itself, not its parent: `<button hidden>` or
     // `<input inert>` is not tabbable in any browser, and "is ... [inert]
@@ -110,10 +140,14 @@ export function useModalDrawerFocus({
 
   useEffect(() => {
     if (!open) return;
-    const original = document.body.style.overflow;
-    document.body.style.overflow = 'hidden';
+    if (scrollLockCount++ === 0) {
+      scrollLockOriginalOverflow = document.body.style.overflow;
+      document.body.style.overflow = 'hidden';
+    }
     return () => {
-      document.body.style.overflow = original;
+      if (--scrollLockCount === 0) {
+        document.body.style.overflow = scrollLockOriginalOverflow;
+      }
     };
   }, [open]);
 

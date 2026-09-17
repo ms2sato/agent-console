@@ -15,11 +15,32 @@ function buildContainer(html: string): HTMLElement {
 
 describe('getTabbables', () => {
   it('excludes elements with tabindex="-1", even when they matched via a non-[tabindex] selector alternative', () => {
-    // Reach (measured): dropping the `el.getAttribute('tabindex') === '-1'`
-    // filter in useModalDrawerFocus.ts fails this test (the tabindex="-1"
-    // button is then included).
+    // Reach (measured): dropping the `el.tabIndex < 0` filter in
+    // useModalDrawerFocus.ts fails this test (the tabindex="-1" button is
+    // then included).
     const container = buildContainer('<button>A</button><button tabindex="-1">B</button>');
     expect(getTabbables(container).map((el) => el.textContent)).toEqual(['A']);
+  });
+
+  it('excludes elements with any other negative tabindex, not only the literal "-1"', () => {
+    // Reach (measured): reverting the filter to the literal
+    // `el.getAttribute('tabindex') === '-1'` string check fails this test
+    // (the tabindex="-2" button is then included, since "-2" !== "-1").
+    // Reading `el.tabIndex` (the PROPERTY, not the raw attribute string)
+    // normalises any negative/invalid tabindex value to a real negative
+    // number, so this filter catches all of them, not only "-1".
+    const container = buildContainer('<button>A</button><button tabindex="-2">B</button>');
+    expect(getTabbables(container).map((el) => el.textContent)).toEqual(['A']);
+  });
+
+  it('excludes <input type="hidden">, even though the bare `input` selector alternative matches it', () => {
+    // Reach (measured): dropping the
+    // `el instanceof HTMLInputElement && el.type === 'hidden'` filter fails
+    // this test (the hidden input is then included) -- it is never a tab
+    // stop in any browser, and the `input` selector alternative matches it
+    // regardless of `type`.
+    const container = buildContainer('<button>A</button><input type="hidden" value="x" />');
+    expect(getTabbables(container).map((el) => el.tagName)).toEqual(['BUTTON']);
   });
 
   it('excludes disabled elements', () => {
@@ -87,6 +108,34 @@ function FocusHarness({
     <div ref={containerRef} data-testid="container" {...containerProps}>
       {children}
     </div>
+  );
+}
+
+/**
+ * Two independent `useModalDrawerFocus` instances, each with its own
+ * `open` state and its own container -- models the real shape of
+ * `MobileSidebarDrawer` (mounted from `routes/__root.tsx`) and
+ * `SessionSidePanelsDrawer` (mounted from `SessionPage.tsx`), which can
+ * legitimately both be open at the same time on a narrow viewport.
+ */
+function TwoInstanceScrollLockHarness() {
+  const [openA, setOpenA] = useState(false);
+  const [openB, setOpenB] = useState(false);
+  return (
+    <>
+      <button type="button" onClick={() => setOpenA((v) => !v)}>
+        toggle-a
+      </button>
+      <button type="button" onClick={() => setOpenB((v) => !v)}>
+        toggle-b
+      </button>
+      <FocusHarness open={openA} onClose={() => setOpenA(false)}>
+        <button type="button">A</button>
+      </FocusHarness>
+      <FocusHarness open={openB} onClose={() => setOpenB(false)}>
+        <button type="button">B</button>
+      </FocusHarness>
+    </>
   );
 }
 
@@ -204,5 +253,35 @@ describe('useModalDrawerFocus', () => {
       'aria-hidden': false,
       'aria-modal': true,
     });
+  });
+
+  it('reference-counts the body scroll lock across two simultaneously open instances (e.g. both mobile drawers open at once)', () => {
+    // Reach (measured): reverting the scroll-lock effect to a per-instance
+    // snapshot/restore (each effect capturing its own `original` on open
+    // and restoring THAT value on close, instead of the shared
+    // `scrollLockCount` / `scrollLockOriginalOverflow` module-level pair)
+    // fails this test at the "closing A while B is still open" assertion
+    // below: A's own effect restores the ORIGINAL (pre-open) overflow even
+    // though B is still open, unlocking the scroll early.
+    const originalOverflow = document.body.style.overflow;
+    render(<TwoInstanceScrollLockHarness />);
+    expect(document.body.style.overflow).toBe(originalOverflow);
+
+    fireEvent.click(screen.getByText('toggle-a'));
+    expect(document.body.style.overflow).toBe('hidden');
+
+    fireEvent.click(screen.getByText('toggle-b'));
+    expect(document.body.style.overflow).toBe('hidden');
+
+    // Close the FIRST-opened instance while the second is still open: the
+    // lock must stay applied (this is the assertion the reverted mutation
+    // fails).
+    fireEvent.click(screen.getByText('toggle-a'));
+    expect(document.body.style.overflow).toBe('hidden');
+
+    // Close the second (now the only remaining open) instance: the lock
+    // releases, restoring the pre-open value.
+    fireEvent.click(screen.getByText('toggle-b'));
+    expect(document.body.style.overflow).toBe(originalOverflow);
   });
 });
