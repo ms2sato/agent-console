@@ -252,7 +252,7 @@ describe('API Client', () => {
 
   describe('raiseOrchestratorDesignation', () => {
     it('should POST to the orchestrator-designation endpoint with the session id', async () => {
-      const mockResult = { repositoryId: 'repo-1', orchestratorSessionId: 'session-id' };
+      const mockResult = { repositoryId: 'repo-1', orchestratorSessionIds: ['session-id'] };
       mockFetch.mockResolvedValue(createMockResponse(mockResult));
 
       const result = await raiseOrchestratorDesignation('session-id');
@@ -265,7 +265,7 @@ describe('API Client', () => {
 
   describe('clearOrchestratorDesignation', () => {
     it('should DELETE the orchestrator-designation endpoint with the session id', async () => {
-      const mockResult = { repositoryId: 'repo-1', cleared: true };
+      const mockResult = { repositoryId: 'repo-1', removed: true, orchestratorSessionIds: [] };
       mockFetch.mockResolvedValue(createMockResponse(mockResult));
 
       const result = await clearOrchestratorDesignation('session-id');

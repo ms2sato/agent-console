@@ -136,15 +136,20 @@ export function useSessionSideEffects({
   }, [handleWorkerActivity]);
 
   // Targeted, immediate cache patch for a repository's designated-Orchestrator
-  // session change. This is a second, independent, always-mounted listener --
+  // sessions changing. This is a second, independent, always-mounted listener --
   // separate from useRepositoryRegistrySync's onRepositoryUpdated handler
   // (also root-mounted). ActiveSessionsSidebar (which reads
-  // Repository.orchestratorSessionId to render the flag control) is mounted
+  // Repository.orchestratorSessionIds to render the flag control) is mounted
   // unconditionally from __root.tsx alongside this hook, so this listener
   // must not depend on which route is currently active. It is fine and
   // harmless for both broadcasts to patch the same cache key on the same
   // change -- setQueryData is idempotent per-call.
-  const handleOrchestratorDesignationChanged = useCallback((repositoryId: string, sessionId: string | null) => {
+  const handleOrchestratorDesignationChanged = useCallback((
+    repositoryId: string,
+    orchestratorSessionIds: string[],
+    _changedSessionId: string,
+    _action: 'added' | 'removed'
+  ) => {
     const queryKey = repositoryKeys.all();
     // No cached data to patch yet -- most likely an in-flight fetch that has
     // not resolved. A single `invalidateQueries` (or `refetchQueries`) call
@@ -190,7 +195,7 @@ export function useSessionSideEffects({
       if (!old) return old;
       return {
         repositories: old.repositories.map((r) =>
-          r.id === repositoryId ? { ...r, orchestratorSessionId: sessionId } : r
+          r.id === repositoryId ? { ...r, orchestratorSessionIds } : r
         ),
       };
     });

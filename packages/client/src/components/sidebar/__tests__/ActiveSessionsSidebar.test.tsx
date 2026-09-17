@@ -19,8 +19,8 @@ import type { AgentActivityState, WorktreeSession, QuickSession, Session, Reposi
 // --- Global fetch mock (Issue #1643 PR-2) ---
 //
 // ActiveSessionsSidebar now always issues a `GET /api/repositories` query
-// (to know each repository's designated-Orchestrator session for the flag
-// control), so every test in this file needs a fetch stub even when it does
+// (to know each repository's designated set of Orchestrator sessions for the
+// flag control), so every test in this file needs a fetch stub even when it does
 // not itself exercise the flag control. `repositoriesResponse` lets
 // individual tests configure the repositories list; `orchestratorDesignationCalls`
 // records POST/DELETE calls to the raise/clear endpoint so click-behavior
@@ -45,8 +45,8 @@ function installGlobalFetchMock() {
         orchestratorDesignationCalls.push({ method, sessionId: orchestratorMatch[1] });
         const body =
           method === 'POST'
-            ? { repositoryId: 'repo-1', orchestratorSessionId: orchestratorMatch[1] }
-            : { repositoryId: 'repo-1', cleared: true };
+            ? { repositoryId: 'repo-1', orchestratorSessionIds: [orchestratorMatch[1]] }
+            : { repositoryId: 'repo-1', removed: true, orchestratorSessionIds: [] };
         return new Response(JSON.stringify(body), {
           status: 200,
           headers: { 'content-type': 'application/json' },
@@ -1555,7 +1555,7 @@ describe('Orchestrator flag control (Issue #1643 PR-2)', () => {
       name: 'repo-1',
       path: '/path/to/repo-1',
       createdAt: new Date().toISOString(),
-      orchestratorSessionId: null,
+      orchestratorSessionIds: [],
       ...overrides,
     } as Repository;
   }
@@ -1565,7 +1565,7 @@ describe('Orchestrator flag control (Issue #1643 PR-2)', () => {
   // control's own row, since a regression could just as easily reintroduce
   // nesting elsewhere.
   it('never nests a <button> inside another <button> anywhere in the sidebar', async () => {
-    repositoriesResponse = { repositories: [repository({ id: 'repo-a', orchestratorSessionId: 'session-a' })] };
+    repositoriesResponse = { repositories: [repository({ id: 'repo-a', orchestratorSessionIds: ['session-a'] })] };
     const sessions = [
       createSessionWithActivity(
         createMockWorktreeSession({ id: 'session-a', repositoryId: 'repo-a', repositoryName: 'repo-a' }),
@@ -1604,7 +1604,7 @@ describe('Orchestrator flag control (Issue #1643 PR-2)', () => {
   });
 
   it('renders exactly one lit flag for the repository holding the designation, and none lit otherwise', async () => {
-    repositoriesResponse = { repositories: [repository({ id: 'repo-a', orchestratorSessionId: 'session-a' })] };
+    repositoriesResponse = { repositories: [repository({ id: 'repo-a', orchestratorSessionIds: ['session-a'] })] };
     const sessions = [
       createSessionWithActivity(
         createMockWorktreeSession({ id: 'session-a', repositoryId: 'repo-a', repositoryName: 'repo-a' }),
@@ -1628,7 +1628,7 @@ describe('Orchestrator flag control (Issue #1643 PR-2)', () => {
   });
 
   it('renders zero lit flags when the repository has no designation', async () => {
-    repositoriesResponse = { repositories: [repository({ id: 'repo-a', orchestratorSessionId: null })] };
+    repositoriesResponse = { repositories: [repository({ id: 'repo-a', orchestratorSessionIds: [] })] };
     const sessions = [
       createSessionWithActivity(
         createMockWorktreeSession({ id: 'session-a', repositoryId: 'repo-a', repositoryName: 'repo-a' }),
@@ -1645,8 +1645,39 @@ describe('Orchestrator flag control (Issue #1643 PR-2)', () => {
     expect(lit).toHaveLength(0);
   });
 
+  // reach: fails if isOrchestratorFlagLit stops checking membership in the
+  // full array (e.g. reverts to a single `=== id` comparison) -- a
+  // repository can have several designated sessions lit at once.
+  it('renders two lit flags at once when the repository designates two sessions', async () => {
+    repositoriesResponse = {
+      repositories: [repository({ id: 'repo-1', orchestratorSessionIds: ['session-a', 'session-b'] })],
+    };
+    const sessions = [
+      createSessionWithActivity(
+        createMockWorktreeSession({ id: 'session-a', repositoryId: 'repo-1', repositoryName: 'repo-1' }),
+        'idle'
+      ),
+      createSessionWithActivity(
+        createMockWorktreeSession({ id: 'session-b', repositoryId: 'repo-1', repositoryName: 'repo-1' }),
+        'idle'
+      ),
+      createSessionWithActivity(
+        createMockWorktreeSession({ id: 'session-c', repositoryId: 'repo-1', repositoryName: 'repo-1' }),
+        'idle'
+      ),
+    ];
+
+    await renderWithRouter(<ActiveSessionsSidebar {...defaultProps()} sessions={sessions} />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('orchestrator-flag-session-a').getAttribute('data-orchestrator-flag-lit')).toBe('true');
+      expect(screen.getByTestId('orchestrator-flag-session-b').getAttribute('data-orchestrator-flag-lit')).toBe('true');
+      expect(screen.getByTestId('orchestrator-flag-session-c').getAttribute('data-orchestrator-flag-lit')).toBe('false');
+    });
+  });
+
   it('raises the designation when an unlit flag is clicked, without triggering row navigation', async () => {
-    repositoriesResponse = { repositories: [repository({ id: 'repo-a', orchestratorSessionId: null })] };
+    repositoriesResponse = { repositories: [repository({ id: 'repo-a', orchestratorSessionIds: [] })] };
     const sessions = [
       createSessionWithActivity(
         createMockWorktreeSession({ id: 'session-a', repositoryId: 'repo-a', repositoryName: 'repo-a' }),
@@ -1670,7 +1701,7 @@ describe('Orchestrator flag control (Issue #1643 PR-2)', () => {
   });
 
   it('clears the designation when a lit flag is clicked, without triggering row navigation', async () => {
-    repositoriesResponse = { repositories: [repository({ id: 'repo-a', orchestratorSessionId: 'session-a' })] };
+    repositoriesResponse = { repositories: [repository({ id: 'repo-a', orchestratorSessionIds: ['session-a'] })] };
     const sessions = [
       createSessionWithActivity(
         createMockWorktreeSession({ id: 'session-a', repositoryId: 'repo-a', repositoryName: 'repo-a' }),
@@ -1698,6 +1729,82 @@ describe('Orchestrator flag control (Issue #1643 PR-2)', () => {
     expect(router.state.location.pathname).toBe('/');
   });
 
+  // reach: fails if handleOrchestratorFlagClick is made unconditional --
+  // i.e. it opens the confirmation dialog on every lit-flag click instead of
+  // only when isLastDesignation is true. MEASURED (not predicted): with the
+  // `else if (isLastDesignation)` branch temporarily collapsed into a bare
+  // `else { setClearConfirmOpen(true); }`, this test FAILED (timeout waiting
+  // for the DELETE call, since it never fires until the dialog is confirmed);
+  // restored, it PASSES. Both runs recorded in the PR report.
+  it('clicking a lit flag when it is one of TWO designations removes it directly, with NO confirmation dialog', async () => {
+    repositoriesResponse = {
+      repositories: [repository({ id: 'repo-1', orchestratorSessionIds: ['session-a', 'session-b'] })],
+    };
+    const sessions = [
+      createSessionWithActivity(
+        createMockWorktreeSession({ id: 'session-a', repositoryId: 'repo-1', repositoryName: 'repo-1' }),
+        'idle'
+      ),
+      createSessionWithActivity(
+        createMockWorktreeSession({ id: 'session-b', repositoryId: 'repo-1', repositoryName: 'repo-1' }),
+        'idle'
+      ),
+    ];
+
+    await renderWithRouter(<ActiveSessionsSidebar {...defaultProps()} sessions={sessions} />);
+
+    const flagButton = await waitFor(() => {
+      const el = screen.getByTestId('orchestrator-flag-session-a');
+      expect(el.getAttribute('data-orchestrator-flag-lit')).toBe('true');
+      return el;
+    });
+    fireEvent.click(flagButton);
+
+    await waitFor(() => {
+      expect(orchestratorDesignationCalls).toContainEqual({ method: 'DELETE', sessionId: 'session-a' });
+    });
+    expect(screen.queryByRole('alertdialog')).toBeNull();
+  });
+
+  // reach: fails if isLastDesignation is computed incorrectly (e.g. always
+  // false, or checks something other than array length === 1) -- the
+  // dialog must still gate the DELETE when this session is the sole
+  // remaining designation.
+  it('clicking a lit flag when it is the LAST designation shows the confirmation dialog with the unchanged copy', async () => {
+    repositoriesResponse = { repositories: [repository({ id: 'repo-a', orchestratorSessionIds: ['session-a'] })] };
+    const sessions = [
+      createSessionWithActivity(
+        createMockWorktreeSession({ id: 'session-a', repositoryId: 'repo-a', repositoryName: 'repo-a' }),
+        'idle'
+      ),
+    ];
+
+    await renderWithRouter(<ActiveSessionsSidebar {...defaultProps()} sessions={sessions} />);
+
+    const flagButton = await waitFor(() => {
+      const el = screen.getByTestId('orchestrator-flag-session-a');
+      expect(el.getAttribute('data-orchestrator-flag-lit')).toBe('true');
+      return el;
+    });
+    fireEvent.click(flagButton);
+
+    const dialog = await waitFor(() => screen.getByRole('alertdialog'));
+    expect(within(dialog).getByText('Clear Orchestrator designation for repo-a?')).toBeTruthy();
+    expect(
+      within(dialog).getByText(
+        'This repository will have no designated Orchestrator; labeled-Issue webhooks and fallback notifications will not be delivered until one is set.'
+      )
+    ).toBeTruthy();
+    // No DELETE has fired yet -- the dialog only opened, it did not confirm.
+    expect(orchestratorDesignationCalls).toEqual([]);
+
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Clear' }));
+
+    await waitFor(() => {
+      expect(orchestratorDesignationCalls).toContainEqual({ method: 'DELETE', sessionId: 'session-a' });
+    });
+  });
+
   // Clearing a repository's designation leaves it with no designated
   // Orchestrator at all, breaking labeled-Issue webhook routing and the
   // fallback-notification path until someone re-designates -- so the
@@ -1706,7 +1813,7 @@ describe('Orchestrator flag control (Issue #1643 PR-2)', () => {
   // check, since this sentence is also the visual acceptance criterion verified
   // verbatim in Browser QA.
   it('shows a confirmation dialog with the exact clear-consequence copy when a lit flag is clicked', async () => {
-    repositoriesResponse = { repositories: [repository({ id: 'repo-a', orchestratorSessionId: 'session-a' })] };
+    repositoriesResponse = { repositories: [repository({ id: 'repo-a', orchestratorSessionIds: ['session-a'] })] };
     const sessions = [
       createSessionWithActivity(
         createMockWorktreeSession({ id: 'session-a', repositoryId: 'repo-a', repositoryName: 'repo-a' }),
@@ -1735,7 +1842,7 @@ describe('Orchestrator flag control (Issue #1643 PR-2)', () => {
   });
 
   it('issues no request when the clear confirmation dialog is cancelled', async () => {
-    repositoriesResponse = { repositories: [repository({ id: 'repo-a', orchestratorSessionId: 'session-a' })] };
+    repositoriesResponse = { repositories: [repository({ id: 'repo-a', orchestratorSessionIds: ['session-a'] })] };
     const sessions = [
       createSessionWithActivity(
         createMockWorktreeSession({ id: 'session-a', repositoryId: 'repo-a', repositoryName: 'repo-a' }),
@@ -1764,11 +1871,11 @@ describe('Orchestrator flag control (Issue #1643 PR-2)', () => {
     expect(flagButton.hasAttribute('disabled')).toBe(false);
   });
 
-  // Polarity measured: fails when the swap (raise) path also opens
+  // Polarity measured: fails when the raise (add) path also opens
   // setClearConfirmOpen(true) (reverted after measuring) -- see
-  // handleOrchestratorFlagClick's `else` branch in ActiveSessionsSidebar.tsx.
-  it('raising the designation (swap) never opens a confirmation dialog', async () => {
-    repositoriesResponse = { repositories: [repository({ id: 'repo-a', orchestratorSessionId: 'session-a' })] };
+  // handleOrchestratorFlagClick's first branch in ActiveSessionsSidebar.tsx.
+  it('adding never shows a dialog', async () => {
+    repositoriesResponse = { repositories: [repository({ id: 'repo-a', orchestratorSessionIds: ['session-a'] })] };
     const sessions = [
       createSessionWithActivity(
         createMockWorktreeSession({ id: 'session-a', repositoryId: 'repo-a', repositoryName: 'repo-a' }),
@@ -1801,7 +1908,7 @@ describe('Orchestrator flag control (Issue #1643 PR-2)', () => {
   // re-enable the button, with no visible feedback (e.g. a 403 for a
   // non-owner's session in multi-user `all` mode, or a network error).
   it('shows a transient, visible error message when raising the designation fails', async () => {
-    repositoriesResponse = { repositories: [repository({ id: 'repo-a', orchestratorSessionId: null })] };
+    repositoriesResponse = { repositories: [repository({ id: 'repo-a', orchestratorSessionIds: [] })] };
     globalThis.fetch = Object.assign(
       mock(async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
         const url = input instanceof Request ? input.url : String(input);
@@ -1847,7 +1954,7 @@ describe('Orchestrator flag control (Issue #1643 PR-2)', () => {
   });
 
   it('shows a transient, visible error message when clearing the designation fails', async () => {
-    repositoriesResponse = { repositories: [repository({ id: 'repo-a', orchestratorSessionId: 'session-a' })] };
+    repositoriesResponse = { repositories: [repository({ id: 'repo-a', orchestratorSessionIds: ['session-a'] })] };
     globalThis.fetch = Object.assign(
       mock(async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
         const url = input instanceof Request ? input.url : String(input);
@@ -1897,7 +2004,7 @@ describe('Orchestrator flag control (Issue #1643 PR-2)', () => {
   // `showCreatorUsername`'s right-28/right-2 toggle) to directly below the
   // activity indicator, left-aligned under it.
   it('positions the flag left-aligned under the indicator column, not top-right beside the creator badge', async () => {
-    repositoriesResponse = { repositories: [repository({ id: 'repo-a', orchestratorSessionId: null })] };
+    repositoriesResponse = { repositories: [repository({ id: 'repo-a', orchestratorSessionIds: [] })] };
     const sessions = [
       createSessionWithActivity(
         createMockWorktreeSession({ id: 'session-a', repositoryId: 'repo-a', repositoryName: 'repo-a' }),
@@ -1922,7 +2029,7 @@ describe('Orchestrator flag control (Issue #1643 PR-2)', () => {
   });
 
   it('reserves a spacer slot below the activity indicator for worktree sessions, but not for quick sessions', async () => {
-    repositoriesResponse = { repositories: [repository({ id: 'repo-a', orchestratorSessionId: null })] };
+    repositoriesResponse = { repositories: [repository({ id: 'repo-a', orchestratorSessionIds: [] })] };
     const sessions = [
       createSessionWithActivity(
         createMockWorktreeSession({ id: 'session-a', repositoryId: 'repo-a', repositoryName: 'repo-a' }),
@@ -1943,7 +2050,7 @@ describe('Orchestrator flag control (Issue #1643 PR-2)', () => {
   });
 
   it('anchors the error tooltip to the left edge, not the right, now that the flag sits near the sidebar\'s left side', async () => {
-    repositoriesResponse = { repositories: [repository({ id: 'repo-a', orchestratorSessionId: 'session-a' })] };
+    repositoriesResponse = { repositories: [repository({ id: 'repo-a', orchestratorSessionIds: ['session-a'] })] };
     globalThis.fetch = Object.assign(
       mock(async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
         const url = input instanceof Request ? input.url : String(input);
@@ -1992,7 +2099,7 @@ describe('Orchestrator flag control (Issue #1643 PR-2)', () => {
   // existing ruling, restated in #1660's PR body) -- pin that omission
   // explicitly rather than relying on it never having been tested.
   it('omits the flag control and its spacer entirely in collapsed mode, while still rendering the row icon', async () => {
-    repositoriesResponse = { repositories: [repository({ id: 'repo-a', orchestratorSessionId: 'session-a' })] };
+    repositoriesResponse = { repositories: [repository({ id: 'repo-a', orchestratorSessionIds: ['session-a'] })] };
     const sessions = [
       createSessionWithActivity(
         createMockWorktreeSession({ id: 'session-a', repositoryId: 'repo-a', repositoryName: 'repo-a' }),
@@ -2081,7 +2188,7 @@ describe('Orchestrator flag control (Issue #1643 PR-2)', () => {
             // schema (v.strictObject in app-server-message.ts), unlike the
             // REST-mock `repository()` helper above whose payload never
             // passes through schema validation.
-            repositories: [repository({ id: 'repo-a', orchestratorSessionId: 'session-a', clonedSourceRepoPath: null })],
+            repositories: [repository({ id: 'repo-a', orchestratorSessionIds: ['session-a'], clonedSourceRepoPath: null })],
           }),
         );
       });
@@ -2111,7 +2218,7 @@ describe('Orchestrator flag control (Issue #1643 PR-2)', () => {
   it('when the cache holds a stale designation, a repositories-sync payload with a corrected designation relights exactly the newly-designated session\'s flag', async () => {
     const restoreWebSocket = installMockWebSocket();
     resetWebSocket();
-    repositoriesResponse = { repositories: [repository({ id: 'repo-a', orchestratorSessionId: 'session-a' })] };
+    repositoriesResponse = { repositories: [repository({ id: 'repo-a', orchestratorSessionIds: ['session-a'] })] };
     installGlobalFetchMock();
 
     try {
@@ -2152,13 +2259,14 @@ describe('Orchestrator flag control (Issue #1643 PR-2)', () => {
             // schema (v.strictObject in app-server-message.ts), unlike the
             // REST-mock `repository()` helper above whose payload never
             // passes through schema validation.
-            repositories: [repository({ id: 'repo-a', orchestratorSessionId: 'session-b', clonedSourceRepoPath: null })],
+            repositories: [repository({ id: 'repo-a', orchestratorSessionIds: ['session-b'], clonedSourceRepoPath: null })],
           }),
         );
       });
 
-      // Ending state: the designation moved -- session-b's flag is now the
-      // sole lit flag, and session-a's flag (still present) is dark.
+      // Ending state: the designated set changed to session-b -- session-b's
+      // flag is now the sole lit flag, and session-a's flag (still present)
+      // is dark.
       await waitFor(() => {
         const flags = Array.from(document.querySelectorAll('[data-orchestrator-flag]'));
         expect(flags).toHaveLength(2);

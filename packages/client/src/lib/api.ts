@@ -330,12 +330,13 @@ export async function resumeSession(sessionId: string): Promise<Session> {
 
 export interface OrchestratorDesignationResponse {
   repositoryId: string;
-  orchestratorSessionId: string;
+  orchestratorSessionIds: string[];
 }
 
 /**
- * Raise this session's repository's Orchestrator-designation flag (making
- * this session the designated Orchestrator for its repository).
+ * Add this session to its repository's set of designated Orchestrator
+ * sessions. Other sessions' designations (if any) are unaffected -- a
+ * repository row can have several designated sessions at once.
  * Only valid for worktree sessions.
  */
 export async function raiseOrchestratorDesignation(sessionId: string): Promise<OrchestratorDesignationResponse> {
@@ -348,13 +349,14 @@ export async function raiseOrchestratorDesignation(sessionId: string): Promise<O
 
 export interface ClearOrchestratorDesignationResponse {
   repositoryId: string;
-  /** `false` is a normal no-op response (another session already superseded this one), not an error. */
-  cleared: boolean;
+  /** `false` is the idempotent no-op response (this session was not in the designated set), not an error. */
+  removed: boolean;
+  orchestratorSessionIds: string[];
 }
 
 /**
- * Clear this session's repository's Orchestrator-designation flag, but only
- * if this session currently holds it.
+ * Remove this session from its repository's set of designated Orchestrator
+ * sessions. Other sessions' designations (if any) are unaffected.
  */
 export async function clearOrchestratorDesignation(sessionId: string): Promise<ClearOrchestratorDesignationResponse> {
   const res = await api.sessions[':id']['orchestrator-designation'].$delete({ param: { id: sessionId } });

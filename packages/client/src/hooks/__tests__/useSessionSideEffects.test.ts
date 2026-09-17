@@ -489,7 +489,7 @@ describe('worktreeInvalidationKeyFor (Issue #1266)', () => {
  * Tests for Issue #1643 PR-2's targeted `orchestrator-designation-changed`
  * cache patch. This handler is registered directly on this always-mounted
  * hook (not only on routes/index.tsx's onRepositoryUpdated), because
- * ActiveSessionsSidebar -- which reads Repository.orchestratorSessionId to
+ * ActiveSessionsSidebar -- which reads Repository.orchestratorSessionIds to
  * render the flag control -- is mounted unconditionally from __root.tsx on
  * every route, not only the dashboard route.
  */
@@ -521,50 +521,97 @@ describe('useSessionSideEffects - orchestrator-designation-changed cache patch (
       name: 'repo-1',
       path: '/path/to/repo-1',
       createdAt: new Date().toISOString(),
-      orchestratorSessionId: null,
+      orchestratorSessionIds: [],
       ...overrides,
     } as Repository;
   }
 
-  it('patches only the targeted repository, leaving the other repository object reference-equal', () => {
+  it('patches only the targeted repository with the broadcast full array on action: added, leaving the other repository object reference-equal', () => {
+    // reach: fails if the handler splices changedSessionId into the cached
+    // array instead of writing the broadcast's orchestratorSessionIds verbatim.
     const options = createDefaultOptions();
     const { queryClient } = renderWithQueryClient(options);
 
-    const repoA = repository({ id: 'repo-a', orchestratorSessionId: null });
-    const repoB = repository({ id: 'repo-b', orchestratorSessionId: 'old-session' });
+    const repoA = repository({ id: 'repo-a', orchestratorSessionIds: ['s1'] });
+    const repoB = repository({ id: 'repo-b', orchestratorSessionIds: ['old-session'] });
     queryClient.setQueryData(['repositories'], { repositories: [repoA, repoB] });
 
     const ws = MockWebSocket.getLastInstance();
     act(() => {
       ws?.simulateOpen();
       ws?.simulateMessage(
-        JSON.stringify({ type: 'orchestrator-designation-changed', repositoryId: 'repo-a', sessionId: 'session-new' })
+        JSON.stringify({
+          type: 'orchestrator-designation-changed',
+          repositoryId: 'repo-a',
+          orchestratorSessionIds: ['s1', 's2'],
+          changedSessionId: 's2',
+          action: 'added',
+        })
       );
     });
 
     const cached = queryClient.getQueryData<{ repositories: Repository[] }>(['repositories']);
-    expect(cached?.repositories.find((r) => r.id === 'repo-a')?.orchestratorSessionId).toBe('session-new');
+    expect(cached?.repositories.find((r) => r.id === 'repo-a')?.orchestratorSessionIds).toEqual(['s1', 's2']);
     // Untouched repository must be the SAME object reference, not just equal by value.
     expect(cached?.repositories.find((r) => r.id === 'repo-b')).toBe(repoB);
   });
 
-  it('sets orchestratorSessionId to null when the designation is cleared', () => {
+  it('patches orchestratorSessionIds down to an empty array on action: removed', () => {
+    // reach: fails if the handler leaves the cached array unchanged, or
+    // filters it locally instead of writing the broadcast's array verbatim.
     const options = createDefaultOptions();
     const { queryClient } = renderWithQueryClient(options);
 
-    const repoA = repository({ id: 'repo-a', orchestratorSessionId: 'session-old' });
+    const repoA = repository({ id: 'repo-a', orchestratorSessionIds: ['session-old'] });
     queryClient.setQueryData(['repositories'], { repositories: [repoA] });
 
     const ws = MockWebSocket.getLastInstance();
     act(() => {
       ws?.simulateOpen();
       ws?.simulateMessage(
-        JSON.stringify({ type: 'orchestrator-designation-changed', repositoryId: 'repo-a', sessionId: null })
+        JSON.stringify({
+          type: 'orchestrator-designation-changed',
+          repositoryId: 'repo-a',
+          orchestratorSessionIds: [],
+          changedSessionId: 'session-old',
+          action: 'removed',
+        })
       );
     });
 
     const cached = queryClient.getQueryData<{ repositories: Repository[] }>(['repositories']);
-    expect(cached?.repositories.find((r) => r.id === 'repo-a')?.orchestratorSessionId).toBeNull();
+    expect(cached?.repositories.find((r) => r.id === 'repo-a')?.orchestratorSessionIds).toEqual([]);
+  });
+
+  it('writes the broadcast array verbatim even when it disagrees with what a splice from changedSessionId/action would produce', () => {
+    // reach: fails if the handler derives the new array from
+    // changedSessionId + action (e.g. appending/removing changedSessionId
+    // locally) instead of trusting the broadcast's orchestratorSessionIds --
+    // the "never derive" pin from Issue #1716.
+    const options = createDefaultOptions();
+    const { queryClient } = renderWithQueryClient(options);
+
+    const repoA = repository({ id: 'repo-a', orchestratorSessionIds: ['s1'] });
+    queryClient.setQueryData(['repositories'], { repositories: [repoA] });
+
+    const ws = MockWebSocket.getLastInstance();
+    act(() => {
+      ws?.simulateOpen();
+      ws?.simulateMessage(
+        JSON.stringify({
+          type: 'orchestrator-designation-changed',
+          repositoryId: 'repo-a',
+          // Disagrees with a naive splice: a local "add s2" would produce
+          // ['s1', 's2'], not ['s3'].
+          orchestratorSessionIds: ['s3'],
+          changedSessionId: 's2',
+          action: 'added',
+        })
+      );
+    });
+
+    const cached = queryClient.getQueryData<{ repositories: Repository[] }>(['repositories']);
+    expect(cached?.repositories.find((r) => r.id === 'repo-a')?.orchestratorSessionIds).toEqual(['s3']);
   });
 
   it('does not throw when no repositories query has ever been registered', () => {
@@ -580,7 +627,13 @@ describe('useSessionSideEffects - orchestrator-designation-changed cache patch (
       act(() => {
         ws?.simulateOpen();
         ws?.simulateMessage(
-          JSON.stringify({ type: 'orchestrator-designation-changed', repositoryId: 'repo-a', sessionId: 'session-new' })
+          JSON.stringify({
+            type: 'orchestrator-designation-changed',
+            repositoryId: 'repo-a',
+            orchestratorSessionIds: ['session-new'],
+            changedSessionId: 'session-new',
+            action: 'added',
+          })
         );
       });
     }).not.toThrow();
@@ -600,8 +653,8 @@ describe('useSessionSideEffects - orchestrator-designation-changed cache patch (
     const { queryClient } = renderWithQueryClient(options);
     const queryKey = repositoryKeys.all();
 
-    const repoAStale = repository({ id: 'repo-a', orchestratorSessionId: null });
-    const repoAFresh = repository({ id: 'repo-a', orchestratorSessionId: 'session-new' });
+    const repoAStale = repository({ id: 'repo-a', orchestratorSessionIds: [] });
+    const repoAFresh = repository({ id: 'repo-a', orchestratorSessionIds: ['session-new'] });
 
     let resolveFirstFetch: ((value: { repositories: Repository[] }) => void) | null = null;
     const queryFn = mock(() => {
@@ -635,7 +688,13 @@ describe('useSessionSideEffects - orchestrator-designation-changed cache patch (
     act(() => {
       ws?.simulateOpen();
       ws?.simulateMessage(
-        JSON.stringify({ type: 'orchestrator-designation-changed', repositoryId: 'repo-a', sessionId: 'session-new' })
+        JSON.stringify({
+            type: 'orchestrator-designation-changed',
+            repositoryId: 'repo-a',
+            orchestratorSessionIds: ['session-new'],
+            changedSessionId: 'session-new',
+            action: 'added',
+          })
       );
     });
 
@@ -651,7 +710,7 @@ describe('useSessionSideEffects - orchestrator-designation-changed cache patch (
     });
     await waitFor(() => {
       const cached = queryClient.getQueryData<{ repositories: Repository[] }>(queryKey);
-      expect(cached?.repositories.find((r) => r.id === 'repo-a')?.orchestratorSessionId).toBe('session-new');
+      expect(cached?.repositories.find((r) => r.id === 'repo-a')?.orchestratorSessionIds).toEqual(['session-new']);
     });
   });
 
@@ -672,7 +731,7 @@ describe('useSessionSideEffects - orchestrator-designation-changed cache patch (
     const { queryClient } = renderWithQueryClient(options);
     const queryKey = repositoryKeys.all();
 
-    const repoB = repository({ id: 'repo-b', orchestratorSessionId: null });
+    const repoB = repository({ id: 'repo-b', orchestratorSessionIds: [] });
 
     const queryFn = mock(() => Promise.resolve({ repositories: [repoB] }));
 
@@ -693,7 +752,13 @@ describe('useSessionSideEffects - orchestrator-designation-changed cache patch (
     act(() => {
       ws?.simulateOpen();
       ws?.simulateMessage(
-        JSON.stringify({ type: 'orchestrator-designation-changed', repositoryId: 'repo-a', sessionId: 'session-new' })
+        JSON.stringify({
+            type: 'orchestrator-designation-changed',
+            repositoryId: 'repo-a',
+            orchestratorSessionIds: ['session-new'],
+            changedSessionId: 'session-new',
+            action: 'added',
+          })
       );
     });
 
