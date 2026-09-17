@@ -230,7 +230,7 @@ export async function createDatabaseForTest(dbPath: string = IN_MEMORY_DB_PATH):
   // would look for the real file on the virtual filesystem and fail with
   // ENOENT, even though the real file exists on real disk. Passing
   // `dbPath` here would only be correct in isolation, never in the full
-  // suite (Issue #1709 PR-3b). This skip is local to THIS factory only --
+  // suite. This skip is local to THIS factory only --
   // the production path (`initializeDatabase` / `doInitializeDatabase`
   // above) is untouched and still passes its real `dbPath` into
   // `runMigrations`, so the v19 backup still runs for real installs.
