@@ -65,7 +65,13 @@
  *         `missing-command` whose `command` does not exist -> status
  *         `failed`, no `mcp__missing-command__*` tool, and the turn still
  *         completes (declares, does not brick) -- compared to P1's baseline
- *         BY NAME, never by "any failed status".
+ *         BY NAME, never by "any failed status". CONDITIONAL FALLBACK: if
+ *         no `mcp__chrome-devtools__*` call is observed with `alwaysLoad`
+ *         unset, ONE more session repeats the arm with `alwaysLoad: true`
+ *         on the declared server -- separating "deferred tools are
+ *         unreachable under our allowlist" (a design input: the engine
+ *         wiring's no-`alwaysLoad` choice would flip) from "the declaration
+ *         itself does not work". Costs a turn only when needed.
  *
  *   --p3  TASK. Two halves, one session each.
  *         (a) P1 + `tools: [...baseline, 'Task', 'Agent']` and NO `agents`.
@@ -191,7 +197,7 @@ const EXIT_CODE_MEANINGS: Record<number, string> = {
 };
 
 export interface ArmVerdict {
-  arm: 'P0' | 'P1' | 'P2' | 'P3a' | 'P3b';
+  arm: 'P0' | 'P1' | 'P2' | 'P2-alwaysLoad' | 'P3a' | 'P3b';
   conclusive: boolean;
   verdict: string;
   /** Findings that change a design or need their own Issue; printed as `STOP:` lines. */
@@ -382,6 +388,7 @@ export function classifyP1(init: InitObservation | null, post: ReadonlyArray<{ n
 }
 
 export interface DeclaredInputs {
+  arm?: 'P2' | 'P2-alwaysLoad';
   init: InitObservation | null;
   post: ReadonlyArray<{ name: string; status: string }>;
   declaredName: string;
@@ -392,8 +399,9 @@ export interface DeclaredInputs {
 }
 
 export function classifyP2(i: DeclaredInputs): ArmVerdict {
-  if (!i.init) return { arm: 'P2', conclusive: false, verdict: 'INCONCLUSIVE -- no system:init', stops: [] };
-  if (!i.turnSettled) return { arm: 'P2', conclusive: false, verdict: 'INCONCLUSIVE -- the tool-call turn did not settle', stops: [] };
+  const arm = i.arm ?? 'P2';
+  if (!i.init) return { arm, conclusive: false, verdict: 'INCONCLUSIVE -- no system:init', stops: [] };
+  if (!i.turnSettled) return { arm, conclusive: false, verdict: 'INCONCLUSIVE -- the tool-call turn did not settle', stops: [] };
   const statusOf = (name: string): string | null =>
     i.post.find((s) => s.name === name)?.status ?? i.init!.mcpServers.find((s) => s.name === name)?.status ?? null;
   const declaredStatus = statusOf(i.declaredName);
@@ -410,7 +418,7 @@ export function classifyP2(i: DeclaredInputs): ArmVerdict {
   if (!missingOk) stops.push(`P2 negative control: '${i.missingName}' status=${missingStatus ?? '(absent)'} tools=${missingToolsAtInit} -- a missing command did not read as a clean, declared failure`);
   if (!strict.consoleConnected) stops.push('P2 reserved `console` server not connected alongside declared servers');
   return {
-    arm: 'P2',
+    arm,
     conclusive: true,
     verdict: `${declaredOk ? 'DECLARED WORKS' : 'DECLARED DID NOT WORK'} -- ${i.declaredName}: status=${declaredStatus ?? '(absent)'} toolsAtInit=${declaredToolsAtInit} calls=${i.declaredToolCalls}; ${i.missingName}: status=${missingStatus ?? '(absent)'} toolsAtInit=${missingToolsAtInit} (${missingOk ? 'clean failure' : 'NOT a clean failure'}); reserved console=${strict.consoleConnected ? 'connected' : 'NOT connected'}`,
     stops,
@@ -772,12 +780,14 @@ async function armP1(cwd: string, url: string): Promise<ArmVerdict> {
   return verdict;
 }
 
-async function armP2(cwd: string, url: string, userServers: Record<string, unknown>): Promise<ArmVerdict> {
-  h(`P2 DECLARED -- P1 + declared '${AMBIENT_SERVER}' (host's own config) + '${MISSING_SERVER}' negative control`);
-  const declared = userServers[AMBIENT_SERVER] as McpServerConfig;
-  console.log(`P2: declared ${AMBIENT_SERVER} = ${JSON.stringify(declared)}`);
+async function runDeclaredSession(
+  arm: 'P2' | 'P2-alwaysLoad',
+  cwd: string,
+  url: string,
+  declared: McpServerConfig,
+): Promise<ArmVerdict> {
   const run = await runOneSession(
-    'P2',
+    arm,
     cwd,
     url,
     {
@@ -790,9 +800,10 @@ async function armP2(cwd: string, url: string, userServers: Record<string, unkno
     `Call the tool named mcp__${AMBIENT_SERVER}__list_pages exactly once with no arguments. Then reply with ONLY the single word DONE. If that tool is not available to you, reply with ONLY the single word UNAVAILABLE and call nothing.`,
   );
   const declaredToolCalls = run.recorder.postToolUse.filter((f) => !f.agentId && mcpServerOf(f.tool) === AMBIENT_SERVER).length;
-  console.log(`P2: PostToolUse firings = ${JSON.stringify(run.recorder.postToolUse)}`);
-  console.log(`P2: answer = ${JSON.stringify(run.outcome.text.trim().slice(0, 200))}`);
+  console.log(`${arm}: PostToolUse firings = ${JSON.stringify(run.recorder.postToolUse)}`);
+  console.log(`${arm}: answer = ${JSON.stringify(run.outcome.text.trim().slice(0, 200))}`);
   const verdict = classifyP2({
+    arm,
     init: run.init,
     post: run.post,
     declaredName: AMBIENT_SERVER,
@@ -800,8 +811,21 @@ async function armP2(cwd: string, url: string, userServers: Record<string, unkno
     declaredToolCalls,
     turnSettled: turnSettled(run.outcome),
   });
-  console.log(`P2 verdict: ${verdict.verdict}`);
+  console.log(`${arm} verdict: ${verdict.verdict}`);
   return verdict;
+}
+
+async function armP2(cwd: string, url: string, userServers: Record<string, unknown>): Promise<ArmVerdict[]> {
+  h(`P2 DECLARED -- P1 + declared '${AMBIENT_SERVER}' (host's own config, alwaysLoad unset) + '${MISSING_SERVER}' negative control`);
+  const declared = userServers[AMBIENT_SERVER] as McpServerConfig;
+  console.log(`P2: declared ${AMBIENT_SERVER} = ${JSON.stringify(declared)}`);
+  const primary = await runDeclaredSession('P2', cwd, url, declared);
+  if (primary.conclusive && !primary.verdict.startsWith('DECLARED WORKS')) {
+    h(`P2-alwaysLoad -- the same, with alwaysLoad: true on '${AMBIENT_SERVER}' (conditional fallback: no tool call observed above)`);
+    const fallback = await runDeclaredSession('P2-alwaysLoad', cwd, url, { ...declared, alwaysLoad: true } as McpServerConfig);
+    return [primary, fallback];
+  }
+  return [primary];
 }
 
 function writeNonceFile(cwd: string, token: string): string {
@@ -835,9 +859,9 @@ async function armP3(cwd: string, url: string, half: 'a' | 'b'): Promise<ArmVerd
           },
         }
       : undefined;
-  const subagentType = half === 'b' ? 'probe' : 'general-purpose';
+  const subagentClause = half === 'b' ? 'with subagent_type "probe", ' : 'with the default subagent type, ';
   const prompt =
-    `Delegate the following to a subagent using your Task tool (or Agent tool, whichever you have), with subagent_type "${subagentType}", run_in_background false: ` +
+    `Delegate the following to a subagent using your Task tool (or Agent tool, whichever you have), ${subagentClause}run_in_background false: ` +
     `"Read the file ${file} with your Read tool and follow the instructions inside it exactly." ` +
     'When the subagent finishes, reply with the subagent\'s full report VERBATIM and nothing else. Do not read the file yourself.';
   const run = await runOneSession(label, cwd, url, { strictMcpConfig: true, extraTools: TASK_CANDIDATES, agents }, prompt, 300_000);
@@ -889,7 +913,7 @@ async function main(): Promise<number> {
       }
     }
     if (arms.has('--p1')) verdicts.push(await armP1(cwd, standIn.url));
-    if (!halted && arms.has('--p2')) verdicts.push(await armP2(cwd, standIn.url, userServers));
+    if (!halted && arms.has('--p2')) verdicts.push(...(await armP2(cwd, standIn.url, userServers)));
     if (!halted && arms.has('--p3')) {
       verdicts.push(await armP3(cwd, standIn.url, 'a'));
       verdicts.push(await armP3(cwd, standIn.url, 'b'));
