@@ -129,28 +129,37 @@ function renderSessionPage() {
 }
 
 /**
- * Mirrors hooks/__tests__/useIsMobile.test.ts's `createMockMatchMedia`
- * helper -- reused here (not imported, since it's file-local there) to
- * drive the real `useIsMobile()` inside the real `SessionPage`.
+ * A complete, directly-typed `MediaQueryList` stub (no cast through
+ * `unknown`; same shape as TerminalAdapter.test.tsx's `createMatchMediaList`)
+ * plus a `triggerChange` lever, so the test can drive the real `useIsMobile()`
+ * inside the real `SessionPage` across the 767px boundary. `useIsMobile`
+ * only reads `.matches` and subscribes via `addEventListener('change')`.
  */
 function createMockMatchMedia(matches: boolean) {
-  let changeListener: ((e: { matches: boolean }) => void) | null = null;
-  const mql = {
+  let changeListener: ((e: MediaQueryListEvent) => void) | null = null;
+  const mql: MediaQueryList = {
     matches,
-    addEventListener: mock((event: string, listener: (e: { matches: boolean }) => void) => {
-      if (event === 'change') changeListener = listener;
-    }),
-    removeEventListener: mock((event: string, _listener: unknown) => {
-      if (event === 'change') changeListener = null;
-    }),
+    media: '(max-width: 767px)',
+    onchange: null,
+    addEventListener: (type: string, listener: EventListenerOrEventListenerObject | null) => {
+      if (type === 'change' && typeof listener === 'function') {
+        changeListener = listener as (e: MediaQueryListEvent) => void;
+      }
+    },
+    removeEventListener: (type: string) => {
+      if (type === 'change') changeListener = null;
+    },
+    addListener: () => {},
+    removeListener: () => {},
+    dispatchEvent: () => false,
   };
-  const matchMedia = mock((_query: string) => mql as unknown as MediaQueryList);
+  const matchMedia = mock((_query: string) => mql);
   return {
     matchMedia,
     mql,
     triggerChange: (newMatches: boolean) => {
       mql.matches = newMatches;
-      changeListener?.({ matches: newMatches });
+      changeListener?.({ matches: newMatches } as MediaQueryListEvent);
     },
   };
 }
