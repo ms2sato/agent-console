@@ -59,7 +59,9 @@ describe('DiffWorkerHandler', () => {
     return {
       sessionManager: {
         getSession: mock((id: string): Session | undefined => sessionMap.get(id)),
-        writeWorkerInput: mock((_sessionId: string, _workerId: string, _data: string): boolean => true),
+        // DiffWorkerHandler never calls deliverWorkerNotification -- present
+        // only to satisfy InboundSessionManager's shape.
+        deliverWorkerNotification: mock(async () => ({ ok: true as const })),
       },
       broadcastToApp: mockBroadcast,
     };

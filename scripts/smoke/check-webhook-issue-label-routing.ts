@@ -80,13 +80,41 @@
  *      D2 stays paused for scenarios 5-7, which therefore also exercise
  *      "a designated-but-not-live session is skipped by the fallback".
  *
+ *   4c. POSITIVE (Issue #1739, inbound delivery to an EMBEDDED-agent
+ *      worker): an `openai-api` embedded-agent definition is created
+ *      through the real `POST /api/embedded-agents`, pointed at a stub
+ *      OpenAI-compatible provider hosted in this process (`Bun.serve`,
+ *      scripted final answer, no tool calls, every request recorded); a
+ *      fourth worktree session E is created with that definition as its
+ *      initial worker (`embeddedAgentId`; no PTY `agent` worker at all)
+ *      and designated through a real `set_orchestrator_session` call, so
+ *      the set reads {D, D2, E}. The scenario 3 shape is posted again:
+ *      D receives the PTY tag as before; E's worker -- created dormant,
+ *      never activated by the smoke -- is woken by the event itself
+ *      (`deliverWorkerNotification` -> `sendSystemNotification` ->
+ *      `deliverUserTurn` -> `ensureDeliverable`) and its NDJSON output
+ *      file gains, after the baseline captured before the POST, a
+ *      `user-message` event with `notification.kind === 'inbound-event'`
+ *      whose text carries `[inbound:issue:labeled]` (read only after the
+ *      turn settles: stub answered + `state: 'idle'`); the stub saw
+ *      exactly one chat request since the POST, carrying that tag text
+ *      (the activation-on-delivery proof); T does not receive; and the
+ *      server's stdout since the POST does NOT contain the "no agent
+ *      worker to deliver to" skip reason naming E. On the pre-fix tree
+ *      every E assertion fails and that skip line IS present naming E.
+ *
  *   5. POSITIVE (Issue #1661, main-push fallback): a `workflow_run`
  *      `completed`/`success` event on `head_branch: 'main'`, matching zero
  *      registered sessions (neither D's nor T's worktreeId). Routes to D
  *      (the live designated Orchestrator session) via `resolveTargets`'s
  *      designated-session fallback -- confirmed by reading D's real worker
  *      output file for the `[inbound:ci:completed]` tag. T must NOT receive
- *      it, and neither must the paused D2 (designated, skipped). `head_sha` is omitted so `job-handler.ts`'s `ciCompletionChecker`
+ *      it, and neither must the paused D2 (designated, skipped). E (the
+ *      embedded-designated session from 4c) MUST receive it too, as the
+ *      same NDJSON `inbound-event` user-message shape on the
+ *      `[inbound:ci:completed]` tag with exactly one more stub request
+ *      (Issue #1739: the fallback path for an embedded designated
+ *      session). `head_sha` is omitted so `job-handler.ts`'s `ciCompletionChecker`
  *      gate never runs (it only fires when `commitSha` is present), avoiding
  *      a pointless real `gh api` call against a nonexistent repo.
  *
@@ -149,7 +177,15 @@
  *     remove a session from the live session manager while preserving its
  *     DB row;
  *   - a real `DELETE /api/sessions/:id` call (scenario 7) to remove session
- *     R's row from the `sessions` table entirely.
+ *     R's row from the `sessions` table entirely;
+ *   - (scenario 4c / 5-E) a real `POST /api/embedded-agents` definition, a
+ *     real worktree session E whose initial worker is that embedded agent
+ *     (`embeddedAgentId`), a third real `set_orchestrator_session` call, a
+ *     real embedded-agent loop subprocess spawned by the disposable server
+ *     on delivery (the real `openai-api` engine, talking to the in-process
+ *     stub provider over real HTTP), and E's real NDJSON worker output
+ *     file. The ONLY substitution is the provider behind the definition's
+ *     `baseUrl` -- upstream of and outside the delivery chain under test.
  *
  * Usage:
  *   bun scripts/smoke/check-webhook-issue-label-routing.ts
@@ -341,6 +377,16 @@ async function main(): Promise<void> {
   let proc: ReturnType<typeof Bun.spawn> | undefined;
   let stdoutBuf = '';
   let stderrBuf = '';
+  // Scenario 4c / 5-E state that the `finally` block needs: the in-process
+  // stub provider (stopped AFTER the child server has exited, so no loop
+  // request is ever cut off mid-flight), the embedded-designated session E
+  // (deleted through the real route BEFORE the server is killed, so its
+  // embedded worker is deactivated gracefully and its output flushed
+  // before the disposable home is removed), and the stub's request log,
+  // printed on failure so a red E assertion can be attributed.
+  let stubServer: ReturnType<typeof Bun.serve> | undefined;
+  let sessionEId: string | undefined;
+  let printStubStateOnFailure: (() => void) | undefined;
 
   try {
     // -----------------------------------------------------------------
@@ -881,18 +927,297 @@ async function main(): Promise<void> {
     // skip log call directly (a paused session is absent from
     // `getSessions()`, so this is the "not a live session" reason, not the
     // "not running" one a hibernated-but-present session would produce).
-    const stdoutSince4b = stdoutBuf.slice(stdoutLenBefore4b);
+    //
+    // Polled rather than read once: the child's pino-pretty transport
+    // flushes to the pipe asynchronously, so the record can land in
+    // `stdoutBuf` a moment after D's PTY notification is already visible
+    // (observed once as an empty `stdoutSince4b` on an otherwise green run).
+    const NOT_LIVE_SKIP_MSG = 'issue:labeled event matched repository but a designated orchestrator session is not a live session';
+    const scenario4bSkipLogged = await waitFor(() => {
+      const since = stdoutBuf.slice(stdoutLenBefore4b);
+      return since.includes(NOT_LIVE_SKIP_MSG) && since.includes(sessionD2.id);
+    }, 15_000, "server stdout to contain the 'not a live session' skip reason naming D2 (scenario 4b)");
     expect(
-      stdoutSince4b.includes('issue:labeled event matched repository but a designated orchestrator session is not a live session') &&
-        stdoutSince4b.includes(sessionD2.id),
+      scenario4bSkipLogged,
       "SCENARIO 4b: server stdout contains resolve-targets.ts's per-session 'not a live session' skip reason naming D2",
-      `stdout tail: ${stdoutSince4b.slice(-2000)}`,
+      `stdout tail: ${stdoutBuf.slice(stdoutLenBefore4b).slice(-2000)}`,
     );
     const designatedAfterPause = await readDesignatedSet();
     expect(
       designatedAfterPause.includes(sessionD2.id) && designatedAfterPause.includes(sessionD.id),
       'SCENARIO 4b: D2 is STILL in the designated set after being skipped (routing never auto-removes a designation)',
       JSON.stringify(designatedAfterPause),
+    );
+
+    // ===================================================================
+    // SETUP for scenarios 4c / 5-E: an EMBEDDED-designated session E.
+    //
+    // Inbound delivery to an embedded-agent worker (the Phase 6 blocker
+    // this scenario exists for): `AgentWorkerHandler` routes through
+    // `SessionManager.deliverWorkerNotification`, whose embedded branch is
+    // `sendSystemNotification` -> `deliverUserTurn` -> `ensureDeliverable`
+    // (activates a dormant worker before delivery). E's worker is created
+    // DORMANT (an embedded-agent worker is never spawned at creation) and
+    // is woken by the inbound event itself -- which is why "the stub saw
+    // exactly one chat request since the POST" is the activation-on-
+    // delivery proof, not merely a delivery proof.
+    //
+    // FREE AND DETERMINISTIC, like the rest of this smoke: the worker's
+    // `openai-api` definition points at a stub OpenAI-compatible provider
+    // hosted in THIS process (`Bun.serve`, port 0) that answers every
+    // `POST /v1/chat/completions` with a scripted final assistant message
+    // and no tool calls (same shape as `check-embedded-agent-bash-env.ts`'s
+    // stub). No LLM, no provider key beyond a fake `apiKeyRef` entry in the
+    // disposable home's `provider-keys.json`.
+    // ===================================================================
+    console.log('\n==> SETUP E: stub OpenAI-compatible provider + openai-api definition + embedded-designated worktree session E');
+    interface StubChatRequest {
+      at: number;
+      body: unknown;
+    }
+    const stubRequests: StubChatRequest[] = [];
+    const sseEvent = (obj: unknown): string => `data: ${JSON.stringify(obj)}\n\n`;
+    const finalAnswerSse = (): string =>
+      sseEvent({ choices: [{ delta: { content: 'Acknowledged.' }, finish_reason: null }] }) +
+      sseEvent({ choices: [{ delta: {}, finish_reason: 'stop' }] }) +
+      'data: [DONE]\n\n';
+    stubServer = Bun.serve({
+      port: 0,
+      hostname: '127.0.0.1',
+      async fetch(req) {
+        const url = new URL(req.url);
+        if (req.method === 'POST' && url.pathname === '/v1/chat/completions') {
+          const body = (await req.json()) as unknown;
+          stubRequests.push({ at: Date.now(), body });
+          return new Response(finalAnswerSse(), { headers: { 'Content-Type': 'text/event-stream' } });
+        }
+        return new Response('not found', { status: 404 });
+      },
+    });
+    const stubBaseUrl = `http://127.0.0.1:${stubServer.port}`;
+    console.log(`==> stub provider listening on ${stubBaseUrl}`);
+    /** Stub requests recorded at or after `sinceMs` (the POST's wall-clock). */
+    const stubRequestsSince = (sinceMs: number): StubChatRequest[] => stubRequests.filter((r) => r.at >= sinceMs);
+    /** Whether a recorded chat request's messages carry `text` anywhere (string or content-part shape). */
+    const stubRequestMentions = (r: StubChatRequest, text: string): boolean => JSON.stringify(r.body).includes(text);
+    printStubStateOnFailure = () => {
+      console.error(`==> stub provider port: ${stubServer?.port}; recorded chat requests (${stubRequests.length}):`);
+      for (const r of stubRequests) {
+        console.error(`  at=${new Date(r.at).toISOString()} body=${JSON.stringify(r.body).slice(0, 1500)}`);
+      }
+    };
+
+    // The disposable server resolves `apiKeyRef` through
+    // `<AGENT_CONSOLE_HOME>/provider-keys.json` at ACTIVATION time (not at
+    // boot), so writing it now -- after the server is already up -- is
+    // sufficient. The value is fake; the stub never checks it.
+    const apiKeyRef = 'smoke-provider-key';
+    writeFileSync(path.join(disposableHome, 'provider-keys.json'), JSON.stringify({ [apiKeyRef]: `smoke-fake-key-${runId}` }), { mode: 0o600 });
+
+    const createDefinitionRes = await fetch(`${baseUrl}/api/embedded-agents`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: 'Smoke inbound-delivery embedded Orchestrator',
+        provider: { baseUrl: `${stubBaseUrl}/v1`, model: 'smoke-model', apiKeyRef },
+      }),
+    });
+    if (createDefinitionRes.status !== 201) {
+      bail(`POST /api/embedded-agents failed (status ${createDefinitionRes.status}): ${await createDefinitionRes.text()}`);
+    }
+    const { embeddedAgent } = (await createDefinitionRes.json()) as { embeddedAgent: { id: string } };
+    console.log(`==> openai-api definition created: ${embeddedAgent.id}`);
+
+    const worktreeEDir = path.join(scratchRoot, 'worktree-e');
+    git(['worktree', 'add', worktreeEDir, '-b', 'smoke-branch-e'], repoDir);
+    // `embeddedAgentId` (not `agentId`) selects an embedded-agent initial
+    // worker -- the two fields are mutually exclusive on the request schema
+    // (`schemas/session.ts`), and no `initialPrompt` is passed, so nothing
+    // is delivered at activation other than the inbound event itself.
+    const sessionE = await createSession(baseUrl, {
+      type: 'worktree',
+      repositoryId: repository.id,
+      worktreeId: 'smoke-branch-e',
+      locationPath: worktreeEDir,
+      embeddedAgentId: embeddedAgent.id,
+    });
+    sessionEId = sessionE.id;
+    console.log(`==> session E created: ${sessionE.id} (workers: ${JSON.stringify(sessionE.workers.map((w) => w.type))})`);
+    const embeddedWorkerE = sessionE.workers.find((w) => w.type === 'embedded-agent');
+    if (!embeddedWorkerE) bail('session E has no embedded-agent worker');
+    expect(
+      !sessionE.workers.some((w) => w.type === 'agent'),
+      'SETUP E: session E has NO PTY agent worker (embedded-only -- the shape the pre-fix predicate rejected)',
+      JSON.stringify(sessionE.workers.map((w) => w.type)),
+    );
+
+    const designateResultE = (await callMcpTool(baseUrl, mcpSessionId, 'set_orchestrator_session', {
+      sessionId: sessionE.id,
+    })) as { repositoryId: string; orchestratorSessionIds: string[] };
+    const designatedWithE = await readDesignatedSet();
+    expect(
+      designatedWithE.includes(sessionD.id) &&
+        designatedWithE.includes(sessionD2.id) &&
+        designatedWithE.includes(sessionE.id) &&
+        designatedWithE.length === 3,
+      'SETUP E: set_orchestrator_session adds E; GET /api/repositories/:id reads the set as exactly {D, D2, E}',
+      `mcp=${JSON.stringify(designateResultE)} rest=${JSON.stringify(designatedWithE)}`,
+    );
+
+    const outputPathE = await resolveWorkerOutputPath(sessionE.id, embeddedWorkerE.id);
+    console.log(`==> E's worker output file (NDJSON): ${outputPathE}`);
+
+    interface EmbeddedNdjsonLine {
+      type?: string;
+      state?: string;
+      text?: string;
+      notification?: { kind?: string };
+    }
+    /** Parse the NDJSON appended to E's output file after `baseline` (unparseable lines are skipped). */
+    function parseNdjsonSince(p: string, baseline: string): EmbeddedNdjsonLine[] {
+      return readOutputFileSafe(p)
+        .slice(baseline.length)
+        .split('\n')
+        .filter((line) => line.length > 0)
+        .flatMap((line) => {
+          try {
+            return [JSON.parse(line) as EmbeddedNdjsonLine];
+          } catch {
+            return [];
+          }
+        });
+    }
+    /** `user-message` events persisted with `notification.kind === 'inbound-event'` whose text carries `tag`. */
+    function inboundNotificationEvents(lines: EmbeddedNdjsonLine[], tag: string): EmbeddedNdjsonLine[] {
+      return lines.filter(
+        (e) => e.type === 'user-message' && e.notification?.kind === 'inbound-event' && typeof e.text === 'string' && e.text.includes(tag),
+      );
+    }
+    const hasIdleState = (lines: EmbeddedNdjsonLine[]): boolean => lines.some((e) => e.type === 'state' && e.state === 'idle');
+
+    /**
+     * Whether the server's stdout since a given offset contains the
+     * "no agent worker to deliver to" skip reason NAMING `sessionId` --
+     * i.e. the two appear within the same log record. pino-pretty (dev
+     * mode) prints the message and its fields on adjacent lines, and JSON
+     * mode prints the fields BEFORE `msg` on one line, so "same record" is
+     * approximated by a +/-800-char window around each occurrence of the
+     * message rather than by a single-line match. Returns the matching
+     * window (so a failure can print the offending record verbatim) or
+     * null when no occurrence names the session.
+     */
+    const NO_AGENT_WORKER_SKIP_MSG = 'issue:labeled event matched repository but the designated orchestrator session has no agent worker to deliver to';
+    function noAgentWorkerSkipNaming(stdoutSince: string, sessionId: string): string | null {
+      let idx = stdoutSince.indexOf(NO_AGENT_WORKER_SKIP_MSG);
+      while (idx !== -1) {
+        const window = stdoutSince.slice(Math.max(0, idx - 800), idx + NO_AGENT_WORKER_SKIP_MSG.length + 800);
+        if (window.includes(sessionId)) return window;
+        idx = stdoutSince.indexOf(NO_AGENT_WORKER_SKIP_MSG, idx + NO_AGENT_WORKER_SKIP_MSG.length);
+      }
+      return null;
+    }
+
+    // ===================================================================
+    // SCENARIO 4c (Issue #1739): `issue:labeled`, matching label, with an
+    // EMBEDDED-designated session E in the set (D live PTY, D2 still
+    // paused). D receives the PTY tag exactly as in scenario 3; E's worker
+    // -- dormant until now -- is activated on delivery and its NDJSON
+    // output file gains a `user-message` event with
+    // `notification.kind === 'inbound-event'` carrying the same
+    // `[inbound:issue:labeled]` tag text (presence scoped by the baseline
+    // captured before the POST, read only after the turn settles: the
+    // stub answered and a `state: 'idle'` event landed). The stub saw
+    // exactly one chat request since the POST, and that request's
+    // messages carry the tag text. T does not receive. Server stdout
+    // since the POST does NOT contain the "no agent worker to deliver to"
+    // skip reason naming E (attribution: on the pre-fix tree that line IS
+    // present naming E and every E assertion here FAILS -- Q12).
+    // ===================================================================
+    console.log('\n==> SCENARIO 4c: issues/labeled, matching label, EMBEDDED-designated session E (D + E receive; T does not; E woken by the event)');
+    const beforeD4c = readOutputFileSafe(outputPathD);
+    const beforeE4c = readOutputFileSafe(outputPathE);
+    const beforeT4c = readOutputFileSafe(outputPathT);
+    const stdoutLenBefore4c = stdoutBuf.length;
+    expect(stubRequests.length === 0, "SCENARIO 4c: E's worker is dormant before the event (the stub has seen zero chat requests)", `stubRequests=${stubRequests.length}`);
+    const postedAt4c = Date.now();
+    const embeddedRes = await postWebhook(
+      baseUrl,
+      'issues',
+      {
+        action: 'labeled',
+        label: { name: webhookTriggerLabel },
+        issue: { number: 1006, title: 'Scenario 4c matching label with embedded-designated E', html_url: null, updated_at: null },
+        repository: { full_name: `${nonceOrg}/${nonceRepo}` },
+      },
+      webhookSecret,
+    );
+    expect(embeddedRes.status === 200, 'SCENARIO 4c: POST /webhooks/github returns 200', `status=${embeddedRes.status}`);
+    await embeddedRes.text();
+
+    const scenario4cDTagFound = await waitFor(() => {
+      const content = readOutputFileSafe(outputPathD);
+      return content.slice(beforeD4c.length).includes('[inbound:issue:labeled]');
+    }, 45_000, "D's output file to contain [inbound:issue:labeled] (scenario 4c)");
+    expect(scenario4cDTagFound, 'SCENARIO 4c: D (PTY designated session) received the [inbound:issue:labeled] PTY notification', readOutputFileSafe(outputPathD).slice(beforeD4c.length).slice(-500));
+
+    // Settle: the stub answered AND E's loop reported idle since the
+    // baseline. Read every E assertion only after this point -- a
+    // presence check read early would pass before activation completed
+    // and an "exactly one request" count read early is meaningless.
+    const scenario4cSettled = await waitFor(
+      () => stubRequestsSince(postedAt4c).length >= 1 && hasIdleState(parseNdjsonSince(outputPathE, beforeE4c)),
+      60_000,
+      "E's embedded worker to be activated by the event, answered by the stub, and report state:idle (scenario 4c)",
+    );
+    expect(scenario4cSettled, "SCENARIO 4c: E's turn settled (stub answered + state:idle persisted since the baseline)", `stubSince=${stubRequestsSince(postedAt4c).length} ndjsonTail=${readOutputFileSafe(outputPathE).slice(beforeE4c.length).slice(-800)}`);
+
+    const e4cLines = parseNdjsonSince(outputPathE, beforeE4c);
+    const e4cInbound = inboundNotificationEvents(e4cLines, '[inbound:issue:labeled]');
+    expect(
+      e4cInbound.length === 1,
+      "SCENARIO 4c: E's NDJSON gained exactly one user-message with notification.kind='inbound-event' carrying [inbound:issue:labeled] (since the baseline)",
+      `matches=${e4cInbound.length} tail=${readOutputFileSafe(outputPathE).slice(beforeE4c.length).slice(-800)}`,
+    );
+    expect(
+      e4cInbound.length === 1 && e4cInbound[0]!.text!.includes('type=issue:labeled') && e4cInbound[0]!.text!.includes('intent=triage'),
+      "SCENARIO 4c: E's inbound-event text carries the same key=value fields as the PTY notification (type=issue:labeled, intent=triage)",
+      e4cInbound[0]?.text,
+    );
+    const stub4c = stubRequestsSince(postedAt4c);
+    expect(
+      stub4c.length === 1,
+      'SCENARIO 4c: the stub saw exactly ONE chat request since the POST (E was dormant and woken by this event; no other turn ran)',
+      `count=${stub4c.length}`,
+    );
+    expect(
+      stub4c.length >= 1 && stubRequestMentions(stub4c[0]!, '[inbound:issue:labeled]'),
+      "SCENARIO 4c: that chat request's messages include the [inbound:issue:labeled] tag text (the notification reached the model as a turn)",
+      stub4c[0] ? JSON.stringify(stub4c[0].body).slice(0, 1500) : 'no request',
+    );
+    const afterT4c = readOutputFileSafe(outputPathT);
+    expect(
+      !afterT4c.slice(beforeT4c.length).includes('[inbound:issue:labeled]'),
+      'SCENARIO 4c: T did NOT receive the [inbound:issue:labeled] PTY notification',
+      afterT4c.slice(beforeT4c.length).slice(-500),
+    );
+    // Positive control for the absence assertion below: the SAME
+    // `resolveIssueLabeledTargets` pass skips the still-paused D2 with the
+    // 'not a live session' reason, logged right before E is evaluated.
+    // Waiting for that record proves the instrument (the stdout pipe) has
+    // caught up to this routing pass, so "no skip line naming E" is a fact
+    // about the routing decision and not about pino's flush latency.
+    const scenario4cControlLogged = await waitFor(() => {
+      const since = stdoutBuf.slice(stdoutLenBefore4c);
+      return since.includes(NOT_LIVE_SKIP_MSG) && since.includes(sessionD2.id);
+    }, 15_000, "server stdout to contain the 'not a live session' skip reason naming D2 (scenario 4c positive control)");
+    expect(scenario4cControlLogged, "SCENARIO 4c: positive control -- server stdout since the POST names D2 in the 'not a live session' skip reason (the stdout instrument sees this routing pass)", stdoutBuf.slice(stdoutLenBefore4c).slice(-2000));
+    const stdoutSince4c = stdoutBuf.slice(stdoutLenBefore4c);
+    const skipRecordNamingE = noAgentWorkerSkipNaming(stdoutSince4c, sessionE.id);
+    expect(
+      skipRecordNamingE === null,
+      "SCENARIO 4c: server stdout since the POST does NOT contain the 'no agent worker to deliver to' skip reason naming E (attribution: the pre-fix predicate rejected E here)",
+      // JSON-escaped so the record prints on one line (pino-pretty output carries ANSI escapes and newlines).
+      `offending record: ${JSON.stringify(skipRecordNamingE ?? '')}`,
     );
 
     // ===================================================================
@@ -903,11 +1228,17 @@ async function main(): Promise<void> {
     // routes it to D. `head_sha` is omitted so job-handler.ts's
     // `ciCompletionChecker` gate (only active when `commitSha` is present)
     // never runs, avoiding a pointless real `gh api` call.
+    //
+    // Issue #1739: the fallback also routes to E (embedded-designated, set
+    // up above) -- the same NDJSON presence check as scenario 4c, on the
+    // `[inbound:ci:completed]` tag, plus exactly one more stub request.
     // ===================================================================
-    console.log('\n==> SCENARIO 5: workflow_run/completed on main, zero matching sessions (designated-session fallback)');
+    console.log('\n==> SCENARIO 5: workflow_run/completed on main, zero matching sessions (designated-session fallback; D and E receive)');
     const beforeD5 = readOutputFileSafe(outputPathD);
     const beforeD25 = readOutputFileSafe(outputPathD2);
     const beforeT5 = readOutputFileSafe(outputPathT);
+    const beforeE5 = readOutputFileSafe(outputPathE);
+    const postedAt5 = Date.now();
     const mainPushRes = await postWebhook(
       baseUrl,
       'workflow_run',
@@ -945,6 +1276,29 @@ async function main(): Promise<void> {
       !afterD25.slice(beforeD25.length).includes('[inbound:ci:completed]'),
       'SCENARIO 5: the paused-but-still-designated D2 did NOT receive the fallback (skipped by the same per-session exclusion)',
       afterD25.slice(beforeD25.length).slice(-500),
+    );
+
+    // Issue #1739: E (embedded-designated) receives the SAME fallback
+    // through the kind-aware seam. E's worker is already active after
+    // scenario 4c, so this is a plain delivery (no wake); settle on the
+    // stub having answered and state:idle since this scenario's baseline.
+    const scenario5ESettled = await waitFor(
+      () => stubRequestsSince(postedAt5).length >= 1 && hasIdleState(parseNdjsonSince(outputPathE, beforeE5)),
+      60_000,
+      "E's embedded worker to receive the fallback, be answered by the stub, and report state:idle (scenario 5)",
+    );
+    expect(scenario5ESettled, "SCENARIO 5: E's turn settled (stub answered + state:idle persisted since the baseline)", `stubSince=${stubRequestsSince(postedAt5).length} ndjsonTail=${readOutputFileSafe(outputPathE).slice(beforeE5.length).slice(-800)}`);
+    const e5Inbound = inboundNotificationEvents(parseNdjsonSince(outputPathE, beforeE5), '[inbound:ci:completed]');
+    expect(
+      e5Inbound.length === 1,
+      "SCENARIO 5: E (embedded-designated) received the fallback as exactly one user-message with notification.kind='inbound-event' carrying [inbound:ci:completed]",
+      `matches=${e5Inbound.length} tail=${readOutputFileSafe(outputPathE).slice(beforeE5.length).slice(-800)}`,
+    );
+    const stub5 = stubRequestsSince(postedAt5);
+    expect(
+      stub5.length === 1 && stubRequestMentions(stub5[0]!, '[inbound:ci:completed]'),
+      'SCENARIO 5: the stub saw exactly ONE chat request since the POST and it carries the [inbound:ci:completed] tag text',
+      `count=${stub5.length} first=${stub5[0] ? JSON.stringify(stub5[0].body).slice(0, 1500) : 'none'}`,
     );
 
     // ===================================================================
@@ -1179,7 +1533,8 @@ async function main(): Promise<void> {
     //
     // WARNING FOR WHOEVER ADDS SCENARIO 8: this "most recent job of this
     // type" query is correct ONLY because scenario 7 is currently the LAST
-    // scenario in this file to post a webhook. If a scenario 8 is added
+    // scenario in this file to post a webhook (scenario 4c, Issue #1739,
+    // was deliberately inserted BEFORE scenario 5 for this reason). If a scenario 8 is added
     // AFTER this point, this query will silently pick up scenario 8's job
     // instead of scenario 7's, and this assertion will start measuring the
     // wrong job with no error -- a false pass, not a loud failure. Before
@@ -1201,9 +1556,34 @@ async function main(): Promise<void> {
     expect(scenario7Job?.status === JOB_STATUS.COMPLETED, 'SCENARIO 7: the job completed (status=completed)', JSON.stringify(scenario7Job));
     expect(scenario7Job?.attempts === 0, 'SCENARIO 7: the job completed on its first attempt (attempts=0, no job-level retry)', JSON.stringify(scenario7Job));
   } finally {
+    if (failures.length > 0 && printStubStateOnFailure) {
+      printStubStateOnFailure();
+    }
+    // Teardown order (Issue #1739): (1) delete E's session through the real
+    // route while the server is still up, so its embedded worker is
+    // deactivated gracefully (the loop subprocess exits and the output
+    // file is flushed) rather than orphaned by the server kill below;
+    // (2) kill the child server and await its exit, exactly as before;
+    // (3) only THEN stop the stub -- a stub stopped while the server is
+    // still alive could cut off an in-flight loop request; (4) remove the
+    // disposable home.
+    if (sessionEId && proc) {
+      try {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), 15_000);
+        const res = await fetch(`${baseUrl}/api/sessions/${sessionEId}`, { method: 'DELETE', signal: controller.signal });
+        clearTimeout(timer);
+        console.log(`\n==> teardown: DELETE /api/sessions/${sessionEId} (embedded-designated E) -> ${res.status}`);
+      } catch (err) {
+        console.error(`==> WARNING: teardown DELETE of session E failed: ${String(err)}`);
+      }
+    }
     if (proc) {
       proc.kill();
       await proc.exited;
+    }
+    if (stubServer) {
+      stubServer.stop(true);
     }
     try {
       rmSync(scratchRoot, { recursive: true, force: true });
