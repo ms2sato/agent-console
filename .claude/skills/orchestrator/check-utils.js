@@ -86,6 +86,7 @@ export const COVERAGE_PATTERNS = [
   /^packages\/shared\/src\/.+\.ts$/,
   /^packages\/embedded-agent\/src\/.+\.ts$/,
   /^\.claude\/hooks\/.+\.sh$/,
+  /^scripts\/lib\/.+\.ts$/,
 ];
 
 // Source-file extensions considered for coverage analysis. `.sh` is included

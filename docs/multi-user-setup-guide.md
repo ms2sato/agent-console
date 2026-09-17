@@ -547,35 +547,118 @@ requirement.)
 
 ## Iterative Updates (after the initial setup)
 
-After the bootstrap script has completed once, ongoing source-code updates and
-restarts are performed by `scripts/update-and-deploy-for-multiuser-ubuntu.sh`.
-The script assumes the source-repo at `${AGENT_CONSOLE_DATA_ROOT}/source-repos/agent-console`
-has already been advanced to the target ref (the orchestrator-driven update
-cycle: fetch + checkout + this script).
+After the bootstrap script has completed once, ongoing source-code updates,
+the restart, and the post-deploy verification are all performed by **one
+command**, run as your own login user (not under a top-level `sudo` -- the
+script elevates each privileged step itself, and its readability probes
+depend on that; Issue #1690):
 
 ```bash
 # Default invocation (matches bootstrap defaults: agentconsole / port 8080).
-sudo scripts/update-and-deploy-for-multiuser-ubuntu.sh
+scripts/update-and-deploy-for-multiuser-ubuntu.sh
 
 # Overrides (env vars; CLI flags not supported):
-sudo AGENT_CONSOLE_PORT=9000 \
-     AGENT_CONSOLE_SERVICE_USER=ac-svc \
-     scripts/update-and-deploy-for-multiuser-ubuntu.sh
+AGENT_CONSOLE_PORT=9000 \
+AGENT_CONSOLE_SERVICE_USER=ac-svc \
+  scripts/update-and-deploy-for-multiuser-ubuntu.sh
 ```
 
 The full list of override env vars is documented in the script's top comment.
-The script does not perform `git pull` itself — sync the source-repo to the
-intended commit before invoking, and confirm via the printed HEAD line in the
+The script does not perform `git pull` itself -- sync the source-repo at
+`${AGENT_CONSOLE_DATA_ROOT}/source-repos/agent-console` to the intended
+commit before invoking, and confirm via the printed HEAD line in the
 script's `==> Pre-check` step before the build proceeds.
+
+### The post-deploy screen and its exit code
+
+The script ends with a six-line screen, one line per check, and exits with
+the worst code it observed. Read the screen; the exit code is the same
+information for automation:
+
+```
+==> Post-deploy verification
+  PASS  V1 unit-env-drift
+  PASS  V2 entry-path-readable
+  PASS  V3 mainpid-identity
+  PASS  V4 unit-active
+  PASS  V5 health
+  PASS  V6 journal-digest
+  RESULT: 6 PASS, 0 FAIL, 0 SKIP -> exit 0
+```
+
+| Line | Meaning | Exit code contribution |
+|---|---|---|
+| `  PASS  <check>` | the check ran and the system is right | -- |
+| `  FAIL  <check>: <reason>` | the check ran and the system is wrong; the reason and the remedy are on that line and indented beneath it where it ran | `1` |
+| `  SKIP  <check>: cannot run: <reason>` | the check could not run (a missing tool, a refused elevation) -- not a verdict about the unit; fix what it names and re-run | `2` (only when nothing FAILed) |
+| `        WARN: ...` / `        INFO: ...` | an annotation under a PASS line (V1's ExecStart warning, V6's `AUTH_COOKIE_SECURE=false` note); never changes the exit code | -- |
+
+Exit `0` = every check passed. Exit `1` = at least one FAIL. Exit `2` = at
+least one SKIP and no FAIL. Every check runs even after a failure, so the
+screen is always complete.
+
+The six checks (spec: the "Post-deploy verification -- checks enumerated"
+table in `docs/design/elevation-verification-tiers.md`; each is a
+fixture-tested subcommand of `scripts/lib/setup-multiuser-checks.sh`):
+
+| Check | What it reads | Runs |
+|---|---|---|
+| V1 `unit-env-drift` | every `Environment=KEY=` in `scripts/agent-console-multiuser.service.template` is present in the live unit's effective environment (`systemctl show -p Environment`, drop-ins included); `ExecStart` on a binary other than `EMBEDDED_AGENT_BUN_PATH` is a WARN | **before the restart, fail-closed** -- a FAIL here aborts the deploy with no restart |
+| V2 `entry-path-readable` | `/usr/local/lib/agent-console/embedded-agent.js` and its `.map` are readable by an unprivileged user (`runuser -u nobody`) | after the restart |
+| V3 `mainpid-identity` | the unit's main process runs the same binary as `EMBEDDED_AGENT_BUN_PATH` (the production `compareBinaryIdentity`, run as the unit's `User=` and `Group=`) | after the restart |
+| V4 `unit-active` | `systemctl is-active` is `active`; otherwise `systemctl status` and the last 20 journal lines are attached | after the restart |
+| V5 `health` | `GET http://localhost:<port>/api/config` is HTTP 200 with `"authMode":"multi-user"` (polls up to 10 s) | after the restart |
+| V6 `journal-digest` | since the restart, the journal has `Server starting` (production), `User mode initialized` (multi-user) and `Server listening`, and no `EMBEDDED_AGENT_BUN_PATH` warning | after the restart |
+
+### Who re-renders the unit, and when
+
+**The deploy script never renders the systemd unit.** The unit's single
+writer is `scripts/setup-multiuser-for-ubuntu.sh` (its Step 7 renders the
+unit from the template, diffs it against the live file, and overwrites only
+with `--force`). A template change -- a new `Environment=` line, a changed
+`ExecStart` -- therefore reaches an existing host **only through a setup
+script re-run**, and V1 is the trigger that tells you it is due. When V1
+prints
+
+```
+  FAIL  V1 unit-env-drift: template key(s) missing from the live unit's effective Environment: EMBEDDED_AGENT_ENTRY_PATH -- ...
+```
+
+the deploy has stopped before the restart (the previous deploy keeps
+running). Apply the canonical remedy, then run the deploy command again:
+
+```bash
+# 1. Preview the re-render with the SAME parameters the host was set up with
+#    (the port is the sharp edge -- see "Re-running the bootstrap script"
+#    above); only the unit should differ.
+sudo bash scripts/setup-multiuser-for-ubuntu.sh --dry-run --force --port <live-port>
+
+# 2. Apply it.
+sudo bash scripts/setup-multiuser-for-ubuntu.sh --force --port <live-port>
+
+# 3. Deploy again: V1 passes, the restart happens, V2-V6 run.
+scripts/update-and-deploy-for-multiuser-ubuntu.sh
+```
+
+Operator-specific `Environment=` lines that are not in the template (a
+shared-account username, an SSH agent socket, a Slack token) do **not**
+belong in the generated unit file, where a re-render replaces them: put
+them in a `.service.d/` drop-in (`sudo systemctl edit agent-console`, as
+the shared-account section below does). A drop-in survives every re-render
+by construction, and V1 counts a key supplied by a drop-in as present,
+because it reads the unit's *effective* environment. The same drop-in
+mechanism is V1's bridge remedy when a re-render must wait: add the
+missing `Environment=` line(s) there, `systemctl daemon-reload`, and deploy
+again.
 
 **The script also copies `dist/embedded-agent.js` (+ `.map`) to the unified
 entry path on every invocation** (step 5/6, right after the deployed-commit
-marker write, from the deploy target — not a second independent read from
+marker write, from the deploy target -- not a second independent read from
 the source repo), and fails closed on that path's readability right before
-`systemctl restart` (Issue #1668) — the same shape as the bun-binary copy
-above, applied to the application bundle instead of the language-runtime
-binary. No separate operator action is needed for this; it happens
-automatically as part of the ordinary update cycle.
+V1 (Issue #1668) -- the same shape as the bun-binary copy above, applied to
+the application bundle instead of the language-runtime binary. No separate
+operator action is needed for this; it happens automatically as part of the
+ordinary update cycle.
 
 Every deploy script (`update-and-deploy-for-multiuser-ubuntu.sh`,
 `update-and-deploy-for-ubuntu.sh`, `update-and-deploy-for-mac.sh`) writes the
@@ -1232,7 +1315,16 @@ configured vendor.
 
 ## Post-deploy Verification (smoke tests)
 
-Run after every deploy that touches a privilege-elevation code path
+**The first thing to read after a deploy is the deploy script's own
+six-line screen** (`  PASS  V1 unit-env-drift` ... `RESULT: 6 PASS`), printed
+at the end of `scripts/update-and-deploy-for-multiuser-ubuntu.sh` and
+described under "Iterative Updates" above: unit drift, entry-path
+readability, MainPID identity, unit active, health, journal digest, in one
+invocation as the operator. The smokes below stay as they are -- they go
+further (real elevated spawns, PTY env, orphan sweeps) and are run by hand
+when the code paths they cover change.
+
+Run the smokes after every deploy that touches a privilege-elevation code path
 (`packages/server/src/services/user-mode.ts`, `env-filter.ts`, or
 `scripts/setup-multiuser-for-ubuntu.sh`). Unit tests cover the inner-command
 string shape, but only an on-host smoke can confirm what env the elevated

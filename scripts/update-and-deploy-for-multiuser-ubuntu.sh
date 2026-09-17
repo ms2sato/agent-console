@@ -32,8 +32,26 @@
 #      before restarting the service -- refuses to restart into a unit whose
 #      EMBEDDED_AGENT_ENTRY_PATH would point at a file step 6 did not
 #      actually provision.
-#   9. systemctl restart <service> + status snapshot.
-#  10. Health probe via curl.
+#   9. V1 unit-env-drift (Issue #1688), still BEFORE the restart and
+#      fail-closed: every `Environment=KEY=` in
+#      scripts/agent-console-multiuser.service.template must be present in
+#      the live unit's effective environment, or the deploy stops here
+#      naming the missing key(s) and both remedies. This script never
+#      renders the unit -- scripts/setup-multiuser-for-ubuntu.sh is its
+#      single writer; V1 only detects that a re-render is due.
+#      Then systemctl restart <service> + status snapshot.
+#  10. Post-deploy verification V2-V6 (Issue #1717; the spec is the
+#      "Post-deploy verification -- checks enumerated" table in
+#      docs/design/elevation-verification-tiers.md): entry-path readability,
+#      MainPID binary identity, unit active, /api/config health, journal
+#      digest. One line per check, PASS / FAIL / SKIP, then a six-line
+#      screen (V1 included) and the worst code as this script's exit:
+#        0  every check PASSed
+#        1  at least one FAIL (a check ran and the system is wrong)
+#        2  at least one SKIP (a check could not run) and no FAIL
+#      Every check runs even after a failure, so the screen is complete.
+#      The checks themselves live in lib/setup-multiuser-checks.sh (V1-V6
+#      subcommands, fixture-tested); this script only sequences them.
 #
 # Contract: run this script as the operator's own login user -- do NOT
 # invoke it with a top-level sudo. Every privileged step below elevates
@@ -60,7 +78,8 @@
 #                                    Default: /home/${AGENT_CONSOLE_SERVICE_USER}/agent-console
 #   AGENT_CONSOLE_SERVICE_NAME       systemd unit to restart.
 #                                    Default: agent-console.service
-#   AGENT_CONSOLE_PORT               Port used by the health probe URL.
+#   AGENT_CONSOLE_PORT               Port the V5 health check probes
+#                                    (GET http://localhost:<port>/api/config).
 #                                    Default: 8080
 #
 # Example with overrides:
@@ -83,12 +102,13 @@ SRC="${AGENT_CONSOLE_APP_SOURCE_DIR:-${DATA_ROOT}/source-repos/agent-console}"
 DST="${AGENT_CONSOLE_DEPLOY_TARGET_DIR:-/home/${SERVICE_USER}/agent-console}"
 SERVICE_NAME="${AGENT_CONSOLE_SERVICE_NAME:-agent-console.service}"
 PORT="${AGENT_CONSOLE_PORT:-8080}"
-HEALTH_URL="http://localhost:${PORT}/api/auth/me"
 
-# Elevation prefix for the one probe that needs root itself (the
-# unprivileged-readability gate below, via `runuser`) but that this script
-# does not otherwise require at the top level (see the Contract note above
-# -- every OTHER privileged step elevates per-command already). Empty when
+# Elevation prefix for the probes that need root themselves (the
+# unprivileged-readability gate below, via `runuser`; and the post-deploy
+# verification's V2 / V3 `runuser` reads and V4 / V6 journal reads, which
+# receive it as an explicit argument) but that this script does not
+# otherwise require at the top level (see the Contract note above -- every
+# OTHER privileged step elevates per-command already). Empty when
 # already root (a supported, if unusual, invocation); the same bare,
 # interactive-capable form every other elevated step in this script uses
 # otherwise -- not a non-interactive flag, so an expired credential cache
@@ -123,12 +143,100 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/setup-multiuser-checks.sh
 source "$SCRIPT_DIR/lib/setup-multiuser-checks.sh"
 
+# The unit template V1 reads its key set from -- the same file the setup
+# script renders the unit from, read here only ever for its `Environment=`
+# key names and its ExecStart placeholder (this script never renders it).
+UNIT_TEMPLATE="$SCRIPT_DIR/agent-console-multiuser.service.template"
+
+# --- post-deploy verification runner (Issue #1717) --------------------------
+#
+# verify_check <label> <lib-function> <args...>
+#
+# Runs one V check from lib/setup-multiuser-checks.sh, prints its screen line
+# (`  PASS  <label>` / `  FAIL  <label>: <reason>` / `  SKIP  <label>: cannot
+# run: <reason>`) plus any annotation / diagnostic lines the check wrote to
+# stderr, indented beneath it, and folds the verdict into the counters the
+# final screen and exit code are built from. Returns the check's own code
+# (0 / 1 / 2) so a caller that must stop on it (V1, before the restart) can;
+# the post-restart callers deliberately ignore it (`|| true`) so every check
+# runs and the screen is complete. The check's stdout (marker + detail
+# lines) is kept in VERIFY_LAST_STDOUT for the one caller that parses it
+# (V1's live EMBEDDED_AGENT_BUN_PATH value, handed to V3).
+VERIFY_SCREEN=""
+VERIFY_PASS=0
+VERIFY_FAIL=0
+VERIFY_SKIP=0
+VERIFY_LAST_STDOUT=""
+verify_check() {
+  local label="$1"
+  shift
+  local out err rc=0
+  out="$(mktemp)"
+  err="$(mktemp)"
+  "$@" >"$out" 2>"$err" || rc=$?
+  VERIFY_LAST_STDOUT="$(cat "$out")"
+  local line
+  case "$rc" in
+    0)
+      line="  PASS  ${label}"
+      VERIFY_PASS=$((VERIFY_PASS + 1))
+      ;;
+    1)
+      line="  FAIL  ${label}: $(head -n 1 "$err")"
+      VERIFY_FAIL=$((VERIFY_FAIL + 1))
+      ;;
+    *)
+      line="  SKIP  ${label}: cannot run: $(head -n 1 "$err" | sed 's/^cannot run: //')"
+      VERIFY_SKIP=$((VERIFY_SKIP + 1))
+      ;;
+  esac
+  echo "$line"
+  # On PASS every stderr line is an annotation (WARN: / INFO:); otherwise the
+  # first line is already on the verdict line and the rest is diagnostics.
+  if [ "$rc" -eq 0 ]; then
+    sed 's/^/        /' "$err"
+  else
+    tail -n +2 "$err" | sed 's/^/        /'
+  fi
+  VERIFY_SCREEN="${VERIFY_SCREEN}${line}"$'\n'
+  rm -f "$out" "$err"
+  return "$rc"
+}
+
+# The worst code observed: 1 if any check FAILed; else 2 if any could not
+# run; else 0 (docs/design/elevation-verification-tiers.md's convention,
+# from os-environment-coupling.md Discipline 1). FAIL outranks SKIP because
+# "the system is wrong" is the stronger statement.
+verify_exit_code() {
+  if [ "$VERIFY_FAIL" -gt 0 ]; then
+    echo 1
+  elif [ "$VERIFY_SKIP" -gt 0 ]; then
+    echo 2
+  else
+    echo 0
+  fi
+}
+
+verify_print_screen() {
+  local code
+  code="$(verify_exit_code)"
+  echo ""
+  echo "==> Post-deploy verification"
+  printf '%s' "$VERIFY_SCREEN"
+  echo "  RESULT: ${VERIFY_PASS} PASS, ${VERIFY_FAIL} FAIL, ${VERIFY_SKIP} SKIP -> exit ${code}"
+  if [ "$VERIFY_FAIL" -gt 0 ]; then
+    echo "  (a FAIL line means the check ran and the system is wrong; its reason and remedy are on that line and beneath it above)"
+  elif [ "$VERIFY_SKIP" -gt 0 ]; then
+    echo "  (a SKIP line means the check could not run -- a missing tool or a refused elevation, not a verdict about the unit; fix what it names and re-run this script)"
+  fi
+}
+
 echo "==> Config"
 echo "    SERVICE_USER : ${SERVICE_USER}"
 echo "    APP_SOURCE   : ${SRC}"
 echo "    DEPLOY_TARGET: ${DST}"
 echo "    SERVICE_NAME : ${SERVICE_NAME}"
-echo "    HEALTH_URL   : ${HEALTH_URL}"
+echo "    PORT         : ${PORT}"
 echo ""
 
 echo "==> Pre-check: source-repo HEAD"
@@ -257,18 +365,66 @@ assert_readable_by_unprivileged_user "${UNIFIED_ENTRY_MAP_PATH}" \
   "${ELEVATE}" || exit 1
 
 echo ""
-echo "==> systemctl restart ${SERVICE_NAME}"
-sudo systemctl restart "${SERVICE_NAME}"
-sleep 2
-sudo systemctl status "${SERVICE_NAME}" --no-pager | head -10
+echo "==> V1 (fail-closed, before restart): live unit environment vs the template"
+# Issue #1688: the ONLY verification check that runs BEFORE the restart, and
+# the only one this script stops on. A template `Environment=KEY=` missing
+# from the live unit's effective environment means the unit predates a
+# template change and was never re-rendered (on the dogfood host: no
+# EMBEDDED_AGENT_BUN_PATH / EMBEDDED_AGENT_ENTRY_PATH line at all, so the
+# bundle copied in step 5/6 would never have been used). Restarting into
+# such a unit deploys code the unit cannot run correctly, so the deploy
+# refuses here -- the build and rsync above have already run, but the
+# running server keeps executing the previous deploy until a restart
+# happens. This script does NOT re-render the unit (single writer =
+# scripts/setup-multiuser-for-ubuntu.sh, run with --dry-run then --force);
+# V1 only names the drift and the remedies. `systemctl show` needs no
+# elevation, so no prefix is passed. ExecStart drifting from the unified bun
+# is a WARN here (exit 0); V3 below is where that becomes a hard FAIL.
+V1_RC=0
+verify_check "V1 unit-env-drift" unit_env_drift "${UNIT_TEMPLATE}" "${SERVICE_NAME}" systemctl || V1_RC=$?
+if [ "${V1_RC}" -ne 0 ]; then
+  verify_print_screen
+  echo "" >&2
+  echo "Error: refusing to restart ${SERVICE_NAME} -- V1 did not pass (see the line above). No restart was performed: the unit keeps running the previous deploy. Apply the named remedy, then re-run this script." >&2
+  exit "${V1_RC}"
+fi
+# V1's single read of the live environment is passed down to V3: the value
+# the embedded agent will actually spawn, not the template's placeholder.
+CONFIGURED_BUN="$(printf '%s\n' "${VERIFY_LAST_STDOUT}" | sed -n 's/^EMBEDDED_AGENT_BUN_PATH=//p' | head -n 1)"
 
 echo ""
-echo "==> Post-deploy: quick health probe"
-if curl -sf -m 5 "${HEALTH_URL}" >/dev/null; then
-  echo "    ${HEALTH_URL} OK"
-else
-  echo "    ${HEALTH_URL} FAILED"
-fi
+echo "==> systemctl restart ${SERVICE_NAME}"
+# Captured IMMEDIATELY before the restart -- never after -- in the journal's
+# own local-time, second-precision form, so V6's `journalctl --since` reads
+# this incarnation's boot and nothing older.
+RESTART_SINCE="$(date '+%Y-%m-%d %H:%M:%S')"
+sudo systemctl restart "${SERVICE_NAME}"
+sleep 2
+# `status` exits non-zero for a unit that is not active; the verification
+# below is what reports that (V4), so the snapshot must not abort the script.
+sudo systemctl status "${SERVICE_NAME}" --no-pager | head -10 || true
+
+echo ""
+echo "==> Post-deploy verification V2-V6 (after restart)"
+# Every check runs regardless of the previous one's verdict (`|| true`), so
+# the screen is complete; the exit code is computed from the counters after
+# all six. Each elevating check receives ${ELEVATE} explicitly (the #1690
+# shape): V2's `runuser -u nobody` probe, V3's `runuser -u <User> -g
+# <Group>` identity read, and the journal reads in V4's diagnostics and V6
+# (the system journal is root / adm / systemd-journal readable only, and the
+# operator account is not assumed to be in either group). `systemctl show` /
+# `is-active` and the health probe need no elevation.
+verify_check "V2 entry-path-readable" entry_path_readable "${UNIFIED_ENTRY_PATH}" "${UNIFIED_ENTRY_MAP_PATH}" "${ELEVATE}" || true
+verify_check "V3 mainpid-identity" mainpid_identity "${SERVICE_NAME}" "${CONFIGURED_BUN}" "${ELEVATE}" systemctl || true
+verify_check "V4 unit-active" unit_active "${SERVICE_NAME}" systemctl journalctl "${ELEVATE}" || true
+# V5 is the wait point after the restart: it polls /api/config up to 10 x 1 s
+# before deciding, so V6 after it reads a settled boot rather than racing it.
+verify_check "V5 health" health "${PORT}" 10 curl || true
+verify_check "V6 journal-digest" journal_digest "${SERVICE_NAME}" "${RESTART_SINCE}" journalctl "${ELEVATE}" || true
+
+verify_print_screen
+VERIFY_EXIT="$(verify_exit_code)"
 
 echo ""
 echo "==> Done."
+exit "${VERIFY_EXIT}"
