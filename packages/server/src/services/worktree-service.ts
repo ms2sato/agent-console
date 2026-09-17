@@ -1,7 +1,8 @@
 import { promises as fsPromises } from 'fs';
 import * as path from 'path';
 import type { Worktree, HookCommandResult } from '@agent-console/shared';
-import { getRepositoryDir } from '../lib/config.js';
+import { getConfigDir, getRepositoryDir } from '../lib/config.js';
+import { ensureTrustedDirChain, resolveAncestorContract } from '../lib/trusted-dir.js';
 import {
   git,
   deriveRepositorySlug,
@@ -467,8 +468,22 @@ export class WorktreeService {
     const orgRepo = await deriveRepositorySlug(repoPath, path.basename(repoPath));
     const repoWorktreeDir = path.join(getRepositoryDir(orgRepo), 'worktrees');
 
-    // Ensure base directory exists
-    await fsPromises.mkdir(repoWorktreeDir, { recursive: true });
+    // Ensure the base directory exists, walking from the trusted root
+    // (`configDir`) segment by segment: `repositories/<org>/<repo>` is the
+    // same tree the session-data writers create, and `repositories/` is a
+    // group-writable (`2775`) directory in multi-user mode, so a recursive
+    // mkdir here would follow a symlink a group member pre-planted at
+    // `repositories/<org>/<repo>` (or at `worktrees` itself) and every
+    // worktree of this repository would be checked out wherever it points.
+    // Every segment down to and including `worktrees/` is server-created and
+    // server-owned, so the ancestor contract (owner uid only) holds on the
+    // leaf too. Nothing walks BELOW `worktrees/`: the per-worktree `wt-*`
+    // directory is created by `git worktree add` as the requesting user and
+    // is that user's, out of the walker's reach by design. A verification
+    // failure throws `TrustedDirVerificationError` out of this method
+    // unwrapped -- deliberately before the `try` below, whose catch tears
+    // down git state for a git failure, which an integrity rejection is not.
+    await ensureTrustedDirChain(getConfigDir(), repoWorktreeDir, resolveAncestorContract());
 
     // Allocate index from DB records
     const dbRecords = await this.worktreeRepository.findByRepositoryId(repositoryId);

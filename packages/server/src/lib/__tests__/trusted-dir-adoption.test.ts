@@ -45,6 +45,33 @@ const SESSION_DATA_WRITERS = [
 ] as const;
 
 /**
+ * The worktree tree's creator: `WorktreeService.createWorktree` builds
+ * `<configDir>/repositories/<org>/<repo>/worktrees` -- the same
+ * `repositories/<org>/<repo>` segments the session-data writers create,
+ * under the same group-writable `repositories/` ancestor -- so it walks the
+ * same chain from the same root. It is deliberately NOT in
+ * `SESSION_DATA_WRITERS`: that list's rule is "zero recursive mkdir", and
+ * this file legitimately keeps exactly one -- the in-process template sink
+ * (`directFsSink.mkdir`, `mkdir(dirPath, { recursive: true })`), which
+ * writes INSIDE a worktree that `git worktree add` has already created
+ * (user-owned on the elevated path), a tree with no server-created
+ * group-writable ancestor of its own, where nested template directories
+ * need the recursion. The rule for this list is therefore "exactly one
+ * recursive mkdir, and it is the sink", so the exemption is pinned by name
+ * rather than by count alone.
+ *
+ * Reach measured: restoring `fsPromises.mkdir(repoWorktreeDir, { recursive:
+ * true })` at the worktrees-dir site makes the count 2 and fails naming
+ * both `services/worktree-service.ts:<line>` entries; deleting the sink's
+ * own `mkdir` line makes the count 0 and also fails -- the pin refuses to
+ * let the exemption silently widen or silently disappear. Replacing the
+ * sink's `dirPath` argument with any other name also fails (the line-text
+ * pin), so a second recursive mkdir cannot hide by taking the sink's place.
+ */
+const WORKTREE_TREE_WRITERS = ['services/worktree-service.ts'] as const;
+const TEMPLATE_SINK_MKDIR = 'mkdir(dirPath, { recursive: true })';
+
+/**
  * A `mkdir` / `mkdirSync` call whose argument list carries
  * `recursive: true`, bounded by the statement's `;`. The bound is the
  * statement, not the closing `)`, because the former worker-output-file.ts
@@ -91,4 +118,30 @@ describe('trusted-root walker adoption (grep pin)', () => {
       expect(content).toContain('ensureTrustedDirChain');
     }
   });
+
+  for (const relativePath of WORKTREE_TREE_WRITERS) {
+    it(`${relativePath} contains exactly one recursive mkdir, and it is the template sink`, async () => {
+      const content = await Bun.file(path.join(SRC_ROOT, relativePath)).text();
+      expect(content.length).toBeGreaterThan(100);
+      const lines = content.split('\n');
+      // Pin the line that carries `recursive: true` (the END of the match),
+      // not the match's start: the sink's `mkdir` is a method whose
+      // declaration line (`async mkdir(dirPath) {`) precedes the call by one
+      // line with no `;` between, so RECURSIVE_MKDIR's `[^;]*?` starts the
+      // match at the declaration. The option line is the one that names
+      // the call, in every shape.
+      const found = [...content.matchAll(RECURSIVE_MKDIR)].map((m) => {
+        const lineNumber = lineNumberAt(content, m.index + m[0].length);
+        return { at: `${relativePath}:${lineNumber}`, text: lines[lineNumber - 1].trim() };
+      });
+      // One assertion over the whole list, so a failure prints every
+      // offending `file:line` rather than a bare length mismatch.
+      expect(found).toEqual([{ at: expect.any(String), text: expect.stringContaining(TEMPLATE_SINK_MKDIR) }]);
+    });
+
+    it(`${relativePath} imports the walker`, async () => {
+      const content = await Bun.file(path.join(SRC_ROOT, relativePath)).text();
+      expect(content).toContain('ensureTrustedDirChain');
+    });
+  }
 });

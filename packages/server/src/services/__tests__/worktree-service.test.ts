@@ -586,6 +586,77 @@ detached
       expect(mockRepo.records.length).toBe(1);
       expect(mockRepo.records[0].repositoryId).toBe('repo-1');
       expect(mockRepo.records[0].path).toBe(result.worktreePath);
+      // Positive control for the two pre-planted-symlink cases below: the
+      // trusted-root walk created `repositories/<org>/<repo>/worktrees` as a
+      // real directory in this fixture, so those rejections are attributable
+      // to the plant and not to a fixture the walker cannot pass.
+      const repoWorktreeDir = `${TEST_CONFIG_DIR}/repositories/owner/repo-name/worktrees`;
+      expect(fs.lstatSync(repoWorktreeDir).isSymbolicLink()).toBe(false);
+      expect(fs.statSync(repoWorktreeDir).isDirectory()).toBe(true);
+    });
+
+    // The walk from `configDir` to `repositories/<org>/<repo>/worktrees`
+    // rejects a pre-planted symlink at any segment, BEFORE the index is
+    // allocated and BEFORE `git worktree add` runs, so a planted link can
+    // never redirect the checkout. Both cases plant the link at a segment a
+    // group member can create under the `2775` `repositories/` ancestor in
+    // multi-user mode (the fixture is single-user, but the walk is the same
+    // code on both paths).
+    //
+    // Polarity, measured by restoring `fsPromises.mkdir(repoWorktreeDir,
+    // { recursive: true })` at the call site: memfs's recursive mkdir
+    // follows the link and `createWorktree` RESOLVES with a `wt-001-*` path
+    // under the link in both cases, so the `rejects` assertion fails first
+    // in both. Measured with the `rejects` lines removed, to see what the
+    // remaining pins each catch on their own: (a) `readdir(elsewhere)` is
+    // `['worktrees']` (the recursive mkdir created it through the link),
+    // `runAsUser` was called once and one record was saved -- all three
+    // fail; (b) `readdir(elsewhere)` is `[]` in both worlds, because the
+    // fake `runAsUser` never creates the `wt-*` directory, so that pin
+    // carries no polarity in (b) -- the `runAsUser` (1 call, path under the
+    // link) and `save` (1 record) pins are what fail there. With the
+    // walker restored: both pass.
+    describe('pre-planted symlink on the worktrees ancestor chain (#1749)', () => {
+      const REPO_SEGMENT = `${TEST_CONFIG_DIR}/repositories/owner/repo-name`;
+      const WORKTREES_SEGMENT = `${REPO_SEGMENT}/worktrees`;
+      const ELSEWHERE = `${TEST_CONFIG_DIR}/elsewhere`;
+
+      async function expectCheckoutNotRedirected(plantedAt: string) {
+        const { TrustedDirVerificationError } = await import('../../lib/trusted-dir.js');
+        const WorktreeService = await getWorktreeService();
+        const service = new WorktreeService({
+          worktreeRepository: mockRepo,
+          runAsUserImpl: runAsUserMock.runAsUserImpl,
+        });
+
+        const promise = service.createWorktree('/repo', 'feature-branch', 'repo-1');
+        await expect(promise).rejects.toBeInstanceOf(TrustedDirVerificationError);
+        await expect(promise).rejects.toThrow(`Trusted directory segment is a symlink: ${plantedAt}`);
+        // The link's target received nothing: no `worktrees` directory, no
+        // `wt-*` entry.
+        expect(fs.readdirSync(ELSEWHERE)).toEqual([]);
+        // "Checkout not redirected": git never ran at all, so nothing was
+        // checked out anywhere -- neither under the link nor elsewhere.
+        expect(runAsUserMock.calls).toEqual([]);
+        // No index was allocated / persisted for a worktree that does not exist.
+        expect(mockRepo.records).toEqual([]);
+      }
+
+      it('rejects when repositories/<org>/<repo> is a symlink and never runs git', async () => {
+        fs.mkdirSync(ELSEWHERE, { recursive: true });
+        fs.mkdirSync(`${TEST_CONFIG_DIR}/repositories/owner`, { recursive: true });
+        fs.symlinkSync(ELSEWHERE, REPO_SEGMENT);
+
+        await expectCheckoutNotRedirected(REPO_SEGMENT);
+      });
+
+      it('rejects when .../worktrees itself is a symlink and never runs git', async () => {
+        fs.mkdirSync(ELSEWHERE, { recursive: true });
+        fs.mkdirSync(REPO_SEGMENT, { recursive: true });
+        fs.symlinkSync(ELSEWHERE, WORKTREES_SEGMENT);
+
+        await expectCheckoutNotRedirected(WORKTREES_SEGMENT);
+      });
     });
 
     it('should create worktree with new branch from base (uses -b flag)', async () => {
