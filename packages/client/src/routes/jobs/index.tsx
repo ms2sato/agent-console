@@ -206,6 +206,9 @@ function JobsPage() {
             <option value={JOB_TYPES.INBOUND_EVENT_PROCESS}>
               {JOB_TYPE_LABELS[JOB_TYPES.INBOUND_EVENT_PROCESS]}
             </option>
+            <option value={JOB_TYPES.CLEANUP_DEFINITION_MEMORY}>
+              {JOB_TYPE_LABELS[JOB_TYPES.CLEANUP_DEFINITION_MEMORY]}
+            </option>
           </select>
         </div>
       </div>
