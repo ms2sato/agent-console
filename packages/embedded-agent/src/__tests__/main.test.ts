@@ -24,7 +24,12 @@ import { COMPACT_TOOL_UNSUPPORTED_RESULT } from '../compact-tool.js';
 import type { SdkEngineDeps } from '../sdk-engine.js';
 import { buildUserMessageContent } from '../attachment-content.js';
 import type { EmbeddedAgentAttachment } from '@agent-console/shared';
-import { loadInstructions, formatMemoryHeader, type LoadInstructionsParams } from '../system-prompt.js';
+import {
+  loadInstructions,
+  formatMemoryHeader,
+  assembleSystemPrompt,
+  type LoadInstructionsParams,
+} from '../system-prompt.js';
 
 const mainPath = join(import.meta.dir, '..', 'main.ts');
 
@@ -1698,26 +1703,114 @@ class DeadAdapter implements ProviderAdapter {
 
 describe('runLoop — compaction at the restore boundary (#1411)', () => {
   const WINDOW = 1000;
+  /** The band the boundary check decides inside, for `WINDOW`: at or above
+   * the auto threshold (`DEFAULT_COMPACTION_THRESHOLD` 0.85 -> 850) the
+   * check fires at all; at or below `FULL_DISTILL_MAX_RATIO` (0.9 -> 900) it
+   * distills the WHOLE conversation rather than a budgeted suffix. */
+  const BAND_FLOOR_TOKENS = 850;
+  const BAND_CEILING_TOKENS = 900;
 
-  /** Restored conversation of roughly `chars` characters past the system
-   * message, which `main.ts` replaces with its own ~597-char assembly (measured; the preamble length is load-bearing for the band arithmetic below -- its ceiling is 601 chars). */
+  /** The system prompt `main.ts` substitutes for the server-side placeholder
+   * at restore, assembled here from the SAME inputs `initializeLoop` feeds
+   * `assembleSystemPrompt`: `initCommand()`'s `context` and `makeFactories()`'s
+   * empty `loadInstructions` result, no definition system prompt. Computed
+   * BEFORE the loop runs because the fixture below is SIZED from it -- a
+   * string captured from the adapter only exists after the run. That this is
+   * byte-for-byte the string the loop sends is not assumed: the first test
+   * asserts it against the adapter's captured `messages[0].content`. */
+  const assembled = assembleSystemPrompt({
+    context: { sessionId: 's', workerId: 'w', cwd: '/tmp' },
+    instructions: { segments: [] },
+  });
+
+  /** The loop's own estimator (`estimateTokensFromChars` in agent-loop.ts,
+   * private): chars / 4 over every message's `.content`, rounded. Restated
+   * here so the expected reading is derived, not measured -- when the
+   * estimator changes, the derivation and the loop's `context-usage` event
+   * disagree and the first test fails on that, by name. */
+  const estimateTokens = (chars: number) => Math.round(chars / 4);
+
+  /** Restored conversation whose first message is the server-side placeholder
+   * `main.ts` replaces with `assembled`; the rest alternate user/assistant. */
   const restoredOf = (...contents: string[]) => [
     { role: 'system', content: 'SERVER_SIDE_PLACEHOLDER' },
     ...contents.map((content, i) => ({ role: i % 2 === 0 ? 'user' : 'assistant', content })),
   ];
 
+  /** A restored conversation whose estimate lands at `IN_BAND_TARGET_TOKENS`
+   * exactly: the user message is sized as the remainder after the assembled
+   * system prompt, so the reading is INDEPENDENT of the preamble's wording.
+   *
+   * 875 is the midpoint of [850, 900] -- 25 tokens (100 chars) of margin on
+   * each side against the estimator's rounding or a message the loop counts
+   * that this derivation does not. The fixture text is
+   * `875 * 4 - assembled.length` chars (2903 at the 597-char assembly this
+   * was written against); it only goes negative once the preamble exceeds
+   * 3500 chars, which is the other edge of the margin.
+   *
+   * MEASURED REACH (mutation, run -- not predicted; 2026-09-17):
+   *
+   *   m1  `initializeLoop` skips `loop.compactAtRestoreBoundaryIfNeeded()`.
+   *       -> 5 fail, every test here except POLARITY (whose control shape is
+   *          exactly this mutation): the first test fails on the missing
+   *          `context-usage` reading, then no marker before ready, no second
+   *          turn-error, no adapter run, and the E2E's first user turn 400s.
+   *   m2  `buildPreamble` gains a 200-char sentence.
+   *       -> 0 fail. The fixture shrinks by the same 200 chars and the reading
+   *          stays 875. That is the point of the derivation: before it the
+   *          fixture was a hand-measured 3000 chars sitting 1 token under the
+   *          ceiling, and this same mutation failed 3 tests (the first, the
+   *          budget bound, and the timer test) -- as it did for real, twice
+   *          on 2026-09-17, on two unrelated preamble edits.
+   *   m3  the estimator divides by 3 instead of 4.
+   *       -> 3 fail, the first by name: the reading is 1167 against the
+   *          derived 875. The other two fail downstream, because 1167 is past
+   *          the ceiling and the partial path's 700-token budget fits no
+   *          suffix of a single 2903-char message. */
+  const IN_BAND_TARGET_TOKENS = 875;
+  const inBandFixtureChars = IN_BAND_TARGET_TOKENS * 4 - assembled.length;
+  const restoredInBand = () => restoredOf('U'.repeat(inBandFixtureChars));
+
+  /** A restored conversation far PAST the window: three messages totalling
+   * 8400 chars, a fixed size because the margin here is measured in
+   * thousands of tokens and no preamble edit can reach it. */
+  const pastWindowContents = ['A'.repeat(4000), 'B'.repeat(4000), 'C'.repeat(400)];
+  const pastWindowChars = pastWindowContents.reduce((sum, c) => sum + c.length, 0);
+  const restoredPastWindow = () => restoredOf(...pastWindowContents);
+
+  /** Provider adapter that records the system message of its first request,
+   * the SAME string the loop assembled for the restored conversation. */
+  class CapturingStubAdapter extends StubAdapter {
+    firstSystemPrompt: ProviderRunRequest['messages'][number]['content'] | undefined;
+    override async *run(req: ProviderRunRequest): AsyncIterable<ProviderEvent> {
+      this.firstSystemPrompt ??= req.messages[0]?.content;
+      yield* super.run(req);
+    }
+  }
+
   it('emits the context-compacted marker BEFORE ready, and ready exactly once', async () => {
-    // ~597-char system prompt + 3000 chars => ~899 estimated tokens, inside
-    // the [850, 900] full-compaction band for a 1000-token window.
+    const adapter = new CapturingStubAdapter();
     const { io, events } = makeIo([
       initCommand({
         compaction: { auto: true, contextWindowTokens: WINDOW },
-        restoredConversation: restoredOf('U'.repeat(3000)),
+        restoredConversation: restoredInBand(),
       }),
       JSON.stringify({ v: 1, type: 'shutdown' }),
     ]);
 
-    expect(await runLoop(io, makeFactories())).toBe(0);
+    expect(await runLoop(io, makeFactories({ createAdapter: () => adapter }))).toBe(0);
+
+    // The derivation's premises, asserted rather than assumed: the loop sent
+    // exactly the string this file assembled, and the reading it decided on
+    // (the `context-usage` it publishes before the boundary check) is that
+    // string plus the fixture through the estimator, inside the band.
+    const boundaryUsage = events.find((e) => e.type === 'context-usage');
+    expect(boundaryUsage && 'promptTokens' in boundaryUsage ? boundaryUsage.promptTokens : undefined).toBe(
+      estimateTokens(assembled.length + inBandFixtureChars),
+    );
+    expect(adapter.firstSystemPrompt).toBe(assembled);
+    expect(IN_BAND_TARGET_TOKENS).toBeGreaterThanOrEqual(BAND_FLOOR_TOKENS);
+    expect(IN_BAND_TARGET_TOKENS).toBeLessThanOrEqual(BAND_CEILING_TOKENS);
 
     const markerIndex = events.findIndex((e) => e.type === 'context-compacted');
     const readyIndex = events.findIndex((e) => e.type === 'ready');
@@ -1734,7 +1827,7 @@ describe('runLoop — compaction at the restore boundary (#1411)', () => {
     const { io, events } = makeIo([
       initCommand({
         compaction: { auto: true, contextWindowTokens: WINDOW },
-        restoredConversation: restoredOf('U'.repeat(3000)),
+        restoredConversation: restoredInBand(),
       }),
       JSON.stringify({ v: 1, type: 'user-message', id: 'u1', text: 'still working?' }),
       JSON.stringify({ v: 1, type: 'shutdown' }),
@@ -1763,7 +1856,7 @@ describe('runLoop — compaction at the restore boundary (#1411)', () => {
     const { io, events } = makeIo([
       initCommand({
         compaction: { auto: true, contextWindowTokens: WINDOW },
-        restoredConversation: restoredOf('U'.repeat(3000)),
+        restoredConversation: restoredInBand(),
       }),
       JSON.stringify({ v: 1, type: 'shutdown' }),
     ]);
@@ -1789,14 +1882,17 @@ describe('runLoop — compaction at the restore boundary (#1411)', () => {
   });
 
   it('E2E: a restored conversation past the window is partially distilled, and the first user turn does not go over the window', async () => {
-    // ~597 system + 4000 + 4000 + 400 = ~8997 chars => ~2249 tokens against a
-    // 1000-token window: far past the 0.9 full-distill ceiling, so the
-    // distillation input itself must be narrowed to the 700-token budget.
+    // The assembled system prompt plus 8400 chars of conversation, through
+    // the estimator, sits far past the full-distill ceiling (~2249 tokens at
+    // the 597-char assembly, against 900: a margin the preamble cannot close
+    // in either direction), so the distillation input itself must be
+    // narrowed to the 700-token budget. Asserted here rather than trusted.
+    expect(estimateTokens(assembled.length + pastWindowChars)).toBeGreaterThan(BAND_CEILING_TOKENS);
     const adapter = new WindowedAdapter(WINDOW, 'DISTILLED');
     const { io, events } = makeIo([
       initCommand({
         compaction: { auto: true, contextWindowTokens: WINDOW },
-        restoredConversation: restoredOf('A'.repeat(4000), 'B'.repeat(4000), 'C'.repeat(400)),
+        restoredConversation: restoredPastWindow(),
       }),
       JSON.stringify({ v: 1, type: 'user-message', id: 'u1', text: 'follow-up' }),
       JSON.stringify({ v: 1, type: 'shutdown' }),
@@ -1825,7 +1921,7 @@ describe('runLoop — compaction at the restore boundary (#1411)', () => {
     const { io, events } = makeIo([
       initCommand({
         compaction: { auto: false, contextWindowTokens: WINDOW },
-        restoredConversation: restoredOf('A'.repeat(4000), 'B'.repeat(4000), 'C'.repeat(400)),
+        restoredConversation: restoredPastWindow(),
       }),
       JSON.stringify({ v: 1, type: 'user-message', id: 'u1', text: 'follow-up' }),
       JSON.stringify({ v: 1, type: 'shutdown' }),
@@ -1895,7 +1991,7 @@ describe('runLoop — compaction at the restore boundary (#1411)', () => {
       async *readCommands() {
         yield initCommand({
           compaction: { auto: true, contextWindowTokens: WINDOW },
-          restoredConversation: restoredOf('U'.repeat(3000)),
+          restoredConversation: restoredInBand(),
         });
         await new Promise((resolve) => setTimeout(resolve, 0));
         yield JSON.stringify({ v: 1, type: 'user-message', id: 'u1', text: 'after ready' });
