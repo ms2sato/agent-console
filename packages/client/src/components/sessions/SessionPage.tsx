@@ -9,7 +9,7 @@ import { SessionSettings } from '../SessionSettings';
 import { QuickSessionSettings } from '../QuickSessionSettings';
 import { ErrorDialog, useErrorDialog } from '../ui/error-dialog';
 import { ErrorBoundary } from '../ui/ErrorBoundary';
-import { DiffIcon, AlertCircleIcon } from '../Icons';
+import { DiffIcon, AlertCircleIcon, PanelRightIcon } from '../Icons';
 import { getSession, restartAgentWorker, resumeSession, deleteSession, openPath } from '../../lib/api';
 import { isSessionOrphanedError } from './resumeErrors';
 import { formatPath } from '../../lib/path';
@@ -24,7 +24,9 @@ import { sendPtyWorkerMessage, escapePtyWorker } from './messagePanelHandlers';
 import type { AgentDefinition, Session, Worker } from '@agent-console/shared';
 import { MessagePanel, type MessagePanelHandle } from './MessagePanel';
 import { SessionSidePanels } from './SessionSidePanels';
+import { SessionSidePanelsDrawer } from './SessionSidePanelsDrawer';
 import { useAgents } from '../../hooks/useAgents';
+import { useIsMobile } from '../../hooks/useIsMobile';
 import { useSessionStopTasksContext } from '../../routes/__root';
 import type { SessionStopTask } from '../../hooks/useSessionStopTasks';
 import { Spinner } from '../ui/Spinner';
@@ -206,6 +208,24 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
   // State for deleting orphaned session
   const [isDeletingOrphan, setIsDeletingOrphan] = useState(false);
   const [orphanDeleteError, setOrphanDeleteError] = useState<string | null>(null);
+
+  const isMobile = useIsMobile();
+  // Whether the mobile-only side-panels drawer is open. Deliberately a plain
+  // useState, never persisted (unlike useSessionSidePanelsState's own
+  // record): a persisted overlay-open flag would reopen the drawer on every
+  // navigation to this page, which is not what "open" means for a modal.
+  const [sidePanelsDrawerOpen, setSidePanelsDrawerOpen] = useState(false);
+
+  // Reset the drawer's open flag when the viewport crosses back above the
+  // mobile breakpoint. SessionPage itself never unmounts on a resize (only
+  // the rail vs. drawer swap does), so without this the flag would stay
+  // true and the drawer would silently reappear open if the viewport
+  // shrinks below 768px again later in the same page visit. Driven by a
+  // browser-API subscription (useIsMobile's matchMedia listener) crossing a
+  // threshold, which frontend.md's useEffect table permits.
+  useEffect(() => {
+    if (!isMobile) setSidePanelsDrawerOpen(false);
+  }, [isMobile]);
 
   const { navigateToWorker, navigateToSession } = useWorkerRouting(sessionId);
 
@@ -710,6 +730,24 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
         {/* Spacer */}
         <div className="flex-1" />
 
+        {/* Mobile-only trigger for the side-panels drawer. JS-gated by
+            useIsMobile rather than `md:hidden` for the same reason as
+            routes/__root.tsx's NotificationBell gate: the rail and the
+            drawer must never be mounted at the same time -- each
+            useSessionSidePanelsState() instance holds its own useState,
+            and two live instances would drift out of sync with each other. */}
+        {isMobile && (
+          <button
+            type="button"
+            onClick={() => setSidePanelsDrawerOpen(true)}
+            aria-label="Open session panels"
+            aria-expanded={sidePanelsDrawerOpen}
+            className="p-2 text-gray-400 hover:text-white min-w-[44px] min-h-[44px] flex items-center justify-center bg-transparent border-none cursor-pointer"
+          >
+            <PanelRightIcon className="w-5 h-5" />
+          </button>
+        )}
+
         {/* Settings button */}
         <div className="px-2">
           {session.type === 'worktree' ? (
@@ -744,9 +782,22 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
         <div className="flex-1 min-w-0 relative">
           {activeTabContent}
         </div>
-        {/* Session side panels: memo / artifacts / bookmarks */}
-        <SessionSidePanels sessionId={sessionId} />
+        {/* Session side panels: memo / artifacts / bookmarks. Exactly one
+            useSessionSidePanelsState instance exists at a time -- rail on
+            desktop, drawer on mobile -- both reading/writing the same
+            storage key. Crossing the 767px boundary unmounts one and mounts
+            the other; the drawer's own effect cleanup releases the body
+            scroll lock on unmount, and the open flag it was given is simply
+            dropped by the reset effect above. */}
+        {!isMobile && <SessionSidePanels sessionId={sessionId} />}
       </div>
+      {isMobile && (
+        <SessionSidePanelsDrawer
+          sessionId={sessionId}
+          open={sidePanelsDrawerOpen}
+          onClose={() => setSidePanelsDrawerOpen(false)}
+        />
+      )}
 
       {/* Message panel - only shown for agent workers */}
       {activeTab?.workerType === 'agent' && activeTabId && (
