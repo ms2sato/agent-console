@@ -3,13 +3,23 @@
 # Driven ONLY by scripts/verify-multiuser-systemd.sh, on an ephemeral GitHub
 # runner (or a personal workstation whose only user is its owner). NEVER on
 # the dogfood host -- see docs/design/elevation-verification-tiers.md, "The
-# rule: never on the dogfood host". The driver refuses unless CI=true or
-# AC_TIER3_HOST_OK=1 is set; do not `docker compose up` this file by hand.
+# rule: never on the dogfood host". The driver refuses unless
+# AC_TIER3_RUNNER=github-hosted (the workflow copies GitHub's own
+# `runner.environment` context there) or AC_TIER3_HOST_OK=1 (the explicit
+# workstation opt-in) is set; a bare CI=true is not accepted. That gate stops
+# AMBIENT runs on the wrong host (a delegate typing the command, an inherited
+# variable); it does not stop a workflow author who edits the env to the
+# literal marker -- an org-level runner-registration concern, not a
+# shell-enforceable security boundary. Do not `docker compose up` this file
+# by hand.
 #
 # The service block below is the boot set measured in Task 0 (runner only):
 #   CAP_SYS_ADMIN + host cgroup namespace + rw /sys/fs/cgroup bind
 #   + tmpfs /run,/run/lock + container=docker + apparmor=unconfined,
-#   seccomp = Docker's default profile, no other capability, no --privileged.
+#   seccomp = Docker's default profile, no --privileged. SYS_ADMIN is the
+#   only capability ADDED; `cap_add` keeps Docker's default capability set,
+#   which the measurement ran with (no `cap_drop: ALL` -- narrowing the
+#   defaults would be a new boot measurement, not a comment change).
 # Task 0 measured that the same set WITHOUT the AppArmor opt-out does not
 # boot on ubuntu-latest (systemd 255 exits 255: "Failed to fork off
 # sandboxing environment for executing generators: Protocol error"), and that

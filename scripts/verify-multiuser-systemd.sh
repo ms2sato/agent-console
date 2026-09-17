@@ -12,7 +12,10 @@
 #  NEVER ON THE DOGFOOD HOST. This script runs on an ephemeral GitHub
 #  runner (.github/workflows/verify-multiuser-systemd.yml) or on a personal
 #  workstation whose only user is its owner. It refuses to run unless
-#  CI=true or AC_TIER3_HOST_OK=1 is set (Discipline 4 of
+#  AC_TIER3_RUNNER=github-hosted (set by the workflow from GitHub's own
+#  `runner.environment` context -- `CI=true` alone is NOT accepted, any
+#  self-hosted runner sets that) or AC_TIER3_HOST_OK=1 (the explicit
+#  workstation opt-in) is set (Discipline 4 of
 #  .claude/rules/os-environment-coupling.md, drafted in the note above).
 #  A delegate on the dogfood host drives tier 3 by PUSHING A BRANCH, never
 #  by running this script.
@@ -23,7 +26,8 @@
 #
 #   CAP_SYS_ADMIN + host cgroup namespace + rw /sys/fs/cgroup bind
 #   + tmpfs /run,/run/lock + container=docker + apparmor=unconfined
-#   (seccomp = Docker's default profile; no other capability; NO --privileged)
+#   (seccomp = Docker's default profile; SYS_ADMIN is the only capability
+#   ADDED on top of Docker's defaults; NO --privileged)
 #
 # It lives in docker/docker-compose.systemd.yml. This driver asserts the set
 # boots (systemctl is-system-running = running|degraded, /proc/1/comm =
@@ -41,7 +45,8 @@
 # workflow passes in (the helper cases' elevation prefix).
 #
 # Steps (each timed, printed as `STEP <name> <n>s`):
-#   0. gate (CI=true | AC_TIER3_HOST_OK=1) and the rules-file preflight
+#   0. gate (AC_TIER3_RUNNER=github-hosted | AC_TIER3_HOST_OK=1) and the
+#      rules-file preflight
 #   1. host facts: docker info (security options, cgroup version), kernel
 #   2. docker compose build (docker/Dockerfile.systemd, no app baked)
 #   3. boot + assertion (is-system-running, /proc/1/comm, failed units)
@@ -148,11 +153,17 @@ check() { # check <name> <exit-code>
 # --- 0. gate + preflight ---------------------------------------------------
 
 gate() {
-  if [ "${CI:-}" = "true" ] || [ "${AC_TIER3_HOST_OK:-}" = "1" ]; then
+  # `CI=true` is deliberately NOT accepted: any CI system or self-hosted
+  # runner sets it, including one that could be registered on the dogfood
+  # host. `runner.environment` is evaluated by GitHub itself and is
+  # `github-hosted` only on an ephemeral GitHub runner; the workflow copies
+  # it into AC_TIER3_RUNNER.
+  if [ "${AC_TIER3_RUNNER:-}" = "github-hosted" ] || [ "${AC_TIER3_HOST_OK:-}" = "1" ]; then
     return 0
   fi
-  cat >&2 <<'EOF'
+  cat >&2 <<EOF
 verify-multiuser-systemd.sh: REFUSING TO RUN on this host.
+  (seen: AC_TIER3_RUNNER='${AC_TIER3_RUNNER:-}' AC_TIER3_HOST_OK='${AC_TIER3_HOST_OK:-}'; accepted markers: AC_TIER3_RUNNER=github-hosted or AC_TIER3_HOST_OK=1)
 
   Tier 3 boots systemd as PID 1 with CAP_SYS_ADMIN, the host cgroup namespace,
   a writable host cgroup tree and an AppArmor opt-out -- root-equivalent on
@@ -160,11 +171,20 @@ verify-multiuser-systemd.sh: REFUSING TO RUN on this host.
   elevation-coupled code; docs/design/elevation-verification-tiers.md, "The
   rule: never on the dogfood host") therefore confines tier 3 to ephemeral CI
   runners and personal workstations, and this gate makes that mechanical:
-  the driver runs only when CI=true (a GitHub runner) or AC_TIER3_HOST_OK=1
-  (set by hand, on a workstation whose only user is its owner). Neither is
-  set here. A delegate drives tier 3 by pushing a branch that
+  the driver runs only when AC_TIER3_RUNNER=github-hosted (copied by the
+  workflow from GitHub's own runner.environment context; CI=true alone is
+  not accepted, any self-hosted runner sets that) or AC_TIER3_HOST_OK=1 (set
+  by hand, on a workstation whose only user is its owner). Neither is set
+  here. A delegate drives tier 3 by pushing a branch that
   .github/workflows/verify-multiuser-systemd.yml picks up, never by running
   this script on the dogfood host.
+
+  What this gate is, honestly: it stops AMBIENT runs on the wrong host -- a
+  delegate typing the command, an inherited variable, a CI=true that any
+  self-hosted runner sets. It does not stop a workflow author who edits the
+  env to the literal marker; that is an org-level runner-registration
+  concern (no self-hosted runner exists today), not a shell-enforceable
+  security boundary.
 EOF
   exit 2
 }
@@ -204,7 +224,7 @@ host_facts() {
   echo "  docker info: $(docker info --format 'cgroupdriver={{.CgroupDriver}} cgroupversion={{.CgroupVersion}} security={{.SecurityOptions}} storage={{.Driver}}')"
   echo "  /sys/fs/cgroup fstype: $(stat -fc %T /sys/fs/cgroup 2>/dev/null || echo unknown)"
   echo "  compose: $(docker compose version 2>/dev/null | head -1)"
-  echo "  boot set: CAP_SYS_ADMIN + host cgroupns + rw /sys/fs/cgroup + tmpfs /run,/run/lock + container=docker + apparmor=unconfined (seccomp default, no --privileged) -- see ${COMPOSE_FILE#"$REPO_ROOT"/}"
+  echo "  boot set: CAP_SYS_ADMIN + host cgroupns + rw /sys/fs/cgroup + tmpfs /run,/run/lock + container=docker + apparmor=unconfined (seccomp default, SYS_ADMIN the only added cap, no --privileged) -- see ${COMPOSE_FILE#"$REPO_ROOT"/}"
   step_end host_facts
 }
 

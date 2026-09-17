@@ -16,7 +16,7 @@ const WORKFLOW_FILE = resolve(__dirname, '..', '..', '.github', 'workflows', 've
 // nothing here boots a container, and nothing here may. What these tests
 // establish is the ORDER the driver enforces before it touches docker:
 //
-//   gate (CI=true | AC_TIER3_HOST_OK=1)  ->  rules-file preflight  ->  docker
+//   gate (AC_TIER3_RUNNER=github-hosted | AC_TIER3_HOST_OK=1)  ->  rules-file preflight  ->  docker
 //
 // with a positive control proving the third arrow: when the gate is open
 // and the rules file, its COPY line and AC_TIER3_ELEVATE are all present,
@@ -34,10 +34,13 @@ const WORKFLOW_FILE = resolve(__dirname, '..', '..', '.github', 'workflows', 've
 // driver placed at <fixture>/scripts/verify-multiuser-systemd.sh makes
 // <fixture> the repo root without adding any test-only seam to the script.
 //
-// AC_TIER3_HOST_OK=1 is deliberately never set by these tests, even against
-// the fake docker: it is the workstation opt-in and the delegate-side rule
-// is never to set it on the dogfood host. The gate is exercised through
-// CI=true (the runner's value) and through the refusal branch.
+// Both accepted markers are exercised: AC_TIER3_RUNNER=github-hosted (what
+// the workflow copies from GitHub's `runner.environment` context) and
+// AC_TIER3_HOST_OK=1 (the workstation opt-in). The latter is set ONLY in the
+// child process's environment and ONLY with the fake docker first on PATH,
+// which exits 42 on every call -- no container can start, on any host, from
+// these tests. The refusal branch covers a bare CI=true (any self-hosted
+// runner sets it), AC_TIER3_RUNNER=self-hosted, and nothing set.
 
 function fixtureRepo({ rulesFile, dockerfileInstalls }) {
   const root = mkdtempSync(join(tmpdir(), 'tier3-driver-'));
@@ -73,6 +76,7 @@ function runDriver(root, envOverrides) {
   // control the gate's inputs explicitly per test.
   const env = { ...process.env };
   delete env.CI;
+  delete env.AC_TIER3_RUNNER;
   delete env.AC_TIER3_HOST_OK;
   delete env.AC_TIER3_ELEVATE;
   env.PATH = `${join(root, 'bin')}:${env.PATH ?? '/usr/bin:/bin'}`;
@@ -91,7 +95,7 @@ describe('verify-multiuser-systemd.sh: never-on-the-dogfood-host gate (AC 1)', (
   beforeEach(() => { fx = fixtureRepo({ rulesFile: true, dockerfileInstalls: true }); });
   afterEach(() => { rmSync(fx.root, { recursive: true, force: true }); });
 
-  it('refuses (exit 2, citing Discipline 4) when neither CI=true nor AC_TIER3_HOST_OK=1 is set, and never calls docker', () => {
+  it('refuses (exit 2, citing Discipline 4) when neither AC_TIER3_RUNNER=github-hosted nor AC_TIER3_HOST_OK=1 is set, and never calls docker', () => {
     const r = runDriver(fx.root, { AC_TIER3_ELEVATE: 'fake-elevate' });
     expect(r.status).toBe(2);
     expect(r.stderr).toContain('REFUSING TO RUN');
@@ -100,11 +104,35 @@ describe('verify-multiuser-systemd.sh: never-on-the-dogfood-host gate (AC 1)', (
     expect(dockerCalls(fx.log)).toEqual([]);
   });
 
-  it('refuses on near-miss values (CI=false, AC_TIER3_HOST_OK=0) -- the gate compares exact values, not presence', () => {
-    const r = runDriver(fx.root, { CI: 'false', AC_TIER3_HOST_OK: '0', AC_TIER3_ELEVATE: 'fake-elevate' });
+  it('refuses on near-miss values (AC_TIER3_RUNNER=self-hosted, AC_TIER3_HOST_OK=0) -- the gate compares exact values, not presence', () => {
+    const r = runDriver(fx.root, { AC_TIER3_RUNNER: 'self-hosted', AC_TIER3_HOST_OK: '0', AC_TIER3_ELEVATE: 'fake-elevate' });
     expect(r.status).toBe(2);
     expect(r.stderr).toContain('REFUSING TO RUN');
     expect(dockerCalls(fx.log)).toEqual([]);
+  });
+
+  it('refuses a bare CI=true (any CI system or self-hosted runner sets it) -- only the GitHub-evaluated marker or the workstation opt-in opens the gate', () => {
+    const r = runDriver(fx.root, { CI: 'true', AC_TIER3_ELEVATE: 'fake-elevate' });
+    expect(r.status).toBe(2);
+    expect(r.stderr).toContain('REFUSING TO RUN');
+    expect(r.stderr).toContain('CI=true alone is');
+    expect(dockerCalls(fx.log)).toEqual([]);
+  });
+
+  it('names the markers it saw and the ones it accepts in the refusal', () => {
+    const r = runDriver(fx.root, { AC_TIER3_RUNNER: 'self-hosted', AC_TIER3_ELEVATE: 'fake-elevate' });
+    expect(r.status).toBe(2);
+    expect(r.stderr).toContain("seen: AC_TIER3_RUNNER='self-hosted' AC_TIER3_HOST_OK=''");
+    expect(r.stderr).toContain('accepted markers: AC_TIER3_RUNNER=github-hosted or AC_TIER3_HOST_OK=1');
+    expect(dockerCalls(fx.log)).toEqual([]);
+  });
+
+  it('opens on AC_TIER3_HOST_OK=1 alone (the workstation opt-in) -- proven by the fake docker being reached', () => {
+    const r = runDriver(fx.root, { AC_TIER3_HOST_OK: '1', AC_TIER3_ELEVATE: 'fake-elevate' });
+    expect(r.stderr).not.toContain('REFUSING TO RUN');
+    expect(r.stderr).not.toMatch(/error: missing/);
+    expect(dockerCalls(fx.log).length).toBeGreaterThan(0);
+    expect(r.status).not.toBe(0);
   });
 
   it('the refusal is decided BEFORE the rules-file preflight (a refused run names no missing file)', () => {
@@ -121,7 +149,7 @@ describe('verify-multiuser-systemd.sh: never-on-the-dogfood-host gate (AC 1)', (
   });
 });
 
-describe('verify-multiuser-systemd.sh: rules-file preflight (AC 3), gate open via CI=true', () => {
+describe('verify-multiuser-systemd.sh: rules-file preflight (AC 3), gate open via AC_TIER3_RUNNER=github-hosted', () => {
   const cases = [
     {
       name: 'the operator rules file docker/deployer-elevation-rules is absent',
@@ -157,7 +185,7 @@ describe('verify-multiuser-systemd.sh: rules-file preflight (AC 3), gate open vi
     it(`exits 2 naming the missing item and never calls docker when ${c.name}`, () => {
       const fx = fixtureRepo(c.fixture);
       try {
-        const r = runDriver(fx.root, { CI: 'true', ...c.env });
+        const r = runDriver(fx.root, { AC_TIER3_RUNNER: 'github-hosted', ...c.env });
         expect(r.status).toBe(2);
         expect(r.stderr).toMatch(/error: missing/);
         for (const s of c.names) expect(r.stderr).toContain(s);
@@ -173,7 +201,7 @@ describe('verify-multiuser-systemd.sh: rules-file preflight (AC 3), gate open vi
   it('reports every missing line at once (all three absent -> all three named, one exit)', () => {
     const fx = fixtureRepo({ rulesFile: false, dockerfileInstalls: false });
     try {
-      const r = runDriver(fx.root, { CI: 'true' });
+      const r = runDriver(fx.root, { AC_TIER3_RUNNER: 'github-hosted' });
       expect(r.status).toBe(2);
       expect(r.stderr).toContain('docker/deployer-elevation-rules');
       expect(r.stderr).toContain('does not install');
@@ -184,10 +212,10 @@ describe('verify-multiuser-systemd.sh: rules-file preflight (AC 3), gate open vi
     }
   });
 
-  it('POSITIVE CONTROL: with the gate open and the rules file, its COPY line and AC_TIER3_ELEVATE present, the driver reaches docker (the fake records the call and fails the run)', () => {
+  it('POSITIVE CONTROL: with the gate open (AC_TIER3_RUNNER=github-hosted) and the rules file, its COPY line and AC_TIER3_ELEVATE present, the driver reaches docker (the fake records the call and fails the run)', () => {
     const fx = fixtureRepo({ rulesFile: true, dockerfileInstalls: true });
     try {
-      const r = runDriver(fx.root, { CI: 'true', AC_TIER3_ELEVATE: 'fake-elevate' });
+      const r = runDriver(fx.root, { AC_TIER3_RUNNER: 'github-hosted', AC_TIER3_ELEVATE: 'fake-elevate' });
       // The fake docker exits 42 on every call, so the run cannot succeed;
       // what matters is WHY it stopped: past the gate, past the preflight,
       // at a docker call.
@@ -221,14 +249,14 @@ describe('docker/docker-compose.systemd.yml: the measured tier-3 boot set, not -
     expect(compose).toContain('stop_signal: SIGRTMIN+3');
   });
 
-  it('never falls back to --privileged and does not opt out of seccomp', () => {
+  it('never falls back to --privileged, adds no capability beyond SYS_ADMIN, and does not opt out of seccomp', () => {
     expect(compose).not.toMatch(/^\s*privileged:/m);
     // security_opt carries the AppArmor opt-out and nothing else (no
     // seccomp=unconfined: the comment header may mention seccomp, the
     // service block must not).
     expect(compose).toMatch(/security_opt:\s*\n\s*- apparmor=unconfined\s*\n\s*tmpfs:/);
     expect(compose).not.toMatch(/^\s*- seccomp/m);
-    // one capability line only
+    // one capability ADDED (cap_add keeps Docker's defaults; no cap_drop)
     expect(compose.match(/^\s*- [A-Z_]+\s*$/gm)).toEqual(['      - SYS_ADMIN']);
   });
 
@@ -268,5 +296,10 @@ describe('.github/workflows/verify-multiuser-systemd.yml: triggers per AC 6 and 
     expect(wf).toContain('contents: read');
     expect(wf).toContain('run: scripts/verify-multiuser-systemd.sh');
     expect(wf).toMatch(/^\s+AC_TIER3_ELEVATE:/m);
+  });
+
+  it('copies GitHub\'s runner.environment context into AC_TIER3_RUNNER (the gate marker; a bare CI=true is not the gate)', () => {
+    expect(wf).toContain('AC_TIER3_RUNNER: ${{ runner.environment }}');
+    expect(wf).not.toMatch(/^\s+CI:/m);
   });
 });
