@@ -44,6 +44,7 @@ import {
   type BinaryIdentity,
 } from '../../packages/server/src/lib/embedded-agent-bun-path-check.js';
 
+/** Maps a `compareBinaryIdentity` result to the single stdout marker V3 reads. */
 export function markerFor(identity: BinaryIdentity): string {
   if (typeof identity === 'string') {
     return identity === 'same' ? 'SAME' : 'DIFFERENT';
@@ -51,10 +52,12 @@ export function markerFor(identity: BinaryIdentity): string {
   return `UNRESOLVABLE:${identity.unresolvable}`;
 }
 
+/** A MainPID (digits) becomes `/proc/<pid>/exe`; anything else is the self path verbatim. */
 export function selfExeFor(pidOrPath: string): string {
   return /^[0-9]+$/.test(pidOrPath) ? `/proc/${pidOrPath}/exe` : pidOrPath;
 }
 
+/** Entry: prints the marker for `<pid|self-exe> <configured>` and returns the process exit code (2 on bad usage). */
 export async function main(argv: readonly string[] = process.argv.slice(2)): Promise<number> {
   const [pidOrPath, configured] = argv;
   if (!pidOrPath || !configured) {
