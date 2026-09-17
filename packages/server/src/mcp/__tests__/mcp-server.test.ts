@@ -3065,7 +3065,12 @@ describe('MCP Server Tools', () => {
       expect(agentPrompt).toContain('\n---\n');
       expect(agentPrompt).toContain('Task completion');
       expect(agentPrompt).toContain('send_session_message');
-      expect(agentPrompt).toContain('fromSessionId: Use your AGENT_CONSOLE_SESSION_ID environment variable');
+      // Issue #1694 (C8): the callback names BOTH identity sources, because a
+      // Bash-less claude-sdk worker has no environment to read and must fall
+      // back to the Session ID its system-prompt preamble states.
+      expect(agentPrompt).toContain(
+        'fromSessionId: your session id (AGENT_CONSOLE_SESSION_ID in your environment, or the Session ID stated in your system prompt)',
+      );
       expect(agentPrompt).toContain('You have a parent session');
 
       // Verify PR merge notification instructions

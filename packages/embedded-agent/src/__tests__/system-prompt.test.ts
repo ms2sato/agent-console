@@ -794,9 +794,9 @@ describe('loadOptInInstructions', () => {
 
 // ---------------------------------------------------------------------------
 // composeSdkSystemPromptAppend -- the SDK engine's systemPrompt.append
-// composition (instruction segments, formatted the same way
-// assembleSystemPrompt renders them, followed by the definition system
-// prompt if present; no preamble).
+// composition (the identity preamble first, then instruction segments
+// formatted the same way assembleSystemPrompt renders them, followed by the
+// definition system prompt if present).
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
@@ -1231,7 +1231,7 @@ describe('loadInstructions — skills layer', () => {
     await writeSkill(root, 'sdk-demo-skill', '---\nname: sdk-demo-skill\ndescription: SDK-visible too.\n---\n');
 
     const instructions = await loadInstructions({ cwd: root, xdgConfigHome: await isolatedXdgConfigHome() });
-    const result = composeSdkSystemPromptAppend(instructions, undefined);
+    const result = composeSdkSystemPromptAppend({ context, instructions });
 
     expect(result).toContain('sdk-demo-skill');
     expect(result).toContain('SDK-visible too.');
@@ -1328,31 +1328,83 @@ describe('parseSkillsLayerCapBytes', () => {
 });
 
 describe('composeSdkSystemPromptAppend', () => {
-  it('returns undefined when there are no segments and no definition system prompt', () => {
-    expect(composeSdkSystemPromptAppend({ segments: [] }, undefined)).toBeUndefined();
+  // Issue #1694 (C5): the SDK append carries the SAME identity preamble the
+  // openai-api arm gets, through the single writer `buildPreamble`. Before
+  // this change a claude-sdk worker without Bash (the default enabledTools)
+  // had no identity source at all -- the preamble stated the ids only on the
+  // openai-api arm. Reach measured: removing `buildPreamble(params.context)`
+  // from `composeSdkSystemPromptAppend`'s section list (and equally,
+  // reverting to the pre-#1694 "undefined when nothing to append" shape)
+  // fails five tests in this block (identity present, byte-identical
+  // prefix, Repository ID rule, preamble-then-definition, empty-string
+  // definition) plus two in sdk-engine.test.ts; rendering the preamble
+  // LAST instead of first fails the four ordering-sensitive ones (prefix,
+  // preamble-then-definition, segment order, empty-string definition).
+  it('renders the identity preamble (session, worker, repository id) even with no segments and no definition system prompt', () => {
+    const result = composeSdkSystemPromptAppend({ context, instructions: { segments: [] } });
+    expect(result).toContain('embedded agent running inside agent-console');
+    expect(result).toContain('Session ID: sess-1');
+    expect(result).toContain('Worker ID: work-1');
+    expect(result).toContain('Repository ID: repo-1');
+    expect(result).toContain('fromSessionId');
+    // Never undefined any more: the preamble alone is a non-empty append.
+    expect(typeof result).toBe('string');
   });
 
-  it('returns only the definition system prompt when there are no segments', () => {
-    expect(composeSdkSystemPromptAppend({ segments: [] }, 'OPERATOR_PROMPT')).toBe('OPERATOR_PROMPT');
+  it('renders the preamble through the same single writer as assembleSystemPrompt (byte-identical prefix on both arms)', () => {
+    const instructions: LoadInstructionsResult = {
+      segments: [{ origin: '/repo/AGENTS.md', content: 'REPO_MARKER' }],
+    };
+    const openai = assembleSystemPrompt({ context, instructions, definitionSystemPrompt: 'OPERATOR_MARKER' });
+    const sdk = composeSdkSystemPromptAppend({ context, instructions, definitionSystemPrompt: 'OPERATOR_MARKER' });
+    // Both arms produce the identical string from the identical params --
+    // one writer, no per-engine preamble variant.
+    expect(sdk).toBe(openai);
+    const preambleEnd = openai.indexOf('\n\n--- Instructions:');
+    expect(preambleEnd).toBeGreaterThan(0);
+    expect(sdk.slice(0, preambleEnd)).toContain('Session ID: sess-1');
   });
 
-  it('renders segments using the same "--- Instructions: <origin> ---" delimiter as assembleSystemPrompt, ordered before the definition system prompt', () => {
-    const result = composeSdkSystemPromptAppend(
-      { segments: [{ origin: '/repo/AGENTS.md', content: 'REPO_MARKER' }] },
-      'OPERATOR_MARKER',
-    );
+  it('omits the Repository ID line when repositoryId is absent (same rule as assembleSystemPrompt)', () => {
+    const result = composeSdkSystemPromptAppend({
+      context: { sessionId: 's', workerId: 'w', cwd: '/c' },
+      instructions: { segments: [] },
+    });
+    expect(result).toContain('Session ID: s');
+    expect(result).not.toContain('Repository ID:');
+  });
+
+  it('returns the preamble followed by only the definition system prompt when there are no segments', () => {
+    const result = composeSdkSystemPromptAppend({
+      context,
+      instructions: { segments: [] },
+      definitionSystemPrompt: 'OPERATOR_PROMPT',
+    });
+    expect(result.endsWith('\n\nOPERATOR_PROMPT')).toBe(true);
+    expect(result.indexOf('Session ID: sess-1')).toBeLessThan(result.indexOf('OPERATOR_PROMPT'));
+  });
+
+  it('renders segments using the same "--- Instructions: <origin> ---" delimiter as assembleSystemPrompt, after the preamble and before the definition system prompt', () => {
+    const result = composeSdkSystemPromptAppend({
+      context,
+      instructions: { segments: [{ origin: '/repo/AGENTS.md', content: 'REPO_MARKER' }] },
+      definitionSystemPrompt: 'OPERATOR_MARKER',
+    });
     expect(result).toContain('--- Instructions: /repo/AGENTS.md ---\nREPO_MARKER');
-    const repoIdx = result!.indexOf('REPO_MARKER');
-    const operatorIdx = result!.indexOf('OPERATOR_MARKER');
+    const preambleIdx = result.indexOf('Session ID: sess-1');
+    const repoIdx = result.indexOf('REPO_MARKER');
+    const operatorIdx = result.indexOf('OPERATOR_MARKER');
+    expect(repoIdx).toBeGreaterThan(preambleIdx);
     expect(operatorIdx).toBeGreaterThan(repoIdx);
   });
 
   it('omits the definition system prompt section when it is an empty string (matches assembleSystemPrompt)', () => {
-    const result = composeSdkSystemPromptAppend(
-      { segments: [{ origin: '/repo/AGENTS.md', content: 'REPO_MARKER' }] },
-      '',
-    );
-    expect(result).toBe('--- Instructions: /repo/AGENTS.md ---\nREPO_MARKER');
+    const result = composeSdkSystemPromptAppend({
+      context,
+      instructions: { segments: [{ origin: '/repo/AGENTS.md', content: 'REPO_MARKER' }] },
+      definitionSystemPrompt: '',
+    });
+    expect(result.endsWith('\n\n--- Instructions: /repo/AGENTS.md ---\nREPO_MARKER')).toBe(true);
   });
 
   // Issue #1343 Phase A (R1): this function's own aggregate-capping logic
@@ -1364,49 +1416,50 @@ describe('composeSdkSystemPromptAppend', () => {
   // and the two rules-layer lines render the same way assembleSystemPrompt
   // renders them (mirrored through the shared renderInstructionsBody).
   it('renders rule segments using the "--- Rule: <origin> ---" delimiter, after instruction segments and before the definition system prompt', () => {
-    const result = composeSdkSystemPromptAppend(
-      {
+    const result = composeSdkSystemPromptAppend({
+      context,
+      instructions: {
         segments: [{ origin: '/repo/AGENTS.md', content: 'REPO_MARKER' }],
         ruleSegments: [{ origin: '/repo/.claude/rules/unscoped.md', content: 'RULE_MARKER' }],
       },
-      'OPERATOR_MARKER',
-    );
+      definitionSystemPrompt: 'OPERATOR_MARKER',
+    });
     expect(result).toContain('--- Rule: /repo/.claude/rules/unscoped.md ---\nRULE_MARKER');
-    const instructionIdx = result!.indexOf('REPO_MARKER');
-    const ruleIdx = result!.indexOf('RULE_MARKER');
-    const operatorIdx = result!.indexOf('OPERATOR_MARKER');
+    const instructionIdx = result.indexOf('REPO_MARKER');
+    const ruleIdx = result.indexOf('RULE_MARKER');
+    const operatorIdx = result.indexOf('OPERATOR_MARKER');
     expect(ruleIdx).toBeGreaterThan(instructionIdx);
     expect(operatorIdx).toBeGreaterThan(ruleIdx);
   });
 
   it('renders ruleOmissionLine and ruleIndexLine verbatim when present', () => {
-    const result = composeSdkSystemPromptAppend(
-      {
+    const result = composeSdkSystemPromptAppend({
+      context,
+      instructions: {
         segments: [],
         ruleOmissionLine: 'rules omitted for size: big.md',
         ruleIndexLine: 'Rules that apply when you touch matching paths: scoped.md (paths: src/**)',
       },
-      undefined,
-    );
+    });
     expect(result).toContain('rules omitted for size: big.md');
     expect(result).toContain('Rules that apply when you touch matching paths: scoped.md (paths: src/**)');
   });
 
   it('renders skillOmissionLine and skillIndexLine verbatim, after the rules-layer lines', () => {
-    const result = composeSdkSystemPromptAppend(
-      {
+    const result = composeSdkSystemPromptAppend({
+      context,
+      instructions: {
         segments: [],
         ruleIndexLine: 'Rules that apply when you touch matching paths: scoped.md (paths: src/**)',
         skillOmissionLine: 'skills omitted for size: big-skill.md',
         skillIndexLine: 'Skills available (open the named SKILL.md to read full instructions): demo -- A demo skill.',
       },
-      undefined,
-    );
+    });
     expect(result).toContain('skills omitted for size: big-skill.md');
     expect(result).toContain('Skills available (open the named SKILL.md to read full instructions): demo -- A demo skill.');
-    const ruleIdx = result!.indexOf('Rules that apply');
-    const skillOmissionIdx = result!.indexOf('skills omitted');
-    const skillIndexIdx = result!.indexOf('Skills available');
+    const ruleIdx = result.indexOf('Rules that apply');
+    const skillOmissionIdx = result.indexOf('skills omitted');
+    const skillIndexIdx = result.indexOf('Skills available');
     expect(skillOmissionIdx).toBeGreaterThan(ruleIdx);
     expect(skillIndexIdx).toBeGreaterThan(skillOmissionIdx);
   });
@@ -1874,6 +1927,6 @@ describe('memory layer — position in the rendered order (single writer: render
   });
 
   it('composeSdkSystemPromptAppend: the identical order (same single writer)', () => {
-    assertOrder(composeSdkSystemPromptAppend(fixture, 'DEFINITION_PROMPT_MARKER')!);
+    assertOrder(composeSdkSystemPromptAppend({ context, instructions: fixture, definitionSystemPrompt: 'DEFINITION_PROMPT_MARKER' }));
   });
 });

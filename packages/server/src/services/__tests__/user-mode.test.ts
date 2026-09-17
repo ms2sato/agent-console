@@ -21,6 +21,7 @@ import { SqliteUserRepository } from '../../repositories/sqlite-user-repository.
 import { SingleUserMode, MultiUserMode } from '../user-mode.js';
 import type { TerminalPtySpawnRequest, AgentPtySpawnRequest } from '../user-mode.js';
 import { getUnsetEnvPrefix } from '../env-filter.js';
+import { buildAgentConsoleEnv } from '../agent-console-env.js';
 import type { PtyProvider, PtySpawnOptions, PtyInstance } from '../../lib/pty-provider.js';
 
 const mockPtyProvider: PtyProvider = {
@@ -492,6 +493,77 @@ describe('MultiUserMode', () => {
       expect(innerCommand).not.toMatch(/(?:^|[\s;])export\b[^;]*\bUSER=/);
       expect(innerCommand).not.toMatch(/(?:^|[\s;])export\b[^;]*\bSHELL=/);
       expect(innerCommand).not.toMatch(/(?:^|[\s;])export\b[^;]*\bLOGNAME=/);
+    });
+  });
+
+  describe('spawnPty - agent identity env goes through buildAgentConsoleEnv on both paths (Issue #1694 C2)', () => {
+    // The AgentConsoleContext -> AGENT_CONSOLE_* mapping used to be written
+    // twice in this file (direct path, elevated path). Both now call the
+    // single writer in agent-console-env.ts; these pins compare each path's
+    // output against the writer itself so a per-path re-inlining that
+    // drifts (a renamed key, a dropped optional) fails here. Reach measured:
+    // re-inlining the elevated mapping with only the three required keys
+    // fails the elevated test; dropping the PARENT_WORKER_ID spread inside
+    // the builder itself fails the elevated test too; making the direct
+    // path map `request.agentConsoleContext` by a drifted rule (raw
+    // `AGENT_CONSOLE_<FIELD>` keys) fails the direct test.
+    const ctx = {
+      baseUrl: 'http://localhost:3457',
+      sessionId: 'sess-map',
+      workerId: 'work-map',
+      repositoryId: 'repo-map',
+      parentSessionId: 'parent-sess-map',
+      parentWorkerId: 'parent-work-map',
+    };
+
+    it('direct path: the spawn env carries exactly buildAgentConsoleEnv(ctx) for the AGENT_CONSOLE_* keys', () => {
+      const { provider, lastCall } = createCapturingPtyProvider();
+      const cachedUser = { id: 'cached-id', username: 'cached', homeDir: '/home/cached' };
+      const userMode = new SingleUserMode(provider, cachedUser);
+
+      const request: AgentPtySpawnRequest = {
+        type: 'agent',
+        username: 'cached',
+        cwd: '/home/cached/project',
+        additionalEnvVars: {},
+        cols: 80,
+        rows: 24,
+        command: 'claude',
+        agentConsoleContext: ctx,
+      };
+      userMode.spawnPty(request);
+
+      const [, , opts] = lastCall();
+      const agentConsoleEntries = Object.fromEntries(
+        Object.entries(opts.env ?? {}).filter(([k]) => k.startsWith('AGENT_CONSOLE_')),
+      );
+      expect(agentConsoleEntries).toEqual(buildAgentConsoleEnv(ctx));
+    });
+
+    it('elevated path: the inner command exports every key buildAgentConsoleEnv(ctx) produces', async () => {
+      const { provider, lastCall } = createCapturingPtyProvider();
+      const userRepository = new SqliteUserRepository(db);
+      const mode = await MultiUserMode.create(provider, userRepository);
+
+      const request: AgentPtySpawnRequest = {
+        type: 'agent',
+        username: 'definitely-not-the-server-user',
+        cwd: '/workspace',
+        additionalEnvVars: {},
+        cols: 80,
+        rows: 24,
+        command: 'claude',
+        agentConsoleContext: ctx,
+      };
+      mode.spawnPty(request);
+
+      const [, args] = lastCall();
+      const innerCommand = args[6] as string;
+      const expected = buildAgentConsoleEnv(ctx);
+      expect(Object.keys(expected)).toHaveLength(6);
+      for (const [key, value] of Object.entries(expected)) {
+        expect(innerCommand).toContain(`${key}='${value}'`);
+      }
     });
   });
 

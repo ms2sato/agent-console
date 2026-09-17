@@ -6,11 +6,17 @@
  * process. Detached / background descendant processes spawned by a worker
  * (e.g. a worker's `bun run dev` child, an MCP subprocess) are never in that
  * PID set and leak forever across server restarts. Every worker process in
- * this codebase already carries `AGENT_CONSOLE_SESSION_ID=<sessionId>` in its
- * environment (set at PTY spawn time in `user-mode.ts`, inherited by every
- * descendant process). This module scans `/proc/[pid]/environ` for that
- * marker, tree-wide, regardless of whether a pid was ever recorded as a
- * `worker.pid`.
+ * this codebase carries `AGENT_CONSOLE_SESSION_ID=<sessionId>` in its
+ * environment (set at spawn time through `buildAgentConsoleEnv` -- at PTY
+ * spawn in `user-mode.ts` for terminal agents, at `spawnAsUser` time in
+ * `embedded-agent-worker-service.ts` for embedded-agent loop subprocesses --
+ * and inherited by every descendant process). This module scans
+ * `/proc/[pid]/environ` for that marker, tree-wide, regardless of whether a
+ * pid was ever recorded as a `worker.pid`. The embedded-agent loop tree
+ * (the `bun` loop, its Bash children, and on the claude-sdk arm the `claude`
+ * CLI grandchild) is therefore in the sweep's population: after a server
+ * crash that leaves such a tree behind, the next startup's sweep reaps it
+ * by this marker like any terminal agent's tree.
  *
  * Multi-user constraint: `/proc/<pid>/environ` for another OS user's process
  * is not readable by the server process (EACCES). The scan (which requires

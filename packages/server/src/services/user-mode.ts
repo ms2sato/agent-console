@@ -21,6 +21,7 @@ import type { PtyProvider, PtyInstance } from '../lib/pty-provider.js';
 import type { UserRepository } from '../repositories/user-repository.js';
 import { getCleanChildProcessEnv, getUnsetEnvPrefix } from './env-filter.js';
 import { buildElevationArgs } from './elevation-args.js';
+import { buildAgentConsoleEnv, type AgentConsoleContext } from './agent-console-env.js';
 import { buildDirectSentinelShellCommand, buildElevatedSentinelCommand } from './sentinel-spawn-command.js';
 import { lookupOsUser } from './os-user-lookup.js';
 import { getConfigDir } from '../lib/config.js';
@@ -43,20 +44,6 @@ const logger = createLogger('user-mode');
 const SUDO_NEUTRAL_CWD = '/';
 
 // ========== PtySpawnRequest (Discriminated Union) ==========
-
-/**
- * Typed keys for AGENT_CONSOLE_* environment variables.
- * These provide the agent with context about its own identity
- * for self-delegation (e.g., MCP tools) and agent self-awareness.
- */
-export interface AgentConsoleContext {
-  baseUrl: string;
-  sessionId: string;
-  workerId: string;
-  repositoryId?: string;
-  parentSessionId?: string;
-  parentWorkerId?: string;
-}
 
 interface PtySpawnRequestBase {
   /** OS username of the user who owns this PTY process. Used by MultiUserMode for sudo. */
@@ -114,18 +101,10 @@ function spawnDirectPty(ptyProvider: PtyProvider, request: PtySpawnRequest): Pty
 
   switch (request.type) {
     case 'agent': {
-      const ctx = request.agentConsoleContext;
-
-      // Convert AgentConsoleContext to AGENT_CONSOLE_* env vars.
-      // Optional fields are spread conditionally to avoid `undefined` values in the env.
-      const agentConsoleEnv: Record<string, string> = {
-        AGENT_CONSOLE_BASE_URL: ctx.baseUrl,
-        AGENT_CONSOLE_SESSION_ID: ctx.sessionId,
-        AGENT_CONSOLE_WORKER_ID: ctx.workerId,
-        ...(ctx.repositoryId && { AGENT_CONSOLE_REPOSITORY_ID: ctx.repositoryId }),
-        ...(ctx.parentSessionId && { AGENT_CONSOLE_PARENT_SESSION_ID: ctx.parentSessionId }),
-        ...(ctx.parentWorkerId && { AGENT_CONSOLE_PARENT_WORKER_ID: ctx.parentWorkerId }),
-      };
+      // Single writer of the AgentConsoleContext -> AGENT_CONSOLE_* mapping
+      // (agent-console-env.ts); the elevated path and the embedded-agent
+      // spawn call the same function.
+      const agentConsoleEnv = buildAgentConsoleEnv(request.agentConsoleContext);
 
       // Security: agentConsoleEnv is spread LAST so AGENT_CONSOLE_* vars
       // cannot be spoofed by repository-level config or agent command templates
@@ -490,15 +469,8 @@ export class MultiUserMode implements UserMode {
     let command: string;
     switch (request.type) {
       case 'agent': {
-        const ctx = request.agentConsoleContext;
-        agentConsoleVars = {
-          AGENT_CONSOLE_BASE_URL: ctx.baseUrl,
-          AGENT_CONSOLE_SESSION_ID: ctx.sessionId,
-          AGENT_CONSOLE_WORKER_ID: ctx.workerId,
-          ...(ctx.repositoryId && { AGENT_CONSOLE_REPOSITORY_ID: ctx.repositoryId }),
-          ...(ctx.parentSessionId && { AGENT_CONSOLE_PARENT_SESSION_ID: ctx.parentSessionId }),
-          ...(ctx.parentWorkerId && { AGENT_CONSOLE_PARENT_WORKER_ID: ctx.parentWorkerId }),
-        };
+        // Same single writer as the direct path above (agent-console-env.ts).
+        agentConsoleVars = buildAgentConsoleEnv(request.agentConsoleContext);
         command = request.sentinel
           ? buildElevatedSentinelCommand(request.sentinel)
           : request.command;

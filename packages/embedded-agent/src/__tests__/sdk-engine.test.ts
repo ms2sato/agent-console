@@ -639,13 +639,20 @@ describe('SdkEngine — construction seam: the query() Options battery (Pin 1(a)
   // files. These two tests exercise the real composition helper's output as
   // the deps value, proving the round trip: composed instruction content
   // actually reaches `options.systemPrompt.append`, ordered before the
-  // definition system prompt, and the no-configuration case still omits
-  // `systemPrompt` entirely (no regression from the "omits systemPrompt
-  // entirely" test above).
-  it('carries composed opt-in instruction content into options.systemPrompt.append, ordered before the definition system prompt', () => {
+  // definition system prompt, and -- since Issue #1694 (C5) -- the
+  // no-configuration case still sets `systemPrompt.append`, because the
+  // identity preamble is always composed (the engine-level "omits
+  // systemPrompt entirely" test above stays valid for a caller that passes
+  // no append at all; main.ts is no longer such a caller).
+  const sdkContext = { sessionId: 'sess-sdk', workerId: 'work-sdk', cwd: '/tmp/work' };
+  it('carries composed opt-in instruction content into options.systemPrompt.append, ordered after the identity preamble and before the definition system prompt', () => {
     const { queryFn, captured } = makeFakeQuery([]);
     const segments = [{ origin: '/tmp/work/NOTES.md', content: 'INSTRUCTION_CONTENT' }];
-    const systemPromptAppend = composeSdkSystemPromptAppend({ segments }, 'Be terse.');
+    const systemPromptAppend = composeSdkSystemPromptAppend({
+      context: sdkContext,
+      instructions: { segments },
+      definitionSystemPrompt: 'Be terse.',
+    });
     new SdkEngine(baseDeps({ queryFn, systemPromptAppend }));
 
     expect(captured.options?.systemPrompt).toEqual({
@@ -654,19 +661,31 @@ describe('SdkEngine — construction seam: the query() Options battery (Pin 1(a)
       append: systemPromptAppend,
     });
     const append = (captured.options?.systemPrompt as { append: string }).append;
+    const preambleIdx = append.indexOf('Session ID: sess-sdk');
     const instructionIdx = append.indexOf('INSTRUCTION_CONTENT');
     const definitionIdx = append.indexOf('Be terse.');
-    expect(instructionIdx).toBeGreaterThanOrEqual(0);
+    expect(preambleIdx).toBeGreaterThanOrEqual(0);
+    expect(instructionIdx).toBeGreaterThan(preambleIdx);
     expect(definitionIdx).toBeGreaterThan(instructionIdx);
   });
 
-  it('omits systemPrompt.append when neither instructions nor a definition system prompt are configured (no regression)', () => {
+  it('still sets systemPrompt.append (the identity preamble) when neither instructions nor a definition system prompt are configured (Issue #1694 C5)', () => {
+    // Reach measured: reverting `composeSdkSystemPromptAppend` to the
+    // pre-#1694 "return undefined when nothing to append" shape fails here
+    // (append absent) -- the exact gap C5 closes: a Bash-less claude-sdk
+    // worker with no instructions and no definition prompt had NO identity
+    // source at all.
     const { queryFn, captured } = makeFakeQuery([]);
-    const systemPromptAppend = composeSdkSystemPromptAppend({ segments: [] }, undefined);
-    expect(systemPromptAppend).toBeUndefined();
+    const systemPromptAppend = composeSdkSystemPromptAppend({ context: sdkContext, instructions: { segments: [] } });
 
     new SdkEngine(baseDeps({ queryFn, systemPromptAppend }));
-    expect('systemPrompt' in (captured.options ?? {})).toBe(false);
+    expect(captured.options?.systemPrompt).toEqual({
+      type: 'preset',
+      preset: 'claude_code',
+      append: systemPromptAppend,
+    });
+    expect(systemPromptAppend).toContain('Session ID: sess-sdk');
+    expect(systemPromptAppend).toContain('Worker ID: work-sdk');
   });
 });
 

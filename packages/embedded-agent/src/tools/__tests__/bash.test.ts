@@ -207,28 +207,44 @@ describe('bashTool', () => {
     expect(result.stdout).not.toContain('�');
   });
 
-  it('does not leak AGENT_CONSOLE_*-prefixed env vars (or their values) into the spawned command', async () => {
-    const previous = process.env.AGENT_CONSOLE_MCP_TOKEN;
+  it('forwards the identity AGENT_CONSOLE_* keys and strips every other AGENT_CONSOLE_* key (and its value) from the spawned command', async () => {
+    // Issue #1694 (C4): buildBashEnv is an allowlist now. Seed one identity
+    // key and one non-identity key on the loop's own env and read the child's
+    // `env` back: the identity key must reach the child with this value, the
+    // non-identity key must not (nor its value). Reach measured: reverting
+    // env-cleaner.ts to the pre-#1694 blanket strip fails the SESSION_ID
+    // positive; dropping the strip fails the MCP_TOKEN negative.
+    const previousToken = process.env.AGENT_CONSOLE_MCP_TOKEN;
+    const previousSession = process.env.AGENT_CONSOLE_SESSION_ID;
     process.env.AGENT_CONSOLE_MCP_TOKEN = 'secret-token-xyz';
+    process.env.AGENT_CONSOLE_SESSION_ID = 'sess-from-bash-test';
     try {
       const result = await bashTool.execute({ command: 'env' }, { locationPath });
 
       expect(result.result).not.toContain('secret-token-xyz');
-      // Assert no *key* in the printed `env` output starts with AGENT_CONSOLE_
-      // (a leaked var, i.e. a line shaped `AGENT_CONSOLE_FOO=...`). A plain
-      // substring check on the whole blob is too brittle here: this test can
-      // itself run inside a delegated/elevated agent-console session whose
-      // ambient SUDO_COMMAND env var legitimately contains the literal text
-      // "AGENT_CONSOLE_" (from the sudo invocation's own `export
-      // AGENT_CONSOLE_SESSION_ID=...` command line) without that being a leak
-      // of buildBashEnv's key-based filtering.
-      expect(result.result).not.toMatch(/(^|\n)AGENT_CONSOLE_[A-Za-z0-9_]*=/);
+      // Line-anchored key checks, NOT a plain substring check on the whole
+      // blob: this test can itself run inside a delegated/elevated
+      // agent-console session whose ambient SUDO_COMMAND env var legitimately
+      // contains the literal text "AGENT_CONSOLE_" (from the elevation
+      // invocation's own `export AGENT_CONSOLE_SESSION_ID=...` command line)
+      // without that being a leak of buildBashEnv's key-based filtering. The
+      // same ambient session also makes the OTHER identity keys
+      // (WORKER_ID / BASE_URL / PARENT_*) legitimately present in this
+      // process's env, so the negative is scoped to the seeded non-identity
+      // key rather than "no AGENT_CONSOLE_ line at all".
+      expect(result.result).toMatch(/(^|\n)AGENT_CONSOLE_SESSION_ID=sess-from-bash-test($|\n)/);
+      expect(result.result).not.toMatch(/(^|\n)AGENT_CONSOLE_MCP_TOKEN=/);
       expect(result.result).toContain('PATH=');
     } finally {
-      if (previous === undefined) {
+      if (previousToken === undefined) {
         delete process.env.AGENT_CONSOLE_MCP_TOKEN;
       } else {
-        process.env.AGENT_CONSOLE_MCP_TOKEN = previous;
+        process.env.AGENT_CONSOLE_MCP_TOKEN = previousToken;
+      }
+      if (previousSession === undefined) {
+        delete process.env.AGENT_CONSOLE_SESSION_ID;
+      } else {
+        process.env.AGENT_CONSOLE_SESSION_ID = previousSession;
       }
     }
   });

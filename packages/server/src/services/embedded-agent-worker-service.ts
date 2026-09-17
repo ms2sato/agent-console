@@ -52,6 +52,8 @@ import type { SessionDataPathResolver } from '../lib/session-data-path-resolver.
 import type { McpTokenRegistry } from '../mcp/mcp-auth.js';
 import type { WorkerOutputFileManager } from '../lib/worker-output-file.js';
 import { spawnAsUser, shellEscape, type SpawnAsUserFn } from './privilege-elevation.js';
+import { getCleanChildProcessEnv } from './env-filter.js';
+import { buildAgentConsoleEnv } from './agent-console-env.js';
 import { IdleEvictionTimers } from './embedded-agent-idle-eviction.js';
 import { resolveEffectiveContextWindow } from './embedded-agent-context-window.js';
 import { resolveEffectiveModelParams } from './embedded-agent-model-params.js';
@@ -1135,12 +1137,43 @@ export class EmbeddedAgentWorkerService {
       }
 
       // Step 5: spawn as the requesting OS user. The command carries NO secrets
-      // (token / provider key travel only in the stdin init line) and NO env.
+      // (token / provider key travel only in the stdin init line). The env
+      // carries the worker's OWN identity and nothing secret: the same six
+      // `AGENT_CONSOLE_*` keys a terminal agent gets at PTY spawn, produced by
+      // the same single writer (`buildAgentConsoleEnv`), so the loop's Bash
+      // tool, the SDK engine's native Bash (which composes the CLI env from
+      // `process.env` -- never pass `Options.env`, it REPLACES the env), and
+      // the orphan-process sweep (`AGENT_CONSOLE_SESSION_ID` tree-wide) all
+      // see this worker's ids rather than the server's.
+      //
+      // `baseEnv` is the same `getCleanChildProcessEnv()` the terminal direct
+      // path uses -- one writer of "strip the server's inherited
+      // AGENT_CONSOLE_* / server-only config" -- so on the non-elevated
+      // branch (single-user, or multi-user with username === server user) a
+      // key the context does NOT carry (e.g. PARENT_SESSION_ID for a session
+      // without a parent) is absent from the child, not inherited from the
+      // server's own delegated-session environment. The elevated branch
+      // ignores `baseEnv` (the login-shell reset is already clean) and exports
+      // `env` inside the inner command, exactly like the terminal path.
+      //
+      // BASE_URL is the origin of the MCP dial-back URL (`http://localhost:
+      // <PORT>` in production, no `/mcp`) -- the terminal shape;
+      // `init.mcp.baseUrl` keeps the full `/mcp` URL.
       const username = await this.deps.resolveSpawnUsername(session.createdBy);
+      const agentConsoleEnv = buildAgentConsoleEnv({
+        baseUrl: new URL(this.deps.getMcpBaseUrl()).origin,
+        sessionId,
+        workerId,
+        ...(session.type === 'worktree' ? { repositoryId: session.repositoryId } : {}),
+        ...(session.parentSessionId !== undefined ? { parentSessionId: session.parentSessionId } : {}),
+        ...(session.parentWorkerId !== undefined ? { parentWorkerId: session.parentWorkerId } : {}),
+      });
       const { subprocess, stdin } = this.spawnAsUserFn({
         username,
         command: `${shellEscape(this.bunPath)} ${shellEscape(this.entryPath)}`,
         cwd: session.locationPath,
+        baseEnv: getCleanChildProcessEnv(),
+        env: agentConsoleEnv,
       });
       spawned = subprocess;
       spawnedStdin = stdin;

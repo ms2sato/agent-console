@@ -12,16 +12,26 @@
  *   (a) the Bash tool's `env` output shows `USER=`/`LOGNAME=` equal to the
  *       target user -- proof the tool actually ran as the target OS user
  *       under real elevation, not the server-process user.
- *   (b) no `AGENT_CONSOLE_*`-prefixed env var appears in that output --
- *       proof `buildBashEnv`'s strip (packages/embedded-agent/src/tools/
- *       env-cleaner.ts) survives the real spawnAsUser -> login-shell-init ->
- *       loop-subprocess -> Bash-child chain, not just the unit-test's direct
- *       in-process call.
+ *   (b) the worker's OWN identity records are in that output -- exactly
+ *       `AGENT_CONSOLE_BASE_URL` / `SESSION_ID` / `WORKER_ID` with the
+ *       activated session's values (Issue #1694; this smoke's quick session
+ *       has no repository and no parent, so `REPOSITORY_ID` / `PARENT_*` are
+ *       correctly absent) -- and NO other `AGENT_CONSOLE_*` key is. Proof
+ *       that the spawn-time injection (`buildAgentConsoleEnv` via
+ *       `spawnAsUser`'s elevated inner-command export) AND `buildBashEnv`'s
+ *       allowlist (packages/embedded-agent/src/tools/env-cleaner.ts) survive
+ *       the real spawnAsUser -> login-shell-init -> loop-subprocess ->
+ *       Bash-child chain, not just the unit-tests' direct in-process calls.
  *   (c) the provider's fake API key does not leak into that output either.
  *
  * This is the smoke bullet Issue #1043's AC calls "Multi-user smoke: on the
  * dogfood host, running the smoke script under a second user asserts (a)
- * `whoami` in Bash tool output = target user, (b) env does not leak."
+ * `whoami` in Bash tool output = target user, (b) env does not leak" --
+ * with (b) flipped by Issue #1694 from "no AGENT_CONSOLE_* at all" to "this
+ * worker's identity and nothing else", and it is Issue #1694's acceptance
+ * sentence: `env | grep AGENT_CONSOLE_` inside the embedded worker's Bash
+ * prints SESSION_ID / WORKER_ID / BASE_URL for THIS worker, and nothing
+ * else.
  *
  * What this smoke does NOT exercise:
  *   - MCP bearer-token / enforce-mode auth (already covered end-to-end by
@@ -511,16 +521,50 @@ async function main(): Promise<void> {
         bashResult.slice(0, 2000),
       );
 
-      // (b) Negative: no AGENT_CONSOLE_*-prefixed env var leaked into the
-      // Bash child's env. Line-anchored regex, NOT a bare substring check --
-      // see packages/embedded-agent/src/tools/__tests__/bash.test.ts's
+      // (b) Issue #1694: the worker's OWN identity is present, and nothing
+      // else from the AGENT_CONSOLE_* namespace is. Positive half: the three
+      // records every embedded worker gets (this smoke's session is a quick
+      // session with no parent, so REPOSITORY_ID / PARENT_* are correctly
+      // ABSENT -- their absence is part of the exact-set check below), each
+      // line-anchored and value-exact against the activated session's ids
+      // and the origin of the MCP dial-back URL (the terminal shape, no
+      // `/mcp`). Negative half: the SET of AGENT_CONSOLE_* keys in the
+      // output is exactly those three -- no server-side key (HOME,
+      // MCP_TOKEN_FILE, a stale PARENT_SESSION_ID from the server's own
+      // environment) leaked through `buildBashEnv`'s allowlist or the
+      // server's clean base env. Line-anchored, NOT a bare substring check
+      // -- see packages/embedded-agent/src/tools/__tests__/bash.test.ts's
       // identical caveat: a delegated/elevated agent-console session's
       // ambient SUDO_COMMAND env var can legitimately contain the literal
-      // text "AGENT_CONSOLE_" (from the sudo invocation's own `export
+      // text "AGENT_CONSOLE_" (from the elevation invocation's own `export
       // AGENT_CONSOLE_SESSION_ID=...` command line) without that being a
-      // leak of buildBashEnv's key-based filtering.
-      const leakedAgentConsoleVar = /(^|\n)AGENT_CONSOLE_[A-Za-z0-9_]*=/.test(bashResult);
-      expect(!leakedAgentConsoleVar, 'no AGENT_CONSOLE_*-prefixed env var leaked into the Bash tool output');
+      // key in the child's env.
+      //
+      // Polarity, measured in the tier-2 container (PR #1694's body): on
+      // main before the fix this block FAILS (no identity records at all);
+      // with the fix it passes.
+      const expectedIdentity: Record<string, string> = {
+        AGENT_CONSOLE_BASE_URL: new URL(mcpBaseUrl).origin,
+        AGENT_CONSOLE_SESSION_ID: sessionId,
+        AGENT_CONSOLE_WORKER_ID: workerId,
+      };
+      for (const [key, value] of Object.entries(expectedIdentity)) {
+        const escapedValue = value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const recordRe = new RegExp(`(^|\\n)${key}=${escapedValue}($|\\n)`);
+        expect(
+          recordRe.test(bashResult),
+          `Bash tool env output carries this worker's own ${key}=${value}`,
+          bashResult.slice(0, 2000),
+        );
+      }
+      const observedAgentConsoleKeys = [...bashResult.matchAll(/(?:^|\n)(AGENT_CONSOLE_[A-Za-z0-9_]*)=/g)]
+        .map((m) => m[1])
+        .sort();
+      expect(
+        JSON.stringify(observedAgentConsoleKeys) === JSON.stringify(Object.keys(expectedIdentity).sort()),
+        'the Bash tool env output carries EXACTLY the identity keys (BASE_URL / SESSION_ID / WORKER_ID) and no other AGENT_CONSOLE_* key',
+        `observed AGENT_CONSOLE_* keys: ${JSON.stringify(observedAgentConsoleKeys)}`,
+      );
 
       // (c) Negative: the provider's fake API key does not leak either.
       expect(!bashResult.includes(fakeApiKey), 'provider API key does not appear in the Bash tool output');

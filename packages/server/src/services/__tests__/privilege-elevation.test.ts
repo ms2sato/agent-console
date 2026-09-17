@@ -868,6 +868,94 @@ describe('privilege-elevation', () => {
       }
     });
 
+    // Issue #1694 (C1): `baseEnv` -- the non-elevated branch layers `env`
+    // over a caller-supplied base instead of `process.env`, so a consumer
+    // can hand in a pre-filtered base (getCleanChildProcessEnv()) and a key
+    // the server's own environment carries does NOT reach the child unless
+    // `env` re-adds it. Reach measured per test.
+    it('non-elevated: layers opts.env over opts.baseEnv (NOT process.env) when baseEnv is given', () => {
+      // Reach: reverting the branch to `{ ...process.env, ...opts.env }`
+      // fails here (the sentinel leaks through); dropping the `...opts.env`
+      // layer fails here (FOO absent).
+      process.env.AUTH_MODE = 'none';
+      const sentinelKey = '__SPAWN_AS_USER_BASE_ENV_TEST_SENTINEL__';
+      process.env[sentinelKey] = 'server-only-must-not-leak';
+      try {
+        const captured: CapturedSpawn[] = [];
+        const fakeSpawn = makeFakeSpawnForSpawnAsUser(captured);
+
+        spawnAsUser(
+          {
+            username: null,
+            command: 'env',
+            baseEnv: { PATH: '/clean/bin', KEEP: 'yes' },
+            env: { FOO: 'bar' },
+          },
+          fakeSpawn,
+        );
+
+        const opts = captured[0].options as { env?: Record<string, string> };
+        expect(opts.env).toEqual({ PATH: '/clean/bin', KEEP: 'yes', FOO: 'bar' });
+        expect(opts.env?.[sentinelKey]).toBeUndefined();
+      } finally {
+        delete process.env[sentinelKey];
+      }
+    });
+
+    it('non-elevated: baseEnv alone (no env) still replaces the inherited environment', () => {
+      // Reach: reverting the guard to `if (opts.env !== undefined)` fails
+      // here (spawn option env left unset, so the child would inherit
+      // process.env wholesale).
+      process.env.AUTH_MODE = 'none';
+      const captured: CapturedSpawn[] = [];
+      const fakeSpawn = makeFakeSpawnForSpawnAsUser(captured);
+
+      spawnAsUser({ username: null, command: 'env', baseEnv: { ONLY: 'this' } }, fakeSpawn);
+
+      const opts = captured[0].options as { env?: Record<string, string> };
+      expect(opts.env).toEqual({ ONLY: 'this' });
+    });
+
+    it('non-elevated: with neither env nor baseEnv the spawn option env stays unset (inherit process.env, unchanged behaviour)', () => {
+      process.env.AUTH_MODE = 'none';
+      const captured: CapturedSpawn[] = [];
+      const fakeSpawn = makeFakeSpawnForSpawnAsUser(captured);
+
+      spawnAsUser({ username: null, command: 'env' }, fakeSpawn);
+
+      const opts = captured[0].options as { env?: Record<string, string> };
+      expect('env' in opts).toBe(false);
+    });
+
+    it('elevated: ignores baseEnv (login-shell reset is the clean base) and exports env inside the inner command', () => {
+      // Reach: forwarding baseEnv into buildInnerCommand's export list fails
+      // here (SHOULD_NOT_EXPORT appears in the argv); setting
+      // spawnOptions.env on the elevated branch fails here.
+      process.env.AUTH_MODE = 'multi-user';
+      const targetUser = `${serverUsername}-someone-else`;
+      const captured: CapturedSpawn[] = [];
+      const fakeSpawn = makeFakeSpawnForSpawnAsUser(captured);
+
+      spawnAsUser(
+        {
+          username: targetUser,
+          command: 'bun loop.ts',
+          cwd: '/work/here',
+          baseEnv: { SHOULD_NOT_EXPORT: 'x' },
+          env: { AGENT_CONSOLE_SESSION_ID: 'sess-1', AGENT_CONSOLE_WORKER_ID: 'work-1' },
+        },
+        fakeSpawn,
+      );
+
+      const innerCommand = captured[0].args[captured[0].args.length - 1];
+      expect(innerCommand).toBe(
+        "cd '/work/here' && export AGENT_CONSOLE_SESSION_ID='sess-1' AGENT_CONSOLE_WORKER_ID='work-1'; bun loop.ts",
+      );
+      expect(innerCommand).not.toContain('SHOULD_NOT_EXPORT');
+      const opts = captured[0].options as { env?: Record<string, string> };
+      expect(opts.env).toBeUndefined();
+    });
+
     it('elevated: interpolates cwd/env into the inner command AND pins spawn cwd to /', () => {
       process.env.AUTH_MODE = 'multi-user';
       const targetUser = `${serverUsername}-someone-else`;

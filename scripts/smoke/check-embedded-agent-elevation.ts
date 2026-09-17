@@ -5,9 +5,10 @@
  * Drives the REAL shipping path -- `SessionManager.activateEmbeddedAgentWorker`
  * spawning the REAL embedded-agent loop subprocess via the REAL production
  * `spawnAsUser` -- against a REAL second OS user, with `AUTH_MODE=multi-user`
- * forced on and `AGENT_CONSOLE_MCP_AUTH` left UNSET so the real Phase 4
- * default-flip resolves it to `enforce`. This is the smoke bullet referenced
- * by docs/design/embedded-agent-worker.md Part II Testing plan.
+ * forced on and `AGENT_CONSOLE_MCP_AUTH=enforce` set explicitly (the
+ * multi-user default is `warn` until Issue #1107 lands -- see the "Note on
+ * AGENT_CONSOLE_MCP_AUTH" below). This is the smoke bullet referenced by
+ * docs/design/embedded-agent-worker.md Part II Testing plan.
  *
  * What this smoke exercises:
  *   - `resolveEmbeddedAgentEntryPath()` actually resolves via the
@@ -45,14 +46,23 @@
  *     separately, naming the configured path itself as unreadable. Both are
  *     probe-cannot-run conditions (exit 2), not assertion failures.
  *   - The loop's init handshake completing end-to-end against a REAL `/mcp`
- *     Streamable-HTTP endpoint, with `AGENT_CONSOLE_MCP_AUTH` left UNSET so
- *     `resolveMcpAuthMode` resolves it to `enforce` via the real Phase 4
- *     default-flip (`AUTH_MODE=multi-user` + unset -> `enforce`) -- proving
- *     that flip does not break the already-working embedded-agent token
- *     delivery (Phase 2).
+ *     Streamable-HTTP endpoint running in `enforce` mode
+ *     (`AGENT_CONSOLE_MCP_AUTH=enforce`, set explicitly) -- proving
+ *     enforcement does not break the already-working embedded-agent token
+ *     delivery (Phase 2). What this does NOT yet prove is enforcement
+ *     itself (a tokenless call refused, a warn-mode run failing the smoke);
+ *     that assertion is Issue #1738.
  *   - Negative secret assertions against the REAL `/proc/<pid>/cmdline` and
  *     `/proc/<pid>/environ` of the elevated subprocess: neither the MCP
  *     bearer token nor the provider API key must appear in either file.
+ *   - (Issue #1694) A POSITIVE identity assertion in the same run: scanning
+ *     `/proc/*\/environ` AS THE TARGET USER via the real `runAsUser` with
+ *     the orphan sweep's exact match semantics (`grep -Fxz`), at least one
+ *     live process carries `AGENT_CONSOLE_SESSION_ID=<activated sessionId>`
+ *     -- the worker's own identity reached the elevated tree (and that tree
+ *     is therefore in the sweep's population) -- while a never-activated id
+ *     matches zero processes (negative control). See the assertion's own
+ *     comment for why the wrapper pid's environ cannot carry it.
  *   - Closing the bundle-sibling gap documented above (OPT-IN, via the
  *     `EMBEDDED_AGENT_ENTRY_PATH` env var, since this smoke's default
  *     checkout has no `dist/embedded-agent.js` sibling to exercise): when
@@ -139,13 +149,17 @@
  *     never dialed. The `provider.baseUrl` field is only present because the
  *     embedded-agent definition schema requires it.
  *
- * Note on AGENT_CONSOLE_MCP_AUTH: this smoke deliberately leaves it UNSET
- * (only `AUTH_MODE=multi-user` is forced) so it exercises the real
- * `resolveMcpAuthMode` default-flip resolution end-to-end, in a live process,
- * rather than an explicit override. The unit-level resolution table is
- * covered by `packages/server/src/mcp/__tests__/mcp-auth.test.ts`; this
- * smoke is what proves that same resolution actually reaches `enforce` when
- * wired through a real app server and a real elevated subprocess.
+ * Note on AGENT_CONSOLE_MCP_AUTH: this smoke sets it to `enforce`
+ * EXPLICITLY, next to `AUTH_MODE=multi-user`. An earlier revision left it
+ * unset on the premise that "unset + multi-user resolves to enforce"; that
+ * default flip landed and was then reverted (Issue #1107 is the open item to
+ * restore it), and `resolveMcpAuthMode` returns `warn` for an unset value
+ * regardless of `AUTH_MODE` (`packages/server/src/mcp/__tests__/
+ * mcp-auth.test.ts` pins exactly that) -- so every run under the old premise
+ * exercised the `/mcp` boundary in `warn` mode while claiming `enforce`
+ * (found by CodeRabbit on PR #1736; Issue #1738 tracks the follow-up that
+ * adds a real enforcement assertion with polarity). Setting the value
+ * explicitly is what makes the "enforce" in this file's assertions true.
  *
  * Usage:
  *   bun scripts/smoke/check-embedded-agent-elevation.ts <target-user>
@@ -344,16 +358,17 @@ async function main(): Promise<void> {
   // `console.log(serverConfig.AUTH_MODE)` placed as the first line inside
   // `main()` printed 'multi-user' (not 'none'), confirming this ordering holds.
   //
-  // `AGENT_CONSOLE_MCP_AUTH` is NOT set here (and deliberately not set at all
-  // -- see the "Note on AGENT_CONSOLE_MCP_AUTH" header comment above). Unlike
-  // `AUTH_MODE`, it carries no analogous module-load-time ordering hazard:
-  // `resolveMcpAuthMode`'s `rawValue` parameter defaults to
+  // `AGENT_CONSOLE_MCP_AUTH=enforce` is set EXPLICITLY (see the "Note on
+  // AGENT_CONSOLE_MCP_AUTH" header comment above: the multi-user default is
+  // `warn` until Issue #1107, so an unset value would run the `/mcp` boundary
+  // in warn mode). Unlike `AUTH_MODE`, it carries no module-load-time
+  // ordering hazard: `resolveMcpAuthMode`'s `rawValue` parameter defaults to
   // `process.env.AGENT_CONSOLE_MCP_AUTH` evaluated at CALL time (a JS default
-  // parameter, not a module-load-time IIFE), and it is only called later, from
-  // inside `main()`, once `createMcpApp` builds the `/mcp` route. Leaving it
-  // unset here means that call sees `AUTH_MODE=multi-user` and no explicit
-  // override, which is exactly the real Phase 4 default-flip path.
+  // parameter, not a module-load-time IIFE), and it is only called later,
+  // from inside `main()`, once `createMcpApp` builds the `/mcp` route --
+  // setting it here, before the deferred imports, is sufficient.
   process.env.AUTH_MODE = 'multi-user';
+  process.env.AGENT_CONSOLE_MCP_AUTH = 'enforce';
 
   // --- Deferred imports: everything below transitively imports server-config.ts,
   // so it must be dynamically imported AFTER the env vars above are set.
@@ -365,6 +380,12 @@ async function main(): Promise<void> {
   const { createMcpApp } = await import('../../packages/server/src/mcp/mcp-server.js');
   const { resolveEmbeddedAgentEntryPath } = await import(
     '../../packages/server/src/services/embedded-agent-worker-service.js'
+  );
+  // Issue #1694: the positive /proc environ assertion scans AS THE TARGET
+  // USER through the real elevation primitive (see the assertion's comment
+  // for why the server process cannot read the elevated tree's environ).
+  const { runAsUser, shellEscape } = await import(
+    '../../packages/server/src/services/privilege-elevation.js'
   );
 
   // `hono` is only hoisted under packages/server/node_modules (and
@@ -783,7 +804,7 @@ async function main(): Promise<void> {
 
     appServer = Bun.serve({ fetch: app.fetch, port: 0 });
     mcpBaseUrl = `http://localhost:${appServer.port}/mcp`;
-    console.log(`==> real app server on :${appServer.port}, /mcp resolving AGENT_CONSOLE_MCP_AUTH via the multi-user default flip (unset -> enforce)`);
+    console.log(`==> real app server on :${appServer.port}, /mcp under AGENT_CONSOLE_MCP_AUTH=enforce (set explicitly; the multi-user default is warn until #1107)`);
 
     // Subprocess cwd must exist on the REAL filesystem.
     realCwd = path.join(os.tmpdir(), `ac-embedded-smoke-cwd-${crypto.randomUUID()}`);
@@ -915,7 +936,7 @@ async function main(): Promise<void> {
         console.error(`  subprocess pid: ${internalWorkerForStderr.subprocess.pid}`);
       }
     }
-    expect(sawReady, 'reached `ready` (init handshake incl. real MCP call under AGENT_CONSOLE_MCP_AUTH=enforce)');
+    expect(sawReady, 'reached `ready` (init handshake incl. real MCP call under AGENT_CONSOLE_MCP_AUTH=enforce, set explicitly -- the multi-user default is warn until #1107)');
 
     // --- Real bearer token hit the real /mcp endpoint (mirrors the E2E test's assertion). ---
     expect(capturedMcpAuth.length > 0, 'the init-minted MCP bearer token hit the real /mcp endpoint');
@@ -1006,6 +1027,81 @@ async function main(): Promise<void> {
         );
         expect(!leaked, `${secret.label} does NOT appear in /proc/${pid}/cmdline or /environ`);
       }
+
+      // --- Issue #1694 POSITIVE identity assertion: some live process in
+      // the elevated tree carries the EXACT NUL-delimited record
+      // `AGENT_CONSOLE_SESSION_ID=<activated sessionId>` in its
+      // /proc/<pid>/environ -- the same fixed-string whole-record match
+      // (`grep -Fxz`) the orphan-process sweep uses
+      // (`orphan-process-sweeper.ts`'s `buildSweepScript`), so a pass here
+      // is also the proof that the embedded loop tree is now in that
+      // sweep's population (C6). Scanned AS THE TARGET USER through the real
+      // `runAsUser` (elevated when the target is a second OS user; the
+      // bypass branch when degenerate) because `/proc/<pid>/environ` of
+      // another user's process is EACCES for the server process -- the
+      // negative secret checks above read the outer wrapper pid's environ,
+      // which is the SERVER's environment on the elevated branch and
+      // therefore can never carry the injected identity; only the inner
+      // login shell and the loop it execs do. The scan script is the
+      // sweeper's scan phase without the kill: single-line `sh -s` command,
+      // multi-line script over stdin (`.claude/rules/elevation-helpers.md`,
+      // "Multi-line elevated commands").
+      //
+      // Negative control in the same run: a marker for a session id that
+      // was never activated must match ZERO processes, so the positive
+      // result above is attributable to this activation and not to a
+      // scanner that matches everything (workflow.md sub-pattern 9).
+      //
+      // Polarity, measured in the tier-2 container (PR #1694's body): on
+      // main before the fix the positive half FAILS (no process carries
+      // the record -- the loop inherited nothing on the elevated branch);
+      // with the fix it passes.
+      console.log('==> /proc positive identity assertion (AGENT_CONSOLE_SESSION_ID record, scanned as the target user)');
+      const scanScript = (marker: string): string =>
+        [
+          'set -u',
+          `marker=${shellEscape(marker)}`,
+          'matches=0',
+          'for envfile in /proc/[0-9]*/environ; do',
+          '  [ -e "$envfile" ] || continue',
+          '  if grep -Fxzq -- "$marker" "$envfile" 2>/dev/null; then',
+          '    matches=$((matches + 1))',
+          '  fi',
+          'done',
+          'echo "MATCHES=$matches"',
+          '',
+        ].join('\n');
+      const countMatches = async (marker: string): Promise<number | undefined> => {
+        const result = await runAsUser({
+          username: targetUsername,
+          command: 'sh -s',
+          stdin: scanScript(marker),
+          cwd: '/',
+          timeoutMs: 30_000,
+        });
+        const m = /^MATCHES=(\d+)\s*$/m.exec(result.stdout);
+        if (result.exitCode !== 0 || result.timedOut || m === null) {
+          console.error(
+            `  scan as ${targetUsername} did not produce a MATCHES line: exit=${result.exitCode} timedOut=${result.timedOut} stderr=${result.stderr.slice(0, 500)}`,
+          );
+          return undefined;
+        }
+        return Number(m[1]);
+      };
+      const identityMatches = await countMatches(`AGENT_CONSOLE_SESSION_ID=${sessionId}`);
+      const controlMatches = await countMatches(`AGENT_CONSOLE_SESSION_ID=${crypto.randomUUID()}`);
+      expect(identityMatches !== undefined, 'the /proc environ scan as the target user actually ran (identity marker)');
+      expect(controlMatches !== undefined, 'the /proc environ scan as the target user actually ran (never-activated control marker)');
+      expect(
+        controlMatches === 0,
+        'negative control: a never-activated session id matches no process',
+        `matches=${controlMatches}`,
+      );
+      expect(
+        identityMatches !== undefined && identityMatches >= 1,
+        `a live process in the elevated tree carries the exact record AGENT_CONSOLE_SESSION_ID=${sessionId} (sweeper match semantics)`,
+        `matches=${identityMatches}`,
+      );
     }
   } catch (err) {
     if (err instanceof SmokeSetupError) {

@@ -180,7 +180,7 @@ You have a parent session that delegated this task to you. Use the \`send_sessio
 Common parameters for all messages:
 - toSessionId: "${parentSessionId}"
 - toWorkerId: "${parentWorkerId}"
-- fromSessionId: Use your AGENT_CONSOLE_SESSION_ID environment variable
+- fromSessionId: your session id (AGENT_CONSOLE_SESSION_ID in your environment, or the Session ID stated in your system prompt)
 
 When to send a message:
 
@@ -546,7 +546,7 @@ export function createMcpApp(deps: McpDependencies): Hono {
       'through send_session_message when acting.',
     {
       sessionId: z.string().describe(
-        "The calling session's ID, used to resolve which repository to flag and to verify ownership. Use your own AGENT_CONSOLE_SESSION_ID environment variable.",
+        "The calling session's ID, used to resolve which repository to flag and to verify ownership. Use your session id (AGENT_CONSOLE_SESSION_ID in your environment, or the Session ID stated in your system prompt).",
       ),
     },
     async ({ sessionId }) => {
@@ -600,7 +600,7 @@ export function createMcpApp(deps: McpDependencies): Hono {
       'so a paused incarnation does not stay designated.',
     {
       sessionId: z.string().describe(
-        "The calling session's ID. Use your own AGENT_CONSOLE_SESSION_ID environment variable.",
+        "The calling session's ID. Use your session id (AGENT_CONSOLE_SESSION_ID in your environment, or the Session ID stated in your system prompt).",
       ),
     },
     async ({ sessionId }) => {
@@ -727,7 +727,7 @@ export function createMcpApp(deps: McpDependencies): Hono {
     'Send a message to a worker in another session via file. ' +
       'The message is written as a file and the target worker receives a PTY notification. ' +
       'If toWorkerId is omitted and the session has exactly one agent worker, it is auto-selected. ' +
-      'The calling agent can get its own session ID from the AGENT_CONSOLE_SESSION_ID environment variable.',
+      'The calling agent uses your session id (AGENT_CONSOLE_SESSION_ID in your environment, or the Session ID stated in your system prompt).',
     {
       toSessionId: z.string().describe('Target session ID'),
       toWorkerId: z.string().optional().describe(
@@ -735,7 +735,7 @@ export function createMcpApp(deps: McpDependencies): Hono {
       ),
       content: z.string().describe('Message content (free-form)'),
       fromSessionId: z.string().describe(
-        'The sender session ID. The calling agent can get this from the AGENT_CONSOLE_SESSION_ID environment variable.',
+        'The sender session ID: your session id (AGENT_CONSOLE_SESSION_ID in your environment, or the Session ID stated in your system prompt).',
       ),
     },
     async ({ toSessionId, toWorkerId, content, fromSessionId }) => {
@@ -791,7 +791,7 @@ export function createMcpApp(deps: McpDependencies): Hono {
           return errorResult(
             `Sender session ${fromSessionId} not found. ` +
               `fromSessionId must reference an existing session — ` +
-              `agents should source it from the AGENT_CONSOLE_SESSION_ID environment variable.`,
+              `agents should source it from your session id (AGENT_CONSOLE_SESSION_ID in your environment, or the Session ID stated in your system prompt).`,
           );
         }
 
@@ -909,8 +909,9 @@ export function createMcpApp(deps: McpDependencies): Hono {
       'Use this to delegate work to a new agent running in an isolated worktree. ' +
       'Note: once started, the worktree and session persist on the server even if the MCP client disconnects. ' +
       'To delegate to a repository other than your own, use list_repositories to discover available repositories. ' +
-      'Requires parentSessionId and parentWorkerId, from your own AGENT_CONSOLE_SESSION_ID / AGENT_CONSOLE_WORKER_ID ' +
-      'environment variables (every legitimate caller holds both). The parent session determines the delegated ' +
+      'Requires parentSessionId and parentWorkerId: your own session id and worker id (AGENT_CONSOLE_SESSION_ID / ' +
+      'AGENT_CONSOLE_WORKER_ID in your environment, or the Session ID / Worker ID stated in your system prompt; every ' +
+      'legitimate caller holds both). The parent session determines the delegated ' +
       "session's ownership (createdBy inheritance) -- this is not a reporting convenience. By default, callback " +
       'instructions are appended to the prompt so the delegated agent reports results back via send_session_message; ' +
       'set skipMessageCallbackPrompt to suppress that.',
@@ -956,7 +957,7 @@ export function createMcpApp(deps: McpDependencies): Hono {
         .string()
         .min(1, 'parentSessionId must be non-empty')
         .describe(
-          "Required. The parent session's ID, from your own AGENT_CONSOLE_SESSION_ID environment variable. " +
+          "Required. The parent session's ID: your session id (AGENT_CONSOLE_SESSION_ID in your environment, or the Session ID stated in your system prompt). " +
             "The parent session determines the delegated session's ownership (createdBy is inherited from it) -- " +
             'this is not just a reporting convenience. Callback instructions are appended to the prompt (unless ' +
             'skipMessageCallbackPrompt is set) so the delegated agent reports results back via send_session_message.',
@@ -965,7 +966,7 @@ export function createMcpApp(deps: McpDependencies): Hono {
         .string()
         .min(1, 'parentWorkerId must be non-empty')
         .describe(
-          "Required. The parent session's worker ID, from your own AGENT_CONSOLE_WORKER_ID environment variable. " +
+          "Required. The parent session's worker ID: your worker id (AGENT_CONSOLE_WORKER_ID in your environment, or the Worker ID stated in your system prompt). " +
             'Must name an existing worker in that session capable of receiving send_session_message ' +
             '(an agent or embedded-agent worker).',
         ),
@@ -1506,11 +1507,11 @@ export function createMcpApp(deps: McpDependencies): Hono {
     {
       sessionId: z.string().describe(
         'The session to receive timer notifications. ' +
-          'Use AGENT_CONSOLE_SESSION_ID environment variable for your own session.',
+          'Use your session id (AGENT_CONSOLE_SESSION_ID in your environment, or the Session ID stated in your system prompt) for your own session.',
       ),
       workerId: z.string().describe(
         'The worker to receive timer notifications. ' +
-          'Use AGENT_CONSOLE_WORKER_ID environment variable for your own worker.',
+          'Use your worker id (AGENT_CONSOLE_WORKER_ID in your environment, or the Worker ID stated in your system prompt) for your own worker.',
       ),
       intervalSeconds: z
         .number()
@@ -1597,11 +1598,11 @@ export function createMcpApp(deps: McpDependencies): Hono {
     {
       sessionId: z.string().describe(
         'The session to receive wakeup notifications. ' +
-          'Use AGENT_CONSOLE_SESSION_ID environment variable for your own session.',
+          'Use your session id (AGENT_CONSOLE_SESSION_ID in your environment, or the Session ID stated in your system prompt) for your own session.',
       ),
       workerId: z.string().describe(
         'The worker to receive the wakeup. ' +
-          'Usually the current agent worker. Use AGENT_CONSOLE_WORKER_ID if available.',
+          'Usually the current agent worker. Use your worker id (AGENT_CONSOLE_WORKER_ID in your environment, or the Worker ID stated in your system prompt) for your own worker.',
       ),
       intervalSeconds: z.number().int().min(30).max(86400).describe(
         'How often to check the condition (30-86400 seconds). ' +
@@ -1748,11 +1749,11 @@ export function createMcpApp(deps: McpDependencies): Hono {
         .describe('Command to execute (e.g., "node acceptance-check.js 526")'),
       sessionId: z.string().describe(
         'The session to receive STDOUT notifications. ' +
-          'Use AGENT_CONSOLE_SESSION_ID environment variable for your own session.',
+          'Use your session id (AGENT_CONSOLE_SESSION_ID in your environment, or the Session ID stated in your system prompt) for your own session.',
       ),
       workerId: z.string().describe(
         'The worker to receive STDOUT notifications. ' +
-          'Use AGENT_CONSOLE_WORKER_ID environment variable for your own worker.',
+          'Use your worker id (AGENT_CONSOLE_WORKER_ID in your environment, or the Worker ID stated in your system prompt) for your own worker.',
       ),
       cwd: z
         .string()
@@ -2099,7 +2100,7 @@ export function createMcpApp(deps: McpDependencies): Hono {
       ),
       sessionId: z.string().describe(
         "The calling session's ID, used to attribute the artifact to that session's owner (session.createdBy). " +
-          'Use your own AGENT_CONSOLE_SESSION_ID environment variable.',
+          'Use your session id (AGENT_CONSOLE_SESSION_ID in your environment, or the Session ID stated in your system prompt).',
       ),
     },
     async ({ content, title, sessionId }) => {
@@ -2184,7 +2185,7 @@ export function createMcpApp(deps: McpDependencies): Hono {
       artifactId: z.string().describe('The id of the artifact to delete, as returned by create_html_artifact.'),
       sessionId: z.string().describe(
         "The calling session's ID, used to resolve that session's owner (session.createdBy) for the ownership " +
-          'check. Use your own AGENT_CONSOLE_SESSION_ID environment variable.',
+          'check. Use your session id (AGENT_CONSOLE_SESSION_ID in your environment, or the Session ID stated in your system prompt).',
       ),
     },
     async ({ artifactId, sessionId }) => {
@@ -2261,7 +2262,7 @@ export function createMcpApp(deps: McpDependencies): Hono {
       ),
       sessionId: z.string().describe(
         "The calling session's ID, used to attribute the bookmark to that session's owner (session.createdBy). " +
-          'Use your own AGENT_CONSOLE_SESSION_ID environment variable.',
+          'Use your session id (AGENT_CONSOLE_SESSION_ID in your environment, or the Session ID stated in your system prompt).',
       ),
     },
     async ({ url, title, sessionId }) => {
@@ -2343,7 +2344,7 @@ export function createMcpApp(deps: McpDependencies): Hono {
       bookmarkId: z.string().describe('The id of the bookmark to delete, as returned by create_bookmark.'),
       sessionId: z.string().describe(
         "The calling session's ID, used to resolve that session's owner (session.createdBy) for the ownership " +
-          'check. Use your own AGENT_CONSOLE_SESSION_ID environment variable.',
+          'check. Use your session id (AGENT_CONSOLE_SESSION_ID in your environment, or the Session ID stated in your system prompt).',
       ),
     },
     async ({ bookmarkId, sessionId }) => {

@@ -1439,8 +1439,14 @@ Like the PTY env check, this script imports the production command builders
 Run before claiming multi-user support for
 [EmbeddedAgentWorker](glossary.md#embeddedagentworker). It spawns the real
 embedded-agent loop as a real second OS user via the production `spawnAsUser`,
-with `AUTH_MODE=multi-user` and `AGENT_CONSOLE_MCP_AUTH=enforce` forced on,
-against a real `/mcp` endpoint running in `enforce` mode:
+with `AUTH_MODE=multi-user` forced on and `AGENT_CONSOLE_MCP_AUTH=enforce` set
+explicitly by the script itself (the multi-user default is `warn` until Issue
+#1107 restores the `enforce` default, so the script does not rely on an unset
+value resolving to `enforce`; nothing needs to be set in the environment you
+run the command from), against a real `/mcp` endpoint running in `enforce`
+mode. Note that the smoke proves enforcement does not break token delivery,
+not enforcement itself (a tokenless call being refused) -- that assertion is
+Issue #1738:
 
 ```bash
 sudo -u agentconsole bun scripts/smoke/check-embedded-agent-elevation.ts <target-user>
@@ -1462,6 +1468,15 @@ What it verifies:
   `/proc/<pid>/cmdline` or `/proc/<pid>/environ` of the elevated subprocess,
   with an "actually executed" guard so a silently-skipped check (process
   already exited, `/proc` unreadable) reports as a failure, not a pass.
+- (Issue #1694) Positive: scanning `/proc/*/environ` AS THE TARGET USER
+  (through the real `runAsUser`, since another user's `environ` is EACCES
+  for the server process) with the orphan sweep's exact match semantics
+  (`grep -Fxz`), at least one live process carries the record
+  `AGENT_CONSOLE_SESSION_ID=<activated sessionId>` — the worker's own
+  identity reached the elevated tree, and that tree is now in the orphan
+  sweep's population. A never-activated id is scanned in the same run and
+  must match zero processes (negative control), so the positive result is
+  attributable to this activation.
 - (Issue #1222) When `EMBEDDED_AGENT_BUN_PATH` is configured to an absolute
   path, the LIVE `agent-console.service` systemd process is resolved via
   `systemctl show -p MainPID` and its actual executable (`/proc/<pid>/exe`)
@@ -1602,12 +1617,20 @@ What it verifies:
 - The `Bash` tool actually runs as the real target OS user — the captured
   `env` output's `USER=`/`LOGNAME=` line matches `<target-user>`, not the
   server-process user.
-- Negative: no `AGENT_CONSOLE_*`-prefixed environment variable appears in the
-  captured output — proof that `buildBashEnv`'s strip
-  (`packages/embedded-agent/src/tools/env-cleaner.ts`) survives the real
+- (Issue #1694) The captured output carries EXACTLY this worker's own
+  identity: `AGENT_CONSOLE_BASE_URL` (`http://localhost:<PORT>`, the origin
+  of the MCP dial-back URL), `AGENT_CONSOLE_SESSION_ID` and
+  `AGENT_CONSOLE_WORKER_ID` with the activated session's values, and no
+  other `AGENT_CONSOLE_*` key (the smoke's session is a quick session with
+  no parent, so `REPOSITORY_ID` / `PARENT_*` are correctly absent) — proof
+  that the spawn-time injection (`buildAgentConsoleEnv`, exported inside the
+  elevated inner command by `spawnAsUser`) AND `buildBashEnv`'s allowlist
+  (`packages/embedded-agent/src/tools/env-cleaner.ts`) survive the real
   `spawnAsUser` -> login-shell-init -> loop-subprocess -> Bash-child chain,
-  not just a direct in-process unit test call. The check is line-anchored
-  (`AGENT_CONSOLE_<KEY>=`), not a bare substring match, so it does not
+  not just direct in-process unit test calls. Before #1694 this check was
+  the pure negative "no `AGENT_CONSOLE_*` key at all", which the injection
+  makes false by design. The checks are line-anchored
+  (`AGENT_CONSOLE_<KEY>=`), not bare substring matches, so they do not
   false-positive on an ambient `SUDO_COMMAND` env var that may legitimately
   contain the literal text "AGENT_CONSOLE_" from the elevation invocation's
   own command line.
