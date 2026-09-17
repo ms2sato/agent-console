@@ -261,7 +261,7 @@ function setup(opts?: {
   const service = new EmbeddedAgentWorkerService({
     getSession: (id) => (id === session.id ? session : undefined),
     persistSession: (async () => {}) as never,
-    getPathResolver: () => new SessionDataPathResolver(TEST_BASE_DIR),
+    getPathResolver: () => new SessionDataPathResolver(TEST_BASE_DIR, tmpdir()),
     getEmbeddedAgent: () => opts?.definition ?? SDK_DEFINITION,
     resolveSpawnUsername: async () => USERNAME,
     mcpTokenRegistry: { mint: (() => 'mcp-token') as never, revokeByWorker: (() => {}) as never },

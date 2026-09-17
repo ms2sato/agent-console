@@ -175,7 +175,7 @@ describe('Worker WebSocket: embedded-agent branch', () => {
   // prior incarnation's transcript already on disk" without needing the
   // single-shot fake spawn to support a second real activation cycle.
   let workerOutputFileManager: WorkerOutputFileManager;
-  const quickOutputResolver = new SessionDataPathResolver(`${TEST_CONFIG_DIR}/_quick`);
+  const quickOutputResolver = new SessionDataPathResolver(`${TEST_CONFIG_DIR}/_quick`, TEST_CONFIG_DIR);
 
   beforeEach(async () => {
     await closeDatabase();

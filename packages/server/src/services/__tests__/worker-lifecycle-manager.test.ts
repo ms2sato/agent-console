@@ -140,9 +140,9 @@ describe('WorkerLifecycleManager', () => {
       resolveSpawnUsername: async () => 'testuser',
       getJobQueue: () => testJobQueue,
       getSessionLifecycleCallbacks: () => mockCallbacks,
-      getPathResolver: () => new SessionDataPathResolver(`${TEST_CONFIG_DIR}/_quick`),
+      getPathResolver: () => new SessionDataPathResolver(`${TEST_CONFIG_DIR}/_quick`, TEST_CONFIG_DIR),
       getSessionScope: () => ({ scope: 'quick', slug: null }),
-      getPathResolverByPersistedSessionId: async () => new SessionDataPathResolver(`${TEST_CONFIG_DIR}/_quick`),
+      getPathResolverByPersistedSessionId: async () => new SessionDataPathResolver(`${TEST_CONFIG_DIR}/_quick`, TEST_CONFIG_DIR),
       annotationService: new AnnotationService(),
       workerOutputFileManager: new WorkerOutputFileManager(),
       interSessionMessageService: new InterSessionMessageService(),
@@ -1804,7 +1804,7 @@ describe('WorkerLifecycleManager', () => {
       const manager = new WorkerLifecycleManager(createDeps({
         getPathResolver: () => {
           order.push('resolver');
-          return new SessionDataPathResolver(`${TEST_CONFIG_DIR}/_quick`);
+          return new SessionDataPathResolver(`${TEST_CONFIG_DIR}/_quick`, TEST_CONFIG_DIR);
         },
       }));
 
@@ -2419,7 +2419,7 @@ describe('WorkerLifecycleManager', () => {
       const manager = new WorkerLifecycleManager(createDeps({
         getPathResolver: () => {
           order.push('resolver');
-          return new SessionDataPathResolver(`${TEST_CONFIG_DIR}/_quick`);
+          return new SessionDataPathResolver(`${TEST_CONFIG_DIR}/_quick`, TEST_CONFIG_DIR);
         },
       }));
 
@@ -2830,7 +2830,7 @@ describe('WorkerLifecycleManager', () => {
         deactivateEmbeddedAgentWorker: deactivateTracking,
         getPathResolver: () => {
           order.push('resolver');
-          return new SessionDataPathResolver(`${TEST_CONFIG_DIR}/_quick`);
+          return new SessionDataPathResolver(`${TEST_CONFIG_DIR}/_quick`, TEST_CONFIG_DIR);
         },
       }));
 
@@ -3147,7 +3147,7 @@ describe('WorkerLifecycleManager', () => {
         deactivateEmbeddedAgentWorker: deactivateTracking,
         getPathResolver: () => {
           order.push('resolver');
-          return new SessionDataPathResolver(`${TEST_CONFIG_DIR}/_quick`);
+          return new SessionDataPathResolver(`${TEST_CONFIG_DIR}/_quick`, TEST_CONFIG_DIR);
         },
       }));
 
@@ -4278,7 +4278,7 @@ describe('WorkerLifecycleManager', () => {
     /** Write rotated content: an early "marker" burst, then enough later
      * traffic to push it out of the live window (fileMaxSize small). */
     async function seedRotatedContent(fileManager: WorkerOutputFileManager, sessionId: string, workerId: string): Promise<void> {
-      const resolver = new SessionDataPathResolver(`${TEST_CONFIG_DIR}/_quick`);
+      const resolver = new SessionDataPathResolver(`${TEST_CONFIG_DIR}/_quick`, TEST_CONFIG_DIR);
       const early = [
         line({ v: 1, type: 'user-message', id: 'm1', text: 'PRE-ROTATION-MARKER' }),
         line({ v: 1, type: 'assistant-message', turnId: 't1', text: 'ack' }),
@@ -4798,7 +4798,7 @@ describe('WorkerLifecycleManager', () => {
       // via `getWorker` so this test exercises the guard that returns 0 when
       // there is no worker. See design §"Call-site coverage" for the full
       // mandate that covers this branch.
-      const dbResolver = new SessionDataPathResolver(`${TEST_CONFIG_DIR}/repositories/test-repo`);
+      const dbResolver = new SessionDataPathResolver(`${TEST_CONFIG_DIR}/repositories/test-repo`, TEST_CONFIG_DIR);
       const manager = new WorkerLifecycleManager(createDeps({
         getSession: () => undefined,
         // The DB-backed lookup returns a resolver that points to a valid
@@ -4857,7 +4857,7 @@ describe('WorkerLifecycleManager', () => {
       // Likewise spy the persisted-fallback so we can assert it is NOT
       // consulted for an in-memory session with an invalid scope.
       const persistedResolverSpy: (sessionId: string) => Promise<SessionDataPathResolver | null> =
-        mock(async () => new SessionDataPathResolver(`${TEST_CONFIG_DIR}/_quick`));
+        mock(async () => new SessionDataPathResolver(`${TEST_CONFIG_DIR}/_quick`, TEST_CONFIG_DIR));
 
       const manager = new WorkerLifecycleManager(
         createDeps({

@@ -359,6 +359,42 @@ describe('SessionManager', () => {
       expect(resolverAfter?.getOutputsDir()).toContain('org-a/remote-repo');
       expect(resolverAfter?.getOutputsDir()).not.toContain('org-b/remote-repo');
     });
+
+    // Trusted-root walker (docs/design/session-data-path.md section 2): the
+    // resolver the session manager hands out carries `configDir` itself as
+    // its trusted root -- the SAME value the base was computed from -- so
+    // every writer walks `<configDir>/repositories/<slug>/...` from the
+    // real data root, not from some ancestor of the base or from `/`.
+    // Measured: passing `path.dirname(base)` as the root instead (a
+    // plausible "the directory containing the base" mistake, which for the
+    // `org-a/remote-repo` slug is `<configDir>/repositories/org-a`, NOT
+    // `configDir`) fails this pin on the equality; passing `'/'` fails it
+    // too.
+    it('hands out a resolver whose trusted root is configDir, the same root the base was derived from', async () => {
+      setupMemfs({
+        [`${TEST_CONFIG_DIR}/.keep`]: '',
+        ...createMockGitRepoFiles(REMOTE_REPO_DIR),
+      });
+      mockGit.deriveRepositorySlug.mockReset();
+      mockGit.deriveRepositorySlug.mockImplementation(() => Promise.resolve('org-a/remote-repo'));
+
+      const repositoryManager = await getRepositoryManagerForTest();
+      const repo = await repositoryManager.registerRepository(REMOTE_REPO_DIR);
+      const manager = await getSessionManagerWithRealRepositoryLookup(repositoryManager);
+
+      const session = await manager.createSession({
+        type: 'worktree',
+        locationPath: '/test/path',
+        repositoryId: repo.id,
+        worktreeId: 'main',
+        agentId: 'claude-code',
+      });
+
+      const resolver = manager.getPathResolverForSessionId(session.id);
+      expect(resolver).not.toBeNull();
+      expect(resolver!.getTrustedRoot()).toBe(TEST_CONFIG_DIR);
+      expect(resolver!.getBaseDir()).toBe(`${TEST_CONFIG_DIR}/repositories/org-a/remote-repo`);
+    });
   });
 
   // ===========================================================================

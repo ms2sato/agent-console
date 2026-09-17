@@ -10,6 +10,7 @@
  * - Enables proper test isolation with in-memory databases
  */
 
+import * as fsPromises from 'fs/promises';
 import type { Kysely } from 'kysely';
 import type { Database } from './database/schema.js';
 import type { JobQueue } from './jobs/job-queue.js';
@@ -87,7 +88,7 @@ import { getCurrentBranch } from './lib/git.js';
 import { fetchGitHubIssue } from './services/github-issue-service.js';
 import { generateRepositoryDescription } from './services/repository-description-generator.js';
 import { RepositoryCloneService } from './services/repository-clone-service.js';
-import { getSourceReposDir } from './lib/config.js';
+import { getSourceReposDir, getConfigDir } from './lib/config.js';
 import { SqliteMessageTemplateRepository } from './repositories/sqlite-message-template-repository.js';
 import { SqliteArtifactRepository } from './repositories/sqlite-artifact-repository.js';
 import { SqliteBookmarkRepository } from './repositories/sqlite-bookmark-repository.js';
@@ -741,6 +742,15 @@ export interface CreateTestContextOptions {
 export async function createTestContext(
   overrides?: CreateTestContextOptions
 ): Promise<AppContext> {
+  // Boot invariant: the data root exists before any session-data writer runs.
+  // Production establishes it in `doInitializeDatabase` (connection.ts) for the
+  // file-backed database; the in-memory test database skips that step, and the
+  // trusted-root walker (`ensureTrustedDirChain`) verifies its root and never
+  // creates it (docs/design/session-data-path.md section 2). Creating the ROOT
+  // recursively here is the same shape as `PersistenceService`'s
+  // `ensureConfigDir` -- it is the one directory the walker does not own.
+  await fsPromises.mkdir(getConfigDir(), { recursive: true });
+
   // Standalone database for test isolation -- in-memory by default, or a
   // file path when `overrides.dbPath` is set (see CreateTestContextOptions).
   // This does NOT modify the global db variable, preventing test interference

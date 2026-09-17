@@ -145,9 +145,9 @@ describe('Client-Server Boundary: cleanup:definition-memory job (Issue #1709)', 
     const flatBase = computeSessionDataBaseDir(configDir, 'repository', 'flat');
     const nestedBase = computeSessionDataBaseDir(configDir, 'repository', 'org/repo');
     const quickBase = computeSessionDataBaseDir(configDir, 'quick', null);
-    const flatResolver = new SessionDataPathResolver(flatBase);
-    const nestedResolver = new SessionDataPathResolver(nestedBase);
-    const quickResolver = new SessionDataPathResolver(quickBase);
+    const flatResolver = new SessionDataPathResolver(flatBase, configDir);
+    const nestedResolver = new SessionDataPathResolver(nestedBase, configDir);
+    const quickResolver = new SessionDataPathResolver(quickBase, configDir);
     const cwdSlug = computeQuickCwdSlug('/some/quick/session/cwd');
 
     const flatTarget = flatResolver.getMemoryDir(definitionId, { kind: 'repository' });

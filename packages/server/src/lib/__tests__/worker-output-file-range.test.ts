@@ -19,7 +19,7 @@ import {
 } from '../worker-output-manifest.js';
 
 const CONFIG_DIR = '/test/config';
-const resolver = new SessionDataPathResolver(`${CONFIG_DIR}/_quick`);
+const resolver = new SessionDataPathResolver(`${CONFIG_DIR}/_quick`, CONFIG_DIR);
 const S = 'session-1';
 const W = 'w-1';
 
@@ -88,7 +88,9 @@ describe('WorkerOutputFileManager — backwards range serving', () => {
   let manager: WorkerOutputFileManager;
 
   beforeEach(() => {
-    setupMemfs({});
+    // The trusted root (`CONFIG_DIR`) must exist in the volume: the walker
+    // verifies it and never creates it (session-data-path.md section 2).
+    setupMemfs({ [CONFIG_DIR]: null });
     process.env.AGENT_CONSOLE_HOME = CONFIG_DIR;
     manager = makeManager();
   });

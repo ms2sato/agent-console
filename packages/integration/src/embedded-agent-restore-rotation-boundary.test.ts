@@ -41,7 +41,7 @@ import { SessionDataPathResolver } from '@agent-console/server/src/lib/session-d
 import { reconstructConversation } from '@agent-console/embedded-agent/src/restore';
 
 const TEST_CONFIG_DIR = '/test/config';
-const resolver = new SessionDataPathResolver(`${TEST_CONFIG_DIR}/_quick`);
+const resolver = new SessionDataPathResolver(`${TEST_CONFIG_DIR}/_quick`, TEST_CONFIG_DIR);
 const S = 'session-rotation';
 const W = 'worker-rotation';
 const SYSTEM_PROMPT = 'You are a helpful assistant.';

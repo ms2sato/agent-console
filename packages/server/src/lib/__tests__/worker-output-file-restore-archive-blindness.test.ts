@@ -19,7 +19,7 @@ import { SessionDataPathResolver } from '../session-data-path-resolver.js';
 import { reconstructConversation } from '@agent-console/embedded-agent/src/restore.js';
 
 const CONFIG_DIR = '/test/config';
-const resolver = new SessionDataPathResolver(`${CONFIG_DIR}/_quick`);
+const resolver = new SessionDataPathResolver(`${CONFIG_DIR}/_quick`, CONFIG_DIR);
 const S = 'session-1';
 const W = 'w-1';
 const SYSTEM_PROMPT = 'You are a helpful assistant.';
@@ -39,7 +39,9 @@ describe('#1202 Q12 — restore against a boundary that rotated into the archive
   let manager: WorkerOutputFileManager;
 
   beforeEach(() => {
-    setupMemfs({});
+    // The trusted root (`CONFIG_DIR`) must exist in the volume: the walker
+    // verifies it and never creates it (session-data-path.md section 2).
+    setupMemfs({ [CONFIG_DIR]: null });
     process.env.AGENT_CONSOLE_HOME = CONFIG_DIR;
     manager = makeManager(400);
   });
@@ -186,7 +188,9 @@ describe('#1202 — the walk-back assembles a stream that starts at a safe ancho
   let manager: WorkerOutputFileManager;
 
   beforeEach(() => {
-    setupMemfs({});
+    // The trusted root (`CONFIG_DIR`) must exist in the volume: the walker
+    // verifies it and never creates it (session-data-path.md section 2).
+    setupMemfs({ [CONFIG_DIR]: null });
     process.env.AGENT_CONSOLE_HOME = CONFIG_DIR;
     manager = makeManager(400);
   });
@@ -404,7 +408,9 @@ describe('#1202 Q9 — the two engines are exposed to this defect differently', 
   let manager: WorkerOutputFileManager;
 
   beforeEach(() => {
-    setupMemfs({});
+    // The trusted root (`CONFIG_DIR`) must exist in the volume: the walker
+    // verifies it and never creates it (session-data-path.md section 2).
+    setupMemfs({ [CONFIG_DIR]: null });
     process.env.AGENT_CONSOLE_HOME = CONFIG_DIR;
     manager = makeManager(400);
   });

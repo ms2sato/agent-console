@@ -506,7 +506,7 @@ export class SessionManager {
       workerOutputFileManager: this.workerOutputFileManager,
       jobQueue: this.jobQueue,
       getPathResolverForPersistedSession: (persisted) => this.getPathResolverForPersistedSession(persisted),
-      baseDirForPersistedSession: (persisted) => this.baseDirForPersistedSession(persisted),
+      baseDirForPersistedSession: (persisted) => this.baseDirForPersistedSession(persisted, getConfigDir()),
       getServerPid,
       resolveSpawnUsername: (createdBy) => resolveSpawnUsername(createdBy, this.userRepository),
       sweepOrphanProcessesImpl: options.sweepOrphanProcessesImpl,
@@ -1680,8 +1680,7 @@ export class SessionManager {
    * sessions that failed to populate scope at creation — both indicate the
    * session is orphaned).
    */
-  private baseDirForSession(session: InternalSession): string {
-    const configDir = getConfigDir();
+  private baseDirForSession(session: InternalSession, configDir: string): string {
     if (session.type === 'quick') {
       return computeSessionDataBaseDir(configDir, 'quick', null);
     }
@@ -1697,8 +1696,7 @@ export class SessionManager {
    * Throws `InvalidSessionDataScopeError` if scope is missing — callers that
    * operate on potentially-orphaned sessions must catch this explicitly.
    */
-  private baseDirForPersistedSession(persisted: PersistedSession): string {
-    const configDir = getConfigDir();
+  private baseDirForPersistedSession(persisted: PersistedSession, configDir: string): string {
     if (persisted.type === 'quick') {
       return computeSessionDataBaseDir(configDir, 'quick', null);
     }
@@ -1713,7 +1711,8 @@ export class SessionManager {
    * Throws if the session's scope cannot be resolved.
    */
   private getPathResolverForSession(session: InternalSession): SessionDataPathResolver {
-    return new SessionDataPathResolver(this.baseDirForSession(session));
+    const configDir = getConfigDir();
+    return new SessionDataPathResolver(this.baseDirForSession(session, configDir), configDir);
   }
 
   /**
@@ -1736,7 +1735,8 @@ export class SessionManager {
    * Throws if scope is missing — see {@link baseDirForPersistedSession}.
    */
   private getPathResolverForPersistedSession(persisted: PersistedSession): SessionDataPathResolver {
-    return new SessionDataPathResolver(this.baseDirForPersistedSession(persisted));
+    const configDir = getConfigDir();
+    return new SessionDataPathResolver(this.baseDirForPersistedSession(persisted, configDir), configDir);
   }
 
   /**

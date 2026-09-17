@@ -47,8 +47,8 @@ function createMockDeps(overrides?: Partial<SessionDeletionDeps>): SessionDeleti
     memoService: {
       deleteMemo: mock(async () => {}),
     } as unknown as SessionDeletionDeps['memoService'],
-    getPathResolverForSession: () => new SessionDataPathResolver('/test/config/repositories/test-repo'),
-    getPathResolverForPersistedSession: () => new SessionDataPathResolver('/test/config/repositories/test-repo'),
+    getPathResolverForSession: () => new SessionDataPathResolver('/test/config/repositories/test-repo', '/test/config'),
+    getPathResolverForPersistedSession: () => new SessionDataPathResolver('/test/config/repositories/test-repo', '/test/config'),
     getSessionScope: () => ({ scope: 'repository', slug: 'test-repo' }),
     getPersistedSessionScope: () => ({ scope: 'repository', slug: 'test-repo' }),
     getSessionLifecycleCallbacks: () => undefined,

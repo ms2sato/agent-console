@@ -197,7 +197,7 @@ describe('Client-Server Boundary: exited.reason survives to the client as `evict
   it(
     'a real idle eviction appends an `exited` row that the real EmbeddedAgentStreamEventSchema parses with reason === "evicted"',
     async () => {
-      const resolver = new SessionDataPathResolver(BASE_DIR);
+      const resolver = new SessionDataPathResolver(BASE_DIR, '/test/config');
       // `flushThreshold: 1` makes every append hit the file immediately, so the
       // read-back below comes off disk rather than out of the pending buffer.
       outputFileManager = new WorkerOutputFileManager({ flushThreshold: 1, flushInterval: 5 });

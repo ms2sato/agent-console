@@ -42,7 +42,7 @@ function makeDeps(
     messageId: `msg-${Math.random().toString(16).slice(2, 10)}.json`,
     path: `/tmp/messages/${params.content.slice(0, 4)}.json`,
   }));
-  const resolver = new SessionDataPathResolver('/tmp/test-base');
+  const resolver = new SessionDataPathResolver('/tmp/test-base', '/tmp');
   const getResolver = mock((_sessionId: string) => resolver as SessionDataPathResolver | null);
 
   const deps: ProcessOutputRouterDeps = {
@@ -507,7 +507,7 @@ describe('routeProcessExit ordering (Issue #1591)', () => {
   });
 
   it('R2: a rejected step does not block the next enqueued step, and its own rejection is still observable on its own promise', async () => {
-    const resolver = new SessionDataPathResolver('/tmp/test-base');
+    const resolver = new SessionDataPathResolver('/tmp/test-base', '/tmp');
     let getResolverCalls = 0;
     const { deps, sendMessage } = makeDeps({
       getResolver: () => {

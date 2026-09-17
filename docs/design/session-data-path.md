@@ -121,21 +121,23 @@ function computeSessionDataBaseDir(
 
 Invariants (enforced in the helper):
 - Returns a canonical absolute path (symlinks resolved where applicable).
-- The returned path is always under `configDir` — verified by string-prefix check after `path.resolve`.
+- The returned path is always under `configDir` — verified by string-prefix check after `path.resolve`, and, at creation time, on the inode chain: every segment from `configDir` to the leaf is created non-recursively and lstat-verified (not a symlink, a directory, owned by the server) by `ensureTrustedDirChain` (`packages/server/src/lib/trusted-dir.ts`). The string check constrains the path the server *intends*; the walker constrains the directory the filesystem *actually* hands back — under a group-writable multi-user data root the two can disagree when a group member pre-plants a symlink at `_quick/` or `repositories/<slug>/` (or any segment between) before the server first creates it, and a recursive `mkdir` follows that link silently. Every session-data writer (worker output, memos, inter-session messages, the memory layer's base) calls the walker with `resolver.getTrustedRoot()` as the root; ancestors assert symlink / directory / owner uid only (a service-user-owned directory that predates the `2775` contract must keep working), while the memory leaf keeps its exact gid/mode contract (embedded-agent-worker.md "Ownership and location"). Verification runs on every call — no readiness cache. Accepted residue: pre-planted links only; a link swapped in between the walker's `lstat` and a later use of the path (TOCTOU) is inside the team-of-trust model the `2775` contract already accepts, and no `O_NOFOLLOW` / `openat` chain is attempted.
 - `scope === 'quick'` requires `slug === null`; `scope === 'repository'` requires a non-empty slug matching `^[A-Za-z0-9._-]+(\/[A-Za-z0-9._-]+)?$`.
 - Throws `InvalidSessionDataScopeError` on any violation.
 
-`SessionDataPathResolver` becomes a thin wrapper around a `baseDir: string` value:
+`SessionDataPathResolver` becomes a thin wrapper around a `baseDir: string` value plus the `trustedRoot` the inode walk starts from:
 
 ```ts
 class SessionDataPathResolver {
-  constructor(private readonly baseDir: string) {}
+  constructor(private readonly baseDir: string, private readonly trustedRoot: string) {}
   getOutputsDir(): string { return path.join(this.baseDir, 'outputs'); }
+  /** The root `ensureTrustedDirChain` verifies every path under `baseDir` from. */
+  getTrustedRoot(): string { return this.trustedRoot; }
   // ... etc.
 }
 ```
 
-No parameterless overload exists. No `repositoryName` argument exists. All call sites derive `baseDir` through `computeSessionDataBaseDir(configDir, session.dataScope, session.dataScopeSlug)` (or equivalent from a job payload).
+No parameterless overload exists. No `repositoryName` argument exists. `trustedRoot` is required, with no default and no ambient `getConfigDir()` fallback (an ambient fallback would silently pass a base that is not under it). All call sites derive `baseDir` through `computeSessionDataBaseDir(configDir, session.dataScope, session.dataScopeSlug)` (or equivalent from a job payload) and pass that same `configDir` as `trustedRoot`.
 
 ### 3. Orphan lifecycle
 

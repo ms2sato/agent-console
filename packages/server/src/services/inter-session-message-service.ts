@@ -14,6 +14,7 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import type { SessionDataPathResolver } from '../lib/session-data-path-resolver.js';
 import { createLogger } from '../lib/logger.js';
+import { ensureTrustedDirChain, resolveAncestorContract } from '../lib/trusted-dir.js';
 
 const logger = createLogger('inter-session-message');
 
@@ -61,7 +62,9 @@ export class InterSessionMessageService {
   /**
    * Write a message file for the target worker.
    *
-   * 1. Create directory: {messagesDir}/{toSessionId}/{toWorkerId}/ (recursive)
+   * 1. Create directory: {messagesDir}/{toSessionId}/{toWorkerId}/, and any
+   *    missing ancestor up to the trusted root, through the trusted-dir
+   *    walker
    * 2. Write to temp file `.tmp-{messageId}` in the same directory
    * 3. Atomic rename to `{timestamp}-{fromSessionId}-{randomHex}.json`
    * 4. Return { messageId, path }
@@ -84,7 +87,7 @@ export class InterSessionMessageService {
     const dir = path.resolve(messagesDir, toSessionId, toWorkerId);
     assertWithinDir(dir, messagesDir);
 
-    await fs.mkdir(dir, { recursive: true });
+    await ensureTrustedDirChain(resolver.getTrustedRoot(), dir, resolveAncestorContract());
 
     const timestamp = Date.now();
     const suffix = randomBytes(4).toString('hex');

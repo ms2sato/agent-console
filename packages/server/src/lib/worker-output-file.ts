@@ -19,6 +19,7 @@ import { SessionDataPathResolver } from './session-data-path-resolver.js';
 import { serverConfig } from './server-config.js';
 import { createLogger } from './logger.js';
 import { isErrnoException } from './type-guards.js';
+import { ensureTrustedDirChain, resolveAncestorContract, TrustedDirVerificationError } from './trusted-dir.js';
 import {
   type WorkerOutputManifest,
   type SegmentMeta,
@@ -319,6 +320,15 @@ export class WorkerOutputFileManager {
   }
 
   /**
+   * Creates `<base>/outputs/<sessionId>` (and any missing ancestor up to
+   * the trusted root) through the trusted-dir walker -- never a recursive
+   * `mkdir`, see docs/design/session-data-path.md section 2.
+   */
+  private async ensureWorkerDir(sessionId: string, resolver: SessionDataPathResolver): Promise<void> {
+    await ensureTrustedDirChain(resolver.getTrustedRoot(), this.getWorkerDir(sessionId, resolver), resolveAncestorContract());
+  }
+
+  /**
    * Check if a file exists at the given path.
    */
   private async fileExists(filePath: string): Promise<boolean> {
@@ -404,7 +414,7 @@ export class WorkerOutputFileManager {
         // manifest and the in-memory worker agree; otherwise degrade to a fresh
         // mint. Any legacy `.log` / `.log.gz` present is the whole stream at base 0.
         manifest = createInitialManifest(epochHint ?? this.mintEpoch());
-        await fs.mkdir(dir, { recursive: true });
+        await this.ensureWorkerDir(sessionId, resolver);
         await writeManifestDurable(manifestPath, manifest);
       } else {
         // Orphan-scan is the expensive part; keep it gated to first access.
@@ -413,7 +423,7 @@ export class WorkerOutputFileManager {
       this.recovered.add(key);
     } else if (manifest === null) {
       manifest = createInitialManifest(epochHint ?? this.mintEpoch());
-      await fs.mkdir(dir, { recursive: true });
+      await this.ensureWorkerDir(sessionId, resolver);
       await writeManifestDurable(manifestPath, manifest);
     }
 
@@ -519,7 +529,7 @@ export class WorkerOutputFileManager {
     return this.runExclusive(key, async () => {
       const filePath = this.getOutputFilePath(sessionId, workerId, resolver);
       try {
-        await fs.mkdir(path.dirname(filePath), { recursive: true });
+        await this.ensureWorkerDir(sessionId, resolver);
 
         // Ensure a manifest exists (records `epoch` for a brand-new worker).
         const manifest = await this.loadManifestWithRecovery(sessionId, workerId, resolver, epoch);
@@ -533,6 +543,11 @@ export class WorkerOutputFileManager {
         logger.debug({ sessionId, workerId, filePath, epoch: manifest.epoch }, 'Initialized worker output file + manifest');
         return manifest.epoch;
       } catch (error) {
+        // A trusted-dir rejection means the tree this worker would write into
+        // is not the one under the trusted root -- propagate rather than fall
+        // into the best-effort epoch-persistence path below (the walker
+        // already logged the rejection).
+        if (error instanceof TrustedDirVerificationError) throw error;
         logger.error({ sessionId, workerId, err: error }, 'Failed to initialize worker output file');
         // Best-effort: ensure the epoch is persisted so a later history read
         // (which cannot see the worker object's epoch) does not lazily mint a
@@ -543,11 +558,14 @@ export class WorkerOutputFileManager {
           const existing = await readManifest(manifestPath);
           if (existing) return existing.epoch;
           const fresh = createInitialManifest(epoch ?? this.mintEpoch());
-          await fs.mkdir(path.dirname(manifestPath), { recursive: true });
+          await this.ensureWorkerDir(sessionId, resolver);
           await writeManifestDurable(manifestPath, fresh);
           this.recovered.add(key);
           return fresh.epoch;
-        } catch {
+        } catch (innerError) {
+          // Same rethrow, one level down: a trusted-dir rejection here must
+          // not be swallowed into "mint an unpersisted epoch and carry on".
+          if (innerError instanceof TrustedDirVerificationError) throw innerError;
           // Truly degraded I/O — reads will mint their own epoch; nothing more
           // we can do here without a working filesystem.
           return epoch ?? this.mintEpoch();
@@ -687,9 +705,8 @@ export class WorkerOutputFileManager {
 
       const manifest = await this.loadManifestWithRecovery(sessionId, workerId, resolver);
       const filePath = this.getOutputFilePath(sessionId, workerId, resolver);
-      const dir = this.getWorkerDir(sessionId, resolver);
 
-      await fs.mkdir(dir, { recursive: true });
+      await this.ensureWorkerDir(sessionId, resolver);
       // NOT wrapped in try/catch: an I/O failure here must reach the
       // caller so it can fall back to the reset path (R1).
       await fs.appendFile(filePath, `${markerLine}\n`, 'utf-8');
@@ -750,7 +767,7 @@ export class WorkerOutputFileManager {
 
     let committed = false;
     try {
-      await fs.mkdir(path.dirname(filePath), { recursive: true });
+      await this.ensureWorkerDir(sessionId, resolver);
 
       // Ensure recovery has run and the manifest is loaded (needed for cut base).
       // Forward the worker's epoch so that if this flush is the first op to
@@ -1804,7 +1821,7 @@ export class WorkerOutputFileManager {
       }
 
       try {
-        await fs.mkdir(dir, { recursive: true });
+        await this.ensureWorkerDir(sessionId, resolver);
 
         if (opts?.preserveToSidecar) {
           const sidecarPath = path.join(dir, `${workerId}.restore-failed.log`);
@@ -1844,6 +1861,12 @@ export class WorkerOutputFileManager {
         logger.debug({ sessionId, workerId, epoch: newEpoch }, 'Reset worker output (new epoch)');
         return newEpoch;
       } catch (error) {
+        // A trusted-dir rejection means the tree this reset would write into
+        // is not the one under the trusted root -- propagate rather than fall
+        // into the best-effort epoch-persistence path below. A redirected
+        // tree must never get a manifest written into it (the walker already
+        // logged the rejection).
+        if (error instanceof TrustedDirVerificationError) throw error;
         logger.error({ sessionId, workerId, err: error }, 'Failed to reset worker output file');
         // Best-effort: persist the NEW epoch so the on-disk manifest matches the
         // epoch the restarted worker will carry. NEVER fall back to the old
@@ -1852,11 +1875,14 @@ export class WorkerOutputFileManager {
         // unrelated new-incarnation bytes as authoritative — exactly the
         // coordinate-aliasing hazard the epoch exists to prevent (§3.4).
         try {
-          await fs.mkdir(dir, { recursive: true });
+          await this.ensureWorkerDir(sessionId, resolver);
           await writeManifestDurable(manifestPath, createInitialManifest(newEpoch));
           this.recovered.add(key);
           return newEpoch;
         } catch (persistError) {
+          // Same rethrow, one level down: a trusted-dir rejection here must
+          // not be swallowed into "carry on with an unpersisted epoch".
+          if (persistError instanceof TrustedDirVerificationError) throw persistError;
           // Residual divergence window: the new epoch could not be persisted, so
           // the returned (in-memory) epoch leads the on-disk manifest until the
           // next successful manifest write. Because reads honor an epoch hint

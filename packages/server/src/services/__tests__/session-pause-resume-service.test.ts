@@ -46,7 +46,7 @@ function createMockDeps(overrides?: Partial<SessionPauseResumeDeps>): SessionPau
     activateEmbeddedAgentWorker: mock(async () => {}),
     pathExists: mock(async () => true),
     getRepositoryEnvVars: mock(async () => ({})),
-    getPathResolverForSession: mock((_session: InternalSession) => new SessionDataPathResolver('/dummy')),
+    getPathResolverForSession: mock((_session: InternalSession) => new SessionDataPathResolver('/dummy', '/')),
     toPublicSession: mock((session: InternalSession) => ({
       id: session.id,
       type: session.type,

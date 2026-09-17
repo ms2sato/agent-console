@@ -507,7 +507,7 @@ describe('Subprocess tool-call composition: scoped .claude/rules activation reac
     if (toolResultEvent?.type !== 'tool-result') throw new Error('expected a tool-result event');
 
     const workerOutputFileManager = new WorkerOutputFileManager();
-    const resolver = new SessionDataPathResolver(join(dir, '.output-data'));
+    const resolver = new SessionDataPathResolver(join(dir, '.output-data'), dir);
     const sessionId = 's';
     const workerId = 'w';
     await workerOutputFileManager.initializeWorkerOutput(sessionId, workerId, resolver);

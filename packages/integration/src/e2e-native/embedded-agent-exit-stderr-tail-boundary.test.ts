@@ -206,7 +206,7 @@ describe('Client-Server Boundary: exited.stderrTail survives to the client (#145
   it(
     'a real unexpected exit with stderr appends an `exited` row that the real EmbeddedAgentStreamEventSchema parses with stderrTail',
     async () => {
-      const resolver = new SessionDataPathResolver(BASE_DIR);
+      const resolver = new SessionDataPathResolver(BASE_DIR, '/test/config');
       // `flushThreshold: 1` makes every append hit the file immediately, so
       // the read-back below comes off disk rather than out of the pending
       // buffer.

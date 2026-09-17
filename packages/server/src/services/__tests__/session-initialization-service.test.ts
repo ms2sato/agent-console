@@ -128,7 +128,7 @@ describe('SessionInitializationService', () => {
       isSessionInMemory: (id) => inMemoryIds.has(id),
       workerOutputFileManager,
       jobQueue,
-      getPathResolverForPersistedSession: () => new SessionDataPathResolver('/test/config/_quick'),
+      getPathResolverForPersistedSession: () => new SessionDataPathResolver('/test/config/_quick', '/test/config'),
       baseDirForPersistedSession: () => '/test/config/_quick',
       getServerPid: () => TEST_SERVER_PID,
       resolveSpawnUsername: options.resolveSpawnUsername ?? defaultResolveSpawnUsername,
@@ -1088,7 +1088,7 @@ describe('SessionInitializationService integration (real DB → mapper → servi
       isSessionInMemory: () => false,
       workerOutputFileManager,
       jobQueue,
-      getPathResolverForPersistedSession: () => new SessionDataPathResolver('/test/config/_quick'),
+      getPathResolverForPersistedSession: () => new SessionDataPathResolver('/test/config/_quick', '/test/config'),
       baseDirForPersistedSession: () => '/test/config/_quick',
       getServerPid: () => TEST_SERVER_PID,
       resolveSpawnUsername: async (createdBy) => createdBy ?? 'test-server-user',
@@ -1161,7 +1161,7 @@ describe('SessionInitializationService integration (real DB → mapper → servi
         isSessionInMemory: () => false,
         workerOutputFileManager,
         jobQueue,
-        getPathResolverForPersistedSession: () => new SessionDataPathResolver('/test/config/_quick'),
+        getPathResolverForPersistedSession: () => new SessionDataPathResolver('/test/config/_quick', '/test/config'),
         baseDirForPersistedSession: (persisted) => {
           if (opts.throwFor?.has(persisted.id)) {
             throw new InvalidSessionDataScopeError(

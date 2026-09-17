@@ -654,7 +654,7 @@ async function main(): Promise<void> {
           .get(sessionId) as { data_scope: string | null; data_scope_slug: string | null } | undefined;
         if (!row || !row.data_scope) bail(`session ${sessionId} has no data_scope row`);
         const baseDir = computeSessionDataBaseDir(disposableHome, row.data_scope as 'quick' | 'repository', row.data_scope_slug);
-        const resolver = new SessionDataPathResolver(baseDir);
+        const resolver = new SessionDataPathResolver(baseDir, disposableHome);
         return resolver.getOutputFilePath(sessionId, workerId);
       } finally {
         sqliteHandle.close();

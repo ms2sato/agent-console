@@ -12,6 +12,7 @@ import * as path from 'path';
 import type { SessionDataPathResolver } from '../lib/session-data-path-resolver.js';
 import { createLogger } from '../lib/logger.js';
 import { isErrnoException } from '../lib/type-guards.js';
+import { ensureTrustedDirChain, resolveAncestorContract } from '../lib/trusted-dir.js';
 
 const logger = createLogger('memo-service');
 
@@ -26,8 +27,10 @@ export class MemoService {
   }
 
   /**
-   * Write a memo for a session. Creates the memos directory if needed
-   * and writes the file atomically (write to temp, then rename).
+   * Write a memo for a session. Creates and verifies the memos directory
+   * (and any missing ancestor up to the trusted root) through the
+   * trusted-dir walker if needed, and writes the file atomically (write to
+   * temp, then rename).
    *
    * @returns The absolute file path of the written memo.
    */
@@ -39,7 +42,7 @@ export class MemoService {
     }
 
     const memosDir = resolver.getMemosDir();
-    await fs.mkdir(memosDir, { recursive: true });
+    await ensureTrustedDirChain(resolver.getTrustedRoot(), memosDir, resolveAncestorContract());
 
     const filePath = path.join(memosDir, `${sessionId}.md`);
     const tmpPath = path.join(memosDir, `.tmp-${sessionId}.md`);

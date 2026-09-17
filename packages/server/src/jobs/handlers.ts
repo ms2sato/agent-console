@@ -72,9 +72,10 @@ export function registerJobHandlers(
     JOB_TYPES.CLEANUP_SESSION_OUTPUTS,
     async (payload) => {
       const { sessionId, scope, slug } = payload;
+      const configDir = getConfigDir();
       let baseDir: string;
       try {
-        baseDir = computeSessionDataBaseDir(getConfigDir(), scope, slug);
+        baseDir = computeSessionDataBaseDir(configDir, scope, slug);
       } catch (err) {
         if (err instanceof InvalidSessionDataScopeError) {
           logger.error({ sessionId, scope, slug, err: err.message }, 'Invalid cleanup payload; skipping');
@@ -82,7 +83,7 @@ export function registerJobHandlers(
         }
         throw err;
       }
-      const resolver = new SessionDataPathResolver(baseDir);
+      const resolver = new SessionDataPathResolver(baseDir, configDir);
       logger.debug({ sessionId, scope, slug }, 'Executing cleanup:session-outputs job');
       await workerOutputFileManager.deleteSessionOutputs(sessionId, resolver);
       logger.info({ sessionId }, 'Session outputs cleanup completed');
@@ -93,9 +94,10 @@ export function registerJobHandlers(
     JOB_TYPES.CLEANUP_WORKER_OUTPUT,
     async (payload) => {
       const { sessionId, workerId, scope, slug } = payload;
+      const configDir = getConfigDir();
       let baseDir: string;
       try {
-        baseDir = computeSessionDataBaseDir(getConfigDir(), scope, slug);
+        baseDir = computeSessionDataBaseDir(configDir, scope, slug);
       } catch (err) {
         if (err instanceof InvalidSessionDataScopeError) {
           logger.error(
@@ -106,7 +108,7 @@ export function registerJobHandlers(
         }
         throw err;
       }
-      const resolver = new SessionDataPathResolver(baseDir);
+      const resolver = new SessionDataPathResolver(baseDir, configDir);
       logger.debug({ sessionId, workerId, scope, slug }, 'Executing cleanup:worker-output job');
       await workerOutputFileManager.deleteWorkerOutput(sessionId, workerId, resolver);
       logger.info({ sessionId, workerId }, 'Worker output cleanup completed');

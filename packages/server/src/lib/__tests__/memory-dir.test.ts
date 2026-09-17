@@ -9,7 +9,7 @@ import { describe, it, expect, afterEach } from 'bun:test';
 import { mkdir, rm, symlink, writeFile, lstat, chmod, readdir } from 'fs/promises';
 import { isMemfsActive } from '../../__tests__/utils/memfs-detection.js';
 import { tmpdir } from 'os';
-import { join } from 'path';
+import { join, dirname } from 'path';
 import { randomUUID } from 'crypto';
 import {
   resolveMemoryDirContract,
@@ -34,10 +34,28 @@ function freshTempDir(label: string): string {
   return dir;
 }
 
-/** Create and return a fresh, real trusted-base directory for a test. */
+/**
+ * Create and return a fresh, real trusted ROOT directory for a test. The
+ * session base lives under it as `<root>/_quick` (`baseUnder`), the same
+ * shape production walks from `configDir`; `ensureMemoryDir` is handed
+ * `(base, dirname(base))` everywhere below. The root is created here (the
+ * walker never creates its root); whether the base is created is each
+ * test's own decision.
+ */
+async function freshTrustedRoot(label: string): Promise<string> {
+  const root = freshTempDir(label);
+  await mkdir(root, { recursive: true });
+  return root;
+}
+
+function baseUnder(root: string): string {
+  return join(root, '_quick');
+}
+
+/** Create and return a fresh, real trusted-base directory (`<root>/_quick`) for a test. */
 async function freshTrustedBase(label: string): Promise<string> {
-  const base = freshTempDir(label);
-  await mkdir(base, { recursive: true });
+  const base = baseUnder(await freshTrustedRoot(label));
+  await mkdir(base);
   return base;
 }
 
@@ -79,7 +97,7 @@ describe('ensureMemoryDir — single-user contract', () => {
   it('creates the directory with mode exactly 0o700', async () => {
     const base = await freshTrustedBase('single-create');
     const dir = join(base, 'memory', 'def-1');
-    await ensureMemoryDir(dir, base, { mode: 0o700, expectedGid: null });
+    await ensureMemoryDir(dir, base, dirname(base), { mode: 0o700, expectedGid: null });
     const st = await lstat(dir);
     expect(st.isDirectory()).toBe(true);
     expect(st.mode & 0o7777).toBe(0o700);
@@ -88,8 +106,8 @@ describe('ensureMemoryDir — single-user contract', () => {
   it('is idempotent on a second call (still 0700, no throw)', async () => {
     const base = await freshTrustedBase('single-idempotent');
     const dir = join(base, 'memory', 'def-1');
-    await ensureMemoryDir(dir, base, { mode: 0o700, expectedGid: null });
-    await ensureMemoryDir(dir, base, { mode: 0o700, expectedGid: null });
+    await ensureMemoryDir(dir, base, dirname(base), { mode: 0o700, expectedGid: null });
+    await ensureMemoryDir(dir, base, dirname(base), { mode: 0o700, expectedGid: null });
     const st = await lstat(dir);
     expect(st.mode & 0o7777).toBe(0o700);
   });
@@ -97,7 +115,7 @@ describe('ensureMemoryDir — single-user contract', () => {
   it('creates nested parent segments (memory/<def>) under a fresh base, every segment 0700', async () => {
     const base = await freshTrustedBase('single-nested');
     const dir = join(base, 'memory', 'def-nested');
-    await ensureMemoryDir(dir, base, { mode: 0o700, expectedGid: null });
+    await ensureMemoryDir(dir, base, dirname(base), { mode: 0o700, expectedGid: null });
     const st = await lstat(dir);
     expect(st.isDirectory()).toBe(true);
     const memorySt = await lstat(join(base, 'memory'));
@@ -120,7 +138,7 @@ describe('ensureMemoryDir — single-user contract', () => {
     await symlink(targetDir, linkPath);
     let caught: unknown;
     try {
-      await ensureMemoryDir(linkPath, base, { mode: 0o700, expectedGid: null });
+      await ensureMemoryDir(linkPath, base, dirname(base), { mode: 0o700, expectedGid: null });
     } catch (err) {
       caught = err;
     }
@@ -129,11 +147,10 @@ describe('ensureMemoryDir — single-user contract', () => {
   });
 
   it('rejects a pre-created regular file at the path', async () => {
-    const base = freshTempDir('single-file');
+    const base = await freshTrustedBase('single-file');
     const filePath = join(base, 'not-a-dir');
-    await mkdir(base, { recursive: true });
     await writeFile(filePath, 'hello');
-    await expect(ensureMemoryDir(filePath, base, { mode: 0o700, expectedGid: null })).rejects.toThrow(
+    await expect(ensureMemoryDir(filePath, base, dirname(base), { mode: 0o700, expectedGid: null })).rejects.toThrow(
       MemoryDirVerificationError,
     );
   });
@@ -152,7 +169,7 @@ describe('ensureMemoryDir — single-user contract', () => {
     await chmod(dir, 0o755);
     let caught: unknown;
     try {
-      await ensureMemoryDir(dir, base, { mode: 0o700, expectedGid: null });
+      await ensureMemoryDir(dir, base, dirname(base), { mode: 0o700, expectedGid: null });
     } catch (err) {
       caught = err;
     }
@@ -188,7 +205,7 @@ describe('ensureMemoryDir — single-user contract', () => {
     const dir = join(base, 'memory', 'def-1');
     let caught: unknown;
     try {
-      await ensureMemoryDir(dir, base, { mode: 0o700, expectedGid: null });
+      await ensureMemoryDir(dir, base, dirname(base), { mode: 0o700, expectedGid: null });
     } catch (err) {
       caught = err;
     }
@@ -231,7 +248,7 @@ describe('ensureMemoryDir — single-user contract', () => {
     const dir = join(base, 'memory', 'def-1', 'some-cwd-slug-abc123');
     let caught: unknown;
     try {
-      await ensureMemoryDir(dir, base, { mode: 0o700, expectedGid: null });
+      await ensureMemoryDir(dir, base, dirname(base), { mode: 0o700, expectedGid: null });
     } catch (err) {
       caught = err;
     }
@@ -249,14 +266,12 @@ describe('ensureMemoryDir — single-user contract', () => {
   // })` walked straight through it and created the leaf for real inside
   // whatever the base symlink pointed at, passing the (leaf-only) check.
   //
-  // Re-verified after the base-absent fix (`mkdir(trustedBase, {
-  // recursive: true })` added ahead of this check): still rejects.
-  // `linkedBase` already exists (as a symlink resolving to a real
-  // directory), so the new recursive `mkdir` is a no-op and the
-  // `lstat`/`isSymbolicLink()` check below still sees the symlink.
+  // Since the trusted-root walker took over base creation, the base is one
+  // more segment of the ancestor walk from `parent` (the trusted root): the
+  // non-recursive `mkdir` hits EEXIST on the existing symlink and the
+  // segment's `lstat`/`isSymbolicLink()` check rejects it, naming the base.
   it('rejects when the trusted base itself is a symlink, naming the base', async () => {
-    const parent = freshTempDir('base-is-link-parent');
-    await mkdir(parent, { recursive: true });
+    const parent = await freshTrustedRoot('base-is-link-parent');
     const realBase = join(parent, 'real-base');
     await mkdir(realBase, { recursive: true });
     const linkedBase = join(parent, 'linked-base');
@@ -265,7 +280,7 @@ describe('ensureMemoryDir — single-user contract', () => {
     const dir = join(linkedBase, 'memory', 'def-1');
     let caught: unknown;
     try {
-      await ensureMemoryDir(dir, linkedBase, { mode: 0o700, expectedGid: null });
+      await ensureMemoryDir(dir, linkedBase, parent, { mode: 0o700, expectedGid: null });
     } catch (err) {
       caught = err;
     }
@@ -296,7 +311,7 @@ describe('ensureMemoryDir — single-user contract', () => {
     const dir = join(memoryPath, 'def-1');
     let caught: unknown;
     try {
-      await ensureMemoryDir(dir, base, { mode: 0o700, expectedGid: null });
+      await ensureMemoryDir(dir, base, dirname(base), { mode: 0o700, expectedGid: null });
     } catch (err) {
       caught = err;
     }
@@ -311,6 +326,39 @@ describe('ensureMemoryDir — single-user contract', () => {
     await expect(lstat(dir)).rejects.toThrow();
   });
 
+  // ADOPTION PIN for the trusted-root walker at the base-creation site
+  // (docs/design/session-data-path.md section 2): `<root>/_quick` is
+  // pre-planted as a symlink to `<root>/elsewhere` BEFORE the call. The old
+  // shape created the base with `mkdir(trustedBase, { recursive: true })`
+  // and then `lstat`-checked it, so this case was already rejected -- what
+  // the walker adds is that the rejection now happens INSIDE the ancestor
+  // walk, before any leaf segment is touched. Measured: replacing the
+  // ancestor `ensureTrustedDirChain(trustedRoot, trustedBase, ...)` call in
+  // `ensureMemoryDir` with a bare `mkdir(trustedBase, { recursive: true })`
+  // (no base lstat) fails this pin -- the leaf walk then starts at the
+  // symlinked base, `mkdir` follows the link, and `memory/def-1` lands
+  // inside `elsewhere` (the readdir assertion is what catches that).
+  it('adoption pin: rejects a pre-planted symlink at <root>/_quick and writes nothing through it', async () => {
+    const root = await freshTrustedRoot('adoption-link');
+    const elsewhere = join(root, 'elsewhere');
+    await mkdir(elsewhere);
+    const base = baseUnder(root);
+    await symlink(elsewhere, base);
+
+    const dir = join(base, 'memory', 'def-1');
+    let caught: unknown;
+    try {
+      await ensureMemoryDir(dir, base, root, { mode: 0o700, expectedGid: null });
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(MemoryDirVerificationError);
+    expect((caught as Error).message).toMatch(/is a symlink/);
+    expect((caught as Error).message).toContain(base);
+    expect((await lstat(base)).isSymbolicLink()).toBe(true);
+    expect(await readdir(elsewhere)).toEqual([]);
+  });
+
   it('boundary: a dir outside trustedBase is rejected as "escapes the trusted base"', async () => {
     const base = await freshTrustedBase('escape-base');
     const sibling = freshTempDir('escape-sibling');
@@ -318,7 +366,7 @@ describe('ensureMemoryDir — single-user contract', () => {
 
     let caught: unknown;
     try {
-      await ensureMemoryDir(sibling, base, { mode: 0o700, expectedGid: null });
+      await ensureMemoryDir(sibling, base, dirname(base), { mode: 0o700, expectedGid: null });
     } catch (err) {
       caught = err;
     }
@@ -336,10 +384,12 @@ describe('ensureMemoryDir — single-user contract', () => {
   // and fail with a raw ENOENT. `trustedBase` here is deliberately NEVER
   // created by the test -- `freshTempDir` only allocates a path.
   it('creates the trusted base itself when absent, then proceeds through the walk (leaf verified 0700)', async () => {
-    const base = freshTempDir('base-absent');
-    // No mkdir(base, ...) here -- this is the point of the test.
+    const root = await freshTrustedRoot('base-absent');
+    const base = baseUnder(root);
+    // No mkdir(base) here -- this is the point of the test. Only the root
+    // exists, as it does in production (the setup script creates it).
     const dir = join(base, 'memory', 'def-1');
-    await ensureMemoryDir(dir, base, { mode: 0o700, expectedGid: null });
+    await ensureMemoryDir(dir, base, root, { mode: 0o700, expectedGid: null });
 
     const baseSt = await lstat(base);
     expect(baseSt.isSymbolicLink()).toBe(false);
@@ -353,7 +403,7 @@ describe('ensureMemoryDir — single-user contract', () => {
   it('positive: creates <base>/memory/<defId>/<slug> fresh, every segment mode exactly 0700', async () => {
     const base = await freshTrustedBase('positive-fresh');
     const dir = join(base, 'memory', 'def-1', 'cwd-slug-abc');
-    await ensureMemoryDir(dir, base, { mode: 0o700, expectedGid: null });
+    await ensureMemoryDir(dir, base, dirname(base), { mode: 0o700, expectedGid: null });
 
     for (const segmentPath of [join(base, 'memory'), join(base, 'memory', 'def-1'), dir]) {
       const st = await lstat(segmentPath);
@@ -382,8 +432,7 @@ describe('ensureMemoryDir — multi-user contract (real fs, Linux only)', () => 
       console.warn('[skip] memfs is active in this process; run this file alone (`bun test memory-dir.test.ts`) to exercise the real setgid inheritance.');
       return;
     }
-    const base = freshTempDir('multi-user');
-    await mkdir(base, { recursive: true });
+    const base = await freshTrustedBase('multi-user');
     const chmodProc = Bun.spawn(['chmod', '2775', base], { stdout: 'pipe', stderr: 'pipe' });
     const chmodExit = await chmodProc.exited;
     if (chmodExit !== 0) {
@@ -400,7 +449,7 @@ describe('ensureMemoryDir — multi-user contract (real fs, Linux only)', () => 
     const prevUmask = process.umask(0o002);
     try {
       const dir = join(base, 'memory', 'def-1');
-      await ensureMemoryDir(dir, base, contract);
+      await ensureMemoryDir(dir, base, dirname(base), contract);
       const st = await lstat(dir);
       expect(st.mode & 0o7777).toBe(0o2775);
       expect(st.gid).toBe(process.getgid());
@@ -416,7 +465,7 @@ describe('ensureMemoryDir — multi-user contract (real fs, Linux only)', () => 
       const dir2 = join(base, 'memory', 'def-2');
       let caught: unknown;
       try {
-        await ensureMemoryDir(dir2, base, contract);
+        await ensureMemoryDir(dir2, base, dirname(base), contract);
       } catch (err) {
         caught = err;
       }
@@ -432,7 +481,7 @@ describe('ensureMemoryDir — multi-user contract (real fs, Linux only)', () => 
 
 describe('resolveMemoryDirPath', () => {
   it('worktree session -> <base>/memory/<def>', async () => {
-    const resolver = new SessionDataPathResolver('/test/config/repositories/myorg/myrepo');
+    const resolver = new SessionDataPathResolver('/test/config/repositories/myorg/myrepo', '/test/config');
     const dir = await resolveMemoryDirPath({
       session: { type: 'worktree', locationPath: '/test/worktree' },
       definitionId: 'def-1',
@@ -444,7 +493,7 @@ describe('resolveMemoryDirPath', () => {
   it('quick session with a real existing cwd -> <base>/memory/<def>/<slug-of-realpath>', async () => {
     const base = freshTempDir('quick-real-cwd');
     await mkdir(base, { recursive: true });
-    const resolver = new SessionDataPathResolver('/test/config/_quick');
+    const resolver = new SessionDataPathResolver('/test/config/_quick', '/test/config');
     const dir = await resolveMemoryDirPath({
       session: { type: 'quick', locationPath: base },
       definitionId: 'def-1',
@@ -458,7 +507,7 @@ describe('resolveMemoryDirPath', () => {
   // (calling `realpath` unconditionally) fails this pin with an unhandled
   // ENOENT -- measured.
   it('quick session with a nonexistent cwd falls back to computeQuickCwdSlug(cwd) directly', async () => {
-    const resolver = new SessionDataPathResolver('/test/config/_quick');
+    const resolver = new SessionDataPathResolver('/test/config/_quick', '/test/config');
     const dir = await resolveMemoryDirPath({
       session: { type: 'quick', locationPath: '/test/quick' },
       definitionId: 'def-1',
@@ -472,7 +521,7 @@ describe('resolveMemoryDirPath', () => {
 describe('prepareMemoryDir', () => {
   it('resolves, creates, and returns the memory dir for a worktree session', async () => {
     const base = await freshTrustedBase('prepare-worktree');
-    const resolver = new SessionDataPathResolver(base);
+    const resolver = new SessionDataPathResolver(base, dirname(base));
     const definition: EmbeddedAgentDefinition = {
       id: 'def-1',
       name: 'Local model',

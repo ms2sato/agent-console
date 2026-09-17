@@ -87,7 +87,7 @@ describe('WorkerManager', () => {
     });
   }
 
-  const defaultResolver = new SessionDataPathResolver(`${TEST_CONFIG_DIR}/_quick`);
+  const defaultResolver = new SessionDataPathResolver(`${TEST_CONFIG_DIR}/_quick`, TEST_CONFIG_DIR);
 
   const defaultAgentActivationParams = {
     sessionId: 'session-1',

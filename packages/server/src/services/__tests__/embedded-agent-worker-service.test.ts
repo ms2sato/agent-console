@@ -421,7 +421,7 @@ function setup(opts?: {
   const service = new EmbeddedAgentWorkerService({
     getSession: (id) => (id === session.id ? session : undefined),
     persistSession: persistSession as never,
-    getPathResolver: () => new SessionDataPathResolver(TEST_BASE_DIR),
+    getPathResolver: () => new SessionDataPathResolver(TEST_BASE_DIR, tmpdir()),
     getEmbeddedAgent: () => definition,
     resolveSpawnUsername: async () => USERNAME,
     mcpTokenRegistry: { mint: mint as never, revokeByWorker: revokeByWorker as never },
@@ -648,8 +648,8 @@ describe('EmbeddedAgentWorkerService.activate', () => {
       // attachmentRoots must include the messages dir so an embedded-agent
       // worker can Read a run_process outputMode: 'message' notification
       // file, which lives outside the session's locationPath.
-      attachmentRoots: [resolveUploadDir(), new SessionDataPathResolver(TEST_BASE_DIR).getMessagesDir()],
-      memoryDir: new SessionDataPathResolver(TEST_BASE_DIR).getMemoryDir('def-1', { kind: 'repository' }),
+      attachmentRoots: [resolveUploadDir(), new SessionDataPathResolver(TEST_BASE_DIR, tmpdir()).getMessagesDir()],
+      memoryDir: new SessionDataPathResolver(TEST_BASE_DIR, tmpdir()).getMemoryDir('def-1', { kind: 'repository' }),
     });
     expect(first.maxToolIterations).toBe(25);
   });
@@ -4524,7 +4524,7 @@ describe('EmbeddedAgentWorkerService — memory layer (epic #1636 Phase 2)', () 
   // `async () => undefined` at the call site and confirming the assertion
   // below fails.
   it('worktree session: composes init.context.memoryDir from the resolver and creates the dir (mode 0700) before spawn', async () => {
-    const expectedDir = new SessionDataPathResolver(TEST_BASE_DIR).getMemoryDir('def-1', {
+    const expectedDir = new SessionDataPathResolver(TEST_BASE_DIR, tmpdir()).getMemoryDir('def-1', {
       kind: 'repository',
     });
     let sawExpectedDir = false;
@@ -4547,7 +4547,7 @@ describe('EmbeddedAgentWorkerService — memory layer (epic #1636 Phase 2)', () 
     const h = setup({ quickSession: true });
     await h.service.activate(h.sessionId, h.workerId);
 
-    const resolver = new SessionDataPathResolver(TEST_BASE_DIR);
+    const resolver = new SessionDataPathResolver(TEST_BASE_DIR, tmpdir());
     const expectedSlug = computeQuickCwdSlug('/test/quick');
     const expectedDir = resolver.getMemoryDir('def-1', { kind: 'quick', cwdSlug: expectedSlug });
 
@@ -4560,7 +4560,7 @@ describe('EmbeddedAgentWorkerService — memory layer (epic #1636 Phase 2)', () 
   // confirmed by the same mutation `memory-dir.test.ts` measures directly
   // against `ensureMemoryDir` in isolation.
   it('a pre-created symlink at the memory path fails activation loudly and rolls back (no spawn, token revoked)', async () => {
-    const expectedDir = new SessionDataPathResolver(TEST_BASE_DIR).getMemoryDir('def-1', {
+    const expectedDir = new SessionDataPathResolver(TEST_BASE_DIR, tmpdir()).getMemoryDir('def-1', {
       kind: 'repository',
     });
     await mkdir(join(expectedDir, '..'), { recursive: true });
@@ -4629,7 +4629,7 @@ describe('EmbeddedAgentWorkerService — memory layer (epic #1636 Phase 2)', () 
     ].join('\n');
 
     it('PRESENT: the restored conversation head carries the memory header for the resolver\'s memoryDir', async () => {
-      const expectedDir = new SessionDataPathResolver(TEST_BASE_DIR).getMemoryDir('def-1', {
+      const expectedDir = new SessionDataPathResolver(TEST_BASE_DIR, tmpdir()).getMemoryDir('def-1', {
         kind: 'repository',
       });
       const h = setup({
