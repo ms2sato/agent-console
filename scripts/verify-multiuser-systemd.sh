@@ -595,7 +595,7 @@ ownership_polarity_arm() {
   grep -E '^  (PASS|FAIL|SKIP)  V[0-6] |^        |^  RESULT: |^Error: |^==> (systemctl restart|Done)' "$out" | cut -c1-220 | sed 's/^/  /' || true
   expect "7c: deploy #4 exits 1 (V0 FAIL, the worst code)" test "$rc" -eq 1
   expect "7c: V0 FAIL line names ${org_dir}" grep -qF "FAIL  V0 data-root-ownership: 1 walked directory(ies) under ${DATA_ROOT} not owned by agentconsole: ${org_dir}" "$out"
-  expect "7c: the chown remedy line names ${org_dir}" grep -qF "chown agentconsole:agent-console-users ${org_dir}" "$out"
+  expect "7c: the chown remedy line names ${org_dir}" grep -qF "chown -- agentconsole:agent-console-users ${org_dir}" "$out"
   local restarted=0
   grep -q '==> systemctl restart' "$out" && restarted=1
   check "7c: no '==> systemctl restart' line -- the deploy stopped before the restart" "$restarted"

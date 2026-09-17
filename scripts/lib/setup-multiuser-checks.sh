@@ -236,7 +236,9 @@ dist_artifact_present() {
 # A start point that does not exist yet (a fresh install, no `_quick`) is not
 # an error -- each is tested with `[ -d ]` and only the existing ones are
 # passed to find. Zero existing start points is OWNERSHIP_NO_TREES, not a
-# failure.
+# failure -- but only once <data-root> itself is confirmed to be an
+# accessible directory; an untraversable root is cannot-run, not
+# OWNERSHIP_NO_TREES (see the guard at the top of the function).
 #
 # Classification is by POSITION on the path relative to <data-root> (prefix
 # stripped, no realpath -- a symlink at a walked position is the walker's
@@ -260,23 +262,43 @@ data_root_ownership() {
     return 2
   fi
 
+  # Fail closed (CodeRabbit review on this PR) when the data root itself is
+  # not traversable by the caller: without this, a mis-owned or unreadable
+  # <data-root> makes BOTH `[ -d "$quick_dir" ]` and `[ -d "$repos_dir" ]`
+  # return false (a `[ -d ]` on any path under an untraversable parent fails
+  # the same way as a path that does not exist), so the zero-start-points
+  # branch below would misreport OWNERSHIP_NO_TREES -- "nothing to check" --
+  # for what is actually "could not check". This is a distinct, narrower
+  # case than an existing child start point failing mid-walk (already
+  # handled by find_rc below): it is the untraversable-ROOT case, checked
+  # before start-point discovery even begins.
+  if [ ! -d "$root" ] || [ ! -x "$root" ]; then
+    echo "cannot run: data root is not an accessible directory: ${root}" >&2
+    return 2
+  fi
+
   # Mirror of docs/multi-user-setup-guide.md's "Data-root ownership
   # pre-deploy check" walked-position list -- that section is the single
-  # writer; this variable applies it mechanically. One POSIX ERE per line,
-  # each anchored, tested against the path relative to <data-root>.
-  local walked_patterns='^_quick$
-^repositories$
-^repositories/[^/]+$
-^repositories/[^/]+/[^/]+$
-^repositories/[^/]+/[^/]+/worktrees$
-^(_quick|repositories/[^/]+/[^/]+)/(outputs|memos|messages|memory)$
-^(_quick|repositories/[^/]+/[^/]+)/outputs/[^/]+$
-^(_quick|repositories/[^/]+/[^/]+)/messages/[^/]+(/[^/]+)?$
-^(_quick|repositories/[^/]+/[^/]+)/memory/[^/]+$
-^_quick/memory/[^/]+/[^/]+$'
-  local patterns_tmp
-  patterns_tmp="$(mktemp)"
-  printf '%s\n' "$walked_patterns" >"$patterns_tmp"
+  # writer; this ONE array applies it mechanically. Each element is a POSIX
+  # ERE, anchored, tested against the path relative to <data-root> via
+  # bash's own `[[ =~ ]]` (never grep -- see the NUL-safety note below).
+  # Dialect note: `[[ =~ ]]` uses the shell's own ERE (glibc regex, POSIX
+  # extended), not a bash-specific syntax -- these ten patterns use only
+  # `^ $ [^/]+ ( | ) ?`, which every one of these constructs means
+  # identically under `grep -E` and under bash's `=~`, so switching
+  # matchers here changes nothing about which paths match.
+  local -a walked_patterns=(
+    '^_quick$'
+    '^repositories$'
+    '^repositories/[^/]+$'
+    '^repositories/[^/]+/[^/]+$'
+    '^repositories/[^/]+/[^/]+/worktrees$'
+    '^(_quick|repositories/[^/]+/[^/]+)/(outputs|memos|messages|memory)$'
+    '^(_quick|repositories/[^/]+/[^/]+)/outputs/[^/]+$'
+    '^(_quick|repositories/[^/]+/[^/]+)/messages/[^/]+(/[^/]+)?$'
+    '^(_quick|repositories/[^/]+/[^/]+)/memory/[^/]+$'
+    '^_quick/memory/[^/]+/[^/]+$'
+  )
 
   local quick_dir="${root}/_quick"
   local repos_dir="${root}/repositories"
@@ -285,7 +307,6 @@ data_root_ownership() {
   [ -d "$repos_dir" ] && start_points+=("$repos_dir")
 
   if [ "${#start_points[@]}" -eq 0 ]; then
-    rm -f "$patterns_tmp"
     echo "OWNERSHIP_NO_TREES"
     echo "INFO: neither '${quick_dir}' nor '${repos_dir}' exists yet -- nothing to check" >&2
     return 0
@@ -295,23 +316,54 @@ data_root_ownership() {
   out_tmp="$(mktemp)"
   err_tmp="$(mktemp)"
   find_rc=0
-  "$find_cmd" "${start_points[@]}" -maxdepth 5 \( -path '*/worktrees/*' -prune \) -o -type d ! -user "$service_user" -print >"$out_tmp" 2>"$err_tmp" || find_rc=$?
+  # -print0 / read -d '' (CodeRabbit review on this PR), not -print / plain
+  # `read`: a directory name containing an embedded newline would otherwise
+  # split into two records at the newline-based read boundary, so a walked
+  # position's own relative-path string could arrive at the pattern match
+  # already fragmented -- and grep's line-oriented matching over that same
+  # fragment compounds it, since grep's ^/$ anchor per LINE, not per
+  # record. NUL is the one byte a POSIX filename cannot contain, so it is
+  # the only safe delimiter; matching then goes through bash's `[[ =~ ]]`
+  # (whole-string anchors, embedded newlines are just characters) instead
+  # of grep, for the same reason.
+  "$find_cmd" "${start_points[@]}" -maxdepth 5 \( -path '*/worktrees/*' -prune \) -o -type d ! -user "$service_user" -print0 >"$out_tmp" 2>"$err_tmp" || find_rc=$?
 
   # <data-root>'s own group (never a literal) for the chown remedy lines.
   local group
   group="$(stat -c %G "$root" 2>/dev/null)" || group="$service_user"
 
   local misowned_count=0 misowned_list="" remedy_list="" info_list="" first_three=""
-  local path rel
-  while IFS= read -r path; do
+  local path rel pattern matched remedy q_path
+  while IFS= read -r -d '' path; do
     [ -n "$path" ] || continue
     rel="${path#"${root}"/}"
-    if grep -Eq -f "$patterns_tmp" <<<"$rel"; then
+    matched=0
+    for pattern in "${walked_patterns[@]}"; do
+      if [[ "$rel" =~ $pattern ]]; then
+        matched=1
+        break
+      fi
+    done
+    if [ "$matched" -eq 1 ]; then
       misowned_count=$((misowned_count + 1))
       misowned_list="${misowned_list}${path}"$'\n'
-      remedy_list="${remedy_list}chown ${service_user}:${group} ${path}"$'\n'
+      # %q (CodeRabbit review on this PR): the remedy is advisory text an
+      # operator may copy-paste; a raw path containing a space or shell
+      # metacharacter would otherwise let the shell split or reinterpret it
+      # when run verbatim. `--` stops `chown` from reading a leading `-` in
+      # the path as an option. `%q` is bash's OWN quoting form, and this
+      # whole script family (this lib, the deploy script, the operator's own
+      # login shell) is bash -- so the guide's "run the printed chown"
+      # instruction stays literally true: paste the remedy line as-is.
+      printf -v remedy 'chown -- %q:%q %q' "$service_user" "$group" "$path"
+      remedy_list="${remedy_list}${remedy}"$'\n'
       if [ "$misowned_count" -le 3 ]; then
-        first_three="${first_three:+${first_three}, }${path}"
+        # Also %q'd: an embedded newline in a raw path here would make the
+        # ONE-LINE stderr summary below span multiple physical lines,
+        # breaking verify_check's `head -n 1 "$err"` contract (the rest of
+        # the summary would silently go missing from the deploy screen).
+        printf -v q_path '%q' "$path"
+        first_three="${first_three:+${first_three}, }${q_path}"
       fi
     else
       info_list="${info_list}INFO: ignored (not walked): ${path}"$'\n'
@@ -331,13 +383,13 @@ data_root_ownership() {
       echo "a mismatch that reaches the running server is logged as: Trusted directory segment has unexpected owner uid=<uid> (expected <service-uid>): <path>"
       printf '%s' "$info_list"
     } >&2
-    rm -f "$out_tmp" "$err_tmp" "$patterns_tmp"
+    rm -f "$out_tmp" "$err_tmp"
     return 1
   fi
 
   if [ "$find_rc" -ne 0 ]; then
     echo "cannot run: find failed: $(head -n 1 "$err_tmp")" >&2
-    rm -f "$out_tmp" "$err_tmp" "$patterns_tmp"
+    rm -f "$out_tmp" "$err_tmp"
     return 2
   fi
 
@@ -345,7 +397,7 @@ data_root_ownership() {
   if [ -n "$info_list" ]; then
     printf '%s' "$info_list" >&2
   fi
-  rm -f "$out_tmp" "$err_tmp" "$patterns_tmp"
+  rm -f "$out_tmp" "$err_tmp"
   return 0
 }
 

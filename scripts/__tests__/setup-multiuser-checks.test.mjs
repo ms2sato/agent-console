@@ -2,7 +2,7 @@ import { describe, it, expect } from 'bun:test';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve, join } from 'node:path';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync, existsSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync, existsSync, chmodSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -952,9 +952,9 @@ describe('setup-multiuser-checks: data-root-ownership (V0, Issue #1754)', () => 
       const stdoutLines = r.stdout.replace(/\n$/, '').split('\n');
       expect(stdoutLines.slice(1)).toEqual([p1, p2, p3]);
       const group = rootGroup(root);
-      expect(r.stderr).toContain(`chown ${SVC}:${group} ${p1}`);
-      expect(r.stderr).toContain(`chown ${SVC}:${group} ${p2}`);
-      expect(r.stderr).toContain(`chown ${SVC}:${group} ${p3}`);
+      expect(r.stderr).toContain(`chown -- ${SVC}:${group} ${p1}`);
+      expect(r.stderr).toContain(`chown -- ${SVC}:${group} ${p2}`);
+      expect(r.stderr).toContain(`chown -- ${SVC}:${group} ${p3}`);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -1069,7 +1069,7 @@ describe('setup-multiuser-checks: data-root-ownership (V0, Issue #1754)', () => 
         '!',
         '-user',
         SVC,
-        '-print',
+        '-print0',
       ]);
       const pruneIdx = argv.indexOf('-prune');
       const typeIdx = argv.indexOf('-type');
@@ -1092,25 +1092,90 @@ describe('setup-multiuser-checks: data-root-ownership (V0, Issue #1754)', () => 
       rmSync(root, { recursive: true, force: true });
     }
   });
+
+  it('data root itself does not exist -> cannot run, rc 2, NOT OWNERSHIP_NO_TREES (CodeRabbit review: an untraversable root must not read as "nothing to check")', () => {
+    const parent = mkdtempSync(join(tmpdir(), 'v0-ownership-'));
+    try {
+      const root = join(parent, 'does-not-exist');
+      const r = v0(root, { FAKE_FIND_LINES: '' });
+      expect(r.status).toBe(2);
+      expect(r.stderr).toContain('cannot run: data root is not an accessible directory');
+      expect(markerOf(r)).not.toBe('OWNERSHIP_NO_TREES');
+    } finally {
+      rmSync(parent, { recursive: true, force: true });
+    }
+  });
+
+  it('data root exists but is not traversable by the caller (no execute bit) -> cannot run, rc 2, NOT OWNERSHIP_NO_TREES', () => {
+    const root = mkdtempSync(join(tmpdir(), 'v0-ownership-'));
+    try {
+      chmodSync(root, 0o644);
+      const r = v0(root, { FAKE_FIND_LINES: '' });
+      expect(r.status).toBe(2);
+      expect(r.stderr).toContain('cannot run: data root is not an accessible directory');
+      expect(markerOf(r)).not.toBe('OWNERSHIP_NO_TREES');
+    } finally {
+      chmodSync(root, 0o755);
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('a walked directory whose name contains an embedded newline is still classified correctly (polarity: -print / plain read would fragment it at the newline)', () => {
+    // FAKE_FIND_SINGLE_RAW is the one-entry escape hatch for a path
+    // FAKE_FIND_LINES cannot represent (see the fixture's header): it is
+    // emitted verbatim, embedded newline included, NUL-terminated -- the
+    // exact shape a real `find ... -print0` would produce for this
+    // directory. "repositories/<weirdName>" matches `^repositories/[^/]+$`
+    // only if the WHOLE relative path (embedded newline included) is
+    // treated as one opaque string, which is what -print0 / read -d '' /
+    // `[[ =~ ]]` guarantee and what -print / plain `read` do not.
+    const root = makeRoot('repositories');
+    try {
+      const weirdName = 'org\nrepo';
+      const weirdDir = join(root, 'repositories', weirdName);
+      const r = v0(root, { FAKE_FIND_SINGLE_RAW: weirdDir });
+      expect(r.status).toBe(1);
+      expect(markerOf(r)).toBe('OWNERSHIP_MISOWNED:1');
+      const stdoutLines = r.stdout.replace(/\n$/, '').split('\n');
+      expect(stdoutLines.slice(1).join('\n')).toBe(weirdDir);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 });
 
-// SIGPIPE-class safety for V0 under the caller's `set -o pipefail`, the same
-// discipline as the V1 / V6 section above: 300 printed paths, none walked,
-// counted exactly via a whole-input `while read` loop (never a `grep -q` at
-// a pipeline tail) rather than truncated by an early-exiting consumer.
-describe('setup-multiuser-checks: pipefail-safety of V0 on inputs larger than a pipe buffer', () => {
+// V0 has NO internal pipe (find's output goes to a temp file, read back via
+// plain `<` redirection, never `cmd | while read`), so it cannot SIGPIPE
+// the way V1 / V6's `printf ... | grep` pipelines could -- this is a
+// structural property of the design, not something this test needs to
+// prove by input size. What this test actually measures (CodeRabbit review
+// on this PR flagged the original ~12 KiB fixture as too small to cross a
+// 64 KiB pipe buffer; investigating that showed the real reach is
+// different): whole-file consumption survives `set -o pipefail`, and
+// (measured directly: mutating the classification loop from `done
+// <"$out_tmp"` to `cat "$out_tmp" | while read ...; done` -- the classic
+// bash subshell-variable-loss bug -- makes this exact test fail, since
+// `misowned_count` / `info_list` updated inside the piped subshell never
+// escape back to the caller) it would catch a future refactor that
+// reintroduces a pipe here. The padding below additionally exceeds 64 KiB
+// per CodeRabbit's suggestion, so the fixture also covers the historical
+// V1/V6-shaped SIGPIPE class if a future change ever adds a real pipe.
+describe('setup-multiuser-checks: pipefail-safety of V0 (whole-file consumption; no internal pipe to SIGPIPE)', () => {
   const RUN_UNDER_PIPEFAIL = resolve(__dirname, 'fixtures', 'run-lib-under-pipefail.sh');
   const FAKE_FIND = resolve(__dirname, 'fixtures', 'fake-find.sh');
 
-  it('300 printed non-walked paths are counted exactly (OWNERSHIP_OK, not truncated) under pipefail', () => {
+  it('300 printed non-walked paths (padded past 64 KiB) are counted exactly (OWNERSHIP_OK, not truncated) under pipefail', () => {
     const root = mkdtempSync(join(tmpdir(), 'v0-pipefail-'));
     try {
       mkdirSync(join(root, 'repositories'), { recursive: true });
-      const lines = Array.from({ length: 300 }, (_, i) => join(root, 'qa', `nonwalked-${i}`));
+      const padding = 'x'.repeat(200);
+      const lines = Array.from({ length: 300 }, (_, i) => join(root, 'qa', `nonwalked-${i}-${padding}`));
+      const findInput = lines.join('\n');
+      expect(findInput.length).toBeGreaterThan(64 * 1024);
       const r = spawnSync(
         RUN_UNDER_PIPEFAIL,
         ['data-root-ownership', root, 'agentconsole', FAKE_FIND],
-        { encoding: 'utf-8', env: { ...process.env, FAKE_FIND_LINES: lines.join('\n') } },
+        { encoding: 'utf-8', env: { ...process.env, FAKE_FIND_LINES: findInput } },
       );
       expect(r.status).toBe(0);
       expect(markerOf(r)).toBe('OWNERSHIP_OK');

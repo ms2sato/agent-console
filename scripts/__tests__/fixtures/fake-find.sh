@@ -7,7 +7,17 @@
 # answers come from environment variables the test sets on the child process:
 #
 #   FAKE_FIND_LINES        newline-separated absolute paths to print on
-#                          stdout (unset/empty prints nothing)
+#                          stdout, EACH RE-EMITTED NUL-TERMINATED (matching
+#                          the production `find ... -print0` this fixture
+#                          stands in for); unset/empty prints nothing. A
+#                          path containing a literal newline cannot be
+#                          represented through this newline-delimited input
+#                          format -- use FAKE_FIND_SINGLE_RAW for that case
+#   FAKE_FIND_SINGLE_RAW   emits its value VERBATIM (embedded newlines
+#                          preserved, no per-line splitting) followed by
+#                          exactly one NUL terminator -- the one-entry
+#                          escape hatch for a path containing a literal
+#                          newline, which FAKE_FIND_LINES cannot represent
 #   FAKE_FIND_FAIL=1       exit 1 immediately with a stderr line, no stdout
 #                          (find itself could not run)
 #   FAKE_FIND_FAIL_AFTER=1 print FAKE_FIND_LINES, THEN exit 1 with a stderr
@@ -29,7 +39,12 @@ if [ "${FAKE_FIND_FAIL:-0}" = "1" ]; then
   exit 1
 fi
 if [ -n "${FAKE_FIND_LINES:-}" ]; then
-  printf '%s\n' "$FAKE_FIND_LINES"
+  while IFS= read -r line; do
+    printf '%s\0' "$line"
+  done <<<"$FAKE_FIND_LINES"
+fi
+if [ -n "${FAKE_FIND_SINGLE_RAW:-}" ]; then
+  printf '%s\0' "$FAKE_FIND_SINGLE_RAW"
 fi
 if [ "${FAKE_FIND_FAIL_AFTER:-0}" = "1" ]; then
   echo "fake-find: permission denied after hits (simulated)" >&2
