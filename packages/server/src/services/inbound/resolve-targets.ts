@@ -327,9 +327,10 @@ async function resolveIssueLabeledTargets(
       // -- e.g. a worktree session whose only worker is a `git-diff`
       // worker. Such a session passes the check above but
       // AgentWorkerHandler.handle() can never deliver to it (no
-      // `agent`-type worker to resolve a workerId from). Check the same
-      // single-writer predicate handle() uses, so this routing decision and
-      // the actual delivery capability never drift apart.
+      // agent-shaped worker -- PTY agent or embedded-agent -- to resolve a
+      // workerId from). Check the same single-writer predicate handle()
+      // uses, so this routing decision and the actual delivery capability
+      // never drift apart.
       if (!canDeliverToAgentWorker(liveSession)) {
         logger.info(
           { repositoryId: repository.id, orchestratorSessionId },

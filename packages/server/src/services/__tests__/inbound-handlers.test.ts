@@ -3,6 +3,8 @@ import type { InboundSystemEvent, InboundEventSummary } from '@agent-console/sha
 import { createInboundHandlers } from '../inbound/handlers.js';
 import type { InboundHandlerDependencies } from '../inbound/handlers.js';
 import { buildWorktreeSession } from '../../__tests__/utils/build-test-data.js';
+import { writePtyNotification } from '../../lib/pty-notification.js';
+import type { PtyNotificationParams, WritePtyNotificationParams } from '../../lib/pty-notification.js';
 
 function createReviewCommentEvent(): InboundSystemEvent {
   return {
@@ -58,18 +60,35 @@ const mockSessionOverrides = {
   ],
 };
 
+/**
+ * Fake `deliverWorkerNotification` that applies the REAL PTY branch
+ * (`writePtyNotification`, with `writeInput` bound to a capture array), so
+ * the bytes it produces are byte-for-byte the same as production's PTY
+ * branch (SessionManager.deliverWorkerNotification's `isPtyBackedWorker`
+ * branch, session-manager.ts). Re-points this file's tests at the seam
+ * introduced by Issue #1739 without losing byte-level parity coverage.
+ */
+function createPtyBranchSessionManager(writes: string[]): InboundHandlerDependencies['sessionManager'] {
+  return {
+    getSession: mock(() => buildWorktreeSession(mockSessionOverrides)),
+    deliverWorkerNotification: mock((_sessionId: string, _workerId: string, params: PtyNotificationParams) => {
+      writePtyNotification({
+        ...params,
+        writeInput: (data: string) => {
+          writes.push(data);
+        },
+      } as WritePtyNotificationParams);
+      return Promise.resolve({ ok: true as const });
+    }),
+  };
+}
+
 function createAgentHandlerWithCapture(): {
   agentHandler: ReturnType<typeof createInboundHandlers>[number];
   getCapturedMessage: () => string;
 } {
-  let capturedMessage = '';
-  const mockSessionManager: InboundHandlerDependencies['sessionManager'] = {
-    getSession: mock(() => buildWorktreeSession(mockSessionOverrides)),
-    writeWorkerInput: mock((_sessionId: string, _workerId: string, data: string) => {
-      capturedMessage = data;
-      return true;
-    }),
-  };
+  const writes: string[] = [];
+  const mockSessionManager = createPtyBranchSessionManager(writes);
 
   const handlers = createInboundHandlers({
     sessionManager: mockSessionManager,
@@ -77,7 +96,7 @@ function createAgentHandlerWithCapture(): {
   });
   return {
     agentHandler: handlers.find((h) => h.handlerId === 'agent-worker')!,
-    getCapturedMessage: () => capturedMessage,
+    getCapturedMessage: () => writes[0] ?? '',
   };
 }
 
@@ -118,9 +137,12 @@ describe('AgentWorkerHandler', () => {
   });
 
   it('returns false for unrecognized event type', async () => {
+    const deliverWorkerNotification = mock((_sessionId: string, _workerId: string, _params: PtyNotificationParams) =>
+      Promise.resolve({ ok: true as const }),
+    );
     const mockSessionManager: InboundHandlerDependencies['sessionManager'] = {
       getSession: mock(() => buildWorktreeSession(mockSessionOverrides)),
-      writeWorkerInput: mock(),
+      deliverWorkerNotification,
     };
 
     const handlers = createInboundHandlers({
@@ -142,20 +164,14 @@ describe('AgentWorkerHandler', () => {
     const result = await agentHandler.handle(invalidEvent, { sessionId: 'session-1' });
 
     expect(result).toBe(false);
-    expect(mockSessionManager.writeWorkerInput).not.toHaveBeenCalled();
+    expect(deliverWorkerNotification).not.toHaveBeenCalled();
   });
 
   it('sends Enter keystroke separately after a 150ms delay', async () => {
     jest.useFakeTimers();
     try {
       const writtenData: string[] = [];
-      const mockSessionManager: InboundHandlerDependencies['sessionManager'] = {
-        getSession: mock(() => buildWorktreeSession(mockSessionOverrides)),
-        writeWorkerInput: mock((_sessionId: string, _workerId: string, data: string) => {
-          writtenData.push(data);
-          return true;
-        }),
-      };
+      const mockSessionManager = createPtyBranchSessionManager(writtenData);
 
       const handlers = createInboundHandlers({
         sessionManager: mockSessionManager,

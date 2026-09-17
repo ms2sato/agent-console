@@ -232,6 +232,24 @@ describe('resolveTargets: designated-session fallback (#1661)', () => {
   // `issue:labeled routing` describe block's `AGENT_WORKER` convention).
   const AGENT_WORKER = { id: 'worker-1', type: 'agent' as const, name: 'Claude', agentId: 'claude-code-builtin', activated: true, createdAt: '2024-01-01T00:00:00Z' };
 
+  // Embedded-agent worker fixture (Issue #1739): `canDeliverToAgentWorker`
+  // now accepts an embedded-only session too (session.workers.some(
+  // canReceiveSessionMessages), which is true for `agent` AND
+  // `embedded-agent`), so a session whose ONLY worker is embedded-agent
+  // must count as live+deliverable for the fallback decision, same as an
+  // AGENT_WORKER session.
+  const EMBEDDED_WORKER = {
+    id: 'worker-embedded-1',
+    type: 'embedded-agent' as const,
+    name: 'Embedded',
+    embeddedAgentId: 'def-1',
+    activated: false,
+    autoCompaction: true,
+    reasoningEffort: null,
+    hasParameterOverride: false,
+    createdAt: '2024-01-01T00:00:00Z',
+  };
+
   function buildDesignatedSession(overrides: Partial<WorktreeSession> = {}): WorktreeSession {
     return buildWorktreeSession({
       id: 'designated-1',
@@ -250,6 +268,29 @@ describe('resolveTargets: designated-session fallback (#1661)', () => {
     });
     const nonMatchingSession = buildWorktreeSession({ id: 'session-1', repositoryId: 'repo-1', worktreeId: 'feature-branch' });
     const designatedSession = buildDesignatedSession();
+    const deps: TargetResolverDependencies = {
+      getSessions: () => [nonMatchingSession, designatedSession],
+      getRepository: () => repository,
+      getAllRepositories: () => [repository],
+      getOrgRepoFromPath: mock(() => Promise.resolve('owner/repo')),
+    };
+
+    const targets = await resolveTargets(createEvent({ branch: 'main' }), deps);
+
+    expect(targets).toEqual([{ sessionId: 'designated-1', fallback: true }]);
+  });
+
+  it('positive (Issue #1739 twin): branch matches zero sessions, designated session running with an EMBEDDED-ONLY worker -> sole fallback target', async () => {
+    // POLARITY: fails on main (pre-#1739 `canDeliverToAgentWorker` excluded
+    // embedded-only sessions, so `resolveDesignatedFallbackSessionIds`
+    // dropped this designated session and the fallback was empty).
+    const repository = buildRepositoryWithDesignation({
+      id: 'repo-1',
+      path: '/path/to/repo',
+      orchestratorSessionIds: ['designated-1'],
+    });
+    const nonMatchingSession = buildWorktreeSession({ id: 'session-1', repositoryId: 'repo-1', worktreeId: 'feature-branch' });
+    const designatedSession = buildDesignatedSession({ workers: [EMBEDDED_WORKER] });
     const deps: TargetResolverDependencies = {
       getSessions: () => [nonMatchingSession, designatedSession],
       getRepository: () => repository,
@@ -390,6 +431,45 @@ describe('resolveTargets: designated-session fallback (#1661)', () => {
       { sessionId: 'session-1' },
       { sessionId: 'vacuously-running-parent' },
       { sessionId: 'designated-1', fallback: true },
+    ]);
+  });
+
+  it('boundary (Issue #1739 twin): matched session has a parent that is running with an EMBEDDED-ONLY worker -> designated session NOT added (the embedded parent counts as live+deliverable)', async () => {
+    // POLARITY: fails on main (pre-#1739 `canDeliverToAgentWorker` checked
+    // `worker.type === 'agent'` only, so an embedded-only parent read as
+    // NOT deliverable and the designated session was incorrectly added as
+    // a fallback alongside it).
+    const repository = buildRepositoryWithDesignation({
+      id: 'repo-1',
+      path: '/path/to/repo',
+      orchestratorSessionIds: ['designated-1'],
+    });
+    const matchedSession = buildWorktreeSession({
+      id: 'session-1',
+      repositoryId: 'repo-1',
+      worktreeId: 'feature',
+      parentSessionId: 'embedded-parent',
+    });
+    const embeddedParent = buildWorktreeSession({
+      id: 'embedded-parent',
+      repositoryId: 'repo-1',
+      worktreeId: 'main',
+      activationState: 'running',
+      workers: [EMBEDDED_WORKER],
+    });
+    const designatedSession = buildDesignatedSession();
+    const deps: TargetResolverDependencies = {
+      getSessions: () => [matchedSession, embeddedParent, designatedSession],
+      getRepository: () => repository,
+      getAllRepositories: () => [repository],
+      getOrgRepoFromPath: mock(() => Promise.resolve('owner/repo')),
+    };
+
+    const targets = await resolveTargets(createEvent({ branch: 'feature' }), deps);
+
+    expect(targets).toEqual([
+      { sessionId: 'session-1' },
+      { sessionId: 'embedded-parent' },
     ]);
   });
 
@@ -601,6 +681,20 @@ describe('resolveTargets: issue:labeled routing', () => {
   // reason build their `workers` array explicitly instead.
   const AGENT_WORKER = { id: 'worker-1', type: 'agent' as const, name: 'Claude', agentId: 'claude-code-builtin', activated: true, createdAt: '2024-01-01T00:00:00Z' };
 
+  // Embedded-agent worker fixture (Issue #1739) -- see the sibling fallback
+  // describe block's identical const for the rationale.
+  const EMBEDDED_WORKER = {
+    id: 'worker-embedded-1',
+    type: 'embedded-agent' as const,
+    name: 'Embedded',
+    embeddedAgentId: 'def-1',
+    activated: false,
+    autoCompaction: true,
+    reasoningEffort: null,
+    hasParameterOverride: false,
+    createdAt: '2024-01-01T00:00:00Z',
+  };
+
   function createOrchestratorSession(overrides: Partial<WorktreeSession> = {}): WorktreeSession {
     return buildWorktreeSession({
       id: 'orchestrator-session-1',
@@ -629,6 +723,41 @@ describe('resolveTargets: issue:labeled routing', () => {
     const targets = await resolveTargets(createIssueLabeledEvent(), deps);
 
     expect(targets).toEqual([{ sessionId: 'orchestrator-session-1' }]);
+  });
+
+  it('routes to the designated Orchestrator session (Issue #1739 twin: EMBEDDED-ONLY worker) when the repository matches and the label matches', async () => {
+    // POLARITY: fails on main (pre-#1739 `canDeliverToAgentWorker` excluded
+    // embedded-only sessions from `resolveIssueLabeledTargets`'s
+    // deliverability check, dropping this session and logging "...has no
+    // agent worker to deliver to" instead of routing to it).
+    const repository = buildRepositoryWithDesignation({
+      id: 'repo-1',
+      path: '/path/to/repo',
+      orchestratorSessionIds: ['orchestrator-session-1'],
+      issueTriggerLabels: 'orchestrator-trigger',
+    });
+    const orchestratorSession = createOrchestratorSession({ workers: [EMBEDDED_WORKER] });
+    const deps: TargetResolverDependencies = {
+      getSessions: () => [orchestratorSession],
+      getRepository: () => repository,
+      getAllRepositories: () => [repository],
+      getOrgRepoFromPath: mock(() => Promise.resolve('owner/repo')),
+    };
+
+    const infoSpy = spyOn(rootLogger, 'info');
+    try {
+      const targets = await resolveTargets(createIssueLabeledEvent(), deps);
+
+      expect(targets).toEqual([{ sessionId: 'orchestrator-session-1' }]);
+
+      const noAgentWorkerCall = infoSpy.mock.calls.find(
+        (call) =>
+          call[1] === 'issue:labeled event matched repository but the designated orchestrator session has no agent worker to deliver to'
+      );
+      expect(noAgentWorkerCall).toBeUndefined();
+    } finally {
+      infoSpy.mockRestore();
+    }
   });
 
   it('does not fan out to other active sessions for the repository (unlike every other event type)', async () => {
@@ -965,6 +1094,64 @@ describe('resolveTargets: issue:labeled routing', () => {
       expect(matchingCall?.[0]).toMatchObject({
         repositoryId: 'repo-1',
         orchestratorSessionId: 'orchestrator-session-1',
+      });
+    } finally {
+      infoSpy.mockRestore();
+    }
+  });
+
+  // -------------------------------------------------------------------
+  // Known boundary (Issue #1739, NOT changed by this PR): a session whose
+  // PTY worker(s) are all inactive AND that also carries an embedded-agent
+  // worker still reads `activationState: 'hibernated'`, because
+  // `computeActivationState` (session-converter-service.ts) reads PTY
+  // workers only -- it has no awareness of embedded-agent workers, which
+  // have no PTY to hibernate in the first place. So this session is
+  // skipped by the "not running" check below even though its embedded
+  // worker could, in principle, receive the notification. Out of scope
+  // here; pinned so a future change to `computeActivationState` that
+  // silently alters this boundary is caught.
+  // -------------------------------------------------------------------
+
+  it('boundary (Issue #1739, out of scope): designated session hibernated with a PTY (inactive) worker PLUS an embedded-agent worker -> still dropped as "not running"', async () => {
+    const repository = buildRepositoryWithDesignation({
+      id: 'repo-1',
+      path: '/path/to/repo',
+      orchestratorSessionIds: ['orchestrator-session-1'],
+      issueTriggerLabels: 'orchestrator-trigger',
+    });
+    const hibernatedMixedSession = buildWorktreeSession({
+      id: 'orchestrator-session-1',
+      repositoryId: 'repo-1',
+      worktreeId: 'main',
+      activationState: 'hibernated',
+      workers: [
+        { id: 'worker-1', type: 'agent', name: 'Claude', agentId: 'claude-code-builtin', activated: false, createdAt: '2024-01-01T00:00:00Z' },
+        EMBEDDED_WORKER,
+      ],
+    });
+    const deps: TargetResolverDependencies = {
+      getSessions: () => [hibernatedMixedSession],
+      getRepository: () => repository,
+      getAllRepositories: () => [repository],
+      getOrgRepoFromPath: mock(() => Promise.resolve('owner/repo')),
+    };
+
+    const infoSpy = spyOn(rootLogger, 'info');
+    try {
+      const targets = await resolveTargets(createIssueLabeledEvent(), deps);
+
+      expect(targets).toEqual([]);
+
+      const matchingCall = infoSpy.mock.calls.find(
+        (call) =>
+          call[1] === 'issue:labeled event matched repository but the designated orchestrator session is not running'
+      );
+      expect(matchingCall).toBeDefined();
+      expect(matchingCall?.[0]).toMatchObject({
+        repositoryId: 'repo-1',
+        orchestratorSessionId: 'orchestrator-session-1',
+        activationState: 'hibernated',
       });
     } finally {
       infoSpy.mockRestore();

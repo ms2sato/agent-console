@@ -47,7 +47,7 @@ Agent Console Server
 │              Event Handlers                  │
 ├─────────────┬─────────────┬────────────────┤
 │ AgentWorker │ DiffWorker  │ UI Notifier    │
-│ (PTY write) │ (refresh)   │ (WebSocket)    │
+│ (notify)    │ (refresh)   │ (WebSocket)    │
 └─────────────┴─────────────┴────────────────┘
 ```
 
@@ -147,35 +147,44 @@ interface EventTarget {
 
 ### Built-in Handlers
 
-#### 1. AgentWorkerHandler (PTY Write)
+#### 1. AgentWorkerHandler (agent-shaped worker notification)
 
-Writes formatted message to Agent Worker's PTY stdin.
+Delivers a structured `[inbound:<type>]` notification to the session's agent-shaped worker — a PTY `agent` worker or an `embedded-agent` worker — through `SessionManager.deliverWorkerNotification`, the kind-aware seam shared with timers, conditional wakeups, `send_session_message` and `run_process` output. The handler never branches on worker kind itself (Issue [#1739](https://github.com/ms2sato/agent-console/issues/1739)); see [Delivery shape by worker kind](#designated-orchestrator-sessions) for what each kind receives.
 
 ```typescript
 class AgentWorkerHandler implements InboundEventHandler {
   readonly handlerId = 'agent-worker';
   readonly supportedEvents: InboundEventType[] = [
-    'ci:completed', 'ci:failed', 'pr:merged',
+    'ci:completed', 'ci:failed', 'issue:labeled', 'pr:merged',
     'pr:review_comment', 'pr:changes_requested', 'pr:comment',
   ];
 
   async handle(event: InboundSystemEvent, target: EventTarget): Promise<boolean> {
-    const worker = this.sessionManager.getWorker(target.sessionId, target.workerId);
-    if (!worker || worker.type !== 'agent') return false;
+    const session = this.sessionManager.getSession(target.sessionId);
+    if (!session) return false;
+    if (!target.workerId && !canDeliverToAgentWorker(session)) return false;
+    // First agent-shaped worker in session.workers order (deterministic).
+    const workerId = target.workerId ?? session.workers.find(canReceiveSessionMessages)?.id;
+    if (!workerId) return false;
 
-    const message = this.formatMessage(event);
-    worker.pty.write(message);
-    return true;
-  }
-
-  private formatMessage(event: InboundSystemEvent): string {
-    // Format: structured tag + key/value fields for reliable parsing.
-    // Example: [inbound:ci-failed] source=github repo=owner/repo branch=main url=... summary="..." intent=triage
-    const intent = this.resolveIntent(event.type);
-    return `\n[inbound:${event.type}] ` +
-      `source=${event.source} repo=${event.metadata.repositoryName ?? 'unknown'} ` +
-      `branch=${event.metadata.branch ?? 'unknown'} url=${event.metadata.url ?? 'N/A'} ` +
-      `summary="${event.summary}" intent=${intent}\n`;
+    // Format: structured tag + key/value fields for reliable parsing. The PTY
+    // branch renders `\n[inbound:<type>] timestamp=... type=... source=... repo=...
+    // branch=... url=... summary="..." intent=...`; the embedded branch delivers
+    // the same text as a system-notification turn (notification.kind = 'inbound-event').
+    const result = await this.sessionManager.deliverWorkerNotification(target.sessionId, workerId, {
+      kind: 'inbound-event',
+      tag: `inbound:${event.type}`,
+      fields: {
+        type: event.type,
+        source: event.source,
+        repo: event.metadata.repositoryName ?? 'unknown',
+        branch: event.metadata.branch ?? 'unknown',
+        url: event.metadata.url ?? 'N/A',
+        summary: event.summary,
+      },
+      intent: this.resolveIntent(event.type),
+    });
+    return result.ok;
   }
 
   /**
@@ -514,15 +523,22 @@ A Repository row holds a SET of designated Orchestrator sessions (`repository_or
 |---|---|
 | is not in `getSessions()` (deleted, or paused — a paused session's DB row survives but it is absent from the live session manager) | not a live session |
 | has `activationState !== 'running'` (hibernated: all its PTY workers have exited) | not running |
-| fails `canDeliverToAgentWorker` (no `agent`-type worker — e.g. a worktree session whose only worker is `git-diff`, which computes `running` vacuously) | no agent worker to deliver to |
+| fails `canDeliverToAgentWorker` (no agent-shaped worker: neither a PTY `agent` nor an `embedded-agent` — e.g. a worktree session whose only worker is `git-diff`, which computes `running` vacuously) | no agent worker to deliver to |
 
 Targets are collected into a `Set` keyed by session id, so a session designated on two same-remote rows is delivered to once. There is no precedence among designated sessions and no ordering guarantee beyond the deduplication; each recipient decides for itself whether the event is its responsibility, and recipients coordinate through `send_session_message` when they act.
+
+**Delivery shape by worker kind.** `AgentWorkerHandler` (`services/inbound/handlers.ts`) resolves the target worker as the first worker in `session.workers` order that satisfies `canReceiveSessionMessages` (PTY `agent` or `embedded-agent`) and hands one structured params object — `kind: 'inbound-event'`, tag `inbound:<type>`, fields `type, source, repo, branch, url, summary`, `intent` — to `SessionManager.deliverWorkerNotification`, the same kind-aware seam timers, conditional wakeups, `send_session_message` and `run_process` output already use (Issue [#1739](https://github.com/ms2sato/agent-console/issues/1739)). The seam routes by kind:
+
+- **PTY `agent`**: the `[inbound:<type>] timestamp=… type=… source=… repo=… branch=… url=… summary=… intent=…` PTY notification, rendered through the identical `writePtyNotification` — byte-for-byte what the handler wrote before the seam (pinned in `handlers.test.ts` against a fixture captured from the pre-seam code).
+- **`embedded-agent`**: the SAME text (`buildPtyNotificationText` over the same params) delivered as a system-notification user turn persisted with `notification.kind = 'inbound-event'` (the client renders it as "Inbound Event"). If a turn is already active it is parked on the R3 mid-turn queue (one delivery per `idle`, cap 32, oldest dropped with a warning; see [embedded-agent-worker.md](./embedded-agent-worker.md)). A dormant or evicted worker is activated first: `sendSystemNotification` → `deliverUserTurn`, whose first statement is `ensureDeliverable`, which awaits any in-flight eviction and calls `activate` when `worker.subprocess === null` (`embedded-agent-worker-service.ts`, `sendSystemNotification` L1464 → `deliverUserTurn` L1580 → `ensureDeliverable` L1692–1726 at `a3ffc100`) — an inbound event wakes a dormant embedded Orchestrator exactly as a timer tick does.
+
+**Known boundary (not changed by #1739):** a session holding BOTH a hibernated PTY `agent` worker and an `embedded-agent` worker computes `activationState: 'hibernated'` — `computeActivationState` (`session-converter-service.ts`) reads PTY workers only — and is skipped with the "not running" reason even though its embedded worker could receive; `activationState`'s definition belongs to hibernation (Issue [#1264](https://github.com/ms2sato/agent-console/issues/1264)), and the boundary is pinned in `resolve-targets.test.ts`.
 
 **Hibernated designated sessions are SKIPPED, never auto-removed (ruling, #1716 §5).** `activationState: 'hibernated'` is derived, not stored — it means "all PTY workers gone" (`session-converter-service.ts`) — and it is transient: the auto-resume path brings such a session back with no operator action, so an auto-removal on hibernation would silently drop a designation minutes before it became deliverable again. The only removal the system performs is the `ON DELETE CASCADE` on session deletion. A stale designation on a retired incarnation is visible in the sidebar (the flag stays lit) and is the owner's, or the retiring Orchestrator's (`clear_orchestrator_session` before retiring), to lower.
 
 **Boundary values** (pinned in `services/inbound/__tests__/resolve-targets*.test.ts` for both paths): a row with `[]` yields no target from that row; two designated with one hibernated yields exactly the live one; two same-remote rows designating the same session yield one target; three designated, all live, yield three targets.
 
-The shipping-path E2E for both paths is `bun scripts/smoke/check-webhook-issue-label-routing.ts` (scenarios 3–7; registered in `.claude/rules/test-trigger.md`).
+The shipping-path E2E for both paths is `bun scripts/smoke/check-webhook-issue-label-routing.ts` (scenarios 3–7; scenario 4c and scenario 5's session E cover the embedded-designated recipient; registered in `.claude/rules/test-trigger.md`).
 
 ### Service Parser Interface
 

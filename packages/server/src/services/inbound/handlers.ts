@@ -5,9 +5,9 @@ import type {
   PtyNotificationIntent,
   Session,
 } from '@agent-console/shared';
+import { canReceiveSessionMessages } from '@agent-console/shared';
 import type { SessionManager } from '../session-manager.js';
 import { triggerRefresh } from '../git-diff-service.js';
-import { writePtyNotification } from '../../lib/pty-notification.js';
 import { createLogger } from '../../lib/logger.js';
 
 /** Event types that AgentWorkerHandler actually handles */
@@ -36,19 +36,26 @@ export interface EventTarget {
 }
 
 /**
- * Whether AgentWorkerHandler.handle() can deliver a PTY notification to this
- * session -- i.e. whether it has an `agent`-type worker at all. This is
- * deliberately NOT "and that worker's pty is non-null": writeWorkerInput
- * silently no-ops (returns false, logs a warn) rather than throwing when the
- * pty is null, and WritePtyNotificationParams.writeInput's `void` return type
- * means handle() never observes that false -- so a worker existing (even
- * with a currently-null pty) already IS today's actual delivery-success
- * condition. Single writer: any code that needs to know "can this session
- * receive an issue:labeled-style PTY notification" calls this, rather than
- * re-deriving the check.
+ * Whether AgentWorkerHandler.handle() can deliver a notification to this
+ * session -- i.e. whether it has an agent-shaped worker at all (a PTY
+ * `agent` worker, or an `embedded-agent` worker). Delivery itself routes
+ * through SessionManager.deliverWorkerNotification, which branches by the
+ * resolved worker's kind (PTY write vs the embedded-agent loop) -- this
+ * predicate only decides eligibility, not the delivery mechanism.
+ *
+ * This is deliberately NOT gated on PTY liveness: for a PTY `agent` worker,
+ * writeWorkerInput silently no-ops (returns false, logs a warn) rather than
+ * throwing when the pty is null, so a worker existing (even with a
+ * currently-null pty) already IS today's actual delivery-success condition.
+ * For an `embedded-agent` worker, the delivery seam's embedded branch
+ * activates a dormant worker (one with `activated: false`) before delivery
+ * via `ensureDeliverable`, so liveness is likewise not a precondition here.
+ * Single writer: any code that needs to know "can this session receive an
+ * issue:labeled-style notification" calls this, rather than re-deriving the
+ * check.
  */
 export function canDeliverToAgentWorker(session: Session): boolean {
-  return session.workers.some((worker) => worker.type === 'agent');
+  return session.workers.some(canReceiveSessionMessages);
 }
 
 export interface InboundEventHandler {
@@ -69,7 +76,7 @@ export interface InboundEventHandler {
  * Minimal SessionManager interface required by inbound handlers.
  * Narrowed to only the methods actually used, reducing coupling.
  */
-type InboundSessionManager = Pick<SessionManager, 'getSession' | 'writeWorkerInput'>;
+type InboundSessionManager = Pick<SessionManager, 'getSession' | 'deliverWorkerNotification'>;
 
 export interface InboundHandlerDependencies {
   sessionManager: InboundSessionManager;
@@ -101,7 +108,9 @@ class AgentWorkerHandler implements InboundEventHandler {
 
     if (!target.workerId && !canDeliverToAgentWorker(session)) return false;
 
-    const workerId = target.workerId ?? session.workers.find((worker) => worker.type === 'agent')?.id;
+    // First match in `session.workers` order, deterministic, same as
+    // today's `find`.
+    const workerId = target.workerId ?? session.workers.find(canReceiveSessionMessages)?.id;
     if (!workerId) return false;
 
     const sessionId = target.sessionId;
@@ -114,25 +123,23 @@ class AgentWorkerHandler implements InboundEventHandler {
       return false;
     }
 
-    try {
-      writePtyNotification({
-        kind: 'inbound-event',
-        tag: `inbound:${event.type}`,
-        fields: {
-          type: event.type,
-          source: event.source,
-          repo: event.metadata.repositoryName ?? 'unknown',
-          branch: event.metadata.branch ?? 'unknown',
-          url: event.metadata.url ?? 'N/A',
-          summary: event.summary,
-        },
-        intent: this.resolveIntent(event.type),
-        writeInput: (data) => this.sessionManager.writeWorkerInput(sessionId, workerId, data),
-      });
-    } catch (err) {
+    const result = await this.sessionManager.deliverWorkerNotification(sessionId, workerId, {
+      kind: 'inbound-event',
+      tag: `inbound:${event.type}`,
+      fields: {
+        type: event.type,
+        source: event.source,
+        repo: event.metadata.repositoryName ?? 'unknown',
+        branch: event.metadata.branch ?? 'unknown',
+        url: event.metadata.url ?? 'N/A',
+        summary: event.summary,
+      },
+      intent: this.resolveIntent(event.type),
+    });
+    if (!result.ok) {
       handlerLogger.warn(
-        { err, sessionId, workerId, eventType: event.type },
-        'PTY notification failed for inbound event',
+        { error: result.error, sessionId, workerId, eventType: event.type },
+        'notification delivery failed for inbound event',
       );
       return false;
     }
