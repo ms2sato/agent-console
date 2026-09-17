@@ -83,26 +83,29 @@
  *       already exposes `spawnAsUserFn` as a first-class test seam for
  *       exactly this kind of wrapping (see its own doc comment).
  *
- *   (d) CLAUDE-SDK D2 PROVISIONING (the boot-through block at the top of
- *       `main()`): the REST
- *       creation route (`EmbeddedAgentManager.createEmbeddedAgent`)
- *       hardcodes `engine: 'openai-api'` by design (SDK Engine Phase 1 --
- *       `claude-sdk` is reachable ONLY through the single builtin,
- *       `CLAUDE_SDK_AGENT_ID`), so there is no public creation path for a
- *       SECOND `claude-sdk` definition, which this script's negative
- *       control (C: same repository, different definition) needs for the
- *       claude-sdk arm. This substitutes the ABSENT creation path -- it
- *       sits upstream of, and outside, the activation chain under test. The
- *       row reaches that chain through REAL production machinery, never a
- *       hand-assembled shortcut: (i) a disposable `createTestContext`
- *       boots against a FILE-backed (not in-memory) database; (ii) the row
- *       is persisted through the real `SqliteEmbeddedAgentRepository.save`;
- *       (iii) that context is shut down (closing its DB handle); (iv) the
- *       context this script actually drives boots against the SAME file,
- *       and `EmbeddedAgentManager.create()` -> `.initialize()` loads the
- *       row through the REAL startup boot path -- the exact code path a
- *       production server runs after a restart. The manager's in-memory
- *       map is never written to directly by this script.
+ *   (d) CLAUDE-SDK D1 / D2 PROVISIONING (the boot-through block at the top
+ *       of `main()`): the REST creation route
+ *       (`EmbeddedAgentManager.createEmbeddedAgent`) hardcodes
+ *       `engine: 'openai-api'` by design (SDK Engine Phase 1 -- `claude-sdk`
+ *       is reachable ONLY through the single builtin, `claude-sdk-builtin`),
+ *       so there is no public creation path for a `claude-sdk` definition
+ *       carrying `Write`/`Edit` in its `enabledTools`, which the WRITE half
+ *       under test needs (see SMOKE_ENABLED_TOOLS: the builtin has no
+ *       Write/Edit, so its memory is read-only by policy and it is the
+ *       subject of no arm). Both claude-sdk definitions (D1 the subject, D2
+ *       the same-repository control) are therefore smoke-persisted rows
+ *       shaped like the builtin plus SMOKE_ENABLED_TOOLS. This substitutes
+ *       the ABSENT creation path -- it sits upstream of, and outside, the
+ *       activation chain under test. The rows reach that chain through REAL
+ *       production machinery, never a hand-assembled shortcut: (i) a
+ *       disposable `createTestContext` boots against a FILE-backed (not
+ *       in-memory) database; (ii) the rows are persisted through the real
+ *       `SqliteEmbeddedAgentRepository.save`; (iii) that context is shut
+ *       down (closing its DB handle); (iv) the context this script actually
+ *       drives boots against the SAME file, and `EmbeddedAgentManager.create()`
+ *       -> `.initialize()` loads them through the REAL startup boot path --
+ *       the exact code path a production server runs after a restart. The
+ *       manager's in-memory map is never written to directly by this script.
  *
  *       Both halves ride on `createTestContext`'s own override block:
  *       `dbPath` (a file-backed database, so boot #2 reads what boot #1
@@ -207,6 +210,20 @@ const RECALL_TEXT =
   'not, reply with the single word UNKNOWN only.';
 
 const MEMORY_INDEX_LINK_RE = /^\s*[-*]\s*\[[^\]]*\]\(([^)\s]+)\)/;
+
+/**
+ * The tool set EVERY smoke definition carries, on both engines, byte-identical
+ * (Architect ruling on run 4 at 48559c2b): the memory layer's WRITE half is the
+ * existing `Write`/`Edit` tools under `enabledTools` -- the design's named
+ * mechanism -- and a definition without them has read-only memory by policy on
+ * either engine (the SDK arm builds its `tools:` list from `enabledTools` too,
+ * `sdk-engine.ts`). The builtin `claude-sdk-builtin` carries no `enabledTools`
+ * (the default set has no Write/Edit), so it is no longer the subject of any
+ * arm here: measured on run 4, it answered a `Write` with "No such tool
+ * available: Write" and wrote through the `run_process` MCP shell instead --
+ * the route the mechanism pins below now reject.
+ */
+const SMOKE_ENABLED_TOOLS = ['Read', 'Write', 'Edit', 'Glob', 'Grep'] as const;
 
 const failures: string[] = [];
 let passes = 0;
@@ -360,7 +377,6 @@ async function main(engine: EngineSelection, expectNoMemory: boolean): Promise<v
   const { createTestContext, shutdownAppContext } = await import('../../packages/server/src/app-context.js');
   const { api } = await import('../../packages/server/src/routes/api.js');
   const { createMcpApp } = await import('../../packages/server/src/mcp/mcp-server.js');
-  const { CLAUDE_SDK_AGENT_ID } = await import('../../packages/server/src/services/embedded-agent-manager.js');
   const { claudeSdkAgent } = await import('../../packages/server/src/services/embedded-agents/claude-sdk-builtin.js');
   const { SqliteEmbeddedAgentRepository } = await import(
     '../../packages/server/src/repositories/sqlite-embedded-agent-repository.js'
@@ -451,24 +467,37 @@ async function main(engine: EngineSelection, expectNoMemory: boolean): Promise<v
     Bun.spawnSync(['mkdir', '-p', home]);
     const sharedDbPath = path.join(home, 'data.db');
 
+    let claudeSdkD1Id: string | undefined;
     let claudeSdkD2Id: string | undefined;
     {
       // Boot-through unconditionally (simpler than branching the boot
       // itself), even for an openai-api-only run -- the only conditional
-      // part is whether D2 gets persisted into the shared file.
+      // part is whether the claude-sdk rows get persisted into the shared
+      // file. BOTH claude-sdk definitions (D1 the subject, D2 the control)
+      // are smoke-persisted rows shaped like the builtin but carrying
+      // SMOKE_ENABLED_TOOLS -- the builtin itself is not used by any arm
+      // (see SMOKE_ENABLED_TOOLS).
       const bootCtx = await createTestContext({ dbPath: sharedDbPath });
       try {
         if (engines.includes('claude-sdk')) {
+          claudeSdkD1Id = `claude-sdk-smoke-d1-${process.pid}`;
           claudeSdkD2Id = `claude-sdk-smoke-d2-${process.pid}`;
           const now = new Date().toISOString();
-          await new SqliteEmbeddedAgentRepository(bootCtx.db).save({
-            ...claudeSdkAgent,
-            id: claudeSdkD2Id,
-            name: `memory-layer-smoke-claude-sdk-d2-${process.pid}`,
-            isBuiltIn: false,
-            createdAt: now,
-            updatedAt: now,
-          });
+          const repo = new SqliteEmbeddedAgentRepository(bootCtx.db);
+          for (const [id, role] of [
+            [claudeSdkD1Id, 'd1'],
+            [claudeSdkD2Id, 'd2'],
+          ] as const) {
+            await repo.save({
+              ...claudeSdkAgent,
+              id,
+              name: `memory-layer-smoke-claude-sdk-${role}-${process.pid}`,
+              enabledTools: [...SMOKE_ENABLED_TOOLS],
+              isBuiltIn: false,
+              createdAt: now,
+              updatedAt: now,
+            });
+          }
         }
       } finally {
         await shutdownAppContext(bootCtx);
@@ -509,13 +538,17 @@ async function main(engine: EngineSelection, expectNoMemory: boolean): Promise<v
     const owner = await ctx.userRepository.upsertByOsUid(osUid, username, os.homedir());
 
     if (engines.includes('claude-sdk')) {
-      if (!claudeSdkD2Id) throw new Error('claudeSdkD2Id was not set even though the claude-sdk arm is selected');
-      const loaded = ctx.embeddedAgentManager.getEmbeddedAgent(claudeSdkD2Id);
-      if (!loaded) {
-        throw new Error(
-          `claude-sdk D2 definition (${claudeSdkD2Id}) did not load from the shared file DB via ` +
-            'EmbeddedAgentManager.initialize() -- the provisioning proxy did not reach the real boot path',
-        );
+      if (!claudeSdkD1Id || !claudeSdkD2Id) {
+        throw new Error('the claude-sdk definition ids were not set even though the claude-sdk arm is selected');
+      }
+      for (const id of [claudeSdkD1Id, claudeSdkD2Id]) {
+        const loaded = ctx.embeddedAgentManager.getEmbeddedAgent(id);
+        if (!loaded) {
+          throw new Error(
+            `claude-sdk definition (${id}) did not load from the shared file DB via ` +
+              'EmbeddedAgentManager.initialize() -- the provisioning proxy did not reach the real boot path',
+          );
+        }
       }
     }
 
@@ -736,6 +769,31 @@ async function main(engine: EngineSelection, expectNoMemory: boolean): Promise<v
       console.log(`  A plant reply: ${plantResult.reply.trim().slice(0, 120)}`);
 
       if (!expectNoMemory) {
+        // MECHANISM pins (Architect ruling on run 4 at 48559c2b): the write
+        // must land through the design's named mechanism -- the `Write` /
+        // `Edit` tools under `enabledTools` -- and not through any shell.
+        // Marker-scoped (plantEvents), read after the turn's idle, like the
+        // recall pins. Reach measured on run 4 itself, before these pins
+        // existed: the claude-sdk plant events as captured (a refused
+        // `Write` -- "No such tool available: Write" -- followed by three
+        // `mcp__agent-console__run_process` calls that wrote the files with
+        // `printf`) FAIL both (i) and (ii); the openai-api plant events
+        // (two `Write` calls under memoryDir) PASS both. The on-disk pins
+        // below are mechanism-agnostic and stay.
+        const plantToolCalls = plantEvents.filter((e) => e.type === 'tool-call');
+        expect(
+          plantToolCalls.some(
+            (e) => (e.name === 'Write' || e.name === 'Edit') && toolCallTouchesPrefix(e, expectedDirA),
+          ),
+          `${armLabel}: the plant wrote under the memory directory with Write or Edit (the enabledTools mechanism)`,
+          `tool calls: ${JSON.stringify(plantToolCalls.map((e) => ({ name: e.name, args: e.args }))).slice(0, 600)}`,
+        );
+        expect(
+          !plantToolCalls.some((e) => String(e.name).includes('run_process')),
+          `${armLabel}: the plant did NOT go through the run_process MCP shell`,
+          `tool calls: ${plantToolCalls.map((e) => String(e.name)).join(',')}`,
+        );
+
         const memoryDirExists = existsSync(expectedDirA);
         expect(memoryDirExists, `${armLabel}: the memory directory exists on disk after the planting turn`, expectedDirA);
 
@@ -816,9 +874,19 @@ async function main(engine: EngineSelection, expectNoMemory: boolean): Promise<v
         `${armLabel}: B's recall used a tool call that touched the memory directory`,
         `events: ${recallEvents.map((e) => e.type).join(',')}`,
       );
+      // Needle = S1's absolute cwd DIRECTORY, not the file path and not the
+      // bare basename (Architect ruling on run 4 at 48559c2b). A substring
+      // match over the args subsumes the deleted file's path and also
+      // catches a Glob / Grep / shell over S1's tree; the bare basename was
+      // a false positive on run 4 -- B, in S2, `Read` its OWN cwd's
+      // `qa-note.txt` (ENOENT; the file never existed there) after the
+      // topic file named it as its source, and the recall had already come
+      // from the topic file. Precision holds: s1Dir and s2Dir are siblings
+      // under the home, and memoryDir is under the home's base dir, so
+      // neither contains the other.
       expect(
-        !recallEvents.some((e) => toolCallMentionsAny(e, [path.join(s1Dir, NONCE_FILE), NONCE_FILE])),
-        `${armLabel}: B's recall did NOT mention the deleted cwd nonce file`,
+        !recallEvents.some((e) => toolCallMentionsAny(e, [s1Dir])),
+        `${armLabel}: B's recall did NOT touch S1's cwd (the deleted nonce file's directory)`,
         `events: ${JSON.stringify(recallEvents.filter((e) => e.type === 'tool-call'))}`,
       );
 
@@ -879,7 +947,7 @@ async function main(engine: EngineSelection, expectNoMemory: boolean): Promise<v
             name: `memory-layer-smoke-openai-d1-${process.pid}`,
             description: 'Disposable definition D1 for the memory-layer E2E (epic #1636 Phase 2 PR-3b).',
             provider: { baseUrl: PROVIDER_BASE_URL, model: PROVIDER_MODEL, apiKeyRef: PROVIDER_KEY_REF },
-            enabledTools: ['Read', 'Write', 'Edit', 'Glob', 'Grep'],
+            enabledTools: [...SMOKE_ENABLED_TOOLS],
           },
           owner.id,
         );
@@ -888,14 +956,14 @@ async function main(engine: EngineSelection, expectNoMemory: boolean): Promise<v
             name: `memory-layer-smoke-openai-d2-${process.pid}`,
             description: 'Disposable definition D2 (negative control) for the memory-layer E2E.',
             provider: { baseUrl: PROVIDER_BASE_URL, model: PROVIDER_MODEL, apiKeyRef: PROVIDER_KEY_REF },
-            enabledTools: ['Read', 'Write', 'Edit', 'Glob', 'Grep'],
+            enabledTools: [...SMOKE_ENABLED_TOOLS],
           },
           owner.id,
         );
         await runArm('openai-api', d1.id, d2.id);
       } else {
-        // claudeSdkD2Id was validated non-null and loaded above.
-        await runArm('claude-sdk', CLAUDE_SDK_AGENT_ID, claudeSdkD2Id!);
+        // Both ids were validated non-null and loaded above.
+        await runArm('claude-sdk', claudeSdkD1Id!, claudeSdkD2Id!);
       }
     }
   } finally {
