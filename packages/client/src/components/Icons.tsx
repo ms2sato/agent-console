@@ -309,6 +309,15 @@ export function LayoutListIcon({ className = 'w-4 h-4' }: IconProps) {
   );
 }
 
+export function PanelRightIcon({ className = 'w-4 h-4' }: IconProps) {
+  return (
+    <svg className={className} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <rect x="3" y="3" width="18" height="18" rx="2" strokeWidth={2} />
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 3v18" />
+    </svg>
+  );
+}
+
 export function SpinnerIcon({ className = 'w-4 h-4' }: IconProps) {
   return (
     <svg className={`${className} animate-spin`} viewBox="0 0 24 24" fill="none">
