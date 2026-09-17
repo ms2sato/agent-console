@@ -642,6 +642,22 @@ describe('AppContext', () => {
       // ':memory:' to `new BunDatabase(...)` (ignoring the `dbPath`
       // parameter) fails this test -- ctx2 boots a fresh, empty in-memory
       // database and never sees `persisted-def`.
+      //
+      // This test is ALSO the memfs polarity pin for `createDatabaseForTest`
+      // passing `IN_MEMORY_DB_PATH` (not the real `dbPath`) into
+      // `runMigrations` (`connection.ts`): with `runMigrations` given the
+      // real `dbPath` instead, this test still passes when the file is run
+      // alone, but FAILS under the full server suite (`cd packages/server
+      // && bun test src/`), because some sibling test file's import of
+      // `test-utils.js` mocks `fs/promises` to memfs process-wide before
+      // this test runs, and the v19 migration's pre-flight backup
+      // (`backupDatabaseFile`) then tries to `copyFile` the real,
+      // real-disk-backed sqlite file through that virtual filesystem:
+      // `ENOENT: no such file or directory, open
+      // '.../app-context-dbpath-<...>.sqlite'` from memfs's own
+      // `_copyFile`. With the `IN_MEMORY_DB_PATH` sentinel (the actual
+      // production code), this test passes in both isolation and the full
+      // suite. Reproduced 2026-09-17.
       const dbPath = makeTmpDbPath();
       try {
         const ctx1 = await createTestContext({ dbPath });
