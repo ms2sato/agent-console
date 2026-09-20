@@ -1255,10 +1255,6 @@ describe('SessionInitializationService integration (real DB → mapper → servi
         id: 'repo-1762',
         name: 'r',
         path: '/r',
-        // The dead `orchestrator_session_id` column (DEAD since v41, see
-        // schema.ts) still exists at this SHA and still carries an
-        // ON DELETE SET NULL foreign key onto sessions(id).
-        orchestrator_session_id: 'sess-1762',
       })
       .execute();
     await db
