@@ -1021,7 +1021,8 @@ slug, or `repositories/<org>` and `repositories/<org>/<repo>` for a
 two-segment slug), the base's own `worktrees` directory, and the `outputs/`,
 `memos/`, `messages/`, `memory/` directories under `_quick` or under the
 base, together with the session / worker / definition directories the
-server creates below them.
+server creates below `outputs/`, `messages/` and `memory/` (`memos/` holds
+memo files directly -- `<sessionId>.md` -- and has no directories below it).
 
 A walked position is not fully determined by depth alone: `repositories/<a>`
 and `repositories/<a>/<b>` are ambiguous between "the base itself" and "an
