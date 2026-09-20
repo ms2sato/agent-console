@@ -1385,6 +1385,118 @@ describe('SqliteSessionRepository', () => {
         expect(flipped.embeddedAgentId).toBe('def-1');
       }
     });
+
+    // Polarity: fails against the pre-fix doUpdateSet (bare workerRow.* without
+    // ?? null/?? 1 fallbacks) -- measured 2026-09-20 by temporarily reverting
+    // the fix in sqlite-session-repository.ts. sdk_session_id, auto_compaction
+    // and context_window_tokens survived the flip to 'agent' with their stale
+    // 'embedded-agent' values instead of being reset:
+    //   error: expect(received).toBeNull()
+    //   Received: "sess-cross-type-flip-reverse"
+    //   at .../sqlite-session-repository.test.ts:1420:41
+    it('correctly resets type-discriminant worker columns when a worker FLIPS from embedded-agent to agent (reverse cross-type restart)', async () => {
+      // First save: an 'embedded-agent' worker with non-default values in
+      // every field the doUpdateSet fix touches. autoCompaction is
+      // deliberately seeded OFF (raw column 0) so the post-flip assertion of
+      // `auto_compaction === 1` (the schema's NOT NULL DEFAULT) is evidence
+      // of a real reset, not a coincidental match with the seeded value.
+      const embeddedWorker = buildPersistedEmbeddedAgentWorker({
+        id: 'flip-worker-reverse',
+        name: 'Ollama qwen3',
+        embeddedAgentId: 'def-1',
+        sdkSessionId: 'sess-cross-type-flip-reverse',
+        autoCompaction: false,
+        model: 'qwen3:32b',
+        reasoningEffort: 'high',
+        contextWindowTokens: 128000,
+      });
+      const session = buildPersistedQuickSession({
+        id: 'flip-worker-reverse-session',
+        workers: [embeddedWorker],
+      });
+      await repository.save(session);
+
+      // Second save: SAME worker id, now an 'agent' worker. toWorkerRow's
+      // 'agent' branch never sets sdk_session_id / auto_compaction /
+      // context_window_tokens at all (they are absent from its returned
+      // object, i.e. `undefined`), which is exactly the shape that exposed
+      // the bug: Kysely's doUpdateSet omits `undefined` columns from the SQL
+      // SET clause entirely, silently preserving the previous row's stale
+      // 'embedded-agent' values instead of resetting them.
+      const agentWorker = buildPersistedAgentWorker({
+        id: 'flip-worker-reverse',
+        name: 'Claude Agent',
+        agentId: 'custom-agent-id',
+      });
+      const sessionAfterFlip = buildPersistedQuickSession({
+        id: 'flip-worker-reverse-session',
+        workers: [agentWorker],
+      });
+      await repository.save(sessionAfterFlip);
+
+      // Read the RAW row directly: the higher-level PersistedWorker type for
+      // an 'agent' worker doesn't expose sdkSessionId/autoCompaction/
+      // contextWindowTokens at all, so reading through
+      // repository.findById()/toPersistedWorker() couldn't observe a stale
+      // raw column even if one existed.
+      const rawRow = await db
+        .selectFrom('workers')
+        .where('id', '=', 'flip-worker-reverse')
+        .selectAll()
+        .executeTakeFirstOrThrow();
+
+      expect(rawRow.type).toBe('agent');
+      expect(rawRow.sdk_session_id).toBeNull();
+      expect(rawRow.auto_compaction).toBe(1);
+      expect(rawRow.model).toBeNull();
+      expect(rawRow.reasoning_effort).toBeNull();
+      expect(rawRow.context_window_tokens).toBeNull();
+    });
+
+    it('correctly resets type-discriminant worker columns via saveAll() (same defect, saveAll caller)', async () => {
+      // Same shape as the save()-based test above, but driven through
+      // saveAll() -- the new caller introduced alongside upsertSessionInTrx's
+      // extraction, which runs at every server boot for every session.
+      const embeddedWorker = buildPersistedEmbeddedAgentWorker({
+        id: 'flip-worker-reverse-saveall',
+        name: 'Ollama qwen3',
+        embeddedAgentId: 'def-1',
+        sdkSessionId: 'sess-cross-type-flip-reverse-saveall',
+        autoCompaction: false,
+        model: 'qwen3:32b',
+        reasoningEffort: 'high',
+        contextWindowTokens: 128000,
+      });
+      const session = buildPersistedQuickSession({
+        id: 'flip-worker-reverse-saveall-session',
+        workers: [embeddedWorker],
+      });
+      await repository.saveAll([session]);
+
+      const agentWorker = buildPersistedAgentWorker({
+        id: 'flip-worker-reverse-saveall',
+        name: 'Claude Agent',
+        agentId: 'custom-agent-id',
+      });
+      const sessionAfterFlip = buildPersistedQuickSession({
+        id: 'flip-worker-reverse-saveall-session',
+        workers: [agentWorker],
+      });
+      await repository.saveAll([sessionAfterFlip]);
+
+      const rawRow = await db
+        .selectFrom('workers')
+        .where('id', '=', 'flip-worker-reverse-saveall')
+        .selectAll()
+        .executeTakeFirstOrThrow();
+
+      expect(rawRow.type).toBe('agent');
+      expect(rawRow.sdk_session_id).toBeNull();
+      expect(rawRow.auto_compaction).toBe(1);
+      expect(rawRow.model).toBeNull();
+      expect(rawRow.reasoning_effort).toBeNull();
+      expect(rawRow.context_window_tokens).toBeNull();
+    });
   });
 
   describe('data integrity handling', () => {

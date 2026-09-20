@@ -164,11 +164,24 @@ export class SqliteSessionRepository implements SessionRepository {
             // restart breaks.
             embedded_agent_id: workerRow.embedded_agent_id,
             deliver_initial_prompt_on_activation: workerRow.deliver_initial_prompt_on_activation,
-            sdk_session_id: workerRow.sdk_session_id,
-            auto_compaction: workerRow.auto_compaction,
-            model: workerRow.model,
-            reasoning_effort: workerRow.reasoning_effort,
-            context_window_tokens: workerRow.context_window_tokens,
+            // toWorkerRow's per-type branches omit these five keys entirely
+            // for types that don't declare them (e.g. 'agent' never sets
+            // sdk_session_id/auto_compaction/context_window_tokens; 'terminal'
+            // and 'git-diff' set none of the five), so workerRow.<key> is
+            // `undefined` rather than `null` on those branches. Kysely's
+            // doUpdateSet treats `undefined` as "omit this column from the
+            // SQL SET clause", which is different from `null` (which DOES
+            // reset the column) -- without the `?? null`/`?? 1` fallback
+            // below, a same-id restart into a type that doesn't declare one
+            // of these columns would silently leave the PREVIOUS type's
+            // stale value in place instead of resetting it.
+            sdk_session_id: workerRow.sdk_session_id ?? null,
+            // auto_compaction is NOT NULL DEFAULT 1 in the schema, so its
+            // reset value is 1 (ON), not null.
+            auto_compaction: workerRow.auto_compaction ?? 1,
+            model: workerRow.model ?? null,
+            reasoning_effort: workerRow.reasoning_effort ?? null,
+            context_window_tokens: workerRow.context_window_tokens ?? null,
           })
         )
         .execute();
