@@ -32,8 +32,12 @@
 #      before restarting the service -- refuses to restart into a unit whose
 #      EMBEDDED_AGENT_ENTRY_PATH would point at a file step 6 did not
 #      actually provision.
-#   9. V1 unit-env-drift (Issue #1688), still BEFORE the restart and
-#      fail-closed: every `Environment=KEY=` in
+#   9. V0 data-root-ownership (Issue #1754) and V1 unit-env-drift (Issue
+#      #1688), both still BEFORE the restart and fail-closed. V0 mechanizes
+#      the setup guide's "Data-root ownership pre-deploy check" -- a walked
+#      directory under the data root not owned by the service user fails the
+#      deploy here, naming the offending path(s) and the chown remedy. V1:
+#      every `Environment=KEY=` in
 #      scripts/agent-console-multiuser.service.template must be present in
 #      the live unit's effective environment, or the deploy stops here
 #      naming the missing key(s) and both remedies. This script never
@@ -44,13 +48,13 @@
 #      "Post-deploy verification -- checks enumerated" table in
 #      docs/design/elevation-verification-tiers.md): entry-path readability,
 #      MainPID binary identity, unit active, /api/config health, journal
-#      digest. One line per check, PASS / FAIL / SKIP, then a six-line
-#      screen (V1 included) and the worst code as this script's exit:
+#      digest. One line per check, PASS / FAIL / SKIP, then a seven-line
+#      screen (V0 and V1 included) and the worst code as this script's exit:
 #        0  every check PASSed
 #        1  at least one FAIL (a check ran and the system is wrong)
 #        2  at least one SKIP (a check could not run) and no FAIL
 #      Every check runs even after a failure, so the screen is complete.
-#      The checks themselves live in lib/setup-multiuser-checks.sh (V1-V6
+#      The checks themselves live in lib/setup-multiuser-checks.sh (V0-V6
 #      subcommands, fixture-tested); this script only sequences them.
 #
 # Contract: run this script as the operator's own login user -- do NOT
@@ -365,6 +369,24 @@ assert_readable_by_unprivileged_user "${UNIFIED_ENTRY_MAP_PATH}" \
   "${ELEVATE}" || exit 1
 
 echo ""
+echo "==> V0 (fail-closed, before restart): data-root ownership at walked positions"
+# Issue #1754: mechanizes the setup guide's "Data-root ownership pre-deploy
+# check". The trusted-root walker (packages/server/src/lib/trusted-dir.ts)
+# fails closed on any walked directory not owned by the service user; V0
+# surfaces that as a deploy-time signal instead of a runtime error on the
+# first session-data write or worktree creation after the restart. `find` is
+# passed as the bare command name (like `systemctl` above) -- the operator
+# traverses the 2775 trees unprivileged, no elevation needed.
+V0_RC=0
+verify_check "V0 data-root-ownership" data_root_ownership "${DATA_ROOT}" "${SERVICE_USER}" find || V0_RC=$?
+if [ "${V0_RC}" -ne 0 ]; then
+  verify_print_screen
+  echo "" >&2
+  echo "Error: refusing to restart ${SERVICE_NAME} -- V0 did not pass (see the line above). No restart was performed: the unit keeps running the previous deploy. Apply the named remedy, then re-run this script." >&2
+  exit "${V0_RC}"
+fi
+
+echo ""
 echo "==> V1 (fail-closed, before restart): live unit environment vs the template"
 # Issue #1688: the ONLY verification check that runs BEFORE the restart, and
 # the only one this script stops on. A template `Environment=KEY=` missing
@@ -408,7 +430,7 @@ echo ""
 echo "==> Post-deploy verification V2-V6 (after restart)"
 # Every check runs regardless of the previous one's verdict (`|| true`), so
 # the screen is complete; the exit code is computed from the counters after
-# all six. Each elevating check receives ${ELEVATE} explicitly (the #1690
+# all seven. Each elevating check receives ${ELEVATE} explicitly (the #1690
 # shape): V2's `runuser -u nobody` probe, V3's `runuser -u <User> -g
 # <Group>` identity read, and the journal reads in V4's diagnostics and V6
 # (the system journal is root / adm / systemd-journal readable only, and the

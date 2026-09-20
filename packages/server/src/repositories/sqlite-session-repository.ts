@@ -1,4 +1,4 @@
-import type { Kysely } from 'kysely';
+import type { Kysely, Transaction } from 'kysely';
 import type { SessionRepository, SessionUpdateFields } from './session-repository.js';
 import type { PersistedSession } from '../services/persistence-service.js';
 import type { Database, Session } from '../database/schema.js';
@@ -60,88 +60,7 @@ export class SqliteSessionRepository implements SessionRepository {
 
   async save(session: PersistedSession): Promise<void> {
     await this.db.transaction().execute(async (trx) => {
-      // Upsert session
-      const sessionRow = toSessionRow(session);
-
-      await trx
-        .insertInto('sessions')
-        .values(sessionRow)
-        .onConflict((oc) =>
-          oc.column('id').doUpdateSet({
-            type: sessionRow.type,
-            location_path: sessionRow.location_path,
-            server_pid: sessionRow.server_pid,
-            // Note: created_at is intentionally NOT updated (should never change after insert)
-            updated_at: sessionRow.updated_at,
-            initial_prompt: sessionRow.initial_prompt,
-            initial_prompt_delivered: sessionRow.initial_prompt_delivered,
-            title: sessionRow.title,
-            repository_id: sessionRow.repository_id,
-            worktree_id: sessionRow.worktree_id,
-            paused_at: sessionRow.paused_at,
-            parent_session_id: sessionRow.parent_session_id,
-            parent_worker_id: sessionRow.parent_worker_id,
-            initiated_by: sessionRow.initiated_by,
-            data_scope: sessionRow.data_scope,
-            data_scope_slug: sessionRow.data_scope_slug,
-            recovery_state: sessionRow.recovery_state,
-            orphaned_at: sessionRow.orphaned_at,
-            orphaned_reason: sessionRow.orphaned_reason,
-          })
-        )
-        .execute();
-
-      // Upsert workers (preserves created_at, updates other fields)
-      for (const worker of session.workers) {
-        const workerRow = toWorkerRow(worker, session.id);
-        await trx
-          .insertInto('workers')
-          .values(workerRow)
-          .onConflict((oc) =>
-            oc.column('id').doUpdateSet({
-              session_id: workerRow.session_id,
-              type: workerRow.type,
-              name: workerRow.name,
-              // Note: created_at is intentionally NOT updated (should never change after insert)
-              updated_at: workerRow.updated_at,
-              pid: workerRow.pid,
-              agent_id: workerRow.agent_id,
-              base_commit: workerRow.base_commit,
-              // embedded_agent_id and the fields below are type-discriminant
-              // (only meaningful for 'embedded-agent' rows, toWorkerRow always
-              // writes null for other types). They must be included in the
-              // conflict-update set: a worker restart that changes a worker's
-              // `type` (e.g. 'agent' -> 'embedded-agent', same worker id)
-              // upserts an existing row whose `type` FLIPS, and an omitted
-              // column here would silently leave the PREVIOUS type's stale
-              // value (or null) in place instead of the new type's row shape
-              // -- this doUpdateSet originally listed only fields that could
-              // vary for a same-type restart, an assumption a type-changing
-              // restart breaks.
-              embedded_agent_id: workerRow.embedded_agent_id,
-              deliver_initial_prompt_on_activation: workerRow.deliver_initial_prompt_on_activation,
-              sdk_session_id: workerRow.sdk_session_id,
-              auto_compaction: workerRow.auto_compaction,
-              model: workerRow.model,
-              reasoning_effort: workerRow.reasoning_effort,
-              context_window_tokens: workerRow.context_window_tokens,
-            })
-          )
-          .execute();
-      }
-
-      // Delete orphaned workers (workers no longer in the session)
-      const currentWorkerIds = session.workers.map((w) => w.id);
-      if (currentWorkerIds.length > 0) {
-        await trx
-          .deleteFrom('workers')
-          .where('session_id', '=', session.id)
-          .where('id', 'not in', currentWorkerIds)
-          .execute();
-      } else {
-        // If no workers, delete all workers for this session
-        await trx.deleteFrom('workers').where('session_id', '=', session.id).execute();
-      }
+      await this.upsertSessionInTrx(trx, session);
     });
 
     logger.debug({ sessionId: session.id }, 'Session saved');
@@ -149,21 +68,137 @@ export class SqliteSessionRepository implements SessionRepository {
 
   async saveAll(sessions: PersistedSession[]): Promise<void> {
     await this.db.transaction().execute(async (trx) => {
-      // Delete all sessions and workers (cascade will handle workers)
-      await trx.deleteFrom('sessions').execute();
-
-      // Insert all sessions and workers
       for (const session of sessions) {
-        const sessionRow = toSessionRow(session);
-        await trx.insertInto('sessions').values(sessionRow).execute();
+        await this.upsertSessionInTrx(trx, session);
+      }
 
-        for (const worker of session.workers) {
-          await trx.insertInto('workers').values(toWorkerRow(worker, session.id)).execute();
-        }
+      // Delete sessions no longer present in the input set. This must run
+      // LAST, after every upsert above, and must be scoped by id (never a
+      // delete-all-then-reinsert) -- a session id absent from the input set
+      // is removed together with its dependents via the ordinary FK
+      // cascade, which is the correct semantics for "this session is gone".
+      // A blanket DELETE FROM sessions followed by re-insert would cascade
+      // through every FK referencing sessions(id) -- workers,
+      // inbound_event_notifications, repository_orchestrator_sessions, and
+      // the dead single-session column on repositories (see its own
+      // deadness guard test) -- wiping rows this method never re-creates.
+      // Never implemented as delete-all + re-insert.
+      // Order-independent by construction: `ids` is a fixed snapshot of this
+      // call's input, so a session present in `sessions` can never also
+      // match this NOT IN predicate, regardless of where this delete sits
+      // relative to the upserts above. If `ids`'s derivation is ever changed
+      // to a live/dynamic query (e.g. a subquery against another table),
+      // re-verify this invariant and add an ordering test then.
+      const ids = sessions.map((s) => s.id);
+      if (ids.length > 0) {
+        await trx.deleteFrom('sessions').where('id', 'not in', ids).execute();
+      } else {
+        await trx.deleteFrom('sessions').execute();
       }
     });
 
     logger.debug({ count: sessions.length }, 'All sessions saved');
+  }
+
+  private async upsertSessionInTrx(
+    trx: Transaction<Database>,
+    session: PersistedSession
+  ): Promise<void> {
+    // Upsert session
+    const sessionRow = toSessionRow(session);
+
+    await trx
+      .insertInto('sessions')
+      .values(sessionRow)
+      .onConflict((oc) =>
+        oc.column('id').doUpdateSet({
+          type: sessionRow.type,
+          location_path: sessionRow.location_path,
+          server_pid: sessionRow.server_pid,
+          // Note: created_at is intentionally NOT updated (should never change after insert)
+          updated_at: sessionRow.updated_at,
+          initial_prompt: sessionRow.initial_prompt,
+          initial_prompt_delivered: sessionRow.initial_prompt_delivered,
+          title: sessionRow.title,
+          repository_id: sessionRow.repository_id,
+          worktree_id: sessionRow.worktree_id,
+          paused_at: sessionRow.paused_at,
+          parent_session_id: sessionRow.parent_session_id,
+          parent_worker_id: sessionRow.parent_worker_id,
+          initiated_by: sessionRow.initiated_by,
+          data_scope: sessionRow.data_scope,
+          data_scope_slug: sessionRow.data_scope_slug,
+          recovery_state: sessionRow.recovery_state,
+          orphaned_at: sessionRow.orphaned_at,
+          orphaned_reason: sessionRow.orphaned_reason,
+        })
+      )
+      .execute();
+
+    // Upsert workers (preserves created_at, updates other fields)
+    for (const worker of session.workers) {
+      const workerRow = toWorkerRow(worker, session.id);
+      await trx
+        .insertInto('workers')
+        .values(workerRow)
+        .onConflict((oc) =>
+          oc.column('id').doUpdateSet({
+            session_id: workerRow.session_id,
+            type: workerRow.type,
+            name: workerRow.name,
+            // Note: created_at is intentionally NOT updated (should never change after insert)
+            updated_at: workerRow.updated_at,
+            pid: workerRow.pid,
+            agent_id: workerRow.agent_id,
+            base_commit: workerRow.base_commit,
+            // embedded_agent_id and the fields below are type-discriminant
+            // (only meaningful for 'embedded-agent' rows, toWorkerRow always
+            // writes null for other types). They must be included in the
+            // conflict-update set: a worker restart that changes a worker's
+            // `type` (e.g. 'agent' -> 'embedded-agent', same worker id)
+            // upserts an existing row whose `type` FLIPS, and an omitted
+            // column here would silently leave the PREVIOUS type's stale
+            // value (or null) in place instead of the new type's row shape
+            // -- this doUpdateSet originally listed only fields that could
+            // vary for a same-type restart, an assumption a type-changing
+            // restart breaks.
+            embedded_agent_id: workerRow.embedded_agent_id,
+            deliver_initial_prompt_on_activation: workerRow.deliver_initial_prompt_on_activation,
+            // toWorkerRow's per-type branches omit these five keys entirely
+            // for types that don't declare them (e.g. 'agent' never sets
+            // sdk_session_id/auto_compaction/context_window_tokens; 'terminal'
+            // and 'git-diff' set none of the five), so workerRow.<key> is
+            // `undefined` rather than `null` on those branches. Kysely's
+            // doUpdateSet treats `undefined` as "omit this column from the
+            // SQL SET clause", which is different from `null` (which DOES
+            // reset the column) -- without the `?? null`/`?? 1` fallback
+            // below, a same-id restart into a type that doesn't declare one
+            // of these columns would silently leave the PREVIOUS type's
+            // stale value in place instead of resetting it.
+            sdk_session_id: workerRow.sdk_session_id ?? null,
+            // auto_compaction is NOT NULL DEFAULT 1 in the schema, so its
+            // reset value is 1 (ON), not null.
+            auto_compaction: workerRow.auto_compaction ?? 1,
+            model: workerRow.model ?? null,
+            reasoning_effort: workerRow.reasoning_effort ?? null,
+            context_window_tokens: workerRow.context_window_tokens ?? null,
+          })
+        )
+        .execute();
+    }
+
+    // Delete orphaned workers (workers no longer in the session)
+    const currentWorkerIds = session.workers.map((w) => w.id);
+    if (currentWorkerIds.length > 0) {
+      await trx
+        .deleteFrom('workers')
+        .where('session_id', '=', session.id)
+        .where('id', 'not in', currentWorkerIds)
+        .execute();
+    } else {
+      // If no workers, delete all workers for this session
+      await trx.deleteFrom('workers').where('session_id', '=', session.id).execute();
+    }
   }
 
   async delete(id: string): Promise<void> {

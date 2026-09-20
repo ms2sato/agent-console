@@ -57,9 +57,10 @@
 #   6. update-and-deploy-for-multiuser-ubuntu.sh as `deployer` (uid != 0, so
 #      the script's own per-step self-elevation is what runs); expect exit 0
 #   7. the deploy script's OWN post-deploy verification screen (Issue #1717:
-#      V1 unit-env-drift, V2 entry-path-readable, V3 mainpid-identity, V4
-#      unit-active, V5 health, V6 journal-digest) is consumed, not
-#      re-implemented: six `  PASS  V<n> <name>` lines and `RESULT: 6 PASS`.
+#      V0 data-root-ownership, V1 unit-env-drift, V2 entry-path-readable, V3
+#      mainpid-identity, V4 unit-active, V5 health, V6 journal-digest; V0
+#      added by Issue #1754) is consumed, not re-implemented: seven
+#      `  PASS  V<n> <name>` lines and `RESULT: 7 PASS`.
 #      The facts behind them (MainPID/User/Group/ExecStart, /proc/<MainPID>/
 #      exe read AS the unit's User+Group -- root in-container lacks
 #      CAP_SYS_PTRACE and cannot read another uid's exe link, Task 0's root
@@ -72,10 +73,34 @@
 #      line naming the key BEFORE restarting (ActiveEnterTimestampMonotonic
 #      unchanged, no `==> systemctl restart` line); `setup --force` must
 #      re-render the unit (the key is back in `show -p Environment`); a
-#      third deploy must exit 0 with the six PASS lines again. V3's
+#      third deploy must exit 0 with the seven PASS lines again. V3's
 #      DIFFERENT arm is NOT driven here (it needs a second bun binary); its
 #      marker-to-verdict table is pinned at tier 1 instead
 #      (scripts/__tests__/setup-multiuser-checks.test.mjs)
+#  7c. the #1754 ownership-polarity arm: synthesizes a
+#      repositories/<org>/<repo>/worktrees tree (this driver creates no
+#      worktree of its own), re-owns it to the service user first (positive
+#      control: a clean synthesized tree PASSes V0, proven via a direct
+#      helper probe before any injection), then `chown deployer` on the org
+#      dir alone (a walked position) -- deploy #4 must exit 1 on V0's FAIL
+#      line naming that path BEFORE the restart (no V1-V6 line, no
+#      `==> systemctl restart`); restoring ownership, deploy #5 must exit 0
+#      with the seven PASS lines, V0's marker independently confirmed
+#      OWNERSHIP_OK (the tree stays non-empty, never NO_TREES) via the same
+#      direct probe. A non-walked control (repositories/<org>/<repo>/
+#      templates, `chown deployer`) is created once and left mis-owned
+#      through deploy #5: V0 still PASSes, with an INFO line naming it as
+#      ignored (not walked).
+#  7d. the #1762 restart-survival arm: seeds one session plus its FK
+#      dependents (a repository_orchestrator_sessions designation, a
+#      pending inbound_event_notifications row, and the dead
+#      repositories.orchestrator_session_id reference) directly against the
+#      real data.db via `bun -e` + bun:sqlite, restarts the unit through
+#      deploy #6 (the shipping saveAll() path), and reads the same rows
+#      back: the session itself present (positive control -- not swept as
+#      an orphan), its created_at unchanged / updated_at moved, and the
+#      three dependents intact -- exactly what the pre-#1762 DELETE-all
+#      saveAll() cascaded away.
 #   8. the three #1690 helper cases, explicitly: (1) elevated (deployer +
 #      AC_TIER3_ELEVATE) against the real bundle -> READABLE; (2) the same
 #      call against a chmod 000 copy -> UNREADABLE, exit 1; (3) root with an
@@ -118,6 +143,8 @@ UNIT="agent-console"
 # script builds from (AGENT_CONSOLE_APP_SOURCE_DIR's default).
 SRC="/var/lib/agent-console/source-repos/agent-console"
 DEPLOY_TARGET="/home/agentconsole/agent-console"
+# AGENT_CONSOLE_DATA_ROOT's default -- the two trees V0 (7c) walks.
+DATA_ROOT="/var/lib/agent-console"
 UNIFIED_BUN="/usr/local/bin/bun"
 UNIFIED_ENTRY="/usr/local/lib/agent-console/embedded-agent.js"
 SMOKE="scripts/smoke/check-embedded-agent-elevation.ts"
@@ -368,9 +395,11 @@ run_deploy() {
   step_end deploy_as_deployer
 }
 
-# The six checks of the deploy script's post-deploy verification (Issue
-# #1717), by the label each prints on its screen line.
+# The seven checks of the deploy script's post-deploy verification (Issue
+# #1717, V0 added by Issue #1754), by the label each prints on its screen
+# line.
 V_LABELS=(
+  "V0 data-root-ownership"
   "V1 unit-env-drift"
   "V2 entry-path-readable"
   "V3 mainpid-identity"
@@ -379,10 +408,10 @@ V_LABELS=(
   "V6 journal-digest"
 )
 
-# assert_six_pass <deploy-output-file> <prefix>: one check() per V label
+# assert_seven_pass <deploy-output-file> <prefix>: one check() per V label
 # (`  PASS  <label>` present, anchored at line start so a FAIL line that
 # quotes another check's name cannot satisfy it) plus the RESULT line.
-assert_six_pass() {
+assert_seven_pass() {
   local out="$1" prefix="$2" label rc
   for label in "${V_LABELS[@]}"; do
     rc=0
@@ -390,23 +419,24 @@ assert_six_pass() {
     check "${prefix}: screen has '  PASS  ${label}'" "$rc"
   done
   rc=0
-  grep -q '^  RESULT: 6 PASS, 0 FAIL, 0 SKIP -> exit 0$' "$out" || rc=$?
-  check "${prefix}: RESULT line is 6 PASS, 0 FAIL, 0 SKIP -> exit 0" "$rc"
+  grep -q '^  RESULT: 7 PASS, 0 FAIL, 0 SKIP -> exit 0$' "$out" || rc=$?
+  check "${prefix}: RESULT line is 7 PASS, 0 FAIL, 0 SKIP -> exit 0" "$rc"
 }
 
 # --- 7. post-deploy checks -------------------------------------------------
 
 post_deploy_checks() {
-  step_start "7. the deploy script's own post-deploy verification screen (V1-V6), consumed"
-  # Issue #1717: the deploy script now prints the screen this section used to
-  # re-implement (is-active, MainPID identity, /api/config, journal digest).
-  # What tier 3 asserts is that the SHIPPING PATH -- the deploy script run as
-  # the operator, its checks elevating through the same prefix a real
-  # operator's would -- produced six PASS lines. The facts behind them are
-  # still printed below for the log, unasserted.
+  step_start "7. the deploy script's own post-deploy verification screen (V0-V6), consumed"
+  # Issue #1717 (V0 added by #1754): the deploy script now prints the screen
+  # this section used to re-implement (is-active, MainPID identity,
+  # /api/config, journal digest). What tier 3 asserts is that the SHIPPING
+  # PATH -- the deploy script run as the operator, its checks elevating
+  # through the same prefix a real operator's would -- produced seven PASS
+  # lines. The facts behind them are still printed below for the log,
+  # unasserted.
   echo "  --- the screen (from section 6's output) ---"
-  grep -E '^  (PASS|FAIL|SKIP)  V[1-6] |^        (WARN|INFO): |^  RESULT: ' "$DEPLOY_OUT" | sed 's/^/  /' || true
-  assert_six_pass "$DEPLOY_OUT" "deploy #1"
+  grep -E '^  (PASS|FAIL|SKIP)  V[0-6] |^        (WARN|INFO): |^  RESULT: ' "$DEPLOY_OUT" | sed 's/^/  /' || true
+  assert_seven_pass "$DEPLOY_OUT" "deploy #1"
   local rc=0
   grep -q '==> Done.' "$DEPLOY_OUT" || rc=$?
   check "deploy #1: the script printed Done. after the screen" "$rc"
@@ -479,8 +509,9 @@ drift_arm() {
   out="$(mktemp)"
   rc=0
   cexec --user deployer -w "$SRC" "$SERVICE" bash scripts/update-and-deploy-for-multiuser-ubuntu.sh >"$out" 2>&1 || rc=$?
-  grep -E '^  (PASS|FAIL|SKIP)  V[1-6] |^        |^  RESULT: |^Error: |^==> (systemctl restart|Done)' "$out" | cut -c1-220 | sed 's/^/  /' || true
+  grep -E '^  (PASS|FAIL|SKIP)  V[0-6] |^        |^  RESULT: |^Error: |^==> (systemctl restart|Done)' "$out" | cut -c1-220 | sed 's/^/  /' || true
   expect "drift: deploy #2 exits 1 (V1 FAIL, the worst code)" test "$rc" -eq 1
+  expect "drift: V0 PASSes before V1's FAIL -- unaffected by the drift" grep -q '^  PASS  V0 data-root-ownership$' "$out"
   expect "drift: V1 FAIL line names EMBEDDED_AGENT_ENTRY_PATH" grep -q '^  FAIL  V1 unit-env-drift: .*EMBEDDED_AGENT_ENTRY_PATH' "$out"
   expect "drift: the canonical remedy (setup --dry-run then --force) is named" grep -q 'setup-multiuser-for-ubuntu.sh --dry-run' "$out"
   expect "drift: the bridge remedy (a .service.d drop-in) is named" grep -q 'service.d/\*.conf drop-in' "$out"
@@ -511,18 +542,201 @@ drift_arm() {
   case " ${env_now} " in *" EMBEDDED_AGENT_ENTRY_PATH="*) rc=0 ;; esac
   check "drift: EMBEDDED_AGENT_ENTRY_PATH present again in 'systemctl show -p Environment' (the unit was re-rendered)" "$rc"
 
-  # Deploy #3: the ordinary path again, exit 0 with the six PASS lines.
-  echo "  --- deploy #3 (expect: exit 0, six PASS lines) ---"
+  # Deploy #3: the ordinary path again, exit 0 with the seven PASS lines.
+  echo "  --- deploy #3 (expect: exit 0, seven PASS lines) ---"
   out="$(mktemp)"
   rc=0
   cexec --user deployer -w "$SRC" "$SERVICE" bash scripts/update-and-deploy-for-multiuser-ubuntu.sh >"$out" 2>&1 || rc=$?
-  grep -E '^  (PASS|FAIL|SKIP)  V[1-6] |^        (WARN|INFO): |^  RESULT: ' "$out" | cut -c1-220 | sed 's/^/  /' || true
+  grep -E '^  (PASS|FAIL|SKIP)  V[0-6] |^        (WARN|INFO): |^  RESULT: ' "$out" | cut -c1-220 | sed 's/^/  /' || true
   check "drift: deploy #3 exits 0" "$rc"
-  assert_six_pass "$out" "drift: deploy #3"
+  assert_seven_pass "$out" "drift: deploy #3"
   ts_after="$(cexec --user root "$SERVICE" systemctl show -p ActiveEnterTimestampMonotonic --value "$UNIT" | tr -d '\r')"
   expect "drift: deploy #3 DID restart the unit (ActiveEnterTimestampMonotonic moved past ${ts_before})" test "$ts_after" != "$ts_before"
   rm -f "$out"
   step_end drift_arm
+}
+
+# --- 7c. the #1754 ownership-polarity arm ----------------------------------
+
+ownership_polarity_arm() {
+  step_start "7c. #1754 ownership-polarity arm: synthesize repositories/<org>/<repo>/worktrees -> misown the org dir -> deploy refuses BEFORE restart -> re-own -> deploy passes on a NON-EMPTY walked tree"
+  # This driver creates no worktree of its own (the AC's "the org dir of the
+  # worktree section 7 created" referred to scripts/verify-multiuser-docker.sh's
+  # tier-2 section 7 -- a different container/stack; Architect-confirmed
+  # correction), so 7c synthesizes its own tree directly.
+  local org="wt-issue-1754" repo="repo"
+  local org_dir="${DATA_ROOT}/repositories/${org}"
+  local worktrees_dir="${org_dir}/${repo}/worktrees"
+  local templates_dir="${org_dir}/${repo}/templates"
+  local rc out probe_out
+
+  cexec --user root "$SERVICE" install -d -m 2775 -o agentconsole -g agent-console-users \
+    "${DATA_ROOT}/repositories" "$org_dir" "${org_dir}/${repo}" "$worktrees_dir"
+  cexec --user root "$SERVICE" chown -R agentconsole:agent-console-users "$org_dir"
+
+  # Positive control (Architect addition): a clean, correctly-owned
+  # synthesized tree PASSes V0 (OWNERSHIP_OK) BEFORE any injection -- proven
+  # via a direct helper probe (V0's own contract, not the deploy script's
+  # sequencing, is what this proves), matching R5's unprivileged find (no
+  # elevation prefix).
+  probe_out="$(mktemp)"
+  rc=0
+  cexec --user deployer -w "$SRC" "$SERVICE" bash "$HELPER" data-root-ownership "$DATA_ROOT" agentconsole find >"$probe_out" 2>&1 || rc=$?
+  local control_marker
+  control_marker="$(head -n 1 "$probe_out" | tr -d '\r')"
+  echo "  positive control: rc=${rc} marker=${control_marker}"
+  expect "7c: positive control -- a clean synthesized tree PASSes V0 (OWNERSHIP_OK) before any injection" test "$rc" -eq 0 -a "$control_marker" = "OWNERSHIP_OK"
+  rm -f "$probe_out"
+
+  # The non-walked control: created once, left mis-owned through deploy #5.
+  cexec --user root "$SERVICE" install -d -m 0755 "$templates_dir"
+  cexec --user root "$SERVICE" chown deployer "$templates_dir"
+
+  # Inject: misown the org dir itself (a walked position), non-recursive --
+  # its children (repo/worktrees, still agentconsole-owned; templates_dir,
+  # already deployer-owned above) are untouched by this single chown,
+  # matching the restoration below.
+  cexec --user root "$SERVICE" chown deployer "$org_dir"
+
+  echo "  --- deploy #4 (expect: V0 FAIL naming ${org_dir}, exit 1, no restart) ---"
+  out="$(mktemp)"
+  rc=0
+  cexec --user deployer -w "$SRC" "$SERVICE" bash scripts/update-and-deploy-for-multiuser-ubuntu.sh >"$out" 2>&1 || rc=$?
+  grep -E '^  (PASS|FAIL|SKIP)  V[0-6] |^        |^  RESULT: |^Error: |^==> (systemctl restart|Done)' "$out" | cut -c1-220 | sed 's/^/  /' || true
+  expect "7c: deploy #4 exits 1 (V0 FAIL, the worst code)" test "$rc" -eq 1
+  expect "7c: V0 FAIL line names ${org_dir}" grep -qF "FAIL  V0 data-root-ownership: 1 walked directory(ies) under ${DATA_ROOT} not owned by agentconsole: ${org_dir}" "$out"
+  expect "7c: the chown remedy line names ${org_dir}" grep -qF "chown -- agentconsole:agent-console-users ${org_dir}" "$out"
+  local restarted=0
+  grep -q '==> systemctl restart' "$out" && restarted=1
+  check "7c: no '==> systemctl restart' line -- the deploy stopped before the restart" "$restarted"
+  local v_after_v0=0
+  grep -qE '^  (PASS|FAIL|SKIP)  V[1-6] ' "$out" && v_after_v0=1
+  check "7c: no V1-V6 line -- nothing after V0 ran" "$v_after_v0"
+  rm -f "$out"
+
+  # Restore: the same non-recursive chown, so templates_dir (still
+  # deployer-owned) is untouched.
+  cexec --user root "$SERVICE" chown agentconsole:agent-console-users "$org_dir"
+
+  echo "  --- deploy #5 (expect: exit 0, seven PASS lines) ---"
+  out="$(mktemp)"
+  rc=0
+  cexec --user deployer -w "$SRC" "$SERVICE" bash scripts/update-and-deploy-for-multiuser-ubuntu.sh >"$out" 2>&1 || rc=$?
+  grep -E '^  (PASS|FAIL|SKIP)  V[0-6] |^        (WARN|INFO): |^  RESULT: ' "$out" | cut -c1-220 | sed 's/^/  /' || true
+  check "7c: deploy #5 exits 0" "$rc"
+  assert_seven_pass "$out" "7c: deploy #5"
+  expect "7c: V0's INFO line names the non-walked control as ignored" grep -qF "INFO: ignored (not walked): ${templates_dir}" "$out"
+  rm -f "$out"
+
+  # Marker confirmation (Architect addition): the tree stays non-empty, so
+  # V0's PASS on deploy #5 is OWNERSHIP_OK, never OWNERSHIP_NO_TREES.
+  probe_out="$(mktemp)"
+  rc=0
+  cexec --user deployer -w "$SRC" "$SERVICE" bash "$HELPER" data-root-ownership "$DATA_ROOT" agentconsole find >"$probe_out" 2>&1 || rc=$?
+  local final_marker
+  final_marker="$(head -n 1 "$probe_out" | tr -d '\r')"
+  echo "  post-#5 probe: rc=${rc} marker=${final_marker}"
+  expect "7c: post-#5 marker is OWNERSHIP_OK, not OWNERSHIP_NO_TREES (the tree stays)" test "$rc" -eq 0 -a "$final_marker" = "OWNERSHIP_OK"
+  rm -f "$probe_out"
+
+  # The non-walked control is STILL mis-owned -- nobody auto-fixed it.
+  local templates_owner
+  templates_owner="$(cexec --user root "$SERVICE" stat -c %U "$templates_dir" | tr -d '\r')"
+  expect "7c: the non-walked control is still owned by deployer (nobody auto-fixed it)" test "$templates_owner" = "deployer"
+
+  step_end ownership_polarity
+}
+
+# --- 7d. the #1762 restart-survival arm ------------------------------------
+
+# Seeds one session plus its three FK dependents ([workers] is exercised
+# elsewhere; the ones the boot-time saveAll() cascade-deleted before #1762)
+# directly against the real data.db, restarts the unit through the shipping
+# deploy path, then reads the same rows back. `bun -e` + bun:sqlite is the
+# in-container DB tool (no sqlite3 CLI assumed).
+#
+# The seeded session is a `quick` session whose location_path is DATA_ROOT
+# itself (guaranteed to exist in the container, and a quick session's
+# recovery-state resolution never depends on data_scope/data_scope_slug --
+# both are left NULL) so that SessionInitializationService.initializeSessions()
+# takes the ordinary "path exists" branch into sessionsToSave, not the
+# orphan-deletion branch. That is asserted explicitly, as a positive control,
+# BEFORE the dependent-row assertions below -- a session lost to the orphan
+# path would trivially fail the dependents too, for the wrong reason.
+#
+# [#1756-DEPENDENT: this arm seeds `repositories.orchestrator_session_id`,
+# the dead SET-NULL reference dropped by #1756. If #1756 has merged before
+# this arm's data-shape lands, drop that column from the repository insert
+# below and drop its read-back assertion; the FK-enumeration gate in
+# sqlite-session-repository.test.ts is the single source of truth for
+# which shape is current -- keep this arm's seed in sync with it.]
+restart_survival_arm() {
+  step_start "7d. #1762 restart-survival arm: designation + pending notification survive a real restart through the shipping saveAll() path"
+  local seed_ts="2020-01-01T00:00:00.000Z"
+  local seed_js read_js seed_out read_out rc
+
+  seed_js='import { Database } from "bun:sqlite";
+const db = new Database("/var/lib/agent-console/data.db");
+db.exec("PRAGMA busy_timeout = 5000");
+db.exec("PRAGMA foreign_keys = ON");
+db.query("INSERT INTO sessions (id, type, location_path, server_pid, created_at, updated_at, data_scope, data_scope_slug, paused_at, recovery_state) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").run("issue1762-session", "quick", "/var/lib/agent-console", null, "'"${seed_ts}"'", "'"${seed_ts}"'", null, null, null, "healthy");
+db.query("INSERT INTO repositories (id, name, path, orchestrator_session_id) VALUES (?, ?, ?, ?)").run("issue1762-repo", "issue1762-repo", "/tmp/issue1762-repo", "issue1762-session");
+db.query("INSERT INTO repository_orchestrator_sessions (repository_id, session_id) VALUES (?, ?)").run("issue1762-repo", "issue1762-session");
+db.query("INSERT INTO inbound_event_notifications (id, job_id, session_id, worker_id, handler_id, event_type, event_summary, status, created_at, notified_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").run("issue1762-notif", "issue1762-job", "issue1762-session", "issue1762-worker", "issue1762-handler", "ci:completed", "tier3 7d seed", "pending", "'"${seed_ts}"'", null);
+console.log("SEEDED");'
+
+  seed_out="$(mktemp)"
+  rc=0
+  cexec --user agentconsole "$SERVICE" bun -e "$seed_js" >"$seed_out" 2>&1 || rc=$?
+  cat "$seed_out" | sed 's/^/  seed: /'
+  expect "7d: seed script exits 0 and prints SEEDED" bash -c "[ $rc -eq 0 ] && grep -q SEEDED '$seed_out'"
+  rm -f "$seed_out"
+
+  echo "  --- deploy #6 (the shipping restart path) ---"
+  local out
+  out="$(mktemp)"
+  rc=0
+  cexec --user deployer -w "$SRC" "$SERVICE" bash scripts/update-and-deploy-for-multiuser-ubuntu.sh >"$out" 2>&1 || rc=$?
+  grep -E '^  (PASS|FAIL|SKIP)  V[0-6] |^        (WARN|INFO): |^  RESULT: ' "$out" | cut -c1-220 | sed 's/^/  /' || true
+  check "7d: deploy #6 exits 0" "$rc"
+  assert_seven_pass "$out" "7d: deploy #6"
+  rm -f "$out"
+
+  read_js='import { Database } from "bun:sqlite";
+const db = new Database("/var/lib/agent-console/data.db");
+const session = db.query("SELECT created_at, updated_at FROM sessions WHERE id = ?").get("issue1762-session");
+if (!session) { console.log("SESSION_MISSING"); process.exit(0); }
+console.log("SESSION_PRESENT created_at=" + session.created_at + " updated_at=" + session.updated_at);
+const repo = db.query("SELECT orchestrator_session_id FROM repositories WHERE id = ?").get("issue1762-repo");
+console.log("REPO_ORCHESTRATOR_SESSION_ID=" + (repo ? repo.orchestrator_session_id : "MISSING"));
+const designation = db.query("SELECT COUNT(*) as n FROM repository_orchestrator_sessions WHERE repository_id = ? AND session_id = ?").get("issue1762-repo", "issue1762-session");
+console.log("DESIGNATION_COUNT=" + designation.n);
+const notif = db.query("SELECT status FROM inbound_event_notifications WHERE id = ?").get("issue1762-notif");
+console.log("NOTIFICATION_STATUS=" + (notif ? notif.status : "MISSING"));'
+
+  read_out="$(mktemp)"
+  rc=0
+  cexec --user agentconsole "$SERVICE" bun -e "$read_js" >"$read_out" 2>&1 || rc=$?
+  cat "$read_out" | sed 's/^/  read-back: /'
+  check "7d: read-back script exits 0" "$rc"
+
+  # Positive control FIRST: the seeded session must still be present (not
+  # swept into the orphan-deletion path) before the dependent-row
+  # assertions below can mean anything.
+  expect "7d: the seeded session is still present after the restart (not classified as an orphan)" grep -q '^SESSION_PRESENT ' "$read_out"
+  expect "7d: session created_at is unchanged (${seed_ts})" grep -qF "created_at=${seed_ts}" "$read_out"
+  expect "7d: session updated_at moved past the seed value (boot-time upsert touched it)" bash -c "grep -q '^SESSION_PRESENT ' '$read_out' && ! grep -qF 'updated_at=${seed_ts}' '$read_out'"
+
+  # The polarity-bearing assertions: these are exactly what the pre-#1762
+  # DELETE-all saveAll() cascades away, even though the session row above
+  # survives either way (it is re-inserted with the same createdAt either
+  # way -- only the OTHER tables' rows are the ones the cascade destroys).
+  expect "7d: repository_orchestrator_sessions designation still exists (DESIGNATION_COUNT=1)" grep -qF 'DESIGNATION_COUNT=1' "$read_out"
+  expect "7d: inbound_event_notifications row still exists with status=pending" grep -qF 'NOTIFICATION_STATUS=pending' "$read_out"
+  expect "7d: repositories.orchestrator_session_id (dead SET-NULL column) is still set, not nulled" grep -qF 'REPO_ORCHESTRATOR_SESSION_ID=issue1762-session' "$read_out"
+  rm -f "$read_out"
+
+  step_end restart_survival
 }
 
 # --- 8. the three #1690 helper cases ---------------------------------------
@@ -671,6 +885,8 @@ main() {
   run_deploy
   post_deploy_checks
   drift_arm
+  ownership_polarity_arm
+  restart_survival_arm
   helper_cases
   run_smokes
   footprint
