@@ -18,6 +18,9 @@
  * exit-code mapping must never claim MEASURED once a run halted on budget.
  */
 import { describe, it, expect } from 'bun:test';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
   ALL_SERVER_NAMES,
   LOCAL_SERVER,
@@ -37,8 +40,12 @@ import {
   finalExitCode,
   hasMcp,
   initLite,
+  matchesLedgerEntry,
   mcpStatus,
-  parseCanaryPid,
+  parseLedger,
+  parseLedgerLine,
+  snapshotIsolationEvidence,
+  verifyIsolationStrict,
   type ArmALabel,
   type InitLite,
 } from '../probe-sdk-mcp-settings-sources.js';
@@ -517,33 +524,132 @@ describe('Arm G -- env-var expansion in declared server args', () => {
   });
 });
 
-describe('parseCanaryPid (teardown orphan check, Architect finding PR #1782)', () => {
-  it('parses a bare pid on the first line', () => {
-    expect(parseCanaryPid('12345\n2026-09-20T20:00:00.000Z\n')).toBe(12345);
+describe('parseLedgerLine / parseLedger (teardown orphan check, Architect ruling PR #1782, CodeRabbit M1)', () => {
+  it('parses a well-formed line', () => {
+    expect(parseLedgerLine('12345\t9876543\tprobe-project-x\t2026-09-20T20:00:00.000Z')).toEqual({
+      pid: 12345,
+      starttime: '9876543',
+      serverName: 'probe-project-x',
+      timestamp: '2026-09-20T20:00:00.000Z',
+    });
   });
 
-  it('parses a pid with no trailing content', () => {
-    expect(parseCanaryPid('42')).toBe(42);
+  it('returns null for fewer than 4 tab-separated fields', () => {
+    expect(parseLedgerLine('12345\t9876543\tprobe-project-x')).toBeNull();
   });
 
-  it('tolerates surrounding whitespace on the first line', () => {
-    expect(parseCanaryPid('  99  \n')).toBe(99);
+  it('returns null for a non-numeric or non-positive pid', () => {
+    expect(parseLedgerLine('not-a-pid\t9876543\tprobe-project-x\t2026-09-20T20:00:00.000Z')).toBeNull();
+    expect(parseLedgerLine('0\t9876543\tprobe-project-x\t2026-09-20T20:00:00.000Z')).toBeNull();
+    expect(parseLedgerLine('-5\t9876543\tprobe-project-x\t2026-09-20T20:00:00.000Z')).toBeNull();
   });
 
-  it('returns null for the OLD timestamp-only canary format (no PID present)', () => {
-    expect(parseCanaryPid('2026-09-20T20:00:00.000Z\n')).toBeNull();
+  it('returns null for an empty line', () => {
+    expect(parseLedgerLine('')).toBeNull();
   });
 
-  it('returns null for an empty file', () => {
-    expect(parseCanaryPid('')).toBeNull();
+  it('parses every valid line in a multi-line ledger, skipping blanks and malformed lines', () => {
+    const content = [
+      '111\t1000\tprobe-user-mcp\t2026-09-20T20:00:00.000Z',
+      '',
+      'garbage-line',
+      '222\t2000\tprobe-project-x\t2026-09-20T20:00:01.000Z',
+      '',
+    ].join('\n');
+    expect(parseLedger(content)).toEqual([
+      { pid: 111, starttime: '1000', serverName: 'probe-user-mcp', timestamp: '2026-09-20T20:00:00.000Z' },
+      { pid: 222, starttime: '2000', serverName: 'probe-project-x', timestamp: '2026-09-20T20:00:01.000Z' },
+    ]);
+  });
+});
+
+/** A synthetic `/proc/<pid>/stat` line: comm intentionally contains a space AND a `)` to exercise the last-`)` split. */
+function fakeStatLine(starttime: string): string {
+  return `12345 (weird comm)) S 1 12345 12345 0 -1 4194560 100 0 0 0 10 5 0 0 20 0 1 0 ${starttime} 4327424 259 18446744073709551615 1 1 0 0 0 0 0 4096 0 0 0 0 17 0 0 0 0 0 0`;
+}
+
+describe('matchesLedgerEntry (identity check before SIGKILL, Architect ruling PR #1782, CodeRabbit M2)', () => {
+  const FIXTURE_MARKER = 'stdio-echo-mcp-server.ts';
+
+  it('matches when starttime and cmdline both agree', () => {
+    expect(matchesLedgerEntry('9876543', fakeStatLine('9876543'), `bun\0/abs/path/scripts/smoke/fixtures/${FIXTURE_MARKER}\0--canary\0/tmp/x.touched\0`, FIXTURE_MARKER)).toBe(true);
   });
 
-  it('returns null for pid 0 (never a real process)', () => {
-    expect(parseCanaryPid('0\n')).toBeNull();
+  it('does not match when the starttime has changed (PID reused by a different process)', () => {
+    expect(matchesLedgerEntry('9876543', fakeStatLine('1111111'), `bun\0/abs/path/scripts/smoke/fixtures/${FIXTURE_MARKER}\0`, FIXTURE_MARKER)).toBe(false);
   });
 
-  it('returns null for a negative or non-numeric first line', () => {
-    expect(parseCanaryPid('-5\n')).toBeNull();
-    expect(parseCanaryPid('not-a-pid\n')).toBeNull();
+  it('does not match when cmdline no longer contains the fixture path (same starttime, different program -- an unlikely but not impossible PID-reuse coincidence)', () => {
+    expect(matchesLedgerEntry('9876543', fakeStatLine('9876543'), 'some-other-program\0--flag\0', FIXTURE_MARKER)).toBe(false);
+  });
+
+  it('never matches an empty ledger starttime (never recorded, e.g. a non-Linux spawn)', () => {
+    expect(matchesLedgerEntry('', fakeStatLine('9876543'), `bun\0${FIXTURE_MARKER}\0`, FIXTURE_MARKER)).toBe(false);
+  });
+
+  it('does not match malformed stat content (no starttime parseable)', () => {
+    expect(matchesLedgerEntry('9876543', 'not-a-stat-line', `bun\0${FIXTURE_MARKER}\0`, FIXTURE_MARKER)).toBe(false);
+  });
+});
+
+describe('verifyIsolationStrict / snapshotIsolationEvidence (isolation gate, Architect ruling PR #1782, CodeRabbit M3)', () => {
+  // Real temp directories, not synthetic in-memory objects: snapshotIsolationEvidence()
+  // calls transcriptFiles()/existsSync() against the filesystem, and the whole
+  // point of this gate is that a file the HARNESS itself wrote (.claude.json)
+  // must not count as evidence -- that claim is only meaningful checked for real.
+  function makeConfigDir(): string {
+    return mkdtempSync(join(tmpdir(), 'probe-isolation-strict-test-'));
+  }
+
+  it('the seeded .claude.json alone is NOT evidence -- writing it produces no ok=true delta', () => {
+    const configDir = makeConfigDir();
+    try {
+      const before = snapshotIsolationEvidence(configDir);
+      writeFileSync(join(configDir, '.claude.json'), '{}');
+      const result = verifyIsolationStrict(configDir, before);
+      expect(result.ok).toBe(false);
+    } finally {
+      rmSync(configDir, { recursive: true, force: true });
+    }
+  });
+
+  it('a grown transcript-file count IS evidence', () => {
+    const configDir = makeConfigDir();
+    try {
+      const before = snapshotIsolationEvidence(configDir);
+      mkdirSync(join(configDir, 'projects', 'some-project'), { recursive: true });
+      writeFileSync(join(configDir, 'projects', 'some-project', 'abc.jsonl'), '{}\n');
+      const result = verifyIsolationStrict(configDir, before);
+      expect(result.ok).toBe(true);
+      expect(result.after.transcriptCount).toBeGreaterThan(result.before.transcriptCount);
+    } finally {
+      rmSync(configDir, { recursive: true, force: true });
+    }
+  });
+
+  it('a newly-created sessions/ dir IS evidence, even with transcript count unchanged', () => {
+    const configDir = makeConfigDir();
+    try {
+      const before = snapshotIsolationEvidence(configDir);
+      mkdirSync(join(configDir, 'sessions'), { recursive: true });
+      const result = verifyIsolationStrict(configDir, before);
+      expect(result.ok).toBe(true);
+      expect(result.before.sessionsDirExists).toBe(false);
+      expect(result.after.sessionsDirExists).toBe(true);
+    } finally {
+      rmSync(configDir, { recursive: true, force: true });
+    }
+  });
+
+  it('an ALREADY-existing sessions/ dir is not re-counted as evidence on a second snapshot (no delta)', () => {
+    const configDir = makeConfigDir();
+    try {
+      mkdirSync(join(configDir, 'sessions'), { recursive: true });
+      const before = snapshotIsolationEvidence(configDir);
+      const result = verifyIsolationStrict(configDir, before);
+      expect(result.ok).toBe(false);
+    } finally {
+      rmSync(configDir, { recursive: true, force: true });
+    }
   });
 });

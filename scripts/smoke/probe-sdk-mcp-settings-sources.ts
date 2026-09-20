@@ -212,7 +212,7 @@
  * Usage: bun scripts/smoke/probe-sdk-mcp-settings-sources.ts [--armA] [--armC] [--armB] [--armF] [--armE] [--armD] [--armG] [--max-usd <n>]
  */
 
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { createSdkMcpServer, type McpServerConfig, type Options, type Settings } from '../../packages/embedded-agent/node_modules/@anthropic-ai/claude-agent-sdk';
@@ -225,13 +225,14 @@ import {
   isolateClaudeConfigDir,
   nonce,
   stamp,
+  transcriptFiles,
   turnLine,
   turnSettled,
-  verifyIsolation,
   type SystemInitMessage,
   type TurnOutcome,
 } from './probe-sdk-session-harness.js';
 import { readUserScopeMcpServers, startAgentConsoleStandIn } from './probe-sdk-declared-mcp-and-task.js';
+import { parseProcStatStarttime } from './fixtures/proc-stat.js';
 
 // ---------------------------------------------------------------------------
 // Exit codes and the pure verdict layer (the part the unit test pins)
@@ -246,7 +247,12 @@ export const PROBE_EXIT = {
 const EXIT_CODE_MEANINGS: Record<number, string> = {
   [PROBE_EXIT.MEASURED]: 'measured; every selected arm produced a definite reading',
   [PROBE_EXIT.INCONCLUSIVE]: 'inconclusive; at least one selected arm produced no reading',
-  [PROBE_EXIT.HARNESS]: 'harness failure; nothing was measured',
+  // NOT "nothing was measured" (Architect ruling, PR #1782, CodeRabbit m4):
+  // a surviving canary process is a HARNESS-level failure discovered only
+  // at teardown, AFTER every arm above has already printed its verdict --
+  // those readings are real and readable above, the run simply cannot be
+  // trusted to have cleaned up after itself.
+  [PROBE_EXIT.HARNESS]: 'harness failure -- verdicts above are printed and readable, but the run is not clean (see the HARNESS/STOP lines)',
 };
 
 export interface ArmVerdict {
@@ -832,7 +838,7 @@ function stdioServerConfig(name: string, extraArgs: string[] = [], env?: Record<
     // failure to match there is attributable to the SDK's comparison
     // semantics, not to a resolvable-vs-literal command-string mismatch.
     command: process.execPath,
-    args: [FIXTURE_PATH, '--canary', canaryPath, '--env-var', 'PROBE_MCP_ECHO_VAR', ...extraArgs],
+    args: [FIXTURE_PATH, '--canary', canaryPath, '--ledger', spawnLedgerPath(), '--env-var', 'PROBE_MCP_ECHO_VAR', ...extraArgs],
     alwaysLoad: true,
     ...(env ? { env } : {}),
   };
@@ -844,6 +850,11 @@ let fixturesCanaryDir = '';
 
 function spawnCanaryPath(name: string): string {
   return join(fixturesCanaryDir, `${name}.touched`);
+}
+
+/** Append-only spawn ledger path (Architect ruling, PR #1782, CodeRabbit M1) -- one file per run, never truncated, never reset between sessions. */
+function spawnLedgerPath(): string {
+  return join(fixturesCanaryDir, 'spawns.ledger');
 }
 
 function resetSpawnCanaries(names: readonly string[]): void {
@@ -860,74 +871,124 @@ function readSpawnCanaries<N extends string>(names: readonly N[]): Record<N, boo
 }
 
 /**
- * Pure parse of a canary file's own first line: the fixture writes
- * `process.pid` there before anything else (see the fixture's own header).
- * Kept separate from the syscall side below so it is unit-testable for
- * free -- no process needs to exist for this function to be exercised.
+ * Pure parse of ONE spawn-ledger line (Architect ruling, PR #1782,
+ * CodeRabbit M1). The ledger is append-only for the whole run -- unlike
+ * the resettable per-server `.touched` canary, a later session's reset can
+ * never overwrite an earlier process's record here, so a sweep at the end
+ * of the run can still find a process that outlived the session that
+ * spawned it, even after that server's OWN canary file was reset by a
+ * subsequent session.
  */
-export function parseCanaryPid(content: string): number | null {
-  const firstLine = (content.split('\n')[0] ?? '').trim();
-  if (!/^\d+$/.test(firstLine)) return null;
-  const pid = Number(firstLine);
-  return pid > 0 ? pid : null;
+export interface LedgerEntry {
+  pid: number;
+  starttime: string;
+  serverName: string;
+  timestamp: string;
+}
+
+export function parseLedgerLine(line: string): LedgerEntry | null {
+  const parts = line.split('\t');
+  if (parts.length < 4) return null;
+  const pid = Number(parts[0]);
+  if (!Number.isInteger(pid) || pid <= 0) return null;
+  return { pid, starttime: parts[1], serverName: parts[2], timestamp: parts[3] };
+}
+
+export function parseLedger(content: string): LedgerEntry[] {
+  const out: LedgerEntry[] = [];
+  for (const line of content.split('\n')) {
+    const entry = parseLedgerLine(line);
+    if (entry) out.push(entry);
+  }
+  return out;
 }
 
 /**
- * `process.kill(pid, 0)` sends no signal, only probes for existence:
- * throwing `ESRCH` means the pid is gone; any other outcome (no throw, or
- * a permission error) means SOMETHING at that pid still exists.
+ * Pure identity match (Architect ruling, PR #1782, CodeRabbit M2):
+ * `process.kill(pid, 0)` alone only asks "does SOMETHING exist at this
+ * PID", which the OS can reassign to an unrelated process once the
+ * fixture that originally owned it exits -- a naive re-check could then
+ * SIGKILL a stranger. This compares the CURRENT `/proc/<pid>/stat`
+ * starttime against what the ledger recorded at spawn time, AND requires
+ * the current `/proc/<pid>/cmdline` to contain the fixture's own script
+ * path -- both must agree for this to be treated as the SAME process the
+ * ledger entry describes. An empty `ledgerStarttime` (never recorded --
+ * e.g. the entry was written on a non-Linux run) can never match.
  */
-function isProcessAlive(pid: number): boolean {
+export function matchesLedgerEntry(ledgerStarttime: string, currentStatContent: string, currentCmdlineContent: string, fixturePathMarker: string): boolean {
+  if (!ledgerStarttime) return false;
+  const currentStarttime = parseProcStatStarttime(currentStatContent);
+  return currentStarttime !== null && currentStarttime === ledgerStarttime && currentCmdlineContent.includes(fixturePathMarker);
+}
+
+/** ENOENT = the pid is gone (expected, not reported); EACCES/EPERM = it exists but this process cannot read its /proc entry (reported, never signaled). */
+function readProcFile(path: string): { content: string | null; permissionDenied: boolean } {
   try {
-    process.kill(pid, 0);
-    return true;
+    return { content: readFileSync(path, 'utf8'), permissionDenied: false };
   } catch (err) {
-    return (err as NodeJS.ErrnoException).code !== 'ESRCH';
+    const code = (err as NodeJS.ErrnoException).code;
+    return { content: null, permissionDenied: code === 'EACCES' || code === 'EPERM' };
   }
 }
 
 export interface OrphanSweepResult {
   checked: number;
+  /** Identity-CONFIRMED survivors of this run's own fixture spawns (killed, or a kill attempt was made). */
   survivors: number[];
   killed: number[];
+  /** A PID the ledger recorded that still exists but could NOT be confirmed as ours (PID reuse, permission, or non-Linux) -- NEVER signaled. */
+  reportedOnly: number[];
 }
 
 /**
- * Teardown's orphan check (Architect finding, PR #1782): the header always
+ * Teardown's orphan check (Architect ruling, PR #1782): the header always
  * claimed "teardown additionally verifies no canary-server PID from this
- * run remains", but nothing actually read the canary files back before
- * this. Reads every `*.touched` file under `canaryDir`, parses its PID, and
- * SIGKILLs (reporting) any survivor -- the `claude` child's own exit is
- * expected to already have taken every MCP subprocess with it, so a
- * non-empty `survivors` list is itself a finding, not routine cleanup.
+ * run remains", but nothing actually read anything back before this. Reads
+ * the run's single append-only ledger (never the resettable `.touched`
+ * files), and for each recorded pid still resolvable in `/proc`, confirms
+ * identity via `matchesLedgerEntry` before ever signaling it -- the
+ * `claude` child's own exit is expected to already have taken every MCP
+ * subprocess with it, so a non-empty `survivors` list is itself a finding,
+ * not routine cleanup. Linux-only (same convention as
+ * `check-stdin-sink-leak.ts`): on any other platform every ledger pid is
+ * reported, never probed or signaled.
  */
 function sweepOrphanCanaryProcesses(canaryDir: string): OrphanSweepResult {
-  const result: OrphanSweepResult = { checked: 0, survivors: [], killed: [] };
-  let files: string[];
+  const result: OrphanSweepResult = { checked: 0, survivors: [], killed: [], reportedOnly: [] };
+  let ledgerContent: string;
   try {
-    files = readdirSync(canaryDir).filter((f) => f.endsWith('.touched'));
+    ledgerContent = readFileSync(spawnLedgerPath(), 'utf8');
   } catch {
     return result;
   }
-  for (const file of files) {
-    let content: string;
-    try {
-      content = readFileSync(join(canaryDir, file), 'utf8');
-    } catch {
+  const entries = parseLedger(ledgerContent);
+  result.checked = entries.length;
+  if (process.platform !== 'linux') {
+    for (const entry of entries) result.reportedOnly.push(entry.pid);
+    return result;
+  }
+  for (const entry of entries) {
+    const stat = readProcFile(`/proc/${entry.pid}/stat`);
+    if (stat.content === null) {
+      if (stat.permissionDenied) result.reportedOnly.push(entry.pid);
+      continue; // ENOENT: the process is gone, exactly as expected.
+    }
+    const cmdline = readProcFile(`/proc/${entry.pid}/cmdline`);
+    if (cmdline.content === null) {
+      result.reportedOnly.push(entry.pid); // stat readable a moment ago, cmdline now gone/denied -- cannot confirm identity.
       continue;
     }
-    const pid = parseCanaryPid(content);
-    if (pid === null) continue;
-    result.checked++;
-    if (isProcessAlive(pid)) {
-      result.survivors.push(pid);
+    if (matchesLedgerEntry(entry.starttime, stat.content, cmdline.content, FIXTURE_PATH)) {
+      result.survivors.push(entry.pid);
       try {
-        process.kill(pid, 'SIGKILL');
-        result.killed.push(pid);
+        process.kill(entry.pid, 'SIGKILL');
+        result.killed.push(entry.pid);
       } catch {
-        // Already gone by the time we tried, or no permission to signal it
-        // -- still reported as a survivor above; that is the finding.
+        // Still a confirmed survivor even if the kill itself failed (race,
+        // or no permission to signal) -- already recorded above.
       }
+    } else {
+      result.reportedOnly.push(entry.pid); // PID reused by an unrelated process -- never signaled.
     }
   }
   return result;
@@ -1119,8 +1180,45 @@ interface SessionRun {
   session: ProbeSession;
 }
 
-/** Set once by main() right after buildFixtures(); read by the early isolation check below. */
+/**
+ * Strict isolation evidence (Architect ruling, PR #1782, CodeRabbit M3):
+ * the shared harness's `verifyIsolation()` accepts `<configDir>/.claude.json`
+ * as evidence, but THIS probe's own `buildFixtures()` writes that exact
+ * file itself before any session ever runs -- so both the early and final
+ * isolation checks could pass even if the spawned `claude` child never
+ * actually honored `CLAUDE_CONFIG_DIR`. This requires evidence the CHILD
+ * produced, not the harness: the transcript file COUNT growing past a
+ * `before` snapshot, or a `sessions/` directory newly appearing -- neither
+ * of which `buildFixtures()` ever writes. (`verifyIsolation()` itself is
+ * left untouched; its own tautology is a separate concern.)
+ */
+export interface IsolationEvidenceSnapshot {
+  transcriptCount: number;
+  sessionsDirExists: boolean;
+}
+
+export function snapshotIsolationEvidence(configDir: string): IsolationEvidenceSnapshot {
+  return {
+    transcriptCount: transcriptFiles(configDir).length,
+    sessionsDirExists: existsSync(join(configDir, 'sessions')),
+  };
+}
+
+export interface StrictIsolationResult {
+  ok: boolean;
+  before: IsolationEvidenceSnapshot;
+  after: IsolationEvidenceSnapshot;
+}
+
+export function verifyIsolationStrict(configDir: string, before: IsolationEvidenceSnapshot): StrictIsolationResult {
+  const after = snapshotIsolationEvidence(configDir);
+  const ok = after.transcriptCount > before.transcriptCount || (after.sessionsDirExists && !before.sessionsDirExists);
+  return { ok, before, after };
+}
+
+/** Set once by main() right after buildFixtures(), BEFORE any session runs; read by both the early and final isolation checks below. */
 let currentConfigDirForIsolationCheck = '';
+let preRunIsolationSnapshot: IsolationEvidenceSnapshot | null = null;
 /** Fires once, after the FIRST billed session this process runs (Architect requirement, PR #1782: per-arm, not only at the very end). */
 let earlyIsolationChecked = false;
 
@@ -1144,11 +1242,11 @@ async function runOneSession(
   await session.waitForStreamEnd();
   if (!earlyIsolationChecked) {
     earlyIsolationChecked = true;
-    const early = verifyIsolation(currentConfigDirForIsolationCheck);
-    console.log(`${label}: EARLY isolation check (first billed session) -- evidence=${JSON.stringify(early.evidence)}`);
-    if (!early.ok) {
+    const strict = verifyIsolationStrict(currentConfigDirForIsolationCheck, preRunIsolationSnapshot!);
+    console.log(`${label}: EARLY isolation check (first billed session) -- before=${JSON.stringify(strict.before)} after=${JSON.stringify(strict.after)} ok=${strict.ok}`);
+    if (!strict.ok) {
       throw new HarnessIsolationFailure(
-        'the CLAUDE_CONFIG_DIR override did not reach the first billed session -- halting immediately rather than waiting until every arm has run',
+        'no child-generated evidence (transcript-file growth or a new sessions/ dir) appeared after the first billed session -- the CLAUDE_CONFIG_DIR override may not have reached the child',
       );
     }
   }
@@ -1846,6 +1944,10 @@ async function main(): Promise<number> {
   const g3HeaderStandIn = await startHeaderCapturingStandIn('x-probe');
   const f = buildFixtures(g3HeaderStandIn.url);
   currentConfigDirForIsolationCheck = f.configDir;
+  // Snapshotted BEFORE any session runs, so both the early (first-session)
+  // and final isolation checks compare against the SAME pre-run baseline
+  // (Architect ruling, PR #1782, CodeRabbit M3).
+  preRunIsolationSnapshot = snapshotIsolationEvidence(f.configDir);
   h(`probe-sdk-mcp-settings-sources -- arms=${[...arms].join(' ')} maxUsd=${maxUsd} config=${f.configDir} scratch=${f.scratchDir} canaries=${f.canaryDir}`);
   console.log(`user-scope mcpServers seeded via readUserScopeMcpServers(): ${JSON.stringify(Object.keys(userServers))} (unused by this probe's own servers; kept only as the sibling precondition check)`);
 
@@ -1911,14 +2013,11 @@ async function main(): Promise<number> {
   h('ISOLATION');
   // Re-checked here regardless of the early per-arm result above (which
   // only fires once, after the FIRST billed session) -- this is the
-  // Architect-required FINAL check, kept alongside the early one rather
-  // than replaced by it.
-  const iso = verifyIsolation(f.configDir);
-  console.log(`config dir ${f.configDir}: evidence=${JSON.stringify(iso.evidence)} transcripts=${iso.files.length}`);
-  if (!iso.ok) harnessFailed = true;
-  if (harnessFailed) {
-    console.log('HARNESS: the CLAUDE_CONFIG_DIR override did not reach the child; every isolation claim above is void');
-  }
+  // Architect-required FINAL check, kept alongside the early one, both
+  // against the SAME pre-run baseline.
+  const finalIso = verifyIsolationStrict(f.configDir, preRunIsolationSnapshot!);
+  console.log(`config dir ${f.configDir}: before=${JSON.stringify(finalIso.before)} after=${JSON.stringify(finalIso.after)} ok=${finalIso.ok}`);
+  if (!finalIso.ok) harnessFailed = true;
 
   h('VERDICTS');
   for (const v of verdicts) {
@@ -1931,12 +2030,20 @@ async function main(): Promise<number> {
 
   h('TEARDOWN');
   // The `claude` child's own exit is expected to already have taken every
-  // MCP subprocess with it; this reads each canary file's own PID BEFORE
-  // the canary dir is removed and reports (SIGKILLing) any survivor.
+  // MCP subprocess with it; this reads the run's append-only spawn ledger
+  // BEFORE the canary dir is removed and reports (SIGKILLing) any
+  // identity-confirmed survivor. A survivor -- whether killed or not --
+  // is a HARNESS-level finding (Architect ruling, PR #1782, CodeRabbit m4):
+  // it means this run cannot be trusted to have cleaned up after itself,
+  // regardless of what the arms above measured.
   const sweep = sweepOrphanCanaryProcesses(f.canaryDir);
-  console.log(`canary-server PID check: checked=${sweep.checked} survivors=${JSON.stringify(sweep.survivors)} killed=${JSON.stringify(sweep.killed)}`);
+  console.log(`canary-server ledger check: checked=${sweep.checked} survivors=${JSON.stringify(sweep.survivors)} killed=${JSON.stringify(sweep.killed)} reportedOnly=${JSON.stringify(sweep.reportedOnly)}`);
   if (sweep.survivors.length > 0) {
+    harnessFailed = true;
     console.log(`STOP: ${sweep.survivors.length} canary-server process(es) survived past the claude child's exit -- ${JSON.stringify(sweep.survivors)}`);
+  }
+  if (sweep.reportedOnly.length > 0) {
+    console.log(`NOTE: ${sweep.reportedOnly.length} ledger pid(s) could not be confirmed as ours (PID reuse, permission, or non-Linux) -- not signaled: ${JSON.stringify(sweep.reportedOnly)}`);
   }
 
   try {
@@ -1946,8 +2053,7 @@ async function main(): Promise<number> {
     // Scratch dirs; leaving them behind is harmless.
   }
 
-  if (harnessFailed) return PROBE_EXIT.HARNESS;
-  const code = finalExitCode(verdicts, halted !== null);
+  const code = harnessFailed ? PROBE_EXIT.HARNESS : finalExitCode(verdicts, halted !== null);
   console.log(`exit ${code}: ${EXIT_CODE_MEANINGS[code]}`);
   return code;
 }
