@@ -578,7 +578,7 @@ ownership_polarity_arm() {
   local org_dir="${DATA_ROOT}/repositories/${org}"
   local worktrees_dir="${org_dir}/${repo}/worktrees"
   local templates_dir="${org_dir}/${repo}/templates"
-  local rc out probe_out
+  local rc out probe_out probe_err
 
   cexec --user root "$SERVICE" install -d -m 2775 -o agentconsole -g agent-console-users \
     "${DATA_ROOT}/repositories" "$org_dir" "${org_dir}/${repo}" "$worktrees_dir"
@@ -590,13 +590,16 @@ ownership_polarity_arm() {
   # sequencing, is what this proves), matching R5's unprivileged find (no
   # elevation prefix).
   probe_out="$(mktemp)"
+  probe_err="$(mktemp)"
   rc=0
-  cexec --user deployer -w "$SRC" "$SERVICE" bash "$HELPER" data-root-ownership "$DATA_ROOT" agentconsole find >"$probe_out" 2>&1 || rc=$?
+  # A marker read by first line must come from a stdout-only capture; the exec transport does not preserve cross-stream order (Issue #1766).
+  cexec --user deployer -w "$SRC" "$SERVICE" bash "$HELPER" data-root-ownership "$DATA_ROOT" agentconsole find >"$probe_out" 2>"$probe_err" || rc=$?
   local control_marker
   control_marker="$(head -n 1 "$probe_out" | tr -d '\r')"
   echo "  positive control: rc=${rc} marker=${control_marker}"
+  sed 's/^/    probe stderr: /' "$probe_err" || true
   expect "7c: positive control -- a clean synthesized tree PASSes V0 (OWNERSHIP_OK) before any injection" test "$rc" -eq 0 -a "$control_marker" = "OWNERSHIP_OK"
-  rm -f "$probe_out"
+  rm -f "$probe_out" "$probe_err"
 
   # The non-walked control: created once, left mis-owned through deploy #5.
   cexec --user root "$SERVICE" install -d -m 0755 "$templates_dir"
@@ -641,13 +644,16 @@ ownership_polarity_arm() {
   # Marker confirmation (Architect addition): the tree stays non-empty, so
   # V0's PASS on deploy #5 is OWNERSHIP_OK, never OWNERSHIP_NO_TREES.
   probe_out="$(mktemp)"
+  probe_err="$(mktemp)"
   rc=0
-  cexec --user deployer -w "$SRC" "$SERVICE" bash "$HELPER" data-root-ownership "$DATA_ROOT" agentconsole find >"$probe_out" 2>&1 || rc=$?
+  # A marker read by first line must come from a stdout-only capture; the exec transport does not preserve cross-stream order (Issue #1766).
+  cexec --user deployer -w "$SRC" "$SERVICE" bash "$HELPER" data-root-ownership "$DATA_ROOT" agentconsole find >"$probe_out" 2>"$probe_err" || rc=$?
   local final_marker
   final_marker="$(head -n 1 "$probe_out" | tr -d '\r')"
   echo "  post-#5 probe: rc=${rc} marker=${final_marker}"
+  sed 's/^/    probe stderr: /' "$probe_err" || true
   expect "7c: post-#5 marker is OWNERSHIP_OK, not OWNERSHIP_NO_TREES (the tree stays)" test "$rc" -eq 0 -a "$final_marker" = "OWNERSHIP_OK"
-  rm -f "$probe_out"
+  rm -f "$probe_out" "$probe_err"
 
   # The non-walked control is STILL mis-owned -- nobody auto-fixed it.
   local templates_owner

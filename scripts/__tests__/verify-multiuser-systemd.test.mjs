@@ -442,7 +442,7 @@ describe('verify-multiuser-systemd.sh: 7c ownership-polarity arm is present and 
     expect(a).toContain('control_marker="$(head -n 1 "$probe_out" | tr -d \'\\r\')"');
     const order = [
       'chown -R agentconsole:agent-console-users "$org_dir"',
-      'bash "$HELPER" data-root-ownership "$DATA_ROOT" agentconsole find >"$probe_out" 2>&1',
+      'bash "$HELPER" data-root-ownership "$DATA_ROOT" agentconsole find >"$probe_out" 2>"$probe_err"',
       'expect "7c: positive control -- a clean synthesized tree PASSes V0 (OWNERSHIP_OK) before any injection"',
     ];
     let prev = -1;
@@ -451,6 +451,15 @@ describe('verify-multiuser-systemd.sh: 7c ownership-polarity arm is present and 
       expect(i).toBeGreaterThan(prev);
       prev = i;
     }
+  });
+
+  it('both #1754 marker probes capture stdout and stderr into SEPARATE files, never merged (Issue #1766)', () => {
+    const a = arm();
+    const splitCapture = 'find >"$probe_out" 2>"$probe_err"';
+    const mergedCapture = 'find >"$probe_out" 2>&1';
+    const splitCount = (a.match(new RegExp(splitCapture.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g')) ?? []).length;
+    expect(splitCount).toBe(2);
+    expect(a).not.toContain(mergedCapture);
   });
 
   it('creates the non-walked control (templates dir, chown deployer) BEFORE injecting the org-dir misownership, and the injection is non-recursive', () => {
@@ -506,6 +515,48 @@ describe('verify-multiuser-systemd.sh: 7c ownership-polarity arm is present and 
       expect(i).toBeGreaterThan(prev);
       prev = i;
     }
+  });
+});
+
+// A marker read by `head -n 1` must come from a stdout-only capture; the
+// exec transport (`docker compose exec -T`, wrapped by `cexec`) does not
+// preserve cross-stream write order, so a file opened with `2>&1` can put an
+// INFO/WARN stderr line ahead of the marker on line 1 (Issue #1766). This
+// sweeps the WHOLE driver, not just the 7c arm, for any `head -n 1 "$V"` read
+// of a variable V that was ever captured via `>"$V" 2>&1`.
+//
+// Reach measured: temporarily restoring `2>&1` on one of the two #1754 probe
+// lines (reverting one of this PR's two split-capture edits) makes this
+// test's negative assertion fail, confirming the pin actually looks at the
+// read site rather than passing vacuously. That measurement is recorded in
+// the PR body rather than committed here, per workflow.md's "a check's
+// existence is not its detection power".
+describe('verify-multiuser-systemd.sh: no `head -n 1` reads a merged-stream capture file (Issue #1766)', () => {
+  const driver = readFileSync(DRIVER, 'utf-8');
+
+  it('every variable captured via `2>&1` is never the target of a `head -n 1` read, and the sweep is proven non-vacuous', () => {
+    const mergedCaptureVars = new Set();
+    const mergedCaptureRe = /> *"\$(\w+)" 2>&1/g;
+    let m;
+    while ((m = mergedCaptureRe.exec(driver)) !== null) {
+      mergedCaptureVars.add(m[1]);
+    }
+
+    // Positive control: the driver still has ordinary `>"$out" 2>&1`
+    // captures elsewhere (grep-consumed, never read by `head -n 1`), so this
+    // sweep is exercising a non-empty set rather than vacuously passing on
+    // an instrument that finds nothing.
+    expect(mergedCaptureVars.size).toBeGreaterThan(0);
+
+    for (const v of mergedCaptureVars) {
+      const headReadRe = new RegExp(`head -n 1 "\\$${v}"`);
+      expect(driver).not.toMatch(headReadRe);
+    }
+
+    // Confirms the pin is looking at the real read site: `probe_out` (this
+    // PR's split-capture target) is still read by `head -n 1` -- just never
+    // via a merged `2>&1` capture, since it is now captured with `2>"$probe_err"`.
+    expect(driver).toContain('head -n 1 "$probe_out"');
   });
 });
 
