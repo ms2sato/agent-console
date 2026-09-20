@@ -713,6 +713,46 @@ describe('printAutoDetection — Production File Test Coverage wording', () => {
     const output = logs.join('\n');
     expect(output).toContain('❌ packages/server/src/services/foo.ts -> NO TEST');
   });
+
+  // A file `findTestFiles()` marks `isExcluded` matched a COVERAGE_PATTERN and
+  // was then removed by a COVERAGE_EXCLUSIONS regex or the re-export-only
+  // content check. Before this branch existed it shared the ⬜ "skipped (not
+  // in coverage patterns)" line with a file outside every pattern, so an
+  // acceptance report could not tell "in scope, exempt for a stated reason"
+  // from "this directory is simply not covered". Reach measured by removing
+  // the `isExcluded` branch: both `exempt (...)` expectations fail (the
+  // excluded files fall through to the generic ⬜ line), the out-of-scope and
+  // not.toContain expectations still pass — so the pin is these two lines.
+  it('reports an excluded-by-rule file as exempt (<rule>) distinctly from an out-of-scope file', () => {
+    printAutoDetection(minimalAutoDetection([
+      // Excluded by a COVERAGE_EXCLUSIONS regex: `exclusionRule` is the regex source.
+      { file: 'packages/shared/src/types/session.ts', hasTest: false, expectedTestPath: '', needsCoverage: false, isCommentOnly: false, isExcluded: true, exclusionRule: '^packages\\/shared\\/src\\/types\\/.+\\.ts$' },
+      // Excluded by the re-export-only content check.
+      { file: 'packages/server/src/repositories/index.ts', hasTest: false, expectedTestPath: '', needsCoverage: false, isCommentOnly: false, isExcluded: true, exclusionRule: 're-export-only' },
+      // Out of scope: matches no COVERAGE_PATTERN at all.
+      { file: 'packages/server/src/index.ts', hasTest: false, expectedTestPath: '', needsCoverage: false, isCommentOnly: false, isExcluded: false, exclusionRule: undefined },
+    ]));
+    expect(logs).toContain('  ⬜ packages/shared/src/types/session.ts -> exempt (^packages\\/shared\\/src\\/types\\/.+\\.ts$)');
+    expect(logs).toContain('  ⬜ packages/server/src/repositories/index.ts -> exempt (re-export-only)');
+    expect(logs).toContain('  ⬜ packages/server/src/index.ts -> skipped (not in coverage patterns)');
+    const output = logs.join('\n');
+    expect(output).not.toContain('packages/shared/src/types/session.ts -> skipped');
+    expect(output).not.toContain('packages/server/src/repositories/index.ts -> skipped');
+  });
+
+  // The covered / gap / comment-only lines are unchanged by the exempt
+  // branch: asserted as whole `console.log` calls (leading indent included),
+  // so a wording or indentation change in any of them fails here.
+  it('leaves the covered, NO TEST and comment-only lines byte-identical', () => {
+    printAutoDetection(minimalAutoDetection([
+      { file: 'packages/server/src/lib/a.ts', hasTest: true, expectedTestPath: 'packages/server/src/lib/__tests__/a.test.ts', needsCoverage: true, isCommentOnly: false, isExcluded: false },
+      { file: 'packages/server/src/lib/b.ts', hasTest: false, expectedTestPath: 'packages/server/src/lib/__tests__/b.test.ts', needsCoverage: true, isCommentOnly: false, isExcluded: false },
+      { file: 'packages/server/src/lib/c.ts', hasTest: false, expectedTestPath: 'packages/server/src/lib/__tests__/c.test.ts', needsCoverage: false, isCommentOnly: true, isExcluded: false },
+    ]));
+    expect(logs).toContain('  ✅ packages/server/src/lib/a.ts -> covered');
+    expect(logs).toContain('  ❌ packages/server/src/lib/b.ts -> NO TEST (expected: packages/server/src/lib/__tests__/b.test.ts)');
+    expect(logs).toContain('  ➖ packages/server/src/lib/c.ts -> exempted (comment-only diff)');
+  });
 });
 
 // --- printProposedBehaviorCoverage tests ---
