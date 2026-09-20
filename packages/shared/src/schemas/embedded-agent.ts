@@ -219,7 +219,7 @@ export const EmbeddedAgentDefinitionSchema = v.variant('engine', [
  * BREAKING CHANGE (documented, not silent): making `engine` a required
  * discriminant means every caller must now send it explicitly -- see
  * `packages/client/src/components/embedded-agents/AddEmbeddedAgentForm.tsx`
- * (updated in a companion PR).
+ * (updated in this PR).
  */
 export const CreateEmbeddedAgentRequestSchema = v.variant('engine', [
   v.strictObject({
