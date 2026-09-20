@@ -1184,7 +1184,10 @@ both `created_at` and `updated_at`, and a row still fails the pre-flight
 check (and migration v43 still aborts) if either one is left uncorrected:
 
 ```sql
+-- Run only for a row whose created_at is invalid.
 UPDATE sessions SET created_at = '2024-01-01T00:00:00.000Z' WHERE id = '<session-id>';
+
+-- Run only for a row whose updated_at is invalid.
 UPDATE sessions SET updated_at = '2024-01-01T00:00:00.000Z' WHERE id = '<session-id>';
 ```
 
