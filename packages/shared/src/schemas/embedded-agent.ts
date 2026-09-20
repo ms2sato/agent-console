@@ -248,11 +248,22 @@ export const CreateEmbeddedAgentRequestSchema = v.variant('engine', [
  * `compaction` follows the same whole-object replacement convention (no
  * per-subfield PATCH merging — see docs/design/embedded-agent-worker.md
  * "Compaction" § Definition config, migration, and forms).
+ *
+ * `provider` accepts EITHER engine's provider shape (a union of the two
+ * already-exported `v.strictObject`s), because `UpdateEmbeddedAgentRequestSchema`
+ * stays flat (no `engine` discriminant on a PATCH -- a PATCH body carries no
+ * `engine` field). Discrimination between the two shapes is structural:
+ * `EmbeddedAgentProviderSchema` requires `baseUrl`, `EmbeddedAgentSdkProviderSchema`
+ * is `{ model }` only, so a payload matches exactly one member (or neither,
+ * and is rejected). `EmbeddedAgentManager.updateEmbeddedAgent` is responsible
+ * for rejecting a schema-valid provider whose shape does not match the
+ * EXISTING definition's engine (`'baseUrl' in request.provider`), which the
+ * schema alone cannot know (it has no view of the persisted `existing.engine`).
  */
 export const UpdateEmbeddedAgentRequestSchema = v.strictObject({
   name: v.optional(v.pipe(v.string(), v.trim(), v.minLength(1, 'Name cannot be empty'))),
   description: v.optional(v.nullable(v.string())),
-  provider: v.optional(EmbeddedAgentProviderSchema),
+  provider: v.optional(v.union([EmbeddedAgentProviderSchema, EmbeddedAgentSdkProviderSchema])),
   systemPrompt: v.optional(v.nullable(v.string())),
   maxToolIterations: v.optional(v.nullable(v.pipe(v.number(), v.integer(), v.minValue(1)))),
   enabledTools: v.optional(v.nullable(EnabledToolsSchema)),

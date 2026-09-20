@@ -563,6 +563,44 @@ describe('UpdateEmbeddedAgentRequestSchema', () => {
     expect(result.success).toBe(false);
   });
 
+  describe('provider union (CodeRabbit Major, schemas/embedded-agent.ts:255 -- a PATCH carries no engine, so provider must admit both engines\' shapes structurally)', () => {
+    it('accepts a bare claude-sdk-shaped provider ({ model } only, no baseUrl)', () => {
+      const result = v.safeParse(UpdateEmbeddedAgentRequestSchema, {
+        provider: { model: 'claude-sonnet-5' },
+      });
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.output.provider).toEqual({ model: 'claude-sonnet-5' });
+      }
+    });
+
+    it('accepts an openai-api-shaped provider (baseUrl + model), unchanged from before', () => {
+      const result = v.safeParse(UpdateEmbeddedAgentRequestSchema, {
+        provider: { baseUrl: 'http://localhost:8080/v1', model: 'vllm-model', apiKeyRef: 'key-1' },
+      });
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.output.provider).toEqual({
+          baseUrl: 'http://localhost:8080/v1',
+          model: 'vllm-model',
+          apiKeyRef: 'key-1',
+        });
+      }
+    });
+
+    it('rejects a provider mixing an SDK-only-looking field name with an invalid combination (neither union member matches)', () => {
+      // `{ model, apiKeyRef }` with no `baseUrl` is not a valid EmbeddedAgentProviderSchema
+      // (apiKeyRef alone doesn't imply baseUrl, but the openai-api member is a
+      // strictObject requiring baseUrl -- so this payload matches neither
+      // member: EmbeddedAgentSdkProviderSchema strictly disallows the extra
+      // `apiKeyRef` key, and EmbeddedAgentProviderSchema is missing `baseUrl`.
+      const result = v.safeParse(UpdateEmbeddedAgentRequestSchema, {
+        provider: { model: 'x', apiKeyRef: 'y' },
+      });
+      expect(result.success).toBe(false);
+    });
+  });
+
   it('accepts enabledTools: null (clear to default)', () => {
     const result = v.safeParse(UpdateEmbeddedAgentRequestSchema, {
       enabledTools: null,

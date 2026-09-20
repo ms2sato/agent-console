@@ -254,6 +254,17 @@ export class EmbeddedAgentManager implements AgentSurface<'embedded'> {
     }
 
     if (existing.engine === 'claude-sdk') {
+      // `UpdateEmbeddedAgentRequestSchema.provider` is a union of both
+      // engines' provider shapes (it has to be -- a PATCH carries no
+      // `engine` discriminant), so a schema-valid payload can still be
+      // shaped for the WRONG engine relative to this existing definition.
+      // The schema alone cannot catch that (it has no view of
+      // `existing.engine`); reject it here, structurally, via presence of
+      // `baseUrl` -- the field only the openai-api shape carries.
+      if (request.provider !== undefined && 'baseUrl' in request.provider) {
+        throw new ValidationError('provider shape does not match this definition engine (claude-sdk)');
+      }
+
       const enabledTools =
         request.enabledTools === null ? undefined : (request.enabledTools ?? existing.enabledTools);
 
@@ -264,17 +275,7 @@ export class EmbeddedAgentManager implements AgentSurface<'embedded'> {
         name: request.name ?? existing.name,
         description:
           request.description === null ? undefined : (request.description ?? existing.description),
-        // Narrowed to `{ model }`, NOT `request.provider ?? existing.provider`:
-        // `UpdateEmbeddedAgentRequestSchema.provider` is shaped for the
-        // openai-api arm (requires `baseUrl`, may carry `apiKeyRef`) because
-        // it predates this PR's claude-sdk update path. A bare `?? `
-        // assignment would structurally type-check (a `{baseUrl, model,
-        // apiKeyRef?}` object satisfies `{model: string}`) but would let a
-        // caller-supplied `baseUrl`/`apiKeyRef` leak onto a claude-sdk
-        // definition's `provider` at runtime -- violating "no provider
-        // secret ever crosses the server" for this engine (§3.2). Extract
-        // only `.model`.
-        provider: request.provider !== undefined ? { model: request.provider.model } : existing.provider,
+        provider: request.provider ?? existing.provider,
         systemPrompt:
           request.systemPrompt === null ? undefined : (request.systemPrompt ?? existing.systemPrompt),
         maxToolIterations:
@@ -316,6 +317,14 @@ export class EmbeddedAgentManager implements AgentSurface<'embedded'> {
       request.enabledTools === null ? undefined : (request.enabledTools ?? existing.enabledTools);
     if (!taskCapability.capable && resolvedEnabledTools?.includes('Task')) {
       throw new ValidationError(taskCapability.reason);
+    }
+
+    // Same structural mismatch guard as the claude-sdk branch above, in the
+    // opposite direction: a schema-valid claude-sdk-shaped `{ model }`
+    // payload (no `baseUrl`) must not be accepted as-is here, since
+    // openai-api's own `EmbeddedAgentDefinition.provider` requires `baseUrl`.
+    if (request.provider !== undefined && !('baseUrl' in request.provider)) {
+      throw new ValidationError('provider shape does not match this definition engine (openai-api)');
     }
 
     const updated: EmbeddedAgentDefinition = {

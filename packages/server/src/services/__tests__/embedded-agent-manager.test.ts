@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach } from 'bun:test';
-import { JOB_TYPES, type EmbeddedAgentDefinition } from '@agent-console/shared';
+import * as v from 'valibot';
+import { JOB_TYPES, UpdateEmbeddedAgentRequestSchema, type EmbeddedAgentDefinition } from '@agent-console/shared';
 import type { EmbeddedAgentRepository } from '../../repositories/embedded-agent-repository.js';
 import type { JobQueue } from '../../jobs/index.js';
 import {
@@ -469,6 +470,20 @@ describe('EmbeddedAgentManager', () => {
       expect(updated?.provider).toEqual(newProvider);
     });
 
+    it('rejects an openai-api PATCH whose provider is claude-sdk-shaped (bare { model }, no baseUrl)', async () => {
+      const manager = await getManager();
+      const created = await seed(manager);
+
+      const parsed = v.parse(UpdateEmbeddedAgentRequestSchema, { provider: { model: 'x' } });
+
+      await expect(manager.updateEmbeddedAgent(created.id, parsed)).rejects.toThrow(
+        'provider shape does not match this definition engine (openai-api)'
+      );
+
+      const stillOriginal = manager.getEmbeddedAgent(created.id);
+      expect(stillOriginal?.provider).toEqual(VALID_PROVIDER);
+    });
+
     it('bumps updatedAt', async () => {
       const manager = await getManager();
       const created = await seed(manager);
@@ -534,7 +549,7 @@ describe('EmbeddedAgentManager', () => {
 
         const updated = await manager.updateEmbeddedAgent(created.id, {
           name: 'Renamed Claude',
-          provider: { baseUrl: 'http://localhost:11434/v1', model: 'claude-opus-5' },
+          provider: { model: 'claude-opus-5' },
         });
 
         expect(updated).not.toBeNull();
@@ -543,11 +558,36 @@ describe('EmbeddedAgentManager', () => {
         expect(updated?.provider).toEqual({ model: 'claude-opus-5' });
       });
 
-      it("narrows a patched provider to '{ model }' only, never leaking baseUrl/apiKeyRef onto a claude-sdk definition (defense in depth: UpdateEmbeddedAgentRequestSchema.provider is openai-api-shaped)", async () => {
+      it('accepts a bare { model } provider PATCH, persisting exactly that shape (regression lock: the union schema must admit the claude-sdk shape on this branch)', async () => {
         const manager = await getManager();
         const created = await seedSdk(manager);
 
-        const updated = await manager.updateEmbeddedAgent(created.id, {
+        // Route the payload through the real exported schema, not a hand-typed
+        // literal: this is what makes the assertion below fail against the
+        // PRE-FIX schema (provider: v.optional(EmbeddedAgentProviderSchema),
+        // which required baseUrl) at the v.parse step, before the manager is
+        // ever reached -- rather than only failing (or worse, silently
+        // succeeding via the old `{ model: request.provider.model }`
+        // narrowing) inside the manager itself.
+        const parsed = v.parse(UpdateEmbeddedAgentRequestSchema, { provider: { model: 'x' } });
+        const updated = await manager.updateEmbeddedAgent(created.id, parsed);
+
+        expect(updated?.engine).toBe('claude-sdk');
+        expect(updated?.provider).toEqual({ model: 'x' });
+        if (updated?.engine === 'claude-sdk') {
+          expect('baseUrl' in updated.provider).toBe(false);
+          expect('apiKeyRef' in updated.provider).toBe(false);
+        }
+      });
+
+      it('rejects a claude-sdk PATCH whose provider is openai-api-shaped (has baseUrl), nothing persisted (CodeRabbit Major, schemas/embedded-agent.ts:255 -- the old narrowing silently stripped this instead of rejecting it)', async () => {
+        const manager = await getManager();
+        const created = await seedSdk(manager);
+
+        // Schema-valid (matches the union's openai-api member) but wrong for
+        // THIS existing definition's engine -- the schema has no view of
+        // `existing.engine`, so the manager must reject it structurally.
+        const parsed = v.parse(UpdateEmbeddedAgentRequestSchema, {
           provider: {
             baseUrl: 'http://localhost:11434/v1',
             model: 'claude-opus-5',
@@ -555,10 +595,13 @@ describe('EmbeddedAgentManager', () => {
           },
         });
 
-        expect(updated?.engine).toBe('claude-sdk');
-        expect(updated?.provider).toEqual({ model: 'claude-opus-5' });
-        expect('baseUrl' in (updated?.provider ?? {})).toBe(false);
-        expect('apiKeyRef' in (updated?.provider ?? {})).toBe(false);
+        await expect(manager.updateEmbeddedAgent(created.id, parsed)).rejects.toThrow(
+          'provider shape does not match this definition engine (claude-sdk)'
+        );
+
+        const stillOriginal = manager.getEmbeddedAgent(created.id);
+        expect(stillOriginal?.engine).toBe('claude-sdk');
+        expect(stillOriginal?.provider).toEqual({ model: 'claude-sonnet-5' });
       });
     });
 
