@@ -27,6 +27,7 @@ import {
   classifyP3,
   classifyStrict,
   exitCodeFor,
+  finalExitCode,
   honoredTaskToolName,
   isAccountConnector,
   mcpServerOf,
@@ -74,6 +75,34 @@ describe('exit codes', () => {
     const leak = classifyP0(WITH_AMBIENT, WITH_AMBIENT, 'chrome-devtools');
     expect(leak.stops.length).toBeGreaterThan(0);
     expect(exitCodeFor([leak])).toBe(PROBE_EXIT.MEASURED);
+  });
+
+  /**
+   * Regression (CodeRabbit finding, PR #1727): a P0 leak with
+   * `--continue-after-leak` absent withholds the selected `--p2`/`--p3` arms
+   * before they ever push a verdict. `exitCodeFor` only ever sees PUSHED
+   * verdicts, so a conclusive P0 alone reads MEASURED even though the
+   * withheld arms produced no reading at all -- a caller reading the bare
+   * exit code cannot tell "every selected arm read" from "some were
+   * withheld". `finalExitCode` must downgrade that case to INCONCLUSIVE.
+   */
+  describe('finalExitCode (halt-after-leak downgrade)', () => {
+    it('downgrades a would-be MEASURED code to INCONCLUSIVE when halted', () => {
+      const onlyP0 = [classifyP0(RESERVED_ONLY, WITH_AMBIENT, 'chrome-devtools')];
+      expect(exitCodeFor(onlyP0)).toBe(PROBE_EXIT.MEASURED); // the bug this guards against
+      expect(finalExitCode(onlyP0, true)).toBe(PROBE_EXIT.INCONCLUSIVE);
+    });
+
+    it('leaves an unhalted MEASURED code unchanged', () => {
+      const onlyP0 = [classifyP0(RESERVED_ONLY, WITH_AMBIENT, 'chrome-devtools')];
+      expect(finalExitCode(onlyP0, false)).toBe(PROBE_EXIT.MEASURED);
+    });
+
+    it('never upgrades an already-INCONCLUSIVE or HARNESS-shaped result', () => {
+      const inconclusive = [classifyP0(null, WITH_AMBIENT, 'chrome-devtools')];
+      expect(finalExitCode(inconclusive, true)).toBe(PROBE_EXIT.INCONCLUSIVE);
+      expect(finalExitCode(inconclusive, false)).toBe(PROBE_EXIT.INCONCLUSIVE);
+    });
   });
 });
 

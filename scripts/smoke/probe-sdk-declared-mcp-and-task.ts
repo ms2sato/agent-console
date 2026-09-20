@@ -218,6 +218,19 @@ export function exitCodeFor(verdicts: ReadonlyArray<Pick<ArmVerdict, 'conclusive
   return verdicts.every((v) => v.conclusive) ? PROBE_EXIT.MEASURED : PROBE_EXIT.INCONCLUSIVE;
 }
 
+/**
+ * The run's FINAL exit code once a deliberate P0-leak halt is folded in.
+ * `exitCodeFor` reads only the verdicts that were actually pushed, so a halt
+ * that withholds selected `--p2` / `--p3` arms before they ever run is
+ * invisible to it -- those arms produced no reading, yet a conclusive P0
+ * alone would read MEASURED. A halted run can therefore never claim
+ * MEASURED; it downgrades to INCONCLUSIVE (CodeRabbit finding, PR #1727).
+ */
+export function finalExitCode(pushedVerdicts: ReadonlyArray<Pick<ArmVerdict, 'conclusive'>>, halted: boolean): number {
+  const code = exitCodeFor(pushedVerdicts);
+  return halted && code === PROBE_EXIT.MEASURED ? PROBE_EXIT.INCONCLUSIVE : code;
+}
+
 /** The two `mcpServers` names `buildOptions()` always declares. */
 export const RESERVED_MCP_SERVER_NAMES = ['agent-console', 'console'] as const;
 
@@ -981,7 +994,7 @@ async function main(): Promise<number> {
   if (halted) console.log(`HALTED: ${halted}`);
   const t = totals();
   console.log(`\nturns=${perTurn.size} promptTokens=${t.tokens} cost=$${t.cost.toFixed(4)} elapsed=${Math.round((Date.now() - startedAt) / 1000)}s`);
-  const code = exitCodeFor(verdicts);
+  const code = finalExitCode(verdicts, halted !== null);
   console.log(`exit ${code}: ${EXIT_CODE_MEANINGS[code]}`);
   try {
     rmSync(cwd, { recursive: true, force: true });
