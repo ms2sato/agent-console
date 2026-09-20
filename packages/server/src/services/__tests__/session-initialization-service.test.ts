@@ -1238,4 +1238,65 @@ describe('SessionInitializationService integration (real DB → mapper → servi
       expect(autoResumeIds).not.toContain('orphaned-dead');
     });
   });
+
+  it('preserves designation and pending notification rows across initialize() (Issue 1762)', async () => {
+    // Seed via the real repository (upsert path, unaffected by this bug)
+    // plus raw inserts for the dependents -- same shapes as the
+    // dependent-row-preservation tests in
+    // sqlite-session-repository.test.ts case (a). initialize() calls
+    // sessionRepository.saveAll() internally; before the fix, that call
+    // cascade-deleted both rows below.
+    const session = buildPersistedQuickSession({ id: 'sess-1762', locationPath: '/some/path' });
+    await sessionRepository.save(session);
+
+    await db
+      .insertInto('repositories')
+      .values({
+        id: 'repo-1762',
+        name: 'r',
+        path: '/r',
+      })
+      .execute();
+    await db
+      .insertInto('repository_orchestrator_sessions')
+      .values({ repository_id: 'repo-1762', session_id: 'sess-1762' })
+      .execute();
+    await db
+      .insertInto('inbound_event_notifications')
+      .values({
+        id: 'notif-1762',
+        job_id: 'job-1',
+        session_id: 'sess-1762',
+        worker_id: 'w-1',
+        handler_id: 'h-1',
+        event_type: 'ci:completed',
+        event_summary: 's',
+        status: 'pending',
+        created_at: new Date().toISOString(),
+        notified_at: null,
+      })
+      .execute();
+
+    // Polarity: fails against the pre-fix DELETE-all saveAll() (measured
+    // 2026-09-20) -- initialize() calls saveAll() at the end of
+    // initializeSessions(), which used to unconditionally `DELETE FROM
+    // sessions` before re-inserting, cascade-deleting both rows below.
+    const { service } = createServiceWithRealRepo();
+    await service.initialize();
+
+    const designation = await db
+      .selectFrom('repository_orchestrator_sessions')
+      .where('repository_id', '=', 'repo-1762')
+      .where('session_id', '=', 'sess-1762')
+      .selectAll()
+      .executeTakeFirst();
+    expect(designation).toBeDefined();
+
+    const notification = await db
+      .selectFrom('inbound_event_notifications')
+      .where('id', '=', 'notif-1762')
+      .selectAll()
+      .executeTakeFirst();
+    expect(notification?.status).toBe('pending');
+  });
 });

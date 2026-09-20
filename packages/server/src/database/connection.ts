@@ -15,7 +15,7 @@ import { getRemoteUrl, parseOrgRepo } from '../lib/git.js';
 import { createLogger } from '../lib/logger.js';
 import { isValidSlug } from '../lib/session-data-path.js';
 import { toSessionRow, toWorkerRow, toRepositoryRow, toAgentRow } from './mappers.js';
-import { addDatetime, ISO8601_GLOB_PATTERN, NOW_ISO8601 } from './schema-helpers.js';
+import { addDatetime, NOW_ISO8601, ISO8601_GLOB_PATTERN } from './schema-helpers.js';
 
 const logger = createLogger('database');
 
@@ -418,6 +418,10 @@ async function runMigrations(database: Kysely<Database>, dbPath: string): Promis
 
   if (currentVersion < 41) {
     await migrateToV41(database);
+  }
+
+  if (currentVersion < 42) {
+    await migrateToV42(database, dbPath);
   }
 
   if (currentVersion < 43) {
@@ -2361,6 +2365,7 @@ export async function migrateToV40(database: Kysely<Database>): Promise<void> {
  * worth doing on the production DB only as part of a later migration that
  * already needs a `repositories` rebuild for some other reason, not for
  * this zero-functional-gain cleanup alone; tracked as a follow-up Issue.
+ * Dropped by `migrateToV42` below, once such a rebuild was needed.
  * The column's value is backfilled into the new table below and then
  * cleared to NULL so nothing in the running system can ever read a stale
  * value back out of it -- see `mappers.ts`'s `toRepositoryRow` (stops
@@ -2407,6 +2412,164 @@ export async function migrateToV41(database: Kysely<Database>): Promise<void> {
   await sql`PRAGMA user_version = 41`.execute(database);
 
   logger.info('Migration to v41 completed');
+}
+
+/**
+ * Migration v42: Drop the dead `orchestrator_session_id` column from
+ * `repositories`, deferred from the v41 migration above.
+ *
+ * SQLite's `ALTER TABLE ... DROP COLUMN` refuses a column that participates
+ * in a foreign key, so this is a table rebuild -- the same pattern as
+ * `migrateToV19`, including its FK-rewrite-on-rename hazard handling: three
+ * child tables (`worktrees`, `repository_slack_integrations`,
+ * `repository_orchestrator_sessions`) carry a real FK to `repositories.id`,
+ * and only `repositories_new` (never `repositories` itself) is ever renamed,
+ * so SQLite's FK-rewrite-on-rename has nothing pointed at it to rewrite.
+ *
+ * The new table's DDL is copied verbatim from the live schema (read via
+ * `SELECT sql FROM sqlite_master WHERE name='repositories'` on a v41
+ * database), not re-derived from `schema.ts` (which carries no DEFAULT /
+ * UNIQUE / REFERENCES / CHECK information) -- including the two ISO8601
+ * CHECK constraints `addDatetime()` has attached to `created_at` /
+ * `updated_at` since migration v2. Dropping those constraints during the
+ * rebuild would silently weaken an existing validation guarantee, so they
+ * are reproduced from the same `NOW_ISO8601` / `ISO8601_GLOB_PATTERN`
+ * constants `addDatetime()` itself uses, rather than a second hand-copied
+ * literal that could drift from them later.
+ *
+ * @internal Exported for testing.
+ */
+export async function migrateToV42(
+  database: Kysely<Database>,
+  dbPath: string = IN_MEMORY_DB_PATH
+): Promise<void> {
+  // Idempotency guard: same rationale as migrateToV19's.
+  const versionResult = await sql<{ user_version: number }>`PRAGMA user_version`.execute(database);
+  const currentVersion = versionResult.rows[0]?.user_version ?? 0;
+  if (currentVersion >= 42) {
+    logger.info({ currentVersion }, 'Skipping migration to v42: already applied');
+    return;
+  }
+
+  // Take a pre-flight backup BEFORE any schema mutation, same rationale as
+  // migrateToV19's: a copy failure throws and aborts the migration so
+  // user_version stays at 41 and the caller can investigate without a
+  // partially-rebuilt repositories table. Skipped for in-memory databases.
+  const backupPath = await backupDatabaseFile(dbPath, 41, 42);
+  if (backupPath !== null) {
+    logger.info({ backupPath }, 'Database backup created');
+  }
+
+  logger.info('Running migration to v42: Dropping dead orchestrator_session_id column from repositories');
+
+  // FK toggling cannot happen inside a transaction. Disable FK enforcement
+  // for the duration of the rebuild so the drop/rename steps don't trip on
+  // the three dependent tables' constraints.
+  await sql`PRAGMA foreign_keys = OFF`.execute(database);
+
+  try {
+    // Snapshot non-automatic indexes and triggers attached to `repositories`
+    // BEFORE dropping it, same rationale as migrateToV19's: SQLite drops
+    // these automatically when the backing table is dropped, so they are
+    // recreated after the new table is in place. There are none today (no
+    // explicit index/trigger on `repositories`), but the step is kept so a
+    // future one added between now and this migration's execution still
+    // survives the rebuild.
+    const objectsResult = await sql<{
+      type: string;
+      name: string;
+      sql: string | null;
+    }>`
+      SELECT type, name, sql
+      FROM sqlite_master
+      WHERE tbl_name = 'repositories'
+        AND type IN ('index', 'trigger')
+        AND name NOT LIKE 'sqlite_autoindex%'
+    `.execute(database);
+    const objectsToRestore = objectsResult.rows.filter((row) => row.sql !== null);
+
+    await database.transaction().execute(async (trx) => {
+      // Step 1: create the new table under a temporary name. Column order,
+      // types, and every DEFAULT / UNIQUE / REFERENCES / CHECK clause mirror
+      // the live v41 schema exactly; the only change is the removal of
+      // `orchestrator_session_id`.
+      await sql`
+        CREATE TABLE repositories_new (
+          id TEXT PRIMARY KEY,
+          name TEXT NOT NULL,
+          path TEXT NOT NULL UNIQUE,
+          created_at TEXT NOT NULL DEFAULT ${NOW_ISO8601},
+          updated_at TEXT NOT NULL DEFAULT ${NOW_ISO8601},
+          setup_command TEXT,
+          env_vars TEXT,
+          description TEXT,
+          cleanup_command TEXT,
+          default_agent_id TEXT REFERENCES agents(id) ON DELETE SET NULL,
+          issue_trigger_labels TEXT,
+          CONSTRAINT repositories_created_at_iso8601 CHECK (created_at IS NULL OR created_at GLOB '${sql.raw(ISO8601_GLOB_PATTERN)}'),
+          CONSTRAINT repositories_updated_at_iso8601 CHECK (updated_at IS NULL OR updated_at GLOB '${sql.raw(ISO8601_GLOB_PATTERN)}')
+        )
+      `.execute(trx);
+
+      // Step 2: copy data. Listing columns explicitly guards against any
+      // future column-order drift between the old and new tables, and is
+      // what actually drops `orchestrator_session_id` -- it is simply not
+      // named on either side.
+      await sql`
+        INSERT INTO repositories_new (
+          id, name, path, created_at, updated_at, setup_command, env_vars,
+          description, cleanup_command, default_agent_id, issue_trigger_labels
+        )
+        SELECT
+          id, name, path, created_at, updated_at, setup_command, env_vars,
+          description, cleanup_command, default_agent_id, issue_trigger_labels
+        FROM repositories
+      `.execute(trx);
+
+      // Step 3: drop the original table. Indexes and triggers attached to it
+      // are dropped automatically by SQLite; we recreate them in step 5.
+      await sql`DROP TABLE repositories`.execute(trx);
+
+      // Step 4: rename the new table into place. After this rename, the
+      // three dependent FK declarations (worktrees.repository_id,
+      // repository_slack_integrations.repository_id,
+      // repository_orchestrator_sessions.repository_id) continue to
+      // reference `repositories` because no dependent table references
+      // `repositories_new` -- so SQLite's FK-rewrite-on-rename has nothing
+      // to do.
+      await sql`ALTER TABLE repositories_new RENAME TO repositories`.execute(trx);
+
+      // Step 5: recreate captured indexes/triggers. Each row's `sql` is the
+      // exact CREATE statement SQLite stored, so re-executing it restores
+      // the object on the rebuilt table.
+      for (const obj of objectsToRestore) {
+        await sql.raw(obj.sql as string).execute(trx);
+      }
+
+      // Step 6: verify the rebuild left no dangling FK references. Performed
+      // inside the transaction so any violation triggers a rollback rather
+      // than leaving the database in a partially-committed state with a
+      // bumped schema version. PRAGMA foreign_key_check is read-only and
+      // safe to run within a transaction.
+      const fkCheck = await sql<{ table: string; rowid: number; parent: string; fkid: number }>`
+        PRAGMA foreign_key_check
+      `.execute(trx);
+      if (fkCheck.rows.length > 0) {
+        throw new Error(
+          `Foreign key check failed after v42 migration: ${JSON.stringify(fkCheck.rows)}`
+        );
+      }
+
+      // Step 7: bump the schema version inside the transaction so that a
+      // failure anywhere above leaves the version unchanged.
+      await sql`PRAGMA user_version = 42`.execute(trx);
+    });
+  } finally {
+    // Always re-enable FK enforcement, even if the migration failed.
+    await sql`PRAGMA foreign_keys = ON`.execute(database);
+  }
+
+  logger.info('Migration to v42 completed');
 }
 
 /**

@@ -317,15 +317,17 @@ describe('verify-multiuser-systemd.sh: section 7 consumes the V0-V6 screen; the 
     return i;
   };
 
-  it('main runs the sections in order: run_deploy -> post_deploy_checks -> drift_arm -> ownership_polarity_arm -> helper_cases -> run_smokes', () => {
-    expect(driver).toContain('  run_deploy\n  post_deploy_checks\n  drift_arm\n  ownership_polarity_arm\n  helper_cases\n  run_smokes\n');
+  it('main runs the sections in order: run_deploy -> post_deploy_checks -> drift_arm -> ownership_polarity_arm -> restart_survival_arm -> helper_cases -> run_smokes', () => {
+    expect(driver).toContain('  run_deploy\n  post_deploy_checks\n  drift_arm\n  ownership_polarity_arm\n  restart_survival_arm\n  helper_cases\n  run_smokes\n');
     expect(driver).toMatch(/^drift_arm\(\) \{/m);
     expect(driver).toMatch(/^ownership_polarity_arm\(\) \{/m);
+    expect(driver).toMatch(/^restart_survival_arm\(\) \{/m);
     // Placed after section 7 in the file too (the AC's "new section, after 7"),
-    // and 7c after 7b.
+    // 7c after 7b, and 7d after 7c.
     expect(idxOf('drift_arm() {')).toBeGreaterThan(idxOf('post_deploy_checks() {'));
     expect(idxOf('ownership_polarity_arm() {')).toBeGreaterThan(idxOf('drift_arm() {'));
-    expect(idxOf('ownership_polarity_arm() {')).toBeLessThan(idxOf('helper_cases() {'));
+    expect(idxOf('restart_survival_arm() {')).toBeGreaterThan(idxOf('ownership_polarity_arm() {'));
+    expect(idxOf('restart_survival_arm() {')).toBeLessThan(idxOf('helper_cases() {'));
   });
 
   it('section 7 asserts the seven PASS lines by label (V0 first) plus the RESULT line, via one shared helper, instead of re-implementing the checks', () => {
@@ -403,8 +405,8 @@ describe('verify-multiuser-systemd.sh: section 7 consumes the V0-V6 screen; the 
 
   it('every deploy invocation in the driver runs as `deployer` (never root), so the screen is the operator-path screen', () => {
     const deployCalls = driver.match(/cexec --user \S+ -w "\$SRC" "\$SERVICE" bash scripts\/update-and-deploy-for-multiuser-ubuntu\.sh/g) ?? [];
-    // deploy #1 (run_deploy) + #2/#3 (drift_arm) + #4/#5 (ownership_polarity_arm).
-    expect(deployCalls).toHaveLength(5);
+    // deploy #1 (run_deploy) + #2/#3 (drift_arm) + #4/#5 (ownership_polarity_arm) + #6 (restart_survival_arm).
+    expect(deployCalls).toHaveLength(6);
     for (const c of deployCalls) expect(c).toContain('--user deployer ');
   });
 });
@@ -417,7 +419,7 @@ describe('verify-multiuser-systemd.sh: 7c ownership-polarity arm is present and 
     expect(i).toBeGreaterThan(-1);
     return i;
   };
-  const arm = () => driver.slice(idxOf('ownership_polarity_arm() {'), idxOf('helper_cases() {'));
+  const arm = () => driver.slice(idxOf('ownership_polarity_arm() {'), idxOf('restart_survival_arm() {'));
 
   it('synthesizes repositories/<org>/<repo>/worktrees, re-owns it to the service user, and proves a positive control (OWNERSHIP_OK) via a direct helper probe before any injection', () => {
     const a = arm();
@@ -484,6 +486,72 @@ describe('verify-multiuser-systemd.sh: 7c ownership-polarity arm is present and 
       'expect "7c: V0\'s INFO line names the non-walked control as ignored"',
       'expect "7c: post-#5 marker is OWNERSHIP_OK, not OWNERSHIP_NO_TREES (the tree stays)"',
       'expect "7c: the non-walked control is still owned by deployer (nobody auto-fixed it)"',
+    ];
+    let prev = -1;
+    for (const needle of order) {
+      const i = a.indexOf(needle);
+      expect(i).toBeGreaterThan(prev);
+      prev = i;
+    }
+  });
+});
+
+// The 7d restart-survival arm (#1762), pinned the way 7b/7c are pinned above.
+describe('verify-multiuser-systemd.sh: 7d restart-survival arm is present and ordered (Issue #1762)', () => {
+  const driver = readFileSync(DRIVER, 'utf-8');
+  const idxOf = (needle) => {
+    const i = driver.indexOf(needle);
+    expect(i).toBeGreaterThan(-1);
+    return i;
+  };
+  const arm = () => driver.slice(idxOf('restart_survival_arm() {'), idxOf('helper_cases() {'));
+
+  it('seeds the session and its two FK dependents via bun -e + bun:sqlite against the real data.db, as agentconsole, before the restart', () => {
+    const a = arm();
+    expect(a).toContain('import { Database } from "bun:sqlite";');
+    expect(a).toContain('new Database("/var/lib/agent-console/data.db")');
+    expect(a).toContain('PRAGMA busy_timeout = 5000');
+    expect(a).toContain('PRAGMA foreign_keys = ON');
+    expect(a).toContain('INSERT INTO repositories');
+    expect(a).toContain('INSERT INTO sessions');
+    expect(a).toContain('INSERT INTO repository_orchestrator_sessions');
+    expect(a).toContain('INSERT INTO inbound_event_notifications');
+    expect(a).toContain('cexec --user agentconsole "$SERVICE" bun -e "$seed_js"');
+    const order = [
+      'seed_js=\'import { Database }',
+      'cexec --user agentconsole "$SERVICE" bun -e "$seed_js"',
+      'expect "7d: seed script exits 0 and prints SEEDED"',
+      'echo "  --- deploy #6',
+    ];
+    let prev = -1;
+    for (const needle of order) {
+      const i = a.indexOf(needle);
+      expect(i).toBeGreaterThan(prev);
+      prev = i;
+    }
+  });
+
+  it('seeds a `quick` session at DATA_ROOT with NULL data_scope/data_scope_slug, so initializeSessions() takes the path-exists branch, not the orphan branch', () => {
+    const a = arm();
+    expect(a).toContain('"quick", "/var/lib/agent-console", null');
+  });
+
+  it('runs deploy #6 (the shipping restart path) as deployer, asserting exit 0 and the seven PASS lines, same as #1/#2/#3/#4/#5', () => {
+    const a = arm();
+    expect(a).toContain('cexec --user deployer -w "$SRC" "$SERVICE" bash scripts/update-and-deploy-for-multiuser-ubuntu.sh');
+    expect(a).toContain('check "7d: deploy #6 exits 0" "$rc"');
+    expect(a).toContain('assert_seven_pass "$out" "7d: deploy #6"');
+  });
+
+  it('reads the seeded rows back after the restart, asserting the session is present BEFORE the dependent-row assertions (positive control against the orphan path)', () => {
+    const a = arm();
+    const order = [
+      'cexec --user agentconsole "$SERVICE" bun -e "$read_js"',
+      'expect "7d: the seeded session is still present after the restart (not classified as an orphan)"',
+      'expect "7d: session created_at is unchanged',
+      'expect "7d: session updated_at moved past the seed value',
+      'expect "7d: repository_orchestrator_sessions designation still exists (DESIGNATION_COUNT=1)"',
+      'expect "7d: inbound_event_notifications row still exists with status=pending"',
     ];
     let prev = -1;
     for (const needle of order) {

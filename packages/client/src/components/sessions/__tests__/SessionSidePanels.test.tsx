@@ -1,5 +1,6 @@
 import { describe, it, expect, mock, beforeEach, afterEach, afterAll, spyOn } from 'bun:test';
 import { screen, cleanup, waitFor, act } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { renderWithRouter } from '../../../test/renderWithRouter';
 import { SessionSidePanels } from '../SessionSidePanels';
 import { _reset as resetWebSocket } from '../../../lib/app-websocket';
@@ -112,6 +113,72 @@ describe('SessionSidePanels', () => {
     });
     consoleLogSpy.mockRestore();
     consoleErrorSpy.mockRestore();
+  });
+
+  it('tabs from the collapsed Memo header through the always-visible Edit button to the Artifacts header, skipping Memo\'s inert body entirely', async () => {
+    // happy-dom / user-event do not model keyboard-focusable scrollers
+    // (Chrome's behavior of treating a scroll container with no focusable
+    // children as a tab stop), so this test cannot reproduce the original
+    // bug directly. The DOM-level pin is that Memo's AccordionSectionBody
+    // wrapper carries `inert` (which removes its overflow-y-auto scroller
+    // from the tab order structurally) once Memo is collapsed; the actual
+    // browser behavior is verified only by the Browser QA captures
+    // attached to the PR.
+    //
+    // Measured (not assumed): with this fixture's `routeFetchByPanel`
+    // content (non-empty memo), the element immediately after the
+    // collapsed Memo header in DOM/tab order is MemoPanel's own "Edit
+    // memo" button -- it lives in the header row, OUTSIDE
+    // AccordionSectionBody entirely, and stays reachable by design while
+    // collapsed (MemoPanel.tsx: "the only section whose always-visible
+    // header control (Edit) can enter a content-editing mode while the
+    // section is collapsed"). So the next HEADER after Memo's is
+    // Artifacts, reached on the SECOND Tab, not the first.
+    //
+    // This is a FIXTURE difference from the drawer's sibling test
+    // (SessionSidePanelsDrawer.test.tsx), not a rail-vs-drawer difference
+    // -- do not file the divergence between the two tests as a bug.
+    // MemoPanel renders the Edit button in its header row only when
+    // `mode === 'view' && !isEmpty` (MemoPanel.tsx ~L188). This file's
+    // `routeFetchByPanel` fixture gives Memo non-empty content, so the
+    // Edit button renders and is an intermediate tab stop. The drawer
+    // test instead uses `routeFetchEmpty()`, under which `isEmpty` is
+    // true and the Edit button never renders at all -- so that test tabs
+    // directly header -> header, with nothing in between.
+    await renderWithRouter(<SessionSidePanels sessionId="session-1" />);
+    await waitFor(() => expect(screen.getByLabelText('Expand side panel')).toBeTruthy());
+
+    act(() => {
+      screen.getByLabelText('Expand side panel').click();
+    });
+    await waitFor(() => expect(screen.getByText('Hello Memo')).toBeTruthy());
+
+    const memoHeader = screen.getByLabelText('Collapse Memo');
+    const user = userEvent.setup();
+    await user.click(memoHeader);
+    const collapsedMemoHeader = await waitFor(() => screen.getByLabelText('Expand Memo'));
+    const editMemoButton = screen.getByLabelText('Edit memo');
+    const artifactsHeader = screen.getByLabelText('Collapse Artifacts');
+
+    const memoSection = collapsedMemoHeader.closest('.border-b') as HTMLElement;
+    const memoBodyWrapper = memoSection.querySelector('[aria-hidden]') as HTMLElement;
+    expect(memoBodyWrapper).toBeTruthy();
+    expect(memoBodyWrapper.getAttribute('inert')).toBe('');
+    expect(memoSection.querySelector('.overflow-y-auto')).not.toBe(document.activeElement);
+
+    // The click above leaves focus on the header itself -- assert that
+    // before tabbing away from it.
+    expect(document.activeElement).toBe(collapsedMemoHeader);
+
+    await user.tab();
+    expect(document.activeElement).toBe(editMemoButton);
+    expect(memoBodyWrapper.getAttribute('inert')).toBe('');
+    expect(memoSection.querySelector('.overflow-y-auto')).not.toBe(document.activeElement);
+
+    await user.tab();
+    expect(document.activeElement).toBe(artifactsHeader);
+    expect(memoBodyWrapper.getAttribute('inert')).toBe('');
+    expect(memoSection.querySelector('.overflow-y-auto')).not.toBe(document.activeElement);
   });
 
   it('starts with the rail closed (new default), then shows all three sections expanded once opened', async () => {

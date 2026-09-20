@@ -3,6 +3,7 @@ import { Kysely, sql } from 'kysely';
 import { BunSqliteDialect } from 'kysely-bun-sqlite';
 import { Database as BunDatabase } from 'bun:sqlite';
 import { SqliteSessionRepository } from '../sqlite-session-repository.js';
+import { createDatabaseForTest } from '../../database/connection.js';
 import type { Database } from '../../database/schema.js';
 import type { SessionUpdateFields } from '../session-repository.js';
 import {
@@ -834,6 +835,275 @@ describe('SqliteSessionRepository', () => {
     });
   });
 
+  describe('SqliteSessionRepository.saveAll — dependent-row preservation (Issue 1762)', () => {
+    // This describe block uses the REAL migrated schema (via
+    // createDatabaseForTest), not the manually-built partial schema the
+    // outer describe's beforeEach constructs above. The manual schema has
+    // no `repositories`, `repository_orchestrator_sessions`, or
+    // `inbound_event_notifications` tables, so it cannot exercise real FK
+    // cascade behavior -- exactly the gap this bug lived in.
+    let realDb: Kysely<Database>;
+    let realRepository: SqliteSessionRepository;
+
+    beforeEach(async () => {
+      realDb = await createDatabaseForTest();
+      realRepository = new SqliteSessionRepository(realDb);
+    });
+
+    afterEach(async () => {
+      await realDb.destroy();
+    });
+
+    async function seedDependents(
+      repoId: string,
+      sessionId: string,
+      notificationId: string
+    ): Promise<void> {
+      await realDb
+        .insertInto('repositories')
+        .values({
+          id: repoId,
+          name: 'test-repo',
+          path: `/test/${repoId}`,
+        })
+        .execute();
+
+      await realDb
+        .insertInto('repository_orchestrator_sessions')
+        .values({ repository_id: repoId, session_id: sessionId })
+        .execute();
+
+      await realDb
+        .insertInto('inbound_event_notifications')
+        .values({
+          id: notificationId,
+          job_id: `job-${notificationId}`,
+          session_id: sessionId,
+          worker_id: 'worker-1',
+          handler_id: 'handler-1',
+          event_type: 'ci:completed',
+          event_summary: 'test notification',
+          status: 'pending',
+          created_at: new Date().toISOString(),
+          notified_at: null,
+        })
+        .execute();
+    }
+
+    it('case (a) full preservation: an in-set session keeps its worker, designation, and notification across saveAll', async () => {
+      const session = buildPersistedQuickSession({
+        id: 'session-a',
+        workers: [buildPersistedAgentWorker({ id: 'worker-a' })],
+      });
+      await realRepository.save(session);
+      await seedDependents('repo-a', 'session-a', 'notif-a');
+
+      const beforeSessionRow = await realDb
+        .selectFrom('sessions')
+        .where('id', '=', 'session-a')
+        .select(['created_at', 'updated_at'])
+        .executeTakeFirstOrThrow();
+
+      // Ensure a distinguishable updated_at timestamp.
+      await new Promise((resolve) => setTimeout(resolve, 10));
+
+      // Polarity: fails against the pre-fix DELETE-all saveAll() (measured
+      // 2026-09-20) -- the repository_orchestrator_sessions and
+      // inbound_event_notifications rows are both cascade-deleted by the
+      // unconditional `DELETE FROM sessions`, and the worker's created_at
+      // is not preserved either (re-inserted, not upserted).
+      await realRepository.saveAll([session]);
+
+      const afterSessionRow = await realDb
+        .selectFrom('sessions')
+        .where('id', '=', 'session-a')
+        .select(['created_at', 'updated_at'])
+        .executeTakeFirst();
+      expect(afterSessionRow).toBeDefined();
+      expect(afterSessionRow!.created_at).toBe(beforeSessionRow.created_at);
+      expect(afterSessionRow!.updated_at).not.toBe(beforeSessionRow.updated_at);
+
+      const found = await realRepository.findById('session-a');
+      expect(found?.workers.map((w) => w.id)).toEqual(['worker-a']);
+
+      const designation = await realDb
+        .selectFrom('repository_orchestrator_sessions')
+        .where('repository_id', '=', 'repo-a')
+        .where('session_id', '=', 'session-a')
+        .selectAll()
+        .executeTakeFirst();
+      expect(designation).toBeDefined();
+
+      const notification = await realDb
+        .selectFrom('inbound_event_notifications')
+        .where('id', '=', 'notif-a')
+        .selectAll()
+        .executeTakeFirst();
+      expect(notification?.status).toBe('pending');
+    });
+
+    it("case (b) absent session's dependents are cleaned up (intended cascade), while the in-set sibling keeps everything", async () => {
+      const s1 = buildPersistedQuickSession({ id: 'session-b1' });
+      const s2 = buildPersistedQuickSession({ id: 'session-b2' });
+      await realRepository.save(s1);
+      await realRepository.save(s2);
+      await seedDependents('repo-b1', 'session-b1', 'notif-b1');
+      await seedDependents('repo-b2', 'session-b2', 'notif-b2');
+
+      // Polarity: fails against the pre-fix DELETE-all saveAll() (measured
+      // 2026-09-20). session-b2's removal (and its dependents) is identical
+      // under both implementations -- both drop an absent session's
+      // dependents via cascade. What differs, and what this test actually
+      // catches, is session-b1's dependents: the pre-fix implementation's
+      // `DELETE FROM sessions` with no WHERE clause cascades through EVERY
+      // session, including the in-set one, before re-inserting it, so
+      // session-b1's own designation row is destroyed too (b1Designation
+      // was undefined against the pre-fix body).
+      await realRepository.saveAll([s1]);
+
+      expect(await realRepository.findById('session-b2')).toBeNull();
+      const b2Designation = await realDb
+        .selectFrom('repository_orchestrator_sessions')
+        .where('session_id', '=', 'session-b2')
+        .selectAll()
+        .executeTakeFirst();
+      expect(b2Designation).toBeUndefined();
+      const b2Notification = await realDb
+        .selectFrom('inbound_event_notifications')
+        .where('id', '=', 'notif-b2')
+        .selectAll()
+        .executeTakeFirst();
+      expect(b2Notification).toBeUndefined();
+
+      expect(await realRepository.findById('session-b1')).not.toBeNull();
+      const b1Designation = await realDb
+        .selectFrom('repository_orchestrator_sessions')
+        .where('session_id', '=', 'session-b1')
+        .selectAll()
+        .executeTakeFirst();
+      expect(b1Designation).toBeDefined();
+      const b1Notification = await realDb
+        .selectFrom('inbound_event_notifications')
+        .where('id', '=', 'notif-b1')
+        .selectAll()
+        .executeTakeFirst();
+      expect(b1Notification?.status).toBe('pending');
+    });
+
+    it('case (c) saveAll([]) deletes the session and every one of its dependents (existing empty-array semantics, extended to dependents)', async () => {
+      const session = buildPersistedQuickSession({ id: 'session-c' });
+      await realRepository.save(session);
+      await seedDependents('repo-c', 'session-c', 'notif-c');
+
+      // Polarity: identical outcome under the pre-fix DELETE-all saveAll()
+      // -- an empty input set was always fully destructive for the session
+      // and, as a side effect of the unconditional DELETE, its dependents
+      // too. No divergence to measure for this case.
+      await realRepository.saveAll([]);
+
+      expect(await realRepository.findById('session-c')).toBeNull();
+      const designation = await realDb
+        .selectFrom('repository_orchestrator_sessions')
+        .where('session_id', '=', 'session-c')
+        .selectAll()
+        .executeTakeFirst();
+      expect(designation).toBeUndefined();
+      const notification = await realDb
+        .selectFrom('inbound_event_notifications')
+        .where('id', '=', 'notif-c')
+        .selectAll()
+        .executeTakeFirst();
+      expect(notification).toBeUndefined();
+    });
+
+    it("case (d) a worker dropped from the session's array is deleted, and the kept worker keeps its created_at", async () => {
+      const keptWorkerCreatedAt = '2024-01-01T00:00:00.000Z';
+      const session = buildPersistedQuickSession({
+        id: 'session-d',
+        workers: [
+          buildPersistedAgentWorker({ id: 'worker-d-keep', createdAt: keptWorkerCreatedAt }),
+          buildPersistedTerminalWorker({ id: 'worker-d-drop' }),
+        ],
+      });
+      await realRepository.save(session);
+
+      const shrunk = buildPersistedQuickSession({
+        id: 'session-d',
+        workers: [buildPersistedAgentWorker({ id: 'worker-d-keep' })],
+      });
+
+      // Polarity: fails against the pre-fix DELETE-all saveAll() (measured
+      // 2026-09-20) -- for a different reason than case (a): the pre-fix
+      // implementation re-inserts every worker via a fresh
+      // `insertInto('workers').values(...)` rather than upserting, so
+      // worker-d-keep's created_at is NOT preserved (it gets whatever
+      // created_at the second buildPersistedAgentWorker() call defaults to).
+      await realRepository.saveAll([shrunk]);
+
+      const dropped = await realDb
+        .selectFrom('workers')
+        .where('id', '=', 'worker-d-drop')
+        .selectAll()
+        .executeTakeFirst();
+      expect(dropped).toBeUndefined();
+
+      const kept = await realDb
+        .selectFrom('workers')
+        .where('id', '=', 'worker-d-keep')
+        .select(['created_at'])
+        .executeTakeFirst();
+      expect(kept?.created_at).toBe(keptWorkerCreatedAt);
+    });
+
+    it('every FK onto sessions(id) is seeded by the preservation tests above (Issue 1762 "not just today\'s two") -- no polarity requirement, schema-discovery completeness check only', async () => {
+      const tables = await sql<{ name: string }>`SELECT name FROM sqlite_master WHERE type = 'table'`.execute(
+        realDb
+      );
+      const dependentFks: Array<{ table: string; column: string }> = [];
+      for (const t of tables.rows) {
+        const fks = await sql<{ table: string; from: string }>`PRAGMA foreign_key_list(${sql.raw(t.name)})`.execute(
+          realDb
+        );
+        for (const fk of fks.rows) {
+          if (fk.table === 'sessions') dependentFks.push({ table: t.name, column: fk.from });
+        }
+      }
+      const dependentTableNames = new Set(dependentFks.map((d) => d.table));
+      // The v40 `orchestrator_session_id` column on `repositories` used to
+      // reference sessions(id), which put `repositories` in this set. It
+      // was dropped by migration v42 (Issue #1725), shrinking the set to 3.
+      expect(dependentTableNames).toEqual(
+        new Set(['workers', 'inbound_event_notifications', 'repository_orchestrator_sessions'])
+      );
+
+      // Detection half: the set-equality check above only proves the SCHEMA
+      // enumeration matches a hardcoded literal -- it never looks at what
+      // the preservation tests above actually seed, so on its own it would
+      // NOT fail if (a) forgot to seed one of these dependents, and it
+      // would NOT fail on a future FK onto sessions(id) whose name happens
+      // to already appear in the literal by coincidence. Close both gaps by
+      // seeding a session with a row in every currently-enumerated
+      // dependent table, then confirming each one is actually reachable by
+      // its own FK column -- a dependent that exists in the schema but has
+      // no seeded row here (whether because a future FK was never added to
+      // seedDependents/the session's own workers, or because an existing
+      // seed line was deleted) fails this loop.
+      const session = buildPersistedQuickSession({
+        id: 'session-gate',
+        workers: [buildPersistedAgentWorker({ id: 'worker-gate' })],
+      });
+      await realRepository.save(session);
+      await seedDependents('repo-gate', 'session-gate', 'notif-gate');
+
+      for (const { table, column } of dependentFks) {
+        const row = await sql`SELECT 1 FROM ${sql.raw(table)} WHERE ${sql.raw(column)} = ${'session-gate'} LIMIT 1`.execute(
+          realDb
+        );
+        expect(row.rows.length, `expected a seeded row in ${table}.${column} referencing session-gate`).toBeGreaterThan(0);
+      }
+    });
+  });
+
   describe('delete', () => {
     it('should remove session by id', async () => {
       const sessions = [
@@ -1098,6 +1368,118 @@ describe('SqliteSessionRepository', () => {
       if (flipped?.type === 'embedded-agent') {
         expect(flipped.embeddedAgentId).toBe('def-1');
       }
+    });
+
+    // Polarity: fails against the pre-fix doUpdateSet (bare workerRow.* without
+    // ?? null/?? 1 fallbacks) -- measured 2026-09-20 by temporarily reverting
+    // the fix in sqlite-session-repository.ts. sdk_session_id, auto_compaction
+    // and context_window_tokens survived the flip to 'agent' with their stale
+    // 'embedded-agent' values instead of being reset:
+    //   error: expect(received).toBeNull()
+    //   Received: "sess-cross-type-flip-reverse"
+    //   at .../sqlite-session-repository.test.ts:1420:41
+    it('correctly resets type-discriminant worker columns when a worker FLIPS from embedded-agent to agent (reverse cross-type restart)', async () => {
+      // First save: an 'embedded-agent' worker with non-default values in
+      // every field the doUpdateSet fix touches. autoCompaction is
+      // deliberately seeded OFF (raw column 0) so the post-flip assertion of
+      // `auto_compaction === 1` (the schema's NOT NULL DEFAULT) is evidence
+      // of a real reset, not a coincidental match with the seeded value.
+      const embeddedWorker = buildPersistedEmbeddedAgentWorker({
+        id: 'flip-worker-reverse',
+        name: 'Ollama qwen3',
+        embeddedAgentId: 'def-1',
+        sdkSessionId: 'sess-cross-type-flip-reverse',
+        autoCompaction: false,
+        model: 'qwen3:32b',
+        reasoningEffort: 'high',
+        contextWindowTokens: 128000,
+      });
+      const session = buildPersistedQuickSession({
+        id: 'flip-worker-reverse-session',
+        workers: [embeddedWorker],
+      });
+      await repository.save(session);
+
+      // Second save: SAME worker id, now an 'agent' worker. toWorkerRow's
+      // 'agent' branch never sets sdk_session_id / auto_compaction /
+      // context_window_tokens at all (they are absent from its returned
+      // object, i.e. `undefined`), which is exactly the shape that exposed
+      // the bug: Kysely's doUpdateSet omits `undefined` columns from the SQL
+      // SET clause entirely, silently preserving the previous row's stale
+      // 'embedded-agent' values instead of resetting them.
+      const agentWorker = buildPersistedAgentWorker({
+        id: 'flip-worker-reverse',
+        name: 'Claude Agent',
+        agentId: 'custom-agent-id',
+      });
+      const sessionAfterFlip = buildPersistedQuickSession({
+        id: 'flip-worker-reverse-session',
+        workers: [agentWorker],
+      });
+      await repository.save(sessionAfterFlip);
+
+      // Read the RAW row directly: the higher-level PersistedWorker type for
+      // an 'agent' worker doesn't expose sdkSessionId/autoCompaction/
+      // contextWindowTokens at all, so reading through
+      // repository.findById()/toPersistedWorker() couldn't observe a stale
+      // raw column even if one existed.
+      const rawRow = await db
+        .selectFrom('workers')
+        .where('id', '=', 'flip-worker-reverse')
+        .selectAll()
+        .executeTakeFirstOrThrow();
+
+      expect(rawRow.type).toBe('agent');
+      expect(rawRow.sdk_session_id).toBeNull();
+      expect(rawRow.auto_compaction).toBe(1);
+      expect(rawRow.model).toBeNull();
+      expect(rawRow.reasoning_effort).toBeNull();
+      expect(rawRow.context_window_tokens).toBeNull();
+    });
+
+    it('correctly resets type-discriminant worker columns via saveAll() (same defect, saveAll caller)', async () => {
+      // Same shape as the save()-based test above, but driven through
+      // saveAll() -- the new caller introduced alongside upsertSessionInTrx's
+      // extraction, which runs at every server boot for every session.
+      const embeddedWorker = buildPersistedEmbeddedAgentWorker({
+        id: 'flip-worker-reverse-saveall',
+        name: 'Ollama qwen3',
+        embeddedAgentId: 'def-1',
+        sdkSessionId: 'sess-cross-type-flip-reverse-saveall',
+        autoCompaction: false,
+        model: 'qwen3:32b',
+        reasoningEffort: 'high',
+        contextWindowTokens: 128000,
+      });
+      const session = buildPersistedQuickSession({
+        id: 'flip-worker-reverse-saveall-session',
+        workers: [embeddedWorker],
+      });
+      await repository.saveAll([session]);
+
+      const agentWorker = buildPersistedAgentWorker({
+        id: 'flip-worker-reverse-saveall',
+        name: 'Claude Agent',
+        agentId: 'custom-agent-id',
+      });
+      const sessionAfterFlip = buildPersistedQuickSession({
+        id: 'flip-worker-reverse-saveall-session',
+        workers: [agentWorker],
+      });
+      await repository.saveAll([sessionAfterFlip]);
+
+      const rawRow = await db
+        .selectFrom('workers')
+        .where('id', '=', 'flip-worker-reverse-saveall')
+        .selectAll()
+        .executeTakeFirstOrThrow();
+
+      expect(rawRow.type).toBe('agent');
+      expect(rawRow.sdk_session_id).toBeNull();
+      expect(rawRow.auto_compaction).toBe(1);
+      expect(rawRow.model).toBeNull();
+      expect(rawRow.reasoning_effort).toBeNull();
+      expect(rawRow.context_window_tokens).toBeNull();
     });
   });
 

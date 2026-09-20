@@ -11,8 +11,11 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import * as fs from 'fs';
 import * as path from 'path';
-import { sql } from 'kysely';
-import { initializeDatabase, closeDatabase, migrateFromJson, migrateToV41 } from '../connection.js';
+import { sql, Kysely } from 'kysely';
+import { BunSqliteDialect } from 'kysely-bun-sqlite';
+import { Database as BunDatabase } from 'bun:sqlite';
+import type { Database } from '../schema.js';
+import { initializeDatabase, closeDatabase, migrateFromJson, migrateToV40, migrateToV41 } from '../connection.js';
 import { setupMemfs, cleanupMemfs } from '../../__tests__/utils/mock-fs-helper.js';
 import { mockGit } from '../../__tests__/utils/mock-git-helper.js';
 
@@ -1265,98 +1268,118 @@ describe('migration', () => {
   });
 
   describe('schema migration v40: orchestrator_session_id and issue_trigger_labels columns', () => {
+    /**
+     * Build a v39-shaped database: `repositories` and `sessions` as they
+     * existed immediately before migration v40, i.e. without
+     * `orchestrator_session_id` / `issue_trigger_labels`. Isolates v40's
+     * own ADD COLUMN behavior from what runs after it in the full chain
+     * (v41's backfill-then-clear, v42's drop) -- mirrors
+     * `migration-v36.test.ts`'s "seed the pre-migration shape, call the
+     * migration function directly" pattern. Needed because v42 (Issue
+     * #1725) makes `initializeDatabase(':memory:')` land on a schema where
+     * the column is gone entirely, so the three tests below can no longer
+     * observe v40's own effect through the full chain the way they used
+     * to before v42 existed. Raw `sql` queries (not the typed Kysely
+     * builder) are used throughout for the same reason `migrateToV41`'s
+     * own "backfills..." test below does: the compile-time `Database` type
+     * mirrors the CURRENT schema.ts, which no longer has the field,
+     * regardless of which migration state a given test db is actually at.
+     */
+    function seedV39Database(): Kysely<Database> {
+      const bunDb = new BunDatabase(':memory:');
+      const db = new Kysely<Database>({
+        dialect: new BunSqliteDialect({ database: bunDb }),
+      });
+
+      bunDb.exec(`
+        CREATE TABLE sessions (
+          id TEXT PRIMARY KEY,
+          type TEXT NOT NULL,
+          location_path TEXT NOT NULL,
+          created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+
+        CREATE TABLE repositories (
+          id TEXT PRIMARY KEY,
+          name TEXT NOT NULL,
+          path TEXT NOT NULL UNIQUE,
+          created_at TEXT NOT NULL DEFAULT (datetime('now')),
+          updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+          setup_command TEXT,
+          env_vars TEXT,
+          description TEXT,
+          cleanup_command TEXT,
+          default_agent_id TEXT
+        );
+
+        PRAGMA user_version = 39;
+      `);
+
+      return db;
+    }
+
     it('should add a repository row with orchestrator_session_id set to an existing session id', async () => {
-      const db = await initializeDatabase(':memory:');
+      const db = seedV39Database();
+      await sql`INSERT INTO sessions (id, type, location_path) VALUES (${'session-orchestrator'}, 'quick', '/test/orchestrator-session')`.execute(db);
 
-      await db
-        .insertInto('sessions')
-        .values({
-          id: 'session-orchestrator',
-          type: 'quick',
-          location_path: '/test/orchestrator-session',
-          created_at: '2024-01-01T00:00:00.000Z',
-          server_pid: null,
-          initial_prompt: null,
-          title: null,
-          repository_id: null,
-          worktree_id: null,
-        })
-        .execute();
+      await migrateToV40(db);
 
-      await db
-        .insertInto('repositories')
-        .values({
-          id: 'repo-orchestrator-designated',
-          name: 'Orchestrator Designated Repo',
-          path: '/test/orchestrator-designated',
-          created_at: '2024-01-01T00:00:00.000Z',
-          updated_at: '2024-01-01T00:00:00.000Z',
-          orchestrator_session_id: 'session-orchestrator',
-        })
-        .execute();
+      await sql`
+        INSERT INTO repositories (id, name, path, created_at, updated_at, orchestrator_session_id)
+        VALUES (${'repo-orchestrator-designated'}, 'Orchestrator Designated Repo', '/test/orchestrator-designated', '2024-01-01T00:00:00.000Z', '2024-01-01T00:00:00.000Z', ${'session-orchestrator'})
+      `.execute(db);
 
-      const rows = await db.selectFrom('repositories').selectAll().execute();
+      const rows = await sql<{ orchestrator_session_id: string | null }>`
+        SELECT orchestrator_session_id FROM repositories
+      `.execute(db);
 
-      expect(rows).toHaveLength(1);
-      expect(rows[0].orchestrator_session_id).toBe('session-orchestrator');
+      expect(rows.rows).toHaveLength(1);
+      expect(rows.rows[0]?.orchestrator_session_id).toBe('session-orchestrator');
+
+      await db.destroy();
     });
 
     it('should set orchestrator_session_id to null when the referenced session is deleted', async () => {
-      const db = await initializeDatabase(':memory:');
+      const db = seedV39Database();
+      await sql`INSERT INTO sessions (id, type, location_path) VALUES (${'session-orchestrator-fk'}, 'quick', '/test/orchestrator-session-fk')`.execute(db);
 
-      await db
-        .insertInto('sessions')
-        .values({
-          id: 'session-orchestrator-fk',
-          type: 'quick',
-          location_path: '/test/orchestrator-session-fk',
-          created_at: '2024-01-01T00:00:00.000Z',
-          server_pid: null,
-          initial_prompt: null,
-          title: null,
-          repository_id: null,
-          worktree_id: null,
-        })
-        .execute();
+      await migrateToV40(db);
+      await sql`PRAGMA foreign_keys = ON`.execute(db);
 
-      await db
-        .insertInto('repositories')
-        .values({
-          id: 'repo-orchestrator-fk-test',
-          name: 'Orchestrator FK Test Repo',
-          path: '/test/orchestrator-fk-test',
-          created_at: '2024-01-01T00:00:00.000Z',
-          updated_at: '2024-01-01T00:00:00.000Z',
-          orchestrator_session_id: 'session-orchestrator-fk',
-        })
-        .execute();
+      await sql`
+        INSERT INTO repositories (id, name, path, created_at, updated_at, orchestrator_session_id)
+        VALUES (${'repo-orchestrator-fk-test'}, 'Orchestrator FK Test Repo', '/test/orchestrator-fk-test', '2024-01-01T00:00:00.000Z', '2024-01-01T00:00:00.000Z', ${'session-orchestrator-fk'})
+      `.execute(db);
 
-      await db.deleteFrom('sessions').where('id', '=', 'session-orchestrator-fk').execute();
+      await sql`DELETE FROM sessions WHERE id = ${'session-orchestrator-fk'}`.execute(db);
 
-      const rows = await db.selectFrom('repositories').selectAll().execute();
-      expect(rows).toHaveLength(1);
-      expect(rows[0].orchestrator_session_id).toBeNull();
+      const rows = await sql<{ orchestrator_session_id: string | null }>`
+        SELECT orchestrator_session_id FROM repositories
+      `.execute(db);
+      expect(rows.rows).toHaveLength(1);
+      expect(rows.rows[0]?.orchestrator_session_id).toBeNull();
+
+      await db.destroy();
     });
 
     it('should default orchestrator_session_id and issue_trigger_labels to null when not specified', async () => {
-      const db = await initializeDatabase(':memory:');
+      const db = seedV39Database();
+      await migrateToV40(db);
 
-      await db
-        .insertInto('repositories')
-        .values({
-          id: 'repo-no-orchestrator-fields',
-          name: 'No Orchestrator Fields Repo',
-          path: '/test/no-orchestrator-fields',
-          created_at: '2024-01-01T00:00:00.000Z',
-          updated_at: '2024-01-01T00:00:00.000Z',
-        })
-        .execute();
+      await sql`
+        INSERT INTO repositories (id, name, path, created_at, updated_at)
+        VALUES (${'repo-no-orchestrator-fields'}, 'No Orchestrator Fields Repo', '/test/no-orchestrator-fields', '2024-01-01T00:00:00.000Z', '2024-01-01T00:00:00.000Z')
+      `.execute(db);
 
-      const rows = await db.selectFrom('repositories').selectAll().execute();
+      const rows = await sql<{ orchestrator_session_id: string | null; issue_trigger_labels: string | null }>`
+        SELECT orchestrator_session_id, issue_trigger_labels FROM repositories
+      `.execute(db);
 
-      expect(rows).toHaveLength(1);
-      expect(rows[0].orchestrator_session_id).toBeNull();
-      expect(rows[0].issue_trigger_labels).toBeNull();
+      expect(rows.rows).toHaveLength(1);
+      expect(rows.rows[0]?.orchestrator_session_id).toBeNull();
+      expect(rows.rows[0]?.issue_trigger_labels).toBeNull();
+
+      await db.destroy();
     });
 
     it('should persist a non-null issue_trigger_labels string verbatim', async () => {
@@ -1446,18 +1469,44 @@ describe('migration', () => {
     // follow-up `UPDATE repositories SET orchestrator_session_id = NULL`)
     // fails this test.
     it('backfills an existing orchestrator_session_id value into the join table and clears the dead column', async () => {
-      const db = await initializeDatabase(':memory:');
-      await insertMinimalSession(db, 'session-v41-backfill');
-      await insertMinimalRepository(db, 'repo-v41-backfill');
+      // Isolated v40-shaped fixture (repositories carries the dead column,
+      // `repository_orchestrator_sessions` does not exist yet), rather than
+      // `initializeDatabase(':memory:')`'s full chain: since v42 (Issue
+      // #1725) that chain lands on a schema where the column is gone
+      // entirely, so a raw `UPDATE ... SET orchestrator_session_id` against
+      // it would now fail with "no such column". Raw `sql` queries (not the
+      // typed Kysely builder) are used for the same reason the v40 describe
+      // block above does.
+      const bunDb = new BunDatabase(':memory:');
+      const db = new Kysely<Database>({
+        dialect: new BunSqliteDialect({ database: bunDb }),
+      });
+      bunDb.exec(`
+        CREATE TABLE sessions (
+          id TEXT PRIMARY KEY,
+          type TEXT NOT NULL,
+          location_path TEXT NOT NULL,
+          created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
 
-      // Simulate a database that carries a value in the now-dead column, as
-      // v40 application code would have written before the storage move.
-      // `db` is already at v41 (initializeDatabase ran the full chain), so
-      // calling migrateToV41 again directly exercises its backfill logic
-      // against a value that only exists AFTER the migration first ran --
-      // safe because the migration's own table-create is `ifNotExists` and
-      // its backfill INSERT is `OR IGNORE`.
-      await sql`UPDATE repositories SET orchestrator_session_id = ${'session-v41-backfill'} WHERE id = ${'repo-v41-backfill'}`.execute(db);
+        CREATE TABLE repositories (
+          id TEXT PRIMARY KEY,
+          name TEXT NOT NULL,
+          path TEXT NOT NULL UNIQUE,
+          created_at TEXT NOT NULL DEFAULT (datetime('now')),
+          updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+          orchestrator_session_id TEXT REFERENCES sessions(id) ON DELETE SET NULL,
+          issue_trigger_labels TEXT
+        );
+
+        PRAGMA user_version = 40;
+      `);
+
+      await sql`INSERT INTO sessions (id, type, location_path) VALUES (${'session-v41-backfill'}, 'quick', '/test/session-v41-backfill')`.execute(db);
+      await sql`
+        INSERT INTO repositories (id, name, path, orchestrator_session_id)
+        VALUES (${'repo-v41-backfill'}, 'Repo v41 Backfill', '/test/repo-v41-backfill', ${'session-v41-backfill'})
+      `.execute(db);
 
       await migrateToV41(db);
 
@@ -1469,12 +1518,12 @@ describe('migration', () => {
       expect(designationRows).toHaveLength(1);
       expect(designationRows[0].session_id).toBe('session-v41-backfill');
 
-      const repoRow = await db
-        .selectFrom('repositories')
-        .select('orchestrator_session_id')
-        .where('id', '=', 'repo-v41-backfill')
-        .executeTakeFirst();
-      expect(repoRow?.orchestrator_session_id).toBeNull();
+      const repoRow = await sql<{ orchestrator_session_id: string | null }>`
+        SELECT orchestrator_session_id FROM repositories WHERE id = ${'repo-v41-backfill'}
+      `.execute(db);
+      expect(repoRow.rows[0]?.orchestrator_session_id).toBeNull();
+
+      await db.destroy();
     });
 
     // reach: dropping `ON DELETE CASCADE` on either foreign key fails this
@@ -1685,7 +1734,7 @@ describe('migration', () => {
 
     it('should advance schema version past v14 to the latest', async () => {
       // initializeDatabase runs every migration up to current; this just
-      // confirms the v14 step is part of that chain (final version is 19).
+      // confirms the v14 step is part of that chain (final version is 43).
       const db = await initializeDatabase(':memory:');
 
       const { sql } = await import('kysely');
@@ -1723,7 +1772,7 @@ describe('migration', () => {
 
     it('should advance schema version past v16 to the latest', async () => {
       // initializeDatabase runs every migration up to current; this just
-      // confirms the v16 step is part of that chain (final version is 19).
+      // confirms the v16 step is part of that chain (final version is 43).
       const db = await initializeDatabase(':memory:');
 
       const { sql } = await import('kysely');
