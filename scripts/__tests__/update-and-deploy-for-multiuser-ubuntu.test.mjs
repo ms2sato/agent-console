@@ -153,7 +153,7 @@ describe('update-and-deploy-for-multiuser-ubuntu.sh: post-deploy verification V0
       'verify_check "V2 entry-path-readable" entry_path_readable "${UNIFIED_ENTRY_PATH}" "${UNIFIED_ENTRY_MAP_PATH}" "${ELEVATE}" || true',
       'verify_check "V3 mainpid-identity" mainpid_identity "${SERVICE_NAME}" "${CONFIGURED_BUN}" "${ELEVATE}" systemctl || true',
       'verify_check "V4 unit-active" unit_active "${SERVICE_NAME}" systemctl journalctl "${ELEVATE}" || true',
-      'verify_check "V5 health" health "${PORT}" 10 curl || true',
+      'verify_check "V5 health" health "${HEALTH_PORT}" 10 curl || true',
       'verify_check "V6 journal-digest" journal_digest "${SERVICE_NAME}" "${RESTART_SINCE}" journalctl "${ELEVATE}" || true',
     ];
     let prev = restartIdx;
@@ -194,5 +194,69 @@ describe('update-and-deploy-for-multiuser-ubuntu.sh: post-deploy verification V0
 
   it('the status snapshot after the restart cannot abort the script before the screen (a non-active unit is V4\'s verdict)', () => {
     expect(scriptText).toContain('sudo systemctl status "${SERVICE_NAME}" --no-pager | head -10 || true');
+  });
+});
+
+// V5's port resolution (Issue #1761): the live unit's own PORT= (read at V1,
+// the same single read that already feeds V3's CONFIGURED_BUN) must win over
+// a guessed AGENT_CONSOLE_PORT default. Same static-source-text discipline
+// as above: resolve_health_port itself is fixture-tested directly in
+// scripts/__tests__/setup-multiuser-checks.test.mjs; what THIS file pins is
+// that the deploy script actually wires LIVE_PORT through it and feeds V5
+// from the result, not from the raw env-var default.
+describe('update-and-deploy-for-multiuser-ubuntu.sh: V5 port resolution wiring (Issue #1761)', () => {
+  const scriptText = readFileSync(SCRIPT, 'utf-8');
+
+  it('LIVE_PORT is derived from VERIFY_LAST_STDOUT after V1 and before the restart', () => {
+    const v1 = scriptText.indexOf('verify_check "V1 unit-env-drift"');
+    const restartIdx = scriptText.indexOf('sudo systemctl restart "${SERVICE_NAME}"');
+    const livePortIdx = scriptText.indexOf(
+      'LIVE_PORT="$(printf \'%s\\n\' "${VERIFY_LAST_STDOUT}" | sed -n \'s/^PORT=//p\' | head -n 1)"',
+    );
+    expect(v1).toBeGreaterThan(-1);
+    expect(restartIdx).toBeGreaterThan(-1);
+    expect(livePortIdx).toBeGreaterThan(-1);
+    expect(livePortIdx).toBeGreaterThan(v1);
+    expect(livePortIdx).toBeLessThan(restartIdx);
+  });
+
+  it('resolve_health_port is called with LIVE_PORT and PORT_OVERRIDE, with the literal "8080" as the third (default) argument', () => {
+    expect(scriptText).toContain(
+      'RESOLVE_PORT_OUT="$(resolve_health_port "${LIVE_PORT}" "${PORT_OVERRIDE}" "8080" 2>"${RESOLVE_PORT_ERR}")"',
+    );
+  });
+
+  // PORT_OVERRIDE must be the RAW env var, empty when AGENT_CONSOLE_PORT was
+  // not exported -- NOT "${AGENT_CONSOLE_PORT:-8080}". The defect this pins
+  // against: if the override argument defaulted to 8080 here, it would never
+  // be empty, so (a) resolve_health_port's "default" source would be
+  // unreachable from this script, and (b) on any host whose live unit's
+  // PORT differs from 8080 (e.g. 6340), the script would print a spurious
+  // "WARN: AGENT_CONSOLE_PORT=8080 differs from the live unit's PORT=6340"
+  // even though the operator never exported AGENT_CONSOLE_PORT at all.
+  it('PORT_OVERRIDE is the raw env var with no baked-in default (the literal "8080" default lives only in the call site\'s third argument)', () => {
+    expect(scriptText).toContain('PORT_OVERRIDE="${AGENT_CONSOLE_PORT:-}"');
+    expect(scriptText).not.toContain('PORT_OVERRIDE="${AGENT_CONSOLE_PORT:-8080}"');
+    expect(scriptText).not.toContain('PORT_FALLBACK');
+  });
+
+  it('V5\'s argument is ${HEALTH_PORT}, and the old `health "${PORT}"` shape is gone', () => {
+    expect(scriptText).toContain('verify_check "V5 health" health "${HEALTH_PORT}" 10 curl || true');
+    expect(scriptText).not.toContain('health "${PORT}"');
+  });
+
+  it('the "PORT (V5):" annotation line exists, right after the resolution and before the restart', () => {
+    const line = 'echo "        PORT (V5): ${HEALTH_PORT} (source: ${HEALTH_PORT_SOURCE})"';
+    const i = scriptText.indexOf(line);
+    const restartIdx = scriptText.indexOf('sudo systemctl restart "${SERVICE_NAME}"');
+    expect(i).toBeGreaterThan(-1);
+    expect(i).toBeLessThan(restartIdx);
+  });
+
+  it('there is exactly one systemctl show read path for the port -- the deploy script itself never calls systemctl show for PORT directly', () => {
+    // The only "systemctl show" reads in this script are V1's own (via
+    // unit_env_drift, inside the lib) -- this script's own text contains no
+    // second, independent `systemctl show ... PORT` read.
+    expect(scriptText).not.toMatch(/systemctl show[^\n]*PORT/);
   });
 });

@@ -567,7 +567,10 @@ depend on that; Issue #1690):
 # Default invocation (matches bootstrap defaults: agentconsole / port 8080).
 scripts/update-and-deploy-for-multiuser-ubuntu.sh
 
-# Overrides (env vars; CLI flags not supported):
+# Overrides (env vars; CLI flags not supported). AGENT_CONSOLE_PORT here is
+# only a FALLBACK for V5's health check, used when the live unit's own PORT=
+# cannot be read (Issue #1761) -- when it can, the live unit's port always
+# wins, and a mismatched override is reported as a WARN, not silently used.
 AGENT_CONSOLE_PORT=9000 \
 AGENT_CONSOLE_SERVICE_USER=ac-svc \
   scripts/update-and-deploy-for-multiuser-ubuntu.sh
@@ -619,7 +622,7 @@ fixture-tested subcommand of `scripts/lib/setup-multiuser-checks.sh`):
 | V2 `entry-path-readable` | `/usr/local/lib/agent-console/embedded-agent.js` and its `.map` are readable by an unprivileged user (`runuser -u nobody`) | after the restart |
 | V3 `mainpid-identity` | the unit's main process runs the same binary as `EMBEDDED_AGENT_BUN_PATH` (the production `compareBinaryIdentity`, run as the unit's `User=` and `Group=`) | after the restart |
 | V4 `unit-active` | `systemctl is-active` is `active`; otherwise `systemctl status` and the last 20 journal lines are attached | after the restart |
-| V5 `health` | `GET http://localhost:<port>/api/config` is HTTP 200 with `"authMode":"multi-user"` (polls up to 10 s) | after the restart |
+| V5 `health` | `GET http://localhost:<port>/api/config` is HTTP 200 with `"authMode":"multi-user"` (polls up to 10 s); `<port>` is read from the live unit's own `PORT=` at V1 (`resolve_health_port`), not a script default -- `AGENT_CONSOLE_PORT` is only a fallback for a unit that does not declare `PORT=` (Issue #1761) | after the restart |
 | V6 `journal-digest` | since the restart, the journal has `Server starting` (production), `User mode initialized` (multi-user) and `Server listening`, and no `EMBEDDED_AGENT_BUN_PATH` warning | after the restart |
 
 ### Who re-renders the unit, and when
