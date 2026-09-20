@@ -617,8 +617,13 @@ function h(title: string): void {
   console.log(`\n${'='.repeat(72)}\n${title}   [${stamp()}]\n${'='.repeat(72)}`);
 }
 
-/** The operator's real user-scope `mcpServers` block, read from `~/.claude.json`. */
-function readUserScopeMcpServers(): Record<string, unknown> {
+/**
+ * The operator's real user-scope `mcpServers` block, read from `~/.claude.json`.
+ * Exported for reuse by `probe-sdk-mcp-settings-sources.ts` (Issue #1781),
+ * which needs the same seeding source for its `settingSources: ['user']`
+ * arms -- this arm A's siblings.
+ */
+export function readUserScopeMcpServers(): Record<string, unknown> {
   const file = join(homedir(), '.claude.json');
   if (!existsSync(file)) throw new Error(`host precondition: ${file} does not exist`);
   const parsed = JSON.parse(readFileSync(file, 'utf8')) as { mcpServers?: Record<string, unknown> };
