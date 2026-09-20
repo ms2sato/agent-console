@@ -405,8 +405,8 @@ describe('verify-multiuser-systemd.sh: section 7 consumes the V0-V6 screen; the 
 
   it('every deploy invocation in the driver runs as `deployer` (never root), so the screen is the operator-path screen', () => {
     const deployCalls = driver.match(/cexec --user \S+ -w "\$SRC" "\$SERVICE" bash scripts\/update-and-deploy-for-multiuser-ubuntu\.sh/g) ?? [];
-    // deploy #1 (run_deploy) + #2/#3 (drift_arm) + #4/#5 (ownership_polarity_arm) + #6 (restart_survival_arm).
-    expect(deployCalls).toHaveLength(6);
+    // deploy #1 (run_deploy) + #2/#3 (drift_arm) + #4/#5/#5b/#5c (ownership_polarity_arm) + #6 (restart_survival_arm).
+    expect(deployCalls).toHaveLength(8);
     for (const c of deployCalls) expect(c).toContain('--user deployer ');
   });
 });
@@ -495,6 +495,77 @@ describe('verify-multiuser-systemd.sh: 7c ownership-polarity arm is present and 
       'expect "7c: V0\'s INFO line names the non-walked control as ignored"',
       'expect "7c: post-#5 marker is OWNERSHIP_OK, not OWNERSHIP_NO_TREES (the tree stays)"',
       'expect "7c: the non-walked control is still owned by deployer (nobody auto-fixed it)"',
+    ];
+    let prev = -1;
+    for (const needle of order) {
+      const i = a.indexOf(needle);
+      expect(i).toBeGreaterThan(prev);
+      prev = i;
+    }
+  });
+
+  // The one-segment repo base (Issue #1760's name-aware classification):
+  // solo_dir carries its own non-walked control and its own polarity
+  // injection, extending the 7c arm rather than replacing anything above.
+  it('creates the one-segment repo base (solo_dir, with an outputs child) and its own non-walked control (solo_daily_dir) in the same setup step as the org tree and templates_dir', () => {
+    const a = arm();
+    expect(a).toContain('local solo_dir="${DATA_ROOT}/repositories/solo"');
+    expect(a).toContain('local solo_daily_dir="${solo_dir}/daily"');
+    expect(a).toContain('"$solo_dir" "${solo_dir}/outputs"');
+    expect(a).toContain('chown -R agentconsole:agent-console-users "$solo_dir"');
+    const order = [
+      'chown deployer "$templates_dir"',
+      'chown deployer "$solo_daily_dir"',
+      'chown deployer "$org_dir"',
+    ];
+    let prev = -1;
+    for (const needle of order) {
+      const i = a.indexOf(needle);
+      expect(i).toBeGreaterThan(prev);
+      prev = i;
+    }
+  });
+
+  it('deploy #5 additionally asserts the solo_daily_dir INFO line', () => {
+    const a = arm();
+    const order = [
+      'assert_seven_pass "$out" "7c: deploy #5"',
+      'expect "7c: V0\'s INFO line names the one-segment-base non-walked control as ignored"',
+    ];
+    let prev = -1;
+    for (const needle of order) {
+      const i = a.indexOf(needle);
+      expect(i).toBeGreaterThan(prev);
+      prev = i;
+    }
+  });
+
+  it('deploy #5b: a second polarity injection misowns solo_dir alone (non-recursive) and asserts V0 FAIL naming it, the chown remedy, and no restart', () => {
+    const a = arm();
+    const order = [
+      'expect "7c: the non-walked control is still owned by deployer (nobody auto-fixed it)"',
+      'chown deployer "$solo_dir"',
+      'expect "7c: deploy #5b exits 1 (V0 FAIL, the worst code)" test "$rc" -eq 1',
+      'expect "7c: V0 FAIL line names ${solo_dir}"',
+      'expect "7c: the chown remedy line names ${solo_dir}"',
+      'check "7c: no \'==> systemctl restart\' line on deploy #5b -- the deploy stopped before the restart" "$restarted_5b"',
+    ];
+    let prev = -1;
+    for (const needle of order) {
+      const i = a.indexOf(needle);
+      expect(i).toBeGreaterThan(prev);
+      prev = i;
+    }
+  });
+
+  it('deploy #5c: restores solo_dir ownership and asserts exit 0 with the seven PASS lines, leaving the arm in a green state', () => {
+    const a = arm();
+    const order = [
+      'expect "7c: the chown remedy line names ${solo_dir}"',
+      'chown agentconsole:agent-console-users "$solo_dir"',
+      'check "7c: deploy #5c exits 0" "$rc"',
+      'assert_seven_pass "$out" "7c: deploy #5c"',
+      'step_end ownership_polarity',
     ];
     let prev = -1;
     for (const needle of order) {

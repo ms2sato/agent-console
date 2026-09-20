@@ -240,11 +240,13 @@ dist_artifact_present() {
 # accessible directory; an untraversable root is cannot-run, not
 # OWNERSHIP_NO_TREES (see the guard at the top of the function).
 #
-# Classification is by POSITION on the path relative to <data-root> (prefix
+# Classification is by position on the path relative to <data-root> (prefix
 # stripped, no realpath -- a symlink at a walked position is the walker's
-# job, not this check's). The walked-position pattern list below is a mirror
-# of the guide's "Data-root ownership pre-deploy check" section, which is the
-# single writer of the list itself; keep the two in sync.
+# job, not this check's) and, where position alone is ambiguous, by NAME:
+# the walked child names below and the UUID v4 shape of session / worker
+# ids. classify_walked (below) is the single writer of the rules; the
+# guide's "Data-root ownership pre-deploy check" section mirrors them in
+# prose for a human to read -- keep the two in sync.
 #
 # Markers (stdout line 1): OWNERSHIP_OK (rc 0) | OWNERSHIP_NO_TREES (rc 0) |
 # OWNERSHIP_MISOWNED:<n> (rc 1). Lines 2+ are the offending absolute paths,
@@ -252,6 +254,211 @@ dist_artifact_present() {
 # no offending walked path is cannot-run (rc 2); a find failure that DID
 # print one is still a FAIL (rc 1) -- the worst code, per the shared contract
 # above.
+
+# WALKED_CHILD_NAMES: the child directory names the trusted-root walker
+# (ensureTrustedDirChain) creates directly under a repo base (one- or
+# two-segment) or under _quick. classify_walked below is the single writer
+# of the full rules; this array is the one list every rule below reads.
+WALKED_CHILD_NAMES=(outputs memos messages memory worktrees)
+
+# _is_walked_child_name <name>: true iff <name> is one of WALKED_CHILD_NAMES.
+_is_walked_child_name() {
+  local name="$1" w
+  for w in "${WALKED_CHILD_NAMES[@]}"; do
+    [ "$name" = "$w" ] && return 0
+  done
+  return 1
+}
+
+# _has_walked_child <root> <base-rel>: true iff <root>/<base-rel> has a
+# direct child directory named after one of WALKED_CHILD_NAMES -- i.e.
+# <base-rel> has actually been used as a repo base at least once. Traversal
+# only (2775 directories), never ownership -- this never chowns anything,
+# same read-only contract as data_root_ownership itself.
+#
+# A base that exists but has no such child yet (never used) is classified
+# as not-yet-a-base by this probe -- a known, accepted limit: the walker
+# creates the children as the service user on first use, and would itself
+# fail closed on an unowned empty base with its own diagnostic (the
+# "Trusted directory segment has unexpected owner" message).
+_has_walked_child() {
+  local root="$1" base_rel="$2" w
+  for w in "${WALKED_CHILD_NAMES[@]}"; do
+    [ -d "${root}/${base_rel}/${w}" ] && return 0
+  done
+  return 1
+}
+
+# _org_dir_has_walked_grandchild <root> <org-rel>: true iff <root>/<org-rel>
+# has at least one existing child directory that itself has a direct walked
+# child -- i.e. <org-rel> is the ORG segment of a two-segment slug with at
+# least one already-used repo underneath it.
+_org_dir_has_walked_grandchild() {
+  local root="$1" org_rel="$2" child repo
+  for child in "${root}/${org_rel}"/*/; do
+    [ -d "$child" ] || continue
+    repo="${child%/}"
+    repo="${repo##*/}"
+    _has_walked_child "$root" "${org_rel}/${repo}" && return 0
+  done
+  return 1
+}
+
+# UUID v4 as printed by crypto.randomUUID() (session ids: session-manager.ts;
+# worker ids: worker-lifecycle-manager.ts): 8-4-4-4-12 lowercase hex, version
+# nibble fixed to 4, variant nibble restricted to 8-b.
+UUID_V4_RE='^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
+
+# _classify_below_walked_base <root> <base-rel> <seg1> [<seg2> [<seg3>]]
+#
+# Applies the below-base rules to the path segments AFTER a resolved walked
+# base (either "_quick", or a one-/two-segment "repositories/..." base --
+# the caller has already decided which). <root> is unused by every branch
+# except the identically-shaped ones that could need it in the future; kept
+# as the first parameter for symmetry with the other _* helpers.
+#   <name>                walked iff <name> is a WALKED_CHILD_NAMES entry
+#   outputs/<x>            walked iff <x> is a UUID v4 (session id)
+#   messages/<x>           walked iff <x> is a UUID v4 (session id)
+#   messages/<x>/<y>       walked iff BOTH <x> and <y> are UUID v4 (session
+#                          id / worker id)
+#   memory/<x>              walked for ANY single <x> -- an accepted
+#                          over-inclusion: builtin definition ids are not
+#                          UUIDs ('claude-sdk-builtin', claude-sdk-
+#                          builtin.ts) and quick cwd slugs are
+#                          <basename>-<12 hex> (computeQuickCwdSlug,
+#                          session-data-path.ts), so a precise id check
+#                          isn't possible here; this costs at most one
+#                          harmless chown, never a missed one
+#   _quick/memory/<x>/<y>   walked for ANY <x>, <y> -- the F5 getMemoryDir
+#                          asymmetry: repositories/.../memory/<x>/<y> is
+#                          deliberately NOT walked (only the _quick form
+#                          is), pinned by the (d) test in the sibling
+#                          test file
+# Anything else below a base (an operator's ad-hoc directory) is ignored.
+_classify_below_walked_base() {
+  local root="$1" base_rel="$2"
+  shift 2
+  local name0="$1" name1="${2:-}" name2="${3:-}"
+
+  if [ "$#" -eq 1 ]; then
+    _is_walked_child_name "$name0" && return 0
+    return 1
+  fi
+
+  if [ "$name0" = "outputs" ] && [ "$#" -eq 2 ]; then
+    [[ "$name1" =~ $UUID_V4_RE ]] && return 0
+    return 1
+  fi
+
+  if [ "$name0" = "messages" ] && { [ "$#" -eq 2 ] || [ "$#" -eq 3 ]; }; then
+    [[ "$name1" =~ $UUID_V4_RE ]] || return 1
+    [ "$#" -eq 2 ] && return 0
+    [[ "$name2" =~ $UUID_V4_RE ]] && return 0
+    return 1
+  fi
+
+  if [ "$name0" = "memory" ]; then
+    [ "$#" -eq 2 ] && return 0
+    [ "$#" -eq 3 ] && [ "$base_rel" = "_quick" ] && return 0
+    return 1
+  fi
+
+  return 1
+}
+
+# classify_walked <root> <relpath>   (Issue #1760)
+#
+# <relpath> is the path relative to <root> (no leading slash, as produced by
+# data_root_ownership's own prefix-stripping below). Returns 0 when
+# <relpath> sits at a position the trusted-root walker creates or verifies,
+# 1 otherwise. Prints nothing -- the caller only needs the exit code.
+#
+# The previous design classified by POSITION ALONE via a fixed-depth ERE
+# list, which produced false positives on the production tree (Issue
+# #1760): a one-segment repo's ad-hoc child (repositories/<a>/<b>, e.g.
+# "e_system/templates") sits at the SAME depth as a two-segment slug's own
+# base (repositories/<org>/<repo>, e.g. "ms2sato/wsheet"), so a purely
+# positional rule cannot tell them apart. This function resolves the
+# ambiguity by NAME instead: a segment matching one of WALKED_CHILD_NAMES,
+# or the UUID v4 id shape, decides which reading applies.
+#
+# Splitting <relpath> into segments is done by parameter-expansion
+# substring stripping (`${rest%%/*}` / `${rest#*/}`), never by `read`:
+# `read` is line-oriented and would silently truncate a path segment that
+# contains an embedded newline at the first newline it sees, exactly the
+# NUL-safety hazard data_root_ownership's own `-print0` / `read -d ''` loop
+# exists to avoid. Plain parameter expansion operates on the whole string as
+# an opaque byte sequence and has no such boundary.
+#
+# Depth accounting: with a one-segment base, messages/<sid>/<wid> is depth 4
+# below <root>/repositories; with a two-segment base, depth 5.
+# data_root_ownership's `-maxdepth 5` (counted from each find start point)
+# covers both.
+classify_walked() {
+  local root="$1" rel="$2"
+  local -a segs=()
+  local rest="$rel"
+  while [ -n "$rest" ]; do
+    segs+=("${rest%%/*}")
+    case "$rest" in
+      */*) rest="${rest#*/}" ;;
+      *) rest="" ;;
+    esac
+  done
+  local n="${#segs[@]}"
+
+  if [ "$n" -eq 1 ]; then
+    case "${segs[0]}" in
+      _quick | repositories) return 0 ;;
+      *) return 1 ;;
+    esac
+  fi
+
+  if [ "${segs[0]}" = "_quick" ]; then
+    _classify_below_walked_base "$root" "_quick" "${segs[@]:1}"
+    return $?
+  fi
+
+  if [ "${segs[0]}" != "repositories" ]; then
+    return 1
+  fi
+
+  local a="${segs[1]}"
+
+  if [ "$n" -eq 2 ]; then
+    # repositories/<a>: walked iff <a> is a one-segment repo base with a
+    # walked child of its own, OR <a> is the org segment of a two-segment
+    # slug with at least one repo underneath that itself has a walked
+    # child.
+    if _has_walked_child "$root" "repositories/${a}" || _org_dir_has_walked_grandchild "$root" "repositories/${a}"; then
+      return 0
+    fi
+    return 1
+  fi
+
+  local b="${segs[2]}"
+
+  # Which segment is "the base" is decided by NAME, not depth: a walked
+  # child name at segment 2 means <a> is a one-segment base and <b> is the
+  # below-base child itself; otherwise <a>/<b> is treated as a two-segment
+  # base and the below-base rules apply starting at segment 3.
+  if _is_walked_child_name "$b"; then
+    _classify_below_walked_base "$root" "repositories/${a}" "${segs[@]:2}"
+    return $?
+  fi
+
+  if [ "$n" -eq 3 ]; then
+    # repositories/<a>/<b>, <b> not a walked child name: walked only if
+    # <a>/<b> is itself a used two-segment base (has its own walked child).
+    _has_walked_child "$root" "repositories/${a}/${b}" && return 0
+    return 1
+  fi
+
+  # n >= 4, <b> not a walked child name: <a>/<b> is treated as a
+  # two-segment base; below-base rules apply starting at segment 3.
+  _classify_below_walked_base "$root" "repositories/${a}/${b}" "${segs[@]:3}"
+}
+
 data_root_ownership() {
   local root="$1"
   local service_user="$2"
@@ -277,29 +484,6 @@ data_root_ownership() {
     return 2
   fi
 
-  # Mirror of docs/multi-user-setup-guide.md's "Data-root ownership
-  # pre-deploy check" walked-position list -- that section is the single
-  # writer; this ONE array applies it mechanically. Each element is a POSIX
-  # ERE, anchored, tested against the path relative to <data-root> via
-  # bash's own `[[ =~ ]]` (never grep -- see the NUL-safety note below).
-  # Dialect note: `[[ =~ ]]` uses the shell's own ERE (glibc regex, POSIX
-  # extended), not a bash-specific syntax -- these ten patterns use only
-  # `^ $ [^/]+ ( | ) ?`, which every one of these constructs means
-  # identically under `grep -E` and under bash's `=~`, so switching
-  # matchers here changes nothing about which paths match.
-  local -a walked_patterns=(
-    '^_quick$'
-    '^repositories$'
-    '^repositories/[^/]+$'
-    '^repositories/[^/]+/[^/]+$'
-    '^repositories/[^/]+/[^/]+/worktrees$'
-    '^(_quick|repositories/[^/]+/[^/]+)/(outputs|memos|messages|memory)$'
-    '^(_quick|repositories/[^/]+/[^/]+)/outputs/[^/]+$'
-    '^(_quick|repositories/[^/]+/[^/]+)/messages/[^/]+(/[^/]+)?$'
-    '^(_quick|repositories/[^/]+/[^/]+)/memory/[^/]+$'
-    '^_quick/memory/[^/]+/[^/]+$'
-  )
-
   local quick_dir="${root}/_quick"
   local repos_dir="${root}/repositories"
   local -a start_points=()
@@ -319,13 +503,13 @@ data_root_ownership() {
   # -print0 / read -d '' (CodeRabbit review on this PR), not -print / plain
   # `read`: a directory name containing an embedded newline would otherwise
   # split into two records at the newline-based read boundary, so a walked
-  # position's own relative-path string could arrive at the pattern match
+  # position's own relative-path string could arrive at classify_walked
   # already fragmented -- and grep's line-oriented matching over that same
   # fragment compounds it, since grep's ^/$ anchor per LINE, not per
   # record. NUL is the one byte a POSIX filename cannot contain, so it is
-  # the only safe delimiter; matching then goes through bash's `[[ =~ ]]`
-  # (whole-string anchors, embedded newlines are just characters) instead
-  # of grep, for the same reason.
+  # the only safe delimiter; classify_walked's own segment split (parameter
+  # expansion, never `read`) preserves the whole opaque string, including
+  # any embedded newline, for the same reason.
   "$find_cmd" "${start_points[@]}" -maxdepth 5 \( -path '*/worktrees/*' -prune \) -o -type d ! -user "$service_user" -print0 >"$out_tmp" 2>"$err_tmp" || find_rc=$?
 
   # <data-root>'s own group (never a literal) for the chown remedy lines.
@@ -333,17 +517,12 @@ data_root_ownership() {
   group="$(stat -c %G "$root" 2>/dev/null)" || group="$service_user"
 
   local misowned_count=0 misowned_list="" remedy_list="" info_list="" first_three=""
-  local path rel pattern matched remedy q_path
+  local path rel matched remedy q_path
   while IFS= read -r -d '' path; do
     [ -n "$path" ] || continue
     rel="${path#"${root}"/}"
     matched=0
-    for pattern in "${walked_patterns[@]}"; do
-      if [[ "$rel" =~ $pattern ]]; then
-        matched=1
-        break
-      fi
-    done
+    classify_walked "$root" "$rel" && matched=1
     if [ "$matched" -eq 1 ]; then
       misowned_count=$((misowned_count + 1))
       misowned_list="${misowned_list}${path}"$'\n'

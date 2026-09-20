@@ -941,7 +941,12 @@ describe('setup-multiuser-checks: data-root-ownership (V0, Issue #1754)', () => 
   });
 
   it('(b) three walked paths (the dogfood shape) -> OWNERSHIP_MISOWNED:3, rc 1, the three absolute paths on stdout lines 2-4 in order, chown remedies name the root\'s own group', () => {
-    const root = makeRoot('repositories');
+    // p3 (repositories/ms2sato/agent-console/worktrees) is built for real
+    // (Issue #1760's name-aware classification resolves repositories/<a>
+    // and repositories/<a>/<b> by checking for an actual WALKED_CHILD_NAMES
+    // child, not by position alone) so ms2sato/agent-console is recognized
+    // as a used two-segment base and ms2sato as its org dir.
+    const root = makeRoot('repositories', join('repositories', 'ms2sato', 'agent-console', 'worktrees'));
     try {
       const p1 = join(root, 'repositories', 'ms2sato');
       const p2 = join(root, 'repositories', 'ms2sato', 'agent-console');
@@ -961,7 +966,9 @@ describe('setup-multiuser-checks: data-root-ownership (V0, Issue #1754)', () => 
   });
 
   it('(c) one walked + two non-walked -> OWNERSHIP_MISOWNED:1 and two INFO: ignored (not walked) lines [polarity: replacing any one pattern with a catch-all (e.g. ".*") makes every printed path match, and the count becomes 3 -- measured]', () => {
-    const root = makeRoot('repositories');
+    // repositories/org/repo/outputs is built for real so org/repo is
+    // recognized as a used two-segment base (Issue #1760).
+    const root = makeRoot('repositories', join('repositories', 'org', 'repo', 'outputs'));
     try {
       const walked = join(root, 'repositories', 'org', 'repo');
       const nonWalked1 = join(root, 'repositories', 'org', 'repo', 'templates');
@@ -977,7 +984,11 @@ describe('setup-multiuser-checks: data-root-ownership (V0, Issue #1754)', () => 
   });
 
   it('(d) _quick/memory/<def>/<slug> is walked but repositories/<org>/<repo>/memory/<def>/<slug> is NOT (the F5 getMemoryDir asymmetry)', () => {
-    const root = makeRoot('_quick', 'repositories');
+    // _quick/memory/<def>/<slug> is walked by rule regardless of the real
+    // tree (Issue #1760's below-base rule for _quick/memory/<x>/<y> is
+    // unconditional), but the real dirs are still built here for parity
+    // with the other real-tree-backed cases in this describe block.
+    const root = makeRoot('_quick', 'repositories', join('_quick', 'memory', 'def', 'slug'));
     try {
       const quickMemory = join(root, '_quick', 'memory', 'def', 'slug');
       const repoMemory = join(root, 'repositories', 'org', 'repo', 'memory', 'def', 'slug');
@@ -1004,7 +1015,9 @@ describe('setup-multiuser-checks: data-root-ownership (V0, Issue #1754)', () => 
   });
 
   it('(f) find prints a walked hit THEN fails (a real permission error after real hits) -> FAIL outranks cannot-run, rc 1', () => {
-    const root = makeRoot('repositories');
+    // repositories/org/outputs is built for real so repositories/org is
+    // recognized as a used one-segment base (Issue #1760).
+    const root = makeRoot('repositories', join('repositories', 'org', 'outputs'));
     try {
       const walked = join(root, 'repositories', 'org');
       const r = v0(root, { FAKE_FIND_LINES: walked, FAKE_FIND_FAIL_AFTER: '1' });
@@ -1120,19 +1133,25 @@ describe('setup-multiuser-checks: data-root-ownership (V0, Issue #1754)', () => 
     }
   });
 
-  it('a walked directory whose name contains an embedded newline is still classified correctly (polarity: -print / plain read would fragment it at the newline)', () => {
+  it('a walked directory whose name contains an embedded newline is still classified correctly (polarity: -print / plain read, or a `read`-based segment split, would fragment it at the newline)', () => {
     // FAKE_FIND_SINGLE_RAW is the one-entry escape hatch for a path
     // FAKE_FIND_LINES cannot represent (see the fixture's header): it is
     // emitted verbatim, embedded newline included, NUL-terminated -- the
     // exact shape a real `find ... -print0` would produce for this
-    // directory. "repositories/<weirdName>" matches `^repositories/[^/]+$`
-    // only if the WHOLE relative path (embedded newline included) is
-    // treated as one opaque string, which is what -print0 / read -d '' /
-    // `[[ =~ ]]` guarantee and what -print / plain `read` do not.
+    // directory. "repositories/<weirdName>" is walked (a used one-segment
+    // base, Issue #1760) only if the WHOLE relative path (embedded newline
+    // included) is treated as one opaque string when classify_walked
+    // constructs the "<weirdName>/outputs" probe path -- which is what
+    // -print0 / read -d '' / parameter-expansion segment splitting
+    // guarantee and what -print / plain `read` (line-oriented, including
+    // inside classify_walked's own segment split) do not: a fragmented
+    // split would probe the wrong (non-existent) path and misclassify this
+    // as ignored.
     const root = makeRoot('repositories');
     try {
       const weirdName = 'org\nrepo';
       const weirdDir = join(root, 'repositories', weirdName);
+      mkdirSync(join(weirdDir, 'outputs'), { recursive: true });
       const r = v0(root, { FAKE_FIND_SINGLE_RAW: weirdDir });
       expect(r.status).toBe(1);
       expect(markerOf(r)).toBe('OWNERSHIP_MISOWNED:1');
@@ -1141,6 +1160,187 @@ describe('setup-multiuser-checks: data-root-ownership (V0, Issue #1754)', () => 
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
+  });
+
+  // -------------------------------------------------------------------------
+  // Name-aware classification (Issue #1760): classify_walked resolves
+  // repositories/<a> and repositories/<a>/<b> by NAME (a WALKED_CHILD_NAMES
+  // child, or the UUID v4 id shape) rather than by position alone, closing
+  // the three false positives the production tree produced under the old
+  // fixed-depth ERE list: a one-segment repo's ad-hoc child at the same
+  // depth as a two-segment slug's own base (repositories/e_system/templates
+  // vs repositories/ms2sato/wsheet), and an ad-hoc directory under
+  // outputs/. See scripts/lib/setup-multiuser-checks.sh's classify_walked
+  // header comment for the rules; this suite exercises them against a real
+  // filesystem tree (the child probes read the real filesystem, not the
+  // fake find's printed lines).
+  // -------------------------------------------------------------------------
+  describe('name-aware classification (Issue #1760)', () => {
+    const UUID_A = '3f2a9c1e-7b4d-4e8a-9c21-5d6e7f8a9b0c';
+    const UUID_B = '11112222-3333-4222-8555-666677778888';
+
+    it('(a) one-segment repo with an outputs child: an ad-hoc child ("daily") is ignored -> OWNERSHIP_OK, one INFO line [polarity: removing the "has a walked child" probe from the repositories/<a>/<b> branch (always-walked at that position) flips this to OWNERSHIP_MISOWNED:1]', () => {
+      const root = makeRoot(join('repositories', 'x', 'outputs'));
+      try {
+        const daily = join(root, 'repositories', 'x', 'daily');
+        const r = v0(root, { FAKE_FIND_LINES: daily });
+        expect(r.status).toBe(0);
+        expect(markerOf(r)).toBe('OWNERSHIP_OK');
+        expect(r.stderr).toContain(`INFO: ignored (not walked): ${daily}`);
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
+
+    it('(b) same tree: the outputs dir itself is walked -> OWNERSHIP_MISOWNED:1', () => {
+      const root = makeRoot(join('repositories', 'x', 'outputs'));
+      try {
+        const outputs = join(root, 'repositories', 'x', 'outputs');
+        const r = v0(root, { FAKE_FIND_LINES: outputs });
+        expect(r.status).toBe(1);
+        expect(markerOf(r)).toBe('OWNERSHIP_MISOWNED:1');
+        const stdoutLines = r.stdout.replace(/\n$/, '').split('\n');
+        expect(stdoutLines.slice(1)).toEqual([outputs]);
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
+
+    it('(c) same tree: the one-segment base itself (repositories/x) is walked -> OWNERSHIP_MISOWNED:1', () => {
+      const root = makeRoot(join('repositories', 'x', 'outputs'));
+      try {
+        const base = join(root, 'repositories', 'x');
+        const r = v0(root, { FAKE_FIND_LINES: base });
+        expect(r.status).toBe(1);
+        expect(markerOf(r)).toBe('OWNERSHIP_MISOWNED:1');
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
+
+    it('(d) two-segment repo with an outputs child: both the org dir and the repo base are walked, an ad-hoc child ("templates") under the repo base is ignored -> OWNERSHIP_MISOWNED:2, one INFO line', () => {
+      const root = makeRoot(join('repositories', 'o', 'r', 'outputs'));
+      try {
+        const orgDir = join(root, 'repositories', 'o');
+        const repoBase = join(root, 'repositories', 'o', 'r');
+        const templates = join(root, 'repositories', 'o', 'r', 'templates');
+        const r = v0(root, { FAKE_FIND_LINES: [orgDir, repoBase, templates].join('\n') });
+        expect(r.status).toBe(1);
+        expect(markerOf(r)).toBe('OWNERSHIP_MISOWNED:2');
+        const stdoutLines = r.stdout.replace(/\n$/, '').split('\n');
+        expect(stdoutLines.slice(1)).toEqual([orgDir, repoBase]);
+        expect(r.stderr).toContain(`INFO: ignored (not walked): ${templates}`);
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
+
+    it('(e) a repo base with no walked child anywhere below it (and its own ad-hoc child) are both ignored -> OWNERSHIP_OK, two INFO lines [polarity: removing the "has a walked child" probes flips this to OWNERSHIP_MISOWNED:2]', () => {
+      const root = makeRoot(join('repositories', 'junk', 'sub'));
+      try {
+        const junk = join(root, 'repositories', 'junk');
+        const sub = join(root, 'repositories', 'junk', 'sub');
+        const r = v0(root, { FAKE_FIND_LINES: [junk, sub].join('\n') });
+        expect(r.status).toBe(0);
+        expect(markerOf(r)).toBe('OWNERSHIP_OK');
+        expect(r.stderr).toContain(`INFO: ignored (not walked): ${junk}`);
+        expect(r.stderr).toContain(`INFO: ignored (not walked): ${sub}`);
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
+
+    it('(f) under a two-segment repo base: outputs/<uuid v4> is walked, outputs/<non-uuid> is ignored -> OWNERSHIP_MISOWNED:1, one INFO line [polarity: removing the UUID v4 check (always-walked under outputs/) flips this to OWNERSHIP_MISOWNED:2]', () => {
+      const root = makeRoot(join('repositories', 'o', 'r', 'outputs'));
+      try {
+        const uuidChild = join(root, 'repositories', 'o', 'r', 'outputs', UUID_A);
+        const adhocChild = join(root, 'repositories', 'o', 'r', 'outputs', 'worktree-cleanup-issue');
+        const r = v0(root, { FAKE_FIND_LINES: [uuidChild, adhocChild].join('\n') });
+        expect(r.status).toBe(1);
+        expect(markerOf(r)).toBe('OWNERSHIP_MISOWNED:1');
+        const stdoutLines = r.stdout.replace(/\n$/, '').split('\n');
+        expect(stdoutLines.slice(1)).toEqual([uuidChild]);
+        expect(r.stderr).toContain(`INFO: ignored (not walked): ${adhocChild}`);
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
+
+    it('(g) under a two-segment repo base: messages/<uuid>/<uuid> is walked, messages/<uuid>/<non-uuid> is ignored -> OWNERSHIP_MISOWNED:1, one INFO line [polarity: removing the UUID v4 check (always-walked under messages/) flips this to OWNERSHIP_MISOWNED:2]', () => {
+      const root = makeRoot(join('repositories', 'o', 'r', 'outputs'));
+      try {
+        const uuidGrandchild = join(root, 'repositories', 'o', 'r', 'messages', UUID_A, UUID_B);
+        const adhocGrandchild = join(root, 'repositories', 'o', 'r', 'messages', UUID_A, 'notes');
+        const r = v0(root, { FAKE_FIND_LINES: [uuidGrandchild, adhocGrandchild].join('\n') });
+        expect(r.status).toBe(1);
+        expect(markerOf(r)).toBe('OWNERSHIP_MISOWNED:1');
+        const stdoutLines = r.stdout.replace(/\n$/, '').split('\n');
+        expect(stdoutLines.slice(1)).toEqual([uuidGrandchild]);
+        expect(r.stderr).toContain(`INFO: ignored (not walked): ${adhocGrandchild}`);
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
+
+    it('(h) memory/<definition> is walked under a two-segment repo base for a non-UUID definition id, and _quick/memory/<definition>/<slug> is walked for a non-UUID definition and a basename-hash cwd slug -> OWNERSHIP_MISOWNED:2', () => {
+      const root = makeRoot(join('repositories', 'o', 'r', 'outputs'), '_quick');
+      try {
+        const repoMemory = join(root, 'repositories', 'o', 'r', 'memory', 'claude-sdk-builtin');
+        const quickMemory = join(root, '_quick', 'memory', 'claude-sdk-builtin', 'agent-console-1a2b3c4d5e6f');
+        const r = v0(root, { FAKE_FIND_LINES: [repoMemory, quickMemory].join('\n') });
+        expect(r.status).toBe(1);
+        expect(markerOf(r)).toBe('OWNERSHIP_MISOWNED:2');
+        const stdoutLines = r.stdout.replace(/\n$/, '').split('\n');
+        expect(stdoutLines.slice(1)).toEqual([repoMemory, quickMemory]);
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
+
+    it('(i) the exact three production false positives (Issue #1760) are all ignored, and the mis-owned two-segment base among them is the only walked entry -> OWNERSHIP_MISOWNED:1, three INFO lines', () => {
+      const root = makeRoot(
+        join('repositories', 'e_system', 'outputs'),
+        join('repositories', 'e_system', 'messages'),
+        join('repositories', 'e_system', 'templates'),
+        join('repositories', 'agent-console', 'outputs'),
+        join('repositories', 'agent-console', 'messages'),
+        join('repositories', 'agent-console', 'daily'),
+        join('repositories', 'ms2sato', 'wsheet', 'outputs'),
+        join('repositories', 'ms2sato', 'wsheet', 'worktrees'),
+      );
+      try {
+        const eSystemTemplates = join(root, 'repositories', 'e_system', 'templates');
+        const wsheetWorktreeCleanup = join(root, 'repositories', 'ms2sato', 'wsheet', 'outputs', 'worktree-cleanup-issue');
+        const agentConsoleDaily = join(root, 'repositories', 'agent-console', 'daily');
+        const wsheetBase = join(root, 'repositories', 'ms2sato', 'wsheet');
+        const r = v0(root, {
+          FAKE_FIND_LINES: [eSystemTemplates, wsheetWorktreeCleanup, agentConsoleDaily, wsheetBase].join('\n'),
+        });
+        expect(r.status).toBe(1);
+        expect(markerOf(r)).toBe('OWNERSHIP_MISOWNED:1');
+        const stdoutLines = r.stdout.replace(/\n$/, '').split('\n');
+        expect(stdoutLines.slice(1)).toEqual([wsheetBase]);
+        expect(r.stderr).toContain(`INFO: ignored (not walked): ${eSystemTemplates}`);
+        expect(r.stderr).toContain(`INFO: ignored (not walked): ${wsheetWorktreeCleanup}`);
+        expect(r.stderr).toContain(`INFO: ignored (not walked): ${agentConsoleDaily}`);
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
+
+    it('a mis-owned org dir (repositories/<org>, two-segment slug, e.g. the 2026-09-20 incident shape) is still walked, even though it has no walked child of its own -- only its repo child does', () => {
+      const root = makeRoot(join('repositories', 'ms2sato', 'wsheet', 'outputs'));
+      try {
+        const orgDir = join(root, 'repositories', 'ms2sato');
+        const r = v0(root, { FAKE_FIND_LINES: orgDir });
+        expect(r.status).toBe(1);
+        expect(markerOf(r)).toBe('OWNERSHIP_MISOWNED:1');
+        const stdoutLines = r.stdout.replace(/\n$/, '').split('\n');
+        expect(stdoutLines.slice(1)).toEqual([orgDir]);
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
   });
 });
 
