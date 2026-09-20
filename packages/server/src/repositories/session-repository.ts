@@ -69,8 +69,10 @@ export interface SessionRepository {
   save(session: PersistedSession): Promise<void>;
 
   /**
-   * Save multiple sessions at once.
-   * Replaces all existing sessions with the provided array.
+   * Persists exactly this set: sessions in the set are upserted (their
+   * `created_at` and every row in another table that references them are
+   * preserved); sessions not in the set are deleted with their dependents.
+   * Never implemented as delete-all + re-insert.
    * @param sessions - The sessions to save
    */
   saveAll(sessions: PersistedSession[]): Promise<void>;

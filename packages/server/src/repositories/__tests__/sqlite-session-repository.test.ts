@@ -3,6 +3,7 @@ import { Kysely, sql } from 'kysely';
 import { BunSqliteDialect } from 'kysely-bun-sqlite';
 import { Database as BunDatabase } from 'bun:sqlite';
 import { SqliteSessionRepository } from '../sqlite-session-repository.js';
+import { createDatabaseForTest } from '../../database/connection.js';
 import type { Database } from '../../database/schema.js';
 import type { SessionUpdateFields } from '../session-repository.js';
 import {
@@ -831,6 +832,261 @@ describe('SqliteSessionRepository', () => {
 
       expect(session1?.workers.length).toBe(1);
       expect(session2?.workers.length).toBe(2);
+    });
+  });
+
+  describe('SqliteSessionRepository.saveAll — dependent-row preservation (Issue 1762)', () => {
+    // This describe block uses the REAL migrated schema (via
+    // createDatabaseForTest), not the manually-built partial schema the
+    // outer describe's beforeEach constructs above. The manual schema has
+    // no `repositories`, `repository_orchestrator_sessions`, or
+    // `inbound_event_notifications` tables, so it cannot exercise real FK
+    // cascade behavior -- exactly the gap this bug lived in.
+    let realDb: Kysely<Database>;
+    let realRepository: SqliteSessionRepository;
+
+    beforeEach(async () => {
+      realDb = await createDatabaseForTest();
+      realRepository = new SqliteSessionRepository(realDb);
+    });
+
+    afterEach(async () => {
+      await realDb.destroy();
+    });
+
+    async function seedDependents(
+      repoId: string,
+      sessionId: string,
+      notificationId: string
+    ): Promise<void> {
+      await realDb
+        .insertInto('repositories')
+        .values({
+          id: repoId,
+          name: 'test-repo',
+          path: `/test/${repoId}`,
+          // The dead `orchestrator_session_id` column (DEAD since v41, see
+          // schema.ts) still exists at this SHA and still carries an
+          // ON DELETE SET NULL foreign key onto sessions(id) -- seed it so
+          // the preservation assertions below cover it too.
+          orchestrator_session_id: sessionId,
+        })
+        .execute();
+
+      await realDb
+        .insertInto('repository_orchestrator_sessions')
+        .values({ repository_id: repoId, session_id: sessionId })
+        .execute();
+
+      await realDb
+        .insertInto('inbound_event_notifications')
+        .values({
+          id: notificationId,
+          job_id: `job-${notificationId}`,
+          session_id: sessionId,
+          worker_id: 'worker-1',
+          handler_id: 'handler-1',
+          event_type: 'ci:completed',
+          event_summary: 'test notification',
+          status: 'pending',
+          created_at: new Date().toISOString(),
+          notified_at: null,
+        })
+        .execute();
+    }
+
+    it('case (a) full preservation: an in-set session keeps its worker, designation, notification, and dead-column pointer across saveAll', async () => {
+      const session = buildPersistedQuickSession({
+        id: 'session-a',
+        workers: [buildPersistedAgentWorker({ id: 'worker-a' })],
+      });
+      await realRepository.save(session);
+      await seedDependents('repo-a', 'session-a', 'notif-a');
+
+      const beforeSessionRow = await realDb
+        .selectFrom('sessions')
+        .where('id', '=', 'session-a')
+        .select(['created_at', 'updated_at'])
+        .executeTakeFirstOrThrow();
+
+      // Ensure a distinguishable updated_at timestamp.
+      await new Promise((resolve) => setTimeout(resolve, 10));
+
+      // Polarity: fails against the pre-fix DELETE-all saveAll() (measured
+      // 2026-09-20) -- the repository_orchestrator_sessions,
+      // inbound_event_notifications, and repositories rows are all
+      // cascade-deleted by the unconditional `DELETE FROM sessions`, and
+      // the worker's created_at is not preserved either (re-inserted, not
+      // upserted).
+      await realRepository.saveAll([session]);
+
+      const afterSessionRow = await realDb
+        .selectFrom('sessions')
+        .where('id', '=', 'session-a')
+        .select(['created_at', 'updated_at'])
+        .executeTakeFirst();
+      expect(afterSessionRow).toBeDefined();
+      expect(afterSessionRow!.created_at).toBe(beforeSessionRow.created_at);
+      expect(afterSessionRow!.updated_at).not.toBe(beforeSessionRow.updated_at);
+
+      const found = await realRepository.findById('session-a');
+      expect(found?.workers.map((w) => w.id)).toEqual(['worker-a']);
+
+      const designation = await realDb
+        .selectFrom('repository_orchestrator_sessions')
+        .where('repository_id', '=', 'repo-a')
+        .where('session_id', '=', 'session-a')
+        .selectAll()
+        .executeTakeFirst();
+      expect(designation).toBeDefined();
+
+      const notification = await realDb
+        .selectFrom('inbound_event_notifications')
+        .where('id', '=', 'notif-a')
+        .selectAll()
+        .executeTakeFirst();
+      expect(notification?.status).toBe('pending');
+
+      const repoRow = await realDb
+        .selectFrom('repositories')
+        .where('id', '=', 'repo-a')
+        .select(['orchestrator_session_id'])
+        .executeTakeFirst();
+      expect(repoRow?.orchestrator_session_id).toBe('session-a');
+    });
+
+    it("case (b) absent session's dependents are cleaned up (intended cascade), while the in-set sibling keeps everything", async () => {
+      const s1 = buildPersistedQuickSession({ id: 'session-b1' });
+      const s2 = buildPersistedQuickSession({ id: 'session-b2' });
+      await realRepository.save(s1);
+      await realRepository.save(s2);
+      await seedDependents('repo-b1', 'session-b1', 'notif-b1');
+      await seedDependents('repo-b2', 'session-b2', 'notif-b2');
+
+      // Polarity: fails against the pre-fix DELETE-all saveAll() (measured
+      // 2026-09-20). session-b2's removal (and its dependents) is identical
+      // under both implementations -- both drop an absent session's
+      // dependents via cascade. What differs, and what this test actually
+      // catches, is session-b1's dependents: the pre-fix implementation's
+      // `DELETE FROM sessions` with no WHERE clause cascades through EVERY
+      // session, including the in-set one, before re-inserting it, so
+      // session-b1's own designation row is destroyed too (b1Designation
+      // was undefined against the pre-fix body).
+      await realRepository.saveAll([s1]);
+
+      expect(await realRepository.findById('session-b2')).toBeNull();
+      const b2Designation = await realDb
+        .selectFrom('repository_orchestrator_sessions')
+        .where('session_id', '=', 'session-b2')
+        .selectAll()
+        .executeTakeFirst();
+      expect(b2Designation).toBeUndefined();
+      const b2Notification = await realDb
+        .selectFrom('inbound_event_notifications')
+        .where('id', '=', 'notif-b2')
+        .selectAll()
+        .executeTakeFirst();
+      expect(b2Notification).toBeUndefined();
+
+      expect(await realRepository.findById('session-b1')).not.toBeNull();
+      const b1Designation = await realDb
+        .selectFrom('repository_orchestrator_sessions')
+        .where('session_id', '=', 'session-b1')
+        .selectAll()
+        .executeTakeFirst();
+      expect(b1Designation).toBeDefined();
+      const b1Notification = await realDb
+        .selectFrom('inbound_event_notifications')
+        .where('id', '=', 'notif-b1')
+        .selectAll()
+        .executeTakeFirst();
+      expect(b1Notification?.status).toBe('pending');
+    });
+
+    it('case (c) saveAll([]) deletes the session and every one of its dependents (existing empty-array semantics, extended to dependents)', async () => {
+      const session = buildPersistedQuickSession({ id: 'session-c' });
+      await realRepository.save(session);
+      await seedDependents('repo-c', 'session-c', 'notif-c');
+
+      // Polarity: identical outcome under the pre-fix DELETE-all saveAll()
+      // -- an empty input set was always fully destructive for the session
+      // and, as a side effect of the unconditional DELETE, its dependents
+      // too. No divergence to measure for this case.
+      await realRepository.saveAll([]);
+
+      expect(await realRepository.findById('session-c')).toBeNull();
+      const designation = await realDb
+        .selectFrom('repository_orchestrator_sessions')
+        .where('session_id', '=', 'session-c')
+        .selectAll()
+        .executeTakeFirst();
+      expect(designation).toBeUndefined();
+      const notification = await realDb
+        .selectFrom('inbound_event_notifications')
+        .where('id', '=', 'notif-c')
+        .selectAll()
+        .executeTakeFirst();
+      expect(notification).toBeUndefined();
+    });
+
+    it("case (d) a worker dropped from the session's array is deleted, and the kept worker keeps its created_at", async () => {
+      const keptWorkerCreatedAt = '2024-01-01T00:00:00.000Z';
+      const session = buildPersistedQuickSession({
+        id: 'session-d',
+        workers: [
+          buildPersistedAgentWorker({ id: 'worker-d-keep', createdAt: keptWorkerCreatedAt }),
+          buildPersistedTerminalWorker({ id: 'worker-d-drop' }),
+        ],
+      });
+      await realRepository.save(session);
+
+      const shrunk = buildPersistedQuickSession({
+        id: 'session-d',
+        workers: [buildPersistedAgentWorker({ id: 'worker-d-keep' })],
+      });
+
+      // Polarity: fails against the pre-fix DELETE-all saveAll() (measured
+      // 2026-09-20) -- for a different reason than case (a): the pre-fix
+      // implementation re-inserts every worker via a fresh
+      // `insertInto('workers').values(...)` rather than upserting, so
+      // worker-d-keep's created_at is NOT preserved (it gets whatever
+      // created_at the second buildPersistedAgentWorker() call defaults to).
+      await realRepository.saveAll([shrunk]);
+
+      const dropped = await realDb
+        .selectFrom('workers')
+        .where('id', '=', 'worker-d-drop')
+        .selectAll()
+        .executeTakeFirst();
+      expect(dropped).toBeUndefined();
+
+      const kept = await realDb
+        .selectFrom('workers')
+        .where('id', '=', 'worker-d-keep')
+        .select(['created_at'])
+        .executeTakeFirst();
+      expect(kept?.created_at).toBe(keptWorkerCreatedAt);
+    });
+
+    it('every FK onto sessions(id) is seeded by the preservation tests above (Issue 1762 "not just today\'s two") -- no polarity requirement, schema-discovery completeness check only', async () => {
+      const tables = await sql<{ name: string }>`SELECT name FROM sqlite_master WHERE type = 'table'`.execute(
+        realDb
+      );
+      const dependents = new Set<string>();
+      for (const t of tables.rows) {
+        const fks = await sql<{ table: string }>`PRAGMA foreign_key_list(${sql.raw(t.name)})`.execute(realDb);
+        for (const fk of fks.rows) {
+          if (fk.table === 'sessions') dependents.add(t.name);
+        }
+      }
+      // The dead `orchestrator_session_id` column on `repositories` (see
+      // schema.ts) still references sessions(id) at this SHA, so
+      // `repositories` is included below. Once that column is dropped by a
+      // later rebuild migration, this set shrinks to 3 and the
+      // `orchestrator_session_id` seeding above should be removed.
+      expect(dependents).toEqual(
+        new Set(['workers', 'inbound_event_notifications', 'repository_orchestrator_sessions', 'repositories'])
+      );
     });
   });
 
