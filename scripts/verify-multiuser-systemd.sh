@@ -679,8 +679,8 @@ restart_survival_arm() {
 const db = new Database("/var/lib/agent-console/data.db");
 db.exec("PRAGMA busy_timeout = 5000");
 db.exec("PRAGMA foreign_keys = ON");
-db.query("INSERT INTO repositories (id, name, path, orchestrator_session_id) VALUES (?, ?, ?, ?)").run("issue1762-repo", "issue1762-repo", "/tmp/issue1762-repo", "issue1762-session");
 db.query("INSERT INTO sessions (id, type, location_path, server_pid, created_at, updated_at, data_scope, data_scope_slug, paused_at, recovery_state) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").run("issue1762-session", "quick", "/var/lib/agent-console", null, "'"${seed_ts}"'", "'"${seed_ts}"'", null, null, null, "healthy");
+db.query("INSERT INTO repositories (id, name, path, orchestrator_session_id) VALUES (?, ?, ?, ?)").run("issue1762-repo", "issue1762-repo", "/tmp/issue1762-repo", "issue1762-session");
 db.query("INSERT INTO repository_orchestrator_sessions (repository_id, session_id) VALUES (?, ?)").run("issue1762-repo", "issue1762-session");
 db.query("INSERT INTO inbound_event_notifications (id, job_id, session_id, worker_id, handler_id, event_type, event_summary, status, created_at, notified_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").run("issue1762-notif", "issue1762-job", "issue1762-session", "issue1762-worker", "issue1762-handler", "ci:completed", "tier3 7d seed", "pending", "'"${seed_ts}"'", null);
 console.log("SEEDED");'
