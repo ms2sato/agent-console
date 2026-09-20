@@ -31,8 +31,12 @@ import {
   isAccountConnector,
   mcpServerOf,
   parseClaimedTools,
+  slugifyMcpServerName,
+  startAgentConsoleStandIn,
   type InitObservation,
 } from '../probe-sdk-declared-mcp-and-task.js';
+import { Client } from '../../../packages/embedded-agent/node_modules/@modelcontextprotocol/sdk/dist/esm/client/index.js';
+import { StreamableHTTPClientTransport } from '../../../packages/embedded-agent/node_modules/@modelcontextprotocol/sdk/dist/esm/client/streamableHttp.js';
 
 const RESERVED_ONLY: InitObservation = {
   tools: ['Read', 'Glob', 'Grep', 'TodoWrite', 'Write', 'Edit', 'mcp__console__Compact', 'mcp__console__TodoWrite'],
@@ -127,6 +131,40 @@ describe('P0 baseline', () => {
     const v = classifyP0(withConnector, WITH_AMBIENT, 'chrome-devtools');
     expect(v.verdict).toStartWith('NO LEAK');
     expect(v.verdict).toContain('claude_ai_Google_Drive');
+  });
+
+  /**
+   * Regression for the P0 run of 2026-09-20: `system:init.mcp_servers[].name`
+   * reports the SAME four claude.ai connectors as a human-readable label
+   * ("claude.ai Google Calendar"), not the tool-name slug form
+   * ("claude_ai_Google_Calendar"). A server with no tools yet (e.g.
+   * `needs-auth`, as measured for Calendar and Gmail) appears ONLY in
+   * `mcp_servers`, so this label form must be recognized directly -- it
+   * cannot be inferred from a tool-name prefix that never arrives.
+   */
+  it('recognizes the account-connector class in its mcp_servers[].name label form, not only the tool-name slug form', () => {
+    expect(slugifyMcpServerName('claude.ai Google Calendar')).toBe('claude_ai_Google_Calendar');
+    expect(slugifyMcpServerName('claude_ai_Google_Drive')).toBe('claude_ai_Google_Drive');
+    expect(slugifyMcpServerName('agent-console')).toBe('agent_console');
+    expect(isAccountConnector('claude.ai Google Calendar')).toBe(true);
+    expect(isAccountConnector('claude.ai Gmail')).toBe(true);
+    expect(isAccountConnector('claude_ai_Google_Drive')).toBe(true); // pre-existing slug form still matches
+    expect(isAccountConnector('chrome-devtools')).toBe(false);
+    expect(isAccountConnector('agent-console')).toBe(false);
+
+    const labelFormOnly: InitObservation = {
+      // Calendar/Gmail carry no tools while `needs-auth` -- the label-form
+      // server entry is the ONLY signal available for them.
+      tools: RESERVED_ONLY.tools,
+      mcpServers: [...RESERVED_ONLY.mcpServers, { name: 'claude.ai Google Calendar', status: 'needs-auth' }],
+    };
+    expect(classifyBaseline(labelFormOnly)).toEqual({
+      undeclaredServers: [],
+      undeclaredMcpTools: [],
+      accountConnectorServers: ['claude.ai Google Calendar'],
+      accountConnectorTools: [],
+      leak: false,
+    });
   });
 
   it('is INCONCLUSIVE, never "no leak", when the positive control cannot see the seeded server', () => {
@@ -353,5 +391,36 @@ describe('parseClaimedTools', () => {
   it('collects TOOL: lines in order, deduplicated', () => {
     expect(parseClaimedTools('TOOL: Read\nTOOL: Glob\nfoo\nTOOL: Read\n')).toEqual(['Read', 'Glob']);
     expect(parseClaimedTools('no tools here')).toEqual([]);
+  });
+});
+
+/**
+ * Regression for the P0 run of 2026-09-20: the `agent-console` stand-in
+ * reported status `failed` on every arm because its single, process-lifetime
+ * `WebStandardStreamableHTTPServerTransport` (stateless mode, no
+ * `sessionIdGenerator`) threw "Stateless transport cannot be reused across
+ * requests" from the SECOND request onward -- a probe session makes several
+ * turns, each hitting this stand-in at least once. Free and deterministic:
+ * real HTTP requests against a real in-process MCP server, no `claude` CLI,
+ * no cost. Two independent `Client` handshakes (not two raw fetches) because
+ * an MCP `initialize` is exactly what production's SDK does on every turn
+ * that touches this server, and is what the pre-fix code could not survive
+ * twice.
+ */
+describe('agent-console stand-in (regression: stateless transport reuse)', () => {
+  it('answers a second, independent client handshake after the first has completed', async () => {
+    const standIn = await startAgentConsoleStandIn();
+    try {
+      for (let i = 0; i < 2; i++) {
+        const client = new Client({ name: `probe-test-client-${i}`, version: '0.0.0' });
+        const transport = new StreamableHTTPClientTransport(new URL(standIn.url));
+        await client.connect(transport);
+        const result = await client.callTool({ name: 'probe_ping', arguments: {} });
+        expect(result.content).toEqual([{ type: 'text', text: 'pong' }]);
+        await client.close();
+      }
+    } finally {
+      standIn.stop();
+    }
   });
 });

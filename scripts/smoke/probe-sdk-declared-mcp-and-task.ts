@@ -235,8 +235,28 @@ export const RESERVED_MCP_SERVER_NAMES = ['agent-console', 'console'] as const;
  */
 export const ACCOUNT_CONNECTOR_PREFIX = 'claude_ai_';
 
+/**
+ * `system:init`'s `mcp_servers[].name` reports the SAME four connectors as a
+ * human-readable label ("claude.ai Google Drive"), not the underscore-joined
+ * slug the tool-name prefix uses ("claude_ai_Google_Drive") -- measured on
+ * this host's own P0 run (2026-09-20): `mcp_servers` carried "claude.ai
+ * Claude Docs" / "claude.ai Google Drive" / "claude.ai Google Calendar" /
+ * "claude.ai Gmail", none of which `ACCOUNT_CONNECTOR_PREFIX.startsWith`
+ * could ever match, while the SAME servers' tools (where they had any) were
+ * correctly bucketed via the tool-name prefix. Rather than maintain a SECOND
+ * string heuristic for the label form (itself unobserved in `sdk.d.ts`, same
+ * caveat as the prefix above), this normalizes any server name to the
+ * tool-name slug shape before testing the prefix -- one hypothesis, applied
+ * once, to both name spaces. The replacement rule (any run of non
+ * alphanumeric characters becomes a single `_`) is itself inferred from the
+ * four observed label/slug pairs, not documented anywhere in `sdk.d.ts`.
+ */
+export function slugifyMcpServerName(name: string): string {
+  return name.replace(/[^A-Za-z0-9]+/g, '_');
+}
+
 export function isAccountConnector(serverName: string): boolean {
-  return serverName.startsWith(ACCOUNT_CONNECTOR_PREFIX);
+  return slugifyMcpServerName(serverName).startsWith(ACCOUNT_CONNECTOR_PREFIX);
 }
 
 /** `system:init`'s two observable fields, as this probe reads them. */
@@ -605,15 +625,29 @@ function seedUserScopeServers(configDir: string, servers: Record<string, unknown
   return Object.keys(servers);
 }
 
-/** The stand-in for production's console-served `agent-console` HTTP MCP server. */
-async function startAgentConsoleStandIn(): Promise<{ url: string; stop: () => void }> {
-  const server = new McpServer({ name: 'agent-console', version: '0.0.0-probe' });
-  server.registerTool('probe_ping', { description: 'Probe stand-in; replies pong.' }, async () => ({
-    content: [{ type: 'text' as const, text: 'pong' }],
-  }));
-  const transport = new WebStandardStreamableHTTPServerTransport({ sessionIdGenerator: undefined });
-  await server.connect(transport);
-  const srv = Bun.serve({ port: 0, hostname: '127.0.0.1', fetch: (req) => transport.handleRequest(req) });
+/**
+ * The stand-in for production's console-served `agent-console` HTTP MCP
+ * server. A `WebStandardStreamableHTTPServerTransport` constructed with
+ * `sessionIdGenerator: undefined` is STATELESS, and the SDK's own
+ * `handleRequest` throws "Stateless transport cannot be reused across
+ * requests" on any request past its first per instance (the SDK's own
+ * documented contract, `webStandardStreamableHttp.js` header comment and
+ * L172-176) -- measured on this host's own P0 run (2026-09-20): a single
+ * transport reused across a session's several turns crashed from the second
+ * request on, reporting `agent-console` as `failed` in every arm. Each
+ * request therefore gets its OWN server + transport pair (the SDK's
+ * documented stateless pattern), never a shared one.
+ */
+export async function startAgentConsoleStandIn(): Promise<{ url: string; stop: () => void }> {
+  const handleRequest = (req: Request): Promise<Response> => {
+    const server = new McpServer({ name: 'agent-console', version: '0.0.0-probe' });
+    server.registerTool('probe_ping', { description: 'Probe stand-in; replies pong.' }, async () => ({
+      content: [{ type: 'text' as const, text: 'pong' }],
+    }));
+    const transport = new WebStandardStreamableHTTPServerTransport({ sessionIdGenerator: undefined });
+    return server.connect(transport).then(() => transport.handleRequest(req));
+  };
+  const srv = Bun.serve({ port: 0, hostname: '127.0.0.1', fetch: handleRequest });
   return { url: `http://127.0.0.1:${srv.port}/`, stop: () => srv.stop(true) };
 }
 
