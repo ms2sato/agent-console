@@ -969,14 +969,16 @@ is required.
 ## Data-root ownership pre-deploy check (Linux multi-user)
 
 Every session-data directory below `${DATA_ROOT}` (`_quick/`,
-`repositories/<org>/<repo>/` — three levels, the slug is `<org>/<repo>` —
-and the `outputs/`, `memos/`, `messages/`, `memory/` trees under them) is
-created by the server through a trusted-root walker
+`repositories/<repo>/` when the repository has no parseable remote (a
+one-segment slug), `repositories/<org>/<repo>/` otherwise (a two-segment
+slug) — and the `outputs/`, `memos/`, `messages/`, `memory/` trees under
+either shape) is created by the server through a trusted-root walker
 (`ensureTrustedDirChain`, `packages/server/src/lib/trusted-dir.ts`;
 [design](design/session-data-path.md) section 2), and so is the worktree
-base directory `repositories/<org>/<repo>/worktrees/` (the `wt-NNN-XXXX`
-directories below it are created by `git worktree add` as the requesting
-user and are NOT walked). The walker creates each segment non-recursively
+base directory below either slug shape (`repositories/<repo>/worktrees/` or
+`repositories/<org>/<repo>/worktrees/`) — the `wt-NNN-XXXX` directories below
+it are created by `git worktree add` as the requesting user and are NOT
+walked. The walker creates each segment non-recursively
 and `lstat`-verifies it on every write: a symlink or a non-directory at any
 segment is rejected, and so is any directory **not owned by the service
 user** — a group member can pre-plant a real directory at
@@ -1003,35 +1005,56 @@ overrides for the defaults. The start points are the two trees the walker
 runs in, so `source-repos/` (setup-script-owned; interactive users clone
 into it) and any other top-level directory an operator keeps under the data
 root never appear. `-maxdepth 5` (counted from each start point) reaches the
-deepest walked segments: `repositories/<org>/<repo>/messages/<session>/<worker>`
-(depth 5), `repositories/<org>/<repo>/memory/<definition>` (depth 4), and
-under `_quick` the `memory/<definition>/<cwd-slug>` and
-`messages/<session>/<worker>` trees (depth 3). The `-path`
+deepest walked segments under a two-segment slug:
+`repositories/<org>/<repo>/messages/<session>/<worker>` (depth 5),
+`repositories/<org>/<repo>/memory/<definition>` (depth 4). Under a
+one-segment slug the same trees sit one level shallower —
+`repositories/<repo>/messages/<session>/<worker>` (depth 4),
+`repositories/<repo>/memory/<definition>` (depth 3) — and under `_quick` the
+`memory/<definition>/<cwd-slug>` and `messages/<session>/<worker>` trees sit
+at depth 3; `-maxdepth 5` covers all three shapes. The `-path`
 exclusion skips the `wt-NNN-XXXX` directories under `worktrees/` (created by
 `git worktree add` as the requesting user); `worktrees` itself is still
 listed.
 
 **Read the listing by position, not by count — only an entry at a walked
 position needs re-owning.** The walked positions are `_quick`,
-`repositories`, `repositories/<org>`, `repositories/<org>/<repo>`,
-`repositories/<org>/<repo>/worktrees`, and the `outputs/`, `memos/`,
-`messages/`, `memory/` directories under `_quick` or under `<org>/<repo>`
-together with the session / worker / definition directories the server
-creates below them. Anything else the command prints — a `templates/`
-directory, an operator's ad-hoc directory under a repository directory or
-under `outputs/` — sits at a position the walker never creates or verifies,
-and needs no change. Re-own each entry at a walked position before
-deploying:
+`repositories`, a repository base (`repositories/<repo>` for a one-segment
+slug, or `repositories/<org>` and `repositories/<org>/<repo>` for a
+two-segment slug), the base's own `worktrees` directory, and the `outputs/`,
+`memos/`, `messages/`, `memory/` directories under `_quick` or under the
+base, together with the session / worker / definition directories the
+server creates below `outputs/`, `messages/` and `memory/` (`memos/` holds
+memo files directly -- `<sessionId>.md` -- and has no directories below it).
+
+A walked position is not fully determined by depth alone: `repositories/<a>`
+and `repositories/<a>/<b>` are ambiguous between "the base itself" and "an
+ad-hoc child of a shallower one-segment base" at the same depth. The
+resolution is by NAME, not just position — a segment named `outputs`,
+`memos`, `messages`, `memory`, or `worktrees` (the names the walker itself
+creates), or matching the session / worker id's UUID v4 shape under
+`outputs/` or `messages/`, is what the walker actually created or verifies.
+Anything else the command prints — a `templates/` directory, an operator's
+ad-hoc directory under a repository base or under `outputs/` — sits at a
+position the walker never creates or verifies, and needs no change. (The
+`memory/<definition>` directory is walked for any single name below it,
+since a builtin definition id such as `claude-sdk-builtin` and a quick cwd
+slug are not UUIDs — this over-includes a little rather than under-include,
+at the cost of at most one harmless re-own.) Re-own each entry at a walked
+position before deploying:
 
 ```bash
 sudo chown agentconsole:agent-console-users /var/lib/agent-console/<printed-dir>
 ```
 
-The deploy script's `V0 data-root-ownership` check applies this list
-mechanically, before every restart -- see "The post-deploy screen and its
-exit code" above. Running the command above by hand is still useful for a
-pre-deploy preview; V0 is what makes it a deploy-time gate rather than a
-step an operator can forget.
+The deploy script's `V0 data-root-ownership` check applies these name-aware
+rules mechanically, before every restart -- see "The post-deploy screen and
+its exit code" above. The manual `find` command above stays a
+position-only listing: it prints every directory not owned by the service
+user under the two walked trees, for a human to then read against the
+NAME rules stated above. Running it by hand is still useful for a
+pre-deploy preview; V0 is what makes the full classification a deploy-time
+gate rather than a step an operator can forget or misjudge by hand.
 
 A mismatch that reaches the running server is logged at `error` level by
 the `trusted-dir` logger, with this exact message shape (the uid, the

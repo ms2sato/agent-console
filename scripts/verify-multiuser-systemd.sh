@@ -90,7 +90,13 @@
 #      direct probe. A non-walked control (repositories/<org>/<repo>/
 #      templates, `chown deployer`) is created once and left mis-owned
 #      through deploy #5: V0 still PASSes, with an INFO line naming it as
-#      ignored (not walked).
+#      ignored (not walked). A second synthesized tree, a one-segment repo
+#      base (repositories/solo, Issue #1760's name-aware classification),
+#      carries its own non-walked control (solo/daily) asserted the same
+#      way on deploy #5, then its own polarity injection: `chown deployer`
+#      on the one-segment base itself -- deploy #5b must exit 1 on V0's
+#      FAIL line naming it (no restart), and deploy #5c, after restoring
+#      ownership, must exit 0 with the seven PASS lines again.
 #  7d. the #1762 restart-survival arm: seeds one session plus its FK
 #      dependents (a repository_orchestrator_sessions designation and a
 #      pending inbound_event_notifications row) directly against the
@@ -578,11 +584,18 @@ ownership_polarity_arm() {
   local org_dir="${DATA_ROOT}/repositories/${org}"
   local worktrees_dir="${org_dir}/${repo}/worktrees"
   local templates_dir="${org_dir}/${repo}/templates"
+  # A one-segment repo base (Issue #1760's name-aware classification):
+  # repositories/solo, no org segment. Carries its own non-walked control
+  # (solo_daily_dir) and its own polarity injection later in this arm.
+  local solo_dir="${DATA_ROOT}/repositories/solo"
+  local solo_daily_dir="${solo_dir}/daily"
   local rc out probe_out probe_err
 
   cexec --user root "$SERVICE" install -d -m 2775 -o agentconsole -g agent-console-users \
-    "${DATA_ROOT}/repositories" "$org_dir" "${org_dir}/${repo}" "$worktrees_dir"
+    "${DATA_ROOT}/repositories" "$org_dir" "${org_dir}/${repo}" "$worktrees_dir" \
+    "$solo_dir" "${solo_dir}/outputs"
   cexec --user root "$SERVICE" chown -R agentconsole:agent-console-users "$org_dir"
+  cexec --user root "$SERVICE" chown -R agentconsole:agent-console-users "$solo_dir"
 
   # Positive control (Architect addition): a clean, correctly-owned
   # synthesized tree PASSes V0 (OWNERSHIP_OK) BEFORE any injection -- proven
@@ -601,9 +614,11 @@ ownership_polarity_arm() {
   expect "7c: positive control -- a clean synthesized tree PASSes V0 (OWNERSHIP_OK) before any injection" test "$rc" -eq 0 -a "$control_marker" = "OWNERSHIP_OK"
   rm -f "$probe_out" "$probe_err"
 
-  # The non-walked control: created once, left mis-owned through deploy #5.
+  # The non-walked controls: created once, left mis-owned through deploy #5.
   cexec --user root "$SERVICE" install -d -m 0755 "$templates_dir"
   cexec --user root "$SERVICE" chown deployer "$templates_dir"
+  cexec --user root "$SERVICE" install -d -m 0755 "$solo_daily_dir"
+  cexec --user root "$SERVICE" chown deployer "$solo_daily_dir"
 
   # Inject: misown the org dir itself (a walked position), non-recursive --
   # its children (repo/worktrees, still agentconsole-owned; templates_dir,
@@ -639,6 +654,7 @@ ownership_polarity_arm() {
   check "7c: deploy #5 exits 0" "$rc"
   assert_seven_pass "$out" "7c: deploy #5"
   expect "7c: V0's INFO line names the non-walked control as ignored" grep -qF "INFO: ignored (not walked): ${templates_dir}" "$out"
+  expect "7c: V0's INFO line names the one-segment-base non-walked control as ignored" grep -qF "INFO: ignored (not walked): ${solo_daily_dir}" "$out"
   rm -f "$out"
 
   # Marker confirmation (Architect addition): the tree stays non-empty, so
@@ -659,6 +675,37 @@ ownership_polarity_arm() {
   local templates_owner
   templates_owner="$(cexec --user root "$SERVICE" stat -c %U "$templates_dir" | tr -d '\r')"
   expect "7c: the non-walked control is still owned by deployer (nobody auto-fixed it)" test "$templates_owner" = "deployer"
+
+  # Second polarity injection: misown the ONE-SEGMENT base itself
+  # (solo_dir, a walked position -- Issue #1760), non-recursive, so
+  # solo_dir/outputs (still agentconsole-owned) is untouched.
+  cexec --user root "$SERVICE" chown deployer "$solo_dir"
+
+  echo "  --- deploy #5b (expect: V0 FAIL naming ${solo_dir}, exit 1, no restart) ---"
+  out="$(mktemp)"
+  rc=0
+  cexec --user deployer -w "$SRC" "$SERVICE" bash scripts/update-and-deploy-for-multiuser-ubuntu.sh >"$out" 2>&1 || rc=$?
+  grep -E '^  (PASS|FAIL|SKIP)  V[0-6] |^        |^  RESULT: |^Error: |^==> (systemctl restart|Done)' "$out" | cut -c1-220 | sed 's/^/  /' || true
+  expect "7c: deploy #5b exits 1 (V0 FAIL, the worst code)" test "$rc" -eq 1
+  expect "7c: V0 FAIL line names ${solo_dir}" grep -qF "FAIL  V0 data-root-ownership: 1 walked directory(ies) under ${DATA_ROOT} not owned by agentconsole: ${solo_dir}" "$out"
+  expect "7c: the chown remedy line names ${solo_dir}" grep -qF "chown -- agentconsole:agent-console-users ${solo_dir}" "$out"
+  local restarted_5b=0
+  grep -q '==> systemctl restart' "$out" && restarted_5b=1
+  check "7c: no '==> systemctl restart' line on deploy #5b -- the deploy stopped before the restart" "$restarted_5b"
+  rm -f "$out"
+
+  # Restore: the same non-recursive chown, so solo_daily_dir (still
+  # deployer-owned) is untouched.
+  cexec --user root "$SERVICE" chown agentconsole:agent-console-users "$solo_dir"
+
+  echo "  --- deploy #5c (expect: exit 0, seven PASS lines) ---"
+  out="$(mktemp)"
+  rc=0
+  cexec --user deployer -w "$SRC" "$SERVICE" bash scripts/update-and-deploy-for-multiuser-ubuntu.sh >"$out" 2>&1 || rc=$?
+  grep -E '^  (PASS|FAIL|SKIP)  V[0-6] |^        (WARN|INFO): |^  RESULT: ' "$out" | cut -c1-220 | sed 's/^/  /' || true
+  check "7c: deploy #5c exits 0" "$rc"
+  assert_seven_pass "$out" "7c: deploy #5c"
+  rm -f "$out"
 
   step_end ownership_polarity
 }
