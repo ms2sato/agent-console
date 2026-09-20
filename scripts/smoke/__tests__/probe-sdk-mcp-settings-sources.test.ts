@@ -88,6 +88,12 @@ describe('initLite / mcpStatus / hasMcp', () => {
   });
 
   it('defaults agents/skills to empty arrays when the message omits them', () => {
+    // `agents` is genuinely optional on SDKSystemMessage; `skills` is not,
+    // but a real CLI predating the field (or a malformed message) could
+    // still omit it -- both keys are deliberately ABSENT here (not present
+    // as `[]`) so `initLite`'s `?? []` fallback is actually exercised for
+    // both, rather than merely echoing an already-empty array back
+    // (CodeRabbit finding on PR #1782).
     const lite = initLite({
       type: 'system',
       subtype: 'init',
@@ -100,7 +106,6 @@ describe('initLite / mcpStatus / hasMcp', () => {
       permissionMode: 'bypassPermissions',
       slash_commands: [],
       output_style: 'default',
-      skills: [],
       plugins: [],
       uuid: 'u' as never,
       session_id: 's',

@@ -705,8 +705,8 @@ const ARM_FLAGS = ['--armA', '--armC', '--armB', '--armF', '--armE', '--armD', '
  */
 const EXTRA_FLAGS = ['--armA3', '--armC1b', '--armC1d', '--armC1e', '--armC1c', '--armG2', '--armG3'] as const;
 const USAGE_TEXT =
-  'Usage: bun scripts/smoke/probe-sdk-mcp-settings-sources.ts [--armA] [--armA3] [--armC] [--armC1b] [--armC1d] [--armC1c] [--armB] [--armF] [--armE] [--armD] [--armG] [--max-usd <n>]\n' +
-  '  Default (no arm flag) = the original seven, in owner-directed order (A, C, B, F, E, D, G). --armA3/--armC1b/--armC1d/--armC1c are addenda, explicit-only. Operationally run across several invocations: A alone first, its result reported, then the rest.';
+  'Usage: bun scripts/smoke/probe-sdk-mcp-settings-sources.ts [--armA] [--armA3] [--armC] [--armC1b] [--armC1d] [--armC1e] [--armC1c] [--armB] [--armF] [--armE] [--armD] [--armG] [--armG2] [--armG3] [--max-usd <n>]\n' +
+  '  Default (no arm flag) = the original seven, in owner-directed order (A, C, B, F, E, D, G). --armA3/--armC1b/--armC1d/--armC1e/--armC1c/--armG2/--armG3 are addenda, explicit-only. Operationally run across several invocations: A alone first, its result reported, then the rest.';
 
 function parseArgs(argv: string[]): { arms: Set<string>; maxUsd: number } {
   const arms = new Set<string>();
