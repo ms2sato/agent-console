@@ -38,6 +38,7 @@ import {
   hasMcp,
   initLite,
   mcpStatus,
+  parseCanaryPid,
   type ArmALabel,
   type InitLite,
 } from '../probe-sdk-mcp-settings-sources.js';
@@ -513,5 +514,36 @@ describe('Arm G -- env-var expansion in declared server args', () => {
   it('a reported tag matching neither form raises a STOP', () => {
     const v = classifyArmGSession({ variant: 'explicit', settled: true, reportedTag: 'garbage', literalTag: '${PROBE_VAR}', expandedTag: 'value' });
     expect(v.stops.length).toBeGreaterThan(0);
+  });
+});
+
+describe('parseCanaryPid (teardown orphan check, Architect finding PR #1782)', () => {
+  it('parses a bare pid on the first line', () => {
+    expect(parseCanaryPid('12345\n2026-09-20T20:00:00.000Z\n')).toBe(12345);
+  });
+
+  it('parses a pid with no trailing content', () => {
+    expect(parseCanaryPid('42')).toBe(42);
+  });
+
+  it('tolerates surrounding whitespace on the first line', () => {
+    expect(parseCanaryPid('  99  \n')).toBe(99);
+  });
+
+  it('returns null for the OLD timestamp-only canary format (no PID present)', () => {
+    expect(parseCanaryPid('2026-09-20T20:00:00.000Z\n')).toBeNull();
+  });
+
+  it('returns null for an empty file', () => {
+    expect(parseCanaryPid('')).toBeNull();
+  });
+
+  it('returns null for pid 0 (never a real process)', () => {
+    expect(parseCanaryPid('0\n')).toBeNull();
+  });
+
+  it('returns null for a negative or non-numeric first line', () => {
+    expect(parseCanaryPid('-5\n')).toBeNull();
+    expect(parseCanaryPid('not-a-pid\n')).toBeNull();
   });
 });

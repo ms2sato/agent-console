@@ -12,13 +12,18 @@
  * Two jobs:
  *
  *   1. SPAWN CANARY. Touches `--canary <path>` immediately, before opening
- *      the stdio transport. A probe reading THAT FILE'S existence afterward
- *      gets ground truth that the underlying OS process was actually
- *      exec'd -- independent of whatever `system:init`'s `mcp_servers[].status`
- *      reports, which cannot by itself distinguish "the CLI decided not to
- *      even attempt this server" (native-load scope filtered it out before
- *      spawn) from any other blocked/absent shape (see the calling probe's
- *      header for why that distinction is load-bearing for its arms).
+ *      the stdio transport, writing `process.pid` as the file's first line
+ *      (Architect finding, PR #1782: the calling probe's teardown claims a
+ *      PID-based orphan check but the file originally carried only a
+ *      timestamp, nothing parseable as a PID). A probe reading THAT FILE'S
+ *      existence afterward gets ground truth that the underlying OS process
+ *      was actually exec'd -- independent of whatever `system:init`'s
+ *      `mcp_servers[].status` reports, which cannot by itself distinguish
+ *      "the CLI decided not to even attempt this server" (native-load scope
+ *      filtered it out before spawn) from any other blocked/absent shape
+ *      (see the calling probe's header for why that distinction is
+ *      load-bearing for its arms); the SAME file's first line now also lets
+ *      the caller verify the spawned process does not outlive teardown.
  *
  *   2. ECHO TOOL. Registers one tool, `probe_echo`, that reports this
  *      process's own `argv` and one named environment variable back to the
@@ -69,8 +74,10 @@ async function main(): Promise<void> {
 
   // Touched BEFORE the transport connects: a probe must be able to observe
   // "this process was exec'd" even if the MCP handshake never completes
-  // (e.g. the client disconnects early, or the tool is never called).
-  writeFileSync(canaryPath, `${new Date().toISOString()}\n`);
+  // (e.g. the client disconnects early, or the tool is never called). The
+  // PID on its own first line is what teardown's orphan check parses; the
+  // timestamp on line two is diagnostic only.
+  writeFileSync(canaryPath, `${process.pid}\n${new Date().toISOString()}\n`);
 
   const server = new McpServer({ name: 'stdio-echo', version: '0.0.0-probe' });
   server.registerTool(

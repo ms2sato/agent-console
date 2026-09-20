@@ -145,6 +145,43 @@
  *           the expanded value? Control = the same via `.mcp.json` (project
  *           file scope). 2 sessions. Docs say expanded.
  *
+ * MEASURED, 2026-09-20 (this file's own PRE-run expectations above are
+ * left as originally written; this section is the post-run correction,
+ * not an edit to them, per the Architect's review of PR #1782). Every
+ * pre-run "expected" statement above is a HYPOTHESIS the run tested, not a
+ * claim the run confirmed -- read the arm descriptions above as intent,
+ * this section as outcome:
+ *
+ *   - Arm A's plain `['user']` case does NOT cover local-scope MCP; the
+ *     addendum arm A3 (`['user','local']`, dispatched live) measured the
+ *     fix cleanly: U+L start, X/Y don't, matching the hoped shape exactly.
+ *   - Arm C's `managedSettings` ALLOW expectation ("dropped -> same as
+ *     baseline") is REFUTED on this build: C1/C2/C3 collapsed to an
+ *     identical "everything blocked" reading in BOTH carriers, INCLUDING
+ *     the reserved `agent-console` server. This is a recorded FINDING on
+ *     0.3.238, not an anomaly -- confirmed via three addenda dispatched
+ *     live: a name-only allow entry (C1b) proves the field genuinely works
+ *     (X gets admitted); naming the reserved pair (C1d+e) re-admits
+ *     `agent-console`, while `console` (in-process, no command/url) turns
+ *     out to have never been gated at all, named or not; and exact-argv
+ *     `serverCommand` matching (C1c/C2', absolute-path command) still does
+ *     not match, ruling out a path-representation mismatch as the cause.
+ *     `deniedMcpServers` (C5) survives as documented, in both carriers.
+ *   - Arm F's `claudeMdExcludes` shows the OPPOSITE carrier asymmetry from
+ *     `allowedMcpServers`: enforced via `settings`, DROPPED via
+ *     `managedSettings`. A narrow, absolute-path exclude (addendum F2)
+ *     suppresses only the named project file, leaving user CLAUDE.md and
+ *     unscoped rules intact.
+ *   - Arm G's "docs say expanded" premise is TRUE only for `args:`'s
+ *     opposite: `${VAR}` is NEVER expanded in `args:` (both declaration
+ *     paths), but IS expanded in `env:`, `headers:`, and `url:` (addenda
+ *     G2/G3, both declaration paths) -- a per-field asymmetry, not a
+ *     single yes/no answer.
+ *
+ * Full per-arm Expected/Measured/stamp/cost tables and the two summary
+ * tables (settingSources x native-load; per-arm cost) live in Issue #1781's
+ * PR body, not duplicated here.
+ *
  * EXIT CODES (`PROBE_EXIT`): 0 = every selected arm produced a definite
  * measurement (a deviation from a stated expectation is a MEASUREMENT,
  * printed as a `STOP:` line, not a failure of this script); 1 =
@@ -175,7 +212,7 @@
  * Usage: bun scripts/smoke/probe-sdk-mcp-settings-sources.ts [--armA] [--armC] [--armB] [--armF] [--armE] [--armD] [--armG] [--max-usd <n>]
  */
 
-import { existsSync, mkdirSync, mkdtempSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { createSdkMcpServer, type McpServerConfig, type Options, type Settings } from '../../packages/embedded-agent/node_modules/@anthropic-ai/claude-agent-sdk';
@@ -823,6 +860,80 @@ function readSpawnCanaries<N extends string>(names: readonly N[]): Record<N, boo
 }
 
 /**
+ * Pure parse of a canary file's own first line: the fixture writes
+ * `process.pid` there before anything else (see the fixture's own header).
+ * Kept separate from the syscall side below so it is unit-testable for
+ * free -- no process needs to exist for this function to be exercised.
+ */
+export function parseCanaryPid(content: string): number | null {
+  const firstLine = (content.split('\n')[0] ?? '').trim();
+  if (!/^\d+$/.test(firstLine)) return null;
+  const pid = Number(firstLine);
+  return pid > 0 ? pid : null;
+}
+
+/**
+ * `process.kill(pid, 0)` sends no signal, only probes for existence:
+ * throwing `ESRCH` means the pid is gone; any other outcome (no throw, or
+ * a permission error) means SOMETHING at that pid still exists.
+ */
+function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code !== 'ESRCH';
+  }
+}
+
+export interface OrphanSweepResult {
+  checked: number;
+  survivors: number[];
+  killed: number[];
+}
+
+/**
+ * Teardown's orphan check (Architect finding, PR #1782): the header always
+ * claimed "teardown additionally verifies no canary-server PID from this
+ * run remains", but nothing actually read the canary files back before
+ * this. Reads every `*.touched` file under `canaryDir`, parses its PID, and
+ * SIGKILLs (reporting) any survivor -- the `claude` child's own exit is
+ * expected to already have taken every MCP subprocess with it, so a
+ * non-empty `survivors` list is itself a finding, not routine cleanup.
+ */
+function sweepOrphanCanaryProcesses(canaryDir: string): OrphanSweepResult {
+  const result: OrphanSweepResult = { checked: 0, survivors: [], killed: [] };
+  let files: string[];
+  try {
+    files = readdirSync(canaryDir).filter((f) => f.endsWith('.touched'));
+  } catch {
+    return result;
+  }
+  for (const file of files) {
+    let content: string;
+    try {
+      content = readFileSync(join(canaryDir, file), 'utf8');
+    } catch {
+      continue;
+    }
+    const pid = parseCanaryPid(content);
+    if (pid === null) continue;
+    result.checked++;
+    if (isProcessAlive(pid)) {
+      result.survivors.push(pid);
+      try {
+        process.kill(pid, 'SIGKILL');
+        result.killed.push(pid);
+      } catch {
+        // Already gone by the time we tried, or no permission to signal it
+        // -- still reported as a survivor above; that is the finding.
+      }
+    }
+  }
+  return result;
+}
+
+/**
  * Builds the isolated `<configDir>` + scratch git repo once, shared by every
  * arm (content is read-only across arms; only the spawn-canary files and
  * hook-canary file are reset per session).
@@ -1008,6 +1119,11 @@ interface SessionRun {
   session: ProbeSession;
 }
 
+/** Set once by main() right after buildFixtures(); read by the early isolation check below. */
+let currentConfigDirForIsolationCheck = '';
+/** Fires once, after the FIRST billed session this process runs (Architect requirement, PR #1782: per-arm, not only at the very end). */
+let earlyIsolationChecked = false;
+
 async function runOneSession(
   label: string,
   cwd: string,
@@ -1026,6 +1142,16 @@ async function runOneSession(
   logInit(label, init);
   session.close();
   await session.waitForStreamEnd();
+  if (!earlyIsolationChecked) {
+    earlyIsolationChecked = true;
+    const early = verifyIsolation(currentConfigDirForIsolationCheck);
+    console.log(`${label}: EARLY isolation check (first billed session) -- evidence=${JSON.stringify(early.evidence)}`);
+    if (!early.ok) {
+      throw new HarnessIsolationFailure(
+        'the CLAUDE_CONFIG_DIR override did not reach the first billed session -- halting immediately rather than waiting until every arm has run',
+      );
+    }
+  }
   return { init, outcome, session };
 }
 
@@ -1036,6 +1162,7 @@ const PONG_PROMPT = 'Reply with exactly the single word: pong';
 // ---------------------------------------------------------------------------
 
 class BudgetExceeded extends Error {}
+class HarnessIsolationFailure extends Error {}
 
 function checkBudget(maxUsd: number): void {
   if (totals().cost > maxUsd) {
@@ -1718,12 +1845,14 @@ async function main(): Promise<number> {
   // inline at session-build time (its own function creates its stand-in).
   const g3HeaderStandIn = await startHeaderCapturingStandIn('x-probe');
   const f = buildFixtures(g3HeaderStandIn.url);
+  currentConfigDirForIsolationCheck = f.configDir;
   h(`probe-sdk-mcp-settings-sources -- arms=${[...arms].join(' ')} maxUsd=${maxUsd} config=${f.configDir} scratch=${f.scratchDir} canaries=${f.canaryDir}`);
   console.log(`user-scope mcpServers seeded via readUserScopeMcpServers(): ${JSON.stringify(Object.keys(userServers))} (unused by this probe's own servers; kept only as the sibling precondition check)`);
 
   const verdicts: ArmVerdict[] = [];
   let halted: string | null = null;
   let baselineInit: InitLite | null = null;
+  let harnessFailed = false;
   try {
     if (arms.has('--armA')) verdicts.push(...(await armA(f, standIn.url, maxUsd)));
     if (arms.has('--armA3')) {
@@ -1768,6 +1897,9 @@ async function main(): Promise<number> {
     if (err instanceof BudgetExceeded) {
       halted = err.message;
       console.log(`HALTED (budget): ${halted}`);
+    } else if (err instanceof HarnessIsolationFailure) {
+      harnessFailed = true;
+      console.log(`HARNESS (early isolation check): ${err.message}`);
     } else {
       throw err;
     }
@@ -1777,9 +1909,13 @@ async function main(): Promise<number> {
   }
 
   h('ISOLATION');
+  // Re-checked here regardless of the early per-arm result above (which
+  // only fires once, after the FIRST billed session) -- this is the
+  // Architect-required FINAL check, kept alongside the early one rather
+  // than replaced by it.
   const iso = verifyIsolation(f.configDir);
   console.log(`config dir ${f.configDir}: evidence=${JSON.stringify(iso.evidence)} transcripts=${iso.files.length}`);
-  const harnessFailed = !iso.ok;
+  if (!iso.ok) harnessFailed = true;
   if (harnessFailed) {
     console.log('HARNESS: the CLAUDE_CONFIG_DIR override did not reach the child; every isolation claim above is void');
   }
@@ -1792,6 +1928,16 @@ async function main(): Promise<number> {
   if (halted) console.log(`HALTED: ${halted}`);
   const t = totals();
   console.log(`\nturns=${perTurn.size} promptTokens=${t.tokens} cost=$${t.cost.toFixed(4)} elapsed=${Math.round((Date.now() - startedAt) / 1000)}s`);
+
+  h('TEARDOWN');
+  // The `claude` child's own exit is expected to already have taken every
+  // MCP subprocess with it; this reads each canary file's own PID BEFORE
+  // the canary dir is removed and reports (SIGKILLing) any survivor.
+  const sweep = sweepOrphanCanaryProcesses(f.canaryDir);
+  console.log(`canary-server PID check: checked=${sweep.checked} survivors=${JSON.stringify(sweep.survivors)} killed=${JSON.stringify(sweep.killed)}`);
+  if (sweep.survivors.length > 0) {
+    console.log(`STOP: ${sweep.survivors.length} canary-server process(es) survived past the claude child's exit -- ${JSON.stringify(sweep.survivors)}`);
+  }
 
   try {
     rmSync(f.scratchDir, { recursive: true, force: true });
