@@ -56,8 +56,6 @@ describe('SqliteEmbeddedAgentRepository', () => {
       .addColumn('instructions', 'text')
       .addColumn('context_window_tokens', 'integer')
       .addColumn('compaction_threshold', 'real')
-      .addColumn('mcp_servers', 'text')
-      .addColumn('subagents', 'text')
       .addColumn('is_built_in', 'integer', (col) => col.notNull().defaultTo(0))
       .addColumn('created_by', 'text', (col) => col.notNull())
       .addColumn('created_at', 'text', (col) => col.notNull().defaultTo(NOW_ISO8601))
@@ -293,45 +291,6 @@ describe('SqliteEmbeddedAgentRepository', () => {
       expect(found?.engine).toBe('openai-api');
       expect(found?.isBuiltIn).toBe(true);
     });
-
-    it('round-trips mcpServers/subagents on a claude-sdk definition (epic #1636 Phase 5 PR-1, decision 3, Issue #1779)', async () => {
-      const def: EmbeddedAgentDefinition = {
-        id: 'def-sdk-mcp',
-        name: 'Claude',
-        engine: 'claude-sdk',
-        provider: { model: 'claude-sonnet-5' },
-        enabledTools: ['Task'],
-        mcpServers: {
-          docs: { type: 'stdio', command: 'docs-mcp', args: ['--stdio'], envRef: 'docs-mcp-key' },
-          remote: { type: 'http', url: 'https://mcp.example.com/', headersRef: 'remote-mcp-headers' },
-        },
-        subagents: {
-          reviewer: { description: 'Reviews code', prompt: 'Review the diff carefully.' },
-        },
-        isBuiltIn: false,
-        createdBy: 'user-1',
-        createdAt: '2024-01-01T00:00:00.000Z',
-        updatedAt: '2024-01-01T00:00:00.000Z',
-      };
-
-      await repository.save(def);
-      const found = await repository.findById('def-sdk-mcp');
-
-      expect(found?.engine).toBe('claude-sdk');
-      if (found?.engine === 'claude-sdk') {
-        expect(found.mcpServers).toEqual(def.mcpServers);
-        expect(found.subagents).toEqual(def.subagents);
-      }
-    });
-
-    it('leaves mcpServers/subagents undefined on an openai-api row (regression: unaffected by the new columns)', async () => {
-      await repository.save(buildDefinition({ id: 'openai-unaffected' }));
-      const found = await repository.findById('openai-unaffected');
-
-      expect(found?.engine).toBe('openai-api');
-      expect((found as { mcpServers?: unknown }).mcpServers).toBeUndefined();
-      expect((found as { subagents?: unknown }).subagents).toBeUndefined();
-    });
   });
 
   describe('upsert', () => {
@@ -450,34 +409,6 @@ describe('SqliteEmbeddedAgentRepository', () => {
         throw new Error('expected openai-api engine');
       }
       expect(found.provider.supportsImages).toBeUndefined();
-    });
-
-    it('updates mcp_servers/subagents on conflict (regression guard: onConflict lists columns explicitly)', async () => {
-      const sdkDef: EmbeddedAgentDefinition = {
-        id: 'x',
-        name: 'Claude',
-        engine: 'claude-sdk',
-        provider: { model: 'claude-sonnet-5' },
-        isBuiltIn: false,
-        createdBy: 'user-1',
-        createdAt: '2024-01-01T00:00:00.000Z',
-        updatedAt: '2024-01-01T00:00:00.000Z',
-      };
-      await repository.save(sdkDef);
-      await repository.save({
-        ...sdkDef,
-        enabledTools: ['Task'],
-        mcpServers: { docs: { type: 'stdio', command: 'docs-mcp' } },
-        subagents: { reviewer: { description: 'Reviews code', prompt: 'Review it.' } },
-        updatedAt: '2024-06-01T00:00:00.000Z',
-      });
-
-      const found = await repository.findById('x');
-      if (found?.engine !== 'claude-sdk') {
-        throw new Error('expected claude-sdk engine');
-      }
-      expect(found.mcpServers).toEqual({ docs: { type: 'stdio', command: 'docs-mcp' } });
-      expect(found.subagents).toEqual({ reviewer: { description: 'Reviews code', prompt: 'Review it.' } });
     });
   });
 

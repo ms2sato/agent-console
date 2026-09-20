@@ -311,10 +311,6 @@ describe('EmbeddedAgentManager', () => {
         expect(def.isBuiltIn).toBe(false);
         expect(def.createdBy).toBe('creator-user-id');
         expect(def.createdAt).toBe(def.updatedAt);
-        if (def.engine === 'claude-sdk') {
-          expect(def.mcpServers).toBeUndefined();
-          expect(def.subagents).toBeUndefined();
-        }
         expect(def.enabledTools).toBeUndefined();
         expect(def.systemPrompt).toBeUndefined();
 
@@ -564,221 +560,9 @@ describe('EmbeddedAgentManager', () => {
         expect('baseUrl' in (updated?.provider ?? {})).toBe(false);
         expect('apiKeyRef' in (updated?.provider ?? {})).toBe(false);
       });
-
-      it('mcpServers absent from the request leaves it unchanged (regression: identical to before this PR)', async () => {
-        const manager = await getManager();
-        const created = await seedSdk(manager);
-
-        const updated = await manager.updateEmbeddedAgent(created.id, { name: 'Renamed' });
-
-        expect(updated?.engine).toBe('claude-sdk');
-        if (updated?.engine === 'claude-sdk') {
-          expect(updated.mcpServers).toBeUndefined();
-        }
-      });
-
-      it('accepts a whole-object mcpServers replacement', async () => {
-        const manager = await getManager();
-        const created = await seedSdk(manager);
-        const mcpServers = { docs: { type: 'stdio' as const, command: 'docs-mcp' } };
-
-        const updated = await manager.updateEmbeddedAgent(created.id, { mcpServers });
-
-        expect(updated?.engine).toBe('claude-sdk');
-        if (updated?.engine === 'claude-sdk') {
-          expect(updated.mcpServers).toEqual(mcpServers);
-        }
-      });
-
-      it('clears mcpServers on null', async () => {
-        const manager = await getManager();
-        const created = await seedSdk(manager);
-        await manager.updateEmbeddedAgent(created.id, {
-          mcpServers: { docs: { type: 'stdio', command: 'docs-mcp' } },
-        });
-
-        const updated = await manager.updateEmbeddedAgent(created.id, { mcpServers: null });
-
-        expect(updated?.engine).toBe('claude-sdk');
-        if (updated?.engine === 'claude-sdk') {
-          expect(updated.mcpServers).toBeUndefined();
-        }
-      });
-
-      it("rejects a declared mcpServers entry named 'agent-console' (reserved), naming the offending key", async () => {
-        const manager = await getManager();
-        const created = await seedSdk(manager);
-
-        await expect(
-          manager.updateEmbeddedAgent(created.id, {
-            mcpServers: { 'agent-console': { type: 'stdio', command: 'evil' } },
-          })
-        ).rejects.toThrow('mcpServers cannot declare the reserved name "agent-console"');
-      });
-
-      it("rejects a declared mcpServers entry named 'console' (reserved), naming the offending key", async () => {
-        const manager = await getManager();
-        const created = await seedSdk(manager);
-
-        await expect(
-          manager.updateEmbeddedAgent(created.id, {
-            mcpServers: { console: { type: 'stdio', command: 'evil' } },
-          })
-        ).rejects.toThrow('mcpServers cannot declare the reserved name "console"');
-      });
-
-      it('does not persist or mutate the map when the reserved-name check rejects', async () => {
-        const manager = await getManager();
-        const created = await seedSdk(manager);
-
-        await expect(
-          manager.updateEmbeddedAgent(created.id, {
-            mcpServers: { console: { type: 'stdio', command: 'evil' } },
-          })
-        ).rejects.toThrow();
-
-        const stillOriginal = manager.getEmbeddedAgent(created.id);
-        expect(stillOriginal?.engine).toBe('claude-sdk');
-        if (stillOriginal?.engine === 'claude-sdk') {
-          expect(stillOriginal.mcpServers).toBeUndefined();
-        }
-      });
-
-      it('accepts subagents when enabledTools includes Task in the same request', async () => {
-        const manager = await getManager();
-        const created = await seedSdk(manager);
-        const subagents = { reviewer: { description: 'Reviews code', prompt: 'Review it.' } };
-
-        const updated = await manager.updateEmbeddedAgent(created.id, {
-          enabledTools: ['Task'],
-          subagents,
-        });
-
-        expect(updated?.engine).toBe('claude-sdk');
-        if (updated?.engine === 'claude-sdk') {
-          expect(updated.subagents).toEqual(subagents);
-          expect(updated.enabledTools).toEqual(['Task']);
-        }
-      });
-
-      it('accepts subagents when Task was already enabled by a prior update (resolved against existing enabledTools)', async () => {
-        const manager = await getManager();
-        const created = await seedSdk(manager);
-        await manager.updateEmbeddedAgent(created.id, { enabledTools: ['Task'] });
-
-        const subagents = { reviewer: { description: 'Reviews code', prompt: 'Review it.' } };
-        const updated = await manager.updateEmbeddedAgent(created.id, { subagents });
-
-        expect(updated?.engine).toBe('claude-sdk');
-        if (updated?.engine === 'claude-sdk') {
-          expect(updated.subagents).toEqual(subagents);
-        }
-      });
-
-      it('rejects subagents when the resolved enabledTools lacks Task (a silent no-op is forbidden)', async () => {
-        const manager = await getManager();
-        const created = await seedSdk(manager);
-
-        await expect(
-          manager.updateEmbeddedAgent(created.id, {
-            subagents: { reviewer: { description: 'Reviews code', prompt: 'Review it.' } },
-          })
-        ).rejects.toThrow('subagents requires "Task" to be included in enabledTools');
-      });
-
-      it('rejects subagents when enabledTools is explicitly set without Task in the same request', async () => {
-        const manager = await getManager();
-        const created = await seedSdk(manager);
-
-        await expect(
-          manager.updateEmbeddedAgent(created.id, {
-            enabledTools: ['Read'],
-            subagents: { reviewer: { description: 'Reviews code', prompt: 'Review it.' } },
-          })
-        ).rejects.toThrow('subagents requires "Task" to be included in enabledTools');
-      });
-
-      it('rejects subagents when a prior Task enablement is cleared in the same request (enabledTools: null)', async () => {
-        const manager = await getManager();
-        const created = await seedSdk(manager);
-        await manager.updateEmbeddedAgent(created.id, { enabledTools: ['Task'] });
-
-        await expect(
-          manager.updateEmbeddedAgent(created.id, {
-            enabledTools: null,
-            subagents: { reviewer: { description: 'Reviews code', prompt: 'Review it.' } },
-          })
-        ).rejects.toThrow('subagents requires "Task" to be included in enabledTools');
-      });
-
-      it('does not mutate the map when the subagents-without-Task check rejects', async () => {
-        const manager = await getManager();
-        const created = await seedSdk(manager);
-
-        await expect(
-          manager.updateEmbeddedAgent(created.id, {
-            subagents: { reviewer: { description: 'Reviews code', prompt: 'Review it.' } },
-          })
-        ).rejects.toThrow();
-
-        const stillOriginal = manager.getEmbeddedAgent(created.id);
-        expect(stillOriginal?.engine).toBe('claude-sdk');
-        if (stillOriginal?.engine === 'claude-sdk') {
-          expect(stillOriginal.subagents).toBeUndefined();
-        }
-      });
-
-      it('clears subagents on null (no Task requirement re-checked on clear)', async () => {
-        const manager = await getManager();
-        const created = await seedSdk(manager);
-        await manager.updateEmbeddedAgent(created.id, {
-          enabledTools: ['Task'],
-          subagents: { reviewer: { description: 'Reviews code', prompt: 'Review it.' } },
-        });
-
-        const updated = await manager.updateEmbeddedAgent(created.id, { subagents: null });
-
-        expect(updated?.engine).toBe('claude-sdk');
-        if (updated?.engine === 'claude-sdk') {
-          expect(updated.subagents).toBeUndefined();
-        }
-      });
     });
 
-    describe('mcpServers/subagents/Task on an openai-api update (incapable engine)', () => {
-      it('rejects mcpServers with a ValidationError naming the capability row reason', async () => {
-        const manager = await getManager();
-        const created = await seed(manager);
-
-        await expect(
-          manager.updateEmbeddedAgent(created.id, {
-            mcpServers: { docs: { type: 'stdio', command: 'docs-mcp' } },
-          })
-        ).rejects.toThrow(
-          'openai-api reaches MCP only through the console dial-back; no declared external servers on this engine'
-        );
-      });
-
-      it('rejects mcpServers: null too (present at all, including explicit clear)', async () => {
-        const manager = await getManager();
-        const created = await seed(manager);
-
-        await expect(manager.updateEmbeddedAgent(created.id, { mcpServers: null })).rejects.toThrow(
-          'openai-api reaches MCP only through the console dial-back; no declared external servers on this engine'
-        );
-      });
-
-      it('rejects subagents with a ValidationError naming the task capability row reason', async () => {
-        const manager = await getManager();
-        const created = await seed(manager);
-
-        await expect(
-          manager.updateEmbeddedAgent(created.id, {
-            subagents: { reviewer: { description: 'Reviews code', prompt: 'Review it.' } },
-          })
-        ).rejects.toThrow('openai-api has no subagent runtime');
-      });
-
+    describe("'Task' in enabledTools on an openai-api update (incapable engine)", () => {
       it("rejects 'Task' inside enabledTools with a ValidationError naming the task capability row reason", async () => {
         const manager = await getManager();
         const created = await seed(manager);
@@ -788,7 +572,7 @@ describe('EmbeddedAgentManager', () => {
         ).rejects.toThrow('openai-api has no subagent runtime');
       });
 
-      it('does not mutate the map when any of the above rejects', async () => {
+      it('does not mutate the map when the above rejects', async () => {
         const manager = await getManager();
         const created = await seed(manager);
 

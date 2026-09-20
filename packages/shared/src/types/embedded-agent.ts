@@ -124,38 +124,6 @@ export interface EmbeddedAgentAttachment {
 }
 
 /**
- * A declared external MCP server (epic #1636 Phase 5 decision 3) that a
- * `claude-sdk` definition asks its worker's `query()` session
- * to connect. Consumed at `sdk-engine.ts`'s `buildOptions()` -- wiring only
- * in this PR (see `EmbeddedAgentDefinition`'s `claude-sdk` arm doc comment);
- * PR-2 does the actual `Options.mcpServers` merge, `strictMcpConfig`, and
- * the containment narrowing. See docs/design/embedded-agent-sdk-engine.md
- * §4.5.
- *
- * `envRef` / `headersRef` are key-store reference NAMES only (D2: secrets
- * are resolved at activation time in the subprocess, as the activating OS
- * user, never carried as a raw secret in the definition itself -- PR-2 does
- * that resolution).
- */
-export type DeclaredMcpServer =
-  | { type: 'stdio'; command: string; args?: string[]; envRef?: string }
-  | { type: 'http'; url: string; headersRef?: string };
-
-/**
- * A declared subagent (epic #1636 Phase 5 decision 3), mirrored from the
- * SDK's own `AgentDefinition` shape, meaningful only when
- * `'Task'` is included in the owning definition's `enabledTools`. Consumed
- * at `sdk-engine.ts`'s `buildOptions()` via `Options.agents` -- wiring only
- * in this PR. See docs/design/embedded-agent-sdk-engine.md §4.5.
- */
-export interface DeclaredSubagent {
-  description: string;
-  prompt: string;
-  tools?: EmbeddedAgentToolName[];
-  model?: string;
-}
-
-/**
  * Wire-shape for the `init` command's `restoredConversation` field
  * (Transcript Restore, #1123). Structurally identical to embedded-agent's
  * internal `ChatMessage` union -- see EmbeddedAgentRestoredToolCall doc.
@@ -248,27 +216,6 @@ export type EmbeddedAgentDefinition =
       // OS user and uses that user's own claude authentication; no provider
       // secret ever crosses the server (§3.2).
       provider: { model: string };
-      /**
-       * Declared external MCP servers (epic #1636 Phase 5 decision 3).
-       * Deliberately on the `claude-sdk` arm ONLY, not the shared
-       * base -- an `openai-api` definition cannot carry this at the type
-       * level (design-principles.md "enforce constraints through structure,
-       * not convention"; `openai-api`'s capability row is
-       * `capable: false`). Key = server name; the reserved names
-       * `'agent-console'` (the console dial-back) and `'console'` (the
-       * in-process `Compact`/`TodoWrite` server) are REJECTED at
-       * `EmbeddedAgentManager` validation, not by this type. See
-       * docs/design/embedded-agent-sdk-engine.md §4.5.
-       */
-      mcpServers?: Record<string, DeclaredMcpServer>;
-      /**
-       * Declared subagents (epic #1636 Phase 5 decision 3), meaningful
-       * only when `enabledTools` includes `'Task'` -- a
-       * definition carrying `subagents` without `'Task'` is rejected at
-       * `EmbeddedAgentManager` validation (a silent no-op is forbidden).
-       * Same claude-sdk-arm-only placement rationale as `mcpServers` above.
-       */
-      subagents?: Record<string, DeclaredSubagent>;
     });
 
 /**
@@ -450,20 +397,6 @@ export type EmbeddedAgentCommand =
        * is fresh.
        */
       resume?: { sdkSessionId: string };
-      /**
-       * Declared external MCP servers, mirrored from the owning
-       * definition's own `mcpServers` field (epic #1636 Phase 5 decision 3).
-       * Wiring only (Phase 5 PR-1) -- `sdk-engine.ts`'s
-       * `buildOptions` does not consume these yet; that's PR-2.
-       */
-      mcpServers?: Record<string, DeclaredMcpServer>;
-      /**
-       * Declared subagents, mirrored from the owning definition's own
-       * `subagents` field (epic #1636 Phase 5 decision 3).
-       * Wiring only (Phase 5 PR-1) -- `sdk-engine.ts`'s `buildOptions` does
-       * not consume these yet; that's PR-2.
-       */
-      subagents?: Record<string, DeclaredSubagent>;
     })
   | {
       v: 1;

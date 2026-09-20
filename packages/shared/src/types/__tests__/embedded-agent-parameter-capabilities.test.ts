@@ -29,13 +29,6 @@ describe('EMBEDDED_AGENT_ENGINE_PARAMETER_CAPABILITIES', () => {
       }
     });
 
-    it('is incapable of mcpServers (no declared-server mechanism, only the console dial-back)', () => {
-      expect(caps.mcpServers.capable).toBe(false);
-      if (!caps.mcpServers.capable) {
-        expect(caps.mcpServers.reason.length).toBeGreaterThan(0);
-      }
-    });
-
     it('is incapable of task (no subagent runtime)', () => {
       expect(caps.task.capable).toBe(false);
       if (!caps.task.capable) {
@@ -63,14 +56,6 @@ describe('EMBEDDED_AGENT_ENGINE_PARAMETER_CAPABILITIES', () => {
       }
     });
 
-    it('is capable of mcpServers, pass-through (epic #1636 Phase 5 decision 3)', () => {
-      expect(caps.mcpServers.capable).toBe(true);
-      if (caps.mcpServers.capable) {
-        expect(caps.mcpServers.acceptedValues).toBeNull();
-        expect(caps.mcpServers.consumptionSite.length).toBeGreaterThan(0);
-      }
-    });
-
     it('is capable of task, pass-through (epic #1636 Phase 5 decision 3)', () => {
       expect(caps.task.capable).toBe(true);
       if (caps.task.capable) {
@@ -83,10 +68,10 @@ describe('EMBEDDED_AGENT_ENGINE_PARAMETER_CAPABILITIES', () => {
   describe('discriminated union shape', () => {
     // Note: prior to epic #1636 Phase 5 (Issue #1779), the `capable: false`
     // branch was exercised only by this hand-built fixture -- the table had
-    // no production incapable row. `mcpServers`/`task` on `openai-api`
-    // (asserted above) are now the first production rows exercising it; this
-    // fixture stays as a direct shape check of the discriminated union
-    // itself, independent of any particular table entry.
+    // no production incapable row. `task` on `openai-api` (asserted above)
+    // is now the first production row exercising it; this fixture stays as
+    // a direct shape check of the discriminated union itself, independent
+    // of any particular table entry.
     it('an incapable row carries a reason, not acceptedValues/consumptionSite', () => {
       const incapable: EmbeddedAgentEngineParameterCapability = {
         capable: false,

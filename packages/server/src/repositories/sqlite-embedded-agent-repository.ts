@@ -68,8 +68,6 @@ export class SqliteEmbeddedAgentRepository implements EmbeddedAgentRepository {
           instructions: row.instructions,
           context_window_tokens: row.context_window_tokens,
           compaction_threshold: row.compaction_threshold,
-          mcp_servers: row.mcp_servers,
-          subagents: row.subagents,
           is_built_in: row.is_built_in,
           // Note: created_at and created_by are intentionally NOT updated
           // (they must never change after the initial insert).

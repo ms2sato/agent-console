@@ -5,8 +5,6 @@ import {
   type AgentDirectoryEntry,
   type AgentSurface,
   type CleanupDefinitionMemoryPayload,
-  type DeclaredMcpServer,
-  type DeclaredSubagent,
   EMBEDDED_AGENT_ENGINE_PARAMETER_CAPABILITIES,
 } from '@agent-console/shared';
 import { createLogger } from '../lib/logger.js';
@@ -16,44 +14,6 @@ import type { EmbeddedAgentRepository } from '../repositories/embedded-agent-rep
 import { SqliteEmbeddedAgentRepository } from '../repositories/sqlite-embedded-agent-repository.js';
 import { claudeSdkAgent, CLAUDE_SDK_AGENT_ID } from './embedded-agents/claude-sdk-builtin.js';
 import { JOB_TYPES, type JobQueue } from '../jobs/index.js';
-
-/**
- * Reserved MCP server names (epic #1636 Phase 5 decision 3):
- * `'agent-console'` is the console dial-back server, `'console'` is the
- * in-process `Compact`/`TodoWrite` server. A declared `mcpServers` entry
- * using either name would collide with a server the engine wiring (PR-2)
- * always injects, so declaring one is rejected here, naming the offending
- * key. See docs/design/embedded-agent-sdk-engine.md §4.5.
- */
-const RESERVED_MCP_SERVER_NAMES = new Set(['agent-console', 'console']);
-
-/**
- * Throws a `ValidationError` if `mcpServers` declares a reserved server
- * name. Names the ACTUAL offending key found, not a generic list.
- */
-function assertNoReservedMcpServerName(mcpServers: Record<string, DeclaredMcpServer> | undefined): void {
-  if (mcpServers === undefined) return;
-  for (const name of Object.keys(mcpServers)) {
-    if (RESERVED_MCP_SERVER_NAMES.has(name)) {
-      throw new ValidationError(`mcpServers cannot declare the reserved name "${name}"`);
-    }
-  }
-}
-
-/**
- * Throws a `ValidationError` if `subagents` is present but the resolved
- * `enabledTools` does not include `'Task'` -- a silent no-op is forbidden
- * by the epic (subagent definitions with no way to reach them).
- */
-function assertSubagentsRequireTask(
-  subagents: Record<string, DeclaredSubagent> | undefined,
-  enabledTools: EmbeddedAgentDefinition['enabledTools']
-): void {
-  if (subagents === undefined) return;
-  if (!enabledTools?.includes('Task')) {
-    throw new ValidationError('subagents requires "Task" to be included in enabledTools');
-  }
-}
 
 const logger = createLogger('embedded-agent-manager');
 
@@ -181,11 +141,11 @@ export class EmbeddedAgentManager implements AgentSurface<'embedded'> {
    * - `openai-api`: user-facing creation, unchanged behavior from before
    *   this PR (every field the request already carried).
    * - `claude-sdk`: MINIMAL create -- `{ name, provider: { model } }` only.
-   *   No `mcpServers`/`subagents`/`enabledTools` are representable on this
-   *   arm at the type level, so no capability check is needed here (the
-   *   `'Task'`-in-`enabledTools` check below is openai-api-arm-only for the
-   *   same reason). See docs/design/embedded-agent-sdk-engine.md §3.1/§1 for
-   *   why the SDK-hosted subprocess was previously builtin-only.
+   *   No `enabledTools` is representable on this arm at the type level, so
+   *   no capability check is needed here (the `'Task'`-in-`enabledTools`
+   *   check below is openai-api-arm-only for the same reason). See
+   *   docs/design/embedded-agent-sdk-engine.md §3.1/§1 for why the
+   *   SDK-hosted subprocess was previously builtin-only.
    */
   async createEmbeddedAgent(
     request: CreateEmbeddedAgentRequest,
@@ -217,10 +177,9 @@ export class EmbeddedAgentManager implements AgentSurface<'embedded'> {
     }
 
     // 'Task' inside enabledTools is a shared picklist value, representable
-    // on the openai-api arm at the type level (unlike mcpServers/subagents,
-    // which the claude-sdk arm structurally excludes it can't carry) -- so
-    // the incapability is enforced here, loudly, rather than left as a
-    // representable-but-ignored value.
+    // on the openai-api arm at the type level -- so the incapability is
+    // enforced here, loudly, rather than left as a representable-but-ignored
+    // value.
     const taskCapability = EMBEDDED_AGENT_ENGINE_PARAMETER_CAPABILITIES['openai-api'].task;
     if (!taskCapability.capable && request.enabledTools?.includes('Task')) {
       throw new ValidationError(taskCapability.reason);
@@ -264,7 +223,7 @@ export class EmbeddedAgentManager implements AgentSurface<'embedded'> {
    *
    * PATCH semantics matching UpdateEmbeddedAgentRequestSchema:
    * - undefined = no change
-   * - null = clear (for description / systemPrompt / maxToolIterations / enabledTools / instructions / mcpServers / subagents)
+   * - null = clear (for description / systemPrompt / maxToolIterations / enabledTools / instructions)
    * - `provider` replaces the whole provider object when present
    *
    * Preserves id / engine / isBuiltIn / createdBy / createdAt, bumps updatedAt.
@@ -297,11 +256,6 @@ export class EmbeddedAgentManager implements AgentSurface<'embedded'> {
     if (existing.engine === 'claude-sdk') {
       const enabledTools =
         request.enabledTools === null ? undefined : (request.enabledTools ?? existing.enabledTools);
-      const mcpServers = request.mcpServers === null ? undefined : (request.mcpServers ?? existing.mcpServers);
-      const subagents = request.subagents === null ? undefined : (request.subagents ?? existing.subagents);
-
-      assertNoReservedMcpServerName(mcpServers);
-      assertSubagentsRequireTask(subagents, enabledTools);
 
       const updated: EmbeddedAgentDefinition = {
         id: existing.id,
@@ -335,8 +289,6 @@ export class EmbeddedAgentManager implements AgentSurface<'embedded'> {
             ? undefined
             : (request.contextWindowTokens ?? existing.contextWindowTokens),
         compaction: request.compaction === null ? undefined : (request.compaction ?? existing.compaction),
-        mcpServers,
-        subagents,
         createdBy: existing.createdBy,
         createdAt: existing.createdAt,
         updatedAt: new Date().toISOString(),
@@ -355,20 +307,11 @@ export class EmbeddedAgentManager implements AgentSurface<'embedded'> {
       return updated;
     }
 
-    // 'openai-api' branch. mcpServers/subagents/'Task' are all incapable on
-    // this engine -- reject loudly rather than silently accepting a
-    // representable-but-ignored value (mcpServers/subagents are
-    // representable here because UpdateEmbeddedAgentRequestSchema stays
-    // flat/non-discriminated; 'Task' is representable because it is a
-    // shared picklist value on enabledTools).
-    const mcpServersCapability = EMBEDDED_AGENT_ENGINE_PARAMETER_CAPABILITIES['openai-api'].mcpServers;
-    if (!mcpServersCapability.capable && request.mcpServers !== undefined) {
-      throw new ValidationError(mcpServersCapability.reason);
-    }
+    // 'openai-api' branch. 'Task' is incapable on this engine -- reject
+    // loudly rather than silently accepting a representable-but-ignored
+    // value (it is representable here because it is a shared picklist value
+    // on enabledTools).
     const taskCapability = EMBEDDED_AGENT_ENGINE_PARAMETER_CAPABILITIES['openai-api'].task;
-    if (!taskCapability.capable && request.subagents !== undefined) {
-      throw new ValidationError(taskCapability.reason);
-    }
     const resolvedEnabledTools =
       request.enabledTools === null ? undefined : (request.enabledTools ?? existing.enabledTools);
     if (!taskCapability.capable && resolvedEnabledTools?.includes('Task')) {

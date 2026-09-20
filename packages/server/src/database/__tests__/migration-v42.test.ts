@@ -209,20 +209,19 @@ describe('migration v42 (drop dead repositories.orchestrator_session_id)', () =>
     await db.destroy();
   });
 
-  it('runs through the real dispatcher (runMigrations) and lands on 44 from a fresh database', async () => {
+  it('runs through the real dispatcher (runMigrations) and lands on 43 from a fresh database', async () => {
     // `runMigrations` is module-internal (not exported), so this exercises
     // it via the real `initializeDatabase(':memory:')` entrypoint -- the
     // "migration.test.ts style" full-chain check, scoped to this file for
-    // v42's own dispatch integration. Migrations v43 (sessions ISO8601 CHECK
-    // rebuild) and v44 (embedded_agents mcp_servers/subagents columns) now
-    // also run unconditionally after v42 in the same dispatcher chain, so a
-    // fresh database lands two steps further than v42's own step -- this
-    // asserts the CHAIN's landing point, not v42's own effect (which the
-    // "advances the schema version to 42" test above already isolates via a
-    // direct `migrateToV42(db)` call).
+    // v42's own dispatch integration. Migration v43 (sessions ISO8601 CHECK
+    // rebuild) now also runs unconditionally after v42 in the same
+    // dispatcher chain, so a fresh database lands one step further than
+    // v42's own step -- this asserts the CHAIN's landing point, not v42's
+    // own effect (which the "advances the schema version to 42" test above
+    // already isolates via a direct `migrateToV42(db)` call).
     const db = await initializeDatabase(':memory:');
     const versionRes = await sql<{ user_version: number }>`PRAGMA user_version`.execute(db);
-    expect(versionRes.rows[0]?.user_version).toBe(44);
+    expect(versionRes.rows[0]?.user_version).toBe(43);
   });
 
   it('drops orchestrator_session_id and reproduces the live DDL exactly: both ISO8601 CHECK constraints survive', async () => {

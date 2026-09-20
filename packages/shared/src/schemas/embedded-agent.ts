@@ -95,52 +95,6 @@ const EnabledToolsSchema = v.pipe(
 const InstructionsListSchema = v.array(v.pipe(v.string(), v.minLength(1)));
 
 /**
- * Declared external MCP server wire-shapes (epic #1636 Phase 5 decision 3),
- * mirroring `DeclaredMcpServer` in types/embedded-agent.ts.
- * `claude-sdk` arm only -- see `EmbeddedAgentDefinitionSchema` below.
- *
- * Deliberately NO reserved-name check (`'agent-console'` / `'console'`)
- * here: that check needs to name the SPECIFIC offending key in its error
- * message, which is more consistent to do as an imperative check alongside
- * the other capability checks in `EmbeddedAgentManager` (server-side).
- */
-const DeclaredMcpServerSchema = v.union([
-  v.strictObject({
-    type: v.literal('stdio'),
-    command: v.pipe(v.string(), v.minLength(1)),
-    args: v.optional(v.array(v.string())),
-    envRef: v.optional(v.pipe(v.string(), v.minLength(1))),
-  }),
-  v.strictObject({
-    type: v.literal('http'),
-    url: v.pipe(v.string(), v.url()),
-    headersRef: v.optional(v.pipe(v.string(), v.minLength(1))),
-  }),
-]);
-
-// Exported so mappers.ts can re-validate the persisted JSON column at
-// hydration time (nested-validation-at-read, epic #1636 Phase 5 PR-1
-// decision 3) -- the write path (this file's own definition/update schemas)
-// already validates the shape, but a row that was written before this
-// validation existed, or corrupted out-of-band, must not be silently
-// returned to callers as if it conformed.
-export const DeclaredMcpServersSchema = v.record(v.pipe(v.string(), v.minLength(1)), DeclaredMcpServerSchema);
-
-/**
- * Declared subagent wire-shape (epic #1636 Phase 5 decision 3), mirroring
- * `DeclaredSubagent` in types/embedded-agent.ts.
- */
-const DeclaredSubagentSchema = v.strictObject({
-  description: v.pipe(v.string(), v.minLength(1)),
-  prompt: v.pipe(v.string(), v.minLength(1)),
-  tools: v.optional(EnabledToolsSchema),
-  model: v.optional(v.pipe(v.string(), v.minLength(1))),
-});
-
-// Exported -- same rationale as DeclaredMcpServersSchema above.
-export const DeclaredSubagentsSchema = v.record(v.pipe(v.string(), v.minLength(1)), DeclaredSubagentSchema);
-
-/**
  * Transcript Restore (#1123) wire-shape schemas, mirroring
  * `EmbeddedAgentRestoredToolCall` / `EmbeddedAgentRestoredMessage` in
  * types/embedded-agent.ts.
@@ -245,10 +199,6 @@ export const EmbeddedAgentDefinitionSchema = v.variant('engine', [
     ...EmbeddedAgentDefinitionBaseFields,
     engine: v.literal('claude-sdk'),
     provider: EmbeddedAgentSdkProviderSchema,
-    // Declared MCP servers / subagents (epic #1636 Phase 5 decision 3):
-    // claude-sdk arm only -- see the type's doc comment.
-    mcpServers: v.optional(DeclaredMcpServersSchema),
-    subagents: v.optional(DeclaredSubagentsSchema),
   }),
 ]);
 
@@ -261,10 +211,10 @@ export const EmbeddedAgentDefinitionSchema = v.variant('engine', [
  * - `openai-api`: unchanged from before this PR -- every field the schema
  *   already had.
  * - `claude-sdk`: deliberately MINIMAL, `{ engine, name, provider }` only.
- *   No `mcpServers`/`subagents`/`enabledTools`/anything else on this arm in
- *   PR-1 -- creation is intentionally minimal; those fields are settable
- *   only via a follow-up PATCH (`UpdateEmbeddedAgentRequestSchema` below)
- *   once PR-3's form exists, or directly via this PR's PATCH support.
+ *   No `enabledTools`/anything else on this arm in PR-1 -- creation is
+ *   intentionally minimal; those fields are settable only via a follow-up
+ *   PATCH (`UpdateEmbeddedAgentRequestSchema` below) once PR-3's form
+ *   exists, or directly via this PR's PATCH support.
  *
  * BREAKING CHANGE (documented, not silent): making `engine` a required
  * discriminant means every caller must now send it explicitly -- see
@@ -309,15 +259,6 @@ export const UpdateEmbeddedAgentRequestSchema = v.strictObject({
   instructions: v.optional(v.nullable(InstructionsListSchema)),
   contextWindowTokens: v.optional(v.nullable(v.pipe(v.number(), v.integer(), v.minValue(1)))),
   compaction: v.optional(v.nullable(EmbeddedAgentCompactionConfigSchema)),
-  // Declared MCP servers / subagents (epic #1636 Phase 5 decision 3).
-  // Same PATCH convention as every other field here: undefined = no
-  // change, null = clear. `UpdateEmbeddedAgentRequestSchema` stays flat
-  // (non-discriminated -- a PATCH carries no `engine`), so an `openai-api`
-  // definition CAN receive these fields at the schema level; rejecting them
-  // for that engine is `EmbeddedAgentManager`'s job (a `ValidationError`
-  // naming the incapability), not this schema's.
-  mcpServers: v.optional(v.nullable(DeclaredMcpServersSchema)),
-  subagents: v.optional(v.nullable(DeclaredSubagentsSchema)),
 });
 
 // === Protocol schemas ===
@@ -414,11 +355,6 @@ const EmbeddedAgentInitCommandSchema = v.variant('engine', [
         sdkSessionId: v.pipe(v.string(), v.minLength(1)),
       }),
     ),
-    // Declared MCP servers / subagents, mirrored from the owning
-    // definition's own fields (epic #1636 Phase 5 decision 3). Wiring
-    // only (Phase 5 PR-1) -- see the type's doc comment.
-    mcpServers: v.optional(DeclaredMcpServersSchema),
-    subagents: v.optional(DeclaredSubagentsSchema),
   }),
 ]);
 

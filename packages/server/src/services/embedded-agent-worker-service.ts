@@ -1288,13 +1288,6 @@ export class EmbeddedAgentWorkerService {
               // and can read that user's own session store, which this
               // process cannot in multi-user mode.
               ...(resumeId !== null ? { resume: { sdkSessionId: resumeId } } : {}),
-              // Declared MCP servers / subagents (epic #1636 Phase 5 PR-1,
-              // decision 3): wiring only -- copies the definition's
-              // declared values into the stdin payload. No behavior change
-              // to what the subprocess DOES with these (that's PR-2's
-              // buildOptions).
-              ...(definition.mcpServers !== undefined ? { mcpServers: definition.mcpServers } : {}),
-              ...(definition.subagents !== undefined ? { subagents: definition.subagents } : {}),
             };
       this.writeCommand(stdin, initCommand);
 

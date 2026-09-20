@@ -258,20 +258,18 @@ describe('Embedded Agents API', () => {
     it('surfaces a manager ValidationError (incapable-engine parameter) as a 400 (epic #1636 Phase 5 decision 3, Issue #1779)', async () => {
       embeddedAgentManager.getEmbeddedAgent.mockReturnValue(ownedDefinition());
       embeddedAgentManager.updateEmbeddedAgent.mockReturnValue(
-        Promise.reject(new ValidationError('openai-api reaches MCP only through the console dial-back; no declared external servers on this engine'))
+        Promise.reject(new ValidationError('openai-api has no subagent runtime'))
       );
 
       const res = await app.request('/api/embedded-agents/def-1', {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ mcpServers: { docs: { type: 'stdio', command: 'docs-mcp' } } }),
+        body: JSON.stringify({ enabledTools: ['Task'] }),
       });
 
       expect(res.status).toBe(400);
       const body = (await res.json()) as { error: string };
-      expect(body.error).toBe(
-        'openai-api reaches MCP only through the console dial-back; no declared external servers on this engine'
-      );
+      expect(body.error).toBe('openai-api has no subagent runtime');
     });
 
     it('accepts enabledTools: null (clear to default)', async () => {

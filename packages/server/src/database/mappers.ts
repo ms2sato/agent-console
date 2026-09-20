@@ -1,6 +1,4 @@
-import * as v from 'valibot';
 import type { AgentDefinition, Repository, AgentActivityPatterns, MessageTemplate, EmbeddedAgentDefinition, EmbeddedAgentToolName, Artifact, Bookmark } from '@agent-console/shared';
-import { DeclaredMcpServersSchema, DeclaredSubagentsSchema } from '@agent-console/shared';
 import type { ArtifactRecord } from '../repositories/artifact-repository.js';
 import type { BookmarkRecord } from '../repositories/bookmark-repository.js';
 import { computeCapabilities } from '@agent-console/shared';
@@ -571,11 +569,6 @@ export function toEmbeddedAgentRow(def: EmbeddedAgentDefinition): NewEmbeddedAge
     instructions: def.instructions !== undefined ? JSON.stringify(def.instructions) : null,
     context_window_tokens: def.contextWindowTokens ?? null,
     compaction_threshold: def.compaction?.threshold ?? null,
-    // Declared MCP servers / subagents (epic #1636 Phase 5 PR-1, decision 3):
-    // claude-sdk-only, same null-for-other-engine convention as
-    // provider_base_url above.
-    mcp_servers: def.engine === 'claude-sdk' && def.mcpServers !== undefined ? JSON.stringify(def.mcpServers) : null,
-    subagents: def.engine === 'claude-sdk' && def.subagents !== undefined ? JSON.stringify(def.subagents) : null,
     is_built_in: def.isBuiltIn ? 1 : 0,
     created_by: def.createdBy,
     created_at: def.createdAt,
@@ -611,52 +604,6 @@ function parseEmbeddedAgentJsonArrayColumn<T>(
     logger.warn({ embeddedAgentId }, `Failed to parse ${fieldName}, ignoring`);
     return undefined;
   }
-}
-
-/**
- * Parse a nullable JSON-object-string embedded-agent column (`mcp_servers`,
- * `subagents`) into a typed record, re-validated against the same shared
- * wire schema the write path already enforces (`DeclaredMcpServersSchema` /
- * `DeclaredSubagentsSchema`). Two layers, deliberately treated differently
- * (Architect ruling, epic #1636 Phase 5 PR-1 decision 3):
- *
- * 1. The string isn't valid JSON at all -- `JSON.parse` throws. TOLERANT:
- *    warn + fall back to `undefined`, same as `parseEmbeddedAgentJsonArrayColumn`
- *    above. `undefined` ("no declared servers/subagents") is always a safe
- *    read, so this layer stays lenient.
- * 2. `JSON.parse` succeeds, but the result does not conform to the schema
- *    (wrong shape, invalid discriminant, a missing required field, or not
- *    even a plain object -- `v.record`'s own schema check rejects those).
- *    THROWS `DataIntegrityError`, mirroring the `provider_base_url`/`engine`
- *    consistency guard immediately below in `toEmbeddedAgentDefinition`: a
- *    row failing this check is corrupted data, not a recoverable shape, and
- *    the write path already validates the same schema at create/update time
- *    -- there is no principled reason to be more lenient here than there.
- */
-function parseEmbeddedAgentJsonObjectColumn<TSchema extends v.GenericSchema>(
-  value: string | null,
-  embeddedAgentId: string,
-  fieldName: 'mcp_servers' | 'subagents',
-  schema: TSchema
-): v.InferOutput<TSchema> | undefined {
-  if (value === null) {
-    return undefined;
-  }
-
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(value);
-  } catch {
-    logger.warn({ embeddedAgentId }, `Failed to parse ${fieldName}, ignoring`);
-    return undefined;
-  }
-
-  const result = v.safeParse(schema, parsed);
-  if (!result.success) {
-    const shapeName = fieldName === 'mcp_servers' ? 'MCP server' : 'subagent';
-    throw new DataIntegrityError('embedded-agent', embeddedAgentId, `${fieldName} (invalid declared ${shapeName} shape)`);
-  }
-  return result.output;
 }
 
 /**
@@ -739,8 +686,6 @@ export function toEmbeddedAgentDefinition(row: EmbeddedAgentRow): EmbeddedAgentD
       ...base,
       engine: 'claude-sdk',
       provider: { model: row.provider_model },
-      mcpServers: parseEmbeddedAgentJsonObjectColumn(row.mcp_servers, row.id, 'mcp_servers', DeclaredMcpServersSchema),
-      subagents: parseEmbeddedAgentJsonObjectColumn(row.subagents, row.id, 'subagents', DeclaredSubagentsSchema),
     };
   } else {
     throw new DataIntegrityError('embedded-agent', row.id, `engine (unexpected value: ${row.engine})`);

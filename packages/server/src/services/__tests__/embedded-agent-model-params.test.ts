@@ -155,7 +155,6 @@ describe('validateEmbeddedAgentParameterOverride', () => {
   const CAPABLE: EmbeddedAgentEngineParameterCapabilities = {
     model: { capable: true, acceptedValues: null, consumptionSite: 'test fixture' },
     reasoningEffort: { capable: true, acceptedValues: null, consumptionSite: 'test fixture' },
-    mcpServers: { capable: true, acceptedValues: null, consumptionSite: 'test fixture' },
     task: { capable: true, acceptedValues: null, consumptionSite: 'test fixture' },
   };
   const CLOSED_EFFORT: EmbeddedAgentEngineParameterCapabilities = {
@@ -165,7 +164,6 @@ describe('validateEmbeddedAgentParameterOverride', () => {
       acceptedValues: ['low', 'medium', 'high'],
       consumptionSite: 'test fixture',
     },
-    mcpServers: { capable: true, acceptedValues: null, consumptionSite: 'test fixture' },
     task: { capable: true, acceptedValues: null, consumptionSite: 'test fixture' },
   };
 
@@ -239,7 +237,6 @@ describe('validateEmbeddedAgentParameterOverride', () => {
       const incapable: EmbeddedAgentEngineParameterCapabilities = {
         model: { capable: false, reason: 'test fixture: model overrides disabled' },
         reasoningEffort: { capable: true, acceptedValues: null, consumptionSite: 'test fixture' },
-        mcpServers: { capable: true, acceptedValues: null, consumptionSite: 'test fixture' },
         task: { capable: true, acceptedValues: null, consumptionSite: 'test fixture' },
       };
 

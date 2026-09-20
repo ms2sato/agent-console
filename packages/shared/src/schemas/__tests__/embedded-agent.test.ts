@@ -277,53 +277,6 @@ describe('EmbeddedAgentDefinitionSchema', () => {
     });
   });
 
-  describe('mcpServers / subagents (epic #1636 Phase 5 decision 3, Issue #1779, claude-sdk arm only)', () => {
-    it('accepts a claude-sdk definition with declared mcpServers (stdio and http)', () => {
-      const result = v.safeParse(EmbeddedAgentDefinitionSchema, {
-        ...validSdkDefinition,
-        mcpServers: {
-          docs: { type: 'stdio', command: 'docs-mcp', args: ['--stdio'], envRef: 'docs-mcp-key' },
-          remote: { type: 'http', url: 'https://mcp.example.com/', headersRef: 'remote-mcp-headers' },
-        },
-      });
-      expect(result.success).toBe(true);
-    });
-
-    it('accepts a claude-sdk definition with declared subagents', () => {
-      const result = v.safeParse(EmbeddedAgentDefinitionSchema, {
-        ...validSdkDefinition,
-        enabledTools: ['Task'],
-        subagents: {
-          reviewer: { description: 'Reviews code', prompt: 'Review the diff carefully.' },
-        },
-      });
-      expect(result.success).toBe(true);
-    });
-
-    it('rejects an openai-api definition carrying mcpServers (not representable on that arm)', () => {
-      const result = v.safeParse(EmbeddedAgentDefinitionSchema, {
-        ...validDefinition,
-        mcpServers: { docs: { type: 'stdio', command: 'docs-mcp' } },
-      });
-      expect(result.success).toBe(false);
-    });
-
-    it('rejects an openai-api definition carrying subagents (not representable on that arm)', () => {
-      const result = v.safeParse(EmbeddedAgentDefinitionSchema, {
-        ...validDefinition,
-        subagents: { reviewer: { description: 'Reviews code', prompt: 'Review it.' } },
-      });
-      expect(result.success).toBe(false);
-    });
-
-    it('rejects a malformed mcpServers entry (missing command on a stdio server)', () => {
-      const result = v.safeParse(EmbeddedAgentDefinitionSchema, {
-        ...validSdkDefinition,
-        mcpServers: { docs: { type: 'stdio' } },
-      });
-      expect(result.success).toBe(false);
-    });
-  });
 });
 
 describe('EmbeddedAgentProviderSchema supportsImages (Issue #1571)', () => {
@@ -725,54 +678,6 @@ describe('UpdateEmbeddedAgentRequestSchema', () => {
     expect(result.success).toBe(false);
   });
 
-  describe('mcpServers / subagents (epic #1636 Phase 5 decision 3, Issue #1779)', () => {
-    it('accepts mcpServers/subagents absent (no change)', () => {
-      const result = v.safeParse(UpdateEmbeddedAgentRequestSchema, {});
-      expect(result.success).toBe(true);
-      if (result.success) {
-        expect(result.output.mcpServers).toBeUndefined();
-        expect(result.output.subagents).toBeUndefined();
-      }
-    });
-
-    it('accepts a whole-object mcpServers replacement', () => {
-      const result = v.safeParse(UpdateEmbeddedAgentRequestSchema, {
-        mcpServers: { docs: { type: 'stdio', command: 'docs-mcp' } },
-      });
-      expect(result.success).toBe(true);
-      if (result.success) {
-        expect(result.output.mcpServers).toEqual({ docs: { type: 'stdio', command: 'docs-mcp' } });
-      }
-    });
-
-    it('accepts mcpServers: null to clear', () => {
-      const result = v.safeParse(UpdateEmbeddedAgentRequestSchema, { mcpServers: null });
-      expect(result.success).toBe(true);
-      if (result.success) {
-        expect(result.output.mcpServers).toBeNull();
-      }
-    });
-
-    it('accepts a whole-object subagents replacement', () => {
-      const result = v.safeParse(UpdateEmbeddedAgentRequestSchema, {
-        subagents: { reviewer: { description: 'Reviews code', prompt: 'Review it.' } },
-      });
-      expect(result.success).toBe(true);
-      if (result.success) {
-        expect(result.output.subagents).toEqual({
-          reviewer: { description: 'Reviews code', prompt: 'Review it.' },
-        });
-      }
-    });
-
-    it('accepts subagents: null to clear', () => {
-      const result = v.safeParse(UpdateEmbeddedAgentRequestSchema, { subagents: null });
-      expect(result.success).toBe(true);
-      if (result.success) {
-        expect(result.output.subagents).toBeNull();
-      }
-    });
-  });
 });
 
 describe('EmbeddedAgentCommandSchema', () => {
@@ -1240,34 +1145,6 @@ describe('EmbeddedAgentCommandSchema', () => {
       expect(result.success).toBe(false);
     });
 
-    it('accepts a claude-sdk init command carrying declared mcpServers/subagents (epic #1636 Phase 5 decision 3, Issue #1779, wiring only)', () => {
-      const init = {
-        ...baseFields,
-        engine: 'claude-sdk',
-        provider: { model: 'claude-sonnet-5' },
-        mcpServers: { docs: { type: 'stdio', command: 'docs-mcp' } },
-        subagents: { reviewer: { description: 'Reviews code', prompt: 'Review it.' } },
-      };
-      const result = v.safeParse(EmbeddedAgentCommandSchema, init);
-      expect(result.success).toBe(true);
-      if (result.success && result.output.type === 'init' && result.output.engine === 'claude-sdk') {
-        expect(result.output.mcpServers).toEqual({ docs: { type: 'stdio', command: 'docs-mcp' } });
-        expect(result.output.subagents).toEqual({
-          reviewer: { description: 'Reviews code', prompt: 'Review it.' },
-        });
-      }
-    });
-
-    it('rejects an openai-api init command carrying mcpServers (not representable on that arm)', () => {
-      const init = {
-        ...baseFields,
-        engine: 'openai-api',
-        provider: { baseUrl: 'http://localhost:11434/v1', model: 'llama3' },
-        mcpServers: { docs: { type: 'stdio', command: 'docs-mcp' } },
-      };
-      const result = v.safeParse(EmbeddedAgentCommandSchema, init);
-      expect(result.success).toBe(false);
-    });
   });
 
   describe('per-worker model-effort overrides (agent-surface.md Ruling 3, #1554)', () => {

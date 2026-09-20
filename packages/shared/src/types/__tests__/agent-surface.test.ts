@@ -125,7 +125,6 @@ describe('getAgentParameterCapabilitiesFor', () => {
       const incapableModelRow = {
         model: { capable: false as const, reason: 'test fixture: model overrides disabled for this engine' },
         reasoningEffort: { capable: true as const, acceptedValues: null, consumptionSite: 'test fixture' },
-        mcpServers: { capable: true as const, acceptedValues: null, consumptionSite: 'test fixture' },
         task: { capable: true as const, acceptedValues: null, consumptionSite: 'test fixture' },
       };
       const result = deriveEmbeddedParameterCapabilities(incapableModelRow);
@@ -136,7 +135,6 @@ describe('getAgentParameterCapabilitiesFor', () => {
       const incapableEffortRow = {
         model: { capable: true as const, acceptedValues: null, consumptionSite: 'test fixture' },
         reasoningEffort: { capable: false as const, reason: 'test fixture: reasoningEffort disabled for this engine' },
-        mcpServers: { capable: true as const, acceptedValues: null, consumptionSite: 'test fixture' },
         task: { capable: true as const, acceptedValues: null, consumptionSite: 'test fixture' },
       };
       const result = deriveEmbeddedParameterCapabilities(incapableEffortRow);
@@ -147,7 +145,6 @@ describe('getAgentParameterCapabilitiesFor', () => {
       const allIncapableRow = {
         model: { capable: false as const, reason: 'test fixture: model disabled' },
         reasoningEffort: { capable: false as const, reason: 'test fixture: reasoningEffort disabled' },
-        mcpServers: { capable: true as const, acceptedValues: null, consumptionSite: 'test fixture' },
         task: { capable: true as const, acceptedValues: null, consumptionSite: 'test fixture' },
       };
       const result = deriveEmbeddedParameterCapabilities(allIncapableRow);

@@ -107,10 +107,6 @@ export {
   EmbeddedAgentDefinitionSchema,
   CreateEmbeddedAgentRequestSchema,
   UpdateEmbeddedAgentRequestSchema,
-  // Declared MCP servers / subagents (epic #1636 Phase 5 PR-1 decision 3):
-  // exported for server-side re-validation at hydration (mappers.ts).
-  DeclaredMcpServersSchema,
-  DeclaredSubagentsSchema,
   EmbeddedAgentCommandSchema,
   EmbeddedAgentEventSchema,
   EmbeddedAgentServerEventSchema,

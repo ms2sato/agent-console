@@ -1808,8 +1808,6 @@ describe('mappers', () => {
         instructions: row.instructions ?? null,
         context_window_tokens: row.context_window_tokens ?? null,
         compaction_threshold: row.compaction_threshold ?? null,
-        mcp_servers: row.mcp_servers ?? null,
-        subagents: row.subagents ?? null,
         created_by: row.created_by,
         is_built_in: 0,
         created_at: fullDefinition.createdAt,
@@ -1837,8 +1835,6 @@ describe('mappers', () => {
         instructions: null,
         context_window_tokens: null,
         compaction_threshold: null,
-        mcp_servers: null,
-        subagents: null,
         created_by: 'user-uuid',
         is_built_in: 0,
         created_at: '2026-01-01T00:00:00.000Z',
@@ -1877,8 +1873,6 @@ describe('mappers', () => {
         instructions: '[]',
         context_window_tokens: null,
         compaction_threshold: null,
-        mcp_servers: null,
-        subagents: null,
         created_by: 'user-uuid',
         is_built_in: 0,
         created_at: '2026-01-01T00:00:00.000Z',
@@ -1907,8 +1901,6 @@ describe('mappers', () => {
         instructions: null,
         context_window_tokens: null,
         compaction_threshold: null,
-        mcp_servers: null,
-        subagents: null,
         created_by: 'user-uuid',
         is_built_in: 0,
         created_at: '2026-01-01T00:00:00.000Z',
@@ -1939,8 +1931,6 @@ describe('mappers', () => {
         instructions: '["docs/note.md"',
         context_window_tokens: null,
         compaction_threshold: null,
-        mcp_servers: null,
-        subagents: null,
         created_by: 'user-uuid',
         is_built_in: 0,
         created_at: '2026-01-01T00:00:00.000Z',
@@ -1971,8 +1961,6 @@ describe('mappers', () => {
         instructions: null,
         context_window_tokens: null,
         compaction_threshold: null,
-        mcp_servers: null,
-        subagents: null,
         created_by: 'user-uuid',
         is_built_in: 0,
         created_at: '2026-01-01T00:00:00.000Z',
@@ -2003,8 +1991,6 @@ describe('mappers', () => {
         instructions: '"foo"',
         context_window_tokens: null,
         compaction_threshold: null,
-        mcp_servers: null,
-        subagents: null,
         created_by: 'user-uuid',
         is_built_in: 0,
         created_at: '2026-01-01T00:00:00.000Z',
@@ -2035,8 +2021,6 @@ describe('mappers', () => {
         instructions: null,
         context_window_tokens: null,
         compaction_threshold: 0.6,
-        mcp_servers: null,
-        subagents: null,
         created_by: 'user-uuid',
         is_built_in: 0,
         created_at: '2026-01-01T00:00:00.000Z',
@@ -2063,8 +2047,6 @@ describe('mappers', () => {
         instructions: null,
         context_window_tokens: null,
         compaction_threshold: null,
-        mcp_servers: null,
-        subagents: null,
         created_by: 'user-uuid',
         is_built_in: 0,
         created_at: '2026-01-01T00:00:00.000Z',
@@ -2177,8 +2159,6 @@ describe('mappers', () => {
           instructions: row.instructions ?? null,
           context_window_tokens: row.context_window_tokens ?? null,
           compaction_threshold: row.compaction_threshold ?? null,
-          mcp_servers: row.mcp_servers ?? null,
-          subagents: row.subagents ?? null,
           is_built_in: row.is_built_in,
           created_by: row.created_by,
           created_at: sdkDefinition.createdAt,
@@ -2206,8 +2186,6 @@ describe('mappers', () => {
           instructions: null,
           context_window_tokens: null,
           compaction_threshold: null,
-          mcp_servers: null,
-          subagents: null,
           created_by: 'user-uuid',
           is_built_in: 0,
           created_at: '2026-01-01T00:00:00.000Z',
@@ -2234,8 +2212,6 @@ describe('mappers', () => {
           instructions: null,
           context_window_tokens: null,
           compaction_threshold: null,
-          mcp_servers: null,
-          subagents: null,
           created_by: 'system',
           is_built_in: 1,
           created_at: '2026-01-01T00:00:00.000Z',
@@ -2244,122 +2220,6 @@ describe('mappers', () => {
 
         expect(() => toEmbeddedAgentDefinition(selectRow)).toThrow(DataIntegrityError);
         expect(() => toEmbeddedAgentDefinition(selectRow)).toThrow(/provider_base_url/);
-      });
-
-      describe('mcp_servers / subagents nested-shape validation at hydration (epic #1636 Phase 5 PR-1, decision 3)', () => {
-        function buildSdkRow(overrides: Partial<EmbeddedAgentRow> = {}): EmbeddedAgentRow {
-          return {
-            id: 'def-nested-shape',
-            name: 'Claude',
-            description: null,
-            engine: 'claude-sdk',
-            provider_base_url: null,
-            provider_model: 'claude-sonnet-5',
-            provider_api_key_ref: null,
-            provider_supports_images: null,
-            system_prompt: null,
-            max_tool_iterations: null,
-            enabled_tools: null,
-            instructions: null,
-            context_window_tokens: null,
-            compaction_threshold: null,
-            mcp_servers: null,
-            subagents: null,
-            is_built_in: 0,
-            created_by: 'user-uuid',
-            created_at: '2026-01-01T00:00:00.000Z',
-            updated_at: '2026-01-01T00:00:00.000Z',
-            ...overrides,
-          };
-        }
-
-        it('throws DataIntegrityError when mcp_servers parses to JSON with an invalid discriminant (neither stdio nor http)', () => {
-          const selectRow = buildSdkRow({
-            mcp_servers: JSON.stringify({ docs: { type: 'websocket', command: 'docs-mcp' } }),
-          });
-
-          expect(() => toEmbeddedAgentDefinition(selectRow)).toThrow(DataIntegrityError);
-          expect(() => toEmbeddedAgentDefinition(selectRow)).toThrow(/mcp_servers/);
-        });
-
-        it('throws DataIntegrityError when mcp_servers parses to JSON missing a required field (stdio with no command)', () => {
-          const selectRow = buildSdkRow({
-            mcp_servers: JSON.stringify({ docs: { type: 'stdio' } }),
-          });
-
-          expect(() => toEmbeddedAgentDefinition(selectRow)).toThrow(DataIntegrityError);
-          expect(() => toEmbeddedAgentDefinition(selectRow)).toThrow(/mcp_servers/);
-        });
-
-        it('throws DataIntegrityError when subagents parses to JSON missing required fields (no description/prompt)', () => {
-          const selectRow = buildSdkRow({
-            subagents: JSON.stringify({ reviewer: { model: 'claude-sonnet-5' } }),
-          });
-
-          expect(() => toEmbeddedAgentDefinition(selectRow)).toThrow(DataIntegrityError);
-          expect(() => toEmbeddedAgentDefinition(selectRow)).toThrow(/subagents/);
-        });
-
-        it('throws DataIntegrityError when subagents parses to JSON with a bad tools entry', () => {
-          const selectRow = buildSdkRow({
-            subagents: JSON.stringify({
-              reviewer: { description: 'Reviews code', prompt: 'Review it.', tools: ['NotARealTool'] },
-            }),
-          });
-
-          expect(() => toEmbeddedAgentDefinition(selectRow)).toThrow(DataIntegrityError);
-          expect(() => toEmbeddedAgentDefinition(selectRow)).toThrow(/subagents/);
-        });
-
-        it('does not throw and falls back to undefined for a mcp_servers value that is not valid JSON at all (layer 1 stays tolerant)', () => {
-          const selectRow = buildSdkRow({ mcp_servers: '{not valid json' });
-
-          let restored: EmbeddedAgentDefinition | undefined;
-          expect(() => {
-            restored = toEmbeddedAgentDefinition(selectRow);
-          }).not.toThrow();
-
-          expect(restored?.engine).toBe('claude-sdk');
-          if (restored?.engine === 'claude-sdk') {
-            expect(restored.mcpServers).toBeUndefined();
-          }
-        });
-
-        it('does not throw and falls back to undefined for a subagents value that is not valid JSON at all (layer 1 stays tolerant)', () => {
-          const selectRow = buildSdkRow({ subagents: '[not valid json' });
-
-          let restored: EmbeddedAgentDefinition | undefined;
-          expect(() => {
-            restored = toEmbeddedAgentDefinition(selectRow);
-          }).not.toThrow();
-
-          expect(restored?.engine).toBe('claude-sdk');
-          if (restored?.engine === 'claude-sdk') {
-            expect(restored.subagents).toBeUndefined();
-          }
-        });
-
-        it('regression: a valid mcp_servers/subagents value still round-trips correctly (unaffected by the new validation layer)', () => {
-          const mcpServers = {
-            docs: { type: 'stdio' as const, command: 'docs-mcp', args: ['--stdio'], envRef: 'docs-mcp-key' },
-            remote: { type: 'http' as const, url: 'https://mcp.example.com/', headersRef: 'remote-mcp-headers' },
-          };
-          const subagents = {
-            reviewer: { description: 'Reviews code', prompt: 'Review the diff carefully.' },
-          };
-          const selectRow = buildSdkRow({
-            mcp_servers: JSON.stringify(mcpServers),
-            subagents: JSON.stringify(subagents),
-          });
-
-          const restored = toEmbeddedAgentDefinition(selectRow);
-
-          expect(restored.engine).toBe('claude-sdk');
-          if (restored.engine === 'claude-sdk') {
-            expect(restored.mcpServers).toEqual(mcpServers);
-            expect(restored.subagents).toEqual(subagents);
-          }
-        });
       });
     });
   });
