@@ -1072,21 +1072,51 @@ describe('SqliteSessionRepository', () => {
       const tables = await sql<{ name: string }>`SELECT name FROM sqlite_master WHERE type = 'table'`.execute(
         realDb
       );
-      const dependents = new Set<string>();
+      const dependentFks: Array<{ table: string; column: string }> = [];
       for (const t of tables.rows) {
-        const fks = await sql<{ table: string }>`PRAGMA foreign_key_list(${sql.raw(t.name)})`.execute(realDb);
+        const fks = await sql<{ table: string; from: string }>`PRAGMA foreign_key_list(${sql.raw(t.name)})`.execute(
+          realDb
+        );
         for (const fk of fks.rows) {
-          if (fk.table === 'sessions') dependents.add(t.name);
+          if (fk.table === 'sessions') dependentFks.push({ table: t.name, column: fk.from });
         }
       }
+      const dependentTableNames = new Set(dependentFks.map((d) => d.table));
       // The dead `orchestrator_session_id` column on `repositories` (see
       // schema.ts) still references sessions(id) at this SHA, so
       // `repositories` is included below. Once that column is dropped by a
       // later rebuild migration, this set shrinks to 3 and the
-      // `orchestrator_session_id` seeding above should be removed.
-      expect(dependents).toEqual(
+      // `orchestrator_session_id` seeding below (and in seedDependents)
+      // should be removed.
+      expect(dependentTableNames).toEqual(
         new Set(['workers', 'inbound_event_notifications', 'repository_orchestrator_sessions', 'repositories'])
       );
+
+      // Detection half: the set-equality check above only proves the SCHEMA
+      // enumeration matches a hardcoded literal -- it never looks at what
+      // the preservation tests above actually seed, so on its own it would
+      // NOT fail if (a) forgot to seed one of these dependents, and it
+      // would NOT fail on a future FK onto sessions(id) whose name happens
+      // to already appear in the literal by coincidence. Close both gaps by
+      // seeding a session with a row in every currently-enumerated
+      // dependent table, then confirming each one is actually reachable by
+      // its own FK column -- a dependent that exists in the schema but has
+      // no seeded row here (whether because a future FK was never added to
+      // seedDependents/the session's own workers, or because an existing
+      // seed line was deleted) fails this loop.
+      const session = buildPersistedQuickSession({
+        id: 'session-gate',
+        workers: [buildPersistedAgentWorker({ id: 'worker-gate' })],
+      });
+      await realRepository.save(session);
+      await seedDependents('repo-gate', 'session-gate', 'notif-gate');
+
+      for (const { table, column } of dependentFks) {
+        const row = await sql`SELECT 1 FROM ${sql.raw(table)} WHERE ${sql.raw(column)} = ${'session-gate'} LIMIT 1`.execute(
+          realDb
+        );
+        expect(row.rows.length, `expected a seeded row in ${table}.${column} referencing session-gate`).toBeGreaterThan(0);
+      }
     });
   });
 

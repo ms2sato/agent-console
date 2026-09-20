@@ -82,6 +82,12 @@ export class SqliteSessionRepository implements SessionRepository {
       // inbound_event_notifications, repository_orchestrator_sessions, and
       // the (dead) repositories.orchestrator_session_id -- wiping rows this
       // method never re-creates. Never implemented as delete-all + re-insert.
+      // Order-independent by construction: `ids` is a fixed snapshot of this
+      // call's input, so a session present in `sessions` can never also
+      // match this NOT IN predicate, regardless of where this delete sits
+      // relative to the upserts above. If `ids`'s derivation is ever changed
+      // to a live/dynamic query (e.g. a subquery against another table),
+      // re-verify this invariant and add an ordering test then.
       const ids = sessions.map((s) => s.id);
       if (ids.length > 0) {
         await trx.deleteFrom('sessions').where('id', 'not in', ids).execute();
