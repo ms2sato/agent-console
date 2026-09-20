@@ -124,7 +124,7 @@ describe('Client-Server Boundary: embedded-agent message attachments (Issue #157
     const owner = await ctx.userRepository.upsertByOsUid(24680, 'owner', '/home/owner');
 
     const definition = await ctx.embeddedAgentManager.createEmbeddedAgent(
-      { name: 'Local model', provider: { baseUrl: 'http://localhost:11434/v1', model: 'qwen3:32b' } },
+      { engine: 'openai-api', name: 'Local model', provider: { baseUrl: 'http://localhost:11434/v1', model: 'qwen3:32b' } },
       owner.id,
     );
     const session = await ctx.sessionManager.createSession(
@@ -201,7 +201,7 @@ describe('Client-Server Boundary: embedded-agent message attachments (Issue #157
     const owner = await ctx.userRepository.upsertByOsUid(24681, 'owner2', '/home/owner2');
 
     const definition = await ctx.embeddedAgentManager.createEmbeddedAgent(
-      { name: 'Local model', provider: { baseUrl: 'http://localhost:11434/v1', model: 'qwen3:32b' } },
+      { engine: 'openai-api', name: 'Local model', provider: { baseUrl: 'http://localhost:11434/v1', model: 'qwen3:32b' } },
       owner.id,
     );
     const session = await ctx.sessionManager.createSession(

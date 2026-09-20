@@ -544,7 +544,7 @@ describe('Interactive Process MCP boundary: embedded-agent target', () => {
     const userRepository = new SqliteUserRepository(getDatabase());
     const owner = await userRepository.upsertByOsUid(osUid, username, `/home/${username}`);
     const definition = await embeddedAgentManager.createEmbeddedAgent(
-      { name: 'Local model', provider: { baseUrl: 'http://localhost:11434/v1', model: 'qwen3:32b' } },
+      { engine: 'openai-api', name: 'Local model', provider: { baseUrl: 'http://localhost:11434/v1', model: 'qwen3:32b' } },
       owner.id,
     );
     const session = await sessionManager.createSession(

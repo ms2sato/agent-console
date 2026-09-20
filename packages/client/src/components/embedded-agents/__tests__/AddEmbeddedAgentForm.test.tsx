@@ -106,6 +106,7 @@ describe('AddEmbeddedAgentForm', () => {
     expect(getLastFetchMethod()).toBe('POST');
     const body = await getLastFetchBody();
     expect(body).toEqual({
+      engine: 'openai-api',
       name: 'Ollama qwen3',
       provider: { baseUrl: 'http://localhost:11434/v1', model: 'qwen3:32b' },
       enabledTools: ['Read', 'Glob', 'Grep', 'TodoWrite'],

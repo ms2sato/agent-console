@@ -913,6 +913,7 @@ describe('API Client', () => {
       mockFetch.mockResolvedValue(createMockResponse(mockEmbeddedAgent));
 
       const result = await createEmbeddedAgent({
+        engine: 'openai-api',
         name: 'Ollama qwen3',
         provider: { baseUrl: 'http://localhost:11434/v1', model: 'qwen3:32b' },
       });
@@ -921,6 +922,7 @@ describe('API Client', () => {
       expect(getLastFetchMethod()).toBe('POST');
       const body = await getLastFetchBody();
       expect(body).toEqual({
+        engine: 'openai-api',
         name: 'Ollama qwen3',
         provider: { baseUrl: 'http://localhost:11434/v1', model: 'qwen3:32b' },
       });
@@ -937,7 +939,11 @@ describe('API Client', () => {
       } as unknown as Response);
 
       await expect(
-        createEmbeddedAgent({ name: 'Test', provider: { baseUrl: 'not-a-url', model: '' } })
+        createEmbeddedAgent({
+          engine: 'openai-api',
+          name: 'Test',
+          provider: { baseUrl: 'not-a-url', model: '' },
+        })
       ).rejects.toThrow('Invalid provider');
     });
   });

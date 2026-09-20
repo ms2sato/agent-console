@@ -60,8 +60,25 @@ export type EmbeddedAgentEngine = 'openai-api' | 'claude-sdk';
  * instead (mirroring `Compact`'s own MCP-served shape) -- see
  * `SDK_TODO_WRITE_TOOL_NAME` below; on `openai-api` it is implemented in
  * packages/embedded-agent/src/tools/todo-write.ts.
+ *
+ * `Task` (epic #1636 Phase 5 decision 3) is the SDK's own
+ * subagent-delegation tool (the vendored `sdk.d.ts` also calls it "the Agent
+ * tool"; the runtime delegation call is emitted as `"Agent"` while
+ * `Options.tools`/`system:init` honour the literal `"Task"` -- two literals
+ * for one tool). SDK-only: gated per-engine via
+ * `EMBEDDED_AGENT_ENGINE_PARAMETER_CAPABILITIES` (`claude-sdk`:
+ * `capable: true`; `openai-api`: `capable: false`, no subagent runtime). See
+ * docs/design/embedded-agent-sdk-engine.md §4.5.
  */
-export type EmbeddedAgentToolName = 'Read' | 'Glob' | 'Grep' | 'Bash' | 'Write' | 'Edit' | 'TodoWrite';
+export type EmbeddedAgentToolName =
+  | 'Read'
+  | 'Glob'
+  | 'Grep'
+  | 'Bash'
+  | 'Write'
+  | 'Edit'
+  | 'TodoWrite'
+  | 'Task';
 
 /**
  * The `TodoWrite` tool's model-visible, namespaced name on the `claude-sdk`

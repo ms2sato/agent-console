@@ -117,7 +117,7 @@ describe('Client-Server Boundary: embedded-agent memory layer init.context.memor
     const owner = await ctx.userRepository.upsertByOsUid(13579, 'owner', '/home/owner');
 
     const definition = await ctx.embeddedAgentManager.createEmbeddedAgent(
-      { name: 'Local model', provider: { baseUrl: 'http://localhost:11434/v1', model: 'qwen3:32b' } },
+      { engine: 'openai-api', name: 'Local model', provider: { baseUrl: 'http://localhost:11434/v1', model: 'qwen3:32b' } },
       owner.id,
     );
     const session = await ctx.sessionManager.createSession(

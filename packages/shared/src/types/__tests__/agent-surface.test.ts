@@ -125,6 +125,7 @@ describe('getAgentParameterCapabilitiesFor', () => {
       const incapableModelRow = {
         model: { capable: false as const, reason: 'test fixture: model overrides disabled for this engine' },
         reasoningEffort: { capable: true as const, acceptedValues: null, consumptionSite: 'test fixture' },
+        task: { capable: true as const, acceptedValues: null, consumptionSite: 'test fixture' },
       };
       const result = deriveEmbeddedParameterCapabilities(incapableModelRow);
       expect(result).toEqual({ model: false, reasoningEffort: true, contextWindowTokens: false });
@@ -134,6 +135,7 @@ describe('getAgentParameterCapabilitiesFor', () => {
       const incapableEffortRow = {
         model: { capable: true as const, acceptedValues: null, consumptionSite: 'test fixture' },
         reasoningEffort: { capable: false as const, reason: 'test fixture: reasoningEffort disabled for this engine' },
+        task: { capable: true as const, acceptedValues: null, consumptionSite: 'test fixture' },
       };
       const result = deriveEmbeddedParameterCapabilities(incapableEffortRow);
       expect(result).toEqual({ model: true, reasoningEffort: false, contextWindowTokens: true });
@@ -143,6 +145,7 @@ describe('getAgentParameterCapabilitiesFor', () => {
       const allIncapableRow = {
         model: { capable: false as const, reason: 'test fixture: model disabled' },
         reasoningEffort: { capable: false as const, reason: 'test fixture: reasoningEffort disabled' },
+        task: { capable: true as const, acceptedValues: null, consumptionSite: 'test fixture' },
       };
       const result = deriveEmbeddedParameterCapabilities(allIncapableRow);
       expect(result).toEqual({ model: false, reasoningEffort: false, contextWindowTokens: false });

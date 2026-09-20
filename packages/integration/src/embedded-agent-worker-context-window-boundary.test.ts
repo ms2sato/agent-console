@@ -18,7 +18,7 @@
  * neither of those crosses `JSON.stringify` + `v.safeParse`.
  *
  * Exercises the real chain:
- *   ctx.embeddedAgentManager.createEmbeddedAgent({ contextWindowTokens })
+ *   ctx.embeddedAgentManager.createEmbeddedAgent({ engine: 'openai-api', contextWindowTokens })
  *     -> ctx.sessionManager.createSession
  *     -> ctx.sessionManager.createWorker({ type: 'embedded-agent', ... })
  *     -> re-read the public session (toPublicWorker resolves the window via
@@ -60,6 +60,7 @@ describe('Client-Server Boundary: EmbeddedAgentWorker.contextWindowTokens', () =
     //    a declared context window.
     const def = await ctx.embeddedAgentManager.createEmbeddedAgent(
       {
+        engine: 'openai-api',
         name: 'Ollama qwen3',
         provider: { baseUrl: 'http://localhost:11434/v1', model: 'qwen3:32b' },
         contextWindowTokens: 40_000,
@@ -135,6 +136,7 @@ describe('Client-Server Boundary: EmbeddedAgentWorker.contextWindowTokens', () =
 
     const def = await ctx.embeddedAgentManager.createEmbeddedAgent(
       {
+        engine: 'openai-api',
         name: 'Ollama qwen3 (no window)',
         provider: { baseUrl: 'http://localhost:11434/v1', model: 'qwen3:32b' },
       },

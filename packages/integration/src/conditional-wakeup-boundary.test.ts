@@ -227,7 +227,7 @@ describe('Client-Server Boundary: deliverWorkerNotification, embedded-agent targ
     const owner = await userRepository.upsertByOsUid(97531, 'wakeup-owner', '/home/wakeup-owner');
 
     const definition = await embeddedAgentManager.createEmbeddedAgent(
-      { name: 'Local model', provider: { baseUrl: 'http://localhost:11434/v1', model: 'qwen3:32b' } },
+      { engine: 'openai-api', name: 'Local model', provider: { baseUrl: 'http://localhost:11434/v1', model: 'qwen3:32b' } },
       owner.id,
     );
     const session = await sessionManager.createSession(

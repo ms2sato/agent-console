@@ -127,6 +127,7 @@ describe('Client-Server Boundary: cleanup:definition-memory job (Issue #1709)', 
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
+        engine: 'openai-api',
         name: 'Definition to delete',
         provider: { baseUrl: 'http://localhost:11434/v1', model: 'qwen3:32b' },
       }),

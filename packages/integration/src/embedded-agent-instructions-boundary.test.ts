@@ -11,7 +11,7 @@
  * tests (which inject pre-built definition objects) can catch that.
  *
  * This boundary test exercises the real chain:
- *   ctx.embeddedAgentManager.createEmbeddedAgent({ instructions: [...] })
+ *   ctx.embeddedAgentManager.createEmbeddedAgent({ engine: 'openai-api', instructions: [...] })
  *     -> the same definition object the manager broadcasts via
  *        onEmbeddedAgentCreated({ type: 'embedded-agent-created', embeddedAgent })
  *     -> JSON serialize (wire transmission simulation)
@@ -75,6 +75,7 @@ describe('Client-Server Boundary: EmbeddedAgentDefinition.instructions', () => {
 
     const def = await ctx.embeddedAgentManager.createEmbeddedAgent(
       {
+        engine: 'openai-api',
         name: 'Ollama qwen3',
         provider: { baseUrl: 'http://localhost:11434/v1', model: 'qwen3:32b' },
         instructions: ['docs/local-note.md', 'CONTRIBUTING.md'],
@@ -113,6 +114,7 @@ describe('Client-Server Boundary: EmbeddedAgentDefinition.instructions', () => {
 
     const def = await ctx.embeddedAgentManager.createEmbeddedAgent(
       {
+        engine: 'openai-api',
         name: 'No Instructions',
         provider: { baseUrl: 'http://localhost:11434/v1', model: 'llama3' },
         instructions: [],
@@ -139,6 +141,7 @@ describe('Client-Server Boundary: EmbeddedAgentDefinition.instructions', () => {
 
     const def = await ctx.embeddedAgentManager.createEmbeddedAgent(
       {
+        engine: 'openai-api',
         name: 'Default',
         provider: { baseUrl: 'http://localhost:11434/v1', model: 'llama3' },
       },

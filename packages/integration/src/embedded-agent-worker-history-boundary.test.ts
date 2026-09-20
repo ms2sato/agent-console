@@ -183,7 +183,7 @@ describe('Client-Server Boundary: embedded-agent worker reconnect + history repl
     const owner = await userRepository.upsertByOsUid(24680, 'owner', '/home/owner');
 
     const definition = await embeddedAgentManager.createEmbeddedAgent(
-      { name: 'Local model', provider: { baseUrl: 'http://localhost:11434/v1', model: 'qwen3:32b' } },
+      { engine: 'openai-api', name: 'Local model', provider: { baseUrl: 'http://localhost:11434/v1', model: 'qwen3:32b' } },
       owner.id,
     );
     const session = await sessionManager.createSession(

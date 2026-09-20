@@ -313,7 +313,7 @@ describe('delegate_to_worktree: embedded-agent auto-activation (Issue #1260 PR-1
 
   async function createEmbeddedAgentDef(): Promise<string> {
     const def = await embeddedAgentManager.createEmbeddedAgent(
-      { name: 'Stub embedded agent', provider: { baseUrl: 'http://localhost:9/v1', model: 'stub-model' } },
+      { engine: 'openai-api', name: 'Stub embedded agent', provider: { baseUrl: 'http://localhost:9/v1', model: 'stub-model' } },
       'creator-user-id',
     );
     return def.id;

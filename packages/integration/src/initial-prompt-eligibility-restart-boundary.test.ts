@@ -62,7 +62,7 @@ describe('Persistence boundary: embedded-agent initial-prompt eligibility surviv
   it('persists deliverInitialPromptOnActivation=true for the initial embedded-agent worker and restores it after simulated restart', async () => {
     const owner = await ctx.userRepository.upsertByOsUid(54321, 'owner', '/home/owner');
     const def = await ctx.embeddedAgentManager.createEmbeddedAgent(
-      { name: 'Ollama qwen3', provider: { baseUrl: 'http://localhost:11434/v1', model: 'qwen3:32b' } },
+      { engine: 'openai-api', name: 'Ollama qwen3', provider: { baseUrl: 'http://localhost:11434/v1', model: 'qwen3:32b' } },
       owner.id,
     );
 
@@ -113,7 +113,7 @@ describe('Persistence boundary: embedded-agent initial-prompt eligibility surviv
   it('does not mark a later add-on embedded-agent worker as eligible, and that survives restore too', async () => {
     const owner = await ctx.userRepository.upsertByOsUid(54322, 'owner2', '/home/owner2');
     const def = await ctx.embeddedAgentManager.createEmbeddedAgent(
-      { name: 'Ollama qwen3', provider: { baseUrl: 'http://localhost:11434/v1', model: 'qwen3:32b' } },
+      { engine: 'openai-api', name: 'Ollama qwen3', provider: { baseUrl: 'http://localhost:11434/v1', model: 'qwen3:32b' } },
       owner.id,
     );
 
@@ -241,7 +241,7 @@ describe('Cross-type restart: initial-prompt delivery on the converted embedded-
 
     const owner = await ctx.userRepository.upsertByOsUid(55001, 'owner', '/home/owner');
     const def = await ctx.embeddedAgentManager.createEmbeddedAgent(
-      { name: 'Ollama qwen3', provider: { baseUrl: 'http://localhost:11434/v1', model: 'qwen3:32b' } },
+      { engine: 'openai-api', name: 'Ollama qwen3', provider: { baseUrl: 'http://localhost:11434/v1', model: 'qwen3:32b' } },
       owner.id,
     );
 
@@ -283,7 +283,7 @@ describe('Cross-type restart: initial-prompt delivery on the converted embedded-
 
     const owner = await ctx.userRepository.upsertByOsUid(55002, 'owner2', '/home/owner2');
     const def = await ctx.embeddedAgentManager.createEmbeddedAgent(
-      { name: 'Ollama qwen3', provider: { baseUrl: 'http://localhost:11434/v1', model: 'qwen3:32b' } },
+      { engine: 'openai-api', name: 'Ollama qwen3', provider: { baseUrl: 'http://localhost:11434/v1', model: 'qwen3:32b' } },
       owner.id,
     );
 

@@ -276,6 +276,7 @@ describe('EmbeddedAgentDefinitionSchema', () => {
       expect(result.success).toBe(false);
     });
   });
+
 });
 
 describe('EmbeddedAgentProviderSchema supportsImages (Issue #1571)', () => {
@@ -306,6 +307,7 @@ describe('EmbeddedAgentProviderSchema supportsImages (Issue #1571)', () => {
 describe('CreateEmbeddedAgentRequestSchema', () => {
   it('accepts a valid create request', () => {
     const result = v.safeParse(CreateEmbeddedAgentRequestSchema, {
+      engine: 'openai-api',
       name: 'New Agent',
       provider: { baseUrl: 'http://localhost:11434/v1', model: 'llama3' },
     });
@@ -314,6 +316,7 @@ describe('CreateEmbeddedAgentRequestSchema', () => {
 
   it('trims the name and rejects empty names', () => {
     const trimmed = v.safeParse(CreateEmbeddedAgentRequestSchema, {
+      engine: 'openai-api',
       name: '  Trimmed  ',
       provider: { baseUrl: 'http://localhost:11434/v1', model: 'llama3' },
     });
@@ -323,6 +326,7 @@ describe('CreateEmbeddedAgentRequestSchema', () => {
     }
 
     const empty = v.safeParse(CreateEmbeddedAgentRequestSchema, {
+      engine: 'openai-api',
       name: '   ',
       provider: { baseUrl: 'http://localhost:11434/v1', model: 'llama3' },
     });
@@ -331,6 +335,7 @@ describe('CreateEmbeddedAgentRequestSchema', () => {
 
   it('rejects a createdBy field in the body (server-side only)', () => {
     const result = v.safeParse(CreateEmbeddedAgentRequestSchema, {
+      engine: 'openai-api',
       name: 'New Agent',
       provider: { baseUrl: 'http://localhost:11434/v1', model: 'llama3' },
       createdBy: 'attacker-uuid',
@@ -340,6 +345,7 @@ describe('CreateEmbeddedAgentRequestSchema', () => {
 
   it('accepts a valid enabledTools array', () => {
     const result = v.safeParse(CreateEmbeddedAgentRequestSchema, {
+      engine: 'openai-api',
       name: 'New Agent',
       provider: { baseUrl: 'http://localhost:11434/v1', model: 'llama3' },
       enabledTools: ['Read', 'Glob', 'Grep'],
@@ -349,6 +355,7 @@ describe('CreateEmbeddedAgentRequestSchema', () => {
 
   it('rejects an enabledTools array with a duplicate tool name', () => {
     const result = v.safeParse(CreateEmbeddedAgentRequestSchema, {
+      engine: 'openai-api',
       name: 'New Agent',
       provider: { baseUrl: 'http://localhost:11434/v1', model: 'llama3' },
       enabledTools: ['Read', 'Read'],
@@ -358,6 +365,7 @@ describe('CreateEmbeddedAgentRequestSchema', () => {
 
   it('accepts a valid instructions array', () => {
     const result = v.safeParse(CreateEmbeddedAgentRequestSchema, {
+      engine: 'openai-api',
       name: 'New Agent',
       provider: { baseUrl: 'http://localhost:11434/v1', model: 'llama3' },
       instructions: ['docs/local-note.md'],
@@ -367,6 +375,7 @@ describe('CreateEmbeddedAgentRequestSchema', () => {
 
   it('accepts a positive integer contextWindowTokens', () => {
     const result = v.safeParse(CreateEmbeddedAgentRequestSchema, {
+      engine: 'openai-api',
       name: 'New Agent',
       provider: { baseUrl: 'http://localhost:11434/v1', model: 'llama3' },
       contextWindowTokens: 32000,
@@ -376,17 +385,19 @@ describe('CreateEmbeddedAgentRequestSchema', () => {
 
   it('accepts a create request with contextWindowTokens absent', () => {
     const result = v.safeParse(CreateEmbeddedAgentRequestSchema, {
+      engine: 'openai-api',
       name: 'New Agent',
       provider: { baseUrl: 'http://localhost:11434/v1', model: 'llama3' },
     });
     expect(result.success).toBe(true);
-    if (result.success) {
+    if (result.success && result.output.engine === 'openai-api') {
       expect(result.output.contextWindowTokens).toBeUndefined();
     }
   });
 
   it('rejects a non-integer contextWindowTokens', () => {
     const result = v.safeParse(CreateEmbeddedAgentRequestSchema, {
+      engine: 'openai-api',
       name: 'New Agent',
       provider: { baseUrl: 'http://localhost:11434/v1', model: 'llama3' },
       contextWindowTokens: 1.5,
@@ -396,6 +407,7 @@ describe('CreateEmbeddedAgentRequestSchema', () => {
 
   it('rejects a non-positive contextWindowTokens', () => {
     const result = v.safeParse(CreateEmbeddedAgentRequestSchema, {
+      engine: 'openai-api',
       name: 'New Agent',
       provider: { baseUrl: 'http://localhost:11434/v1', model: 'llama3' },
       contextWindowTokens: 0,
@@ -405,11 +417,63 @@ describe('CreateEmbeddedAgentRequestSchema', () => {
 
   it('accepts a valid compaction config', () => {
     const result = v.safeParse(CreateEmbeddedAgentRequestSchema, {
+      engine: 'openai-api',
       name: 'New Agent',
       provider: { baseUrl: 'http://localhost:11434/v1', model: 'llama3' },
       compaction: { threshold: 0.7 },
     });
     expect(result.success).toBe(true);
+  });
+
+  describe('engine discriminant (epic #1636 Phase 5 decision 3, Issue #1779)', () => {
+    it('rejects a body with no engine at all', () => {
+      const result = v.safeParse(CreateEmbeddedAgentRequestSchema, {
+        name: 'New Agent',
+        provider: { baseUrl: 'http://localhost:11434/v1', model: 'llama3' },
+      });
+      expect(result.success).toBe(false);
+    });
+
+    it('accepts a minimal claude-sdk create request: engine, name, provider.model only', () => {
+      const result = v.safeParse(CreateEmbeddedAgentRequestSchema, {
+        engine: 'claude-sdk',
+        name: 'Claude',
+        provider: { model: 'claude-sonnet-5' },
+      });
+      expect(result.success).toBe(true);
+      if (result.success && result.output.engine === 'claude-sdk') {
+        expect(result.output.name).toBe('Claude');
+        expect(result.output.provider).toEqual({ model: 'claude-sonnet-5' });
+      }
+    });
+
+    it('rejects a claude-sdk create request carrying an openai-api-only field (systemPrompt)', () => {
+      const result = v.safeParse(CreateEmbeddedAgentRequestSchema, {
+        engine: 'claude-sdk',
+        name: 'Claude',
+        provider: { model: 'claude-sonnet-5' },
+        systemPrompt: 'You are helpful.',
+      });
+      expect(result.success).toBe(false);
+    });
+
+    it('rejects a claude-sdk create request with an openai-api-shaped provider (baseUrl)', () => {
+      const result = v.safeParse(CreateEmbeddedAgentRequestSchema, {
+        engine: 'claude-sdk',
+        name: 'Claude',
+        provider: { baseUrl: 'http://localhost:11434/v1', model: 'llama3' },
+      });
+      expect(result.success).toBe(false);
+    });
+
+    it('rejects an openai-api create request with a claude-sdk-shaped provider (no baseUrl)', () => {
+      const result = v.safeParse(CreateEmbeddedAgentRequestSchema, {
+        engine: 'openai-api',
+        name: 'New Agent',
+        provider: { model: 'llama3' },
+      });
+      expect(result.success).toBe(false);
+    });
   });
 });
 
@@ -497,6 +561,44 @@ describe('UpdateEmbeddedAgentRequestSchema', () => {
       provider: null,
     });
     expect(result.success).toBe(false);
+  });
+
+  describe('provider union (CodeRabbit Major, schemas/embedded-agent.ts:255 -- a PATCH carries no engine, so provider must admit both engines\' shapes structurally)', () => {
+    it('accepts a bare claude-sdk-shaped provider ({ model } only, no baseUrl)', () => {
+      const result = v.safeParse(UpdateEmbeddedAgentRequestSchema, {
+        provider: { model: 'claude-sonnet-5' },
+      });
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.output.provider).toEqual({ model: 'claude-sonnet-5' });
+      }
+    });
+
+    it('accepts an openai-api-shaped provider (baseUrl + model), unchanged from before', () => {
+      const result = v.safeParse(UpdateEmbeddedAgentRequestSchema, {
+        provider: { baseUrl: 'http://localhost:8080/v1', model: 'vllm-model', apiKeyRef: 'key-1' },
+      });
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.output.provider).toEqual({
+          baseUrl: 'http://localhost:8080/v1',
+          model: 'vllm-model',
+          apiKeyRef: 'key-1',
+        });
+      }
+    });
+
+    it('rejects a provider mixing an SDK-only-looking field name with an invalid combination (neither union member matches)', () => {
+      // `{ model, apiKeyRef }` with no `baseUrl` is not a valid EmbeddedAgentProviderSchema
+      // (apiKeyRef alone doesn't imply baseUrl, but the openai-api member is a
+      // strictObject requiring baseUrl -- so this payload matches neither
+      // member: EmbeddedAgentSdkProviderSchema strictly disallows the extra
+      // `apiKeyRef` key, and EmbeddedAgentProviderSchema is missing `baseUrl`.
+      const result = v.safeParse(UpdateEmbeddedAgentRequestSchema, {
+        provider: { model: 'x', apiKeyRef: 'y' },
+      });
+      expect(result.success).toBe(false);
+    });
   });
 
   it('accepts enabledTools: null (clear to default)', () => {
@@ -613,6 +715,7 @@ describe('UpdateEmbeddedAgentRequestSchema', () => {
     });
     expect(result.success).toBe(false);
   });
+
 });
 
 describe('EmbeddedAgentCommandSchema', () => {
@@ -1079,6 +1182,7 @@ describe('EmbeddedAgentCommandSchema', () => {
       const result = v.safeParse(EmbeddedAgentCommandSchema, init);
       expect(result.success).toBe(false);
     });
+
   });
 
   describe('per-worker model-effort overrides (agent-surface.md Ruling 3, #1554)', () => {
@@ -2205,5 +2309,10 @@ describe('EMBEDDED_AGENT_TOOL_NAMES / DEFAULT_EMBEDDED_AGENT_ENABLED_TOOLS (#157
   it('EMBEDDED_AGENT_TOOL_NAMES includes TodoWrite and DEFAULT_EMBEDDED_AGENT_ENABLED_TOOLS includes it too', () => {
     expect(EMBEDDED_AGENT_TOOL_NAMES).toContain('TodoWrite');
     expect(DEFAULT_EMBEDDED_AGENT_ENABLED_TOOLS).toContain('TodoWrite');
+  });
+
+  it('EMBEDDED_AGENT_TOOL_NAMES includes Task (epic #1636 Phase 5 decision 3), off by default', () => {
+    expect(EMBEDDED_AGENT_TOOL_NAMES).toContain('Task');
+    expect(DEFAULT_EMBEDDED_AGENT_ENABLED_TOOLS).not.toContain('Task');
   });
 });

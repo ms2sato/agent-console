@@ -246,6 +246,7 @@ describe('Agent surface boundary: list_agents wire-level shape (Issue #1160 PR-A
 
     const def = await embeddedAgentManager.createEmbeddedAgent(
       {
+        engine: 'openai-api',
         name: 'Wire-boundary embedded agent',
         provider: { baseUrl: 'http://localhost:9/v1', model: 'stub-model' },
       },

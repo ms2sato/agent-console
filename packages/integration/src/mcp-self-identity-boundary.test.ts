@@ -302,7 +302,7 @@ describe(
     /** Activates a real embedded-agent worker and returns its own activation-minted MCP token. */
     async function activateEmbeddedWorker(ownerId: string): Promise<{ sessionId: string; ownToken: string }> {
       const definition = await embeddedAgentManager.createEmbeddedAgent(
-        { name: 'Local model', provider: { baseUrl: 'http://localhost:11434/v1', model: 'qwen3:32b' } },
+        { engine: 'openai-api', name: 'Local model', provider: { baseUrl: 'http://localhost:11434/v1', model: 'qwen3:32b' } },
         ownerId,
       );
       const session = await sessionManager.createSession(

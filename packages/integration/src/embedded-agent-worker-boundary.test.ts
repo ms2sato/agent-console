@@ -57,6 +57,7 @@ describe('Client-Server Boundary: EmbeddedAgentWorker', () => {
     // 2. Create an embedded-agent definition through the real manager.
     const def = await ctx.embeddedAgentManager.createEmbeddedAgent(
       {
+        engine: 'openai-api',
         name: 'Ollama qwen3',
         provider: { baseUrl: 'http://localhost:11434/v1', model: 'qwen3:32b' },
       },

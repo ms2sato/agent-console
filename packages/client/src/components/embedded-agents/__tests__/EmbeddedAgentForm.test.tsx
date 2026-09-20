@@ -7,6 +7,7 @@ import {
   READ_ONLY_TOOL_NAMES,
   COMMAND_EXECUTION_TOOL_NAMES,
   FILE_MODIFICATION_TOOL_NAMES,
+  ENGINE_INAPPLICABLE_TOOL_NAMES,
   parseContextWindowTokens,
   parseCompactionThreshold,
   formatCompactionThresholdInput,
@@ -297,16 +298,25 @@ describe('EmbeddedAgentForm', () => {
   });
 
   describe('tool group partitioning', () => {
-    it('READ_ONLY_TOOL_NAMES, COMMAND_EXECUTION_TOOL_NAMES, and FILE_MODIFICATION_TOOL_NAMES partition EMBEDDED_AGENT_TOOL_NAMES exactly', () => {
+    it('READ_ONLY_TOOL_NAMES, COMMAND_EXECUTION_TOOL_NAMES, FILE_MODIFICATION_TOOL_NAMES, and ENGINE_INAPPLICABLE_TOOL_NAMES partition EMBEDDED_AGENT_TOOL_NAMES exactly', () => {
       const union = [
         ...READ_ONLY_TOOL_NAMES,
         ...COMMAND_EXECUTION_TOOL_NAMES,
         ...FILE_MODIFICATION_TOOL_NAMES,
+        ...ENGINE_INAPPLICABLE_TOOL_NAMES,
       ].sort();
       const all = [...EMBEDDED_AGENT_TOOL_NAMES].sort();
       expect(union).toEqual(all);
-      // No duplicates across the three groups.
+      // No duplicates across the four groups.
       expect(new Set(union).size).toBe(union.length);
+    });
+
+    it('ENGINE_INAPPLICABLE_TOOL_NAMES tools have no checkbox rendered in the form', () => {
+      renderEmbeddedAgentForm();
+
+      for (const name of ENGINE_INAPPLICABLE_TOOL_NAMES) {
+        expect(screen.queryByRole('checkbox', { name })).toBeNull();
+      }
     });
   });
 

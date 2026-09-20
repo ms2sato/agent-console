@@ -81,6 +81,7 @@ describe('shared index exports', () => {
     expect(rejected.success).toBe(false);
 
     const accepted = v.safeParse(mod.CreateEmbeddedAgentRequestSchema, {
+      engine: 'openai-api',
       name: 'My Agent',
       provider: { baseUrl: 'https://api.example.com', model: 'gpt-4' },
     });

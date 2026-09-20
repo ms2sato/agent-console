@@ -201,7 +201,7 @@ describe('Client-Server Boundary: embedded-agent TodoWrite tool-call/tool-result
     const owner = await userRepository.upsertByOsUid(24681, 'owner', '/home/owner');
 
     const definition = await embeddedAgentManager.createEmbeddedAgent(
-      { name: 'Local model', provider: { baseUrl: 'http://localhost:11434/v1', model: 'qwen3:32b' } },
+      { engine: 'openai-api', name: 'Local model', provider: { baseUrl: 'http://localhost:11434/v1', model: 'qwen3:32b' } },
       owner.id,
     );
     const session = await sessionManager.createSession(
@@ -287,7 +287,7 @@ describe('Client-Server Boundary: embedded-agent TodoWrite tool-call/tool-result
     const owner = await userRepository.upsertByOsUid(24682, 'owner2', '/home/owner2');
 
     const definition = await embeddedAgentManager.createEmbeddedAgent(
-      { name: 'SDK agent', provider: { baseUrl: 'http://localhost:11434/v1', model: 'qwen3:32b' } },
+      { engine: 'openai-api', name: 'SDK agent', provider: { baseUrl: 'http://localhost:11434/v1', model: 'qwen3:32b' } },
       owner.id,
     );
     const session = await sessionManager.createSession(

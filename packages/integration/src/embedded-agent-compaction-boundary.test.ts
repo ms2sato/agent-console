@@ -204,7 +204,7 @@ describe('Client-Server Boundary: Compaction wire round trips', () => {
     const owner = await userRepository.upsertByOsUid(24680, 'owner', '/home/owner');
 
     const definition = await embeddedAgentManager.createEmbeddedAgent(
-      { name: 'Local model', provider: { baseUrl: 'http://localhost:11434/v1', model: 'qwen3:32b' } },
+      { engine: 'openai-api', name: 'Local model', provider: { baseUrl: 'http://localhost:11434/v1', model: 'qwen3:32b' } },
       owner.id,
     );
     const session = await sessionManager.createSession(
@@ -269,7 +269,7 @@ describe('Client-Server Boundary: Compaction wire round trips', () => {
     const owner = await userRepository.upsertByOsUid(24681, 'legacy-owner', '/home/legacy');
 
     const definition = await embeddedAgentManager.createEmbeddedAgent(
-      { name: 'Local model', provider: { baseUrl: 'http://localhost:11434/v1', model: 'qwen3:32b' } },
+      { engine: 'openai-api', name: 'Local model', provider: { baseUrl: 'http://localhost:11434/v1', model: 'qwen3:32b' } },
       owner.id,
     );
     const session = await sessionManager.createSession(
@@ -305,6 +305,7 @@ describe('Client-Server Boundary: Compaction wire round trips', () => {
 
     const created = await embeddedAgentManager.createEmbeddedAgent(
       {
+        engine: 'openai-api',
         name: 'Compaction-configured model',
         provider: { baseUrl: 'http://localhost:11434/v1', model: 'qwen3:32b' },
         contextWindowTokens: 128000,
@@ -369,7 +370,7 @@ describe('Client-Server Boundary: Compaction wire round trips', () => {
     const owner = await userRepository.upsertByOsUid(13571, 'owner3', '/home/owner3');
 
     const definition = await embeddedAgentManager.createEmbeddedAgent(
-      { name: 'Local model', provider: { baseUrl: 'http://localhost:11434/v1', model: 'qwen3:32b' } },
+      { engine: 'openai-api', name: 'Local model', provider: { baseUrl: 'http://localhost:11434/v1', model: 'qwen3:32b' } },
       owner.id,
     );
     const session = await sessionManager.createSession(

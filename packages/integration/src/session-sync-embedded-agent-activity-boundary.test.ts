@@ -56,6 +56,7 @@ describe('Client-Server Boundary: sessions-sync embedded-agent activity state', 
 
     const def = await ctx.embeddedAgentManager.createEmbeddedAgent(
       {
+        engine: 'openai-api',
         name: 'Ollama qwen3',
         provider: { baseUrl: 'http://localhost:11434/v1', model: 'qwen3:32b' },
       },

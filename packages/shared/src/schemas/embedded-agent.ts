@@ -34,8 +34,24 @@ import type { ExitReason } from '../types/worker.js';
  * instead (mirroring `Compact`'s own MCP-served shape, see
  * `SDK_TODO_WRITE_TOOL_NAME` in types/embedded-agent.ts); on `openai-api` it
  * is implemented in packages/embedded-agent/src/tools/todo-write.ts.
+ *
+ * `Task` (epic #1636 Phase 5 decision 3) is the SDK's own
+ * subagent-delegation tool, SDK-only -- see the type's doc comment
+ * (types/embedded-agent.ts) for the full rationale, including the
+ * `"Task"`/`"Agent"` two-literal wrinkle. `openai-api`'s capability row is
+ * `capable: false` (no subagent runtime); a `Task` value reaching that
+ * engine's `enabledTools` is rejected at `EmbeddedAgentManager` validation.
  */
-export const EMBEDDED_AGENT_TOOL_NAMES = ['Read', 'Glob', 'Grep', 'Bash', 'Write', 'Edit', 'TodoWrite'] as const;
+export const EMBEDDED_AGENT_TOOL_NAMES = [
+  'Read',
+  'Glob',
+  'Grep',
+  'Bash',
+  'Write',
+  'Edit',
+  'TodoWrite',
+  'Task',
+] as const;
 
 /**
  * Default when a definition's `enabledTools` is absent: read-only tools ON,
@@ -189,18 +205,41 @@ export const EmbeddedAgentDefinitionSchema = v.variant('engine', [
 /**
  * Schema for creating an embedded agent definition. `createdBy` is set
  * server-side from the authenticated user, never from the request body.
+ *
+ * Discriminated on `engine` (epic #1636 Phase 5 decision 3), mirroring
+ * `EmbeddedAgentDefinitionSchema`'s own split:
+ * - `openai-api`: unchanged from before this PR -- every field the schema
+ *   already had.
+ * - `claude-sdk`: deliberately MINIMAL, `{ engine, name, provider }` only.
+ *   No `enabledTools`/anything else on this arm in PR-1 -- creation is
+ *   intentionally minimal; those fields are settable only via a follow-up
+ *   PATCH (`UpdateEmbeddedAgentRequestSchema` below) once PR-3's form
+ *   exists, or directly via this PR's PATCH support.
+ *
+ * BREAKING CHANGE (documented, not silent): making `engine` a required
+ * discriminant means every caller must now send it explicitly -- see
+ * `packages/client/src/components/embedded-agents/AddEmbeddedAgentForm.tsx`
+ * (updated in this PR).
  */
-export const CreateEmbeddedAgentRequestSchema = v.strictObject({
-  name: v.pipe(v.string(), v.trim(), v.minLength(1, 'Name is required')),
-  description: v.optional(v.string()),
-  provider: EmbeddedAgentProviderSchema,
-  systemPrompt: v.optional(v.string()),
-  maxToolIterations: v.optional(v.pipe(v.number(), v.integer(), v.minValue(1))),
-  enabledTools: v.optional(EnabledToolsSchema),
-  instructions: v.optional(InstructionsListSchema),
-  contextWindowTokens: v.optional(v.pipe(v.number(), v.integer(), v.minValue(1))),
-  compaction: v.optional(EmbeddedAgentCompactionConfigSchema),
-});
+export const CreateEmbeddedAgentRequestSchema = v.variant('engine', [
+  v.strictObject({
+    engine: v.literal('openai-api'),
+    name: v.pipe(v.string(), v.trim(), v.minLength(1, 'Name is required')),
+    description: v.optional(v.string()),
+    provider: EmbeddedAgentProviderSchema,
+    systemPrompt: v.optional(v.string()),
+    maxToolIterations: v.optional(v.pipe(v.number(), v.integer(), v.minValue(1))),
+    enabledTools: v.optional(EnabledToolsSchema),
+    instructions: v.optional(InstructionsListSchema),
+    contextWindowTokens: v.optional(v.pipe(v.number(), v.integer(), v.minValue(1))),
+    compaction: v.optional(EmbeddedAgentCompactionConfigSchema),
+  }),
+  v.strictObject({
+    engine: v.literal('claude-sdk'),
+    name: v.pipe(v.string(), v.trim(), v.minLength(1, 'Name is required')),
+    provider: EmbeddedAgentSdkProviderSchema,
+  }),
+]);
 
 /**
  * Schema for updating an embedded agent definition.
@@ -209,11 +248,22 @@ export const CreateEmbeddedAgentRequestSchema = v.strictObject({
  * `compaction` follows the same whole-object replacement convention (no
  * per-subfield PATCH merging — see docs/design/embedded-agent-worker.md
  * "Compaction" § Definition config, migration, and forms).
+ *
+ * `provider` accepts EITHER engine's provider shape (a union of the two
+ * already-exported `v.strictObject`s), because `UpdateEmbeddedAgentRequestSchema`
+ * stays flat (no `engine` discriminant on a PATCH -- a PATCH body carries no
+ * `engine` field). Discrimination between the two shapes is structural:
+ * `EmbeddedAgentProviderSchema` requires `baseUrl`, `EmbeddedAgentSdkProviderSchema`
+ * is `{ model }` only, so a payload matches exactly one member (or neither,
+ * and is rejected). `EmbeddedAgentManager.updateEmbeddedAgent` is responsible
+ * for rejecting a schema-valid provider whose shape does not match the
+ * EXISTING definition's engine (`'baseUrl' in request.provider`), which the
+ * schema alone cannot know (it has no view of the persisted `existing.engine`).
  */
 export const UpdateEmbeddedAgentRequestSchema = v.strictObject({
   name: v.optional(v.pipe(v.string(), v.trim(), v.minLength(1, 'Name cannot be empty'))),
   description: v.optional(v.nullable(v.string())),
-  provider: v.optional(EmbeddedAgentProviderSchema),
+  provider: v.optional(v.union([EmbeddedAgentProviderSchema, EmbeddedAgentSdkProviderSchema])),
   systemPrompt: v.optional(v.nullable(v.string())),
   maxToolIterations: v.optional(v.nullable(v.pipe(v.number(), v.integer(), v.minValue(1)))),
   enabledTools: v.optional(v.nullable(EnabledToolsSchema)),

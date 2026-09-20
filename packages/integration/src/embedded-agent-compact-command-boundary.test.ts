@@ -278,7 +278,7 @@ describe('Client-Server Boundary: /compact console-slash-command interception (#
     const owner = await userRepository.upsertByOsUid(97531, 'compact-owner', '/home/compact-owner');
 
     const definition = await embeddedAgentManager.createEmbeddedAgent(
-      { name: 'Local model', provider: { baseUrl: 'http://localhost:11434/v1', model: 'qwen3:32b' } },
+      { engine: 'openai-api', name: 'Local model', provider: { baseUrl: 'http://localhost:11434/v1', model: 'qwen3:32b' } },
       owner.id,
     );
     const session = await sessionManager.createSession(
