@@ -647,7 +647,7 @@ describe('migration', () => {
       // Verify the schema version is the latest
       const { sql } = await import('kysely');
       const result = await sql<{ user_version: number }>`PRAGMA user_version`.execute(db);
-      expect(result.rows[0]?.user_version).toBe(42);
+      expect(result.rows[0]?.user_version).toBe(43);
 
       // Verify description column exists by inserting and reading a repository with description
       await db
@@ -742,7 +742,7 @@ describe('migration', () => {
       // Verify the schema version is the latest
       const { sql } = await import('kysely');
       const result = await sql<{ user_version: number }>`PRAGMA user_version`.execute(db);
-      expect(result.rows[0]?.user_version).toBe(42);
+      expect(result.rows[0]?.user_version).toBe(43);
 
       // First create a repository (foreign key dependency)
       await db
@@ -1734,12 +1734,12 @@ describe('migration', () => {
 
     it('should advance schema version past v14 to the latest', async () => {
       // initializeDatabase runs every migration up to current; this just
-      // confirms the v14 step is part of that chain (final version is 42).
+      // confirms the v14 step is part of that chain (final version is 43).
       const db = await initializeDatabase(':memory:');
 
       const { sql } = await import('kysely');
       const result = await sql<{ user_version: number }>`PRAGMA user_version`.execute(db);
-      expect(result.rows[0]?.user_version).toBe(42);
+      expect(result.rows[0]?.user_version).toBe(43);
     });
   });
 
@@ -1772,12 +1772,12 @@ describe('migration', () => {
 
     it('should advance schema version past v16 to the latest', async () => {
       // initializeDatabase runs every migration up to current; this just
-      // confirms the v16 step is part of that chain (final version is 42).
+      // confirms the v16 step is part of that chain (final version is 43).
       const db = await initializeDatabase(':memory:');
 
       const { sql } = await import('kysely');
       const result = await sql<{ user_version: number }>`PRAGMA user_version`.execute(db);
-      expect(result.rows[0]?.user_version).toBe(42);
+      expect(result.rows[0]?.user_version).toBe(43);
     });
   });
 

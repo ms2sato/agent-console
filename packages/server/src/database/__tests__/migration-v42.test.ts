@@ -23,6 +23,7 @@ import * as fsPromises from 'fs/promises';
 import type { Database } from '../schema.js';
 import { closeDatabase, initializeDatabase, migrateToV42, backupDatabaseFile } from '../connection.js';
 import { setupMemfs, cleanupMemfs } from '../../__tests__/utils/mock-fs-helper.js';
+import { expectRebuiltTableDdl } from './helpers/ddl-pin.js';
 
 const TEST_CONFIG_DIR = '/test/config';
 
@@ -208,81 +209,59 @@ describe('migration v42 (drop dead repositories.orchestrator_session_id)', () =>
     await db.destroy();
   });
 
-  it('runs through the real dispatcher (runMigrations) and lands on 42 from a fresh database', async () => {
+  it('runs through the real dispatcher (runMigrations) and lands on 43 from a fresh database', async () => {
     // `runMigrations` is module-internal (not exported), so this exercises
     // it via the real `initializeDatabase(':memory:')` entrypoint -- the
     // "migration.test.ts style" full-chain check, scoped to this file for
-    // v42's own dispatch integration.
+    // v42's own dispatch integration. Migration v43 (sessions ISO8601 CHECK
+    // rebuild) now also runs unconditionally after v42 in the same
+    // dispatcher chain, so a fresh database lands one step further than
+    // v42's own step -- this asserts the CHAIN's landing point, not v42's
+    // own effect (which the "advances the schema version to 42" test above
+    // already isolates via a direct `migrateToV42(db)` call).
     const db = await initializeDatabase(':memory:');
     const versionRes = await sql<{ user_version: number }>`PRAGMA user_version`.execute(db);
-    expect(versionRes.rows[0]?.user_version).toBe(42);
+    expect(versionRes.rows[0]?.user_version).toBe(43);
   });
 
-  it('drops orchestrator_session_id and preserves every other column, type-for-type', async () => {
+  it('drops orchestrator_session_id and reproduces the live DDL exactly: both ISO8601 CHECK constraints survive', async () => {
+    // Uses the shared `expectRebuiltTableDdl` helper (packages/server/src/
+    // database/__tests__/helpers/ddl-pin.ts), replacing what were previously
+    // two separate inline tests here: a `PRAGMA table_info`-based
+    // column-shape pin (which does not surface table-level CHECK
+    // constraints, so a dropped CHECK would pass it silently) and a
+    // `sqlite_master.sql`-text pin for the CHECK constraints specifically.
+    // The helper asserts both in one call, preserving every assertion the
+    // two original tests made. Polarity: renaming `repositories` itself
+    // (instead of `repositories_new`) or skipping a column in the explicit
+    // INSERT column list would leave the column set wrong; dropping either
+    // CONSTRAINT clause from `migrateToV42`'s CREATE TABLE fails the
+    // `mustContain` checks below without touching the column-shape checks.
     const db = seedV41Database({ repositories: [] });
     await migrateToV42(db);
 
-    const columns = await sql<PragmaTableInfoRow>`PRAGMA table_info(repositories)`.execute(db);
-    const byName = new Map(columns.rows.map((c) => [c.name, { ...c }]));
-
-    expect(byName.has('orchestrator_session_id')).toBe(false);
-
-    // Polarity: renaming `repositories` itself (instead of `repositories_new`)
-    // or skipping a column in the explicit INSERT column list would leave
-    // this set wrong; comparing full rows (not just names) also catches a
-    // changed type / notnull / default on any surviving column.
-    const expected: Record<string, { type: string; notnull: number; dflt_value: string | null; pk: number }> = {
-      id: { type: 'TEXT', notnull: 0, dflt_value: null, pk: 1 },
-      name: { type: 'TEXT', notnull: 1, dflt_value: null, pk: 0 },
-      path: { type: 'TEXT', notnull: 1, dflt_value: null, pk: 0 },
-      // `PRAGMA table_info`'s `dflt_value` strips one level of the
-      // enclosing parens the CREATE TABLE text itself carries around a
-      // function-call DEFAULT (confirmed empirically against this exact
-      // migration's output; `sqlite_master.sql`, asserted in the next test,
-      // keeps the parens).
-      created_at: { type: 'TEXT', notnull: 1, dflt_value: "strftime('%Y-%m-%dT%H:%M:%fZ', 'now')", pk: 0 },
-      updated_at: { type: 'TEXT', notnull: 1, dflt_value: "strftime('%Y-%m-%dT%H:%M:%fZ', 'now')", pk: 0 },
-      setup_command: { type: 'TEXT', notnull: 0, dflt_value: null, pk: 0 },
-      env_vars: { type: 'TEXT', notnull: 0, dflt_value: null, pk: 0 },
-      description: { type: 'TEXT', notnull: 0, dflt_value: null, pk: 0 },
-      cleanup_command: { type: 'TEXT', notnull: 0, dflt_value: null, pk: 0 },
-      default_agent_id: { type: 'TEXT', notnull: 0, dflt_value: null, pk: 0 },
-      issue_trigger_labels: { type: 'TEXT', notnull: 0, dflt_value: null, pk: 0 },
-    };
-
-    expect(new Set(byName.keys())).toEqual(new Set(Object.keys(expected)));
-    for (const [name, exp] of Object.entries(expected)) {
-      const actual = byName.get(name);
-      expect(actual, `column ${name}`).toBeDefined();
-      expect(actual!.type, `${name}.type`).toBe(exp.type);
-      expect(actual!.notnull, `${name}.notnull`).toBe(exp.notnull);
-      expect(actual!.dflt_value, `${name}.dflt_value`).toBe(exp.dflt_value);
-      expect(actual!.pk, `${name}.pk`).toBe(exp.pk);
-    }
-
-    await db.destroy();
-  });
-
-  it('reproduces the live DDL text exactly: both ISO8601 CHECK constraints survive, the dead column does not', async () => {
-    // `PRAGMA table_info` (the test above) does not surface table-level
-    // CHECK constraints at all, so a dropped CHECK would pass that pin
-    // silently. This reads the actual CREATE TABLE text from
-    // `sqlite_master` -- the same source R1 requires copying from -- to
-    // pin the constraints as text. Polarity: dropping either CONSTRAINT
-    // clause from `migrateToV42`'s CREATE TABLE fails this test; it would
-    // NOT fail the table_info-based column-set test above.
-    const db = seedV41Database({ repositories: [] });
-    await migrateToV42(db);
-
-    const ddl = await sql<{ sql: string }>`
-      SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'repositories'
-    `.execute(db);
-    const createTableSql = ddl.rows[0]?.sql ?? '';
-
-    expect(createTableSql).toContain('repositories_created_at_iso8601');
-    expect(createTableSql).toContain('repositories_updated_at_iso8601');
-    expect(createTableSql).toContain("GLOB '????-??-??T??:??:??*Z'");
-    expect(createTableSql).not.toContain('orchestrator_session_id');
+    await expectRebuiltTableDdl(db, 'repositories', {
+      expectedColumns: [
+        { cid: 0, name: 'id', type: 'TEXT', notnull: 0, dflt_value: null, pk: 1 },
+        { cid: 1, name: 'name', type: 'TEXT', notnull: 1, dflt_value: null, pk: 0 },
+        { cid: 2, name: 'path', type: 'TEXT', notnull: 1, dflt_value: null, pk: 0 },
+        // `PRAGMA table_info`'s `dflt_value` strips one level of the
+        // enclosing parens the CREATE TABLE text itself carries around a
+        // function-call DEFAULT (confirmed empirically against this exact
+        // migration's output; `sqlite_master.sql`, asserted via
+        // `mustContain` below, keeps the parens).
+        { cid: 3, name: 'created_at', type: 'TEXT', notnull: 1, dflt_value: "strftime('%Y-%m-%dT%H:%M:%fZ', 'now')", pk: 0 },
+        { cid: 4, name: 'updated_at', type: 'TEXT', notnull: 1, dflt_value: "strftime('%Y-%m-%dT%H:%M:%fZ', 'now')", pk: 0 },
+        { cid: 5, name: 'setup_command', type: 'TEXT', notnull: 0, dflt_value: null, pk: 0 },
+        { cid: 6, name: 'env_vars', type: 'TEXT', notnull: 0, dflt_value: null, pk: 0 },
+        { cid: 7, name: 'description', type: 'TEXT', notnull: 0, dflt_value: null, pk: 0 },
+        { cid: 8, name: 'cleanup_command', type: 'TEXT', notnull: 0, dflt_value: null, pk: 0 },
+        { cid: 9, name: 'default_agent_id', type: 'TEXT', notnull: 0, dflt_value: null, pk: 0 },
+        { cid: 10, name: 'issue_trigger_labels', type: 'TEXT', notnull: 0, dflt_value: null, pk: 0 },
+      ],
+      mustContain: ['repositories_created_at_iso8601', 'repositories_updated_at_iso8601', "GLOB '????-??-??T??:??:??*Z'"],
+      mustNotContain: ['orchestrator_session_id'],
+    });
 
     await db.destroy();
   });
