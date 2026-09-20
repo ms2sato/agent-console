@@ -87,6 +87,7 @@ export const COVERAGE_PATTERNS = [
   /^packages\/embedded-agent\/src\/.+\.ts$/,
   /^\.claude\/hooks\/.+\.sh$/,
   /^scripts\/lib\/.+\.ts$/,
+  /^packages\/server\/src\/repositories\/.+\.ts$/,
 ];
 
 // Source-file extensions considered for coverage analysis. `.sh` is included
@@ -142,6 +143,22 @@ const COVERAGE_EXCLUSIONS = [
   // are not double-matched here, and files like `type.ts` (singular)
   // are NOT excluded — they may contain runtime enums / factories.
   /(?:^|\/)types\.tsx?$/,
+  // packages/server/src/repositories/<x>-repository.ts convention: files
+  // whose basename is `<x>-repository.ts` and does NOT start with
+  // `sqlite-` / `json-` / `inbound-` are interface-only contract files
+  // (`export interface` / `export type` only, no runtime logic). Same
+  // rationale as `-types.ts` above — the type system already enforces
+  // their shape at consume sites, so a runtime test would be tautological.
+  // The negative lookahead keeps every IMPLEMENTATION in scope even though
+  // its basename also ends in `-repository.ts` (`sqlite-*-repository.ts`,
+  // `json-*-repository.ts`, `inbound-*-repository.ts`).
+  // `repository-factory.ts` is deliberately NOT exempted — it is runtime
+  // code, not a contract file, and its basename doesn't match this pattern
+  // anyway (ends in `-factory.ts`, not `-repository.ts`).
+  // `index.ts` in that directory needs no regex here: it is a re-export
+  // barrel, already exempted by `isReExportOnlyFile()` in
+  // `requiresTestCoverage()` below via its content, not its path.
+  /^packages\/server\/src\/repositories\/(?!sqlite-|json-|inbound-)[^/]+-repository\.ts$/,
 ];
 
 export function isTestFile(filePath) {
@@ -211,6 +228,30 @@ export function requiresTestCoverage(filePath) {
   // (the type system already enforces re-export shape at consume sites).
   if (isReExportOnlyFile(filePath)) return false;
   return true;
+}
+
+/**
+ * Identify WHICH rule excluded a file from test-coverage requirements, so
+ * preflight-check.js can name it instead of staying silent (the excluded
+ * file previously vanished from the report the moment it stopped needing
+ * coverage — indistinguishable from "not in scope at all" to a reader).
+ *
+ * Mirrors `requiresTestCoverage`'s own exclusion order (COVERAGE_EXCLUSIONS
+ * first, then the re-export-only content check) without duplicating its
+ * COVERAGE_PATTERNS gate — a file that matches no COVERAGE_PATTERN at all
+ * is not "excluded" in this sense, it is simply out of scope, and callers
+ * that need that distinction (see `findTestFiles`'s `isExcluded`) make it
+ * themselves by also checking COVERAGE_PATTERNS.
+ *
+ * @param {string} filePath
+ * @returns {string|null} the matching COVERAGE_EXCLUSIONS regex's `.source`,
+ *   `'re-export-only'`, or `null` when nothing excludes the file.
+ */
+export function findExclusionRule(filePath) {
+  const matched = COVERAGE_EXCLUSIONS.find(pattern => pattern.test(filePath));
+  if (matched) return matched.source;
+  if (isReExportOnlyFile(filePath)) return 're-export-only';
+  return null;
 }
 
 // --- Comment-only diff detection ---
@@ -672,12 +713,32 @@ export function findTestFiles(changedFiles, diffRef = {}) {
     // A file that otherwise needs coverage is exempted when its actual diff
     // hunks are comment-only/blank — no behavior changed, so a sibling test
     // would be tautological.
-    const isCommentOnly = requiresTestCoverage(prodFile) && isCommentOnlyFileDiff(prodFile, baseRef, cwd, headRef);
-    const needsCoverage = requiresTestCoverage(prodFile) && !isCommentOnly;
+    const requiresCoverage = requiresTestCoverage(prodFile);
+    const isCommentOnly = requiresCoverage && isCommentOnlyFileDiff(prodFile, baseRef, cwd, headRef);
+    const needsCoverage = requiresCoverage && !isCommentOnly;
+    // `isExcluded` names files preflight-check.js should surface by rule
+    // rather than dropping silently: in scope (matches a COVERAGE_PATTERN)
+    // but removed by a COVERAGE_EXCLUSIONS regex or the re-export-only
+    // content check. A file that matches no COVERAGE_PATTERN at all is a
+    // different bucket ("not in scope") and must NOT be flagged here — the
+    // `matchesCoveragePattern` gate is what keeps the two apart, since
+    // `requiresTestCoverage` alone returns false for both reasons.
+    const matchesCoveragePattern = COVERAGE_PATTERNS.some(pattern => pattern.test(prodFile));
+    const isExcluded = matchesCoveragePattern && !requiresCoverage;
+    const exclusionRule = isExcluded ? findExclusionRule(prodFile) : undefined;
     const expectedTestPath = dir + '/__tests__/' + fileName + '.test' + expectedTestExt(ext);
     const altExt = alternateTestExt(ext);
     const alternateTestPath = altExt ? dir + '/__tests__/' + fileName + '.test' + altExt : null;
-    testCoverage.push({ file: prodFile, hasTest, expectedTestPath, alternateTestPath, needsCoverage, isCommentOnly });
+    testCoverage.push({
+      file: prodFile,
+      hasTest,
+      expectedTestPath,
+      alternateTestPath,
+      needsCoverage,
+      isCommentOnly,
+      isExcluded,
+      exclusionRule,
+    });
   }
 
   return { testFiles, productionFiles, testCoverage };
