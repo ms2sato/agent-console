@@ -2,6 +2,7 @@ import { useRef, useState, type RefObject } from 'react';
 import { describe, it, expect, mock, afterEach } from 'bun:test';
 import { render, screen, fireEvent, cleanup, renderHook } from '@testing-library/react';
 import { useModalDrawerFocus, getTabbables } from '../useModalDrawerFocus';
+import { AccordionSectionBody } from '../../components/sessions/AccordionSectionBody';
 
 afterEach(() => {
   cleanup();
@@ -90,6 +91,43 @@ describe('getTabbables', () => {
     const result = getTabbables(container);
     expect(result.length).toBe(1);
     expect(result[0]!.textContent).toBe('Only');
+  });
+
+  it('excludes a collapsed AccordionSectionBody\'s scroller stand-in via its wrapper\'s inert attribute, includes it once expanded', () => {
+    // happy-dom performs no layout and does not model Chrome's
+    // keyboard-focusable-scrollers behavior, so this pin cannot exercise
+    // that browser quirk directly. What it proves instead is narrower and
+    // fully within reach of this hook's own logic: AccordionSectionBody's
+    // wrapper carries `inert` while collapsed, and getTabbables' ancestor
+    // walk (above) already excludes every descendant of an `[inert]`
+    // ancestor -- so a stand-in tabbable INSIDE the collapsed body (playing
+    // the role a Chrome-made-focusable overflow-y-auto scroller would play)
+    // is excluded via that existing mechanism, and reappears once expanded.
+    // This is the only unit-layer pin that involves the scroller concept at
+    // all; it proves the hook's Tab-wrap boundary will never land on a
+    // collapsed scroller, not that Chrome itself behaves this way -- that
+    // is what the Browser QA captures attached to the PR verify instead.
+    const { container, rerender } = render(
+      <div>
+        <button>outside</button>
+        <AccordionSectionBody isExpanded={false}>
+          <div tabIndex={0}>scroller</div>
+        </AccordionSectionBody>
+      </div>
+    );
+
+    expect(getTabbables(container).map((el) => el.textContent)).toEqual(['outside']);
+
+    rerender(
+      <div>
+        <button>outside</button>
+        <AccordionSectionBody isExpanded={true}>
+          <div tabIndex={0}>scroller</div>
+        </AccordionSectionBody>
+      </div>
+    );
+
+    expect(getTabbables(container).map((el) => el.textContent)).toEqual(['outside', 'scroller']);
   });
 });
 

@@ -52,4 +52,43 @@ describe('AccordionSectionBody', () => {
 
     expect(screen.getByText('Section content')).toBeTruthy();
   });
+
+  it('is inert when collapsed -- removes the wrapper (and every descendant) from the tab order and from Chrome\'s keyboard-focusable-scroller behavior', () => {
+    const { container } = render(
+      <AccordionSectionBody isExpanded={false}>
+        <span>Section content</span>
+      </AccordionSectionBody>
+    );
+
+    const wrapper = container.firstElementChild as HTMLElement;
+    expect(wrapper.hasAttribute('inert')).toBe(true);
+  });
+
+  it('is not inert when expanded', () => {
+    const { container } = render(
+      <AccordionSectionBody isExpanded={true}>
+        <span>Section content</span>
+      </AccordionSectionBody>
+    );
+
+    const wrapper = container.firstElementChild as HTMLElement;
+    expect(wrapper.hasAttribute('inert')).toBe(false);
+  });
+
+  it('sets inert to the empty string, never a boolean, when collapsed', () => {
+    // React 18 / @types/react 18.3 do not know the `inert` attribute; passing
+    // a boolean `true` gets silently dropped (with a console warning) since
+    // React treats an unrecognized attribute as a plain DOM attribute, where
+    // only a string (or `undefined` to omit it) is valid. The empty-string
+    // attribute (`inert=""` present / attribute absent) is the only shape
+    // `react-inert.d.ts` admits, and it is the contract this pins.
+    const { container } = render(
+      <AccordionSectionBody isExpanded={false}>
+        <span>Section content</span>
+      </AccordionSectionBody>
+    );
+
+    const wrapper = container.firstElementChild as HTMLElement;
+    expect(wrapper.getAttribute('inert')).toBe('');
+  });
 });
