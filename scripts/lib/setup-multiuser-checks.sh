@@ -185,6 +185,57 @@ dist_artifact_present() {
   return 1
 }
 
+# resolve_health_port <live-port-or-empty> <override-or-empty> <default>   (Issue #1761)
+#
+# V5's port input used to be a single guessed default (AGENT_CONSOLE_PORT,
+# falling back to 8080) with no connection to what the live unit actually
+# binds -- the unit is the single writer of the port the server binds (its
+# `Environment=PORT=` line, rendered by scripts/setup-multiuser-for-
+# ubuntu.sh), so a guessed default could silently disagree with a host whose
+# PORT= differs from it. This resolves the port to probe by PRECEDENCE (the
+# live unit wins, then an explicit override, then the compiled-in default)
+# and reports which source it used.
+#
+# <live-port-or-empty> is V1's own PORT= read from the live unit's effective
+# Environment (unit_env_drift's VERIFY_LAST_STDOUT -- the same single read
+# CONFIGURED_BUN already uses for EMBEDDED_AGENT_BUN_PATH, no second
+# `systemctl show` call). <override-or-empty> is AGENT_CONSOLE_PORT, kept
+# only as a fallback for a unit whose template does not (yet) declare
+# `PORT=`. <default> is the script's own compiled-in fallback (8080).
+#
+# Prints `PORT_SOURCE:<unit|override|default>` on stdout line 1 and the
+# resolved port on stdout line 2. When both the live unit's port and the
+# override are non-empty and differ, warns on stderr naming both (the unit
+# still wins) -- an operator-set AGENT_CONSOLE_PORT that no longer matches a
+# re-rendered unit is exactly the drift this function exists to surface
+# rather than silently overriding. Always returns 0: a resolution decision
+# is never itself a deploy failure -- the caller's own V5 health probe is
+# what can still fail, against whichever port this resolved.
+resolve_health_port() {
+  local live="$1"
+  local override="$2"
+  local default="$3"
+
+  if [ -n "$live" ]; then
+    if [ -n "$override" ] && [ "$override" != "$live" ]; then
+      echo "WARN: AGENT_CONSOLE_PORT=${override} differs from the live unit's PORT=${live}; using the unit's" >&2
+    fi
+    echo "PORT_SOURCE:unit"
+    echo "$live"
+    return 0
+  fi
+
+  if [ -n "$override" ]; then
+    echo "PORT_SOURCE:override"
+    echo "$override"
+    return 0
+  fi
+
+  echo "PORT_SOURCE:default"
+  echo "$default"
+  return 0
+}
+
 # ---------------------------------------------------------------------------
 # Post-deploy verification checks V0-V6 (Issue #1717, absorbing #1688;
 # V0 added by Issue #1754).
@@ -1047,6 +1098,10 @@ if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
     dist-artifact-present)
       shift
       dist_artifact_present "$@"
+      ;;
+    resolve-health-port)
+      shift
+      resolve_health_port "$@"
       ;;
     data-root-ownership)
       shift

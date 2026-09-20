@@ -166,6 +166,95 @@ export function formatCoverageVerdict({ hasUnitGaps, gapsCount, hasIntegrationGa
   return '**All production files have corresponding tests.** ✅';
 }
 
+/**
+ * Print the "excluded by rule" addendum: files that match a
+ * COVERAGE_PATTERN but are removed by a COVERAGE_EXCLUSIONS regex or the
+ * re-export-only content check (`testCoverage[].isExcluded`). Previously
+ * these files vanished from the report the moment they stopped needing
+ * coverage — indistinguishable from "not in scope at all" to a reader.
+ * Prints nothing when the list is empty, so callers get byte-identical
+ * output to before this addendum existed whenever there is nothing to name.
+ */
+function printExcludedByRule(excludedByRule) {
+  if (excludedByRule.length === 0) return;
+  console.log(`### Exempted -- excluded by rule (${excludedByRule.length})\n`);
+  for (const { file, exclusionRule } of excludedByRule) {
+    console.log(`- ⬜ \`${file}\` -> \`${exclusionRule}\``);
+  }
+  console.log();
+}
+
+/**
+ * Render the "## Test Coverage Check" section (covered / comment-only /
+ * missing-tests / excluded-by-rule + the verdict line). Extracted from
+ * `run()` and exported so it is directly unit-testable without driving
+ * `run()`'s `process.exit()` side effect — same pattern as
+ * `printEmbeddedAgentStdoutWritersCheck` above. Returns `hasUnitGaps` so
+ * `run()` can fold it into its overall exit-code decision without
+ * re-deriving it.
+ *
+ * @param {Array} testCoverage
+ * @param {object|null} integrationTestNeeds
+ * @returns {boolean} hasUnitGaps
+ */
+export function printCoverageCheck(testCoverage, integrationTestNeeds) {
+  const filesNeedingCoverage = testCoverage.filter(tc => tc.needsCoverage);
+  const commentOnlyExempted = testCoverage.filter(tc => tc.isCommentOnly);
+  const excludedByRule = testCoverage.filter(tc => tc.isExcluded);
+  const hasUnitGaps = filesNeedingCoverage.some(tc => !tc.hasTest);
+  const hasIntegrationGap = integrationTestNeeds && !integrationTestNeeds.hasIntegrationTestInPr;
+
+  if (filesNeedingCoverage.length === 0 && commentOnlyExempted.length === 0 && !integrationTestNeeds) {
+    console.log('## Test Coverage Check\n');
+    console.log('No production files matching coverage patterns were changed.\n');
+    printExcludedByRule(excludedByRule);
+    return hasUnitGaps;
+  }
+
+  const gaps = filesNeedingCoverage.filter(tc => !tc.hasTest);
+  const covered = filesNeedingCoverage.filter(tc => tc.hasTest);
+
+  console.log('## Test Coverage Check\n');
+
+  if (covered.length > 0) {
+    console.log(`### Covered (${covered.length})\n`);
+    for (const { file } of covered) {
+      console.log(`- ✅ \`${file}\``);
+    }
+    console.log();
+  }
+
+  if (commentOnlyExempted.length > 0) {
+    console.log(`### Exempted — comment-only diff (${commentOnlyExempted.length})\n`);
+    for (const { file } of commentOnlyExempted) {
+      console.log(`- ➖ \`${file}\` — all changed lines are comments/blank`);
+    }
+    console.log();
+  }
+
+  if (gaps.length > 0) {
+    console.log(`### Missing Tests (${gaps.length})\n`);
+    for (const { file, expectedTestPath, alternateTestPath } of gaps) {
+      const alt = alternateTestPath ? ` (or \`${alternateTestPath}\` if JSX-free)` : '';
+      console.log(`- ❌ \`${file}\` — expected: \`${expectedTestPath}\`${alt}`);
+    }
+    console.log();
+  }
+
+  printIntegrationTestCoverage(integrationTestNeeds);
+
+  console.log(formatCoverageVerdict({
+    hasUnitGaps,
+    gapsCount: gaps.length,
+    hasIntegrationGap,
+    hasCommentOnlyExemptions: commentOnlyExempted.length > 0,
+  }));
+
+  printExcludedByRule(excludedByRule);
+
+  return hasUnitGaps;
+}
+
 // --- Main ---
 
 function run(changedFiles, diffRef = {}) {
@@ -173,54 +262,7 @@ function run(changedFiles, diffRef = {}) {
   const categories = categorizeFiles(changedFiles);
   const integrationTestNeeds = detectIntegrationTestNeeds(changedFiles, categories);
 
-  const filesNeedingCoverage = testCoverage.filter(tc => tc.needsCoverage);
-  const commentOnlyExempted = testCoverage.filter(tc => tc.isCommentOnly);
-  const hasUnitGaps = filesNeedingCoverage.some(tc => !tc.hasTest);
-  const hasIntegrationGap = integrationTestNeeds && !integrationTestNeeds.hasIntegrationTestInPr;
-
-  if (filesNeedingCoverage.length === 0 && commentOnlyExempted.length === 0 && !integrationTestNeeds) {
-    console.log('## Test Coverage Check\n');
-    console.log('No production files matching coverage patterns were changed.\n');
-  } else {
-    const gaps = filesNeedingCoverage.filter(tc => !tc.hasTest);
-    const covered = filesNeedingCoverage.filter(tc => tc.hasTest);
-
-    console.log('## Test Coverage Check\n');
-
-    if (covered.length > 0) {
-      console.log(`### Covered (${covered.length})\n`);
-      for (const { file } of covered) {
-        console.log(`- ✅ \`${file}\``);
-      }
-      console.log();
-    }
-
-    if (commentOnlyExempted.length > 0) {
-      console.log(`### Exempted — comment-only diff (${commentOnlyExempted.length})\n`);
-      for (const { file } of commentOnlyExempted) {
-        console.log(`- ➖ \`${file}\` — all changed lines are comments/blank`);
-      }
-      console.log();
-    }
-
-    if (gaps.length > 0) {
-      console.log(`### Missing Tests (${gaps.length})\n`);
-      for (const { file, expectedTestPath, alternateTestPath } of gaps) {
-        const alt = alternateTestPath ? ` (or \`${alternateTestPath}\` if JSX-free)` : '';
-        console.log(`- ❌ \`${file}\` — expected: \`${expectedTestPath}\`${alt}`);
-      }
-      console.log();
-    }
-
-    printIntegrationTestCoverage(integrationTestNeeds);
-
-    console.log(formatCoverageVerdict({
-      hasUnitGaps,
-      gapsCount: gaps.length,
-      hasIntegrationGap,
-      hasCommentOnlyExemptions: commentOnlyExempted.length > 0,
-    }));
-  }
+  const hasUnitGaps = printCoverageCheck(testCoverage, integrationTestNeeds);
 
   // Rule/Skill duplication invariant — runs on every preflight because drift
   // can be introduced by edits anywhere, not just the current PR's diff.

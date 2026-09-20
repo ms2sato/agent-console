@@ -47,9 +47,11 @@
 #  10. Post-deploy verification V2-V6 (Issue #1717; the spec is the
 #      "Post-deploy verification -- checks enumerated" table in
 #      docs/design/elevation-verification-tiers.md): entry-path readability,
-#      MainPID binary identity, unit active, /api/config health, journal
-#      digest. One line per check, PASS / FAIL / SKIP, then a seven-line
-#      screen (V0 and V1 included) and the worst code as this script's exit:
+#      MainPID binary identity, unit active, /api/config health (V5, on the
+#      port read from the live unit at V1 -- resolve_health_port -- not a
+#      script default; Issue #1761), journal digest. One line per check,
+#      PASS / FAIL / SKIP, then a seven-line screen (V0 and V1 included) and
+#      the worst code as this script's exit:
 #        0  every check PASSed
 #        1  at least one FAIL (a check ran and the system is wrong)
 #        2  at least one SKIP (a check could not run) and no FAIL
@@ -82,13 +84,19 @@
 #                                    Default: /home/${AGENT_CONSOLE_SERVICE_USER}/agent-console
 #   AGENT_CONSOLE_SERVICE_NAME       systemd unit to restart.
 #                                    Default: agent-console.service
-#   AGENT_CONSOLE_PORT               Port the V5 health check probes
-#                                    (GET http://localhost:<port>/api/config).
-#                                    Default: 8080
+#   AGENT_CONSOLE_PORT               Fallback port for the V5 health check
+#                                    (GET http://localhost:<port>/api/config)
+#                                    when the live unit's own PORT= cannot be
+#                                    read (Issue #1761) -- the live unit's
+#                                    PORT= (read at V1) always wins when
+#                                    present. Default: 8080
 #
 # Example with overrides:
 #   AGENT_CONSOLE_PORT=9000 AGENT_CONSOLE_SERVICE_USER=ac-svc \
 #     scripts/update-and-deploy-for-multiuser-ubuntu.sh
+#   (AGENT_CONSOLE_PORT above only takes effect if the live unit's PORT=
+#   cannot be read; otherwise the live unit's own port is used and a WARN
+#   is printed naming the mismatch)
 #
 # Prerequisites (set up by scripts/setup-multiuser-for-ubuntu.sh):
 #   - service user exists with the configured home directory
@@ -105,7 +113,18 @@ DATA_ROOT="${AGENT_CONSOLE_DATA_ROOT:-/var/lib/agent-console}"
 SRC="${AGENT_CONSOLE_APP_SOURCE_DIR:-${DATA_ROOT}/source-repos/agent-console}"
 DST="${AGENT_CONSOLE_DEPLOY_TARGET_DIR:-/home/${SERVICE_USER}/agent-console}"
 SERVICE_NAME="${AGENT_CONSOLE_SERVICE_NAME:-agent-console.service}"
-PORT="${AGENT_CONSOLE_PORT:-8080}"
+# The operator's OPTIONAL override input to V5's port resolution (Issue
+# #1761) -- empty when not exported, deliberately WITHOUT a `:-8080` default
+# baked in here. resolve_health_port's own third argument ("8080", passed at
+# the call site below) is the ONE place the compiled-in default lives; if
+# this variable also defaulted to 8080, the override would never be empty,
+# which would make resolve_health_port's "default" source unreachable from
+# this script and -- worse -- would fire a spurious WARN on every host whose
+# live unit's PORT differs from 8080, even when the operator never exported
+# AGENT_CONSOLE_PORT at all. See resolve_health_port and the V1 section
+# below, where the live unit's read (LIVE_PORT) is what actually wins in the
+# ordinary case.
+PORT_OVERRIDE="${AGENT_CONSOLE_PORT:-}"
 
 # Elevation prefix for the probes that need root themselves (the
 # unprivileged-readability gate below, via `runuser`; and the post-deploy
@@ -240,7 +259,7 @@ echo "    SERVICE_USER : ${SERVICE_USER}"
 echo "    APP_SOURCE   : ${SRC}"
 echo "    DEPLOY_TARGET: ${DST}"
 echo "    SERVICE_NAME : ${SERVICE_NAME}"
-echo "    PORT         : ${PORT}"
+echo "    AGENT_CONSOLE_PORT (fallback; the live unit's PORT is read at V1): ${PORT_OVERRIDE:-(unset)}"
 echo ""
 
 echo "==> Pre-check: source-repo HEAD"
@@ -410,9 +429,32 @@ if [ "${V1_RC}" -ne 0 ]; then
   echo "Error: refusing to restart ${SERVICE_NAME} -- V1 did not pass (see the line above). No restart was performed: the unit keeps running the previous deploy. Apply the named remedy, then re-run this script." >&2
   exit "${V1_RC}"
 fi
-# V1's single read of the live environment is passed down to V3: the value
-# the embedded agent will actually spawn, not the template's placeholder.
+# V1's single read of the live environment is passed down to V3 and V5: the
+# value the embedded agent will actually spawn (V3, EMBEDDED_AGENT_BUN_PATH)
+# and the port the live unit actually binds (V5, PORT) -- not the template's
+# placeholder, and not a guessed script default (Issue #1761).
 CONFIGURED_BUN="$(printf '%s\n' "${VERIFY_LAST_STDOUT}" | sed -n 's/^EMBEDDED_AGENT_BUN_PATH=//p' | head -n 1)"
+LIVE_PORT="$(printf '%s\n' "${VERIFY_LAST_STDOUT}" | sed -n 's/^PORT=//p' | head -n 1)"
+
+# Resolve V5's port input: the live unit's PORT= (LIVE_PORT, just read above)
+# wins over AGENT_CONSOLE_PORT (PORT_OVERRIDE, a fallback for a unit whose
+# template does not declare PORT=), which wins over the compiled-in default
+# ("8080", the literal third argument -- the ONE place it lives; Issue #1761,
+# see resolve_health_port's own header for the precedence and why).
+# PORT_OVERRIDE is passed RAW (empty when AGENT_CONSOLE_PORT was not
+# exported) -- if it defaulted to 8080 here too, the override would never be
+# empty, and this script would print a spurious WARN on every host whose
+# live unit's PORT differs from 8080, even with no operator override at all.
+# Its stderr (a WARN when the override disagrees with the live unit) is
+# shown indented beneath V1's screen line, matching verify_check's own
+# annotation style.
+RESOLVE_PORT_ERR="$(mktemp)"
+RESOLVE_PORT_OUT="$(resolve_health_port "${LIVE_PORT}" "${PORT_OVERRIDE}" "8080" 2>"${RESOLVE_PORT_ERR}")"
+HEALTH_PORT_SOURCE="$(printf '%s\n' "${RESOLVE_PORT_OUT}" | sed -n '1s/^PORT_SOURCE://p')"
+HEALTH_PORT="$(printf '%s\n' "${RESOLVE_PORT_OUT}" | sed -n '2p')"
+sed 's/^/        /' "${RESOLVE_PORT_ERR}"
+rm -f "${RESOLVE_PORT_ERR}"
+echo "        PORT (V5): ${HEALTH_PORT} (source: ${HEALTH_PORT_SOURCE})"
 
 echo ""
 echo "==> systemctl restart ${SERVICE_NAME}"
@@ -441,7 +483,7 @@ verify_check "V3 mainpid-identity" mainpid_identity "${SERVICE_NAME}" "${CONFIGU
 verify_check "V4 unit-active" unit_active "${SERVICE_NAME}" systemctl journalctl "${ELEVATE}" || true
 # V5 is the wait point after the restart: it polls /api/config up to 10 x 1 s
 # before deciding, so V6 after it reads a settled boot rather than racing it.
-verify_check "V5 health" health "${PORT}" 10 curl || true
+verify_check "V5 health" health "${HEALTH_PORT}" 10 curl || true
 verify_check "V6 journal-digest" journal_digest "${SERVICE_NAME}" "${RESTART_SINCE}" journalctl "${ELEVATE}" || true
 
 verify_print_screen

@@ -1,5 +1,6 @@
 import { describe, it, expect, mock } from 'bun:test';
-import { formatCoverageVerdict, printEmbeddedAgentStdoutWritersCheck } from '../preflight-check.js';
+import { formatCoverageVerdict, printEmbeddedAgentStdoutWritersCheck, printCoverageCheck } from '../preflight-check.js';
+import { findTestFiles } from '../check-utils.js';
 
 /**
  * Captures every console.log call made during `fn()` and returns the
@@ -79,6 +80,50 @@ describe('formatCoverageVerdict (Issue #1189)', () => {
       hasCommentOnlyExemptions: false,
     });
     expect(result).toBe('**All production files have corresponding tests.** ✅');
+  });
+});
+
+describe('printCoverageCheck -- excluded-by-rule naming (Issue #1767 follow-up)', () => {
+  it('names the excluded interface file and its exclusion rule in the "no production files" branch', () => {
+    // Real fixture on disk: an interface-only contract file, excluded by
+    // the packages/server/src/repositories/ regex added for Issue #1767.
+    // With only this file changed, filesNeedingCoverage and
+    // commentOnlyExempted are both empty, so this drives the "No
+    // production files..." branch, and the excluded-by-rule addendum must
+    // still name the file rather than staying silent.
+    const { testCoverage } = findTestFiles(['packages/server/src/repositories/timer-repository.ts']);
+    const output = captureConsoleLog(() => {
+      printCoverageCheck(testCoverage, null);
+    });
+    expect(output).toContain('No production files matching coverage patterns were changed.');
+    expect(output).toContain('### Exempted -- excluded by rule (1)');
+    expect(output).toContain('packages/server/src/repositories/timer-repository.ts');
+    expect(output).toContain(
+      '^packages\\/server\\/src\\/repositories\\/(?!sqlite-|json-|inbound-)[^/]+-repository\\.ts$',
+    );
+  });
+
+  it('prints no excluded-by-rule section when the changed file matches no exclusion rule', () => {
+    // A hypothetical routes file: matches COVERAGE_PATTERNS, is not
+    // excluded, so it lands in the ordinary Missing Tests branch with no
+    // excluded-by-rule addendum at all.
+    const { testCoverage } = findTestFiles(['packages/server/src/routes/some-new-route.ts']);
+    const output = captureConsoleLog(() => {
+      printCoverageCheck(testCoverage, null);
+    });
+    expect(output).not.toContain('Exempted -- excluded by rule');
+  });
+
+  it('prints no excluded-by-rule section when there is nothing excluded (byte-identical to before the addendum existed)', () => {
+    // A changed test file only: findTestFiles produces an empty
+    // testCoverage array, so both the "no production files" line and no
+    // excluded-by-rule section should appear.
+    const { testCoverage } = findTestFiles(['packages/server/src/repositories/__tests__/timer-repository.test.ts']);
+    const output = captureConsoleLog(() => {
+      printCoverageCheck(testCoverage, null);
+    });
+    expect(output).toContain('No production files matching coverage patterns were changed.');
+    expect(output).not.toContain('Exempted -- excluded by rule');
   });
 });
 

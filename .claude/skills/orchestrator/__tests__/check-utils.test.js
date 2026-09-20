@@ -16,6 +16,8 @@ import {
   PrDiffRefResolutionError,
   getAcceptanceCriteria,
   getCiStatus,
+  COVERAGE_PATTERNS,
+  findExclusionRule,
 } from '../check-utils.js';
 
 describe('isReExportOnlyContent', () => {
@@ -148,6 +150,136 @@ describe('requiresTestCoverage for packages/server/src/lib/** (Issue #1459)', ()
     // No exclusion pattern applies here — it is a normal runtime file, just
     // a small one. See packages/server/src/lib/__tests__/auth-constants.test.ts.
     expect(requiresTestCoverage('packages/server/src/lib/auth-constants.ts')).toBe(true);
+  });
+});
+
+describe('requiresTestCoverage for packages/server/src/repositories/** (Issue #1767)', () => {
+  it('adds the repositories coverage pattern in the canonical ^DIR/.+\\.EXT$ shape', () => {
+    // check-mirror-drift.js normalizes ONLY this shape when comparing
+    // COVERAGE_PATTERNS against test-trigger.md's YAML globs — keep the
+    // pattern's .source literal in sync with that shape.
+    expect(
+      COVERAGE_PATTERNS.some((p) => p.source === '^packages\\/server\\/src\\/repositories\\/.+\\.ts$'),
+    ).toBe(true);
+  });
+
+  const interfaceOnlyFiles = [
+    'agent-repository',
+    'artifact-repository',
+    'bookmark-repository',
+    'embedded-agent-repository',
+    'message-template-repository',
+    'notification-cursor-repository',
+    'repository-repository',
+    'session-repository',
+    'timer-repository',
+    'user-repository',
+    'worktree-repository',
+  ];
+
+  for (const name of interfaceOnlyFiles) {
+    it(`exempts the interface-only contract file ${name}.ts`, () => {
+      // Real fixture on disk: `export interface` / `export type` only, no
+      // runtime logic — same rationale as the `-types.ts` exemption.
+      expect(requiresTestCoverage(`packages/server/src/repositories/${name}.ts`)).toBe(false);
+    });
+  }
+
+  const implementationFiles = [
+    // sqlite-*-repository.ts — every one currently on disk.
+    'sqlite-message-template-repository',
+    'sqlite-notification-cursor-repository',
+    'sqlite-agent-repository',
+    'sqlite-artifact-repository',
+    'sqlite-bookmark-repository',
+    'sqlite-timer-repository',
+    'sqlite-user-repository',
+    'sqlite-repository-repository',
+    'sqlite-embedded-agent-repository',
+    'sqlite-session-repository',
+    'sqlite-worktree-repository',
+    // Other prefixed implementations excluded from the exemption's negative
+    // lookahead.
+    'json-session-repository',
+    'inbound-event-notification-repository',
+  ];
+
+  for (const name of implementationFiles) {
+    it(`requires coverage for the implementation file ${name}.ts`, () => {
+      expect(requiresTestCoverage(`packages/server/src/repositories/${name}.ts`)).toBe(true);
+    });
+  }
+
+  it('requires coverage for repository-factory.ts (runtime code, not a contract file)', () => {
+    expect(requiresTestCoverage('packages/server/src/repositories/repository-factory.ts')).toBe(true);
+  });
+
+  it('exempts index.ts via the existing re-export-only content check, not a path regex', () => {
+    // Real fixture on disk: packages/server/src/repositories/index.ts is a
+    // pure re-export barrel. No dedicated regex is needed for it — see the
+    // exclusion pattern's own comment in check-utils.js.
+    expect(requiresTestCoverage('packages/server/src/repositories/index.ts')).toBe(false);
+  });
+
+  it('requires coverage for a hypothetical sqlite-foo-repository.ts (polarity: negative lookahead excludes it from the exemption)', () => {
+    expect(requiresTestCoverage('packages/server/src/repositories/sqlite-foo-repository.ts')).toBe(true);
+  });
+
+  it('exempts a hypothetical bare-name foo-repository.ts (polarity: exclusion applies)', () => {
+    expect(requiresTestCoverage('packages/server/src/repositories/foo-repository.ts')).toBe(false);
+  });
+
+  it('requires coverage for a nested foo-repository.ts (boundary: [^/]+ anchors the basename, not nested paths)', () => {
+    // The exclusion regex's [^/]+ segment cannot span a `/`, so a
+    // sub-directory path like `.../repositories/sub/foo-repository.ts`
+    // does not match the exclusion at all and falls through to requiring
+    // coverage — even though its basename alone would otherwise qualify.
+    expect(requiresTestCoverage('packages/server/src/repositories/sub/foo-repository.ts')).toBe(true);
+  });
+});
+
+describe('findExclusionRule and findTestFiles isExcluded (Issue #1767 follow-up: preflight must name the excluded file)', () => {
+  it('returns the repositories interface regex source for an excluded interface file', () => {
+    expect(findExclusionRule('packages/server/src/repositories/timer-repository.ts')).toBe(
+      '^packages\\/server\\/src\\/repositories\\/(?!sqlite-|json-|inbound-)[^/]+-repository\\.ts$',
+    );
+  });
+
+  it("returns 're-export-only' for the repositories index.ts barrel", () => {
+    // Real fixture on disk: a pure re-export barrel, not matched by any
+    // COVERAGE_EXCLUSIONS regex, only by the content check.
+    expect(findExclusionRule('packages/server/src/repositories/index.ts')).toBe('re-export-only');
+  });
+
+  it('returns null for a file nothing excludes', () => {
+    expect(findExclusionRule('packages/server/src/repositories/sqlite-timer-repository.ts')).toBeNull();
+  });
+
+  it('findTestFiles reports isExcluded: true with the exclusionRule set for an excluded interface file', () => {
+    const { testCoverage } = findTestFiles(['packages/server/src/repositories/timer-repository.ts']);
+    expect(testCoverage).toHaveLength(1);
+    const entry = testCoverage[0];
+    expect(entry.needsCoverage).toBe(false);
+    expect(entry.isExcluded).toBe(true);
+    expect(entry.exclusionRule).toBe(
+      '^packages\\/server\\/src\\/repositories\\/(?!sqlite-|json-|inbound-)[^/]+-repository\\.ts$',
+    );
+  });
+
+  it('findTestFiles reports isExcluded: false for an in-scope file that requires coverage', () => {
+    const { testCoverage } = findTestFiles(['packages/server/src/routes/foo.ts']);
+    expect(testCoverage).toHaveLength(1);
+    expect(testCoverage[0].isExcluded).toBe(false);
+    expect(testCoverage[0].exclusionRule).toBeUndefined();
+  });
+
+  it('findTestFiles reports isExcluded: false for a file that matches no COVERAGE_PATTERN at all (a different bucket than "excluded by rule")', () => {
+    const { testCoverage } = findTestFiles(['packages/server/src/other/foo.ts']);
+    expect(testCoverage).toHaveLength(1);
+    expect(testCoverage[0].isExcluded).toBe(false);
+    expect(testCoverage[0].exclusionRule).toBeUndefined();
+    // Also not flagged as needing coverage -- it's simply out of scope.
+    expect(testCoverage[0].needsCoverage).toBe(false);
   });
 });
 
