@@ -10,6 +10,8 @@ The Orchestrator skill (`.claude/skills/orchestrator/`) was written for, and has
 
 Phase 6 is not dispatchable until every step the skill prescribes has been mapped onto what the builtin definition can do today. That map is the [Readiness table](#readiness-table). Its first real finding is that **inbound `[inbound:*]` notifications never reach an embedded-agent worker** ([F5](#f5-designation-works-inbound-delivery-does-not)), which is also the first Issue to file.
 
+**Run 1 (Phase 6, #1740).** Run date: 2026-09-20 (UTC). Embedded Orchestrator session id: `ae7daa5b-db98-46fb-a695-9f78cf39772c`. Delegate session id: `9240c7d3-c0ae-49b0-8c4d-62e4a6ed779d`. PR: [#1764](https://github.com/ms2sato/agent-console/pull/1764).
+
 ## Facts the table is built on (re-verified at `a59fc303`)
 
 ### F1. Tool surface of the builtin: no Bash, no EnterWorktree, no Task, no browser
