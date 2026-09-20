@@ -368,13 +368,20 @@ function printAutoDetection(autoDetection) {
   if (testCoverage.length === 0) {
     console.log('  (no production code files)');
   } else {
-    for (const { file, hasTest, expectedTestPath, needsCoverage, isCommentOnly } of testCoverage) {
+    for (const { file, hasTest, expectedTestPath, needsCoverage, isCommentOnly, isExcluded, exclusionRule } of testCoverage) {
       if (hasTest) {
         console.log(`  ✅ ${file} -> covered`);
       } else if (needsCoverage) {
         console.log(`  ❌ ${file} -> NO TEST (expected: ${expectedTestPath})`);
       } else if (isCommentOnly) {
         console.log(`  ➖ ${file} -> exempted (comment-only diff)`);
+      } else if (isExcluded) {
+        // In scope (matched a COVERAGE_PATTERN) but removed by a
+        // COVERAGE_EXCLUSIONS regex or the re-export-only content check.
+        // `findTestFiles()` is the single writer of that distinction; this
+        // branch only renders it, so the reader can tell "exempt for a stated
+        // reason" from the genuinely out-of-scope bucket below.
+        console.log(`  ⬜ ${file} -> exempt (${exclusionRule})`);
       } else {
         console.log(`  ⬜ ${file} -> skipped (not in coverage patterns)`);
       }
