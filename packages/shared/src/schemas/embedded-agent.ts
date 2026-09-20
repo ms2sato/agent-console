@@ -34,8 +34,24 @@ import type { ExitReason } from '../types/worker.js';
  * instead (mirroring `Compact`'s own MCP-served shape, see
  * `SDK_TODO_WRITE_TOOL_NAME` in types/embedded-agent.ts); on `openai-api` it
  * is implemented in packages/embedded-agent/src/tools/todo-write.ts.
+ *
+ * `Task` (epic #1636 Phase 5 decision 3) is the SDK's own
+ * subagent-delegation tool, SDK-only -- see the type's doc comment
+ * (types/embedded-agent.ts) for the full rationale, including the
+ * `"Task"`/`"Agent"` two-literal wrinkle. `openai-api`'s capability row is
+ * `capable: false` (no subagent runtime); a `Task` value reaching that
+ * engine's `enabledTools` is rejected at `EmbeddedAgentManager` validation.
  */
-export const EMBEDDED_AGENT_TOOL_NAMES = ['Read', 'Glob', 'Grep', 'Bash', 'Write', 'Edit', 'TodoWrite'] as const;
+export const EMBEDDED_AGENT_TOOL_NAMES = [
+  'Read',
+  'Glob',
+  'Grep',
+  'Bash',
+  'Write',
+  'Edit',
+  'TodoWrite',
+  'Task',
+] as const;
 
 /**
  * Default when a definition's `enabledTools` is absent: read-only tools ON,
@@ -77,6 +93,45 @@ const EnabledToolsSchema = v.pipe(
  * check — duplicate paths are harmless (just re-read the same file twice).
  */
 const InstructionsListSchema = v.array(v.pipe(v.string(), v.minLength(1)));
+
+/**
+ * Declared external MCP server wire-shapes (epic #1636 Phase 5 decision 3),
+ * mirroring `DeclaredMcpServer` in types/embedded-agent.ts.
+ * `claude-sdk` arm only -- see `EmbeddedAgentDefinitionSchema` below.
+ *
+ * Deliberately NO reserved-name check (`'agent-console'` / `'console'`)
+ * here: that check needs to name the SPECIFIC offending key in its error
+ * message, which is more consistent to do as an imperative check alongside
+ * the other capability checks in `EmbeddedAgentManager` (server-side).
+ */
+const DeclaredMcpServerSchema = v.union([
+  v.strictObject({
+    type: v.literal('stdio'),
+    command: v.pipe(v.string(), v.minLength(1)),
+    args: v.optional(v.array(v.string())),
+    envRef: v.optional(v.pipe(v.string(), v.minLength(1))),
+  }),
+  v.strictObject({
+    type: v.literal('http'),
+    url: v.pipe(v.string(), v.url()),
+    headersRef: v.optional(v.pipe(v.string(), v.minLength(1))),
+  }),
+]);
+
+const DeclaredMcpServersSchema = v.record(v.pipe(v.string(), v.minLength(1)), DeclaredMcpServerSchema);
+
+/**
+ * Declared subagent wire-shape (epic #1636 Phase 5 decision 3), mirroring
+ * `DeclaredSubagent` in types/embedded-agent.ts.
+ */
+const DeclaredSubagentSchema = v.strictObject({
+  description: v.pipe(v.string(), v.minLength(1)),
+  prompt: v.pipe(v.string(), v.minLength(1)),
+  tools: v.optional(EnabledToolsSchema),
+  model: v.optional(v.pipe(v.string(), v.minLength(1))),
+});
+
+const DeclaredSubagentsSchema = v.record(v.pipe(v.string(), v.minLength(1)), DeclaredSubagentSchema);
 
 /**
  * Transcript Restore (#1123) wire-shape schemas, mirroring
@@ -183,24 +238,51 @@ export const EmbeddedAgentDefinitionSchema = v.variant('engine', [
     ...EmbeddedAgentDefinitionBaseFields,
     engine: v.literal('claude-sdk'),
     provider: EmbeddedAgentSdkProviderSchema,
+    // Declared MCP servers / subagents (epic #1636 Phase 5 decision 3):
+    // claude-sdk arm only -- see the type's doc comment.
+    mcpServers: v.optional(DeclaredMcpServersSchema),
+    subagents: v.optional(DeclaredSubagentsSchema),
   }),
 ]);
 
 /**
  * Schema for creating an embedded agent definition. `createdBy` is set
  * server-side from the authenticated user, never from the request body.
+ *
+ * Discriminated on `engine` (epic #1636 Phase 5 decision 3), mirroring
+ * `EmbeddedAgentDefinitionSchema`'s own split:
+ * - `openai-api`: unchanged from before this PR -- every field the schema
+ *   already had.
+ * - `claude-sdk`: deliberately MINIMAL, `{ engine, name, provider }` only.
+ *   No `mcpServers`/`subagents`/`enabledTools`/anything else on this arm in
+ *   PR-1 -- creation is intentionally minimal; those fields are settable
+ *   only via a follow-up PATCH (`UpdateEmbeddedAgentRequestSchema` below)
+ *   once PR-3's form exists, or directly via this PR's PATCH support.
+ *
+ * BREAKING CHANGE (documented, not silent): making `engine` a required
+ * discriminant means every caller must now send it explicitly -- see
+ * `packages/client/src/components/embedded-agents/AddEmbeddedAgentForm.tsx`
+ * (updated in a companion PR).
  */
-export const CreateEmbeddedAgentRequestSchema = v.strictObject({
-  name: v.pipe(v.string(), v.trim(), v.minLength(1, 'Name is required')),
-  description: v.optional(v.string()),
-  provider: EmbeddedAgentProviderSchema,
-  systemPrompt: v.optional(v.string()),
-  maxToolIterations: v.optional(v.pipe(v.number(), v.integer(), v.minValue(1))),
-  enabledTools: v.optional(EnabledToolsSchema),
-  instructions: v.optional(InstructionsListSchema),
-  contextWindowTokens: v.optional(v.pipe(v.number(), v.integer(), v.minValue(1))),
-  compaction: v.optional(EmbeddedAgentCompactionConfigSchema),
-});
+export const CreateEmbeddedAgentRequestSchema = v.variant('engine', [
+  v.strictObject({
+    engine: v.literal('openai-api'),
+    name: v.pipe(v.string(), v.trim(), v.minLength(1, 'Name is required')),
+    description: v.optional(v.string()),
+    provider: EmbeddedAgentProviderSchema,
+    systemPrompt: v.optional(v.string()),
+    maxToolIterations: v.optional(v.pipe(v.number(), v.integer(), v.minValue(1))),
+    enabledTools: v.optional(EnabledToolsSchema),
+    instructions: v.optional(InstructionsListSchema),
+    contextWindowTokens: v.optional(v.pipe(v.number(), v.integer(), v.minValue(1))),
+    compaction: v.optional(EmbeddedAgentCompactionConfigSchema),
+  }),
+  v.strictObject({
+    engine: v.literal('claude-sdk'),
+    name: v.pipe(v.string(), v.trim(), v.minLength(1, 'Name is required')),
+    provider: EmbeddedAgentSdkProviderSchema,
+  }),
+]);
 
 /**
  * Schema for updating an embedded agent definition.
@@ -220,6 +302,15 @@ export const UpdateEmbeddedAgentRequestSchema = v.strictObject({
   instructions: v.optional(v.nullable(InstructionsListSchema)),
   contextWindowTokens: v.optional(v.nullable(v.pipe(v.number(), v.integer(), v.minValue(1)))),
   compaction: v.optional(v.nullable(EmbeddedAgentCompactionConfigSchema)),
+  // Declared MCP servers / subagents (epic #1636 Phase 5 decision 3).
+  // Same PATCH convention as every other field here: undefined = no
+  // change, null = clear. `UpdateEmbeddedAgentRequestSchema` stays flat
+  // (non-discriminated -- a PATCH carries no `engine`), so an `openai-api`
+  // definition CAN receive these fields at the schema level; rejecting them
+  // for that engine is `EmbeddedAgentManager`'s job (a `ValidationError`
+  // naming the incapability), not this schema's.
+  mcpServers: v.optional(v.nullable(DeclaredMcpServersSchema)),
+  subagents: v.optional(v.nullable(DeclaredSubagentsSchema)),
 });
 
 // === Protocol schemas ===
@@ -316,6 +407,11 @@ const EmbeddedAgentInitCommandSchema = v.variant('engine', [
         sdkSessionId: v.pipe(v.string(), v.minLength(1)),
       }),
     ),
+    // Declared MCP servers / subagents, mirrored from the owning
+    // definition's own fields (epic #1636 Phase 5 decision 3). Wiring
+    // only (Phase 5 PR-1) -- see the type's doc comment.
+    mcpServers: v.optional(DeclaredMcpServersSchema),
+    subagents: v.optional(DeclaredSubagentsSchema),
   }),
 ]);
 

@@ -676,6 +676,53 @@ describe('EmbeddedAgentWorkerService.activate', () => {
     expect('baseUrl' in first.provider).toBe(false);
   });
 
+  it('writes declared mcpServers/subagents into the claude-sdk init command when the definition sets them (epic #1636 Phase 5 PR-1, decision 3, Issue #1779, wiring only)', async () => {
+    const mcpServers = { docs: { type: 'stdio' as const, command: 'docs-mcp' } };
+    const subagents = { reviewer: { description: 'Reviews code', prompt: 'Review it.' } };
+    const h = setup({
+      definition: {
+        id: 'def-sdk',
+        name: 'Claude',
+        engine: 'claude-sdk',
+        provider: { model: 'claude-sonnet-5' },
+        enabledTools: ['Task'],
+        mcpServers,
+        subagents,
+        isBuiltIn: true,
+        createdBy: 'system',
+        createdAt: '2026-01-01T00:00:00.000Z',
+        updatedAt: '2026-01-01T00:00:00.000Z',
+      },
+    });
+    await h.service.activate(h.sessionId, h.workerId);
+
+    const first = JSON.parse(h.fake.stdinWrites[0]);
+    expect(first.engine).toBe('claude-sdk');
+    expect(first.mcpServers).toEqual(mcpServers);
+    expect(first.subagents).toEqual(subagents);
+  });
+
+  it('omits mcpServers/subagents entirely from the claude-sdk init command when the definition has none (regression)', async () => {
+    const h = setup({
+      definition: {
+        id: 'def-sdk',
+        name: 'Claude',
+        engine: 'claude-sdk',
+        provider: { model: 'claude-sonnet-5' },
+        isBuiltIn: true,
+        createdBy: 'system',
+        createdAt: '2026-01-01T00:00:00.000Z',
+        updatedAt: '2026-01-01T00:00:00.000Z',
+      },
+    });
+    await h.service.activate(h.sessionId, h.workerId);
+
+    const first = JSON.parse(h.fake.stdinWrites[0]);
+    expect(first.engine).toBe('claude-sdk');
+    expect('mcpServers' in first).toBe(false);
+    expect('subagents' in first).toBe(false);
+  });
+
   it('uses the definition maxToolIterations when set', async () => {
     const h = setup({ definition: buildDefinition({ maxToolIterations: 7 }) });
     await h.service.activate(h.sessionId, h.workerId);

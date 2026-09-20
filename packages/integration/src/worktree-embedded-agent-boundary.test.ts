@@ -135,6 +135,7 @@ describe('createWorktreeWithSession: embedded-agent worker creation boundary', (
     // test drives the service layer directly).
     const def = await embeddedAgentManager.createEmbeddedAgent(
       {
+        engine: 'openai-api',
         name: 'Stub embedded agent',
         provider: { baseUrl: 'http://localhost:9/v1', model: 'stub-model' },
       },

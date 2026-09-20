@@ -273,6 +273,10 @@ export interface EmbeddedAgentsTable {
   compaction_threshold: number | null;
   /** Per-provider capability flag: 1 = provider declares it can see images, 0/null = cannot (default). NULL for 'claude-sdk' engine rows, same convention as provider_base_url. */
   provider_supports_images: number | null;
+  /** JSON-serialized Record<string, DeclaredMcpServer> (claude-sdk engine only; NULL for openai-api rows and for claude-sdk rows with no declared servers). Phase 5 PR-1 (epic #1636 decision 3). */
+  mcp_servers: string | null;
+  /** JSON-serialized Record<string, DeclaredSubagent> (claude-sdk engine only; NULL otherwise). Phase 5 PR-1 (epic #1636 decision 3). */
+  subagents: string | null;
   /** Builtin-definition marker (SDK Engine Phase 1), mirroring agents.is_built_in: 1 for the claude-sdk builtin, 0 for user-created definitions. Builtin definitions cannot be modified or deleted. */
   is_built_in: number;
   /** User UUID (from users table) of the creator */

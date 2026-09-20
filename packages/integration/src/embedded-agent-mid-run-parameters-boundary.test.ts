@@ -124,6 +124,7 @@ describe('Client-Server Boundary: mid-run embedded-agent parameter change (agent
     const owner = await ctx.userRepository.upsertByOsUid(osUid, username, `/home/${username}`);
     const def = await ctx.embeddedAgentManager.createEmbeddedAgent(
       {
+        engine: 'openai-api',
         name: 'Boundary Test Embedded Agent',
         provider: { baseUrl: 'http://localhost:11434/v1', model: 'qwen3:32b' },
         contextWindowTokens: 128_000,

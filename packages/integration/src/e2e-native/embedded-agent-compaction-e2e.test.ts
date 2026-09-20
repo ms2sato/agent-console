@@ -238,6 +238,7 @@ describe('E2E: Compaction shipping path (single-user, openai-api engine)', () =>
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({
+            engine: 'openai-api',
             name: 'Stub local LLM (compaction)',
             provider: { baseUrl: `${stubBaseUrl}/v1`, model: 'stub-model' },
             contextWindowTokens: CONTEXT_WINDOW_TOKENS,

@@ -181,6 +181,7 @@ describe('set_agent_parameters', () => {
   async function createEmbeddedAgentDef(): Promise<string> {
     const def = await embeddedAgentManager.createEmbeddedAgent(
       {
+        engine: 'openai-api',
         name: 'Stub embedded agent',
         provider: { baseUrl: 'http://localhost:9/v1', model: 'stub-model' },
         contextWindowTokens: 128_000,

@@ -28,6 +28,20 @@ describe('EMBEDDED_AGENT_ENGINE_PARAMETER_CAPABILITIES', () => {
         expect(caps.reasoningEffort.consumptionSite.length).toBeGreaterThan(0);
       }
     });
+
+    it('is incapable of mcpServers (no declared-server mechanism, only the console dial-back)', () => {
+      expect(caps.mcpServers.capable).toBe(false);
+      if (!caps.mcpServers.capable) {
+        expect(caps.mcpServers.reason.length).toBeGreaterThan(0);
+      }
+    });
+
+    it('is incapable of task (no subagent runtime)', () => {
+      expect(caps.task.capable).toBe(false);
+      if (!caps.task.capable) {
+        expect(caps.task.reason.length).toBeGreaterThan(0);
+      }
+    });
   });
 
   describe('claude-sdk', () => {
@@ -48,10 +62,32 @@ describe('EMBEDDED_AGENT_ENGINE_PARAMETER_CAPABILITIES', () => {
         expect(caps.reasoningEffort.consumptionSite.length).toBeGreaterThan(0);
       }
     });
+
+    it('is capable of mcpServers, pass-through (epic #1636 Phase 5 decision 3)', () => {
+      expect(caps.mcpServers.capable).toBe(true);
+      if (caps.mcpServers.capable) {
+        expect(caps.mcpServers.acceptedValues).toBeNull();
+        expect(caps.mcpServers.consumptionSite.length).toBeGreaterThan(0);
+      }
+    });
+
+    it('is capable of task, pass-through (epic #1636 Phase 5 decision 3)', () => {
+      expect(caps.task.capable).toBe(true);
+      if (caps.task.capable) {
+        expect(caps.task.acceptedValues).toBeNull();
+        expect(caps.task.consumptionSite.length).toBeGreaterThan(0);
+      }
+    });
   });
 
   describe('discriminated union shape', () => {
-    it('an incapable row (test-only fixture) carries a reason, not acceptedValues/consumptionSite', () => {
+    // Note: prior to epic #1636 Phase 5 (Issue #1779), the `capable: false`
+    // branch was exercised only by this hand-built fixture -- the table had
+    // no production incapable row. `mcpServers`/`task` on `openai-api`
+    // (asserted above) are now the first production rows exercising it; this
+    // fixture stays as a direct shape check of the discriminated union
+    // itself, independent of any particular table entry.
+    it('an incapable row carries a reason, not acceptedValues/consumptionSite', () => {
       const incapable: EmbeddedAgentEngineParameterCapability = {
         capable: false,
         reason: 'this engine does not support this parameter',

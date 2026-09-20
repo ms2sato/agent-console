@@ -2,7 +2,6 @@ import { useForm, useFieldArray, type FieldError } from 'react-hook-form';
 import { valibotResolver } from '@hookform/resolvers/valibot';
 import * as v from 'valibot';
 import {
-  CreateEmbeddedAgentRequestSchema,
   EmbeddedAgentProviderSchema,
   EMBEDDED_AGENT_TOOL_NAMES,
   DEFAULT_EMBEDDED_AGENT_ENABLED_TOOLS,
@@ -16,11 +15,12 @@ import { isPositiveInteger, POSITIVE_INTEGER_MESSAGE } from '../../lib/positive-
  * UI grouping of `EMBEDDED_AGENT_TOOL_NAMES` into "read-only", "command
  * execution", and "file modification" checkbox sections. These arrays must
  * partition the shared constant exactly -- the guard below throws at module
- * load if a future tool addition is not also added to one of these groups,
- * so it fails loudly instead of silently vanishing from the form. FF-1c
- * added `Write`/`Edit` as their own "file modification" group (see below)
- * rather than folding them into `COMMAND_EXECUTION_TOOL_NAMES`, since their
- * risk profile (creating/modifying files) is distinct from Bash's (running
+ * load if a future tool addition is not also added to one of these groups
+ * (or explicitly excluded, see `ENGINE_INAPPLICABLE_TOOL_NAMES` below), so
+ * it fails loudly instead of silently vanishing from the form. FF-1c added
+ * `Write`/`Edit` as their own "file modification" group (see below) rather
+ * than folding them into `COMMAND_EXECUTION_TOOL_NAMES`, since their risk
+ * profile (creating/modifying files) is distinct from Bash's (running
  * arbitrary shell commands) and warrants its own warning copy.
  */
 export const READ_ONLY_TOOL_NAMES: readonly EmbeddedAgentToolName[] = [
@@ -32,17 +32,32 @@ export const READ_ONLY_TOOL_NAMES: readonly EmbeddedAgentToolName[] = [
 export const COMMAND_EXECUTION_TOOL_NAMES: readonly EmbeddedAgentToolName[] = ['Bash'];
 export const FILE_MODIFICATION_TOOL_NAMES: readonly EmbeddedAgentToolName[] = ['Write', 'Edit'];
 
+/**
+ * Tools deliberately excluded from this form's checkbox groups because they
+ * have no valid use here: `EmbeddedAgentForm` (via `AddEmbeddedAgentForm`)
+ * only ever creates `openai-api` definitions today -- the `claude-sdk`
+ * engine-selector / creation UI is a separate future PR (epic #1636 Phase 5
+ * PR-3). `Task` is the SDK's own subagent-delegation tool, `claude-sdk`-only
+ * (see `EMBEDDED_AGENT_TOOL_NAMES`'s doc comment in
+ * packages/shared/src/schemas/embedded-agent.ts): `openai-api`'s capability
+ * row is `capable: false`, and a `Task` value reaching that engine's
+ * `enabledTools` is rejected server-side. Kept as an explicit, named
+ * exclusion (not merely omitted from every group) so the guard below still
+ * fails loudly on a genuinely-forgotten future tool.
+ */
+export const ENGINE_INAPPLICABLE_TOOL_NAMES: readonly EmbeddedAgentToolName[] = ['Task'];
+
 const TOOL_GROUPS = [
   READ_ONLY_TOOL_NAMES,
   COMMAND_EXECUTION_TOOL_NAMES,
   FILE_MODIFICATION_TOOL_NAMES,
 ];
 
-const flatToolNames = TOOL_GROUPS.flat();
+const flatToolNames = [...TOOL_GROUPS.flat(), ...ENGINE_INAPPLICABLE_TOOL_NAMES];
 if (
   flatToolNames.length !== new Set(flatToolNames).size ||
   flatToolNames.length !== EMBEDDED_AGENT_TOOL_NAMES.length ||
-  !EMBEDDED_AGENT_TOOL_NAMES.every((name) => TOOL_GROUPS.some((group) => group.includes(name)))
+  !EMBEDDED_AGENT_TOOL_NAMES.every((name) => flatToolNames.includes(name))
 ) {
   throw new Error('EmbeddedAgentForm tool groups do not partition EMBEDDED_AGENT_TOOL_NAMES');
 }
@@ -58,13 +73,20 @@ const InstructionPathSchema = v.pipe(
  * Client-side form schema for embedded-agent creation/editing.
  *
  * Reuses field validators from the shared request schemas where the
- * server-side rule is a plain "always required" check (name, model).
- * Fields that the form allows to be empty (converted to undefined/null on
- * submit) get their own client-side pipe -- mirrors the pattern in
- * `AgentForm.tsx` (`continueTemplate`, `headlessTemplate`).
+ * server-side rule is a plain "always required" check (model). `name` is
+ * inlined here (kept in sync by hand) rather than reused from
+ * `CreateEmbeddedAgentRequestSchema.entries.name`: since epic #1636 Phase 5
+ * PR-1 that schema is a `v.variant('engine', [...])`, which has no flat
+ * `.entries` (only `.options`, one member schema per engine arm) --
+ * both arms currently define `name` identically as
+ * `v.pipe(v.string(), v.trim(), v.minLength(1, 'Name is required'))`, so the
+ * inlined copy below matches either arm. Fields that the form allows to be
+ * empty (converted to undefined/null on submit) get their own client-side
+ * pipe -- mirrors the pattern in `AgentForm.tsx` (`continueTemplate`,
+ * `headlessTemplate`).
  */
 const EmbeddedAgentFormRawSchema = v.object({
-  name: CreateEmbeddedAgentRequestSchema.entries.name,
+  name: v.pipe(v.string(), v.trim(), v.minLength(1, 'Name is required')),
   description: v.optional(v.pipe(v.string(), v.trim())),
 
   // baseUrl is always required in the form (provider is a whole-object

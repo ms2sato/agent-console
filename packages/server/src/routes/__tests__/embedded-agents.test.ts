@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
 import type { Hono } from 'hono';
 import type { AppBindings } from '../../app-context.js';
+import { ValidationError } from '../../lib/errors.js';
 import {
   setupTestEnvironment,
   cleanupTestEnvironment,
@@ -94,7 +95,7 @@ describe('Embedded Agents API', () => {
       const res = await app.request('/api/embedded-agents', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: 'Ollama', provider: VALID_PROVIDER }),
+        body: JSON.stringify({ engine: 'openai-api', name: 'Ollama', provider: VALID_PROVIDER }),
       });
 
       expect(res.status).toBe(201);
@@ -103,9 +104,53 @@ describe('Embedded Agents API', () => {
 
       // createdBy is threaded from the authenticated user, not from the body.
       expect(embeddedAgentManager.createEmbeddedAgent).toHaveBeenCalledWith(
-        { name: 'Ollama', provider: VALID_PROVIDER },
+        { engine: 'openai-api', name: 'Ollama', provider: VALID_PROVIDER },
         TEST_AUTH_USER.id
       );
+    });
+
+    it('rejects a body with no engine at all (400, epic #1636 Phase 5 decision 3, Issue #1779)', async () => {
+      const res = await app.request('/api/embedded-agents', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'Ollama', provider: VALID_PROVIDER }),
+      });
+
+      expect(res.status).toBe(400);
+      expect(embeddedAgentManager.createEmbeddedAgent).not.toHaveBeenCalled();
+    });
+
+    it('creates a minimal claude-sdk definition (engine, name, provider.model only) (201)', async () => {
+      const created = ownedDefinition({ engine: 'claude-sdk', provider: { model: 'claude-sonnet-5' } });
+      embeddedAgentManager.createEmbeddedAgent.mockReturnValue(Promise.resolve(created));
+
+      const res = await app.request('/api/embedded-agents', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ engine: 'claude-sdk', name: 'Claude', provider: { model: 'claude-sonnet-5' } }),
+      });
+
+      expect(res.status).toBe(201);
+      expect(embeddedAgentManager.createEmbeddedAgent).toHaveBeenCalledWith(
+        { engine: 'claude-sdk', name: 'Claude', provider: { model: 'claude-sonnet-5' } },
+        TEST_AUTH_USER.id
+      );
+    });
+
+    it('rejects a claude-sdk create body carrying an openai-api-only field (400)', async () => {
+      const res = await app.request('/api/embedded-agents', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          engine: 'claude-sdk',
+          name: 'Claude',
+          provider: { model: 'claude-sonnet-5' },
+          systemPrompt: 'You are helpful.',
+        }),
+      });
+
+      expect(res.status).toBe(400);
+      expect(embeddedAgentManager.createEmbeddedAgent).not.toHaveBeenCalled();
     });
 
     it('rejects a body carrying an extra createdBy key (400, strict schema)', async () => {
@@ -113,6 +158,7 @@ describe('Embedded Agents API', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
+          engine: 'openai-api',
           name: 'Ollama',
           provider: VALID_PROVIDER,
           createdBy: 'attacker',
@@ -127,7 +173,7 @@ describe('Embedded Agents API', () => {
       const res = await app.request('/api/embedded-agents', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: 'X', provider: { baseUrl: 'not-a-url', model: 'm' } }),
+        body: JSON.stringify({ engine: 'openai-api', name: 'X', provider: { baseUrl: 'not-a-url', model: 'm' } }),
       });
 
       expect(res.status).toBe(400);
@@ -138,6 +184,7 @@ describe('Embedded Agents API', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
+          engine: 'openai-api',
           name: 'X',
           provider: VALID_PROVIDER,
           enabledTools: ['Read', 'Read'],
@@ -208,6 +255,25 @@ describe('Embedded Agents API', () => {
       expect(res.status).toBe(400);
     });
 
+    it('surfaces a manager ValidationError (incapable-engine parameter) as a 400 (epic #1636 Phase 5 decision 3, Issue #1779)', async () => {
+      embeddedAgentManager.getEmbeddedAgent.mockReturnValue(ownedDefinition());
+      embeddedAgentManager.updateEmbeddedAgent.mockReturnValue(
+        Promise.reject(new ValidationError('openai-api reaches MCP only through the console dial-back; no declared external servers on this engine'))
+      );
+
+      const res = await app.request('/api/embedded-agents/def-1', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mcpServers: { docs: { type: 'stdio', command: 'docs-mcp' } } }),
+      });
+
+      expect(res.status).toBe(400);
+      const body = (await res.json()) as { error: string };
+      expect(body.error).toBe(
+        'openai-api reaches MCP only through the console dial-back; no declared external servers on this engine'
+      );
+    });
+
     it('accepts enabledTools: null (clear to default)', async () => {
       embeddedAgentManager.getEmbeddedAgent.mockReturnValue(ownedDefinition({ enabledTools: ['Read'] }));
       embeddedAgentManager.updateEmbeddedAgent.mockReturnValue(
@@ -254,14 +320,19 @@ describe('Embedded Agents API', () => {
       const postRes = await app.request('/api/embedded-agents', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: 'Ollama', provider: VALID_PROVIDER, enabledTools: ['Read', 'Glob'] }),
+        body: JSON.stringify({
+          engine: 'openai-api',
+          name: 'Ollama',
+          provider: VALID_PROVIDER,
+          enabledTools: ['Read', 'Glob'],
+        }),
       });
 
       expect(postRes.status).toBe(201);
       const postBody = (await postRes.json()) as { embeddedAgent: { enabledTools?: string[] } };
       expect(postBody.embeddedAgent.enabledTools).toEqual(['Read', 'Glob']);
       expect(embeddedAgentManager.createEmbeddedAgent).toHaveBeenCalledWith(
-        { name: 'Ollama', provider: VALID_PROVIDER, enabledTools: ['Read', 'Glob'] },
+        { engine: 'openai-api', name: 'Ollama', provider: VALID_PROVIDER, enabledTools: ['Read', 'Glob'] },
         TEST_AUTH_USER.id
       );
 

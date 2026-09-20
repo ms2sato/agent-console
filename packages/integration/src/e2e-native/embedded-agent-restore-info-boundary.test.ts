@@ -230,6 +230,7 @@ describe('Client-Server Boundary: restore-info WorkerServerMessage (Transcript R
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({
+            engine: 'openai-api',
             name: 'Stub local LLM (restore boundary)',
             provider: { baseUrl: `${stubBaseUrl}/v1`, model: 'stub-model' },
           }),
@@ -485,6 +486,7 @@ describe('Client-Server Boundary: restore-info WorkerServerMessage (Transcript R
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({
+            engine: 'openai-api',
             name: 'Stub local LLM (restore FAILURE boundary)',
             provider: { baseUrl: `${stubBaseUrl}/v1`, model: 'stub-model' },
           }),
@@ -774,6 +776,7 @@ describe('Client-Server Boundary: restore-info WorkerServerMessage (Transcript R
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({
+            engine: 'openai-api',
             name: 'Stub local LLM (restore SECOND RESTART boundary)',
             provider: { baseUrl: `${stubBaseUrl}/v1`, model: 'stub-model' },
           }),

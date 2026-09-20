@@ -276,6 +276,54 @@ describe('EmbeddedAgentDefinitionSchema', () => {
       expect(result.success).toBe(false);
     });
   });
+
+  describe('mcpServers / subagents (epic #1636 Phase 5 decision 3, Issue #1779, claude-sdk arm only)', () => {
+    it('accepts a claude-sdk definition with declared mcpServers (stdio and http)', () => {
+      const result = v.safeParse(EmbeddedAgentDefinitionSchema, {
+        ...validSdkDefinition,
+        mcpServers: {
+          docs: { type: 'stdio', command: 'docs-mcp', args: ['--stdio'], envRef: 'docs-mcp-key' },
+          remote: { type: 'http', url: 'https://mcp.example.com/', headersRef: 'remote-mcp-headers' },
+        },
+      });
+      expect(result.success).toBe(true);
+    });
+
+    it('accepts a claude-sdk definition with declared subagents', () => {
+      const result = v.safeParse(EmbeddedAgentDefinitionSchema, {
+        ...validSdkDefinition,
+        enabledTools: ['Task'],
+        subagents: {
+          reviewer: { description: 'Reviews code', prompt: 'Review the diff carefully.' },
+        },
+      });
+      expect(result.success).toBe(true);
+    });
+
+    it('rejects an openai-api definition carrying mcpServers (not representable on that arm)', () => {
+      const result = v.safeParse(EmbeddedAgentDefinitionSchema, {
+        ...validDefinition,
+        mcpServers: { docs: { type: 'stdio', command: 'docs-mcp' } },
+      });
+      expect(result.success).toBe(false);
+    });
+
+    it('rejects an openai-api definition carrying subagents (not representable on that arm)', () => {
+      const result = v.safeParse(EmbeddedAgentDefinitionSchema, {
+        ...validDefinition,
+        subagents: { reviewer: { description: 'Reviews code', prompt: 'Review it.' } },
+      });
+      expect(result.success).toBe(false);
+    });
+
+    it('rejects a malformed mcpServers entry (missing command on a stdio server)', () => {
+      const result = v.safeParse(EmbeddedAgentDefinitionSchema, {
+        ...validSdkDefinition,
+        mcpServers: { docs: { type: 'stdio' } },
+      });
+      expect(result.success).toBe(false);
+    });
+  });
 });
 
 describe('EmbeddedAgentProviderSchema supportsImages (Issue #1571)', () => {
@@ -306,6 +354,7 @@ describe('EmbeddedAgentProviderSchema supportsImages (Issue #1571)', () => {
 describe('CreateEmbeddedAgentRequestSchema', () => {
   it('accepts a valid create request', () => {
     const result = v.safeParse(CreateEmbeddedAgentRequestSchema, {
+      engine: 'openai-api',
       name: 'New Agent',
       provider: { baseUrl: 'http://localhost:11434/v1', model: 'llama3' },
     });
@@ -314,6 +363,7 @@ describe('CreateEmbeddedAgentRequestSchema', () => {
 
   it('trims the name and rejects empty names', () => {
     const trimmed = v.safeParse(CreateEmbeddedAgentRequestSchema, {
+      engine: 'openai-api',
       name: '  Trimmed  ',
       provider: { baseUrl: 'http://localhost:11434/v1', model: 'llama3' },
     });
@@ -323,6 +373,7 @@ describe('CreateEmbeddedAgentRequestSchema', () => {
     }
 
     const empty = v.safeParse(CreateEmbeddedAgentRequestSchema, {
+      engine: 'openai-api',
       name: '   ',
       provider: { baseUrl: 'http://localhost:11434/v1', model: 'llama3' },
     });
@@ -331,6 +382,7 @@ describe('CreateEmbeddedAgentRequestSchema', () => {
 
   it('rejects a createdBy field in the body (server-side only)', () => {
     const result = v.safeParse(CreateEmbeddedAgentRequestSchema, {
+      engine: 'openai-api',
       name: 'New Agent',
       provider: { baseUrl: 'http://localhost:11434/v1', model: 'llama3' },
       createdBy: 'attacker-uuid',
@@ -340,6 +392,7 @@ describe('CreateEmbeddedAgentRequestSchema', () => {
 
   it('accepts a valid enabledTools array', () => {
     const result = v.safeParse(CreateEmbeddedAgentRequestSchema, {
+      engine: 'openai-api',
       name: 'New Agent',
       provider: { baseUrl: 'http://localhost:11434/v1', model: 'llama3' },
       enabledTools: ['Read', 'Glob', 'Grep'],
@@ -349,6 +402,7 @@ describe('CreateEmbeddedAgentRequestSchema', () => {
 
   it('rejects an enabledTools array with a duplicate tool name', () => {
     const result = v.safeParse(CreateEmbeddedAgentRequestSchema, {
+      engine: 'openai-api',
       name: 'New Agent',
       provider: { baseUrl: 'http://localhost:11434/v1', model: 'llama3' },
       enabledTools: ['Read', 'Read'],
@@ -358,6 +412,7 @@ describe('CreateEmbeddedAgentRequestSchema', () => {
 
   it('accepts a valid instructions array', () => {
     const result = v.safeParse(CreateEmbeddedAgentRequestSchema, {
+      engine: 'openai-api',
       name: 'New Agent',
       provider: { baseUrl: 'http://localhost:11434/v1', model: 'llama3' },
       instructions: ['docs/local-note.md'],
@@ -367,6 +422,7 @@ describe('CreateEmbeddedAgentRequestSchema', () => {
 
   it('accepts a positive integer contextWindowTokens', () => {
     const result = v.safeParse(CreateEmbeddedAgentRequestSchema, {
+      engine: 'openai-api',
       name: 'New Agent',
       provider: { baseUrl: 'http://localhost:11434/v1', model: 'llama3' },
       contextWindowTokens: 32000,
@@ -376,17 +432,19 @@ describe('CreateEmbeddedAgentRequestSchema', () => {
 
   it('accepts a create request with contextWindowTokens absent', () => {
     const result = v.safeParse(CreateEmbeddedAgentRequestSchema, {
+      engine: 'openai-api',
       name: 'New Agent',
       provider: { baseUrl: 'http://localhost:11434/v1', model: 'llama3' },
     });
     expect(result.success).toBe(true);
-    if (result.success) {
+    if (result.success && result.output.engine === 'openai-api') {
       expect(result.output.contextWindowTokens).toBeUndefined();
     }
   });
 
   it('rejects a non-integer contextWindowTokens', () => {
     const result = v.safeParse(CreateEmbeddedAgentRequestSchema, {
+      engine: 'openai-api',
       name: 'New Agent',
       provider: { baseUrl: 'http://localhost:11434/v1', model: 'llama3' },
       contextWindowTokens: 1.5,
@@ -396,6 +454,7 @@ describe('CreateEmbeddedAgentRequestSchema', () => {
 
   it('rejects a non-positive contextWindowTokens', () => {
     const result = v.safeParse(CreateEmbeddedAgentRequestSchema, {
+      engine: 'openai-api',
       name: 'New Agent',
       provider: { baseUrl: 'http://localhost:11434/v1', model: 'llama3' },
       contextWindowTokens: 0,
@@ -405,11 +464,63 @@ describe('CreateEmbeddedAgentRequestSchema', () => {
 
   it('accepts a valid compaction config', () => {
     const result = v.safeParse(CreateEmbeddedAgentRequestSchema, {
+      engine: 'openai-api',
       name: 'New Agent',
       provider: { baseUrl: 'http://localhost:11434/v1', model: 'llama3' },
       compaction: { threshold: 0.7 },
     });
     expect(result.success).toBe(true);
+  });
+
+  describe('engine discriminant (epic #1636 Phase 5 decision 3, Issue #1779)', () => {
+    it('rejects a body with no engine at all', () => {
+      const result = v.safeParse(CreateEmbeddedAgentRequestSchema, {
+        name: 'New Agent',
+        provider: { baseUrl: 'http://localhost:11434/v1', model: 'llama3' },
+      });
+      expect(result.success).toBe(false);
+    });
+
+    it('accepts a minimal claude-sdk create request: engine, name, provider.model only', () => {
+      const result = v.safeParse(CreateEmbeddedAgentRequestSchema, {
+        engine: 'claude-sdk',
+        name: 'Claude',
+        provider: { model: 'claude-sonnet-5' },
+      });
+      expect(result.success).toBe(true);
+      if (result.success && result.output.engine === 'claude-sdk') {
+        expect(result.output.name).toBe('Claude');
+        expect(result.output.provider).toEqual({ model: 'claude-sonnet-5' });
+      }
+    });
+
+    it('rejects a claude-sdk create request carrying an openai-api-only field (systemPrompt)', () => {
+      const result = v.safeParse(CreateEmbeddedAgentRequestSchema, {
+        engine: 'claude-sdk',
+        name: 'Claude',
+        provider: { model: 'claude-sonnet-5' },
+        systemPrompt: 'You are helpful.',
+      });
+      expect(result.success).toBe(false);
+    });
+
+    it('rejects a claude-sdk create request with an openai-api-shaped provider (baseUrl)', () => {
+      const result = v.safeParse(CreateEmbeddedAgentRequestSchema, {
+        engine: 'claude-sdk',
+        name: 'Claude',
+        provider: { baseUrl: 'http://localhost:11434/v1', model: 'llama3' },
+      });
+      expect(result.success).toBe(false);
+    });
+
+    it('rejects an openai-api create request with a claude-sdk-shaped provider (no baseUrl)', () => {
+      const result = v.safeParse(CreateEmbeddedAgentRequestSchema, {
+        engine: 'openai-api',
+        name: 'New Agent',
+        provider: { model: 'llama3' },
+      });
+      expect(result.success).toBe(false);
+    });
   });
 });
 
@@ -612,6 +723,55 @@ describe('UpdateEmbeddedAgentRequestSchema', () => {
       handoff: { softRatio: 0.6 },
     });
     expect(result.success).toBe(false);
+  });
+
+  describe('mcpServers / subagents (epic #1636 Phase 5 decision 3, Issue #1779)', () => {
+    it('accepts mcpServers/subagents absent (no change)', () => {
+      const result = v.safeParse(UpdateEmbeddedAgentRequestSchema, {});
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.output.mcpServers).toBeUndefined();
+        expect(result.output.subagents).toBeUndefined();
+      }
+    });
+
+    it('accepts a whole-object mcpServers replacement', () => {
+      const result = v.safeParse(UpdateEmbeddedAgentRequestSchema, {
+        mcpServers: { docs: { type: 'stdio', command: 'docs-mcp' } },
+      });
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.output.mcpServers).toEqual({ docs: { type: 'stdio', command: 'docs-mcp' } });
+      }
+    });
+
+    it('accepts mcpServers: null to clear', () => {
+      const result = v.safeParse(UpdateEmbeddedAgentRequestSchema, { mcpServers: null });
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.output.mcpServers).toBeNull();
+      }
+    });
+
+    it('accepts a whole-object subagents replacement', () => {
+      const result = v.safeParse(UpdateEmbeddedAgentRequestSchema, {
+        subagents: { reviewer: { description: 'Reviews code', prompt: 'Review it.' } },
+      });
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.output.subagents).toEqual({
+          reviewer: { description: 'Reviews code', prompt: 'Review it.' },
+        });
+      }
+    });
+
+    it('accepts subagents: null to clear', () => {
+      const result = v.safeParse(UpdateEmbeddedAgentRequestSchema, { subagents: null });
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.output.subagents).toBeNull();
+      }
+    });
   });
 });
 
@@ -1076,6 +1236,35 @@ describe('EmbeddedAgentCommandSchema', () => {
 
     it('rejects a claude-sdk init command whose provider carries an empty-string model', () => {
       const init = { ...baseFields, engine: 'claude-sdk', provider: { model: '' } };
+      const result = v.safeParse(EmbeddedAgentCommandSchema, init);
+      expect(result.success).toBe(false);
+    });
+
+    it('accepts a claude-sdk init command carrying declared mcpServers/subagents (epic #1636 Phase 5 decision 3, Issue #1779, wiring only)', () => {
+      const init = {
+        ...baseFields,
+        engine: 'claude-sdk',
+        provider: { model: 'claude-sonnet-5' },
+        mcpServers: { docs: { type: 'stdio', command: 'docs-mcp' } },
+        subagents: { reviewer: { description: 'Reviews code', prompt: 'Review it.' } },
+      };
+      const result = v.safeParse(EmbeddedAgentCommandSchema, init);
+      expect(result.success).toBe(true);
+      if (result.success && result.output.type === 'init' && result.output.engine === 'claude-sdk') {
+        expect(result.output.mcpServers).toEqual({ docs: { type: 'stdio', command: 'docs-mcp' } });
+        expect(result.output.subagents).toEqual({
+          reviewer: { description: 'Reviews code', prompt: 'Review it.' },
+        });
+      }
+    });
+
+    it('rejects an openai-api init command carrying mcpServers (not representable on that arm)', () => {
+      const init = {
+        ...baseFields,
+        engine: 'openai-api',
+        provider: { baseUrl: 'http://localhost:11434/v1', model: 'llama3' },
+        mcpServers: { docs: { type: 'stdio', command: 'docs-mcp' } },
+      };
       const result = v.safeParse(EmbeddedAgentCommandSchema, init);
       expect(result.success).toBe(false);
     });
@@ -2205,5 +2394,10 @@ describe('EMBEDDED_AGENT_TOOL_NAMES / DEFAULT_EMBEDDED_AGENT_ENABLED_TOOLS (#157
   it('EMBEDDED_AGENT_TOOL_NAMES includes TodoWrite and DEFAULT_EMBEDDED_AGENT_ENABLED_TOOLS includes it too', () => {
     expect(EMBEDDED_AGENT_TOOL_NAMES).toContain('TodoWrite');
     expect(DEFAULT_EMBEDDED_AGENT_ENABLED_TOOLS).toContain('TodoWrite');
+  });
+
+  it('EMBEDDED_AGENT_TOOL_NAMES includes Task (epic #1636 Phase 5 decision 3), off by default', () => {
+    expect(EMBEDDED_AGENT_TOOL_NAMES).toContain('Task');
+    expect(DEFAULT_EMBEDDED_AGENT_ENABLED_TOOLS).not.toContain('Task');
   });
 });

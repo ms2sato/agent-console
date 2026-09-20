@@ -263,7 +263,7 @@ describe('Worker WebSocket: embedded-agent branch', () => {
 
   async function createEmbeddedAgentSession(): Promise<{ sessionId: string; workerId: string }> {
     const definition = await embeddedAgentManager.createEmbeddedAgent(
-      { name: 'Local model', provider: { baseUrl: 'http://localhost:11434/v1', model: 'qwen3:32b' } },
+      { engine: 'openai-api', name: 'Local model', provider: { baseUrl: 'http://localhost:11434/v1', model: 'qwen3:32b' } },
       sessionOwnerUserId,
     );
     const session = await sessionManager.createSession(
@@ -319,7 +319,7 @@ describe('Worker WebSocket: embedded-agent branch', () => {
     // Session with no worker of this id up front: create a worker, then delete
     // the underlying definition so activation hits the dangling-definition path.
     const definition = await embeddedAgentManager.createEmbeddedAgent(
-      { name: 'Local model', provider: { baseUrl: 'http://localhost:11434/v1', model: 'qwen3:32b' } },
+      { engine: 'openai-api', name: 'Local model', provider: { baseUrl: 'http://localhost:11434/v1', model: 'qwen3:32b' } },
       sessionOwnerUserId,
     );
     const session = await sessionManager.createSession(
@@ -385,7 +385,7 @@ describe('Worker WebSocket: embedded-agent branch', () => {
     // 'not-found' path through the actual EmbeddedAgentWorkerService step 2
     // wrap -- no injected seam needed.
     const definition = await embeddedAgentManager.createEmbeddedAgent(
-      { name: 'Keyed model', provider: { baseUrl: 'http://localhost:11434/v1', model: 'qwen3:32b', apiKeyRef: 'openai' } },
+      { engine: 'openai-api', name: 'Keyed model', provider: { baseUrl: 'http://localhost:11434/v1', model: 'qwen3:32b', apiKeyRef: 'openai' } },
       sessionOwnerUserId,
     );
     const session = await sessionManager.createSession(
@@ -569,7 +569,7 @@ describe('Worker WebSocket: embedded-agent branch', () => {
     // admission check returns { code: 'NOT_ACTIVATED' }, which routes.ts must
     // map to the wire-level ACTIVATION_FAILED code (not string-match 'error').
     const definition = await embeddedAgentManager.createEmbeddedAgent(
-      { name: 'Local model', provider: { baseUrl: 'http://localhost:11434/v1', model: 'qwen3:32b' } },
+      { engine: 'openai-api', name: 'Local model', provider: { baseUrl: 'http://localhost:11434/v1', model: 'qwen3:32b' } },
       sessionOwnerUserId,
     );
     const session = await sessionManager.createSession(

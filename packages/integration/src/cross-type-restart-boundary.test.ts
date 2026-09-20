@@ -154,7 +154,7 @@ describe('Client-Server Boundary: cross-type worker restart (agent -> embedded-a
   it('converts a PTY agent worker to an embedded-agent worker via real HTTP restart; persisted row and broadcast frames survive the wire', async () => {
     const owner = await ctx.userRepository.upsertByOsUid(87001, 'owner', '/home/owner');
     const def = await ctx.embeddedAgentManager.createEmbeddedAgent(
-      { name: 'Ollama qwen3', provider: { baseUrl: 'http://localhost:11434/v1', model: 'qwen3:32b' } },
+      { engine: 'openai-api', name: 'Ollama qwen3', provider: { baseUrl: 'http://localhost:11434/v1', model: 'qwen3:32b' } },
       owner.id,
     );
 
@@ -230,7 +230,7 @@ describe('Client-Server Boundary: cross-type worker restart (agent -> embedded-a
     // no `agentId` to convert to, and no PTY conversation to `continue`.
     const owner = await ctx.userRepository.upsertByOsUid(87002, 'owner2', '/home/owner2');
     const def = await ctx.embeddedAgentManager.createEmbeddedAgent(
-      { name: 'Ollama qwen3', provider: { baseUrl: 'http://localhost:11434/v1', model: 'qwen3:32b' } },
+      { engine: 'openai-api', name: 'Ollama qwen3', provider: { baseUrl: 'http://localhost:11434/v1', model: 'qwen3:32b' } },
       owner.id,
     );
 
@@ -278,7 +278,7 @@ describe('Client-Server Boundary: cross-type worker restart (agent -> embedded-a
   it('converts an embedded-agent worker back to a PTY agent worker via the terminal member with agentId supplied (case a, Issue #1592: the R8 pin flips to a real conversion)', async () => {
     const owner = await ctx.userRepository.upsertByOsUid(87003, 'owner3', '/home/owner3');
     const def = await ctx.embeddedAgentManager.createEmbeddedAgent(
-      { name: 'Ollama qwen3', provider: { baseUrl: 'http://localhost:11434/v1', model: 'qwen3:32b' } },
+      { engine: 'openai-api', name: 'Ollama qwen3', provider: { baseUrl: 'http://localhost:11434/v1', model: 'qwen3:32b' } },
       owner.id,
     );
 

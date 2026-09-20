@@ -27,6 +27,10 @@ export type EmbeddedAgentEngineParameterCapability =
 export interface EmbeddedAgentEngineParameterCapabilities {
   model: EmbeddedAgentEngineParameterCapability;
   reasoningEffort: EmbeddedAgentEngineParameterCapability;
+  /** Declared external MCP servers (epic #1636 Phase 5 decision 3). */
+  mcpServers: EmbeddedAgentEngineParameterCapability;
+  /** The `'Task'` builtin tool / declared subagents (epic #1636 Phase 5 decision 3). */
+  task: EmbeddedAgentEngineParameterCapability;
 }
 
 /**
@@ -84,13 +88,16 @@ export type { _EffortLevelsMatchSdk, _SdkMatchesEffortLevels };
  * kind-dispatching consumer (`agent-surface.ts`) read this table rather
  * than re-deriving per-engine capability.
  *
- * All 4 (engine, param) combinations are `capable: true` today -- verified
- * fact, not a placeholder: the SDK really does expose `Options.effort`
- * (`sdk.d.ts` line 1711), and both engines' request/options composition
- * really does have a `model` field. This does not violate Ruling 1's
+ * `model` and `reasoningEffort` are `capable: true` on both engines --
+ * verified fact, not a placeholder: the SDK really does expose
+ * `Options.effort` (`sdk.d.ts` line 1711), and both engines' request/options
+ * composition really does have a `model` field. `mcpServers` and `task`
+ * (epic #1636 Phase 5 decision 3) are the first PRODUCTION
+ * `capable: false` rows -- `openai-api` has no external-MCP-declaration
+ * mechanism and no subagent runtime. This does not violate Ruling 1's
  * "capable/incapable" wording -- that names the representable set, not a
- * requirement that an incapable row currently exist. The `capable: false`
- * branch is exercised only by test-only DI-injected fixture tables.
+ * requirement that an incapable row currently exist; it simply no longer
+ * needs a test-only fixture to exercise that branch.
  */
 export const EMBEDDED_AGENT_ENGINE_PARAMETER_CAPABILITIES: Record<
   'openai-api' | 'claude-sdk',
@@ -109,6 +116,14 @@ export const EMBEDDED_AGENT_ENGINE_PARAMETER_CAPABILITIES: Record<
         'chat.completions request body `reasoning_effort` field (openai-chat-adapter.ts) -- ' +
         'pass-through; not every OpenAI-compatible provider honors it, the provider is the authority',
     },
+    mcpServers: {
+      capable: false,
+      reason: 'openai-api reaches MCP only through the console dial-back; no declared external servers on this engine',
+    },
+    task: {
+      capable: false,
+      reason: 'openai-api has no subagent runtime',
+    },
   },
   'claude-sdk': {
     model: {
@@ -120,6 +135,16 @@ export const EMBEDDED_AGENT_ENGINE_PARAMETER_CAPABILITIES: Record<
       capable: true,
       acceptedValues: EFFORT_LEVELS,
       consumptionSite: 'query() Options.effort (sdk-engine.ts buildOptions)',
+    },
+    mcpServers: {
+      capable: true,
+      acceptedValues: null,
+      consumptionSite: 'query() Options.mcpServers (sdk-engine.ts buildOptions)',
+    },
+    task: {
+      capable: true,
+      acceptedValues: null,
+      consumptionSite: 'query() Options.tools + Options.agents (sdk-engine.ts buildOptions)',
     },
   },
 } as const;

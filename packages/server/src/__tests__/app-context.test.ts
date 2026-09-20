@@ -476,6 +476,7 @@ describe('AppContext', () => {
         );
         const definition = await ctx.embeddedAgentManager.createEmbeddedAgent(
           {
+            engine: 'openai-api',
             name: 'Issue #1591 ordering test agent',
             provider: { baseUrl: 'http://localhost:11434/v1', model: 'qwen3:32b' },
           },
@@ -622,7 +623,7 @@ describe('AppContext', () => {
         '/home/seam-owner',
       );
       const definition = await appContext.embeddedAgentManager.createEmbeddedAgent(
-        { name: 'Seam agent', provider: { baseUrl: 'http://localhost:11434/v1', model: 'qwen3:32b' } },
+        { engine: 'openai-api', name: 'Seam agent', provider: { baseUrl: 'http://localhost:11434/v1', model: 'qwen3:32b' } },
         owner.id,
       );
       const scratch = path.join(memoryHomeDir, 'quick-seam-cwd');

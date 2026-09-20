@@ -353,6 +353,7 @@ describe('E2E: create_html_artifact through the embedded-agent shipping path (P3
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({
+            engine: 'openai-api',
             name: 'Stub local LLM',
             provider: { baseUrl: `${stubBaseUrl}/v1`, model: 'stub-model' },
           }),

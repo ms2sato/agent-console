@@ -427,6 +427,10 @@ async function runMigrations(database: Kysely<Database>, dbPath: string): Promis
   if (currentVersion < 43) {
     await migrateToV43(database, dbPath);
   }
+
+  if (currentVersion < 44) {
+    await migrateToV44(database);
+  }
 }
 
 /**
@@ -2780,6 +2784,38 @@ export async function migrateToV43(
   }
 
   logger.info('Migration to v43 completed');
+}
+
+/**
+ * Migration v44: Add `mcp_servers` and `subagents` columns to
+ * `embedded_agents` (epic #1636 Phase 5 PR-1, decision 3).
+ * Both are nullable JSON-serialized text, same idiom as
+ * `issue_trigger_labels` (migration v40) -- meaningful only for
+ * `engine = 'claude-sdk'` rows; always NULL for `openai-api` rows (see
+ * mappers.ts's toEmbeddedAgentRow/toEmbeddedAgentDefinition).
+ *
+ * @internal Exported for testing.
+ */
+export async function migrateToV44(database: Kysely<Database>): Promise<void> {
+  logger.info('Running migration to v44: Adding mcp_servers and subagents columns to embedded_agents');
+
+  try {
+    await sql`ALTER TABLE embedded_agents ADD COLUMN mcp_servers TEXT`.execute(database);
+  } catch (error) {
+    if (!isDuplicateColumnError(error)) throw error;
+    logger.info('Column mcp_servers already exists, skipping');
+  }
+
+  try {
+    await sql`ALTER TABLE embedded_agents ADD COLUMN subagents TEXT`.execute(database);
+  } catch (error) {
+    if (!isDuplicateColumnError(error)) throw error;
+    logger.info('Column subagents already exists, skipping');
+  }
+
+  await sql`PRAGMA user_version = 44`.execute(database);
+
+  logger.info('Migration to v44 completed');
 }
 
 /**

@@ -326,6 +326,7 @@ describe('E2E: EmbeddedAgentWorker shipping path (single-user)', () => {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({
+            engine: 'openai-api',
             name: 'Stub local LLM',
             provider: { baseUrl: `${stubBaseUrl}/v1`, model: 'stub-model' },
           }),

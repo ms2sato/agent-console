@@ -68,6 +68,7 @@ describe('Client-Server Boundary: embedded-agent model/reasoningEffort/contextWi
     //    both model and reasoningEffort, acceptedValues: null pass-through).
     const def = await ctx.embeddedAgentManager.createEmbeddedAgent(
       {
+        engine: 'openai-api',
         name: 'Boundary Test Embedded Agent',
         provider: { baseUrl: 'http://localhost:11434/v1', model: 'qwen3:32b' },
       },
@@ -124,6 +125,7 @@ describe('Client-Server Boundary: embedded-agent model/reasoningEffort/contextWi
 
     const def = await ctx.embeddedAgentManager.createEmbeddedAgent(
       {
+        engine: 'openai-api',
         name: 'Boundary Test Embedded Agent 2',
         provider: { baseUrl: 'http://localhost:11434/v1', model: 'qwen3:32b' },
       },

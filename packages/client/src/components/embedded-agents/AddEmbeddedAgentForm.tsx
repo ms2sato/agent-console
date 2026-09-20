@@ -48,6 +48,10 @@ export function AddEmbeddedAgentForm({ onSuccess, onCancel }: AddEmbeddedAgentFo
     const threshold = parseCompactionThreshold(data.compactionThresholdInput);
     const compaction = threshold !== undefined ? { threshold } : undefined;
     createMutation.mutate({
+      // This form only ever creates openai-api definitions today -- the
+      // engine-selector / claude-sdk creation UI is a separate future PR
+      // (epic #1636 Phase 5 PR-3), not this one.
+      engine: 'openai-api',
       name: data.name,
       description: data.description || undefined,
       provider: {

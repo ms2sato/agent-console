@@ -1,4 +1,4 @@
-import type { AgentDefinition, Repository, AgentActivityPatterns, MessageTemplate, EmbeddedAgentDefinition, EmbeddedAgentToolName, Artifact, Bookmark } from '@agent-console/shared';
+import type { AgentDefinition, Repository, AgentActivityPatterns, MessageTemplate, EmbeddedAgentDefinition, EmbeddedAgentToolName, DeclaredMcpServer, DeclaredSubagent, Artifact, Bookmark } from '@agent-console/shared';
 import type { ArtifactRecord } from '../repositories/artifact-repository.js';
 import type { BookmarkRecord } from '../repositories/bookmark-repository.js';
 import { computeCapabilities } from '@agent-console/shared';
@@ -569,6 +569,11 @@ export function toEmbeddedAgentRow(def: EmbeddedAgentDefinition): NewEmbeddedAge
     instructions: def.instructions !== undefined ? JSON.stringify(def.instructions) : null,
     context_window_tokens: def.contextWindowTokens ?? null,
     compaction_threshold: def.compaction?.threshold ?? null,
+    // Declared MCP servers / subagents (epic #1636 Phase 5 PR-1, decision 3):
+    // claude-sdk-only, same null-for-other-engine convention as
+    // provider_base_url above.
+    mcp_servers: def.engine === 'claude-sdk' && def.mcpServers !== undefined ? JSON.stringify(def.mcpServers) : null,
+    subagents: def.engine === 'claude-sdk' && def.subagents !== undefined ? JSON.stringify(def.subagents) : null,
     is_built_in: def.isBuiltIn ? 1 : 0,
     created_by: def.createdBy,
     created_at: def.createdAt,
@@ -600,6 +605,34 @@ function parseEmbeddedAgentJsonArrayColumn<T>(
       return undefined;
     }
     return parsed as T[];
+  } catch {
+    logger.warn({ embeddedAgentId }, `Failed to parse ${fieldName}, ignoring`);
+    return undefined;
+  }
+}
+
+/**
+ * Parse a nullable JSON-object-string embedded-agent column (`mcp_servers`,
+ * `subagents`) into a typed record. Sibling of
+ * `parseEmbeddedAgentJsonArrayColumn` above, same warn-and-fall-back-to-
+ * undefined philosophy for both failure modes (invalid JSON, and JSON that
+ * parses to something other than a plain object -- an array or a scalar).
+ */
+function parseEmbeddedAgentJsonObjectColumn<T>(
+  value: string | null,
+  embeddedAgentId: string,
+  fieldName: 'mcp_servers' | 'subagents'
+): Record<string, T> | undefined {
+  if (value === null) {
+    return undefined;
+  }
+  try {
+    const parsed: unknown = JSON.parse(value);
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+      logger.warn({ embeddedAgentId }, `Failed to parse ${fieldName}, ignoring`);
+      return undefined;
+    }
+    return parsed as Record<string, T>;
   } catch {
     logger.warn({ embeddedAgentId }, `Failed to parse ${fieldName}, ignoring`);
     return undefined;
@@ -686,6 +719,8 @@ export function toEmbeddedAgentDefinition(row: EmbeddedAgentRow): EmbeddedAgentD
       ...base,
       engine: 'claude-sdk',
       provider: { model: row.provider_model },
+      mcpServers: parseEmbeddedAgentJsonObjectColumn<DeclaredMcpServer>(row.mcp_servers, row.id, 'mcp_servers'),
+      subagents: parseEmbeddedAgentJsonObjectColumn<DeclaredSubagent>(row.subagents, row.id, 'subagents'),
     };
   } else {
     throw new DataIntegrityError('embedded-agent', row.id, `engine (unexpected value: ${row.engine})`);

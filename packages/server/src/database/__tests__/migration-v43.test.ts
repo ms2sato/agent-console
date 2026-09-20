@@ -594,10 +594,14 @@ describe('migration v43 (sessions ISO8601 CHECK restoration)', () => {
     await db.destroy();
   });
 
-  it('lands the fresh in-memory dispatcher on schema version 43', async () => {
+  it('lands the fresh in-memory dispatcher on schema version 44', async () => {
+    // Migration v44 (embedded_agents mcp_servers/subagents columns) now
+    // also runs unconditionally after v43 in the same dispatcher chain, so
+    // a fresh database lands one step further than v43's own step -- see
+    // the identical note in migration-v42.test.ts's dispatcher-chain test.
     const db = await initializeDatabase(':memory:');
     const versionRes = await sql<{ user_version: number }>`PRAGMA user_version`.execute(db);
-    expect(versionRes.rows[0]?.user_version).toBe(43);
+    expect(versionRes.rows[0]?.user_version).toBe(44);
   });
 
   // Polarity (Task 4 #5): removing the `backupDatabaseFile(...)` call in

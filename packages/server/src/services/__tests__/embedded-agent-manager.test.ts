@@ -164,7 +164,7 @@ describe('EmbeddedAgentManager', () => {
       const manager = await getManager();
 
       const def = await manager.createEmbeddedAgent(
-        { name: 'Ollama', provider: VALID_PROVIDER },
+        { engine: 'openai-api', name: 'Ollama', provider: VALID_PROVIDER },
         'creator-user-id'
       );
 
@@ -197,7 +197,7 @@ describe('EmbeddedAgentManager', () => {
       const manager = await getManager();
 
       const def = await manager.createEmbeddedAgent(
-        { name: 'Ollama', provider: VALID_PROVIDER, enabledTools: ['Read', 'Glob'] },
+        { engine: 'openai-api', name: 'Ollama', provider: VALID_PROVIDER, enabledTools: ['Read', 'Glob'] },
         'creator-user-id'
       );
 
@@ -208,7 +208,7 @@ describe('EmbeddedAgentManager', () => {
       const manager = await getManager();
 
       const def = await manager.createEmbeddedAgent(
-        { name: 'Ollama', provider: VALID_PROVIDER },
+        { engine: 'openai-api', name: 'Ollama', provider: VALID_PROVIDER },
         'creator-user-id'
       );
 
@@ -219,7 +219,7 @@ describe('EmbeddedAgentManager', () => {
       const manager = await getManager();
 
       const def = await manager.createEmbeddedAgent(
-        { name: 'Ollama', provider: VALID_PROVIDER, instructions: ['docs/local-note.md'] },
+        { engine: 'openai-api', name: 'Ollama', provider: VALID_PROVIDER, instructions: ['docs/local-note.md'] },
         'creator-user-id'
       );
 
@@ -230,7 +230,7 @@ describe('EmbeddedAgentManager', () => {
       const manager = await getManager();
 
       const def = await manager.createEmbeddedAgent(
-        { name: 'Ollama', provider: VALID_PROVIDER },
+        { engine: 'openai-api', name: 'Ollama', provider: VALID_PROVIDER },
         'creator-user-id'
       );
 
@@ -242,6 +242,7 @@ describe('EmbeddedAgentManager', () => {
 
       const def = await manager.createEmbeddedAgent(
         {
+          engine: 'openai-api',
           name: 'Ollama',
           provider: VALID_PROVIDER,
           contextWindowTokens: 128000,
@@ -258,7 +259,7 @@ describe('EmbeddedAgentManager', () => {
       const manager = await getManager();
 
       const def = await manager.createEmbeddedAgent(
-        { name: 'Ollama', provider: VALID_PROVIDER },
+        { engine: 'openai-api', name: 'Ollama', provider: VALID_PROVIDER },
         'creator-user-id'
       );
 
@@ -272,7 +273,7 @@ describe('EmbeddedAgentManager', () => {
       manager.setLifecycleCallbacks(callbacks);
 
       const def = await manager.createEmbeddedAgent(
-        { name: 'Cb', provider: VALID_PROVIDER },
+        { engine: 'openai-api', name: 'Cb', provider: VALID_PROVIDER },
         'user-1'
       );
 
@@ -287,11 +288,79 @@ describe('EmbeddedAgentManager', () => {
       repository.failSave = true;
 
       await expect(
-        manager.createEmbeddedAgent({ name: 'Fail', provider: VALID_PROVIDER }, 'user-1')
+        manager.createEmbeddedAgent({ engine: 'openai-api', name: 'Fail', provider: VALID_PROVIDER }, 'user-1')
       ).rejects.toThrow('save failed');
 
       expect(manager.getAllEmbeddedAgents()).toEqual([claudeSdkAgent]);
       expect(created).toHaveLength(0);
+    });
+
+    describe('claude-sdk engine (epic #1636 Phase 5 PR-1, decision 3, Issue #1779)', () => {
+      it('creates a minimal claude-sdk definition: id, name, provider.model, no other fields', async () => {
+        const manager = await getManager();
+
+        const def = await manager.createEmbeddedAgent(
+          { engine: 'claude-sdk', name: 'Claude', provider: { model: 'claude-sonnet-5' } },
+          'creator-user-id'
+        );
+
+        expect(def.id).toMatch(/^[0-9a-f-]{36}$/);
+        expect(def.engine).toBe('claude-sdk');
+        expect(def.name).toBe('Claude');
+        expect(def.provider).toEqual({ model: 'claude-sonnet-5' });
+        expect(def.isBuiltIn).toBe(false);
+        expect(def.createdBy).toBe('creator-user-id');
+        expect(def.createdAt).toBe(def.updatedAt);
+        if (def.engine === 'claude-sdk') {
+          expect(def.mcpServers).toBeUndefined();
+          expect(def.subagents).toBeUndefined();
+        }
+        expect(def.enabledTools).toBeUndefined();
+        expect(def.systemPrompt).toBeUndefined();
+
+        expect(manager.getEmbeddedAgent(def.id)).toEqual(def);
+      });
+
+      it('fires onEmbeddedAgentCreated for a claude-sdk create', async () => {
+        const { created, callbacks } = createCallbackRecorder();
+        const manager = await getManager();
+        manager.setLifecycleCallbacks(callbacks);
+
+        const def = await manager.createEmbeddedAgent(
+          { engine: 'claude-sdk', name: 'Claude', provider: { model: 'claude-sonnet-5' } },
+          'user-1'
+        );
+
+        expect(created).toHaveLength(1);
+        expect(created[0]).toEqual(def);
+      });
+    });
+
+    describe("'Task' in enabledTools on an openai-api create (incapable engine)", () => {
+      it('rejects with a ValidationError naming the capability row reason', async () => {
+        const manager = await getManager();
+
+        await expect(
+          manager.createEmbeddedAgent(
+            { engine: 'openai-api', name: 'X', provider: VALID_PROVIDER, enabledTools: ['Read', 'Task'] },
+            'user-1'
+          )
+        ).rejects.toThrow('openai-api has no subagent runtime');
+      });
+
+      it('does not persist or mutate the map when rejected', async () => {
+        const manager = await getManager();
+
+        await expect(
+          manager.createEmbeddedAgent(
+            { engine: 'openai-api', name: 'X', provider: VALID_PROVIDER, enabledTools: ['Task'] },
+            'user-1'
+          )
+        ).rejects.toThrow();
+
+        expect(manager.getAllEmbeddedAgents()).toEqual([claudeSdkAgent]);
+        expect(repository.getAllSaved()).toHaveLength(1);
+      });
     });
   });
 
@@ -299,6 +368,7 @@ describe('EmbeddedAgentManager', () => {
     async function seed(manager: EmbeddedAgentManager) {
       return manager.createEmbeddedAgent(
         {
+          engine: 'openai-api',
           name: 'Original',
           description: 'orig desc',
           provider: VALID_PROVIDER,
@@ -453,13 +523,301 @@ describe('EmbeddedAgentManager', () => {
       expect(result).toBeNull();
       expect(manager.getEmbeddedAgent(CLAUDE_SDK_AGENT_ID)).toEqual(claudeSdkAgent);
     });
+
+    describe('claude-sdk engine (epic #1636 Phase 5 PR-1, decision 3, Issue #1779) -- now REACHED, not unreachable', () => {
+      async function seedSdk(manager: EmbeddedAgentManager) {
+        return manager.createEmbeddedAgent(
+          { engine: 'claude-sdk', name: 'Claude', provider: { model: 'claude-sonnet-5' } },
+          'owner-id'
+        );
+      }
+
+      it('patches name/provider.model on a non-builtin claude-sdk definition', async () => {
+        const manager = await getManager();
+        const created = await seedSdk(manager);
+
+        const updated = await manager.updateEmbeddedAgent(created.id, {
+          name: 'Renamed Claude',
+          provider: { baseUrl: 'http://localhost:11434/v1', model: 'claude-opus-5' },
+        });
+
+        expect(updated).not.toBeNull();
+        expect(updated?.engine).toBe('claude-sdk');
+        expect(updated?.name).toBe('Renamed Claude');
+        expect(updated?.provider).toEqual({ model: 'claude-opus-5' });
+      });
+
+      it("narrows a patched provider to '{ model }' only, never leaking baseUrl/apiKeyRef onto a claude-sdk definition (defense in depth: UpdateEmbeddedAgentRequestSchema.provider is openai-api-shaped)", async () => {
+        const manager = await getManager();
+        const created = await seedSdk(manager);
+
+        const updated = await manager.updateEmbeddedAgent(created.id, {
+          provider: {
+            baseUrl: 'http://localhost:11434/v1',
+            model: 'claude-opus-5',
+            apiKeyRef: 'should-never-leak',
+          },
+        });
+
+        expect(updated?.engine).toBe('claude-sdk');
+        expect(updated?.provider).toEqual({ model: 'claude-opus-5' });
+        expect('baseUrl' in (updated?.provider ?? {})).toBe(false);
+        expect('apiKeyRef' in (updated?.provider ?? {})).toBe(false);
+      });
+
+      it('mcpServers absent from the request leaves it unchanged (regression: identical to before this PR)', async () => {
+        const manager = await getManager();
+        const created = await seedSdk(manager);
+
+        const updated = await manager.updateEmbeddedAgent(created.id, { name: 'Renamed' });
+
+        expect(updated?.engine).toBe('claude-sdk');
+        if (updated?.engine === 'claude-sdk') {
+          expect(updated.mcpServers).toBeUndefined();
+        }
+      });
+
+      it('accepts a whole-object mcpServers replacement', async () => {
+        const manager = await getManager();
+        const created = await seedSdk(manager);
+        const mcpServers = { docs: { type: 'stdio' as const, command: 'docs-mcp' } };
+
+        const updated = await manager.updateEmbeddedAgent(created.id, { mcpServers });
+
+        expect(updated?.engine).toBe('claude-sdk');
+        if (updated?.engine === 'claude-sdk') {
+          expect(updated.mcpServers).toEqual(mcpServers);
+        }
+      });
+
+      it('clears mcpServers on null', async () => {
+        const manager = await getManager();
+        const created = await seedSdk(manager);
+        await manager.updateEmbeddedAgent(created.id, {
+          mcpServers: { docs: { type: 'stdio', command: 'docs-mcp' } },
+        });
+
+        const updated = await manager.updateEmbeddedAgent(created.id, { mcpServers: null });
+
+        expect(updated?.engine).toBe('claude-sdk');
+        if (updated?.engine === 'claude-sdk') {
+          expect(updated.mcpServers).toBeUndefined();
+        }
+      });
+
+      it("rejects a declared mcpServers entry named 'agent-console' (reserved), naming the offending key", async () => {
+        const manager = await getManager();
+        const created = await seedSdk(manager);
+
+        await expect(
+          manager.updateEmbeddedAgent(created.id, {
+            mcpServers: { 'agent-console': { type: 'stdio', command: 'evil' } },
+          })
+        ).rejects.toThrow('mcpServers cannot declare the reserved name "agent-console"');
+      });
+
+      it("rejects a declared mcpServers entry named 'console' (reserved), naming the offending key", async () => {
+        const manager = await getManager();
+        const created = await seedSdk(manager);
+
+        await expect(
+          manager.updateEmbeddedAgent(created.id, {
+            mcpServers: { console: { type: 'stdio', command: 'evil' } },
+          })
+        ).rejects.toThrow('mcpServers cannot declare the reserved name "console"');
+      });
+
+      it('does not persist or mutate the map when the reserved-name check rejects', async () => {
+        const manager = await getManager();
+        const created = await seedSdk(manager);
+
+        await expect(
+          manager.updateEmbeddedAgent(created.id, {
+            mcpServers: { console: { type: 'stdio', command: 'evil' } },
+          })
+        ).rejects.toThrow();
+
+        const stillOriginal = manager.getEmbeddedAgent(created.id);
+        expect(stillOriginal?.engine).toBe('claude-sdk');
+        if (stillOriginal?.engine === 'claude-sdk') {
+          expect(stillOriginal.mcpServers).toBeUndefined();
+        }
+      });
+
+      it('accepts subagents when enabledTools includes Task in the same request', async () => {
+        const manager = await getManager();
+        const created = await seedSdk(manager);
+        const subagents = { reviewer: { description: 'Reviews code', prompt: 'Review it.' } };
+
+        const updated = await manager.updateEmbeddedAgent(created.id, {
+          enabledTools: ['Task'],
+          subagents,
+        });
+
+        expect(updated?.engine).toBe('claude-sdk');
+        if (updated?.engine === 'claude-sdk') {
+          expect(updated.subagents).toEqual(subagents);
+          expect(updated.enabledTools).toEqual(['Task']);
+        }
+      });
+
+      it('accepts subagents when Task was already enabled by a prior update (resolved against existing enabledTools)', async () => {
+        const manager = await getManager();
+        const created = await seedSdk(manager);
+        await manager.updateEmbeddedAgent(created.id, { enabledTools: ['Task'] });
+
+        const subagents = { reviewer: { description: 'Reviews code', prompt: 'Review it.' } };
+        const updated = await manager.updateEmbeddedAgent(created.id, { subagents });
+
+        expect(updated?.engine).toBe('claude-sdk');
+        if (updated?.engine === 'claude-sdk') {
+          expect(updated.subagents).toEqual(subagents);
+        }
+      });
+
+      it('rejects subagents when the resolved enabledTools lacks Task (a silent no-op is forbidden)', async () => {
+        const manager = await getManager();
+        const created = await seedSdk(manager);
+
+        await expect(
+          manager.updateEmbeddedAgent(created.id, {
+            subagents: { reviewer: { description: 'Reviews code', prompt: 'Review it.' } },
+          })
+        ).rejects.toThrow('subagents requires "Task" to be included in enabledTools');
+      });
+
+      it('rejects subagents when enabledTools is explicitly set without Task in the same request', async () => {
+        const manager = await getManager();
+        const created = await seedSdk(manager);
+
+        await expect(
+          manager.updateEmbeddedAgent(created.id, {
+            enabledTools: ['Read'],
+            subagents: { reviewer: { description: 'Reviews code', prompt: 'Review it.' } },
+          })
+        ).rejects.toThrow('subagents requires "Task" to be included in enabledTools');
+      });
+
+      it('rejects subagents when a prior Task enablement is cleared in the same request (enabledTools: null)', async () => {
+        const manager = await getManager();
+        const created = await seedSdk(manager);
+        await manager.updateEmbeddedAgent(created.id, { enabledTools: ['Task'] });
+
+        await expect(
+          manager.updateEmbeddedAgent(created.id, {
+            enabledTools: null,
+            subagents: { reviewer: { description: 'Reviews code', prompt: 'Review it.' } },
+          })
+        ).rejects.toThrow('subagents requires "Task" to be included in enabledTools');
+      });
+
+      it('does not mutate the map when the subagents-without-Task check rejects', async () => {
+        const manager = await getManager();
+        const created = await seedSdk(manager);
+
+        await expect(
+          manager.updateEmbeddedAgent(created.id, {
+            subagents: { reviewer: { description: 'Reviews code', prompt: 'Review it.' } },
+          })
+        ).rejects.toThrow();
+
+        const stillOriginal = manager.getEmbeddedAgent(created.id);
+        expect(stillOriginal?.engine).toBe('claude-sdk');
+        if (stillOriginal?.engine === 'claude-sdk') {
+          expect(stillOriginal.subagents).toBeUndefined();
+        }
+      });
+
+      it('clears subagents on null (no Task requirement re-checked on clear)', async () => {
+        const manager = await getManager();
+        const created = await seedSdk(manager);
+        await manager.updateEmbeddedAgent(created.id, {
+          enabledTools: ['Task'],
+          subagents: { reviewer: { description: 'Reviews code', prompt: 'Review it.' } },
+        });
+
+        const updated = await manager.updateEmbeddedAgent(created.id, { subagents: null });
+
+        expect(updated?.engine).toBe('claude-sdk');
+        if (updated?.engine === 'claude-sdk') {
+          expect(updated.subagents).toBeUndefined();
+        }
+      });
+    });
+
+    describe('mcpServers/subagents/Task on an openai-api update (incapable engine)', () => {
+      it('rejects mcpServers with a ValidationError naming the capability row reason', async () => {
+        const manager = await getManager();
+        const created = await seed(manager);
+
+        await expect(
+          manager.updateEmbeddedAgent(created.id, {
+            mcpServers: { docs: { type: 'stdio', command: 'docs-mcp' } },
+          })
+        ).rejects.toThrow(
+          'openai-api reaches MCP only through the console dial-back; no declared external servers on this engine'
+        );
+      });
+
+      it('rejects mcpServers: null too (present at all, including explicit clear)', async () => {
+        const manager = await getManager();
+        const created = await seed(manager);
+
+        await expect(manager.updateEmbeddedAgent(created.id, { mcpServers: null })).rejects.toThrow(
+          'openai-api reaches MCP only through the console dial-back; no declared external servers on this engine'
+        );
+      });
+
+      it('rejects subagents with a ValidationError naming the task capability row reason', async () => {
+        const manager = await getManager();
+        const created = await seed(manager);
+
+        await expect(
+          manager.updateEmbeddedAgent(created.id, {
+            subagents: { reviewer: { description: 'Reviews code', prompt: 'Review it.' } },
+          })
+        ).rejects.toThrow('openai-api has no subagent runtime');
+      });
+
+      it("rejects 'Task' inside enabledTools with a ValidationError naming the task capability row reason", async () => {
+        const manager = await getManager();
+        const created = await seed(manager);
+
+        await expect(
+          manager.updateEmbeddedAgent(created.id, { enabledTools: ['Read', 'Task'] })
+        ).rejects.toThrow('openai-api has no subagent runtime');
+      });
+
+      it('does not mutate the map when any of the above rejects', async () => {
+        const manager = await getManager();
+        const created = await seed(manager);
+
+        await expect(
+          manager.updateEmbeddedAgent(created.id, { enabledTools: ['Task'] })
+        ).rejects.toThrow();
+
+        expect(manager.getEmbeddedAgent(created.id)?.enabledTools).toEqual(['Read']);
+      });
+
+      it('existing openai-api update with no new fields is entirely unchanged (regression)', async () => {
+        const manager = await getManager();
+        const created = await seed(manager);
+
+        const updated = await manager.updateEmbeddedAgent(created.id, { name: 'Renamed' });
+
+        expect(updated).not.toBeNull();
+        expect(updated?.engine).toBe('openai-api');
+        expect(updated?.name).toBe('Renamed');
+        expect(updated?.enabledTools).toEqual(['Read']);
+      });
+    });
   });
 
   describe('deleteEmbeddedAgent', () => {
     it('removes the definition from the map and the repository', async () => {
       const manager = await getManager();
       const created = await manager.createEmbeddedAgent(
-        { name: 'ToDelete', provider: VALID_PROVIDER },
+        { engine: 'openai-api', name: 'ToDelete', provider: VALID_PROVIDER },
         'user-1'
       );
 
@@ -481,7 +839,7 @@ describe('EmbeddedAgentManager', () => {
       const { deleted, callbacks } = createCallbackRecorder();
       const manager = await getManager();
       const created = await manager.createEmbeddedAgent(
-        { name: 'ToDelete', provider: VALID_PROVIDER },
+        { engine: 'openai-api', name: 'ToDelete', provider: VALID_PROVIDER },
         'user-1'
       );
       manager.setLifecycleCallbacks(callbacks);
@@ -512,7 +870,7 @@ describe('EmbeddedAgentManager', () => {
 
       const manager = await EmbeddedAgentManager.create(repository, { jobQueue });
       const created = await manager.createEmbeddedAgent(
-        { name: 'ToDelete', provider: VALID_PROVIDER },
+        { engine: 'openai-api', name: 'ToDelete', provider: VALID_PROVIDER },
         'user-1'
       );
       const { deleted, callbacks } = createCallbackRecorder();
@@ -541,7 +899,7 @@ describe('EmbeddedAgentManager', () => {
       const { jobQueue, calls } = createFakeJobQueue();
       const manager = await EmbeddedAgentManager.create(repository, { jobQueue });
       const created = await manager.createEmbeddedAgent(
-        { name: 'ToDelete', provider: VALID_PROVIDER },
+        { engine: 'openai-api', name: 'ToDelete', provider: VALID_PROVIDER },
         'user-1'
       );
       repository.failDelete = true;
@@ -577,7 +935,7 @@ describe('EmbeddedAgentManager', () => {
       for (const createManager of factories) {
         const manager = await createManager();
         const created = await manager.createEmbeddedAgent(
-          { name: 'ToDelete', provider: VALID_PROVIDER },
+          { engine: 'openai-api', name: 'ToDelete', provider: VALID_PROVIDER },
           'user-1'
         );
         const { deleted, callbacks } = createCallbackRecorder();
@@ -597,7 +955,7 @@ describe('EmbeddedAgentManager', () => {
 
     it('list() wraps getAllEmbeddedAgents() entries with kind "embedded"', async () => {
       const manager = await getManager();
-      const created = await manager.createEmbeddedAgent({ name: 'Listed', provider: VALID_PROVIDER }, 'user-1');
+      const created = await manager.createEmbeddedAgent({ engine: 'openai-api', name: 'Listed', provider: VALID_PROVIDER }, 'user-1');
 
       // The built-in claude-sdk definition is always present alongside the
       // newly-created custom one.
@@ -610,7 +968,7 @@ describe('EmbeddedAgentManager', () => {
     it('get(id) wraps getEmbeddedAgent(id) with kind "embedded", or returns undefined', async () => {
       const manager = await getManager();
       const created = await manager.createEmbeddedAgent(
-        { name: 'Findable', provider: VALID_PROVIDER },
+        { engine: 'openai-api', name: 'Findable', provider: VALID_PROVIDER },
         'user-1',
       );
 
@@ -621,10 +979,10 @@ describe('EmbeddedAgentManager', () => {
     it('findByName(name) wraps a name filter over getAllEmbeddedAgents() with kind "embedded"', async () => {
       const manager = await getManager();
       const created = await manager.createEmbeddedAgent(
-        { name: 'Shared Name', provider: VALID_PROVIDER },
+        { engine: 'openai-api', name: 'Shared Name', provider: VALID_PROVIDER },
         'user-1',
       );
-      await manager.createEmbeddedAgent({ name: 'Other Name', provider: VALID_PROVIDER }, 'user-1');
+      await manager.createEmbeddedAgent({ engine: 'openai-api', name: 'Other Name', provider: VALID_PROVIDER }, 'user-1');
 
       const entries = manager.findByName('Shared Name');
       expect(entries).toEqual([{ kind: 'embedded', agent: created }]);

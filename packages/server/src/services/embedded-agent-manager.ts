@@ -5,13 +5,55 @@ import {
   type AgentDirectoryEntry,
   type AgentSurface,
   type CleanupDefinitionMemoryPayload,
+  type DeclaredMcpServer,
+  type DeclaredSubagent,
+  EMBEDDED_AGENT_ENGINE_PARAMETER_CAPABILITIES,
 } from '@agent-console/shared';
 import { createLogger } from '../lib/logger.js';
 import { initializeDatabase } from '../database/connection.js';
+import { ValidationError } from '../lib/errors.js';
 import type { EmbeddedAgentRepository } from '../repositories/embedded-agent-repository.js';
 import { SqliteEmbeddedAgentRepository } from '../repositories/sqlite-embedded-agent-repository.js';
 import { claudeSdkAgent, CLAUDE_SDK_AGENT_ID } from './embedded-agents/claude-sdk-builtin.js';
 import { JOB_TYPES, type JobQueue } from '../jobs/index.js';
+
+/**
+ * Reserved MCP server names (epic #1636 Phase 5 decision 3):
+ * `'agent-console'` is the console dial-back server, `'console'` is the
+ * in-process `Compact`/`TodoWrite` server. A declared `mcpServers` entry
+ * using either name would collide with a server the engine wiring (PR-2)
+ * always injects, so declaring one is rejected here, naming the offending
+ * key. See docs/design/embedded-agent-sdk-engine.md §4.5.
+ */
+const RESERVED_MCP_SERVER_NAMES = new Set(['agent-console', 'console']);
+
+/**
+ * Throws a `ValidationError` if `mcpServers` declares a reserved server
+ * name. Names the ACTUAL offending key found, not a generic list.
+ */
+function assertNoReservedMcpServerName(mcpServers: Record<string, DeclaredMcpServer> | undefined): void {
+  if (mcpServers === undefined) return;
+  for (const name of Object.keys(mcpServers)) {
+    if (RESERVED_MCP_SERVER_NAMES.has(name)) {
+      throw new ValidationError(`mcpServers cannot declare the reserved name "${name}"`);
+    }
+  }
+}
+
+/**
+ * Throws a `ValidationError` if `subagents` is present but the resolved
+ * `enabledTools` does not include `'Task'` -- a silent no-op is forbidden
+ * by the epic (subagent definitions with no way to reach them).
+ */
+function assertSubagentsRequireTask(
+  subagents: Record<string, DeclaredSubagent> | undefined,
+  enabledTools: EmbeddedAgentDefinition['enabledTools']
+): void {
+  if (subagents === undefined) return;
+  if (!enabledTools?.includes('Task')) {
+    throw new ValidationError('subagents requires "Task" to be included in enabledTools');
+  }
+}
 
 const logger = createLogger('embedded-agent-manager');
 
@@ -132,12 +174,18 @@ export class EmbeddedAgentManager implements AgentSurface<'embedded'> {
   /**
    * Create a new embedded-agent definition.
    * `createdBy` is set from the authenticated user parameter, never from the
-   * request body. User-facing creation via this route always produces a
-   * `openai-api` engine definition (hardcoded here, not read from the
-   * request) -- the `claude-sdk` engine is registered as a builtin only
-   * (Phase 1), never user-created. See
-   * docs/design/embedded-agent-sdk-engine.md §3.1/§1 ("SDK-hosted subprocess
-   * ... registered as a builtin only").
+   * request body.
+   *
+   * Discriminated on `request.engine` (epic #1636 Phase 5 decision 3, Issue
+   * #1779; `CreateEmbeddedAgentRequestSchema` is engine-discriminated):
+   * - `openai-api`: user-facing creation, unchanged behavior from before
+   *   this PR (every field the request already carried).
+   * - `claude-sdk`: MINIMAL create -- `{ name, provider: { model } }` only.
+   *   No `mcpServers`/`subagents`/`enabledTools` are representable on this
+   *   arm at the type level, so no capability check is needed here (the
+   *   `'Task'`-in-`enabledTools` check below is openai-api-arm-only for the
+   *   same reason). See docs/design/embedded-agent-sdk-engine.md §3.1/§1 for
+   *   why the SDK-hosted subprocess was previously builtin-only.
    */
   async createEmbeddedAgent(
     request: CreateEmbeddedAgentRequest,
@@ -145,6 +193,38 @@ export class EmbeddedAgentManager implements AgentSurface<'embedded'> {
   ): Promise<EmbeddedAgentDefinition> {
     const id = crypto.randomUUID();
     const now = new Date().toISOString();
+
+    if (request.engine === 'claude-sdk') {
+      const def: EmbeddedAgentDefinition = {
+        id,
+        name: request.name,
+        engine: 'claude-sdk',
+        provider: request.provider,
+        isBuiltIn: false,
+        createdBy,
+        createdAt: now,
+        updatedAt: now,
+      };
+
+      await this.repository.save(def);
+      this.embeddedAgents.set(id, def);
+
+      logger.info({ embeddedAgentId: id, name: def.name, engine: def.engine }, 'Embedded agent created');
+
+      this.lifecycleCallbacks?.onEmbeddedAgentCreated(def);
+
+      return def;
+    }
+
+    // 'Task' inside enabledTools is a shared picklist value, representable
+    // on the openai-api arm at the type level (unlike mcpServers/subagents,
+    // which the claude-sdk arm structurally excludes it can't carry) -- so
+    // the incapability is enforced here, loudly, rather than left as a
+    // representable-but-ignored value.
+    const taskCapability = EMBEDDED_AGENT_ENGINE_PARAMETER_CAPABILITIES['openai-api'].task;
+    if (!taskCapability.capable && request.enabledTools?.includes('Task')) {
+      throw new ValidationError(taskCapability.reason);
+    }
 
     const def: EmbeddedAgentDefinition = {
       id,
@@ -184,13 +264,19 @@ export class EmbeddedAgentManager implements AgentSurface<'embedded'> {
    *
    * PATCH semantics matching UpdateEmbeddedAgentRequestSchema:
    * - undefined = no change
-   * - null = clear (for description / systemPrompt / maxToolIterations / enabledTools / instructions)
+   * - null = clear (for description / systemPrompt / maxToolIterations / enabledTools / instructions / mcpServers / subagents)
    * - `provider` replaces the whole provider object when present
    *
    * Preserves id / engine / isBuiltIn / createdBy / createdAt, bumps updatedAt.
-   * `engine` is never accepted from the request (only `openai-api`
-   * definitions can be user-created; see `createEmbeddedAgent`), so an
-   * update can never change a definition's engine.
+   * `engine` is never accepted from the request, so an update can never
+   * change a definition's engine.
+   *
+   * Branches on `existing.engine` (epic #1636 Phase 5 decision 3, Issue
+   * #1779). Before this PR every non-built-in definition was `openai-api`
+   * by construction (`createEmbeddedAgent` hardcoded it), so the
+   * `claude-sdk` branch was unreachable at runtime -- it exists NOW, and is
+   * REACHED, whenever `createEmbeddedAgent` produced a non-builtin
+   * `claude-sdk` definition (this PR's `engine: 'claude-sdk'` create arm).
    */
   async updateEmbeddedAgent(
     id: string,
@@ -208,20 +294,85 @@ export class EmbeddedAgentManager implements AgentSurface<'embedded'> {
       return null;
     }
 
-    // Defensive engine-narrowing guard: in Phase 1 every non-built-in
-    // definition is `openai-api` by construction (createEmbeddedAgent
-    // hardcodes it; the only `claude-sdk` definition is the builtin already
-    // rejected above), so this branch is unreachable at runtime today. It
-    // exists so TypeScript narrows `existing.provider` to the openai-api
-    // shape below (matching `request.provider`'s type) and so a future
-    // engine addition fails loudly here instead of silently constructing an
-    // inconsistent definition.
-    if (existing.engine !== 'openai-api') {
-      logger.warn(
-        { embeddedAgentId: id, engine: existing.engine },
-        'Cannot modify non-openai-api embedded agent via update'
+    if (existing.engine === 'claude-sdk') {
+      const enabledTools =
+        request.enabledTools === null ? undefined : (request.enabledTools ?? existing.enabledTools);
+      const mcpServers = request.mcpServers === null ? undefined : (request.mcpServers ?? existing.mcpServers);
+      const subagents = request.subagents === null ? undefined : (request.subagents ?? existing.subagents);
+
+      assertNoReservedMcpServerName(mcpServers);
+      assertSubagentsRequireTask(subagents, enabledTools);
+
+      const updated: EmbeddedAgentDefinition = {
+        id: existing.id,
+        engine: 'claude-sdk',
+        isBuiltIn: existing.isBuiltIn,
+        name: request.name ?? existing.name,
+        description:
+          request.description === null ? undefined : (request.description ?? existing.description),
+        // Narrowed to `{ model }`, NOT `request.provider ?? existing.provider`:
+        // `UpdateEmbeddedAgentRequestSchema.provider` is shaped for the
+        // openai-api arm (requires `baseUrl`, may carry `apiKeyRef`) because
+        // it predates this PR's claude-sdk update path. A bare `?? `
+        // assignment would structurally type-check (a `{baseUrl, model,
+        // apiKeyRef?}` object satisfies `{model: string}`) but would let a
+        // caller-supplied `baseUrl`/`apiKeyRef` leak onto a claude-sdk
+        // definition's `provider` at runtime -- violating "no provider
+        // secret ever crosses the server" for this engine (§3.2). Extract
+        // only `.model`.
+        provider: request.provider !== undefined ? { model: request.provider.model } : existing.provider,
+        systemPrompt:
+          request.systemPrompt === null ? undefined : (request.systemPrompt ?? existing.systemPrompt),
+        maxToolIterations:
+          request.maxToolIterations === null
+            ? undefined
+            : (request.maxToolIterations ?? existing.maxToolIterations),
+        enabledTools,
+        instructions:
+          request.instructions === null ? undefined : (request.instructions ?? existing.instructions),
+        contextWindowTokens:
+          request.contextWindowTokens === null
+            ? undefined
+            : (request.contextWindowTokens ?? existing.contextWindowTokens),
+        compaction: request.compaction === null ? undefined : (request.compaction ?? existing.compaction),
+        mcpServers,
+        subagents,
+        createdBy: existing.createdBy,
+        createdAt: existing.createdAt,
+        updatedAt: new Date().toISOString(),
+      };
+
+      await this.repository.save(updated);
+      this.embeddedAgents.set(id, updated);
+
+      logger.info(
+        { embeddedAgentId: id, name: updated.name, engine: updated.engine },
+        'Embedded agent updated'
       );
-      return null;
+
+      this.lifecycleCallbacks?.onEmbeddedAgentUpdated(updated);
+
+      return updated;
+    }
+
+    // 'openai-api' branch. mcpServers/subagents/'Task' are all incapable on
+    // this engine -- reject loudly rather than silently accepting a
+    // representable-but-ignored value (mcpServers/subagents are
+    // representable here because UpdateEmbeddedAgentRequestSchema stays
+    // flat/non-discriminated; 'Task' is representable because it is a
+    // shared picklist value on enabledTools).
+    const mcpServersCapability = EMBEDDED_AGENT_ENGINE_PARAMETER_CAPABILITIES['openai-api'].mcpServers;
+    if (!mcpServersCapability.capable && request.mcpServers !== undefined) {
+      throw new ValidationError(mcpServersCapability.reason);
+    }
+    const taskCapability = EMBEDDED_AGENT_ENGINE_PARAMETER_CAPABILITIES['openai-api'].task;
+    if (!taskCapability.capable && request.subagents !== undefined) {
+      throw new ValidationError(taskCapability.reason);
+    }
+    const resolvedEnabledTools =
+      request.enabledTools === null ? undefined : (request.enabledTools ?? existing.enabledTools);
+    if (!taskCapability.capable && resolvedEnabledTools?.includes('Task')) {
+      throw new ValidationError(taskCapability.reason);
     }
 
     const updated: EmbeddedAgentDefinition = {
@@ -240,8 +391,7 @@ export class EmbeddedAgentManager implements AgentSurface<'embedded'> {
         request.maxToolIterations === null
           ? undefined
           : (request.maxToolIterations ?? existing.maxToolIterations),
-      enabledTools:
-        request.enabledTools === null ? undefined : (request.enabledTools ?? existing.enabledTools),
+      enabledTools: resolvedEnabledTools,
       instructions:
         request.instructions === null ? undefined : (request.instructions ?? existing.instructions),
       contextWindowTokens:

@@ -902,6 +902,8 @@ describe('WorkerLifecycleManager', () => {
       const incapableCapabilities = () => ({
         model: { capable: false as const, reason: 'test fixture: model overrides disabled for this engine' },
         reasoningEffort: { capable: true as const, acceptedValues: null, consumptionSite: 'test fixture' },
+        mcpServers: { capable: true as const, acceptedValues: null, consumptionSite: 'test fixture' },
+        task: { capable: true as const, acceptedValues: null, consumptionSite: 'test fixture' },
       });
       const lifecycleWithStub = new WorkerLifecycleManager(
         createDeps({ getEmbeddedAgentParameterCapabilitiesImpl: incapableCapabilities }),
@@ -930,6 +932,8 @@ describe('WorkerLifecycleManager', () => {
       const incapableCapabilities = () => ({
         model: { capable: true as const, acceptedValues: null, consumptionSite: 'test fixture' },
         reasoningEffort: { capable: false as const, reason: 'test fixture: reasoningEffort disabled for this engine' },
+        mcpServers: { capable: true as const, acceptedValues: null, consumptionSite: 'test fixture' },
+        task: { capable: true as const, acceptedValues: null, consumptionSite: 'test fixture' },
       });
       const lifecycleWithStub = new WorkerLifecycleManager(
         createDeps({ getEmbeddedAgentParameterCapabilitiesImpl: incapableCapabilities }),
