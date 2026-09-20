@@ -178,7 +178,11 @@
 import { existsSync, mkdirSync, mkdtempSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import type { McpServerConfig, Options, Settings } from '../../packages/embedded-agent/node_modules/@anthropic-ai/claude-agent-sdk';
+import { createSdkMcpServer, type McpServerConfig, type Options, type Settings } from '../../packages/embedded-agent/node_modules/@anthropic-ai/claude-agent-sdk';
+import { McpServer } from '../../packages/embedded-agent/node_modules/@modelcontextprotocol/sdk/dist/esm/server/mcp.js';
+import { WebStandardStreamableHTTPServerTransport } from '../../packages/embedded-agent/node_modules/@modelcontextprotocol/sdk/dist/esm/server/webStandardStreamableHttp.js';
+import { SDK_COMPACT_TOOL_NAME, createSdkCompactTool, createSdkTodoWriteTool } from '../../packages/embedded-agent/src/sdk-engine.js';
+import { SDK_TODO_WRITE_TOOL_NAME } from '../../packages/shared/src/types/embedded-agent.ts';
 import {
   ProbeSession,
   isolateClaudeConfigDir,
@@ -238,6 +242,18 @@ export const PROJECT_SERVER_X = 'probe-project-x';
 export const PROJECT_SERVER_Y = 'probe-project-y';
 /** Explicit-`Options.mcpServers` arm-G server name. */
 export const EXPLICIT_SERVER_G = 'probe-explicit-g';
+/**
+ * Project-FILE (`.mcp.json`) arm-G server name -- distinct from X/Y, and
+ * declared with its OWN `${PROBE_VAR}`-bearing `args` entry, so arm G's
+ * `projectFile` control actually exercises the same expansion question as
+ * `explicit` rather than reusing X's plain declaration (which never carried
+ * the placeholder argument at all).
+ */
+export const PROJECT_FILE_SERVER_G = 'probe-project-file-g';
+/** G3 (project-file-scope env/headers/url expansion): distinct server names, all declared in `.mcp.json`. */
+export const G3_ENV_SERVER = 'probe-g3-env';
+export const G3_HEADERS_SERVER = 'probe-g3-headers';
+export const G3_URL_SERVER = 'probe-g3-url';
 
 export const ALL_SERVER_NAMES = [USER_SERVER, LOCAL_SERVER, PROJECT_SERVER_X, PROJECT_SERVER_Y] as const;
 export type ServerName = (typeof ALL_SERVER_NAMES)[number];
@@ -279,7 +295,7 @@ export function hasMcp(init: InitLite, name: string): boolean {
 // Arm A -- settingSources: ['user'] and its controls
 // ---------------------------------------------------------------------------
 
-export type ArmALabel = 'A' | 'A+' | 'A-' | 'A2';
+export type ArmALabel = 'A' | 'A+' | 'A-' | 'A2' | 'A3';
 
 export interface ArmASessionReading {
   label: ArmALabel;
@@ -325,6 +341,21 @@ export function expectedForArmA(label: ArmALabel): ArmAExpectation {
       // to load exactly as in plain arm A.
       return {
         spawned: { [USER_SERVER]: false, [LOCAL_SERVER]: false, [PROJECT_SERVER_X]: false, [PROJECT_SERVER_Y]: false } as Record<ServerName, boolean>,
+        canaries: { userClaudeMd: true, projectClaudeMd: false, unscopedRule: false },
+        agents: { user: true, project: false },
+      };
+    case 'A3':
+      // Orchestrator/Architect addendum (2026-09-20), added after plain arm
+      // A measured that 'user' alone does NOT cover local-scope MCP (L).
+      // The load-bearing question for design II: does 'local' ALSO leak in
+      // project-scope (X, Y)? Expected=false here is the HOPE, not an
+      // assumption -- a measured true is the finding this session exists to
+      // surface, via the same MCP-containment STOP path as every other
+      // label. CLAUDE.md/agent visibility is expected identical to plain A,
+      // since 'local' only adds a settings/MCP source, not a different
+      // user-scope loader.
+      return {
+        spawned: { [USER_SERVER]: true, [LOCAL_SERVER]: true, [PROJECT_SERVER_X]: false, [PROJECT_SERVER_Y]: false } as Record<ServerName, boolean>,
         canaries: { userClaudeMd: true, projectClaudeMd: false, unscopedRule: false },
         agents: { user: true, project: false },
       };
@@ -376,7 +407,7 @@ export function classifyArmASession(r: ArmASessionReading): ArmVerdict {
 // Arm C -- the managedSettings/settings "wall"
 // ---------------------------------------------------------------------------
 
-export type CVariant = 'baseline' | 'C1' | 'C2' | 'C3' | 'C5';
+export type CVariant = 'baseline' | 'C1' | 'C1b' | 'C1c' | 'C2' | 'C2p' | 'C3' | 'C5';
 export type Carrier = 'managedSettings' | 'settings';
 
 export interface ArmCSessionReading {
@@ -400,9 +431,31 @@ function literalCVariantExpectation(variant: CVariant): { U: boolean; X: boolean
       return { U: true, X: true, Y: true };
     case 'C1':
       return { U: false, X: true, Y: false };
+    case 'C1b':
+      // Diagnostic (my own addition, before reporting C1/C2/C3): a
+      // NAME-ONLY allow entry (no serverCommand), isolating whether the
+      // compound serverName+serverCommand entry's argv reconstruction is
+      // what actually failed to match X in C1/C2/C3, rather than the field
+      // doing nothing regardless of content. If this ALSO reads
+      // {U:false,X:false,Y:false}, the "blocks everything regardless of
+      // content" finding stands on firmer ground; if X starts here, the
+      // C1/C2/C3 result is attributable to a bad serverCommand match, not
+      // to the field being inert.
+      return { U: false, X: true, Y: false };
+    case 'C1c':
+      // Orchestrator/Architect addendum: re-run of C1's exact-argv shape,
+      // now with an absolute `command` path so PATH-resolution cannot be
+      // the reason a match fails. Expected: X admitted (the exact-argv
+      // "hash" actually works once the compared string is unambiguous).
+      return { U: false, X: true, Y: false };
     case 'C2':
       // Mutated argv -- the allow-array's entry no longer matches X at all,
       // so literal semantics says NOTHING is allowed (X included).
+      return { U: false, X: false, Y: false };
+    case 'C2p':
+      // C1c's sibling with one argv element mutated -- the hash-equivalence
+      // negative: expected X now blocked, proving the exact-argv comparison
+      // is sensitive to content once the base case (C1c) is known to work.
       return { U: false, X: false, Y: false };
     case 'C3':
       return { U: false, X: false, Y: false };
@@ -492,14 +545,22 @@ export function classifyArmBSession(r: ArmBSessionReading): ArmVerdict {
 // Arm F -- claudeMdExcludes feasibility (design III input)
 // ---------------------------------------------------------------------------
 
-export type FVariant = 'control' | 'F1-settings' | 'F1-managedSettings';
+export type FVariant = 'control' | 'F1-settings' | 'F1-managedSettings' | 'F2-settings';
 
 export interface ArmFSessionReading {
   variant: FVariant;
   settled: boolean;
   init: InitLite | null;
   spawned: { X: boolean; Y: boolean };
-  canaries: { projectClaudeMd: boolean; unscopedRule: boolean };
+  /**
+   * `userClaudeMd` is recorded for every variant but only ASSERTED for F2
+   * (Architect addendum, 2026-09-20): F1's glob (`**\/CLAUDE.md`) is
+   * absolute-path-matched, so it may ALSO exclude the isolated config dir's
+   * own user-level CLAUDE.md -- an open question, not a stop, for F1. F2's
+   * point is a NARROW, project-file-only exclude that must leave user-level
+   * content untouched, so a suppressed userClaudeMd there IS a stop.
+   */
+  canaries: { userClaudeMd: boolean; projectClaudeMd: boolean; unscopedRule: boolean };
 }
 
 export function classifyArmFSession(r: ArmFSessionReading): ArmVerdict {
@@ -511,6 +572,19 @@ export function classifyArmFSession(r: ArmFSessionReading): ArmVerdict {
   if (r.variant === 'control') {
     if (!r.canaries.projectClaudeMd || !r.canaries.unscopedRule) {
       stops.push(`armF[control] canaries did not load with no excludes present -- measured ${JSON.stringify(r.canaries)}`);
+    }
+  } else if (r.variant === 'F2-settings') {
+    // Narrow, project-file-only exclude: X/Y unaffected (recorded, not the
+    // point of F2), project CLAUDE.md suppressed, user CLAUDE.md AND the
+    // unscoped rule (untouched by this narrower pattern) must survive.
+    if (r.canaries.projectClaudeMd) {
+      stops.push(`armF[F2-settings] the narrow project-file-only exclude did NOT suppress the project canary -- measured ${JSON.stringify(r.canaries)}`);
+    }
+    if (!r.canaries.userClaudeMd) {
+      stops.push(`armF[F2-settings] the narrow exclude ALSO suppressed user-level CLAUDE.md -- design II cannot drop only the loader-supplied file -- measured ${JSON.stringify(r.canaries)}`);
+    }
+    if (!r.canaries.unscopedRule) {
+      stops.push(`armF[F2-settings] the narrow exclude unexpectedly suppressed the unscoped rule too -- measured ${JSON.stringify(r.canaries)}`);
     }
   } else {
     // Feasibility claim: X/Y still start (excludes only gate CLAUDE.md/rules
@@ -623,16 +697,23 @@ export function classifyArmGSession(r: ArmGSessionReading): ArmVerdict {
 // ---------------------------------------------------------------------------
 
 const ARM_FLAGS = ['--armA', '--armC', '--armB', '--armF', '--armE', '--armD', '--armG'] as const;
+/**
+ * `--armA3` (Orchestrator/Architect addendum, 2026-09-20) is deliberately
+ * NOT part of `ARM_FLAGS`'s default population: arm A had already run and
+ * been reported before A3 was requested, so it must be billable on its own
+ * rather than re-running (and re-billing) the original four-session arm A.
+ */
+const EXTRA_FLAGS = ['--armA3', '--armC1b', '--armC1d', '--armC1e', '--armC1c', '--armG2', '--armG3'] as const;
 const USAGE_TEXT =
-  'Usage: bun scripts/smoke/probe-sdk-mcp-settings-sources.ts [--armA] [--armC] [--armB] [--armF] [--armE] [--armD] [--armG] [--max-usd <n>]\n' +
-  '  Default (no arm flag) = all seven, in owner-directed order (A, C, B, F, E, D, G). Operationally run across several invocations: A alone first, its result reported, then the rest.';
+  'Usage: bun scripts/smoke/probe-sdk-mcp-settings-sources.ts [--armA] [--armA3] [--armC] [--armC1b] [--armC1d] [--armC1c] [--armB] [--armF] [--armE] [--armD] [--armG] [--max-usd <n>]\n' +
+  '  Default (no arm flag) = the original seven, in owner-directed order (A, C, B, F, E, D, G). --armA3/--armC1b/--armC1d/--armC1c are addenda, explicit-only. Operationally run across several invocations: A alone first, its result reported, then the rest.';
 
 function parseArgs(argv: string[]): { arms: Set<string>; maxUsd: number } {
   const arms = new Set<string>();
   let maxUsd = 3;
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
-    if ((ARM_FLAGS as readonly string[]).includes(a)) {
+    if ((ARM_FLAGS as readonly string[]).includes(a) || (EXTRA_FLAGS as readonly string[]).includes(a)) {
       arms.add(a);
       continue;
     }
@@ -699,13 +780,21 @@ interface Fixtures {
   canaryDir: string;
   hookCanaryPath: string;
   canaries: Canaries;
+  /** Arm G's project-file server: the value baked into its `.mcp.json` `env` block. */
+  armGProjectFileValue: string;
 }
 
 function stdioServerConfig(name: string, extraArgs: string[] = [], env?: Record<string, string>): McpServerConfig {
   const canaryPath = join(fixturesCanaryDir, `${name}.touched`);
   return {
     type: 'stdio',
-    command: 'bun',
+    // Orchestrator/Architect addendum (2026-09-20), after C1/C2's bare
+    // `command: 'bun'` collapsed to identical "blocked" readings alongside
+    // C3's empty-array control: an absolute path removes PATH-resolution
+    // as a variable in the C1c/C2' exact-argv matching diagnostic, so a
+    // failure to match there is attributable to the SDK's comparison
+    // semantics, not to a resolvable-vs-literal command-string mismatch.
+    command: process.execPath,
     args: [FIXTURE_PATH, '--canary', canaryPath, '--env-var', 'PROBE_MCP_ECHO_VAR', ...extraArgs],
     alwaysLoad: true,
     ...(env ? { env } : {}),
@@ -738,7 +827,7 @@ function readSpawnCanaries<N extends string>(names: readonly N[]): Record<N, boo
  * arm (content is read-only across arms; only the spawn-canary files and
  * hook-canary file are reset per session).
  */
-function buildFixtures(): Fixtures {
+function buildFixtures(g3HeaderStandInUrl: string): Fixtures {
   const configDir = isolateClaudeConfigDir('mcp-settings-sources');
   const scratchDir = mkdtempSync(join(tmpdir(), 'probe-sdk-mcp-settings-sources-repo-'));
   const canaryDir = mkdtempSync(join(tmpdir(), 'probe-sdk-mcp-settings-sources-canaries-'));
@@ -799,6 +888,19 @@ function buildFixtures(): Fixtures {
       2,
     ),
   );
+  // Arm G's project-file server: the SAME `${VAR}`-in-args shape as the
+  // explicit-scope variant, so the two are actually comparable (fixing the
+  // bug where the projectFile control originally reused X's plain
+  // declaration, which never carried the placeholder argument at all).
+  const armGProjectFileValue = `probe-g-projectfile-expanded-${nonce('VAL')}`;
+  const armGLiteralTag = '${PROBE_VAR}';
+
+  // G3 (project-file-scope version of G2): the SAME env:/headers:/url:
+  // `${VAR}` shapes as G2's explicit-scope servers, declared in `.mcp.json`
+  // instead of `Options.mcpServers`. `g3HeaderStandInUrl` is created by the
+  // caller BEFORE this function runs (its port must be known at file-write
+  // time); `${PROBE_PORT}` in the url server is expanded (or not) from
+  // `armG3()`'s own process.env, exactly like G2.
   writeFileSync(
     join(scratchDir, '.mcp.json'),
     JSON.stringify(
@@ -806,6 +908,20 @@ function buildFixtures(): Fixtures {
         mcpServers: {
           [PROJECT_SERVER_X]: stdioServerConfig(PROJECT_SERVER_X),
           [PROJECT_SERVER_Y]: stdioServerConfig(PROJECT_SERVER_Y),
+          [PROJECT_FILE_SERVER_G]: stdioServerConfig(PROJECT_FILE_SERVER_G, [armGLiteralTag], { PROBE_VAR: armGProjectFileValue }),
+          [G3_ENV_SERVER]: stdioServerConfig(G3_ENV_SERVER, [], { PROBE_MCP_ECHO_VAR: '${PROBE_VAR}' }),
+          [G3_HEADERS_SERVER]: {
+            type: 'http',
+            url: g3HeaderStandInUrl,
+            headers: { 'X-Probe': 'v-${PROBE_VAR}' },
+            alwaysLoad: true,
+          },
+          [G3_URL_SERVER]: {
+            type: 'http',
+            url: 'http://127.0.0.1:${PROBE_PORT}/',
+            headers: { Authorization: `Bearer ${PROBE_TOKEN}` },
+            alwaysLoad: true,
+          },
         },
       },
       null,
@@ -813,7 +929,7 @@ function buildFixtures(): Fixtures {
     ),
   );
 
-  return { configDir, scratchDir, canaryDir, hookCanaryPath, canaries };
+  return { configDir, scratchDir, canaryDir, hookCanaryPath, canaries, armGProjectFileValue };
 }
 
 function askCanaryPrompt(canaries: Canaries): string {
@@ -854,6 +970,14 @@ function buildOptions(cwd: string, agentConsoleUrl: string, v: BatteryVariation)
         headers: { Authorization: `Bearer ${PROBE_TOKEN}` },
         alwaysLoad: true,
       },
+      // Added for the Architect's C1d+e diagnostic (2026-09-20): production
+      // parity requires the in-process 'console' server present too, so an
+      // allowlist naming it can be tested for re-admission alongside the
+      // HTTP-based 'agent-console' stand-in.
+      console: createSdkMcpServer({
+        name: 'console',
+        tools: [createSdkCompactTool(() => undefined), createSdkTodoWriteTool()],
+      }),
       ...(v.extraMcpServers ?? {}),
     },
     permissionMode: 'bypassPermissions',
@@ -933,6 +1057,18 @@ async function runArmASession(label: ArmALabel, f: Fixtures, url: string, settin
   return classifyArmASession({ label, settled, init: settled ? run.init : null, spawned, canaries });
 }
 
+/**
+ * A3 -- Orchestrator/Architect addendum (2026-09-20), added after plain arm
+ * A measured that `settingSources: ['user']` alone does not cover
+ * local-scope MCP (L). Run as its own flag (`--armA3`) so it can be billed
+ * separately from the original four-session arm A, which had already run
+ * and been reported before this addendum arrived.
+ */
+async function armA3(f: Fixtures, url: string): Promise<ArmVerdict> {
+  h('ARM A3 (addendum) -- settingSources: [\'user\',\'local\']');
+  return runArmASession('A3', f, url, ['user', 'local']);
+}
+
 async function armA(f: Fixtures, url: string, maxUsd: number): Promise<ArmVerdict[]> {
   h('ARM A -- settingSources: [\'user\'] and controls (A, A+, A-, A2)');
   const verdicts: ArmVerdict[] = [];
@@ -959,7 +1095,20 @@ function cVariantPayload(variant: Exclude<CVariant, 'baseline'>): Partial<Settin
   switch (variant) {
     case 'C1':
       return { allowedMcpServers: [{ serverName: PROJECT_SERVER_X, serverCommand: exactArgvFor(PROJECT_SERVER_X) }] };
+    case 'C1b':
+      return { allowedMcpServers: [{ serverName: PROJECT_SERVER_X }] };
+    case 'C1c':
+      // Same shape as C1, but stdioServerConfig() now emits an ABSOLUTE
+      // command path (process.execPath), so exactArgvFor() reconstructs a
+      // string the CLI cannot ambiguously re-resolve.
+      return { allowedMcpServers: [{ serverName: PROJECT_SERVER_X, serverCommand: exactArgvFor(PROJECT_SERVER_X) }] };
     case 'C2': {
+      const argv = exactArgvFor(PROJECT_SERVER_X);
+      const mutated = [...argv];
+      mutated[mutated.length - 1] = `${mutated[mutated.length - 1]}-mutated`;
+      return { allowedMcpServers: [{ serverName: PROJECT_SERVER_X, serverCommand: mutated as [string, ...string[]] }] };
+    }
+    case 'C2p': {
       const argv = exactArgvFor(PROJECT_SERVER_X);
       const mutated = [...argv];
       mutated[mutated.length - 1] = `${mutated[mutated.length - 1]}-mutated`;
@@ -1011,6 +1160,136 @@ async function armC(f: Fixtures, url: string, maxUsd: number): Promise<{ verdict
     }
   }
   return { verdicts, baselineInit: baseline.init };
+}
+
+/**
+ * C1b diagnostic -- run standalone (`--armC1b`) so it can be billed on its
+ * own after arm C already ran and showed C1/C2/C3 collapsing to the SAME
+ * "everything blocked" reading under BOTH carriers, which cannot by itself
+ * distinguish "the field does nothing regardless of content" from "the
+ * compound serverName+serverCommand entry's argv reconstruction failed to
+ * match X" (workflow.md's "a check's existence is not its detection
+ * power" applied to this arm's own C1 row). A name-only allow entry
+ * isolates the two: X admitted here means C1/C2/C3's result is a harness
+ * argv-matching artifact, not a genuine SDK finding.
+ */
+async function armC1bDiagnostic(f: Fixtures, url: string): Promise<ArmVerdict[]> {
+  h('ARM C1b (diagnostic) -- name-only allowedMcpServers entry, both carriers');
+  const verdicts: ArmVerdict[] = [];
+  for (const carrier of ['managedSettings', 'settings'] as const) {
+    const { verdict } = await runArmCSession('C1b', carrier, f, url);
+    verdicts.push(verdict);
+  }
+  return verdicts;
+}
+
+/**
+ * C1c / C2' -- Orchestrator/Architect addendum (2026-09-20): pins whether
+ * `serverCommand` exact-argv matching works AT ALL on this SDK version, now
+ * that `command` is an absolute path (removing PATH-resolution ambiguity as
+ * a candidate explanation for C1/C2's uniform "blocked" reading). Settings
+ * carrier only -- C1/C1b/C2/C3/C5 already established the two carriers
+ * behave identically for this field, so a second carrier here would spend a
+ * turn confirming an already-measured equivalence rather than answering a
+ * new question. If C1c STILL blocks X, that is itself the recorded finding
+ * (exact-argv matching unusable on 0.3.238, form unknown) -- not a harness
+ * failure, since the apparatus already proved it CAN admit a server (C1b).
+ */
+/** The connector name diagnostic C1d+e names first by its label form (not the tool-name slug), matching `system:init.mcp_servers[].name`'s observed shape. */
+const DIAGNOSTIC_CONNECTOR_LABEL = 'claude.ai Google Drive';
+const DIAGNOSTIC_CONNECTOR_SLUG = 'claude_ai_Google_Drive';
+const DIAGNOSTIC_CONNECTOR_TOOL_PREFIX = 'mcp__claude_ai_Google_Drive__';
+const OTHER_CONNECTOR_LABELS = ['claude.ai Claude Docs', 'claude.ai Google Calendar', 'claude.ai Gmail'];
+
+/**
+ * C1d+e (Architect's exact shape, 2026-09-20, sent directly -- theirs wins):
+ * one session, `settings.allowedMcpServers` naming FOUR servers by
+ * `serverName` alone: the reserved HTTP stand-in (`agent-console`), the
+ * reserved in-process SDK server (`console`), one project-scope server (X),
+ * and one claude.ai connector. Four observations recorded SEPARATELY, per
+ * the Architect's spec, because a failure on (1)/(2) is the load-bearing
+ * "SDK-native allowlist wall is incompatible with the reserved pair"
+ * finding -- it must never be folded into a single pass/fail.
+ *
+ * `connectorNameForm` parameterizes obs4's naming form: the label ("claude.ai
+ * Google Drive", matching `mcp_servers[].name`'s observed shape) is the
+ * Architect's primary form; the slug ("claude_ai_Google_Drive") is the
+ * OPTIONAL follow-up their own spec names if the label form reads absent.
+ */
+async function armC1dePlus(f: Fixtures, url: string, connectorNameForm: 'label' | 'slug' = 'label'): Promise<ArmVerdict> {
+  const connectorName = connectorNameForm === 'label' ? DIAGNOSTIC_CONNECTOR_LABEL : DIAGNOSTIC_CONNECTOR_SLUG;
+  const arm = connectorNameForm === 'label' ? 'C1d+e' : 'C1e-slug';
+  h(`ARM ${arm} (Architect's shape) -- allowlist by name: agent-console, console, X, a claude.ai connector (${connectorNameForm} form)`);
+  resetSpawnCanaries([USER_SERVER, PROJECT_SERVER_X, PROJECT_SERVER_Y]);
+  const run = await runOneSession(
+    `armC-${arm}`,
+    f.scratchDir,
+    url,
+    {
+      settingSources: ['user', 'project'],
+      strictMcpConfig: false,
+      settings: {
+        allowedMcpServers: [
+          { serverName: 'agent-console' },
+          { serverName: 'console' },
+          { serverName: PROJECT_SERVER_X },
+          { serverName: connectorName },
+        ],
+      },
+    },
+    PONG_PROMPT,
+  );
+  const settled = turnSettled(run.outcome);
+  const spawned = readSpawnCanaries([USER_SERVER, PROJECT_SERVER_X, PROJECT_SERVER_Y]);
+  if (!settled || !run.init) {
+    return { arm, conclusive: false, verdict: 'INCONCLUSIVE -- turn did not settle or no system:init', stops: [] };
+  }
+  const init = run.init;
+  const agentConsoleStatus = mcpStatus(init, 'agent-console');
+  const consoleStatus = mcpStatus(init, 'console');
+  const consoleToolsPresent = init.tools.includes(SDK_COMPACT_TOOL_NAME) && init.tools.includes(SDK_TODO_WRITE_TOOL_NAME);
+  const connectorPresent = hasMcp(init, DIAGNOSTIC_CONNECTOR_LABEL) || hasMcp(init, DIAGNOSTIC_CONNECTOR_SLUG);
+  const connectorToolsPresent = init.tools.some((t) => t.startsWith(DIAGNOSTIC_CONNECTOR_TOOL_PREFIX));
+  const otherConnectorsPresent = OTHER_CONNECTOR_LABELS.filter((n) => hasMcp(init, n));
+  const obs1 = agentConsoleStatus === 'connected';
+  const obs2 = consoleStatus === 'connected' && consoleToolsPresent;
+  const obs3 = spawned[PROJECT_SERVER_X] && !spawned[USER_SERVER] && !spawned[PROJECT_SERVER_Y];
+  const obs4 = connectorPresent && connectorToolsPresent && otherConnectorsPresent.length === 0;
+  const stops: string[] = [];
+  if (!obs1 || !obs2) {
+    stops.push(
+      `${arm} LOAD-BEARING -- naming the reserved pair by serverName did NOT re-admit both: agent-console status=${agentConsoleStatus ?? '(absent)'} (obs1=${obs1}), console status=${consoleStatus ?? '(absent)'} tools=${consoleToolsPresent} (obs2=${obs2}). An SDK-native allowlist wall is incompatible with the reserved pair on this build.`,
+    );
+  }
+  if (!obs3) {
+    stops.push(`${arm} obs3 deviated -- spawned=${JSON.stringify(spawned)} (expected X only)`);
+  }
+  if (!obs4) {
+    stops.push(
+      `${arm} obs4 (${connectorNameForm} form) -- connector re-admission did not read as expected: present=${connectorPresent} toolsPresent=${connectorToolsPresent} otherConnectorsStillPresent=${JSON.stringify(otherConnectorsPresent)}`,
+    );
+  }
+  return {
+    arm,
+    conclusive: true,
+    verdict:
+      `battery includes console=true; obs1(agent-console connected)=${obs1} status=${agentConsoleStatus ?? '(absent)'}; ` +
+      `obs2(console connected+tools)=${obs2} status=${consoleStatus ?? '(absent)'} toolsPresent=${consoleToolsPresent}; ` +
+      `obs3(X only)=${obs3} spawned=${JSON.stringify(spawned)}; ` +
+      `obs4(connector re-admitted via ${connectorNameForm} form, others absent)=${obs4} present=${connectorPresent} toolsPresent=${connectorToolsPresent} otherConnectorsPresent=${JSON.stringify(otherConnectorsPresent)}; ` +
+      `full mcp_servers=${JSON.stringify(init.mcpServers)}`,
+    stops,
+  };
+}
+
+async function armC1cDiagnostic(f: Fixtures, url: string): Promise<ArmVerdict[]> {
+  h("ARM C1c/C2' (diagnostic) -- exact-argv matching with an absolute command path, settings carrier");
+  const verdicts: ArmVerdict[] = [];
+  const c1c = await runArmCSession('C1c', 'settings', f, url);
+  verdicts.push(c1c.verdict);
+  const c2p = await runArmCSession('C2p', 'settings', f, url);
+  verdicts.push(c2p.verdict);
+  return verdicts;
 }
 
 // ---------------------------------------------------------------------------
@@ -1065,6 +1344,11 @@ async function runArmFSession(variant: FVariant, f: Fixtures, url: string): Prom
   const battery: BatteryVariation = { settingSources: ['user', 'project'], strictMcpConfig: false };
   if (variant === 'F1-settings') battery.settings = { claudeMdExcludes: CLAUDE_MD_EXCLUDES };
   if (variant === 'F1-managedSettings') battery.managedSettings = { claudeMdExcludes: CLAUDE_MD_EXCLUDES };
+  // F2 (Architect addendum, 2026-09-20): a NARROW, absolute-path exclude
+  // naming only the project's own CLAUDE.md -- does design II's exclude
+  // knob drop just the loader-supplied file, leaving user-level CLAUDE.md
+  // (and the unscoped rule, untouched by this narrower pattern) intact?
+  if (variant === 'F2-settings') battery.settings = { claudeMdExcludes: [join(f.scratchDir, 'CLAUDE.md')] };
   const run = await runOneSession(`armF-${variant}`, f.scratchDir, url, battery, askCanaryPrompt(f.canaries));
   const settled = turnSettled(run.outcome);
   const spawned = readSpawnCanaries([PROJECT_SERVER_X, PROJECT_SERVER_Y]);
@@ -1074,7 +1358,7 @@ async function runArmFSession(variant: FVariant, f: Fixtures, url: string): Prom
     settled,
     init: settled ? run.init : null,
     spawned: { X: spawned[PROJECT_SERVER_X], Y: spawned[PROJECT_SERVER_Y] },
-    canaries: { projectClaudeMd: canaries.projectClaudeMd, unscopedRule: canaries.unscopedRule },
+    canaries,
   });
   console.log(`armF-${variant} verdict: ${verdict.verdict}`);
   return verdict;
@@ -1083,7 +1367,7 @@ async function runArmFSession(variant: FVariant, f: Fixtures, url: string): Prom
 async function armF(f: Fixtures, url: string, maxUsd: number): Promise<ArmVerdict[]> {
   h('ARM F -- claudeMdExcludes feasibility (design III input)');
   const verdicts: ArmVerdict[] = [];
-  for (const variant of ['control', 'F1-settings', 'F1-managedSettings'] as const) {
+  for (const variant of ['control', 'F1-settings', 'F1-managedSettings', 'F2-settings'] as const) {
     verdicts.push(await runArmFSession(variant, f, url));
     checkBudget(maxUsd);
   }
@@ -1125,8 +1409,28 @@ function connectorNamesFrom(init: InitLite | null): string[] {
   return init.mcpServers.map((s) => s.name).filter((n) => !RESERVED_MCP_SERVER_NAMES.includes(n as never) && n.toLowerCase().includes('claude'));
 }
 
+/**
+ * `baselineInit` reuses arm C's baseline reading when this invocation ran
+ * `--armC` first (avoiding a redundant billed control session). When D runs
+ * standalone (its own invocation), `baselineInit` is null and this runs one
+ * cheap control session itself instead of assuming a fixed connector list --
+ * the connector set is empirically stable across every session observed so
+ * far, but asserting that stability without re-checking would be exactly
+ * the "trust a secondary signal" trap workflow.md warns about.
+ */
 async function armD(f: Fixtures, url: string, baselineInit: InitLite | null): Promise<ArmVerdict> {
-  h('ARM D (optional) -- disableClaudeAiConnectors');
+  h('ARM D -- disableClaudeAiConnectors');
+  let control = baselineInit;
+  if (!control) {
+    const controlRun = await runOneSession(
+      'armD-control',
+      f.scratchDir,
+      url,
+      { settingSources: ['user', 'project'], strictMcpConfig: false },
+      PONG_PROMPT,
+    );
+    control = turnSettled(controlRun.outcome) ? controlRun.init : null;
+  }
   const run = await runOneSession(
     'armD',
     f.scratchDir,
@@ -1135,7 +1439,7 @@ async function armD(f: Fixtures, url: string, baselineInit: InitLite | null): Pr
     PONG_PROMPT,
   );
   const settled = turnSettled(run.outcome);
-  const verdict = classifyArmD({ settled, init: settled ? run.init : null, controlConnectorNames: connectorNamesFrom(baselineInit) });
+  const verdict = classifyArmD({ settled, init: settled ? run.init : null, controlConnectorNames: connectorNamesFrom(control) });
   console.log(`armD verdict: ${verdict.verdict}`);
   return verdict;
 }
@@ -1149,7 +1453,13 @@ async function runArmGSession(variant: GVariant, f: Fixtures, url: string, liter
     variant === 'explicit'
       ? { settingSources: ['user', 'project'], extraMcpServers: { [EXPLICIT_SERVER_G]: stdioServerConfig(EXPLICIT_SERVER_G, [literalTag], { PROBE_VAR: envValue }) } }
       : { settingSources: ['user', 'project'] };
-  const serverName = variant === 'explicit' ? EXPLICIT_SERVER_G : PROJECT_SERVER_X;
+  // `projectFile` uses PROJECT_FILE_SERVER_G, a DEDICATED `.mcp.json` entry
+  // carrying the same `${PROBE_VAR}`-in-args shape as `explicit` (baked in
+  // by buildFixtures(), env value in `f.armGProjectFileValue`) -- fixed
+  // from an earlier version that reused X's plain declaration, which never
+  // had the placeholder argument at all and could not have measured
+  // anything about expansion.
+  const serverName = variant === 'explicit' ? EXPLICIT_SERVER_G : PROJECT_FILE_SERVER_G;
   const run = await runOneSession(
     `armG-${variant}`,
     f.scratchDir,
@@ -1174,25 +1484,225 @@ async function runArmGSession(variant: GVariant, f: Fixtures, url: string, liter
 
 async function armG(f: Fixtures, url: string, maxUsd: number): Promise<ArmVerdict[]> {
   h('ARM G (optional) -- env-var expansion in declared server args');
-  const envValue = `probe-g-expanded-${nonce('VAL')}`;
   const literalTag = '${PROBE_VAR}';
   const verdicts: ArmVerdict[] = [];
-  verdicts.push(await runArmGSession('explicit', f, url, literalTag, envValue));
+  // Each variant compares against its OWN baked-in env value: `explicit`'s
+  // is generated fresh per invocation (its server is declared inline);
+  // `projectFile`'s was baked into `.mcp.json` at buildFixtures() time
+  // (`f.armGProjectFileValue`), since the file is written once, before this
+  // function runs.
+  verdicts.push(await runArmGSession('explicit', f, url, literalTag, `probe-g-explicit-expanded-${nonce('VAL')}`));
   checkBudget(maxUsd);
-  // The project-file control needs the SAME literal placeholder + env value
-  // reachable via the process env the CLI inherits, since `.mcp.json`
-  // cannot carry a per-server `env` block distinct from the explicit-option
-  // path's own config in this probe's harness -- set it on this process's
-  // own env before spawning, matching how a real project `.mcp.json` server
-  // would only see `${PROBE_VAR}` if the CLI's OWN process environment (not
-  // the SDK's `Options.mcpServers` entry) carries it.
-  process.env.PROBE_VAR = envValue;
+  verdicts.push(await runArmGSession('projectFile', f, url, literalTag, f.armGProjectFileValue));
+  return verdicts;
+}
+
+// ---------------------------------------------------------------------------
+// Arm G2 -- Orchestrator's follow-up: does ${VAR} expand in env: / headers: / url:?
+// ---------------------------------------------------------------------------
+
+const G2_ENV_SERVER = 'probe-g2-env';
+const G2_HEADERS_SERVER = 'probe-g2-headers';
+const G2_URL_SERVER = 'probe-g2-url';
+
+/**
+ * A minimal HTTP MCP stand-in that records the last-seen value of a named
+ * request header, for the `headers:` sub-observation. Mirrors the sibling
+ * probe's `startAgentConsoleStandIn` construction (a fresh server+transport
+ * per request, since a stateless `WebStandardStreamableHTTPServerTransport`
+ * cannot be reused across requests -- see that function's own header for
+ * the measured crash this avoids).
+ */
+async function startHeaderCapturingStandIn(headerName: string): Promise<{ url: string; stop: () => void; lastValue: () => string | null }> {
+  let last: string | null = null;
+  const handleRequest = (req: Request): Promise<Response> => {
+    last = req.headers.get(headerName);
+    const server = new McpServer({ name: 'probe-g2-headers', version: '0.0.0-probe' });
+    server.registerTool('probe_ping', { description: 'Probe stand-in; replies pong.' }, async () => ({
+      content: [{ type: 'text' as const, text: 'pong' }],
+    }));
+    const transport = new WebStandardStreamableHTTPServerTransport({ sessionIdGenerator: undefined });
+    return server.connect(transport).then(() => transport.handleRequest(req));
+  };
+  const srv = Bun.serve({ port: 0, hostname: '127.0.0.1', fetch: handleRequest });
+  return { url: `http://127.0.0.1:${srv.port}/`, stop: () => srv.stop(true), lastValue: () => last };
+}
+
+/**
+ * G2 (Orchestrator's exact shape, 2026-09-20): ONE session, explicit
+ * `Options.mcpServers` path only, testing THREE `${VAR}`-expansion surfaces
+ * at once: a stdio server's `env:` value, an HTTP server's `headers:`
+ * value, and an HTTP server's `url:` value (port number). Each has its own
+ * control in the SAME session: the g2-env fixture starting normally is
+ * proof positive the battery itself works; the header-capturing stand-in
+ * records whatever it actually received (there is no "failure" shape for a
+ * header -- the request either carries the literal or the expanded string,
+ * always); the g2-url server's CONNECTION STATUS is the observable for
+ * that one (a literal `${PROBE_PORT}` is not a valid host:port, so it must
+ * fail to connect; the expanded real port must connect, and reaching the
+ * SAME stand-in the reserved `agent-console` entry already targets is the
+ * built-in positive control there).
+ */
+async function armG2(f: Fixtures, url: string): Promise<ArmVerdict> {
+  h("ARM G2 (Orchestrator's follow-up) -- ${VAR} expansion in env:/headers:/url:, explicit mcpServers only");
+  const probeVarValue = `probe-g2-env-expanded-${nonce('VAL')}`;
+  const headerLiteralOrExpanded = `v-\${PROBE_VAR}`;
+  const agentConsolePort = new URL(url).port;
+  const headerStandIn = await startHeaderCapturingStandIn('x-probe');
+  process.env.PROBE_VAR = probeVarValue;
+  process.env.PROBE_PORT = agentConsolePort;
   try {
-    verdicts.push(await runArmGSession('projectFile', f, url, literalTag, envValue));
+    const battery: BatteryVariation = {
+      settingSources: ['user', 'project'],
+      extraMcpServers: {
+        // The fixture's `envVarName` is fixed to `PROBE_MCP_ECHO_VAR` by
+        // `stdioServerConfig()`'s own `--env-var` arg (not parameterized
+        // here) -- the `env:` key under test MUST be that exact name, or
+        // the fixture reports `envValue: null` for a key that was never
+        // set, which is a harness bug, not a measurement (fixed after the
+        // first G2 run reported "UNKNOWN" for a mismatched key `PROBE_TOKEN`).
+        [G2_ENV_SERVER]: stdioServerConfig(G2_ENV_SERVER, [], { PROBE_MCP_ECHO_VAR: '${PROBE_VAR}' }),
+        [G2_HEADERS_SERVER]: {
+          type: 'http',
+          url: headerStandIn.url,
+          headers: { 'X-Probe': headerLiteralOrExpanded },
+          alwaysLoad: true,
+        },
+        [G2_URL_SERVER]: {
+          type: 'http',
+          url: 'http://127.0.0.1:${PROBE_PORT}/',
+          headers: { Authorization: `Bearer ${PROBE_TOKEN}` },
+          alwaysLoad: true,
+        },
+      },
+    };
+    // The fixture's tool returns a FLAT object -- {argv, envVarName,
+    // envValue} (stdio-echo-mcp-server.ts's own JSON.stringify call), never
+    // a nested "env" object -- ask for `envValue` directly.
+    const run = await runOneSession(
+      'armG2',
+      f.scratchDir,
+      url,
+      battery,
+      `Call the tool named mcp__${G2_ENV_SERVER}__probe_echo exactly once with no arguments. It returns a JSON object with an "envValue" field; reply with ONLY the exact string value of that field, and nothing else. If envValue is null, reply with exactly UNKNOWN.`,
+    );
+    const settled = turnSettled(run.outcome);
+    if (!settled || !run.init) {
+      return { arm: 'G2', conclusive: false, verdict: 'INCONCLUSIVE -- turn did not settle or no system:init', stops: [] };
+    }
+    const init = run.init;
+    // All three declared servers set `alwaysLoad: true`, which blocks
+    // startup until connected/failed (capped at the standard 5s connect
+    // timeout) -- `system:init` therefore already carries each one's FINAL
+    // status, with no need for a post-turn `mcpServerStatus()` poll (which
+    // would also require reading before `runOneSession`'s own
+    // `session.close()`, not after).
+    const statusOf = (name: string): string | null => mcpStatus(init, name);
+    const envStatus = statusOf(G2_ENV_SERVER);
+    const headersStatus = statusOf(G2_HEADERS_SERVER);
+    const urlStatus = statusOf(G2_URL_SERVER);
+    const reportedEnvValue = run.outcome.text.trim();
+    const envExpanded = reportedEnvValue === probeVarValue;
+    const envLiteral = reportedEnvValue === '${PROBE_VAR}';
+    const capturedHeader = headerStandIn.lastValue();
+    const headerExpanded = capturedHeader === `v-${probeVarValue}`;
+    const headerLiteral = capturedHeader === headerLiteralOrExpanded;
+    const urlExpanded = urlStatus === 'connected';
+    const controlOk = envStatus === 'connected' && statusOf('agent-console') === 'connected';
+    const stops: string[] = [];
+    if (!controlOk) {
+      stops.push(`G2 control failed -- g2-env status=${envStatus ?? '(absent)'}, agent-console status=${statusOf('agent-console') ?? '(absent)'}; readings below are not trustworthy`);
+    }
+    if (!envExpanded && !envLiteral) {
+      stops.push(`G2 env: reported value matched neither form -- reportedEnvValue=${JSON.stringify(reportedEnvValue)}`);
+    }
+    if (!headerExpanded && !headerLiteral) {
+      stops.push(`G2 headers: captured value matched neither form -- capturedHeader=${JSON.stringify(capturedHeader)}`);
+    }
+    return {
+      arm: 'G2',
+      conclusive: true,
+      verdict:
+        `controlOk=${controlOk}; ` +
+        `env: reportedValue=${JSON.stringify(reportedEnvValue)} expanded=${envExpanded} literal=${envLiteral}; ` +
+        `headers: capturedValue=${JSON.stringify(capturedHeader)} expanded=${headerExpanded} literal=${headerLiteral}; ` +
+        `url: status=${urlStatus ?? '(absent)'} expanded(connected)=${urlExpanded}; ` +
+        `mcp_servers=${JSON.stringify(init.mcpServers)}`,
+      stops,
+    };
   } finally {
     delete process.env.PROBE_VAR;
+    delete process.env.PROBE_PORT;
+    headerStandIn.stop();
   }
-  return verdicts;
+}
+
+/**
+ * G3 (Orchestrator's follow-up, 2026-09-20) -- the `.mcp.json`-path sibling
+ * of G2: the SAME env:/headers:/url: `${VAR}` shapes, declared in the
+ * project file instead of `Options.mcpServers`. The three G3 servers were
+ * baked into `.mcp.json` by `buildFixtures()` (their `g3HeaderStandInUrl`
+ * is created by `main()` BEFORE that call, since the header stand-in's
+ * port must be known at file-write time); this function only sets the two
+ * env vars the CLI needs to expand `${PROBE_VAR}`/`${PROBE_PORT}` from ITS
+ * OWN inherited environment, runs one session, and reads the same three
+ * observables G2 reads.
+ */
+async function armG3(f: Fixtures, url: string, g3HeaderStandIn: { lastValue: () => string | null }): Promise<ArmVerdict> {
+  h("ARM G3 (Orchestrator's follow-up) -- ${VAR} expansion in env:/headers:/url:, .mcp.json path only");
+  const probeVarValue = `probe-g3-env-expanded-${nonce('VAL')}`;
+  const agentConsolePort = new URL(url).port;
+  process.env.PROBE_VAR = probeVarValue;
+  process.env.PROBE_PORT = agentConsolePort;
+  try {
+    const run = await runOneSession(
+      'armG3',
+      f.scratchDir,
+      url,
+      { settingSources: ['user', 'project'] },
+      `Call the tool named mcp__${G3_ENV_SERVER}__probe_echo exactly once with no arguments. It returns a JSON object with an "envValue" field; reply with ONLY the exact string value of that field, and nothing else. If envValue is null, reply with exactly UNKNOWN.`,
+    );
+    const settled = turnSettled(run.outcome);
+    if (!settled || !run.init) {
+      return { arm: 'G3', conclusive: false, verdict: 'INCONCLUSIVE -- turn did not settle or no system:init', stops: [] };
+    }
+    const init = run.init;
+    const statusOf = (name: string): string | null => mcpStatus(init, name);
+    const envStatus = statusOf(G3_ENV_SERVER);
+    const reportedEnvValue = run.outcome.text.trim();
+    const envExpanded = reportedEnvValue === probeVarValue;
+    const envLiteral = reportedEnvValue === '${PROBE_VAR}';
+    const capturedHeader = g3HeaderStandIn.lastValue();
+    const headerExpanded = capturedHeader === `v-${probeVarValue}`;
+    const headerLiteral = capturedHeader === 'v-${PROBE_VAR}';
+    const urlStatus = statusOf(G3_URL_SERVER);
+    const urlExpanded = urlStatus === 'connected';
+    const controlOk = envStatus === 'connected' && statusOf('agent-console') === 'connected';
+    const stops: string[] = [];
+    if (!controlOk) {
+      stops.push(`G3 control failed -- g3-env status=${envStatus ?? '(absent)'}, agent-console status=${statusOf('agent-console') ?? '(absent)'}; readings below are not trustworthy`);
+    }
+    if (!envExpanded && !envLiteral) {
+      stops.push(`G3 env: reported value matched neither form -- reportedEnvValue=${JSON.stringify(reportedEnvValue)}`);
+    }
+    if (!headerExpanded && !headerLiteral) {
+      stops.push(`G3 headers: captured value matched neither form -- capturedHeader=${JSON.stringify(capturedHeader)}`);
+    }
+    return {
+      arm: 'G3',
+      conclusive: true,
+      verdict:
+        `controlOk=${controlOk}; ` +
+        `env: reportedValue=${JSON.stringify(reportedEnvValue)} expanded=${envExpanded} literal=${envLiteral}; ` +
+        `headers: capturedValue=${JSON.stringify(capturedHeader)} expanded=${headerExpanded} literal=${headerLiteral}; ` +
+        `url: status=${urlStatus ?? '(absent)'} expanded(connected)=${urlExpanded}; ` +
+        `mcp_servers=${JSON.stringify(init.mcpServers)}`,
+      stops,
+    };
+  } finally {
+    delete process.env.PROBE_VAR;
+    delete process.env.PROBE_PORT;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1203,7 +1713,11 @@ async function main(): Promise<number> {
   const { arms, maxUsd } = parseArgs(process.argv.slice(2));
   const userServers = readUserScopeMcpServers();
   const standIn = await startAgentConsoleStandIn();
-  const f = buildFixtures();
+  // Created before buildFixtures() -- G3's `.mcp.json` entry needs this
+  // stand-in's real port at file-write time, unlike G2's, which is declared
+  // inline at session-build time (its own function creates its stand-in).
+  const g3HeaderStandIn = await startHeaderCapturingStandIn('x-probe');
+  const f = buildFixtures(g3HeaderStandIn.url);
   h(`probe-sdk-mcp-settings-sources -- arms=${[...arms].join(' ')} maxUsd=${maxUsd} config=${f.configDir} scratch=${f.scratchDir} canaries=${f.canaryDir}`);
   console.log(`user-scope mcpServers seeded via readUserScopeMcpServers(): ${JSON.stringify(Object.keys(userServers))} (unused by this probe's own servers; kept only as the sibling precondition check)`);
 
@@ -1212,16 +1726,44 @@ async function main(): Promise<number> {
   let baselineInit: InitLite | null = null;
   try {
     if (arms.has('--armA')) verdicts.push(...(await armA(f, standIn.url, maxUsd)));
+    if (arms.has('--armA3')) {
+      verdicts.push(await armA3(f, standIn.url));
+      checkBudget(maxUsd);
+    }
     if (arms.has('--armC')) {
       const c = await armC(f, standIn.url, maxUsd);
       verdicts.push(...c.verdicts);
       baselineInit = c.baselineInit;
+    }
+    if (arms.has('--armC1b')) {
+      verdicts.push(...(await armC1bDiagnostic(f, standIn.url)));
+      checkBudget(maxUsd);
+    }
+    if (arms.has('--armC1d')) {
+      verdicts.push(await armC1dePlus(f, standIn.url));
+      checkBudget(maxUsd);
+    }
+    if (arms.has('--armC1e')) {
+      verdicts.push(await armC1dePlus(f, standIn.url, 'slug'));
+      checkBudget(maxUsd);
+    }
+    if (arms.has('--armC1c')) {
+      verdicts.push(...(await armC1cDiagnostic(f, standIn.url)));
+      checkBudget(maxUsd);
     }
     if (arms.has('--armB')) verdicts.push(...(await armB(f, standIn.url, maxUsd)));
     if (arms.has('--armF')) verdicts.push(...(await armF(f, standIn.url, maxUsd)));
     if (arms.has('--armE')) verdicts.push(...(await armE(f, standIn.url, maxUsd)));
     if (arms.has('--armD')) verdicts.push(await armD(f, standIn.url, baselineInit));
     if (arms.has('--armG')) verdicts.push(...(await armG(f, standIn.url, maxUsd)));
+    if (arms.has('--armG2')) {
+      verdicts.push(await armG2(f, standIn.url));
+      checkBudget(maxUsd);
+    }
+    if (arms.has('--armG3')) {
+      verdicts.push(await armG3(f, standIn.url, g3HeaderStandIn));
+      checkBudget(maxUsd);
+    }
   } catch (err) {
     if (err instanceof BudgetExceeded) {
       halted = err.message;
@@ -1231,6 +1773,7 @@ async function main(): Promise<number> {
     }
   } finally {
     standIn.stop();
+    g3HeaderStandIn.stop();
   }
 
   h('ISOLATION');

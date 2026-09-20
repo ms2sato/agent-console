@@ -189,7 +189,28 @@ describe('Arm A -- settingSources: [\'user\'] and controls', () => {
     expect(Object.values(expected.canaries).every((b) => b === true)).toBe(true);
   });
 
-  for (const label of ['A', 'A+', 'A-', 'A2'] as ArmALabel[]) {
+  it('A3 (addendum) hopes U+L start and X/Y do not, same CLAUDE.md/agent shape as plain A', () => {
+    const expected = expectedForArmA('A3');
+    expect(expected.spawned[USER_SERVER]).toBe(true);
+    expect(expected.spawned[LOCAL_SERVER]).toBe(true);
+    expect(expected.spawned[PROJECT_SERVER_X]).toBe(false);
+    expect(expected.spawned[PROJECT_SERVER_Y]).toBe(false);
+    expect(expected.canaries).toEqual({ userClaudeMd: true, projectClaudeMd: false, unscopedRule: false });
+  });
+
+  it('A3 with X leaking in under [\'user\',\'local\'] raises a STOP (the load-bearing question for design II)', () => {
+    const expected = expectedForArmA('A3');
+    const v = classifyArmASession({
+      label: 'A3',
+      settled: true,
+      init: initWith([USER_SERVER, LOCAL_SERVER, PROJECT_SERVER_X]),
+      spawned: { ...expected.spawned, [PROJECT_SERVER_X]: true },
+      canaries: expected.canaries,
+    });
+    expect(v.stops.length).toBeGreaterThan(0);
+  });
+
+  for (const label of ['A', 'A+', 'A-', 'A2', 'A3'] as ArmALabel[]) {
     it(`${label}: expectedForArmA is a pure function of the label (no hidden state)`, () => {
       expect(expectedForArmA(label)).toEqual(expectedForArmA(label));
     });
@@ -288,6 +309,22 @@ describe('Arm C -- the managedSettings/settings wall', () => {
     expect(literalShape.stops).toEqual([]);
     expect(allStart.verdict).toContain('UNDOCUMENTED');
   });
+
+  it('C1b (diagnostic: name-only allow entry) via managedSettings is still read as a permissive key expected dropped -- same shape as C1', () => {
+    const v = classifyArmCSession({
+      variant: 'C1b',
+      carrier: 'managedSettings',
+      settled: true,
+      init: initWith([USER_SERVER, PROJECT_SERVER_X, PROJECT_SERVER_Y]),
+      spawned: { U: true, X: true, Y: true },
+    });
+    expect(v.stops).toEqual([]);
+  });
+
+  it('C1b arm label composes as variant-carrier, matching its C1/C2/C3/C5 siblings', () => {
+    const v = classifyArmCSession({ variant: 'C1b', carrier: 'settings', settled: true, init: initWith([]), spawned: { U: false, X: false, Y: false } });
+    expect(v.arm).toBe('C1b-settings');
+  });
 });
 
 describe('Arm B -- native project-gate semantics', () => {
@@ -321,7 +358,7 @@ describe('Arm F -- claudeMdExcludes feasibility', () => {
       settled: true,
       init: initWith([PROJECT_SERVER_X, PROJECT_SERVER_Y]),
       spawned: { X: true, Y: true },
-      canaries: { projectClaudeMd: false, unscopedRule: false },
+      canaries: { userClaudeMd: true, projectClaudeMd: false, unscopedRule: false },
     });
     expect(v.stops.length).toBeGreaterThan(0);
   });
@@ -332,7 +369,7 @@ describe('Arm F -- claudeMdExcludes feasibility', () => {
       settled: true,
       init: initWith([PROJECT_SERVER_X, PROJECT_SERVER_Y]),
       spawned: { X: true, Y: true },
-      canaries: { projectClaudeMd: true, unscopedRule: true },
+      canaries: { userClaudeMd: true, projectClaudeMd: true, unscopedRule: true },
     });
     expect(v.stops).toEqual([]);
   });
@@ -343,7 +380,7 @@ describe('Arm F -- claudeMdExcludes feasibility', () => {
       settled: true,
       init: initWith([PROJECT_SERVER_X, PROJECT_SERVER_Y]),
       spawned: { X: true, Y: true },
-      canaries: { projectClaudeMd: false, unscopedRule: false },
+      canaries: { userClaudeMd: true, projectClaudeMd: false, unscopedRule: false },
     });
     expect(v.stops).toEqual([]);
   });
@@ -354,7 +391,7 @@ describe('Arm F -- claudeMdExcludes feasibility', () => {
       settled: true,
       init: initWith([PROJECT_SERVER_X, PROJECT_SERVER_Y]),
       spawned: { X: true, Y: true },
-      canaries: { projectClaudeMd: true, unscopedRule: false },
+      canaries: { userClaudeMd: true, projectClaudeMd: true, unscopedRule: false },
     });
     expect(v.stops.length).toBeGreaterThan(0);
   });
@@ -365,9 +402,55 @@ describe('Arm F -- claudeMdExcludes feasibility', () => {
       settled: true,
       init: initWith([]),
       spawned: { X: false, Y: false },
-      canaries: { projectClaudeMd: false, unscopedRule: false },
+      canaries: { userClaudeMd: true, projectClaudeMd: false, unscopedRule: false },
     });
     expect(v.stops.length).toBeGreaterThan(0);
+  });
+
+  describe('F2 (narrow, project-file-only exclude)', () => {
+    it('matching feasibility (project canary suppressed, user CLAUDE.md + unscoped rule survive) is clean', () => {
+      const v = classifyArmFSession({
+        variant: 'F2-settings',
+        settled: true,
+        init: initWith([PROJECT_SERVER_X, PROJECT_SERVER_Y]),
+        spawned: { X: true, Y: true },
+        canaries: { userClaudeMd: true, projectClaudeMd: false, unscopedRule: true },
+      });
+      expect(v.stops).toEqual([]);
+    });
+
+    it('project canary still leaking raises a STOP', () => {
+      const v = classifyArmFSession({
+        variant: 'F2-settings',
+        settled: true,
+        init: initWith([PROJECT_SERVER_X, PROJECT_SERVER_Y]),
+        spawned: { X: true, Y: true },
+        canaries: { userClaudeMd: true, projectClaudeMd: true, unscopedRule: true },
+      });
+      expect(v.stops.some((s) => s.includes('did NOT suppress the project canary'))).toBe(true);
+    });
+
+    it('the narrow exclude ALSO suppressing user-level CLAUDE.md raises a STOP (design II cannot drop only its own file)', () => {
+      const v = classifyArmFSession({
+        variant: 'F2-settings',
+        settled: true,
+        init: initWith([PROJECT_SERVER_X, PROJECT_SERVER_Y]),
+        spawned: { X: true, Y: true },
+        canaries: { userClaudeMd: false, projectClaudeMd: false, unscopedRule: true },
+      });
+      expect(v.stops.some((s) => s.includes('ALSO suppressed user-level CLAUDE.md'))).toBe(true);
+    });
+
+    it('the narrow exclude unexpectedly suppressing the unscoped rule raises a STOP', () => {
+      const v = classifyArmFSession({
+        variant: 'F2-settings',
+        settled: true,
+        init: initWith([PROJECT_SERVER_X, PROJECT_SERVER_Y]),
+        spawned: { X: true, Y: true },
+        canaries: { userClaudeMd: true, projectClaudeMd: false, unscopedRule: false },
+      });
+      expect(v.stops.some((s) => s.includes('unexpectedly suppressed the unscoped rule'))).toBe(true);
+    });
   });
 });
 
