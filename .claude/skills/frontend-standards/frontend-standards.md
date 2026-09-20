@@ -158,6 +158,7 @@ So, when you add a panel to SessionPage:
    - Responsiveness (does mobile fallback work?)
    - Accessibility (buttons reachable, text readable)
      - Modal overlays (drawers): use `useModalDrawerFocus` (`packages/client/src/hooks/useModalDrawerFocus.ts`) -- it owns Escape-to-close, body scroll lock, focus save/restore, and the Tab-trap / inert focus boundary; do not re-implement any of the four in a component.
+     - Collapsible side-panel sections: a collapsed `AccordionSectionBody` (`packages/client/src/components/sessions/AccordionSectionBody.tsx`) carries `inert=""` on its wrapper -- that single attribute is the tab-order exclusion (it also removes the body's `overflow-y-auto` scroll container from Chrome's keyboard-focusable-scroller tab stops), and the panels' per-control `tabIndex={-1}` while collapsed is the fallback layer; do not add a third mechanism (`hidden` / unmount would kill the grid-rows transition).
 6. Stop the dev server after verification
 
 ### What to Check

@@ -480,6 +480,51 @@ describe('SessionSidePanelsDrawer', () => {
       expect(document.activeElement).toBe(bookmarksHeader);
     });
 
+    it('tabs from the collapsed Memo header to the expanded Bookmarks header, and Memo\'s body stays inert throughout', async () => {
+      // happy-dom / user-event do not model keyboard-focusable scrollers
+      // (Chrome's behavior of treating a scroll container with no
+      // focusable children as a tab stop), so this test cannot reproduce
+      // the original bug directly. The DOM-level pin is that Memo's
+      // AccordionSectionBody wrapper carries `inert` (which removes its
+      // overflow-y-auto scroller from the tab order structurally, per
+      // getTabbables' ancestor walk) both before and after the Tab press;
+      // the actual browser behavior is verified only by the Browser QA
+      // captures attached to the PR.
+      routeFetchEmpty();
+      localStorage.setItem(
+        STORAGE_KEY,
+        JSON.stringify({ railOpen: false, expanded: { memo: false, artifacts: false, bookmarks: true } })
+      );
+      await renderWithRouter(<SessionSidePanelsDrawer sessionId="session-1" open={true} onClose={() => {}} />);
+      const memoHeader = await waitFor(() => screen.getByLabelText('Expand Memo'));
+      const bookmarksHeader = screen.getByLabelText('Collapse Bookmarks');
+
+      // Locate Memo's body wrapper as the closest `[aria-hidden]` ancestor
+      // of the Memo section's own collapsed-body content marker: since Memo
+      // is collapsed and empty (routeFetchEmpty), its body renders the
+      // "No memo yet." text -- scoped to the Memo section's own
+      // `border-b` row (the first one in the drawer) to avoid matching
+      // Bookmarks' or Artifacts' wrappers, which also carry `aria-hidden`
+      // while collapsed.
+      const memoSection = memoHeader.closest('.border-b') as HTMLElement;
+      const memoBodyWrapper = memoSection.querySelector('[aria-hidden]') as HTMLElement;
+      expect(memoBodyWrapper).toBeTruthy();
+      expect(memoBodyWrapper.getAttribute('inert')).toBe('');
+      expect(memoSection.querySelector('.overflow-y-auto')).not.toBe(document.activeElement);
+
+      act(() => {
+        memoHeader.focus();
+      });
+      expect(document.activeElement).toBe(memoHeader);
+
+      const user = userEvent.setup();
+      await user.tab();
+
+      expect(document.activeElement).toBe(bookmarksHeader);
+      expect(memoBodyWrapper.getAttribute('inert')).toBe('');
+      expect(memoSection.querySelector('.overflow-y-auto')).not.toBe(document.activeElement);
+    });
+
     it('keeps focus on the dialog container across the pending-query boundary (the initial-focus effect does not re-run when children later render)', async () => {
       // Reach (measured): this pin has reach for the `?? container`
       // fallback, and none for the deps-array premise its name is about.
