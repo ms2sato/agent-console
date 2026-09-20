@@ -1,4 +1,6 @@
-import type { AgentDefinition, Repository, AgentActivityPatterns, MessageTemplate, EmbeddedAgentDefinition, EmbeddedAgentToolName, DeclaredMcpServer, DeclaredSubagent, Artifact, Bookmark } from '@agent-console/shared';
+import * as v from 'valibot';
+import type { AgentDefinition, Repository, AgentActivityPatterns, MessageTemplate, EmbeddedAgentDefinition, EmbeddedAgentToolName, Artifact, Bookmark } from '@agent-console/shared';
+import { DeclaredMcpServersSchema, DeclaredSubagentsSchema } from '@agent-console/shared';
 import type { ArtifactRecord } from '../repositories/artifact-repository.js';
 import type { BookmarkRecord } from '../repositories/bookmark-repository.js';
 import { computeCapabilities } from '@agent-console/shared';
@@ -613,30 +615,48 @@ function parseEmbeddedAgentJsonArrayColumn<T>(
 
 /**
  * Parse a nullable JSON-object-string embedded-agent column (`mcp_servers`,
- * `subagents`) into a typed record. Sibling of
- * `parseEmbeddedAgentJsonArrayColumn` above, same warn-and-fall-back-to-
- * undefined philosophy for both failure modes (invalid JSON, and JSON that
- * parses to something other than a plain object -- an array or a scalar).
+ * `subagents`) into a typed record, re-validated against the same shared
+ * wire schema the write path already enforces (`DeclaredMcpServersSchema` /
+ * `DeclaredSubagentsSchema`). Two layers, deliberately treated differently
+ * (Architect ruling, epic #1636 Phase 5 PR-1 decision 3):
+ *
+ * 1. The string isn't valid JSON at all -- `JSON.parse` throws. TOLERANT:
+ *    warn + fall back to `undefined`, same as `parseEmbeddedAgentJsonArrayColumn`
+ *    above. `undefined` ("no declared servers/subagents") is always a safe
+ *    read, so this layer stays lenient.
+ * 2. `JSON.parse` succeeds, but the result does not conform to the schema
+ *    (wrong shape, invalid discriminant, a missing required field, or not
+ *    even a plain object -- `v.record`'s own schema check rejects those).
+ *    THROWS `DataIntegrityError`, mirroring the `provider_base_url`/`engine`
+ *    consistency guard immediately below in `toEmbeddedAgentDefinition`: a
+ *    row failing this check is corrupted data, not a recoverable shape, and
+ *    the write path already validates the same schema at create/update time
+ *    -- there is no principled reason to be more lenient here than there.
  */
-function parseEmbeddedAgentJsonObjectColumn<T>(
+function parseEmbeddedAgentJsonObjectColumn<TSchema extends v.GenericSchema>(
   value: string | null,
   embeddedAgentId: string,
-  fieldName: 'mcp_servers' | 'subagents'
-): Record<string, T> | undefined {
+  fieldName: 'mcp_servers' | 'subagents',
+  schema: TSchema
+): v.InferOutput<TSchema> | undefined {
   if (value === null) {
     return undefined;
   }
+
+  let parsed: unknown;
   try {
-    const parsed: unknown = JSON.parse(value);
-    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
-      logger.warn({ embeddedAgentId }, `Failed to parse ${fieldName}, ignoring`);
-      return undefined;
-    }
-    return parsed as Record<string, T>;
+    parsed = JSON.parse(value);
   } catch {
     logger.warn({ embeddedAgentId }, `Failed to parse ${fieldName}, ignoring`);
     return undefined;
   }
+
+  const result = v.safeParse(schema, parsed);
+  if (!result.success) {
+    const shapeName = fieldName === 'mcp_servers' ? 'MCP server' : 'subagent';
+    throw new DataIntegrityError('embedded-agent', embeddedAgentId, `${fieldName} (invalid declared ${shapeName} shape)`);
+  }
+  return result.output;
 }
 
 /**
@@ -719,8 +739,8 @@ export function toEmbeddedAgentDefinition(row: EmbeddedAgentRow): EmbeddedAgentD
       ...base,
       engine: 'claude-sdk',
       provider: { model: row.provider_model },
-      mcpServers: parseEmbeddedAgentJsonObjectColumn<DeclaredMcpServer>(row.mcp_servers, row.id, 'mcp_servers'),
-      subagents: parseEmbeddedAgentJsonObjectColumn<DeclaredSubagent>(row.subagents, row.id, 'subagents'),
+      mcpServers: parseEmbeddedAgentJsonObjectColumn(row.mcp_servers, row.id, 'mcp_servers', DeclaredMcpServersSchema),
+      subagents: parseEmbeddedAgentJsonObjectColumn(row.subagents, row.id, 'subagents', DeclaredSubagentsSchema),
     };
   } else {
     throw new DataIntegrityError('embedded-agent', row.id, `engine (unexpected value: ${row.engine})`);

@@ -118,7 +118,13 @@ const DeclaredMcpServerSchema = v.union([
   }),
 ]);
 
-const DeclaredMcpServersSchema = v.record(v.pipe(v.string(), v.minLength(1)), DeclaredMcpServerSchema);
+// Exported so mappers.ts can re-validate the persisted JSON column at
+// hydration time (nested-validation-at-read, epic #1636 Phase 5 PR-1
+// decision 3) -- the write path (this file's own definition/update schemas)
+// already validates the shape, but a row that was written before this
+// validation existed, or corrupted out-of-band, must not be silently
+// returned to callers as if it conformed.
+export const DeclaredMcpServersSchema = v.record(v.pipe(v.string(), v.minLength(1)), DeclaredMcpServerSchema);
 
 /**
  * Declared subagent wire-shape (epic #1636 Phase 5 decision 3), mirroring
@@ -131,7 +137,8 @@ const DeclaredSubagentSchema = v.strictObject({
   model: v.optional(v.pipe(v.string(), v.minLength(1))),
 });
 
-const DeclaredSubagentsSchema = v.record(v.pipe(v.string(), v.minLength(1)), DeclaredSubagentSchema);
+// Exported -- same rationale as DeclaredMcpServersSchema above.
+export const DeclaredSubagentsSchema = v.record(v.pipe(v.string(), v.minLength(1)), DeclaredSubagentSchema);
 
 /**
  * Transcript Restore (#1123) wire-shape schemas, mirroring
