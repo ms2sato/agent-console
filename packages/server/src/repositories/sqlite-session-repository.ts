@@ -80,8 +80,9 @@ export class SqliteSessionRepository implements SessionRepository {
       // A blanket DELETE FROM sessions followed by re-insert would cascade
       // through every FK referencing sessions(id) -- workers,
       // inbound_event_notifications, repository_orchestrator_sessions, and
-      // the (dead) repositories.orchestrator_session_id -- wiping rows this
-      // method never re-creates. Never implemented as delete-all + re-insert.
+      // the dead single-session column on repositories (see its own
+      // deadness guard test) -- wiping rows this method never re-creates.
+      // Never implemented as delete-all + re-insert.
       // Order-independent by construction: `ids` is a fixed snapshot of this
       // call's input, so a session present in `sessions` can never also
       // match this NOT IN predicate, regardless of where this delete sits
