@@ -323,6 +323,68 @@ describe('setup-multiuser-checks: dist_artifact_present (Issue #1707 pre-enable-
   // polarity: they fail against unmodified code and pass against the fix.
 });
 
+// resolve_health_port (Issue #1761): V5's port-resolution precedence (the
+// live unit's own PORT= wins over AGENT_CONSOLE_PORT, which wins over the
+// script's compiled-in default), split out as a pure function so the
+// precedence itself -- not just each source in isolation -- is pinned
+// without a real systemd unit. update-and-deploy-for-multiuser-ubuntu.sh
+// wires this to V1's own single read (LIVE_PORT) and PORT_OVERRIDE (the raw,
+// undefaulted AGENT_CONSOLE_PORT); see that script's V1 section.
+function runResolveHealthPort(live, override, def) {
+  return spawnSync(LIB, ['resolve-health-port', live, override, def], { encoding: 'utf-8' });
+}
+
+describe('setup-multiuser-checks: resolve_health_port (V5 port resolution, Issue #1761)', () => {
+  it('unit only: live=6340, override empty -> PORT_SOURCE:unit / 6340, exit 0, empty stderr', () => {
+    const r = runResolveHealthPort('6340', '', '8080');
+    expect(r.status).toBe(0);
+    expect(r.stdout).toBe('PORT_SOURCE:unit\n6340\n');
+    expect(r.stderr).toBe('');
+  });
+
+  it('override only: live empty, override=9000 -> PORT_SOURCE:override / 9000, exit 0, empty stderr', () => {
+    const r = runResolveHealthPort('', '9000', '8080');
+    expect(r.status).toBe(0);
+    expect(r.stdout).toBe('PORT_SOURCE:override\n9000\n');
+    expect(r.stderr).toBe('');
+  });
+
+  it('default only (both live and override empty) -> PORT_SOURCE:default / 8080, exit 0, empty stderr', () => {
+    const r = runResolveHealthPort('', '', '8080');
+    expect(r.status).toBe(0);
+    expect(r.stdout).toBe('PORT_SOURCE:default\n8080\n');
+    expect(r.stderr).toBe('');
+  });
+
+  it('unit + equal override: live=6340, override=6340 -> PORT_SOURCE:unit / 6340, exit 0, NO warn', () => {
+    const r = runResolveHealthPort('6340', '6340', '8080');
+    expect(r.status).toBe(0);
+    expect(r.stdout).toBe('PORT_SOURCE:unit\n6340\n');
+    expect(r.stderr).toBe('');
+  });
+
+  it('unit + differing override: live=6340, override=9999 -> PORT_SOURCE:unit / 6340 (the unit wins), exit 0, WARN names both', () => {
+    const r = runResolveHealthPort('6340', '9999', '8080');
+    expect(r.status).toBe(0);
+    expect(r.stdout).toBe('PORT_SOURCE:unit\n6340\n');
+    expect(r.stderr).toContain('WARN: AGENT_CONSOLE_PORT=9999 differs from the live unit\'s PORT=6340; using the unit\'s');
+  });
+
+  it('always returns 0 -- a resolution decision is never itself a deploy failure', () => {
+    for (const args of [['6340', '', '8080'], ['', '9000', '8080'], ['', '', '8080'], ['6340', '9999', '8080']]) {
+      expect(runResolveHealthPort(...args).status).toBe(0);
+    }
+  });
+
+  // Reach measurement (workflow.md "A check's existence is not its detection
+  // power"): temporarily inverted the precedence -- swapped the function so
+  // a non-empty override wins over a non-empty live value -- and re-ran the
+  // 'unit + differing override' case above by hand. It failed as expected
+  // (stdout became 'PORT_SOURCE:override\n9999\n', not the unit's 6340),
+  // confirming the assertion actually distinguishes the two precedence
+  // orders rather than passing regardless. Reverted immediately after.
+});
+
 // ---------------------------------------------------------------------------
 // Post-deploy verification checks V1-V6 (Issue #1717, absorbing #1688).
 //

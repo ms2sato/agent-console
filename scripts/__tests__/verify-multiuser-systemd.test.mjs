@@ -404,10 +404,23 @@ describe('verify-multiuser-systemd.sh: section 7 consumes the V0-V6 screen; the 
   });
 
   it('every deploy invocation in the driver runs as `deployer` (never root), so the screen is the operator-path screen', () => {
-    const deployCalls = driver.match(/cexec --user \S+ -w "\$SRC" "\$SERVICE" bash scripts\/update-and-deploy-for-multiuser-ubuntu\.sh/g) ?? [];
+    // Deploy #3 (Issue #1761, F2) carries an extra `-e AGENT_CONSOLE_PORT=9999`
+    // between `-w "$SRC"` and `"$SERVICE"` -- the one deliberately-wrong
+    // override that distinguishes "the live unit wins" from the pre-#1761
+    // behaviour; the regex tolerates that one optional segment.
+    const deployCalls = driver.match(/cexec --user \S+ -w "\$SRC" (?:-e AGENT_CONSOLE_PORT=9999 )?"\$SERVICE" bash scripts\/update-and-deploy-for-multiuser-ubuntu\.sh/g) ?? [];
     // deploy #1 (run_deploy) + #2/#3 (drift_arm) + #4/#5 (ownership_polarity_arm) + #6 (restart_survival_arm).
     expect(deployCalls).toHaveLength(6);
     for (const c of deployCalls) expect(c).toContain('--user deployer ');
+  });
+
+  it('deploy #3 exports AGENT_CONSOLE_PORT=9999 for that one invocation and asserts the live unit wins (PORT (V5): 8080 source=unit) with the WARN naming 9999', () => {
+    const arm = driver.slice(idxOf('drift_arm() {'), idxOf('ownership_polarity_arm() {'));
+    expect(arm).toContain(
+      'cexec --user deployer -w "$SRC" -e AGENT_CONSOLE_PORT=9999 "$SERVICE" bash scripts/update-and-deploy-for-multiuser-ubuntu.sh >"$out" 2>&1 || rc=$?',
+    );
+    expect(arm).toContain("PORT (V5): 8080 (source: unit)'");
+    expect(arm).toContain("WARN: AGENT_CONSOLE_PORT=9999 differs from the live unit's PORT=8080");
   });
 });
 

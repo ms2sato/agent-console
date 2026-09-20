@@ -542,13 +542,24 @@ drift_arm() {
   check "drift: EMBEDDED_AGENT_ENTRY_PATH present again in 'systemctl show -p Environment' (the unit was re-rendered)" "$rc"
 
   # Deploy #3: the ordinary path again, exit 0 with the seven PASS lines.
-  echo "  --- deploy #3 (expect: exit 0, seven PASS lines) ---"
+  # AGENT_CONSOLE_PORT=9999 is exported for THIS ONE invocation only (Issue
+  # #1761, F2): the container's unit runs PORT=8080, which is ALSO the
+  # script's own compiled-in default, so this is the only place in this
+  # driver that can distinguish "the live unit's PORT= wins over a wrong
+  # override" from the pre-#1761 behaviour (a guessed default that happened
+  # to already agree with the container's unit) -- without a deliberately
+  # WRONG override, the two behaviours would look identical here.
+  echo "  --- deploy #3 (expect: exit 0, seven PASS lines, PORT (V5): 8080 source=unit despite AGENT_CONSOLE_PORT=9999) ---"
   out="$(mktemp)"
   rc=0
-  cexec --user deployer -w "$SRC" "$SERVICE" bash scripts/update-and-deploy-for-multiuser-ubuntu.sh >"$out" 2>&1 || rc=$?
-  grep -E '^  (PASS|FAIL|SKIP)  V[0-6] |^        (WARN|INFO): |^  RESULT: ' "$out" | cut -c1-220 | sed 's/^/  /' || true
+  cexec --user deployer -w "$SRC" -e AGENT_CONSOLE_PORT=9999 "$SERVICE" bash scripts/update-and-deploy-for-multiuser-ubuntu.sh >"$out" 2>&1 || rc=$?
+  grep -E '^  (PASS|FAIL|SKIP)  V[0-6] |^        (WARN|INFO): |^  RESULT: |^        PORT \(V5\): ' "$out" | cut -c1-220 | sed 's/^/  /' || true
   check "drift: deploy #3 exits 0" "$rc"
   assert_seven_pass "$out" "drift: deploy #3"
+  expect "drift: deploy #3 prints 'PORT (V5): 8080 (source: unit)' -- the live unit's PORT wins over the wrong override" \
+    grep -qF 'PORT (V5): 8080 (source: unit)' "$out"
+  expect "drift: deploy #3 warns that AGENT_CONSOLE_PORT=9999 differs from the live unit's PORT=8080" \
+    grep -qF "WARN: AGENT_CONSOLE_PORT=9999 differs from the live unit's PORT=8080" "$out"
   ts_after="$(cexec --user root "$SERVICE" systemctl show -p ActiveEnterTimestampMonotonic --value "$UNIT" | tr -d '\r')"
   expect "drift: deploy #3 DID restart the unit (ActiveEnterTimestampMonotonic moved past ${ts_before})" test "$ts_after" != "$ts_before"
   rm -f "$out"
