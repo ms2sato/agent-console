@@ -506,7 +506,7 @@ describe('verify-multiuser-systemd.sh: 7d restart-survival arm is present and or
   };
   const arm = () => driver.slice(idxOf('restart_survival_arm() {'), idxOf('helper_cases() {'));
 
-  it('seeds the session and its three FK dependents via bun -e + bun:sqlite against the real data.db, as agentconsole, before the restart', () => {
+  it('seeds the session and its two FK dependents via bun -e + bun:sqlite against the real data.db, as agentconsole, before the restart', () => {
     const a = arm();
     expect(a).toContain('import { Database } from "bun:sqlite";');
     expect(a).toContain('new Database("/var/lib/agent-console/data.db")');
@@ -552,7 +552,6 @@ describe('verify-multiuser-systemd.sh: 7d restart-survival arm is present and or
       'expect "7d: session updated_at moved past the seed value',
       'expect "7d: repository_orchestrator_sessions designation still exists (DESIGNATION_COUNT=1)"',
       'expect "7d: inbound_event_notifications row still exists with status=pending"',
-      'expect "7d: repositories.orchestrator_session_id (dead SET-NULL column) is still set, not nulled"',
     ];
     let prev = -1;
     for (const needle of order) {

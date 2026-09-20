@@ -865,11 +865,6 @@ describe('SqliteSessionRepository', () => {
           id: repoId,
           name: 'test-repo',
           path: `/test/${repoId}`,
-          // The dead `orchestrator_session_id` column (DEAD since v41, see
-          // schema.ts) still exists at this SHA and still carries an
-          // ON DELETE SET NULL foreign key onto sessions(id) -- seed it so
-          // the preservation assertions below cover it too.
-          orchestrator_session_id: sessionId,
         })
         .execute();
 
@@ -895,7 +890,7 @@ describe('SqliteSessionRepository', () => {
         .execute();
     }
 
-    it('case (a) full preservation: an in-set session keeps its worker, designation, notification, and dead-column pointer across saveAll', async () => {
+    it('case (a) full preservation: an in-set session keeps its worker, designation, and notification across saveAll', async () => {
       const session = buildPersistedQuickSession({
         id: 'session-a',
         workers: [buildPersistedAgentWorker({ id: 'worker-a' })],
@@ -913,11 +908,10 @@ describe('SqliteSessionRepository', () => {
       await new Promise((resolve) => setTimeout(resolve, 10));
 
       // Polarity: fails against the pre-fix DELETE-all saveAll() (measured
-      // 2026-09-20) -- the repository_orchestrator_sessions,
-      // inbound_event_notifications, and repositories rows are all
-      // cascade-deleted by the unconditional `DELETE FROM sessions`, and
-      // the worker's created_at is not preserved either (re-inserted, not
-      // upserted).
+      // 2026-09-20) -- the repository_orchestrator_sessions and
+      // inbound_event_notifications rows are both cascade-deleted by the
+      // unconditional `DELETE FROM sessions`, and the worker's created_at
+      // is not preserved either (re-inserted, not upserted).
       await realRepository.saveAll([session]);
 
       const afterSessionRow = await realDb
@@ -946,13 +940,6 @@ describe('SqliteSessionRepository', () => {
         .selectAll()
         .executeTakeFirst();
       expect(notification?.status).toBe('pending');
-
-      const repoRow = await realDb
-        .selectFrom('repositories')
-        .where('id', '=', 'repo-a')
-        .select(['orchestrator_session_id'])
-        .executeTakeFirst();
-      expect(repoRow?.orchestrator_session_id).toBe('session-a');
     });
 
     it("case (b) absent session's dependents are cleaned up (intended cascade), while the in-set sibling keeps everything", async () => {
@@ -1082,14 +1069,11 @@ describe('SqliteSessionRepository', () => {
         }
       }
       const dependentTableNames = new Set(dependentFks.map((d) => d.table));
-      // The dead `orchestrator_session_id` column on `repositories` (see
-      // schema.ts) still references sessions(id) at this SHA, so
-      // `repositories` is included below. Once that column is dropped by a
-      // later rebuild migration, this set shrinks to 3 and the
-      // `orchestrator_session_id` seeding below (and in seedDependents)
-      // should be removed.
+      // The v40 `orchestrator_session_id` column on `repositories` used to
+      // reference sessions(id), which put `repositories` in this set. It
+      // was dropped by migration v42 (Issue #1725), shrinking the set to 3.
       expect(dependentTableNames).toEqual(
-        new Set(['workers', 'inbound_event_notifications', 'repository_orchestrator_sessions', 'repositories'])
+        new Set(['workers', 'inbound_event_notifications', 'repository_orchestrator_sessions'])
       );
 
       // Detection half: the set-equality check above only proves the SCHEMA

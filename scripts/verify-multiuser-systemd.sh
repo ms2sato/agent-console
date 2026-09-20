@@ -92,14 +92,13 @@
 #      through deploy #5: V0 still PASSes, with an INFO line naming it as
 #      ignored (not walked).
 #  7d. the #1762 restart-survival arm: seeds one session plus its FK
-#      dependents (a repository_orchestrator_sessions designation, a
-#      pending inbound_event_notifications row, and the dead
-#      repositories.orchestrator_session_id reference) directly against the
+#      dependents (a repository_orchestrator_sessions designation and a
+#      pending inbound_event_notifications row) directly against the
 #      real data.db via `bun -e` + bun:sqlite, restarts the unit through
 #      deploy #6 (the shipping saveAll() path), and reads the same rows
 #      back: the session itself present (positive control -- not swept as
 #      an orphan), its created_at unchanged / updated_at moved, and the
-#      three dependents intact -- exactly what the pre-#1762 DELETE-all
+#      two dependents intact -- exactly what the pre-#1762 DELETE-all
 #      saveAll() cascaded away.
 #   8. the three #1690 helper cases, explicitly: (1) elevated (deployer +
 #      AC_TIER3_ELEVATE) against the real bundle -> READABLE; (2) the same
@@ -663,13 +662,6 @@ ownership_polarity_arm() {
 # orphan-deletion branch. That is asserted explicitly, as a positive control,
 # BEFORE the dependent-row assertions below -- a session lost to the orphan
 # path would trivially fail the dependents too, for the wrong reason.
-#
-# [#1756-DEPENDENT: this arm seeds `repositories.orchestrator_session_id`,
-# the dead SET-NULL reference dropped by #1756. If #1756 has merged before
-# this arm's data-shape lands, drop that column from the repository insert
-# below and drop its read-back assertion; the FK-enumeration gate in
-# sqlite-session-repository.test.ts is the single source of truth for
-# which shape is current -- keep this arm's seed in sync with it.]
 restart_survival_arm() {
   step_start "7d. #1762 restart-survival arm: designation + pending notification survive a real restart through the shipping saveAll() path"
   local seed_ts="2020-01-01T00:00:00.000Z"
@@ -680,7 +672,7 @@ const db = new Database("/var/lib/agent-console/data.db");
 db.exec("PRAGMA busy_timeout = 5000");
 db.exec("PRAGMA foreign_keys = ON");
 db.query("INSERT INTO sessions (id, type, location_path, server_pid, created_at, updated_at, data_scope, data_scope_slug, paused_at, recovery_state) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").run("issue1762-session", "quick", "/var/lib/agent-console", null, "'"${seed_ts}"'", "'"${seed_ts}"'", null, null, null, "healthy");
-db.query("INSERT INTO repositories (id, name, path, orchestrator_session_id) VALUES (?, ?, ?, ?)").run("issue1762-repo", "issue1762-repo", "/tmp/issue1762-repo", "issue1762-session");
+db.query("INSERT INTO repositories (id, name, path) VALUES (?, ?, ?)").run("issue1762-repo", "issue1762-repo", "/tmp/issue1762-repo");
 db.query("INSERT INTO repository_orchestrator_sessions (repository_id, session_id) VALUES (?, ?)").run("issue1762-repo", "issue1762-session");
 db.query("INSERT INTO inbound_event_notifications (id, job_id, session_id, worker_id, handler_id, event_type, event_summary, status, created_at, notified_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").run("issue1762-notif", "issue1762-job", "issue1762-session", "issue1762-worker", "issue1762-handler", "ci:completed", "tier3 7d seed", "pending", "'"${seed_ts}"'", null);
 console.log("SEEDED");'
@@ -707,8 +699,6 @@ const db = new Database("/var/lib/agent-console/data.db");
 const session = db.query("SELECT created_at, updated_at FROM sessions WHERE id = ?").get("issue1762-session");
 if (!session) { console.log("SESSION_MISSING"); process.exit(0); }
 console.log("SESSION_PRESENT created_at=" + session.created_at + " updated_at=" + session.updated_at);
-const repo = db.query("SELECT orchestrator_session_id FROM repositories WHERE id = ?").get("issue1762-repo");
-console.log("REPO_ORCHESTRATOR_SESSION_ID=" + (repo ? repo.orchestrator_session_id : "MISSING"));
 const designation = db.query("SELECT COUNT(*) as n FROM repository_orchestrator_sessions WHERE repository_id = ? AND session_id = ?").get("issue1762-repo", "issue1762-session");
 console.log("DESIGNATION_COUNT=" + designation.n);
 const notif = db.query("SELECT status FROM inbound_event_notifications WHERE id = ?").get("issue1762-notif");
@@ -733,7 +723,6 @@ console.log("NOTIFICATION_STATUS=" + (notif ? notif.status : "MISSING"));'
   # way -- only the OTHER tables' rows are the ones the cascade destroys).
   expect "7d: repository_orchestrator_sessions designation still exists (DESIGNATION_COUNT=1)" grep -qF 'DESIGNATION_COUNT=1' "$read_out"
   expect "7d: inbound_event_notifications row still exists with status=pending" grep -qF 'NOTIFICATION_STATUS=pending' "$read_out"
-  expect "7d: repositories.orchestrator_session_id (dead SET-NULL column) is still set, not nulled" grep -qF 'REPO_ORCHESTRATOR_SESSION_ID=issue1762-session' "$read_out"
   rm -f "$read_out"
 
   step_end restart_survival

@@ -192,8 +192,6 @@ export interface RepositoriesTable {
   description: string | null;
   /** Default agent ID for worktree creation (added in v10) */
   default_agent_id: string | null;
-  /** DEAD since v41: designations live in repository_orchestrator_sessions; always NULL; dropped by a later rebuild migration */
-  orchestrator_session_id: string | null;
   /** Comma-separated label names that trigger issue:labeled routing (added in v40). */
   issue_trigger_labels: string | null;
 }
@@ -579,9 +577,10 @@ export type NewBookmark = Insertable<BookmarksTable>;
 /**
  * Repository-orchestrator-session designation table (migration v41;
  * see docs/design/shared-orchestrator-session.md, "Designation in multi-user"). A repository's Orchestrator designation is a SET of sessions, not
- * a single nullable pointer -- see the dead `RepositoriesTable.orchestrator_session_id`
- * doc comment above -- so this table carries one row per (repository,
- * session) designation pair. Composite primary key on
+ * a single nullable pointer -- the v40 single-session column this table
+ * replaced (`repositories.orchestrator_session_id`) was later dropped by
+ * a table-rebuild migration -- so this table carries one row per
+ * (repository, session) designation pair. Composite primary key on
  * `(repository_id, session_id)`; both foreign keys `ON DELETE CASCADE` so a
  * deleted repository or a deleted session removes its designation rows
  * automatically, with no application code path to get wrong.
