@@ -54,6 +54,7 @@ export async function expectRebuiltTableDdl(
   for (const expected of expectedColumns) {
     const actual = actualByName.get(expected.name);
     expect(actual, `${table}.${expected.name} is missing from PRAGMA table_info`).toBeDefined();
+    expect(actual!.cid, `${table}.${expected.name}.cid`).toBe(expected.cid);
     expect(actual!.type, `${table}.${expected.name}.type`).toBe(expected.type);
     expect(actual!.notnull, `${table}.${expected.name}.notnull`).toBe(expected.notnull);
     expect(actual!.dflt_value, `${table}.${expected.name}.dflt_value`).toBe(expected.dflt_value);

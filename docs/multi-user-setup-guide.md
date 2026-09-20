@@ -1179,10 +1179,13 @@ though the upgrade itself did not proceed.
 
 For each offending row, decide the correct ISO8601 value (UTC,
 `YYYY-MM-DDTHH:MM:SS.sssZ`) from the row's actual creation/update time,
-then update it directly, for example:
+then update **every** invalid column on that row -- the query above checks
+both `created_at` and `updated_at`, and a row still fails the pre-flight
+check (and migration v43 still aborts) if either one is left uncorrected:
 
 ```sql
 UPDATE sessions SET created_at = '2024-01-01T00:00:00.000Z' WHERE id = '<session-id>';
+UPDATE sessions SET updated_at = '2024-01-01T00:00:00.000Z' WHERE id = '<session-id>';
 ```
 
 Re-run the query above until it returns zero rows, then restart the
