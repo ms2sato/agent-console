@@ -1505,8 +1505,23 @@ export class SdkEngine implements ClaudeSdkEngine {
    *   `mcp__<slug>__<toolname>` entries (via `mcpServerOf` in
    *   {@link handleSystemInit}), which the CLI itself has ALREADY slugified
    *   before this process ever sees them -- there is no raw form to recover
-   *   here, so `name` is compared by slugifying each candidate known name
-   *   and matching it against `name` as-is.
+   *   here. **The CLI's own slugification and our {@link slugifyMcpServerName}
+   *   are NOT the same alphabet** (Architect finding, 2026-09-21, fixing a
+   *   production-bricking regression the prior version of this comment
+   *   introduced): measured against 82 recorded real tool-name occurrences in
+   *   this repository's own probe transcripts/fixtures, the CLI slugifies
+   *   `.` and spaces to `_` but leaves `-` UNTOUCHED (`mcp__agent-console__`,
+   *   `mcp__chrome-devtools__`), while our own
+   *   {@link slugifyMcpServerName} collapses `-` to `_` as well
+   *   (`slugifyMcpServerName('agent-console') === 'agent_console'`). A
+   *   one-sided comparison (`slugifyMcpServerName(known) === name`) therefore
+   *   FATALS every real activation that reports the reserved `agent-console`
+   *   server's own tools, because `'agent_console' !== 'agent-console'`. The
+   *   only way to compare correctly is to run `name` through
+   *   {@link slugifyMcpServerName} too, landing BOTH sides in our own
+   *   canonical alphabet -- never compare our slugified known-name against
+   *   the CLI's raw/differently-slugified extracted name directly. Do not
+   *   "simplify" this back to a one-sided comparison.
    *
    * **The `'tool'` channel's ambiguity is inherent to the CLI, not
    * introduced by this comparison.** Two DISTINCT raw server names can
@@ -1535,7 +1550,7 @@ export class SdkEngine implements ClaudeSdkEngine {
    */
   private classifyMcpServerScope(name: string, channel: 'raw' | 'tool'): McpServerDiscoveredScope | null {
     const matchesKnown = (known: string): boolean =>
-      channel === 'raw' ? name === known : slugifyMcpServerName(known) === name;
+      channel === 'raw' ? name === known : slugifyMcpServerName(known) === slugifyMcpServerName(name);
 
     if (matchesKnown('agent-console') || matchesKnown(COMPACT_TOOL_SERVER_NAME)) {
       return 'reserved';

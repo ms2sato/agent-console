@@ -995,12 +995,14 @@ describe('SdkEngine — tool-surface containment (Pin 2, S5)', () => {
   it('accepts a system:init report whose non-mcp__ tools are a subset of the configured allowlist (positive control)', async () => {
     const events: EmbeddedAgentEvent[] = [];
     const { queryFn } = makeFakeQuery([
-      // `mcp__agent_console__...` (underscore), not a literal hyphen: the
-      // CLI's own tool-name prefix is already the slugified form
-      // (`slugifyMcpServerName('agent-console') === 'agent_console'`), and
-      // `classifyMcpServerScope`'s `'tool'` channel compares this extracted
-      // name against KNOWN names slugified on-the-fly, not the other way
-      // around -- see that method's doc comment.
+      // `mcp__agent_console__...` (underscore form): this test exercises the
+      // tool-surface containment check (Pin 2, S5), not the MCP wall's
+      // hyphen-alphabet distinction (see `sdk-engine.ts`'s "MCP server
+      // containment wall" describe block below for the real, hyphen-kept
+      // `mcp__agent-console__...` form the CLI actually reports).
+      // `classifyMcpServerScope`'s `'tool'` channel slugifies BOTH the known
+      // name and this extracted name before comparing them, so either
+      // spelling classifies as reserved here.
       systemInit({ tools: ['Read', 'Glob', 'Grep', 'mcp__agent_console__close_session'] }),
     ]);
     new SdkEngine(baseDeps({ emit: (e) => events.push(e), queryFn, enabledTools: ['Read', 'Glob', 'Grep'] }));
@@ -1113,6 +1115,32 @@ describe('SdkEngine — MCP server containment wall (epic #1636 Phase 5 PR-2, §
     expect(eventsOfType(events, 'fatal')).toHaveLength(0);
   });
 
+  // Architect finding, 2026-09-21 (production-bricking regression fix on top
+  // of the prior `classifyMcpServerScope` revision): `agent-console` is the
+  // RESERVED, ALWAYS-PRESENT built-in server, so EVERY real `claude-sdk`
+  // activation's `system:init` reports a tool named `mcp__agent-console__...`
+  // for it -- and the CLI does NOT slugify `-` in its tool-name prefixes
+  // (only `.` and spaces), so this tool name is reported with the hyphen
+  // KEPT, never as `mcp__agent_console__...`. A one-sided tool-channel
+  // comparison (`slugifyMcpServerName(known) === name`, without also
+  // slugifying `name`) never matches `'agent_console' !== 'agent-console'`
+  // and FATALS this activation -- i.e. every real one. This is the single
+  // highest-priority pin in this file.
+  //
+  // Polarity, measured: reverting `classifyMcpServerScope`'s `'tool'`-channel
+  // comparison to the one-sided form (`slugifyMcpServerName(known) === name`)
+  // makes this pin FAIL with a fatal event naming `agent-console`. Restored
+  // afterward.
+  it('accepts the reserved agent-console server reported via its real, hyphen-kept mcp__agent-console__ tool-name form (positive control, Architect finding 2026-09-21)', async () => {
+    const events: EmbeddedAgentEvent[] = [];
+    const { queryFn } = makeFakeQuery([
+      systemInit({ tools: ['Read', 'mcp__agent-console__list_sessions'] }),
+    ]);
+    new SdkEngine(baseDeps({ emit: (e) => events.push(e), queryFn, enabledTools: ['Read'] }));
+    await flush();
+    expect(eventsOfType(events, 'fatal')).toHaveLength(0);
+  });
+
   it('accepts a project server name resolved into the initial project MCP servers (positive control)', async () => {
     const events: EmbeddedAgentEvent[] = [];
     const { queryFn } = makeFakeQuery([
@@ -1121,9 +1149,23 @@ describe('SdkEngine — MCP server containment wall (epic #1636 Phase 5 PR-2, §
           { name: 'agent-console', status: 'connected' },
           { name: 'my-server', status: 'connected' },
         ],
-        // `mcp__my_server__...` (underscore): the CLI's own tool-name prefix
-        // is already the slugified form of the raw `my-server` name.
-        tools: ['Read', 'mcp__my_server__do_thing'],
+        // `mcp__my-server__...` (HYPHEN KEPT, not `mcp__my_server__...`):
+        // measured against 82 recorded real tool-name occurrences (Architect
+        // finding, 2026-09-21), the CLI's own tool-name slugification does
+        // NOT touch `-` -- only `.` and spaces collapse to `_`. A prior
+        // version of this fixture used the underscore form on the mistaken
+        // premise that the CLI slugifies hyphens too; that premise is false,
+        // and a comparison built on it fatals the reserved `agent-console`
+        // server (see the pin directly above this one).
+        //
+        // Polarity, measured: reverting `classifyMcpServerScope`'s
+        // `'tool'`-channel comparison to the one-sided form
+        // (`slugifyMcpServerName(known) === name`) makes THIS pin fail too
+        // (1 fatal event naming `my-server` instead of 0) -- the hyphen-drop
+        // bug is not specific to the reserved pair, it fatals any
+        // hyphenated project-scope server's own tools as well. Restored
+        // afterward.
+        tools: ['Read', 'mcp__my-server__do_thing'],
       }),
     ]);
     new SdkEngine(
@@ -1155,6 +1197,32 @@ describe('SdkEngine — MCP server containment wall (epic #1636 Phase 5 PR-2, §
       baseDeps({
         emit: (e) => events.push(e),
         queryFn,
+        expectedMcpServerNames: { userLocal: new Set(['chrome-devtools']), unavailable: false },
+      }),
+    );
+    await flush();
+    expect(eventsOfType(events, 'fatal')).toHaveLength(0);
+  });
+
+  // Architect finding, 2026-09-21: a real, commonly-configured Local-scope
+  // MCP server (`chrome-devtools`) reported via its real, hyphen-kept
+  // `mcp__chrome-devtools__...` tool-name form must also be accepted on the
+  // `'tool'` channel, not only via the raw `mcp_servers[].name` channel
+  // already covered by the positive control directly above.
+  //
+  // Polarity, measured: reverting `classifyMcpServerScope`'s `'tool'`-channel
+  // comparison to the one-sided form makes this pin FAIL with a fatal event
+  // naming `chrome-devtools`. Restored afterward.
+  it('accepts a user/local-scope server reported via its real, hyphen-kept mcp__chrome-devtools__ tool-name form (positive control, Architect finding 2026-09-21)', async () => {
+    const events: EmbeddedAgentEvent[] = [];
+    const { queryFn } = makeFakeQuery([
+      systemInit({ tools: ['Read', 'mcp__chrome-devtools__list_pages'] }),
+    ]);
+    new SdkEngine(
+      baseDeps({
+        emit: (e) => events.push(e),
+        queryFn,
+        enabledTools: ['Read'],
         expectedMcpServerNames: { userLocal: new Set(['chrome-devtools']), unavailable: false },
       }),
     );
@@ -1373,6 +1441,14 @@ describe('SdkEngine — MCP server containment wall (epic #1636 Phase 5 PR-2, §
   // 'my.server' by exact string equality, isAccountConnector/reserved/
   // project also don't match it, and the wall correctly fatals. Restored
   // afterward; see the PR body for the exact revert/restore commands run.
+  //
+  // Re-verified 2026-09-21 (Architect finding, hyphen-alphabet fix on the
+  // `'tool'` channel): the raw channel itself is UNCHANGED by that fix, and
+  // this pin was re-run against a build that slugifies the raw channel too
+  // (i.e. `matchesKnown = (known) => slugifyMcpServerName(known) ===
+  // slugifyMcpServerName(name)` unconditionally, ignoring `channel`) --
+  // still FAILS (0 fatal events instead of 1), confirming this measurement
+  // holds after the `'tool'`-channel change, not merely before it.
   it('fatals when the raw mcp_servers name "my server" is reported but only the DISTINCT raw name "my.server" (same slug) is expected (negative control, CodeRabbit finding on #1794)', async () => {
     const events: EmbeddedAgentEvent[] = [];
     const { queryFn } = makeFakeQuery([
