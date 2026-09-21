@@ -107,6 +107,8 @@ interface ControllableStream {
   stream: ReadableStream<Uint8Array>;
   push: (s: string) => void;
   close: () => void;
+  /** Error the stream out from under an in-flight reader.read(). */
+  error: (err: unknown) => void;
 }
 
 function makeControllableStream(): ControllableStream {
@@ -127,6 +129,12 @@ function makeControllableStream(): ControllableStream {
         ctrl.close();
       }
     },
+    error: (err: unknown) => {
+      if (!closed) {
+        closed = true;
+        ctrl.error(err);
+      }
+    },
   };
 }
 
@@ -140,6 +148,17 @@ interface FakeSpawn {
   endCount: () => number;
   pushStdout: (s: string) => void;
   pushStderr: (s: string) => void;
+  /** Error the stdout stream out from under readStdout's reader.read(). */
+  errorStdout: (err: unknown) => void;
+  /**
+   * Resolve `exited` WITHOUT closing either stream -- lets a test
+   * observe `runtime.exitObserved` flip true (via the exit observer's own
+   * `.then` callback) while stdout/stderr are still open, so a LATER stream
+   * error can be distinguished from one racing the exit itself. Deliberately
+   * separate from `simulateExit`, which both resolves `exited` AND closes
+   * both streams for every pre-existing test in this file.
+   */
+  resolveExitCode: (code: number) => void;
   /** Resolve `exited` AND close both streams so the exit observer can complete. */
   simulateExit: (code: number) => void;
   /** Optional hook fired on kill(signal); tests use it to escalate to exit. */
@@ -222,6 +241,10 @@ function makeFakeSpawn(opts?: { endThrows?: boolean }): FakeSpawn {
     endCount: () => ends,
     pushStdout: stdout.push,
     pushStderr: stderr.push,
+    errorStdout: stdout.error,
+    resolveExitCode: (code: number) => {
+      resolveExited(code);
+    },
     simulateExit: (code: number) => {
       resolveExited(code);
       stdout.close();
@@ -5402,5 +5425,306 @@ describe('EmbeddedAgentWorkerService — activation-failure rollback clears mcpS
 
     expect(capturedRuntime).toBeDefined();
     expect(capturedRuntime?.projectDiscovery).toBeNull();
+  });
+});
+
+/**
+ * Issue #1798: `readStdout`'s per-line try/catch around
+ * `await this.handleLoopLine(...)` must contain a rejecting handler to that
+ * ONE line -- the reader itself (and therefore the incarnation) must survive
+ * it -- and the stream-end log level must distinguish "the process already
+ * exited" from "the reader died while the incarnation still looks alive".
+ */
+describe('readStdout per-line containment (#1798)', () => {
+  const HANDLER_FAILED_WARN = 'Embedded-agent event handler failed; line skipped, reader continues';
+
+  function warnCallsFor(warnSpy: ReturnType<typeof spyOn>, message: string): Record<string, unknown>[] {
+    return (warnSpy.mock.calls as unknown as unknown[][])
+      .filter((call) => call[1] === message)
+      .map((call) => call[0] as Record<string, unknown>);
+  }
+
+  it('AC 1/2/5 (core pin, site a, L2360 sdk-session-id): a rejecting handler on line N does not end the reader -- line N+1 is still processed, exactly one WARN is logged naming the failed event type, and neither the parse-failure strike counter nor a kill signal is touched', async () => {
+    const h = setup();
+    await h.service.activate(h.sessionId, h.workerId);
+
+    const warnSpy = spyOn(rootLogger, 'warn');
+    try {
+      h.persistSession.mockImplementationOnce(async () => {
+        throw new Error('persist boom');
+      });
+
+      // Line N: the handler's own `persistSession` call rejects. Pushed
+      // ALONE first -- line N+1 must not be pushed yet, because
+      // `handleLoopLine`'s `sdk-session-id` handler resets
+      // `runtime.consecutiveParseFailures = 0` on every SUCCESSFULLY parsed
+      // line (production code, unrelated to this fix). If N+1 had already
+      // been processed by the time the strike-counter assertion below runs,
+      // that reset would make the assertion pass regardless of whether the
+      // per-line catch mistakenly routed N's failure through
+      // `handleParseFailure` first -- see the M4 note below.
+      h.fake.pushStdout('{"v":1,"type":"sdk-session-id","sdkSessionId":"S1"}\n');
+
+      // Wait for the WARN itself, not for N+1's effect -- this is the
+      // earliest point at which N's per-line catch has definitely run and
+      // N+1 has definitely NOT.
+      await waitFor(() => warnCallsFor(warnSpy, HANDLER_FAILED_WARN).length > 0);
+
+      // Item 2, asserted AT THIS POINT (before N+1 is even pushed): this is
+      // a runtime fault in one event's side effect, not protocol corruption
+      // -- the strike counter and the kill path both belong to
+      // `handleParseFailure`, which this catch must never call.
+      //
+      // M4 measured (Architect review, workflow.md "A check's existence is
+      // not its detection power"): temporarily adding
+      // `this.handleParseFailure(runtime, subprocess);` inside the per-line
+      // catch's `catch (err) { ... }` block (production code, reverted
+      // after confirming) reproduces the exact bug this assertion exists to
+      // catch. Asserted at the OLD position (after N+1's `waitFor`), the
+      // assertion passed anyway -- N+1's own successful parse resets the
+      // counter to 0 before the read, hiding M4 entirely (0/1 mutations
+      // caught at that position). Asserted HERE, at the position below,
+      // the same M4 mutation makes this assertion fail as expected
+      // (`consecutiveParseFailures` is `1`, not `0`) -- confirmed by
+      // running the mutation, not inferred.
+      const runtimes = (h.service as unknown as { runtimes: Map<string, { consecutiveParseFailures: number }> })
+        .runtimes;
+      expect(runtimes.get(h.workerId)?.consecutiveParseFailures).toBe(0);
+      expect(h.fake.killSignals).toEqual([]);
+
+      // Line N+1: pushed only now -- proves the reader itself never stalled
+      // on N's rejection.
+      h.fake.pushStdout('{"v":1,"type":"sdk-session-id","sdkSessionId":"S2"}\n');
+
+      await waitFor(() => h.worker.sdkSessionId === 'S2');
+      expect(h.worker.sdkSessionId).toBe('S2');
+
+      const matching = warnCallsFor(warnSpy, HANDLER_FAILED_WARN);
+      expect(matching).toHaveLength(1);
+      expect(matching[0].type).toBe('sdk-session-id');
+      expect(matching[0].sessionId).toBe(h.sessionId);
+      expect(matching[0].workerId).toBe(h.workerId);
+      expect(matching[0].err).toBeInstanceOf(Error);
+
+      // Polarity measured (workflow.md "Every pin's reach is measured, not
+      // predicted"): commenting out just the per-line try/catch in
+      // `readStdout` (leaving `await this.handleLoopLine(...)` bare, inside
+      // the existing OUTER try) makes this test's first `waitFor` (the WARN
+      // itself) time out. The rejection propagates out of the `for` loop
+      // and the `while` loop's own try, is caught by the OUTER
+      // (stream-level) catch, and the reader returns -- no
+      // `HANDLER_FAILED_WARN` is ever logged, and line N+1 (`S2`) is never
+      // read at all. Reverted after confirming the failure.
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it('AC 6(b), site b, L2512 (mcp-servers-discovered persist): a rejecting persistSession call inside the mcp-servers-discovered handler does not end the reader', async () => {
+    const h = setup({ definition: SDK_DEFINITION });
+    await h.service.activate(h.sessionId, h.workerId);
+
+    const warnSpy = spyOn(rootLogger, 'warn');
+    try {
+      h.persistSession.mockImplementationOnce(async () => {
+        throw new Error('persist boom');
+      });
+
+      h.fake.pushStdout(
+        `${JSON.stringify({
+          v: 1,
+          type: 'mcp-servers-discovered',
+          servers: [{ name: 'A', scope: 'project', hash: 'hash-a', decision: 'pending' }],
+        })}\n`,
+      );
+      h.fake.pushStdout('{"v":1,"type":"sdk-session-id","sdkSessionId":"S2"}\n');
+
+      await waitFor(() => h.worker.sdkSessionId === 'S2');
+      expect(h.worker.sdkSessionId).toBe('S2');
+      // The discovered event's own effect on `worker.mcpServers` still
+      // landed -- the rejection is on the trailing `persistSession` call,
+      // after the assignment, not on the handler as a whole.
+      expect(h.worker.mcpServers).toEqual([{ name: 'A', scope: 'project', hash: 'hash-a', decision: 'pending' }]);
+
+      const matching = warnCallsFor(warnSpy, HANDLER_FAILED_WARN);
+      expect(matching).toHaveLength(1);
+      expect(matching[0].type).toBe('mcp-servers-discovered');
+
+      // Polarity measured: with the SAME per-line try/catch removed as in
+      // the core pin above, this test's first `waitFor` also times out --
+      // this site is reached by the same mechanism, not merely assumed by
+      // similarity to the core pin.
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it('AC 6(e), site e, L2293->2042 (maybeDeliverInitialPrompt persist): a rejecting persistSession call after a delivered initial prompt does not end the reader', async () => {
+    const h = setup({
+      deliverInitialPromptOnActivation: true,
+      initialPrompt: 'do the thing',
+    });
+    await h.service.activate(h.sessionId, h.workerId);
+
+    const warnSpy = spyOn(rootLogger, 'warn');
+    try {
+      h.persistSession.mockImplementationOnce(async () => {
+        throw new Error('persist boom');
+      });
+
+      h.fake.pushStdout('{"v":1,"type":"ready"}\n');
+      // Confirm `maybeDeliverInitialPrompt` actually ran (the prompt was
+      // forwarded to stdin) before asserting on the rejection it then hits.
+      await waitFor(() => h.fake.stdinWrites.some((w) => JSON.parse(w).text === 'do the thing'));
+
+      h.fake.pushStdout('{"v":1,"type":"sdk-session-id","sdkSessionId":"S2"}\n');
+      await waitFor(() => h.worker.sdkSessionId === 'S2');
+      expect(h.worker.sdkSessionId).toBe('S2');
+
+      const matching = warnCallsFor(warnSpy, HANDLER_FAILED_WARN);
+      expect(matching).toHaveLength(1);
+      expect(matching[0].type).toBe('ready');
+
+      // Polarity measured: with the SAME per-line try/catch removed as in
+      // the core pin above, this test's second `waitFor` (the `S2` line)
+      // also times out -- confirmed by running the mutation, not inferred.
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it('AC 4/6(c), site c, L2758 (handleResumeFailed persist, refused): a rejecting persistSession call still lets the incarnation-replacement recovery run, because that recovery is gated on ordering, not on persistence', async () => {
+    const WARN_MESSAGE = 'Failed to persist cleared SDK session id; proceeding with incarnation replacement';
+    const h = setup({
+      definition: SDK_DEFINITION,
+      everActivated: true,
+      sdkSessionId: 'sess-prev',
+      readHistoryWithOffsetResult: { data: COMPLETED_TURN_STREAM },
+      shutdownGraceMs: 10,
+      sigtermTimeoutMs: 10,
+    });
+    await h.service.activate(h.sessionId, h.workerId);
+    // The fake child only exits when told to; deactivate escalates to a
+    // signal, so that is where it exits (mirrors the sibling `refused` test
+    // in the `sdk-resume-failed handling` describe block above).
+    h.fake.setOnKill(() => h.fake.simulateExit(137));
+    const spawnsBefore = h.fake.captured.length;
+
+    h.persistSession.mockImplementationOnce(async () => {
+      throw new Error('persist boom');
+    });
+
+    const warnSpy = spyOn(rootLogger, 'warn');
+    try {
+      h.fake.pushStdout(
+        '{"v":1,"type":"sdk-resume-failed","requestedSdkSessionId":"sess-prev","reason":"refused"}\n',
+      );
+
+      // The recovery (deactivate -> activate) still runs, observable as a
+      // new spawn -- this is the property item 1's per-line catch ALONE
+      // would not guarantee: it keeps the reader alive, but a reject inside
+      // `handleResumeFailed` with no local catch would still unwind past the
+      // detached `replaceIncarnationAfterRefusedResume(...)` call below the
+      // `await persistSession(...)` line, and no recovery would ever start.
+      await waitFor(() => h.fake.captured.length > spawnsBefore, 3000);
+      expect(h.fake.captured.length).toBe(spawnsBefore + 1);
+      // Cleared synchronously, strictly BEFORE the failed persist call --
+      // the persist rejecting does not undo it.
+      expect(h.worker.sdkSessionId).toBeNull();
+      // The replacement must not carry the id that just failed.
+      const reinit = JSON.parse(h.fake.stdinWrites[h.fake.stdinWrites.length - 1]);
+      expect('resume' in reinit).toBe(false);
+
+      const matching = warnCallsFor(warnSpy, WARN_MESSAGE);
+      expect(matching).toHaveLength(1);
+      expect(matching[0].sessionId).toBe(h.sessionId);
+      expect(matching[0].workerId).toBe(h.workerId);
+      expect(matching[0].requestedSdkSessionId).toBe('sess-prev');
+      expect(matching[0].err).toBeInstanceOf(Error);
+
+      // Polarity measured: temporarily removing ONLY the local try/catch
+      // around `handleResumeFailed`'s `persistSession` call (restoring the
+      // bare `await this.deps.persistSession(session)`, item 1's per-line
+      // catch left untouched) makes the `waitFor` above time out --
+      // `h.fake.captured.length` never exceeds `spawnsBefore` within the
+      // window, because the rejection unwinds past
+      // `replaceIncarnationAfterRefusedResume(...)` before it is ever
+      // called. Item 1 alone keeps the READER alive (no other line's
+      // processing is affected) but does not run this recovery -- exactly
+      // the "same brick, one more log line" this local catch exists to
+      // prevent. Reverted after confirming the failure.
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it('AC 3/7(i): the stdout stream erroring while the incarnation is still alive (exitObserved never set) logs WARN with the alive-specific message, not DEBUG', async () => {
+    const h = setup();
+    await h.service.activate(h.sessionId, h.workerId);
+
+    const warnSpy = spyOn(rootLogger, 'warn');
+    const debugSpy = spyOn(rootLogger, 'debug');
+    try {
+      h.fake.errorStdout(new Error('stream boom while alive'));
+
+      await waitFor(() =>
+        warnSpy.mock.calls.some(
+          (call) => call[1] === 'Embedded-agent stdout stream ended while the incarnation is still alive',
+        ),
+      );
+      expect(debugSpy.mock.calls.some((call) => call[1] === 'Embedded-agent stdout stream ended')).toBe(false);
+
+      // AC item 7(i): the error happens strictly BEFORE `simulateExit` is
+      // ever called -- `runtime.exitObserved` is still `false`. Calling
+      // `simulateExit` afterward only settles `exited`/stderr for test
+      // hygiene; `errorStdout`'s own `closed` guard makes the resulting
+      // `ctrl.close()` on the already-errored stdout stream a safe no-op.
+      h.fake.simulateExit(0);
+
+      // Polarity measured: temporarily removing the `runtime.exitObserved`
+      // check in `readStdout`'s outer catch (restoring the single
+      // unconditional `logger.debug(...)`) makes this test fail -- the WARN
+      // assertion above never becomes true and the `waitFor` times out.
+      // Reverted after confirming the failure.
+    } finally {
+      warnSpy.mockRestore();
+      debugSpy.mockRestore();
+    }
+  });
+
+  it('AC 3/7(ii): the stdout stream erroring AFTER the exit observer already ran (exitObserved set) logs only the ordinary DEBUG close message, never the alive-specific WARN', async () => {
+    const h = setup();
+    await h.service.activate(h.sessionId, h.workerId);
+    const runtimes = (h.service as unknown as { runtimes: Map<string, { exitObserved: boolean }> }).runtimes;
+
+    const warnSpy = spyOn(rootLogger, 'warn');
+    const debugSpy = spyOn(rootLogger, 'debug');
+    try {
+      // Resolves `exited` WITHOUT closing either stream, so the exit
+      // observer's `.then` callback can flip `exitObserved` while
+      // `readStdout`'s reader is still parked in an in-flight `read()`.
+      h.fake.resolveExitCode(0);
+      await waitFor(() => runtimes.get(h.workerId)?.exitObserved === true);
+
+      // Only NOW does the stdout stream actually error.
+      h.fake.errorStdout(new Error('stream boom after exit'));
+
+      await waitFor(() => debugSpy.mock.calls.some((call) => call[1] === 'Embedded-agent stdout stream ended'));
+      expect(
+        warnSpy.mock.calls.some(
+          (call) => call[1] === 'Embedded-agent stdout stream ended while the incarnation is still alive',
+        ),
+      ).toBe(false);
+
+      // Polarity measured: with the SAME `runtime.exitObserved` check
+      // removed as above, this test still passes (a single unconditional
+      // DEBUG is exactly what it asserts) -- it is the sibling (i) test
+      // above that carries this fix's polarity; this test instead pins
+      // that the fix does not turn an ordinary post-exit stream error into
+      // a spurious WARN.
+    } finally {
+      warnSpy.mockRestore();
+      debugSpy.mockRestore();
+    }
   });
 });

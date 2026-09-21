@@ -569,6 +569,17 @@ interface Runtime {
   streamsDone: Promise<void>;
   /** Resolves after the exit observer finished all cleanup (append/revoke/persist/fire). */
   exitSettled: Promise<void>;
+  /**
+   * Set SYNCHRONOUSLY as the first statement of `subprocess.exited`'s
+   * `.then` callback -- before `await runtime.streamsDone`, i.e. before the
+   * readers necessarily see it. Read by `readStdout`'s and `readStderr`'s
+   * outer catch to decide whether an unexpected stream error is worth a WARN
+   * (the incarnation still looks alive from `exitObserved`'s reckoning) or
+   * only the ordinary DEBUG close (the subprocess has already exited). A
+   * best-effort ordering signal, not a guarantee -- see the outer catches'
+   * own comments for the one known race.
+   */
+  exitObserved: boolean;
   /** Transcript Restore (#1123 success / #1449 failure): this incarnation's restore result, retained for bootstrap re-delivery to every new connection for the incarnation's lifetime. null means ONLY "there is nothing to say" (first-ever activation, or no activation yet) -- a restore FAILURE is a non-null `{failed: true, ...}` record, not null (#1449). `completed` starts false on the success member (restore succeeded but the new incarnation hasn't reported `ready` yet) and flips true once the loop's `ready` event fires (#1205) -- this is what lets the client distinguish "still restoring" from "restore delivered, incarnation ready" across an epoch-stable restore; the failure member has no `completed` field. `sdkResumed` (R1) is set only for `claude-sdk` workers -- see {@link RestoreInfo}. */
   restoreInfo: RestoreInfo | null;
   /**
@@ -1363,6 +1374,7 @@ export class EmbeddedAgentWorkerService {
         consecutiveParseFailures: 0,
         streamsDone: Promise.resolve(),
         exitSettled: Promise.resolve(),
+        exitObserved: false,
         restoreInfo,
         requestedResumeId: resumeId,
         resumeRecoveryStarted: false,
@@ -1398,6 +1410,12 @@ export class EmbeddedAgentWorkerService {
 
       runtime.exitSettled = subprocess.exited
         .then(async (code) => {
+          // Set FIRST, synchronously, before the streams-done await
+          // below -- this is the signal `readStdout`/`readStderr`'s outer
+          // catch reads to tell "stream errored because the process already
+          // exited" (expected, DEBUG) from "stream errored while the
+          // incarnation still looks alive" (unexpected, WARN).
+          runtime.exitObserved = true;
           // Exit handling is ordered AFTER stream completion so the final events
           // flush before the server-authored `exited` row (mirrors
           // interactive-process-manager.ts exit observation). The exiting
@@ -2194,11 +2212,53 @@ export class EmbeddedAgentWorkerService {
         }
         for (const line of result.lines) {
           if (line.length === 0) continue;
-          await this.handleLoopLine(runtime, subprocess, line);
+          // A rejected handler must not end the reader. A side effect
+          // inside `handleLoopLine` (a DB persist, etc.) rejecting is a
+          // runtime fault in THIS event's handling, not a protocol
+          // violation -- it must never reach `handleParseFailure` or touch
+          // `runtime.consecutiveParseFailures` (that counter is reserved for
+          // genuine NDJSON corruption), and it must never end this loop: the
+          // incarnation's subprocess is still alive and every later line
+          // still needs a reader, or the worker looks alive while nothing
+          // about it responds ever again. `type` is derived only inside the
+          // catch, from a second, self-guarded re-parse of the same line --
+          // the success path pays no extra parsing cost for it.
+          try {
+            await this.handleLoopLine(runtime, subprocess, line);
+          } catch (err) {
+            let type: string | undefined;
+            try {
+              const reparsed: unknown = JSON.parse(line);
+              const candidate =
+                typeof reparsed === 'object' && reparsed !== null ? (reparsed as { type?: unknown }).type : undefined;
+              type = typeof candidate === 'string' ? candidate : undefined;
+            } catch {
+              type = undefined;
+            }
+            logger.warn(
+              { sessionId: ctx.sessionId, workerId: ctx.workerId, type, err },
+              'Embedded-agent event handler failed; line skipped, reader continues',
+            );
+          }
         }
       }
     } catch (err) {
-      logger.debug({ sessionId: ctx.sessionId, workerId: ctx.workerId, err }, 'Embedded-agent stdout stream ended');
+      if (runtime.exitObserved) {
+        logger.debug({ sessionId: ctx.sessionId, workerId: ctx.workerId, err }, 'Embedded-agent stdout stream ended');
+      } else {
+        // The exit observer's `.then` callback (whose first statement
+        // sets `exitObserved`) has not run yet by this reckoning, so the
+        // incarnation is still alive from the reader's point of view -- a
+        // stream error here is worth a WARN rather than folding into the
+        // ordinary quiet DEBUG close. Best-effort ordering only: a stream
+        // error racing the exit callback within the same tick can still
+        // produce this WARN once even though the process was already
+        // exiting; that is an acceptable false positive, not a bug.
+        logger.warn(
+          { sessionId: ctx.sessionId, workerId: ctx.workerId, err },
+          'Embedded-agent stdout stream ended while the incarnation is still alive',
+        );
+      }
     }
   }
 
@@ -2219,7 +2279,16 @@ export class EmbeddedAgentWorkerService {
         );
       }
     } catch (err) {
-      logger.debug({ sessionId: ctx.sessionId, workerId: ctx.workerId, err }, 'Embedded-agent stderr stream ended');
+      // Same alive-vs-exited level split as `readStdout`'s outer
+      // catch, for the same reason -- see its comment.
+      if (runtime.exitObserved) {
+        logger.debug({ sessionId: ctx.sessionId, workerId: ctx.workerId, err }, 'Embedded-agent stderr stream ended');
+      } else {
+        logger.warn(
+          { sessionId: ctx.sessionId, workerId: ctx.workerId, err },
+          'Embedded-agent stderr stream ended while the incarnation is still alive',
+        );
+      }
     }
   }
 
@@ -2755,7 +2824,25 @@ export class EmbeddedAgentWorkerService {
     }
     const session = this.deps.getSession(sessionId);
     if (session) {
-      await this.deps.persistSession(session);
+      // A local catch, not the per-line catch `readStdout` now wraps
+      // `handleLoopLine` in. That per-line catch stops a rejection from
+      // ending the READER, but it does so by unwinding out of
+      // `handleLoopLine` entirely -- which would also skip everything below
+      // this `await`, including the detached recovery call. This is the one
+      // site inside `handleLoopLine`'s call tree where a reject changes what
+      // runs NEXT, not merely whether the reader survives: the recovery must
+      // run whether or not the id was durably cleared, per this method's own
+      // doc comment ("the incarnation is replaced... for an unrelated
+      // reason"). Skip it here and the incarnation stays exactly as bricked
+      // as before, with one extra log line to show for it.
+      try {
+        await this.deps.persistSession(session);
+      } catch (err) {
+        logger.warn(
+          { sessionId, workerId, requestedSdkSessionId, err },
+          'Failed to persist cleared SDK session id; proceeding with incarnation replacement',
+        );
+      }
     }
 
     // `refused`: the SDK query is dead while the harness stays alive, which
