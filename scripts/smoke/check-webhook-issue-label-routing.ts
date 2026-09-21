@@ -1019,6 +1019,7 @@ async function main(): Promise<void> {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         name: 'Smoke inbound-delivery embedded Orchestrator',
+        engine: 'openai-api',
         provider: { baseUrl: `${stubBaseUrl}/v1`, model: 'smoke-model', apiKeyRef },
       }),
     });
