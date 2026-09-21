@@ -6,14 +6,14 @@
  * code in tests (logic duplication anti-pattern).
  */
 import { describe, it, expect, mock, beforeEach } from 'bun:test';
-import type { AgentDefinition, Session, Worker } from '@agent-console/shared';
+import type { AgentDefinition, EmbeddedAgentWorker, Session, Worker } from '@agent-console/shared';
 import {
   extractRestartableSession,
   findAgentWorker,
   executeWorkerRestart,
   type WorkerRestartResult,
 } from '../workerRestart';
-import { sessionToPageState, resolveShouldStripScrollback, resolveActiveEmbeddedAgentId, resolveActiveEmbeddedContextWindowTokens, resolveActiveEmbeddedModel, resolveActiveEmbeddedReasoningEffort, resolveActiveEmbeddedHasParameterOverride, getSessionStopTaskBannerText } from '../SessionPage';
+import { sessionToPageState, resolveShouldStripScrollback, resolveActiveEmbeddedAgentId, resolveActiveEmbeddedContextWindowTokens, resolveActiveEmbeddedModel, resolveActiveEmbeddedReasoningEffort, resolveActiveEmbeddedHasParameterOverride, resolveActiveEmbeddedMcpServers, getSessionStopTaskBannerText } from '../SessionPage';
 import type { SessionStopTask } from '../../../hooks/useSessionStopTasks';
 import { getTabDotColor, isCloseableTabType, getWorkerTypeLabel, showsActivityBadge } from '../tabAppearance';
 import type { UseTabManagementResult, AddAgentWorkerParams, Tab } from '../hooks/useTabManagement';
@@ -782,6 +782,62 @@ describe('resolveActiveEmbeddedHasParameterOverride (agent-surface.md Phase 3)',
     ];
 
     expect(resolveActiveEmbeddedHasParameterOverride(workers, null)).toBeUndefined();
+  });
+});
+
+describe('resolveActiveEmbeddedMcpServers (epic #1636 Phase 5 PR-3b)', () => {
+  // SessionPage.tsx's active-tab render branch passes this value as
+  // EmbeddedAgentWorkerView's `mcpServers` prop. Mirrors
+  // `resolveActiveEmbeddedModel`'s test shape above.
+  it('resolves mcpServers when the active tab worker is embedded-agent type with a populated array', () => {
+    const mcpServers: NonNullable<EmbeddedAgentWorker['mcpServers']> = [
+      { name: 'chrome-devtools', scope: 'project', hash: 'abc123', decision: 'pending' },
+    ];
+    const embeddedWorker: Worker = {
+      id: 'embedded-worker-1',
+      type: 'embedded-agent',
+      name: 'Local GPT',
+      embeddedAgentId: 'embedded-agent-1',
+      activated: true, autoCompaction: true, reasoningEffort: null, hasParameterOverride: false,
+      mcpServers,
+      createdAt: new Date().toISOString(),
+    };
+    const workers: Worker[] = [
+      { id: 'agent-worker-1', type: 'agent', name: 'Claude Code', agentId: 'claude-code', createdAt: new Date().toISOString(), activated: true },
+      embeddedWorker,
+    ];
+
+    expect(resolveActiveEmbeddedMcpServers(workers, 'embedded-worker-1')).toBe(mcpServers);
+  });
+
+  it('returns undefined when the active embedded-agent worker has no mcpServers reading', () => {
+    const embeddedWorker: Worker = {
+      id: 'embedded-worker-1',
+      type: 'embedded-agent',
+      name: 'Local GPT',
+      embeddedAgentId: 'embedded-agent-1',
+      activated: true, autoCompaction: true, reasoningEffort: null, hasParameterOverride: false,
+      createdAt: new Date().toISOString(),
+    };
+    const workers: Worker[] = [embeddedWorker];
+
+    expect(resolveActiveEmbeddedMcpServers(workers, 'embedded-worker-1')).toBeUndefined();
+  });
+
+  it('returns undefined when the active tab worker is not embedded-agent type', () => {
+    const workers: Worker[] = [
+      { id: 'agent-worker-1', type: 'agent', name: 'Claude Code', agentId: 'claude-code', createdAt: new Date().toISOString(), activated: true },
+    ];
+
+    expect(resolveActiveEmbeddedMcpServers(workers, 'agent-worker-1')).toBeUndefined();
+  });
+
+  it('returns undefined when activeTabId does not match any worker', () => {
+    const workers: Worker[] = [
+      { id: 'agent-worker-1', type: 'agent', name: 'Claude Code', agentId: 'claude-code', createdAt: new Date().toISOString(), activated: true },
+    ];
+
+    expect(resolveActiveEmbeddedMcpServers(workers, 'nonexistent-tab')).toBeUndefined();
   });
 });
 

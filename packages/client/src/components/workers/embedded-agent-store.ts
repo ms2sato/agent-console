@@ -305,6 +305,23 @@ export interface EmbeddedAgentSnapshot {
    * what they represent, not where they're used".
    */
   currentExit: { code: number | null; reason?: ExitReason; stderrTail?: string } | null;
+  /**
+   * epic #1636 Phase 5 PR-3b: the most recently received
+   * `mcp-servers-discovered` event's two failure notes, verbatim. `null`
+   * before any such event has arrived for the current incarnation. Neither
+   * `mcpJsonError` nor `userLocalNamesUnavailable` lives anywhere else on
+   * the client -- they are not part of `worker.mcpServers` (the server
+   * broadcast field), so this snapshot field is their sole home.
+   */
+  mcpDiscovery: { mcpJsonError?: string; userLocalNamesUnavailable?: true } | null;
+  /**
+   * epic #1636 Phase 5 PR-3b: the most recently received
+   * `mcp-servers-applied` event, verbatim plus a client-side `at` timestamp
+   * (`Date.now()` at fold time) so the UI can render a "just applied" style
+   * indicator if desired. `null` before any such event has arrived for the
+   * current incarnation.
+   */
+  lastMcpApply: { applied: boolean; reason?: string; errors?: Record<string, string>; at: number } | null;
 }
 
 export interface EmbeddedAgentInstance {
@@ -467,6 +484,8 @@ class EmbeddedAgentController implements EmbeddedAgentInstance {
       restoreFailed: false,
       preservation: undefined,
       currentExit: null,
+      mcpDiscovery: null,
+      lastMcpApply: null,
     };
     this.appUnsub = appSubscribeImpl((msg) => this.handleAppMessage(msg));
     this.connect();
@@ -843,7 +862,7 @@ class EmbeddedAgentController implements EmbeddedAgentInstance {
     // stale value could be read. See resetChatState's doc comment for the
     // full two-caller argument.
     //
-    // All four fields below are passed to resetChatState() as its
+    // All fields below are passed to resetChatState() as its
     // epoch-change-only extension, rather than patched here in a SEPARATE
     // this.patch() call, so the whole epoch-reset update -- display-content
     // fields plus these liveness/declaration fields -- reaches listeners in
@@ -864,6 +883,8 @@ class EmbeddedAgentController implements EmbeddedAgentInstance {
       currentExit: null,
       restoreFailed: false,
       preservation: undefined,
+      mcpDiscovery: null,
+      lastMcpApply: null,
     });
     this.epoch = newEpoch;
     this.lastOffset = 0;
@@ -903,7 +924,7 @@ class EmbeddedAgentController implements EmbeddedAgentInstance {
   private resetChatState(
     epochChangeFields?: Pick<
       EmbeddedAgentSnapshot,
-      'activityState' | 'currentExit' | 'restoreFailed' | 'preservation'
+      'activityState' | 'currentExit' | 'restoreFailed' | 'preservation' | 'mcpDiscovery' | 'lastMcpApply'
     >,
   ): void {
     this.splitter = new NdjsonLineSplitter();
@@ -960,6 +981,17 @@ class EmbeddedAgentController implements EmbeddedAgentInstance {
     //     ordinary reconnect even though the worker never restarted.
     //   - currentExit (#1455) -- same worker-LIVENESS reasoning as
     //     activityState above.
+    //   - mcpDiscovery/lastMcpApply (epic #1636 Phase 5 PR-3b) -- also
+    //     worker-LIVENESS-adjacent, per-incarnation state, for the same
+    //     reason restoreFailed/preservation belong here: neither
+    //     `mcp-servers-discovered` nor `mcp-servers-applied` is ever
+    //     re-sent by a `history` response, so a same-epoch fresh load (a
+    //     resync after a network blip, or a server buffer prune) is
+    //     exactly the case where a genuinely-still-true reading (e.g. "2
+    //     pending / 1 allowed") would otherwise be silently wiped with
+    //     nothing left to re-declare it. The NEXT incarnation's own events
+    //     (from beginEpochReset) DO re-declare both from scratch, so
+    //     clearing them there is correct.
     //
     // When adding a new field to this function, ask which of the two
     // semantics above it belongs to, for EACH call site -- not just the one
@@ -1393,9 +1425,28 @@ class EmbeddedAgentController implements EmbeddedAgentInstance {
         });
         return true;
       case 'mcp-servers-discovered':
+        // (epic #1636 Phase 5 PR-3b) Snapshot-only: no timeline entry, same
+        // no-chat-row treatment as model-params-applied above. `mcpJsonError`
+        // / `userLocalNamesUnavailable` live ONLY on this event (never on
+        // worker.mcpServers), so this is their sole client-side home.
+        this.patch({
+          mcpDiscovery: {
+            ...(event.mcpJsonError !== undefined ? { mcpJsonError: event.mcpJsonError } : {}),
+            ...(event.userLocalNamesUnavailable === true ? { userLocalNamesUnavailable: true as const } : {}),
+          },
+        });
+        return false;
       case 'mcp-servers-applied':
-        // (epic #1636 Phase 5 PR-2, #1785) Intentionally no-op for now: the
-        // panel that renders MCP server permission decisions ships in PR-3.
+        // (epic #1636 Phase 5 PR-3b) Snapshot-only, same no-chat-row
+        // treatment.
+        this.patch({
+          lastMcpApply: {
+            applied: event.applied,
+            ...(event.reason !== undefined ? { reason: event.reason } : {}),
+            ...(event.errors !== undefined ? { errors: event.errors } : {}),
+            at: Date.now(),
+          },
+        });
         return false;
       default: {
         const _exhaustive: never = event;

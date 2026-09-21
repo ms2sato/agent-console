@@ -82,6 +82,13 @@ function renderView(props: {
   model?: string;
   reasoningEffort?: string | null;
   hasParameterOverride?: boolean;
+  mcpServers?: Array<{
+    name: string;
+    scope: 'project' | 'user' | 'local' | 'reserved' | 'connector';
+    hash?: string;
+    decision?: 'allowed' | 'denied' | 'pending' | 'rejected-reserved' | 'invalid';
+    status?: string;
+  }>;
 }) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
   return render(
@@ -2831,6 +2838,326 @@ describe('EmbeddedAgentWorkerView', () => {
         });
         expect(defaultButton.disabled).toBe(false);
       });
+    });
+  });
+
+  describe('the MCP servers disclosure (epic #1636 Phase 5 PR-3b)', () => {
+    /** A definition matching every test's `embeddedAgentId`, engine `claude-sdk`. */
+    const sdkDefinition = embeddedAgentFixture({ id: 'ea-mcp', engine: 'claude-sdk' });
+
+    /** Fixture: 2 pending / 1 allowed / 1 denied / 1 rejected-reserved project rows, plus one user-scope and one connector-scope row. */
+    const mcpServersFixture = [
+      { name: 'chrome-devtools', scope: 'project' as const, hash: 'abc123de', decision: 'pending' as const },
+      { name: 'filesystem', scope: 'project' as const, hash: 'def456ab', decision: 'pending' as const },
+      { name: 'weather', scope: 'project' as const, hash: 'aaa11122', decision: 'allowed' as const, status: 'connected' },
+      { name: 'blocked-server', scope: 'project' as const, hash: 'bbb22233', decision: 'denied' as const },
+      { name: 'console', scope: 'project' as const, hash: 'ccc33344', decision: 'rejected-reserved' as const },
+      { name: 'my-user-server', scope: 'user' as const, status: 'connected' },
+      { name: 'chrome-devtools-connector', scope: 'connector' as const, status: 'connected' },
+    ];
+
+    function mcpGetFetch(): (input: RequestInfo | URL, init?: RequestInit) => Promise<Response> {
+      const base = makeEmbeddedViewFetch([sdkDefinition]);
+      return (input: RequestInfo | URL, _init?: RequestInit) => base(input);
+    }
+
+    function mcpFetchWithPost(
+      postResponse: () => Response | Promise<Response> = () =>
+        new Response(JSON.stringify({ worker: {} }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+    ) {
+      const get = mcpGetFetch();
+      return async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+        const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+        if (url.includes('/mcp-permissions') && init?.method === 'POST') {
+          return postResponse();
+        }
+        return get(input);
+      };
+    }
+
+    it('(a) is NOT rendered for an openai-api definition even when mcpServers is populated -- proves the gate is isSdkEngine, not merely "mcpServers was passed"', () => {
+      const openaiDefinition = embeddedAgentFixture({ id: 'ea-mcp-openai', engine: 'openai-api' });
+      globalThis.fetch = Object.assign(mock(makeEmbeddedViewFetch([openaiDefinition])), { preconnect: () => {} });
+      renderView({
+        sessionId: 's-mcp-a',
+        workerId: 'w-mcp-a',
+        embeddedAgentId: 'ea-mcp-openai',
+        mcpServers: mcpServersFixture,
+      });
+
+      expect(screen.queryByRole('button', { name: /MCP servers/ })).toBeNull();
+    });
+
+    it('(b) renders CLOSED by default for claude-sdk, with the summary counting project rows only and a "needs a decision" badge, and no body rows while closed', async () => {
+      globalThis.fetch = Object.assign(mock(mcpGetFetch()), { preconnect: () => {} });
+      renderView({
+        sessionId: 's-mcp-b',
+        workerId: 'w-mcp-b',
+        embeddedAgentId: 'ea-mcp',
+        mcpServers: mcpServersFixture,
+      });
+
+      // The "MCP servers" section is gated on `isSdkEngine`, which resolves
+      // only once the embedded-agent registry query settles -- unlike
+      // "Model and effort" above, which renders unconditionally.
+      const summary = await screen.findByRole('button', { name: /MCP servers/ });
+      expect(summary.getAttribute('aria-expanded')).toBe('false');
+      expect(summary.textContent).toContain('1 allowed / 2 pending / 1 denied');
+      expect(screen.getByText('needs a decision')).toBeTruthy();
+      expect(screen.queryByText('chrome-devtools')).toBeNull();
+      expect(screen.queryByText('weather')).toBeNull();
+    });
+
+    it('(c) opening shows one row per project entry with the right buttons/state, and read-only lines for non-project entries', async () => {
+      globalThis.fetch = Object.assign(mock(mcpGetFetch()), { preconnect: () => {} });
+      const user = userEvent.setup();
+      renderView({
+        sessionId: 's-mcp-c',
+        workerId: 'w-mcp-c',
+        embeddedAgentId: 'ea-mcp',
+        mcpServers: mcpServersFixture,
+      });
+
+      await user.click(await screen.findByRole('button', { name: /MCP servers/ }));
+
+      // Pending row: both buttons present and enabled (neither matches 'pending').
+      const chromeRow = screen.getByText('chrome-devtools').closest('div') as HTMLElement;
+      const chromeAllow = within(chromeRow).getByRole('button', { name: 'Allow' }) as HTMLButtonElement;
+      const chromeDeny = within(chromeRow).getByRole('button', { name: 'Deny' }) as HTMLButtonElement;
+      expect(chromeAllow.disabled).toBe(false);
+      expect(chromeDeny.disabled).toBe(false);
+      expect(within(chromeRow).getByText('not running')).toBeTruthy();
+
+      // Allowed row: Allow disabled (matches current decision), Deny enabled.
+      const weatherRow = screen.getByText('weather').closest('div') as HTMLElement;
+      const weatherAllow = within(weatherRow).getByRole('button', { name: 'Allow' }) as HTMLButtonElement;
+      const weatherDeny = within(weatherRow).getByRole('button', { name: 'Deny' }) as HTMLButtonElement;
+      expect(weatherAllow.disabled).toBe(true);
+      expect(weatherDeny.disabled).toBe(false);
+      expect(within(weatherRow).getByText('connected')).toBeTruthy();
+
+      // Denied row: Deny disabled, Allow enabled.
+      const blockedRow = screen.getByText('blocked-server').closest('div') as HTMLElement;
+      const blockedAllow = within(blockedRow).getByRole('button', { name: 'Allow' }) as HTMLButtonElement;
+      const blockedDeny = within(blockedRow).getByRole('button', { name: 'Deny' }) as HTMLButtonElement;
+      expect(blockedAllow.disabled).toBe(false);
+      expect(blockedDeny.disabled).toBe(true);
+
+      // Rejected-reserved row: no buttons, a note instead.
+      const consoleRow = screen.getByText('console').closest('div') as HTMLElement;
+      expect(within(consoleRow).queryByRole('button', { name: 'Allow' })).toBeNull();
+      expect(within(consoleRow).queryByRole('button', { name: 'Deny' })).toBeNull();
+      expect(within(consoleRow).getByText(/reserved name/)).toBeTruthy();
+
+      // Read-only lines for the user/connector entries: no buttons.
+      const userRow = screen.getByText('my-user-server').closest('div') as HTMLElement;
+      expect(within(userRow).queryByRole('button')).toBeNull();
+      const connectorRow = screen.getByText('chrome-devtools-connector').closest('div') as HTMLElement;
+      expect(within(connectorRow).queryByRole('button')).toBeNull();
+    });
+
+    it('(d) clicking Allow on a pending row issues exactly one POST to mcp-permissions, and both buttons on that row disable while in flight', async () => {
+      let resolvePost: (value: Response) => void = () => {};
+      const postPromise = new Promise<Response>((resolve) => {
+        resolvePost = resolve;
+      });
+      const fetchMock = mock(mcpFetchWithPost(() => postPromise));
+      globalThis.fetch = Object.assign(fetchMock, { preconnect: () => {} });
+      const user = userEvent.setup();
+      renderView({
+        sessionId: 's-mcp-d',
+        workerId: 'w-mcp-d',
+        embeddedAgentId: 'ea-mcp',
+        mcpServers: mcpServersFixture,
+      });
+
+      await user.click(await screen.findByRole('button', { name: /MCP servers/ }));
+      const chromeRow = screen.getByText('chrome-devtools').closest('div') as HTMLElement;
+      const chromeAllow = within(chromeRow).getByRole('button', { name: 'Allow' }) as HTMLButtonElement;
+      const chromeDeny = within(chromeRow).getByRole('button', { name: 'Deny' }) as HTMLButtonElement;
+
+      await user.click(chromeAllow);
+
+      await waitFor(() => {
+        expect(chromeAllow.disabled).toBe(true);
+      });
+      expect(chromeDeny.disabled).toBe(true);
+
+      const postCalls = fetchMock.mock.calls.filter(
+        ([, init]) => (init as RequestInit | undefined)?.method === 'POST' && String((init as RequestInit)?.body ?? '').includes('chrome-devtools'),
+      );
+      expect(postCalls).toHaveLength(1);
+      const [postUrl, postInit] = postCalls[0]!;
+      expect(String(postUrl)).toContain('/api/sessions/s-mcp-d/workers/w-mcp-d/mcp-permissions');
+      expect(JSON.parse(String((postInit as RequestInit).body))).toEqual({
+        name: 'chrome-devtools',
+        hash: 'abc123de',
+        decision: 'allow',
+      });
+
+      resolvePost(
+        new Response(JSON.stringify({ worker: {} }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      );
+
+      await waitFor(() => {
+        expect(chromeAllow.disabled).toBe(false);
+      });
+    });
+
+    it('(e) "Allow all pending" posts { all: true }', async () => {
+      const fetchMock = mock(mcpFetchWithPost());
+      globalThis.fetch = Object.assign(fetchMock, { preconnect: () => {} });
+      const user = userEvent.setup();
+      renderView({
+        sessionId: 's-mcp-e',
+        workerId: 'w-mcp-e',
+        embeddedAgentId: 'ea-mcp',
+        mcpServers: mcpServersFixture,
+      });
+
+      await user.click(await screen.findByRole('button', { name: /MCP servers/ }));
+      await user.click(screen.getByRole('button', { name: 'Allow all pending' }));
+
+      await waitFor(() => {
+        const postCall = fetchMock.mock.calls.find(
+          ([, init]) => (init as RequestInit | undefined)?.method === 'POST',
+        );
+        expect(postCall).toBeDefined();
+        expect(JSON.parse(String((postCall![1] as RequestInit).body))).toEqual({ all: true });
+      });
+    });
+
+    it('(f) a failed POST shows the message inline and re-enables the buttons afterward', async () => {
+      const fetchMock = mock(
+        mcpFetchWithPost(
+          () =>
+            new Response(JSON.stringify({ error: 'conflict message' }), {
+              status: 409,
+              headers: { 'Content-Type': 'application/json' },
+            }),
+        ),
+      );
+      globalThis.fetch = Object.assign(fetchMock, { preconnect: () => {} });
+      const user = userEvent.setup();
+      renderView({
+        sessionId: 's-mcp-f',
+        workerId: 'w-mcp-f',
+        embeddedAgentId: 'ea-mcp',
+        mcpServers: mcpServersFixture,
+      });
+
+      await user.click(await screen.findByRole('button', { name: /MCP servers/ }));
+      const chromeRow = screen.getByText('chrome-devtools').closest('div') as HTMLElement;
+      const chromeAllow = within(chromeRow).getByRole('button', { name: 'Allow' }) as HTMLButtonElement;
+
+      await user.click(chromeAllow);
+
+      expect(await screen.findByText('conflict message')).toBeTruthy();
+      await waitFor(() => {
+        expect(chromeAllow.disabled).toBe(false);
+      });
+    });
+
+    it('(g) an mcp-servers-applied event over the WebSocket renders the live-apply indicator', async () => {
+      globalThis.fetch = Object.assign(mock(mcpGetFetch()), { preconnect: () => {} });
+      const user = userEvent.setup();
+      renderView({
+        sessionId: 's-mcp-g',
+        workerId: 'w-mcp-g',
+        embeddedAgentId: 'ea-mcp',
+        mcpServers: mcpServersFixture,
+      });
+      await user.click(await screen.findByRole('button', { name: /MCP servers/ }));
+
+      const ws = MockWebSocket.getLastInstance();
+      act(() => {
+        ws?.simulateOpen();
+      });
+      await flush();
+
+      act(() => {
+        const data = ndjson({ v: 1, type: 'mcp-servers-applied', applied: true });
+        ws?.simulateMessage(JSON.stringify({ type: 'history', data, offset: data.length, startOffset: 0, epoch: 1 }));
+      });
+      await flush();
+
+      expect(screen.getByText('applied to the running agent')).toBeTruthy();
+
+      act(() => {
+        const data = ndjson({ v: 1, type: 'mcp-servers-applied', applied: false, reason: 'delivery-failed' });
+        ws?.simulateMessage(JSON.stringify({ type: 'output', data, offset: data.length }));
+      });
+      await flush();
+
+      expect(screen.getByText(/recorded; applies at the next activation/)).toBeTruthy();
+      expect(screen.getByText(/delivery-failed/)).toBeTruthy();
+    });
+
+    it('(h) an mcp-servers-discovered event carrying mcpJsonError renders the note with the message', async () => {
+      globalThis.fetch = Object.assign(mock(mcpGetFetch()), { preconnect: () => {} });
+      const user = userEvent.setup();
+      renderView({
+        sessionId: 's-mcp-h',
+        workerId: 'w-mcp-h',
+        embeddedAgentId: 'ea-mcp',
+        mcpServers: mcpServersFixture,
+      });
+      await user.click(await screen.findByRole('button', { name: /MCP servers/ }));
+
+      const ws = MockWebSocket.getLastInstance();
+      act(() => {
+        ws?.simulateOpen();
+      });
+      await flush();
+
+      act(() => {
+        const data = ndjson({
+          v: 1,
+          type: 'mcp-servers-discovered',
+          // discovery-wire `servers` never carries 'denied' -- that decision
+          // is server-computed only, never something the subprocess itself
+          // emits (see `EmbeddedAgentWorker.mcpServers`'s doc comment) --
+          // this test only cares about mcpJsonError, so an empty list keeps
+          // the fixture valid against the wire schema.
+          servers: [],
+          mcpJsonError: 'ENOENT: .mcp.json not found',
+        });
+        ws?.simulateMessage(JSON.stringify({ type: 'history', data, offset: data.length, startOffset: 0, epoch: 1 }));
+      });
+      await flush();
+
+      expect(screen.getByText(/could not be read: ENOENT: \.mcp\.json not found/)).toBeTruthy();
+    });
+
+    it('(i) mcpServers undefined shows "not discovered yet"', async () => {
+      globalThis.fetch = Object.assign(mock(mcpGetFetch()), { preconnect: () => {} });
+      renderView({
+        sessionId: 's-mcp-i',
+        workerId: 'w-mcp-i',
+        embeddedAgentId: 'ea-mcp',
+      });
+
+      const summary = await screen.findByRole('button', { name: /MCP servers/ });
+      expect(summary.textContent).toContain('not discovered yet');
+    });
+
+    it('(j) mcpServers empty array shows "none declared in .mcp.json"', async () => {
+      globalThis.fetch = Object.assign(mock(mcpGetFetch()), { preconnect: () => {} });
+      renderView({
+        sessionId: 's-mcp-j',
+        workerId: 'w-mcp-j',
+        embeddedAgentId: 'ea-mcp',
+        mcpServers: [],
+      });
+
+      const summary = await screen.findByRole('button', { name: /MCP servers/ });
+      expect(summary.textContent).toContain('none declared in .mcp.json');
     });
   });
 
