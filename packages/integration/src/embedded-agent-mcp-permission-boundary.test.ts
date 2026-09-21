@@ -29,6 +29,23 @@
  *   4. A `strictObject` reject test for the STALE full-config payload shape
  *      (Q10's failure mode: a dropped frame with only a browser-console log,
  *      never a thrown error visible to a test that does not check `.success`).
+ *   5. (epic #1636 Phase 5 PR-3b, Orchestrator disposition on the preflight
+ *      integration-coverage warning raised against `SessionPage.tsx` /
+ *      `EmbeddedAgentWorkerView.tsx`) The CONSUMER half of forms (a)/(b):
+ *      `mcp-servers-discovered.mcpJsonError` and `mcp-servers-applied.reason`
+ *      driven through the real loop-stdout -> `WorkerOutputFileManager`
+ *      persistence -> `SessionManager.getWorkerOutputHistory` replay path,
+ *      then fed -- as the exact persisted bytes, not a hand-typed literal --
+ *      into the REAL CLIENT STORE (`embedded-agent-store.ts`) via a
+ *      simulated worker-WS `history` push, the same code
+ *      `useEmbeddedAgentWorker` reads. The store's own `foldLine()` calls
+ *      the REAL `EmbeddedAgentStreamEventSchema` internally, so this is the
+ *      client's actual replay-parse path, not a second hand-authored parse.
+ *      PR-3b's own view tests (`EmbeddedAgentWorkerView.test.tsx`) inject a
+ *      `mcp-servers-discovered`/`mcp-servers-applied` frame via the mock WS
+ *      directly, as a literal object -- they pin the RENDERING but cannot
+ *      pin the wire-to-store PARSE step, which is exactly the pre-pr-
+ *      completeness.md Q10 step 2 gap this case closes.
  *
  * NOTE: packages/integration uses a FLAT sibling test layout (no __tests__/).
  */
@@ -48,6 +65,8 @@ import { CLAUDE_SDK_AGENT_ID } from '@agent-console/server/src/services/embedded
 import type { SpawnAsUserFn, SpawnAsUserOpts, SpawnAsUserResult } from '@agent-console/server/src/services/privilege-elevation';
 
 import { EmbeddedAgentCommandSchema, EmbeddedAgentEventSchema, AppServerMessageSchema } from '@agent-console/shared';
+import { getOrCreateEmbeddedAgentWorker, _resetEmbeddedAgentWorkers } from '@agent-console/client/src/components/workers/embedded-agent-store';
+import { MockWebSocket, installMockWebSocket } from '@agent-console/client/src/test/mock-websocket';
 
 const TEST_REPO_PATH = '/test/mcp-permission-repo';
 
@@ -370,5 +389,78 @@ describe('Client-Server Boundary: MCP server permission wire (epic #1636 Phase 5
     };
     const parsed = v.safeParse(EmbeddedAgentCommandSchema, staleFrame);
     expect(parsed.success).toBe(false);
+  });
+
+  it('epic #1636 Phase 5 PR-3b: mcp-servers-discovered (mcpJsonError) and mcp-servers-applied (applied:false, reason) survive the real persistence/replay round trip and populate the CLIENT STORE\'s mcpDiscovery/lastMcpApply snapshot fields', async () => {
+    const { sessionId, workerId } = await createSdkWorktreeWorker();
+    await ctx.sessionManager.activateEmbeddedAgentWorker(sessionId, workerId);
+    await waitFor(() => fake.stdinWrites.length >= 1);
+
+    // Form (a)-shaped discovery that failed to read .mcp.json -- `servers`
+    // empty, `mcpJsonError` present. Real engine shape per
+    // `emitMcpServersDiscovered`'s own doc comment.
+    fake.pushStdoutLine({
+      v: 1,
+      type: 'mcp-servers-discovered',
+      servers: [],
+      mcpJsonError: 'ENOENT: .mcp.json not found',
+    });
+    // A live-apply refusal with a free-form reason (never a silent no-op --
+    // see the event's own doc comment in types/embedded-agent.ts).
+    fake.pushStdoutLine({
+      v: 1,
+      type: 'mcp-servers-applied',
+      applied: false,
+      reason: 'delivery-failed',
+    });
+
+    await waitFor(async () => {
+      const hist = await ctx.sessionManager.getWorkerOutputHistory(sessionId, workerId, 0);
+      return !!hist && hist.data.includes('mcp-servers-applied');
+    });
+    const history = await ctx.sessionManager.getWorkerOutputHistory(sessionId, workerId, 0);
+    expect(history).not.toBeNull();
+
+    // Feed the REAL persisted bytes -- not a hand-typed literal -- into the
+    // REAL client store exactly the way a worker-WS `history` push would.
+    _resetEmbeddedAgentWorkers();
+    const restoreWs = installMockWebSocket();
+    const originalLocation = Object.getOwnPropertyDescriptor(window, 'location');
+    Object.defineProperty(window, 'location', {
+      value: { protocol: 'http:', host: 'localhost:3000' },
+      writable: true,
+      configurable: true,
+    });
+    try {
+      const instance = getOrCreateEmbeddedAgentWorker(sessionId, workerId);
+      const ws = MockWebSocket.getLastInstance();
+      ws!.simulateOpen();
+      ws!.simulateMessage(
+        JSON.stringify({
+          type: 'history',
+          data: history!.data,
+          offset: history!.offset,
+          startOffset: history!.startOffset,
+          epoch: history!.epoch,
+        }),
+      );
+      await waitFor(() => instance.getSnapshot().lastMcpApply !== null);
+
+      const snapshot = instance.getSnapshot();
+      expect(snapshot.mcpDiscovery).toEqual({ mcpJsonError: 'ENOENT: .mcp.json not found' });
+      expect(snapshot.lastMcpApply?.applied).toBe(false);
+      expect(snapshot.lastMcpApply?.reason).toBe('delivery-failed');
+      // Polarity (Orchestrator disposition, 2026-09-21): reverting the
+      // store's `mcp-servers-applied` case to the PR-2 no-op
+      // (`return false` with no `this.patch(...)`) made this assertion fail
+      // with `lastMcpApply` still `null`. Reverted after confirming the
+      // failure.
+    } finally {
+      _resetEmbeddedAgentWorkers();
+      restoreWs();
+      if (originalLocation) {
+        Object.defineProperty(window, 'location', originalLocation);
+      }
+    }
   });
 });

@@ -3159,6 +3159,126 @@ describe('EmbeddedAgentWorkerView', () => {
       const summary = await screen.findByRole('button', { name: /MCP servers/ });
       expect(summary.textContent).toContain('none declared in .mcp.json');
     });
+
+    // Architect ruling (2026-09-21, on the #1800 stale-status-broadcast
+    // caveat): the broadcast fix will make `session-updated` frames arrive
+    // mid-flow -- these two pins prove the panel already handles that
+    // correctly, independent of when #1800 lands.
+    it('(k) a changed mcpServers prop (a session-updated broadcast reaching SessionPage) re-renders the row\'s decision/status without needing to reopen the disclosure', async () => {
+      globalThis.fetch = Object.assign(mock(mcpGetFetch()), { preconnect: () => {} });
+      const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+      const user = userEvent.setup();
+      const pendingServers = [
+        { name: 'srv-allowed', scope: 'project' as const, hash: 'abc123de', decision: 'pending' as const },
+      ];
+      const { rerender } = render(
+        <QueryClientProvider client={queryClient}>
+          <EmbeddedAgentWorkerView
+            sessionId="s-mcp-k"
+            workerId="w-mcp-k"
+            embeddedAgentId="ea-mcp"
+            mcpServers={pendingServers}
+          />
+        </QueryClientProvider>,
+      );
+
+      await user.click(await screen.findByRole('button', { name: /MCP servers/ }));
+      expect(screen.getByText('pending')).toBeTruthy();
+      expect(screen.getByText('not running')).toBeTruthy();
+
+      // A NEW array reference -- the shape a session-updated WS push
+      // produces, never a mutation of the old prop value.
+      const updatedServers = [
+        {
+          name: 'srv-allowed',
+          scope: 'project' as const,
+          hash: 'abc123de',
+          decision: 'allowed' as const,
+          status: 'connected',
+        },
+      ];
+      rerender(
+        <QueryClientProvider client={queryClient}>
+          <EmbeddedAgentWorkerView
+            sessionId="s-mcp-k"
+            workerId="w-mcp-k"
+            embeddedAgentId="ea-mcp"
+            mcpServers={updatedServers}
+          />
+        </QueryClientProvider>,
+      );
+
+      expect(screen.getByText('allowed')).toBeTruthy();
+      expect(screen.getByText('connected')).toBeTruthy();
+      expect(screen.queryByText('pending')).toBeNull();
+      expect(screen.queryByText('not running')).toBeNull();
+    });
+
+    // Polarity confirmed: temporarily gating the `lastMcpApply !== null`
+    // render block on `false && ...` made this test fail (`getByText`
+    // threw, "applied to the running agent" not found), and passed again
+    // once reverted -- so this is not vacuously true regardless of whether
+    // the indicator actually renders.
+    it('(l) lastMcpApply (the live-apply indicator) survives an mcpServers prop change -- the worker object being replaced does not clear the panel\'s local snapshot state', async () => {
+      globalThis.fetch = Object.assign(mock(mcpGetFetch()), { preconnect: () => {} });
+      const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+      const user = userEvent.setup();
+      const initialServers = [
+        { name: 'srv-allowed', scope: 'project' as const, hash: 'abc123de', decision: 'allowed' as const },
+      ];
+      const { rerender } = render(
+        <QueryClientProvider client={queryClient}>
+          <EmbeddedAgentWorkerView
+            sessionId="s-mcp-l"
+            workerId="w-mcp-l"
+            embeddedAgentId="ea-mcp"
+            mcpServers={initialServers}
+          />
+        </QueryClientProvider>,
+      );
+
+      const ws = MockWebSocket.getLastInstance();
+      act(() => {
+        ws?.simulateOpen();
+      });
+      await flush();
+      act(() => {
+        const data = ndjson({ v: 1, type: 'mcp-servers-applied', applied: true });
+        ws?.simulateMessage(JSON.stringify({ type: 'history', data, offset: data.length, startOffset: 0, epoch: 1 }));
+      });
+      await flush();
+
+      await user.click(await screen.findByRole('button', { name: /MCP servers/ }));
+      expect(screen.getByText('applied to the running agent')).toBeTruthy();
+
+      // A NEW worker object arrives (session-updated replacing
+      // `worker.mcpServers` with a fresh array, status now 'connected') --
+      // this must not reset the store-backed lastMcpApply local state the
+      // "applied" line reads from; that state lives in the module-level
+      // store keyed by (sessionId, workerId), decoupled from props.
+      const updatedServers = [
+        {
+          name: 'srv-allowed',
+          scope: 'project' as const,
+          hash: 'abc123de',
+          decision: 'allowed' as const,
+          status: 'connected',
+        },
+      ];
+      rerender(
+        <QueryClientProvider client={queryClient}>
+          <EmbeddedAgentWorkerView
+            sessionId="s-mcp-l"
+            workerId="w-mcp-l"
+            embeddedAgentId="ea-mcp"
+            mcpServers={updatedServers}
+          />
+        </QueryClientProvider>,
+      );
+
+      expect(screen.getByText('applied to the running agent')).toBeTruthy();
+      expect(screen.getByText('connected')).toBeTruthy();
+    });
   });
 
   describe('Transcript Restore (#1123)', () => {
