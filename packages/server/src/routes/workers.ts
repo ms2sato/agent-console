@@ -22,6 +22,7 @@ import { resolveUploadDir } from '../lib/message-upload-dir.js';
 import { resolveSpawnUsername } from '../services/resolve-spawn-username.js';
 import { assertCanOperateSession } from '../lib/session-access.js';
 import { serverConfig } from '../lib/server-config.js';
+import { resolvePermissionDecisions } from '../lib/mcp-server-permissions.js';
 import {
   EmbeddedAgentActivationError,
   EmbeddedMessageDeliveryError,
@@ -485,29 +486,17 @@ const workers = new Hono<AppBindings>()
         throw new NotFoundError('Embedded-agent worker');
       }
 
-      const discovered = worker.mcpServers ?? [];
-      let decisions: Array<{ name: string; hash: string; decision: 'allow' | 'deny' }>;
-
-      if ('all' in body) {
-        // Every currently-pending pair. An entry with no `hash` (an
-        // `'invalid'` discovery with nothing computable) can never be
-        // `'pending'` in the first place, so this filter never needs a
-        // separate hash-presence check.
-        decisions = discovered
-          .filter((entry): entry is typeof entry & { hash: string } => entry.decision === 'pending' && entry.hash !== undefined)
-          .map((entry) => ({ name: entry.name, hash: entry.hash, decision: 'allow' as const }));
-      } else {
-        const match = discovered.find((entry) => entry.name === body.name && entry.hash === body.hash);
-        if (!match) {
-          throw new NotFoundError(`MCP server '${body.name}' with hash '${body.hash}'`);
+      // Pair-resolution rules live in one writer (lib/mcp-server-permissions.js),
+      // shared with the `set_mcp_server_permission` MCP tool -- see that
+      // helper's doc comment for the full rule set.
+      const resolved = resolvePermissionDecisions(worker.mcpServers, body);
+      if (!resolved.ok) {
+        if (resolved.kind === 'undecidable') {
+          throw new ConflictError(resolved.message);
         }
-        if (match.decision === 'rejected-reserved' || match.decision === 'invalid') {
-          throw new ConflictError(
-            `A permission decision cannot be recorded for '${body.name}': its discovered decision is '${match.decision}'`,
-          );
-        }
-        decisions = [{ name: body.name, hash: body.hash, decision: body.decision }];
+        throw new NotFoundError(resolved.message);
       }
+      const decisions = resolved.decisions;
 
       const updated = await sessionManager.setMcpServerPermissions(
         sessionId,

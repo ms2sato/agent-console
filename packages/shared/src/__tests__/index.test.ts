@@ -123,6 +123,7 @@ describe('shared index exports', () => {
       'manageDefinitions',
       'restart',
       'setWorkerParameters',
+      'decideMcpServerPermissions',
     ]);
   });
 

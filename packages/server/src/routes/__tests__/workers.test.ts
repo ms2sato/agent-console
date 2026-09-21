@@ -1868,6 +1868,25 @@ describe('Workers API', () => {
       expect(res.status).toBe(404);
     });
 
+    it('returns 404 when the name matches a discovered pair but the hash differs (hoisted resolvePermissionDecisions is keyed on the hash)', async () => {
+      // Pins that the route's adoption of the hoisted
+      // `resolvePermissionDecisions` helper (lib/mcp-server-permissions.ts)
+      // preserves the pre-existing classification for THIS specific
+      // boundary -- same server name, different discovered hash -- not
+      // just the "name never seen at all" shape the sibling test above
+      // covers.
+      const { sessionId, workerId } = await createWorktreeSdkWorker();
+      await seedDiscovered(sessionId, workerId);
+
+      const res = await app.request(`/api/sessions/${sessionId}/workers/${workerId}/mcp-permissions`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ name: 'chrome-devtools', hash: 'a-different-hash', decision: 'allow' }),
+      });
+
+      expect(res.status).toBe(404);
+    });
+
     it('returns 409 for a pair discovered as invalid', async () => {
       const { sessionId, workerId } = await createWorktreeSdkWorker();
       await seedDiscovered(sessionId, workerId);

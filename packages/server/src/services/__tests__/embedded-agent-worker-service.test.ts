@@ -54,6 +54,7 @@ import {
   type ProviderKeyStoreErrorKind,
 } from '../provider-key-store.js';
 import { serverConfig } from '../../lib/server-config.js';
+import { rootLogger } from '../../lib/logger.js';
 
 const MCP_BASE_URL = 'http://localhost:3457/mcp';
 const ENTRY_PATH = '/install/embedded-agent/src/main.ts';
@@ -4892,7 +4893,7 @@ describe('EmbeddedAgentWorkerService — mcp-servers-discovered event handling',
     expect(h.persistSession).toHaveBeenCalled();
   });
 
-  it('a later discovered event is LAST-WRITE-WINS, not an accumulation', async () => {
+  it('a later discovered event MERGES rather than erasing a still-pending project row (previously last-write-wins wiped the pending pair)', async () => {
     const h = setup({ definition: SDK_DEFINITION });
     await h.service.activate(h.sessionId, h.workerId);
 
@@ -4912,9 +4913,443 @@ describe('EmbeddedAgentWorkerService — mcp-servers-discovered event handling',
         servers: [{ name: 'agent-console', scope: 'reserved' }],
       })}\n`,
     );
-    await waitFor(() => (h.worker.mcpServers?.length ?? 0) === 1 && h.worker.mcpServers![0]?.name === 'agent-console');
+    await waitFor(() => (h.worker.mcpServers ?? []).some((entry) => entry.name === 'agent-console'));
 
-    expect(h.worker.mcpServers).toEqual([{ name: 'agent-console', scope: 'reserved' }]);
+    // chrome-devtools's discovered pair MUST survive: the second event never
+    // carries hash/decision for ANY entry (system:init/mcpServerStatus()
+    // never do, per emitMcpServersDiscovered's own doc comment), so a plain
+    // last-write-wins replacement would silently wipe it -- exactly the
+    // defect this PR fixes. Non-project (here reserved) rows
+    // still fully replace on each arrival, unchanged.
+    expect(h.worker.mcpServers).toEqual([
+      { name: 'chrome-devtools', scope: 'project', hash: 'hash-1', decision: 'pending' },
+      { name: 'agent-console', scope: 'reserved' },
+    ]);
+  });
+
+  it("form (a) is the sole authority for a pending pair's hash/decision -- a later form (b)/(c) event (reserved + one now-connected server, neither carrying hash/decision) never erases it", async () => {
+    const h = setup({ definition: SDK_DEFINITION });
+    await h.service.activate(h.sessionId, h.workerId);
+
+    // Form (a): activation-time discovery. A stays pending; B is already
+    // allowed (a durable approval from before this activation).
+    h.fake.pushStdout(
+      `${JSON.stringify({
+        v: 1,
+        type: 'mcp-servers-discovered',
+        servers: [
+          { name: 'A', scope: 'project', hash: 'hash-a', decision: 'pending' },
+          { name: 'B', scope: 'project', hash: 'hash-b', decision: 'allowed' },
+        ],
+      })}\n`,
+    );
+    await waitFor(() => h.worker.mcpServers !== undefined);
+
+    // Form (b): a `system:init` occurrence reports ONLY the reserved server
+    // plus B (now live and connected) -- A is not yet part of the SDK's own
+    // session (still pending, never started), so it is absent from this
+    // report entirely, exactly as `emitMcpServersDiscovered` documents.
+    h.fake.pushStdout(
+      `${JSON.stringify({
+        v: 1,
+        type: 'mcp-servers-discovered',
+        servers: [
+          { name: 'agent-console', scope: 'reserved', status: 'connected' },
+          { name: 'B', scope: 'project', status: 'connected' },
+        ],
+      })}\n`,
+    );
+    await waitFor(() => (h.worker.mcpServers ?? []).some((entry) => entry.name === 'B' && entry.status === 'connected'));
+
+    const byName = new Map((h.worker.mcpServers ?? []).map((entry) => [entry.name, entry]));
+    expect(byName.get('A')).toEqual({ name: 'A', scope: 'project', hash: 'hash-a', decision: 'pending' });
+    expect(byName.get('B')).toEqual({
+      name: 'B',
+      scope: 'project',
+      hash: 'hash-b',
+      decision: 'allowed',
+      status: 'connected',
+    });
+    expect(byName.get('agent-console')).toEqual({ name: 'agent-console', scope: 'reserved', status: 'connected' });
+  });
+
+  it('a project row already ALLOWED from an earlier durable approval keeps its hash/decision (service-computed, deny-merged) through a later status-only report', async () => {
+    const h = setup({
+      definition: SDK_DEFINITION,
+      mcpServerPermissionRows: [
+        {
+          repositoryId: 'repo-1',
+          serverName: 'A',
+          configHash: 'hash-a',
+          decision: 'allow',
+          decidedBy: 'user-1',
+          createdAt: '2026-01-01T00:00:00.000Z',
+          decidedAt: '2026-01-01T00:00:00.000Z',
+        },
+      ],
+    });
+    await h.service.activate(h.sessionId, h.workerId);
+
+    // Form (a): A was already durably approved before this activation.
+    h.fake.pushStdout(
+      `${JSON.stringify({
+        v: 1,
+        type: 'mcp-servers-discovered',
+        servers: [{ name: 'A', scope: 'project', hash: 'hash-a', decision: 'allowed' }],
+      })}\n`,
+    );
+    await waitFor(() => h.worker.mcpServers !== undefined);
+
+    // Form (c): a fresh mcpServerStatus() read after A actually connected --
+    // status only, no hash/decision.
+    h.fake.pushStdout(
+      `${JSON.stringify({
+        v: 1,
+        type: 'mcp-servers-discovered',
+        servers: [{ name: 'A', scope: 'project', status: 'connected' }],
+      })}\n`,
+    );
+    await waitFor(() => (h.worker.mcpServers ?? []).some((entry) => entry.status === 'connected'));
+
+    expect(h.worker.mcpServers).toEqual([
+      { name: 'A', scope: 'project', hash: 'hash-a', decision: 'allowed', status: 'connected' },
+    ]);
+  });
+
+  it('a live allow recorded AFTER form (a) is not reverted to pending by a later status-only report (CHANGES-REQUESTED: the merge previously read only `deny` rows)', async () => {
+    // `SessionManager.setMcpServerPermissions` patches `worker.mcpServers`
+    // directly the instant a live allow lands, but never tells THIS
+    // handler's own `runtime.projectDiscovery` snapshot about it. Passing a
+    // mutable array (never replaced, only pushed to) lets this test append
+    // the durable row BETWEEN the two discovered events, exactly mirroring
+    // that a permission decision can be recorded after form (a)'s snapshot
+    // was taken but before a later `mcp-servers-discovered` arrival.
+    const permissionRows: Array<{
+      repositoryId: string;
+      serverName: string;
+      configHash: string;
+      decision: 'allow' | 'deny';
+      decidedBy: string;
+      createdAt: string;
+      decidedAt: string;
+    }> = [];
+    const h = setup({ definition: SDK_DEFINITION, mcpServerPermissionRows: permissionRows });
+    await h.service.activate(h.sessionId, h.workerId);
+
+    // Form (a): A is pending -- no durable row exists yet.
+    h.fake.pushStdout(
+      `${JSON.stringify({
+        v: 1,
+        type: 'mcp-servers-discovered',
+        servers: [{ name: 'A', scope: 'project', hash: 'hash-a', decision: 'pending' }],
+      })}\n`,
+    );
+    await waitFor(() => h.worker.mcpServers !== undefined);
+    expect(h.worker.mcpServers).toEqual([{ name: 'A', scope: 'project', hash: 'hash-a', decision: 'pending' }]);
+
+    // The live-apply path's durable write lands (what
+    // `SessionManager.setMcpServerPermissions` does on a real allow) --
+    // `runtime.projectDiscovery` is NOT told about this.
+    permissionRows.push({
+      repositoryId: 'repo-1',
+      serverName: 'A',
+      configHash: 'hash-a',
+      decision: 'allow',
+      decidedBy: 'user-1',
+      createdAt: '2026-01-01T00:00:00.000Z',
+      decidedAt: '2026-01-01T00:00:00.000Z',
+    });
+
+    // Form (c): the live `setMcpServers` call the allow itself triggered
+    // reports A connected -- status only, no hash/decision.
+    h.fake.pushStdout(
+      `${JSON.stringify({
+        v: 1,
+        type: 'mcp-servers-discovered',
+        servers: [{ name: 'A', scope: 'project', status: 'connected' }],
+      })}\n`,
+    );
+    await waitFor(() => (h.worker.mcpServers ?? []).some((entry) => entry.status === 'connected'));
+
+    // Must read `allowed` (from the repository row), never the stale
+    // `pending` reading `runtime.projectDiscovery` still carries.
+    //
+    // Polarity confirmed: temporarily reverting the merge's `finalDecision`
+    // computation to deny-only (`decisionByKey.get(key) === 'denied' ?
+    // 'denied' : decision`, dropping the `allow` case) made this assertion
+    // fail with an actual `decision` of `'pending'` (the row's `status`
+    // still correctly read `'connected'`, producing exactly the
+    // self-contradictory pending+connected row this Issue's review
+    // described). Reverted after confirming the failure.
+    expect(h.worker.mcpServers).toEqual([
+      { name: 'A', scope: 'project', hash: 'hash-a', decision: 'allowed', status: 'connected' },
+    ]);
+  });
+
+  it('a transient permission-repository read failure is skipped for THIS event only -- WARN logged, worker.mcpServers unchanged, next event processed normally once the repository recovers (CodeRabbit MAJOR / Architect ruling)', async () => {
+    const WARN_MESSAGE =
+      'Failed to load MCP server permission records; skipping this discovered event (worker.mcpServers unchanged, next event retries)';
+    const h = setup({ definition: SDK_DEFINITION });
+    await h.service.activate(h.sessionId, h.workerId);
+
+    // First discovered event (form a): repository healthy (the default,
+    // non-throwing mock) -- establishes a real, non-trivial prior state so
+    // "unchanged from before the failing event" below is a genuine claim,
+    // not merely "stayed undefined".
+    h.fake.pushStdout(
+      `${JSON.stringify({
+        v: 1,
+        type: 'mcp-servers-discovered',
+        servers: [{ name: 'A', scope: 'project', hash: 'hash-a', decision: 'pending' }],
+      })}\n`,
+    );
+    await waitFor(() => h.worker.mcpServers !== undefined);
+    const beforeFailure = h.worker.mcpServers;
+    expect(beforeFailure).toEqual([{ name: 'A', scope: 'project', hash: 'hash-a', decision: 'pending' }]);
+
+    // The NEXT listByRepository call rejects once; every call after that
+    // reverts to the mock's default (non-throwing) implementation.
+    h.listByRepository.mockImplementationOnce(async () => {
+      throw new Error('transient db read boom');
+    });
+
+    const warnSpy = spyOn(rootLogger, 'warn');
+    try {
+      // Second discovered event (form c-shaped: status only): triggers the
+      // (e2) handler's own listByRepository call, which rejects.
+      h.fake.pushStdout(
+        `${JSON.stringify({
+          v: 1,
+          type: 'mcp-servers-discovered',
+          servers: [{ name: 'A', scope: 'project', status: 'connected' }],
+        })}\n`,
+      );
+      await waitFor(() => warnSpy.mock.calls.some((call) => call[1] === WARN_MESSAGE));
+
+      const warnCall = warnSpy.mock.calls.find((call) => call[1] === WARN_MESSAGE)!;
+      const fields = warnCall[0] as Record<string, unknown>;
+      expect(fields.sessionId).toBe(h.sessionId);
+      expect(fields.workerId).toBe(h.workerId);
+      expect(fields.err).toBeInstanceOf(Error);
+
+      // Unchanged -- not merely equal in content, but the SAME reference:
+      // the failed event never reached the assignment at all.
+      expect(h.worker.mcpServers).toBe(beforeFailure);
+
+      // Third discovered event, repository healthy again -- processed
+      // normally. Without the local catch, the second event's uncaught
+      // rejection propagates out of handleLoopLine into readStdout's own
+      // try/catch, which ends the reader loop entirely -- so no line after
+      // the failing one is ever read again, this third event included.
+      //
+      // Polarity confirmed: temporarily reverting the local try/catch back
+      // to a bare `await this.deps.mcpServerPermissionRepository
+      // .listByRepository(repositoryId)` made the EARLIER waitFor (line
+      // ~5127, waiting for the WARN itself) time out -- the reader loop
+      // died on the second event's uncaught rejection before ever logging
+      // the WARN, which is a stronger failure than merely "the third event
+      // is unreachable": nothing after the failing event runs at all,
+      // including the very log line this fix exists to produce. Restored
+      // after confirming the failure.
+      h.fake.pushStdout(
+        `${JSON.stringify({
+          v: 1,
+          type: 'mcp-servers-discovered',
+          servers: [{ name: 'A', scope: 'project', status: 'connected' }],
+        })}\n`,
+      );
+      await waitFor(() => h.worker.mcpServers !== beforeFailure);
+      expect(h.worker.mcpServers).toEqual([
+        { name: 'A', scope: 'project', hash: 'hash-a', decision: 'pending', status: 'connected' },
+      ]);
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+});
+
+/**
+ * epic #1636 Phase 5 PR-3a: the `makeFakeSpawn` helper above is
+ * a SINGLE fixed subprocess/stdout for the harness's whole life, shared
+ * unmodified by many hundred pre-existing tests in this file -- broadening it
+ * to support a second, independent incarnation risks destabilizing all of
+ * them. This is a small, deliberately local duplicate of its SHAPE
+ * (`workflow.md`'s Duplication check), needed only by the describe block
+ * below: it returns a FRESH subprocess/stdin/stdout PER `spawnAsUserFn` call
+ * instead of one fixed set, so a deactivate-then-reactivate cycle gets a
+ * genuinely independent second incarnation to push events onto.
+ */
+interface FakeIncarnation {
+  stdinWrites: string[];
+  push: (s: string) => void;
+  simulateExit: (code: number) => void;
+}
+
+function makeFakeMultiActivationSpawn(): { fn: SpawnAsUserFn; incarnations: FakeIncarnation[] } {
+  const incarnations: FakeIncarnation[] = [];
+  const fn: SpawnAsUserFn = () => {
+    const stdinWrites: string[] = [];
+    let ctrl!: ReadableStreamDefaultController<Uint8Array>;
+    const stream = new ReadableStream<Uint8Array>({
+      start(c) {
+        ctrl = c;
+      },
+    });
+    let stderrCtrl!: ReadableStreamDefaultController<Uint8Array>;
+    const stderrStream = new ReadableStream<Uint8Array>({
+      start(c) {
+        stderrCtrl = c;
+      },
+    });
+    const enc = new TextEncoder();
+    let resolveExited!: (code: number) => void;
+    const exited = new Promise<number>((resolve) => {
+      resolveExited = resolve;
+    });
+    const stdin: FakeFileSink = {
+      write: (chunk) => {
+        stdinWrites.push(typeof chunk === 'string' ? chunk : new TextDecoder().decode(chunk));
+        return 0;
+      },
+      end: () => {},
+      flush: () => 0,
+    };
+    const subprocess: FakeSubprocess = {
+      pid: 9000 + incarnations.length,
+      exited,
+      stdin,
+      stdout: stream,
+      stderr: stderrStream,
+      kill: () => {},
+    };
+    const incarnation: FakeIncarnation = {
+      stdinWrites,
+      push: (s: string) => ctrl.enqueue(enc.encode(s)),
+      simulateExit: (code: number) => {
+        resolveExited(code);
+        ctrl.close();
+        stderrCtrl.close();
+      },
+    };
+    incarnations.push(incarnation);
+    return { subprocess, stdin, elevated: false } as unknown as SpawnAsUserResult;
+  };
+  return { fn, incarnations };
+}
+
+describe('EmbeddedAgentWorkerService — mcp-servers-discovered form (a) is per-incarnation', () => {
+  it("a second activation's form (a) fully replaces the previous incarnation's discovery snapshot -- no stale hash/decision leaks through", async () => {
+    const multi = makeFakeMultiActivationSpawn();
+    const h = setup({ definition: SDK_DEFINITION, spawnAsUserFnOverride: multi.fn });
+
+    await h.service.activate(h.sessionId, h.workerId);
+    multi.incarnations[0].push(
+      `${JSON.stringify({
+        v: 1,
+        type: 'mcp-servers-discovered',
+        servers: [{ name: 'A', scope: 'project', hash: 'hash-v1', decision: 'pending' }],
+      })}\n`,
+    );
+    await waitFor(() => h.worker.mcpServers !== undefined);
+    expect(h.worker.mcpServers).toEqual([{ name: 'A', scope: 'project', hash: 'hash-v1', decision: 'pending' }]);
+
+    // A later status-only report on the SAME incarnation must not lose
+    // hash-v1/pending -- this is what gives this test real polarity against
+    // the merge fix: a plain last-write-wins replacement (the pre-fix
+    // behavior) would drop hash/decision here, since this event carries
+    // neither.
+    multi.incarnations[0].push(
+      `${JSON.stringify({
+        v: 1,
+        type: 'mcp-servers-discovered',
+        servers: [{ name: 'A', scope: 'project', status: 'connected' }],
+      })}\n`,
+    );
+    await waitFor(() => (h.worker.mcpServers ?? []).some((entry) => entry.status === 'connected'));
+    expect(h.worker.mcpServers).toEqual([
+      { name: 'A', scope: 'project', hash: 'hash-v1', decision: 'pending', status: 'connected' },
+    ]);
+
+    const dp = h.service.deactivate(h.sessionId, h.workerId);
+    multi.incarnations[0].simulateExit(0);
+    await dp;
+
+    // A brand-new incarnation's OWN form (a) -- a different hash/decision,
+    // no status yet. Neither the old hash-v1/pending pair NOR the previous
+    // incarnation's 'connected' status may survive into it.
+    await h.service.activate(h.sessionId, h.workerId);
+    multi.incarnations[1].push(
+      `${JSON.stringify({
+        v: 1,
+        type: 'mcp-servers-discovered',
+        servers: [{ name: 'A', scope: 'project', hash: 'hash-v2', decision: 'allowed' }],
+      })}\n`,
+    );
+    await waitFor(() => (h.worker.mcpServers ?? []).some((entry) => entry.hash === 'hash-v2'));
+
+    // Exactly one row, at the NEW hash, no leftover status -- the old
+    // incarnation's reading must not survive alongside or instead of it.
+    expect(h.worker.mcpServers).toEqual([{ name: 'A', scope: 'project', hash: 'hash-v2', decision: 'allowed' }]);
+  });
+});
+
+describe('EmbeddedAgentWorkerService — handleExit clears stale status but keeps the decision record (CHANGES-REQUESTED Item 2)', () => {
+  it('a clean exit strips `status` from every mcpServers row while keeping name/scope/hash/decision', async () => {
+    const h = setup({ definition: SDK_DEFINITION });
+    await h.service.activate(h.sessionId, h.workerId);
+
+    // Form (a): every entry is scope:'project' -- real production discovery
+    // never mixes in a reserved entry here (main.ts's own emission is
+    // project-only); a mixed shape would be misdetected as NOT form (a) by
+    // `isFormA`'s own check and exercise the fallback branch instead.
+    h.fake.pushStdout(
+      `${JSON.stringify({
+        v: 1,
+        type: 'mcp-servers-discovered',
+        servers: [{ name: 'A', scope: 'project', hash: 'hash-a', decision: 'allowed' }],
+      })}\n`,
+    );
+    await waitFor(() => h.worker.mcpServers !== undefined);
+
+    // A later form (c)-shaped event -- A actually connected, status only.
+    h.fake.pushStdout(
+      `${JSON.stringify({
+        v: 1,
+        type: 'mcp-servers-discovered',
+        servers: [
+          { name: 'A', scope: 'project', status: 'connected' },
+          { name: 'agent-console', scope: 'reserved', status: 'connected' },
+        ],
+      })}\n`,
+    );
+    await waitFor(() => (h.worker.mcpServers ?? []).some((entry) => entry.status === 'connected'));
+    const beforeExit = h.worker.mcpServers;
+    expect(beforeExit).toEqual([
+      { name: 'A', scope: 'project', hash: 'hash-a', decision: 'allowed', status: 'connected' },
+      { name: 'agent-console', scope: 'reserved', status: 'connected' },
+    ]);
+
+    const dp = h.service.deactivate(h.sessionId, h.workerId);
+    h.fake.simulateExit(0);
+    await dp;
+
+    // `status` is gone -- the dead incarnation can no longer claim to be
+    // 'connected' -- but the durable decision record survives intact.
+    //
+    // Polarity confirmed: temporarily removing `handleExit`'s
+    // `worker.mcpServers = worker.mcpServers.map(({ status: _status,
+    // ...rest }) => rest);` line made this assertion fail with the stale
+    // `status: 'connected'` fields still present on both rows. Restored
+    // after confirming the failure.
+    expect(h.worker.mcpServers).toEqual([
+      { name: 'A', scope: 'project', hash: 'hash-a', decision: 'allowed' },
+      { name: 'agent-console', scope: 'reserved' },
+    ]);
+    // A fresh array reference, not an in-place mutation of the pre-exit one
+    // -- load-bearing for any reader (e.g. the project-mcp-permission
+    // smoke's `activate()` helper) that detects a change via reference
+    // inequality rather than re-reading content.
+    expect(h.worker.mcpServers).not.toBe(beforeExit);
   });
 });
 
@@ -4935,5 +5370,37 @@ describe('EmbeddedAgentWorkerService — activation-failure rollback clears mcpS
     await expect(h.service.activate(h.sessionId, h.workerId)).rejects.toThrow('persist boom');
 
     expect(h.worker.mcpServers).toBeUndefined();
+  });
+
+  it("also clears the runtime's own discovery snapshot: a straggler discovered event on the failed incarnation cannot resurrect stale project rows", async () => {
+    // `Runtime.projectDiscovery` has no public surface (see its own doc
+    // comment: "kept OFF the worker object") -- the only way to pin this
+    // specific defensive line is to reach into the service's private
+    // `runtimes` map, exactly at the point `persistSession` throws (the
+    // same synchronous point the catch block runs from), mirroring this
+    // describe block's existing pattern of injecting stale state directly
+    // (the sibling test above sets `h.worker.mcpServers` before `activate()`
+    // for the SAME reason -- `Runtime` doesn't exist yet before `activate()`
+    // is called, so the injection has to happen from inside the mocked
+    // `persistSession` instead).
+    const h = setup({ definition: SDK_DEFINITION });
+    let capturedRuntime: { projectDiscovery: unknown } | undefined;
+    h.persistSession.mockImplementationOnce(async () => {
+      const runtimes = (h.service as unknown as { runtimes: Map<string, { projectDiscovery: unknown }> }).runtimes;
+      capturedRuntime = runtimes.get(h.workerId);
+      // Simulate a `mcp-servers-discovered` event having landed on THIS
+      // incarnation just before the failure -- the exact race this
+      // describe block's own comment (and the (e2) handler's doc comment)
+      // describes.
+      if (capturedRuntime) {
+        capturedRuntime.projectDiscovery = new Map([['stale', { hash: 'stale-hash', decision: 'pending' as const }]]);
+      }
+      throw new Error('persist boom');
+    });
+
+    await expect(h.service.activate(h.sessionId, h.workerId)).rejects.toThrow('persist boom');
+
+    expect(capturedRuntime).toBeDefined();
+    expect(capturedRuntime?.projectDiscovery).toBeNull();
   });
 });

@@ -642,6 +642,22 @@ interface Runtime {
    * `'unexpected'` and this is non-empty.
    */
   stderrTail: string;
+  /**
+   * epic #1636 Phase 5 PR-3a: the (name -> {hash, decision})
+   * snapshot from the FIRST `mcp-servers-discovered` event of this
+   * incarnation (always form (a), `main.ts`'s activation-time discovery --
+   * sound by construction since `main.ts` emits it before `createSdkEngine`
+   * even constructs the engine). Discovery is the SOLE authority for
+   * PROJECT-scope rows' `hash`/`decision`; the SDK's own later reports
+   * (`system:init` / a live `setMcpServers` read) never carry a `pending` or
+   * denied server -- see `emitMcpServersDiscovered`'s own doc comment
+   * (`hash`/`decision` are deliberately left unset on every entry it
+   * reports) -- so they cannot be trusted to re-derive this. `null` until
+   * the first discovered event of the incarnation lands; reset to `null` at
+   * activation start (a fresh `Runtime` per incarnation) and at the Q14
+   * rollback, mirroring `worker.mcpServers`'s own reset there.
+   */
+  projectDiscovery: Map<string, { hash: string; decision: 'allowed' | 'pending' | 'rejected-reserved' | 'invalid' }> | null;
 }
 
 // `RestoreInfo` moved to worker-types.ts (#1449 CI fix): defining it here and
@@ -1357,6 +1373,7 @@ export class EmbeddedAgentWorkerService {
         evictable: isEvictableEngine(definition.engine),
         pendingNotifications: [],
         stderrTail: '',
+        projectDiscovery: null,
       };
       this.runtimes.set(workerId, runtime);
 
@@ -1414,6 +1431,17 @@ export class EmbeddedAgentWorkerService {
       // failed activation never leaves a stale discovery snapshot behind
       // for the next attempt to inherit.
       worker.mcpServers = undefined;
+      // epic #1636 Phase 5 PR-3a, Q14: the runtime's own discovery snapshot
+      // (see Runtime.projectDiscovery's doc comment) must not survive a
+      // failed re-activation either -- mirrors the `worker.mcpServers` reset
+      // immediately above. Read via `this.runtimes.get` rather than a local
+      // `runtime` variable: the `const runtime` created a few steps into the
+      // happy path is block-scoped inside the `try`, out of reach here; an
+      // activation failure BEFORE that point never installed one at all.
+      const runtimeForRollback = this.runtimes.get(workerId);
+      if (runtimeForRollback) {
+        runtimeForRollback.projectDiscovery = null;
+      }
       // Safe to delete unconditionally: the in-flight activation guard prevents
       // a concurrent activation from having installed a different runtime here.
       this.runtimes.delete(workerId);
@@ -2333,39 +2361,153 @@ export class EmbeddedAgentWorkerService {
       }
     }
 
-    // (e2) epic #1636 Phase 5 PR-2 (docs/design/embedded-agent-sdk-engine.md
-    // §4.5): the claude-sdk engine's own discovery of its project
-    // `.mcp.json` fired. Per §4.5 D-D, discovery may report up to three
-    // times per activation -- each arrival is LAST-WRITE-WINS over
-    // `ctx.worker.mcpServers`, never an accumulation across arrivals.
-    // Every reported entry is mapped onto the worker-state shape, with a
-    // server-computed `'denied'` overriding whatever decision the
-    // subprocess itself carried, whenever this repository has a matching
-    // `deny` row for the SAME `(name, hash)` key -- the subprocess never
-    // emits `'denied'` itself (see the wire event's own doc comment for
-    // why that member exists on the worker-state picklist but not on the
-    // wire event's).
+    // (e2) epic #1636 Phase 5 PR-2/PR-3a (docs/design/embedded-agent-sdk-engine.md
+    // §4.5): the claude-sdk engine's own discovery of its
+    // project `.mcp.json` fired. Per §4.5 D-D, discovery may report up to
+    // three times per activation -- but a plain last-write-wins replacement
+    // over `ctx.worker.mcpServers` is WRONG: forms (b)/(c) (`system:init` /
+    // a live `setMcpServers` read) never carry `hash`/`decision` on ANY
+    // entry, project-scope included (`emitMcpServersDiscovered`'s own doc
+    // comment states this explicitly), so a later arrival of either form
+    // would silently erase the `hash`/`decision` pair a still-`pending`
+    // project server needs for `set_mcp_server_permission` to find it
+    // (`resolvePermissionDecisions` matches by `(name, hash)`).
+    //
+    // The merge below: form (a) (`runtime.projectDiscovery`, populated once
+    // below and never again this incarnation) is the FALLBACK decision for
+    // a project-scope row, but this repository's DURABLE record (both
+    // `allow` and `deny` rows, re-read from `listByRepository` on every
+    // arrival) is authoritative whenever a row exists for the SAME
+    // `(name, hash)` key. This is load-bearing, not merely a deny-only
+    // override: `SessionManager.setMcpServerPermissions` patches
+    // `worker.mcpServers` directly the instant a live `allow` lands, but
+    // `runtime.projectDiscovery` (this handler's own snapshot) is NEVER
+    // told about that -- so the very next `mcp-servers-discovered` event
+    // (form (c), fired right after the live `setMcpServers` call this same
+    // permission triggered) would otherwise rebuild from the STALE
+    // `'pending'` reading and silently revert a server the caller just
+    // approved back to `'pending'` (with a self-contradictory
+    // `status: 'connected'` alongside it) -- see this PR's own
+    // CHANGES-REQUESTED review, "live allow reverts to pending on the next
+    // discovered event". The subprocess itself never emits `'allowed'` or
+    // `'denied'` for a NOT-YET-durable decision, so re-reading the
+    // repository on every arrival is the only way this handler's own
+    // rebuild can reflect a decision recorded after the incarnation's form
+    // (a) snapshot was taken. The LATEST arrival (this event, whichever
+    // form it is) remains authoritative for `status` on any row it names,
+    // and fully REPLACES every non-project row
+    // (`reserved`/`user`/`local`/`connector`), matching the previous
+    // last-write-wins contract for exactly those rows.
     if (event.type === 'mcp-servers-discovered') {
       const session = this.deps.getSession(ctx.sessionId);
       const repositoryId = session?.type === 'worktree' ? session.repositoryId : undefined;
-      const denyKeys = new Set(
-        repositoryId !== undefined
-          ? (await this.deps.mcpServerPermissionRepository.listByRepository(repositoryId))
-              .filter((row) => row.decision === 'deny')
-              .map((row) => `${row.serverName}\u0000${row.configHash}`)
-          : [],
+      let permissionRows: Awaited<ReturnType<McpServerPermissionRepository['listByRepository']>>;
+      if (repositoryId !== undefined) {
+        // CodeRabbit MAJOR / Architect ruling: a transient DB read failure
+        // here must not kill the incarnation. Catch locally, WARN, and skip
+        // the REBUILD for THIS event only -- `ctx.worker.mcpServers` stays
+        // exactly as it was before this event arrived. The record is
+        // re-read on the very next discovered event (form (c) after any
+        // live apply, form (b) on the next activation), so the state
+        // self-heals with nothing fabricated in between. This mirrors the
+        // §4.5 D-E wall's own fail-closed direction for an unreadable
+        // `~/.claude.json`: "unreadable record" means "no new claim", never
+        // a reason to tear down a live turn (which killing would do, by
+        // converting a read hiccup into a lost turn and a restart).
+        try {
+          permissionRows = await this.deps.mcpServerPermissionRepository.listByRepository(repositoryId);
+        } catch (err) {
+          logger.warn(
+            { sessionId: ctx.sessionId, workerId: ctx.workerId, err },
+            'Failed to load MCP server permission records; skipping this discovered event (worker.mcpServers unchanged, next event retries)',
+          );
+          return;
+        }
+      } else {
+        permissionRows = [];
+      }
+      const decisionByKey = new Map(
+        permissionRows.map((row) => [
+          `${row.serverName}\u0000${row.configHash}`,
+          row.decision === 'allow' ? ('allowed' as const) : ('denied' as const),
+        ]),
       );
-      ctx.worker.mcpServers = event.servers.map((entry) => {
-        const key = entry.hash !== undefined ? `${entry.name}\u0000${entry.hash}` : undefined;
-        const decision = key !== undefined && denyKeys.has(key) ? ('denied' as const) : entry.decision;
-        return {
-          name: entry.name,
-          scope: entry.scope,
-          ...(entry.hash !== undefined ? { hash: entry.hash } : {}),
-          ...(decision !== undefined ? { decision } : {}),
-          ...(entry.status !== undefined ? { status: entry.status } : {}),
-        };
-      });
+
+      // Form (a) detection: `main.ts`'s activation-time discovery reports
+      // EVERY entry as `scope: 'project'` with `decision` always set (even
+      // `'invalid'`); `emitMcpServersDiscovered` (forms (b)/(c)) never sets
+      // `decision` on any entry. "every entry is project-scope with a
+      // defined decision" is therefore an unambiguous form (a) signal --
+      // deliberately NOT a `hash`-presence check, since form (a) itself
+      // omits `hash` for a `decision: 'invalid'` entry (see
+      // `DiscoveredMcpServer`'s own doc comment: "hash: '' only when
+      // invalid").
+      const isFormA =
+        event.servers.length > 0 &&
+        event.servers.every((entry) => entry.scope === 'project' && entry.decision !== undefined);
+      if (isFormA) {
+        const discovery = new Map<
+          string,
+          { hash: string; decision: 'allowed' | 'pending' | 'rejected-reserved' | 'invalid' }
+        >();
+        for (const entry of event.servers) {
+          // `entry.decision` is guaranteed defined by `isFormA` above;
+          // `entry.hash` defaults to '' for an `'invalid'` entry, mirroring
+          // `DiscoveredMcpServer`'s own "hash: '' only when invalid" pre-wire
+          // representation (main.ts omits the wire `hash` key in that case).
+          discovery.set(entry.name, { hash: entry.hash ?? '', decision: entry.decision! });
+        }
+        runtime.projectDiscovery = discovery;
+      }
+
+      if (runtime.projectDiscovery !== null) {
+        const projectDiscovery = runtime.projectDiscovery;
+        const liveByName = new Map(event.servers.map((entry) => [entry.name, entry]));
+        const projectRows = Array.from(projectDiscovery.entries()).map(([name, { hash, decision }]) => {
+          const key = `${name}\u0000${hash}`;
+          const finalDecision = decisionByKey.get(key) ?? decision;
+          const status = liveByName.get(name)?.status;
+          return {
+            name,
+            scope: 'project' as const,
+            // Empty string is discovery's own "invalid, no computable hash"
+            // sentinel (see above) -- omit the key entirely to match the
+            // worker-state contract ("hash is absent only for an entry the
+            // loader could not normalize at all").
+            ...(hash !== '' ? { hash } : {}),
+            decision: finalDecision,
+            ...(status !== undefined ? { status } : {}),
+          };
+        });
+        const nonProjectRows = event.servers
+          .filter((entry) => entry.scope !== 'project')
+          .map((entry) => ({
+            name: entry.name,
+            scope: entry.scope,
+            ...(entry.hash !== undefined ? { hash: entry.hash } : {}),
+            ...(entry.decision !== undefined ? { decision: entry.decision } : {}),
+            ...(entry.status !== undefined ? { status: entry.status } : {}),
+          }));
+        ctx.worker.mcpServers = [...projectRows, ...nonProjectRows];
+      } else {
+        // Defensive fallback: no form (a) discovery has landed yet for this
+        // incarnation. Should not happen in production -- `main.ts` always
+        // emits form (a) before `createSdkEngine` even constructs the
+        // engine -- but falls back to the previous (pre-merge) behavior
+        // rather than leaving `ctx.worker.mcpServers` stale.
+        ctx.worker.mcpServers = event.servers.map((entry) => {
+          const key = entry.hash !== undefined ? `${entry.name}\u0000${entry.hash}` : undefined;
+          const decision = (key !== undefined ? decisionByKey.get(key) : undefined) ?? entry.decision;
+          return {
+            name: entry.name,
+            scope: entry.scope,
+            ...(entry.hash !== undefined ? { hash: entry.hash } : {}),
+            ...(decision !== undefined ? { decision } : {}),
+            ...(entry.status !== undefined ? { status: entry.status } : {}),
+          };
+        });
+      }
+
       if (session) {
         await this.deps.persistSession(session);
       }
@@ -2726,6 +2868,23 @@ export class EmbeddedAgentWorkerService {
     }
 
     this.endStdinSafely(worker.stdin);
+    // epic #1636 Phase 5 PR-3a (CHANGES-REQUESTED Item 2): a
+    // dead incarnation's per-server `status` (e.g. `'connected'`) goes
+    // stale the instant the subprocess exits -- there is no live SDK
+    // session left for it to describe. `name`/`scope`/`hash`/`decision`
+    // stay exactly as last known: the durable RECORD is still correct, and
+    // a dormant worker's panel/tools still need it to decide what a future
+    // activation should do. Only `status` is dropped. This is deliberately
+    // NOT the Q14 activation-failure rollback below (`worker.mcpServers =
+    // undefined`, a full clear for a FAILED incarnation that never
+    // produced a trustworthy reading at all) -- a clean exit's reading was
+    // trustworthy, it is just no longer live. Rebuilds a FRESH array
+    // (never mutates rows in place) so a reader comparing the array
+    // REFERENCE (e.g. the project-mcp-permission smoke's `activate()`
+    // helper, which waits for exactly this kind of change) still sees it.
+    if (worker.mcpServers !== undefined) {
+      worker.mcpServers = worker.mcpServers.map(({ status: _status, ...rest }) => rest);
+    }
     worker.subprocess = null;
     worker.stdin = null;
     this.deps.mcpTokenRegistry.revokeByWorker(workerId);
