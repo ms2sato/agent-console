@@ -145,10 +145,69 @@ export function transcriptFiles(configDir: string): string[] {
  * legitimately produces no `.jsonl` while still proving the override
  * arrived. `files` reports the transcripts separately for the items that do
  * depend on them.
+ *
+ * TAUTOLOGY WARNING (Issue #1783): this weak form is only valid for a
+ * caller that writes NOTHING into `configDir` before the child ever runs.
+ * `probe-sdk-declared-mcp-and-task.ts`'s P0 seed and
+ * `probe-sdk-mcp-settings-sources.ts`'s U/L seed both write
+ * `<configDir>/.claude.json` themselves before any session starts, which
+ * makes `.claude.json` present regardless of whether the child honored
+ * `CLAUDE_CONFIG_DIR` at all -- the exact failure this predicate exists to
+ * catch. A caller that seeds `.claude.json` (or anything else under
+ * `configDir`) before running a session MUST use `verifyIsolationStrict`
+ * below instead, never this function.
  */
 export function verifyIsolation(configDir: string): { ok: boolean; files: string[]; evidence: string[] } {
   const evidence = ['.claude.json', 'projects', 'sessions'].filter((e) => existsSync(join(configDir, e)));
   return { ok: evidence.length > 0, files: transcriptFiles(configDir), evidence };
+}
+
+/**
+ * Snapshot of the isolation evidence `verifyIsolationStrict` compares
+ * against: a transcript-file COUNT (never presence -- a caller may have
+ * already run an earlier session in the same `configDir`) and whether
+ * `sessions/` exists yet.
+ */
+export interface IsolationEvidenceSnapshot {
+  transcriptCount: number;
+  sessionsDirExists: boolean;
+}
+
+export function snapshotIsolationEvidence(configDir: string): IsolationEvidenceSnapshot {
+  return {
+    transcriptCount: transcriptFiles(configDir).length,
+    sessionsDirExists: existsSync(join(configDir, 'sessions')),
+  };
+}
+
+export interface StrictIsolationResult {
+  ok: boolean;
+  before: IsolationEvidenceSnapshot;
+  after: IsolationEvidenceSnapshot;
+}
+
+/**
+ * Strict isolation evidence (Issue #1783, lifted from
+ * `probe-sdk-mcp-settings-sources.ts` where it was first built as a
+ * per-probe local fix -- Architect ruling, PR #1782, CodeRabbit M3). Use
+ * this instead of `verifyIsolation` whenever the caller writes anything
+ * (most commonly `<configDir>/.claude.json`, a user-scope MCP seed) into
+ * `configDir` before the first session runs: `.claude.json` alone is never
+ * evidence here, because a caller that seeds it can produce that exact file
+ * without the child ever having touched `CLAUDE_CONFIG_DIR`. The only
+ * evidence accepted is something the CHILD produced -- the transcript-file
+ * count growing past a `before` snapshot, or a `sessions/` directory newly
+ * appearing -- neither of which any known seeding routine in this repo ever
+ * writes.
+ *
+ * `before` must be captured via `snapshotIsolationEvidence(configDir)`
+ * BEFORE the caller writes its seed and BEFORE any session runs, so the
+ * comparison baseline predates both the seed and the child's own writes.
+ */
+export function verifyIsolationStrict(configDir: string, before: IsolationEvidenceSnapshot): StrictIsolationResult {
+  const after = snapshotIsolationEvidence(configDir);
+  const ok = after.transcriptCount > before.transcriptCount || (after.sessionsDirExists && !before.sessionsDirExists);
+  return { ok, before, after };
 }
 
 export interface TurnOutcome {
