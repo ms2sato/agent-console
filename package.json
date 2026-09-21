@@ -11,7 +11,7 @@
     "dev": "./scripts/dev.sh",
     "dev:multiuser": "./scripts/dev-multiuser.sh",
     "build": "bun run --filter '@agent-console/shared' build && bun run --filter '@agent-console/client' build && bun run --filter '@agent-console/server' build",
-    "start": "NODE_ENV=production bun dist/index.js",
+    "start": "NODE_ENV=production \"$npm_execpath\" dist/index.js",
     "typecheck": "bun run --filter '*' typecheck && bun run typecheck:docker",
     "typecheck:docker": "tsc -p docker",
     "test": "bun run typecheck && bun run test:only",

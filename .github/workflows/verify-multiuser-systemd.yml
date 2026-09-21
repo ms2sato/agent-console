@@ -25,7 +25,10 @@ name: Verify Multi-User systemd Stack (tier 3)
 # - the paths filter: the setup / deploy scripts, their shared lib, the unit
 #   template, the elevation rules template (`scripts/*-agent-console.template`
 #   is that file; its name carries the elevation literal so it is spelled as
-#   a glob here), docker/**, the elevation smoke, this driver, this file.
+#   a glob here), docker/**, the elevation smoke, this driver, the root
+#   package.json (Issue #1776: the file that carries the invariant the 7e
+#   arm pins -- a future edit to "start" alone must still reach this
+#   workflow), this file.
 # - `workflow_dispatch` for a manual re-run once the file is on main.
 #
 # Cost: ~3 min real (Task 0 measured 2 min 11 s checkout-to-teardown), so a
@@ -45,6 +48,7 @@ on:
       - 'scripts/*-agent-console.template'
       - 'scripts/smoke/check-embedded-agent-elevation.ts'
       - 'scripts/verify-multiuser-systemd.sh'
+      - 'package.json'
       - '.github/workflows/verify-multiuser-systemd.yml'
   pull_request:
     branches: [main]
@@ -57,6 +61,7 @@ on:
       - 'scripts/*-agent-console.template'
       - 'scripts/smoke/check-embedded-agent-elevation.ts'
       - 'scripts/verify-multiuser-systemd.sh'
+      - 'package.json'
       - '.github/workflows/verify-multiuser-systemd.yml'
   workflow_dispatch:
 
