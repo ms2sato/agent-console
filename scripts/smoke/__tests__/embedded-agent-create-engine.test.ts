@@ -89,6 +89,19 @@ import * as path from 'node:path';
  *       someConst` (an unresolvable identifier) -> fails with this pin's
  *       "method could not be classified" message rather than silently
  *       skipping the call (the fail-open fix's negative side).
+ *
+ * (d)/(e) above are one-time measurements against a real smoke file's
+ * end-to-end behavior, not a standing test on their own -- a future edit
+ * to `classifyMethod` would not automatically re-run them. The
+ * `describe('classifyMethod', ...)` block below is the PERMANENT
+ * regression lock for the same rule, calling `classifyMethod` directly on
+ * inline strings (`'POST'`/`"POST"` -> post; `'GET'`/`"DELETE"`/`'PATCH'`/
+ * `'PUT'` -> skip; a bare identifier or a missing `method:` key ->
+ * unclassified). Polarity measured by collapsing `classifyMethod` to
+ * `return 'post';` unconditionally: 6 of its 8 cases flip to failing (the
+ * two `'post'`-expecting cases pass either way, correctly -- they are not
+ * vacuous, since a `classifyMethod` that always skipped or always failed
+ * would flip them too).
  */
 
 const REPO_ROOT = path.resolve(import.meta.dir, '../../..');
@@ -190,6 +203,43 @@ function findCreateCallSites(content: string): CreateCallSite[] {
   }
   return sites;
 }
+
+describe('classifyMethod', () => {
+  // Permanent pins for the fail-open method-check hole CodeRabbit found on
+  // this PR's second review pass (discussion_r4059254646): the earlier
+  // exact-text `method: 'POST'` check treated ANY non-exact-match as
+  // "not a POST, nothing to check" -- silently skipping a call whose
+  // method could not actually be read, rather than flagging it. These
+  // cases exercise `classifyMethod` directly on inline strings, so the
+  // classification rule has a permanent regression lock independent of
+  // the one-time mutation measurements (d)/(e) recorded in the header
+  // comment above (which exercise the SAME rule end-to-end through a real
+  // smoke file, but only as a manual measurement, not a standing test).
+  it("classifies method: 'POST' (single quotes) as post", () => {
+    expect(classifyMethod("{ method: 'POST' }")).toBe('post');
+  });
+
+  it('classifies method: "POST" (double quotes) as post', () => {
+    expect(classifyMethod('{ method: "POST" }')).toBe('post');
+  });
+
+  it.each([
+    ["method: 'GET'", "{ method: 'GET' }"],
+    ['method: "DELETE"', '{ method: "DELETE" }'],
+    ["method: 'PATCH'", "{ method: 'PATCH' }"],
+    ["method: 'PUT'", "{ method: 'PUT' }"],
+  ])('classifies %s as skip (a genuinely different HTTP verb)', (_label, callText) => {
+    expect(classifyMethod(callText)).toBe('skip');
+  });
+
+  it('classifies a non-literal method value (an identifier) as unclassified', () => {
+    expect(classifyMethod('{ method: someConst }')).toBe('unclassified');
+  });
+
+  it('classifies a call with no method key at all as unclassified', () => {
+    expect(classifyMethod("{ headers: {}, body: JSON.stringify({ engine: 'x' }) }")).toBe('unclassified');
+  });
+});
 
 describe('scripts/smoke/* embedded-agent create calls carry `engine` (Issue #1792)', () => {
   const smokeFiles = discoverSmokeFiles();
