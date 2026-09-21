@@ -19,3 +19,18 @@ export async function isMemfsActive(): Promise<boolean> {
     return true;
   }
 }
+
+/**
+ * Assert that the CURRENT process has NOT had `fs`/`fs/promises` swapped
+ * for memfs. A real-fs test that finds memfs active is a wiring error, not
+ * something to skip gracefully: it means the test wasn't listed in
+ * `packages/server/package.json`'s second `bun test` invocation, or it
+ * ended up sharing a process with a `mock-fs-helper` importer.
+ */
+export async function assertRealFs(label: string): Promise<void> {
+  if (await isMemfsActive()) {
+    throw new Error(
+      `${label}: this real-fs test is running under memfs -- it must be listed in packages/server/package.json's second bun test invocation and must not share a process with a mock-fs-helper importer`,
+    );
+  }
+}
