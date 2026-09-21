@@ -367,6 +367,7 @@ async function main(): Promise<void> {
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
           name: 'Smoke Bash-env LLM',
+          engine: 'openai-api',
           provider: { baseUrl: `${stubBaseUrl}/v1`, model: 'smoke-model', apiKeyRef },
           enabledTools: ['Bash'],
         }),
