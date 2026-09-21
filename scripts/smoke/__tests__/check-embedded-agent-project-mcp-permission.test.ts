@@ -6,6 +6,7 @@ import {
   hasToolCallForServer,
   hasUserOrLocalScopeEntry,
   anyUserLocalNamesUnavailable,
+  isSessionStatusPayload,
 } from '../check-embedded-agent-project-mcp-permission.js';
 
 /**
@@ -111,5 +112,36 @@ describe('check-embedded-agent-project-mcp-permission smoke: anyUserLocalNamesUn
   it('returns false when the flag is absent, or on an empty array', () => {
     expect(anyUserLocalNamesUnavailable([{ type: 'mcp-servers-discovered', servers: [] }])).toBe(false);
     expect(anyUserLocalNamesUnavailable([])).toBe(false);
+  });
+});
+
+describe('check-embedded-agent-project-mcp-permission smoke: isSessionStatusPayload', () => {
+  it('accepts an object with a workers array (empty or populated)', () => {
+    expect(isSessionStatusPayload({ workers: [] })).toBe(true);
+    expect(isSessionStatusPayload({ workers: [{ id: 'w1', mcpServers: [] }] })).toBe(true);
+  });
+
+  it('rejects undefined -- the shape callMcpTool returns when there is no content block or JSON.parse failed', () => {
+    expect(isSessionStatusPayload(undefined)).toBe(false);
+  });
+
+  it('rejects null', () => {
+    expect(isSessionStatusPayload(null)).toBe(false);
+  });
+
+  it('rejects an object with no workers property', () => {
+    expect(isSessionStatusPayload({})).toBe(false);
+  });
+
+  it('rejects an object whose workers property is not an array', () => {
+    expect(isSessionStatusPayload({ workers: 'not-an-array' })).toBe(false);
+    expect(isSessionStatusPayload({ workers: {} })).toBe(false);
+    expect(isSessionStatusPayload({ workers: null })).toBe(false);
+  });
+
+  it('rejects a bare array or primitive (the object-ness check)', () => {
+    expect(isSessionStatusPayload([])).toBe(false);
+    expect(isSessionStatusPayload('workers')).toBe(false);
+    expect(isSessionStatusPayload(42)).toBe(false);
   });
 });

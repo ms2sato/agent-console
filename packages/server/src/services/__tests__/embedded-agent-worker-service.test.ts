@@ -54,6 +54,7 @@ import {
   type ProviderKeyStoreErrorKind,
 } from '../provider-key-store.js';
 import { serverConfig } from '../../lib/server-config.js';
+import { rootLogger } from '../../lib/logger.js';
 
 const MCP_BASE_URL = 'http://localhost:3457/mcp';
 const ENTRY_PATH = '/install/embedded-agent/src/main.ts';
@@ -5083,6 +5084,87 @@ describe('EmbeddedAgentWorkerService — mcp-servers-discovered event handling',
     expect(h.worker.mcpServers).toEqual([
       { name: 'A', scope: 'project', hash: 'hash-a', decision: 'allowed', status: 'connected' },
     ]);
+  });
+
+  it('a transient permission-repository read failure is skipped for THIS event only -- WARN logged, worker.mcpServers unchanged, next event processed normally once the repository recovers (CodeRabbit MAJOR / Architect ruling)', async () => {
+    const WARN_MESSAGE =
+      'Failed to load MCP server permission records; skipping this discovered event (worker.mcpServers unchanged, next event retries)';
+    const h = setup({ definition: SDK_DEFINITION });
+    await h.service.activate(h.sessionId, h.workerId);
+
+    // First discovered event (form a): repository healthy (the default,
+    // non-throwing mock) -- establishes a real, non-trivial prior state so
+    // "unchanged from before the failing event" below is a genuine claim,
+    // not merely "stayed undefined".
+    h.fake.pushStdout(
+      `${JSON.stringify({
+        v: 1,
+        type: 'mcp-servers-discovered',
+        servers: [{ name: 'A', scope: 'project', hash: 'hash-a', decision: 'pending' }],
+      })}\n`,
+    );
+    await waitFor(() => h.worker.mcpServers !== undefined);
+    const beforeFailure = h.worker.mcpServers;
+    expect(beforeFailure).toEqual([{ name: 'A', scope: 'project', hash: 'hash-a', decision: 'pending' }]);
+
+    // The NEXT listByRepository call rejects once; every call after that
+    // reverts to the mock's default (non-throwing) implementation.
+    h.listByRepository.mockImplementationOnce(async () => {
+      throw new Error('transient db read boom');
+    });
+
+    const warnSpy = spyOn(rootLogger, 'warn');
+    try {
+      // Second discovered event (form c-shaped: status only): triggers the
+      // (e2) handler's own listByRepository call, which rejects.
+      h.fake.pushStdout(
+        `${JSON.stringify({
+          v: 1,
+          type: 'mcp-servers-discovered',
+          servers: [{ name: 'A', scope: 'project', status: 'connected' }],
+        })}\n`,
+      );
+      await waitFor(() => warnSpy.mock.calls.some((call) => call[1] === WARN_MESSAGE));
+
+      const warnCall = warnSpy.mock.calls.find((call) => call[1] === WARN_MESSAGE)!;
+      const fields = warnCall[0] as Record<string, unknown>;
+      expect(fields.sessionId).toBe(h.sessionId);
+      expect(fields.workerId).toBe(h.workerId);
+      expect(fields.err).toBeInstanceOf(Error);
+
+      // Unchanged -- not merely equal in content, but the SAME reference:
+      // the failed event never reached the assignment at all.
+      expect(h.worker.mcpServers).toBe(beforeFailure);
+
+      // Third discovered event, repository healthy again -- processed
+      // normally. Without the local catch, the second event's uncaught
+      // rejection propagates out of handleLoopLine into readStdout's own
+      // try/catch, which ends the reader loop entirely -- so no line after
+      // the failing one is ever read again, this third event included.
+      //
+      // Polarity confirmed: temporarily reverting the local try/catch back
+      // to a bare `await this.deps.mcpServerPermissionRepository
+      // .listByRepository(repositoryId)` made the EARLIER waitFor (line
+      // ~5127, waiting for the WARN itself) time out -- the reader loop
+      // died on the second event's uncaught rejection before ever logging
+      // the WARN, which is a stronger failure than merely "the third event
+      // is unreachable": nothing after the failing event runs at all,
+      // including the very log line this fix exists to produce. Restored
+      // after confirming the failure.
+      h.fake.pushStdout(
+        `${JSON.stringify({
+          v: 1,
+          type: 'mcp-servers-discovered',
+          servers: [{ name: 'A', scope: 'project', status: 'connected' }],
+        })}\n`,
+      );
+      await waitFor(() => h.worker.mcpServers !== beforeFailure);
+      expect(h.worker.mcpServers).toEqual([
+        { name: 'A', scope: 'project', hash: 'hash-a', decision: 'pending', status: 'connected' },
+      ]);
+    } finally {
+      warnSpy.mockRestore();
+    }
   });
 });
 

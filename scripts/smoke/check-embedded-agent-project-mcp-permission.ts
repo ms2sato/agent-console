@@ -255,6 +255,29 @@ export function findDiscoveredServer(
   return (servers ?? []).find((s) => s.name === name);
 }
 
+/**
+ * CodeRabbit review finding (Minor): `callMcpTool`'s `data` field is `unknown`
+ * -- it is `undefined` whenever the tool call has no content block or the
+ * content failed to JSON.parse (see `callMcpTool`'s own `try { data =
+ * rawText ? JSON.parse(rawText) : undefined } catch { data = undefined }`).
+ * A bare `res.data as { workers?: ... }` cast does not change that at
+ * runtime: reading `.workers` off `undefined` throws `TypeError`, and an
+ * uncaught throw here means main()'s `catch` reports "PROBE COULD NOT RUN"
+ * (exit 2) instead of a plain assertion failure (exit 1) -- the crash
+ * masks whatever real signal the poll/read was trying to observe. This
+ * guard makes the shape check explicit so every caller can treat a
+ * malformed payload as "no data yet" rather than crashing.
+ */
+export function isSessionStatusPayload(
+  data: unknown,
+): data is { workers: Array<{ id: string; mcpServers?: DiscoveredServerLite[] }> } {
+  return (
+    typeof data === 'object' &&
+    data !== null &&
+    Array.isArray((data as Record<string, unknown>).workers)
+  );
+}
+
 /** Whether any `tool-call` event in `events` named the given MCP server's namespaced tool (`mcp__<serverName>__...`). */
 export function hasToolCallForServer(events: EventLite[], serverName: string): boolean {
   const prefix = `mcp__${serverName}__`;
@@ -697,8 +720,14 @@ async function main(expectNoPermission: boolean): Promise<void> {
     const readDiscoveredViaWire = async (label: string): Promise<DiscoveredServerLite[]> => {
       const res = await callMcpTool('get_session_status', { sessionId: targetSessionId }, `Bearer ${tuiToken}`);
       expect(!res.isError, `${label}: get_session_status succeeded`, res.text.slice(0, 300));
-      const status = res.data as { workers?: Array<{ id: string; mcpServers?: DiscoveredServerLite[] }> };
-      const workerRow = status.workers?.find((w) => w.id === targetWorkerId);
+      // Malformed/absent payload (no content block, or JSON.parse failure --
+      // see `isSessionStatusPayload`'s own doc comment) is NOT thrown here:
+      // `!res.isError` above already reported the real failure; `workerRow`
+      // just stays undefined so the assertion below reports it too, instead
+      // of a `TypeError` masking whatever `get_session_status` actually said.
+      const workerRow = isSessionStatusPayload(res.data)
+        ? res.data.workers.find((w) => w.id === targetWorkerId)
+        : undefined;
       expect(workerRow !== undefined, `${label}: get_session_status reports the target worker`, res.text.slice(0, 300));
       return workerRow?.mcpServers ?? [];
     };
@@ -722,8 +751,13 @@ async function main(expectNoPermission: boolean): Promise<void> {
       let last: DiscoveredServerLite | undefined;
       do {
         const res = await callMcpTool('get_session_status', { sessionId: targetSessionId }, `Bearer ${tuiToken}`);
-        const status = res.data as { workers?: Array<{ id: string; mcpServers?: DiscoveredServerLite[] }> };
-        const workerRow = status.workers?.find((w) => w.id === targetWorkerId);
+        // A malformed/absent payload on ANY single poll is not fatal --
+        // treat it as "no reading yet" and keep polling (the same
+        // fail-closed-but-keep-trying shape `readDiscoveredViaWire` uses at
+        // its single call site, applied across a loop here instead).
+        const workerRow = isSessionStatusPayload(res.data)
+          ? res.data.workers.find((w) => w.id === targetWorkerId)
+          : undefined;
         last = findDiscoveredServer(workerRow?.mcpServers, serverName);
         if (predicate(last)) return last;
         await delay(300);

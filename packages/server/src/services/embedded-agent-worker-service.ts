@@ -2401,10 +2401,31 @@ export class EmbeddedAgentWorkerService {
     if (event.type === 'mcp-servers-discovered') {
       const session = this.deps.getSession(ctx.sessionId);
       const repositoryId = session?.type === 'worktree' ? session.repositoryId : undefined;
-      const permissionRows =
-        repositoryId !== undefined
-          ? await this.deps.mcpServerPermissionRepository.listByRepository(repositoryId)
-          : [];
+      let permissionRows: Awaited<ReturnType<McpServerPermissionRepository['listByRepository']>>;
+      if (repositoryId !== undefined) {
+        // CodeRabbit MAJOR / Architect ruling: a transient DB read failure
+        // here must not kill the incarnation. Catch locally, WARN, and skip
+        // the REBUILD for THIS event only -- `ctx.worker.mcpServers` stays
+        // exactly as it was before this event arrived. The record is
+        // re-read on the very next discovered event (form (c) after any
+        // live apply, form (b) on the next activation), so the state
+        // self-heals with nothing fabricated in between. This mirrors the
+        // §4.5 D-E wall's own fail-closed direction for an unreadable
+        // `~/.claude.json`: "unreadable record" means "no new claim", never
+        // a reason to tear down a live turn (which killing would do, by
+        // converting a read hiccup into a lost turn and a restart).
+        try {
+          permissionRows = await this.deps.mcpServerPermissionRepository.listByRepository(repositoryId);
+        } catch (err) {
+          logger.warn(
+            { sessionId: ctx.sessionId, workerId: ctx.workerId, err },
+            'Failed to load MCP server permission records; skipping this discovered event (worker.mcpServers unchanged, next event retries)',
+          );
+          return;
+        }
+      } else {
+        permissionRows = [];
+      }
       const decisionByKey = new Map(
         permissionRows.map((row) => [
           `${row.serverName}\u0000${row.configHash}`,
