@@ -33,6 +33,7 @@ import { isInternalPtyWorker } from '../worker-types.js';
 import { EmbeddedMessageDeliveryError } from '../embedded-agent-worker-service.js';
 import { composeEmbeddedAgentDeliveryText } from '../session-manager.js';
 import { buildPtyNotificationText, type PtyNotificationParams } from '../../lib/pty-notification.js';
+import type { McpServerPermissionRow } from '../../repositories/mcp-server-permission-repository.js';
 
 // Test config directory
 const TEST_CONFIG_DIR = '/test/config';
@@ -2017,6 +2018,246 @@ describe('SessionManager', () => {
       expect(readPublicWorker(manager, sessionId, workerId).hasParameterOverride).toBe(
         readPublicWorker(manager, sessionId, fresh!.id).hasParameterOverride,
       );
+    });
+  });
+
+  describe('setMcpServerPermissions (epic #1636 Phase 5 PR-2)', () => {
+    const SDK_DEF = {
+      id: 'sdk-def',
+      name: 'Claude',
+      engine: 'claude-sdk' as const,
+      isBuiltIn: true,
+      provider: { model: 'claude-sonnet-5' },
+      createdBy: 'test-user-id',
+      createdAt: '2024-01-01T00:00:00.000Z',
+      updatedAt: '2024-01-01T00:00:00.000Z',
+    };
+
+    /** Fake spawn with controllable stdout, for pushing a discovered event through the real activation path. */
+    function makeControllableSpawn() {
+      const stdinWrites: string[] = [];
+      const stdin = {
+        write: (chunk: string | Uint8Array) => {
+          stdinWrites.push(typeof chunk === 'string' ? chunk : new TextDecoder().decode(chunk));
+          return 0;
+        },
+        end: () => {},
+        flush: () => 0,
+      };
+      let stdoutCtrl!: ReadableStreamDefaultController<Uint8Array>;
+      let stderrCtrl!: ReadableStreamDefaultController<Uint8Array>;
+      const stdout = new ReadableStream<Uint8Array>({ start(c) { stdoutCtrl = c; } });
+      const stderr = new ReadableStream<Uint8Array>({ start(c) { stderrCtrl = c; } });
+      let resolveExited!: (code: number) => void;
+      const exited = new Promise<number>((resolve) => { resolveExited = resolve; });
+      const subprocess = { pid: 4242, exited, stdin, stdout, stderr, kill: () => {} };
+      const fakeSpawnAsUserFn = mock(() => ({ subprocess, stdin, elevated: false }));
+      return {
+        fakeSpawnAsUserFn: fakeSpawnAsUserFn as unknown as SpawnAsUserFn,
+        stdinWrites,
+        pushStdout: (s: string) => stdoutCtrl.enqueue(new TextEncoder().encode(s)),
+        simulateExit: (code: number) => {
+          resolveExited(code);
+          stdoutCtrl.close();
+          stderrCtrl.close();
+        },
+      };
+    }
+
+    async function waitForCondition(cond: () => boolean, timeoutMs = 1000): Promise<void> {
+      const start = Date.now();
+      while (!cond()) {
+        if (Date.now() - start > timeoutMs) throw new Error('waitForCondition timed out');
+        await new Promise((r) => setTimeout(r, 2));
+      }
+    }
+
+    async function setupSdkWorker() {
+      const spawn = makeControllableSpawn();
+      const upsert = mock(async (params: { repositoryId: string; serverName: string; configHash: string; decision: 'allow' | 'deny'; decidedBy: string }) => ({
+        id: `perm-${params.serverName}`,
+        ...params,
+        createdAt: '2026-01-01T00:00:00.000Z',
+        decidedAt: '2026-01-01T00:00:00.000Z',
+      }));
+      const listByRepository = mock(async (): Promise<McpServerPermissionRow[]> => []);
+      const module = await import(`../session-manager.js?v=${++importCounter}`);
+      const manager: SessionManager = await module.SessionManager.create({
+        userMode: new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' }),
+        pathExists: mockPathExists,
+        jobQueue: testJobQueue,
+        agentManager,
+        mcpTokenRegistry: new McpTokenRegistry(),
+        embeddedAgentManager: { getEmbeddedAgent: (id: string) => (id === SDK_DEF.id ? SDK_DEF : undefined) },
+        repositoryLookup: defaultRepositoryLookup,
+        repositoryEnvLookup: defaultRepositoryEnvLookup,
+        spawnAsUserFn: spawn.fakeSpawnAsUserFn,
+        mcpServerPermissionRepository: { listByRepository: listByRepository as never, upsert: upsert as never },
+      });
+      const session = await manager.createSession(
+        { type: 'quick', locationPath: '/test/path', agentId: 'claude-code' },
+        { createdBy: 'test-user-id' },
+      );
+      const worker = await manager.createWorker(session.id, {
+        type: 'embedded-agent',
+        embeddedAgentId: SDK_DEF.id,
+      });
+      return { manager, spawn, upsert, listByRepository, sessionId: session.id, workerId: worker!.id };
+    }
+
+    it('returns null for a nonexistent session, a nonexistent worker, or the wrong worker type', async () => {
+      const { manager, sessionId, workerId } = await setupSdkWorker();
+      const session = await manager.createSession(
+        { type: 'quick', locationPath: '/test/terminal', agentId: 'claude-code' },
+        { createdBy: 'test-user-id' },
+      );
+      const terminal = session.workers.find((w) => w.type !== 'embedded-agent');
+
+      expect(await manager.setMcpServerPermissions('no-such-session', workerId, 'repo-1', [], 'user-1')).toBeNull();
+      expect(await manager.setMcpServerPermissions(sessionId, 'no-such-worker', 'repo-1', [], 'user-1')).toBeNull();
+      if (terminal) {
+        expect(await manager.setMcpServerPermissions(session.id, terminal.id, 'repo-1', [], 'user-1')).toBeNull();
+      }
+    });
+
+    it('records the decision durably even for a worker with no discovery reading yet (dormant/never-activated)', async () => {
+      const { manager, upsert, sessionId, workerId } = await setupSdkWorker();
+
+      const result = await manager.setMcpServerPermissions(
+        sessionId,
+        workerId,
+        'repo-1',
+        [{ name: 'chrome-devtools', hash: 'hash-1', decision: 'allow' }],
+        'user-1',
+      );
+
+      expect(result).not.toBeNull();
+      expect(upsert).toHaveBeenCalledWith({
+        repositoryId: 'repo-1',
+        serverName: 'chrome-devtools',
+        configHash: 'hash-1',
+        decision: 'allow',
+        decidedBy: 'user-1',
+      });
+      // Nothing to reflect: no discovery reading exists yet.
+      if (result!.type === 'embedded-agent') {
+        expect(result!.mcpServers).toBeUndefined();
+      }
+    });
+
+    it('reflects the decision on a DORMANT worker (activated once, then deactivated) with no live command sent', async () => {
+      const { manager, spawn, upsert, sessionId, workerId } = await setupSdkWorker();
+      await manager.activateEmbeddedAgentWorker(sessionId, workerId);
+      spawn.pushStdout(
+        `${JSON.stringify({
+          v: 1,
+          type: 'mcp-servers-discovered',
+          servers: [{ name: 'chrome-devtools', scope: 'project', hash: 'hash-1', decision: 'pending' }],
+        })}\n`,
+      );
+      await waitForCondition(() => {
+        const w = manager.getSession(sessionId)!.workers.find((x) => x.id === workerId)!;
+        return w.type === 'embedded-agent' && w.mcpServers !== undefined;
+      });
+
+      const deactivatePromise = manager.deactivateEmbeddedAgentWorker(sessionId, workerId);
+      spawn.simulateExit(0);
+      await deactivatePromise;
+
+      const result = await manager.setMcpServerPermissions(
+        sessionId,
+        workerId,
+        'repo-1',
+        [{ name: 'chrome-devtools', hash: 'hash-1', decision: 'allow' }],
+        'user-1',
+      );
+
+      expect(upsert).toHaveBeenCalledTimes(1);
+      const worker = result!;
+      expect(worker.type === 'embedded-agent' && worker.mcpServers).toEqual([
+        { name: 'chrome-devtools', scope: 'project', hash: 'hash-1', decision: 'allowed' },
+      ]);
+      // The worker is DORMANT (deactivated above) -- there is no live
+      // subprocess to tell, so `applyMcpServerPermissions` returns `false`
+      // and no additional stdin write happens as a side effect of recording
+      // the decision. No new spawn either: a dormant worker's decision
+      // applies at its NEXT activation, not by respawning here.
+      expect(spawn.fakeSpawnAsUserFn).toHaveBeenCalledTimes(1);
+    });
+
+    it('live-apply: sends a set-mcp-servers command carrying the FULL currently-allowed set to a LIVE worker', async () => {
+      const { manager, spawn, listByRepository, sessionId, workerId } = await setupSdkWorker();
+      await manager.activateEmbeddedAgentWorker(sessionId, workerId);
+      // The composition reads the repository's CURRENT allow rows (not just
+      // the pair just recorded) -- seed a pre-existing allow row for a
+      // DIFFERENT server so the live command's content proves that.
+      listByRepository.mockImplementation(async () => [
+        {
+          id: 'perm-existing',
+          repositoryId: 'repo-1',
+          serverName: 'chrome-devtools',
+          configHash: 'hash-1',
+          decision: 'allow' as const,
+          decidedBy: 'user-0',
+          createdAt: '2026-01-01T00:00:00.000Z',
+          decidedAt: '2026-01-01T00:00:00.000Z',
+        },
+        {
+          id: 'perm-new',
+          repositoryId: 'repo-1',
+          serverName: 'other-server',
+          configHash: 'hash-2',
+          decision: 'allow' as const,
+          decidedBy: 'user-1',
+          createdAt: '2026-01-01T00:00:00.000Z',
+          decidedAt: '2026-01-01T00:00:00.000Z',
+        },
+      ]);
+      const before = spawn.stdinWrites.length;
+
+      await manager.setMcpServerPermissions(
+        sessionId,
+        workerId,
+        'repo-1',
+        [{ name: 'other-server', hash: 'hash-2', decision: 'allow' }],
+        'user-1',
+      );
+
+      expect(JSON.parse(spawn.stdinWrites[before])).toEqual({
+        v: 1,
+        type: 'set-mcp-servers',
+        allowedProjectMcpServers: [
+          { name: 'chrome-devtools', hash: 'hash-1' },
+          { name: 'other-server', hash: 'hash-2' },
+        ],
+      });
+    });
+
+    it('persists BEFORE forwarding to a live subprocess (call-order pin, not merely "both happened")', async () => {
+      const { manager, spawn, sessionId, workerId } = await setupSdkWorker();
+      await manager.activateEmbeddedAgentWorker(sessionId, workerId);
+
+      const order: string[] = [];
+      const repository = manager.getSessionRepository();
+      const realSave = repository.save.bind(repository);
+      spyOn(repository, 'save').mockImplementation(async (session) => {
+        order.push('persist');
+        await realSave(session);
+      });
+      const before = spawn.stdinWrites.length;
+
+      await manager.setMcpServerPermissions(
+        sessionId,
+        workerId,
+        'repo-1',
+        [{ name: 'chrome-devtools', hash: 'hash-1', decision: 'allow' }],
+        'user-1',
+      );
+
+      order.push(
+        ...spawn.stdinWrites.slice(before).map((line) => `forward:${(JSON.parse(line) as { type: string }).type}`),
+      );
+      expect(order).toEqual(['persist', 'forward:set-mcp-servers']);
     });
   });
 

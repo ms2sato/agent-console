@@ -45,7 +45,6 @@ import {
   type EmbeddedAgentAttachment,
   type EmbeddedAgentEvent,
   type EmbeddedAgentToolName,
-  type McpServerWireConfig,
 } from '@agent-console/shared';
 import {
   COMPACT_TOOL_DESCRIPTION,
@@ -414,16 +413,34 @@ export interface SdkEngineDeps {
   ruleActivator: RuleActivatorLike;
   /**
    * epic #1636 Phase 5 PR-2 (docs/design/embedded-agent-sdk-engine.md §4.5
-   * D-E "the door"): the repository's currently-allowed `.mcp.json` (Project
-   * scope) servers, in wire-config shape, keyed by name. Never contains the
-   * reserved pair (`agent-console` / `console`) -- `buildOptions()` throws if
-   * it ever does, since that would mean a caller regression let a rejected
-   * name through discovery (`discoverProjectMcpServers` already marks a
-   * reserved-named `.mcp.json` entry `rejected-reserved`, never `allowed`).
-   * Empty when no server is currently allowed, or for a quick session with no
-   * repository.
+   * D-B / D-F, Architect ruling (B), 2026-09-21): EVERY entry
+   * `discoverProjectMcpServers` (mcp-discovery.ts, main.ts's caller) found in
+   * `.mcp.json`, keyed by name -- including a currently-`pending` entry, not
+   * only the `allowed` subset. This is the ONLY place a real server config
+   * (command/args/env/url/headers) lives in this process; the server never
+   * holds one, so `setMcpServers`'s (name, hash) pairs are resolved against
+   * this map rather than carrying configs on the wire. Never contains the
+   * reserved pair (`agent-console` / `console`) -- `discoverProjectMcpServers`
+   * marks a reserved-named `.mcp.json` entry `rejected-reserved`, never
+   * `allowed`/`pending`, so it never reaches this map. Empty when `.mcp.json`
+   * declares nothing, or for a quick session with no repository.
    */
-  projectMcpServers: Record<string, McpServerWireConfig>;
+  discoveredProjectMcpServers: Map<string, { hash: string; config: McpServerConfig }>;
+  /**
+   * epic #1636 Phase 5 PR-2 (§4.5 D-E "the door"): the `init` command's own
+   * `allowedProjectMcpServers` field, passed straight through by main.ts --
+   * the repository's currently-allowed (name, hash) pairs at ACTIVATION time.
+   * The constructor resolves each pair against
+   * {@link discoveredProjectMcpServers} to build the INITIAL
+   * `Options.mcpServers` project subset; a pair that does not resolve against
+   * discovery (should not normally happen -- both inputs are derived from the
+   * same activation-time discovery pass -- but defensive) is silently
+   * skipped at construction rather than thrown on, since this is a much
+   * rarer edge case than a LIVE `setMcpServers` mismatch (see that method's
+   * own doc comment, which DOES report a mismatch, because there the two
+   * inputs can genuinely have drifted apart since construction).
+   */
+  initialAllowedProjectMcpServers: Array<{ name: string; hash: string }>;
   /**
    * §4.5 D-E "the wall": the CLI's own User-scope and Local-scope (this
    * `cwd`) server NAMES, read once at activation by `readUserLocalMcpNames`
@@ -481,9 +498,21 @@ export class SdkEngine implements ClaudeSdkEngine {
     [COMPACT_TOOL_SERVER_NAME]: McpServerConfig;
   };
   /**
+   * The INITIAL `Options.mcpServers` project subset, resolved once in the
+   * constructor from {@link SdkEngineDeps.initialAllowedProjectMcpServers}
+   * against {@link SdkEngineDeps.discoveredProjectMcpServers} -- a pair whose
+   * name/hash both match a discovered entry contributes its config here; a
+   * pair that does not resolve is silently skipped (see
+   * `initialAllowedProjectMcpServers`'s own doc comment for why). Never
+   * recomputed after construction: a later change reaches the live session
+   * only through {@link setMcpServers}, which extends
+   * {@link liveAddedMcpServerNames} instead of mutating this map.
+   */
+  private readonly initialProjectMcpServers: Record<string, McpServerConfig>;
+  /**
    * §4.5 D-D "activation never waits": server names added to the live
    * session by {@link setMcpServers} since construction, over and above
-   * {@link SdkEngineDeps.projectMcpServers}'s activation-time set. Extended
+   * {@link initialProjectMcpServers}'s activation-time set. Extended
    * BEFORE the live `Query.setMcpServers` call in
    * {@link applyMcpServersOnce}, so a `system:init`/status update racing in
    * from the SDK during that call is never fatal'd for a name this call is
@@ -653,6 +682,22 @@ export class SdkEngine implements ClaudeSdkEngine {
       }),
     };
 
+    // Resolve the INITIAL allowed set against discovery -- see
+    // `initialProjectMcpServers`'s own doc comment. Built here, before
+    // `buildOptions()` reads it, so a fresh `SdkEngineDeps` never needs a
+    // second pass to populate it.
+    this.initialProjectMcpServers = {};
+    for (const pair of deps.initialAllowedProjectMcpServers) {
+      const discovered = deps.discoveredProjectMcpServers.get(pair.name);
+      if (discovered !== undefined && discovered.hash === pair.hash) {
+        this.initialProjectMcpServers[pair.name] = discovered.config;
+      }
+      // A pair that does not resolve here is silently skipped -- see this
+      // field's own doc comment on `SdkEngineDeps.initialAllowedProjectMcpServers`
+      // for why construction-time drift is treated as a rarer, non-reported
+      // edge case unlike the live `setMcpServers` mismatch.
+    }
+
     // The ONLY production call site for the SDK's query() function -- both
     // the DI seam Pin 1(a) exercises and the grep-containment target Pin 1(b)
     // verifies (see __tests__/sdk-engine.test.ts). Phase 2's `reseed` was the
@@ -684,14 +729,14 @@ export class SdkEngine implements ClaudeSdkEngine {
   private buildOptions(systemPromptAppend: string | undefined): Options {
     // Defensive pin, not a runtime path meant to fire in production:
     // `discoverProjectMcpServers` (main.ts's caller) already marks a
-    // reserved-named `.mcp.json` entry `rejected-reserved`, never `allowed`,
-    // so `projectMcpServers` should never carry either reserved name. Catches
-    // a caller regression rather than tolerating a silent shadow of the
-    // reserved pair.
-    for (const name of Object.keys(this.deps.projectMcpServers)) {
+    // reserved-named `.mcp.json` entry `rejected-reserved`, never
+    // `allowed`/`pending`, so `initialProjectMcpServers` should never carry
+    // either reserved name. Catches a caller regression rather than
+    // tolerating a silent shadow of the reserved pair.
+    for (const name of Object.keys(this.initialProjectMcpServers)) {
       if (name === 'agent-console' || name === COMPACT_TOOL_SERVER_NAME) {
         throw new Error(
-          `SdkEngineDeps.projectMcpServers must never contain the reserved name "${name}"`,
+          `SdkEngine's resolved initial project MCP servers must never contain the reserved name "${name}"`,
         );
       }
     }
@@ -735,10 +780,11 @@ export class SdkEngine implements ClaudeSdkEngine {
         'agent-console': this.reservedMcpServers['agent-console'],
         [COMPACT_TOOL_SERVER_NAME]: this.reservedMcpServers[COMPACT_TOOL_SERVER_NAME],
         // epic #1636 Phase 5 PR-2 (§4.5 D-E "the door"): the currently-allowed
-        // `.mcp.json` (Project scope) servers, and nothing else -- the
-        // reserved-name collision guard above is what keeps this spread from
-        // ever shadowing the pair above it.
-        ...this.deps.projectMcpServers,
+        // `.mcp.json` (Project scope) servers at ACTIVATION time, resolved
+        // once in the constructor -- see `initialProjectMcpServers`'s own doc
+        // comment. Nothing else -- the reserved-name collision guard above is
+        // what keeps this spread from ever shadowing the pair above it.
+        ...this.initialProjectMcpServers,
       },
       permissionMode: 'bypassPermissions',
       allowDangerouslySkipPermissions: true,
@@ -1048,9 +1094,12 @@ export class SdkEngine implements ClaudeSdkEngine {
    * (Project scope) servers into the LIVE SDK session, or report that the
    * fallback (a restart-in-place, declared in the panel) is required.
    *
-   * `servers` is the FULL currently-allowed project set, never a delta --
+   * `pairs` is the FULL currently-allowed (name, hash) set, never a delta --
    * same contract as {@link setModelParams} and the `set-mcp-servers` wire
-   * command's own doc comment.
+   * command's own doc comment. Architect ruling (B), 2026-09-21: this method
+   * (and the wire command behind it) never carries a server config -- each
+   * pair is resolved against {@link SdkEngineDeps.discoveredProjectMcpServers}
+   * in {@link applyMcpServersOnce}, since the server never holds one.
    *
    * SERIALIZED on the SAME {@link liveWritesChain} {@link setModelParams}
    * uses, deliberately -- not a second, independent chain. Reusing the one
@@ -1062,9 +1111,9 @@ export class SdkEngine implements ClaudeSdkEngine {
    * `claude-sdk`-only -- see the interface doc comment on
    * {@link ClaudeSdkEngine.setMcpServers}.
    */
-  setMcpServers(servers: Record<string, McpServerWireConfig>): void {
+  setMcpServers(pairs: Array<{ name: string; hash: string }>): void {
     this.liveWritesChain = this.liveWritesChain
-      .then(() => this.applyMcpServersOnce(servers))
+      .then(() => this.applyMcpServersOnce(pairs))
       .catch(() => {
         // Same rationale as `setModelParams`'s own `.catch(() => {})`:
         // `applyMcpServersOnce` handles its own failures, so reaching here
@@ -1078,13 +1127,39 @@ export class SdkEngine implements ClaudeSdkEngine {
    * One {@link setMcpServers} call's work. The `this.dead` check stays HERE,
    * at execution time, for the same reason {@link applyModelParamsOnce}'s
    * does -- it lets the shared chain outlive the session safely.
+   *
+   * Resolution: each pair is looked up in
+   * {@link SdkEngineDeps.discoveredProjectMcpServers} by NAME, and admitted
+   * only when the discovered entry's `hash` ALSO matches -- a name that is
+   * not discovered at all (`errors[name] = 'not-discovered'`) and a name
+   * whose hash no longer matches the discovered entry
+   * (`errors[name] = 'hash-mismatch'`, the branch-swap case: the file changed
+   * since discovery, so the approval no longer covers what is on disk) are
+   * both reported rather than started. A pair that resolves is included in
+   * the live `Query.setMcpServers` call; one that does not is simply absent
+   * from it (not retried, not defaulted).
    */
-  private async applyMcpServersOnce(servers: Record<string, McpServerWireConfig>): Promise<void> {
+  private async applyMcpServersOnce(pairs: Array<{ name: string; hash: string }>): Promise<void> {
+    const resolutionErrors: Record<string, string> = {};
+    const resolvedAllowed: Record<string, McpServerConfig> = {};
+    for (const pair of pairs) {
+      const discovered = this.deps.discoveredProjectMcpServers.get(pair.name);
+      if (discovered === undefined) {
+        resolutionErrors[pair.name] = 'not-discovered';
+      } else if (discovered.hash !== pair.hash) {
+        resolutionErrors[pair.name] = 'hash-mismatch';
+      } else {
+        resolvedAllowed[pair.name] = discovered.config;
+      }
+    }
+
     // §4.5 D-D: extend the containment detector's expected set BEFORE the
     // live SDK call, so a `system:init`/status update racing in from the SDK
     // while this call is in flight is never fatal'd for a name this call is
-    // in the middle of legitimately adding.
-    for (const name of Object.keys(servers)) this.liveAddedMcpServerNames.add(name);
+    // in the middle of legitimately adding. Only names that actually
+    // RESOLVED are added -- a name that failed resolution was never going to
+    // be started, so it must not widen the expected set.
+    for (const name of Object.keys(resolvedAllowed)) this.liveAddedMcpServerNames.add(name);
 
     if (this.dead) {
       // No live session to write to. The approval record (D-B) is already
@@ -1097,17 +1172,20 @@ export class SdkEngine implements ClaudeSdkEngine {
 
     let result: McpSetServersResult;
     try {
-      // ALWAYS the full reserved pair plus the full allowed set (premise P-a,
-      // `probe-sdk-phase5-pr2-premises.ts`): omitting the reserved pair from a
-      // `setMcpServers` call was never measured and must not be assumed safe.
-      // The reserved pair's config/instance is the SAME one `buildOptions()`
-      // constructed at activation -- see {@link reservedMcpServers}'s own doc
-      // comment for why reusing it (rather than building a fresh one here)
-      // is the measured-safe shape.
+      // ALWAYS the full reserved pair plus the resolved allowed set (premise
+      // P-a, `probe-sdk-phase5-pr2-premises.ts`), regardless of whether
+      // `resolvedAllowed` is empty -- omitting the reserved pair from a
+      // `setMcpServers` call was never measured and must not be assumed
+      // safe, and a call carrying ONLY the reserved pair (every requested
+      // pair failed resolution) is still the measured-safe shape, never
+      // skipped. The reserved pair's config/instance is the SAME one
+      // `buildOptions()` constructed at activation -- see
+      // {@link reservedMcpServers}'s own doc comment for why reusing it
+      // (rather than building a fresh one here) is the measured-safe shape.
       result = await this.query.setMcpServers({
         'agent-console': this.reservedMcpServers['agent-console'],
         [COMPACT_TOOL_SERVER_NAME]: this.reservedMcpServers[COMPACT_TOOL_SERVER_NAME],
-        ...servers,
+        ...resolvedAllowed,
       });
     } catch (err: unknown) {
       console.warn(
@@ -1118,7 +1196,7 @@ export class SdkEngine implements ClaudeSdkEngine {
         v: 1,
         type: 'mcp-servers-applied',
         applied: false,
-        errors: { '*': errorMessage(err) },
+        errors: { ...resolutionErrors, '*': errorMessage(err) },
       });
       return;
     }
@@ -1128,11 +1206,17 @@ export class SdkEngine implements ClaudeSdkEngine {
     // connection failure is reported via the discovered event's per-server
     // `status` below, not via this flag (mirrors `model-params-applied`'s own
     // "applied describes the write reaching the live session" contract).
+    // `errors` merges the SDK's own per-server connection failures with the
+    // resolution failures computed above; resolution errors are spread LAST
+    // so they win on the (should-be-unreachable) case of a name appearing in
+    // both -- the SDK never even saw a name that failed resolution, so a
+    // resolution-level verdict is the more informative one to report.
+    const errors = { ...result.errors, ...resolutionErrors };
     this.deps.emit({
       v: 1,
       type: 'mcp-servers-applied',
       applied: true,
-      ...(Object.keys(result.errors).length > 0 ? { errors: result.errors } : {}),
+      ...(Object.keys(errors).length > 0 ? { errors } : {}),
     });
 
     // Form (c): the discovered event from a FRESH `mcpServerStatus()` read,
@@ -1361,7 +1445,15 @@ export class SdkEngine implements ClaudeSdkEngine {
    */
   private classifyMcpServerScope(name: string): McpServerDiscoveredScope | null {
     if (name === 'agent-console' || name === COMPACT_TOOL_SERVER_NAME) return 'reserved';
-    if (name in this.deps.projectMcpServers || this.liveAddedMcpServerNames.has(name)) return 'project';
+    // `'project'` scope is keyed on what has ACTUALLY been passed to the SDK
+    // (`initialProjectMcpServers` union `liveAddedMcpServerNames`) --
+    // deliberately NOT `deps.discoveredProjectMcpServers`'s full key set. A
+    // `.mcp.json` entry that discovery found but that is only `pending` (not
+    // yet allowed, never started) must still trip the wall if it somehow
+    // shows up in `system:init`/`mcpServerStatus()`: being DISCOVERED is not
+    // being PERMITTED, and this containment check exists to catch exactly
+    // that gap between the two.
+    if (name in this.initialProjectMcpServers || this.liveAddedMcpServerNames.has(name)) return 'project';
     // Fail-closed (§4.5 D-E): `unavailable` means the CLI's own
     // ~/.claude.json could not be read for this purpose, so `userLocal` is
     // treated as EMPTY regardless of its actual (possibly stale, possibly

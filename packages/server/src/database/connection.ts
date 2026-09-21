@@ -427,6 +427,10 @@ async function runMigrations(database: Kysely<Database>, dbPath: string): Promis
   if (currentVersion < 43) {
     await migrateToV43(database, dbPath);
   }
+
+  if (currentVersion < 44) {
+    await migrateToV44(database);
+  }
 }
 
 /**
@@ -2780,6 +2784,89 @@ export async function migrateToV43(
   }
 
   logger.info('Migration to v43 completed');
+}
+
+/**
+ * Migration v44: create the `mcp_server_permissions` table (epic #1636
+ * Phase 5 PR-2, docs/design/embedded-agent-sdk-engine.md §4.5's "the
+ * approval record").
+ *
+ * A NEW table, no rebuild, no existing rows to migrate, no pre-flight
+ * backup -- same shape as `migrateToV41`'s `repository_orchestrator_sessions`
+ * table above. Column order, types, and constraints reproduce the
+ * owner-approved DDL verbatim via the Kysely schema builder:
+ *
+ * ```sql
+ * CREATE TABLE mcp_server_permissions (
+ *   id            TEXT PRIMARY KEY,
+ *   repository_id TEXT NOT NULL REFERENCES repositories(id) ON DELETE CASCADE,
+ *   server_name   TEXT NOT NULL,
+ *   config_hash   TEXT NOT NULL,
+ *   decision      TEXT NOT NULL CHECK (decision IN ('allow','deny')),
+ *   decided_by    TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+ *   created_at    TEXT NOT NULL DEFAULT (...) CHECK (...ISO8601...),
+ *   decided_at    TEXT NOT NULL DEFAULT (...) CHECK (...ISO8601...),
+ *   CONSTRAINT mcp_server_permissions_key UNIQUE (repository_id, server_name, config_hash)
+ * );
+ * CREATE INDEX idx_mcp_server_permissions_repository_id ON mcp_server_permissions(repository_id);
+ * ```
+ *
+ * `decided_by` is `ON DELETE CASCADE` (not `SET NULL`, unlike
+ * `sessions.created_by`): a permission decision with no accountable actor
+ * is not a state worth keeping -- deleting the deciding user removes the
+ * decision rather than orphaning it.
+ *
+ * `created_at` and `decided_at` both get `addDatetime`'s ISO8601 CHECK +
+ * DEFAULT, but the two are not populated the same way: `created_at` is the
+ * ordinary insert-once DEFAULT, while `decided_at` is ALWAYS supplied
+ * explicitly by the repository's `upsert()` (never left to the DEFAULT),
+ * so that a repeat decision on the same key can carry it into the
+ * `ON CONFLICT ... DO UPDATE SET` clause and move it forward. Both are
+ * `Generated<string>` at the `schema.ts` type level regardless -- see that
+ * file's doc comment on `McpServerPermissionsTable` for why `Generated<>`
+ * only means "optional on insert", not "the app never sets it explicitly".
+ *
+ * @internal Exported for testing.
+ */
+export async function migrateToV44(database: Kysely<Database>): Promise<void> {
+  logger.info('Running migration to v44: Creating mcp_server_permissions table');
+
+  let table = database.schema
+    .createTable('mcp_server_permissions')
+    .ifNotExists()
+    .addColumn('id', 'text', (col) => col.primaryKey())
+    .addColumn('repository_id', 'text', (col) =>
+      col.notNull().references('repositories.id').onDelete('cascade')
+    )
+    .addColumn('server_name', 'text', (col) => col.notNull())
+    .addColumn('config_hash', 'text', (col) => col.notNull())
+    .addColumn('decision', 'text', (col) => col.notNull())
+    .addCheckConstraint('mcp_server_permissions_decision_check', sql`decision IN ('allow', 'deny')`)
+    .addColumn('decided_by', 'text', (col) =>
+      col.notNull().references('users.id').onDelete('cascade')
+    );
+
+  table = addDatetime(table, 'mcp_server_permissions', 'created_at', (col) => col.notNull(), {
+    defaultNow: true,
+  });
+  table = addDatetime(table, 'mcp_server_permissions', 'decided_at', (col) => col.notNull(), {
+    defaultNow: true,
+  });
+
+  await table
+    .addUniqueConstraint('mcp_server_permissions_key', ['repository_id', 'server_name', 'config_hash'])
+    .execute();
+
+  await database.schema
+    .createIndex('idx_mcp_server_permissions_repository_id')
+    .ifNotExists()
+    .on('mcp_server_permissions')
+    .column('repository_id')
+    .execute();
+
+  await sql`PRAGMA user_version = 44`.execute(database);
+
+  logger.info('Migration to v44 completed');
 }
 
 /**

@@ -50,6 +50,8 @@ import type { InternalSession } from './internal-types.js';
 import type { InternalEmbeddedAgentWorker } from './worker-types.js';
 import type { SessionDataPathResolver } from '../lib/session-data-path-resolver.js';
 import type { McpTokenRegistry } from '../mcp/mcp-auth.js';
+import type { McpServerPermissionRepository } from '../repositories/mcp-server-permission-repository.js';
+import { listAllowedProjectMcpServerPairs } from '../lib/mcp-server-permissions.js';
 import type { WorkerOutputFileManager } from '../lib/worker-output-file.js';
 import { spawnAsUser, shellEscape, type SpawnAsUserFn } from './privilege-elevation.js';
 import { getCleanChildProcessEnv } from './env-filter.js';
@@ -338,6 +340,13 @@ export interface EmbeddedAgentWorkerServiceDeps {
   getEmbeddedAgent: (id: string) => EmbeddedAgentDefinition | undefined;
   resolveSpawnUsername: (createdBy?: string) => Promise<string>;
   mcpTokenRegistry: Pick<McpTokenRegistry, 'mint' | 'revokeByWorker'>;
+  /**
+   * epic #1636 Phase 5 PR-2 (docs/design/embedded-agent-sdk-engine.md §4.5's
+   * "the approval record"): read at activation to compose a `claude-sdk`
+   * worktree session's `allowedProjectMcpServers`. `openai-api` and quick
+   * sessions never read this (no repository, no MCP-discovery concept).
+   */
+  mcpServerPermissionRepository: Pick<McpServerPermissionRepository, 'listByRepository'>;
   workerOutputFileManager: Pick<
     WorkerOutputFileManager,
     'resetWorkerOutput'
@@ -1193,6 +1202,22 @@ export class EmbeddedAgentWorkerService {
       // its own `provider` shape.
       const resolvedModelParams = resolveEffectiveModelParams(definition, worker);
 
+      // epic #1636 Phase 5 PR-2 (docs/design/embedded-agent-sdk-engine.md
+      // §4.5's "the approval record"): the repository's current `allow`
+      // decisions, read fresh at every activation -- `claude-sdk`
+      // worktree-session activations only. A quick session has no
+      // `repositoryId` and no `.mcp.json`-approval concept, so its
+      // `allowedProjectMcpServers` is unconditionally empty, same as the
+      // `openai-api` arm (which never carries this field at all).
+      const repositoryIdForMcp = session.type === 'worktree' ? session.repositoryId : undefined;
+      const allowedProjectMcpServers =
+        definition.engine === 'claude-sdk' && repositoryIdForMcp !== undefined
+          ? await listAllowedProjectMcpServerPairs(
+              this.deps.mcpServerPermissionRepository,
+              repositoryIdForMcp,
+            )
+          : [];
+
       // Step 6: write the init command as the FIRST stdin line. Branched on
       // `definition.engine` (SDK Engine Phase 1) so each arm's `provider`
       // shape matches the discriminated `EmbeddedAgentCommand` union --
@@ -1288,6 +1313,11 @@ export class EmbeddedAgentWorkerService {
               // and can read that user's own session store, which this
               // process cannot in multi-user mode.
               ...(resumeId !== null ? { resume: { sdkSessionId: resumeId } } : {}),
+              // epic #1636 Phase 5 PR-2: REQUIRED, never omitted -- an
+              // absent field is a schema validation error, not "nothing is
+              // approved yet" (see the wire type's own doc comment). Empty
+              // for a quick session or a repository with no `allow` rows.
+              allowedProjectMcpServers,
             };
       this.writeCommand(stdin, initCommand);
 
@@ -1360,6 +1390,12 @@ export class EmbeddedAgentWorkerService {
       this.endStdinSafely(spawnedStdin);
       worker.subprocess = null;
       worker.stdin = null;
+      // epic #1636 Phase 5 PR-2, Q14: a `mcp-servers-discovered` event may
+      // have already landed on this incarnation before a LATER activation
+      // step failed (e.g. the persist below it). Clear the reading so a
+      // failed activation never leaves a stale discovery snapshot behind
+      // for the next attempt to inherit.
+      worker.mcpServers = undefined;
       // Safe to delete unconditionally: the in-flight activation guard prevents
       // a concurrent activation from having installed a different runtime here.
       this.runtimes.delete(workerId);
@@ -1874,6 +1910,49 @@ export class EmbeddedAgentWorkerService {
   }
 
   /**
+   * epic #1636 Phase 5 PR-2 (docs/design/embedded-agent-sdk-engine.md §4.5
+   * D-D "activation never waits"): forward a change to the repository's
+   * `.mcp.json` (Project scope) permission set to a RUNNING subprocess, so
+   * the change applies without waiting for the next activation.
+   *
+   * `allowedProjectMcpServers` is the FULL currently-allowed (name, hash)
+   * set, never a delta -- the same full-state contract `applyModelParams`
+   * documents for `set-model-params`, and the `set-mcp-servers` wire
+   * command's own doc comment. Architect ruling (B), 2026-09-21: NO server
+   * config crosses this call either -- only names and hashes. The caller
+   * (`SessionManager.setMcpServerPermissions`) composes this array the same
+   * way `activate`'s own `init` composition does: every currently-`allow`
+   * row for the session's repository.
+   *
+   * Same "returns `false` means no live subprocess, not a failure" contract
+   * as `applyModelParams` -- the durable permission row is already written
+   * by the caller before this is invoked, and a dormant worker picks it up
+   * at its next activation.
+   */
+  applyMcpServerPermissions(
+    workerId: string,
+    allowedProjectMcpServers: Array<{ name: string; hash: string }>,
+  ): boolean {
+    const runtime = this.runtimes.get(workerId);
+    const stdin = runtime?.ctx.worker.stdin;
+    if (!runtime || !stdin) return false;
+    try {
+      this.writeCommand(stdin, {
+        v: 1,
+        type: 'set-mcp-servers',
+        allowedProjectMcpServers,
+      });
+      return true;
+    } catch (err) {
+      logger.warn(
+        { workerId, err },
+        'Failed to forward MCP server permissions to embedded-agent stdin',
+      );
+      return false;
+    }
+  }
+
+  /**
    * Deliver the session's initialPrompt as this embedded worker's first user
    * message, exactly once, right after the loop reports readiness. Reuses
    * the normal sendUserMessage path (turn admission, transcript append, WS
@@ -2200,6 +2279,44 @@ export class EmbeddedAgentWorkerService {
       runtime.requestedResumeId = null;
       ctx.worker.sdkSessionId = event.sdkSessionId;
       const session = this.deps.getSession(ctx.sessionId);
+      if (session) {
+        await this.deps.persistSession(session);
+      }
+    }
+
+    // (e2) epic #1636 Phase 5 PR-2 (docs/design/embedded-agent-sdk-engine.md
+    // §4.5): the claude-sdk engine's own discovery of its project
+    // `.mcp.json` fired. Per §4.5 D-D, discovery may report up to three
+    // times per activation -- each arrival is LAST-WRITE-WINS over
+    // `ctx.worker.mcpServers`, never an accumulation across arrivals.
+    // Every reported entry is mapped onto the worker-state shape, with a
+    // server-computed `'denied'` overriding whatever decision the
+    // subprocess itself carried, whenever this repository has a matching
+    // `deny` row for the SAME `(name, hash)` key -- the subprocess never
+    // emits `'denied'` itself (see the wire event's own doc comment for
+    // why that member exists on the worker-state picklist but not on the
+    // wire event's).
+    if (event.type === 'mcp-servers-discovered') {
+      const session = this.deps.getSession(ctx.sessionId);
+      const repositoryId = session?.type === 'worktree' ? session.repositoryId : undefined;
+      const denyKeys = new Set(
+        repositoryId !== undefined
+          ? (await this.deps.mcpServerPermissionRepository.listByRepository(repositoryId))
+              .filter((row) => row.decision === 'deny')
+              .map((row) => `${row.serverName}\u0000${row.configHash}`)
+          : [],
+      );
+      ctx.worker.mcpServers = event.servers.map((entry) => {
+        const key = entry.hash !== undefined ? `${entry.name}\u0000${entry.hash}` : undefined;
+        const decision = key !== undefined && denyKeys.has(key) ? ('denied' as const) : entry.decision;
+        return {
+          name: entry.name,
+          scope: entry.scope,
+          ...(entry.hash !== undefined ? { hash: entry.hash } : {}),
+          ...(decision !== undefined ? { decision } : {}),
+          ...(entry.status !== undefined ? { status: entry.status } : {}),
+        };
+      });
       if (session) {
         await this.deps.persistSession(session);
       }

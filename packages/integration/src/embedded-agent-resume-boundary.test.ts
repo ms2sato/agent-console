@@ -119,6 +119,7 @@ describe('init.resume survives the command schema, on the claude-sdk arm only (R
     const parsed = v.parse(EmbeddedAgentCommandSchema, {
       ...base,
       engine: 'claude-sdk',
+      allowedProjectMcpServers: [],
       provider: { model: 'claude-sonnet-5' },
       resume: { sdkSessionId: 'sess-abc' },
     });
@@ -133,6 +134,7 @@ describe('init.resume survives the command schema, on the claude-sdk arm only (R
     const parsed = v.parse(EmbeddedAgentCommandSchema, {
       ...base,
       engine: 'claude-sdk',
+      allowedProjectMcpServers: [],
       provider: { model: 'claude-sonnet-5' },
     });
     if (parsed.type !== 'init') throw new Error('unexpected parse output');
@@ -156,6 +158,7 @@ describe('init.resume survives the command schema, on the claude-sdk arm only (R
     const result = v.safeParse(EmbeddedAgentCommandSchema, {
       ...base,
       engine: 'claude-sdk',
+      allowedProjectMcpServers: [],
       provider: { model: 'claude-sonnet-5' },
       resume: { sdkSessionId: '' },
     });

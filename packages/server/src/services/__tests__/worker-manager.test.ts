@@ -1584,6 +1584,39 @@ describe('WorkerManager', () => {
       });
     });
 
+    describe('mcpServers (epic #1636 Phase 5 PR-2)', () => {
+      it('carries the internal worker mcpServers reading onto the public shape', () => {
+        const worker = buildInternalEmbeddedAgentWorker({
+          id: 'pub-mcp',
+          mcpServers: [
+            { name: 'agent-console', scope: 'reserved' },
+            { name: 'chrome-devtools', scope: 'project', hash: 'hash-1', decision: 'denied' },
+          ],
+        });
+
+        const publicWorker = workerManager.toPublicWorker(worker);
+
+        expect(publicWorker.type).toBe('embedded-agent');
+        if (publicWorker.type === 'embedded-agent') {
+          expect(publicWorker.mcpServers).toEqual([
+            { name: 'agent-console', scope: 'reserved' },
+            { name: 'chrome-devtools', scope: 'project', hash: 'hash-1', decision: 'denied' },
+          ]);
+        }
+      });
+
+      it('omits mcpServers entirely (not `undefined`-valued) when the internal worker has no reading', () => {
+        const worker = buildInternalEmbeddedAgentWorker({ id: 'pub-mcp-none' });
+
+        const publicWorker = workerManager.toPublicWorker(worker);
+
+        expect(publicWorker.type).toBe('embedded-agent');
+        if (publicWorker.type === 'embedded-agent') {
+          expect('mcpServers' in publicWorker).toBe(false);
+        }
+      });
+    });
+
     describe('model / reasoningEffort / hasParameterOverride (agent-surface.md Phase 3)', () => {
       function buildTestDefinition(model: string): EmbeddedAgentDefinition {
         return {

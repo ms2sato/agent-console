@@ -10,7 +10,6 @@ import {
   EmbeddedAgentServerEventSchema,
   EmbeddedAgentStreamEventSchema,
   EmbeddedAgentProviderSchema,
-  McpServerWireConfigSchema,
   EMBEDDED_AGENT_TOOL_NAMES,
   DEFAULT_EMBEDDED_AGENT_ENABLED_TOOLS,
 } from '../embedded-agent.js';
@@ -891,79 +890,65 @@ describe('EmbeddedAgentCommandSchema', () => {
     });
   });
 
-  describe('McpServerWireConfigSchema (epic #1636 Phase 5 PR-2, §4.5)', () => {
-    it('accepts a stdio config with all optional fields', () => {
-      const config = { type: 'stdio', command: 'run', args: ['--x'], env: { A: '1' } };
-      expect(v.safeParse(McpServerWireConfigSchema, config).success).toBe(true);
-    });
-
-    it('accepts a minimal stdio config', () => {
-      expect(v.safeParse(McpServerWireConfigSchema, { type: 'stdio', command: 'run' }).success).toBe(true);
-    });
-
-    it('accepts http and sse configs', () => {
-      expect(v.safeParse(McpServerWireConfigSchema, { type: 'http', url: 'http://x' }).success).toBe(true);
-      expect(
-        v.safeParse(McpServerWireConfigSchema, { type: 'sse', url: 'http://x', headers: { A: '1' } }).success,
-      ).toBe(true);
-    });
-
-    it('rejects a config missing the type discriminant', () => {
-      expect(v.safeParse(McpServerWireConfigSchema, { command: 'run' }).success).toBe(false);
-    });
-
-    it('rejects a stdio config with an unknown field (strictObject)', () => {
-      expect(v.safeParse(McpServerWireConfigSchema, { type: 'stdio', command: 'run', leaked: 'x' }).success).toBe(
-        false,
-      );
-    });
-
-    it('rejects an http config missing url', () => {
-      expect(v.safeParse(McpServerWireConfigSchema, { type: 'http' }).success).toBe(false);
-    });
-  });
-
-  describe('set-mcp-servers (epic #1636 Phase 5 PR-2, §4.5)', () => {
-    it('round-trips the reserved pair plus an allowed project stdio server', () => {
+  describe('set-mcp-servers (epic #1636 Phase 5 PR-2, §4.5, Architect ruling B)', () => {
+    it('round-trips a non-empty allowedProjectMcpServers pair list', () => {
       const command = {
         v: 1,
         type: 'set-mcp-servers',
-        servers: {
-          'agent-console': { type: 'http', url: 'http://localhost:3457/mcp' },
-          console: { type: 'stdio', command: 'internal' },
-          'chrome-devtools': { type: 'stdio', command: 'chrome-devtools-mcp', args: ['--headless'] },
-        },
+        allowedProjectMcpServers: [
+          { name: 'chrome-devtools', hash: 'abc123' },
+          { name: 'other-server', hash: 'def456' },
+        ],
       };
       const result = v.safeParse(EmbeddedAgentCommandSchema, command);
       expect(result.success).toBe(true);
       if (result.success && result.output.type === 'set-mcp-servers') {
-        expect(Object.keys(result.output.servers)).toEqual(['agent-console', 'console', 'chrome-devtools']);
+        expect(result.output.allowedProjectMcpServers).toEqual([
+          { name: 'chrome-devtools', hash: 'abc123' },
+          { name: 'other-server', hash: 'def456' },
+        ]);
       }
     });
 
-    it('accepts an empty servers map', () => {
+    it('accepts an empty allowedProjectMcpServers array (revoking everything)', () => {
       expect(
-        v.safeParse(EmbeddedAgentCommandSchema, { v: 1, type: 'set-mcp-servers', servers: {} }).success,
+        v.safeParse(EmbeddedAgentCommandSchema, {
+          v: 1,
+          type: 'set-mcp-servers',
+          allowedProjectMcpServers: [],
+        }).success,
       ).toBe(true);
     });
 
-    it('rejects a server entry missing its discriminant type', () => {
-      const command = { v: 1, type: 'set-mcp-servers', servers: { x: { command: 'run' } } };
+    it('rejects a pair entry missing hash', () => {
+      const command = {
+        v: 1,
+        type: 'set-mcp-servers',
+        allowedProjectMcpServers: [{ name: 'x' }],
+      };
       expect(v.safeParse(EmbeddedAgentCommandSchema, command).success).toBe(false);
     });
 
-    it('rejects an sse/http entry missing url', () => {
-      const command = { v: 1, type: 'set-mcp-servers', servers: { x: { type: 'http' } } };
+    it('rejects a pair entry with an unknown field (strictObject)', () => {
+      const command = {
+        v: 1,
+        type: 'set-mcp-servers',
+        allowedProjectMcpServers: [{ name: 'x', hash: 'h', extra: 1 }],
+      };
       expect(v.safeParse(EmbeddedAgentCommandSchema, command).success).toBe(false);
     });
 
-    it('rejects a stdio entry with an sse-only field (structural discrimination)', () => {
-      const command = { v: 1, type: 'set-mcp-servers', servers: { x: { type: 'stdio', command: 'run', url: 'x' } } };
-      expect(v.safeParse(EmbeddedAgentCommandSchema, command).success).toBe(false);
-    });
-
-    it('rejects a missing servers field', () => {
+    it('rejects a missing allowedProjectMcpServers field', () => {
       expect(v.safeParse(EmbeddedAgentCommandSchema, { v: 1, type: 'set-mcp-servers' }).success).toBe(false);
+    });
+
+    it('rejects the stale full-config payload shape (Q10 dropped-frame failure mode)', () => {
+      const command = {
+        v: 1,
+        type: 'set-mcp-servers',
+        servers: { x: { type: 'stdio', command: 'run' } },
+      };
+      expect(v.safeParse(EmbeddedAgentCommandSchema, command).success).toBe(false);
     });
   });
 

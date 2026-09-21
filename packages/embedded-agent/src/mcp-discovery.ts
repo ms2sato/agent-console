@@ -10,8 +10,22 @@
 import { createHash } from 'node:crypto';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import type { McpServerWireConfig } from '@agent-console/shared';
+import type { McpServerConfig, McpSdkServerConfigWithInstance } from '@anthropic-ai/claude-agent-sdk';
 import { isErrnoException } from './type-guards.js';
+
+/**
+ * The subset of the SDK's own {@link McpServerConfig} union a `.mcp.json`
+ * entry can normalize into -- never the in-process
+ * `McpSdkServerConfigWithInstance` arm (that arm is only ever constructed for
+ * the reserved `console` server, sdk-engine.ts's `reservedMcpServers`; a
+ * project entry from a JSON file can never carry a live server instance).
+ * `Exclude`, not `Extract`, because `McpStdioServerConfig.type` is OPTIONAL
+ * (`type?: 'stdio'`) in the SDK's own typing -- `Extract<McpServerConfig, {
+ * type: 'stdio' | ... }>` would structurally drop that arm entirely (an
+ * optional property does not satisfy a required one in a conditional-type
+ * assignability check), which is not what this narrowing wants.
+ */
+type DiscoveredMcpServerConfig = Exclude<McpServerConfig, McpSdkServerConfigWithInstance>;
 
 /**
  * The two `mcpServers` names `sdk-engine.ts`'s `buildOptions()` always
@@ -29,7 +43,7 @@ export interface DiscoveredMcpServer {
    * still gets a hash field rather than an absent one.
    */
   hash: string;
-  config: McpServerWireConfig;
+  config: DiscoveredMcpServerConfig;
   decision: 'allowed' | 'pending' | 'rejected-reserved' | 'invalid';
 }
 
@@ -60,7 +74,7 @@ interface RawMcpJsonFile {
  * `config`/`hash` are not meaningful for an entry with no interpretable
  * shape.
  */
-const INVALID_ENTRY_FALLBACK_CONFIG: McpServerWireConfig = { type: 'stdio', command: '' };
+const INVALID_ENTRY_FALLBACK_CONFIG: DiscoveredMcpServerConfig = { type: 'stdio', command: '' };
 
 function sortRecordKeys(record: Record<string, string>): Record<string, string> {
   const sorted: Record<string, string> = {};
@@ -90,8 +104,14 @@ function normalizeStringRecord(raw: unknown): { ok: true; value: Record<string, 
  * order would hash differently unless we fix the order explicitly here.
  * `env`/`headers` are already key-sorted by {@link normalizeStringRecord}.
  */
-function canonicalize(config: McpServerWireConfig): unknown {
-  if (config.type === 'stdio') {
+function canonicalize(config: DiscoveredMcpServerConfig): unknown {
+  // Narrowed via `'command' in config`, not `config.type === 'stdio'`: the
+  // SDK's own `McpStdioServerConfig.type` is OPTIONAL (`type?: 'stdio'`), so
+  // a `type === 'stdio'` check cannot exclude that member from the `else`
+  // branch below (its `type` could legitimately be `undefined` there too).
+  // `command` is required on the stdio arm and absent on the http/sse arms,
+  // so it is a real structural discriminant regardless of `type`'s presence.
+  if ('command' in config) {
     return {
       type: config.type,
       command: config.command,
@@ -106,19 +126,19 @@ function canonicalize(config: McpServerWireConfig): unknown {
   };
 }
 
-function hashConfig(config: McpServerWireConfig): string {
+function hashConfig(config: DiscoveredMcpServerConfig): string {
   return createHash('sha256').update(JSON.stringify(canonicalize(config))).digest('hex');
 }
 
 /**
- * Normalizes one raw `.mcp.json` entry into {@link McpServerWireConfig},
+ * Normalizes one raw `.mcp.json` entry into {@link DiscoveredMcpServerConfig},
  * hashed BEFORE any `${VAR}` expansion (§4.5 D-B: "the hash's meaning is
  * catching `.mcp.json` changes", and the hash must bind to what the branch
  * DECLARES, not to what the environment happened to substitute --
  * {@link applyArgSubstitution} runs later, only on an already-allowed
  * entry's `args`, never before this hash is computed).
  */
-function normalizeAndHash(raw: unknown): { config: McpServerWireConfig; hash: string; valid: boolean } {
+function normalizeAndHash(raw: unknown): { config: DiscoveredMcpServerConfig; hash: string; valid: boolean } {
   if (typeof raw !== 'object' || raw === null) {
     return { config: INVALID_ENTRY_FALLBACK_CONFIG, hash: '', valid: false };
   }
@@ -138,7 +158,7 @@ function normalizeAndHash(raw: unknown): { config: McpServerWireConfig; hash: st
     if (!args.ok || !env.ok) {
       return { config: INVALID_ENTRY_FALLBACK_CONFIG, hash: '', valid: false };
     }
-    const config: McpServerWireConfig = {
+    const config: DiscoveredMcpServerConfig = {
       type: 'stdio',
       command: entry.command as string,
       ...(args.value !== undefined ? { args: args.value } : {}),
@@ -159,7 +179,7 @@ function normalizeAndHash(raw: unknown): { config: McpServerWireConfig; hash: st
     if (!headers.ok) {
       return { config: INVALID_ENTRY_FALLBACK_CONFIG, hash: '', valid: false };
     }
-    const config: McpServerWireConfig = {
+    const config: DiscoveredMcpServerConfig = {
       type,
       url: entry.url as string,
       ...(headers.value !== undefined ? { headers: headers.value } : {}),

@@ -265,6 +265,7 @@ function setup(opts?: {
     getEmbeddedAgent: () => opts?.definition ?? SDK_DEFINITION,
     resolveSpawnUsername: async () => USERNAME,
     mcpTokenRegistry: { mint: (() => 'mcp-token') as never, revokeByWorker: (() => {}) as never },
+    mcpServerPermissionRepository: { listByRepository: (async () => []) as never },
     workerOutputFileManager: {
       resetWorkerOutput: (async () => {
         persisted.length = 0; // a reset truncates the live file

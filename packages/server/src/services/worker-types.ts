@@ -286,6 +286,31 @@ export interface InternalEmbeddedAgentWorker extends InternalWorkerBase {
    */
   autoCompaction: boolean;
   /**
+   * epic #1636 Phase 5 PR-2 (docs/design/embedded-agent-sdk-engine.md §4.5):
+   * this `claude-sdk` worker's own discovery of its project `.mcp.json`, as
+   * last reported by the `mcp-servers-discovered` event (up to 3 times per
+   * activation, last-write-wins) and folded through this repository's
+   * `deny` rows (a subprocess-reported entry matching a `deny` row's
+   * `(name, hash)` key is overridden to `'denied'`). `undefined` for every
+   * `openai-api` worker (no MCP-discovery concept) and for a `claude-sdk`
+   * worker that has not yet reported a discovery reading (e.g. never
+   * activated). NOT persisted (no DB column) -- transient, rediscovered
+   * fresh at every activation, mirroring `subprocess`/`stdin`'s
+   * null-when-not-applicable convention. Cleared on activation failure (see
+   * `runActivation`'s catch block) so a stale reading from a PRIOR
+   * incarnation never survives a failed re-activation. Mirrors
+   * `EmbeddedAgentWorker.mcpServers` in `packages/shared/src/types/worker.ts`
+   * -- crossing the wire requires `toPublicWorker` (`worker-manager.ts`) to
+   * carry this field through.
+   */
+  mcpServers?: Array<{
+    name: string;
+    scope: 'project' | 'user' | 'local' | 'reserved' | 'connector';
+    hash?: string;
+    decision?: 'allowed' | 'denied' | 'pending' | 'rejected-reserved' | 'invalid';
+    status?: string;
+  }>;
+  /**
    * This worker's model override (agent-surface.md Ruling 3), or `null` when
    * no override is set. A worker's override beats its embedded-agent
    * definition's own `provider.model` default; `null` means "live-read the

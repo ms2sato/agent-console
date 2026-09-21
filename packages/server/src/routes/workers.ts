@@ -7,6 +7,7 @@ import {
   CreateWorkerRequestSchema,
   RestartWorkerRequestSchema,
   UpdateEmbeddedAgentWorkerRequestSchema,
+  SetMcpServerPermissionsRequestSchema,
   SendWorkerMessageRequestSchema,
   MAX_MESSAGE_FILES,
   MAX_TOTAL_FILE_SIZE,
@@ -14,11 +15,13 @@ import {
   MAX_IMAGE_ATTACHMENT_BYTES,
 } from '@agent-console/shared';
 import type { AppBindings } from '../app-context.js';
-import { NotFoundError, ValidationError } from '../lib/errors.js';
+import { ConflictError, NotFoundError, ValidationError } from '../lib/errors.js';
 import { vValidator } from '../middleware/validation.js';
 import { createLogger } from '../lib/logger.js';
 import { resolveUploadDir } from '../lib/message-upload-dir.js';
 import { resolveSpawnUsername } from '../services/resolve-spawn-username.js';
+import { assertCanOperateSession } from '../lib/session-access.js';
+import { serverConfig } from '../lib/server-config.js';
 import {
   EmbeddedAgentActivationError,
   EmbeddedMessageDeliveryError,
@@ -435,6 +438,89 @@ const workers = new Hono<AppBindings>()
       }
 
       return c.json({ worker });
+    },
+  )
+  // Record an MCP server permission decision for a claude-sdk embedded-agent
+  // worker's repository (epic #1636 Phase 5 PR-2,
+  // docs/design/embedded-agent-sdk-engine.md §4.5's "the approval record").
+  //
+  // Live-apply: IMPLEMENTED (Architect ruling (B), 2026-09-21 -- the wire
+  // command carries only (name, hash) pairs, never a server config, so the
+  // server never needs a copy of one). A live worker is told immediately via
+  // `SessionManager.setMcpServerPermissions` -> `EmbeddedAgentWorkerService
+  // .applyMcpServerPermissions`; a dormant worker's decision still applies at
+  // its next activation regardless -- see that method's own doc comment.
+  .post(
+    '/:sessionId/workers/:workerId/mcp-permissions',
+    vValidator(SetMcpServerPermissionsRequestSchema),
+    async (c) => {
+      const sessionId = c.req.param('sessionId');
+      const workerId = c.req.param('workerId');
+      const body = c.req.valid('json');
+
+      const { sessionManager, sharedAccountRegistry } = c.get('appContext');
+      const authUser = c.get('authUser');
+
+      const session = sessionManager.getSession(sessionId);
+      if (!session) {
+        throw new NotFoundError('Session');
+      }
+
+      assertCanOperateSession(
+        session,
+        authUser,
+        sharedAccountRegistry,
+        serverConfig.AUTH_MODE,
+        'Only the session owner can decide MCP server permissions',
+      );
+
+      if (session.type !== 'worktree' || !session.repositoryId) {
+        throw new ConflictError(
+          'MCP server permissions require a repository; quick sessions are not yet supported (see #1786)',
+        );
+      }
+
+      const worker = session.workers.find((w) => w.id === workerId);
+      if (!worker || worker.type !== 'embedded-agent') {
+        throw new NotFoundError('Embedded-agent worker');
+      }
+
+      const discovered = worker.mcpServers ?? [];
+      let decisions: Array<{ name: string; hash: string; decision: 'allow' | 'deny' }>;
+
+      if ('all' in body) {
+        // Every currently-pending pair. An entry with no `hash` (an
+        // `'invalid'` discovery with nothing computable) can never be
+        // `'pending'` in the first place, so this filter never needs a
+        // separate hash-presence check.
+        decisions = discovered
+          .filter((entry): entry is typeof entry & { hash: string } => entry.decision === 'pending' && entry.hash !== undefined)
+          .map((entry) => ({ name: entry.name, hash: entry.hash, decision: 'allow' as const }));
+      } else {
+        const match = discovered.find((entry) => entry.name === body.name && entry.hash === body.hash);
+        if (!match) {
+          throw new NotFoundError(`MCP server '${body.name}' with hash '${body.hash}'`);
+        }
+        if (match.decision === 'rejected-reserved' || match.decision === 'invalid') {
+          throw new ConflictError(
+            `A permission decision cannot be recorded for '${body.name}': its discovered decision is '${match.decision}'`,
+          );
+        }
+        decisions = [{ name: body.name, hash: body.hash, decision: body.decision }];
+      }
+
+      const updated = await sessionManager.setMcpServerPermissions(
+        sessionId,
+        workerId,
+        session.repositoryId,
+        decisions,
+        authUser.id,
+      );
+      if (!updated) {
+        throw new NotFoundError('Embedded-agent worker');
+      }
+
+      return c.json({ worker: updated });
     },
   )
   // Restart an agent worker

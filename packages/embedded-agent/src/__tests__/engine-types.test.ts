@@ -39,7 +39,31 @@ type _AssertNoDispose = Assert<'dispose' extends keyof Engine ? false : true>;
  */
 type _AssertHasSetMcpServers = Assert<'setMcpServers' extends keyof ClaudeSdkEngine ? true : false>;
 
-export type { _AssertNoCompactNow, _AssertNoDispose, _AssertHasSetMcpServers };
+/**
+ * Architect ruling (B), 2026-09-21: `setMcpServers`'s parameter must be an
+ * ARRAY OF (name, hash) PAIRS, never a full-config map -- the earlier
+ * `Record<string, McpServerWireConfig>` shape is the exact regression this
+ * pin exists to catch (that type no longer exists in `@agent-console/shared`
+ * at all, so a reintroduction would first need to resurrect it). Checked
+ * both directions (`extends` each way) so neither a wider nor a narrower
+ * drift passes silently.
+ */
+type SetMcpServersParam = Parameters<ClaudeSdkEngine['setMcpServers']>[0];
+type ExpectedSetMcpServersParam = Array<{ name: string; hash: string }>;
+type _AssertSetMcpServersParamShape = Assert<
+  SetMcpServersParam extends ExpectedSetMcpServersParam
+    ? ExpectedSetMcpServersParam extends SetMcpServersParam
+      ? true
+      : false
+    : false
+>;
+
+export type {
+  _AssertNoCompactNow,
+  _AssertNoDispose,
+  _AssertHasSetMcpServers,
+  _AssertSetMcpServersParamShape,
+};
 
 describe('Engine — no compactNow/dispose member (Phase 4, #1683 decision 5)', () => {
   it('is enforced at compile time (see the type-level pin above)', () => {

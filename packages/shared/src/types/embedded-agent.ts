@@ -141,24 +141,6 @@ export type EmbeddedAgentRestoredMessage =
   | { role: 'tool'; tool_call_id: string; content: string };
 
 /**
- * Wire-shape for one `.mcp.json` entry, discriminated on `type` (epic #1636
- * Phase 5 PR-2, docs/design/embedded-agent-sdk-engine.md §4.5). Mirrors the
- * TUI's own `.mcp.json` shape: a stdio server names a `command` (plus
- * optional `args`/`env`), an HTTP or SSE server names a `url` (plus optional
- * `headers`). `type` is REQUIRED here -- a raw `.mcp.json` entry that omits
- * `type` for a stdio server (the file's own convention) is normalized by the
- * discovery loader (`discoverProjectMcpServers`,
- * packages/embedded-agent/src/mcp-discovery.ts) BEFORE it ever reaches this
- * wire shape; this type only carries the already-normalized form.
- *
- * Used by the `set-mcp-servers` command below, which always carries the FULL
- * allowed project set -- never a delta, same contract as `set-model-params`.
- */
-export type McpServerWireConfig =
-  | { type: 'stdio'; command: string; args?: string[]; env?: Record<string, string> }
-  | { type: 'http' | 'sse'; url: string; headers?: Record<string, string> };
-
-/**
  * Ratio of `contextWindowTokens` at which the `openai-api` engine compacts
  * automatically, when a definition leaves `compaction.threshold` unset.
  *
@@ -498,17 +480,25 @@ export type EmbeddedAgentCommand =
    * command shape rather than an engine-discriminated pair; an engine with
    * no use for it simply never receives one.
    *
-   * FULL STATE, never a delta, same contract as `set-model-params`:
-   * `servers` is keyed by name and always carries the reserved pair
-   * (`agent-console`, `console`) plus every currently-allowed project
-   * server -- never a partial update. This mirrors §4.5 D-D's "the engine
-   * adds it with `Query.setMcpServers`" note: that SDK call itself takes the
-   * full server set, so a delta-shaped command would force the engine to
-   * reconstruct the full set from a partial one it was never given in full.
-   * Not persisted (no command is); the approval record (D-B) is the durable
-   * store this command is derived from.
+   * FULL STATE, never a delta, same contract as `set-model-params` and the
+   * `init` command's field of the same name: `allowedProjectMcpServers` is
+   * the FULL currently-allowed (name, hash) pair set -- never a partial
+   * update, never `[]`-means-"unchanged".
+   *
+   * Architect ruling (B), 2026-09-21: NO server config (command/args/env/
+   * url/headers) ever crosses this wire -- the server only ever knows names
+   * and hashes (D-B / D-F). The subprocess resolves each pair against its
+   * own `discoveredProjectMcpServers` (populated by
+   * `discoverProjectMcpServers`, packages/embedded-agent/src/mcp-discovery.ts)
+   * and composes the reserved pair (`agent-console`, `console`) itself --
+   * the reserved pair is never part of this payload, matching how `init`'s
+   * `allowedProjectMcpServers` never carries it either. A pair that does not
+   * resolve (unknown name, or a hash that no longer matches the discovered
+   * entry) is reported back on `mcp-servers-applied.errors`, never silently
+   * dropped. Not persisted (no command is); the permission record (D-B) is
+   * the durable store this command is derived from.
    */
-  | { v: 1; type: 'set-mcp-servers'; servers: Record<string, McpServerWireConfig> }
+  | { v: 1; type: 'set-mcp-servers'; allowedProjectMcpServers: Array<{ name: string; hash: string }> }
   /**
    * Slash commands, `console`-handled arm (#1572): a manual `/compact`
    * intercepted by the server (see `EMBEDDED_AGENT_SLASH_COMMANDS` in

@@ -2409,7 +2409,7 @@ describe('runLoop — claude-sdk engine: MCP/agents discovery wiring (epic #1636
     decision: 'invalid' as const,
   };
 
-  it("threads discoverProjectMcpServers' cwd/allowedProjectMcpServers args and only its 'allowed'-decision entries into SdkEngineDeps.projectMcpServers", async () => {
+  it("threads discoverProjectMcpServers' cwd/allowedProjectMcpServers args into SdkEngineDeps, storing BOTH 'allowed' and 'pending' entries in discoveredProjectMcpServers and passing init's own pairs through as initialAllowedProjectMcpServers", async () => {
     let capturedDeps: SdkEngineDeps | undefined;
     let capturedArgs: [string, Array<{ name: string; hash: string }>] | undefined;
     const { io } = makeIo([
@@ -2429,8 +2429,16 @@ describe('runLoop — claude-sdk engine: MCP/agents discovery wiring (epic #1636
 
     expect(await runLoop(io, factories)).toBe(0);
     expect(capturedArgs).toEqual(['/tmp/work', [{ name: 'my-server', hash: 'h1' }]]);
-    // Only the 'allowed' entry reaches the engine -- 'pending' does not.
-    expect(capturedDeps?.projectMcpServers).toEqual({ 'my-server': { type: 'stdio', command: 'echo' } });
+    // Architect ruling (B): the map holds EVERY allowed/pending entry
+    // (never `rejected-reserved`/`invalid`), keyed by name.
+    expect(capturedDeps?.discoveredProjectMcpServers).toEqual(
+      new Map([
+        ['my-server', { hash: 'h1', config: { type: 'stdio', command: 'echo' } }],
+        ['pending-server', { hash: 'h2', config: { type: 'stdio', command: 'echo2' } }],
+      ]),
+    );
+    // `init.allowedProjectMcpServers` passed straight through, unchanged.
+    expect(capturedDeps?.initialAllowedProjectMcpServers).toEqual([{ name: 'my-server', hash: 'h1' }]);
   });
 
   it('emits the form (a) mcp-servers-discovered event once, BEFORE the engine is constructed, with hash/decision for every non-invalid entry and no hash for an invalid one', async () => {
@@ -2545,16 +2553,16 @@ describe('runLoop — claude-sdk engine: MCP/agents discovery wiring (epic #1636
 // epic #1636 Phase 5 PR-2: set-mcp-servers dispatch
 // ---------------------------------------------------------------------------
 
-describe('runLoop — set-mcp-servers dispatch (epic #1636 Phase 5 PR-2)', () => {
+describe('runLoop — set-mcp-servers dispatch (epic #1636 Phase 5 PR-2, Architect ruling B)', () => {
   class CapturingSetMcpServersEngine implements ClaudeSdkEngine {
     readonly kind = 'claude-sdk' as const;
-    readonly calls: Array<Record<string, unknown>> = [];
+    readonly calls: Array<Array<{ name: string; hash: string }>> = [];
     async runTurn(): Promise<void> {}
     cancel(): void {}
     setAutoCompaction(): void {}
     setModelParams(): void {}
-    setMcpServers(servers: Record<string, unknown>): void {
-      this.calls.push(servers);
+    setMcpServers(pairs: Array<{ name: string; hash: string }>): void {
+      this.calls.push(pairs);
     }
     dispose(): void {}
   }
@@ -2572,22 +2580,26 @@ describe('runLoop — set-mcp-servers dispatch (epic #1636 Phase 5 PR-2)', () =>
       maxToolIterations: 5,
     });
 
-  it('routes set-mcp-servers to Engine.setMcpServers on a claude-sdk engine', async () => {
+  it('routes set-mcp-servers to Engine.setMcpServers on a claude-sdk engine, carrying (name, hash) pairs only', async () => {
     const engine = new CapturingSetMcpServersEngine();
     const { io } = makeIo([
       claudeSdkInitCommand(),
-      JSON.stringify({ v: 1, type: 'set-mcp-servers', servers: { 'my-server': { type: 'stdio', command: 'echo' } } }),
+      JSON.stringify({
+        v: 1,
+        type: 'set-mcp-servers',
+        allowedProjectMcpServers: [{ name: 'my-server', hash: 'h1' }],
+      }),
       JSON.stringify({ v: 1, type: 'shutdown' }),
     ]);
 
     expect(await runLoop(io, makeFactories({ createSdkEngine: () => engine }))).toBe(0);
-    expect(engine.calls).toEqual([{ 'my-server': { type: 'stdio', command: 'echo' } }]);
+    expect(engine.calls).toEqual([[{ name: 'my-server', hash: 'h1' }]]);
   });
 
   it('emits mcp-servers-applied {applied:false, reason:"unsupported-engine"} when set-mcp-servers reaches an openai-api engine', async () => {
     const { io, events } = makeIo([
       initCommand(),
-      JSON.stringify({ v: 1, type: 'set-mcp-servers', servers: {} }),
+      JSON.stringify({ v: 1, type: 'set-mcp-servers', allowedProjectMcpServers: [] }),
       JSON.stringify({ v: 1, type: 'shutdown' }),
     ]);
 
@@ -2598,7 +2610,7 @@ describe('runLoop — set-mcp-servers dispatch (epic #1636 Phase 5 PR-2)', () =>
   it('is NOT gated on turnActive: dispatches to the engine while a turn is active', async () => {
     class TurnBlockingSetMcpServersEngine implements ClaudeSdkEngine {
       readonly kind = 'claude-sdk' as const;
-      readonly calls: Array<{ servers: Record<string, unknown>; turnInFlight: boolean }> = [];
+      readonly calls: Array<{ pairs: Array<{ name: string; hash: string }>; turnInFlight: boolean }> = [];
       turnInFlight = false;
       private releaseTurn: (() => void) | null = null;
       runTurn(): Promise<void> {
@@ -2613,8 +2625,8 @@ describe('runLoop — set-mcp-servers dispatch (epic #1636 Phase 5 PR-2)', () =>
       cancel(): void {}
       setAutoCompaction(): void {}
       setModelParams(): void {}
-      setMcpServers(servers: Record<string, unknown>): void {
-        this.calls.push({ servers, turnInFlight: this.turnInFlight });
+      setMcpServers(pairs: Array<{ name: string; hash: string }>): void {
+        this.calls.push({ pairs, turnInFlight: this.turnInFlight });
         this.releaseTurn?.();
       }
       dispose(): void {}
@@ -2623,7 +2635,11 @@ describe('runLoop — set-mcp-servers dispatch (epic #1636 Phase 5 PR-2)', () =>
     const { io } = makeIo([
       claudeSdkInitCommand(),
       JSON.stringify({ v: 1, type: 'user-message', id: 'u1', text: 'a long one' }),
-      JSON.stringify({ v: 1, type: 'set-mcp-servers', servers: { 'my-server': { type: 'stdio', command: 'echo' } } }),
+      JSON.stringify({
+        v: 1,
+        type: 'set-mcp-servers',
+        allowedProjectMcpServers: [{ name: 'my-server', hash: 'h1' }],
+      }),
       JSON.stringify({ v: 1, type: 'shutdown' }),
     ]);
 

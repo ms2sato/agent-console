@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach, spyOn } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, spyOn, mock } from 'bun:test';
 import * as os from 'os';
 import { join as pathJoin } from 'path';
 import { Hono } from 'hono';
@@ -25,6 +25,7 @@ import { McpTokenRegistry } from '../../mcp/mcp-auth.js';
 import { AgentDirectory } from '../../services/agent-directory.js';
 import type { SpawnAsUserFn, SpawnAsUserOpts, SpawnAsUserResult } from '../../services/privilege-elevation.js';
 import { GENERIC_EMBEDDED_ACTIVATION_FAILURE_MESSAGE } from '../../services/embedded-agent-worker-service.js';
+import { serverConfig } from '../../lib/server-config.js';
 
 // Config dir is memfs-only; uploads target a per-uid /tmp dir by spec (see #821).
 // memfs hooks fs/promises so the route's mkdir lands in memfs, which we then
@@ -54,6 +55,7 @@ function makeFakeEmbeddedSpawn(): {
   fn: SpawnAsUserFn;
   captured: SpawnAsUserOpts[];
   stdinWrites: string[];
+  pushStdout: (s: string) => void;
   simulateExit: (code: number) => void;
   throwOnNextSpawn: Error | null;
 } {
@@ -103,6 +105,7 @@ function makeFakeEmbeddedSpawn(): {
     fn,
     captured,
     stdinWrites,
+    pushStdout: (s: string) => stdoutCtrl.enqueue(new TextEncoder().encode(s)),
     simulateExit,
     get throwOnNextSpawn() {
       return state.throwOnNextSpawn;
@@ -120,6 +123,9 @@ describe('Workers API', () => {
   // Issue #1260 PR-2: embedded-agent loop subprocess fake, see
   // `makeFakeEmbeddedSpawn` above. Fresh instance each test.
   let fakeEmbeddedSpawn: ReturnType<typeof makeFakeEmbeddedSpawn>;
+  // epic #1636 Phase 5 PR-2: MCP server permission repository fakes.
+  let mcpUpsert: ReturnType<typeof mock>;
+  let mcpListByRepository: ReturnType<typeof mock>;
 
   beforeEach(async () => {
     await closeDatabase();
@@ -146,6 +152,13 @@ describe('Workers API', () => {
     const sessionRepository = new JsonSessionRepository(`${TEST_CONFIG_DIR}/sessions.json`);
 
     fakeEmbeddedSpawn = makeFakeEmbeddedSpawn();
+    mcpListByRepository = mock(async () => []);
+    mcpUpsert = mock(async (params: { repositoryId: string; serverName: string; configHash: string; decision: 'allow' | 'deny'; decidedBy: string }) => ({
+      id: `perm-${params.serverName}`,
+      ...params,
+      createdAt: '2024-01-01T00:00:00.000Z',
+      decidedAt: '2024-01-01T00:00:00.000Z',
+    }));
 
     sessionManager = await SessionManager.create({
       userMode: new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' }),
@@ -154,23 +167,40 @@ describe('Workers API', () => {
       jobQueue: testJobQueue,
       agentManager: agentMgr,
       mcpTokenRegistry: new McpTokenRegistry(),
+      mcpServerPermissionRepository: { listByRepository: mcpListByRepository as never, upsert: mcpUpsert as never },
       spawnAsUserFn: fakeEmbeddedSpawn.fn,
-      // Resolve only 'agent-def-1'; any other embeddedAgentId is dangling and
-      // createWorker rejects it (surfaced as 400 by the route error handler).
+      // Resolve 'agent-def-1' (openai-api) and 'sdk-def-1' (claude-sdk, epic
+      // #1636 Phase 5 PR-2's MCP-permissions route tests); any other
+      // embeddedAgentId is dangling and createWorker rejects it (surfaced as
+      // 400 by the route error handler).
       embeddedAgentManager: {
-        getEmbeddedAgent: (id: string) =>
-          id === 'agent-def-1'
-            ? {
-                id: 'agent-def-1',
-                name: 'Test Embedded',
-                engine: 'openai-api' as const,
-                provider: { baseUrl: 'http://localhost:11434/v1', model: 'qwen3:32b' },
-                isBuiltIn: false,
-                createdBy: 'test-user-id',
-                createdAt: '2024-01-01T00:00:00.000Z',
-                updatedAt: '2024-01-01T00:00:00.000Z',
-              }
-            : undefined,
+        getEmbeddedAgent: (id: string) => {
+          if (id === 'agent-def-1') {
+            return {
+              id: 'agent-def-1',
+              name: 'Test Embedded',
+              engine: 'openai-api' as const,
+              provider: { baseUrl: 'http://localhost:11434/v1', model: 'qwen3:32b' },
+              isBuiltIn: false,
+              createdBy: 'test-user-id',
+              createdAt: '2024-01-01T00:00:00.000Z',
+              updatedAt: '2024-01-01T00:00:00.000Z',
+            };
+          }
+          if (id === 'sdk-def-1') {
+            return {
+              id: 'sdk-def-1',
+              name: 'Claude',
+              engine: 'claude-sdk' as const,
+              provider: { model: 'claude-sonnet-5' },
+              isBuiltIn: true,
+              createdBy: 'test-user-id',
+              createdAt: '2024-01-01T00:00:00.000Z',
+              updatedAt: '2024-01-01T00:00:00.000Z',
+            };
+          }
+          return undefined;
+        },
       },
       repositoryLookup: { getRepositorySlug: async () => 'test-repo' },
       repositoryEnvLookup: {
@@ -1758,6 +1788,205 @@ describe('Workers API', () => {
       expect(res.status).toBeLessThan(500);
       const body = (await res.json()) as { error: string };
       expect(body.error).toContain('Could not resolve diff base');
+    });
+  });
+
+  // ===========================================================================
+  // POST /api/sessions/:sessionId/workers/:workerId/mcp-permissions
+  // (epic #1636 Phase 5 PR-2)
+  // ===========================================================================
+
+  describe('POST /api/sessions/:sessionId/workers/:workerId/mcp-permissions', () => {
+    async function createWorktreeSdkWorker(createdBy = 'test-user-id') {
+      const session = await sessionManager.createSession(
+        { type: 'worktree', locationPath: '/test/path', repositoryId: 'repo-1', worktreeId: 'feature-branch', agentId: 'claude-code' },
+        { createdBy },
+      );
+      const worker = await sessionManager.createWorker(session.id, {
+        type: 'embedded-agent',
+        embeddedAgentId: 'sdk-def-1',
+      });
+      return { sessionId: session.id, workerId: worker!.id };
+    }
+
+    async function seedDiscovered(sessionId: string, workerId: string) {
+      await sessionManager.activateEmbeddedAgentWorker(sessionId, workerId);
+      fakeEmbeddedSpawn.pushStdout(
+        `${JSON.stringify({
+          v: 1,
+          type: 'mcp-servers-discovered',
+          servers: [
+            { name: 'chrome-devtools', scope: 'project', hash: 'hash-1', decision: 'pending' },
+            { name: 'reserved-only', scope: 'reserved' },
+            { name: 'bad-server', scope: 'project', hash: 'hash-bad', decision: 'invalid' },
+          ],
+        })}\n`,
+      );
+      const start = Date.now();
+      while (true) {
+        const w = sessionManager.getSession(sessionId)!.workers.find((x) => x.id === workerId);
+        if (w && w.type === 'embedded-agent' && w.mcpServers !== undefined) return;
+        if (Date.now() - start > 1000) throw new Error('timed out waiting for discovery');
+        await new Promise((r) => setTimeout(r, 2));
+      }
+    }
+
+    it('returns 404 for a nonexistent session', async () => {
+      const res = await app.request('/api/sessions/no-such-session/workers/w/mcp-permissions', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ name: 'x', hash: 'y', decision: 'allow' }),
+      });
+      expect(res.status).toBe(404);
+    });
+
+    it('returns 409 naming the follow-up issue for a quick session', async () => {
+      const session = await sessionManager.createSession({ type: 'quick', locationPath: '/test/path', agentId: 'claude-code' });
+      const worker = await sessionManager.createWorker(session.id, { type: 'embedded-agent', embeddedAgentId: 'sdk-def-1' });
+
+      const res = await app.request(`/api/sessions/${session.id}/workers/${worker!.id}/mcp-permissions`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ name: 'chrome-devtools', hash: 'hash-1', decision: 'allow' }),
+      });
+
+      expect(res.status).toBe(409);
+      const body = (await res.json()) as { error: string };
+      expect(body.error).toContain('#1786');
+    });
+
+    it('returns 404 for a (name, hash) pair that was never discovered', async () => {
+      const { sessionId, workerId } = await createWorktreeSdkWorker();
+      await seedDiscovered(sessionId, workerId);
+
+      const res = await app.request(`/api/sessions/${sessionId}/workers/${workerId}/mcp-permissions`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ name: 'never-discovered', hash: 'hash-x', decision: 'allow' }),
+      });
+
+      expect(res.status).toBe(404);
+    });
+
+    it('returns 409 for a pair discovered as invalid', async () => {
+      const { sessionId, workerId } = await createWorktreeSdkWorker();
+      await seedDiscovered(sessionId, workerId);
+
+      const res = await app.request(`/api/sessions/${sessionId}/workers/${workerId}/mcp-permissions`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ name: 'bad-server', hash: 'hash-bad', decision: 'allow' }),
+      });
+
+      expect(res.status).toBe(409);
+      const body = (await res.json()) as { error: string };
+      expect(body.error).toContain('invalid');
+    });
+
+    it('deny then allow on the same pair is last-write-wins (one durable row, response reflects allow)', async () => {
+      const { sessionId, workerId } = await createWorktreeSdkWorker();
+      await seedDiscovered(sessionId, workerId);
+
+      const denyRes = await app.request(`/api/sessions/${sessionId}/workers/${workerId}/mcp-permissions`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ name: 'chrome-devtools', hash: 'hash-1', decision: 'deny' }),
+      });
+      expect(denyRes.status).toBe(200);
+
+      const allowRes = await app.request(`/api/sessions/${sessionId}/workers/${workerId}/mcp-permissions`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ name: 'chrome-devtools', hash: 'hash-1', decision: 'allow' }),
+      });
+      expect(allowRes.status).toBe(200);
+      const body = (await allowRes.json()) as { worker: { mcpServers?: Array<{ name: string; decision?: string }> } };
+      expect(body.worker.mcpServers?.find((s) => s.name === 'chrome-devtools')?.decision).toBe('allowed');
+
+      expect(mcpUpsert).toHaveBeenCalledTimes(2);
+    });
+
+    it('records the decision on a DORMANT worker (never activated), row written and response mcpServers stays undefined (nothing discovered yet)', async () => {
+      // A worktree session's embedded-agent worker created but never
+      // activated has no `mcpServers` reading at all -- but the route's
+      // pair-validation runs against `worker.mcpServers ?? []`, so an
+      // undiscovered pair on a dormant worker is 404, matching the "never
+      // discovered" case above. This test instead exercises `{ all: true }`
+      // against an empty discovered set, which is a legitimate no-op.
+      const { sessionId, workerId } = await createWorktreeSdkWorker();
+
+      const res = await app.request(`/api/sessions/${sessionId}/workers/${workerId}/mcp-permissions`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ all: true }),
+      });
+
+      expect(res.status).toBe(200);
+      expect(mcpUpsert).not.toHaveBeenCalled();
+    });
+
+    it('{ all: true } allows every currently-pending pair and no others', async () => {
+      const { sessionId, workerId } = await createWorktreeSdkWorker();
+      await sessionManager.activateEmbeddedAgentWorker(sessionId, workerId);
+      fakeEmbeddedSpawn.pushStdout(
+        `${JSON.stringify({
+          v: 1,
+          type: 'mcp-servers-discovered',
+          servers: [
+            { name: 'pending-1', scope: 'project', hash: 'hash-1', decision: 'pending' },
+            { name: 'pending-2', scope: 'project', hash: 'hash-2', decision: 'pending' },
+            { name: 'already-allowed', scope: 'project', hash: 'hash-3', decision: 'allowed' },
+          ],
+        })}\n`,
+      );
+      const start = Date.now();
+      while (true) {
+        const w = sessionManager.getSession(sessionId)!.workers.find((x) => x.id === workerId);
+        if (w && w.type === 'embedded-agent' && w.mcpServers !== undefined) break;
+        if (Date.now() - start > 1000) throw new Error('timed out waiting for discovery');
+        await new Promise((r) => setTimeout(r, 2));
+      }
+
+      const res = await app.request(`/api/sessions/${sessionId}/workers/${workerId}/mcp-permissions`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ all: true }),
+      });
+
+      expect(res.status).toBe(200);
+      expect(mcpUpsert).toHaveBeenCalledTimes(2);
+      const body = (await res.json()) as { worker: { mcpServers?: Array<{ name: string; decision?: string }> } };
+      expect(body.worker.mcpServers?.find((s) => s.name === 'pending-1')?.decision).toBe('allowed');
+      expect(body.worker.mcpServers?.find((s) => s.name === 'pending-2')?.decision).toBe('allowed');
+      expect(body.worker.mcpServers?.find((s) => s.name === 'already-allowed')?.decision).toBe('allowed');
+    });
+
+    it('403 for a multi-user non-owner on a personal session', async () => {
+      const { sessionId, workerId } = await createWorktreeSdkWorker('someone-else-id');
+      const originalAuthMode = serverConfig.AUTH_MODE;
+      (serverConfig as { AUTH_MODE: string }).AUTH_MODE = 'multi-user';
+      try {
+        const res = await app.request(`/api/sessions/${sessionId}/workers/${workerId}/mcp-permissions`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ all: true }),
+        });
+        expect(res.status).toBe(403);
+      } finally {
+        (serverConfig as { AUTH_MODE: string }).AUTH_MODE = originalAuthMode;
+      }
+    });
+
+    it('200 in single-user mode regardless of createdBy', async () => {
+      const { sessionId, workerId } = await createWorktreeSdkWorker('someone-else-id');
+
+      const res = await app.request(`/api/sessions/${sessionId}/workers/${workerId}/mcp-permissions`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ all: true }),
+      });
+
+      expect(res.status).toBe(200);
     });
   });
 });

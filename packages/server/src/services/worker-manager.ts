@@ -1344,6 +1344,7 @@ export class WorkerManager {
           model,
           reasoningEffort,
           hasParameterOverride: hasEmbeddedAgentParameterOverride(worker),
+          ...(worker.mcpServers !== undefined ? { mcpServers: worker.mcpServers } : {}),
         };
         return embeddedAgentWorker;
       }

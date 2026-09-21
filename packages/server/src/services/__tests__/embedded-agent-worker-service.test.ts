@@ -261,6 +261,7 @@ interface Harness {
   persistSession: ReturnType<typeof mock>;
   globalActivity: ReturnType<typeof mock>;
   globalExit: ReturnType<typeof mock>;
+  listByRepository: ReturnType<typeof mock>;
   recorder: Recorder;
 }
 
@@ -320,6 +321,21 @@ function setup(opts?: {
   /** Issue #1694 (C3): a delegated session's parent ids, undefined by default (no parent). */
   parentSessionId?: string;
   parentWorkerId?: string;
+  /**
+   * epic #1636 Phase 5 PR-2: rows `mcpServerPermissionRepository.listByRepository`
+   * returns for THIS worker's session repositoryId (only meaningful for a
+   * worktree session -- `buildInternalWorktreeSession`'s default
+   * `repositoryId: 'repo-1'`). Defaults to `[]` (no decisions recorded).
+   */
+  mcpServerPermissionRows?: Array<{
+    repositoryId: string;
+    serverName: string;
+    configHash: string;
+    decision: 'allow' | 'deny';
+    decidedBy: string;
+    createdAt: string;
+    decidedAt: string;
+  }>;
 }): Harness {
   const definition = 'definition' in (opts ?? {}) ? opts!.definition : buildDefinition();
   const createdBy = opts && 'createdBy' in opts ? opts.createdBy : 'user-1';
@@ -404,6 +420,7 @@ function setup(opts?: {
   const persistSession = mock(async () => {});
   const globalActivity = mock(() => {});
   const globalExit = mock(() => {});
+  const listByRepository = mock(async () => opts?.mcpServerPermissionRows ?? []);
 
   const recorder: Recorder = {
     onData: mock(() => {}),
@@ -425,6 +442,7 @@ function setup(opts?: {
     getEmbeddedAgent: () => definition,
     resolveSpawnUsername: async () => USERNAME,
     mcpTokenRegistry: { mint: mint as never, revokeByWorker: revokeByWorker as never },
+    mcpServerPermissionRepository: { listByRepository: listByRepository as never },
     workerOutputFileManager: {
       resetWorkerOutput: resetWorkerOutput as never,
       bufferOutput: bufferOutput as never,
@@ -464,6 +482,7 @@ function setup(opts?: {
     persistSession,
     globalActivity,
     globalExit,
+    listByRepository,
     recorder,
   };
 }
@@ -3026,6 +3045,57 @@ describe('EmbeddedAgentWorkerService.applyModelParams', () => {
   });
 });
 
+describe('EmbeddedAgentWorkerService.applyMcpServerPermissions (epic #1636 Phase 5 PR-2, Architect ruling B)', () => {
+  it('forwards a set-mcp-servers command carrying (name, hash) pairs only to a running subprocess', async () => {
+    const h = setup({ definition: SDK_DEFINITION });
+    await h.service.activate(h.sessionId, h.workerId);
+    const before = h.fake.stdinWrites.length;
+
+    expect(
+      h.service.applyMcpServerPermissions(h.workerId, [{ name: 'chrome-devtools', hash: 'hash-1' }]),
+    ).toBe(true);
+
+    expect(JSON.parse(h.fake.stdinWrites[before])).toEqual({
+      v: 1,
+      type: 'set-mcp-servers',
+      allowedProjectMcpServers: [{ name: 'chrome-devtools', hash: 'hash-1' }],
+    });
+  });
+
+  it('forwards an empty allowedProjectMcpServers array (revoking everything), never omitting the field', async () => {
+    const h = setup({ definition: SDK_DEFINITION });
+    await h.service.activate(h.sessionId, h.workerId);
+    const before = h.fake.stdinWrites.length;
+
+    h.service.applyMcpServerPermissions(h.workerId, []);
+
+    const command = JSON.parse(h.fake.stdinWrites[before]);
+    expect('allowedProjectMcpServers' in command).toBe(true);
+    expect(command.allowedProjectMcpServers).toEqual([]);
+  });
+
+  it('forwards even while a turn is in flight (not gated on turnActive)', async () => {
+    const h = setup({ definition: SDK_DEFINITION });
+    await h.service.activate(h.sessionId, h.workerId);
+    await h.service.sendUserMessage(h.sessionId, h.workerId, 'a long turn');
+    const before = h.fake.stdinWrites.length;
+
+    expect(
+      h.service.applyMcpServerPermissions(h.workerId, [{ name: 'chrome-devtools', hash: 'hash-1' }]),
+    ).toBe(true);
+    expect(JSON.parse(h.fake.stdinWrites[before]).type).toBe('set-mcp-servers');
+  });
+
+  it('returns false, without throwing, when there is no running subprocess (the dormant-worker case)', async () => {
+    // The durable permission row is already written by the caller; a
+    // dormant worker picks up the new value at its next activation.
+    const h = setup({ definition: SDK_DEFINITION });
+    expect(
+      h.service.applyMcpServerPermissions(h.workerId, [{ name: 'chrome-devtools', hash: 'hash-1' }]),
+    ).toBe(false);
+  });
+});
+
 describe('EmbeddedAgentWorkerService.cancel', () => {
   it('forwards a cancel command', async () => {
     const h = setup();
@@ -4655,5 +4725,174 @@ describe('EmbeddedAgentWorkerService — memory layer (epic #1636 Phase 2)', () 
       const head = first.restoredConversation[0].content as string;
       expect(head).not.toContain('--- Memory:');
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// epic #1636 Phase 5 PR-2: MCP server permission wiring
+// (docs/design/embedded-agent-sdk-engine.md §4.5's "the approval record")
+// ---------------------------------------------------------------------------
+
+describe('EmbeddedAgentWorkerService — allowedProjectMcpServers composition', () => {
+  it('composes allowedProjectMcpServers from allow-decision rows for a claude-sdk worktree session', async () => {
+    const h = setup({
+      definition: SDK_DEFINITION,
+      mcpServerPermissionRows: [
+        {
+          repositoryId: 'repo-1',
+          serverName: 'chrome-devtools',
+          configHash: 'hash-1',
+          decision: 'allow',
+          decidedBy: 'user-1',
+          createdAt: '2026-01-01T00:00:00.000Z',
+          decidedAt: '2026-01-01T00:00:00.000Z',
+        },
+        {
+          repositoryId: 'repo-1',
+          serverName: 'other-server',
+          configHash: 'hash-2',
+          decision: 'deny',
+          decidedBy: 'user-1',
+          createdAt: '2026-01-01T00:00:00.000Z',
+          decidedAt: '2026-01-01T00:00:00.000Z',
+        },
+      ],
+    });
+    await h.service.activate(h.sessionId, h.workerId);
+
+    const first = JSON.parse(h.fake.stdinWrites[0]);
+    expect(first.allowedProjectMcpServers).toEqual([{ name: 'chrome-devtools', hash: 'hash-1' }]);
+    expect(h.listByRepository).toHaveBeenCalledWith('repo-1');
+  });
+
+  it('sends an empty allowedProjectMcpServers when the repository has no allow rows', async () => {
+    const h = setup({ definition: SDK_DEFINITION });
+    await h.service.activate(h.sessionId, h.workerId);
+
+    const first = JSON.parse(h.fake.stdinWrites[0]);
+    expect(first.allowedProjectMcpServers).toEqual([]);
+  });
+
+  it('sends an empty allowedProjectMcpServers for a quick session (no repositoryId), even with allow rows on record for another repository', async () => {
+    const h = setup({
+      definition: SDK_DEFINITION,
+      quickSession: true,
+      mcpServerPermissionRows: [
+        {
+          repositoryId: 'repo-1',
+          serverName: 'chrome-devtools',
+          configHash: 'hash-1',
+          decision: 'allow',
+          decidedBy: 'user-1',
+          createdAt: '2026-01-01T00:00:00.000Z',
+          decidedAt: '2026-01-01T00:00:00.000Z',
+        },
+      ],
+    });
+    await h.service.activate(h.sessionId, h.workerId);
+
+    const first = JSON.parse(h.fake.stdinWrites[0]);
+    expect(first.allowedProjectMcpServers).toEqual([]);
+    expect(h.listByRepository).not.toHaveBeenCalled();
+  });
+
+  it('never sends allowedProjectMcpServers on an openai-api init command', async () => {
+    const h = setup();
+    await h.service.activate(h.sessionId, h.workerId);
+
+    const first = JSON.parse(h.fake.stdinWrites[0]);
+    expect('allowedProjectMcpServers' in first).toBe(false);
+    expect(h.listByRepository).not.toHaveBeenCalled();
+  });
+});
+
+describe('EmbeddedAgentWorkerService — mcp-servers-discovered event handling', () => {
+  it('populates worker.mcpServers from the discovered event, merges in a deny-row override, and persists', async () => {
+    const h = setup({
+      definition: SDK_DEFINITION,
+      mcpServerPermissionRows: [
+        {
+          repositoryId: 'repo-1',
+          serverName: 'other-server',
+          configHash: 'hash-2',
+          decision: 'deny',
+          decidedBy: 'user-1',
+          createdAt: '2026-01-01T00:00:00.000Z',
+          decidedAt: '2026-01-01T00:00:00.000Z',
+        },
+      ],
+    });
+    await h.service.activate(h.sessionId, h.workerId);
+    h.persistSession.mockClear();
+
+    h.fake.pushStdout(
+      `${JSON.stringify({
+        v: 1,
+        type: 'mcp-servers-discovered',
+        servers: [
+          { name: 'agent-console', scope: 'reserved' },
+          // Matches the recorded deny row's (name, hash) key -- the
+          // subprocess itself reported it 'allowed', but a deny row
+          // overrides it to 'denied'.
+          { name: 'other-server', scope: 'project', hash: 'hash-2', decision: 'allowed' },
+          // No matching permission row -- keeps the subprocess's own
+          // 'pending' reading unchanged.
+          { name: 'yet-another', scope: 'project', hash: 'hash-3', decision: 'pending' },
+        ],
+      })}\n`,
+    );
+    await waitFor(() => h.worker.mcpServers !== undefined);
+
+    expect(h.worker.mcpServers).toEqual([
+      { name: 'agent-console', scope: 'reserved' },
+      { name: 'other-server', scope: 'project', hash: 'hash-2', decision: 'denied' },
+      { name: 'yet-another', scope: 'project', hash: 'hash-3', decision: 'pending' },
+    ]);
+    expect(h.persistSession).toHaveBeenCalled();
+  });
+
+  it('a later discovered event is LAST-WRITE-WINS, not an accumulation', async () => {
+    const h = setup({ definition: SDK_DEFINITION });
+    await h.service.activate(h.sessionId, h.workerId);
+
+    h.fake.pushStdout(
+      `${JSON.stringify({
+        v: 1,
+        type: 'mcp-servers-discovered',
+        servers: [{ name: 'chrome-devtools', scope: 'project', hash: 'hash-1', decision: 'pending' }],
+      })}\n`,
+    );
+    await waitFor(() => h.worker.mcpServers !== undefined);
+
+    h.fake.pushStdout(
+      `${JSON.stringify({
+        v: 1,
+        type: 'mcp-servers-discovered',
+        servers: [{ name: 'agent-console', scope: 'reserved' }],
+      })}\n`,
+    );
+    await waitFor(() => (h.worker.mcpServers?.length ?? 0) === 1 && h.worker.mcpServers![0]?.name === 'agent-console');
+
+    expect(h.worker.mcpServers).toEqual([{ name: 'agent-console', scope: 'reserved' }]);
+  });
+});
+
+describe('EmbeddedAgentWorkerService — activation-failure rollback clears mcpServers (Q14)', () => {
+  it('clears a discovered mcpServers reading when a LATER activation step fails', async () => {
+    // A discovered event landing on an EARLIER incarnation (or a stale
+    // in-memory reading from before this activation attempt) must not
+    // survive a failed re-activation. Force the final persist call inside
+    // runActivation's happy path to fail -- the same shape a concurrently-
+    // handled `mcp-servers-discovered` event landing just before that
+    // rejection would produce.
+    const h = setup({ definition: SDK_DEFINITION });
+    h.worker.mcpServers = [{ name: 'stale', scope: 'project', hash: 'stale-hash', decision: 'pending' }];
+    h.persistSession.mockImplementationOnce(async () => {
+      throw new Error('persist boom');
+    });
+
+    await expect(h.service.activate(h.sessionId, h.workerId)).rejects.toThrow('persist boom');
+
+    expect(h.worker.mcpServers).toBeUndefined();
   });
 });

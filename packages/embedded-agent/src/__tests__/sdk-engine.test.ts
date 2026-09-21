@@ -17,8 +17,9 @@ import { join } from 'node:path';
 import * as fsPromises from 'node:fs/promises';
 import * as os from 'node:os';
 import { z } from 'zod';
-import type { EmbeddedAgentAttachment, EmbeddedAgentEvent, McpServerWireConfig } from '@agent-console/shared';
+import type { EmbeddedAgentAttachment, EmbeddedAgentEvent } from '@agent-console/shared';
 import type {
+  McpServerConfig,
   Options,
   Query,
   SDKControlGetContextUsageResponse,
@@ -360,11 +361,13 @@ const baseDeps = (overrides: Partial<SdkEngineDeps> = {}): SdkEngineDeps => ({
   autoCompaction: false,
   sleep: instantSleep(),
   ruleActivator: noopRuleActivator(),
-  // epic #1636 Phase 5 PR-2: empty by default so the vast majority of tests,
-  // which are not about MCP discovery/agents at all, see no project servers,
-  // an available-but-empty user/local name set, and no subagents. The
-  // dedicated describe blocks below override these explicitly.
-  projectMcpServers: {},
+  // epic #1636 Phase 5 PR-2 (Architect ruling B): empty by default so the
+  // vast majority of tests, which are not about MCP discovery/agents at all,
+  // see no discovered project servers, no initially-allowed pairs, an
+  // available-but-empty user/local name set, and no subagents. The dedicated
+  // describe blocks below override these explicitly.
+  discoveredProjectMcpServers: new Map(),
+  initialAllowedProjectMcpServers: [],
   expectedMcpServerNames: { userLocal: new Set(), unavailable: false },
   agents: {},
   ...overrides,
@@ -767,11 +770,17 @@ describe('SdkEngine — construction seam: the query() Options battery (Pin 1(a)
 // epic #1636 Phase 5 PR-2: buildOptions -- project MCP servers and subagents
 // ---------------------------------------------------------------------------
 
-describe('SdkEngine — buildOptions: project MCP servers and subagents (epic #1636 Phase 5 PR-2)', () => {
-  it('spreads projectMcpServers into mcpServers alongside the reserved pair', () => {
+describe('SdkEngine — buildOptions: project MCP servers and subagents (epic #1636 Phase 5 PR-2, Architect ruling B)', () => {
+  it('resolves initialAllowedProjectMcpServers against discoveredProjectMcpServers and spreads the result into mcpServers alongside the reserved pair', () => {
     const { queryFn, captured } = makeFakeQuery([]);
-    const projectServer: McpServerWireConfig = { type: 'stdio', command: 'echo-server' };
-    new SdkEngine(baseDeps({ queryFn, projectMcpServers: { 'my-server': projectServer } }));
+    const projectServer: McpServerConfig = { type: 'stdio', command: 'echo-server' };
+    new SdkEngine(
+      baseDeps({
+        queryFn,
+        discoveredProjectMcpServers: new Map([['my-server', { hash: 'h1', config: projectServer }]]),
+        initialAllowedProjectMcpServers: [{ name: 'my-server', hash: 'h1' }],
+      }),
+    );
 
     expect(Object.keys(captured.options?.mcpServers ?? {}).sort()).toEqual([
       'agent-console',
@@ -781,19 +790,61 @@ describe('SdkEngine — buildOptions: project MCP servers and subagents (epic #1
     expect(captured.options?.mcpServers?.['my-server']).toEqual(projectServer);
   });
 
-  it('throws at construction if projectMcpServers contains the reserved "agent-console" name (defensive pin, not a production path)', () => {
+  it('silently skips an initialAllowedProjectMcpServers pair whose hash does not match the discovered entry', () => {
+    const { queryFn, captured } = makeFakeQuery([]);
+    new SdkEngine(
+      baseDeps({
+        queryFn,
+        discoveredProjectMcpServers: new Map([
+          ['my-server', { hash: 'DIFFERENT', config: { type: 'stdio', command: 'echo-server' } }],
+        ]),
+        initialAllowedProjectMcpServers: [{ name: 'my-server', hash: 'h1' }],
+      }),
+    );
+
+    expect(Object.keys(captured.options?.mcpServers ?? {}).sort()).toEqual(['agent-console', 'console']);
+  });
+
+  it('silently skips an initialAllowedProjectMcpServers pair naming an undiscovered server', () => {
+    const { queryFn, captured } = makeFakeQuery([]);
+    new SdkEngine(
+      baseDeps({
+        queryFn,
+        discoveredProjectMcpServers: new Map(),
+        initialAllowedProjectMcpServers: [{ name: 'my-server', hash: 'h1' }],
+      }),
+    );
+
+    expect(Object.keys(captured.options?.mcpServers ?? {}).sort()).toEqual(['agent-console', 'console']);
+  });
+
+  it('throws at construction if the resolved initial project servers contain the reserved "agent-console" name (defensive pin, not a production path)', () => {
     const { queryFn } = makeFakeQuery([]);
     expect(() =>
       new SdkEngine(
-        baseDeps({ queryFn, projectMcpServers: { 'agent-console': { type: 'stdio', command: 'x' } } }),
+        baseDeps({
+          queryFn,
+          discoveredProjectMcpServers: new Map([
+            ['agent-console', { hash: 'h1', config: { type: 'stdio', command: 'x' } }],
+          ]),
+          initialAllowedProjectMcpServers: [{ name: 'agent-console', hash: 'h1' }],
+        }),
       ),
     ).toThrow(/reserved name "agent-console"/);
   });
 
-  it('throws at construction if projectMcpServers contains the reserved "console" name (defensive pin, not a production path)', () => {
+  it('throws at construction if the resolved initial project servers contain the reserved "console" name (defensive pin, not a production path)', () => {
     const { queryFn } = makeFakeQuery([]);
     expect(() =>
-      new SdkEngine(baseDeps({ queryFn, projectMcpServers: { console: { type: 'stdio', command: 'x' } } })),
+      new SdkEngine(
+        baseDeps({
+          queryFn,
+          discoveredProjectMcpServers: new Map([
+            ['console', { hash: 'h1', config: { type: 'stdio', command: 'x' } }],
+          ]),
+          initialAllowedProjectMcpServers: [{ name: 'console', hash: 'h1' }],
+        }),
+      ),
     ).toThrow(/reserved name "console"/);
   });
 
@@ -1047,7 +1098,7 @@ describe('SdkEngine — MCP server containment wall (epic #1636 Phase 5 PR-2, §
     expect(eventsOfType(events, 'fatal')).toHaveLength(0);
   });
 
-  it('accepts a project server name present in deps.projectMcpServers (positive control)', async () => {
+  it('accepts a project server name resolved into the initial project MCP servers (positive control)', async () => {
     const events: EmbeddedAgentEvent[] = [];
     const { queryFn } = makeFakeQuery([
       systemInit({
@@ -1063,7 +1114,10 @@ describe('SdkEngine — MCP server containment wall (epic #1636 Phase 5 PR-2, §
         emit: (e) => events.push(e),
         queryFn,
         enabledTools: ['Read'],
-        projectMcpServers: { 'my-server': { type: 'stdio', command: 'echo' } },
+        discoveredProjectMcpServers: new Map([
+          ['my-server', { hash: 'h1', config: { type: 'stdio', command: 'echo' } }],
+        ]),
+        initialAllowedProjectMcpServers: [{ name: 'my-server', hash: 'h1' }],
       }),
     );
     await flush();
@@ -1166,7 +1220,10 @@ describe('SdkEngine — MCP server containment wall (epic #1636 Phase 5 PR-2, §
       baseDeps({
         emit: (e) => events.push(e),
         queryFn,
-        projectMcpServers: { 'my-server': { type: 'stdio', command: 'echo' } },
+        discoveredProjectMcpServers: new Map([
+          ['my-server', { hash: 'h1', config: { type: 'stdio', command: 'echo' } }],
+        ]),
+        initialAllowedProjectMcpServers: [{ name: 'my-server', hash: 'h1' }],
         expectedMcpServerNames: { userLocal: new Set(['chrome-devtools']), unavailable: false },
       }),
     );
@@ -1192,9 +1249,17 @@ describe('SdkEngine — MCP server containment wall (epic #1636 Phase 5 PR-2, §
   it('accepts a live-added server name after a successful setMcpServers call, but would have been fatal before it', async () => {
     const events: EmbeddedAgentEvent[] = [];
     const { queryFn, push } = makeControllableMcpQuery();
-    const engine = new SdkEngine(baseDeps({ emit: (e) => events.push(e), queryFn }));
+    const engine = new SdkEngine(
+      baseDeps({
+        emit: (e) => events.push(e),
+        queryFn,
+        discoveredProjectMcpServers: new Map([
+          ['newly-allowed', { hash: 'h1', config: { type: 'stdio', command: 'echo' } }],
+        ]),
+      }),
+    );
 
-    engine.setMcpServers({ 'newly-allowed': { type: 'stdio', command: 'echo' } });
+    engine.setMcpServers([{ name: 'newly-allowed', hash: 'h1' }]);
     await flush();
     expect(eventsOfType(events, 'mcp-servers-applied')).toEqual([
       { v: 1, type: 'mcp-servers-applied', applied: true },
@@ -3588,7 +3653,7 @@ describe('SdkEngine — setModelParams (agent-surface.md Phase 3)', () => {
 // epic #1636 Phase 5 PR-2: setMcpServers
 // ---------------------------------------------------------------------------
 
-describe('SdkEngine — setMcpServers (epic #1636 Phase 5 PR-2)', () => {
+describe('SdkEngine — setMcpServers (epic #1636 Phase 5 PR-2, Architect ruling B: (name, hash) pairs only)', () => {
   interface LiveMcpWriteHandle {
     queryFn: QueryFn;
     setMcpServersCalls: Array<Record<string, unknown>>;
@@ -3598,7 +3663,11 @@ describe('SdkEngine — setMcpServers (epic #1636 Phase 5 PR-2)', () => {
   /** Mirrors `makeLiveWriteQuery` (setModelParams describe block) but for
    * `setMcpServers`/`mcpServerStatus` -- the two live-write methods THIS
    * describe block's tests call. `holdFirst` is the ordering tests' lever,
-   * same shape as `makeLiveWriteQuery`'s `holdFirstSetModel`. */
+   * same shape as `makeLiveWriteQuery`'s `holdFirstSetModel`. This fake
+   * mocks the SDK's OWN `Query.setMcpServers`, which still takes a
+   * `Record<string, McpServerConfig>` -- only `SdkEngine.setMcpServers`'s
+   * OWN parameter shape (Architect ruling B) changed to (name, hash) pairs;
+   * this fake's argument shape is unaffected. */
   function makeLiveMcpWriteQuery(
     opts: { holdFirst?: boolean; failOn?: 'setMcpServers'; errorsFor?: string } = {},
   ): LiveMcpWriteHandle & { releaseFirst: () => void } {
@@ -3641,11 +3710,21 @@ describe('SdkEngine — setMcpServers (epic #1636 Phase 5 PR-2)', () => {
     };
   }
 
-  it('sends the reserved pair plus the full servers argument on every call, never a partial set', async () => {
-    const { queryFn, setMcpServersCalls } = makeLiveMcpWriteQuery();
-    const engine = new SdkEngine(baseDeps({ queryFn }));
+  /** Shorthand: a `discoveredProjectMcpServers` map with one entry per
+   * `[name, hash]` pair, all sharing the same trivial stdio config -- the
+   * config's content is never the subject of these tests, only whether
+   * resolution succeeds. */
+  function discoveryMap(...pairs: Array<[string, string]>): Map<string, { hash: string; config: McpServerConfig }> {
+    return new Map(pairs.map(([name, hash]) => [name, { hash, config: { type: 'stdio', command: name } }]));
+  }
 
-    engine.setMcpServers({ 'my-server': { type: 'stdio', command: 'echo' } });
+  it('resolves a pair against discovery and sends the reserved pair plus the resolved config, never a partial set', async () => {
+    const { queryFn, setMcpServersCalls } = makeLiveMcpWriteQuery();
+    const engine = new SdkEngine(
+      baseDeps({ queryFn, discoveredProjectMcpServers: discoveryMap(['my-server', 'h1']) }),
+    );
+
+    engine.setMcpServers([{ name: 'my-server', hash: 'h1' }]);
     await flush();
 
     expect(setMcpServersCalls).toHaveLength(1);
@@ -3675,7 +3754,7 @@ describe('SdkEngine — setMcpServers (epic #1636 Phase 5 PR-2)', () => {
     };
     const engine = new SdkEngine(baseDeps({ queryFn }));
 
-    engine.setMcpServers({});
+    engine.setMcpServers([]);
     await flush();
 
     expect(capturedCall?.['agent-console']).toBe(captured.options?.mcpServers?.['agent-console']);
@@ -3687,9 +3766,11 @@ describe('SdkEngine — setMcpServers (epic #1636 Phase 5 PR-2)', () => {
   it('reports applied: true with no errors key when the live call succeeds cleanly', async () => {
     const events: EmbeddedAgentEvent[] = [];
     const { queryFn } = makeLiveMcpWriteQuery();
-    const engine = new SdkEngine(baseDeps({ queryFn, emit: (e) => events.push(e) }));
+    const engine = new SdkEngine(
+      baseDeps({ queryFn, emit: (e) => events.push(e), discoveredProjectMcpServers: discoveryMap(['my-server', 'h1']) }),
+    );
 
-    engine.setMcpServers({ 'my-server': { type: 'stdio', command: 'echo' } });
+    engine.setMcpServers([{ name: 'my-server', hash: 'h1' }]);
     await flush();
 
     const applied = eventsOfType(events, 'mcp-servers-applied');
@@ -3700,9 +3781,11 @@ describe('SdkEngine — setMcpServers (epic #1636 Phase 5 PR-2)', () => {
   it('forwards a per-server errors map from McpSetServersResult while still reporting applied: true', async () => {
     const events: EmbeddedAgentEvent[] = [];
     const { queryFn } = makeLiveMcpWriteQuery({ errorsFor: 'my-server' });
-    const engine = new SdkEngine(baseDeps({ queryFn, emit: (e) => events.push(e) }));
+    const engine = new SdkEngine(
+      baseDeps({ queryFn, emit: (e) => events.push(e), discoveredProjectMcpServers: discoveryMap(['my-server', 'h1']) }),
+    );
 
-    engine.setMcpServers({ 'my-server': { type: 'stdio', command: 'echo' } });
+    engine.setMcpServers([{ name: 'my-server', hash: 'h1' }]);
     await flush();
 
     expect(eventsOfType(events, 'mcp-servers-applied')).toEqual([
@@ -3713,9 +3796,11 @@ describe('SdkEngine — setMcpServers (epic #1636 Phase 5 PR-2)', () => {
   it('reports applied: false with an errors map when the live call throws', async () => {
     const events: EmbeddedAgentEvent[] = [];
     const { queryFn } = makeLiveMcpWriteQuery({ failOn: 'setMcpServers' });
-    const engine = new SdkEngine(baseDeps({ queryFn, emit: (e) => events.push(e) }));
+    const engine = new SdkEngine(
+      baseDeps({ queryFn, emit: (e) => events.push(e), discoveredProjectMcpServers: discoveryMap(['my-server', 'h1']) }),
+    );
 
-    expect(() => engine.setMcpServers({ 'my-server': { type: 'stdio', command: 'echo' } })).not.toThrow();
+    expect(() => engine.setMcpServers([{ name: 'my-server', hash: 'h1' }])).not.toThrow();
     await flush();
 
     expect(eventsOfType(events, 'mcp-servers-applied')).toEqual([
@@ -3726,10 +3811,12 @@ describe('SdkEngine — setMcpServers (epic #1636 Phase 5 PR-2)', () => {
   it('reports applied: false, reason: restart-required and never touches the SDK once the engine is dead', async () => {
     const events: EmbeddedAgentEvent[] = [];
     const { queryFn, setMcpServersCalls } = makeLiveMcpWriteQuery();
-    const engine = new SdkEngine(baseDeps({ queryFn, emit: (e) => events.push(e) }));
+    const engine = new SdkEngine(
+      baseDeps({ queryFn, emit: (e) => events.push(e), discoveredProjectMcpServers: discoveryMap(['my-server', 'h1']) }),
+    );
     engine.dispose();
 
-    engine.setMcpServers({ 'my-server': { type: 'stdio', command: 'echo' } });
+    engine.setMcpServers([{ name: 'my-server', hash: 'h1' }]);
     await flush();
 
     expect(setMcpServersCalls).toEqual([]);
@@ -3742,10 +3829,15 @@ describe('SdkEngine — setMcpServers (epic #1636 Phase 5 PR-2)', () => {
     const events: EmbeddedAgentEvent[] = [];
     const { queryFn, statusCallCount } = makeLiveMcpWriteQuery();
     const engine = new SdkEngine(
-      baseDeps({ queryFn, emit: (e) => events.push(e), projectMcpServers: { 'my-server': { type: 'stdio', command: 'echo' } } }),
+      baseDeps({
+        queryFn,
+        emit: (e) => events.push(e),
+        discoveredProjectMcpServers: discoveryMap(['my-server', 'h1']),
+        initialAllowedProjectMcpServers: [{ name: 'my-server', hash: 'h1' }],
+      }),
     );
 
-    engine.setMcpServers({ 'my-server': { type: 'stdio', command: 'echo' } });
+    engine.setMcpServers([{ name: 'my-server', hash: 'h1' }]);
     await flush();
 
     expect(statusCallCount()).toBe(1);
@@ -3759,9 +3851,11 @@ describe('SdkEngine — setMcpServers (epic #1636 Phase 5 PR-2)', () => {
 
   it('does not call mcpServerStatus() when the live call throws', async () => {
     const { queryFn, statusCallCount } = makeLiveMcpWriteQuery({ failOn: 'setMcpServers' });
-    const engine = new SdkEngine(baseDeps({ queryFn }));
+    const engine = new SdkEngine(
+      baseDeps({ queryFn, discoveredProjectMcpServers: discoveryMap(['my-server', 'h1']) }),
+    );
 
-    engine.setMcpServers({ 'my-server': { type: 'stdio', command: 'echo' } });
+    engine.setMcpServers([{ name: 'my-server', hash: 'h1' }]);
     await flush();
 
     expect(statusCallCount()).toBe(0);
@@ -3769,10 +3863,12 @@ describe('SdkEngine — setMcpServers (epic #1636 Phase 5 PR-2)', () => {
 
   it('applies two rapid setMcpServers calls in call order (lock ordering)', async () => {
     const { queryFn, setMcpServersCalls, releaseFirst } = makeLiveMcpWriteQuery({ holdFirst: true });
-    const engine = new SdkEngine(baseDeps({ queryFn }));
+    const engine = new SdkEngine(
+      baseDeps({ queryFn, discoveredProjectMcpServers: discoveryMap(['a', 'ha'], ['b', 'hb']) }),
+    );
 
-    engine.setMcpServers({ a: { type: 'stdio', command: 'a' } });
-    engine.setMcpServers({ b: { type: 'stdio', command: 'b' } });
+    engine.setMcpServers([{ name: 'a', hash: 'ha' }]);
+    engine.setMcpServers([{ name: 'b', hash: 'hb' }]);
     await flush();
     // The second call cannot start until the first has SETTLED, and the
     // first is held.
@@ -3812,10 +3908,12 @@ describe('SdkEngine — setMcpServers (epic #1636 Phase 5 PR-2)', () => {
           mcpServerStatus: async () => [],
         }),
       );
-    const engine = new SdkEngine(baseDeps({ queryFn }));
+    const engine = new SdkEngine(
+      baseDeps({ queryFn, discoveredProjectMcpServers: discoveryMap(['my-server', 'h1']) }),
+    );
 
     engine.setModelParams({ model: 'model-A', reasoningEffort: 'low', contextWindowTokens: null });
-    engine.setMcpServers({ 'my-server': { type: 'stdio', command: 'echo' } });
+    engine.setMcpServers([{ name: 'my-server', hash: 'h1' }]);
     await flush();
     // Nothing from setMcpServers has started yet -- it is chained behind the
     // still-held setModelParams call, proving the two share ONE lock rather
@@ -3831,5 +3929,100 @@ describe('SdkEngine — setMcpServers (epic #1636 Phase 5 PR-2)', () => {
       'setMcpServers:start',
       'setMcpServers:end',
     ]);
+  });
+
+  // -------------------------------------------------------------------------
+  // Resolution: (name, hash) pairs resolved against discoveredProjectMcpServers
+  // -------------------------------------------------------------------------
+
+  it('reports not-discovered for a pair naming a server absent from discoveredProjectMcpServers, and still calls the SDK with ONLY the reserved pair', async () => {
+    const events: EmbeddedAgentEvent[] = [];
+    const { queryFn, setMcpServersCalls } = makeLiveMcpWriteQuery();
+    const engine = new SdkEngine(baseDeps({ queryFn, emit: (e) => events.push(e) }));
+
+    engine.setMcpServers([{ name: 'unknown', hash: 'h1' }]);
+    await flush();
+
+    expect(setMcpServersCalls).toHaveLength(1);
+    expect(Object.keys(setMcpServersCalls[0]).sort()).toEqual(['agent-console', 'console']);
+    expect(eventsOfType(events, 'mcp-servers-applied')).toEqual([
+      { v: 1, type: 'mcp-servers-applied', applied: true, errors: { unknown: 'not-discovered' } },
+    ]);
+  });
+
+  it('reports hash-mismatch for a pair whose hash no longer matches the discovered entry (the branch-swap case)', async () => {
+    const events: EmbeddedAgentEvent[] = [];
+    const { queryFn, setMcpServersCalls } = makeLiveMcpWriteQuery();
+    const engine = new SdkEngine(
+      baseDeps({ queryFn, emit: (e) => events.push(e), discoveredProjectMcpServers: discoveryMap(['my-server', 'CURRENT']) }),
+    );
+
+    engine.setMcpServers([{ name: 'my-server', hash: 'STALE' }]);
+    await flush();
+
+    expect(Object.keys(setMcpServersCalls[0]).sort()).toEqual(['agent-console', 'console']);
+    expect(eventsOfType(events, 'mcp-servers-applied')).toEqual([
+      { v: 1, type: 'mcp-servers-applied', applied: true, errors: { 'my-server': 'hash-mismatch' } },
+    ]);
+  });
+
+  it('applies a mix of resolvable and unresolvable pairs in one call: the resolvable one is started, the other is reported and never touches the SDK call', async () => {
+    const events: EmbeddedAgentEvent[] = [];
+    const { queryFn, setMcpServersCalls } = makeLiveMcpWriteQuery();
+    const engine = new SdkEngine(
+      baseDeps({ queryFn, emit: (e) => events.push(e), discoveredProjectMcpServers: discoveryMap(['my-server', 'h1']) }),
+    );
+
+    engine.setMcpServers([
+      { name: 'my-server', hash: 'h1' },
+      { name: 'other', hash: 'hX' },
+    ]);
+    await flush();
+
+    expect(Object.keys(setMcpServersCalls[0]).sort()).toEqual(['agent-console', 'console', 'my-server']);
+    expect(eventsOfType(events, 'mcp-servers-applied')).toEqual([
+      { v: 1, type: 'mcp-servers-applied', applied: true, errors: { other: 'not-discovered' } },
+    ]);
+  });
+
+  it('the reserved pair is present in EVERY SDK call, including one whose pairs all fail resolution', async () => {
+    const { queryFn, setMcpServersCalls } = makeLiveMcpWriteQuery();
+    const engine = new SdkEngine(baseDeps({ queryFn }));
+
+    engine.setMcpServers([{ name: 'unknown-a', hash: 'h1' }]);
+    await flush();
+    engine.setMcpServers([{ name: 'unknown-b', hash: 'h2' }]);
+    await flush();
+
+    expect(setMcpServersCalls).toHaveLength(2);
+    for (const call of setMcpServersCalls) {
+      expect(Object.keys(call).sort()).toEqual(['agent-console', 'console']);
+    }
+  });
+
+  it('does NOT extend the live-added expected-name set for a pair that failed resolution', async () => {
+    const events: EmbeddedAgentEvent[] = [];
+    const { queryFn, push } = makeControllableMcpQuery();
+    const engine = new SdkEngine(baseDeps({ emit: (e) => events.push(e), queryFn }));
+
+    // No discovery seeded -- this pair can never resolve.
+    engine.setMcpServers([{ name: 'still-unexpected', hash: 'h1' }]);
+    await flush();
+
+    push(
+      systemInit({
+        mcpServers: [
+          { name: 'agent-console', status: 'connected' },
+          { name: 'still-unexpected', status: 'connected' },
+        ],
+      }),
+    );
+    await flush();
+
+    // Unlike a resolved live add, a failed-resolution pair must still trip
+    // the containment wall if it somehow shows up in system:init.
+    const fatalEvents = eventsOfType(events, 'fatal');
+    expect(fatalEvents).toHaveLength(1);
+    expect(fatalEvents[0].message).toContain('still-unexpected');
   });
 });

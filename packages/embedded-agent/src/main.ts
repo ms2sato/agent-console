@@ -8,12 +8,11 @@
  * `import.meta.main` bootstrap wires the production implementations.
  */
 
-import type { AgentDefinition } from '@anthropic-ai/claude-agent-sdk';
+import type { AgentDefinition, McpServerConfig } from '@anthropic-ai/claude-agent-sdk';
 import {
   DEFAULT_EMBEDDED_AGENT_ENABLED_TOOLS,
   NdjsonLineSplitter,
   type EmbeddedAgentEvent,
-  type McpServerWireConfig,
 } from '@agent-console/shared';
 import * as v from 'valibot';
 import { EmbeddedAgentCommandSchema } from '@agent-console/shared';
@@ -280,7 +279,7 @@ export async function runLoop(io: LoopIO, factories: LoopFactories): Promise<num
       case 'set-mcp-servers': {
         switch (loop.kind) {
           case 'claude-sdk':
-            loop.setMcpServers(command.servers);
+            loop.setMcpServers(command.allowedProjectMcpServers);
             break;
           case 'openai-api':
             // `openai-api` has no MCP discovery/approval concept at all
@@ -715,25 +714,36 @@ async function initializeLoop(
     );
     const userLocalNames = await factories.readUserLocalMcpNames(init.context.cwd);
 
-    // Only `decision: 'allowed'` entries are ever passed to the engine (§4.5
-    // D-E "the door") -- `pending` / `rejected-reserved` / `invalid` entries
-    // are reported in the discovered event below but never reach
-    // `Options.mcpServers`. `${VAR}` substitution (§4.5 D-F) runs here, on
-    // the already-allowed entry's `args` only, from THIS subprocess's own
-    // environment (the login shell's profile under elevation, the cleaned
-    // server environment otherwise) -- never before the hash above is
-    // computed, and never for `env`/`headers`/`url`, which the CLI already
-    // expands natively.
-    const projectMcpServers: Record<string, McpServerWireConfig> = {};
+    // §4.5 D-B / D-F, Architect ruling (B): EVERY `allowed` or `pending`
+    // discovered entry is stored into `discoveredProjectMcpServers` -- not
+    // only the currently-allowed subset -- because this map is the ONLY
+    // place a real server config lives in this process; the server never
+    // holds one, and a `pending` entry allowed LATER (via a live
+    // `set-mcp-servers` command) must already have a resolvable config
+    // sitting here when that command arrives. `rejected-reserved` and
+    // `invalid` entries are excluded: the former can never legitimately
+    // start regardless of any future decision, and the latter has no usable
+    // config to resolve against (see `DiscoveredMcpServer`'s own doc
+    // comment on its `hash: ''` fallback).
+    //
+    // `${VAR}` substitution (§4.5 D-F) runs here, ONCE per discovered entry
+    // going into the map -- not deferred to `set-mcp-servers` time -- from
+    // THIS subprocess's own environment (the login shell's profile under
+    // elevation, the cleaned server environment otherwise). Never before the
+    // hash above is computed, and never for `env`/`headers`/`url`, which the
+    // CLI already expands natively.
+    const discoveredProjectMcpServers = new Map<string, { hash: string; config: McpServerConfig }>();
+    const initialAllowedNames = new Set<string>();
     for (const entry of mcpDiscovery.servers) {
-      if (entry.decision !== 'allowed') continue;
-      if (entry.config.type === 'stdio' && entry.config.args !== undefined) {
-        const { args, warnings } = applyArgSubstitution(entry.name, entry.config.args, process.env);
+      if (entry.decision !== 'allowed' && entry.decision !== 'pending') continue;
+      if (entry.decision === 'allowed') initialAllowedNames.add(entry.name);
+      let config: McpServerConfig = entry.config;
+      if (config.type === 'stdio' && config.args !== undefined) {
+        const { args, warnings } = applyArgSubstitution(entry.name, config.args, process.env);
         for (const warning of warnings) console.warn(warning);
-        projectMcpServers[entry.name] = { ...entry.config, args };
-      } else {
-        projectMcpServers[entry.name] = entry.config;
+        config = { ...config, args };
       }
+      discoveredProjectMcpServers.set(entry.name, { hash: entry.hash, config });
     }
 
     // Form (a) (see sdk-engine.ts's `emitMcpServersDiscovered` doc comment
@@ -763,10 +773,7 @@ async function initializeLoop(
     const enabledToolNames = init.enabledTools ?? DEFAULT_EMBEDDED_AGENT_ENABLED_TOOLS;
     let agents: Record<string, AgentDefinition> = {};
     if (enabledToolNames.includes('Task')) {
-      const agentsResult = await factories.discoverProjectAgents(
-        init.context.cwd,
-        new Set(Object.keys(projectMcpServers)),
-      );
+      const agentsResult = await factories.discoverProjectAgents(init.context.cwd, initialAllowedNames);
       for (const warning of agentsResult.warnings) console.warn(warning);
       agents = agentsResult.agents;
     }
@@ -781,7 +788,8 @@ async function initializeLoop(
       autoCompaction: init.compaction.auto,
       attachmentRoots: init.context.attachmentRoots ?? [],
       ruleActivator,
-      projectMcpServers,
+      discoveredProjectMcpServers,
+      initialAllowedProjectMcpServers: init.allowedProjectMcpServers,
       expectedMcpServerNames: { userLocal: userLocalNames.names, unavailable: userLocalNames.unavailable },
       agents,
       // Transcript Restore, R1: the ONLY path by which a resume id reaches

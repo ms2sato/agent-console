@@ -114,26 +114,6 @@ const EmbeddedAgentAttachmentSchema = v.strictObject({
   mimeType: v.string(),
 });
 
-/**
- * Wire schema for {@link McpServerWireConfig} (epic #1636 Phase 5 PR-2,
- * docs/design/embedded-agent-sdk-engine.md §4.5). `type` is required on the
- * wire -- the discovery loader normalizes a raw `.mcp.json` entry that
- * omits `type` for a stdio server BEFORE it reaches this shape.
- */
-export const McpServerWireConfigSchema = v.union([
-  v.strictObject({
-    type: v.literal('stdio'),
-    command: v.string(),
-    args: v.optional(v.array(v.string())),
-    env: v.optional(v.record(v.string(), v.string())),
-  }),
-  v.strictObject({
-    type: v.picklist(['http', 'sse']),
-    url: v.string(),
-    headers: v.optional(v.record(v.string(), v.string())),
-  }),
-]);
-
 const EmbeddedAgentRestoredMessageSchema = v.union([
   v.strictObject({ role: v.literal('system'), content: v.string() }),
   v.strictObject({
@@ -435,7 +415,9 @@ export const EmbeddedAgentCommandSchema = v.union([
   v.strictObject({
     v: v.literal(1),
     type: v.literal('set-mcp-servers'),
-    servers: v.record(v.string(), McpServerWireConfigSchema),
+    allowedProjectMcpServers: v.array(
+      v.strictObject({ name: v.string(), hash: v.string() }),
+    ),
   }),
   // Slash commands, `console`-handled arm (#1572): a manual `/compact`
   // intercepted server-side rather than forwarded as prose. No payload
