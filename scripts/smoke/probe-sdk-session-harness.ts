@@ -174,9 +174,14 @@ export interface IsolationEvidenceSnapshot {
 }
 
 export function snapshotIsolationEvidence(configDir: string): IsolationEvidenceSnapshot {
+  const sessionsDir = join(configDir, 'sessions');
   return {
     transcriptCount: transcriptFiles(configDir).length,
-    sessionsDirExists: existsSync(join(configDir, 'sessions')),
+    // A regular file at this path is not the child-created directory this
+    // predicate looks for -- existsSync() alone accepts either (CodeRabbit,
+    // PR #1787). A single throwIfNoEntry statSync avoids the
+    // exists-then-stat TOCTOU an existsSync()+statSync() pair would have.
+    sessionsDirExists: statSync(sessionsDir, { throwIfNoEntry: false })?.isDirectory() === true,
   };
 }
 

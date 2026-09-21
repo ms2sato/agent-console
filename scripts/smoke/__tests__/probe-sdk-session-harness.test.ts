@@ -80,6 +80,22 @@ describe('verifyIsolationStrict / snapshotIsolationEvidence (Issue #1783)', () =
     }
   });
 
+  // CodeRabbit, PR #1787: existsSync() alone accepts a regular file at this
+  // path, not only the child-created directory the predicate is meant to
+  // detect.
+  it('a REGULAR FILE named sessions is NOT evidence -- only a directory counts', () => {
+    const configDir = makeConfigDir();
+    try {
+      const before = snapshotIsolationEvidence(configDir);
+      writeFileSync(join(configDir, 'sessions'), 'not a directory');
+      const result = verifyIsolationStrict(configDir, before);
+      expect(result.ok).toBe(false);
+      expect(result.after.sessionsDirExists).toBe(false);
+    } finally {
+      rmSync(configDir, { recursive: true, force: true });
+    }
+  });
+
   // Reach measured, not predicted (Issue #1783 AC item 3). The `before`
   // comparison was temporarily removed from `verifyIsolationStrict` --
   // `ok = after.transcriptCount > before.transcriptCount || (after.sessionsDirExists
