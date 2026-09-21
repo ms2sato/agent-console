@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'bun:test';
 import { spawnSync } from 'node:child_process';
-import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -71,6 +71,28 @@ function runProbe(startScript) {
     const inoB = statSync(bunB).ino;
     if (inoA === inoB) {
       throw new Error(`copy A (${bunA}) and copy B (${bunB}) unexpectedly share inode ${inoA} -- the harness's own precondition failed`);
+    }
+
+    // Bun's script runner prepends `<cwd>/node_modules/.bin` and EVERY
+    // ancestor directory's `node_modules/.bin` (up to `/node_modules/.bin`)
+    // ahead of the inherited PATH -- measured directly: a `bun` entry
+    // placed in cwd's node_modules/.bin wins over a PATH-first copy
+    // elsewhere. If any ancestor of `scratch` already has a `bun` entry
+    // there (host-specific, outside this harness's control), the negative
+    // control could pass for THAT reason instead of the PATH-order
+    // mechanism it exists to prove -- fail loudly rather than silently
+    // reading a false positive.
+    let dir = scratch;
+    for (;;) {
+      const candidate = join(dir, 'node_modules', '.bin', 'bun');
+      if (existsSync(candidate)) {
+        throw new Error(
+          `${candidate} already exists -- Bun's node_modules/.bin ancestor-prepend would resolve bare "bun" to it regardless of PATH, invalidating this harness's premise`,
+        );
+      }
+      const parent = dirname(dir);
+      if (parent === dir) break;
+      dir = parent;
     }
 
     writeFileSync(

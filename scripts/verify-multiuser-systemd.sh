@@ -832,6 +832,34 @@ console.log("NOTIFICATION_STATUS=" + (notif ? notif.status : "MISSING"));'
 SED_TO_PRE_FIX_START='s|^\([[:space:]]*\)"start":.*|\1"start": "NODE_ENV=production bun dist/index.js",|'
 SED_TO_FIXED_START='s|^\([[:space:]]*\)"start":.*|\1"start": "NODE_ENV=production \\"$npm_execpath\\" dist/index.js",|'
 
+# Read-only diagnostics for the #1776 polarity apparatus, added after a
+# tier-3 run showed the polarity deploy did NOT reproduce the defect in
+# this container (the child's exe read as the unified bun even under the
+# pre-fix start line and the planted service-user bun). Never asserts
+# anything itself -- it exists so a run's own output settles which
+# mechanism explains the reading, rather than guessing:
+#   - cmdline read for the SAME pid as the exe read, on one line, so a
+#     mis-identified pid (the wrong process entirely) is visible directly
+#     rather than inferred.
+#   - the child's own /proc/<pid>/environ PATH: Bun prepends <cwd>/
+#     node_modules/.bin and EVERY ancestor directory's node_modules/.bin
+#     (up to /node_modules/.bin) ahead of the inherited PATH when running a
+#     package.json script -- confirmed locally (a `bun` entry placed in
+#     cwd's node_modules/.bin wins over a PATH-first copy elsewhere).
+#   - whether any ancestor's node_modules/.bin actually holds a `bun`
+#     entry, which would beat the planted copy for that reason instead of
+#     any PATH-order or npm_execpath mechanism.
+print_child_diagnostics() {
+  local pid="$1" exe="$2"
+  local cmdline
+  cmdline="$(cexec --user agentconsole:agent-console-users "$SERVICE" sh -c "tr '\\0' ' ' < /proc/${pid:-0}/cmdline" 2>/dev/null | tr -d '\r' || true)"
+  echo "  pid=${pid:-?} exe=${exe} cmdline=${cmdline}"
+  echo "  --- /proc/${pid:-?}/environ (PATH/HOME/BUN_INSTALL/npm_execpath) ---"
+  cexec --user agentconsole:agent-console-users "$SERVICE" sh -c "tr '\\0' '\\n' < /proc/${pid:-0}/environ | grep -E '^(PATH|HOME|BUN_INSTALL|npm_execpath)='" 2>/dev/null | sed 's/^/  /' || echo "  (could not read environ)"
+  echo "  --- node_modules/.bin/bun at the deploy target and every ancestor (this whole chain is prepended ahead of PATH) ---"
+  cexec --user root "$SERVICE" sh -c "for d in '${DEPLOY_TARGET}' /home/agentconsole /home /; do printf '  %s: ' \"\${d}/node_modules/.bin/bun\"; ls -l \"\${d}/node_modules/.bin/bun\" 2>&1 | tail -1; done"
+}
+
 path_first_bun_arm() {
   step_start "7e. #1776 PATH-first-bun arm: a service-user ~/.bun/bin/bun ahead on PATH must not change which binary bun-run-start's child executes"
   local service_bun="/home/agentconsole/.bun/bin/bun"
@@ -876,6 +904,9 @@ path_first_bun_arm() {
     grep -qF '==> Done.' "$out"
   rm -f "$out"
 
+  echo "  --- deployed package.json start line at ${DEPLOY_TARGET} (confirms the injection actually reached the unit's WorkingDirectory, not just \${SRC}) ---"
+  cexec --user root "$SERVICE" grep -F '"start":' "${DEPLOY_TARGET}/package.json" | sed 's/^/  /'
+
   echo "  --- the Issue's own /proc evidence, reproduced under the real unit: which bun did the dist/index.js child actually execute? ---"
   local mainpid child_pid child_exe
   mainpid="$(cexec --user root "$SERVICE" systemctl show -p MainPID --value "$UNIT" | tr -d '\r')"
@@ -885,6 +916,7 @@ path_first_bun_arm() {
   # match BOTH the unit's User= and Group=.
   child_exe="$(cexec --user agentconsole:agent-console-users "$SERVICE" readlink -f "/proc/${child_pid:-0}/exe" | tr -d '\r' || true)"
   echo "  /proc/${child_pid:-?}/exe = ${child_exe}"
+  print_child_diagnostics "$child_pid" "$child_exe"
   expect "7e polarity: the dist/index.js child executed the PATH-first service-user bun (${service_bun})" \
     test "$child_exe" = "$service_bun"
 
@@ -925,6 +957,7 @@ path_first_bun_arm() {
   echo "  MainPID=${mainpid} (bun run start) child_pid=${child_pid:-?} (dist/index.js)"
   child_exe="$(cexec --user agentconsole:agent-console-users "$SERVICE" readlink -f "/proc/${child_pid:-0}/exe" | tr -d '\r' || true)"
   echo "  /proc/${child_pid:-?}/exe = ${child_exe}"
+  print_child_diagnostics "$child_pid" "$child_exe"
   expect "7e fixed: the dist/index.js child executed the unified bun (${UNIFIED_BUN}), regardless of the service-user bun ahead on PATH" \
     test "$child_exe" = "$UNIFIED_BUN"
 

@@ -826,4 +826,35 @@ describe('verify-multiuser-systemd.sh: 7e PATH-first-bun arm is present and orde
     expect(driver).toContain('NOT EXERCISED (yet -- see 7e below): setup step 6b');
     expect(driver).toContain('NOW EXERCISED (7e, #1776): setup step 6b');
   });
+
+  // Added after a tier-3 run showed the polarity deploy did not reproduce
+  // the defect in the container: read-only instrumentation, never an
+  // assertion of its own, to settle which mechanism explains a reading
+  // (pid mis-identification, PATH-order, or Bun's node_modules/.bin
+  // ancestor-prepend beating the planted copy).
+  it('print_child_diagnostics reads cmdline for the SAME pid as the exe read (one line), the child\'s environ PATH/HOME/BUN_INSTALL/npm_execpath, and node_modules/.bin/bun at the deploy target and every ancestor', () => {
+    expect(driver).toContain('print_child_diagnostics() {');
+    // Declared before the arm, called from within it.
+    expect(idxOf('print_child_diagnostics() {')).toBeLessThan(armStart());
+    expect(driver).toContain("tr '\\\\0' ' ' < /proc/${pid:-0}/cmdline");
+    expect(driver).toContain('echo "  pid=${pid:-?} exe=${exe} cmdline=${cmdline}"');
+    expect(driver).toContain("tr '\\\\0' '\\\\n' < /proc/${pid:-0}/environ | grep -E '^(PATH|HOME|BUN_INSTALL|npm_execpath)='");
+    expect(driver).toContain("for d in '${DEPLOY_TARGET}' /home/agentconsole /home /; do");
+    expect(driver).toContain('node_modules/.bin/bun\\" 2>&1 | tail -1; done');
+    expect(driver).toMatch(/ls -l \\"\\\$\{d}\/node_modules\/\.bin\/bun\\"/);
+
+    const a = arm();
+    const callSites = a.split('print_child_diagnostics "$child_pid" "$child_exe"').length - 1;
+    expect(callSites).toBe(2); // once for deploy #7 (polarity), once for deploy #8 (fixed)
+  });
+
+  it('prints the DEPLOYED package.json start line at DEPLOY_TARGET (not just $SRC) after deploy #7, confirming the injection reached the unit\'s WorkingDirectory', () => {
+    const a = arm();
+    expect(a).toContain('grep -F \'"start":\' "${DEPLOY_TARGET}/package.json"');
+    const i = a.indexOf('grep -F \'"start":\' "${DEPLOY_TARGET}/package.json"');
+    const deployI = a.indexOf("echo \"  --- deploy #7");
+    const evidenceI = a.indexOf("the Issue's own /proc evidence");
+    expect(i).toBeGreaterThan(deployI);
+    expect(i).toBeLessThan(evidenceI);
+  });
 });
