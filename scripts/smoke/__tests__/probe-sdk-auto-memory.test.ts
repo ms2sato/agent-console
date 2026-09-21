@@ -1080,8 +1080,18 @@ function seedFactUnderConfigDir(configDir: string, slug: string): void {
 }
 
 describe('withArmConfigDir isolation gate (Issue #1788)', () => {
+  const originalClaudeConfigDir = process.env.CLAUDE_CONFIG_DIR;
+
+  // `isolateClaudeConfigDir` (called by `withArmConfigDir`) overwrites
+  // `process.env.CLAUDE_CONFIG_DIR` for the life of this process; restore
+  // whatever was there before this describe block ran rather than
+  // unconditionally deleting it (CodeRabbit, PR #1790).
   afterEach(() => {
-    delete process.env.CLAUDE_CONFIG_DIR;
+    if (originalClaudeConfigDir === undefined) {
+      delete process.env.CLAUDE_CONFIG_DIR;
+    } else {
+      process.env.CLAUDE_CONFIG_DIR = originalClaudeConfigDir;
+    }
   });
 
   it('a seeded projects/<slug>/memory/MEMORY.md alone (no child-generated transcript) is NOT evidence -- rejects', async () => {
