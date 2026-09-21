@@ -995,6 +995,16 @@ path_first_bun_arm() {
   rc=0
   cexec --user deployer -w "$SRC" "$SERVICE" bash scripts/update-and-deploy-for-multiuser-ubuntu.sh >"$out" 2>&1 || rc=$?
   grep -E '^  (PASS|FAIL|SKIP)  V[0-6] |^        (WARN|INFO): |^  RESULT: |^==> (systemctl restart|Done)' "$out" | cut -c1-260 | sed 's/^/  /' || true
+  # The grep above only matches the post-deploy verification screen's own
+  # lines -- if the deploy died BEFORE printing that screen (a build/install
+  # failure, an unhandled error), it prints NOTHING, and a reader is left
+  # guessing why the exit code differed. Dump the tail unconditionally on an
+  # unexpected code, verbatim, so the actual failure is in the log rather
+  # than inferred.
+  if [ "$rc" -ne 1 ]; then
+    echo "  --- deploy #7 exited ${rc}, not the expected 1 -- last 40 lines of its full output ---"
+    tail -n 40 "$out" | sed 's/^/  deploy-out: /'
+  fi
   expect "7e polarity: deploy #7 exits 1 (V6 FAIL, the worst code)" test "$rc" -eq 1
   local label
   for label in "V0 data-root-ownership" "V1 unit-env-drift" "V2 entry-path-readable" "V3 mainpid-identity" "V4 unit-active" "V5 health"; do
@@ -1049,6 +1059,13 @@ path_first_bun_arm() {
   rc=0
   cexec --user deployer -w "$SRC" "$SERVICE" bash scripts/update-and-deploy-for-multiuser-ubuntu.sh >"$out" 2>&1 || rc=$?
   grep -E '^  (PASS|FAIL|SKIP)  V[0-6] |^        (WARN|INFO): |^  RESULT: |^==> (systemctl restart|Done)' "$out" | cut -c1-260 | sed 's/^/  /' || true
+  # Same rationale as deploy #7 above: the grep matches only the
+  # post-deploy screen's own lines, so an early death prints nothing here
+  # otherwise.
+  if [ "$rc" -ne 0 ]; then
+    echo "  --- deploy #8 exited ${rc}, not the expected 0 -- last 40 lines of its full output ---"
+    tail -n 40 "$out" | sed 's/^/  deploy-out: /'
+  fi
   check "7e fixed: deploy #8 exits 0" "$rc"
   # V3's only PASS outcome is a SAME marker (mainpid_identity's non-zero
   # exit codes are DIFFERENT/1 or an UNRESOLVABLE-*/2) -- the screen's

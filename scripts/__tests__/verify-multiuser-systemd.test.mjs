@@ -920,4 +920,36 @@ describe('verify-multiuser-systemd.sh: 7e PATH-first-bun arm is present and orde
     expect(a).toContain('expect_bun_node_dir_unchanged "7e polarity" "$bun_node_dir"');
     expect(a).toContain('expect_bun_node_dir_unchanged "7e fixed" "$bun_node_dir"');
   });
+
+  // Added after a run where BOTH deploy #7 and deploy #8 exited with an
+  // unexpected code in well under a second -- far too fast for a real
+  // bun install/build/rsync/restart cycle -- and the arm's own recap grep
+  // (matched only against the post-deploy verification screen's own line
+  // shapes) printed nothing, because the deploy died before ever printing
+  // that screen. Without this, an early death is invisible in the log.
+  it('dumps the last 40 lines of the deploy\'s own full output, verbatim, whenever its exit code is not the expected one -- for both deploy #7 and deploy #8', () => {
+    const a = arm();
+    expect(a).toContain('if [ "$rc" -ne 1 ]; then');
+    expect(a).toContain("echo \"  --- deploy #7 exited ${rc}, not the expected 1 -- last 40 lines of its full output ---\"");
+    expect(a).toContain('tail -n 40 "$out" | sed \'s/^/  deploy-out: /\'');
+    expect(a).toContain('if [ "$rc" -ne 0 ]; then');
+    expect(a).toContain("echo \"  --- deploy #8 exited ${rc}, not the expected 0 -- last 40 lines of its full output ---\"");
+
+    // Both dumps sit BETWEEN the recap grep and the exit-code assertion --
+    // printed before the assertion fails, not after, so the log reads
+    // top-to-bottom without the reader hunting backward for context.
+    const deploy7Grep = a.indexOf(
+      "grep -E '^  (PASS|FAIL|SKIP)  V[0-6] |^        (WARN|INFO): |^  RESULT: |^==> (systemctl restart|Done)' \"$out\" | cut -c1-260 | sed 's/^/  /' || true",
+    );
+    const deploy7Dump = a.indexOf('deploy #7 exited');
+    const deploy7Assert = a.indexOf('expect "7e polarity: deploy #7 exits 1');
+    expect(deploy7Grep).toBeGreaterThan(-1);
+    expect(deploy7Dump).toBeGreaterThan(deploy7Grep);
+    expect(deploy7Assert).toBeGreaterThan(deploy7Dump);
+
+    const deploy8Dump = a.indexOf('deploy #8 exited');
+    const deploy8Assert = a.indexOf('check "7e fixed: deploy #8 exits 0"');
+    expect(deploy8Dump).toBeGreaterThan(deploy7Assert);
+    expect(deploy8Assert).toBeGreaterThan(deploy8Dump);
+  });
 });
