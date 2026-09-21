@@ -1056,6 +1056,12 @@ describe('Sessions API - PUT /api/sessions/:id/memo (Issue #1569)', () => {
     // scenario its name describes, rather than relying on whatever mode
     // happens to be active by default (single-user, which would skip the
     // check entirely and return 200).
+    //
+    // epic #1636 Phase 5 PR-2: the route's inline isOwner/isSharedSession
+    // check was extracted to `assertCanOperateSession` (session-access.ts,
+    // its own dedicated unit tests live in session-access.test.ts). This
+    // route-level test still exercises the extracted helper through the
+    // route, confirming the refactor preserved this endpoint's behavior.
     const originalAuthMode = serverConfig.AUTH_MODE;
     (serverConfig as { AUTH_MODE: string }).AUTH_MODE = 'multi-user';
     try {
@@ -1640,6 +1646,11 @@ describe('Sessions API - POST/DELETE /api/sessions/:id/orchestrator-designation 
     expect(res.status).toBe(404);
   });
 
+  // epic #1636 Phase 5 PR-2: the route's inline isOwner/isSharedSession check
+  // was extracted to `assertCanOperateSession` (session-access.ts, its own
+  // dedicated unit tests live in session-access.test.ts). This route-level
+  // test still exercises the extracted helper through the route, confirming
+  // the refactor preserved this endpoint's behavior.
   it('POST: multi-user non-owner, non-shared -> 403', async () => {
     await setupCommon({ sharedEnabled: false });
     const sessionId = await createWorktreeSession('someone-else-id');
@@ -1656,6 +1667,7 @@ describe('Sessions API - POST/DELETE /api/sessions/:id/orchestrator-designation 
     }
   });
 
+  // Same extraction note as the POST case above.
   it('DELETE: multi-user non-owner, non-shared -> 403', async () => {
     await setupCommon({ sharedEnabled: false });
     const sessionId = await createWorktreeSession('someone-else-id');

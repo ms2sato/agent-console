@@ -11,6 +11,7 @@ import {
   composeSdkSystemPromptAppend,
   loadInstructions,
   loadOptInInstructions,
+  parseCapBytesEnv,
   parseRuleFrontmatter,
   parseRulesLayerCapBytes,
   parseSkillFrontmatter,
@@ -1342,6 +1343,23 @@ describe('parseSkillsLayerCapBytes', () => {
 
   it('falls back to the default for a non-numeric value', () => {
     expect(parseSkillsLayerCapBytes('not-a-number')).toBe(16 * 1024);
+  });
+});
+
+// PR-2 (epic #1636 Phase 5): parseCapBytesEnv was module-private, exercised
+// only indirectly through parseRulesLayerCapBytes/parseSkillsLayerCapBytes/
+// parseMemoryLayerCapBytes above. It is now exported so agents-discovery.ts
+// can reuse the same clamping rule directly. This is the direct-call
+// contract check -- see the function's own doc comment for the negative-value
+// rationale already exercised indirectly above.
+describe('parseCapBytesEnv', () => {
+  it('uses a positive numeric override verbatim', () => {
+    expect(parseCapBytesEnv('4096', 999)).toBe(4096);
+  });
+
+  it('falls back to the passed default for a non-positive or non-numeric value', () => {
+    expect(parseCapBytesEnv('-5', 999)).toBe(999);
+    expect(parseCapBytesEnv('not-a-number', 999)).toBe(999);
   });
 });
 
