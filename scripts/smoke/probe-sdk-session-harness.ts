@@ -117,10 +117,17 @@ export function isolateClaudeConfigDir(label: string): string {
   return dir;
 }
 
-/** Session transcript files the isolated config dir has accumulated. */
+/**
+ * Session transcript files the isolated config dir has accumulated.
+ *
+ * A single `throwIfNoEntry` `statSync` (not `existsSync`) guards `projects`
+ * itself, matching the `isDirectory()` reasoning `verifyIsolation` applies
+ * to the same path (Issue #1788): a regular file at `projects` must read as
+ * "no transcripts" rather than crashing `readdirSync` with `ENOTDIR`.
+ */
 export function transcriptFiles(configDir: string): string[] {
   const projects = join(configDir, 'projects');
-  if (!existsSync(projects)) return [];
+  if (!statSync(projects, { throwIfNoEntry: false })?.isDirectory()) return [];
   const out: string[] = [];
   for (const entry of readdirSync(projects)) {
     const sub = join(projects, entry);
@@ -156,9 +163,22 @@ export function transcriptFiles(configDir: string): string[] {
  * catch. A caller that seeds `.claude.json` (or anything else under
  * `configDir`) before running a session MUST use `verifyIsolationStrict`
  * below instead, never this function.
+ *
+ * `projects` / `sessions` require an actual DIRECTORY at that path, not
+ * merely `existsSync` (CodeRabbit Minor, PR #1787): a caller-written regular
+ * file at either name would otherwise satisfy this predicate the same way a
+ * caller-created `projects/` directory satisfies the tautology above --
+ * same reasoning `snapshotIsolationEvidence`'s `sessionsDirExists` already
+ * applies below, via a single `throwIfNoEntry` `statSync` to avoid an
+ * exists-then-stat TOCTOU. `.claude.json` is exempt: it is expected to be a
+ * regular file, not a directory.
  */
 export function verifyIsolation(configDir: string): { ok: boolean; files: string[]; evidence: string[] } {
-  const evidence = ['.claude.json', 'projects', 'sessions'].filter((e) => existsSync(join(configDir, e)));
+  const evidence: string[] = [];
+  if (existsSync(join(configDir, '.claude.json'))) evidence.push('.claude.json');
+  for (const dirName of ['projects', 'sessions']) {
+    if (statSync(join(configDir, dirName), { throwIfNoEntry: false })?.isDirectory()) evidence.push(dirName);
+  }
   return { ok: evidence.length > 0, files: transcriptFiles(configDir), evidence };
 }
 
