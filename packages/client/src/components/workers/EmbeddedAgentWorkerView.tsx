@@ -831,7 +831,7 @@ export function EmbeddedAgentWorkerView({
                       <button
                         type="button"
                         onClick={() => void handleMcpDecision(server.name, server.hash ?? '', 'allow')}
-                        disabled={mcpPending || server.decision === 'allowed'}
+                        disabled={mcpPending || server.hash === undefined || server.decision === 'allowed'}
                         className="text-xs px-2 py-0.5 rounded bg-blue-700 hover:bg-blue-600 disabled:opacity-50 text-white"
                       >
                         Allow
@@ -839,7 +839,7 @@ export function EmbeddedAgentWorkerView({
                       <button
                         type="button"
                         onClick={() => void handleMcpDecision(server.name, server.hash ?? '', 'deny')}
-                        disabled={mcpPending || server.decision === 'denied'}
+                        disabled={mcpPending || server.hash === undefined || server.decision === 'denied'}
                         className="text-xs px-2 py-0.5 rounded bg-slate-700 hover:bg-slate-600 disabled:opacity-50 text-gray-200"
                       >
                         Deny
