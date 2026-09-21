@@ -36,6 +36,7 @@ import type { InterSessionMessageService } from './services/inter-session-messag
 import type { MessageTemplateRepository } from './repositories/message-template-repository.js';
 import type { ArtifactRepository } from './repositories/artifact-repository.js';
 import type { BookmarkRepository } from './repositories/bookmark-repository.js';
+import type { McpServerPermissionRepository } from './repositories/mcp-server-permission-repository.js';
 import type { NotificationCursorRepository } from './repositories/notification-cursor-repository.js';
 import type { NotificationService } from './services/notification-service.js';
 import type { SuggestSessionMetadataFn } from './services/session-metadata-suggester.js';
@@ -92,6 +93,7 @@ import { getSourceReposDir, getConfigDir } from './lib/config.js';
 import { SqliteMessageTemplateRepository } from './repositories/sqlite-message-template-repository.js';
 import { SqliteArtifactRepository } from './repositories/sqlite-artifact-repository.js';
 import { SqliteBookmarkRepository } from './repositories/sqlite-bookmark-repository.js';
+import { SqliteMcpServerPermissionRepository } from './repositories/sqlite-mcp-server-permission-repository.js';
 import { SqliteNotificationCursorRepository } from './repositories/sqlite-notification-cursor-repository.js';
 import { NotificationService as NotificationServiceClass } from './services/notification-service.js';
 
@@ -243,6 +245,12 @@ export interface AppContext {
   /** Bookmark CRUD repository */
   bookmarkRepository: BookmarkRepository;
 
+  /**
+   * MCP server permission repository (epic #1636 Phase 5 PR-2,
+   * docs/design/embedded-agent-sdk-engine.md §4.5's "the approval record").
+   */
+  mcpServerPermissionRepository: McpServerPermissionRepository;
+
   /** Per-user notification read cursor repository (docs/design/notification-center.md §5) */
   notificationCursorRepository: NotificationCursorRepository;
 
@@ -305,6 +313,7 @@ export async function createAppContext(
   const messageTemplateRepository = new SqliteMessageTemplateRepository(db);
   const artifactRepository = new SqliteArtifactRepository(db);
   const bookmarkRepository = new SqliteBookmarkRepository(db);
+  const mcpServerPermissionRepository = new SqliteMcpServerPermissionRepository(db);
   const notificationCursorRepository = new SqliteNotificationCursorRepository(db);
   const notificationService = new NotificationServiceClass({
     artifactRepository,
@@ -384,6 +393,7 @@ export async function createAppContext(
     agentManager,
     embeddedAgentManager,
     mcpTokenRegistry,
+    mcpServerPermissionRepository,
     notificationManager,
     annotationService,
     workerOutputFileManager,
@@ -649,6 +659,7 @@ export async function createAppContext(
     messageTemplateRepository,
     artifactRepository,
     bookmarkRepository,
+    mcpServerPermissionRepository,
     notificationCursorRepository,
     notificationService,
     branchWatcherService,
@@ -771,6 +782,7 @@ export async function createTestContext(
   const messageTemplateRepository = new SqliteMessageTemplateRepository(db);
   const artifactRepository = new SqliteArtifactRepository(db);
   const bookmarkRepository = new SqliteBookmarkRepository(db);
+  const mcpServerPermissionRepository = new SqliteMcpServerPermissionRepository(db);
   const notificationCursorRepository = new SqliteNotificationCursorRepository(db);
   const notificationService = new NotificationServiceClass({
     artifactRepository,
@@ -836,6 +848,7 @@ export async function createTestContext(
     agentManager,
     embeddedAgentManager,
     mcpTokenRegistry,
+    mcpServerPermissionRepository,
     // Thread only when provided so default behavior (local /mcp URL) is
     // unchanged for tests that do not override it.
     ...(overrides?.getMcpBaseUrl ? { getMcpBaseUrl: overrides.getMcpBaseUrl } : {}),
@@ -960,6 +973,7 @@ export async function createTestContext(
     messageTemplateRepository,
     artifactRepository,
     bookmarkRepository,
+    mcpServerPermissionRepository,
     notificationCursorRepository,
     notificationService,
     branchWatcherService: new BranchWatcherService(async () => {}),

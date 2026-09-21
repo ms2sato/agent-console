@@ -117,6 +117,28 @@ export interface ClaudeSdkEngine extends Engine {
    * implementation of one.
    */
   dispose(): void;
+  /**
+   * epic #1636 Phase 5 PR-2 (docs/design/embedded-agent-sdk-engine.md §4.5
+   * D-D "activation never waits"): reflect a newly-allowed set of `.mcp.json`
+   * (Project scope) servers into the LIVE session without waiting for the
+   * next activation. `claude-sdk`-only -- `openai-api` has no MCP
+   * discovery/approval concept at all, so there is no `setMcpServers` on
+   * `OpenAiApiEngine`; `main.ts`'s dispatch reports `unsupported-engine` on
+   * that arm instead of calling a method that does not exist.
+   *
+   * `pairs` is the FULL currently-allowed (name, hash) set, never a delta --
+   * same full-state contract as {@link Engine.setModelParams} and the
+   * `set-mcp-servers` wire command's own doc comment. Architect ruling (B),
+   * 2026-09-21: NO server config crosses this method's boundary either --
+   * only names and hashes. The implementation (`SdkEngine.setMcpServers`,
+   * sdk-engine.ts) resolves each pair against its own
+   * `discoveredProjectMcpServers` map (populated at construction from
+   * `discoverProjectMcpServers`, mcp-discovery.ts) and reports a pair that
+   * does not resolve (unknown name, or a hash that no longer matches the
+   * discovered entry) via `mcp-servers-applied.errors` rather than silently
+   * dropping it.
+   */
+  setMcpServers(pairs: Array<{ name: string; hash: string }>): void;
 }
 
 /** Either engine `main.ts`'s dispatch loop may be driving, narrowed on

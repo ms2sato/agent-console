@@ -4,6 +4,7 @@ import {
   CreateWorkerRequestSchema,
   RestartWorkerRequestSchema,
   UpdateEmbeddedAgentWorkerRequestSchema,
+  SetMcpServerPermissionsRequestSchema,
 } from '../worker';
 
 describe('CreateWorkerRequestSchema', () => {
@@ -667,5 +668,68 @@ describe('UpdateEmbeddedAgentWorkerRequestSchema (Compaction toggle)', () => {
         }).success,
       ).toBe(true);
     });
+  });
+});
+
+describe('SetMcpServerPermissionsRequestSchema (epic #1636 Phase 5 PR-2)', () => {
+  it('accepts a named (name, hash, decision: allow) body', () => {
+    const result = v.safeParse(SetMcpServerPermissionsRequestSchema, {
+      name: 'chrome-devtools',
+      hash: 'hash-1',
+      decision: 'allow',
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it('accepts a named (name, hash, decision: deny) body', () => {
+    const result = v.safeParse(SetMcpServerPermissionsRequestSchema, {
+      name: 'chrome-devtools',
+      hash: 'hash-1',
+      decision: 'deny',
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it('accepts an { all: true } body', () => {
+    const result = v.safeParse(SetMcpServerPermissionsRequestSchema, { all: true });
+    expect(result.success).toBe(true);
+  });
+
+  it('rejects a decision value outside allow/deny', () => {
+    const result = v.safeParse(SetMcpServerPermissionsRequestSchema, {
+      name: 'chrome-devtools',
+      hash: 'hash-1',
+      decision: 'maybe',
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects an empty name or hash', () => {
+    expect(
+      v.safeParse(SetMcpServerPermissionsRequestSchema, { name: '', hash: 'hash-1', decision: 'allow' }).success,
+    ).toBe(false);
+    expect(
+      v.safeParse(SetMcpServerPermissionsRequestSchema, { name: 'x', hash: '', decision: 'allow' }).success,
+    ).toBe(false);
+  });
+
+  it('rejects mixing the two member shapes (strictObject cross-member rejection)', () => {
+    const result = v.safeParse(SetMcpServerPermissionsRequestSchema, {
+      all: true,
+      name: 'chrome-devtools',
+      hash: 'hash-1',
+      decision: 'allow',
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects `{ all: false }` (only literal true is a member)', () => {
+    const result = v.safeParse(SetMcpServerPermissionsRequestSchema, { all: false });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects an empty body', () => {
+    const result = v.safeParse(SetMcpServerPermissionsRequestSchema, {});
+    expect(result.success).toBe(false);
   });
 });

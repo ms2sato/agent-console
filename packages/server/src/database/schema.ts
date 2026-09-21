@@ -22,6 +22,7 @@ export interface Database {
   user_notification_cursor: UserNotificationCursorTable;
   bookmarks: BookmarksTable;
   repository_orchestrator_sessions: RepositoryOrchestratorSessionsTable;
+  mcp_server_permissions: McpServerPermissionsTable;
 }
 
 /**
@@ -601,3 +602,59 @@ export interface RepositoryOrchestratorSessionsTable {
 export type RepositoryOrchestratorSessionRow = Selectable<RepositoryOrchestratorSessionsTable>;
 /** Repository-orchestrator-session designation data for INSERT queries */
 export type NewRepositoryOrchestratorSession = Insertable<RepositoryOrchestratorSessionsTable>;
+
+/**
+ * MCP server permission table (migration v44; epic #1636 Phase 5 PR-2,
+ * docs/design/embedded-agent-sdk-engine.md §4.5's "the approval record").
+ * One row per (repository, server name, config hash) key -- a decision is
+ * bound to the EXACT `.mcp.json` entry content it was made against, so a
+ * changed file content (e.g. a branch swap) is a different hash and
+ * therefore not "allowed" even under the same server name. `decided_by`
+ * `ON DELETE CASCADE`: a decision with no accountable actor left is not a
+ * state worth keeping.
+ */
+export interface McpServerPermissionsTable {
+  /** Primary key - UUID */
+  id: string;
+  /** Foreign key reference to repositories.id. ON DELETE CASCADE. */
+  repository_id: string;
+  /** The `.mcp.json` entry's server name (the key the engine discovers by). */
+  server_name: string;
+  /**
+   * Content hash of the normalized `.mcp.json` entry BEFORE any `${VAR}`
+   * expansion -- the entry the decision actually binds to. Computed by the
+   * engine's discovery loader; the server never recomputes it.
+   */
+  config_hash: string;
+  /** `'allow'` or `'deny'` (CHECK constraint). Verb vocabulary -- distinct
+   * from the wire event's past-participle `'allowed'`/`'pending'`/etc. and
+   * from `EmbeddedAgentWorker.mcpServers[].decision`'s worker-state
+   * vocabulary; a mapping between the two lives at the call site that reads
+   * this column, not here. */
+  decision: 'allow' | 'deny';
+  /** Foreign key reference to users.id -- the actor of the CURRENT decision, either polarity. ON DELETE CASCADE. */
+  decided_by: string;
+  /**
+   * First-decision timestamp (has DB DEFAULT); never updated on a later
+   * upsert to the same key. `Generated<>` because the DEFAULT makes this
+   * column insert-optional -- the underlying storage is still plain TEXT.
+   */
+  created_at: Generated<string>;
+  /**
+   * Timestamp of the CURRENT decision; moves forward on every upsert to the
+   * same key. Also `Generated<>` at this type level (the DB DEFAULT makes it
+   * insert-optional), but unlike `created_at` the SERVICE always supplies an
+   * explicit value on both insert and update -- `Generated<T>` only means
+   * "optional to provide", never "the app never provides it". The explicit
+   * value is what lets a repeat upsert carry it into the
+   * `ON CONFLICT ... DO UPDATE SET` clause and move it forward; relying on
+   * the raw SQL DEFAULT here would only ever fire on the initial INSERT
+   * branch of an upsert, never on a conflicting UPDATE.
+   */
+  decided_at: Generated<string>;
+}
+
+/** MCP server permission row as returned from SELECT queries */
+export type McpServerPermissionRow = Selectable<McpServerPermissionsTable>;
+/** MCP server permission data for INSERT queries */
+export type NewMcpServerPermission = Insertable<McpServerPermissionsTable>;

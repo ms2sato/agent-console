@@ -64,3 +64,26 @@ export const COMPACT_TOOL_SCHEDULED_RESULT =
 export const COMPACT_TOOL_UNSUPPORTED_RESULT =
   'This agent compacts automatically and cannot be asked to compact on demand. ' +
   'Automatic compaction can be turned on or off for this worker.';
+
+/**
+ * epic #1636 Phase 5 PR-2 (docs/design/embedded-agent-sdk-engine.md §4.5):
+ * `Task` (the SDK's own subagent-delegation tool, `claude-sdk`-only per
+ * `EMBEDDED_AGENT_ENGINE_PARAMETER_CAPABILITIES`'s `task` capability row) has
+ * no equivalent on the `openai-api` engine at all -- there is no subagent
+ * runtime to delegate to. Housed here, beside `COMPACT_TOOL_UNSUPPORTED_RESULT`,
+ * for the same reason: an honest, engine-owned "declines honestly" result
+ * rather than a silent no-op or an MCP-layer error with unpredictable wording
+ * (decision 4).
+ *
+ * **The two-literal wrinkle (§4.5 Task 0, arm P3a):** measured on the pinned
+ * SDK, `system:init.tools` honours the definition's tool-policy literal
+ * `"Task"`, but the model's ACTUAL runtime delegation tool-call -- the
+ * `tool_use` block and the corresponding `PreToolUse` firing -- is named
+ * `"Agent"`, never `"Task"`. `CompositeToolExecutor.callTool()` therefore
+ * checks BOTH literals before routing to `builtins` or the MCP executor: on
+ * `openai-api`, the model can only ever emit whichever literal it was told
+ * about (there is no SDK-side normalization here to rely on), so keying on
+ * only one of the two would let the other reach the MCP executor unintercepted.
+ */
+export const TASK_TOOL_UNSUPPORTED_RESULT =
+  'This agent has no subagent-delegation runtime; the Task/Agent tool is not available on this engine.';

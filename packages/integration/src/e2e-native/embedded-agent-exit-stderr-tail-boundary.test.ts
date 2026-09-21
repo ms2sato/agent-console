@@ -230,6 +230,7 @@ describe('Client-Server Boundary: exited.stderrTail survives to the client (#145
         mcpTokenRegistry: new McpTokenRegistry(),
         workerOutputFileManager: outputFileManager,
         getMcpBaseUrl: () => 'http://localhost:3457/mcp',
+        mcpServerPermissionRepository: { listByRepository: async () => [] },
         spawnAsUserFn: spawn.fn,
         entryPath: '/install/embedded-agent/src/main.ts',
         getGlobalActivityCallback: () => undefined,

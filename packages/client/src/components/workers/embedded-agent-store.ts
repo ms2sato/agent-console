@@ -1392,6 +1392,11 @@ class EmbeddedAgentController implements EmbeddedAgentInstance {
           kind: 'restore-failure-declaration',
         });
         return true;
+      case 'mcp-servers-discovered':
+      case 'mcp-servers-applied':
+        // (epic #1636 Phase 5 PR-2, #1785) Intentionally no-op for now: the
+        // panel that renders MCP server permission decisions ships in PR-3.
+        return false;
       default: {
         const _exhaustive: never = event;
         return _exhaustive;

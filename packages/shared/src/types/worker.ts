@@ -89,6 +89,30 @@ export interface EmbeddedAgentWorker extends WorkerBase {
    */
   reasoningEffort: string | null;
   /**
+   * epic #1636 Phase 5 PR-2 (docs/design/embedded-agent-sdk-engine.md §4.5):
+   * the `claude-sdk` engine's own discovery of this worker's project
+   * `.mcp.json`, as last reported by the `mcp-servers-discovered` event
+   * (up to 3 times per activation, last-write-wins). Absent on every
+   * `openai-api` worker (no MCP-discovery concept) and on a `claude-sdk`
+   * worker that has not yet reported a discovery reading (e.g. never
+   * activated). `decision` here has ONE more member than the wire event's
+   * own picklist -- `'denied'` -- because a server-computed decision (a user
+   * explicitly denying a pending server) is never something the subprocess
+   * itself emits.
+   *
+   * Crossing the wire requires the matching field on
+   * `EmbeddedAgentWorkerSchema` (schemas/app-server-message.ts) -- that
+   * schema is a `strictObject`, so a type-only addition here would be
+   * silently stripped at the boundary.
+   */
+  mcpServers?: Array<{
+    name: string;
+    scope: 'project' | 'user' | 'local' | 'reserved' | 'connector';
+    hash?: string;
+    decision?: 'allowed' | 'denied' | 'pending' | 'rejected-reserved' | 'invalid';
+    status?: string;
+  }>;
+  /**
    * Whether ANY of this worker's three override fields is set --
    * `worker.model !== null || worker.reasoningEffort !== null ||
    * worker.contextWindowTokens !== null`, computed server-side by

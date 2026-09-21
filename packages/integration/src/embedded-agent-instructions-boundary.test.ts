@@ -245,6 +245,7 @@ describe('Subprocess system-prompt composition: .claude/rules layer reaches both
     cancel(): void {}
     setAutoCompaction(): void {}
     setModelParams(): void {}
+    setMcpServers(): void {}
     dispose(): void {}
   }
 
@@ -271,6 +272,9 @@ describe('Subprocess system-prompt composition: .claude/rules layer reaches both
       loadCompactionPrompt: async () => ({ content: 'STUB', origin: 'bundled-default' }),
       createSdkEngine: () => new NoopEngine(),
       probeSdkSession: async () => 'found',
+      discoverProjectMcpServers: async () => ({ servers: [] }),
+      readUserLocalMcpNames: async () => ({ names: new Set(), unavailable: false }),
+      discoverProjectAgents: async () => ({ agents: {}, warnings: [] }),
     };
     const io = makeIo([
       JSON.stringify({
@@ -307,6 +311,9 @@ describe('Subprocess system-prompt composition: .claude/rules layer reaches both
         return new NoopEngine();
       },
       probeSdkSession: async () => 'found',
+      discoverProjectMcpServers: async () => ({ servers: [] }),
+      readUserLocalMcpNames: async () => ({ names: new Set(), unavailable: false }),
+      discoverProjectAgents: async () => ({ agents: {}, warnings: [] }),
     };
     const io = makeIo([
       JSON.stringify({
@@ -314,6 +321,7 @@ describe('Subprocess system-prompt composition: .claude/rules layer reaches both
         type: 'init',
         compaction: { auto: false },
         engine: 'claude-sdk',
+        allowedProjectMcpServers: [],
         mcp: { baseUrl: 'http://mcp/local', token: 'tok' },
         provider: { model: 'claude-sonnet-5' },
         context: { sessionId: 's', workerId: 'w', cwd: dir },
@@ -409,6 +417,7 @@ describe('Subprocess tool-call composition: scoped .claude/rules activation reac
     cancel(): void {}
     setAutoCompaction(): void {}
     setModelParams(): void {}
+    setMcpServers(): void {}
     dispose(): void {}
   }
 
@@ -445,6 +454,9 @@ describe('Subprocess tool-call composition: scoped .claude/rules activation reac
       loadCompactionPrompt: async () => ({ content: 'STUB', origin: 'bundled-default' }),
       createSdkEngine: () => new NoopEngine(),
       probeSdkSession: async () => 'found',
+      discoverProjectMcpServers: async () => ({ servers: [] }),
+      readUserLocalMcpNames: async () => ({ names: new Set(), unavailable: false }),
+      discoverProjectAgents: async () => ({ agents: {}, warnings: [] }),
     };
   }
 

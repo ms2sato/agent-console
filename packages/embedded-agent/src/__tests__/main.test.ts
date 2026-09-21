@@ -90,6 +90,7 @@ class NoopEngine implements ClaudeSdkEngine {
   cancel(): void {}
   setAutoCompaction(): void {}
   setModelParams(): void {}
+  setMcpServers(): void {}
   dispose(): void {}
 }
 
@@ -149,6 +150,13 @@ function makeFactories(overrides: Partial<LoopFactories> = {}): LoopFactories {
     // majority of tests, which are not about resume at all, exercise the
     // resume-is-honoured path. The resume tests override it explicitly.
     probeSdkSession: async () => 'found',
+    // epic #1636 Phase 5 PR-2: default every discovery seam to "found
+    // nothing" so the vast majority of tests, which are not about MCP/agent
+    // discovery at all, see an empty allowed set and no agents. The dedicated
+    // describe blocks below override these explicitly.
+    discoverProjectMcpServers: async () => ({ servers: [] }),
+    readUserLocalMcpNames: async () => ({ names: new Set(), unavailable: false }),
+    discoverProjectAgents: async () => ({ agents: {}, warnings: [] }),
     ...overrides,
   };
 }
@@ -669,6 +677,7 @@ describe('runLoop — image attachment threading (#1571)', () => {
       type: 'init',
       compaction: { auto: false },
       engine: 'claude-sdk',
+      allowedProjectMcpServers: [],
       mcp: { baseUrl: 'http://mcp/local', token: 'tok' },
       provider: { model: 'claude-sonnet-5' },
       context: { sessionId: 's', workerId: 'w', cwd: '/tmp' },
@@ -685,6 +694,7 @@ describe('runLoop — image attachment threading (#1571)', () => {
     cancel(): void {}
     setAutoCompaction(): void {}
     setModelParams(): void {}
+    setMcpServers(): void {}
     dispose(): void {}
   }
 
@@ -908,6 +918,7 @@ describe('runLoop — reasoningEffort/effort threading (agent-surface.md Ruling 
       type: 'init',
       compaction: { auto: false },
       engine: 'claude-sdk',
+      allowedProjectMcpServers: [],
       mcp: { baseUrl: 'http://mcp/local', token: 'tok' },
       provider: { model: 'claude-sonnet-5' },
       context: { sessionId: 's', workerId: 'w', cwd: '/tmp' },
@@ -1042,6 +1053,7 @@ describe('runLoop — engine discriminant containment (SDK Engine Phase 1)', () 
       type: 'init',
       compaction: { auto: false },
       engine: 'claude-sdk',
+      allowedProjectMcpServers: [],
       mcp: { baseUrl: 'http://mcp/local', token: 'tok' },
       provider: { model: 'claude-sonnet-5', apiKey: 'sk-leaked' },
       context: { sessionId: 's', workerId: 'w', cwd: '/tmp' },
@@ -1057,6 +1069,7 @@ describe('runLoop — engine discriminant containment (SDK Engine Phase 1)', () 
       type: 'init',
       compaction: { auto: false },
       engine: 'claude-sdk',
+      allowedProjectMcpServers: [],
       mcp: { baseUrl: 'http://mcp/local', token: 'tok' },
       provider: { model: 'claude-sonnet-5' },
       context: { sessionId: 's', workerId: 'w', cwd: '/tmp' },
@@ -1080,6 +1093,7 @@ describe('runLoop — engine discriminant containment (SDK Engine Phase 1)', () 
       type: 'init',
       compaction: { auto: false },
       engine: 'claude-sdk',
+      allowedProjectMcpServers: [],
       mcp: { baseUrl: 'http://mcp/local', token: 'tok' },
       provider: { model: 'claude-sonnet-5' },
       context: { sessionId: 's', workerId: 'w', cwd: '/tmp' },
@@ -1109,6 +1123,7 @@ describe('runLoop — the retired handoff command (#1401)', () => {
       type: 'init',
       compaction: { auto: false },
       engine: 'claude-sdk',
+      allowedProjectMcpServers: [],
       mcp: { baseUrl: 'http://mcp/local', token: 'tok' },
       provider: { model: 'claude-sonnet-5' },
       context: { sessionId: 's', workerId: 'w', cwd: '/tmp' },
@@ -1176,6 +1191,7 @@ describe('runLoop — the `compact` command (Slash commands, console-handled arm
       type: 'init',
       compaction: { auto: false },
       engine: 'claude-sdk',
+      allowedProjectMcpServers: [],
       mcp: { baseUrl: 'http://mcp/local', token: 'tok' },
       provider: { model: 'claude-sonnet-5' },
       context: { sessionId: 's', workerId: 'w', cwd: '/tmp' },
@@ -1238,6 +1254,7 @@ describe('runLoop — shutdown dispose (Phase 4, #1683 decision 5)', () => {
     cancel(): void {}
     setAutoCompaction(): void {}
     setModelParams(): void {}
+    setMcpServers(): void {}
     dispose(): void {
       this.disposeCalls += 1;
     }
@@ -1250,6 +1267,7 @@ describe('runLoop — shutdown dispose (Phase 4, #1683 decision 5)', () => {
       type: 'init',
       compaction: { auto: false },
       engine: 'claude-sdk',
+      allowedProjectMcpServers: [],
       mcp: { baseUrl: 'http://mcp/local', token: 'tok' },
       provider: { model: 'claude-sonnet-5' },
       context: { sessionId: 's', workerId: 'w', cwd: '/tmp' },
@@ -1286,6 +1304,7 @@ describe('runLoop — claude-sdk engine: instructions via loadInstructions (Issu
       type: 'init',
       compaction: { auto: false },
       engine: 'claude-sdk',
+      allowedProjectMcpServers: [],
       mcp: { baseUrl: 'http://mcp/local', token: 'tok' },
       provider: { model: 'claude-sonnet-5' },
       context: { sessionId: 's', workerId: 'w', cwd: '/tmp' },
@@ -1408,6 +1427,7 @@ describe('runLoop — claude-sdk engine: CLAUDE.md chain-layer delivery (Issue #
       type: 'init',
       compaction: { auto: false },
       engine: 'claude-sdk',
+      allowedProjectMcpServers: [],
       mcp: { baseUrl: 'http://mcp/local', token: 'tok' },
       provider: { model: 'claude-sonnet-5' },
       context: { sessionId: 's', workerId: 'w', cwd },
@@ -1487,6 +1507,7 @@ describe('runLoop — claude-sdk resume pre-flight (R1)', () => {
       type: 'init',
       compaction: { auto: false },
       engine: 'claude-sdk',
+      allowedProjectMcpServers: [],
       mcp: { baseUrl: 'http://mcp/local', token: 'tok' },
       provider: { model: 'claude-sonnet-5' },
       context: { sessionId: 's', workerId: 'w', cwd: '/tmp/work' },
@@ -1512,6 +1533,7 @@ describe('runLoop — claude-sdk resume pre-flight (R1)', () => {
       v.safeParse(EmbeddedAgentCommandSchema, {
         ...shared,
         engine: 'claude-sdk',
+        allowedProjectMcpServers: [],
         provider: { model: 'claude-sonnet-5' },
       }).success,
     ).toBe(true);
@@ -2278,6 +2300,7 @@ describe('runLoop — set-model-params dispatch (agent-surface.md Phase 3)', () 
       this.setModelParamsCalls.push({ params, turnInFlight: this.turnInFlight });
       this.releaseTurn?.();
     }
+    setMcpServers(): void {}
     dispose(): void {}
   }
 
@@ -2287,6 +2310,7 @@ describe('runLoop — set-model-params dispatch (agent-surface.md Phase 3)', () 
       type: 'init',
       compaction: { auto: false },
       engine: 'claude-sdk',
+      allowedProjectMcpServers: [],
       mcp: { baseUrl: 'http://mcp/local', token: 'tok' },
       provider: { model: 'claude-sonnet-5' },
       context: { sessionId: 's', workerId: 'w', cwd: '/tmp' },
@@ -2348,6 +2372,284 @@ describe('runLoop — set-model-params dispatch (agent-surface.md Phase 3)', () 
 });
 
 // ---------------------------------------------------------------------------
+// epic #1636 Phase 5 PR-2: MCP/agents discovery wiring
+// ---------------------------------------------------------------------------
+
+describe('runLoop — claude-sdk engine: MCP/agents discovery wiring (epic #1636 Phase 5 PR-2)', () => {
+  const claudeSdkInitCommand = (overrides: Record<string, unknown> = {}) =>
+    JSON.stringify({
+      v: 1,
+      type: 'init',
+      compaction: { auto: false },
+      engine: 'claude-sdk',
+      allowedProjectMcpServers: [],
+      mcp: { baseUrl: 'http://mcp/local', token: 'tok' },
+      provider: { model: 'claude-sonnet-5' },
+      context: { sessionId: 's', workerId: 'w', cwd: '/tmp' },
+      maxToolIterations: 5,
+      ...overrides,
+    });
+
+  const allowedEntry = {
+    name: 'my-server',
+    hash: 'h1',
+    config: { type: 'stdio' as const, command: 'echo' },
+    decision: 'allowed' as const,
+  };
+  const pendingEntry = {
+    name: 'pending-server',
+    hash: 'h2',
+    config: { type: 'stdio' as const, command: 'echo2' },
+    decision: 'pending' as const,
+  };
+  const invalidEntry = {
+    name: 'bad',
+    hash: '',
+    config: { type: 'stdio' as const, command: '' },
+    decision: 'invalid' as const,
+  };
+
+  it("threads discoverProjectMcpServers' cwd/allowedProjectMcpServers args into SdkEngineDeps, storing BOTH 'allowed' and 'pending' entries in discoveredProjectMcpServers and passing init's own pairs through as initialAllowedProjectMcpServers", async () => {
+    let capturedDeps: SdkEngineDeps | undefined;
+    let capturedArgs: [string, Array<{ name: string; hash: string }>] | undefined;
+    const { io } = makeIo([
+      claudeSdkInitCommand({ context: { sessionId: 's', workerId: 'w', cwd: '/tmp/work' }, allowedProjectMcpServers: [{ name: 'my-server', hash: 'h1' }] }),
+      JSON.stringify({ v: 1, type: 'shutdown' }),
+    ]);
+    const factories = makeFactories({
+      discoverProjectMcpServers: async (cwd, allowed) => {
+        capturedArgs = [cwd, allowed];
+        return { servers: [allowedEntry, pendingEntry] };
+      },
+      createSdkEngine: (deps) => {
+        capturedDeps = deps;
+        return new NoopEngine();
+      },
+    });
+
+    expect(await runLoop(io, factories)).toBe(0);
+    expect(capturedArgs).toEqual(['/tmp/work', [{ name: 'my-server', hash: 'h1' }]]);
+    // Architect ruling (B): the map holds EVERY allowed/pending entry
+    // (never `rejected-reserved`/`invalid`), keyed by name.
+    expect(capturedDeps?.discoveredProjectMcpServers).toEqual(
+      new Map([
+        ['my-server', { hash: 'h1', config: { type: 'stdio', command: 'echo' } }],
+        ['pending-server', { hash: 'h2', config: { type: 'stdio', command: 'echo2' } }],
+      ]),
+    );
+    // `init.allowedProjectMcpServers` passed straight through, unchanged.
+    expect(capturedDeps?.initialAllowedProjectMcpServers).toEqual([{ name: 'my-server', hash: 'h1' }]);
+  });
+
+  it('emits the form (a) mcp-servers-discovered event once, BEFORE the engine is constructed, with hash/decision for every non-invalid entry and no hash for an invalid one', async () => {
+    const order: string[] = [];
+    const { io, events } = makeIo([claudeSdkInitCommand(), JSON.stringify({ v: 1, type: 'shutdown' })]);
+    const factories = makeFactories({
+      discoverProjectMcpServers: async () => ({ servers: [allowedEntry, invalidEntry] }),
+      createSdkEngine: (deps) => {
+        order.push('createSdkEngine');
+        deps.emit({ v: 1, type: 'sdk-session-id', sdkSessionId: 'marker' });
+        return new NoopEngine();
+      },
+    });
+
+    expect(await runLoop(io, factories)).toBe(0);
+    const discoveredIndex = events.findIndex((e) => e.type === 'mcp-servers-discovered');
+    const markerIndex = events.findIndex((e) => e.type === 'sdk-session-id');
+    expect(discoveredIndex).toBeGreaterThanOrEqual(0);
+    expect(discoveredIndex).toBeLessThan(markerIndex);
+    expect(events.filter((e) => e.type === 'mcp-servers-discovered')).toEqual([
+      {
+        v: 1,
+        type: 'mcp-servers-discovered',
+        servers: [
+          { name: 'my-server', scope: 'project', decision: 'allowed', hash: 'h1' },
+          { name: 'bad', scope: 'project', decision: 'invalid' },
+        ],
+      },
+    ]);
+  });
+
+  it('declares mcpJsonError / userLocalNamesUnavailable on the discovered event without aborting activation (discovery failures never abort)', async () => {
+    let capturedDeps: SdkEngineDeps | undefined;
+    const { io, events } = makeIo([claudeSdkInitCommand(), JSON.stringify({ v: 1, type: 'shutdown' })]);
+    const factories = makeFactories({
+      discoverProjectMcpServers: async () => ({ servers: [], mcpJsonError: 'Failed to parse .mcp.json: boom' }),
+      readUserLocalMcpNames: async () => ({ names: new Set(), unavailable: true }),
+      createSdkEngine: (deps) => {
+        capturedDeps = deps;
+        return new NoopEngine();
+      },
+    });
+
+    expect(await runLoop(io, factories)).toBe(0);
+    expect(events.filter((e) => e.type === 'fatal')).toEqual([]);
+    expect(events.filter((e) => e.type === 'mcp-servers-discovered')).toEqual([
+      {
+        v: 1,
+        type: 'mcp-servers-discovered',
+        servers: [],
+        mcpJsonError: 'Failed to parse .mcp.json: boom',
+        userLocalNamesUnavailable: true,
+      },
+    ]);
+    expect(capturedDeps?.expectedMcpServerNames).toEqual({ userLocal: new Set(), unavailable: true });
+  });
+
+  it('does not call discoverProjectAgents when Task is not enabled, and passes an empty agents object', async () => {
+    let called = false;
+    let capturedDeps: SdkEngineDeps | undefined;
+    const { io } = makeIo([
+      claudeSdkInitCommand({ enabledTools: ['Read'] }),
+      JSON.stringify({ v: 1, type: 'shutdown' }),
+    ]);
+    const factories = makeFactories({
+      discoverProjectAgents: async () => {
+        called = true;
+        return { agents: {}, warnings: [] };
+      },
+      createSdkEngine: (deps) => {
+        capturedDeps = deps;
+        return new NoopEngine();
+      },
+    });
+
+    expect(await runLoop(io, factories)).toBe(0);
+    expect(called).toBe(false);
+    expect(capturedDeps?.agents).toEqual({});
+  });
+
+  it("calls discoverProjectAgents with cwd and the allowed project server names when 'Task' is enabled, threading its result into SdkEngineDeps.agents", async () => {
+    let capturedDeps: SdkEngineDeps | undefined;
+    let capturedArgs: [string, Set<string>] | undefined;
+    const { io } = makeIo([
+      claudeSdkInitCommand({
+        enabledTools: ['Read', 'Task'],
+        context: { sessionId: 's', workerId: 'w', cwd: '/tmp/agents-work' },
+        allowedProjectMcpServers: [{ name: 'my-server', hash: 'h1' }],
+      }),
+      JSON.stringify({ v: 1, type: 'shutdown' }),
+    ]);
+    const factories = makeFactories({
+      discoverProjectMcpServers: async () => ({ servers: [allowedEntry] }),
+      discoverProjectAgents: async (cwd, allowedServerNames) => {
+        capturedArgs = [cwd, allowedServerNames];
+        return { agents: { reviewer: { description: 'reviews code', prompt: 'You review code.' } }, warnings: [] };
+      },
+      createSdkEngine: (deps) => {
+        capturedDeps = deps;
+        return new NoopEngine();
+      },
+    });
+
+    expect(await runLoop(io, factories)).toBe(0);
+    expect(capturedArgs?.[0]).toBe('/tmp/agents-work');
+    expect([...(capturedArgs?.[1] ?? [])]).toEqual(['my-server']);
+    expect(capturedDeps?.agents).toEqual({ reviewer: { description: 'reviews code', prompt: 'You review code.' } });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// epic #1636 Phase 5 PR-2: set-mcp-servers dispatch
+// ---------------------------------------------------------------------------
+
+describe('runLoop — set-mcp-servers dispatch (epic #1636 Phase 5 PR-2, Architect ruling B)', () => {
+  class CapturingSetMcpServersEngine implements ClaudeSdkEngine {
+    readonly kind = 'claude-sdk' as const;
+    readonly calls: Array<Array<{ name: string; hash: string }>> = [];
+    async runTurn(): Promise<void> {}
+    cancel(): void {}
+    setAutoCompaction(): void {}
+    setModelParams(): void {}
+    setMcpServers(pairs: Array<{ name: string; hash: string }>): void {
+      this.calls.push(pairs);
+    }
+    dispose(): void {}
+  }
+
+  const claudeSdkInitCommand = () =>
+    JSON.stringify({
+      v: 1,
+      type: 'init',
+      compaction: { auto: false },
+      engine: 'claude-sdk',
+      allowedProjectMcpServers: [],
+      mcp: { baseUrl: 'http://mcp/local', token: 'tok' },
+      provider: { model: 'claude-sonnet-5' },
+      context: { sessionId: 's', workerId: 'w', cwd: '/tmp' },
+      maxToolIterations: 5,
+    });
+
+  it('routes set-mcp-servers to Engine.setMcpServers on a claude-sdk engine, carrying (name, hash) pairs only', async () => {
+    const engine = new CapturingSetMcpServersEngine();
+    const { io } = makeIo([
+      claudeSdkInitCommand(),
+      JSON.stringify({
+        v: 1,
+        type: 'set-mcp-servers',
+        allowedProjectMcpServers: [{ name: 'my-server', hash: 'h1' }],
+      }),
+      JSON.stringify({ v: 1, type: 'shutdown' }),
+    ]);
+
+    expect(await runLoop(io, makeFactories({ createSdkEngine: () => engine }))).toBe(0);
+    expect(engine.calls).toEqual([[{ name: 'my-server', hash: 'h1' }]]);
+  });
+
+  it('emits mcp-servers-applied {applied:false, reason:"unsupported-engine"} when set-mcp-servers reaches an openai-api engine', async () => {
+    const { io, events } = makeIo([
+      initCommand(),
+      JSON.stringify({ v: 1, type: 'set-mcp-servers', allowedProjectMcpServers: [] }),
+      JSON.stringify({ v: 1, type: 'shutdown' }),
+    ]);
+
+    expect(await runLoop(io, makeFactories())).toBe(0);
+    expect(events).toContainEqual({ v: 1, type: 'mcp-servers-applied', applied: false, reason: 'unsupported-engine' });
+  });
+
+  it('is NOT gated on turnActive: dispatches to the engine while a turn is active', async () => {
+    class TurnBlockingSetMcpServersEngine implements ClaudeSdkEngine {
+      readonly kind = 'claude-sdk' as const;
+      readonly calls: Array<{ pairs: Array<{ name: string; hash: string }>; turnInFlight: boolean }> = [];
+      turnInFlight = false;
+      private releaseTurn: (() => void) | null = null;
+      runTurn(): Promise<void> {
+        this.turnInFlight = true;
+        return new Promise<void>((resolve) => {
+          this.releaseTurn = () => {
+            this.turnInFlight = false;
+            resolve();
+          };
+        });
+      }
+      cancel(): void {}
+      setAutoCompaction(): void {}
+      setModelParams(): void {}
+      setMcpServers(pairs: Array<{ name: string; hash: string }>): void {
+        this.calls.push({ pairs, turnInFlight: this.turnInFlight });
+        this.releaseTurn?.();
+      }
+      dispose(): void {}
+    }
+    const engine = new TurnBlockingSetMcpServersEngine();
+    const { io } = makeIo([
+      claudeSdkInitCommand(),
+      JSON.stringify({ v: 1, type: 'user-message', id: 'u1', text: 'a long one' }),
+      JSON.stringify({
+        v: 1,
+        type: 'set-mcp-servers',
+        allowedProjectMcpServers: [{ name: 'my-server', hash: 'h1' }],
+      }),
+      JSON.stringify({ v: 1, type: 'shutdown' }),
+    ]);
+
+    expect(await runLoop(io, makeFactories({ createSdkEngine: () => engine }))).toBe(0);
+    expect(engine.calls).toHaveLength(1);
+    expect(engine.calls[0].turnInFlight).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Memory layer (epic #1636 Phase 2, PR-3a): `init.context.memoryDir` reaches
 // every `loadInstructions` call site in this file with no engine branch, and
 // (openai-api) the builtin tool ctx as `memoryRoot`. Each pin's reach was
@@ -2401,6 +2703,7 @@ describe('runLoop — memory layer: memoryDir at every loader call site, memoryR
         type: 'init',
         compaction: { auto: false },
         engine: 'claude-sdk',
+        allowedProjectMcpServers: [],
         mcp: { baseUrl: 'http://mcp/local', token: 'tok' },
         provider: { model: 'claude-sonnet-5' },
         context: { sessionId: 's', workerId: 'w', cwd, memoryDir },

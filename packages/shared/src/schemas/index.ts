@@ -84,6 +84,7 @@ export {
   CreateWorkerRequestSchema,
   RestartWorkerRequestSchema,
   UpdateEmbeddedAgentWorkerRequestSchema,
+  SetMcpServerPermissionsRequestSchema,
   // Internal types for server-side worker creation
   type CreateAgentWorkerParams,
   type CreateTerminalWorkerParams,
@@ -94,6 +95,7 @@ export {
   type CreateWorkerRequest,
   type RestartWorkerRequest,
   type UpdateEmbeddedAgentWorkerRequest,
+  type SetMcpServerPermissionsRequest,
 } from './worker.js';
 
 // Embedded agent schemas

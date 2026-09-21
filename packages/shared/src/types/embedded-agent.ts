@@ -397,6 +397,25 @@ export type EmbeddedAgentCommand =
        * is fresh.
        */
       resume?: { sdkSessionId: string };
+      /**
+       * epic #1636 Phase 5 PR-2 (docs/design/embedded-agent-sdk-engine.md
+       * §4.5's D-B "the approval record"): the repository's current
+       * `.mcp.json`-approval decisions, by server name and content hash, as
+       * of activation time. REQUIRED (not optional) -- an absent field is a
+       * schema validation error, never silently "no allowed servers": the
+       * engine must never guess that omission means "nothing is approved
+       * yet" versus "the server forgot to send the field".
+       *
+       * `hash` is `config_hash` from the `mcp_server_approvals` table (§4.5's
+       * D-B), computed over the normalized `.mcp.json` entry BEFORE any
+       * `${VAR}` expansion -- the entry the record's decision actually binds
+       * to. The engine's own discovery loader
+       * (`discoverProjectMcpServers`) recomputes the SAME hash over what it
+       * reads from `.mcp.json` and compares by `{name, hash}` pair, so a
+       * changed file content (a branch swap) is a different hash and
+       * therefore not "allowed" even under the same server name.
+       */
+      allowedProjectMcpServers: Array<{ name: string; hash: string }>;
     })
   | {
       v: 1;
@@ -451,6 +470,35 @@ export type EmbeddedAgentCommand =
       reasoningEffort: string | null;
       contextWindowTokens: number | null;
     }
+  /**
+   * epic #1636 Phase 5 PR-2 (docs/design/embedded-agent-sdk-engine.md §4.5's
+   * D-D "activation never waits" / D-E "containment"): the repository's
+   * approved-project-MCP-server set changed while the subprocess was
+   * running (a pending server was allowed, or the allowed set otherwise
+   * changed). Only meaningful to `claude-sdk` -- `openai-api` has no MCP
+   * discovery/approval concept -- but, like `set-model-params`, kept as ONE
+   * command shape rather than an engine-discriminated pair; an engine with
+   * no use for it simply never receives one.
+   *
+   * FULL STATE, never a delta, same contract as `set-model-params` and the
+   * `init` command's field of the same name: `allowedProjectMcpServers` is
+   * the FULL currently-allowed (name, hash) pair set -- never a partial
+   * update, never `[]`-means-"unchanged".
+   *
+   * Architect ruling (B), 2026-09-21: NO server config (command/args/env/
+   * url/headers) ever crosses this wire -- the server only ever knows names
+   * and hashes (D-B / D-F). The subprocess resolves each pair against its
+   * own `discoveredProjectMcpServers` (populated by
+   * `discoverProjectMcpServers`, packages/embedded-agent/src/mcp-discovery.ts)
+   * and composes the reserved pair (`agent-console`, `console`) itself --
+   * the reserved pair is never part of this payload, matching how `init`'s
+   * `allowedProjectMcpServers` never carries it either. A pair that does not
+   * resolve (unknown name, or a hash that no longer matches the discovered
+   * entry) is reported back on `mcp-servers-applied.errors`, never silently
+   * dropped. Not persisted (no command is); the permission record (D-B) is
+   * the durable store this command is derived from.
+   */
+  | { v: 1; type: 'set-mcp-servers'; allowedProjectMcpServers: Array<{ name: string; hash: string }> }
   /**
    * Slash commands, `console`-handled arm (#1572): a manual `/compact`
    * intercepted by the server (see `EMBEDDED_AGENT_SLASH_COMMANDS` in
@@ -733,7 +781,68 @@ export type EmbeddedAgentEvent =
    * so a later activation reads the requested values from it. The event says
    * "not live", never "not saved".
    */
-  | { v: 1; type: 'model-params-applied'; applied: boolean };
+  | { v: 1; type: 'model-params-applied'; applied: boolean }
+  /**
+   * epic #1636 Phase 5 PR-2 (docs/design/embedded-agent-sdk-engine.md §4.5):
+   * the `claude-sdk` engine's own discovery of `.mcp.json` (project scope)
+   * fired, reporting every entry it found plus each entry's decision against
+   * the `allowedProjectMcpServers` the `init` command carried. Per §4.5's
+   * D-D "activation never waits", discovery is NOT a one-time init-only
+   * event: it can fire up to three times per activation (once at init-time
+   * discovery, and potentially again if the CLI's own user/local-scope
+   * config or the project `.mcp.json` file changes mid-session and is
+   * re-read), so the server treats each arrival as LAST-WRITE-WINS over the
+   * worker's persisted `mcpServers` state -- never an accumulation across
+   * arrivals.
+   *
+   * `servers` reports EVERY discovered entry, including ones the engine will
+   * never pass to the SDK (`decision: 'pending'` or `'rejected-reserved'` or
+   * `'invalid'`) -- the approval-decision UI (PR-3) needs to show a pending
+   * or rejected server, not just the allowed ones. `hash` is absent only for
+   * an entry the loader could not normalize at all (`decision: 'invalid'`
+   * with no computable hash); every other decision carries one, matching
+   * `allowedProjectMcpServers`'s hash so the server can compare by
+   * `{name, hash}` pair.
+   *
+   * `userLocalNamesUnavailable` reports that the CLI's own `~/.claude.json`
+   * (User/Local scope) could not be read for the containment detector's
+   * expected-name set (see §4.5 D-E's "wall") -- a read failure there is
+   * declared here rather than silently narrowing what the detector expects,
+   * so a false containment fatal is distinguishable from a genuine leak.
+   * `mcpJsonError` is the analogous declaration for a `.mcp.json` parse/read
+   * failure -- discovery never throws on either; both fall to an empty
+   * reading with the failure named here instead.
+   */
+  | {
+      v: 1;
+      type: 'mcp-servers-discovered';
+      servers: Array<{
+        name: string;
+        scope: 'project' | 'user' | 'local' | 'reserved' | 'connector';
+        hash?: string;
+        decision?: 'allowed' | 'pending' | 'rejected-reserved' | 'invalid';
+        status?: string;
+      }>;
+      userLocalNamesUnavailable?: true;
+      mcpJsonError?: string;
+    }
+  /**
+   * epic #1636 Phase 5 PR-2: the engine's report on a `set-mcp-servers`
+   * command -- whether the newly-allowed server(s) were added to the LIVE
+   * session (via `Query.setMcpServers`, §4.5 D-D) or require a restart.
+   *
+   * `applied: false` with `reason: 'restart-required'` is the DECLARED
+   * fallback §4.5 D-D names ("if the live add does not hold, the fallback is
+   * restart-in-place, declared in the panel") -- not a silent failure: the
+   * approval record (D-B) already carries the durable decision, so the
+   * consequence of `applied: false` is purely "not live yet", mirroring
+   * `model-params-applied`'s own "not live, never not saved" contract.
+   * `reason` is otherwise a free-form string (an engine-side error message)
+   * rather than a closed picklist -- unlike `model-params-applied`, which
+   * has exactly one classified refusal shape today, a live MCP-server add
+   * can fail for reasons the SDK itself does not enumerate.
+   */
+  | { v: 1; type: 'mcp-servers-applied'; applied: boolean; reason?: 'restart-required' | string; errors?: Record<string, string> };
 
 /**
  * Events the SERVER (not the loop) appends into the persisted stream so the

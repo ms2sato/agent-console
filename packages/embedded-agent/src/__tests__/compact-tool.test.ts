@@ -19,6 +19,7 @@ import {
   COMPACT_TOOL_NAME,
   COMPACT_TOOL_SCHEDULED_RESULT,
   COMPACT_TOOL_UNSUPPORTED_RESULT,
+  TASK_TOOL_UNSUPPORTED_RESULT,
   compactToolDefinition,
 } from '../compact-tool.js';
 
@@ -73,5 +74,14 @@ describe('Compact — result strings', () => {
     // the model can say WHY it cannot comply. A result that just said "error"
     // would leave it guessing.
     expect(COMPACT_TOOL_UNSUPPORTED_RESULT.toLowerCase()).toContain('automatic');
+  });
+
+  it('explains the Task/Agent unsupported case by naming both runtime literals', () => {
+    // `CompositeToolExecutor.callTool()` intercepts both "Task" and "Agent"
+    // (the two-literal wrinkle from the definition vs. the actual tool-call
+    // name), so the honest-decline result should name both, not just one.
+    expect(TASK_TOOL_UNSUPPORTED_RESULT).not.toBe(COMPACT_TOOL_UNSUPPORTED_RESULT);
+    expect(TASK_TOOL_UNSUPPORTED_RESULT).toContain('Task');
+    expect(TASK_TOOL_UNSUPPORTED_RESULT).toContain('Agent');
   });
 });

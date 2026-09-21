@@ -258,6 +258,26 @@ export const RestartWorkerRequestSchema = v.union([
   EmbeddedRestartSchema,
 ]);
 
+/**
+ * Schema for recording an MCP server permission decision for an embedded-
+ * agent worker's repository (epic #1636 Phase 5 PR-2,
+ * docs/design/embedded-agent-sdk-engine.md §4.5's "the approval record").
+ * A union rather than a flat object with optional fields, for the same
+ * `strictObject`-rejects-cross-member-keys reason as {@link RestartWorkerRequestSchema}:
+ * `{ all: true }` (allow every currently-pending server in one call) and a
+ * single named `(name, hash, decision)` pair are mutually exclusive shapes.
+ */
+export const SetMcpServerPermissionsRequestSchema = v.union([
+  v.strictObject({
+    name: v.pipe(v.string(), v.minLength(1, 'name is required')),
+    hash: v.pipe(v.string(), v.minLength(1, 'hash is required')),
+    decision: v.picklist(['allow', 'deny']),
+  }),
+  v.strictObject({
+    all: v.literal(true),
+  }),
+]);
+
 // Internal types for server-side worker creation
 export type CreateAgentWorkerParams = v.InferOutput<typeof CreateAgentWorkerParamsSchema>;
 export type CreateTerminalWorkerParams = v.InferOutput<typeof CreateTerminalWorkerParamsSchema>;
@@ -274,3 +294,4 @@ export type CreateWorkerRequest = v.InferOutput<typeof CreateWorkerRequestSchema
 export type RestartWorkerRequest = v.InferOutput<typeof RestartWorkerRequestSchema>;
 
 export type UpdateEmbeddedAgentWorkerRequest = v.InferOutput<typeof UpdateEmbeddedAgentWorkerRequestSchema>;
+export type SetMcpServerPermissionsRequest = v.InferOutput<typeof SetMcpServerPermissionsRequestSchema>;

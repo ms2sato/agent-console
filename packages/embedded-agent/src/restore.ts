@@ -687,6 +687,8 @@ function replayWindow(
       case 'turn-interrupted':
       case 'restore-failure-declaration':
       case 'model-params-applied':
+      case 'mcp-servers-discovered':
+      case 'mcp-servers-applied':
         // Noise: replay-only, contributes nothing to the conversation array.
         // sdk-session-id (SDK Engine Phase 1) carries no conversational
         // content -- it is a bookkeeping marker for the worker's current SDK
@@ -709,6 +711,13 @@ function replayWindow(
         // event -- is what a later activation reads its parameters from.
         // (No restart is implied by it either way; both parameters apply
         // live on both engines.)
+        // mcp-servers-discovered and mcp-servers-applied (epic #1636 Phase 5
+        // PR-2) are the same shape again: a report about the PROCESS's own
+        // MCP-server discovery/live-apply bookkeeping, not about what was
+        // said. The persisted `workers.mcpServers` state -- not this event
+        // -- is what a later read shows; a discovery event can fire up to 3
+        // times per activation and is last-write-wins there, which is
+        // irrelevant to conversation reconstruction either way.
         break;
       case 'context-compacted':
       case 'context-handoff':

@@ -7,11 +7,12 @@ import {
   UpdateSessionMemoRequestSchema,
 } from '@agent-console/shared';
 import { createSessionValidationService } from '../services/session-validation-service.js';
-import { ForbiddenError, InternalError, NotFoundError, ValidationError } from '../lib/errors.js';
+import { InternalError, NotFoundError, ValidationError } from '../lib/errors.js';
 import { vValidator, vQueryValidator } from '../middleware/validation.js';
 import { getOrgRepoFromPath } from '../lib/git.js';
 import { resolveSpawnUsername } from '../services/resolve-spawn-username.js';
 import { serverConfig } from '../lib/server-config.js';
+import { assertCanOperateSession } from '../lib/session-access.js';
 import type { AppBindings } from '../app-context.js';
 
 const sessions = new Hono<AppBindings>()
@@ -142,11 +143,7 @@ const sessions = new Hono<AppBindings>()
       throw new NotFoundError('Session');
     }
 
-    const isOwner = session.createdBy === authUser.id;
-    const isSharedSession = session.createdBy != null && sharedAccountRegistry.isSharedUserId(session.createdBy);
-    if (serverConfig.AUTH_MODE === 'multi-user' && !isOwner && !isSharedSession) {
-      throw new ForbiddenError('Only the session owner can write this memo');
-    }
+    assertCanOperateSession(session, authUser, sharedAccountRegistry, serverConfig.AUTH_MODE, 'Only the session owner can write this memo');
 
     // R4: a save whose trimmed content is empty DELETES the memo file
     // rather than writing an empty one. Writing '' would make readMemo
@@ -304,11 +301,7 @@ const sessions = new Hono<AppBindings>()
       throw new NotFoundError('Session');
     }
 
-    const isOwner = session.createdBy === authUser.id;
-    const isSharedSession = session.createdBy != null && sharedAccountRegistry.isSharedUserId(session.createdBy);
-    if (serverConfig.AUTH_MODE === 'multi-user' && !isOwner && !isSharedSession) {
-      throw new ForbiddenError('Only the session owner can set the Orchestrator designation');
-    }
+    assertCanOperateSession(session, authUser, sharedAccountRegistry, serverConfig.AUTH_MODE, 'Only the session owner can set the Orchestrator designation');
 
     if (session.type !== 'worktree' || !session.repositoryId) {
       throw new ValidationError('Only a worktree session can hold the Orchestrator designation');
@@ -335,11 +328,7 @@ const sessions = new Hono<AppBindings>()
       throw new NotFoundError('Session');
     }
 
-    const isOwner = session.createdBy === authUser.id;
-    const isSharedSession = session.createdBy != null && sharedAccountRegistry.isSharedUserId(session.createdBy);
-    if (serverConfig.AUTH_MODE === 'multi-user' && !isOwner && !isSharedSession) {
-      throw new ForbiddenError('Only the session owner can clear the Orchestrator designation');
-    }
+    assertCanOperateSession(session, authUser, sharedAccountRegistry, serverConfig.AUTH_MODE, 'Only the session owner can clear the Orchestrator designation');
 
     if (session.type !== 'worktree' || !session.repositoryId) {
       throw new ValidationError('Only a worktree session can hold the Orchestrator designation');

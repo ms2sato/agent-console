@@ -60,6 +60,10 @@ describe('reconstructConversation — 4c total classification', () => {
       // agent-surface.md Phase 3: a report about the PROCESS's configuration,
       // not about what was said -- Noise, same class as sdk-session-id above.
       { v: 1, type: 'model-params-applied', applied: false },
+      // epic #1636 Phase 5 PR-2: MCP-server discovery/live-apply
+      // bookkeeping, same Noise class as model-params-applied above.
+      { v: 1, type: 'mcp-servers-discovered', servers: [{ name: 'x', scope: 'project' }] },
+      { v: 1, type: 'mcp-servers-applied', applied: true },
       { v: 1, type: 'state', state: 'idle' },
       { v: 1, type: 'exited', code: 0 },
     ];

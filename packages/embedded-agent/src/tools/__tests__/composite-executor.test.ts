@@ -1,4 +1,5 @@
 import { describe, it, expect, mock } from 'bun:test';
+import { TASK_TOOL_UNSUPPORTED_RESULT } from '../../compact-tool.js';
 import type { ToolExecutor, ToolCallOutcome } from '../../mcp.js';
 import type { ToolDefinition } from '../../providers/types.js';
 import { RuleActivator, type ActivationBlock, type RuleActivatorLike } from '../../rule-activation.js';
@@ -318,5 +319,43 @@ describe('CompositeToolExecutor — Phase B (#1343 R2) scoped-rule activation ap
 
     expect(result).toEqual({ ok: true, result: 'Bash-result' });
     expect('appendix' in result).toBe(false);
+  });
+});
+
+describe('CompositeToolExecutor — Task/Agent decline (epic #1636 Phase 5 PR-2)', () => {
+  it("returns TASK_TOOL_UNSUPPORTED_RESULT for 'Task' without reaching builtins or the MCP executor", async () => {
+    const mcpCallTool = mock(async (): Promise<ToolCallOutcome> => ({ ok: true, result: 'mcp' }));
+    const mcp = makeMcpStub([], mcpCallTool);
+    const readTool = makeBuiltinTool('Read');
+    const composite = new CompositeToolExecutor({
+      mcp,
+      builtins: [readTool],
+      ctx: { locationPath: '/work' },
+      ruleActivator: makeNoopRuleActivator(),
+    });
+
+    const result = await composite.callTool('Task', {}, new AbortController().signal);
+
+    expect(result).toEqual({ ok: false, result: TASK_TOOL_UNSUPPORTED_RESULT });
+    expect(mcpCallTool).not.toHaveBeenCalled();
+    expect(readTool.executeMock).not.toHaveBeenCalled();
+  });
+
+  it("returns TASK_TOOL_UNSUPPORTED_RESULT for 'Agent' (the runtime delegation call's actual name, per §4.5 Task 0) without reaching builtins or the MCP executor", async () => {
+    const mcpCallTool = mock(async (): Promise<ToolCallOutcome> => ({ ok: true, result: 'mcp' }));
+    const mcp = makeMcpStub([], mcpCallTool);
+    const readTool = makeBuiltinTool('Read');
+    const composite = new CompositeToolExecutor({
+      mcp,
+      builtins: [readTool],
+      ctx: { locationPath: '/work' },
+      ruleActivator: makeNoopRuleActivator(),
+    });
+
+    const result = await composite.callTool('Agent', {}, new AbortController().signal);
+
+    expect(result).toEqual({ ok: false, result: TASK_TOOL_UNSUPPORTED_RESULT });
+    expect(mcpCallTool).not.toHaveBeenCalled();
+    expect(readTool.executeMock).not.toHaveBeenCalled();
   });
 });

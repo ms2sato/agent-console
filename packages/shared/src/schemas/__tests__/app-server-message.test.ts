@@ -966,6 +966,63 @@ describe('AppServerMessageSchema', () => {
       });
     });
 
+    describe('mcpServers (epic #1636 Phase 5 PR-2)', () => {
+      const embeddedWorker = (overrides: Record<string, unknown>) => ({
+        type: 'session-created' as const,
+        session: {
+          ...worktreeSession,
+          workers: [
+            {
+              id: 'w4',
+              type: 'embedded-agent',
+              name: 'Embedded',
+              createdAt: '2026-01-01T00:00:00Z',
+              embeddedAgentId: 'def-1',
+              activated: true,
+              autoCompaction: true,
+              reasoningEffort: null,
+              hasParameterOverride: false,
+              ...overrides,
+            },
+          ],
+        },
+      });
+
+      it('is optional -- absent on an openai-api-style worker with no discovery reading yet', () => {
+        const output = expectValid(embeddedWorker({}));
+        if (output.type === 'session-created') {
+          const worker = output.session.workers[0];
+          if (worker.type === 'embedded-agent') expect(worker.mcpServers).toBeUndefined();
+        }
+      });
+
+      it('round-trips a discovery reading, including the server-computed "denied" decision', () => {
+        const output = expectValid(
+          embeddedWorker({
+            mcpServers: [
+              { name: 'agent-console', scope: 'reserved', decision: 'allowed', status: 'connected' },
+              { name: 'chrome-devtools', scope: 'project', hash: 'abc', decision: 'denied' },
+            ],
+          }),
+        );
+        if (output.type === 'session-created') {
+          const worker = output.session.workers[0];
+          if (worker.type === 'embedded-agent') {
+            expect(worker.mcpServers).toEqual([
+              { name: 'agent-console', scope: 'reserved', decision: 'allowed', status: 'connected' },
+              { name: 'chrome-devtools', scope: 'project', hash: 'abc', decision: 'denied' },
+            ]);
+          }
+        }
+      });
+
+      it('rejects an unknown field on a mcpServers entry (strictObject)', () => {
+        expectInvalid(
+          embeddedWorker({ mcpServers: [{ name: 'x', scope: 'project', leaked: 'x' }] }),
+        );
+      });
+    });
+
     it('should reject an embedded-agent worker with an unknown key', () => {
       expectInvalid({
         type: 'session-created',

@@ -34,6 +34,7 @@ import {
   matchSlashCommand,
   type EmbeddedAgentDefinition,
   type EmbeddedAgentCommand,
+  type EmbeddedAgentEvent,
   type EmbeddedAgentServerEvent,
   type EmbeddedAgentServerNotification,
   type EmbeddedAgentRestoredMessage,
@@ -50,6 +51,8 @@ import type { InternalSession } from './internal-types.js';
 import type { InternalEmbeddedAgentWorker } from './worker-types.js';
 import type { SessionDataPathResolver } from '../lib/session-data-path-resolver.js';
 import type { McpTokenRegistry } from '../mcp/mcp-auth.js';
+import type { McpServerPermissionRepository } from '../repositories/mcp-server-permission-repository.js';
+import { listAllowedProjectMcpServerPairs } from '../lib/mcp-server-permissions.js';
 import type { WorkerOutputFileManager } from '../lib/worker-output-file.js';
 import { spawnAsUser, shellEscape, type SpawnAsUserFn } from './privilege-elevation.js';
 import { getCleanChildProcessEnv } from './env-filter.js';
@@ -331,6 +334,23 @@ export type SendUserMessageResult =
   | { ok: true; queued: true }
   | { ok: false; code: 'NOT_ACTIVATED' | 'TURN_IN_PROGRESS' | 'WRITE_FAILED'; error: string };
 
+/**
+ * {@link EmbeddedAgentWorkerService.applyMcpServerPermissions}'s return
+ * shape -- distinguishes the two `ok: true` cases (`live: false` = no
+ * running subprocess to tell, a legitimate no-op since the durable row
+ * already carries the decision and a dormant worker reads it at its next
+ * activation; `live: true` = the command reached the running subprocess)
+ * from the case that must NOT be conflated with either: a live subprocess
+ * existed but writing to its stdin threw, so the SDK session still has the
+ * OLD allowed set even though the durable row and in-memory
+ * `worker.mcpServers` already reflect the NEW decision (see
+ * `applyMcpServerPermissions`'s own doc comment). `applyModelParams` still
+ * returns a plain `boolean` with this same two-cause conflation on its
+ * `false` branch -- a pre-existing, out-of-scope-for-this-fix gap noted here
+ * rather than fixed alongside it.
+ */
+export type ApplyMcpServerPermissionsResult = { ok: true; live: boolean } | { ok: false; error: string };
+
 export interface EmbeddedAgentWorkerServiceDeps {
   getSession: (sessionId: string) => InternalSession | undefined;
   persistSession: (session: InternalSession) => Promise<void>;
@@ -338,6 +358,13 @@ export interface EmbeddedAgentWorkerServiceDeps {
   getEmbeddedAgent: (id: string) => EmbeddedAgentDefinition | undefined;
   resolveSpawnUsername: (createdBy?: string) => Promise<string>;
   mcpTokenRegistry: Pick<McpTokenRegistry, 'mint' | 'revokeByWorker'>;
+  /**
+   * epic #1636 Phase 5 PR-2 (docs/design/embedded-agent-sdk-engine.md §4.5's
+   * "the approval record"): read at activation to compose a `claude-sdk`
+   * worktree session's `allowedProjectMcpServers`. `openai-api` and quick
+   * sessions never read this (no repository, no MCP-discovery concept).
+   */
+  mcpServerPermissionRepository: Pick<McpServerPermissionRepository, 'listByRepository'>;
   workerOutputFileManager: Pick<
     WorkerOutputFileManager,
     'resetWorkerOutput'
@@ -1193,6 +1220,22 @@ export class EmbeddedAgentWorkerService {
       // its own `provider` shape.
       const resolvedModelParams = resolveEffectiveModelParams(definition, worker);
 
+      // epic #1636 Phase 5 PR-2 (docs/design/embedded-agent-sdk-engine.md
+      // §4.5's "the approval record"): the repository's current `allow`
+      // decisions, read fresh at every activation -- `claude-sdk`
+      // worktree-session activations only. A quick session has no
+      // `repositoryId` and no `.mcp.json`-approval concept, so its
+      // `allowedProjectMcpServers` is unconditionally empty, same as the
+      // `openai-api` arm (which never carries this field at all).
+      const repositoryIdForMcp = session.type === 'worktree' ? session.repositoryId : undefined;
+      const allowedProjectMcpServers =
+        definition.engine === 'claude-sdk' && repositoryIdForMcp !== undefined
+          ? await listAllowedProjectMcpServerPairs(
+              this.deps.mcpServerPermissionRepository,
+              repositoryIdForMcp,
+            )
+          : [];
+
       // Step 6: write the init command as the FIRST stdin line. Branched on
       // `definition.engine` (SDK Engine Phase 1) so each arm's `provider`
       // shape matches the discriminated `EmbeddedAgentCommand` union --
@@ -1288,6 +1331,11 @@ export class EmbeddedAgentWorkerService {
               // and can read that user's own session store, which this
               // process cannot in multi-user mode.
               ...(resumeId !== null ? { resume: { sdkSessionId: resumeId } } : {}),
+              // epic #1636 Phase 5 PR-2: REQUIRED, never omitted -- an
+              // absent field is a schema validation error, not "nothing is
+              // approved yet" (see the wire type's own doc comment). Empty
+              // for a quick session or a repository with no `allow` rows.
+              allowedProjectMcpServers,
             };
       this.writeCommand(stdin, initCommand);
 
@@ -1360,6 +1408,12 @@ export class EmbeddedAgentWorkerService {
       this.endStdinSafely(spawnedStdin);
       worker.subprocess = null;
       worker.stdin = null;
+      // epic #1636 Phase 5 PR-2, Q14: a `mcp-servers-discovered` event may
+      // have already landed on this incarnation before a LATER activation
+      // step failed (e.g. the persist below it). Clear the reading so a
+      // failed activation never leaves a stale discovery snapshot behind
+      // for the next attempt to inherit.
+      worker.mcpServers = undefined;
       // Safe to delete unconditionally: the in-flight activation guard prevents
       // a concurrent activation from having installed a different runtime here.
       this.runtimes.delete(workerId);
@@ -1874,6 +1928,68 @@ export class EmbeddedAgentWorkerService {
   }
 
   /**
+   * epic #1636 Phase 5 PR-2 (docs/design/embedded-agent-sdk-engine.md §4.5
+   * D-D "activation never waits"): forward a change to the repository's
+   * `.mcp.json` (Project scope) permission set to a RUNNING subprocess, so
+   * the change applies without waiting for the next activation.
+   *
+   * `allowedProjectMcpServers` is the FULL currently-allowed (name, hash)
+   * set, never a delta -- the same full-state contract `applyModelParams`
+   * documents for `set-model-params`, and the `set-mcp-servers` wire
+   * command's own doc comment. Architect ruling (B), 2026-09-21: NO server
+   * config crosses this call either -- only names and hashes. The caller
+   * (`SessionManager.setMcpServerPermissions`) composes this array the same
+   * way `activate`'s own `init` composition does: every currently-`allow`
+   * row for the session's repository.
+   *
+   * `{ ok: true, live: false }` means no live subprocess, not a failure --
+   * the durable permission row is already written by the caller before this
+   * is invoked, and a dormant worker picks it up at its next activation.
+   * `{ ok: true, live: true }` means the command reached the running
+   * subprocess. `{ ok: false, error }` is the THIRD, distinct case a plain
+   * boolean could not express: a live subprocess existed but the stdin write
+   * threw, so the SDK session was never told -- the caller must not treat
+   * this the same as the no-runtime case (see
+   * {@link ApplyMcpServerPermissionsResult}'s own doc comment).
+   *
+   * A live write failure must not be silently
+   * indistinguishable from a clean apply -- the API response stays HTTP 200
+   * either way (the durable decision IS recorded, and that is the truth a
+   * dormant/future activation reads), but the failure is made OBSERVABLE by
+   * appending a synthetic `mcp-servers-applied` event -- shaped exactly like
+   * the engine's own report of the same failure class -- into the worker's
+   * persisted stream via the SAME `appendEvent`/fan-out path
+   * `handleLoopLine` uses for the engine's genuine reports. This is the one
+   * place the server synthesizes an ENGINE-shaped event rather than a
+   * `EmbeddedAgentServerEvent`: the engine never got a chance to report
+   * `applied: false` itself, because the write that would have carried the
+   * command never reached it.
+   */
+  applyMcpServerPermissions(
+    workerId: string,
+    allowedProjectMcpServers: Array<{ name: string; hash: string }>,
+  ): ApplyMcpServerPermissionsResult {
+    const runtime = this.runtimes.get(workerId);
+    const stdin = runtime?.ctx.worker.stdin;
+    if (!runtime || !stdin) return { ok: true, live: false };
+    try {
+      this.writeCommand(stdin, {
+        v: 1,
+        type: 'set-mcp-servers',
+        allowedProjectMcpServers,
+      });
+      return { ok: true, live: true };
+    } catch (err) {
+      logger.warn(
+        { workerId, err },
+        'Failed to forward MCP server permissions to embedded-agent stdin',
+      );
+      this.appendEvent(runtime.ctx, { v: 1, type: 'mcp-servers-applied', applied: false, reason: 'delivery-failed' });
+      return { ok: false, error: err instanceof Error ? err.message : String(err) };
+    }
+  }
+
+  /**
    * Deliver the session's initialPrompt as this embedded worker's first user
    * message, exactly once, right after the loop reports readiness. Reuses
    * the normal sendUserMessage path (turn admission, transcript append, WS
@@ -1984,8 +2100,20 @@ export class EmbeddedAgentWorkerService {
     }
   }
 
-  /** Append a server-authored event object to the persisted stream. */
-  private appendEvent(ctx: StreamContext, event: EmbeddedAgentServerEvent): void {
+  /**
+   * Append a server-authored event object to the persisted stream. Also
+   * accepts the ENGINE-shaped `mcp-servers-applied` event for the one case
+   * where the SERVER synthesizes it: a live `applyMcpServerPermissions`
+   * whose stdin write THREW, so the engine itself never got the chance to
+   * report `applied: false` -- see `applyMcpServerPermissions`'s catch
+   * block. This is a deliberately narrow widening (one named `Extract`, not
+   * the full `EmbeddedAgentEvent` union): every OTHER engine-authored event
+   * still reaches the stream only via `handleLoopLine`'s raw-line append.
+   */
+  private appendEvent(
+    ctx: StreamContext,
+    event: EmbeddedAgentServerEvent | Extract<EmbeddedAgentEvent, { type: 'mcp-servers-applied' }>,
+  ): void {
     this.appendLine(ctx, JSON.stringify(event));
   }
 
@@ -2200,6 +2328,44 @@ export class EmbeddedAgentWorkerService {
       runtime.requestedResumeId = null;
       ctx.worker.sdkSessionId = event.sdkSessionId;
       const session = this.deps.getSession(ctx.sessionId);
+      if (session) {
+        await this.deps.persistSession(session);
+      }
+    }
+
+    // (e2) epic #1636 Phase 5 PR-2 (docs/design/embedded-agent-sdk-engine.md
+    // §4.5): the claude-sdk engine's own discovery of its project
+    // `.mcp.json` fired. Per §4.5 D-D, discovery may report up to three
+    // times per activation -- each arrival is LAST-WRITE-WINS over
+    // `ctx.worker.mcpServers`, never an accumulation across arrivals.
+    // Every reported entry is mapped onto the worker-state shape, with a
+    // server-computed `'denied'` overriding whatever decision the
+    // subprocess itself carried, whenever this repository has a matching
+    // `deny` row for the SAME `(name, hash)` key -- the subprocess never
+    // emits `'denied'` itself (see the wire event's own doc comment for
+    // why that member exists on the worker-state picklist but not on the
+    // wire event's).
+    if (event.type === 'mcp-servers-discovered') {
+      const session = this.deps.getSession(ctx.sessionId);
+      const repositoryId = session?.type === 'worktree' ? session.repositoryId : undefined;
+      const denyKeys = new Set(
+        repositoryId !== undefined
+          ? (await this.deps.mcpServerPermissionRepository.listByRepository(repositoryId))
+              .filter((row) => row.decision === 'deny')
+              .map((row) => `${row.serverName}\u0000${row.configHash}`)
+          : [],
+      );
+      ctx.worker.mcpServers = event.servers.map((entry) => {
+        const key = entry.hash !== undefined ? `${entry.name}\u0000${entry.hash}` : undefined;
+        const decision = key !== undefined && denyKeys.has(key) ? ('denied' as const) : entry.decision;
+        return {
+          name: entry.name,
+          scope: entry.scope,
+          ...(entry.hash !== undefined ? { hash: entry.hash } : {}),
+          ...(decision !== undefined ? { decision } : {}),
+          ...(entry.status !== undefined ? { status: entry.status } : {}),
+        };
+      });
       if (session) {
         await this.deps.persistSession(session);
       }
