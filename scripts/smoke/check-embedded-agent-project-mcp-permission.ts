@@ -173,7 +173,8 @@
 // check-embedded-agent-idle-eviction.ts's header comment for the full
 // account).
 
-import { existsSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
+import { Glob } from 'bun';
+import { cpSync, existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import type { AppContext } from '../../packages/server/src/app-context.js';
@@ -642,12 +643,44 @@ async function main(expectNoPermission: boolean): Promise<void> {
       return { status: res.status, isError: body.result?.isError, data, text };
     }
 
+    /**
+     * Diagnosed 2026-09-21 (Issue #1795 follow-up): a clean `deactivate()`
+     * NEVER clears `worker.mcpServers` -- only the Q14 activation-FAILURE
+     * rollback does (`embedded-agent-worker-service.ts`'s `worker.mcpServers
+     * = undefined` sits exclusively in that catch block). So across a
+     * restart, the PREVIOUS incarnation's `mcpServers` value survives
+     * untouched on the `worker` object, and a bare `!== undefined` check
+     * (this function's own prior implementation) is satisfied the INSTANT
+     * `activateEmbeddedAgentWorker()` returns -- before the new
+     * incarnation's subprocess has even spawned, let alone reported its own
+     * discovery. That is a read-too-early bug (test-trigger.md's "Absence
+     * assertions are the ones read-too-early makes pass falsely" applies
+     * here to a PRESENCE check the same way: an unscoped `!== undefined`
+     * check is satisfiable by a value that predates the event entirely),
+     * and it is DETERMINISTIC, not an occasional flake: the condition is
+     * already true before the subprocess exists, so the very first
+     * `waitUntil` poll always short-circuits.
+     *
+     * Fixed by scoping the wait to "the value CHANGED from what it was
+     * before this activation", via reference inequality against a
+     * `baselineMcpServers` snapshot captured immediately before
+     * `activateEmbeddedAgentWorker()` is even called. This is sound because
+     * the service's `mcp-servers-discovered` handler always assigns a BRAND
+     * NEW array to `worker.mcpServers` on every event it processes (both
+     * the merge branch and the defensive fallback construct a fresh array
+     * literal), so a changed reference is exactly, and only, "a discovered
+     * event for the CURRENT incarnation has been processed" -- never
+     * satisfied by the previous incarnation's leftover value, regardless of
+     * whether its CONTENT happens to be identical.
+     */
     const activate = async (label: string): Promise<void> => {
+      const baselineWorker = ctx!.sessionManager.getWorker(targetSessionId, targetWorkerId);
+      const baselineMcpServers = baselineWorker?.type === 'embedded-agent' ? baselineWorker.mcpServers : undefined;
       await ctx!.sessionManager.activateEmbeddedAgentWorker(targetSessionId, targetWorkerId);
       await waitUntil(
         () => {
           const w = ctx!.sessionManager.getWorker(targetSessionId, targetWorkerId);
-          return !!w && w.type === 'embedded-agent' && w.mcpServers !== undefined;
+          return !!w && w.type === 'embedded-agent' && w.mcpServers !== undefined && w.mcpServers !== baselineMcpServers;
         },
         30_000,
         `${label}: activation-time mcp-servers-discovered event`,
@@ -906,6 +939,27 @@ async function main(expectNoPermission: boolean): Promise<void> {
       if (sweep.survivors.length > 0) {
         console.error('  a fixture MCP server process outlived its session -- this is a finding, not routine cleanup.');
       }
+    }
+    // Ad-hoc, temporary capture-before-delete (2026-09-21 investigation of
+    // the arm 3 read-too-early bug) -- mirrors
+    // `check-fatal-incarnation-replacement.ts`'s `captureWorkerNdjson`
+    // pattern (copy before `rm -rf`, never after) so a future failed run's
+    // persisted worker NDJSON survives the disposable home's teardown for
+    // inspection. Deliberately NOT extracted into a registered, documented
+    // mechanism (`test-trigger.md` registration) -- this is a debugging aid
+    // for one investigation, not a standing feature of this smoke.
+    if (home) {
+      const captureRoot = path.join(os.homedir(), '.agent-console-smoke-captures', 'check-embedded-agent-project-mcp-permission');
+      const captureDir = path.join(captureRoot, path.basename(home));
+      const glob = new Glob('**/outputs/**/*');
+      let capturedAny = false;
+      for (const rel of glob.scanSync({ cwd: home, onlyFiles: true })) {
+        const dest = path.join(captureDir, rel);
+        mkdirSync(path.dirname(dest), { recursive: true });
+        cpSync(path.join(home, rel), dest);
+        capturedAny = true;
+      }
+      if (capturedAny) console.log(`==> worker NDJSON captured to: ${captureDir}`);
     }
     if (home) Bun.spawnSync(['rm', '-rf', home]);
   }
