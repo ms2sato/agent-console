@@ -21,7 +21,11 @@ import {
   createSdkMcpServer,
   query,
   tool,
+  type AgentDefinition,
   type EffortLevel,
+  type McpServerConfig,
+  type McpServerStatus,
+  type McpSetServersResult,
   type Options,
   type Query,
   type SDKCompactBoundaryMessage,
@@ -41,6 +45,7 @@ import {
   type EmbeddedAgentAttachment,
   type EmbeddedAgentEvent,
   type EmbeddedAgentToolName,
+  type McpServerWireConfig,
 } from '@agent-console/shared';
 import {
   COMPACT_TOOL_DESCRIPTION,
@@ -49,6 +54,7 @@ import {
 } from './compact-tool.js';
 import { resolveImageAttachments, buildClaudeSdkUserContent } from './attachment-content.js';
 import type { ClaudeSdkEngine, Engine } from './engine-types.js';
+import { isAccountConnector, mcpServerOf } from './mcp-names.js';
 import type { RuleActivatorLike } from './rule-activation.js';
 import {
   TodoWriteArgsSchema,
@@ -57,6 +63,15 @@ import {
   summarize as summarizeTodos,
   type TodoItem,
 } from './tools/todo-write.js';
+
+/**
+ * The wire scope vocabulary an `mcp-servers-discovered` event's `servers[]`
+ * entries carry (`EmbeddedAgentEvent`'s doc comment, `packages/shared`). Named
+ * here so `classifyMcpServerScope`'s return type is anchored to it rather
+ * than a locally re-typed literal union that could silently drift from the
+ * wire picklist.
+ */
+type McpServerDiscoveredScope = 'project' | 'user' | 'local' | 'reserved' | 'connector';
 
 type SystemInitMessage = Extract<SDKMessage, { type: 'system'; subtype: 'init' }>;
 type CompactBoundaryMessage = Extract<SDKMessage, { type: 'system'; subtype: 'compact_boundary' }>;
@@ -397,6 +412,42 @@ export interface SdkEngineDeps {
    * legitimate "no activator" case to default around.
    */
   ruleActivator: RuleActivatorLike;
+  /**
+   * epic #1636 Phase 5 PR-2 (docs/design/embedded-agent-sdk-engine.md §4.5
+   * D-E "the door"): the repository's currently-allowed `.mcp.json` (Project
+   * scope) servers, in wire-config shape, keyed by name. Never contains the
+   * reserved pair (`agent-console` / `console`) -- `buildOptions()` throws if
+   * it ever does, since that would mean a caller regression let a rejected
+   * name through discovery (`discoverProjectMcpServers` already marks a
+   * reserved-named `.mcp.json` entry `rejected-reserved`, never `allowed`).
+   * Empty when no server is currently allowed, or for a quick session with no
+   * repository.
+   */
+  projectMcpServers: Record<string, McpServerWireConfig>;
+  /**
+   * §4.5 D-E "the wall": the CLI's own User-scope and Local-scope (this
+   * `cwd`) server NAMES, read once at activation by `readUserLocalMcpNames`
+   * (main.ts) -- never their configs, which the CLI loads on its own under
+   * `settingSources: ['user', 'local']`. `unavailable: true` means
+   * `~/.claude.json` could not be read for this purpose; per §4.5, that is a
+   * FAIL-CLOSED condition: `userLocal` is then treated as EMPTY regardless of
+   * its actual contents, so a legitimate user/local-scope server reads as
+   * unexpected (fatal) rather than silently narrowing the detector's
+   * tolerance. `userLocal` combines BOTH scopes into one set (the loader has
+   * no reason to keep them apart for this purpose) -- `mcp-servers-discovered`
+   * events therefore report a name found here as `scope: 'user'`, a
+   * documented simplification, never `'local'`.
+   */
+  expectedMcpServerNames: { userLocal: Set<string>; unavailable: boolean };
+  /**
+   * §4.5's "Subagents" discovery rule: `.claude/agents/*.md` definitions
+   * discovered by `discoverProjectAgents` (main.ts), passed through
+   * `Options.agents` -- but ONLY when `'Task'` is enabled (`buildOptions()`
+   * omits the `agents` key entirely otherwise, never an empty object). Empty
+   * when discovery found nothing, or when `'Task'` is not enabled (main.ts
+   * skips discovery entirely in that case).
+   */
+  agents: Record<string, AgentDefinition>;
 }
 
 /**
@@ -413,17 +464,51 @@ export class SdkEngine implements ClaudeSdkEngine {
   private readonly allowedToolNames: Set<string>;
   private readonly queue = new UserMessageQueue();
   private readonly query: Query;
+  /**
+   * The reserved `agent-console`/`console` pair's own config/instance, built
+   * ONCE (before the first `buildOptions()` call) and reused verbatim by
+   * every later `applyMcpServersOnce` call -- never reconstructed. This is
+   * what makes "reuse the SAME instance" (§4.5 PR-2's `setMcpServers`
+   * premise, `probe-sdk-phase5-pr2-premises.ts` P-a) true by construction
+   * rather than by convention: a second `createSdkMcpServer(...)` call would
+   * be a DIFFERENT in-process server object carrying its own (functionally
+   * identical, but distinct) `Compact`/`TodoWrite` tool closures, and P-a
+   * never measured that shape -- only re-passing the SAME instance was
+   * confirmed to keep the server connected across a live `setMcpServers` call.
+   */
+  private readonly reservedMcpServers: {
+    'agent-console': McpServerConfig;
+    [COMPACT_TOOL_SERVER_NAME]: McpServerConfig;
+  };
+  /**
+   * §4.5 D-D "activation never waits": server names added to the live
+   * session by {@link setMcpServers} since construction, over and above
+   * {@link SdkEngineDeps.projectMcpServers}'s activation-time set. Extended
+   * BEFORE the live `Query.setMcpServers` call in
+   * {@link applyMcpServersOnce}, so a `system:init`/status update racing in
+   * from the SDK during that call is never fatal'd for a name this call is
+   * in the middle of legitimately adding. Folded into `'project'` scope by
+   * {@link classifyMcpServerScope} -- a live add is definitionally a project
+   * server that was pending at activation and got allowed mid-session.
+   */
+  private readonly liveAddedMcpServerNames = new Set<string>();
 
   private currentTurnId: string | null = null;
   private iterationText = '';
   private currentTurnDeferred: { resolve: () => void } | null = null;
   private dead = false;
   /**
-   * Serializes {@link setModelParams}'s live writes. See that method's doc
-   * comment for why arrival order has to be preserved; the chain itself is
-   * just "each link starts only after the previous one SETTLES".
+   * Serializes BOTH {@link setModelParams}'s and {@link setMcpServers}'s live
+   * writes onto ONE shared chain -- renamed from `modelParamsChain` when
+   * `setMcpServers` was added (epic #1636 Phase 5 PR-2) specifically so a
+   * model/effort change and an MCP-server change can never run their live SDK
+   * writes concurrently or interleaved with each other, not only within
+   * themselves. See {@link setModelParams}'s doc comment for why arrival
+   * order has to be preserved; the chain itself is just "each link starts
+   * only after the previous one SETTLES", regardless of which of the two
+   * kinds of call appended it.
    */
-  private modelParamsChain: Promise<void> = Promise.resolve();
+  private liveWritesChain: Promise<void> = Promise.resolve();
   /**
    * Set by `cancel()` when a `runTurn` with attachments is still awaiting
    * `resolveImageAttachments` -- at that point nothing has been pushed onto
@@ -538,6 +623,35 @@ export class SdkEngine implements ClaudeSdkEngine {
     this.enabledToolNames = [...enabledToolNames];
     this.allowedToolNames = new Set(enabledToolNames);
     this.autoCompaction = deps.autoCompaction;
+    // Built once, before the first (only) `buildOptions()` call, so
+    // `applyMcpServersOnce` can reuse the SAME instance later -- see
+    // `reservedMcpServers`'s own doc comment.
+    this.reservedMcpServers = {
+      'agent-console': {
+        type: 'http',
+        url: deps.mcp.baseUrl,
+        headers: { Authorization: `Bearer ${deps.mcp.token}` },
+        alwaysLoad: true,
+      },
+      // Compaction's `Compact` tool, served IN THIS PROCESS -- the handler
+      // acts on state that lives here, and the server has no part in it
+      // (docs/design/embedded-agent-worker.md § The `Compact` tool). The SDK
+      // namespaces it, so the model sees `mcp__console__Compact` while the
+      // openai-api engine's model sees plain `Compact`; the contract (no
+      // parameters, reservation semantics, result wording) is identical.
+      //
+      // `TodoWrite` rides the SAME server, registered only when the
+      // definition's `enabledTools` includes it -- unlike `Compact`, a
+      // disabled `TodoWrite` must not even be reachable, so registration is
+      // gated the same way the allowlist entry above is.
+      [COMPACT_TOOL_SERVER_NAME]: createSdkMcpServer({
+        name: COMPACT_TOOL_SERVER_NAME,
+        tools: [
+          createSdkCompactTool(() => this.reserveCompaction()),
+          ...(this.allowedToolNames.has('TodoWrite') ? [createSdkTodoWriteTool()] : []),
+        ],
+      }),
+    };
 
     // The ONLY production call site for the SDK's query() function -- both
     // the DI seam Pin 1(a) exercises and the grep-containment target Pin 1(b)
@@ -568,6 +682,19 @@ export class SdkEngine implements ClaudeSdkEngine {
    * options object anywhere is the drift vector this exists to kill.
    */
   private buildOptions(systemPromptAppend: string | undefined): Options {
+    // Defensive pin, not a runtime path meant to fire in production:
+    // `discoverProjectMcpServers` (main.ts's caller) already marks a
+    // reserved-named `.mcp.json` entry `rejected-reserved`, never `allowed`,
+    // so `projectMcpServers` should never carry either reserved name. Catches
+    // a caller regression rather than tolerating a silent shadow of the
+    // reserved pair.
+    for (const name of Object.keys(this.deps.projectMcpServers)) {
+      if (name === 'agent-console' || name === COMPACT_TOOL_SERVER_NAME) {
+        throw new Error(
+          `SdkEngineDeps.projectMcpServers must never contain the reserved name "${name}"`,
+        );
+      }
+    }
     return {
       executable: 'bun',
       cwd: this.deps.cwd,
@@ -602,35 +729,36 @@ export class SdkEngine implements ClaudeSdkEngine {
         ...(this.allowedToolNames.has('TodoWrite') ? [SDK_TODO_WRITE_TOOL_NAME] : []),
       ],
       mcpServers: {
-        'agent-console': {
-          type: 'http',
-          url: this.deps.mcp.baseUrl,
-          headers: { Authorization: `Bearer ${this.deps.mcp.token}` },
-          alwaysLoad: true,
-        },
-        // Compaction's `Compact` tool, served IN THIS PROCESS -- the handler
-        // acts on state that lives here, and the server has no part in it
-        // (docs/design/embedded-agent-worker.md § The `Compact` tool). The
-        // SDK namespaces it, so the model sees `mcp__console__Compact` while
-        // the openai-api engine's model sees plain `Compact`; the contract
-        // (no parameters, reservation semantics, result wording) is identical.
-        //
-        // `TodoWrite` rides the SAME server, registered only
-        // when the definition's `enabledTools` includes it -- unlike
-        // `Compact`, a disabled `TodoWrite` must not even be reachable, so
-        // registration is gated the same way the allowlist entry above is.
-        [COMPACT_TOOL_SERVER_NAME]: createSdkMcpServer({
-          name: COMPACT_TOOL_SERVER_NAME,
-          tools: [
-            createSdkCompactTool(() => this.reserveCompaction()),
-            ...(this.allowedToolNames.has('TodoWrite') ? [createSdkTodoWriteTool()] : []),
-          ],
-        }),
+        // The reserved pair -- built once in the constructor and reused
+        // verbatim (never reconstructed here); see `reservedMcpServers`'s own
+        // doc comment.
+        'agent-console': this.reservedMcpServers['agent-console'],
+        [COMPACT_TOOL_SERVER_NAME]: this.reservedMcpServers[COMPACT_TOOL_SERVER_NAME],
+        // epic #1636 Phase 5 PR-2 (§4.5 D-E "the door"): the currently-allowed
+        // `.mcp.json` (Project scope) servers, and nothing else -- the
+        // reserved-name collision guard above is what keeps this spread from
+        // ever shadowing the pair above it.
+        ...this.deps.projectMcpServers,
       },
       permissionMode: 'bypassPermissions',
       allowDangerouslySkipPermissions: true,
       includePartialMessages: true,
-      settingSources: [],
+      // epic #1636 Phase 5 PR-2, design II (§4.5 "Configuration"): the CLI
+      // itself now loads the executing user's own User-scope and Local-scope
+      // (this `cwd`) servers/CLAUDE.md/agents from `~/.claude.json` -- PS10
+      // measured `['user','local']` loads BOTH scopes and NOTHING from the
+      // worktree (no `.mcp.json`, no project CLAUDE.md/rules/agents), so
+      // `'project'` stays deliberately OFF (§4.2's instruction-loader
+      // argument: `loadInstructions` must not double-load with native
+      // discovery). `strictMcpConfig` is deliberately NOT set -- PS11 found
+      // it an MCP-only wall mutually exclusive with this design; §4.5 D-E's
+      // detector (`handleSystemInit`) is the wall instead.
+      settingSources: ['user', 'local'],
+      // §4.5's "Subagents" discovery rule: declared ONLY when `Task` is
+      // enabled -- an omitted key here (never `agents: {}`) for a definition
+      // that never enabled `Task` at all, mirroring how `tools:` above only
+      // ever contains `Task` when it is in `enabledToolNames`.
+      ...(this.allowedToolNames.has('Task') ? { agents: this.deps.agents } : {}),
       // Compaction: the SDK's own auto-compaction IS this engine's automatic
       // compaction; the worker's toggle drives it directly rather than
       // through any machinery of ours.
@@ -817,8 +945,10 @@ export class SdkEngine implements ClaudeSdkEngine {
    * reads the requested values from it.
    *
    * SERIALIZED per engine, which is all this method itself does: each call
-   * is appended to {@link modelParamsChain}, and its work starts only once
-   * the previous call's has SETTLED. Two commands arriving in quick
+   * is appended to {@link liveWritesChain}, and its work starts only once
+   * the previous call's has SETTLED -- including a {@link setMcpServers} call
+   * appended in between, since the two share one chain (see that field's doc
+   * comment for why). Two commands arriving in quick
    * succession each run two awaited live writes, so without the chain they
    * can interleave -- `A.setModel`, `B.setModel`, `B.applyFlagSettings`,
    * `A.applyFlagSettings` -- leaving the live session on the EARLIER call's
@@ -845,13 +975,13 @@ export class SdkEngine implements ClaudeSdkEngine {
     reasoningEffort: string | null;
     contextWindowTokens: number | null;
   }): void {
-    this.modelParamsChain = this.modelParamsChain
+    this.liveWritesChain = this.liveWritesChain
       .then(() => this.applyModelParamsOnce(params))
       .catch(() => {
         // `applyModelParamsOnce` handles its own failures, so reaching here
         // means something outside the live writes threw (an `emit` consumer,
         // say). Swallowed rather than left to propagate for one reason: a
-        // rejected `modelParamsChain` rejects every link appended to it
+        // rejected `liveWritesChain` rejects every link appended to it
         // afterwards WITHOUT running its body, which would silently drop
         // every later parameter change for the life of the engine.
       });
@@ -910,6 +1040,116 @@ export class SdkEngine implements ClaudeSdkEngine {
       );
       this.deps.emit({ v: 1, type: 'model-params-applied', applied: false });
     }
+  }
+
+  /**
+   * epic #1636 Phase 5 PR-2 (docs/design/embedded-agent-sdk-engine.md §4.5
+   * D-D "activation never waits"): reflect a newly-allowed set of `.mcp.json`
+   * (Project scope) servers into the LIVE SDK session, or report that the
+   * fallback (a restart-in-place, declared in the panel) is required.
+   *
+   * `servers` is the FULL currently-allowed project set, never a delta --
+   * same contract as {@link setModelParams} and the `set-mcp-servers` wire
+   * command's own doc comment.
+   *
+   * SERIALIZED on the SAME {@link liveWritesChain} {@link setModelParams}
+   * uses, deliberately -- not a second, independent chain. Reusing the one
+   * lock is what stops a live MCP-server add from running its awaited SDK
+   * calls concurrently with (or interleaved with) an in-flight model/effort
+   * change on the same engine; two independent chains would let both classes
+   * of live write race each other exactly the way `setModelParams`'s own doc
+   * comment describes for two of ITS OWN calls arriving in quick succession.
+   * `claude-sdk`-only -- see the interface doc comment on
+   * {@link ClaudeSdkEngine.setMcpServers}.
+   */
+  setMcpServers(servers: Record<string, McpServerWireConfig>): void {
+    this.liveWritesChain = this.liveWritesChain
+      .then(() => this.applyMcpServersOnce(servers))
+      .catch(() => {
+        // Same rationale as `setModelParams`'s own `.catch(() => {})`:
+        // `applyMcpServersOnce` handles its own failures, so reaching here
+        // means something outside the live write threw. Swallowed so a
+        // rejected `liveWritesChain` never drops every later call (of
+        // EITHER kind) appended to it.
+      });
+  }
+
+  /**
+   * One {@link setMcpServers} call's work. The `this.dead` check stays HERE,
+   * at execution time, for the same reason {@link applyModelParamsOnce}'s
+   * does -- it lets the shared chain outlive the session safely.
+   */
+  private async applyMcpServersOnce(servers: Record<string, McpServerWireConfig>): Promise<void> {
+    // §4.5 D-D: extend the containment detector's expected set BEFORE the
+    // live SDK call, so a `system:init`/status update racing in from the SDK
+    // while this call is in flight is never fatal'd for a name this call is
+    // in the middle of legitimately adding.
+    for (const name of Object.keys(servers)) this.liveAddedMcpServerNames.add(name);
+
+    if (this.dead) {
+      // No live session to write to. The approval record (D-B) is already
+      // the durable truth, so the consequence is purely "not live yet" --
+      // the declared fallback is a restart-in-place, which will pick up the
+      // durable value on its own `init`.
+      this.deps.emit({ v: 1, type: 'mcp-servers-applied', applied: false, reason: 'restart-required' });
+      return;
+    }
+
+    let result: McpSetServersResult;
+    try {
+      // ALWAYS the full reserved pair plus the full allowed set (premise P-a,
+      // `probe-sdk-phase5-pr2-premises.ts`): omitting the reserved pair from a
+      // `setMcpServers` call was never measured and must not be assumed safe.
+      // The reserved pair's config/instance is the SAME one `buildOptions()`
+      // constructed at activation -- see {@link reservedMcpServers}'s own doc
+      // comment for why reusing it (rather than building a fresh one here)
+      // is the measured-safe shape.
+      result = await this.query.setMcpServers({
+        'agent-console': this.reservedMcpServers['agent-console'],
+        [COMPACT_TOOL_SERVER_NAME]: this.reservedMcpServers[COMPACT_TOOL_SERVER_NAME],
+        ...servers,
+      });
+    } catch (err: unknown) {
+      console.warn(
+        `[sdk-engine] setMcpServers threw while applying the live project-server set; the approval ` +
+          `record stays the truth and a restart will pick it up: ${errorMessage(err)}`,
+      );
+      this.deps.emit({
+        v: 1,
+        type: 'mcp-servers-applied',
+        applied: false,
+        errors: { '*': errorMessage(err) },
+      });
+      return;
+    }
+
+    // `applied: true` describes whether the LIVE CALL was made and processed
+    // -- not whether every server in it connected cleanly. A per-server
+    // connection failure is reported via the discovered event's per-server
+    // `status` below, not via this flag (mirrors `model-params-applied`'s own
+    // "applied describes the write reaching the live session" contract).
+    this.deps.emit({
+      v: 1,
+      type: 'mcp-servers-applied',
+      applied: true,
+      ...(Object.keys(result.errors).length > 0 ? { errors: result.errors } : {}),
+    });
+
+    // Form (c): the discovered event from a FRESH `mcpServerStatus()` read,
+    // reflecting the just-applied set -- see `emitMcpServersDiscovered`'s doc
+    // comment for the shared classification logic both this and
+    // `handleSystemInit`'s form (b) use.
+    let status: McpServerStatus[];
+    try {
+      status = await this.query.mcpServerStatus();
+    } catch (err: unknown) {
+      console.warn(
+        `[sdk-engine] mcpServerStatus() failed after a live setMcpServers call; the panel will not see an ` +
+          `updated reading until the next system:init: ${errorMessage(err)}`,
+      );
+      return;
+    }
+    this.emitMcpServersDiscovered(status);
   }
 
   cancel(): void {
@@ -1079,6 +1319,105 @@ export class SdkEngine implements ClaudeSdkEngine {
         `SDK session reported disallowed tool(s) outside the containment allowlist: ${leaked.join(', ')}`,
       );
     }
+
+    // epic #1636 Phase 5 PR-2 (§4.5 D-E "the detector is the wall"): the MCP
+    // containment check. Emitted BEFORE the fatal decision below, so the
+    // panel sees what the SDK actually reported even on a session that is
+    // about to be terminated.
+    this.emitMcpServersDiscovered(message.mcp_servers);
+
+    const mcpToolServerNames = new Set<string>();
+    for (const name of message.tools) {
+      const server = mcpServerOf(name);
+      if (server !== null) mcpToolServerNames.add(server);
+    }
+    const reportedMcpNames = new Set([...mcpToolServerNames, ...message.mcp_servers.map((s) => s.name)]);
+    const unexpectedMcpNames = [...reportedMcpNames].filter((name) => !this.isExpectedMcpServerName(name));
+    if (unexpectedMcpNames.length > 0) {
+      const unavailableHint = this.deps.expectedMcpServerNames.unavailable
+        ? ' -- note: the CLI\'s own ~/.claude.json could not be read at activation, so a legitimate ' +
+          'user/local-scope server may have been misclassified as unexpected here'
+        : '';
+      this.handleFatal(
+        `SDK session reported an MCP server outside the expected set: ${unexpectedMcpNames.join(', ')}${unavailableHint}`,
+      );
+    }
+  }
+
+  /**
+   * §4.5 D-E's expected-name union, over the LITERAL name space (the
+   * reserved pair, `.mcp.json` entries, and `~/.claude.json` entries all use
+   * the name as-declared) plus the connector class, which is recognized via
+   * `isAccountConnector`'s own slugify-then-prefix-test normalization
+   * (`mcp-names.ts`) rather than a literal-name lookup -- `system:init`
+   * reports the SAME four connectors as a human-readable label
+   * ("claude.ai Google Drive") in `mcp_servers[].name` and as an
+   * already-slugified tool-name prefix in `tools` (`mcp__claude_ai_Google_
+   * Drive__*`), and only the slugify normalization matches both spellings.
+   * Returns `null` for a name matching none of the five -- a containment
+   * violation, which {@link handleSystemInit} handles separately by folding
+   * it into `unexpectedMcpNames` rather than reading `null` back out of this
+   * method's return value at that call site.
+   */
+  private classifyMcpServerScope(name: string): McpServerDiscoveredScope | null {
+    if (name === 'agent-console' || name === COMPACT_TOOL_SERVER_NAME) return 'reserved';
+    if (name in this.deps.projectMcpServers || this.liveAddedMcpServerNames.has(name)) return 'project';
+    // Fail-closed (§4.5 D-E): `unavailable` means the CLI's own
+    // ~/.claude.json could not be read for this purpose, so `userLocal` is
+    // treated as EMPTY regardless of its actual (possibly stale, possibly
+    // never-populated) contents -- a user/local-scope server then reads as
+    // unexpected rather than silently narrowing the detector's tolerance.
+    if (!this.deps.expectedMcpServerNames.unavailable && this.deps.expectedMcpServerNames.userLocal.has(name)) {
+      // `expectedMcpServerNames.userLocal` combines BOTH the CLI's
+      // User-scope and Local-scope name sets into one (see that field's own
+      // doc comment on `SdkEngineDeps`) -- a name found here is reported as
+      // `'user'`, a documented simplification, never `'local'`.
+      return 'user';
+    }
+    if (isAccountConnector(name)) return 'connector';
+    return null;
+  }
+
+  /** Whether `name` matches ANY of §4.5 D-E's expected classes -- the wall's
+   * pass condition. See {@link classifyMcpServerScope} for the classes. */
+  private isExpectedMcpServerName(name: string): boolean {
+    return this.classifyMcpServerScope(name) !== null;
+  }
+
+  /**
+   * Emits an `mcp-servers-discovered` event classifying every entry in
+   * `entries` by §4.5 D-E's scope union, shared by `handleSystemInit`'s form
+   * (b) (every occurrence of `system:init`, reporting `message.mcp_servers`)
+   * and `applyMcpServersOnce`'s form (c) (a fresh `mcpServerStatus()` read
+   * after a live `setMcpServers` call).
+   *
+   * An entry whose name matches none of the five scopes -- the containment
+   * violation `handleSystemInit`'s own fatal check reacts to separately -- is
+   * OMITTED from the emitted array rather than reported with some
+   * placeholder scope: the wire schema's `scope` picklist has no "unknown"
+   * member (see `EmbeddedAgentEvent`'s doc comment on this event), and
+   * fabricating one of the five real values for a name that matched none of
+   * them would misreport it. The `fatal` event this drives towards already
+   * names the anomaly in its own message text.
+   *
+   * `hash`/`decision` are deliberately left unset here for every entry, even
+   * `'project'`-scope ones: the FIRST discovered-event emission
+   * (`main.ts`'s init-arm form (a), emitted once per activation from
+   * discovery, before this engine's `query()` is even constructed) already
+   * carries the authoritative `hash`/`decision` pair for every project
+   * entry. This site's job is reporting what `system:init`/`mcpServerStatus()`
+   * ACTUALLY says -- primarily `status` -- not re-deriving a hash this class
+   * has no reason to recompute.
+   */
+  private emitMcpServersDiscovered(entries: Array<{ name: string; status: string }>): void {
+    const servers = entries.reduce<
+      Array<{ name: string; scope: McpServerDiscoveredScope; status: string }>
+    >((acc, entry) => {
+      const scope = this.classifyMcpServerScope(entry.name);
+      if (scope !== null) acc.push({ name: entry.name, scope, status: entry.status });
+      return acc;
+    }, []);
+    this.deps.emit({ v: 1, type: 'mcp-servers-discovered', servers });
   }
 
   /**

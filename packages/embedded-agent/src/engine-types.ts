@@ -35,7 +35,11 @@
  * narrows on (with an exhaustiveness check), rather than a runtime
  * `typeof loop.compactNow === 'function'` guess.
  */
-import type { EmbeddedAgentAttachment, EmbeddedAgentDefinition } from '@agent-console/shared';
+import type {
+  EmbeddedAgentAttachment,
+  EmbeddedAgentDefinition,
+  McpServerWireConfig,
+} from '@agent-console/shared';
 
 export interface Engine {
   /** Start (or continue) one user turn. Resolves once the turn concludes,
@@ -117,6 +121,20 @@ export interface ClaudeSdkEngine extends Engine {
    * implementation of one.
    */
   dispose(): void;
+  /**
+   * epic #1636 Phase 5 PR-2 (docs/design/embedded-agent-sdk-engine.md §4.5
+   * D-D "activation never waits"): reflect a newly-allowed set of `.mcp.json`
+   * (Project scope) servers into the LIVE session without waiting for the
+   * next activation. `claude-sdk`-only -- `openai-api` has no MCP
+   * discovery/approval concept at all, so there is no `setMcpServers` on
+   * `OpenAiApiEngine`; `main.ts`'s dispatch reports `unsupported-engine` on
+   * that arm instead of calling a method that does not exist.
+   *
+   * `servers` is the FULL currently-allowed project set, never a delta --
+   * same full-state contract as {@link Engine.setModelParams} and the
+   * `set-mcp-servers` wire command's own doc comment.
+   */
+  setMcpServers(servers: Record<string, McpServerWireConfig>): void;
 }
 
 /** Either engine `main.ts`'s dispatch loop may be driving, narrowed on

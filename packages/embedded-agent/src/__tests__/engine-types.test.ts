@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import type { Engine } from '../engine-types.js';
+import type { ClaudeSdkEngine, Engine } from '../engine-types.js';
 
 // -----------------------------------------------------------------------
 // Type-level compile pin (Phase 4, #1683 decision 5): `Engine` must have no
@@ -31,7 +31,15 @@ type Assert<T extends true> = T;
 type _AssertNoCompactNow = Assert<'compactNow' extends keyof Engine ? false : true>;
 type _AssertNoDispose = Assert<'dispose' extends keyof Engine ? false : true>;
 
-export type { _AssertNoCompactNow, _AssertNoDispose };
+/**
+ * epic #1636 Phase 5 PR-2: `ClaudeSdkEngine` must have a `setMcpServers`
+ * member -- same `Assert<T extends true>` idiom as the two pins above (a
+ * `declare const x: never` form is inert here for the identical reason their
+ * own comment explains).
+ */
+type _AssertHasSetMcpServers = Assert<'setMcpServers' extends keyof ClaudeSdkEngine ? true : false>;
+
+export type { _AssertNoCompactNow, _AssertNoDispose, _AssertHasSetMcpServers };
 
 describe('Engine — no compactNow/dispose member (Phase 4, #1683 decision 5)', () => {
   it('is enforced at compile time (see the type-level pin above)', () => {

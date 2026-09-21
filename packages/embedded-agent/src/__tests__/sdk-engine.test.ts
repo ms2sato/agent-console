@@ -17,7 +17,7 @@ import { join } from 'node:path';
 import * as fsPromises from 'node:fs/promises';
 import * as os from 'node:os';
 import { z } from 'zod';
-import type { EmbeddedAgentAttachment, EmbeddedAgentEvent } from '@agent-console/shared';
+import type { EmbeddedAgentAttachment, EmbeddedAgentEvent, McpServerWireConfig } from '@agent-console/shared';
 import type {
   Options,
   Query,
@@ -228,6 +228,59 @@ function makeCapturingQuery(source: SDKMessage[]): { queryFn: QueryFn; pushedMes
   return { queryFn, pushedMessages };
 }
 
+/**
+ * A `queryFn` fake supporting `setMcpServers`/`mcpServerStatus` PLUS manual,
+ * out-of-band message pushing (`push`) -- for tests that need to drive a
+ * live `setMcpServers` call and THEN observe a later `system:init` occurrence
+ * against the resulting (extended) containment expectation, which
+ * `makeFakeQuery`'s fixed-array replay cannot express (the array is
+ * exhausted/blocked before the test's own live call happens).
+ */
+function makeControllableMcpQuery(): {
+  queryFn: QueryFn;
+  push: (msg: SDKMessage) => void;
+  setMcpServersCalls: Array<Record<string, unknown>>;
+} {
+  const queue: SDKMessage[] = [];
+  let waiter: ((msg: SDKMessage) => void) | null = null;
+  const push = (msg: SDKMessage) => {
+    if (waiter) {
+      const w = waiter;
+      waiter = null;
+      w(msg);
+    } else {
+      queue.push(msg);
+    }
+  };
+  const setMcpServersCalls: Array<Record<string, unknown>> = [];
+  const queryFn: QueryFn = () => {
+    const gen = (async function* (): AsyncGenerator<SDKMessage, void> {
+      for (;;) {
+        if (queue.length > 0) {
+          yield queue.shift()!;
+          continue;
+        }
+        const msg = await new Promise<SDKMessage>((resolve) => {
+          waiter = resolve;
+        });
+        yield msg;
+      }
+    })();
+    const fake = Object.assign(gen, {
+      interrupt: async () => undefined,
+      close: () => {},
+      getContextUsage: async () => usableContextUsage(1000),
+      setMcpServers: async (servers: Record<string, unknown>) => {
+        setMcpServersCalls.push(servers);
+        return { added: Object.keys(servers), removed: [], errors: {} };
+      },
+      mcpServerStatus: async () => [],
+    });
+    return asQuery(fake);
+  };
+  return { queryFn, push, setMcpServersCalls };
+}
+
 /** A generator that never yields and never resolves -- models "system:init
  * never arrives" for the ready/system:init decoupling regression guard. */
 function neverYieldingGenerator(): AsyncGenerator<SDKMessage, void> {
@@ -307,6 +360,13 @@ const baseDeps = (overrides: Partial<SdkEngineDeps> = {}): SdkEngineDeps => ({
   autoCompaction: false,
   sleep: instantSleep(),
   ruleActivator: noopRuleActivator(),
+  // epic #1636 Phase 5 PR-2: empty by default so the vast majority of tests,
+  // which are not about MCP discovery/agents at all, see no project servers,
+  // an available-but-empty user/local name set, and no subagents. The
+  // dedicated describe blocks below override these explicitly.
+  projectMcpServers: {},
+  expectedMcpServerNames: { userLocal: new Set(), unavailable: false },
+  agents: {},
   ...overrides,
 });
 
@@ -317,7 +377,13 @@ const baseDeps = (overrides: Partial<SdkEngineDeps> = {}): SdkEngineDeps => ({
 // required fields this codebase does not own.
 // ---------------------------------------------------------------------------
 
-function systemInit(overrides: { sessionId?: string; tools?: string[] } = {}): SDKMessage {
+function systemInit(
+  overrides: {
+    sessionId?: string;
+    tools?: string[];
+    mcpServers?: { name: string; status: string }[];
+  } = {},
+): SDKMessage {
   return asSdkMessage({
     type: 'system',
     subtype: 'init',
@@ -325,7 +391,7 @@ function systemInit(overrides: { sessionId?: string; tools?: string[] } = {}): S
     claude_code_version: '2.1.233',
     cwd: '/tmp/work',
     tools: overrides.tools ?? ['Read', 'Glob', 'Grep'],
-    mcp_servers: [{ name: 'agent-console', status: 'connected' }],
+    mcp_servers: overrides.mcpServers ?? [{ name: 'agent-console', status: 'connected' }],
     model: 'claude-sonnet-5',
     permissionMode: 'bypassPermissions',
     slash_commands: [],
@@ -553,7 +619,12 @@ describe('SdkEngine — construction seam: the query() Options battery (Pin 1(a)
     expect(options.permissionMode).toBe('bypassPermissions');
     expect(options.allowDangerouslySkipPermissions).toBe(true);
     expect(options.includePartialMessages).toBe(true);
-    expect(options.settingSources).toEqual([]);
+    // epic #1636 Phase 5 PR-2, design II (§4.5): the CLI's own User- and
+    // Local-scope discovery replaces the Phase 1 `[]` value -- PS10 measured
+    // `['user','local']` loads neither `.mcp.json` nor project CLAUDE.md/
+    // rules/agents, so `'project'` stays deliberately absent.
+    expect(options.settingSources).toEqual(['user', 'local']);
+    expect('strictMcpConfig' in options).toBe(false);
     // Reach measured: removing autoMemoryEnabled from buildOptions fails this line with "expected {…} to equal {…}".
     expect(options.settings).toEqual({ autoCompactEnabled: false, autoMemoryEnabled: false });
     expect(options.mcpServers?.['agent-console']).toEqual({
@@ -564,7 +635,10 @@ describe('SdkEngine — construction seam: the query() Options battery (Pin 1(a)
     });
     // Compaction's `Compact` tool is served by a SECOND, in-process SDK MCP
     // server. Asserted by presence rather than deep equality: the value is a
-    // live server instance, not a config literal.
+    // live server instance, not a config literal. `baseDeps()` defaults
+    // `projectMcpServers` to `{}`, so the reserved pair is the whole set here
+    // -- the "plus project servers" half is asserted in the dedicated
+    // `projectMcpServers` describe block below.
     expect(Object.keys(options.mcpServers ?? {}).sort()).toEqual(['agent-console', 'console']);
     // R1: the re-scoped Phase 1 pin. `resume` is absent because these deps
     // carried none -- NOT because the engine cannot pass one. The pin's
@@ -686,6 +760,66 @@ describe('SdkEngine — construction seam: the query() Options battery (Pin 1(a)
     });
     expect(systemPromptAppend).toContain('Session ID: sess-sdk');
     expect(systemPromptAppend).toContain('Worker ID: work-sdk');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// epic #1636 Phase 5 PR-2: buildOptions -- project MCP servers and subagents
+// ---------------------------------------------------------------------------
+
+describe('SdkEngine — buildOptions: project MCP servers and subagents (epic #1636 Phase 5 PR-2)', () => {
+  it('spreads projectMcpServers into mcpServers alongside the reserved pair', () => {
+    const { queryFn, captured } = makeFakeQuery([]);
+    const projectServer: McpServerWireConfig = { type: 'stdio', command: 'echo-server' };
+    new SdkEngine(baseDeps({ queryFn, projectMcpServers: { 'my-server': projectServer } }));
+
+    expect(Object.keys(captured.options?.mcpServers ?? {}).sort()).toEqual([
+      'agent-console',
+      'console',
+      'my-server',
+    ]);
+    expect(captured.options?.mcpServers?.['my-server']).toEqual(projectServer);
+  });
+
+  it('throws at construction if projectMcpServers contains the reserved "agent-console" name (defensive pin, not a production path)', () => {
+    const { queryFn } = makeFakeQuery([]);
+    expect(() =>
+      new SdkEngine(
+        baseDeps({ queryFn, projectMcpServers: { 'agent-console': { type: 'stdio', command: 'x' } } }),
+      ),
+    ).toThrow(/reserved name "agent-console"/);
+  });
+
+  it('throws at construction if projectMcpServers contains the reserved "console" name (defensive pin, not a production path)', () => {
+    const { queryFn } = makeFakeQuery([]);
+    expect(() =>
+      new SdkEngine(baseDeps({ queryFn, projectMcpServers: { console: { type: 'stdio', command: 'x' } } })),
+    ).toThrow(/reserved name "console"/);
+  });
+
+  it('omits the agents key entirely when Task is not enabled, even when deps.agents is non-empty', () => {
+    const { queryFn, captured } = makeFakeQuery([]);
+    new SdkEngine(
+      baseDeps({
+        queryFn,
+        enabledTools: ['Read'],
+        agents: { reviewer: { description: 'reviews code', prompt: 'You review code.' } },
+      }),
+    );
+    expect('agents' in (captured.options ?? {})).toBe(false);
+  });
+
+  it('passes deps.agents through Options.agents when Task is enabled', () => {
+    const { queryFn, captured } = makeFakeQuery([]);
+    const agents = { reviewer: { description: 'reviews code', prompt: 'You review code.' } };
+    new SdkEngine(baseDeps({ queryFn, enabledTools: ['Read', 'Task'], agents }));
+    expect(captured.options?.agents).toEqual(agents);
+  });
+
+  it('passes an empty agents object through when Task is enabled but discovery found nothing', () => {
+    const { queryFn, captured } = makeFakeQuery([]);
+    new SdkEngine(baseDeps({ queryFn, enabledTools: ['Task'], agents: {} }));
+    expect(captured.options?.agents).toEqual({});
   });
 });
 
@@ -880,6 +1014,210 @@ describe('SdkEngine — tool-surface containment (Pin 2, S5)', () => {
     } finally {
       warn.mockRestore();
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// epic #1636 Phase 5 PR-2 (§4.5 D-E): the MCP server containment wall
+// ---------------------------------------------------------------------------
+
+describe('SdkEngine — MCP server containment wall (epic #1636 Phase 5 PR-2, §4.5 D-E)', () => {
+  it('accepts a connector name in mcp_servers (label form) with no matching tool prefix (positive control)', async () => {
+    const events: EmbeddedAgentEvent[] = [];
+    const { queryFn } = makeFakeQuery([
+      systemInit({
+        mcpServers: [
+          { name: 'agent-console', status: 'connected' },
+          { name: 'claude.ai Google Drive', status: 'connected' },
+        ],
+      }),
+    ]);
+    new SdkEngine(baseDeps({ emit: (e) => events.push(e), queryFn }));
+    await flush();
+    expect(eventsOfType(events, 'fatal')).toHaveLength(0);
+  });
+
+  it('accepts a connector tool-name prefix (already-slugified form) with no matching mcp_servers entry (positive control)', async () => {
+    const events: EmbeddedAgentEvent[] = [];
+    const { queryFn } = makeFakeQuery([
+      systemInit({ tools: ['Read', 'mcp__claude_ai_Google_Drive__list_files'] }),
+    ]);
+    new SdkEngine(baseDeps({ emit: (e) => events.push(e), queryFn, enabledTools: ['Read'] }));
+    await flush();
+    expect(eventsOfType(events, 'fatal')).toHaveLength(0);
+  });
+
+  it('accepts a project server name present in deps.projectMcpServers (positive control)', async () => {
+    const events: EmbeddedAgentEvent[] = [];
+    const { queryFn } = makeFakeQuery([
+      systemInit({
+        mcpServers: [
+          { name: 'agent-console', status: 'connected' },
+          { name: 'my-server', status: 'connected' },
+        ],
+        tools: ['Read', 'mcp__my-server__do_thing'],
+      }),
+    ]);
+    new SdkEngine(
+      baseDeps({
+        emit: (e) => events.push(e),
+        queryFn,
+        enabledTools: ['Read'],
+        projectMcpServers: { 'my-server': { type: 'stdio', command: 'echo' } },
+      }),
+    );
+    await flush();
+    expect(eventsOfType(events, 'fatal')).toHaveLength(0);
+  });
+
+  it('accepts a user/local-scope server name present in deps.expectedMcpServerNames.userLocal (positive control)', async () => {
+    const events: EmbeddedAgentEvent[] = [];
+    const { queryFn } = makeFakeQuery([
+      systemInit({
+        mcpServers: [
+          { name: 'agent-console', status: 'connected' },
+          { name: 'chrome-devtools', status: 'connected' },
+        ],
+      }),
+    ]);
+    new SdkEngine(
+      baseDeps({
+        emit: (e) => events.push(e),
+        queryFn,
+        expectedMcpServerNames: { userLocal: new Set(['chrome-devtools']), unavailable: false },
+      }),
+    );
+    await flush();
+    expect(eventsOfType(events, 'fatal')).toHaveLength(0);
+  });
+
+  it('terminates with a fatal event when mcp_servers reports a name outside every expected class (negative control)', async () => {
+    const events: EmbeddedAgentEvent[] = [];
+    const { queryFn, isClosed } = makeFakeQuery([
+      systemInit({
+        mcpServers: [
+          { name: 'agent-console', status: 'connected' },
+          { name: 'unexpected-leak', status: 'connected' },
+        ],
+      }),
+    ]);
+    new SdkEngine(baseDeps({ emit: (e) => events.push(e), queryFn }));
+    await flush();
+
+    const fatalEvents = eventsOfType(events, 'fatal');
+    expect(fatalEvents).toHaveLength(1);
+    expect(fatalEvents[0].message).toContain('unexpected-leak');
+    expect(isClosed()).toBe(true);
+  });
+
+  it('terminates with a fatal event when an mcp__-prefixed tool name reports a server outside every expected class (negative control)', async () => {
+    const events: EmbeddedAgentEvent[] = [];
+    const { queryFn } = makeFakeQuery([
+      systemInit({ tools: ['Read', 'mcp__unexpected-leak__do_thing'] }),
+    ]);
+    new SdkEngine(baseDeps({ emit: (e) => events.push(e), queryFn, enabledTools: ['Read'] }));
+    await flush();
+
+    const fatalEvents = eventsOfType(events, 'fatal');
+    expect(fatalEvents).toHaveLength(1);
+    expect(fatalEvents[0].message).toContain('unexpected-leak');
+  });
+
+  it('fail-closed: a user/local-scope name is treated as unexpected (fatal) when expectedMcpServerNames.unavailable is true, even though it is present in userLocal', async () => {
+    const events: EmbeddedAgentEvent[] = [];
+    const { queryFn } = makeFakeQuery([
+      systemInit({
+        mcpServers: [
+          { name: 'agent-console', status: 'connected' },
+          { name: 'chrome-devtools', status: 'connected' },
+        ],
+      }),
+    ]);
+    new SdkEngine(
+      baseDeps({
+        emit: (e) => events.push(e),
+        queryFn,
+        expectedMcpServerNames: { userLocal: new Set(['chrome-devtools']), unavailable: true },
+      }),
+    );
+    await flush();
+
+    const fatalEvents = eventsOfType(events, 'fatal');
+    expect(fatalEvents).toHaveLength(1);
+    expect(fatalEvents[0].message).toContain('chrome-devtools');
+    expect(fatalEvents[0].message).toContain('~/.claude.json');
+  });
+
+  it('emits mcp-servers-discovered classifying reserved/project/user/connector scopes, BEFORE the fatal decision, and omits an unclassifiable name from the array', async () => {
+    const events: EmbeddedAgentEvent[] = [];
+    const { queryFn } = makeFakeQuery([
+      systemInit({
+        mcpServers: [
+          { name: 'agent-console', status: 'connected' },
+          { name: 'console', status: 'connected' },
+          { name: 'my-server', status: 'connected' },
+          { name: 'chrome-devtools', status: 'connected' },
+          { name: 'claude.ai Google Drive', status: 'connected' },
+          { name: 'unexpected-leak', status: 'failed' },
+        ],
+      }),
+    ]);
+    new SdkEngine(
+      baseDeps({
+        emit: (e) => events.push(e),
+        queryFn,
+        projectMcpServers: { 'my-server': { type: 'stdio', command: 'echo' } },
+        expectedMcpServerNames: { userLocal: new Set(['chrome-devtools']), unavailable: false },
+      }),
+    );
+    await flush();
+
+    const discovered = eventsOfType(events, 'mcp-servers-discovered');
+    expect(discovered).toHaveLength(1);
+    expect(discovered[0].servers).toEqual([
+      { name: 'agent-console', scope: 'reserved', status: 'connected' },
+      { name: 'console', scope: 'reserved', status: 'connected' },
+      { name: 'my-server', scope: 'project', status: 'connected' },
+      { name: 'chrome-devtools', scope: 'user', status: 'connected' },
+      { name: 'claude.ai Google Drive', scope: 'connector', status: 'connected' },
+    ]);
+    // The discovered event must appear BEFORE the fatal it's paired with in
+    // this same flush -- the panel must see what was seen even on a fatal.
+    const discoveredIndex = events.indexOf(discovered[0]);
+    const fatalIndex = events.findIndex((e) => e.type === 'fatal');
+    expect(fatalIndex).toBeGreaterThan(-1);
+    expect(discoveredIndex).toBeLessThan(fatalIndex);
+  });
+
+  it('accepts a live-added server name after a successful setMcpServers call, but would have been fatal before it', async () => {
+    const events: EmbeddedAgentEvent[] = [];
+    const { queryFn, push } = makeControllableMcpQuery();
+    const engine = new SdkEngine(baseDeps({ emit: (e) => events.push(e), queryFn }));
+
+    engine.setMcpServers({ 'newly-allowed': { type: 'stdio', command: 'echo' } });
+    await flush();
+    expect(eventsOfType(events, 'mcp-servers-applied')).toEqual([
+      { v: 1, type: 'mcp-servers-applied', applied: true },
+    ]);
+
+    events.length = 0;
+    push(
+      systemInit({
+        mcpServers: [
+          { name: 'agent-console', status: 'connected' },
+          { name: 'console', status: 'connected' },
+          { name: 'newly-allowed', status: 'connected' },
+        ],
+      }),
+    );
+    await flush();
+    // Positive assertion, not just "no fatal": had `newly-allowed` reached
+    // the wall BEFORE the live `setMcpServers` call extended the expected
+    // set, this exact name would have been the one reported unexpected (see
+    // the "outside every expected class" negative control above) --
+    // confirming this test actually exercises the live-extension path.
+    expect(eventsOfType(events, 'fatal')).toHaveLength(0);
+    expect(eventsOfType(events, 'sdk-session-id')).toHaveLength(1);
   });
 });
 
@@ -1384,18 +1722,25 @@ describe('SdkEngine — Finding #3 (#1584): no double-emit across a real tool-us
     const messages = rawLines.map((line) => JSON.parse(line) as Record<string, unknown>);
 
     // The real capture's system:init reports the FULL agent-console tool
-    // catalog (Task, Bash, EnterWorktree, ...) -- Pin 2's live containment
-    // check (this file's own "SDK session reported disallowed tool(s)"
-    // fatal path, unrelated to Finding #3) would otherwise terminate the
-    // session before the turn under test even completes. Only the `Read`
-    // tool the fixture's own tool_use block actually calls is relevant to
-    // this test, so the fixture's system:init is adjusted to match the
-    // engine's `enabledTools` below -- this narrows containment scope only,
-    // and does not touch any of the assistant/tool_use/text content this
-    // test asserts on.
+    // catalog (Task, Bash, EnterWorktree, ...) AND `mcp_servers` list
+    // (`chrome-devtools`, `agent-console-dev`, the claude.ai connectors, ...)
+    // -- Pin 2's live containment check and the epic #1636 Phase 5 PR-2 MCP
+    // wall (this file's own "disallowed tool(s)" / "MCP server outside the
+    // expected set" fatal paths, both unrelated to Finding #3) would
+    // otherwise terminate the session before the turn under test even
+    // completes. Only the `Read` tool the fixture's own tool_use block
+    // actually calls is relevant to this test, so the fixture's system:init
+    // is adjusted to match the engine's `enabledTools` below and to report
+    // only the reserved pair -- this narrows containment scope only, and does
+    // not touch any of the assistant/tool_use/text content this test asserts
+    // on.
     for (const message of messages) {
       if (message.type === 'system' && message.subtype === 'init') {
         message.tools = ['Read'];
+        message.mcp_servers = [
+          { name: 'agent-console', status: 'connected' },
+          { name: 'console', status: 'connected' },
+        ];
       }
     }
 
@@ -3236,5 +3581,255 @@ describe('SdkEngine — setModelParams (agent-surface.md Phase 3)', () => {
     engine.setModelParams({ model: 'model-B', reasoningEffort: 'high', contextWindowTokens: null });
     await flush();
     expect(eventsOfType(events, 'model-params-applied')).toHaveLength(2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// epic #1636 Phase 5 PR-2: setMcpServers
+// ---------------------------------------------------------------------------
+
+describe('SdkEngine — setMcpServers (epic #1636 Phase 5 PR-2)', () => {
+  interface LiveMcpWriteHandle {
+    queryFn: QueryFn;
+    setMcpServersCalls: Array<Record<string, unknown>>;
+    statusCallCount: () => number;
+  }
+
+  /** Mirrors `makeLiveWriteQuery` (setModelParams describe block) but for
+   * `setMcpServers`/`mcpServerStatus` -- the two live-write methods THIS
+   * describe block's tests call. `holdFirst` is the ordering tests' lever,
+   * same shape as `makeLiveWriteQuery`'s `holdFirstSetModel`. */
+  function makeLiveMcpWriteQuery(
+    opts: { holdFirst?: boolean; failOn?: 'setMcpServers'; errorsFor?: string } = {},
+  ): LiveMcpWriteHandle & { releaseFirst: () => void } {
+    const setMcpServersCalls: Array<Record<string, unknown>> = [];
+    let statusCalls = 0;
+    let release: () => void = () => {};
+    const held =
+      opts.holdFirst === true
+        ? new Promise<void>((resolve) => {
+            release = resolve;
+          })
+        : null;
+    let seen = 0;
+    const { queryFn: base } = makeFakeQuery([]);
+    const queryFn: QueryFn = (params) =>
+      asQuery(
+        Object.assign(base(params), {
+          setMcpServers: async (servers: Record<string, unknown>) => {
+            setMcpServersCalls.push(servers);
+            seen += 1;
+            if (held !== null && seen === 1) await held;
+            if (opts.failOn === 'setMcpServers') throw new Error('transport gone');
+            const errors =
+              opts.errorsFor !== undefined && servers[opts.errorsFor] !== undefined
+                ? { [opts.errorsFor]: 'connection refused' }
+                : {};
+            return { added: Object.keys(servers), removed: [], errors };
+          },
+          mcpServerStatus: async () => {
+            statusCalls += 1;
+            return [];
+          },
+        }),
+      );
+    return {
+      queryFn,
+      setMcpServersCalls,
+      statusCallCount: () => statusCalls,
+      releaseFirst: () => release(),
+    };
+  }
+
+  it('sends the reserved pair plus the full servers argument on every call, never a partial set', async () => {
+    const { queryFn, setMcpServersCalls } = makeLiveMcpWriteQuery();
+    const engine = new SdkEngine(baseDeps({ queryFn }));
+
+    engine.setMcpServers({ 'my-server': { type: 'stdio', command: 'echo' } });
+    await flush();
+
+    expect(setMcpServersCalls).toHaveLength(1);
+    expect(Object.keys(setMcpServersCalls[0]).sort()).toEqual(['agent-console', 'console', 'my-server']);
+  });
+
+  it('reuses the SAME reserved agent-console config and console server instance across buildOptions and a live setMcpServers call (premise P-a)', async () => {
+    let capturedCall: Record<string, unknown> | undefined;
+    const captured: { options?: Options } = {};
+    const queryFn: QueryFn = (params) => {
+      captured.options = params.options;
+      const gen = (async function* (): AsyncGenerator<SDKMessage, void> {
+        await new Promise<never>(() => {});
+      })();
+      return asQuery(
+        Object.assign(gen, {
+          interrupt: async () => undefined,
+          close: () => {},
+          getContextUsage: async () => usableContextUsage(1000),
+          setMcpServers: async (servers: Record<string, unknown>) => {
+            capturedCall = servers;
+            return { added: [], removed: [], errors: {} };
+          },
+          mcpServerStatus: async () => [],
+        }),
+      );
+    };
+    const engine = new SdkEngine(baseDeps({ queryFn }));
+
+    engine.setMcpServers({});
+    await flush();
+
+    expect(capturedCall?.['agent-console']).toBe(captured.options?.mcpServers?.['agent-console']);
+    expect(capturedCall?.['console']).toBe(
+      captured.options?.mcpServers?.['console'],
+    );
+  });
+
+  it('reports applied: true with no errors key when the live call succeeds cleanly', async () => {
+    const events: EmbeddedAgentEvent[] = [];
+    const { queryFn } = makeLiveMcpWriteQuery();
+    const engine = new SdkEngine(baseDeps({ queryFn, emit: (e) => events.push(e) }));
+
+    engine.setMcpServers({ 'my-server': { type: 'stdio', command: 'echo' } });
+    await flush();
+
+    const applied = eventsOfType(events, 'mcp-servers-applied');
+    expect(applied).toEqual([{ v: 1, type: 'mcp-servers-applied', applied: true }]);
+    expect('errors' in applied[0]).toBe(false);
+  });
+
+  it('forwards a per-server errors map from McpSetServersResult while still reporting applied: true', async () => {
+    const events: EmbeddedAgentEvent[] = [];
+    const { queryFn } = makeLiveMcpWriteQuery({ errorsFor: 'my-server' });
+    const engine = new SdkEngine(baseDeps({ queryFn, emit: (e) => events.push(e) }));
+
+    engine.setMcpServers({ 'my-server': { type: 'stdio', command: 'echo' } });
+    await flush();
+
+    expect(eventsOfType(events, 'mcp-servers-applied')).toEqual([
+      { v: 1, type: 'mcp-servers-applied', applied: true, errors: { 'my-server': 'connection refused' } },
+    ]);
+  });
+
+  it('reports applied: false with an errors map when the live call throws', async () => {
+    const events: EmbeddedAgentEvent[] = [];
+    const { queryFn } = makeLiveMcpWriteQuery({ failOn: 'setMcpServers' });
+    const engine = new SdkEngine(baseDeps({ queryFn, emit: (e) => events.push(e) }));
+
+    expect(() => engine.setMcpServers({ 'my-server': { type: 'stdio', command: 'echo' } })).not.toThrow();
+    await flush();
+
+    expect(eventsOfType(events, 'mcp-servers-applied')).toEqual([
+      { v: 1, type: 'mcp-servers-applied', applied: false, errors: { '*': 'transport gone' } },
+    ]);
+  });
+
+  it('reports applied: false, reason: restart-required and never touches the SDK once the engine is dead', async () => {
+    const events: EmbeddedAgentEvent[] = [];
+    const { queryFn, setMcpServersCalls } = makeLiveMcpWriteQuery();
+    const engine = new SdkEngine(baseDeps({ queryFn, emit: (e) => events.push(e) }));
+    engine.dispose();
+
+    engine.setMcpServers({ 'my-server': { type: 'stdio', command: 'echo' } });
+    await flush();
+
+    expect(setMcpServersCalls).toEqual([]);
+    expect(eventsOfType(events, 'mcp-servers-applied')).toEqual([
+      { v: 1, type: 'mcp-servers-applied', applied: false, reason: 'restart-required' },
+    ]);
+  });
+
+  it('emits an mcp-servers-discovered event (form c) from a fresh mcpServerStatus() read after a successful apply', async () => {
+    const events: EmbeddedAgentEvent[] = [];
+    const { queryFn, statusCallCount } = makeLiveMcpWriteQuery();
+    const engine = new SdkEngine(
+      baseDeps({ queryFn, emit: (e) => events.push(e), projectMcpServers: { 'my-server': { type: 'stdio', command: 'echo' } } }),
+    );
+
+    engine.setMcpServers({ 'my-server': { type: 'stdio', command: 'echo' } });
+    await flush();
+
+    expect(statusCallCount()).toBe(1);
+    // The fake's mcpServerStatus() resolves to []; the discovered event still
+    // fires (with an empty servers array), proving the call site is reached
+    // unconditionally after a successful apply.
+    expect(eventsOfType(events, 'mcp-servers-discovered')).toEqual([
+      { v: 1, type: 'mcp-servers-discovered', servers: [] },
+    ]);
+  });
+
+  it('does not call mcpServerStatus() when the live call throws', async () => {
+    const { queryFn, statusCallCount } = makeLiveMcpWriteQuery({ failOn: 'setMcpServers' });
+    const engine = new SdkEngine(baseDeps({ queryFn }));
+
+    engine.setMcpServers({ 'my-server': { type: 'stdio', command: 'echo' } });
+    await flush();
+
+    expect(statusCallCount()).toBe(0);
+  });
+
+  it('applies two rapid setMcpServers calls in call order (lock ordering)', async () => {
+    const { queryFn, setMcpServersCalls, releaseFirst } = makeLiveMcpWriteQuery({ holdFirst: true });
+    const engine = new SdkEngine(baseDeps({ queryFn }));
+
+    engine.setMcpServers({ a: { type: 'stdio', command: 'a' } });
+    engine.setMcpServers({ b: { type: 'stdio', command: 'b' } });
+    await flush();
+    // The second call cannot start until the first has SETTLED, and the
+    // first is held.
+    expect(setMcpServersCalls).toHaveLength(1);
+
+    releaseFirst();
+    await flush();
+    const nonReservedKeys = setMcpServersCalls.map((call) =>
+      Object.keys(call).filter((k) => k !== 'agent-console' && k !== 'console'),
+    );
+    expect(nonReservedKeys).toEqual([['a'], ['b']]);
+  });
+
+  it('reuses the SAME liveWritesChain as setModelParams: a live MCP-server add never interleaves with a model/effort change', async () => {
+    const callOrder: string[] = [];
+    let releaseSetModel: () => void = () => {};
+    const holdSetModel = new Promise<void>((resolve) => {
+      releaseSetModel = resolve;
+    });
+    const { queryFn: base } = makeFakeQuery([]);
+    const queryFn: QueryFn = (params) =>
+      asQuery(
+        Object.assign(base(params), {
+          setModel: async () => {
+            callOrder.push('setModel:start');
+            await holdSetModel;
+            callOrder.push('setModel:end');
+          },
+          applyFlagSettings: async () => {
+            callOrder.push('applyFlagSettings');
+          },
+          setMcpServers: async (servers: Record<string, unknown>) => {
+            callOrder.push('setMcpServers:start');
+            callOrder.push('setMcpServers:end');
+            return { added: Object.keys(servers), removed: [], errors: {} };
+          },
+          mcpServerStatus: async () => [],
+        }),
+      );
+    const engine = new SdkEngine(baseDeps({ queryFn }));
+
+    engine.setModelParams({ model: 'model-A', reasoningEffort: 'low', contextWindowTokens: null });
+    engine.setMcpServers({ 'my-server': { type: 'stdio', command: 'echo' } });
+    await flush();
+    // Nothing from setMcpServers has started yet -- it is chained behind the
+    // still-held setModelParams call, proving the two share ONE lock rather
+    // than running on independent chains.
+    expect(callOrder).toEqual(['setModel:start']);
+
+    releaseSetModel();
+    await flush();
+    expect(callOrder).toEqual([
+      'setModel:start',
+      'setModel:end',
+      'applyFlagSettings',
+      'setMcpServers:start',
+      'setMcpServers:end',
+    ]);
   });
 });

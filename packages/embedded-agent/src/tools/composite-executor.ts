@@ -4,6 +4,7 @@
  * which tools are local and which are remote.
  */
 
+import { TASK_TOOL_UNSUPPORTED_RESULT } from '../compact-tool.js';
 import type { ToolExecutor, ToolCallOutcome } from '../mcp.js';
 import type { ToolDefinition } from '../providers/types.js';
 import type { RuleActivatorLike } from '../rule-activation.js';
@@ -47,6 +48,16 @@ export class CompositeToolExecutor implements ToolExecutor {
   }
 
   async callTool(name: string, args: unknown, signal: AbortSignal): Promise<ToolCallOutcome> {
+    // epic #1636 Phase 5 PR-2 (docs/design/embedded-agent-sdk-engine.md §4.5):
+    // `Task`/`Agent` (the SDK's subagent-delegation tool, `claude-sdk`-only)
+    // has no equivalent here at all -- checked BEFORE `builtins`/the MCP
+    // executor so the openai-api engine always declines it honestly (see
+    // `TASK_TOOL_UNSUPPORTED_RESULT`'s doc comment for why BOTH literals are
+    // checked), never routed to the MCP executor where it would 404/error
+    // with unpredictable wording.
+    if (name === 'Task' || name === 'Agent') {
+      return { ok: false, result: TASK_TOOL_UNSUPPORTED_RESULT };
+    }
     const builtin = this.deps.builtins.find((t) => t.name === name);
     let outcome: ToolCallOutcome;
     if (builtin) {

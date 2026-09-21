@@ -8,14 +8,27 @@
  * `import.meta.main` bootstrap wires the production implementations.
  */
 
-import { NdjsonLineSplitter, type EmbeddedAgentEvent } from '@agent-console/shared';
+import type { AgentDefinition } from '@anthropic-ai/claude-agent-sdk';
+import {
+  DEFAULT_EMBEDDED_AGENT_ENABLED_TOOLS,
+  NdjsonLineSplitter,
+  type EmbeddedAgentEvent,
+  type McpServerWireConfig,
+} from '@agent-console/shared';
 import * as v from 'valibot';
 import { EmbeddedAgentCommandSchema } from '@agent-console/shared';
+import { discoverProjectAgents } from './agents-discovery.js';
 import { AgentLoop } from './agent-loop.js';
 import { buildUserMessageContent } from './attachment-content.js';
 import { COMPACT_TOOL_NAME, COMPACT_TOOL_UNSUPPORTED_RESULT } from './compact-tool.js';
 import type { AnyEngine, ClaudeSdkEngine } from './engine-types.js';
 import { loadCompactionPrompt } from './compaction-prompt.js';
+import {
+  applyArgSubstitution,
+  discoverProjectMcpServers,
+  readUserLocalMcpNames,
+  type DiscoverProjectMcpServersResult,
+} from './mcp-discovery.js';
 import { McpToolClient, type ToolExecutor } from './mcp.js';
 import { OpenAIChatAdapter } from './providers/openai-chat-adapter.js';
 import type { ChatMessage, ProviderAdapter, ToolDefinition } from './providers/types.js';
@@ -44,6 +57,7 @@ const KNOWN_COMMAND_TYPES = new Set([
   'cancel',
   'set-auto-compaction',
   'set-model-params',
+  'set-mcp-servers',
   'compact',
   'shutdown',
 ]);
@@ -121,6 +135,25 @@ export interface LoopFactories {
   /** DI seam for the R1 resume pre-flight, which otherwise reads the real
    * `~/.claude` of whoever is running. Defaults to `probeSdkSession`. */
   probeSdkSession(sdkSessionId: string, cwd: string): Promise<SdkSessionProbe>;
+  /** epic #1636 Phase 5 PR-2 DI seam: the `.mcp.json` (Project scope)
+   * loader, which otherwise reads the real worktree's filesystem. Defaults to
+   * `discoverProjectMcpServers` (mcp-discovery.ts). */
+  discoverProjectMcpServers(
+    cwd: string,
+    allowedProjectMcpServers: Array<{ name: string; hash: string }>,
+  ): Promise<DiscoverProjectMcpServersResult>;
+  /** epic #1636 Phase 5 PR-2 DI seam: the CLI's own `~/.claude.json` reader
+   * for the containment detector's expected User/Local-scope name set, which
+   * otherwise reads the real executing user's config file. Defaults to
+   * `readUserLocalMcpNames` (mcp-discovery.ts). */
+  readUserLocalMcpNames(cwd: string): Promise<{ names: Set<string>; unavailable: boolean }>;
+  /** epic #1636 Phase 5 PR-2 DI seam: the `.claude/agents/*.md` loader,
+   * which otherwise walks the real worktree's filesystem up to its git root.
+   * Defaults to `discoverProjectAgents` (agents-discovery.ts). */
+  discoverProjectAgents(
+    cwd: string,
+    allowedServerNames: Set<string>,
+  ): Promise<{ agents: Record<string, AgentDefinition>; warnings: string[] }>;
   /** Documented test seam: overrides
    * {@link RESTORE_BOUNDARY_COMPACTION_BUDGET_MS} so a test can drive the
    * budget-exceeded path without waiting a real minute. Production never sets
@@ -236,6 +269,35 @@ export async function runLoop(io: LoopIO, factories: LoopFactories): Promise<num
           contextWindowTokens: command.contextWindowTokens,
         });
         break;
+      /**
+       * epic #1636 Phase 5 PR-2 (docs/design/embedded-agent-sdk-engine.md
+       * §4.5 D-D "activation never waits"): the repository's approved
+       * project-MCP-server set changed while this worker was running.
+       * Deliberately NOT gated on `turnActive`, same reasoning as
+       * `set-model-params` above: a live config write must not be silently
+       * dropped because a turn happened to be in flight.
+       */
+      case 'set-mcp-servers': {
+        switch (loop.kind) {
+          case 'claude-sdk':
+            loop.setMcpServers(command.servers);
+            break;
+          case 'openai-api':
+            // `openai-api` has no MCP discovery/approval concept at all
+            // (decision 4's "declines honestly": an explicit unsupported
+            // result, never a silent no-op) -- the server never sends this
+            // command to that arm today, but `main.ts`'s dispatch stays
+            // exhaustive on `kind` regardless, mirroring the `compact`
+            // command's own claude-sdk arm above.
+            io.writeEvent({ v: 1, type: 'mcp-servers-applied', applied: false, reason: 'unsupported-engine' });
+            break;
+          default: {
+            const _exhaustive: never = loop;
+            void _exhaustive;
+          }
+        }
+        break;
+      }
       case 'cancel':
         loop.cancel();
         break;
@@ -637,6 +699,78 @@ async function initializeLoop(
       }
     }
 
+    // epic #1636 Phase 5 PR-2 (docs/design/embedded-agent-sdk-engine.md §4.5):
+    // discover the worktree's declared MCP servers (Project scope) and, if
+    // `Task` is enabled, its subagents -- BEFORE `createSdkEngine` below
+    // constructs the engine (which calls the real SDK's `query()`
+    // synchronously). Discovery failures never abort activation: both
+    // `discoverProjectMcpServers` and `readUserLocalMcpNames` are documented
+    // as never throwing, declaring a read/parse failure on the event instead
+    // (`mcpJsonError` / `userLocalNamesUnavailable` below); only engine
+    // CONSTRUCTION failure (this function's own enclosing `catch`) keeps the
+    // existing `fatal` path.
+    const mcpDiscovery = await factories.discoverProjectMcpServers(
+      init.context.cwd,
+      init.allowedProjectMcpServers,
+    );
+    const userLocalNames = await factories.readUserLocalMcpNames(init.context.cwd);
+
+    // Only `decision: 'allowed'` entries are ever passed to the engine (§4.5
+    // D-E "the door") -- `pending` / `rejected-reserved` / `invalid` entries
+    // are reported in the discovered event below but never reach
+    // `Options.mcpServers`. `${VAR}` substitution (§4.5 D-F) runs here, on
+    // the already-allowed entry's `args` only, from THIS subprocess's own
+    // environment (the login shell's profile under elevation, the cleaned
+    // server environment otherwise) -- never before the hash above is
+    // computed, and never for `env`/`headers`/`url`, which the CLI already
+    // expands natively.
+    const projectMcpServers: Record<string, McpServerWireConfig> = {};
+    for (const entry of mcpDiscovery.servers) {
+      if (entry.decision !== 'allowed') continue;
+      if (entry.config.type === 'stdio' && entry.config.args !== undefined) {
+        const { args, warnings } = applyArgSubstitution(entry.name, entry.config.args, process.env);
+        for (const warning of warnings) console.warn(warning);
+        projectMcpServers[entry.name] = { ...entry.config, args };
+      } else {
+        projectMcpServers[entry.name] = entry.config;
+      }
+    }
+
+    // Form (a) (see sdk-engine.ts's `emitMcpServersDiscovered` doc comment
+    // for forms (b)/(c)): emitted ONCE per activation, project entries only,
+    // `status` absent -- `system:init` has not happened yet at this point,
+    // so there is nothing to report a live connection status from. `hash` is
+    // omitted only for a `decision: 'invalid'` entry, which has no
+    // computable hash (see `DiscoveredMcpServer`'s own doc comment).
+    io.writeEvent({
+      v: 1,
+      type: 'mcp-servers-discovered',
+      servers: mcpDiscovery.servers.map((entry) => ({
+        name: entry.name,
+        scope: 'project' as const,
+        decision: entry.decision,
+        ...(entry.decision !== 'invalid' ? { hash: entry.hash } : {}),
+      })),
+      ...(mcpDiscovery.mcpJsonError !== undefined ? { mcpJsonError: mcpDiscovery.mcpJsonError } : {}),
+      ...(userLocalNames.unavailable ? { userLocalNamesUnavailable: true as const } : {}),
+    });
+
+    // §4.5's "Subagents" discovery rule: `.claude/agents/*.md` definitions
+    // are only ever meaningful when `Task` is enabled (the precondition
+    // `discoverProjectAgents`'s own doc comment names as the caller's
+    // responsibility) -- an empty `{}` is passed to the engine otherwise,
+    // never a discovery call that would do filesystem work for nothing.
+    const enabledToolNames = init.enabledTools ?? DEFAULT_EMBEDDED_AGENT_ENABLED_TOOLS;
+    let agents: Record<string, AgentDefinition> = {};
+    if (enabledToolNames.includes('Task')) {
+      const agentsResult = await factories.discoverProjectAgents(
+        init.context.cwd,
+        new Set(Object.keys(projectMcpServers)),
+      );
+      for (const warning of agentsResult.warnings) console.warn(warning);
+      agents = agentsResult.agents;
+    }
+
     return factories.createSdkEngine({
       cwd: init.context.cwd,
       model: init.provider.model,
@@ -647,6 +781,9 @@ async function initializeLoop(
       autoCompaction: init.compaction.auto,
       attachmentRoots: init.context.attachmentRoots ?? [],
       ruleActivator,
+      projectMcpServers,
+      expectedMcpServerNames: { userLocal: userLocalNames.names, unavailable: userLocalNames.unavailable },
+      agents,
       // Transcript Restore, R1: the ONLY path by which a resume id reaches
       // the engine. Absent means a fresh session -- a first-ever
       // activation, a worker with no persisted id, or an id the pre-flight
@@ -752,6 +889,9 @@ if (import.meta.main) {
     loadCompactionPrompt,
     createSdkEngine: (deps) => new SdkEngine(deps),
     probeSdkSession,
+    discoverProjectMcpServers,
+    readUserLocalMcpNames,
+    discoverProjectAgents,
   };
   runLoop(io, factories)
     .then((code) => process.exit(code))
