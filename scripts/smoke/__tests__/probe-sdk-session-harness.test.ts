@@ -21,7 +21,7 @@ import { describe, it, expect } from 'bun:test';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { snapshotIsolationEvidence, verifyIsolationStrict } from '../probe-sdk-session-harness.js';
+import { snapshotIsolationEvidence, verifyIsolation, verifyIsolationStrict } from '../probe-sdk-session-harness.js';
 
 function makeConfigDir(): string {
   return mkdtempSync(join(tmpdir(), 'probe-isolation-strict-test-'));
@@ -112,4 +112,62 @@ describe('verifyIsolationStrict / snapshotIsolationEvidence (Issue #1783)', () =
   // which hold under either implementation. The mutation was reverted
   // immediately after (`git diff` confirmed clean) and the suite re-run
   // green (4 pass, 0 fail) before this comment was written.
+});
+
+/**
+ * `verifyIsolation` (the weak, presence-only predicate) had no unit test of
+ * its own before Issue #1788's optional AC item -- only its STRICT sibling
+ * above was pinned. Two cases: the positive (a real directory is evidence)
+ * and the negative CodeRabbit flagged on PR #1787 but that #1787's own AC
+ * kept out of scope for the weak form (a regular file at the same path is
+ * NOT evidence, isDirectory() reasoning applied here per Issue #1788).
+ */
+describe('verifyIsolation (Issue #1788 -- isDirectory() reasoning applied to the weak form)', () => {
+  it('a real `projects` directory IS evidence', () => {
+    const configDir = makeConfigDir();
+    try {
+      mkdirSync(join(configDir, 'projects'), { recursive: true });
+      const result = verifyIsolation(configDir);
+      expect(result.ok).toBe(true);
+      expect(result.evidence).toContain('projects');
+    } finally {
+      rmSync(configDir, { recursive: true, force: true });
+    }
+  });
+
+  it('a REGULAR FILE named `projects` is NOT evidence -- only a directory counts', () => {
+    const configDir = makeConfigDir();
+    try {
+      writeFileSync(join(configDir, 'projects'), 'not a directory');
+      const result = verifyIsolation(configDir);
+      expect(result.ok).toBe(false);
+      expect(result.evidence).not.toContain('projects');
+    } finally {
+      rmSync(configDir, { recursive: true, force: true });
+    }
+  });
+
+  it('a REGULAR FILE named `sessions` is NOT evidence -- only a directory counts', () => {
+    const configDir = makeConfigDir();
+    try {
+      writeFileSync(join(configDir, 'sessions'), 'not a directory');
+      const result = verifyIsolation(configDir);
+      expect(result.ok).toBe(false);
+      expect(result.evidence).not.toContain('sessions');
+    } finally {
+      rmSync(configDir, { recursive: true, force: true });
+    }
+  });
+
+  it('`.claude.json` is exempt from the directory check -- a regular file there IS still evidence', () => {
+    const configDir = makeConfigDir();
+    try {
+      writeFileSync(join(configDir, '.claude.json'), '{}');
+      const result = verifyIsolation(configDir);
+      expect(result.ok).toBe(true);
+      expect(result.evidence).toContain('.claude.json');
+    } finally {
+      rmSync(configDir, { recursive: true, force: true });
+    }
+  });
 });
