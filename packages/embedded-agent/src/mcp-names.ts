@@ -2,7 +2,7 @@
  * MCP server name classification shared by the epic #1636 Phase 5 discovery
  * loaders (`mcp-discovery.ts`, `agents-discovery.ts`) and the Task 0 premise
  * probe that first measured these rules (`scripts/smoke/probe-sdk-declared-
- * mcp-and-task.ts`, Issue #1726). MOVED here (not copied) so the probe and
+ * mcp-and-task.ts`). MOVED here (not copied) so the probe and
  * the production discovery loaders share exactly one definition of "is this
  * an account connector" / "which server does this tool name belong to" --
  * see docs/design/embedded-agent-sdk-engine.md §4.5 D-E's "wall" paragraph,
@@ -15,7 +15,7 @@
  * present under `settingSources: []` on three SDK versions). A NAMING
  * HYPOTHESIS inferred from this host's own interactive tool catalog
  * (`mcp__claude_ai_Google_Drive__*`, `mcp__claude_ai_Claude_Docs__*`), NOT
- * from `sdk.d.ts`, which names no such prefix (Architect ruling, PR #1727).
+ * from `sdk.d.ts`, which names no such prefix (Architect ruling).
  * Every caller therefore prints BOTH partitions raw where it matters --
  * connector names and non-connector names -- so a reader can re-partition,
  * and every leak / exactness verdict rests on the NON-connector partition
