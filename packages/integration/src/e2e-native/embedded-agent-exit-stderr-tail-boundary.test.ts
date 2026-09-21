@@ -224,6 +224,7 @@ describe('Client-Server Boundary: exited.stderrTail survives to the client (#145
       service = new EmbeddedAgentWorkerService({
         getSession: (id) => (id === session.id ? session : undefined),
         persistSession: async () => {},
+        onSessionUpdated: () => {},
         getPathResolver: () => resolver,
         getEmbeddedAgent: (id) => (id === CLAUDE_SDK_AGENT_ID ? claudeSdkAgent : undefined),
         resolveSpawnUsername: async () => 'testuser',

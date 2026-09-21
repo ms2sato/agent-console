@@ -197,11 +197,22 @@ describe('Client-Server Boundary: cross-type worker restart (agent -> embedded-a
 
     // session-updated and worker-restarted broadcast frames parse through the
     // ACTUAL client-side schemas -- the whole point of this test.
+    //
+    // Two session-updated broadcasts here, both correct and harmless
+    // (Architect ruling on the "lifecycle-manager + embedded-agent
+    // worker-service" double broadcast): frame 1 is
+    // WorkerLifecycleManager.restartAgentWorkerAsEmbedded's existing
+    // broadcast, fired immediately after the worker-type flip persists but
+    // BEFORE activation (measured: worker.activated === false); frame 2 is
+    // EmbeddedAgentWorkerService.activate()'s own broadcast, fired once
+    // activation succeeds and persists (measured: worker.activated ===
+    // true). What matters is the LAST frame reflects the fully-converted,
+    // fully-activated state, not the raw count.
     const sessionUpdatedFrames = capturedBroadcasts.filter((m) => m.type === 'session-updated');
-    expect(sessionUpdatedFrames).toHaveLength(1);
+    expect(sessionUpdatedFrames).toHaveLength(2);
     const parsedSessionUpdated = v.safeParse(
       AppServerMessageSchema,
-      simulateWireTransmission(sessionUpdatedFrames[0]),
+      simulateWireTransmission(sessionUpdatedFrames[sessionUpdatedFrames.length - 1]),
     );
     expect(parsedSessionUpdated.success).toBe(true);
     if (parsedSessionUpdated.success && parsedSessionUpdated.output.type === 'session-updated') {
@@ -322,11 +333,23 @@ describe('Client-Server Boundary: cross-type worker restart (agent -> embedded-a
     expect(persistedConverted?.type).toBe('agent');
 
     // Broadcast frames parse through the real client-side schemas.
+    //
+    // Two session-updated broadcasts here too, in the OPPOSITE order from
+    // the agent -> embedded case above (Architect ruling: both correct and
+    // harmless): frame 1 is EmbeddedAgentWorkerService's own broadcast,
+    // fired from handleExit when deactivateEmbeddedAgentWorker tears the
+    // old embedded worker down -- the worker row is still type
+    // 'embedded-agent' at that instant (measured: type === 'embedded-agent',
+    // activated === false), since the type flip to 'agent' has not
+    // persisted yet; frame 2 is WorkerLifecycleManager's existing
+    // broadcast, fired after the new PTY worker is initialized and
+    // persisted (measured: type === 'agent'). The LAST frame reflects the
+    // fully-converted state.
     const sessionUpdatedFrames = capturedBroadcasts.filter((m) => m.type === 'session-updated');
-    expect(sessionUpdatedFrames).toHaveLength(1);
+    expect(sessionUpdatedFrames).toHaveLength(2);
     const parsedSessionUpdated = v.safeParse(
       AppServerMessageSchema,
-      simulateWireTransmission(sessionUpdatedFrames[0]),
+      simulateWireTransmission(sessionUpdatedFrames[sessionUpdatedFrames.length - 1]),
     );
     expect(parsedSessionUpdated.success).toBe(true);
     if (parsedSessionUpdated.success && parsedSessionUpdated.output.type === 'session-updated') {

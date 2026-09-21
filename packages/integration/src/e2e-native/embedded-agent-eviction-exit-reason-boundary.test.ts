@@ -214,6 +214,7 @@ describe('Client-Server Boundary: exited.reason survives to the client as `evict
       service = new EmbeddedAgentWorkerService({
         getSession: (id) => (id === session.id ? session : undefined),
         persistSession: async () => {},
+        onSessionUpdated: () => {},
         getPathResolver: () => resolver,
         // The REAL built-in definition: eviction is gated to `claude-sdk`, so
         // the engine value is load-bearing for this test even reaching the

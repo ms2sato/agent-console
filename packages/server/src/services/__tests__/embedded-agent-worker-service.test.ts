@@ -283,6 +283,7 @@ interface Harness {
   appendRestoreFailureMarker: ReturnType<typeof mock>;
   loadProviderKeyFn: ReturnType<typeof mock>;
   persistSession: ReturnType<typeof mock>;
+  onSessionUpdated: ReturnType<typeof mock>;
   globalActivity: ReturnType<typeof mock>;
   globalExit: ReturnType<typeof mock>;
   listByRepository: ReturnType<typeof mock>;
@@ -442,6 +443,7 @@ function setup(opts?: {
   const loadProviderKeyFn =
     opts?.loadProviderKeyFn ?? mock(async () => API_KEY);
   const persistSession = mock(async () => {});
+  const onSessionUpdated = mock((_session: InternalSession) => {});
   const globalActivity = mock(() => {});
   const globalExit = mock(() => {});
   const listByRepository = mock(async () => opts?.mcpServerPermissionRows ?? []);
@@ -462,6 +464,7 @@ function setup(opts?: {
   const service = new EmbeddedAgentWorkerService({
     getSession: (id) => (id === session.id ? session : undefined),
     persistSession: persistSession as never,
+    onSessionUpdated: onSessionUpdated as never,
     getPathResolver: () => new SessionDataPathResolver(TEST_BASE_DIR, tmpdir()),
     getEmbeddedAgent: () => definition,
     resolveSpawnUsername: async () => USERNAME,
@@ -504,6 +507,7 @@ function setup(opts?: {
     appendRestoreFailureMarker,
     loadProviderKeyFn,
     persistSession,
+    onSessionUpdated,
     globalActivity,
     globalExit,
     listByRepository,
@@ -5726,5 +5730,267 @@ describe('readStdout per-line containment (#1798)', () => {
       warnSpy.mockRestore();
       debugSpy.mockRestore();
     }
+  });
+});
+
+/**
+ * The service mutates several public worker fields (mcp server discovery
+ * status, `activated`/subprocess presence) and persists them to disk, but
+ * never told any connected app client -- there was no dep for it to call.
+ * `onSessionUpdated` closes that gap at the three sites that already
+ * persist a public-field change (discovered-event rebuild, worker exit,
+ * activation success) plus the activation-failure rollback catch, which
+ * corrects a durable `pid` a discovered event may have already written
+ * before a later step failed.
+ */
+describe('onSessionUpdated broadcast (worker-service session-updated broadcast gap)', () => {
+  it('(a) a form (a) discovered event rebuild persists, then broadcasts exactly once with the rebuilt mcpServers', async () => {
+    const h = setup({ definition: SDK_DEFINITION });
+    await h.service.activate(h.sessionId, h.workerId);
+    h.persistSession.mockClear();
+    h.onSessionUpdated.mockClear();
+
+    const order: string[] = [];
+    h.persistSession.mockImplementation(async () => {
+      order.push('persist');
+    });
+    h.onSessionUpdated.mockImplementation(() => {
+      order.push('onSessionUpdated');
+    });
+
+    h.fake.pushStdout(
+      `${JSON.stringify({
+        v: 1,
+        type: 'mcp-servers-discovered',
+        servers: [{ name: 'A', scope: 'project', hash: 'hash-a', decision: 'pending' }],
+      })}\n`,
+    );
+    await waitFor(() => h.onSessionUpdated.mock.calls.length > 0);
+
+    expect(h.onSessionUpdated).toHaveBeenCalledTimes(1);
+    const [broadcastSession] = h.onSessionUpdated.mock.calls[0] as [InternalSession];
+    expect(broadcastSession).toBe(h.session);
+    expect(h.worker.mcpServers).toEqual([{ name: 'A', scope: 'project', hash: 'hash-a', decision: 'pending' }]);
+    // persist-before-broadcast, not merely both-called.
+    expect(order).toEqual(['persist', 'onSessionUpdated']);
+
+    // Mutation measured: commenting out the discovered-event handler's
+    // `this.deps.onSessionUpdated(session);` call (immediately after its
+    // `persistSession` await) makes `toHaveBeenCalledTimes(1)` above fail
+    // with 0 observed calls. Confirmed by running the mutation and
+    // reverting it afterward.
+  });
+
+  it('(b) a worker exit persists, then broadcasts exactly once with subprocess cleared and no `status` left on any mcpServers row', async () => {
+    const h = setup({ definition: SDK_DEFINITION });
+    await h.service.activate(h.sessionId, h.workerId);
+
+    h.fake.pushStdout(
+      `${JSON.stringify({
+        v: 1,
+        type: 'mcp-servers-discovered',
+        servers: [{ name: 'A', scope: 'project', hash: 'hash-a', decision: 'pending', status: 'connected' }],
+      })}\n`,
+    );
+    await waitFor(() => h.worker.mcpServers !== undefined);
+
+    h.persistSession.mockClear();
+    h.onSessionUpdated.mockClear();
+    const order: string[] = [];
+    h.persistSession.mockImplementation(async () => {
+      order.push('persist');
+    });
+    h.onSessionUpdated.mockImplementation(() => {
+      order.push('onSessionUpdated');
+    });
+
+    h.fake.simulateExit(1);
+    await waitFor(() => h.onSessionUpdated.mock.calls.length > 0);
+
+    expect(h.onSessionUpdated).toHaveBeenCalledTimes(1);
+    const [broadcastSession] = h.onSessionUpdated.mock.calls[0] as [InternalSession];
+    expect(broadcastSession).toBe(h.session);
+    expect(h.worker.subprocess).toBeNull();
+    expect((h.worker.mcpServers ?? []).every((row) => !('status' in row))).toBe(true);
+    expect(order).toEqual(['persist', 'onSessionUpdated']);
+
+    // Mutation measured: commenting out `handleExit`'s
+    // `this.deps.onSessionUpdated(session);` call (immediately after its
+    // `persistSession` await) makes `toHaveBeenCalledTimes(1)` above fail
+    // with 0 observed calls. Confirmed by running the mutation and
+    // reverting it afterward.
+  });
+
+  it('(c) a successful activate() persists, then broadcasts exactly once with the subprocess already set', async () => {
+    const h = setup({ definition: SDK_DEFINITION });
+
+    const order: string[] = [];
+    h.persistSession.mockImplementation(async () => {
+      order.push('persist');
+    });
+    h.onSessionUpdated.mockImplementation(() => {
+      order.push('onSessionUpdated');
+    });
+
+    await h.service.activate(h.sessionId, h.workerId);
+
+    expect(h.onSessionUpdated).toHaveBeenCalledTimes(1);
+    const [broadcastSession] = h.onSessionUpdated.mock.calls[0] as [InternalSession];
+    expect(broadcastSession).toBe(h.session);
+    expect(h.worker.subprocess).not.toBeNull();
+    expect(order).toEqual(['persist', 'onSessionUpdated']);
+
+    // Mutation measured: commenting out `activate()`'s happy-path
+    // `this.deps.onSessionUpdated(session);` call (immediately after its
+    // `persistSession` await, before the "activated" info log) makes
+    // `toHaveBeenCalledTimes(1)` above fail with 0 observed calls.
+    // Confirmed by running the mutation and reverting it afterward.
+  });
+
+  it('(d) a transient permission-repository read failure never persists or broadcasts for the skipped discovered event', async () => {
+    const h = setup({ definition: SDK_DEFINITION });
+    await h.service.activate(h.sessionId, h.workerId);
+    h.persistSession.mockClear();
+    h.onSessionUpdated.mockClear();
+
+    h.listByRepository.mockImplementationOnce(async () => {
+      throw new Error('transient db read boom');
+    });
+
+    const warnSpy = spyOn(rootLogger, 'warn');
+    try {
+      h.fake.pushStdout(
+        `${JSON.stringify({
+          v: 1,
+          type: 'mcp-servers-discovered',
+          servers: [{ name: 'A', scope: 'project', hash: 'hash-a', decision: 'pending' }],
+        })}\n`,
+      );
+      await waitFor(() =>
+        warnSpy.mock.calls.some(
+          (call) =>
+            call[1] ===
+            'Failed to load MCP server permission records; skipping this discovered event (worker.mcpServers unchanged, next event retries)',
+        ),
+      );
+      // The skipped event's own handler returns before reaching either
+      // `persistSession` or `onSessionUpdated` -- give a wrongly-reached
+      // broadcast a chance to land before asserting its absence.
+      await new Promise((r) => setTimeout(r, 20));
+
+      expect(h.persistSession).not.toHaveBeenCalled();
+      expect(h.onSessionUpdated).not.toHaveBeenCalled();
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it('(e) a session deleted during the exit gap (handleExit re-resolves getSession, which can now return undefined): no persist, no broadcast', async () => {
+    const h = setup({ definition: SDK_DEFINITION });
+    await h.service.activate(h.sessionId, h.workerId);
+    h.persistSession.mockClear();
+    h.onSessionUpdated.mockClear();
+
+    const deps = (h.service as unknown as { deps: { getSession: (id: string) => InternalSession | undefined } })
+      .deps;
+    deps.getSession = () => undefined;
+
+    h.fake.simulateExit(1);
+    await waitFor(() => h.worker.subprocess === null);
+    // handleExit's own persist/broadcast is gated on getSession's result --
+    // give a wrongly-reached call a chance to land before asserting absence.
+    await new Promise((r) => setTimeout(r, 20));
+
+    expect(h.persistSession).not.toHaveBeenCalled();
+    expect(h.onSessionUpdated).not.toHaveBeenCalled();
+  });
+});
+
+describe('activation-failure rollback persists and broadcasts the reverted worker state', () => {
+  it('(f-i) a later activation step failing after the subprocess is set re-persists with the subprocess cleared, then broadcasts exactly once', async () => {
+    const h = setup({ definition: SDK_DEFINITION });
+
+    const order: string[] = [];
+    let persistCalls = 0;
+    h.persistSession.mockImplementation(async () => {
+      persistCalls += 1;
+      order.push(`persist-${persistCalls}`);
+      if (persistCalls === 1) {
+        throw new Error('persist boom');
+      }
+    });
+    h.onSessionUpdated.mockImplementation(() => {
+      order.push('onSessionUpdated');
+    });
+
+    await expect(h.service.activate(h.sessionId, h.workerId)).rejects.toThrow('persist boom');
+
+    // (i) the original activation error propagated -- asserted above.
+
+    // (ii) persistSession is called twice: the happy-path call that
+    // rejects, then the rollback's re-persist, by which point
+    // worker.subprocess has already been reset to null.
+    expect(persistCalls).toBe(2);
+    expect(h.worker.subprocess).toBeNull();
+
+    // (iii) onSessionUpdated is called exactly once, strictly after the
+    // rollback re-persist.
+    expect(h.onSessionUpdated).toHaveBeenCalledTimes(1);
+    expect(h.onSessionUpdated).toHaveBeenCalledWith(h.session);
+    expect(order).toEqual(['persist-1', 'persist-2', 'onSessionUpdated']);
+
+    // (iv) the pre-existing rollback clear is unaffected by this change.
+    expect(h.worker.mcpServers).toBeUndefined();
+
+    // Mutation measured: commenting out the rollback catch block's
+    // `this.deps.onSessionUpdated(sessionForRollback);` call makes the
+    // `toHaveBeenCalledTimes(1)` assertion above fail with 0 observed
+    // calls. Confirmed by running the mutation and reverting it afterward.
+  });
+
+  it('(f-ii) the rollback re-persist itself failing still propagates the ORIGINAL activation error (not the rollback persist error), logs a WARN, and still broadcasts', async () => {
+    const h = setup({ definition: SDK_DEFINITION });
+
+    let persistCalls = 0;
+    h.persistSession.mockImplementation(async () => {
+      persistCalls += 1;
+      throw new Error(persistCalls === 1 ? 'persist boom' : 'rollback persist boom');
+    });
+
+    const warnSpy = spyOn(rootLogger, 'warn');
+    let caught: unknown;
+    try {
+      await h.service.activate(h.sessionId, h.workerId);
+    } catch (err) {
+      caught = err;
+    }
+
+    try {
+      // Exact-message check, not substring: 'rollback persist boom' also
+      // contains the substring 'persist boom', so a substring-based
+      // assertion here would not distinguish the two failure modes.
+      expect(caught).toBeInstanceOf(Error);
+      expect((caught as Error).message).toBe('persist boom');
+      expect(persistCalls).toBe(2);
+      expect(
+        warnSpy.mock.calls.some(
+          (call) =>
+            call[1] ===
+            'Failed to persist embedded-agent activation rollback; broadcasting the in-memory state anyway',
+        ),
+      ).toBe(true);
+      expect(h.onSessionUpdated).toHaveBeenCalledTimes(1);
+      expect(h.onSessionUpdated).toHaveBeenCalledWith(h.session);
+    } finally {
+      warnSpy.mockRestore();
+    }
+
+    // Mutation measured: removing the rollback block's local try/catch
+    // around `await this.deps.persistSession(sessionForRollback)` (letting
+    // the rollback persist's own rejection propagate directly instead of
+    // being caught and WARN-logged) makes the message assertion above fail
+    // -- the caught error becomes 'rollback persist boom' instead of the
+    // original 'persist boom'. Confirmed by running the mutation and
+    // reverting it afterward.
   });
 });

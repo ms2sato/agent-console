@@ -64,7 +64,12 @@ import type { AppContext } from '@agent-console/server/src/app-context';
 import { CLAUDE_SDK_AGENT_ID } from '@agent-console/server/src/services/embedded-agent-manager';
 import type { SpawnAsUserFn, SpawnAsUserOpts, SpawnAsUserResult } from '@agent-console/server/src/services/privilege-elevation';
 
-import { EmbeddedAgentCommandSchema, EmbeddedAgentEventSchema, AppServerMessageSchema } from '@agent-console/shared';
+import {
+  EmbeddedAgentCommandSchema,
+  EmbeddedAgentEventSchema,
+  AppServerMessageSchema,
+  type AppServerMessage,
+} from '@agent-console/shared';
 import { getOrCreateEmbeddedAgentWorker, _resetEmbeddedAgentWorkers } from '@agent-console/client/src/components/workers/embedded-agent-store';
 import { MockWebSocket, installMockWebSocket } from '@agent-console/client/src/test/mock-websocket';
 
@@ -131,6 +136,7 @@ async function waitFor(cond: () => boolean | Promise<boolean>, timeoutMs = 2000)
 describe('Client-Server Boundary: MCP server permission wire (epic #1636 Phase 5 PR-2, Architect ruling B)', () => {
   let ctx: AppContext;
   let fake: ReturnType<typeof makeFakeSpawn>;
+  let capturedBroadcasts: AppServerMessage[];
 
   beforeEach(async () => {
     await setupTestEnvironment();
@@ -139,7 +145,23 @@ describe('Client-Server Boundary: MCP server permission wire (epic #1636 Phase 5
       [`${TEST_REPO_PATH}/.git/HEAD`]: 'ref: refs/heads/main',
     });
     fake = makeFakeSpawn();
-    ctx = await createTestContext({ spawnAsUserFn: fake.fn });
+    capturedBroadcasts = [];
+    ctx = await createTestContext({
+      spawnAsUserFn: fake.fn,
+      broadcastToApp: (msg) => {
+        capturedBroadcasts.push(msg);
+      },
+    });
+    // Mirrors websocket/routes.ts's production `onSessionUpdated ->
+    // broadcastToApp({ type: 'session-updated', session })` wiring (
+    // setupWebSocketRoutes), which createTestContext() alone does not
+    // register (same pattern as session-memo-boundary.test.ts's
+    // onMemoUpdated wiring).
+    ctx.sessionManager.setSessionLifecycleCallbacks({
+      onSessionUpdated: (session) => {
+        ctx.broadcastToApp({ type: 'session-updated', session });
+      },
+    });
   });
 
   afterEach(async () => {
@@ -226,6 +248,54 @@ describe('Client-Server Boundary: MCP server permission wire (epic #1636 Phase 5
         { name: 'chrome-devtools', scope: 'project', hash: 'hash-1', decision: 'pending' },
       ]);
     }
+  });
+
+  it('a real mcp-servers-discovered event makes the server actually call broadcastToApp with a session-updated frame (not merely a hand-built shape check)', async () => {
+    // The test above proves the WIRE SHAPE survives `AppServerMessageSchema`
+    // once a `session-updated` payload is hand-constructed. It does not
+    // prove the server ever produces that payload as a consequence of a
+    // discovered event -- worker.mcpServers could change in memory with no
+    // app client ever being told. This test drives the real
+    // onSessionUpdated -> broadcastToApp wiring (mirrored from
+    // websocket/routes.ts's production setupWebSocketRoutes, same pattern
+    // as session-memo-boundary.test.ts) and asserts the broadcast actually
+    // fires.
+    const { sessionId, workerId } = await createSdkWorktreeWorker();
+    await ctx.sessionManager.activateEmbeddedAgentWorker(sessionId, workerId);
+    await waitFor(() => fake.stdinWrites.length >= 1);
+
+    // Activation itself already broadcasts once; isolate the discovered
+    // event's own broadcast from activation's.
+    capturedBroadcasts.length = 0;
+
+    const discoveredEvent = {
+      v: 1,
+      type: 'mcp-servers-discovered',
+      servers: [{ name: 'chrome-devtools', scope: 'project', hash: 'hash-1', decision: 'pending' }],
+    };
+    fake.pushStdoutLine(discoveredEvent);
+
+    // Waits for the broadcast itself, not merely for worker.mcpServers to
+    // change in memory -- the exact gap this test exists to close.
+    await waitFor(() => capturedBroadcasts.some((m) => m.type === 'session-updated'));
+
+    const sessionUpdatedBroadcasts = capturedBroadcasts.filter((m) => m.type === 'session-updated');
+    expect(sessionUpdatedBroadcasts).toHaveLength(1);
+
+    const wirePayload = JSON.parse(JSON.stringify(sessionUpdatedBroadcasts[0]));
+    const parsedWire = v.safeParse(AppServerMessageSchema, wirePayload);
+    expect(parsedWire.success).toBe(true);
+    if (!parsedWire.success) {
+      throw new Error(`safeParse failed unexpectedly: ${JSON.stringify(parsedWire.issues.map((i) => i.message))}`);
+    }
+    if (parsedWire.output.type !== 'session-updated') {
+      throw new Error(`Expected session-updated, got: ${parsedWire.output.type}`);
+    }
+
+    const wireWorker = parsedWire.output.session.workers.find((w) => w.id === workerId);
+    expect(wireWorker?.type === 'embedded-agent' && wireWorker.mcpServers).toEqual([
+      { name: 'chrome-devtools', scope: 'project', hash: 'hash-1', decision: 'pending' },
+    ]);
   });
 
   it('mcp-servers-applied parses through EmbeddedAgentEventSchema', async () => {

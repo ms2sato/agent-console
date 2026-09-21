@@ -294,6 +294,7 @@ function setup(opts?: {
     entryPath: ENTRY_PATH,
     getGlobalActivityCallback: () => undefined,
     getGlobalWorkerExitCallback: () => globalExit as never,
+    onSessionUpdated: (() => {}) as never,
     shutdownGraceMs: opts?.shutdownGraceMs ?? 50,
     sigtermTimeoutMs: opts?.sigtermTimeoutMs ?? 50,
     idleEvictionMs: opts?.idleEvictionMs,

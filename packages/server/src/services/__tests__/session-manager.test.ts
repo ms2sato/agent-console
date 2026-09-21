@@ -21,6 +21,7 @@ import { PtyMessageInjectionService } from '../pty-message-injection-service.js'
 // Type-only: the suite loads SessionManager dynamically (fresh module per test),
 // but the R1 return-type pin below needs the static type.
 import type { SessionManager } from '../session-manager.js';
+import type { InternalSession } from '../internal-types.js';
 import { UsernameLookupService } from '../username-lookup.js';
 import type { UserRepository } from '../../repositories/user-repository.js';
 import type { AuthUser } from '@agent-console/shared';
@@ -4266,6 +4267,56 @@ describe('SessionManager', () => {
           title: 'New Title',
         })
       );
+    });
+
+    it('wires EmbeddedAgentWorkerService.onSessionUpdated to broadcast via sessionLifecycleCallbacks', async () => {
+      // EmbeddedAgentWorkerService mutates and persists public worker state
+      // (mcp server discovery status, activated) at several sites of its
+      // own; the wiring under test is the single line connecting its
+      // `onSessionUpdated` dep to this manager's `sessionLifecycleCallbacks`,
+      // wrapped through the same `toPublicSession` conversion every other
+      // broadcast in this file uses. Driving a real embedded-agent
+      // activation end-to-end to exercise this line is unnecessary here --
+      // that shipping path is already covered by
+      // packages/integration/src/embedded-agent-mcp-permission-boundary.test.ts.
+      // This test calls the exact dep function session-manager.ts wires,
+      // the same way EmbeddedAgentWorkerService itself would.
+      const manager = await getSessionManager();
+
+      const onSessionUpdated = mock(() => {});
+      manager.setSessionLifecycleCallbacks({ onSessionUpdated });
+
+      const session = await manager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+
+      // createSession triggers onSessionUpdated via its initial worker
+      // creation; clear that incidental call before asserting on the
+      // EmbeddedAgentWorkerService wiring under test.
+      onSessionUpdated.mockClear();
+
+      const internalSession = (
+        manager as unknown as { sessions: Map<string, InternalSession> }
+      ).sessions.get(session.id)!;
+      const embeddedDeps = (
+        manager as unknown as {
+          embeddedAgentWorkerService: { deps: { onSessionUpdated: (s: InternalSession) => void } };
+        }
+      ).embeddedAgentWorkerService.deps;
+
+      embeddedDeps.onSessionUpdated(internalSession);
+
+      expect(onSessionUpdated).toHaveBeenCalledTimes(1);
+      expect(onSessionUpdated).toHaveBeenCalledWith(manager.getSession(session.id));
+
+      // Mutation measured: temporarily replacing session-manager.ts's
+      // `onSessionUpdated: (session) => this.sessionLifecycleCallbacks
+      // ?.onSessionUpdated?.(this.toPublicSession(session))` wiring with a
+      // no-op made the `toHaveBeenCalledTimes(1)` assertion above fail with
+      // 0 observed calls. Confirmed by running the mutation and reverting
+      // it afterward.
     });
 
     it('should not call onSessionUpdated if session does not exist', async () => {
