@@ -869,8 +869,13 @@ describe('verify-multiuser-systemd.sh: 7e PATH-first-bun arm is present and orde
   // container's.
   it('reproduces the dogfood host\'s bun-node temp-dir shim: alice-owned, bun/node symlinked to a bun only she can reach, confirmed unreachable from agentconsole before deploying', () => {
     const a = arm();
-    expect(a).toContain('bun_rev="$(cexec --user agentconsole "$SERVICE" "$UNIFIED_BUN" --revision');
+    expect(a).toContain('bun_full_rev="$(cexec --user agentconsole "$SERVICE" "$UNIFIED_BUN" --revision');
+    // The build hash, not the full "<version>+<hash>" revision string, is
+    // what names the temp dir (measured: a first attempt using the full
+    // string targeted a directory that never existed).
+    expect(a).toContain('bun_rev="${bun_full_rev#*+}"');
     expect(a).toContain('bun_node_dir="/tmp/bun-node-${bun_rev}"');
+    expect(a).toContain('if [ -z "$bun_rev" ] || [ "$bun_rev" = "$bun_full_rev" ]; then');
     expect(a).toContain('install -D -m 0755 -o alice -g alice "$UNIFIED_BUN" /home/alice/.bun/bin/bun');
     expect(a).toContain('cexec --user root "$SERVICE" chmod 750 /home/alice');
     expect(a).toContain("ln -sf /home/alice/.bun/bin/bun '${bun_node_dir}/bun'");
@@ -886,7 +891,7 @@ describe('verify-multiuser-systemd.sh: 7e PATH-first-bun arm is present and orde
 
     const order = [
       "reproduce the dogfood host's bun-node temp-dir shim",
-      'bun_rev="$(cexec --user agentconsole',
+      'bun_full_rev="$(cexec --user agentconsole',
       'install -D -m 0755 -o alice -g alice',
       "ln -sf /home/alice/.bun/bin/bun '${bun_node_dir}/bun'",
       "ls -1 '${bun_node_dir}' | grep -qx bun",

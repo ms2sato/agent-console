@@ -938,17 +938,36 @@ path_first_bun_arm() {
   # here -- owned by a different user (alice), pointing at a bun only she
   # can reach -- reproduces the dogfood host's actual condition instead of
   # a clean container's.
-  local bun_rev bun_node_dir
-  bun_rev="$(cexec --user agentconsole "$SERVICE" "$UNIFIED_BUN" --revision | tr -d '\r')"
+  local bun_full_rev bun_rev bun_node_dir
+  bun_full_rev="$(cexec --user agentconsole "$SERVICE" "$UNIFIED_BUN" --revision | tr -d '\r')"
+  # `bun --revision` prints "<version>+<build-hash>" (e.g.
+  # "1.3.14+0d9b296af"), but the temp dir bun itself creates is named after
+  # the build hash ALONE (e.g. "/tmp/bun-node-0d9b296af") -- measured
+  # directly (a first attempt using the full revision string targeted a
+  # directory that never existed, `ls: cannot access
+  # '/tmp/bun-node-1.3.14+0d9b296af': No such file or directory`).
+  bun_rev="${bun_full_rev#*+}"
   bun_node_dir="/tmp/bun-node-${bun_rev}"
-  echo "  bun --revision = ${bun_rev} -> ${bun_node_dir}"
-  echo "  --- before (whatever deploy #1's own bun install already created) ---"
+  echo "  bun --revision = ${bun_full_rev} -> build hash ${bun_rev} -> ${bun_node_dir}"
+  # Fails LOUDLY, with a clear message, rather than silently targeting a
+  # wrong path, if a future `bun --revision` format ever drops the `+`
+  # separator (the exact bug this guard replaces: the first attempt used
+  # the full revision string unparsed and silently targeted a directory
+  # that never existed).
+  if [ -z "$bun_rev" ] || [ "$bun_rev" = "$bun_full_rev" ]; then
+    echo "error: could not extract a build hash from 'bun --revision' output '${bun_full_rev}' (expected '<version>+<hash>')" >&2
+    exit 2
+  fi
+  echo "  --- before (this dir may not exist yet -- nothing has necessarily run under conditions that create it before this arm) ---"
   cexec --user root "$SERVICE" sh -c "ls -la '${bun_node_dir}' 2>&1; readlink -f '${bun_node_dir}/bun' 2>&1" | sed 's/^/  /'
   expect "7e: alice has her own bun at /home/alice/.bun/bin/bun (a path agentconsole cannot traverse)" \
     cexec --user root "$SERVICE" install -D -m 0755 -o alice -g alice "$UNIFIED_BUN" /home/alice/.bun/bin/bun
   cexec --user root "$SERVICE" chmod 750 /home/alice
-  expect "7e: bun-node temp dir overwritten -- alice-owned, bun/node -> alice's unreachable bun" \
-    cexec --user root "$SERVICE" sh -c "mkdir -p '${bun_node_dir}' && ln -sf /home/alice/.bun/bin/bun '${bun_node_dir}/bun' && ln -sf /home/alice/.bun/bin/bun '${bun_node_dir}/node' && chown -R alice:alice '${bun_node_dir}'"
+  # `install -d`, not `mkdir -p`: creates the dir alice-owned from the
+  # start if it does not exist yet, rather than relying on the later
+  # `chown -R` to fix up a root-owned dir `mkdir` would have left behind.
+  expect "7e: bun-node temp dir created/overwritten -- alice-owned, bun/node -> alice's unreachable bun" \
+    cexec --user root "$SERVICE" sh -c "install -d -o alice -g alice -m 755 '${bun_node_dir}' && ln -sf /home/alice/.bun/bin/bun '${bun_node_dir}/bun' && ln -sf /home/alice/.bun/bin/bun '${bun_node_dir}/node' && chown -R alice:alice '${bun_node_dir}'"
   cexec --user root "$SERVICE" sh -c "ls -la '${bun_node_dir}'; stat -c '  %U:%G %a %n' /home/alice" | sed 's/^/  after: /'
   # Positive control, checked from agentconsole's own vantage point BEFORE
   # deploy #7 runs: the symlink NAME is visible (`ls` on the dir itself
