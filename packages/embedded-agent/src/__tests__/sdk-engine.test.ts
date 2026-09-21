@@ -4299,4 +4299,138 @@ describe('SdkEngine — setMcpServers (epic #1636 Phase 5 PR-2, Architect ruling
     // added set -- it is still accepted, not fatal.
     expect(eventsOfType(events, 'fatal')).toHaveLength(0);
   });
+
+  // -------------------------------------------------------------------------
+  // Unified name-membership set (Architect ruling, 2026-09-21, PR #1794
+  // follow-up): the two revocation/throw-restore pins above cover a name
+  // added via a LIVE `setMcpServers` call. `classifyMcpServerScope`'s
+  // `'project'` branch ALSO unconditionally checked
+  // `Object.keys(this.initialProjectMcpServers)` -- the activation-time
+  // allowed set -- which had the SAME "stale membership survives a later
+  // full-state-replace" hole for a name allowed at CONSTRUCTION, never
+  // closed by the live-added fix. `currentProjectMcpServerNames` collapses
+  // both origins (activation-time allow, and anything added/revoked live)
+  // into ONE mutable set, so there is now exactly one place this invariant
+  // can ever be wrong. These two pins are the initial-set analogue of the
+  // two above.
+  //
+  // Polarity, measured: with `classifyMcpServerScope`'s `'project'` branch
+  // reverted to ALSO checking `Object.keys(this.initialProjectMcpServers)`
+  // unconditionally (i.e. `|| Object.keys(this.initialProjectMcpServers).some(matchesKnown)`
+  // added back before the unified-set check), the first pin below (empty-
+  // pairs-call revokes 'A') FAILS on BOTH channels -- 'A' still matches the
+  // initial map's key directly and no fatal fires, even though the SDK no
+  // longer has it live. Restored afterward; the second pin (throw restores
+  // 'A') is unaffected either way, since restoring the unified set already
+  // keeps 'A' live-classified through the SAME branch.
+  // -------------------------------------------------------------------------
+
+  it('revokes an ACTIVATION-time (initial) server name when a later successful setMcpServers call with an EMPTY pairs array omits it -- reported via BOTH the raw and tool channel', async () => {
+    const events: EmbeddedAgentEvent[] = [];
+    const { queryFn, push } = makeControllableMcpQuery();
+    const engine = new SdkEngine(
+      baseDeps({
+        emit: (e) => events.push(e),
+        queryFn,
+        discoveredProjectMcpServers: discoveryMap(['A', 'hA']),
+        initialAllowedProjectMcpServers: [{ name: 'A', hash: 'hA' }],
+      }),
+    );
+
+    // A full-state-replace call resolving to nothing NEW still succeeds --
+    // the reserved pair is always sent (premise P-a) -- and per the SDK's
+    // own full-state-replace contract, 'A' (omitted here) is no longer live
+    // even though it was allowed at ACTIVATION, not via a prior live call.
+    engine.setMcpServers([]);
+    await flush();
+
+    // RAW channel: system:init reports 'A' again in mcp_servers[].
+    push(
+      systemInit({
+        mcpServers: [
+          { name: 'agent-console', status: 'connected' },
+          { name: 'A', status: 'connected' },
+        ],
+      }),
+    );
+    await flush();
+
+    // Had the fix not shipped (the initial map checked unconditionally),
+    // 'A' would still read as 'project' scope and this would NOT be fatal.
+    const fatalEvents = eventsOfType(events, 'fatal');
+    expect(fatalEvents).toHaveLength(1);
+    expect(fatalEvents[0].message).toContain('A');
+  });
+
+  it('revokes an ACTIVATION-time (initial) server name via the TOOL channel too, after a later successful setMcpServers call with an EMPTY pairs array omits it', async () => {
+    const events: EmbeddedAgentEvent[] = [];
+    const { queryFn, push } = makeControllableMcpQuery();
+    const engine = new SdkEngine(
+      baseDeps({
+        emit: (e) => events.push(e),
+        queryFn,
+        discoveredProjectMcpServers: discoveryMap(['A', 'hA']),
+        initialAllowedProjectMcpServers: [{ name: 'A', hash: 'hA' }],
+      }),
+    );
+
+    engine.setMcpServers([]);
+    await flush();
+
+    // TOOL channel: system:init reports a tool namespaced under 'A' again --
+    // `mcpServerOf('mcp__A__something') === 'A'`, no slugify ambiguity since
+    // 'A' has no non-alphanumeric characters.
+    push(systemInit({ tools: ['Read', 'mcp__A__something'] }));
+    await flush();
+
+    const fatalEvents = eventsOfType(events, 'fatal');
+    expect(fatalEvents).toHaveLength(1);
+    expect(fatalEvents[0].message).toContain('A');
+  });
+
+  it('a THROWING setMcpServers call restores the pre-call set for an ACTIVATION-time (initial) server too: it is still accepted afterward, not fatal', async () => {
+    const events: EmbeddedAgentEvent[] = [];
+    // The one and only setMcpServers call throws -- its outcome on the SDK's
+    // actual live state is UNKNOWN, so the conservative/safe choice is to
+    // restore (keep) 'A' live-classified, exactly as the pre-existing
+    // throw-restore pin above does for a live-added name. Optimistically
+    // dropping 'A' here would false-fatal a server that may still be live;
+    // optimistically keeping the (empty) attempted state would be no
+    // different in this case, which is why the restore-to-last-known
+    // behavior -- not either optimistic alternative -- is the one under
+    // test.
+    const { queryFn, push } = makeControllableMcpQuery({ failOnCallNumber: 1 });
+    const engine = new SdkEngine(
+      baseDeps({
+        emit: (e) => events.push(e),
+        queryFn,
+        discoveredProjectMcpServers: discoveryMap(['A', 'hA']),
+        initialAllowedProjectMcpServers: [{ name: 'A', hash: 'hA' }],
+      }),
+    );
+
+    engine.setMcpServers([]);
+    await flush();
+    expect(eventsOfType(events, 'mcp-servers-applied').at(-1)).toEqual({
+      v: 1,
+      type: 'mcp-servers-applied',
+      applied: false,
+      errors: { '*': 'transport gone' },
+    });
+
+    events.length = 0;
+    push(
+      systemInit({
+        mcpServers: [
+          { name: 'agent-console', status: 'connected' },
+          { name: 'A', status: 'connected' },
+        ],
+      }),
+    );
+    await flush();
+
+    // The throwing call must not have dropped 'A' from the initial
+    // activation-time set -- it is still accepted, not fatal.
+    expect(eventsOfType(events, 'fatal')).toHaveLength(0);
+  });
 });
