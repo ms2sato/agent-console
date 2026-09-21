@@ -11,6 +11,7 @@ import type {
   PtyNotificationKind,
   EmbeddedAgentServerNotification,
   RestorePreservation,
+  EmbeddedAgentWorker,
 } from '@agent-console/shared';
 import { useEmbeddedAgentWorker } from './hooks/useEmbeddedAgentWorker';
 import type { EmbeddedAgentChatEntry } from './embedded-agent-store';
@@ -22,7 +23,7 @@ import { ContextUsageBar } from './ContextUsageBar';
 import { TodoPanel } from './TodoPanel';
 import { useEmbeddedAgents } from '../../hooks/useEmbeddedAgents';
 import { logger } from '../../lib/logger';
-import { updateEmbeddedAgentWorker, sendWorkerMessage } from '../../lib/api';
+import { updateEmbeddedAgentWorker, setMcpServerPermissions, sendWorkerMessage } from '../../lib/api';
 import { copyToClipboard } from '../../lib/clipboard';
 import { isPositiveInteger, POSITIVE_INTEGER_MESSAGE } from '../../lib/positive-integer';
 import { AgentParameterFields } from '../agents/AgentParameterFields';
@@ -213,6 +214,15 @@ interface EmbeddedAgentWorkerViewProps {
    * distinguishes the two.
    */
   hasParameterOverride?: boolean;
+  /**
+   * `EmbeddedAgentWorker.mcpServers` -- the `claude-sdk` engine's own MCP
+   * discovery/permission rows for this worker (epic #1636 Phase 5 PR-3b),
+   * sourced from the worker's own wire field. Absent on every `openai-api`
+   * worker and on a `claude-sdk` worker that has never activated; an empty
+   * array means the worker activated and its `.mcp.json` declared no
+   * project servers.
+   */
+  mcpServers?: EmbeddedAgentWorker['mcpServers'];
   onStatusChange?: (status: ConnectionStatus) => void;
 }
 
@@ -225,6 +235,7 @@ export function EmbeddedAgentWorkerView({
   model,
   reasoningEffort,
   hasParameterOverride,
+  mcpServers,
   onStatusChange,
 }: EmbeddedAgentWorkerViewProps) {
   const {
@@ -239,6 +250,8 @@ export function EmbeddedAgentWorkerView({
     restoreFailed,
     preservation,
     currentExit,
+    mcpDiscovery,
+    lastMcpApply,
     sendUserMessage,
     cancel,
     restart,
@@ -362,6 +375,46 @@ export function EmbeddedAgentWorkerView({
     }
   };
 
+  // MCP servers disclosure (epic #1636 Phase 5 PR-3b). Closed by default,
+  // same local-only UI flag discipline as `paramsOpen` above.
+  const [mcpOpen, setMcpOpen] = useState(false);
+  // Same in-flight discipline as `togglePending`/`paramsPending` above: no
+  // optimistic decision flip is ever applied locally -- the buttons stay
+  // disabled until the server's broadcast `mcpServers` prop (or a
+  // `mcp-servers-applied` event) naturally updates.
+  const [mcpPending, setMcpPending] = useState(false);
+  // Local inline error surface for a failed decision POST -- NOT the
+  // snapshot's global `workerError` (that is server/WS-driven connection
+  // state, unrelated to this per-action REST call). Cleared at the start of
+  // every new attempt.
+  const [mcpError, setMcpError] = useState<string | null>(null);
+
+  const handleMcpDecision = async (name: string, hash: string, decision: 'allow' | 'deny'): Promise<void> => {
+    setMcpPending(true);
+    setMcpError(null);
+    try {
+      await setMcpServerPermissions(sessionId, workerId, { name, hash, decision });
+    } catch (err) {
+      setMcpError(err instanceof Error ? err.message : 'Failed to record the MCP server decision');
+      logger.error('Failed to record MCP server decision', err);
+    } finally {
+      setMcpPending(false);
+    }
+  };
+
+  const handleMcpAllowAllPending = async (): Promise<void> => {
+    setMcpPending(true);
+    setMcpError(null);
+    try {
+      await setMcpServerPermissions(sessionId, workerId, { all: true });
+    } catch (err) {
+      setMcpError(err instanceof Error ? err.message : 'Failed to record the MCP server decision');
+      logger.error('Failed to record MCP server decisions (allow all pending)', err);
+    } finally {
+      setMcpPending(false);
+    }
+  };
+
   const listRef = useRef<HTMLDivElement>(null);
 
   // Auto-scroll to the newest entry. Component-scoped DOM interaction is an
@@ -442,6 +495,18 @@ export function EmbeddedAgentWorkerView({
   const restoreLoss = restoreFailed && (isOpenaiApiEngine || (isSdkEngine && sdkResumed === false));
 
   const displayItems = useMemo(() => buildDisplayItems(entries), [entries]);
+
+  // MCP servers disclosure summary (epic #1636 Phase 5 PR-3b). Counts ONLY
+  // `scope === 'project'` rows -- reserved/user/local/connector rows are
+  // read-only informational lines in the body, never part of this
+  // three-way count. `rejected-reserved`/`invalid` project rows are
+  // deliberately excluded from all three counters (they are neither
+  // allowed, pending, nor denied).
+  const mcpProjectServers = mcpServers?.filter((s) => s.scope === 'project') ?? [];
+  const mcpOtherServers = mcpServers?.filter((s) => s.scope !== 'project') ?? [];
+  const mcpPendingCount = mcpProjectServers.filter((s) => s.decision === 'pending').length;
+  const mcpAllowedCount = mcpProjectServers.filter((s) => s.decision === 'allowed').length;
+  const mcpDeniedCount = mcpProjectServers.filter((s) => s.decision === 'denied').length;
 
   return (
     <div className="flex flex-col flex-1 min-h-0 bg-slate-900">
@@ -716,6 +781,133 @@ export function EmbeddedAgentWorkerView({
           </div>
         )}
       </div>
+
+      {/* MCP servers disclosure (epic #1636 Phase 5 PR-3b). Same
+          `<button aria-expanded>` disclosure discipline as "Model and
+          effort" above, for the same `<details>`-count-pinned-by-tests
+          reason -- never a `<details>` element here either. `claude-sdk`
+          ONLY: `openai-api` has no MCP discovery/permission concept. */}
+      {isSdkEngine && (
+        <div className="border-t border-slate-800 shrink-0 text-xs text-gray-400">
+          <button
+            type="button"
+            aria-expanded={mcpOpen}
+            onClick={() => setMcpOpen((open) => !open)}
+            className="w-full px-4 py-1.5 flex items-center gap-2 text-left hover:bg-slate-800/60"
+          >
+            <span>MCP servers:</span>
+            {mcpServers === undefined ? (
+              <span className="text-gray-300">not discovered yet (activates with the agent)</span>
+            ) : mcpProjectServers.length === 0 ? (
+              <span className="text-gray-300">none declared in .mcp.json</span>
+            ) : (
+              <>
+                <span className="text-gray-300">
+                  {mcpAllowedCount} allowed / {mcpPendingCount} pending / {mcpDeniedCount} denied
+                </span>
+                {mcpPendingCount > 0 && (
+                  <span className="px-1 py-0.5 rounded bg-blue-900 text-blue-300 text-[10px] uppercase tracking-wide">
+                    needs a decision
+                  </span>
+                )}
+              </>
+            )}
+          </button>
+          {mcpOpen && mcpServers !== undefined && (
+            <div className="px-4 pb-2 space-y-1">
+              {mcpProjectServers.map((server) => (
+                <div key={server.name} className="flex items-center gap-2 flex-wrap">
+                  <span className="text-gray-200">{server.name}</span>
+                  <span
+                    className="text-gray-500"
+                    title={server.hash}
+                  >
+                    {server.hash ? server.hash.slice(0, 8) : '-'}
+                  </span>
+                  <span className="text-gray-400">{server.decision}</span>
+                  <span className="text-gray-500">{server.status ?? 'not running'}</span>
+                  {(server.decision === 'pending' || server.decision === 'allowed' || server.decision === 'denied') && (
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => void handleMcpDecision(server.name, server.hash ?? '', 'allow')}
+                        disabled={mcpPending || server.hash === undefined || server.decision === 'allowed'}
+                        className="text-xs px-2 py-0.5 rounded bg-blue-700 hover:bg-blue-600 disabled:opacity-50 text-white"
+                      >
+                        Allow
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void handleMcpDecision(server.name, server.hash ?? '', 'deny')}
+                        disabled={mcpPending || server.hash === undefined || server.decision === 'denied'}
+                        className="text-xs px-2 py-0.5 rounded bg-slate-700 hover:bg-slate-600 disabled:opacity-50 text-gray-200"
+                      >
+                        Deny
+                      </button>
+                    </>
+                  )}
+                  {server.decision === 'rejected-reserved' && (
+                    <span className="text-amber-400">
+                      reserved name -- a project server cannot be called `agent-console` or `console`
+                    </span>
+                  )}
+                  {server.decision === 'invalid' && (
+                    <span className="text-amber-400">invalid entry in .mcp.json</span>
+                  )}
+                </div>
+              ))}
+              {mcpPendingCount > 0 && (
+                <button
+                  type="button"
+                  onClick={() => void handleMcpAllowAllPending()}
+                  disabled={mcpPending}
+                  className="text-xs px-2 py-1 rounded bg-blue-700 hover:bg-blue-600 disabled:opacity-50 text-white"
+                >
+                  Allow all pending
+                </button>
+              )}
+              {mcpOtherServers.map((server) => (
+                <div key={server.name} className="flex items-center gap-2 text-gray-500">
+                  <span>{server.name}</span>
+                  <span>{server.status ?? '-'}</span>
+                </div>
+              ))}
+              {mcpDiscovery?.mcpJsonError !== undefined && (
+                <div className="text-amber-400">
+                  the worktree's .mcp.json could not be read: {mcpDiscovery.mcpJsonError}
+                </div>
+              )}
+              {mcpDiscovery?.userLocalNamesUnavailable === true && (
+                <div className="text-amber-400">
+                  your own ~/.claude.json could not be read; user/local servers will be reported as unexpected
+                </div>
+              )}
+              {lastMcpApply !== null && (
+                <div className="text-gray-500">
+                  {lastMcpApply.applied ? (
+                    <span>applied to the running agent</span>
+                  ) : (
+                    <span>
+                      recorded; applies at the next activation
+                      {lastMcpApply.reason !== undefined && <span> ({lastMcpApply.reason})</span>}
+                    </span>
+                  )}
+                  {lastMcpApply.errors !== undefined && (
+                    <div>
+                      {Object.entries(lastMcpApply.errors).map(([name, error]) => (
+                        <div key={name}>
+                          {name}: {error}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+              {mcpError !== null && <div className="text-red-300">{mcpError}</div>}
+            </div>
+          )}
+        </div>
+      )}
 
       <TodoPanel entries={entries} />
 

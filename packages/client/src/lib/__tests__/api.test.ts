@@ -10,6 +10,7 @@ import {
   restartWorkerAsEmbeddedAgent,
   restartAllAgentWorkers,
   updateEmbeddedAgentWorker,
+  setMcpServerPermissions,
   fetchRepositories,
   registerRepository,
   unregisterRepository,
@@ -467,6 +468,49 @@ describe('API Client', () => {
       expect(result.issues?.map((issue) => issue.message)).toEqual([
         'setting a model requires contextWindowTokens; pass null to declare no window',
       ]);
+    });
+  });
+
+  describe('setMcpServerPermissions (epic #1636 Phase 5 PR-3b)', () => {
+    it('sends a named-decision body to the mcp-permissions endpoint', async () => {
+      const mockWorker = { worker: { id: 'worker-id', type: 'embedded-agent', name: 'Local GPT' } };
+      mockFetch.mockResolvedValue(createMockResponse(mockWorker));
+
+      const result = await setMcpServerPermissions('session-id', 'worker-id', {
+        name: 'chrome-devtools',
+        hash: 'abc123',
+        decision: 'allow',
+      });
+
+      expect(getLastFetchUrl()).toContain('/api/sessions/session-id/workers/worker-id/mcp-permissions');
+      expect(getLastFetchMethod()).toBe('POST');
+      const body = await getLastFetchBody();
+      expect(body).toEqual({ name: 'chrome-devtools', hash: 'abc123', decision: 'allow' });
+      expect(result).toEqual(mockWorker);
+    });
+
+    it('sends the { all: true } body for "allow all pending"', async () => {
+      const mockWorker = { worker: { id: 'worker-id', type: 'embedded-agent', name: 'Local GPT' } };
+      mockFetch.mockResolvedValue(createMockResponse(mockWorker));
+
+      await setMcpServerPermissions('session-id', 'worker-id', { all: true });
+
+      expect(getLastFetchMethod()).toBe('POST');
+      const body = await getLastFetchBody();
+      expect(body).toEqual({ all: true });
+    });
+
+    it('throws error on failure', async () => {
+      mockFetch.mockResolvedValue({
+        ok: false,
+        status: 409,
+        statusText: 'Conflict',
+        json: mock(() => Promise.resolve({ error: 'The .mcp.json entry has changed; re-fetch and try again' })),
+      } as unknown as Response);
+
+      await expect(
+        setMcpServerPermissions('session-id', 'worker-id', { name: 'chrome-devtools', hash: 'abc123', decision: 'allow' })
+      ).rejects.toThrow('The .mcp.json entry has changed; re-fetch and try again');
     });
   });
 

@@ -39,6 +39,7 @@ import type {
   MessageTemplate,
   Artifact,
   Bookmark,
+  SetMcpServerPermissionsRequest,
 } from '@agent-console/shared';
 import {
   ArtifactsListResponseSchema,
@@ -270,6 +271,28 @@ export async function updateEmbeddedAgentWorker(
   });
   if (!res.ok) {
     await handleApiError(res, 'Failed to update worker');
+  }
+  return res.json() as Promise<{ worker: Worker }>;
+}
+
+/**
+ * Record an MCP server permission decision for a `claude-sdk` embedded-agent
+ * worker (epic #1636 Phase 5 PR-3b). The server is the source of truth --
+ * the updated worker comes back in the response and the change is also
+ * broadcast as a session update, so callers follow the server's `mcpServers`
+ * value rather than applying an optimistic flip locally.
+ */
+export async function setMcpServerPermissions(
+  sessionId: string,
+  workerId: string,
+  body: SetMcpServerPermissionsRequest,
+): Promise<{ worker: Worker }> {
+  const res = await api.sessions[':sessionId'].workers[':workerId']['mcp-permissions'].$post({
+    param: { sessionId, workerId },
+    json: body,
+  });
+  if (!res.ok) {
+    await handleApiError(res, 'Failed to record the MCP server decision');
   }
   return res.json() as Promise<{ worker: Worker }>;
 }

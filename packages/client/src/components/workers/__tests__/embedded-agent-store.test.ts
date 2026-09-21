@@ -864,6 +864,195 @@ describe('embedded-agent-store', () => {
     });
   });
 
+  describe('mcpDiscovery / lastMcpApply (epic #1636 Phase 5 PR-3b)', () => {
+    it('initializes to null before any mcp-servers-discovered/mcp-servers-applied event has been observed', () => {
+      const instance = getOrCreateEmbeddedAgentWorker('s5d-init', 'w5d-init');
+      const snapshot = instance.getSnapshot();
+      expect(snapshot.mcpDiscovery).toBeNull();
+      expect(snapshot.lastMcpApply).toBeNull();
+    });
+
+    it('sets mcpDiscovery from an mcp-servers-discovered event, without either optional flag, and does not push a chat entry', async () => {
+      const instance = getOrCreateEmbeddedAgentWorker('s5d-basic', 'w5d-basic');
+      const ws = MockWebSocket.getLastInstance();
+      ws!.simulateOpen();
+
+      const data = ndjson({
+        v: 1,
+        type: 'mcp-servers-discovered',
+        servers: [{ name: 'chrome-devtools', scope: 'project', hash: 'abc123', decision: 'pending' }],
+      });
+      ws!.simulateMessage(historyMessage(data, data.length));
+      await flush();
+
+      const snapshot = instance.getSnapshot();
+      expect(snapshot.mcpDiscovery).toEqual({});
+      expect(snapshot.entries).toHaveLength(0);
+    });
+
+    it('sets mcpDiscovery.mcpJsonError when present', async () => {
+      const instance = getOrCreateEmbeddedAgentWorker('s5d-jsonerror', 'w5d-jsonerror');
+      const ws = MockWebSocket.getLastInstance();
+      ws!.simulateOpen();
+
+      const data = ndjson({
+        v: 1,
+        type: 'mcp-servers-discovered',
+        servers: [],
+        mcpJsonError: 'ENOENT: .mcp.json not found',
+      });
+      ws!.simulateMessage(historyMessage(data, data.length));
+      await flush();
+
+      expect(instance.getSnapshot().mcpDiscovery).toEqual({ mcpJsonError: 'ENOENT: .mcp.json not found' });
+    });
+
+    it('sets mcpDiscovery.userLocalNamesUnavailable when present', async () => {
+      const instance = getOrCreateEmbeddedAgentWorker('s5d-namesunavail', 'w5d-namesunavail');
+      const ws = MockWebSocket.getLastInstance();
+      ws!.simulateOpen();
+
+      const data = ndjson({
+        v: 1,
+        type: 'mcp-servers-discovered',
+        servers: [],
+        userLocalNamesUnavailable: true,
+      });
+      ws!.simulateMessage(historyMessage(data, data.length));
+      await flush();
+
+      expect(instance.getSnapshot().mcpDiscovery).toEqual({ userLocalNamesUnavailable: true });
+    });
+
+    it('sets lastMcpApply from an mcp-servers-applied event (applied: true), and does not push a chat entry', async () => {
+      const instance = getOrCreateEmbeddedAgentWorker('s5d-applied', 'w5d-applied');
+      const ws = MockWebSocket.getLastInstance();
+      ws!.simulateOpen();
+
+      const data = ndjson({ v: 1, type: 'mcp-servers-applied', applied: true });
+      ws!.simulateMessage(historyMessage(data, data.length));
+      await flush();
+
+      const snapshot = instance.getSnapshot();
+      expect(snapshot.lastMcpApply).not.toBeNull();
+      expect(snapshot.lastMcpApply?.applied).toBe(true);
+      expect(Object.prototype.hasOwnProperty.call(snapshot.lastMcpApply, 'reason')).toBe(false);
+      expect(Object.prototype.hasOwnProperty.call(snapshot.lastMcpApply, 'errors')).toBe(false);
+      expect(typeof snapshot.lastMcpApply?.at).toBe('number');
+      expect(snapshot.entries).toHaveLength(0);
+    });
+
+    it('sets lastMcpApply with reason (applied: false, restart-required)', async () => {
+      const instance = getOrCreateEmbeddedAgentWorker('s5d-restart-required', 'w5d-restart-required');
+      const ws = MockWebSocket.getLastInstance();
+      ws!.simulateOpen();
+
+      const data = ndjson({ v: 1, type: 'mcp-servers-applied', applied: false, reason: 'restart-required' });
+      ws!.simulateMessage(historyMessage(data, data.length));
+      await flush();
+
+      const snapshot = instance.getSnapshot();
+      expect(snapshot.lastMcpApply?.applied).toBe(false);
+      expect(snapshot.lastMcpApply?.reason).toBe('restart-required');
+    });
+
+    it('sets lastMcpApply with errors when present', async () => {
+      const instance = getOrCreateEmbeddedAgentWorker('s5d-errors', 'w5d-errors');
+      const ws = MockWebSocket.getLastInstance();
+      ws!.simulateOpen();
+
+      const data = ndjson({
+        v: 1,
+        type: 'mcp-servers-applied',
+        applied: false,
+        errors: { 'chrome-devtools': 'connection refused' },
+      });
+      ws!.simulateMessage(historyMessage(data, data.length));
+      await flush();
+
+      expect(instance.getSnapshot().lastMcpApply?.errors).toEqual({ 'chrome-devtools': 'connection refused' });
+    });
+
+    it('preserves mcpDiscovery/lastMcpApply across a same-epoch fresh load (server prune / resync), unlike a genuine epoch bump', async () => {
+      // Mirrors "preserves a declared restore failure across a same-epoch
+      // fresh load" above: resetChatState() is shared by beginEpochReset (a
+      // genuine incarnation change) and applyBytes's same-epoch `isFresh`
+      // branch. A `history` response never carries a fresh
+      // `mcp-servers-discovered`/`mcp-servers-applied`, so nothing is coming
+      // to re-declare either reading on a same-epoch fresh load -- both must
+      // survive unchanged.
+      const instance = getOrCreateEmbeddedAgentWorker('s5d-preserve', 'w5d-preserve');
+      const ws1 = MockWebSocket.getLastInstance();
+      ws1!.simulateOpen();
+
+      const initialData = ndjson(
+        { v: 1, type: 'user-message', id: 'u1', text: 'first' },
+        {
+          v: 1,
+          type: 'mcp-servers-discovered',
+          servers: [{ name: 'chrome-devtools', scope: 'project', hash: 'abc123', decision: 'pending' }],
+          mcpJsonError: 'transient read error',
+        },
+        { v: 1, type: 'mcp-servers-applied', applied: true },
+      );
+      ws1!.simulateMessage(historyMessage(initialData, initialData.length, 0, 1));
+      await flush();
+      expect(instance.getSnapshot().mcpDiscovery).toEqual({ mcpJsonError: 'transient read error' });
+      expect(instance.getSnapshot().lastMcpApply?.applied).toBe(true);
+
+      // Plain reconnect (no epoch bump): lastOffset carries over, so the
+      // client requests fromOffset: initialData.length.
+      instance.restart();
+      const ws2 = MockWebSocket.getLastInstance();
+      expect(ws2).not.toBe(ws1);
+      ws2!.simulateOpen();
+      expect(lastSentMessages(ws2!)).toContainEqual({
+        type: 'request-history',
+        fromOffset: initialData.length,
+      });
+
+      // The server responds with the SAME epoch (no restart) but pruned its
+      // buffer, sending a fresh payload starting at 0 -- applyBytes's
+      // `isFresh` branch, without an epoch bump.
+      const prunedData = ndjson({ v: 1, type: 'user-message', id: 'u2', text: 'second (post-prune)' });
+      ws2!.simulateMessage(historyMessage(prunedData, prunedData.length, 0, 1));
+      await flush();
+
+      expect(instance.getSnapshot().mcpDiscovery).toEqual({ mcpJsonError: 'transient read error' });
+      expect(instance.getSnapshot().lastMcpApply?.applied).toBe(true);
+    });
+
+    it('resets mcpDiscovery/lastMcpApply to null on a genuine epoch bump (worker restarted server-side)', async () => {
+      const instance = getOrCreateEmbeddedAgentWorker('s5d-epoch', 'w5d-epoch');
+      const ws = MockWebSocket.getLastInstance();
+      ws!.simulateOpen();
+
+      // Establish epoch 1 with a discovery reading and an apply result.
+      const initialData = ndjson(
+        {
+          v: 1,
+          type: 'mcp-servers-discovered',
+          servers: [{ name: 'chrome-devtools', scope: 'project', hash: 'abc123', decision: 'pending' }],
+        },
+        { v: 1, type: 'mcp-servers-applied', applied: true },
+      );
+      ws!.simulateMessage(historyMessage(initialData, initialData.length, 0, 1));
+      await flush();
+      expect(instance.getSnapshot().mcpDiscovery).not.toBeNull();
+      expect(instance.getSnapshot().lastMcpApply).not.toBeNull();
+
+      // A larger epoch means the worker restarted server-side -- this
+      // message itself carries no mcp-servers event, so any clearing
+      // observed here can only come from beginEpochReset itself.
+      const bumpData = ndjson({ v: 1, type: 'user-message', id: 'u-bump', text: 'after restart' });
+      ws!.simulateMessage(outputMessage(bumpData, bumpData.length, 2));
+      await flush();
+
+      expect(instance.getSnapshot().mcpDiscovery).toBeNull();
+      expect(instance.getSnapshot().lastMcpApply).toBeNull();
+    });
+  });
+
   it('folds a user-message server-authored event from replayed history', async () => {
     const instance = getOrCreateEmbeddedAgentWorker('s5b', 'w5b');
     const ws = MockWebSocket.getLastInstance();

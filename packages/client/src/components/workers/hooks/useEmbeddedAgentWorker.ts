@@ -5,6 +5,7 @@ import {
   type EmbeddedAgentChatEntry,
   type EmbeddedAgentConnectionStatus,
   type EmbeddedAgentContextUsage,
+  type EmbeddedAgentSnapshot,
 } from '../embedded-agent-store.js';
 import type { WorkerErrorCode } from '@agent-console/shared';
 
@@ -33,6 +34,10 @@ interface UseEmbeddedAgentWorkerReturn {
   preservation: RestorePreservation | undefined;
   /** R1 (#1455). See `EmbeddedAgentSnapshot.currentExit` doc comment. */
   currentExit: { code: number | null; reason?: ExitReason; stderrTail?: string } | null;
+  /** epic #1636 Phase 5 PR-3b. See `EmbeddedAgentSnapshot.mcpDiscovery` doc comment. */
+  mcpDiscovery: EmbeddedAgentSnapshot['mcpDiscovery'];
+  /** epic #1636 Phase 5 PR-3b. See `EmbeddedAgentSnapshot.lastMcpApply` doc comment. */
+  lastMcpApply: EmbeddedAgentSnapshot['lastMcpApply'];
   sendUserMessage: (text: string) => Promise<void>;
   cancel: () => void;
   restart: () => void;
@@ -99,6 +104,8 @@ export function useEmbeddedAgentWorker(
     restoreFailed: snapshot.restoreFailed,
     preservation: snapshot.preservation,
     currentExit: snapshot.currentExit,
+    mcpDiscovery: snapshot.mcpDiscovery,
+    lastMcpApply: snapshot.lastMcpApply,
     sendUserMessage,
     cancel,
     restart,

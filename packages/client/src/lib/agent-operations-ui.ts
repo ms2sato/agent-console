@@ -32,7 +32,7 @@ export const UI_AGENT_OPERATIONS = {
     via: 'EmbeddedAgentWorkerView "Model and effort" disclosure',
   },
   decideMcpServerPermissions: {
-    exposed: false,
-    reason: 'ships in PR-3b (EmbeddedAgentWorkerView "MCP servers" section)',
+    exposed: true,
+    via: 'EmbeddedAgentWorkerView "MCP servers" disclosure',
   },
 } satisfies Record<AgentOperation, SurfaceExposure>;

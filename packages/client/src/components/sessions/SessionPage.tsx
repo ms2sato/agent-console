@@ -21,7 +21,7 @@ import { getTabDotColor, isCloseableTabType, getWorkerTypeLabel, showsActivityBa
 import { getNextTabIndex } from './tabKeyboardNavigation';
 import { extractRestartableSession, executeWorkerRestart } from './workerRestart';
 import { sendPtyWorkerMessage, escapePtyWorker } from './messagePanelHandlers';
-import type { AgentDefinition, Session, Worker } from '@agent-console/shared';
+import type { AgentDefinition, EmbeddedAgentWorker, Session, Worker } from '@agent-console/shared';
 import { MessagePanel, type MessagePanelHandle } from './MessagePanel';
 import { SessionSidePanels } from './SessionSidePanels';
 import { SessionSidePanelsDrawer } from './SessionSidePanelsDrawer';
@@ -128,6 +128,20 @@ export function resolveActiveEmbeddedHasParameterOverride(
 ): boolean | undefined {
   const activeWorker = workers.find(w => w.id === activeTabId);
   return activeWorker?.type === 'embedded-agent' ? activeWorker.hasParameterOverride : undefined;
+}
+
+/**
+ * Resolve the `mcpServers` prop for the active tab's worker -- undefined
+ * when the active worker isn't an embedded-agent type. Same extraction
+ * rationale as `resolveActiveEmbeddedAgentId` above (epic #1636 Phase 5
+ * PR-3b).
+ */
+export function resolveActiveEmbeddedMcpServers(
+  workers: Worker[],
+  activeTabId: string | null,
+): EmbeddedAgentWorker['mcpServers'] {
+  const activeWorker = workers.find(w => w.id === activeTabId);
+  return activeWorker?.type === 'embedded-agent' ? activeWorker.mcpServers : undefined;
 }
 
 // Error fallback UI for worker tabs
@@ -600,6 +614,10 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
     session.workers,
     activeTabId,
   );
+  // epic #1636 Phase 5 PR-3b: the MCP servers disclosure's server-broadcast
+  // rows, resolved the same way as the override fields above -- read from
+  // `session.workers` on every render, never held locally.
+  const activeEmbeddedMcpServers = resolveActiveEmbeddedMcpServers(session.workers, activeTabId);
   const statusWorkerType = activeTab?.workerType ?? 'agent';
   const statusColor = getConnectionStatusColor(connectionStatus, activityState, statusWorkerType);
   const statusText = getConnectionStatusText(connectionStatus, activityState, exitInfo ?? null, statusWorkerType);
@@ -674,6 +692,7 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
             model={activeEmbeddedModel}
             reasoningEffort={activeEmbeddedReasoningEffort}
             hasParameterOverride={activeEmbeddedHasParameterOverride}
+            mcpServers={activeEmbeddedMcpServers}
             onStatusChange={handleStatusChange}
           />
         ) : activeTab.workerType === 'git-diff' ? (
