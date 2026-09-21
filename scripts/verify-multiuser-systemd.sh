@@ -130,7 +130,20 @@
 #      `bun`/`node` symlinked to a bun only she can reach, confirmed
 #      unreachable from agentconsole's own vantage point before deploying,
 #      and asserted unchanged after both deploys below (the ONLY variable
-#      between deploy #7 and #8 is the package.json start line). Polarity:
+#      between deploy #7 and #8 is the package.json start line). A second
+#      run of this arm (shim reproduced, nothing else) died in `bun run
+#      build`'s `#!/usr/bin/env node` scripts with `Permission denied`,
+#      exit 126: glibc's execvp does NOT stop at the first EACCES it hits
+#      walking PATH -- it records the error and keeps searching, failing
+#      with that EACCES only if nothing LATER on PATH resolves either. The
+#      dogfood host survives the dead shim entry because a real,
+#      root-owned `/usr/bin/node` (apt-installed) sits later on its PATH;
+#      this bun-only image has no node anywhere, so the walk exhausts PATH
+#      and returns the remembered EACCES. This arm plants `/usr/bin/node ->
+#      the unified bun` as a stand-in for the dogfood host's apt node --
+#      bun is Node-compatible enough to have already built this exact repo
+#      once, unmodified, before this stand-in existed (the first tier-3 run
+#      of this arm, back when the shim was still live). Polarity:
 #      with the pre-fix (af8fed78) bare-`bun` start script injected into
 #      the rsynced package.json, deploy #7 must exit 1 (V0-V5 PASS, V6 FAIL
 #      naming the EMBEDDED_AGENT_BUN_PATH warning, restart still happens)
@@ -880,6 +893,8 @@ print_child_diagnostics() {
   cexec --user root "$SERVICE" sh -c "for d in '${DEPLOY_TARGET}' /home/agentconsole /home /; do printf '  %s: ' \"\${d}/node_modules/.bin/bun\"; ls -l \"\${d}/node_modules/.bin/bun\" 2>&1 | tail -1; done"
   echo "  --- ${bun_node_dir} (owner + bun/node symlink targets) ---"
   cexec --user root "$SERVICE" sh -c "stat -c '  %U:%G %a %n' '${bun_node_dir}'; readlink '${bun_node_dir}/bun'; readlink '${bun_node_dir}/node'" 2>&1 | sed 's/^/  /'
+  echo "  --- /usr/bin/node (the planted stand-in for the dogfood host's apt node) ---"
+  cexec --user root "$SERVICE" readlink -f /usr/bin/node 2>&1 | sed 's/^/  /'
 }
 
 # expect_bun_node_dir_unchanged <label> <bun_node_dir>: asserts the shim
@@ -985,6 +1000,28 @@ path_first_bun_arm() {
   cexec --user agentconsole "$SERVICE" test -e "${bun_node_dir}/bun" || blocked_rc=$?
   expect "7e: agentconsole CANNOT resolve the bun-node dir's bun symlink (its target under /home/alice is unreachable)" \
     test "$blocked_rc" -ne 0
+
+  # glibc's execvp does NOT stop on the FIRST EACCES it hits while walking
+  # PATH -- it records the error and keeps searching, reporting EACCES only
+  # if nothing LATER on PATH resolves either (measured: run 25695935's
+  # build succeeded while the shim was live -- unified-owned -- and run
+  # 35558058623's build died with exactly `/usr/bin/env: 'node': Permission
+  # denied`, exit 126, once the shim's `node` entry became alice's
+  # unreachable bun). On the dogfood host, `bun run build`'s `#!/usr/bin/env
+  # node` scripts survive this dead shim entry because a real, root-owned
+  # `/usr/bin/node` (apt-installed) sits later on PATH and execvp's walk
+  # reaches it. THIS image has no node anywhere, so the walk exhausts PATH
+  # and returns the remembered EACCES. Planting a stand-in here is what
+  # makes this container match the dogfood host's actual PATH shape, not a
+  # workaround for this arm's own defect -- bun itself is Node-compatible
+  # enough to have already built this exact repo once, unmodified, when it
+  # was reached via the shim's live pre-arm state (run 25695935).
+  local pre_node_rc=0
+  cexec --user root "$SERVICE" test -e /usr/bin/node || pre_node_rc=$?
+  expect "7e: /usr/bin/node does not exist yet (this image ships bun only, unlike the dogfood host's apt-installed node)" \
+    test "$pre_node_rc" -ne 0
+  expect "7e: /usr/bin/node -> unified bun planted (stand-in for the dogfood host's real apt node, later on PATH than the dead shim)" \
+    cexec --user root "$SERVICE" ln -s "$UNIFIED_BUN" /usr/bin/node
 
   echo "  --- inject the pre-fix (af8fed78) start line into ${SRC}/${pkg} ---"
   printf '%s\n' "$SED_TO_PRE_FIX_START" | cexec --user agentconsole -w "$SRC" "$SERVICE" sed -i -f - -- "$pkg"

@@ -952,4 +952,37 @@ describe('verify-multiuser-systemd.sh: 7e PATH-first-bun arm is present and orde
     expect(deploy8Dump).toBeGreaterThan(deploy7Assert);
     expect(deploy8Assert).toBeGreaterThan(deploy8Dump);
   });
+
+  // Added after the deploy-out dump (above) revealed the actual mechanism:
+  // both deploys died in `bun run build`'s `#!/usr/bin/env node` scripts
+  // with `Permission denied`, exit 126 -- glibc's execvp does not stop at
+  // the first EACCES walking PATH, it keeps searching and only fails with
+  // that EACCES if nothing LATER on PATH resolves either. The dogfood host
+  // survives the dead shim entry because a real apt-installed /usr/bin/node
+  // sits later on its PATH; this bun-only image has none, so the walk
+  // exhausts PATH. This stand-in is what makes the container's PATH shape
+  // match the dogfood host's, not a workaround for the arm's own defect.
+  it('plants /usr/bin/node -> the unified bun as a stand-in for the dogfood host\'s real apt-installed node, asserted absent beforehand', () => {
+    const a = arm();
+    expect(a).toContain('cexec --user root "$SERVICE" test -e /usr/bin/node || pre_node_rc=$?');
+    expect(a).toContain(
+      'expect "7e: /usr/bin/node does not exist yet (this image ships bun only, unlike the dogfood host\'s apt-installed node)" \\\n    test "$pre_node_rc" -ne 0',
+    );
+    expect(a).toContain('cexec --user root "$SERVICE" ln -s "$UNIFIED_BUN" /usr/bin/node');
+
+    // Planted AFTER confirming the shim's bun entry is unreachable
+    // (the polarity precondition), BEFORE the pre-fix start line is
+    // injected -- present for both deploy #7 and #8.
+    const shimBlockedI = a.indexOf('agentconsole CANNOT resolve the bun-node dir');
+    const nodePlantI = a.indexOf('ln -s "$UNIFIED_BUN" /usr/bin/node');
+    const injectI = a.indexOf('inject the pre-fix (af8fed78) start line');
+    expect(nodePlantI).toBeGreaterThan(shimBlockedI);
+    expect(injectI).toBeGreaterThan(nodePlantI);
+  });
+
+  it('print_child_diagnostics also prints /usr/bin/node\'s resolved target', () => {
+    expect(driver).toContain("echo \"  --- /usr/bin/node (the planted stand-in for the dogfood host's apt node) ---\"");
+    expect(driver).toContain('cexec --user root "$SERVICE" readlink -f /usr/bin/node');
+    expect(idxOf("/usr/bin/node (the planted stand-in")).toBeLessThan(armStart());
+  });
 });
