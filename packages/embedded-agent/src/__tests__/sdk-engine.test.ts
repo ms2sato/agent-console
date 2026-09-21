@@ -995,7 +995,13 @@ describe('SdkEngine — tool-surface containment (Pin 2, S5)', () => {
   it('accepts a system:init report whose non-mcp__ tools are a subset of the configured allowlist (positive control)', async () => {
     const events: EmbeddedAgentEvent[] = [];
     const { queryFn } = makeFakeQuery([
-      systemInit({ tools: ['Read', 'Glob', 'Grep', 'mcp__agent-console__close_session'] }),
+      // `mcp__agent_console__...` (underscore), not a literal hyphen: the
+      // CLI's own tool-name prefix is already the slugified form
+      // (`slugifyMcpServerName('agent-console') === 'agent_console'`), and
+      // `classifyMcpServerScope`'s `'tool'` channel compares this extracted
+      // name against KNOWN names slugified on-the-fly, not the other way
+      // around -- see that method's doc comment.
+      systemInit({ tools: ['Read', 'Glob', 'Grep', 'mcp__agent_console__close_session'] }),
     ]);
     new SdkEngine(baseDeps({ emit: (e) => events.push(e), queryFn, enabledTools: ['Read', 'Glob', 'Grep'] }));
     await flush();
@@ -1007,7 +1013,7 @@ describe('SdkEngine — tool-surface containment (Pin 2, S5)', () => {
   it('terminates the session with a fatal event when system:init reports a forbidden builtin tool outside the allowlist (negative control)', async () => {
     const events: EmbeddedAgentEvent[] = [];
     const { queryFn, isClosed } = makeFakeQuery([
-      systemInit({ tools: ['Read', 'Glob', 'Grep', 'WebFetch', 'mcp__agent-console__close_session'] }),
+      systemInit({ tools: ['Read', 'Glob', 'Grep', 'WebFetch', 'mcp__agent_console__close_session'] }),
     ]);
     new SdkEngine(baseDeps({ emit: (e) => events.push(e), queryFn, enabledTools: ['Read', 'Glob', 'Grep'] }));
     await flush();
@@ -1021,7 +1027,7 @@ describe('SdkEngine — tool-surface containment (Pin 2, S5)', () => {
   it('excludes mcp__-prefixed entries from the containment subset check by design (an mcp__ tool never trips it)', async () => {
     const events: EmbeddedAgentEvent[] = [];
     const { queryFn } = makeFakeQuery([
-      systemInit({ tools: ['Read', 'mcp__agent-console__anything_not_in_our_allowlist'] }),
+      systemInit({ tools: ['Read', 'mcp__agent_console__anything_not_in_our_allowlist'] }),
     ]);
     new SdkEngine(baseDeps({ emit: (e) => events.push(e), queryFn, enabledTools: ['Read'] }));
     await flush();
@@ -1115,7 +1121,9 @@ describe('SdkEngine — MCP server containment wall (epic #1636 Phase 5 PR-2, §
           { name: 'agent-console', status: 'connected' },
           { name: 'my-server', status: 'connected' },
         ],
-        tools: ['Read', 'mcp__my-server__do_thing'],
+        // `mcp__my_server__...` (underscore): the CLI's own tool-name prefix
+        // is already the slugified form of the raw `my-server` name.
+        tools: ['Read', 'mcp__my_server__do_thing'],
       }),
     ]);
     new SdkEngine(
@@ -1294,22 +1302,19 @@ describe('SdkEngine — MCP server containment wall (epic #1636 Phase 5 PR-2, §
     expect(eventsOfType(events, 'sdk-session-id')).toHaveLength(1);
   });
 
-  // Architect finding, 2026-09-21: `classifyMcpServerScope` must normalize
-  // BOTH sides of every comparison through `slugifyMcpServerName` before
-  // matching -- `message.tools`'s `mcp__<slug>__<toolname>` entries carry an
-  // ALREADY-SLUGIFIED server name (non-alphanumeric runs replaced with `_`),
-  // while the expected-name sources (`initialProjectMcpServers`'s keys,
-  // `expectedMcpServerNames.userLocal`) hold the RAW declared name. Without
-  // normalization, a legitimate server whose declared name contains a `.` or
-  // a space is misclassified as unexpected and the session is wrongly
-  // fatal'd. These two pins reach the wall exclusively via the
-  // already-slugified `message.tools` form, never via `message.mcp_servers`,
-  // so a raw-vs-raw comparison could not accidentally satisfy them.
+  // Architect finding, 2026-09-21: `classifyMcpServerScope` must classify on
+  // the CORRECT channel per name source -- `'tool'` for names extracted from
+  // `message.tools`'s `mcp__<slug>__<toolname>` entries (already slugified by
+  // the CLI, non-alphanumeric runs replaced with `_`), `'raw'` for
+  // `message.mcp_servers[].name` (the CLI's un-mangled declared name). These
+  // two pins reach the wall exclusively via the already-slugified
+  // `message.tools` form, never via `message.mcp_servers`, so a raw-vs-raw
+  // comparison could not accidentally satisfy them.
   //
-  // Polarity, measured: with `classifyMcpServerScope`'s normalization
-  // reverted to raw (unslugified) comparison, BOTH pins below fail --
-  // 'terminates with a fatal event' where none was expected, because
-  // `mcp__my_server__...`/`mcp__my_server_2__...` (slugified) never
+  // Polarity, measured: with `classifyMcpServerScope`'s `'tool'`-channel
+  // slugify-comparison reverted to raw (unslugified) comparison, BOTH pins
+  // below fail -- 'terminates with a fatal event' where none was expected,
+  // because `mcp__my_server__...`/`mcp__my_server_2__...` (slugified) never
   // raw-string-matches `'my.server'`/`'my server'` (declared). Restored
   // afterward; see the PR body for the exact revert/restore commands run.
   it('accepts a user/local-scope server declared as "my.server" when reported via the slugified mcp__my_server__ tool-name form (positive control, Architect finding 2026-09-21)', async () => {
@@ -1347,6 +1352,46 @@ describe('SdkEngine — MCP server containment wall (epic #1636 Phase 5 PR-2, §
     );
     await flush();
     expect(eventsOfType(events, 'fatal')).toHaveLength(0);
+  });
+
+  // CodeRabbit finding on PR #1794 (2026-09-21), fixed on top of the two
+  // positive pins above: slugifying is MANY-TO-ONE, so two DISTINCT raw
+  // server names can collide on one slug -- `my server` (space) and
+  // `my.server` (dot) both slugify to `my_server`. Before this fix,
+  // `classifyMcpServerScope` slugified BOTH channels uniformly, so a
+  // completely different, unexpected server literally named `my server`
+  // would be incorrectly accepted merely because a DIFFERENT,
+  // legitimately-allowed `my.server` shares its slug -- the wall reported
+  // "expected" for a name it had never actually approved. This pin reaches
+  // the wall via `message.mcp_servers[].name` (the RAW channel), NOT via
+  // `message.tools`, so it exercises exact-match comparison specifically.
+  //
+  // Polarity, measured: with `classifyMcpServerScope` reverted to slugifying
+  // BOTH channels (the bug), this pin FAILS -- 'my server' incorrectly
+  // matches the slug of the expected 'my.server' and no fatal fires. With
+  // the fix (raw-channel exact match), 'my server' does not match
+  // 'my.server' by exact string equality, isAccountConnector/reserved/
+  // project also don't match it, and the wall correctly fatals. Restored
+  // afterward; see the PR body for the exact revert/restore commands run.
+  it('fatals when the raw mcp_servers name "my server" is reported but only the DISTINCT raw name "my.server" (same slug) is expected (negative control, CodeRabbit finding on #1794)', async () => {
+    const events: EmbeddedAgentEvent[] = [];
+    const { queryFn } = makeFakeQuery([
+      systemInit({
+        mcpServers: [{ name: 'my server', status: 'connected' }],
+      }),
+    ]);
+    new SdkEngine(
+      baseDeps({
+        emit: (e) => events.push(e),
+        queryFn,
+        expectedMcpServerNames: { userLocal: new Set(['my.server']), unavailable: false },
+      }),
+    );
+    await flush();
+
+    const fatalEvents = eventsOfType(events, 'fatal');
+    expect(fatalEvents).toHaveLength(1);
+    expect(fatalEvents[0].message).toContain('my server');
   });
 });
 

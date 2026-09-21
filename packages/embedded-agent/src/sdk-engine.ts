@@ -1443,13 +1443,25 @@ export class SdkEngine implements ClaudeSdkEngine {
     // about to be terminated.
     this.emitMcpServersDiscovered(message.mcp_servers);
 
+    // Two DISTINCT name spaces, never merged into one Set (Architect finding,
+    // 2026-09-21, security fix on top of PR-2's original wall -- see
+    // `classifyMcpServerScope`'s own doc comment for the collision this
+    // avoids): `message.tools`'s `mcp__<slug>__<toolname>` entries carry the
+    // CLI's ALREADY-SLUGIFIED form (the `'tool'` channel), while
+    // `message.mcp_servers[].name` carries the CLI's RAW declared name (the
+    // `'raw'` channel). Classifying each on its own channel, rather than
+    // slugifying both sides uniformly, is what keeps a raw-name comparison
+    // exact and unambiguous.
     const mcpToolServerNames = new Set<string>();
     for (const name of message.tools) {
       const server = mcpServerOf(name);
       if (server !== null) mcpToolServerNames.add(server);
     }
-    const reportedMcpNames = new Set([...mcpToolServerNames, ...message.mcp_servers.map((s) => s.name)]);
-    const unexpectedMcpNames = [...reportedMcpNames].filter((name) => !this.isExpectedMcpServerName(name));
+    const rawMcpServerNames = new Set(message.mcp_servers.map((s) => s.name));
+    const unexpectedMcpNames = [
+      ...[...mcpToolServerNames].filter((name) => !this.isExpectedMcpServerName(name, 'tool')),
+      ...[...rawMcpServerNames].filter((name) => !this.isExpectedMcpServerName(name, 'raw')),
+    ];
     if (unexpectedMcpNames.length > 0) {
       const unavailableHint = this.deps.expectedMcpServerNames.unavailable
         ? ' -- note: the CLI\'s own ~/.claude.json could not be read at activation, so a legitimate ' +
@@ -1476,34 +1488,56 @@ export class SdkEngine implements ClaudeSdkEngine {
    * it into `unexpectedMcpNames` rather than reading `null` back out of this
    * method's return value at that call site.
    *
-   * **Both sides of every comparison are normalized through
-   * {@link slugifyMcpServerName} before matching** (Architect finding,
-   * 2026-09-21, security fix on top of PR-2's original wall). `system:init`
-   * reports an MCP server's name in TWO forms depending on which field is
-   * read: `message.mcp_servers[].name` carries the RAW declared name, while
-   * `message.tools`'s `mcp__<slug>__<toolname>` entries (extracted by
-   * `mcpServerOf` in {@link handleSystemInit}) carry the ALREADY-SLUGIFIED
-   * form -- this is a general SDK tool-naming convention, not special-cased
-   * to the connector class `isAccountConnector` was originally measured
-   * against (see `mcp-names.ts`'s doc comment on `slugifyMcpServerName`). A
-   * fully legitimate project/user/local-scope server literally named
-   * `my.server` or `my server` therefore arrives via `message.tools` as
-   * `my_server`, which does NOT raw-string-match a `my.server`/`my server`
-   * entry in any of the expected-name sources below -- WITHOUT
-   * normalization, the wall would incorrectly treat that legitimate,
-   * already-allowed server as unexpected and fatal the session. Slugifying
-   * an already-slugified name is idempotent (a lone underscore is left
-   * alone), so this normalization is safe to apply uniformly regardless of
-   * which of the two forms `name` actually is.
+   * **`channel` selects the comparison rule, and the two rules are NOT
+   * interchangeable** (Architect finding, 2026-09-21, security fix on top of
+   * PR-2's original wall, refining a prior all-slugify version of this
+   * method that a follow-up review found unsound). `system:init` reports an
+   * MCP server's name in TWO forms depending on which field is read:
+   *
+   * - `channel: 'raw'` -- for `message.mcp_servers[].name` and
+   *   `mcpServerStatus()`'s own `.name`, both of which carry the CLI's RAW,
+   *   un-mangled declared name. Every candidate known name is compared
+   *   against `name` by EXACT STRING EQUALITY, on both sides unmodified.
+   *   Exact equality can never conflate two distinct declared names, so this
+   *   channel is unambiguous: a session reporting a raw name that is not
+   *   BYTE-IDENTICAL to an expected raw name is genuinely unexpected.
+   * - `channel: 'tool'` -- for names extracted from `message.tools`'s
+   *   `mcp__<slug>__<toolname>` entries (via `mcpServerOf` in
+   *   {@link handleSystemInit}), which the CLI itself has ALREADY slugified
+   *   before this process ever sees them -- there is no raw form to recover
+   *   here, so `name` is compared by slugifying each candidate known name
+   *   and matching it against `name` as-is.
+   *
+   * **The `'tool'` channel's ambiguity is inherent to the CLI, not
+   * introduced by this comparison.** Two DISTINCT raw server names can
+   * slugify to the identical string -- `my server` (space) and `my.server`
+   * (dot) both become `my_server` -- and the CLI emits the SAME
+   * `mcp__my_server__` tool-name prefix for either one. A `'tool'`-channel
+   * classification can therefore only ever narrow to "some server with this
+   * slug is expected," never disambiguate WHICH raw name actually produced
+   * it. This is exactly why {@link handleSystemInit}'s wall check classifies
+   * `message.mcp_servers[].name` on `'raw'`, never `'tool'`: an
+   * attacker-controlled server literally named `my server` must never be
+   * accepted merely because a DIFFERENT, legitimately-allowed `my.server`
+   * happens to share its slug. On the `'raw'` channel this collision cannot
+   * happen at all -- exact string equality is unambiguous by construction.
+   *
+   * The connector class (`isAccountConnector`) is checked identically on
+   * both channels -- it does its own internal slugify-then-prefix-test
+   * normalization (see `mcp-names.ts`), and slugifying an already-slugified
+   * `'tool'`-channel `name` again is idempotent, so passing either channel's
+   * `name` straight through is safe.
    *
    * This function's RETURN VALUE (the scope label) is the only thing shared
    * with {@link emitMcpServersDiscovered} -- the RAW `entry.name` callers
    * pass in and store alongside that label is never touched here, so the
    * panel keeps reporting exactly the name the SDK reported, unslugified.
    */
-  private classifyMcpServerScope(name: string): McpServerDiscoveredScope | null {
-    const slug = slugifyMcpServerName(name);
-    if (slug === slugifyMcpServerName('agent-console') || slug === slugifyMcpServerName(COMPACT_TOOL_SERVER_NAME)) {
+  private classifyMcpServerScope(name: string, channel: 'raw' | 'tool'): McpServerDiscoveredScope | null {
+    const matchesKnown = (known: string): boolean =>
+      channel === 'raw' ? name === known : slugifyMcpServerName(known) === name;
+
+    if (matchesKnown('agent-console') || matchesKnown(COMPACT_TOOL_SERVER_NAME)) {
       return 'reserved';
     }
     // `'project'` scope is keyed on what has ACTUALLY been passed to the SDK
@@ -1515,8 +1549,8 @@ export class SdkEngine implements ClaudeSdkEngine {
     // being PERMITTED, and this containment check exists to catch exactly
     // that gap between the two.
     if (
-      Object.keys(this.initialProjectMcpServers).some((known) => slugifyMcpServerName(known) === slug) ||
-      [...this.liveAddedMcpServerNames].some((known) => slugifyMcpServerName(known) === slug)
+      Object.keys(this.initialProjectMcpServers).some(matchesKnown) ||
+      [...this.liveAddedMcpServerNames].some(matchesKnown)
     ) {
       return 'project';
     }
@@ -1527,7 +1561,7 @@ export class SdkEngine implements ClaudeSdkEngine {
     // unexpected rather than silently narrowing the detector's tolerance.
     if (
       !this.deps.expectedMcpServerNames.unavailable &&
-      [...this.deps.expectedMcpServerNames.userLocal].some((known) => slugifyMcpServerName(known) === slug)
+      [...this.deps.expectedMcpServerNames.userLocal].some(matchesKnown)
     ) {
       // `expectedMcpServerNames.userLocal` combines BOTH the CLI's
       // User-scope and Local-scope name sets into one (see that field's own
@@ -1540,9 +1574,10 @@ export class SdkEngine implements ClaudeSdkEngine {
   }
 
   /** Whether `name` matches ANY of §4.5 D-E's expected classes -- the wall's
-   * pass condition. See {@link classifyMcpServerScope} for the classes. */
-  private isExpectedMcpServerName(name: string): boolean {
-    return this.classifyMcpServerScope(name) !== null;
+   * pass condition. See {@link classifyMcpServerScope} for the classes and
+   * what `channel` selects. */
+  private isExpectedMcpServerName(name: string, channel: 'raw' | 'tool'): boolean {
+    return this.classifyMcpServerScope(name, channel) !== null;
   }
 
   /**
@@ -1569,12 +1604,18 @@ export class SdkEngine implements ClaudeSdkEngine {
    * entry. This site's job is reporting what `system:init`/`mcpServerStatus()`
    * ACTUALLY says -- primarily `status` -- not re-deriving a hash this class
    * has no reason to recompute.
+   *
+   * `entries` is always `message.mcp_servers[]` or `mcpServerStatus()`'s
+   * output -- never tool-derived -- so every entry is classified on the
+   * `'raw'` channel; see {@link classifyMcpServerScope}'s doc comment for why
+   * that channel, not `'tool'`, is the one whose exact-match comparison is
+   * safe for a name this method reports verbatim to the panel.
    */
   private emitMcpServersDiscovered(entries: Array<{ name: string; status: string }>): void {
     const servers = entries.reduce<
       Array<{ name: string; scope: McpServerDiscoveredScope; status: string }>
     >((acc, entry) => {
-      const scope = this.classifyMcpServerScope(entry.name);
+      const scope = this.classifyMcpServerScope(entry.name, 'raw');
       if (scope !== null) acc.push({ name: entry.name, scope, status: entry.status });
       return acc;
     }, []);
