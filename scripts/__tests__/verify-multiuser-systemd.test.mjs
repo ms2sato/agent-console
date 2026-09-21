@@ -857,4 +857,62 @@ describe('verify-multiuser-systemd.sh: 7e PATH-first-bun arm is present and orde
     expect(i).toBeGreaterThan(deployI);
     expect(i).toBeLessThan(evidenceI);
   });
+
+  // Added after a SECOND tier-3 run showed the planted service-user bun
+  // still lost: `bun run` prepends a per-machine temp dir
+  // (`/tmp/bun-node-<bun-revision>`) ahead of PATH, and this container's
+  // own copy -- created by deploy #1's own first `bun install`/`bun run
+  // build`, long before this arm runs -- already pointed at the unified
+  // bun and won regardless of what this arm plants elsewhere on PATH. This
+  // setup reproduces the dogfood host's actual condition (a DIFFERENT
+  // user's stale symlink into an unreachable home) instead of a clean
+  // container's.
+  it('reproduces the dogfood host\'s bun-node temp-dir shim: alice-owned, bun/node symlinked to a bun only she can reach, confirmed unreachable from agentconsole before deploying', () => {
+    const a = arm();
+    expect(a).toContain('bun_rev="$(cexec --user agentconsole "$SERVICE" "$UNIFIED_BUN" --revision');
+    expect(a).toContain('bun_node_dir="/tmp/bun-node-${bun_rev}"');
+    expect(a).toContain('install -D -m 0755 -o alice -g alice "$UNIFIED_BUN" /home/alice/.bun/bin/bun');
+    expect(a).toContain('cexec --user root "$SERVICE" chmod 750 /home/alice');
+    expect(a).toContain("ln -sf /home/alice/.bun/bin/bun '${bun_node_dir}/bun'");
+    expect(a).toContain("ln -sf /home/alice/.bun/bin/bun '${bun_node_dir}/node'");
+    expect(a).toContain("chown -R alice:alice '${bun_node_dir}'");
+    // The two-sided control: the dir stays traversable (ls sees the name),
+    // but resolving the symlink to its target is blocked -- both read from
+    // agentconsole's own vantage point, before deploy #7 runs.
+    expect(a).toContain("ls -1 '${bun_node_dir}' | grep -qx bun");
+    expect(a).toContain('expect "7e: agentconsole can see the bun-node dir\'s own bun entry');
+    expect(a).toContain('cexec --user agentconsole "$SERVICE" test -e "${bun_node_dir}/bun"');
+    expect(a).toContain('expect "7e: agentconsole CANNOT resolve the bun-node dir\'s bun symlink');
+
+    const order = [
+      "reproduce the dogfood host's bun-node temp-dir shim",
+      'bun_rev="$(cexec --user agentconsole',
+      'install -D -m 0755 -o alice -g alice',
+      "ln -sf /home/alice/.bun/bin/bun '${bun_node_dir}/bun'",
+      "ls -1 '${bun_node_dir}' | grep -qx bun",
+      'expect "7e: agentconsole CANNOT resolve',
+      "echo \"  --- inject the pre-fix",
+    ];
+    let prev = -1;
+    for (const needle of order) {
+      const i2 = a.indexOf(needle);
+      expect(i2).toBeGreaterThan(prev);
+      prev = i2;
+    }
+  });
+
+  it('expect_bun_node_dir_unchanged asserts the shim dir\'s owner and both symlink targets, called once after each deploy -- the ONLY variable between #7 and #8 is the start line', () => {
+    expect(driver).toContain('expect_bun_node_dir_unchanged() {');
+    expect(idxOf('expect_bun_node_dir_unchanged() {')).toBeLessThan(armStart());
+    expect(driver).toContain('test "$owner" = "alice:alice"');
+    expect(driver).toContain('test "$target_bun" = "/home/alice/.bun/bin/bun"');
+    expect(driver).toContain('test "$target_node" = "/home/alice/.bun/bin/bun"');
+
+    const a = arm();
+
+    const callSites = a.split('expect_bun_node_dir_unchanged "7e').length - 1;
+    expect(callSites).toBe(2);
+    expect(a).toContain('expect_bun_node_dir_unchanged "7e polarity" "$bun_node_dir"');
+    expect(a).toContain('expect_bun_node_dir_unchanged "7e fixed" "$bun_node_dir"');
+  });
 });

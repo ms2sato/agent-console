@@ -144,6 +144,22 @@ describe('root package.json "start" script resolves bun by construction, not PAT
   // must ALWAYS resolve the PATH-first copy B. If this control ever
   // started printing copy A instead, the harness itself -- not the
   // production script -- would be broken.
+  //
+  // What this control does NOT cover: `bun run` can prepend a per-machine
+  // temp dir (`/tmp/bun-node-<bun-revision>`, containing `bun`/`node`
+  // symlinks) ahead of the inherited PATH under SOME spawn conditions --
+  // confirmed on the real multi-user systemd unit (tier 3's arm 7e), whose
+  // child process saw this dir first. Measured directly under THIS test's
+  // own spawn shape (`spawnSync` with an explicit minimal env, PATH printed
+  // from inside the child): bun 1.3.14 does NOT prepend that shim dir here,
+  // even when it already exists and points at the exact binary invoked --
+  // the child's PATH starts with the node_modules/.bin chain instead. So
+  // this control isolates the PATH-order mechanism alone; a machine (or
+  // spawn condition) whose environment never triggers the shim reads SAME
+  // even pre-fix, for a different reason than the fix, and would need the
+  // real-unit reproduction (tier 3's arm 7e) to see the shim's effect. The
+  // exact condition that triggers the prepend under a systemd unit's spawn
+  // is not established here.
   it('negative control: the pre-fix (af8fed78) bare-`bun` form always resolves the PATH-first copy, never the invoking one', () => {
     const preFixStart = 'NODE_ENV=production bun probe.mjs';
     const { stdout, bunB } = runProbe(preFixStart);
