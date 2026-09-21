@@ -5454,10 +5454,46 @@ describe('readStdout per-line containment (#1798)', () => {
         throw new Error('persist boom');
       });
 
-      // Line N: the handler's own `persistSession` call rejects.
+      // Line N: the handler's own `persistSession` call rejects. Pushed
+      // ALONE first -- line N+1 must not be pushed yet, because
+      // `handleLoopLine`'s `sdk-session-id` handler resets
+      // `runtime.consecutiveParseFailures = 0` on every SUCCESSFULLY parsed
+      // line (production code, unrelated to this fix). If N+1 had already
+      // been processed by the time the strike-counter assertion below runs,
+      // that reset would make the assertion pass regardless of whether the
+      // per-line catch mistakenly routed N's failure through
+      // `handleParseFailure` first -- see the M4 note below.
       h.fake.pushStdout('{"v":1,"type":"sdk-session-id","sdkSessionId":"S1"}\n');
-      // Line N+1: pushed immediately, before waiting on N -- proves the
-      // reader itself never stalled on N's rejection.
+
+      // Wait for the WARN itself, not for N+1's effect -- this is the
+      // earliest point at which N's per-line catch has definitely run and
+      // N+1 has definitely NOT.
+      await waitFor(() => warnCallsFor(warnSpy, HANDLER_FAILED_WARN).length > 0);
+
+      // Item 2, asserted AT THIS POINT (before N+1 is even pushed): this is
+      // a runtime fault in one event's side effect, not protocol corruption
+      // -- the strike counter and the kill path both belong to
+      // `handleParseFailure`, which this catch must never call.
+      //
+      // M4 measured (Architect review, workflow.md "A check's existence is
+      // not its detection power"): temporarily adding
+      // `this.handleParseFailure(runtime, subprocess);` inside the per-line
+      // catch's `catch (err) { ... }` block (production code, reverted
+      // after confirming) reproduces the exact bug this assertion exists to
+      // catch. Asserted at the OLD position (after N+1's `waitFor`), the
+      // assertion passed anyway -- N+1's own successful parse resets the
+      // counter to 0 before the read, hiding M4 entirely (0/1 mutations
+      // caught at that position). Asserted HERE, at the position below,
+      // the same M4 mutation makes this assertion fail as expected
+      // (`consecutiveParseFailures` is `1`, not `0`) -- confirmed by
+      // running the mutation, not inferred.
+      const runtimes = (h.service as unknown as { runtimes: Map<string, { consecutiveParseFailures: number }> })
+        .runtimes;
+      expect(runtimes.get(h.workerId)?.consecutiveParseFailures).toBe(0);
+      expect(h.fake.killSignals).toEqual([]);
+
+      // Line N+1: pushed only now -- proves the reader itself never stalled
+      // on N's rejection.
       h.fake.pushStdout('{"v":1,"type":"sdk-session-id","sdkSessionId":"S2"}\n');
 
       await waitFor(() => h.worker.sdkSessionId === 'S2');
@@ -5470,26 +5506,15 @@ describe('readStdout per-line containment (#1798)', () => {
       expect(matching[0].workerId).toBe(h.workerId);
       expect(matching[0].err).toBeInstanceOf(Error);
 
-      // Item 2: this is a runtime fault in one event's side effect, not
-      // protocol corruption -- the strike counter and the kill path both
-      // belong to `handleParseFailure`, which this catch must never call.
-      const runtimes = (h.service as unknown as { runtimes: Map<string, { consecutiveParseFailures: number }> })
-        .runtimes;
-      expect(runtimes.get(h.workerId)?.consecutiveParseFailures).toBe(0);
-      expect(h.fake.killSignals).toEqual([]);
-
       // Polarity measured (workflow.md "Every pin's reach is measured, not
       // predicted"): commenting out just the per-line try/catch in
       // `readStdout` (leaving `await this.handleLoopLine(...)` bare, inside
-      // the existing OUTER try) makes this test's first `waitFor` time out.
-      // The rejection propagates out of the `for` loop and the `while`
-      // loop's own try, is caught by the OUTER (stream-level) catch, and
-      // the reader returns -- line N+1 (`S2`) is never read at all, so
-      // `worker.sdkSessionId` stays `'S1'`... actually never even reaches
-      // `'S1'`, because line N's own effect (`worker.sdkSessionId = 'S1'`)
-      // happens BEFORE the rejecting `persistSession` call, so `worker.
-      // sdkSessionId` is `'S1'`, permanently, and the `waitFor(() => ...
-      // === 'S2')` above times out. Reverted after confirming the failure.
+      // the existing OUTER try) makes this test's first `waitFor` (the WARN
+      // itself) time out. The rejection propagates out of the `for` loop
+      // and the `while` loop's own try, is caught by the OUTER
+      // (stream-level) catch, and the reader returns -- no
+      // `HANDLER_FAILED_WARN` is ever logged, and line N+1 (`S2`) is never
+      // read at all. Reverted after confirming the failure.
     } finally {
       warnSpy.mockRestore();
     }
