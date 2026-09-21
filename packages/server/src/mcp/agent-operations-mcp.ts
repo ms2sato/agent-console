@@ -29,4 +29,5 @@ export const MCP_AGENT_OPERATIONS = {
   },
   restart: { exposed: true, via: 'restart_all_agents' },
   setWorkerParameters: { exposed: true, via: 'set_agent_parameters' },
+  decideMcpServerPermissions: { exposed: true, via: 'set_mcp_server_permission' },
 } satisfies Record<AgentOperation, SurfaceExposure>;

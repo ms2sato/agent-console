@@ -28,11 +28,30 @@ describe('EMBEDDED_AGENT_OPERATIONS', () => {
     }
   });
 
-  it('mirrors MCP_AGENT_OPERATIONS exposed/not-exposed flags exactly (structural identity)', () => {
+  // epic #1636 Phase 5 PR-3a: operations an EMBEDDED caller must never
+  // perform even though the shared MCP endpoint exposes them to TUI
+  // callers; each is enforced in the tool itself (see
+  // agent-operations-embedded.ts's reason). Adding an entry here is a
+  // design decision that needs an Architect ruling, never a convenience.
+  const PERMANENT_EMBEDDED_DIVERGENCES = ['decideMcpServerPermissions'] as const;
+
+  it('mirrors MCP_AGENT_OPERATIONS exposed/not-exposed flags exactly, except the declared permanent divergences', () => {
+    // polarity confirmed: removing 'decideMcpServerPermissions' from
+    // PERMANENT_EMBEDDED_DIVERGENCES fails this test (embedded=false vs
+    // MCP=true).
     for (const operation of AGENT_OPERATIONS) {
-      expect(EMBEDDED_AGENT_OPERATIONS[operation].exposed).toBe(
-        MCP_AGENT_OPERATIONS[operation].exposed,
-      );
+      if ((PERMANENT_EMBEDDED_DIVERGENCES as readonly string[]).includes(operation)) continue;
+      expect(EMBEDDED_AGENT_OPERATIONS[operation].exposed).toBe(MCP_AGENT_OPERATIONS[operation].exposed);
+    }
+  });
+
+  it('every declared permanent divergence is actually divergent (a stale entry fails here)', () => {
+    // polarity confirmed: flipping EMBEDDED_AGENT_OPERATIONS.decideMcpServerPermissions.exposed
+    // to true fails this test's first assertion.
+    for (const operation of PERMANENT_EMBEDDED_DIVERGENCES) {
+      expect(EMBEDDED_AGENT_OPERATIONS[operation].exposed).toBe(false);
+      expect((EMBEDDED_AGENT_OPERATIONS[operation] as { reason: string }).reason.length).toBeGreaterThan(0);
+      expect(MCP_AGENT_OPERATIONS[operation].exposed).toBe(true);
     }
   });
 
@@ -51,6 +70,13 @@ describe('EMBEDDED_AGENT_OPERATIONS', () => {
     expect(EMBEDDED_AGENT_OPERATIONS.setWorkerParameters).toEqual({
       exposed: true,
       via: 'MCP endpoint (shared) — set_agent_parameters',
+    });
+  });
+
+  it("does not expose 'decideMcpServerPermissions' -- embedded callers are refused inside the tool (PR-3a)", () => {
+    expect(EMBEDDED_AGENT_OPERATIONS.decideMcpServerPermissions).toEqual({
+      exposed: false,
+      reason: expect.stringContaining('embedded-agent worker'),
     });
   });
 });

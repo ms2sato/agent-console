@@ -52,4 +52,16 @@ describe('MCP_AGENT_OPERATIONS', () => {
     const registeredNames = await getRegisteredMcpToolNames();
     expect(registeredNames.has('set_agent_parameters')).toBe(true);
   });
+
+  it("exposes 'decideMcpServerPermissions' via set_mcp_server_permission (epic #1636 Phase 5 PR-3a)", () => {
+    expect(MCP_AGENT_OPERATIONS.decideMcpServerPermissions).toEqual({
+      exposed: true,
+      via: 'set_mcp_server_permission',
+    });
+  });
+
+  it('registers set_mcp_server_permission as a real tool', async () => {
+    const registeredNames = await getRegisteredMcpToolNames();
+    expect(registeredNames.has('set_mcp_server_permission')).toBe(true);
+  });
 });

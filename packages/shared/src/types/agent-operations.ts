@@ -22,6 +22,7 @@ export const AGENT_OPERATIONS = [
   'manageDefinitions', // CRUD on agent definitions
   'restart', // bulk restart of workers with a live process (agent, embedded-agent)
   'setWorkerParameters', // change a worker's model / reasoning effort / context window mid-run
+  'decideMcpServerPermissions', // allow / deny a discovered project-scope MCP server for an embedded-agent worker; claude-sdk only
 ] as const;
 export type AgentOperation = (typeof AGENT_OPERATIONS)[number];
 

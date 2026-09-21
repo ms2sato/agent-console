@@ -1422,6 +1422,64 @@ describe('MCP Server Tools', () => {
       expect(embeddedAgentWorker!.activityState).toBe('active');
     });
 
+    it('reports mcpServers for an embedded-agent worker that has discovered pairs (epic #1636 Phase 5 PR-3a)', async () => {
+      const session = await sessionManager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+
+      const embeddedWorker = await sessionManager.createWorker(session.id, {
+        type: 'embedded-agent',
+        embeddedAgentId: TEST_EMBEDDED_AGENT_DEF.id,
+      });
+      expect(embeddedWorker).toBeDefined();
+
+      const internalWorker = sessionManager.getWorker(session.id, embeddedWorker!.id)!;
+      expect(internalWorker.type).toBe('embedded-agent');
+      if (internalWorker.type === 'embedded-agent') {
+        internalWorker.mcpServers = [
+          { name: 'chrome-devtools', scope: 'project', hash: 'hash-1', decision: 'pending' },
+        ];
+      }
+
+      const response = await callTool(app, mcpSessionId, 'get_session_status', {
+        sessionId: session.id,
+      }, nextId++);
+      const data = parseToolResult(response) as {
+        workers: Array<{
+          id: string;
+          type: string;
+          mcpServers?: Array<{ name: string; scope: string; hash?: string; decision?: string }>;
+        }>;
+      };
+
+      const embeddedAgentWorker = data.workers.find((w) => w.type === 'embedded-agent');
+      expect(embeddedAgentWorker).toBeDefined();
+      expect(embeddedAgentWorker!.mcpServers).toEqual([
+        { name: 'chrome-devtools', scope: 'project', hash: 'hash-1', decision: 'pending' },
+      ]);
+    });
+
+    it('carries no mcpServers key at all for a PTY worker (epic #1636 Phase 5 PR-3a)', async () => {
+      const session = await sessionManager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+
+      const response = await callTool(app, mcpSessionId, 'get_session_status', {
+        sessionId: session.id,
+      }, nextId++);
+      const data = parseToolResult(response) as {
+        workers: Array<Record<string, unknown>>;
+      };
+
+      const agentWorker = data.workers.find((w) => w.type === 'agent');
+      expect(agentWorker).toBeDefined();
+      expect('mcpServers' in agentWorker!).toBe(false);
+    });
+
     it('should report terminated worker when PTY has exited', async () => {
       const session = await sessionManager.createSession({
         type: 'quick',

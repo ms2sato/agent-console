@@ -59,14 +59,23 @@ import {
   createMcpAuthMiddleware,
 } from './mcp-auth.js';
 import { resolveSelfIdentity } from './self-identity.js';
-import type { Session, Worker, AgentActivityState, AppServerMessage } from '@agent-console/shared';
+import type {
+  Session,
+  Worker,
+  EmbeddedAgentWorker,
+  AgentActivityState,
+  AppServerMessage,
+  SetMcpServerPermissionsRequest,
+} from '@agent-console/shared';
 import {
   isPtyBackedWorker,
   canReceiveSessionMessages,
   canReceiveNotifications,
   CreateBookmarkRequestSchema,
   UpdateEmbeddedAgentWorkerRequestSchema,
+  SetMcpServerPermissionsRequestSchema,
 } from '@agent-console/shared';
+import { resolvePermissionDecisions } from '../lib/mcp-server-permissions.js';
 
 const logger = createLogger('mcp');
 
@@ -92,6 +101,18 @@ interface SessionStatusResult {
     id: string;
     type: Worker['type'];
     activityState: AgentActivityState;
+    /**
+     * epic #1636 Phase 5 PR-3a: the discovered (name, hash, decision) pairs
+     * for an embedded-agent worker's project `.mcp.json` -- the same array
+     * `EmbeddedAgentWorker.mcpServers` carries on the public `Session`
+     * (PR-2). A TUI Orchestrator needs this to learn which pairs it may
+     * pass to `set_mcp_server_permission`; without it, `{ all: true }`
+     * would be the only usable form. Absent for every non-embedded-agent
+     * worker row (PTY / diff), and for an embedded-agent worker that has
+     * never reported a discovery reading. This interface is server-local
+     * with no schema pair on the wire -- Q10 does not fire here.
+     */
+    mcpServers?: EmbeddedAgentWorker['mcpServers'];
   }>;
 }
 
@@ -404,6 +425,7 @@ export function createMcpApp(deps: McpDependencies): Hono {
         w.type === 'agent' || w.type === 'embedded-agent'
           ? sessionManager.getWorkerActivityState(session.id, w.id) ?? 'unknown'
           : ('unknown' as AgentActivityState),
+      ...(w.type === 'embedded-agent' && w.mcpServers !== undefined ? { mcpServers: w.mcpServers } : {}),
     }));
   }
 
@@ -2676,6 +2698,145 @@ export function createMcpApp(deps: McpDependencies): Hono {
       } catch (err) {
         const message = err instanceof Error ? err.message : 'Unknown error';
         logger.error({ err, sessionId, workerId }, 'set_agent_parameters failed');
+        return errorResult(message);
+      }
+    },
+  );
+
+  // ---------- Tool: set_mcp_server_permission ----------
+
+  // Eleventh session-claiming tool (checkCallerOwnsSession), alongside
+  // send_session_message, delegate_to_worktree, remove_worktree,
+  // create_conditional_wakeup, run_process, create_html_artifact,
+  // delete_html_artifact, create_bookmark, delete_bookmark,
+  // set_orchestrator_session, clear_orchestrator_session, and
+  // set_agent_parameters. No mechanical registry enumerates these tools;
+  // this comment is the convention-only marker.
+  //
+  // Unlike every other tool here, ownership is checked on the TARGET
+  // session, not the caller's own -- this tool's whole point is deciding
+  // for ANOTHER session (a TUI Orchestrator deciding for its delegate).
+  //
+  // A tokenless caller is refused REGARDLESS of `mcpAuthMode`, same
+  // deliberate departure as `set_agent_parameters` above, but for a
+  // different reason: the embedded-caller refusal below needs the
+  // CALLER's own worker (to read its `type`), and with no verified
+  // identity there is no caller worker to classify. There is nothing to
+  // fall back to -- proceeding tokenless would mean trusting the caller's
+  // own unverified claim about what kind of worker it is.
+  mcpServer.tool(
+    'set_mcp_server_permission',
+    'Decide, as the person operating this console or as the TUI Orchestrator of a delegate session, whether a ' +
+      "project-scope MCP server declared in the target worktree's .mcp.json may start for this embedded-agent " +
+      "worker -- the headless form of Claude Code's own per-server approval prompt. Reads the currently " +
+      'discovered servers from get_session_status; all: true allows every currently-pending server.',
+    {
+      sessionId: z.string().describe('The target session ID — the delegate/worker session this decision applies to.'),
+      workerId: z.string().describe('The target embedded-agent worker ID within that session.'),
+      name: z.string().optional().describe(
+        'The MCP server name from a discovered pending pair. Required together with hash and decision (mutually exclusive with all).',
+      ),
+      hash: z.string().optional().describe('The discovered config hash for that server. Required together with name and decision.'),
+      decision: z.enum(['allow', 'deny']).optional().describe('allow or deny the named server. Required together with name and hash.'),
+      all: z.literal(true).optional().describe('Allow every currently-pending discovered server in one call. Mutually exclusive with name/hash/decision.'),
+    },
+    async ({ sessionId, workerId, name, hash, decision, all }) => {
+      const caller = getMcpCallerIdentity();
+
+      // Refused REGARDLESS of mcpAuthMode -- see the block comment above
+      // this tool for why a tokenless caller cannot be classified here.
+      if (!caller) {
+        return errorResult(
+          'set_mcp_server_permission requires a verified caller identity: deciding for another session needs ' +
+            'proof of who is deciding. Embedded agents are given one automatically; a TUI Orchestrator session ' +
+            'needs AGENT_CONSOLE_MCP_AUTH configured with a minted token.',
+        );
+      }
+
+      // Embedded-caller refusal (owner OK'd, 2026-09-21): resolve the
+      // CALLER's own worker and refuse if it is absent (fail closed -- an
+      // unknown caller worker is not provably a TUI worker) or is itself
+      // an embedded-agent. This keys on the CALLER's worker type, not on
+      // anything about the target -- an embedded agent is refused even
+      // when it "owns" the target session (same createdBy) or targets
+      // itself.
+      const callerSession = sessionManager.getSession(caller.sessionId);
+      const callerWorker = callerSession?.workers.find((w) => w.id === caller.workerId);
+      if (!callerWorker || callerWorker.type === 'embedded-agent') {
+        return errorResult(
+          "an embedded agent cannot grant its own or its delegates' MCP servers; the decision belongs to the " +
+            'person operating the console (worker panel) or to a TUI Orchestrator',
+        );
+      }
+
+      try {
+        const targetSession = sessionManager.getSession(sessionId);
+        if (!targetSession) {
+          return errorResult(`Session not found: ${sessionId}`);
+        }
+
+        const authError = checkCallerOwnsSession(
+          caller,
+          { sessionId, createdBy: targetSession.createdBy },
+          mcpAuthMode,
+          { toolName: 'set_mcp_server_permission' },
+        );
+        if (authError) return errorResult(authError.error);
+
+        if (targetSession.type !== 'worktree' || !targetSession.repositoryId) {
+          return errorResult(
+            'MCP server permissions require a repository; quick sessions are not yet supported (see #1786)',
+          );
+        }
+
+        const worker = targetSession.workers.find((w) => w.id === workerId);
+        if (!worker || worker.type !== 'embedded-agent') {
+          return errorResult(`Worker ${workerId} not found in session ${sessionId}, or is not an embedded-agent worker`);
+        }
+
+        // Compose the body the same shape the REST route's wire schema
+        // accepts, so the tool and the route validate byte-identically.
+        // Only keys the caller actually sent are put in the object.
+        const composed: Record<string, unknown> = {};
+        if (all === true) composed.all = true;
+        if (name !== undefined) composed.name = name;
+        if (hash !== undefined) composed.hash = hash;
+        if (decision !== undefined) composed.decision = decision;
+        const parsedBody = v.safeParse(SetMcpServerPermissionsRequestSchema, composed);
+        if (!parsedBody.success) {
+          return errorResult(parsedBody.issues.map((issue) => issue.message).join('; '));
+        }
+        const body: SetMcpServerPermissionsRequest = parsedBody.output;
+
+        const resolved = resolvePermissionDecisions(worker.mcpServers, body);
+        if (!resolved.ok) {
+          return errorResult(resolved.message);
+        }
+
+        const updated = await sessionManager.setMcpServerPermissions(
+          sessionId,
+          workerId,
+          targetSession.repositoryId,
+          resolved.decisions,
+          caller.userId,
+        );
+        if (!updated) {
+          // Unreachable through the checks above (session, worker and type
+          // are all already resolved); a null here would mean the worker
+          // went away between them and the write.
+          return errorResult(`Worker ${workerId} in session ${sessionId} is no longer settable`);
+        }
+
+        logger.info({ sessionId, workerId }, 'MCP server permission decided via MCP');
+
+        return textResult({
+          sessionId,
+          workerId,
+          mcpServers: updated.type === 'embedded-agent' ? updated.mcpServers : undefined,
+        });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Unknown error';
+        logger.error({ err, sessionId, workerId }, 'set_mcp_server_permission failed');
         return errorResult(message);
       }
     },
