@@ -446,6 +446,7 @@ export class SessionManager {
       ensureMemoryDirFn: options.ensureMemoryDirFn,
       getGlobalActivityCallback: () => this.globalActivityCallback,
       getGlobalWorkerExitCallback: () => this.globalWorkerExitCallback,
+      onSessionUpdated: (session) => this.sessionLifecycleCallbacks?.onSessionUpdated?.(this.toPublicSession(session)),
     });
 
     // Default to a never-resolves username lookup for the same reason as

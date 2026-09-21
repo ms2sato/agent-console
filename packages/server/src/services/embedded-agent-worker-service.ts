@@ -354,6 +354,16 @@ export type ApplyMcpServerPermissionsResult = { ok: true; live: boolean } | { ok
 export interface EmbeddedAgentWorkerServiceDeps {
   getSession: (sessionId: string) => InternalSession | undefined;
   persistSession: (session: InternalSession) => Promise<void>;
+  /**
+   * Broadcasts the app-wide `session-updated` event whenever this service
+   * mutates a public worker field (mcp server status, activated) and
+   * persists it. REQUIRED, not optional -- an optional callback here is
+   * exactly the silent no-op that let public worker state changes reach
+   * disk without ever reaching a connected client. This service never
+   * learns the public session shape; composition (`toPublicSession`) stays
+   * in the caller (session-manager.ts).
+   */
+  onSessionUpdated: (session: InternalSession) => void;
   getPathResolver: (session: InternalSession) => SessionDataPathResolver;
   getEmbeddedAgent: (id: string) => EmbeddedAgentDefinition | undefined;
   resolveSpawnUsername: (createdBy?: string) => Promise<string>;
@@ -1431,6 +1441,7 @@ export class EmbeddedAgentWorkerService {
       this.broadcastActivity(ctx, 'idle');
 
       await this.deps.persistSession(session);
+      this.deps.onSessionUpdated(session);
 
       logger.info({ sessionId, workerId, pid: subprocess.pid }, 'Embedded-agent worker activated');
     } catch (err) {
@@ -1467,6 +1478,34 @@ export class EmbeddedAgentWorkerService {
       // armed by this activation must not survive it.
       this.idleEviction.clear(workerId);
       logger.warn({ sessionId, workerId, err }, 'Embedded-agent activation failed; revoked token and cleaned up');
+
+      // `mcpServers` is never a persisted field (`toPersistedWorker` only
+      // durably tracks `pid`/`sdkSessionId` for an embedded worker), so the
+      // in-memory reverts above cover it on their own. What CAN have gone
+      // durable is `pid`: if a `mcp-servers-discovered` event landed on this
+      // incarnation before the later step that actually failed, that
+      // event's own `persistSession` call already wrote `spawned.pid` to
+      // disk. `handleExit` cannot correct it here -- its own stale-exit
+      // guard (`worker.subprocess !== subprocess`) makes a rolled-back
+      // incarnation's exit unobservable, since `worker.subprocess` was just
+      // reset above. Re-persist and broadcast so a stray durable pid does
+      // not survive a failed activation. A local try/catch keeps a persist
+      // failure here from masking the original `err` this catch block must
+      // still propagate; the broadcast always fires afterward regardless of
+      // whether the re-persist succeeded, since clients should follow the
+      // in-memory truth even when the row is momentarily behind it.
+      const sessionForRollback = this.deps.getSession(sessionId);
+      if (sessionForRollback) {
+        try {
+          await this.deps.persistSession(sessionForRollback);
+        } catch (persistErr) {
+          logger.warn(
+            { sessionId, workerId, err: persistErr },
+            'Failed to persist embedded-agent activation rollback; broadcasting the in-memory state anyway',
+          );
+        }
+        this.deps.onSessionUpdated(sessionForRollback);
+      }
       throw err;
     }
   }
@@ -2579,6 +2618,7 @@ export class EmbeddedAgentWorkerService {
 
       if (session) {
         await this.deps.persistSession(session);
+        this.deps.onSessionUpdated(session);
       }
     }
 
@@ -2984,6 +3024,7 @@ export class EmbeddedAgentWorkerService {
     const session = this.deps.getSession(sessionId);
     if (session) {
       await this.deps.persistSession(session);
+      this.deps.onSessionUpdated(session);
     }
 
     const snapshot = Array.from(worker.connectionCallbacks.values());
