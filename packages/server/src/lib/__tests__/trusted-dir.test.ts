@@ -15,10 +15,12 @@
  *     sibling, the walker kept hitting the real disk and 71 memfs-backed
  *     writer tests failed with `trusted root is not accessible` (0 in the
  *     reverse order). Both orders are green now.
- *   - The symlinked-root case below skips when memfs is active, because
- *     memfs answers `mkdir` under a symlinked directory with ENOTDIR where a
- *     kernel follows the link. Its mutation was measured with this file run
- *     alone.
+ *   - The symlinked-root case below asserts real fs (via `assertRealFs`),
+ *     because memfs answers `mkdir` under a symlinked directory with
+ *     ENOTDIR where a kernel follows the link. It runs for real only in
+ *     packages/server's second `bun test` invocation (Issue #1699), where
+ *     no memfs-mocking sibling ever shares the process. Its mutation was
+ *     measured with this file run alone.
  *
  * Mutation reach, measured by editing trusted-dir.ts and running this file
  * alone (restored by re-editing, never via `git checkout`); each case's own
@@ -29,7 +31,7 @@ import { mkdir, rm, symlink, writeFile, lstat, stat, chmod, readdir } from 'fs/p
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { randomUUID } from 'crypto';
-import { isMemfsActive } from '../../__tests__/utils/memfs-detection.js';
+import { assertRealFs } from '../../__tests__/utils/memfs-detection.js';
 import {
   ensureTrustedDirChain,
   resolveAncestorContract,
@@ -159,13 +161,10 @@ describe('ensureTrustedDirChain -- root', () => {
     // memfs (process-globally swapped in for `fs/promises` once any sibling
     // test file imports mock-fs-helper.ts) answers `mkdir` of a child under
     // a SYMLINKED directory with ENOTDIR instead of following the link the
-    // way a real kernel does, so this real-fs-only case is skipped there --
-    // same discipline as memory-dir.test.ts's setgid case. Run this file
-    // alone (`bun test trusted-dir.test.ts`) to exercise it.
-    if (await isMemfsActive()) {
-      console.warn('[skip] memfs is active in this process; run this file alone to exercise the symlinked-root case.');
-      return;
-    }
+    // way a real kernel does, so this real-fs-only case runs for real only
+    // in packages/server's second `bun test` invocation (Issue #1699),
+    // where no memfs-mocking sibling ever loads in the same process.
+    await assertRealFs('symlinked-root case (trusted-dir)');
     const parent = await freshRoot('root-link-parent');
     const realRoot = join(parent, 'real-root');
     await mkdir(realRoot);

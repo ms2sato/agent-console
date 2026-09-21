@@ -35,21 +35,23 @@
  *      filesystem honour setgid (the precondition for the workaround
  *      to work at all).
  *
- *   2. Bun JS-layer probe (skip when memfs is loaded): asserts that
- *      Bun's own `fs.mkdir({ mode: 0o2750 })` produces 0o750 — i.e.
- *      the bug the workaround targets. Under the full suite
- *      `fs/promises` is memfs-mocked so this probe cannot exercise
- *      the real Bun binding; it is then skipped with a clear note.
- *      If a future Bun release fixes the JS-layer stripping, this
- *      probe (when run alone) fails and prompts a deliberate update
- *      to `workers.ts` so the spawn-chmod step can become an
+ *   2. Bun JS-layer probe (asserts real fs via `assertRealFs`): asserts
+ *      that Bun's own `fs.mkdir({ mode: 0o2750 })` produces 0o750 — i.e.
+ *      the bug the workaround targets. This probe runs for real only in
+ *      packages/server's second `bun test` invocation (Issue #1699),
+ *      where `fs/promises` is NOT memfs-mocked (no memfs-mocking sibling
+ *      ever shares that process). If a future Bun release fixes the
+ *      JS-layer stripping, this probe fails and prompts a deliberate
+ *      update to `workers.ts` so the spawn-chmod step can become an
  *      in-process chmod.
  *
- *   3. End-to-end probes (skip when memfs is loaded): drive
+ *   3. End-to-end probes (assert real fs via `assertRealFs`): drive
  *      `__TESTING__.ensureUploadDir()` against the real fs and
- *      assert the resulting dir's mode/gid via `stat(1)`. Skipped
- *      under the full suite because `fs/promises` is mocked to
- *      memfs by then; run when this file is invoked alone:
+ *      assert the resulting dir's mode/gid via `stat(1)`. These run
+ *      for real only in packages/server's second `bun test` invocation
+ *      (Issue #1699), added by `package.json`'s explicit path list,
+ *      where no memfs-mocking sibling ever shares the process. To run
+ *      this file alone:
  *
  *        bun test packages/server/src/routes/__tests__/workers-upload-dir-real-fs.test.ts
  */
@@ -58,7 +60,7 @@ import { describe, it, expect } from 'bun:test';
 import * as os from 'os';
 import { join as pathJoin } from 'path';
 import { __TESTING__ } from '../workers.js';
-import { isMemfsActive } from '../../__tests__/utils/memfs-detection.js';
+import { assertRealFs } from '../../__tests__/utils/memfs-detection.js';
 
 const SUPPORTS_SETGID_CONTRACT =
   process.platform === 'linux' && typeof process.geteuid === 'function';
@@ -148,12 +150,7 @@ describe('Upload directory real-fs contract (#830 regression)', () => {
   it.skipIf(!SUPPORTS_SETGID_CONTRACT)(
     'Bun fs.mkdir strips setgid in the JS layer (this is the bug the route works around)',
     async () => {
-      if (await isMemfsActive()) {
-        console.log(
-          '[skip] memfs is active in this process; fs.mkdir is mocked. Run this file alone (`bun test workers-upload-dir-real-fs.test.ts`) to probe the real Bun binding.',
-        );
-        return;
-      }
+      await assertRealFs('Bun fs.mkdir setgid-stripping probe');
 
       const mk = await spawnCheck(['mktemp', '-d', '-p', os.tmpdir(), 'ac-bun-probe.XXXXXX']);
       expect(mk.exitCode).toBe(0);
@@ -191,12 +188,7 @@ describe('Upload directory real-fs contract (#830 regression)', () => {
   it.skipIf(!SUPPORTS_SETGID_CONTRACT)(
     'ensureUploadDir() applies setgid via spawned chmod under AUTH_MODE=multi-user (end-to-end)',
     async () => {
-      if (await isMemfsActive()) {
-        console.log(
-          '[skip] memfs is active in this test process; ensureUploadDir() would land on memfs. Run this file alone to exercise.',
-        );
-        return;
-      }
+      await assertRealFs('ensureUploadDir() multi-user end-to-end');
 
       const mk = await spawnCheck(['mktemp', '-d', '-p', os.tmpdir(), 'ac-upload-real.XXXXXX']);
       expect(mk.exitCode).toBe(0);
@@ -249,12 +241,7 @@ describe('Upload directory real-fs contract (#830 regression)', () => {
   it.skipIf(!SUPPORTS_SETGID_CONTRACT)(
     'ensureUploadDir() keeps mode 0700 in single-user mode (end-to-end)',
     async () => {
-      if (await isMemfsActive()) {
-        console.log(
-          '[skip] memfs is active in this test process; run this file alone to exercise.',
-        );
-        return;
-      }
+      await assertRealFs('ensureUploadDir() single-user end-to-end');
 
       const mk = await spawnCheck([
         'mktemp',

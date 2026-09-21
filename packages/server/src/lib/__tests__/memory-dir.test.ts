@@ -7,7 +7,7 @@
  */
 import { describe, it, expect, afterEach } from 'bun:test';
 import { mkdir, rm, symlink, writeFile, lstat, chmod, readdir } from 'fs/promises';
-import { isMemfsActive } from '../../__tests__/utils/memfs-detection.js';
+import { assertRealFs } from '../../__tests__/utils/memfs-detection.js';
 import { tmpdir } from 'os';
 import { join, dirname } from 'path';
 import { randomUUID } from 'crypto';
@@ -424,14 +424,11 @@ describe('ensureMemoryDir — multi-user contract (real fs, Linux only)', () => 
       console.warn('Skipping multi-user setgid test: running as root (permission checks bypassed)');
       return;
     }
-    // In the full server suite `fs/promises` is process-globally swapped for
-    // memfs (mock-fs-helper.ts), so `chmod(1)` on a memfs-only directory and
-    // the kernel's setgid inheritance cannot be observed. Same discipline as
-    // workers-upload-dir-real-fs.test.ts: run this file alone to exercise.
-    if (await isMemfsActive()) {
-      console.warn('[skip] memfs is active in this process; run this file alone (`bun test memory-dir.test.ts`) to exercise the real setgid inheritance.');
-      return;
-    }
+    // This case runs for real in packages/server's second `bun test`
+    // invocation (Issue #1699), where `fs/promises` is NOT swapped for
+    // memfs (mock-fs-helper.ts never loads there), so `chmod(1)` on this
+    // directory and the kernel's setgid inheritance are observed for real.
+    await assertRealFs('multi-user setgid inheritance (memory-dir)');
     const base = await freshTrustedBase('multi-user');
     const chmodProc = Bun.spawn(['chmod', '2775', base], { stdout: 'pipe', stderr: 'pipe' });
     const chmodExit = await chmodProc.exited;
