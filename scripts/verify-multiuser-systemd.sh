@@ -863,7 +863,7 @@ path_first_bun_arm() {
   rc=0
   cexec --user deployer -w "$SRC" "$SERVICE" bash scripts/update-and-deploy-for-multiuser-ubuntu.sh >"$out" 2>&1 || rc=$?
   grep -E '^  (PASS|FAIL|SKIP)  V[0-6] |^        (WARN|INFO): |^  RESULT: |^==> (systemctl restart|Done)' "$out" | cut -c1-260 | sed 's/^/  /' || true
-  check "7e polarity: deploy #7 exits 1 (V6 FAIL, the worst code)" "$rc"
+  expect "7e polarity: deploy #7 exits 1 (V6 FAIL, the worst code)" test "$rc" -eq 1
   local label
   for label in "V0 data-root-ownership" "V1 unit-env-drift" "V2 entry-path-readable" "V3 mainpid-identity" "V4 unit-active" "V5 health"; do
     expect "7e polarity: deploy #7 screen has '  PASS  ${label}'" grep -q "^  PASS  ${label}\$" "$out"

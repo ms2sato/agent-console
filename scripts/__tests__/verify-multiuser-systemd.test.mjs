@@ -759,7 +759,12 @@ describe('verify-multiuser-systemd.sh: 7e PATH-first-bun arm is present and orde
 
   it('deploy #7 (polarity): expects V0-V5 PASS, V6 FAIL naming the EMBEDDED_AGENT_BUN_PATH warning, exit 1, and the restart still happens (Done. is printed)', () => {
     const a = arm();
-    expect(a).toContain('check "7e polarity: deploy #7 exits 1 (V6 FAIL, the worst code)" "$rc"');
+    // Not `check "..." "$rc"` directly: `check` records PASS only when its
+    // exit-code argument is 0, but the EXPECTED value here is 1 (deploy #7
+    // exits 1 on purpose, V6 FAILing). Must go through `expect` + `test
+    // "$rc" -eq 1`, the same shape drift_arm's "deploy #2 exits 1" uses.
+    expect(a).toContain('expect "7e polarity: deploy #7 exits 1 (V6 FAIL, the worst code)" test "$rc" -eq 1');
+    expect(a).not.toContain('check "7e polarity: deploy #7 exits 1 (V6 FAIL, the worst code)" "$rc"');
     // The six V0-V5 labels are iterated via a shell `for label in ...` loop,
     // not spelled out individually -- assert the loop's own label list, and
     // the templated assertion line that consumes `${label}`.
@@ -775,7 +780,7 @@ describe('verify-multiuser-systemd.sh: 7e PATH-first-bun arm is present and orde
     expect(a).toContain("grep -qF '==> Done.'");
     const order = [
       "echo \"  --- deploy #7",
-      'check "7e polarity: deploy #7 exits 1 (V6 FAIL, the worst code)" "$rc"',
+      'expect "7e polarity: deploy #7 exits 1 (V6 FAIL, the worst code)" test "$rc" -eq 1',
       'for label in "V0 data-root-ownership"',
       "expect \"7e polarity: deploy #7's V6 FAILs naming the EMBEDDED_AGENT_BUN_PATH warning\"",
       "expect \"7e polarity: deploy #7's RESULT is 6 PASS, 1 FAIL, 0 SKIP -> exit 1\"",
