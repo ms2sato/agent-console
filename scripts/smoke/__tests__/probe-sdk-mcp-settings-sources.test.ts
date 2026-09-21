@@ -18,8 +18,6 @@
  * exit-code mapping must never claim MEASURED once a run halted on budget.
  */
 import { describe, it, expect } from 'bun:test';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   ALL_SERVER_NAMES,
@@ -44,8 +42,6 @@ import {
   mcpStatus,
   parseLedger,
   parseLedgerLine,
-  snapshotIsolationEvidence,
-  verifyIsolationStrict,
   type ArmALabel,
   type InitLite,
 } from '../probe-sdk-mcp-settings-sources.js';
@@ -592,64 +588,9 @@ describe('matchesLedgerEntry (identity check before SIGKILL, Architect ruling PR
   });
 });
 
-describe('verifyIsolationStrict / snapshotIsolationEvidence (isolation gate, Architect ruling PR #1782, CodeRabbit M3)', () => {
-  // Real temp directories, not synthetic in-memory objects: snapshotIsolationEvidence()
-  // calls transcriptFiles()/existsSync() against the filesystem, and the whole
-  // point of this gate is that a file the HARNESS itself wrote (.claude.json)
-  // must not count as evidence -- that claim is only meaningful checked for real.
-  function makeConfigDir(): string {
-    return mkdtempSync(join(tmpdir(), 'probe-isolation-strict-test-'));
-  }
-
-  it('the seeded .claude.json alone is NOT evidence -- writing it produces no ok=true delta', () => {
-    const configDir = makeConfigDir();
-    try {
-      const before = snapshotIsolationEvidence(configDir);
-      writeFileSync(join(configDir, '.claude.json'), '{}');
-      const result = verifyIsolationStrict(configDir, before);
-      expect(result.ok).toBe(false);
-    } finally {
-      rmSync(configDir, { recursive: true, force: true });
-    }
-  });
-
-  it('a grown transcript-file count IS evidence', () => {
-    const configDir = makeConfigDir();
-    try {
-      const before = snapshotIsolationEvidence(configDir);
-      mkdirSync(join(configDir, 'projects', 'some-project'), { recursive: true });
-      writeFileSync(join(configDir, 'projects', 'some-project', 'abc.jsonl'), '{}\n');
-      const result = verifyIsolationStrict(configDir, before);
-      expect(result.ok).toBe(true);
-      expect(result.after.transcriptCount).toBeGreaterThan(result.before.transcriptCount);
-    } finally {
-      rmSync(configDir, { recursive: true, force: true });
-    }
-  });
-
-  it('a newly-created sessions/ dir IS evidence, even with transcript count unchanged', () => {
-    const configDir = makeConfigDir();
-    try {
-      const before = snapshotIsolationEvidence(configDir);
-      mkdirSync(join(configDir, 'sessions'), { recursive: true });
-      const result = verifyIsolationStrict(configDir, before);
-      expect(result.ok).toBe(true);
-      expect(result.before.sessionsDirExists).toBe(false);
-      expect(result.after.sessionsDirExists).toBe(true);
-    } finally {
-      rmSync(configDir, { recursive: true, force: true });
-    }
-  });
-
-  it('an ALREADY-existing sessions/ dir is not re-counted as evidence on a second snapshot (no delta)', () => {
-    const configDir = makeConfigDir();
-    try {
-      mkdirSync(join(configDir, 'sessions'), { recursive: true });
-      const before = snapshotIsolationEvidence(configDir);
-      const result = verifyIsolationStrict(configDir, before);
-      expect(result.ok).toBe(false);
-    } finally {
-      rmSync(configDir, { recursive: true, force: true });
-    }
-  });
-});
+// `verifyIsolationStrict` / `snapshotIsolationEvidence` moved to the shared
+// harness as its single writer (Issue #1783); their pins now live in
+// `probe-sdk-session-harness.test.ts`, this probe's own local definitions
+// having been removed. This probe still USES the harness functions (see
+// `../probe-sdk-mcp-settings-sources.ts`'s `runOneSession` / `main`), but a
+// second pin here would test the same function twice under two names.
