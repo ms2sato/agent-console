@@ -117,10 +117,17 @@ export function isolateClaudeConfigDir(label: string): string {
   return dir;
 }
 
-/** Session transcript files the isolated config dir has accumulated. */
+/**
+ * Session transcript files the isolated config dir has accumulated.
+ *
+ * A single `throwIfNoEntry` `statSync` (not `existsSync`) guards `projects`
+ * itself, matching the `isDirectory()` reasoning `verifyIsolation` applies
+ * to the same path (Issue #1788): a regular file at `projects` must read as
+ * "no transcripts" rather than crashing `readdirSync` with `ENOTDIR`.
+ */
 export function transcriptFiles(configDir: string): string[] {
   const projects = join(configDir, 'projects');
-  if (!existsSync(projects)) return [];
+  if (!statSync(projects, { throwIfNoEntry: false })?.isDirectory()) return [];
   const out: string[] = [];
   for (const entry of readdirSync(projects)) {
     const sub = join(projects, entry);
@@ -145,10 +152,87 @@ export function transcriptFiles(configDir: string): string[] {
  * legitimately produces no `.jsonl` while still proving the override
  * arrived. `files` reports the transcripts separately for the items that do
  * depend on them.
+ *
+ * TAUTOLOGY WARNING (Issue #1783): this weak form is only valid for a
+ * caller that writes NOTHING into `configDir` before the child ever runs.
+ * `probe-sdk-declared-mcp-and-task.ts`'s P0 seed and
+ * `probe-sdk-mcp-settings-sources.ts`'s U/L seed both write
+ * `<configDir>/.claude.json` themselves before any session starts, which
+ * makes `.claude.json` present regardless of whether the child honored
+ * `CLAUDE_CONFIG_DIR` at all -- the exact failure this predicate exists to
+ * catch. A caller that seeds `.claude.json` (or anything else under
+ * `configDir`) before running a session MUST use `verifyIsolationStrict`
+ * below instead, never this function.
+ *
+ * `projects` / `sessions` require an actual DIRECTORY at that path, not
+ * merely `existsSync` (CodeRabbit Minor, PR #1787): a caller-written regular
+ * file at either name would otherwise satisfy this predicate the same way a
+ * caller-created `projects/` directory satisfies the tautology above --
+ * same reasoning `snapshotIsolationEvidence`'s `sessionsDirExists` already
+ * applies below, via a single `throwIfNoEntry` `statSync` to avoid an
+ * exists-then-stat TOCTOU. `.claude.json` is exempt: it is expected to be a
+ * regular file, not a directory.
  */
 export function verifyIsolation(configDir: string): { ok: boolean; files: string[]; evidence: string[] } {
-  const evidence = ['.claude.json', 'projects', 'sessions'].filter((e) => existsSync(join(configDir, e)));
+  const evidence: string[] = [];
+  if (existsSync(join(configDir, '.claude.json'))) evidence.push('.claude.json');
+  for (const dirName of ['projects', 'sessions']) {
+    if (statSync(join(configDir, dirName), { throwIfNoEntry: false })?.isDirectory()) evidence.push(dirName);
+  }
   return { ok: evidence.length > 0, files: transcriptFiles(configDir), evidence };
+}
+
+/**
+ * Snapshot of the isolation evidence `verifyIsolationStrict` compares
+ * against: a transcript-file COUNT (never presence -- a caller may have
+ * already run an earlier session in the same `configDir`) and whether
+ * `sessions/` exists yet.
+ */
+export interface IsolationEvidenceSnapshot {
+  transcriptCount: number;
+  sessionsDirExists: boolean;
+}
+
+export function snapshotIsolationEvidence(configDir: string): IsolationEvidenceSnapshot {
+  const sessionsDir = join(configDir, 'sessions');
+  return {
+    transcriptCount: transcriptFiles(configDir).length,
+    // A regular file at this path is not the child-created directory this
+    // predicate looks for -- existsSync() alone accepts either (CodeRabbit,
+    // PR #1787). A single throwIfNoEntry statSync avoids the
+    // exists-then-stat TOCTOU an existsSync()+statSync() pair would have.
+    sessionsDirExists: statSync(sessionsDir, { throwIfNoEntry: false })?.isDirectory() === true,
+  };
+}
+
+export interface StrictIsolationResult {
+  ok: boolean;
+  before: IsolationEvidenceSnapshot;
+  after: IsolationEvidenceSnapshot;
+}
+
+/**
+ * Strict isolation evidence (Issue #1783, lifted from
+ * `probe-sdk-mcp-settings-sources.ts` where it was first built as a
+ * per-probe local fix -- Architect ruling, PR #1782, CodeRabbit M3). Use
+ * this instead of `verifyIsolation` whenever the caller writes anything
+ * (most commonly `<configDir>/.claude.json`, a user-scope MCP seed) into
+ * `configDir` before the first session runs: `.claude.json` alone is never
+ * evidence here, because a caller that seeds it can produce that exact file
+ * without the child ever having touched `CLAUDE_CONFIG_DIR`. The only
+ * evidence accepted is something the CHILD produced -- the transcript-file
+ * count growing past a `before` snapshot, or a `sessions/` directory newly
+ * appearing -- neither of which any known seeding routine in this repo ever
+ * writes.
+ *
+ * `before` must be captured via `snapshotIsolationEvidence(configDir)`
+ * BEFORE the caller writes its seed and BEFORE any session runs, so the
+ * comparison baseline predates both the seed and the child's own writes.
+ */
+export function verifyIsolationStrict(configDir: string, before: IsolationEvidenceSnapshot): StrictIsolationResult {
+  const after = snapshotIsolationEvidence(configDir);
+  const ok = after.transcriptCount > before.transcriptCount || (after.sessionsDirExists && !before.sessionsDirExists);
+  return { ok, before, after };
 }
 
 export interface TurnOutcome {

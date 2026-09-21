@@ -57,8 +57,10 @@
  * cwd-keyed, not repo-keyed) and a throwaway, isolated `CLAUDE_CONFIG_DIR` --
  * no real user memory directory is ever touched, by construction (every
  * `~/.claude/...`-rooted path the SDK documents is redirected under the
- * isolated config dir, confirmed the same way every sibling probe's own
- * `verifyIsolation()` check confirms it for session storage generally):
+ * isolated config dir, confirmed via `withArmConfigDir`'s strict isolation
+ * check below -- see Issue #1788 for why the weak `verifyIsolation()` form
+ * every OTHER sibling probe uses is tautological for this probe's seeding
+ * arms):
  *
  *   --a  RECALL: seed a nonce directly into the SDK's OWN default
  *        Project-scope memory directory (path discovered per the adaptation
@@ -425,11 +427,12 @@ import {
   ProbeSession,
   isolateClaudeConfigDir,
   nonce,
+  snapshotIsolationEvidence,
   stamp,
   turnLine,
   turnSettled,
   unsettledReason,
-  verifyIsolation,
+  verifyIsolationStrict,
   type MemoryRecallMessage,
   type TurnOutcome,
 } from './probe-sdk-session-harness.js';
@@ -1382,16 +1385,37 @@ function buildScratchCwd(label: string): string {
 
 class IsolationError extends Error {}
 
-/** Runs `body` against a fresh isolated `CLAUDE_CONFIG_DIR`, verifies isolation held, and always tears the dir down. */
-async function withArmConfigDir<T>(label: string, body: (configDir: string) => Promise<T>): Promise<T> {
+/**
+ * Runs `body` against a fresh isolated `CLAUDE_CONFIG_DIR`, verifies
+ * isolation held, and always tears the dir down.
+ *
+ * Uses the STRICT form (Issue #1788, same shape as #1783 /
+ * `probe-sdk-declared-mcp-and-task.ts`'s `preRunIsolationSnapshot`), not the
+ * weak `verifyIsolation`: arms A / E / F and the `--auto-memory-off` check
+ * call `seedMemoryTopic` INSIDE `body`, which `mkdirSync`s
+ * `<configDir>/projects/<slug>/memory` before any session necessarily runs.
+ * The weak predicate's evidence list includes `projects`, so it would read
+ * "isolated" purely from that seed write, whether or not the spawned
+ * `claude` child ever honoured `CLAUDE_CONFIG_DIR` -- the same tautology
+ * #1783 fixed for `.claude.json`. The snapshot is taken here, immediately
+ * after `isolateClaudeConfigDir` and BEFORE `body` runs, so the baseline
+ * predates both any seed write and the child's own writes; only a
+ * transcript-file-count increase or a newly-appeared `sessions/` dir counts
+ * as evidence afterward. Arms B / C / D / G call this same function but seed
+ * nothing under `configDir`, so they are unaffected by construction.
+ *
+ * @internal Exported for the sibling unit test.
+ */
+export async function withArmConfigDir<T>(label: string, body: (configDir: string) => Promise<T>): Promise<T> {
   const configDir = isolateClaudeConfigDir(label);
+  const before = snapshotIsolationEvidence(configDir);
   try {
     const result = await body(configDir);
-    const isolation = verifyIsolation(configDir);
-    console.log(`${label}: child-created state under the throwaway CLAUDE_CONFIG_DIR: ${isolation.evidence.join(', ') || '(none)'}`);
+    const isolation = verifyIsolationStrict(configDir, before);
+    console.log(`${label}: strict isolation check -- before=${JSON.stringify(isolation.before)} after=${JSON.stringify(isolation.after)} ok=${isolation.ok}`);
     if (!isolation.ok) {
       throw new IsolationError(
-        `${label}: ISOLATION NOT VERIFIED -- the child wrote no state into the throwaway config dir; this arm cannot be trusted (it may have run against the operator's real config dir).`,
+        `${label}: ISOLATION NOT VERIFIED -- no child-generated evidence (transcript-file growth or a new sessions/ dir) appeared after this arm's body ran; this arm cannot be trusted (it may have run against the operator's real config dir, or a seed write alone satisfied a weaker check).`,
       );
     }
     return result;

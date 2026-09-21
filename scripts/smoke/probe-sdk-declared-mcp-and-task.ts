@@ -169,10 +169,12 @@ import {
   ProbeSession,
   isolateClaudeConfigDir,
   nonce,
+  snapshotIsolationEvidence,
   stamp,
   turnLine,
   turnSettled,
-  verifyIsolation,
+  verifyIsolationStrict,
+  type IsolationEvidenceSnapshot,
   type SystemInitMessage,
   type TurnOutcome,
 } from './probe-sdk-session-harness.js';
@@ -788,6 +790,19 @@ interface SessionRun {
 }
 
 /**
+ * Set by main() right after `isolateClaudeConfigDir` + `seedUserScopeServers`,
+ * BEFORE any session runs; read by the EARLY isolation check below.
+ * `seedUserScopeServers` writes `<configDir>/.claude.json` itself, so the
+ * weak `verifyIsolation` predicate is tautological here (Issue #1783) --
+ * every isolation check in this probe uses the strict, child-evidence-only
+ * form instead, snapshotted before that seed is written.
+ */
+let configDirForIsolationCheck = '';
+let preRunIsolationSnapshot: IsolationEvidenceSnapshot | null = null;
+/** Fires once, after the FIRST billed session this process runs -- same shape as the sibling probe's early check (Issue #1783 AC item 2). */
+let earlyIsolationChecked = false;
+
+/**
  * One session, one turn, then a settled status read. `system:init` does not
  * arrive until a turn is pushed (harness header), so even the arms that only
  * want the init body spend one small turn.
@@ -811,6 +826,16 @@ async function runOneSession(
   const post = await readPostStatus(session, label);
   session.close();
   await session.waitForStreamEnd();
+  if (!earlyIsolationChecked) {
+    earlyIsolationChecked = true;
+    const strict = verifyIsolationStrict(configDirForIsolationCheck, preRunIsolationSnapshot!);
+    console.log(`${label}: EARLY isolation check (first billed session) -- before=${JSON.stringify(strict.before)} after=${JSON.stringify(strict.after)} ok=${strict.ok}`);
+    if (!strict.ok) {
+      throw new Error(
+        'no child-generated evidence (transcript-file growth or a new sessions/ dir) appeared after the first billed session -- the CLAUDE_CONFIG_DIR override may not have reached the child',
+      );
+    }
+  }
   return { init: initObservation(session.systemInit), post, outcome, recorder, session };
 }
 
@@ -956,6 +981,11 @@ async function main(): Promise<number> {
   const { arms, continueAfterLeak } = parseArgs(process.argv.slice(2));
   const userServers = readUserScopeMcpServers();
   const configDir = isolateClaudeConfigDir('declared-mcp');
+  // Snapshotted BEFORE seedUserScopeServers() writes `.claude.json` and
+  // BEFORE any session runs, so the strict isolation check's baseline
+  // predates both the seed and any child-generated evidence (Issue #1783).
+  configDirForIsolationCheck = configDir;
+  preRunIsolationSnapshot = snapshotIsolationEvidence(configDir);
   const seeded = seedUserScopeServers(configDir, userServers);
   const cwd = mkdtempSync(join(tmpdir(), 'probe-sdk-declared-mcp-cwd-'));
   const standIn = await startAgentConsoleStandIn();
@@ -984,9 +1014,13 @@ async function main(): Promise<number> {
   }
 
   h('ISOLATION');
-  const iso = verifyIsolation(configDir);
-  console.log(`config dir ${configDir}: evidence=${JSON.stringify(iso.evidence)} transcripts=${iso.files.length}`);
-  if (!iso.ok) {
+  // Re-checked here regardless of the early per-arm result above (which only
+  // fires once, after the FIRST billed session) -- the FINAL check, against
+  // the SAME pre-run baseline (Issue #1783 AC item 2, mirroring the sibling
+  // probe's early+final pair).
+  const finalIso = verifyIsolationStrict(configDir, preRunIsolationSnapshot!);
+  console.log(`config dir ${configDir}: before=${JSON.stringify(finalIso.before)} after=${JSON.stringify(finalIso.after)} ok=${finalIso.ok}`);
+  if (!finalIso.ok) {
     console.log('HARNESS: the CLAUDE_CONFIG_DIR override did not reach the child; every isolation claim above is void');
     return PROBE_EXIT.HARNESS;
   }

@@ -944,6 +944,7 @@ async function main(): Promise<void> {
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
           name: 'Smoke inert LLM',
+          engine: 'openai-api',
           provider: { baseUrl: `${stubBaseUrl}/v1`, model: 'smoke-model', apiKeyRef },
         }),
       }),

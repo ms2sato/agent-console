@@ -224,10 +224,12 @@ import {
   ProbeSession,
   isolateClaudeConfigDir,
   nonce,
+  snapshotIsolationEvidence,
   stamp,
-  transcriptFiles,
   turnLine,
   turnSettled,
+  verifyIsolationStrict,
+  type IsolationEvidenceSnapshot,
   type SystemInitMessage,
   type TurnOutcome,
 } from './probe-sdk-session-harness.js';
@@ -1181,40 +1183,17 @@ interface SessionRun {
 }
 
 /**
- * Strict isolation evidence (Architect ruling, PR #1782, CodeRabbit M3):
- * the shared harness's `verifyIsolation()` accepts `<configDir>/.claude.json`
- * as evidence, but THIS probe's own `buildFixtures()` writes that exact
- * file itself before any session ever runs -- so both the early and final
- * isolation checks could pass even if the spawned `claude` child never
- * actually honored `CLAUDE_CONFIG_DIR`. This requires evidence the CHILD
- * produced, not the harness: the transcript file COUNT growing past a
- * `before` snapshot, or a `sessions/` directory newly appearing -- neither
- * of which `buildFixtures()` ever writes. (`verifyIsolation()` itself is
- * left untouched; its own tautology is a separate concern.)
+ * Strict isolation evidence: the shared harness's `verifyIsolation()`
+ * accepts `<configDir>/.claude.json` as evidence, but THIS probe's own
+ * `buildFixtures()` writes that exact file itself before any session ever
+ * runs -- so both the early and final isolation checks could pass even if
+ * the spawned `claude` child never actually honored `CLAUDE_CONFIG_DIR`.
+ * `snapshotIsolationEvidence` / `verifyIsolationStrict` (imported above) are
+ * now the harness's single writer for this strict form (Issue #1783,
+ * lifted from this probe's own local fix -- Architect ruling, PR #1782,
+ * CodeRabbit M3), so this probe carries no local definition of either; its
+ * pins live in `probe-sdk-session-harness.test.ts`.
  */
-export interface IsolationEvidenceSnapshot {
-  transcriptCount: number;
-  sessionsDirExists: boolean;
-}
-
-export function snapshotIsolationEvidence(configDir: string): IsolationEvidenceSnapshot {
-  return {
-    transcriptCount: transcriptFiles(configDir).length,
-    sessionsDirExists: existsSync(join(configDir, 'sessions')),
-  };
-}
-
-export interface StrictIsolationResult {
-  ok: boolean;
-  before: IsolationEvidenceSnapshot;
-  after: IsolationEvidenceSnapshot;
-}
-
-export function verifyIsolationStrict(configDir: string, before: IsolationEvidenceSnapshot): StrictIsolationResult {
-  const after = snapshotIsolationEvidence(configDir);
-  const ok = after.transcriptCount > before.transcriptCount || (after.sessionsDirExists && !before.sessionsDirExists);
-  return { ok, before, after };
-}
 
 /** Set once by main() right after buildFixtures(), BEFORE any session runs; read by both the early and final isolation checks below. */
 let currentConfigDirForIsolationCheck = '';

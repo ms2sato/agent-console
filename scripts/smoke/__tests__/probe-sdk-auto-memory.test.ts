@@ -20,7 +20,7 @@
  * pure function but also isn't billable).
  */
 import { describe, it, expect, afterEach } from 'bun:test';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -42,6 +42,7 @@ import {
   classifyRealTreeDiff,
   PROBE_SLUG,
   seedMemoryTopic,
+  withArmConfigDir,
   redactRecallEntry,
   recallPathMatches,
   summarizeRecalls,
@@ -1052,4 +1053,83 @@ describe('parseArgs -- --auto-memory-off', () => {
     expect(parsed.autoMemoryOff).toBe(true);
     expect([...parsed.arms]).toEqual(['--a']);
   });
+});
+
+// ---------------------------------------------------------------------------
+// Issue #1788: withArmConfigDir's isolation gate must be strict, not
+// tautological, for the arms (A / E / F / --auto-memory-off) that call
+// `seedMemoryTopic` INSIDE the body -- real filesystem I/O against a real
+// tmpdir, exercising the actual production `withArmConfigDir`, same
+// convention as `probe-sdk-session-harness.test.ts`'s own isolation pins
+// (a synthetic in-memory object would not be meaningful here, since the
+// whole point of the gate is what a real filesystem write does or does not
+// count as).
+// ---------------------------------------------------------------------------
+
+function seedFactUnderConfigDir(configDir: string, slug: string): void {
+  seedMemoryTopic({
+    memoryDir: join(configDir, 'projects', slug, 'memory'),
+    topicFilename: 'fact.md',
+    frontmatterName: 'fact',
+    description: 'a test fact',
+    codenameSubject: 'The codename',
+    codenameValue: 'ZEBRA-42',
+    indexTitle: 'Test Fact',
+    indexHook: 'the codename is here.',
+  });
+}
+
+describe('withArmConfigDir isolation gate (Issue #1788)', () => {
+  const originalClaudeConfigDir = process.env.CLAUDE_CONFIG_DIR;
+
+  // `isolateClaudeConfigDir` (called by `withArmConfigDir`) overwrites
+  // `process.env.CLAUDE_CONFIG_DIR` for the life of this process; restore
+  // whatever was there before this describe block ran rather than
+  // unconditionally deleting it (CodeRabbit, PR #1790).
+  afterEach(() => {
+    if (originalClaudeConfigDir === undefined) {
+      delete process.env.CLAUDE_CONFIG_DIR;
+    } else {
+      process.env.CLAUDE_CONFIG_DIR = originalClaudeConfigDir;
+    }
+  });
+
+  it('a seeded projects/<slug>/memory/MEMORY.md alone (no child-generated transcript) is NOT evidence -- rejects', async () => {
+    await expect(
+      withArmConfigDir('test-1788-seed-only', async (configDir) => {
+        seedFactUnderConfigDir(configDir, 'some-slug');
+      }),
+    ).rejects.toThrow(/ISOLATION NOT VERIFIED/);
+  });
+
+  it('a transcript file appearing under configDir AFTER the snapshot (alongside the same seed) IS evidence -- resolves', async () => {
+    const result = await withArmConfigDir('test-1788-seed-plus-transcript', async (configDir) => {
+      seedFactUnderConfigDir(configDir, 'some-slug');
+      // Simulates the CHILD writing its own session transcript -- the only
+      // kind of evidence the strict check accepts. `seedMemoryTopic` itself
+      // never writes a `.jsonl` file, so this is genuinely additional to the
+      // seed, not a restatement of it.
+      const projectDir = join(configDir, 'projects', 'some-slug');
+      mkdirSync(projectDir, { recursive: true });
+      writeFileSync(join(projectDir, 'abc.jsonl'), '{}\n');
+      return 'ok';
+    });
+    expect(result).toBe('ok');
+  });
+
+  // Reach measured, not predicted (Issue #1788's own AC). `withArmConfigDir`
+  // was temporarily reverted to its PRE-FIX body -- `verifyIsolation(configDir)`
+  // (the weak, presence-only predicate) in place of
+  // `verifyIsolationStrict(configDir, before)` -- and this suite re-run
+  // against that reversion. Measured result: the FIRST case above ("seeded
+  // ... alone ... is NOT evidence -- rejects") FAILED (it resolved instead of
+  // rejecting: `seedMemoryTopic`'s `mkdirSync` alone made `projects` exist,
+  // which the weak predicate accepts unconditionally) -- exactly the
+  // tautology this Issue exists to close. The SECOND case ("... IS evidence
+  // -- resolves") passed unchanged under both implementations, because
+  // presence-only and strict-delta agree whenever real child evidence is
+  // also present; that is the expected invariant-preservation shape, not a
+  // gap in the test. The mutation was reverted immediately after (`git diff`
+  // confirmed clean) and the suite re-run green (both cases passing) before
+  // this comment was written.
 });
