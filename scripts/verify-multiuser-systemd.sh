@@ -975,6 +975,20 @@ path_first_bun_arm() {
   fi
   echo "  --- before (this dir may not exist yet -- nothing has necessarily run under conditions that create it before this arm) ---"
   cexec --user root "$SERVICE" sh -c "ls -la '${bun_node_dir}' 2>&1; readlink -f '${bun_node_dir}/bun' 2>&1" | sed 's/^/  /'
+  # ${bun_node_dir} is a predictable path under the world-writable /tmp
+  # (CodeRabbit, PR #1789): if it already existed as a SYMLINK (planted by
+  # anything other than a legitimate prior bun invocation), `install -d`'s
+  # own symlink-following behavior is version-dependent (GNU coreutils
+  # follows an existing symlink component; some other `install`
+  # implementations replace it) -- refuse outright rather than depend on
+  # that. A real bun-created shim is always a plain directory, never a
+  # symlink, so this check costs nothing on the expected path.
+  local dir_is_symlink=0
+  cexec --user root "$SERVICE" test -L "$bun_node_dir" && dir_is_symlink=1
+  if [ "$dir_is_symlink" -eq 1 ]; then
+    echo "error: ${bun_node_dir} already exists as a SYMLINK -- refusing to follow it (a legitimate bun-created shim is always a plain directory)" >&2
+    exit 2
+  fi
   expect "7e: alice has her own bun at /home/alice/.bun/bin/bun (a path agentconsole cannot traverse)" \
     cexec --user root "$SERVICE" install -D -m 0755 -o alice -g alice "$UNIFIED_BUN" /home/alice/.bun/bin/bun
   cexec --user root "$SERVICE" chmod 750 /home/alice

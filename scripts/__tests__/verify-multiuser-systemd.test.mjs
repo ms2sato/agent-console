@@ -985,4 +985,29 @@ describe('verify-multiuser-systemd.sh: 7e PATH-first-bun arm is present and orde
     expect(driver).toContain('cexec --user root "$SERVICE" readlink -f /usr/bin/node');
     expect(idxOf("/usr/bin/node (the planted stand-in")).toBeLessThan(armStart());
   });
+
+  // CodeRabbit (PR #1789, discussion_r4059145730): bun_node_dir is a
+  // predictable path under the world-writable /tmp; GNU coreutils' `install
+  // -d` follows an existing symlink path component (version-dependent
+  // across `install` implementations), so a pre-existing symlink there
+  // could redirect root's writes outside the intended shim directory.
+  // Reject it outright before touching the path.
+  it('refuses to proceed if bun_node_dir already exists as a symlink, before install -d or either ln -sf runs', () => {
+    const a = arm();
+    expect(a).toContain('cexec --user root "$SERVICE" test -L "$bun_node_dir" && dir_is_symlink=1');
+    expect(a).toContain('if [ "$dir_is_symlink" -eq 1 ]; then');
+    expect(a).toContain(
+      'echo "error: ${bun_node_dir} already exists as a SYMLINK -- refusing to follow it (a legitimate bun-created shim is always a plain directory)" >&2',
+    );
+    expect(a).toContain('exit 2');
+
+    // Checked BEFORE either root-owned write: alice's own bun provisioning
+    // and the install -d / ln -sf command that plants the shim.
+    const symlinkCheckI = a.indexOf('test -L "$bun_node_dir"');
+    const aliceProvisionI = a.indexOf('install -D -m 0755 -o alice -g alice "$UNIFIED_BUN"');
+    const shimWriteI = a.indexOf('install -d -o alice -g alice -m 755');
+    expect(symlinkCheckI).toBeGreaterThan(-1);
+    expect(aliceProvisionI).toBeGreaterThan(symlinkCheckI);
+    expect(shimWriteI).toBeGreaterThan(symlinkCheckI);
+  });
 });
