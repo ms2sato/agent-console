@@ -57,6 +57,22 @@ const EmbeddedAgentWorkerSchema = v.strictObject({
   model: v.optional(v.string()),
   reasoningEffort: v.nullable(v.string()),
   hasParameterOverride: v.boolean(),
+  // epic #1636 Phase 5 PR-2. Mirrors EmbeddedAgentWorker in types/worker.ts
+  // -- this object is strict, so the field must exist here or it is
+  // stripped off the wire with no error on either side. Optional: absent on
+  // every openai-api worker and on a claude-sdk worker with no discovery
+  // reading yet.
+  mcpServers: v.optional(
+    v.array(
+      v.strictObject({
+        name: v.string(),
+        scope: v.picklist(['project', 'user', 'local', 'reserved', 'connector']),
+        hash: v.optional(v.string()),
+        decision: v.optional(v.picklist(['allowed', 'denied', 'pending', 'rejected-reserved', 'invalid'])),
+        status: v.optional(v.string()),
+      }),
+    ),
+  ),
 });
 
 const WorkerSchema = v.union([

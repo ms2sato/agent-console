@@ -114,6 +114,26 @@ const EmbeddedAgentAttachmentSchema = v.strictObject({
   mimeType: v.string(),
 });
 
+/**
+ * Wire schema for {@link McpServerWireConfig} (epic #1636 Phase 5 PR-2,
+ * docs/design/embedded-agent-sdk-engine.md §4.5). `type` is required on the
+ * wire -- the discovery loader normalizes a raw `.mcp.json` entry that
+ * omits `type` for a stdio server BEFORE it reaches this shape.
+ */
+export const McpServerWireConfigSchema = v.union([
+  v.strictObject({
+    type: v.literal('stdio'),
+    command: v.string(),
+    args: v.optional(v.array(v.string())),
+    env: v.optional(v.record(v.string(), v.string())),
+  }),
+  v.strictObject({
+    type: v.picklist(['http', 'sse']),
+    url: v.string(),
+    headers: v.optional(v.record(v.string(), v.string())),
+  }),
+]);
+
 const EmbeddedAgentRestoredMessageSchema = v.union([
   v.strictObject({ role: v.literal('system'), content: v.string() }),
   v.strictObject({
@@ -366,6 +386,13 @@ const EmbeddedAgentInitCommandSchema = v.variant('engine', [
         sdkSessionId: v.pipe(v.string(), v.minLength(1)),
       }),
     ),
+    // epic #1636 Phase 5 PR-2 (docs/design/embedded-agent-sdk-engine.md
+    // §4.5's D-B). REQUIRED, not optional -- an absent field is a schema
+    // validation error, never silently "no allowed servers". See the type's
+    // doc comment.
+    allowedProjectMcpServers: v.array(
+      v.strictObject({ name: v.string(), hash: v.string() }),
+    ),
   }),
 ]);
 
@@ -400,6 +427,15 @@ export const EmbeddedAgentCommandSchema = v.union([
     model: v.pipe(v.string(), v.minLength(1)),
     reasoningEffort: v.nullable(v.string()),
     contextWindowTokens: v.nullable(v.pipe(v.number(), v.integer(), v.minValue(1))),
+  }),
+  // epic #1636 Phase 5 PR-2 (docs/design/embedded-agent-sdk-engine.md §4.5):
+  // the repository's approved-project-MCP-server set changed while the
+  // subprocess was running. FULL STATE, never a delta -- see the type's
+  // doc comment.
+  v.strictObject({
+    v: v.literal(1),
+    type: v.literal('set-mcp-servers'),
+    servers: v.record(v.string(), McpServerWireConfigSchema),
   }),
   // Slash commands, `console`-handled arm (#1572): a manual `/compact`
   // intercepted server-side rather than forwarded as prose. No payload
@@ -526,6 +562,35 @@ export const EmbeddedAgentEventSchema = v.union([
     v: v.literal(1),
     type: v.literal('model-params-applied'),
     applied: v.boolean(),
+  }),
+  // epic #1636 Phase 5 PR-2 (docs/design/embedded-agent-sdk-engine.md §4.5):
+  // the claude-sdk engine's own `.mcp.json` discovery reading, up to 3 times
+  // per activation, last-write-wins on the server. See the type's doc
+  // comment for what each field means and why `decision` has no `'denied'`
+  // member here (server-computed only).
+  v.strictObject({
+    v: v.literal(1),
+    type: v.literal('mcp-servers-discovered'),
+    servers: v.array(
+      v.strictObject({
+        name: v.string(),
+        scope: v.picklist(['project', 'user', 'local', 'reserved', 'connector']),
+        hash: v.optional(v.string()),
+        decision: v.optional(v.picklist(['allowed', 'pending', 'rejected-reserved', 'invalid'])),
+        status: v.optional(v.string()),
+      }),
+    ),
+    userLocalNamesUnavailable: v.optional(v.literal(true)),
+    mcpJsonError: v.optional(v.string()),
+  }),
+  // epic #1636 Phase 5 PR-2: the engine's report on a `set-mcp-servers`
+  // command. See the type's doc comment.
+  v.strictObject({
+    v: v.literal(1),
+    type: v.literal('mcp-servers-applied'),
+    applied: v.boolean(),
+    reason: v.optional(v.string()),
+    errors: v.optional(v.record(v.string(), v.string())),
   }),
 ]);
 

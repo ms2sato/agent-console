@@ -29,13 +29,14 @@ import {
   exitCodeFor,
   finalExitCode,
   honoredTaskToolName,
-  isAccountConnector,
-  mcpServerOf,
   parseClaimedTools,
-  slugifyMcpServerName,
   startAgentConsoleStandIn,
   type InitObservation,
 } from '../probe-sdk-declared-mcp-and-task.js';
+import {
+  isAccountConnector,
+  slugifyMcpServerName,
+} from '../../../packages/embedded-agent/src/mcp-names.js';
 import { Client } from '../../../packages/embedded-agent/node_modules/@modelcontextprotocol/sdk/dist/esm/client/index.js';
 import { StreamableHTTPClientTransport } from '../../../packages/embedded-agent/node_modules/@modelcontextprotocol/sdk/dist/esm/client/streamableHttp.js';
 
@@ -103,15 +104,6 @@ describe('exit codes', () => {
       expect(finalExitCode(inconclusive, true)).toBe(PROBE_EXIT.INCONCLUSIVE);
       expect(finalExitCode(inconclusive, false)).toBe(PROBE_EXIT.INCONCLUSIVE);
     });
-  });
-});
-
-describe('mcpServerOf', () => {
-  it('extracts the server segment of an MCP-namespaced tool and null otherwise', () => {
-    expect(mcpServerOf('mcp__console__Compact')).toBe('console');
-    expect(mcpServerOf('mcp__chrome-devtools__list_pages')).toBe('chrome-devtools');
-    expect(mcpServerOf('Read')).toBeNull();
-    expect(mcpServerOf('mcp__')).toBeNull();
   });
 });
 

@@ -10,6 +10,7 @@ import {
   EmbeddedAgentServerEventSchema,
   EmbeddedAgentStreamEventSchema,
   EmbeddedAgentProviderSchema,
+  McpServerWireConfigSchema,
   EMBEDDED_AGENT_TOOL_NAMES,
   DEFAULT_EMBEDDED_AGENT_ENABLED_TOOLS,
 } from '../embedded-agent.js';
@@ -890,6 +891,82 @@ describe('EmbeddedAgentCommandSchema', () => {
     });
   });
 
+  describe('McpServerWireConfigSchema (epic #1636 Phase 5 PR-2, §4.5)', () => {
+    it('accepts a stdio config with all optional fields', () => {
+      const config = { type: 'stdio', command: 'run', args: ['--x'], env: { A: '1' } };
+      expect(v.safeParse(McpServerWireConfigSchema, config).success).toBe(true);
+    });
+
+    it('accepts a minimal stdio config', () => {
+      expect(v.safeParse(McpServerWireConfigSchema, { type: 'stdio', command: 'run' }).success).toBe(true);
+    });
+
+    it('accepts http and sse configs', () => {
+      expect(v.safeParse(McpServerWireConfigSchema, { type: 'http', url: 'http://x' }).success).toBe(true);
+      expect(
+        v.safeParse(McpServerWireConfigSchema, { type: 'sse', url: 'http://x', headers: { A: '1' } }).success,
+      ).toBe(true);
+    });
+
+    it('rejects a config missing the type discriminant', () => {
+      expect(v.safeParse(McpServerWireConfigSchema, { command: 'run' }).success).toBe(false);
+    });
+
+    it('rejects a stdio config with an unknown field (strictObject)', () => {
+      expect(v.safeParse(McpServerWireConfigSchema, { type: 'stdio', command: 'run', leaked: 'x' }).success).toBe(
+        false,
+      );
+    });
+
+    it('rejects an http config missing url', () => {
+      expect(v.safeParse(McpServerWireConfigSchema, { type: 'http' }).success).toBe(false);
+    });
+  });
+
+  describe('set-mcp-servers (epic #1636 Phase 5 PR-2, §4.5)', () => {
+    it('round-trips the reserved pair plus an allowed project stdio server', () => {
+      const command = {
+        v: 1,
+        type: 'set-mcp-servers',
+        servers: {
+          'agent-console': { type: 'http', url: 'http://localhost:3457/mcp' },
+          console: { type: 'stdio', command: 'internal' },
+          'chrome-devtools': { type: 'stdio', command: 'chrome-devtools-mcp', args: ['--headless'] },
+        },
+      };
+      const result = v.safeParse(EmbeddedAgentCommandSchema, command);
+      expect(result.success).toBe(true);
+      if (result.success && result.output.type === 'set-mcp-servers') {
+        expect(Object.keys(result.output.servers)).toEqual(['agent-console', 'console', 'chrome-devtools']);
+      }
+    });
+
+    it('accepts an empty servers map', () => {
+      expect(
+        v.safeParse(EmbeddedAgentCommandSchema, { v: 1, type: 'set-mcp-servers', servers: {} }).success,
+      ).toBe(true);
+    });
+
+    it('rejects a server entry missing its discriminant type', () => {
+      const command = { v: 1, type: 'set-mcp-servers', servers: { x: { command: 'run' } } };
+      expect(v.safeParse(EmbeddedAgentCommandSchema, command).success).toBe(false);
+    });
+
+    it('rejects an sse/http entry missing url', () => {
+      const command = { v: 1, type: 'set-mcp-servers', servers: { x: { type: 'http' } } };
+      expect(v.safeParse(EmbeddedAgentCommandSchema, command).success).toBe(false);
+    });
+
+    it('rejects a stdio entry with an sse-only field (structural discrimination)', () => {
+      const command = { v: 1, type: 'set-mcp-servers', servers: { x: { type: 'stdio', command: 'run', url: 'x' } } };
+      expect(v.safeParse(EmbeddedAgentCommandSchema, command).success).toBe(false);
+    });
+
+    it('rejects a missing servers field', () => {
+      expect(v.safeParse(EmbeddedAgentCommandSchema, { v: 1, type: 'set-mcp-servers' }).success).toBe(false);
+    });
+  });
+
   it('parses an init command carrying enabledTools', () => {
     const init = {
       v: 1,
@@ -1137,7 +1214,12 @@ describe('EmbeddedAgentCommandSchema', () => {
     };
 
     it('parses a claude-sdk init command whose provider carries only model (no apiKey)', () => {
-      const init = { ...baseFields, engine: 'claude-sdk', provider: { model: 'claude-sonnet-5' } };
+      const init = {
+        ...baseFields,
+        engine: 'claude-sdk',
+        provider: { model: 'claude-sonnet-5' },
+        allowedProjectMcpServers: [],
+      };
       const result = v.safeParse(EmbeddedAgentCommandSchema, init);
       expect(result.success).toBe(true);
       if (result.success && result.output.type === 'init' && result.output.engine === 'claude-sdk') {
@@ -1150,6 +1232,7 @@ describe('EmbeddedAgentCommandSchema', () => {
         ...baseFields,
         engine: 'claude-sdk',
         provider: { baseUrl: 'http://localhost:11434/v1', model: 'claude-sonnet-5' },
+        allowedProjectMcpServers: [],
       };
       const result = v.safeParse(EmbeddedAgentCommandSchema, init);
       expect(result.success).toBe(false);
@@ -1178,11 +1261,65 @@ describe('EmbeddedAgentCommandSchema', () => {
     });
 
     it('rejects a claude-sdk init command whose provider carries an empty-string model', () => {
-      const init = { ...baseFields, engine: 'claude-sdk', provider: { model: '' } };
+      const init = {
+        ...baseFields,
+        engine: 'claude-sdk',
+        provider: { model: '' },
+        allowedProjectMcpServers: [],
+      };
       const result = v.safeParse(EmbeddedAgentCommandSchema, init);
       expect(result.success).toBe(false);
     });
 
+  });
+
+  describe('allowedProjectMcpServers (epic #1636 Phase 5 PR-2, §4.5 D-B)', () => {
+    const baseFields = {
+      v: 1,
+      type: 'init',
+      compaction: { auto: true },
+      engine: 'claude-sdk',
+      mcp: { baseUrl: 'http://localhost:3457/mcp', token: 'tok' },
+      provider: { model: 'claude-sonnet-5' },
+      context: { sessionId: 's1', workerId: 'w1', cwd: '/work' },
+      maxToolIterations: 25,
+    };
+
+    it('rejects a claude-sdk init command with allowedProjectMcpServers entirely absent', () => {
+      const result = v.safeParse(EmbeddedAgentCommandSchema, baseFields);
+      expect(result.success).toBe(false);
+    });
+
+    it('parses an empty allowedProjectMcpServers array (no allowed servers yet)', () => {
+      const init = { ...baseFields, allowedProjectMcpServers: [] };
+      const result = v.safeParse(EmbeddedAgentCommandSchema, init);
+      expect(result.success).toBe(true);
+      if (result.success && result.output.type === 'init' && result.output.engine === 'claude-sdk') {
+        expect(result.output.allowedProjectMcpServers).toEqual([]);
+      }
+    });
+
+    it('round-trips a non-empty allowedProjectMcpServers array', () => {
+      const init = {
+        ...baseFields,
+        allowedProjectMcpServers: [{ name: 'chrome-devtools', hash: 'abc123' }],
+      };
+      const result = v.safeParse(EmbeddedAgentCommandSchema, init);
+      expect(result.success).toBe(true);
+      if (result.success && result.output.type === 'init' && result.output.engine === 'claude-sdk') {
+        expect(result.output.allowedProjectMcpServers).toEqual([{ name: 'chrome-devtools', hash: 'abc123' }]);
+      }
+    });
+
+    it('rejects an entry missing "hash" (strictObject on each element)', () => {
+      const init = { ...baseFields, allowedProjectMcpServers: [{ name: 'x' }] };
+      expect(v.safeParse(EmbeddedAgentCommandSchema, init).success).toBe(false);
+    });
+
+    it('rejects an entry with an extra unknown field (strictObject)', () => {
+      const init = { ...baseFields, allowedProjectMcpServers: [{ name: 'x', hash: 'h', extra: 1 }] };
+      expect(v.safeParse(EmbeddedAgentCommandSchema, init).success).toBe(false);
+    });
   });
 
   describe('per-worker model-effort overrides (agent-surface.md Ruling 3, #1554)', () => {
@@ -1226,6 +1363,7 @@ describe('EmbeddedAgentCommandSchema', () => {
         ...baseFields,
         engine: 'claude-sdk',
         provider: { model: 'claude-sonnet-5', effort: 'medium' },
+        allowedProjectMcpServers: [],
       };
       const result = v.safeParse(EmbeddedAgentCommandSchema, init);
       expect(result.success).toBe(true);
@@ -1235,7 +1373,12 @@ describe('EmbeddedAgentCommandSchema', () => {
     });
 
     it('parses a claude-sdk init command without effort (absent, not required)', () => {
-      const init = { ...baseFields, engine: 'claude-sdk', provider: { model: 'claude-sonnet-5' } };
+      const init = {
+        ...baseFields,
+        engine: 'claude-sdk',
+        provider: { model: 'claude-sonnet-5' },
+        allowedProjectMcpServers: [],
+      };
       const result = v.safeParse(EmbeddedAgentCommandSchema, init);
       expect(result.success).toBe(true);
       if (result.success && result.output.type === 'init' && result.output.engine === 'claude-sdk') {
@@ -1699,6 +1842,112 @@ describe('EmbeddedAgentEventSchema', () => {
       ).toBe(false);
     });
   });
+
+  describe('mcp-servers-discovered (epic #1636 Phase 5 PR-2, §4.5)', () => {
+    it('round-trips a discovery reading with every optional field present', () => {
+      const event = {
+        v: 1,
+        type: 'mcp-servers-discovered',
+        servers: [
+          { name: 'agent-console', scope: 'reserved', decision: 'allowed', status: 'connected' },
+          { name: 'chrome-devtools', scope: 'project', hash: 'abc', decision: 'pending', status: 'connected' },
+          { name: 'claude.ai Google Drive', scope: 'connector' },
+        ],
+      };
+      const result = v.safeParse(EmbeddedAgentEventSchema, event);
+      expect(result.success).toBe(true);
+      if (result.success && result.output.type === 'mcp-servers-discovered') {
+        expect(result.output.servers).toHaveLength(3);
+      }
+    });
+
+    it('accepts userLocalNamesUnavailable and mcpJsonError declarations', () => {
+      const result = v.safeParse(EmbeddedAgentEventSchema, {
+        v: 1,
+        type: 'mcp-servers-discovered',
+        servers: [],
+        userLocalNamesUnavailable: true,
+        mcpJsonError: 'ENOENT',
+      });
+      expect(result.success).toBe(true);
+    });
+
+    it('rejects a "denied" decision (server-computed only, never emitted by the subprocess)', () => {
+      const result = v.safeParse(EmbeddedAgentEventSchema, {
+        v: 1,
+        type: 'mcp-servers-discovered',
+        servers: [{ name: 'x', scope: 'project', decision: 'denied' }],
+      });
+      expect(result.success).toBe(false);
+    });
+
+    it('rejects userLocalNamesUnavailable: false (literal true only)', () => {
+      const result = v.safeParse(EmbeddedAgentEventSchema, {
+        v: 1,
+        type: 'mcp-servers-discovered',
+        servers: [],
+        userLocalNamesUnavailable: false,
+      });
+      expect(result.success).toBe(false);
+    });
+
+    it('rejects an unknown field on a server entry (strictObject)', () => {
+      const result = v.safeParse(EmbeddedAgentEventSchema, {
+        v: 1,
+        type: 'mcp-servers-discovered',
+        servers: [{ name: 'x', scope: 'project', leaked: 'x' }],
+      });
+      expect(result.success).toBe(false);
+    });
+
+    it('rejects a scope value outside the closed picklist', () => {
+      const result = v.safeParse(EmbeddedAgentEventSchema, {
+        v: 1,
+        type: 'mcp-servers-discovered',
+        servers: [{ name: 'x', scope: 'nonsense' }],
+      });
+      expect(result.success).toBe(false);
+    });
+  });
+
+  describe('mcp-servers-applied (epic #1636 Phase 5 PR-2, §4.5)', () => {
+    it('round-trips an applied report', () => {
+      const result = v.safeParse(EmbeddedAgentEventSchema, {
+        v: 1,
+        type: 'mcp-servers-applied',
+        applied: true,
+      });
+      expect(result.success).toBe(true);
+    });
+
+    it('round-trips a restart-required refusal with per-server errors', () => {
+      const result = v.safeParse(EmbeddedAgentEventSchema, {
+        v: 1,
+        type: 'mcp-servers-applied',
+        applied: false,
+        reason: 'restart-required',
+        errors: { x: 'connection refused' },
+      });
+      expect(result.success).toBe(true);
+    });
+
+    it('rejects a missing applied flag', () => {
+      expect(
+        v.safeParse(EmbeddedAgentEventSchema, { v: 1, type: 'mcp-servers-applied' }).success,
+      ).toBe(false);
+    });
+
+    it('rejects an unknown field (strictObject)', () => {
+      expect(
+        v.safeParse(EmbeddedAgentEventSchema, {
+          v: 1,
+          type: 'mcp-servers-applied',
+          applied: true,
+          leaked: 'x',
+        }).success,
+      ).toBe(false);
+    });
+  });
 });
 
 describe('EmbeddedAgentServerEventSchema', () => {
@@ -1989,6 +2238,7 @@ describe('Transcript Restore R1 wire additions (#1410)', () => {
     provider: { model: 'claude-sonnet-5' },
     context: { sessionId: 's1', workerId: 'w1', cwd: '/work' },
     maxToolIterations: 25,
+    allowedProjectMcpServers: [],
   };
 
   describe('init.resume', () => {

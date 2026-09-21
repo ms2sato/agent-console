@@ -48,7 +48,7 @@ const MEMORY_LAYER_MAX_ENTRIES_DEFAULT = 500;
  * rules-layer, skills-layer, and memory-layer cap parsers below -- all need
  * the identical clamping rule, just with a different default.
  */
-function parseCapBytesEnv(raw: string | undefined, defaultValue: number): number {
+export function parseCapBytesEnv(raw: string | undefined, defaultValue: number): number {
   const n = Number(raw);
   return Number.isFinite(n) && n > 0 ? n : defaultValue;
 }

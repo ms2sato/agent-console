@@ -161,7 +161,8 @@ import {
   verifyIsolation,
   type TurnOutcome,
 } from './probe-sdk-session-harness.js';
-import { RESERVED_MCP_SERVER_NAMES, mcpServerOf, startAgentConsoleStandIn } from './probe-sdk-declared-mcp-and-task.js';
+import { RESERVED_MCP_SERVER_NAMES, startAgentConsoleStandIn } from './probe-sdk-declared-mcp-and-task.js';
+import { mcpServerOf } from '../../packages/embedded-agent/src/mcp-names.js';
 
 // ---------------------------------------------------------------------------
 // Exit codes and the pure verdict layer (the part the unit test pins)
