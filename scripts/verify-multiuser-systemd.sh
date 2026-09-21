@@ -74,9 +74,15 @@
 #      unchanged, no `==> systemctl restart` line); `setup --force` must
 #      re-render the unit (the key is back in `show -p Environment`); a
 #      third deploy must exit 0 with the seven PASS lines again. V3's
-#      DIFFERENT arm is NOT driven here (it needs a second bun binary); its
-#      marker-to-verdict table is pinned at tier 1 instead
-#      (scripts/__tests__/setup-multiuser-checks.test.mjs)
+#      DIFFERENT arm is still NOT driven here: 7e (below) is the first arm
+#      in this driver to provision a second bun binary, but it plants that
+#      second inode at the SERVICE USER's own PATH-first location, not at
+#      EMBEDDED_AGENT_BUN_PATH -- V3 mainpid-identity reads MainPID's own
+#      /proc/<pid>/exe (always the unified bun; ExecStart invokes it
+#      correctly either way) against the CONFIGURED EMBEDDED_AGENT_BUN_PATH,
+#      neither of which 7e's second inode touches, so V3 stays SAME through
+#      7e's polarity too. V3's own marker-to-verdict table is pinned at
+#      tier 1 instead (scripts/__tests__/setup-multiuser-checks.test.mjs)
 #  7c. the #1754 ownership-polarity arm: synthesizes a
 #      repositories/<org>/<repo>/worktrees tree (this driver creates no
 #      worktree of its own), re-owns it to the service user first (positive
@@ -106,6 +112,52 @@
 #      an orphan), its created_at unchanged / updated_at moved, and the
 #      two dependents intact -- exactly what the pre-#1762 DELETE-all
 #      saveAll() cascaded away.
+#  7e. the #1776 PATH-first-bun arm: plants a SECOND bun inode at
+#      /home/agentconsole/.bun/bin/bun (the exact path the unit's
+#      Environment=PATH puts first, ahead of /usr/local/bin -- the
+#      production shape the dogfood host has and this container did not
+#      until now). A first run of this arm (no further setup) did NOT
+#      reproduce the defect: `bun run` prepends a per-machine temp dir
+#      `/tmp/bun-node-<bun-revision>` (containing `bun`/`node` symlinks)
+#      ahead of the inherited PATH, and this container's own copy -- first
+#      created by deploy #1's own `bun install`/`bun run build`, long
+#      before this arm plants anything -- already pointed at the unified
+#      bun and won regardless of PATH. The dogfood host's own copy of this
+#      dir is owned by the operator, pointing into a home directory the
+#      service user cannot traverse (mode 750) -- a dead symlink whose
+#      failure falls through to the rest of PATH. This arm reproduces THAT
+#      condition: overwrites the container's copy so it is alice-owned,
+#      `bun`/`node` symlinked to a bun only she can reach, confirmed
+#      unreachable from agentconsole's own vantage point before deploying,
+#      and asserted unchanged after both deploys below (the ONLY variable
+#      between deploy #7 and #8 is the package.json start line). A second
+#      run of this arm (shim reproduced, nothing else) died in `bun run
+#      build`'s `#!/usr/bin/env node` scripts with `Permission denied`,
+#      exit 126: glibc's execvp does NOT stop at the first EACCES it hits
+#      walking PATH -- it records the error and keeps searching, failing
+#      with that EACCES only if nothing LATER on PATH resolves either. The
+#      dogfood host survives the dead shim entry because a real,
+#      root-owned `/usr/bin/node` (apt-installed) sits later on its PATH;
+#      this bun-only image has no node anywhere, so the walk exhausts PATH
+#      and returns the remembered EACCES. This arm plants `/usr/bin/node ->
+#      the unified bun` as a stand-in for the dogfood host's apt node --
+#      bun is Node-compatible enough to have already built this exact repo
+#      once, unmodified, before this stand-in existed (the first tier-3 run
+#      of this arm, back when the shim was still live). Polarity:
+#      with the pre-fix (af8fed78) bare-`bun` start script injected into
+#      the rsynced package.json, deploy #7 must exit 1 (V0-V5 PASS, V6 FAIL
+#      naming the EMBEDDED_AGENT_BUN_PATH warning, restart still happens)
+#      and `readlink /proc/<child-pid>/exe` of the dist/index.js process
+#      (MainPID's own child, not MainPID itself -- MainPID's own
+#      /proc/<pid>/exe is always the unified bun, since ExecStart invokes
+#      it correctly; V3 mainpid-identity reads MainPID and is unaffected by
+#      this defect either way) must be the service-user bun -- the Issue's
+#      own /proc evidence, reproduced under the real unit. Then the fixed
+#      start script is restored and `setup --force` re-run (step 6b now
+#      takes its COPY branch instead of its skip-warning branch, since the
+#      service-user bun now exists) before deploy #8, which must exit 0
+#      with the seven PASS lines (V3 SAME) and the child's exe reading the
+#      unified bun.
 #   8. the three #1690 helper cases, explicitly: (1) elevated (deployer +
 #      AC_TIER3_ELEVATE) against the real bundle -> READABLE; (2) the same
 #      call against a chmod 000 copy -> UNREADABLE, exit 1; (3) root with an
@@ -349,13 +401,16 @@ run_setup() {
   cexec --user root -w /src "$SERVICE" bash scripts/setup-multiuser-for-ubuntu.sh --force --repo-source /src --add-user alice --add-user deployer 2>&1 | tee "$out" || rc=${PIPESTATUS[0]}
   check "setup --force exits 0" "$rc"
   # Step 6b (copy the service user's ~/.bun/bin/bun to the unified path) and
-  # the smoke's freshness check are NOT exercised in this image: bun is
-  # pinned at the unified path by docker/Dockerfile.systemd and the service
-  # user has no ~/.bun, so 6b warns and skips and step 7's fail-closed check
+  # the smoke's freshness check are NOT exercised on THIS run: bun is pinned
+  # at the unified path by docker/Dockerfile.systemd and the service user
+  # has no ~/.bun YET, so 6b warns and skips and step 7's fail-closed check
   # passes on the preinstalled binary. Stated here rather than hidden in the
-  # setup output, per the Issue's checklist.
+  # setup output, per the Issue's checklist. 7e (#1776, below) plants a
+  # service-user bun later in the run and re-runs `setup --force`, which
+  # DOES take 6b's copy branch at that point -- this run is the "before"
+  # half of that arm's own before/after contrast, not a permanent gap.
   if grep -q 'not found; skipping copy' "$out"; then
-    echo "  NOT EXERCISED: setup step 6b (service-user ~/.bun/bin/bun copy) -- image pins bun at ${UNIFIED_BUN}; the freshness check in the smoke is skipped for the same reason"
+    echo "  NOT EXERCISED (yet -- see 7e below): setup step 6b (service-user ~/.bun/bin/bun copy) -- image pins bun at ${UNIFIED_BUN}; the freshness check in the smoke is skipped for the same reason"
   else
     echo "  NOTE: setup step 6b did not print its skip line (the image no longer pins bun at the unified path?)"
   fi
@@ -792,6 +847,297 @@ console.log("NOTIFICATION_STATUS=" + (notif ? notif.status : "MISSING"));'
   step_end restart_survival
 }
 
+# --- 7e. the #1776 PATH-first-bun arm ---------------------------------------
+
+# The two package.json "start" line forms, delivered as sed scripts over
+# stdin (never interpolated into a `sh -c` string) so neither host bash nor
+# the container's shell ever re-parses the embedded backslashes/quotes in
+# the fixed form's `\"$npm_execpath\"`. `sed -i -f - -- <file>` reads its
+# script from stdin while editing `<file>` in place; the container's file
+# content is what actually changes, matching 7b's "mutate inside the
+# container" style even though the byte-exact script text is composed on
+# the host, where quoting is unambiguous.
+SED_TO_PRE_FIX_START='s|^\([[:space:]]*\)"start":.*|\1"start": "NODE_ENV=production bun dist/index.js",|'
+SED_TO_FIXED_START='s|^\([[:space:]]*\)"start":.*|\1"start": "NODE_ENV=production \\"$npm_execpath\\" dist/index.js",|'
+
+# Read-only diagnostics for the #1776 polarity apparatus, added after a
+# tier-3 run showed the polarity deploy did NOT reproduce the defect in
+# this container (the child's exe read as the unified bun even under the
+# pre-fix start line and the planted service-user bun). Never asserts
+# anything itself -- it exists so a run's own output settles which
+# mechanism explains the reading, rather than guessing. That run's own
+# environ read settled it: the child's PATH began with a per-machine temp
+# dir `/tmp/bun-node-<bun-revision>` (containing `bun`/`node` symlinks)
+# ahead of node_modules/.bin and the inherited PATH -- see the bun-node
+# temp-dir shim setup below, which is what this diagnostic confirms stayed
+# in place. Kept:
+#   - cmdline read for the SAME pid as the exe read, on one line, so a
+#     mis-identified pid (the wrong process entirely) is visible directly
+#     rather than inferred.
+#   - the child's own /proc/<pid>/environ PATH/HOME/BUN_INSTALL/npm_execpath.
+#   - node_modules/.bin/bun at the deploy target and every ancestor -- this
+#     WAS the leading hypothesis before the environ read; none exist in
+#     this container (confirmed empty on the first instrumented run), so
+#     it is kept only as a ruled-out negative, not as the explanation.
+#   - the bun-node temp dir's own state (owner, `bun`/`node` symlink
+#     targets), so a run's log shows directly whether the arm's setup below
+#     survived both deploys unchanged.
+print_child_diagnostics() {
+  local pid="$1" exe="$2" bun_node_dir="$3"
+  local cmdline
+  cmdline="$(cexec --user agentconsole:agent-console-users "$SERVICE" sh -c "tr '\\0' ' ' < /proc/${pid:-0}/cmdline" 2>/dev/null | tr -d '\r' || true)"
+  echo "  pid=${pid:-?} exe=${exe} cmdline=${cmdline}"
+  echo "  --- /proc/${pid:-?}/environ (PATH/HOME/BUN_INSTALL/npm_execpath) ---"
+  cexec --user agentconsole:agent-console-users "$SERVICE" sh -c "tr '\\0' '\\n' < /proc/${pid:-0}/environ | grep -E '^(PATH|HOME|BUN_INSTALL|npm_execpath)='" 2>/dev/null | sed 's/^/  /' || echo "  (could not read environ)"
+  echo "  --- node_modules/.bin/bun at the deploy target and every ancestor (ruled out: none exist in this container) ---"
+  cexec --user root "$SERVICE" sh -c "for d in '${DEPLOY_TARGET}' /home/agentconsole /home /; do printf '  %s: ' \"\${d}/node_modules/.bin/bun\"; ls -l \"\${d}/node_modules/.bin/bun\" 2>&1 | tail -1; done"
+  echo "  --- ${bun_node_dir} (owner + bun/node symlink targets) ---"
+  cexec --user root "$SERVICE" sh -c "stat -c '  %U:%G %a %n' '${bun_node_dir}'; readlink '${bun_node_dir}/bun'; readlink '${bun_node_dir}/node'" 2>&1 | sed 's/^/  /'
+  echo "  --- /usr/bin/node (the planted stand-in for the dogfood host's apt node) ---"
+  cexec --user root "$SERVICE" readlink -f /usr/bin/node 2>&1 | sed 's/^/  /'
+}
+
+# expect_bun_node_dir_unchanged <label> <bun_node_dir>: asserts the shim
+# dir set up before deploy #7 still belongs to alice and its bun/node
+# symlinks still target her unreachable bun -- the ONE variable that must
+# NOT move between deploy #7 (polarity) and deploy #8 (fixed) is the
+# package.json start line, not this dir. Read as root (bypasses the very
+# permission wall the arm relies on; that wall is what agentconsole hits,
+# not what this admin-side check needs to hit).
+expect_bun_node_dir_unchanged() {
+  local label="$1" bun_node_dir="$2"
+  local owner target_bun target_node
+  owner="$(cexec --user root "$SERVICE" stat -c '%U:%G' "$bun_node_dir" | tr -d '\r')"
+  target_bun="$(cexec --user root "$SERVICE" readlink "${bun_node_dir}/bun" | tr -d '\r')"
+  target_node="$(cexec --user root "$SERVICE" readlink "${bun_node_dir}/node" | tr -d '\r')"
+  expect "${label}: ${bun_node_dir} is still alice:alice-owned" test "$owner" = "alice:alice"
+  expect "${label}: ${bun_node_dir}/bun still targets /home/alice/.bun/bin/bun" test "$target_bun" = "/home/alice/.bun/bin/bun"
+  expect "${label}: ${bun_node_dir}/node still targets /home/alice/.bun/bin/bun" test "$target_node" = "/home/alice/.bun/bin/bun"
+}
+
+path_first_bun_arm() {
+  step_start "7e. #1776 PATH-first-bun arm: a service-user ~/.bun/bin/bun ahead on PATH must not change which binary bun-run-start's child executes"
+  local service_bun="/home/agentconsole/.bun/bin/bun"
+  local pkg="package.json"
+  local rc out
+
+  echo "  --- before: no service-user bun (this container's baseline, unlike the dogfood host) ---"
+  local pre_rc=0
+  cexec --user root "$SERVICE" test -e "$service_bun" || pre_rc=$?
+  check "7e: ${service_bun} does not exist yet (the container's baseline)" "$([ "$pre_rc" -ne 0 ] && echo 0 || echo 1)"
+
+  echo "  --- plant a SECOND inode at the exact path the unit's Environment=PATH puts first ---"
+  expect "7e: install -D -m 0755 ${UNIFIED_BUN} -> ${service_bun}" \
+    cexec --user root "$SERVICE" install -D -m 0755 "$UNIFIED_BUN" "$service_bun"
+  cexec --user root "$SERVICE" chown -R agentconsole:agentconsole /home/agentconsole/.bun
+  cexec --user root "$SERVICE" stat -c '  %U:%G %a %n' "$service_bun" | sed 's/^/  /'
+  local ino_unified ino_service
+  ino_unified="$(cexec --user root "$SERVICE" stat -c '%i' "$UNIFIED_BUN" | tr -d '\r')"
+  ino_service="$(cexec --user root "$SERVICE" stat -c '%i' "$service_bun" | tr -d '\r')"
+  expect "7e: the planted service-user bun is a SEPARATE inode from the unified bun (${ino_unified} vs ${ino_service})" \
+    test "$ino_unified" != "$ino_service"
+
+  echo "  --- reproduce the dogfood host's bun-node temp-dir shim: a DIFFERENT user's stale symlink, an unreachable target ---"
+  # `bun run` prepends a per-machine temp dir -- keyed by bun's own build
+  # hash from `bun --revision`, never hard-coded -- containing `bun`/`node`
+  # symlinks, ahead of node_modules/.bin and the inherited PATH. On the
+  # dogfood host this dir already existed, owned by the operator, with
+  # symlinks into a home directory the service user cannot traverse (mode
+  # 750) -- exec falls through the dead symlink to the rest of PATH,
+  # landing on the service user's own bun (the journal WARN this arm's
+  # polarity must reproduce). In a fresh container, deploy #1's own first
+  # `bun install`/`bun run build` already created this SAME dir, owned by
+  # the service user, pointing at the unified bun -- a LIVE symlink that
+  # wins over anything planted on PATH afterward, which is why the first
+  # tier-3 run of this arm did not reproduce the defect. Overwriting it
+  # here -- owned by a different user (alice), pointing at a bun only she
+  # can reach -- reproduces the dogfood host's actual condition instead of
+  # a clean container's.
+  local bun_full_rev bun_rev bun_node_dir
+  bun_full_rev="$(cexec --user agentconsole "$SERVICE" "$UNIFIED_BUN" --revision | tr -d '\r')"
+  # `bun --revision` prints "<version>+<build-hash>" (e.g.
+  # "1.3.14+0d9b296af"), but the temp dir bun itself creates is named after
+  # the build hash ALONE (e.g. "/tmp/bun-node-0d9b296af") -- measured
+  # directly (a first attempt using the full revision string targeted a
+  # directory that never existed, `ls: cannot access
+  # '/tmp/bun-node-1.3.14+0d9b296af': No such file or directory`).
+  bun_rev="${bun_full_rev#*+}"
+  bun_node_dir="/tmp/bun-node-${bun_rev}"
+  echo "  bun --revision = ${bun_full_rev} -> build hash ${bun_rev} -> ${bun_node_dir}"
+  # Fails LOUDLY, with a clear message, rather than silently targeting a
+  # wrong path, if a future `bun --revision` format ever drops the `+`
+  # separator (the exact bug this guard replaces: the first attempt used
+  # the full revision string unparsed and silently targeted a directory
+  # that never existed).
+  if [ -z "$bun_rev" ] || [ "$bun_rev" = "$bun_full_rev" ]; then
+    echo "error: could not extract a build hash from 'bun --revision' output '${bun_full_rev}' (expected '<version>+<hash>')" >&2
+    exit 2
+  fi
+  echo "  --- before (this dir may not exist yet -- nothing has necessarily run under conditions that create it before this arm) ---"
+  cexec --user root "$SERVICE" sh -c "ls -la '${bun_node_dir}' 2>&1; readlink -f '${bun_node_dir}/bun' 2>&1" | sed 's/^/  /'
+  # ${bun_node_dir} is a predictable path under the world-writable /tmp
+  # (CodeRabbit, PR #1789): if it already existed as a SYMLINK (planted by
+  # anything other than a legitimate prior bun invocation), `install -d`'s
+  # own symlink-following behavior is version-dependent (GNU coreutils
+  # follows an existing symlink component; some other `install`
+  # implementations replace it) -- refuse outright rather than depend on
+  # that. A real bun-created shim is always a plain directory, never a
+  # symlink, so this check costs nothing on the expected path.
+  local dir_is_symlink=0
+  cexec --user root "$SERVICE" test -L "$bun_node_dir" && dir_is_symlink=1
+  if [ "$dir_is_symlink" -eq 1 ]; then
+    echo "error: ${bun_node_dir} already exists as a SYMLINK -- refusing to follow it (a legitimate bun-created shim is always a plain directory)" >&2
+    exit 2
+  fi
+  expect "7e: alice has her own bun at /home/alice/.bun/bin/bun (a path agentconsole cannot traverse)" \
+    cexec --user root "$SERVICE" install -D -m 0755 -o alice -g alice "$UNIFIED_BUN" /home/alice/.bun/bin/bun
+  cexec --user root "$SERVICE" chmod 750 /home/alice
+  # `install -d`, not `mkdir -p`: creates the dir alice-owned from the
+  # start if it does not exist yet, rather than relying on the later
+  # `chown -R` to fix up a root-owned dir `mkdir` would have left behind.
+  expect "7e: bun-node temp dir created/overwritten -- alice-owned, bun/node -> alice's unreachable bun" \
+    cexec --user root "$SERVICE" sh -c "install -d -o alice -g alice -m 755 '${bun_node_dir}' && ln -sf /home/alice/.bun/bin/bun '${bun_node_dir}/bun' && ln -sf /home/alice/.bun/bin/bun '${bun_node_dir}/node' && chown -R alice:alice '${bun_node_dir}'"
+  cexec --user root "$SERVICE" sh -c "ls -la '${bun_node_dir}'; stat -c '  %U:%G %a %n' /home/alice" | sed 's/^/  after: /'
+  # Positive control, checked from agentconsole's own vantage point BEFORE
+  # deploy #7 runs: the symlink NAME is visible (`ls` on the dir itself
+  # needs no traversal past it), but resolving it to its target IS blocked
+  # (EACCES on /home/alice) -- the exact fall-through condition the
+  # polarity depends on. `ls` (a directory read) is used for the first
+  # check rather than `test -r` on the entry itself, which would need to
+  # stat() the RESOLVED target and so would fail for the same reason as
+  # the second check, proving nothing about the directory's own
+  # traversability.
+  local visible_rc=0
+  cexec --user agentconsole "$SERVICE" sh -c "ls -1 '${bun_node_dir}' | grep -qx bun" || visible_rc=$?
+  expect "7e: agentconsole can see the bun-node dir's own bun entry (the dir itself stays traversable)" test "$visible_rc" -eq 0
+  local blocked_rc=0
+  cexec --user agentconsole "$SERVICE" test -e "${bun_node_dir}/bun" || blocked_rc=$?
+  expect "7e: agentconsole CANNOT resolve the bun-node dir's bun symlink (its target under /home/alice is unreachable)" \
+    test "$blocked_rc" -ne 0
+
+  # glibc's execvp does NOT stop on the FIRST EACCES it hits while walking
+  # PATH -- it records the error and keeps searching, reporting EACCES only
+  # if nothing LATER on PATH resolves either (measured: run 25695935's
+  # build succeeded while the shim was live -- unified-owned -- and run
+  # 35558058623's build died with exactly `/usr/bin/env: 'node': Permission
+  # denied`, exit 126, once the shim's `node` entry became alice's
+  # unreachable bun). On the dogfood host, `bun run build`'s `#!/usr/bin/env
+  # node` scripts survive this dead shim entry because a real, root-owned
+  # `/usr/bin/node` (apt-installed) sits later on PATH and execvp's walk
+  # reaches it. THIS image has no node anywhere, so the walk exhausts PATH
+  # and returns the remembered EACCES. Planting a stand-in here is what
+  # makes this container match the dogfood host's actual PATH shape, not a
+  # workaround for this arm's own defect -- bun itself is Node-compatible
+  # enough to have already built this exact repo once, unmodified, when it
+  # was reached via the shim's live pre-arm state (run 25695935).
+  local pre_node_rc=0
+  cexec --user root "$SERVICE" test -e /usr/bin/node || pre_node_rc=$?
+  expect "7e: /usr/bin/node does not exist yet (this image ships bun only, unlike the dogfood host's apt-installed node)" \
+    test "$pre_node_rc" -ne 0
+  expect "7e: /usr/bin/node -> unified bun planted (stand-in for the dogfood host's real apt node, later on PATH than the dead shim)" \
+    cexec --user root "$SERVICE" ln -s "$UNIFIED_BUN" /usr/bin/node
+
+  echo "  --- inject the pre-fix (af8fed78) start line into ${SRC}/${pkg} ---"
+  printf '%s\n' "$SED_TO_PRE_FIX_START" | cexec --user agentconsole -w "$SRC" "$SERVICE" sed -i -f - -- "$pkg"
+  cexec --user agentconsole -w "$SRC" "$SERVICE" grep -F '"start":' "$pkg" | sed 's/^/  injected: /'
+
+  echo "  --- deploy #7 (polarity: expect V0-V5 PASS, V6 FAIL naming the warning, exit 1 -- restart still happens) ---"
+  out="$(mktemp)"
+  rc=0
+  cexec --user deployer -w "$SRC" "$SERVICE" bash scripts/update-and-deploy-for-multiuser-ubuntu.sh >"$out" 2>&1 || rc=$?
+  grep -E '^  (PASS|FAIL|SKIP)  V[0-6] |^        (WARN|INFO): |^  RESULT: |^==> (systemctl restart|Done)' "$out" | cut -c1-260 | sed 's/^/  /' || true
+  # The grep above only matches the post-deploy verification screen's own
+  # lines -- if the deploy died BEFORE printing that screen (a build/install
+  # failure, an unhandled error), it prints NOTHING, and a reader is left
+  # guessing why the exit code differed. Dump the tail unconditionally on an
+  # unexpected code, verbatim, so the actual failure is in the log rather
+  # than inferred.
+  if [ "$rc" -ne 1 ]; then
+    echo "  --- deploy #7 exited ${rc}, not the expected 1 -- last 40 lines of its full output ---"
+    tail -n 40 "$out" | sed 's/^/  deploy-out: /'
+  fi
+  expect "7e polarity: deploy #7 exits 1 (V6 FAIL, the worst code)" test "$rc" -eq 1
+  local label
+  for label in "V0 data-root-ownership" "V1 unit-env-drift" "V2 entry-path-readable" "V3 mainpid-identity" "V4 unit-active" "V5 health"; do
+    expect "7e polarity: deploy #7 screen has '  PASS  ${label}'" grep -q "^  PASS  ${label}\$" "$out"
+  done
+  expect "7e polarity: deploy #7's V6 FAILs naming the EMBEDDED_AGENT_BUN_PATH warning" \
+    grep -q '^  FAIL  V6 journal-digest: the server logged an EMBEDDED_AGENT_BUN_PATH warning at boot' "$out"
+  expect "7e polarity: deploy #7's RESULT is 6 PASS, 1 FAIL, 0 SKIP -> exit 1" \
+    grep -qF '  RESULT: 6 PASS, 1 FAIL, 0 SKIP -> exit 1' "$out"
+  expect "7e polarity: deploy #7 still printed Done. (the restart happened -- this is not a V0/V1-style pre-restart refusal)" \
+    grep -qF '==> Done.' "$out"
+  rm -f "$out"
+
+  echo "  --- deployed package.json start line at ${DEPLOY_TARGET} (confirms the injection actually reached the unit's WorkingDirectory, not just \${SRC}) ---"
+  cexec --user root "$SERVICE" grep -F '"start":' "${DEPLOY_TARGET}/package.json" | sed 's/^/  /'
+
+  echo "  --- the Issue's own /proc evidence, reproduced under the real unit: which bun did the dist/index.js child actually execute? ---"
+  local mainpid child_pid child_exe
+  mainpid="$(cexec --user root "$SERVICE" systemctl show -p MainPID --value "$UNIT" | tr -d '\r')"
+  child_pid="$(cexec --user root "$SERVICE" pgrep -P "$mainpid" | head -n 1 | tr -d '\r')"
+  echo "  MainPID=${mainpid} (bun run start) child_pid=${child_pid:-?} (dist/index.js)"
+  # Same PTRACE_MODE_READ constraint as post_deploy_checks' exe read: must
+  # match BOTH the unit's User= and Group=.
+  child_exe="$(cexec --user agentconsole:agent-console-users "$SERVICE" readlink -f "/proc/${child_pid:-0}/exe" | tr -d '\r' || true)"
+  echo "  /proc/${child_pid:-?}/exe = ${child_exe}"
+  print_child_diagnostics "$child_pid" "$child_exe" "$bun_node_dir"
+  expect "7e polarity: the dist/index.js child executed the PATH-first service-user bun (${service_bun})" \
+    test "$child_exe" = "$service_bun"
+  expect_bun_node_dir_unchanged "7e polarity" "$bun_node_dir"
+
+  echo "  --- restore the fixed start line ---"
+  printf '%s\n' "$SED_TO_FIXED_START" | cexec --user agentconsole -w "$SRC" "$SERVICE" sed -i -f - -- "$pkg"
+  local restored=0
+  cexec --user agentconsole -w "$SRC" "$SERVICE" grep -qF '"start": "NODE_ENV=production \"$npm_execpath\" dist/index.js",' "$pkg" && restored=1
+  check "7e: the start line was restored byte-for-byte to the fixed form" "$(( 1 - restored ))"
+  cexec --user agentconsole -w "$SRC" "$SERVICE" grep -F '"start":' "$pkg" | sed 's/^/  restored: /'
+
+  echo "  --- setup --force re-run: step 6b now takes its COPY branch (the service-user bun exists) ---"
+  out="$(mktemp)"
+  rc=0
+  cexec --user root -w /src "$SERVICE" bash scripts/setup-multiuser-for-ubuntu.sh --force --repo-source /src --add-user alice --add-user deployer >"$out" 2>&1 || rc=$?
+  check "7e: setup --force (service-user bun now present) exits 0" "$rc"
+  expect "7e: step 6b took its COPY branch, printing 'install -m 0755 ${service_bun} ${UNIFIED_BUN}'" \
+    grep -qF "install -m 0755 ${service_bun} ${UNIFIED_BUN}" "$out"
+  local skip_line=0
+  grep -q 'not found; skipping copy' "$out" && skip_line=1
+  check "7e: step 6b did NOT print its skip-warning line this time (unlike 4b, above)" "$skip_line"
+  rm -f "$out"
+
+  echo "  --- deploy #8 (fixed tree: expect the seven PASS lines, V3 SAME, exit 0) ---"
+  out="$(mktemp)"
+  rc=0
+  cexec --user deployer -w "$SRC" "$SERVICE" bash scripts/update-and-deploy-for-multiuser-ubuntu.sh >"$out" 2>&1 || rc=$?
+  grep -E '^  (PASS|FAIL|SKIP)  V[0-6] |^        (WARN|INFO): |^  RESULT: |^==> (systemctl restart|Done)' "$out" | cut -c1-260 | sed 's/^/  /' || true
+  # Same rationale as deploy #7 above: the grep matches only the
+  # post-deploy screen's own lines, so an early death prints nothing here
+  # otherwise.
+  if [ "$rc" -ne 0 ]; then
+    echo "  --- deploy #8 exited ${rc}, not the expected 0 -- last 40 lines of its full output ---"
+    tail -n 40 "$out" | sed 's/^/  deploy-out: /'
+  fi
+  check "7e fixed: deploy #8 exits 0" "$rc"
+  # V3's only PASS outcome is a SAME marker (mainpid_identity's non-zero
+  # exit codes are DIFFERENT/1 or an UNRESOLVABLE-*/2) -- the screen's
+  # "PASS V3 mainpid-identity" line, asserted by assert_seven_pass below,
+  # IS "V3 prints SAME" for this screen.
+  assert_seven_pass "$out" "7e fixed: deploy #8"
+  rm -f "$out"
+
+  mainpid="$(cexec --user root "$SERVICE" systemctl show -p MainPID --value "$UNIT" | tr -d '\r')"
+  child_pid="$(cexec --user root "$SERVICE" pgrep -P "$mainpid" | head -n 1 | tr -d '\r')"
+  echo "  MainPID=${mainpid} (bun run start) child_pid=${child_pid:-?} (dist/index.js)"
+  child_exe="$(cexec --user agentconsole:agent-console-users "$SERVICE" readlink -f "/proc/${child_pid:-0}/exe" | tr -d '\r' || true)"
+  echo "  /proc/${child_pid:-?}/exe = ${child_exe}"
+  print_child_diagnostics "$child_pid" "$child_exe" "$bun_node_dir"
+  expect "7e fixed: the dist/index.js child executed the unified bun (${UNIFIED_BUN}), regardless of the service-user bun ahead on PATH" \
+    test "$child_exe" = "$UNIFIED_BUN"
+  expect_bun_node_dir_unchanged "7e fixed" "$bun_node_dir"
+
+  step_end path_first_bun
+}
+
 # --- 8. the three #1690 helper cases ---------------------------------------
 
 helper_cases() {
@@ -940,6 +1286,7 @@ main() {
   drift_arm
   ownership_polarity_arm
   restart_survival_arm
+  path_first_bun_arm
   helper_cases
   run_smokes
   footprint
@@ -948,7 +1295,7 @@ main() {
   echo "=================================================="
   echo "  tier-3 stack summary (runner-only measurement)"
   printf '%s' "$SUMMARY"
-  echo "  NOT EXERCISED: setup step 6b + the smoke's freshness check (image pins bun at ${UNIFIED_BUN})"
+  echo "  NOW EXERCISED (7e, #1776): setup step 6b's copy branch, and the smoke's freshness check's non-skip path -- 7e plants /home/agentconsole/.bun/bin/bun and never removes it, so both remain present through steps 8-9. Still NOT EXERCISED: the freshness check's WARN (divergent-version) branch, since 7e's planted copy is byte-identical to the unified bun."
   echo "  RESULT: ${PASS} passed, ${FAIL} failed, $(( $(date +%s) - run_t0 ))s"
   echo "=================================================="
   [ "$FAIL" -eq 0 ]

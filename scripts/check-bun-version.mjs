@@ -12,6 +12,13 @@
 //     `bun scripts/smoke/check-pty-als-data.ts`.
 // The higher floor wins: 1.3.14. Bun's `engines` enforcement is advisory
 // (warning only) as of Bun 1.3.x, so we need this explicit check.
+//
+// `npm_execpath` semantics: root package.json's "start" script invokes bun
+// via `"$npm_execpath"` rather than a bare `bun`, relying on `bun run
+// <script>` setting `npm_execpath` to the absolute path of the bun binary
+// that ran `run` itself. Re-verify this on a future bun bump via
+// `scripts/__tests__/start-script-execpath.test.mjs` -- it is the canary for
+// this specific behavior, not merely for the version floor above.
 
 const MIN_BUN_VERSION = "1.3.14";
 

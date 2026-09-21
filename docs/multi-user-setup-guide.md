@@ -625,6 +625,12 @@ fixture-tested subcommand of `scripts/lib/setup-multiuser-checks.sh`):
 | V5 `health` | `GET http://localhost:<port>/api/config` is HTTP 200 with `"authMode":"multi-user"` (polls up to 10 s); `<port>` is read from the live unit's own `PORT=` at V1 (`resolve_health_port`), not a script default -- `AGENT_CONSOLE_PORT` is only a fallback for a unit that does not declare `PORT=` (Issue #1761) | after the restart |
 | V6 `journal-digest` | since the restart, the journal has `Server starting` (production), `User mode initialized` (multi-user) and `Server listening`, and no `EMBEDDED_AGENT_BUN_PATH` warning | after the restart |
 
+`bun run start` (root `package.json`) resolves `bun` by the binary that
+actually invoked it (`$npm_execpath`), not by a bare-name `PATH` lookup --
+so a service-user `~/.bun/bin/bun` ahead of `/usr/local/bin` on the unit's
+`Environment=PATH=` no longer changes which binary serves `dist/index.js`
+(Issue #1776).
+
 ### Who re-renders the unit, and when
 
 **The deploy script never renders the systemd unit.** The unit's single

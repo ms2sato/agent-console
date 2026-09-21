@@ -276,7 +276,7 @@ describe('.github/workflows/verify-multiuser-systemd.yml: triggers per AC 6 and 
     expect(wf).toMatch(/^\s+workflow_dispatch:/m);
   });
 
-  it('paths-filters on the setup / deploy scripts, their lib, both templates, docker/**, the elevation smoke and the driver', () => {
+  it('paths-filters on the setup / deploy scripts, their lib, both templates, docker/**, the elevation smoke, the driver, and root package.json (Issue #1776)', () => {
     for (const p of [
       "'docker/**'",
       "'scripts/setup-*'",
@@ -286,9 +286,15 @@ describe('.github/workflows/verify-multiuser-systemd.yml: triggers per AC 6 and 
       "'scripts/*-agent-console.template'",
       "'scripts/smoke/check-embedded-agent-elevation.ts'",
       "'scripts/verify-multiuser-systemd.sh'",
+      "'package.json'",
     ]) {
       expect(wf).toContain(p);
     }
+  });
+
+  it('the package.json path entry appears in BOTH the push and pull_request paths lists, not just one', () => {
+    const occurrences = wf.split("'package.json'").length - 1;
+    expect(occurrences).toBe(2);
   });
 
   it('runs the driver with a 15-minute timeout, read-only token, and carries the AC_TIER3_ELEVATE env slot', () => {
@@ -317,17 +323,21 @@ describe('verify-multiuser-systemd.sh: section 7 consumes the V0-V6 screen; the 
     return i;
   };
 
-  it('main runs the sections in order: run_deploy -> post_deploy_checks -> drift_arm -> ownership_polarity_arm -> restart_survival_arm -> helper_cases -> run_smokes', () => {
-    expect(driver).toContain('  run_deploy\n  post_deploy_checks\n  drift_arm\n  ownership_polarity_arm\n  restart_survival_arm\n  helper_cases\n  run_smokes\n');
+  it('main runs the sections in order: run_deploy -> post_deploy_checks -> drift_arm -> ownership_polarity_arm -> restart_survival_arm -> path_first_bun_arm -> helper_cases -> run_smokes', () => {
+    expect(driver).toContain(
+      '  run_deploy\n  post_deploy_checks\n  drift_arm\n  ownership_polarity_arm\n  restart_survival_arm\n  path_first_bun_arm\n  helper_cases\n  run_smokes\n',
+    );
     expect(driver).toMatch(/^drift_arm\(\) \{/m);
     expect(driver).toMatch(/^ownership_polarity_arm\(\) \{/m);
     expect(driver).toMatch(/^restart_survival_arm\(\) \{/m);
+    expect(driver).toMatch(/^path_first_bun_arm\(\) \{/m);
     // Placed after section 7 in the file too (the AC's "new section, after 7"),
-    // 7c after 7b, and 7d after 7c.
+    // 7c after 7b, 7d after 7c, and 7e (#1776) after 7d.
     expect(idxOf('drift_arm() {')).toBeGreaterThan(idxOf('post_deploy_checks() {'));
     expect(idxOf('ownership_polarity_arm() {')).toBeGreaterThan(idxOf('drift_arm() {'));
     expect(idxOf('restart_survival_arm() {')).toBeGreaterThan(idxOf('ownership_polarity_arm() {'));
-    expect(idxOf('restart_survival_arm() {')).toBeLessThan(idxOf('helper_cases() {'));
+    expect(idxOf('path_first_bun_arm() {')).toBeGreaterThan(idxOf('restart_survival_arm() {'));
+    expect(idxOf('path_first_bun_arm() {')).toBeLessThan(idxOf('helper_cases() {'));
   });
 
   it('section 7 asserts the seven PASS lines by label (V0 first) plus the RESULT line, via one shared helper, instead of re-implementing the checks', () => {
@@ -340,7 +350,12 @@ describe('verify-multiuser-systemd.sh: section 7 consumes the V0-V6 screen; the 
     expect(driver).toContain("grep -q '^  RESULT: 7 PASS, 0 FAIL, 0 SKIP -> exit 0$' \"$out\" || rc=$?");
     expect(driver).toContain('assert_seven_pass "$DEPLOY_OUT" "deploy #1"');
     expect(driver).not.toContain('assert_six_pass');
-    expect(driver).not.toMatch(/RESULT: 6 PASS/);
+    // Scoped to the shared V0-V6 mechanism (before any arm), not the whole
+    // file: 7e (#1776) legitimately asserts a literal "RESULT: 6 PASS, 1
+    // FAIL, 0 SKIP -> exit 1" for its own polarity deploy (V6 fails on
+    // purpose there), so a whole-file ban would forbid a correct assertion
+    // rather than catch a re-implementation of the shared helper.
+    expect(driver.slice(0, idxOf('drift_arm() {'))).not.toMatch(/RESULT: 6 PASS/);
     // The old per-check re-implementation and the old /api/auth/me probe
     // assertion are gone.
     expect(driver).not.toContain('/api/auth/me');
@@ -409,8 +424,8 @@ describe('verify-multiuser-systemd.sh: section 7 consumes the V0-V6 screen; the 
     // override that distinguishes "the live unit wins" from the pre-#1761
     // behaviour; the regex tolerates that one optional segment.
     const deployCalls = driver.match(/cexec --user \S+ -w "\$SRC" (?:-e AGENT_CONSOLE_PORT=9999 )?"\$SERVICE" bash scripts\/update-and-deploy-for-multiuser-ubuntu\.sh/g) ?? [];
-    // deploy #1 (run_deploy) + #2/#3 (drift_arm) + #4/#5/#5b/#5c (ownership_polarity_arm) + #6 (restart_survival_arm).
-    expect(deployCalls).toHaveLength(8);
+    // deploy #1 (run_deploy) + #2/#3 (drift_arm) + #4/#5/#5b/#5c (ownership_polarity_arm) + #6 (restart_survival_arm) + #7/#8 (path_first_bun_arm, #1776).
+    expect(deployCalls).toHaveLength(10);
     for (const c of deployCalls) expect(c).toContain('--user deployer ');
   });
 
@@ -639,7 +654,7 @@ describe('verify-multiuser-systemd.sh: 7d restart-survival arm is present and or
     expect(i).toBeGreaterThan(-1);
     return i;
   };
-  const arm = () => driver.slice(idxOf('restart_survival_arm() {'), idxOf('helper_cases() {'));
+  const arm = () => driver.slice(idxOf('restart_survival_arm() {'), idxOf('path_first_bun_arm() {'));
 
   it('seeds the session and its two FK dependents via bun -e + bun:sqlite against the real data.db, as agentconsole, before the restart', () => {
     const a = arm();
@@ -694,5 +709,305 @@ describe('verify-multiuser-systemd.sh: 7d restart-survival arm is present and or
       expect(i).toBeGreaterThan(prev);
       prev = i;
     }
+  });
+});
+
+// The 7e PATH-first-bun arm (#1776), pinned the way 7b/7c/7d are pinned
+// above. Ordering after 7d and before helper_cases is asserted in the
+// "main runs the sections in order" test above; this describe block covers
+// the arm's own content.
+describe('verify-multiuser-systemd.sh: 7e PATH-first-bun arm is present and ordered (Issue #1776)', () => {
+  const driver = readFileSync(DRIVER, 'utf-8');
+  const idxOf = (needle) => {
+    const i = driver.indexOf(needle);
+    expect(i).toBeGreaterThan(-1);
+    return i;
+  };
+  // The two SED_TO_* script constants are declared at the TOP LEVEL of the
+  // file, immediately above `path_first_bun_arm() {` -- outside `arm()`'s
+  // slice, which starts at the function itself -- so they are checked
+  // against the whole `driver` text, not `arm()`.
+  const armStart = () => idxOf('path_first_bun_arm() {');
+  const arm = () => driver.slice(armStart(), idxOf('helper_cases() {'));
+
+  it('plants a SECOND bun inode at the exact path the unit\'s Environment=PATH puts first, distinct from the unified bun', () => {
+    const a = arm();
+    expect(a).toContain('local service_bun="/home/agentconsole/.bun/bin/bun"');
+    expect(a).toContain('install -D -m 0755 "$UNIFIED_BUN" "$service_bun"');
+    expect(a).toContain('the planted service-user bun is a SEPARATE inode from the unified bun');
+  });
+
+  it('injects the pre-fix (af8fed78) bare-`bun` start line via a sed script delivered over stdin, never interpolated into a `sh -c` string', () => {
+    expect(driver).toContain(
+      'SED_TO_PRE_FIX_START=\'s|^\\([[:space:]]*\\)"start":.*|\\1"start": "NODE_ENV=production bun dist/index.js",|\'',
+    );
+    // Declared before the arm, consumed inside it.
+    expect(idxOf('SED_TO_PRE_FIX_START=')).toBeLessThan(armStart());
+    expect(arm()).toContain('printf \'%s\\n\' "$SED_TO_PRE_FIX_START" | cexec --user agentconsole -w "$SRC" "$SERVICE" sed -i -f - -- "$pkg"');
+  });
+
+  it('restores the exact fixed `$npm_execpath` form via its own sed script, distinct from the pre-fix one', () => {
+    expect(driver).toContain(
+      'SED_TO_FIXED_START=\'s|^\\([[:space:]]*\\)"start":.*|\\1"start": "NODE_ENV=production \\\\"$npm_execpath\\\\" dist/index.js",|\'',
+    );
+    expect(idxOf('SED_TO_FIXED_START=')).toBeLessThan(armStart());
+    const a = arm();
+    expect(a).toContain('printf \'%s\\n\' "$SED_TO_FIXED_START" | cexec --user agentconsole -w "$SRC" "$SERVICE" sed -i -f - -- "$pkg"');
+    // Byte-exact restore check reads for the literal escaped form, not a loose match.
+    expect(a).toContain('grep -qF \'"start": "NODE_ENV=production \\"$npm_execpath\\" dist/index.js",\'');
+  });
+
+  it('deploy #7 (polarity): expects V0-V5 PASS, V6 FAIL naming the EMBEDDED_AGENT_BUN_PATH warning, exit 1, and the restart still happens (Done. is printed)', () => {
+    const a = arm();
+    // Not `check "..." "$rc"` directly: `check` records PASS only when its
+    // exit-code argument is 0, but the EXPECTED value here is 1 (deploy #7
+    // exits 1 on purpose, V6 FAILing). Must go through `expect` + `test
+    // "$rc" -eq 1`, the same shape drift_arm's "deploy #2 exits 1" uses.
+    expect(a).toContain('expect "7e polarity: deploy #7 exits 1 (V6 FAIL, the worst code)" test "$rc" -eq 1');
+    expect(a).not.toContain('check "7e polarity: deploy #7 exits 1 (V6 FAIL, the worst code)" "$rc"');
+    // The six V0-V5 labels are iterated via a shell `for label in ...` loop,
+    // not spelled out individually -- assert the loop's own label list, and
+    // the templated assertion line that consumes `${label}`.
+    expect(a).toContain(
+      'for label in "V0 data-root-ownership" "V1 unit-env-drift" "V2 entry-path-readable" "V3 mainpid-identity" "V4 unit-active" "V5 health"; do',
+    );
+    expect(a).toContain(`expect "7e polarity: deploy #7 screen has '  PASS  \${label}'" grep -q "^  PASS  \${label}\\$" "$out"`);
+    expect(a).toContain(
+      "expect \"7e polarity: deploy #7's V6 FAILs naming the EMBEDDED_AGENT_BUN_PATH warning\"",
+    );
+    expect(a).toContain("grep -q '^  FAIL  V6 journal-digest: the server logged an EMBEDDED_AGENT_BUN_PATH warning at boot'");
+    expect(a).toContain("grep -qF '  RESULT: 6 PASS, 1 FAIL, 0 SKIP -> exit 1'");
+    expect(a).toContain("grep -qF '==> Done.'");
+    const order = [
+      "echo \"  --- deploy #7",
+      'expect "7e polarity: deploy #7 exits 1 (V6 FAIL, the worst code)" test "$rc" -eq 1',
+      'for label in "V0 data-root-ownership"',
+      "expect \"7e polarity: deploy #7's V6 FAILs naming the EMBEDDED_AGENT_BUN_PATH warning\"",
+      "expect \"7e polarity: deploy #7's RESULT is 6 PASS, 1 FAIL, 0 SKIP -> exit 1\"",
+      "expect \"7e polarity: deploy #7 still printed Done.",
+    ];
+    let prev = -1;
+    for (const needle of order) {
+      const i = a.indexOf(needle);
+      expect(i).toBeGreaterThan(prev);
+      prev = i;
+    }
+  });
+
+  it('reads the dist/index.js child\'s own exe (MainPID\'s child, not MainPID itself) via pgrep -P, asserting it against the service-user bun under polarity and the unified bun once fixed', () => {
+    const a = arm();
+    expect(a).toContain('pgrep -P "$mainpid"');
+    expect(a).toContain('cexec --user agentconsole:agent-console-users "$SERVICE" readlink -f "/proc/${child_pid:-0}/exe"');
+    expect(a).toContain(
+      'expect "7e polarity: the dist/index.js child executed the PATH-first service-user bun (${service_bun})" \\\n    test "$child_exe" = "$service_bun"',
+    );
+    expect(a).toContain(
+      'expect "7e fixed: the dist/index.js child executed the unified bun (${UNIFIED_BUN}), regardless of the service-user bun ahead on PATH" \\\n    test "$child_exe" = "$UNIFIED_BUN"',
+    );
+  });
+
+  it('re-runs setup --force between the two deploys, asserting step 6b now takes its COPY branch (the service-user bun exists) instead of its skip-warning branch', () => {
+    const a = arm();
+    expect(a).toContain('bash scripts/setup-multiuser-for-ubuntu.sh --force --repo-source /src --add-user alice --add-user deployer');
+    expect(a).toContain("install -m 0755 ${service_bun} ${UNIFIED_BUN}");
+    expect(a).toContain("step 6b did NOT print its skip-warning line this time");
+  });
+
+  it('deploy #8 (fixed tree): expects the seven PASS lines via the shared assert_seven_pass helper -- V3\'s PASS line IS "V3 prints SAME" on this screen', () => {
+    const a = arm();
+    expect(a).toContain('check "7e fixed: deploy #8 exits 0" "$rc"');
+    expect(a).toContain('assert_seven_pass "$out" "7e fixed: deploy #8"');
+    expect(a).toContain("V3's only PASS outcome is a SAME marker");
+  });
+
+  it('the driver\'s top-of-file notes are updated: V3\'s DIFFERENT-arm note explains why 7e\'s second inode does not make V3 go DIFFERENT, and step 6b\'s NOT-EXERCISED notes point at 7e', () => {
+    expect(driver).toContain('7e (below) is the first arm');
+    expect(driver).toContain('so V3 stays SAME through');
+    expect(driver).toContain('NOT EXERCISED (yet -- see 7e below): setup step 6b');
+    expect(driver).toContain('NOW EXERCISED (7e, #1776): setup step 6b');
+  });
+
+  // Added after a tier-3 run showed the polarity deploy did not reproduce
+  // the defect in the container: read-only instrumentation, never an
+  // assertion of its own, to settle which mechanism explains a reading
+  // (pid mis-identification, PATH-order, or Bun's node_modules/.bin
+  // ancestor-prepend beating the planted copy).
+  it('print_child_diagnostics reads cmdline for the SAME pid as the exe read (one line), the child\'s environ PATH/HOME/BUN_INSTALL/npm_execpath, and node_modules/.bin/bun at the deploy target and every ancestor', () => {
+    expect(driver).toContain('print_child_diagnostics() {');
+    // Declared before the arm, called from within it.
+    expect(idxOf('print_child_diagnostics() {')).toBeLessThan(armStart());
+    expect(driver).toContain("tr '\\\\0' ' ' < /proc/${pid:-0}/cmdline");
+    expect(driver).toContain('echo "  pid=${pid:-?} exe=${exe} cmdline=${cmdline}"');
+    expect(driver).toContain("tr '\\\\0' '\\\\n' < /proc/${pid:-0}/environ | grep -E '^(PATH|HOME|BUN_INSTALL|npm_execpath)='");
+    expect(driver).toContain("for d in '${DEPLOY_TARGET}' /home/agentconsole /home /; do");
+    expect(driver).toContain('node_modules/.bin/bun\\" 2>&1 | tail -1; done');
+    expect(driver).toMatch(/ls -l \\"\\\$\{d}\/node_modules\/\.bin\/bun\\"/);
+
+    const a = arm();
+    const callSites = a.split('print_child_diagnostics "$child_pid" "$child_exe"').length - 1;
+    expect(callSites).toBe(2); // once for deploy #7 (polarity), once for deploy #8 (fixed)
+  });
+
+  it('prints the DEPLOYED package.json start line at DEPLOY_TARGET (not just $SRC) after deploy #7, confirming the injection reached the unit\'s WorkingDirectory', () => {
+    const a = arm();
+    expect(a).toContain('grep -F \'"start":\' "${DEPLOY_TARGET}/package.json"');
+    const i = a.indexOf('grep -F \'"start":\' "${DEPLOY_TARGET}/package.json"');
+    const deployI = a.indexOf("echo \"  --- deploy #7");
+    const evidenceI = a.indexOf("the Issue's own /proc evidence");
+    expect(i).toBeGreaterThan(deployI);
+    expect(i).toBeLessThan(evidenceI);
+  });
+
+  // Added after a SECOND tier-3 run showed the planted service-user bun
+  // still lost: `bun run` prepends a per-machine temp dir
+  // (`/tmp/bun-node-<bun-revision>`) ahead of PATH, and this container's
+  // own copy -- created by deploy #1's own first `bun install`/`bun run
+  // build`, long before this arm runs -- already pointed at the unified
+  // bun and won regardless of what this arm plants elsewhere on PATH. This
+  // setup reproduces the dogfood host's actual condition (a DIFFERENT
+  // user's stale symlink into an unreachable home) instead of a clean
+  // container's.
+  it('reproduces the dogfood host\'s bun-node temp-dir shim: alice-owned, bun/node symlinked to a bun only she can reach, confirmed unreachable from agentconsole before deploying', () => {
+    const a = arm();
+    expect(a).toContain('bun_full_rev="$(cexec --user agentconsole "$SERVICE" "$UNIFIED_BUN" --revision');
+    // The build hash, not the full "<version>+<hash>" revision string, is
+    // what names the temp dir (measured: a first attempt using the full
+    // string targeted a directory that never existed).
+    expect(a).toContain('bun_rev="${bun_full_rev#*+}"');
+    expect(a).toContain('bun_node_dir="/tmp/bun-node-${bun_rev}"');
+    expect(a).toContain('if [ -z "$bun_rev" ] || [ "$bun_rev" = "$bun_full_rev" ]; then');
+    expect(a).toContain('install -D -m 0755 -o alice -g alice "$UNIFIED_BUN" /home/alice/.bun/bin/bun');
+    expect(a).toContain('cexec --user root "$SERVICE" chmod 750 /home/alice');
+    expect(a).toContain("ln -sf /home/alice/.bun/bin/bun '${bun_node_dir}/bun'");
+    expect(a).toContain("ln -sf /home/alice/.bun/bin/bun '${bun_node_dir}/node'");
+    expect(a).toContain("chown -R alice:alice '${bun_node_dir}'");
+    // The two-sided control: the dir stays traversable (ls sees the name),
+    // but resolving the symlink to its target is blocked -- both read from
+    // agentconsole's own vantage point, before deploy #7 runs.
+    expect(a).toContain("ls -1 '${bun_node_dir}' | grep -qx bun");
+    expect(a).toContain('expect "7e: agentconsole can see the bun-node dir\'s own bun entry');
+    expect(a).toContain('cexec --user agentconsole "$SERVICE" test -e "${bun_node_dir}/bun"');
+    expect(a).toContain('expect "7e: agentconsole CANNOT resolve the bun-node dir\'s bun symlink');
+
+    const order = [
+      "reproduce the dogfood host's bun-node temp-dir shim",
+      'bun_full_rev="$(cexec --user agentconsole',
+      'install -D -m 0755 -o alice -g alice',
+      "ln -sf /home/alice/.bun/bin/bun '${bun_node_dir}/bun'",
+      "ls -1 '${bun_node_dir}' | grep -qx bun",
+      'expect "7e: agentconsole CANNOT resolve',
+      "echo \"  --- inject the pre-fix",
+    ];
+    let prev = -1;
+    for (const needle of order) {
+      const i2 = a.indexOf(needle);
+      expect(i2).toBeGreaterThan(prev);
+      prev = i2;
+    }
+  });
+
+  it('expect_bun_node_dir_unchanged asserts the shim dir\'s owner and both symlink targets, called once after each deploy -- the ONLY variable between #7 and #8 is the start line', () => {
+    expect(driver).toContain('expect_bun_node_dir_unchanged() {');
+    expect(idxOf('expect_bun_node_dir_unchanged() {')).toBeLessThan(armStart());
+    expect(driver).toContain('test "$owner" = "alice:alice"');
+    expect(driver).toContain('test "$target_bun" = "/home/alice/.bun/bin/bun"');
+    expect(driver).toContain('test "$target_node" = "/home/alice/.bun/bin/bun"');
+
+    const a = arm();
+
+    const callSites = a.split('expect_bun_node_dir_unchanged "7e').length - 1;
+    expect(callSites).toBe(2);
+    expect(a).toContain('expect_bun_node_dir_unchanged "7e polarity" "$bun_node_dir"');
+    expect(a).toContain('expect_bun_node_dir_unchanged "7e fixed" "$bun_node_dir"');
+  });
+
+  // Added after a run where BOTH deploy #7 and deploy #8 exited with an
+  // unexpected code in well under a second -- far too fast for a real
+  // bun install/build/rsync/restart cycle -- and the arm's own recap grep
+  // (matched only against the post-deploy verification screen's own line
+  // shapes) printed nothing, because the deploy died before ever printing
+  // that screen. Without this, an early death is invisible in the log.
+  it('dumps the last 40 lines of the deploy\'s own full output, verbatim, whenever its exit code is not the expected one -- for both deploy #7 and deploy #8', () => {
+    const a = arm();
+    expect(a).toContain('if [ "$rc" -ne 1 ]; then');
+    expect(a).toContain("echo \"  --- deploy #7 exited ${rc}, not the expected 1 -- last 40 lines of its full output ---\"");
+    expect(a).toContain('tail -n 40 "$out" | sed \'s/^/  deploy-out: /\'');
+    expect(a).toContain('if [ "$rc" -ne 0 ]; then');
+    expect(a).toContain("echo \"  --- deploy #8 exited ${rc}, not the expected 0 -- last 40 lines of its full output ---\"");
+
+    // Both dumps sit BETWEEN the recap grep and the exit-code assertion --
+    // printed before the assertion fails, not after, so the log reads
+    // top-to-bottom without the reader hunting backward for context.
+    const deploy7Grep = a.indexOf(
+      "grep -E '^  (PASS|FAIL|SKIP)  V[0-6] |^        (WARN|INFO): |^  RESULT: |^==> (systemctl restart|Done)' \"$out\" | cut -c1-260 | sed 's/^/  /' || true",
+    );
+    const deploy7Dump = a.indexOf('deploy #7 exited');
+    const deploy7Assert = a.indexOf('expect "7e polarity: deploy #7 exits 1');
+    expect(deploy7Grep).toBeGreaterThan(-1);
+    expect(deploy7Dump).toBeGreaterThan(deploy7Grep);
+    expect(deploy7Assert).toBeGreaterThan(deploy7Dump);
+
+    const deploy8Dump = a.indexOf('deploy #8 exited');
+    const deploy8Assert = a.indexOf('check "7e fixed: deploy #8 exits 0"');
+    expect(deploy8Dump).toBeGreaterThan(deploy7Assert);
+    expect(deploy8Assert).toBeGreaterThan(deploy8Dump);
+  });
+
+  // Added after the deploy-out dump (above) revealed the actual mechanism:
+  // both deploys died in `bun run build`'s `#!/usr/bin/env node` scripts
+  // with `Permission denied`, exit 126 -- glibc's execvp does not stop at
+  // the first EACCES walking PATH, it keeps searching and only fails with
+  // that EACCES if nothing LATER on PATH resolves either. The dogfood host
+  // survives the dead shim entry because a real apt-installed /usr/bin/node
+  // sits later on its PATH; this bun-only image has none, so the walk
+  // exhausts PATH. This stand-in is what makes the container's PATH shape
+  // match the dogfood host's, not a workaround for the arm's own defect.
+  it('plants /usr/bin/node -> the unified bun as a stand-in for the dogfood host\'s real apt-installed node, asserted absent beforehand', () => {
+    const a = arm();
+    expect(a).toContain('cexec --user root "$SERVICE" test -e /usr/bin/node || pre_node_rc=$?');
+    expect(a).toContain(
+      'expect "7e: /usr/bin/node does not exist yet (this image ships bun only, unlike the dogfood host\'s apt-installed node)" \\\n    test "$pre_node_rc" -ne 0',
+    );
+    expect(a).toContain('cexec --user root "$SERVICE" ln -s "$UNIFIED_BUN" /usr/bin/node');
+
+    // Planted AFTER confirming the shim's bun entry is unreachable
+    // (the polarity precondition), BEFORE the pre-fix start line is
+    // injected -- present for both deploy #7 and #8.
+    const shimBlockedI = a.indexOf('agentconsole CANNOT resolve the bun-node dir');
+    const nodePlantI = a.indexOf('ln -s "$UNIFIED_BUN" /usr/bin/node');
+    const injectI = a.indexOf('inject the pre-fix (af8fed78) start line');
+    expect(nodePlantI).toBeGreaterThan(shimBlockedI);
+    expect(injectI).toBeGreaterThan(nodePlantI);
+  });
+
+  it('print_child_diagnostics also prints /usr/bin/node\'s resolved target', () => {
+    expect(driver).toContain("echo \"  --- /usr/bin/node (the planted stand-in for the dogfood host's apt node) ---\"");
+    expect(driver).toContain('cexec --user root "$SERVICE" readlink -f /usr/bin/node');
+    expect(idxOf("/usr/bin/node (the planted stand-in")).toBeLessThan(armStart());
+  });
+
+  // CodeRabbit (PR #1789, discussion_r4059145730): bun_node_dir is a
+  // predictable path under the world-writable /tmp; GNU coreutils' `install
+  // -d` follows an existing symlink path component (version-dependent
+  // across `install` implementations), so a pre-existing symlink there
+  // could redirect root's writes outside the intended shim directory.
+  // Reject it outright before touching the path.
+  it('refuses to proceed if bun_node_dir already exists as a symlink, before install -d or either ln -sf runs', () => {
+    const a = arm();
+    expect(a).toContain('cexec --user root "$SERVICE" test -L "$bun_node_dir" && dir_is_symlink=1');
+    expect(a).toContain('if [ "$dir_is_symlink" -eq 1 ]; then');
+    expect(a).toContain(
+      'echo "error: ${bun_node_dir} already exists as a SYMLINK -- refusing to follow it (a legitimate bun-created shim is always a plain directory)" >&2',
+    );
+    expect(a).toContain('exit 2');
+
+    // Checked BEFORE either root-owned write: alice's own bun provisioning
+    // and the install -d / ln -sf command that plants the shim.
+    const symlinkCheckI = a.indexOf('test -L "$bun_node_dir"');
+    const aliceProvisionI = a.indexOf('install -D -m 0755 -o alice -g alice "$UNIFIED_BUN"');
+    const shimWriteI = a.indexOf('install -d -o alice -g alice -m 755');
+    expect(symlinkCheckI).toBeGreaterThan(-1);
+    expect(aliceProvisionI).toBeGreaterThan(symlinkCheckI);
+    expect(shimWriteI).toBeGreaterThan(symlinkCheckI);
   });
 });
