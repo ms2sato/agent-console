@@ -18,29 +18,52 @@ import * as path from 'node:path';
  *
  * This pin closes that gap mechanically: for every ACTUAL create call site
  * (a `fetch(...)`/`new Request(...)` whose route argument is the create
- * route and whose options carry `method: 'POST'`), the call's own
- * `JSON.stringify(...)` argument must be an inline object literal
- * containing `engine: '` -- so the NEXT time this schema (or a sibling
- * shaped like it) tightens, the smoke that calls it fails in the ordinary
- * test suite, not in a tier-3 run weeks later.
+ * route and whose options carry a `method:` classified as an explicit
+ * `'POST'`/`"POST"` string literal), the call's own `JSON.stringify(...)`
+ * argument must be an inline object literal containing `engine: '` -- so
+ * the NEXT time this schema (or a sibling shaped like it) tightens, the
+ * smoke that calls it fails in the ordinary test suite, not in a tier-3
+ * run weeks later.
  *
- * Scoped to the CALL SITE, not the whole file, per two flaws an Architect
- * review (and, independently, CodeRabbit on this same PR) found in an
- * earlier whole-file-text version of this pin:
- *   - FALSE PASS: a whole-file `engine: '` search is satisfied by a
- *     comment, a log message, or a type annotation anywhere in the file,
- *     none of which affect what the server actually receives.
- *   - FALSE NEGATIVE: requiring the literal `JSON.stringify({` misses a
- *     smoke that builds the body in a variable first (`const body = {...};
- *     ... JSON.stringify(body)`) -- a shape this pin cannot statically
- *     verify, so it must be REJECTED (a build-not-inline body is a hole
- *     this pin cannot close, not something to skip silently).
+ * Scoped to the CALL SITE, not the whole file, per flaws an Architect
+ * review (and, independently, CodeRabbit on this same PR, across two
+ * review passes) found in earlier versions of this pin:
+ *   - FALSE PASS (whole-file version): a whole-file `engine: '` search is
+ *     satisfied by a comment, a log message, or a type annotation anywhere
+ *     in the file, none of which affect what the server actually receives.
+ *   - FALSE NEGATIVE (whole-file version): requiring the literal
+ *     `JSON.stringify({` misses a smoke that builds the body in a variable
+ *     first (`const body = {...}; ... JSON.stringify(body)`) -- a shape
+ *     this pin cannot statically verify, so it must be REJECTED (a
+ *     build-not-inline body is a hole this pin cannot close, not something
+ *     to skip silently).
+ *   - MISATTRIBUTION (call-site version, round 1): `findCreateCallSites`
+ *     attributed a route mention to the nearest PRECEDING `fetch(`/
+ *     `Request(` text without checking that the mention actually falls
+ *     INSIDE that call's own balanced range. A route literal reused later
+ *     in the file (e.g. inside a log/bail message quoting the route for a
+ *     human-readable error) would be wrongly attributed to an earlier,
+ *     already-closed call. Fixed by rejecting any route match whose index
+ *     lies past the attributed call's balanced closing paren.
+ *   - FAIL-OPEN METHOD CHECK (call-site version, round 1): the method
+ *     gate required the EXACT text `method: 'POST'` (single quotes, no
+ *     other spelling), so `method: "POST"` (double quotes), a computed
+ *     value, or any other spelling of POST silently fell through the
+ *     `return` (treated as "not a POST, nothing to check") instead of
+ *     being flagged as unclassifiable. Fixed by classifying the method
+ *     literal explicitly: an explicit `'POST'`/`"POST"` string literal is
+ *     checked; an explicit non-POST literal (`'GET'`/`'DELETE'`/`'PATCH'`/
+ *     `'PUT'`, either quote) is skipped (a real, different HTTP verb, nothing
+ *     to check); anything else -- no `method:` key at all, or a non-literal
+ *     value (a constant, a variable, a template expression) -- FAILS
+ *     closed with an explicit "method could not be classified" error, the
+ *     same fail-closed shape as the inline-body rule above.
  *
  * Glob-driven (not a hardcoded file list), same convention as the sibling
  * `registry-reachability.test.ts`: a future smoke that creates an
  * embedded-agent definition is covered automatically.
  *
- * Three polarity mutations, each measured directly against this exact
+ * Five polarity mutations, each measured directly against this exact
  * implementation and restored after observing the failure:
  *   (a) delete the `engine: 'openai-api',` line from the elevation smoke's
  *       create body -> the corresponding per-call-site assertion fails
@@ -58,6 +81,14 @@ import * as path from 'node:path';
  *       own "build the create body inline" message, not a false pass (the
  *       false-negative fix, specifically) -- proving the pin actively
  *       rejects a shape it cannot verify rather than silently ignoring it.
+ *   (d) change the elevation smoke's `method: 'POST'` to `method: "POST"`
+ *       (double quotes, body otherwise unchanged) -> the assertion still
+ *       runs and still passes -- proving the method classification is not
+ *       tied to one quote style (the fail-open fix's positive side).
+ *   (e) change the elevation smoke's `method: 'POST'` to `method:
+ *       someConst` (an unresolvable identifier) -> fails with this pin's
+ *       "method could not be classified" message rather than silently
+ *       skipping the call (the fail-open fix's negative side).
  */
 
 const REPO_ROOT = path.resolve(import.meta.dir, '../../..');
@@ -69,6 +100,27 @@ const SMOKE_DIR = path.join(REPO_ROOT, 'scripts/smoke');
 // another `/`.
 const CREATE_ROUTE_PATTERN = /\/api\/embedded-agents(?!\/)/g;
 const ENGINE_FIELD_PATTERN = /\bengine:\s*'/;
+
+// An explicit `method:` string literal, either quote style.
+const POST_LITERAL_PATTERN = /\bmethod:\s*(['"])POST\1/;
+const NON_POST_LITERAL_PATTERN = /\bmethod:\s*(['"])(?:GET|DELETE|PATCH|PUT)\1/;
+
+type MethodClassification = 'post' | 'skip' | 'unclassified';
+
+/** Classifies a call's `method:` option from its balanced call text.
+ * `'post'`: an explicit `'POST'`/`"POST"` literal -- this IS a create call,
+ * check it. `'skip'`: an explicit non-POST literal (a real, different HTTP
+ * verb) -- not a create call, nothing to check. `'unclassified'`: no
+ * `method:` key at all, or a `method:` value that is not a recognized
+ * string literal (a constant, a variable, a template expression) -- FAIL
+ * CLOSED rather than silently treating an unreadable method as "not a
+ * POST"; a shorthand or a differently-spelled literal must not bypass the
+ * `engine` assertion below. */
+function classifyMethod(callText: string): MethodClassification {
+  if (POST_LITERAL_PATTERN.test(callText)) return 'post';
+  if (NON_POST_LITERAL_PATTERN.test(callText)) return 'skip';
+  return 'unclassified';
+}
 
 function discoverSmokeFiles(): string[] {
   const glob = new Glob('*.{ts,mjs}');
@@ -121,9 +173,18 @@ function findCreateCallSites(content: string): CreateCallSite[] {
     } else {
       callParenIndex = requestIdx + 'Request'.length; // index of '('
     }
-    if (seenCallStarts.has(callParenIndex)) continue; // same call, another route mention inside it (not expected, but avoid double-counting)
     const callEnd = findBalancedEnd(content, callParenIndex, '(', ')');
     if (callEnd === -1) continue;
+    // The route mention must lie INSIDE the call it was attributed to.
+    // `lastIndexOf` finds the nearest PRECEDING `fetch(`/`Request(` text,
+    // but that call may already have closed before this route mention --
+    // e.g. a route literal reused later in a log/bail message quoting the
+    // route for a human-readable error. Attributing that mention to the
+    // earlier, already-closed call would be wrong regardless of whether
+    // the call site was already recorded, so reject it before the
+    // dedup check rather than relying on dedup to hide the mistake.
+    if (routeIndex > callEnd) continue;
+    if (seenCallStarts.has(callParenIndex)) continue; // same call, another route mention inside it (not expected, but avoid double-counting)
     seenCallStarts.add(callParenIndex);
     sites.push({ callText: content.slice(callParenIndex, callEnd + 1) });
   }
@@ -174,9 +235,15 @@ describe('scripts/smoke/* embedded-agent create calls carry `engine` (Issue #179
       it(`${label}: the create call's own body carries \`engine: '\` inside its inline JSON.stringify object`, () => {
         // Not every fetch/Request call to this route is necessarily a
         // POST (a future GET/DELETE against a sibling route shape would
-        // still match the route pattern) -- skip anything that is not.
-        if (!/method:\s*'POST'/.test(site.callText)) {
+        // still match the route pattern) -- skip anything explicitly
+        // classified as a different verb, but fail closed on anything
+        // this pin cannot read (see `classifyMethod`'s own doc comment).
+        const methodClassification = classifyMethod(site.callText);
+        if (methodClassification === 'skip') {
           return;
+        }
+        if (methodClassification === 'unclassified') {
+          throw new Error(`${label}: method could not be classified -- write it as a string literal`);
         }
         const stringifyMatch = /JSON\.stringify\(/.exec(site.callText);
         expect(stringifyMatch).not.toBeNull();
