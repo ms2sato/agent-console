@@ -261,6 +261,50 @@ describe('Client-Server Boundary: MCP server permission wire (epic #1636 Phase 5
     }
   });
 
+  it('REST permission round trip: a hash that differs from the discovered pair returns 404 with the hoisted resolvePermissionDecisions not-discovered text (the hoist changed nothing at the wire)', async () => {
+    // Orchestrator disposition (preflight-check.js Integration test gap on
+    // routes/workers.ts's hoist of resolvePermissionDecisions into
+    // lib/mcp-server-permissions.ts): this is the wire-layer pin that the
+    // hoist changed nothing -- workers.test.ts (route-unit, fake service)
+    // cannot fully give this, because it never drives the real fake
+    // subprocess + real activation + real route dispatch together.
+    //
+    // Polarity confirmed: temporarily swapping the route's `kind` mapping
+    // (routes/workers.ts, `if (resolved.kind === 'undecidable')` branch) to
+    // `throw new ConflictError(resolved.message)` unconditionally -- so a
+    // `not-discovered` result also produced 409 instead of 404 -- made this
+    // test's `expect(res.status).toBe(404)` fail with an actual status of
+    // 409, while the message-text assertion still passed. Reverted after
+    // confirming the failure.
+    const { sessionId, workerId } = await createSdkWorktreeWorker();
+    await ctx.sessionManager.activateEmbeddedAgentWorker(sessionId, workerId);
+    await waitFor(() => fake.stdinWrites.length >= 1);
+
+    fake.pushStdoutLine({
+      v: 1,
+      type: 'mcp-servers-discovered',
+      servers: [{ name: 'chrome-devtools', scope: 'project', hash: 'hash-1', decision: 'pending' }],
+    });
+    await waitFor(() => {
+      const w = ctx.sessionManager.getSession(sessionId)?.workers.find((x) => x.id === workerId);
+      return w?.type === 'embedded-agent' && w.mcpServers !== undefined;
+    });
+
+    const app = await createTestApp(ctx);
+    const res = await app.request(`/api/sessions/${sessionId}/workers/${workerId}/mcp-permissions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'chrome-devtools', hash: 'a-different-hash', decision: 'allow' }),
+    });
+
+    expect(res.status).toBe(404);
+    const body = (await res.json()) as { error: string };
+    // resolvePermissionDecisions's exact not-discovered message text, as
+    // wrapped by NotFoundError (`${resource} not found`) and serialized by
+    // the error-handler middleware's `{ error: message }` shape.
+    expect(body.error).toBe("MCP server 'chrome-devtools' with hash 'a-different-hash' not found");
+  });
+
   it('rejects the STALE full-config set-mcp-servers payload shape (Q10 dropped-frame failure mode)', () => {
     const staleFrame = {
       v: 1,
