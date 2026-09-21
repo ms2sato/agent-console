@@ -2374,25 +2374,42 @@ export class EmbeddedAgentWorkerService {
     // (`resolvePermissionDecisions` matches by `(name, hash)`).
     //
     // The merge below: form (a) (`runtime.projectDiscovery`, populated once
-    // below and never again this incarnation) is the SOLE authority for a
-    // project-scope row's `hash`/`decision`, folded through this
-    // repository's `deny` rows exactly as before (a server-computed
-    // `'denied'` overriding whatever decision discovery carried, whenever
-    // this repository has a matching `deny` row for the SAME `(name, hash)`
-    // key -- the subprocess never emits `'denied'` itself). The LATEST
-    // arrival (this event, whichever form it is) is authoritative for
-    // `status` on any row it names, and fully REPLACES every non-project
-    // row (`reserved`/`user`/`local`/`connector`), matching the previous
+    // below and never again this incarnation) is the FALLBACK decision for
+    // a project-scope row, but this repository's DURABLE record (both
+    // `allow` and `deny` rows, re-read from `listByRepository` on every
+    // arrival) is authoritative whenever a row exists for the SAME
+    // `(name, hash)` key. This is load-bearing, not merely a deny-only
+    // override: `SessionManager.setMcpServerPermissions` patches
+    // `worker.mcpServers` directly the instant a live `allow` lands, but
+    // `runtime.projectDiscovery` (this handler's own snapshot) is NEVER
+    // told about that -- so the very next `mcp-servers-discovered` event
+    // (form (c), fired right after the live `setMcpServers` call this same
+    // permission triggered) would otherwise rebuild from the STALE
+    // `'pending'` reading and silently revert a server the caller just
+    // approved back to `'pending'` (with a self-contradictory
+    // `status: 'connected'` alongside it) -- see this PR's own
+    // CHANGES-REQUESTED review, "live allow reverts to pending on the next
+    // discovered event". The subprocess itself never emits `'allowed'` or
+    // `'denied'` for a NOT-YET-durable decision, so re-reading the
+    // repository on every arrival is the only way this handler's own
+    // rebuild can reflect a decision recorded after the incarnation's form
+    // (a) snapshot was taken. The LATEST arrival (this event, whichever
+    // form it is) remains authoritative for `status` on any row it names,
+    // and fully REPLACES every non-project row
+    // (`reserved`/`user`/`local`/`connector`), matching the previous
     // last-write-wins contract for exactly those rows.
     if (event.type === 'mcp-servers-discovered') {
       const session = this.deps.getSession(ctx.sessionId);
       const repositoryId = session?.type === 'worktree' ? session.repositoryId : undefined;
-      const denyKeys = new Set(
+      const permissionRows =
         repositoryId !== undefined
-          ? (await this.deps.mcpServerPermissionRepository.listByRepository(repositoryId))
-              .filter((row) => row.decision === 'deny')
-              .map((row) => `${row.serverName}\u0000${row.configHash}`)
-          : [],
+          ? await this.deps.mcpServerPermissionRepository.listByRepository(repositoryId)
+          : [];
+      const decisionByKey = new Map(
+        permissionRows.map((row) => [
+          `${row.serverName}\u0000${row.configHash}`,
+          row.decision === 'allow' ? ('allowed' as const) : ('denied' as const),
+        ]),
       );
 
       // Form (a) detection: `main.ts`'s activation-time discovery reports
@@ -2427,7 +2444,7 @@ export class EmbeddedAgentWorkerService {
         const liveByName = new Map(event.servers.map((entry) => [entry.name, entry]));
         const projectRows = Array.from(projectDiscovery.entries()).map(([name, { hash, decision }]) => {
           const key = `${name}\u0000${hash}`;
-          const finalDecision = denyKeys.has(key) ? ('denied' as const) : decision;
+          const finalDecision = decisionByKey.get(key) ?? decision;
           const status = liveByName.get(name)?.status;
           return {
             name,
@@ -2459,7 +2476,7 @@ export class EmbeddedAgentWorkerService {
         // rather than leaving `ctx.worker.mcpServers` stale.
         ctx.worker.mcpServers = event.servers.map((entry) => {
           const key = entry.hash !== undefined ? `${entry.name}\u0000${entry.hash}` : undefined;
-          const decision = key !== undefined && denyKeys.has(key) ? ('denied' as const) : entry.decision;
+          const decision = (key !== undefined ? decisionByKey.get(key) : undefined) ?? entry.decision;
           return {
             name: entry.name,
             scope: entry.scope,
@@ -2830,6 +2847,23 @@ export class EmbeddedAgentWorkerService {
     }
 
     this.endStdinSafely(worker.stdin);
+    // epic #1636 Phase 5 PR-3a (CHANGES-REQUESTED Item 2): a
+    // dead incarnation's per-server `status` (e.g. `'connected'`) goes
+    // stale the instant the subprocess exits -- there is no live SDK
+    // session left for it to describe. `name`/`scope`/`hash`/`decision`
+    // stay exactly as last known: the durable RECORD is still correct, and
+    // a dormant worker's panel/tools still need it to decide what a future
+    // activation should do. Only `status` is dropped. This is deliberately
+    // NOT the Q14 activation-failure rollback below (`worker.mcpServers =
+    // undefined`, a full clear for a FAILED incarnation that never
+    // produced a trustworthy reading at all) -- a clean exit's reading was
+    // trustworthy, it is just no longer live. Rebuilds a FRESH array
+    // (never mutates rows in place) so a reader comparing the array
+    // REFERENCE (e.g. the project-mcp-permission smoke's `activate()`
+    // helper, which waits for exactly this kind of change) still sees it.
+    if (worker.mcpServers !== undefined) {
+      worker.mcpServers = worker.mcpServers.map(({ status: _status, ...rest }) => rest);
+    }
     worker.subprocess = null;
     worker.stdin = null;
     this.deps.mcpTokenRegistry.revokeByWorker(workerId);

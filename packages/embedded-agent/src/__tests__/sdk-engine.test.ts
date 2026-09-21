@@ -1323,6 +1323,22 @@ describe('SdkEngine — MCP server containment wall (epic #1636 Phase 5 PR-2, §
       { name: 'chrome-devtools', scope: 'user', status: 'connected' },
       { name: 'claude.ai Google Drive', scope: 'connector', status: 'connected' },
     ]);
+    // epic #1636 Phase 5 PR-3a (Item 3): explicit, on top of
+    // `toEqual`'s already-implicit exact-shape check above -- every entry
+    // form (b) (`handleSystemInit`) emits, INCLUDING the `'project'`-scope
+    // one, has neither `decision` nor `hash`. This is the exact premise
+    // `embedded-agent-worker-service.ts`'s `isFormA` detection relies on
+    // (its own comment: "form (a) ... reports EVERY entry as `scope:
+    // 'project'` with `decision` always set ... `emitMcpServersDiscovered`
+    // (forms (b)/(c)) never sets `decision` on any entry") to tell form (a)
+    // apart from forms (b)/(c) -- if this engine ever started attaching
+    // either field here, that detection would misclassify a form (b)/(c)
+    // arrival as form (a) and the server-side merge would silently corrupt
+    // its `runtime.projectDiscovery` snapshot.
+    for (const server of discovered[0].servers) {
+      expect(server).not.toHaveProperty('decision');
+      expect(server).not.toHaveProperty('hash');
+    }
     // The discovered event must appear BEFORE the fatal it's paired with in
     // this same flush -- the panel must see what was seen even on a fatal.
     const discoveredIndex = events.indexOf(discovered[0]);
@@ -3854,7 +3870,13 @@ describe('SdkEngine — setMcpServers (epic #1636 Phase 5 PR-2, Architect ruling
    * OWN parameter shape (Architect ruling B) changed to (name, hash) pairs;
    * this fake's argument shape is unaffected. */
   function makeLiveMcpWriteQuery(
-    opts: { holdFirst?: boolean; failOn?: 'setMcpServers'; errorsFor?: string } = {},
+    opts: {
+      holdFirst?: boolean;
+      failOn?: 'setMcpServers';
+      errorsFor?: string;
+      /** What the fake's `mcpServerStatus()` resolves to; defaults to `[]`. */
+      statusResult?: Array<{ name: string; status: string }>;
+    } = {},
   ): LiveMcpWriteHandle & { releaseFirst: () => void } {
     const setMcpServersCalls: Array<Record<string, unknown>> = [];
     let statusCalls = 0;
@@ -3883,7 +3905,7 @@ describe('SdkEngine — setMcpServers (epic #1636 Phase 5 PR-2, Architect ruling
           },
           mcpServerStatus: async () => {
             statusCalls += 1;
-            return [];
+            return opts.statusResult ?? [];
           },
         }),
       );
@@ -4032,6 +4054,48 @@ describe('SdkEngine — setMcpServers (epic #1636 Phase 5 PR-2, Architect ruling
     expect(eventsOfType(events, 'mcp-servers-discovered')).toEqual([
       { v: 1, type: 'mcp-servers-discovered', servers: [] },
     ]);
+  });
+
+  it('form (c) entries carry neither `decision` nor `hash`, even for a `project`-scope name (Item 3)', async () => {
+    // epic #1636 Phase 5 PR-3a: the sibling test above proves the empty-array
+    // shape; this one populates `mcpServerStatus()`'s reading so there is an
+    // actual `'project'`-scope entry to assert on -- the case
+    // `embedded-agent-worker-service.ts`'s `isFormA` detection most needs to
+    // be robust against, since a `'project'`-scope entry is exactly what
+    // form (a) itself always is.
+    const events: EmbeddedAgentEvent[] = [];
+    const { queryFn, statusCallCount } = makeLiveMcpWriteQuery({
+      statusResult: [
+        { name: 'agent-console', status: 'connected' },
+        { name: 'my-server', status: 'connected' },
+      ],
+    });
+    const engine = new SdkEngine(
+      baseDeps({
+        queryFn,
+        emit: (e) => events.push(e),
+        discoveredProjectMcpServers: discoveryMap(['my-server', 'h1']),
+        initialAllowedProjectMcpServers: [{ name: 'my-server', hash: 'h1' }],
+      }),
+    );
+
+    engine.setMcpServers([{ name: 'my-server', hash: 'h1' }]);
+    await flush();
+
+    expect(statusCallCount()).toBe(1);
+    const discovered = eventsOfType(events, 'mcp-servers-discovered');
+    expect(discovered).toHaveLength(1);
+    expect(discovered[0].servers).toEqual([
+      { name: 'agent-console', scope: 'reserved', status: 'connected' },
+      { name: 'my-server', scope: 'project', status: 'connected' },
+    ]);
+    // Explicit, on top of `toEqual`'s already-implicit exact-shape check
+    // above -- see the form (b) test's identical comment for why this
+    // matters to `isFormA`'s detection.
+    for (const server of discovered[0].servers) {
+      expect(server).not.toHaveProperty('decision');
+      expect(server).not.toHaveProperty('hash');
+    }
   });
 
   it('does not call mcpServerStatus() when the live call throws', async () => {

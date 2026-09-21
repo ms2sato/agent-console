@@ -215,7 +215,7 @@ describe('Client-Server Boundary: MCP server permission wire (epic #1636 Phase 5
     expect(parsed.success).toBe(true);
   });
 
-  it('a form (b)-shaped event (reserved only, no hash/decision) after form (a) does not erase the discovered pair -- the REST route still finds it (Issue #1795 regression lock)', async () => {
+  it('a form (b)-shaped event (reserved only, no hash/decision) after form (a) does not erase the discovered pair -- the REST route still finds it (regression lock)', async () => {
     const { sessionId, workerId } = await createSdkWorktreeWorker();
     await ctx.sessionManager.activateEmbeddedAgentWorker(sessionId, workerId);
     await waitFor(() => fake.stdinWrites.length >= 1);
@@ -234,7 +234,7 @@ describe('Client-Server Boundary: MCP server permission wire (epic #1636 Phase 5
     // Form (b)-shaped: a `system:init` occurrence reporting ONLY the
     // reserved server -- never carrying hash/decision on ANY entry,
     // project-scope included (see `emitMcpServersDiscovered`'s own doc
-    // comment). Before Issue #1795's fix, this REPLACED
+    // comment). Before the server-side merge fix, this REPLACED
     // `worker.mcpServers` wholesale, silently dropping chrome-devtools's
     // discovered (name, hash) pair.
     fake.pushStdoutLine({
@@ -258,7 +258,7 @@ describe('Client-Server Boundary: MCP server permission wire (epic #1636 Phase 5
     // 404 with resolvePermissionDecisions's not-discovered text.
     //
     // Polarity confirmed: temporarily reverting the (e2) handler in
-    // embedded-agent-worker-service.ts to its pre-#1795 plain
+    // embedded-agent-worker-service.ts to its pre-fix plain
     // `event.servers.map(...)` replacement (isFormA forced to `false`, so
     // the merge branch never runs) made this assertion fail with an actual
     // status of 404 (`"MCP server 'chrome-devtools' with hash 'hash-1' not

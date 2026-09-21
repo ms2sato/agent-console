@@ -1,8 +1,8 @@
 #!/usr/bin/env bun
 /**
  * Shipping-path E2E for the `set_mcp_server_permission` MCP tool (epic #1636
- * Phase 5 PR-3a, docs/design/embedded-agent-sdk-engine.md §4.5 D-C / D-D,
- * Issue #1795). The tool itself (`packages/server/src/mcp/mcp-server.ts`),
+ * Phase 5 PR-3a, docs/design/embedded-agent-sdk-engine.md §4.5 D-C / D-D).
+ * The tool itself (`packages/server/src/mcp/mcp-server.ts`),
  * the hoisted decision-resolution helper
  * (`packages/server/src/lib/mcp-server-permissions.ts`'s
  * `resolvePermissionDecisions` / `listAllowedProjectMcpServerPairs`), the
@@ -55,7 +55,7 @@
  * ============================================================================
  * ORDERING NOTE -- history: why this script used to read discovered pairs
  * IMMEDIATELY after activation, before ANY turn was sent, and why arm 1 no
- * longer has to (Issue #1795 fixed the underlying race server-side)
+ * longer has to (a server-side fix closed the underlying race)
  * ============================================================================
  *
  * `sdk-engine.ts`'s own comments establish two facts that combine into a
@@ -91,7 +91,7 @@
  * first turn, unchanged -- that arm's own point is confirming the
  * activation-time pending pair exists at all, not proving survival across a
  * turn. Arm 1's read, by contrast, now happens AFTER the polarity turn --
- * see the "Issue #1795" comment at that call site -- because a post-turn
+ * see the comment at that call site -- because a post-turn
  * read that still returns both hashes IS the regression-path proof: before
  * the fix, this exact read would have returned `decision: undefined` for
  * both fixtures and arm 1's `set_mcp_server_permission` call would have
@@ -644,7 +644,7 @@ async function main(expectNoPermission: boolean): Promise<void> {
     }
 
     /**
-     * Diagnosed 2026-09-21 (Issue #1795 follow-up): a clean `deactivate()`
+     * Diagnosed 2026-09-21 (follow-up investigation): a clean `deactivate()`
      * NEVER clears `worker.mcpServers` -- only the Q14 activation-FAILURE
      * rollback does (`embedded-agent-worker-service.ts`'s `worker.mcpServers
      * = undefined` sits exclusively in that catch block). So across a
@@ -703,6 +703,34 @@ async function main(expectNoPermission: boolean): Promise<void> {
       return workerRow?.mcpServers ?? [];
     };
 
+    /**
+     * CHANGES-REQUESTED (Item 1): polls the SAME `get_session_status`
+     * MCP tool `readDiscoveredViaWire` uses -- no new turn, no billing -- until
+     * `serverName`'s discovered row satisfies `predicate` or `timeoutMs`
+     * elapses, returning whatever the LAST poll saw either way. Deliberately
+     * bypasses `readDiscoveredViaWire`'s own `expect()` calls (which would
+     * otherwise register one pass per poll iteration, inflating the run's
+     * pass count for what is really one check); the caller asserts once on
+     * the returned value.
+     */
+    const pollDiscoveredServer = async (
+      serverName: string,
+      predicate: (server: DiscoveredServerLite | undefined) => boolean,
+      timeoutMs: number,
+    ): Promise<DiscoveredServerLite | undefined> => {
+      const deadline = Date.now() + timeoutMs;
+      let last: DiscoveredServerLite | undefined;
+      do {
+        const res = await callMcpTool('get_session_status', { sessionId: targetSessionId }, `Bearer ${tuiToken}`);
+        const status = res.data as { workers?: Array<{ id: string; mcpServers?: DiscoveredServerLite[] }> };
+        const workerRow = status.workers?.find((w) => w.id === targetWorkerId);
+        last = findDiscoveredServer(workerRow?.mcpServers, serverName);
+        if (predicate(last)) return last;
+        await delay(300);
+      } while (Date.now() < deadline);
+      return last;
+    };
+
     // ===================================================================
     // POLARITY (always first).
     // ===================================================================
@@ -740,9 +768,9 @@ async function main(expectNoPermission: boolean): Promise<void> {
       return;
     }
 
-    // Issue #1795: read the discovered pairs AGAIN, now AFTER the polarity
+    // Read the discovered pairs AGAIN, now AFTER the polarity
     // turn -- this is the actual regression-path proof, not a diagnostic.
-    // Before the #1795 fix, `sdk-engine.ts`'s `system:init` handler
+    // Before the fix, `sdk-engine.ts`'s `system:init` handler
     // (`emitMcpServersDiscovered`, fired as a side effect of the turn just
     // sent) would have REPLACED `worker.mcpServers` wholesale with a
     // reading that never carries `hash`/`decision` for ANY entry --
@@ -755,7 +783,7 @@ async function main(expectNoPermission: boolean): Promise<void> {
     const pendingHashV1 = findDiscoveredServer(postTurnDiscovered, 'srv-pending')?.hash;
     expect(
       typeof allowedHash === 'string' && typeof pendingHashV1 === 'string',
-      "post-polarity-turn: both fixtures still carry their discovered hash (Issue #1795's own regression path)",
+      'post-polarity-turn: both fixtures still carry their discovered hash (the regression path this fix closes)',
       JSON.stringify(postTurnDiscovered),
     );
 
@@ -784,6 +812,26 @@ async function main(expectNoPermission: boolean): Promise<void> {
       'arm1: mcp-servers-applied',
     );
     expect(applied1.applied === true, 'arm1: mcp-servers-applied reports applied:true', JSON.stringify(applied1));
+
+    // CHANGES-REQUESTED (Item 1): the live allow must be visible
+    // via `get_session_status` as `decision: 'allowed'` -- not reverted to
+    // `pending` by the `mcp-servers-discovered` form (c) event
+    // `applyMcpServersOnce` emits right after `mcp-servers-applied`
+    // (`sdk-engine.ts`: `mcpServerStatus()` is awaited, then
+    // `emitMcpServersDiscovered(status)` fires) -- alongside a
+    // `status: 'connected'` that must NOT be paired with a
+    // self-contradictory `decision: 'pending'`. No new turn: polls the same
+    // free `get_session_status` tool call already used above.
+    const allowedAfterApply1 = await pollDiscoveredServer(
+      'srv-allowed',
+      (s) => s?.decision === 'allowed' && s?.status === 'connected',
+      15_000,
+    );
+    expect(
+      allowedAfterApply1?.decision === 'allowed' && allowedAfterApply1?.status === 'connected',
+      'arm1: srv-allowed reads decision:allowed + status:connected via get_session_status after the live apply',
+      JSON.stringify(allowedAfterApply1),
+    );
 
     await waitUntil(() => existsSync(canaryPath('srv-allowed')), 15_000, 'arm1: srv-allowed canary appears').catch(
       (err) => expect(false, 'arm1: srv-allowed canary appears (live add)', String(err)),
@@ -857,6 +905,22 @@ async function main(expectNoPermission: boolean): Promise<void> {
       'arm3: mcp-servers-applied',
     );
     expect(applied3.applied === true, 'arm3: mcp-servers-applied reports applied:true', JSON.stringify(applied3));
+
+    // CHANGES-REQUESTED (Item 1): the same allow-by-new-hash
+    // check as arm 1, at the pending server's NEW hash -- confirms the
+    // repository-read merge also holds for a hash that changed mid-run, not
+    // only for the fixture's original hash.
+    const allowedAfterApply3 = await pollDiscoveredServer(
+      'srv-pending',
+      (s) => s?.decision === 'allowed' && s?.status === 'connected',
+      15_000,
+    );
+    expect(
+      allowedAfterApply3?.decision === 'allowed' && allowedAfterApply3?.status === 'connected',
+      'arm3: srv-pending reads decision:allowed + status:connected via get_session_status after the live apply (new hash)',
+      JSON.stringify(allowedAfterApply3),
+    );
+
     await waitUntil(() => existsSync(canaryPath('srv-pending')), 15_000, 'arm3: srv-pending canary appears').catch((err) =>
       expect(false, 'arm3: srv-pending canary appears (live add by new hash)', String(err)),
     );
