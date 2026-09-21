@@ -4892,7 +4892,7 @@ describe('EmbeddedAgentWorkerService — mcp-servers-discovered event handling',
     expect(h.persistSession).toHaveBeenCalled();
   });
 
-  it('a later discovered event is LAST-WRITE-WINS, not an accumulation', async () => {
+  it('a later discovered event MERGES rather than erasing a still-pending project row (Issue #1795; previously last-write-wins wiped the pending pair)', async () => {
     const h = setup({ definition: SDK_DEFINITION });
     await h.service.activate(h.sessionId, h.workerId);
 
@@ -4912,9 +4912,232 @@ describe('EmbeddedAgentWorkerService — mcp-servers-discovered event handling',
         servers: [{ name: 'agent-console', scope: 'reserved' }],
       })}\n`,
     );
-    await waitFor(() => (h.worker.mcpServers?.length ?? 0) === 1 && h.worker.mcpServers![0]?.name === 'agent-console');
+    await waitFor(() => (h.worker.mcpServers ?? []).some((entry) => entry.name === 'agent-console'));
 
-    expect(h.worker.mcpServers).toEqual([{ name: 'agent-console', scope: 'reserved' }]);
+    // chrome-devtools's discovered pair MUST survive: the second event never
+    // carries hash/decision for ANY entry (system:init/mcpServerStatus()
+    // never do, per emitMcpServersDiscovered's own doc comment), so a plain
+    // last-write-wins replacement would silently wipe it -- exactly the
+    // Issue #1795 defect this PR fixes. Non-project (here reserved) rows
+    // still fully replace on each arrival, unchanged.
+    expect(h.worker.mcpServers).toEqual([
+      { name: 'chrome-devtools', scope: 'project', hash: 'hash-1', decision: 'pending' },
+      { name: 'agent-console', scope: 'reserved' },
+    ]);
+  });
+
+  it("form (a) is the sole authority for a pending pair's hash/decision -- a later form (b)/(c) event (reserved + one now-connected server, neither carrying hash/decision) never erases it (Issue #1795)", async () => {
+    const h = setup({ definition: SDK_DEFINITION });
+    await h.service.activate(h.sessionId, h.workerId);
+
+    // Form (a): activation-time discovery. A stays pending; B is already
+    // allowed (a durable approval from before this activation).
+    h.fake.pushStdout(
+      `${JSON.stringify({
+        v: 1,
+        type: 'mcp-servers-discovered',
+        servers: [
+          { name: 'A', scope: 'project', hash: 'hash-a', decision: 'pending' },
+          { name: 'B', scope: 'project', hash: 'hash-b', decision: 'allowed' },
+        ],
+      })}\n`,
+    );
+    await waitFor(() => h.worker.mcpServers !== undefined);
+
+    // Form (b): a `system:init` occurrence reports ONLY the reserved server
+    // plus B (now live and connected) -- A is not yet part of the SDK's own
+    // session (still pending, never started), so it is absent from this
+    // report entirely, exactly as `emitMcpServersDiscovered` documents.
+    h.fake.pushStdout(
+      `${JSON.stringify({
+        v: 1,
+        type: 'mcp-servers-discovered',
+        servers: [
+          { name: 'agent-console', scope: 'reserved', status: 'connected' },
+          { name: 'B', scope: 'project', status: 'connected' },
+        ],
+      })}\n`,
+    );
+    await waitFor(() => (h.worker.mcpServers ?? []).some((entry) => entry.name === 'B' && entry.status === 'connected'));
+
+    const byName = new Map((h.worker.mcpServers ?? []).map((entry) => [entry.name, entry]));
+    expect(byName.get('A')).toEqual({ name: 'A', scope: 'project', hash: 'hash-a', decision: 'pending' });
+    expect(byName.get('B')).toEqual({
+      name: 'B',
+      scope: 'project',
+      hash: 'hash-b',
+      decision: 'allowed',
+      status: 'connected',
+    });
+    expect(byName.get('agent-console')).toEqual({ name: 'agent-console', scope: 'reserved', status: 'connected' });
+  });
+
+  it('a project row already ALLOWED from an earlier durable approval keeps its hash/decision (service-computed, deny-merged) through a later status-only report (Issue #1795)', async () => {
+    const h = setup({
+      definition: SDK_DEFINITION,
+      mcpServerPermissionRows: [
+        {
+          repositoryId: 'repo-1',
+          serverName: 'A',
+          configHash: 'hash-a',
+          decision: 'allow',
+          decidedBy: 'user-1',
+          createdAt: '2026-01-01T00:00:00.000Z',
+          decidedAt: '2026-01-01T00:00:00.000Z',
+        },
+      ],
+    });
+    await h.service.activate(h.sessionId, h.workerId);
+
+    // Form (a): A was already durably approved before this activation.
+    h.fake.pushStdout(
+      `${JSON.stringify({
+        v: 1,
+        type: 'mcp-servers-discovered',
+        servers: [{ name: 'A', scope: 'project', hash: 'hash-a', decision: 'allowed' }],
+      })}\n`,
+    );
+    await waitFor(() => h.worker.mcpServers !== undefined);
+
+    // Form (c): a fresh mcpServerStatus() read after A actually connected --
+    // status only, no hash/decision.
+    h.fake.pushStdout(
+      `${JSON.stringify({
+        v: 1,
+        type: 'mcp-servers-discovered',
+        servers: [{ name: 'A', scope: 'project', status: 'connected' }],
+      })}\n`,
+    );
+    await waitFor(() => (h.worker.mcpServers ?? []).some((entry) => entry.status === 'connected'));
+
+    expect(h.worker.mcpServers).toEqual([
+      { name: 'A', scope: 'project', hash: 'hash-a', decision: 'allowed', status: 'connected' },
+    ]);
+  });
+});
+
+/**
+ * epic #1636 Phase 5 PR-3a (Issue #1795): the `makeFakeSpawn` helper above is
+ * a SINGLE fixed subprocess/stdout for the harness's whole life, shared
+ * unmodified by many hundred pre-existing tests in this file -- broadening it
+ * to support a second, independent incarnation risks destabilizing all of
+ * them. This is a small, deliberately local duplicate of its SHAPE
+ * (`workflow.md`'s Duplication check), needed only by the describe block
+ * below: it returns a FRESH subprocess/stdin/stdout PER `spawnAsUserFn` call
+ * instead of one fixed set, so a deactivate-then-reactivate cycle gets a
+ * genuinely independent second incarnation to push events onto.
+ */
+interface FakeIncarnation {
+  stdinWrites: string[];
+  push: (s: string) => void;
+  simulateExit: (code: number) => void;
+}
+
+function makeFakeMultiActivationSpawn(): { fn: SpawnAsUserFn; incarnations: FakeIncarnation[] } {
+  const incarnations: FakeIncarnation[] = [];
+  const fn: SpawnAsUserFn = () => {
+    const stdinWrites: string[] = [];
+    let ctrl!: ReadableStreamDefaultController<Uint8Array>;
+    const stream = new ReadableStream<Uint8Array>({
+      start(c) {
+        ctrl = c;
+      },
+    });
+    let stderrCtrl!: ReadableStreamDefaultController<Uint8Array>;
+    const stderrStream = new ReadableStream<Uint8Array>({
+      start(c) {
+        stderrCtrl = c;
+      },
+    });
+    const enc = new TextEncoder();
+    let resolveExited!: (code: number) => void;
+    const exited = new Promise<number>((resolve) => {
+      resolveExited = resolve;
+    });
+    const stdin: FakeFileSink = {
+      write: (chunk) => {
+        stdinWrites.push(typeof chunk === 'string' ? chunk : new TextDecoder().decode(chunk));
+        return 0;
+      },
+      end: () => {},
+      flush: () => 0,
+    };
+    const subprocess: FakeSubprocess = {
+      pid: 9000 + incarnations.length,
+      exited,
+      stdin,
+      stdout: stream,
+      stderr: stderrStream,
+      kill: () => {},
+    };
+    const incarnation: FakeIncarnation = {
+      stdinWrites,
+      push: (s: string) => ctrl.enqueue(enc.encode(s)),
+      simulateExit: (code: number) => {
+        resolveExited(code);
+        ctrl.close();
+        stderrCtrl.close();
+      },
+    };
+    incarnations.push(incarnation);
+    return { subprocess, stdin, elevated: false } as unknown as SpawnAsUserResult;
+  };
+  return { fn, incarnations };
+}
+
+describe('EmbeddedAgentWorkerService — mcp-servers-discovered form (a) is per-incarnation (Issue #1795)', () => {
+  it("a second activation's form (a) fully replaces the previous incarnation's discovery snapshot -- no stale hash/decision leaks through", async () => {
+    const multi = makeFakeMultiActivationSpawn();
+    const h = setup({ definition: SDK_DEFINITION, spawnAsUserFnOverride: multi.fn });
+
+    await h.service.activate(h.sessionId, h.workerId);
+    multi.incarnations[0].push(
+      `${JSON.stringify({
+        v: 1,
+        type: 'mcp-servers-discovered',
+        servers: [{ name: 'A', scope: 'project', hash: 'hash-v1', decision: 'pending' }],
+      })}\n`,
+    );
+    await waitFor(() => h.worker.mcpServers !== undefined);
+    expect(h.worker.mcpServers).toEqual([{ name: 'A', scope: 'project', hash: 'hash-v1', decision: 'pending' }]);
+
+    // A later status-only report on the SAME incarnation must not lose
+    // hash-v1/pending -- this is what gives this test real polarity against
+    // the merge fix: a plain last-write-wins replacement (the pre-#1795
+    // behavior) would drop hash/decision here, since this event carries
+    // neither.
+    multi.incarnations[0].push(
+      `${JSON.stringify({
+        v: 1,
+        type: 'mcp-servers-discovered',
+        servers: [{ name: 'A', scope: 'project', status: 'connected' }],
+      })}\n`,
+    );
+    await waitFor(() => (h.worker.mcpServers ?? []).some((entry) => entry.status === 'connected'));
+    expect(h.worker.mcpServers).toEqual([
+      { name: 'A', scope: 'project', hash: 'hash-v1', decision: 'pending', status: 'connected' },
+    ]);
+
+    const dp = h.service.deactivate(h.sessionId, h.workerId);
+    multi.incarnations[0].simulateExit(0);
+    await dp;
+
+    // A brand-new incarnation's OWN form (a) -- a different hash/decision,
+    // no status yet. Neither the old hash-v1/pending pair NOR the previous
+    // incarnation's 'connected' status may survive into it.
+    await h.service.activate(h.sessionId, h.workerId);
+    multi.incarnations[1].push(
+      `${JSON.stringify({
+        v: 1,
+        type: 'mcp-servers-discovered',
+        servers: [{ name: 'A', scope: 'project', hash: 'hash-v2', decision: 'allowed' }],
+      })}\n`,
+    );
+    await waitFor(() => (h.worker.mcpServers ?? []).some((entry) => entry.hash === 'hash-v2'));
+
+    // Exactly one row, at the NEW hash, no leftover status -- the old
+    // incarnation's reading must not survive alongside or instead of it.
+    expect(h.worker.mcpServers).toEqual([{ name: 'A', scope: 'project', hash: 'hash-v2', decision: 'allowed' }]);
   });
 });
 
@@ -4935,5 +5158,37 @@ describe('EmbeddedAgentWorkerService — activation-failure rollback clears mcpS
     await expect(h.service.activate(h.sessionId, h.workerId)).rejects.toThrow('persist boom');
 
     expect(h.worker.mcpServers).toBeUndefined();
+  });
+
+  it("also clears the runtime's own discovery snapshot (Issue #1795): a straggler discovered event on the failed incarnation cannot resurrect stale project rows", async () => {
+    // `Runtime.projectDiscovery` has no public surface (see its own doc
+    // comment: "kept OFF the worker object") -- the only way to pin this
+    // specific defensive line is to reach into the service's private
+    // `runtimes` map, exactly at the point `persistSession` throws (the
+    // same synchronous point the catch block runs from), mirroring this
+    // describe block's existing pattern of injecting stale state directly
+    // (the sibling test above sets `h.worker.mcpServers` before `activate()`
+    // for the SAME reason -- `Runtime` doesn't exist yet before `activate()`
+    // is called, so the injection has to happen from inside the mocked
+    // `persistSession` instead).
+    const h = setup({ definition: SDK_DEFINITION });
+    let capturedRuntime: { projectDiscovery: unknown } | undefined;
+    h.persistSession.mockImplementationOnce(async () => {
+      const runtimes = (h.service as unknown as { runtimes: Map<string, { projectDiscovery: unknown }> }).runtimes;
+      capturedRuntime = runtimes.get(h.workerId);
+      // Simulate a `mcp-servers-discovered` event having landed on THIS
+      // incarnation just before the failure -- the exact race this
+      // describe block's own comment (and the (e2) handler's doc comment)
+      // describes.
+      if (capturedRuntime) {
+        capturedRuntime.projectDiscovery = new Map([['stale', { hash: 'stale-hash', decision: 'pending' as const }]]);
+      }
+      throw new Error('persist boom');
+    });
+
+    await expect(h.service.activate(h.sessionId, h.workerId)).rejects.toThrow('persist boom');
+
+    expect(capturedRuntime).toBeDefined();
+    expect(capturedRuntime?.projectDiscovery).toBeNull();
   });
 });

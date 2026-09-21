@@ -642,6 +642,22 @@ interface Runtime {
    * `'unexpected'` and this is non-empty.
    */
   stderrTail: string;
+  /**
+   * epic #1636 Phase 5 PR-3a (Issue #1795): the (name -> {hash, decision})
+   * snapshot from the FIRST `mcp-servers-discovered` event of this
+   * incarnation (always form (a), `main.ts`'s activation-time discovery --
+   * sound by construction since `main.ts` emits it before `createSdkEngine`
+   * even constructs the engine). Discovery is the SOLE authority for
+   * PROJECT-scope rows' `hash`/`decision`; the SDK's own later reports
+   * (`system:init` / a live `setMcpServers` read) never carry a `pending` or
+   * denied server -- see `emitMcpServersDiscovered`'s own doc comment
+   * (`hash`/`decision` are deliberately left unset on every entry it
+   * reports) -- so they cannot be trusted to re-derive this. `null` until
+   * the first discovered event of the incarnation lands; reset to `null` at
+   * activation start (a fresh `Runtime` per incarnation) and at the Q14
+   * rollback, mirroring `worker.mcpServers`'s own reset there.
+   */
+  projectDiscovery: Map<string, { hash: string; decision: 'allowed' | 'pending' | 'rejected-reserved' | 'invalid' }> | null;
 }
 
 // `RestoreInfo` moved to worker-types.ts (#1449 CI fix): defining it here and
@@ -1357,6 +1373,7 @@ export class EmbeddedAgentWorkerService {
         evictable: isEvictableEngine(definition.engine),
         pendingNotifications: [],
         stderrTail: '',
+        projectDiscovery: null,
       };
       this.runtimes.set(workerId, runtime);
 
@@ -1414,6 +1431,17 @@ export class EmbeddedAgentWorkerService {
       // failed activation never leaves a stale discovery snapshot behind
       // for the next attempt to inherit.
       worker.mcpServers = undefined;
+      // epic #1636 Phase 5 PR-3a, Q14: the runtime's own discovery snapshot
+      // (see Runtime.projectDiscovery's doc comment) must not survive a
+      // failed re-activation either -- mirrors the `worker.mcpServers` reset
+      // immediately above. Read via `this.runtimes.get` rather than a local
+      // `runtime` variable: the `const runtime` created a few steps into the
+      // happy path is block-scoped inside the `try`, out of reach here; an
+      // activation failure BEFORE that point never installed one at all.
+      const runtimeForRollback = this.runtimes.get(workerId);
+      if (runtimeForRollback) {
+        runtimeForRollback.projectDiscovery = null;
+      }
       // Safe to delete unconditionally: the in-flight activation guard prevents
       // a concurrent activation from having installed a different runtime here.
       this.runtimes.delete(workerId);
@@ -2333,18 +2361,29 @@ export class EmbeddedAgentWorkerService {
       }
     }
 
-    // (e2) epic #1636 Phase 5 PR-2 (docs/design/embedded-agent-sdk-engine.md
-    // §4.5): the claude-sdk engine's own discovery of its project
-    // `.mcp.json` fired. Per §4.5 D-D, discovery may report up to three
-    // times per activation -- each arrival is LAST-WRITE-WINS over
-    // `ctx.worker.mcpServers`, never an accumulation across arrivals.
-    // Every reported entry is mapped onto the worker-state shape, with a
-    // server-computed `'denied'` overriding whatever decision the
-    // subprocess itself carried, whenever this repository has a matching
-    // `deny` row for the SAME `(name, hash)` key -- the subprocess never
-    // emits `'denied'` itself (see the wire event's own doc comment for
-    // why that member exists on the worker-state picklist but not on the
-    // wire event's).
+    // (e2) epic #1636 Phase 5 PR-2/PR-3a (docs/design/embedded-agent-sdk-engine.md
+    // §4.5, Issue #1795): the claude-sdk engine's own discovery of its
+    // project `.mcp.json` fired. Per §4.5 D-D, discovery may report up to
+    // three times per activation -- but a plain last-write-wins replacement
+    // over `ctx.worker.mcpServers` is WRONG: forms (b)/(c) (`system:init` /
+    // a live `setMcpServers` read) never carry `hash`/`decision` on ANY
+    // entry, project-scope included (`emitMcpServersDiscovered`'s own doc
+    // comment states this explicitly), so a later arrival of either form
+    // would silently erase the `hash`/`decision` pair a still-`pending`
+    // project server needs for `set_mcp_server_permission` to find it
+    // (`resolvePermissionDecisions` matches by `(name, hash)`).
+    //
+    // The merge below: form (a) (`runtime.projectDiscovery`, populated once
+    // below and never again this incarnation) is the SOLE authority for a
+    // project-scope row's `hash`/`decision`, folded through this
+    // repository's `deny` rows exactly as before (a server-computed
+    // `'denied'` overriding whatever decision discovery carried, whenever
+    // this repository has a matching `deny` row for the SAME `(name, hash)`
+    // key -- the subprocess never emits `'denied'` itself). The LATEST
+    // arrival (this event, whichever form it is) is authoritative for
+    // `status` on any row it names, and fully REPLACES every non-project
+    // row (`reserved`/`user`/`local`/`connector`), matching the previous
+    // last-write-wins contract for exactly those rows.
     if (event.type === 'mcp-servers-discovered') {
       const session = this.deps.getSession(ctx.sessionId);
       const repositoryId = session?.type === 'worktree' ? session.repositoryId : undefined;
@@ -2355,17 +2394,82 @@ export class EmbeddedAgentWorkerService {
               .map((row) => `${row.serverName}\u0000${row.configHash}`)
           : [],
       );
-      ctx.worker.mcpServers = event.servers.map((entry) => {
-        const key = entry.hash !== undefined ? `${entry.name}\u0000${entry.hash}` : undefined;
-        const decision = key !== undefined && denyKeys.has(key) ? ('denied' as const) : entry.decision;
-        return {
-          name: entry.name,
-          scope: entry.scope,
-          ...(entry.hash !== undefined ? { hash: entry.hash } : {}),
-          ...(decision !== undefined ? { decision } : {}),
-          ...(entry.status !== undefined ? { status: entry.status } : {}),
-        };
-      });
+
+      // Form (a) detection: `main.ts`'s activation-time discovery reports
+      // EVERY entry as `scope: 'project'` with `decision` always set (even
+      // `'invalid'`); `emitMcpServersDiscovered` (forms (b)/(c)) never sets
+      // `decision` on any entry. "every entry is project-scope with a
+      // defined decision" is therefore an unambiguous form (a) signal --
+      // deliberately NOT a `hash`-presence check, since form (a) itself
+      // omits `hash` for a `decision: 'invalid'` entry (see
+      // `DiscoveredMcpServer`'s own doc comment: "hash: '' only when
+      // invalid").
+      const isFormA =
+        event.servers.length > 0 &&
+        event.servers.every((entry) => entry.scope === 'project' && entry.decision !== undefined);
+      if (isFormA) {
+        const discovery = new Map<
+          string,
+          { hash: string; decision: 'allowed' | 'pending' | 'rejected-reserved' | 'invalid' }
+        >();
+        for (const entry of event.servers) {
+          // `entry.decision` is guaranteed defined by `isFormA` above;
+          // `entry.hash` defaults to '' for an `'invalid'` entry, mirroring
+          // `DiscoveredMcpServer`'s own "hash: '' only when invalid" pre-wire
+          // representation (main.ts omits the wire `hash` key in that case).
+          discovery.set(entry.name, { hash: entry.hash ?? '', decision: entry.decision! });
+        }
+        runtime.projectDiscovery = discovery;
+      }
+
+      if (runtime.projectDiscovery !== null) {
+        const projectDiscovery = runtime.projectDiscovery;
+        const liveByName = new Map(event.servers.map((entry) => [entry.name, entry]));
+        const projectRows = Array.from(projectDiscovery.entries()).map(([name, { hash, decision }]) => {
+          const key = `${name}\u0000${hash}`;
+          const finalDecision = denyKeys.has(key) ? ('denied' as const) : decision;
+          const status = liveByName.get(name)?.status;
+          return {
+            name,
+            scope: 'project' as const,
+            // Empty string is discovery's own "invalid, no computable hash"
+            // sentinel (see above) -- omit the key entirely to match the
+            // worker-state contract ("hash is absent only for an entry the
+            // loader could not normalize at all").
+            ...(hash !== '' ? { hash } : {}),
+            decision: finalDecision,
+            ...(status !== undefined ? { status } : {}),
+          };
+        });
+        const nonProjectRows = event.servers
+          .filter((entry) => entry.scope !== 'project')
+          .map((entry) => ({
+            name: entry.name,
+            scope: entry.scope,
+            ...(entry.hash !== undefined ? { hash: entry.hash } : {}),
+            ...(entry.decision !== undefined ? { decision: entry.decision } : {}),
+            ...(entry.status !== undefined ? { status: entry.status } : {}),
+          }));
+        ctx.worker.mcpServers = [...projectRows, ...nonProjectRows];
+      } else {
+        // Defensive fallback: no form (a) discovery has landed yet for this
+        // incarnation. Should not happen in production -- `main.ts` always
+        // emits form (a) before `createSdkEngine` even constructs the
+        // engine -- but falls back to the previous (pre-merge) behavior
+        // rather than leaving `ctx.worker.mcpServers` stale.
+        ctx.worker.mcpServers = event.servers.map((entry) => {
+          const key = entry.hash !== undefined ? `${entry.name}\u0000${entry.hash}` : undefined;
+          const decision = key !== undefined && denyKeys.has(key) ? ('denied' as const) : entry.decision;
+          return {
+            name: entry.name,
+            scope: entry.scope,
+            ...(entry.hash !== undefined ? { hash: entry.hash } : {}),
+            ...(decision !== undefined ? { decision } : {}),
+            ...(entry.status !== undefined ? { status: entry.status } : {}),
+          };
+        });
+      }
+
       if (session) {
         await this.deps.persistSession(session);
       }

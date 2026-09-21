@@ -215,6 +215,63 @@ describe('Client-Server Boundary: MCP server permission wire (epic #1636 Phase 5
     expect(parsed.success).toBe(true);
   });
 
+  it('a form (b)-shaped event (reserved only, no hash/decision) after form (a) does not erase the discovered pair -- the REST route still finds it (Issue #1795 regression lock)', async () => {
+    const { sessionId, workerId } = await createSdkWorktreeWorker();
+    await ctx.sessionManager.activateEmbeddedAgentWorker(sessionId, workerId);
+    await waitFor(() => fake.stdinWrites.length >= 1);
+
+    // Form (a): activation-time discovery.
+    fake.pushStdoutLine({
+      v: 1,
+      type: 'mcp-servers-discovered',
+      servers: [{ name: 'chrome-devtools', scope: 'project', hash: 'hash-1', decision: 'pending' }],
+    });
+    await waitFor(() => {
+      const w = ctx.sessionManager.getSession(sessionId)?.workers.find((x) => x.id === workerId);
+      return w?.type === 'embedded-agent' && w.mcpServers !== undefined;
+    });
+
+    // Form (b)-shaped: a `system:init` occurrence reporting ONLY the
+    // reserved server -- never carrying hash/decision on ANY entry,
+    // project-scope included (see `emitMcpServersDiscovered`'s own doc
+    // comment). Before Issue #1795's fix, this REPLACED
+    // `worker.mcpServers` wholesale, silently dropping chrome-devtools's
+    // discovered (name, hash) pair.
+    fake.pushStdoutLine({
+      v: 1,
+      type: 'mcp-servers-discovered',
+      servers: [{ name: 'agent-console', scope: 'reserved' }],
+    });
+    await waitFor(() => {
+      const w = ctx.sessionManager.getSession(sessionId)?.workers.find((x) => x.id === workerId);
+      return w?.type === 'embedded-agent' && (w.mcpServers ?? []).some((entry) => entry.name === 'agent-console');
+    });
+
+    const app = await createTestApp(ctx);
+    const res = await app.request(`/api/sessions/${sessionId}/workers/${workerId}/mcp-permissions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'chrome-devtools', hash: 'hash-1', decision: 'allow' }),
+    });
+
+    // The regression lock: the route must still FIND the pair (200), not
+    // 404 with resolvePermissionDecisions's not-discovered text.
+    //
+    // Polarity confirmed: temporarily reverting the (e2) handler in
+    // embedded-agent-worker-service.ts to its pre-#1795 plain
+    // `event.servers.map(...)` replacement (isFormA forced to `false`, so
+    // the merge branch never runs) made this assertion fail with an actual
+    // status of 404 (`"MCP server 'chrome-devtools' with hash 'hash-1' not
+    // found"`). Reverted after confirming the failure.
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      worker: { type: string; mcpServers?: Array<{ name: string; scope: string; hash?: string; decision?: string }> };
+    };
+    expect(body.worker.type).toBe('embedded-agent');
+    const chromeDevtools = body.worker.mcpServers?.find((entry) => entry.name === 'chrome-devtools');
+    expect(chromeDevtools).toEqual({ name: 'chrome-devtools', scope: 'project', hash: 'hash-1', decision: 'allowed' });
+  });
+
   it('REST permission round trip: allow -> a live set-mcp-servers command carrying (name, hash) pairs is observed on the fake subprocess stdin -> the response reflects the decision', async () => {
     const { sessionId, workerId } = await createSdkWorktreeWorker();
     await ctx.sessionManager.activateEmbeddedAgentWorker(sessionId, workerId);

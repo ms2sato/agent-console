@@ -286,16 +286,23 @@ export interface InternalEmbeddedAgentWorker extends InternalWorkerBase {
    */
   autoCompaction: boolean;
   /**
-   * epic #1636 Phase 5 PR-2 (docs/design/embedded-agent-sdk-engine.md §4.5):
-   * this `claude-sdk` worker's own discovery of its project `.mcp.json`, as
-   * last reported by the `mcp-servers-discovered` event (up to 3 times per
-   * activation, last-write-wins) and folded through this repository's
-   * `deny` rows (a subprocess-reported entry matching a `deny` row's
-   * `(name, hash)` key is overridden to `'denied'`). `undefined` for every
-   * `openai-api` worker (no MCP-discovery concept) and for a `claude-sdk`
-   * worker that has not yet reported a discovery reading (e.g. never
-   * activated). NOT persisted (no DB column) -- transient, rediscovered
-   * fresh at every activation, mirroring `subprocess`/`stdin`'s
+   * epic #1636 Phase 5 PR-2/PR-3a (docs/design/embedded-agent-sdk-engine.md
+   * §4.5): this `claude-sdk` worker's own discovery of its project
+   * `.mcp.json`, as MERGED across the (up to 3 per activation)
+   * `mcp-servers-discovered` reports -- never a plain last-write-wins
+   * replacement. Discovery (`main.ts`'s activation-time report, "form (a)")
+   * is the sole authority for a PROJECT-scope row's `hash`/`decision`: the
+   * SDK's own later reports (`system:init`, or a live `setMcpServers` read)
+   * never carry a `pending` or rejected/invalid server, so they cannot
+   * re-derive a project row discovery already knows about. Those later
+   * reports ARE authoritative for `status` (on any row they name) and for
+   * every non-project (`reserved`/`user`/`local`/`connector`) row, which
+   * they fully replace on each arrival. A `deny` row for the same
+   * `(name, hash)` key overrides a project row's decision to `'denied'`.
+   * `undefined` for every `openai-api` worker (no MCP-discovery concept) and
+   * for a `claude-sdk` worker that has not yet reported a discovery reading
+   * (e.g. never activated). NOT persisted (no DB column) -- transient,
+   * rediscovered fresh at every activation, mirroring `subprocess`/`stdin`'s
    * null-when-not-applicable convention. Cleared on activation failure (see
    * `runActivation`'s catch block) so a stale reading from a PRIOR
    * incarnation never survives a failed re-activation. Mirrors
