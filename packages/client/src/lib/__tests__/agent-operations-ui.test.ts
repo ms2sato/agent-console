@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import { readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { AGENT_OPERATIONS } from '@agent-console/shared';
+import { AGENT_OPERATIONS, type AgentOperation } from '@agent-console/shared';
 import { UI_AGENT_OPERATIONS } from '../agent-operations-ui';
 
 const COMPONENTS_DIR = fileURLToPath(new URL('../../components', import.meta.url));
@@ -31,13 +31,26 @@ describe('UI_AGENT_OPERATIONS', () => {
     expect(actualKeys).toEqual(expectedKeys);
   });
 
-  test('all entries are currently exposed (matches the spec table)', () => {
+  // PR-3a: `decideMcpServerPermissions` is the one recorded, TEMPORARY
+  // exception -- PR-3b (EmbeddedAgentWorkerView "MCP servers" section) flips
+  // it to `exposed: true` and removes this constant. Unlike the
+  // server-side `PERMANENT_EMBEDDED_DIVERGENCES` in
+  // `agent-operations-embedded.test.ts` (a permanent, Architect-ruled
+  // divergence enforced inside the tool), this one is temporary scope
+  // deferral -- do not merge the two ideas or reuse that name here.
+  const NOT_YET_EXPOSED_UI: ReadonlySet<AgentOperation> = new Set(['decideMcpServerPermissions']);
+
+  test('all entries except the recorded temporary exception are currently exposed (matches the spec table)', () => {
     // NOTE: if this test starts failing because an entry became
     // `exposed: false`, that is likely an INTENTIONAL table update (a new
     // recorded not-exposed decision for the UI surface), not a bug. Update
     // this test's expectation to match the new table -- do not just delete
     // the assertion.
     for (const operation of AGENT_OPERATIONS) {
+      if (NOT_YET_EXPOSED_UI.has(operation)) {
+        expect(UI_AGENT_OPERATIONS[operation].exposed).toBe(false);
+        continue;
+      }
       expect(UI_AGENT_OPERATIONS[operation].exposed).toBe(true);
     }
   });
@@ -58,9 +71,12 @@ describe('UI_AGENT_OPERATIONS', () => {
     };
 
     for (const [operation, fileName] of Object.entries(componentFileClaims)) {
-      expect(UI_AGENT_OPERATIONS[operation as keyof typeof UI_AGENT_OPERATIONS].via).toContain(
-        fileName.replace('.tsx', ''),
-      );
+      const entry = UI_AGENT_OPERATIONS[operation as keyof typeof UI_AGENT_OPERATIONS];
+      // Narrow the discriminated union: every key listed in componentFileClaims
+      // is expected to be an exposed entry (the only variant carrying `via`).
+      expect(entry.exposed).toBe(true);
+      if (!entry.exposed) throw new Error(`unreachable: ${operation} is not exposed`);
+      expect(entry.via).toContain(fileName.replace('.tsx', ''));
       expect(componentFileExists(fileName)).toBe(true);
     }
   });
