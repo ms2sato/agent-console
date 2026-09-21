@@ -510,17 +510,28 @@ export class SdkEngine implements ClaudeSdkEngine {
    */
   private readonly initialProjectMcpServers: Record<string, McpServerConfig>;
   /**
-   * §4.5 D-D "activation never waits": server names added to the live
-   * session by {@link setMcpServers} since construction, over and above
-   * {@link initialProjectMcpServers}'s activation-time set. Extended
-   * BEFORE the live `Query.setMcpServers` call in
-   * {@link applyMcpServersOnce}, so a `system:init`/status update racing in
-   * from the SDK during that call is never fatal'd for a name this call is
-   * in the middle of legitimately adding. Folded into `'project'` scope by
-   * {@link classifyMcpServerScope} -- a live add is definitionally a project
-   * server that was pending at activation and got allowed mid-session.
+   * §4.5 D-D "activation never waits": server names currently live in the
+   * SDK session via {@link setMcpServers}, over and above
+   * {@link initialProjectMcpServers}'s activation-time set. NOT add-only:
+   * `Query.setMcpServers` is a full-state replace (same contract as
+   * `pairs` itself -- see {@link setMcpServers}'s doc comment), so a name
+   * omitted from a later successful call is no longer live, and this set is
+   * REPLACED (not unioned) with exactly that call's resolved names once it
+   * succeeds -- otherwise a revoked name would still read as `'project'`
+   * scope here after the SDK itself has dropped it, defeating the §4.5 D-E
+   * containment wall for exactly the revocation it exists to catch. WHILE a
+   * call is in flight, this set is first EXTENDED (union of the pre-call
+   * snapshot and the newly-resolving names) BEFORE the live
+   * `Query.setMcpServers` call in {@link applyMcpServersOnce}, so a
+   * `system:init`/status update racing in from the SDK during that call is
+   * never fatal'd for a name this call is in the middle of legitimately
+   * adding OR revoking. On failure (the SDK call throws), the pre-call
+   * snapshot is restored verbatim, since the call never took effect. Folded
+   * into `'project'` scope by {@link classifyMcpServerScope} -- a live add
+   * is definitionally a project server that was pending at activation and
+   * got allowed mid-session.
    */
-  private readonly liveAddedMcpServerNames = new Set<string>();
+  private liveAddedMcpServerNames = new Set<string>();
 
   private currentTurnId: string | null = null;
   private iterationText = '';
@@ -1156,10 +1167,18 @@ export class SdkEngine implements ClaudeSdkEngine {
     // §4.5 D-D: extend the containment detector's expected set BEFORE the
     // live SDK call, so a `system:init`/status update racing in from the SDK
     // while this call is in flight is never fatal'd for a name this call is
-    // in the middle of legitimately adding. Only names that actually
-    // RESOLVED are added -- a name that failed resolution was never going to
-    // be started, so it must not widen the expected set.
-    for (const name of Object.keys(resolvedAllowed)) this.liveAddedMcpServerNames.add(name);
+    // in the middle of legitimately adding -- or a name a PREVIOUS call
+    // added that this call is in the middle of revoking (the SDK could
+    // still report the old name mid-transition). Only names that actually
+    // RESOLVED are added to the union -- a name that failed resolution was
+    // never going to be started, so it must not widen the expected set.
+    // Snapshotted so a throw below can restore exactly the pre-call state
+    // (see the `catch` block), since a throw means the call never took
+    // effect.
+    const previousLiveAdded = this.liveAddedMcpServerNames;
+    const extendedLiveAdded = new Set(previousLiveAdded);
+    for (const name of Object.keys(resolvedAllowed)) extendedLiveAdded.add(name);
+    this.liveAddedMcpServerNames = extendedLiveAdded;
 
     if (this.dead) {
       // No live session to write to. The approval record (D-B) is already
@@ -1188,6 +1207,12 @@ export class SdkEngine implements ClaudeSdkEngine {
         ...resolvedAllowed,
       });
     } catch (err: unknown) {
+      // The call never took effect, so the SDK's own live-added set is
+      // whatever it was BEFORE this call -- restore the snapshot rather than
+      // keeping the optimistic extension above, or a name this call FAILED
+      // to add/revoke would incorrectly keep reading as `'project'` scope
+      // (or lose scope it never actually lost).
+      this.liveAddedMcpServerNames = previousLiveAdded;
       console.warn(
         `[sdk-engine] setMcpServers threw while applying the live project-server set; the approval ` +
           `record stays the truth and a restart will pick it up: ${errorMessage(err)}`,
@@ -1200,6 +1225,14 @@ export class SdkEngine implements ClaudeSdkEngine {
       });
       return;
     }
+
+    // The live call succeeded and is a FULL-STATE REPLACE (same contract as
+    // `pairs` itself) -- so the live-added set is REPLACED with exactly this
+    // call's resolved names, not left as the union computed above. A name
+    // added by a PREVIOUS call and omitted from THIS one is no longer live
+    // in the SDK session either, and must stop reading as `'project'` scope
+    // here too (the bug this replace-not-union step exists to close).
+    this.liveAddedMcpServerNames = new Set(Object.keys(resolvedAllowed));
 
     // `applied: true` describes whether the LIVE CALL was made and processed
     // -- not whether every server in it connected cleanly. A per-server

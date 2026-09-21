@@ -3053,7 +3053,7 @@ describe('EmbeddedAgentWorkerService.applyMcpServerPermissions (epic #1636 Phase
 
     expect(
       h.service.applyMcpServerPermissions(h.workerId, [{ name: 'chrome-devtools', hash: 'hash-1' }]),
-    ).toBe(true);
+    ).toEqual({ ok: true, live: true });
 
     expect(JSON.parse(h.fake.stdinWrites[before])).toEqual({
       v: 1,
@@ -3082,18 +3082,59 @@ describe('EmbeddedAgentWorkerService.applyMcpServerPermissions (epic #1636 Phase
 
     expect(
       h.service.applyMcpServerPermissions(h.workerId, [{ name: 'chrome-devtools', hash: 'hash-1' }]),
-    ).toBe(true);
+    ).toEqual({ ok: true, live: true });
     expect(JSON.parse(h.fake.stdinWrites[before]).type).toBe('set-mcp-servers');
   });
 
-  it('returns false, without throwing, when there is no running subprocess (the dormant-worker case)', async () => {
+  it('returns { ok: true, live: false }, without throwing, when there is no running subprocess (the dormant-worker case)', async () => {
     // The durable permission row is already written by the caller; a
     // dormant worker picks up the new value at its next activation.
     const h = setup({ definition: SDK_DEFINITION });
     expect(
       h.service.applyMcpServerPermissions(h.workerId, [{ name: 'chrome-devtools', hash: 'hash-1' }]),
-    ).toBe(false);
+    ).toEqual({ ok: true, live: false });
+    // CodeRabbit finding, PR #1794: the dormant-worker case must NOT append
+    // (or broadcast) a synthetic mcp-servers-applied event -- only a REAL
+    // discovered event at the worker's next activation should ever produce
+    // one for this case.
+    expect(h.recorder.onData).not.toHaveBeenCalled();
   });
+
+  it('CodeRabbit finding, PR #1794: when a live subprocess exists but the stdin write throws, appends+broadcasts a synthetic applied:false,reason:delivery-failed event -- distinguishing this from the dormant-worker no-op', async () => {
+    const h = setup({ definition: SDK_DEFINITION });
+    await h.service.activate(h.sessionId, h.workerId);
+    h.recorder.onData.mockClear();
+    h.worker.stdin!.write = () => {
+      throw new Error('EPIPE');
+    };
+
+    const result = h.service.applyMcpServerPermissions(h.workerId, [
+      { name: 'chrome-devtools', hash: 'hash-1' },
+    ]);
+
+    expect(result).toEqual({ ok: false, error: 'EPIPE' });
+    // The event reaches the SAME fan-out path a genuine engine-authored
+    // mcp-servers-applied report takes (handleLoopLine -> appendLine ->
+    // every attached connection's onData) -- not a separate/new broadcast
+    // mechanism.
+    const dataCalls = h.recorder.onData.mock.calls as Array<[string, number, number]>;
+    const appliedLines = dataCalls
+      .map(([data]) => data.trim())
+      .filter((line) => line.length > 0)
+      .map((line) => JSON.parse(line))
+      .filter((event) => event.type === 'mcp-servers-applied');
+    expect(appliedLines).toEqual([{ v: 1, type: 'mcp-servers-applied', applied: false, reason: 'delivery-failed' }]);
+  });
+
+  // Polarity (workflow.md "A check's existence is not its detection
+  // power"): reverting the append-on-throw line (simulating the ORIGINAL
+  // bug -- the catch block only logs and returns, never surfaces the
+  // failure into the stream) makes the assertion above fail. Verified by
+  // temporarily commenting out the
+  // `this.appendEvent(runtime.ctx, { ... reason: 'delivery-failed' })` line
+  // in `applyMcpServerPermissions`'s catch block and re-running this test:
+  // `appliedLines` was `[]` instead of the expected single-element array,
+  // and the assertion failed as expected. Restored before commit.
 });
 
 describe('EmbeddedAgentWorkerService.cancel', () => {

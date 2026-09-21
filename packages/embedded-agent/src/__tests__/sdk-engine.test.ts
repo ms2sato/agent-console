@@ -237,7 +237,9 @@ function makeCapturingQuery(source: SDKMessage[]): { queryFn: QueryFn; pushedMes
  * `makeFakeQuery`'s fixed-array replay cannot express (the array is
  * exhausted/blocked before the test's own live call happens).
  */
-function makeControllableMcpQuery(): {
+function makeControllableMcpQuery(
+  opts: { failOnCallNumber?: number } = {},
+): {
   queryFn: QueryFn;
   push: (msg: SDKMessage) => void;
   setMcpServersCalls: Array<Record<string, unknown>>;
@@ -254,6 +256,7 @@ function makeControllableMcpQuery(): {
     }
   };
   const setMcpServersCalls: Array<Record<string, unknown>> = [];
+  let callCount = 0;
   const queryFn: QueryFn = () => {
     const gen = (async function* (): AsyncGenerator<SDKMessage, void> {
       for (;;) {
@@ -273,6 +276,12 @@ function makeControllableMcpQuery(): {
       getContextUsage: async () => usableContextUsage(1000),
       setMcpServers: async (servers: Record<string, unknown>) => {
         setMcpServersCalls.push(servers);
+        callCount += 1;
+        // Selective per-call failure (`opts.failOnCallNumber`), distinct
+        // from `makeLiveMcpWriteQuery`'s `failOn` which fails EVERY call --
+        // needed by tests that must observe a SUCCESSFUL prior call's
+        // effect surviving a LATER call's failure.
+        if (opts.failOnCallNumber === callCount) throw new Error('transport gone');
         return { added: Object.keys(servers), removed: [], errors: {} };
       },
       mcpServerStatus: async () => [],
@@ -4024,5 +4033,94 @@ describe('SdkEngine — setMcpServers (epic #1636 Phase 5 PR-2, Architect ruling
     const fatalEvents = eventsOfType(events, 'fatal');
     expect(fatalEvents).toHaveLength(1);
     expect(fatalEvents[0].message).toContain('still-unexpected');
+  });
+
+  // -------------------------------------------------------------------------
+  // Revocation (CodeRabbit finding, PR #1794): setMcpServers is a full-state
+  // replace, so a name omitted from a LATER successful call must stop
+  // reading as 'project' scope -- liveAddedMcpServerNames is not add-only.
+  // -------------------------------------------------------------------------
+
+  it('revokes a name omitted from a later successful setMcpServers call: it no longer counts as project scope and trips the wall', async () => {
+    const events: EmbeddedAgentEvent[] = [];
+    const { queryFn, push } = makeControllableMcpQuery();
+    const engine = new SdkEngine(
+      baseDeps({
+        emit: (e) => events.push(e),
+        queryFn,
+        discoveredProjectMcpServers: discoveryMap(['keep', 'hk'], ['revoke', 'hr']),
+      }),
+    );
+
+    // First call live-adds BOTH names.
+    engine.setMcpServers([
+      { name: 'keep', hash: 'hk' },
+      { name: 'revoke', hash: 'hr' },
+    ]);
+    await flush();
+
+    // Second call is the FULL new allowed set -- 'revoke' is omitted, which
+    // per the SDK's full-state-replace contract means the SDK itself no
+    // longer has it live.
+    engine.setMcpServers([{ name: 'keep', hash: 'hk' }]);
+    await flush();
+
+    push(
+      systemInit({
+        mcpServers: [
+          { name: 'agent-console', status: 'connected' },
+          { name: 'revoke', status: 'connected' },
+        ],
+      }),
+    );
+    await flush();
+
+    // Had the fix not shipped, 'revoke' would still read as 'project' scope
+    // (still in the add-only set) and this would NOT be fatal.
+    const fatalEvents = eventsOfType(events, 'fatal');
+    expect(fatalEvents).toHaveLength(1);
+    expect(fatalEvents[0].message).toContain('revoke');
+  });
+
+  it('a THROWING setMcpServers call restores the pre-call live-added set: a name added by an earlier successful call is unaffected', async () => {
+    const events: EmbeddedAgentEvent[] = [];
+    // Call #1 succeeds (adds 'keep'); call #2 throws while attempting to
+    // omit it -- the pre-call snapshot restore must keep 'keep' live-added,
+    // since the throwing call never took effect.
+    const { queryFn, push } = makeControllableMcpQuery({ failOnCallNumber: 2 });
+    const engine = new SdkEngine(
+      baseDeps({
+        emit: (e) => events.push(e),
+        queryFn,
+        discoveredProjectMcpServers: discoveryMap(['keep', 'hk']),
+      }),
+    );
+
+    engine.setMcpServers([{ name: 'keep', hash: 'hk' }]);
+    await flush();
+
+    engine.setMcpServers([]);
+    await flush();
+    expect(eventsOfType(events, 'mcp-servers-applied').at(-1)).toEqual({
+      v: 1,
+      type: 'mcp-servers-applied',
+      applied: false,
+      errors: { '*': 'transport gone' },
+    });
+
+    events.length = 0;
+    push(
+      systemInit({
+        mcpServers: [
+          { name: 'agent-console', status: 'connected' },
+          { name: 'keep', status: 'connected' },
+        ],
+      }),
+    );
+    await flush();
+
+    // The throwing second call must not have dropped 'keep' from the live-
+    // added set -- it is still accepted, not fatal.
+    expect(eventsOfType(events, 'fatal')).toHaveLength(0);
   });
 });

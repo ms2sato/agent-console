@@ -2055,6 +2055,12 @@ describe('SessionManager', () => {
       return {
         fakeSpawnAsUserFn: fakeSpawnAsUserFn as unknown as SpawnAsUserFn,
         stdinWrites,
+        // Test seam: mutable so a test can force `stdin.write` to throw
+        // (mirrors `embedded-agent-worker-service.test.ts`'s
+        // `h.worker.stdin!.write = () => { throw ... }` pattern) and
+        // observe a live-subprocess write failure through the REAL
+        // SessionManager -> EmbeddedAgentWorkerService chain.
+        stdin,
         pushStdout: (s: string) => stdoutCtrl.enqueue(new TextEncoder().encode(s)),
         simulateExit: (code: number) => {
           resolveExited(code);
@@ -2178,11 +2184,60 @@ describe('SessionManager', () => {
         { name: 'chrome-devtools', scope: 'project', hash: 'hash-1', decision: 'allowed' },
       ]);
       // The worker is DORMANT (deactivated above) -- there is no live
-      // subprocess to tell, so `applyMcpServerPermissions` returns `false`
-      // and no additional stdin write happens as a side effect of recording
-      // the decision. No new spawn either: a dormant worker's decision
-      // applies at its NEXT activation, not by respawning here.
+      // subprocess to tell, so `applyMcpServerPermissions` returns
+      // `{ ok: true, live: false }` and no additional stdin write happens as
+      // a side effect of recording the decision. No new spawn either: a
+      // dormant worker's decision applies at its NEXT activation, not by
+      // respawning here.
       expect(spawn.fakeSpawnAsUserFn).toHaveBeenCalledTimes(1);
+    });
+
+    it('CodeRabbit finding, PR #1794: a LIVE worker whose stdin write throws still durably records the decision and responds successfully, but never as if the live session was updated', async () => {
+      const { manager, spawn, upsert, sessionId, workerId } = await setupSdkWorker();
+      await manager.activateEmbeddedAgentWorker(sessionId, workerId);
+      spawn.pushStdout(
+        `${JSON.stringify({
+          v: 1,
+          type: 'mcp-servers-discovered',
+          servers: [{ name: 'chrome-devtools', scope: 'project', hash: 'hash-1', decision: 'pending', status: 'connected' }],
+        })}\n`,
+      );
+      await waitForCondition(() => {
+        const w = manager.getSession(sessionId)!.workers.find((x) => x.id === workerId)!;
+        return w.type === 'embedded-agent' && w.mcpServers !== undefined;
+      });
+
+      // Force the live subprocess's stdin write to throw -- the write-failed
+      // case the (dormant-worker-only) test above cannot exercise, since the
+      // worker here is genuinely LIVE (never deactivated).
+      spawn.stdin.write = () => {
+        throw new Error('EPIPE');
+      };
+
+      const result = await manager.setMcpServerPermissions(
+        sessionId,
+        workerId,
+        'repo-1',
+        [{ name: 'chrome-devtools', hash: 'hash-1', decision: 'allow' }],
+        'user-1',
+      );
+
+      // The durable write happened regardless of the live-apply outcome --
+      // this is the SAME fact a dormant worker's call establishes, and the
+      // whole point of the fix is that a live-apply failure does not
+      // suppress it.
+      expect(upsert).toHaveBeenCalledTimes(1);
+      // The response still succeeds -- HTTP 200-equivalent at this layer --
+      // and the decision field reflects the just-recorded row. `status`
+      // stays exactly what the last REAL discovered event reported
+      // ('connected') -- the synthetic delivery-failed event appended by
+      // `applyMcpServerPermissions` is NOT a discovery and must never
+      // overwrite `worker.mcpServers`, i.e. must never claim the live
+      // session was updated.
+      const worker = result!;
+      expect(worker.type === 'embedded-agent' && worker.mcpServers).toEqual([
+        { name: 'chrome-devtools', scope: 'project', hash: 'hash-1', decision: 'allowed', status: 'connected' },
+      ]);
     });
 
     it('live-apply: sends a set-mcp-servers command carrying the FULL currently-allowed set to a LIVE worker', async () => {

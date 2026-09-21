@@ -530,94 +530,110 @@ async function armPa(cwd: string, agentConsoleUrl: string): Promise<ArmVerdict> 
   const recorder = new HookRecorder();
   const consoleConfig = buildConsoleServer();
   const session = new ProbeSession({ label: 'Pa', options: buildBattery(cwd, agentConsoleUrl, consoleConfig, recorder.hooks), pollUsage: false });
-  const ready = await session.waitForReady();
-  console.log(`Pa: ready=${ready}`);
-
-  const first = await session.runTurn('Reply with exactly the single word: READY');
-  account('Pa-turn1', first);
-  console.log(turnLine('Pa-turn1', first));
-
-  const statusBefore = await session.q.mcpServerStatus();
-  console.log(`Pa: mcpServerStatus() before setMcpServers = ${JSON.stringify(statusBefore.map((s) => ({ name: s.name, status: s.status })))}`);
-
-  const fixtureDir = mkdtempSync(join(tmpdir(), 'probe-sdk-pr2-pa-fixture-'));
-  const canaryPath = join(fixtureDir, `${NEW_SERVER_NAME}.touched`);
-  const ledgerPath = join(fixtureDir, 'ledger.tsv');
-  // Defensive per the task spec ("delete any stale canary"); fixtureDir is
-  // freshly created above so this never actually fires, but a probe reused
-  // against a non-fresh dir should not read a leftover canary as evidence.
-  if (existsSync(canaryPath)) rmSync(canaryPath);
-
-  let setResult: { added: string[]; removed: string[]; errors: Record<string, string> };
-  try {
-    setResult = await session.q.setMcpServers({
-      'agent-console': buildAgentConsoleConfig(agentConsoleUrl),
-      console: consoleConfig,
-      [NEW_SERVER_NAME]: { type: 'stdio', command: process.execPath, args: [FIXTURE_PATH, '--canary', canaryPath, '--ledger', ledgerPath] },
-      [MISSING_SERVER_NAME]: { type: 'stdio', command: MISSING_COMMAND },
-    });
-  } catch (err) {
-    console.log(`Pa: setMcpServers threw: ${err instanceof Error ? err.message : String(err)}`);
+  // Idempotent release: the happy path below calls `release()` once, at the
+  // point the ORIGINAL code called `session.close(); await
+  // session.waitForStreamEnd();` directly. The `finally` also calls it, so
+  // an exception thrown from ANY awaited call in between (a `runTurn`, a
+  // `mcpServerStatus()` read, etc. -- not just the guarded `setMcpServers`
+  // call) still releases the session/child process instead of leaking it.
+  let closed = false;
+  const release = async (): Promise<void> => {
+    if (closed) return;
+    closed = true;
     session.close();
     await session.waitForStreamEnd();
-    return { arm: 'Pa', conclusive: false, verdict: 'INCONCLUSIVE -- setMcpServers threw before any reading could be taken', stops: [] };
-  }
-  console.log(`Pa: setMcpServers result = ${JSON.stringify(setResult)}`);
+  };
 
-  const statusAfterSet = await session.q.mcpServerStatus();
-  console.log(`Pa: mcpServerStatus() after setMcpServers = ${JSON.stringify(statusAfterSet.map((s) => ({ name: s.name, status: s.status })))}`);
-  console.log(`Pa RECORD reserved-persistence: ${describeReservedPersistence(statusBefore, statusAfterSet, RESERVED_MCP_SERVER_NAMES)}`);
-
-  const second = await session.runTurn(
-    `Call the mcp__${NEW_SERVER_NAME}__probe_echo tool exactly once with no arguments and report what it returns. Then reply with ONLY the single word DONE. If that tool is not available to you, reply with ONLY the single word UNAVAILABLE and call nothing.`,
-  );
-  account('Pa-turn2', second);
-  console.log(turnLine('Pa-turn2', second));
-  console.log(`Pa: PostToolUse firings = ${JSON.stringify(recorder.postToolUse)}`);
-  console.log(`Pa: answer = ${JSON.stringify(second.text.trim().slice(0, 200))}`);
-
-  const canaryExists = existsSync(canaryPath);
-  const toolCallObserved = recorder.postToolUse.some((f) => !f.agentId && mcpServerOf(f.tool) === NEW_SERVER_NAME);
-  const missingToolCallObserved = recorder.postToolUse.some((f) => mcpServerOf(f.tool) === MISSING_SERVER_NAME);
-
-  const statusAfterTurn = await session.q.mcpServerStatus();
-
-  // RECORD-only: re-pass the SAME `console` instance a second time. This
-  // probe always tries the SAME instance, never a fresh one with the same
-  // name -- see this file's header for why that variant was chosen.
   try {
-    const dupResult = await session.q.setMcpServers({
-      'agent-console': buildAgentConsoleConfig(agentConsoleUrl),
-      console: consoleConfig,
-      [NEW_SERVER_NAME]: { type: 'stdio', command: process.execPath, args: [FIXTURE_PATH, '--canary', canaryPath, '--ledger', ledgerPath] },
-    });
-    console.log(
-      `Pa RECORD duplicate-console-registration (SAME instance re-passed) = ${classifyDuplicateConsoleRegistration(dupResult, 'console')} raw=${JSON.stringify(dupResult)}`,
+    const ready = await session.waitForReady();
+    console.log(`Pa: ready=${ready}`);
+
+    const first = await session.runTurn('Reply with exactly the single word: READY');
+    account('Pa-turn1', first);
+    console.log(turnLine('Pa-turn1', first));
+
+    const statusBefore = await session.q.mcpServerStatus();
+    console.log(`Pa: mcpServerStatus() before setMcpServers = ${JSON.stringify(statusBefore.map((s) => ({ name: s.name, status: s.status })))}`);
+
+    const fixtureDir = mkdtempSync(join(tmpdir(), 'probe-sdk-pr2-pa-fixture-'));
+    const canaryPath = join(fixtureDir, `${NEW_SERVER_NAME}.touched`);
+    const ledgerPath = join(fixtureDir, 'ledger.tsv');
+    // Defensive per the task spec ("delete any stale canary"); fixtureDir is
+    // freshly created above so this never actually fires, but a probe reused
+    // against a non-fresh dir should not read a leftover canary as evidence.
+    if (existsSync(canaryPath)) rmSync(canaryPath);
+
+    let setResult: { added: string[]; removed: string[]; errors: Record<string, string> };
+    try {
+      setResult = await session.q.setMcpServers({
+        'agent-console': buildAgentConsoleConfig(agentConsoleUrl),
+        console: consoleConfig,
+        [NEW_SERVER_NAME]: { type: 'stdio', command: process.execPath, args: [FIXTURE_PATH, '--canary', canaryPath, '--ledger', ledgerPath] },
+        [MISSING_SERVER_NAME]: { type: 'stdio', command: MISSING_COMMAND },
+      });
+    } catch (err) {
+      console.log(`Pa: setMcpServers threw: ${err instanceof Error ? err.message : String(err)}`);
+      await release();
+      return { arm: 'Pa', conclusive: false, verdict: 'INCONCLUSIVE -- setMcpServers threw before any reading could be taken', stops: [] };
+    }
+    console.log(`Pa: setMcpServers result = ${JSON.stringify(setResult)}`);
+
+    const statusAfterSet = await session.q.mcpServerStatus();
+    console.log(`Pa: mcpServerStatus() after setMcpServers = ${JSON.stringify(statusAfterSet.map((s) => ({ name: s.name, status: s.status })))}`);
+    console.log(`Pa RECORD reserved-persistence: ${describeReservedPersistence(statusBefore, statusAfterSet, RESERVED_MCP_SERVER_NAMES)}`);
+
+    const second = await session.runTurn(
+      `Call the mcp__${NEW_SERVER_NAME}__probe_echo tool exactly once with no arguments and report what it returns. Then reply with ONLY the single word DONE. If that tool is not available to you, reply with ONLY the single word UNAVAILABLE and call nothing.`,
     );
-  } catch (err) {
-    console.log(`Pa RECORD duplicate-console-registration: the re-pass call threw: ${err instanceof Error ? err.message : String(err)}`);
-  }
+    account('Pa-turn2', second);
+    console.log(turnLine('Pa-turn2', second));
+    console.log(`Pa: PostToolUse firings = ${JSON.stringify(recorder.postToolUse)}`);
+    console.log(`Pa: answer = ${JSON.stringify(second.text.trim().slice(0, 200))}`);
 
-  session.close();
-  await session.waitForStreamEnd();
+    const canaryExists = existsSync(canaryPath);
+    const toolCallObserved = recorder.postToolUse.some((f) => !f.agentId && mcpServerOf(f.tool) === NEW_SERVER_NAME);
+    const missingToolCallObserved = recorder.postToolUse.some((f) => mcpServerOf(f.tool) === MISSING_SERVER_NAME);
 
-  const verdict = classifyPa({
-    turnSettled: turnSettled(second),
-    canaryExists,
-    toolCallObserved,
-    missingToolCallObserved,
-    statusByName: statusAfterTurn.map((s) => ({ name: s.name, status: s.status })),
-    setResult,
-    newServerName: NEW_SERVER_NAME,
-    missingServerName: MISSING_SERVER_NAME,
-  });
-  console.log(`Pa verdict: ${verdict.verdict}`);
-  try {
-    rmSync(fixtureDir, { recursive: true, force: true });
-  } catch {
-    // Scratch dir; leaving it behind is harmless.
+    const statusAfterTurn = await session.q.mcpServerStatus();
+
+    // RECORD-only: re-pass the SAME `console` instance a second time. This
+    // probe always tries the SAME instance, never a fresh one with the same
+    // name -- see this file's header for why that variant was chosen.
+    try {
+      const dupResult = await session.q.setMcpServers({
+        'agent-console': buildAgentConsoleConfig(agentConsoleUrl),
+        console: consoleConfig,
+        [NEW_SERVER_NAME]: { type: 'stdio', command: process.execPath, args: [FIXTURE_PATH, '--canary', canaryPath, '--ledger', ledgerPath] },
+      });
+      console.log(
+        `Pa RECORD duplicate-console-registration (SAME instance re-passed) = ${classifyDuplicateConsoleRegistration(dupResult, 'console')} raw=${JSON.stringify(dupResult)}`,
+      );
+    } catch (err) {
+      console.log(`Pa RECORD duplicate-console-registration: the re-pass call threw: ${err instanceof Error ? err.message : String(err)}`);
+    }
+
+    await release();
+
+    const verdict = classifyPa({
+      turnSettled: turnSettled(second),
+      canaryExists,
+      toolCallObserved,
+      missingToolCallObserved,
+      statusByName: statusAfterTurn.map((s) => ({ name: s.name, status: s.status })),
+      setResult,
+      newServerName: NEW_SERVER_NAME,
+      missingServerName: MISSING_SERVER_NAME,
+    });
+    console.log(`Pa verdict: ${verdict.verdict}`);
+    try {
+      rmSync(fixtureDir, { recursive: true, force: true });
+    } catch {
+      // Scratch dir; leaving it behind is harmless.
+    }
+    return verdict;
+  } finally {
+    await release();
   }
-  return verdict;
 }
 
 async function armPb(agentConsoleUrl: string): Promise<ArmVerdict[]> {
@@ -656,24 +672,40 @@ async function armPb(agentConsoleUrl: string): Promise<ArmVerdict[]> {
     }),
     pollUsage: false,
   });
-  await subjectSession.waitForReady();
-  const subjectOutcome = await subjectSession.runTurn(delegationPrompt, 240_000);
-  account('Pb-subject', subjectOutcome);
-  console.log(turnLine('Pb-subject', subjectOutcome));
-  console.log(`Pb-subject: system:init.agents = ${JSON.stringify(subjectSession.systemInit?.agents ?? null)}`);
-  console.log(`Pb-subject: SubagentStart firings = ${JSON.stringify(subjectRecorder.subagentStarts)}`);
-  console.log(`Pb-subject: answer = ${JSON.stringify(subjectOutcome.text.trim().slice(0, 400))}`);
-  subjectSession.close();
-  await subjectSession.waitForStreamEnd();
+  // Idempotent release, same pattern/rationale as `armPa`'s: any awaited
+  // call between construction and the happy-path close (waitForReady,
+  // runTurn) can throw, and without a `finally` the session/child process
+  // would leak.
+  let subjectClosed = false;
+  const releaseSubject = async (): Promise<void> => {
+    if (subjectClosed) return;
+    subjectClosed = true;
+    subjectSession.close();
+    await subjectSession.waitForStreamEnd();
+  };
 
-  const subjectVerdict = classifyPbSubject({
-    turnSettled: turnSettled(subjectOutcome),
-    agentsInInit: subjectSession.systemInit?.agents,
-    subagentStartFired: subjectRecorder.subagentStarts.includes('probe-agent'),
-    answer: subjectOutcome.text,
-    optionNonce,
-  });
-  console.log(`Pb-subject verdict: ${subjectVerdict.verdict}`);
+  let subjectVerdict: ArmVerdict;
+  try {
+    await subjectSession.waitForReady();
+    const subjectOutcome = await subjectSession.runTurn(delegationPrompt, 240_000);
+    account('Pb-subject', subjectOutcome);
+    console.log(turnLine('Pb-subject', subjectOutcome));
+    console.log(`Pb-subject: system:init.agents = ${JSON.stringify(subjectSession.systemInit?.agents ?? null)}`);
+    console.log(`Pb-subject: SubagentStart firings = ${JSON.stringify(subjectRecorder.subagentStarts)}`);
+    console.log(`Pb-subject: answer = ${JSON.stringify(subjectOutcome.text.trim().slice(0, 400))}`);
+    await releaseSubject();
+
+    subjectVerdict = classifyPbSubject({
+      turnSettled: turnSettled(subjectOutcome),
+      agentsInInit: subjectSession.systemInit?.agents,
+      subagentStartFired: subjectRecorder.subagentStarts.includes('probe-agent'),
+      answer: subjectOutcome.text,
+      optionNonce,
+    });
+    console.log(`Pb-subject verdict: ${subjectVerdict.verdict}`);
+  } finally {
+    await releaseSubject();
+  }
 
   // CONTROL -- same repo, same battery, Options.agents omitted entirely.
   const controlConsole = buildConsoleServer();
@@ -682,20 +714,32 @@ async function armPb(agentConsoleUrl: string): Promise<ArmVerdict[]> {
     options: buildBattery(repoDir, agentConsoleUrl, controlConsole, {}, { extraTools: ['Task'] }),
     pollUsage: false,
   });
-  await controlSession.waitForReady();
-  const controlOutcome = await controlSession.runTurn(delegationPrompt, 240_000);
-  account('Pb-control', controlOutcome);
-  console.log(turnLine('Pb-control', controlOutcome));
-  console.log(`Pb-control: system:init.agents = ${JSON.stringify(controlSession.systemInit?.agents ?? null)}`);
-  console.log(`Pb-control: answer = ${JSON.stringify(controlOutcome.text.trim().slice(0, 400))}`);
-  controlSession.close();
-  await controlSession.waitForStreamEnd();
+  let controlClosed = false;
+  const releaseControl = async (): Promise<void> => {
+    if (controlClosed) return;
+    controlClosed = true;
+    controlSession.close();
+    await controlSession.waitForStreamEnd();
+  };
 
-  const controlVerdict = classifyPbControl({
-    turnSettled: turnSettled(controlOutcome),
-    agentsInInit: controlSession.systemInit?.agents,
-  });
-  console.log(`Pb-control verdict: ${controlVerdict.verdict}`);
+  let controlVerdict: ArmVerdict;
+  try {
+    await controlSession.waitForReady();
+    const controlOutcome = await controlSession.runTurn(delegationPrompt, 240_000);
+    account('Pb-control', controlOutcome);
+    console.log(turnLine('Pb-control', controlOutcome));
+    console.log(`Pb-control: system:init.agents = ${JSON.stringify(controlSession.systemInit?.agents ?? null)}`);
+    console.log(`Pb-control: answer = ${JSON.stringify(controlOutcome.text.trim().slice(0, 400))}`);
+    await releaseControl();
+
+    controlVerdict = classifyPbControl({
+      turnSettled: turnSettled(controlOutcome),
+      agentsInInit: controlSession.systemInit?.agents,
+    });
+    console.log(`Pb-control verdict: ${controlVerdict.verdict}`);
+  } finally {
+    await releaseControl();
+  }
 
   try {
     rmSync(repoDir, { recursive: true, force: true });

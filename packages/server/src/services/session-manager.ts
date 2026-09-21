@@ -1062,6 +1062,18 @@ export class SessionManager {
    * (404/409 classification) -- this method performs the write
    * unconditionally for whatever pairs it is given.
    *
+   * This route ALWAYS responds HTTP 200 with the updated worker, regardless
+   * of the live-apply outcome -- the durable decision is the truth the
+   * response reflects. `applyMcpServerPermissions`'s return value is
+   * deliberately not branched on here: a live
+   * write failure is not swallowed, it is made OBSERVABLE by that method
+   * itself, which appends a synthetic `applied: false, reason:
+   * 'delivery-failed'` event into the worker's own stream when its stdin
+   * write throws -- see that method's own doc comment. There is nothing
+   * left for this layer to decide from the return value; a future caller
+   * that needs it (metrics, a different response shape) can start reading
+   * it without changing this method's own contract.
+   *
    * Returns `null` when the session does not exist, the worker does not
    * exist, or the worker is not an embedded-agent worker.
    */

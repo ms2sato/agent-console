@@ -1906,7 +1906,7 @@ describe('Workers API', () => {
       expect(mcpUpsert).toHaveBeenCalledTimes(2);
     });
 
-    it('records the decision on a DORMANT worker (never activated), row written and response mcpServers stays undefined (nothing discovered yet)', async () => {
+    it('{ all: true } on a DORMANT worker (never activated) is a 200 no-op: no row written, nothing discovered yet', async () => {
       // A worktree session's embedded-agent worker created but never
       // activated has no `mcpServers` reading at all -- but the route's
       // pair-validation runs against `worker.mcpServers ?? []`, so an

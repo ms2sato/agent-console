@@ -34,6 +34,7 @@ import {
   matchSlashCommand,
   type EmbeddedAgentDefinition,
   type EmbeddedAgentCommand,
+  type EmbeddedAgentEvent,
   type EmbeddedAgentServerEvent,
   type EmbeddedAgentServerNotification,
   type EmbeddedAgentRestoredMessage,
@@ -332,6 +333,23 @@ export type SendUserMessageResult =
   | { ok: true; id: string }
   | { ok: true; queued: true }
   | { ok: false; code: 'NOT_ACTIVATED' | 'TURN_IN_PROGRESS' | 'WRITE_FAILED'; error: string };
+
+/**
+ * {@link EmbeddedAgentWorkerService.applyMcpServerPermissions}'s return
+ * shape -- distinguishes the two `ok: true` cases (`live: false` = no
+ * running subprocess to tell, a legitimate no-op since the durable row
+ * already carries the decision and a dormant worker reads it at its next
+ * activation; `live: true` = the command reached the running subprocess)
+ * from the case that must NOT be conflated with either: a live subprocess
+ * existed but writing to its stdin threw, so the SDK session still has the
+ * OLD allowed set even though the durable row and in-memory
+ * `worker.mcpServers` already reflect the NEW decision (see
+ * `applyMcpServerPermissions`'s own doc comment). `applyModelParams` still
+ * returns a plain `boolean` with this same two-cause conflation on its
+ * `false` branch -- a pre-existing, out-of-scope-for-this-fix gap noted here
+ * rather than fixed alongside it.
+ */
+export type ApplyMcpServerPermissionsResult = { ok: true; live: boolean } | { ok: false; error: string };
 
 export interface EmbeddedAgentWorkerServiceDeps {
   getSession: (sessionId: string) => InternalSession | undefined;
@@ -1924,31 +1942,50 @@ export class EmbeddedAgentWorkerService {
    * way `activate`'s own `init` composition does: every currently-`allow`
    * row for the session's repository.
    *
-   * Same "returns `false` means no live subprocess, not a failure" contract
-   * as `applyModelParams` -- the durable permission row is already written
-   * by the caller before this is invoked, and a dormant worker picks it up
-   * at its next activation.
+   * `{ ok: true, live: false }` means no live subprocess, not a failure --
+   * the durable permission row is already written by the caller before this
+   * is invoked, and a dormant worker picks it up at its next activation.
+   * `{ ok: true, live: true }` means the command reached the running
+   * subprocess. `{ ok: false, error }` is the THIRD, distinct case a plain
+   * boolean could not express: a live subprocess existed but the stdin write
+   * threw, so the SDK session was never told -- the caller must not treat
+   * this the same as the no-runtime case (see
+   * {@link ApplyMcpServerPermissionsResult}'s own doc comment).
+   *
+   * A live write failure must not be silently
+   * indistinguishable from a clean apply -- the API response stays HTTP 200
+   * either way (the durable decision IS recorded, and that is the truth a
+   * dormant/future activation reads), but the failure is made OBSERVABLE by
+   * appending a synthetic `mcp-servers-applied` event -- shaped exactly like
+   * the engine's own report of the same failure class -- into the worker's
+   * persisted stream via the SAME `appendEvent`/fan-out path
+   * `handleLoopLine` uses for the engine's genuine reports. This is the one
+   * place the server synthesizes an ENGINE-shaped event rather than a
+   * `EmbeddedAgentServerEvent`: the engine never got a chance to report
+   * `applied: false` itself, because the write that would have carried the
+   * command never reached it.
    */
   applyMcpServerPermissions(
     workerId: string,
     allowedProjectMcpServers: Array<{ name: string; hash: string }>,
-  ): boolean {
+  ): ApplyMcpServerPermissionsResult {
     const runtime = this.runtimes.get(workerId);
     const stdin = runtime?.ctx.worker.stdin;
-    if (!runtime || !stdin) return false;
+    if (!runtime || !stdin) return { ok: true, live: false };
     try {
       this.writeCommand(stdin, {
         v: 1,
         type: 'set-mcp-servers',
         allowedProjectMcpServers,
       });
-      return true;
+      return { ok: true, live: true };
     } catch (err) {
       logger.warn(
         { workerId, err },
         'Failed to forward MCP server permissions to embedded-agent stdin',
       );
-      return false;
+      this.appendEvent(runtime.ctx, { v: 1, type: 'mcp-servers-applied', applied: false, reason: 'delivery-failed' });
+      return { ok: false, error: err instanceof Error ? err.message : String(err) };
     }
   }
 
@@ -2063,8 +2100,20 @@ export class EmbeddedAgentWorkerService {
     }
   }
 
-  /** Append a server-authored event object to the persisted stream. */
-  private appendEvent(ctx: StreamContext, event: EmbeddedAgentServerEvent): void {
+  /**
+   * Append a server-authored event object to the persisted stream. Also
+   * accepts the ENGINE-shaped `mcp-servers-applied` event for the one case
+   * where the SERVER synthesizes it: a live `applyMcpServerPermissions`
+   * whose stdin write THREW, so the engine itself never got the chance to
+   * report `applied: false` -- see `applyMcpServerPermissions`'s catch
+   * block. This is a deliberately narrow widening (one named `Extract`, not
+   * the full `EmbeddedAgentEvent` union): every OTHER engine-authored event
+   * still reaches the stream only via `handleLoopLine`'s raw-line append.
+   */
+  private appendEvent(
+    ctx: StreamContext,
+    event: EmbeddedAgentServerEvent | Extract<EmbeddedAgentEvent, { type: 'mcp-servers-applied' }>,
+  ): void {
     this.appendLine(ctx, JSON.stringify(event));
   }
 
