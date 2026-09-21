@@ -643,7 +643,7 @@ interface Runtime {
    */
   stderrTail: string;
   /**
-   * epic #1636 Phase 5 PR-3a (Issue #1795): the (name -> {hash, decision})
+   * epic #1636 Phase 5 PR-3a: the (name -> {hash, decision})
    * snapshot from the FIRST `mcp-servers-discovered` event of this
    * incarnation (always form (a), `main.ts`'s activation-time discovery --
    * sound by construction since `main.ts` emits it before `createSdkEngine`
@@ -2362,7 +2362,7 @@ export class EmbeddedAgentWorkerService {
     }
 
     // (e2) epic #1636 Phase 5 PR-2/PR-3a (docs/design/embedded-agent-sdk-engine.md
-    // §4.5, Issue #1795): the claude-sdk engine's own discovery of its
+    // §4.5): the claude-sdk engine's own discovery of its
     // project `.mcp.json` fired. Per §4.5 D-D, discovery may report up to
     // three times per activation -- but a plain last-write-wins replacement
     // over `ctx.worker.mcpServers` is WRONG: forms (b)/(c) (`system:init` /
