@@ -3279,6 +3279,44 @@ describe('EmbeddedAgentWorkerView', () => {
       expect(screen.getByText('applied to the running agent')).toBeTruthy();
       expect(screen.getByText('connected')).toBeTruthy();
     });
+
+    // CodeRabbit review, PR #1802: a project row can carry `decision:
+    // 'pending'`/`'allowed'`/`'denied'` with `hash` absent only through a
+    // future decision-shape drift (the wire contract reserves an absent
+    // hash for `invalid` today), but TypeScript's `hash?` is optional
+    // regardless of `decision` -- nothing in the type system stops it. A
+    // hash-less row must never be able to POST an empty-string hash.
+    // Polarity confirmed: removing `server.hash === undefined` from both
+    // buttons' `disabled` conditions made this test fail (`disabled` read
+    // `false`, and the click assertion below failed since a POST fired);
+    // reverted after confirming.
+    it('(m) a pending project row with NO hash renders both buttons disabled and issues no POST on click', async () => {
+      const fetchMock = mock(mcpFetchWithPost());
+      globalThis.fetch = Object.assign(fetchMock, { preconnect: () => {} });
+      const user = userEvent.setup();
+      renderView({
+        sessionId: 's-mcp-m',
+        workerId: 'w-mcp-m',
+        embeddedAgentId: 'ea-mcp',
+        mcpServers: [{ name: 'no-hash-server', scope: 'project', decision: 'pending' }],
+      });
+
+      await user.click(await screen.findByRole('button', { name: /MCP servers/ }));
+      const row = screen.getByText('no-hash-server').closest('div') as HTMLElement;
+      const allowButton = within(row).getByRole('button', { name: 'Allow' }) as HTMLButtonElement;
+      const denyButton = within(row).getByRole('button', { name: 'Deny' }) as HTMLButtonElement;
+      expect(allowButton.disabled).toBe(true);
+      expect(denyButton.disabled).toBe(true);
+
+      await user.click(allowButton).catch(() => {});
+      await user.click(denyButton).catch(() => {});
+
+      expect(
+        fetchMock.mock.calls.some(
+          ([, init]) => (init as RequestInit | undefined)?.method === 'POST',
+        ),
+      ).toBe(false);
+    });
   });
 
   describe('Transcript Restore (#1123)', () => {
