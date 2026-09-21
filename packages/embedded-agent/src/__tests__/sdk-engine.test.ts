@@ -1293,6 +1293,61 @@ describe('SdkEngine — MCP server containment wall (epic #1636 Phase 5 PR-2, §
     expect(eventsOfType(events, 'fatal')).toHaveLength(0);
     expect(eventsOfType(events, 'sdk-session-id')).toHaveLength(1);
   });
+
+  // Architect finding, 2026-09-21: `classifyMcpServerScope` must normalize
+  // BOTH sides of every comparison through `slugifyMcpServerName` before
+  // matching -- `message.tools`'s `mcp__<slug>__<toolname>` entries carry an
+  // ALREADY-SLUGIFIED server name (non-alphanumeric runs replaced with `_`),
+  // while the expected-name sources (`initialProjectMcpServers`'s keys,
+  // `expectedMcpServerNames.userLocal`) hold the RAW declared name. Without
+  // normalization, a legitimate server whose declared name contains a `.` or
+  // a space is misclassified as unexpected and the session is wrongly
+  // fatal'd. These two pins reach the wall exclusively via the
+  // already-slugified `message.tools` form, never via `message.mcp_servers`,
+  // so a raw-vs-raw comparison could not accidentally satisfy them.
+  //
+  // Polarity, measured: with `classifyMcpServerScope`'s normalization
+  // reverted to raw (unslugified) comparison, BOTH pins below fail --
+  // 'terminates with a fatal event' where none was expected, because
+  // `mcp__my_server__...`/`mcp__my_server_2__...` (slugified) never
+  // raw-string-matches `'my.server'`/`'my server'` (declared). Restored
+  // afterward; see the PR body for the exact revert/restore commands run.
+  it('accepts a user/local-scope server declared as "my.server" when reported via the slugified mcp__my_server__ tool-name form (positive control, Architect finding 2026-09-21)', async () => {
+    const events: EmbeddedAgentEvent[] = [];
+    const { queryFn } = makeFakeQuery([
+      systemInit({ tools: ['Read', 'mcp__my_server__do_thing'] }),
+    ]);
+    new SdkEngine(
+      baseDeps({
+        emit: (e) => events.push(e),
+        queryFn,
+        enabledTools: ['Read'],
+        expectedMcpServerNames: { userLocal: new Set(['my.server']), unavailable: false },
+      }),
+    );
+    await flush();
+    expect(eventsOfType(events, 'fatal')).toHaveLength(0);
+  });
+
+  it('accepts a project-scope server declared as "my server" when reported via the slugified mcp__my_server_2__ tool-name form (positive control, Architect finding 2026-09-21)', async () => {
+    const events: EmbeddedAgentEvent[] = [];
+    const { queryFn } = makeFakeQuery([
+      systemInit({ tools: ['Read', 'mcp__my_server_2__do_thing'] }),
+    ]);
+    new SdkEngine(
+      baseDeps({
+        emit: (e) => events.push(e),
+        queryFn,
+        enabledTools: ['Read'],
+        discoveredProjectMcpServers: new Map([
+          ['my server 2', { hash: 'h1', config: { type: 'stdio', command: 'echo' } }],
+        ]),
+        initialAllowedProjectMcpServers: [{ name: 'my server 2', hash: 'h1' }],
+      }),
+    );
+    await flush();
+    expect(eventsOfType(events, 'fatal')).toHaveLength(0);
+  });
 });
 
 // ---------------------------------------------------------------------------

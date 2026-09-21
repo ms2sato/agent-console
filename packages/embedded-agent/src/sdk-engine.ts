@@ -53,7 +53,7 @@ import {
 } from './compact-tool.js';
 import { resolveImageAttachments, buildClaudeSdkUserContent } from './attachment-content.js';
 import type { ClaudeSdkEngine, Engine } from './engine-types.js';
-import { isAccountConnector, mcpServerOf } from './mcp-names.js';
+import { isAccountConnector, mcpServerOf, slugifyMcpServerName } from './mcp-names.js';
 import type { RuleActivatorLike } from './rule-activation.js';
 import {
   TodoWriteArgsSchema,
@@ -1475,9 +1475,37 @@ export class SdkEngine implements ClaudeSdkEngine {
    * violation, which {@link handleSystemInit} handles separately by folding
    * it into `unexpectedMcpNames` rather than reading `null` back out of this
    * method's return value at that call site.
+   *
+   * **Both sides of every comparison are normalized through
+   * {@link slugifyMcpServerName} before matching** (Architect finding,
+   * 2026-09-21, security fix on top of PR-2's original wall). `system:init`
+   * reports an MCP server's name in TWO forms depending on which field is
+   * read: `message.mcp_servers[].name` carries the RAW declared name, while
+   * `message.tools`'s `mcp__<slug>__<toolname>` entries (extracted by
+   * `mcpServerOf` in {@link handleSystemInit}) carry the ALREADY-SLUGIFIED
+   * form -- this is a general SDK tool-naming convention, not special-cased
+   * to the connector class `isAccountConnector` was originally measured
+   * against (see `mcp-names.ts`'s doc comment on `slugifyMcpServerName`). A
+   * fully legitimate project/user/local-scope server literally named
+   * `my.server` or `my server` therefore arrives via `message.tools` as
+   * `my_server`, which does NOT raw-string-match a `my.server`/`my server`
+   * entry in any of the expected-name sources below -- WITHOUT
+   * normalization, the wall would incorrectly treat that legitimate,
+   * already-allowed server as unexpected and fatal the session. Slugifying
+   * an already-slugified name is idempotent (a lone underscore is left
+   * alone), so this normalization is safe to apply uniformly regardless of
+   * which of the two forms `name` actually is.
+   *
+   * This function's RETURN VALUE (the scope label) is the only thing shared
+   * with {@link emitMcpServersDiscovered} -- the RAW `entry.name` callers
+   * pass in and store alongside that label is never touched here, so the
+   * panel keeps reporting exactly the name the SDK reported, unslugified.
    */
   private classifyMcpServerScope(name: string): McpServerDiscoveredScope | null {
-    if (name === 'agent-console' || name === COMPACT_TOOL_SERVER_NAME) return 'reserved';
+    const slug = slugifyMcpServerName(name);
+    if (slug === slugifyMcpServerName('agent-console') || slug === slugifyMcpServerName(COMPACT_TOOL_SERVER_NAME)) {
+      return 'reserved';
+    }
     // `'project'` scope is keyed on what has ACTUALLY been passed to the SDK
     // (`initialProjectMcpServers` union `liveAddedMcpServerNames`) --
     // deliberately NOT `deps.discoveredProjectMcpServers`'s full key set. A
@@ -1486,13 +1514,21 @@ export class SdkEngine implements ClaudeSdkEngine {
     // shows up in `system:init`/`mcpServerStatus()`: being DISCOVERED is not
     // being PERMITTED, and this containment check exists to catch exactly
     // that gap between the two.
-    if (name in this.initialProjectMcpServers || this.liveAddedMcpServerNames.has(name)) return 'project';
+    if (
+      Object.keys(this.initialProjectMcpServers).some((known) => slugifyMcpServerName(known) === slug) ||
+      [...this.liveAddedMcpServerNames].some((known) => slugifyMcpServerName(known) === slug)
+    ) {
+      return 'project';
+    }
     // Fail-closed (§4.5 D-E): `unavailable` means the CLI's own
     // ~/.claude.json could not be read for this purpose, so `userLocal` is
     // treated as EMPTY regardless of its actual (possibly stale, possibly
     // never-populated) contents -- a user/local-scope server then reads as
     // unexpected rather than silently narrowing the detector's tolerance.
-    if (!this.deps.expectedMcpServerNames.unavailable && this.deps.expectedMcpServerNames.userLocal.has(name)) {
+    if (
+      !this.deps.expectedMcpServerNames.unavailable &&
+      [...this.deps.expectedMcpServerNames.userLocal].some((known) => slugifyMcpServerName(known) === slug)
+    ) {
       // `expectedMcpServerNames.userLocal` combines BOTH the CLI's
       // User-scope and Local-scope name sets into one (see that field's own
       // doc comment on `SdkEngineDeps`) -- a name found here is reported as
