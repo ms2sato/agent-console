@@ -48,6 +48,53 @@ const ptyFactory = createMockPtyFactory(10000);
 let importCounter = 0;
 let agentManager: AgentManager;
 
+/**
+ * Minimal structural subset of Bun's `Subprocess<'pipe','pipe','pipe'>` /
+ * `FileSink` that this file's `spawnAsUserFn` fakes implement -- pid /
+ * exited / stdin / stdout / stderr / kill and write / end / flush. This is
+ * the file's single, named boundary between that fake shape and
+ * `SpawnAsUserResult` (Bun's real, much larger types), used by every fake
+ * `spawnAsUserFn` below instead of a cast at each call site.
+ */
+interface FakeSpawnStdin {
+  write(chunk: string | Uint8Array): number;
+  end(): void;
+  flush(): number;
+}
+interface FakeSpawnSubprocess {
+  pid: number;
+  exited: Promise<number>;
+  stdin: FakeSpawnStdin;
+  stdout: ReadableStream<Uint8Array>;
+  stderr: ReadableStream<Uint8Array>;
+  kill(signal?: number): void;
+}
+function fakeSpawnAsUserResult(fields: {
+  subprocess: FakeSpawnSubprocess;
+  stdin: FakeSpawnStdin;
+  elevated?: boolean;
+}): SpawnAsUserResult {
+  return { elevated: false, ...fields } as SpawnAsUserResult;
+}
+
+/**
+ * SessionManager constructs its own `sessions` map and
+ * `EmbeddedAgentWorkerService` internally -- neither is exposed via
+ * `SessionManagerOptions` or a public getter. This is the file's single
+ * documented reach into that private state, needed by exactly one test
+ * (see its own comment) that would otherwise have to re-drive a full
+ * embedded-agent activation already covered end-to-end elsewhere.
+ */
+function getSessionManagerPrivateState(manager: SessionManager): {
+  sessions: Map<string, InternalSession>;
+  embeddedAgentWorkerService: { deps: { onSessionUpdated: (session: InternalSession) => void } };
+} {
+  return manager as unknown as {
+    sessions: Map<string, InternalSession>;
+    embeddedAgentWorkerService: { deps: { onSessionUpdated: (session: InternalSession) => void } };
+  };
+}
+
 describe('SessionManager', () => {
   // SessionManager delegates to extracted services: SessionInitializationService,
   // SessionMetadataService, SessionPauseResumeService, SessionDeletionService,
@@ -1340,7 +1387,7 @@ describe('SessionManager', () => {
         stderr,
         kill: () => {},
       };
-      const fakeSpawnAsUserFn = mock(() => ({ subprocess, stdin, elevated: false }));
+      const fakeSpawnAsUserFn = mock(() => fakeSpawnAsUserResult({ subprocess, stdin }));
 
       const module = await import(`../session-manager.js?v=${++importCounter}`);
       const manager = await module.SessionManager.create({
@@ -1352,7 +1399,7 @@ describe('SessionManager', () => {
         embeddedAgentManager: { getEmbeddedAgent: (id: string) => (id === 'stub-def' ? STUB_DEF : undefined) },
         repositoryLookup: defaultRepositoryLookup,
         repositoryEnvLookup: defaultRepositoryEnvLookup,
-        spawnAsUserFn: fakeSpawnAsUserFn as unknown as SpawnAsUserFn,
+        spawnAsUserFn: fakeSpawnAsUserFn,
       });
 
       const session = await manager.createSession(
@@ -1401,7 +1448,7 @@ describe('SessionManager', () => {
         // Never resolves -- this test never deactivates the worker.
       });
       const subprocess = { pid: 4244, exited, stdin, stdout, stderr, kill: () => {} };
-      const fakeSpawnAsUserFn = mock(() => ({ subprocess, stdin, elevated: false }));
+      const fakeSpawnAsUserFn = mock(() => fakeSpawnAsUserResult({ subprocess, stdin }));
 
       const module = await import(`../session-manager.js?v=${++importCounter}`);
       const manager = await module.SessionManager.create({
@@ -1413,7 +1460,7 @@ describe('SessionManager', () => {
         embeddedAgentManager: { getEmbeddedAgent: (id: string) => (id === 'stub-def' ? STUB_DEF : undefined) },
         repositoryLookup: defaultRepositoryLookup,
         repositoryEnvLookup: defaultRepositoryEnvLookup,
-        spawnAsUserFn: fakeSpawnAsUserFn as unknown as SpawnAsUserFn,
+        spawnAsUserFn: fakeSpawnAsUserFn,
         ensureMemoryDirFn: async () => undefined,
       });
 
@@ -1460,7 +1507,7 @@ describe('SessionManager', () => {
         stderrCtrl.close();
       };
       const subprocess = { pid: 5555, exited, stdin, stdout, stderr, kill: () => {} };
-      const fakeSpawnAsUserFn = mock(() => ({ subprocess, stdin, elevated: false }));
+      const fakeSpawnAsUserFn = mock(() => fakeSpawnAsUserResult({ subprocess, stdin }));
 
       const module = await import(`../session-manager.js?v=${++importCounter}`);
       const manager = await module.SessionManager.create({
@@ -1472,7 +1519,7 @@ describe('SessionManager', () => {
         embeddedAgentManager: { getEmbeddedAgent: (id: string) => (id === 'stub-def' ? STUB_DEF : undefined) },
         repositoryLookup: defaultRepositoryLookup,
         repositoryEnvLookup: defaultRepositoryEnvLookup,
-        spawnAsUserFn: fakeSpawnAsUserFn as unknown as SpawnAsUserFn,
+        spawnAsUserFn: fakeSpawnAsUserFn,
       });
 
       // Create a worktree session whose initial worker is embedded-agent,
@@ -1531,7 +1578,7 @@ describe('SessionManager', () => {
         stderrCtrl.close();
       };
       const subprocess = { pid: 4444, exited, stdin, stdout, stderr, kill: () => {} };
-      const fakeSpawnAsUserFn = mock(() => ({ subprocess, stdin, elevated: false }));
+      const fakeSpawnAsUserFn = mock(() => fakeSpawnAsUserResult({ subprocess, stdin }));
 
       const module = await import(`../session-manager.js?v=${++importCounter}`);
       const manager = await module.SessionManager.create({
@@ -1543,7 +1590,7 @@ describe('SessionManager', () => {
         embeddedAgentManager: { getEmbeddedAgent: (id: string) => (id === 'stub-def' ? STUB_DEF : undefined) },
         repositoryLookup: defaultRepositoryLookup,
         repositoryEnvLookup: defaultRepositoryEnvLookup,
-        spawnAsUserFn: fakeSpawnAsUserFn as unknown as SpawnAsUserFn,
+        spawnAsUserFn: fakeSpawnAsUserFn,
       });
 
       const session = await manager.createSession(
@@ -1600,7 +1647,7 @@ describe('SessionManager', () => {
         stderrCtrl.close();
       };
       const subprocess = { pid: 4445, exited, stdin, stdout, stderr, kill: () => {} };
-      const fakeSpawnAsUserFn = mock(() => ({ subprocess, stdin, elevated: false }));
+      const fakeSpawnAsUserFn = mock(() => fakeSpawnAsUserResult({ subprocess, stdin }));
 
       const module = await import(`../session-manager.js?v=${++importCounter}`);
       const manager = await module.SessionManager.create({
@@ -1612,7 +1659,7 @@ describe('SessionManager', () => {
         embeddedAgentManager: { getEmbeddedAgent: (id: string) => (id === 'stub-def' ? STUB_DEF : undefined) },
         repositoryLookup: defaultRepositoryLookup,
         repositoryEnvLookup: defaultRepositoryEnvLookup,
-        spawnAsUserFn: fakeSpawnAsUserFn as unknown as SpawnAsUserFn,
+        spawnAsUserFn: fakeSpawnAsUserFn,
       });
 
       const session = await manager.createSession(
@@ -1682,7 +1729,7 @@ describe('SessionManager', () => {
       const stdinWrites: string[] = [];
       const spawnCount = { value: 0 };
       const events: string[] = [];
-      const fn = (() => {
+      const fn: SpawnAsUserFn = () => {
         spawnCount.value += 1;
         let resolveExited!: (code: number) => void;
         const exited = new Promise<number>((resolve) => {
@@ -1712,8 +1759,8 @@ describe('SessionManager', () => {
           flush: () => 0,
         };
         const subprocess = { pid: 4242 + spawnCount.value, exited, stdin, stdout, stderr, kill: () => finish() };
-        return { subprocess, stdin, elevated: false };
-      }) as unknown as SpawnAsUserFn;
+        return fakeSpawnAsUserResult({ subprocess, stdin });
+      };
       return { fn, stdinWrites, spawnCount, events };
     }
 
@@ -2052,9 +2099,9 @@ describe('SessionManager', () => {
       let resolveExited!: (code: number) => void;
       const exited = new Promise<number>((resolve) => { resolveExited = resolve; });
       const subprocess = { pid: 4242, exited, stdin, stdout, stderr, kill: () => {} };
-      const fakeSpawnAsUserFn = mock(() => ({ subprocess, stdin, elevated: false }));
+      const fakeSpawnAsUserFn = mock(() => fakeSpawnAsUserResult({ subprocess, stdin }));
       return {
-        fakeSpawnAsUserFn: fakeSpawnAsUserFn as unknown as SpawnAsUserFn,
+        fakeSpawnAsUserFn,
         stdinWrites,
         // Test seam: mutable so a test can force `stdin.write` to throw
         // (mirrors `embedded-agent-worker-service.test.ts`'s
@@ -2386,7 +2433,7 @@ describe('SessionManager', () => {
         stderrCtrl.close();
       };
       const subprocess = { pid: 9001, exited, stdin, stdout, stderr, kill: () => {} };
-      const fakeSpawnAsUserFn = mock(() => ({ subprocess, stdin, elevated: false }));
+      const fakeSpawnAsUserFn = mock(() => fakeSpawnAsUserResult({ subprocess, stdin }));
 
       const module = await import(`../session-manager.js?v=${++importCounter}`);
       const manager = await module.SessionManager.create({
@@ -2398,7 +2445,7 @@ describe('SessionManager', () => {
         embeddedAgentManager: { getEmbeddedAgent: (id: string) => (id === STUB_DEF.id ? STUB_DEF : undefined) },
         repositoryLookup: defaultRepositoryLookup,
         repositoryEnvLookup: defaultRepositoryEnvLookup,
-        spawnAsUserFn: fakeSpawnAsUserFn as unknown as SpawnAsUserFn,
+        spawnAsUserFn: fakeSpawnAsUserFn,
       });
 
       const session = await manager.createSession(
@@ -2531,7 +2578,7 @@ describe('SessionManager', () => {
         stderrCtrl.close();
       };
       const subprocess = { pid: 4343, exited, stdin, stdout, stderr, kill: () => {} };
-      const fakeSpawnAsUserFn = mock(() => ({ subprocess, stdin, elevated: false }));
+      const fakeSpawnAsUserFn = mock(() => fakeSpawnAsUserResult({ subprocess, stdin }));
 
       const module = await import(`../session-manager.js?v=${++importCounter}`);
       const manager = await module.SessionManager.create({
@@ -2542,7 +2589,7 @@ describe('SessionManager', () => {
         embeddedAgentManager: { getEmbeddedAgent: (id: string) => (id === 'stub-def' ? STUB_DEF : undefined) },
         repositoryLookup: defaultRepositoryLookup,
         repositoryEnvLookup: defaultRepositoryEnvLookup,
-        spawnAsUserFn: fakeSpawnAsUserFn as unknown as SpawnAsUserFn,
+        spawnAsUserFn: fakeSpawnAsUserFn,
         mcpTokenRegistry: sharedRegistry,
       });
 
@@ -3603,10 +3650,10 @@ describe('SessionManager', () => {
 
       const subprocess = { pid: 7000, exited, stdin, stdout, stderr, kill: () => {} };
 
-      const fn: SpawnAsUserFn = ((opts: unknown) => {
+      const fn: SpawnAsUserFn = (opts) => {
         captured.push(opts);
-        return { subprocess, stdin, elevated: false };
-      }) as unknown as SpawnAsUserFn;
+        return fakeSpawnAsUserResult({ subprocess, stdin });
+      };
 
       return { fn, captured, stdinWrites, pushLine, simulateExit };
     }
@@ -3812,9 +3859,9 @@ describe('SessionManager', () => {
     });
 
     it('propagates a generic (non-marker) activation failure verbatim as a plain Error', async () => {
-      const throwingFn: SpawnAsUserFn = (() => {
+      const throwingFn: SpawnAsUserFn = () => {
         throw new Error('ENOENT: spawn bun');
-      }) as unknown as SpawnAsUserFn;
+      };
 
       const module = await import(`../session-manager.js?v=${++importCounter}`);
       const manager = await module.SessionManager.create({
@@ -4297,14 +4344,9 @@ describe('SessionManager', () => {
       // EmbeddedAgentWorkerService wiring under test.
       onSessionUpdated.mockClear();
 
-      const internalSession = (
-        manager as unknown as { sessions: Map<string, InternalSession> }
-      ).sessions.get(session.id)!;
-      const embeddedDeps = (
-        manager as unknown as {
-          embeddedAgentWorkerService: { deps: { onSessionUpdated: (s: InternalSession) => void } };
-        }
-      ).embeddedAgentWorkerService.deps;
+      const privateState = getSessionManagerPrivateState(manager);
+      const internalSession = privateState.sessions.get(session.id)!;
+      const embeddedDeps = privateState.embeddedAgentWorkerService.deps;
 
       embeddedDeps.onSessionUpdated(internalSession);
 
@@ -5514,7 +5556,7 @@ describe('SessionManager', () => {
       const subprocess = { pid: 5150, exited, stdin, stdout, stderr, kill: () => {} };
       const fn: SpawnAsUserFn = (opts) => {
         captured.push(opts);
-        return { subprocess, stdin, elevated: false } as unknown as SpawnAsUserResult;
+        return fakeSpawnAsUserResult({ subprocess, stdin });
       };
       return { fn, captured };
     }
@@ -6479,7 +6521,7 @@ describe('SessionManager', () => {
       // The agent worker PTY spawn should have received the expanded env vars.
       // ptyFactory.spawn is called with (cmd, args, opts) where opts.env has the env vars.
       expect(ptyFactory.spawn.mock.calls.length).toBeGreaterThanOrEqual(1);
-      const spawnOptions = (ptyFactory.spawn.mock.calls[0] as unknown as [string, string[], PtySpawnOptions])[2];
+      const spawnOptions = (ptyFactory.spawn.mock.calls[0] as [string, string[], PtySpawnOptions])[2];
       const spawnEnv = (spawnOptions.env ?? {}) as Record<string, string>;
 
       // WORKTREE_NUM=3, so {{WORKTREE_NUM * 100}} should expand to '300'
@@ -7255,7 +7297,7 @@ describe('SessionManager', () => {
         let current = makeFakeSubprocess();
         const fakeSpawnAsUserFn = mock(() => {
           current = makeFakeSubprocess();
-          return { subprocess: current.subprocess, stdin: current.stdin, elevated: false };
+          return fakeSpawnAsUserResult({ subprocess: current.subprocess, stdin: current.stdin });
         });
 
         const module = await import(`../session-manager.js?v=${++importCounter}`);
@@ -7268,7 +7310,7 @@ describe('SessionManager', () => {
           embeddedAgentManager: { getEmbeddedAgent: (id: string) => (id === 'stub-def' ? STUB_DEF : undefined) },
           repositoryLookup: defaultRepositoryLookup,
           repositoryEnvLookup: defaultRepositoryEnvLookup,
-          spawnAsUserFn: fakeSpawnAsUserFn as unknown as SpawnAsUserFn,
+          spawnAsUserFn: fakeSpawnAsUserFn,
         });
 
         return { manager, fakeSpawnAsUserFn, current: () => current };
