@@ -134,6 +134,7 @@ interface FixtureReading {
   varName: string;
   canaryPath: string;
   ledgerPath: string;
+  reportPath: string;
   toolCallSeen: boolean;
   toolResultParsed: boolean;
   envValue: string | null;
@@ -141,6 +142,9 @@ interface FixtureReading {
   canaryExists: boolean;
   ledgerLineCount: number;
   raw: string | null;
+  reportExists: boolean;
+  reportEnvValue: string | null;
+  reportArgsTrailing: string | null;
 }
 
 async function main(): Promise<number> {
@@ -251,9 +255,17 @@ async function main(): Promise<number> {
     const fixtureScriptPath = path.resolve(import.meta.dir, 'fixtures/stdio-echo-mcp-server.ts');
     const canarySet = path.join(locationPath, `${SET_SERVER_NAME}.touched`);
     const ledgerSet = path.join(locationPath, `${SET_SERVER_NAME}-ledger.tsv`);
+    const reportSet = path.join(locationPath, `${SET_SERVER_NAME}-report.ndjson`);
     const canaryUnset = path.join(locationPath, `${UNSET_SERVER_NAME}.touched`);
     const ledgerUnset = path.join(locationPath, `${UNSET_SERVER_NAME}-ledger.tsv`);
+    const reportUnset = path.join(locationPath, `${UNSET_SERVER_NAME}-report.ndjson`);
 
+    // `--spawn-report` is inserted BEFORE the trailing `${VAR}` placeholder
+    // argument so that placeholder stays the LAST element of `args` -- the
+    // same position `readFixture`'s `argv.at(-1)` reads for the tool-result
+    // reading below, and the same position the fixture's own spawn report
+    // reads argv from (Issue #1799 item 2's same-run positive control: the
+    // two must be byte-equal for the SAME trailing element).
     const mcpJson = {
       mcpServers: {
         [SET_SERVER_NAME]: {
@@ -266,6 +278,8 @@ async function main(): Promise<number> {
             ledgerSet,
             '--env-var',
             'PROBE_TOKEN',
+            '--spawn-report',
+            reportSet,
             `\${${PROBE_VAR_NAME}}`,
           ],
           env: { PROBE_TOKEN: `\${${PROBE_VAR_NAME}}` },
@@ -280,6 +294,8 @@ async function main(): Promise<number> {
             ledgerUnset,
             '--env-var',
             'PROBE_TOKEN2',
+            '--spawn-report',
+            reportUnset,
             `\${${PROBE_UNSET_NAME}}`,
           ],
           env: { PROBE_TOKEN2: `\${${PROBE_UNSET_NAME}}` },
@@ -391,7 +407,13 @@ async function main(): Promise<number> {
     console.log(`==> turn settled. reply: ${reply.trim().slice(0, 300)}`);
     const turnEvents = (await readEvents()).slice(turnMarker);
 
-    const readFixture = (serverName: string, varName: string, canaryPath: string, ledgerPath: string): FixtureReading => {
+    const readFixture = (
+      serverName: string,
+      varName: string,
+      canaryPath: string,
+      ledgerPath: string,
+      reportPath: string,
+    ): FixtureReading => {
       const call = turnEvents.find(
         (e) => e.type === 'tool-call' && mcpServerOf(String(e.name ?? '')) === serverName,
       );
@@ -422,11 +444,33 @@ async function main(): Promise<number> {
           // reported below as toolResultParsed: false
         }
       }
+
+      // Same-run positive control (Issue #1799 item 2): the fixture's own
+      // spawn report, written BEFORE the MCP transport ever connects -- read
+      // here purely from disk, no dependency on the tool-result parse above.
+      let reportExists = false;
+      let reportEnvValue: string | null = null;
+      let reportArgsTrailing: string | null = null;
+      if (existsSync(reportPath)) {
+        const reportLines = readFileSync(reportPath, 'utf8').split('\n').filter((l) => l.trim() !== '');
+        if (reportLines.length > 0) {
+          try {
+            const parsed = JSON.parse(reportLines[0]) as { argv: string[]; envValue: string | null };
+            reportExists = true;
+            reportEnvValue = parsed.envValue;
+            reportArgsTrailing = parsed.argv.at(-1) ?? null;
+          } catch {
+            // reported below via reportExists staying false
+          }
+        }
+      }
+
       return {
         serverName,
         varName,
         canaryPath,
         ledgerPath,
+        reportPath,
         toolCallSeen: call !== undefined,
         toolResultParsed,
         envValue,
@@ -436,11 +480,14 @@ async function main(): Promise<number> {
           ? readFileSync(ledgerPath, 'utf8').split('\n').filter((l) => l.trim() !== '').length
           : 0,
         raw,
+        reportExists,
+        reportEnvValue,
+        reportArgsTrailing,
       };
     };
 
-    const setReading = readFixture(SET_SERVER_NAME, PROBE_VAR_NAME, canarySet, ledgerSet);
-    const unsetReading = readFixture(UNSET_SERVER_NAME, PROBE_UNSET_NAME, canaryUnset, ledgerUnset);
+    const setReading = readFixture(SET_SERVER_NAME, PROBE_VAR_NAME, canarySet, ledgerSet, reportSet);
+    const unsetReading = readFixture(UNSET_SERVER_NAME, PROBE_UNSET_NAME, canaryUnset, ledgerUnset, reportUnset);
 
     console.log('\n==> READINGS (non-elevated branch only)');
     for (const r of [setReading, unsetReading]) {
@@ -450,7 +497,34 @@ async function main(): Promise<number> {
       console.log(`    env  (CLI-native expansion) -> ${JSON.stringify(r.envValue)}`);
       console.log(`    args (our loader's applyArgSubstitution) -> ${JSON.stringify(r.argsTrailing)}`);
       if (r.raw) console.log(`    raw tool-result: ${r.raw}`);
+      console.log(
+        `    spawn report -- exists: ${r.reportExists}  env: ${JSON.stringify(r.reportEnvValue)}  args: ${JSON.stringify(r.reportArgsTrailing)}`,
+      );
     }
+
+    // --- Same-run positive control (Issue #1799 item 2): the spawn report
+    // must be byte-equal to the tool-result reading it stands in for. A
+    // mismatch is a HARNESS failure (exit 2), never a finding -- this
+    // equality is what licenses reading the elevated branch (which has no
+    // tool-result at all) from the spawn report alone.
+    for (const r of [setReading, unsetReading]) {
+      if (!r.reportExists) {
+        throw new Error(`${r.serverName}: spawn report at ${r.reportPath} was not written or could not be parsed`);
+      }
+      if (r.reportEnvValue !== r.envValue) {
+        throw new Error(
+          `${r.serverName}: spawn report envValue (${JSON.stringify(r.reportEnvValue)}) does not match ` +
+            `tool-result envValue (${JSON.stringify(r.envValue)}) -- these must be byte-equal in the same run`,
+        );
+      }
+      if (r.reportArgsTrailing !== r.argsTrailing) {
+        throw new Error(
+          `${r.serverName}: spawn report argsTrailing (${JSON.stringify(r.reportArgsTrailing)}) does not match ` +
+            `tool-result argsTrailing (${JSON.stringify(r.argsTrailing)}) -- these must be byte-equal in the same run`,
+        );
+      }
+    }
+    console.log('\n==> same-run positive control (item 2): spawn report byte-equal to tool-result for both fixtures -- OK');
 
     expect(setReading.canaryExists, `${SET_SERVER_NAME}: spawn canary exists (process was actually exec'd)`);
     expect(unsetReading.canaryExists, `${UNSET_SERVER_NAME}: spawn canary exists (process was actually exec'd)`);
