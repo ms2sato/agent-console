@@ -1,15 +1,14 @@
 /**
- * Migration v44 tests -- creates the `mcp_server_permissions` table (epic
- * #1636 Phase 5 PR-2, docs/design/embedded-agent-sdk-engine.md §4.5's "the
- * approval record").
+ * Migration v45 tests -- creates the `mcp_server_path_permissions` table
+ * (epic #1636 Phase 5 PR-2 follow-up, Issue #1786's quick-session key).
  *
  * A NEW table, no rebuild, no existing rows, no backup file -- same shape as
- * `migrateToV41`'s `repository_orchestrator_sessions` table. A minimal
- * v43-shaped `repositories`/`users` pair (the two FK targets) is seeded
- * directly against a raw Bun SQLite instance, then the production
- * `migrateToV44` is invoked directly against it -- exercising the real
- * migration code with no risk of drift between a test-local copy and the
- * production implementation.
+ * `migration-v44.test.ts`. A minimal v44-shaped `users` table (the one FK
+ * target -- unlike v44, there is no `repositories` FK here, see
+ * `migrateToV45`'s own doc comment) is seeded directly against a raw Bun
+ * SQLite instance, then the production `migrateToV45` is invoked directly
+ * against it -- exercising the real migration code with no risk of drift
+ * between a test-local copy and the production implementation.
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
@@ -17,18 +16,19 @@ import { sql, Kysely } from 'kysely';
 import { BunSqliteDialect } from 'kysely-bun-sqlite';
 import { Database as BunDatabase } from 'bun:sqlite';
 import type { Database } from '../schema.js';
-import { initializeDatabase, closeDatabase, migrateToV44 } from '../connection.js';
+import { initializeDatabase, closeDatabase, migrateToV45 } from '../connection.js';
 import { setupMemfs, cleanupMemfs } from '../../__tests__/utils/mock-fs-helper.js';
 import { expectRebuiltTableDdl, type PragmaTableInfoRow } from './helpers/ddl-pin.js';
 
 const TEST_CONFIG_DIR = '/test/config';
 
 /**
- * Build a v43-shaped database: a minimal `repositories`/`users` pair (the
- * two tables `mcp_server_permissions` references), with no
- * `mcp_server_permissions` table yet.
+ * Build a v44-shaped database: a minimal `repositories`/`users` pair (the
+ * `mcp_server_permissions` FK targets, present for realism though only
+ * `users` is referenced by the new table) and the v44 table itself, with no
+ * `mcp_server_path_permissions` table yet.
  */
-function seedV43Database(): Kysely<Database> {
+function seedV44Database(): Kysely<Database> {
   const bunDb = new BunDatabase(':memory:');
   const db = new Kysely<Database>({
     dialect: new BunSqliteDialect({ database: bunDb }),
@@ -52,14 +52,10 @@ function seedV43Database(): Kysely<Database> {
       updated_at TEXT
     );
 
-    PRAGMA user_version = 43;
+    PRAGMA user_version = 44;
   `);
 
   return db;
-}
-
-async function insertRepository(db: Kysely<Database>, id: string): Promise<void> {
-  await db.insertInto('repositories').values({ id, name: id, path: `/tmp/${id}` }).execute();
 }
 
 async function insertUser(db: Kysely<Database>, id: string): Promise<void> {
@@ -70,7 +66,7 @@ async function insertUser(db: Kysely<Database>, id: string): Promise<void> {
     .execute();
 }
 
-describe('migration v44 (mcp_server_permissions table creation)', () => {
+describe('migration v45 (mcp_server_path_permissions table creation)', () => {
   beforeEach(async () => {
     await closeDatabase();
     setupMemfs({
@@ -84,13 +80,13 @@ describe('migration v44 (mcp_server_permissions table creation)', () => {
     cleanupMemfs();
   });
 
-  it('creates mcp_server_permissions with the expected column shape and DDL', async () => {
-    const db = seedV43Database();
-    await migrateToV44(db);
+  it('creates mcp_server_path_permissions with the expected column shape and DDL', async () => {
+    const db = seedV44Database();
+    await migrateToV45(db);
 
     const expectedColumns: PragmaTableInfoRow[] = [
       { cid: 0, name: 'id', type: 'TEXT', notnull: 0, dflt_value: null, pk: 1 },
-      { cid: 1, name: 'repository_id', type: 'TEXT', notnull: 1, dflt_value: null, pk: 0 },
+      { cid: 1, name: 'location_path', type: 'TEXT', notnull: 1, dflt_value: null, pk: 0 },
       { cid: 2, name: 'server_name', type: 'TEXT', notnull: 1, dflt_value: null, pk: 0 },
       { cid: 3, name: 'config_hash', type: 'TEXT', notnull: 1, dflt_value: null, pk: 0 },
       { cid: 4, name: 'decision', type: 'TEXT', notnull: 1, dflt_value: null, pk: 0 },
@@ -113,48 +109,47 @@ describe('migration v44 (mcp_server_permissions table creation)', () => {
       },
     ];
 
-    await expectRebuiltTableDdl(db, 'mcp_server_permissions', {
+    await expectRebuiltTableDdl(db, 'mcp_server_path_permissions', {
       expectedColumns,
       mustContain: [
-        'mcp_server_permissions_key',
-        'mcp_server_permissions_decision_check',
+        'mcp_server_path_permissions_key',
+        'mcp_server_path_permissions_decision_check',
         "decision IN ('allow', 'deny')",
-        'mcp_server_permissions_created_at_iso8601',
-        'mcp_server_permissions_decided_at_iso8601',
+        'mcp_server_path_permissions_created_at_iso8601',
+        'mcp_server_path_permissions_decided_at_iso8601',
         'GLOB',
       ],
       mustNotContain: [],
     });
 
     const versionRes = await sql<{ user_version: number }>`PRAGMA user_version`.execute(db);
-    expect(versionRes.rows[0]?.user_version).toBe(44);
+    expect(versionRes.rows[0]?.user_version).toBe(45);
 
     await db.destroy();
   });
 
-  it('creates the repository_id index', async () => {
-    const db = seedV43Database();
-    await migrateToV44(db);
+  it('creates the location_path index', async () => {
+    const db = seedV44Database();
+    await migrateToV45(db);
 
     const indexRows = await sql<{ name: string }>`
-      SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'mcp_server_permissions'
+      SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'mcp_server_path_permissions'
     `.execute(db);
-    expect(indexRows.rows.map((r) => r.name)).toContain('idx_mcp_server_permissions_repository_id');
+    expect(indexRows.rows.map((r) => r.name)).toContain('idx_mcp_server_path_permissions_location_path');
 
     await db.destroy();
   });
 
-  it('rejects a second row with the same (repository_id, server_name, config_hash) key', async () => {
-    const db = seedV43Database();
-    await migrateToV44(db);
-    await insertRepository(db, 'repo-1');
+  it('rejects a second row with the same (location_path, server_name, config_hash) key', async () => {
+    const db = seedV44Database();
+    await migrateToV45(db);
     await insertUser(db, 'user-1');
 
     await db
-      .insertInto('mcp_server_permissions')
+      .insertInto('mcp_server_path_permissions')
       .values({
         id: 'perm-1',
-        repository_id: 'repo-1',
+        location_path: '/home/user-1/quick-project',
         server_name: 'chrome-devtools',
         config_hash: 'hash-1',
         decision: 'allow',
@@ -165,10 +160,10 @@ describe('migration v44 (mcp_server_permissions table creation)', () => {
 
     await expect(
       db
-        .insertInto('mcp_server_permissions')
+        .insertInto('mcp_server_path_permissions')
         .values({
           id: 'perm-2',
-          repository_id: 'repo-1',
+          location_path: '/home/user-1/quick-project',
           server_name: 'chrome-devtools',
           config_hash: 'hash-1',
           decision: 'deny',
@@ -182,17 +177,16 @@ describe('migration v44 (mcp_server_permissions table creation)', () => {
   });
 
   it('rejects a decision value outside allow/deny', async () => {
-    const db = seedV43Database();
-    await migrateToV44(db);
-    await insertRepository(db, 'repo-1');
+    const db = seedV44Database();
+    await migrateToV45(db);
     await insertUser(db, 'user-1');
 
     await expect(
       db
-        .insertInto('mcp_server_permissions')
+        .insertInto('mcp_server_path_permissions')
         .values({
           id: 'perm-bad',
-          repository_id: 'repo-1',
+          location_path: '/home/user-1/quick-project',
           server_name: 'chrome-devtools',
           config_hash: 'hash-1',
           decision: 'maybe' as never,
@@ -205,42 +199,15 @@ describe('migration v44 (mcp_server_permissions table creation)', () => {
     await db.destroy();
   });
 
-  it('CASCADEs on repository delete', async () => {
-    const db = seedV43Database();
-    await migrateToV44(db);
-    await insertRepository(db, 'repo-cascade');
-    await insertUser(db, 'user-1');
-    await db
-      .insertInto('mcp_server_permissions')
-      .values({
-        id: 'perm-cascade',
-        repository_id: 'repo-cascade',
-        server_name: 'chrome-devtools',
-        config_hash: 'hash-1',
-        decision: 'allow',
-        decided_by: 'user-1',
-        decided_at: '2026-01-01T00:00:00.000Z',
-      })
-      .execute();
-
-    await db.deleteFrom('repositories').where('id', '=', 'repo-cascade').execute();
-
-    const rows = await db.selectFrom('mcp_server_permissions').selectAll().execute();
-    expect(rows).toEqual([]);
-
-    await db.destroy();
-  });
-
   it('CASCADEs on decided_by user delete', async () => {
-    const db = seedV43Database();
-    await migrateToV44(db);
-    await insertRepository(db, 'repo-1');
+    const db = seedV44Database();
+    await migrateToV45(db);
     await insertUser(db, 'user-cascade');
     await db
-      .insertInto('mcp_server_permissions')
+      .insertInto('mcp_server_path_permissions')
       .values({
         id: 'perm-user-cascade',
-        repository_id: 'repo-1',
+        location_path: '/home/user-cascade/quick-project',
         server_name: 'chrome-devtools',
         config_hash: 'hash-1',
         decision: 'allow',
@@ -251,22 +218,25 @@ describe('migration v44 (mcp_server_permissions table creation)', () => {
 
     await db.deleteFrom('users').where('id', '=', 'user-cascade').execute();
 
-    const rows = await db.selectFrom('mcp_server_permissions').selectAll().execute();
+    const rows = await db.selectFrom('mcp_server_path_permissions').selectAll().execute();
     expect(rows).toEqual([]);
 
     await db.destroy();
   });
 
-  it('is idempotent: running twice has no additional effect', async () => {
-    const db = seedV43Database();
-    await migrateToV44(db);
-    await insertRepository(db, 'repo-1');
+  it('does NOT cascade on repository delete -- there is no FK to repositories at all', async () => {
+    const db = seedV44Database();
+    await migrateToV45(db);
     await insertUser(db, 'user-1');
     await db
-      .insertInto('mcp_server_permissions')
+      .insertInto('repositories')
+      .values({ id: 'repo-unrelated', name: 'repo-unrelated', path: '/tmp/repo-unrelated' })
+      .execute();
+    await db
+      .insertInto('mcp_server_path_permissions')
       .values({
         id: 'perm-1',
-        repository_id: 'repo-1',
+        location_path: '/home/user-1/quick-project',
         server_name: 'chrome-devtools',
         config_hash: 'hash-1',
         decision: 'allow',
@@ -275,18 +245,47 @@ describe('migration v44 (mcp_server_permissions table creation)', () => {
       })
       .execute();
 
-    await expect(migrateToV44(db)).resolves.toBeUndefined();
+    // Deleting EVERY repository row must leave the path-keyed row intact --
+    // the inverse pin of `migration-v44.test.ts`'s "CASCADEs on repository
+    // delete", since this table has no repository FK at all.
+    await db.deleteFrom('repositories').execute();
+
+    const rows = await db.selectFrom('mcp_server_path_permissions').selectAll().execute();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.id).toBe('perm-1');
+
+    await db.destroy();
+  });
+
+  it('is idempotent: running twice has no additional effect', async () => {
+    const db = seedV44Database();
+    await migrateToV45(db);
+    await insertUser(db, 'user-1');
+    await db
+      .insertInto('mcp_server_path_permissions')
+      .values({
+        id: 'perm-1',
+        location_path: '/home/user-1/quick-project',
+        server_name: 'chrome-devtools',
+        config_hash: 'hash-1',
+        decision: 'allow',
+        decided_by: 'user-1',
+        decided_at: '2026-01-01T00:00:00.000Z',
+      })
+      .execute();
+
+    await expect(migrateToV45(db)).resolves.toBeUndefined();
 
     const versionRes = await sql<{ user_version: number }>`PRAGMA user_version`.execute(db);
-    expect(versionRes.rows[0]?.user_version).toBe(44);
+    expect(versionRes.rows[0]?.user_version).toBe(45);
 
-    const rows = await db.selectFrom('mcp_server_permissions').selectAll().execute();
+    const rows = await db.selectFrom('mcp_server_path_permissions').selectAll().execute();
     expect(rows).toHaveLength(1);
 
     await db.destroy();
   });
 
-  it('lands the fresh in-memory dispatcher past schema version 44 (see migration-v45.test.ts for the v45 pin)', async () => {
+  it('lands the fresh in-memory dispatcher on schema version 45', async () => {
     const db = await initializeDatabase(':memory:');
     const versionRes = await sql<{ user_version: number }>`PRAGMA user_version`.execute(db);
     expect(versionRes.rows[0]?.user_version).toBe(45);
