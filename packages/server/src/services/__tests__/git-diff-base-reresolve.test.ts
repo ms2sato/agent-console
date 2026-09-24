@@ -17,7 +17,11 @@
  * a hand-rolled temp dir, so every commit made below runs under a throwaway
  * global git config instead of the operator's own -- a real host config with
  * commit signing enabled otherwise fails every commit here before the code
- * under test is ever reached (see `os-environment-coupling.md`).
+ * under test is ever reached (see `os-environment-coupling.md`). Because a
+ * real `git` subprocess needs directories memfs cannot make visible to it,
+ * this file runs in `packages/server`'s second (real-fs) `bun test`
+ * invocation (`package.json`) and calls `assertRealFs` before any other fs
+ * call, per `testing.md`'s real-fs test placement rule.
  */
 
 import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from 'bun:test';
@@ -25,6 +29,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { MERGE_BASE_REF_PREFIX } from '@agent-console/shared';
+import { assertRealFs } from '../../__tests__/utils/memfs-detection.js';
 import { mockGit, resetGitMocks } from '../../__tests__/utils/mock-git-helper.js';
 import { createScratchGitRepo, type ScratchGitRepo } from '../../__tests__/utils/scratch-git.js';
 import {
@@ -104,6 +109,7 @@ describe('Issue #800: git-diff base spec re-resolution (real repo)', () => {
   let scratchParent: string;
 
   beforeAll(async () => {
+    await assertRealFs('git-diff-base-reresolve.test.ts setup');
     scratchParent = await mkdtemp(path.join(os.tmpdir(), 'git-diff-800-parent-'));
   });
 

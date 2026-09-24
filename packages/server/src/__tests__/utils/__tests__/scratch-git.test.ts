@@ -1,9 +1,13 @@
 /**
  * This suite uses the REAL fs (never `mock-fs-helper`): the helper under
- * test spawns the real `git` binary and the polarity case must prove itself
- * against a REAL fake host config. `HOME` is pointed at a scratch home for
- * the whole file so the operator's real `~/.gitconfig` is never read or
- * written.
+ * test spawns the real `git` binary against directories memfs cannot make
+ * visible to a subprocess, and the polarity case must prove itself against
+ * a REAL fake host config. `HOME` is pointed at a scratch home for the
+ * whole file so the operator's real `~/.gitconfig` is never read or
+ * written. Per `testing.md`'s real-fs test placement rule, this file runs
+ * in `packages/server`'s second `bun test` invocation (`package.json`) and
+ * calls `assertRealFs` before any other fs call, rather than silently
+ * risking memfs poisoning from an earlier-loaded file in a shared process.
  *
  * Mutation record (workflow.md "A check's existence is not its detection
  * power"): removing `GIT_CONFIG_GLOBAL` from the env `createScratchGitRepo`
@@ -17,6 +21,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from 'bun:test';
 import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { assertRealFs } from '../memfs-detection.js';
 import { createScratchGitRepo } from '../scratch-git.js';
 
 // Guard (i) and guard (ii) share an invariant-naming prefix ("scratch git
@@ -35,6 +40,7 @@ let fakeHostConfigSnapshot: { mtimeMs: number; content: string };
 let scratchParent: string;
 
 beforeAll(async () => {
+  await assertRealFs('scratch-git.test.ts setup');
   scratchHome = await mkdtemp(path.join(os.tmpdir(), 'scratch-git-test-home-'));
   fakeHostConfigPath = path.join(scratchHome, '.gitconfig');
   await writeFile(
