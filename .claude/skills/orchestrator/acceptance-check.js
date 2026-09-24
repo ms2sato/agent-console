@@ -97,7 +97,7 @@ function runAutoDetection(prNumber) {
     }
   }
 
-  const integrationTestNeeds = detectIntegrationTestNeeds(changedFiles, categories);
+  const integrationTestNeeds = detectIntegrationTestNeeds(changedFiles, categories, diffRef);
   const languageCheck = runLanguageCheck();
 
   return {
