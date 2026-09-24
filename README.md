@@ -83,6 +83,8 @@ Available variables:
 
 Bun automatically loads `.env` files - no additional packages required.
 
+For a `claude-sdk` embedded worker's project `.mcp.json` `${VAR}` placeholders: in single-user mode the placeholders resolve from the server's cleaned environment (see [`docs/multi-user-setup-guide.md`](docs/multi-user-setup-guide.md#step-5-user-account-requirements) for the multi-user equivalent).
+
 ### Build
 
 ```bash

@@ -557,6 +557,13 @@ export type SdkResumeFailureReason = (typeof SDK_RESUME_FAILURE_REASONS)[number]
  * schema at the process boundary.
  */
 export type EmbeddedAgentEvent =
+  /**
+   * `ready` means the engine is constructed and consuming; the CLI's init,
+   * including project MCP connection, completes afterwards and precedes
+   * the first turn -- a prompt delivered at `ready` waits in the input
+   * queue. See docs/design/embedded-agent-sdk-engine.md Appendix A.2's
+   * `ready` row for the measurement this records.
+   */
   | { v: 1; type: 'ready' }
   | { v: 1; type: 'state'; state: 'active' | 'idle' }
   | { v: 1; type: 'assistant-delta'; turnId: string; text: string }

@@ -452,6 +452,8 @@ Users do **not** need:
 
 Their existing environment (`.bashrc`, `.zshrc`, SSH keys, git config, API keys) works automatically because PTY processes run as their user via `sudo -u <user> -i`, which loads their login shell profile.
 
+The same rule applies to a `claude-sdk` embedded worker's project MCP servers: in a `claude-sdk` embedded worker under multi-user mode, `.mcp.json` `${VAR}` placeholders resolve from the EXECUTING user's login-shell profile, never from the server process's environment (exporting a variable on the service unit does nothing); a server whose placeholder does not resolve still appears in the worker panel with its status rather than vanishing.
+
 ### Default `0700` home directories work as-is
 
 User home directories at the OS default mode `0700` (Debian/Ubuntu
@@ -898,7 +900,7 @@ Verify that `AUTH_MODE=multi-user` is set in the server's environment. In `none`
 
 ### User's shell profile is not loaded
 
-Make sure `sudo -u <user> -i` works for the target user. The `-i` flag creates a login shell, which loads the user's profile. Test:
+Make sure `sudo -u <user> -i` works for the target user. The `-i` flag creates a login shell, which loads the user's profile. This is also what a `claude-sdk` embedded worker's `.mcp.json` `${VAR}` placeholders resolve from — see [the note in Step 5](#step-5-user-account-requirements). Test:
 
 ```bash
 sudo -u agentconsole sudo -u alice -i sh -c 'echo $HOME && echo $SHELL'
