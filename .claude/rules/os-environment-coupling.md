@@ -28,6 +28,8 @@ If the diff touches none of the above, this rule does not apply.
 
 ## Discipline 1: Real-machine smoke tests for OS-coupled code
 
+A lighter-weight instance of the same coupling, closed differently: a test or smoke fixture that creates a scratch git repository and commits inside it inherits the operator's global git config (signing program, `core.hooksPath`, `init.defaultBranch`, aliases) unless it routes the commit through `createScratchGitRepo` (`packages/server/src/__tests__/utils/scratch-git.ts`, see `testing.md`'s "Scratch Git Repositories" section) -- no real-machine smoke is needed here, since the fix is a throwaway `GIT_CONFIG_GLOBAL` rather than a change to production OS behavior.
+
 Unit tests assert the *shape* of an OS-call site (e.g., the argv passed to `sudo` is `['-u', 'alice', '-i', 'sh', '-c', ...]`). They cannot assert what happens when that argv reaches the actual OS — `sudo -i` may strip env vars the unit test did not anticipate, the elevated user's login shell may not include `~/.bun/bin` in PATH, a posix_spawn may EACCES because of inherited cwd, etc.
 
 Add a **smoke test** that runs the production code path on the actual machine and asserts the observable end state:
