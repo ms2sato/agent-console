@@ -5,6 +5,15 @@ import type { JobQueue, JobHandler } from '../job-queue.js';
 import { registerWorktreeDeleteJobHandler } from '../worktree-delete-job-handler.js';
 import type { DeleteWorktreeDeps, DeleteWorktreeFn } from '../../services/worktree-deletion-service.js';
 
+/**
+ * `JobQueue` has private fields, so a stub object literal cannot satisfy it
+ * structurally. `Partial<JobQueue>` retains the same private brand, so this
+ * single-step cast type-checks without bridging through `unknown`.
+ */
+function asJobQueue(stub: Partial<JobQueue>): JobQueue {
+  return stub as JobQueue;
+}
+
 describe('worktree:delete handler (Issue #1327)', () => {
   let handlers: Map<string, JobHandler<unknown>>;
   let fakeQueue: JobQueue;
@@ -26,11 +35,11 @@ describe('worktree:delete handler (Issue #1327)', () => {
   beforeEach(() => {
     handlers = new Map();
     broadcasts = [];
-    fakeQueue = {
+    fakeQueue = asJobQueue({
       registerHandler: <T>(type: string, handler: JobHandler<T>) => {
         handlers.set(type, handler as JobHandler<unknown>);
       },
-    } as unknown as JobQueue;
+    });
   });
 
   function registerWithImpl(deleteWorktreeImpl: DeleteWorktreeFn): JobHandler<unknown> {
@@ -43,19 +52,20 @@ describe('worktree:delete handler (Issue #1327)', () => {
   }
 
   it('success: forwards payload params + deletionDeps to deleteWorktreeImpl, broadcasts worktree-deletion-completed, resolves', async () => {
-    const deleteWorktreeImpl = mock(async () => ({
+    const deleteWorktreeImplMock = mock<DeleteWorktreeFn>(async () => ({
       success: true,
       sessionIds: ['s1'],
       cleanupCommandResult: { success: true, output: 'ok' },
       killErrors: [{ sessionId: 's1', error: 'kill failed' }],
-    })) as unknown as DeleteWorktreeFn;
+    }));
+    const deleteWorktreeImpl: DeleteWorktreeFn = deleteWorktreeImplMock;
 
     const handler = registerWithImpl(deleteWorktreeImpl);
 
     await expect(handler(payload)).resolves.toBeUndefined();
 
     expect(deleteWorktreeImpl).toHaveBeenCalledTimes(1);
-    const call = (deleteWorktreeImpl as unknown as ReturnType<typeof mock>).mock.calls[0];
+    const call = deleteWorktreeImplMock.mock.calls[0];
     expect(call[0]).toEqual({
       repoId: 'repo-1',
       worktreePath: '/repo/worktrees/wt-1',
@@ -76,12 +86,12 @@ describe('worktree:delete handler (Issue #1327)', () => {
   });
 
   it('result failure: broadcasts worktree-deletion-failed with the error/gitStatus and rejects', async () => {
-    const deleteWorktreeImpl = mock(async () => ({
+    const deleteWorktreeImpl: DeleteWorktreeFn = mock(async () => ({
       success: false,
       error: 'Failed to remove worktree: dirty working tree',
       gitStatus: 'M some-file.ts',
       sessionIds: ['s2'],
-    })) as unknown as DeleteWorktreeFn;
+    }));
 
     const handler = registerWithImpl(deleteWorktreeImpl);
 
@@ -99,9 +109,9 @@ describe('worktree:delete handler (Issue #1327)', () => {
   });
 
   it('thrown exception: broadcasts worktree-deletion-failed with sessionIds: [] and rethrows', async () => {
-    const deleteWorktreeImpl = mock(async () => {
+    const deleteWorktreeImpl: DeleteWorktreeFn = mock(async () => {
       throw new Error('unexpected filesystem error');
-    }) as unknown as DeleteWorktreeFn;
+    });
 
     const handler = registerWithImpl(deleteWorktreeImpl);
 

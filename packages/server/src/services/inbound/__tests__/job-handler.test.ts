@@ -780,7 +780,7 @@ describe('createInboundEventJobHandler', () => {
         const handler: InboundEventHandler = {
           handlerId: 'test-handler',
           supportedEvents: ['ci:completed'],
-          handle: handlerMock as unknown as InboundEventHandler['handle'],
+          handle: handlerMock as InboundEventHandler['handle'],
         };
 
         const jobHandler = createInboundEventJobHandler({
@@ -875,7 +875,7 @@ describe('createInboundEventJobHandler', () => {
         const handler: InboundEventHandler = {
           handlerId: 'test-handler',
           supportedEvents: ['ci:completed'],
-          handle: handlerMock as unknown as InboundEventHandler['handle'],
+          handle: handlerMock as InboundEventHandler['handle'],
         };
 
         const jobHandler = createInboundEventJobHandler({
