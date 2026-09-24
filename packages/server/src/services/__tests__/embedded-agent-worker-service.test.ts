@@ -1,4 +1,4 @@
-import { describe, it, expect, mock, setSystemTime, spyOn, afterAll } from 'bun:test';
+import { describe, it, expect, mock, setSystemTime, spyOn, afterAll, type Mock } from 'bun:test';
 import { randomUUID } from 'node:crypto';
 import { mkdir, rm, writeFile, symlink, unlink } from 'node:fs/promises';
 import { lstatSync } from 'node:fs';
@@ -37,6 +37,7 @@ afterAll(async () => {
 });
 import {
   EmbeddedAgentWorkerService,
+  type EmbeddedAgentWorkerServiceDeps,
   EmbeddedAgentActivationError,
   EmbeddedMessageDeliveryError,
   resolveEmbeddedAgentEntryPath,
@@ -101,6 +102,47 @@ interface FakeSubprocess {
   stdout: ReadableStream<Uint8Array>;
   stderr: ReadableStream<Uint8Array>;
   kill: (signal?: number) => void;
+}
+
+/**
+ * Typed fixture builder for a fake `spawnAsUserFn` result. `SpawnAsUserResult.subprocess`
+ * is Bun's real `Subprocess<'pipe','pipe','pipe'>` and `.stdin` its real
+ * `FileSink` -- far larger types than the `FakeSubprocess`/`FakeFileSink`
+ * doubles above actually implement. This is the file's single, named
+ * boundary between the fake shape and `SpawnAsUserResult` (mirrors the
+ * inline pattern `makeFakeSpawn` used below, now shared with
+ * `makeFakeMultiActivationSpawn`).
+ */
+function toSpawnAsUserResult(fields: {
+  subprocess: FakeSubprocess;
+  stdin: FakeFileSink;
+  elevated?: boolean;
+}): SpawnAsUserResult {
+  const result: Pick<SpawnAsUserResult, 'elevated'> & { subprocess: FakeSubprocess; stdin: FakeFileSink } = {
+    subprocess: fields.subprocess,
+    stdin: fields.stdin,
+    elevated: fields.elevated ?? false,
+  };
+  return result as SpawnAsUserResult;
+}
+
+/**
+ * Test seam: `EmbeddedAgentWorkerService.runtimes` is private, in-memory
+ * only, and has no public surface (see `Runtime.projectDiscovery`'s own doc
+ * comment in the production file: "kept OFF the worker object"). A handful
+ * of tests below need to observe or inject state on it directly (a
+ * straggler discovery event landing mid-activation, `consecutiveParseFailures`,
+ * `exitObserved`'s exact flip point) that no public API exposes, and
+ * `runtimes` is constructed inside `activate()` rather than injected via
+ * `EmbeddedAgentWorkerServiceDeps` -- there is no harness-side seam for it.
+ * This is the file's single reach point for that private state, kept to
+ * one documented access instead of one per call site. `runtimes` is a TS
+ * `private` field (not `#private`), so bracket access is typed -- no cast
+ * needed, and inference carries the real `Runtime` type (Architect ruling
+ * 2026-09-24).
+ */
+function getRuntimesForTest(service: EmbeddedAgentWorkerService) {
+  return service['runtimes'];
 }
 
 interface ControllableStream {
@@ -225,11 +267,7 @@ function makeFakeSpawn(opts?: { endThrows?: boolean }): FakeSpawn {
 
   const fn: SpawnAsUserFn = (opts) => {
     captured.push(opts);
-    const result: Pick<SpawnAsUserResult, 'elevated'> & {
-      subprocess: FakeSubprocess;
-      stdin: FakeFileSink;
-    } = { subprocess, stdin, elevated: false };
-    return result as SpawnAsUserResult;
+    return toSpawnAsUserResult({ subprocess, stdin, elevated: false });
   };
 
   return {
@@ -268,6 +306,7 @@ interface Recorder {
 
 interface Harness {
   service: EmbeddedAgentWorkerService;
+  deps: EmbeddedAgentWorkerServiceDeps;
   sessionId: string;
   workerId: string;
   worker: ReturnType<typeof buildInternalEmbeddedAgentWorker>;
@@ -461,7 +500,7 @@ function setup(opts?: {
     onRestoreInfo: recorder.onRestoreInfo,
   });
 
-  const service = new EmbeddedAgentWorkerService({
+  const deps: EmbeddedAgentWorkerServiceDeps = {
     getSession: (id) => (id === session.id ? session : undefined),
     persistSession: persistSession as never,
     onSessionUpdated: onSessionUpdated as never,
@@ -488,10 +527,12 @@ function setup(opts?: {
     getGlobalWorkerExitCallback: () => globalExit as never,
     shutdownGraceMs: opts?.shutdownGraceMs,
     sigtermTimeoutMs: opts?.sigtermTimeoutMs,
-  });
+  };
+  const service = new EmbeddedAgentWorkerService(deps);
 
   return {
     service,
+    deps,
     readHistoryForRestore,
     sessionId: session.id,
     workerId: worker.id,
@@ -525,7 +566,7 @@ async function waitFor(cond: () => boolean, timeoutMs = 1000): Promise<void> {
 
 /** Extract appended NDJSON lines (drop trailing newline) from bufferOutput calls. */
 function appendedLines(bufferOutput: ReturnType<typeof mock>): string[] {
-  return (bufferOutput.mock.calls as unknown as unknown[][]).map((c) => (c[2] as string).replace(/\n$/, ''));
+  return bufferOutput.mock.calls.map((c) => (c[2] as string).replace(/\n$/, ''));
 }
 
 /**
@@ -5259,7 +5300,7 @@ function makeFakeMultiActivationSpawn(): { fn: SpawnAsUserFn; incarnations: Fake
       },
     };
     incarnations.push(incarnation);
-    return { subprocess, stdin, elevated: false } as unknown as SpawnAsUserResult;
+    return toSpawnAsUserResult({ subprocess, stdin, elevated: false });
   };
   return { fn, incarnations };
 }
@@ -5413,7 +5454,7 @@ describe('EmbeddedAgentWorkerService — activation-failure rollback clears mcpS
     const h = setup({ definition: SDK_DEFINITION });
     let capturedRuntime: { projectDiscovery: unknown } | undefined;
     h.persistSession.mockImplementationOnce(async () => {
-      const runtimes = (h.service as unknown as { runtimes: Map<string, { projectDiscovery: unknown }> }).runtimes;
+      const runtimes = getRuntimesForTest(h.service);
       capturedRuntime = runtimes.get(h.workerId);
       // Simulate a `mcp-servers-discovered` event having landed on THIS
       // incarnation just before the failure -- the exact race this
@@ -5442,8 +5483,8 @@ describe('EmbeddedAgentWorkerService — activation-failure rollback clears mcpS
 describe('readStdout per-line containment (#1798)', () => {
   const HANDLER_FAILED_WARN = 'Embedded-agent event handler failed; line skipped, reader continues';
 
-  function warnCallsFor(warnSpy: ReturnType<typeof spyOn>, message: string): Record<string, unknown>[] {
-    return (warnSpy.mock.calls as unknown as unknown[][])
+  function warnCallsFor(warnSpy: Mock<typeof rootLogger.warn>, message: string): Record<string, unknown>[] {
+    return warnSpy.mock.calls
       .filter((call) => call[1] === message)
       .map((call) => call[0] as Record<string, unknown>);
   }
@@ -5491,8 +5532,7 @@ describe('readStdout per-line containment (#1798)', () => {
       // the same M4 mutation makes this assertion fail as expected
       // (`consecutiveParseFailures` is `1`, not `0`) -- confirmed by
       // running the mutation, not inferred.
-      const runtimes = (h.service as unknown as { runtimes: Map<string, { consecutiveParseFailures: number }> })
-        .runtimes;
+      const runtimes = getRuntimesForTest(h.service);
       expect(runtimes.get(h.workerId)?.consecutiveParseFailures).toBe(0);
       expect(h.fake.killSignals).toEqual([]);
 
@@ -5699,7 +5739,7 @@ describe('readStdout per-line containment (#1798)', () => {
   it('AC 3/7(ii): the stdout stream erroring AFTER the exit observer already ran (exitObserved set) logs only the ordinary DEBUG close message, never the alive-specific WARN', async () => {
     const h = setup();
     await h.service.activate(h.sessionId, h.workerId);
-    const runtimes = (h.service as unknown as { runtimes: Map<string, { exitObserved: boolean }> }).runtimes;
+    const runtimes = getRuntimesForTest(h.service);
 
     const warnSpy = spyOn(rootLogger, 'warn');
     const debugSpy = spyOn(rootLogger, 'debug');
@@ -5891,9 +5931,7 @@ describe('onSessionUpdated broadcast (worker-service session-updated broadcast g
     h.persistSession.mockClear();
     h.onSessionUpdated.mockClear();
 
-    const deps = (h.service as unknown as { deps: { getSession: (id: string) => InternalSession | undefined } })
-      .deps;
-    deps.getSession = () => undefined;
+    h.deps.getSession = () => undefined;
 
     h.fake.simulateExit(1);
     await waitFor(() => h.worker.subprocess === null);
