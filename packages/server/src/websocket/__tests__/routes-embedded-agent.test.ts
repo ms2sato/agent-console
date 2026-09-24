@@ -26,9 +26,10 @@ import { RepositorySlackIntegrationService } from '../../services/notifications/
 import { SingleUserMode } from '../../services/user-mode.js';
 import { SqliteUserRepository } from '../../repositories/sqlite-user-repository.js';
 import { setupWebSocketRoutes, EMBEDDED_USER_MESSAGE_MAX_BYTES } from '../routes.js';
-import type { AppContext } from '../../app-context.js';
 import { McpTokenRegistry } from '../../mcp/mcp-auth.js';
 import { PROVIDER_KEY_STORE_UI_MESSAGES } from '../../services/provider-key-store.js';
+import { asWSContext, asUpgradeWebSocket } from './ws-test-helpers.js';
+import { asAppContext } from '../../__tests__/test-utils.js';
 
 const TEST_CONFIG_DIR = '/test/config';
 
@@ -46,7 +47,7 @@ function createMockWs(): WSContext & {
   const sentMessages: string[] = [];
   const closeCalls: { code?: number; reason?: string }[] = [];
 
-  return {
+  const ws = asWSContext({
     send: (data: string | ArrayBuffer) => {
       sentMessages.push(typeof data === 'string' ? data : new TextDecoder().decode(data as ArrayBuffer));
     },
@@ -54,12 +55,8 @@ function createMockWs(): WSContext & {
       closeCalls.push({ code, reason });
     },
     readyState: 1, // OPEN
-    sentMessages,
-    closeCalls,
-  } as unknown as WSContext & {
-    sentMessages: string[];
-    closeCalls: { code?: number; reason?: string }[];
-  };
+  });
+  return Object.assign(ws, { sentMessages, closeCalls });
 }
 
 /** Minimal subset of Bun's FileSink consumed by EmbeddedAgentWorkerService (write/end/flush). */
@@ -67,6 +64,36 @@ interface FakeFileSink {
   write: (chunk: string | Uint8Array) => number;
   end: () => void;
   flush: () => number;
+}
+
+/** Minimal subset of Bun's Subprocess this file's fake spawn constructs. */
+interface FakeSubprocess {
+  pid: number;
+  exited: Promise<number>;
+  stdin: FakeFileSink;
+  stdout: ReadableStream<Uint8Array>;
+  stderr: ReadableStream<Uint8Array>;
+  kill: () => void;
+}
+
+/**
+ * `SpawnAsUserResult.subprocess` is Bun's real `Subprocess<'pipe','pipe','pipe'>`
+ * and `.stdin` its real `FileSink` -- far larger types than `FakeSubprocess`/
+ * `FakeFileSink` above actually implement. This is the file's single, named
+ * boundary between the fake shape and `SpawnAsUserResult` (mirrors the
+ * pattern in `embedded-agent-worker-service.test.ts`'s `toSpawnAsUserResult`).
+ */
+function toSpawnAsUserResult(fields: {
+  subprocess: FakeSubprocess;
+  stdin: FakeFileSink;
+  elevated?: boolean;
+}): SpawnAsUserResult {
+  const result: Pick<SpawnAsUserResult, 'elevated'> & { subprocess: FakeSubprocess; stdin: FakeFileSink } = {
+    subprocess: fields.subprocess,
+    stdin: fields.stdin,
+    elevated: fields.elevated ?? false,
+  };
+  return result as SpawnAsUserResult;
 }
 
 /**
@@ -134,7 +161,7 @@ function makeFakeSpawn(): {
       throw err;
     }
     captured.push(opts);
-    return { subprocess, stdin, elevated: false } as unknown as SpawnAsUserResult;
+    return toSpawnAsUserResult({ subprocess, stdin, elevated: false });
   };
 
   return {
@@ -224,14 +251,14 @@ describe('Worker WebSocket: embedded-agent branch', () => {
     const repositoryManager = await RepositoryManager.create({ repository: repositoryRepository, jobQueue: testJobQueue });
     const userMode = new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' });
 
-    const appContext = { sessionManager, notificationManager, agentManager, embeddedAgentManager, repositoryManager, userMode } as unknown as AppContext;
+    const appContext = asAppContext({ sessionManager, notificationManager, agentManager, embeddedAgentManager, repositoryManager, userMode });
 
     const app = new Hono();
     const upgradeWebSocket = (handlerFactory: WebSocketHandlerFactory) => {
       capturedWorkerHandlerFactory = handlerFactory;
       return handlerFactory;
     };
-    await setupWebSocketRoutes(app, upgradeWebSocket as unknown as Parameters<typeof setupWebSocketRoutes>[1], appContext);
+    await setupWebSocketRoutes(app, asUpgradeWebSocket(upgradeWebSocket), appContext);
   });
 
   afterEach(async () => {

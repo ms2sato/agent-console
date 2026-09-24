@@ -9,6 +9,7 @@ import {
 } from '../app-handler.js';
 import type { Session, AgentActivityState } from '@agent-console/shared';
 import { buildQuickSession, buildWorktreeSession } from '../../__tests__/utils/build-test-data.js';
+import { asWSContext } from './ws-test-helpers.js';
 
 describe('App Handler', () => {
   describe('isValidClientMessage', () => {
@@ -226,9 +227,9 @@ describe('App Handler', () => {
 
   describe('sendSessionsSync', () => {
     it('should send sessions-sync message to WebSocket', async () => {
-      const mockWs = {
+      const mockWs = asWSContext({
         send: mock(),
-      } as unknown as WSContext;
+      });
 
       const deps = {
         getAllSessions: () => [],
@@ -247,7 +248,7 @@ describe('App Handler', () => {
     });
 
     it('should log session count', async () => {
-      const mockWs = { send: mock() } as unknown as WSContext;
+      const mockWs = asWSContext({ send: mock() });
       const mockDebug = mock();
 
       const deps = {
@@ -266,7 +267,7 @@ describe('App Handler', () => {
     });
 
     it('should include paused sessions in count', async () => {
-      const mockWs = { send: mock() } as unknown as WSContext;
+      const mockWs = asWSContext({ send: mock() });
       const mockDebug = mock();
 
       const deps = {
@@ -291,9 +292,9 @@ describe('App Handler', () => {
     let mockDeps: AppHandlerDependencies;
 
     beforeEach(() => {
-      mockWs = {
+      mockWs = asWSContext({
         send: mock(),
-      } as unknown as WSContext;
+      });
 
       mockDeps = {
         getAllSessions: () => [],
