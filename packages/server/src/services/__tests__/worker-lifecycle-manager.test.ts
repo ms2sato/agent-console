@@ -1429,8 +1429,8 @@ describe('WorkerLifecycleManager', () => {
       // Track when old PTY exit fires by wrapping the exitCallback
       const oldMockPty = ptyFactory.instances[0];
       const originalOnExit = oldMockPty.onExit.bind(oldMockPty);
-      oldMockPty.onExit = (callback: (event: { exitCode: number; signal?: number }) => void) => {
-        const wrappedCallback = (event: { exitCode: number; signal?: number }) => {
+      oldMockPty.onExit = (callback: (event: { exitCode: number; signal?: number | string }) => void) => {
+        const wrappedCallback = (event: { exitCode: number; signal?: number | string }) => {
           operationOrder.push('old-exited');
           callback(event);
         };

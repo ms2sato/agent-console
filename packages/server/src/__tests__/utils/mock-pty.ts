@@ -1,5 +1,5 @@
 import { mock } from 'bun:test';
-import type { PtyProvider, PtyDataDiagnostics, PtySpawnOptions } from '../../lib/pty-provider.js';
+import type { PtyProvider, PtyInstance, PtyDataDiagnostics, PtySpawnOptions } from '../../lib/pty-provider.js';
 
 /**
  * Disposable interface matching bun-pty's IDisposable.
@@ -11,14 +11,36 @@ interface MockDisposable {
 /**
  * Mock PTY class for testing PTY-dependent code.
  * Simulates PTY behavior without spawning actual processes.
- * Implements the PtyInstance interface from pty-provider.
+ *
+ * `implements PtyInstance` so any future structural drift between this mock
+ * and the real contract (bun-pty's `IPty`, extended with the optional
+ * `dispose()` / `getDataDiagnostics()` members) is a compile error here,
+ * rather than being hidden behind a cast at the factory boundary (Issue
+ * #1829). Polarity measured (2026-09-25, `tsc --noEmit` in `packages/server`):
+ * temporarily removing the `process` field produces
+ * `TS2420: Class 'MockPty' incorrectly implements interface 'PtyInstance'. ...
+ * Property 'process' is missing in type 'MockPty' but required in type
+ * 'IPty'.` at this class's `implements` line; reverting `kill`'s parameter to
+ * `number` produces `TS2416: Property 'kill' in type 'MockPty' is not
+ * assignable to the same property in base type 'PtyInstance'.` at `kill`'s
+ * declaration. Both restored immediately after measuring.
  */
-export class MockPty {
+export class MockPty implements PtyInstance {
   pid: number;
+  cols = 80;
+  rows = 24;
+  process = 'mock';
   // Note: Single callback that gets replaced, matching PtyInstance interface contract
   // which specifies "Only one callback is supported. Subsequent calls will replace the previous callback."
   private dataCallback: ((data: string) => void) | null = null;
-  private exitCallback: ((event: { exitCode: number; signal?: number }) => void | Promise<void>) | null = null;
+  // `IExitEvent.signal` (bun-pty) is `number | string | undefined` -- kept as
+  // that exact union so both `kill(signal?: string)` below (the real IPty
+  // contract) and `simulateExit(exitCode, signal?: number | string)` (used
+  // by callers simulating a raw exit event, independent of kill()) deliver a
+  // structurally valid IExitEvent with no numeric-to-string mapping invented
+  // for either.
+  private exitCallback: ((event: { exitCode: number; signal?: number | string }) => void | Promise<void>) | null =
+    null;
   killed = false;
   /** Set true when dispose() is called. Mirrors PtyInstance's optional dispose(). */
   disposed = false;
@@ -29,9 +51,13 @@ export class MockPty {
   /**
    * Optional diagnostics stub for the sentinel watchdog (Issue #1242).
    * Mirrors `BunTerminalPtyAdapter.getDataDiagnostics()`. Tests set this
-   * directly; left unset it returns `undefined`, exercising the same
-   * "diagnostics absent" branch worker-manager.ts must handle gracefully
-   * for `bunPtyProvider`.
+   * directly; left unset, `getDataDiagnostics()` still returns a real
+   * (zeroed) `PtyDataDiagnostics` -- `PtyInstance.getDataDiagnostics` is
+   * optional by PRESENCE only, never by return value. Absence of
+   * diagnostics is modeled by removing the METHOD itself on a given
+   * instance (`mockPty.getDataDiagnostics = undefined;`, legal because the
+   * class declares it as an optional member below), not by this field
+   * being unset.
    */
   dataDiagnostics?: PtyDataDiagnostics;
   private sentinelEmitted = false;
@@ -56,7 +82,7 @@ export class MockPty {
     };
   }
 
-  onExit(callback: (event: { exitCode: number; signal?: number }) => void | Promise<void>): MockDisposable {
+  onExit(callback: (event: { exitCode: number; signal?: number | string }) => void | Promise<void>): MockDisposable {
     this.exitCallback = callback;
     return {
       dispose: () => {
@@ -72,9 +98,23 @@ export class MockPty {
   resize(cols: number, rows: number) {
     this.currentCols = cols;
     this.currentRows = rows;
+    this.cols = cols;
+    this.rows = rows;
   }
 
-  kill(signal?: number) {
+  /**
+   * Matches `IPty.kill(signal?: string)`. The string is passed straight into
+   * the exit event with no name-to-number mapping -- the real adapter
+   * (`BunTerminalPtyAdapter.kill`) reports `subprocess.signalCode`, the POSIX
+   * name as a string, unmapped, so a mapping here would be a mock-invented
+   * convention the production contract doesn't have. A bare `kill()` (the
+   * only production caller's shape, `pty.kill()` in worker-manager.ts) fires
+   * `signal: undefined`, matching this mock's pre-#1829 behavior; no
+   * consumer asserts a signal value after a bare kill (grepped
+   * `worker-manager.test.ts` / `worker-lifecycle-manager.test.ts`), so no
+   * `'SIGTERM'` default was added.
+   */
+  kill(signal?: string) {
     this.killed = true;
     // Simulate async exit like real PTY - fire exit callback via microtask
     if (this.exitCallback) {
@@ -93,9 +133,15 @@ export class MockPty {
     this.disposed = true;
   }
 
-  /** Mirrors PtyInstance's optional getDataDiagnostics() -- see `dataDiagnostics` field doc. */
-  getDataDiagnostics(): PtyDataDiagnostics | undefined {
-    return this.dataDiagnostics;
+  /**
+   * Mirrors `PtyInstance`'s optional `getDataDiagnostics()` -- see
+   * `dataDiagnostics` field doc. Declared as an optional class member (`?`)
+   * so a test can model "provider does not implement this at all" by
+   * assigning `mockPty.getDataDiagnostics = undefined;` on one instance,
+   * rather than this method itself ever returning `undefined` while present.
+   */
+  getDataDiagnostics?(): PtyDataDiagnostics {
+    return this.dataDiagnostics ?? { fireCount: 0, bufferedBytes: 0, droppedBytes: 0 };
   }
 
   // Test helpers - simulate PTY events
@@ -136,7 +182,7 @@ export class MockPty {
     }
   }
 
-  async simulateExit(exitCode: number, signal?: number): Promise<void> {
+  async simulateExit(exitCode: number, signal?: number | string): Promise<void> {
     await this.exitCallback?.({ exitCode, signal });
   }
 }
@@ -180,19 +226,12 @@ export function createMockPtyFactory(startPid = 10000) {
     autoEmitSentinel = enabled;
   };
 
-  // Create a PtyProvider that uses the mock spawn.
-  // Residual: `MockPty` does not (yet) `implements PtyInstance`, so this
-  // bridges through `unknown`. Measured gaps if it were declared: missing
-  // `cols`/`rows`/`process` (IPty fields MockPty tracks as `currentCols`/
-  // `currentRows` and has no analogue for at all); `kill(signal?: number)`
-  // vs `IPty.kill(signal?: string)` (the mock's numeric signal is the drift
-  // -- production PTYs' `kill()` takes no signal at all); and
-  // `getDataDiagnostics(): PtyDataDiagnostics | undefined` vs `IPty`'s
-  // non-optional call signature (the real adapter always returns a value;
-  // the mock's `undefined` branch is the drift, not the contract). Tracked
-  // as test-only follow-up work, not a change to the production contract.
+  // Typed wrapper, no cast: `MockPty implements PtyInstance` (see the class
+  // doc comment), so `spawn`'s return type already satisfies `PtyProvider`.
   const provider: PtyProvider = {
-    spawn: spawn as unknown as PtyProvider['spawn'],
+    spawn(command, args, options) {
+      return spawn(command, args, options);
+    },
   };
 
   return { instances, spawn, reset, provider, setAutoEmitSentinel };
