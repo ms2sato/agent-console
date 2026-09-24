@@ -4,6 +4,7 @@ import type { GenerateRepositoryDescriptionFn } from '../../services/repository-
 import {
   CloneNameConflictError,
   CloneValidationError,
+  type CloneRepositoryRequest,
 } from '../../services/repository-clone-service.js';
 import { RepositoryInUseError } from '../../services/repository-manager.js';
 import { CLONE_ERROR_CODES, CLONE_JOB_STATUS } from '@agent-console/shared';
@@ -81,7 +82,7 @@ const agentManager = {
 // directly via getJob.mockReturnValue or via enqueueClone returning a jobId
 // the test seeds.
 const repositoryCloneService = {
-  enqueueClone: mock((_request: unknown) => Promise.resolve('mock-job-id')),
+  enqueueClone: mock((_request: CloneRepositoryRequest) => Promise.resolve('mock-job-id')),
   getJob: mock((_jobId: string) => undefined as any),
 };
 
@@ -658,7 +659,7 @@ describe('Repositories API', () => {
       expect(body.repositoryId).toBe(null);
 
       expect(repositoryCloneService.enqueueClone).toHaveBeenCalledTimes(1);
-      const firstArg = repositoryCloneService.enqueueClone.mock.calls[0][0] as any;
+      const firstArg = repositoryCloneService.enqueueClone.mock.calls[0][0];
       expect(firstArg.url).toBe('https://github.com/org/repo.git');
       expect(firstArg.description).toBe('an example');
       // TEST_AUTH_USER.username from test-utils.ts is 'testuser'.

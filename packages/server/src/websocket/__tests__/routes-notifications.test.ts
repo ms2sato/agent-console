@@ -137,12 +137,7 @@ describe('WebSocket routes notifications', () => {
       const app = new Hono();
       await setupWebSocketRoutes(app, createUpgradeWebSocketStub(), appContext);
       expect(setSpy).toHaveBeenCalled();
-      return setSpy.mock.calls[0][0] as (
-        sessionId: string,
-        workerId: string,
-        exitCode: number,
-        reason: ExitReason,
-      ) => void;
+      return setSpy.mock.calls[0][0];
     }
 
     it('suppresses the notification for an `evicted` exit', async () => {

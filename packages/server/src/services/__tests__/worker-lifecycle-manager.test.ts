@@ -112,7 +112,7 @@ describe('WorkerLifecycleManager', () => {
   let mockPersistSession: Mock<WorkerLifecycleDeps['persistSession']>;
   let mockPathExists: Mock<WorkerLifecycleDeps['pathExists']>;
   let mockCallbacks: SessionLifecycleCallbacks;
-  let mockOnSessionUpdated: ReturnType<typeof mock>;
+  let mockOnSessionUpdated: Mock<(session: Session) => void>;
   let mockOnWorkerActivated: ReturnType<typeof mock>;
   let mockOnWorkerRestarted: ReturnType<typeof mock>;
   let mockOnDiffBaseCommitChanged: ReturnType<typeof mock>;
@@ -192,7 +192,7 @@ describe('WorkerLifecycleManager', () => {
     sessions = new Map();
     mockPersistSession = mock<WorkerLifecycleDeps['persistSession']>(() => Promise.resolve());
     mockPathExists = mock<WorkerLifecycleDeps['pathExists']>(() => Promise.resolve(true));
-    mockOnSessionUpdated = mock(() => {});
+    mockOnSessionUpdated = mock<(session: Session) => void>(() => {});
     mockOnWorkerActivated = mock(() => {});
     mockOnWorkerRestarted = mock(() => {});
     mockOnDiffBaseCommitChanged = mock(() => {});
@@ -630,7 +630,7 @@ describe('WorkerLifecycleManager', () => {
       });
 
       expect(mockOnSessionUpdated).toHaveBeenCalledTimes(1);
-      const broadcastedSession = mockOnSessionUpdated.mock.calls[0][0] as Session;
+      const broadcastedSession = mockOnSessionUpdated.mock.calls[0][0];
       expect(broadcastedSession.workers.find((w) => w.id === worker!.id)).toBeDefined();
     });
 
@@ -642,7 +642,7 @@ describe('WorkerLifecycleManager', () => {
       const worker = await lifecycleManager.createWorker(session.id, { type: 'terminal' });
 
       expect(mockOnSessionUpdated).toHaveBeenCalledTimes(1);
-      const broadcastedSession = mockOnSessionUpdated.mock.calls[0][0] as Session;
+      const broadcastedSession = mockOnSessionUpdated.mock.calls[0][0];
       expect(broadcastedSession.workers.find((w) => w.id === worker!.id)).toBeDefined();
     });
 
@@ -657,7 +657,7 @@ describe('WorkerLifecycleManager', () => {
       });
 
       expect(mockOnSessionUpdated).toHaveBeenCalledTimes(1);
-      const broadcastedSession = mockOnSessionUpdated.mock.calls[0][0] as Session;
+      const broadcastedSession = mockOnSessionUpdated.mock.calls[0][0];
       expect(broadcastedSession.workers.find((w) => w.id === worker!.id)).toBeDefined();
     });
 
@@ -1302,7 +1302,7 @@ describe('WorkerLifecycleManager', () => {
 
       expect(mockOnSessionUpdated).toHaveBeenCalledTimes(1);
       // The broadcast session should not contain the deleted worker
-      const broadcastedSession = mockOnSessionUpdated.mock.calls[0][0] as Session;
+      const broadcastedSession = mockOnSessionUpdated.mock.calls[0][0];
       expect(broadcastedSession.workers.find(w => w.id === deletedWorkerId)).toBeUndefined();
     });
   });
@@ -2053,7 +2053,7 @@ describe('WorkerLifecycleManager', () => {
       // worker (this test's proxy for "the persisted row", per this file's
       // mocked persistSession).
       expect(mockPersistSession).toHaveBeenCalled();
-      const persistedSession = mockPersistSession.mock.calls.at(-1)?.[0] as InternalSession;
+      const persistedSession = mockPersistSession.mock.calls.at(-1)![0];
       const persistedWorker = persistedSession.workers.get(workerId) as InternalEmbeddedAgentWorker;
       expect(persistedWorker.type).toBe('embedded-agent');
       expect(persistedWorker.embeddedAgentId).toBe(EMBEDDED_AGENT_DEF.id);
@@ -2515,7 +2515,7 @@ describe('WorkerLifecycleManager', () => {
       expect(result!.type).toBe('embedded-agent');
 
       expect(mockPersistSession).toHaveBeenCalled();
-      const persistedSession = mockPersistSession.mock.calls.at(-1)?.[0] as InternalSession;
+      const persistedSession = mockPersistSession.mock.calls.at(-1)![0];
       const persistedWorker = persistedSession.workers.get(worker!.id) as InternalEmbeddedAgentWorker;
       expect(persistedWorker.type).toBe('embedded-agent');
 
@@ -2647,7 +2647,7 @@ describe('WorkerLifecycleManager', () => {
       expect(ptyFactory.instances[0].killed).toBe(false);
 
       expect(mockPersistSession).toHaveBeenCalled();
-      const persistedSession = mockPersistSession.mock.calls.at(-1)?.[0] as InternalSession;
+      const persistedSession = mockPersistSession.mock.calls.at(-1)![0];
       const persistedWorker = persistedSession.workers.get(workerId) as InternalAgentWorker;
       expect(persistedWorker.type).toBe('agent');
       expect(persistedWorker.agentId).toBe(CLAUDE_CODE_AGENT_ID);
@@ -3029,7 +3029,7 @@ describe('WorkerLifecycleManager', () => {
       expect(internal.autoCompaction).toBe(false);
 
       expect(mockPersistSession).toHaveBeenCalled();
-      const persistedSession = mockPersistSession.mock.calls.at(-1)?.[0] as InternalSession;
+      const persistedSession = mockPersistSession.mock.calls.at(-1)![0];
       const persistedWorker = persistedSession.workers.get(workerId) as InternalEmbeddedAgentWorker;
       expect(persistedWorker.embeddedAgentId).toBe(EMBEDDED_AGENT_DEF_SDK.id);
       expect(persistedWorker.autoCompaction).toBe(false);
@@ -3373,7 +3373,7 @@ describe('WorkerLifecycleManager', () => {
 
       expect(mockGit.renameBranch).toHaveBeenCalledWith('original-branch', 'new-branch', session.locationPath, 'testuser');
       expect(mockPersistSession).toHaveBeenCalled();
-      const persistedSession = mockPersistSession.mock.calls[0][0] as InternalSession;
+      const persistedSession = mockPersistSession.mock.calls[0][0];
       expect(persistedSession.type).toBe('worktree');
       if (persistedSession.type === 'worktree') {
         expect(persistedSession.worktreeId).toBe('new-branch');
@@ -3698,7 +3698,7 @@ describe('WorkerLifecycleManager', () => {
       await lifecycleManager.restoreWorker(session.id, agentWorker.id);
 
       expect(mockOnSessionUpdated).toHaveBeenCalledTimes(1);
-      const updatedSession = mockOnSessionUpdated.mock.calls[0][0] as Session;
+      const updatedSession = mockOnSessionUpdated.mock.calls[0][0];
       expect(updatedSession.id).toBe(session.id);
       expect(updatedSession.activationState).toBe('running');
     });
@@ -3858,7 +3858,7 @@ describe('WorkerLifecycleManager', () => {
       await lifecycleManager.getAvailableWorker(session.id, terminalWorker.id);
 
       expect(mockOnSessionUpdated).toHaveBeenCalledTimes(1);
-      const updatedSession = mockOnSessionUpdated.mock.calls[0][0] as Session;
+      const updatedSession = mockOnSessionUpdated.mock.calls[0][0];
       expect(updatedSession.id).toBe(session.id);
       expect(updatedSession.activationState).toBe('running');
     });

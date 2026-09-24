@@ -8,7 +8,7 @@ const TEST_FLUSH_INTERVAL = 10; // ms
 const TEST_FLUSH_THRESHOLD = 100; // bytes
 
 function createMockWs() {
-  const sendMock = mock();
+  const sendMock = mock<(data: string) => void>();
   const ws = asWSContext({
     send: sendMock,
     close: mock(),
@@ -69,7 +69,7 @@ describe('BufferedWebSocketSender', () => {
       await waitForFlush();
 
       expect(sendMock).toHaveBeenCalledTimes(1);
-      const sent = JSON.parse(sendMock.mock.calls[0][0] as string);
+      const sent = JSON.parse(sendMock.mock.calls[0][0]);
       expect(sent).toEqual({ type: 'output', data: 'hello world', offset: 11, epoch: 0 });
     });
 
@@ -79,7 +79,7 @@ describe('BufferedWebSocketSender', () => {
 
       // Should have flushed immediately without waiting for timer
       expect(sendMock).toHaveBeenCalledTimes(1);
-      const sent = JSON.parse(sendMock.mock.calls[0][0] as string);
+      const sent = JSON.parse(sendMock.mock.calls[0][0]);
       expect(sent.type).toBe('output');
       expect(sent.data.length).toBe(TEST_FLUSH_THRESHOLD);
     });
@@ -106,7 +106,7 @@ describe('BufferedWebSocketSender', () => {
       await waitForFlush();
 
       expect(sendMock).toHaveBeenCalledTimes(2);
-      const sent = JSON.parse(sendMock.mock.calls[1][0] as string);
+      const sent = JSON.parse(sendMock.mock.calls[1][0]);
       expect(sent.data).toBe('new data'); // Only new data, not "important data" + "new data"
     });
 
@@ -141,7 +141,7 @@ describe('BufferedWebSocketSender', () => {
       sender.flush();
 
       expect(sendMock).toHaveBeenCalledTimes(2);
-      const sent = JSON.parse(sendMock.mock.calls[1][0] as string);
+      const sent = JSON.parse(sendMock.mock.calls[1][0]);
       expect(sent.data).toBe('new');
     });
   });
@@ -212,8 +212,8 @@ describe('BufferedWebSocketSender', () => {
 
       expect(sendMock).toHaveBeenCalledTimes(2);
 
-      const firstMsg = JSON.parse(sendMock.mock.calls[0][0] as string);
-      const secondMsg = JSON.parse(sendMock.mock.calls[1][0] as string);
+      const firstMsg = JSON.parse(sendMock.mock.calls[0][0]);
+      const secondMsg = JSON.parse(sendMock.mock.calls[1][0]);
 
       expect(firstMsg.type).toBe('output');
       expect(firstMsg.data).toBe('output data');
@@ -226,8 +226,8 @@ describe('BufferedWebSocketSender', () => {
 
       expect(sendMock).toHaveBeenCalledTimes(2);
 
-      const firstMsg = JSON.parse(sendMock.mock.calls[0][0] as string);
-      const secondMsg = JSON.parse(sendMock.mock.calls[1][0] as string);
+      const firstMsg = JSON.parse(sendMock.mock.calls[0][0]);
+      const secondMsg = JSON.parse(sendMock.mock.calls[1][0]);
 
       expect(firstMsg.type).toBe('output');
       expect(secondMsg.type).toBe('activity');
@@ -239,8 +239,8 @@ describe('BufferedWebSocketSender', () => {
 
       expect(sendMock).toHaveBeenCalledTimes(2);
 
-      const firstMsg = JSON.parse(sendMock.mock.calls[0][0] as string);
-      const secondMsg = JSON.parse(sendMock.mock.calls[1][0] as string);
+      const firstMsg = JSON.parse(sendMock.mock.calls[0][0]);
+      const secondMsg = JSON.parse(sendMock.mock.calls[1][0]);
 
       expect(firstMsg.type).toBe('output');
       expect(secondMsg.type).toBe('server-restarted');
@@ -252,7 +252,7 @@ describe('BufferedWebSocketSender', () => {
       sender.send({ type: 'exit', exitCode: 0, signal: null });
 
       expect(sendMock).toHaveBeenCalledTimes(1);
-      const sent = JSON.parse(sendMock.mock.calls[0][0] as string);
+      const sent = JSON.parse(sendMock.mock.calls[0][0]);
       expect(sent).toEqual({ type: 'exit', exitCode: 0, signal: null });
     });
 
@@ -260,7 +260,7 @@ describe('BufferedWebSocketSender', () => {
       sender.send({ type: 'activity', state: 'active' });
 
       expect(sendMock).toHaveBeenCalledTimes(1);
-      const sent = JSON.parse(sendMock.mock.calls[0][0] as string);
+      const sent = JSON.parse(sendMock.mock.calls[0][0]);
       expect(sent).toEqual({ type: 'activity', state: 'active' });
     });
   });
