@@ -70,6 +70,16 @@
  * reads -- fire at all (`sdk-engine.ts`'s own comments: zero events of any
  * kind arrive from the SDK until the first prompt is yielded).
  *
+ * LIMITATION, RULED (Architect, Issue 1813): this isolation covers only the
+ * `user`/`local` FILE channel (`.claude.json`); claude.ai connectors ride on
+ * the copied CREDENTIALS rather than on that file, so they still appear in
+ * the discovered event and are accepted here as the executing user's own
+ * capability surface under `docs/design/embedded-agent-sdk-engine.md`
+ * section 4.1's TUI parity -- the only suppressor is the construction-time
+ * `Options.settings.disableClaudeAiConnectors`, which `SdkEngine.buildOptions()`
+ * does not expose on this shipping path. Their presence is therefore a
+ * RECORDED reading below, never a gated assertion.
+ *
  * STDERR WARNING OBSERVABILITY (best-effort, not gated). `applyArgSubstitution`
  * logs one `console.warn` per unresolved placeholder inside the embedded-agent
  * SUBPROCESS -- there is no public getter for a live worker's stderr tail
@@ -165,23 +175,21 @@ interface FixtureReading {
 
 /**
  * Whether any `mcp-servers-discovered` event in `events` reported a `user` /
- * `local` / `connector`-scope row -- the three scopes that would mean the
- * operator's real `~/.claude.json` (including its claude.ai connectors)
- * leaked into this probe's isolated run (Issue 1813). Not reused from
- * `check-embedded-agent-project-mcp-permission.ts`'s own
- * `hasUserOrLocalScopeEntry`: that predicate checks only `user`/`local`,
- * because its own negative control never needed to rule out a leaked
- * connector -- what this probe actually leaked (Issue 1813's own finding)
- * was a `connector`-scope row, so this predicate covers all three.
+ * `local`-scope row -- the two scopes the isolated, empty `.claude.json`
+ * (Issue 1813) is actually able to close. Deliberately narrowed to match
+ * `check-embedded-agent-project-mcp-permission.ts`'s own precedent
+ * `hasUserOrLocalScopeEntry`: `connector`-scope rows are NOT included here
+ * (Architect ruling, Issue 1813) -- they ride on the copied credentials, not
+ * on `.claude.json`, so no isolation this script can perform suppresses
+ * them; see {@link collectConnectorScopeRows} for the recorded (non-gated)
+ * reading instead, and this file's header comment for the full rationale.
  */
-function hasLeakedMcpScopeEntry(events: Array<Record<string, unknown> & { type: string }>): boolean {
+function hasUserOrLocalScopeEntry(events: Array<Record<string, unknown> & { type: string }>): boolean {
   return events.some(
     (e) =>
       e.type === 'mcp-servers-discovered' &&
       Array.isArray(e.servers) &&
-      (e.servers as Array<{ scope?: string }>).some(
-        (s) => s.scope === 'user' || s.scope === 'local' || s.scope === 'connector',
-      ),
+      (e.servers as Array<{ scope?: string }>).some((s) => s.scope === 'user' || s.scope === 'local'),
   );
 }
 
@@ -194,6 +202,33 @@ function hasLeakedMcpScopeEntry(events: Array<Record<string, unknown> & { type: 
  */
 function anyUserLocalNamesUnavailable(events: Array<Record<string, unknown> & { type: string }>): boolean {
   return events.some((e) => e.type === 'mcp-servers-discovered' && e.userLocalNamesUnavailable === true);
+}
+
+/**
+ * Every `connector`-scope row (name + status) reported across any
+ * `mcp-servers-discovered` event in `events`, deduplicated by name (the
+ * event fires repeatedly per activation -- see `sdk-engine.ts`'s
+ * `emitMcpServersDiscovered` doc comment on forms (a)/(b)/(c) -- and the
+ * same connector reports identically each time). A RECORDED reading, never
+ * a gated assertion (Architect ruling, Issue 1813): these rows are expected
+ * to be present, tied to the copied credentials rather than to
+ * `.claude.json`, and this function exists so a future `buildOptions()`
+ * change that starts suppressing them shows up as a changed reading instead
+ * of a silent pass.
+ */
+function collectConnectorScopeRows(
+  events: Array<Record<string, unknown> & { type: string }>,
+): Array<{ name: string; status: string }> {
+  const byName = new Map<string, { name: string; status: string }>();
+  for (const e of events) {
+    if (e.type !== 'mcp-servers-discovered' || !Array.isArray(e.servers)) continue;
+    for (const s of e.servers as Array<{ name?: string; scope?: string; status?: string }>) {
+      if (s.scope === 'connector' && typeof s.name === 'string') {
+        byName.set(s.name, { name: s.name, status: String(s.status ?? 'unknown') });
+      }
+    }
+  }
+  return [...byName.values()];
 }
 
 async function main(): Promise<number> {
@@ -508,25 +543,35 @@ async function main(): Promise<number> {
 
     // --- Isolation negative control (Issue 1813): with CLAUDE_CONFIG_DIR
     // pointed at an isolated, empty (but present) config, no discovered
-    // event ever reports a user/local/connector-scope row, and
-    // userLocalNamesUnavailable is never set (the isolated config was
-    // readable) -- the operator's own ~/.claude.json is never read. Checked
-    // over the FULL event history (not just `turnEvents`), the same scope
+    // event ever reports a user/local-scope row, and userLocalNamesUnavailable
+    // is never set (the isolated config was readable) -- the operator's own
+    // ~/.claude.json is never read. Checked over the FULL event history (not
+    // just `turnEvents`), the same scope
     // check-embedded-agent-project-mcp-permission.ts's own negative control
     // (c) uses, since a `mcp-servers-discovered` event can also arrive from
     // `main.ts`'s activation-time form (a) or `applyMcpServersOnce`'s form
     // (c), not only from `handleSystemInit`'s form (b) this turn drives.
+    //
+    // claude.ai connectors are DELIBERATELY NOT part of this gated check
+    // (Architect ruling, Issue 1813 -- see this file's header, "LIMITATION,
+    // RULED"): they are printed as a RECORDED reading below instead, never
+    // asserted against.
     console.log('\n==> isolation negative control (Issue 1813)');
     const allDiscoveredEvents = (await readEvents()).filter((e) => e.type === 'mcp-servers-discovered');
     expect(allDiscoveredEvents.length > 0, 'isolation: at least one mcp-servers-discovered event exists to check');
     expect(
-      !hasLeakedMcpScopeEntry(allDiscoveredEvents),
-      'isolation: no discovered event ever reported a user/local/connector-scope row',
+      !hasUserOrLocalScopeEntry(allDiscoveredEvents),
+      'isolation: no discovered event ever reported a user/local-scope row',
       JSON.stringify(allDiscoveredEvents.map((e) => e.servers)),
     );
     expect(
       !anyUserLocalNamesUnavailable(allDiscoveredEvents),
       'isolation: userLocalNamesUnavailable was never set (the isolated config was readable)',
+    );
+    const connectorRows = collectConnectorScopeRows(allDiscoveredEvents);
+    console.log(
+      `  connectors present (credential-bound, accepted under section 4.1 TUI parity; not suppressible ` +
+        `through the shipping path -- see PS14 / Issue 1813): ${JSON.stringify(connectorRows)}`,
     );
 
     console.log('\n==> READINGS (non-elevated branch only)');

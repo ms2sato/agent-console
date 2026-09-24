@@ -74,6 +74,7 @@ import {
   type SDKUserMessage,
 } from '../../packages/embedded-agent/node_modules/@anthropic-ai/claude-agent-sdk';
 import { spawnClaudeCodeProcess, UserMessageQueue } from '../../packages/embedded-agent/src/sdk-engine.js';
+import { isolateClaudeConfigDir } from './probe-sdk-session-harness.js';
 
 // `let`, default values -- assigned by the argv parser inside main() below.
 // Stay at module scope (not moved alongside the parser) because
@@ -165,6 +166,14 @@ async function main(): Promise<number> {
 
   withTool = flags.includes('--with-tool');
   trials = positional.length === 1 ? Number(positional[0]) : 5;
+
+  // Isolate from the operator's real ~/.claude.json (Issue 1813's sweep):
+  // same one-line construction probe-sdk-compaction.ts / probe-sdk-resume.ts
+  // already use -- this script has no discovery/scope assertion of its own
+  // (unlike probe-sdk-phase5-pr2-pc.ts), so no `{}` .claude.json write is
+  // needed, only the config-dir relocation.
+  const configDir = isolateClaudeConfigDir('h2-transport-settle');
+  console.log(`isolated CLAUDE_CONFIG_DIR: ${configDir}`);
 
   console.log(`Running ${trials} trial(s), ${withTool ? 'Bash-tool-call-bearing' : 'plain-text'} turns, production-faithful methodology (no early break)...\n`);
 

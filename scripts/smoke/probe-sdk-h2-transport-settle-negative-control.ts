@@ -61,6 +61,7 @@ import {
   type Options,
 } from '../../packages/embedded-agent/node_modules/@anthropic-ai/claude-agent-sdk';
 import { spawnClaudeCodeProcess, UserMessageQueue } from '../../packages/embedded-agent/src/sdk-engine.js';
+import { isolateClaudeConfigDir } from './probe-sdk-session-harness.js';
 
 const RETRY_ATTEMPTS = 6;
 const RETRY_DELAY_MS = 500;
@@ -127,6 +128,12 @@ async function main(): Promise<number> {
   }
 
   const trials = args.length === 1 ? Number(args[0]) : 5;
+
+  // Isolate from the operator's real ~/.claude.json (Issue 1813's sweep):
+  // same one-line construction its production-faithful sibling
+  // (probe-sdk-h2-transport-settle.ts) now uses.
+  const configDir = isolateClaudeConfigDir('h2-transport-settle-negative-control');
+  console.log(`isolated CLAUDE_CONFIG_DIR: ${configDir}`);
 
   console.log(`Running ${trials} trial(s) with the DELIBERATELY WRONG early-break methodology (expect every trial to reproduce "ProcessTransport is not ready for writing")...\n`);
 
