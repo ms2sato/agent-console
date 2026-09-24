@@ -27,6 +27,15 @@ import type { RunAsUserResult } from '../../services/privilege-elevation.js';
 const TEST_CONFIG = '/test/config';
 
 /**
+ * `JobQueue` has private fields, so a stub object literal cannot satisfy it
+ * structurally. `Partial<JobQueue>` retains the same private brand, so this
+ * single-step cast type-checks without bridging through `unknown`.
+ */
+function asJobQueue(stub: Partial<JobQueue>): JobQueue {
+  return stub as JobQueue;
+}
+
+/**
  * Captured arguments for `rmRecursiveAsUser` (PR #888). Mirrors the helper's
  * positional signature so the test seam can assert path / username / opts
  * directly — no need to inspect the underlying `rm -rf -- '<...>'` command
@@ -85,18 +94,16 @@ describe('cleanup job handlers', () => {
     // as the prototype keeps the type contract honest (no unsafe casts) and
     // the spies still capture every call.
     workerOutputFileManager = new WorkerOutputFileManager();
-    workerOutputFileManager.deleteSessionOutputs =
-      deleteSessionOutputs as unknown as WorkerOutputFileManager['deleteSessionOutputs'];
-    workerOutputFileManager.deleteWorkerOutput =
-      deleteWorkerOutput as unknown as WorkerOutputFileManager['deleteWorkerOutput'];
+    workerOutputFileManager.deleteSessionOutputs = deleteSessionOutputs;
+    workerOutputFileManager.deleteWorkerOutput = deleteWorkerOutput;
 
-    const fakeQueue: JobQueue = {
+    // The handler-registration entry point only needs registerHandler; the
+    // rest of the JobQueue surface is intentionally unused here.
+    const fakeQueue = asJobQueue({
       registerHandler: <T>(type: string, handler: JobHandler<T>) => {
         handlers.set(type, handler as JobHandler<unknown>);
       },
-      // The handler-registration entry point only needs registerHandler;
-      // the rest of the JobQueue surface is intentionally unused here.
-    } as unknown as JobQueue;
+    });
 
     process.env.AGENT_CONSOLE_HOME = TEST_CONFIG;
     rmRecursiveAsUserMock = createRmRecursiveAsUserMock();

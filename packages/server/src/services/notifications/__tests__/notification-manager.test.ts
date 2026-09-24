@@ -24,13 +24,23 @@ describe('NotificationManager', () => {
 
   type MockSlackHandler = ReturnType<typeof createMockSlackHandler>;
 
+  /**
+   * `SlackHandler` has a private constructor-injected field, so a stub
+   * object literal cannot satisfy it structurally. `Partial<SlackHandler>`
+   * retains the same private brand, so this single-step cast type-checks
+   * without bridging through `unknown`.
+   */
+  function asSlackHandler(stub: Partial<SlackHandler>): SlackHandler {
+    return stub as SlackHandler;
+  }
+
   // Helper to create NotificationManager with mock SlackHandler
   function createNotificationManager(
     slackHandler: MockSlackHandler = createMockSlackHandler(),
     options?: NotificationManagerOptions
   ) {
     const manager = new NotificationManager(
-      slackHandler as unknown as SlackHandler,
+      asSlackHandler(slackHandler),
       options
     );
     return { manager, slackHandler };
