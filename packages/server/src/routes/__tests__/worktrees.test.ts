@@ -72,8 +72,13 @@ function asEmbeddedAgentManager(stub: Partial<EmbeddedAgentManager>): EmbeddedAg
  * Minimal-but-valid `AgentDefinition` fixture. The route under test only
  * ever reads `.id` from the resolved agent (see routes/worktrees.ts); the
  * real `suggestSessionMetadata` (the only consumer of the other fields) is
- * always replaced with a test double in this file, so the templates/
- * capabilities below are never exercised -- they exist only to satisfy the
+ * replaced with a test double in every context that overrides an
+ * `agentManager` and can reach the POST /worktrees creation route -- the
+ * handful of `asAppContext(...)` calls in this file that omit
+ * `suggestSessionMetadata` entirely are GET/DELETE-only contexts (or the
+ * default `beforeEach` context, never mounted for a prompt-mode POST), so
+ * they never reach the suggester regardless. The templates/capabilities
+ * below are therefore never exercised -- they exist only to satisfy the
  * real `AgentDefinition` shape without a cast.
  */
 function buildAgentDefinitionFixture(overrides: Pick<AgentDefinition, 'id' | 'name'>): AgentDefinition {
