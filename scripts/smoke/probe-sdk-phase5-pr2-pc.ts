@@ -45,12 +45,36 @@
  * `discoverProjectMcpServers` against the real `.mcp.json` this script
  * writes -- never hand-computed.
  *
- * SCOPE: NON-ELEVATED BRANCH ONLY. The elevated branch (does a login shell's
+ * TWO ARMS, ONE PROCESS INVOCATION EACH (Issue #1799). Run with no arguments
+ * for the NON-ELEVATED branch above (billable, one real turn). Run with
+ * `--elevated <target-user>` for the ELEVATED branch: does a login shell's
  * profile, rather than the server process's own environment, supply the
- * value under `sudo -u <user> -i`?) needs a tier-2 container this session
- * cannot reach and is NOT attempted here -- no substitution, no
- * approximation. Every printed reading is prefixed NON-ELEVATED; the
- * elevated branch is reported as NOT REACHED, not as passing or failing.
+ * value under `sudo -u <user> -i`? That arm is TURN-FREE -- it never sends a
+ * user message -- because the observable it needs (each fixture's `argv` and
+ * named env var) is read from the fixture's own `--spawn-report` file
+ * (`fixtures/stdio-echo-mcp-server.ts` job 4), written at spawn time, before
+ * any model turn could exist. The elevated arm's reading is licensed by the
+ * non-elevated arm's own same-run positive control (below): a run has shown
+ * the spawn report and the tool-result reading are byte-equal, so reading
+ * the elevated arm from the spawn report alone stands in for the tool-result
+ * observable the elevated arm has no turn to produce. Every printed reading
+ * is prefixed with its arm (NON-ELEVATED or ELEVATED); the two arms never
+ * run in the same process invocation, so neither can be reported as "not
+ * reached" by the OTHER arm's own run.
+ *
+ * A CLI FACT, NOT A HARNESS QUIRK: `ready` does not imply every declared
+ * project MCP server has finished connecting. `ready` (`sdk-engine.ts`) means
+ * the engine constructed the SDK query and started its consumer; it is NOT
+ * gated on the CLI's own `system:init`, which does not arrive until the
+ * FIRST PROMPT is sent -- so `ready` fires essentially immediately, before
+ * the CLI has necessarily finished (or even started reporting on) its
+ * connections to `.mcp.json`-declared servers. Measured directly (both in a
+ * free, local degenerate-mode dry run and in the real tier-2 container):
+ * `ready` -> fixture spawn report, WITH NO PROMPT SENT, observed lag roughly
+ * 1.5-3.2s. This is a property of the `claude` CLI's own startup sequencing,
+ * not an artifact of this script's harness, and any future reader of the
+ * elevated arm's boundary-detection code should read it as such. The
+ * elevated arm's grace-window poll (below) exists because of this fact.
  *
  * ISOLATION FROM THE OPERATOR'S REAL `~/.claude.json` (Issue 1813). Observed
  * 2026-09-22 (a prompted run of this same non-elevated arm, recorded on
@@ -95,21 +119,37 @@
  * stated rather than a presence/absence being fabricated.
  *
  * VERDICT / EXIT CODES (`PROBE_EXIT`), same convention as the sibling P-a/P-b
- * file: 0 = MEASURED (both fixtures' tool calls completed and their JSON
- * payload was read, regardless of what the values turned out to be -- a
- * clean measurement is a success even if a reading deviates from
- * expectation, which is then a finding to report, not a script failure); 1 =
- * INCONCLUSIVE (a turn never settled, a tool call never happened, or its
- * JSON payload could not be parsed); 2 = HARNESS (activation failed, the
- * probe could not run at all).
+ * file, for BOTH arms: 0 = MEASURED (non-elevated: both fixtures' tool calls
+ * completed and their JSON payload was read; elevated: both spawn reports
+ * appeared and the control fixture's shape matched -- regardless of what the
+ * SET fixture's values turned out to be, a clean measurement is a success
+ * even if a reading deviates from expectation, which is then a finding to
+ * report, not a script failure); 1 = INCONCLUSIVE (non-elevated: a turn
+ * never settled, a tool call never happened, or its JSON payload could not
+ * be parsed; elevated: exactly one of the two spawn reports appeared, or the
+ * control fixture disagreed with the non-elevated arm's own control shape);
+ * 2 = HARNESS (non-elevated: activation failed; elevated: outcome (ii),
+ * neither spawn report appeared within the gate's timeout).
  *
- * Requirements: a real, authenticated `claude` CLI session for the invoking
- * OS user; `bun install` already run; `git` on PATH (for the throwaway
- * repository's `.git`, needed by `RepositoryManager.registerRepository`).
- * BILLABLE -- one real turn, well under $1. A manual gate, never a CI job;
- * registered in `.claude/rules/test-trigger.md`.
+ * Requirements (non-elevated branch): a real, authenticated `claude` CLI
+ * session for the invoking OS user; `bun install` already run; `git` on PATH
+ * (for the throwaway repository's `.git`, needed by
+ * `RepositoryManager.registerRepository`). BILLABLE -- one real turn, well
+ * under $1.
  *
- * Usage: bun scripts/smoke/probe-sdk-phase5-pr2-pc.ts
+ * Requirements (--elevated <target-user> branch): elevation privilege for
+ * <target-user> (a real OS user); `AUTH_MODE=multi-user` is forced on by
+ * this arm. FREE and TURN-FREE -- no `claude` CLI login is needed for
+ * <target-user>, no model turn is ever sent; this is exactly what item 4's
+ * "free gate" measures (does the CLI start its declared MCP servers without
+ * one?). See `.claude/rules/test-trigger.md`'s section for this probe for
+ * the gate's two outcomes.
+ *
+ * A manual gate, never a CI job; registered in `.claude/rules/test-trigger.md`.
+ *
+ * Usage:
+ *   bun scripts/smoke/probe-sdk-phase5-pr2-pc.ts                      # non-elevated (billable)
+ *   bun scripts/smoke/probe-sdk-phase5-pr2-pc.ts --elevated <target-user>  # elevated (free, turn-free)
  */
 
 // --- CRITICAL ordering, same hazard as check-embedded-agent-idle-eviction.ts
@@ -129,6 +169,11 @@ import * as path from 'node:path';
 import { discoverProjectMcpServers } from '../../packages/embedded-agent/src/mcp-discovery.js';
 import { mcpServerOf } from '../../packages/embedded-agent/src/mcp-names.js';
 import { isolateClaudeConfigDir } from './probe-sdk-session-harness.js';
+// No transitive server-config.ts import (pure node:fs/promises + node:os +
+// node:path), so this is safe as a static import above the env-var prelude,
+// the same reasoning check-embedded-agent-elevation.ts documents for its own
+// use of this helper.
+import { createDisposableMultiUserHome } from './disposable-multi-user-home.js';
 import type { AppContext } from '../../packages/server/src/app-context.js';
 
 const PROBE_VAR_NAME = 'PROBE_VAR';
@@ -164,6 +209,7 @@ interface FixtureReading {
   varName: string;
   canaryPath: string;
   ledgerPath: string;
+  reportPath: string;
   toolCallSeen: boolean;
   toolResultParsed: boolean;
   envValue: string | null;
@@ -171,6 +217,9 @@ interface FixtureReading {
   canaryExists: boolean;
   ledgerLineCount: number;
   raw: string | null;
+  reportExists: boolean;
+  reportEnvValue: string | null;
+  reportArgsTrailing: string | null;
 }
 
 /**
@@ -231,7 +280,8 @@ function collectConnectorScopeRows(
   return [...byName.values()];
 }
 
-async function main(): Promise<number> {
+/** Non-elevated branch -- unchanged from before Issue #1799's `--elevated` arm was added, aside from this rename. */
+async function runNonElevated(): Promise<number> {
   process.env.LOG_LEVEL = 'debug';
   process.env[PROBE_VAR_NAME] = PROBE_VAR_VALUE;
   // Deliberately never set: PROBE_UNSET_NAME stays absent from this process's
@@ -270,8 +320,8 @@ async function main(): Promise<number> {
   let homeDir: string | undefined;
 
   try {
-    console.log(`==> NON-ELEVATED branch only. ${PROBE_VAR_NAME}=${PROBE_VAR_VALUE} ${PROBE_UNSET_NAME}=(unset)`);
-    console.log('==> ELEVATED branch: NOT REACHED (needs tier-2 container; not attempted here)');
+    console.log(`==> NON-ELEVATED branch. ${PROBE_VAR_NAME}=${PROBE_VAR_VALUE} ${PROBE_UNSET_NAME}=(unset)`);
+    console.log('==> ELEVATED branch: not run by this invocation -- see --elevated <target-user>');
 
     // Isolate this arm from the operator's real `~/.claude.json` -- the same
     // isolateClaudeConfigDir + `{}` `.claude.json` construction
@@ -350,9 +400,17 @@ async function main(): Promise<number> {
     const fixtureScriptPath = path.resolve(import.meta.dir, 'fixtures/stdio-echo-mcp-server.ts');
     const canarySet = path.join(locationPath, `${SET_SERVER_NAME}.touched`);
     const ledgerSet = path.join(locationPath, `${SET_SERVER_NAME}-ledger.tsv`);
+    const reportSet = path.join(locationPath, `${SET_SERVER_NAME}-report.ndjson`);
     const canaryUnset = path.join(locationPath, `${UNSET_SERVER_NAME}.touched`);
     const ledgerUnset = path.join(locationPath, `${UNSET_SERVER_NAME}-ledger.tsv`);
+    const reportUnset = path.join(locationPath, `${UNSET_SERVER_NAME}-report.ndjson`);
 
+    // `--spawn-report` is inserted BEFORE the trailing `${VAR}` placeholder
+    // argument so that placeholder stays the LAST element of `args` -- the
+    // same position `readFixture`'s `argv.at(-1)` reads for the tool-result
+    // reading below, and the same position the fixture's own spawn report
+    // reads argv from (Issue #1799 item 2's same-run positive control: the
+    // two must be byte-equal for the SAME trailing element).
     const mcpJson = {
       mcpServers: {
         [SET_SERVER_NAME]: {
@@ -365,6 +423,8 @@ async function main(): Promise<number> {
             ledgerSet,
             '--env-var',
             'PROBE_TOKEN',
+            '--spawn-report',
+            reportSet,
             `\${${PROBE_VAR_NAME}}`,
           ],
           env: { PROBE_TOKEN: `\${${PROBE_VAR_NAME}}` },
@@ -379,6 +439,8 @@ async function main(): Promise<number> {
             ledgerUnset,
             '--env-var',
             'PROBE_TOKEN2',
+            '--spawn-report',
+            reportUnset,
             `\${${PROBE_UNSET_NAME}}`,
           ],
           env: { PROBE_TOKEN2: `\${${PROBE_UNSET_NAME}}` },
@@ -490,7 +552,13 @@ async function main(): Promise<number> {
     console.log(`==> turn settled. reply: ${reply.trim().slice(0, 300)}`);
     const turnEvents = (await readEvents()).slice(turnMarker);
 
-    const readFixture = (serverName: string, varName: string, canaryPath: string, ledgerPath: string): FixtureReading => {
+    const readFixture = (
+      serverName: string,
+      varName: string,
+      canaryPath: string,
+      ledgerPath: string,
+      reportPath: string,
+    ): FixtureReading => {
       const call = turnEvents.find(
         (e) => e.type === 'tool-call' && mcpServerOf(String(e.name ?? '')) === serverName,
       );
@@ -521,11 +589,33 @@ async function main(): Promise<number> {
           // reported below as toolResultParsed: false
         }
       }
+
+      // Same-run positive control (Issue #1799 item 2): the fixture's own
+      // spawn report, written BEFORE the MCP transport ever connects -- read
+      // here purely from disk, no dependency on the tool-result parse above.
+      let reportExists = false;
+      let reportEnvValue: string | null = null;
+      let reportArgsTrailing: string | null = null;
+      if (existsSync(reportPath)) {
+        const reportLines = readFileSync(reportPath, 'utf8').split('\n').filter((l) => l.trim() !== '');
+        if (reportLines.length > 0) {
+          try {
+            const parsed = JSON.parse(reportLines[0]) as { argv: string[]; envValue: string | null };
+            reportExists = true;
+            reportEnvValue = parsed.envValue;
+            reportArgsTrailing = parsed.argv.at(-1) ?? null;
+          } catch {
+            // reported below via reportExists staying false
+          }
+        }
+      }
+
       return {
         serverName,
         varName,
         canaryPath,
         ledgerPath,
+        reportPath,
         toolCallSeen: call !== undefined,
         toolResultParsed,
         envValue,
@@ -535,11 +625,14 @@ async function main(): Promise<number> {
           ? readFileSync(ledgerPath, 'utf8').split('\n').filter((l) => l.trim() !== '').length
           : 0,
         raw,
+        reportExists,
+        reportEnvValue,
+        reportArgsTrailing,
       };
     };
 
-    const setReading = readFixture(SET_SERVER_NAME, PROBE_VAR_NAME, canarySet, ledgerSet);
-    const unsetReading = readFixture(UNSET_SERVER_NAME, PROBE_UNSET_NAME, canaryUnset, ledgerUnset);
+    const setReading = readFixture(SET_SERVER_NAME, PROBE_VAR_NAME, canarySet, ledgerSet, reportSet);
+    const unsetReading = readFixture(UNSET_SERVER_NAME, PROBE_UNSET_NAME, canaryUnset, ledgerUnset, reportUnset);
 
     // --- Isolation negative control (Issue 1813): with CLAUDE_CONFIG_DIR
     // pointed at an isolated, empty (but present) config, no discovered
@@ -582,7 +675,40 @@ async function main(): Promise<number> {
       console.log(`    env  (CLI-native expansion) -> ${JSON.stringify(r.envValue)}`);
       console.log(`    args (our loader's applyArgSubstitution) -> ${JSON.stringify(r.argsTrailing)}`);
       if (r.raw) console.log(`    raw tool-result: ${r.raw}`);
+      console.log(
+        `    spawn report -- exists: ${r.reportExists}  env: ${JSON.stringify(r.reportEnvValue)}  args: ${JSON.stringify(r.reportArgsTrailing)}`,
+      );
     }
+
+    // --- Same-run positive control (Issue #1799 item 2): the spawn report
+    // must be byte-equal to the tool-result reading it stands in for. A
+    // mismatch is a HARNESS failure (exit 2), never a finding -- this
+    // equality is what licenses reading the elevated branch (which has no
+    // tool-result at all) from the spawn report alone.
+    for (const r of [setReading, unsetReading]) {
+      if (!r.reportExists) {
+        throw new Error(`${r.serverName}: spawn report at ${r.reportPath} was not written or could not be parsed`);
+      }
+      // No tool-result to compare against: the expect() gates below report
+      // this as INCONCLUSIVE, per the header's verdict convention. Without
+      // this guard, a missing tool call (envValue/argsTrailing both null)
+      // would compare against the report's real values and throw HARNESS
+      // instead.
+      if (!r.toolResultParsed) continue;
+      if (r.reportEnvValue !== r.envValue) {
+        throw new Error(
+          `${r.serverName}: spawn report envValue (${JSON.stringify(r.reportEnvValue)}) does not match ` +
+            `tool-result envValue (${JSON.stringify(r.envValue)}) -- these must be byte-equal in the same run`,
+        );
+      }
+      if (r.reportArgsTrailing !== r.argsTrailing) {
+        throw new Error(
+          `${r.serverName}: spawn report argsTrailing (${JSON.stringify(r.reportArgsTrailing)}) does not match ` +
+            `tool-result argsTrailing (${JSON.stringify(r.argsTrailing)}) -- these must be byte-equal in the same run`,
+        );
+      }
+    }
+    console.log('\n==> same-run positive control (item 2): spawn report byte-equal to tool-result for both fixtures -- OK');
 
     expect(setReading.canaryExists, `${SET_SERVER_NAME}: spawn canary exists (process was actually exec'd)`);
     expect(unsetReading.canaryExists, `${UNSET_SERVER_NAME}: spawn canary exists (process was actually exec'd)`);
@@ -646,6 +772,518 @@ async function main(): Promise<number> {
       if (dir) Bun.spawnSync(['rm', '-rf', dir]);
     }
   }
+}
+
+/**
+ * Elevated branch (Issue #1799 items 3-4). Activates a real `claude-sdk`
+ * embedded-agent worker through the real `spawnAsUser`, as <target-user>,
+ * with the SAME fixtures/.mcp.json/permission-seeding shape as the
+ * non-elevated branch above -- but NEVER sends a user message. The
+ * observable is each fixture's `--spawn-report` file (fixtures/stdio-echo-
+ * mcp-server.ts job 4), read from disk once the worker has reported `ready`
+ * OR its subprocess has emitted a terminal failure signal, whichever comes
+ * first -- the boundary past which neither event would add anything
+ * (test-trigger.md's absence-assertion discipline: snapshot after the
+ * boundary, never at the first sign of anything).
+ *
+ * THE FREE GATE (item 4): if BOTH spawn reports appear by that boundary,
+ * outcome (i) -- the CLI started its declared MCP servers without a login,
+ * so this arm runs turn-free at tier 2. If not, outcome (ii) -- NOT
+ * REACHED; this function returns PROBE_EXIT.HARNESS with the captured
+ * reason printed. Exactly one report appearing is a third, partial shape,
+ * reported as PROBE_EXIT.INCONCLUSIVE rather than forced into either
+ * outcome.
+ *
+ * After outcome (i) is confirmed, this function records and classifies the
+ * item-5 readings. The SET readings are measurements, not pass/fail
+ * assertions -- either a real value or a literal placeholder is a valid
+ * finding to report. The never-set control fixture IS checked against its
+ * expected (deterministic, environment-independent) shape; disagreement
+ * returns PROBE_EXIT.INCONCLUSIVE, since the SET reading cannot be trusted
+ * without that baseline holding. Otherwise this arm returns
+ * PROBE_EXIT.MEASURED with the readings printed for the record.
+ */
+async function runElevatedArm(targetUsername: string): Promise<number> {
+  process.env.AUTH_MODE = 'multi-user';
+  process.env.LOG_LEVEL = 'debug';
+  process.env[PROBE_VAR_NAME] = PROBE_VAR_VALUE;
+  delete process.env[PROBE_UNSET_NAME];
+  process.chdir('/');
+
+  // --- Deferred imports, same ordering hazard as runNonElevated: every
+  // module below transitively reaches server-config.ts, which reads
+  // AUTH_MODE at MODULE-LOAD time. lookupOsUser transitively imports
+  // logger.ts -> server-config.ts, so it is deferred here too (unlike
+  // createDisposableMultiUserHome, imported statically at the top of this
+  // file -- see that import's own comment for why it is exempt).
+  const { lookupOsUser } = await import('../../packages/server/src/services/os-user-lookup.js');
+  const { createTestContext, shutdownAppContext } = await import(
+    '../../packages/server/src/app-context.js'
+  );
+  const { api } = await import('../../packages/server/src/routes/api.js');
+  const { createMcpApp } = await import('../../packages/server/src/mcp/mcp-server.js');
+  const { CLAUDE_SDK_AGENT_ID } = await import(
+    '../../packages/server/src/services/embedded-agent-manager.js'
+  );
+  const { createWorktreeWithSession } = await import(
+    '../../packages/server/src/services/worktree-creation-service.js'
+  );
+  const { deleteWorktree } = await import(
+    '../../packages/server/src/services/worktree-deletion-service.js'
+  );
+
+  const serverSrcDir = path.join(import.meta.dir, '../../packages/server/src');
+  const honoEntryPath = Bun.resolveSync('hono', serverSrcDir);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const { Hono } = (await import(honoEntryPath)) as { Hono: new () => any };
+
+  let ctx: AppContext | undefined;
+  let appServer: ReturnType<typeof Bun.serve> | undefined;
+  let repoDir: string | undefined;
+  let locationPath: string | undefined;
+  let homeDir: string | undefined;
+  let prevUmask: number | undefined;
+  let sessionId: string | undefined;
+  let workerId: string | undefined;
+
+  try {
+    console.log(`==> ELEVATED arm (Issue #1799 item 4 free gate). target user = ${targetUsername}`);
+    console.log('==> NON-ELEVATED branch: not run by this invocation -- run with no arguments for that arm');
+
+    const osUser = await lookupOsUser(targetUsername);
+    if (!osUser) {
+      console.error(`ELEVATED branch: NOT REACHED (could not resolve OS user '${targetUsername}' via lookupOsUser)`);
+      return PROBE_EXIT.HARNESS;
+    }
+    console.log(`  resolved target user: uid=${osUser.uid} home=${osUser.homeDir}`);
+
+    let mcpBaseUrl = '';
+    ctx = await createTestContext({ getMcpBaseUrl: () => mcpBaseUrl });
+
+    const osUid = process.getuid?.() ?? 0;
+    const invokingUsername = os.userInfo().username;
+    const owner = await ctx.userRepository.upsertByOsUid(osUid, invokingUsername, os.homedir());
+    const targetUser = await ctx.userRepository.upsertByOsUid(osUser.uid, targetUsername, osUser.homeDir);
+
+    // The disposable AGENT_CONSOLE_HOME must satisfy the production data
+    // root's `2775` setgid contract under AUTH_MODE=multi-user, or the
+    // memory layer's verification (memory-dir.ts) fails closed before the
+    // worker ever reaches its own init handshake -- the same requirement
+    // check-embedded-agent-elevation.ts documents for its own use of this
+    // helper.
+    const homeResult = await createDisposableMultiUserHome('ac-pr2-pc-elevated-home-');
+    if (!homeResult.ok) {
+      console.error(
+        `ELEVATED branch: NOT REACHED (cannot build a disposable AGENT_CONSOLE_HOME satisfying the ` +
+          `multi-user 2775 contract: ${homeResult.reason})`,
+      );
+      return PROBE_EXIT.HARNESS;
+    }
+    homeDir = homeResult.path;
+    prevUmask = homeResult.prevUmask;
+    process.env.AGENT_CONSOLE_HOME = homeDir;
+
+    const app = new Hono();
+    app.use('*', async (c: { set: (k: string, v: unknown) => void }, next: () => Promise<void>) => {
+      c.set('appContext', ctx!);
+      await next();
+    });
+    app.route('/api', api);
+    app.route(
+      '',
+      createMcpApp({
+        sessionManager: ctx.sessionManager,
+        repositoryManager: ctx.repositoryManager,
+        agentManager: ctx.agentManager,
+        agentDirectory: ctx.agentDirectory,
+        timerManager: ctx.timerManager,
+        conditionalWakeupManager: ctx.conditionalWakeupManager,
+        interactiveProcessManager: ctx.interactiveProcessManager,
+        worktreeService: ctx.worktreeService,
+        annotationService: ctx.annotationService,
+        interSessionMessageService: ctx.interSessionMessageService,
+        suggestSessionMetadata: ctx.suggestSessionMetadata,
+        createWorktreeWithSession,
+        deleteWorktree,
+        userRepository: ctx.userRepository,
+        artifactRepository: ctx.artifactRepository,
+        bookmarkRepository: ctx.bookmarkRepository,
+        broadcastToApp: ctx.broadcastToApp,
+        fetchPullRequestUrl: ctx.fetchPullRequestUrl,
+        findOpenPullRequest: ctx.findOpenPullRequest,
+        mcpTokenRegistry: ctx.mcpTokenRegistry,
+      }),
+    );
+
+    appServer = Bun.serve({ fetch: app.fetch, port: 0 });
+    mcpBaseUrl = `http://localhost:${appServer.port}/mcp`;
+
+    repoDir = path.join(os.tmpdir(), `ac-pr2-pc-elevated-repo-${crypto.randomUUID()}`);
+    Bun.spawnSync(['mkdir', '-p', repoDir]);
+    const gitInit = Bun.spawnSync(['git', 'init', '-q'], { cwd: repoDir });
+    if (gitInit.exitCode !== 0) {
+      throw new Error(`git init failed in ${repoDir}: ${new TextDecoder().decode(gitInit.stderr)}`);
+    }
+    const repository = await ctx.repositoryManager.registerRepository(repoDir);
+    console.log(`==> repository registered: ${repository.id} (${repoDir})`);
+
+    locationPath = path.join(os.tmpdir(), `ac-pr2-pc-elevated-cwd-${crypto.randomUUID()}`);
+    Bun.spawnSync(['mkdir', '-p', locationPath]);
+    // The target user's login shell -- not this script's own user -- both
+    // reads .mcp.json and writes the fixtures' canary/ledger/spawn-report
+    // files inside this directory. A throwaway scratch dir this script both
+    // creates and removes, so world read+write+traverse is the simplest
+    // correct permission for it (`.claude/rules/os-environment-coupling.md`
+    // Discipline 2 governs unilateral changes to paths OUTSIDE the
+    // project's own scope, which this is not).
+    Bun.spawnSync(['chmod', '0777', locationPath]);
+
+    const fixtureScriptPath = path.resolve(import.meta.dir, 'fixtures/stdio-echo-mcp-server.ts');
+    const canarySet = path.join(locationPath, `${SET_SERVER_NAME}.touched`);
+    const ledgerSet = path.join(locationPath, `${SET_SERVER_NAME}-ledger.tsv`);
+    const reportSet = path.join(locationPath, `${SET_SERVER_NAME}-report.ndjson`);
+    const canaryUnset = path.join(locationPath, `${UNSET_SERVER_NAME}.touched`);
+    const ledgerUnset = path.join(locationPath, `${UNSET_SERVER_NAME}-ledger.tsv`);
+    const reportUnset = path.join(locationPath, `${UNSET_SERVER_NAME}-report.ndjson`);
+
+    const mcpJson = {
+      mcpServers: {
+        [SET_SERVER_NAME]: {
+          command: process.execPath,
+          args: [
+            fixtureScriptPath,
+            '--canary',
+            canarySet,
+            '--ledger',
+            ledgerSet,
+            '--env-var',
+            'PROBE_TOKEN',
+            '--spawn-report',
+            reportSet,
+            `\${${PROBE_VAR_NAME}}`,
+          ],
+          env: { PROBE_TOKEN: `\${${PROBE_VAR_NAME}}` },
+        },
+        [UNSET_SERVER_NAME]: {
+          command: process.execPath,
+          args: [
+            fixtureScriptPath,
+            '--canary',
+            canaryUnset,
+            '--ledger',
+            ledgerUnset,
+            '--env-var',
+            'PROBE_TOKEN2',
+            '--spawn-report',
+            reportUnset,
+            `\${${PROBE_UNSET_NAME}}`,
+          ],
+          env: { PROBE_TOKEN2: `\${${PROBE_UNSET_NAME}}` },
+        },
+      },
+    };
+    await Bun.write(path.join(locationPath, '.mcp.json'), JSON.stringify(mcpJson, null, 2));
+    console.log(`==> wrote .mcp.json at ${locationPath}`);
+
+    const discovery = await discoverProjectMcpServers(locationPath, []);
+    if (discovery.mcpJsonError) {
+      throw new Error(`discoverProjectMcpServers reported an error: ${discovery.mcpJsonError}`);
+    }
+    const setEntry = discovery.servers.find((s) => s.name === SET_SERVER_NAME);
+    const unsetEntry = discovery.servers.find((s) => s.name === UNSET_SERVER_NAME);
+    if (!setEntry || !unsetEntry) {
+      throw new Error(
+        `discoverProjectMcpServers did not report both fixture entries: ${JSON.stringify(discovery.servers.map((s) => s.name))}`,
+      );
+    }
+    console.log(`==> discovered hashes: ${SET_SERVER_NAME}=${setEntry.hash} ${UNSET_SERVER_NAME}=${unsetEntry.hash}`);
+
+    await ctx.mcpServerPermissionRepository.upsert({
+      repositoryId: repository.id,
+      serverName: SET_SERVER_NAME,
+      configHash: setEntry.hash,
+      decision: 'allow',
+      decidedBy: owner.id,
+    });
+    await ctx.mcpServerPermissionRepository.upsert({
+      repositoryId: repository.id,
+      serverName: UNSET_SERVER_NAME,
+      configHash: unsetEntry.hash,
+      decision: 'allow',
+      decidedBy: owner.id,
+    });
+    console.log('==> seeded both fixtures as allow rows');
+
+    // --- Worktree session owned by the TARGET user, not the operator.
+    // resolveSpawnUsername(session.createdBy) is what routes activation
+    // through spawnAsUser as <target-user> -- see resolve-spawn-username.ts.
+    const session = await ctx.sessionManager.createSession(
+      {
+        type: 'worktree',
+        repositoryId: repository.id,
+        worktreeId: crypto.randomUUID(),
+        locationPath,
+        embeddedAgentId: CLAUDE_SDK_AGENT_ID,
+      },
+      { createdBy: targetUser.id },
+    );
+    const worker = session.workers.find((w) => w.type === 'embedded-agent');
+    if (!worker) throw new Error('createSession did not produce an embedded-agent worker');
+    sessionId = session.id;
+    workerId = worker.id;
+    console.log(`==> session ${session.id} worker ${worker.id} created (not yet activated)`);
+
+    console.log(`==> activating as ${targetUsername} via spawnAsUser (no user message will ever be sent)`);
+    await ctx.sessionManager.activateEmbeddedAgentWorker(session.id, worker.id);
+    console.log('==> activation call returned; waiting for `ready` or a terminal failure signal');
+
+    const readEvents = async (): Promise<Array<Record<string, unknown> & { type: string }>> => {
+      const hist = await ctx!.sessionManager.getWorkerOutputHistory(sessionId!, workerId!);
+      const events: Array<Record<string, unknown> & { type: string }> = [];
+      if (!hist) return events;
+      for (const line of hist.data.split('\n')) {
+        if (line.trim() === '') continue;
+        try {
+          const json = JSON.parse(line) as Record<string, unknown>;
+          if (typeof json.type === 'string') events.push(json as Record<string, unknown> & { type: string });
+        } catch {
+          // A trailing torn line is expected while the stream is live.
+        }
+      }
+      return events;
+    };
+
+    // Wait for the boundary past which neither a spawn report nor a
+    // `ready`/`fatal`/`turn-error` signal would add anything. Bounded so an
+    // elevated spawn that never signals anything (e.g. hung on an
+    // interactive prompt) still reaches a verdict.
+    //
+    // MEASURED (degenerate same-user run, local): `ready` does NOT imply
+    // every declared project MCP server has finished connecting -- one run
+    // observed `ready` fire, then an MCP-server stderr line (and its spawn
+    // report) land ~350ms LATER. `ready` (`sdk-engine.ts`) means the engine
+    // constructed the SDK query and started its consumer; it is NOT gated on
+    // the CLI's own `system:init`, which does not arrive until the FIRST
+    // PROMPT is sent -- so `ready` fires essentially immediately, and the
+    // CLI's own project-server connections can still be in flight. A read
+    // taken at the very instant of `ready` can therefore observe an ABSENT
+    // report that is about to be written a moment later -- a false outcome (ii).
+    // So after `ready` (or a terminal fatal/turn-error signal) fires, this
+    // loop keeps polling the reports themselves for a short GRACE window
+    // rather than reading immediately: it exits early the instant BOTH
+    // reports appear, and otherwise keeps polling until the grace window
+    // elapses (or the overall deadline). A `fatal`/`turn-error` still stops
+    // the EVENT wait immediately -- the grace window applies to reading the
+    // FILESYSTEM after that boundary, not to how long the loop keeps
+    // watching the event stream.
+    // Reads and parses one spawn report file, defined ABOVE the grace-window
+    // loop below so the loop can call it directly -- the loop's own exit
+    // condition needs to know whether a report is actually PARSEABLE, not
+    // merely that its path exists (`stdio-echo-mcp-server.ts` creates and
+    // appends the report in a CHILD process; this parent can observe the
+    // path via `existsSync` while that child's write is still landing, same
+    // race class as the `ready`-vs-connection lag documented below, one
+    // layer further in).
+    const readReport = (
+      reportPath: string,
+    ): { exists: boolean; envValue: string | null; argsTrailing: string | null; raw: string | null } => {
+      if (!existsSync(reportPath)) return { exists: false, envValue: null, argsTrailing: null, raw: null };
+      const lines = readFileSync(reportPath, 'utf8').split('\n').filter((l) => l.trim() !== '');
+      if (lines.length === 0) return { exists: false, envValue: null, argsTrailing: null, raw: null };
+      try {
+        const parsed = JSON.parse(lines[0]) as { argv: string[]; envValue: string | null };
+        return { exists: true, envValue: parsed.envValue, argsTrailing: parsed.argv.at(-1) ?? null, raw: lines[0] };
+      } catch {
+        return { exists: false, envValue: null, argsTrailing: null, raw: lines[0] };
+      }
+    };
+
+    const ELEVATED_GATE_TIMEOUT_MS = 60_000;
+    const ELEVATED_GATE_GRACE_MS = 8_000;
+    const deadline = Date.now() + ELEVATED_GATE_TIMEOUT_MS;
+    let boundaryEvents: Array<Record<string, unknown> & { type: string }> = [];
+    let boundaryReason: 'ready' | 'fatal' | 'turn-error' | 'timeout' = 'timeout';
+    let boundarySignalAt: number | undefined;
+    let graceDeadline: number | undefined;
+    while (Date.now() < deadline) {
+      const events = await readEvents();
+      boundaryEvents = events;
+      if (boundarySignalAt === undefined) {
+        if (events.some((e) => e.type === 'fatal')) {
+          boundaryReason = 'fatal';
+          boundarySignalAt = Date.now();
+        } else if (events.some((e) => e.type === 'turn-error')) {
+          boundaryReason = 'turn-error';
+          boundarySignalAt = Date.now();
+        } else if (events.some((e) => e.type === 'ready')) {
+          boundaryReason = 'ready';
+          boundarySignalAt = Date.now();
+        }
+        if (boundarySignalAt !== undefined) {
+          graceDeadline = Math.min(deadline, boundarySignalAt + ELEVATED_GATE_GRACE_MS);
+        }
+      }
+      if (boundarySignalAt !== undefined) {
+        if (
+          (readReport(reportSet).exists && readReport(reportUnset).exists) ||
+          Date.now() >= (graceDeadline ?? deadline)
+        ) {
+          break;
+        }
+      }
+      await delay(250);
+    }
+    console.log(
+      `==> boundary reached: ${boundaryReason} (${boundaryEvents.length} events observed` +
+        `${boundarySignalAt !== undefined ? `, +${Date.now() - boundarySignalAt}ms grace elapsed` : ''})`,
+    );
+
+    // --- Final snapshot, exactly once, at the boundary above -- never
+    // polled for appearance on their own (test-trigger.md's absence-
+    // assertion discipline: snapshot after the boundary past which the
+    // event would no longer be written, not at the first sign of anything)
+    // -- the grace window above IS that boundary, made wide enough to
+    // survive the measured `ready`-before-MCP-connect race rather than
+    // reading at the instant of `ready` itself.
+    const setReport = readReport(reportSet);
+    const unsetReport = readReport(reportUnset);
+
+    console.log(`==> ELEVATED spawn report -- ${SET_SERVER_NAME}: exists=${setReport.exists} raw=${setReport.raw ?? '(none)'}`);
+    console.log(`==> ELEVATED spawn report -- ${UNSET_SERVER_NAME}: exists=${unsetReport.exists} raw=${unsetReport.raw ?? '(none)'}`);
+
+    if (!setReport.exists && !unsetReport.exists) {
+      // --- OUTCOME (ii): capture the reason. LOG_LEVEL=debug (set above)
+      // means the embedded subprocess's own piped stderr is already visible
+      // in this run's full console capture via pino debug logging -- see
+      // this file's header "STDERR WARNING OBSERVABILITY" paragraph, the
+      // same technique, reused here for the elevated subprocess's refusal
+      // message rather than applyArgSubstitution's warning.
+      const lastEvent = boundaryEvents.at(-1);
+      console.error(
+        `ELEVATED branch: NOT REACHED (boundary=${boundaryReason}; neither fixture's spawn report appeared; ` +
+          `last SDK event: ${lastEvent ? JSON.stringify(lastEvent).slice(0, 500) : '(none observed)'})`,
+      );
+      console.error(
+        '  Grep this run\'s own full console capture for "Embedded-agent stderr" -- the subprocess\'s piped ' +
+          'stderr is logged via pino at debug level (LOG_LEVEL=debug, set above) and should carry the CLI\'s ' +
+          'own refusal reason when it could not start unauthenticated.',
+      );
+      return PROBE_EXIT.HARNESS;
+    }
+
+    if (!setReport.exists || !unsetReport.exists) {
+      // Exactly one of the two spawn reports appeared -- neither a clean
+      // gate pass (item 4's outcome (i) needs BOTH) nor a clean refusal
+      // (which would show NEITHER). Something partial happened; report it
+      // as inconclusive rather than forcing it into either outcome.
+      console.error(
+        `ELEVATED branch: INCONCLUSIVE (boundary=${boundaryReason}; ` +
+          `${SET_SERVER_NAME} report exists=${setReport.exists}; ${UNSET_SERVER_NAME} report exists=${unsetReport.exists} ` +
+          '-- exactly one fixture reported, expected both or neither)',
+      );
+      return PROBE_EXIT.INCONCLUSIVE;
+    }
+
+    console.log(
+      '==> OUTCOME (i): both spawn reports appeared -- the CLI started its declared MCP servers without a login.',
+    );
+
+    // --- Item 5 readings. Both a real-value match and a literal-placeholder
+    // match are legitimate readings -- per this file's header VERDICT
+    // convention, a clean measurement is a success even when the value
+    // deviates from a prior expectation; the deviation is then the finding.
+    const setLiteral = `\${${PROBE_VAR_NAME}}`;
+    const unsetLiteral = `\${${PROBE_UNSET_NAME}}`;
+    const describeValue = (value: string | null, realValue: string, literal: string): string => {
+      if (value === realValue) return 'REAL VALUE (crossed the elevation boundary)';
+      if (value === literal || value === null || value === '') return 'LITERAL/EMPTY (did not cross)';
+      return `UNEXPECTED (${JSON.stringify(value)})`;
+    };
+    console.log(`  ELEVATED ${SET_SERVER_NAME} (\${${PROBE_VAR_NAME}}, SET in the SERVER process only):`);
+    console.log(
+      `  ELEVATED    env  (CLI-native expansion under the target user's shell) -> ${JSON.stringify(setReport.envValue)} -- ${describeValue(setReport.envValue, PROBE_VAR_VALUE, setLiteral)}`,
+    );
+    console.log(
+      `  ELEVATED    args (our loader's applyArgSubstitution)                 -> ${JSON.stringify(setReport.argsTrailing)} -- ${describeValue(setReport.argsTrailing, PROBE_VAR_VALUE, setLiteral)}`,
+    );
+    console.log(`  ELEVATED ${UNSET_SERVER_NAME} (\${${PROBE_UNSET_NAME}}, control -- never set anywhere):`);
+    console.log(
+      `  ELEVATED    env  -> ${JSON.stringify(unsetReport.envValue)}`,
+    );
+    console.log(
+      `  ELEVATED    args -> ${JSON.stringify(unsetReport.argsTrailing)}`,
+    );
+
+    // --- Control agreement check: the UNSET fixture is never set in EITHER
+    // the server process or the target user's shell, in EITHER arm, so its
+    // shape must match what the non-elevated arm's own same-run positive
+    // control already measured (item 2, 2026-09-22: env left literal/empty
+    // by the CLI's native expansion, args left literal by
+    // applyArgSubstitution's documented unset-with-no-default behavior --
+    // never thrown, never a real value). A control that disagrees with that
+    // deterministic, environment-independent behavior means something about
+    // THIS run's apparatus is not comparable to the non-elevated run's, so
+    // the elevated reading cannot be trusted on its own.
+    const unsetEnvAsExpected =
+      unsetReport.envValue === null || unsetReport.envValue === '' || unsetReport.envValue === unsetLiteral;
+    const unsetArgsAsExpected = unsetReport.argsTrailing === unsetLiteral;
+    if (!unsetEnvAsExpected || !unsetArgsAsExpected) {
+      console.error(
+        'ELEVATED branch: INCONCLUSIVE -- the control (never-set-anywhere) fixture disagreed with the ' +
+          `non-elevated arm's own control shape (env as-expected=${unsetEnvAsExpected}, args as-expected=${unsetArgsAsExpected}); ` +
+          'the SET fixture reading above cannot be trusted without this baseline holding.',
+      );
+      return PROBE_EXIT.INCONCLUSIVE;
+    }
+
+    console.log('==> ELEVATED control agreement: OK (matches the non-elevated arm\'s own control shape)');
+    console.log(`\n==> ${passes} passed, ${failures.length} failed (elevated arm has no gated assertions of its own -- item 5 is a measurement, not a pass/fail gate)`);
+    return PROBE_EXIT.MEASURED;
+  } finally {
+    // Restore the umask createDisposableMultiUserHome() changed, FIRST --
+    // it was applied unconditionally the moment that call returned (see its
+    // own header), so nothing else in this block should run under the
+    // smoke's own 0o002 override. Same ordering as
+    // check-embedded-agent-elevation.ts's cleanup.
+    if (prevUmask !== undefined) {
+      process.umask(prevUmask);
+    }
+    if (ctx && sessionId && workerId) {
+      await ctx.sessionManager.deactivateEmbeddedAgentWorker(sessionId, workerId).catch(() => {});
+    }
+    if (ctx) {
+      await shutdownAppContext(ctx).catch(() => {});
+    }
+    try {
+      appServer?.stop(true);
+    } catch {
+      // best-effort
+    }
+    for (const dir of [repoDir, locationPath, homeDir]) {
+      if (dir) Bun.spawnSync(['rm', '-rf', dir]);
+    }
+  }
+}
+
+/**
+ * `--elevated <target-user>` selects the elevated arm exclusively; no
+ * arguments selects the non-elevated arm. The two never run in the same
+ * process invocation (mirrors `check-login-shell-sentinel.ts`'s direct vs
+ * `--elevated` mode dispatch).
+ */
+function parseCliArgs(argvIn: string[]): { mode: 'non-elevated' } | { mode: 'elevated'; targetUsername: string } {
+  const argv = argvIn[0] === '--' ? argvIn.slice(1) : argvIn;
+  if (argv.length === 0) return { mode: 'non-elevated' };
+  if (argv[0] === '--elevated' && argv[1]) {
+    return { mode: 'elevated', targetUsername: argv[1] };
+  }
+  console.error('usage: bun scripts/smoke/probe-sdk-phase5-pr2-pc.ts [--elevated <target-user>]');
+  process.exit(2);
+}
+
+async function main(): Promise<number> {
+  const parsed = parseCliArgs(process.argv.slice(2));
+  return parsed.mode === 'elevated' ? runElevatedArm(parsed.targetUsername) : runNonElevated();
 }
 
 if (import.meta.main) {

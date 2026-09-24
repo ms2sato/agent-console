@@ -50,14 +50,31 @@
  *      reached this process, without relying on any assumption about the
  *      CLI's own expansion behavior.
  *
- * Usage: bun scripts/smoke/fixtures/stdio-echo-mcp-server.ts --canary <path> --ledger <path> [--env-var <NAME>]
- *   --canary <path>    Required. Touched (created, zero-length is fine) at
- *                       startup, before the transport connects.
- *   --ledger <path>    Required. One line APPENDED at startup (never
- *                       truncated), before the transport connects.
- *   --env-var <NAME>   Optional, default PROBE_MCP_ECHO_VAR. The single
- *                       named env var whose value (or null if unset) is
- *                       included in the tool's response.
+ *   4. SPAWN REPORT (OPT-IN, Issue #1799). `--spawn-report <path>` writes
+ *      one JSON line at the SAME MOMENT as the ledger line (job 2, before
+ *      the transport connects): `{ pid, starttime, serverName, argv,
+ *      envVarName, envValue, at }`. This exists so a caller can read
+ *      `argv`/`envValue` -- the same two observables `probe_echo` reports --
+ *      WITHOUT a billed model turn: the elevated branch of the P-c premise
+ *      (`probe-sdk-phase5-pr2-pc.ts`'s `--elevated` arm) only needs the CLI
+ *      to START its declared MCP servers, not to answer a prompt, and this
+ *      report is what makes that turn-free. Opt-in and additive: when the
+ *      flag is absent, nothing about the canary, the ledger, or `probe_echo`
+ *      changes, so every existing consumer that never passes it runs
+ *      byte-identical to before this option existed.
+ *
+ * Usage: bun scripts/smoke/fixtures/stdio-echo-mcp-server.ts --canary <path> --ledger <path> [--env-var <NAME>] [--spawn-report <path>]
+ *   --canary <path>       Required. Touched (created, zero-length is fine)
+ *                          at startup, before the transport connects.
+ *   --ledger <path>       Required. One line APPENDED at startup (never
+ *                          truncated), before the transport connects.
+ *   --env-var <NAME>      Optional, default PROBE_MCP_ECHO_VAR. The single
+ *                          named env var whose value (or null if unset) is
+ *                          included in the tool's response and the spawn
+ *                          report (if requested).
+ *   --spawn-report <path> Optional. When present, one JSON line is APPENDED
+ *                          (never truncated) at the same moment as the
+ *                          ledger line, before the transport connects.
  */
 
 import { appendFileSync, readFileSync, writeFileSync } from 'node:fs';
@@ -72,12 +89,14 @@ interface FixtureArgs {
   canaryPath: string;
   ledgerPath: string;
   envVarName: string;
+  spawnReportPath: string | null;
 }
 
 function parseFixtureArgs(argv: string[]): FixtureArgs {
   let canaryPath: string | null = null;
   let ledgerPath: string | null = null;
   let envVarName = DEFAULT_ENV_VAR;
+  let spawnReportPath: string | null = null;
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === '--canary') {
       canaryPath = argv[++i] ?? null;
@@ -85,6 +104,8 @@ function parseFixtureArgs(argv: string[]): FixtureArgs {
       ledgerPath = argv[++i] ?? null;
     } else if (argv[i] === '--env-var') {
       envVarName = argv[++i] ?? envVarName;
+    } else if (argv[i] === '--spawn-report') {
+      spawnReportPath = argv[++i] ?? null;
     }
   }
   if (!canaryPath) {
@@ -93,7 +114,7 @@ function parseFixtureArgs(argv: string[]): FixtureArgs {
   if (!ledgerPath) {
     throw new Error('stdio-echo-mcp-server: --ledger <path> is required');
   }
-  return { canaryPath, ledgerPath, envVarName };
+  return { canaryPath, ledgerPath, envVarName, spawnReportPath };
 }
 
 /** `/proc/self/stat` is Linux-only; a non-Linux run records an empty starttime field (the caller's identity check treats that as unverifiable, never as a match). */
@@ -107,7 +128,7 @@ function readOwnStarttime(): string {
 }
 
 async function main(): Promise<void> {
-  const { canaryPath, ledgerPath, envVarName } = parseFixtureArgs(process.argv.slice(2));
+  const { canaryPath, ledgerPath, envVarName, spawnReportPath } = parseFixtureArgs(process.argv.slice(2));
   const serverName = basename(canaryPath).replace(/\.touched$/, '');
 
   // Touched BEFORE the transport connects: a probe must be able to observe
@@ -118,6 +139,23 @@ async function main(): Promise<void> {
   // Appended, never truncated -- see this file's own header, job 2.
   const starttime = readOwnStarttime();
   appendFileSync(ledgerPath, `${process.pid}\t${starttime}\t${serverName}\t${new Date().toISOString()}\n`);
+
+  // OPT-IN spawn report -- see this file's own header, job 4. Written at the
+  // SAME MOMENT as the ledger line above (before the transport connects), so
+  // a caller never needs a completed MCP handshake or a billed model turn to
+  // observe `argv`/the named env var's value.
+  if (spawnReportPath) {
+    const report = {
+      pid: process.pid,
+      starttime,
+      serverName,
+      argv: process.argv,
+      envVarName,
+      envValue: process.env[envVarName] ?? null,
+      at: new Date().toISOString(),
+    };
+    appendFileSync(spawnReportPath, `${JSON.stringify(report)}\n`);
+  }
 
   const server = new McpServer({ name: 'stdio-echo', version: '0.0.0-probe' });
   server.registerTool(
