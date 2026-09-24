@@ -2,6 +2,12 @@ import { describe, it, expect, beforeEach, mock } from 'bun:test';
 import { SessionDeletionService, type SessionDeletionDeps } from '../session-deletion-service.js';
 import type { InternalSession } from '../internal-types.js';
 import { SessionDataPathResolver } from '../../lib/session-data-path-resolver.js';
+import type { WorkerManager } from '../worker-manager.js';
+import type { JobQueue } from '../../jobs/index.js';
+import type { NotificationManager } from '../notifications/notification-manager.js';
+import type { MessageService } from '../message-service.js';
+import type { InterSessionMessageService } from '../inter-session-message-service.js';
+import type { MemoService } from '../memo-service.js';
 import {
   buildInternalAgentWorker,
   buildInternalTerminalWorker,
@@ -12,6 +18,42 @@ import {
 } from '../../__tests__/utils/build-test-data.js';
 
 const mockStopWatching = mock(() => {});
+
+// WorkerManager / JobQueue / NotificationManager / MessageService /
+// InterSessionMessageService / MemoService are concrete classes with
+// private fields, so a plain object implementing only the methods a test
+// actually exercises cannot satisfy the class type structurally. Each
+// helper types its parameter as `Partial<X>`, so every provided method
+// name and signature is checked against the real class (a stale or
+// misspelled method name is a compile error), and performs exactly one
+// assertion inside the helper body to bridge the private-member gap --
+// instead of a two-step `unknown`-then-X bypass at every call site, which
+// skips both checks.
+function asWorkerManager(stub: Partial<WorkerManager>): WorkerManager {
+  return stub as WorkerManager;
+}
+
+function asJobQueue(stub: Partial<JobQueue>): JobQueue {
+  return stub as JobQueue;
+}
+
+function asNotificationManager(stub: Partial<NotificationManager>): NotificationManager {
+  return stub as NotificationManager;
+}
+
+function asMessageService(stub: Partial<MessageService>): MessageService {
+  return stub as MessageService;
+}
+
+function asInterSessionMessageService(
+  stub: Partial<InterSessionMessageService>,
+): InterSessionMessageService {
+  return stub as InterSessionMessageService;
+}
+
+function asMemoService(stub: Partial<MemoService>): MemoService {
+  return stub as MemoService;
+}
 
 function createMockDeps(overrides?: Partial<SessionDeletionDeps>): SessionDeletionDeps {
   const sessions = new Map<string, InternalSession>();
@@ -29,24 +71,24 @@ function createMockDeps(overrides?: Partial<SessionDeletionDeps>): SessionDeleti
       delete: mock(async () => {}),
       findPaused: mock(async () => []),
     },
-    workerManager: {
+    workerManager: asWorkerManager({
       killWorker: mock(async () => {}),
-    } as unknown as SessionDeletionDeps['workerManager'],
-    jobQueue: {
+    }),
+    jobQueue: asJobQueue({
       enqueue: mock(async () => 'job-id'),
-    } as unknown as SessionDeletionDeps['jobQueue'],
-    notificationManager: {
+    }),
+    notificationManager: asNotificationManager({
       cleanupSession: mock(() => {}),
-    } as unknown as SessionDeletionDeps['notificationManager'],
-    messageService: {
+    }),
+    messageService: asMessageService({
       clearSession: mock(() => {}),
-    } as unknown as SessionDeletionDeps['messageService'],
-    interSessionMessageService: {
+    }),
+    interSessionMessageService: asInterSessionMessageService({
       deleteSessionMessages: mock(async () => {}),
-    } as unknown as SessionDeletionDeps['interSessionMessageService'],
-    memoService: {
+    }),
+    memoService: asMemoService({
       deleteMemo: mock(async () => {}),
-    } as unknown as SessionDeletionDeps['memoService'],
+    }),
     getPathResolverForSession: () => new SessionDataPathResolver('/test/config/repositories/test-repo', '/test/config'),
     getPathResolverForPersistedSession: () => new SessionDataPathResolver('/test/config/repositories/test-repo', '/test/config'),
     getSessionScope: () => ({ scope: 'repository', slug: 'test-repo' }),
@@ -135,18 +177,20 @@ describe('SessionDeletionService', () => {
 
       const onSessionDeleted = mock(() => {});
       const notifySessionDeleted = mock(() => {});
+      const enqueueMock = mock<JobQueue['enqueue']>(async () => 'job-id');
 
       const deps = createMockDeps({
         getSession: (id) => id === 'session-1' ? session : undefined,
         getSessionLifecycleCallbacks: () => ({ onSessionDeleted }),
         getWebSocketCallbacks: () => ({ notifySessionDeleted }),
+        jobQueue: asJobQueue({ enqueue: enqueueMock }),
       });
       const service = new SessionDeletionService(deps);
 
       const result = await service.deleteSession('session-1');
 
       // Cleanup job payload uses {scope, slug} — not the legacy `repositoryName`.
-      const enqueueCall = (deps.jobQueue!.enqueue as unknown as { mock: { calls: unknown[][] } }).mock.calls[0];
+      const enqueueCall = enqueueMock.mock.calls[0];
       expect(enqueueCall[1]).toEqual({
         sessionId: 'session-1',
         scope: 'repository',
@@ -266,9 +310,9 @@ describe('SessionDeletionService', () => {
 
       const deps = createMockDeps({
         getSession: () => session,
-        interSessionMessageService: {
+        interSessionMessageService: asInterSessionMessageService({
           deleteSessionMessages: mock(async () => { throw new Error('cleanup error'); }),
-        } as unknown as SessionDeletionDeps['interSessionMessageService'],
+        }),
       });
       const service = new SessionDeletionService(deps);
 
@@ -281,9 +325,9 @@ describe('SessionDeletionService', () => {
 
       const deps = createMockDeps({
         getSession: () => session,
-        memoService: {
+        memoService: asMemoService({
           deleteMemo: mock(async () => { throw new Error('memo error'); }),
-        } as unknown as SessionDeletionDeps['memoService'],
+        }),
       });
       const service = new SessionDeletionService(deps);
 
@@ -405,9 +449,9 @@ describe('SessionDeletionService', () => {
           delete: mock(async () => {}),
           findPaused: mock(async () => []),
         },
-        memoService: {
+        memoService: asMemoService({
           deleteMemo: mock(async () => { throw new Error('memo error'); }),
-        } as unknown as SessionDeletionDeps['memoService'],
+        }),
       });
       const service = new SessionDeletionService(deps);
 

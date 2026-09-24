@@ -80,16 +80,30 @@ function createMockSessionRepository(sessions: PersistedSession[]): SessionRepos
   } as SessionRepository;
 }
 
+// WorkerOutputFileManager / JobQueue are concrete classes with private
+// fields, so a plain object implementing only the methods a test actually
+// exercises cannot satisfy the class type structurally. Each helper types
+// its parameter as `Partial<X>`, so every provided method name/signature is
+// checked against the real class, and performs exactly one assertion inside
+// the helper body to bridge the private-member gap.
+function asWorkerOutputFileManager(stub: Partial<WorkerOutputFileManager>): WorkerOutputFileManager {
+  return stub as WorkerOutputFileManager;
+}
+
+function asJobQueue(stub: Partial<JobQueue>): JobQueue {
+  return stub as JobQueue;
+}
+
 function createMockWorkerOutputFileManager(): WorkerOutputFileManager {
-  return {
+  return asWorkerOutputFileManager({
     deleteSessionOutputs: mock(async () => {}),
-  } as unknown as WorkerOutputFileManager;
+  });
 }
 
 function createMockJobQueue(): JobQueue {
-  return {
+  return asJobQueue({
     enqueue: mock(async () => 'job-id'),
-  } as unknown as JobQueue;
+  });
 }
 
 describe('SessionInitializationService', () => {
@@ -1075,12 +1089,8 @@ describe('SessionInitializationService integration (real DB → mapper → servi
   });
 
   function createServiceWithRealRepo() {
-    const workerOutputFileManager = {
-      deleteSessionOutputs: mock(async () => {}),
-    } as unknown as WorkerOutputFileManager;
-    const jobQueue = {
-      enqueue: mock(async () => 'job-id'),
-    } as unknown as JobQueue;
+    const workerOutputFileManager = createMockWorkerOutputFileManager();
+    const jobQueue = createMockJobQueue();
 
     const service = new SessionInitializationService({
       sessionRepository,
@@ -1148,12 +1158,8 @@ describe('SessionInitializationService integration (real DB → mapper → servi
     function createServiceWithOrphanThrowingBaseDir(
       opts: { throwFor?: Set<string> } = {},
     ) {
-      const workerOutputFileManager = {
-        deleteSessionOutputs: mock(async () => {}),
-      } as unknown as WorkerOutputFileManager;
-      const jobQueue = {
-        enqueue: mock(async () => 'job-id'),
-      } as unknown as JobQueue;
+      const workerOutputFileManager = createMockWorkerOutputFileManager();
+      const jobQueue = createMockJobQueue();
 
       const service = new SessionInitializationService({
         sessionRepository,
