@@ -81,8 +81,24 @@ describe('stdio-echo-mcp-server fixture: --spawn-report', () => {
       stderr: 'pipe',
       env: { ...process.env, [ENV_VAR_NAME]: envValue },
     });
+    // `appendFileSync` blocks the fixture process, but that does not make
+    // the file's creation and its payload's visibility atomic to this
+    // test's own process: existsSync can observe the file before its
+    // single JSON line is fully written. Poll for a complete, parseable
+    // line rather than mere existence.
+    const reportHasParseableLine = (): boolean => {
+      if (!existsSync(report)) return false;
+      const lines = readFileSync(report, 'utf8').split('\n').filter((l) => l.trim() !== '');
+      if (lines.length === 0) return false;
+      try {
+        JSON.parse(lines[0]);
+        return true;
+      } catch {
+        return false;
+      }
+    };
     try {
-      expect(await waitFor(() => existsSync(report))).toBe(true);
+      expect(await waitFor(reportHasParseableLine)).toBe(true);
       expect(existsSync(canary)).toBe(true);
       expect(existsSync(ledger)).toBe(true);
 

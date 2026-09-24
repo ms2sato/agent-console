@@ -555,6 +555,12 @@ async function runNonElevated(): Promise<number> {
       if (!r.reportExists) {
         throw new Error(`${r.serverName}: spawn report at ${r.reportPath} was not written or could not be parsed`);
       }
+      // No tool-result to compare against: the expect() gates below report
+      // this as INCONCLUSIVE, per the header's verdict convention. Without
+      // this guard, a missing tool call (envValue/argsTrailing both null)
+      // would compare against the report's real values and throw HARNESS
+      // instead.
+      if (!r.toolResultParsed) continue;
       if (r.reportEnvValue !== r.envValue) {
         throw new Error(
           `${r.serverName}: spawn report envValue (${JSON.stringify(r.reportEnvValue)}) does not match ` +
@@ -650,15 +656,18 @@ async function runNonElevated(): Promise<number> {
  * outcome (i) -- the CLI started its declared MCP servers without a login,
  * so this arm runs turn-free at tier 2. If not, outcome (ii) -- NOT
  * REACHED; this function returns PROBE_EXIT.HARNESS with the captured
- * reason printed.
+ * reason printed. Exactly one report appearing is a third, partial shape,
+ * reported as PROBE_EXIT.INCONCLUSIVE rather than forced into either
+ * outcome.
  *
- * Item 5's readings (comparing each fixture's reported envValue against
- * PROBE_VAR_VALUE, the exit-code scheme over those values) are
- * DELIBERATELY NOT implemented here -- per the Issue #1799 delegation, they
- * are added only once outcome (i) is confirmed and the Orchestrator has
- * given the go-ahead. This function stops at the gate itself: outcome (i)
- * returns PROBE_EXIT.MEASURED with the raw report values printed for the
- * record, but makes no pass/fail claim about them yet.
+ * After outcome (i) is confirmed, this function records and classifies the
+ * item-5 readings. The SET readings are measurements, not pass/fail
+ * assertions -- either a real value or a literal placeholder is a valid
+ * finding to report. The never-set control fixture IS checked against its
+ * expected (deterministic, environment-independent) shape; disagreement
+ * returns PROBE_EXIT.INCONCLUSIVE, since the SET reading cannot be trusted
+ * without that baseline holding. Otherwise this arm returns
+ * PROBE_EXIT.MEASURED with the readings printed for the record.
  */
 async function runElevatedArm(targetUsername: string): Promise<number> {
   process.env.AUTH_MODE = 'multi-user';
@@ -931,6 +940,28 @@ async function runElevatedArm(targetUsername: string): Promise<number> {
     // the EVENT wait immediately -- the grace window applies to reading the
     // FILESYSTEM after that boundary, not to how long the loop keeps
     // watching the event stream.
+    // Reads and parses one spawn report file, defined ABOVE the grace-window
+    // loop below so the loop can call it directly -- the loop's own exit
+    // condition needs to know whether a report is actually PARSEABLE, not
+    // merely that its path exists (`stdio-echo-mcp-server.ts` creates and
+    // appends the report in a CHILD process; this parent can observe the
+    // path via `existsSync` while that child's write is still landing, same
+    // race class as the `ready`-vs-connection lag documented below, one
+    // layer further in).
+    const readReport = (
+      reportPath: string,
+    ): { exists: boolean; envValue: string | null; argsTrailing: string | null; raw: string | null } => {
+      if (!existsSync(reportPath)) return { exists: false, envValue: null, argsTrailing: null, raw: null };
+      const lines = readFileSync(reportPath, 'utf8').split('\n').filter((l) => l.trim() !== '');
+      if (lines.length === 0) return { exists: false, envValue: null, argsTrailing: null, raw: null };
+      try {
+        const parsed = JSON.parse(lines[0]) as { argv: string[]; envValue: string | null };
+        return { exists: true, envValue: parsed.envValue, argsTrailing: parsed.argv.at(-1) ?? null, raw: lines[0] };
+      } catch {
+        return { exists: false, envValue: null, argsTrailing: null, raw: lines[0] };
+      }
+    };
+
     const ELEVATED_GATE_TIMEOUT_MS = 60_000;
     const ELEVATED_GATE_GRACE_MS = 8_000;
     const deadline = Date.now() + ELEVATED_GATE_TIMEOUT_MS;
@@ -957,7 +988,10 @@ async function runElevatedArm(targetUsername: string): Promise<number> {
         }
       }
       if (boundarySignalAt !== undefined) {
-        if ((existsSync(reportSet) && existsSync(reportUnset)) || Date.now() >= (graceDeadline ?? deadline)) {
+        if (
+          (readReport(reportSet).exists && readReport(reportUnset).exists) ||
+          Date.now() >= (graceDeadline ?? deadline)
+        ) {
           break;
         }
       }
@@ -968,25 +1002,13 @@ async function runElevatedArm(targetUsername: string): Promise<number> {
         `${boundarySignalAt !== undefined ? `, +${Date.now() - boundarySignalAt}ms grace elapsed` : ''})`,
     );
 
-    // --- Read both spawn reports from disk. Never polled for appearance on
-    // their own (test-trigger.md's absence-assertion discipline: snapshot
-    // after the boundary past which the event would no longer be written,
-    // not at the first sign of anything) -- the grace window above IS that
-    // boundary, made wide enough to survive the measured `ready`-before-
-    // MCP-connect race rather than reading at the instant of `ready` itself.
-    const readReport = (
-      reportPath: string,
-    ): { exists: boolean; envValue: string | null; argsTrailing: string | null; raw: string | null } => {
-      if (!existsSync(reportPath)) return { exists: false, envValue: null, argsTrailing: null, raw: null };
-      const lines = readFileSync(reportPath, 'utf8').split('\n').filter((l) => l.trim() !== '');
-      if (lines.length === 0) return { exists: false, envValue: null, argsTrailing: null, raw: null };
-      try {
-        const parsed = JSON.parse(lines[0]) as { argv: string[]; envValue: string | null };
-        return { exists: true, envValue: parsed.envValue, argsTrailing: parsed.argv.at(-1) ?? null, raw: lines[0] };
-      } catch {
-        return { exists: false, envValue: null, argsTrailing: null, raw: lines[0] };
-      }
-    };
+    // --- Final snapshot, exactly once, at the boundary above -- never
+    // polled for appearance on their own (test-trigger.md's absence-
+    // assertion discipline: snapshot after the boundary past which the
+    // event would no longer be written, not at the first sign of anything)
+    // -- the grace window above IS that boundary, made wide enough to
+    // survive the measured `ready`-before-MCP-connect race rather than
+    // reading at the instant of `ready` itself.
     const setReport = readReport(reportSet);
     const unsetReport = readReport(reportUnset);
 
