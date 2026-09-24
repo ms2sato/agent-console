@@ -1,5 +1,5 @@
 import { mock } from 'bun:test';
-import type { PtyProvider, PtyDataDiagnostics, PtySpawnOptions } from '../../lib/pty-provider.js';
+import type { PtyProvider, PtyInstance, PtyDataDiagnostics, PtySpawnOptions } from '../../lib/pty-provider.js';
 
 /**
  * Disposable interface matching bun-pty's IDisposable.
@@ -13,8 +13,14 @@ interface MockDisposable {
  * Simulates PTY behavior without spawning actual processes.
  * Implements the PtyInstance interface from pty-provider.
  */
-export class MockPty {
+export class MockPty implements PtyInstance {
   pid: number;
+  /** IPty contract field, kept in sync with `currentCols`/`currentRows` by `resize()`. */
+  cols = 120;
+  /** IPty contract field, kept in sync with `currentCols`/`currentRows` by `resize()`. */
+  rows = 30;
+  /** IPty contract field; a fixed placeholder, no real process backs this mock. */
+  process = 'mock';
   // Note: Single callback that gets replaced, matching PtyInstance interface contract
   // which specifies "Only one callback is supported. Subsequent calls will replace the previous callback."
   private dataCallback: ((data: string) => void) | null = null;
@@ -72,6 +78,8 @@ export class MockPty {
   resize(cols: number, rows: number) {
     this.currentCols = cols;
     this.currentRows = rows;
+    this.cols = cols;
+    this.rows = rows;
   }
 
   kill(signal?: number) {
