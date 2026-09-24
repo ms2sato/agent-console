@@ -56,6 +56,7 @@
 // See the sibling probe script for why this resolves via a relative path
 // into packages/embedded-agent's own node_modules rather than the bare
 // `@anthropic-ai/claude-agent-sdk` specifier.
+import { rmSync } from 'node:fs';
 import {
   query,
   type Options,
@@ -135,20 +136,29 @@ async function main(): Promise<number> {
   const configDir = isolateClaudeConfigDir('h2-transport-settle-negative-control');
   console.log(`isolated CLAUDE_CONFIG_DIR: ${configDir}`);
 
-  console.log(`Running ${trials} trial(s) with the DELIBERATELY WRONG early-break methodology (expect every trial to reproduce "ProcessTransport is not ready for writing")...\n`);
+  try {
+    console.log(`Running ${trials} trial(s) with the DELIBERATELY WRONG early-break methodology (expect every trial to reproduce "ProcessTransport is not ready for writing")...\n`);
 
-  const results: TrialResult[] = [];
-  for (let i = 1; i <= trials; i++) {
-    const r = await runOneTrial(i);
-    results.push(r);
-    console.log(r.reproduced
-      ? `trial ${i}: artifact REPRODUCED (never settled within ${RETRY_ATTEMPTS} attempts / ${RETRY_ATTEMPTS * RETRY_DELAY_MS}ms) -- expected`
-      : `trial ${i}: did NOT reproduce (settled after ${r.attemptsBeforeGivingUp} attempt(s)) -- UNEXPECTED, see this script's header`);
+    const results: TrialResult[] = [];
+    for (let i = 1; i <= trials; i++) {
+      const r = await runOneTrial(i);
+      results.push(r);
+      console.log(r.reproduced
+        ? `trial ${i}: artifact REPRODUCED (never settled within ${RETRY_ATTEMPTS} attempts / ${RETRY_ATTEMPTS * RETRY_DELAY_MS}ms) -- expected`
+        : `trial ${i}: did NOT reproduce (settled after ${r.attemptsBeforeGivingUp} attempt(s)) -- UNEXPECTED, see this script's header`);
+    }
+
+    const notReproduced = results.filter((r) => !r.reproduced);
+    console.log(`\n${results.length - notReproduced.length}/${results.length} trials reproduced the artifact.`);
+    return notReproduced.length === 0 ? 0 : 1;
+  } finally {
+    // CodeRabbit MAJOR (Issue 1813): `isolateClaudeConfigDir` copies the
+    // operator's own `.credentials.json` into this throwaway directory --
+    // leaving it in place would leak a credential copy outside the probe's
+    // own lifetime. `finally` covers both a clean return and a trial that
+    // throws.
+    rmSync(configDir, { recursive: true, force: true });
   }
-
-  const notReproduced = results.filter((r) => !r.reproduced);
-  console.log(`\n${results.length - notReproduced.length}/${results.length} trials reproduced the artifact.`);
-  return notReproduced.length === 0 ? 0 : 1;
 }
 
 // Guarded (Issue #1479): importing this module must not fire a billed run

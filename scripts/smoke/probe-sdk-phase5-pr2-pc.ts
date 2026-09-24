@@ -159,7 +159,7 @@
 // transitively imports server-config.ts is evaluated. Every such import
 // below is therefore a DYNAMIC import made from inside main().
 
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 // mcp-discovery.ts, mcp-names.ts, and probe-sdk-session-harness.ts are
@@ -168,7 +168,11 @@ import * as path from 'node:path';
 // which is deferred below.
 import { discoverProjectMcpServers } from '../../packages/embedded-agent/src/mcp-discovery.js';
 import { mcpServerOf } from '../../packages/embedded-agent/src/mcp-names.js';
-import { isolateClaudeConfigDir } from './probe-sdk-session-harness.js';
+import {
+  isolateClaudeConfigDir,
+  snapshotIsolationEvidence,
+  verifyIsolationStrict,
+} from './probe-sdk-session-harness.js';
 // No transitive server-config.ts import (pure node:fs/promises + node:os +
 // node:path), so this is safe as a static import above the env-var prelude,
 // the same reasoning check-embedded-agent-elevation.ts documents for its own
@@ -318,6 +322,9 @@ async function runNonElevated(): Promise<number> {
   let repoDir: string | undefined;
   let locationPath: string | undefined;
   let homeDir: string | undefined;
+  // Declared here (not `const` inside the `try` block) so the `finally`
+  // block below can reach it for cleanup (CodeRabbit MAJOR, Issue 1813).
+  let isolatedConfigDir: string | undefined;
 
   try {
     console.log(`==> NON-ELEVATED branch. ${PROBE_VAR_NAME}=${PROBE_VAR_VALUE} ${PROBE_UNSET_NAME}=(unset)`);
@@ -330,7 +337,16 @@ async function runNonElevated(): Promise<number> {
     // ~/.claude.json"). Set before `createTestContext` / any spawn below, so
     // the isolated directory is in place before the `claude-sdk` subprocess
     // this script activates ever reads a config dir.
-    const isolatedConfigDir = isolateClaudeConfigDir('phase5-pr2-pc');
+    isolatedConfigDir = isolateClaudeConfigDir('phase5-pr2-pc');
+    // CodeRabbit MAJOR (Issue 1813): the event-content checks below cannot by
+    // themselves prove the child actually READ this isolated directory --
+    // an operator `~/.claude.json` with no user/local servers declared would
+    // pass those checks identically. This snapshot, taken BEFORE the `{}`
+    // write and BEFORE any session runs, is the "before" baseline
+    // `verifyIsolationStrict` (probe-sdk-session-harness.ts) requires of any
+    // caller that seeds `.claude.json` itself -- see that function's own
+    // TAUTOLOGY WARNING doc comment.
+    const isolationBefore = snapshotIsolationEvidence(isolatedConfigDir);
     writeFileSync(path.join(isolatedConfigDir, '.claude.json'), '{}\n');
     console.log(`==> isolated CLAUDE_CONFIG_DIR: ${isolatedConfigDir}`);
 
@@ -650,6 +666,22 @@ async function runNonElevated(): Promise<number> {
     // RULED"): they are printed as a RECORDED reading below instead, never
     // asserted against.
     console.log('\n==> isolation negative control (Issue 1813)');
+    // CodeRabbit MAJOR: a HARD assertion that the CHILD actually used
+    // `isolatedConfigDir`, independent of the event-content checks below --
+    // those checks answer "did the child's own reporting show a leaked
+    // row", not "did the child read this directory at all". A child that
+    // silently fell back to the operator's real ~/.claude.json (which may
+    // happen to declare no user/local servers) would pass the event checks
+    // vacuously; this cannot, because `ok` requires the CHILD's own writes
+    // (a grown transcript count or a newly-appeared `sessions/` dir) against
+    // the `isolationBefore` baseline captured before either the `{}` write
+    // or any session ran.
+    const isolationEvidence = verifyIsolationStrict(isolatedConfigDir, isolationBefore);
+    expect(
+      isolationEvidence.ok,
+      'isolation: the child actually used the isolated CLAUDE_CONFIG_DIR (verifyIsolationStrict)',
+      JSON.stringify(isolationEvidence),
+    );
     const allDiscoveredEvents = (await readEvents()).filter((e) => e.type === 'mcp-servers-discovered');
     expect(allDiscoveredEvents.length > 0, 'isolation: at least one mcp-servers-discovered event exists to check');
     expect(
@@ -771,6 +803,11 @@ async function runNonElevated(): Promise<number> {
     for (const dir of [repoDir, locationPath, homeDir]) {
       if (dir) Bun.spawnSync(['rm', '-rf', dir]);
     }
+    // CodeRabbit MAJOR (Issue 1813): `isolateClaudeConfigDir` copies the
+    // operator's own `.credentials.json` into this throwaway directory --
+    // leaving it in place would leak a credential copy outside the probe's
+    // own lifetime.
+    if (isolatedConfigDir) rmSync(isolatedConfigDir, { recursive: true, force: true });
   }
 }
 

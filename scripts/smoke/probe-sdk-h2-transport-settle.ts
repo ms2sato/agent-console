@@ -68,6 +68,7 @@
 // bare specifier from a script under scripts/smoke/ cannot walk up into a
 // sibling workspace's node_modules. This is the same package instance
 // sdk-engine.ts itself resolves, so the version under test cannot drift.
+import { rmSync } from 'node:fs';
 import {
   query,
   type Options,
@@ -175,18 +176,27 @@ async function main(): Promise<number> {
   const configDir = isolateClaudeConfigDir('h2-transport-settle');
   console.log(`isolated CLAUDE_CONFIG_DIR: ${configDir}`);
 
-  console.log(`Running ${trials} trial(s), ${withTool ? 'Bash-tool-call-bearing' : 'plain-text'} turns, production-faithful methodology (no early break)...\n`);
+  try {
+    console.log(`Running ${trials} trial(s), ${withTool ? 'Bash-tool-call-bearing' : 'plain-text'} turns, production-faithful methodology (no early break)...\n`);
 
-  const results: TrialResult[] = [];
-  for (let i = 1; i <= trials; i++) {
-    const r = await runOneTrial(i);
-    results.push(r);
-    console.log(r.ok ? `trial ${i}: OK (t+${r.elapsedMs}ms, totalTokens=${r.totalTokens})` : `trial ${i}: FAIL (t+${r.elapsedMs}ms): ${r.error}`);
+    const results: TrialResult[] = [];
+    for (let i = 1; i <= trials; i++) {
+      const r = await runOneTrial(i);
+      results.push(r);
+      console.log(r.ok ? `trial ${i}: OK (t+${r.elapsedMs}ms, totalTokens=${r.totalTokens})` : `trial ${i}: FAIL (t+${r.elapsedMs}ms): ${r.error}`);
+    }
+
+    const failures = results.filter((r) => !r.ok);
+    console.log(`\n${results.length - failures.length}/${results.length} trials succeeded on the FIRST getContextUsage() attempt (no retry).`);
+    return failures.length === 0 ? 0 : 1;
+  } finally {
+    // CodeRabbit MAJOR (Issue 1813): `isolateClaudeConfigDir` copies the
+    // operator's own `.credentials.json` into this throwaway directory --
+    // leaving it in place would leak a credential copy outside the probe's
+    // own lifetime. `finally` covers both a clean return and a trial that
+    // throws.
+    rmSync(configDir, { recursive: true, force: true });
   }
-
-  const failures = results.filter((r) => !r.ok);
-  console.log(`\n${results.length - failures.length}/${results.length} trials succeeded on the FIRST getContextUsage() attempt (no retry).`);
-  return failures.length === 0 ? 0 : 1;
 }
 
 // Guarded (Issue #1479): importing this module must not fire a billed run
