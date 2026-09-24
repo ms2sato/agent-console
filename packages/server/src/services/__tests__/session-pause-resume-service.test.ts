@@ -3,7 +3,9 @@ import { SessionPauseResumeService, type SessionPauseResumeDeps } from '../sessi
 import type { InternalSession } from '../internal-types.js';
 import type { InternalWorker } from '../worker-types.js';
 import type { PersistedSession } from '../persistence-service.js';
-import type { Session } from '@agent-console/shared';
+import type { Session, AgentWorker, EmbeddedAgentWorker } from '@agent-console/shared';
+import type { NotificationManager } from '../notifications/notification-manager.js';
+import type { MessageService } from '../message-service.js';
 import { SessionDataPathResolver } from '../../lib/session-data-path-resolver.js';
 import { SessionOrphanedError } from '../../lib/errors.js';
 import {
@@ -14,11 +16,61 @@ import {
   buildInternalWorktreeSession,
   buildInternalQuickSession,
   buildPersistedWorktreeSession,
+  buildPersistedQuickSession,
   buildPersistedAgentWorker,
   buildPersistedTerminalWorker,
+  buildWorktreeSession,
+  buildQuickSession,
 } from '../../__tests__/utils/build-test-data.js';
 
 const mockStopWatching = mock(() => {});
+
+// NotificationManager / MessageService are concrete classes with private
+// fields, so a plain object implementing only the methods a test actually
+// exercises cannot satisfy the class type structurally. Each helper types
+// its parameter as `Partial<X>`, so every provided method name/signature is
+// checked against the real class, and performs exactly one assertion inside
+// the helper body to bridge the private-member gap.
+function asNotificationManager(stub: Partial<NotificationManager>): NotificationManager {
+  return stub as NotificationManager;
+}
+
+function asMessageService(stub: Partial<MessageService>): MessageService {
+  return stub as MessageService;
+}
+
+// Minimal-but-valid public Worker fixtures. Production only ever reads
+// `.id` / `.type` off these in the code paths exercised here (see
+// resumeSession's activity-state collection loop); the remaining fields
+// exist to satisfy the discriminated Worker union's required shape.
+function buildAgentWorkerFixture(
+  overrides: Partial<AgentWorker> & Pick<AgentWorker, 'id'>,
+): AgentWorker {
+  return {
+    name: overrides.id,
+    createdAt: '2024-01-01T00:00:00.000Z',
+    type: 'agent',
+    agentId: 'test-agent',
+    activated: true,
+    ...overrides,
+  };
+}
+
+function buildEmbeddedAgentWorkerFixture(
+  overrides: Partial<EmbeddedAgentWorker> & Pick<EmbeddedAgentWorker, 'id'>,
+): EmbeddedAgentWorker {
+  return {
+    name: overrides.id,
+    createdAt: '2024-01-01T00:00:00.000Z',
+    type: 'embedded-agent',
+    embeddedAgentId: 'def-1',
+    activated: true,
+    autoCompaction: true,
+    reasoningEffort: null,
+    hasParameterOverride: false,
+    ...overrides,
+  };
+}
 
 function createMockDeps(overrides?: Partial<SessionPauseResumeDeps>): SessionPauseResumeDeps {
   const sessions = new Map<string, InternalSession>();
@@ -47,43 +99,48 @@ function createMockDeps(overrides?: Partial<SessionPauseResumeDeps>): SessionPau
     pathExists: mock(async () => true),
     getRepositoryEnvVars: mock(async () => ({})),
     getPathResolverForSession: mock((_session: InternalSession) => new SessionDataPathResolver('/dummy', '/')),
-    toPublicSession: mock((session: InternalSession) => ({
-      id: session.id,
-      type: session.type,
-      locationPath: session.locationPath,
-      status: session.status,
-      activationState: 'running' as const,
-      createdAt: session.createdAt,
-      workers: [],
-    } as unknown as Session)),
-    toPersistedSessionWithServerPid: mock((session: InternalSession, serverPid: number | null) => ({
-      id: session.id,
-      type: session.type,
-      locationPath: session.locationPath,
-      createdAt: session.createdAt,
-      workers: [],
-      serverPid,
-      ...(session.type === 'worktree' ? { repositoryId: session.repositoryId, worktreeId: session.worktreeId } : {}),
-    } as unknown as PersistedSession)),
-    persistedToPublicSession: mock((p: PersistedSession) => ({
-      id: p.id,
-      type: p.type,
-      locationPath: p.locationPath,
-      status: 'active' as const,
-      activationState: 'hibernated' as const,
-      createdAt: p.createdAt,
-      workers: [],
-      pausedAt: p.pausedAt,
-    } as unknown as Session)),
+    toPublicSession: mock((session: InternalSession): Session => {
+      const base = {
+        id: session.id,
+        locationPath: session.locationPath,
+        status: session.status,
+        activationState: 'running' as const,
+        createdAt: session.createdAt,
+        workers: [],
+      };
+      return session.type === 'worktree'
+        ? buildWorktreeSession({ ...base, repositoryId: session.repositoryId, worktreeId: session.worktreeId })
+        : buildQuickSession(base);
+    }),
+    toPersistedSessionWithServerPid: mock((session: InternalSession, serverPid: number | null): PersistedSession => {
+      const base = { id: session.id, locationPath: session.locationPath, createdAt: session.createdAt, workers: [], serverPid };
+      return session.type === 'worktree'
+        ? buildPersistedWorktreeSession({ ...base, repositoryId: session.repositoryId, worktreeId: session.worktreeId })
+        : buildPersistedQuickSession(base);
+    }),
+    persistedToPublicSession: mock((p: PersistedSession): Session => {
+      const base = {
+        id: p.id,
+        locationPath: p.locationPath,
+        status: 'active' as const,
+        activationState: 'hibernated' as const,
+        createdAt: p.createdAt,
+        workers: [],
+        pausedAt: p.pausedAt,
+      };
+      return p.type === 'worktree'
+        ? buildWorktreeSession({ ...base, repositoryId: p.repositoryId, worktreeId: p.worktreeId })
+        : buildQuickSession(base);
+    }),
     getWorkerActivityState: mock(() => undefined),
     getSessionLifecycleCallbacks: () => undefined,
     getWebSocketCallbacks: () => null,
-    notificationManager: {
+    notificationManager: asNotificationManager({
       cleanupSession: mock(() => {}),
-    } as unknown as SessionPauseResumeDeps['notificationManager'],
-    messageService: {
+    }),
+    messageService: asMessageService({
       clearSession: mock(() => {}),
-    } as unknown as SessionPauseResumeDeps['messageService'],
+    }),
     userRepository: null,
     resolveSpawnUsername: mock(async () => 'testuser'),
     stopWatching: mockStopWatching,
@@ -199,7 +256,7 @@ describe('SessionPauseResumeService', () => {
   describe('resumeSession', () => {
     it('should return existing session if already active', async () => {
       const session = buildInternalWorktreeSession();
-      const mockPublicSession = { id: 'session-1' } as unknown as Session;
+      const mockPublicSession = buildWorktreeSession({ id: 'session-1' });
 
       const deps = createMockDeps({
         getSession: () => session,
@@ -280,11 +337,10 @@ describe('SessionPauseResumeService', () => {
       });
 
       const onSessionResumed = mock(() => {});
-      const mockPublicSession = {
+      const mockPublicSession = buildWorktreeSession({
         id: 'session-1',
-        type: 'worktree' as const,
-        workers: [{ id: 'w1', type: 'agent' as const }],
-      } as unknown as Session;
+        workers: [buildAgentWorkerFixture({ id: 'w1' })],
+      });
 
       const deps = createMockDeps({
         sessionRepository: {
@@ -370,11 +426,10 @@ describe('SessionPauseResumeService', () => {
       });
 
       const onSessionResumed = mock(() => {});
-      const mockPublicSession = {
+      const mockPublicSession = buildWorktreeSession({
         id: 'session-1',
-        type: 'worktree' as const,
-        workers: [{ id: 'w1', type: 'embedded-agent' as const }],
-      } as unknown as Session;
+        workers: [buildEmbeddedAgentWorkerFixture({ id: 'w1' })],
+      });
 
       const deps = createMockDeps({
         sessionRepository: {
