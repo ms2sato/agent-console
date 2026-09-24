@@ -63,16 +63,18 @@
  * reached" by the OTHER arm's own run.
  *
  * A CLI FACT, NOT A HARNESS QUIRK: `ready` does not imply every declared
- * project MCP server has finished connecting. Measured directly (both in a
+ * project MCP server has finished connecting. `ready` (`sdk-engine.ts`) means
+ * the engine constructed the SDK query and started its consumer; it is NOT
+ * gated on the CLI's own `system:init`, which does not arrive until the
+ * FIRST PROMPT is sent -- so `ready` fires essentially immediately, before
+ * the CLI has necessarily finished (or even started reporting on) its
+ * connections to `.mcp.json`-declared servers. Measured directly (both in a
  * free, local degenerate-mode dry run and in the real tier-2 container):
- * the loop's `ready` event fires as soon as its OWN init handshake (the
- * console-MCP tool catalog) completes, while the CLI's connections to
- * `.mcp.json`-declared servers can still be in flight -- observed lag
- * roughly 1-1.5s between `ready` and a fixture's spawn report landing. This
- * is a property of the `claude` CLI's own startup sequencing, not an
- * artifact of this script's harness, and any future reader of the elevated
- * arm's boundary-detection code should read it as such. The elevated arm's
- * grace-window poll (below) exists because of this fact.
+ * `ready` -> fixture spawn report, WITH NO PROMPT SENT, observed lag roughly
+ * 1.5-3.2s. This is a property of the `claude` CLI's own startup sequencing,
+ * not an artifact of this script's harness, and any future reader of the
+ * elevated arm's boundary-detection code should read it as such. The
+ * elevated arm's grace-window poll (below) exists because of this fact.
  *
  * STDERR WARNING OBSERVABILITY (best-effort, not gated). `applyArgSubstitution`
  * logs one `console.warn` per unresolved placeholder inside the embedded-agent
@@ -927,11 +929,13 @@ async function runElevatedArm(targetUsername: string): Promise<number> {
     // MEASURED (degenerate same-user run, local): `ready` does NOT imply
     // every declared project MCP server has finished connecting -- one run
     // observed `ready` fire, then an MCP-server stderr line (and its spawn
-    // report) land ~350ms LATER. `ready` only means the loop's OWN init
-    // handshake (its console-MCP tool catalog) is done; the CLI's own
-    // project-server connections can still be in flight. A read taken at
-    // the very instant of `ready` can therefore observe an ABSENT report
-    // that is about to be written a moment later -- a false outcome (ii).
+    // report) land ~350ms LATER. `ready` (`sdk-engine.ts`) means the engine
+    // constructed the SDK query and started its consumer; it is NOT gated on
+    // the CLI's own `system:init`, which does not arrive until the FIRST
+    // PROMPT is sent -- so `ready` fires essentially immediately, and the
+    // CLI's own project-server connections can still be in flight. A read
+    // taken at the very instant of `ready` can therefore observe an ABSENT
+    // report that is about to be written a moment later -- a false outcome (ii).
     // So after `ready` (or a terminal fatal/turn-error signal) fires, this
     // loop keeps polling the reports themselves for a short GRACE window
     // rather than reading immediately: it exits early the instant BOTH
