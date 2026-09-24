@@ -14,8 +14,10 @@ function asSession(stub: Partial<Session>): Session {
 
 /**
  * `Worker` has no private fields, so `Partial<Worker>` retains the same
- * shape (TS collapses a union's `Partial<>` to its common keys) and this
- * single-step cast type-checks without bridging through `unknown`.
+ * shape. `Partial<Worker>` distributes over the union, so a literal with a
+ * `type` discriminant is still excess-property-checked against that
+ * member, and this single-step cast type-checks without bridging through
+ * `unknown`.
  */
 function asWorker(stub: Partial<Worker>): Worker {
   return stub as Worker;
