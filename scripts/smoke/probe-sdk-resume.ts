@@ -87,6 +87,7 @@
 
 import { getSessionInfo, type Options } from '../../packages/embedded-agent/node_modules/@anthropic-ai/claude-agent-sdk';
 import { randomUUID } from 'node:crypto';
+import { rmSync } from 'node:fs';
 import {
   ProbeSession,
   filler,
@@ -757,38 +758,45 @@ async function main(): Promise<number> {
   PRESSURE = selected.has('--pressure');
   CONFIG_DIR = isolateClaudeConfigDir('resume');
 
-  console.log(`probe-sdk-resume  started ${stamp()}`);
-  console.log(`items: ${[...selected].join(' ')}`);
-  console.log(`isolated CLAUDE_CONFIG_DIR: ${CONFIG_DIR}`);
-  console.log(`model: ${MODEL}`);
+  try {
+    console.log(`probe-sdk-resume  started ${stamp()}`);
+    console.log(`items: ${[...selected].join(' ')}`);
+    console.log(`isolated CLAUDE_CONFIG_DIR: ${CONFIG_DIR}`);
+    console.log(`model: ${MODEL}`);
 
-  if (selected.has('--basic')) {
-    await itemBasic();
-    await itemMidTurn();
+    if (selected.has('--basic')) {
+      await itemBasic();
+      await itemMidTurn();
+    }
+    if (selected.has('--invalid')) await itemInvalidResume();
+    if (selected.has('--post-compact')) await itemPostCompact();
+
+    const isolation = verifyIsolation(CONFIG_DIR);
+    h('Isolation check');
+    console.log(`child-created state under the throwaway CLAUDE_CONFIG_DIR: ${isolation.evidence.join(', ') || '(none)'}`);
+    console.log(`session transcripts written there: ${isolation.files.length}`);
+    for (const f of isolation.files) console.log(`  ${f}`);
+    if (!isolation.ok) {
+      console.error(
+        'ISOLATION NOT VERIFIED: the child wrote no state into the throwaway config dir. A resume probe in particular cannot be trusted without this -- the resumed session may have been read from the operator\'s real config dir.',
+      );
+      return 2;
+    }
+
+    h('Verdicts');
+    for (const v of verdicts) {
+      console.log(`\n- ${v.item}\n    verdict: ${v.verdict}\n    control: ${v.control}`);
+    }
+    const t = totals();
+    console.log(`\nfinished ${stamp()}  elapsed=${((Date.now() - startedAt) / 60_000).toFixed(1)} min  cumulative prompt tokens=${t.tokens}  approx cost=$${t.cost.toFixed(4)}`);
+
+    return verdicts.some((v) => v.stop) ? 1 : 0;
+  } finally {
+    // The throwaway CLAUDE_CONFIG_DIR holds a copy of the operator's CLI
+    // credentials (isolateClaudeConfigDir's own doc comment); remove it on
+    // every exit path, success or thrown error (Issue #1819).
+    rmSync(CONFIG_DIR, { recursive: true, force: true });
   }
-  if (selected.has('--invalid')) await itemInvalidResume();
-  if (selected.has('--post-compact')) await itemPostCompact();
-
-  const isolation = verifyIsolation(CONFIG_DIR);
-  h('Isolation check');
-  console.log(`child-created state under the throwaway CLAUDE_CONFIG_DIR: ${isolation.evidence.join(', ') || '(none)'}`);
-  console.log(`session transcripts written there: ${isolation.files.length}`);
-  for (const f of isolation.files) console.log(`  ${f}`);
-  if (!isolation.ok) {
-    console.error(
-      'ISOLATION NOT VERIFIED: the child wrote no state into the throwaway config dir. A resume probe in particular cannot be trusted without this -- the resumed session may have been read from the operator\'s real config dir.',
-    );
-    return 2;
-  }
-
-  h('Verdicts');
-  for (const v of verdicts) {
-    console.log(`\n- ${v.item}\n    verdict: ${v.verdict}\n    control: ${v.control}`);
-  }
-  const t = totals();
-  console.log(`\nfinished ${stamp()}  elapsed=${((Date.now() - startedAt) / 60_000).toFixed(1)} min  cumulative prompt tokens=${t.tokens}  approx cost=$${t.cost.toFixed(4)}`);
-
-  return verdicts.some((v) => v.stop) ? 1 : 0;
 }
 
 // Guarded (Issue #1479): importing this module must not fire a billed run

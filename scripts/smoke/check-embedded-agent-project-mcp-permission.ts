@@ -174,7 +174,7 @@
 // account).
 
 import { Glob } from 'bun';
-import { cpSync, existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import type { AppContext } from '../../packages/server/src/app-context.js';
@@ -398,6 +398,7 @@ async function main(expectNoPermission: boolean): Promise<void> {
   let appServer: ReturnType<typeof Bun.serve> | undefined;
   let home: string | undefined;
   let ledgerPath: string | undefined;
+  let isolatedConfigDir: string | undefined;
 
   try {
     home = path.join(os.tmpdir(), `ac-mcp-permission-smoke-home-${crypto.randomUUID()}`);
@@ -413,7 +414,7 @@ async function main(expectNoPermission: boolean): Promise<void> {
     // NOT modified here -- it stays the single writer of "credentials only";
     // every other caller of it depends on that. This script writes its OWN
     // `.claude.json` into the returned directory, one line below, instead.
-    const isolatedConfigDir = isolateClaudeConfigDir('mcp-permission');
+    isolatedConfigDir = isolateClaudeConfigDir('mcp-permission');
     // ENOENT -> unavailable; `{}` -> empty (measured 2026-09-21). Without
     // this line, `.claude.json` is simply absent, and `readUserLocalMcpNames`
     // (mcp-discovery.ts) treats an absent file as a READ FAILURE
@@ -1053,6 +1054,14 @@ async function main(expectNoPermission: boolean): Promise<void> {
       if (capturedAny) console.log(`==> worker NDJSON captured to: ${captureDir}`);
     }
     if (home) Bun.spawnSync(['rm', '-rf', home]);
+    // `isolatedConfigDir` lives directly under the OS temp dir, NOT nested
+    // under `home` -- it holds a copy of the operator's CLI credentials
+    // (isolateClaudeConfigDir's own doc comment) and needs its own removal
+    // on every exit path, success or thrown error (Issue #1819). Its last
+    // read is negative control (c) above (line ~993), which reads
+    // server-side events rather than the directory itself, so removal here
+    // is strictly after every read.
+    if (isolatedConfigDir) rmSync(isolatedConfigDir, { recursive: true, force: true });
   }
 }
 
