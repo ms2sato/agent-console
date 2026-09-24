@@ -18,6 +18,8 @@ import {
   getCiStatus,
   COVERAGE_PATTERNS,
   findExclusionRule,
+  categorizeFiles,
+  detectIntegrationTestNeeds,
 } from '../check-utils.js';
 
 describe('isReExportOnlyContent', () => {
@@ -1230,6 +1232,88 @@ describe('findTestFiles with an explicit diffRef', () => {
       expect(testCoverage).toHaveLength(1);
       expect(testCoverage[0].isCommentOnly).toBe(true);
       expect(testCoverage[0].needsCoverage).toBe(false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+// detectIntegrationTestNeeds's comment-only exemption reuses
+// isCommentOnlyFileDiff the same way findTestFiles's own exemption does —
+// no second copy of the comment-only-diff logic (Issue #1816). Same shape
+// as "findTestFiles with an explicit diffRef" above, applied at
+// detectIntegrationTestNeeds's own boundary.
+//
+// Measured reach (revert-the-fix polarity check, per workflow.md "Every
+// pin's reach is measured, not predicted"): removing the
+// `isCommentOnlyFileDiff` guard from detectIntegrationTestNeeds (i.e.
+// reverting to `triggers.push({ file, reason })` unconditionally on a
+// pattern match) flips the FIRST test below from pass to fail — the
+// comment-only file is pushed onto `triggers` again and `result` is no
+// longer `null`, reproducing PR #1815's originally-reported false positive
+// exactly. The SECOND test does NOT flip under that same revert — it is an
+// invariant-preservation test (testing.md's third category): both with and
+// without the fix, a real shape change on a shared-type path is (correctly)
+// still flagged, so this test guards against a plausible wrong
+// implementation that exempts every shared-type change regardless of
+// actual diff content, not against this specific regression.
+describe('detectIntegrationTestNeeds with an explicit diffRef (Issue #1816)', () => {
+  function makeTempGitRepo() {
+    const root = mkdtempSync(join(tmpdir(), 'integration-needs-diffref-repo-'));
+    execSync('git init -q -b main', { cwd: root });
+    execSync('git config user.email test@example.com', { cwd: root });
+    execSync('git config user.name Test', { cwd: root });
+    return root;
+  }
+
+  function commit(root, message) {
+    execSync('git add -A', { cwd: root });
+    execSync(`git commit -q -m "${message}"`, { cwd: root });
+  }
+
+  it('does not flag a comment-only diff on a shared-type path', () => {
+    const root = makeTempGitRepo();
+    try {
+      const relPath = 'packages/shared/src/types/embedded-agent.ts';
+      mkdirSync(join(root, 'packages/shared/src/types'), { recursive: true });
+      writeFileSync(join(root, relPath), 'export type Foo = { v: 1 };\n// old note\n');
+      commit(root, 'initial');
+
+      execSync('git checkout -q -b feature', { cwd: root });
+      writeFileSync(join(root, relPath), 'export type Foo = { v: 1 };\n// new note\n');
+      commit(root, 'comment tweak on feature');
+
+      execSync('git checkout -q main', { cwd: root });
+
+      const files = [relPath];
+      const categories = categorizeFiles(files);
+      const result = detectIntegrationTestNeeds(files, categories, { baseRef: 'main', headRef: 'feature', cwd: root });
+      expect(result).toBeNull();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('still flags a one-line shape change on the same path', () => {
+    const root = makeTempGitRepo();
+    try {
+      const relPath = 'packages/shared/src/types/embedded-agent.ts';
+      mkdirSync(join(root, 'packages/shared/src/types'), { recursive: true });
+      writeFileSync(join(root, relPath), 'export type Foo = { v: 1 };\n');
+      commit(root, 'initial');
+
+      execSync('git checkout -q -b feature', { cwd: root });
+      writeFileSync(join(root, relPath), 'export type Foo = { v: 1; w: 2 };\n');
+      commit(root, 'shape change on feature');
+
+      execSync('git checkout -q main', { cwd: root });
+
+      const files = [relPath];
+      const categories = categorizeFiles(files);
+      const result = detectIntegrationTestNeeds(files, categories, { baseRef: 'main', headRef: 'feature', cwd: root });
+      expect(result).not.toBeNull();
+      expect(result.triggers).toHaveLength(1);
+      expect(result.triggers[0].file).toBe(relPath);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

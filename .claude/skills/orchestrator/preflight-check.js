@@ -260,7 +260,7 @@ export function printCoverageCheck(testCoverage, integrationTestNeeds) {
 function run(changedFiles, diffRef = {}) {
   const { testCoverage } = findTestFiles(changedFiles, diffRef);
   const categories = categorizeFiles(changedFiles);
-  const integrationTestNeeds = detectIntegrationTestNeeds(changedFiles, categories);
+  const integrationTestNeeds = detectIntegrationTestNeeds(changedFiles, categories, diffRef);
 
   const hasUnitGaps = printCoverageCheck(testCoverage, integrationTestNeeds);
 
