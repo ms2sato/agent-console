@@ -64,28 +64,12 @@ import { deleteWorktree } from '@agent-console/server/src/services/worktree-dele
 import type { SuggestSessionMetadataFn } from '@agent-console/server/src/services/session-metadata-suggester';
 import { McpTokenRegistry } from '@agent-console/server/src/mcp/mcp-auth';
 import { defaultRepositoryLookup, defaultRepositoryEnvLookup } from '@agent-console/server/src/__tests__/utils/repository-lookup-mock';
-import type { SpawnAsUserFn, SpawnAsUserOpts, SpawnAsUserResult } from '@agent-console/server/src/services/privilege-elevation';
+import type { SpawnAsUserFn, SpawnAsUserOpts } from '@agent-console/server/src/services/privilege-elevation';
+import { toSpawnAsUserResult, type FakeFileSink, type FakeSubprocess } from '@agent-console/server/src/__tests__/utils/fake-spawn-as-user';
 import { createEmptyEmbeddedAgentSurface } from './test-utils';
 
 const TEST_CONFIG_DIR = '/test/config-1696-boundary';
 const ptyFactory = createMockPtyFactory();
-
-/** Minimal subset of Bun's FileSink consumed by EmbeddedAgentWorkerService. */
-interface FakeFileSink {
-  write: (chunk: string | Uint8Array) => number;
-  end: () => void;
-  flush: () => number;
-}
-
-/** The subset of `Subprocess` the service reads while a worker stays activated. */
-interface FakeSubprocess {
-  pid: number;
-  exited: Promise<number>;
-  stdin: FakeFileSink;
-  stdout: ReadableStream<Uint8Array>;
-  stderr: ReadableStream<Uint8Array>;
-  kill: () => void;
-}
 
 function makeFakeSpawn(): {
   fn: SpawnAsUserFn;
@@ -100,25 +84,19 @@ function makeFakeSpawn(): {
     // Never resolves -- this test never deactivates the worker.
   });
   const stdin: FakeFileSink = {
-    write: (chunk) => {
+    write: (chunk: string | Uint8Array) => {
       stdinWrites.push(typeof chunk === 'string' ? chunk : new TextDecoder().decode(chunk));
       return 0;
     },
-    end: () => {},
+    end: () => {
+      return 0;
+    },
     flush: () => 0,
   };
   const subprocess: FakeSubprocess = { pid: 9999, exited, stdin, stdout, stderr, kill: () => {} };
   const fn: SpawnAsUserFn = (opts) => {
     captured.push(opts);
-    // One direct cast at the fake boundary (no `unknown` intermediate): the
-    // typed fake models exactly the subset the service consumes -- the same
-    // idiom as embedded-agent-identity-env-boundary.test.ts.
-    const result: Pick<SpawnAsUserResult, 'elevated'> & { subprocess: FakeSubprocess; stdin: FakeFileSink } = {
-      subprocess,
-      stdin,
-      elevated: false,
-    };
-    return result as SpawnAsUserResult;
+    return toSpawnAsUserResult({ subprocess, stdin, elevated: false });
   };
   return { fn, captured, stdinWrites };
 }

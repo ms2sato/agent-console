@@ -2,10 +2,11 @@ import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { Hono } from 'hono';
 import type { WSContext } from 'hono/ws';
 
-import type { SpawnAsUserFn, SpawnAsUserOpts, SpawnAsUserResult } from '../../services/privilege-elevation.js';
+import type { SpawnAsUserFn, SpawnAsUserOpts } from '../../services/privilege-elevation.js';
 import { createMockPtyFactory } from '../../__tests__/utils/mock-pty.js';
 import { setupMemfs, cleanupMemfs } from '../../__tests__/utils/mock-fs-helper.js';
 import { resetProcessMock } from '../../__tests__/utils/mock-process-helper.js';
+import { toSpawnAsUserResult, type FakeFileSink, type FakeSubprocess } from '../../__tests__/utils/fake-spawn-as-user.js';
 
 import { initializeDatabase, closeDatabase, getDatabase } from '../../database/connection.js';
 import { JobQueue } from '../../jobs/job-queue.js';
@@ -59,43 +60,6 @@ function createMockWs(): WSContext & {
   return Object.assign(ws, { sentMessages, closeCalls });
 }
 
-/** Minimal subset of Bun's FileSink consumed by EmbeddedAgentWorkerService (write/end/flush). */
-interface FakeFileSink {
-  write: (chunk: string | Uint8Array) => number;
-  end: () => void;
-  flush: () => number;
-}
-
-/** Minimal subset of Bun's Subprocess this file's fake spawn constructs. */
-interface FakeSubprocess {
-  pid: number;
-  exited: Promise<number>;
-  stdin: FakeFileSink;
-  stdout: ReadableStream<Uint8Array>;
-  stderr: ReadableStream<Uint8Array>;
-  kill: () => void;
-}
-
-/**
- * `SpawnAsUserResult.subprocess` is Bun's real `Subprocess<'pipe','pipe','pipe'>`
- * and `.stdin` its real `FileSink` -- far larger types than `FakeSubprocess`/
- * `FakeFileSink` above actually implement. This is the file's single, named
- * boundary between the fake shape and `SpawnAsUserResult` (mirrors the
- * pattern in `embedded-agent-worker-service.test.ts`'s `toSpawnAsUserResult`).
- */
-function toSpawnAsUserResult(fields: {
-  subprocess: FakeSubprocess;
-  stdin: FakeFileSink;
-  elevated?: boolean;
-}): SpawnAsUserResult {
-  const result: Pick<SpawnAsUserResult, 'elevated'> & { subprocess: FakeSubprocess; stdin: FakeFileSink } = {
-    subprocess: fields.subprocess,
-    stdin: fields.stdin,
-    elevated: fields.elevated ?? false,
-  };
-  return result as SpawnAsUserResult;
-}
-
 /**
  * Fake spawnAsUser: never emits stdout/stderr on its own (the tests below
  * only exercise the WS routing layer's dispatch to
@@ -135,15 +99,17 @@ function makeFakeSpawn(): {
   };
 
   const stdin: FakeFileSink = {
-    write: (chunk) => {
+    write: (chunk: string | Uint8Array) => {
       stdinWrites.push(typeof chunk === 'string' ? chunk : new TextDecoder().decode(chunk));
       return 0;
     },
-    end: () => {},
+    end: () => {
+      return 0;
+    },
     flush: () => 0,
   };
 
-  const subprocess = {
+  const subprocess: FakeSubprocess = {
     pid: 4321,
     exited,
     stdin,

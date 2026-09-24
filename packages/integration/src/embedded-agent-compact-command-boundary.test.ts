@@ -70,19 +70,13 @@ import { McpTokenRegistry } from '@agent-console/server/src/mcp/mcp-auth';
 import { defaultRepositoryLookup, defaultRepositoryEnvLookup } from '@agent-console/server/src/__tests__/utils/repository-lookup-mock';
 import { setupWebSocketRoutes } from '@agent-console/server/src/websocket/routes';
 import type { AppContext } from '@agent-console/server/src/app-context';
-import type { SpawnAsUserFn, SpawnAsUserOpts, SpawnAsUserResult } from '@agent-console/server/src/services/privilege-elevation';
+import type { SpawnAsUserFn, SpawnAsUserOpts } from '@agent-console/server/src/services/privilege-elevation';
+import { toSpawnAsUserResult, type FakeFileSink, type FakeSubprocess } from '@agent-console/server/src/__tests__/utils/fake-spawn-as-user';
 
 import { EmbeddedAgentCommandSchema, EmbeddedAgentStreamEventSchema, type EmbeddedAgentStreamEvent } from '@agent-console/shared';
 
 const TEST_CONFIG_DIR = '/test/config';
 const ptyFactory = createMockPtyFactory();
-
-/** Minimal subset of Bun's FileSink consumed by EmbeddedAgentWorkerService. */
-interface FakeFileSink {
-  write: (chunk: string | Uint8Array) => number;
-  end: () => void;
-  flush: () => number;
-}
 
 /** One fake subprocess instance: its own stdin capture and controllable stdout. */
 interface FakeSpawnInstance {
@@ -113,14 +107,16 @@ function makeMultiFakeSpawn(): { fn: SpawnAsUserFn; instances: FakeSpawnInstance
       // Never resolves — this test never deactivates the workers.
     });
     const stdin: FakeFileSink = {
-      write: (chunk) => {
+      write: (chunk: string | Uint8Array) => {
         stdinWrites.push(typeof chunk === 'string' ? chunk : new TextDecoder().decode(chunk));
         return 0;
       },
-      end: () => {},
+      end: () => {
+        return 0;
+      },
       flush: () => 0,
     };
-    const subprocess = { pid: 8900 + instances.length, exited, stdin, stdout, stderr, kill: () => {} };
+    const subprocess: FakeSubprocess = { pid: 8900 + instances.length, exited, stdin, stdout, stderr, kill: () => {} };
     instances.push({
       captured: opts,
       stdinWrites,
@@ -129,7 +125,7 @@ function makeMultiFakeSpawn(): { fn: SpawnAsUserFn; instances: FakeSpawnInstance
         stdoutController.enqueue(encoder.encode(`${JSON.stringify(line)}\n`));
       },
     });
-    return { subprocess, stdin, elevated: false } as unknown as SpawnAsUserResult;
+    return toSpawnAsUserResult({ subprocess, stdin, elevated: false });
   };
   return { fn, instances };
 }
