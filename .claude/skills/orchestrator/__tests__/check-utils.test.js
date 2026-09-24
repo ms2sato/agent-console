@@ -1240,8 +1240,8 @@ describe('findTestFiles with an explicit diffRef', () => {
 
 // detectIntegrationTestNeeds's comment-only exemption reuses
 // isCommentOnlyFileDiff the same way findTestFiles's own exemption does —
-// no second copy of the comment-only-diff logic (Issue #1816). Same shape
-// as "findTestFiles with an explicit diffRef" above, applied at
+// no second copy of the comment-only-diff logic. Same shape as
+// "findTestFiles with an explicit diffRef" above, applied at
 // detectIntegrationTestNeeds's own boundary.
 //
 // Measured reach (revert-the-fix polarity check, per workflow.md "Every
@@ -1250,14 +1250,15 @@ describe('findTestFiles with an explicit diffRef', () => {
 // reverting to `triggers.push({ file, reason })` unconditionally on a
 // pattern match) flips the FIRST test below from pass to fail — the
 // comment-only file is pushed onto `triggers` again and `result` is no
-// longer `null`, reproducing PR #1815's originally-reported false positive
-// exactly. The SECOND test does NOT flip under that same revert — it is an
+// longer `null`, reproducing the originally-reported false positive: a
+// JSDoc-only diff to a shared-type path tripping the integration-test-gap
+// flag. The SECOND test does NOT flip under that same revert — it is an
 // invariant-preservation test (testing.md's third category): both with and
 // without the fix, a real shape change on a shared-type path is (correctly)
 // still flagged, so this test guards against a plausible wrong
 // implementation that exempts every shared-type change regardless of
 // actual diff content, not against this specific regression.
-describe('detectIntegrationTestNeeds with an explicit diffRef (Issue #1816)', () => {
+describe('detectIntegrationTestNeeds with an explicit diffRef', () => {
   function makeTempGitRepo() {
     const root = mkdtempSync(join(tmpdir(), 'integration-needs-diffref-repo-'));
     execSync('git init -q -b main', { cwd: root });

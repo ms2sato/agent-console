@@ -785,8 +785,8 @@ export function detectIntegrationTestNeeds(changedFiles, categories, diffRef = {
       // A pure comment-only diff cannot change what crosses the
       // client/server wire -- exempt it the same way `findTestFiles`
       // exempts a comment-only diff from unit-test coverage, via the same
-      // `isCommentOnlyFileDiff` wrapper (Issue #1816). No second copy of
-      // the comment-only-diff logic.
+      // `isCommentOnlyFileDiff` wrapper. No second copy of the
+      // comment-only-diff logic.
       if (!isCommentOnlyFileDiff(file, baseRef, cwd, headRef)) {
         triggers.push({ file, reason });
       }
