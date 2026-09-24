@@ -23,6 +23,42 @@ const INSTALL_SCRIPT = resolve(REPO_ROOT, 'scripts/install-hooks.mjs');
 const SOURCE_HOOK = resolve(REPO_ROOT, 'scripts/git-hooks/commit-msg');
 
 /**
+ * Duplicated inline from `packages/server/src/__tests__/utils/scratch-git.ts`'s
+ * `sanitizeInheritedGitEnv` (the single writer of the canonical, TS-importable
+ * version) -- this file is plain Node (.mjs) and cannot import it. Strips git
+ * repository-location and command-scope configuration-injection variables
+ * before the one commit spawn below that also sets GIT_CONFIG_GLOBAL: none of
+ * these are overridden by GIT_CONFIG_GLOBAL (a separate, higher-precedence
+ * mechanism per git's own docs), so an inherited GIT_CONFIG_COUNT triple could
+ * re-enable commit signing, and an inherited GIT_DIR/GIT_WORK_TREE/
+ * GIT_INDEX_FILE could redirect the commit onto different repository state
+ * entirely (CodeRabbit review, PR #1814). Deliberately narrow: only the git
+ * namespace is touched, never HOME/PATH/SSH_AUTH_SOCK/etc.
+ */
+function sanitizeInheritedGitEnv(sourceEnv) {
+  const riskyKeys = new Set([
+    'GIT_DIR',
+    'GIT_WORK_TREE',
+    'GIT_INDEX_FILE',
+    'GIT_COMMON_DIR',
+    'GIT_OBJECT_DIRECTORY',
+    'GIT_ALTERNATE_OBJECT_DIRECTORIES',
+    'GIT_QUARANTINE_PATH',
+    'GIT_CONFIG',
+    'GIT_CONFIG_PARAMETERS',
+    'GIT_CONFIG_COUNT',
+  ]);
+  const result = {};
+  for (const [key, value] of Object.entries(sourceEnv)) {
+    if (value === undefined) continue;
+    if (riskyKeys.has(key)) continue;
+    if (key.startsWith('GIT_CONFIG_KEY_') || key.startsWith('GIT_CONFIG_VALUE_')) continue;
+    result[key] = value;
+  }
+  return result;
+}
+
+/**
  * Run install-hooks.mjs in a sandbox repo so the test never touches the
  * real .git/hooks directory. We bootstrap a minimal Git repo, copy our
  * source hook into a fixture path, and override GIT_DIR so that
@@ -128,6 +164,18 @@ describe('scripts/install-hooks.mjs', () => {
     // symlink target. Removing the worktree silently disabled the hook.
     const add = spawnSync('git', ['add', '.'], { cwd: sandbox, encoding: 'utf8' });
     expect(add.status).toBe(0);
+
+    // Hermetic commit env, inline: this file is plain Node (.mjs) and
+    // cannot import the TypeScript `createScratchGitRepo` helper
+    // (packages/server/src/__tests__/utils/scratch-git.ts is the single
+    // writer of that pattern for TS-importable callers). GIT_CONFIG_GLOBAL
+    // replaces the whole global config layer for this one commit so a
+    // host with commit signing enabled (gpgsign, gpg.ssh.program) does not
+    // fail this spawn before the behavior under test is ever reached --
+    // never `git config --global` and never touching the real
+    // ~/.gitconfig.
+    const noSignConfigPath = join(sandbox, '.no-sign.gitconfig');
+    writeFileSync(noSignConfigPath, '[commit]\n\tgpgsign = false\n');
     const commit = spawnSync(
       'git',
       [
@@ -140,7 +188,15 @@ describe('scripts/install-hooks.mjs', () => {
         '-m',
         'init',
       ],
-      { cwd: sandbox, encoding: 'utf8' },
+      {
+        cwd: sandbox,
+        encoding: 'utf8',
+        env: {
+          ...sanitizeInheritedGitEnv(process.env),
+          GIT_CONFIG_GLOBAL: noSignConfigPath,
+          GIT_CONFIG_NOSYSTEM: '1',
+        },
+      },
     );
     expect(commit.status).toBe(0);
 
