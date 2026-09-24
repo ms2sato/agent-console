@@ -1,7 +1,10 @@
-import { describe, it, expect, mock, beforeEach, afterEach } from 'bun:test';
+import { describe, it, expect, mock, beforeEach, afterEach, type Mock } from 'bun:test';
 import {
   InteractiveProcessManager,
   MAX_PROCESSES_PER_SESSION,
+  type ProcessOutputCallback,
+  type ProcessExitCallback,
+  type ProcessResponseCallback,
 } from '../interactive-process-manager.js';
 import type {
   SpawnAsUserFn,
@@ -11,16 +14,16 @@ import { toSpawnAsUserResult, type FakeFileSink, type FakeSubprocess } from '../
 
 describe('InteractiveProcessManager', () => {
   let manager: InteractiveProcessManager;
-  let onOutput: ReturnType<typeof mock>;
+  let onOutput: Mock<ProcessOutputCallback>;
   let onExit: ReturnType<typeof mock>;
-  let onResponse: ReturnType<typeof mock>;
+  let onResponse: Mock<ProcessResponseCallback>;
   let mockInjectPtyMessage: ReturnType<typeof mock>;
   let mockWritePtyData: ReturnType<typeof mock>;
 
   beforeEach(() => {
-    onOutput = mock(() => {});
+    onOutput = mock<ProcessOutputCallback>(() => {});
     onExit = mock(() => {});
-    onResponse = mock(() => {});
+    onResponse = mock<ProcessResponseCallback>(() => {});
     mockInjectPtyMessage = mock(() => true);
     mockWritePtyData = mock(() => true);
     manager = new InteractiveProcessManager(
@@ -949,10 +952,7 @@ describe('InteractiveProcessManager', () => {
 
       expect(result).toBe(true);
       expect(onResponse).toHaveBeenCalledTimes(1);
-      const [respInfo, respContent] = onResponse.mock.calls[0] as [
-        { id: string; outputMode: string },
-        string,
-      ];
+      const [respInfo, respContent] = onResponse.mock.calls[0];
       expect(respInfo.id).toBe(process.id);
       expect(respInfo.outputMode).toBe('pty');
       expect(respContent).toBe('hello');
@@ -979,10 +979,7 @@ describe('InteractiveProcessManager', () => {
 
       expect(result).toBe(true);
       expect(onResponse).toHaveBeenCalledTimes(1);
-      const [respInfo, respContent] = onResponse.mock.calls[0] as [
-        { outputMode: string },
-        string,
-      ];
+      const [respInfo, respContent] = onResponse.mock.calls[0];
       expect(respInfo.outputMode).toBe('message');
       expect(respContent).toBe('hello');
     });
@@ -1175,7 +1172,7 @@ describe('InteractiveProcessManager', () => {
       expect(exitInfo.exitCode).toBe(1);
 
       // stdout output was still captured before the error exit
-      const allOutput = onOutput.mock.calls.map((c: unknown[]) => c[1]).join('');
+      const allOutput = onOutput.mock.calls.map((c) => c[1]).join('');
       expect(allOutput).toContain('hello');
     });
   });
@@ -1228,7 +1225,7 @@ describe('InteractiveProcessManager', () => {
       const orderTrackingOnOutput = mock((..._args: unknown[]) => {
         callOrder.push('onOutput');
       });
-      const orderTrackingOnExit = mock((..._args: unknown[]) => {
+      const orderTrackingOnExit = mock<ProcessExitCallback>((..._args: unknown[]) => {
         callOrder.push('onExit');
       });
       const orderManager = new InteractiveProcessManager(
@@ -1270,7 +1267,7 @@ describe('InteractiveProcessManager', () => {
       expect(outputIndex).toBeLessThan(exitIndex);
 
       // Verify the exit code
-      const [exitInfo] = orderTrackingOnExit.mock.calls[0] as [{ exitCode: number }];
+      const [exitInfo] = orderTrackingOnExit.mock.calls[0];
       expect(exitInfo.exitCode).toBe(1);
 
       orderManager.disposeAll();
@@ -1292,7 +1289,7 @@ describe('InteractiveProcessManager', () => {
       await new Promise((resolve) => setTimeout(resolve, InteractiveProcessManager.DEBOUNCE_OUTPUT_MS + 500));
 
       // All 10 lines should be present in the combined output
-      const allOutput = onOutput.mock.calls.map((c: unknown[]) => c[1]).join('');
+      const allOutput = onOutput.mock.calls.map((c) => c[1]).join('');
       for (let i = 1; i <= 10; i++) {
         expect(allOutput).toContain(`rapid-line-${i}`);
       }
@@ -1357,7 +1354,7 @@ describe('InteractiveProcessManager', () => {
       expect(mockWritePtyData).toHaveBeenCalledWith('session-1', 'worker-1', 'test-input');
 
       // The three console.log outputs should be combined into a single onOutput call
-      const allOutput = onOutput.mock.calls.map((c: unknown[]) => c[1]).join('');
+      const allOutput = onOutput.mock.calls.map((c) => c[1]).join('');
       expect(allOutput).toContain('received: test-input');
       expect(allOutput).toContain('processing...');
       expect(allOutput).toContain('done!');
@@ -1379,7 +1376,7 @@ describe('InteractiveProcessManager', () => {
       await new Promise((resolve) => setTimeout(resolve, InteractiveProcessManager.DEBOUNCE_OUTPUT_MS + 1000));
 
       // All 100 lines should be present
-      const allOutput = onOutput.mock.calls.map((c: unknown[]) => c[1]).join('');
+      const allOutput = onOutput.mock.calls.map((c) => c[1]).join('');
       expect(allOutput).toContain('bulk-1');
       expect(allOutput).toContain('bulk-50');
       expect(allOutput).toContain('bulk-100');

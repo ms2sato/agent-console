@@ -3,6 +3,7 @@ import type { Hono } from 'hono';
 import type { AppBindings } from '../../app-context.js';
 import type { MessageTemplate } from '@agent-console/shared';
 import { setupTestEnvironment, cleanupTestEnvironment, createTestApp } from '../../__tests__/test-utils.js';
+import type { MessageTemplateRepository } from '../../repositories/message-template-repository.js';
 
 // ---------------------------------------------------------------------------
 // Mock repository
@@ -11,7 +12,7 @@ import { setupTestEnvironment, cleanupTestEnvironment, createTestApp } from '../
 const messageTemplateRepository = {
   findAll: mock(() => Promise.resolve([] as MessageTemplate[])),
   findById: mock(() => Promise.resolve(null as MessageTemplate | null)),
-  create: mock(() => Promise.resolve({} as MessageTemplate)),
+  create: mock<MessageTemplateRepository['create']>(async () => ({}) as MessageTemplate),
   update: mock(() => Promise.resolve(null as MessageTemplate | null)),
   delete: mock(() => Promise.resolve(false)),
   reorder: mock(() => Promise.resolve()),
@@ -121,7 +122,7 @@ describe('Message Templates API', () => {
         body: JSON.stringify({ title: 'New', content: 'Content' }),
       });
 
-      const createCall = messageTemplateRepository.create.mock.calls[0] as unknown[];
+      const createCall = messageTemplateRepository.create.mock.calls[0];
       // Fourth argument is sortOrder
       expect(createCall[3]).toBe(6);
     });
