@@ -140,8 +140,14 @@ export async function ensureMemoryDir(
  * `computeQuickCwdSlug(realpath(session.locationPath))`; repository
  * (worktree) sessions key on (definition, repository) alone.
  *
- * `realpath` failures (test fixtures using nonexistent paths) fall back to
- * `path.resolve` so this stays usable outside a real filesystem.
+ * `realpath` failures fall back to `path.resolve` so this stays usable
+ * outside a real filesystem, on two triggers: a nonexistent path (test
+ * fixtures) and EACCES when the server process cannot traverse the path (a
+ * quick session's directory under the multi-user `0700`-home default is
+ * unreadable by the server process, even though the path exists and the
+ * session works). Consequence: the memory directory key is then the path as
+ * given, so a symlink alias of a quick session's directory resolves to a
+ * separate memory directory than its target would.
  */
 export async function resolveMemoryDirPath(params: {
   session: Pick<InternalSession, 'type' | 'locationPath'>;

@@ -40,12 +40,16 @@ export type McpPermissionScope =
  * of its `locationPath` -- the same realpath/path.resolve fallback shape as
  * `resolveMemoryDirPath` in `lib/memory-dir.ts` (test fixtures using
  * nonexistent paths fall back to `path.resolve` so this stays usable
- * outside a real filesystem). In practice the fallback can only split a
- * directory into two keys if the path is absent at one decision and present
- * at another -- creation validates it, activation needs it as a cwd anyway
- * -- so it only actually fires for fixture paths or a directory deleted
- * between creation and activation, and a row keyed by a deleted path's
- * resolved value is inert.
+ * outside a real filesystem). The fallback fires on three triggers: a
+ * nonexistent path (test fixtures), a directory deleted between creation
+ * and activation, and EACCES when the server process cannot traverse the
+ * path (the multi-user `0700`-home case -- a quick session's directory
+ * under that default is unreadable by the server process, so `realpath`
+ * fails there even though the path exists and the session works).
+ * Consequence: the key is then the path as given; a symlink alias of a
+ * quick session's directory becomes a separate key. Decision, activation,
+ * and the discovered-event rebuild agree because all three resolve here, in
+ * the server process.
  *
  * The parameter type is a union of minimal `Pick`s (not
  * `Pick<InternalSession, ...>`) because `repositoryId` is not a member of

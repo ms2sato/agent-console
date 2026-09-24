@@ -1237,6 +1237,15 @@ async function main(expectNoPermission: boolean): Promise<void> {
     // ===================================================================
     // CONTROL (arm4-b): a THIRD quick session whose locationPath is a
     // SYMLINK to Dir A -- inherits A's allow decision via realpath-keying.
+    //
+    // SINGLE-USER ONLY. This control's premise is that `realpath` succeeds
+    // for both the symlink and its target, so `resolveMcpPermissionScope`
+    // resolves them to the same key. Under multi-user with a `0700`-mode
+    // quick-session home (`docs/multi-user-setup-guide.md`'s supported
+    // default), the server process cannot traverse the directory, `realpath`
+    // fails EACCES, and `resolveMcpPermissionScope` falls back to keying by
+    // the literal `locationPath` -- which differs between the symlink and
+    // its target. This control would then read `pending`, not `allowed`.
     // ===================================================================
     console.log('\n==> negative control (arm4-b): quick session C, symlink to Dir A -- inherits the allow via realpath');
     await activate('arm4-b quick-C', quickSessionCId, quickWorkerCId);
