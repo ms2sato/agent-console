@@ -22,11 +22,21 @@
 import { vol, fs } from 'memfs';
 import { mock } from 'bun:test';
 
-// Register mocks once at module load time
-mock.module('fs', () => fs);
-mock.module('node:fs', () => fs);
-mock.module('fs/promises', () => fs.promises);
-mock.module('node:fs/promises', () => fs.promises);
+// Register mocks once at module load time.
+//
+// Each factory returns the namespace object AND a `default` property
+// carrying the same object. memfs's `fs` / `fs.promises` have no `default`
+// export of their own, but a dependency deep in a route module's import
+// graph (`open` -> `is-wsl` / `is-docker` / `is-inside-container`) does
+// `import fs from 'node:fs'`, an ESM default import. Once this mock is
+// installed, evaluating that dependency for the first time throws
+// `SyntaxError: Missing 'default' export in module 'node:fs'` unless the
+// mocked module shape carries a `default`. Do not simplify this back to
+// `() => fs` -- that reintroduces the missing-default shape.
+mock.module('fs', () => ({ ...fs, default: fs }));
+mock.module('node:fs', () => ({ ...fs, default: fs }));
+mock.module('fs/promises', () => ({ ...fs.promises, default: fs.promises }));
+mock.module('node:fs/promises', () => ({ ...fs.promises, default: fs.promises }));
 
 /**
  * Sets up memfs with the given file structure.
