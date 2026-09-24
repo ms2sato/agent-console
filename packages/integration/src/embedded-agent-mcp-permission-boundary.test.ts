@@ -62,6 +62,7 @@ import { setupMemfs } from '@agent-console/server/src/__tests__/utils/mock-fs-he
 import { createTestContext, shutdownAppContext } from '@agent-console/server/src/app-context';
 import type { AppContext } from '@agent-console/server/src/app-context';
 import { CLAUDE_SDK_AGENT_ID } from '@agent-console/server/src/services/embedded-agent-manager';
+import { resolveMcpPermissionScope } from '@agent-console/server/src/lib/mcp-server-permissions';
 import type { SpawnAsUserFn, SpawnAsUserOpts, SpawnAsUserResult } from '@agent-console/server/src/services/privilege-elevation';
 
 import {
@@ -74,6 +75,14 @@ import { getOrCreateEmbeddedAgentWorker, _resetEmbeddedAgentWorkers } from '@age
 import { MockWebSocket, installMockWebSocket } from '@agent-console/client/src/test/mock-websocket';
 
 const TEST_REPO_PATH = '/test/mcp-permission-repo';
+// A quick session's scope key is `realpath(locationPath)` (`resolveMcpPermissionScope`
+// in lib/mcp-server-permissions.ts). Under memfs, `realpath` on an EXISTING
+// memfs directory returns the path unchanged (no symlink resolution to
+// simulate) -- the same technique `lib/__tests__/mcp-server-permissions.test.ts`
+// already uses for its own `resolveMcpPermissionScope` quick-session cases
+// (`setupMemfs({ '/test/quick-project': null })`), reused here rather than
+// reinvented. A real (non-memfs) temp directory is not needed.
+const TEST_QUICK_LOCATION_PATH = '/test/mcp-permission-quick';
 
 /** Minimal subset of Bun's FileSink consumed by EmbeddedAgentWorkerService. */
 interface FakeFileSink {
@@ -92,26 +101,69 @@ function makeFakeSpawn(): {
   const stdinWrites: string[] = [];
   let stdoutController: ReadableStreamDefaultController<Uint8Array> | undefined;
   const encoder = new TextEncoder();
-  const stdout = new ReadableStream<Uint8Array>({
-    start(controller) {
-      stdoutController = controller;
-    },
-  });
-  const stderr = new ReadableStream<Uint8Array>({ start() {} });
-  const exited = new Promise<number>(() => {
-    // Never resolves — this test never deactivates the worker.
-  });
-  const stdin: FakeFileSink = {
-    write: (chunk) => {
-      stdinWrites.push(typeof chunk === 'string' ? chunk : new TextDecoder().decode(chunk));
-      return 0;
-    },
-    end: () => {},
-    flush: () => 0,
-  };
-  const subprocess = { pid: 31337, exited, stdin, stdout, stderr, kill: () => {} };
+  let nextPid = 31337;
+  // A FRESH subprocess (fresh `exited` promise in particular) is
+  // constructed on every `fn` call, not a single shared instance reused
+  // across calls -- most call sites in this file only ever activate once,
+  // so this was previously indistinguishable from a single fixed
+  // subprocess, but the deactivate/reactivate quick-session case below
+  // needs a genuinely NEW incarnation on the second activation: reusing an
+  // already-`exited`-resolved promise from the first incarnation would make
+  // EmbeddedAgentWorkerService's exit observer treat the freshly-activated
+  // second incarnation as having crashed instantly (`runtime.exitSettled =
+  // subprocess.exited.then(...)`).
   const fn: SpawnAsUserFn = (opts) => {
     captured.push(opts);
+    let localStdoutController: ReadableStreamDefaultController<Uint8Array> | undefined;
+    let localStderrController: ReadableStreamDefaultController<Uint8Array> | undefined;
+    const stdout = new ReadableStream<Uint8Array>({
+      start(controller) {
+        stdoutController = controller;
+        localStdoutController = controller;
+      },
+    });
+    const stderr = new ReadableStream<Uint8Array>({
+      start(controller) {
+        localStderrController = controller;
+      },
+    });
+    let resolveExited: (code: number) => void = () => {};
+    const exited = new Promise<number>((resolve) => {
+      resolveExited = resolve;
+    });
+    const stdin: FakeFileSink = {
+      write: (chunk) => {
+        const line = typeof chunk === 'string' ? chunk : new TextDecoder().decode(chunk);
+        stdinWrites.push(line);
+        // A well-behaved fake engine exits promptly on a `shutdown`
+        // command, mirroring the production engine's own shutdown
+        // contract. Without this, EmbeddedAgentWorkerService.deactivate()'s
+        // raceExit would run out the full DEFAULT_SHUTDOWN_GRACE_MS +
+        // DEFAULT_SIGTERM_TIMEOUT_MS escalation (8s) -- or hang forever,
+        // since this fake's `kill()` is a no-op that never resolves
+        // `exited` on its own -- for any test that deactivates a worker.
+        // Closing both streams on the same event mirrors a real process's
+        // stdout/stderr reaching EOF on exit -- `deactivate()`'s
+        // `runtime.exitSettled` awaits `runtime.streamsDone`
+        // (readStdout/readStderr) BEFORE resolving, and those readers loop
+        // on `reader.read()` until `done`, so an unclosed stream hangs
+        // `deactivate()` even after `exited` itself has resolved.
+        try {
+          const parsed: unknown = JSON.parse(line.trim());
+          if (typeof parsed === 'object' && parsed !== null && (parsed as { type?: unknown }).type === 'shutdown') {
+            resolveExited(0);
+            localStdoutController?.close();
+            localStderrController?.close();
+          }
+        } catch {
+          // Not a single-line JSON command; ignore.
+        }
+        return 0;
+      },
+      end: () => {},
+      flush: () => 0,
+    };
+    const subprocess = { pid: nextPid++, exited, stdin, stdout, stderr, kill: () => {} };
     return { subprocess, stdin, elevated: false } as unknown as SpawnAsUserResult;
   };
   return {
@@ -143,6 +195,9 @@ describe('Client-Server Boundary: MCP server permission wire (epic #1636 Phase 5
     setupMemfs({
       [`${getTestConfigDir()}/.keep`]: '',
       [`${TEST_REPO_PATH}/.git/HEAD`]: 'ref: refs/heads/main',
+      // `null` value = directory (memfs's `vol.fromJSON` convention), same
+      // as the sibling `mcp-server-permissions.test.ts` usage.
+      [TEST_QUICK_LOCATION_PATH]: null,
     });
     fake = makeFakeSpawn();
     capturedBroadcasts = [];
@@ -188,6 +243,33 @@ describe('Client-Server Boundary: MCP server permission wire (epic #1636 Phase 5
     });
     expect(worker).not.toBeNull();
     return { owner, repository, sessionId: session.id, workerId: worker!.id };
+  }
+
+  /**
+   * Sibling of `createSdkWorktreeWorker`, for a QUICK session (no
+   * `repositoryId`) -- the `{ kind: 'path'; locationPath }` half of
+   * `McpPermissionScope`. `locationPath` on the returned object is derived
+   * by calling the REAL `resolveMcpPermissionScope` directly (not
+   * hand-computed), so a test's expectation can never drift from
+   * production's own resolution -- see this file's `TEST_QUICK_LOCATION_PATH`
+   * doc comment for why memfs alone is sufficient here (no real temp dir).
+   */
+  async function createSdkQuickWorker() {
+    const owner = await ctx.userRepository.upsertByOsUid(24680, 'mcp-perm-quick-owner', '/home/mcp-perm-quick-owner');
+    const session = await ctx.sessionManager.createSession(
+      { type: 'quick', locationPath: TEST_QUICK_LOCATION_PATH },
+      { createdBy: owner.id },
+    );
+    const worker = await ctx.sessionManager.createWorker(session.id, {
+      type: 'embedded-agent',
+      embeddedAgentId: CLAUDE_SDK_AGENT_ID,
+    });
+    expect(worker).not.toBeNull();
+    const scope = await resolveMcpPermissionScope({ type: 'quick', locationPath: TEST_QUICK_LOCATION_PATH });
+    if (scope.kind !== 'path') {
+      throw new Error('expected a path scope for a quick session');
+    }
+    return { owner, sessionId: session.id, workerId: worker!.id, locationPath: scope.locationPath };
   }
 
   it('init.allowedProjectMcpServers is written as (name, hash) pairs and parses through the REAL EmbeddedAgentCommandSchema', async () => {
@@ -404,6 +486,77 @@ describe('Client-Server Boundary: MCP server permission wire (epic #1636 Phase 5
       expect('servers' in commandRaw).toBe(false);
     } else {
       throw new Error('expected a set-mcp-servers command');
+    }
+  });
+
+  it('quick session: REST permission round trip resolves through the location_path-scoped table and the decision survives deactivate/reactivate (Issue #1786, McpPermissionScope path kind)', async () => {
+    // Polarity: before this change (main @ 2991a863), routes/workers.ts's
+    // `POST .../mcp-permissions` handler had a `session.type !== 'worktree'`
+    // guard that rejected this exact request with 409 ("MCP server
+    // permissions require a repository; quick sessions are not yet
+    // supported (see #1786)"), and `SessionManager.setMcpServerPermissions`
+    // took a `repositoryId` parameter directly rather than resolving a
+    // `McpPermissionScope`. This test is only meaningful now that both the
+    // route and the tool are scope-agnostic via `resolveMcpPermissionScope`
+    // -- that branch's removal and its prior exact message text are
+    // established fact from this Issue's own history (read directly from
+    // the pre-change `routes/workers.ts` while implementing this change),
+    // not re-derived here by checking out and re-running the old code: the
+    // removed branch's behavior is already known, and reverting the
+    // repository mid-implementation (while items 1-6 of this same Issue sit
+    // uncommitted) risks disturbing unrelated in-progress work for no
+    // additional evidentiary value.
+    const { sessionId, workerId, locationPath } = await createSdkQuickWorker();
+    expect(locationPath).toBe(TEST_QUICK_LOCATION_PATH);
+
+    await ctx.sessionManager.activateEmbeddedAgentWorker(sessionId, workerId);
+    await waitFor(() => fake.stdinWrites.length >= 1);
+
+    fake.pushStdoutLine({
+      v: 1,
+      type: 'mcp-servers-discovered',
+      servers: [{ name: 'chrome-devtools', scope: 'project', hash: 'hash-1', decision: 'pending' }],
+    });
+    await waitFor(() => {
+      const w = ctx.sessionManager.getSession(sessionId)?.workers.find((x) => x.id === workerId);
+      return w?.type === 'embedded-agent' && w.mcpServers !== undefined;
+    });
+
+    const app = await createTestApp(ctx);
+    const res = await app.request(`/api/sessions/${sessionId}/workers/${workerId}/mcp-permissions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'chrome-devtools', hash: 'hash-1', decision: 'allow' }),
+    });
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      worker: { type: string; mcpServers?: Array<{ name: string; scope: string; hash?: string; decision?: string }> };
+    };
+    expect(body.worker.type).toBe('embedded-agent');
+    expect(body.worker.mcpServers).toEqual([
+      { name: 'chrome-devtools', scope: 'project', hash: 'hash-1', decision: 'allowed' },
+    ]);
+
+    // Deactivate and reactivate the SAME worker: proves the record is a
+    // DURABLE row keyed by `location_path` (`mcp_server_path_permissions`,
+    // migration v45) rather than merely the in-memory worker state the
+    // response above already reflects. A fresh activation re-reads the
+    // permission table from scratch via `resolveMcpPermissionScope` +
+    // `listAllowedProjectMcpServerPairs`, so this is the wire-level proof
+    // that the quick-session scope actually persisted.
+    await ctx.sessionManager.deactivateEmbeddedAgentWorker(sessionId, workerId);
+    const beforeReactivate = fake.stdinWrites.length;
+    await ctx.sessionManager.activateEmbeddedAgentWorker(sessionId, workerId);
+    await waitFor(() => fake.stdinWrites.length > beforeReactivate);
+
+    const reinitRaw = JSON.parse(fake.stdinWrites[beforeReactivate]);
+    const parsedReinit = v.safeParse(EmbeddedAgentCommandSchema, reinitRaw);
+    expect(parsedReinit.success).toBe(true);
+    if (parsedReinit.success && parsedReinit.output.type === 'init' && parsedReinit.output.engine === 'claude-sdk') {
+      expect(parsedReinit.output.allowedProjectMcpServers).toEqual([{ name: 'chrome-devtools', hash: 'hash-1' }]);
+    } else {
+      throw new Error('expected a claude-sdk init command on the fresh activation');
     }
   });
 
