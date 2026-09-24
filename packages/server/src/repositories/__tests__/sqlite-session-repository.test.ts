@@ -6,6 +6,7 @@ import { SqliteSessionRepository } from '../sqlite-session-repository.js';
 import { createDatabaseForTest } from '../../database/connection.js';
 import type { Database } from '../../database/schema.js';
 import type { SessionUpdateFields } from '../session-repository.js';
+import type { PersistedWorktreeSession } from '../../services/persistence-service.js';
 import {
   buildPersistedQuickSession,
   buildPersistedWorktreeSession,
@@ -1665,8 +1666,12 @@ describe('SqliteSessionRepository', () => {
 
       const reloaded = await repository.findById('full-coverage-session');
       expect(reloaded).not.toBeNull();
-      for (const [key, value] of Object.entries(FULL_UPDATE)) {
-        expect((reloaded as unknown as Record<string, unknown>)[key]).toBe(value);
+      // The fixture is always built via `buildPersistedWorktreeSession`, so
+      // narrowing to that one concrete union member is a legitimate
+      // single-step assertion (no `unknown` bridge needed).
+      const reloadedWorktreeSession = reloaded as PersistedWorktreeSession;
+      for (const key of Object.keys(FULL_UPDATE) as Array<keyof typeof FULL_UPDATE>) {
+        expect(reloadedWorktreeSession[key]).toBe(FULL_UPDATE[key]);
       }
     });
   });

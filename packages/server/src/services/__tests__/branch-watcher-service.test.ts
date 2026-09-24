@@ -114,10 +114,12 @@ describe('BranchWatcherService', () => {
       mockWatchCallbacks.set(key, callback);
       const closeFn = mock(() => { mockWatchCallbacks.delete(key); });
       mockWatchCloseFns.set(key, closeFn);
-      const emitter = new EventEmitter() as EventEmitter & { close: typeof closeFn };
+      const emitter = new EventEmitter() as EventEmitter & Pick<FSWatcher, 'close' | 'ref' | 'unref'>;
       emitter.close = closeFn;
-      return emitter as unknown as FSWatcher;
-    }) as unknown as typeof import('node:fs').watch;
+      emitter.ref = () => emitter;
+      emitter.unref = () => emitter;
+      return emitter;
+    }) as typeof import('node:fs').watch;
   }
 
   it('should start and stop watching', async () => {

@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import * as fs from 'fs';
 import * as path from 'path';
-import type { PersistedSession } from '../../services/persistence-service.js';
+import type { PersistedSession, PersistedWorktreeSession } from '../../services/persistence-service.js';
 import type { SessionUpdateFields } from '../session-repository.js';
 import { JsonSessionRepository } from '../json-session-repository.js';
 import {
@@ -408,8 +408,12 @@ describe('JsonSessionRepository', () => {
 
       const reloaded = await repository.findById('full-coverage-session');
       expect(reloaded).not.toBeNull();
-      for (const [key, value] of Object.entries(FULL_UPDATE)) {
-        expect((reloaded as unknown as Record<string, unknown>)[key]).toBe(value);
+      // The fixture is always built via `buildPersistedWorktreeSession`, so
+      // narrowing to that one concrete union member is a legitimate
+      // single-step assertion (no `unknown` bridge needed).
+      const reloadedWorktreeSession = reloaded as PersistedWorktreeSession;
+      for (const key of Object.keys(FULL_UPDATE) as Array<keyof typeof FULL_UPDATE>) {
+        expect(reloadedWorktreeSession[key]).toBe(FULL_UPDATE[key]);
       }
     });
   });

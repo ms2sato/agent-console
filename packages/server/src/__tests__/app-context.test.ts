@@ -6,7 +6,7 @@ import {
   shutdownAppContext,
   type AppContext,
 } from '../app-context.js';
-import type { PtyNotificationParams } from '../lib/pty-notification.js';
+import type { InternalProcessPtyNotification, PtyNotificationParams } from '../lib/pty-notification.js';
 import { rootLogger } from '../lib/logger.js';
 import { InterSessionMessageService } from '../services/inter-session-message-service.js';
 import type { EnsureMemoryDirFn } from '../lib/memory-dir.js';
@@ -352,14 +352,17 @@ describe('AppContext', () => {
       expect(info?.status).toBe('exited');
 
       expect(deliverSpy).toHaveBeenCalledTimes(1);
-      const [calledSessionId, calledWorkerId, params] = deliverSpy.mock.calls[0] as [
-        string,
-        string,
-        { kind: string; tag: string; fields: { processId: string; command: string; message: string }; intent: string },
-      ];
+      const [calledSessionId, calledWorkerId, rawParams] = deliverSpy.mock.calls[0];
       expect(calledSessionId).toBe(sessionId);
       expect(calledWorkerId).toBe(workerId);
-      expect(params.kind).toBe('internal-process');
+      expect(rawParams.kind).toBe('internal-process');
+      // `PtyNotificationParams` is `Omit<WritePtyNotificationParams, 'writeInput'>`, and
+      // TS's built-in `Omit` does not distribute over the union -- `fields` collapses into
+      // one non-discriminated union the `expect` above cannot narrow at the type level. The
+      // wide collapsed type is still comparable to this specific member's own
+      // (writeInput-omitted) shape, so this is a legitimate single-step narrowing cast --
+      // backed by the runtime assertion just above, not merely asserted blind.
+      const params = rawParams as Omit<InternalProcessPtyNotification, 'writeInput'>;
       expect(params.tag).toBe('internal:process');
       expect(params.fields.processId).toBe(process.id);
       expect(params.fields.command).toBe('true');
@@ -559,6 +562,35 @@ describe('AppContext', () => {
       flush: () => number;
     }
 
+    interface FakeSubprocess {
+      pid: number;
+      exited: Promise<number>;
+      stdin: FakeFileSink;
+      stdout: ReadableStream<Uint8Array>;
+      stderr: ReadableStream<Uint8Array>;
+      kill: (signal?: number) => void;
+    }
+
+    /**
+     * Typed fixture builder for a fake `spawnAsUserFn` result. `SpawnAsUserResult.subprocess`
+     * is Bun's real `Subprocess<'pipe','pipe','pipe'>` and `.stdin` its real
+     * `FileSink` -- far larger types than the `FakeSubprocess`/`FakeFileSink`
+     * doubles above actually implement. Mirrors the same-named helper in
+     * `services/__tests__/embedded-agent-worker-service.test.ts`.
+     */
+    function toSpawnAsUserResult(fields: {
+      subprocess: FakeSubprocess;
+      stdin: FakeFileSink;
+      elevated?: boolean;
+    }): SpawnAsUserResult {
+      const result: Pick<SpawnAsUserResult, 'elevated'> & { subprocess: FakeSubprocess; stdin: FakeFileSink } = {
+        subprocess: fields.subprocess,
+        stdin: fields.stdin,
+        elevated: fields.elevated ?? false,
+      };
+      return result as SpawnAsUserResult;
+    }
+
     /**
      * Exitable fake streams/exited-promise (mirrors `makeFakeSpawn` in
      * `session-manager.test.ts`'s "threads the spawnAsUserFn option through"
@@ -597,9 +629,8 @@ describe('AppContext', () => {
         end: () => {},
         flush: () => 0,
       };
-      const subprocess = { pid: 9997, exited, stdin, stdout, stderr, kill: () => {} };
-      const fn: SpawnAsUserFn = (_opts: SpawnAsUserOpts) =>
-        ({ subprocess, stdin, elevated: false }) as unknown as SpawnAsUserResult;
+      const subprocess: FakeSubprocess = { pid: 9997, exited, stdin, stdout, stderr, kill: () => {} };
+      const fn: SpawnAsUserFn = (_opts: SpawnAsUserOpts) => toSpawnAsUserResult({ subprocess, stdin, elevated: false });
       return { fn, stdinWrites, simulateExit };
     }
 
