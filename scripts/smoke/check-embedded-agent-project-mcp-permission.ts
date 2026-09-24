@@ -51,6 +51,19 @@
  *        event ever reports a `user`/`local`-scope row and
  *        `userLocalNamesUnavailable` is never set (the operator's own
  *        `~/.claude.json` is never read).
+ *     5. Arm 4 (Issue #1786): a QUICK session's `srv-quick` is allowed,
+ *        live-added, and its allow SURVIVES a restart -- the same
+ *        allow/live-add/restart-persistence shape as arms 1/2, but against
+ *        `mcp_server_path_permissions` (keyed by realpath'd
+ *        `location_path`) instead of the repository-keyed table. Two
+ *        controls in the same run: (arm4-a) a second quick session at a
+ *        DIFFERENT path, with a byte-identical `.mcp.json` declaration
+ *        (same discovered hash as the first), stays `pending` -- proves the
+ *        permission key includes `location_path`, not just
+ *        `(serverName, hash)`; (arm4-b) a third quick session whose
+ *        `locationPath` is a SYMLINK to the first inherits its allow
+ *        decision -- proves the key is realpath'd, not the literal
+ *        `locationPath` string.
  *
  * ============================================================================
  * ORDERING NOTE -- history: why this script used to read discovered pairs
@@ -142,9 +155,13 @@
  * already uses). `AUTH_MODE` itself stays unset (single-user), so the
  * `2775`/service-group multi-user data-root contract is not exercised here.
  *
- * COST: about 5-6 real Claude turns per full run (1 polarity + 1 probe_echo
- * call + 3 restart-triggering turns + a spare). Small, but real Claude usage
- * -- a manual tool, never a CI gate.
+ * COST: about 10-11 real Claude turns per full run: 5-6 for arms 1-3 +
+ * negative control (a) (1 polarity + 1 probe_echo call + 3
+ * restart/baseline-triggering turns + a spare), plus 5 for arm 4 (Issue
+ * #1786) + its two controls (1 baseline turn to pass `system:init` before
+ * the live add + 1 probe_echo call + 1 restart-persistence turn + 1 plain
+ * confirmation turn each for controls (arm4-a)/(arm4-b)). Small, but real
+ * Claude usage -- a manual tool, never a CI gate.
  *
  * REQUIREMENTS
  *   - A real, authenticated `claude` CLI for the invoking OS user (the
@@ -174,7 +191,7 @@
 // account).
 
 import { Glob } from 'bun';
-import { cpSync, existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, readFileSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import type { AppContext } from '../../packages/server/src/app-context.js';
@@ -695,14 +712,24 @@ async function main(expectNoPermission: boolean): Promise<void> {
      * event for the CURRENT incarnation has been processed" -- never
      * satisfied by the previous incarnation's leftover value, regardless of
      * whether its CONTENT happens to be identical.
+     *
+     * `sessionId`/`workerId` are trailing-optional, defaulting to the
+     * target worktree session/worker (arms 1-3 and negative controls
+     * (a)-(c) all rely on that default and pass only `label`). Arm 4 (the
+     * quick-session, path-keyed permission arm) passes them explicitly to
+     * reuse this same activation-wait logic for its three quick sessions.
      */
-    const activate = async (label: string): Promise<void> => {
-      const baselineWorker = ctx!.sessionManager.getWorker(targetSessionId, targetWorkerId);
+    const activate = async (
+      label: string,
+      sessionId: string = targetSessionId,
+      workerId: string = targetWorkerId,
+    ): Promise<void> => {
+      const baselineWorker = ctx!.sessionManager.getWorker(sessionId, workerId);
       const baselineMcpServers = baselineWorker?.type === 'embedded-agent' ? baselineWorker.mcpServers : undefined;
-      await ctx!.sessionManager.activateEmbeddedAgentWorker(targetSessionId, targetWorkerId);
+      await ctx!.sessionManager.activateEmbeddedAgentWorker(sessionId, workerId);
       await waitUntil(
         () => {
-          const w = ctx!.sessionManager.getWorker(targetSessionId, targetWorkerId);
+          const w = ctx!.sessionManager.getWorker(sessionId, workerId);
           return !!w && w.type === 'embedded-agent' && w.mcpServers !== undefined && w.mcpServers !== baselineMcpServers;
         },
         30_000,
@@ -716,9 +743,16 @@ async function main(expectNoPermission: boolean): Promise<void> {
      * bearer token -- exercising the wire read-side this PR adds. Called
      * immediately after activation/restart, BEFORE any turn -- see this
      * file's header "ORDERING NOTE".
+     *
+     * `sessionId`/`workerId` are trailing-optional, same default/override
+     * shape as `activate` above and for the same reason (arm 4 reuse).
      */
-    const readDiscoveredViaWire = async (label: string): Promise<DiscoveredServerLite[]> => {
-      const res = await callMcpTool('get_session_status', { sessionId: targetSessionId }, `Bearer ${tuiToken}`);
+    const readDiscoveredViaWire = async (
+      label: string,
+      sessionId: string = targetSessionId,
+      workerId: string = targetWorkerId,
+    ): Promise<DiscoveredServerLite[]> => {
+      const res = await callMcpTool('get_session_status', { sessionId }, `Bearer ${tuiToken}`);
       expect(!res.isError, `${label}: get_session_status succeeded`, res.text.slice(0, 300));
       // Malformed/absent payload (no content block, or JSON.parse failure --
       // see `isSessionStatusPayload`'s own doc comment) is NOT thrown here:
@@ -726,7 +760,7 @@ async function main(expectNoPermission: boolean): Promise<void> {
       // just stays undefined so the assertion below reports it too, instead
       // of a `TypeError` masking whatever `get_session_status` actually said.
       const workerRow = isSessionStatusPayload(res.data)
-        ? res.data.workers.find((w) => w.id === targetWorkerId)
+        ? res.data.workers.find((w) => w.id === workerId)
         : undefined;
       expect(workerRow !== undefined, `${label}: get_session_status reports the target worker`, res.text.slice(0, 300));
       return workerRow?.mcpServers ?? [];
@@ -741,22 +775,29 @@ async function main(expectNoPermission: boolean): Promise<void> {
      * otherwise register one pass per poll iteration, inflating the run's
      * pass count for what is really one check); the caller asserts once on
      * the returned value.
+     *
+     * `sessionId`/`workerId` are trailing-optional, same default/override
+     * shape as `activate`/`readDiscoveredViaWire` above (arm 1/3's 3-arg
+     * call sites keep polling the target worker unchanged; arm 4 passes
+     * both explicitly).
      */
     const pollDiscoveredServer = async (
       serverName: string,
       predicate: (server: DiscoveredServerLite | undefined) => boolean,
       timeoutMs: number,
+      sessionId: string = targetSessionId,
+      workerId: string = targetWorkerId,
     ): Promise<DiscoveredServerLite | undefined> => {
       const deadline = Date.now() + timeoutMs;
       let last: DiscoveredServerLite | undefined;
       do {
-        const res = await callMcpTool('get_session_status', { sessionId: targetSessionId }, `Bearer ${tuiToken}`);
+        const res = await callMcpTool('get_session_status', { sessionId }, `Bearer ${tuiToken}`);
         // A malformed/absent payload on ANY single poll is not fatal --
         // treat it as "no reading yet" and keep polling (the same
         // fail-closed-but-keep-trying shape `readDiscoveredViaWire` uses at
         // its single call site, applied across a loop here instead).
         const workerRow = isSessionStatusPayload(res.data)
-          ? res.data.workers.find((w) => w.id === targetWorkerId)
+          ? res.data.workers.find((w) => w.id === workerId)
           : undefined;
         last = findDiscoveredServer(workerRow?.mcpServers, serverName);
         if (predicate(last)) return last;
@@ -987,7 +1028,10 @@ async function main(expectNoPermission: boolean): Promise<void> {
       `Bearer ${embeddedCallerToken}`,
     );
     expect(embeddedAttempt.isError === true, '(b): an embedded caller is refused', embeddedAttempt.text.slice(0, 300));
-    const rowsAfterEmbeddedAttempt = await ctx.mcpServerPermissionRepository.listByRepository(repo.id);
+    const rowsAfterEmbeddedAttempt = await ctx.mcpServerPermissionRepository.listByScope({
+      kind: 'repository',
+      repositoryId: repo.id,
+    });
     const pendingRowAfter = rowsAfterEmbeddedAttempt.find((r) => r.serverName === 'srv-pending');
     expect(
       pendingRowAfter?.decision === 'allow',
@@ -1009,6 +1053,204 @@ async function main(expectNoPermission: boolean): Promise<void> {
     expect(
       !anyUserLocalNamesUnavailable(allDiscoveredEvents),
       '(c): userLocalNamesUnavailable was never set (the isolated config was readable)',
+    );
+
+    // ===================================================================
+    // POSITIVE ARM 4 (Issue #1786): quick session, path-keyed permission.
+    //
+    // `mcp_server_path_permissions` (migration v45) is the quick-session
+    // counterpart to the repository-keyed table arms 1-3 exercise, keyed
+    // by `location_path` (realpath'd -- see
+    // `resolveMcpPermissionScope` in `packages/server/src/lib/
+    // mcp-server-permissions.ts`) rather than `repositoryId`. This arm
+    // drives the identical allow/live-add/restart-persistence shape as
+    // arms 1/2 against a QUICK session instead of a worktree session, then
+    // two controls: (a) a second quick session at a DIFFERENT path, with a
+    // byte-identical `.mcp.json` declaration for `srv-quick` -- same
+    // command, same args, including the SAME `--canary` path, so its
+    // discovered `hash` is genuinely identical to Dir A's, not merely
+    // similar -- stays `pending` (proves the permission key includes
+    // `location_path`, not just `(serverName, hash)`; a hash-only key
+    // would make this control pass vacuously even if path-scoping were
+    // broken, which is why the hash equality is asserted explicitly rather
+    // than assumed); (b) a THIRD quick session whose `locationPath` is a
+    // SYMLINK to Dir A inherits Dir A's allow decision (proves the scope
+    // key is realpath'd, not the literal `locationPath` string).
+    // ===================================================================
+    console.log('\n==> positive arm 4: quick session, path-keyed permission');
+
+    const quickCanaryTouched = canaryPath('srv-quick');
+    function writeQuickMcpJson(dir: string): void {
+      writeFileSync(
+        path.join(dir, '.mcp.json'),
+        JSON.stringify(
+          {
+            mcpServers: {
+              'srv-quick': {
+                command: process.execPath,
+                args: [FIXTURE_PATH, '--canary', quickCanaryTouched, '--ledger', ledgerPath!],
+              },
+            },
+          },
+          null,
+          2,
+        ),
+      );
+    }
+
+    // --- Dir A: the arm's primary quick session. ---
+    const dirA = path.join(home, 'quick-a');
+    Bun.spawnSync(['mkdir', '-p', dirA]);
+    writeQuickMcpJson(dirA);
+    const quickSessionA = await ctx.sessionManager.createSession(
+      { type: 'quick', locationPath: dirA, embeddedAgentId: CLAUDE_SDK_AGENT_ID },
+      { createdBy: owner.id },
+    );
+    const quickWorkerA = quickSessionA.workers.find((w) => w.type === 'embedded-agent');
+    if (!quickWorkerA) throw new Error('quick session A has no embedded-agent worker');
+    const quickSessionAId = quickSessionA.id;
+    const quickWorkerAId = quickWorkerA.id;
+
+    // --- Dir B: control (arm4-a) -- a second, distinct path, byte-identical config. ---
+    const dirB = path.join(home, 'quick-b');
+    Bun.spawnSync(['mkdir', '-p', dirB]);
+    writeQuickMcpJson(dirB);
+    const quickSessionB = await ctx.sessionManager.createSession(
+      { type: 'quick', locationPath: dirB, embeddedAgentId: CLAUDE_SDK_AGENT_ID },
+      { createdBy: owner.id },
+    );
+    const quickWorkerB = quickSessionB.workers.find((w) => w.type === 'embedded-agent');
+    if (!quickWorkerB) throw new Error('quick session B has no embedded-agent worker');
+    const quickSessionBId = quickSessionB.id;
+    const quickWorkerBId = quickWorkerB.id;
+
+    // --- Session C: control (arm4-b) -- a symlink to Dir A (no .mcp.json
+    // of its own; discovery reads Dir A's file through the symlink). ---
+    const dirASymlink = path.join(home, 'quick-a-symlink');
+    symlinkSync(dirA, dirASymlink);
+    const quickSessionC = await ctx.sessionManager.createSession(
+      { type: 'quick', locationPath: dirASymlink, embeddedAgentId: CLAUDE_SDK_AGENT_ID },
+      { createdBy: owner.id },
+    );
+    const quickWorkerC = quickSessionC.workers.find((w) => w.type === 'embedded-agent');
+    if (!quickWorkerC) throw new Error('quick session C has no embedded-agent worker');
+    const quickSessionCId = quickSessionC.id;
+    const quickWorkerCId = quickWorkerC.id;
+
+    // --- Activate Dir A, assert srv-quick is discovered pending, canary absent. ---
+    await activate('arm4 quick-A', quickSessionAId, quickWorkerAId);
+    const quickADiscovered = await readDiscoveredViaWire('arm4 quick-A', quickSessionAId, quickWorkerAId);
+    const quickAPending = findDiscoveredServer(quickADiscovered, 'srv-quick');
+    expect(
+      quickAPending?.decision === 'pending' && typeof quickAPending?.hash === 'string',
+      'arm4: quick session A discovers srv-quick as pending with a computed hash',
+      JSON.stringify(quickADiscovered),
+    );
+    expect(!existsSync(quickCanaryTouched), 'arm4: srv-quick canary is absent before any permission is recorded');
+    const quickAHash = quickAPending!.hash!;
+
+    // A baseline turn to bring the SDK's query loop past `system:init`
+    // before attempting the live add -- same reasoning as arm 3's baseline
+    // turn (this file's own comment there), and load-bearing HERE because,
+    // unlike arm 1/3's target worker (already turned via the polarity
+    // turn), quick session A has never been turned before this point.
+    await runTurn(quickSessionAId, quickWorkerAId, 'Reply with only the word DONE.');
+
+    // --- Allow it through the real tool, same TUI caller as the other arms. ---
+    const applyBaseline4 = (await readEvents(quickSessionAId, quickWorkerAId)).length;
+    const allow4 = await callMcpTool(
+      'set_mcp_server_permission',
+      { sessionId: quickSessionAId, workerId: quickWorkerAId, name: 'srv-quick', hash: quickAHash, decision: 'allow' },
+      `Bearer ${tuiToken}`,
+    );
+    expect(
+      !allow4.isError,
+      'arm4: set_mcp_server_permission (allow srv-quick on quick session A) succeeded',
+      allow4.text.slice(0, 300),
+    );
+    const applied4 = await waitForEvent(
+      quickSessionAId,
+      quickWorkerAId,
+      applyBaseline4,
+      (e) => e.type === 'mcp-servers-applied',
+      20_000,
+      'arm4: mcp-servers-applied',
+    );
+    expect(applied4.applied === true, 'arm4: mcp-servers-applied reports applied:true', JSON.stringify(applied4));
+
+    await waitUntil(() => existsSync(quickCanaryTouched), 15_000, 'arm4: srv-quick canary appears').catch((err) =>
+      expect(false, 'arm4: srv-quick canary appears (live add)', String(err)),
+    );
+    expect(existsSync(quickCanaryTouched), 'arm4: srv-quick canary is present after the live add');
+
+    const quickEchoTurn = await runTurn(
+      quickSessionAId,
+      quickWorkerAId,
+      'Call the tool named exactly mcp__srv-quick__probe_echo with no arguments, then reply with the JSON text it returned, verbatim.',
+    );
+    console.log(`  arm4 echo turn reply: ${quickEchoTurn.reply.trim().slice(0, 200)}`);
+    expect(
+      hasToolCallForServer(quickEchoTurn.events, 'srv-quick'),
+      'arm4: the turn actually called the srv-quick tool',
+      JSON.stringify(quickEchoTurn.events.filter((e) => e.type === 'tool-call')),
+    );
+
+    // --- Restart: srv-quick starts from the durable path-scoped record. ---
+    console.log('\n==> positive arm 4 restart: quick session A, srv-quick persists');
+    // Reset the shared canary before the restart-persistence check, so a
+    // present canary afterwards is attributable to the FRESH incarnation's
+    // own live-add-from-record, not a leftover from the echo turn above.
+    resetCanary('srv-quick');
+    await ctx.sessionManager.deactivateEmbeddedAgentWorker(quickSessionAId, quickWorkerAId);
+    await activate('arm4 quick-A restart', quickSessionAId, quickWorkerAId);
+    await readDiscoveredViaWire('arm4 quick-A restart', quickSessionAId, quickWorkerAId);
+    await runTurn(quickSessionAId, quickWorkerAId, 'Reply with only the word DONE.');
+    expect(existsSync(quickCanaryTouched), 'arm4: srv-quick canary present after restart (from the path-scoped record)');
+
+    // ===================================================================
+    // CONTROL (arm4-a): a SECOND quick session at a DIFFERENT path, with a
+    // byte-identical .mcp.json (same server name, same hash) -- stays
+    // pending. Proves the permission key includes location_path, not just
+    // (serverName, hash).
+    // ===================================================================
+    console.log('\n==> negative control (arm4-a): quick session B, byte-identical config, different path -- stays pending');
+    // Reset the SHARED canary again before checking B: it is currently
+    // present from Dir A's restart above, which would otherwise masquerade
+    // as evidence of B's own (nonexistent) spawn.
+    resetCanary('srv-quick');
+    await activate('arm4-a quick-B', quickSessionBId, quickWorkerBId);
+    const quickBDiscovered = await readDiscoveredViaWire('arm4-a quick-B', quickSessionBId, quickWorkerBId);
+    const quickBPending = findDiscoveredServer(quickBDiscovered, 'srv-quick');
+    expect(
+      quickBPending?.decision === 'pending',
+      "(arm4-a): quick session B's srv-quick is still pending -- identical name+hash at a different path did not inherit A's allow",
+      JSON.stringify(quickBDiscovered),
+    );
+    expect(
+      quickBPending?.hash === quickAHash,
+      "(arm4-a): quick session B's srv-quick discovered the SAME hash as A (the control isolates location_path, not content)",
+      `A=${quickAHash} B=${quickBPending?.hash}`,
+    );
+    await runTurn(quickSessionBId, quickWorkerBId, 'Reply with only the word DONE.');
+    expect(!existsSync(quickCanaryTouched), '(arm4-a): srv-quick canary stays absent -- quick session B never spawned it');
+
+    // ===================================================================
+    // CONTROL (arm4-b): a THIRD quick session whose locationPath is a
+    // SYMLINK to Dir A -- inherits A's allow decision via realpath-keying.
+    // ===================================================================
+    console.log('\n==> negative control (arm4-b): quick session C, symlink to Dir A -- inherits the allow via realpath');
+    await activate('arm4-b quick-C', quickSessionCId, quickWorkerCId);
+    const quickCDiscovered = await readDiscoveredViaWire('arm4-b quick-C', quickSessionCId, quickWorkerCId);
+    const quickCAllowed = findDiscoveredServer(quickCDiscovered, 'srv-quick');
+    expect(
+      quickCAllowed?.decision === 'allowed' && quickCAllowed?.hash === quickAHash,
+      '(arm4-b): quick session C (symlink to Dir A) discovers srv-quick as ALREADY allowed, same hash as A',
+      JSON.stringify(quickCDiscovered),
+    );
+    await runTurn(quickSessionCId, quickWorkerCId, 'Reply with only the word DONE.');
+    expect(
+      existsSync(quickCanaryTouched),
+      '(arm4-b): srv-quick canary appears -- quick session C live-added from the inherited path-scoped record',
     );
 
     await ctx.sessionManager.deactivateEmbeddedAgentWorker(targetSessionId, targetWorkerId).catch(() => {});
