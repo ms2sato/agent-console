@@ -753,10 +753,14 @@ export class SdkEngine implements ClaudeSdkEngine {
     // on the SDK's own system:init handshake. A live probe against SDK
     // 2.1.233 found system:init does not arrive until the FIRST prompt is
     // yielded on the streaming-input generator (zero events of any kind
-    // while the queue is empty, not even a spawn signal); gating `ready` on
-    // it would deadlock every worker with no initial prompt queued at
-    // activation. Consulted with the Architect, 2026-08-17: ready is
-    // decoupled from system:init by design -- see
+    // arrive on the query iterator while the queue is empty); the CLI
+    // spawns declared MCP servers before any prompt (measured 2026-09-22,
+    // Issue 1799: spawn reports 1.5-3.2 s after `ready` with no prompt
+    // queued); system:init itself still does not arrive until the first prompt,
+    // which is why `ready` stays decoupled from it. Gating `ready` on
+    // system:init would deadlock every worker with no initial prompt
+    // queued at activation. Consulted with the Architect, 2026-08-17:
+    // ready is decoupled from system:init by design -- see
     // docs/design/embedded-agent-sdk-engine.md Appendix A.2, the `ready`
     // row's correction trail.
     void this.consumeLoop(this.query);
