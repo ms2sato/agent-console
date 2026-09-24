@@ -1439,9 +1439,9 @@ describe('WorkerLifecycleManager', () => {
 
       // Track when spawn is called for 2nd PTY
       const originalSpawnImpl = ptyFactory.spawn.getMockImplementation()!;
-      ptyFactory.spawn.mockImplementation(() => {
+      ptyFactory.spawn.mockImplementation((command, args, options) => {
         operationOrder.push('new-spawned');
-        return originalSpawnImpl();
+        return originalSpawnImpl(command, args, options);
       });
 
       try {

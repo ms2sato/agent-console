@@ -6,7 +6,6 @@ import { AgentManager } from '../agent-manager.js';
 import { SqliteAgentRepository } from '../../repositories/sqlite-agent-repository.js';
 import { WorkerManager } from '../worker-manager.js';
 import { SingleUserMode, type UserMode, type PtySpawnRequest } from '../user-mode.js';
-import type { PtySpawnOptions } from '../../lib/pty-provider.js';
 import { SessionDataPathResolver } from '../../lib/session-data-path-resolver.js';
 import { WorkerOutputFileManager } from '../../lib/worker-output-file.js';
 import { buildInternalAgentWorker, buildInternalTerminalWorker } from '../../__tests__/utils/build-test-data.js';
@@ -58,7 +57,7 @@ describe('WorkerManager - AgentConsole env var injection', () => {
    * The mock spawn is called as spawn(command, args, options).
    */
   function getLastSpawnEnv(): Record<string, string> | undefined {
-    const calls = ptyFactory.spawn.mock.calls as Array<[string, string[], PtySpawnOptions]>;
+    const calls = ptyFactory.spawn.mock.calls;
     const lastCall = calls[calls.length - 1];
     return lastCall[2]?.env;
   }

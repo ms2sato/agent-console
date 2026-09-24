@@ -1,5 +1,5 @@
 import { mock } from 'bun:test';
-import type { PtyProvider, PtyDataDiagnostics } from '../../lib/pty-provider.js';
+import type { PtyProvider, PtyDataDiagnostics, PtySpawnOptions } from '../../lib/pty-provider.js';
 
 /**
  * Disposable interface matching bun-pty's IDisposable.
@@ -152,12 +152,11 @@ export function createMockPtyFactory(startPid = 10000) {
   let nextPid = startPid;
   let autoEmitSentinel = true;
 
-  const spawn = mock((...args: unknown[]) => {
-    const spawnArgs = args[1] as string[] | undefined;
+  const spawn = mock((_command: string, args: string[], _options: PtySpawnOptions) => {
     // Scan the full argv, not just argv[1]: direct spawns are `sh -c <cmd>`
     // (sentinel at index 1) but elevated spawns are `sudo -u ... sh -c <cmd>`
     // (sentinel deep in the array). Joining covers both shapes.
-    const joinedArgs = Array.isArray(spawnArgs) ? spawnArgs.join(' ') : '';
+    const joinedArgs = args.join(' ');
     const sentinelMatch = joinedArgs.match(/__AGENT_CONSOLE_READY_[a-f0-9]+/);
     const sentinel = sentinelMatch?.[0];
     const pty = new MockPty(nextPid++, sentinel, autoEmitSentinel);

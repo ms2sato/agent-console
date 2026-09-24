@@ -29,8 +29,10 @@ const SYSTEM_PROMPT = 'You are a helpful assistant.';
  * test can spy on lock-acquisition count. No public observable exposes the
  * lock. `spyOn`'s `K extends keyof T` constraint requires the member to be
  * public -- unlike the bracket-access reach used elsewhere in this file
- * family, `keyof` itself excludes private members, so the value genuinely
- * needs a bridging cast through `unknown`.
+ * family, `keyof` itself excludes private members (a plain `'runExclusive'`
+ * argument fails with TS2345: not assignable to `keyof
+ * WorkerOutputFileManager`), so the value genuinely needs a bridging cast
+ * through `unknown`.
  */
 function getRunExclusiveSpyTargetForTest(
   manager: WorkerOutputFileManager,

@@ -2422,13 +2422,13 @@ describe('WorkerManager', () => {
     }
 
     function getLastSpawnEnv(): Record<string, string> | undefined {
-      const calls = ptyFactory.spawn.mock.calls as Array<[string, string[], { env?: Record<string, string> }]>;
+      const calls = ptyFactory.spawn.mock.calls;
       const lastCall = calls[calls.length - 1];
       return lastCall[2]?.env;
     }
 
     function getLastSpawnArgv(): string[] | undefined {
-      const calls = ptyFactory.spawn.mock.calls as Array<[string, string[], { env?: Record<string, string> }]>;
+      const calls = ptyFactory.spawn.mock.calls;
       const lastCall = calls[calls.length - 1];
       return lastCall[1];
     }

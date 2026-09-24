@@ -58,11 +58,7 @@ describe('pty-provider', () => {
     /**
      * Narrow Bun shape exposing only the (cmd[], options) spawn overload the
      * adapter actually invokes. Used to install a typed test fake on the
-     * global Bun object instead of an untyped fake. `Bun.spawn`'s real
-     * signature is a set of overloads with no structural overlap with this
-     * narrow shape, so the initial view still needs a bridging cast through
-     * `unknown` (below); restoring the original in afterEach does not, since
-     * that cast's target type carries `typeof Bun.spawn` verbatim.
+     * global Bun object without casting through `any`/`unknown as T`.
      */
     type SpawnableBun = {
       spawn: (cmd: string[], options: SpawnArgs['options']) => MockSubprocess;
@@ -104,10 +100,12 @@ describe('pty-provider', () => {
       mockSubprocess = makeMockSubprocess(99999);
 
       // View Bun through the narrow SpawnableBun shape so we can install a
-      // typed fake without casting through `typeof Bun.spawn`'s full
-      // overloaded signature. The narrow shape matches the only overload
-      // the adapter calls; restoring in afterEach returns the full typed
-      // Bun.spawn.
+      // typed fake without `as unknown as typeof Bun.spawn`. The narrow shape
+      // matches the only overload the adapter calls; restoring in afterEach
+      // returns the full typed Bun.spawn.
+      // Residual: `Bun.spawn`'s real overloaded signature has no structural
+      // overlap with SpawnableBun (TS2352 on a plain `as`), so this view
+      // still needs the bridging cast through `unknown`.
       const spawnable = Bun as unknown as SpawnableBun;
       spawnable.spawn = (cmd, options) => {
         lastSpawn = { cmd, options };

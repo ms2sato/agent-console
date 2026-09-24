@@ -392,7 +392,7 @@ describe('MultiUserMode', () => {
      * Get the spawn call arguments from the mock.
      */
     function getLastSpawnCall(): [string, string[], PtySpawnOptions] {
-      const calls = ptyFactory.spawn.mock.calls as Array<[string, string[], PtySpawnOptions]>;
+      const calls = ptyFactory.spawn.mock.calls;
       return calls[calls.length - 1];
     }
 
@@ -572,7 +572,7 @@ describe('MultiUserMode', () => {
     }
 
     function getLastSpawnCall(): [string, string[], PtySpawnOptions] {
-      const calls = ptyFactory.spawn.mock.calls as Array<[string, string[], PtySpawnOptions]>;
+      const calls = ptyFactory.spawn.mock.calls;
       return calls[calls.length - 1];
     }
 
@@ -1090,7 +1090,7 @@ describe('MultiUserMode', () => {
     }
 
     function getLastSpawnCall(): [string, string[], PtySpawnOptions] {
-      const calls = ptyFactory.spawn.mock.calls as Array<[string, string[], PtySpawnOptions]>;
+      const calls = ptyFactory.spawn.mock.calls;
       return calls[calls.length - 1];
     }
 
