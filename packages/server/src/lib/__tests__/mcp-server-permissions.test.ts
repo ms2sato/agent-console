@@ -1,15 +1,24 @@
-import { describe, it, expect } from 'bun:test';
-import { listAllowedProjectMcpServerPairs, resolvePermissionDecisions } from '../mcp-server-permissions.js';
+import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
+import * as path from 'path';
+import {
+  listAllowedProjectMcpServerPairs,
+  resolvePermissionDecisions,
+  resolveMcpPermissionScope,
+  type McpPermissionScope,
+} from '../mcp-server-permissions.js';
 import type {
   McpServerPermissionRepository,
   McpServerPermissionRow,
 } from '../../repositories/mcp-server-permission-repository.js';
 import type { EmbeddedAgentWorker } from '@agent-console/shared';
+import { setupMemfs, cleanupMemfs } from '../../__tests__/utils/mock-fs-helper.js';
+
+const REPO_SCOPE: McpPermissionScope = { kind: 'repository', repositoryId: 'repo-1' };
 
 function row(overrides: Partial<McpServerPermissionRow> = {}): McpServerPermissionRow {
   return {
     id: 'row-1',
-    repositoryId: 'repo-1',
+    scope: REPO_SCOPE,
     serverName: 'my-server',
     configHash: 'h1',
     decision: 'allow',
@@ -20,9 +29,9 @@ function row(overrides: Partial<McpServerPermissionRow> = {}): McpServerPermissi
   };
 }
 
-function fakeRepository(rows: McpServerPermissionRow[]): Pick<McpServerPermissionRepository, 'listByRepository'> {
+function fakeRepository(rows: McpServerPermissionRow[]): Pick<McpServerPermissionRepository, 'listByScope'> {
   return {
-    listByRepository: async () => rows,
+    listByScope: async () => rows,
   };
 }
 
@@ -32,7 +41,7 @@ describe('listAllowedProjectMcpServerPairs', () => {
       row({ serverName: 'a', configHash: 'ha', decision: 'allow' }),
       row({ serverName: 'b', configHash: 'hb', decision: 'allow' }),
     ]);
-    expect(await listAllowedProjectMcpServerPairs(repository, 'repo-1')).toEqual([
+    expect(await listAllowedProjectMcpServerPairs(repository, REPO_SCOPE)).toEqual([
       { name: 'a', hash: 'ha' },
       { name: 'b', hash: 'hb' },
     ]);
@@ -43,16 +52,56 @@ describe('listAllowedProjectMcpServerPairs', () => {
       row({ serverName: 'a', configHash: 'ha', decision: 'allow' }),
       row({ serverName: 'b', configHash: 'hb', decision: 'deny' }),
     ]);
-    expect(await listAllowedProjectMcpServerPairs(repository, 'repo-1')).toEqual([{ name: 'a', hash: 'ha' }]);
+    expect(await listAllowedProjectMcpServerPairs(repository, REPO_SCOPE)).toEqual([{ name: 'a', hash: 'ha' }]);
   });
 
-  it('returns an empty array when the repository has no rows (boundary value)', async () => {
-    expect(await listAllowedProjectMcpServerPairs(fakeRepository([]), 'repo-1')).toEqual([]);
+  it('returns an empty array when the scope has no rows (boundary value)', async () => {
+    expect(await listAllowedProjectMcpServerPairs(fakeRepository([]), REPO_SCOPE)).toEqual([]);
   });
 
   it('returns an empty array when every row is a deny (boundary value)', async () => {
     const repository = fakeRepository([row({ decision: 'deny' })]);
-    expect(await listAllowedProjectMcpServerPairs(repository, 'repo-1')).toEqual([]);
+    expect(await listAllowedProjectMcpServerPairs(repository, REPO_SCOPE)).toEqual([]);
+  });
+
+  it('works identically for a path scope (single-row, single-allow)', async () => {
+    const pathScope: McpPermissionScope = { kind: 'path', locationPath: '/home/user/quick-project' };
+    const repository = fakeRepository([row({ scope: pathScope, serverName: 'a', configHash: 'ha', decision: 'allow' })]);
+    expect(await listAllowedProjectMcpServerPairs(repository, pathScope)).toEqual([{ name: 'a', hash: 'ha' }]);
+  });
+});
+
+describe('resolveMcpPermissionScope', () => {
+  // memfs-backed (this file's sibling `__tests__/` location, not one of
+  // `test-trigger.md`'s three real-fs exception files) -- the actual OS-level
+  // realpath/symlink resolution behavior this function delegates to is
+  // already covered in the exempted real-fs file `memory-dir.test.ts` for
+  // `resolveMemoryDirPath`'s identical realpath/path.resolve fallback shape;
+  // these tests only need to prove OUR function calls through to `realpath`
+  // and falls back correctly, which memfs's own realpath implementation
+  // exercises faithfully for a plain existing-directory / nonexistent-path
+  // pair (no symlink needed to distinguish those two branches).
+  beforeEach(() => {
+    setupMemfs({ '/test/quick-project': null });
+  });
+
+  afterEach(() => {
+    cleanupMemfs();
+  });
+
+  it('worktree session -> repository scope', async () => {
+    const scope = await resolveMcpPermissionScope({ type: 'worktree', repositoryId: 'repo-1' });
+    expect(scope).toEqual({ kind: 'repository', repositoryId: 'repo-1' });
+  });
+
+  it('quick session with a real existing cwd -> path scope at the realpath', async () => {
+    const scope = await resolveMcpPermissionScope({ type: 'quick', locationPath: '/test/quick-project' });
+    expect(scope).toEqual({ kind: 'path', locationPath: '/test/quick-project' });
+  });
+
+  it('quick session with a nonexistent cwd falls back to path.resolve(cwd) directly (boundary: ENOENT)', async () => {
+    const scope = await resolveMcpPermissionScope({ type: 'quick', locationPath: '/no/such/quick-project' });
+    expect(scope).toEqual({ kind: 'path', locationPath: path.resolve('/no/such/quick-project') });
   });
 });
 

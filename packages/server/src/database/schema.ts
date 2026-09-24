@@ -661,9 +661,9 @@ export type McpServerPermissionRow = Selectable<McpServerPermissionsTable>;
 export type NewMcpServerPermission = Insertable<McpServerPermissionsTable>;
 
 /**
- * MCP server permission table keyed by `location_path` (migration v45;
- * Issue #1786 -- the sibling of `McpServerPermissionsTable` for sessions
- * with no `repositoryId`, i.e. quick sessions). `location_path` is the
+ * MCP server permission table keyed by `location_path` (migration v45 --
+ * the sibling of `McpServerPermissionsTable` for sessions with no
+ * `repositoryId`, i.e. quick sessions). `location_path` is the
  * session's own realpath'd `locationPath`, the same TUI-style
  * `projects[<path>]` key rendered for a session without a repository.
  * Same shape as `McpServerPermissionsTable` otherwise -- see that

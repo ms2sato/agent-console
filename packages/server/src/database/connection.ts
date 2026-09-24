@@ -2875,9 +2875,9 @@ export async function migrateToV44(database: Kysely<Database>): Promise<void> {
 
 /**
  * Migration v45: create the `mcp_server_path_permissions` table (epic #1636
- * Phase 5 PR-2 follow-up, Issue #1786 -- a quick session has no
- * `repositoryId`, so the v44 `mcp_server_permissions` table cannot key its
- * permission decisions. This is a SIBLING table, keyed by `location_path`
+ * Phase 5 PR-2 follow-up -- a quick session has no `repositoryId`, so the
+ * v44 `mcp_server_permissions` table cannot key its permission decisions.
+ * This is a SIBLING table, keyed by `location_path`
  * (the session's own realpath'd `locationPath`) instead of `repository_id`.
  * `McpPermissionScope` (`lib/mcp-server-permissions.ts`) is the single
  * writer that decides which of the two tables a given session resolves to;
