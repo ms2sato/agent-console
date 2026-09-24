@@ -14,6 +14,7 @@ import {
   DataIntegrityError,
   assertNever,
 } from '../mappers.js';
+import type { LegacySessionRow, LegacyAgentRow } from '../mappers.js';
 import type { Session, Worker, RepositoryRow, AgentRow, EmbeddedAgentRow, BookmarkRow } from '../schema.js';
 import type { EmbeddedAgentDefinition } from '@agent-console/shared';
 import type {
@@ -401,7 +402,7 @@ describe('mappers', () => {
   });
 
   describe('toPersistedSession - scope+slug invariants', () => {
-    function makeSessionRow(overrides: Partial<Session>): Session {
+    function makeSessionRow(overrides: Partial<LegacySessionRow>): LegacySessionRow {
       return {
         id: 'session-1',
         type: 'quick',
@@ -507,12 +508,11 @@ describe('mappers', () => {
 
     it('should treat null recovery_state as healthy (legacy row)', () => {
       const row = makeSessionRow({
-        // `null` does not structurally overlap with the `'healthy' |
-        // 'orphaned'` literal union (unlike a string-literal typo above),
-        // so this one genuinely needs the `unknown` bridge: it simulates a
-        // legacy DB row where `recovery_state` (added later, TS-typed as
-        // non-null) actually holds SQL NULL.
-        recovery_state: null as unknown as 'healthy' | 'orphaned',
+        // `recovery_state` (added later, TS-typed as non-null on `Session`)
+        // may still hold SQL NULL on a pre-backfill row; `LegacySessionRow`
+        // widens the field to `... | null` so this is a plain literal, no
+        // cast needed.
+        recovery_state: null,
       });
       const session = toPersistedSession(row, []);
       expect(session.recoveryState).toBe('healthy');
@@ -1584,12 +1584,14 @@ describe('mappers', () => {
 
   describe('toAgentDefinition', () => {
     /**
-     * `AgentRow` has no private fields, so `Partial<AgentRow>` retains the
-     * same shape and this single-step cast type-checks without bridging
-     * through `unknown`.
+     * `AgentRow` has no private fields, so `Partial<LegacyAgentRow>` retains
+     * the same shape and this single-step cast type-checks without bridging
+     * through `unknown`. `LegacyAgentRow` already widens `created_at` /
+     * `updated_at` to `string | null`, so a stub simulating a legacy row
+     * with null timestamps needs no `unknown` bridge either.
      */
-    function asAgentRow(stub: Partial<AgentRow>): AgentRow {
-      return stub as AgentRow;
+    function asAgentRow(stub: Partial<LegacyAgentRow>): LegacyAgentRow {
+      return stub as LegacyAgentRow;
     }
 
     it('should convert database row to AgentDefinition', () => {
@@ -1685,13 +1687,9 @@ describe('mappers', () => {
 
     it('should handle null/undefined optional fields', () => {
       // Test fallback behavior if DB somehow contains null (defensive test).
-      // `AgentRow` has no private fields, so `Partial<AgentRow>` retains the
-      // same shape and a single-step cast type-checks without bridging
-      // through `unknown` -- except for `created_at`/`updated_at`, whose
-      // `Generated<string>` column is TS-typed non-null but is being
-      // deliberately set to `null` here to simulate DB corruption; `null`
-      // does not structurally overlap with `string`, so those two fields
-      // alone need the `unknown` bridge.
+      // `created_at`/`updated_at` are deliberately set to `null` here to
+      // simulate a legacy (pre-backfill) row; `LegacyAgentRow` widens both
+      // fields to `string | null`, so this needs no cast at all.
       const row = asAgentRow({
         id: 'null-fields-agent',
         name: 'Agent With Nulls',
@@ -1700,8 +1698,8 @@ describe('mappers', () => {
         headless_template: null,
         description: null,
         is_built_in: 0,
-        created_at: null as unknown as string,
-        updated_at: null as unknown as string,
+        created_at: null,
+        updated_at: null,
         activity_patterns: null,
       });
 
@@ -1713,6 +1711,9 @@ describe('mappers', () => {
       expect(agent.activityPatterns).toBeUndefined();
       // createdAt should have a fallback when null
       expect(agent.createdAt).toBeDefined();
+      expect(typeof agent.createdAt).toBe('string');
+      expect(agent.createdAt).not.toBeNull();
+      expect(new Date(agent.createdAt as string).toISOString()).toBe(agent.createdAt);
     });
   });
 

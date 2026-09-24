@@ -277,6 +277,18 @@ export function toPersistedWorker(worker: Worker): PersistedWorker {
 const VALID_SESSION_TYPES = ['worktree', 'quick'] as const;
 
 /**
+ * A session row as it may exist in the database before/around the
+ * recovery_state column's backfill migration. `recovery_state` was added
+ * as a non-null column with a default, but rows written before that
+ * migration ran may still have SQL NULL there until backfilled -- this
+ * widens the declared type to match what toPersistedSession's body
+ * actually defends against.
+ */
+export type LegacySessionRow = Omit<Session, 'recovery_state'> & {
+  recovery_state: Session['recovery_state'] | null;
+};
+
+/**
  * Convert a database session row and workers to a persisted session.
  * Validates that required fields are present based on session type.
  *
@@ -286,7 +298,7 @@ const VALID_SESSION_TYPES = ['worktree', 'quick'] as const;
  * @throws DataIntegrityError if required fields are missing or type is invalid
  */
 export function toPersistedSession(
-  session: Session,
+  session: LegacySessionRow,
   workers: PersistedWorker[]
 ): PersistedSession {
   // Validate type at runtime before the switch
@@ -503,13 +515,24 @@ export function toAgentRow(agent: AgentDefinition): NewAgent {
 }
 
 /**
+ * An agent row as it may exist in the database before the created_at /
+ * updated_at columns were guaranteed non-null. toAgentDefinition's body
+ * defensively falls back on a null created_at (legacy row); this widens
+ * the declared type to match.
+ */
+export type LegacyAgentRow = Omit<AgentRow, 'created_at' | 'updated_at'> & {
+  created_at: string | null;
+  updated_at: string | null;
+};
+
+/**
  * Convert a database agent row to an AgentDefinition.
  * Recomputes capabilities from the templates.
  *
  * @param row - The database agent row
  * @returns The AgentDefinition object
  */
-export function toAgentDefinition(row: AgentRow): AgentDefinition {
+export function toAgentDefinition(row: LegacyAgentRow): AgentDefinition {
   let activityPatterns: AgentActivityPatterns | undefined;
   if (row.activity_patterns) {
     try {
