@@ -6,11 +6,15 @@ import * as path from 'node:path';
 /**
  * Mechanical net for the scratch-git hermeticity discipline
  * (packages/server/src/__tests__/utils/scratch-git.ts): any TypeScript file
- * directly under `scripts/smoke` or nested inside any package's `src`
- * tree's `__tests__` directories that spawns a git commit must import
- * `scratch-git.ts` rather than committing against the operator's own
- * global git config -- see `.claude/rules/os-environment-coupling.md` and
- * `testing.md`'s "Scratch git repositories" paragraph.
+ * directly under `scripts/smoke`, nested inside any package's `src` tree's
+ * `__tests__` directories, or one of `packages/integration/src`'s flat
+ * `*.test.ts(x)` boundary tests (that package deliberately has no
+ * `__tests__/` directory, per `test-trigger.md`'s exception, so the
+ * `__tests__`-anchored glob below never reaches it on its own) that spawns
+ * a git commit must import `scratch-git.ts` rather than committing against
+ * the operator's own global git config -- see
+ * `.claude/rules/os-environment-coupling.md` and `testing.md`'s "Scratch
+ * git repositories" paragraph.
  *
  * Two shapes are detected, matching every commit-spawning site measured on
  * `main` at the time this net was written:
@@ -62,6 +66,22 @@ function discoverCandidateFiles(): string[] {
   }
   {
     const glob = new Glob('packages/*/src/**/__tests__/**/*.ts');
+    for (const f of glob.scanSync({ cwd: REPO_ROOT, onlyFiles: true })) {
+      files.push(f);
+    }
+  }
+  {
+    // packages/integration/src/ uses a deliberate flat layout (no
+    // __tests__/ directory, per test-trigger.md's exception for its
+    // boundary tests), so the __tests__-anchored glob above never reaches
+    // it. Scanned separately by its own *.test.ts(x) naming convention.
+    const glob = new Glob('packages/integration/src/**/*.test.ts');
+    for (const f of glob.scanSync({ cwd: REPO_ROOT, onlyFiles: true })) {
+      files.push(f);
+    }
+  }
+  {
+    const glob = new Glob('packages/integration/src/**/*.test.tsx');
     for (const f of glob.scanSync({ cwd: REPO_ROOT, onlyFiles: true })) {
       files.push(f);
     }

@@ -180,27 +180,36 @@ describe('createScratchGitRepo', () => {
 
     const insideRealRepo = path.join(toplevel, 'zzz-scratch-git-test-guard-ii-should-not-exist');
 
-    // allowRoot explicitly names the real repo's toplevel, which SATISFIES
-    // guard (i) -- so a throw here can only come from guard (ii), and the
-    // assertion below is on guard (ii)'s specific message, not the shared
-    // invariant-naming prefix, to prove exactly that. Per the Architect's
-    // ruling (2026-09-24): guard (ii) is unconditional and an allowRoot
-    // naming/containing the real toplevel must not bypass it.
-    await expect(createScratchGitRepo({ parentDir: insideRealRepo, allowRoot: toplevel })).rejects.toThrow(
-      GUARD_II_MESSAGE,
-    );
-
-    let insideRealRepoExists = true;
     try {
-      await stat(insideRealRepo);
-    } catch {
-      insideRealRepoExists = false;
-    }
-    expect(insideRealRepoExists).toBe(false);
+      // allowRoot explicitly names the real repo's toplevel, which
+      // SATISFIES guard (i) -- so a throw here can only come from guard
+      // (ii), and the assertion below is on guard (ii)'s specific message,
+      // not the shared invariant-naming prefix, to prove exactly that. Per
+      // the Architect's ruling (2026-09-24): guard (ii) is unconditional
+      // and an allowRoot naming/containing the real toplevel must not
+      // bypass it.
+      await expect(createScratchGitRepo({ parentDir: insideRealRepo, allowRoot: toplevel })).rejects.toThrow(
+        GUARD_II_MESSAGE,
+      );
 
-    const statusAfter = Bun.spawnSync(['git', 'status', '--porcelain'], { cwd: toplevel, stdout: 'pipe', stderr: 'pipe' });
-    expect(statusAfter.exitCode).toBe(0);
-    expect(new TextDecoder().decode(statusAfter.stdout)).toBe(new TextDecoder().decode(statusBefore.stdout));
+      let insideRealRepoExists = true;
+      try {
+        await stat(insideRealRepo);
+      } catch {
+        insideRealRepoExists = false;
+      }
+      expect(insideRealRepoExists).toBe(false);
+
+      const statusAfter = Bun.spawnSync(['git', 'status', '--porcelain'], { cwd: toplevel, stdout: 'pipe', stderr: 'pipe' });
+      expect(statusAfter.exitCode).toBe(0);
+      expect(new TextDecoder().decode(statusAfter.stdout)).toBe(new TextDecoder().decode(statusBefore.stdout));
+    } finally {
+      // If a future mutation makes guard (ii) fail to throw, this directory
+      // WOULD get created inside the real repository's toplevel -- clean it
+      // up unconditionally so a mutation run never leaves the real worktree
+      // dirty for the next test or the next `git status`.
+      await rm(insideRealRepo, { recursive: true, force: true });
+    }
   });
 
   it('guard (ii): a linked worktree case -- process.cwd() inside this worktree resolves this worktree as the toplevel to protect', async () => {
@@ -220,9 +229,15 @@ describe('createScratchGitRepo', () => {
     expect(toplevel).not.toBe('');
 
     const insideThisWorktree = path.join(toplevel, 'zzz-scratch-git-test-worktree-guard-should-not-exist');
-    await expect(createScratchGitRepo({ parentDir: insideThisWorktree, allowRoot: toplevel })).rejects.toThrow(
-      GUARD_II_MESSAGE,
-    );
+    try {
+      await expect(createScratchGitRepo({ parentDir: insideThisWorktree, allowRoot: toplevel })).rejects.toThrow(
+        GUARD_II_MESSAGE,
+      );
+    } finally {
+      // See the sibling guard-(ii) test above: cleans up unconditionally in
+      // case a future mutation makes the guard fail to throw.
+      await rm(insideThisWorktree, { recursive: true, force: true });
+    }
   });
 
   it('guard (ii) does not misfire on the ordinary path: parentDir under os.tmpdir(), no allowRoot, does not throw even though this suite itself runs inside the real repository', async () => {
