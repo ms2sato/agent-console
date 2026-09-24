@@ -10,7 +10,8 @@ import type { InternalProcessPtyNotification, PtyNotificationParams } from '../l
 import { rootLogger } from '../lib/logger.js';
 import { InterSessionMessageService } from '../services/inter-session-message-service.js';
 import type { EnsureMemoryDirFn } from '../lib/memory-dir.js';
-import type { SpawnAsUserFn, SpawnAsUserOpts, SpawnAsUserResult } from '../services/privilege-elevation.js';
+import type { SpawnAsUserFn, SpawnAsUserOpts } from '../services/privilege-elevation.js';
+import { toSpawnAsUserResult, type FakeFileSink, type FakeSubprocess } from './utils/fake-spawn-as-user.js';
 import { mkdir, realpath, rm } from 'node:fs/promises';
 import * as path from 'node:path';
 import * as os from 'node:os';
@@ -555,42 +556,6 @@ describe('AppContext', () => {
       await rm(memoryHomeDir, { recursive: true, force: true });
     });
 
-    /** Minimal subset of Bun's FileSink consumed by EmbeddedAgentWorkerService. */
-    interface FakeFileSink {
-      write: (chunk: string | Uint8Array) => number;
-      end: () => void;
-      flush: () => number;
-    }
-
-    interface FakeSubprocess {
-      pid: number;
-      exited: Promise<number>;
-      stdin: FakeFileSink;
-      stdout: ReadableStream<Uint8Array>;
-      stderr: ReadableStream<Uint8Array>;
-      kill: (signal?: number) => void;
-    }
-
-    /**
-     * Typed fixture builder for a fake `spawnAsUserFn` result. `SpawnAsUserResult.subprocess`
-     * is Bun's real `Subprocess<'pipe','pipe','pipe'>` and `.stdin` its real
-     * `FileSink` -- far larger types than the `FakeSubprocess`/`FakeFileSink`
-     * doubles above actually implement. Mirrors the same-named helper in
-     * `services/__tests__/embedded-agent-worker-service.test.ts`.
-     */
-    function toSpawnAsUserResult(fields: {
-      subprocess: FakeSubprocess;
-      stdin: FakeFileSink;
-      elevated?: boolean;
-    }): SpawnAsUserResult {
-      const result: Pick<SpawnAsUserResult, 'elevated'> & { subprocess: FakeSubprocess; stdin: FakeFileSink } = {
-        subprocess: fields.subprocess,
-        stdin: fields.stdin,
-        elevated: fields.elevated ?? false,
-      };
-      return result as SpawnAsUserResult;
-    }
-
     /**
      * Exitable fake streams/exited-promise (mirrors `makeFakeSpawn` in
      * `session-manager.test.ts`'s "threads the spawnAsUserFn option through"
@@ -622,11 +587,13 @@ describe('AppContext', () => {
         stderrCtrl.close();
       };
       const stdin: FakeFileSink = {
-        write: (chunk) => {
+        write: (chunk: string | Uint8Array) => {
           stdinWrites.push(typeof chunk === 'string' ? chunk : new TextDecoder().decode(chunk));
           return 0;
         },
-        end: () => {},
+        end: () => {
+          return 0;
+        },
         flush: () => 0,
       };
       const subprocess: FakeSubprocess = { pid: 9997, exited, stdin, stdout, stderr, kill: () => {} };

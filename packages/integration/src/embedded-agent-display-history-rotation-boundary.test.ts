@@ -43,18 +43,13 @@ import { SqliteEmbeddedAgentRepository } from '@agent-console/server/src/reposit
 import { SqliteUserRepository } from '@agent-console/server/src/repositories/sqlite-user-repository';
 import { JsonSessionRepository } from '@agent-console/server/src/repositories/index';
 import { AnnotationService } from '@agent-console/server/src/services/annotation-service';
-import type { SpawnAsUserFn, SpawnAsUserOpts, SpawnAsUserResult } from '@agent-console/server/src/services/privilege-elevation';
+import type { SpawnAsUserFn, SpawnAsUserOpts } from '@agent-console/server/src/services/privilege-elevation';
+import { toSpawnAsUserResult, type FakeFileSink, type FakeSubprocess } from '@agent-console/server/src/__tests__/utils/fake-spawn-as-user';
 import { McpTokenRegistry } from '@agent-console/server/src/mcp/mcp-auth';
 import { defaultRepositoryLookup, defaultRepositoryEnvLookup } from '@agent-console/server/src/__tests__/utils/repository-lookup-mock';
 
 const TEST_CONFIG_DIR = '/test/config';
 const ptyFactory = createMockPtyFactory();
-
-interface FakeFileSink {
-  write: (chunk: string | Uint8Array) => number;
-  end: () => void;
-  flush: () => number;
-}
 
 interface ControllableStream {
   stream: ReadableStream<Uint8Array>;
@@ -83,11 +78,11 @@ function makeFakeSpawn(): {
   const exited = new Promise<number>(() => {
     // Never resolves — this test never deactivates the worker.
   });
-  const stdin: FakeFileSink = { write: () => 0, end: () => {}, flush: () => 0 };
-  const subprocess = { pid: 9998, exited, stdin, stdout: stdout.stream, stderr: stderr.stream, kill: () => {} };
+  const stdin: FakeFileSink = { write: () => 0, end: () => { return 0; }, flush: () => 0 };
+  const subprocess: FakeSubprocess = { pid: 9998, exited, stdin, stdout: stdout.stream, stderr: stderr.stream, kill: () => {} };
   const fn: SpawnAsUserFn = (opts) => {
     captured.push(opts);
-    return { subprocess, stdin, elevated: false } as unknown as SpawnAsUserResult;
+    return toSpawnAsUserResult({ subprocess, stdin, elevated: false });
   };
   return { fn, captured, pushStdout: stdout.push };
 }

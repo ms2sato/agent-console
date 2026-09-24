@@ -44,28 +44,11 @@ import type { AppContext } from '@agent-console/server/src/app-context';
 import type {
   SpawnAsUserFn,
   SpawnAsUserOpts,
-  SpawnAsUserResult,
 } from '@agent-console/server/src/services/privilege-elevation';
+import { toSpawnAsUserResult, type FakeFileSink, type FakeSubprocess } from '@agent-console/server/src/__tests__/utils/fake-spawn-as-user';
 import { buildBashEnv } from '@agent-console/embedded-agent/src/tools/env-cleaner';
 
 import { AGENT_CONSOLE_IDENTITY_ENV_KEYS, AGENT_CONSOLE_ENV_PREFIX } from '@agent-console/shared';
-
-/** Minimal subset of Bun's FileSink consumed by EmbeddedAgentWorkerService. */
-interface FakeFileSink {
-  write: (chunk: string | Uint8Array) => number;
-  end: () => void;
-  flush: () => number;
-}
-
-/** The subset of `Subprocess` the service reads while a worker stays activated. */
-interface FakeSubprocess {
-  pid: number;
-  exited: Promise<number>;
-  stdin: FakeFileSink;
-  stdout: ReadableStream<Uint8Array>;
-  stderr: ReadableStream<Uint8Array>;
-  kill: () => void;
-}
 
 function makeFakeSpawn(): { fn: SpawnAsUserFn; captured: SpawnAsUserOpts[] } {
   const captured: SpawnAsUserOpts[] = [];
@@ -74,18 +57,11 @@ function makeFakeSpawn(): { fn: SpawnAsUserFn; captured: SpawnAsUserOpts[] } {
   const exited = new Promise<number>(() => {
     // Never resolves -- these tests never deactivate the worker.
   });
-  const stdin: FakeFileSink = { write: () => 0, end: () => {}, flush: () => 0 };
+  const stdin: FakeFileSink = { write: () => 0, end: () => { return 0; }, flush: () => 0 };
   const subprocess: FakeSubprocess = { pid: 9997, exited, stdin, stdout, stderr, kill: () => {} };
   const fn: SpawnAsUserFn = (opts) => {
     captured.push(opts);
-    // One direct cast at the fake boundary (no `unknown` intermediate): the
-    // typed fake models exactly the subset the service consumes.
-    const result: Pick<SpawnAsUserResult, 'elevated'> & { subprocess: FakeSubprocess; stdin: FakeFileSink } = {
-      subprocess,
-      stdin,
-      elevated: false,
-    };
-    return result as SpawnAsUserResult;
+    return toSpawnAsUserResult({ subprocess, stdin, elevated: false });
   };
   return { fn, captured };
 }

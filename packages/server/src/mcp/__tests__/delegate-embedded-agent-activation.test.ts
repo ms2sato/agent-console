@@ -58,49 +58,14 @@ import { McpTokenRegistry } from '../mcp-auth.js';
 import { createWorktreeWithSession } from '../../services/worktree-creation-service.js';
 import { deleteWorktree } from '../../services/worktree-deletion-service.js';
 import { AgentDirectory } from '../../services/agent-directory.js';
-import type { SpawnAsUserFn, SpawnAsUserOpts, SpawnAsUserResult } from '../../services/privilege-elevation.js';
+import type { SpawnAsUserFn, SpawnAsUserOpts } from '../../services/privilege-elevation.js';
 import type { runAsUser } from '../../services/privilege-elevation.js';
+import { toSpawnAsUserResult, type FakeFileSink, type FakeSubprocess } from '../../__tests__/utils/fake-spawn-as-user.js';
 import { initializeMcp, callTool, parseToolResult } from './mcp-protocol-test-helpers.js';
 
 const TEST_CONFIG_DIR = '/test/config-1260';
 const TEST_REPO_PATH = '/test/repo-1260';
 const TEST_REPO_ID = 'repo-1260';
-
-/** Minimal subset of Bun's FileSink consumed by EmbeddedAgentWorkerService (write/end/flush). */
-interface FakeFileSink {
-  write: (chunk: string | Uint8Array) => number;
-  end: () => void;
-  flush: () => number;
-}
-
-interface FakeSubprocess {
-  pid: number;
-  exited: Promise<number>;
-  stdin: FakeFileSink;
-  stdout: ReadableStream<Uint8Array>;
-  stderr: ReadableStream<Uint8Array>;
-  kill: (signal?: number) => void;
-}
-
-/**
- * Typed fixture builder for a fake `spawnAsUserFn` result. `SpawnAsUserResult.subprocess`
- * is Bun's real `Subprocess<'pipe','pipe','pipe'>` and `.stdin` its real
- * `FileSink` -- far larger types than the `FakeSubprocess`/`FakeFileSink`
- * doubles above actually implement. Mirrors the same-named helper in
- * `services/__tests__/embedded-agent-worker-service.test.ts`.
- */
-function toSpawnAsUserResult(fields: {
-  subprocess: FakeSubprocess;
-  stdin: FakeFileSink;
-  elevated?: boolean;
-}): SpawnAsUserResult {
-  const result: Pick<SpawnAsUserResult, 'elevated'> & { subprocess: FakeSubprocess; stdin: FakeFileSink } = {
-    subprocess: fields.subprocess,
-    stdin: fields.stdin,
-    elevated: fields.elevated ?? false,
-  };
-  return result as SpawnAsUserResult;
-}
 
 /**
  * Fake spawnAsUser for the embedded-agent loop subprocess, with a `pushLine`
@@ -142,11 +107,13 @@ function makeFakeEmbeddedSpawn(): {
   };
 
   const stdin: FakeFileSink = {
-    write: (chunk) => {
+    write: (chunk: string | Uint8Array) => {
       stdinWrites.push(typeof chunk === 'string' ? chunk : new TextDecoder().decode(chunk));
       return 0;
     },
-    end: () => {},
+    end: () => {
+      return 0;
+    },
     flush: () => 0,
   };
 

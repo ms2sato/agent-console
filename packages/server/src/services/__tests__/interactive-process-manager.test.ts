@@ -6,8 +6,8 @@ import {
 import type {
   SpawnAsUserFn,
   SpawnAsUserOpts,
-  SpawnAsUserResult,
 } from '../privilege-elevation.js';
+import { toSpawnAsUserResult, type FakeFileSink, type FakeSubprocess } from '../../__tests__/utils/fake-spawn-as-user.js';
 
 describe('InteractiveProcessManager', () => {
   let manager: InteractiveProcessManager;
@@ -238,19 +238,6 @@ describe('InteractiveProcessManager', () => {
     }
 
     /**
-     * Subset of Bun's `FileSink` shape that `interactive-process-manager`
-     * actually consumes (`write` + `flush`; `end` is included so the fake
-     * matches the shape `spawnAsUser` exposes on `subprocess.stdin`).
-     * Declaring it explicitly lets the fake be typed without casting through
-     * `unknown` (which the repo's TypeScript guideline prohibits).
-     */
-    interface FakeFileSink {
-      write: (chunk: string | Uint8Array) => number;
-      end: () => void;
-      flush: () => Promise<number>;
-    }
-
-    /**
      * Issue #1230: fake `spawnAsUserFn` options controlling the returned
      * stdin sink's `end()` behavior, so teardown tests can assert
      * `endStdinSafely` is invoked (via an `endCalls` counter) and that a
@@ -259,20 +246,6 @@ describe('InteractiveProcessManager', () => {
      */
     interface FakeSpawnAsUserOpts {
       endThrows?: boolean;
-    }
-
-    /**
-     * Subset of Bun's `Subprocess<'pipe','pipe','pipe'>` shape that
-     * `interactive-process-manager` actually consumes (`exited`, `stdout`,
-     * `stderr`, `stdin`, `kill`). Mirrors the `FakeProc` pattern used in
-     * `privilege-elevation.test.ts` for the runAsUser fakes.
-     */
-    interface FakeSubprocess {
-      exited: Promise<number>;
-      stdin: FakeFileSink;
-      stdout: ReadableStream<Uint8Array>;
-      stderr: ReadableStream<Uint8Array>;
-      kill: (signal?: number) => void;
     }
 
     /**
@@ -310,6 +283,7 @@ describe('InteractiveProcessManager', () => {
           if (opts?.endThrows) {
             throw new Error('EPIPE: stdin already closed');
           }
+          return 0;
         },
         flush: () => {
           flushCalls.count++;
@@ -337,21 +311,14 @@ describe('InteractiveProcessManager', () => {
 
       const fn: SpawnAsUserFn = (opts) => {
         captured.push({ opts });
-        // Single direct cast at the fake boundary; the fake's typed members
-        // (FakeSubprocess / FakeFileSink) cover the subset production code
-        // consumes. No `unknown` intermediate.
-        const result: Pick<SpawnAsUserResult, 'elevated'> & {
-          subprocess: FakeSubprocess;
-          stdin: FakeFileSink;
-        } = {
+        return toSpawnAsUserResult({
           subprocess,
           stdin,
           elevated:
             opts.username !== null &&
             opts.username !== undefined &&
             opts.username !== '',
-        };
-        return result as SpawnAsUserResult;
+        });
       };
 
       return {

@@ -41,10 +41,10 @@ import type { PersistedWorker } from '@agent-console/server/src/services/persist
 import type {
   SpawnAsUserFn,
   SpawnAsUserOpts,
-  SpawnAsUserResult,
   RunAsUserOpts,
   RunAsUserResult,
 } from '@agent-console/server/src/services/privilege-elevation';
+import { toSpawnAsUserResult, type FakeFileSink, type FakeSubprocess } from '@agent-console/server/src/__tests__/utils/fake-spawn-as-user';
 
 describe('Persistence boundary: embedded-agent initial-prompt eligibility survives restart (Issue #1074)', () => {
   let ctx: AppContext;
@@ -170,13 +170,6 @@ describe('Persistence boundary: embedded-agent initial-prompt eligibility surviv
 describe('Cross-type restart: initial-prompt delivery on the converted embedded-agent worker', () => {
   let ctx: AppContext;
 
-  /** Minimal subset of Bun's FileSink consumed by EmbeddedAgentWorkerService. */
-  interface FakeFileSink {
-    write: (chunk: string | Uint8Array) => number;
-    end: () => void;
-    flush: () => number;
-  }
-
   function makeFakeEmbeddedSpawn(): {
     fn: SpawnAsUserFn;
     stdinWrites: string[];
@@ -184,11 +177,13 @@ describe('Cross-type restart: initial-prompt delivery on the converted embedded-
   } {
     const stdinWrites: string[] = [];
     const stdin: FakeFileSink = {
-      write: (chunk) => {
+      write: (chunk: string | Uint8Array) => {
         stdinWrites.push(typeof chunk === 'string' ? chunk : new TextDecoder().decode(chunk));
         return 0;
       },
-      end: () => {},
+      end: () => {
+        return 0;
+      },
       flush: () => 0,
     };
 
@@ -201,10 +196,10 @@ describe('Cross-type restart: initial-prompt delivery on the converted embedded-
     const pushStdout = (s: string) => stdoutCtrl.enqueue(enc.encode(s));
 
     const exited = new Promise<number>(() => {});
-    const subprocess = { pid: 4200, exited, stdin, stdout, stderr, kill: () => {} };
+    const subprocess: FakeSubprocess = { pid: 4200, exited, stdin, stdout, stderr, kill: () => {} };
 
     const fn: SpawnAsUserFn = (_opts: SpawnAsUserOpts) =>
-      ({ subprocess, stdin, elevated: false }) as unknown as SpawnAsUserResult;
+      toSpawnAsUserResult({ subprocess, stdin, elevated: false });
 
     return { fn, stdinWrites, pushStdout };
   }
