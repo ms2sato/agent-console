@@ -24,6 +24,20 @@ const S = 'session-1';
 const W = 'w-1';
 const SYSTEM_PROMPT = 'You are a helpful assistant.';
 
+/**
+ * @internal Reaches WorkerOutputFileManager's private `runExclusive` so this
+ * test can spy on lock-acquisition count. No public observable exposes the
+ * lock. `spyOn`'s `K extends keyof T` constraint requires the member to be
+ * public -- unlike the bracket-access reach used elsewhere in this file
+ * family, `keyof` itself excludes private members, so the value genuinely
+ * needs a bridging cast through `unknown`.
+ */
+function getRunExclusiveSpyTargetForTest(
+  manager: WorkerOutputFileManager,
+): { runExclusive: (key: string, fn: () => Promise<unknown>) => Promise<unknown> } {
+  return manager as unknown as { runExclusive: (key: string, fn: () => Promise<unknown>) => Promise<unknown> };
+}
+
 function makeManager(fileMaxSize: number): WorkerOutputFileManager {
   return new WorkerOutputFileManager({
     flushThreshold: 100_000_000,
@@ -339,10 +353,7 @@ describe('#1202 — the walk-back assembles a stream that starts at a safe ancho
     manager.bufferOutput(S, W, b, resolver);
     await manager.flushAll();
 
-    const spy = spyOn(
-      manager as unknown as { runExclusive: (key: string, fn: () => Promise<unknown>) => Promise<unknown> },
-      'runExclusive',
-    );
+    const spy = spyOn(getRunExclusiveSpyTargetForTest(manager), 'runExclusive');
     const before = spy.mock.calls.length;
     const assembled = await manager.readHistoryForRestore(S, W, resolver);
     const acquisitions = spy.mock.calls.length - before;

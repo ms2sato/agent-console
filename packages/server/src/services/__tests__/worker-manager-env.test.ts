@@ -5,11 +5,21 @@ import { initializeDatabase, closeDatabase, getDatabase } from '../../database/c
 import { AgentManager } from '../agent-manager.js';
 import { SqliteAgentRepository } from '../../repositories/sqlite-agent-repository.js';
 import { WorkerManager } from '../worker-manager.js';
-import { SingleUserMode } from '../user-mode.js';
+import { SingleUserMode, type UserMode, type PtySpawnRequest } from '../user-mode.js';
 import type { PtySpawnOptions } from '../../lib/pty-provider.js';
 import { SessionDataPathResolver } from '../../lib/session-data-path-resolver.js';
 import { WorkerOutputFileManager } from '../../lib/worker-output-file.js';
 import { buildInternalAgentWorker, buildInternalTerminalWorker } from '../../__tests__/utils/build-test-data.js';
+
+/**
+ * @internal Reaches WorkerManager's private `userMode` collaborator so a
+ * test can monkey-patch `spawnPty` and capture the request object passed
+ * to it. No public observable exposes the collaborator directly. Bracket
+ * access works because the member is declared `private` (not `#private`).
+ */
+function getUserModeForTest(manager: WorkerManager): UserMode {
+  return manager['userMode'];
+}
 
 /**
  * Tests for AgentConsole context environment variable injection.
@@ -48,7 +58,7 @@ describe('WorkerManager - AgentConsole env var injection', () => {
    * The mock spawn is called as spawn(command, args, options).
    */
   function getLastSpawnEnv(): Record<string, string> | undefined {
-    const calls = ptyFactory.spawn.mock.calls as unknown as Array<[string, string[], PtySpawnOptions]>;
+    const calls = ptyFactory.spawn.mock.calls as Array<[string, string[], PtySpawnOptions]>;
     const lastCall = calls[calls.length - 1];
     return lastCall[2]?.env;
   }
@@ -370,10 +380,10 @@ describe('WorkerManager - AgentConsole env var injection', () => {
       // Capture the PtySpawnRequest by monkey-patching the userMode's
       // spawnPty. The internal WorkerManager already holds the userMode
       // reference; we intercept on the next call.
-      const captured: { request?: unknown } = {};
-      const userModeRef = (workerManager as unknown as { userMode: { spawnPty: (req: unknown) => unknown } }).userMode;
+      const captured: { request?: PtySpawnRequest } = {};
+      const userModeRef = getUserModeForTest(workerManager);
       const origSpawnPty = userModeRef.spawnPty.bind(userModeRef);
-      userModeRef.spawnPty = (req: unknown) => {
+      userModeRef.spawnPty = (req: PtySpawnRequest) => {
         captured.request = req;
         return origSpawnPty(req);
       };
@@ -405,10 +415,10 @@ describe('WorkerManager - AgentConsole env var injection', () => {
     it('forwards undefined when context.sshAuthSockFallback is not set (default / back-compat)', async () => {
       const worker = buildInternalAgentWorker({ id: 'wkr-ssh-default' });
 
-      const captured: { request?: unknown } = {};
-      const userModeRef = (workerManager as unknown as { userMode: { spawnPty: (req: unknown) => unknown } }).userMode;
+      const captured: { request?: PtySpawnRequest } = {};
+      const userModeRef = getUserModeForTest(workerManager);
       const origSpawnPty = userModeRef.spawnPty.bind(userModeRef);
-      userModeRef.spawnPty = (req: unknown) => {
+      userModeRef.spawnPty = (req: PtySpawnRequest) => {
         captured.request = req;
         return origSpawnPty(req);
       };

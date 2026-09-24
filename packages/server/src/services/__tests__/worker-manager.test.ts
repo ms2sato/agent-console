@@ -293,7 +293,7 @@ describe('WorkerManager', () => {
       expect(getDefaultBranchCalls.length).toBeGreaterThan(0);
       expect(getDefaultBranchCalls[0][0]).toBe('/elevated/worktree');
       // The second argument is the requestUser.
-      expect((getDefaultBranchCalls[0] as unknown as [string, string | null])[1]).toBe('workspaceuser');
+      expect(getDefaultBranchCalls[0][1]).toBe('workspaceuser');
     });
   });
 
@@ -2422,13 +2422,13 @@ describe('WorkerManager', () => {
     }
 
     function getLastSpawnEnv(): Record<string, string> | undefined {
-      const calls = ptyFactory.spawn.mock.calls as unknown as Array<[string, string[], { env?: Record<string, string> }]>;
+      const calls = ptyFactory.spawn.mock.calls as Array<[string, string[], { env?: Record<string, string> }]>;
       const lastCall = calls[calls.length - 1];
       return lastCall[2]?.env;
     }
 
     function getLastSpawnArgv(): string[] | undefined {
-      const calls = ptyFactory.spawn.mock.calls as unknown as Array<[string, string[], { env?: Record<string, string> }]>;
+      const calls = ptyFactory.spawn.mock.calls as Array<[string, string[], { env?: Record<string, string> }]>;
       const lastCall = calls[calls.length - 1];
       return lastCall[1];
     }
