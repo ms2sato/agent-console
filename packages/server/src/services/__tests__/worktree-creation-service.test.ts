@@ -1,7 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach, mock, spyOn } from 'bun:test';
 import * as fs from 'fs';
-import type { HookCommandResult, Worktree } from '@agent-console/shared';
+import type { CreateSessionRequest, HookCommandResult, Session, Worktree } from '@agent-console/shared';
 import type { SessionManager } from '../session-manager.js';
+import type { SessionCreationContext } from '../internal-types.js';
 import { buildWorktreeSession } from '../../__tests__/utils/build-test-data.js';
 import { GitError, mockGit, resetGitMocks } from '../../__tests__/utils/mock-git-helper.js';
 import {
@@ -80,14 +81,31 @@ const MOCK_SESSION = buildWorktreeSession({
   createdAt: '2026-01-01T00:00:00Z',
 });
 
-function createMockSessionManager(): SessionManager & {
-  createSession: ReturnType<typeof mock>;
-} {
-  return {
+type MockSessionManagerMethods = {
+  createSession: ReturnType<
+    typeof mock<(request: CreateSessionRequest, context?: SessionCreationContext) => Promise<Session>>
+  >;
+};
+
+/**
+ * `SessionManager` has private fields, so a stub object literal cannot
+ * satisfy it structurally. `Partial<SessionManager>` retains the same
+ * private brand, so this single-step cast type-checks without bridging
+ * through `unknown`. The fixed, concrete `MockSessionManagerMethods`
+ * intersection keeps typo/excess-property checking on the object literal
+ * (unlike a generic `<T extends Partial<SessionManager>>` parameter, which
+ * would silently defeat it).
+ */
+function asMockSessionManager(
+  stub: Partial<SessionManager> & MockSessionManagerMethods,
+): SessionManager & MockSessionManagerMethods {
+  return stub as SessionManager & MockSessionManagerMethods;
+}
+
+function createMockSessionManager(): SessionManager & MockSessionManagerMethods {
+  return asMockSessionManager({
     createSession: mock(() => Promise.resolve(MOCK_SESSION)),
-  } as unknown as SessionManager & {
-    createSession: ReturnType<typeof mock>;
-  };
+  });
 }
 
 const DEFAULT_PARAMS = {

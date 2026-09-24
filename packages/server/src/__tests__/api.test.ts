@@ -14,6 +14,7 @@ import { setupMemfs, cleanupMemfs, createMockGitRepoFiles } from './utils/mock-f
 import { mockProcess, resetProcessMock } from './utils/mock-process-helper.js';
 import { createMockPtyFactory } from './utils/mock-pty.js';
 import { mockGit, GitError } from './utils/mock-git-helper.js';
+import { createMockSystemCapabilities } from './utils/mock-system-capabilities-helper.js';
 
 // Set up test config directory BEFORE any service imports to ensure
 // services use the test config path when their modules are loaded
@@ -144,6 +145,15 @@ branch refs/heads/main
 // Mock broadcastToApp for capturing broadcast calls from route handlers
 const mockBroadcastToApp = mock((_msg: Record<string, unknown>) => {});
 
+/**
+ * `JobQueue` has private fields, so a stub object literal cannot satisfy it
+ * structurally. `Partial<JobQueue>` retains the same private brand, so this
+ * single-step cast type-checks without bridging through `unknown`.
+ */
+function asJobQueue(stub: Partial<JobQueue>): JobQueue {
+  return stub as JobQueue;
+}
+
 // Test JobQueue instance (created fresh for each test)
 let testJobQueue: JobQueue | null = null;
 
@@ -163,12 +173,8 @@ describe('API Routes Integration', () => {
     // the v19 FK constraint sessions.created_by -> users(id).
     await ensureTestAuthUser(getDatabase());
 
-    // Set up mock system capabilities
-    const mockCapabilities = new SystemCapabilitiesService();
-    // Manually set capabilities to avoid running which command
-    (mockCapabilities as unknown as { capabilities: { vscode: boolean } }).capabilities = { vscode: true };
-    (mockCapabilities as unknown as { vscodeCommand: string | null }).vscodeCommand = 'code';
-    testSystemCapabilities = mockCapabilities;
+    // Set up mock system capabilities (avoids running the underlying `which` shell-out)
+    testSystemCapabilities = createMockSystemCapabilities({ vscode: true });
 
     // Create a test JobQueue with the shared database connection
     testJobQueue = new JobQueue(getDatabase(), { concurrency: 1 });
@@ -1891,11 +1897,11 @@ describe('API Routes Integration', () => {
         const payload = JSON.parse(job!.payload) as WorktreeDeletePayload;
 
         const handlers = new Map<string, JobHandler<unknown>>();
-        const fakeQueue = {
+        const fakeQueue = asJobQueue({
           registerHandler: <T>(type: string, handler: JobHandler<T>) => {
             handlers.set(type, handler as JobHandler<unknown>);
           },
-        } as unknown as JobQueue;
+        });
 
         registerWorktreeDeleteJobHandler(fakeQueue, {
           deletionDeps: {

@@ -618,7 +618,7 @@ describe('buildArtifactToolResult (§4.1 url/note shape)', () => {
     expect(result).toEqual({
       artifactId: 'artifact-1',
       path: '/artifacts/artifact-1',
-      note: expect.stringContaining('AGENT_CONSOLE_PUBLIC_ORIGIN') as unknown as string,
+      note: expect.stringContaining('AGENT_CONSOLE_PUBLIC_ORIGIN'),
     });
     expect(result.url).toBeUndefined();
   });

@@ -73,6 +73,35 @@ interface FakeFileSink {
   flush: () => number;
 }
 
+interface FakeSubprocess {
+  pid: number;
+  exited: Promise<number>;
+  stdin: FakeFileSink;
+  stdout: ReadableStream<Uint8Array>;
+  stderr: ReadableStream<Uint8Array>;
+  kill: (signal?: number) => void;
+}
+
+/**
+ * Typed fixture builder for a fake `spawnAsUserFn` result. `SpawnAsUserResult.subprocess`
+ * is Bun's real `Subprocess<'pipe','pipe','pipe'>` and `.stdin` its real
+ * `FileSink` -- far larger types than the `FakeSubprocess`/`FakeFileSink`
+ * doubles above actually implement. Mirrors the same-named helper in
+ * `services/__tests__/embedded-agent-worker-service.test.ts`.
+ */
+function toSpawnAsUserResult(fields: {
+  subprocess: FakeSubprocess;
+  stdin: FakeFileSink;
+  elevated?: boolean;
+}): SpawnAsUserResult {
+  const result: Pick<SpawnAsUserResult, 'elevated'> & { subprocess: FakeSubprocess; stdin: FakeFileSink } = {
+    subprocess: fields.subprocess,
+    stdin: fields.stdin,
+    elevated: fields.elevated ?? false,
+  };
+  return result as SpawnAsUserResult;
+}
+
 /**
  * Fake spawnAsUser for the embedded-agent loop subprocess, with a `pushLine`
  * hook to emit NDJSON events on stdout (unlike routes-embedded-agent.test.ts's
@@ -121,7 +150,7 @@ function makeFakeEmbeddedSpawn(): {
     flush: () => 0,
   };
 
-  const subprocess = {
+  const subprocess: FakeSubprocess = {
     pid: 9999,
     exited,
     stdin,
@@ -139,7 +168,7 @@ function makeFakeEmbeddedSpawn(): {
       throw err;
     }
     captured.push(opts);
-    return { subprocess, stdin, elevated: false } as unknown as SpawnAsUserResult;
+    return toSpawnAsUserResult({ subprocess, stdin, elevated: false });
   };
 
   return {

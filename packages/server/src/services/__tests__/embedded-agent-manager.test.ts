@@ -66,6 +66,15 @@ function createCallbackRecorder() {
 }
 
 /**
+ * `JobQueue` has private fields, so a stub object literal cannot satisfy it
+ * structurally. `Partial<JobQueue>` retains the same private brand, so this
+ * single-step cast type-checks without bridging through `unknown`.
+ */
+function asJobQueue(stub: Partial<JobQueue>): JobQueue {
+  return stub as JobQueue;
+}
+
+/**
  * Fake `JobQueue` capturing every `enqueue` call's `(type, payload)`, plus
  * an optional `order` array so tests can interleave enqueue calls with
  * other recorded events (repository writes, lifecycle callbacks) to assert
@@ -73,13 +82,13 @@ function createCallbackRecorder() {
  */
 function createFakeJobQueue(order?: string[]) {
   const calls: Array<{ type: string; payload: unknown }> = [];
-  const jobQueue = {
-    enqueue: async (type: string, payload: unknown) => {
+  const jobQueue = asJobQueue({
+    enqueue: async (type, payload) => {
       order?.push('enqueue');
       calls.push({ type, payload });
       return 'job-id';
     },
-  } as unknown as JobQueue;
+  });
   return { jobQueue, calls };
 }
 
