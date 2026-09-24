@@ -1,5 +1,5 @@
 import { mock } from 'bun:test';
-import type { PtyProvider, PtyDataDiagnostics } from '../../lib/pty-provider.js';
+import type { PtyProvider, PtyDataDiagnostics, PtySpawnOptions } from '../../lib/pty-provider.js';
 
 /**
  * Disposable interface matching bun-pty's IDisposable.
@@ -152,12 +152,11 @@ export function createMockPtyFactory(startPid = 10000) {
   let nextPid = startPid;
   let autoEmitSentinel = true;
 
-  const spawn = mock((...args: unknown[]) => {
-    const spawnArgs = args[1] as string[] | undefined;
+  const spawn = mock((_command: string, args: string[], _options: PtySpawnOptions) => {
     // Scan the full argv, not just argv[1]: direct spawns are `sh -c <cmd>`
     // (sentinel at index 1) but elevated spawns are `sudo -u ... sh -c <cmd>`
     // (sentinel deep in the array). Joining covers both shapes.
-    const joinedArgs = Array.isArray(spawnArgs) ? spawnArgs.join(' ') : '';
+    const joinedArgs = args.join(' ');
     const sentinelMatch = joinedArgs.match(/__AGENT_CONSOLE_READY_[a-f0-9]+/);
     const sentinel = sentinelMatch?.[0];
     const pty = new MockPty(nextPid++, sentinel, autoEmitSentinel);
@@ -181,7 +180,17 @@ export function createMockPtyFactory(startPid = 10000) {
     autoEmitSentinel = enabled;
   };
 
-  // Create a PtyProvider that uses the mock spawn
+  // Create a PtyProvider that uses the mock spawn.
+  // Residual: `MockPty` does not (yet) `implements PtyInstance`, so this
+  // bridges through `unknown`. Measured gaps if it were declared: missing
+  // `cols`/`rows`/`process` (IPty fields MockPty tracks as `currentCols`/
+  // `currentRows` and has no analogue for at all); `kill(signal?: number)`
+  // vs `IPty.kill(signal?: string)` (the mock's numeric signal is the drift
+  // -- production PTYs' `kill()` takes no signal at all); and
+  // `getDataDiagnostics(): PtyDataDiagnostics | undefined` vs `IPty`'s
+  // non-optional call signature (the real adapter always returns a value;
+  // the mock's `undefined` branch is the drift, not the contract). Tracked
+  // as test-only follow-up work, not a change to the production contract.
   const provider: PtyProvider = {
     spawn: spawn as unknown as PtyProvider['spawn'],
   };

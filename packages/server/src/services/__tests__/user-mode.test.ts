@@ -306,7 +306,7 @@ describe('MultiUserMode', () => {
       // After the os-user-lookup extraction, MultiUserMode no longer carries
       // its own lookupOsUser private method. The login() path now imports
       // the standalone helper from os-user-lookup.ts.
-      expect(typeof (mode as unknown as { lookupOsUser?: unknown }).lookupOsUser).toBe('undefined');
+      expect(typeof (mode as { lookupOsUser?: unknown }).lookupOsUser).toBe('undefined');
     });
 
     it('returns null login when OS user lookup fails (unknown user)', async () => {

@@ -16,7 +16,24 @@ import {
   readManifest,
   manifestPathFor,
   firstAvailableOffset,
+  type SegmentMeta,
 } from '../worker-output-manifest.js';
+
+/**
+ * @internal Reaches WorkerOutputFileManager's private `getDecompressedSegment`
+ * (the single-entry decompressed-segment cache under test in this file).
+ * No public observable exposes the cache directly -- callers only see its
+ * effect (shared promise identity, correct bytes). Bracket access works
+ * because the member is declared `private` (not `#private`).
+ */
+function getDecompressedSegmentForTest(
+  manager: WorkerOutputFileManager,
+  key: string,
+  seg: SegmentMeta,
+  segPath: string,
+): Promise<Buffer> {
+  return manager['getDecompressedSegment'](key, seg, segPath);
+}
 
 const CONFIG_DIR = '/test/config';
 const resolver = new SessionDataPathResolver(`${CONFIG_DIR}/_quick`, CONFIG_DIR);
@@ -294,10 +311,8 @@ describe('WorkerOutputFileManager — backwards range serving', () => {
       const seg0 = m.segments[0];
 
       // Two synchronous calls for the same seq return the identical promise.
-      const p1 = (manager as unknown as { getDecompressedSegment: (k: string, s: unknown, p: string) => Promise<Buffer> })
-        .getDecompressedSegment(key, seg0, segPath(seg0));
-      const p2 = (manager as unknown as { getDecompressedSegment: (k: string, s: unknown, p: string) => Promise<Buffer> })
-        .getDecompressedSegment(key, seg0, segPath(seg0));
+      const p1 = getDecompressedSegmentForTest(manager, key, seg0, segPath(seg0));
+      const p2 = getDecompressedSegmentForTest(manager, key, seg0, segPath(seg0));
       expect(p1).toBe(p2);
       const buf = await p1;
       expect(buf.equals(gunzipSync(vol.readFileSync(segPath(seg0)) as Buffer))).toBe(true);
@@ -307,11 +322,9 @@ describe('WorkerOutputFileManager — backwards range serving', () => {
       await buildThreeRegionFixture(manager);
       const m = (await readManifest(manifestPath))!;
       const [segA, segB] = m.segments;
-      const call = (seg: { file: string }, s: unknown) =>
-        (manager as unknown as { getDecompressedSegment: (k: string, seg: unknown, p: string) => Promise<Buffer> })
-          .getDecompressedSegment(key, s, segPath(seg));
+      const call = (seg: SegmentMeta) => getDecompressedSegmentForTest(manager, key, seg, segPath(seg));
 
-      const [bufA, bufB] = await Promise.all([call(segA, segA), call(segB, segB)]);
+      const [bufA, bufB] = await Promise.all([call(segA), call(segB)]);
       expect(bufA.equals(gunzipSync(vol.readFileSync(segPath(segA)) as Buffer))).toBe(true);
       expect(bufB.equals(gunzipSync(vol.readFileSync(segPath(segB)) as Buffer))).toBe(true);
       expect(bufA.equals(bufB)).toBe(false);

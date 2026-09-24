@@ -239,8 +239,10 @@ describe('WorkerOutputFileManager — segmented archive', () => {
       // Force the content-deletion step to fail; the catch must STILL persist the
       // new epoch (returning/leaving the old epoch would re-alias the rewound
       // stream to the old generation — the §3.4 hazard).
-      const seam = manager as unknown as { deleteContentFiles: (...a: unknown[]) => Promise<void> };
-      seam.deleteContentFiles = async () => { throw new Error('unlink boom'); };
+      // @internal Overrides the private deleteContentFiles to force the
+      // catch path. Bracket access works because the member is declared
+      // `private` (not `#private`).
+      manager['deleteContentFiles'] = async () => { throw new Error('unlink boom'); };
 
       const ret = await manager.resetWorkerOutput(S, W, resolver);
 
@@ -483,13 +485,13 @@ describe('WorkerOutputFileManager — segmented archive', () => {
       // first call, so the read keeps the per-worker lock until we release it.
       let releaseRead!: () => void;
       const readGate = new Promise<void>((r) => { releaseRead = r; });
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const m = manager as unknown as { readLiveBuffer: (...a: unknown[]) => Promise<Buffer> };
-      const origReadLive = m.readLiveBuffer.bind(manager);
+      // @internal Bracket access works because the member is declared
+      // `private` (not `#private`).
+      const origReadLive = manager['readLiveBuffer'].bind(manager);
       let gated = false;
-      m.readLiveBuffer = async (...args: unknown[]) => {
+      manager['readLiveBuffer'] = async (sessionId: string, workerId: string, resolver: SessionDataPathResolver) => {
         if (!gated) { gated = true; await readGate; }
-        return origReadLive(...args);
+        return origReadLive(sessionId, workerId, resolver);
       };
 
       const readPromise = manager.readHistoryWithOffset(S, W, resolver, undefined);

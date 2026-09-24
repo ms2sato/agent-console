@@ -125,7 +125,7 @@ describe('MultiUserMode', () => {
 
       // Sign a token with the secret from the file
       const authUser = await userRepository.upsertByOsUid(1001, 'testuser', '/home/testuser');
-      const secret = new Uint8Array(secretBytes as unknown as ArrayBuffer);
+      const secret = new Uint8Array(secretBytes);
 
       const token = await new SignJWT({
         username: authUser.username,
@@ -392,7 +392,7 @@ describe('MultiUserMode', () => {
      * Get the spawn call arguments from the mock.
      */
     function getLastSpawnCall(): [string, string[], PtySpawnOptions] {
-      const calls = ptyFactory.spawn.mock.calls as unknown as Array<[string, string[], PtySpawnOptions]>;
+      const calls = ptyFactory.spawn.mock.calls;
       return calls[calls.length - 1];
     }
 
@@ -572,7 +572,7 @@ describe('MultiUserMode', () => {
     }
 
     function getLastSpawnCall(): [string, string[], PtySpawnOptions] {
-      const calls = ptyFactory.spawn.mock.calls as unknown as Array<[string, string[], PtySpawnOptions]>;
+      const calls = ptyFactory.spawn.mock.calls;
       return calls[calls.length - 1];
     }
 
@@ -1090,7 +1090,7 @@ describe('MultiUserMode', () => {
     }
 
     function getLastSpawnCall(): [string, string[], PtySpawnOptions] {
-      const calls = ptyFactory.spawn.mock.calls as unknown as Array<[string, string[], PtySpawnOptions]>;
+      const calls = ptyFactory.spawn.mock.calls;
       return calls[calls.length - 1];
     }
 
