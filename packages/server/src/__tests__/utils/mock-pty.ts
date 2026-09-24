@@ -27,8 +27,16 @@ interface MockDisposable {
  */
 export class MockPty implements PtyInstance {
   pid: number;
-  cols = 80;
-  rows = 24;
+  /**
+   * 120/30 = production spawn size; deliberately not 80/24 so a resize to
+   * the xterm default is observable. Production spawns every agent/terminal
+   * PTY at 120x30 (worker-manager.ts's `activateAgentWorkerPty` /
+   * `activateTerminalWorkerPty`), not `BunTerminalPtyAdapter`'s
+   * options-less-spawn fallback (80/24) -- production never takes that
+   * fallback path, so the mock must not start there either.
+   */
+  cols = 120;
+  rows = 30;
   process = 'mock';
   // Note: Single callback that gets replaced, matching PtyInstance interface contract
   // which specifies "Only one callback is supported. Subsequent calls will replace the previous callback."
@@ -45,8 +53,6 @@ export class MockPty implements PtyInstance {
   /** Set true when dispose() is called. Mirrors PtyInstance's optional dispose(). */
   disposed = false;
   writtenData: string[] = [];
-  currentCols = 120;
-  currentRows = 30;
   loginShellSentinel?: string;
   /**
    * Optional diagnostics stub for the sentinel watchdog (Issue #1242).
@@ -67,6 +73,20 @@ export class MockPty implements PtyInstance {
     this.pid = pid;
     this.loginShellSentinel = loginShellSentinel;
     this.autoEmitSentinel = autoEmitSentinel;
+  }
+
+  /**
+   * Read-only aliases over `cols`/`rows`, kept for the tests that predate
+   * this mock's `PtyInstance` conformance. `cols`/`rows` are the single
+   * source of truth -- `resize()` writes only those -- so the two pairs can
+   * never disagree.
+   */
+  get currentCols(): number {
+    return this.cols;
+  }
+
+  get currentRows(): number {
+    return this.rows;
   }
 
   onData(callback: (data: string) => void): MockDisposable {
@@ -96,8 +116,6 @@ export class MockPty implements PtyInstance {
   }
 
   resize(cols: number, rows: number) {
-    this.currentCols = cols;
-    this.currentRows = rows;
     this.cols = cols;
     this.rows = rows;
   }
