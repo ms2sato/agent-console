@@ -136,16 +136,13 @@ function toSpawnAsUserResult(fields: {
  * `runtimes` is constructed inside `activate()` rather than injected via
  * `EmbeddedAgentWorkerServiceDeps` -- there is no harness-side seam for it.
  * This is the file's single reach point for that private state, kept to
- * one documented cast instead of one per call site.
+ * one documented access instead of one per call site. `runtimes` is a TS
+ * `private` field (not `#private`), so bracket access is typed -- no cast
+ * needed, and inference carries the real `Runtime` type (Architect ruling
+ * 2026-09-24).
  */
-function getRuntimesForTest(
-  service: EmbeddedAgentWorkerService,
-): Map<string, { projectDiscovery: unknown; consecutiveParseFailures: number; exitObserved: boolean }> {
-  return (
-    service as unknown as {
-      runtimes: Map<string, { projectDiscovery: unknown; consecutiveParseFailures: number; exitObserved: boolean }>;
-    }
-  ).runtimes;
+function getRuntimesForTest(service: EmbeddedAgentWorkerService) {
+  return service['runtimes'];
 }
 
 interface ControllableStream {
