@@ -1007,6 +1007,16 @@ async function main(expectNoPermission: boolean): Promise<void> {
 
     await ctx.sessionManager.deactivateEmbeddedAgentWorker(targetSessionId, targetWorkerId).catch(() => {});
   } finally {
+    // `isolatedConfigDir` lives directly under the OS temp dir, NOT nested
+    // under `home` -- it holds a copy of the operator's CLI credentials
+    // (isolateClaudeConfigDir's own doc comment). Removed FIRST, ahead of
+    // every other teardown step below (worker deactivation, the orphan
+    // sweep, the capture-before-delete step, `home` removal), so a throw
+    // from any one of them still leaves the credentials removed. Its last
+    // read is negative control (c) above (line ~993), which reads
+    // server-side events rather than the directory itself, so removing it
+    // here is strictly after every read.
+    if (isolatedConfigDir) rmSync(isolatedConfigDir, { recursive: true, force: true });
     if (ctx) {
       for (const s of ctx.sessionManager.getAllSessions()) {
         for (const w of s.workers) {
@@ -1054,14 +1064,6 @@ async function main(expectNoPermission: boolean): Promise<void> {
       if (capturedAny) console.log(`==> worker NDJSON captured to: ${captureDir}`);
     }
     if (home) Bun.spawnSync(['rm', '-rf', home]);
-    // `isolatedConfigDir` lives directly under the OS temp dir, NOT nested
-    // under `home` -- it holds a copy of the operator's CLI credentials
-    // (isolateClaudeConfigDir's own doc comment) and needs its own removal
-    // on every exit path, success or thrown error (Issue #1819). Its last
-    // read is negative control (c) above (line ~993), which reads
-    // server-side events rather than the directory itself, so removal here
-    // is strictly after every read.
-    if (isolatedConfigDir) rmSync(isolatedConfigDir, { recursive: true, force: true });
   }
 }
 
