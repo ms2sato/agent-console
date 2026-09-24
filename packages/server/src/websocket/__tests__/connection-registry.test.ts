@@ -1,13 +1,14 @@
 import { describe, it, expect, beforeEach } from 'bun:test';
 import type { WSContext } from 'hono/ws';
 import { WebSocketConnectionRegistry } from '../connection-registry.js';
+import { asWSContext } from './ws-test-helpers.js';
 
 function createMockWs(): WSContext {
-  return {
+  return asWSContext({
     send: () => {},
     close: () => {},
     readyState: 1,
-  } as unknown as WSContext;
+  });
 }
 
 describe('WebSocketConnectionRegistry', () => {

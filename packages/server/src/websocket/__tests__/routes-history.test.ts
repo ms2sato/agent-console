@@ -24,8 +24,9 @@ import { RepositorySlackIntegrationService } from '../../services/notifications/
 import { SingleUserMode } from '../../services/user-mode.js';
 import { setupWebSocketRoutes } from '../routes.js';
 import { WebSocketConnectionRegistry } from '../connection-registry.js';
-import type { AppContext } from '../../app-context.js';
 import { McpTokenRegistry } from '../../mcp/mcp-auth.js';
+import { asWSContext, asUpgradeWebSocket } from './ws-test-helpers.js';
+import { asAppContext } from '../../__tests__/test-utils.js';
 
 const TEST_CONFIG_DIR = '/test/config';
 
@@ -43,7 +44,7 @@ function createMockWs(): WSContext & {
   const sentMessages: string[] = [];
   const closeCalls: { code?: number; reason?: string }[] = [];
 
-  return {
+  return asWSContext({
     send: (data: string | ArrayBuffer) => {
       sentMessages.push(typeof data === 'string' ? data : new TextDecoder().decode(data as ArrayBuffer));
     },
@@ -53,10 +54,7 @@ function createMockWs(): WSContext & {
     readyState: 1,
     sentMessages,
     closeCalls,
-  } as unknown as WSContext & {
-    sentMessages: string[];
-    closeCalls: { code?: number; reason?: string }[];
-  };
+  });
 }
 
 describe('Worker WebSocket history and notifications', () => {
@@ -103,7 +101,7 @@ describe('Worker WebSocket history and notifications', () => {
     const repositoryManager = await RepositoryManager.create({ repository: repositoryRepository, jobQueue: testJobQueue });
     const userMode = new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' });
 
-    const appContext = { sessionManager, notificationManager, agentManager, embeddedAgentManager, repositoryManager, userMode } as unknown as AppContext;
+    const appContext = asAppContext({ sessionManager, notificationManager, agentManager, embeddedAgentManager, repositoryManager, userMode });
 
     const app = new Hono();
     const upgradeWebSocket = (handlerFactory: WebSocketHandlerFactory) => {
@@ -111,7 +109,7 @@ describe('Worker WebSocket history and notifications', () => {
       capturedWorkerHandlerFactory = handlerFactory;
       return handlerFactory;
     };
-    await setupWebSocketRoutes(app, upgradeWebSocket as unknown as Parameters<typeof setupWebSocketRoutes>[1], appContext, testRegistry);
+    await setupWebSocketRoutes(app, asUpgradeWebSocket(upgradeWebSocket), appContext, testRegistry);
   });
 
   afterEach(async () => {

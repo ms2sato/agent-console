@@ -24,19 +24,16 @@ import { setupWebSocketRoutes } from '../routes.js';
 import type { AppContext } from '../../app-context.js';
 import { SingleUserMode } from '../../services/user-mode.js';
 import { McpTokenRegistry } from '../../mcp/mcp-auth.js';
+import { asUpgradeWebSocket } from './ws-test-helpers.js';
 
 const TEST_CONFIG_DIR = '/test/config';
 
 /**
  * Create a no-op upgradeWebSocket stub for tests that only need setupWebSocketRoutes
  * to register callbacks (not actually handle WebSocket connections).
- *
- * UpgradeWebSocket has overloaded call signatures with incompatible return types
- * (MiddlewareHandler vs Promise<Response>), so a passthrough stub cannot satisfy
- * the interface without casting through unknown. This helper centralizes that cast.
  */
 function createUpgradeWebSocketStub(): Parameters<typeof setupWebSocketRoutes>[1] {
-  return ((handler: unknown) => handler) as unknown as Parameters<typeof setupWebSocketRoutes>[1];
+  return asUpgradeWebSocket((handler: unknown) => handler);
 }
 
 describe('WebSocket routes notifications', () => {

@@ -1,21 +1,18 @@
 import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
-import type { WSContext } from 'hono/ws';
-import type pino from 'pino';
 import { WS_READY_STATE } from '@agent-console/shared';
 import { BufferedWebSocketSender } from '../buffered-ws-sender.js';
+import { asWSContext, asPinoLogger } from './ws-test-helpers.js';
 
 // Use short flush interval for tests to avoid slow waits
 const TEST_FLUSH_INTERVAL = 10; // ms
 const TEST_FLUSH_THRESHOLD = 100; // bytes
 
 function createMockWs() {
-  return {
+  return asWSContext({
     send: mock(),
     close: mock(),
     readyState: WS_READY_STATE.OPEN,
-  // WSContext has many required properties (binaryType, url, protocol);
-  // mock only provides the subset used by BufferedWebSocketSender
-  } as unknown as WSContext & { send: ReturnType<typeof mock>; readyState: number };
+  });
 }
 
 function createMockLogger() {
@@ -46,9 +43,7 @@ describe('BufferedWebSocketSender', () => {
     sender = new BufferedWebSocketSender(
       mockWs,
       () => readyState,
-      // pino.Logger has many required properties (level, fatal, trace, etc.);
-      // mock only provides the subset used by BufferedWebSocketSender
-      mockLogger as unknown as pino.Logger,
+      asPinoLogger(mockLogger),
       'test-worker',
       TEST_FLUSH_INTERVAL,
       TEST_FLUSH_THRESHOLD,

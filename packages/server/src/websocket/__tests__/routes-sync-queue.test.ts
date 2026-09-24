@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { Hono } from 'hono';
-import type { WSContext } from 'hono/ws';
+import type { WSContext, WSReadyState } from 'hono/ws';
 import type { AppServerMessage } from '@agent-console/shared';
 import { WS_CLOSE_CODE, SCHEMA_VERSION } from '@agent-console/shared';
 import { createMockPtyFactory } from '../../__tests__/utils/mock-pty.js';
@@ -29,8 +29,9 @@ import { RepositorySlackIntegrationService } from '../../services/notifications/
 import { SingleUserMode } from '../../services/user-mode.js';
 import { setupWebSocketRoutes, broadcastToApp } from '../routes.js';
 import { WebSocketConnectionRegistry } from '../connection-registry.js';
-import type { AppContext } from '../../app-context.js';
 import { McpTokenRegistry } from '../../mcp/mcp-auth.js';
+import { asWSContext, asUpgradeWebSocket } from './ws-test-helpers.js';
+import { asAppContext } from '../../__tests__/test-utils.js';
 
 const TEST_CONFIG_DIR = '/test/config';
 
@@ -45,27 +46,30 @@ type WebSocketHandlerFactory = (c: { req: { param: (name: string) => string } })
   onClose: (event: unknown, ws: WSContext) => void;
 };
 
-function createMockWs(): WSContext & {
+/**
+ * `readyState` defaults to OPEN. Accepts an override so callers that need a
+ * dead-client shape (e.g. CLOSED) can set it at construction time -- WSContext's
+ * real `readyState` is a getter with no setter, so mutating it after
+ * construction is not an option.
+ */
+function createMockWs(readyState: WSReadyState = 1): WSContext & {
   sentMessages: string[];
   closeCalls: { code?: number; reason?: string }[];
 } {
   const sentMessages: string[] = [];
   const closeCalls: { code?: number; reason?: string }[] = [];
 
-  return {
+  return asWSContext({
     send: (data: string | ArrayBuffer) => {
       sentMessages.push(typeof data === 'string' ? data : new TextDecoder().decode(data as ArrayBuffer));
     },
     close: (code?: number, reason?: string) => {
       closeCalls.push({ code, reason });
     },
-    readyState: 1, // OPEN
+    readyState,
     sentMessages,
     closeCalls,
-  } as unknown as WSContext & {
-    sentMessages: string[];
-    closeCalls: { code?: number; reason?: string }[];
-  };
+  });
 }
 
 describe('App WebSocket sync-queue handling', () => {
@@ -110,7 +114,7 @@ describe('App WebSocket sync-queue handling', () => {
     const repositoryManager = await RepositoryManager.create({ repository: repositoryRepository, jobQueue: testJobQueue });
     const userMode = new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' });
 
-    const appContext = { sessionManager, notificationManager, agentManager, embeddedAgentManager, repositoryManager, userMode } as unknown as AppContext;
+    const appContext = asAppContext({ sessionManager, notificationManager, agentManager, embeddedAgentManager, repositoryManager, userMode });
 
     const app = new Hono();
     // Capture the app handler factory (first call to upgradeWebSocket)
@@ -122,7 +126,7 @@ describe('App WebSocket sync-queue handling', () => {
       }
       return handlerFactory;
     };
-    await setupWebSocketRoutes(app, upgradeWebSocket as unknown as Parameters<typeof setupWebSocketRoutes>[1], appContext, testRegistry);
+    await setupWebSocketRoutes(app, asUpgradeWebSocket(upgradeWebSocket), appContext, testRegistry);
   });
 
   afterEach(async () => {
@@ -154,8 +158,8 @@ describe('App WebSocket sync-queue handling', () => {
 
     const mockWs = createMockWs();
     // Manually simulate what onOpen does: add client and start syncing
-    testRegistry.addAppClient(mockWs as unknown as WSContext);
-    testRegistry.startSyncing(mockWs as unknown as WSContext);
+    testRegistry.addAppClient(mockWs);
+    testRegistry.startSyncing(mockWs);
 
     // Broadcast messages while syncing - these should be queued
     const msg1: AppServerMessage = { type: 'session-deleted', sessionId: 'sess-1' };
@@ -171,7 +175,7 @@ describe('App WebSocket sync-queue handling', () => {
     expect(directMessages).toHaveLength(0);
 
     // Verify queue has the messages
-    const queue = testRegistry.getSyncQueue(mockWs as unknown as WSContext);
+    const queue = testRegistry.getSyncQueue(mockWs);
     expect(queue).toBeDefined();
     expect(queue!.length).toBe(2);
 
@@ -179,7 +183,7 @@ describe('App WebSocket sync-queue handling', () => {
     for (const queuedMsg of queue!) {
       mockWs.send(JSON.stringify(queuedMsg));
     }
-    testRegistry.stopSyncing(mockWs as unknown as WSContext);
+    testRegistry.stopSyncing(mockWs);
 
     // Now the queued messages should have been sent
     const replayedMessages = mockWs.sentMessages.filter(m => {
@@ -198,8 +202,8 @@ describe('App WebSocket sync-queue handling', () => {
     const mockWs = createMockWs();
 
     // Add client and start syncing
-    testRegistry.addAppClient(mockWs as unknown as WSContext);
-    testRegistry.startSyncing(mockWs as unknown as WSContext);
+    testRegistry.addAppClient(mockWs);
+    testRegistry.startSyncing(mockWs);
 
     // Fill the queue to capacity (MAX_SYNC_QUEUE_SIZE = 100)
     for (let i = 0; i < 100; i++) {
@@ -224,7 +228,7 @@ describe('App WebSocket sync-queue handling', () => {
     const mockWs = createMockWs();
 
     // Add client without syncing
-    testRegistry.addAppClient(mockWs as unknown as WSContext);
+    testRegistry.addAppClient(mockWs);
 
     const msg: AppServerMessage = { type: 'session-deleted', sessionId: 'sess-1' };
     broadcastToApp(msg);
@@ -237,11 +241,10 @@ describe('App WebSocket sync-queue handling', () => {
   });
 
   it('should remove dead clients with non-OPEN readyState', () => {
-    // Create a mock WS with CLOSED readyState
-    const deadWs = createMockWs();
-    (deadWs as unknown as { readyState: number }).readyState = 3; // CLOSED
+    // Create a mock WS with CLOSED readyState set at construction time.
+    const deadWs = createMockWs(3); // CLOSED
 
-    testRegistry.addAppClient(deadWs as unknown as WSContext);
+    testRegistry.addAppClient(deadWs);
     expect(testRegistry.appClientCount).toBe(1);
 
     // Broadcasting should detect and remove the dead client

@@ -3,6 +3,7 @@ import type { WSContext } from 'hono/ws';
 import type { GitDiffData, GitDiffServerMessage } from '@agent-console/shared';
 import { createGitDiffHandlers, type GitDiffHandlerDependencies } from '../git-diff-handler.js';
 import { AnnotationService } from '../../services/annotation-service.js';
+import { asWSContext } from './ws-test-helpers.js';
 
 
 describe('GitDiffHandler', () => {
@@ -31,13 +32,13 @@ describe('GitDiffHandler', () => {
     sentMessages = [];
 
     // Create mock WebSocket context
-    mockWs = {
+    mockWs = asWSContext({
       send: mock((msg: string) => {
         sentMessages.push(msg);
       }),
       close: mock(),
       readyState: 1, // OPEN
-    } as unknown as WSContext;
+    });
 
     // Create mock dependencies
     mockGetDiffData = mock(async () => mockDiffData);
