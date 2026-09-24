@@ -16,12 +16,19 @@ import * as path from 'node:path';
  * `.claude/rules/os-environment-coupling.md` and `testing.md`'s "Scratch
  * git repositories" paragraph.
  *
- * Two shapes are detected, matching every commit-spawning site measured on
- * `main` at the time this net was written:
+ * Three shapes are detected, matching every commit-spawning site measured
+ * on `main` at the time this net was written (plus one more, found by
+ * CodeRabbit review, that a maintainer could plausibly write):
  *   1. A direct array literal: `Bun.spawn(['git', ..., 'commit', ...])`.
- *   2. A call through a locally-named git wrapper: `git(['commit', ...])`,
- *      `scratchRepo.git(['commit', ...])` -- the wrapper's own array does
- *      not repeat the literal `'git'`, so this is a separate pattern.
+ *   2. A call through a `git`-PREFIXED locally-named wrapper:
+ *      `git(['commit', ...])`, `scratchRepo.git(['commit', ...])` -- the
+ *      wrapper's own array does not repeat the literal `'git'`, so this is
+ *      a separate pattern from #1. Case-insensitive.
+ *   3. A call through a `Git`-SUFFIXED wrapper, e.g. `runGit(['commit',
+ *      ...])` -- notably the exact name of `scratch-git.ts`'s own internal
+ *      low-level spawn function. Case-SENSITIVE on the capital `G`
+ *      specifically so this does not also match `digit(...)` (whose last
+ *      three characters spell "git" but are not a wrapper name at all).
  *
  * Glob-driven (not a hardcoded list), same convention as
  * `registry-reachability.test.ts`: a future new smoke or test file that
@@ -31,13 +38,25 @@ import * as path from 'node:path';
  * Polarity (measured during implementation): temporarily adding a bare
  * `Bun.spawnSync(['git', 'commit', '-m', 'x'])` line to a smoke that does
  * not import scratch-git.ts flips the corresponding per-file test from
- * pass to fail.
+ * pass to fail. Separately measured for shape #3: a bare `function
+ * runGit(): void { Bun.spawnSync(['x']); } runGit(['commit', ...]);`-shaped
+ * snippet (never calling a real `git` binary -- the pattern only reads
+ * source text) added to a smoke without the import also flips its test.
  */
 
 const REPO_ROOT = path.resolve(import.meta.dir, '../../..');
 
 const COMMIT_ARRAY_PATTERN = /\[\s*['"]git['"][\s\S]{0,200}?['"]commit['"]/;
-const WRAPPER_CALL_PATTERN = /\bgit\w*\(\s*\[[\s\S]{0,200}?['"]commit['"]/i;
+// Two separately-flagged patterns rather than one alternation: the PREFIX
+// form is case-insensitive (git(/Git(/GIT( are all wrapper-shaped), but the
+// SUFFIX form must stay case-SENSITIVE on a literal capital `Git` -- under
+// a case-insensitive flag, `\w*Git` would also match "digit(" (the last
+// three characters happen to spell "git"). Requiring the camelCase-style
+// capital G on the suffix side (as in `runGit`, matching this very
+// helper's own internal `runGit` spawn function name) avoids that without
+// losing coverage: nobody names a wrapper "digit" for git commands.
+const WRAPPER_PREFIX_PATTERN = /\bgit\w*\(\s*\[[\s\S]{0,200}?['"]commit['"]/i;
+const WRAPPER_SUFFIX_PATTERN = /\b\w*Git\(\s*\[[\s\S]{0,200}?['"]commit['"]/;
 const IMPORT_PATTERN = /from\s+['"][^'"]*scratch-git(?:\.js)?['"]/;
 
 /**
@@ -90,7 +109,11 @@ function discoverCandidateFiles(): string[] {
 }
 
 function spawnsGitCommit(content: string): boolean {
-  return COMMIT_ARRAY_PATTERN.test(content) || WRAPPER_CALL_PATTERN.test(content);
+  return (
+    COMMIT_ARRAY_PATTERN.test(content) ||
+    WRAPPER_PREFIX_PATTERN.test(content) ||
+    WRAPPER_SUFFIX_PATTERN.test(content)
+  );
 }
 
 function importsScratchGit(content: string): boolean {

@@ -10,15 +10,29 @@
  * risking memfs poisoning from an earlier-loaded file in a shared process.
  *
  * Mutation record (workflow.md "A check's existence is not its detection
- * power"): removing `GIT_CONFIG_GLOBAL` from the env `createScratchGitRepo`
- * returns makes the POLARITY test below fail (the helper-routed commit then
- * also fails on the fake host signer). Removing guard (ii)'s toplevel check
- * makes the "guard (ii)" test below fail (no throw, and a stray directory
- * would appear under the real repository's toplevel). Both were measured
- * against this file during implementation.
+ * power"), all measured against this file during implementation:
+ *   - Removing `GIT_CONFIG_GLOBAL` from the env `createScratchGitRepo`
+ *     returns -> the POLARITY test fails (the helper-routed commit then
+ *     also fails on the fake host signer).
+ *   - Removing guard (ii)'s toplevel check -> the "guard (ii)" test fails
+ *     (no throw, and a stray directory would appear under the real
+ *     repository's toplevel).
+ *   - Removing `sanitizeInheritedGitEnv`'s call site (raw `...process.env`
+ *     instead) -> the "GIT_CONFIG_COUNT/KEY/VALUE injection" test fails with
+ *     the EXACT `cannot exec '/nonexistent/op-ssh-sign'` error the POLARITY
+ *     test's withoutHelperEnv spawn produces (CodeRabbit review, PR #1814).
+ *   - Removing `'GIT_DIR'` from `RISKY_GIT_LOCATION_KEYS` -> the "inherited
+ *     GIT_DIR" test fails: the commit lands in the OTHER scratch repo
+ *     (`rev-list --count HEAD` goes from 1 to 2) and `rev-parse --git-dir`
+ *     reports the other repo's `.git`, not this repo's own.
+ *   - Reverting `resolveRealish` to plain `path.resolve` (no symlink
+ *     resolution) -> the "symlinked parentDir" guard-(ii) test fails (no
+ *     throw); the scratch repo is actually created inside the real
+ *     repository's toplevel through the symlink, cleaned up by the test's
+ *     own `finally` regardless.
  */
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'bun:test';
-import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { assertRealFs } from '../memfs-detection.js';
@@ -256,6 +270,107 @@ describe('createScratchGitRepo', () => {
     const repo = await createScratchGitRepo({ parentDir: scratchParent, initialCommit: false });
     await expect(repo.git(['rev-parse', 'HEAD'])).rejects.toThrow();
     await repo.cleanup();
+  });
+
+  it('sanitizes an inherited GIT_CONFIG_COUNT/KEY/VALUE injection: the helper commit still succeeds despite an ambient commit.gpgsign=true triple', async () => {
+    // Injects the EXACT same broken signer as the fake host HOME's
+    // .gitconfig (commit.gpgsign / gpg.format / gpg.ssh.program), but via
+    // the env-based GIT_CONFIG_COUNT/KEY/VALUE mechanism instead of a file
+    // -- GIT_CONFIG_GLOBAL does NOT override this mechanism (a separate,
+    // higher-precedence config source per git's own docs). If this
+    // triple reached the actual `git commit`, the helper's own init+commit
+    // would fail with the identical "cannot exec" error the POLARITY
+    // test's withoutHelperEnv spawn produces. A clean construction (no
+    // throw) is the assertion; a generic "no secret key" GPG failure would
+    // ALSO indicate a leak (a narrower injection), so this uses the exact
+    // signer to make any leak diagnostic rather than ambiguous.
+    process.env.GIT_CONFIG_COUNT = '4';
+    process.env.GIT_CONFIG_KEY_0 = 'commit.gpgsign';
+    process.env.GIT_CONFIG_VALUE_0 = 'true';
+    process.env.GIT_CONFIG_KEY_1 = 'gpg.format';
+    process.env.GIT_CONFIG_VALUE_1 = 'ssh';
+    process.env.GIT_CONFIG_KEY_2 = 'gpg.ssh.program';
+    process.env.GIT_CONFIG_VALUE_2 = '/nonexistent/op-ssh-sign';
+    process.env.GIT_CONFIG_KEY_3 = 'user.signingkey';
+    process.env.GIT_CONFIG_VALUE_3 = '/fake/path/to/ssh-signing-key.pub';
+    try {
+      const repo = await createScratchGitRepo({ parentDir: scratchParent });
+      await repo.git(['commit', '--allow-empty', '-q', '-m', 'second commit despite injected triple']);
+      await repo.cleanup();
+    } finally {
+      delete process.env.GIT_CONFIG_COUNT;
+      delete process.env.GIT_CONFIG_KEY_0;
+      delete process.env.GIT_CONFIG_VALUE_0;
+      delete process.env.GIT_CONFIG_KEY_1;
+      delete process.env.GIT_CONFIG_VALUE_1;
+      delete process.env.GIT_CONFIG_KEY_2;
+      delete process.env.GIT_CONFIG_VALUE_2;
+      delete process.env.GIT_CONFIG_KEY_3;
+      delete process.env.GIT_CONFIG_VALUE_3;
+    }
+  });
+
+  it('sanitizes an inherited GIT_DIR: the helper commits into its own dir, never into a second scratch repo pointed to by ambient GIT_DIR', async () => {
+    const otherRepo = await createScratchGitRepo({ parentDir: scratchParent });
+    const otherHeadCountBefore = await otherRepo.git(['rev-list', '--count', 'HEAD']);
+
+    process.env.GIT_DIR = path.join(otherRepo.dir, '.git');
+    try {
+      const repo = await createScratchGitRepo({ parentDir: scratchParent });
+
+      // `--git-dir` (not `--show-toplevel`, which falls back to reporting
+      // `cwd` itself whenever GIT_WORK_TREE is unset -- measured during
+      // implementation to NOT discriminate this mutation, since the spawn's
+      // cwd is already `repo.dir` regardless of GIT_DIR) reveals the
+      // ACTUAL .git directory git resolved for this invocation, which is
+      // GIT_DIR verbatim when set and unsanitized.
+      const gitDir = await repo.git(['rev-parse', '--git-dir']);
+      expect(path.resolve(repo.dir, gitDir)).toBe(path.join(repo.dir, '.git'));
+
+      // otherRepo's history is untouched by anything that happened while
+      // constructing `repo`.
+      const otherHeadCountAfter = await otherRepo.git(['rev-list', '--count', 'HEAD']);
+      expect(otherHeadCountAfter).toBe(otherHeadCountBefore);
+
+      await repo.cleanup();
+    } finally {
+      delete process.env.GIT_DIR;
+      await otherRepo.cleanup();
+    }
+  });
+
+  it('guard (ii): a symlinked parentDir pointing INTO the real repository toplevel throws (both sides of every comparison are realpath-resolved)', async () => {
+    const toplevelResult = Bun.spawnSync(['git', 'rev-parse', '--show-toplevel'], {
+      cwd: process.cwd(),
+      stdout: 'pipe',
+      stderr: 'pipe',
+    });
+    expect(toplevelResult.exitCode).toBe(0);
+    const toplevel = new TextDecoder().decode(toplevelResult.stdout).trim();
+
+    const targetInsideRepo = path.join(toplevel, 'zzz-scratch-git-test-symlink-target');
+    const symlinkParent = path.join(os.tmpdir(), `scratch-git-test-symlink-${crypto.randomUUID().slice(0, 8)}`);
+
+    await mkdir(targetInsideRepo, { recursive: true });
+    await symlink(targetInsideRepo, symlinkParent);
+
+    try {
+      // symlinkParent's own literal path lives under os.tmpdir() -- a plain
+      // path.resolve() (no realpath) would satisfy guard (i) trivially and
+      // never trigger guard (ii), since the literal path never looks like
+      // it is inside `toplevel`. allowRoot names the toplevel explicitly so
+      // guard (i) is satisfied via the REAL (resolved) location too,
+      // isolating guard (ii) specifically, same convention as the
+      // non-symlinked guard-(ii) test above.
+      await expect(createScratchGitRepo({ parentDir: symlinkParent, allowRoot: toplevel })).rejects.toThrow(
+        GUARD_II_MESSAGE,
+      );
+    } finally {
+      // Remove the symlink itself (not its target) first, then the target
+      // directory and anything a broken guard created inside it.
+      await rm(symlinkParent, { force: true });
+      await rm(targetInsideRepo, { recursive: true, force: true });
+    }
   });
 
   it('the fake host ~/.gitconfig is byte-identical before and after every test above', async () => {
