@@ -200,6 +200,7 @@ import { createHmac } from 'node:crypto';
 import { mkdirSync, mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { createScratchGitRepo, type ScratchGitRepo } from '../../packages/server/src/__tests__/utils/scratch-git.js';
 
 const REPO_ROOT = new URL('../..', import.meta.url).pathname;
 
@@ -277,11 +278,21 @@ async function postWebhook(baseUrl: string, githubEvent: string, bodyObj: unknow
   });
 }
 
-/** Run a git command synchronously; bail loudly on a non-zero exit. */
-function git(args: string[], cwd: string): void {
-  const result = Bun.spawnSync(['git', ...args], { cwd, stdout: 'pipe', stderr: 'pipe' });
-  if (result.exitCode !== 0) {
-    bail(`git ${args.join(' ')} (cwd=${cwd}) failed: ${new TextDecoder().decode(result.stderr)}`);
+// Set once `main()` creates the scratch git repository; every `git()` call
+// below runs against it, so its hermetic env (scratch-git.ts) applies
+// uniformly instead of each call re-deriving cwd/env by hand.
+let scratchRepo: ScratchGitRepo | undefined;
+
+/** Run a git command against the scratch repository; bail loudly on a non-zero exit or an unexpected cwd. */
+async function git(args: string[], cwd: string): Promise<void> {
+  if (!scratchRepo) bail('git() called before the scratch repository was created');
+  if (path.resolve(cwd) !== path.resolve(scratchRepo.dir)) {
+    bail(`git() called with an unexpected cwd (expected the scratch repo dir ${scratchRepo.dir}, got ${cwd})`);
+  }
+  try {
+    await scratchRepo.git(args);
+  } catch (err) {
+    bail(`git ${args.join(' ')} (cwd=${cwd}) failed: ${err instanceof Error ? err.message : String(err)}`);
   }
 }
 
@@ -358,12 +369,10 @@ async function main(): Promise<void> {
   const runId = `${process.pid}-${Date.now()}`;
   const scratchRoot = mkdtempSync(path.join(os.tmpdir(), 'agent-console-webhook-label-smoke-'));
   const disposableHome = path.join(scratchRoot, 'home');
-  const repoDir = path.join(scratchRoot, 'repo');
   const worktreeDDir = path.join(scratchRoot, 'worktree-d');
   const worktreeD2Dir = path.join(scratchRoot, 'worktree-d2');
   const worktreeTDir = path.join(scratchRoot, 'worktree-t');
   mkdirSync(disposableHome, { recursive: true });
-  mkdirSync(repoDir, { recursive: true });
   console.log(`==> scratch root: ${scratchRoot}`);
 
   const port = getFreePort();
@@ -393,14 +402,15 @@ async function main(): Promise<void> {
     // Disposable git repository with a real `origin` remote.
     // -----------------------------------------------------------------
     console.log('==> setting up disposable git repository with a fake origin remote');
-    git(['init', '-q'], repoDir);
-    git(['config', 'user.email', 'smoke@example.com'], repoDir);
-    git(['config', 'user.name', 'Smoke Test'], repoDir);
-    git(['commit', '--allow-empty', '-q', '-m', 'init'], repoDir);
-    git(['remote', 'add', 'origin', `https://github.com/${nonceOrg}/${nonceRepo}.git`], repoDir);
-    git(['worktree', 'add', worktreeDDir, '-b', 'smoke-branch-d'], repoDir);
-    git(['worktree', 'add', worktreeD2Dir, '-b', 'smoke-branch-d2'], repoDir);
-    git(['worktree', 'add', worktreeTDir, '-b', 'smoke-branch-t'], repoDir);
+    // `scratchRoot` is already under os.tmpdir() -- it doubles as `parentDir`
+    // here, and the scratch repo is removed along with the rest of
+    // `scratchRoot` in the `finally` block below, no separate cleanup().
+    scratchRepo = await createScratchGitRepo({ parentDir: scratchRoot, name: 'repo-' });
+    const repoDir = scratchRepo.dir;
+    await git(['remote', 'add', 'origin', `https://github.com/${nonceOrg}/${nonceRepo}.git`], repoDir);
+    await git(['worktree', 'add', worktreeDDir, '-b', 'smoke-branch-d'], repoDir);
+    await git(['worktree', 'add', worktreeD2Dir, '-b', 'smoke-branch-d2'], repoDir);
+    await git(['worktree', 'add', worktreeTDir, '-b', 'smoke-branch-t'], repoDir);
 
     // -----------------------------------------------------------------
     // Real interactive `claude` CLI trust-dialog bypass.
@@ -1030,7 +1040,7 @@ async function main(): Promise<void> {
     console.log(`==> openai-api definition created: ${embeddedAgent.id}`);
 
     const worktreeEDir = path.join(scratchRoot, 'worktree-e');
-    git(['worktree', 'add', worktreeEDir, '-b', 'smoke-branch-e'], repoDir);
+    await git(['worktree', 'add', worktreeEDir, '-b', 'smoke-branch-e'], repoDir);
     // `embeddedAgentId` (not `agentId`) selects an embedded-agent initial
     // worker -- the two fields are mutually exclusive on the request schema
     // (`schemas/session.ts`), and no `initialPrompt` is passed, so nothing
@@ -1340,7 +1350,7 @@ async function main(): Promise<void> {
     // ===================================================================
     console.log('\n==> SCENARIO 6: workflow_run/completed matching session O, whose parent P was paused (dead-parent fallback)');
     const worktreePDir = path.join(scratchRoot, 'worktree-p');
-    git(['worktree', 'add', worktreePDir, '-b', 'smoke-branch-p'], repoDir);
+    await git(['worktree', 'add', worktreePDir, '-b', 'smoke-branch-p'], repoDir);
     addTrustedProject(worktreePDir);
 
     const sessionP = await createSession(baseUrl, {
@@ -1352,7 +1362,7 @@ async function main(): Promise<void> {
     console.log(`==> session P created (will be paused to simulate a dead parent): ${sessionP.id}`);
 
     const worktreeODir = path.join(scratchRoot, 'worktree-o');
-    git(['worktree', 'add', worktreeODir, '-b', 'smoke-branch-o'], repoDir);
+    await git(['worktree', 'add', worktreeODir, '-b', 'smoke-branch-o'], repoDir);
     addTrustedProject(worktreeODir);
 
     const sessionO = await createSession(baseUrl, {
@@ -1443,7 +1453,7 @@ async function main(): Promise<void> {
     // ===================================================================
     console.log('\n==> SCENARIO 7: workflow_run/completed matching session Q, whose parent R was DELETED (deleted-parent fallback, no job retry)');
     const worktreeRDir = path.join(scratchRoot, 'worktree-r');
-    git(['worktree', 'add', worktreeRDir, '-b', 'smoke-branch-r'], repoDir);
+    await git(['worktree', 'add', worktreeRDir, '-b', 'smoke-branch-r'], repoDir);
     addTrustedProject(worktreeRDir);
 
     const sessionR = await createSession(baseUrl, {
@@ -1455,7 +1465,7 @@ async function main(): Promise<void> {
     console.log(`==> session R created (will be DELETED to simulate a dead parent with no DB row): ${sessionR.id}`);
 
     const worktreeQDir = path.join(scratchRoot, 'worktree-q');
-    git(['worktree', 'add', worktreeQDir, '-b', 'smoke-branch-q'], repoDir);
+    await git(['worktree', 'add', worktreeQDir, '-b', 'smoke-branch-q'], repoDir);
     addTrustedProject(worktreeQDir);
 
     const sessionQ = await createSession(baseUrl, {

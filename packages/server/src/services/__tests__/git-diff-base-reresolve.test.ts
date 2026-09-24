@@ -12,17 +12,27 @@
  * mid-process, we configure the SAME shared `mockGit` to delegate to the real
  * git CLI against the temp repo. This exercises the genuine production code path
  * deterministically and is immune to cross-file mock ordering.
+ *
+ * The repo is created via `createScratchGitRepo` (scratch-git.ts) rather than
+ * a hand-rolled temp dir, so every commit made below runs under a throwaway
+ * global git config instead of the operator's own -- a real host config with
+ * commit signing enabled otherwise fails every commit here before the code
+ * under test is ever reached (see `os-environment-coupling.md`).
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
-import * as path from 'node:path';
+import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from 'bun:test';
+import { mkdtemp, rm } from 'node:fs/promises';
 import * as os from 'node:os';
+import * as path from 'node:path';
 import { MERGE_BASE_REF_PREFIX } from '@agent-console/shared';
 import { mockGit, resetGitMocks } from '../../__tests__/utils/mock-git-helper.js';
+import { createScratchGitRepo, type ScratchGitRepo } from '../../__tests__/utils/scratch-git.js';
 import {
   resolveBaseSpec,
   getDiffData,
 } from '../git-diff-service.js';
+
+let repo: ScratchGitRepo;
 
 /** Run a git command against `cwd`, returning trimmed stdout (throws on failure). */
 async function git(args: string[], cwd: string): Promise<string> {
@@ -30,13 +40,7 @@ async function git(args: string[], cwd: string): Promise<string> {
     cwd,
     stdout: 'pipe',
     stderr: 'pipe',
-    env: {
-      ...process.env,
-      GIT_AUTHOR_NAME: 'Test',
-      GIT_AUTHOR_EMAIL: 'test@example.com',
-      GIT_COMMITTER_NAME: 'Test',
-      GIT_COMMITTER_EMAIL: 'test@example.com',
-    },
+    env: repo.env,
   });
   const exitCode = await proc.exited;
   const stdout = await new Response(proc.stdout).text();
@@ -54,16 +58,6 @@ async function gitSafeReal(args: string[], cwd: string): Promise<string | null> 
   } catch {
     return null;
   }
-}
-
-async function createTempDir(prefix: string): Promise<string> {
-  const tmpDir = path.join(os.tmpdir(), `${prefix}${crypto.randomUUID().slice(0, 8)}`);
-  await Bun.spawn(['mkdir', '-p', tmpDir]).exited;
-  return tmpDir;
-}
-
-async function removeTempDir(dir: string): Promise<void> {
-  await Bun.spawn(['rm', '-rf', dir]).exited;
 }
 
 /**
@@ -107,62 +101,67 @@ function wireRealGit(): void {
 }
 
 describe('Issue #800: git-diff base spec re-resolution (real repo)', () => {
-  let repo: string;
+  let scratchParent: string;
+
+  beforeAll(async () => {
+    scratchParent = await mkdtemp(path.join(os.tmpdir(), 'git-diff-800-parent-'));
+  });
+
+  afterAll(async () => {
+    await rm(scratchParent, { recursive: true, force: true });
+  });
 
   beforeEach(async () => {
+    repo = await createScratchGitRepo({ parentDir: scratchParent, initialCommit: false });
     wireRealGit();
-    repo = await createTempDir('git-diff-800-');
-    await git(['init', '-b', 'main'], repo);
-    await git(['config', 'user.email', 'test@example.com'], repo);
-    await git(['config', 'user.name', 'Test'], repo);
 
     // Initial commit on main
-    await Bun.write(path.join(repo, 'base.txt'), 'base\n');
-    await git(['add', '.'], repo);
-    await git(['commit', '-m', 'initial commit'], repo);
+    await Bun.write(path.join(repo.dir, 'base.txt'), 'base\n');
+    await git(['add', '.'], repo.dir);
+    await git(['commit', '-m', 'initial commit'], repo.dir);
   });
 
   afterEach(async () => {
-    await removeTempDir(repo);
+    await repo.cleanup();
     resetGitMocks();
   });
 
   it('does NOT include an upstream-only file in the diff after the feature branch merges main', async () => {
     // Feature branch off main with its own change
-    await git(['checkout', '-b', 'feature'], repo);
-    await Bun.write(path.join(repo, 'feature.txt'), 'feature change\n');
-    await git(['add', '.'], repo);
-    await git(['commit', '-m', 'feature commit'], repo);
+    await git(['checkout', '-b', 'feature'], repo.dir);
+    await Bun.write(path.join(repo.dir, 'feature.txt'), 'feature change\n');
+    await git(['add', '.'], repo.dir);
+    await git(['commit', '-m', 'feature commit'], repo.dir);
 
     // Back on main: add an upstream-only commit
-    await git(['checkout', 'main'], repo);
-    await Bun.write(path.join(repo, 'upstream.txt'), 'upstream only\n');
-    await git(['add', '.'], repo);
-    await git(['commit', '-m', 'upstream commit'], repo);
+    await git(['checkout', 'main'], repo.dir);
+    await Bun.write(path.join(repo.dir, 'upstream.txt'), 'upstream only\n');
+    await git(['add', '.'], repo.dir);
+    await git(['commit', '-m', 'upstream commit'], repo.dir);
 
     // Back on the feature branch — this is the persisted base spec
-    await git(['checkout', 'feature'], repo);
+    await git(['checkout', 'feature'], repo.dir);
     const spec = `${MERGE_BASE_REF_PREFIX}main`;
 
     // Diff #1: resolves merge-base(main, HEAD) — should contain the feature
     // change but NOT the upstream-only file.
-    const resolved1 = await resolveBaseSpec(spec, repo, null);
+    const resolved1 = await resolveBaseSpec(spec, repo.dir, null);
     expect(resolved1).not.toBeNull();
-    const diff1 = await getDiffData(repo, resolved1!, null);
+    const diff1 = await getDiffData(repo.dir, resolved1!, null);
     const paths1 = diff1.summary.files.map((f) => f.path);
     expect(paths1).toContain('feature.txt');
     expect(paths1).not.toContain('upstream.txt');
 
     // Merge main into feature (absorb the upstream commit, no conflicts)
-    await git(['merge', 'main', '--no-edit'], repo);
+    await git(['merge', 'main', '--no-edit'], repo.dir);
 
     // Diff #2: SAME spec, re-resolved → merge-base moves forward to include the
     // upstream commit, so upstream.txt must NOT appear in the diff.
-    const resolved2 = await resolveBaseSpec(spec, repo, null);
+    const resolved2 = await resolveBaseSpec(spec, repo.dir, null);
     expect(resolved2).not.toBeNull();
     // The merge-base must have advanced (re-resolution actually happened).
     expect(resolved2).not.toBe(resolved1);
-    const diff2 = await getDiffData(repo, resolved2!, null);
+    const diff2 = await getDiffData(repo.dir, resolved2!, null);
     const paths2 = diff2.summary.files.map((f) => f.path);
     expect(paths2).toContain('feature.txt');
     // CORE REGRESSION ASSERTION: with the old frozen-hash behavior diff2 WOULD
@@ -172,11 +171,11 @@ describe('Issue #800: git-diff base spec re-resolution (real repo)', () => {
 
   it('yields an empty diff when the branch has no own changes (no upstream noise)', async () => {
     // A branch identical to main: merge-base is HEAD, diff must be empty.
-    await git(['checkout', '-b', 'no-changes'], repo);
+    await git(['checkout', '-b', 'no-changes'], repo.dir);
     const spec = `${MERGE_BASE_REF_PREFIX}main`;
-    const resolved = await resolveBaseSpec(spec, repo, null);
+    const resolved = await resolveBaseSpec(spec, repo.dir, null);
     expect(resolved).not.toBeNull();
-    const diff = await getDiffData(repo, resolved!, null);
+    const diff = await getDiffData(repo.dir, resolved!, null);
     expect(diff.summary.files).toHaveLength(0);
   });
 });

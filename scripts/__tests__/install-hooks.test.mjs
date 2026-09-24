@@ -128,6 +128,18 @@ describe('scripts/install-hooks.mjs', () => {
     // symlink target. Removing the worktree silently disabled the hook.
     const add = spawnSync('git', ['add', '.'], { cwd: sandbox, encoding: 'utf8' });
     expect(add.status).toBe(0);
+
+    // Hermetic commit env, inline: this file is plain Node (.mjs) and
+    // cannot import the TypeScript `createScratchGitRepo` helper
+    // (packages/server/src/__tests__/utils/scratch-git.ts is the single
+    // writer of that pattern for TS-importable callers). GIT_CONFIG_GLOBAL
+    // replaces the whole global config layer for this one commit so a
+    // host with commit signing enabled (gpgsign, gpg.ssh.program) does not
+    // fail this spawn before the behavior under test is ever reached --
+    // never `git config --global` and never touching the real
+    // ~/.gitconfig.
+    const noSignConfigPath = join(sandbox, '.no-sign.gitconfig');
+    writeFileSync(noSignConfigPath, '[commit]\n\tgpgsign = false\n');
     const commit = spawnSync(
       'git',
       [
@@ -140,7 +152,15 @@ describe('scripts/install-hooks.mjs', () => {
         '-m',
         'init',
       ],
-      { cwd: sandbox, encoding: 'utf8' },
+      {
+        cwd: sandbox,
+        encoding: 'utf8',
+        env: {
+          ...process.env,
+          GIT_CONFIG_GLOBAL: noSignConfigPath,
+          GIT_CONFIG_NOSYSTEM: '1',
+        },
+      },
     );
     expect(commit.status).toBe(0);
 
