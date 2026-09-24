@@ -59,7 +59,7 @@ function createMockWs(readyState: WSReadyState = 1): WSContext & {
   const sentMessages: string[] = [];
   const closeCalls: { code?: number; reason?: string }[] = [];
 
-  return asWSContext({
+  const ws = asWSContext({
     send: (data: string | ArrayBuffer) => {
       sentMessages.push(typeof data === 'string' ? data : new TextDecoder().decode(data as ArrayBuffer));
     },
@@ -67,9 +67,8 @@ function createMockWs(readyState: WSReadyState = 1): WSContext & {
       closeCalls.push({ code, reason });
     },
     readyState,
-    sentMessages,
-    closeCalls,
   });
+  return Object.assign(ws, { sentMessages, closeCalls });
 }
 
 describe('App WebSocket sync-queue handling', () => {

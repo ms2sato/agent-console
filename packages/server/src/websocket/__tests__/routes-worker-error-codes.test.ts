@@ -53,7 +53,7 @@ function createMockWs(): WSContext & {
   const sentMessages: string[] = [];
   const closeCalls: { code?: number; reason?: string }[] = [];
 
-  return asWSContext({
+  const ws = asWSContext({
     send: (data: string | ArrayBuffer) => {
       sentMessages.push(typeof data === 'string' ? data : new TextDecoder().decode(data as ArrayBuffer));
     },
@@ -61,9 +61,8 @@ function createMockWs(): WSContext & {
       closeCalls.push({ code, reason });
     },
     readyState: 1, // OPEN
-    sentMessages,
-    closeCalls,
   });
+  return Object.assign(ws, { sentMessages, closeCalls });
 }
 
 describe('Worker WebSocket connection error codes', () => {
