@@ -1,5 +1,5 @@
 import { mock } from 'bun:test';
-import type { PtyProvider, PtyInstance, PtyDataDiagnostics, PtySpawnOptions } from '../../lib/pty-provider.js';
+import type { PtyProvider, PtyDataDiagnostics, PtySpawnOptions } from '../../lib/pty-provider.js';
 
 /**
  * Disposable interface matching bun-pty's IDisposable.
@@ -13,14 +13,8 @@ interface MockDisposable {
  * Simulates PTY behavior without spawning actual processes.
  * Implements the PtyInstance interface from pty-provider.
  */
-export class MockPty implements PtyInstance {
+export class MockPty {
   pid: number;
-  /** IPty contract field, kept in sync with `currentCols`/`currentRows` by `resize()`. */
-  cols = 120;
-  /** IPty contract field, kept in sync with `currentCols`/`currentRows` by `resize()`. */
-  rows = 30;
-  /** IPty contract field; a fixed placeholder, no real process backs this mock. */
-  process = 'mock';
   // Note: Single callback that gets replaced, matching PtyInstance interface contract
   // which specifies "Only one callback is supported. Subsequent calls will replace the previous callback."
   private dataCallback: ((data: string) => void) | null = null;
@@ -78,8 +72,6 @@ export class MockPty implements PtyInstance {
   resize(cols: number, rows: number) {
     this.currentCols = cols;
     this.currentRows = rows;
-    this.cols = cols;
-    this.rows = rows;
   }
 
   kill(signal?: number) {
@@ -188,7 +180,17 @@ export function createMockPtyFactory(startPid = 10000) {
     autoEmitSentinel = enabled;
   };
 
-  // Create a PtyProvider that uses the mock spawn
+  // Create a PtyProvider that uses the mock spawn.
+  // Residual: `MockPty` does not (yet) `implements PtyInstance`, so this
+  // bridges through `unknown`. Measured gaps if it were declared: missing
+  // `cols`/`rows`/`process` (IPty fields MockPty tracks as `currentCols`/
+  // `currentRows` and has no analogue for at all); `kill(signal?: number)`
+  // vs `IPty.kill(signal?: string)` (the mock's numeric signal is the drift
+  // -- production PTYs' `kill()` takes no signal at all); and
+  // `getDataDiagnostics(): PtyDataDiagnostics | undefined` vs `IPty`'s
+  // non-optional call signature (the real adapter always returns a value;
+  // the mock's `undefined` branch is the drift, not the contract). Tracked
+  // as test-only follow-up work, not a change to the production contract.
   const provider: PtyProvider = {
     spawn: spawn as unknown as PtyProvider['spawn'],
   };

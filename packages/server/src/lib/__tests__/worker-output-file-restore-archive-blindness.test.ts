@@ -11,7 +11,7 @@
  * reconstruction throws and the worker falls to the destructive reset — losing
  * a conversation that is entirely intact on disk.
  */
-import { describe, it, expect, beforeEach, afterEach, spyOn } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { setupMemfs, cleanupMemfs } from '../../__tests__/utils/mock-fs-helper.js';
 import { fs as memfs } from 'memfs';
 import { WorkerOutputFileManager } from '../worker-output-file.js';
@@ -23,22 +23,6 @@ const resolver = new SessionDataPathResolver(`${CONFIG_DIR}/_quick`, CONFIG_DIR)
 const S = 'session-1';
 const W = 'w-1';
 const SYSTEM_PROMPT = 'You are a helpful assistant.';
-
-/**
- * @internal Reaches WorkerOutputFileManager's private `runExclusive` so this
- * test can spy on lock-acquisition count. No public observable exposes the
- * lock. `spyOn`'s `K extends keyof T` constraint requires the member to be
- * public -- unlike the bracket-access reach used elsewhere in this file
- * family, `keyof` itself excludes private members (a plain `'runExclusive'`
- * argument fails with TS2345: not assignable to `keyof
- * WorkerOutputFileManager`), so the value genuinely needs a bridging cast
- * through `unknown`.
- */
-function getRunExclusiveSpyTargetForTest(
-  manager: WorkerOutputFileManager,
-): { runExclusive: (key: string, fn: () => Promise<unknown>) => Promise<unknown> } {
-  return manager as unknown as { runExclusive: (key: string, fn: () => Promise<unknown>) => Promise<unknown> };
-}
 
 function makeManager(fileMaxSize: number): WorkerOutputFileManager {
   return new WorkerOutputFileManager({
@@ -355,11 +339,25 @@ describe('#1202 — the walk-back assembles a stream that starts at a safe ancho
     manager.bufferOutput(S, W, b, resolver);
     await manager.flushAll();
 
-    const spy = spyOn(getRunExclusiveSpyTargetForTest(manager), 'runExclusive');
-    const before = spy.mock.calls.length;
-    const assembled = await manager.readHistoryForRestore(S, W, resolver);
-    const acquisitions = spy.mock.calls.length - before;
-    spy.mockRestore();
+    // Bracket-access override (not spyOn -- `keyof WorkerOutputFileManager`
+    // excludes private members, so spyOn's `K extends keyof T` constraint
+    // rejects `'runExclusive'` outright, TS2345). The wrapper delegates to
+    // the original so exclusivity semantics are unchanged; restored in
+    // `finally` so a throwing call never leaks the override past this test.
+    const original = manager['runExclusive'].bind(manager);
+    const calls: string[] = [];
+    manager['runExclusive'] = (key, fn) => {
+      calls.push(key);
+      return original(key, fn);
+    };
+    const before = calls.length;
+    let assembled: Awaited<ReturnType<WorkerOutputFileManager['readHistoryForRestore']>>;
+    try {
+      assembled = await manager.readHistoryForRestore(S, W, resolver);
+    } finally {
+      manager['runExclusive'] = original;
+    }
+    const acquisitions = calls.length - before;
 
     // Premise control: this fixture genuinely walks the archive. Without it a
     // fast-path return would also acquire once, and the pin would pass while
