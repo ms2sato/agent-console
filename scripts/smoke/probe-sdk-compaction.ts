@@ -97,6 +97,7 @@
  *      never silently burns API usage.
  */
 
+import { rmSync } from 'node:fs';
 import type { Options, Settings } from '../../packages/embedded-agent/node_modules/@anthropic-ai/claude-agent-sdk';
 import {
   ProbeSession,
@@ -1027,43 +1028,50 @@ async function main(): Promise<number> {
 
   const CONFIG_DIR = isolateClaudeConfigDir('compaction');
 
-  console.log(`probe-sdk-compaction  started ${stamp()}`);
-  console.log(`items: ${[...selected].join(' ')}`);
-  console.log(`isolated CLAUDE_CONFIG_DIR: ${CONFIG_DIR}`);
-  console.log(`model: ${MODEL}   budget: $${budgetUsd} estimated cost / ${budgetMinutes} min (cumulative prompt tokens are recorded, not gated -- see budgetUsd's comment)`);
+  try {
+    console.log(`probe-sdk-compaction  started ${stamp()}`);
+    console.log(`items: ${[...selected].join(' ')}`);
+    console.log(`isolated CLAUDE_CONFIG_DIR: ${CONFIG_DIR}`);
+    console.log(`model: ${MODEL}   budget: $${budgetUsd} estimated cost / ${budgetMinutes} min (cumulative prompt tokens are recorded, not gated -- see budgetUsd's comment)`);
 
-  if (selected.has('--p1a')) await itemP1a();
+    if (selected.has('--p1a')) await itemP1a();
 
-  let lever: Lever = { kind: null, window: PROBE_WINDOW, offArmLever: null };
-  if (selected.has('--p3i') || selected.has('--p3-on') || selected.has('--p3-neg') || selected.has('--p4-hooks')) {
-    lever = await itemP3i();
-  }
-  if (selected.has('--p2')) await itemP2();
-  if (selected.has('--p3-on')) await itemP3On(lever);
-  if (selected.has('--p3-neg')) await itemP3Neg(lever);
-  if (selected.has('--p4-hooks')) await itemP4Hooks(lever);
+    let lever: Lever = { kind: null, window: PROBE_WINDOW, offArmLever: null };
+    if (selected.has('--p3i') || selected.has('--p3-on') || selected.has('--p3-neg') || selected.has('--p4-hooks')) {
+      lever = await itemP3i();
+    }
+    if (selected.has('--p2')) await itemP2();
+    if (selected.has('--p3-on')) await itemP3On(lever);
+    if (selected.has('--p3-neg')) await itemP3Neg(lever);
+    if (selected.has('--p4-hooks')) await itemP4Hooks(lever);
 
-  const isolation = verifyIsolation(CONFIG_DIR);
-  h('Isolation check');
-  console.log(`child-created state under the throwaway CLAUDE_CONFIG_DIR: ${isolation.evidence.join(', ') || '(none)'}`);
-  console.log(`session transcripts written there: ${isolation.files.length}`);
-  for (const f of isolation.files) console.log(`  ${f}`);
-  if (!isolation.ok) {
-    console.error(
-      'ISOLATION NOT VERIFIED: the child wrote no state into the throwaway config dir, so the CLAUDE_CONFIG_DIR override may not have reached it. Every isolation claim about this run would be unfounded.',
+    const isolation = verifyIsolation(CONFIG_DIR);
+    h('Isolation check');
+    console.log(`child-created state under the throwaway CLAUDE_CONFIG_DIR: ${isolation.evidence.join(', ') || '(none)'}`);
+    console.log(`session transcripts written there: ${isolation.files.length}`);
+    for (const f of isolation.files) console.log(`  ${f}`);
+    if (!isolation.ok) {
+      console.error(
+        'ISOLATION NOT VERIFIED: the child wrote no state into the throwaway config dir, so the CLAUDE_CONFIG_DIR override may not have reached it. Every isolation claim about this run would be unfounded.',
+      );
+      return 2;
+    }
+
+    h('Verdicts');
+    for (const v of verdicts) {
+      console.log(`\n- ${v.item}\n    verdict: ${v.verdict}\n    control: ${v.control}`);
+    }
+    console.log(
+      `\nfinished ${stamp()}  elapsed=${((Date.now() - startedAt) / 60_000).toFixed(1)} min  cumulative prompt tokens=${totalPromptTokens()} (${totalFreshPromptTokens()} excluding cache reads)  approx cost=$${totalCostUsd().toFixed(4)}`,
     );
-    return 2;
-  }
 
-  h('Verdicts');
-  for (const v of verdicts) {
-    console.log(`\n- ${v.item}\n    verdict: ${v.verdict}\n    control: ${v.control}`);
+    return verdicts.some((v) => v.stop) ? 1 : 0;
+  } finally {
+    // The throwaway CLAUDE_CONFIG_DIR holds a copy of the operator's CLI
+    // credentials (isolateClaudeConfigDir's own doc comment); remove it on
+    // every exit path, success or thrown error (Issue #1819).
+    rmSync(CONFIG_DIR, { recursive: true, force: true });
   }
-  console.log(
-    `\nfinished ${stamp()}  elapsed=${((Date.now() - startedAt) / 60_000).toFixed(1)} min  cumulative prompt tokens=${totalPromptTokens()} (${totalFreshPromptTokens()} excluding cache reads)  approx cost=$${totalCostUsd().toFixed(4)}`,
-  );
-
-  return verdicts.some((v) => v.stop) ? 1 : 0;
 }
 
 // Guarded (Issue #1479): importing this module must not fire a billed run
