@@ -46,13 +46,14 @@ interface BunTestSummary {
   passCount: number;
   failCount: number;
   hasUnhandledError: boolean;
+  exitCode: number;
 }
 
 function stripAnsi(text: string): string {
   return text.replace(/\u001b\[[0-9;]*m/g, '');
 }
 
-function parseBunTestSummary(stderr: string): BunTestSummary {
+function parseBunTestSummary(stderr: string, exitCode: number): BunTestSummary {
   const clean = stripAnsi(stderr);
   const passMatch = clean.match(/(\d+)\s+pass/);
   const failMatch = clean.match(/(\d+)\s+fail/);
@@ -60,18 +61,24 @@ function parseBunTestSummary(stderr: string): BunTestSummary {
     passCount: passMatch ? Number(passMatch[1]) : 0,
     failCount: failMatch ? Number(failMatch[1]) : 0,
     hasUnhandledError: clean.includes('Unhandled error between tests'),
+    exitCode,
   };
 }
 
 async function runBunTest(args: string[]): Promise<BunTestSummary> {
   const proc = Bun.spawn(['bun', 'test', ...args], {
     cwd: SERVER_ROOT,
-    stdout: 'pipe',
+    // Nothing in this file asserts on stdout content -- only stderr carries
+    // bun:test's reporter output (the pass/fail summary and the
+    // "Unhandled error between tests" line). A piped stdout that nobody
+    // reads can fill its OS pipe buffer and block the child indefinitely
+    // if the target file writes enough of it; 'ignore' has no such buffer.
+    stdout: 'ignore',
     stderr: 'pipe',
     timeout: SPAWN_TIMEOUT_MS,
   });
-  const [stderr] = await Promise.all([new Response(proc.stderr).text(), proc.exited]);
-  return parseBunTestSummary(stderr);
+  const [stderr, exitCode] = await Promise.all([new Response(proc.stderr).text(), proc.exited]);
+  return parseBunTestSummary(stderr, exitCode);
 }
 
 /**
@@ -106,23 +113,38 @@ async function runBunTest(args: string[]): Promise<BunTestSummary> {
  * not guarantee; superseded by the deterministic `--preload` form below.
  *
  * Polarity of the current form, measured 2026-09-24 (mock-fs-helper fix
- * reverted to `() => fs` / `() => fs.promises`): the preloaded run reports
- * `hasUnhandledError: true` and 0 of the target file's tests run -- 0 pass
- * / 1 fail. With the fix restored: 1 pass / 0 fail.
+ * reverted to `() => fs` / `() => fs.promises`): the whole file reports 0
+ * pass / 3 fail (pin A's 2 cases plus this one). Inside this test, the
+ * alone-control's assertions all pass first (exitCode 0, no unhandled
+ * error, 0 fail, N > 0 pass); the FIRST assertion to actually fail is
+ * `preloaded.exitCode` (`Expected: 0 / Received: 1` -- bun test exits 1 on
+ * the unhandled error), before the `hasUnhandledError` check below it ever
+ * runs. With the fix restored: 3 pass / 0 fail for the whole file.
  */
 describe('memfs mock ordering: deterministic install via --preload', () => {
   it(
     'preloading mock-fs-helper reports the same pass count as running the target file alone, 0 fail, and no unhandled-error line',
     async () => {
       const alone = await runBunTest([TARGET_FILE]);
-      // Positive control: the target file genuinely contains tests, so
-      // the equality assertion below can never be satisfied vacuously.
+      // Positive control: the target file genuinely contains tests, and
+      // ran to completion. `exitCode` is a second instrument alongside the
+      // parsed summary -- a reformatted or empty reporter line would parse
+      // to 0 pass / 0 fail, which `passCount > 0` alone catches, but the
+      // exit code is what keeps a corrupted-but-nonzero parse from passing
+      // vacuously. The equality assertion below (preloaded.passCount ===
+      // alone.passCount) is what actually guards against "only one test
+      // ran": `alone` is the full file by construction, so any harness
+      // regression that under-runs the preloaded invocation breaks the
+      // equality -- a hardcoded exact count would instead couple this pin
+      // to every future edit of the target file for no added protection.
+      expect(alone.exitCode).toBe(0);
       expect(alone.hasUnhandledError).toBe(false);
       expect(alone.failCount).toBe(0);
       expect(alone.passCount).toBeGreaterThan(0);
 
       const preloaded = await runBunTest(['--preload', MOCK_HELPER_PRELOAD, TARGET_FILE]);
 
+      expect(preloaded.exitCode).toBe(0);
       expect(preloaded.hasUnhandledError).toBe(false);
       expect(preloaded.failCount).toBe(0);
       expect(preloaded.passCount).toBe(alone.passCount);
