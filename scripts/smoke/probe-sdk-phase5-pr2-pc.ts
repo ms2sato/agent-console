@@ -62,6 +62,18 @@
  * run in the same process invocation, so neither can be reported as "not
  * reached" by the OTHER arm's own run.
  *
+ * A CLI FACT, NOT A HARNESS QUIRK: `ready` does not imply every declared
+ * project MCP server has finished connecting. Measured directly (both in a
+ * free, local degenerate-mode dry run and in the real tier-2 container):
+ * the loop's `ready` event fires as soon as its OWN init handshake (the
+ * console-MCP tool catalog) completes, while the CLI's connections to
+ * `.mcp.json`-declared servers can still be in flight -- observed lag
+ * roughly 1-1.5s between `ready` and a fixture's spawn report landing. This
+ * is a property of the `claude` CLI's own startup sequencing, not an
+ * artifact of this script's harness, and any future reader of the elevated
+ * arm's boundary-detection code should read it as such. The elevated arm's
+ * grace-window poll (below) exists because of this fact.
+ *
  * STDERR WARNING OBSERVABILITY (best-effort, not gated). `applyArgSubstitution`
  * logs one `console.warn` per unresolved placeholder inside the embedded-agent
  * SUBPROCESS -- there is no public getter for a live worker's stderr tail
@@ -77,13 +89,17 @@
  * stated rather than a presence/absence being fabricated.
  *
  * VERDICT / EXIT CODES (`PROBE_EXIT`), same convention as the sibling P-a/P-b
- * file: 0 = MEASURED (both fixtures' tool calls completed and their JSON
- * payload was read, regardless of what the values turned out to be -- a
- * clean measurement is a success even if a reading deviates from
- * expectation, which is then a finding to report, not a script failure); 1 =
- * INCONCLUSIVE (a turn never settled, a tool call never happened, or its
- * JSON payload could not be parsed); 2 = HARNESS (activation failed, the
- * probe could not run at all).
+ * file, for BOTH arms: 0 = MEASURED (non-elevated: both fixtures' tool calls
+ * completed and their JSON payload was read; elevated: both spawn reports
+ * appeared and the control fixture's shape matched -- regardless of what the
+ * SET fixture's values turned out to be, a clean measurement is a success
+ * even if a reading deviates from expectation, which is then a finding to
+ * report, not a script failure); 1 = INCONCLUSIVE (non-elevated: a turn
+ * never settled, a tool call never happened, or its JSON payload could not
+ * be parsed; elevated: exactly one of the two spawn reports appeared, or the
+ * control fixture disagreed with the non-elevated arm's own control shape);
+ * 2 = HARNESS (non-elevated: activation failed; elevated: outcome (ii),
+ * neither spawn report appeared within the gate's timeout).
  *
  * Requirements (non-elevated branch): a real, authenticated `claude` CLI
  * session for the invoking OS user; `bun install` already run; `git` on PATH
@@ -977,41 +993,94 @@ async function runElevatedArm(targetUsername: string): Promise<number> {
     console.log(`==> ELEVATED spawn report -- ${SET_SERVER_NAME}: exists=${setReport.exists} raw=${setReport.raw ?? '(none)'}`);
     console.log(`==> ELEVATED spawn report -- ${UNSET_SERVER_NAME}: exists=${unsetReport.exists} raw=${unsetReport.raw ?? '(none)'}`);
 
-    if (setReport.exists && unsetReport.exists) {
-      console.log(
-        '==> OUTCOME (i): both spawn reports appeared -- the CLI started its declared MCP servers without a login.',
+    if (!setReport.exists && !unsetReport.exists) {
+      // --- OUTCOME (ii): capture the reason. LOG_LEVEL=debug (set above)
+      // means the embedded subprocess's own piped stderr is already visible
+      // in this run's full console capture via pino debug logging -- see
+      // this file's header "STDERR WARNING OBSERVABILITY" paragraph, the
+      // same technique, reused here for the elevated subprocess's refusal
+      // message rather than applyArgSubstitution's warning.
+      const lastEvent = boundaryEvents.at(-1);
+      console.error(
+        `ELEVATED branch: NOT REACHED (boundary=${boundaryReason}; neither fixture's spawn report appeared; ` +
+          `last SDK event: ${lastEvent ? JSON.stringify(lastEvent).slice(0, 500) : '(none observed)'})`,
       );
-      console.log(
-        `  ${SET_SERVER_NAME}:   env=${JSON.stringify(setReport.envValue)}  args=${JSON.stringify(setReport.argsTrailing)}`,
+      console.error(
+        '  Grep this run\'s own full console capture for "Embedded-agent stderr" -- the subprocess\'s piped ' +
+          'stderr is logged via pino at debug level (LOG_LEVEL=debug, set above) and should carry the CLI\'s ' +
+          'own refusal reason when it could not start unauthenticated.',
       );
-      console.log(
-        `  ${UNSET_SERVER_NAME}: env=${JSON.stringify(unsetReport.envValue)}  args=${JSON.stringify(unsetReport.argsTrailing)}`,
-      );
-      console.log(
-        '==> item 5 (readings/exit-code scheme over these values) is intentionally NOT implemented in this ' +
-          'run -- reported to the Orchestrator for a go-ahead per the Issue #1799 delegation.',
-      );
-      return PROBE_EXIT.MEASURED;
+      return PROBE_EXIT.HARNESS;
     }
 
-    // --- OUTCOME (ii): capture the reason. LOG_LEVEL=debug (set above)
-    // means the embedded subprocess's own piped stderr is already visible
-    // in this run's full console capture via pino debug logging -- see this
-    // file's header "STDERR WARNING OBSERVABILITY" paragraph, the same
-    // technique, reused here for the elevated subprocess's refusal message
-    // rather than applyArgSubstitution's warning.
-    const lastEvent = boundaryEvents.at(-1);
-    console.error(
-      `ELEVATED branch: NOT REACHED (boundary=${boundaryReason}; ` +
-        `${SET_SERVER_NAME} report exists=${setReport.exists}; ${UNSET_SERVER_NAME} report exists=${unsetReport.exists}; ` +
-        `last SDK event: ${lastEvent ? JSON.stringify(lastEvent).slice(0, 500) : '(none observed)'})`,
+    if (!setReport.exists || !unsetReport.exists) {
+      // Exactly one of the two spawn reports appeared -- neither a clean
+      // gate pass (item 4's outcome (i) needs BOTH) nor a clean refusal
+      // (which would show NEITHER). Something partial happened; report it
+      // as inconclusive rather than forcing it into either outcome.
+      console.error(
+        `ELEVATED branch: INCONCLUSIVE (boundary=${boundaryReason}; ` +
+          `${SET_SERVER_NAME} report exists=${setReport.exists}; ${UNSET_SERVER_NAME} report exists=${unsetReport.exists} ` +
+          '-- exactly one fixture reported, expected both or neither)',
+      );
+      return PROBE_EXIT.INCONCLUSIVE;
+    }
+
+    console.log(
+      '==> OUTCOME (i): both spawn reports appeared -- the CLI started its declared MCP servers without a login.',
     );
-    console.error(
-      '  Grep this run\'s own full console capture for "Embedded-agent stderr" -- the subprocess\'s piped ' +
-        'stderr is logged via pino at debug level (LOG_LEVEL=debug, set above) and should carry the CLI\'s ' +
-        'own refusal reason when it could not start unauthenticated.',
+
+    // --- Item 5 readings. Both a real-value match and a literal-placeholder
+    // match are legitimate readings -- per this file's header VERDICT
+    // convention, a clean measurement is a success even when the value
+    // deviates from a prior expectation; the deviation is then the finding.
+    const setLiteral = `\${${PROBE_VAR_NAME}}`;
+    const unsetLiteral = `\${${PROBE_UNSET_NAME}}`;
+    const describeValue = (value: string | null, realValue: string, literal: string): string => {
+      if (value === realValue) return 'REAL VALUE (crossed the elevation boundary)';
+      if (value === literal || value === null || value === '') return 'LITERAL/EMPTY (did not cross)';
+      return `UNEXPECTED (${JSON.stringify(value)})`;
+    };
+    console.log(`  ELEVATED ${SET_SERVER_NAME} (\${${PROBE_VAR_NAME}}, SET in the SERVER process only):`);
+    console.log(
+      `  ELEVATED    env  (CLI-native expansion under the target user's shell) -> ${JSON.stringify(setReport.envValue)} -- ${describeValue(setReport.envValue, PROBE_VAR_VALUE, setLiteral)}`,
     );
-    return PROBE_EXIT.HARNESS;
+    console.log(
+      `  ELEVATED    args (our loader's applyArgSubstitution)                 -> ${JSON.stringify(setReport.argsTrailing)} -- ${describeValue(setReport.argsTrailing, PROBE_VAR_VALUE, setLiteral)}`,
+    );
+    console.log(`  ELEVATED ${UNSET_SERVER_NAME} (\${${PROBE_UNSET_NAME}}, control -- never set anywhere):`);
+    console.log(
+      `  ELEVATED    env  -> ${JSON.stringify(unsetReport.envValue)}`,
+    );
+    console.log(
+      `  ELEVATED    args -> ${JSON.stringify(unsetReport.argsTrailing)}`,
+    );
+
+    // --- Control agreement check: the UNSET fixture is never set in EITHER
+    // the server process or the target user's shell, in EITHER arm, so its
+    // shape must match what the non-elevated arm's own same-run positive
+    // control already measured (item 2, 2026-09-22: env left literal/empty
+    // by the CLI's native expansion, args left literal by
+    // applyArgSubstitution's documented unset-with-no-default behavior --
+    // never thrown, never a real value). A control that disagrees with that
+    // deterministic, environment-independent behavior means something about
+    // THIS run's apparatus is not comparable to the non-elevated run's, so
+    // the elevated reading cannot be trusted on its own.
+    const unsetEnvAsExpected =
+      unsetReport.envValue === null || unsetReport.envValue === '' || unsetReport.envValue === unsetLiteral;
+    const unsetArgsAsExpected = unsetReport.argsTrailing === unsetLiteral;
+    if (!unsetEnvAsExpected || !unsetArgsAsExpected) {
+      console.error(
+        'ELEVATED branch: INCONCLUSIVE -- the control (never-set-anywhere) fixture disagreed with the ' +
+          `non-elevated arm's own control shape (env as-expected=${unsetEnvAsExpected}, args as-expected=${unsetArgsAsExpected}); ` +
+          'the SET fixture reading above cannot be trusted without this baseline holding.',
+      );
+      return PROBE_EXIT.INCONCLUSIVE;
+    }
+
+    console.log('==> ELEVATED control agreement: OK (matches the non-elevated arm\'s own control shape)');
+    console.log(`\n==> ${passes} passed, ${failures.length} failed (elevated arm has no gated assertions of its own -- item 5 is a measurement, not a pass/fail gate)`);
+    return PROBE_EXIT.MEASURED;
   } finally {
     // Restore the umask createDisposableMultiUserHome() changed, FIRST --
     // it was applied unconditionally the moment that call returned (see its
