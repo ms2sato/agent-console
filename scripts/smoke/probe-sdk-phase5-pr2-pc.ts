@@ -52,6 +52,24 @@
  * approximation. Every printed reading is prefixed NON-ELEVATED; the
  * elevated branch is reported as NOT REACHED, not as passing or failing.
  *
+ * ISOLATION FROM THE OPERATOR'S REAL `~/.claude.json` (Issue 1813). Observed
+ * 2026-09-22 (a prompted run of this same non-elevated arm, recorded on
+ * Issue 1799): before this isolation existed, the `system:init` form-(b)
+ * `mcp-servers-discovered` event reported the operator's own user-scope MCP
+ * servers and claude.ai connectors, spawned/connected as a side effect of a
+ * measurement that has nothing to do with them. This script now adopts the
+ * same `isolateClaudeConfigDir` + `{}` `.claude.json` construction
+ * `check-embedded-agent-project-mcp-permission.ts`'s negative control (c)
+ * uses: a throwaway `CLAUDE_CONFIG_DIR` holding only a copy of the
+ * operator's own credentials (so the `claude` CLI can still authenticate),
+ * with `.claude.json` written as a genuinely-empty `{}` rather than left
+ * absent (an absent file makes `readUserLocalMcpNames` report
+ * `unavailable: true`, which would make this isolation check untestable --
+ * see that file's own comment). The turn this script sends is what makes
+ * `system:init` -- and therefore the form-(b) event this isolation check
+ * reads -- fire at all (`sdk-engine.ts`'s own comments: zero events of any
+ * kind arrive from the SDK until the first prompt is yielded).
+ *
  * STDERR WARNING OBSERVABILITY (best-effort, not gated). `applyArgSubstitution`
  * logs one `console.warn` per unresolved placeholder inside the embedded-agent
  * SUBPROCESS -- there is no public getter for a live worker's stderr tail
@@ -91,14 +109,16 @@
 // transitively imports server-config.ts is evaluated. Every such import
 // below is therefore a DYNAMIC import made from inside main().
 
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-// mcp-discovery.ts and mcp-names.ts are standalone (no transitive
-// server-config.ts import), so they are safe as ordinary static imports --
-// unlike everything under packages/server/src, which is deferred below.
+// mcp-discovery.ts, mcp-names.ts, and probe-sdk-session-harness.ts are
+// standalone (no transitive server-config.ts import), so they are safe as
+// ordinary static imports -- unlike everything under packages/server/src,
+// which is deferred below.
 import { discoverProjectMcpServers } from '../../packages/embedded-agent/src/mcp-discovery.js';
 import { mcpServerOf } from '../../packages/embedded-agent/src/mcp-names.js';
+import { isolateClaudeConfigDir } from './probe-sdk-session-harness.js';
 import type { AppContext } from '../../packages/server/src/app-context.js';
 
 const PROBE_VAR_NAME = 'PROBE_VAR';
@@ -143,6 +163,39 @@ interface FixtureReading {
   raw: string | null;
 }
 
+/**
+ * Whether any `mcp-servers-discovered` event in `events` reported a `user` /
+ * `local` / `connector`-scope row -- the three scopes that would mean the
+ * operator's real `~/.claude.json` (including its claude.ai connectors)
+ * leaked into this probe's isolated run (Issue 1813). Not reused from
+ * `check-embedded-agent-project-mcp-permission.ts`'s own
+ * `hasUserOrLocalScopeEntry`: that predicate checks only `user`/`local`,
+ * because its own negative control never needed to rule out a leaked
+ * connector -- what this probe actually leaked (Issue 1813's own finding)
+ * was a `connector`-scope row, so this predicate covers all three.
+ */
+function hasLeakedMcpScopeEntry(events: Array<Record<string, unknown> & { type: string }>): boolean {
+  return events.some(
+    (e) =>
+      e.type === 'mcp-servers-discovered' &&
+      Array.isArray(e.servers) &&
+      (e.servers as Array<{ scope?: string }>).some(
+        (s) => s.scope === 'user' || s.scope === 'local' || s.scope === 'connector',
+      ),
+  );
+}
+
+/**
+ * Whether any `mcp-servers-discovered` event in `events` declared
+ * `userLocalNamesUnavailable` -- would mean the isolated `.claude.json`
+ * could not be read, which makes the isolation negative control above
+ * untestable rather than genuinely passing (see this file's header comment,
+ * "ISOLATION FROM THE OPERATOR'S REAL ~/.claude.json").
+ */
+function anyUserLocalNamesUnavailable(events: Array<Record<string, unknown> & { type: string }>): boolean {
+  return events.some((e) => e.type === 'mcp-servers-discovered' && e.userLocalNamesUnavailable === true);
+}
+
 async function main(): Promise<number> {
   process.env.LOG_LEVEL = 'debug';
   process.env[PROBE_VAR_NAME] = PROBE_VAR_VALUE;
@@ -184,6 +237,17 @@ async function main(): Promise<number> {
   try {
     console.log(`==> NON-ELEVATED branch only. ${PROBE_VAR_NAME}=${PROBE_VAR_VALUE} ${PROBE_UNSET_NAME}=(unset)`);
     console.log('==> ELEVATED branch: NOT REACHED (needs tier-2 container; not attempted here)');
+
+    // Isolate this arm from the operator's real `~/.claude.json` -- the same
+    // isolateClaudeConfigDir + `{}` `.claude.json` construction
+    // check-embedded-agent-project-mcp-permission.ts's negative control (c)
+    // uses (see this file's own header, "ISOLATION FROM THE OPERATOR'S REAL
+    // ~/.claude.json"). Set before `createTestContext` / any spawn below, so
+    // the isolated directory is in place before the `claude-sdk` subprocess
+    // this script activates ever reads a config dir.
+    const isolatedConfigDir = isolateClaudeConfigDir('phase5-pr2-pc');
+    writeFileSync(path.join(isolatedConfigDir, '.claude.json'), '{}\n');
+    console.log(`==> isolated CLAUDE_CONFIG_DIR: ${isolatedConfigDir}`);
 
     let mcpBaseUrl = '';
     ctx = await createTestContext({ getMcpBaseUrl: () => mcpBaseUrl });
@@ -441,6 +505,29 @@ async function main(): Promise<number> {
 
     const setReading = readFixture(SET_SERVER_NAME, PROBE_VAR_NAME, canarySet, ledgerSet);
     const unsetReading = readFixture(UNSET_SERVER_NAME, PROBE_UNSET_NAME, canaryUnset, ledgerUnset);
+
+    // --- Isolation negative control (Issue 1813): with CLAUDE_CONFIG_DIR
+    // pointed at an isolated, empty (but present) config, no discovered
+    // event ever reports a user/local/connector-scope row, and
+    // userLocalNamesUnavailable is never set (the isolated config was
+    // readable) -- the operator's own ~/.claude.json is never read. Checked
+    // over the FULL event history (not just `turnEvents`), the same scope
+    // check-embedded-agent-project-mcp-permission.ts's own negative control
+    // (c) uses, since a `mcp-servers-discovered` event can also arrive from
+    // `main.ts`'s activation-time form (a) or `applyMcpServersOnce`'s form
+    // (c), not only from `handleSystemInit`'s form (b) this turn drives.
+    console.log('\n==> isolation negative control (Issue 1813)');
+    const allDiscoveredEvents = (await readEvents()).filter((e) => e.type === 'mcp-servers-discovered');
+    expect(allDiscoveredEvents.length > 0, 'isolation: at least one mcp-servers-discovered event exists to check');
+    expect(
+      !hasLeakedMcpScopeEntry(allDiscoveredEvents),
+      'isolation: no discovered event ever reported a user/local/connector-scope row',
+      JSON.stringify(allDiscoveredEvents.map((e) => e.servers)),
+    );
+    expect(
+      !anyUserLocalNamesUnavailable(allDiscoveredEvents),
+      'isolation: userLocalNamesUnavailable was never set (the isolated config was readable)',
+    );
 
     console.log('\n==> READINGS (non-elevated branch only)');
     for (const r of [setReading, unsetReading]) {
