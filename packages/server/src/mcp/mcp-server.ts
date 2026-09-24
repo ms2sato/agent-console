@@ -2783,12 +2783,6 @@ export function createMcpApp(deps: McpDependencies): Hono {
         );
         if (authError) return errorResult(authError.error);
 
-        if (targetSession.type !== 'worktree' || !targetSession.repositoryId) {
-          return errorResult(
-            'MCP server permissions require a repository; quick sessions are not yet supported (see #1786)',
-          );
-        }
-
         const worker = targetSession.workers.find((w) => w.id === workerId);
         if (!worker || worker.type !== 'embedded-agent') {
           return errorResult(`Worker ${workerId} not found in session ${sessionId}, or is not an embedded-agent worker`);
@@ -2816,7 +2810,6 @@ export function createMcpApp(deps: McpDependencies): Hono {
         const updated = await sessionManager.setMcpServerPermissions(
           sessionId,
           workerId,
-          targetSession.repositoryId,
           resolved.decisions,
           caller.userId,
         );

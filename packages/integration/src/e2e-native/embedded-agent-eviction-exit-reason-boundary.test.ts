@@ -224,7 +224,7 @@ describe('Client-Server Boundary: exited.reason survives to the client as `evict
         mcpTokenRegistry: new McpTokenRegistry(),
         workerOutputFileManager: outputFileManager,
         getMcpBaseUrl: () => 'http://localhost:3457/mcp',
-        mcpServerPermissionRepository: { listByRepository: async () => [] },
+        mcpServerPermissionRepository: { listByScope: async () => [] },
         spawnAsUserFn: spawn.fn,
         entryPath: '/install/embedded-agent/src/main.ts',
         getGlobalActivityCallback: () => undefined,
