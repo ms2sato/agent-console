@@ -165,9 +165,11 @@ import * as path from 'node:path';
 // mcp-discovery.ts, mcp-names.ts, and probe-sdk-session-harness.ts are
 // standalone (no transitive server-config.ts import), so they are safe as
 // ordinary static imports -- unlike everything under packages/server/src,
-// which is deferred below.
+// which is deferred below. `lib/config.ts` (NOT `lib/server-config.ts`, a
+// different file) only imports `node:path`/`node:os`, so it is safe here too.
 import { discoverProjectMcpServers } from '../../packages/embedded-agent/src/mcp-discovery.js';
 import { mcpServerOf } from '../../packages/embedded-agent/src/mcp-names.js';
+import { getConfigDir } from '../../packages/server/src/lib/config.js';
 import {
   isolateClaudeConfigDir,
   snapshotIsolationEvidence,
@@ -330,6 +332,16 @@ async function runNonElevated(): Promise<number> {
     console.log(`==> NON-ELEVATED branch. ${PROBE_VAR_NAME}=${PROBE_VAR_VALUE} ${PROBE_UNSET_NAME}=(unset)`);
     console.log('==> ELEVATED branch: not run by this invocation -- see --elevated <target-user>');
 
+    // CodeRabbit MAJOR (Issue 1813, outside-diff finding 2): this MUST be set
+    // before `createTestContext` runs below -- its first statement is a
+    // `mkdir` of `getConfigDir()`, and with `AGENT_CONSOLE_HOME` unset that
+    // resolves to `~/.agent-console`, the OPERATOR's real data root. Same
+    // ordering `check-embedded-agent-project-mcp-permission.ts` uses (home
+    // dir + env var, then isolation, then `createTestContext`).
+    homeDir = path.join(os.tmpdir(), `ac-pr2-pc-home-${crypto.randomUUID()}`);
+    Bun.spawnSync(['mkdir', '-p', homeDir]);
+    process.env.AGENT_CONSOLE_HOME = homeDir;
+
     // Isolate this arm from the operator's real `~/.claude.json` -- the same
     // isolateClaudeConfigDir + `{}` `.claude.json` construction
     // check-embedded-agent-project-mcp-permission.ts's negative control (c)
@@ -352,14 +364,16 @@ async function runNonElevated(): Promise<number> {
 
     let mcpBaseUrl = '';
     ctx = await createTestContext({ getMcpBaseUrl: () => mcpBaseUrl });
+    // CodeRabbit MAJOR (Issue 1813, outside-diff finding 2): hard assertion,
+    // not a recorded reading -- proves `createTestContext` actually resolved
+    // the disposable `homeDir` above, not the operator's real data root, at
+    // the one point where a future reordering of these lines would silently
+    // reintroduce the bug.
+    expect(getConfigDir() === homeDir, 'context data root is the disposable home', `getConfigDir()=${getConfigDir()} homeDir=${homeDir}`);
 
     const osUid = process.getuid?.() ?? 0;
     const username = os.userInfo().username;
     const owner = await ctx.userRepository.upsertByOsUid(osUid, username, os.homedir());
-
-    homeDir = path.join(os.tmpdir(), `ac-pr2-pc-home-${crypto.randomUUID()}`);
-    Bun.spawnSync(['mkdir', '-p', homeDir]);
-    process.env.AGENT_CONSOLE_HOME = homeDir;
 
     const app = new Hono();
     app.use('*', async (c: { set: (k: string, v: unknown) => void }, next: () => Promise<void>) => {
@@ -894,18 +908,14 @@ async function runElevatedArm(targetUsername: string): Promise<number> {
     }
     console.log(`  resolved target user: uid=${osUser.uid} home=${osUser.homeDir}`);
 
-    let mcpBaseUrl = '';
-    ctx = await createTestContext({ getMcpBaseUrl: () => mcpBaseUrl });
-
-    const osUid = process.getuid?.() ?? 0;
-    const invokingUsername = os.userInfo().username;
-    const owner = await ctx.userRepository.upsertByOsUid(osUid, invokingUsername, os.homedir());
-    const targetUser = await ctx.userRepository.upsertByOsUid(osUser.uid, targetUsername, osUser.homeDir);
-
-    // The disposable AGENT_CONSOLE_HOME must satisfy the production data
-    // root's `2775` setgid contract under AUTH_MODE=multi-user, or the
-    // memory layer's verification (memory-dir.ts) fails closed before the
-    // worker ever reaches its own init handshake -- the same requirement
+    // CodeRabbit MAJOR (Issue 1813, outside-diff finding 2): this MUST run
+    // before `createTestContext` below -- its first statement is a `mkdir`
+    // of `getConfigDir()`, and with `AGENT_CONSOLE_HOME` unset that resolves
+    // to `~/.agent-console`, the OPERATOR's real data root. The disposable
+    // AGENT_CONSOLE_HOME must satisfy the production data root's `2775`
+    // setgid contract under AUTH_MODE=multi-user, or the memory layer's
+    // verification (memory-dir.ts) fails closed before the worker ever
+    // reaches its own init handshake -- the same requirement
     // check-embedded-agent-elevation.ts documents for its own use of this
     // helper.
     const homeResult = await createDisposableMultiUserHome('ac-pr2-pc-elevated-home-');
@@ -919,6 +929,20 @@ async function runElevatedArm(targetUsername: string): Promise<number> {
     homeDir = homeResult.path;
     prevUmask = homeResult.prevUmask;
     process.env.AGENT_CONSOLE_HOME = homeDir;
+
+    let mcpBaseUrl = '';
+    ctx = await createTestContext({ getMcpBaseUrl: () => mcpBaseUrl });
+    // CodeRabbit MAJOR (Issue 1813, outside-diff finding 2): hard assertion,
+    // not a recorded reading -- proves `createTestContext` actually resolved
+    // the disposable `homeDir` above, not the operator's real data root, at
+    // the one point where a future reordering of these lines would silently
+    // reintroduce the bug.
+    expect(getConfigDir() === homeDir, 'context data root is the disposable home', `getConfigDir()=${getConfigDir()} homeDir=${homeDir}`);
+
+    const osUid = process.getuid?.() ?? 0;
+    const invokingUsername = os.userInfo().username;
+    const owner = await ctx.userRepository.upsertByOsUid(osUid, invokingUsername, os.homedir());
+    const targetUser = await ctx.userRepository.upsertByOsUid(osUser.uid, targetUsername, osUser.homeDir);
 
     const app = new Hono();
     app.use('*', async (c: { set: (k: string, v: unknown) => void }, next: () => Promise<void>) => {
