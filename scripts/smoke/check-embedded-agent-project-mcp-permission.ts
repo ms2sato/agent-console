@@ -195,6 +195,7 @@ import { cpSync, existsSync, mkdirSync, readFileSync, symlinkSync, unlinkSync, w
 import * as os from 'node:os';
 import * as path from 'node:path';
 import type { AppContext } from '../../packages/server/src/app-context.js';
+import { createScratchGitRepo } from '../../packages/server/src/__tests__/utils/scratch-git.js';
 import { parseLedger, matchesLedgerEntry, type LedgerEntry } from './probe-sdk-mcp-settings-sources.js';
 import { isolateClaudeConfigDir } from './probe-sdk-session-harness.js';
 
@@ -487,26 +488,18 @@ async function main(expectNoPermission: boolean): Promise<void> {
 
     // -----------------------------------------------------------------
     // One scratch git repository + one worktree session (the target).
+    // `home` is already under os.tmpdir() (see above), so it doubles as
+    // `parentDir` here -- the scratch repo is removed along with the rest
+    // of `home` in the `finally` block below, no separate cleanup() call.
     // -----------------------------------------------------------------
-    function git(args: string[], cwd: string): void {
-      const result = Bun.spawnSync(['git', ...args], { cwd, stdout: 'pipe', stderr: 'pipe' });
-      if (result.exitCode !== 0) {
-        throw new Error(`git ${args.join(' ')} (cwd=${cwd}) failed: ${new TextDecoder().decode(result.stderr)}`);
-      }
-    }
-
-    const repoDir = path.join(home, 'repo');
-    Bun.spawnSync(['mkdir', '-p', repoDir]);
-    git(['init', '-q'], repoDir);
-    git(['config', 'user.email', 'smoke@example.com'], repoDir);
-    git(['config', 'user.name', 'Smoke Test'], repoDir);
-    git(['commit', '--allow-empty', '-q', '-m', 'init'], repoDir);
+    const scratchRepo = await createScratchGitRepo({ parentDir: home, name: 'repo-' });
+    const repoDir = scratchRepo.dir;
 
     const repo = await ctx.repositoryManager.registerRepository(repoDir);
     console.log(`==> repository: ${repo.id}`);
 
     const worktreeDir = path.join(home, 'worktree');
-    git(['worktree', 'add', worktreeDir, '-b', `smoke-mcp-permission-${process.pid}`], repoDir);
+    await scratchRepo.git(['worktree', 'add', worktreeDir, '-b', `smoke-mcp-permission-${process.pid}`]);
 
     const targetSession = await ctx.sessionManager.createSession(
       { type: 'worktree', repositoryId: repo.id, worktreeId: 'main', locationPath: worktreeDir, embeddedAgentId: CLAUDE_SDK_AGENT_ID },

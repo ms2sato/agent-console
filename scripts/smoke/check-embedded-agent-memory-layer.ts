@@ -172,6 +172,7 @@ import { existsSync, readFileSync, readdirSync, statSync, unlinkSync } from 'nod
 import * as os from 'node:os';
 import * as path from 'node:path';
 import type { AppContext } from '../../packages/server/src/app-context.js';
+import { createScratchGitRepo, type ScratchGitRepo } from '../../packages/server/src/__tests__/utils/scratch-git.js';
 
 type EngineArm = 'openai-api' | 'claude-sdk';
 type EngineSelection = EngineArm | 'both';
@@ -596,26 +597,21 @@ async function main(engine: EngineSelection, expectNoMemory: boolean): Promise<v
     // Two disposable git repositories, one WITH a fake origin remote (a
     // two-segment "org/repo" slug) and one WITHOUT (a one-segment basename
     // slug) -- both slug shapes the Session Data Path design produces.
+    // `home` is already under os.tmpdir() (see below), so it doubles as
+    // `parentDir` here -- both scratch repos are removed along with the
+    // rest of `home` in the `finally` block, no separate cleanup() calls.
     // -----------------------------------------------------------------
-    function git(args: string[], cwd: string): void {
-      const result = Bun.spawnSync(['git', ...args], { cwd, stdout: 'pipe', stderr: 'pipe' });
-      if (result.exitCode !== 0) {
-        throw new Error(`git ${args.join(' ')} (cwd=${cwd}) failed: ${new TextDecoder().decode(result.stderr)}`);
-      }
-    }
-
-    const repo1Dir = path.join(home, 'repo1-with-remote');
-    const repo2Dir = path.join(home, 'repo2-no-remote');
-    for (const dir of [repo1Dir, repo2Dir]) {
-      Bun.spawnSync(['mkdir', '-p', dir]);
-      git(['init', '-q'], dir);
-      git(['config', 'user.email', 'smoke@example.com'], dir);
-      git(['config', 'user.name', 'Smoke Test'], dir);
-      git(['commit', '--allow-empty', '-q', '-m', 'init'], dir);
-    }
+    const scratchRepo1 = await createScratchGitRepo({ parentDir: home, name: 'repo1-with-remote-' });
+    const scratchRepo2 = await createScratchGitRepo({ parentDir: home, name: 'repo2-no-remote-' });
+    const repo1Dir = scratchRepo1.dir;
+    const repo2Dir = scratchRepo2.dir;
+    const scratchRepoByDir = new Map<string, ScratchGitRepo>([
+      [repo1Dir, scratchRepo1],
+      [repo2Dir, scratchRepo2],
+    ]);
     const nonceOrg = `smoke-org-${process.pid}`;
     const nonceRepo = `smoke-repo-${process.pid}`;
-    git(['remote', 'add', 'origin', `https://github.com/${nonceOrg}/${nonceRepo}.git`], repo1Dir);
+    await scratchRepo1.git(['remote', 'add', 'origin', `https://github.com/${nonceOrg}/${nonceRepo}.git`]);
 
     const repo1 = await ctx.repositoryManager.registerRepository(repo1Dir);
     const repo2 = await ctx.repositoryManager.registerRepository(repo2Dir);
@@ -675,9 +671,11 @@ async function main(engine: EngineSelection, expectNoMemory: boolean): Promise<v
       throw new Error('turn did not complete before the deadline');
     };
 
-    const makeWorktree = (repoDir: string, branch: string): string => {
+    const makeWorktree = async (repoDir: string, branch: string): Promise<string> => {
       const dir = path.join(home!, `worktree-${branch}`);
-      git(['worktree', 'add', dir, '-b', branch], repoDir);
+      const scratchRepo = scratchRepoByDir.get(repoDir);
+      if (!scratchRepo) throw new Error(`makeWorktree: no scratch repo registered for ${repoDir}`);
+      await scratchRepo.git(['worktree', 'add', dir, '-b', branch]);
       return dir;
     };
 
@@ -749,8 +747,8 @@ async function main(engine: EngineSelection, expectNoMemory: boolean): Promise<v
       console.log(`  nonce: ${nonce}`);
 
       const branchPrefix = `smoke-mem-${armLabel}-${process.pid}`;
-      const s1Dir = makeWorktree(repo1Dir, `${branchPrefix}-s1`);
-      const s2Dir = makeWorktree(repo1Dir, `${branchPrefix}-s2`);
+      const s1Dir = await makeWorktree(repo1Dir, `${branchPrefix}-s1`);
+      const s2Dir = await makeWorktree(repo1Dir, `${branchPrefix}-s2`);
 
       const a = await makeSession(repo1.id, `${branchPrefix}-s1`, s1Dir, d1Id);
       const b = await makeSession(repo1.id, `${branchPrefix}-s2`, s2Dir, d1Id);
@@ -900,8 +898,8 @@ async function main(engine: EngineSelection, expectNoMemory: boolean): Promise<v
       // D (same definition, DIFFERENT repo). Both REQUIRED to create and
       // activate -- a failure here is a harness problem (throws -> exit 2),
       // never a tolerated "skip".
-      const s3Dir = makeWorktree(repo1Dir, `${branchPrefix}-s3`);
-      const s4Dir = makeWorktree(repo2Dir, `${branchPrefix}-s4`);
+      const s3Dir = await makeWorktree(repo1Dir, `${branchPrefix}-s3`);
+      const s4Dir = await makeWorktree(repo2Dir, `${branchPrefix}-s4`);
       const c = await makeSession(repo1.id, `${branchPrefix}-s3`, s3Dir, d2Id);
       const d = await makeSession(repo2.id, `${branchPrefix}-s4`, s4Dir, d1Id);
 
