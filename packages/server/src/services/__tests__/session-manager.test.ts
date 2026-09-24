@@ -21,7 +21,6 @@ import { PtyMessageInjectionService } from '../pty-message-injection-service.js'
 // Type-only: the suite loads SessionManager dynamically (fresh module per test),
 // but the R1 return-type pin below needs the static type.
 import type { SessionManager } from '../session-manager.js';
-import type { InternalSession } from '../internal-types.js';
 import { UsernameLookupService } from '../username-lookup.js';
 import type { UserRepository } from '../../repositories/user-repository.js';
 import type { AuthUser } from '@agent-console/shared';
@@ -75,24 +74,6 @@ function fakeSpawnAsUserResult(fields: {
   elevated?: boolean;
 }): SpawnAsUserResult {
   return { elevated: false, ...fields } as SpawnAsUserResult;
-}
-
-/**
- * SessionManager constructs its own `sessions` map and
- * `EmbeddedAgentWorkerService` internally -- neither is exposed via
- * `SessionManagerOptions` or a public getter. This is the file's single
- * documented reach into that private state, needed by exactly one test
- * (see its own comment) that would otherwise have to re-drive a full
- * embedded-agent activation already covered end-to-end elsewhere.
- */
-function getSessionManagerPrivateState(manager: SessionManager): {
-  sessions: Map<string, InternalSession>;
-  embeddedAgentWorkerService: { deps: { onSessionUpdated: (session: InternalSession) => void } };
-} {
-  return manager as unknown as {
-    sessions: Map<string, InternalSession>;
-    embeddedAgentWorkerService: { deps: { onSessionUpdated: (session: InternalSession) => void } };
-  };
 }
 
 describe('SessionManager', () => {
@@ -4322,38 +4303,84 @@ describe('SessionManager', () => {
       // own; the wiring under test is the single line connecting its
       // `onSessionUpdated` dep to this manager's `sessionLifecycleCallbacks`,
       // wrapped through the same `toPublicSession` conversion every other
-      // broadcast in this file uses. Driving a real embedded-agent
-      // activation end-to-end to exercise this line is unnecessary here --
-      // that shipping path is already covered by
-      // packages/integration/src/embedded-agent-mcp-permission-boundary.test.ts.
-      // This test calls the exact dep function session-manager.ts wires,
-      // the same way EmbeddedAgentWorkerService itself would.
-      const manager = await getSessionManager();
+      // broadcast in this file uses. Driven through the real shipping path
+      // (activateEmbeddedAgentWorker -> EmbeddedAgentWorkerService.activate's
+      // own success-path `deps.onSessionUpdated(session)` call, right before
+      // its `logger.info(...'activated')` line) instead of reaching into
+      // SessionManager's private `sessions` map / constructed
+      // `embeddedAgentWorkerService.deps` -- no private-state cast needed
+      // (Architect review, PR #1806).
+      const STUB_DEF = {
+        id: 'stub-def',
+        name: 'Stub Model',
+        engine: 'openai-api' as const,
+        isBuiltIn: false,
+        provider: { baseUrl: 'http://localhost:11434/v1', model: 'qwen3:32b' },
+        createdBy: 'test-user-id',
+        createdAt: '2024-01-01T00:00:00.000Z',
+        updatedAt: '2024-01-01T00:00:00.000Z',
+      };
+      const stdin = { write: () => 0, end: () => {}, flush: () => 0 };
+      let stdoutCtrl!: ReadableStreamDefaultController<Uint8Array>;
+      let stderrCtrl!: ReadableStreamDefaultController<Uint8Array>;
+      const stdout = new ReadableStream<Uint8Array>({ start(c) { stdoutCtrl = c; } });
+      const stderr = new ReadableStream<Uint8Array>({ start(c) { stderrCtrl = c; } });
+      let resolveExited!: (code: number) => void;
+      const exited = new Promise<number>((resolve) => {
+        resolveExited = resolve;
+      });
+      // Closes the streams too, not just `exited` -- deactivate's exit path
+      // awaits `readStdout`/`readStderr` completing (they resolve only once
+      // their stream closes), not merely `subprocess.exited` resolving.
+      const simulateExit = (code: number) => {
+        resolveExited(code);
+        stdoutCtrl.close();
+        stderrCtrl.close();
+      };
+      const subprocess = { pid: 4242, exited, stdin, stdout, stderr, kill: () => {} };
+      const fakeSpawnAsUserFn = mock(() => fakeSpawnAsUserResult({ subprocess, stdin }));
+
+      const module = await import(`../session-manager.js?v=${++importCounter}`);
+      const manager = await module.SessionManager.create({
+        userMode: new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' }),
+        pathExists: mockPathExists,
+        jobQueue: testJobQueue,
+        agentManager,
+        mcpTokenRegistry: new McpTokenRegistry(),
+        embeddedAgentManager: { getEmbeddedAgent: (id: string) => (id === STUB_DEF.id ? STUB_DEF : undefined) },
+        repositoryLookup: defaultRepositoryLookup,
+        repositoryEnvLookup: defaultRepositoryEnvLookup,
+        spawnAsUserFn: fakeSpawnAsUserFn,
+      });
 
       const onSessionUpdated = mock(() => {});
       manager.setSessionLifecycleCallbacks({ onSessionUpdated });
 
-      const session = await manager.createSession({
-        type: 'quick',
-        locationPath: '/test/path',
-        agentId: 'claude-code',
-      });
+      const session = await manager.createSession(
+        { type: 'quick', locationPath: '/test/path', embeddedAgentId: STUB_DEF.id },
+        { createdBy: 'test-user-id' },
+      );
+      const worker = session.workers.find((w: Worker) => w.type === 'embedded-agent');
+      expect(worker).not.toBeUndefined();
 
       // createSession triggers onSessionUpdated via its initial worker
       // creation; clear that incidental call before asserting on the
       // EmbeddedAgentWorkerService wiring under test.
       onSessionUpdated.mockClear();
 
-      const privateState = getSessionManagerPrivateState(manager);
-      const internalSession = privateState.sessions.get(session.id)!;
-      const embeddedDeps = privateState.embeddedAgentWorkerService.deps;
-
-      embeddedDeps.onSessionUpdated(internalSession);
+      await manager.activateEmbeddedAgentWorker(session.id, worker!.id);
 
       expect(onSessionUpdated).toHaveBeenCalledTimes(1);
       expect(onSessionUpdated).toHaveBeenCalledWith(manager.getSession(session.id));
 
-      // Mutation measured: temporarily replacing session-manager.ts's
+      // Teardown: deactivate rather than leaving the fake subprocess running
+      // past the test (mirrors the "threads the spawnAsUserFn option
+      // through" test's pattern above).
+      const deactivatePromise = manager.deactivateEmbeddedAgentWorker(session.id, worker!.id);
+      simulateExit(0);
+      await deactivatePromise;
+
+      // Polarity measured: temporarily replacing session-manager.ts's
       // `onSessionUpdated: (session) => this.sessionLifecycleCallbacks
       // ?.onSessionUpdated?.(this.toPublicSession(session))` wiring with a
       // no-op made the `toHaveBeenCalledTimes(1)` assertion above fail with
