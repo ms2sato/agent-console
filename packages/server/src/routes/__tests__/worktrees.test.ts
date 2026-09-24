@@ -6,7 +6,18 @@ import type { AppBindings } from '../../app-context.js';
 import type { WorktreeService } from '../../services/worktree-service.js';
 import type { RepositoryManager } from '../../services/repository-manager.js';
 import type { SessionManager } from '../../services/session-manager.js';
-import type { AppServerMessage, Repository, WorktreeDeletePayload } from '@agent-console/shared';
+import type { AgentManager } from '../../services/agent-manager.js';
+import type { EmbeddedAgentManager } from '../../services/embedded-agent-manager.js';
+import type { SuggestSessionMetadataFn } from '../../services/session-metadata-suggester.js';
+import type {
+  AgentDefinition,
+  AppServerMessage,
+  EmbeddedAgentDefinition,
+  JobType,
+  Repository,
+  Session,
+  WorktreeDeletePayload,
+} from '@agent-console/shared';
 import { asAppContext, TEST_AUTH_USER } from '../../__tests__/test-utils.js';
 import { mockGit, resetGitMocks } from '../../__tests__/utils/mock-git-helper.js';
 import { setupMemfs, cleanupMemfs } from '../../__tests__/utils/mock-fs-helper.js';
@@ -20,6 +31,105 @@ import { registerWorktreeDeleteJobHandler } from '../../jobs/worktree-delete-job
 import { createDatabaseForTest } from '../../database/connection.js';
 import type { Kysely } from 'kysely';
 import type { Database } from '../../database/schema.js';
+
+// ---------------------------------------------------------------------------
+// Typed test doubles
+// ---------------------------------------------------------------------------
+//
+// WorktreeService / RepositoryManager / SessionManager / AgentManager /
+// EmbeddedAgentManager are concrete classes with private fields (and, for
+// all but WorktreeService, private constructors too), so a plain object
+// implementing only the methods a route actually exercises cannot satisfy
+// the class type structurally -- assigning it directly (or even asserting
+// it with a single `as X`) is rejected by TypeScript as "neither type
+// sufficiently overlaps with the other". Each helper below types its
+// parameter as `Partial<X>`, so every provided method name and signature is
+// checked against the real class (a stale or misspelled method name is a
+// compile error), and performs exactly one assertion inside the helper body
+// to bridge the private-member gap -- instead of a two-step `unknown`-then-X
+// bypass at every call site, which skips both checks.
+function asWorktreeService(stub: Partial<WorktreeService>): WorktreeService {
+  return stub as WorktreeService;
+}
+
+function asRepositoryManager(stub: Partial<RepositoryManager>): RepositoryManager {
+  return stub as RepositoryManager;
+}
+
+function asSessionManager(stub: Partial<SessionManager>): SessionManager {
+  return stub as SessionManager;
+}
+
+function asAgentManager(stub: Partial<AgentManager>): AgentManager {
+  return stub as AgentManager;
+}
+
+function asEmbeddedAgentManager(stub: Partial<EmbeddedAgentManager>): EmbeddedAgentManager {
+  return stub as EmbeddedAgentManager;
+}
+
+/**
+ * Minimal-but-valid `AgentDefinition` fixture. The route under test only
+ * ever reads `.id` from the resolved agent (see routes/worktrees.ts); the
+ * real `suggestSessionMetadata` (the only consumer of the other fields) is
+ * replaced with a test double in every context that overrides an
+ * `agentManager` and can reach the POST /worktrees creation route -- the
+ * handful of `asAppContext(...)` calls in this file that omit
+ * `suggestSessionMetadata` entirely are GET/DELETE-only contexts (or the
+ * default `beforeEach` context, never mounted for a prompt-mode POST), so
+ * they never reach the suggester regardless. The templates/capabilities
+ * below are therefore never exercised -- they exist only to satisfy the
+ * real `AgentDefinition` shape without a cast.
+ */
+function buildAgentDefinitionFixture(overrides: Pick<AgentDefinition, 'id' | 'name'>): AgentDefinition {
+  return {
+    isBuiltIn: true,
+    createdAt: '2024-01-01T00:00:00.000Z',
+    commandTemplate: '{{prompt}}',
+    capabilities: {
+      supportsContinue: false,
+      supportsHeadlessMode: false,
+      supportsActivityDetection: false,
+    },
+    ...overrides,
+  };
+}
+
+/** Same rationale as {@link buildAgentDefinitionFixture}, for the embedded-agent registry. */
+function buildEmbeddedAgentDefinitionFixture(
+  overrides: Pick<EmbeddedAgentDefinition, 'id' | 'name'>,
+): EmbeddedAgentDefinition {
+  return {
+    engine: 'openai-api',
+    isBuiltIn: false,
+    createdBy: TEST_AUTH_USER.id,
+    createdAt: '2024-01-01T00:00:00.000Z',
+    updatedAt: '2024-01-01T00:00:00.000Z',
+    provider: { baseUrl: 'http://localhost:11434/v1', model: 'test-model' },
+    ...overrides,
+  };
+}
+
+/**
+ * Minimal-but-valid `Session` fixture for `sessionManager.createSession`
+ * test doubles that only capture the call's ARGUMENTS (never asserted on
+ * the resolved value itself -- `broadcastToApp` is a no-op in every test
+ * using this fixture, so the returned session only ever reaches a discarded
+ * broadcast payload).
+ */
+function buildSessionFixture(overrides: Pick<Session, 'id'>): Session {
+  return {
+    type: 'quick',
+    locationPath: '/test/quick-session',
+    status: 'active',
+    activationState: 'running',
+    createdAt: '2024-01-01T00:00:00.000Z',
+    workers: [],
+    isShared: false,
+    recoveryState: 'healthy',
+    ...overrides,
+  };
+}
 
 // ---------------------------------------------------------------------------
 // Test constants
@@ -43,8 +153,8 @@ const WORKTREE_PATH = `${REPO_PATH}/worktrees/wt-1`;
 // Mock services
 // ---------------------------------------------------------------------------
 
-function createMockWorktreeService() {
-  return {
+function createMockWorktreeService(): WorktreeService {
+  return asWorktreeService({
     listWorktrees: mock(() => Promise.resolve([])),
     // Pre-create accessibility probe (Issue #854). Default to success so
     // tests that don't care about the probe see the legacy behaviour;
@@ -55,23 +165,21 @@ function createMockWorktreeService() {
     ensureRepoHasCommits: mock(() => Promise.resolve()),
     isWorktreeOf: mock(() => Promise.resolve(true)),
     getDefaultBranch: mock(() => Promise.resolve('main')),
-    listLocalBranches: mock(() => Promise.resolve([])),
-    listRemoteBranches: mock(() => Promise.resolve([])),
-    executeHookCommand: mock(() => Promise.resolve(null)),
+    executeHookCommand: mock(() => Promise.resolve({ success: true })),
     removeWorktree: mock(() => Promise.resolve({ success: true })),
     removeOrphanedWorktree: mock(() => Promise.resolve()),
-    getWorktreeIndexNumber: mock(() => Promise.resolve(null)),
+    getWorktreeIndexNumber: mock(() => Promise.resolve(0)),
     // Default no-op for createWorktree; overridden in tests that exercise
     // the POST /worktrees route.
     createWorktree: mock(() => Promise.resolve({ worktreePath: '', error: 'not implemented in mock' })),
-  } as unknown as WorktreeService;
+  });
 }
 
-function createMockRepositoryManager() {
-  return {
+function createMockRepositoryManager(): RepositoryManager {
+  return asRepositoryManager({
     getRepository: mock((id: string) => (id === TEST_REPO.id ? TEST_REPO : undefined)),
     getAllRepositories: mock(() => [TEST_REPO]),
-  } as unknown as RepositoryManager;
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -166,11 +274,11 @@ describe('Worktrees API', () => {
      * call, the mock resolves a promise the test awaits before asserting.
      */
     function createCapturingWorktreeMock() {
-      let resolveCall!: (args: unknown[]) => void;
-      const captured = new Promise<unknown[]>((resolve) => {
+      let resolveCall!: (args: Parameters<WorktreeService['createWorktree']>) => void;
+      const captured = new Promise<Parameters<WorktreeService['createWorktree']>>((resolve) => {
         resolveCall = resolve;
       });
-      const mockFn = mock((...args: unknown[]) => {
+      const mockFn = mock<WorktreeService['createWorktree']>((...args) => {
         resolveCall(args);
         // Return error so the route's success-broadcast path is skipped --
         // the test only needs to observe the createWorktree call args.
@@ -181,12 +289,12 @@ describe('Worktrees API', () => {
 
     it("forwards authUser.username as requestUsername to worktreeService.createWorktree", async () => {
       // Mock the agent manager so the route passes the agent validation.
-      const mockAgentManager = {
-        getAgent: mock(() => ({ id: 'claude-code-builtin', name: 'Claude Code' })),
-      } as unknown as Parameters<typeof asAppContext>[0]['agentManager'];
+      const mockAgentManager = asAgentManager({
+        getAgent: mock(() => buildAgentDefinitionFixture({ id: 'claude-code-builtin', name: 'Claude Code' })),
+      });
 
       const { mockFn: createCapture, captured } = createCapturingWorktreeMock();
-      (mockWorktreeService as unknown as { createWorktree: typeof createCapture }).createWorktree = createCapture;
+      mockWorktreeService.createWorktree = createCapture;
 
       // Re-mount the app with the augmented appContext (agentManager +
       // sessionManager + broadcastToApp + suggestSessionMetadata). The
@@ -201,7 +309,7 @@ describe('Worktrees API', () => {
           // sessionManager is invoked downstream by createWorktreeWithSession
           // only when the worktree creation succeeds; the short-circuit error
           // above ensures it never runs.
-          sessionManager: { createSession: mock() } as unknown as SessionManager,
+          sessionManager: asSessionManager({ createSession: mock() }),
           broadcastToApp: () => {},
           suggestSessionMetadata: mock(async () => ({ branch: '', title: '', error: 'unused' })),
         }));
@@ -250,18 +358,18 @@ describe('Worktrees API', () => {
       // suggester). The default SingleUserMode used by asAppContext is
       // constructed with TEST_AUTH_USER (username='testuser'), so we assert
       // the route forwards 'testuser' as `requestUser`.
-      const mockAgentManager = {
-        getAgent: mock(() => ({ id: 'claude-code-builtin', name: 'Claude Code' })),
-      } as unknown as Parameters<typeof asAppContext>[0]['agentManager'];
+      const mockAgentManager = asAgentManager({
+        getAgent: mock(() => buildAgentDefinitionFixture({ id: 'claude-code-builtin', name: 'Claude Code' })),
+      });
 
       // Capture the args the suggester receives. Resolve to an error so the
       // downstream worktree creation falls back to `task-<timestamp>` and we
       // do not need to mock the success-broadcast path further.
-      let resolveSuggestionCall!: (args: unknown[]) => void;
-      const suggestionCaptured = new Promise<unknown[]>((resolve) => {
+      let resolveSuggestionCall!: (args: Parameters<SuggestSessionMetadataFn>) => void;
+      const suggestionCaptured = new Promise<Parameters<SuggestSessionMetadataFn>>((resolve) => {
         resolveSuggestionCall = resolve;
       });
-      const suggestionMock = mock((...args: unknown[]) => {
+      const suggestionMock = mock<SuggestSessionMetadataFn>((...args) => {
         resolveSuggestionCall(args);
         return Promise.resolve({ branch: undefined, title: undefined, error: 'short-circuit for test' });
       });
@@ -270,7 +378,7 @@ describe('Worktrees API', () => {
       // pipeline; we only care that the suggester was called with the right
       // requestUser.
       const { mockFn: createCapture } = createCapturingWorktreeMock();
-      (mockWorktreeService as unknown as { createWorktree: typeof createCapture }).createWorktree = createCapture;
+      mockWorktreeService.createWorktree = createCapture;
 
       app = new Hono<AppBindings>();
       app.use('*', async (c, next) => {
@@ -278,9 +386,9 @@ describe('Worktrees API', () => {
           repositoryManager: mockRepositoryManager,
           worktreeService: mockWorktreeService,
           agentManager: mockAgentManager,
-          sessionManager: { createSession: mock() } as unknown as SessionManager,
+          sessionManager: asSessionManager({ createSession: mock() }),
           broadcastToApp: () => {},
-          suggestSessionMetadata: suggestionMock as unknown as Parameters<typeof asAppContext>[0]['suggestSessionMetadata'],
+          suggestSessionMetadata: suggestionMock,
         }));
         await next();
       });
@@ -309,7 +417,7 @@ describe('Worktrees API', () => {
       // The suggester is invoked from the fire-and-forget IIFE; await the
       // captured-args promise so we observe the call deterministically.
       const args = await suggestionCaptured;
-      const req = args[0] as { prompt: string; repositoryPath: string; requestUser: string | null };
+      const req = args[0];
       expect(req.prompt).toBe('Add a dark mode toggle');
       expect(req.repositoryPath).toBe(REPO_PATH);
       // Primary assertion: requestUser must equal the authenticated OS user.
@@ -326,9 +434,9 @@ describe('Worktrees API', () => {
   // =========================================================================
 
   describe('POST /api/repositories/:id/worktrees (Issue #1286 shared worktree sessions)', () => {
-    const mockAgentManager = {
-      getAgent: mock(() => ({ id: 'claude-code-builtin', name: 'Claude Code' })),
-    } as unknown as Parameters<typeof asAppContext>[0]['agentManager'];
+    const mockAgentManager = asAgentManager({
+      getAgent: mock(() => buildAgentDefinitionFixture({ id: 'claude-code-builtin', name: 'Claude Code' })),
+    });
 
     /**
      * The route kicks off worktree creation in a fire-and-forget IIFE; the
@@ -338,11 +446,11 @@ describe('Worktrees API', () => {
      * creation instead of short-circuiting).
      */
     function createCapturingCreateWorktreeMock(worktreePath: string) {
-      let resolveCall!: (args: unknown[]) => void;
-      const captured = new Promise<unknown[]>((resolve) => {
+      let resolveCall!: (args: Parameters<WorktreeService['createWorktree']>) => void;
+      const captured = new Promise<Parameters<WorktreeService['createWorktree']>>((resolve) => {
         resolveCall = resolve;
       });
-      const mockFn = mock((...args: unknown[]) => {
+      const mockFn = mock<WorktreeService['createWorktree']>((...args) => {
         resolveCall(args);
         return Promise.resolve({ worktreePath, index: 0 });
       });
@@ -350,13 +458,13 @@ describe('Worktrees API', () => {
     }
 
     function createCapturingSessionMock() {
-      let resolveCall!: (args: unknown[]) => void;
-      const captured = new Promise<unknown[]>((resolve) => {
+      let resolveCall!: (args: Parameters<SessionManager['createSession']>) => void;
+      const captured = new Promise<Parameters<SessionManager['createSession']>>((resolve) => {
         resolveCall = resolve;
       });
-      const mockFn = mock((...args: unknown[]) => {
+      const mockFn = mock<SessionManager['createSession']>((...args) => {
         resolveCall(args);
-        return Promise.resolve({ id: 'session-shared-1' });
+        return Promise.resolve(buildSessionFixture({ id: 'session-shared-1' }));
       });
       return { mockFn, captured };
     }
@@ -366,7 +474,8 @@ describe('Worktrees API', () => {
      * fake UserRepository, mirroring sessions.test.ts's setupCommon pattern.
      * The registry's public API (isEnabled / getDefaultUserId /
      * getDefaultUsername) is exercised for real; only the OS lookup + DB
-     * upsert are faked.
+     * upsert are faked. UserRepository is a plain interface (not a class),
+     * so a fake implementing both its methods needs no cast at all.
      */
     async function createSharedAccountRegistry(opts: { enabled: boolean }): Promise<SharedAccountRegistry> {
       if (!opts.enabled) {
@@ -380,7 +489,7 @@ describe('Worktrees API', () => {
       };
       return SharedAccountRegistry.create({
         username: 'shared-user',
-        userRepository: fakeUserRepository as unknown as Parameters<typeof SharedAccountRegistry.create>[0]['userRepository'],
+        userRepository: fakeUserRepository,
         lookupOsUser: () => Promise.resolve({ uid: 6000, homeDir: '/home/shared-user' }),
       });
     }
@@ -388,7 +497,7 @@ describe('Worktrees API', () => {
     it('shared:true + registry disabled -> 400 with exact message, createWorktree not called', async () => {
       const sharedAccountRegistry = await createSharedAccountRegistry({ enabled: false });
       const { mockFn: createCapture } = createCapturingCreateWorktreeMock(WORKTREE_PATH);
-      (mockWorktreeService as unknown as { createWorktree: typeof createCapture }).createWorktree = createCapture;
+      mockWorktreeService.createWorktree = createCapture;
 
       app = new Hono<AppBindings>();
       app.use('*', async (c, next) => {
@@ -396,7 +505,7 @@ describe('Worktrees API', () => {
           repositoryManager: mockRepositoryManager,
           worktreeService: mockWorktreeService,
           agentManager: mockAgentManager,
-          sessionManager: { createSession: mock() } as unknown as SessionManager,
+          sessionManager: asSessionManager({ createSession: mock() }),
           broadcastToApp: () => {},
           suggestSessionMetadata: mock(async () => ({ branch: '', title: '', error: 'unused' })),
           sharedAccountRegistry,
@@ -437,7 +546,7 @@ describe('Worktrees API', () => {
       expect(sharedUsername).toBe('shared-user');
 
       const { mockFn: createCapture, captured: createCaptured } = createCapturingCreateWorktreeMock(WORKTREE_PATH);
-      (mockWorktreeService as unknown as { createWorktree: typeof createCapture }).createWorktree = createCapture;
+      mockWorktreeService.createWorktree = createCapture;
 
       const { mockFn: sessionCapture, captured: sessionCaptured } = createCapturingSessionMock();
 
@@ -447,7 +556,7 @@ describe('Worktrees API', () => {
           repositoryManager: mockRepositoryManager,
           worktreeService: mockWorktreeService,
           agentManager: mockAgentManager,
-          sessionManager: { createSession: sessionCapture } as unknown as SessionManager,
+          sessionManager: asSessionManager({ createSession: sessionCapture }),
           broadcastToApp: () => {},
           suggestSessionMetadata: mock(async () => ({ branch: '', title: '', error: 'unused' })),
           sharedAccountRegistry,
@@ -491,16 +600,16 @@ describe('Worktrees API', () => {
 
       const { mockFn: createCapture } = createCapturingWorktreeMockShortCircuit();
 
-      let resolveSuggestionCall!: (args: unknown[]) => void;
-      const suggestionCaptured = new Promise<unknown[]>((resolve) => {
+      let resolveSuggestionCall!: (args: Parameters<SuggestSessionMetadataFn>) => void;
+      const suggestionCaptured = new Promise<Parameters<SuggestSessionMetadataFn>>((resolve) => {
         resolveSuggestionCall = resolve;
       });
-      const suggestionMock = mock((...args: unknown[]) => {
+      const suggestionMock = mock<SuggestSessionMetadataFn>((...args) => {
         resolveSuggestionCall(args);
         return Promise.resolve({ branch: undefined, title: undefined, error: 'short-circuit for test' });
       });
 
-      (mockWorktreeService as unknown as { createWorktree: typeof createCapture }).createWorktree = createCapture;
+      mockWorktreeService.createWorktree = createCapture;
 
       app = new Hono<AppBindings>();
       app.use('*', async (c, next) => {
@@ -508,9 +617,9 @@ describe('Worktrees API', () => {
           repositoryManager: mockRepositoryManager,
           worktreeService: mockWorktreeService,
           agentManager: mockAgentManager,
-          sessionManager: { createSession: mock() } as unknown as SessionManager,
+          sessionManager: asSessionManager({ createSession: mock() }),
           broadcastToApp: () => {},
-          suggestSessionMetadata: suggestionMock as unknown as Parameters<typeof asAppContext>[0]['suggestSessionMetadata'],
+          suggestSessionMetadata: suggestionMock,
           sharedAccountRegistry,
         }));
         await next();
@@ -536,7 +645,7 @@ describe('Worktrees API', () => {
       expect(res.status).toBe(202);
 
       const args = await suggestionCaptured;
-      const req = args[0] as { requestUser: string | null };
+      const req = args[0];
       expect(req.requestUser).toBe(sharedUsername);
     });
 
@@ -544,7 +653,7 @@ describe('Worktrees API', () => {
       const sharedAccountRegistry = await createSharedAccountRegistry({ enabled: true });
 
       const { mockFn: createCapture, captured: createCaptured } = createCapturingCreateWorktreeMock(WORKTREE_PATH);
-      (mockWorktreeService as unknown as { createWorktree: typeof createCapture }).createWorktree = createCapture;
+      mockWorktreeService.createWorktree = createCapture;
 
       const { mockFn: sessionCapture, captured: sessionCaptured } = createCapturingSessionMock();
 
@@ -554,7 +663,7 @@ describe('Worktrees API', () => {
           repositoryManager: mockRepositoryManager,
           worktreeService: mockWorktreeService,
           agentManager: mockAgentManager,
-          sessionManager: { createSession: sessionCapture } as unknown as SessionManager,
+          sessionManager: asSessionManager({ createSession: sessionCapture }),
           broadcastToApp: () => {},
           suggestSessionMetadata: mock(async () => ({ branch: '', title: '', error: 'unused' })),
           sharedAccountRegistry,
@@ -610,8 +719,8 @@ describe('Worktrees API', () => {
     // instead of `embeddedAgentManager.getEmbeddedAgent(...)`, and the
     // `AgentDirectory` constructor requires a working `AgentSurface` for
     // every kind at construction time (compile-time exhaustiveness gate).
-    const getAgent = mock(() => ({ id: 'claude-code-builtin', name: 'Claude Code' }));
-    const mockAgentManager = {
+    const getAgent = mock(() => buildAgentDefinitionFixture({ id: 'claude-code-builtin', name: 'Claude Code' }));
+    const mockAgentManager = asAgentManager({
       getAgent,
       kind: 'terminal' as const,
       list: () => [],
@@ -620,15 +729,15 @@ describe('Worktrees API', () => {
         return agent ? { kind: 'terminal' as const, agent } : undefined;
       },
       findByName: () => [],
-    } as unknown as Parameters<typeof asAppContext>[0]['agentManager'];
+    });
 
     // Widened the same way as mockAgentManager above, so it can serve as the
     // `embedded` surface of a real `AgentDirectory`.
     function createMockEmbeddedAgentManager(knownId: string) {
       const getEmbeddedAgent = mock((id: string) =>
-        id === knownId ? { id: knownId, name: 'My Embedded Agent' } : undefined,
+        id === knownId ? buildEmbeddedAgentDefinitionFixture({ id: knownId, name: 'My Embedded Agent' }) : undefined,
       );
-      return {
+      return asEmbeddedAgentManager({
         getEmbeddedAgent,
         kind: 'embedded' as const,
         list: () => [],
@@ -637,20 +746,17 @@ describe('Worktrees API', () => {
           return agent ? { kind: 'embedded' as const, agent } : undefined;
         },
         findByName: () => [],
-      } as unknown as Parameters<typeof asAppContext>[0]['embeddedAgentManager'];
+      });
     }
 
-    // mockAgentManager / createMockEmbeddedAgentManager are cast to the real
+    // mockAgentManager / createMockEmbeddedAgentManager are typed as the real
     // AgentManager / EmbeddedAgentManager classes above (both of which
     // `implements AgentSurface<K>`, agent-surface migration PR-A), so they
-    // are directly assignable here without further casting. The trailing
-    // `!` strips the `| undefined` that `Parameters<typeof asAppContext>`
-    // widens to (asAppContext's param type is a Partial<AppContext>) -- the
-    // mocks above always construct a real object, never undefined.
+    // are directly assignable here without further casting.
     function createAgentDirectory(knownEmbeddedId: string) {
       return new AgentDirectory({
-        terminal: mockAgentManager!,
-        embedded: createMockEmbeddedAgentManager(knownEmbeddedId)!,
+        terminal: mockAgentManager,
+        embedded: createMockEmbeddedAgentManager(knownEmbeddedId),
       });
     }
 
@@ -661,13 +767,13 @@ describe('Worktrees API', () => {
      * test awaits before asserting, instead of polling with `Bun.sleep(0)`.
      */
     function createCapturingSessionMock() {
-      let resolveCall!: (args: unknown[]) => void;
-      const captured = new Promise<unknown[]>((resolve) => {
+      let resolveCall!: (args: Parameters<SessionManager['createSession']>) => void;
+      const captured = new Promise<Parameters<SessionManager['createSession']>>((resolve) => {
         resolveCall = resolve;
       });
-      const mockFn = mock((...args: unknown[]) => {
+      const mockFn = mock<SessionManager['createSession']>((...args) => {
         resolveCall(args);
-        return Promise.resolve(undefined);
+        return Promise.resolve(buildSessionFixture({ id: 'session-1038-1' }));
       });
       return { mockFn, captured };
     }
@@ -681,7 +787,7 @@ describe('Worktrees API', () => {
           agentManager: mockAgentManager,
           embeddedAgentManager: createMockEmbeddedAgentManager('known-embedded-agent'),
           agentDirectory: createAgentDirectory('known-embedded-agent'),
-          sessionManager: { createSession: mock() } as unknown as SessionManager,
+          sessionManager: asSessionManager({ createSession: mock() }),
           broadcastToApp: () => {},
           suggestSessionMetadata: mock(async () => ({ branch: '', title: '', error: 'unused' })),
         }));
@@ -714,8 +820,7 @@ describe('Worktrees API', () => {
 
     it('forwards embeddedAgentId to createWorktreeWithSession with agentId undefined (happy path)', async () => {
       const { mockFn: createSessionMock, captured } = createCapturingSessionMock();
-      (mockWorktreeService as unknown as { createWorktree: ReturnType<typeof mock> }).createWorktree =
-        mock(() => Promise.resolve({ worktreePath: WORKTREE_PATH, index: 1 }));
+      mockWorktreeService.createWorktree = mock(() => Promise.resolve({ worktreePath: WORKTREE_PATH, index: 1 }));
 
       app = new Hono<AppBindings>();
       app.use('*', async (c, next) => {
@@ -725,7 +830,7 @@ describe('Worktrees API', () => {
           agentManager: mockAgentManager,
           embeddedAgentManager: createMockEmbeddedAgentManager('known-embedded-agent'),
           agentDirectory: createAgentDirectory('known-embedded-agent'),
-          sessionManager: { createSession: createSessionMock } as unknown as SessionManager,
+          sessionManager: asSessionManager({ createSession: createSessionMock }),
           broadcastToApp: () => {},
           suggestSessionMetadata: mock(async () => ({ branch: '', title: '', error: 'unused' })),
         }));
@@ -755,18 +860,14 @@ describe('Worktrees API', () => {
       await captured; // resolves as soon as createSession is invoked -- no sleep needed
 
       expect(createSessionMock).toHaveBeenCalledTimes(1);
-      const sessionRequest = createSessionMock.mock.calls[0]![0] as unknown as {
-        agentId?: string;
-        embeddedAgentId?: string;
-      };
+      const sessionRequest = createSessionMock.mock.calls[0]![0];
       expect(sessionRequest.embeddedAgentId).toBe('known-embedded-agent');
       expect(sessionRequest.agentId).toBeUndefined();
     });
 
     it('regression: agentId-only request still forwards agentId with embeddedAgentId undefined', async () => {
       const { mockFn: createSessionMock, captured } = createCapturingSessionMock();
-      (mockWorktreeService as unknown as { createWorktree: ReturnType<typeof mock> }).createWorktree =
-        mock(() => Promise.resolve({ worktreePath: WORKTREE_PATH, index: 1 }));
+      mockWorktreeService.createWorktree = mock(() => Promise.resolve({ worktreePath: WORKTREE_PATH, index: 1 }));
 
       app = new Hono<AppBindings>();
       app.use('*', async (c, next) => {
@@ -775,7 +876,7 @@ describe('Worktrees API', () => {
           worktreeService: mockWorktreeService,
           agentManager: mockAgentManager,
           embeddedAgentManager: createMockEmbeddedAgentManager('known-embedded-agent'),
-          sessionManager: { createSession: createSessionMock } as unknown as SessionManager,
+          sessionManager: asSessionManager({ createSession: createSessionMock }),
           broadcastToApp: () => {},
           suggestSessionMetadata: mock(async () => ({ branch: '', title: '', error: 'unused' })),
         }));
@@ -805,18 +906,14 @@ describe('Worktrees API', () => {
       await captured; // resolves as soon as createSession is invoked -- no sleep needed
 
       expect(createSessionMock).toHaveBeenCalledTimes(1);
-      const sessionRequest = createSessionMock.mock.calls[0]![0] as unknown as {
-        agentId?: string;
-        embeddedAgentId?: string;
-      };
+      const sessionRequest = createSessionMock.mock.calls[0]![0];
       expect(sessionRequest.agentId).toBe('claude-code-builtin');
       expect(sessionRequest.embeddedAgentId).toBeUndefined();
     });
 
     it('forwards model and reasoningEffort to createWorktreeWithSession (Issue #1541)', async () => {
       const { mockFn: createSessionMock, captured } = createCapturingSessionMock();
-      (mockWorktreeService as unknown as { createWorktree: ReturnType<typeof mock> }).createWorktree =
-        mock(() => Promise.resolve({ worktreePath: WORKTREE_PATH, index: 1 }));
+      mockWorktreeService.createWorktree = mock(() => Promise.resolve({ worktreePath: WORKTREE_PATH, index: 1 }));
 
       app = new Hono<AppBindings>();
       app.use('*', async (c, next) => {
@@ -825,7 +922,7 @@ describe('Worktrees API', () => {
           worktreeService: mockWorktreeService,
           agentManager: mockAgentManager,
           embeddedAgentManager: createMockEmbeddedAgentManager('known-embedded-agent'),
-          sessionManager: { createSession: createSessionMock } as unknown as SessionManager,
+          sessionManager: asSessionManager({ createSession: createSessionMock }),
           broadcastToApp: () => {},
           suggestSessionMetadata: mock(async () => ({ branch: '', title: '', error: 'unused' })),
         }));
@@ -866,8 +963,7 @@ describe('Worktrees API', () => {
 
     it('forwards contextWindowTokens to createWorktreeWithSession (Issue #1554)', async () => {
       const { mockFn: createSessionMock, captured } = createCapturingSessionMock();
-      (mockWorktreeService as unknown as { createWorktree: ReturnType<typeof mock> }).createWorktree =
-        mock(() => Promise.resolve({ worktreePath: WORKTREE_PATH, index: 1 }));
+      mockWorktreeService.createWorktree = mock(() => Promise.resolve({ worktreePath: WORKTREE_PATH, index: 1 }));
 
       app = new Hono<AppBindings>();
       app.use('*', async (c, next) => {
@@ -877,7 +973,7 @@ describe('Worktrees API', () => {
           agentManager: mockAgentManager,
           embeddedAgentManager: createMockEmbeddedAgentManager('known-embedded-agent'),
           agentDirectory: createAgentDirectory('known-embedded-agent'),
-          sessionManager: { createSession: createSessionMock } as unknown as SessionManager,
+          sessionManager: asSessionManager({ createSession: createSessionMock }),
           broadcastToApp: () => {},
           suggestSessionMetadata: mock(async () => ({ branch: '', title: '', error: 'unused' })),
         }));
@@ -918,8 +1014,7 @@ describe('Worktrees API', () => {
 
     it('regression: no-agent-specified request still defaults agentId with embeddedAgentId undefined', async () => {
       const { mockFn: createSessionMock, captured } = createCapturingSessionMock();
-      (mockWorktreeService as unknown as { createWorktree: ReturnType<typeof mock> }).createWorktree =
-        mock(() => Promise.resolve({ worktreePath: WORKTREE_PATH, index: 1 }));
+      mockWorktreeService.createWorktree = mock(() => Promise.resolve({ worktreePath: WORKTREE_PATH, index: 1 }));
 
       app = new Hono<AppBindings>();
       app.use('*', async (c, next) => {
@@ -928,7 +1023,7 @@ describe('Worktrees API', () => {
           worktreeService: mockWorktreeService,
           agentManager: mockAgentManager,
           embeddedAgentManager: createMockEmbeddedAgentManager('known-embedded-agent'),
-          sessionManager: { createSession: createSessionMock } as unknown as SessionManager,
+          sessionManager: asSessionManager({ createSession: createSessionMock }),
           broadcastToApp: () => {},
           suggestSessionMetadata: mock(async () => ({ branch: '', title: '', error: 'unused' })),
         }));
@@ -957,10 +1052,7 @@ describe('Worktrees API', () => {
       await captured; // resolves as soon as createSession is invoked -- no sleep needed
 
       expect(createSessionMock).toHaveBeenCalledTimes(1);
-      const sessionRequest = createSessionMock.mock.calls[0]![0] as unknown as {
-        agentId?: string;
-        embeddedAgentId?: string;
-      };
+      const sessionRequest = createSessionMock.mock.calls[0]![0];
       // No agentId in request body -> selectedAgentId falls back to
       // CLAUDE_CODE_AGENT_ID (route default), forwarded unchanged.
       expect(sessionRequest.agentId).toBe('claude-code-builtin');
@@ -989,9 +1081,9 @@ describe('Worktrees API', () => {
     // embedded-agent validation now reads `agentDirectory.get('embedded', ...)`.
     function createMockEmbeddedAgentManager(knownId: string) {
       const getEmbeddedAgent = mock((id: string) =>
-        id === knownId ? { id: knownId, name: 'My Embedded Agent' } : undefined,
+        id === knownId ? buildEmbeddedAgentDefinitionFixture({ id: knownId, name: 'My Embedded Agent' }) : undefined,
       );
-      return {
+      return asEmbeddedAgentManager({
         getEmbeddedAgent,
         kind: 'embedded' as const,
         list: () => [],
@@ -1000,7 +1092,7 @@ describe('Worktrees API', () => {
           return agent ? { kind: 'embedded' as const, agent } : undefined;
         },
         findByName: () => [],
-      } as unknown as Parameters<typeof asAppContext>[0]['embeddedAgentManager'];
+      });
     }
 
     /**
@@ -1011,9 +1103,9 @@ describe('Worktrees API', () => {
      * hardcoded id regardless of the route's fallback logic.
      */
     function createEchoingAgentManager() {
-      return {
-        getAgent: mock((id: string) => ({ id, name: 'Mock Agent' })),
-      } as unknown as Parameters<typeof asAppContext>[0]['agentManager'];
+      return asAgentManager({
+        getAgent: mock((id: string) => buildAgentDefinitionFixture({ id, name: 'Mock Agent' })),
+      });
     }
 
     /**
@@ -1039,11 +1131,11 @@ describe('Worktrees API', () => {
      * path does not need to be mocked further.
      */
     function createCapturingSuggestionMock() {
-      let resolveCall!: (args: unknown[]) => void;
-      const captured = new Promise<unknown[]>((resolve) => {
+      let resolveCall!: (args: Parameters<SuggestSessionMetadataFn>) => void;
+      const captured = new Promise<Parameters<SuggestSessionMetadataFn>>((resolve) => {
         resolveCall = resolve;
       });
-      const mockFn = mock((...args: unknown[]) => {
+      const mockFn = mock<SuggestSessionMetadataFn>((...args) => {
         resolveCall(args);
         return Promise.resolve({ branch: undefined, title: undefined, error: 'short-circuit for test' });
       });
@@ -1054,7 +1146,7 @@ describe('Worktrees API', () => {
       const { mockFn: suggestionMock, captured } = createCapturingSuggestionMock();
 
       const { mockFn: createCapture } = createCapturingWorktreeMock();
-      (mockWorktreeService as unknown as { createWorktree: typeof createCapture }).createWorktree = createCapture;
+      mockWorktreeService.createWorktree = createCapture;
 
       app = new Hono<AppBindings>();
       app.use('*', async (c, next) => {
@@ -1065,11 +1157,11 @@ describe('Worktrees API', () => {
           embeddedAgentManager: createMockEmbeddedAgentManager('known-embedded-agent'),
           agentDirectory: new AgentDirectory({
             terminal: emptyTerminalSurface,
-            embedded: createMockEmbeddedAgentManager('known-embedded-agent')!,
+            embedded: createMockEmbeddedAgentManager('known-embedded-agent'),
           }),
-          sessionManager: { createSession: mock() } as unknown as SessionManager,
+          sessionManager: asSessionManager({ createSession: mock() }),
           broadcastToApp: () => {},
-          suggestSessionMetadata: suggestionMock as unknown as Parameters<typeof asAppContext>[0]['suggestSessionMetadata'],
+          suggestSessionMetadata: suggestionMock,
         }));
         await next();
       });
@@ -1096,7 +1188,7 @@ describe('Worktrees API', () => {
       expect(res.status).toBe(202);
 
       const args = await captured;
-      const req = args[0] as { agent: { id: string } };
+      const req = args[0];
       expect(req.agent.id).toBe(CLAUDE_CODE_AGENT_ID);
     });
 
@@ -1104,7 +1196,7 @@ describe('Worktrees API', () => {
       const { mockFn: suggestionMock, captured } = createCapturingSuggestionMock();
 
       const { mockFn: createCapture } = createCapturingWorktreeMock();
-      (mockWorktreeService as unknown as { createWorktree: typeof createCapture }).createWorktree = createCapture;
+      mockWorktreeService.createWorktree = createCapture;
 
       app = new Hono<AppBindings>();
       app.use('*', async (c, next) => {
@@ -1112,9 +1204,9 @@ describe('Worktrees API', () => {
           repositoryManager: mockRepositoryManager,
           worktreeService: mockWorktreeService,
           agentManager: createEchoingAgentManager(),
-          sessionManager: { createSession: mock() } as unknown as SessionManager,
+          sessionManager: asSessionManager({ createSession: mock() }),
           broadcastToApp: () => {},
-          suggestSessionMetadata: suggestionMock as unknown as Parameters<typeof asAppContext>[0]['suggestSessionMetadata'],
+          suggestSessionMetadata: suggestionMock,
         }));
         await next();
       });
@@ -1141,7 +1233,7 @@ describe('Worktrees API', () => {
       expect(res.status).toBe(202);
 
       const args = await captured;
-      const req = args[0] as { agent: { id: string } };
+      const req = args[0];
       expect(req.agent.id).toBe('custom-terminal-agent');
       expect(req.agent.id).not.toBe(CLAUDE_CODE_AGENT_ID);
     });
@@ -1468,11 +1560,11 @@ describe('Worktrees API', () => {
           Promise<{ number: number; title: string } | null>
       >(async () => null);
 
-      const mockSessionManager = {
+      const mockSessionManager = asSessionManager({
         getAllSessions: () => [],
         killSessionWorkers: mock(() => Promise.resolve()),
         deleteSession: mock(() => Promise.resolve(true)),
-      } as unknown as SessionManager;
+      });
 
       app = new Hono<AppBindings>();
       app.use('*', async (c, next) => {
@@ -1547,11 +1639,13 @@ describe('Worktrees API', () => {
         const payload = JSON.parse(jobs[0]!.payload) as WorktreeDeletePayload;
 
         const handlers = new Map<string, JobHandler<unknown>>();
-        const fakeQueue = {
-          registerHandler: <T>(type: string, handler: JobHandler<T>) => {
-            handlers.set(type, handler as JobHandler<unknown>);
-          },
-        } as unknown as JobQueue;
+        // JobQueue has a public constructor (unlike WorktreeService's / etc.
+        // sibling classes), so this capture-only fake queue is a real
+        // instance with `registerHandler` overridden -- no cast needed.
+        const fakeQueue = new JobQueue(testDb!);
+        fakeQueue.registerHandler = <T>(type: JobType, handler: JobHandler<T>) => {
+          handlers.set(type, handler as JobHandler<unknown>);
+        };
 
         registerWorktreeDeleteJobHandler(fakeQueue, {
           deletionDeps: {
@@ -1628,11 +1722,11 @@ describe('Worktrees API', () => {
         // sessions were registered against this orphaned worktree).
         const broadcasts: AppServerMessage[] = [];
 
-        const mockSessionManager = {
+        const mockSessionManager = asSessionManager({
           getAllSessions: () => [],
           killSessionWorkers: mock(() => Promise.resolve()),
           deleteSession: mock(() => Promise.resolve(true)),
-        } as unknown as SessionManager;
+        });
 
         app = new Hono<AppBindings>();
         app.use('*', async (c, next) => {
