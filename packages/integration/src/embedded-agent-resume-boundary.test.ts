@@ -120,6 +120,7 @@ describe('init.resume survives the command schema, on the claude-sdk arm only (R
       ...base,
       engine: 'claude-sdk',
       allowedProjectMcpServers: [],
+      disableClaudeAiConnectors: false,
       provider: { model: 'claude-sonnet-5' },
       resume: { sdkSessionId: 'sess-abc' },
     });
@@ -135,6 +136,7 @@ describe('init.resume survives the command schema, on the claude-sdk arm only (R
       ...base,
       engine: 'claude-sdk',
       allowedProjectMcpServers: [],
+      disableClaudeAiConnectors: false,
       provider: { model: 'claude-sonnet-5' },
     });
     if (parsed.type !== 'init') throw new Error('unexpected parse output');
