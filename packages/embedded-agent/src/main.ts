@@ -786,6 +786,7 @@ async function initializeLoop(
       mcp: init.mcp,
       emit: (event) => io.writeEvent(event),
       autoCompaction: init.compaction.auto,
+      disableClaudeAiConnectors: init.disableClaudeAiConnectors,
       attachmentRoots: init.context.attachmentRoots ?? [],
       ruleActivator,
       discoveredProjectMcpServers,
