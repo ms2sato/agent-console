@@ -148,6 +148,9 @@
 import { readFileSync } from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+// `lib/config.ts` (NOT `lib/server-config.ts`) only imports `node:path`/
+// `node:os` at module load, so it is safe as a static import here too.
+import { getConfigDir } from '../../packages/server/src/lib/config.js';
 import type { AppContext } from '../../packages/server/src/app-context.js';
 
 const CLAUDE_NONCE = `PROJECT-${Math.floor(Math.random() * 9000 + 1000)}`;
@@ -240,16 +243,45 @@ async function main(): Promise<void> {
   let realCwd: string | undefined;
 
   try {
+    // AGENT_CONSOLE_HOME pointed at a real temp dir BEFORE createTestContext
+    // ever runs -- createTestContext's own first statement is a
+    // mkdir(getConfigDir()), and with AGENT_CONSOLE_HOME unset that resolves
+    // to the operator's real data root, not this smoke's disposable home.
+    // getConfigDir() reads process.env.AGENT_CONSOLE_HOME at CALL time (not
+    // module load time), so this override is safe post-import.
+    realConfigDir = path.join(os.tmpdir(), `ac-1343-instruction-loader-smoke-cfg-${crypto.randomUUID()}`);
+    Bun.spawnSync(['mkdir', '-p', realConfigDir]);
+    process.env.AGENT_CONSOLE_HOME = realConfigDir;
+
+    // Guard: createTestContext's own initial mkdir(getConfigDir()) must
+    // never run against the operator's real data root. Two explicit checks
+    // -- before and after createTestContext -- each throwing an Error
+    // (which the outer `main().catch(...)` below maps to `process.exit(2)`)
+    // directly on a mismatch, mirroring the shape probe-sdk-phase5-pr2-pc.ts's
+    // elevated arm landed at, rather than a bare `expect()` whose result the
+    // final exit check might not consult before the rest of the run has
+    // already touched the wrong root.
+    const configDirBeforeContext = getConfigDir();
+    if (configDirBeforeContext !== realConfigDir) {
+      throw new Error(
+        `context data root is not the disposable home before createTestContext: ` +
+          `getConfigDir()=${configDirBeforeContext} realConfigDir=${realConfigDir}`,
+      );
+    }
+
     let mcpBaseUrl = '';
     ctx = await createTestContext({ getMcpBaseUrl: () => mcpBaseUrl });
+    const contextConfigDir = getConfigDir();
+    if (contextConfigDir !== realConfigDir) {
+      throw new Error(
+        `context data root is not the disposable home after createTestContext: ` +
+          `getConfigDir()=${contextConfigDir} realConfigDir=${realConfigDir}`,
+      );
+    }
 
     const osUid = process.getuid?.() ?? 0;
     const username = os.userInfo().username;
     const owner = await ctx.userRepository.upsertByOsUid(osUid, username, os.homedir());
-
-    realConfigDir = path.join(os.tmpdir(), `ac-1343-instruction-loader-smoke-cfg-${crypto.randomUUID()}`);
-    Bun.spawnSync(['mkdir', '-p', realConfigDir]);
-    process.env.AGENT_CONSOLE_HOME = realConfigDir;
 
     // The provider key is copied into the disposable home (resolved
     // relative to AGENT_CONSOLE_HOME) rather than borrowing the dev home

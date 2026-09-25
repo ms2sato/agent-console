@@ -171,6 +171,9 @@
 import { existsSync, readFileSync, readdirSync, statSync, unlinkSync } from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+// `lib/config.ts` (NOT `lib/server-config.ts`) only imports `node:path`/
+// `node:os` at module load, so it is safe as a static import here too.
+import { getConfigDir } from '../../packages/server/src/lib/config.js';
 import type { AppContext } from '../../packages/server/src/app-context.js';
 import { createScratchGitRepo, type ScratchGitRepo } from '../../packages/server/src/__tests__/utils/scratch-git.js';
 
@@ -472,6 +475,17 @@ async function main(engine: EngineSelection, expectNoMemory: boolean): Promise<v
     // -----------------------------------------------------------------
     home = path.join(os.tmpdir(), `ac-memory-layer-smoke-home-${crypto.randomUUID()}`);
     Bun.spawnSync(['mkdir', '-p', home]);
+
+    // AGENT_CONSOLE_HOME must be set before the FIRST createTestContext call
+    // below (`bootCtx`), not merely before the second one this script
+    // actually drives -- createTestContext's own first statement is a
+    // mkdir(getConfigDir()), and with AGENT_CONSOLE_HOME unset that resolves
+    // to the operator's real data root, not this smoke's disposable home.
+    // Also true for the later, more commonly cited reason: memory-dir
+    // resolution reads getConfigDir() at call time, not at context
+    // construction time, so this must precede the first activation too.
+    process.env.AGENT_CONSOLE_HOME = home;
+
     const sharedDbPath = path.join(home, 'data.db');
 
     let claudeSdkD1Id: string | undefined;
@@ -484,7 +498,33 @@ async function main(engine: EngineSelection, expectNoMemory: boolean): Promise<v
       // are smoke-persisted rows shaped like the builtin but carrying
       // SMOKE_ENABLED_TOOLS -- the builtin itself is not used by any arm
       // (see SMOKE_ENABLED_TOOLS).
+      //
+      // Guard: createTestContext's own initial mkdir(getConfigDir()) must
+      // never run against the operator's real data root. Two explicit
+      // checks -- before and after this createTestContext call -- each
+      // throwing an Error (which the outer `main().catch(...)` below maps
+      // to `process.exit(2)`) directly on a mismatch, mirroring the shape
+      // probe-sdk-phase5-pr2-pc.ts's elevated arm landed at, rather than a
+      // bare `expect()` whose result the final exit check might not
+      // consult before the rest of the run has already touched the wrong
+      // root. The SECOND createTestContext call below (`ctx`) needs no
+      // additional guard -- AGENT_CONSOLE_HOME never changes between here
+      // and there.
+      const configDirBeforeBootCtx = getConfigDir();
+      if (configDirBeforeBootCtx !== home) {
+        throw new Error(
+          `context data root is not the disposable home before the boot createTestContext: ` +
+            `getConfigDir()=${configDirBeforeBootCtx} home=${home}`,
+        );
+      }
       const bootCtx = await createTestContext({ dbPath: sharedDbPath });
+      const bootCtxConfigDir = getConfigDir();
+      if (bootCtxConfigDir !== home) {
+        throw new Error(
+          `context data root is not the disposable home after the boot createTestContext: ` +
+            `getConfigDir()=${bootCtxConfigDir} home=${home}`,
+        );
+      }
       try {
         if (engines.includes('claude-sdk')) {
           claudeSdkD1Id = `claude-sdk-smoke-d1-${process.pid}`;
@@ -510,12 +550,6 @@ async function main(engine: EngineSelection, expectNoMemory: boolean): Promise<v
         await shutdownAppContext(bootCtx);
       }
     }
-
-    // AGENT_CONSOLE_HOME must be set before the first activation (memory-dir
-    // resolution reads getConfigDir() at call time, not at context
-    // construction time) -- set now, before booting the context this script
-    // actually drives, matching every sibling smoke's ordering.
-    process.env.AGENT_CONSOLE_HOME = home;
 
     if (engines.includes('openai-api')) {
       let apiKey: string;

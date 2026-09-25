@@ -1351,11 +1351,18 @@ async function runElevatedArm(targetUsername: string): Promise<number> {
  * arguments selects the non-elevated arm. The two never run in the same
  * process invocation (mirrors `check-login-shell-sentinel.ts`'s direct vs
  * `--elevated` mode dispatch).
+ *
+ * `argv.length === 2` is load-bearing, not incidental: without it, a
+ * trailing argument after `<target-user>` (`--elevated alice garbage`) was
+ * silently accepted and ignored rather than rejected as a usage error.
+ * Exported so the unit test can exercise this exact rejection.
  */
-function parseCliArgs(argvIn: string[]): { mode: 'non-elevated' } | { mode: 'elevated'; targetUsername: string } {
+export function parseCliArgs(
+  argvIn: string[],
+): { mode: 'non-elevated' } | { mode: 'elevated'; targetUsername: string } {
   const argv = argvIn[0] === '--' ? argvIn.slice(1) : argvIn;
   if (argv.length === 0) return { mode: 'non-elevated' };
-  if (argv[0] === '--elevated' && argv[1]) {
+  if (argv.length === 2 && argv[0] === '--elevated' && argv[1]) {
     return { mode: 'elevated', targetUsername: argv[1] };
   }
   console.error('usage: bun scripts/smoke/probe-sdk-phase5-pr2-pc.ts [--elevated <target-user>]');
