@@ -194,4 +194,75 @@ describe('SqliteUserRepository', () => {
       expect(found!.username).toBe('alice_new');
     });
   });
+
+  describe('getPreferences', () => {
+    it('returns null for an unknown id (not false, not a thrown error)', async () => {
+      const found = await repository.getPreferences('nonexistent-id');
+      expect(found).toBeNull();
+    });
+
+    it('returns disableClaudeAiConnectors: false for a user who has never called setPreferences', async () => {
+      const user = await repository.upsertByOsUid(1001, 'alice', '/home/alice');
+      const found = await repository.getPreferences(user.id);
+      expect(found).toEqual({ disableClaudeAiConnectors: false });
+    });
+  });
+
+  describe('setPreferences', () => {
+    it('round-trips disableClaudeAiConnectors: true', async () => {
+      const user = await repository.upsertByOsUid(1001, 'alice', '/home/alice');
+
+      const updated = await repository.setPreferences(user.id, { disableClaudeAiConnectors: true });
+      expect(updated).toBe(true);
+
+      const found = await repository.getPreferences(user.id);
+      expect(found).toEqual({ disableClaudeAiConnectors: true });
+    });
+
+    it('round-trips disableClaudeAiConnectors: false after having been true', async () => {
+      const user = await repository.upsertByOsUid(1001, 'alice', '/home/alice');
+      await repository.setPreferences(user.id, { disableClaudeAiConnectors: true });
+
+      const updated = await repository.setPreferences(user.id, { disableClaudeAiConnectors: false });
+      expect(updated).toBe(true);
+
+      const found = await repository.getPreferences(user.id);
+      expect(found).toEqual({ disableClaudeAiConnectors: false });
+    });
+
+    it('returns false for an unknown id -- no row updated, and it does not throw', async () => {
+      await expect(
+        repository.setPreferences('nonexistent-id', { disableClaudeAiConnectors: true }),
+      ).resolves.toBe(false);
+    });
+
+    it('does not affect a different user\'s preferences', async () => {
+      const alice = await repository.upsertByOsUid(1001, 'alice', '/home/alice');
+      const bob = await repository.upsertByOsUid(1002, 'bob', '/home/bob');
+
+      await repository.setPreferences(alice.id, { disableClaudeAiConnectors: true });
+
+      const bobPreferences = await repository.getPreferences(bob.id);
+      expect(bobPreferences).toEqual({ disableClaudeAiConnectors: false });
+    });
+
+    it('updates updated_at on the underlying row', async () => {
+      const user = await repository.upsertByOsUid(1001, 'alice', '/home/alice');
+      const rowBefore = await db
+        .selectFrom('users')
+        .where('id', '=', user.id)
+        .select('updated_at')
+        .executeTakeFirst();
+
+      await repository.setPreferences(user.id, { disableClaudeAiConnectors: true });
+
+      const rowAfter = await db
+        .selectFrom('users')
+        .where('id', '=', user.id)
+        .select('updated_at')
+        .executeTakeFirst();
+      expect(rowAfter?.updated_at).toBeDefined();
+      expect(rowBefore?.updated_at).toBeDefined();
+    });
+  });
 });
