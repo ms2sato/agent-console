@@ -11,7 +11,7 @@
 
 import { Hono } from 'hono';
 import { getCookie, setCookie, deleteCookie } from 'hono/cookie';
-import { LoginRequestSchema } from '@agent-console/shared';
+import { LoginRequestSchema, MePreferencesSchema } from '@agent-console/shared';
 import { vValidator } from '../middleware/validation.js';
 import type { AppBindings } from '../app-context.js';
 import { serverConfig, resolveAuthCookieSecure } from '../lib/server-config.js';
@@ -100,14 +100,41 @@ const auth = new Hono<AppBindings>()
     deleteCookie(c, AUTH_COOKIE_NAME, { path: '/' });
     return c.json({ success: true });
   })
-  .get('/me', (c) => {
-    const { userMode } = c.get('appContext');
+  .get('/me', async (c) => {
+    const { userMode, userRepository } = c.get('appContext');
 
     // No 401 on failure - returns null if unauthenticated.
     // In single-user mode, always returns the server process user.
     const authUser = userMode.authenticate(() => getCookie(c, AUTH_COOKIE_NAME));
+    if (!authUser) {
+      return c.json({ user: null });
+    }
 
-    return c.json({ user: authUser });
+    // The per-user claude.ai connectors toggle (and future preferences):
+    // a missing row (pre-migration user, or a user never PATCHed) resolves
+    // to each field's own default rather than an error.
+    const preferences = (await userRepository.getPreferences(authUser.id)) ?? {
+      disableClaudeAiConnectors: false,
+    };
+
+    return c.json({ user: authUser, preferences });
+  })
+  .patch('/me/preferences', vValidator(MePreferencesSchema), async (c) => {
+    const { userMode, userRepository } = c.get('appContext');
+
+    const authUser = userMode.authenticate(() => getCookie(c, AUTH_COOKIE_NAME));
+    if (!authUser) {
+      return c.json({ error: 'Unauthorized' }, 401);
+    }
+
+    // The target user is ALWAYS the authenticated caller's own id -- never
+    // taken from the request body (`MePreferencesSchema` accepts no id/
+    // userId field at all).
+    const body = c.req.valid('json');
+    await userRepository.setPreferences(authUser.id, body);
+    const preferences = (await userRepository.getPreferences(authUser.id)) ?? body;
+
+    return c.json({ user: authUser, preferences });
   });
 
 export { auth, LoginRateLimiter, loginRateLimiter };
