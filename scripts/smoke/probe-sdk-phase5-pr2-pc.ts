@@ -76,6 +76,34 @@
  * elevated arm's boundary-detection code should read it as such. The
  * elevated arm's grace-window poll (below) exists because of this fact.
  *
+ * ISOLATION FROM THE OPERATOR'S REAL `~/.claude.json` (Issue 1813). Observed
+ * 2026-09-22 (a prompted run of this same non-elevated arm, recorded on
+ * Issue 1799): before this isolation existed, the `system:init` form-(b)
+ * `mcp-servers-discovered` event reported the operator's own user-scope MCP
+ * servers and claude.ai connectors, spawned/connected as a side effect of a
+ * measurement that has nothing to do with them. This script now adopts the
+ * same `isolateClaudeConfigDir` + `{}` `.claude.json` construction
+ * `check-embedded-agent-project-mcp-permission.ts`'s negative control (c)
+ * uses: a throwaway `CLAUDE_CONFIG_DIR` holding only a copy of the
+ * operator's own credentials (so the `claude` CLI can still authenticate),
+ * with `.claude.json` written as a genuinely-empty `{}` rather than left
+ * absent (an absent file makes `readUserLocalMcpNames` report
+ * `unavailable: true`, which would make this isolation check untestable --
+ * see that file's own comment). The turn this script sends is what makes
+ * `system:init` -- and therefore the form-(b) event this isolation check
+ * reads -- fire at all (`sdk-engine.ts`'s own comments: zero events of any
+ * kind arrive from the SDK until the first prompt is yielded).
+ *
+ * LIMITATION, RULED (Architect, Issue 1813): this isolation covers only the
+ * `user`/`local` FILE channel (`.claude.json`); claude.ai connectors ride on
+ * the copied CREDENTIALS rather than on that file, so they still appear in
+ * the discovered event and are accepted here as the executing user's own
+ * capability surface under `docs/design/embedded-agent-sdk-engine.md`
+ * section 4.1's TUI parity -- the only suppressor is the construction-time
+ * `Options.settings.disableClaudeAiConnectors`, which `SdkEngine.buildOptions()`
+ * does not expose on this shipping path. Their presence is therefore a
+ * RECORDED reading below, never a gated assertion.
+ *
  * STDERR WARNING OBSERVABILITY (best-effort, not gated). `applyArgSubstitution`
  * logs one `console.warn` per unresolved placeholder inside the embedded-agent
  * SUBPROCESS -- there is no public getter for a live worker's stderr tail
@@ -131,14 +159,22 @@
 // transitively imports server-config.ts is evaluated. Every such import
 // below is therefore a DYNAMIC import made from inside main().
 
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-// mcp-discovery.ts and mcp-names.ts are standalone (no transitive
-// server-config.ts import), so they are safe as ordinary static imports --
-// unlike everything under packages/server/src, which is deferred below.
+// mcp-discovery.ts, mcp-names.ts, and probe-sdk-session-harness.ts are
+// standalone (no transitive server-config.ts import), so they are safe as
+// ordinary static imports -- unlike everything under packages/server/src,
+// which is deferred below. `lib/config.ts` (NOT `lib/server-config.ts`, a
+// different file) only imports `node:path`/`node:os`, so it is safe here too.
 import { discoverProjectMcpServers } from '../../packages/embedded-agent/src/mcp-discovery.js';
 import { mcpServerOf } from '../../packages/embedded-agent/src/mcp-names.js';
+import { getConfigDir } from '../../packages/server/src/lib/config.js';
+import {
+  isolateClaudeConfigDir,
+  snapshotIsolationEvidence,
+  verifyIsolationStrict,
+} from './probe-sdk-session-harness.js';
 // No transitive server-config.ts import (pure node:fs/promises + node:os +
 // node:path), so this is safe as a static import above the env-var prelude,
 // the same reasoning check-embedded-agent-elevation.ts documents for its own
@@ -192,6 +228,64 @@ interface FixtureReading {
   reportArgsTrailing: string | null;
 }
 
+/**
+ * Whether any `mcp-servers-discovered` event in `events` reported a `user` /
+ * `local`-scope row -- the two scopes the isolated, empty `.claude.json`
+ * (Issue 1813) is actually able to close. Deliberately narrowed to match
+ * `check-embedded-agent-project-mcp-permission.ts`'s own precedent
+ * `hasUserOrLocalScopeEntry`: `connector`-scope rows are NOT included here
+ * (Architect ruling, Issue 1813) -- they ride on the copied credentials, not
+ * on `.claude.json`, so no isolation this script can perform suppresses
+ * them; see {@link collectConnectorScopeRows} for the recorded (non-gated)
+ * reading instead, and this file's header comment for the full rationale.
+ */
+function hasUserOrLocalScopeEntry(events: Array<Record<string, unknown> & { type: string }>): boolean {
+  return events.some(
+    (e) =>
+      e.type === 'mcp-servers-discovered' &&
+      Array.isArray(e.servers) &&
+      (e.servers as Array<{ scope?: string }>).some((s) => s.scope === 'user' || s.scope === 'local'),
+  );
+}
+
+/**
+ * Whether any `mcp-servers-discovered` event in `events` declared
+ * `userLocalNamesUnavailable` -- would mean the isolated `.claude.json`
+ * could not be read, which makes the isolation negative control above
+ * untestable rather than genuinely passing (see this file's header comment,
+ * "ISOLATION FROM THE OPERATOR'S REAL ~/.claude.json").
+ */
+function anyUserLocalNamesUnavailable(events: Array<Record<string, unknown> & { type: string }>): boolean {
+  return events.some((e) => e.type === 'mcp-servers-discovered' && e.userLocalNamesUnavailable === true);
+}
+
+/**
+ * Every `connector`-scope row (name + status) reported across any
+ * `mcp-servers-discovered` event in `events`, deduplicated by name (the
+ * event fires repeatedly per activation -- see `sdk-engine.ts`'s
+ * `emitMcpServersDiscovered` doc comment on forms (a)/(b)/(c) -- and the
+ * same connector reports identically each time). A RECORDED reading, never
+ * a gated assertion (Architect ruling, Issue 1813): these rows are expected
+ * to be present, tied to the copied credentials rather than to
+ * `.claude.json`, and this function exists so a future `buildOptions()`
+ * change that starts suppressing them shows up as a changed reading instead
+ * of a silent pass.
+ */
+function collectConnectorScopeRows(
+  events: Array<Record<string, unknown> & { type: string }>,
+): Array<{ name: string; status: string }> {
+  const byName = new Map<string, { name: string; status: string }>();
+  for (const e of events) {
+    if (e.type !== 'mcp-servers-discovered' || !Array.isArray(e.servers)) continue;
+    for (const s of e.servers as Array<{ name?: string; scope?: string; status?: string }>) {
+      if (s.scope === 'connector' && typeof s.name === 'string') {
+        byName.set(s.name, { name: s.name, status: String(s.status ?? 'unknown') });
+      }
+    }
+  }
+  return [...byName.values()];
+}
+
 /** Non-elevated branch -- unchanged from before Issue #1799's `--elevated` arm was added, aside from this rename. */
 async function runNonElevated(): Promise<number> {
   process.env.LOG_LEVEL = 'debug';
@@ -230,21 +324,56 @@ async function runNonElevated(): Promise<number> {
   let repoDir: string | undefined;
   let locationPath: string | undefined;
   let homeDir: string | undefined;
+  // Declared here (not `const` inside the `try` block) so the `finally`
+  // block below can reach it for cleanup (CodeRabbit MAJOR, Issue 1813).
+  let isolatedConfigDir: string | undefined;
 
   try {
     console.log(`==> NON-ELEVATED branch. ${PROBE_VAR_NAME}=${PROBE_VAR_VALUE} ${PROBE_UNSET_NAME}=(unset)`);
     console.log('==> ELEVATED branch: not run by this invocation -- see --elevated <target-user>');
 
+    // CodeRabbit MAJOR (Issue 1813, outside-diff finding 2): this MUST be set
+    // before `createTestContext` runs below -- its first statement is a
+    // `mkdir` of `getConfigDir()`, and with `AGENT_CONSOLE_HOME` unset that
+    // resolves to `~/.agent-console`, the OPERATOR's real data root. Same
+    // ordering `check-embedded-agent-project-mcp-permission.ts` uses (home
+    // dir + env var, then isolation, then `createTestContext`).
+    homeDir = path.join(os.tmpdir(), `ac-pr2-pc-home-${crypto.randomUUID()}`);
+    Bun.spawnSync(['mkdir', '-p', homeDir]);
+    process.env.AGENT_CONSOLE_HOME = homeDir;
+
+    // Isolate this arm from the operator's real `~/.claude.json` -- the same
+    // isolateClaudeConfigDir + `{}` `.claude.json` construction
+    // check-embedded-agent-project-mcp-permission.ts's negative control (c)
+    // uses (see this file's own header, "ISOLATION FROM THE OPERATOR'S REAL
+    // ~/.claude.json"). Set before `createTestContext` / any spawn below, so
+    // the isolated directory is in place before the `claude-sdk` subprocess
+    // this script activates ever reads a config dir.
+    isolatedConfigDir = isolateClaudeConfigDir('phase5-pr2-pc');
+    // CodeRabbit MAJOR (Issue 1813): the event-content checks below cannot by
+    // themselves prove the child actually READ this isolated directory --
+    // an operator `~/.claude.json` with no user/local servers declared would
+    // pass those checks identically. This snapshot, taken BEFORE the `{}`
+    // write and BEFORE any session runs, is the "before" baseline
+    // `verifyIsolationStrict` (probe-sdk-session-harness.ts) requires of any
+    // caller that seeds `.claude.json` itself -- see that function's own
+    // TAUTOLOGY WARNING doc comment.
+    const isolationBefore = snapshotIsolationEvidence(isolatedConfigDir);
+    writeFileSync(path.join(isolatedConfigDir, '.claude.json'), '{}\n');
+    console.log(`==> isolated CLAUDE_CONFIG_DIR: ${isolatedConfigDir}`);
+
     let mcpBaseUrl = '';
     ctx = await createTestContext({ getMcpBaseUrl: () => mcpBaseUrl });
+    // CodeRabbit MAJOR (Issue 1813, outside-diff finding 2): hard assertion,
+    // not a recorded reading -- proves `createTestContext` actually resolved
+    // the disposable `homeDir` above, not the operator's real data root, at
+    // the one point where a future reordering of these lines would silently
+    // reintroduce the bug.
+    expect(getConfigDir() === homeDir, 'context data root is the disposable home', `getConfigDir()=${getConfigDir()} homeDir=${homeDir}`);
 
     const osUid = process.getuid?.() ?? 0;
     const username = os.userInfo().username;
     const owner = await ctx.userRepository.upsertByOsUid(osUid, username, os.homedir());
-
-    homeDir = path.join(os.tmpdir(), `ac-pr2-pc-home-${crypto.randomUUID()}`);
-    Bun.spawnSync(['mkdir', '-p', homeDir]);
-    process.env.AGENT_CONSOLE_HOME = homeDir;
 
     const app = new Hono();
     app.use('*', async (c: { set: (k: string, v: unknown) => void }, next: () => Promise<void>) => {
@@ -535,6 +664,55 @@ async function runNonElevated(): Promise<number> {
     const setReading = readFixture(SET_SERVER_NAME, PROBE_VAR_NAME, canarySet, ledgerSet, reportSet);
     const unsetReading = readFixture(UNSET_SERVER_NAME, PROBE_UNSET_NAME, canaryUnset, ledgerUnset, reportUnset);
 
+    // --- Isolation negative control (Issue 1813): with CLAUDE_CONFIG_DIR
+    // pointed at an isolated, empty (but present) config, no discovered
+    // event ever reports a user/local-scope row, and userLocalNamesUnavailable
+    // is never set (the isolated config was readable) -- the operator's own
+    // ~/.claude.json is never read. Checked over the FULL event history (not
+    // just `turnEvents`), the same scope
+    // check-embedded-agent-project-mcp-permission.ts's own negative control
+    // (c) uses, since a `mcp-servers-discovered` event can also arrive from
+    // `main.ts`'s activation-time form (a) or `applyMcpServersOnce`'s form
+    // (c), not only from `handleSystemInit`'s form (b) this turn drives.
+    //
+    // claude.ai connectors are DELIBERATELY NOT part of this gated check
+    // (Architect ruling, Issue 1813 -- see this file's header, "LIMITATION,
+    // RULED"): they are printed as a RECORDED reading below instead, never
+    // asserted against.
+    console.log('\n==> isolation negative control (Issue 1813)');
+    // CodeRabbit MAJOR: a HARD assertion that the CHILD actually used
+    // `isolatedConfigDir`, independent of the event-content checks below --
+    // those checks answer "did the child's own reporting show a leaked
+    // row", not "did the child read this directory at all". A child that
+    // silently fell back to the operator's real ~/.claude.json (which may
+    // happen to declare no user/local servers) would pass the event checks
+    // vacuously; this cannot, because `ok` requires the CHILD's own writes
+    // (a grown transcript count or a newly-appeared `sessions/` dir) against
+    // the `isolationBefore` baseline captured before either the `{}` write
+    // or any session ran.
+    const isolationEvidence = verifyIsolationStrict(isolatedConfigDir, isolationBefore);
+    expect(
+      isolationEvidence.ok,
+      'isolation: the child actually used the isolated CLAUDE_CONFIG_DIR (verifyIsolationStrict)',
+      JSON.stringify(isolationEvidence),
+    );
+    const allDiscoveredEvents = (await readEvents()).filter((e) => e.type === 'mcp-servers-discovered');
+    expect(allDiscoveredEvents.length > 0, 'isolation: at least one mcp-servers-discovered event exists to check');
+    expect(
+      !hasUserOrLocalScopeEntry(allDiscoveredEvents),
+      'isolation: no discovered event ever reported a user/local-scope row',
+      JSON.stringify(allDiscoveredEvents.map((e) => e.servers)),
+    );
+    expect(
+      !anyUserLocalNamesUnavailable(allDiscoveredEvents),
+      'isolation: userLocalNamesUnavailable was never set (the isolated config was readable)',
+    );
+    const connectorRows = collectConnectorScopeRows(allDiscoveredEvents);
+    console.log(
+      `  connectors present (credential-bound, accepted under section 4.1 TUI parity; not suppressible ` +
+        `through the shipping path -- see PS14 / Issue 1813): ${JSON.stringify(connectorRows)}`,
+    );
+
     console.log('\n==> READINGS (non-elevated branch only)');
     for (const r of [setReading, unsetReading]) {
       console.log(`  ${r.serverName} (\${${r.varName}}, ${r.varName === PROBE_VAR_NAME ? 'SET' : 'UNSET'}):`);
@@ -639,6 +817,11 @@ async function runNonElevated(): Promise<number> {
     for (const dir of [repoDir, locationPath, homeDir]) {
       if (dir) Bun.spawnSync(['rm', '-rf', dir]);
     }
+    // CodeRabbit MAJOR (Issue 1813): `isolateClaudeConfigDir` copies the
+    // operator's own `.credentials.json` into this throwaway directory --
+    // leaving it in place would leak a credential copy outside the probe's
+    // own lifetime.
+    if (isolatedConfigDir) rmSync(isolatedConfigDir, { recursive: true, force: true });
   }
 }
 
@@ -725,18 +908,14 @@ async function runElevatedArm(targetUsername: string): Promise<number> {
     }
     console.log(`  resolved target user: uid=${osUser.uid} home=${osUser.homeDir}`);
 
-    let mcpBaseUrl = '';
-    ctx = await createTestContext({ getMcpBaseUrl: () => mcpBaseUrl });
-
-    const osUid = process.getuid?.() ?? 0;
-    const invokingUsername = os.userInfo().username;
-    const owner = await ctx.userRepository.upsertByOsUid(osUid, invokingUsername, os.homedir());
-    const targetUser = await ctx.userRepository.upsertByOsUid(osUser.uid, targetUsername, osUser.homeDir);
-
-    // The disposable AGENT_CONSOLE_HOME must satisfy the production data
-    // root's `2775` setgid contract under AUTH_MODE=multi-user, or the
-    // memory layer's verification (memory-dir.ts) fails closed before the
-    // worker ever reaches its own init handshake -- the same requirement
+    // CodeRabbit MAJOR (Issue 1813, outside-diff finding 2): this MUST run
+    // before `createTestContext` below -- its first statement is a `mkdir`
+    // of `getConfigDir()`, and with `AGENT_CONSOLE_HOME` unset that resolves
+    // to `~/.agent-console`, the OPERATOR's real data root. The disposable
+    // AGENT_CONSOLE_HOME must satisfy the production data root's `2775`
+    // setgid contract under AUTH_MODE=multi-user, or the memory layer's
+    // verification (memory-dir.ts) fails closed before the worker ever
+    // reaches its own init handshake -- the same requirement
     // check-embedded-agent-elevation.ts documents for its own use of this
     // helper.
     const homeResult = await createDisposableMultiUserHome('ac-pr2-pc-elevated-home-');
@@ -750,6 +929,40 @@ async function runElevatedArm(targetUsername: string): Promise<number> {
     homeDir = homeResult.path;
     prevUmask = homeResult.prevUmask;
     process.env.AGENT_CONSOLE_HOME = homeDir;
+
+    let mcpBaseUrl = '';
+    // CodeRabbit MINOR (Issue 1813, follow-up to outside-diff finding 2):
+    // this arm's final return does NOT consult `failures` (it is a
+    // measurement, not a pass/fail gate -- see the `MEASURED` return below),
+    // so a plain `expect()` here could never actually stop the run on a
+    // mismatch, defeating the Architect's original safety intent. Two
+    // explicit guards instead, each returning `PROBE_EXIT.HARNESS` directly:
+    // the first protects `createTestContext`'s own initial
+    // `mkdir(getConfigDir())` from ever running against the operator's real
+    // data root; the second re-confirms right after context creation, as a
+    // pin against a future reordering of these lines.
+    const configDirBeforeContext = getConfigDir();
+    if (configDirBeforeContext !== homeDir) {
+      console.error(
+        `ELEVATED branch: NOT REACHED (context data root is not the disposable home: ` +
+          `getConfigDir()=${configDirBeforeContext} homeDir=${homeDir})`,
+      );
+      return PROBE_EXIT.HARNESS;
+    }
+    ctx = await createTestContext({ getMcpBaseUrl: () => mcpBaseUrl });
+    const contextConfigDir = getConfigDir();
+    if (contextConfigDir !== homeDir) {
+      console.error(
+        `ELEVATED branch: NOT REACHED (context data root is not the disposable home: ` +
+          `getConfigDir()=${contextConfigDir} homeDir=${homeDir})`,
+      );
+      return PROBE_EXIT.HARNESS;
+    }
+
+    const osUid = process.getuid?.() ?? 0;
+    const invokingUsername = os.userInfo().username;
+    const owner = await ctx.userRepository.upsertByOsUid(osUid, invokingUsername, os.homedir());
+    const targetUser = await ctx.userRepository.upsertByOsUid(osUser.uid, targetUsername, osUser.homeDir);
 
     const app = new Hono();
     app.use('*', async (c: { set: (k: string, v: unknown) => void }, next: () => Promise<void>) => {
