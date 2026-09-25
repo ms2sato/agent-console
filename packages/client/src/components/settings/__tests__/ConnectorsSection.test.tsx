@@ -94,7 +94,7 @@ describe('ConnectorsSection', () => {
     expect((screen.getByRole('checkbox') as HTMLInputElement).checked).toBe(true);
   });
 
-  it('renders nothing when the response carries no preferences (unauthenticated)', async () => {
+  it('renders nothing when /me returns user: null (unauthenticated)', async () => {
     hasPreferences = false;
     await renderWithRouter(<ConnectorsSection />);
 
