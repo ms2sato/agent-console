@@ -286,9 +286,9 @@ describe('migration v44 (mcp_server_permissions table creation)', () => {
     await db.destroy();
   });
 
-  it('lands the fresh in-memory dispatcher past schema version 44 (see migration-v45.test.ts for the v45 pin)', async () => {
+  it('lands the fresh in-memory dispatcher past schema version 44 (see migration-v46.test.ts for the v46 pin)', async () => {
     const db = await initializeDatabase(':memory:');
     const versionRes = await sql<{ user_version: number }>`PRAGMA user_version`.execute(db);
-    expect(versionRes.rows[0]?.user_version).toBe(45);
+    expect(versionRes.rows[0]?.user_version).toBe(46);
   });
 });

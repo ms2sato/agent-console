@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'bun:test';
 import * as v from 'valibot';
-import { LoginRequestSchema, ConfigResponseSchema } from '../auth';
+import { LoginRequestSchema, ConfigResponseSchema, MePreferencesSchema } from '../auth';
 
 describe('LoginRequestSchema', () => {
   it('should accept a valid login request', () => {
@@ -103,5 +103,44 @@ describe('ConfigResponseSchema', () => {
   it('rejects an unknown key (strict-parse contract)', () => {
     const result = v.safeParse(ConfigResponseSchema, { ...validSample, unexpectedField: 'leaked' });
     expect(result.success).toBe(false);
+  });
+});
+
+describe('MePreferencesSchema', () => {
+  it('accepts disableClaudeAiConnectors: true', () => {
+    const result = v.safeParse(MePreferencesSchema, { disableClaudeAiConnectors: true });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.output.disableClaudeAiConnectors).toBe(true);
+    }
+  });
+
+  it('accepts disableClaudeAiConnectors: false', () => {
+    const result = v.safeParse(MePreferencesSchema, { disableClaudeAiConnectors: false });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.output.disableClaudeAiConnectors).toBe(false);
+    }
+  });
+
+  it('rejects a missing disableClaudeAiConnectors key', () => {
+    const result = v.safeParse(MePreferencesSchema, {});
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects a non-boolean disableClaudeAiConnectors value', () => {
+    const result = v.safeParse(MePreferencesSchema, { disableClaudeAiConnectors: 'true' });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects an unknown key (strict-parse contract, and never a caller-supplied id/userId)', () => {
+    const result = v.safeParse(MePreferencesSchema, {
+      disableClaudeAiConnectors: true,
+      userId: 'user-should-not-be-accepted',
+    });
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.issues.some((i) => i.path?.[0]?.key === 'userId')).toBe(true);
+    }
   });
 });

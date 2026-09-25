@@ -137,6 +137,8 @@ describe('GET /api/config — sharedAccountsAvailable', () => {
         homeDir: '/home/sharedusr',
       }),
       findById: async () => null,
+      getPreferences: async () => null,
+      setPreferences: async () => true,
     } satisfies UserRepository;
     const enabledRegistry = await SharedAccountRegistry.create({
       username: 'sharedusr',

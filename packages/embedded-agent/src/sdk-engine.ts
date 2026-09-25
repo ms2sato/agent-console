@@ -381,6 +381,17 @@ export interface SdkEngineDeps {
    */
   autoCompaction: boolean;
   /**
+   * The per-user claude.ai connectors toggle: this user's
+   * `disableClaudeAiConnectors` preference, composed into the SDK's own
+   * `Settings.disableClaudeAiConnectors`. ALWAYS explicit `true`/`false`
+   * (same convention as `autoMemoryEnabled` below) -- there is no
+   * optional/undefined third state. Unlike `autoCompaction`, there is NO
+   * runtime setter for this: the SDK only reads `Options.settings` at
+   * construction, so a preference change takes effect at the worker's next
+   * activation, not live.
+   */
+  disableClaudeAiConnectors: boolean;
+  /**
    * Transcript Restore, R1: the SDK session id to resume, or absent for a
    * fresh session. Comes from `init.resume.sdkSessionId` and NOWHERE else
    * -- the re-scoped init pin (docs/design/embedded-agent-sdk-engine.md
@@ -654,6 +665,13 @@ export class SdkEngine implements ClaudeSdkEngine {
   /** Compaction: the worker's auto toggle, mirrored into the SDK's settings. */
   private autoCompaction: boolean;
   /**
+   * The per-user claude.ai connectors toggle: this user's connectors
+   * preference, mirrored into the SDK's settings at construction.
+   * `readonly` -- no runtime setter exists for this field (see
+   * `SdkEngineDeps.disableClaudeAiConnectors`'s doc comment).
+   */
+  private readonly disableClaudeAiConnectors: boolean;
+  /**
    * Compaction: a `compact_boundary` observed during the current turn, and
    * the `compact_summary` the `PostCompact` hook delivered for it.
    *
@@ -690,6 +708,7 @@ export class SdkEngine implements ClaudeSdkEngine {
     this.enabledToolNames = [...enabledToolNames];
     this.allowedToolNames = new Set(enabledToolNames);
     this.autoCompaction = deps.autoCompaction;
+    this.disableClaudeAiConnectors = deps.disableClaudeAiConnectors;
     // Built once, before the first (only) `buildOptions()` call, so
     // `applyMcpServersOnce` can reuse the SAME instance later -- see
     // `reservedMcpServers`'s own doc comment.
@@ -867,7 +886,11 @@ export class SdkEngine implements ClaudeSdkEngine {
       // users in multi-user mode), and would be a second, unmaintained
       // index in front of our own memory. Measured on SDK 0.3.238: the SDK
       // loads the project-scoped MEMORY.md at turn start and never writes.
-      settings: { autoCompactEnabled: this.autoCompaction, autoMemoryEnabled: false },
+      settings: {
+        autoCompactEnabled: this.autoCompaction,
+        autoMemoryEnabled: false,
+        disableClaudeAiConnectors: this.disableClaudeAiConnectors,
+      },
       // The `PostCompact` hook is the only path that carries the summary
       // text; the `compact_boundary` message on the iterator carries the
       // token counts but not the words. Both are needed for one marker --

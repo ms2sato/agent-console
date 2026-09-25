@@ -139,3 +139,8 @@ export const notificationCenterKeys = {
   /** The composed feed (items + cursor + unread count) */
   feed: () => ['notification-center', 'feed'] as const,
 } as const;
+
+export const authKeys = {
+  /** Current authenticated user + per-user preferences (GET /api/auth/me) */
+  me: () => ['auth', 'me'] as const,
+} as const;

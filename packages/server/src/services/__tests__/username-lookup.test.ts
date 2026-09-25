@@ -30,6 +30,12 @@ function makeStubRepo(users: Record<string, AuthUser | null>): {
       findByIdCalls.push(id);
       return users[id] ?? null;
     },
+    async getPreferences() {
+      return null;
+    },
+    async setPreferences() {
+      return true;
+    },
   };
   return { repo, findByIdCalls };
 }

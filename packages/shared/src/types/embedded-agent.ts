@@ -416,6 +416,20 @@ export type EmbeddedAgentCommand =
        * therefore not "allowed" even under the same server name.
        */
       allowedProjectMcpServers: Array<{ name: string; hash: string }>;
+      /**
+       * The per-user claude.ai connectors toggle: this user's
+       * `disableClaudeAiConnectors` preference, resolved from
+       * `session.createdBy`'s `users` row at
+       * activation time. REQUIRED (not optional) -- an absent field is a
+       * schema validation error, never "default to connectors on/off": the
+       * `openai-api` arm has no representable analogue (no claude.ai
+       * connectors concept), so this field is deliberately absent there
+       * instead. No runtime setter exists (unlike `compaction.auto`); the
+       * SDK only reads this at construction, so a preference change takes
+       * effect at the worker's NEXT activation, not live. See
+       * `packages/server/src/services/resolve-disable-claude-ai-connectors.ts`.
+       */
+      disableClaudeAiConnectors: boolean;
     })
   | {
       v: 1;

@@ -415,6 +415,17 @@ export interface EmbeddedAgentWorkerServiceDeps {
   sigtermTimeoutMs?: number;
   /** Test seam for the idle-eviction threshold (defaults to `serverConfig.EMBEDDED_AGENT_IDLE_EVICTION_MS`). */
   idleEvictionMs?: number;
+  /**
+   * The per-user claude.ai connectors toggle: resolves the session owner's
+   * `disableClaudeAiConnectors` preference from their `users` row, read
+   * fresh at every `claude-sdk` activation. `userId` is `session.createdBy`
+   * (the same id used to mint the MCP caller identity), NEVER a value read
+   * from `AuthUser`/the JWT -- the cached `SingleUserMode` user is built
+   * once at boot and goes stale after a PATCH to
+   * `/api/auth/me/preferences`. `openai-api` never calls this (no claude.ai
+   * connectors concept for that engine).
+   */
+  resolveDisableClaudeAiConnectors: (userId: string) => Promise<boolean>;
 }
 
 /**
@@ -935,6 +946,11 @@ export class EmbeddedAgentWorkerService {
         `Cannot activate embedded-agent worker: session ${sessionId} has no createdBy, so an MCP caller identity cannot be minted`,
       );
     }
+    // Narrowed to `string` by the check above. Captured in a `const` (rather
+    // than re-reading `session.createdBy` after the several `await`s below)
+    // because TS's control-flow narrowing on a property access is not
+    // guaranteed to survive an intervening function call.
+    const createdByUserId = session.createdBy;
     const token = this.deps.mcpTokenRegistry.mint({
       sessionId,
       workerId,
@@ -1272,6 +1288,18 @@ export class EmbeddedAgentWorkerService {
             )
           : [];
 
+      // The per-user claude.ai connectors toggle: the session owner's
+      // connectors preference, read fresh at every activation --
+      // `claude-sdk` only (`openai-api` has no claude.ai
+      // connectors concept). `createdByUserId` is the SAME id used to mint
+      // the MCP caller identity above, never a value read from `AuthUser`/
+      // the JWT (see `EmbeddedAgentWorkerServiceDeps.resolveDisableClaudeAiConnectors`'s
+      // doc comment).
+      const disableClaudeAiConnectors =
+        definition.engine === 'claude-sdk'
+          ? await this.deps.resolveDisableClaudeAiConnectors(createdByUserId)
+          : false;
+
       // Step 6: write the init command as the FIRST stdin line. Branched on
       // `definition.engine` (SDK Engine Phase 1) so each arm's `provider`
       // shape matches the discriminated `EmbeddedAgentCommand` union --
@@ -1372,6 +1400,9 @@ export class EmbeddedAgentWorkerService {
               // approved yet" (see the wire type's own doc comment). Empty
               // for a quick session or a repository with no `allow` rows.
               allowedProjectMcpServers,
+              // The per-user claude.ai connectors toggle: REQUIRED, never
+              // omitted -- see the wire type's own doc comment.
+              disableClaudeAiConnectors,
             };
       this.writeCommand(stdin, initCommand);
 

@@ -255,6 +255,7 @@ function setup(opts?: {
     getPathResolver: () => new SessionDataPathResolver(TEST_BASE_DIR, tmpdir()),
     getEmbeddedAgent: () => opts?.definition ?? SDK_DEFINITION,
     resolveSpawnUsername: async () => USERNAME,
+    resolveDisableClaudeAiConnectors: async () => false,
     mcpTokenRegistry: { mint: (() => 'mcp-token') as never, revokeByWorker: (() => {}) as never },
     mcpServerPermissionRepository: { listByScope: (async () => []) as never },
     workerOutputFileManager: {

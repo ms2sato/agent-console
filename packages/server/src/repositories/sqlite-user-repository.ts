@@ -1,5 +1,5 @@
 import type { Kysely } from 'kysely';
-import type { AuthUser } from '@agent-console/shared';
+import type { AuthUser, UserPreferences } from '@agent-console/shared';
 import type { UserRepository } from './user-repository.js';
 import type { Database } from '../database/schema.js';
 import { createLogger } from '../lib/logger.js';
@@ -66,5 +66,32 @@ export class SqliteUserRepository implements UserRepository {
       username: row.username,
       homeDir: row.home_dir,
     };
+  }
+
+  async getPreferences(id: string): Promise<UserPreferences | null> {
+    const row = await this.db
+      .selectFrom('users')
+      .where('id', '=', id)
+      .select(['disable_claude_ai_connectors'])
+      .executeTakeFirst();
+
+    if (!row) return null;
+
+    return {
+      disableClaudeAiConnectors: Boolean(row.disable_claude_ai_connectors),
+    };
+  }
+
+  async setPreferences(id: string, preferences: UserPreferences): Promise<boolean> {
+    const result = await this.db
+      .updateTable('users')
+      .set({
+        disable_claude_ai_connectors: preferences.disableClaudeAiConnectors ? 1 : 0,
+        updated_at: new Date().toISOString(),
+      })
+      .where('id', '=', id)
+      .executeTakeFirst();
+
+    return result.numUpdatedRows > 0n;
   }
 }

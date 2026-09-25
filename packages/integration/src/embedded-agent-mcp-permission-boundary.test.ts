@@ -286,6 +286,11 @@ describe('Client-Server Boundary: MCP server permission wire (epic #1636 Phase 5
       // field must still be PRESENT (required, never omitted) -- see the
       // schema's own doc comment.
       expect(parsed.output.allowedProjectMcpServers).toEqual([]);
+      // The per-user claude.ai connectors toggle: no preference row exists
+      // for this test's owner, so `resolveDisableClaudeAiConnectors`
+      // defaults to false (connectors ON) -- the field itself must still be
+      // PRESENT, per the schema's own doc comment.
+      expect(parsed.output.disableClaudeAiConnectors).toBe(false);
     } else {
       throw new Error('expected a claude-sdk init command');
     }
@@ -555,6 +560,9 @@ describe('Client-Server Boundary: MCP server permission wire (epic #1636 Phase 5
     expect(parsedReinit.success).toBe(true);
     if (parsedReinit.success && parsedReinit.output.type === 'init' && parsedReinit.output.engine === 'claude-sdk') {
       expect(parsedReinit.output.allowedProjectMcpServers).toEqual([{ name: 'chrome-devtools', hash: 'hash-1' }]);
+      // The per-user claude.ai connectors toggle: re-resolved fresh on this
+      // reactivation too, same default-false reasoning as the first test.
+      expect(parsedReinit.output.disableClaudeAiConnectors).toBe(false);
     } else {
       throw new Error('expected a claude-sdk init command on the fresh activation');
     }
