@@ -24,7 +24,8 @@ import type { SessionManager } from '../session-manager.js';
 import { UsernameLookupService } from '../username-lookup.js';
 import type { UserRepository } from '../../repositories/user-repository.js';
 import type { AuthUser } from '@agent-console/shared';
-import type { SpawnAsUserFn, SpawnAsUserOpts, SpawnAsUserResult, runAsUser, RunAsUserOpts } from '../privilege-elevation.js';
+import type { SpawnAsUserFn, SpawnAsUserOpts, runAsUser, RunAsUserOpts } from '../privilege-elevation.js';
+import { toSpawnAsUserResult, type FakeFileSink, type FakeSubprocess } from '../../__tests__/utils/fake-spawn-as-user.js';
 import * as os from 'os';
 import type { LookupOsUserFn } from '../os-user-lookup.js';
 import type { sweepOrphanProcesses } from '../orphan-process-sweeper.js';
@@ -34,6 +35,7 @@ import { EmbeddedMessageDeliveryError } from '../embedded-agent-worker-service.j
 import { composeEmbeddedAgentDeliveryText } from '../session-manager.js';
 import { buildPtyNotificationText, type PtyNotificationParams } from '../../lib/pty-notification.js';
 import type { McpServerPermissionRow } from '../../repositories/mcp-server-permission-repository.js';
+import type { McpPermissionScope } from '../../lib/mcp-server-permissions.js';
 
 // Test config directory
 const TEST_CONFIG_DIR = '/test/config';
@@ -46,35 +48,6 @@ const ptyFactory = createMockPtyFactory(10000);
 
 let importCounter = 0;
 let agentManager: AgentManager;
-
-/**
- * Minimal structural subset of Bun's `Subprocess<'pipe','pipe','pipe'>` /
- * `FileSink` that this file's `spawnAsUserFn` fakes implement -- pid /
- * exited / stdin / stdout / stderr / kill and write / end / flush. This is
- * the file's single, named boundary between that fake shape and
- * `SpawnAsUserResult` (Bun's real, much larger types), used by every fake
- * `spawnAsUserFn` below instead of a cast at each call site.
- */
-interface FakeSpawnStdin {
-  write(chunk: string | Uint8Array): number;
-  end(): void;
-  flush(): number;
-}
-interface FakeSpawnSubprocess {
-  pid: number;
-  exited: Promise<number>;
-  stdin: FakeSpawnStdin;
-  stdout: ReadableStream<Uint8Array>;
-  stderr: ReadableStream<Uint8Array>;
-  kill(signal?: number): void;
-}
-function fakeSpawnAsUserResult(fields: {
-  subprocess: FakeSpawnSubprocess;
-  stdin: FakeSpawnStdin;
-  elevated?: boolean;
-}): SpawnAsUserResult {
-  return { elevated: false, ...fields } as SpawnAsUserResult;
-}
 
 describe('SessionManager', () => {
   // SessionManager delegates to extracted services: SessionInitializationService,
@@ -1339,7 +1312,7 @@ describe('SessionManager', () => {
       // Proves SessionManagerOptions.spawnAsUserFn is actually wired into the
       // constructed EmbeddedAgentWorkerService rather than silently falling
       // back to the real spawnAsUser (which would spawn a real `bun` process).
-      const stdin = { write: () => 0, end: () => {}, flush: () => 0 };
+      const stdin: FakeFileSink = { write: () => 0, end: () => 0, flush: () => 0 };
 
       // Exitable fake streams/exited-promise (mirrors makeFakeSpawn in
       // embedded-agent-worker-service.test.ts): lets this test deactivate the
@@ -1360,7 +1333,7 @@ describe('SessionManager', () => {
         stderrCtrl.close();
       };
 
-      const subprocess = {
+      const subprocess: FakeSubprocess = {
         pid: 4242,
         exited,
         stdin,
@@ -1368,7 +1341,7 @@ describe('SessionManager', () => {
         stderr,
         kill: () => {},
       };
-      const fakeSpawnAsUserFn = mock(() => fakeSpawnAsUserResult({ subprocess, stdin }));
+      const fakeSpawnAsUserFn = mock(() => toSpawnAsUserResult({ subprocess, stdin }));
 
       const module = await import(`../session-manager.js?v=${++importCounter}`);
       const manager = await module.SessionManager.create({
@@ -1415,12 +1388,12 @@ describe('SessionManager', () => {
       // the service, its default `prepareMemoryDir` runs instead, and
       // `context.memoryDir` is present in the captured init frame.
       const stdinWrites: string[] = [];
-      const stdin = {
+      const stdin: FakeFileSink = {
         write: (chunk: string | Uint8Array) => {
           stdinWrites.push(typeof chunk === 'string' ? chunk : new TextDecoder().decode(chunk));
           return 0;
         },
-        end: () => {},
+        end: () => 0,
         flush: () => 0,
       };
       const stdout = new ReadableStream<Uint8Array>({ start() {} });
@@ -1428,8 +1401,8 @@ describe('SessionManager', () => {
       const exited = new Promise<number>(() => {
         // Never resolves -- this test never deactivates the worker.
       });
-      const subprocess = { pid: 4244, exited, stdin, stdout, stderr, kill: () => {} };
-      const fakeSpawnAsUserFn = mock(() => fakeSpawnAsUserResult({ subprocess, stdin }));
+      const subprocess: FakeSubprocess = { pid: 4244, exited, stdin, stdout, stderr, kill: () => {} };
+      const fakeSpawnAsUserFn = mock(() => toSpawnAsUserResult({ subprocess, stdin }));
 
       const module = await import(`../session-manager.js?v=${++importCounter}`);
       const manager = await module.SessionManager.create({
@@ -1472,7 +1445,7 @@ describe('SessionManager', () => {
       // session-pause-resume-service.test.ts against mocked deps; this test
       // is the DI-seam proof that the real wiring is not mis-plumbed,
       // mirroring the "threads spawnAsUserFn option through" test above.
-      const stdin = { write: () => 0, end: () => {}, flush: () => 0 };
+      const stdin: FakeFileSink = { write: () => 0, end: () => 0, flush: () => 0 };
       let stdoutCtrl!: ReadableStreamDefaultController<Uint8Array>;
       let stderrCtrl!: ReadableStreamDefaultController<Uint8Array>;
       const stdout = new ReadableStream<Uint8Array>({ start(c) { stdoutCtrl = c; } });
@@ -1487,8 +1460,8 @@ describe('SessionManager', () => {
         stdoutCtrl.close();
         stderrCtrl.close();
       };
-      const subprocess = { pid: 5555, exited, stdin, stdout, stderr, kill: () => {} };
-      const fakeSpawnAsUserFn = mock(() => fakeSpawnAsUserResult({ subprocess, stdin }));
+      const subprocess: FakeSubprocess = { pid: 5555, exited, stdin, stdout, stderr, kill: () => {} };
+      const fakeSpawnAsUserFn = mock(() => toSpawnAsUserResult({ subprocess, stdin }));
 
       const module = await import(`../session-manager.js?v=${++importCounter}`);
       const manager = await module.SessionManager.create({
@@ -1543,7 +1516,7 @@ describe('SessionManager', () => {
       // the persisted transcript back through getWorkerOutputHistory (the
       // same read path the client uses on reconnect) and confirm the
       // clientMessageId argument survived the facade call unchanged.
-      const stdin = { write: () => 0, end: () => {}, flush: () => 0 };
+      const stdin: FakeFileSink = { write: () => 0, end: () => 0, flush: () => 0 };
       let stdoutCtrl!: ReadableStreamDefaultController<Uint8Array>;
       let stderrCtrl!: ReadableStreamDefaultController<Uint8Array>;
       const stdout = new ReadableStream<Uint8Array>({ start(c) { stdoutCtrl = c; } });
@@ -1558,8 +1531,8 @@ describe('SessionManager', () => {
         stdoutCtrl.close();
         stderrCtrl.close();
       };
-      const subprocess = { pid: 4444, exited, stdin, stdout, stderr, kill: () => {} };
-      const fakeSpawnAsUserFn = mock(() => fakeSpawnAsUserResult({ subprocess, stdin }));
+      const subprocess: FakeSubprocess = { pid: 4444, exited, stdin, stdout, stderr, kill: () => {} };
+      const fakeSpawnAsUserFn = mock(() => toSpawnAsUserResult({ subprocess, stdin }));
 
       const module = await import(`../session-manager.js?v=${++importCounter}`);
       const manager = await module.SessionManager.create({
@@ -1612,7 +1585,7 @@ describe('SessionManager', () => {
       // the persisted transcript back through getWorkerOutputHistory (the
       // same read path the client uses on reconnect) and confirm the
       // structured params/opts survived the facade call unchanged.
-      const stdin = { write: () => 0, end: () => {}, flush: () => 0 };
+      const stdin: FakeFileSink = { write: () => 0, end: () => 0, flush: () => 0 };
       let stdoutCtrl!: ReadableStreamDefaultController<Uint8Array>;
       let stderrCtrl!: ReadableStreamDefaultController<Uint8Array>;
       const stdout = new ReadableStream<Uint8Array>({ start(c) { stdoutCtrl = c; } });
@@ -1627,8 +1600,8 @@ describe('SessionManager', () => {
         stdoutCtrl.close();
         stderrCtrl.close();
       };
-      const subprocess = { pid: 4445, exited, stdin, stdout, stderr, kill: () => {} };
-      const fakeSpawnAsUserFn = mock(() => fakeSpawnAsUserResult({ subprocess, stdin }));
+      const subprocess: FakeSubprocess = { pid: 4445, exited, stdin, stdout, stderr, kill: () => {} };
+      const fakeSpawnAsUserFn = mock(() => toSpawnAsUserResult({ subprocess, stdin }));
 
       const module = await import(`../session-manager.js?v=${++importCounter}`);
       const manager = await module.SessionManager.create({
@@ -1728,7 +1701,7 @@ describe('SessionManager', () => {
           stdoutCtrl.close();
           stderrCtrl.close();
         };
-        const stdin = {
+        const stdin: FakeFileSink = {
           write: (chunk: string | Uint8Array) => {
             const text = typeof chunk === 'string' ? chunk : new TextDecoder().decode(chunk);
             stdinWrites.push(text);
@@ -1736,11 +1709,11 @@ describe('SessionManager', () => {
             if (text.includes('"shutdown"')) finish();
             return 0;
           },
-          end: () => {},
+          end: () => 0,
           flush: () => 0,
         };
-        const subprocess = { pid: 4242 + spawnCount.value, exited, stdin, stdout, stderr, kill: () => finish() };
-        return fakeSpawnAsUserResult({ subprocess, stdin });
+        const subprocess: FakeSubprocess = { pid: 4242 + spawnCount.value, exited, stdin, stdout, stderr, kill: () => finish() };
+        return toSpawnAsUserResult({ subprocess, stdin });
       };
       return { fn, stdinWrites, spawnCount, events };
     }
@@ -2065,12 +2038,12 @@ describe('SessionManager', () => {
     /** Fake spawn with controllable stdout, for pushing a discovered event through the real activation path. */
     function makeControllableSpawn() {
       const stdinWrites: string[] = [];
-      const stdin = {
+      const stdin: FakeFileSink = {
         write: (chunk: string | Uint8Array) => {
           stdinWrites.push(typeof chunk === 'string' ? chunk : new TextDecoder().decode(chunk));
           return 0;
         },
-        end: () => {},
+        end: () => 0,
         flush: () => 0,
       };
       let stdoutCtrl!: ReadableStreamDefaultController<Uint8Array>;
@@ -2079,8 +2052,8 @@ describe('SessionManager', () => {
       const stderr = new ReadableStream<Uint8Array>({ start(c) { stderrCtrl = c; } });
       let resolveExited!: (code: number) => void;
       const exited = new Promise<number>((resolve) => { resolveExited = resolve; });
-      const subprocess = { pid: 4242, exited, stdin, stdout, stderr, kill: () => {} };
-      const fakeSpawnAsUserFn = mock(() => fakeSpawnAsUserResult({ subprocess, stdin }));
+      const subprocess: FakeSubprocess = { pid: 4242, exited, stdin, stdout, stderr, kill: () => {} };
+      const fakeSpawnAsUserFn = mock(() => toSpawnAsUserResult({ subprocess, stdin }));
       return {
         fakeSpawnAsUserFn,
         stdinWrites,
@@ -2116,7 +2089,7 @@ describe('SessionManager', () => {
 
     async function setupSdkWorker() {
       const spawn = makeControllableSpawn();
-      const upsert = mock(async (params: { scope: unknown; serverName: string; configHash: string; decision: 'allow' | 'deny'; decidedBy: string }) => ({
+      const upsert = mock(async (params: { scope: McpPermissionScope; serverName: string; configHash: string; decision: 'allow' | 'deny'; decidedBy: string }) => ({
         id: `perm-${params.serverName}`,
         ...params,
         createdAt: '2026-01-01T00:00:00.000Z',
@@ -2400,7 +2373,7 @@ describe('SessionManager', () => {
     });
 
     it('embedded-agent target: routes through sendEmbeddedAgentSystemNotification with the SAME params (activates on delivery, R4)', async () => {
-      const stdin = { write: () => 0, end: () => {}, flush: () => 0 };
+      const stdin: FakeFileSink = { write: () => 0, end: () => 0, flush: () => 0 };
       let stdoutCtrl!: ReadableStreamDefaultController<Uint8Array>;
       let stderrCtrl!: ReadableStreamDefaultController<Uint8Array>;
       const stdout = new ReadableStream<Uint8Array>({ start(c) { stdoutCtrl = c; } });
@@ -2415,8 +2388,8 @@ describe('SessionManager', () => {
         stdoutCtrl.close();
         stderrCtrl.close();
       };
-      const subprocess = { pid: 9001, exited, stdin, stdout, stderr, kill: () => {} };
-      const fakeSpawnAsUserFn = mock(() => fakeSpawnAsUserResult({ subprocess, stdin }));
+      const subprocess: FakeSubprocess = { pid: 9001, exited, stdin, stdout, stderr, kill: () => {} };
+      const fakeSpawnAsUserFn = mock(() => toSpawnAsUserResult({ subprocess, stdin }));
 
       const module = await import(`../session-manager.js?v=${++importCounter}`);
       const manager = await module.SessionManager.create({
@@ -2541,9 +2514,12 @@ describe('SessionManager', () => {
       // EmbeddedAgentWorkerService.activate() mints and delivers in its
       // init command, without duplicating its mint/JSON logic.
       const written: string[] = [];
-      const stdin = {
-        write: (data: string) => { written.push(data); return 0; },
-        end: () => {},
+      const stdin: FakeFileSink = {
+        write: (chunk: string | Uint8Array) => {
+          written.push(typeof chunk === 'string' ? chunk : new TextDecoder().decode(chunk));
+          return 0;
+        },
+        end: () => 0,
         flush: () => 0,
       };
       let stdoutCtrl!: ReadableStreamDefaultController<Uint8Array>;
@@ -2560,8 +2536,8 @@ describe('SessionManager', () => {
         stdoutCtrl.close();
         stderrCtrl.close();
       };
-      const subprocess = { pid: 4343, exited, stdin, stdout, stderr, kill: () => {} };
-      const fakeSpawnAsUserFn = mock(() => fakeSpawnAsUserResult({ subprocess, stdin }));
+      const subprocess: FakeSubprocess = { pid: 4343, exited, stdin, stdout, stderr, kill: () => {} };
+      const fakeSpawnAsUserFn = mock(() => toSpawnAsUserResult({ subprocess, stdin }));
 
       const module = await import(`../session-manager.js?v=${++importCounter}`);
       const manager = await module.SessionManager.create({
@@ -3584,13 +3560,6 @@ describe('SessionManager', () => {
       updatedAt: '2024-01-01T00:00:00.000Z',
     };
 
-    /** Minimal subset of Bun's FileSink consumed by EmbeddedAgentWorkerService. */
-    interface FakeSink {
-      write: (chunk: string | Uint8Array) => number;
-      end: () => void;
-      flush: () => number;
-    }
-
     function makeFakeEmbeddedSpawn(): {
       fn: SpawnAsUserFn;
       captured: unknown[];
@@ -3622,20 +3591,20 @@ describe('SessionManager', () => {
         stdoutCtrl.enqueue(encoder.encode(`${JSON.stringify(obj)}\n`));
       };
 
-      const stdin: FakeSink = {
-        write: (chunk) => {
+      const stdin: FakeFileSink = {
+        write: (chunk: string | Uint8Array) => {
           stdinWrites.push(typeof chunk === 'string' ? chunk : new TextDecoder().decode(chunk));
           return 0;
         },
-        end: () => {},
+        end: () => 0,
         flush: () => 0,
       };
 
-      const subprocess = { pid: 7000, exited, stdin, stdout, stderr, kill: () => {} };
+      const subprocess: FakeSubprocess = { pid: 7000, exited, stdin, stdout, stderr, kill: () => {} };
 
       const fn: SpawnAsUserFn = (opts) => {
         captured.push(opts);
-        return fakeSpawnAsUserResult({ subprocess, stdin });
+        return toSpawnAsUserResult({ subprocess, stdin });
       };
 
       return { fn, captured, stdinWrites, pushLine, simulateExit };
@@ -4322,7 +4291,7 @@ describe('SessionManager', () => {
         createdAt: '2024-01-01T00:00:00.000Z',
         updatedAt: '2024-01-01T00:00:00.000Z',
       };
-      const stdin = { write: () => 0, end: () => {}, flush: () => 0 };
+      const stdin: FakeFileSink = { write: () => 0, end: () => 0, flush: () => 0 };
       let stdoutCtrl!: ReadableStreamDefaultController<Uint8Array>;
       let stderrCtrl!: ReadableStreamDefaultController<Uint8Array>;
       const stdout = new ReadableStream<Uint8Array>({ start(c) { stdoutCtrl = c; } });
@@ -4339,8 +4308,8 @@ describe('SessionManager', () => {
         stdoutCtrl.close();
         stderrCtrl.close();
       };
-      const subprocess = { pid: 4242, exited, stdin, stdout, stderr, kill: () => {} };
-      const fakeSpawnAsUserFn = mock(() => fakeSpawnAsUserResult({ subprocess, stdin }));
+      const subprocess: FakeSubprocess = { pid: 4242, exited, stdin, stdout, stderr, kill: () => {} };
+      const fakeSpawnAsUserFn = mock(() => toSpawnAsUserResult({ subprocess, stdin }));
 
       const module = await import(`../session-manager.js?v=${++importCounter}`);
       const manager = await module.SessionManager.create({
@@ -5574,7 +5543,14 @@ describe('SessionManager', () => {
     function makeFakeEmbeddedSpawn(): { fn: SpawnAsUserFn; captured: SpawnAsUserOpts[] } {
       const captured: SpawnAsUserOpts[] = [];
       const written: string[] = [];
-      const stdin = { write: (data: string) => { written.push(data); return 0; }, end: () => {}, flush: () => 0 };
+      const stdin: FakeFileSink = {
+        write: (chunk: string | Uint8Array) => {
+          written.push(typeof chunk === 'string' ? chunk : new TextDecoder().decode(chunk));
+          return 0;
+        },
+        end: () => 0,
+        flush: () => 0,
+      };
       let stdoutCtrl!: ReadableStreamDefaultController<Uint8Array>;
       let stderrCtrl!: ReadableStreamDefaultController<Uint8Array>;
       const stdout = new ReadableStream<Uint8Array>({ start(c) { stdoutCtrl = c; } });
@@ -5582,10 +5558,10 @@ describe('SessionManager', () => {
       void stdoutCtrl;
       void stderrCtrl;
       const exited = new Promise<number>(() => {});
-      const subprocess = { pid: 5150, exited, stdin, stdout, stderr, kill: () => {} };
+      const subprocess: FakeSubprocess = { pid: 5150, exited, stdin, stdout, stderr, kill: () => {} };
       const fn: SpawnAsUserFn = (opts) => {
         captured.push(opts);
-        return fakeSpawnAsUserResult({ subprocess, stdin });
+        return toSpawnAsUserResult({ subprocess, stdin });
       };
       return { fn, captured };
     }
@@ -6550,8 +6526,8 @@ describe('SessionManager', () => {
       // The agent worker PTY spawn should have received the expanded env vars.
       // ptyFactory.spawn is called with (cmd, args, opts) where opts.env has the env vars.
       expect(ptyFactory.spawn.mock.calls.length).toBeGreaterThanOrEqual(1);
-      const spawnOptions = (ptyFactory.spawn.mock.calls[0] as [string, string[], PtySpawnOptions])[2];
-      const spawnEnv = (spawnOptions.env ?? {}) as Record<string, string>;
+      const spawnOptions = ptyFactory.spawn.mock.calls[0][2];
+      const spawnEnv = spawnOptions.env ?? {};
 
       // WORKTREE_NUM=3, so {{WORKTREE_NUM * 100}} should expand to '300'
       expect(spawnEnv.PORT).toBe('300');
@@ -7317,8 +7293,8 @@ describe('SessionManager', () => {
           stdoutCtrl.close();
           stderrCtrl.close();
         };
-        const stdin = { write: () => 0, end: () => {}, flush: () => 0 };
-        const subprocess = { pid: 4242, exited, stdin, stdout, stderr, kill: () => {} };
+        const stdin: FakeFileSink = { write: () => 0, end: () => 0, flush: () => 0 };
+        const subprocess: FakeSubprocess = { pid: 4242, exited, stdin, stdout, stderr, kill: () => {} };
         return { subprocess, stdin, simulateExit };
       }
 
@@ -7326,7 +7302,7 @@ describe('SessionManager', () => {
         let current = makeFakeSubprocess();
         const fakeSpawnAsUserFn = mock(() => {
           current = makeFakeSubprocess();
-          return fakeSpawnAsUserResult({ subprocess: current.subprocess, stdin: current.stdin });
+          return toSpawnAsUserResult({ subprocess: current.subprocess, stdin: current.stdin });
         });
 
         const module = await import(`../session-manager.js?v=${++importCounter}`);

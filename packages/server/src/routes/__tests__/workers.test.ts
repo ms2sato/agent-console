@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach, spyOn, mock } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, spyOn, mock, type Mock } from 'bun:test';
 import * as os from 'os';
 import { join as pathJoin } from 'path';
 import { Hono } from 'hono';
@@ -23,9 +23,11 @@ import { JsonSessionRepository } from '../../repositories/index.js';
 import { MAX_MESSAGE_FILES, MAX_TOTAL_FILE_SIZE, MAX_IMAGE_ATTACHMENT_BYTES } from '@agent-console/shared';
 import { McpTokenRegistry } from '../../mcp/mcp-auth.js';
 import { AgentDirectory } from '../../services/agent-directory.js';
-import type { SpawnAsUserFn, SpawnAsUserOpts, SpawnAsUserResult } from '../../services/privilege-elevation.js';
+import type { SpawnAsUserFn, SpawnAsUserOpts } from '../../services/privilege-elevation.js';
+import { toSpawnAsUserResult, type FakeFileSink, type FakeSubprocess } from '../../__tests__/utils/fake-spawn-as-user.js';
 import { GENERIC_EMBEDDED_ACTIVATION_FAILURE_MESSAGE } from '../../services/embedded-agent-worker-service.js';
 import { serverConfig } from '../../lib/server-config.js';
+import type { McpPermissionScope } from '../../lib/mcp-server-permissions.js';
 
 // Config dir is memfs-only; uploads target a per-uid /tmp dir by spec (see #821).
 // memfs hooks fs/promises so the route's mkdir lands in memfs, which we then
@@ -36,13 +38,6 @@ import { serverConfig } from '../../lib/server-config.js';
 const TEST_CONFIG_DIR = '/test/config';
 
 const ptyFactory = createMockPtyFactory(20000);
-
-/** Minimal subset of Bun's FileSink consumed by EmbeddedAgentWorkerService (write/end/flush). */
-interface FakeFileSink {
-  write: (chunk: string | Uint8Array) => number;
-  end: () => void;
-  flush: () => number;
-}
 
 /**
  * Fake spawnAsUser for the embedded-agent loop subprocess (Issue #1260
@@ -79,15 +74,15 @@ function makeFakeEmbeddedSpawn(): {
   };
 
   const stdin: FakeFileSink = {
-    write: (chunk) => {
+    write: (chunk: string | Uint8Array) => {
       stdinWrites.push(typeof chunk === 'string' ? chunk : new TextDecoder().decode(chunk));
       return 0;
     },
-    end: () => {},
+    end: () => 0,
     flush: () => 0,
   };
 
-  const subprocess = { pid: 6543, exited, stdin, stdout, stderr, kill: () => {} };
+  const subprocess: FakeSubprocess = { pid: 6543, exited, stdin, stdout, stderr, kill: () => {} };
 
   const state = { throwOnNextSpawn: null as Error | null };
 
@@ -98,7 +93,7 @@ function makeFakeEmbeddedSpawn(): {
       throw err;
     }
     captured.push(opts);
-    return { subprocess, stdin, elevated: false } as unknown as SpawnAsUserResult;
+    return toSpawnAsUserResult({ subprocess, stdin, elevated: false });
   };
 
   return {
@@ -116,6 +111,17 @@ function makeFakeEmbeddedSpawn(): {
   };
 }
 
+/**
+ * Reaches `SessionManager`'s private `sessions` map so a test can simulate a
+ * shared session by mutating an internal session's `createdBy` after
+ * creation. There is no public setter for this (only `createSession`'s
+ * `context.createdBy`, which is fixed at creation time), so this bracket
+ * access to a TS `private` (not `#private`) field is the only observable.
+ */
+function getSessionsForTest(manager: SessionManager) {
+  return manager['sessions'];
+}
+
 describe('Workers API', () => {
   let app: Hono<AppBindings>;
   let sessionManager: SessionManager;
@@ -124,7 +130,18 @@ describe('Workers API', () => {
   // `makeFakeEmbeddedSpawn` above. Fresh instance each test.
   let fakeEmbeddedSpawn: ReturnType<typeof makeFakeEmbeddedSpawn>;
   // epic #1636 Phase 5 PR-2: MCP server permission repository fakes.
-  let mcpUpsert: ReturnType<typeof mock>;
+  let mcpUpsert: Mock<
+    (params: { scope: McpPermissionScope; serverName: string; configHash: string; decision: 'allow' | 'deny'; decidedBy: string }) => Promise<{
+      id: string;
+      scope: McpPermissionScope;
+      serverName: string;
+      configHash: string;
+      decision: 'allow' | 'deny';
+      decidedBy: string;
+      createdAt: string;
+      decidedAt: string;
+    }>
+  >;
   let mcpListByScope: ReturnType<typeof mock>;
 
   beforeEach(async () => {
@@ -153,7 +170,7 @@ describe('Workers API', () => {
 
     fakeEmbeddedSpawn = makeFakeEmbeddedSpawn();
     mcpListByScope = mock(async () => []);
-    mcpUpsert = mock(async (params: { scope: unknown; serverName: string; configHash: string; decision: 'allow' | 'deny'; decidedBy: string }) => ({
+    mcpUpsert = mock(async (params: { scope: McpPermissionScope; serverName: string; configHash: string; decision: 'allow' | 'deny'; decidedBy: string }) => ({
       id: `perm-${params.serverName}`,
       ...params,
       createdAt: '2024-01-01T00:00:00.000Z',
@@ -1696,7 +1713,7 @@ describe('Workers API', () => {
       // Patch the internal session's createdBy directly to simulate a shared
       // session. The public Session returned by getSession is a fresh object
       // each call, so we must mutate the internal map entry.
-      const internalSessions = (sessionManager as unknown as { sessions: Map<string, { createdBy?: string }> }).sessions;
+      const internalSessions = getSessionsForTest(sessionManager);
       const internalSession = internalSessions.get(session.id)!;
       internalSession.createdBy = 'shared-account-id';
 
@@ -1721,7 +1738,7 @@ describe('Workers API', () => {
       // landed there, NOT the authenticated viewer.
       const calls = mockGit.getMergeBaseSafe.mock.calls;
       expect(calls.length).toBeGreaterThan(0);
-      const lastCall = calls[calls.length - 1] as unknown as [string, string, string, string | null];
+      const lastCall = calls[calls.length - 1];
       expect(lastCall[3]).toBe('sharedacct');
     });
   });
@@ -1859,7 +1876,7 @@ describe('Workers API', () => {
       expect(body.worker.mcpServers?.find((s) => s.name === 'chrome-devtools')?.decision).toBe('allowed');
 
       expect(mcpUpsert).toHaveBeenCalledTimes(1);
-      const call = mcpUpsert.mock.calls[0]?.[0] as { scope: { kind: string; locationPath: string } };
+      const call = mcpUpsert.mock.calls[0]![0];
       expect(call.scope).toEqual({ kind: 'path', locationPath: '/test/path' });
     });
 
