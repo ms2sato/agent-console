@@ -54,18 +54,12 @@ import { AgentDirectory } from '../../services/agent-directory.js';
 import { createWorktreeWithSession } from '../../services/worktree-creation-service.js';
 import { deleteWorktree } from '../../services/worktree-deletion-service.js';
 import { initializeMcp, callTool, parseToolResult } from './mcp-protocol-test-helpers.js';
-import type { SpawnAsUserFn, SpawnAsUserOpts, SpawnAsUserResult } from '../../services/privilege-elevation.js';
+import type { SpawnAsUserFn, SpawnAsUserOpts } from '../../services/privilege-elevation.js';
+import { toSpawnAsUserResult, type FakeFileSink, type FakeSubprocess } from '../../__tests__/utils/fake-spawn-as-user.js';
 
 const TEST_CONFIG_DIR = '/test/config-set-mcp-server-permission';
 const TEST_REPO_PATH = '/test/repo-set-mcp-server-permission';
 const TEST_REPO_ID = 'repo-set-mcp-server-permission';
-
-/** Minimal subset of Bun's FileSink consumed by EmbeddedAgentWorkerService (write/end/flush). */
-interface FakeFileSink {
-  write: (chunk: string | Uint8Array) => number;
-  end: () => void;
-  flush: () => number;
-}
 
 /**
  * Fake spawnAsUser for the embedded-agent loop subprocess, with a `pushLine`
@@ -105,19 +99,19 @@ function makeFakeEmbeddedSpawn(): {
   };
 
   const stdin: FakeFileSink = {
-    write: (chunk) => {
+    write: (chunk: string | Uint8Array) => {
       stdinWrites.push(typeof chunk === 'string' ? chunk : new TextDecoder().decode(chunk));
       return 0;
     },
-    end: () => {},
+    end: () => 0,
     flush: () => 0,
   };
 
-  const subprocess = { pid: 8765, exited, stdin, stdout, stderr, kill: () => {} };
+  const subprocess: FakeSubprocess = { pid: 8765, exited, stdin, stdout, stderr, kill: () => {} };
 
   const fn: SpawnAsUserFn = (opts) => {
     captured.push(opts);
-    return { subprocess, stdin, elevated: false } as unknown as SpawnAsUserResult;
+    return toSpawnAsUserResult({ subprocess, stdin, elevated: false });
   };
 
   return { fn, captured, stdinWrites, pushLine, simulateExit };

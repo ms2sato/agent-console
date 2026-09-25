@@ -26,7 +26,6 @@ import { SqliteUserRepository } from '../../repositories/sqlite-user-repository.
 import { SqliteArtifactRepository } from '../../repositories/sqlite-artifact-repository.js';
 import { SqliteBookmarkRepository } from '../../repositories/sqlite-bookmark-repository.js';
 import { WorktreeService } from '../../services/worktree-service.js';
-import type { PtySpawnOptions } from '../../lib/pty-provider.js';
 import { extractPromptFromSpawnCommand } from '../../__tests__/utils/extract-prompt-from-command.js';
 import { TimerManager } from '../../services/timer-manager.js';
 import { ConditionalWakeupManager } from '../../services/conditional-wakeup-manager.js';
@@ -42,7 +41,8 @@ import type { SuggestSessionMetadataFn } from '../../services/session-metadata-s
 import { AgentDirectory } from '../../services/agent-directory.js';
 import type { AgentDirectoryEntry, EmbeddedAgentDefinition, AppServerMessage } from '@agent-console/shared';
 import type { PersistedWorker } from '../../services/persistence-service.js';
-import type { runAsUser, SpawnAsUserFn, SpawnAsUserOpts, SpawnAsUserResult } from '../../services/privilege-elevation.js';
+import type { runAsUser, SpawnAsUserFn, SpawnAsUserOpts } from '../../services/privilege-elevation.js';
+import { toSpawnAsUserResult, type FakeFileSink, type FakeSubprocess } from '../../__tests__/utils/fake-spawn-as-user.js';
 
 // Mock session-metadata-suggester to avoid spawning real agent processes.
 // Declaring the parameter type makes `mock.calls` typed correctly so the
@@ -105,13 +105,6 @@ const fakeRunAsUserAlwaysSuccess: typeof runAsUser = async (opts) => {
   };
 };
 
-/** Minimal subset of Bun's FileSink consumed by EmbeddedAgentWorkerService (write/end/flush). */
-interface McpDelegateFakeFileSink {
-  write: (chunk: string | Uint8Array) => number;
-  end: () => void;
-  flush: () => number;
-}
-
 /**
  * Fake spawnAsUser for the embedded-agent loop subprocess (Issue #1260
  * PR-1). Needed because `delegate_to_worktree` now eagerly activates an
@@ -157,16 +150,16 @@ function makeFakeEmbeddedAgentDelegateSpawn(): {
     stdoutCtrl.enqueue(encoder.encode(`${JSON.stringify(obj)}\n`));
   };
 
-  const stdin: McpDelegateFakeFileSink = {
-    write: (chunk) => {
+  const stdin: FakeFileSink = {
+    write: (chunk: string | Uint8Array) => {
       stdinWrites.push(typeof chunk === 'string' ? chunk : new TextDecoder().decode(chunk));
       return 0;
     },
-    end: () => {},
+    end: () => 0,
     flush: () => 0,
   };
 
-  const subprocess = {
+  const subprocess: FakeSubprocess = {
     pid: 8765,
     exited,
     stdin,
@@ -187,7 +180,7 @@ function makeFakeEmbeddedAgentDelegateSpawn(): {
       throw err;
     }
     captured.push(opts);
-    return { subprocess, stdin, elevated: false } as unknown as SpawnAsUserResult;
+    return toSpawnAsUserResult({ subprocess, stdin, elevated: false });
   };
 
   return {
@@ -2267,7 +2260,7 @@ describe('MCP Server Tools', () => {
      * Returns undefined if no matching call is found.
      */
     function findSpawnCallByCommand(commandSubstring: string): unknown[] | undefined {
-      const calls = ptyFactory.spawn.mock.calls as unknown as Array<[string, string[], unknown]>;
+      const calls = ptyFactory.spawn.mock.calls;
       const spawnMatch = calls.find((call) => {
         const cmd = call[1]?.join(' ') ?? '';
         return cmd.includes(commandSubstring);
@@ -3073,7 +3066,7 @@ describe('MCP Server Tools', () => {
      * the content captured by the `fakeRunAsUserAlwaysSuccess` seam above.
      */
     function getAgentPromptForSession(sessionId: string): string {
-      const calls = ptyFactory.spawn.mock.calls as unknown as Array<[string, string[], PtySpawnOptions]>;
+      const calls = ptyFactory.spawn.mock.calls;
       const callIndex = calls.findIndex((call) =>
         call[2]?.env?.AGENT_CONSOLE_SESSION_ID === sessionId,
       );
@@ -3524,7 +3517,7 @@ describe('MCP Server Tools', () => {
        * can read the captured arguments. The wrapped implementation delegates
        * to the real method so the rest of the orchestration still runs.
        */
-      function spyCreateWorktree(): ReturnType<typeof jest.spyOn> {
+      function spyCreateWorktree() {
         return jest.spyOn(worktreeService, 'createWorktree');
       }
 
@@ -3557,7 +3550,7 @@ describe('MCP Server Tools', () => {
 
         // createWorktree(repoPath, branch, repositoryId, baseBranch?, requestUsername?)
         expect(createWorktreeSpy).toHaveBeenCalledTimes(1);
-        const callArgs = createWorktreeSpy.mock.calls[0] as unknown[];
+        const callArgs = createWorktreeSpy.mock.calls[0];
         expect(callArgs[4]).toBe('alice');
       });
 
@@ -3617,7 +3610,7 @@ describe('MCP Server Tools', () => {
         expect(response.result?.isError).toBeUndefined();
 
         expect(createWorktreeSpy).toHaveBeenCalledTimes(1);
-        const callArgs = createWorktreeSpy.mock.calls[0] as unknown[];
+        const callArgs = createWorktreeSpy.mock.calls[0];
         expect(callArgs[4]).toBeNull();
       });
     });
@@ -3636,7 +3629,7 @@ describe('MCP Server Tools', () => {
     // The tests below spy on `sessionManager.createSession` to capture the
     // `context` argument and assert the `sshAuthSockFallback` field.
     describe('Issue #918: sshAuthSockFallback propagation', () => {
-      function spyCreateSession(): ReturnType<typeof jest.spyOn> {
+      function spyCreateSession() {
         return jest.spyOn(sessionManager, 'createSession');
       }
 
@@ -3665,8 +3658,8 @@ describe('MCP Server Tools', () => {
 
         // The delegated session creation is the last call; the parent was
         // created BEFORE the spy was installed.
-        const delegateCall = spy.mock.calls[spy.mock.calls.length - 1] as unknown[];
-        const context = delegateCall[1] as { sshAuthSockFallback?: string } | undefined;
+        const delegateCall = spy.mock.calls[spy.mock.calls.length - 1];
+        const context = delegateCall[1];
         expect(context?.sshAuthSockFallback).toBe('/home/alice918/.1password/agent.sock');
       });
 
@@ -3716,8 +3709,8 @@ describe('MCP Server Tools', () => {
         expect(response.result?.isError).toBeUndefined();
 
         expect(spy).toHaveBeenCalled();
-        const lastCall = spy.mock.calls[spy.mock.calls.length - 1] as unknown[];
-        const context = lastCall[1] as { sshAuthSockFallback?: string } | undefined;
+        const lastCall = spy.mock.calls[spy.mock.calls.length - 1];
+        const context = lastCall[1];
         expect(context?.sshAuthSockFallback).toBeUndefined();
       });
     });
@@ -4090,7 +4083,7 @@ describe('MCP Server Tools', () => {
 
       // Find the PTY spawn call for the agent worker (the last one created by delegate)
       // The spawn calls include the env in the options parameter
-      const calls = ptyFactory.spawn.mock.calls as unknown as Array<[string, string[], PtySpawnOptions]>;
+      const calls = ptyFactory.spawn.mock.calls;
 
       // Find the spawn call that includes AGENT_CONSOLE_SESSION_ID matching our session
       const matchingCall = calls.find((call) =>
@@ -5010,9 +5003,7 @@ describe('MCP Server Tools', () => {
 
           expect(response.result?.isError).toBeUndefined();
           expect(runProcessSpy).toHaveBeenCalledTimes(1);
-          const params = runProcessSpy.mock.calls[0][0] as {
-            requestUser?: string | null;
-          };
+          const params = runProcessSpy.mock.calls[0][0];
           expect(params.requestUser).toBe('alice');
 
           runProcessSpy.mockRestore();
@@ -5035,9 +5026,7 @@ describe('MCP Server Tools', () => {
 
           expect(response.result?.isError).toBeUndefined();
           expect(runProcessSpy).toHaveBeenCalledTimes(1);
-          const params = runProcessSpy.mock.calls[0][0] as {
-            requestUser?: string | null;
-          };
+          const params = runProcessSpy.mock.calls[0][0];
           expect(params.requestUser).toBeNull();
 
           runProcessSpy.mockRestore();
@@ -5064,9 +5053,7 @@ describe('MCP Server Tools', () => {
 
           expect(response.result?.isError).toBeUndefined();
           expect(runProcessSpy).toHaveBeenCalledTimes(1);
-          const params = runProcessSpy.mock.calls[0][0] as {
-            requestUser?: string | null;
-          };
+          const params = runProcessSpy.mock.calls[0][0];
           expect(params.requestUser).toBeNull();
 
           runProcessSpy.mockRestore();
