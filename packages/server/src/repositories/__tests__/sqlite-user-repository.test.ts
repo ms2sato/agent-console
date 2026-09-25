@@ -18,7 +18,8 @@ describe('SqliteUserRepository', () => {
       dialect: new BunSqliteDialect({ database: bunDb }),
     });
 
-    // Create users table matching migration v14
+    // Create users table matching migration v14, plus v46's
+    // disable_claude_ai_connectors column.
     await db.schema
       .createTable('users')
       .addColumn('id', 'text', (col) => col.primaryKey())
@@ -27,6 +28,7 @@ describe('SqliteUserRepository', () => {
       .addColumn('home_dir', 'text', (col) => col.notNull())
       .addColumn('created_at', 'text', (col) => col.notNull())
       .addColumn('updated_at', 'text', (col) => col.notNull())
+      .addColumn('disable_claude_ai_connectors', 'integer', (col) => col.notNull().defaultTo(0))
       .execute();
 
     // Partial unique index on os_uid

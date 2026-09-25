@@ -2712,6 +2712,12 @@ describe('SessionManager', () => {
             }
             return null;
           },
+          async getPreferences(): Promise<null> {
+            return null;
+          },
+          async setPreferences(): Promise<boolean> {
+            return true;
+          },
         };
 
         const module = await import(`../session-manager.js?v=${++importCounter}`);
@@ -3078,6 +3084,12 @@ describe('SessionManager', () => {
             return { id, username: 'alice', homeDir: '/home/alice' };
           }
           return null;
+        },
+        async getPreferences(): Promise<null> {
+          return null;
+        },
+        async setPreferences(): Promise<boolean> {
+          return true;
         },
       };
       const usernameLookup = new UsernameLookupService(stubUserRepo);
@@ -6820,6 +6832,12 @@ describe('SessionManager', () => {
             return { id, username: 'alice', homeDir: '/home/alice' };
           }
           return null;
+        },
+        async getPreferences(): Promise<null> {
+          return null;
+        },
+        async setPreferences(): Promise<boolean> {
+          return true;
         },
       };
 
