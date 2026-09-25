@@ -81,6 +81,10 @@ import * as path from 'node:path';
 // node:path + Bun.spawn), so this is safe as a static import above the
 // env-var prelude, same as the type-only import below.
 import { createDisposableMultiUserHome } from './disposable-multi-user-home.js';
+// `lib/config.ts` (NOT `lib/server-config.ts`) only imports `node:path`/
+// `node:os` at module load, so it is safe as a static import here too --
+// same reasoning as `probe-sdk-phase5-pr2-pc.ts`.
+import { getConfigDir } from '../../packages/server/src/lib/config.js';
 // Type-only imports are erased at compile time -- safe above the env-var
 // prelude despite the module they point at transitively importing
 // server-config.ts.
@@ -265,23 +269,13 @@ async function main(): Promise<void> {
     });
     const stubBaseUrl = `http://localhost:${stubServer.port}`;
 
-    // --- Real AppContext (in-memory SQLite via createTestContext), with the
-    // loop's MCP base URL late-bound to the real app server's ephemeral port. ---
-    let mcpBaseUrl = '';
-    ctx = await createTestContext({ getMcpBaseUrl: () => mcpBaseUrl });
-
-    // Real target-user identity: session.createdBy -> resolveSpawnUsername
-    // resolves to this user's REAL username, so spawnAsUser actually elevates.
-    const targetUser = await ctx.userRepository.upsertByOsUid(
-      osUser.uid,
-      targetUsername,
-      osUser.homeDir,
-    );
-
     // --- Real temp provider-keys.json (0600), AGENT_CONSOLE_HOME pointed at a
-    // real temp dir BEFORE any activation reads it via loadProviderKey/getConfigDir.
-    // getConfigDir() reads process.env.AGENT_CONSOLE_HOME at CALL time (not
-    // module load time), so this override is safe post-import.
+    // real temp dir BEFORE createTestContext ever runs -- createTestContext's
+    // own first statement is a mkdir(getConfigDir()), and with
+    // AGENT_CONSOLE_HOME unset that resolves to the operator's real data
+    // root, not this smoke's disposable home. getConfigDir() reads
+    // process.env.AGENT_CONSOLE_HOME at CALL time (not module load time), so
+    // this override is safe post-import.
     //
     // The disposable home must carry the production data root's 2775 setgid
     // contract (Issue #1713) -- a plain `mkdir -p` home is 755, and the
@@ -291,15 +285,15 @@ async function main(): Promise<void> {
     const homeResult = await createDisposableMultiUserHome('ac-embedded-bash-smoke-cfg-');
     if (!homeResult.ok) {
       // Routed through SmokeSetupError (not a direct process.exit(2)) --
-      // ctx and stubServer already exist by this point, and this class
-      // exists precisely so a setup/launch failure here still runs the
-      // finally block's other cleanup (deactivate/shutdownAppContext/stop
-      // servers) before exiting 2, unlike the earlier osUser-lookup guard
-      // above which runs before either resource is created. The helper
-      // itself already removed the failed mkdtemp directory (best-effort)
-      // before returning, so there is nothing left for this smoke's own
-      // cleanup to do for the home; ok:false also never touched
-      // process.umask(), so there is no prevUmask to capture.
+      // stubServer already exists by this point, and this class exists
+      // precisely so a setup/launch failure here still runs the finally
+      // block's other cleanup (stop stub server) before exiting 2, unlike
+      // the earlier osUser-lookup guard above which runs before any
+      // resource is created. The helper itself already removed the failed
+      // mkdtemp directory (best-effort) before returning, so there is
+      // nothing left for this smoke's own cleanup to do for the home;
+      // ok:false also never touched process.umask(), so there is no
+      // prevUmask to capture.
       throw new SmokeSetupError(
         `cannot build a disposable AGENT_CONSOLE_HOME satisfying the multi-user data-root 2775 contract: ${homeResult.reason}`,
       );
@@ -312,6 +306,42 @@ async function main(): Promise<void> {
     const providerKeysPath = path.join(realConfigDir, 'provider-keys.json');
     await Bun.write(providerKeysPath, JSON.stringify({ [apiKeyRef]: fakeApiKey }));
     Bun.spawnSync(['chmod', '600', providerKeysPath]);
+
+    // Guard: createTestContext's own initial mkdir(getConfigDir()) must
+    // never run against the operator's real data root. Two explicit checks
+    // -- before and after createTestContext -- each throwing
+    // SmokeSetupError (which the outer catch below maps to
+    // process.exitCode = 2) directly on a mismatch, mirroring the shape
+    // probe-sdk-phase5-pr2-pc.ts's elevated arm landed at, rather than a
+    // bare `expect()` whose result the final exit check might not consult
+    // before the rest of the run has already touched the wrong root.
+    const configDirBeforeContext = getConfigDir();
+    if (configDirBeforeContext !== realConfigDir) {
+      throw new SmokeSetupError(
+        `context data root is not the disposable home before createTestContext: ` +
+          `getConfigDir()=${configDirBeforeContext} realConfigDir=${realConfigDir}`,
+      );
+    }
+
+    // --- Real AppContext (in-memory SQLite via createTestContext), with the
+    // loop's MCP base URL late-bound to the real app server's ephemeral port. ---
+    let mcpBaseUrl = '';
+    ctx = await createTestContext({ getMcpBaseUrl: () => mcpBaseUrl });
+    const contextConfigDir = getConfigDir();
+    if (contextConfigDir !== realConfigDir) {
+      throw new SmokeSetupError(
+        `context data root is not the disposable home after createTestContext: ` +
+          `getConfigDir()=${contextConfigDir} realConfigDir=${realConfigDir}`,
+      );
+    }
+
+    // Real target-user identity: session.createdBy -> resolveSpawnUsername
+    // resolves to this user's REAL username, so spawnAsUser actually elevates.
+    const targetUser = await ctx.userRepository.upsertByOsUid(
+      osUser.uid,
+      targetUsername,
+      osUser.homeDir,
+    );
 
     // --- Fixture 2: real app server (real /api router + real /mcp app),
     // mirroring check-embedded-agent-elevation.ts. This smoke's job is the
