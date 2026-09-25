@@ -70,3 +70,22 @@ export const ConfigResponseSchema = v.strictObject({
 });
 
 export type ConfigResponse = v.InferOutput<typeof ConfigResponseSchema>;
+
+/**
+ * Schema for `PATCH /api/auth/me/preferences`'s request body.
+ *
+ * Mirrors `packages/shared/src/types/auth.ts`'s hand-written `UserPreferences`
+ * domain type field-for-field, but is independently defined here (same
+ * reason `ConfigResponseSchema` above lives here rather than in
+ * `types/auth.ts`: `.dependency-cruiser.cjs`'s `shared-no-types-import-schemas`
+ * rule forbids `types/` importing from `schemas/`) -- this is the wire
+ * boundary validated at parse time, not a re-export of the domain shape.
+ * `v.strictObject` rejects any field beyond `disableClaudeAiConnectors`
+ * (in particular, no `id`/`userId` field is ever accepted here -- the
+ * target user always comes from the authenticated caller, never the body).
+ */
+export const MePreferencesSchema = v.strictObject({
+  disableClaudeAiConnectors: v.boolean(),
+});
+
+export type MePreferencesRequest = v.InferOutput<typeof MePreferencesSchema>;

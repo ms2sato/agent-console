@@ -29,6 +29,33 @@ export interface LoginResponse {
   user: AuthUser;
 }
 
+/**
+ * Per-user preferences. Persisted on the `users`
+ * table; resolved fresh at every `claude-sdk` embedded-agent worker
+ * activation from `session.createdBy`, never read from `AuthUser` or the
+ * JWT (both are built once at login/boot and would go stale after a PATCH
+ * to `/api/auth/me/preferences`). See
+ * `packages/server/src/services/resolve-disable-claude-ai-connectors.ts`.
+ */
+export interface UserPreferences {
+  /**
+   * When true, this user's `claude-sdk` embedded-agent workers are spawned
+   * with the SDK's own claude.ai connectors (Google Drive, Gmail, etc.)
+   * disabled. Default `false` (connectors ON). Read once at worker
+   * ACTIVATION -- there is no runtime setter, so a change here takes
+   * effect at the worker's next activation, not live.
+   */
+  disableClaudeAiConnectors: boolean;
+}
+
 export interface CurrentUserResponse {
   user: AuthUser | null;
+  /** Present iff `user` is non-null (omitted for an unauthenticated caller). */
+  preferences?: UserPreferences;
+}
+
+/** `PATCH /api/auth/me/preferences`'s response body. */
+export interface UpdateUserPreferencesResponse {
+  user: AuthUser;
+  preferences: UserPreferences;
 }
