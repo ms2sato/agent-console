@@ -442,8 +442,11 @@ const workers = new Hono<AppBindings>()
     },
   )
   // Record an MCP server permission decision for a claude-sdk embedded-agent
-  // worker's repository (epic #1636 Phase 5 PR-2,
-  // docs/design/embedded-agent-sdk-engine.md §4.5's "the approval record").
+  // worker's scope -- a worktree session's repository, or a quick
+  // session's realpath'd locationPath (epic #1636 Phase 5 PR-2,
+  // docs/design/embedded-agent-sdk-engine.md §4.5's "the approval
+  // record"). Scope resolution is scope-agnostic past this handler -- see
+  // `resolveMcpPermissionScope` (lib/mcp-server-permissions.ts).
   //
   // Live-apply: IMPLEMENTED (Architect ruling (B), 2026-09-21 -- the wire
   // command carries only (name, hash) pairs, never a server config, so the
@@ -475,12 +478,6 @@ const workers = new Hono<AppBindings>()
         'Only the session owner can decide MCP server permissions',
       );
 
-      if (session.type !== 'worktree' || !session.repositoryId) {
-        throw new ConflictError(
-          'MCP server permissions require a repository; quick sessions are not yet supported (see #1786)',
-        );
-      }
-
       const worker = session.workers.find((w) => w.id === workerId);
       if (!worker || worker.type !== 'embedded-agent') {
         throw new NotFoundError('Embedded-agent worker');
@@ -501,7 +498,6 @@ const workers = new Hono<AppBindings>()
       const updated = await sessionManager.setMcpServerPermissions(
         sessionId,
         workerId,
-        session.repositoryId,
         decisions,
         authUser.id,
       );

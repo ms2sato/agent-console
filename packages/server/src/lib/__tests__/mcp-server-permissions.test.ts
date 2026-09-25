@@ -1,15 +1,26 @@
 import { describe, it, expect } from 'bun:test';
-import { listAllowedProjectMcpServerPairs, resolvePermissionDecisions } from '../mcp-server-permissions.js';
+import * as path from 'path';
+import { mkdir, rm, symlink, realpath } from 'fs/promises';
+import { tmpdir } from 'os';
+import { randomUUID } from 'crypto';
+import {
+  listAllowedProjectMcpServerPairs,
+  resolvePermissionDecisions,
+  resolveMcpPermissionScope,
+  type McpPermissionScope,
+} from '../mcp-server-permissions.js';
 import type {
   McpServerPermissionRepository,
   McpServerPermissionRow,
 } from '../../repositories/mcp-server-permission-repository.js';
 import type { EmbeddedAgentWorker } from '@agent-console/shared';
 
+const REPO_SCOPE: McpPermissionScope = { kind: 'repository', repositoryId: 'repo-1' };
+
 function row(overrides: Partial<McpServerPermissionRow> = {}): McpServerPermissionRow {
   return {
     id: 'row-1',
-    repositoryId: 'repo-1',
+    scope: REPO_SCOPE,
     serverName: 'my-server',
     configHash: 'h1',
     decision: 'allow',
@@ -20,9 +31,9 @@ function row(overrides: Partial<McpServerPermissionRow> = {}): McpServerPermissi
   };
 }
 
-function fakeRepository(rows: McpServerPermissionRow[]): Pick<McpServerPermissionRepository, 'listByRepository'> {
+function fakeRepository(rows: McpServerPermissionRow[]): Pick<McpServerPermissionRepository, 'listByScope'> {
   return {
-    listByRepository: async () => rows,
+    listByScope: async () => rows,
   };
 }
 
@@ -32,7 +43,7 @@ describe('listAllowedProjectMcpServerPairs', () => {
       row({ serverName: 'a', configHash: 'ha', decision: 'allow' }),
       row({ serverName: 'b', configHash: 'hb', decision: 'allow' }),
     ]);
-    expect(await listAllowedProjectMcpServerPairs(repository, 'repo-1')).toEqual([
+    expect(await listAllowedProjectMcpServerPairs(repository, REPO_SCOPE)).toEqual([
       { name: 'a', hash: 'ha' },
       { name: 'b', hash: 'hb' },
     ]);
@@ -43,16 +54,68 @@ describe('listAllowedProjectMcpServerPairs', () => {
       row({ serverName: 'a', configHash: 'ha', decision: 'allow' }),
       row({ serverName: 'b', configHash: 'hb', decision: 'deny' }),
     ]);
-    expect(await listAllowedProjectMcpServerPairs(repository, 'repo-1')).toEqual([{ name: 'a', hash: 'ha' }]);
+    expect(await listAllowedProjectMcpServerPairs(repository, REPO_SCOPE)).toEqual([{ name: 'a', hash: 'ha' }]);
   });
 
-  it('returns an empty array when the repository has no rows (boundary value)', async () => {
-    expect(await listAllowedProjectMcpServerPairs(fakeRepository([]), 'repo-1')).toEqual([]);
+  it('returns an empty array when the scope has no rows (boundary value)', async () => {
+    expect(await listAllowedProjectMcpServerPairs(fakeRepository([]), REPO_SCOPE)).toEqual([]);
   });
 
   it('returns an empty array when every row is a deny (boundary value)', async () => {
     const repository = fakeRepository([row({ decision: 'deny' })]);
-    expect(await listAllowedProjectMcpServerPairs(repository, 'repo-1')).toEqual([]);
+    expect(await listAllowedProjectMcpServerPairs(repository, REPO_SCOPE)).toEqual([]);
+  });
+
+  it('works identically for a path scope (single-row, single-allow)', async () => {
+    const pathScope: McpPermissionScope = { kind: 'path', locationPath: '/home/user/quick-project' };
+    const repository = fakeRepository([row({ scope: pathScope, serverName: 'a', configHash: 'ha', decision: 'allow' })]);
+    expect(await listAllowedProjectMcpServerPairs(repository, pathScope)).toEqual([{ name: 'a', hash: 'ha' }]);
+  });
+});
+
+describe('resolveMcpPermissionScope', () => {
+  it('worktree session -> repository scope', async () => {
+    const scope = await resolveMcpPermissionScope({ type: 'worktree', repositoryId: 'repo-1' });
+    expect(scope).toEqual({ kind: 'repository', repositoryId: 'repo-1' });
+  });
+
+  // Real fs, not memfs: a plain existing-directory case does not
+  // distinguish `realpath()` from `path.resolve()` -- with no symlink to
+  // resolve, both return the identical string, so a memfs fixture at a
+  // non-symlinked path (this describe block's earlier shape) cannot tell
+  // the two apart. Only a symlink whose target differs from its own path
+  // does, which is why this proves it on the real OS-level symlink/realpath
+  // resolution this function delegates to -- the same reason the exempted
+  // real-fs file `memory-dir.test.ts` covers `resolveMemoryDirPath`'s
+  // identical fallback shape without memfs.
+  //
+  // Manually-built unique path + `mkdir(..., { recursive: true })` instead
+  // of `mkdtemp(tmpdir())`: an earlier test file in this same bun:test
+  // process may have poisoned `node:fs`/`node:fs/promises` process-wide via
+  // `mock.module()`, under which `tmpdir()`'s ancestors may not exist (see
+  // `embedded-agent-worker-service.test.ts`'s symlink tests for the same
+  // construction and rationale).
+  //
+  // Reach measured: skipping `realpath()` in favor of `path.resolve()`
+  // directly makes this test fail (the symlink's own path is returned
+  // instead of its target) -- confirmed while authoring this test.
+  it('quick session with a symlinked cwd -> path scope at the symlink target, not the symlink itself', async () => {
+    const base = path.join(tmpdir(), `mcp-permission-scope-symlink-${randomUUID()}`);
+    const target = path.join(base, 'target');
+    const link = path.join(base, 'quick-project-link');
+    await mkdir(target, { recursive: true });
+    try {
+      await symlink(target, link);
+      const scope = await resolveMcpPermissionScope({ type: 'quick', locationPath: link });
+      expect(scope).toEqual({ kind: 'path', locationPath: await realpath(target) });
+    } finally {
+      await rm(base, { recursive: true, force: true }).catch(() => {});
+    }
+  });
+
+  it('quick session with a nonexistent cwd falls back to path.resolve(cwd) directly (boundary: ENOENT)', async () => {
+    const scope = await resolveMcpPermissionScope({ type: 'quick', locationPath: '/no/such/quick-project' });
+    expect(scope).toEqual({ kind: 'path', locationPath: path.resolve('/no/such/quick-project') });
   });
 });
 

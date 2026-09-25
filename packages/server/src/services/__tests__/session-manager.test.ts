@@ -2107,15 +2107,22 @@ describe('SessionManager', () => {
       }
     }
 
+    // `setupSdkWorker` builds a QUICK session (`locationPath: '/test/path'`),
+    // so every `setMcpServerPermissions` call below resolves to a PATH scope
+    // (Issue #1786) -- `/test/path` does not exist in this suite's memfs, so
+    // `resolveMcpPermissionScope` falls back to `path.resolve`, a no-op on
+    // an already-absolute path.
+    const QUICK_SCOPE = { kind: 'path' as const, locationPath: '/test/path' };
+
     async function setupSdkWorker() {
       const spawn = makeControllableSpawn();
-      const upsert = mock(async (params: { repositoryId: string; serverName: string; configHash: string; decision: 'allow' | 'deny'; decidedBy: string }) => ({
+      const upsert = mock(async (params: { scope: unknown; serverName: string; configHash: string; decision: 'allow' | 'deny'; decidedBy: string }) => ({
         id: `perm-${params.serverName}`,
         ...params,
         createdAt: '2026-01-01T00:00:00.000Z',
         decidedAt: '2026-01-01T00:00:00.000Z',
       }));
-      const listByRepository = mock(async (): Promise<McpServerPermissionRow[]> => []);
+      const listByScope = mock(async (): Promise<McpServerPermissionRow[]> => []);
       const module = await import(`../session-manager.js?v=${++importCounter}`);
       const manager: SessionManager = await module.SessionManager.create({
         userMode: new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' }),
@@ -2127,7 +2134,7 @@ describe('SessionManager', () => {
         repositoryLookup: defaultRepositoryLookup,
         repositoryEnvLookup: defaultRepositoryEnvLookup,
         spawnAsUserFn: spawn.fakeSpawnAsUserFn,
-        mcpServerPermissionRepository: { listByRepository: listByRepository as never, upsert: upsert as never },
+        mcpServerPermissionRepository: { listByScope: listByScope as never, upsert: upsert as never },
       });
       const session = await manager.createSession(
         { type: 'quick', locationPath: '/test/path', agentId: 'claude-code' },
@@ -2137,7 +2144,7 @@ describe('SessionManager', () => {
         type: 'embedded-agent',
         embeddedAgentId: SDK_DEF.id,
       });
-      return { manager, spawn, upsert, listByRepository, sessionId: session.id, workerId: worker!.id };
+      return { manager, spawn, upsert, listByScope, sessionId: session.id, workerId: worker!.id };
     }
 
     it('returns null for a nonexistent session, a nonexistent worker, or the wrong worker type', async () => {
@@ -2148,10 +2155,10 @@ describe('SessionManager', () => {
       );
       const terminal = session.workers.find((w) => w.type !== 'embedded-agent');
 
-      expect(await manager.setMcpServerPermissions('no-such-session', workerId, 'repo-1', [], 'user-1')).toBeNull();
-      expect(await manager.setMcpServerPermissions(sessionId, 'no-such-worker', 'repo-1', [], 'user-1')).toBeNull();
+      expect(await manager.setMcpServerPermissions('no-such-session', workerId, [], 'user-1')).toBeNull();
+      expect(await manager.setMcpServerPermissions(sessionId, 'no-such-worker', [], 'user-1')).toBeNull();
       if (terminal) {
-        expect(await manager.setMcpServerPermissions(session.id, terminal.id, 'repo-1', [], 'user-1')).toBeNull();
+        expect(await manager.setMcpServerPermissions(session.id, terminal.id, [], 'user-1')).toBeNull();
       }
     });
 
@@ -2161,14 +2168,13 @@ describe('SessionManager', () => {
       const result = await manager.setMcpServerPermissions(
         sessionId,
         workerId,
-        'repo-1',
         [{ name: 'chrome-devtools', hash: 'hash-1', decision: 'allow' }],
         'user-1',
       );
 
       expect(result).not.toBeNull();
       expect(upsert).toHaveBeenCalledWith({
-        repositoryId: 'repo-1',
+        scope: QUICK_SCOPE,
         serverName: 'chrome-devtools',
         configHash: 'hash-1',
         decision: 'allow',
@@ -2202,7 +2208,6 @@ describe('SessionManager', () => {
       const result = await manager.setMcpServerPermissions(
         sessionId,
         workerId,
-        'repo-1',
         [{ name: 'chrome-devtools', hash: 'hash-1', decision: 'allow' }],
         'user-1',
       );
@@ -2246,7 +2251,6 @@ describe('SessionManager', () => {
       const result = await manager.setMcpServerPermissions(
         sessionId,
         workerId,
-        'repo-1',
         [{ name: 'chrome-devtools', hash: 'hash-1', decision: 'allow' }],
         'user-1',
       );
@@ -2270,15 +2274,15 @@ describe('SessionManager', () => {
     });
 
     it('live-apply: sends a set-mcp-servers command carrying the FULL currently-allowed set to a LIVE worker', async () => {
-      const { manager, spawn, listByRepository, sessionId, workerId } = await setupSdkWorker();
+      const { manager, spawn, listByScope, sessionId, workerId } = await setupSdkWorker();
       await manager.activateEmbeddedAgentWorker(sessionId, workerId);
-      // The composition reads the repository's CURRENT allow rows (not just
+      // The composition reads the scope's CURRENT allow rows (not just
       // the pair just recorded) -- seed a pre-existing allow row for a
       // DIFFERENT server so the live command's content proves that.
-      listByRepository.mockImplementation(async () => [
+      listByScope.mockImplementation(async () => [
         {
           id: 'perm-existing',
-          repositoryId: 'repo-1',
+          scope: QUICK_SCOPE,
           serverName: 'chrome-devtools',
           configHash: 'hash-1',
           decision: 'allow' as const,
@@ -2288,7 +2292,7 @@ describe('SessionManager', () => {
         },
         {
           id: 'perm-new',
-          repositoryId: 'repo-1',
+          scope: QUICK_SCOPE,
           serverName: 'other-server',
           configHash: 'hash-2',
           decision: 'allow' as const,
@@ -2302,7 +2306,6 @@ describe('SessionManager', () => {
       await manager.setMcpServerPermissions(
         sessionId,
         workerId,
-        'repo-1',
         [{ name: 'other-server', hash: 'hash-2', decision: 'allow' }],
         'user-1',
       );
@@ -2333,7 +2336,6 @@ describe('SessionManager', () => {
       await manager.setMcpServerPermissions(
         sessionId,
         workerId,
-        'repo-1',
         [{ name: 'chrome-devtools', hash: 'hash-1', decision: 'allow' }],
         'user-1',
       );

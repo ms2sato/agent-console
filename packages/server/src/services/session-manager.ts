@@ -38,7 +38,7 @@ import type { AgentManager } from './agent-manager.js';
 import type { EmbeddedAgentManager } from './embedded-agent-manager.js';
 import { McpTokenRegistry } from '../mcp/mcp-auth.js';
 import type { McpServerPermissionRepository } from '../repositories/mcp-server-permission-repository.js';
-import { listAllowedProjectMcpServerPairs } from '../lib/mcp-server-permissions.js';
+import { listAllowedProjectMcpServerPairs, resolveMcpPermissionScope } from '../lib/mcp-server-permissions.js';
 import { serverConfig } from '../lib/server-config.js';
 import type { NotificationManager } from './notifications/notification-manager.js';
 import { filterRepositoryEnvVars } from './env-filter.js';
@@ -174,17 +174,18 @@ interface SessionManagerOptions {
   mcpTokenRegistry: McpTokenRegistry;
   /**
    * MCP server permission repository (epic #1636 Phase 5 PR-2,
-   * docs/design/embedded-agent-sdk-engine.md §4.5's "the approval record").
-   * Threaded straight through to `EmbeddedAgentWorkerService` (its
-   * `listByRepository` read composes a `claude-sdk` activation's
-   * `allowedProjectMcpServers`) and read/written directly by
-   * `setMcpServerPermissions` below. Optional: callers that never activate
-   * a `claude-sdk` embedded-agent worker or record a permission decision may
-   * omit it and get a null-object default (`listByRepository` returns `[]`,
-   * `upsert`/`get` throw) -- production (createAppContext) always passes
-   * the real repository.
+   * docs/design/embedded-agent-sdk-engine.md §4.5's "the approval record";
+   * scope-agnostic across repository- and path-keyed sessions). Threaded
+   * straight through to `EmbeddedAgentWorkerService` (its `listByScope`
+   * read composes a `claude-sdk` activation's `allowedProjectMcpServers`)
+   * and read/written directly by `setMcpServerPermissions` below.
+   * Optional: callers that never activate a `claude-sdk` embedded-agent
+   * worker or record a permission decision may omit it and get a
+   * null-object default (`listByScope` returns `[]`, `upsert`/`get`
+   * throw) -- production (createAppContext) always passes the real
+   * repository.
    */
-  mcpServerPermissionRepository?: Pick<McpServerPermissionRepository, 'listByRepository' | 'upsert'>;
+  mcpServerPermissionRepository?: Pick<McpServerPermissionRepository, 'listByScope' | 'upsert'>;
   /**
    * MCP Streamable-HTTP base URL delivered to the embedded-agent loop in its
    * init message. Defaults to the local server's `/mcp` endpoint.
@@ -312,7 +313,7 @@ export class SessionManager {
    */
   private embeddedAgentDefinitions: Pick<EmbeddedAgentManager, 'getEmbeddedAgent'>;
   private mcpTokenRegistry: McpTokenRegistry;
-  private mcpServerPermissionRepository: Pick<McpServerPermissionRepository, 'listByRepository' | 'upsert'>;
+  private mcpServerPermissionRepository: Pick<McpServerPermissionRepository, 'listByScope' | 'upsert'>;
   /**
    * Global activity / worker-exit callbacks. Stored here (not only forwarded to
    * WorkerManager) so the EmbeddedAgentWorkerService — which is not routed
@@ -391,7 +392,7 @@ export class SessionManager {
     // that DOES reach for them without a real repository configured is a
     // wiring bug, not a legitimate "nothing to do" state.
     this.mcpServerPermissionRepository = options.mcpServerPermissionRepository ?? {
-      listByRepository: async () => [],
+      listByScope: async () => [],
       upsert: async () => {
         throw new Error('SessionManager: mcpServerPermissionRepository not configured');
       },
@@ -1036,10 +1037,13 @@ export class SessionManager {
   /**
    * epic #1636 Phase 5 PR-2 (docs/design/embedded-agent-sdk-engine.md §4.5's
    * "the approval record"): record one or more MCP-server permission
-   * decisions for a `claude-sdk` embedded-agent worker's repository,
-   * durably (`mcp_server_permissions`) and reflected immediately on the
-   * in-memory worker's `mcpServers` reading -- so a DORMANT worker's
-   * response shows the decision without waiting for a subprocess event.
+   * decisions for a `claude-sdk` embedded-agent worker's scope (a worktree
+   * session's repository, or a quick session's realpath'd `locationPath`),
+   * durably (`mcp_server_permissions` /
+   * `mcp_server_path_permissions`, selected via `resolveMcpPermissionScope`)
+   * and reflected immediately on the in-memory worker's `mcpServers`
+   * reading -- so a DORMANT worker's response shows the decision without
+   * waiting for a subprocess event.
    *
    * Live-apply: implemented via `EmbeddedAgentWorkerService.applyMcpServerPermissions`
    * -- the SAME `setEmbeddedAgentParameters` -> `applyModelParams` precedent
@@ -1081,7 +1085,6 @@ export class SessionManager {
   async setMcpServerPermissions(
     sessionId: string,
     workerId: string,
-    repositoryId: string,
     decisions: Array<{ name: string; hash: string; decision: 'allow' | 'deny' }>,
     decidedBy: string,
   ): Promise<Worker | null> {
@@ -1090,9 +1093,11 @@ export class SessionManager {
     const worker = session.workers.get(workerId);
     if (!worker || worker.type !== 'embedded-agent') return null;
 
+    const scope = await resolveMcpPermissionScope(session);
+
     for (const d of decisions) {
       await this.mcpServerPermissionRepository.upsert({
-        repositoryId,
+        scope,
         serverName: d.name,
         configHash: d.hash,
         decision: d.decision,
@@ -1114,7 +1119,7 @@ export class SessionManager {
 
     const allowedProjectMcpServers = await listAllowedProjectMcpServerPairs(
       this.mcpServerPermissionRepository,
-      repositoryId,
+      scope,
     );
     this.embeddedAgentWorkerService.applyMcpServerPermissions(workerId, allowedProjectMcpServers);
 

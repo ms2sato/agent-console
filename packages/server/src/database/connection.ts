@@ -431,6 +431,10 @@ async function runMigrations(database: Kysely<Database>, dbPath: string): Promis
   if (currentVersion < 44) {
     await migrateToV44(database);
   }
+
+  if (currentVersion < 45) {
+    await migrateToV45(database);
+  }
 }
 
 /**
@@ -2867,6 +2871,80 @@ export async function migrateToV44(database: Kysely<Database>): Promise<void> {
   await sql`PRAGMA user_version = 44`.execute(database);
 
   logger.info('Migration to v44 completed');
+}
+
+/**
+ * Migration v45: create the `mcp_server_path_permissions` table (epic #1636
+ * Phase 5 PR-2 follow-up -- a quick session has no `repositoryId`, so the
+ * v44 `mcp_server_permissions` table cannot key its permission decisions.
+ * This is a SIBLING table, keyed by `location_path`
+ * (the session's own realpath'd `locationPath`) instead of `repository_id`.
+ * `McpPermissionScope` (`lib/mcp-server-permissions.ts`) is the single
+ * writer that decides which of the two tables a given session resolves to;
+ * this migration does not touch `mcp_server_permissions` at all -- no
+ * rebuild, no data migrated between the two.
+ *
+ * ```sql
+ * CREATE TABLE mcp_server_path_permissions (
+ *   id            TEXT PRIMARY KEY,
+ *   location_path TEXT NOT NULL,
+ *   server_name   TEXT NOT NULL,
+ *   config_hash   TEXT NOT NULL,
+ *   decision      TEXT NOT NULL CHECK (decision IN ('allow','deny')),
+ *   decided_by    TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+ *   created_at    TEXT NOT NULL DEFAULT (...) CHECK (...ISO8601...),
+ *   decided_at    TEXT NOT NULL DEFAULT (...) CHECK (...ISO8601...),
+ *   CONSTRAINT mcp_server_path_permissions_key UNIQUE (location_path, server_name, config_hash)
+ * );
+ * CREATE INDEX idx_mcp_server_path_permissions_location_path ON mcp_server_path_permissions(location_path);
+ * ```
+ *
+ * `location_path` has no FK -- unlike `repository_id`, there is no
+ * `repositories` row (or any other table) it could reference; a quick
+ * session's `locationPath` is an arbitrary filesystem path, not a foreign
+ * key. There is therefore no CASCADE analogous to `mcp_server_permissions`'
+ * repository-delete CASCADE -- a row here is only ever removed by its
+ * `decided_by` user being deleted, same as v44.
+ *
+ * @internal Exported for testing.
+ */
+export async function migrateToV45(database: Kysely<Database>): Promise<void> {
+  logger.info('Running migration to v45: Creating mcp_server_path_permissions table');
+
+  let table = database.schema
+    .createTable('mcp_server_path_permissions')
+    .ifNotExists()
+    .addColumn('id', 'text', (col) => col.primaryKey())
+    .addColumn('location_path', 'text', (col) => col.notNull())
+    .addColumn('server_name', 'text', (col) => col.notNull())
+    .addColumn('config_hash', 'text', (col) => col.notNull())
+    .addColumn('decision', 'text', (col) => col.notNull())
+    .addCheckConstraint('mcp_server_path_permissions_decision_check', sql`decision IN ('allow', 'deny')`)
+    .addColumn('decided_by', 'text', (col) =>
+      col.notNull().references('users.id').onDelete('cascade')
+    );
+
+  table = addDatetime(table, 'mcp_server_path_permissions', 'created_at', (col) => col.notNull(), {
+    defaultNow: true,
+  });
+  table = addDatetime(table, 'mcp_server_path_permissions', 'decided_at', (col) => col.notNull(), {
+    defaultNow: true,
+  });
+
+  await table
+    .addUniqueConstraint('mcp_server_path_permissions_key', ['location_path', 'server_name', 'config_hash'])
+    .execute();
+
+  await database.schema
+    .createIndex('idx_mcp_server_path_permissions_location_path')
+    .ifNotExists()
+    .on('mcp_server_path_permissions')
+    .column('location_path')
+    .execute();
+
+  await sql`PRAGMA user_version = 45`.execute(database);
+
+  logger.info('Migration to v45 completed');
 }
 
 /**

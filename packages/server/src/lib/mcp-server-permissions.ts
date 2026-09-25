@@ -1,25 +1,82 @@
 /**
  * epic #1636 Phase 5 PR-2 (docs/design/embedded-agent-sdk-engine.md §4.5's
- * "the approval record"), Architect ruling (B), 2026-09-21.
+ * "the approval record"), Architect ruling (B), 2026-09-21. Extended to
+ * cover quick sessions (no `repositoryId`) via a second, `location_path`-
+ * keyed table -- see `McpPermissionScope` and `resolveMcpPermissionScope`
+ * below.
  *
  * Single writer of "the FULL currently-allowed (name, hash) pair set for a
- * repository" -- the exact composition BOTH
+ * scope" -- the exact composition BOTH
  * `EmbeddedAgentWorkerService.activate`'s `init.allowedProjectMcpServers`
  * and `SessionManager.setMcpServerPermissions`'s live-apply `set-mcp-servers`
  * command use. Extracted once a second call site needed the identical
  * `.filter(decision === 'allow').map(...)` composition (`workflow.md`'s
  * "Duplication check" / `design-principles.md`'s sibling-grep discipline):
  * without one writer, the two call sites could silently drift on what
- * "currently allowed" means for a repository.
+ * "currently allowed" means for a scope.
  */
+import { realpath } from 'fs/promises';
+import * as path from 'path';
 import type { McpServerPermissionRepository } from '../repositories/mcp-server-permission-repository.js';
+import type { InternalQuickSession, InternalWorktreeSession } from '../services/internal-types.js';
 import type { EmbeddedAgentWorker, SetMcpServerPermissionsRequest } from '@agent-console/shared';
 
+/**
+ * Discriminated union covering both MCP-permission key shapes: a worktree
+ * session's `repositoryId` (`mcp_server_permissions`, migration v44), or a
+ * quick session's realpath'd `locationPath` (`mcp_server_path_permissions`,
+ * migration v45). Every consumer of a permission decision is
+ * scope-agnostic -- it reads/writes through this type and
+ * `McpServerPermissionRepository`'s scope-taking methods, never branching
+ * on `session.type` itself past `resolveMcpPermissionScope` below.
+ */
+export type McpPermissionScope =
+  | { kind: 'repository'; repositoryId: string }
+  | { kind: 'path'; locationPath: string };
+
+/**
+ * Resolve a session to its `McpPermissionScope`. A worktree session's scope
+ * is its `repositoryId` directly; a quick session's scope is the realpath
+ * of its `locationPath` -- the same realpath/path.resolve fallback shape as
+ * `resolveMemoryDirPath` in `lib/memory-dir.ts` (test fixtures using
+ * nonexistent paths fall back to `path.resolve` so this stays usable
+ * outside a real filesystem). The fallback fires on three triggers: a
+ * nonexistent path (test fixtures), a directory deleted between creation
+ * and activation, and EACCES when the server process cannot traverse the
+ * path (the multi-user `0700`-home case -- a quick session's directory
+ * under that default is unreadable by the server process, so `realpath`
+ * fails there even though the path exists and the session works).
+ * Consequence: the key is then the path as given; a symlink alias of a
+ * quick session's directory becomes a separate key. Decision, activation,
+ * and the discovered-event rebuild agree because all three resolve here, in
+ * the server process.
+ *
+ * The parameter type is a union of minimal `Pick`s (not
+ * `Pick<InternalSession, ...>`) because `repositoryId` is not a member of
+ * `keyof InternalSession` -- it only exists on `InternalWorktreeSession`,
+ * so `Pick<InternalSession, 'repositoryId'>` does not type-check for a
+ * union type.
+ */
+export async function resolveMcpPermissionScope(
+  session: Pick<InternalWorktreeSession, 'type' | 'repositoryId'> | Pick<InternalQuickSession, 'type' | 'locationPath'>,
+): Promise<McpPermissionScope> {
+  if (session.type === 'worktree') {
+    return { kind: 'repository', repositoryId: session.repositoryId };
+  }
+  let realCwd: string;
+  try {
+    realCwd = await realpath(session.locationPath);
+  } catch {
+    realCwd = path.resolve(session.locationPath);
+  }
+  return { kind: 'path', locationPath: realCwd };
+}
+
 export async function listAllowedProjectMcpServerPairs(
-  repository: Pick<McpServerPermissionRepository, 'listByRepository'>,
-  repositoryId: string,
+  repository: Pick<McpServerPermissionRepository, 'listByScope'>,
+  scope: McpPermissionScope,
 ): Promise<Array<{ name: string; hash: string }>> {
-  return (await repository.listByRepository(repositoryId))
+  return (await repository.listByScope(scope))
     .filter((row) => row.decision === 'allow')
     .map((row) => ({ name: row.serverName, hash: row.configHash }));
 }

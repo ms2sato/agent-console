@@ -52,7 +52,7 @@ import type { InternalEmbeddedAgentWorker } from './worker-types.js';
 import type { SessionDataPathResolver } from '../lib/session-data-path-resolver.js';
 import type { McpTokenRegistry } from '../mcp/mcp-auth.js';
 import type { McpServerPermissionRepository } from '../repositories/mcp-server-permission-repository.js';
-import { listAllowedProjectMcpServerPairs } from '../lib/mcp-server-permissions.js';
+import { listAllowedProjectMcpServerPairs, resolveMcpPermissionScope } from '../lib/mcp-server-permissions.js';
 import type { WorkerOutputFileManager } from '../lib/worker-output-file.js';
 import { spawnAsUser, shellEscape, type SpawnAsUserFn } from './privilege-elevation.js';
 import { getCleanChildProcessEnv } from './env-filter.js';
@@ -371,10 +371,12 @@ export interface EmbeddedAgentWorkerServiceDeps {
   /**
    * epic #1636 Phase 5 PR-2 (docs/design/embedded-agent-sdk-engine.md §4.5's
    * "the approval record"): read at activation to compose a `claude-sdk`
-   * worktree session's `allowedProjectMcpServers`. `openai-api` and quick
-   * sessions never read this (no repository, no MCP-discovery concept).
+   * session's `allowedProjectMcpServers`. `openai-api` never reads this (no
+   * MCP-discovery concept). Scope-agnostic -- both worktree
+   * (repository-keyed) and quick (path-keyed) sessions read through
+   * `resolveMcpPermissionScope`.
    */
-  mcpServerPermissionRepository: Pick<McpServerPermissionRepository, 'listByRepository'>;
+  mcpServerPermissionRepository: Pick<McpServerPermissionRepository, 'listByScope'>;
   workerOutputFileManager: Pick<
     WorkerOutputFileManager,
     'resetWorkerOutput'
@@ -1258,18 +1260,15 @@ export class EmbeddedAgentWorkerService {
       const resolvedModelParams = resolveEffectiveModelParams(definition, worker);
 
       // epic #1636 Phase 5 PR-2 (docs/design/embedded-agent-sdk-engine.md
-      // §4.5's "the approval record"): the repository's current `allow`
+      // §4.5's "the approval record"): the scope's current `allow`
       // decisions, read fresh at every activation -- `claude-sdk`
-      // worktree-session activations only. A quick session has no
-      // `repositoryId` and no `.mcp.json`-approval concept, so its
-      // `allowedProjectMcpServers` is unconditionally empty, same as the
-      // `openai-api` arm (which never carries this field at all).
-      const repositoryIdForMcp = session.type === 'worktree' ? session.repositoryId : undefined;
+      // activations only (worktree AND quick sessions;
+      // `openai-api` never carries this field at all).
       const allowedProjectMcpServers =
-        definition.engine === 'claude-sdk' && repositoryIdForMcp !== undefined
+        definition.engine === 'claude-sdk'
           ? await listAllowedProjectMcpServerPairs(
               this.deps.mcpServerPermissionRepository,
-              repositoryIdForMcp,
+              await resolveMcpPermissionScope(session),
             )
           : [];
 
@@ -2484,7 +2483,7 @@ export class EmbeddedAgentWorkerService {
     // The merge below: form (a) (`runtime.projectDiscovery`, populated once
     // below and never again this incarnation) is the FALLBACK decision for
     // a project-scope row, but this repository's DURABLE record (both
-    // `allow` and `deny` rows, re-read from `listByRepository` on every
+    // `allow` and `deny` rows, re-read from `listByScope` on every
     // arrival) is authoritative whenever a row exists for the SAME
     // `(name, hash)` key. This is load-bearing, not merely a deny-only
     // override: `SessionManager.setMcpServerPermissions` patches
@@ -2508,9 +2507,8 @@ export class EmbeddedAgentWorkerService {
     // last-write-wins contract for exactly those rows.
     if (event.type === 'mcp-servers-discovered') {
       const session = this.deps.getSession(ctx.sessionId);
-      const repositoryId = session?.type === 'worktree' ? session.repositoryId : undefined;
-      let permissionRows: Awaited<ReturnType<McpServerPermissionRepository['listByRepository']>>;
-      if (repositoryId !== undefined) {
+      let permissionRows: Awaited<ReturnType<McpServerPermissionRepository['listByScope']>>;
+      if (session !== undefined) {
         // CodeRabbit MAJOR / Architect ruling: a transient DB read failure
         // here must not kill the incarnation. Catch locally, WARN, and skip
         // the REBUILD for THIS event only -- `ctx.worker.mcpServers` stays
@@ -2523,7 +2521,8 @@ export class EmbeddedAgentWorkerService {
         // a reason to tear down a live turn (which killing would do, by
         // converting a read hiccup into a lost turn and a restart).
         try {
-          permissionRows = await this.deps.mcpServerPermissionRepository.listByRepository(repositoryId);
+          const scope = await resolveMcpPermissionScope(session);
+          permissionRows = await this.deps.mcpServerPermissionRepository.listByScope(scope);
         } catch (err) {
           logger.warn(
             { sessionId: ctx.sessionId, workerId: ctx.workerId, err },

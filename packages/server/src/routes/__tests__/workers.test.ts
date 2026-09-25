@@ -125,7 +125,7 @@ describe('Workers API', () => {
   let fakeEmbeddedSpawn: ReturnType<typeof makeFakeEmbeddedSpawn>;
   // epic #1636 Phase 5 PR-2: MCP server permission repository fakes.
   let mcpUpsert: ReturnType<typeof mock>;
-  let mcpListByRepository: ReturnType<typeof mock>;
+  let mcpListByScope: ReturnType<typeof mock>;
 
   beforeEach(async () => {
     await closeDatabase();
@@ -152,8 +152,8 @@ describe('Workers API', () => {
     const sessionRepository = new JsonSessionRepository(`${TEST_CONFIG_DIR}/sessions.json`);
 
     fakeEmbeddedSpawn = makeFakeEmbeddedSpawn();
-    mcpListByRepository = mock(async () => []);
-    mcpUpsert = mock(async (params: { repositoryId: string; serverName: string; configHash: string; decision: 'allow' | 'deny'; decidedBy: string }) => ({
+    mcpListByScope = mock(async () => []);
+    mcpUpsert = mock(async (params: { scope: unknown; serverName: string; configHash: string; decision: 'allow' | 'deny'; decidedBy: string }) => ({
       id: `perm-${params.serverName}`,
       ...params,
       createdAt: '2024-01-01T00:00:00.000Z',
@@ -167,7 +167,7 @@ describe('Workers API', () => {
       jobQueue: testJobQueue,
       agentManager: agentMgr,
       mcpTokenRegistry: new McpTokenRegistry(),
-      mcpServerPermissionRepository: { listByRepository: mcpListByRepository as never, upsert: mcpUpsert as never },
+      mcpServerPermissionRepository: { listByScope: mcpListByScope as never, upsert: mcpUpsert as never },
       spawnAsUserFn: fakeEmbeddedSpawn.fn,
       // Resolve 'agent-def-1' (openai-api) and 'sdk-def-1' (claude-sdk, epic
       // #1636 Phase 5 PR-2's MCP-permissions route tests); any other
@@ -1840,9 +1840,13 @@ describe('Workers API', () => {
       expect(res.status).toBe(404);
     });
 
-    it('returns 409 naming the follow-up issue for a quick session', async () => {
-      const session = await sessionManager.createSession({ type: 'quick', locationPath: '/test/path', agentId: 'claude-code' });
+    it('records the decision for a quick session under the path key (Issue #1786)', async () => {
+      const session = await sessionManager.createSession(
+        { type: 'quick', locationPath: '/test/path', agentId: 'claude-code' },
+        { createdBy: 'test-user-id' },
+      );
       const worker = await sessionManager.createWorker(session.id, { type: 'embedded-agent', embeddedAgentId: 'sdk-def-1' });
+      await seedDiscovered(session.id, worker!.id);
 
       const res = await app.request(`/api/sessions/${session.id}/workers/${worker!.id}/mcp-permissions`, {
         method: 'POST',
@@ -1850,9 +1854,13 @@ describe('Workers API', () => {
         body: JSON.stringify({ name: 'chrome-devtools', hash: 'hash-1', decision: 'allow' }),
       });
 
-      expect(res.status).toBe(409);
-      const body = (await res.json()) as { error: string };
-      expect(body.error).toContain('#1786');
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { worker: { mcpServers?: Array<{ name: string; decision?: string }> } };
+      expect(body.worker.mcpServers?.find((s) => s.name === 'chrome-devtools')?.decision).toBe('allowed');
+
+      expect(mcpUpsert).toHaveBeenCalledTimes(1);
+      const call = mcpUpsert.mock.calls[0]?.[0] as { scope: { kind: string; locationPath: string } };
+      expect(call.scope).toEqual({ kind: 'path', locationPath: '/test/path' });
     });
 
     it('returns 404 for a (name, hash) pair that was never discovered', async () => {

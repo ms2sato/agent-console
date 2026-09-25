@@ -382,7 +382,7 @@ describe('set_mcp_server_permission', () => {
     expect(findRow(data.mcpServers ?? [], 'chrome-devtools')?.decision).toBe('allowed');
 
     // Persisted, not just reflected in the response.
-    const rows = await mcpServerPermissionRepository.listByRepository(TEST_REPO_ID);
+    const rows = await mcpServerPermissionRepository.listByScope({ kind: 'repository', repositoryId: TEST_REPO_ID });
     const row = rows.find((r) => r.serverName === 'chrome-devtools');
     expect(row?.decision).toBe('allow');
     expect(row?.decidedBy).toBe(tui.userId);
@@ -414,7 +414,7 @@ describe('set_mcp_server_permission', () => {
     expect(findRow(data.mcpServers ?? [], 'pending-2')?.decision).toBe('allowed');
     expect(findRow(data.mcpServers ?? [], 'already-allowed')?.decision).toBe('allowed');
 
-    const rows = await mcpServerPermissionRepository.listByRepository(TEST_REPO_ID);
+    const rows = await mcpServerPermissionRepository.listByScope({ kind: 'repository', repositoryId: TEST_REPO_ID });
     expect(rows).toHaveLength(2);
   });
 
@@ -449,7 +449,7 @@ describe('set_mcp_server_permission', () => {
     const data = parseToolResult(allowRes) as { mcpServers?: Array<{ name: string; decision?: string }> };
     expect(findRow(data.mcpServers ?? [], 'chrome-devtools')?.decision).toBe('allowed');
 
-    const rows = await mcpServerPermissionRepository.listByRepository(TEST_REPO_ID);
+    const rows = await mcpServerPermissionRepository.listByScope({ kind: 'repository', repositoryId: TEST_REPO_ID });
     expect(rows).toHaveLength(1);
     expect(rows[0].decision).toBe('allow');
   });
@@ -478,7 +478,7 @@ describe('set_mcp_server_permission', () => {
     expect(response.result?.isError).toBe(true);
     const data = parseToolResult(response) as { error: string };
     expect(data.error).toContain('embedded agent cannot grant');
-    const rows = await mcpServerPermissionRepository.listByRepository(TEST_REPO_ID);
+    const rows = await mcpServerPermissionRepository.listByScope({ kind: 'repository', repositoryId: TEST_REPO_ID });
     expect(rows).toHaveLength(0);
   });
 
@@ -501,7 +501,7 @@ describe('set_mcp_server_permission', () => {
     expect(response.result?.isError).toBe(true);
     const data = parseToolResult(response) as { error: string };
     expect(data.error).toContain('embedded agent cannot grant');
-    const rows = await mcpServerPermissionRepository.listByRepository(TEST_REPO_ID);
+    const rows = await mcpServerPermissionRepository.listByScope({ kind: 'repository', repositoryId: TEST_REPO_ID });
     expect(rows).toHaveLength(0);
   });
 
@@ -524,7 +524,7 @@ describe('set_mcp_server_permission', () => {
     expect(response.result?.isError).toBe(true);
     const data = parseToolResult(response) as { error: string };
     expect(data.error).toContain('verified caller identity');
-    const rows = await mcpServerPermissionRepository.listByRepository(TEST_REPO_ID);
+    const rows = await mcpServerPermissionRepository.listByScope({ kind: 'repository', repositoryId: TEST_REPO_ID });
     expect(rows).toHaveLength(0);
   });
 
@@ -544,7 +544,7 @@ describe('set_mcp_server_permission', () => {
     );
 
     expect(response.result?.isError).toBe(true);
-    const rows = await mcpServerPermissionRepository.listByRepository(TEST_REPO_ID);
+    const rows = await mcpServerPermissionRepository.listByScope({ kind: 'repository', repositoryId: TEST_REPO_ID });
     expect(rows).toHaveLength(0);
   });
 
@@ -605,7 +605,7 @@ describe('set_mcp_server_permission', () => {
     expect(response.result?.isError).toBe(true);
     const data = parseToolResult(response) as { error: string };
     expect(data.error).toContain('identity mismatch');
-    const rows = await mcpServerPermissionRepository.listByRepository(TEST_REPO_ID);
+    const rows = await mcpServerPermissionRepository.listByScope({ kind: 'repository', repositoryId: TEST_REPO_ID });
     expect(rows).toHaveLength(0);
   });
 
@@ -653,7 +653,7 @@ describe('set_mcp_server_permission', () => {
     expect(data.error).toContain('invalid');
   });
 
-  it('(h) a quick-session target names the #1786 follow-up', async () => {
+  it('(h) a quick-session target is recorded under the path key', async () => {
     const owner = await userRepository.upsertByOsUid(9113, 'owner-h3', '/home/owner-h3');
     const tui = await createTuiCaller(9113, 'owner-h3');
     const embeddedAgentId = await createEmbeddedAgentDef();
@@ -665,19 +665,34 @@ describe('set_mcp_server_permission', () => {
       type: 'embedded-agent',
       embeddedAgentId,
     });
+    await seedDiscovered(quickSession.id, worker!.id, [
+      { name: 'chrome-devtools', scope: 'project', hash: 'hash-1', decision: 'pending' },
+    ]);
 
     const response = await callTool(
       app,
       mcpSessionId,
       'set_mcp_server_permission',
-      { sessionId: quickSession.id, workerId: worker!.id, all: true },
+      { sessionId: quickSession.id, workerId: worker!.id, name: 'chrome-devtools', hash: 'hash-1', decision: 'allow' },
       nextId++,
       authHeader(tui.token),
     );
 
-    expect(response.result?.isError).toBe(true);
-    const data = parseToolResult(response) as { error: string };
-    expect(data.error).toContain('#1786');
+    expect(response.result?.isError).toBeUndefined();
+    const data = parseToolResult(response) as {
+      sessionId: string;
+      workerId: string;
+      mcpServers?: Array<{ name: string; decision?: string }>;
+    };
+    expect(data.sessionId).toBe(quickSession.id);
+    expect(findRow(data.mcpServers ?? [], 'chrome-devtools')?.decision).toBe('allowed');
+
+    // Persisted under the path-keyed scope, not the repository-keyed one.
+    const rows = await mcpServerPermissionRepository.listByScope({ kind: 'path', locationPath: TEST_REPO_PATH });
+    const row = rows.find((r) => r.serverName === 'chrome-devtools');
+    expect(row?.scope.kind).toBe('path');
+    expect(row?.decision).toBe('allow');
+    expect(row?.decidedBy).toBe(tui.userId);
   });
 
   it('(h) a target worker that is not embedded-agent is refused', async () => {
@@ -724,7 +739,7 @@ describe('set_mcp_server_permission', () => {
     expect(response.result?.isError).toBe(true);
     const data = parseToolResult(response) as { error: string };
     expect(data.error.length).toBeGreaterThan(0);
-    const rows = await mcpServerPermissionRepository.listByRepository(TEST_REPO_ID);
+    const rows = await mcpServerPermissionRepository.listByScope({ kind: 'repository', repositoryId: TEST_REPO_ID });
     expect(rows).toHaveLength(0);
   });
 

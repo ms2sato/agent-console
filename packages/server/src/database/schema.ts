@@ -23,6 +23,7 @@ export interface Database {
   bookmarks: BookmarksTable;
   repository_orchestrator_sessions: RepositoryOrchestratorSessionsTable;
   mcp_server_permissions: McpServerPermissionsTable;
+  mcp_server_path_permissions: McpServerPathPermissionsTable;
 }
 
 /**
@@ -658,3 +659,43 @@ export interface McpServerPermissionsTable {
 export type McpServerPermissionRow = Selectable<McpServerPermissionsTable>;
 /** MCP server permission data for INSERT queries */
 export type NewMcpServerPermission = Insertable<McpServerPermissionsTable>;
+
+/**
+ * MCP server permission table keyed by `location_path` (migration v45 --
+ * the sibling of `McpServerPermissionsTable` for sessions with no
+ * `repositoryId`, i.e. quick sessions). `location_path` is the
+ * session's own realpath'd `locationPath`, the same TUI-style
+ * `projects[<path>]` key rendered for a session without a repository.
+ * Same shape as `McpServerPermissionsTable` otherwise -- see that
+ * interface's doc comment for the field-by-field rationale (verb
+ * vocabulary, `decided_by` CASCADE, `decided_at` always explicit). There is
+ * no FK on `location_path` -- unlike `repository_id`, no table row backs an
+ * arbitrary filesystem path.
+ */
+export interface McpServerPathPermissionsTable {
+  /** Primary key - UUID */
+  id: string;
+  /** The session's own realpath'd `locationPath`. No FK -- see this interface's doc comment. */
+  location_path: string;
+  /** The `.mcp.json` entry's server name (the key the engine discovers by). */
+  server_name: string;
+  /**
+   * Content hash of the normalized `.mcp.json` entry BEFORE any `${VAR}`
+   * expansion -- the entry the decision actually binds to. Computed by the
+   * engine's discovery loader; the server never recomputes it.
+   */
+  config_hash: string;
+  /** `'allow'` or `'deny'` (CHECK constraint). Same verb vocabulary as `McpServerPermissionsTable.decision`. */
+  decision: 'allow' | 'deny';
+  /** Foreign key reference to users.id -- the actor of the CURRENT decision, either polarity. ON DELETE CASCADE. */
+  decided_by: string;
+  /** First-decision timestamp (has DB DEFAULT); never updated on a later upsert to the same key. */
+  created_at: Generated<string>;
+  /** Timestamp of the CURRENT decision; moves forward on every upsert to the same key. Always supplied explicitly by the service. */
+  decided_at: Generated<string>;
+}
+
+/** MCP server path-permission row as returned from SELECT queries */
+export type McpServerPathPermissionRow = Selectable<McpServerPathPermissionsTable>;
+/** MCP server path-permission data for INSERT queries */
+export type NewMcpServerPathPermission = Insertable<McpServerPathPermissionsTable>;

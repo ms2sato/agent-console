@@ -11,6 +11,7 @@ import { SessionDataPathResolver } from '../../lib/session-data-path-resolver.js
 import { resolveUploadDir } from '../../lib/message-upload-dir.js';
 import { computeQuickCwdSlug } from '../../lib/session-data-path.js';
 import type { EnsureMemoryDirFn } from '../../lib/memory-dir.js';
+import type { McpPermissionScope } from '../../lib/mcp-server-permissions.js';
 import { buildPtyNotificationText, buildReplyInstructions, type PtyNotificationParams } from '../../lib/pty-notification.js';
 import type { InternalSession } from '../internal-types.js';
 import {
@@ -325,7 +326,7 @@ interface Harness {
   onSessionUpdated: ReturnType<typeof mock>;
   globalActivity: ReturnType<typeof mock>;
   globalExit: ReturnType<typeof mock>;
-  listByRepository: ReturnType<typeof mock>;
+  listByScope: ReturnType<typeof mock>;
   recorder: Recorder;
 }
 
@@ -386,13 +387,17 @@ function setup(opts?: {
   parentSessionId?: string;
   parentWorkerId?: string;
   /**
-   * epic #1636 Phase 5 PR-2: rows `mcpServerPermissionRepository.listByRepository`
-   * returns for THIS worker's session repositoryId (only meaningful for a
-   * worktree session -- `buildInternalWorktreeSession`'s default
-   * `repositoryId: 'repo-1'`). Defaults to `[]` (no decisions recorded).
+   * epic #1636 Phase 5 PR-2 (Issue #1786): rows
+   * `mcpServerPermissionRepository.listByScope` returns REGARDLESS of the
+   * scope it is called with -- the fake ignores its argument entirely, so
+   * a test opts into these rows landing on whichever scope the session
+   * under test resolves to (`repo-1` for the default worktree session via
+   * `buildInternalWorktreeSession`, or the quick session's realpath'd
+   * `locationPath` when `quickSession: true`). Defaults to `[]` (no
+   * decisions recorded).
    */
   mcpServerPermissionRows?: Array<{
-    repositoryId: string;
+    scope: McpPermissionScope;
     serverName: string;
     configHash: string;
     decision: 'allow' | 'deny';
@@ -485,7 +490,7 @@ function setup(opts?: {
   const onSessionUpdated = mock((_session: InternalSession) => {});
   const globalActivity = mock(() => {});
   const globalExit = mock(() => {});
-  const listByRepository = mock(async () => opts?.mcpServerPermissionRows ?? []);
+  const listByScope = mock(async () => opts?.mcpServerPermissionRows ?? []);
 
   const recorder: Recorder = {
     onData: mock(() => {}),
@@ -508,7 +513,7 @@ function setup(opts?: {
     getEmbeddedAgent: () => definition,
     resolveSpawnUsername: async () => USERNAME,
     mcpTokenRegistry: { mint: mint as never, revokeByWorker: revokeByWorker as never },
-    mcpServerPermissionRepository: { listByRepository: listByRepository as never },
+    mcpServerPermissionRepository: { listByScope: listByScope as never },
     workerOutputFileManager: {
       resetWorkerOutput: resetWorkerOutput as never,
       bufferOutput: bufferOutput as never,
@@ -551,7 +556,7 @@ function setup(opts?: {
     onSessionUpdated,
     globalActivity,
     globalExit,
-    listByRepository,
+    listByScope,
     recorder,
   };
 }
@@ -4849,7 +4854,7 @@ describe('EmbeddedAgentWorkerService — allowedProjectMcpServers composition', 
       definition: SDK_DEFINITION,
       mcpServerPermissionRows: [
         {
-          repositoryId: 'repo-1',
+          scope: { kind: 'repository', repositoryId: 'repo-1' },
           serverName: 'chrome-devtools',
           configHash: 'hash-1',
           decision: 'allow',
@@ -4858,7 +4863,7 @@ describe('EmbeddedAgentWorkerService — allowedProjectMcpServers composition', 
           decidedAt: '2026-01-01T00:00:00.000Z',
         },
         {
-          repositoryId: 'repo-1',
+          scope: { kind: 'repository', repositoryId: 'repo-1' },
           serverName: 'other-server',
           configHash: 'hash-2',
           decision: 'deny',
@@ -4872,7 +4877,7 @@ describe('EmbeddedAgentWorkerService — allowedProjectMcpServers composition', 
 
     const first = JSON.parse(h.fake.stdinWrites[0]);
     expect(first.allowedProjectMcpServers).toEqual([{ name: 'chrome-devtools', hash: 'hash-1' }]);
-    expect(h.listByRepository).toHaveBeenCalledWith('repo-1');
+    expect(h.listByScope).toHaveBeenCalledWith({ kind: 'repository', repositoryId: 'repo-1' });
   });
 
   it('sends an empty allowedProjectMcpServers when the repository has no allow rows', async () => {
@@ -4883,13 +4888,13 @@ describe('EmbeddedAgentWorkerService — allowedProjectMcpServers composition', 
     expect(first.allowedProjectMcpServers).toEqual([]);
   });
 
-  it('sends an empty allowedProjectMcpServers for a quick session (no repositoryId), even with allow rows on record for another repository', async () => {
+  it('composes allowedProjectMcpServers for a quick session from its realpath-resolved path scope (Issue #1786)', async () => {
     const h = setup({
       definition: SDK_DEFINITION,
       quickSession: true,
       mcpServerPermissionRows: [
         {
-          repositoryId: 'repo-1',
+          scope: { kind: 'path', locationPath: '/test/quick' },
           serverName: 'chrome-devtools',
           configHash: 'hash-1',
           decision: 'allow',
@@ -4902,8 +4907,12 @@ describe('EmbeddedAgentWorkerService — allowedProjectMcpServers composition', 
     await h.service.activate(h.sessionId, h.workerId);
 
     const first = JSON.parse(h.fake.stdinWrites[0]);
-    expect(first.allowedProjectMcpServers).toEqual([]);
-    expect(h.listByRepository).not.toHaveBeenCalled();
+    expect(first.allowedProjectMcpServers).toEqual([{ name: 'chrome-devtools', hash: 'hash-1' }]);
+    // `/test/quick` (buildInternalQuickSession's default locationPath) does
+    // not exist on real disk in this test process, so `resolveMcpPermissionScope`
+    // falls back to `path.resolve` -- the fallback path.resolve of an
+    // already-absolute path is a no-op, giving back the same string.
+    expect(h.listByScope).toHaveBeenCalledWith({ kind: 'path', locationPath: '/test/quick' });
   });
 
   it('never sends allowedProjectMcpServers on an openai-api init command', async () => {
@@ -4912,7 +4921,7 @@ describe('EmbeddedAgentWorkerService — allowedProjectMcpServers composition', 
 
     const first = JSON.parse(h.fake.stdinWrites[0]);
     expect('allowedProjectMcpServers' in first).toBe(false);
-    expect(h.listByRepository).not.toHaveBeenCalled();
+    expect(h.listByScope).not.toHaveBeenCalled();
   });
 });
 
@@ -4922,7 +4931,7 @@ describe('EmbeddedAgentWorkerService — mcp-servers-discovered event handling',
       definition: SDK_DEFINITION,
       mcpServerPermissionRows: [
         {
-          repositoryId: 'repo-1',
+          scope: { kind: 'repository', repositoryId: 'repo-1' },
           serverName: 'other-server',
           configHash: 'hash-2',
           decision: 'deny',
@@ -5046,7 +5055,7 @@ describe('EmbeddedAgentWorkerService — mcp-servers-discovered event handling',
       definition: SDK_DEFINITION,
       mcpServerPermissionRows: [
         {
-          repositoryId: 'repo-1',
+          scope: { kind: 'repository', repositoryId: 'repo-1' },
           serverName: 'A',
           configHash: 'hash-a',
           decision: 'allow',
@@ -5093,7 +5102,7 @@ describe('EmbeddedAgentWorkerService — mcp-servers-discovered event handling',
     // that a permission decision can be recorded after form (a)'s snapshot
     // was taken but before a later `mcp-servers-discovered` arrival.
     const permissionRows: Array<{
-      repositoryId: string;
+      scope: McpPermissionScope;
       serverName: string;
       configHash: string;
       decision: 'allow' | 'deny';
@@ -5119,7 +5128,7 @@ describe('EmbeddedAgentWorkerService — mcp-servers-discovered event handling',
     // `SessionManager.setMcpServerPermissions` does on a real allow) --
     // `runtime.projectDiscovery` is NOT told about this.
     permissionRows.push({
-      repositoryId: 'repo-1',
+      scope: { kind: 'repository', repositoryId: 'repo-1' },
       serverName: 'A',
       configHash: 'hash-a',
       decision: 'allow',
@@ -5175,16 +5184,16 @@ describe('EmbeddedAgentWorkerService — mcp-servers-discovered event handling',
     const beforeFailure = h.worker.mcpServers;
     expect(beforeFailure).toEqual([{ name: 'A', scope: 'project', hash: 'hash-a', decision: 'pending' }]);
 
-    // The NEXT listByRepository call rejects once; every call after that
+    // The NEXT listByScope call rejects once; every call after that
     // reverts to the mock's default (non-throwing) implementation.
-    h.listByRepository.mockImplementationOnce(async () => {
+    h.listByScope.mockImplementationOnce(async () => {
       throw new Error('transient db read boom');
     });
 
     const warnSpy = spyOn(rootLogger, 'warn');
     try {
       // Second discovered event (form c-shaped: status only): triggers the
-      // (e2) handler's own listByRepository call, which rejects.
+      // (e2) handler's own listByScope call, which rejects.
       h.fake.pushStdout(
         `${JSON.stringify({
           v: 1,
@@ -5212,7 +5221,7 @@ describe('EmbeddedAgentWorkerService — mcp-servers-discovered event handling',
       //
       // Polarity confirmed: temporarily reverting the local try/catch back
       // to a bare `await this.deps.mcpServerPermissionRepository
-      // .listByRepository(repositoryId)` made the EARLIER waitFor (line
+      // .listByScope(scope)` made the EARLIER waitFor (line
       // ~5127, waiting for the WARN itself) time out -- the reader loop
       // died on the second event's uncaught rejection before ever logging
       // the WARN, which is a stronger failure than merely "the third event
@@ -5893,7 +5902,7 @@ describe('onSessionUpdated broadcast (worker-service session-updated broadcast g
     h.persistSession.mockClear();
     h.onSessionUpdated.mockClear();
 
-    h.listByRepository.mockImplementationOnce(async () => {
+    h.listByScope.mockImplementationOnce(async () => {
       throw new Error('transient db read boom');
     });
 

@@ -1,18 +1,23 @@
 import type { Kysely } from 'kysely';
-import type { Database, McpServerPermissionRow as McpServerPermissionDbRow } from '../database/schema.js';
+import type {
+  Database,
+  McpServerPermissionRow as McpServerPermissionDbRow,
+  McpServerPathPermissionRow as McpServerPathPermissionDbRow,
+} from '../database/schema.js';
 import type {
   McpServerPermissionRepository,
   McpServerPermissionRow,
   UpsertMcpServerPermissionParams,
 } from './mcp-server-permission-repository.js';
+import type { McpPermissionScope } from '../lib/mcp-server-permissions.js';
 import { createLogger } from '../lib/logger.js';
 
 const logger = createLogger('sqlite-mcp-server-permission-repository');
 
-function toDomainRow(row: McpServerPermissionDbRow): McpServerPermissionRow {
+function fromRepositoryRow(row: McpServerPermissionDbRow): McpServerPermissionRow {
   return {
     id: row.id,
-    repositoryId: row.repository_id,
+    scope: { kind: 'repository', repositoryId: row.repository_id },
     serverName: row.server_name,
     configHash: row.config_hash,
     decision: row.decision,
@@ -22,16 +27,45 @@ function toDomainRow(row: McpServerPermissionDbRow): McpServerPermissionRow {
   };
 }
 
+function fromPathRow(row: McpServerPathPermissionDbRow): McpServerPermissionRow {
+  return {
+    id: row.id,
+    scope: { kind: 'path', locationPath: row.location_path },
+    serverName: row.server_name,
+    configHash: row.config_hash,
+    decision: row.decision,
+    decidedBy: row.decided_by,
+    createdAt: row.created_at,
+    decidedAt: row.decided_at,
+  };
+}
+
+/**
+ * Backed by TWO physical tables -- `mcp_server_permissions` (keyed by
+ * `repository_id`, migration v44) and `mcp_server_path_permissions` (keyed
+ * by `location_path`, migration v45) -- selected by
+ * `scope.kind` on every method. This is the single place that branches on
+ * scope kind; every caller of `McpServerPermissionRepository` stays
+ * scope-agnostic.
+ */
 export class SqliteMcpServerPermissionRepository implements McpServerPermissionRepository {
   constructor(private db: Kysely<Database>) {}
 
-  async listByRepository(repositoryId: string): Promise<McpServerPermissionRow[]> {
+  async listByScope(scope: McpPermissionScope): Promise<McpServerPermissionRow[]> {
+    if (scope.kind === 'repository') {
+      const rows = await this.db
+        .selectFrom('mcp_server_permissions')
+        .where('repository_id', '=', scope.repositoryId)
+        .selectAll()
+        .execute();
+      return rows.map(fromRepositoryRow);
+    }
     const rows = await this.db
-      .selectFrom('mcp_server_permissions')
-      .where('repository_id', '=', repositoryId)
+      .selectFrom('mcp_server_path_permissions')
+      .where('location_path', '=', scope.locationPath)
       .selectAll()
       .execute();
-    return rows.map(toDomainRow);
+    return rows.map(fromPathRow);
   }
 
   async upsert(params: UpsertMcpServerPermissionParams): Promise<McpServerPermissionRow> {
@@ -44,11 +78,43 @@ export class SqliteMcpServerPermissionRepository implements McpServerPermissionR
     // decision forever.
     const decidedAt = new Date().toISOString();
 
+    if (params.scope.kind === 'repository') {
+      const row = await this.db
+        .insertInto('mcp_server_permissions')
+        .values({
+          id,
+          repository_id: params.scope.repositoryId,
+          server_name: params.serverName,
+          config_hash: params.configHash,
+          decision: params.decision,
+          decided_by: params.decidedBy,
+          decided_at: decidedAt,
+        })
+        .onConflict((oc) =>
+          oc.columns(['repository_id', 'server_name', 'config_hash']).doUpdateSet({
+            // Note: id and created_at are intentionally NOT updated (they must
+            // never change after the initial insert).
+            decision: params.decision,
+            decided_by: params.decidedBy,
+            decided_at: decidedAt,
+          })
+        )
+        .returningAll()
+        .executeTakeFirstOrThrow();
+
+      logger.debug(
+        { repositoryId: params.scope.repositoryId, serverName: params.serverName, decision: params.decision },
+        'MCP server permission upserted'
+      );
+
+      return fromRepositoryRow(row);
+    }
+
     const row = await this.db
-      .insertInto('mcp_server_permissions')
+      .insertInto('mcp_server_path_permissions')
       .values({
         id,
-        repository_id: params.repositoryId,
+        location_path: params.scope.locationPath,
         server_name: params.serverName,
         config_hash: params.configHash,
         decision: params.decision,
@@ -56,7 +122,7 @@ export class SqliteMcpServerPermissionRepository implements McpServerPermissionR
         decided_at: decidedAt,
       })
       .onConflict((oc) =>
-        oc.columns(['repository_id', 'server_name', 'config_hash']).doUpdateSet({
+        oc.columns(['location_path', 'server_name', 'config_hash']).doUpdateSet({
           // Note: id and created_at are intentionally NOT updated (they must
           // never change after the initial insert).
           decision: params.decision,
@@ -68,21 +134,31 @@ export class SqliteMcpServerPermissionRepository implements McpServerPermissionR
       .executeTakeFirstOrThrow();
 
     logger.debug(
-      { repositoryId: params.repositoryId, serverName: params.serverName, decision: params.decision },
-      'MCP server permission upserted',
+      { locationPath: params.scope.locationPath, serverName: params.serverName, decision: params.decision },
+      'MCP server path permission upserted'
     );
 
-    return toDomainRow(row);
+    return fromPathRow(row);
   }
 
-  async get(repositoryId: string, serverName: string, configHash: string): Promise<McpServerPermissionRow | null> {
+  async get(scope: McpPermissionScope, serverName: string, configHash: string): Promise<McpServerPermissionRow | null> {
+    if (scope.kind === 'repository') {
+      const row = await this.db
+        .selectFrom('mcp_server_permissions')
+        .where('repository_id', '=', scope.repositoryId)
+        .where('server_name', '=', serverName)
+        .where('config_hash', '=', configHash)
+        .selectAll()
+        .executeTakeFirst();
+      return row ? fromRepositoryRow(row) : null;
+    }
     const row = await this.db
-      .selectFrom('mcp_server_permissions')
-      .where('repository_id', '=', repositoryId)
+      .selectFrom('mcp_server_path_permissions')
+      .where('location_path', '=', scope.locationPath)
       .where('server_name', '=', serverName)
       .where('config_hash', '=', configHash)
       .selectAll()
       .executeTakeFirst();
-    return row ? toDomainRow(row) : null;
+    return row ? fromPathRow(row) : null;
   }
 }

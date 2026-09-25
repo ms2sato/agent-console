@@ -5537,6 +5537,63 @@ describe('MCP Server Tools', () => {
   });
 
   // ===========================================================================
+  // set_mcp_server_permission: registration (mcp-server.ts wiring, the
+  // quick-session MCP permission scope work)
+  //
+  // Full behavior coverage (persistence under the path-keyed scope, the
+  // embedded-caller refusal, {all:true} semantics, etc.) lives in the
+  // dedicated __tests__/set-mcp-server-permission.test.ts, mirroring
+  // delete-html-artifact.test.ts's own split above. This is a narrower,
+  // registered-tool-level check: the handler this `createMcpApp` wiring
+  // registers no longer refuses a quick-session target before it ever
+  // reaches worker/decision resolution -- the branch this file's own diff
+  // removed. `all: true` against a never-activated embedded-agent worker
+  // (no discovered servers yet) resolves to zero decisions, so this test
+  // deliberately never reaches `mcpServerPermissionRepository`, which this
+  // file's harness does not wire (unlike the sibling test file's dedicated
+  // `SqliteMcpServerPermissionRepository` setup).
+  // ===========================================================================
+
+  describe('set_mcp_server_permission: registration (mcp-server.ts wiring)', () => {
+    it('no longer refuses a quick-session target with the removed "quick sessions are not yet supported" error', async () => {
+      const owner = await userRepository.upsertByOsUid(9200, 'quick-mcp-permission-owner', '/home/quick-mcp-permission-owner');
+      const quickSession = await sessionManager.createSession(
+        { type: 'quick', locationPath: TEST_REPO_PATH, agentId: 'claude-code' },
+        { createdBy: owner.id },
+      );
+      const callerWorkerId = firstAgentWorkerId(quickSession);
+
+      const embeddedWorker = await sessionManager.createWorker(quickSession.id, {
+        type: 'embedded-agent',
+        embeddedAgentId: TEST_EMBEDDED_AGENT_DEF.id,
+      });
+      expect(embeddedWorker).toBeDefined();
+
+      const registry = new McpTokenRegistry();
+      const token = registry.mint({
+        sessionId: quickSession.id,
+        workerId: callerWorkerId,
+        userId: owner.id,
+      });
+      await remountMcpApp({ mcpAuthMode: 'enforce', mcpTokenRegistry: registry });
+
+      const response = await callTool(
+        app,
+        mcpSessionId,
+        'set_mcp_server_permission',
+        { sessionId: quickSession.id, workerId: embeddedWorker!.id, all: true },
+        nextId++,
+        { Authorization: `Bearer ${token}` },
+      );
+
+      expect(response.result?.isError).toBeUndefined();
+      const data = parseToolResult(response) as { sessionId: string; workerId: string };
+      expect(data.sessionId).toBe(quickSession.id);
+      expect(data.workerId).toBe(embeddedWorker!.id);
+    });
+  });
+
+  // ===========================================================================
   // MCP caller identity wiring (docs/design/embedded-agent-worker.md phase 1)
   // ===========================================================================
 
