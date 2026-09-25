@@ -931,13 +931,33 @@ async function runElevatedArm(targetUsername: string): Promise<number> {
     process.env.AGENT_CONSOLE_HOME = homeDir;
 
     let mcpBaseUrl = '';
+    // CodeRabbit MINOR (Issue 1813, follow-up to outside-diff finding 2):
+    // this arm's final return does NOT consult `failures` (it is a
+    // measurement, not a pass/fail gate -- see the `MEASURED` return below),
+    // so a plain `expect()` here could never actually stop the run on a
+    // mismatch, defeating the Architect's original safety intent. Two
+    // explicit guards instead, each returning `PROBE_EXIT.HARNESS` directly:
+    // the first protects `createTestContext`'s own initial
+    // `mkdir(getConfigDir())` from ever running against the operator's real
+    // data root; the second re-confirms right after context creation, as a
+    // pin against a future reordering of these lines.
+    const configDirBeforeContext = getConfigDir();
+    if (configDirBeforeContext !== homeDir) {
+      console.error(
+        `ELEVATED branch: NOT REACHED (context data root is not the disposable home: ` +
+          `getConfigDir()=${configDirBeforeContext} homeDir=${homeDir})`,
+      );
+      return PROBE_EXIT.HARNESS;
+    }
     ctx = await createTestContext({ getMcpBaseUrl: () => mcpBaseUrl });
-    // CodeRabbit MAJOR (Issue 1813, outside-diff finding 2): hard assertion,
-    // not a recorded reading -- proves `createTestContext` actually resolved
-    // the disposable `homeDir` above, not the operator's real data root, at
-    // the one point where a future reordering of these lines would silently
-    // reintroduce the bug.
-    expect(getConfigDir() === homeDir, 'context data root is the disposable home', `getConfigDir()=${getConfigDir()} homeDir=${homeDir}`);
+    const contextConfigDir = getConfigDir();
+    if (contextConfigDir !== homeDir) {
+      console.error(
+        `ELEVATED branch: NOT REACHED (context data root is not the disposable home: ` +
+          `getConfigDir()=${contextConfigDir} homeDir=${homeDir})`,
+      );
+      return PROBE_EXIT.HARNESS;
+    }
 
     const osUid = process.getuid?.() ?? 0;
     const invokingUsername = os.userInfo().username;
