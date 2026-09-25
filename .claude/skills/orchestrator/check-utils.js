@@ -764,16 +764,33 @@ export function listExistingIntegrationTests() {
   }
 }
 
-export function detectIntegrationTestNeeds(changedFiles, categories) {
+/**
+ * @param {string[]} changedFiles
+ * @param {{ client: string[], server: string[], shared: string[] }} categories
+ * @param {{ baseRef?: string, headRef?: string, cwd?: string }} [diffRef]
+ *   Passed through to `isCommentOnlyFileDiff` for the comment-only-diff
+ *   check, same contract as `findTestFiles`'s own `diffRef` parameter (see
+ *   its doc comment) -- omit to keep `origin/main`/checked-out `HEAD`, or
+ *   pass `resolvePrDiffRef(prNumber)`'s result when checking an arbitrary
+ *   PR from a worktree that may not be checked out to that PR's branch.
+ */
+export function detectIntegrationTestNeeds(changedFiles, categories, diffRef = {}) {
+  const { baseRef, headRef, cwd } = diffRef;
   const triggers = [];
 
   for (const file of changedFiles) {
     if (isTestFile(file)) continue;
     for (const { pattern, reason } of INTEGRATION_TRIGGER_PATTERNS) {
-      if (pattern.test(file)) {
+      if (!pattern.test(file)) continue;
+      // A pure comment-only diff cannot change what crosses the
+      // client/server wire -- exempt it the same way `findTestFiles`
+      // exempts a comment-only diff from unit-test coverage, via the same
+      // `isCommentOnlyFileDiff` wrapper. No second copy of the
+      // comment-only-diff logic.
+      if (!isCommentOnlyFileDiff(file, baseRef, cwd, headRef)) {
         triggers.push({ file, reason });
-        break;
       }
+      break;
     }
   }
 

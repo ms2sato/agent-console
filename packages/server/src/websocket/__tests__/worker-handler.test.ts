@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, mock } from 'bun:test';
 import type { WSContext } from 'hono/ws';
 import { createWorkerMessageHandler, type WorkerHandlerDependencies } from '../worker-handler.js';
+import { asWSContext } from './ws-test-helpers.js';
 
 describe('Worker Handler', () => {
   let mockWs: WSContext;
@@ -9,11 +10,11 @@ describe('Worker Handler', () => {
 
   beforeEach(() => {
     // Create mock WebSocket context
-    mockWs = {
+    mockWs = asWSContext({
       send: mock(),
       close: mock(),
       readyState: 1, // OPEN
-    } as unknown as WSContext;
+    });
 
     // Create mock session manager
     mockSessionManager = {

@@ -1,26 +1,29 @@
-import { describe, it, expect, mock, beforeEach, afterEach } from 'bun:test';
+import { describe, it, expect, mock, beforeEach, afterEach, type Mock } from 'bun:test';
 import {
   InteractiveProcessManager,
   MAX_PROCESSES_PER_SESSION,
+  type ProcessOutputCallback,
+  type ProcessExitCallback,
+  type ProcessResponseCallback,
 } from '../interactive-process-manager.js';
 import type {
   SpawnAsUserFn,
   SpawnAsUserOpts,
-  SpawnAsUserResult,
 } from '../privilege-elevation.js';
+import { toSpawnAsUserResult, type FakeFileSink, type FakeSubprocess } from '../../__tests__/utils/fake-spawn-as-user.js';
 
 describe('InteractiveProcessManager', () => {
   let manager: InteractiveProcessManager;
-  let onOutput: ReturnType<typeof mock>;
+  let onOutput: Mock<ProcessOutputCallback>;
   let onExit: ReturnType<typeof mock>;
-  let onResponse: ReturnType<typeof mock>;
+  let onResponse: Mock<ProcessResponseCallback>;
   let mockInjectPtyMessage: ReturnType<typeof mock>;
   let mockWritePtyData: ReturnType<typeof mock>;
 
   beforeEach(() => {
-    onOutput = mock(() => {});
+    onOutput = mock<ProcessOutputCallback>(() => {});
     onExit = mock(() => {});
-    onResponse = mock(() => {});
+    onResponse = mock<ProcessResponseCallback>(() => {});
     mockInjectPtyMessage = mock(() => true);
     mockWritePtyData = mock(() => true);
     manager = new InteractiveProcessManager(
@@ -238,19 +241,6 @@ describe('InteractiveProcessManager', () => {
     }
 
     /**
-     * Subset of Bun's `FileSink` shape that `interactive-process-manager`
-     * actually consumes (`write` + `flush`; `end` is included so the fake
-     * matches the shape `spawnAsUser` exposes on `subprocess.stdin`).
-     * Declaring it explicitly lets the fake be typed without casting through
-     * `unknown` (which the repo's TypeScript guideline prohibits).
-     */
-    interface FakeFileSink {
-      write: (chunk: string | Uint8Array) => number;
-      end: () => void;
-      flush: () => Promise<number>;
-    }
-
-    /**
      * Issue #1230: fake `spawnAsUserFn` options controlling the returned
      * stdin sink's `end()` behavior, so teardown tests can assert
      * `endStdinSafely` is invoked (via an `endCalls` counter) and that a
@@ -259,20 +249,6 @@ describe('InteractiveProcessManager', () => {
      */
     interface FakeSpawnAsUserOpts {
       endThrows?: boolean;
-    }
-
-    /**
-     * Subset of Bun's `Subprocess<'pipe','pipe','pipe'>` shape that
-     * `interactive-process-manager` actually consumes (`exited`, `stdout`,
-     * `stderr`, `stdin`, `kill`). Mirrors the `FakeProc` pattern used in
-     * `privilege-elevation.test.ts` for the runAsUser fakes.
-     */
-    interface FakeSubprocess {
-      exited: Promise<number>;
-      stdin: FakeFileSink;
-      stdout: ReadableStream<Uint8Array>;
-      stderr: ReadableStream<Uint8Array>;
-      kill: (signal?: number) => void;
     }
 
     /**
@@ -310,6 +286,7 @@ describe('InteractiveProcessManager', () => {
           if (opts?.endThrows) {
             throw new Error('EPIPE: stdin already closed');
           }
+          return 0;
         },
         flush: () => {
           flushCalls.count++;
@@ -337,21 +314,14 @@ describe('InteractiveProcessManager', () => {
 
       const fn: SpawnAsUserFn = (opts) => {
         captured.push({ opts });
-        // Single direct cast at the fake boundary; the fake's typed members
-        // (FakeSubprocess / FakeFileSink) cover the subset production code
-        // consumes. No `unknown` intermediate.
-        const result: Pick<SpawnAsUserResult, 'elevated'> & {
-          subprocess: FakeSubprocess;
-          stdin: FakeFileSink;
-        } = {
+        return toSpawnAsUserResult({
           subprocess,
           stdin,
           elevated:
             opts.username !== null &&
             opts.username !== undefined &&
             opts.username !== '',
-        };
-        return result as SpawnAsUserResult;
+        });
       };
 
       return {
@@ -982,10 +952,7 @@ describe('InteractiveProcessManager', () => {
 
       expect(result).toBe(true);
       expect(onResponse).toHaveBeenCalledTimes(1);
-      const [respInfo, respContent] = onResponse.mock.calls[0] as [
-        { id: string; outputMode: string },
-        string,
-      ];
+      const [respInfo, respContent] = onResponse.mock.calls[0];
       expect(respInfo.id).toBe(process.id);
       expect(respInfo.outputMode).toBe('pty');
       expect(respContent).toBe('hello');
@@ -1012,10 +979,7 @@ describe('InteractiveProcessManager', () => {
 
       expect(result).toBe(true);
       expect(onResponse).toHaveBeenCalledTimes(1);
-      const [respInfo, respContent] = onResponse.mock.calls[0] as [
-        { outputMode: string },
-        string,
-      ];
+      const [respInfo, respContent] = onResponse.mock.calls[0];
       expect(respInfo.outputMode).toBe('message');
       expect(respContent).toBe('hello');
     });
@@ -1208,7 +1172,7 @@ describe('InteractiveProcessManager', () => {
       expect(exitInfo.exitCode).toBe(1);
 
       // stdout output was still captured before the error exit
-      const allOutput = onOutput.mock.calls.map((c: unknown[]) => c[1]).join('');
+      const allOutput = onOutput.mock.calls.map((c) => c[1]).join('');
       expect(allOutput).toContain('hello');
     });
   });
@@ -1261,7 +1225,7 @@ describe('InteractiveProcessManager', () => {
       const orderTrackingOnOutput = mock((..._args: unknown[]) => {
         callOrder.push('onOutput');
       });
-      const orderTrackingOnExit = mock((..._args: unknown[]) => {
+      const orderTrackingOnExit = mock<ProcessExitCallback>((..._args: unknown[]) => {
         callOrder.push('onExit');
       });
       const orderManager = new InteractiveProcessManager(
@@ -1303,7 +1267,7 @@ describe('InteractiveProcessManager', () => {
       expect(outputIndex).toBeLessThan(exitIndex);
 
       // Verify the exit code
-      const [exitInfo] = orderTrackingOnExit.mock.calls[0] as [{ exitCode: number }];
+      const [exitInfo] = orderTrackingOnExit.mock.calls[0];
       expect(exitInfo.exitCode).toBe(1);
 
       orderManager.disposeAll();
@@ -1325,7 +1289,7 @@ describe('InteractiveProcessManager', () => {
       await new Promise((resolve) => setTimeout(resolve, InteractiveProcessManager.DEBOUNCE_OUTPUT_MS + 500));
 
       // All 10 lines should be present in the combined output
-      const allOutput = onOutput.mock.calls.map((c: unknown[]) => c[1]).join('');
+      const allOutput = onOutput.mock.calls.map((c) => c[1]).join('');
       for (let i = 1; i <= 10; i++) {
         expect(allOutput).toContain(`rapid-line-${i}`);
       }
@@ -1390,7 +1354,7 @@ describe('InteractiveProcessManager', () => {
       expect(mockWritePtyData).toHaveBeenCalledWith('session-1', 'worker-1', 'test-input');
 
       // The three console.log outputs should be combined into a single onOutput call
-      const allOutput = onOutput.mock.calls.map((c: unknown[]) => c[1]).join('');
+      const allOutput = onOutput.mock.calls.map((c) => c[1]).join('');
       expect(allOutput).toContain('received: test-input');
       expect(allOutput).toContain('processing...');
       expect(allOutput).toContain('done!');
@@ -1412,7 +1376,7 @@ describe('InteractiveProcessManager', () => {
       await new Promise((resolve) => setTimeout(resolve, InteractiveProcessManager.DEBOUNCE_OUTPUT_MS + 1000));
 
       // All 100 lines should be present
-      const allOutput = onOutput.mock.calls.map((c: unknown[]) => c[1]).join('');
+      const allOutput = onOutput.mock.calls.map((c) => c[1]).join('');
       expect(allOutput).toContain('bulk-1');
       expect(allOutput).toContain('bulk-50');
       expect(allOutput).toContain('bulk-100');

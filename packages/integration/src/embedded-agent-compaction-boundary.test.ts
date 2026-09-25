@@ -50,7 +50,8 @@ import { JsonSessionRepository } from '@agent-console/server/src/repositories/in
 import { AnnotationService } from '@agent-console/server/src/services/annotation-service';
 import { McpTokenRegistry } from '@agent-console/server/src/mcp/mcp-auth';
 import { defaultRepositoryLookup, defaultRepositoryEnvLookup } from '@agent-console/server/src/__tests__/utils/repository-lookup-mock';
-import type { SpawnAsUserFn, SpawnAsUserOpts, SpawnAsUserResult } from '@agent-console/server/src/services/privilege-elevation';
+import type { SpawnAsUserFn, SpawnAsUserOpts } from '@agent-console/server/src/services/privilege-elevation';
+import { toSpawnAsUserResult, type FakeFileSink, type FakeSubprocess } from '@agent-console/server/src/__tests__/utils/fake-spawn-as-user';
 
 import {
   EmbeddedAgentStreamEventSchema,
@@ -61,13 +62,6 @@ import {
 
 const TEST_CONFIG_DIR = '/test/config';
 const ptyFactory = createMockPtyFactory();
-
-/** Minimal subset of Bun's FileSink consumed by EmbeddedAgentWorkerService. */
-interface FakeFileSink {
-  write: (chunk: string | Uint8Array) => number;
-  end: () => void;
-  flush: () => number;
-}
 
 /**
  * Fake `spawnAsUser` whose stdout is a controllable stream: unlike the
@@ -100,17 +94,19 @@ function makeFakeSpawnWithControllableStdout(): {
     // Never resolves — this test never deactivates the worker.
   });
   const stdin: FakeFileSink = {
-    write: (chunk) => {
+    write: (chunk: string | Uint8Array) => {
       stdinWrites.push(typeof chunk === 'string' ? chunk : new TextDecoder().decode(chunk));
       return 0;
     },
-    end: () => {},
+    end: () => {
+      return 0;
+    },
     flush: () => 0,
   };
-  const subprocess = { pid: 8889, exited, stdin, stdout, stderr, kill: () => {} };
+  const subprocess: FakeSubprocess = { pid: 8889, exited, stdin, stdout, stderr, kill: () => {} };
   const fn: SpawnAsUserFn = (opts) => {
     captured.push(opts);
-    return { subprocess, stdin, elevated: false } as unknown as SpawnAsUserResult;
+    return toSpawnAsUserResult({ subprocess, stdin, elevated: false });
   };
   return {
     fn,

@@ -293,7 +293,7 @@ describe('WorkerManager', () => {
       expect(getDefaultBranchCalls.length).toBeGreaterThan(0);
       expect(getDefaultBranchCalls[0][0]).toBe('/elevated/worktree');
       // The second argument is the requestUser.
-      expect((getDefaultBranchCalls[0] as unknown as [string, string | null])[1]).toBe('workspaceuser');
+      expect(getDefaultBranchCalls[0][1]).toBe('workspaceuser');
     });
   });
 
@@ -805,7 +805,13 @@ describe('WorkerManager', () => {
         ptyFactory.setAutoEmitSentinel(false);
         const worker = createTestAgentWorker();
         await workerManager.activateAgentWorkerPty(worker, defaultAgentActivationParams);
-        // Deliberately leave mockPty.dataDiagnostics unset (bunPtyProvider-shaped absence).
+        // Model bunPtyProvider's real IPty, which has no getDataDiagnostics
+        // member at all -- legal because MockPty declares the method
+        // optional (`getDataDiagnostics?()`), so a per-instance `undefined`
+        // assignment reproduces "provider does not implement this at all"
+        // rather than "implements it but returns nothing".
+        const mockPty = ptyFactory.instances[0]!;
+        mockPty.getDataDiagnostics = undefined;
 
         jest.advanceTimersByTime(15000);
 
@@ -1152,7 +1158,7 @@ describe('WorkerManager', () => {
 
         const mockPty = ptyFactory.instances[0];
         // Override kill to NOT fire exit callback (simulates hung process)
-        mockPty.kill = function (this: typeof mockPty, _signal?: number) {
+        mockPty.kill = function (this: typeof mockPty, _signal?: string) {
           this.killed = true;
         };
 
@@ -2422,13 +2428,13 @@ describe('WorkerManager', () => {
     }
 
     function getLastSpawnEnv(): Record<string, string> | undefined {
-      const calls = ptyFactory.spawn.mock.calls as unknown as Array<[string, string[], { env?: Record<string, string> }]>;
+      const calls = ptyFactory.spawn.mock.calls;
       const lastCall = calls[calls.length - 1];
       return lastCall[2]?.env;
     }
 
     function getLastSpawnArgv(): string[] | undefined {
-      const calls = ptyFactory.spawn.mock.calls as unknown as Array<[string, string[], { env?: Record<string, string> }]>;
+      const calls = ptyFactory.spawn.mock.calls;
       const lastCall = calls[calls.length - 1];
       return lastCall[1];
     }

@@ -7,7 +7,7 @@
  * - Invalid payloads (bad scope, path-escape slug) MUST be logged and skipped
  *   without any filesystem operation.
  */
-import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, mock, type Mock } from 'bun:test';
 import * as fsPromises from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
@@ -21,10 +21,18 @@ import type {
 import type { JobQueue, JobHandler } from '../job-queue.js';
 import { registerJobHandlers } from '../handlers.js';
 import { WorkerOutputFileManager } from '../../lib/worker-output-file.js';
-import { SessionDataPathResolver } from '../../lib/session-data-path-resolver.js';
 import type { RunAsUserResult } from '../../services/privilege-elevation.js';
 
 const TEST_CONFIG = '/test/config';
+
+/**
+ * `JobQueue` has private fields, so a stub object literal cannot satisfy it
+ * structurally. `Partial<JobQueue>` retains the same private brand, so this
+ * single-step cast type-checks without bridging through `unknown`.
+ */
+function asJobQueue(stub: Partial<JobQueue>): JobQueue {
+  return stub as JobQueue;
+}
 
 /**
  * Captured arguments for `rmRecursiveAsUser` (PR #888). Mirrors the helper's
@@ -70,33 +78,33 @@ function createRmRecursiveAsUserMock() {
 describe('cleanup job handlers', () => {
   let handlers: Map<string, JobHandler<unknown>>;
   let workerOutputFileManager: WorkerOutputFileManager;
-  let deleteSessionOutputs: ReturnType<typeof mock>;
-  let deleteWorkerOutput: ReturnType<typeof mock>;
+  let deleteSessionOutputs: Mock<WorkerOutputFileManager['deleteSessionOutputs']>;
+  let deleteWorkerOutput: Mock<WorkerOutputFileManager['deleteWorkerOutput']>;
   let rmRecursiveAsUserMock: ReturnType<typeof createRmRecursiveAsUserMock>;
   const originalAuthMode = process.env.AUTH_MODE;
 
   beforeEach(() => {
     handlers = new Map();
-    deleteSessionOutputs = mock(async (_sessionId: string, _resolver: SessionDataPathResolver) => {});
-    deleteWorkerOutput = mock(
-      async (_sessionId: string, _workerId: string, _resolver: SessionDataPathResolver) => {}
+    deleteSessionOutputs = mock<WorkerOutputFileManager['deleteSessionOutputs']>(
+      async (_sessionId, _resolver) => {},
+    );
+    deleteWorkerOutput = mock<WorkerOutputFileManager['deleteWorkerOutput']>(
+      async (_sessionId, _workerId, _resolver) => {},
     );
     // Stub only the two cleanup methods we care about. Using a real instance
     // as the prototype keeps the type contract honest (no unsafe casts) and
     // the spies still capture every call.
     workerOutputFileManager = new WorkerOutputFileManager();
-    workerOutputFileManager.deleteSessionOutputs =
-      deleteSessionOutputs as unknown as WorkerOutputFileManager['deleteSessionOutputs'];
-    workerOutputFileManager.deleteWorkerOutput =
-      deleteWorkerOutput as unknown as WorkerOutputFileManager['deleteWorkerOutput'];
+    workerOutputFileManager.deleteSessionOutputs = deleteSessionOutputs;
+    workerOutputFileManager.deleteWorkerOutput = deleteWorkerOutput;
 
-    const fakeQueue: JobQueue = {
+    // The handler-registration entry point only needs registerHandler; the
+    // rest of the JobQueue surface is intentionally unused here.
+    const fakeQueue = asJobQueue({
       registerHandler: <T>(type: string, handler: JobHandler<T>) => {
         handlers.set(type, handler as JobHandler<unknown>);
       },
-      // The handler-registration entry point only needs registerHandler;
-      // the rest of the JobQueue surface is intentionally unused here.
-    } as unknown as JobQueue;
+    });
 
     process.env.AGENT_CONSOLE_HOME = TEST_CONFIG;
     rmRecursiveAsUserMock = createRmRecursiveAsUserMock();
@@ -123,7 +131,7 @@ describe('cleanup job handlers', () => {
       await runPayload({ sessionId: 'sid-1', scope: 'repository', slug: 'owner/repo' });
       expect(deleteSessionOutputs).toHaveBeenCalledTimes(1);
 
-      const [sessionId, resolver] = deleteSessionOutputs.mock.calls[0] as [string, SessionDataPathResolver];
+      const [sessionId, resolver] = deleteSessionOutputs.mock.calls[0];
       expect(sessionId).toBe('sid-1');
       // The resolver's outputs dir should be rooted at the repository scope path,
       // never the `_quick` fallback.
@@ -134,7 +142,7 @@ describe('cleanup job handlers', () => {
       await runPayload({ sessionId: 'sid-1', scope: 'quick', slug: null });
       expect(deleteSessionOutputs).toHaveBeenCalledTimes(1);
 
-      const [sessionId, resolver] = deleteSessionOutputs.mock.calls[0] as [string, SessionDataPathResolver];
+      const [sessionId, resolver] = deleteSessionOutputs.mock.calls[0];
       expect(sessionId).toBe('sid-1');
       expect(resolver.getOutputsDir()).toBe(path.resolve(TEST_CONFIG, '_quick', 'outputs'));
     });
@@ -165,11 +173,7 @@ describe('cleanup job handlers', () => {
       await runPayload({ sessionId: 'sid', workerId: 'wid', scope: 'repository', slug: 'owner/repo' });
       expect(deleteWorkerOutput).toHaveBeenCalledTimes(1);
 
-      const [sessionId, workerId, resolver] = deleteWorkerOutput.mock.calls[0] as [
-        string,
-        string,
-        SessionDataPathResolver,
-      ];
+      const [sessionId, workerId, resolver] = deleteWorkerOutput.mock.calls[0];
       expect(sessionId).toBe('sid');
       expect(workerId).toBe('wid');
       expect(resolver.getOutputFilePath('sid', 'wid')).toBe(

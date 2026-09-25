@@ -2,10 +2,11 @@ import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { Hono } from 'hono';
 import type { WSContext } from 'hono/ws';
 
-import type { SpawnAsUserFn, SpawnAsUserOpts, SpawnAsUserResult } from '../../services/privilege-elevation.js';
+import type { SpawnAsUserFn, SpawnAsUserOpts } from '../../services/privilege-elevation.js';
 import { createMockPtyFactory } from '../../__tests__/utils/mock-pty.js';
 import { setupMemfs, cleanupMemfs } from '../../__tests__/utils/mock-fs-helper.js';
 import { resetProcessMock } from '../../__tests__/utils/mock-process-helper.js';
+import { toSpawnAsUserResult, type FakeFileSink, type FakeSubprocess } from '../../__tests__/utils/fake-spawn-as-user.js';
 
 import { initializeDatabase, closeDatabase, getDatabase } from '../../database/connection.js';
 import { JobQueue } from '../../jobs/job-queue.js';
@@ -26,9 +27,10 @@ import { RepositorySlackIntegrationService } from '../../services/notifications/
 import { SingleUserMode } from '../../services/user-mode.js';
 import { SqliteUserRepository } from '../../repositories/sqlite-user-repository.js';
 import { setupWebSocketRoutes, EMBEDDED_USER_MESSAGE_MAX_BYTES } from '../routes.js';
-import type { AppContext } from '../../app-context.js';
 import { McpTokenRegistry } from '../../mcp/mcp-auth.js';
 import { PROVIDER_KEY_STORE_UI_MESSAGES } from '../../services/provider-key-store.js';
+import { asWSContext, asUpgradeWebSocket } from './ws-test-helpers.js';
+import { asAppContext } from '../../__tests__/test-utils.js';
 
 const TEST_CONFIG_DIR = '/test/config';
 
@@ -46,7 +48,7 @@ function createMockWs(): WSContext & {
   const sentMessages: string[] = [];
   const closeCalls: { code?: number; reason?: string }[] = [];
 
-  return {
+  const ws = asWSContext({
     send: (data: string | ArrayBuffer) => {
       sentMessages.push(typeof data === 'string' ? data : new TextDecoder().decode(data as ArrayBuffer));
     },
@@ -54,19 +56,8 @@ function createMockWs(): WSContext & {
       closeCalls.push({ code, reason });
     },
     readyState: 1, // OPEN
-    sentMessages,
-    closeCalls,
-  } as unknown as WSContext & {
-    sentMessages: string[];
-    closeCalls: { code?: number; reason?: string }[];
-  };
-}
-
-/** Minimal subset of Bun's FileSink consumed by EmbeddedAgentWorkerService (write/end/flush). */
-interface FakeFileSink {
-  write: (chunk: string | Uint8Array) => number;
-  end: () => void;
-  flush: () => number;
+  });
+  return Object.assign(ws, { sentMessages, closeCalls });
 }
 
 /**
@@ -108,15 +99,17 @@ function makeFakeSpawn(): {
   };
 
   const stdin: FakeFileSink = {
-    write: (chunk) => {
+    write: (chunk: string | Uint8Array) => {
       stdinWrites.push(typeof chunk === 'string' ? chunk : new TextDecoder().decode(chunk));
       return 0;
     },
-    end: () => {},
+    end: () => {
+      return 0;
+    },
     flush: () => 0,
   };
 
-  const subprocess = {
+  const subprocess: FakeSubprocess = {
     pid: 4321,
     exited,
     stdin,
@@ -134,7 +127,7 @@ function makeFakeSpawn(): {
       throw err;
     }
     captured.push(opts);
-    return { subprocess, stdin, elevated: false } as unknown as SpawnAsUserResult;
+    return toSpawnAsUserResult({ subprocess, stdin, elevated: false });
   };
 
   return {
@@ -224,14 +217,14 @@ describe('Worker WebSocket: embedded-agent branch', () => {
     const repositoryManager = await RepositoryManager.create({ repository: repositoryRepository, jobQueue: testJobQueue });
     const userMode = new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' });
 
-    const appContext = { sessionManager, notificationManager, agentManager, embeddedAgentManager, repositoryManager, userMode } as unknown as AppContext;
+    const appContext = asAppContext({ sessionManager, notificationManager, agentManager, embeddedAgentManager, repositoryManager, userMode });
 
     const app = new Hono();
     const upgradeWebSocket = (handlerFactory: WebSocketHandlerFactory) => {
       capturedWorkerHandlerFactory = handlerFactory;
       return handlerFactory;
     };
-    await setupWebSocketRoutes(app, upgradeWebSocket as unknown as Parameters<typeof setupWebSocketRoutes>[1], appContext);
+    await setupWebSocketRoutes(app, asUpgradeWebSocket(upgradeWebSocket), appContext);
   });
 
   afterEach(async () => {

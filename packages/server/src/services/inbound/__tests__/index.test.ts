@@ -36,6 +36,15 @@ import { McpTokenRegistry } from '../../../mcp/mcp-auth.js';
 import { AnnotationService } from '../../annotation-service.js';
 import { initializeInboundIntegration } from '../index.js';
 
+/**
+ * `JobQueue` has private fields, so a stub object literal cannot satisfy it
+ * structurally. `Partial<JobQueue>` retains the same private brand, so this
+ * single-step cast type-checks without bridging through `unknown`.
+ */
+function asJobQueue(stub: Partial<JobQueue>): JobQueue {
+  return stub as JobQueue;
+}
+
 const TEST_CONFIG_DIR = '/test/config-inbound-index';
 const TEST_REPO_PATH = '/test/repo-inbound-index';
 const TEST_REPO_ID = 'repo-inbound-index';
@@ -106,13 +115,13 @@ describe('initializeInboundIntegration', () => {
   });
 
   function createFakeJobQueue(): JobQueue {
-    return {
+    return asJobQueue({
       registerHandler: <T>(type: string, handler: JobHandler<T>) => {
         if (type === JOB_TYPES.INBOUND_EVENT_PROCESS) {
-          capturedHandler = handler as unknown as JobHandler<InboundEventJobPayload>;
+          capturedHandler = handler as JobHandler<InboundEventJobPayload>;
         }
       },
-    } as unknown as JobQueue;
+    });
   }
 
   function buildLabeledIssuePayload(): InboundEventJobPayload {

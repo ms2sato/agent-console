@@ -6,11 +6,12 @@ import {
   shutdownAppContext,
   type AppContext,
 } from '../app-context.js';
-import type { PtyNotificationParams } from '../lib/pty-notification.js';
+import type { InternalProcessPtyNotification, PtyNotificationParams } from '../lib/pty-notification.js';
 import { rootLogger } from '../lib/logger.js';
 import { InterSessionMessageService } from '../services/inter-session-message-service.js';
 import type { EnsureMemoryDirFn } from '../lib/memory-dir.js';
-import type { SpawnAsUserFn, SpawnAsUserOpts, SpawnAsUserResult } from '../services/privilege-elevation.js';
+import type { SpawnAsUserFn, SpawnAsUserOpts } from '../services/privilege-elevation.js';
+import { toSpawnAsUserResult, type FakeFileSink, type FakeSubprocess } from './utils/fake-spawn-as-user.js';
 import { mkdir, realpath, rm } from 'node:fs/promises';
 import * as path from 'node:path';
 import * as os from 'node:os';
@@ -352,14 +353,17 @@ describe('AppContext', () => {
       expect(info?.status).toBe('exited');
 
       expect(deliverSpy).toHaveBeenCalledTimes(1);
-      const [calledSessionId, calledWorkerId, params] = deliverSpy.mock.calls[0] as [
-        string,
-        string,
-        { kind: string; tag: string; fields: { processId: string; command: string; message: string }; intent: string },
-      ];
+      const [calledSessionId, calledWorkerId, rawParams] = deliverSpy.mock.calls[0];
       expect(calledSessionId).toBe(sessionId);
       expect(calledWorkerId).toBe(workerId);
-      expect(params.kind).toBe('internal-process');
+      expect(rawParams.kind).toBe('internal-process');
+      // `PtyNotificationParams` is `Omit<WritePtyNotificationParams, 'writeInput'>`, and
+      // TS's built-in `Omit` does not distribute over the union -- `fields` collapses into
+      // one non-discriminated union the `expect` above cannot narrow at the type level. The
+      // wide collapsed type is still comparable to this specific member's own
+      // (writeInput-omitted) shape, so this is a legitimate single-step narrowing cast --
+      // backed by the runtime assertion just above, not merely asserted blind.
+      const params = rawParams as Omit<InternalProcessPtyNotification, 'writeInput'>;
       expect(params.tag).toBe('internal:process');
       expect(params.fields.processId).toBe(process.id);
       expect(params.fields.command).toBe('true');
@@ -552,13 +556,6 @@ describe('AppContext', () => {
       await rm(memoryHomeDir, { recursive: true, force: true });
     });
 
-    /** Minimal subset of Bun's FileSink consumed by EmbeddedAgentWorkerService. */
-    interface FakeFileSink {
-      write: (chunk: string | Uint8Array) => number;
-      end: () => void;
-      flush: () => number;
-    }
-
     /**
      * Exitable fake streams/exited-promise (mirrors `makeFakeSpawn` in
      * `session-manager.test.ts`'s "threads the spawnAsUserFn option through"
@@ -590,16 +587,17 @@ describe('AppContext', () => {
         stderrCtrl.close();
       };
       const stdin: FakeFileSink = {
-        write: (chunk) => {
+        write: (chunk: string | Uint8Array) => {
           stdinWrites.push(typeof chunk === 'string' ? chunk : new TextDecoder().decode(chunk));
           return 0;
         },
-        end: () => {},
+        end: () => {
+          return 0;
+        },
         flush: () => 0,
       };
-      const subprocess = { pid: 9997, exited, stdin, stdout, stderr, kill: () => {} };
-      const fn: SpawnAsUserFn = (_opts: SpawnAsUserOpts) =>
-        ({ subprocess, stdin, elevated: false }) as unknown as SpawnAsUserResult;
+      const subprocess: FakeSubprocess = { pid: 9997, exited, stdin, stdout, stderr, kill: () => {} };
+      const fn: SpawnAsUserFn = (_opts: SpawnAsUserOpts) => toSpawnAsUserResult({ subprocess, stdin, elevated: false });
       return { fn, stdinWrites, simulateExit };
     }
 

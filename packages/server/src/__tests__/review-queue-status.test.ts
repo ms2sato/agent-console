@@ -1,7 +1,27 @@
 import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
-import type { Session } from '@agent-console/shared';
+import type { Session, Worker } from '@agent-console/shared';
 import { setupTestEnvironment, cleanupTestEnvironment, createTestApp } from './test-utils.js';
 import { AnnotationService } from '../services/annotation-service.js';
+
+/**
+ * `Session` has no private fields, so `Partial<Session>` retains the same
+ * shape and this single-step cast type-checks without bridging through
+ * `unknown`.
+ */
+function asSession(stub: Partial<Session>): Session {
+  return stub as Session;
+}
+
+/**
+ * `Worker` has no private fields, so `Partial<Worker>` retains the same
+ * shape. `Partial<Worker>` distributes over the union, so a literal with a
+ * `type` discriminant is still excess-property-checked against that
+ * member, and this single-step cast type-checks without bridging through
+ * `unknown`.
+ */
+function asWorker(stub: Partial<Worker>): Worker {
+  return stub as Worker;
+}
 
 describe('PATCH /api/review-queue/:workerId/status', () => {
   const SOURCE_SESSION_ID = 'source-session-1';
@@ -13,17 +33,17 @@ describe('PATCH /api/review-queue/:workerId/status', () => {
 
   const mockWriteWorkerInput = mock((_sessionId: string, _workerId: string, _data: string) => true);
 
-  const sourceSession = {
+  const sourceSession = asSession({
     id: SOURCE_SESSION_ID,
     title: 'Orchestrator Session',
-    workers: [{ id: AGENT_WORKER_ID, type: 'agent' }],
-  } as unknown as Session;
+    workers: [asWorker({ id: AGENT_WORKER_ID, type: 'agent' })],
+  });
 
-  const targetSession = {
+  const targetSession = asSession({
     id: TARGET_SESSION_ID,
     title: 'Feature Session',
     workers: [],
-  } as unknown as Session;
+  });
 
   function createMockSessionManager(sessions: Record<string, Session> = {}) {
     return {
@@ -97,10 +117,10 @@ describe('PATCH /api/review-queue/:workerId/status', () => {
   it('does not throw when source session has no agent worker', async () => {
     setupAnnotations();
 
-    const sessionWithoutAgent = {
+    const sessionWithoutAgent = asSession({
       ...sourceSession,
-      workers: [{ id: 'terminal-1', type: 'terminal' }],
-    } as unknown as Session;
+      workers: [asWorker({ id: 'terminal-1', type: 'terminal' })],
+    });
 
     const sessionManager = createMockSessionManager({
       [SOURCE_SESSION_ID]: sessionWithoutAgent,

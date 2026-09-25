@@ -1,4 +1,4 @@
-import { describe, it, expect, mock } from 'bun:test';
+import { describe, it, expect, mock, type Mock } from 'bun:test';
 import type { InteractiveProcessInfo } from '@agent-console/shared';
 import {
   routeProcessContent,
@@ -30,15 +30,15 @@ function makeDeps(
   overrides: Partial<ProcessOutputRouterDeps> = {},
 ): {
   deps: ProcessOutputRouterDeps;
-  deliverNotification: ReturnType<typeof mock>;
-  sendMessage: ReturnType<typeof mock>;
+  deliverNotification: Mock<ProcessOutputRouterDeps['deliverNotification']>;
+  sendMessage: Mock<ProcessOutputRouterDeps['sendMessage']>;
   getResolver: ReturnType<typeof mock>;
 } {
-  const deliverNotification = mock(
-    async (_sessionId: string, _workerId: string, _params: PtyNotificationParams) =>
+  const deliverNotification = mock<ProcessOutputRouterDeps['deliverNotification']>(
+    async (_sessionId, _workerId, _params) =>
       ({ ok: true }) as { ok: true } | { ok: false; error: string },
   );
-  const sendMessage = mock(async (params: { content: string }) => ({
+  const sendMessage = mock<ProcessOutputRouterDeps['sendMessage']>(async (params) => ({
     messageId: `msg-${Math.random().toString(16).slice(2, 10)}.json`,
     path: `/tmp/messages/${params.content.slice(0, 4)}.json`,
   }));
@@ -157,11 +157,7 @@ describe('routeProcessContent (pty mode)', () => {
 
     expect(sendMessage).not.toHaveBeenCalled();
     expect(deliverNotification).toHaveBeenCalledTimes(1);
-    const [sessionId, workerId, params] = deliverNotification.mock.calls[0] as [
-      string,
-      string,
-      PtyNotificationParams,
-    ];
+    const [sessionId, workerId, params] = deliverNotification.mock.calls[0];
     expect(sessionId).toBe('session-1');
     expect(workerId).toBe('worker-1');
     expect(params).toEqual({
@@ -235,12 +231,7 @@ describe('routeProcessContent (message mode)', () => {
     });
 
     expect(sendMessage).toHaveBeenCalledTimes(1);
-    const sendArgs = sendMessage.mock.calls[0]?.[0] as {
-      toSessionId: string;
-      toWorkerId: string;
-      fromSessionId: string;
-      content: string;
-    };
+    const sendArgs = sendMessage.mock.calls[0][0];
     expect(sendArgs.toSessionId).toBe('session-1');
     expect(sendArgs.toWorkerId).toBe('worker-1');
     expect(sendArgs.fromSessionId).toBe('session-1');
@@ -249,11 +240,7 @@ describe('routeProcessContent (message mode)', () => {
     // Brief notification with file path and bytes, delivered via the same
     // structured-params seam as the pty branch.
     expect(deliverNotification).toHaveBeenCalledTimes(1);
-    const [sessionId, workerId, params] = deliverNotification.mock.calls[0] as [
-      string,
-      string,
-      PtyNotificationParams,
-    ];
+    const [sessionId, workerId, params] = deliverNotification.mock.calls[0];
     expect(sessionId).toBe('session-1');
     expect(workerId).toBe('worker-1');
     expect(params.kind).toBe('internal-process');
@@ -276,7 +263,7 @@ describe('routeProcessContent (message mode)', () => {
       direction: 'response',
     });
 
-    const [, , params] = deliverNotification.mock.calls[0] as [string, string, PtyNotificationParams];
+    const [, , params] = deliverNotification.mock.calls[0];
     expect(params.intent).toBe('inform');
     const fields = params.fields as { message: string };
     expect(fields.message).toContain('response via message');
@@ -299,7 +286,7 @@ describe('routeProcessContent (message mode)', () => {
     expect(sendMessage.mock.calls.length).toBeGreaterThanOrEqual(3);
     // Reassembling chunks must equal original content.
     const reassembled = sendMessage.mock.calls
-      .map((c) => (c[0] as { content: string }).content)
+      .map((c) => c[0].content)
       .join('');
     expect(reassembled).toBe(content);
 
@@ -524,7 +511,7 @@ describe('routeProcessExit ordering (Issue #1591)', () => {
     await expect(second).resolves.toBeUndefined();
 
     expect(sendMessage).toHaveBeenCalledTimes(1);
-    expect((sendMessage.mock.calls[0]?.[0] as { content: string }).content).toBe('second (succeeds)');
+    expect(sendMessage.mock.calls[0][0].content).toBe('second (succeeds)');
   });
 
   it('R3: deletes the per-process delivery tail entry once the exit step settles', async () => {

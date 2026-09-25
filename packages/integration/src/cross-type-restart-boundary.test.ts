@@ -39,17 +39,10 @@ import type { PersistedWorker } from '@agent-console/server/src/services/persist
 import type {
   SpawnAsUserFn,
   SpawnAsUserOpts,
-  SpawnAsUserResult,
 } from '@agent-console/server/src/services/privilege-elevation';
+import { toSpawnAsUserResult, type FakeFileSink, type FakeSubprocess } from '@agent-console/server/src/__tests__/utils/fake-spawn-as-user';
 
 import { AppServerMessageSchema, type AppServerMessage } from '@agent-console/shared';
-
-/** Minimal subset of Bun's FileSink consumed by EmbeddedAgentWorkerService (write/end/flush). */
-interface FakeFileSink {
-  write: (chunk: string | Uint8Array) => number;
-  end: () => void;
-  flush: () => number;
-}
 
 /**
  * Fake spawnAsUser for the embedded-agent loop subprocess, so activation
@@ -86,11 +79,13 @@ function makeFakeEmbeddedSpawn(): { fn: SpawnAsUserFn; captured: SpawnAsUserOpts
 
   const stdin: FakeFileSink = {
     write: () => 0,
-    end: () => {},
+    end: () => {
+      return 0;
+    },
     flush: () => 0,
   };
 
-  const subprocess = {
+  const subprocess: FakeSubprocess = {
     pid: 9876,
     exited,
     stdin,
@@ -103,7 +98,7 @@ function makeFakeEmbeddedSpawn(): { fn: SpawnAsUserFn; captured: SpawnAsUserOpts
 
   const fn: SpawnAsUserFn = (opts) => {
     captured.push(opts);
-    return { subprocess, stdin, elevated: false } as unknown as SpawnAsUserResult;
+    return toSpawnAsUserResult({ subprocess, stdin, elevated: false });
   };
 
   return { fn, captured };

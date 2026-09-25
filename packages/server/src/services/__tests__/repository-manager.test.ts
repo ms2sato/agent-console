@@ -41,6 +41,15 @@ function createRunAsUserMock() {
   return { calls, runAsUserImpl, responder };
 }
 
+/**
+ * `JobQueue` has private fields, so a stub object literal cannot satisfy it
+ * structurally. `Partial<JobQueue>` retains the same private brand, so this
+ * single-step cast type-checks without bridging through `unknown`.
+ */
+function asJobQueue(stub: Partial<JobQueue>): JobQueue {
+  return stub as JobQueue;
+}
+
 // Test JobQueue instance (created fresh for each test)
 let testJobQueue: JobQueue | null = null;
 
@@ -125,11 +134,11 @@ describe('RepositoryManager', () => {
     const payload = JSON.parse(jobs[0]!.payload) as CleanupRepositoryPayload;
 
     const handlers = new Map<string, JobHandler<unknown>>();
-    const fakeQueue = {
+    const fakeQueue = asJobQueue({
       registerHandler: <T>(type: string, handler: JobHandler<T>) => {
         handlers.set(type, handler as JobHandler<unknown>);
       },
-    } as unknown as JobQueue;
+    });
     registerJobHandlers(fakeQueue, new WorkerOutputFileManager());
 
     const handler = handlers.get('cleanup:repository')!;

@@ -5,7 +5,7 @@
  * by using a real WorkerManager with mock PTY provider and
  * mocking the session-related dependencies (getSession, persistSession, etc.).
  */
-import { describe, it, expect, beforeEach, afterEach, mock, spyOn } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, mock, spyOn, type Mock } from 'bun:test';
 import type { CreateWorkerParams, EmbeddedAgentDefinition, NotificationContext, Session, Worker } from '@agent-console/shared';
 import { ValidationError } from '../../lib/errors.js';
 import { createMockPtyFactory } from '../../__tests__/utils/mock-pty.js';
@@ -82,6 +82,22 @@ const mockDeactivateEmbeddedAgentWorker = mock(async (_sessionId: string, _worke
 // specific outcome (e.g. an activation failure).
 const mockActivateEmbeddedAgentWorker = mock(async (_sessionId: string, _workerId: string) => {});
 
+// SlackHandler has a private constructor parameter, so a plain object
+// implementing only the methods NotificationManager calls cannot satisfy
+// the class type structurally. Typing the stub as `Partial<SlackHandler>`
+// checks every provided method name/signature against the real class (a
+// stale or misspelled name is a compile error) and performs exactly one
+// assertion inside the helper to bridge the private-member gap.
+function asSlackHandler(stub: Partial<SlackHandler>): SlackHandler {
+  return stub as SlackHandler;
+}
+
+// Same rationale as asSlackHandler above, for NotificationManager's own
+// private fields.
+function asNotificationManager(stub: Partial<NotificationManager>): NotificationManager {
+  return stub as NotificationManager;
+}
+
 // Mock PTY factory
 const ptyFactory = createMockPtyFactory(10000);
 
@@ -93,10 +109,10 @@ describe('WorkerLifecycleManager', () => {
   let lifecycleManager: WorkerLifecycleManager;
   let agentManager: AgentManager;
   let sessions: Map<string, InternalSession>;
-  let mockPersistSession: ReturnType<typeof mock>;
-  let mockPathExists: ReturnType<typeof mock>;
+  let mockPersistSession: Mock<WorkerLifecycleDeps['persistSession']>;
+  let mockPathExists: Mock<WorkerLifecycleDeps['pathExists']>;
   let mockCallbacks: SessionLifecycleCallbacks;
-  let mockOnSessionUpdated: ReturnType<typeof mock>;
+  let mockOnSessionUpdated: Mock<(session: Session) => void>;
   let mockOnWorkerActivated: ReturnType<typeof mock>;
   let mockOnWorkerRestarted: ReturnType<typeof mock>;
   let mockOnDiffBaseCommitChanged: ReturnType<typeof mock>;
@@ -118,9 +134,9 @@ describe('WorkerLifecycleManager', () => {
       deactivateEmbeddedAgentWorker: mockDeactivateEmbeddedAgentWorker,
       activateEmbeddedAgentWorker: mockActivateEmbeddedAgentWorker,
       notificationManager: null,
-      pathExists: mockPathExists as unknown as (path: string) => Promise<boolean>,
+      pathExists: mockPathExists,
       getSession: (id: string) => sessions.get(id),
-      persistSession: mockPersistSession as unknown as (session: InternalSession) => Promise<void>,
+      persistSession: mockPersistSession,
       getRepositoryEnvVars: async () => ({}),
       toPublicSession: (session: InternalSession) => {
         const ptyWorkers = Array.from(session.workers.values()).filter(
@@ -174,9 +190,9 @@ describe('WorkerLifecycleManager', () => {
     agentManager = await AgentManager.create(new SqliteAgentRepository(db));
 
     sessions = new Map();
-    mockPersistSession = mock(() => Promise.resolve());
-    mockPathExists = mock(() => Promise.resolve(true));
-    mockOnSessionUpdated = mock(() => {});
+    mockPersistSession = mock<WorkerLifecycleDeps['persistSession']>(() => Promise.resolve());
+    mockPathExists = mock<WorkerLifecycleDeps['pathExists']>(() => Promise.resolve(true));
+    mockOnSessionUpdated = mock<(session: Session) => void>(() => {});
     mockOnWorkerActivated = mock(() => {});
     mockOnWorkerRestarted = mock(() => {});
     mockOnDiffBaseCommitChanged = mock(() => {});
@@ -480,8 +496,7 @@ describe('WorkerLifecycleManager', () => {
     // propagation -- not just that the worker was created.
     it('should propagate session.sshAuthSockFallback into agent worker activation context', async () => {
       const session = createTestSession();
-      (session as unknown as { sshAuthSockFallback?: string }).sshAuthSockFallback =
-        '/home/alice/.1password/agent.sock';
+      session.sshAuthSockFallback = '/home/alice/.1password/agent.sock';
       sessions.set(session.id, session);
 
       const originalActivate = workerManager.activateAgentWorkerPty.bind(workerManager);
@@ -615,7 +630,7 @@ describe('WorkerLifecycleManager', () => {
       });
 
       expect(mockOnSessionUpdated).toHaveBeenCalledTimes(1);
-      const broadcastedSession = mockOnSessionUpdated.mock.calls[0][0] as Session;
+      const broadcastedSession = mockOnSessionUpdated.mock.calls[0][0];
       expect(broadcastedSession.workers.find((w) => w.id === worker!.id)).toBeDefined();
     });
 
@@ -627,7 +642,7 @@ describe('WorkerLifecycleManager', () => {
       const worker = await lifecycleManager.createWorker(session.id, { type: 'terminal' });
 
       expect(mockOnSessionUpdated).toHaveBeenCalledTimes(1);
-      const broadcastedSession = mockOnSessionUpdated.mock.calls[0][0] as Session;
+      const broadcastedSession = mockOnSessionUpdated.mock.calls[0][0];
       expect(broadcastedSession.workers.find((w) => w.id === worker!.id)).toBeDefined();
     });
 
@@ -642,7 +657,7 @@ describe('WorkerLifecycleManager', () => {
       });
 
       expect(mockOnSessionUpdated).toHaveBeenCalledTimes(1);
-      const broadcastedSession = mockOnSessionUpdated.mock.calls[0][0] as Session;
+      const broadcastedSession = mockOnSessionUpdated.mock.calls[0][0];
       expect(broadcastedSession.workers.find((w) => w.id === worker!.id)).toBeDefined();
     });
 
@@ -1287,7 +1302,7 @@ describe('WorkerLifecycleManager', () => {
 
       expect(mockOnSessionUpdated).toHaveBeenCalledTimes(1);
       // The broadcast session should not contain the deleted worker
-      const broadcastedSession = mockOnSessionUpdated.mock.calls[0][0] as Session;
+      const broadcastedSession = mockOnSessionUpdated.mock.calls[0][0];
       expect(broadcastedSession.workers.find(w => w.id === deletedWorkerId)).toBeUndefined();
     });
   });
@@ -1414,8 +1429,8 @@ describe('WorkerLifecycleManager', () => {
       // Track when old PTY exit fires by wrapping the exitCallback
       const oldMockPty = ptyFactory.instances[0];
       const originalOnExit = oldMockPty.onExit.bind(oldMockPty);
-      oldMockPty.onExit = (callback: (event: { exitCode: number; signal?: number }) => void) => {
-        const wrappedCallback = (event: { exitCode: number; signal?: number }) => {
+      oldMockPty.onExit = (callback: (event: { exitCode: number; signal?: number | string }) => void) => {
+        const wrappedCallback = (event: { exitCode: number; signal?: number | string }) => {
           operationOrder.push('old-exited');
           callback(event);
         };
@@ -1424,9 +1439,9 @@ describe('WorkerLifecycleManager', () => {
 
       // Track when spawn is called for 2nd PTY
       const originalSpawnImpl = ptyFactory.spawn.getMockImplementation()!;
-      ptyFactory.spawn.mockImplementation(() => {
+      ptyFactory.spawn.mockImplementation((command, args, options) => {
         operationOrder.push('new-spawned');
-        return originalSpawnImpl();
+        return originalSpawnImpl(command, args, options);
       });
 
       try {
@@ -2038,7 +2053,7 @@ describe('WorkerLifecycleManager', () => {
       // worker (this test's proxy for "the persisted row", per this file's
       // mocked persistSession).
       expect(mockPersistSession).toHaveBeenCalled();
-      const persistedSession = mockPersistSession.mock.calls.at(-1)?.[0] as InternalSession;
+      const persistedSession = mockPersistSession.mock.calls.at(-1)![0];
       const persistedWorker = persistedSession.workers.get(workerId) as InternalEmbeddedAgentWorker;
       expect(persistedWorker.type).toBe('embedded-agent');
       expect(persistedWorker.embeddedAgentId).toBe(EMBEDDED_AGENT_DEF.id);
@@ -2500,7 +2515,7 @@ describe('WorkerLifecycleManager', () => {
       expect(result!.type).toBe('embedded-agent');
 
       expect(mockPersistSession).toHaveBeenCalled();
-      const persistedSession = mockPersistSession.mock.calls.at(-1)?.[0] as InternalSession;
+      const persistedSession = mockPersistSession.mock.calls.at(-1)![0];
       const persistedWorker = persistedSession.workers.get(worker!.id) as InternalEmbeddedAgentWorker;
       expect(persistedWorker.type).toBe('embedded-agent');
 
@@ -2517,10 +2532,10 @@ describe('WorkerLifecycleManager', () => {
       });
 
       const persistError = new Error('boom: db unavailable');
-      const failingPersist = mock(async () => { throw persistError; });
+      const failingPersist = mock<WorkerLifecycleDeps['persistSession']>(async () => { throw persistError; });
       mockOnSessionUpdated.mockClear();
       const manager = new WorkerLifecycleManager(createDeps({
-        persistSession: failingPersist as unknown as (session: InternalSession) => Promise<void>,
+        persistSession: failingPersist,
       }));
 
       await expect(
@@ -2546,14 +2561,14 @@ describe('WorkerLifecycleManager', () => {
         agentId: CLAUDE_CODE_AGENT_ID,
       });
 
-      const slackHandler = {
+      const slackHandlerSend = mock((_context: NotificationContext, _repositoryId: string) => Promise.resolve());
+      const notificationManager = new NotificationManager(asSlackHandler({
         integrationType: 'slack' as const,
         canHandle: mock((_repositoryId: string) => Promise.resolve(true)),
-        send: mock((_context: NotificationContext, _repositoryId: string) => Promise.resolve()),
+        send: slackHandlerSend,
         sendTest: mock((_message: string, _repositoryId: string) => Promise.resolve()),
         sendToWebhook: mock((_context: NotificationContext, _webhookUrl: string) => Promise.resolve()),
-      };
-      const notificationManager = new NotificationManager(slackHandler as unknown as SlackHandler, {
+      }), {
         debounceSeconds: 0.05, // 50ms -- short enough for a fast test
         triggers: {
           'agent:waiting': true,
@@ -2574,16 +2589,16 @@ describe('WorkerLifecycleManager', () => {
         { id: worker!.id },
         'idle',
       );
-      expect(slackHandler.send).not.toHaveBeenCalled();
+      expect(slackHandlerSend).not.toHaveBeenCalled();
 
       await manager.restartAgentWorkerAsEmbedded(session.id, worker!.id, EMBEDDED_AGENT_DEF.id);
 
       // Wait past what would have been the debounce period. If the pending
       // timer survived the conversion, it fires here and calls
-      // slackHandler.send -- proving the cleanup did NOT happen.
+      // slackHandlerSend -- proving the cleanup did NOT happen.
       await new Promise((resolve) => setTimeout(resolve, 150));
 
-      expect(slackHandler.send).not.toHaveBeenCalled();
+      expect(slackHandlerSend).not.toHaveBeenCalled();
     });
   });
 
@@ -2632,7 +2647,7 @@ describe('WorkerLifecycleManager', () => {
       expect(ptyFactory.instances[0].killed).toBe(false);
 
       expect(mockPersistSession).toHaveBeenCalled();
-      const persistedSession = mockPersistSession.mock.calls.at(-1)?.[0] as InternalSession;
+      const persistedSession = mockPersistSession.mock.calls.at(-1)![0];
       const persistedWorker = persistedSession.workers.get(workerId) as InternalAgentWorker;
       expect(persistedWorker.type).toBe('agent');
       expect(persistedWorker.agentId).toBe(CLAUDE_CODE_AGENT_ID);
@@ -3014,7 +3029,7 @@ describe('WorkerLifecycleManager', () => {
       expect(internal.autoCompaction).toBe(false);
 
       expect(mockPersistSession).toHaveBeenCalled();
-      const persistedSession = mockPersistSession.mock.calls.at(-1)?.[0] as InternalSession;
+      const persistedSession = mockPersistSession.mock.calls.at(-1)![0];
       const persistedWorker = persistedSession.workers.get(workerId) as InternalEmbeddedAgentWorker;
       expect(persistedWorker.embeddedAgentId).toBe(EMBEDDED_AGENT_DEF_SDK.id);
       expect(persistedWorker.autoCompaction).toBe(false);
@@ -3261,7 +3276,7 @@ describe('WorkerLifecycleManager', () => {
         deactivateEmbeddedAgentWorker: deactivateTracking,
         activateEmbeddedAgentWorker: activateTracking,
         workerOutputFileManager: wofm,
-        notificationManager: { cleanupWorker: notificationCleanupSpy } as unknown as NonNullable<WorkerLifecycleDeps['notificationManager']>,
+        notificationManager: asNotificationManager({ cleanupWorker: notificationCleanupSpy }),
       }));
 
       const result = await manager.restartAgentWorkerAsEmbedded(session.id, workerId, EMBEDDED_AGENT_DEF.id);
@@ -3358,7 +3373,7 @@ describe('WorkerLifecycleManager', () => {
 
       expect(mockGit.renameBranch).toHaveBeenCalledWith('original-branch', 'new-branch', session.locationPath, 'testuser');
       expect(mockPersistSession).toHaveBeenCalled();
-      const persistedSession = mockPersistSession.mock.calls[0][0] as InternalSession;
+      const persistedSession = mockPersistSession.mock.calls[0][0];
       expect(persistedSession.type).toBe('worktree');
       if (persistedSession.type === 'worktree') {
         expect(persistedSession.worktreeId).toBe('new-branch');
@@ -3544,9 +3559,9 @@ describe('WorkerLifecycleManager', () => {
     });
 
     it('should return PATH_NOT_FOUND when session path does not exist', async () => {
-      const pathExistsReturningFalse = mock(() => Promise.resolve(false));
+      const pathExistsReturningFalse = mock<WorkerLifecycleDeps['pathExists']>(() => Promise.resolve(false));
       const manager = new WorkerLifecycleManager(createDeps({
-        pathExists: pathExistsReturningFalse as unknown as (path: string) => Promise<boolean>,
+        pathExists: pathExistsReturningFalse,
       }));
 
       const session = createTestSession();
@@ -3683,7 +3698,7 @@ describe('WorkerLifecycleManager', () => {
       await lifecycleManager.restoreWorker(session.id, agentWorker.id);
 
       expect(mockOnSessionUpdated).toHaveBeenCalledTimes(1);
-      const updatedSession = mockOnSessionUpdated.mock.calls[0][0] as Session;
+      const updatedSession = mockOnSessionUpdated.mock.calls[0][0];
       expect(updatedSession.id).toBe(session.id);
       expect(updatedSession.activationState).toBe('running');
     });
@@ -3797,9 +3812,9 @@ describe('WorkerLifecycleManager', () => {
     });
 
     it('should return null when session path does not exist', async () => {
-      const pathExistsReturningFalse = mock(() => Promise.resolve(false));
+      const pathExistsReturningFalse = mock<WorkerLifecycleDeps['pathExists']>(() => Promise.resolve(false));
       const manager = new WorkerLifecycleManager(createDeps({
-        pathExists: pathExistsReturningFalse as unknown as (path: string) => Promise<boolean>,
+        pathExists: pathExistsReturningFalse,
       }));
 
       const session = createTestSession();
@@ -3843,7 +3858,7 @@ describe('WorkerLifecycleManager', () => {
       await lifecycleManager.getAvailableWorker(session.id, terminalWorker.id);
 
       expect(mockOnSessionUpdated).toHaveBeenCalledTimes(1);
-      const updatedSession = mockOnSessionUpdated.mock.calls[0][0] as Session;
+      const updatedSession = mockOnSessionUpdated.mock.calls[0][0];
       expect(updatedSession.id).toBe(session.id);
       expect(updatedSession.activationState).toBe('running');
     });

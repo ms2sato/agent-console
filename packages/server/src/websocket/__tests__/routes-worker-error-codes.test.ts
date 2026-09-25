@@ -25,8 +25,9 @@ import { SingleUserMode } from '../../services/user-mode.js';
 import type { UserMode, LoginResult, PtySpawnRequest } from '../../services/user-mode.js';
 import type { PtyInstance } from '../../lib/pty-provider.js';
 import { setupWebSocketRoutes, notifySessionPaused } from '../routes.js';
-import type { AppContext } from '../../app-context.js';
 import { McpTokenRegistry } from '../../mcp/mcp-auth.js';
+import { asWSContext, asUpgradeWebSocket } from './ws-test-helpers.js';
+import { asAppContext } from '../../__tests__/test-utils.js';
 
 const TEST_CONFIG_DIR = '/test/config';
 
@@ -52,7 +53,7 @@ function createMockWs(): WSContext & {
   const sentMessages: string[] = [];
   const closeCalls: { code?: number; reason?: string }[] = [];
 
-  return {
+  const ws = asWSContext({
     send: (data: string | ArrayBuffer) => {
       sentMessages.push(typeof data === 'string' ? data : new TextDecoder().decode(data as ArrayBuffer));
     },
@@ -60,12 +61,8 @@ function createMockWs(): WSContext & {
       closeCalls.push({ code, reason });
     },
     readyState: 1, // OPEN
-    sentMessages,
-    closeCalls,
-  } as unknown as WSContext & {
-    sentMessages: string[];
-    closeCalls: { code?: number; reason?: string }[];
-  };
+  });
+  return Object.assign(ws, { sentMessages, closeCalls });
 }
 
 describe('Worker WebSocket connection error codes', () => {
@@ -110,7 +107,7 @@ describe('Worker WebSocket connection error codes', () => {
     const repositoryManager = await RepositoryManager.create({ repository: repositoryRepository, jobQueue: testJobQueue });
     const userMode = new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' });
 
-    const appContext = { sessionManager, notificationManager, agentManager, embeddedAgentManager, repositoryManager, userMode } as unknown as AppContext;
+    const appContext = asAppContext({ sessionManager, notificationManager, agentManager, embeddedAgentManager, repositoryManager, userMode });
 
     // Set up routes with a custom upgradeWebSocket that captures the worker handler factory
     const app = new Hono();
@@ -119,7 +116,7 @@ describe('Worker WebSocket connection error codes', () => {
       capturedWorkerHandlerFactory = handlerFactory;
       return handlerFactory;
     };
-    await setupWebSocketRoutes(app, upgradeWebSocket as unknown as Parameters<typeof setupWebSocketRoutes>[1], appContext);
+    await setupWebSocketRoutes(app, asUpgradeWebSocket(upgradeWebSocket), appContext);
   });
 
   afterEach(async () => {
@@ -330,14 +327,14 @@ describe('WebSocket authentication rejection (C4)', () => {
     // Use a UserMode that always rejects authentication
     const userMode = new RejectingUserMode();
 
-    const appContext = { sessionManager, notificationManager, agentManager, embeddedAgentManager, repositoryManager, userMode } as unknown as AppContext;
+    const appContext = asAppContext({ sessionManager, notificationManager, agentManager, embeddedAgentManager, repositoryManager, userMode });
 
     // Set up routes with a mock upgradeWebSocket
     app = new Hono();
     const upgradeWebSocket = (handlerFactory: WebSocketHandlerFactory) => {
       return handlerFactory;
     };
-    await setupWebSocketRoutes(app, upgradeWebSocket as unknown as Parameters<typeof setupWebSocketRoutes>[1], appContext);
+    await setupWebSocketRoutes(app, asUpgradeWebSocket(upgradeWebSocket), appContext);
   });
 
   afterEach(async () => {

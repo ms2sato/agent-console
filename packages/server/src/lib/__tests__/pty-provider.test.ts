@@ -103,6 +103,9 @@ describe('pty-provider', () => {
       // typed fake without `as unknown as typeof Bun.spawn`. The narrow shape
       // matches the only overload the adapter calls; restoring in afterEach
       // returns the full typed Bun.spawn.
+      // Residual: `Bun.spawn`'s real overloaded signature has no structural
+      // overlap with SpawnableBun (TS2352 on a plain `as`), so this view
+      // still needs the bridging cast through `unknown`.
       const spawnable = Bun as unknown as SpawnableBun;
       spawnable.spawn = (cmd, options) => {
         lastSpawn = { cmd, options };
@@ -112,7 +115,7 @@ describe('pty-provider', () => {
 
     afterEach(() => {
       // Restore the original (fully-typed) Bun.spawn via the same narrow view.
-      (Bun as unknown as { spawn: typeof Bun.spawn }).spawn = originalSpawn;
+      (Bun as { spawn: typeof Bun.spawn }).spawn = originalSpawn;
     });
 
     it('spawns with terminal cols/rows/name and forwards cwd/env verbatim', () => {

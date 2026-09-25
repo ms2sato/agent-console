@@ -14,6 +14,7 @@ import {
   DataIntegrityError,
   assertNever,
 } from '../mappers.js';
+import type { LegacySessionRow, LegacyAgentRow } from '../mappers.js';
 import type { Session, Worker, RepositoryRow, AgentRow, EmbeddedAgentRow, BookmarkRow } from '../schema.js';
 import type { EmbeddedAgentDefinition } from '@agent-console/shared';
 import type {
@@ -401,7 +402,7 @@ describe('mappers', () => {
   });
 
   describe('toPersistedSession - scope+slug invariants', () => {
-    function makeSessionRow(overrides: Partial<Session>): Session {
+    function makeSessionRow(overrides: Partial<LegacySessionRow>): LegacySessionRow {
       return {
         id: 'session-1',
         type: 'quick',
@@ -466,8 +467,10 @@ describe('mappers', () => {
 
     it('should throw when data_scope is an unknown value', () => {
       const row = makeSessionRow({
-        // Simulate database corruption: column type is wider than the union
-        data_scope: 'unknown' as unknown as 'quick' | 'repository' | null,
+        // Simulate database corruption: column type is wider than the union.
+        // Literal-to-literal casts are allowed by TS without an `unknown`
+        // bridge (both sides share the `string` base type).
+        data_scope: 'unknown' as 'quick' | 'repository' | null,
         data_scope_slug: null,
       });
       expect(() => toPersistedSession(row, [])).toThrow(DataIntegrityError);
@@ -496,7 +499,8 @@ describe('mappers', () => {
 
     it('should throw when recovery_state is an unknown value', () => {
       const row = makeSessionRow({
-        recovery_state: 'mystery' as unknown as 'healthy' | 'orphaned',
+        // Literal-to-literal cast; see the data_scope test above.
+        recovery_state: 'mystery' as 'healthy' | 'orphaned',
       });
       expect(() => toPersistedSession(row, [])).toThrow(DataIntegrityError);
       expect(() => toPersistedSession(row, [])).toThrow(/recovery_state \(unexpected value: mystery\)/);
@@ -504,7 +508,11 @@ describe('mappers', () => {
 
     it('should treat null recovery_state as healthy (legacy row)', () => {
       const row = makeSessionRow({
-        recovery_state: null as unknown as 'healthy' | 'orphaned',
+        // `recovery_state` (added later, TS-typed as non-null on `Session`)
+        // may still hold SQL NULL on a pre-backfill row; `LegacySessionRow`
+        // widens the field to `... | null` so this is a plain literal, no
+        // cast needed.
+        recovery_state: null,
       });
       const session = toPersistedSession(row, []);
       expect(session.recoveryState).toBe('healthy');
@@ -895,7 +903,7 @@ describe('mappers', () => {
       // always concrete strings. Cast to `Worker` (Selectable) the way a
       // real INSERT-then-SELECT round trip would read the row back, so
       // toPersistedWorker receives what production actually hands it.
-      const selectRow = row as unknown as Worker;
+      const selectRow = row as Worker;
 
       const roundTripped = toPersistedWorker(selectRow) as PersistedEmbeddedAgentWorker;
 
@@ -1186,18 +1194,30 @@ describe('mappers', () => {
   });
 
   describe('toPersistedWorker - type validation', () => {
+    /**
+     * `Worker` has no private fields, so `Partial<Worker>` retains the same
+     * shape and this single-step cast type-checks without bridging through
+     * `unknown`.
+     */
+    function asWorker(stub: Partial<Worker>): Worker {
+      return stub as Worker;
+    }
+
     it('should throw DataIntegrityError for unknown worker type', () => {
-      // Simulate database corruption where type column has an unexpected value
-      const dbWorker = {
+      // Simulate database corruption where type column has an unexpected value.
+      // `type` is deliberately outside `Worker['type']`'s union: a literal-to-
+      // literal cast is allowed by TS without an `unknown` bridge (both sides
+      // share the `string` base type), so only this one field needs it.
+      const dbWorker = asWorker({
         id: 'worker-1',
         session_id: 'session-1',
-        type: 'unknown-type',
+        type: 'unknown-type' as Worker['type'],
         name: 'Unknown',
         created_at: new Date().toISOString(),
         pid: null,
         agent_id: null,
         base_commit: null,
-      } as unknown as Worker;
+      });
 
       expect(() => toPersistedWorker(dbWorker)).toThrow(DataIntegrityError);
       expect(() => toPersistedWorker(dbWorker)).toThrow(/type \(unexpected value: unknown-type\)/);
@@ -1205,11 +1225,21 @@ describe('mappers', () => {
   });
 
   describe('toPersistedSession - type validation', () => {
+    /**
+     * `Session` has no private fields, so `Partial<Session>` retains the
+     * same shape and this single-step cast type-checks without bridging
+     * through `unknown`.
+     */
+    function asSession(stub: Partial<Session>): Session {
+      return stub as Session;
+    }
+
     it('should throw DataIntegrityError for unknown session type', () => {
-      // Simulate database corruption where type column has an unexpected value
-      const dbSession = {
+      // Simulate database corruption where type column has an unexpected
+      // value. Same literal-to-literal reasoning as the worker test above.
+      const dbSession = asSession({
         id: 'session-1',
-        type: 'invalid-type',
+        type: 'invalid-type' as Session['type'],
         location_path: '/path',
         server_pid: 1234,
         created_at: new Date().toISOString(),
@@ -1218,7 +1248,7 @@ describe('mappers', () => {
         title: null,
         repository_id: null,
         worktree_id: null,
-      } as unknown as Session;
+      });
 
       expect(() => toPersistedSession(dbSession, [])).toThrow(DataIntegrityError);
       expect(() => toPersistedSession(dbSession, [])).toThrow(/type \(unexpected value: invalid-type\)/);
@@ -1553,6 +1583,17 @@ describe('mappers', () => {
   });
 
   describe('toAgentDefinition', () => {
+    /**
+     * `AgentRow` has no private fields, so `Partial<LegacyAgentRow>` retains
+     * the same shape and this single-step cast type-checks without bridging
+     * through `unknown`. `LegacyAgentRow` already widens `created_at` /
+     * `updated_at` to `string | null`, so a stub simulating a legacy row
+     * with null timestamps needs no `unknown` bridge either.
+     */
+    function asAgentRow(stub: Partial<LegacyAgentRow>): LegacyAgentRow {
+      return stub as LegacyAgentRow;
+    }
+
     it('should convert database row to AgentDefinition', () => {
       const row: AgentRow = {
         id: 'db-agent-1',
@@ -1645,8 +1686,11 @@ describe('mappers', () => {
     });
 
     it('should handle null/undefined optional fields', () => {
-      // Test fallback behavior if DB somehow contains null (defensive test)
-      const row = {
+      // Test fallback behavior if DB somehow contains null (defensive test).
+      // `created_at`/`updated_at` are deliberately set to `null` here to
+      // simulate a legacy (pre-backfill) row; `LegacyAgentRow` widens both
+      // fields to `string | null`, so this needs no cast at all.
+      const row = asAgentRow({
         id: 'null-fields-agent',
         name: 'Agent With Nulls',
         command_template: 'cmd {{prompt}}',
@@ -1657,7 +1701,7 @@ describe('mappers', () => {
         created_at: null,
         updated_at: null,
         activity_patterns: null,
-      } as unknown as AgentRow;
+      });
 
       const agent = toAgentDefinition(row);
 
@@ -1667,6 +1711,9 @@ describe('mappers', () => {
       expect(agent.activityPatterns).toBeUndefined();
       // createdAt should have a fallback when null
       expect(agent.createdAt).toBeDefined();
+      expect(typeof agent.createdAt).toBe('string');
+      expect(agent.createdAt).not.toBeNull();
+      expect(new Date(agent.createdAt as string).toISOString()).toBe(agent.createdAt);
     });
   });
 

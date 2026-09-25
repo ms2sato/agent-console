@@ -67,20 +67,33 @@ const {
 
 // --- Helper to create mock SessionManager ---
 
-function createMockSessionManager(sessions: Session[] = []): SessionManager & {
-  killSessionWorkers: ReturnType<typeof mock>;
-  deleteSession: ReturnType<typeof mock>;
-  getAllSessions: ReturnType<typeof mock>;
-} {
-  return {
-    killSessionWorkers: mock(() => Promise.resolve()),
-    deleteSession: mock(() => Promise.resolve(true)),
+type MockSessionManagerMethods = {
+  killSessionWorkers: ReturnType<typeof mock<(id: string) => Promise<void>>>;
+  deleteSession: ReturnType<typeof mock<(id: string) => Promise<boolean>>>;
+  getAllSessions: ReturnType<typeof mock<() => Session[]>>;
+};
+
+/**
+ * `SessionManager` has private fields, so a stub object literal cannot
+ * satisfy it structurally. `Partial<SessionManager>` retains the same
+ * private brand, so this single-step cast type-checks without bridging
+ * through `unknown`. The fixed, concrete `MockSessionManagerMethods`
+ * intersection keeps typo/excess-property checking on the object literal
+ * (unlike a generic `<T extends Partial<SessionManager>>` parameter, which
+ * would silently defeat it).
+ */
+function asMockSessionManager(
+  stub: Partial<SessionManager> & MockSessionManagerMethods,
+): SessionManager & MockSessionManagerMethods {
+  return stub as SessionManager & MockSessionManagerMethods;
+}
+
+function createMockSessionManager(sessions: Session[] = []): SessionManager & MockSessionManagerMethods {
+  return asMockSessionManager({
+    killSessionWorkers: mock((_id: string) => Promise.resolve()),
+    deleteSession: mock((_id: string) => Promise.resolve(true)),
     getAllSessions: mock(() => sessions),
-  } as unknown as SessionManager & {
-    killSessionWorkers: ReturnType<typeof mock>;
-    deleteSession: ReturnType<typeof mock>;
-    getAllSessions: ReturnType<typeof mock>;
-  };
+  });
 }
 
 // --- Helper to create mock dependencies ---

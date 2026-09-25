@@ -12,17 +12,18 @@ import {
   handleHistoryRangeRequest,
   type HistoryRangeSessionManager,
 } from '../history-range-handler.js';
+import { asWSContext } from './ws-test-helpers.js';
 
 const SID = 'session-1';
 const WID = 'w-1';
 
 function makeWs(): { ws: WSContext; sent: WorkerServerMessage[] } {
   const sent: WorkerServerMessage[] = [];
-  const ws = {
+  const ws = asWSContext({
     send: (data: string) => {
       sent.push(JSON.parse(data) as WorkerServerMessage);
     },
-  } as unknown as WSContext;
+  });
   return { ws, sent };
 }
 

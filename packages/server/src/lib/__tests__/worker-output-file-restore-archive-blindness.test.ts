@@ -11,7 +11,7 @@
  * reconstruction throws and the worker falls to the destructive reset — losing
  * a conversation that is entirely intact on disk.
  */
-import { describe, it, expect, beforeEach, afterEach, spyOn } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { setupMemfs, cleanupMemfs } from '../../__tests__/utils/mock-fs-helper.js';
 import { fs as memfs } from 'memfs';
 import { WorkerOutputFileManager } from '../worker-output-file.js';
@@ -339,14 +339,25 @@ describe('#1202 — the walk-back assembles a stream that starts at a safe ancho
     manager.bufferOutput(S, W, b, resolver);
     await manager.flushAll();
 
-    const spy = spyOn(
-      manager as unknown as { runExclusive: (key: string, fn: () => Promise<unknown>) => Promise<unknown> },
-      'runExclusive',
-    );
-    const before = spy.mock.calls.length;
-    const assembled = await manager.readHistoryForRestore(S, W, resolver);
-    const acquisitions = spy.mock.calls.length - before;
-    spy.mockRestore();
+    // Bracket-access override (not spyOn -- `keyof WorkerOutputFileManager`
+    // excludes private members, so spyOn's `K extends keyof T` constraint
+    // rejects `'runExclusive'` outright, TS2345). The wrapper delegates to
+    // the original so exclusivity semantics are unchanged; restored in
+    // `finally` so a throwing call never leaks the override past this test.
+    const original = manager['runExclusive'].bind(manager);
+    const calls: string[] = [];
+    manager['runExclusive'] = (key, fn) => {
+      calls.push(key);
+      return original(key, fn);
+    };
+    const before = calls.length;
+    let assembled: Awaited<ReturnType<WorkerOutputFileManager['readHistoryForRestore']>>;
+    try {
+      assembled = await manager.readHistoryForRestore(S, W, resolver);
+    } finally {
+      manager['runExclusive'] = original;
+    }
+    const acquisitions = calls.length - before;
 
     // Premise control: this fixture genuinely walks the archive. Without it a
     // fast-path return would also acquire once, and the pin would pass while

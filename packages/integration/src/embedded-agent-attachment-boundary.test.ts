@@ -38,16 +38,10 @@ import {
 import { createTestContext, shutdownAppContext } from '@agent-console/server/src/app-context';
 import type { AppContext } from '@agent-console/server/src/app-context';
 import { resolveUploadDir } from '@agent-console/server/src/lib/message-upload-dir';
-import type { SpawnAsUserFn, SpawnAsUserOpts, SpawnAsUserResult } from '@agent-console/server/src/services/privilege-elevation';
+import type { SpawnAsUserFn, SpawnAsUserOpts } from '@agent-console/server/src/services/privilege-elevation';
+import { toSpawnAsUserResult, type FakeFileSink, type FakeSubprocess } from '@agent-console/server/src/__tests__/utils/fake-spawn-as-user';
 
 import { EmbeddedAgentStreamEventSchema, type EmbeddedAgentStreamEvent } from '@agent-console/shared';
-
-/** Minimal subset of Bun's FileSink consumed by EmbeddedAgentWorkerService. */
-interface FakeFileSink {
-  write: (chunk: string | Uint8Array) => number;
-  end: () => void;
-  flush: () => number;
-}
 
 function makeFakeSpawn(): {
   fn: SpawnAsUserFn;
@@ -62,17 +56,19 @@ function makeFakeSpawn(): {
     // Never resolves — this test never deactivates the worker.
   });
   const stdin: FakeFileSink = {
-    write: (chunk) => {
+    write: (chunk: string | Uint8Array) => {
       stdinWrites.push(typeof chunk === 'string' ? chunk : new TextDecoder().decode(chunk));
       return 0;
     },
-    end: () => {},
+    end: () => {
+      return 0;
+    },
     flush: () => 0,
   };
-  const subprocess = { pid: 9999, exited, stdin, stdout, stderr, kill: () => {} };
+  const subprocess: FakeSubprocess = { pid: 9999, exited, stdin, stdout, stderr, kill: () => {} };
   const fn: SpawnAsUserFn = (opts) => {
     captured.push(opts);
-    return { subprocess, stdin, elevated: false } as unknown as SpawnAsUserResult;
+    return toSpawnAsUserResult({ subprocess, stdin, elevated: false });
   };
   return { fn, captured, stdinWrites };
 }
