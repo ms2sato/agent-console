@@ -102,9 +102,8 @@
  *
  * EXIT CODES
  *   0  every assertion passed (default run: the fix holds; polarity run:
- *      the apparatus did NOT reach the pre-fix bug shape, i.e. the tree
- *      under test is NOT reverted -- an unusual but not impossible outcome
- *      to see as 0 if the polarity assertion is written inverted; see the
+ *      the pre-fix bug shape REPRODUCED -- a connector was observed with the
+ *      toggle on, i.e. the tree under test is reverted/broken; see the
  *      polarity section above for the documented EXPECTED exit-1 case)
  *   1  an assertion failed (default run: the system is wrong), OR the run
  *      was INCONCLUSIVE (the host account has no connectors to observe) --
