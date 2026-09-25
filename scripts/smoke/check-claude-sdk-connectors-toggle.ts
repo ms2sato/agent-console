@@ -54,21 +54,34 @@
  *       merely "the discovered-event mechanism broke" or "nothing
  *       connected at all".
  *
- * `--expect-connectors-present` (a control run, not a "break-the-fix"
- * polarity run -- there is no source-level toggle to flip for this
- * mechanism the way other smokes' `--expect-*` flags revert a code fix).
- * It skips the PATCH step entirely and drives worker B through the SAME
- * activate-and-turn sequence with the preference left at its default
- * (false, connectors ON), then asserts B's discovered event(s) DO contain
- * a `scope: 'connector'` row. This is the same-run positive-control shape
- * `workflow.md`'s "a check's existence is not its detection power" asks
- * for, applied to worker B specifically: it confirms B's own harness
- * (fresh worker, fresh session, same user, same turn text) is capable of
- * observing connectors at all, so the default run's "B: zero connector
- * rows" assertion is attributable to the toggle rather than to some
- * unrelated property of a freshly-created worker. Run this BEFORE the
- * default run, the same way sibling smokes run their `--expect-no-*`
- * control first.
+ * `--expect-connectors-present` is a BREAK-THE-FIX POLARITY FLAG, same
+ * convention as this file's Tier-4 siblings (`--expect-not-evictable`,
+ * `--expect-underfire`): it drives the SAME real PATCH the default run
+ * uses -- `PATCH /api/auth/me/preferences { disableClaudeAiConnectors:
+ * true }` -- then activates a fresh worker B and asserts its discovered
+ * event(s) DO contain a `scope: 'connector'` row, i.e. it asserts the
+ * PRE-FIX BUG SHAPE (the toggle failing to suppress connectors).
+ *
+ * On THIS, correctly-fixed tree, that assertion is EXPECTED TO FAIL -- the
+ * toggle correctly suppresses the connector, so B observes none, and this
+ * flag's own `expect()` call reports a failure. That failure is the
+ * CORRECT, documented outcome here: it is the confirmation that the
+ * apparatus actually reaches the defect. Run this flag against a REVERTED
+ * tree (the composition step removed from
+ * `embedded-agent-worker-service.ts`, or `disableClaudeAiConnectors`
+ * dropped from the `settings` object in `sdk-engine.ts`) to see it PASS,
+ * which is what "the apparatus reaches the defect" means operationally --
+ * see `workflow.md`'s "A check's existence is not its detection power".
+ *
+ * KNOWN LIMITATION: this flag has no INCONCLUSIVE gate of its own (unlike
+ * worker A in the default run). If the invoking OS user's account has no
+ * claude.ai connectors configured at all, this flag's assertion also fails
+ * on the fixed tree -- indistinguishably from the toggle correctly
+ * suppressing a connector. That is harmless for THIS flag specifically
+ * (failing on the fixed tree is the expected outcome either way), but it
+ * means a PASS under this flag (i.e. a reverted tree) is only meaningful
+ * when the same host's default run has already cleared its own
+ * INCONCLUSIVE gate in the same session.
  *
  * COST: two real Claude turns (default run: A's turn, B's turn) or one
  * (`--expect-connectors-present`: B's turn only). Small, but real money and
@@ -85,13 +98,19 @@
  *
  * USAGE
  *   bun scripts/smoke/check-claude-sdk-connectors-toggle.ts
- *   bun scripts/smoke/check-claude-sdk-connectors-toggle.ts -- --expect-connectors-present
+ *   bun scripts/smoke/check-claude-sdk-connectors-toggle.ts --expect-connectors-present
  *
  * EXIT CODES
- *   0  every assertion passed
- *   1  an assertion failed (the system is wrong), OR the run was
- *      INCONCLUSIVE (the host account has no connectors to observe) --
- *      never conflated with a clean pass
+ *   0  every assertion passed (default run: the fix holds; polarity run:
+ *      the apparatus did NOT reach the pre-fix bug shape, i.e. the tree
+ *      under test is NOT reverted -- an unusual but not impossible outcome
+ *      to see as 0 if the polarity assertion is written inverted; see the
+ *      polarity section above for the documented EXPECTED exit-1 case)
+ *   1  an assertion failed (default run: the system is wrong), OR the run
+ *      was INCONCLUSIVE (the host account has no connectors to observe) --
+ *      never conflated with a clean pass. For `--expect-connectors-present`
+ *      specifically, exit 1 on the current, correctly-fixed tree is the
+ *      EXPECTED and CORRECT outcome -- see the polarity section above.
  *   2  the probe could not run (bad usage, missing prerequisite, launch
  *      failure)
  *
@@ -105,8 +124,31 @@
 // such import below is therefore a DYNAMIC import made from inside main().
 // See check-embedded-agent-idle-eviction.ts's identical header note.
 
-function parseExpectConnectorsPresent(): boolean {
-  return process.argv.includes('--expect-connectors-present');
+export interface ParsedArgs {
+  expectConnectorsPresent: boolean;
+}
+
+/**
+ * @internal Exported for testing. Tolerates a leading `--` separator, same
+ * convention as `check-embedded-agent-project-mcp-permission.ts`'s
+ * `parseArgs` -- `bun run <alias> -- --flag` and direct `bun scripts/...ts
+ * --flag` invocations both parse identically.
+ */
+export function parseArgs(argv: string[]): ParsedArgs {
+  const args = argv[0] === '--' ? argv.slice(1) : argv;
+  let expectConnectorsPresent = false;
+  for (const arg of args) {
+    if (arg === '--expect-connectors-present') {
+      expectConnectorsPresent = true;
+    } else {
+      console.error(`unknown flag: ${arg}`);
+      console.error(
+        'Usage: bun scripts/smoke/check-claude-sdk-connectors-toggle.ts [--] [--expect-connectors-present]',
+      );
+      process.exit(2);
+    }
+  }
+  return { expectConnectorsPresent };
 }
 
 import * as os from 'node:os';
@@ -129,14 +171,35 @@ function expect(cond: boolean, label: string, detail?: string): void {
 
 const delay = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
-interface DiscoveredServer {
+export interface DiscoveredServer {
   name: string;
   scope: string;
   status: string;
 }
 
+/**
+ * @internal Exported for testing. `true` iff `servers` contains at least
+ * one `scope: 'connector'` row -- the single classifier both the default
+ * run's positive control (worker A) and the polarity run's assertion
+ * (worker B) key on.
+ */
+export function hasConnectorScope(servers: DiscoveredServer[]): boolean {
+  return servers.some((s) => s.scope === 'connector');
+}
+
+/**
+ * @internal Exported for testing. `true` iff `servers` contains a row named
+ * `name` (any scope) -- used to confirm the reserved `agent-console` /
+ * `console` servers survive alongside a suppressed connector, so
+ * "connectors suppressed" is not merely "the discovered-event mechanism
+ * broke" or "nothing connected at all".
+ */
+export function hasServerNamed(servers: DiscoveredServer[], name: string): boolean {
+  return servers.some((s) => s.name === name);
+}
+
 async function main(): Promise<void> {
-  const expectConnectorsPresent = parseExpectConnectorsPresent();
+  const { expectConnectorsPresent } = parseArgs(process.argv.slice(2));
 
   // Ad-hoc invocation inherits the caller's cwd, which the spawn machinery
   // evaluates; an unreadable inherited cwd produces EACCES on posix_spawn.
@@ -176,7 +239,9 @@ async function main(): Promise<void> {
   let claudeConfigDir: string | undefined;
 
   try {
-    console.log(`==> mode: ${expectConnectorsPresent ? '--expect-connectors-present (control)' : 'default'}`);
+    console.log(
+      `==> mode: ${expectConnectorsPresent ? '--expect-connectors-present (POLARITY: the pre-fix bug shape must reproduce; EXPECTED TO FAIL on the fixed tree)' : 'default (the fix must hold)'}`,
+    );
 
     // Isolated CLAUDE_CONFIG_DIR: preserves the real account's login
     // credentials (so the real, account-scoped claude.ai connectors are
@@ -317,6 +382,39 @@ async function main(): Promise<void> {
 
     const TURN_TEXT = 'Reply with only the word READY.';
 
+    /**
+     * The real PATCH, through the real route, no cookie needed (single-user
+     * mode's `authenticate()` always returns the cached server-process
+     * user). Common to both modes -- the default run and the polarity run
+     * both set the toggle to `true`; they differ only in what precedes
+     * (worker A, default-only) and what is asserted about worker B
+     * afterward.
+     */
+    const patchDisableConnectorsOn = async (): Promise<void> => {
+      console.log('==> PATCH /api/auth/me/preferences { disableClaudeAiConnectors: true }');
+      const patchRes = await fetch(`http://localhost:${appServer!.port}/api/auth/me/preferences`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ disableClaudeAiConnectors: true }),
+      });
+      const patchBody = (await patchRes.json()) as {
+        user?: { id: string };
+        preferences?: { disableClaudeAiConnectors: boolean };
+      };
+      console.log(`  PATCH response: ${patchRes.status} ${JSON.stringify(patchBody)}`);
+      expect(patchRes.status === 200, 'PATCH /api/auth/me/preferences returned 200');
+      expect(
+        patchBody.preferences?.disableClaudeAiConnectors === true,
+        'PATCH response preferences.disableClaudeAiConnectors === true',
+        JSON.stringify(patchBody),
+      );
+      expect(
+        patchBody.user?.id === owner.id,
+        'PATCH response user is the same owner that owns this run\'s workers',
+        `expected ${owner.id}, got ${patchBody.user?.id}`,
+      );
+    };
+
     if (!expectConnectorsPresent) {
       // --- Worker A: baseline, toggle at its migration default (OFF ->
       // connectors ON). No preference PATCH has happened yet for this user.
@@ -327,7 +425,7 @@ async function main(): Promise<void> {
       const aServers = await discoveredServers(a.sessionId, a.workerId);
       console.log(`  A discovered servers: ${JSON.stringify(aServers)}`);
 
-      const aHasConnector = aServers.some((s) => s.scope === 'connector');
+      const aHasConnector = hasConnectorScope(aServers);
       if (!aHasConnector) {
         inconclusive =
           'the invoking OS user\'s Claude Code account has no claude.ai connectors configured -- ' +
@@ -336,31 +434,7 @@ async function main(): Promise<void> {
       } else {
         expect(true, 'worker A (baseline): observed at least one scope:"connector" row');
 
-        // --- The real PATCH, through the real route, no cookie needed
-        // (single-user mode's authenticate() always returns the cached
-        // server-process user).
-        console.log('==> PATCH /api/auth/me/preferences { disableClaudeAiConnectors: true }');
-        const patchRes = await fetch(`http://localhost:${appServer.port}/api/auth/me/preferences`, {
-          method: 'PATCH',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ disableClaudeAiConnectors: true }),
-        });
-        const patchBody = (await patchRes.json()) as {
-          user?: { id: string };
-          preferences?: { disableClaudeAiConnectors: boolean };
-        };
-        console.log(`  PATCH response: ${patchRes.status} ${JSON.stringify(patchBody)}`);
-        expect(patchRes.status === 200, 'PATCH /api/auth/me/preferences returned 200');
-        expect(
-          patchBody.preferences?.disableClaudeAiConnectors === true,
-          'PATCH response preferences.disableClaudeAiConnectors === true',
-          JSON.stringify(patchBody),
-        );
-        expect(
-          patchBody.user?.id === owner.id,
-          'PATCH response user is the same owner that created worker A',
-          `expected ${owner.id}, got ${patchBody.user?.id}`,
-        );
+        await patchDisableConnectorsOn();
 
         // --- Worker B: a FRESH worker, activated AFTER the PATCH. The
         // toggle has no runtime setter, so this is the "next activation"
@@ -375,47 +449,45 @@ async function main(): Promise<void> {
         console.log(`  B discovered servers: ${JSON.stringify(bServers)}`);
 
         expect(
-          !bServers.some((s) => s.scope === 'connector'),
+          !hasConnectorScope(bServers),
           'worker B: zero scope:"connector" rows after the toggle was turned on',
           JSON.stringify(bServers),
         );
         expect(
-          bServers.some((s) => s.name === 'agent-console'),
+          hasServerNamed(bServers, 'agent-console'),
           'worker B: the reserved "agent-console" server is still present (not "nothing connected at all")',
           JSON.stringify(bServers),
         );
         expect(
-          bServers.some((s) => s.name === 'console'),
+          hasServerNamed(bServers, 'console'),
           'worker B: the reserved "console" (Compact tool) server is still present',
           JSON.stringify(bServers),
         );
       }
     } else {
-      // --- Control run: no PATCH at all. Worker B, on its own, fresh
-      // session, same user, same turn text, with the preference left at
-      // its default (false, connectors ON) -- must still observe a
-      // connector. This licenses reading the default run's "zero connector
-      // rows" as attributable to the toggle, not to some unrelated
-      // property of a freshly-created worker/session.
-      console.log('==> worker B (control): activate + one turn, no PATCH (connectors expected ON)');
-      const b = await makeWorker('B-control');
+      // --- Polarity run: the SAME real PATCH as the default run (toggle
+      // SET to true), then a fresh worker B, activated after the PATCH.
+      // Asserts the PRE-FIX bug shape -- a connector STILL observed despite
+      // the toggle being on. On this, correctly-fixed tree, that assertion
+      // is EXPECTED TO FAIL; see the header's polarity section for why a
+      // failure here is the correct, documented outcome.
+      await patchDisableConnectorsOn();
+
+      console.log('==> worker B (polarity): activate + one turn (toggle SET, connector presence asserted)');
+      const b = await makeWorker('B');
       await ctx.sessionManager.activateEmbeddedAgentWorker(b.sessionId, b.workerId);
       await runTurn(b.sessionId, b.workerId, TURN_TEXT);
       const bServers = await discoveredServers(b.sessionId, b.workerId);
-      console.log(`  B (control) discovered servers: ${JSON.stringify(bServers)}`);
+      console.log(`  B (polarity) discovered servers: ${JSON.stringify(bServers)}`);
 
-      const bHasConnector = bServers.some((s) => s.scope === 'connector');
-      if (!bHasConnector) {
-        inconclusive =
-          'the invoking OS user\'s Claude Code account has no claude.ai connectors configured -- ' +
-          'the control worker observed zero scope:"connector" rows even with no PATCH applied, so ' +
-          'this run cannot license the default run\'s "zero connector rows" reading as toggle-caused';
-      } else {
-        expect(
-          true,
-          '--expect-connectors-present control: worker B observed at least one scope:"connector" row with no PATCH applied',
-        );
-      }
+      expect(
+        hasConnectorScope(bServers),
+        '--expect-connectors-present: worker B (toggle SET) still observed a scope:"connector" row -- ' +
+          'EXPECTED TO FAIL on this, correctly-fixed tree; a PASS here means the toggle is NOT ' +
+          'actually suppressing connectors, or (see the KNOWN LIMITATION in the header) the host ' +
+          'account has no connectors to observe at all',
+        JSON.stringify(bServers),
+      );
     }
   } finally {
     if (ctx) {
