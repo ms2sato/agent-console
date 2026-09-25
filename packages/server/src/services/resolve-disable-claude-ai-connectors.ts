@@ -8,8 +8,11 @@
  * `resolve-spawn-username.ts`'s shape.
  *
  * Resolution paths:
- * 1. userRepository is null -> false (with warning) -- single-user mode has
- *    no user DB, and the default is connectors ON.
+ * 1. userRepository is null -> false (with warning) -- `userRepository` is
+ *    null only when the service is constructed without one (e.g. in unit
+ *    tests); both production modes (single-user and multi-user) always
+ *    supply a real `SqliteUserRepository`, so this branch is not a
+ *    production single-user-mode path.
  * 2. userId resolves to no row in `getPreferences` -> false (with warning)
  *    -- a missing row is treated as "never opted in", the same default a
  *    pre-migration user would read as.
