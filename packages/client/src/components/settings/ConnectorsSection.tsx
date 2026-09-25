@@ -49,6 +49,7 @@ export function ConnectorsSection() {
           type="checkbox"
           className="mt-1"
           checked={disableClaudeAiConnectors}
+          disabled={mutation.isPending}
           onChange={(e) => void handleChange(e.target.checked)}
         />
         <span>
@@ -60,6 +61,9 @@ export function ConnectorsSection() {
         account&apos;s own integrations (Google Drive, Gmail, ...); terminal
         Claude Code workers are not affected.
       </p>
+      {mutation.isError && (
+        <p className="text-sm text-red-400 mt-2">Failed to update the connectors preference.</p>
+      )}
     </div>
   );
 }
