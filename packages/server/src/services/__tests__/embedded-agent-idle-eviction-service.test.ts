@@ -9,13 +9,14 @@
  * a single test, and the sibling file's single-subprocess fake cannot express
  * that.
  */
-import { describe, it, expect, mock, afterAll } from 'bun:test';
+import { describe, it, expect, mock, afterAll, type Mock } from 'bun:test';
 import { randomUUID } from 'node:crypto';
 import { mkdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { EmbeddedAgentDefinition, ExitReason } from '@agent-console/shared';
-import type { SpawnAsUserFn, SpawnAsUserOpts, SpawnAsUserResult } from '../privilege-elevation.js';
+import type { EmbeddedAgentDefinition } from '@agent-console/shared';
+import type { SpawnAsUserFn, SpawnAsUserOpts } from '../privilege-elevation.js';
+import { toSpawnAsUserResult, type FakeFileSink, type FakeSubprocess } from '../../__tests__/utils/fake-spawn-as-user.js';
 import { SessionDataPathResolver } from '../../lib/session-data-path-resolver.js';
 import {
   buildInternalEmbeddedAgentWorker,
@@ -67,12 +68,6 @@ const OPENAI_DEFINITION: EmbeddedAgentDefinition = {
   createdAt: '2026-01-01T00:00:00.000Z',
   updatedAt: '2026-01-01T00:00:00.000Z',
 };
-
-interface FakeFileSink {
-  write: (chunk: string | Uint8Array) => number;
-  end: () => void;
-  flush: () => number;
-}
 
 /** One spawned subprocess, with the hooks a test needs to drive it. */
 interface Incarnation {
@@ -140,7 +135,7 @@ function makeSpawnFactory(opts?: { exitOnShutdown?: boolean }): SpawnFactory {
     };
 
     const stdin: FakeFileSink = {
-      write: (chunk) => {
+      write: (chunk: string | Uint8Array) => {
         const s = typeof chunk === 'string' ? chunk : new TextDecoder().decode(chunk);
         stdinWrites.push(s);
         if (exitOnShutdown && s.includes('"type":"shutdown"')) {
@@ -148,11 +143,11 @@ function makeSpawnFactory(opts?: { exitOnShutdown?: boolean }): SpawnFactory {
         }
         return 0;
       },
-      end: () => {},
+      end: () => 0,
       flush: () => 0,
     };
 
-    const subprocess = {
+    const subprocess: FakeSubprocess = {
       pid: 4000 + incarnations.length,
       exited: exitedPromise,
       stdin,
@@ -177,11 +172,7 @@ function makeSpawnFactory(opts?: { exitOnShutdown?: boolean }): SpawnFactory {
       hasExited: () => exited,
     });
 
-    const result: Pick<SpawnAsUserResult, 'elevated'> & {
-      subprocess: typeof subprocess;
-      stdin: FakeFileSink;
-    } = { subprocess, stdin, elevated: false };
-    return result as unknown as SpawnAsUserResult;
+    return toSpawnAsUserResult({ subprocess, stdin, elevated: false });
   };
 
   return {
@@ -199,7 +190,7 @@ interface Harness {
   worker: ReturnType<typeof buildInternalEmbeddedAgentWorker>;
   session: ReturnType<typeof buildInternalWorktreeSession>;
   spawn: SpawnFactory;
-  bufferOutput: ReturnType<typeof mock>;
+  bufferOutput: Mock<(sessionId: string, workerId: string, data: string) => void>;
   globalExit: ReturnType<typeof mock>;
   onExit: ReturnType<typeof mock>;
 }
@@ -244,8 +235,8 @@ function setup(opts?: {
   const globalExit = mock(() => {});
   const onExit = mock(() => {});
   worker.connectionCallbacks.set('conn-1', {
-    onData: (() => {}) as unknown as (data: string, offset: number, epoch: number) => void,
-    onExit: onExit as unknown as (code: number, sig: string | null, reason?: ExitReason) => void,
+    onData: () => {},
+    onExit,
   });
 
   let spawnCount = 0;
@@ -337,13 +328,11 @@ async function activateAndReady(h: Harness): Promise<void> {
   await sleep(20);
 }
 
-function appendedLines(bufferOutput: ReturnType<typeof mock>): string[] {
-  return (bufferOutput.mock.calls as unknown as unknown[][]).map((c) =>
-    (c[2] as string).replace(/\n$/, ''),
-  );
+function appendedLines(bufferOutput: Mock<(sessionId: string, workerId: string, data: string) => void>): string[] {
+  return bufferOutput.mock.calls.map((c) => c[2].replace(/\n$/, ''));
 }
 
-function exitedRows(bufferOutput: ReturnType<typeof mock>): Array<Record<string, unknown>> {
+function exitedRows(bufferOutput: Mock<(sessionId: string, workerId: string, data: string) => void>): Array<Record<string, unknown>> {
   return appendedLines(bufferOutput)
     .filter((l) => l.includes('"type":"exited"'))
     .map((l) => JSON.parse(l) as Record<string, unknown>);
