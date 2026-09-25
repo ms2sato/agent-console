@@ -27,7 +27,9 @@ export interface UserRepository {
   /**
    * Write a user's preferences. Returns `true` iff a row was actually
    * updated; `false` when `id` does not match any user (no row updated,
-   * not an error).
+   * not an error). The `PATCH /api/auth/me/preferences` route maps a
+   * `false` return to a 404, so implementers should preserve this
+   * "no row updated" signal rather than, e.g., silently upserting.
    */
   setPreferences(id: string, preferences: UserPreferences): Promise<boolean>;
 }

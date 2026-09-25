@@ -131,8 +131,18 @@ const auth = new Hono<AppBindings>()
     // taken from the request body (`MePreferencesSchema` accepts no id/
     // userId field at all).
     const body = c.req.valid('json');
-    await userRepository.setPreferences(authUser.id, body);
-    const preferences = (await userRepository.getPreferences(authUser.id)) ?? body;
+    const updated = await userRepository.setPreferences(authUser.id, body);
+    if (!updated) {
+      // No row was updated -- `authUser.id` does not match any user row.
+      // Never call getPreferences afterwards: on the success path it must
+      // return the row, so a null there would be the same 404, not a body
+      // echo (no `?? body` fallback).
+      return c.json({ error: 'No user row for the authenticated user' }, 404);
+    }
+    const preferences = await userRepository.getPreferences(authUser.id);
+    if (!preferences) {
+      return c.json({ error: 'No user row for the authenticated user' }, 404);
+    }
 
     return c.json({ user: authUser, preferences });
   });

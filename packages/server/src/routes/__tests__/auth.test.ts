@@ -4,7 +4,7 @@
  * Uses a mock UserMode to control authentication behavior
  * without requiring real OS credential validation or JWT secrets.
  */
-import { describe, it, expect, beforeEach } from 'bun:test';
+import { describe, it, expect, beforeEach, mock } from 'bun:test';
 import { Hono } from 'hono';
 import { getCookie } from 'hono/cookie';
 import { auth, LoginRateLimiter, loginRateLimiter } from '../auth.js';
@@ -461,6 +461,36 @@ describe('Auth Routes', () => {
       expect(otherPreferences).toEqual({ disableClaudeAiConnectors: false });
       const ownPreferences = await userRepository.getPreferences(TEST_USER.id);
       expect(ownPreferences).toEqual({ disableClaudeAiConnectors: true });
+    });
+
+    it('returns 404 when setPreferences updates no row, and never calls getPreferences afterwards', async () => {
+      const userMode = createMockUserMode({ authenticateResult: TEST_USER });
+      const getPreferencesSpy = mock(async () => null);
+      const userRepository: UserRepository = {
+        upsertByOsUid: async () => {
+          throw new Error('upsertByOsUid not used by this test');
+        },
+        findById: async () => null,
+        getPreferences: getPreferencesSpy,
+        // No matching user row -- mirrors what a deleted-between-auth-and-write
+        // user, or any other "id does not match a row" case, looks like.
+        setPreferences: async () => false,
+      };
+      const app = createTestApp(userMode, userRepository);
+
+      const res = await app.request('/api/auth/me/preferences', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ disableClaudeAiConnectors: true }),
+      });
+
+      expect(res.status).toBe(404);
+      const body = (await res.json()) as { error: string };
+      expect(body.error).toBe('No user row for the authenticated user');
+      // The 404 is decided entirely from setPreferences's return value --
+      // getPreferences must never even be called on this path (no `?? body`
+      // fallback that would otherwise mask the missing row with an echo).
+      expect(getPreferencesSpy).not.toHaveBeenCalled();
     });
   });
 
