@@ -1204,6 +1204,7 @@ describe('EmbeddedAgentCommandSchema', () => {
         engine: 'claude-sdk',
         provider: { model: 'claude-sonnet-5' },
         allowedProjectMcpServers: [],
+        disableClaudeAiConnectors: false,
       };
       const result = v.safeParse(EmbeddedAgentCommandSchema, init);
       expect(result.success).toBe(true);
@@ -1218,6 +1219,7 @@ describe('EmbeddedAgentCommandSchema', () => {
         engine: 'claude-sdk',
         provider: { baseUrl: 'http://localhost:11434/v1', model: 'claude-sonnet-5' },
         allowedProjectMcpServers: [],
+        disableClaudeAiConnectors: false,
       };
       const result = v.safeParse(EmbeddedAgentCommandSchema, init);
       expect(result.success).toBe(false);
@@ -1251,6 +1253,7 @@ describe('EmbeddedAgentCommandSchema', () => {
         engine: 'claude-sdk',
         provider: { model: '' },
         allowedProjectMcpServers: [],
+        disableClaudeAiConnectors: false,
       };
       const result = v.safeParse(EmbeddedAgentCommandSchema, init);
       expect(result.success).toBe(false);
@@ -1268,6 +1271,7 @@ describe('EmbeddedAgentCommandSchema', () => {
       provider: { model: 'claude-sonnet-5' },
       context: { sessionId: 's1', workerId: 'w1', cwd: '/work' },
       maxToolIterations: 25,
+      disableClaudeAiConnectors: false,
     };
 
     it('rejects a claude-sdk init command with allowedProjectMcpServers entirely absent', () => {
@@ -1303,6 +1307,63 @@ describe('EmbeddedAgentCommandSchema', () => {
 
     it('rejects an entry with an extra unknown field (strictObject)', () => {
       const init = { ...baseFields, allowedProjectMcpServers: [{ name: 'x', hash: 'h', extra: 1 }] };
+      expect(v.safeParse(EmbeddedAgentCommandSchema, init).success).toBe(false);
+    });
+  });
+
+  describe('disableClaudeAiConnectors (the per-user claude.ai connectors toggle)', () => {
+    const baseFields = {
+      v: 1,
+      type: 'init',
+      compaction: { auto: true },
+      engine: 'claude-sdk',
+      mcp: { baseUrl: 'http://localhost:3457/mcp', token: 'tok' },
+      provider: { model: 'claude-sonnet-5' },
+      context: { sessionId: 's1', workerId: 'w1', cwd: '/work' },
+      maxToolIterations: 25,
+      allowedProjectMcpServers: [],
+    };
+
+    it('rejects a claude-sdk init command with disableClaudeAiConnectors entirely absent', () => {
+      const result = v.safeParse(EmbeddedAgentCommandSchema, baseFields);
+      expect(result.success).toBe(false);
+    });
+
+    it('parses disableClaudeAiConnectors: true', () => {
+      const init = { ...baseFields, disableClaudeAiConnectors: true };
+      const result = v.safeParse(EmbeddedAgentCommandSchema, init);
+      expect(result.success).toBe(true);
+      if (result.success && result.output.type === 'init' && result.output.engine === 'claude-sdk') {
+        expect(result.output.disableClaudeAiConnectors).toBe(true);
+      }
+    });
+
+    it('parses disableClaudeAiConnectors: false', () => {
+      const init = { ...baseFields, disableClaudeAiConnectors: false };
+      const result = v.safeParse(EmbeddedAgentCommandSchema, init);
+      expect(result.success).toBe(true);
+      if (result.success && result.output.type === 'init' && result.output.engine === 'claude-sdk') {
+        expect(result.output.disableClaudeAiConnectors).toBe(false);
+      }
+    });
+
+    it('rejects a non-boolean disableClaudeAiConnectors value', () => {
+      const init = { ...baseFields, disableClaudeAiConnectors: 'true' };
+      expect(v.safeParse(EmbeddedAgentCommandSchema, init).success).toBe(false);
+    });
+
+    it('rejects an openai-api init command carrying disableClaudeAiConnectors (no representable analogue on that arm)', () => {
+      const init = {
+        v: 1,
+        type: 'init',
+        compaction: { auto: true },
+        engine: 'openai-api',
+        mcp: { baseUrl: 'http://localhost:3457/mcp', token: 'tok' },
+        provider: { baseUrl: 'http://localhost:11434/v1', model: 'llama3' },
+        context: { sessionId: 's1', workerId: 'w1', cwd: '/work' },
+        maxToolIterations: 25,
+        disableClaudeAiConnectors: false,
+      };
       expect(v.safeParse(EmbeddedAgentCommandSchema, init).success).toBe(false);
     });
   });
@@ -1349,6 +1410,7 @@ describe('EmbeddedAgentCommandSchema', () => {
         engine: 'claude-sdk',
         provider: { model: 'claude-sonnet-5', effort: 'medium' },
         allowedProjectMcpServers: [],
+        disableClaudeAiConnectors: false,
       };
       const result = v.safeParse(EmbeddedAgentCommandSchema, init);
       expect(result.success).toBe(true);
@@ -1363,6 +1425,7 @@ describe('EmbeddedAgentCommandSchema', () => {
         engine: 'claude-sdk',
         provider: { model: 'claude-sonnet-5' },
         allowedProjectMcpServers: [],
+        disableClaudeAiConnectors: false,
       };
       const result = v.safeParse(EmbeddedAgentCommandSchema, init);
       expect(result.success).toBe(true);
@@ -2224,6 +2287,7 @@ describe('Transcript Restore R1 wire additions (#1410)', () => {
     context: { sessionId: 's1', workerId: 'w1', cwd: '/work' },
     maxToolIterations: 25,
     allowedProjectMcpServers: [],
+    disableClaudeAiConnectors: false,
   };
 
   describe('init.resume', () => {

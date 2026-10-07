@@ -594,10 +594,10 @@ describe('migration v43 (sessions ISO8601 CHECK restoration)', () => {
     await db.destroy();
   });
 
-  it('lands the fresh in-memory dispatcher on the latest schema version (v45, past this migration)', async () => {
+  it('lands the fresh in-memory dispatcher on the latest schema version (v46, past this migration)', async () => {
     const db = await initializeDatabase(':memory:');
     const versionRes = await sql<{ user_version: number }>`PRAGMA user_version`.execute(db);
-    expect(versionRes.rows[0]?.user_version).toBe(45);
+    expect(versionRes.rows[0]?.user_version).toBe(46);
   });
 
   // Polarity (Task 4 #5): removing the `backupDatabaseFile(...)` call in

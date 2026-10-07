@@ -33,6 +33,8 @@ import type {
   LoginRequest,
   LoginResponse,
   CurrentUserResponse,
+  UserPreferences,
+  UpdateUserPreferencesResponse,
   ReviewQueueGroup,
   ReviewComment,
   SkillDefinition,
@@ -1192,6 +1194,16 @@ export async function fetchCurrentUser(): Promise<CurrentUserResponse> {
     await handleApiError(res, 'Failed to fetch current user');
   }
   return res.json() as Promise<CurrentUserResponse>;
+}
+
+export async function updateAuthPreferences(
+  preferences: UserPreferences
+): Promise<UpdateUserPreferencesResponse> {
+  const res = await api.auth.me.preferences.$patch({ json: preferences });
+  if (!res.ok) {
+    await handleApiError(res, 'Failed to update preferences');
+  }
+  return res.json() as Promise<UpdateUserPreferencesResponse>;
 }
 
 // ===========================================================================

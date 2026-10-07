@@ -435,6 +435,10 @@ async function runMigrations(database: Kysely<Database>, dbPath: string): Promis
   if (currentVersion < 45) {
     await migrateToV45(database);
   }
+
+  if (currentVersion < 46) {
+    await migrateToV46(database);
+  }
 }
 
 /**
@@ -2945,6 +2949,37 @@ export async function migrateToV45(database: Kysely<Database>): Promise<void> {
   await sql`PRAGMA user_version = 45`.execute(database);
 
   logger.info('Migration to v45 completed');
+}
+
+/**
+ * Migration v46: Adding `disable_claude_ai_connectors` column to `users`
+ * (the per-user claude.ai connectors toggle).
+ *
+ * A per-USER toggle, not a definition or worker field -- deliberately
+ * modeled after `workers.auto_compaction` (v35)'s shape, but the opposite
+ * default: `NOT NULL DEFAULT 0` because OFF (connectors ON) is what every
+ * existing user's connector-using workers already do today. A migration
+ * that defaulted this to 1 would silently disable connectors for every
+ * account that predates this column, which is not something the toggle's
+ * introduction should do on anyone's behalf.
+ *
+ * @internal Exported for testing.
+ */
+export async function migrateToV46(database: Kysely<Database>): Promise<void> {
+  logger.info('Running migration to v46: Adding disable_claude_ai_connectors column to users');
+
+  try {
+    await sql`ALTER TABLE users ADD COLUMN disable_claude_ai_connectors INTEGER NOT NULL DEFAULT 0`.execute(
+      database,
+    );
+  } catch (error) {
+    if (!isDuplicateColumnError(error)) throw error;
+    logger.info('Column disable_claude_ai_connectors already exists, skipping');
+  }
+
+  await sql`PRAGMA user_version = 46`.execute(database);
+
+  logger.info('Migration to v46 completed');
 }
 
 /**

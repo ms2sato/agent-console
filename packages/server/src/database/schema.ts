@@ -429,6 +429,17 @@ export interface UsersTable {
   created_at: string;
   /** Last update timestamp as ISO 8601 string */
   updated_at: string;
+  /**
+   * Per-user claude.ai connectors toggle: when set, this user's
+   * `claude-sdk` embedded-agent workers are spawned with the SDK's own
+   * claude.ai connectors (Google Drive, Gmail, etc.) disabled. NOT NULL
+   * DEFAULT 0 -- OFF is the default, meaning connectors stay ON for every
+   * existing user and every user created before this column's migration.
+   * Read fresh at every worker activation
+   * (`resolve-disable-claude-ai-connectors.ts`), never cached on `AuthUser`
+   * or the JWT. See docs/design/embedded-agent-sdk-engine.md §4.5.
+   */
+  disable_claude_ai_connectors: Generated<number>;
 }
 
 /** User row as returned from SELECT queries */

@@ -4,7 +4,7 @@
  * Uses a mock UserMode to control authentication behavior
  * without requiring real OS credential validation or JWT secrets.
  */
-import { describe, it, expect, beforeEach } from 'bun:test';
+import { describe, it, expect, beforeEach, mock } from 'bun:test';
 import { Hono } from 'hono';
 import { getCookie } from 'hono/cookie';
 import { auth, LoginRateLimiter, loginRateLimiter } from '../auth.js';
@@ -13,9 +13,10 @@ import { AUTH_COOKIE_NAME } from '../../lib/auth-constants.js';
 import { serverConfig } from '../../lib/server-config.js';
 import type { AppBindings, AppContext } from '../../app-context.js';
 import type { UserMode, LoginResult } from '../../services/user-mode.js';
-import type { AuthUser } from '@agent-console/shared';
+import type { AuthUser, UserPreferences } from '@agent-console/shared';
 import type { PtyInstance } from '../../lib/pty-provider.js';
 import type { PtySpawnRequest } from '../../services/user-mode.js';
+import type { UserRepository } from '../../repositories/user-repository.js';
 import { createMockSystemCapabilities } from '../../__tests__/utils/mock-system-capabilities-helper.js';
 
 // ============================================================================
@@ -39,6 +40,28 @@ function createMockUserMode(options: {
   };
 }
 
+/**
+ * In-memory fake `UserRepository`, exposing only the two preferences
+ * methods `routes/auth.ts` actually calls -- `upsertByOsUid`/`findById`
+ * throw if reached, since no auth route under test needs them.
+ */
+function createMockUserRepository(seed: Record<string, UserPreferences> = {}): UserRepository {
+  const store = new Map<string, UserPreferences>(Object.entries(seed));
+  return {
+    upsertByOsUid: async () => {
+      throw new Error('upsertByOsUid not implemented in mock');
+    },
+    findById: async () => {
+      throw new Error('findById not implemented in mock');
+    },
+    getPreferences: async (id) => store.get(id) ?? null,
+    setPreferences: async (id, preferences) => {
+      store.set(id, preferences);
+      return true;
+    },
+  };
+}
+
 // ============================================================================
 // Test App Factory
 // ============================================================================
@@ -47,12 +70,12 @@ function createMockUserMode(options: {
  * Create a test Hono app with auth routes mounted.
  * The auth routes in the real app are mounted at /api/auth, so we replicate that.
  */
-function createTestApp(userMode: UserMode): Hono<AppBindings> {
+function createTestApp(userMode: UserMode, userRepository: UserRepository = createMockUserRepository()): Hono<AppBindings> {
   const app = new Hono<AppBindings>();
 
   // Inject appContext middleware
   app.use('*', async (c, next) => {
-    c.set('appContext', { userMode } as AppContext);
+    c.set('appContext', { userMode, userRepository } as AppContext);
     await next();
   });
 
@@ -311,6 +334,163 @@ describe('Auth Routes', () => {
       await app.request('/api/auth/me');
 
       expect(receivedToken).toBeUndefined();
+    });
+
+    it('omits preferences entirely when unauthenticated', async () => {
+      const userMode = createMockUserMode({ authenticateResult: null });
+      const app = createTestApp(userMode);
+
+      const res = await app.request('/api/auth/me');
+
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as Record<string, unknown>;
+      expect('preferences' in body).toBe(false);
+    });
+
+    it('returns preferences: { disableClaudeAiConnectors: false } when authenticated with no preferences row', async () => {
+      const userMode = createMockUserMode({ authenticateResult: TEST_USER });
+      const app = createTestApp(userMode);
+
+      const res = await app.request('/api/auth/me');
+
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { preferences: UserPreferences };
+      expect(body.preferences).toEqual({ disableClaudeAiConnectors: false });
+    });
+
+    it('returns the persisted preferences row when one exists', async () => {
+      const userMode = createMockUserMode({ authenticateResult: TEST_USER });
+      const userRepository = createMockUserRepository({
+        [TEST_USER.id]: { disableClaudeAiConnectors: true },
+      });
+      const app = createTestApp(userMode, userRepository);
+
+      const res = await app.request('/api/auth/me');
+
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { preferences: UserPreferences };
+      expect(body.preferences).toEqual({ disableClaudeAiConnectors: true });
+    });
+  });
+
+  // =========================================================================
+  // PATCH /api/auth/me/preferences
+  // =========================================================================
+
+  describe('PATCH /api/auth/me/preferences', () => {
+    it('returns 401 when unauthenticated', async () => {
+      const userMode = createMockUserMode({ authenticateResult: null });
+      const app = createTestApp(userMode);
+
+      const res = await app.request('/api/auth/me/preferences', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ disableClaudeAiConnectors: true }),
+      });
+
+      expect(res.status).toBe(401);
+      const body = (await res.json()) as { error: string };
+      expect(body.error).toBe('Unauthorized');
+    });
+
+    it('returns 400 for a non-boolean disableClaudeAiConnectors value', async () => {
+      const userMode = createMockUserMode({ authenticateResult: TEST_USER });
+      const app = createTestApp(userMode);
+
+      const res = await app.request('/api/auth/me/preferences', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ disableClaudeAiConnectors: 'yes' }),
+      });
+
+      expect(res.status).toBe(400);
+    });
+
+    it('returns 400 for an unknown key (strict-parse contract, never a caller-supplied id/userId)', async () => {
+      const userMode = createMockUserMode({ authenticateResult: TEST_USER });
+      const app = createTestApp(userMode);
+
+      const res = await app.request('/api/auth/me/preferences', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ disableClaudeAiConnectors: true, userId: 'someone-elses-id' }),
+      });
+
+      expect(res.status).toBe(400);
+    });
+
+    it('sets the preference on the authenticated user and returns { user, preferences }', async () => {
+      const userMode = createMockUserMode({ authenticateResult: TEST_USER });
+      const userRepository = createMockUserRepository();
+      const app = createTestApp(userMode, userRepository);
+
+      const res = await app.request('/api/auth/me/preferences', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ disableClaudeAiConnectors: true }),
+      });
+
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { user: AuthUser; preferences: UserPreferences };
+      expect(body.user).toEqual(TEST_USER);
+      expect(body.preferences).toEqual({ disableClaudeAiConnectors: true });
+
+      // Durable: a subsequent GET /me reflects the same value.
+      const meRes = await app.request('/api/auth/me');
+      const meBody = (await meRes.json()) as { preferences: UserPreferences };
+      expect(meBody.preferences).toEqual({ disableClaudeAiConnectors: true });
+    });
+
+    it('acts only on the authenticated caller\'s own id, never a body-supplied one', async () => {
+      const OTHER_USER: AuthUser = { id: 'other-user-uuid', username: 'bob', homeDir: '/home/bob' };
+      const userMode = createMockUserMode({ authenticateResult: TEST_USER });
+      const userRepository = createMockUserRepository({
+        [OTHER_USER.id]: { disableClaudeAiConnectors: false },
+      });
+      const app = createTestApp(userMode, userRepository);
+
+      await app.request('/api/auth/me/preferences', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ disableClaudeAiConnectors: true }),
+      });
+
+      // OTHER_USER's row is untouched -- the body carries no id field at all,
+      // so there is no way this request could have targeted it.
+      const otherPreferences = await userRepository.getPreferences(OTHER_USER.id);
+      expect(otherPreferences).toEqual({ disableClaudeAiConnectors: false });
+      const ownPreferences = await userRepository.getPreferences(TEST_USER.id);
+      expect(ownPreferences).toEqual({ disableClaudeAiConnectors: true });
+    });
+
+    it('returns 404 when setPreferences updates no row, and never calls getPreferences afterwards', async () => {
+      const userMode = createMockUserMode({ authenticateResult: TEST_USER });
+      const getPreferencesSpy = mock(async () => null);
+      const userRepository: UserRepository = {
+        upsertByOsUid: async () => {
+          throw new Error('upsertByOsUid not used by this test');
+        },
+        findById: async () => null,
+        getPreferences: getPreferencesSpy,
+        // No matching user row -- mirrors what a deleted-between-auth-and-write
+        // user, or any other "id does not match a row" case, looks like.
+        setPreferences: async () => false,
+      };
+      const app = createTestApp(userMode, userRepository);
+
+      const res = await app.request('/api/auth/me/preferences', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ disableClaudeAiConnectors: true }),
+      });
+
+      expect(res.status).toBe(404);
+      const body = (await res.json()) as { error: string };
+      expect(body.error).toBe('No user row for the authenticated user');
+      // The 404 is decided entirely from setPreferences's return value --
+      // getPreferences must never even be called on this path (no `?? body`
+      // fallback that would otherwise mask the missing row with an echo).
+      expect(getPreferencesSpy).not.toHaveBeenCalled();
     });
   });
 

@@ -55,6 +55,8 @@ export {
   type LoginRequest,
   ConfigResponseSchema,
   type ConfigResponse,
+  MePreferencesSchema,
+  type MePreferencesRequest,
 } from './auth.js';
 
 // Agent schemas

@@ -368,6 +368,10 @@ const baseDeps = (overrides: Partial<SdkEngineDeps> = {}): SdkEngineDeps => ({
   // subject of tests that are about something else; the compaction describe
   // below opts in explicitly.
   autoCompaction: false,
+  // The per-user claude.ai connectors toggle: OFF by default (connectors
+  // ON) so it is not the subject of tests that are about something else;
+  // the dedicated describe block below opts in explicitly.
+  disableClaudeAiConnectors: false,
   sleep: instantSleep(),
   ruleActivator: noopRuleActivator(),
   // epic #1636 Phase 5 PR-2 (Architect ruling B): empty by default so the
@@ -638,7 +642,11 @@ describe('SdkEngine — construction seam: the query() Options battery (Pin 1(a)
     expect(options.settingSources).toEqual(['user', 'local']);
     expect('strictMcpConfig' in options).toBe(false);
     // Reach measured: removing autoMemoryEnabled from buildOptions fails this line with "expected {…} to equal {…}".
-    expect(options.settings).toEqual({ autoCompactEnabled: false, autoMemoryEnabled: false });
+    expect(options.settings).toEqual({
+      autoCompactEnabled: false,
+      autoMemoryEnabled: false,
+      disableClaudeAiConnectors: false,
+    });
     expect(options.mcpServers?.['agent-console']).toEqual({
       type: 'http',
       url: 'http://mcp.local',
@@ -2610,13 +2618,21 @@ describe('SdkEngine — compaction: the auto toggle', () => {
   it('composes the worker toggle into the SDK settings, ON', () => {
     const { queryFn, captured } = makeFakeQuery([]);
     new SdkEngine(baseDeps({ queryFn, autoCompaction: true }));
-    expect(captured.options?.settings).toEqual({ autoCompactEnabled: true, autoMemoryEnabled: false });
+    expect(captured.options?.settings).toEqual({
+      autoCompactEnabled: true,
+      autoMemoryEnabled: false,
+      disableClaudeAiConnectors: false,
+    });
   });
 
   it('composes the worker toggle into the SDK settings, OFF', () => {
     const { queryFn, captured } = makeFakeQuery([]);
     new SdkEngine(baseDeps({ queryFn, autoCompaction: false }));
-    expect(captured.options?.settings).toEqual({ autoCompactEnabled: false, autoMemoryEnabled: false });
+    expect(captured.options?.settings).toEqual({
+      autoCompactEnabled: false,
+      autoMemoryEnabled: false,
+      disableClaudeAiConnectors: false,
+    });
   });
 
   it('applies a live toggle change to the running session via applyFlagSettings', () => {
@@ -2658,6 +2674,34 @@ describe('SdkEngine — compaction: the auto toggle', () => {
     expect(() => engine.setAutoCompaction(true)).not.toThrow();
     await flush();
   });
+});
+
+describe('SdkEngine — the per-user claude.ai connectors toggle', () => {
+  it('composes disableClaudeAiConnectors: true into the SDK settings when deps carry true', () => {
+    const { queryFn, captured } = makeFakeQuery([]);
+    new SdkEngine(baseDeps({ queryFn, disableClaudeAiConnectors: true }));
+    expect(captured.options?.settings).toEqual({
+      autoCompactEnabled: false,
+      autoMemoryEnabled: false,
+      disableClaudeAiConnectors: true,
+    });
+  });
+
+  it('composes disableClaudeAiConnectors: false into the SDK settings when deps carry false', () => {
+    const { queryFn, captured } = makeFakeQuery([]);
+    new SdkEngine(baseDeps({ queryFn, disableClaudeAiConnectors: false }));
+    expect(captured.options?.settings).toEqual({
+      autoCompactEnabled: false,
+      autoMemoryEnabled: false,
+      disableClaudeAiConnectors: false,
+    });
+  });
+
+  // Reach measurement (test-trigger.md "A check's existence is not its
+  // detection power"): both tests above were confirmed to fail against a
+  // `buildOptions()` with the `disableClaudeAiConnectors` field temporarily
+  // removed from the `settings` object literal -- restored immediately
+  // after, `git diff --stat` clean.
 });
 
 describe('SdkEngine — compaction: the boundary marker', () => {

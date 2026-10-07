@@ -75,6 +75,7 @@ import { WorkerOutputFileManager, type HistoryReadResult, type HistoryRangeResul
 import { JsonSessionRepository, type SessionRepository } from '../repositories/index.js';
 import type { UserRepository } from '../repositories/user-repository.js';
 import { resolveSpawnUsername } from './resolve-spawn-username.js';
+import { resolveDisableClaudeAiConnectors } from './resolve-disable-claude-ai-connectors.js';
 import type { JobQueue } from '../jobs/index.js';
 import { SessionInitializationService } from './session-initialization-service.js';
 import { SessionDeletionService } from './session-deletion-service.js';
@@ -439,6 +440,8 @@ export class SessionManager {
       getPathResolver: (session) => this.getPathResolverForSession(session),
       getEmbeddedAgent: (id) => embeddedAgentManager.getEmbeddedAgent(id),
       resolveSpawnUsername: (createdBy) => resolveSpawnUsername(createdBy, this.userRepository),
+      resolveDisableClaudeAiConnectors: (userId) =>
+        resolveDisableClaudeAiConnectors(userId, this.userRepository),
       mcpTokenRegistry: this.mcpTokenRegistry,
       mcpServerPermissionRepository: this.mcpServerPermissionRepository,
       workerOutputFileManager,

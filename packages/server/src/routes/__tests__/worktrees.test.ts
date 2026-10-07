@@ -486,6 +486,8 @@ describe('Worktrees API', () => {
           Promise.resolve({ id: 'shared-user-id', username, homeDir } satisfies AuthUser),
         ),
         findById: mock(() => Promise.resolve(null)),
+        getPreferences: mock(() => Promise.resolve(null)),
+        setPreferences: mock(() => Promise.resolve(true)),
       };
       return SharedAccountRegistry.create({
         username: 'shared-user',
