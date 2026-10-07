@@ -302,7 +302,7 @@ export class GitHubServiceParser implements ServiceParser {
         labels: labelNames,
       },
       payload: body,
-      summary: `Issue #${issue.number} labeled '${labelNames[0]}': ${issue.title}`,
+      summary: `Issue #${issue.number} opened with label '${labelNames[0]}': ${issue.title}`,
     };
   }
 
