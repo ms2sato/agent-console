@@ -410,10 +410,9 @@ describe('JobQueue', () => {
       expect(job?.attempts).toBe(1);
       expect(job?.last_error).toBe('boom after stop');
 
-      // handleFailure schedules a retry timer after stop() cleared them; drop it
-      // so the test does not leave a live timer behind.
-      for (const timer of jobQueue.__testOnly.retryTimers.values()) clearTimeout(timer);
-      jobQueue.__testOnly.retryTimers.clear();
+      // No retry timer may be armed after stop(); start() picks the pending row up.
+      expect(jobQueue.__testOnly.retryTimers.has(id)).toBe(false);
+      expect(jobQueue.__testOnly.retryTimers.size).toBe(0);
     });
 
     it('gives up after stopTimeoutMs with exactly one warning, leaves the row processing, and start() reclaims it', async () => {

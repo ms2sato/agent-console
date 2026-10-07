@@ -647,6 +647,11 @@ export class JobQueue {
    * Schedule a retry for a job after a delay.
    */
   private scheduleRetry(jobId: string, delay: number): void {
+    if (!this.running) {
+      logger.debug({ jobId }, 'Skipping retry timer: queue stopped; next start() picks the pending row up');
+      return;
+    }
+
     // Clear existing timer if any
     const existing = this.retryTimers.get(jobId);
     if (existing) clearTimeout(existing);
