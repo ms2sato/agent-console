@@ -100,6 +100,7 @@ import type { AppBindings } from '../app-context.js';
 import { asAppContext, TEST_AUTH_USER, ensureTestAuthUser, mockOpen } from './test-utils.js';
 import { SingleUserMode } from '../services/user-mode.js';
 import { McpTokenRegistry } from '../mcp/mcp-auth.js';
+import { serverConfig } from '../lib/server-config.js';
 
 // =============================================================================
 // Test Setup
@@ -345,6 +346,30 @@ describe('API Routes Integration', () => {
       expect(typeof body.serverPort).toBe('number');
       expect(Number.isFinite(body.serverPort)).toBe(true);
       expect(body.serverPort).toBeGreaterThan(0);
+    });
+
+    it('reports sharedAccountsEnvVarIgnored based on AGENT_CONSOLE_SHARED_USERNAME (shared-accounts Release 2)', async () => {
+      const app = await createApp();
+      const originalSharedUsername = serverConfig.AGENT_CONSOLE_SHARED_USERNAME;
+
+      try {
+        (serverConfig as { AGENT_CONSOLE_SHARED_USERNAME: string | undefined }).AGENT_CONSOLE_SHARED_USERNAME =
+          'legacy-shared-bot';
+        const resSet = await app.request('/api/config');
+        expect(resSet.status).toBe(200);
+        const bodySet = (await resSet.json()) as { sharedAccountsEnvVarIgnored: boolean };
+        expect(bodySet.sharedAccountsEnvVarIgnored).toBe(true);
+
+        (serverConfig as { AGENT_CONSOLE_SHARED_USERNAME: string | undefined }).AGENT_CONSOLE_SHARED_USERNAME =
+          undefined;
+        const resUnset = await app.request('/api/config');
+        expect(resUnset.status).toBe(200);
+        const bodyUnset = (await resUnset.json()) as { sharedAccountsEnvVarIgnored: boolean };
+        expect(bodyUnset.sharedAccountsEnvVarIgnored).toBe(false);
+      } finally {
+        (serverConfig as { AGENT_CONSOLE_SHARED_USERNAME: string | undefined }).AGENT_CONSOLE_SHARED_USERNAME =
+          originalSharedUsername;
+      }
     });
   });
 

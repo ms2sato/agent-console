@@ -202,18 +202,30 @@ describe('Shared account routes', () => {
 
   describe('POST /api/shared-accounts', () => {
     it('registers a resolvable OS account', async () => {
-      const app = buildApp({ sharedAccountRepository, userRepository, db } as Partial<AppContext>);
+      const sharedAccountRegistry = SharedAccountRegistry.createDisabled();
+      const app = buildApp({ sharedAccountRepository, userRepository, db, sharedAccountRegistry } as Partial<AppContext>);
       const res = await app.request('/api/shared-accounts', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ username: REAL_OS_USERNAME }),
       });
       expect(res.status).toBe(201);
+      const { userId } = (await res.json()) as { username: string; userId: string };
 
       const accounts = await sharedAccountRepository.list();
       expect(accounts).toHaveLength(1);
       expect(accounts[0]?.username).toBe(REAL_OS_USERNAME);
       expect(accounts[0]?.createdBy).toBe(CALLER.id);
+
+      // The live in-memory registry cache -- not just the DB row -- is
+      // updated as a side effect of the route handler's
+      // `sharedAccountRegistry.register(...)` call, so the account is
+      // immediately usable for shared-session creation with no restart.
+      expect(sharedAccountRegistry.isSharedUserId(userId)).toBe(true);
+      expect(sharedAccountRegistry.getEntry(userId)).toEqual({
+        username: REAL_OS_USERNAME,
+        resolvable: true,
+      });
     });
 
     it('rejects registering your own account (400)', async () => {
@@ -364,10 +376,19 @@ describe('Shared account routes', () => {
       const shared = await userRepository.upsertByOsUid(70002, 'shared-bot-2', '/home/shared-bot-2');
       await sharedAccountRepository.register(shared.id, null);
 
-      const app = buildApp({ sharedAccountRepository, userRepository });
+      const sharedAccountRegistry = SharedAccountRegistry.createDisabled();
+      sharedAccountRegistry.register({ userId: shared.id, username: 'shared-bot-2', resolvable: true });
+      expect(sharedAccountRegistry.isSharedUserId(shared.id)).toBe(true);
+
+      const app = buildApp({ sharedAccountRepository, userRepository, sharedAccountRegistry });
       const res = await app.request('/api/shared-accounts/shared-bot-2', { method: 'DELETE' });
       expect(res.status).toBe(200);
       expect(await sharedAccountRepository.list()).toEqual([]);
+
+      // The live in-memory registry cache is updated as a side effect of the
+      // route handler's `sharedAccountRegistry.unregister(...)` call, not
+      // just the DB row.
+      expect(sharedAccountRegistry.isSharedUserId(shared.id)).toBe(false);
     });
 
     it('returns 404 for an unregistered username', async () => {

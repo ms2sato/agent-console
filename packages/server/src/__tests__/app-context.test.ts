@@ -3,6 +3,7 @@ import { JOB_TYPES, type AppServerMessage, type WorktreeDeletePayload } from '@a
 import {
   createAppContext,
   createTestContext,
+  resolveSharedAccountEnvVarWarnings,
   shutdownAppContext,
   type AppContext,
 } from '../app-context.js';
@@ -38,6 +39,26 @@ async function waitForCondition(
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
 }
+
+describe('resolveSharedAccountEnvVarWarnings (shared-accounts Release 2 boot warnings)', () => {
+  it('returns no warnings when the env var is unset, regardless of registry state', () => {
+    expect(resolveSharedAccountEnvVarWarnings(undefined, true)).toEqual([]);
+    expect(resolveSharedAccountEnvVarWarnings(undefined, false)).toEqual([]);
+  });
+
+  it('returns a single ignored-env-var warning when the env var is set and the registry has entries', () => {
+    expect(resolveSharedAccountEnvVarWarnings('agent-console-shared', true)).toEqual([
+      'AGENT_CONSOLE_SHARED_USERNAME is set but ignored since Release 2; remove it from the unit file',
+    ]);
+  });
+
+  it('additionally warns that shared sessions are disabled when the env var is set but the registry is empty', () => {
+    expect(resolveSharedAccountEnvVarWarnings('agent-console-shared', false)).toEqual([
+      'AGENT_CONSOLE_SHARED_USERNAME is set but ignored since Release 2; remove it from the unit file',
+      'no shared accounts are registered in the DB while AGENT_CONSOLE_SHARED_USERNAME is set -- shared sessions are disabled until one is registered',
+    ]);
+  });
+});
 
 describe('AppContext', () => {
   let appContext: AppContext | null = null;
