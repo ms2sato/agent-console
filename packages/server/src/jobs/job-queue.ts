@@ -113,6 +113,11 @@ export interface JobStats {
 export interface JobQueueOptions {
   /** Maximum concurrent job processing. Default: 4 */
   concurrency?: number;
+  /**
+   * Maximum time stop() waits for in-flight jobs to settle before giving up
+   * (logging a warning and resolving). Default: 10000
+   */
+  stopTimeoutMs?: number;
 }
 
 // =============================================================================
@@ -148,6 +153,11 @@ export class JobQueue {
   private concurrency: number;
   private retryTimers = new Map<string, Timer>();
   private running = false;
+  /** Job processing promises still running, keyed to their job id (identity-tracked). */
+  private inFlight = new Map<Promise<void>, string>();
+  /** tryProcess claim loops still running; a claim may complete after stop() begins. */
+  private claiming = new Set<Promise<void>>();
+  private readonly stopTimeoutMs: number;
 
   // Retry configuration
   private readonly backoffBase = 1000; // 1 second
@@ -156,10 +166,12 @@ export class JobQueue {
   // Default job configuration
   private readonly defaultMaxAttempts = 5;
   private readonly defaultConcurrency = 4;
+  private readonly defaultStopTimeoutMs = 10_000;
 
   constructor(db: Kysely<Database>, options?: JobQueueOptions) {
     this.db = db;
     this.concurrency = options?.concurrency ?? this.defaultConcurrency;
+    this.stopTimeoutMs = options?.stopTimeoutMs ?? this.defaultStopTimeoutMs;
     logger.info({ concurrency: this.concurrency }, 'JobQueue initialized');
   }
 
@@ -214,6 +226,9 @@ export class JobQueue {
   /**
    * Start processing jobs.
    * Recovers any jobs that were processing when the server crashed.
+   *
+   * `processing` rows are reclaimed by start(); attempts are not incremented by
+   * that reclaim -- accepted.
    */
   async start(): Promise<void> {
     if (this.running) {
@@ -252,7 +267,10 @@ export class JobQueue {
 
   /**
    * Stop processing jobs.
-   * Clears all retry timers and removes event listeners.
+   * Clears all retry timers and removes event listeners, then waits for
+   * in-flight jobs (and any claim that was mid-flight) to settle so their
+   * final DB writes land before the caller tears the database down.
+   * Gives up after `stopTimeoutMs` with a single warning; never throws.
    */
   async stop(): Promise<void> {
     if (!this.running) {
@@ -268,7 +286,45 @@ export class JobQueue {
     this.retryTimers.clear();
     this.emitter.removeAllListeners();
 
+    await this.drainInFlight();
+
     logger.info('JobQueue stopped');
+  }
+
+  /**
+   * Wait until no job processing / claim work remains, bounded by stopTimeoutMs.
+   * Re-reads the live collections each round because a claim that was already
+   * awaiting the DB when stop() flipped `running` registers work afterwards.
+   */
+  private async drainInFlight(): Promise<void> {
+    const pending = () => [...this.inFlight.keys(), ...this.claiming];
+    if (pending().length === 0) return;
+
+    let timer: Timer | undefined;
+    const timeout = new Promise<'timeout'>((resolve) => {
+      timer = setTimeout(() => resolve('timeout'), this.stopTimeoutMs);
+    });
+
+    try {
+      while (pending().length > 0) {
+        const outcome = await Promise.race([
+          Promise.allSettled(pending()).then(() => 'drained' as const),
+          timeout,
+        ]);
+        if (outcome === 'timeout') {
+          logger.warn(
+            {
+              inFlight: this.inFlight.size + this.claiming.size,
+              jobIds: [...this.inFlight.values()],
+            },
+            'JobQueue stop timed out waiting for in-flight jobs'
+          );
+          return;
+        }
+      }
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   // ===========================================================================
@@ -419,17 +475,52 @@ export class JobQueue {
         const job = await this.claimNextJob();
         if (!job) break;
 
+        if (!this.running) {
+          // stop() ran while the claim was in flight: hand the row back instead
+          // of starting a handler that stop() would not be waiting for.
+          await this.releaseClaim(job.id);
+          break;
+        }
+
         this.processing++;
-        this.processJob(job).finally(() => {
+        const p: Promise<void> = this.processJob(job).finally(() => {
+          this.inFlight.delete(p);
           this.processing--;
           this.emitter.emit('job:completed');
         });
+        this.inFlight.set(p, job.id);
       }
     };
 
-    processNext().catch((err) => {
-      logger.error({ err }, 'Error in tryProcess');
-    });
+    const claim: Promise<void> = processNext()
+      .catch((err) => {
+        logger.error({ err }, 'Error in tryProcess');
+      })
+      .finally(() => {
+        this.claiming.delete(claim);
+      });
+    this.claiming.add(claim);
+  }
+
+  /**
+   * Return a job claimed after stop() to pending, as if it was never claimed.
+   * Never rejects: a failure here leaves the row `processing`, which start() reclaims.
+   */
+  private async releaseClaim(jobId: string): Promise<void> {
+    try {
+      await this.db
+        .updateTable('jobs')
+        .set({
+          status: JOB_STATUS.PENDING,
+          started_at: null,
+          next_retry_at: Date.now(),
+        })
+        .where('id', '=', jobId)
+        .execute();
+      logger.debug({ jobId }, 'Released job claimed after stop');
+    } catch (err) {
+      logger.error({ err, jobId }, 'Failed to release job claimed after stop');
+    }
   }
 
   /**
