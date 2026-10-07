@@ -52,6 +52,30 @@
  * `pty === null` moments later purely due to the exit-127 teardown) before
  * landing -- it is not a hypothesis.
  *
+ * Second Q13 recorded proxy: `createTestContext()` defaults to
+ * `SingleUserMode` (every PTY spawns unelevated, as the server process's own
+ * OS user) UNLESS a `MultiUserMode` instance is explicitly supplied via
+ * `overrides.userMode` -- `process.env.AUTH_MODE = 'multi-user'` is read by
+ * OTHER code this smoke depends on (`createDisposableMultiUserHome`'s `2775`
+ * contract) but NOT by this specific decision in `app-context.ts`. This
+ * smoke therefore constructs a real `MultiUserMode.create(bunPtyProvider,
+ * <userRepository>)` itself and injects it. The `userRepository` passed to
+ * that factory is a proxy: a throwaway, unshared, in-memory database,
+ * substituted because `MultiUserMode.create` only reads it later, inside
+ * `.login()` -- which authenticates OS credentials against it -- and this
+ * smoke never calls `.login()` (auth is bypassed via the monkey-patched
+ * `.authenticate` described below). Everything `MultiUserMode` actually
+ * exercises for this smoke's purposes -- `spawnSudoPty`'s argv construction
+ * and the real elevated `sudo` invocation -- uses the real, shared
+ * `bunPtyProvider`, never the proxy. Omitting this override was a real,
+ * previously-undetected defect in this smoke (and, before this PR, in its
+ * precursor): every PTY it drove was silently unelevated, so the identity
+ * assertions below were passing (or, after the terminal-worker change,
+ * failing with a hard timeout) for the wrong reason. Confirmed by removing
+ * the override and re-running: every PTY-identity assertion failed (the
+ * terminal worker's PTY never activated within its 30s deadline -- see the
+ * PR body for the recorded exit).
+ *
  * Why the PTY-identity assertion does NOT read `pty.pid`'s own owner
  * directly: `MultiUserMode.spawnPty` spawns `sudo -u <user> ... -i sh -c
  * '<sentinel>; exec $SHELL'` as the PTY process. Depending on the sudo
@@ -276,6 +300,10 @@ async function main(): Promise<void> {
   const { api } = await import('../../packages/server/src/routes/api.js');
   const { onApiError } = await import('../../packages/server/src/lib/error-handler.js');
   const { createScratchGitRepo } = await import('../../packages/server/src/__tests__/utils/scratch-git.js');
+  const { MultiUserMode } = await import('../../packages/server/src/services/user-mode.js');
+  const { bunPtyProvider } = await import('../../packages/server/src/lib/pty-provider.js');
+  const { createDatabaseForTest } = await import('../../packages/server/src/database/connection.js');
+  const { SqliteUserRepository } = await import('../../packages/server/src/repositories/sqlite-user-repository.js');
 
   // `hono` is only hoisted under packages/server/node_modules (and
   // packages/client, packages/shared) -- same resolution trick as
@@ -298,7 +326,13 @@ async function main(): Promise<void> {
   }
   console.log(`  account A: ${accountAUsername} (uid=${osUserA.uid})`);
   console.log(`  account B: ${accountBUsername} (uid=${osUserB.uid})`);
-  const serverUsername = os.userInfo().username;
+  // `os.userInfo().username` resolves to the literal string `'unknown'` in
+  // this container (Bun's NSS lookup does not resolve the invoking uid under
+  // `docker compose exec --user <name>`, confirmed independently via `id -un`
+  // succeeding while `os.userInfo()` does not) -- `id -un` is the reliable
+  // source here.
+  const idResult = Bun.spawnSync(['id', '-un']);
+  const serverUsername = idResult.exitCode === 0 ? idResult.stdout.toString().trim() : os.userInfo().username;
   for (const [label, username] of [
     ['account A', accountAUsername],
     ['account B', accountBUsername],
@@ -341,7 +375,25 @@ async function main(): Promise<void> {
       );
     }
 
-    ctx = await createTestContext();
+    // `createTestContext()` defaults to `SingleUserMode` (no elevation --
+    // every PTY spawns as the server process's own OS user) UNLESS a
+    // `MultiUserMode` instance is explicitly passed via `overrides.userMode`
+    // -- `process.env.AUTH_MODE = 'multi-user'` above is read by OTHER code
+    // (e.g. `createDisposableMultiUserHome`'s 2775 contract) but NOT by this
+    // decision (`app-context.ts`'s `createTestContext`: `userMode =
+    // overrides?.userMode ?? await SingleUserMode.create(...)`). Without
+    // this override, every PTY in this smoke -- including the terminal
+    // worker this smoke exists to probe -- would spawn unelevated as the
+    // invoking OS user, never as the bound account. `MultiUserMode.create`
+    // only loads/generates a JWT secret at construction time and never reads
+    // the `UserRepository` it's given until `.login()` is called (never
+    // called here -- auth is bypassed below), so a throwaway in-memory
+    // repository is sufficient; it never needs to share state with the
+    // context's own database.
+    const multiUserModeUserRepoDb = await createDatabaseForTest();
+    const multiUserMode = await MultiUserMode.create(bunPtyProvider, new SqliteUserRepository(multiUserModeUserRepoDb));
+
+    ctx = await createTestContext({ userMode: multiUserMode });
     const contextConfigDir = getConfigDir();
     if (contextConfigDir !== realConfigDir) {
       throw new SmokeSetupError(
@@ -516,9 +568,12 @@ async function main(): Promise<void> {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ type: 'terminal' }),
       });
-      expect(res.status === 201, `POST /api/sessions/${sessionId}/workers (terminal) returns 201`, `got ${res.status}: ${await res.text()}`);
+      // Read the body exactly once -- a `Response`'s body stream throws
+      // "Body already used" on a second `.text()`/`.json()` call.
+      const resText = await res.text();
+      expect(res.status === 201, `POST /api/sessions/${sessionId}/workers (terminal) returns 201`, `got ${res.status}: ${resText}`);
       if (res.status !== 201) return undefined;
-      const body = (await res.json()) as { worker?: { id: string } };
+      const body = JSON.parse(resText) as { worker?: { id: string } };
       const workerId = body.worker?.id;
       if (!workerId) return undefined;
 
@@ -558,6 +613,19 @@ async function main(): Promise<void> {
       `R1 and R2 run as DIFFERENT accounts (selectivity: per-repository binding, not a single global account)`,
       `owner1=${owner1} owner2=${owner2}`,
     );
+    // Defense in depth against a `SingleUserMode` regression that somehow
+    // leaves the PTY alive (this bug's actual manifestation was a hard
+    // failure -- the PTY never activated at all, since `SingleUserMode`'s
+    // unelevated `spawnDirectPty` hit a path this repository-bound worktree
+    // cwd cannot satisfy -- but a future change could make an unelevated
+    // spawn survive). Neither account should ever be the server process's
+    // own OS user when elevation is genuinely happening.
+    if (owner1 !== undefined) {
+      expect(owner1 !== serverUsername, `R1's PTY owner is not the server process's own user ('${serverUsername}') -- elevation actually happened`, `got ${owner1}`);
+    }
+    if (owner2 !== undefined) {
+      expect(owner2 !== serverUsername, `R2's PTY owner is not the server process's own user ('${serverUsername}') -- elevation actually happened`, `got ${owner2}`);
+    }
 
     // --- Assertion (e): quick sessions can never be shared (unconditional 400). ---
     console.log('==> quick session with shared:true is unconditionally rejected');
