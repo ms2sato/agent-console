@@ -865,6 +865,12 @@ if [ "$SMOKES" -eq 1 ]; then
   # 401 is the gate's doing and not the environment's.
   run_smoke "check-embedded-agent-elevation:warn" "check-embedded-agent-elevation.ts" alice --auth-mode warn
   run_smoke "check-embedded-agent-bash-env" "check-embedded-agent-bash-env.ts" alice
+  # Shared-accounts Release 2 (Issue #1842): DB-backed set + per-repository
+  # binding actually drive shared-session PTY spawn identity. alice/bob
+  # double as the two target accounts here (already baked, already members
+  # of agent-console-users -- see the scratch-repo chmod rationale in the
+  # smoke's own header).
+  run_smoke "check-shared-account-binding" "check-shared-account-binding.ts" alice bob
 
   echo
   echo "=== smoke summary (exit codes) ==="
