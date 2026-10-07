@@ -35,8 +35,8 @@ function createAgentsResponse() {
 function createSharedAccountsResponse() {
   return createMockResponse({
     accounts: [
-      { username: 'shared-bot', registeredAt: '2024-01-01T00:00:00Z', boundRepositoryCount: 0, sessionCount: 0 },
-      { username: 'ci-runner', registeredAt: '2024-01-01T00:00:00Z', boundRepositoryCount: 1, sessionCount: 0 },
+      { username: 'shared-bot', registeredAt: '2024-01-01T00:00:00Z', boundRepositoryCount: 0, sessionCount: 0, resolvable: true },
+      { username: 'ci-runner', registeredAt: '2024-01-01T00:00:00Z', boundRepositoryCount: 1, sessionCount: 0, resolvable: true },
     ],
   });
 }
