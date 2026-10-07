@@ -10,6 +10,8 @@ export interface RepositoryUpdates {
   description?: string | null;
   defaultAgentId?: string | null;
   issueTriggerLabels?: string | null;
+  /** Bound shared account's `users.id` (Release 1: storage only), or null to unbind. */
+  sharedAccountUserId?: string | null;
 }
 
 /**

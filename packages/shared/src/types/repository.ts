@@ -11,6 +11,8 @@ export interface Repository {
   defaultAgentId?: string | null; // Default agent ID for worktree creation
   orchestratorSessionIds: string[]; // The set of sessions designated as this repository's Orchestrators (see docs/design/shared-orchestrator-session.md, "Designation in multi-user"); sorted by designation time then id; a designation disappears with its session (DB ON DELETE CASCADE)
   issueTriggerLabels?: string | null; // Comma-separated GitHub label names (case-insensitive, trimmed) that route labeled-Issue webhooks to every live session in orchestratorSessionIds
+  // Username of the bound shared account (Release 1: storage only, not yet consulted by session creation), or null when unbound
+  sharedAccountUsername?: string | null;
   /**
    * Equal to `path` when this repository's registered path lives under the
    * shared `source-repos` directory (`getSourceReposDir()`); `null` otherwise.

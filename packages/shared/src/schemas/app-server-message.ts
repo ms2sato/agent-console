@@ -144,6 +144,7 @@ const RepositorySchema = v.strictObject({
   // never an absent key.
   orchestratorSessionIds: v.array(v.string()),
   issueTriggerLabels: v.optional(v.nullable(v.string())),
+  sharedAccountUsername: v.optional(v.nullable(v.string())),
   // Required (not optional) so every broadcast carries a defined value;
   // server derives via `withRepositoryRemote` against `getSourceReposDir()`.
   clonedSourceRepoPath: v.nullable(v.string()),

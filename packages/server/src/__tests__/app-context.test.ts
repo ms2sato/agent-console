@@ -59,6 +59,7 @@ describe('AppContext', () => {
       expect(appContext.sessionManager).toBeDefined();
       expect(appContext.repositoryManager).toBeDefined();
       expect(appContext.notificationManager).toBeDefined();
+      expect(appContext.sharedAccountRepository).toBeDefined();
     });
 
     it('should use in-memory database for isolation', async () => {
@@ -72,6 +73,17 @@ describe('AppContext', () => {
 
       expect(Array.isArray(result)).toBe(true);
       expect(result.length).toBe(0); // Fresh database
+    });
+
+    it('wires sharedAccountRepository to the same database as the rest of the context', async () => {
+      appContext = await createTestContext();
+
+      const user = await appContext.userRepository.upsertByOsUid(88001, 'shared-wiring-check', '/home/shared-wiring-check');
+      await appContext.sharedAccountRepository.register(user.id, null);
+
+      const accounts = await appContext.sharedAccountRepository.list();
+      expect(accounts).toHaveLength(1);
+      expect(accounts[0]?.username).toBe('shared-wiring-check');
     });
 
     it('should allow custom sessionRepository override', async () => {

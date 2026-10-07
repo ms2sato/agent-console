@@ -9,6 +9,7 @@ import { screen, cleanup } from '@testing-library/react';
 import { SettingsPage } from '../index';
 import { renderWithRouter } from '../../../test/renderWithRouter';
 import { setServerPort, _reset as resetServerInfo } from '../../../lib/server-info';
+import { setAuthMode, _reset as resetAuth } from '../../../lib/auth';
 
 beforeEach(() => {
   setServerPort(3457);
@@ -16,6 +17,7 @@ beforeEach(() => {
 
 afterEach(() => {
   resetServerInfo();
+  resetAuth();
   cleanup();
 });
 
@@ -41,5 +43,23 @@ describe('SettingsPage (Issue #1178 — agent management removed)', () => {
     await renderWithRouter(<SettingsPage />);
 
     expect(screen.getByText('Install MCP server in Claude Code')).toBeTruthy();
+  });
+});
+
+describe('SettingsPage shared-accounts link (epic #1841)', () => {
+  it('does NOT render the Shared Accounts link when authMode is none', async () => {
+    setAuthMode('none');
+    await renderWithRouter(<SettingsPage />);
+
+    expect(screen.queryByRole('link', { name: 'Shared Accounts' })).toBeNull();
+  });
+
+  it('renders the Shared Accounts link when authMode is multi-user', async () => {
+    setAuthMode('multi-user');
+    await renderWithRouter(<SettingsPage />);
+
+    const link = screen.getByRole('link', { name: 'Shared Accounts' });
+    expect(link).toBeTruthy();
+    expect(link.getAttribute('href')).toBe('/settings/shared-accounts');
   });
 });

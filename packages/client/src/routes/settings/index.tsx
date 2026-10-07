@@ -2,12 +2,15 @@ import { createFileRoute, Link } from '@tanstack/react-router';
 import { PageBreadcrumb } from '../../components/PageBreadcrumb';
 import { McpInstallSection } from '../../components/settings/McpInstallSection';
 import { ConnectorsSection } from '../../components/settings/ConnectorsSection';
+import { useAuth } from '../../lib/auth';
 
 export const Route = createFileRoute('/settings/')({
   component: SettingsPage,
 });
 
 export function SettingsPage() {
+  const { authMode } = useAuth();
+
   return (
     <div className="p-6 max-w-4xl mx-auto">
       {/* Breadcrumb */}
@@ -32,6 +35,21 @@ export function SettingsPage() {
           . Head there to add, edit, or remove terminal and embedded agents.
         </p>
       </div>
+
+      {/* Shared accounts are a multi-user-only concept; hide the link entirely
+          when AUTH_MODE=none rather than linking to a page that would just
+          say "not available". */}
+      {authMode !== 'none' && (
+        <div className="card text-gray-500 mt-4">
+          <p>
+            Manage{' '}
+            <Link to="/settings/shared-accounts" className="text-blue-400 hover:underline">
+              Shared Accounts
+            </Link>
+            {' '}used to run sessions under a shared OS account.
+          </p>
+        </div>
+      )}
     </div>
   );
 }

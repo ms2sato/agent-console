@@ -1340,6 +1340,7 @@ describe('mappers', () => {
         description: null,
         default_agent_id: null,
         issue_trigger_labels: null,
+        shared_account_user_id: null,
       };
 
       const repository = toRepository(row);
@@ -1354,6 +1355,52 @@ describe('mappers', () => {
       expect(repository.defaultAgentId).toBeNull();
       expect(repository.orchestratorSessionIds).toEqual([]);
       expect(repository.issueTriggerLabels).toBeNull();
+      expect(repository.sharedAccountUsername).toBeNull();
+    });
+
+    it('should default sharedAccountUsername to null when the third argument is omitted', () => {
+      const row: RepositoryRow = {
+        id: 'repo-shared-account',
+        name: 'test-repo',
+        path: '/tmp/test-repo',
+        created_at: '2024-12-01T00:00:00.000Z',
+        updated_at: '2024-12-01T00:00:00.000Z',
+        setup_command: null,
+        cleanup_command: null,
+        env_vars: null,
+        description: null,
+        default_agent_id: null,
+        issue_trigger_labels: null,
+        shared_account_user_id: 'user-shared',
+      };
+
+      const repository = toRepository(row);
+
+      // reach: a bound `shared_account_user_id` on the row alone must not
+      // leak into the output -- resolution is the caller's job (the third
+      // argument), not something `toRepository` re-derives from the row.
+      expect(repository.sharedAccountUsername).toBeNull();
+    });
+
+    it('should use the provided sharedAccountUsername (third argument)', () => {
+      const row: RepositoryRow = {
+        id: 'repo-shared-account',
+        name: 'test-repo',
+        path: '/tmp/test-repo',
+        created_at: '2024-12-01T00:00:00.000Z',
+        updated_at: '2024-12-01T00:00:00.000Z',
+        setup_command: null,
+        cleanup_command: null,
+        env_vars: null,
+        description: null,
+        default_agent_id: null,
+        issue_trigger_labels: null,
+        shared_account_user_id: 'user-shared',
+      };
+
+      const repository = toRepository(row, [], 'shared-bot');
+
+      expect(repository.sharedAccountUsername).toBe('shared-bot');
     });
 
     it('should default orchestratorSessionIds to [] when the second argument is omitted', () => {
@@ -1369,6 +1416,7 @@ describe('mappers', () => {
         description: null,
         default_agent_id: null,
         issue_trigger_labels: null,
+        shared_account_user_id: null,
       };
 
       const repository = toRepository(row);
@@ -1392,6 +1440,7 @@ describe('mappers', () => {
         description: null,
         default_agent_id: null,
         issue_trigger_labels: null,
+        shared_account_user_id: null,
       };
 
       const repository = toRepository(row, ['session-a', 'session-b']);
@@ -1414,6 +1463,7 @@ describe('mappers', () => {
         description: null,
         default_agent_id: null,
         issue_trigger_labels: 'bug, needs-triage',
+        shared_account_user_id: null,
       };
 
       const repository = toRepository(row);
@@ -1434,6 +1484,7 @@ describe('mappers', () => {
         description: null,
         default_agent_id: null,
         issue_trigger_labels: null,
+        shared_account_user_id: null,
       };
 
       const repository = toRepository(row);
@@ -1455,6 +1506,7 @@ describe('mappers', () => {
         description: null,
         default_agent_id: null,
         issue_trigger_labels: null,
+        shared_account_user_id: null,
       };
 
       const repository = toRepository(row);
@@ -1475,6 +1527,7 @@ describe('mappers', () => {
         description: null,
         default_agent_id: null,
         issue_trigger_labels: null,
+        shared_account_user_id: null,
       };
 
       const repository = toRepository(row);
@@ -1495,6 +1548,7 @@ describe('mappers', () => {
         description: null,
         default_agent_id: null,
         issue_trigger_labels: null,
+        shared_account_user_id: null,
       };
 
       const repository = toRepository(row);

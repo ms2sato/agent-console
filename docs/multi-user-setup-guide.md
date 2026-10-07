@@ -1471,7 +1471,62 @@ variables on the server's systemd unit — they do not reach elevated PTYs,
 and `CLAUDE_CODE_*` on the server env triggers the direct-path unset-prefix
 hazard (`packages/server/src/services/env-filter.ts`).
 
-### 4. Verify
+### 4. Registering shared accounts in the DB (Release 1: configure now, used from Release 2)
+
+This is a **separate, additive step** from step 2's `AGENT_CONSOLE_SHARED_USERNAME`
+env var. As of this release, the server also supports registering shared
+accounts in the database (the `shared_accounts` table), per repository,
+through the Settings UI and `/api/shared-accounts`. Session creation still
+reads ONLY the env var set in step 2 — a DB registration or a repository
+binding made here has no effect on which account a shared session actually
+spawns as until a later release switches session creation over. Configure
+this now so the cutover is a no-op for already-registered accounts; see
+[Shared-Account Set and Per-Repository Binding](design/shared-orchestrator-session.md#shared-account-set-and-per-repository-binding-db-backed)
+for the full rollout plan.
+
+In the web UI (**Settings → Shared Accounts**, visible only under
+`AUTH_MODE=multi-user`):
+
+- Click **Import current env-var account** to register the account already
+  configured via `AGENT_CONSOLE_SHARED_USERNAME` (step 2) into the DB-backed
+  set — idempotent, safe to click more than once or on every operator visit.
+- Or click **Register** and enter the username of a *different* OS shared
+  account you have already provisioned via step 1, to add it to the set
+  without making it the env-var default.
+- On a repository's edit page, use the **Shared account** dropdown to bind
+  that repository to one of the registered accounts. Unbinding or changing
+  a binding never affects a session that already exists — only future
+  session creation, and only once that is wired up.
+
+Equivalently, via the API:
+
+```bash
+curl -s -X POST http://localhost:<port>/api/shared-accounts/import-env \
+  -H 'Cookie: <session cookie>'   # { "imported": true } or { "imported": false } if already registered
+
+curl -s http://localhost:<port>/api/shared-accounts \
+  -H 'Cookie: <session cookie>'   # lists every registered account with its bound-repository and session counts
+```
+
+Registering an account through **Register** or the `POST /api/shared-accounts`
+API is refused in two cases, both interim safeguards until a dedicated
+who-may-register allowlist lands: you cannot register your own logged-in
+account (`400`), and -- unless the account is already the one named by
+`AGENT_CONSOLE_SHARED_USERNAME` -- you cannot register an account that
+already has personal (non-shared) sessions attached to it (`409`, naming
+the count), since that shape of history marks it as a human's account, not
+a shared execution identity. The exception exists because `delegate_to_worktree`
+never sets `initiated_by`, so the env-var account's own MCP-delegated child
+sessions look identical to a human's personal sessions; without it, that
+account could never be registered at all. **Import current env-var account** (`POST /api/shared-accounts/import-env`)
+is exempt from both checks: the account named by `AGENT_CONSOLE_SHARED_USERNAME`
+is already vouched for by whoever set that variable on the unit, so it can be
+imported even if it happens to have sessions from before this release's
+bookkeeping existed. Unregistering an account is refused (`409`, naming the
+counts) while any repository is bound to it or any session was created
+under it, regardless of which path registered it.
+
+### 5. Verify
 
 ```bash
 # Vendor auth works for the account itself

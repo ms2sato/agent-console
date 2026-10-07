@@ -90,6 +90,15 @@ describe('API route mounting', () => {
     const body = (await res.json()) as { items: unknown[]; lastSeenAt: string | null; unreadCount: number };
     expect(body).toEqual({ items: [], lastSeenAt: null, unreadCount: 0 });
   });
+
+  it('should mount shared-accounts route at /api/shared-accounts', async () => {
+    // AUTH_MODE defaults to 'none' in tests, so the route's own gate applies
+    // -- this confirms the route is MOUNTED (reachable), not that it is
+    // enabled; the enabled-path behavior is covered by
+    // routes/__tests__/shared-accounts.test.ts.
+    const res = await app.request('/api/shared-accounts');
+    expect(res.status).toBe(400);
+  });
 });
 
 describe('GET /api/config — sharedAccountsAvailable', () => {

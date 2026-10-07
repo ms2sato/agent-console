@@ -105,6 +105,7 @@ describe('app-sync payloads parse against the strict AppServerMessageSchema', ()
       description: 'A repo',
       default_agent_id: null,
       issue_trigger_labels: null,
+      shared_account_user_id: null,
     };
     const message = {
       type: 'repositories-sync',

@@ -4,6 +4,7 @@ import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { Repository } from '@agent-console/shared';
 import { EditRepositoryForm } from '../EditRepositoryForm';
+import { setAuthMode, _reset as resetAuth } from '../../../lib/auth';
 
 // Save original fetch and set up mock
 const originalFetch = globalThis.fetch;
@@ -29,6 +30,17 @@ function createAgentsResponse() {
   });
 }
 
+// Default mock shared-accounts response (used only when authMode !== 'none',
+// since EditRepositoryForm's shared-account query is disabled otherwise)
+function createSharedAccountsResponse() {
+  return createMockResponse({
+    accounts: [
+      { username: 'shared-bot', registeredAt: '2024-01-01T00:00:00Z', boundRepositoryCount: 0, sessionCount: 0 },
+      { username: 'ci-runner', registeredAt: '2024-01-01T00:00:00Z', boundRepositoryCount: 1, sessionCount: 0 },
+    ],
+  });
+}
+
 // Helper to set up mock fetch with Slack integration always returning 404
 function setupMockFetch(mainResponse: Response | (() => Promise<Response>)) {
   mockFetch.mockImplementation((input: RequestInfo | URL) => {
@@ -38,6 +50,9 @@ function setupMockFetch(mainResponse: Response | (() => Promise<Response>)) {
     }
     if (url.includes('/api/agents')) {
       return Promise.resolve(createAgentsResponse());
+    }
+    if (url.includes('/api/shared-accounts')) {
+      return Promise.resolve(createSharedAccountsResponse());
     }
     if (typeof mainResponse === 'function') {
       return mainResponse();
@@ -68,6 +83,7 @@ afterAll(() => {
 // Clean up after each test
 afterEach(() => {
   cleanup();
+  resetAuth();
 });
 
 function createMockResponse(body: unknown, ok = true) {
@@ -161,7 +177,7 @@ describe('EditRepositoryForm', () => {
 
       // Verify API was called with correct data
       const requestBody = getRepositoryUpdateRequestBody();
-      expect(requestBody).toEqual({ setupCommand: 'bun install', cleanupCommand: '', envVars: '', issueTriggerLabels: '', description: '', defaultAgentId: null });
+      expect(requestBody).toEqual({ setupCommand: 'bun install', cleanupCommand: '', envVars: '', issueTriggerLabels: '', description: '', defaultAgentId: null, sharedAccountUsername: null });
     });
 
     it('should submit with empty string (clears command)', async () => {
@@ -189,7 +205,7 @@ describe('EditRepositoryForm', () => {
 
       // Verify API was called with empty string (server will convert to null)
       const requestBody = getRepositoryUpdateRequestBody();
-      expect(requestBody).toEqual({ setupCommand: '', cleanupCommand: '', envVars: '', issueTriggerLabels: '', description: '', defaultAgentId: null });
+      expect(requestBody).toEqual({ setupCommand: '', cleanupCommand: '', envVars: '', issueTriggerLabels: '', description: '', defaultAgentId: null, sharedAccountUsername: null });
     });
 
     it('should trim whitespace from setupCommand', async () => {
@@ -216,7 +232,7 @@ describe('EditRepositoryForm', () => {
 
       // Verify API was called with trimmed value
       const requestBody = getRepositoryUpdateRequestBody();
-      expect(requestBody).toEqual({ setupCommand: 'bun install', cleanupCommand: '', envVars: '', issueTriggerLabels: '', description: '', defaultAgentId: null });
+      expect(requestBody).toEqual({ setupCommand: 'bun install', cleanupCommand: '', envVars: '', issueTriggerLabels: '', description: '', defaultAgentId: null, sharedAccountUsername: null });
     });
   });
 
@@ -906,6 +922,101 @@ describe('EditRepositoryForm', () => {
 
       const requestBody = getRepositoryUpdateRequestBody();
       expect(requestBody.defaultAgentId).toBeNull();
+    });
+  });
+
+  describe('shared account select (epic #1841)', () => {
+    it('is absent entirely when authMode is none', () => {
+      setupMockFetch(createMockResponse({}));
+      // Default authMode (reset in afterEach) is 'none'.
+
+      renderEditRepositoryForm();
+
+      expect(screen.queryByText('Shared Account (optional)')).toBeNull();
+    });
+
+    it('renders with the current sharedAccountUsername pre-selected when authMode is multi-user', async () => {
+      setAuthMode('multi-user');
+      setupMockFetch(createMockResponse({}));
+
+      const repository = createTestRepository({ sharedAccountUsername: 'ci-runner' });
+      renderEditRepositoryForm({ repository });
+
+      await waitFor(() => {
+        const select = screen.getByRole('combobox', { name: /Shared Account/ }) as HTMLSelectElement;
+        expect(select.value).toBe('ci-runner');
+      });
+      expect(screen.getByText('shared-bot')).toBeTruthy();
+    });
+
+    it('defaults to "(none)" when sharedAccountUsername is null', async () => {
+      setAuthMode('multi-user');
+      setupMockFetch(createMockResponse({}));
+
+      const repository = createTestRepository({ sharedAccountUsername: null });
+      renderEditRepositoryForm({ repository });
+
+      await waitFor(() => {
+        const select = screen.getByRole('combobox', { name: /Shared Account/ }) as HTMLSelectElement;
+        expect(select.value).toBe('');
+      });
+    });
+
+    it('includes the changed sharedAccountUsername in the submit payload', async () => {
+      setAuthMode('multi-user');
+      const user = userEvent.setup();
+      const repository = createTestRepository({ sharedAccountUsername: null });
+      setupMockFetch(
+        createMockResponse({ repository: { ...repository, sharedAccountUsername: 'shared-bot' } })
+      );
+
+      const { props } = renderEditRepositoryForm({ repository });
+
+      await waitFor(() => {
+        expect(screen.getByText('shared-bot')).toBeTruthy();
+      });
+
+      const select = screen.getByRole('combobox', { name: /Shared Account/ });
+      await user.selectOptions(select, 'shared-bot');
+
+      const submitButton = screen.getByText('Save Changes');
+      await user.click(submitButton);
+
+      await waitFor(() => {
+        expect(props.onSuccess).toHaveBeenCalledTimes(1);
+      });
+
+      const requestBody = getRepositoryUpdateRequestBody();
+      expect(requestBody.sharedAccountUsername).toBe('shared-bot');
+    });
+
+    it('sends null for sharedAccountUsername when "(none)" is selected', async () => {
+      setAuthMode('multi-user');
+      const user = userEvent.setup();
+      const repository = createTestRepository({ sharedAccountUsername: 'ci-runner' });
+      setupMockFetch(
+        createMockResponse({ repository: { ...repository, sharedAccountUsername: null } })
+      );
+
+      const { props } = renderEditRepositoryForm({ repository });
+
+      await waitFor(() => {
+        const select = screen.getByRole('combobox', { name: /Shared Account/ }) as HTMLSelectElement;
+        expect(select.value).toBe('ci-runner');
+      });
+
+      const select = screen.getByRole('combobox', { name: /Shared Account/ });
+      await user.selectOptions(select, '');
+
+      const submitButton = screen.getByText('Save Changes');
+      await user.click(submitButton);
+
+      await waitFor(() => {
+        expect(props.onSuccess).toHaveBeenCalledTimes(1);
+      });
+
+      const requestBody = getRepositoryUpdateRequestBody();
+      expect(requestBody.sharedAccountUsername).toBeNull();
     });
   });
 });

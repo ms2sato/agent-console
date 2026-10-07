@@ -107,9 +107,9 @@ describe('migration v46 (users.disable_claude_ai_connectors column)', () => {
     expect(columns.rows.filter((c) => c.name === 'disable_claude_ai_connectors')).toHaveLength(1);
   });
 
-  it('lands the fresh in-memory dispatcher on schema version 46', async () => {
+  it('lands the fresh in-memory dispatcher on the latest schema version (v47, past this migration)', async () => {
     const db = await initializeDatabase(':memory:');
     const versionRes = await sql<{ user_version: number }>`PRAGMA user_version`.execute(db);
-    expect(versionRes.rows[0]?.user_version).toBe(46);
+    expect(versionRes.rows[0]?.user_version).toBe(47);
   });
 });

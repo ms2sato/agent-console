@@ -215,8 +215,9 @@ describe('migration v42 (drop dead repositories.orchestrator_session_id)', () =>
     // "migration.test.ts style" full-chain check, scoped to this file for
     // v42's own dispatch integration. Migrations v43 (sessions ISO8601 CHECK
     // rebuild), v44 (mcp_server_permissions table), v45
-    // (mcp_server_path_permissions table), and v46
-    // (users.disable_claude_ai_connectors column) now also run
+    // (mcp_server_path_permissions table), v46
+    // (users.disable_claude_ai_connectors column), and v47 (shared_accounts
+    // table + repositories.shared_account_user_id) now also run
     // unconditionally after v42 in the same dispatcher chain, so a fresh
     // database lands further than v42's own step -- this asserts the
     // CHAIN's landing point, not v42's own effect (which the "advances the
@@ -224,7 +225,7 @@ describe('migration v42 (drop dead repositories.orchestrator_session_id)', () =>
     // `migrateToV42(db)` call).
     const db = await initializeDatabase(':memory:');
     const versionRes = await sql<{ user_version: number }>`PRAGMA user_version`.execute(db);
-    expect(versionRes.rows[0]?.user_version).toBe(46);
+    expect(versionRes.rows[0]?.user_version).toBe(47);
   });
 
   it('drops orchestrator_session_id and reproduces the live DDL exactly: both ISO8601 CHECK constraints survive', async () => {

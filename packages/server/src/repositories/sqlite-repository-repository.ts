@@ -31,7 +31,17 @@ export class SqliteRepositoryRepository implements RepositoryRepository {
       }
     }
 
-    return rows.map((row) => toRepository(row, byRepositoryId.get(row.id) ?? []));
+    const sharedAccountUsernameById = await this.resolveSharedAccountUsernames(
+      rows.map((row) => row.shared_account_user_id)
+    );
+
+    return rows.map((row) =>
+      toRepository(
+        row,
+        byRepositoryId.get(row.id) ?? [],
+        row.shared_account_user_id ? sharedAccountUsernameById.get(row.shared_account_user_id) ?? null : null
+      )
+    );
   }
 
   async findById(id: string): Promise<Repository | null> {
@@ -43,7 +53,8 @@ export class SqliteRepositoryRepository implements RepositoryRepository {
 
     if (!row) return null;
     const orchestratorSessionIds = await this.listOrchestratorSessionIds(id);
-    return toRepository(row, orchestratorSessionIds);
+    const sharedAccountUsername = await this.resolveSharedAccountUsername(row.shared_account_user_id);
+    return toRepository(row, orchestratorSessionIds, sharedAccountUsername);
   }
 
   async findByPath(path: string): Promise<Repository | null> {
@@ -55,7 +66,42 @@ export class SqliteRepositoryRepository implements RepositoryRepository {
 
     if (!row) return null;
     const orchestratorSessionIds = await this.listOrchestratorSessionIds(row.id);
-    return toRepository(row, orchestratorSessionIds);
+    const sharedAccountUsername = await this.resolveSharedAccountUsername(row.shared_account_user_id);
+    return toRepository(row, orchestratorSessionIds, sharedAccountUsername);
+  }
+
+  /**
+   * Resolve a single bound shared account's username, or null when `userId`
+   * is null (unbound). Skips the query entirely in the common unbound case.
+   */
+  private async resolveSharedAccountUsername(userId: string | null): Promise<string | null> {
+    if (!userId) return null;
+    const row = await this.db
+      .selectFrom('users')
+      .select('username')
+      .where('id', '=', userId)
+      .executeTakeFirst();
+    return row?.username ?? null;
+  }
+
+  /**
+   * Resolve a batch of bound shared-account ids to usernames in a single
+   * query, avoiding N+1 lookups across `findAll()`'s result set. Skips the
+   * query entirely when there are zero bound rows.
+   */
+  private async resolveSharedAccountUsernames(
+    userIds: Array<string | null>
+  ): Promise<Map<string, string>> {
+    const distinctIds = Array.from(new Set(userIds.filter((id): id is string => id !== null)));
+    if (distinctIds.length === 0) return new Map();
+
+    const rows = await this.db
+      .selectFrom('users')
+      .select(['id', 'username'])
+      .where('id', 'in', distinctIds)
+      .execute();
+
+    return new Map(rows.map((row) => [row.id, row.username]));
   }
 
   async save(repository: Repository): Promise<void> {
@@ -77,6 +123,14 @@ export class SqliteRepositoryRepository implements RepositoryRepository {
         description: repository.description ?? null,
         default_agent_id: repository.defaultAgentId ?? null,
         issue_trigger_labels: repository.issueTriggerLabels ?? null,
+        // `shared_account_user_id` is intentionally NOT derived from
+        // `repository.sharedAccountUsername` here -- that field is a
+        // resolved username (read-only, join-derived), not the raw id this
+        // column stores. A fresh insert always starts unbound; bindings are
+        // written only through `update()`'s `sharedAccountUserId` field. Not
+        // included in `onConflict().doUpdateSet()` below for the same
+        // reason `orchestratorSessionIds` is never touched by `save()`.
+        shared_account_user_id: null,
       })
       .onConflict((oc) =>
         oc.column('id').doUpdateSet({
@@ -113,6 +167,7 @@ export class SqliteRepositoryRepository implements RepositoryRepository {
       ['description', 'description'],
       ['defaultAgentId', 'default_agent_id'],
       ['issueTriggerLabels', 'issue_trigger_labels'],
+      ['sharedAccountUserId', 'shared_account_user_id'],
     ];
 
     for (const [domainKey, dbColumn] of fieldMap) {

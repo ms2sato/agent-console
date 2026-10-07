@@ -24,6 +24,7 @@ export interface Database {
   repository_orchestrator_sessions: RepositoryOrchestratorSessionsTable;
   mcp_server_permissions: McpServerPermissionsTable;
   mcp_server_path_permissions: McpServerPathPermissionsTable;
+  shared_accounts: SharedAccountsTable;
 }
 
 /**
@@ -196,6 +197,8 @@ export interface RepositoriesTable {
   default_agent_id: string | null;
   /** Comma-separated label names that trigger issue:labeled routing (added in v40). */
   issue_trigger_labels: string | null;
+  /** Bound shared account's users.id, or null when unbound (added in v47) */
+  shared_account_user_id: string | null;
 }
 
 /** Repository row as returned from SELECT queries */
@@ -710,3 +713,26 @@ export interface McpServerPathPermissionsTable {
 export type McpServerPathPermissionRow = Selectable<McpServerPathPermissionsTable>;
 /** MCP server path-permission data for INSERT queries */
 export type NewMcpServerPathPermission = Insertable<McpServerPathPermissionsTable>;
+
+/**
+ * Shared-accounts table (migration v47; Release 1 of the shared-accounts
+ * design). One row per OS account an operator has registered as a usable
+ * shared execution identity -- a SET, distinct from `repositories`'
+ * per-repository BINDING to one member of that set
+ * (`RepositoriesTable.shared_account_user_id`). Storage only in Release 1:
+ * nothing on the session-creation or access-control path reads this table
+ * yet (see `migrateToV47`'s doc comment in `connection.ts`).
+ */
+export interface SharedAccountsTable {
+  /** Primary key -- the `users.id` this shared account resolves to. ON DELETE CASCADE. */
+  user_id: string;
+  /** `users.id` of the user who registered this shared account. ON DELETE SET NULL. */
+  created_by: string | null;
+  /** Registration timestamp as ISO 8601 string (has DEFAULT). */
+  created_at: Generated<string>;
+}
+
+/** Shared-account row as returned from SELECT queries */
+export type SharedAccountRow = Selectable<SharedAccountsTable>;
+/** Shared-account data for INSERT queries */
+export type NewSharedAccount = Insertable<SharedAccountsTable>;

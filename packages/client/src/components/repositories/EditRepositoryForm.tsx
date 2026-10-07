@@ -11,12 +11,14 @@ import {
   updateRepositorySlackIntegration,
   testRepositorySlackIntegration,
   fetchNotificationStatus,
+  fetchSharedAccounts,
   type RepositoryResponse,
 } from '../../lib/api';
-import { repositoryKeys, notificationKeys } from '../../lib/query-keys';
+import { repositoryKeys, notificationKeys, sharedAccountKeys } from '../../lib/query-keys';
 import { FormField, Input, Textarea } from '../ui/FormField';
 import { FormOverlay, Spinner } from '../ui/Spinner';
 import { useAgents } from '../../hooks/useAgents';
+import { useAuth } from '../../lib/auth';
 
 // Form data schema - all fields are optional and can be empty
 const EditRepositoryFormSchema = v.object({
@@ -297,6 +299,21 @@ export function EditRepositoryForm({ repository, onSuccess, onCancel }: EditRepo
   const regenerateTimerRef = useRef<NodeJS.Timeout | null>(null);
   const [selectedAgentId, setSelectedAgentId] = useState<string>(repository.defaultAgentId ?? '');
   const { agents, isLoading: agentsLoading } = useAgents();
+  const { authMode } = useAuth();
+  const [selectedSharedAccountUsername, setSelectedSharedAccountUsername] = useState<string>(
+    repository.sharedAccountUsername ?? '',
+  );
+  // Gated on `authMode !== 'none'` (not `sharedAccountsAvailable`): this field
+  // edits the DB-backed binding, which is available whenever multi-user mode
+  // is on, independent of whether an env-var shared account happens to be
+  // configured (Release 1's point is letting operators configure this ahead
+  // of Release 2 regardless of the env var's state).
+  const { data: sharedAccountsData, isLoading: sharedAccountsLoading } = useQuery({
+    queryKey: sharedAccountKeys.all(),
+    queryFn: fetchSharedAccounts,
+    enabled: authMode !== 'none',
+  });
+  const sharedAccounts = sharedAccountsData?.accounts ?? [];
 
   useEffect(() => {
     return () => {
@@ -406,6 +423,7 @@ export function EditRepositoryForm({ repository, onSuccess, onCancel }: EditRepo
       envVars: data.envVars?.trim() ?? '',
       issueTriggerLabels: data.issueTriggerLabels?.trim() ?? '',
       defaultAgentId: selectedAgentId || null,
+      sharedAccountUsername: selectedSharedAccountUsername || null,
     });
   };
 
@@ -477,6 +495,34 @@ export function EditRepositoryForm({ repository, onSuccess, onCancel }: EditRepo
               )}
             </select>
           </FormField>
+
+          {authMode !== 'none' && (
+            <FormField label="Shared Account (optional)" fieldId="sharedAccountUsername">
+              <select
+                id="sharedAccountUsername"
+                className="input"
+                value={selectedSharedAccountUsername}
+                onChange={(e) => setSelectedSharedAccountUsername(e.target.value)}
+                disabled={sharedAccountsLoading}
+              >
+                {sharedAccountsLoading ? (
+                  <option>Loading shared accounts...</option>
+                ) : (
+                  <>
+                    <option value="">(none)</option>
+                    {sharedAccounts.map((account) => (
+                      <option key={account.username} value={account.username}>
+                        {account.username}
+                      </option>
+                    ))}
+                  </>
+                )}
+              </select>
+              <p className="text-xs text-gray-500 mt-1">
+                Saves which shared account this repository should use. This selection does not yet change which account sessions run under — that takes effect in a future release.
+              </p>
+            </FormField>
+          )}
 
           <FormField label="Setup Command (optional)" error={errors.setupCommand}>
             <Textarea

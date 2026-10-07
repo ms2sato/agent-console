@@ -384,6 +384,113 @@ describe('Repositories API', () => {
   });
 
   // =========================================================================
+  // PATCH /api/repositories/:id (sharedAccountUsername, Release 1)
+  // =========================================================================
+
+  describe('PATCH /api/repositories/:id (sharedAccountUsername)', () => {
+    const sharedAccountRepository = {
+      list: mock(() =>
+        Promise.resolve([
+          { userId: 'user-a', username: 'shared-bot-a', createdAt: '2026-01-01T00:00:00.000Z', createdBy: null },
+          { userId: 'user-b', username: 'shared-bot-b', createdAt: '2026-01-02T00:00:00.000Z', createdBy: null },
+        ]),
+      ),
+      register: mock(() => Promise.resolve()),
+      unregister: mock(() => Promise.resolve(true)),
+      countBoundRepositories: mock(() => Promise.resolve(0)),
+      countSessions: mock(() => Promise.resolve(0)),
+    };
+
+    beforeEach(async () => {
+      sharedAccountRepository.list.mockClear();
+      app = await createTestApp({
+        repositoryManager: repositoryManager as any,
+        sharedAccountRepository: sharedAccountRepository as any,
+      });
+      repositoryManager.updateRepository.mockImplementation(() =>
+        Promise.resolve({
+          id: 'repo1',
+          name: 'repo1',
+          path: '/repo',
+          createdAt: '2026-01-01T00:00:00.000Z',
+          orchestratorSessionIds: [],
+          clonedSourceRepoPath: null,
+          sharedAccountUsername: 'shared-bot-a',
+        } as any),
+      );
+    });
+
+    it('binds to a registered shared account, resolving username to userId', async () => {
+      const res = await app.request('/api/repositories/repo1', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sharedAccountUsername: 'shared-bot-a' }),
+      });
+
+      expect(res.status).toBe(200);
+      expect(repositoryManager.updateRepository).toHaveBeenCalledWith(
+        'repo1',
+        expect.objectContaining({ sharedAccountUserId: 'user-a' }),
+      );
+      const calls = repositoryManager.updateRepository.mock.calls as unknown as Array<
+        [string, Record<string, unknown>]
+      >;
+      const callArgs = calls[0]?.[1];
+      expect(callArgs && 'sharedAccountUsername' in callArgs).toBe(false);
+    });
+
+    it('rebinds to a different registered shared account', async () => {
+      const res = await app.request('/api/repositories/repo1', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sharedAccountUsername: 'shared-bot-b' }),
+      });
+
+      expect(res.status).toBe(200);
+      expect(repositoryManager.updateRepository).toHaveBeenCalledWith(
+        'repo1',
+        expect.objectContaining({ sharedAccountUserId: 'user-b' }),
+      );
+    });
+
+    it('unbinds when sharedAccountUsername is null', async () => {
+      const res = await app.request('/api/repositories/repo1', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sharedAccountUsername: null }),
+      });
+
+      expect(res.status).toBe(200);
+      expect(repositoryManager.updateRepository).toHaveBeenCalledWith(
+        'repo1',
+        expect.objectContaining({ sharedAccountUserId: null }),
+      );
+    });
+
+    it('returns 400 for an unregistered shared account username', async () => {
+      const res = await app.request('/api/repositories/repo1', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sharedAccountUsername: 'not-registered' }),
+      });
+
+      expect(res.status).toBe(400);
+      expect(repositoryManager.updateRepository).not.toHaveBeenCalled();
+    });
+
+    it('does not touch sharedAccountRepository when sharedAccountUsername is omitted', async () => {
+      const res = await app.request('/api/repositories/repo1', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ description: 'updated' }),
+      });
+
+      expect(res.status).toBe(200);
+      expect(sharedAccountRepository.list).not.toHaveBeenCalled();
+    });
+  });
+
+  // =========================================================================
   // POST /api/repositories/:id/generate-description
   // =========================================================================
 

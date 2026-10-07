@@ -454,6 +454,11 @@ export function toRepositoryRow(repository: PersistedRepository): NewRepository 
     // v41 -- see `schema.ts`'s doc comment on it) is intentionally NOT
     // written here: designations since v41 live in a separate join table.
     issue_trigger_labels: null,
+    // `shared_account_user_id` (added in v47) has no corresponding field in
+    // the legacy `PersistedRepository` JSON shape this mapper migrates
+    // from; a migrated repository always starts unbound. Bindings are
+    // written only through `RepositoryRepository.update`.
+    shared_account_user_id: null,
   };
 }
 
@@ -466,9 +471,17 @@ export function toRepositoryRow(repository: PersistedRepository): NewRepository 
  *   by the caller (row store). Defaults to `[]` for call sites that never
  *   hydrate designations (e.g. legacy fixtures) rather than making every
  *   caller pass an empty array explicitly.
+ * @param sharedAccountUsername - The bound shared account's resolved
+ *   username (Release 1: storage only, not yet consulted by session
+ *   creation), already resolved from `shared_account_user_id` by the caller
+ *   (row store). Defaults to `null` for call sites that never resolve it.
  * @returns The Repository object
  */
-export function toRepository(row: RepositoryRow, orchestratorSessionIds: string[] = []): Repository {
+export function toRepository(
+  row: RepositoryRow,
+  orchestratorSessionIds: string[] = [],
+  sharedAccountUsername: string | null = null
+): Repository {
   return {
     id: row.id,
     name: row.name,
@@ -481,6 +494,7 @@ export function toRepository(row: RepositoryRow, orchestratorSessionIds: string[
     defaultAgentId: row.default_agent_id ?? null,
     orchestratorSessionIds,
     issueTriggerLabels: row.issue_trigger_labels ?? null,
+    sharedAccountUsername,
     // `clonedSourceRepoPath` is a derived field (not persisted). The serving
     // path (REST / WS) enriches the value via `withRepositoryRemote`; this
     // mapper sets the safe default so the type contract is satisfied at the

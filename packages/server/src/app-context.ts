@@ -51,6 +51,8 @@ import { registerJobHandlers } from './jobs/handlers.js';
 import { registerWorktreeDeleteJobHandler } from './jobs/worktree-delete-job-handler.js';
 import { SqliteSessionRepository } from './repositories/sqlite-session-repository.js';
 import { SqliteRepositoryRepository } from './repositories/sqlite-repository-repository.js';
+import { SqliteSharedAccountRepository } from './repositories/sqlite-shared-account-repository.js';
+import type { SharedAccountRepository } from './repositories/shared-account-repository.js';
 import { SessionManager as SessionManagerClass } from './services/session-manager.js';
 import { RepositoryManager as RepositoryManagerClass } from './services/repository-manager.js';
 import { NotificationManager as NotificationManagerClass } from './services/notifications/notification-manager.js';
@@ -179,6 +181,14 @@ export interface AppContext {
 
   /** Registry of configured shared OS accounts (for shared-session creation) */
   sharedAccountRegistry: SharedAccountRegistry;
+
+  /**
+   * Shared-account storage repository (Release 1 of the shared-accounts
+   * design): the registered-account SET plus per-repository binding
+   * support. Storage only -- NOT consulted by session creation or access
+   * control; see `migrateToV47`'s doc comment in `database/connection.ts`.
+   */
+  sharedAccountRepository: SharedAccountRepository;
 
   /** Periodic timer management (persisted when repository is available) */
   timerManager: TimerManager;
@@ -310,6 +320,7 @@ export async function createAppContext(
   // 3. Create repositories and services that depend only on db
   const sessionRepository = new SqliteSessionRepository(db);
   const repositoryRepository = new SqliteRepositoryRepository(db);
+  const sharedAccountRepository = new SqliteSharedAccountRepository(db);
   const messageTemplateRepository = new SqliteMessageTemplateRepository(db);
   const artifactRepository = new SqliteArtifactRepository(db);
   const bookmarkRepository = new SqliteBookmarkRepository(db);
@@ -646,6 +657,7 @@ export async function createAppContext(
     userMode,
     userRepository,
     sharedAccountRegistry,
+    sharedAccountRepository,
     timerManager,
     conditionalWakeupManager,
     interactiveProcessManager,
@@ -779,6 +791,7 @@ export async function createTestContext(
   const sessionRepository =
     overrides?.sessionRepository ?? new SqliteSessionRepository(db);
   const repositoryRepository = new SqliteRepositoryRepository(db);
+  const sharedAccountRepository = new SqliteSharedAccountRepository(db);
   const messageTemplateRepository = new SqliteMessageTemplateRepository(db);
   const artifactRepository = new SqliteArtifactRepository(db);
   const bookmarkRepository = new SqliteBookmarkRepository(db);
@@ -960,6 +973,7 @@ export async function createTestContext(
     userMode,
     userRepository,
     sharedAccountRegistry,
+    sharedAccountRepository,
     timerManager,
     conditionalWakeupManager,
     interactiveProcessManager,

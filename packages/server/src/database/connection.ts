@@ -439,6 +439,10 @@ async function runMigrations(database: Kysely<Database>, dbPath: string): Promis
   if (currentVersion < 46) {
     await migrateToV46(database);
   }
+
+  if (currentVersion < 47) {
+    await migrateToV47(database);
+  }
 }
 
 /**
@@ -2980,6 +2984,69 @@ export async function migrateToV46(database: Kysely<Database>): Promise<void> {
   await sql`PRAGMA user_version = 46`.execute(database);
 
   logger.info('Migration to v46 completed');
+}
+
+/**
+ * Migration v47: shared-account storage (Release 1 of the shared-accounts
+ * design). This migration ONLY adds storage -- it does not change which
+ * account a shared session actually runs as. Session creation and the
+ * access-control path keep reading `AGENT_CONSOLE_SHARED_USERNAME` via
+ * `SharedAccountRegistry` exactly as before; nothing introduced here is
+ * consulted by that path yet (see the shared-account design's Release
+ * phases).
+ *
+ * Two distinct concepts, one migration:
+ *
+ * - `shared_accounts`: the SET of OS accounts an operator has registered as
+ *   usable shared execution identities. One row per registered account,
+ *   keyed by `user_id` (the `users.id` this account resolves to). `ON DELETE
+ *   CASCADE` on `user_id -> users.id`: a shared account with no backing user
+ *   row cannot exist. `created_by` records which user registered the
+ *   account (`ON DELETE SET NULL` -- losing the registering user's own
+ *   record should not retroactively invalidate the shared account).
+ * - `repositories.shared_account_user_id`: a per-repository BINDING to one
+ *   of the registered accounts above, for a future release to consult when
+ *   creating that repository's shared sessions. `ON DELETE RESTRICT`: a
+ *   shared account currently bound to a repository cannot be removed from
+ *   `shared_accounts` out from under that binding -- the caller must unbind
+ *   first.
+ *
+ * ```sql
+ * CREATE TABLE IF NOT EXISTS shared_accounts (
+ *   user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+ *   created_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+ *   created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+ * );
+ * ALTER TABLE repositories ADD COLUMN shared_account_user_id TEXT REFERENCES shared_accounts(user_id) ON DELETE RESTRICT;
+ * ```
+ *
+ * The DDL above is reproduced verbatim via raw `sql` tagged-template
+ * statements rather than Kysely's schema builder, so the migration's actual
+ * text stays directly diffable against the owner-approved DDL.
+ *
+ * @internal Exported for testing.
+ */
+export async function migrateToV47(database: Kysely<Database>): Promise<void> {
+  logger.info('Running migration to v47: Creating shared_accounts table and repositories.shared_account_user_id');
+
+  await sql`
+    CREATE TABLE IF NOT EXISTS shared_accounts (
+      user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+      created_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+      created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+    )
+  `.execute(database);
+
+  try {
+    await sql`ALTER TABLE repositories ADD COLUMN shared_account_user_id TEXT REFERENCES shared_accounts(user_id) ON DELETE RESTRICT`.execute(database);
+  } catch (error) {
+    if (!isDuplicateColumnError(error)) throw error;
+    logger.info('Column shared_account_user_id already exists, skipping');
+  }
+
+  await sql`PRAGMA user_version = 47`.execute(database);
+
+  logger.info('Migration to v47 completed');
 }
 
 /**

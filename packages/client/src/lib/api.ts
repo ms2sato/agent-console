@@ -42,6 +42,7 @@ import type {
   Artifact,
   Bookmark,
   SetMcpServerPermissionsRequest,
+  ListSharedAccountsResponse,
 } from '@agent-console/shared';
 import {
   ArtifactsListResponseSchema,
@@ -50,11 +51,15 @@ import {
   NotificationsSeenResponseSchema,
   BookmarksListResponseSchema,
   BookmarkSchema,
+  ListSharedAccountsResponseSchema,
 } from '@agent-console/shared';
 import type { NotificationsResponseSchemaOutput, NotificationsSeenResponseSchemaOutput } from '@agent-console/shared';
 import * as v from 'valibot';
 
 export type { ConfigResponse } from '@agent-console/shared';
+export type { SharedAccountSummary } from '@agent-console/shared';
+/** Alias kept local to this file's `fetchX -> XResponse` naming convention. */
+export type SharedAccountsResponse = ListSharedAccountsResponse;
 import { api } from './api-client';
 import { getVSCodeOpenMode, getVSCodeRemoteHost } from './capabilities';
 import { buildVSCodeRemoteUrl } from './vscode-url';
@@ -1428,4 +1433,66 @@ export async function markNotificationsSeen(lastSeenAt: string): Promise<Notific
     await handleApiError(res, 'Failed to update notification cursor');
   }
   return v.parse(NotificationsSeenResponseSchema, await res.json());
+}
+
+// ===========================================================================
+// Shared Accounts API (epic #1841, Release 1)
+// ===========================================================================
+
+/**
+ * The exact error body text the server returns from
+ * `POST /api/shared-accounts/import-env` when `AGENT_CONSOLE_SHARED_USERNAME`
+ * is not set (`packages/server/src/routes/shared-accounts.ts`). Exported so
+ * callers of `importEnvSharedAccount` can distinguish "no env-var account
+ * configured" (an expected, displayable state) from other failures by
+ * comparing the thrown `ApiError`'s message, without hand-duplicating the
+ * literal at each call site.
+ */
+export const NO_ENV_SHARED_ACCOUNT_ERROR_MESSAGE = 'No env-var shared account is configured';
+
+/**
+ * Fetch every registered shared account, with per-account bound-repository
+ * and session counts. Parsed through `ListSharedAccountsResponseSchema` at
+ * the wire boundary rather than blindly cast, so a server/client field drift
+ * fails loudly instead of silently dropping data (see
+ * `.claude/rules/pre-pr-completeness.md` Q10).
+ */
+export async function fetchSharedAccounts(): Promise<SharedAccountsResponse> {
+  const res = await api['shared-accounts'].$get();
+  if (!res.ok) {
+    await handleApiError(res, 'Failed to fetch shared accounts');
+  }
+  return v.parse(ListSharedAccountsResponseSchema, await res.json());
+}
+
+export async function registerSharedAccount(username: string): Promise<{ username: string; userId: string }> {
+  const res = await api['shared-accounts'].$post({ json: { username } });
+  if (!res.ok) {
+    await handleApiError(res, 'Failed to register shared account');
+  }
+  return res.json() as Promise<{ username: string; userId: string }>;
+}
+
+export async function unregisterSharedAccount(username: string): Promise<void> {
+  const res = await api['shared-accounts'][':username'].$delete({ param: { username } });
+  if (!res.ok) {
+    await handleApiError(res, 'Failed to unregister shared account');
+  }
+}
+
+/**
+ * Import the env-var-configured shared account
+ * (`AGENT_CONSOLE_SHARED_USERNAME`) into the DB-backed registry. The "no
+ * env-var account configured" case is a normal HTTP 404 and goes through the
+ * same `!res.ok` -> `handleApiError` path as any other failure; callers
+ * distinguish it by comparing the thrown error's message against
+ * `NO_ENV_SHARED_ACCOUNT_ERROR_MESSAGE` (the server's body is surfaced
+ * verbatim by `handleApiError`).
+ */
+export async function importEnvSharedAccount(): Promise<{ imported: boolean }> {
+  const res = await api['shared-accounts']['import-env'].$post();
+  if (!res.ok) {
+    await handleApiError(res, 'Failed to import env-var shared account');
+  }
+  return res.json() as Promise<{ imported: boolean }>;
 }

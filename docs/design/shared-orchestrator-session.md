@@ -351,9 +351,11 @@ Shared-account sessions are **opt-in**. Deployments that do not want them leave 
 |---|---|---|
 | `AGENT_CONSOLE_SHARED_USERNAME` | (unset) | OS username of the default shared account (single-account case). |
 
-Multiple shared accounts (a natural extension for larger organisations) would use a comma-separated list, a separate per-account config file, or an equivalent mechanism. The initial implementation targets exactly one account via the single variable above; the extension is straightforward when needed.
+Multiple shared accounts are a natural extension for larger organisations; the chosen runtime form is the DB-backed set described in [Shared-Account Set and Per-Repository Binding](#shared-account-set-and-per-repository-binding-db-backed) below, not a comma-separated env var or a config file. The single `AGENT_CONSOLE_SHARED_USERNAME` variable above remains the Release 1 / Release 2 runtime source until Release 2 switches the creation path over (see that section's rollout table) — this resolves the "Multiple shared accounts" item that previously appeared under Open Questions.
 
 ### Startup behaviour
+
+Release 1 and Release 2 differ here; see the rollout table in [Shared-Account Set and Per-Repository Binding](#shared-account-set-and-per-repository-binding-db-backed) for the full picture. The rules below describe the env-var-driven path, which is what actually runs session creation in both releases (Release 2 changes this — see that section):
 
 - **Unset** — shared feature disabled. Server logs one informational line (`"shared account: disabled (AGENT_CONSOLE_SHARED_USERNAME not set)"`) and continues. UI does not display shared-session affordances.
 - **Set, and the OS account exists** — server upserts the account into `users` on startup, enables shared-session creation endpoints and UI.
@@ -362,7 +364,50 @@ Multiple shared accounts (a natural extension for larger organisations) would us
 ### Relationship to `AUTH_MODE`
 
 - In `AUTH_MODE=multi-user`, `AGENT_CONSOLE_SHARED_USERNAME` is honoured per the rules above.
-- In `AUTH_MODE=none`, `AGENT_CONSOLE_SHARED_USERNAME` is ignored — shared sessions require multi-user authentication to be meaningful.
+- In `AUTH_MODE=none`, `AGENT_CONSOLE_SHARED_USERNAME` is ignored — shared sessions require multi-user authentication to be meaningful. The DB-backed set and binding described below are likewise unavailable in `AUTH_MODE=none` (every `/api/shared-accounts/*` endpoint and the `sharedAccountUsername` field on `PATCH /api/repositories/:id` reject with 400).
+
+## Shared-Account Set and Per-Repository Binding (DB-backed)
+
+Two concepts, deliberately separate:
+
+- **The shared-account SET** — which OS accounts are shared execution identities at all. This is what [Session Creation Flow](#session-creation-flow) and the [Permission Model](#permission-model-initial-open) actually consult: `isSharedUserId(created_by)` (`SharedAccountRegistry`, and from Release 2 onward also `SqliteSharedAccountRepository`) asks only "is this `users.id` in the set", never which repository a session came from.
+- **The repository → account BINDING** — which *one* member of the set a given repository's shared sessions should run as. Consulted only at session-creation time (from Release 2 onward); never by anything that judges an *existing* session. Consequence: unbinding or rebinding a repository never changes who may operate, or how the UI labels, a session already created — its `created_by` still names a member of the set, independent of the repository's current binding.
+
+### Storage
+
+- **SET** — table `shared_accounts(user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE, created_by TEXT REFERENCES users(id) ON DELETE SET NULL, created_at TEXT NOT NULL DEFAULT ...)`. A row is created only through the same two calls `SharedAccountRegistry.create` already makes today — a server-side `lookupOsUser` followed by `upsertByOsUid` — so a registered account's identity stays keyed on `users.id` (stable across OS account renames, see [Shared account rename and identity stability](#shared-account-rename-and-identity-stability)). `created_by` records who registered the account.
+- **BINDING** — one nullable column `repositories.shared_account_user_id TEXT REFERENCES shared_accounts(user_id) ON DELETE RESTRICT`. One account per repository (no picker — a repository either has no shared account or exactly one); many repositories may share the same account. `ON DELETE RESTRICT` makes "unbind every repository before unregistering an account" a DB-enforced fact, not an operator convention.
+
+### Wire and API surface
+
+`Repository` gains `sharedAccountUsername: string | null` (derived from the bound account's `users` row, never the raw id — consistent with the "no leaking internal identity layout" rule in [UI/UX](#ui--ux)). `PATCH /api/repositories/:id` accepts `sharedAccountUsername: string | null` (`null` unbinds; a non-null value must name an already-REGISTERED shared account, else `400`).
+
+- `GET /api/shared-accounts` → the registered set, each entry with its bound-repository count and session count (for the settings UI and for deciding whether an unregister is safe).
+- `POST /api/shared-accounts { username }` → registers an OS account into the set (server-side `lookupOsUser`, `400` on no such OS account, `409` if already registered).
+- `DELETE /api/shared-accounts/:username` → `409` while any repository is bound to it or any session's `created_by` names it (never silently orphans a session or a binding); otherwise removes it from the set.
+- `POST /api/shared-accounts/import-env` → registers the account currently configured via `AGENT_CONSOLE_SHARED_USERNAME` (Release 1's bridge from the env-var world to the DB-backed one; idempotent).
+
+All four endpoints, and the `sharedAccountUsername` field on `PATCH /api/repositories/:id`, are `400` under `AUTH_MODE=none` — shared accounts remain a multi-user-only mechanism end to end.
+
+### Quick sessions and `delegate_to_worktree`
+
+Quick sessions cannot be shared once bindings govern session creation (Release 2 onward) — a binding is a *repository* property, and a quick session has no repository to bind against. The MCP `delegate_to_worktree` tool keeps its existing `created_by` inheritance (see [Worktree-creation entry point](#worktree-creation-entry-point), reason 2): a worktree delegated from a shared parent session runs as the PARENT's account even when the target repository is bound to a *different* account — inheritance wins over binding. This is also why the Release 1 guard on registering an account (see the Architect's safety note — not reproduced here, see the implementing Issue) must not mistake an env-var shared account's own MCP-delegated child sessions (which never set `initiated_by`) for a human's personal sessions.
+
+### Rollout: Release 1 (storage only) → Release 2 (consumed by session creation)
+
+| | Release 1 | Release 2 |
+|---|---|---|
+| Storage (`shared_accounts` table, `repositories.shared_account_user_id`) | ✅ present, writable via the API/UI above | unchanged |
+| `SharedAccountRegistry` (what session creation actually reads) | built from `AGENT_CONSOLE_SHARED_USERNAME`, exactly as before this design landed | built from the `shared_accounts` table |
+| `POST /api/sessions` / `POST /api/repositories/:id/worktrees` with `shared: true` | uses `getDefaultUserId()` (env var) — **a DB binding on the target repository has no effect** | reads the repository's binding |
+| `AGENT_CONSOLE_SHARED_USERNAME` set at boot | honoured as the (only) runtime source | ignored for session creation; triggers one boot WARN, and a second WARN if the DB-backed set is empty (a refusal-to-boot was considered and rejected — see below) |
+| A registered account whose OS user no longer resolves | not checked (Release 1 never resolves bindings at runtime) | does NOT fail boot — the account stays in the set (so its existing sessions stay operable and labelled), is marked unresolvable with one WARN, the settings UI surfaces the state, and creating against it returns `400` |
+
+Release 2 boot deliberately WARNs rather than refuses when the env var is set but ignored, or when a registered account has gone stale: refusing to boot would turn a stale unit file or a since-removed OS account into a full outage with no UI path to recover, which is worse than a visible warning plus a `400` at the point of use.
+
+### Why Release 1 ships storage before Release 2 consumes it
+
+This is a deliberate two-stage rollout (owner decision), not an accidental half-feature: it lets operators register accounts and bind repositories ahead of time — including importing today's env-var account via `POST /api/shared-accounts/import-env` — so that the Release 2 cutover changes *which account answers*, never *whether the feature works at all*. It also means Release 1's registration surface is live before anything consults it; the allowlist-of-who-may-bind-which-account question (a human registering another human's personal account would make that human's sessions team-operable once Release 2 ships) is deferred to a follow-up and tracked separately from this design.
 
 ## Operational Setup
 
@@ -394,10 +439,12 @@ sudo -u agent-console-shared -i
   # Configure the CLI however it expects. Exact command depends on the CLI.
   # For Claude Code, either the interactive login or an env-var export works:
   #   (interactive) claude login
-  #   echo 'export ANTHROPIC_API_KEY=<your-api-key>' >> ~/.zshrc
+  #   echo 'export ANTHROPIC_API_KEY=<your-api-key>' >> ~/.profile
   # For other vendors, their own mechanism (e.g. ~/.aws/credentials for Bedrock).
   exit
 ```
+
+**Use `~/.profile`, not `~/.zshrc` or `~/.bashrc`.** The PTY is spawned via an elevated, non-interactive login shell (`sudo -u <shared-account-name> -i sh -c '...'`); on Ubuntu that inner shell is dash, which does not source `.bashrc`/`.zshrc` (see [`multi-user-setup-guide.md`](./multi-user-setup-guide.md)'s "Configure LLM vendor credentials in the account's own home" section for the same rule applied to per-user accounts).
 
 Which of these is appropriate for a *shared* account is a licensing question for the operator, not a system requirement — see the guidance under [Authentication model](#authentication-model).
 
@@ -421,7 +468,8 @@ Rotation is manual, triggered when a key is compromised or reaching expiry:
 ```bash
 sudo -u <shared-account-name> -i
   # Update the CLI's stored credential with the new API key.
-  # Env-var based setup: edit ~/.zshrc (or equivalent).
+  # Env-var based setup: edit ~/.profile (not ~/.zshrc/~/.bashrc -- see the
+  # "Use ~/.profile" note in "Configure the LLM CLI's credentials" above).
   # Login-based setup: re-run the login command with the new key.
   exit
 
@@ -491,8 +539,9 @@ Required schema additions for this design:
 
 1. **`sessions.initiated_by`** (nullable text, application-level linkage to `users.id`). For personal sessions it equals `created_by`; for shared sessions it records the authenticated user who clicked "Create shared session" — distinct from `created_by`, which represents the PTY spawn identity. The Session Creation Flow above (step 4) persists this value, so it must exist from day one.
 2. **`repositories.remote_url`** (nullable text). Stores the source URL when a repository is registered via `registerRepositoryFromUrl` (per-user lazy clone bootstrap reads it). Existing path-based registrations leave this null — `getRemoteUrl(path)` continues to derive the URL on demand from the cloned repo's `origin` remote, as today.
+3. **`shared_accounts`** table (`user_id` PK referencing `users.id`, `created_by`, `created_at`) and **`repositories.shared_account_user_id`** (nullable, referencing `shared_accounts.user_id`, `ON DELETE RESTRICT`) — see [Shared-Account Set and Per-Repository Binding](#shared-account-set-and-per-repository-binding-db-backed) above for the full design. Storage only; not consulted by session creation until a later release.
 
-Aside from these two columns, the existing `users`, `sessions`, and `repositories` tables already cover the shared-account mechanism via the `created_by` linkage; no further schema changes are required for the minimum viable version.
+Aside from these columns and the `shared_accounts` table, the existing `users`, `sessions`, and `repositories` tables already cover the shared-account mechanism via the `created_by` linkage; no further schema changes are required for the minimum viable version.
 
 Optional additions considered but deferred:
 
@@ -503,7 +552,8 @@ Decisions about `sessions.created_by` gaining a DB-level `REFERENCES users(id)` 
 
 ## Open Questions
 
-- **Multiple shared accounts.** Concrete config form for more than one account (comma-separated env var, config file, or per-repository association). Schema-wise free; runtime form is an implementation choice. The session-create API's shared-account identifier (Session Creation Flow step 1) is resolved alongside this.
+- ~~**Multiple shared accounts.**~~ Resolved — see [Shared-Account Set and Per-Repository Binding](#shared-account-set-and-per-repository-binding-db-backed): the DB-backed set plus per-repository binding is the chosen runtime form, rolled out across two releases.
+- **Who may bind which account to a repository / who may register which OS account into the set.** Deferred to a follow-up (see that section's "Why Release 1 ships storage before Release 2 consumes it").
 - **Shared session audit depth.** Current design records creator. Per-stdin-message authorship would require an additional table — revisit if team operators report need.
 - **API-key storage form inside the shared account's home.** Two equivalent options: env-var export in shell profile, or CLI-native credential file. Operator choice; does not affect the server.
 - **Rate limiting and abuse control.** The initial design does not rate-limit shared-session creation or stdin throughput. Runaway consumption by a compromised or misbehaving internal actor is an operator concern, handled externally (reverse proxy limits, vendor-side billing caps). Revisit if self-service shared sessions become available to a larger audience.

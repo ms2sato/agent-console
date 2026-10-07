@@ -427,7 +427,19 @@ describe('AppServerMessageSchema', () => {
           defaultAgentId: 'claude-code',
           orchestratorSessionIds: ['session-1', 'session-2'],
           issueTriggerLabels: 'bug, needs-triage',
+          sharedAccountUsername: 'shared-bot',
         },
+      });
+    });
+
+    it('should accept repository omitting sharedAccountUsername entirely (still optional)', () => {
+      expectValid({ type: 'repository-created', repository });
+    });
+
+    it('should accept repository with sharedAccountUsername set to null (unbound)', () => {
+      expectValid({
+        type: 'repository-created',
+        repository: { ...repository, sharedAccountUsername: null },
       });
     });
 
