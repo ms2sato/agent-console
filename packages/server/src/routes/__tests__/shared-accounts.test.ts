@@ -17,6 +17,7 @@ import type { Kysely } from 'kysely';
 import type { AuthUser } from '@agent-console/shared';
 import type { Database } from '../../database/schema.js';
 import { createDatabaseForTest } from '../../database/connection.js';
+import type { SharedAccountRepository } from '../../repositories/shared-account-repository.js';
 import { SqliteSharedAccountRepository } from '../../repositories/sqlite-shared-account-repository.js';
 import { SqliteUserRepository } from '../../repositories/sqlite-user-repository.js';
 import { SharedAccountRegistry } from '../../services/shared-account-registry.js';
@@ -40,6 +41,25 @@ function mockUserMode(authenticateResult: AuthUser | null): UserMode {
     spawnPty: (_request: PtySpawnRequest): PtyInstance => {
       throw new Error('spawnPty not implemented in mock');
     },
+  };
+}
+
+/**
+ * DI-level stub for simulating the TOCTOU race window in
+ * `POST /import-env`: `register()` throws a real-shaped SQLite
+ * unique-constraint error unconditionally, as if a concurrent call had
+ * already inserted the row between this call's `list()` pre-check and its
+ * own insert attempt. All other methods delegate to the real repository.
+ */
+function withThrowingRegister(repo: SharedAccountRepository): SharedAccountRepository {
+  return {
+    list: () => repo.list(),
+    register: async () => {
+      throw new Error('UNIQUE constraint failed: shared_accounts.user_id');
+    },
+    unregister: (userId) => repo.unregister(userId),
+    countBoundRepositories: (userId) => repo.countBoundRepositories(userId),
+    countSessions: (userId) => repo.countSessions(userId),
   };
 }
 
@@ -401,6 +421,60 @@ describe('Shared account routes', () => {
       const body = (await res.json()) as { imported: boolean };
       expect(body.imported).toBe(false);
       expect(await sharedAccountRepository.list()).toHaveLength(1);
+    });
+
+    it('records the authenticated caller as created_by, not the env-var account itself', async () => {
+      const sharedAccountRegistry = await SharedAccountRegistry.create({
+        username: REAL_OS_USERNAME,
+        userRepository,
+      });
+      const defaultUserId = sharedAccountRegistry.getDefaultUserId();
+      expect(defaultUserId).not.toBeNull();
+
+      const importer: AuthUser = { id: 'importer-1', username: 'importer', homeDir: '/home/importer' };
+      await db
+        .insertInto('users')
+        .values({
+          id: importer.id,
+          os_uid: null,
+          username: importer.username,
+          home_dir: importer.homeDir,
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        })
+        .execute();
+
+      const app = buildApp(
+        { sharedAccountRepository, userRepository, sharedAccountRegistry } as Partial<AppContext>,
+        importer,
+      );
+      const res = await app.request('/api/shared-accounts/import-env', { method: 'POST' });
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { imported: boolean };
+      expect(body.imported).toBe(true);
+
+      const accounts = await sharedAccountRepository.list();
+      expect(accounts).toHaveLength(1);
+      expect(accounts[0]?.createdBy).toBe(importer.id);
+      expect(accounts[0]?.createdBy).not.toBe(defaultUserId);
+    });
+
+    it('returns imported: false when a concurrent import-env call wins the registration race', async () => {
+      const sharedAccountRegistry = await SharedAccountRegistry.create({
+        username: REAL_OS_USERNAME,
+        userRepository,
+      });
+      const racyRepository = withThrowingRegister(sharedAccountRepository);
+
+      const app = buildApp({
+        sharedAccountRepository: racyRepository,
+        userRepository,
+        sharedAccountRegistry,
+      } as Partial<AppContext>);
+      const res = await app.request('/api/shared-accounts/import-env', { method: 'POST' });
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { imported: boolean };
+      expect(body.imported).toBe(false);
     });
 
     it('imports successfully even when the account already has initiated_by-null sessions (4a/4b guards bypassed)', async () => {

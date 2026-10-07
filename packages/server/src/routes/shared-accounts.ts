@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import type { Kysely } from 'kysely';
 import { RegisterSharedAccountRequestSchema } from '@agent-console/shared';
 import type { SharedAccountRepository } from '../repositories/shared-account-repository.js';
-import { lookupOsUser } from '../services/os-user-lookup.js';
+import { lookupOsUser, type OsUserInfo } from '../services/os-user-lookup.js';
 import type { UserRepository } from '../repositories/user-repository.js';
 import type { Database } from '../database/schema.js';
 import { ValidationError, NotFoundError, ConflictError } from '../lib/errors.js';
@@ -19,22 +19,21 @@ const logger = createLogger('api:shared-accounts');
  * unguarded -- see this module's `POST /import-env` handler for why it
  * skips the two guards `POST /` applies).
  *
- * Resolves `username` against the host OS, upserts/reuses the corresponding
- * `users` row, and registers it as a shared account. Throws `ValidationError`
- * when the username does not resolve to an OS account; lets a duplicate
+ * Upserts/reuses the `users` row for the already-resolved `osInfo` and
+ * registers it as a shared account. Does NOT resolve the OS account and does
+ * NOT handle the does-not-resolve case -- both call sites already need their
+ * own `lookupOsUser` call for other reasons (`POST /`'s personal-session
+ * guard; `POST /import-env`'s own OS-account validation), so resolution is
+ * the caller's responsibility and is never duplicated here. Lets a duplicate
  * registration's unique-constraint error propagate unchanged (callers decide
  * how to translate it).
  */
 async function registerSharedAccountCore(
   username: string,
+  osInfo: OsUserInfo,
   createdBy: string | null,
   deps: { sharedAccountRepository: SharedAccountRepository; userRepository: UserRepository },
 ): Promise<{ userId: string }> {
-  const osInfo = await lookupOsUser(username);
-  if (!osInfo) {
-    throw new ValidationError(`'${username}' does not resolve to an OS account.`);
-  }
-
   const user = await deps.userRepository.upsertByOsUid(osInfo.uid, username, osInfo.homeDir);
   await deps.sharedAccountRepository.register(user.id, createdBy);
 
@@ -104,7 +103,7 @@ const sharedAccounts = new Hono<AppBindings>()
 
     let result: { userId: string };
     try {
-      result = await registerSharedAccountCore(username, authUser.id, { sharedAccountRepository, userRepository });
+      result = await registerSharedAccountCore(username, osInfo, authUser.id, { sharedAccountRepository, userRepository });
     } catch (err) {
       if (isUniqueConstraintError(err)) {
         throw new ConflictError(`'${username}' is already registered as a shared account.`);
@@ -152,6 +151,7 @@ const sharedAccounts = new Hono<AppBindings>()
     }
 
     const { sharedAccountRegistry, sharedAccountRepository, userRepository } = c.get('appContext');
+    const authUser = c.get('authUser');
     const username = sharedAccountRegistry.getDefaultUsername();
     if (!username) {
       return c.json({ error: 'No env-var shared account is configured' }, 404);
@@ -163,10 +163,25 @@ const sharedAccounts = new Hono<AppBindings>()
       return c.json({ imported: false });
     }
 
-    // Self-registering: there is no operator-initiated caller here, so the
-    // env-var account is recorded as having registered itself.
-    const defaultUserId = sharedAccountRegistry.getDefaultUserId();
-    await registerSharedAccountCore(username, defaultUserId, { sharedAccountRepository, userRepository });
+    const osInfo = await lookupOsUser(username);
+    if (!osInfo) {
+      throw new ValidationError(`'${username}' does not resolve to an OS account.`);
+    }
+
+    // The caller is whoever is logged in and clicked "Import" -- same
+    // operator-initiated attribution as `POST /`, not the env-var account
+    // registering itself.
+    try {
+      await registerSharedAccountCore(username, osInfo, authUser.id, { sharedAccountRepository, userRepository });
+    } catch (err) {
+      if (isUniqueConstraintError(err)) {
+        // A concurrent import-env call won the race and registered first;
+        // from this caller's perspective the account is now registered,
+        // which is exactly what `imported: false` already means below.
+        return c.json({ imported: false });
+      }
+      throw err;
+    }
 
     return c.json({ imported: true });
   });

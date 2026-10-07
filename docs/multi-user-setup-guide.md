@@ -1508,10 +1508,19 @@ curl -s http://localhost:<port>/api/shared-accounts \
   -H 'Cookie: <session cookie>'   # lists every registered account with its bound-repository and session counts
 ```
 
-An account cannot be registered if it has personal (non-shared) sessions
-already attached to it, and cannot be unregistered while any repository is
-bound to it or any session was created under it — both guards return a
-`409` naming the reason.
+Registering an account through **Register** or the `POST /api/shared-accounts`
+API is refused in two cases, both interim safeguards until a dedicated
+who-may-register allowlist lands: you cannot register your own logged-in
+account (`400`), and you cannot register an account that already has
+personal (non-shared) sessions attached to it (`409`, naming the count) --
+that shape of history marks it as a human's account, not a shared execution
+identity. **Import current env-var account** (`POST /api/shared-accounts/import-env`)
+is exempt from both checks: the account named by `AGENT_CONSOLE_SHARED_USERNAME`
+is already vouched for by whoever set that variable on the unit, so it can be
+imported even if it happens to have sessions from before this release's
+bookkeeping existed. Unregistering an account is refused (`409`, naming the
+counts) while any repository is bound to it or any session was created
+under it, regardless of which path registered it.
 
 ### 5. Verify
 
