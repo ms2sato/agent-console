@@ -51,8 +51,9 @@ describe('GitHubServiceParser: issues event dispatch', () => {
     expect(event!.type).toBe('issue:labeled');
     expect(event!.metadata.repositoryName).toBe('owner/repo');
     expect(event!.metadata.labels).toEqual(['enhancement', 'needs-triage']);
-    expect(event!.summary).toContain('#100');
-    expect(event!.summary).toContain('enhancement');
+    // Distinct from the `labeled` summary: GitHub sends both `opened` and `labeled`
+    // when an Issue is created with a label, and the receiver must be able to tell them apart.
+    expect(event!.summary).toBe("Issue #100 opened with label 'enhancement': New feature request");
   });
 
   it('returns null for an opened issue with an empty label set (vacuous boundary)', async () => {
