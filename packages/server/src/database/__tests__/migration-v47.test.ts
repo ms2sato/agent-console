@@ -226,10 +226,37 @@ describe('migration v47 (shared_accounts table + repositories.shared_account_use
     await db.destroy();
   });
 
-  it('lands the fresh in-memory dispatcher on schema version 47', async () => {
+  // Asserts BOTH v46's and v47's artifacts, not just the version number, so
+  // that a dropped or misordered `if (currentVersion < 46)` dispatcher guard
+  // fails THIS real-dispatcher test -- not only the hand-sequenced
+  // migrateToV46-then-migrateToV47 test below, which never consults the
+  // dispatcher's own guard chain at all.
+  //
+  // Polarity measured directly: temporarily removed the
+  // `if (currentVersion < 46) { await migrateToV46(database); }` block from
+  // `runMigrations` in connection.ts (leaving `< 47`'s block, and v46's own
+  // function, untouched) -- this test failed on the `disable_claude_ai_connectors`
+  // assertion below (column undefined), while the version assertion alone
+  // would NOT have caught it (a fresh dispatcher still reaches 47 by running
+  // every `< N` check against the same version-0 starting value, so skipping
+  // v46's block only skips v46's OWN migration, not the version bump).
+  // Restored immediately after confirming the failure.
+  it('lands the fresh in-memory dispatcher on schema version 47, with both v46 and v47 artifacts present', async () => {
     const db = await initializeDatabase(':memory:');
     const versionRes = await sql<{ user_version: number }>`PRAGMA user_version`.execute(db);
     expect(versionRes.rows[0]?.user_version).toBe(47);
+
+    const userColumns = await sql.raw<PragmaTableInfoRow>('PRAGMA table_info(users)').execute(db);
+    const disableConnectorsColumn = userColumns.rows.find((c) => c.name === 'disable_claude_ai_connectors');
+    expect(disableConnectorsColumn).toBeDefined();
+
+    const repoColumns = await sql.raw<PragmaTableInfoRow>('PRAGMA table_info(repositories)').execute(db);
+    expect(repoColumns.rows.find((c) => c.name === 'shared_account_user_id')).toBeDefined();
+
+    const sharedAccountsTable = await sql<{ name: string }>`
+      SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'shared_accounts'
+    `.execute(db);
+    expect(sharedAccountsTable.rows).toHaveLength(1);
   });
 
   // `runMigrations` (the dispatcher's own `if (currentVersion < N)` guard
