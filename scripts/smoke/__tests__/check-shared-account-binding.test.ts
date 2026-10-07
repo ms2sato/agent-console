@@ -17,37 +17,17 @@ import { parseArgs } from '../check-shared-account-binding.js';
  * `--auth-mode` usage-error table.
  */
 describe('check-shared-account-binding smoke: argv parsing', () => {
-  it('parses two positionals with expectGlobalAccount defaulting to false', () => {
+  it('parses two positionals', () => {
     expect(parseArgs(['alice', 'bob'])).toEqual({
       accountAUsername: 'alice',
       accountBUsername: 'bob',
-      expectGlobalAccount: false,
     });
   });
 
-  it('accepts --expect-global-account in any position', () => {
-    expect(parseArgs(['alice', 'bob', '--expect-global-account'])).toEqual({
+  it('tolerates a leading -- separator (the `bun script -- <args>` form the sibling smokes accept)', () => {
+    expect(parseArgs(['--', 'alice', 'bob'])).toEqual({
       accountAUsername: 'alice',
       accountBUsername: 'bob',
-      expectGlobalAccount: true,
-    });
-    expect(parseArgs(['--expect-global-account', 'alice', 'bob'])).toEqual({
-      accountAUsername: 'alice',
-      accountBUsername: 'bob',
-      expectGlobalAccount: true,
-    });
-    expect(parseArgs(['alice', '--expect-global-account', 'bob'])).toEqual({
-      accountAUsername: 'alice',
-      accountBUsername: 'bob',
-      expectGlobalAccount: true,
-    });
-  });
-
-  it('tolerates a leading -- separator (the `bun script -- --flag` form the sibling smokes accept)', () => {
-    expect(parseArgs(['--', 'alice', 'bob', '--expect-global-account'])).toEqual({
-      accountAUsername: 'alice',
-      accountBUsername: 'bob',
-      expectGlobalAccount: true,
     });
   });
 
@@ -67,7 +47,7 @@ describe('check-shared-account-binding smoke: argv parsing', () => {
     const stderrText = proc.stderr.toString();
     expect(stderrText).toContain(`error: ${expectedError}`);
     expect(stderrText).toContain(
-      'usage: bun scripts/smoke/check-shared-account-binding.ts <account-A-username> <account-B-username> [--expect-global-account]',
+      'usage: bun scripts/smoke/check-shared-account-binding.ts <account-A-username> <account-B-username>',
     );
     expect(stderrText).not.toContain('PROBE ERROR');
   });

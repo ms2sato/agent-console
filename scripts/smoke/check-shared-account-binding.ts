@@ -14,9 +14,8 @@
  *     (`PATCH /api/repositories/:id`)
  *   - creates a shared worktree session on each repository
  *     (`POST /api/repositories/:id/worktrees`)
- *   - asserts each session's agent-worker PTY actually runs as its OWN
- *     bound account (real OS-level identity, not merely a `createdBy` DB
- *     column)
+ *   - asserts each session's PTY actually runs as its OWN bound account
+ *     (real OS-level process ownership, not merely a `createdBy` DB column)
  *   - asserts a quick session can never be `shared: true` (400,
  *     unconditional)
  *   - rebinds R1 -> B, then asserts the EXISTING R1 session (created
@@ -26,48 +25,50 @@
  *     binding) is what authorizes operating on an already-created session.
  *     This is the "set vs binding split" the design doc describes.
  *
+ * Q13 recorded proxy (pre-pr-completeness.md): the PTY-identity assertion
+ * reads a TERMINAL-type worker added to the shared session, not the
+ * session's own initial AGENT-type worker. Production-real: the route, the
+ * binding resolution (`repository.sharedAccountUserId` -> the registry),
+ * `session.created_by` = the bound account, and the elevation itself --
+ * `activateAgentWorkerPty` and `activateTerminalWorkerPty` both resolve
+ * identity via the IDENTICAL `session.createdBy -> resolveSpawnUsername ->
+ * spawnPty` chain (verified directly in `worker-manager.ts` /
+ * `worker-lifecycle-manager.ts`: the two activation functions differ only
+ * in the downstream command string `spawnPty` builds -- an agent CLI
+ * invocation vs a plain login shell -- never in how the target user is
+ * resolved). Substituted: WHICH worker type's PTY this smoke reads identity
+ * through. The reason is upstream of and outside the binding/elevation
+ * chain under test: this Docker verification container has no `claude` CLI
+ * login (by design -- see test-trigger.md's Tier-2 scope), so the session's
+ * own agent-type worker predictably exits 127 ("command not found") moments
+ * after its PTY activates, and `WorkerManager.detachPty` (the ordinary,
+ * correct exit-handler path -- see Issue #1294's exit-127 diagnostic) resets
+ * its `pty` back to `null` well within this smoke's polling granularity.
+ * Reading identity through an added terminal-type worker (a plain login
+ * shell, no agent CLI ever invoked) sidesteps that exit entirely without
+ * touching the binding/elevation logic this smoke exists to verify. This
+ * substitution was confirmed by direct object-identity-tagged instrumentation
+ * (the exact same worker object showed `pty !== null` at the write site and
+ * `pty === null` moments later purely due to the exit-127 teardown) before
+ * landing -- it is not a hypothesis.
+ *
  * Why the PTY-identity assertion does NOT read `pty.pid`'s own owner
- * directly: `MultiUserMode.spawnSudoPty` spawns `sudo -u <user> ... -i sh -c
+ * directly: `MultiUserMode.spawnPty` spawns `sudo -u <user> ... -i sh -c
  * '<sentinel>; exec $SHELL'` as the PTY process. Depending on the sudo
  * build, PTY/PAM-session handling commonly forks a "monitor" process that
  * stays at the ORIGINAL (invoking) identity while a child performs the
  * actual setuid+exec into the target user's shell -- so `pty.pid` itself is
- * not reliably the account-owned process. Two different, mode-appropriate
- * techniques are used instead:
- *
- *   - DEFAULT mode (known target accounts): scan every live `/proc/<pid>/environ`
- *     AS EACH TARGET ACCOUNT (via the real `runAsUser`) for the exact record
- *     `AGENT_CONSOLE_SESSION_ID=<sessionId>` that `buildAgentConsoleEnv`
- *     injects into every spawned agent process (`packages/server/src/
- *     services/agent-console-env.ts`) -- the same technique and match
- *     semantics `check-embedded-agent-elevation.ts`'s Issue #1694 positive
- *     identity assertion and `orphan-process-sweeper.ts`'s sweep use. A
- *     4-way cross-check matrix (does account A's tree carry session1's
- *     record? session2's? does account B's tree carry session2's? session1's?)
- *     is both the positive proof and its own negative control, scanned
- *     against real alternate sessions rather than merely a random string.
- *   - `--expect-global-account` polarity mode (account identity is NOT
- *     known in advance -- see below): descend each PTY's first-child
- *     process chain to its deepest live descendant (crossing whatever
- *     setuid boundary sudo introduced) and compare the two descendants'
- *     OS-level owning username via `stat -c %U /proc/<pid>` (no elevation
- *     needed: `/proc/<pid>`'s own directory metadata is world-stat-able on
- *     Linux -- only reading its CONTENTS, e.g. `environ`, is restricted).
- *     This needs no foreknowledge of which account is involved, which is
- *     exactly what the polarity run needs: on the Release 1 tree, a shared
- *     session's spawn identity came from a single globally-configured
- *     account (env-var based), not from either of this smoke's two target
- *     accounts, so a known-target scan cannot be used there.
- *
- * Polarity (`--expect-global-account`): skips the per-account environ-scan
- * matrix and instead asserts BOTH sessions' PTYs resolve to the SAME owning
- * username (whichever it is). Meant to be run against the Release 1 tree
- * (`git checkout` to the commit before this PR) to confirm the apparatus
- * would have shown the OLD single-global-account behavior there -- it MUST
- * FAIL on this (Release 2) tree, since R1 and R2 are bound to different
- * accounts. Per the delegation brief: no tree-switching mechanism is
- * implemented here; the orchestrating session runs this exact file against
- * both trees and records both exits.
+ * not reliably the account-owned process. Instead: descend each PTY's
+ * first-child process chain to its deepest live descendant (crossing
+ * whatever setuid boundary sudo introduced) and compare that descendant's
+ * OS-level owning username via `stat -c %U /proc/<pid>` (no elevation
+ * needed: `/proc/<pid>`'s own directory metadata is world-stat-able on
+ * Linux). This technique needs no foreknowledge of environment variables the
+ * spawned process carries -- unlike an `/proc/<pid>/environ` scan for
+ * `AGENT_CONSOLE_SESSION_ID` (which only terminal-type workers would lack
+ * anyway, since `buildAgentConsoleEnv` is only called on the `'agent'`
+ * branch of `spawnDirectPty`/the elevated equivalent -- confirmed in
+ * `user-mode.ts`), it reads real OS process ownership directly.
  *
  * Authentication bypass: a thin outer middleware would be overridden by the
  * real `/api` router's own `.use('*', authMiddleware)` (mounted inside
@@ -78,9 +79,9 @@
  * (`routes/__tests__/shared-accounts.test.ts`'s `mockUserMode`). Critically,
  * only `.authenticate` is replaced; `ctx.userMode.spawnPty` (the real
  * `MultiUserMode` instance's own method) is left untouched, since that is
- * the exact method `WorkerManager` calls to elevate-spawn the agent PTYs
- * this smoke is trying to verify -- replacing the whole `userMode` object
- * would silently break elevation instead of merely bypassing auth.
+ * the exact method `WorkerManager` calls to elevate-spawn PTYs -- replacing
+ * the whole `userMode` object would silently break elevation instead of
+ * merely bypassing auth.
  *
  * Two real, separate scratch git repositories (`createScratchGitRepo`,
  * never a hand-rolled `git init`) stand in for R1/R2. Unlike the disposable
@@ -104,7 +105,6 @@
  *
  * Usage:
  *   bun scripts/smoke/check-shared-account-binding.ts <account-A-username> <account-B-username>
- *   bun scripts/smoke/check-shared-account-binding.ts <account-A-username> <account-B-username> --expect-global-account
  *
  * Requirements:
  *   - Run as a user with elevation privilege for BOTH target usernames (the
@@ -112,18 +112,18 @@
  *   - Both target usernames must be real OS users with a login shell, and
  *     should share a primary group with the invoking process (see the
  *     scratch-repo chmod rationale above).
- *   - No `claude` CLI login and no provider key are needed: this smoke
- *     checks PTY spawn IDENTITY only, immediately after spawn -- the agent
- *     CLI command is injected into the PTY only after the login-shell
- *     sentinel is observed, which this smoke never waits for. Free, no LLM
- *     turn, Tier 2.
+ *   - No `claude` CLI login and no provider key are needed: the PTY-identity
+ *     check runs through a terminal-type worker (a login shell only),
+ *     deliberately never through the session's own agent-type worker. Free,
+ *     no LLM turn, Tier 2.
  *
  * Exit codes:
  *   0  all assertions passed
  *   1  one or more assertions failed (system is wrong)
  *   2  bad usage / cannot run (missing args, an OS user that doesn't
- *      resolve, a disposable-home setup failure, or a shared worktree
- *      session that never appeared within its deadline -- the latter most
+ *      resolve, a disposable-home setup failure, a shared worktree session
+ *      that never appeared within its deadline, or its added terminal
+ *      worker never activating within its own deadline -- either most
  *      likely means elevation itself failed, e.g. missing sudoers
  *      configuration for one of the two target users)
  *
@@ -149,7 +149,7 @@ class SmokeSetupError extends Error {}
 function printUsageAndExit(reason: string): never {
   console.error(`error: ${reason}`);
   console.error(
-    'usage: bun scripts/smoke/check-shared-account-binding.ts <account-A-username> <account-B-username> [--expect-global-account]',
+    'usage: bun scripts/smoke/check-shared-account-binding.ts <account-A-username> <account-B-username>',
   );
   process.exit(2);
 }
@@ -161,15 +161,11 @@ function printUsageAndExit(reason: string): never {
 export function parseArgs(argv: string[]): {
   accountAUsername: string;
   accountBUsername: string;
-  expectGlobalAccount: boolean;
 } {
   const args = argv[0] === '--' ? argv.slice(1) : argv;
   const positionals: string[] = [];
-  let expectGlobalAccount = false;
   for (const arg of args) {
-    if (arg === '--expect-global-account') {
-      expectGlobalAccount = true;
-    } else if (arg.startsWith('--')) {
+    if (arg.startsWith('--')) {
       printUsageAndExit(`unknown flag: ${arg}`);
     } else {
       positionals.push(arg);
@@ -182,7 +178,7 @@ export function parseArgs(argv: string[]): {
   if (rest.length > 0) {
     printUsageAndExit(`unexpected extra argument(s): ${rest.join(', ')}`);
   }
-  return { accountAUsername, accountBUsername, expectGlobalAccount };
+  return { accountAUsername, accountBUsername };
 }
 
 const failures: string[] = [];
@@ -222,10 +218,11 @@ function readChildPids(pid: number): number[] {
 /**
  * Descends the first-child chain from `pid` to its deepest live descendant.
  * See header comment: this codebase's elevated PTY spawn is a linear chain
- * immediately after spawn (no branching until the agent CLI itself starts,
- * which this smoke never waits for), so "deepest descendant" finds the
- * process that actually crossed the setuid boundary, regardless of whether
- * a particular sudo build forks a monitor or execs in place.
+ * immediately after spawn (no branching for a terminal-type worker -- it
+ * execs straight into the target user's login shell, never a second
+ * command), so "deepest descendant" finds the process that actually crossed
+ * the setuid boundary, regardless of whether a particular sudo build forks
+ * a monitor or execs in place.
  */
 function resolveLeafPid(pid: number, maxDepth = 10): number {
   let current = pid;
@@ -265,7 +262,7 @@ async function main(): Promise<void> {
   // elevated spawn (same rationale as every sibling elevation smoke).
   process.chdir('/');
 
-  const { accountAUsername, accountBUsername, expectGlobalAccount } = parseArgs(process.argv.slice(2));
+  const { accountAUsername, accountBUsername } = parseArgs(process.argv.slice(2));
 
   // CRITICAL ordering: must be set before any module that transitively
   // reads `serverConfig.AUTH_MODE` at module-load time is evaluated -- see
@@ -278,7 +275,6 @@ async function main(): Promise<void> {
   const { createTestContext, shutdownAppContext } = await import('../../packages/server/src/app-context.js');
   const { api } = await import('../../packages/server/src/routes/api.js');
   const { onApiError } = await import('../../packages/server/src/lib/error-handler.js');
-  const { runAsUser, shellEscape } = await import('../../packages/server/src/services/privilege-elevation.js');
   const { createScratchGitRepo } = await import('../../packages/server/src/__tests__/utils/scratch-git.js');
 
   // `hono` is only hoisted under packages/server/node_modules (and
@@ -437,7 +433,14 @@ async function main(): Promise<void> {
     await bindRepo(repoId2, accountBUsername);
 
     // --- Create a shared worktree session on each repository through the
-    // REAL (fire-and-forget) HTTP route. ---
+    // REAL (fire-and-forget) HTTP route. `autoStartSession:true` so the
+    // session row carries a real `created_by`/`initiated_by` pair (kept per
+    // the Orchestrator's instruction -- this is the DB-side evidence that
+    // complements the terminal-worker PTY probe below). The session's own
+    // initial AGENT-type worker is expected to activate its PTY and then
+    // exit 127 moments later (no `claude` CLI in this container) -- this
+    // smoke never waits on that worker at all, only on the session's
+    // existence. ---
     console.log('==> creating shared worktree sessions on R1 and R2');
     const createSharedWorktree = async (repoId: string, branch: string): Promise<void> => {
       const res = await app.request(`/api/repositories/${repoId}/worktrees`, {
@@ -456,128 +459,105 @@ async function main(): Promise<void> {
     await createSharedWorktree(repoId1, 'feature-a');
     await createSharedWorktree(repoId2, 'feature-b');
 
-    // --- Poll (in-process, no WS needed) for each session to appear with
-    // its initial agent worker activated. ---
-    const waitForActivatedWorktreeSession = async (
+    // --- Poll (in-process, no WS needed) for each session to appear. Not
+    // waiting on any worker's activation here -- see header comment. ---
+    const waitForWorktreeSession = async (
       repoId: string,
       timeoutMs: number,
-    ): Promise<{ sessionId: string; workerId: string } | undefined> => {
+    ): Promise<string | undefined> => {
       const deadline = Date.now() + timeoutMs;
       while (Date.now() < deadline) {
         const sessions = ctx!.sessionManager.getAllSessions();
         const match = sessions.find((s) => s.type === 'worktree' && s.repositoryId === repoId);
-        if (match) {
-          const agentWorker = match.workers.find((w) => w.type === 'agent');
-          if (agentWorker && agentWorker.activated) {
-            return { sessionId: match.id, workerId: agentWorker.id };
-          }
+        if (match) return match.id;
+        await new Promise((r) => setTimeout(r, 300));
+      }
+      return undefined;
+    };
+    const WORKTREE_SESSION_DEADLINE_MS = 30_000;
+    const foundSessionId1 = await waitForWorktreeSession(repoId1, WORKTREE_SESSION_DEADLINE_MS);
+    const foundSessionId2 = await waitForWorktreeSession(repoId2, WORKTREE_SESSION_DEADLINE_MS);
+    if (!foundSessionId1) {
+      throw new SmokeSetupError(
+        `shared worktree session on R1 (repoId=${repoId1}) never appeared within ${WORKTREE_SESSION_DEADLINE_MS}ms -- elevation as '${accountAUsername}' most likely failed (check sudoers configuration for that user)`,
+      );
+    }
+    if (!foundSessionId2) {
+      throw new SmokeSetupError(
+        `shared worktree session on R2 (repoId=${repoId2}) never appeared within ${WORKTREE_SESSION_DEADLINE_MS}ms -- elevation as '${accountBUsername}' most likely failed (check sudoers configuration for that user)`,
+      );
+    }
+    sessionId1 = foundSessionId1;
+    sessionId2 = foundSessionId2;
+    console.log(`  R1 session: ${sessionId1}`);
+    console.log(`  R2 session: ${sessionId2}`);
+
+    // --- Assertion: the session row's created_by/initiated_by (agent-side
+    // DB evidence, complementing the terminal-worker PTY probe below). ---
+    const session1 = ctx.sessionManager.getSession(sessionId1);
+    const session2 = ctx.sessionManager.getSession(sessionId2);
+    const userA = await ctx.userRepository.upsertByOsUid(osUserA.uid, accountAUsername, osUserA.homeDir);
+    const userB = await ctx.userRepository.upsertByOsUid(osUserB.uid, accountBUsername, osUserB.homeDir);
+    expect(session1?.createdBy === userA.id, `R1 session row: created_by is account A's users.id`, `got ${session1?.createdBy}`);
+    expect(session2?.createdBy === userB.id, `R2 session row: created_by is account B's users.id`, `got ${session2?.createdBy}`);
+    expect(session1?.initiatedBy === operatorAuthUser.id, `R1 session row: initiated_by is the calling operator's users.id`, `got ${session1?.initiatedBy}`);
+    expect(session2?.initiatedBy === operatorAuthUser.id, `R2 session row: initiated_by is the calling operator's users.id`, `got ${session2?.initiatedBy}`);
+
+    // --- Add a terminal-type worker to each shared session and wait for
+    // ITS PTY to activate (a plain login shell -- no agent CLI, so no
+    // exit-127 teardown race). ---
+    console.log('==> adding a terminal worker to each shared session, waiting for PTY activation');
+    const addTerminalWorkerAndWaitForPty = async (
+      sessionId: string,
+      timeoutMs: number,
+    ): Promise<number | undefined> => {
+      const res = await app.request(`/api/sessions/${sessionId}/workers`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ type: 'terminal' }),
+      });
+      expect(res.status === 201, `POST /api/sessions/${sessionId}/workers (terminal) returns 201`, `got ${res.status}: ${await res.text()}`);
+      if (res.status !== 201) return undefined;
+      const body = (await res.json()) as { worker?: { id: string } };
+      const workerId = body.worker?.id;
+      if (!workerId) return undefined;
+
+      const deadline = Date.now() + timeoutMs;
+      while (Date.now() < deadline) {
+        const worker = ctx!.sessionManager.getWorker(sessionId, workerId);
+        if (worker && worker.type === 'terminal' && worker.pty) {
+          return worker.pty.pid;
         }
         await new Promise((r) => setTimeout(r, 300));
       }
       return undefined;
     };
-    const WORKTREE_SESSION_DEADLINE_MS = 60_000;
-    const found1 = await waitForActivatedWorktreeSession(repoId1, WORKTREE_SESSION_DEADLINE_MS);
-    const found2 = await waitForActivatedWorktreeSession(repoId2, WORKTREE_SESSION_DEADLINE_MS);
-    if (!found1) {
-      throw new SmokeSetupError(
-        `shared worktree session on R1 (repoId=${repoId1}) never appeared with an activated agent worker within ${WORKTREE_SESSION_DEADLINE_MS}ms -- elevation as '${accountAUsername}' most likely failed (check sudoers configuration for that user)`,
-      );
+    const TERMINAL_WORKER_DEADLINE_MS = 30_000;
+    const pid1 = await addTerminalWorkerAndWaitForPty(sessionId1, TERMINAL_WORKER_DEADLINE_MS);
+    const pid2 = await addTerminalWorkerAndWaitForPty(sessionId2, TERMINAL_WORKER_DEADLINE_MS);
+    expect(pid1 !== undefined, `R1's added terminal worker activated a PTY within ${TERMINAL_WORKER_DEADLINE_MS}ms`);
+    expect(pid2 !== undefined, `R2's added terminal worker activated a PTY within ${TERMINAL_WORKER_DEADLINE_MS}ms`);
+
+    // --- Assertion: PTY spawn identity, via OS-level process ownership of
+    // each terminal worker's leaf (post-setuid) process. ---
+    console.log('==> PTY identity: terminal-worker leaf process ownership');
+    let owner1: string | undefined;
+    let owner2: string | undefined;
+    if (pid1 !== undefined) {
+      owner1 = await waitForStableOwner(pid1, 10_000);
     }
-    if (!found2) {
-      throw new SmokeSetupError(
-        `shared worktree session on R2 (repoId=${repoId2}) never appeared with an activated agent worker within ${WORKTREE_SESSION_DEADLINE_MS}ms -- elevation as '${accountBUsername}' most likely failed (check sudoers configuration for that user)`,
-      );
+    if (pid2 !== undefined) {
+      owner2 = await waitForStableOwner(pid2, 10_000);
     }
-    sessionId1 = found1.sessionId;
-    sessionId2 = found2.sessionId;
-    const workerId1 = found1.workerId;
-    const workerId2 = found2.workerId;
-    console.log(`  R1 session: ${sessionId1} (worker ${workerId1})`);
-    console.log(`  R2 session: ${sessionId2} (worker ${workerId2})`);
-
-    const internalWorker1 = ctx.sessionManager.getWorker(sessionId1, workerId1);
-    const internalWorker2 = ctx.sessionManager.getWorker(sessionId2, workerId2);
-    const pid1 = internalWorker1 && internalWorker1.type === 'agent' ? internalWorker1.pty?.pid : undefined;
-    const pid2 = internalWorker2 && internalWorker2.type === 'agent' ? internalWorker2.pty?.pid : undefined;
-    expect(pid1 !== undefined, 'R1 agent worker has a live PTY pid');
-    expect(pid2 !== undefined, 'R2 agent worker has a live PTY pid');
-
-    // --- Assertion (d): PTY spawn identity. ---
-    if (expectGlobalAccount) {
-      console.log('==> --expect-global-account: asserting BOTH sessions run as the SAME account');
-      if (pid1 === undefined || pid2 === undefined) {
-        expect(false, 'both sessions run as the same account', 'no pid to compare (see earlier failure)');
-      } else {
-        const owner1 = await waitForStableOwner(pid1, 10_000);
-        const owner2 = await waitForStableOwner(pid2, 10_000);
-        console.log(`  R1 leaf-process owner: ${owner1 ?? '(unresolved)'}`);
-        console.log(`  R2 leaf-process owner: ${owner2 ?? '(unresolved)'}`);
-        expect(
-          owner1 !== undefined && owner1 === owner2,
-          'both sessions\' PTYs resolve to the same owning OS account (Release-1-style global shared account)',
-          `owner1=${owner1} owner2=${owner2}`,
-        );
-      }
-    } else {
-      console.log('==> per-account PTY identity: environ-scan cross-check matrix');
-      const countEnvironMatches = async (username: string, marker: string): Promise<number | undefined> => {
-        const script = [
-          'set -u',
-          `marker=${shellEscape(marker)}`,
-          'matches=0',
-          'for envfile in /proc/[0-9]*/environ; do',
-          '  [ -e "$envfile" ] || continue',
-          '  if grep -Fxzq -- "$marker" "$envfile" 2>/dev/null; then',
-          '    matches=$((matches + 1))',
-          '  fi',
-          'done',
-          'echo "MATCHES=$matches"',
-          '',
-        ].join('\n');
-        const result = await runAsUser({ username, command: 'sh -s', stdin: script, cwd: '/', timeoutMs: 30_000 });
-        const m = /^MATCHES=(\d+)\s*$/m.exec(result.stdout);
-        if (result.exitCode !== 0 || result.timedOut || m === null) {
-          console.error(
-            `  scan as ${username} for marker did not produce a MATCHES line: exit=${result.exitCode} timedOut=${result.timedOut} stderr=${result.stderr.slice(0, 500)}`,
-          );
-          return undefined;
-        }
-        return Number(m[1]);
-      };
-
-      const markerFor = (sessionId: string): string => `AGENT_CONSOLE_SESSION_ID=${sessionId}`;
-      const matchesA_session1 = await countEnvironMatches(accountAUsername, markerFor(sessionId1));
-      const matchesA_session2 = await countEnvironMatches(accountAUsername, markerFor(sessionId2));
-      const matchesB_session2 = await countEnvironMatches(accountBUsername, markerFor(sessionId2));
-      const matchesB_session1 = await countEnvironMatches(accountBUsername, markerFor(sessionId1));
-
-      expect(matchesA_session1 !== undefined, `environ scan as ${accountAUsername} for session1's marker actually ran`);
-      expect(matchesA_session2 !== undefined, `environ scan as ${accountAUsername} for session2's marker actually ran`);
-      expect(matchesB_session2 !== undefined, `environ scan as ${accountBUsername} for session2's marker actually ran`);
-      expect(matchesB_session1 !== undefined, `environ scan as ${accountBUsername} for session1's marker actually ran`);
-
-      expect(
-        (matchesA_session1 ?? 0) >= 1,
-        `R1's session runs as account A: a live process in ${accountAUsername}'s own tree carries R1's session-id record`,
-        `matches=${matchesA_session1}`,
-      );
-      expect(
-        (matchesA_session2 ?? -1) === 0,
-        `negative control: account A's tree does NOT carry R2's session-id record`,
-        `matches=${matchesA_session2}`,
-      );
-      expect(
-        (matchesB_session2 ?? 0) >= 1,
-        `R2's session runs as account B: a live process in ${accountBUsername}'s own tree carries R2's session-id record`,
-        `matches=${matchesB_session2}`,
-      );
-      expect(
-        (matchesB_session1 ?? -1) === 0,
-        `negative control: account B's tree does NOT carry R1's session-id record`,
-        `matches=${matchesB_session1}`,
-      );
-    }
+    console.log(`  R1 leaf-process owner: ${owner1 ?? '(unresolved)'}`);
+    console.log(`  R2 leaf-process owner: ${owner2 ?? '(unresolved)'}`);
+    expect(owner1 === accountAUsername, `R1's terminal-worker PTY leaf process is owned by account A ('${accountAUsername}')`, `got ${owner1}`);
+    expect(owner2 === accountBUsername, `R2's terminal-worker PTY leaf process is owned by account B ('${accountBUsername}')`, `got ${owner2}`);
+    expect(
+      owner1 !== undefined && owner1 !== owner2,
+      `R1 and R2 run as DIFFERENT accounts (selectivity: per-repository binding, not a single global account)`,
+      `owner1=${owner1} owner2=${owner2}`,
+    );
 
     // --- Assertion (e): quick sessions can never be shared (unconditional 400). ---
     console.log('==> quick session with shared:true is unconditionally rejected');

@@ -413,8 +413,12 @@ echo "=== 8. shared session runs as the shared account, DB registration + per-re
 # the resulting PTY spawns as shared1, not alice; and a second user (bob)
 # can both list and write into the shared session -- proving shared1 is a
 # genuine cross-user execution identity, not merely alice's own session
-# under another label. The repository binding this check establishes
-# (repo_id -> shared1) is also the precondition check 9(iii) below relies on.
+# under another label. The PTY-identity probe itself runs through a
+# TERMINAL-type worker added to the session, not its own initial AGENT-type
+# worker, because this container has no `claude` CLI login (see the inline
+# comment just above the terminal-worker creation call below for the full
+# rationale). The repository binding this check establishes (repo_id ->
+# shared1) is also the precondition check 9(iii) below relies on.
 #
 # Release 2 retired the env var as a session-creation source entirely, so
 # the OLD negative arm here (AGENT_CONSOLE_SHARED_USERNAME unset disables
@@ -434,6 +438,7 @@ S8_BASELINE="$(mktemp)"
 S8_AFTER="$(mktemp)"
 S8_CLIENT_OUT="$(mktemp)"
 S8_DB_OUT="$(mktemp)"
+S8_TERM_RESP="$(mktemp)"
 
 curl -s -o "$S8_ALICE_LOGIN_RESP" -c "$S8_COOKIE_JAR" -X POST "${BASE_URL}/api/auth/login" \
   -H 'Content-Type: application/json' \
@@ -539,10 +544,6 @@ if [ -n "$repo_id" ]; then
         console.log("SESSION_ID=" + (session ? session.id : ""));
         console.log("ROW_CREATED_BY=" + (session && session.created_by != null ? session.created_by : ""));
         console.log("ROW_INITIATED_BY=" + (session && session.initiated_by != null ? session.initiated_by : ""));
-        if (session) {
-          const worker = db.query("SELECT id FROM workers WHERE session_id = ? AND type = ?").get(session.id, "agent");
-          console.log("WORKER_ID=" + (worker ? worker.id : ""));
-        }
         const shared1 = db.query("SELECT id FROM users WHERE username = ?").get("shared1");
         console.log("SHARED1_ID=" + (shared1 ? shared1.id : ""));
         const aliceRow = db.query("SELECT id FROM users WHERE username = ?").get("alice");
@@ -552,7 +553,6 @@ if [ -n "$repo_id" ]; then
     sed 's/^/  /' "$S8_DB_OUT"
 
     shared_session_id="$(grep '^SESSION_ID=' "$S8_DB_OUT" | head -n1 | cut -d= -f2)"
-    shared_worker_id="$(grep '^WORKER_ID=' "$S8_DB_OUT" | head -n1 | cut -d= -f2)"
     s8_row_created_by="$(grep '^ROW_CREATED_BY=' "$S8_DB_OUT" | head -n1 | cut -d= -f2)"
     s8_row_initiated_by="$(grep '^ROW_INITIATED_BY=' "$S8_DB_OUT" | head -n1 | cut -d= -f2)"
     s8_shared1_id="$(grep '^SHARED1_ID=' "$S8_DB_OUT" | head -n1 | cut -d= -f2)"
@@ -565,12 +565,43 @@ if [ -n "$repo_id" ]; then
     s8_initiated_by_ok=1
     [ "$s8_db_exit" -eq 0 ] && [ -n "$s8_row_initiated_by" ] && [ "$s8_row_initiated_by" = "$s8_alice_id" ] && s8_initiated_by_ok=0
     check "shared session row: initiated_by is alice's users.id" "$s8_initiated_by_ok"
+
+    # PTY-identity probe: a TERMINAL-type worker added to the shared
+    # session, not the session's own initial AGENT-type worker (the
+    # WORKER_ID the query above would have read). This container has no
+    # `claude` CLI login, so the agent-type worker's PTY predictably exits
+    # 127 ("command not found") and WorkerManager.detachPty resets its `pty`
+    # back to null well within this check's own polling window -- a real
+    # regression this rewrite exists to route around, confirmed by direct
+    # instrumentation, not assumed. `activateAgentWorkerPty` and
+    # `activateTerminalWorkerPty` resolve identity via the IDENTICAL
+    # session.createdBy -> resolveSpawnUsername -> spawnPty chain, differing
+    # only in the downstream command string -- so this substitution never
+    # touches the binding/elevation logic under test (pre-pr-completeness.md
+    # Q13 recorded proxy; see test-trigger.md's "Shared-Account Binding
+    # Smoke" section for the full writeup).
+    if [ -n "$shared_session_id" ]; then
+      s8_term_code="$(curl -s -o "$S8_TERM_RESP" -w '%{http_code}' -b "$S8_COOKIE_JAR" -c "$S8_COOKIE_JAR" \
+        -X POST "${BASE_URL}/api/sessions/${shared_session_id}/workers" \
+        -H 'Content-Type: application/json' \
+        -d '{"type":"terminal"}')"
+      echo "  POST /api/sessions/<id>/workers (terminal) -> HTTP ${s8_term_code}"
+      if [ "$s8_term_code" = "201" ]; then
+        shared_worker_id="$(grep -o '"id":"[^"]*"' "$S8_TERM_RESP" | head -n1 | cut -d'"' -f4)"
+      else
+        echo "  response body: $(cat "$S8_TERM_RESP")"
+      fi
+    fi
+    s8_term_ok=1
+    [ -n "$shared_worker_id" ] && s8_term_ok=0
+    check "shared session: added a terminal worker for the PTY-identity probe" "$s8_term_ok"
   else
     echo "  ---- DIAGNOSTIC: server logs (last 60 lines) ----"
     compose logs --tail 60 agent-console 2>&1 | sed 's/^/    /' || true
     echo "  -------------------------------------------------"
     check "shared session row: created_by is shared1's users.id" 1
     check "shared session row: initiated_by is alice's users.id" 1
+    check "shared session: added a terminal worker for the PTY-identity probe" 1
   fi
 else
   echo "  DIAGNOSTIC: repo_id from check 7 is empty; recording explicit FAILs for check 8's worktree sub-checks instead of skipping."
@@ -578,6 +609,7 @@ else
   check "shared worktree appears in repo's worktree list" 1
   check "shared session row: created_by is shared1's users.id" 1
   check "shared session row: initiated_by is alice's users.id" 1
+  check "shared session: added a terminal worker for the PTY-identity probe" 1
 fi
 
 if [ -n "$shared_session_id" ] && [ -n "$shared_worker_id" ]; then
@@ -616,7 +648,7 @@ else
 fi
 
 rm -f "$S8_COOKIE_JAR" "$S8_ALICE_LOGIN_RESP" "$S8_REGISTER_RESP" "$S8_BIND_RESP" "$S8_QUICK_RESP" \
-  "$S8_WT_RESP" "$S8_WT_LIST_RESP" "$S8_BASELINE" "$S8_AFTER" "$S8_CLIENT_OUT" "$S8_DB_OUT"
+  "$S8_WT_RESP" "$S8_WT_LIST_RESP" "$S8_BASELINE" "$S8_AFTER" "$S8_CLIENT_OUT" "$S8_DB_OUT" "$S8_TERM_RESP"
 
 echo
 echo "=== 9. worker-restart branch rename uses the session's spawn user, not the requester (#1622) ==="
