@@ -217,4 +217,30 @@ describe('Client-Server Boundary: Shared Accounts REST API', () => {
     const listAfterUnregister = await fetchSharedAccounts();
     expect(listAfterUnregister.accounts).toHaveLength(0);
   });
+
+  it('(e) updateRepository with NO sharedAccountUsername key leaves an existing binding untouched while other fields change', async () => {
+    // Pins the safety claim behind the EditRepositoryForm load-failure state:
+    // when shared accounts cannot be loaded, the client omits the
+    // `sharedAccountUsername` key entirely, and the route's `!== undefined`
+    // gate must then preserve the existing binding (omitted != null).
+    await registerSharedAccount(REAL_OS_USERNAME);
+    const { repository } = await registerRepository({ path: TEST_REPO_PATH });
+    const repoId = repository.id;
+    await updateRepository(repoId, { sharedAccountUsername: REAL_OS_USERNAME });
+
+    await updateRepository(repoId, { description: 'changed by (e)' });
+
+    // An earlier PATCH (the bind) exists, so take the LAST matching one.
+    const patchRequests = bridge.capturedRequests.filter(
+      (r) => r.method === 'PATCH' && r.url.includes(`/api/repositories/${repoId}`)
+    );
+    const lastPatch = patchRequests[patchRequests.length - 1];
+    expect(lastPatch).toBeDefined();
+    expect(lastPatch.body).not.toHaveProperty('sharedAccountUsername');
+    expect(lastPatch.body).toHaveProperty('description', 'changed by (e)');
+
+    const reread = await fetchRepository(repoId);
+    expect(reread.repository.sharedAccountUsername).toBe(REAL_OS_USERNAME);
+    expect(reread.repository.description).toBe('changed by (e)');
+  });
 });

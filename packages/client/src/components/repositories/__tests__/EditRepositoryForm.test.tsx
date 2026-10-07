@@ -42,7 +42,10 @@ function createSharedAccountsResponse() {
 }
 
 // Helper to set up mock fetch with Slack integration always returning 404
-function setupMockFetch(mainResponse: Response | (() => Promise<Response>)) {
+function setupMockFetch(
+  mainResponse: Response | (() => Promise<Response>),
+  sharedAccountsHandler: () => Promise<Response> = () => Promise.resolve(createSharedAccountsResponse()),
+) {
   mockFetch.mockImplementation((input: RequestInfo | URL) => {
     const url = typeof input === 'string' ? input : input.toString();
     if (url.includes('/integrations/slack')) {
@@ -52,7 +55,7 @@ function setupMockFetch(mainResponse: Response | (() => Promise<Response>)) {
       return Promise.resolve(createAgentsResponse());
     }
     if (url.includes('/api/shared-accounts')) {
-      return Promise.resolve(createSharedAccountsResponse());
+      return sharedAccountsHandler();
     }
     if (typeof mainResponse === 'function') {
       return mainResponse();
@@ -1035,6 +1038,145 @@ describe('EditRepositoryForm', () => {
       // must not reappear now that binding actually governs session
       // creation.
       expect(screen.queryByText(/does not yet change which account/)).toBeNull();
+    });
+
+    // Issue #1847: a failed shared-accounts fetch/parse must not look like an
+    // empty "(none)" list, and must not let the form overwrite the binding.
+    describe('when the shared-accounts query fails (Issue #1847)', () => {
+      const SERVER_ERROR_MESSAGE = 'Shared accounts store unavailable';
+
+      function createServerErrorResponse() {
+        return new Response(JSON.stringify({ error: SERVER_ERROR_MESSAGE }), {
+          status: 500,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+
+      // 200 body that fails ListSharedAccountsResponseSchema: `resolvable` is required.
+      function createMalformedSharedAccountsResponse() {
+        return createMockResponse({
+          accounts: [
+            { username: 'ci-runner', registeredAt: '2024-01-01T00:00:00Z', boundRepositoryCount: 1, sessionCount: 0 },
+          ],
+        });
+      }
+
+      async function expectDegradedBindingState(expectedOption: { value: string; text: string }) {
+        await waitFor(() => {
+          expect(screen.getByText(/Could not load shared accounts/)).toBeTruthy();
+        });
+        const select = screen.getByRole('combobox', { name: /Shared Account/ }) as HTMLSelectElement;
+        expect(select.disabled).toBe(true);
+        const options = Array.from(select.querySelectorAll('option'));
+        expect(options).toHaveLength(1);
+        expect(options[0].value).toBe(expectedOption.value);
+        expect(options[0].textContent).toBe(expectedOption.text);
+        expect(screen.getByRole('button', { name: 'Retry' })).toBeTruthy();
+      }
+
+      async function submitAndGetBody(user: ReturnType<typeof userEvent.setup>) {
+        await user.click(screen.getByText('Save Changes'));
+        await waitFor(() => {
+          expect(
+            (mockFetch.mock.calls as Array<[RequestInfo | URL, RequestInit | undefined]>).some(
+              ([, init]) => init?.method === 'PATCH',
+            ),
+          ).toBe(true);
+        });
+        return getRepositoryUpdateRequestBody();
+      }
+
+      it('shows a disabled select with only the current binding, an error line with the server message, and omits the key from the payload on a 500 (bound repository)', async () => {
+        setAuthMode('multi-user');
+        const user = userEvent.setup();
+        const repository = createTestRepository({ sharedAccountUsername: 'ci-runner', description: 'keep me' });
+        setupMockFetch(
+          createMockResponse({ repository }),
+          () => Promise.resolve(createServerErrorResponse()),
+        );
+
+        renderEditRepositoryForm({ repository });
+
+        await expectDegradedBindingState({ value: 'ci-runner', text: 'ci-runner' });
+        expect(
+          screen.getByText(`Could not load shared accounts: ${SERVER_ERROR_MESSAGE}. The current binding is unchanged.`),
+        ).toBeTruthy();
+
+        const body = await submitAndGetBody(user);
+        expect(body).not.toHaveProperty('sharedAccountUsername');
+        // Other fields still save.
+        expect(body.description).toBe('keep me');
+        expect(body).toHaveProperty('defaultAgentId');
+      });
+
+      it('shows "(none)" as the single option when the repository is genuinely unbound', async () => {
+        setAuthMode('multi-user');
+        const user = userEvent.setup();
+        const repository = createTestRepository({ sharedAccountUsername: null });
+        setupMockFetch(
+          createMockResponse({ repository }),
+          () => Promise.resolve(createServerErrorResponse()),
+        );
+
+        renderEditRepositoryForm({ repository });
+
+        await expectDegradedBindingState({ value: '', text: '(none)' });
+
+        const body = await submitAndGetBody(user);
+        expect(body).not.toHaveProperty('sharedAccountUsername');
+      });
+
+      it('treats a 200 response that fails schema parsing the same as a failed fetch', async () => {
+        setAuthMode('multi-user');
+        const user = userEvent.setup();
+        const repository = createTestRepository({ sharedAccountUsername: 'ci-runner', description: 'keep me' });
+        setupMockFetch(
+          createMockResponse({ repository }),
+          () => Promise.resolve(createMalformedSharedAccountsResponse()),
+        );
+
+        renderEditRepositoryForm({ repository });
+
+        await expectDegradedBindingState({ value: 'ci-runner', text: 'ci-runner' });
+
+        const body = await submitAndGetBody(user);
+        expect(body).not.toHaveProperty('sharedAccountUsername');
+        expect(body.description).toBe('keep me');
+      });
+
+      it('Retry refetches and restores the full enabled list without the error line', async () => {
+        setAuthMode('multi-user');
+        const user = userEvent.setup();
+        const repository = createTestRepository({ sharedAccountUsername: 'ci-runner' });
+        let sharedAccountsCalls = 0;
+        setupMockFetch(
+          createMockResponse({ repository }),
+          () => {
+            sharedAccountsCalls += 1;
+            return Promise.resolve(
+              sharedAccountsCalls === 1 ? createServerErrorResponse() : createSharedAccountsResponse(),
+            );
+          },
+        );
+
+        renderEditRepositoryForm({ repository });
+
+        await expectDegradedBindingState({ value: 'ci-runner', text: 'ci-runner' });
+
+        await user.click(screen.getByRole('button', { name: 'Retry' }));
+
+        await waitFor(() => {
+          const select = screen.getByRole('combobox', { name: /Shared Account/ }) as HTMLSelectElement;
+          expect(select.disabled).toBe(false);
+          const texts = Array.from(select.querySelectorAll('option')).map((o) => o.textContent);
+          expect(texts).toContain('shared-bot');
+          expect(texts).toContain('ci-runner');
+          expect(texts).toContain('(none)');
+          expect(select.value).toBe('ci-runner');
+        });
+        expect(screen.queryByText(/Could not load shared accounts/)).toBeNull();
+        expect(screen.queryByRole('button', { name: 'Retry' })).toBeNull();
+      });
     });
   });
 });

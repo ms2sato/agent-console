@@ -308,12 +308,18 @@ export function EditRepositoryForm({ repository, onSuccess, onCancel }: EditRepo
   // is on, independent of whether an env-var shared account happens to be
   // configured (Release 1's point is letting operators configure this ahead
   // of Release 2 regardless of the env var's state).
-  const { data: sharedAccountsData, isLoading: sharedAccountsLoading } = useQuery({
+  const {
+    data: sharedAccountsData,
+    isLoading: sharedAccountsLoading,
+    isError: sharedAccountsError,
+    error: sharedAccountsErrorValue,
+    refetch: refetchSharedAccounts,
+  } = useQuery({
     queryKey: sharedAccountKeys.all(),
     queryFn: fetchSharedAccounts,
     enabled: authMode !== 'none',
   });
-  const sharedAccounts = sharedAccountsData?.accounts ?? [];
+  const sharedAccounts = sharedAccountsData?.accounts;
 
   useEffect(() => {
     return () => {
@@ -423,7 +429,11 @@ export function EditRepositoryForm({ repository, onSuccess, onCancel }: EditRepo
       envVars: data.envVars?.trim() ?? '',
       issueTriggerLabels: data.issueTriggerLabels?.trim() ?? '',
       defaultAgentId: selectedAgentId || null,
-      sharedAccountUsername: selectedSharedAccountUsername || null,
+      // Omitted (not null) while the account list failed to load, so the
+      // server leaves the existing binding untouched.
+      ...(sharedAccountsError
+        ? {}
+        : { sharedAccountUsername: selectedSharedAccountUsername || null }),
     });
   };
 
@@ -498,26 +508,55 @@ export function EditRepositoryForm({ repository, onSuccess, onCancel }: EditRepo
 
           {authMode !== 'none' && (
             <FormField label="Shared Account (optional)" fieldId="sharedAccountUsername">
-              <select
-                id="sharedAccountUsername"
-                className="input"
-                value={selectedSharedAccountUsername}
-                onChange={(e) => setSelectedSharedAccountUsername(e.target.value)}
-                disabled={sharedAccountsLoading}
-              >
-                {sharedAccountsLoading ? (
-                  <option>Loading shared accounts...</option>
-                ) : (
-                  <>
-                    <option value="">(none)</option>
-                    {sharedAccounts.map((account) => (
-                      <option key={account.username} value={account.username}>
-                        {account.username}
+              {sharedAccountsError ? (
+                <>
+                  <select
+                    id="sharedAccountUsername"
+                    className="input"
+                    value={repository.sharedAccountUsername ?? ''}
+                    disabled
+                  >
+                    {repository.sharedAccountUsername ? (
+                      <option value={repository.sharedAccountUsername}>
+                        {repository.sharedAccountUsername}
                       </option>
-                    ))}
-                  </>
-                )}
-              </select>
+                    ) : (
+                      <option value="">(none)</option>
+                    )}
+                  </select>
+                  <p className="text-xs text-red-400 mt-1">
+                    {`Could not load shared accounts: ${sharedAccountsErrorValue instanceof Error ? sharedAccountsErrorValue.message : 'Unknown error'}. The current binding is unchanged.`}
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => void refetchSharedAccounts()}
+                    className="btn bg-slate-600 hover:bg-slate-500 text-sm mt-1"
+                  >
+                    Retry
+                  </button>
+                </>
+              ) : (
+                <select
+                  id="sharedAccountUsername"
+                  className="input"
+                  value={selectedSharedAccountUsername}
+                  onChange={(e) => setSelectedSharedAccountUsername(e.target.value)}
+                  disabled={sharedAccountsLoading}
+                >
+                  {sharedAccountsLoading ? (
+                    <option>Loading shared accounts...</option>
+                  ) : (
+                    <>
+                      <option value="">(none)</option>
+                      {sharedAccounts?.map((account) => (
+                        <option key={account.username} value={account.username}>
+                          {account.username}
+                        </option>
+                      ))}
+                    </>
+                  )}
+                </select>
+              )}
               <p className="text-xs text-gray-500 mt-1">
                 Shared sessions created in this repository run as this account.
               </p>
