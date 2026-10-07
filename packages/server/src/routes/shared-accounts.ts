@@ -5,7 +5,7 @@ import type { SharedAccountRepository } from '../repositories/shared-account-rep
 import { lookupOsUser, type OsUserInfo } from '../services/os-user-lookup.js';
 import type { UserRepository } from '../repositories/user-repository.js';
 import type { Database } from '../database/schema.js';
-import type { SharedAccountRegistry } from '../services/shared-account-registry.js';
+import { resolveAccountEntry, type SharedAccountRegistry } from '../services/shared-account-registry.js';
 import { ValidationError, NotFoundError, ConflictError } from '../lib/errors.js';
 import { vValidator } from '../middleware/validation.js';
 import { serverConfig } from '../lib/server-config.js';
@@ -123,6 +123,19 @@ const sharedAccounts = new Hono<AppBindings>()
       });
     } catch (err) {
       if (isUniqueConstraintError(err)) {
+        // Self-heal: refresh the live registry's cache entry for the
+        // already-registered account as a side effect of this failed
+        // registration attempt, so "the OS account came back without ever
+        // having been deleted/recreated" resolves on the next registration
+        // attempt with no restart required. A genuine uid reassignment
+        // still correctly stays unresolvable (resolveAccountEntry never
+        // writes in that case) until the explicit unregister+register path.
+        const accounts = await sharedAccountRepository.list();
+        const existing = accounts.find((a) => a.username === username);
+        if (existing) {
+          const refreshed = await resolveAccountEntry(existing.userId, username, userRepository, lookupOsUser);
+          sharedAccountRegistry.register(refreshed);
+        }
         throw new ConflictError(`'${username}' is already registered as a shared account.`);
       }
       throw err;

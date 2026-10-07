@@ -2688,6 +2688,12 @@ describe('SessionManager', () => {
             }
             return null;
           },
+          async getOsUidById(): Promise<number | null | undefined> {
+            throw new Error('getOsUidById not used by this test');
+          },
+          async refreshOsIdentity(): Promise<AuthUser> {
+            throw new Error('refreshOsIdentity not used by this test');
+          },
           async getPreferences(): Promise<null> {
             return null;
           },
@@ -3060,6 +3066,12 @@ describe('SessionManager', () => {
             return { id, username: 'alice', homeDir: '/home/alice' };
           }
           return null;
+        },
+        async getOsUidById(): Promise<number | null | undefined> {
+          throw new Error('getOsUidById not used by this test');
+        },
+        async refreshOsIdentity(): Promise<AuthUser> {
+          throw new Error('refreshOsIdentity not used by this test');
         },
         async getPreferences(): Promise<null> {
           return null;
@@ -6808,6 +6820,12 @@ describe('SessionManager', () => {
             return { id, username: 'alice', homeDir: '/home/alice' };
           }
           return null;
+        },
+        async getOsUidById(): Promise<number | null | undefined> {
+          throw new Error('getOsUidById not used by this test');
+        },
+        async refreshOsIdentity(): Promise<AuthUser> {
+          throw new Error('refreshOsIdentity not used by this test');
         },
         async getPreferences(): Promise<null> {
           return null;

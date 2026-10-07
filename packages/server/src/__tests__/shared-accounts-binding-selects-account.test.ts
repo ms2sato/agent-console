@@ -135,6 +135,12 @@ describe('Shared-accounts Release 2: worktree creation uses the repository\'s bo
         findById: mock(() => Promise.resolve(null)),
         getPreferences: mock(() => Promise.resolve(null)),
         setPreferences: mock(() => Promise.resolve(true)),
+        getOsUidById: mock((id: string) =>
+          Promise.resolve(id === ACCOUNT_A_USER_ID ? 7001 : id === ACCOUNT_B_USER_ID ? 7002 : undefined),
+        ),
+        refreshOsIdentity: mock((id: string, username: string, homeDir: string) =>
+          Promise.resolve({ id, username, homeDir }),
+        ),
       };
       const sharedAccountRegistry = await SharedAccountRegistry.createFromDb({
         sharedAccountRepository: {

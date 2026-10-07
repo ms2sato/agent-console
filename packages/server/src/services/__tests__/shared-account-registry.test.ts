@@ -124,6 +124,92 @@ describe('SharedAccountRegistry', () => {
     });
   });
 
+  describe('createFromDb (OS account resolves to the SAME uid it was registered with)', () => {
+    it('refreshes username/homeDir but keeps the ORIGINAL persisted userId', async () => {
+      const authUser = await userRepository.upsertByOsUid(5050, 'shared-bot', '/home/shared-bot');
+      const lookup: LookupOsUserFn = async () => ({ uid: 5050, homeDir: '/home/shared-bot-new' });
+
+      const registry = await SharedAccountRegistry.createFromDb({
+        sharedAccountRepository: fakeSharedAccountRepository([
+          { userId: authUser.id, username: 'shared-bot-renamed', createdAt: new Date().toISOString(), createdBy: null },
+        ]),
+        userRepository,
+        lookupOsUser: lookup,
+      });
+
+      expect(registry.getEntry(authUser.id)).toEqual({ username: 'shared-bot-renamed', resolvable: true });
+
+      const row = await db
+        .selectFrom('users')
+        .where('id', '=', authUser.id)
+        .selectAll()
+        .executeTakeFirstOrThrow();
+      expect(row.username).toBe('shared-bot-renamed');
+      expect(row.home_dir).toBe('/home/shared-bot-new');
+      expect(row.os_uid).toBe(5050);
+    });
+  });
+
+  describe('createFromDb (OS account now resolves to a DIFFERENT, REASSIGNED uid)', () => {
+    it('marks the entry unresolvable, keeps the ORIGINAL persisted userId, and never touches the unrelated row now holding that uid', async () => {
+      // The shared account's ORIGINAL users row, persisted at uid 5959 --
+      // a genuinely existing row, so getOsUidById(originalAuthUser.id)
+      // resolves to 5959 (not undefined), exercising the uid-MISMATCH
+      // comparison branch (persistedOsUid !== osInfo.uid) specifically,
+      // not the separate "row gone" branch covered by the test below.
+      const originalAuthUser = await userRepository.upsertByOsUid(5959, 'shared-bot', '/home/shared-bot');
+
+      // Seed a SEPARATE, pre-existing, unrelated users row at the uid the
+      // lookup will now return for the shared account's username --
+      // simulating "this uid now belongs to someone else" (e.g. the shared
+      // account's OS account was deleted and its uid recycled to a real
+      // human user).
+      const unrelatedHuman = await userRepository.upsertByOsUid(6060, 'some-human', '/home/some-human');
+
+      const lookup: LookupOsUserFn = async () => ({ uid: 6060, homeDir: '/home/some-human' });
+
+      const registry = await SharedAccountRegistry.createFromDb({
+        sharedAccountRepository: fakeSharedAccountRepository([
+          { userId: originalAuthUser.id, username: 'shared-bot', createdAt: new Date().toISOString(), createdBy: null },
+        ]),
+        userRepository,
+        lookupOsUser: lookup,
+      });
+
+      // (a) resolvable: false, with the ORIGINAL persisted userId -- never
+      // the unrelated row's id.
+      expect(registry.isSharedUserId(originalAuthUser.id)).toBe(true);
+      expect(registry.getEntry(originalAuthUser.id)).toEqual({ username: 'shared-bot', resolvable: false });
+      expect(registry.isSharedUserId(unrelatedHuman.id)).toBe(false);
+
+      // (b) the unrelated row is verifiably untouched.
+      const row = await db
+        .selectFrom('users')
+        .where('id', '=', unrelatedHuman.id)
+        .selectAll()
+        .executeTakeFirstOrThrow();
+      expect(row.username).toBe('some-human');
+      expect(row.home_dir).toBe('/home/some-human');
+      expect(row.os_uid).toBe(6060);
+    });
+  });
+
+  describe('createFromDb (persisted user row no longer exists)', () => {
+    it('marks the entry unresolvable and does not throw, even though this should be unreachable in practice', async () => {
+      const lookup: LookupOsUserFn = async () => ({ uid: 7070, homeDir: '/home/ghost' });
+
+      const registry = await SharedAccountRegistry.createFromDb({
+        sharedAccountRepository: fakeSharedAccountRepository([
+          { userId: 'row-does-not-exist-id', username: 'ghost-bot', createdAt: new Date().toISOString(), createdBy: null },
+        ]),
+        userRepository,
+        lookupOsUser: lookup,
+      });
+
+      expect(registry.getEntry('row-does-not-exist-id')).toEqual({ username: 'ghost-bot', resolvable: false });
+    });
+  });
+
   describe('createFromDb (OS account missing)', () => {
     it('keeps the entry (so isSharedUserId still recognizes it) marked unresolvable, and never throws', async () => {
       const lookup: LookupOsUserFn = async () => null;

@@ -26,15 +26,18 @@ services:
       # and used by check 8's DB-backed registration + per-repository
       # binding flow (register via POST /api/shared-accounts, bind via
       # PATCH /api/repositories/:id) -- this env var plays no part in that.
-      # Since Release 2 the server only reads this var to decide whether to
-      # log a startup warning ("...is set but ignored since Release 2...");
-      # it no longer gates shared-session creation or /api/config's
-      # sharedAccountsAvailable (that now reflects the DB-backed set's size).
-      # Left non-empty by default purely to exercise that warning path on a
+      # Since Release 2 the server no longer reads this var to pick an
+      # account -- it no longer gates shared-session creation or
+      # /api/config's sharedAccountsAvailable (that now reflects the
+      # DB-backed set's size). Its state is surfaced for two things only: a
+      # startup warning ("...is set but ignored since Release 2...") and
+      # /api/config's sharedAccountsEnvVarIgnored flag, which drives the
+      # client settings page's own banner with the same message. Left
+      # non-empty by default purely to exercise those two surfaces on a
       # normal run; an explicitly empty value (the `${VAR-default}` no-colon
       # form substitutes the default only when the variable is UNSET, so an
       # explicitly EMPTY host value passes an empty string through) just
-      # silences the warning, it does not disable anything else:
+      # silences both, it does not disable anything else:
       #   AGENT_CONSOLE_SHARED_USERNAME= scripts/verify-multiuser-docker.sh --no-build
       AGENT_CONSOLE_SHARED_USERNAME: ${AGENT_CONSOLE_SHARED_USERNAME-shared1}
     # Bind to loopback only: this stack ships intentionally known test

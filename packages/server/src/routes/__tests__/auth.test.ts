@@ -54,6 +54,12 @@ function createMockUserRepository(seed: Record<string, UserPreferences> = {}): U
     findById: async () => {
       throw new Error('findById not implemented in mock');
     },
+    getOsUidById: async () => {
+      throw new Error('getOsUidById not implemented in mock');
+    },
+    refreshOsIdentity: async () => {
+      throw new Error('refreshOsIdentity not implemented in mock');
+    },
     getPreferences: async (id) => store.get(id) ?? null,
     setPreferences: async (id, preferences) => {
       store.set(id, preferences);
@@ -471,6 +477,12 @@ describe('Auth Routes', () => {
           throw new Error('upsertByOsUid not used by this test');
         },
         findById: async () => null,
+        getOsUidById: async () => {
+          throw new Error('getOsUidById not used by this test');
+        },
+        refreshOsIdentity: async () => {
+          throw new Error('refreshOsIdentity not used by this test');
+        },
         getPreferences: getPreferencesSpy,
         // No matching user row -- mirrors what a deleted-between-auth-and-write
         // user, or any other "id does not match a row" case, looks like.

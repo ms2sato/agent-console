@@ -324,6 +324,35 @@ describe('Shared account routes', () => {
       });
       expect(res.status).toBe(409);
     });
+
+    it('self-heals the live registry cache as a side effect of a 409 duplicate-registration response, with no server restart', async () => {
+      // Seed the DB-backed row directly (bypassing registerSharedAccountCore,
+      // same as the "rejects a duplicate registration" test above), so the
+      // live in-memory registry starts with NO entry for this account at
+      // all -- simulating e.g. a registry built at a moment the OS account
+      // was not yet resolvable, since fixed.
+      const existing = await userRepository.upsertByOsUid(REAL_OS_UID, REAL_OS_USERNAME, '/home/real');
+      await sharedAccountRepository.register(existing.id, null);
+
+      const sharedAccountRegistry = SharedAccountRegistry.createDisabled();
+      expect(sharedAccountRegistry.getEntry(existing.id)).toBeUndefined();
+
+      const app = buildApp({ sharedAccountRepository, userRepository, db, sharedAccountRegistry } as Partial<AppContext>);
+      const res = await app.request('/api/shared-accounts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username: REAL_OS_USERNAME }),
+      });
+      expect(res.status).toBe(409);
+
+      // The failed registration attempt's self-heal refreshed the live
+      // registry's cache entry -- the account is now resolvable without a
+      // restart.
+      expect(sharedAccountRegistry.getEntry(existing.id)).toEqual({
+        username: REAL_OS_USERNAME,
+        resolvable: true,
+      });
+    });
   });
 
   // =========================================================================

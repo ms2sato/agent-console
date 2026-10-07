@@ -149,6 +149,8 @@ describe('GET /api/config — sharedAccountsAvailable', () => {
       findById: async () => null,
       getPreferences: async () => null,
       setPreferences: async () => true,
+      getOsUidById: async () => 9999,
+      refreshOsIdentity: async (id: string, username: string, homeDir: string) => ({ id, username, homeDir }),
     } satisfies UserRepository;
     const enabledRegistry = await SharedAccountRegistry.createFromDb({
       sharedAccountRepository: {

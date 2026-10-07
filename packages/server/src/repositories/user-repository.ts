@@ -17,6 +17,24 @@ export interface UserRepository {
   findById(id: string): Promise<AuthUser | null>;
 
   /**
+   * Read a user's current OS uid by id, without any write. `undefined` means
+   * no row exists for `id` (should be unreachable in practice --
+   * `shared_accounts` has an ON DELETE CASCADE FK to `users` -- but callers
+   * must branch on it explicitly, not assume). `null` means the row exists
+   * but has no `os_uid` (not expected for a shared account, but the column
+   * is nullable).
+   */
+  getOsUidById(id: string): Promise<number | null | undefined>;
+
+  /**
+   * Refresh username/homeDir for an EXISTING user row, scoped strictly by
+   * `id` -- never touches `os_uid`, never upserts, never creates a row. Used
+   * only when the caller has already confirmed (via `getOsUidById`) that
+   * this id's `os_uid` still matches the OS account being refreshed.
+   */
+  refreshOsIdentity(id: string, username: string, homeDir: string): Promise<AuthUser>;
+
+  /**
    * Read a user's preferences. Returns `null` when the user row does not
    * exist -- callers resolve that to each field's own default (never
    * thrown as an error; a missing row is a legitimate state for a
