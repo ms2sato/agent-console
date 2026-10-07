@@ -386,9 +386,9 @@ Two concepts, deliberately separate:
 - `GET /api/shared-accounts` → the registered set, each entry with its bound-repository count and session count (for the settings UI and for deciding whether an unregister is safe).
 - `POST /api/shared-accounts { username }` → registers an OS account into the set (server-side `lookupOsUser`, `400` on no such OS account, `409` if already registered).
 - `DELETE /api/shared-accounts/:username` → `409` while any repository is bound to it or any session's `created_by` names it (never silently orphans a session or a binding); otherwise removes it from the set.
-- `POST /api/shared-accounts/import-env` → registers the account currently configured via `AGENT_CONSOLE_SHARED_USERNAME` (Release 1's bridge from the env-var world to the DB-backed one; idempotent).
+- `POST /api/shared-accounts/import-env` — Release 1 only, **removed in Release 2** (see the rollout table below): registered the account currently configured via `AGENT_CONSOLE_SHARED_USERNAME` as a one-time bridge from the env-var world to the DB-backed one.
 
-All four endpoints, and the `sharedAccountUsername` field on `PATCH /api/repositories/:id`, are `400` under `AUTH_MODE=none` — shared accounts remain a multi-user-only mechanism end to end.
+All three endpoints above, and the `sharedAccountUsername` field on `PATCH /api/repositories/:id`, are `400` under `AUTH_MODE=none` — shared accounts remain a multi-user-only mechanism end to end.
 
 ### Quick sessions and `delegate_to_worktree`
 
