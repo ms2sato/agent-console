@@ -18,12 +18,16 @@
 #      the service account, and `git status` inside it as that user does
 #      not report dubious ownership -> proves `git worktree add` routes
 #      through runAsUser (Issue #838).
-#   8. a shared session (shared: true) spawns its terminal as the shared
-#      account (shared1) rather than the creating user, the session row's
-#      created_by/initiated_by columns route to shared1/alice respectively,
-#      and a second user (bob) can list and write into the shared session
-#      -> proves the Shared Account is a genuine cross-user execution
-#      identity (Issue #1619).
+#   8. (Release 2, Issue #1842) shared1 is registered as a shared account and
+#      bound to the check-7 repository via the DB-backed routes; a shared
+#      WORKTREE session on that repository spawns its terminal as the
+#      shared account (shared1) rather than the creating user, the session
+#      row's created_by/initiated_by columns route to shared1/alice
+#      respectively, a second user (bob) can list and write into the shared
+#      session, and a QUICK session with shared:true is unconditionally
+#      refused (400) -> proves the Shared Account is a genuine cross-user
+#      execution identity bound per repository, not a global env-var switch
+#      (Issue #1619, re-verified against Release 2's DB-backed runtime).
 #   9. worker-restart branch rename runs as the SESSION'S SPAWN USER, not
 #      the requester: (i) restart-with-branch on alice's own worktree
 #      session, as alice, renames the branch on disk as alice; (iii) the
@@ -400,23 +404,34 @@ rm -f "$ALICE_COOKIE_JAR" "$ALICE_LOGIN_RESP" "$REPO_RESP" \
   "$WT_TASK_RESP" "$WT_LIST_RESP" "$GIT_STATUS_OUT"
 
 echo
-echo "=== 8. shared session runs as the shared account (#1619) ==="
-# Verifies the Shared Account feature end to end (Issue #1619): a session
-# created with shared:true routes sessions.created_by to the shared OS
-# account (shared1, provisioned by docker/Dockerfile) while
-# sessions.initiated_by records the creating user (alice); the resulting PTY
-# spawns as shared1, not alice; and a second user (bob) can both list and
-# write into the shared session -- proving shared1 is a genuine cross-user
-# execution identity, not merely alice's own session under another label.
+echo "=== 8. shared session runs as the shared account, DB registration + per-repository binding (#1619, Release 2 for #1842) ==="
+# Verifies the Shared Account feature end to end on Release 2's DB-backed
+# runtime (Issue #1619, re-expressed for #1842's cutover): alice registers
+# shared1 as a shared account and binds the check-7 repository to it; a
+# shared WORKTREE session created against that repository routes
+# sessions.created_by to shared1 while sessions.initiated_by records alice;
+# the resulting PTY spawns as shared1, not alice; and a second user (bob)
+# can both list and write into the shared session -- proving shared1 is a
+# genuine cross-user execution identity, not merely alice's own session
+# under another label. The repository binding this check establishes
+# (repo_id -> shared1) is also the precondition check 9(iii) below relies on.
 #
-# Step 1 also doubles as the negative arm: with AGENT_CONSOLE_SHARED_USERNAME
-# unset/empty (AGENT_CONSOLE_SHARED_USERNAME= scripts/verify-multiuser-docker.sh
-# --no-build), the create call is refused with HTTP 400 and the response
-# body ("Shared sessions are not enabled on this server.") is echoed below so
-# that refusal is visible in the run log.
+# Release 2 retired the env var as a session-creation source entirely, so
+# the OLD negative arm here (AGENT_CONSOLE_SHARED_USERNAME unset disables
+# the feature) no longer applies -- registration and binding are DB-only
+# now, independent of the env var. The negative arm below instead asserts
+# the Release 2 rule that actually governs this path: a QUICK session can
+# never be shared, unconditionally (Issue #1842 item 4), regardless of
+# registration or binding state.
 S8_COOKIE_JAR="$(mktemp)"
 S8_ALICE_LOGIN_RESP="$(mktemp)"
-S8_SESSION_RESP="$(mktemp)"
+S8_REGISTER_RESP="$(mktemp)"
+S8_BIND_RESP="$(mktemp)"
+S8_QUICK_RESP="$(mktemp)"
+S8_WT_RESP="$(mktemp)"
+S8_WT_LIST_RESP="$(mktemp)"
+S8_BASELINE="$(mktemp)"
+S8_AFTER="$(mktemp)"
 S8_CLIENT_OUT="$(mktemp)"
 S8_DB_OUT="$(mktemp)"
 
@@ -424,81 +439,161 @@ curl -s -o "$S8_ALICE_LOGIN_RESP" -c "$S8_COOKIE_JAR" -X POST "${BASE_URL}/api/a
   -H 'Content-Type: application/json' \
   -d '{"username":"alice","password":"alice-password"}' >/dev/null
 
-# alice creates a shared session directly over HTTP; this is the create-time
-# assertion (including the negative arm above). The session created here is
-# used only for this assertion -- step 2 creates its own shared session via
-# verify-client.ts and the remaining sub-checks use that one, so each
-# sub-check stays independent.
-s8_create_code="$(curl -s -o "$S8_SESSION_RESP" -w '%{http_code}' -b "$S8_COOKIE_JAR" -c "$S8_COOKIE_JAR" \
+# Register shared1 as a shared account. Idempotent across repeated runs of
+# this script against the same container: a second registration attempt
+# returns 409 "already registered", which is an acceptable outcome here --
+# this check only requires shared1 to BE registered afterward, not that
+# this specific call created it.
+s8_register_code="$(curl -s -o "$S8_REGISTER_RESP" -w '%{http_code}' -b "$S8_COOKIE_JAR" -c "$S8_COOKIE_JAR" \
+  -X POST "${BASE_URL}/api/shared-accounts" \
+  -H 'Content-Type: application/json' \
+  -d '{"username":"shared1"}')"
+echo "  POST /api/shared-accounts {username:shared1} -> HTTP ${s8_register_code}"
+if [ "$s8_register_code" != "201" ] && [ "$s8_register_code" != "409" ]; then
+  echo "  response body: $(cat "$S8_REGISTER_RESP")"
+fi
+s8_register_ok=1
+{ [ "$s8_register_code" = "201" ] || [ "$s8_register_code" = "409" ]; } && s8_register_ok=0
+check "shared1 is registered as a shared account (201, or 409 already-registered)" "$s8_register_ok"
+
+# Bind the check-7 repository to shared1. Like check 8's own sub-checks
+# below, a missing repo_id (check 7's own repository registration failed,
+# already recorded as its own FAIL there) is recorded as an explicit FAIL
+# here too, never silently skipped.
+s8_bind_ok=1
+if [ -n "$repo_id" ]; then
+  s8_bind_code="$(curl -s -o "$S8_BIND_RESP" -w '%{http_code}' -b "$S8_COOKIE_JAR" -c "$S8_COOKIE_JAR" \
+    -X PATCH "${BASE_URL}/api/repositories/${repo_id}" \
+    -H 'Content-Type: application/json' \
+    -d '{"sharedAccountUsername":"shared1"}')"
+  echo "  PATCH /api/repositories/<id> {sharedAccountUsername:shared1} -> HTTP ${s8_bind_code}"
+  if [ "$s8_bind_code" != "200" ]; then
+    echo "  response body: $(cat "$S8_BIND_RESP")"
+  fi
+  [ "$s8_bind_code" = "200" ] && s8_bind_ok=0
+else
+  echo "  DIAGNOSTIC: repo_id from check 7 is empty; recording an explicit FAIL instead of skipping."
+fi
+check "repository is bound to shared1" "$s8_bind_ok"
+
+# Negative arm (Release 2, Issue #1842 item 4): a QUICK session can never
+# be shared, unconditionally -- registration and binding above make no
+# difference to this call.
+s8_quick_code="$(curl -s -o "$S8_QUICK_RESP" -w '%{http_code}' -b "$S8_COOKIE_JAR" -c "$S8_COOKIE_JAR" \
   -X POST "${BASE_URL}/api/sessions" \
   -H 'Content-Type: application/json' \
-  -d '{"type":"quick","locationPath":"/home/shared1","shared":true,"title":"verify-shared"}')"
-echo "  POST /api/sessions (shared:true) -> HTTP ${s8_create_code}"
-if [ "$s8_create_code" != "201" ]; then
-  echo "  response body: $(cat "$S8_SESSION_RESP")"
+  -d '{"type":"quick","locationPath":"/home/alice","shared":true,"title":"verify-shared-quick-rejected"}')"
+echo "  POST /api/sessions (quick, shared:true) -> HTTP ${s8_quick_code} (expect 400, Release 2)"
+if [ "$s8_quick_code" != "400" ]; then
+  echo "  response body: $(cat "$S8_QUICK_RESP")"
 fi
-s8_create_ok=1
-[ "$s8_create_code" = "201" ] && s8_create_ok=0
-check "alice can create a shared session (201)" "$s8_create_ok"
-
-# The session verify-client.ts creates here is the one every remaining
-# sub-check uses.
-bun "${REPO_ROOT}/docker/verify-client.ts" "$BASE_URL" alice alice-password shared1 /home/shared1 \
-  --shared --print-ids 2>&1 | tee "$S8_CLIENT_OUT"
-# Use PIPESTATUS[0] (bun's exit code), not $?, which after a pipeline is
-# tee's exit code (always 0) and would silently record a failing
-# verify-client.ts run as PASS. Captured on the very next line: nothing
-# may run in between.
-s8_client_exit="${PIPESTATUS[0]}"
-check "shared session terminal runs as shared1" "$s8_client_exit"
-if [ "$s8_client_exit" -ne 0 ]; then
-  echo "  ---- DIAGNOSTIC: server logs (last 60 lines) ----"
-  compose logs --tail 60 agent-console 2>&1 | sed 's/^/    /' || true
-  echo "  -------------------------------------------------"
-fi
-
-shared_session_id="$(grep '^SESSION_ID=' "$S8_CLIENT_OUT" | head -n1 | cut -d= -f2)"
-shared_worker_id="$(grep '^WORKER_ID=' "$S8_CLIENT_OUT" | head -n1 | cut -d= -f2)"
+s8_quick_ok=1
+[ "$s8_quick_code" = "400" ] && s8_quick_ok=0
+check "quick session with shared:true is rejected (400, Release 2)" "$s8_quick_ok"
 
 # NOTE: unlike checks 6 and 7 above (which intentionally SKIP their
 # dependent sub-checks -- absent from the PASS/FAIL counters -- when a
 # prerequisite id is missing, and are deliberately left unchanged here),
-# check 8's four dependent sub-checks below are recorded as explicit FAILs
+# check 8's dependent sub-checks below are recorded as explicit FAILs
 # rather than skipped. This is check 8's own documented contract (the
 # --smokes "never a silent skip" guarantee in docker/README.md): a missing
 # prerequisite must show up as a FAIL in the RESULT count, not vanish from
 # it. Do not "harmonise" this back to the checks 6/7 skip shape.
-if [ -n "$shared_session_id" ]; then
-  # Read the row inside the container as agentconsole, straight from the
-  # SQLite file the server itself writes to.
-  compose exec -T --user agentconsole -e SHARED_SESSION_ID="$shared_session_id" agent-console \
-    bun -e '
-      import { Database } from "bun:sqlite";
-      const db = new Database(process.env.AGENT_CONSOLE_HOME + "/data.db", { readonly: true });
-      const sessionId = process.env.SHARED_SESSION_ID;
-      const row = db.query("SELECT created_by, initiated_by FROM sessions WHERE id = ?").get(sessionId);
-      console.log("ROW_CREATED_BY=" + (row && row.created_by != null ? row.created_by : ""));
-      console.log("ROW_INITIATED_BY=" + (row && row.initiated_by != null ? row.initiated_by : ""));
-      const shared1 = db.query("SELECT id FROM users WHERE username = ?").get("shared1");
-      console.log("SHARED1_ID=" + (shared1 ? shared1.id : ""));
-      const aliceRow = db.query("SELECT id FROM users WHERE username = ?").get("alice");
-      console.log("ALICE_ID=" + (aliceRow ? aliceRow.id : ""));
-    ' > "$S8_DB_OUT" 2>&1
-  s8_db_exit=$?
-  sed 's/^/  /' "$S8_DB_OUT"
+shared_session_id=""
+shared_worker_id=""
+if [ -n "$repo_id" ]; then
+  curl -s -b "$S8_COOKIE_JAR" "${BASE_URL}/api/repositories/${repo_id}/worktrees" \
+    | grep -o '"path":"[^"]*"' | cut -d'"' -f4 | sort > "$S8_BASELINE"
 
-  s8_row_created_by="$(grep '^ROW_CREATED_BY=' "$S8_DB_OUT" | head -n1 | cut -d= -f2)"
-  s8_row_initiated_by="$(grep '^ROW_INITIATED_BY=' "$S8_DB_OUT" | head -n1 | cut -d= -f2)"
-  s8_shared1_id="$(grep '^SHARED1_ID=' "$S8_DB_OUT" | head -n1 | cut -d= -f2)"
-  s8_alice_id="$(grep '^ALICE_ID=' "$S8_DB_OUT" | head -n1 | cut -d= -f2)"
+  s8_task_id="$(uuidgen 2>/dev/null || cat /proc/sys/kernel/random/uuid)"
+  s8_wt_code="$(curl -s -o "$S8_WT_RESP" -w '%{http_code}' -b "$S8_COOKIE_JAR" -c "$S8_COOKIE_JAR" \
+    -X POST "${BASE_URL}/api/repositories/${repo_id}/worktrees" \
+    -H 'Content-Type: application/json' \
+    -d "{\"taskId\":\"${s8_task_id}\",\"mode\":\"custom\",\"branch\":\"verify-shared-wt\",\"baseBranch\":\"main\",\"useRemote\":false,\"autoStartSession\":true,\"shared\":true}")"
+  echo "  POST /api/repositories/<id>/worktrees (shared:true) -> HTTP ${s8_wt_code}"
+  s8_wt_accept_ok=1
+  [ "$s8_wt_code" = "202" ] && s8_wt_accept_ok=0
+  check "shared worktree creation accepted (202)" "$s8_wt_accept_ok"
 
-  s8_created_by_ok=1
-  [ "$s8_db_exit" -eq 0 ] && [ -n "$s8_row_created_by" ] && [ "$s8_row_created_by" = "$s8_shared1_id" ] && s8_created_by_ok=0
-  check "shared session row: created_by is shared1's users.id" "$s8_created_by_ok"
+  S8_PATH=""
+  for _ in $(seq 1 30); do
+    sleep 1
+    curl -s -o "$S8_WT_LIST_RESP" -b "$S8_COOKIE_JAR" \
+      "${BASE_URL}/api/repositories/${repo_id}/worktrees" >/dev/null
+    grep -o '"path":"[^"]*"' "$S8_WT_LIST_RESP" | cut -d'"' -f4 | sort > "$S8_AFTER"
+    S8_PATH="$(comm -13 "$S8_BASELINE" "$S8_AFTER" | head -n1)"
+    if [ -n "$S8_PATH" ]; then break; fi
+  done
+  s8_listed_ok=1
+  [ -n "$S8_PATH" ] && s8_listed_ok=0
+  check "shared worktree appears in repo's worktree list" "$s8_listed_ok"
 
-  s8_initiated_by_ok=1
-  [ "$s8_db_exit" -eq 0 ] && [ -n "$s8_row_initiated_by" ] && [ "$s8_row_initiated_by" = "$s8_alice_id" ] && s8_initiated_by_ok=0
-  check "shared session row: initiated_by is alice's users.id" "$s8_initiated_by_ok"
+  if [ -n "$S8_PATH" ]; then
+    # Read the row inside the container as agentconsole, straight from the
+    # SQLite file the server itself writes to.
+    compose exec -T --user agentconsole -e S8_PATH="$S8_PATH" agent-console \
+      bun -e '
+        import { Database } from "bun:sqlite";
+        const db = new Database(process.env.AGENT_CONSOLE_HOME + "/data.db", { readonly: true });
+        const session = db.query("SELECT id, created_by, initiated_by FROM sessions WHERE location_path = ?").get(process.env.S8_PATH);
+        console.log("SESSION_ID=" + (session ? session.id : ""));
+        console.log("ROW_CREATED_BY=" + (session && session.created_by != null ? session.created_by : ""));
+        console.log("ROW_INITIATED_BY=" + (session && session.initiated_by != null ? session.initiated_by : ""));
+        if (session) {
+          const worker = db.query("SELECT id FROM workers WHERE session_id = ? AND type = ?").get(session.id, "agent");
+          console.log("WORKER_ID=" + (worker ? worker.id : ""));
+        }
+        const shared1 = db.query("SELECT id FROM users WHERE username = ?").get("shared1");
+        console.log("SHARED1_ID=" + (shared1 ? shared1.id : ""));
+        const aliceRow = db.query("SELECT id FROM users WHERE username = ?").get("alice");
+        console.log("ALICE_ID=" + (aliceRow ? aliceRow.id : ""));
+      ' > "$S8_DB_OUT" 2>&1
+    s8_db_exit=$?
+    sed 's/^/  /' "$S8_DB_OUT"
+
+    shared_session_id="$(grep '^SESSION_ID=' "$S8_DB_OUT" | head -n1 | cut -d= -f2)"
+    shared_worker_id="$(grep '^WORKER_ID=' "$S8_DB_OUT" | head -n1 | cut -d= -f2)"
+    s8_row_created_by="$(grep '^ROW_CREATED_BY=' "$S8_DB_OUT" | head -n1 | cut -d= -f2)"
+    s8_row_initiated_by="$(grep '^ROW_INITIATED_BY=' "$S8_DB_OUT" | head -n1 | cut -d= -f2)"
+    s8_shared1_id="$(grep '^SHARED1_ID=' "$S8_DB_OUT" | head -n1 | cut -d= -f2)"
+    s8_alice_id="$(grep '^ALICE_ID=' "$S8_DB_OUT" | head -n1 | cut -d= -f2)"
+
+    s8_created_by_ok=1
+    [ "$s8_db_exit" -eq 0 ] && [ -n "$s8_row_created_by" ] && [ "$s8_row_created_by" = "$s8_shared1_id" ] && s8_created_by_ok=0
+    check "shared session row: created_by is shared1's users.id" "$s8_created_by_ok"
+
+    s8_initiated_by_ok=1
+    [ "$s8_db_exit" -eq 0 ] && [ -n "$s8_row_initiated_by" ] && [ "$s8_row_initiated_by" = "$s8_alice_id" ] && s8_initiated_by_ok=0
+    check "shared session row: initiated_by is alice's users.id" "$s8_initiated_by_ok"
+  else
+    echo "  ---- DIAGNOSTIC: server logs (last 60 lines) ----"
+    compose logs --tail 60 agent-console 2>&1 | sed 's/^/    /' || true
+    echo "  -------------------------------------------------"
+    check "shared session row: created_by is shared1's users.id" 1
+    check "shared session row: initiated_by is alice's users.id" 1
+  fi
+else
+  echo "  DIAGNOSTIC: repo_id from check 7 is empty; recording explicit FAILs for check 8's worktree sub-checks instead of skipping."
+  check "shared worktree creation accepted (202)" 1
+  check "shared worktree appears in repo's worktree list" 1
+  check "shared session row: created_by is shared1's users.id" 1
+  check "shared session row: initiated_by is alice's users.id" 1
+fi
+
+if [ -n "$shared_session_id" ] && [ -n "$shared_worker_id" ]; then
+  bun "${REPO_ROOT}/docker/verify-client.ts" "$BASE_URL" alice alice-password shared1 \
+    --attach "$shared_session_id" "$shared_worker_id" 2>&1 | tee "$S8_CLIENT_OUT"
+  # Use PIPESTATUS[0] (bun's exit code), not $?, which after a pipeline is
+  # tee's exit code (always 0) and would silently record a failing
+  # verify-client.ts run as PASS. Captured on the very next line: nothing
+  # may run in between.
+  s8_client_exit="${PIPESTATUS[0]}"
+  check "shared session terminal runs as shared1" "$s8_client_exit"
+  if [ "$s8_client_exit" -ne 0 ]; then
+    echo "  ---- DIAGNOSTIC: server logs (last 60 lines) ----"
+    compose logs --tail 60 agent-console 2>&1 | sed 's/^/    /' || true
+    echo "  -------------------------------------------------"
+  fi
 
   # bob logs in separately and lists sessions; the shared session must be
   # visible to him even though alice created it. There is no GET
@@ -510,23 +605,18 @@ if [ -n "$shared_session_id" ]; then
   bun "${REPO_ROOT}/docker/verify-client.ts" "$BASE_URL" bob bob-password --list-session "$shared_session_id"
   check "bob can list the shared session" $?
 
-  if [ -n "$shared_worker_id" ]; then
-    bun "${REPO_ROOT}/docker/verify-client.ts" "$BASE_URL" bob bob-password shared1 \
-      --attach "$shared_session_id" "$shared_worker_id"
-    check "bob can write to the shared session PTY (whoami => shared1)" $?
-  else
-    echo "  DIAGNOSTIC: shared_worker_id is empty (no WORKER_ID in step 2's verify-client.ts output); recording an explicit FAIL instead of skipping."
-    check "bob can write to the shared session PTY (whoami => shared1)" 1
-  fi
+  bun "${REPO_ROOT}/docker/verify-client.ts" "$BASE_URL" bob bob-password shared1 \
+    --attach "$shared_session_id" "$shared_worker_id"
+  check "bob can write to the shared session PTY (whoami => shared1)" $?
 else
-  echo "  DIAGNOSTIC: shared_session_id is empty (no SESSION_ID in step 2's verify-client.ts output); recording explicit FAILs for the four dependent check-8 sub-checks instead of skipping them."
-  check "shared session row: created_by is shared1's users.id" 1
-  check "shared session row: initiated_by is alice's users.id" 1
+  echo "  DIAGNOSTIC: shared_session_id or shared_worker_id is empty; recording explicit FAILs for the three dependent check-8 sub-checks instead of skipping them."
+  check "shared session terminal runs as shared1" 1
   check "bob can list the shared session" 1
   check "bob can write to the shared session PTY (whoami => shared1)" 1
 fi
 
-rm -f "$S8_COOKIE_JAR" "$S8_ALICE_LOGIN_RESP" "$S8_SESSION_RESP" "$S8_CLIENT_OUT" "$S8_DB_OUT"
+rm -f "$S8_COOKIE_JAR" "$S8_ALICE_LOGIN_RESP" "$S8_REGISTER_RESP" "$S8_BIND_RESP" "$S8_QUICK_RESP" \
+  "$S8_WT_RESP" "$S8_WT_LIST_RESP" "$S8_BASELINE" "$S8_AFTER" "$S8_CLIENT_OUT" "$S8_DB_OUT"
 
 echo
 echo "=== 9. worker-restart branch rename uses the session's spawn user, not the requester (#1622) ==="

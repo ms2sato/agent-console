@@ -70,6 +70,7 @@ describe('ConfigResponseSchema', () => {
     serverPort: 3457,
     authMode: 'none',
     sharedAccountsAvailable: false,
+    sharedAccountsEnvVarIgnored: false,
     deployedSha: null,
   };
 

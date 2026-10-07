@@ -80,40 +80,45 @@ const worktrees = new Hono<AppBindings>()
       }
     }
 
-    // Determine worktree/session ownership. For shared sessions, createdBy is
-    // the shared account (PTY spawn identity) and initiatedBy is the
-    // authenticated user (audit trail); the whole creation pipeline below
-    // (git worktree add, useRemote fetch, setup command, headless
-    // branch-name suggestion) runs as the shared account via
-    // `requestUsername`. For personal sessions, createdBy is the
+    // Determine worktree/session ownership. For shared sessions (Release 2:
+    // bound per repository, see docs/design/shared-orchestrator-session.md
+    // §"Shared-Account Set and Per-Repository Binding (DB-backed)"),
+    // createdBy is the repository's BOUND shared account (PTY spawn
+    // identity) and initiatedBy is the authenticated user (audit trail); the
+    // whole creation pipeline below (git worktree add, useRemote fetch,
+    // setup command, headless branch-name suggestion) runs as the shared
+    // account via `requestUsername`. For personal sessions, createdBy is the
     // authenticated user, initiatedBy is left undefined, and requestUsername
     // is the authenticated user's OS username. This mirrors
-    // POST /api/sessions (see routes/sessions.ts) exactly. Resolved
+    // POST /api/sessions (see routes/sessions.ts) exactly for the personal
+    // branch; the shared branch diverges from it (quick sessions can never
+    // be shared -- a binding is a repository property). Resolved
     // synchronously (before the fire-and-forget block) so an invalid request
-    // (feature disabled) fails with 400 instead of a broadcast failure.
-    // Does NOT go through `resolveRequestUsername` (services/resolve-spawn-username.ts):
-    // the personal branch already has the freshest source (`authUser.username`,
-    // no DB round-trip needed), and the shared branch reads a registry cache
-    // whose only write path is the one-time startup upsert, so it cannot
-    // drift from a fresh `userRepository.findById` lookup.
+    // (no binding / unresolvable account) fails with 400 instead of a
+    // broadcast failure. Does NOT go through `resolveRequestUsername`
+    // (services/resolve-spawn-username.ts): the personal branch already has
+    // the freshest source (`authUser.username`, no DB round-trip needed),
+    // and the shared branch reads the repository's binding fresh from the
+    // DB (`RepositoryManager.getSharedAccountUserId`) plus the registry's
+    // own cache, which stays in step with the DB via `register`/`unregister`
+    // (routes/shared-accounts.ts).
     let createdBy: string;
     let initiatedBy: string | undefined;
     let requestUsername: string | null;
     if (body.shared === true) {
-      if (!sharedAccountRegistry.isEnabled()) {
-        throw new ValidationError('Shared sessions are not enabled on this server.');
+      const boundSharedAccountUserId = await repositoryManager.getSharedAccountUserId(repoId);
+      if (!boundSharedAccountUserId) {
+        throw new ValidationError('This repository has no shared account bound; bind one in Settings');
       }
-      const sharedUserId = sharedAccountRegistry.getDefaultUserId();
-      const sharedUsername = sharedAccountRegistry.getDefaultUsername();
-      if (!sharedUserId || !sharedUsername) {
-        // isEnabled() returned true but no default -- unreachable in
-        // practice; surface as 500 since it indicates server-side
-        // inconsistency, not a client input error.
-        throw new InternalError('Shared account registry is enabled but has no default user.');
+      const sharedEntry = sharedAccountRegistry.getEntry(boundSharedAccountUserId);
+      if (!sharedEntry || !sharedEntry.resolvable) {
+        throw new ValidationError(
+          `Shared account ${sharedEntry?.username ?? boundSharedAccountUserId} no longer resolves to an OS account`,
+        );
       }
-      createdBy = sharedUserId;
+      createdBy = boundSharedAccountUserId;
       initiatedBy = authUser.id;
-      requestUsername = sharedUsername;
+      requestUsername = sharedEntry.username;
     } else {
       createdBy = authUser.id;
       initiatedBy = undefined;

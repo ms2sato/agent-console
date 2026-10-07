@@ -62,6 +62,14 @@ export const ConfigResponseSchema = v.strictObject({
   authMode: v.picklist(['none', 'multi-user']),
   sharedAccountsAvailable: v.boolean(),
   /**
+   * `true` when `AGENT_CONSOLE_SHARED_USERNAME` is set on the server, even
+   * though Release 2 no longer consults it for session creation. Lets the
+   * settings page show a banner telling the operator to remove the stale
+   * env var from the unit file. See
+   * docs/design/shared-orchestrator-session.md's rollout table.
+   */
+  sharedAccountsEnvVarIgnored: v.boolean(),
+  /**
    * SHA of the commit currently deployed at this instance, or `null` when no
    * `.deploy-sha` marker is present (e.g. `bun run dev`). See
    * `readDeployedSha` (packages/server/src/lib/deployed-sha.ts).

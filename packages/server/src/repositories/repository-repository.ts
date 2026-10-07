@@ -89,4 +89,19 @@ export interface RepositoryRepository {
    * a deterministic wire representation.
    */
   listOrchestratorSessionIds(id: string): Promise<string[]>;
+
+  /**
+   * Direct, minimal read of the repository's bound shared-account RAW
+   * `users.id` (`repositories.shared_account_user_id`) -- bypassing the
+   * wire-shaped `Repository` mapping entirely, which exposes only the
+   * resolved `sharedAccountUsername` (never the raw id; see
+   * docs/design/shared-orchestrator-session.md §UI/UX "no leaking internal
+   * identity layout"). Used by `RepositoryManager.getSharedAccountUserId`
+   * for Release 2's shared-worktree-creation path
+   * (`routes/worktrees.ts`'s `shared: true` branch).
+   *
+   * @returns `undefined` when the repository does not exist; `null` when it
+   *   exists but is unbound; otherwise the bound account's `users.id`.
+   */
+  getSharedAccountUserId(id: string): Promise<string | null | undefined>;
 }

@@ -39,6 +39,10 @@ const api = new Hono<AppBindings>()
       serverPort: Number(serverConfig.PORT),
       authMode: serverConfig.AUTH_MODE,
       sharedAccountsAvailable: sharedAccountRegistry.isEnabled(),
+      // Release 2: AGENT_CONSOLE_SHARED_USERNAME is no longer a
+      // session-creation source. Surfaced so the settings page can show a
+      // banner telling the operator to remove it from the unit file.
+      sharedAccountsEnvVarIgnored: Boolean(serverConfig.AGENT_CONSOLE_SHARED_USERNAME),
       deployedSha,
     });
   })

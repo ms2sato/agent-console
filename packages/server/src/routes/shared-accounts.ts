@@ -5,6 +5,7 @@ import type { SharedAccountRepository } from '../repositories/shared-account-rep
 import { lookupOsUser, type OsUserInfo } from '../services/os-user-lookup.js';
 import type { UserRepository } from '../repositories/user-repository.js';
 import type { Database } from '../database/schema.js';
+import type { SharedAccountRegistry } from '../services/shared-account-registry.js';
 import { ValidationError, NotFoundError, ConflictError } from '../lib/errors.js';
 import { vValidator } from '../middleware/validation.js';
 import { serverConfig } from '../lib/server-config.js';
@@ -14,28 +15,32 @@ import type { AppBindings } from '../app-context.js';
 const logger = createLogger('api:shared-accounts');
 
 /**
- * Core registration logic shared by `POST /` (operator-initiated, guarded)
- * and `POST /import-env` (automated import of the env-var shared account,
- * unguarded -- see this module's `POST /import-env` handler for why it
- * skips the two guards `POST /` applies).
+ * Core registration logic for `POST /` (operator-initiated, guarded).
  *
- * Upserts/reuses the `users` row for the already-resolved `osInfo` and
- * registers it as a shared account. Does NOT resolve the OS account and does
- * NOT handle the does-not-resolve case -- both call sites already need their
- * own `lookupOsUser` call for other reasons (`POST /`'s personal-session
- * guard; `POST /import-env`'s own OS-account validation), so resolution is
- * the caller's responsibility and is never duplicated here. Lets a duplicate
- * registration's unique-constraint error propagate unchanged (callers decide
- * how to translate it).
+ * Upserts/reuses the `users` row for the already-resolved `osInfo`, persists
+ * it as a shared account, and updates the live in-memory
+ * `SharedAccountRegistry` cache (`register`) so the account is immediately
+ * usable for shared-session creation in this process -- no restart needed.
+ * Does NOT resolve the OS account and does NOT handle the does-not-resolve
+ * case -- the caller already needs its own `lookupOsUser` call for the
+ * personal-session guard, so resolution is the caller's responsibility and
+ * is never duplicated here. Lets a duplicate registration's
+ * unique-constraint error propagate unchanged (the caller decides how to
+ * translate it).
  */
 async function registerSharedAccountCore(
   username: string,
   osInfo: OsUserInfo,
   createdBy: string | null,
-  deps: { sharedAccountRepository: SharedAccountRepository; userRepository: UserRepository },
+  deps: {
+    sharedAccountRepository: SharedAccountRepository;
+    userRepository: UserRepository;
+    sharedAccountRegistry: SharedAccountRegistry;
+  },
 ): Promise<{ userId: string }> {
   const user = await deps.userRepository.upsertByOsUid(osInfo.uid, username, osInfo.homeDir);
   await deps.sharedAccountRepository.register(user.id, createdBy);
+  deps.sharedAccountRegistry.register({ userId: user.id, username: user.username, resolvable: true });
 
   logger.info({ username, userId: user.id, createdBy }, 'Shared account registered');
   return { userId: user.id };
@@ -69,7 +74,7 @@ const sharedAccounts = new Hono<AppBindings>()
     }
 
     const { username } = c.req.valid('json');
-    const { sharedAccountRepository, userRepository } = c.get('appContext');
+    const { sharedAccountRepository, userRepository, sharedAccountRegistry, db } = c.get('appContext');
     const authUser = c.get('authUser');
 
     // Guard 1: refuse registering the caller's own account.
@@ -80,10 +85,10 @@ const sharedAccounts = new Hono<AppBindings>()
     // Guard 2: refuse an account that already has PERSONAL sessions --
     // sessions with created_by = this account AND initiated_by IS NULL,
     // EXCLUDING the case where this account is already a member of the
-    // env-var registry's current set. delegate_to_worktree never sets
-    // initiated_by, so the env-var shared account's own MCP-delegated child
-    // sessions would otherwise look "personal" and trip this guard.
-    const { sharedAccountRegistry, db } = c.get('appContext');
+    // registry's current set. delegate_to_worktree never sets
+    // initiated_by, so an already-registered shared account's own
+    // MCP-delegated child sessions would otherwise look "personal" and trip
+    // this guard.
     const osInfo = await lookupOsUser(username);
     if (!osInfo) {
       throw new ValidationError(`'${username}' does not resolve to an OS account.`);
@@ -103,7 +108,11 @@ const sharedAccounts = new Hono<AppBindings>()
 
     let result: { userId: string };
     try {
-      result = await registerSharedAccountCore(username, osInfo, authUser.id, { sharedAccountRepository, userRepository });
+      result = await registerSharedAccountCore(username, osInfo, authUser.id, {
+        sharedAccountRepository,
+        userRepository,
+        sharedAccountRegistry,
+      });
     } catch (err) {
       if (isUniqueConstraintError(err)) {
         throw new ConflictError(`'${username}' is already registered as a shared account.`);
@@ -120,7 +129,7 @@ const sharedAccounts = new Hono<AppBindings>()
     }
 
     const username = c.req.param('username');
-    const { sharedAccountRepository } = c.get('appContext');
+    const { sharedAccountRepository, sharedAccountRegistry } = c.get('appContext');
 
     const accounts = await sharedAccountRepository.list();
     const match = accounts.find((a) => a.username === username);
@@ -139,51 +148,8 @@ const sharedAccounts = new Hono<AppBindings>()
     }
 
     await sharedAccountRepository.unregister(match.userId);
+    sharedAccountRegistry.unregister(match.userId);
     return c.json({ success: true });
-  })
-  // Import the env-var-configured shared account (AGENT_CONSOLE_SHARED_USERNAME)
-  // into the DB-backed registry. Idempotent; skips the operator-facing
-  // guards `POST /` applies (self-registration, personal-session check) --
-  // the env-var account is operator-vouched for by the unit file that set it.
-  .post('/import-env', async (c) => {
-    if (serverConfig.AUTH_MODE === 'none') {
-      throw new ValidationError('Shared accounts are not available in AUTH_MODE=none.');
-    }
-
-    const { sharedAccountRegistry, sharedAccountRepository, userRepository } = c.get('appContext');
-    const authUser = c.get('authUser');
-    const username = sharedAccountRegistry.getDefaultUsername();
-    if (!username) {
-      return c.json({ error: 'No env-var shared account is configured' }, 404);
-    }
-
-    const accounts = await sharedAccountRepository.list();
-    const already = accounts.find((a) => a.username === username);
-    if (already) {
-      return c.json({ imported: false });
-    }
-
-    const osInfo = await lookupOsUser(username);
-    if (!osInfo) {
-      throw new ValidationError(`'${username}' does not resolve to an OS account.`);
-    }
-
-    // The caller is whoever is logged in and clicked "Import" -- same
-    // operator-initiated attribution as `POST /`, not the env-var account
-    // registering itself.
-    try {
-      await registerSharedAccountCore(username, osInfo, authUser.id, { sharedAccountRepository, userRepository });
-    } catch (err) {
-      if (isUniqueConstraintError(err)) {
-        // A concurrent import-env call won the race and registered first;
-        // from this caller's perspective the account is now registered,
-        // which is exactly what `imported: false` already means below.
-        return c.json({ imported: false });
-      }
-      throw err;
-    }
-
-    return c.json({ imported: true });
   });
 
 /**

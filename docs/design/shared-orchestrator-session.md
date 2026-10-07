@@ -351,20 +351,21 @@ Shared-account sessions are **opt-in**. Deployments that do not want them leave 
 |---|---|---|
 | `AGENT_CONSOLE_SHARED_USERNAME` | (unset) | OS username of the default shared account (single-account case). |
 
-Multiple shared accounts are a natural extension for larger organisations; the chosen runtime form is the DB-backed set described in [Shared-Account Set and Per-Repository Binding](#shared-account-set-and-per-repository-binding-db-backed) below, not a comma-separated env var or a config file. The single `AGENT_CONSOLE_SHARED_USERNAME` variable above remains the Release 1 / Release 2 runtime source until Release 2 switches the creation path over (see that section's rollout table) — this resolves the "Multiple shared accounts" item that previously appeared under Open Questions.
+Multiple shared accounts are a natural extension for larger organisations; the chosen runtime form is the DB-backed set described in [Shared-Account Set and Per-Repository Binding](#shared-account-set-and-per-repository-binding-db-backed) below, not a comma-separated env var or a config file. The single `AGENT_CONSOLE_SHARED_USERNAME` variable above was the Release 1 runtime source; it is **ignored since Release 2** (see that section's rollout table), and removal of the variable from the unit file is a separate, owner-gated deploy change — this resolves the "Multiple shared accounts" item that previously appeared under Open Questions.
 
 ### Startup behaviour
 
-Release 1 and Release 2 differ here; see the rollout table in [Shared-Account Set and Per-Repository Binding](#shared-account-set-and-per-repository-binding-db-backed) for the full picture. The rules below describe the env-var-driven path, which is what actually runs session creation in both releases (Release 2 changes this — see that section):
+Release 1 and Release 2 differ here; see the rollout table in [Shared-Account Set and Per-Repository Binding](#shared-account-set-and-per-repository-binding-db-backed) for the full picture. The rules below describe Release 2's actual behaviour (the DB-backed set, built at boot):
 
-- **Unset** — shared feature disabled. Server logs one informational line (`"shared account: disabled (AGENT_CONSOLE_SHARED_USERNAME not set)"`) and continues. UI does not display shared-session affordances.
-- **Set, and the OS account exists** — server upserts the account into `users` on startup, enables shared-session creation endpoints and UI.
-- **Set, and the OS account does not exist** — server **fails fast at startup** with a clear error instructing the operator to create the OS account or unset the variable. This catches misconfiguration (typos, accidental unset during deployment) before users encounter a missing button.
+- `AGENT_CONSOLE_SHARED_USERNAME` is **ignored since Release 2** for building the registry — it is read only to decide whether to log a warning.
+- **Set** — server logs `logger.warn` ("AGENT_CONSOLE_SHARED_USERNAME is set but ignored since Release 2; remove it from the unit file"). If, in addition, the DB-backed set is empty, a second distinct warning fires ("no shared accounts are registered in the DB while AGENT_CONSOLE_SHARED_USERNAME is set -- shared sessions are disabled until one is registered").
+- **The DB-backed set is built regardless of the env var**: for every `shared_accounts` row, the server resolves the OS account; a resolved account becomes usable, an unresolved one stays in the set (so its existing sessions remain operable and labelled) but is marked unresolvable with one warning naming it, and creating against it returns `400`.
+- Server **never fails boot** over an unresolvable or empty set — a refusal would turn a stale unit file or a since-removed OS account into a full outage with no UI path to recover.
 
 ### Relationship to `AUTH_MODE`
 
-- In `AUTH_MODE=multi-user`, `AGENT_CONSOLE_SHARED_USERNAME` is honoured per the rules above.
-- In `AUTH_MODE=none`, `AGENT_CONSOLE_SHARED_USERNAME` is ignored — shared sessions require multi-user authentication to be meaningful. The DB-backed set and binding described below are likewise unavailable in `AUTH_MODE=none` (every `/api/shared-accounts/*` endpoint and the `sharedAccountUsername` field on `PATCH /api/repositories/:id` reject with 400).
+- In `AUTH_MODE=multi-user`, the DB-backed set and per-repository binding described below are live; `AGENT_CONSOLE_SHARED_USERNAME` is honoured only for the startup warnings above, never to pick an account.
+- In `AUTH_MODE=none`, shared accounts are unavailable entirely — the DB-backed set and binding are unavailable (every `/api/shared-accounts/*` endpoint and the `sharedAccountUsername` field on `PATCH /api/repositories/:id` reject with 400), and `AGENT_CONSOLE_SHARED_USERNAME` is ignored outright (no warnings either, since shared sessions are not meaningful under this auth mode).
 
 ## Shared-Account Set and Per-Repository Binding (DB-backed)
 
@@ -402,12 +403,13 @@ Quick sessions cannot be shared once bindings govern session creation (Release 2
 | `POST /api/sessions` / `POST /api/repositories/:id/worktrees` with `shared: true` | uses `getDefaultUserId()` (env var) — **a DB binding on the target repository has no effect** | reads the repository's binding |
 | `AGENT_CONSOLE_SHARED_USERNAME` set at boot | honoured as the (only) runtime source | ignored for session creation; triggers one boot WARN, and a second WARN if the DB-backed set is empty (a refusal-to-boot was considered and rejected — see below) |
 | A registered account whose OS user no longer resolves | not checked (Release 1 never resolves bindings at runtime) | does NOT fail boot — the account stays in the set (so its existing sessions stay operable and labelled), is marked unresolvable with one WARN, the settings UI surfaces the state, and creating against it returns `400` |
+| `POST /api/shared-accounts/import-env` | present — the bridge that lets an operator pull today's env-var account into the DB-backed set without retyping it | **removed**. Once the registry no longer treats the env var as an account source, an "import from env" mechanism would be the one remaining code path that still reads the variable to pick an account — exactly what this release retires. Registration is UI/API-only (`POST /api/shared-accounts`) from Release 2 onward. |
 
 Release 2 boot deliberately WARNs rather than refuses when the env var is set but ignored, or when a registered account has gone stale: refusing to boot would turn a stale unit file or a since-removed OS account into a full outage with no UI path to recover, which is worse than a visible warning plus a `400` at the point of use.
 
 ### Why Release 1 ships storage before Release 2 consumes it
 
-This is a deliberate two-stage rollout (owner decision), not an accidental half-feature: it lets operators register accounts and bind repositories ahead of time — including importing today's env-var account via `POST /api/shared-accounts/import-env` — so that the Release 2 cutover changes *which account answers*, never *whether the feature works at all*. It also means Release 1's registration surface is live before anything consults it; the allowlist-of-who-may-bind-which-account question (a human registering another human's personal account would make that human's sessions team-operable once Release 2 ships) is deferred to a follow-up and tracked separately from this design.
+This is a deliberate two-stage rollout (owner decision), not an accidental half-feature: it lets operators register accounts and bind repositories ahead of time — Release 1 included an `import-env` bridge for pulling today's env-var account into the DB-backed set without retyping it, removed in Release 2 once the registry stops treating the variable as an account source at all (see the rollout table above) — so that the Release 2 cutover changes *which account answers*, never *whether the feature works at all*. It also means Release 1's registration surface is live before anything consults it; the allowlist-of-who-may-bind-which-account question (a human registering another human's personal account would make that human's sessions team-operable once Release 2 ships) is deferred to a follow-up and tracked separately from this design.
 
 ## Operational Setup
 

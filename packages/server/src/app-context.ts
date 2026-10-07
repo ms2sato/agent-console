@@ -183,10 +183,15 @@ export interface AppContext {
   sharedAccountRegistry: SharedAccountRegistry;
 
   /**
-   * Shared-account storage repository (Release 1 of the shared-accounts
-   * design): the registered-account SET plus per-repository binding
-   * support. Storage only -- NOT consulted by session creation or access
-   * control; see `migrateToV47`'s doc comment in `database/connection.ts`.
+   * Shared-account storage repository: the registered-account SET plus
+   * per-repository binding support. As of Release 2, this IS the source
+   * `SharedAccountRegistry.createFromDb` builds its in-memory cache from at
+   * startup, and what `routes/worktrees.ts`'s `shared: true` branch consults
+   * (via `RepositoryManager.getSharedAccountUserId`) for which account a
+   * repository's shared sessions run as. Still NOT consulted by
+   * access-control (`isSharedUserId` / `Session.isShared` /
+   * `assertCanOperateSession` consult only the in-memory SET, never the
+   * binding); see `migrateToV47`'s doc comment in `database/connection.ts`.
    */
   sharedAccountRepository: SharedAccountRepository;
 
@@ -269,6 +274,40 @@ export interface AppContext {
 
   /** Branch watcher service for dynamic branch tracking */
   branchWatcherService: BranchWatcherServiceType;
+}
+
+/**
+ * Determine which `AGENT_CONSOLE_SHARED_USERNAME`-related boot warnings to
+ * log for Release 2 of the shared-accounts design (the env var is no longer
+ * consulted for session creation; see
+ * docs/design/shared-orchestrator-session.md's rollout table). A pure
+ * function so the four env-var/registry-state combinations are testable
+ * without booting a full `AppContext`.
+ *
+ * @param envVarValue - the raw `AGENT_CONSOLE_SHARED_USERNAME` value (may be
+ *   `undefined` or an empty string; both are treated as "unset").
+ * @param registryEnabled - `sharedAccountRegistry.isEnabled()`, i.e. whether
+ *   the DB-backed set is non-empty.
+ * @returns zero, one, or two warning messages, in the order they should be
+ *   logged.
+ *
+ * @internal Exported for testing.
+ */
+export function resolveSharedAccountEnvVarWarnings(
+  envVarValue: string | undefined,
+  registryEnabled: boolean,
+): string[] {
+  if (!envVarValue) return [];
+
+  const warnings = [
+    'AGENT_CONSOLE_SHARED_USERNAME is set but ignored since Release 2; remove it from the unit file',
+  ];
+  if (!registryEnabled) {
+    warnings.push(
+      'no shared accounts are registered in the DB while AGENT_CONSOLE_SHARED_USERNAME is set -- shared sessions are disabled until one is registered',
+    );
+  }
+  return warnings;
 }
 
 /**
@@ -368,15 +407,25 @@ export async function createAppContext(
     'User mode initialized',
   );
 
-  // 5.6. Create shared account registry. Only honours
-  // AGENT_CONSOLE_SHARED_USERNAME when AUTH_MODE=multi-user; in AUTH_MODE=none
-  // shared sessions are not meaningful and the env var is ignored.
+  // 5.6. Create shared account registry. Release 2: built from the DB-backed
+  // `shared_accounts` table (SharedAccountRegistry.createFromDb), only when
+  // AUTH_MODE=multi-user -- in AUTH_MODE=none shared sessions are not
+  // meaningful. AGENT_CONSOLE_SHARED_USERNAME is no longer a session-creation
+  // source; it is read below ONLY to decide whether to log the two boot
+  // WARN lines described in docs/design/shared-orchestrator-session.md's
+  // rollout table (resolveSharedAccountEnvVarWarnings).
   let sharedAccountRegistry: SharedAccountRegistry;
   if (serverConfig.AUTH_MODE === 'multi-user') {
-    sharedAccountRegistry = await SharedAccountRegistry.create({
-      username: serverConfig.AGENT_CONSOLE_SHARED_USERNAME,
+    sharedAccountRegistry = await SharedAccountRegistry.createFromDb({
+      sharedAccountRepository,
       userRepository,
     });
+    for (const message of resolveSharedAccountEnvVarWarnings(
+      serverConfig.AGENT_CONSOLE_SHARED_USERNAME,
+      sharedAccountRegistry.isEnabled(),
+    )) {
+      logger.warn({}, message);
+    }
   } else {
     if (serverConfig.AGENT_CONSOLE_SHARED_USERNAME) {
       logger.info({}, 'shared account: ignored in AUTH_MODE=none');
