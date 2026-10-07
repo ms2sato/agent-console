@@ -1,10 +1,11 @@
-import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, spyOn } from 'bun:test';
 import { sql } from 'kysely';
 import type { JobType } from '@agent-console/shared';
 import { JobQueue } from '../job-queue.js';
 import { initializeDatabase, closeDatabase, getDatabase } from '../../database/connection.js';
 import type { Database } from '../../database/schema.js';
 import type { Kysely } from 'kysely';
+import { rootLogger } from '../../lib/logger.js';
 
 /** Cast test-only job type strings to JobType for queue mechanism tests */
 const testType = (type: string) => type as JobType;
@@ -337,6 +338,155 @@ describe('JobQueue', () => {
       job = await jobQueue.getJob(id);
       expect(job?.status).toBe('completed');
       expect(processed).toBe(true);
+    });
+  });
+
+  // ===========================================================================
+  // Stop Tests (drain in-flight work before the caller tears the DB down)
+  // ===========================================================================
+
+  describe('stop', () => {
+    function deferred() {
+      let resolve!: () => void;
+      let reject!: (err: Error) => void;
+      const promise = new Promise<void>((res, rej) => {
+        resolve = res;
+        reject = rej;
+      });
+      return { promise, resolve, reject };
+    }
+
+    const tick = (ms = 30) => new Promise((resolve) => setTimeout(resolve, ms));
+
+    it('waits for an in-flight handler and lets its completion write land on the live DB', async () => {
+      const gate = deferred();
+      let started = false;
+      jobQueue.registerHandler(testType('test:job'), async () => {
+        started = true;
+        await gate.promise;
+      });
+      const id = await jobQueue.enqueue(testType('test:job'), {});
+      await jobQueue.start();
+      await waitFor(() => started);
+
+      let stopped = false;
+      const stopPromise = jobQueue.stop().then(() => {
+        stopped = true;
+      });
+      await tick();
+      await tick();
+      expect(stopped).toBe(false);
+
+      gate.resolve();
+      await stopPromise;
+
+      const job = await jobQueue.getJob(id);
+      expect(job?.status).toBe('completed');
+    });
+
+    it('waits for an in-flight handler that rejects and lets its failure write land on the live DB', async () => {
+      const gate = deferred();
+      let started = false;
+      jobQueue.registerHandler(testType('test:job'), async () => {
+        started = true;
+        await gate.promise;
+      });
+      const id = await jobQueue.enqueue(testType('test:job'), {}, { maxAttempts: 5 });
+      await jobQueue.start();
+      await waitFor(() => started);
+
+      let stopped = false;
+      const stopPromise = jobQueue.stop().then(() => {
+        stopped = true;
+      });
+      await tick();
+      expect(stopped).toBe(false);
+
+      gate.reject(new Error('boom after stop'));
+      await stopPromise;
+
+      const job = await jobQueue.getJob(id);
+      expect(job?.status).toBe('pending');
+      expect(job?.attempts).toBe(1);
+      expect(job?.last_error).toBe('boom after stop');
+
+      // No retry timer may be armed after stop(); start() picks the pending row up.
+      expect(jobQueue.__testOnly.retryTimers.has(id)).toBe(false);
+      expect(jobQueue.__testOnly.retryTimers.size).toBe(0);
+    });
+
+    it('gives up after stopTimeoutMs with exactly one warning, leaves the row processing, and start() reclaims it', async () => {
+      jobQueue = new JobQueue(db, { stopTimeoutMs: 50 });
+      const hang = deferred();
+      let calls = 0;
+      jobQueue.registerHandler(testType('test:job'), async () => {
+        calls++;
+        if (calls === 1) await hang.promise;
+      });
+      const id = await jobQueue.enqueue(testType('test:job'), {});
+      await jobQueue.start();
+      await waitFor(() => calls === 1);
+
+      const warnSpy = spyOn(rootLogger, 'warn');
+      try {
+        const began = Date.now();
+        await jobQueue.stop();
+        expect(Date.now() - began).toBeLessThan(2000);
+
+        const timeoutWarnings = warnSpy.mock.calls.filter(
+          ([, message]) => typeof message === 'string' && message.includes('stop timed out')
+        );
+        expect(timeoutWarnings).toHaveLength(1);
+        expect(timeoutWarnings[0][0]).toMatchObject({ inFlight: 1, jobIds: [id] });
+      } finally {
+        warnSpy.mockRestore();
+      }
+
+      expect((await jobQueue.getJob(id))?.status).toBe('processing');
+
+      // Same instance restarts: start() reclaims the stuck row and the handler runs again.
+      await jobQueue.start();
+      await waitFor(async () => (await jobQueue.getJob(id))?.status === 'completed');
+      expect(calls).toBe(2);
+
+      // Let the abandoned first run settle so nothing is left pending.
+      hang.resolve();
+      await tick();
+    });
+
+    it('returns a job whose claim completes after stop() to pending without ever running its handler', async () => {
+      let handlerCalls = 0;
+      jobQueue.registerHandler(testType('test:job'), async () => {
+        handlerCalls++;
+      });
+      const id = await jobQueue.enqueue(testType('test:job'), {});
+
+      // Hold the claim's result back until stop() has flipped `running`.
+      const gate = deferred();
+      const realClaim = (jobQueue as any).claimNextJob.bind(jobQueue);
+      (jobQueue as any).claimNextJob = async () => {
+        const job = await realClaim();
+        await gate.promise;
+        return job;
+      };
+
+      await jobQueue.start();
+      await waitFor(async () => (await jobQueue.getJob(id))?.status === 'processing');
+
+      let stopped = false;
+      const stopPromise = jobQueue.stop().then(() => {
+        stopped = true;
+      });
+      await tick();
+      expect(stopped).toBe(false);
+
+      gate.resolve();
+      await stopPromise;
+
+      const job = await jobQueue.getJob(id);
+      expect(job?.status).toBe('pending');
+      expect(job?.started_at).toBeNull();
+      expect(handlerCalls).toBe(0);
     });
   });
 
