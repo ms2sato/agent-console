@@ -221,6 +221,7 @@ describe('Client-Server Boundary: exited.reason survives to the client as `evict
         // value under test.
         getEmbeddedAgent: (id) => (id === CLAUDE_SDK_AGENT_ID ? claudeSdkAgent : undefined),
         resolveSpawnUsername: async () => 'testuser',
+        resolveDisableClaudeAiConnectors: async () => false,
         mcpTokenRegistry: new McpTokenRegistry(),
         workerOutputFileManager: outputFileManager,
         getMcpBaseUrl: () => 'http://localhost:3457/mcp',

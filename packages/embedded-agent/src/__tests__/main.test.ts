@@ -678,6 +678,7 @@ describe('runLoop — image attachment threading (#1571)', () => {
       compaction: { auto: false },
       engine: 'claude-sdk',
       allowedProjectMcpServers: [],
+      disableClaudeAiConnectors: false,
       mcp: { baseUrl: 'http://mcp/local', token: 'tok' },
       provider: { model: 'claude-sonnet-5' },
       context: { sessionId: 's', workerId: 'w', cwd: '/tmp' },
@@ -919,6 +920,7 @@ describe('runLoop — reasoningEffort/effort threading (agent-surface.md Ruling 
       compaction: { auto: false },
       engine: 'claude-sdk',
       allowedProjectMcpServers: [],
+      disableClaudeAiConnectors: false,
       mcp: { baseUrl: 'http://mcp/local', token: 'tok' },
       provider: { model: 'claude-sonnet-5' },
       context: { sessionId: 's', workerId: 'w', cwd: '/tmp' },
@@ -969,6 +971,37 @@ describe('runLoop — reasoningEffort/effort threading (agent-surface.md Ruling 
 
     expect(await runLoop(io, factories)).toBe(0);
     expect(capturedDeps?.effort).toBe('high');
+  });
+
+  // The per-user claude.ai connectors toggle: init.disableClaudeAiConnectors
+  // threads straight into SdkEngineDeps.disableClaudeAiConnectors, both
+  // directions asserted (mirrors the effort-threading pins above).
+  it('threads init.disableClaudeAiConnectors: true into the constructed SDK engine deps', async () => {
+    let capturedDeps: SdkEngineDeps | undefined;
+    const { io } = makeIo([claudeSdkInitCommand({ disableClaudeAiConnectors: true })]);
+    const factories = makeFactories({
+      createSdkEngine: (deps) => {
+        capturedDeps = deps;
+        return new NoopEngine();
+      },
+    });
+
+    expect(await runLoop(io, factories)).toBe(0);
+    expect(capturedDeps?.disableClaudeAiConnectors).toBe(true);
+  });
+
+  it('threads init.disableClaudeAiConnectors: false into the constructed SDK engine deps', async () => {
+    let capturedDeps: SdkEngineDeps | undefined;
+    const { io } = makeIo([claudeSdkInitCommand({ disableClaudeAiConnectors: false })]);
+    const factories = makeFactories({
+      createSdkEngine: (deps) => {
+        capturedDeps = deps;
+        return new NoopEngine();
+      },
+    });
+
+    expect(await runLoop(io, factories)).toBe(0);
+    expect(capturedDeps?.disableClaudeAiConnectors).toBe(false);
   });
 
   // Issue #1694 (C5): main.ts's claude-sdk init arm composes the SDK
@@ -1054,6 +1087,7 @@ describe('runLoop — engine discriminant containment (SDK Engine Phase 1)', () 
       compaction: { auto: false },
       engine: 'claude-sdk',
       allowedProjectMcpServers: [],
+      disableClaudeAiConnectors: false,
       mcp: { baseUrl: 'http://mcp/local', token: 'tok' },
       provider: { model: 'claude-sonnet-5', apiKey: 'sk-leaked' },
       context: { sessionId: 's', workerId: 'w', cwd: '/tmp' },
@@ -1070,6 +1104,7 @@ describe('runLoop — engine discriminant containment (SDK Engine Phase 1)', () 
       compaction: { auto: false },
       engine: 'claude-sdk',
       allowedProjectMcpServers: [],
+      disableClaudeAiConnectors: false,
       mcp: { baseUrl: 'http://mcp/local', token: 'tok' },
       provider: { model: 'claude-sonnet-5' },
       context: { sessionId: 's', workerId: 'w', cwd: '/tmp' },
@@ -1080,6 +1115,42 @@ describe('runLoop — engine discriminant containment (SDK Engine Phase 1)', () 
     if (result.success && result.output.type === 'init' && result.output.engine === 'claude-sdk') {
       expect('apiKey' in result.output.provider).toBe(false);
     }
+  });
+
+  // The per-user claude.ai connectors toggle (Q10, wire schema pin): REQUIRED
+  // on the claude-sdk arm, ABSENT on the openai-api arm -- both directions of
+  // the containment, mirroring the apiKey pins immediately above.
+  it('rejects a claude-sdk init command missing disableClaudeAiConnectors (required, never "default to connectors on/off")', () => {
+    const command = {
+      v: 1,
+      type: 'init',
+      compaction: { auto: false },
+      engine: 'claude-sdk',
+      allowedProjectMcpServers: [],
+      // disableClaudeAiConnectors deliberately omitted.
+      mcp: { baseUrl: 'http://mcp/local', token: 'tok' },
+      provider: { model: 'claude-sonnet-5' },
+      context: { sessionId: 's', workerId: 'w', cwd: '/tmp' },
+      maxToolIterations: 5,
+    };
+    const result = v.safeParse(EmbeddedAgentCommandSchema, command);
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects an openai-api init command carrying disableClaudeAiConnectors (no representable analogue on that arm)', () => {
+    const command = {
+      v: 1,
+      type: 'init',
+      compaction: { auto: false },
+      engine: 'openai-api',
+      disableClaudeAiConnectors: false,
+      mcp: { baseUrl: 'http://mcp/local', token: 'tok' },
+      provider: { baseUrl: 'http://localhost:11434/v1', model: 'qwen3:32b' },
+      context: { sessionId: 's', workerId: 'w', cwd: '/tmp' },
+      maxToolIterations: 5,
+    };
+    const result = v.safeParse(EmbeddedAgentCommandSchema, command);
+    expect(result.success).toBe(false);
   });
 
   // Mirrors the openai-api branch's "emits a fatal event and exits 1 when
@@ -1094,6 +1165,7 @@ describe('runLoop — engine discriminant containment (SDK Engine Phase 1)', () 
       compaction: { auto: false },
       engine: 'claude-sdk',
       allowedProjectMcpServers: [],
+      disableClaudeAiConnectors: false,
       mcp: { baseUrl: 'http://mcp/local', token: 'tok' },
       provider: { model: 'claude-sonnet-5' },
       context: { sessionId: 's', workerId: 'w', cwd: '/tmp' },
@@ -1124,6 +1196,7 @@ describe('runLoop — the retired handoff command (#1401)', () => {
       compaction: { auto: false },
       engine: 'claude-sdk',
       allowedProjectMcpServers: [],
+      disableClaudeAiConnectors: false,
       mcp: { baseUrl: 'http://mcp/local', token: 'tok' },
       provider: { model: 'claude-sonnet-5' },
       context: { sessionId: 's', workerId: 'w', cwd: '/tmp' },
@@ -1192,6 +1265,7 @@ describe('runLoop — the `compact` command (Slash commands, console-handled arm
       compaction: { auto: false },
       engine: 'claude-sdk',
       allowedProjectMcpServers: [],
+      disableClaudeAiConnectors: false,
       mcp: { baseUrl: 'http://mcp/local', token: 'tok' },
       provider: { model: 'claude-sonnet-5' },
       context: { sessionId: 's', workerId: 'w', cwd: '/tmp' },
@@ -1268,6 +1342,7 @@ describe('runLoop — shutdown dispose (Phase 4, #1683 decision 5)', () => {
       compaction: { auto: false },
       engine: 'claude-sdk',
       allowedProjectMcpServers: [],
+      disableClaudeAiConnectors: false,
       mcp: { baseUrl: 'http://mcp/local', token: 'tok' },
       provider: { model: 'claude-sonnet-5' },
       context: { sessionId: 's', workerId: 'w', cwd: '/tmp' },
@@ -1305,6 +1380,7 @@ describe('runLoop — claude-sdk engine: instructions via loadInstructions (Issu
       compaction: { auto: false },
       engine: 'claude-sdk',
       allowedProjectMcpServers: [],
+      disableClaudeAiConnectors: false,
       mcp: { baseUrl: 'http://mcp/local', token: 'tok' },
       provider: { model: 'claude-sonnet-5' },
       context: { sessionId: 's', workerId: 'w', cwd: '/tmp' },
@@ -1428,6 +1504,7 @@ describe('runLoop — claude-sdk engine: CLAUDE.md chain-layer delivery (Issue #
       compaction: { auto: false },
       engine: 'claude-sdk',
       allowedProjectMcpServers: [],
+      disableClaudeAiConnectors: false,
       mcp: { baseUrl: 'http://mcp/local', token: 'tok' },
       provider: { model: 'claude-sonnet-5' },
       context: { sessionId: 's', workerId: 'w', cwd },
@@ -1508,6 +1585,7 @@ describe('runLoop — claude-sdk resume pre-flight (R1)', () => {
       compaction: { auto: false },
       engine: 'claude-sdk',
       allowedProjectMcpServers: [],
+      disableClaudeAiConnectors: false,
       mcp: { baseUrl: 'http://mcp/local', token: 'tok' },
       provider: { model: 'claude-sonnet-5' },
       context: { sessionId: 's', workerId: 'w', cwd: '/tmp/work' },
@@ -1534,6 +1612,7 @@ describe('runLoop — claude-sdk resume pre-flight (R1)', () => {
         ...shared,
         engine: 'claude-sdk',
         allowedProjectMcpServers: [],
+        disableClaudeAiConnectors: false,
         provider: { model: 'claude-sonnet-5' },
       }).success,
     ).toBe(true);
@@ -2311,6 +2390,7 @@ describe('runLoop — set-model-params dispatch (agent-surface.md Phase 3)', () 
       compaction: { auto: false },
       engine: 'claude-sdk',
       allowedProjectMcpServers: [],
+      disableClaudeAiConnectors: false,
       mcp: { baseUrl: 'http://mcp/local', token: 'tok' },
       provider: { model: 'claude-sonnet-5' },
       context: { sessionId: 's', workerId: 'w', cwd: '/tmp' },
@@ -2383,6 +2463,7 @@ describe('runLoop — claude-sdk engine: MCP/agents discovery wiring (epic #1636
       compaction: { auto: false },
       engine: 'claude-sdk',
       allowedProjectMcpServers: [],
+      disableClaudeAiConnectors: false,
       mcp: { baseUrl: 'http://mcp/local', token: 'tok' },
       provider: { model: 'claude-sonnet-5' },
       context: { sessionId: 's', workerId: 'w', cwd: '/tmp' },
@@ -2574,6 +2655,7 @@ describe('runLoop — set-mcp-servers dispatch (epic #1636 Phase 5 PR-2, Archite
       compaction: { auto: false },
       engine: 'claude-sdk',
       allowedProjectMcpServers: [],
+      disableClaudeAiConnectors: false,
       mcp: { baseUrl: 'http://mcp/local', token: 'tok' },
       provider: { model: 'claude-sonnet-5' },
       context: { sessionId: 's', workerId: 'w', cwd: '/tmp' },
@@ -2704,6 +2786,7 @@ describe('runLoop — memory layer: memoryDir at every loader call site, memoryR
         compaction: { auto: false },
         engine: 'claude-sdk',
         allowedProjectMcpServers: [],
+        disableClaudeAiConnectors: false,
         mcp: { baseUrl: 'http://mcp/local', token: 'tok' },
         provider: { model: 'claude-sonnet-5' },
         context: { sessionId: 's', workerId: 'w', cwd, memoryDir },

@@ -405,6 +405,15 @@ function setup(opts?: {
     createdAt: string;
     decidedAt: string;
   }>;
+  /**
+   * The per-user claude.ai connectors toggle: the value
+   * `resolveDisableClaudeAiConnectors` resolves to. Defaults to `false`
+   * (connectors ON). Ignored unless `resolveDisableClaudeAiConnectorsFn` is
+   * also unset.
+   */
+  disableClaudeAiConnectors?: boolean;
+  /** Overrides the whole `resolveDisableClaudeAiConnectors` fn, e.g. to assert call args or simulate a throwing repository. */
+  resolveDisableClaudeAiConnectorsFn?: ReturnType<typeof mock>;
 }): Harness {
   const definition = 'definition' in (opts ?? {}) ? opts!.definition : buildDefinition();
   const createdBy = opts && 'createdBy' in opts ? opts.createdBy : 'user-1';
@@ -512,6 +521,9 @@ function setup(opts?: {
     getPathResolver: () => new SessionDataPathResolver(TEST_BASE_DIR, tmpdir()),
     getEmbeddedAgent: () => definition,
     resolveSpawnUsername: async () => USERNAME,
+    resolveDisableClaudeAiConnectors:
+      (opts?.resolveDisableClaudeAiConnectorsFn as never) ??
+      (async () => opts?.disableClaudeAiConnectors ?? false),
     mcpTokenRegistry: { mint: mint as never, revokeByWorker: revokeByWorker as never },
     mcpServerPermissionRepository: { listByScope: listByScope as never },
     workerOutputFileManager: {
@@ -4922,6 +4934,58 @@ describe('EmbeddedAgentWorkerService — allowedProjectMcpServers composition', 
     const first = JSON.parse(h.fake.stdinWrites[0]);
     expect('allowedProjectMcpServers' in first).toBe(false);
     expect(h.listByScope).not.toHaveBeenCalled();
+  });
+});
+
+describe('EmbeddedAgentWorkerService — disableClaudeAiConnectors composition (the per-user claude.ai connectors toggle)', () => {
+  it('composes disableClaudeAiConnectors: true when the dep resolves true, for a claude-sdk worker', async () => {
+    const h = setup({ definition: SDK_DEFINITION, disableClaudeAiConnectors: true });
+    await h.service.activate(h.sessionId, h.workerId);
+
+    const first = JSON.parse(h.fake.stdinWrites[0]);
+    expect(first.disableClaudeAiConnectors).toBe(true);
+  });
+
+  it('composes disableClaudeAiConnectors: false when the dep resolves false, for a claude-sdk worker', async () => {
+    const h = setup({ definition: SDK_DEFINITION, disableClaudeAiConnectors: false });
+    await h.service.activate(h.sessionId, h.workerId);
+
+    const first = JSON.parse(h.fake.stdinWrites[0]);
+    expect(first.disableClaudeAiConnectors).toBe(false);
+  });
+
+  it('never sends disableClaudeAiConnectors on an openai-api init command, and never calls the resolver', async () => {
+    const resolveDisableClaudeAiConnectorsFn = mock(async () => true);
+    const h = setup({ resolveDisableClaudeAiConnectorsFn });
+    await h.service.activate(h.sessionId, h.workerId);
+
+    const first = JSON.parse(h.fake.stdinWrites[0]);
+    expect(first.engine).toBe('openai-api');
+    expect('disableClaudeAiConnectors' in first).toBe(false);
+    expect(resolveDisableClaudeAiConnectorsFn).not.toHaveBeenCalled();
+  });
+
+  it('resolves with the same userId (session.createdBy) used to mint the MCP caller identity', async () => {
+    const resolveDisableClaudeAiConnectorsFn = mock(async () => false);
+    const h = setup({
+      definition: SDK_DEFINITION,
+      createdBy: 'user-connectors-test',
+      resolveDisableClaudeAiConnectorsFn,
+    });
+    await h.service.activate(h.sessionId, h.workerId);
+
+    expect(resolveDisableClaudeAiConnectorsFn).toHaveBeenCalledWith('user-connectors-test');
+  });
+
+  it('propagates a throwing resolveDisableClaudeAiConnectors uncaught -- activation fails loudly, never silently defaults', async () => {
+    const resolveDisableClaudeAiConnectorsFn = mock(async () => {
+      throw new Error('simulated preferences read failure');
+    });
+    const h = setup({ definition: SDK_DEFINITION, resolveDisableClaudeAiConnectorsFn });
+
+    await expect(h.service.activate(h.sessionId, h.workerId)).rejects.toThrow(
+      'simulated preferences read failure',
+    );
   });
 });
 

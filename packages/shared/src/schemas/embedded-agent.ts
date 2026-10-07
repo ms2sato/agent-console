@@ -373,6 +373,10 @@ const EmbeddedAgentInitCommandSchema = v.variant('engine', [
     allowedProjectMcpServers: v.array(
       v.strictObject({ name: v.string(), hash: v.string() }),
     ),
+    // The per-user claude.ai connectors toggle. REQUIRED, not optional --
+    // on the claude-sdk arm only, since `openai-api` has no claude.ai
+    // connectors concept. See the type's doc comment.
+    disableClaudeAiConnectors: v.boolean(),
   }),
 ]);
 

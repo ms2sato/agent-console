@@ -18,7 +18,7 @@ import { sql, Kysely } from 'kysely';
 import { BunSqliteDialect } from 'kysely-bun-sqlite';
 import { Database as BunDatabase } from 'bun:sqlite';
 import type { Database } from '../schema.js';
-import { initializeDatabase, closeDatabase, migrateToV47 } from '../connection.js';
+import { initializeDatabase, closeDatabase, migrateToV46, migrateToV47 } from '../connection.js';
 import { setupMemfs, cleanupMemfs } from '../../__tests__/utils/mock-fs-helper.js';
 import { expectRebuiltTableDdl, type PragmaTableInfoRow } from './helpers/ddl-pin.js';
 
@@ -230,5 +230,49 @@ describe('migration v47 (shared_accounts table + repositories.shared_account_use
     const db = await initializeDatabase(':memory:');
     const versionRes = await sql<{ user_version: number }>`PRAGMA user_version`.execute(db);
     expect(versionRes.rows[0]?.user_version).toBe(47);
+  });
+
+  // `runMigrations` (the dispatcher's own `if (currentVersion < N)` guard
+  // chain) is module-internal and only reachable via `initializeDatabase`,
+  // which -- for a non-':memory:' path -- opens a REAL file through
+  // `bun:sqlite`'s native binding, bypassing this test file's `node:fs`
+  // mock entirely (see `mock-fs-helper.ts`'s header: the mock is permanent
+  // for the process once imported). There is no way to pre-seed a v45
+  // schema into the exact path `initializeDatabase` would open without a
+  // real, pre-existing directory on disk, which this test file cannot
+  // create (its own `fs.mkdirSync` calls are virtual-only once mocked).
+  // This test therefore drives `migrateToV46` then `migrateToV47` directly,
+  // in the SAME order and against the SAME connection the dispatcher would
+  // use for a database starting at v45 -- proving the two migrations are
+  // schema-compatible with each other and with a v45 database, which is
+  // the risk this PR actually introduces. It does NOT re-exercise the
+  // dispatcher's own `if (currentVersion < N)` branch evaluation, which is
+  // structurally identical across all 47 guards and not specific to v46/v47.
+  it('a v45 database migrates cleanly through v46 then v47 (migrateToV46 -> migrateToV47 in sequence)', async () => {
+    const db = seedV45Database();
+
+    await migrateToV46(db);
+    await migrateToV47(db);
+
+    const versionRes = await sql<{ user_version: number }>`PRAGMA user_version`.execute(db);
+    expect(versionRes.rows[0]?.user_version).toBe(47);
+
+    // v46's column survived v47's migration running afterward.
+    const userColumns = await sql.raw<PragmaTableInfoRow>('PRAGMA table_info(users)').execute(db);
+    const disableConnectorsColumn = userColumns.rows.find((c) => c.name === 'disable_claude_ai_connectors');
+    expect(disableConnectorsColumn).toBeDefined();
+    expect(disableConnectorsColumn!.notnull).toBe(1);
+    expect(disableConnectorsColumn!.dflt_value).toBe('0');
+
+    // v47's table and column are present alongside it.
+    const repoColumns = await sql.raw<PragmaTableInfoRow>('PRAGMA table_info(repositories)').execute(db);
+    expect(repoColumns.rows.find((c) => c.name === 'shared_account_user_id')).toBeDefined();
+
+    await insertUser(db, 'user-both');
+    await db.insertInto('shared_accounts').values({ user_id: 'user-both', created_by: null }).execute();
+    const sharedAccountRows = await db.selectFrom('shared_accounts').selectAll().execute();
+    expect(sharedAccountRows).toHaveLength(1);
+
+    await db.destroy();
   });
 });

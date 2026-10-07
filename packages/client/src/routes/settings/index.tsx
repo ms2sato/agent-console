@@ -1,6 +1,7 @@
 import { createFileRoute, Link } from '@tanstack/react-router';
 import { PageBreadcrumb } from '../../components/PageBreadcrumb';
 import { McpInstallSection } from '../../components/settings/McpInstallSection';
+import { ConnectorsSection } from '../../components/settings/ConnectorsSection';
 import { useAuth } from '../../lib/auth';
 
 export const Route = createFileRoute('/settings/')({
@@ -19,6 +20,8 @@ export function SettingsPage() {
       ]} />
 
       <McpInstallSection />
+
+      <ConnectorsSection />
 
       <h1 className="text-2xl font-semibold mb-6">Settings</h1>
 

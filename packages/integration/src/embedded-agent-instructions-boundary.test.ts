@@ -322,6 +322,7 @@ describe('Subprocess system-prompt composition: .claude/rules layer reaches both
         compaction: { auto: false },
         engine: 'claude-sdk',
         allowedProjectMcpServers: [],
+        disableClaudeAiConnectors: false,
         mcp: { baseUrl: 'http://mcp/local', token: 'tok' },
         provider: { model: 'claude-sonnet-5' },
         context: { sessionId: 's', workerId: 'w', cwd: dir },

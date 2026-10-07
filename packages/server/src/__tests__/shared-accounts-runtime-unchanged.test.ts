@@ -117,6 +117,8 @@ describe('Shared-accounts Release 1: runtime unchanged', () => {
           Promise.resolve({ id: 'env-var-shared-user-id', username, homeDir }),
         ),
         findById: mock(() => Promise.resolve(null)),
+        getPreferences: mock(() => Promise.resolve(null)),
+        setPreferences: mock(() => Promise.resolve(true)),
       };
       const sharedAccountRegistry = await SharedAccountRegistry.create({
         username: 'env-var-shared-user',
