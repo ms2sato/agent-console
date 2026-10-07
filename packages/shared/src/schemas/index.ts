@@ -177,6 +177,16 @@ export {
   type GenerateRepositoryDescriptionResponse,
 } from './repository.js';
 
+// Shared-account schemas
+export {
+  RegisterSharedAccountRequestSchema,
+  SharedAccountSummarySchema,
+  ListSharedAccountsResponseSchema,
+  type RegisterSharedAccountRequest,
+  type SharedAccountSummary,
+  type ListSharedAccountsResponse,
+} from './shared-account.js';
+
 // App server message schema
 export {
   AppServerMessageSchema,

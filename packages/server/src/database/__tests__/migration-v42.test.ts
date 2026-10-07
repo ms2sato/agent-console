@@ -223,7 +223,7 @@ describe('migration v42 (drop dead repositories.orchestrator_session_id)', () =>
     // call).
     const db = await initializeDatabase(':memory:');
     const versionRes = await sql<{ user_version: number }>`PRAGMA user_version`.execute(db);
-    expect(versionRes.rows[0]?.user_version).toBe(45);
+    expect(versionRes.rows[0]?.user_version).toBe(47);
   });
 
   it('drops orchestrator_session_id and reproduces the live DDL exactly: both ISO8601 CHECK constraints survive', async () => {

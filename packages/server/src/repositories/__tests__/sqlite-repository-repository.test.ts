@@ -37,6 +37,20 @@ describe('SqliteRepositoryRepository', () => {
       .addColumn('description', 'text')
       .addColumn('default_agent_id', 'text')
       .addColumn('issue_trigger_labels', 'text')
+      .addColumn('shared_account_user_id', 'text')
+      .execute();
+
+    // Minimal `users` table (migration v47's `shared_account_user_id`
+    // resolution target) -- no FK declared, same rationale as the comment
+    // below for `repository_orchestrator_sessions`.
+    await db.schema
+      .createTable('users')
+      .addColumn('id', 'text', (col) => col.primaryKey())
+      .addColumn('os_uid', 'integer')
+      .addColumn('username', 'text', (col) => col.notNull())
+      .addColumn('home_dir', 'text', (col) => col.notNull())
+      .addColumn('created_at', 'text', (col) => col.notNull().defaultTo(NOW_ISO8601))
+      .addColumn('updated_at', 'text', (col) => col.notNull().defaultTo(NOW_ISO8601))
       .execute();
 
     // Modeled on migration v41's shape (Issue #1716), minus the two FK
@@ -981,6 +995,82 @@ describe('SqliteRepositoryRepository', () => {
         .select('issue_trigger_labels')
         .executeTakeFirst();
       expect(row?.issue_trigger_labels).toBeNull();
+    });
+  });
+
+  describe('sharedAccountUserId (shared-accounts Release 1)', () => {
+    async function insertUser(id: string, username: string): Promise<void> {
+      const now = new Date().toISOString();
+      await db
+        .insertInto('users')
+        .values({ id, os_uid: null, username, home_dir: `/home/${username}`, created_at: now, updated_at: now })
+        .execute();
+    }
+
+    it('defaults sharedAccountUsername to null on an unbound repository', async () => {
+      const repo = createRepository({ id: 'repo-unbound' });
+      await repository.save(repo);
+
+      const found = await repository.findById('repo-unbound');
+      expect(found?.sharedAccountUsername ?? null).toBeNull();
+    });
+
+    it('resolves a bound account username via update() + findById()', async () => {
+      await insertUser('user-shared', 'shared-bot');
+      const repo = createRepository({ id: 'repo-bind' });
+      await repository.save(repo);
+
+      const updated = await repository.update('repo-bind', { sharedAccountUserId: 'user-shared' });
+      expect(updated).not.toBeNull();
+      expect(updated?.sharedAccountUsername).toBe('shared-bot');
+
+      const found = await repository.findById('repo-bind');
+      expect(found?.sharedAccountUsername).toBe('shared-bot');
+    });
+
+    it('resolves a bound account username via findByPath()', async () => {
+      await insertUser('user-shared', 'shared-bot');
+      const repo = createRepository({ id: 'repo-bind-path', path: '/path/bind' });
+      await repository.save(repo);
+      await repository.update('repo-bind-path', { sharedAccountUserId: 'user-shared' });
+
+      const found = await repository.findByPath('/path/bind');
+      expect(found?.sharedAccountUsername).toBe('shared-bot');
+    });
+
+    it('resolves bound account usernames across multiple repositories via findAll() (no N+1)', async () => {
+      await insertUser('user-shared-a', 'shared-bot-a');
+      await insertUser('user-shared-b', 'shared-bot-b');
+
+      await repository.save(createRepository({ id: 'repo-a', path: '/path/a' }));
+      await repository.save(createRepository({ id: 'repo-b', path: '/path/b' }));
+      await repository.save(createRepository({ id: 'repo-c', path: '/path/c' }));
+      await repository.update('repo-a', { sharedAccountUserId: 'user-shared-a' });
+      await repository.update('repo-b', { sharedAccountUserId: 'user-shared-b' });
+      // repo-c stays unbound.
+
+      const all = await repository.findAll();
+      const byId = new Map(all.map((r) => [r.id, r]));
+      expect(byId.get('repo-a')?.sharedAccountUsername).toBe('shared-bot-a');
+      expect(byId.get('repo-b')?.sharedAccountUsername).toBe('shared-bot-b');
+      expect(byId.get('repo-c')?.sharedAccountUsername ?? null).toBeNull();
+    });
+
+    it('unbinds via update() with sharedAccountUserId: null', async () => {
+      await insertUser('user-shared', 'shared-bot');
+      const repo = createRepository({ id: 'repo-unbind' });
+      await repository.save(repo);
+      await repository.update('repo-unbind', { sharedAccountUserId: 'user-shared' });
+
+      const updated = await repository.update('repo-unbind', { sharedAccountUserId: null });
+      expect(updated?.sharedAccountUsername ?? null).toBeNull();
+
+      const row = await db
+        .selectFrom('repositories')
+        .where('id', '=', 'repo-unbind')
+        .select('shared_account_user_id')
+        .executeTakeFirst();
+      expect(row?.shared_account_user_id).toBeNull();
     });
   });
 

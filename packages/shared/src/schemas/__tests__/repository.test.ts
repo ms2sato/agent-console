@@ -1188,6 +1188,26 @@ describe('UpdateRepositoryRequestSchema (Issue #1643)', () => {
     });
     expect(result.success).toBe(false);
   });
+
+  it('accepts sharedAccountUsername', () => {
+    const result = v.safeParse(UpdateRepositoryRequestSchema, {
+      sharedAccountUsername: 'shared-bot',
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.output.sharedAccountUsername).toBe('shared-bot');
+    }
+  });
+
+  it('accepts a null sharedAccountUsername (unbind)', () => {
+    const result = v.safeParse(UpdateRepositoryRequestSchema, {
+      sharedAccountUsername: null,
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.output.sharedAccountUsername).toBeNull();
+    }
+  });
 });
 
 describe('FetchGitHubIssueRequestSchema', () => {

@@ -372,6 +372,7 @@ export const UpdateRepositoryRequestSchema = v.strictObject({
   description: v.nullish(v.pipe(v.string(), v.trim())),
   defaultAgentId: v.nullish(v.pipe(v.string(), v.trim())),
   issueTriggerLabels: v.nullish(v.pipe(v.string(), v.trim())),
+  sharedAccountUsername: v.nullish(v.pipe(v.string(), v.trim())),
 });
 
 /**

@@ -239,9 +239,30 @@ const repositories = new Hono<AppBindings>()
   .patch('/:id', vValidator(UpdateRepositoryRequestSchema), async (c) => {
     const repoId = c.req.param('id');
     const body = c.req.valid('json');
-    const { repositoryManager } = c.get('appContext');
+    const { repositoryManager, sharedAccountRepository } = c.get('appContext');
 
-    const updated = await repositoryManager.updateRepository(repoId, body);
+    // `sharedAccountUsername` is a wire-only field: the domain/DB layer
+    // (RepositoryUpdates) stores `sharedAccountUserId` instead, since the
+    // wire carries a username but storage keys on `users.id`. Resolve it
+    // here and build an explicit updates object so the raw wire key never
+    // reaches RepositoryUpdates (which doesn't declare it).
+    const { sharedAccountUsername, ...rest } = body;
+    const updates: Parameters<typeof repositoryManager.updateRepository>[1] = { ...rest };
+
+    if (sharedAccountUsername !== undefined) {
+      if (sharedAccountUsername === null) {
+        updates.sharedAccountUserId = null;
+      } else {
+        const accounts = await sharedAccountRepository.list();
+        const match = accounts.find((a) => a.username === sharedAccountUsername);
+        if (!match) {
+          throw new ValidationError(`'${sharedAccountUsername}' is not a registered shared account`);
+        }
+        updates.sharedAccountUserId = match.userId;
+      }
+    }
+
+    const updated = await repositoryManager.updateRepository(repoId, updates);
 
     if (!updated) {
       throw new NotFoundError('Repository');

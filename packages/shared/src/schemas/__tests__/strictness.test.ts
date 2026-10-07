@@ -13,6 +13,7 @@ import * as message from '../message.js';
 import * as notification from '../notification.js';
 import * as repository from '../repository.js';
 import * as session from '../session.js';
+import * as sharedAccount from '../shared-account.js';
 import * as system from '../system.js';
 import * as worker from '../worker.js';
 
@@ -27,6 +28,7 @@ const MODULES: Record<string, Record<string, unknown>> = {
   notification,
   repository,
   session,
+  'shared-account': sharedAccount,
   system,
   worker,
 };
