@@ -103,7 +103,7 @@ function RegisterSharedAccountForm() {
 }
 
 // ===========================================================================
-// Env-var-ignored banner (Release 2, Issue #1842 item 6b)
+// Env-var-ignored banner (Release 2)
 // ===========================================================================
 
 /**

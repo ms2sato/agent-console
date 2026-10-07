@@ -42,9 +42,9 @@ export interface CreateWorktreeFormProps {
   defaultBranch: string;
   defaultAgentId?: string | null;
   /** The repository's bound shared account username, or `null` when unbound.
-   *  Gates the "Create as shared session" checkbox (Issue #1842 item 7):
-   *  shared sessions now run as whichever account the repository is bound
-   *  to, so the checkbox only makes sense when a binding exists. */
+   *  Gates the "Create as shared session" checkbox: shared sessions run as
+   *  whichever account the repository is bound to, so the checkbox only
+   *  makes sense when a binding exists. */
   sharedAccountUsername?: string | null;
   onSubmit: (request: CreateWorktreeFormRequest) => Promise<void>;
   onCancel: () => void;
