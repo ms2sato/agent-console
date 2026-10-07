@@ -46,15 +46,21 @@ function mockUserMode(authenticateResult: AuthUser | null): UserMode {
 
 /**
  * DI-level stub for simulating the TOCTOU race window in
- * `POST /import-env`: `register()` throws a real-shaped SQLite
- * unique-constraint error unconditionally, as if a concurrent call had
- * already inserted the row between this call's `list()` pre-check and its
- * own insert attempt. All other methods delegate to the real repository.
+ * `POST /import-env`: `register()` first delegates to the real repository
+ * (modeling the race's "winner" -- a concurrent call that actually inserts
+ * the row), then throws a real-shaped SQLite unique-constraint error
+ * (modeling the race's "loser" -- the request under test, which is what the
+ * route handler's catch block actually observes and must map to
+ * `imported: false`). This proves the response is correct even though the
+ * account genuinely got registered, rather than merely proving that some
+ * arbitrary thrown error gets mapped to a 200. All other methods delegate to
+ * the real repository.
  */
 function withThrowingRegister(repo: SharedAccountRepository): SharedAccountRepository {
   return {
     list: () => repo.list(),
-    register: async () => {
+    register: async (userId, createdBy) => {
+      await repo.register(userId, createdBy);
       throw new Error('UNIQUE constraint failed: shared_accounts.user_id');
     },
     unregister: (userId) => repo.unregister(userId),
@@ -475,6 +481,13 @@ describe('Shared account routes', () => {
       expect(res.status).toBe(200);
       const body = (await res.json()) as { imported: boolean };
       expect(body.imported).toBe(false);
+
+      // The simulated concurrent winner's register() call genuinely
+      // persisted the row -- the response this caller receives is correct
+      // EVEN THOUGH the account really is registered, not merely because
+      // some arbitrary thrown error got mapped to a 200.
+      const accounts = await sharedAccountRepository.list();
+      expect(accounts.find((a) => a.username === REAL_OS_USERNAME)).toBeDefined();
     });
 
     it('imports successfully even when the account already has initiated_by-null sessions (4a/4b guards bypassed)', async () => {

@@ -1511,10 +1511,14 @@ curl -s http://localhost:<port>/api/shared-accounts \
 Registering an account through **Register** or the `POST /api/shared-accounts`
 API is refused in two cases, both interim safeguards until a dedicated
 who-may-register allowlist lands: you cannot register your own logged-in
-account (`400`), and you cannot register an account that already has
-personal (non-shared) sessions attached to it (`409`, naming the count) --
-that shape of history marks it as a human's account, not a shared execution
-identity. **Import current env-var account** (`POST /api/shared-accounts/import-env`)
+account (`400`), and -- unless the account is already the one named by
+`AGENT_CONSOLE_SHARED_USERNAME` -- you cannot register an account that
+already has personal (non-shared) sessions attached to it (`409`, naming
+the count), since that shape of history marks it as a human's account, not
+a shared execution identity. The exception exists because `delegate_to_worktree`
+never sets `initiated_by`, so the env-var account's own MCP-delegated child
+sessions look identical to a human's personal sessions; without it, that
+account could never be registered at all. **Import current env-var account** (`POST /api/shared-accounts/import-env`)
 is exempt from both checks: the account named by `AGENT_CONSOLE_SHARED_USERNAME`
 is already vouched for by whoever set that variable on the unit, so it can be
 imported even if it happens to have sessions from before this release's
