@@ -1074,6 +1074,39 @@ describe('SqliteRepositoryRepository', () => {
     });
   });
 
+  describe('getSharedAccountUserId', () => {
+    async function insertUser(id: string, username: string): Promise<void> {
+      const now = new Date().toISOString();
+      await db
+        .insertInto('users')
+        .values({ id, os_uid: null, username, home_dir: `/home/${username}`, created_at: now, updated_at: now })
+        .execute();
+    }
+
+    it('returns null when the repository exists but is unbound', async () => {
+      const repo = createRepository({ id: 'repo-get-shared-unbound' });
+      await repository.save(repo);
+
+      const result = await repository.getSharedAccountUserId('repo-get-shared-unbound');
+      expect(result).toBeNull();
+    });
+
+    it('returns the bound users.id when the repository is bound to a shared account', async () => {
+      await insertUser('user-get-shared', 'shared-bot-get');
+      const repo = createRepository({ id: 'repo-get-shared-bound' });
+      await repository.save(repo);
+      await repository.update('repo-get-shared-bound', { sharedAccountUserId: 'user-get-shared' });
+
+      const result = await repository.getSharedAccountUserId('repo-get-shared-bound');
+      expect(result).toBe('user-get-shared');
+    });
+
+    it('returns undefined when the repository does not exist', async () => {
+      const result = await repository.getSharedAccountUserId('repo-does-not-exist');
+      expect(result).toBeUndefined();
+    });
+  });
+
   describe('edge cases', () => {
     it('should handle paths with special characters', async () => {
       const repo = createRepository({
