@@ -134,12 +134,20 @@ run_smoke() { # run_smoke <label> <script> [args...]
   # it as FAIL, never PASS and never a silent skip.
   check "$label" "$smoke_rc"
   if [ "$smoke_rc" -ne 0 ]; then
+    # Always keep stdout's tail (the smoke's own OK/FAIL assertion lines and
+    # PASSED/FAILED summary) on failure -- a crash during the smoke's own
+    # cleanup (e.g. a teardown race) can exit non-zero with an EMPTY or
+    # misleading stderr while every assertion already ran; discarding stdout
+    # unconditionally destroyed exactly that evidence (Issue #1845's own
+    # investigation lost it this way). stderr's tail is still printed
+    # alongside when non-empty, never in place of stdout's.
+    if [ -s "$smoke_out" ]; then
+      echo "  ---- DIAGNOSTIC: ${label} stdout (last 30 lines) ----"
+      tail -n 30 "$smoke_out" | sed 's/^/    /'
+    fi
     if [ -s "$smoke_err" ]; then
       echo "  ---- DIAGNOSTIC: ${label} stderr (last 30 lines) ----"
       tail -n 30 "$smoke_err" | sed 's/^/    /'
-    else
-      echo "  ---- DIAGNOSTIC: ${label} stdout (last 30 lines, stderr was empty) ----"
-      tail -n 30 "$smoke_out" | sed 's/^/    /'
     fi
     echo "  -------------------------------------------------"
   fi
