@@ -1046,11 +1046,10 @@ describe('EditRepositoryForm', () => {
       const SERVER_ERROR_MESSAGE = 'Shared accounts store unavailable';
 
       function createServerErrorResponse() {
-        return {
-          ok: false,
+        return new Response(JSON.stringify({ error: SERVER_ERROR_MESSAGE }), {
           status: 500,
-          json: () => Promise.resolve({ error: SERVER_ERROR_MESSAGE }),
-        } as unknown as Response;
+          headers: { 'Content-Type': 'application/json' },
+        });
       }
 
       // 200 body that fails ListSharedAccountsResponseSchema: `resolvable` is required.
