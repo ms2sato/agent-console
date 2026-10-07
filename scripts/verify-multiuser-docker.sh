@@ -142,6 +142,17 @@ run_smoke() { # run_smoke <label> <script> [args...]
     # investigation lost it this way). stderr's tail is still printed
     # alongside when non-empty, never in place of stdout's.
     if [ -s "$smoke_out" ]; then
+      # Smoke scripts interleave pino's own (verbose, JSON) logging into the
+      # same stdout stream as their own OK/FAIL/PASSED/FAILED lines -- a
+      # plain tail can be entirely pino noise, crowding out exactly the
+      # assertion-level evidence this diagnostic exists to keep. Print the
+      # smoke's own summary lines in full first (never truncated: there are
+      # at most a few dozen assertions per smoke), then the tail for
+      # surrounding context.
+      if grep -qE '^  (OK|FAIL) |^(PASSED|FAILED):' "$smoke_out"; then
+        echo "  ---- DIAGNOSTIC: ${label} stdout (its own OK/FAIL/PASSED/FAILED lines) ----"
+        grep -E '^  (OK|FAIL) |^(PASSED|FAILED):' "$smoke_out" | sed 's/^/    /'
+      fi
       echo "  ---- DIAGNOSTIC: ${label} stdout (last 30 lines) ----"
       tail -n 30 "$smoke_out" | sed 's/^/    /'
     fi
