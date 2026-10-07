@@ -250,9 +250,25 @@ const probe = `printf '${MARKER}%s\\n' "$(whoami)"\n`;
 let buffer = '';
 
 const result: Promise<{ ok: boolean; detail: string }> = new Promise((resolve) => {
+  // `settled` additionally guards the retry send below -- without it, an
+  // unconditional resend after the first probe already succeeded can
+  // interleave its keystrokes with the (already-complete) first probe's
+  // echo inside the PTY's line-editing buffer, corrupting the echoed
+  // command text (observed: "whoami" -> "whoaami") badly enough that the
+  // exclusion filter below (`!l.includes('$(whoami)')`, meant to skip the
+  // echoed input line) no longer matches, and the corrupted echo line gets
+  // misread as real output.
+  let settled = false;
   const timeout = setTimeout(() => {
     resolve({ ok: false, detail: `timed out; last output: ${JSON.stringify(buffer.slice(-200))}` });
   }, 10_000);
+  const finish = (value: { ok: boolean; detail: string }) => {
+    if (settled) return;
+    settled = true;
+    clearTimeout(timeout);
+    clearTimeout(retryTimer);
+    resolve(value);
+  };
 
   let sent = false;
   const sendProbe = () => {
@@ -261,11 +277,16 @@ const result: Promise<{ ok: boolean; detail: string }> = new Promise((resolve) =
     ws.send(JSON.stringify({ type: 'input', data: probe }));
   };
 
+  // Retry once in case the first keystrokes raced the shell startup --
+  // guarded by `settled` so it never fires after a result is already in.
+  const retryTimer = setTimeout(() => {
+    if (settled) return;
+    ws.send(JSON.stringify({ type: 'input', data: probe }));
+  }, 3000);
+
   ws.addEventListener('open', () => {
     // Give the login shell a moment to initialize before typing.
     setTimeout(sendProbe, 800);
-    // Retry once in case the first keystrokes raced the shell startup.
-    setTimeout(() => ws.send(JSON.stringify({ type: 'input', data: probe })), 3000);
   });
 
   ws.addEventListener('message', (ev) => {
@@ -281,8 +302,7 @@ const result: Promise<{ ok: boolean; detail: string }> = new Promise((resolve) =
       const line = clean.split(/\r?\n/).find((l) => l.includes(MARKER) && !l.includes('$(whoami)'));
       if (line) {
         const actual = line.slice(line.indexOf(MARKER) + MARKER.length).trim();
-        clearTimeout(timeout);
-        resolve({
+        finish({
           ok: actual === expectedUser,
           detail: `whoami => '${actual}' (expected '${expectedUser}')`,
         });
@@ -291,8 +311,7 @@ const result: Promise<{ ok: boolean; detail: string }> = new Promise((resolve) =
   });
 
   ws.addEventListener('error', () => {
-    clearTimeout(timeout);
-    resolve({ ok: false, detail: 'websocket error' });
+    finish({ ok: false, detail: 'websocket error' });
   });
 });
 
