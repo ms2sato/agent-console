@@ -299,7 +299,17 @@ const result: Promise<{ ok: boolean; detail: string }> = new Promise((resolve) =
     if (msg.type === 'output' && typeof msg.data === 'string') {
       buffer += msg.data;
       const clean = buffer.replace(ANSI, '');
-      const line = clean.split(/\r?\n/).find((l) => l.includes(MARKER) && !l.includes('$(whoami)'));
+      // Prefer the LAST matching line, not the first: the real command
+      // output always arrives chronologically after the echoed input line,
+      // so this is robust even when the echo itself gets corrupted badly
+      // enough to defeat the `!l.includes('$(whoami)')` exclusion below
+      // (observed: a stray `\r` landing mid-word in the echo, splitting
+      // "whoami" into two pieces neither of which matches the literal
+      // exclusion string, on a terminal worker added to an already-running
+      // worktree session -- root mechanism not fully understood, but this
+      // match strategy is correct regardless of it).
+      const matches = clean.split(/\r?\n/).filter((l) => l.includes(MARKER) && !l.includes('$(whoami)'));
+      const line = matches.length > 0 ? matches[matches.length - 1] : undefined;
       if (line) {
         const actual = line.slice(line.indexOf(MARKER) + MARKER.length).trim();
         finish({
