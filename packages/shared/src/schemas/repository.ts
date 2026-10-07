@@ -217,9 +217,12 @@ const CreateWorktreeBaseSchema = v.strictObject({
   initialPrompt: v.optional(v.string()),
   title: v.optional(v.string()),
   /**
-   * When true, create the worktree session as a shared session (PTY runs as
-   * the configured shared account). Requires AGENT_CONSOLE_SHARED_USERNAME
-   * to be set on the server. See docs/design/shared-orchestrator-session.md.
+   * When true, create the worktree session as a shared session running as
+   * the account bound to this repository (Settings > Shared accounts). 400
+   * if the repository has no binding or the bound account is no longer
+   * resolvable to an OS account. See
+   * docs/design/shared-orchestrator-session.md
+   * §"Shared-Account Set and Per-Repository Binding (DB-backed)".
    */
   shared: v.optional(v.boolean()),
   /** Model override for the initial worker (agent-surface.md Ruling 2). See CreateAgentWorkerParamsSchema. */

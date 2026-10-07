@@ -67,6 +67,13 @@ const mockRepositoryResponse = {
   },
 };
 
+const mockRepositoryResponseWithSharedAccount = {
+  repository: {
+    ...mockRepositoryResponse.repository,
+    sharedAccountUsername: 'ci-runner',
+  },
+};
+
 const mockBranchesResponse = {
   branches: ['main', 'develop'],
   defaultBranch: 'main',
@@ -193,6 +200,36 @@ describe('QuickWorktreeDialog', () => {
     expect(screen.getByRole('dialog')).toBeTruthy();
     // "Create Worktree" appears as both the dialog title and the active tab button
     expect(screen.getAllByText('Create Worktree').length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('should pass sharedAccountUsername from repository data through to CreateWorktreeForm', async () => {
+    mockFetch.mockImplementation((input) => {
+      const url = resolveUrl(input);
+      if (url.endsWith('/repositories')) {
+        return Promise.resolve(createMockResponse(mockRepositoriesResponse));
+      }
+      if (url.includes('/repositories/') && !url.includes('/branches') && !url.includes('/agents') && !url.includes('/remote-status')) {
+        return Promise.resolve(createMockResponse(mockRepositoryResponseWithSharedAccount));
+      }
+      if (url.includes('/branches') && !url.includes('/remote-status')) {
+        return Promise.resolve(createMockResponse(mockBranchesResponse));
+      }
+      if (url.includes('/remote-status')) {
+        return Promise.resolve(createMockResponse({ behind: 0, ahead: 0 }));
+      }
+      return Promise.resolve(createMockResponse(mockAgentsResponse));
+    });
+
+    await renderDialog();
+
+    // Wait for the form to appear (the submit button indicates the form is loaded)
+    await waitFor(() => {
+      expect(screen.getByText('Create & Start Session')).toBeTruthy();
+    });
+
+    // CreateWorktreeForm should reflect the repository's sharedAccountUsername
+    // by rendering the shared-session checkbox label with the bound account name.
+    expect(screen.getByText('Create as shared session (runs as ci-runner)')).toBeTruthy();
   });
 
   it('should close dialog on successful worktree creation', async () => {

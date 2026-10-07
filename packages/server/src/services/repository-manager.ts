@@ -767,6 +767,19 @@ export class RepositoryManager {
   }
 
   /**
+   * Direct pass-through to the repository layer's raw shared-account-id
+   * read (`RepositoryRepository.getSharedAccountUserId`) -- deliberately NOT
+   * served from `this.repositories` (the in-memory `Repository` cache),
+   * which only ever carries the resolved `sharedAccountUsername`, never the
+   * raw `users.id` this method needs. See
+   * docs/design/shared-orchestrator-session.md §UI/UX for why the raw id
+   * never reaches the wire-shaped `Repository` type.
+   */
+  getSharedAccountUserId(id: string): Promise<string | null | undefined> {
+    return this.repository.getSharedAccountUserId(id);
+  }
+
+  /**
    * Resolve the canonical `org/repo` slug frozen into a new session's
    * `dataScopeSlug` at creation time (see `SessionManager.createSession`).
    * Delegates to `deriveRepositorySlug`, which returns

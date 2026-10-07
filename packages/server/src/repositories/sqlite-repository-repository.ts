@@ -244,4 +244,15 @@ export class SqliteRepositoryRepository implements RepositoryRepository {
 
     return rows.map((row) => row.session_id);
   }
+
+  async getSharedAccountUserId(id: string): Promise<string | null | undefined> {
+    const row = await this.db
+      .selectFrom('repositories')
+      .select('shared_account_user_id')
+      .where('id', '=', id)
+      .executeTakeFirst();
+
+    if (!row) return undefined;
+    return row.shared_account_user_id;
+  }
 }

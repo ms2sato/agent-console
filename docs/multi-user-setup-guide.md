@@ -749,7 +749,7 @@ target), reference it from the systemd unit with `EnvironmentFile=-`, then
 | `AGENT_CONSOLE_MCP_AUTH` | _(unset)_ | Mode for missing-MCP-token handling on EVERY `/mcp` request (transport-level gate, Issue #1269): `off`, `warn`, or `enforce`. Unset resolves to `warn` for every `AUTH_MODE`, including multi-user (Sprint 2026-07-16; see Issue #1107 for the enforce-by-default restoration path). Setting `enforce` explicitly while `AUTH_MODE` is not `multi-user` fails server startup with a configuration error: `resolveMcpAuthMode` rejects the combination because MCP bearer tokens for terminal-agent workers are only minted when `AUTH_MODE=multi-user` (`worker-manager.ts`'s mint gate — see [Ruling 2](design/embedded-agent-worker.md#transport-level-authn-gate-issue-1269)), so enforcing without it would reject every terminal-agent MCP call outright; this is a deliberate fail-fast, not a bug. See [MCP authentication mode](#mcp-authentication-mode-agent_console_mcp_auth) below — most deployments should leave this unset. |
 | `EMBEDDED_AGENT_BUN_PATH` | `process.execPath` (the running server's own bun binary) | Absolute path (or bare command name) used to invoke `bun` when spawning the embedded-agent worker's loop subprocess. Defaulting to `process.execPath` (Issue #1291) is exact by construction in single-user/dev: it is literally the same binary file the server itself is running, with no PATH lookup involved. Multi-user mode MUST set this to an absolute path (e.g. `/usr/local/bin/bun`) because the subprocess runs inside an elevated, non-interactive login shell that does not source `.bashrc` and cannot resolve a user-local `~/.bun/bin/bun` by bare name (Issue #1221; see [`.claude/rules/os-environment-coupling.md`](../.claude/rules/os-environment-coupling.md)). `scripts/setup-multiuser-for-ubuntu.sh` sets this to the SAME value as `ExecStart` (Issue #1222) — the server process and the embedded-agent subprocess always execute the identical file, so drift between them is structurally impossible; re-run the setup script after a `bun upgrade` to refresh which version that shared file is. |
 
-| `AGENT_CONSOLE_SHARED_USERNAME` | _(unset)_ | OS username of the **Shared Account** that runs [SharedSessions](design/shared-orchestrator-session.md). Unset → shared sessions disabled (`/api/config` reports `sharedAccountsAvailable: false`). Set → the server resolves the account at startup and **fails fast** if it does not exist. Honoured only when `AUTH_MODE=multi-user`. Provision the account with `scripts/setup-shared-account.sh`; see [Shared Account Setup](#shared-account-setup-shared-sessions). |
+| `AGENT_CONSOLE_SHARED_USERNAME` | _(unset)_ | **Ignored since Release 2.** Shared accounts are registered and bound to repositories through the Settings UI / `/api/shared-accounts` (DB-backed), not this variable — `sharedAccountsAvailable` now reflects whether the DB-backed set is non-empty, and which account a repository's shared sessions run as is decided by that repository's binding, never by this variable. If this variable is still set on the unit, the server logs a startup warning asking the operator to remove it (and a second warning if the DB-backed set is empty, since then shared sessions are disabled even though the variable is set). Provision the OS account with `scripts/setup-shared-account.sh`, then register and bind it per [Shared Account Setup](#shared-account-setup-shared-sessions). Removing this variable from the unit file is a separate, owner-gated deploy step — it is not required for the feature to work, only for the warning to stop. |
 
 The full list of server variables is defined in
 [`packages/server/src/lib/server-config.ts`](../packages/server/src/lib/server-config.ts).
@@ -1413,28 +1413,36 @@ The script is idempotent (safe to re-run) and accepts `--group <name>`,
 
 ### 2. Register the account with the server
 
-Add the username to the systemd unit via a drop-in (survives bootstrap
-re-runs, unlike edits to the generated unit file):
+Since Release 2, registration is DB-backed, not an env var: in the web UI
+(**Settings → Shared Accounts**, visible only under `AUTH_MODE=multi-user`),
+click **Register** and enter the OS username provisioned in step 1.
+Equivalently, via the API:
 
 ```bash
-sudo systemctl edit agent-console
+curl -s -X POST http://localhost:<port>/api/shared-accounts \
+  -H 'Content-Type: application/json' -H 'Cookie: <session cookie>' \
+  -d '{"username":"agent-console-shared"}'
+
+curl -s http://localhost:<port>/api/shared-accounts \
+  -H 'Cookie: <session cookie>'   # lists every registered account with its bound-repository and session counts
 ```
 
-```ini
-[Service]
-Environment=AGENT_CONSOLE_SHARED_USERNAME=agent-console-shared
-```
+Registration is refused in two cases, both interim safeguards until a
+dedicated who-may-register allowlist lands: you cannot register your own
+logged-in account (`400`), and you cannot register an account that already
+has personal (non-shared) sessions attached to it (`409`, naming the
+count), since that shape of history marks it as a human's account, not a
+shared execution identity.
 
-Then restart and verify:
+Then verify:
 
 ```bash
-sudo systemctl restart agent-console
 curl -s http://localhost:<port>/api/config   # expect "sharedAccountsAvailable":true
 ```
 
-The server fails fast at startup when the configured username does not
-resolve to an OS account — create the account first, configure second.
-The setting is honoured only under `AUTH_MODE=multi-user`.
+Registration is honoured only under `AUTH_MODE=multi-user`. No restart is
+needed — registering (or unregistering) an account takes effect
+immediately for the next session creation.
 
 ### 3. Configure LLM vendor credentials in the account's own home
 
@@ -1471,60 +1479,36 @@ variables on the server's systemd unit — they do not reach elevated PTYs,
 and `CLAUDE_CODE_*` on the server env triggers the direct-path unset-prefix
 hazard (`packages/server/src/services/env-filter.ts`).
 
-### 4. Registering shared accounts in the DB (Release 1: configure now, used from Release 2)
+### 4. Bind repositories to a shared account
 
-This is a **separate, additive step** from step 2's `AGENT_CONSOLE_SHARED_USERNAME`
-env var. As of this release, the server also supports registering shared
-accounts in the database (the `shared_accounts` table), per repository,
-through the Settings UI and `/api/shared-accounts`. Session creation still
-reads ONLY the env var set in step 2 — a DB registration or a repository
-binding made here has no effect on which account a shared session actually
-spawns as until a later release switches session creation over. Configure
-this now so the cutover is a no-op for already-registered accounts; see
+Which repository's shared sessions run as which registered account is a
+per-repository **binding**, separate from registration (step 2). On a
+repository's edit page, use the **Shared account** dropdown to bind that
+repository to one of the registered accounts. Unbinding or changing a
+binding never affects a session that already exists — only future session
+creation. See
 [Shared-Account Set and Per-Repository Binding](design/shared-orchestrator-session.md#shared-account-set-and-per-repository-binding-db-backed)
-for the full rollout plan.
-
-In the web UI (**Settings → Shared Accounts**, visible only under
-`AUTH_MODE=multi-user`):
-
-- Click **Import current env-var account** to register the account already
-  configured via `AGENT_CONSOLE_SHARED_USERNAME` (step 2) into the DB-backed
-  set — idempotent, safe to click more than once or on every operator visit.
-- Or click **Register** and enter the username of a *different* OS shared
-  account you have already provisioned via step 1, to add it to the set
-  without making it the env-var default.
-- On a repository's edit page, use the **Shared account** dropdown to bind
-  that repository to one of the registered accounts. Unbinding or changing
-  a binding never affects a session that already exists — only future
-  session creation, and only once that is wired up.
+for the full design.
 
 Equivalently, via the API:
 
 ```bash
-curl -s -X POST http://localhost:<port>/api/shared-accounts/import-env \
-  -H 'Cookie: <session cookie>'   # { "imported": true } or { "imported": false } if already registered
-
-curl -s http://localhost:<port>/api/shared-accounts \
-  -H 'Cookie: <session cookie>'   # lists every registered account with its bound-repository and session counts
+curl -s -X PATCH http://localhost:<port>/api/repositories/<id> \
+  -H 'Content-Type: application/json' -H 'Cookie: <session cookie>' \
+  -d '{"sharedAccountUsername":"agent-console-shared"}'   # or null to unbind
 ```
 
-Registering an account through **Register** or the `POST /api/shared-accounts`
-API is refused in two cases, both interim safeguards until a dedicated
-who-may-register allowlist lands: you cannot register your own logged-in
-account (`400`), and -- unless the account is already the one named by
-`AGENT_CONSOLE_SHARED_USERNAME` -- you cannot register an account that
-already has personal (non-shared) sessions attached to it (`409`, naming
-the count), since that shape of history marks it as a human's account, not
-a shared execution identity. The exception exists because `delegate_to_worktree`
-never sets `initiated_by`, so the env-var account's own MCP-delegated child
-sessions look identical to a human's personal sessions; without it, that
-account could never be registered at all. **Import current env-var account** (`POST /api/shared-accounts/import-env`)
-is exempt from both checks: the account named by `AGENT_CONSOLE_SHARED_USERNAME`
-is already vouched for by whoever set that variable on the unit, so it can be
-imported even if it happens to have sessions from before this release's
-bookkeeping existed. Unregistering an account is refused (`409`, naming the
-counts) while any repository is bound to it or any session was created
-under it, regardless of which path registered it.
+Unregistering an account (`DELETE /api/shared-accounts/:username`) is
+refused (`409`, naming the counts) while any repository is bound to it or
+any session was created under it, regardless of how long ago it was
+registered.
+
+If `AGENT_CONSOLE_SHARED_USERNAME` is still set on the unit from a
+pre-Release-2 deployment, remove it once every repository that needs a
+shared account has one registered and bound — the server logs a startup
+warning until then as a reminder, but keeps running either way. Removing
+the unit's env var is a separate, owner-gated deploy step (see the
+`AGENT_CONSOLE_SHARED_USERNAME` row above).
 
 ### 5. Verify
 
@@ -1536,9 +1520,10 @@ sudo -u agent-console-shared -i claude -p "hello"
 sudo -u agentconsole sh -c 'cd /home/agentconsole/agent-console && NODE_ENV=production /usr/local/bin/bun scripts/smoke/check-multiuser-pty-env.ts agent-console-shared'
 ```
 
-Finally, log in to the web UI as a regular user, create a quick session
-with **Create as shared session** checked (the checkbox appears only when
-`sharedAccountsAvailable` is true), and confirm `whoami` in the session
+Finally, log in to the web UI as a regular user, open a repository bound
+to the shared account (step 4), and create a worktree session with
+**Create as shared session** checked (the checkbox appears only when that
+repository has a shared account bound). Confirm `whoami` in the session
 terminal reports the shared account and the agent responds via the
 configured vendor.
 

@@ -195,7 +195,7 @@ The `assignee` is a username, not a UUID — this is the identifier a human-in-t
 Resolution and authorisation:
 
 1. **Resolve** — `assignee` is looked up in the `users` table. If it does not resolve, the tool returns an error; the Orchestrator sees it and can ask the operator to verify the user.
-2. **Authorise** — only sessions running under a shared account may set `assignee` to someone other than the caller. The server determines whether the calling session is a shared-session by looking up the session's `created_by`, then checking whether that `users.id` is in the set of configured shared account identities (the set upserted at startup per `AGENT_CONSOLE_SHARED_USERNAME`; when multi-account config lands, the set becomes larger). Rejected cases: a personal session attempting to dispatch to another user; **a shared session attempting to dispatch to a shared account (including its own caller account)** — this prevents recursive self-delegation, the Orchestrator delegating work back to its own OS identity. This is the minimum permission boundary; richer role models can be added later.
+2. **Authorise** — only sessions running under a shared account may set `assignee` to someone other than the caller. The server determines whether the calling session is a shared-session by looking up the session's `created_by`, then checking whether that `users.id` is in the set of registered shared account identities (`isSharedUserId`, backed since Release 2 by the DB-backed `shared_accounts` table rather than a single env var — see [Shared-Account Set and Per-Repository Binding](#shared-account-set-and-per-repository-binding-db-backed)). Rejected cases: a personal session attempting to dispatch to another user; **a shared session attempting to dispatch to a shared account (including its own caller account)** — this prevents recursive self-delegation, the Orchestrator delegating work back to its own OS identity. This is the minimum permission boundary; richer role models can be added later.
 3. **Dispatch** — the server computes the target user's clone and worktree paths by convention. If the clone is absent, the server first creates the parent directory (`sudo -u <assignee> -H mkdir -p <clone-parent>`) — `git clone` creates only the leaf, not intermediate path segments — then bootstraps the clone (`sudo -u <assignee> -H git clone <url> <clone-path>`). Next it creates the worktree (`sudo -u <assignee> -H git -C <clone> worktree add ...`), copies template files (see Template file handling below), creates a session row with `created_by = <assignee>.id`, and spawns the session's PTY via the existing `MultiUserMode.spawnPty` with `username = <assignee>`.
 
 The Dispatch step for a single (assignee, repository) pair is serialised by an in-memory lock keyed on `{assignee.users.id, repository.id}`. Two concurrent `delegate_to_worktree` calls targeting the same pair do not race on the lazy clone bootstrap — the second waits on the first (preferred) or receives an "already in progress" error the Orchestrator can retry. The lock is held throughout bootstrap-plus-worktree so the dispatch appears atomic from the Orchestrator's perspective. Per-worktree creation after the clone exists does not need global serialisation — `git worktree add` is atomic against a single clone — but the lock spans the whole sequence for simplicity.
@@ -236,8 +236,8 @@ Single-user behaviour is preserved exactly. The multi-user dispatch path is a su
 
 | Condition | Behaviour |
 |---|---|
-| `AGENT_CONSOLE_SHARED_USERNAME` unset | Shared-session feature disabled; personal sessions only (specified in Configuration → Startup behaviour). |
-| Configured shared account's OS user missing | Server fails fast at startup (specified in Configuration → Startup behaviour — proposed, not yet implemented). |
+| No shared accounts registered in the DB | Shared-session feature disabled (`sharedAccountsAvailable: false`); personal sessions only (specified in Configuration → Startup behaviour). |
+| A registered shared account's OS user no longer resolves | Does NOT fail boot since Release 2 — the account stays in the set (marked unresolvable, one WARN) and creating a new shared session against it returns `400` (specified in Configuration → Startup behaviour). |
 | `delegate_to_worktree` called with unknown `assignee` | Tool returns error; Orchestrator receives it and can ask the operator. |
 | `assignee` exists in DB but the OS account is gone | Dispatch fails at the first `sudo -u` step; returned as a clone or spawn error. |
 | Assignee lacks `git clone` access to the repository URL | Lazy bootstrap fails during `git clone`; error returned to the Orchestrator (no silent retry). |
@@ -351,20 +351,21 @@ Shared-account sessions are **opt-in**. Deployments that do not want them leave 
 |---|---|---|
 | `AGENT_CONSOLE_SHARED_USERNAME` | (unset) | OS username of the default shared account (single-account case). |
 
-Multiple shared accounts are a natural extension for larger organisations; the chosen runtime form is the DB-backed set described in [Shared-Account Set and Per-Repository Binding](#shared-account-set-and-per-repository-binding-db-backed) below, not a comma-separated env var or a config file. The single `AGENT_CONSOLE_SHARED_USERNAME` variable above remains the Release 1 / Release 2 runtime source until Release 2 switches the creation path over (see that section's rollout table) — this resolves the "Multiple shared accounts" item that previously appeared under Open Questions.
+Multiple shared accounts are a natural extension for larger organisations; the chosen runtime form is the DB-backed set described in [Shared-Account Set and Per-Repository Binding](#shared-account-set-and-per-repository-binding-db-backed) below, not a comma-separated env var or a config file. The single `AGENT_CONSOLE_SHARED_USERNAME` variable above was the Release 1 runtime source; it is **ignored since Release 2** (see that section's rollout table), and removal of the variable from the unit file is a separate, owner-gated deploy change — this resolves the "Multiple shared accounts" item that previously appeared under Open Questions.
 
 ### Startup behaviour
 
-Release 1 and Release 2 differ here; see the rollout table in [Shared-Account Set and Per-Repository Binding](#shared-account-set-and-per-repository-binding-db-backed) for the full picture. The rules below describe the env-var-driven path, which is what actually runs session creation in both releases (Release 2 changes this — see that section):
+Release 1 and Release 2 differ here; see the rollout table in [Shared-Account Set and Per-Repository Binding](#shared-account-set-and-per-repository-binding-db-backed) for the full picture. The rules below describe Release 2's actual behaviour (the DB-backed set, built at boot):
 
-- **Unset** — shared feature disabled. Server logs one informational line (`"shared account: disabled (AGENT_CONSOLE_SHARED_USERNAME not set)"`) and continues. UI does not display shared-session affordances.
-- **Set, and the OS account exists** — server upserts the account into `users` on startup, enables shared-session creation endpoints and UI.
-- **Set, and the OS account does not exist** — server **fails fast at startup** with a clear error instructing the operator to create the OS account or unset the variable. This catches misconfiguration (typos, accidental unset during deployment) before users encounter a missing button.
+- `AGENT_CONSOLE_SHARED_USERNAME` is **ignored since Release 2** for building the registry — it is read only to decide whether to log a warning.
+- **Set** — server logs `logger.warn` ("AGENT_CONSOLE_SHARED_USERNAME is set but ignored since Release 2; remove it from the unit file"). If, in addition, the DB-backed set is empty, a second distinct warning fires ("no shared accounts are registered in the DB while AGENT_CONSOLE_SHARED_USERNAME is set -- shared sessions are disabled until one is registered").
+- **The DB-backed set is built regardless of the env var**: for every `shared_accounts` row, the server resolves the OS account; a resolved account becomes usable, an unresolved one stays in the set (so its existing sessions remain operable and labelled) but is marked unresolvable with one warning naming it, and creating against it returns `400`.
+- Server **never fails boot** over an unresolvable or empty set — a refusal would turn a stale unit file or a since-removed OS account into a full outage with no UI path to recover.
 
 ### Relationship to `AUTH_MODE`
 
-- In `AUTH_MODE=multi-user`, `AGENT_CONSOLE_SHARED_USERNAME` is honoured per the rules above.
-- In `AUTH_MODE=none`, `AGENT_CONSOLE_SHARED_USERNAME` is ignored — shared sessions require multi-user authentication to be meaningful. The DB-backed set and binding described below are likewise unavailable in `AUTH_MODE=none` (every `/api/shared-accounts/*` endpoint and the `sharedAccountUsername` field on `PATCH /api/repositories/:id` reject with 400).
+- In `AUTH_MODE=multi-user`, the DB-backed set and per-repository binding described below are live; `AGENT_CONSOLE_SHARED_USERNAME` is honoured only for the startup warnings above, never to pick an account.
+- In `AUTH_MODE=none`, shared accounts are unavailable entirely — the DB-backed set and binding are unavailable (every `/api/shared-accounts/*` endpoint and the `sharedAccountUsername` field on `PATCH /api/repositories/:id` reject with 400), and `AGENT_CONSOLE_SHARED_USERNAME` is ignored outright (no warnings either, since shared sessions are not meaningful under this auth mode).
 
 ## Shared-Account Set and Per-Repository Binding (DB-backed)
 
@@ -385,9 +386,9 @@ Two concepts, deliberately separate:
 - `GET /api/shared-accounts` → the registered set, each entry with its bound-repository count and session count (for the settings UI and for deciding whether an unregister is safe).
 - `POST /api/shared-accounts { username }` → registers an OS account into the set (server-side `lookupOsUser`, `400` on no such OS account, `409` if already registered).
 - `DELETE /api/shared-accounts/:username` → `409` while any repository is bound to it or any session's `created_by` names it (never silently orphans a session or a binding); otherwise removes it from the set.
-- `POST /api/shared-accounts/import-env` → registers the account currently configured via `AGENT_CONSOLE_SHARED_USERNAME` (Release 1's bridge from the env-var world to the DB-backed one; idempotent).
+- `POST /api/shared-accounts/import-env` — Release 1 only, **removed in Release 2** (see the rollout table below): registered the account currently configured via `AGENT_CONSOLE_SHARED_USERNAME` as a one-time bridge from the env-var world to the DB-backed one.
 
-All four endpoints, and the `sharedAccountUsername` field on `PATCH /api/repositories/:id`, are `400` under `AUTH_MODE=none` — shared accounts remain a multi-user-only mechanism end to end.
+All three endpoints above, and the `sharedAccountUsername` field on `PATCH /api/repositories/:id`, are `400` under `AUTH_MODE=none` — shared accounts remain a multi-user-only mechanism end to end.
 
 ### Quick sessions and `delegate_to_worktree`
 
@@ -402,12 +403,13 @@ Quick sessions cannot be shared once bindings govern session creation (Release 2
 | `POST /api/sessions` / `POST /api/repositories/:id/worktrees` with `shared: true` | uses `getDefaultUserId()` (env var) — **a DB binding on the target repository has no effect** | reads the repository's binding |
 | `AGENT_CONSOLE_SHARED_USERNAME` set at boot | honoured as the (only) runtime source | ignored for session creation; triggers one boot WARN, and a second WARN if the DB-backed set is empty (a refusal-to-boot was considered and rejected — see below) |
 | A registered account whose OS user no longer resolves | not checked (Release 1 never resolves bindings at runtime) | does NOT fail boot — the account stays in the set (so its existing sessions stay operable and labelled), is marked unresolvable with one WARN, the settings UI surfaces the state, and creating against it returns `400` |
+| `POST /api/shared-accounts/import-env` | present — the bridge that lets an operator pull today's env-var account into the DB-backed set without retyping it | **removed**. Once the registry no longer treats the env var as an account source, an "import from env" mechanism would be the one remaining code path that still reads the variable to pick an account — exactly what this release retires. Registration is UI/API-only (`POST /api/shared-accounts`) from Release 2 onward. |
 
 Release 2 boot deliberately WARNs rather than refuses when the env var is set but ignored, or when a registered account has gone stale: refusing to boot would turn a stale unit file or a since-removed OS account into a full outage with no UI path to recover, which is worse than a visible warning plus a `400` at the point of use.
 
 ### Why Release 1 ships storage before Release 2 consumes it
 
-This is a deliberate two-stage rollout (owner decision), not an accidental half-feature: it lets operators register accounts and bind repositories ahead of time — including importing today's env-var account via `POST /api/shared-accounts/import-env` — so that the Release 2 cutover changes *which account answers*, never *whether the feature works at all*. It also means Release 1's registration surface is live before anything consults it; the allowlist-of-who-may-bind-which-account question (a human registering another human's personal account would make that human's sessions team-operable once Release 2 ships) is deferred to a follow-up and tracked separately from this design.
+This is a deliberate two-stage rollout (owner decision), not an accidental half-feature: it lets operators register accounts and bind repositories ahead of time — Release 1 included an `import-env` bridge for pulling today's env-var account into the DB-backed set without retyping it, removed in Release 2 once the registry stops treating the variable as an account source at all (see the rollout table above) — so that the Release 2 cutover changes *which account answers*, never *whether the feature works at all*. It also means Release 1's registration surface is live before anything consults it; the allowlist-of-who-may-bind-which-account question (a human registering another human's personal account would make that human's sessions team-operable once Release 2 ships) is deferred to a follow-up and tracked separately from this design.
 
 ## Operational Setup
 
@@ -448,13 +450,13 @@ sudo -u agent-console-shared -i
 
 Which of these is appropriate for a *shared* account is a licensing question for the operator, not a system requirement — see the guidance under [Authentication model](#authentication-model).
 
-### 3. Configure the server
+### 3. Register and bind the account
 
-Set `AGENT_CONSOLE_SHARED_USERNAME=<shared-account-name>` in the server's environment (e.g., systemd unit, launchd plist).
+Since Release 2, registration and binding are DB-backed, not an env var: register the account via **Settings → Shared Accounts** (or `POST /api/shared-accounts`), then bind it to each repository that should use it via that repository's edit page (or `PATCH /api/repositories/:id`). See [Shared-Account Set and Per-Repository Binding](#shared-account-set-and-per-repository-binding-db-backed) above and [`multi-user-setup-guide.md`](./multi-user-setup-guide.md)'s "Shared Account Setup" section for the full operator walkthrough. `AGENT_CONSOLE_SHARED_USERNAME` is no longer read to pick an account; if still set on the unit from a pre-Release-2 deployment, removing it is a separate, owner-gated deploy step (the server only warns until then).
 
 ### 4. Verify
 
-Start the server, log in as any user, create a shared session, verify:
+Log in as any user, open a repository bound to the shared account (step 3), create a worktree session with **Create as shared session** checked, and verify:
 
 - The session appears in the UI with a visible "shared" indicator.
 - The session's worker terminal runs as the shared account (`whoami` inside the terminal returns the account's username).
@@ -528,8 +530,7 @@ Any authenticated user can type into a shared session. This is an intentional pr
 Operator workflow for renaming a shared account (rare):
 
 1. Rename the OS account (`usermod -l ...` on Linux, equivalent on macOS).
-2. Update `AGENT_CONSOLE_SHARED_USERNAME` to the new name.
-3. Restart the server. The startup upsert reconciles the `users` row by `os_uid` and writes the new username. Existing `sessions.created_by` references remain valid.
+2. Restart the server. `SharedAccountRegistry.createFromDb`'s per-row OS lookup re-resolves the username at startup, reconciling the `users` row by `os_uid` and writing the new username. No env var to update since Release 2 — the registered account is keyed by `users.id` in the `shared_accounts` table, never by username. Existing `sessions.created_by` references and repository bindings remain valid.
 
 Per-user accounts (alice, bob) follow the same pattern: their `users` row is keyed by `os_uid`, so a rename plus a subsequent login writes the updated username without orphaning any session record.
 
@@ -539,7 +540,7 @@ Required schema additions for this design:
 
 1. **`sessions.initiated_by`** (nullable text, application-level linkage to `users.id`). For personal sessions it equals `created_by`; for shared sessions it records the authenticated user who clicked "Create shared session" — distinct from `created_by`, which represents the PTY spawn identity. The Session Creation Flow above (step 4) persists this value, so it must exist from day one.
 2. **`repositories.remote_url`** (nullable text). Stores the source URL when a repository is registered via `registerRepositoryFromUrl` (per-user lazy clone bootstrap reads it). Existing path-based registrations leave this null — `getRemoteUrl(path)` continues to derive the URL on demand from the cloned repo's `origin` remote, as today.
-3. **`shared_accounts`** table (`user_id` PK referencing `users.id`, `created_by`, `created_at`) and **`repositories.shared_account_user_id`** (nullable, referencing `shared_accounts.user_id`, `ON DELETE RESTRICT`) — see [Shared-Account Set and Per-Repository Binding](#shared-account-set-and-per-repository-binding-db-backed) above for the full design. Storage only; not consulted by session creation until a later release.
+3. **`shared_accounts`** table (`user_id` PK referencing `users.id`, `created_by`, `created_at`) and **`repositories.shared_account_user_id`** (nullable, referencing `shared_accounts.user_id`, `ON DELETE RESTRICT`) — see [Shared-Account Set and Per-Repository Binding](#shared-account-set-and-per-repository-binding-db-backed) above for the full design. Storage only in Release 1; consulted by session creation from Release 2 onward (see that section's rollout table).
 
 Aside from these columns and the `shared_accounts` table, the existing `users`, `sessions`, and `repositories` tables already cover the shared-account mechanism via the `created_by` linkage; no further schema changes are required for the minimum viable version.
 
@@ -560,13 +561,15 @@ Decisions about `sessions.created_by` gaining a DB-level `REFERENCES users(id)` 
 
 ## Migration / Rollout
 
+This section describes the original, single-release rollout of the shared-accounts feature when it was env-var-only. It has since been superseded by the two-stage Release 1 → Release 2 rollout described in [Shared-Account Set and Per-Repository Binding](#shared-account-set-and-per-repository-binding-db-backed)'s rollout table; kept here for history.
+
 This is additive. Pre-existing personal sessions and the single-user `AUTH_MODE=none` flow are unchanged.
 
 1. Merge the server code supporting `AGENT_CONSOLE_SHARED_USERNAME` + shared-session UI.
 2. Existing deployments: no mandatory action. Shared-session creation is disabled when the env var is unset.
 3. Operators who want shared sessions: perform the Operational Setup above, set the env var, restart the server.
 
-Rollback: unset `AGENT_CONSOLE_SHARED_USERNAME` and restart. Existing shared-session rows remain in the DB (harmless) but cannot be spawned until the env var is restored.
+Rollback (as originally designed, pre-Release-2): unset `AGENT_CONSOLE_SHARED_USERNAME` and restart. Existing shared-session rows remain in the DB (harmless) but cannot be spawned until the env var is restored. **Since Release 2** the env var no longer gates anything — rollback instead means unregistering or unbinding the DB-backed accounts (or, as a last resort, rolling the deployed code itself back to a pre-Release-2 build).
 
 ## References
 

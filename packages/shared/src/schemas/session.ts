@@ -33,9 +33,12 @@ export const CreateWorktreeSessionRequestSchema = v.pipe(
     parentSessionId: v.optional(v.pipe(v.string(), v.trim(), v.minLength(1))),
     parentWorkerId: v.optional(v.pipe(v.string(), v.trim(), v.minLength(1))),
     /**
-     * When true, create a shared session (PTY runs as the configured shared
-     * account). Requires AGENT_CONSOLE_SHARED_USERNAME to be set on the server.
-     * See docs/design/shared-orchestrator-session.md.
+     * Always rejected (400) -- a session created through POST /api/sessions
+     * (this schema or CreateQuickSessionRequestSchema below) can never be
+     * shared. Shared sessions are bound per repository and created only via
+     * POST /api/repositories/:id/worktrees's `shared: true` branch. See
+     * docs/design/shared-orchestrator-session.md
+     * §"Shared-Account Set and Per-Repository Binding (DB-backed)".
      */
     shared: v.optional(v.boolean()),
     /** Model override for the initial worker (agent-surface.md Ruling 2). See CreateAgentWorkerParamsSchema in schemas/worker.ts. */
@@ -94,9 +97,11 @@ export const CreateQuickSessionRequestSchema = v.pipe(
     parentSessionId: v.optional(v.pipe(v.string(), v.trim(), v.minLength(1))),
     parentWorkerId: v.optional(v.pipe(v.string(), v.trim(), v.minLength(1))),
     /**
-     * When true, create a shared session (PTY runs as the configured shared
-     * account). Requires AGENT_CONSOLE_SHARED_USERNAME to be set on the server.
-     * See docs/design/shared-orchestrator-session.md.
+     * Always rejected (400) -- quick sessions can never be shared; shared
+     * sessions are bound per repository and a quick session has no
+     * repository to bind against. See
+     * docs/design/shared-orchestrator-session.md
+     * §"Shared-Account Set and Per-Repository Binding (DB-backed)".
      */
     shared: v.optional(v.boolean()),
     /** Model override for the initial worker (agent-surface.md Ruling 2). See CreateAgentWorkerParamsSchema in schemas/worker.ts. */

@@ -85,15 +85,28 @@ describe('createWorktreeWithSession: shared-session Session.isShared derivation 
 
     // Real SharedAccountRegistry backed by a real SqliteUserRepository
     // (mirrors sessions.test.ts's "shared sessions" describe block). Only
-    // the OS-account lookup is faked, so the registry's own upsert +
-    // isSharedUserId logic run for real.
-    sharedAccountRegistry = await SharedAccountRegistry.create({
-      username: 'shared-user',
-      userRepository: new SqliteUserRepository(db),
+    // the DB-backed list() + OS-account lookup are faked, so the registry's
+    // own upsert + isSharedUserId logic run for real.
+    //
+    // Seed the `users` row FIRST (same os_uid the lookup below returns), so
+    // `createFromDb`'s refresh upsert hits this SAME row via the os_uid
+    // conflict key -- otherwise the registry's resolved userId would be a
+    // freshly generated id, not the one this fake row list declares.
+    const sqliteUserRepository = new SqliteUserRepository(db);
+    const seededUser = await sqliteUserRepository.upsertByOsUid(6000, 'shared-user', '/home/shared-user');
+    sharedUserId = seededUser.id;
+    sharedAccountRegistry = await SharedAccountRegistry.createFromDb({
+      sharedAccountRepository: {
+        list: async () => [{ userId: sharedUserId, username: 'shared-user', createdAt: '2024-01-01T00:00:00.000Z', createdBy: null }],
+        register: async () => {},
+        unregister: async () => true,
+        countBoundRepositories: async () => 0,
+        countSessions: async () => 0,
+      },
+      userRepository: sqliteUserRepository,
       lookupOsUser: () => Promise.resolve({ uid: 6000, homeDir: '/home/shared-user' }),
     });
-    sharedUserId = sharedAccountRegistry.getDefaultUserId()!;
-    expect(sharedUserId).toBeTruthy();
+    expect(sharedAccountRegistry.isSharedUserId(sharedUserId)).toBe(true);
 
     sessionManager = await SessionManager.create({
       userMode: new SingleUserMode(ptyFactory.provider, { id: humanUserId, username: 'testuser', homeDir: '/home/testuser' }),

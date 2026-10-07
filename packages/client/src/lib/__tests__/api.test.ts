@@ -119,6 +119,7 @@ describe('API Client', () => {
         serverPort: 3457,
         authMode: 'none' as const,
         sharedAccountsAvailable: false,
+        sharedAccountsEnvVarIgnored: false,
         deployedSha: null,
       };
       mockFetch.mockResolvedValue(createMockResponse(mockConfig));

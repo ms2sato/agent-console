@@ -7,7 +7,6 @@ import { AgentParameterFields } from '../agents/AgentParameterFields';
 import { UnifiedAgentSelector, useResolvedEmbeddedAgentId } from '../AgentSelector';
 import { useResolvedAgentId } from '../../hooks/useAgents';
 import { Spinner } from '../ui/Spinner';
-import { useAuth } from '../../lib/auth';
 import type { CreateWorktreeFormData } from '../../schemas/worktree-form';
 import { CreateWorktreeFormSchema } from '../../schemas/worktree-form';
 import type {
@@ -42,6 +41,11 @@ export interface CreateWorktreeFormProps {
   repositoryId: string;
   defaultBranch: string;
   defaultAgentId?: string | null;
+  /** The repository's bound shared account username, or `null` when unbound.
+   *  Gates the "Create as shared session" checkbox: shared sessions run as
+   *  whichever account the repository is bound to, so the checkbox only
+   *  makes sense when a binding exists. */
+  sharedAccountUsername?: string | null;
   onSubmit: (request: CreateWorktreeFormRequest) => Promise<void>;
   onCancel: () => void;
   /** When provided, form values are persisted to localStorage under this key.
@@ -59,6 +63,7 @@ export function CreateWorktreeForm({
   repositoryId,
   defaultBranch,
   defaultAgentId,
+  sharedAccountUsername,
   onSubmit,
   onCancel,
   draftKey,
@@ -93,8 +98,6 @@ export function CreateWorktreeForm({
     mode: 'onBlur',
     shouldUnregister: true,
   });
-
-  const { sharedAccountsAvailable } = useAuth();
 
   // Draft persistence: restore saved values on mount, save on change, clear on successful submit
   // Tracks whether draft was cleared (e.g., after successful submit) to skip unmount save
@@ -387,14 +390,14 @@ export function CreateWorktreeForm({
             />
           </div>
 
-          {sharedAccountsAvailable && (
+          {sharedAccountUsername != null && (
             <label className="flex items-center gap-2 text-sm text-gray-400">
               <input
                 type="checkbox"
                 {...register('shared')}
                 className="accent-indigo-600"
               />
-              Create as shared session
+              Create as shared session (runs as {sharedAccountUsername})
             </label>
           )}
 

@@ -734,6 +734,7 @@ function RepositoryCard({ repository, sessions, pausedSessions, activePulls, onP
           repositoryId={repository.id}
           defaultBranch={defaultBranch}
           defaultAgentId={repository.defaultAgentId}
+          sharedAccountUsername={repository.sharedAccountUsername}
           onSubmit={handleCreateWorktree}
           onCancel={() => setShowCreateWorktree(false)}
         />

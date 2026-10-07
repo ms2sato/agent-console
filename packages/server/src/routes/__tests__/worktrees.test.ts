@@ -427,10 +427,16 @@ describe('Worktrees API', () => {
 
   // =========================================================================
   // POST /api/repositories/:id/worktrees (Issue #1286: shared worktree
-  // sessions). Mirrors POST /api/sessions (see sessions.test.ts's "shared
-  // sessions" describe block) -- `body.shared` is translated into
-  // createdBy/initiatedBy ownership and the whole creation pipeline
-  // (createWorktree, session creation) runs under `requestUsername`.
+  // sessions, DB-backed binding per Release 2 --
+  // docs/design/shared-orchestrator-session.md §"Shared-Account Set and
+  // Per-Repository Binding (DB-backed)"). Mirrors POST /api/sessions (see
+  // sessions.test.ts's "shared sessions" describe block) for the personal
+  // branch; the shared branch diverges from it -- a shared worktree session
+  // consults the repository's BOUND account
+  // (`RepositoryManager.getSharedAccountUserId`), not a registry-wide
+  // default. `body.shared` is translated into createdBy/initiatedBy
+  // ownership and the whole creation pipeline (createWorktree, session
+  // creation) runs under `requestUsername`.
   // =========================================================================
 
   describe('POST /api/repositories/:id/worktrees (Issue #1286 shared worktree sessions)', () => {
@@ -469,42 +475,69 @@ describe('Worktrees API', () => {
       return { mockFn, captured };
     }
 
+    /** The bound account's `users.id` used by the "bound + resolvable" fixtures below. */
+    const BOUND_SHARED_USER_ID = 'shared-user-id';
+
     /**
-     * Builds a real SharedAccountRegistry (enabled or disabled) backed by a
-     * fake UserRepository, mirroring sessions.test.ts's setupCommon pattern.
-     * The registry's public API (isEnabled / getDefaultUserId /
-     * getDefaultUsername) is exercised for real; only the OS lookup + DB
-     * upsert are faked. UserRepository is a plain interface (not a class),
-     * so a fake implementing both its methods needs no cast at all.
+     * Builds a real SharedAccountRegistry via `createFromDb`, backed by a
+     * fake SharedAccountRepository + UserRepository, mirroring
+     * sessions.test.ts's setupCommon pattern. The registry's public API
+     * (isEnabled / getEntry / isSharedUserId) is exercised for real; only the
+     * DB-backed `list()` + OS lookup + `users` upsert are faked.
+     *
+     * `opts.resolvable: false` simulates a bound account whose OS account no
+     * longer resolves (kept in the SET per the registry's own contract, but
+     * `resolvable: false`).
      */
-    async function createSharedAccountRegistry(opts: { enabled: boolean }): Promise<SharedAccountRegistry> {
+    async function createSharedAccountRegistry(opts: { enabled: boolean; resolvable?: boolean }): Promise<SharedAccountRegistry> {
       if (!opts.enabled) {
         return SharedAccountRegistry.createDisabled();
       }
+      const resolvable = opts.resolvable ?? true;
       const fakeUserRepository = {
         upsertByOsUid: mock((_uid: number, username: string, homeDir: string) =>
-          Promise.resolve({ id: 'shared-user-id', username, homeDir } satisfies AuthUser),
+          Promise.resolve({ id: BOUND_SHARED_USER_ID, username, homeDir } satisfies AuthUser),
         ),
         findById: mock(() => Promise.resolve(null)),
         getPreferences: mock(() => Promise.resolve(null)),
         setPreferences: mock(() => Promise.resolve(true)),
+        getOsUidById: mock(() => Promise.resolve(6000)),
+        refreshOsIdentity: mock((id: string, username: string, homeDir: string) =>
+          Promise.resolve({ id, username, homeDir }),
+        ),
       };
-      return SharedAccountRegistry.create({
-        username: 'shared-user',
+      return SharedAccountRegistry.createFromDb({
+        sharedAccountRepository: {
+          list: async () => [{ userId: BOUND_SHARED_USER_ID, username: 'shared-user', createdAt: '2024-01-01T00:00:00.000Z', createdBy: null }],
+          register: async () => {},
+          unregister: async () => true,
+          countBoundRepositories: async () => 0,
+          countSessions: async () => 0,
+        },
         userRepository: fakeUserRepository,
-        lookupOsUser: () => Promise.resolve({ uid: 6000, homeDir: '/home/shared-user' }),
+        lookupOsUser: () => Promise.resolve(resolvable ? { uid: 6000, homeDir: '/home/shared-user' } : null),
       });
     }
 
-    it('shared:true + registry disabled -> 400 with exact message, createWorktree not called', async () => {
+    /** Builds a RepositoryManager mock whose `getSharedAccountUserId` resolves to `boundUserId`. */
+    function createMockRepositoryManagerWithBinding(boundUserId: string | null): RepositoryManager {
+      return asRepositoryManager({
+        getRepository: mock((id: string) => (id === TEST_REPO.id ? TEST_REPO : undefined)),
+        getAllRepositories: mock(() => [TEST_REPO]),
+        getSharedAccountUserId: mock(() => Promise.resolve(boundUserId)),
+      });
+    }
+
+    it('shared:true + repository has no bound account -> 400 with exact message, createWorktree not called', async () => {
       const sharedAccountRegistry = await createSharedAccountRegistry({ enabled: false });
+      const repositoryManager = createMockRepositoryManagerWithBinding(null);
       const { mockFn: createCapture } = createCapturingCreateWorktreeMock(WORKTREE_PATH);
       mockWorktreeService.createWorktree = createCapture;
 
       app = new Hono<AppBindings>();
       app.use('*', async (c, next) => {
         c.set('appContext', asAppContext({
-          repositoryManager: mockRepositoryManager,
+          repositoryManager,
           worktreeService: mockWorktreeService,
           agentManager: mockAgentManager,
           sessionManager: asSessionManager({ createSession: mock() }),
@@ -521,9 +554,9 @@ describe('Worktrees API', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          taskId: 'task-1286-disabled',
+          taskId: 'task-1286-unbound',
           mode: 'custom',
-          branch: 'feature/shared-disabled',
+          branch: 'feature/shared-unbound',
           baseBranch: 'main',
           useRemote: false,
           autoStartSession: false,
@@ -534,18 +567,61 @@ describe('Worktrees API', () => {
 
       expect(res.status).toBe(400);
       const body = (await res.json()) as { error: string };
-      expect(body.error).toBe('Shared sessions are not enabled on this server.');
+      expect(body.error).toBe('This repository has no shared account bound; bind one in Settings');
       // Failure happens synchronously (before the fire-and-forget block), so
       // the worktree creation pipeline must never have been entered.
       expect(createCapture).not.toHaveBeenCalled();
     });
 
-    it('shared:true + registry enabled -> createWorktree + session creation run under the shared account', async () => {
+    it('shared:true + bound account no longer resolves -> 400 with exact message, createWorktree not called', async () => {
+      const sharedAccountRegistry = await createSharedAccountRegistry({ enabled: true, resolvable: false });
+      const repositoryManager = createMockRepositoryManagerWithBinding(BOUND_SHARED_USER_ID);
+      const { mockFn: createCapture } = createCapturingCreateWorktreeMock(WORKTREE_PATH);
+      mockWorktreeService.createWorktree = createCapture;
+
+      app = new Hono<AppBindings>();
+      app.use('*', async (c, next) => {
+        c.set('appContext', asAppContext({
+          repositoryManager,
+          worktreeService: mockWorktreeService,
+          agentManager: mockAgentManager,
+          sessionManager: asSessionManager({ createSession: mock() }),
+          broadcastToApp: () => {},
+          suggestSessionMetadata: mock(async () => ({ branch: '', title: '', error: 'unused' })),
+          sharedAccountRegistry,
+        }));
+        await next();
+      });
+      app.onError(onApiError);
+      app.route('/api', api);
+
+      const res = await app.request(`/api/repositories/${TEST_REPO.id}/worktrees`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          taskId: 'task-1286-unresolvable',
+          mode: 'custom',
+          branch: 'feature/shared-unresolvable',
+          baseBranch: 'main',
+          useRemote: false,
+          autoStartSession: false,
+          agentId: 'claude-code-builtin',
+          shared: true,
+        }),
+      });
+
+      expect(res.status).toBe(400);
+      const body = (await res.json()) as { error: string };
+      expect(body.error).toBe('Shared account shared-user no longer resolves to an OS account');
+      expect(createCapture).not.toHaveBeenCalled();
+    });
+
+    it('shared:true + bound account resolvable -> createWorktree + session creation run under the shared account', async () => {
       const sharedAccountRegistry = await createSharedAccountRegistry({ enabled: true });
-      const sharedUserId = sharedAccountRegistry.getDefaultUserId();
-      const sharedUsername = sharedAccountRegistry.getDefaultUsername();
-      expect(sharedUserId).not.toBeNull();
-      expect(sharedUsername).toBe('shared-user');
+      const repositoryManager = createMockRepositoryManagerWithBinding(BOUND_SHARED_USER_ID);
+      const sharedEntry = sharedAccountRegistry.getEntry(BOUND_SHARED_USER_ID);
+      expect(sharedEntry).toEqual({ username: 'shared-user', resolvable: true });
+      const sharedUsername = sharedEntry!.username;
 
       const { mockFn: createCapture, captured: createCaptured } = createCapturingCreateWorktreeMock(WORKTREE_PATH);
       mockWorktreeService.createWorktree = createCapture;
@@ -555,7 +631,7 @@ describe('Worktrees API', () => {
       app = new Hono<AppBindings>();
       app.use('*', async (c, next) => {
         c.set('appContext', asAppContext({
-          repositoryManager: mockRepositoryManager,
+          repositoryManager,
           worktreeService: mockWorktreeService,
           agentManager: mockAgentManager,
           sessionManager: asSessionManager({ createSession: sessionCapture }),
@@ -592,13 +668,14 @@ describe('Worktrees API', () => {
       // sessionManager.createSession signature: (sessionParams, context)
       const sessionArgs = await sessionCaptured;
       const context = sessionArgs[1] as { createdBy?: string; initiatedBy?: string };
-      expect(context.createdBy).toBe(sharedUserId!);
+      expect(context.createdBy).toBe(BOUND_SHARED_USER_ID);
       expect(context.initiatedBy).toBe(TEST_AUTH_USER.id);
     });
 
-    it('shared:true + registry enabled -> prompt-mode suggestSessionMetadata receives the shared account username', async () => {
+    it('shared:true + bound account resolvable -> prompt-mode suggestSessionMetadata receives the shared account username', async () => {
       const sharedAccountRegistry = await createSharedAccountRegistry({ enabled: true });
-      const sharedUsername = sharedAccountRegistry.getDefaultUsername();
+      const repositoryManager = createMockRepositoryManagerWithBinding(BOUND_SHARED_USER_ID);
+      const sharedUsername = sharedAccountRegistry.getEntry(BOUND_SHARED_USER_ID)!.username;
 
       const { mockFn: createCapture } = createCapturingWorktreeMockShortCircuit();
 
@@ -616,7 +693,7 @@ describe('Worktrees API', () => {
       app = new Hono<AppBindings>();
       app.use('*', async (c, next) => {
         c.set('appContext', asAppContext({
-          repositoryManager: mockRepositoryManager,
+          repositoryManager,
           worktreeService: mockWorktreeService,
           agentManager: mockAgentManager,
           sessionManager: asSessionManager({ createSession: mock() }),

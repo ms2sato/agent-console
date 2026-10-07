@@ -38,6 +38,18 @@ describe('SharedAccountSummarySchema', () => {
       registeredAt: '2026-01-01T00:00:00.000Z',
       boundRepositoryCount: 2,
       sessionCount: 5,
+      resolvable: true,
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it('accepts resolvable: false (account no longer resolves to an OS account)', () => {
+    const result = v.safeParse(SharedAccountSummarySchema, {
+      username: 'shared-bot',
+      registeredAt: '2026-01-01T00:00:00.000Z',
+      boundRepositoryCount: 2,
+      sessionCount: 5,
+      resolvable: false,
     });
     expect(result.success).toBe(true);
   });
@@ -47,6 +59,16 @@ describe('SharedAccountSummarySchema', () => {
       username: 'shared-bot',
       registeredAt: '2026-01-01T00:00:00.000Z',
       boundRepositoryCount: 2,
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects a missing resolvable field', () => {
+    const result = v.safeParse(SharedAccountSummarySchema, {
+      username: 'shared-bot',
+      registeredAt: '2026-01-01T00:00:00.000Z',
+      boundRepositoryCount: 2,
+      sessionCount: 5,
     });
     expect(result.success).toBe(false);
   });
@@ -66,6 +88,7 @@ describe('ListSharedAccountsResponseSchema', () => {
           registeredAt: '2026-01-01T00:00:00.000Z',
           boundRepositoryCount: 0,
           sessionCount: 0,
+          resolvable: true,
         },
       ],
     });

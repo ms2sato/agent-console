@@ -170,6 +170,69 @@ describe('SqliteUserRepository', () => {
     });
   });
 
+  describe('getOsUidById', () => {
+    it('returns the os_uid for an existing row', async () => {
+      const user = await repository.upsertByOsUid(1001, 'alice', '/home/alice');
+      const osUid = await repository.getOsUidById(user.id);
+      expect(osUid).toBe(1001);
+    });
+
+    it('returns null for an existing row whose os_uid is null', async () => {
+      const now = new Date().toISOString();
+      await db
+        .insertInto('users')
+        .values({
+          id: 'no-os-uid-user',
+          os_uid: null,
+          username: 'no-os-uid',
+          home_dir: '/home/no-os-uid',
+          created_at: now,
+          updated_at: now,
+        })
+        .execute();
+
+      const osUid = await repository.getOsUidById('no-os-uid-user');
+      expect(osUid).toBeNull();
+    });
+
+    it('returns undefined for a nonexistent id', async () => {
+      const osUid = await repository.getOsUidById('nonexistent-id');
+      expect(osUid).toBeUndefined();
+    });
+  });
+
+  describe('refreshOsIdentity', () => {
+    it('updates username and homeDir for an existing row', async () => {
+      const user = await repository.upsertByOsUid(1001, 'alice', '/home/alice');
+
+      const refreshed = await repository.refreshOsIdentity(user.id, 'alice_renamed', '/Users/alice');
+
+      expect(refreshed).toEqual({ id: user.id, username: 'alice_renamed', homeDir: '/Users/alice' });
+
+      const row = await db
+        .selectFrom('users')
+        .where('id', '=', user.id)
+        .selectAll()
+        .executeTakeFirst();
+      expect(row?.username).toBe('alice_renamed');
+      expect(row?.home_dir).toBe('/Users/alice');
+    });
+
+    it('leaves os_uid and id unchanged', async () => {
+      const user = await repository.upsertByOsUid(1001, 'alice', '/home/alice');
+
+      await repository.refreshOsIdentity(user.id, 'alice_renamed', '/Users/alice');
+
+      const row = await db
+        .selectFrom('users')
+        .where('id', '=', user.id)
+        .selectAll()
+        .executeTakeFirst();
+      expect(row?.id).toBe(user.id);
+      expect(row?.os_uid).toBe(1001);
+    });
+  });
+
   describe('findById', () => {
     it('should return user by id', async () => {
       const created = await repository.upsertByOsUid(1001, 'alice', '/home/alice');

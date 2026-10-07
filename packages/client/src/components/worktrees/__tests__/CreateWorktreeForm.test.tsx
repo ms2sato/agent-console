@@ -1255,33 +1255,42 @@ describe('CreateWorktreeForm', () => {
     });
   });
 
-  describe('shared session checkbox', () => {
-    it('should NOT render the checkbox when sharedAccountsAvailable is false', async () => {
-      setSharedAccountsAvailable(false);
+  describe('shared session checkbox (Issue #1842 item 7: gated on sharedAccountUsername, not sharedAccountsAvailable)', () => {
+    it('should NOT render the checkbox when sharedAccountUsername is not provided', async () => {
       renderCreateWorktreeForm();
 
       await waitFor(() => {
         expect(screen.getByText('Claude Code (built-in)')).toBeTruthy();
       });
 
-      expect(screen.queryByText('Create as shared session')).toBeNull();
+      expect(screen.queryByText(/Create as shared session/)).toBeNull();
     });
 
-    it('should render the checkbox when sharedAccountsAvailable is true', async () => {
+    it('should NOT render the checkbox when sharedAccountUsername is null, even if sharedAccountsAvailable is true (negative control proving the gate changed, not just renamed)', async () => {
       setSharedAccountsAvailable(true);
-      renderCreateWorktreeForm();
+      renderCreateWorktreeForm({ sharedAccountUsername: null });
 
       await waitFor(() => {
         expect(screen.getByText('Claude Code (built-in)')).toBeTruthy();
       });
 
-      expect(screen.getByText('Create as shared session')).toBeTruthy();
+      expect(screen.queryByText(/Create as shared session/)).toBeNull();
+      expect(screen.queryByRole('checkbox')).toBeNull();
+    });
+
+    it('should render the checkbox with the bound account name when sharedAccountUsername is provided', async () => {
+      renderCreateWorktreeForm({ sharedAccountUsername: 'ci-runner' });
+
+      await waitFor(() => {
+        expect(screen.getByText('Claude Code (built-in)')).toBeTruthy();
+      });
+
+      expect(screen.getByText('Create as shared session (runs as ci-runner)')).toBeTruthy();
     });
 
     it('should submit shared: true when the checkbox is checked', async () => {
-      setSharedAccountsAvailable(true);
       const user = userEvent.setup();
-      const { props } = renderCreateWorktreeForm();
+      const { props } = renderCreateWorktreeForm({ sharedAccountUsername: 'ci-runner' });
 
       await waitFor(() => {
         expect(screen.getByText('Claude Code (built-in)')).toBeTruthy();
@@ -1309,9 +1318,8 @@ describe('CreateWorktreeForm', () => {
     });
 
     it('should omit the shared field when the checkbox is left unchecked', async () => {
-      setSharedAccountsAvailable(true);
       const user = userEvent.setup();
-      const { props } = renderCreateWorktreeForm();
+      const { props } = renderCreateWorktreeForm({ sharedAccountUsername: 'ci-runner' });
 
       await waitFor(() => {
         expect(screen.getByText('Claude Code (built-in)')).toBeTruthy();

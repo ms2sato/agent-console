@@ -9,11 +9,10 @@
  * through the real HTTP routes, and it never calls the real client
  * functions in `packages/client/src/lib/api.ts`. This file closes that gap:
  * it exercises the real client functions (`fetchSharedAccounts`,
- * `registerSharedAccount`, `unregisterSharedAccount`,
- * `importEnvSharedAccount`, `registerRepository`, `fetchRepository`,
- * `updateRepository`) against the real `/api/shared-accounts` and
- * `/api/repositories` Hono routes, via the Server Bridge Pattern
- * (`createFetchBridge`).
+ * `registerSharedAccount`, `unregisterSharedAccount`, `registerRepository`,
+ * `fetchRepository`, `updateRepository`) against the real
+ * `/api/shared-accounts` and `/api/repositories` Hono routes, via the Server
+ * Bridge Pattern (`createFetchBridge`).
  *
  * This matters most for `fetchSharedAccounts()`, which parses the server's
  * JSON body through `ListSharedAccountsResponseSchema` --
@@ -30,24 +29,25 @@
  * PROXY (pre-pr-completeness.md Q13 "recorded-proxy discipline"):
  * `packages/server/src/routes/shared-accounts.ts` calls the real
  * `lookupOsUser(username)` directly -- there is no dependency-injection
- * seam on the route itself (unlike `SharedAccountRegistry.create`, which
- * DOES accept an injectable `lookupOsUser` for its own startup
+ * seam on the route itself (unlike `SharedAccountRegistry.createFromDb`,
+ * which DOES accept an injectable `lookupOsUser` for its own startup
  * resolution). Any username registered through the real
- * `POST /api/shared-accounts` or `POST /api/shared-accounts/import-env`
- * routes in this file must therefore be a username that genuinely resolves
- * via the real OS on whatever machine runs this test. This file uses
- * `os.userInfo().username` (`REAL_OS_USERNAME`) for that purpose, the same
- * approach `packages/server/src/routes/__tests__/shared-accounts.test.ts`
- * already uses. Using the real current-process OS account in place of an
- * arbitrary shared-account name is upstream of, and outside, the chain
- * under test -- it changes WHICH username resolves, never what the route
- * does with a resolved username.
+ * `POST /api/shared-accounts` route in this file must therefore be a
+ * username that genuinely resolves via the real OS on whatever machine runs
+ * this test. This file uses `os.userInfo().username` (`REAL_OS_USERNAME`)
+ * for that purpose, the same approach
+ * `packages/server/src/routes/__tests__/shared-accounts.test.ts` already
+ * uses. Using the real current-process OS account in place of an arbitrary
+ * shared-account name is upstream of, and outside, the chain under test --
+ * it changes WHICH username resolves, never what the route does with a
+ * resolved username.
  *
- * Scenario (d) additionally threads the real `lookupOsUser` function
- * itself (not a hand-rolled stub) into `SharedAccountRegistry.create`'s
- * injectable `lookupOsUser` option, since the route's own internal
- * `lookupOsUser` call for `POST /import-env` isn't injectable at all and
- * must resolve the SAME username the registry resolved at construction.
+ * Scenario (d) (`importEnvSharedAccount` round-trip against
+ * `POST /api/shared-accounts/import-env`) was removed in Release 2
+ * (docs/design/shared-orchestrator-session.md): the env var is no longer a
+ * session-creation or registration source and the route no longer exists.
+ * Scenario (a)'s `registerSharedAccount` + `fetchSharedAccounts` round-trip
+ * already covers the same strict-wire-schema reach that (d) used to cover.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import * as os from 'os';
@@ -66,8 +66,6 @@ import { SqliteSharedAccountRepository } from '@agent-console/server/src/reposit
 import { SqliteUserRepository } from '@agent-console/server/src/repositories/sqlite-user-repository';
 import { SqliteRepositoryRepository } from '@agent-console/server/src/repositories/sqlite-repository-repository';
 import { RepositoryManager } from '@agent-console/server/src/services/repository-manager';
-import { SharedAccountRegistry } from '@agent-console/server/src/services/shared-account-registry';
-import { lookupOsUser } from '@agent-console/server/src/services/os-user-lookup';
 import { serverConfig } from '@agent-console/server/src/lib/server-config';
 import type { AppBindings } from '@agent-console/server/src/app-context';
 
@@ -75,7 +73,6 @@ import {
   fetchSharedAccounts,
   registerSharedAccount,
   unregisterSharedAccount,
-  importEnvSharedAccount,
   registerRepository,
   fetchRepository,
   updateRepository,
@@ -123,9 +120,9 @@ describe('Client-Server Boundary: Shared Accounts REST API', () => {
       repository: new SqliteRepositoryRepository(db),
     });
 
-    // `POST /` and `POST /import-env` also read `db` directly off the
-    // AppContext (the personal-session guard's own query), so it must be
-    // wired here too, not just the repositories built on top of it.
+    // `POST /` also reads `db` directly off the AppContext (the
+    // personal-session guard's own query), so it must be wired here too,
+    // not just the repositories built on top of it.
     app = await createTestApp({ db, sharedAccountRepository, userRepository, repositoryManager });
     bridge = createFetchBridge(app);
   });
@@ -219,40 +216,5 @@ describe('Client-Server Boundary: Shared Accounts REST API', () => {
 
     const listAfterUnregister = await fetchSharedAccounts();
     expect(listAfterUnregister.accounts).toHaveLength(0);
-  });
-
-  it('(d) importEnvSharedAccount imports on first call and is idempotent on the second', async () => {
-    // Exercises the registry's real, injectable `lookupOsUser` seam with the
-    // REAL production function (not a stub) -- see this file's header
-    // "Scenario (d)" note: the route's own internal `lookupOsUser` call for
-    // `POST /import-env` isn't injectable, so both calls must resolve the
-    // SAME real OS username.
-    const sharedAccountRegistry = await SharedAccountRegistry.create({
-      username: REAL_OS_USERNAME,
-      userRepository,
-      lookupOsUser,
-    });
-
-    bridge.restore();
-    app = await createTestApp({
-      db: getDatabase(),
-      sharedAccountRepository,
-      userRepository,
-      repositoryManager,
-      sharedAccountRegistry,
-    });
-    bridge = createFetchBridge(app);
-
-    const first = await importEnvSharedAccount();
-    const importRequest = findRequest(bridge.capturedRequests, 'POST', '/api/shared-accounts/import-env');
-    expect(importRequest).toBeDefined();
-    expect(first.imported).toBe(true);
-
-    const second = await importEnvSharedAccount();
-    expect(second.imported).toBe(false);
-
-    const list = await fetchSharedAccounts();
-    expect(list.accounts).toHaveLength(1);
-    expect(list.accounts[0]?.username).toBe(REAL_OS_USERNAME);
   });
 });

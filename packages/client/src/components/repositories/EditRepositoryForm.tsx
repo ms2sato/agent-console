@@ -519,7 +519,7 @@ export function EditRepositoryForm({ repository, onSuccess, onCancel }: EditRepo
                 )}
               </select>
               <p className="text-xs text-gray-500 mt-1">
-                Saves which shared account this repository should use. This selection does not yet change which account sessions run under — that takes effect in a future release.
+                Shared sessions created in this repository run as this account.
               </p>
             </FormField>
           )}

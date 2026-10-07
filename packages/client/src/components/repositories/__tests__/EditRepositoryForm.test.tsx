@@ -35,8 +35,8 @@ function createAgentsResponse() {
 function createSharedAccountsResponse() {
   return createMockResponse({
     accounts: [
-      { username: 'shared-bot', registeredAt: '2024-01-01T00:00:00Z', boundRepositoryCount: 0, sessionCount: 0 },
-      { username: 'ci-runner', registeredAt: '2024-01-01T00:00:00Z', boundRepositoryCount: 1, sessionCount: 0 },
+      { username: 'shared-bot', registeredAt: '2024-01-01T00:00:00Z', boundRepositoryCount: 0, sessionCount: 0, resolvable: true },
+      { username: 'ci-runner', registeredAt: '2024-01-01T00:00:00Z', boundRepositoryCount: 1, sessionCount: 0, resolvable: true },
     ],
   });
 }
@@ -1017,6 +1017,24 @@ describe('EditRepositoryForm', () => {
 
       const requestBody = getRepositoryUpdateRequestBody();
       expect(requestBody.sharedAccountUsername).toBeNull();
+    });
+
+    it('describes the live Release 2 behaviour in the help text (Issue #1842 item 7a)', async () => {
+      setAuthMode('multi-user');
+      setupMockFetch(createMockResponse({}));
+
+      const repository = createTestRepository({ sharedAccountUsername: 'ci-runner' });
+      renderEditRepositoryForm({ repository });
+
+      await waitFor(() => {
+        expect(
+          screen.getByText('Shared sessions created in this repository run as this account.'),
+        ).toBeTruthy();
+      });
+      // The stale Release 1 wording ("does not yet change which account...")
+      // must not reappear now that binding actually governs session
+      // creation.
+      expect(screen.queryByText(/does not yet change which account/)).toBeNull();
     });
   });
 });

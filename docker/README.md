@@ -179,24 +179,9 @@ docker compose -f docker/docker-compose.verification.yml up --build -d
    prints `bob` — never the `agentconsole` service user.
 6. File upload creates the upload dir with mode `2750` (setgid regression, #830).
 7. Worktree creation runs as the requesting user (#838).
-8. **Shared Account**: a shared session (`shared: true`) created by `alice`
-   spawns its terminal as the shared account (`shared1`), not `alice`, so the
-   PTY's `whoami` prints `shared1`; the session row's `created_by` is
-   `shared1`'s `users.id` while `initiated_by` is `alice`'s; and `bob`,
-   logged in separately, both sees the session in the app WebSocket's
-   `sessions-sync` frame and can type into its PTY. This is the
-   shared-session feature's only automated coverage.
+8. **Shared Account** (Release 2, Issue #1842 -- DB-backed registration + per-repository binding): `alice` registers `shared1` as a shared account (`POST /api/shared-accounts`) and binds the check-7 repository to it (`PATCH /api/repositories/:id`); a shared WORKTREE session created against that repository (`shared: true`) spawns its terminal as `shared1`, not `alice`, so the PTY's `whoami` prints `shared1`; the session row's `created_by` is `shared1`'s `users.id` while `initiated_by` is `alice`'s; and `bob`, logged in separately, both sees the session in the app WebSocket's `sessions-sync` frame and can type into its PTY. This is the only automated coverage of the shared-session feature in this Docker verification stack (see `packages/server/src/__tests__/shared-accounts-binding-selects-account.test.ts` and `packages/integration/src/worktree-shared-session-boundary.test.ts` for the server-side and integration-level coverage).
 
-   The negative arm is exercised the same way: running with
-   `AGENT_CONSOLE_SHARED_USERNAME=` (explicitly empty) turns the feature
-   off — the compose file uses the `${VAR-default}` no-colon form, so an
-   empty host value passes through unchanged — and check 8 then fails
-   visibly with `HTTP 400` and the server's "Shared sessions are not
-   enabled on this server." body:
-
-   ```bash
-   AGENT_CONSOLE_SHARED_USERNAME= scripts/verify-multiuser-docker.sh --no-build
-   ```
+   The negative arm asserts the Release 2 rule that actually governs quick sessions: `POST /api/sessions` with `{type:"quick", shared:true}` is unconditionally refused with `HTTP 400`, regardless of registration or binding state (a QUICK session can never be shared — only a repository-bound WORKTREE session can). `AGENT_CONSOLE_SHARED_USERNAME` no longer selects an account for any of this — its state is surfaced for two things only: a server-side startup warning telling the operator to remove it, and the `sharedAccountsEnvVarIgnored` flag on `/api/config` that drives the client's settings-page banner with the same message; the compose file still sets it (`shared1` by default) purely to exercise those two surfaces, not to drive check 8's behaviour.
 
 9. **Worker-restart branch rename uses the session's spawn user, not the
    requester** (Issue #1622): `POST /workers/:workerId/restart` with a

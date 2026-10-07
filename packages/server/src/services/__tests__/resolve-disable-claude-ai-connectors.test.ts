@@ -66,6 +66,12 @@ describe('resolveDisableClaudeAiConnectors', () => {
         throw new Error('not used in this test');
       },
       findById: async () => null,
+      getOsUidById: async () => {
+        throw new Error('not used in this test');
+      },
+      refreshOsIdentity: async () => {
+        throw new Error('not used in this test');
+      },
       getPreferences: async () => {
         throw new Error('simulated repository failure');
       },

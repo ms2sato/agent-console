@@ -50,7 +50,7 @@ describe('SqliteSharedAccountRepository', () => {
       expect(typeof accounts[0]?.createdAt).toBe('string');
     });
 
-    it('registers with createdBy null (e.g. import-env self-registration)', async () => {
+    it('registers with createdBy null (e.g. a registration whose registering user is unknown)', async () => {
       await insertUser(db, 'user-shared', 'shared-bot');
 
       await repository.register('user-shared', null);

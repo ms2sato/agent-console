@@ -22,11 +22,14 @@ export interface SharedAccountRow {
 }
 
 /**
- * Repository for the shared-account SET (Release 1 of the shared-accounts
- * design): which OS accounts an operator has registered as usable shared
- * execution identities. Storage only -- not consulted by session creation
- * or access control (see `migrateToV47`'s doc comment in
- * `packages/server/src/database/connection.ts`).
+ * Repository for the shared-account SET (introduced in Release 1 of the
+ * shared-accounts design): which OS accounts an operator has registered as
+ * usable shared execution identities. As of Release 2, this storage IS
+ * consulted at runtime -- `SharedAccountRegistry.createFromDb` builds the
+ * live registry from `list()` (see `migrateToV47`'s doc comment in
+ * `packages/server/src/database/connection.ts` and
+ * docs/design/shared-orchestrator-session.md §"Shared-Account Set and
+ * Per-Repository Binding (DB-backed)").
  */
 export interface SharedAccountRepository {
   /**

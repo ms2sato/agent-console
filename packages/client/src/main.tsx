@@ -6,7 +6,7 @@ import { routeTree } from './routeTree.gen';
 import { fetchConfig, fetchCurrentUser } from './lib/api';
 import { setHomeDir } from './lib/path';
 import { setServerPort } from './lib/server-info';
-import { setAuthMode, setCurrentUser, setSharedAccountsAvailable } from './lib/auth';
+import { setAuthMode, setCurrentUser, setSharedAccountsAvailable, setSharedAccountsEnvVarIgnored } from './lib/auth';
 import { setCapabilities } from './lib/capabilities';
 import { onPolicyViolation, disconnect as disconnectAppWs } from './lib/app-websocket';
 import { clearStoredFilterMode } from './hooks/useSessionFilter';
@@ -142,6 +142,7 @@ async function initApp() {
     const config = await fetchConfig();
     setAuthMode(config.authMode);
     setSharedAccountsAvailable(config.sharedAccountsAvailable);
+    setSharedAccountsEnvVarIgnored(config.sharedAccountsEnvVarIgnored);
     setServerPort(config.serverPort);
 
     if (config.authMode === 'multi-user') {

@@ -52,6 +52,33 @@ export class SqliteUserRepository implements UserRepository {
     };
   }
 
+  async getOsUidById(id: string): Promise<number | null | undefined> {
+    const row = await this.db
+      .selectFrom('users')
+      .where('id', '=', id)
+      .select('os_uid')
+      .executeTakeFirst();
+
+    if (!row) return undefined;
+    return row.os_uid;
+  }
+
+  async refreshOsIdentity(id: string, username: string, homeDir: string): Promise<AuthUser> {
+    const now = new Date().toISOString();
+
+    await this.db
+      .updateTable('users')
+      .set({
+        username,
+        home_dir: homeDir,
+        updated_at: now,
+      })
+      .where('id', '=', id)
+      .execute();
+
+    return { id, username, homeDir };
+  }
+
   async findById(id: string): Promise<AuthUser | null> {
     const row = await this.db
       .selectFrom('users')
