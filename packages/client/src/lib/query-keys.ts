@@ -40,6 +40,11 @@ export const embeddedAgentKeys = {
   all: () => ['embedded-agents'] as const,
 } as const;
 
+export const sharedAccountKeys = {
+  /** All shared accounts list */
+  all: () => ['shared-accounts'] as const,
+} as const;
+
 export const jobKeys = {
   /** Root key for invalidating all job queries */
   root: () => ['jobs'] as const,
