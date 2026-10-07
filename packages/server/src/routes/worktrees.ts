@@ -9,7 +9,7 @@ import { CreateWorktreeRequestSchema, PullWorktreeRequestSchema } from '@agent-c
 import type { AppBindings } from '../app-context.js';
 import { getRepositoriesDir } from '../lib/config.js';
 import { CLAUDE_CODE_AGENT_ID } from '../services/agent-manager.js';
-import { InternalError, NotFoundError, ValidationError } from '../lib/errors.js';
+import { NotFoundError, ValidationError } from '../lib/errors.js';
 import { vValidator } from '../middleware/validation.js';
 import { getCurrentBranch, isWorkingDirectoryClean, pullFastForward } from '../lib/git.js';
 import { createLogger } from '../lib/logger.js';

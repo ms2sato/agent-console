@@ -1,14 +1,19 @@
 /**
  * Tests for SharedAccountRegistry.
  *
- * The factory has three startup paths:
- *  1. username unset            → registry disabled, no upsert.
- *  2. username set + OS account → upsert into users table, cache the userId.
- *  3. username set + missing OS → factory throws (server fails fast).
+ * Release 2 (docs/design/shared-orchestrator-session.md §"Shared-Account Set
+ * and Per-Repository Binding (DB-backed)"): the registry is built from the
+ * DB-backed shared-account SET via `createFromDb`, which lists rows from a
+ * `SharedAccountRepository` and resolves each against the OS. Unlike the
+ * removed Release 1 `create()` factory, an unresolvable account never fails
+ * the whole registry build -- it is kept as a `resolvable: false` entry (one
+ * WARN, boot continues).
  *
  * Tests inject a stub `lookupOsUser` so they don't depend on a real OS
- * account. The user repository is the real SQLite implementation against an
- * in-memory database, so the tests exercise the actual upsert path.
+ * account, and a fake `SharedAccountRepository` so they don't depend on
+ * `shared_accounts` migration/table details. The user repository is the real
+ * SQLite implementation against an in-memory database, so the tests exercise
+ * the actual upsert/refresh path.
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
@@ -16,91 +21,95 @@ import type { Kysely } from 'kysely';
 import type { Database } from '../../database/schema.js';
 import { createDatabaseForTest } from '../../database/connection.js';
 import { SqliteUserRepository } from '../../repositories/sqlite-user-repository.js';
+import type { SharedAccountRepository, SharedAccountRow } from '../../repositories/shared-account-repository.js';
 import { SharedAccountRegistry, type LookupOsUserFn } from '../shared-account-registry.js';
+
+/** A fake `SharedAccountRepository` whose `list()` returns a fixed set of rows. */
+function fakeSharedAccountRepository(rows: SharedAccountRow[]): SharedAccountRepository {
+  return {
+    list: async () => rows,
+    register: async () => {},
+    unregister: async () => true,
+    countBoundRepositories: async () => 0,
+    countSessions: async () => 0,
+  };
+}
 
 describe('SharedAccountRegistry', () => {
   let db: Kysely<Database>;
+  let userRepository: SqliteUserRepository;
 
   beforeEach(async () => {
     db = await createDatabaseForTest();
+    userRepository = new SqliteUserRepository(db);
   });
 
   afterEach(async () => {
     await db.destroy();
   });
 
-  describe('disabled (username unset)', () => {
-    it('returns a registry with no accounts when username is undefined', async () => {
-      const userRepository = new SqliteUserRepository(db);
+  describe('createDisabled', () => {
+    it('returns a registry with no accounts', () => {
+      const registry = SharedAccountRegistry.createDisabled();
+
+      expect(registry.isEnabled()).toBe(false);
+      expect(registry.isSharedUserId('any-id')).toBe(false);
+      expect(registry.getEntry('any-id')).toBeUndefined();
+    });
+  });
+
+  describe('createFromDb (empty set)', () => {
+    it('returns a disabled registry when the repository lists no rows', async () => {
       const lookup: LookupOsUserFn = async () => {
-        throw new Error('lookup should not be called when username is undefined');
+        throw new Error('lookup should not be called when there are no rows');
       };
 
-      const registry = await SharedAccountRegistry.create({
-        username: undefined,
+      const registry = await SharedAccountRegistry.createFromDb({
+        sharedAccountRepository: fakeSharedAccountRepository([]),
         userRepository,
         lookupOsUser: lookup,
       });
 
       expect(registry.isEnabled()).toBe(false);
-      expect(registry.getDefaultUserId()).toBeNull();
-      expect(registry.getDefaultUsername()).toBeNull();
-    });
-
-    it('does not insert any users row when disabled', async () => {
-      const userRepository = new SqliteUserRepository(db);
-
-      await SharedAccountRegistry.create({
-        username: undefined,
-        userRepository,
-        lookupOsUser: async () => null,
-      });
-
-      const userCount = await db
-        .selectFrom('users')
-        .select(db.fn.count<number>('id').as('count'))
-        .executeTakeFirstOrThrow();
-      expect(userCount.count).toBe(0);
     });
   });
 
-  describe('enabled (username set + OS account exists)', () => {
-    it('upserts the shared account and exposes its users.id', async () => {
-      const userRepository = new SqliteUserRepository(db);
+  describe('createFromDb (OS account resolves)', () => {
+    it('refreshes the users row and exposes a resolvable entry', async () => {
+      const authUser = await userRepository.upsertByOsUid(1234, 'shared-user', '/home/shared-user');
       const lookup: LookupOsUserFn = async (username) => {
         expect(username).toBe('shared-user');
         return { uid: 1234, homeDir: '/home/shared-user' };
       };
 
-      const registry = await SharedAccountRegistry.create({
-        username: 'shared-user',
+      const registry = await SharedAccountRegistry.createFromDb({
+        sharedAccountRepository: fakeSharedAccountRepository([
+          { userId: authUser.id, username: 'shared-user', createdAt: new Date().toISOString(), createdBy: null },
+        ]),
         userRepository,
         lookupOsUser: lookup,
       });
 
       expect(registry.isEnabled()).toBe(true);
-
-      const sharedUserId = registry.getDefaultUserId();
-      expect(sharedUserId).not.toBeNull();
-      expect(registry.getDefaultUsername()).toBe('shared-user');
-
-      // Verify the row exists in DB and matches the cached id.
-      const dbUser = await userRepository.findById(sharedUserId!);
-      expect(dbUser).not.toBeNull();
-      expect(dbUser!.username).toBe('shared-user');
-      expect(dbUser!.homeDir).toBe('/home/shared-user');
-
-      // isSharedUserId discriminates correctly.
-      expect(registry.isSharedUserId(sharedUserId!)).toBe(true);
+      expect(registry.isSharedUserId(authUser.id)).toBe(true);
       expect(registry.isSharedUserId('00000000-0000-0000-0000-000000000000')).toBe(false);
+
+      const entry = registry.getEntry(authUser.id);
+      expect(entry).toEqual({ username: 'shared-user', resolvable: true });
     });
 
-    it('passes uid + homeDir from lookup to upsertByOsUid', async () => {
-      const userRepository = new SqliteUserRepository(db);
+    it('passes uid + homeDir from lookup to the users row refresh', async () => {
+      // Same os_uid as the lookup below so upsertByOsUid's ON CONFLICT hits
+      // this same row (refresh), not a newly inserted one -- the users.id
+      // referenced by the shared_accounts row must stay stable across a
+      // refresh when the OS account is unchanged.
+      const authUser = await userRepository.upsertByOsUid(9988, 'agent-console-shared', '/Users/old-home');
       const lookup: LookupOsUserFn = async () => ({ uid: 9988, homeDir: '/Users/agent-console-shared' });
 
-      await SharedAccountRegistry.create({
-        username: 'agent-console-shared',
+      await SharedAccountRegistry.createFromDb({
+        sharedAccountRepository: fakeSharedAccountRepository([
+          { userId: authUser.id, username: 'agent-console-shared', createdAt: new Date().toISOString(), createdBy: null },
+        ]),
         userRepository,
         lookupOsUser: lookup,
       });
@@ -115,41 +124,33 @@ describe('SharedAccountRegistry', () => {
     });
   });
 
-  describe('misconfigured (username set + OS account missing)', () => {
-    it('throws a clear startup error referencing the configured username', async () => {
-      const userRepository = new SqliteUserRepository(db);
+  describe('createFromDb (OS account missing)', () => {
+    it('keeps the entry (so isSharedUserId still recognizes it) marked unresolvable, and never throws', async () => {
       const lookup: LookupOsUserFn = async () => null;
 
-      await expect(
-        SharedAccountRegistry.create({
-          username: 'no-such-user',
-          userRepository,
-          lookupOsUser: lookup,
-        }),
-      ).rejects.toThrow(/no-such-user/);
+      const registry = await SharedAccountRegistry.createFromDb({
+        sharedAccountRepository: fakeSharedAccountRepository([
+          { userId: 'preexisting-user-id', username: 'no-such-user', createdAt: new Date().toISOString(), createdBy: null },
+        ]),
+        userRepository,
+        lookupOsUser: lookup,
+      });
 
-      await expect(
-        SharedAccountRegistry.create({
-          username: 'no-such-user',
-          userRepository,
-          lookupOsUser: lookup,
-        }),
-      ).rejects.toThrow(/does not resolve/);
+      expect(registry.isEnabled()).toBe(true);
+      expect(registry.isSharedUserId('preexisting-user-id')).toBe(true);
+      expect(registry.getEntry('preexisting-user-id')).toEqual({ username: 'no-such-user', resolvable: false });
     });
 
-    it('does not create a users row when the OS account is missing', async () => {
-      const userRepository = new SqliteUserRepository(db);
+    it('does not upsert a users row when the OS account is missing', async () => {
       const lookup: LookupOsUserFn = async () => null;
 
-      try {
-        await SharedAccountRegistry.create({
-          username: 'no-such-user',
-          userRepository,
-          lookupOsUser: lookup,
-        });
-      } catch {
-        // expected
-      }
+      await SharedAccountRegistry.createFromDb({
+        sharedAccountRepository: fakeSharedAccountRepository([
+          { userId: 'preexisting-user-id', username: 'no-such-user', createdAt: new Date().toISOString(), createdBy: null },
+        ]),
+        userRepository,
+        lookupOsUser: lookup,
+      });
 
       const userCount = await db
         .selectFrom('users')
@@ -159,60 +160,66 @@ describe('SharedAccountRegistry', () => {
     });
   });
 
-  describe('lookup implementation throws (OS/exec error)', () => {
-    it('wraps the error with a distinguishing message and preserves the cause', async () => {
-      const userRepository = new SqliteUserRepository(db);
+  describe('createFromDb (lookup implementation throws)', () => {
+    it('treats the entry as unresolvable rather than failing the whole registry build', async () => {
       const underlyingError = new Error('getent: command not found');
       const lookup: LookupOsUserFn = async () => {
         throw underlyingError;
       };
 
-      await expect(
-        SharedAccountRegistry.create({
-          username: 'shared-user',
-          userRepository,
-          lookupOsUser: lookup,
-        }),
-      ).rejects.toThrow(/failed unexpectedly/);
+      const registry = await SharedAccountRegistry.createFromDb({
+        sharedAccountRepository: fakeSharedAccountRepository([
+          { userId: 'preexisting-user-id', username: 'shared-user', createdAt: new Date().toISOString(), createdBy: null },
+        ]),
+        userRepository,
+        lookupOsUser: lookup,
+      });
 
-      try {
-        await SharedAccountRegistry.create({
-          username: 'shared-user',
-          userRepository,
-          lookupOsUser: lookup,
-        });
-        throw new Error('expected SharedAccountRegistry.create to reject');
-      } catch (err) {
-        expect(err).toBeInstanceOf(Error);
-        if (!(err instanceof Error)) return;
-        expect(err.message).not.toMatch(/does not resolve/);
-        expect(err.cause).toBeInstanceOf(Error);
-        if (!(err.cause instanceof Error)) return;
-        expect(err.cause.message).toBe('getent: command not found');
-      }
+      expect(registry.getEntry('preexisting-user-id')).toEqual({ username: 'shared-user', resolvable: false });
     });
 
-    it('does not create a users row when the lookup throws', async () => {
-      const userRepository = new SqliteUserRepository(db);
+    it('does not upsert a users row when the lookup throws', async () => {
       const lookup: LookupOsUserFn = async () => {
         throw new Error('getent: command not found');
       };
 
-      try {
-        await SharedAccountRegistry.create({
-          username: 'shared-user',
-          userRepository,
-          lookupOsUser: lookup,
-        });
-      } catch {
-        // expected
-      }
+      await SharedAccountRegistry.createFromDb({
+        sharedAccountRepository: fakeSharedAccountRepository([
+          { userId: 'preexisting-user-id', username: 'shared-user', createdAt: new Date().toISOString(), createdBy: null },
+        ]),
+        userRepository,
+        lookupOsUser: lookup,
+      });
 
       const userCount = await db
         .selectFrom('users')
         .select(db.fn.count<number>('id').as('count'))
         .executeTakeFirstOrThrow();
       expect(userCount.count).toBe(0);
+    });
+  });
+
+  describe('register / unregister (no server restart)', () => {
+    it('register adds an entry immediately usable by getEntry/isSharedUserId', () => {
+      const registry = SharedAccountRegistry.createDisabled();
+      expect(registry.isEnabled()).toBe(false);
+
+      registry.register({ userId: 'new-user-id', username: 'newly-registered', resolvable: true });
+
+      expect(registry.isEnabled()).toBe(true);
+      expect(registry.isSharedUserId('new-user-id')).toBe(true);
+      expect(registry.getEntry('new-user-id')).toEqual({ username: 'newly-registered', resolvable: true });
+    });
+
+    it('unregister removes an entry immediately', () => {
+      const registry = SharedAccountRegistry.createDisabled();
+      registry.register({ userId: 'new-user-id', username: 'newly-registered', resolvable: true });
+
+      registry.unregister('new-user-id');
+
+      expect(registry.isEnabled()).toBe(false);
+      expect(registry.isSharedUserId('new-user-id')).toBe(false);
+      expect(registry.getEntry('new-user-id')).toBeUndefined();
     });
   });
 });

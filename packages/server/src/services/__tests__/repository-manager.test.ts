@@ -1326,6 +1326,7 @@ describe('RepositoryManager', () => {
             : result;
         },
         listOrchestratorSessionIds: (id) => repositoryRepository.listOrchestratorSessionIds(id),
+        getSharedAccountUserId: (id) => repositoryRepository.getSharedAccountUserId(id),
       };
     }
 

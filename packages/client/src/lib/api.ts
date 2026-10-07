@@ -1436,19 +1436,9 @@ export async function markNotificationsSeen(lastSeenAt: string): Promise<Notific
 }
 
 // ===========================================================================
-// Shared Accounts API (epic #1841, Release 1)
+// Shared Accounts API (epic #1841; Release 2 retires the env-var import
+// bridge -- see docs/design/shared-orchestrator-session.md's rollout table)
 // ===========================================================================
-
-/**
- * The exact error body text the server returns from
- * `POST /api/shared-accounts/import-env` when `AGENT_CONSOLE_SHARED_USERNAME`
- * is not set (`packages/server/src/routes/shared-accounts.ts`). Exported so
- * callers of `importEnvSharedAccount` can distinguish "no env-var account
- * configured" (an expected, displayable state) from other failures by
- * comparing the thrown `ApiError`'s message, without hand-duplicating the
- * literal at each call site.
- */
-export const NO_ENV_SHARED_ACCOUNT_ERROR_MESSAGE = 'No env-var shared account is configured';
 
 /**
  * Fetch every registered shared account, with per-account bound-repository
@@ -1478,21 +1468,4 @@ export async function unregisterSharedAccount(username: string): Promise<void> {
   if (!res.ok) {
     await handleApiError(res, 'Failed to unregister shared account');
   }
-}
-
-/**
- * Import the env-var-configured shared account
- * (`AGENT_CONSOLE_SHARED_USERNAME`) into the DB-backed registry. The "no
- * env-var account configured" case is a normal HTTP 404 and goes through the
- * same `!res.ok` -> `handleApiError` path as any other failure; callers
- * distinguish it by comparing the thrown error's message against
- * `NO_ENV_SHARED_ACCOUNT_ERROR_MESSAGE` (the server's body is surfaced
- * verbatim by `handleApiError`).
- */
-export async function importEnvSharedAccount(): Promise<{ imported: boolean }> {
-  const res = await api['shared-accounts']['import-env'].$post();
-  if (!res.ok) {
-    await handleApiError(res, 'Failed to import env-var shared account');
-  }
-  return res.json() as Promise<{ imported: boolean }>;
 }

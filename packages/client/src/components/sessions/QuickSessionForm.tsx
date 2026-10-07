@@ -9,7 +9,6 @@ import {
 } from '../AgentSelector';
 import { useResolvedAgentId } from '../../hooks/useAgents';
 import { FormOverlay } from '../ui/Spinner';
-import { useAuth } from '../../lib/auth';
 import type { CreateQuickSessionRequest } from '@agent-console/shared';
 import { CreateQuickSessionRequestSchema } from '@agent-console/shared';
 
@@ -45,7 +44,6 @@ export function QuickSessionForm({
     mode: 'onBlur',
   });
 
-  const { sharedAccountsAvailable } = useAuth();
   const agentId = watch('agentId');
   const embeddedAgentId = watch('embeddedAgentId');
   // Default selection stays the terminal default agent (owner decision:
@@ -160,16 +158,6 @@ export function QuickSessionForm({
             onContextWindowTokensChange={(value) => setValue('contextWindowTokens', value)}
             contextWindowTokensError={errors.contextWindowTokens}
           />
-          {sharedAccountsAvailable && (
-            <label className="flex items-center gap-2 text-sm text-gray-400">
-              <input
-                type="checkbox"
-                {...register('shared')}
-                className="accent-indigo-600"
-              />
-              Create as shared session
-            </label>
-          )}
           {errors.root && (
             <p className="text-sm text-red-400" role="alert">{errors.root.message}</p>
           )}

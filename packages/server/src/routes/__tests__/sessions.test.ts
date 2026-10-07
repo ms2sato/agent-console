@@ -650,18 +650,22 @@ describe('Sessions API - GET /api/sessions/:id (orphaned visibility)', () => {
 // POST /api/sessions — `shared: true` flag handling
 // ===========================================================================
 //
-// Validates the route-level translation of `body.shared` into createdBy /
-// initiatedBy ownership per docs/design/shared-orchestrator-session.md
-// §"Session Creation Flow".
+// Release 2 (docs/design/shared-orchestrator-session.md §"Shared-Account Set
+// and Per-Repository Binding (DB-backed)"): a shared session is bound per
+// repository, and a quick session has no repository to bind against. So
+// `body.shared === true` on POST /api/sessions is ALWAYS rejected, regardless
+// of whether the shared-account set is empty, non-empty, or fully
+// resolvable -- unlike the removed Release 1 behavior where an enabled
+// registry allowed quick-session sharing.
 //
 // Boundary cases (per .claude/rules/design-principles.md "Specify boundary
 // values"):
-//   - `shared` field absent → personal session (createdBy = authUser, initiatedBy undefined).
-//   - `shared: false`       → personal session (same as absent).
-//   - `shared: true` + disabled registry → 400 ValidationError.
-//   - `shared: true` + enabled registry  → shared session (createdBy = shared,
-//                                          initiatedBy = authUser).
-//   - `shared: 'string'`    → 400 from schema validation.
+//   - `shared` field absent              → personal session (createdBy = authUser, initiatedBy undefined).
+//   - `shared: false`                    → personal session (same as absent).
+//   - `shared: true` + empty account set → 400 ValidationError (unconditional).
+//   - `shared: true` + non-empty, resolvable account set → 400 ValidationError
+//     (same rejection -- proves the rejection does not depend on registry state).
+//   - `shared: 'string'`                 → 400 from schema validation.
 describe('Sessions API - POST /api/sessions (shared sessions)', () => {
   let app: Hono<AppBindings>;
   let sessionManager: SessionManager;
@@ -705,8 +709,14 @@ describe('Sessions API - POST /api/sessions (shared sessions)', () => {
       .execute();
 
     if (opts.sharedEnabled) {
-      sharedAccountRegistry = await SharedAccountRegistry.create({
-        username: 'shared-user',
+      sharedAccountRegistry = await SharedAccountRegistry.createFromDb({
+        sharedAccountRepository: {
+          list: async () => [{ userId: 'shared-user-id', username: 'shared-user', createdAt: '2024-01-01T00:00:00.000Z', createdBy: null }],
+          register: async () => {},
+          unregister: async () => true,
+          countBoundRepositories: async () => 0,
+          countSessions: async () => 0,
+        },
         userRepository,
         lookupOsUser: async () => ({ uid: 5050, homeDir: '/home/shared-user' }),
       });
@@ -789,7 +799,7 @@ describe('Sessions API - POST /api/sessions (shared sessions)', () => {
     expect(body.session.initiatedBy).toBeUndefined();
   });
 
-  it('shared:true + feature disabled → 400 ValidationError', async () => {
+  it('shared:true + empty account set → 400 ValidationError (unconditional rejection)', async () => {
     await setupCommon({ sharedEnabled: false });
 
     const res = await app.request('/api/sessions', {
@@ -805,14 +815,17 @@ describe('Sessions API - POST /api/sessions (shared sessions)', () => {
 
     expect(res.status).toBe(400);
     const body = (await res.json()) as { error: string };
-    expect(body.error).toContain('Shared sessions are not enabled');
+    expect(body.error).toContain('Quick sessions cannot be shared');
   });
 
-  it('shared:true + feature enabled → 201 (createdBy = shared, initiatedBy = authUser)', async () => {
+  it('shared:true + non-empty, resolvable account set → still 400 (rejection does not depend on registry state)', async () => {
     await setupCommon({ sharedEnabled: true });
 
-    const sharedUserId = sharedAccountRegistry.getDefaultUserId();
-    expect(sharedUserId).not.toBeNull();
+    // Prove the rejection is unconditional, not state-dependent: the
+    // shared-account set is non-empty and fully resolvable here, yet a quick
+    // session must still be rejected because a binding is a repository
+    // property and a quick session has no repository to bind against.
+    expect(sharedAccountRegistry.isEnabled()).toBe(true);
 
     const res = await app.request('/api/sessions', {
       method: 'POST',
@@ -825,14 +838,9 @@ describe('Sessions API - POST /api/sessions (shared sessions)', () => {
       }),
     });
 
-    expect(res.status).toBe(201);
-    const body = (await res.json()) as { session: { id: string; createdBy?: string; initiatedBy?: string } };
-    expect(body.session.createdBy).toBe(sharedUserId!);
-    expect(body.session.initiatedBy).toBe(TEST_AUTH_USER.id);
-
-    const persisted = await sessionManager.getSessionRepository().findById(body.session.id);
-    expect(persisted!.createdBy).toBe(sharedUserId!);
-    expect(persisted!.initiatedBy).toBe(TEST_AUTH_USER.id);
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toContain('Quick sessions cannot be shared');
   });
 
   it('shared:"string" → 400 from schema validation (boolean expected)', async () => {
@@ -905,8 +913,14 @@ describe('Sessions API - PUT /api/sessions/:id/memo (Issue #1569)', () => {
       .execute();
 
     if (opts.sharedEnabled) {
-      sharedAccountRegistry = await SharedAccountRegistry.create({
-        username: 'shared-user',
+      sharedAccountRegistry = await SharedAccountRegistry.createFromDb({
+        sharedAccountRepository: {
+          list: async () => [{ userId: 'shared-user-id', username: 'shared-user', createdAt: '2024-01-01T00:00:00.000Z', createdBy: null }],
+          register: async () => {},
+          unregister: async () => true,
+          countBoundRepositories: async () => 0,
+          countSessions: async () => 0,
+        },
         userRepository,
         lookupOsUser: async () => ({ uid: 5051, homeDir: '/home/shared-user' }),
       });
@@ -1091,9 +1105,9 @@ describe('Sessions API - PUT /api/sessions/:id/memo (Issue #1569)', () => {
 
   it('multi-user shared: 200 for a shared session even though authUser.id differs from the shared account id', async () => {
     await setupCommon({ sharedEnabled: true });
-    const sharedUserId = sharedAccountRegistry.getDefaultUserId();
-    expect(sharedUserId).not.toBeNull();
-    const sessionId = await createQuickSession(sharedUserId!);
+    expect(sharedAccountRegistry.isEnabled()).toBe(true);
+    const sharedUserId = 'shared-user-id';
+    const sessionId = await createQuickSession(sharedUserId);
 
     const res = await app.request(`/api/sessions/${sessionId}/memo`, {
       method: 'PUT',
@@ -1416,8 +1430,14 @@ describe('Sessions API - POST/DELETE /api/sessions/:id/orchestrator-designation 
       .execute();
 
     if (opts.sharedEnabled) {
-      sharedAccountRegistry = await SharedAccountRegistry.create({
-        username: 'shared-user',
+      sharedAccountRegistry = await SharedAccountRegistry.createFromDb({
+        sharedAccountRepository: {
+          list: async () => [{ userId: 'shared-user-id', username: 'shared-user', createdAt: '2024-01-01T00:00:00.000Z', createdBy: null }],
+          register: async () => {},
+          unregister: async () => true,
+          countBoundRepositories: async () => 0,
+          countSessions: async () => 0,
+        },
         userRepository,
         lookupOsUser: async () => ({ uid: 5052, homeDir: '/home/shared-user' }),
       });

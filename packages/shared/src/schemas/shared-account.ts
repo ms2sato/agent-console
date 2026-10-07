@@ -21,6 +21,17 @@ export const SharedAccountSummarySchema = v.strictObject({
   registeredAt: v.string(),
   boundRepositoryCount: v.number(),
   sessionCount: v.number(),
+  /**
+   * Whether this account's OS account currently resolves (read-time join
+   * against the in-memory `SharedAccountRegistry`, same check
+   * `isSharedUserId` and session-creation's binding resolution use -- see
+   * docs/design/shared-orchestrator-session.md §"Shared-Account Set and
+   * Per-Repository Binding (DB-backed)"). `false` means the account is still
+   * a registered member of the SET (existing sessions/bindings stay valid)
+   * but cannot be used to spawn a NEW shared session until the OS account is
+   * restored.
+   */
+  resolvable: v.boolean(),
 });
 
 export type SharedAccountSummary = v.InferOutput<typeof SharedAccountSummarySchema>;

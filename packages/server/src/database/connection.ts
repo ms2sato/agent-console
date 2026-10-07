@@ -2987,13 +2987,19 @@ export async function migrateToV46(database: Kysely<Database>): Promise<void> {
 }
 
 /**
- * Migration v47: shared-account storage (Release 1 of the shared-accounts
- * design). This migration ONLY adds storage -- it does not change which
- * account a shared session actually runs as. Session creation and the
- * access-control path keep reading `AGENT_CONSOLE_SHARED_USERNAME` via
- * `SharedAccountRegistry` exactly as before; nothing introduced here is
- * consulted by that path yet (see the shared-account design's Release
- * phases).
+ * Migration v47: shared-account storage (introduced in Release 1 of the
+ * shared-accounts design). At the time this migration landed it ONLY added
+ * storage -- session creation and the access-control path still read
+ * `AGENT_CONSOLE_SHARED_USERNAME` via `SharedAccountRegistry`. Release 2
+ * (docs/design/shared-orchestrator-session.md §"Shared-Account Set and
+ * Per-Repository Binding (DB-backed)") wires both tables below into the
+ * runtime: `SharedAccountRegistry.createFromDb` builds the registry from
+ * `shared_accounts` (the env var is no longer a session-creation source, see
+ * `app-context.ts`'s `resolveSharedAccountEnvVarWarnings`), and
+ * `routes/worktrees.ts`'s `shared: true` branch consults
+ * `repositories.shared_account_user_id` via
+ * `RepositoryManager.getSharedAccountUserId` before resolving the bound
+ * account through the registry.
  *
  * Two distinct concepts, one migration:
  *
@@ -3005,8 +3011,9 @@ export async function migrateToV46(database: Kysely<Database>): Promise<void> {
  *   account (`ON DELETE SET NULL` -- losing the registering user's own
  *   record should not retroactively invalidate the shared account).
  * - `repositories.shared_account_user_id`: a per-repository BINDING to one
- *   of the registered accounts above, for a future release to consult when
- *   creating that repository's shared sessions. `ON DELETE RESTRICT`: a
+ *   of the registered accounts above, consulted by `routes/worktrees.ts`'s
+ *   `shared: true` branch via `RepositoryManager.getSharedAccountUserId`
+ *   when creating that repository's shared sessions. `ON DELETE RESTRICT`: a
  *   shared account currently bound to a repository cannot be removed from
  *   `shared_accounts` out from under that binding -- the caller must unbind
  *   first.

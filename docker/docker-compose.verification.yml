@@ -21,16 +21,21 @@ services:
     image: agent-console-multiuser-verify
     container_name: agent-console-multiuser-verify
     environment:
-      # Shared Account (Issue #1619): names the OS account that shared sessions
-      # spawn their PTY as. `shared1` is created by docker/Dockerfile. The
-      # server resolves it at startup and FAILS FAST if the account is missing,
-      # so /api/config reports "sharedAccountsAvailable": true once it is up.
-      #
-      # The `${VAR-default}` (no colon) form is deliberate: it substitutes the
-      # default only when the variable is UNSET, so an explicitly EMPTY host
-      # value passes an empty string through and the server treats it as unset
-      # (shared sessions disabled). That is how the negative arm of check 8 is
-      # driven:  AGENT_CONSOLE_SHARED_USERNAME= scripts/verify-multiuser-docker.sh --no-build
+      # Shared Account (Issue #1619; Release 2, Issue #1842, retired this as
+      # a session-creation source): `shared1` is created by docker/Dockerfile
+      # and used by check 8's DB-backed registration + per-repository
+      # binding flow (register via POST /api/shared-accounts, bind via
+      # PATCH /api/repositories/:id) -- this env var plays no part in that.
+      # Since Release 2 the server only reads this var to decide whether to
+      # log a startup warning ("...is set but ignored since Release 2...");
+      # it no longer gates shared-session creation or /api/config's
+      # sharedAccountsAvailable (that now reflects the DB-backed set's size).
+      # Left non-empty by default purely to exercise that warning path on a
+      # normal run; an explicitly empty value (the `${VAR-default}` no-colon
+      # form substitutes the default only when the variable is UNSET, so an
+      # explicitly EMPTY host value passes an empty string through) just
+      # silences the warning, it does not disable anything else:
+      #   AGENT_CONSOLE_SHARED_USERNAME= scripts/verify-multiuser-docker.sh --no-build
       AGENT_CONSOLE_SHARED_USERNAME: ${AGENT_CONSOLE_SHARED_USERNAME-shared1}
     # Bind to loopback only: this stack ships intentionally known test
     # credentials and must never be reachable from the LAN. ${PORT:-8080} keeps

@@ -7,7 +7,7 @@ import {
   UpdateSessionMemoRequestSchema,
 } from '@agent-console/shared';
 import { createSessionValidationService } from '../services/session-validation-service.js';
-import { InternalError, NotFoundError, ValidationError } from '../lib/errors.js';
+import { NotFoundError, ValidationError } from '../lib/errors.js';
 import { vValidator, vQueryValidator } from '../middleware/validation.js';
 import { getOrgRepoFromPath } from '../lib/git.js';
 import { resolveSpawnUsername } from '../services/resolve-spawn-username.js';
@@ -68,7 +68,7 @@ const sessions = new Hono<AppBindings>()
       throw new ValidationError(validation.error || 'Invalid path');
     }
 
-    const { sessionManager, sharedAccountRegistry, agentDirectory } = c.get('appContext');
+    const { sessionManager, agentDirectory } = c.get('appContext');
     const authUser = c.get('authUser');
 
     // Validate the embedded agent exists before returning accepted (fail
@@ -80,31 +80,23 @@ const sessions = new Hono<AppBindings>()
       }
     }
 
-    // Determine session ownership. For shared sessions, createdBy is the
-    // shared account (PTY spawn identity) and initiatedBy is the
-    // authenticated user (audit trail). For personal sessions, createdBy is
-    // the authenticated user and initiatedBy is left undefined — they would
-    // be equal, and leaving the column null makes shared/personal sessions
-    // observable from the DB.
-    let createdBy: string;
-    let initiatedBy: string | undefined;
+    // Quick sessions can never be shared (Release 2: a shared session is
+    // bound per repository -- see docs/design/shared-orchestrator-session.md
+    // §"Shared-Account Set and Per-Repository Binding (DB-backed)" -- and a
+    // quick session has no repository to bind). This is unconditional,
+    // regardless of whether the shared-account set is empty, non-empty, or
+    // fully resolvable -- unlike POST /:id/worktrees's shared branch, there
+    // is no repository binding to consult here at all.
     if (body.shared === true) {
-      if (!sharedAccountRegistry.isEnabled()) {
-        throw new ValidationError('Shared sessions are not enabled on this server.');
-      }
-      const sharedUserId = sharedAccountRegistry.getDefaultUserId();
-      if (!sharedUserId) {
-        // isEnabled() returned true but no default — unreachable in
-        // practice; surface as 500 since it indicates server-side
-        // inconsistency, not a client input error.
-        throw new InternalError('Shared account registry is enabled but has no default user.');
-      }
-      createdBy = sharedUserId;
-      initiatedBy = authUser.id;
-    } else {
-      createdBy = authUser.id;
-      initiatedBy = undefined;
+      throw new ValidationError('Quick sessions cannot be shared; shared sessions are bound per repository');
     }
+
+    // Determine session ownership. createdBy is always the authenticated
+    // user for a quick session; initiatedBy is left undefined (they would be
+    // equal, and leaving the column null makes shared/personal sessions
+    // observable from the DB).
+    const createdBy = authUser.id;
+    const initiatedBy: string | undefined = undefined;
 
     const session = await sessionManager.createSession(body, { createdBy, initiatedBy });
 

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useState } from 'react';
 import { createFileRoute } from '@tanstack/react-router';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { SharedAccountSummary } from '@agent-console/shared';
@@ -6,8 +6,6 @@ import {
   fetchSharedAccounts,
   registerSharedAccount,
   unregisterSharedAccount,
-  importEnvSharedAccount,
-  NO_ENV_SHARED_ACCOUNT_ERROR_MESSAGE,
 } from '../../lib/api';
 import { sharedAccountKeys } from '../../lib/query-keys';
 import { PageBreadcrumb } from '../../components/PageBreadcrumb';
@@ -40,7 +38,7 @@ export function SharedAccountsPage() {
       ) : (
         <>
           <RegisterSharedAccountForm />
-          <ImportEnvAccountSection />
+          <EnvVarIgnoredBanner />
           <SharedAccountsList />
         </>
       )}
@@ -105,85 +103,28 @@ function RegisterSharedAccountForm() {
 }
 
 // ===========================================================================
-// Import env-var account
+// Env-var-ignored banner (Release 2, Issue #1842 item 6b)
 // ===========================================================================
 
-function ImportEnvAccountSection() {
-  const { sharedAccountsAvailable } = useAuth();
-  const queryClient = useQueryClient();
-  const [message, setMessage] = useState<{ kind: 'success' | 'info' | 'error'; text: string } | null>(null);
-  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+/**
+ * Warns the operator that `AGENT_CONSOLE_SHARED_USERNAME` is set on the
+ * server but no longer consulted for session creation (Release 2 -- see
+ * docs/design/shared-orchestrator-session.md's rollout table). Replaces the
+ * Release 1 "Import current env-var account" affordance, which this release
+ * removes entirely: once the registry no longer treats the env var as an
+ * account source, importing from it would be the one remaining code path
+ * that still reads the variable to pick an account.
+ */
+function EnvVarIgnoredBanner() {
+  const { sharedAccountsEnvVarIgnored } = useAuth();
 
-  useEffect(() => {
-    return () => {
-      if (timerRef.current) clearTimeout(timerRef.current);
-    };
-  }, []);
-
-  const importMutation = useMutation({
-    mutationFn: importEnvSharedAccount,
-    onMutate: () => {
-      setMessage(null);
-      if (timerRef.current) {
-        clearTimeout(timerRef.current);
-        timerRef.current = null;
-      }
-    },
-    onSuccess: (result) => {
-      if (result.imported) {
-        queryClient.invalidateQueries({ queryKey: sharedAccountKeys.all() });
-        setMessage({ kind: 'success', text: 'Imported the env-var shared account.' });
-      } else {
-        setMessage({ kind: 'info', text: 'The env-var shared account is already registered.' });
-      }
-      timerRef.current = setTimeout(() => setMessage(null), 5000);
-    },
-    onError: (err) => {
-      const text =
-        err instanceof Error && err.message === NO_ENV_SHARED_ACCOUNT_ERROR_MESSAGE
-          ? 'No env-var shared account is configured.'
-          : err instanceof Error
-            ? err.message
-            : 'Failed to import env-var shared account';
-      setMessage({ kind: 'error', text });
-      timerRef.current = setTimeout(() => setMessage(null), 5000);
-    },
-  });
-
-  // Gated on `sharedAccountsAvailable` (env-var registry presence), matching
-  // the gating already used by QuickSessionForm/CreateWorktreeForm's shared-
-  // session checkbox -- this affordance is specifically about importing THAT
-  // env-var account, not about shared accounts in general.
-  if (!sharedAccountsAvailable) {
+  if (!sharedAccountsEnvVarIgnored) {
     return null;
   }
 
   return (
-    <div className="card mb-6">
-      <h2 className="text-lg font-medium mb-2">Import Current Env-Var Account</h2>
-      <p className="text-sm text-gray-500 mb-4">
-        Register the shared account configured via AGENT_CONSOLE_SHARED_USERNAME into the DB-backed registry.
-      </p>
-      <button
-        onClick={() => importMutation.mutate()}
-        disabled={importMutation.isPending}
-        className="btn bg-slate-600 hover:bg-slate-500 text-sm"
-      >
-        {importMutation.isPending ? <Spinner size="sm" /> : 'Import current env-var account'}
-      </button>
-      {message && (
-        <p
-          className={`text-sm mt-2 ${
-            message.kind === 'error'
-              ? 'text-red-400'
-              : message.kind === 'success'
-                ? 'text-green-400'
-                : 'text-gray-400'
-          }`}
-        >
-          {message.text}
-        </p>
-      )}
+    <div className="mb-4 p-3 bg-yellow-900/30 border border-yellow-600 rounded text-yellow-200 text-sm">
+      AGENT_CONSOLE_SHARED_USERNAME is set but no longer used; register and bind accounts here, then remove it from the unit file.
     </div>
   );
 }
@@ -253,7 +194,14 @@ function SharedAccountsList() {
         return (
           <div key={account.username} className="card flex items-center justify-between gap-4">
             <div className="min-w-0">
-              <div className="text-lg font-medium">{account.username}</div>
+              <div className="text-lg font-medium flex items-center gap-2">
+                {account.username}
+                {!account.resolvable && (
+                  <span className="text-xs font-normal px-1.5 py-0.5 rounded bg-red-900/40 text-red-300">
+                    unresolvable
+                  </span>
+                )}
+              </div>
               <div className="text-sm text-gray-500">
                 {account.boundRepositoryCount} repositor{account.boundRepositoryCount === 1 ? 'y' : 'ies'} ·{' '}
                 {account.sessionCount} session{account.sessionCount === 1 ? '' : 's'}

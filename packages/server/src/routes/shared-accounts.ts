@@ -53,7 +53,7 @@ const sharedAccounts = new Hono<AppBindings>()
       throw new ValidationError('Shared accounts are not available in AUTH_MODE=none.');
     }
 
-    const { sharedAccountRepository } = c.get('appContext');
+    const { sharedAccountRepository, sharedAccountRegistry } = c.get('appContext');
     const rows = await sharedAccountRepository.list();
 
     const accounts = await Promise.all(
@@ -62,6 +62,14 @@ const sharedAccounts = new Hono<AppBindings>()
         registeredAt: row.createdAt,
         boundRepositoryCount: await sharedAccountRepository.countBoundRepositories(row.userId),
         sessionCount: await sharedAccountRepository.countSessions(row.userId),
+        // Read-time join against the in-memory registry (same check
+        // isSharedUserId/session-creation binding-resolution use), not a DB
+        // column -- see SharedAccountSummarySchema's doc comment. `getEntry`
+        // returning undefined for a row this same `list()` call just
+        // produced should be unreachable in practice (the registry is kept
+        // in sync with this table via register()/unregister()); falling
+        // back to false is a defensive default, not a modeled state.
+        resolvable: sharedAccountRegistry.getEntry(row.userId)?.resolvable ?? false,
       })),
     );
 

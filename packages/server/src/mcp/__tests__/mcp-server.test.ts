@@ -21,6 +21,7 @@ import { AgentManager } from '../../services/agent-manager.js';
 import { SqliteAgentRepository } from '../../repositories/sqlite-agent-repository.js';
 import { JsonSessionRepository } from '../../repositories/index.js';
 import { SqliteRepositoryRepository } from '../../repositories/sqlite-repository-repository.js';
+import { SqliteSharedAccountRepository } from '../../repositories/sqlite-shared-account-repository.js';
 import { SqliteWorktreeRepository } from '../../repositories/sqlite-worktree-repository.js';
 import { SqliteUserRepository } from '../../repositories/sqlite-user-repository.js';
 import { SqliteArtifactRepository } from '../../repositories/sqlite-artifact-repository.js';
@@ -3274,6 +3275,53 @@ describe('MCP Server Tools', () => {
       const childSession = sessionManager.getSession(data.sessionId);
       expect(childSession).toBeDefined();
       expect(childSession!.createdBy).toBe('parent-user-abc');
+    });
+
+    it('should inherit createdBy from parent session even when the target repository is bound to a DIFFERENT shared account (Issue #1842 item 5, inheritance wins over binding)', async () => {
+      await setupDelegateEnvironment('feat/inherit-created-by-over-binding');
+
+      // Two real, registered shared accounts: A (the parent session's
+      // owner) and B (bound to the repository). `repositories.shared_account_user_id`
+      // has a FOREIGN KEY to `shared_accounts(user_id)`, which itself FKs to
+      // `users(id)` -- both must be real rows for the binding to persist.
+      const db = getDatabase();
+      const sharedAccountRepo = new SqliteSharedAccountRepository(db);
+      const userA = await userRepository.upsertByOsUid(9301, 'shared-account-a', '/home/shared-account-a');
+      const userB = await userRepository.upsertByOsUid(9302, 'shared-account-b', '/home/shared-account-b');
+      await sharedAccountRepo.register(userA.id, null);
+      await sharedAccountRepo.register(userB.id, null);
+
+      // Bind the test repository to shared account B -- directly via the
+      // repository layer (no `SharedAccountRegistry` wiring needed:
+      // delegate_to_worktree never reads this binding at all, which is
+      // exactly the property this test pins).
+      const sqliteRepoRepo = new SqliteRepositoryRepository(db);
+      await sqliteRepoRepo.update('test-repo', { sharedAccountUserId: userB.id });
+
+      // Parent session's createdBy is shared account A -- a DIFFERENT
+      // account than the repository's binding.
+      const parentSession = await sessionManager.createSession({
+        type: 'quick',
+        locationPath: TEST_REPO_PATH,
+      }, { createdBy: userA.id });
+
+      const response = await callTool(app, mcpSessionId, 'delegate_to_worktree', {
+        repositoryId: 'test-repo',
+        prompt: 'Test createdBy inheritance wins over repository binding',
+        branch: 'feat/inherit-created-by-over-binding',
+        parentSessionId: parentSession.id,
+        parentWorkerId: firstAgentWorkerId(parentSession),
+      }, nextId++);
+
+      expect(response.result?.isError).toBeUndefined();
+      const data = parseToolResult(response) as { sessionId: string };
+
+      const childSession = sessionManager.getSession(data.sessionId);
+      expect(childSession).toBeDefined();
+      // The crux: createdBy is the PARENT's account (A), never the
+      // repository's bound account (B).
+      expect(childSession!.createdBy).toBe(userA.id);
+      expect(childSession!.createdBy).not.toBe(userB.id);
     });
 
     it(

@@ -4,6 +4,7 @@ import type { AuthUser, AuthMode } from '@agent-console/shared';
 let authMode: AuthMode = 'none';
 let currentUser: AuthUser | null = null;
 let sharedAccountsAvailable = false;
+let sharedAccountsEnvVarIgnored = false;
 
 const stateListeners = new Set<() => void>();
 
@@ -42,6 +43,15 @@ export function setSharedAccountsAvailable(value: boolean): void {
   notifyListeners();
 }
 
+export function getSharedAccountsEnvVarIgnored(): boolean {
+  return sharedAccountsEnvVarIgnored;
+}
+
+export function setSharedAccountsEnvVarIgnored(value: boolean): void {
+  sharedAccountsEnvVarIgnored = value;
+  notifyListeners();
+}
+
 /**
  * Subscribe to auth state changes (for useSyncExternalStore).
  * @returns Unsubscribe function
@@ -56,6 +66,7 @@ interface AuthState {
   currentUser: AuthUser | null;
   isMultiUser: boolean;
   sharedAccountsAvailable: boolean;
+  sharedAccountsEnvVarIgnored: boolean;
 }
 
 let cachedSnapshot: AuthState | null = null;
@@ -65,7 +76,8 @@ function getAuthSnapshot(): AuthState {
     cachedSnapshot &&
     cachedSnapshot.authMode === authMode &&
     cachedSnapshot.currentUser === currentUser &&
-    cachedSnapshot.sharedAccountsAvailable === sharedAccountsAvailable
+    cachedSnapshot.sharedAccountsAvailable === sharedAccountsAvailable &&
+    cachedSnapshot.sharedAccountsEnvVarIgnored === sharedAccountsEnvVarIgnored
   ) {
     return cachedSnapshot;
   }
@@ -74,6 +86,7 @@ function getAuthSnapshot(): AuthState {
     currentUser,
     isMultiUser: authMode === 'multi-user',
     sharedAccountsAvailable,
+    sharedAccountsEnvVarIgnored,
   };
   return cachedSnapshot;
 }
@@ -94,6 +107,7 @@ export function _reset(): void {
   authMode = 'none';
   currentUser = null;
   sharedAccountsAvailable = false;
+  sharedAccountsEnvVarIgnored = false;
   cachedSnapshot = null;
   stateListeners.clear();
 }

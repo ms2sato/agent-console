@@ -17,7 +17,6 @@ import type { Kysely } from 'kysely';
 import type { AuthUser } from '@agent-console/shared';
 import type { Database } from '../../database/schema.js';
 import { createDatabaseForTest } from '../../database/connection.js';
-import type { SharedAccountRepository } from '../../repositories/shared-account-repository.js';
 import { SqliteSharedAccountRepository } from '../../repositories/sqlite-shared-account-repository.js';
 import { SqliteUserRepository } from '../../repositories/sqlite-user-repository.js';
 import { SharedAccountRegistry } from '../../services/shared-account-registry.js';
@@ -41,31 +40,6 @@ function mockUserMode(authenticateResult: AuthUser | null): UserMode {
     spawnPty: (_request: PtySpawnRequest): PtyInstance => {
       throw new Error('spawnPty not implemented in mock');
     },
-  };
-}
-
-/**
- * DI-level stub for simulating the TOCTOU race window in
- * `POST /import-env`: `register()` first delegates to the real repository
- * (modeling the race's "winner" -- a concurrent call that actually inserts
- * the row), then throws a real-shaped SQLite unique-constraint error
- * (modeling the race's "loser" -- the request under test, which is what the
- * route handler's catch block actually observes and must map to
- * `imported: false`). This proves the response is correct even though the
- * account genuinely got registered, rather than merely proving that some
- * arbitrary thrown error gets mapped to a 200. All other methods delegate to
- * the real repository.
- */
-function withThrowingRegister(repo: SharedAccountRepository): SharedAccountRepository {
-  return {
-    list: () => repo.list(),
-    register: async (userId, createdBy) => {
-      await repo.register(userId, createdBy);
-      throw new Error('UNIQUE constraint failed: shared_accounts.user_id');
-    },
-    unregister: (userId) => repo.unregister(userId),
-    countBoundRepositories: (userId) => repo.countBoundRepositories(userId),
-    countSessions: (userId) => repo.countSessions(userId),
   };
 }
 
@@ -150,12 +124,21 @@ describe('Shared account routes', () => {
       const res = await app.request('/api/shared-accounts/anyone', { method: 'DELETE' });
       expect(res.status).toBe(400);
     });
+  });
 
-    it('POST /import-env returns 400', async () => {
-      const app = buildApp({ sharedAccountRepository, userRepository });
-      const res = await app.request('/api/shared-accounts/import-env', { method: 'POST' });
-      expect(res.status).toBe(400);
-    });
+  // =========================================================================
+  // POST /api/shared-accounts/import-env -- the route no longer exists
+  // (Release 2: the env var is no longer a session-creation or
+  // registration source -- see app-context.ts's `resolveSharedAccountEnvVarWarnings`
+  // and docs/design/shared-orchestrator-session.md). A request to this path
+  // falls through to Hono's default unmatched-route 404, in EVERY AUTH_MODE
+  // (not an AUTH_MODE=none-specific 400 as Release 1 returned).
+  // =========================================================================
+
+  it('POST /import-env: route no longer exists, falls through to Hono\'s default 404 (multi-user mode)', async () => {
+    const app = buildApp({ sharedAccountRepository, userRepository });
+    const res = await app.request('/api/shared-accounts/import-env', { method: 'POST' });
+    expect(res.status).toBe(404);
   });
 
   // =========================================================================
@@ -171,24 +154,45 @@ describe('Shared account routes', () => {
       expect(body.accounts).toEqual([]);
     });
 
-    it('lists a registered account with usage counts', async () => {
+    it('lists a registered account with usage counts; resolvable: false when the live registry has no matching (or no) entry', async () => {
       const shared = await userRepository.upsertByOsUid(70001, 'shared-bot', '/home/shared-bot');
       await sharedAccountRepository.register(shared.id, CALLER.id);
 
+      // Default buildApp registry is createDisabled() (no entries), so
+      // getEntry(shared.id) is undefined -> falls back to resolvable: false.
       const app = buildApp({ sharedAccountRepository, userRepository });
       const res = await app.request('/api/shared-accounts');
       expect(res.status).toBe(200);
 
       const body = (await res.json()) as {
-        accounts: Array<{ username: string; registeredAt: string; boundRepositoryCount: number; sessionCount: number }>;
+        accounts: Array<{ username: string; registeredAt: string; boundRepositoryCount: number; sessionCount: number; resolvable: boolean }>;
       };
       expect(body.accounts).toHaveLength(1);
       expect(body.accounts[0]).toMatchObject({
         username: 'shared-bot',
         boundRepositoryCount: 0,
         sessionCount: 0,
+        resolvable: false,
       });
       expect(typeof body.accounts[0]?.registeredAt).toBe('string');
+    });
+
+    it('reports resolvable: true when the live registry has a matching, resolvable entry', async () => {
+      const shared = await userRepository.upsertByOsUid(70005, 'shared-bot-resolvable', '/home/shared-bot-resolvable');
+      await sharedAccountRepository.register(shared.id, CALLER.id);
+
+      const sharedAccountRegistry = SharedAccountRegistry.createDisabled();
+      sharedAccountRegistry.register({ userId: shared.id, username: 'shared-bot-resolvable', resolvable: true });
+
+      const app = buildApp({ sharedAccountRepository, userRepository, sharedAccountRegistry });
+      const res = await app.request('/api/shared-accounts');
+      expect(res.status).toBe(200);
+
+      const body = (await res.json()) as {
+        accounts: Array<{ username: string; resolvable: boolean }>;
+      };
+      expect(body.accounts).toHaveLength(1);
+      expect(body.accounts[0]?.resolvable).toBe(true);
     });
   });
 
@@ -284,11 +288,17 @@ describe('Shared account routes', () => {
         })
         .execute();
 
-      // Build a registry recognizing `existing` as the env-var shared
-      // account (same real OS username, so upsertByOsUid resolves to the
-      // SAME users row via the os_uid conflict key).
-      const sharedAccountRegistry = await SharedAccountRegistry.create({
-        username: REAL_OS_USERNAME,
+      // Build a registry recognizing `existing` as an already-registered
+      // shared account (same real OS username, so upsertByOsUid's refresh
+      // resolves to the SAME users row via the os_uid conflict key).
+      const sharedAccountRegistry = await SharedAccountRegistry.createFromDb({
+        sharedAccountRepository: {
+          list: async () => [{ userId: existing.id, username: REAL_OS_USERNAME, createdAt: new Date().toISOString(), createdBy: null }],
+          register: async () => {},
+          unregister: async () => true,
+          countBoundRepositories: async () => 0,
+          countSessions: async () => 0,
+        },
         userRepository,
       });
       expect(sharedAccountRegistry.isSharedUserId(existing.id)).toBe(true);
@@ -380,147 +390,4 @@ describe('Shared account routes', () => {
     });
   });
 
-  // =========================================================================
-  // POST /api/shared-accounts/import-env
-  // =========================================================================
-
-  describe('POST /api/shared-accounts/import-env', () => {
-    it('returns 404 when no env-var shared account is configured', async () => {
-      const app = buildApp({
-        sharedAccountRepository,
-        userRepository,
-        sharedAccountRegistry: SharedAccountRegistry.createDisabled(),
-      });
-      const res = await app.request('/api/shared-accounts/import-env', { method: 'POST' });
-      expect(res.status).toBe(404);
-      const body = (await res.json()) as { error: string };
-      expect(body.error).toBe('No env-var shared account is configured');
-    });
-
-    it('imports the env-var account on first call (imported: true)', async () => {
-      const sharedAccountRegistry = await SharedAccountRegistry.create({
-        username: REAL_OS_USERNAME,
-        userRepository,
-      });
-
-      const app = buildApp({ sharedAccountRepository, userRepository, sharedAccountRegistry } as Partial<AppContext>);
-      const res = await app.request('/api/shared-accounts/import-env', { method: 'POST' });
-      expect(res.status).toBe(200);
-      const body = (await res.json()) as { imported: boolean };
-      expect(body.imported).toBe(true);
-
-      const accounts = await sharedAccountRepository.list();
-      expect(accounts).toHaveLength(1);
-      expect(accounts[0]?.username).toBe(REAL_OS_USERNAME);
-    });
-
-    it('is idempotent (imported: false on a second call)', async () => {
-      const sharedAccountRegistry = await SharedAccountRegistry.create({
-        username: REAL_OS_USERNAME,
-        userRepository,
-      });
-
-      const app = buildApp({ sharedAccountRepository, userRepository, sharedAccountRegistry } as Partial<AppContext>);
-      await app.request('/api/shared-accounts/import-env', { method: 'POST' });
-      const res = await app.request('/api/shared-accounts/import-env', { method: 'POST' });
-      expect(res.status).toBe(200);
-      const body = (await res.json()) as { imported: boolean };
-      expect(body.imported).toBe(false);
-      expect(await sharedAccountRepository.list()).toHaveLength(1);
-    });
-
-    it('records the authenticated caller as created_by, not the env-var account itself', async () => {
-      const sharedAccountRegistry = await SharedAccountRegistry.create({
-        username: REAL_OS_USERNAME,
-        userRepository,
-      });
-      const defaultUserId = sharedAccountRegistry.getDefaultUserId();
-      expect(defaultUserId).not.toBeNull();
-
-      const importer: AuthUser = { id: 'importer-1', username: 'importer', homeDir: '/home/importer' };
-      await db
-        .insertInto('users')
-        .values({
-          id: importer.id,
-          os_uid: null,
-          username: importer.username,
-          home_dir: importer.homeDir,
-          created_at: new Date().toISOString(),
-          updated_at: new Date().toISOString(),
-        })
-        .execute();
-
-      const app = buildApp(
-        { sharedAccountRepository, userRepository, sharedAccountRegistry } as Partial<AppContext>,
-        importer,
-      );
-      const res = await app.request('/api/shared-accounts/import-env', { method: 'POST' });
-      expect(res.status).toBe(200);
-      const body = (await res.json()) as { imported: boolean };
-      expect(body.imported).toBe(true);
-
-      const accounts = await sharedAccountRepository.list();
-      expect(accounts).toHaveLength(1);
-      expect(accounts[0]?.createdBy).toBe(importer.id);
-      expect(accounts[0]?.createdBy).not.toBe(defaultUserId);
-    });
-
-    it('returns imported: false when a concurrent import-env call wins the registration race', async () => {
-      const sharedAccountRegistry = await SharedAccountRegistry.create({
-        username: REAL_OS_USERNAME,
-        userRepository,
-      });
-      const racyRepository = withThrowingRegister(sharedAccountRepository);
-
-      const app = buildApp({
-        sharedAccountRepository: racyRepository,
-        userRepository,
-        sharedAccountRegistry,
-      } as Partial<AppContext>);
-      const res = await app.request('/api/shared-accounts/import-env', { method: 'POST' });
-      expect(res.status).toBe(200);
-      const body = (await res.json()) as { imported: boolean };
-      expect(body.imported).toBe(false);
-
-      // The simulated concurrent winner's register() call genuinely
-      // persisted the row -- the response this caller receives is correct
-      // EVEN THOUGH the account really is registered, not merely because
-      // some arbitrary thrown error got mapped to a 200.
-      const accounts = await sharedAccountRepository.list();
-      expect(accounts.find((a) => a.username === REAL_OS_USERNAME)).toBeDefined();
-    });
-
-    it('imports successfully even when the account already has initiated_by-null sessions (4a/4b guards bypassed)', async () => {
-      const sharedAccountRegistry = await SharedAccountRegistry.create({
-        username: REAL_OS_USERNAME,
-        userRepository,
-      });
-      const defaultUserId = sharedAccountRegistry.getDefaultUserId();
-      expect(defaultUserId).not.toBeNull();
-
-      await db
-        .insertInto('sessions')
-        .values({
-          id: 'session-delegated-2',
-          type: 'quick',
-          location_path: '/tmp/delegated-2',
-          created_at: new Date().toISOString(),
-          updated_at: new Date().toISOString(),
-          server_pid: null,
-          initial_prompt: null,
-          title: null,
-          repository_id: null,
-          worktree_id: null,
-          created_by: defaultUserId,
-          initiated_by: null,
-        })
-        .execute();
-
-      const app = buildApp({ sharedAccountRepository, userRepository, sharedAccountRegistry } as Partial<AppContext>);
-      const res = await app.request('/api/shared-accounts/import-env', { method: 'POST' });
-      expect(res.status).toBe(200);
-      const body = (await res.json()) as { imported: boolean };
-      expect(body.imported).toBe(true);
-    });
-  });
 });

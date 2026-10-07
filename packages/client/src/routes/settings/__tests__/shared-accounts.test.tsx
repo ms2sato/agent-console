@@ -4,7 +4,7 @@ import userEvent from '@testing-library/user-event';
 
 import { SharedAccountsPage } from '../shared-accounts';
 import { renderWithRouter } from '../../../test/renderWithRouter';
-import { setAuthMode, setSharedAccountsAvailable, _reset as resetAuth } from '../../../lib/auth';
+import { setAuthMode, setSharedAccountsEnvVarIgnored, _reset as resetAuth } from '../../../lib/auth';
 
 // Save original fetch and set up mock (fetch-level mocking per testing.md —
 // the Hono RPC client (`api`) and raw `fetch` calls both resolve to
@@ -26,8 +26,8 @@ function requestUrl(input: RequestInfo | URL): string {
 
 const defaultAccountsResponse = {
   accounts: [
-    { username: 'shared-bot', registeredAt: '2026-01-01T00:00:00Z', boundRepositoryCount: 0, sessionCount: 0 },
-    { username: 'ci-runner', registeredAt: '2026-01-02T00:00:00Z', boundRepositoryCount: 2, sessionCount: 3 },
+    { username: 'shared-bot', registeredAt: '2026-01-01T00:00:00Z', boundRepositoryCount: 0, sessionCount: 0, resolvable: true },
+    { username: 'ci-runner', registeredAt: '2026-01-02T00:00:00Z', boundRepositoryCount: 2, sessionCount: 3, resolvable: true },
   ],
 };
 
@@ -59,7 +59,7 @@ describe('SharedAccountsPage', () => {
 
       expect(screen.getByText(/only available in multi-user mode/i)).toBeTruthy();
       expect(screen.queryByText('Register Shared Account')).toBeNull();
-      expect(screen.queryByText('Import Current Env-Var Account')).toBeNull();
+      expect(screen.queryByText(/AGENT_CONSOLE_SHARED_USERNAME is set/)).toBeNull();
       expect(screen.queryByText('shared-bot')).toBeNull();
     });
   });
@@ -111,6 +111,35 @@ describe('SharedAccountsPage', () => {
       expect(inUseButton.disabled).toBe(true);
       expect(inUseButton.title).toMatch(/still bound|still has active sessions/);
     });
+
+    it('shows an "unresolvable" badge for an account whose OS user no longer resolves', async () => {
+      setAuthMode('multi-user');
+      mockFetch.mockImplementation((input: RequestInfo | URL) => {
+        const url = requestUrl(input);
+        if (url.includes('/api/shared-accounts')) {
+          return Promise.resolve(
+            jsonResponse({
+              accounts: [
+                { username: 'shared-bot', registeredAt: '2026-01-01T00:00:00Z', boundRepositoryCount: 0, sessionCount: 0, resolvable: true },
+                { username: 'gone-user', registeredAt: '2026-01-03T00:00:00Z', boundRepositoryCount: 1, sessionCount: 1, resolvable: false },
+              ],
+            }),
+          );
+        }
+        return Promise.resolve(jsonResponse({}));
+      });
+
+      await renderWithRouter(<SharedAccountsPage />);
+
+      await waitFor(() => {
+        expect(screen.getByText('gone-user')).toBeTruthy();
+      });
+
+      expect(screen.getByText('unresolvable')).toBeTruthy();
+      // The resolvable account must not also carry the badge.
+      const sharedBotRow = screen.getByText('shared-bot').closest('div');
+      expect(sharedBotRow?.textContent).not.toMatch(/unresolvable/);
+    });
   });
 
   describe('register', () => {
@@ -119,7 +148,7 @@ describe('SharedAccountsPage', () => {
       const user = userEvent.setup();
       mockFetch.mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
         const url = requestUrl(input);
-        if (url.includes('/api/shared-accounts') && init?.method === 'POST' && !url.includes('import-env')) {
+        if (url.includes('/api/shared-accounts') && init?.method === 'POST') {
           return Promise.resolve(jsonResponse({ username: 'new-bot', userId: 'user-1' }, 201));
         }
         if (url.includes('/api/shared-accounts')) {
@@ -148,7 +177,7 @@ describe('SharedAccountsPage', () => {
       const user = userEvent.setup();
       mockFetch.mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
         const url = requestUrl(input);
-        if (url.includes('/api/shared-accounts') && init?.method === 'POST' && !url.includes('import-env')) {
+        if (url.includes('/api/shared-accounts') && init?.method === 'POST') {
           return Promise.resolve(jsonResponse({ error: "'new-bot' is already registered as a shared account." }, 409));
         }
         if (url.includes('/api/shared-accounts')) {
@@ -173,87 +202,29 @@ describe('SharedAccountsPage', () => {
     });
   });
 
-  describe('import env-var account', () => {
-    it('is hidden when sharedAccountsAvailable is false', async () => {
+  describe('env-var-ignored banner (Issue #1842 item 6b, Release 2)', () => {
+    it('is hidden when sharedAccountsEnvVarIgnored is false', async () => {
       setAuthMode('multi-user');
-      setSharedAccountsAvailable(false);
+      setSharedAccountsEnvVarIgnored(false);
       await renderWithRouter(<SharedAccountsPage />);
 
       await waitFor(() => {
         expect(screen.getByText('shared-bot')).toBeTruthy();
       });
-      expect(screen.queryByText('Import Current Env-Var Account')).toBeNull();
+      expect(screen.queryByText(/AGENT_CONSOLE_SHARED_USERNAME is set/)).toBeNull();
     });
 
-    it('shows a success message when imported: true', async () => {
+    it('shows the banner with the exact AC wording when sharedAccountsEnvVarIgnored is true', async () => {
       setAuthMode('multi-user');
-      setSharedAccountsAvailable(true);
-      const user = userEvent.setup();
-      mockFetch.mockImplementation((input: RequestInfo | URL) => {
-        const url = requestUrl(input);
-        if (url.includes('/import-env')) {
-          return Promise.resolve(jsonResponse({ imported: true }));
-        }
-        if (url.includes('/api/shared-accounts')) {
-          return Promise.resolve(jsonResponse(defaultAccountsResponse));
-        }
-        return Promise.resolve(jsonResponse({}));
-      });
-
+      setSharedAccountsEnvVarIgnored(true);
       await renderWithRouter(<SharedAccountsPage />);
 
-      await user.click(screen.getByText('Import current env-var account'));
-
       await waitFor(() => {
-        expect(screen.getByText('Imported the env-var shared account.')).toBeTruthy();
-      });
-    });
-
-    it('shows an informational message when imported: false', async () => {
-      setAuthMode('multi-user');
-      setSharedAccountsAvailable(true);
-      const user = userEvent.setup();
-      mockFetch.mockImplementation((input: RequestInfo | URL) => {
-        const url = requestUrl(input);
-        if (url.includes('/import-env')) {
-          return Promise.resolve(jsonResponse({ imported: false }));
-        }
-        if (url.includes('/api/shared-accounts')) {
-          return Promise.resolve(jsonResponse(defaultAccountsResponse));
-        }
-        return Promise.resolve(jsonResponse({}));
-      });
-
-      await renderWithRouter(<SharedAccountsPage />);
-
-      await user.click(screen.getByText('Import current env-var account'));
-
-      await waitFor(() => {
-        expect(screen.getByText('The env-var shared account is already registered.')).toBeTruthy();
-      });
-    });
-
-    it('shows the "no env-var account configured" message on a 404', async () => {
-      setAuthMode('multi-user');
-      setSharedAccountsAvailable(true);
-      const user = userEvent.setup();
-      mockFetch.mockImplementation((input: RequestInfo | URL) => {
-        const url = requestUrl(input);
-        if (url.includes('/import-env')) {
-          return Promise.resolve(jsonResponse({ error: 'No env-var shared account is configured' }, 404));
-        }
-        if (url.includes('/api/shared-accounts')) {
-          return Promise.resolve(jsonResponse(defaultAccountsResponse));
-        }
-        return Promise.resolve(jsonResponse({}));
-      });
-
-      await renderWithRouter(<SharedAccountsPage />);
-
-      await user.click(screen.getByText('Import current env-var account'));
-
-      await waitFor(() => {
-        expect(screen.getByText('No env-var shared account is configured.')).toBeTruthy();
+        expect(
+          screen.getByText(
+            'AGENT_CONSOLE_SHARED_USERNAME is set but no longer used; register and bind accounts here, then remove it from the unit file.',
+          ),
+        ).toBeTruthy();
       });
     });
   });

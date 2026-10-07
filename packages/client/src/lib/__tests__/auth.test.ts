@@ -6,6 +6,8 @@ import {
   setCurrentUser,
   getSharedAccountsAvailable,
   setSharedAccountsAvailable,
+  getSharedAccountsEnvVarIgnored,
+  setSharedAccountsEnvVarIgnored,
   isMultiUserMode,
   subscribeAuth,
   _reset,
@@ -88,6 +90,32 @@ describe('auth module', () => {
     });
   });
 
+  describe('getSharedAccountsEnvVarIgnored / setSharedAccountsEnvVarIgnored', () => {
+    it('should default to false', () => {
+      expect(getSharedAccountsEnvVarIgnored()).toBe(false);
+    });
+
+    it('should return the set value', () => {
+      setSharedAccountsEnvVarIgnored(true);
+      expect(getSharedAccountsEnvVarIgnored()).toBe(true);
+    });
+
+    it('should allow toggling back to false', () => {
+      setSharedAccountsEnvVarIgnored(true);
+      setSharedAccountsEnvVarIgnored(false);
+      expect(getSharedAccountsEnvVarIgnored()).toBe(false);
+    });
+
+    it('should notify listeners when changed', () => {
+      const listener = mock(() => {});
+      subscribeAuth(listener);
+
+      setSharedAccountsEnvVarIgnored(true);
+
+      expect(listener).toHaveBeenCalledTimes(1);
+    });
+  });
+
   describe('subscribeAuth', () => {
     it('should notify listener when setAuthMode is called', () => {
       const listener = mock(() => {});
@@ -124,12 +152,14 @@ describe('auth module', () => {
       setAuthMode('multi-user');
       setCurrentUser({ id: 'user-1', username: 'alice', homeDir: '/home/alice' });
       setSharedAccountsAvailable(true);
+      setSharedAccountsEnvVarIgnored(true);
 
       _reset();
 
       expect(getAuthMode()).toBe('none');
       expect(getCurrentUser()).toBeNull();
       expect(getSharedAccountsAvailable()).toBe(false);
+      expect(getSharedAccountsEnvVarIgnored()).toBe(false);
     });
   });
 });

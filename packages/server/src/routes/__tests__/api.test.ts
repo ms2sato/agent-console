@@ -138,7 +138,8 @@ describe('GET /api/config — sharedAccountsAvailable', () => {
 
   it('returns sharedAccountsAvailable: true when the registry is enabled', async () => {
     // Construct an enabled registry by stubbing the OS lookup + user repository
-    // so create() returns an instance with a configured shared account.
+    // + a one-row SharedAccountRepository, so createFromDb() returns an
+    // instance with a configured shared account.
     const fakeUserRepository = {
       upsertByOsUid: async () => ({
         id: 'shared-user-uuid',
@@ -149,8 +150,14 @@ describe('GET /api/config — sharedAccountsAvailable', () => {
       getPreferences: async () => null,
       setPreferences: async () => true,
     } satisfies UserRepository;
-    const enabledRegistry = await SharedAccountRegistry.create({
-      username: 'sharedusr',
+    const enabledRegistry = await SharedAccountRegistry.createFromDb({
+      sharedAccountRepository: {
+        list: async () => [{ userId: 'shared-user-uuid', username: 'sharedusr', createdAt: new Date().toISOString(), createdBy: null }],
+        register: async () => {},
+        unregister: async () => true,
+        countBoundRepositories: async () => 0,
+        countSessions: async () => 0,
+      },
       userRepository: fakeUserRepository,
       lookupOsUser: async () => ({ uid: 9999, homeDir: '/home/sharedusr' }),
     });

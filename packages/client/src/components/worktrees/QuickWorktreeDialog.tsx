@@ -94,6 +94,7 @@ export function QuickWorktreeDialog({
   const isLoading = repositoriesQuery.isLoading || repositoryQuery.isLoading || branchesQuery.isLoading;
   const defaultBranch = branchesQuery.data?.defaultBranch ?? 'main';
   const defaultAgentId = repositoryQuery.data?.repository.defaultAgentId;
+  const sharedAccountUsername = repositoryQuery.data?.repository.sharedAccountUsername;
 
   const handleSubmit = async (...args: Parameters<typeof handleCreateWorktree>) => {
     try {
@@ -171,6 +172,7 @@ export function QuickWorktreeDialog({
               repositoryId={effectiveRepoId}
               defaultBranch={defaultBranch}
               defaultAgentId={defaultAgentId}
+              sharedAccountUsername={sharedAccountUsername}
               onSubmit={handleSubmit}
               onCancel={() => handleOpenChange(false)}
               draftKey={`worktree-draft:${effectiveRepoId}`}
