@@ -67,7 +67,12 @@ describe('assembleSystemPrompt', () => {
   // Issue #1856: the wait-by-ending-the-turn rule is an unconditional preamble
   // entry on both engines, placed after the identity/omission entry and before
   // the sandboxed-preview entry.
-  // MEASURED POLARITY: (to be filled by orchestrator)
+  // MEASURED POLARITY (run, not predicted; 2026-10-08, system-prompt.test.ts +
+  // main.test.ts together):
+  //   m1  delete the `lines.push(WAIT_BY_ENDING_TURN_PREAMBLE)` in buildPreamble
+  //       -> 4 fail: (a), (b), (c) below and main.test.ts's SDK hand-off pin.
+  //   m2  keep the push but move it after the sandboxed-preview entry
+  //       -> 1 fail: (c) only; (a)/(b) and the hand-off pin still pass.
   it('renders WAIT_BY_ENDING_TURN_PREAMBLE in assembleSystemPrompt output', () => {
     expect(assembleSystemPrompt({ context, instructions: emptyInstructions })).toContain(WAIT_BY_ENDING_TURN_PREAMBLE);
   });
