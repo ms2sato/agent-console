@@ -4383,6 +4383,169 @@ describe('SessionManager', () => {
       // it afterward.
     });
 
+    it('wires EmbeddedAgentWorkerService.deliverWorkerNotification to tell a delegating parent when a child worker is interrupted mid-turn', async () => {
+      // The real shipping path for EmbeddedAgentWorkerService's
+      // `deliverWorkerNotification` dep is an interrupted turn: a child
+      // worker that is mid-turn dies unexpectedly, and the session it was
+      // delegated from (session.parentSessionId/parentWorkerId) gets told
+      // via the SAME SessionManager.deliverWorkerNotification facade the
+      // sibling test above exercises for onSessionUpdated. Driven through
+      // the real shipping path (activate child -> sendEmbeddedAgentUserMessage
+      // -> simulate a non-zero exit with no prior deactivate -> handleExit's
+      // Site 1 -> notifyParentOfInterruptedTurn -> deps.deliverWorkerNotification
+      // -> SessionManager.deliverWorkerNotification's embedded-agent branch,
+      // which activates the dormant parent worker on delivery, R4) rather
+      // than calling the private notifyParentOfInterruptedTurn directly.
+      const STUB_DEF = {
+        id: 'stub-def-interrupt',
+        name: 'Stub Model',
+        engine: 'openai-api' as const,
+        isBuiltIn: false,
+        provider: { baseUrl: 'http://localhost:11434/v1', model: 'qwen3:32b' },
+        createdBy: 'test-user-id',
+        createdAt: '2024-01-01T00:00:00.000Z',
+        updatedAt: '2024-01-01T00:00:00.000Z',
+      };
+
+      function makeFakeSubprocess(pid: number) {
+        let stdoutCtrl!: ReadableStreamDefaultController<Uint8Array>;
+        let stderrCtrl!: ReadableStreamDefaultController<Uint8Array>;
+        const stdout = new ReadableStream<Uint8Array>({ start(c) { stdoutCtrl = c; } });
+        const stderr = new ReadableStream<Uint8Array>({ start(c) { stderrCtrl = c; } });
+        let resolveExited!: (code: number) => void;
+        const exited = new Promise<number>((resolve) => { resolveExited = resolve; });
+        let exitSimulated = false;
+        const simulateExit = (code: number) => {
+          if (exitSimulated) return;
+          exitSimulated = true;
+          resolveExited(code);
+          stdoutCtrl.close();
+          stderrCtrl.close();
+        };
+        const stdin: FakeFileSink = { write: () => 0, end: () => 0, flush: () => 0 };
+        const subprocess: FakeSubprocess = { pid, exited, stdin, stdout, stderr, kill: () => {} };
+        return { subprocess, stdin, simulateExit };
+      }
+
+      // Mints a fresh fake subprocess per spawn call (same pattern as the
+      // "embedded-agent workers (Issue #1519)" describe block's
+      // createManagerWithFakeSpawn): the child worker's own activation is
+      // spawn #1, and the dormant parent worker's activate-on-delivery (R4)
+      // is spawn #2 -- both need independently controllable handles.
+      const spawned: Array<ReturnType<typeof makeFakeSubprocess>> = [];
+      const fakeSpawnAsUserFn = mock(() => {
+        const next = makeFakeSubprocess(9000 + spawned.length);
+        spawned.push(next);
+        return toSpawnAsUserResult({ subprocess: next.subprocess, stdin: next.stdin });
+      });
+
+      const module = await import(`../session-manager.js?v=${++importCounter}`);
+      const manager = await module.SessionManager.create({
+        userMode: new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' }),
+        pathExists: mockPathExists,
+        jobQueue: testJobQueue,
+        agentManager,
+        mcpTokenRegistry: new McpTokenRegistry(),
+        embeddedAgentManager: { getEmbeddedAgent: (id: string) => (id === STUB_DEF.id ? STUB_DEF : undefined) },
+        repositoryLookup: defaultRepositoryLookup,
+        repositoryEnvLookup: defaultRepositoryEnvLookup,
+        spawnAsUserFn: fakeSpawnAsUserFn,
+      });
+
+      // Parent session: an embedded-agent worker left DORMANT -- R4 means
+      // the delivery seam activates it on delivery, so it does not need to
+      // be pre-activated for this test.
+      const parentSession = await manager.createSession(
+        { type: 'quick', locationPath: '/test/parent', embeddedAgentId: STUB_DEF.id },
+        { createdBy: 'test-user-id' },
+      );
+      const parentWorker = parentSession.workers.find((w: Worker) => w.type === 'embedded-agent');
+      expect(parentWorker).not.toBeUndefined();
+
+      // Child session delegated from the parent worker above.
+      const childSession = await manager.createSession(
+        {
+          type: 'quick',
+          locationPath: '/test/child',
+          embeddedAgentId: STUB_DEF.id,
+          parentSessionId: parentSession.id,
+          parentWorkerId: parentWorker!.id,
+        },
+        { createdBy: 'test-user-id' },
+      );
+      const childWorker = childSession.workers.find((w: Worker) => w.type === 'embedded-agent');
+      expect(childWorker).not.toBeUndefined();
+
+      await manager.activateEmbeddedAgentWorker(childSession.id, childWorker!.id);
+      expect(fakeSpawnAsUserFn).toHaveBeenCalledTimes(1);
+      const child = spawned[0];
+
+      // Put the child mid-turn: deliverUserTurn's admission section sets
+      // `runtime.turnActive = true` synchronously, and it is never cleared
+      // because no `state: 'idle'` (or any stdout at all) is ever simulated.
+      const sendResult = await manager.sendEmbeddedAgentUserMessage(
+        childSession.id,
+        childWorker!.id,
+        'do something that will never finish',
+      );
+      expect(sendResult.ok).toBe(true);
+
+      // The child's subprocess dies mid-turn WITHOUT a prior
+      // deactivateEmbeddedAgentWorker call, so handleExit's `reason` is
+      // 'unexpected' (not 'managed'), and the mid-turn-exit notification
+      // branch (Site 1) fires.
+      child.simulateExit(1);
+
+      // The notification travels through several awaits (session persist,
+      // notifyParentOfInterruptedTurn, deliverWorkerNotification,
+      // sendEmbeddedAgentSystemNotification's activate-on-delivery) after
+      // the synchronous simulateExit call above, so poll for it to land.
+      const start = Date.now();
+      let parentHistoryData: string | null = null;
+      for (;;) {
+        const history = await manager.getWorkerOutputHistory(parentSession.id, parentWorker!.id, 0);
+        if (history !== null && (history.data as string).includes('internal-worker-interrupted')) {
+          parentHistoryData = history.data as string;
+          break;
+        }
+        if (Date.now() - start > 1000) {
+          throw new Error(
+            'Timed out waiting for the interrupted-turn notification to reach the parent worker output',
+          );
+        }
+        await new Promise((r) => setTimeout(r, 2));
+      }
+
+      const userMessageLine = parentHistoryData
+        .split('\n')
+        .filter((line: string) => line.length > 0)
+        .map((line: string) => JSON.parse(line) as { type: string; text?: string; notification?: { kind: string } })
+        .find((event) => event.notification?.kind === 'internal-worker-interrupted');
+      expect(userMessageLine).toBeDefined();
+      expect(userMessageLine!.type).toBe('user-message');
+
+      // Confirms the parent worker really was activated on delivery (R4),
+      // and gives us the handle needed to tear it down below.
+      expect(fakeSpawnAsUserFn).toHaveBeenCalledTimes(2);
+      const parent = spawned[1];
+
+      // Teardown: deactivate the parent (activated via R4 above); the child
+      // already exited.
+      const deactivatePromise = manager.deactivateEmbeddedAgentWorker(parentSession.id, parentWorker!.id);
+      parent.simulateExit(0);
+      await deactivatePromise;
+
+      // Polarity measured: temporarily commenting out session-manager.ts's
+      // `deliverWorkerNotification: (s, w, p) => this.deliverWorkerNotification(s, w, p),`
+      // wiring line (leaving EmbeddedAgentWorkerService's `deps.deliverWorkerNotification`
+      // undefined at runtime) made the `userMessageLine` assertion above time
+      // out -- `notifyParentOfInterruptedTurn`'s own try/catch swallows the
+      // resulting `TypeError: this.deps.deliverWorkerNotification is not a
+      // function`, logs a warning, and returns, so the parent worker was
+      // never activated a second time and never received anything. Confirmed
+      // by running the mutation and reverting it afterward.
+    });
+
     it('should not call onSessionUpdated if session does not exist', async () => {
       const manager = await getSessionManager();
 
