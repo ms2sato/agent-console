@@ -76,6 +76,40 @@
  * terminal worker's PTY never activated within its 30s deadline -- see the
  * PR body for the recorded exit).
  *
+ * Reach record for the "PTY owner is not the server process's own user"
+ * assertions (Issue #1848; measured 2026-10-08 in the tier-2 verification
+ * container, nothing from the measurement is committed). The mutation, as
+ * text: after the auth bypass, replace the `MultiUserMode` instance's
+ * `spawnPty` with one that delegates to a `SingleUserMode` built on the same
+ * `bunPtyProvider`, so that everything upstream (routes, binding resolution,
+ * `created_by`, `resolveSpawnUsername`, the terminal-worker add) runs
+ * unchanged and the ONLY thing that moves is who the PTY runs as. Two
+ * recorded proxies, both upstream of and outside the identity chain (the
+ * leaf owner is the PTY process's uid, which neither can change): (1) the
+ * mutated `spawnPty` substitutes `cwd` with `os.tmpdir()`, because the
+ * worktree cwd is unenterable for the server user (the reason the earlier
+ * `SingleUserMode` removal died with an activation timeout instead of
+ * reaching the owner check); (2) the mutated run's `docker compose exec`
+ * passes `--env SHELL=/bin/sh`, because the unelevated terminal spawn is
+ * `sh -c 'exec $SHELL -l'` (user-mode.ts) and the container's server
+ * account has an empty `SHELL` and a nologin passwd shell, so the PTY
+ * exits 1 within ~30ms. Two independent environment facts (cwd, shell), not
+ * one, stood between the old mutation and the owner check. `SHELL` cannot
+ * reach the elevated arm: elevation-args.ts lists it in the PROTECTED set
+ * stripped from the exports crossing the privilege boundary, and the
+ * elevated shell's own login init sets it from the target's passwd entry;
+ * env-filter.ts carries it into the direct spawn, which is why the proxy
+ * works. The unmodified control was re-run under the same `--env` so the two
+ * runs differ in the `spawnPty` patch only. Result: the PTY activated (the
+ * "activated a PTY" assertions stayed OK), both leaf owners resolved to
+ * the server user, and the "PTY owner is not the server process's own user"
+ * assertions FAILED with `got <server user>` for R1 and R2 (exit 1; the
+ * account-equality and DIFFERENT-accounts assertions also failed, expected
+ * and uninformative). So the smoke catches a shared session that quietly ran
+ * as the server account instead of the bound one, not just one that failed
+ * to start. A run where the PTY does not activate or an owner is unresolved
+ * is INCONCLUSIVE for this question, never a measurement of those assertions.
+ *
  * Why the PTY-identity assertion does NOT read `pty.pid`'s own owner
  * directly: `MultiUserMode.spawnPty` spawns `sudo -u <user> ... -i sh -c
  * '<sentinel>; exec $SHELL'` as the PTY process. Depending on the sudo
