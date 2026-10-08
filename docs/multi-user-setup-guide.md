@@ -1500,14 +1500,16 @@ that person can do on GitHub.
 - **gh (Issues / PRs)**: a **fine-grained personal access token** limited
   to the bound repository (or repositories) with only the permissions the
   agent needs (typically Contents, Issues, Pull requests). Owned by a
-  dedicated machine user when one exists; store it with `gh auth login
-  --with-token` as the shared account.
+  dedicated machine user when one exists; export it as `GH_TOKEN` from the
+  shared account's `~/.profile` (the GitHub CLI's documented path for
+  fine-grained tokens).
 - **Verify the boundary**, as the shared account: `git ls-remote` on the
   bound repository succeeds, and a write against a repository outside the
-  scope (for example `gh api -X POST repos/<other-owner>/<other-repo>/issues
-  -f title=probe`) is refused (403, or 404 when that repository is private
-and invisible to the token). Read access to public repositories is
-  not a scope leak — test a write.
+  scope is refused — use a disposable repository you control (for example
+  `gh api -X POST repos/<you>/<disposable-repo>/issues -f title=probe`, and
+  close the issue if the probe unexpectedly succeeds). Expect 403, or 404
+  when that repository is private and invisible to the token. Read access
+  to public repositories is not a scope leak — test a write.
 
 ### 4. Bind repositories to a shared account
 

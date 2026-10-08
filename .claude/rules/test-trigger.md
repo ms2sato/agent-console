@@ -158,7 +158,7 @@ PRs touching `SharedAccountRegistry` (`packages/server/src/services/shared-accou
 
 **The reach of the "PTY owner is not the server process's own user" assertion was measured on 2026-10-08** via an unelevated-spawn mutation in the tier-2 container (the `MultiUserMode` instance's `spawnPty` delegating to a `SingleUserMode`, with `cwd` and the exec's `SHELL` neutralised as recorded proxies): the PTY still activated, both owners resolved to the server user, and the assertion fires with `got <server user>`; the smoke's header comment carries the full record and nothing from the mutation is committed.
 
-**`driver has already been destroyed` during teardown is a regression, not a flake**: `jobQueue.stop()` drains in-flight jobs since Issue [#1845](https://github.com/ms2sato/agent-console/issues/1845) (10/10 tier-2 runs green after the fix). Look for a stop-timeout warning in the log; add no sleep or explicit drain to this smoke.
+**`driver has already been destroyed` during teardown is a regression only after a completed queue drain**: `jobQueue.stop()` drains in-flight jobs since Issue [#1845](https://github.com/ms2sato/agent-console/issues/1845) (10/10 tier-2 runs green after the fix). If the log contains `JobQueue stop timed out waiting for in-flight jobs`, use its `jobIds` to identify the timed-out handler first. Add no sleep or explicit drain to this smoke.
 
 ## Additional Verification: Restore-Failure Declaration (R6) Smoke
 
