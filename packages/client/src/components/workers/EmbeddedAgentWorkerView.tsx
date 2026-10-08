@@ -1129,6 +1129,7 @@ const NOTIFICATION_KIND_LABELS = {
   'internal-process': 'Process',
   'internal-conditional-wakeup': 'Conditional Wakeup',
   'internal-agent-spawn-failed': 'Agent Spawn Failed',
+  'internal-worker-interrupted': 'Worker Interrupted',
 } satisfies Record<PtyNotificationKind, string>;
 
 /** Cap (in characters) for the fallback preview derived from a notification's raw text -- see notificationPreviewText. */

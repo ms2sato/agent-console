@@ -230,6 +230,7 @@ describe('Client-Server Boundary: exited.reason survives to the client as `evict
         entryPath: '/install/embedded-agent/src/main.ts',
         getGlobalActivityCallback: () => undefined,
         getGlobalWorkerExitCallback: () => undefined,
+        deliverWorkerNotification: async () => ({ ok: true }),
         shutdownGraceMs: 200,
         sigtermTimeoutMs: 200,
         idleEvictionMs: IDLE_EVICTION_MS,

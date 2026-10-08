@@ -1750,7 +1750,18 @@ R1 closes the **detection and local signal** half, which the restore machinery p
 - **Detection** is engine-independent and reads only the persisted stream: a `user-message` with no `state: 'idle'` and no `turn-error` after it was interrupted. `exited` is deliberately excluded from that terminal set, and `turn-error` is deliberately included; **[embedded-agent-sdk-engine.md Appendix A.3](embedded-agent-sdk-engine.md#a3-server-side-events-engine-agnostic) is the single writer for the rule and for why each of those two choices is load-bearing** — do not restate the reasoning here.
 - **Signal** is a server-authored [`turn-interrupted`](../glossary.md#turn-interrupted--turn-interrupted) event appended to the stream and rendered on replay as a marker row. Server-authored because the server does not forge engine-authored events: it does not fake a `turn-error`, which would be a claim about what the model did rather than about what the server observed.
 
-**Explicitly not in scope**, and both by decision rather than omission: re-delivering the interrupted instruction (owner's decision, and #1264's ruling), and routing the signal to the delegating parent. That residue stays in [#1273](https://github.com/ms2sato/agent-console/issues/1273), which this event is the hook for — a future delivery mechanism reads it rather than re-deriving the condition.
+**Explicitly not in scope**, by decision rather than omission: re-delivering the interrupted instruction (owner's decision, and #1264's ruling). There is no resume, no auto-reactivation of the interrupted turn, and no synthesized `turn-error`/`state: idle` — the `turn-interrupted` marker stays the only stream-side artifact for the turn itself.
+
+#### Notifying the delegating parent (#1273, parent half)
+
+The local half above leaves the delegating parent (a session that used `delegate_to_worktree`/`createSession` with `parentSessionId`/`parentWorkerId`, and is waiting on a `send_session_message` reply from the interrupted worker) with no way to learn its callback will never arrive. Whenever a worker's turn is interrupted, its delegating parent now receives exactly ONE `internal-worker-interrupted` notification through the existing cross-worker-kind delivery seam (`SessionManager.deliverWorkerNotification`) — the same seam `internal-timer`/`internal-conditional-wakeup`/etc. already use.
+
+There are two sites, because a turn can be interrupted two different ways:
+
+- **Site 1 — a death the server observes directly** (`handleExit`). Whenever the exit observer finds the worker was mid-turn (`runtime.turnActive`, with `runtime.activeTurnId` naming which turn) and the exit reason is not `'evicted'` (eviction only ever fires on an idle worker, by the eviction commit-point's own re-check — stated explicitly rather than relied upon), it notifies after the `exited` row has been appended and persisted, so the parent reads a complete stream for the dying incarnation.
+- **Site 2 — a death the server never observed** (e.g. a server restart). The same activation-time replay that detects an interrupted turn for the `turn-interrupted` marker (above) also reports whether an `exited` row ever followed it (`exitObserved`). When it did, Site 1 already notified in a prior incarnation and Site 2 stays silent — the dedupe rule that keeps this a ONE-time notification per interrupted turn rather than one per restart.
+
+Delivery is best-effort and isolated: a missing `parentSessionId` is a no-op (not a delegated session), a `parentSessionId` with no `parentWorkerId` is logged and skipped (nowhere concrete to deliver to), and a delivery failure or thrown error is caught and warn-logged — the notification path can never alter `handleExit`'s cleanup or an activation's own result.
 
 ### Unobserved incarnation death: the fatal route (#1414)
 

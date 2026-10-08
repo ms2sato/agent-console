@@ -133,6 +133,22 @@ export interface InternalAgentSpawnFailedPtyNotification extends BasePtyNotifica
   intent: PtyNotificationIntent;
 }
 
+export interface InternalWorkerInterruptedPtyNotification extends BasePtyNotificationParams {
+  kind: Extract<PtyNotificationKind, 'internal-worker-interrupted'>;
+  tag: 'internal:worker-interrupted';
+  fields: {
+    sessionId: string;
+    workerId: string;
+    turnId: string;
+    cause: 'exit' | 'unobserved';
+    exitReason: string;
+    exitCode: string;
+    summary: string;
+    hint: string;
+  };
+  intent: PtyNotificationIntent;
+}
+
 export type WritePtyNotificationParams =
   | InboundEventPtyNotification
   | InternalMessagePtyNotification
@@ -141,7 +157,8 @@ export type WritePtyNotificationParams =
   | InternalReviewedPtyNotification
   | InternalProcessPtyNotification
   | InternalConditionalWakeupPtyNotification
-  | InternalAgentSpawnFailedPtyNotification;
+  | InternalAgentSpawnFailedPtyNotification
+  | InternalWorkerInterruptedPtyNotification;
 
 /**
  * Structured PTY-notification params, without the PTY-only `writeInput`

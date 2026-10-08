@@ -1,5 +1,11 @@
 import { describe, expect, it, jest, mock, setSystemTime, spyOn } from 'bun:test';
-import { formatFieldValue, writePtyNotification, buildPtyNotificationText, buildReplyInstructions } from '../pty-notification.js';
+import {
+  formatFieldValue,
+  writePtyNotification,
+  buildPtyNotificationText,
+  buildReplyInstructions,
+  extractNotificationSummary,
+} from '../pty-notification.js';
 
 describe('formatFieldValue', () => {
   it('returns simple value as-is', () => {
@@ -315,6 +321,75 @@ describe('buildPtyNotificationText', () => {
     expect(result).toContain('username=testuser');
     expect(result).toContain('exitCode=127');
     expect(result).toContain('intent=triage');
+  });
+
+  it('builds an internal-worker-interrupted notification with every field (interrupted-turn parent notification)', () => {
+    const result = buildPtyNotificationText({
+      kind: 'internal-worker-interrupted',
+      tag: 'internal:worker-interrupted',
+      fields: {
+        sessionId: 'child-session',
+        workerId: 'child-worker',
+        turnId: 'turn-1',
+        cause: 'exit',
+        exitReason: 'unexpected',
+        exitCode: '1',
+        summary: 'Embedded worker child-worker (session child-session): turn turn-1 was interrupted (exit, unexpected) and will not complete',
+        hint: 'Re-send your instruction with send_session_message, or restart the worker; do not wait for a reply to the interrupted turn',
+      },
+      intent: 'triage',
+    });
+
+    expect(result).toContain('[internal:worker-interrupted]');
+    expect(result).toContain('sessionId=child-session');
+    expect(result).toContain('workerId=child-worker');
+    expect(result).toContain('turnId=turn-1');
+    expect(result).toContain('cause=exit');
+    expect(result).toContain('exitReason=unexpected');
+    expect(result).toContain('exitCode=1');
+    expect(result).toContain(
+      'summary="Embedded worker child-worker (session child-session): turn turn-1 was interrupted (exit, unexpected) and will not complete"',
+    );
+    expect(result).toContain(
+      'hint="Re-send your instruction with send_session_message, or restart the worker; do not wait for a reply to the interrupted turn"',
+    );
+    expect(result).toContain('intent=triage');
+    expect(result).toMatch(/^\n\[internal:worker-interrupted\] timestamp=\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z /);
+  });
+});
+
+describe('extractNotificationSummary — internal-worker-interrupted', () => {
+  it('returns the summary field for an internal-worker-interrupted notification', () => {
+    const summary = extractNotificationSummary({
+      kind: 'internal-worker-interrupted',
+      tag: 'internal:worker-interrupted',
+      fields: {
+        sessionId: 'child-session',
+        workerId: 'child-worker',
+        turnId: 'turn-1',
+        cause: 'unobserved',
+        exitReason: 'server-restart',
+        exitCode: 'unknown',
+        summary: 'Embedded worker child-worker (session child-session): turn turn-1 was interrupted (unobserved, server-restart) and will not complete',
+        hint: 'Re-send your instruction with send_session_message, or restart the worker; do not wait for a reply to the interrupted turn',
+      },
+      intent: 'triage',
+    });
+
+    expect(summary).toBe(
+      'Embedded worker child-worker (session child-session): turn turn-1 was interrupted (unobserved, server-restart) and will not complete',
+    );
+  });
+
+  it('returns undefined for a kind whose fields shape carries no summary (internal-timer)', () => {
+    const summary = extractNotificationSummary({
+      kind: 'internal-timer',
+      tag: 'internal:timer',
+      fields: { timerId: 't1', action: 'fire', fireCount: '1' },
+      intent: 'inform',
+    });
+
+    expect(summary).toBeUndefined();
   });
 });
 

@@ -15,7 +15,7 @@
  * Appendix A.3.
  */
 import { describe, it, expect } from 'bun:test';
-import { findInterruptedTurnId } from '../embedded-agent-worker-service.js';
+import { findInterruptedTurnId, findInterruptedTurn } from '../embedded-agent-worker-service.js';
 
 /**
  * G1, idle kill: a completed turn, then the whole worker tree terminated
@@ -209,5 +209,42 @@ describe('findInterruptedTurnId — vacuous and adversarial inputs', () => {
 
   it('tolerates blank lines', () => {
     expect(findInterruptedTurnId('\n\n{"v":1,"type":"user-message","id":"u1","text":"hi"}\n\n')).toBe('u1');
+  });
+});
+
+/**
+ * Interrupted-turn parent notification -- exitObserved, the SEPARATE tracking pass for whether an exit was already observed:
+ * `findInterruptedTurn`'s SEPARATE `exitObserved` tracking pass over the
+ * same four real G1 fixtures above. `findInterruptedTurnId` (the thin
+ * wrapper over `findInterruptedTurn`) must keep reporting exactly the same
+ * turn ids on these fixtures -- a mechanical refactor, not a behavior
+ * change -- which the "findInterruptedTurnId — real G1 streams" describe
+ * block above already pins unmodified.
+ */
+describe('findInterruptedTurn — exitObserved, real G1 streams', () => {
+  it('reports null for an idle kill (the turn completed; no exitObserved to check)', () => {
+    expect(findInterruptedTurn(G1_IDLE_KILL)).toBeNull();
+  });
+
+  it('reports null for a turn that ended in a turn-error', () => {
+    expect(findInterruptedTurn(G1_MIDTURN_KILL_WITH_TURN_ERROR)).toBeNull();
+  });
+
+  it('reports exitObserved: true for a mid-turn kill where the harness appended `exited` after the unanswered turn', () => {
+    // G1_MIDTURN_KILL_NO_TERMINAL ends on `...assistant-delta...` then
+    // `{"type":"exited","code":137}` -- the server DID observe this exit.
+    expect(findInterruptedTurn(G1_MIDTURN_KILL_NO_TERMINAL)).toEqual({
+      turnId: '5ab99d8e-dd70-41ba-9eb5-3aea9f792a78',
+      exitObserved: true,
+    });
+  });
+
+  it('reports exitObserved: false for the wedged grandchild kill, where no `exited` row was ever written', () => {
+    // G1_GRANDCHILD_KILL_WEDGED has no `exited` row at all -- the harness
+    // never exits, so the server never observed anything.
+    expect(findInterruptedTurn(G1_GRANDCHILD_KILL_WEDGED)).toEqual({
+      turnId: '7d5603db-f39f-4bfe-865a-541d27e66877',
+      exitObserved: false,
+    });
   });
 });

@@ -451,6 +451,7 @@ export class SessionManager {
       getGlobalActivityCallback: () => this.globalActivityCallback,
       getGlobalWorkerExitCallback: () => this.globalWorkerExitCallback,
       onSessionUpdated: (session) => this.sessionLifecycleCallbacks?.onSessionUpdated?.(this.toPublicSession(session)),
+      deliverWorkerNotification: (s, w, p) => this.deliverWorkerNotification(s, w, p),
     });
 
     // Default to a never-resolves username lookup for the same reason as

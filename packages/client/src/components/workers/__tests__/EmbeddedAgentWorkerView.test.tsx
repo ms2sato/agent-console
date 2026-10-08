@@ -518,6 +518,29 @@ describe('EmbeddedAgentWorkerView', () => {
         '[internal:timer] timestamp=2026-08-18T00:00:00.000Z name=my-timer',
       );
     });
+
+    it('renders the "Worker Interrupted" label for a notification kind of internal-worker-interrupted', async () => {
+      renderView({ sessionId: 's-notif-4', workerId: 'w-notif-4' });
+      const ws = MockWebSocket.getLastInstance();
+      act(() => {
+        ws?.simulateOpen();
+      });
+
+      const data = ndjson({
+        v: 1,
+        type: 'user-message',
+        id: 'u1',
+        text:
+          '[internal:worker-interrupted] timestamp=2026-10-08T00:00:00.000Z sessionId=child-s workerId=child-w turnId=turn-1 cause=exit exitReason=unexpected exitCode=1 summary="Embedded worker child-w (session child-s): turn turn-1 was interrupted (exit, unexpected) and will not complete" hint="Re-send your instruction with send_session_message, or restart the worker; do not wait for a reply to the interrupted turn" intent=triage',
+        notification: { kind: 'internal-worker-interrupted' },
+      });
+      act(() => {
+        ws?.simulateMessage(JSON.stringify({ type: 'history', data, offset: data.length, startOffset: 0, epoch: 1 }));
+      });
+      await flush();
+
+      expect(screen.getByText('Worker Interrupted')).toBeTruthy();
+    });
   });
 
   it('renders an ACTIVATION_FAILED error with a Retry action instead of Dismiss', async () => {

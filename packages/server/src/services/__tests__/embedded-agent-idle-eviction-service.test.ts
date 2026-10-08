@@ -193,6 +193,20 @@ interface Harness {
   bufferOutput: Mock<(sessionId: string, workerId: string, data: string) => void>;
   globalExit: ReturnType<typeof mock>;
   onExit: ReturnType<typeof mock>;
+  deliverWorkerNotification: ReturnType<typeof mock>;
+}
+
+/**
+ * Test seam: `EmbeddedAgentWorkerService.runtimes` is private, in-memory
+ * only. Interrupted-turn parent notification test 4 (the `reason ===
+ * 'evicted'` exclusion) needs to force `runtime.turnActive = true` at the
+ * instant of an evicted exit -- a combination production never actually
+ * reaches (eviction's commit-point re-check only drops an idle incarnation)
+ * -- so there is no public API to arrange it. Mirrors
+ * `embedded-agent-worker-service.test.ts`'s own `getRuntimesForTest`.
+ */
+function getRuntimesForTest(service: EmbeddedAgentWorkerService) {
+  return service['runtimes'];
 }
 
 function setup(opts?: {
@@ -214,6 +228,9 @@ function setup(opts?: {
    * spawn; on for tests where the WAKE must exercise the restore/resume path.
    */
   persistAcrossIncarnations?: boolean;
+  /** Interrupted-turn parent notification test: a delegating session's parent ids, undefined by default (no parent). */
+  parentSessionId?: string;
+  parentWorkerId?: string;
 }): Harness {
   const worker = buildInternalEmbeddedAgentWorker({
     id: 'w-emb',
@@ -223,6 +240,8 @@ function setup(opts?: {
   const session = buildInternalWorktreeSession([worker], {
     createdBy: 'user-1',
     initialPrompt: opts?.initialPrompt,
+    ...(opts?.parentSessionId !== undefined ? { parentSessionId: opts.parentSessionId } : {}),
+    ...(opts?.parentWorkerId !== undefined ? { parentWorkerId: opts.parentWorkerId } : {}),
   });
   const spawn = makeSpawnFactory({ exitOnShutdown: opts?.exitOnShutdown });
 
@@ -234,6 +253,7 @@ function setup(opts?: {
   });
   const globalExit = mock(() => {});
   const onExit = mock(() => {});
+  const deliverWorkerNotification = mock(async () => ({ ok: true }) as const);
   worker.connectionCallbacks.set('conn-1', {
     onData: () => {},
     onExit,
@@ -287,6 +307,7 @@ function setup(opts?: {
     getGlobalActivityCallback: () => undefined,
     getGlobalWorkerExitCallback: () => globalExit as never,
     onSessionUpdated: (() => {}) as never,
+    deliverWorkerNotification: deliverWorkerNotification as never,
     shutdownGraceMs: opts?.shutdownGraceMs ?? 50,
     sigtermTimeoutMs: opts?.sigtermTimeoutMs ?? 50,
     idleEvictionMs: opts?.idleEvictionMs,
@@ -302,6 +323,7 @@ function setup(opts?: {
     bufferOutput,
     globalExit,
     onExit,
+    deliverWorkerNotification,
   };
 }
 
@@ -415,6 +437,46 @@ describe('idle eviction — the countdown and its commit point', () => {
     // Let the held-open eviction finish so nothing outlives the test.
     first.simulateExit(0);
     await waitFor(() => h.worker.subprocess === null, 2000);
+  });
+
+  it('interrupted-turn parent notification: an evicted exit never notifies, even if turnActive happened to be true at that instant', async () => {
+    // Production never reaches `turnActive === true` at an evicted exit --
+    // the eviction commit-point re-check only drops an idle incarnation --
+    // but `handleExit`'s `reason !== 'evicted'` guard is written to exclude
+    // this combination explicitly rather than relying on it being
+    // unreachable. Force the combination directly via the private runtime
+    // seam to test that guard on its own terms.
+    const h = setup({
+      idleEvictionMs: 25,
+      exitOnShutdown: false,
+      shutdownGraceMs: 600,
+      sigtermTimeoutMs: 600,
+      parentSessionId: 'parent-s',
+      parentWorkerId: 'parent-w',
+    });
+    await activateAndReady(h);
+
+    const first = h.spawn.incarnations[0];
+    const shutdowns = (): number =>
+      first.stdinWrites.filter((w) => w.includes('"type":"shutdown"')).length;
+    await waitFor(() => shutdowns() === 1, 2000);
+
+    // Eviction has committed (runtime.evicting === true). Force turnActive
+    // true -- the state handleExit's `wasMidTurn` guard reads -- directly on
+    // the private runtime, since there is no production path that produces
+    // this combination to drive through the public API.
+    const runtime = getRuntimesForTest(h.service).get(h.workerId);
+    if (!runtime) throw new Error('expected a runtime to exist for the evicting worker');
+    runtime.turnActive = true;
+    runtime.activeTurnId = 'forced-turn-id';
+
+    first.simulateExit(137);
+    await waitFor(() => h.worker.subprocess === null, 2000);
+
+    expect(exitedRows(h.bufferOutput)).toEqual([
+      expect.objectContaining({ type: 'exited', reason: 'evicted' }),
+    ]);
+    expect(h.deliverWorkerNotification).not.toHaveBeenCalled();
   });
 
   it('isEvicting reports true only while an eviction has committed but the subprocess has not yet exited (Issue #1519)', async () => {
