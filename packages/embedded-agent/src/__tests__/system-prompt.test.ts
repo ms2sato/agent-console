@@ -7,6 +7,7 @@ import { mkdtemp, mkdir, writeFile, rm, symlink, chmod } from 'node:fs/promises'
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
+  WAIT_BY_ENDING_TURN_PREAMBLE,
   assembleSystemPrompt,
   composeSdkSystemPromptAppend,
   loadInstructions,
@@ -63,6 +64,30 @@ async function isolatedXdgConfigHome(): Promise<string> {
 const emptyInstructions: LoadInstructionsResult = { segments: [] };
 
 describe('assembleSystemPrompt', () => {
+  // Issue #1856: the wait-by-ending-the-turn rule is an unconditional preamble
+  // entry on both engines, placed after the identity/omission entry and before
+  // the sandboxed-preview entry.
+  // MEASURED POLARITY: (to be filled by orchestrator)
+  it('renders WAIT_BY_ENDING_TURN_PREAMBLE in assembleSystemPrompt output', () => {
+    expect(assembleSystemPrompt({ context, instructions: emptyInstructions })).toContain(WAIT_BY_ENDING_TURN_PREAMBLE);
+  });
+
+  it('renders WAIT_BY_ENDING_TURN_PREAMBLE in composeSdkSystemPromptAppend output', () => {
+    expect(composeSdkSystemPromptAppend({ context, instructions: emptyInstructions })).toContain(WAIT_BY_ENDING_TURN_PREAMBLE);
+  });
+
+  it('orders WAIT_BY_ENDING_TURN_PREAMBLE after the identity/omission entry and before the sandboxed-preview entry', () => {
+    const prompt = assembleSystemPrompt({ context, instructions: emptyInstructions });
+    const identity = prompt.indexOf('may be omitted: your bearer token supplies them');
+    const wait = prompt.indexOf(WAIT_BY_ENDING_TURN_PREAMBLE);
+    const preview = prompt.indexOf('sandboxed preview');
+    expect(identity).toBeGreaterThanOrEqual(0);
+    expect(wait).toBeGreaterThanOrEqual(0);
+    expect(preview).toBeGreaterThanOrEqual(0);
+    expect(identity).toBeLessThan(wait);
+    expect(wait).toBeLessThan(preview);
+  });
+
   it('includes the context preamble with session, worker, cwd, and repository id', () => {
     const prompt = assembleSystemPrompt({ context, instructions: emptyInstructions });
     expect(prompt).toContain('embedded agent running inside agent-console');

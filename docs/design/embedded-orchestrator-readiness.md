@@ -58,6 +58,7 @@ Phase 6 is not dispatchable until every step the skill prescribes has been mappe
 
 - `deliverWorkerNotification` (`session-manager.ts:841-880`) branches on worker kind and routes embedded workers to `sendSystemNotification` (`packages/server/src/services/embedded-agent-worker-service.ts:1431-1441`): the notification becomes an ordinary user turn persisted with a `notification` marker. Timers (`app-context.ts:425`), conditional wakeups (`:470`), `send_session_message` (`mcp-server.ts:847`, `:870`) and `run_process` output (`:509-510`) all go through it.
 - **R3 mid-turn queue.** A notification arriving while a turn is active is parked (`embedded-agent-worker-service.ts:1452-1467`, cap `MAX_PENDING_NOTIFICATIONS = 32` at `:237`) and delivered ONE per `state: idle`. For the acceptance check this means: the script's next question arrives only after the model ends the turn in which it called `write_process_response` -- one turn per Q, twelve or so turns per check. A TUI worker sees the same shape (the PTY notification is a new prompt), so this is parity, not a cost, but a Phase 6 Orchestrator that keeps calling tools inside one turn will not see the next question until it stops.
+- Made permanent in the preamble on 2026-10-08, run-2 fast-follow (#1856).
 - **Activate-on-delivery.** `ensureDeliverable` (`:1659-1692`) awaits a running eviction, then `activate`s a dormant worker before delivering, so a timer tick or a session message wakes an evicted or restart-dormant Orchestrator.
 
 ### F7. Long-session behaviour: compaction and idle eviction

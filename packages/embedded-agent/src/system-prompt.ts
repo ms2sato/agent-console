@@ -272,6 +272,17 @@ export interface AssembleSystemPromptParams {
 }
 
 /**
+ * The wait-by-ending-the-turn rule (Issue #1856). A notification (process
+ * output, wakeup, timer, reply from another session) that arrives while a turn
+ * is active is parked server-side and delivered one per `state: idle`, so it
+ * can never appear inside the turn that is waiting for it; polling tools in
+ * the same turn cannot see it. Rendered unconditionally by `buildPreamble`, so
+ * both engines carry it.
+ */
+export const WAIT_BY_ENDING_TURN_PREAMBLE =
+  'Output from `run_process`, `create_conditional_wakeup`, `create_timer`, and replies from other sessions arrive as NEW turns, never inside the current one. To wait for any of them, end the turn with a one-line status. NEVER call `get_session_status` or `list_processes` to wait; polling inside a turn can never see them.';
+
+/**
  * The identity preamble: the ONE place the model is told its own Session ID /
  * Worker ID / Repository ID. Rendered first by BOTH engines
  * (`assembleSystemPrompt` for openai-api, `composeSdkSystemPromptAppend` for
@@ -299,6 +310,7 @@ function buildPreamble(context: SystemPromptContext): string {
       'token supplies them. write_memo takes YOUR session (Session ID above); get_session_status, close_session ' +
       'and toSessionId take a TARGET session.',
   );
+  lines.push(WAIT_BY_ENDING_TURN_PREAMBLE);
   lines.push(
     'HTML/SVG code blocks you write may be rendered in a sandboxed preview; keep them static only -- no <script> tags and no inline event handler attributes (onclick, onload, etc.), since these are stripped before rendering and will not run.',
   );
