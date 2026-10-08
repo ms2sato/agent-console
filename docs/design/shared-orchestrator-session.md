@@ -345,11 +345,11 @@ This open model matches the "small-team coordination hub" usage described in `do
 
 ## Configuration
 
-Shared-account sessions are **opt-in**. Deployments that do not want them leave the relevant variables unset; the feature is simply off. Deployments that do want them set the variables to the OS username(s) of the shared account(s).
+Shared-account sessions are **opt-in**. Since Release 2 they are configured in the database, not through environment variables: a deployment that wants them registers one or more shared accounts and binds each repository to one of them (see [Shared-Account Set and Per-Repository Binding](#shared-account-set-and-per-repository-binding-db-backed)). A deployment that registers none has the feature off.
 
 | Variable | Default | Semantics |
 |---|---|---|
-| `AGENT_CONSOLE_SHARED_USERNAME` | (unset) | OS username of the default shared account (single-account case). |
+| `AGENT_CONSOLE_SHARED_USERNAME` | (unset) | **Ignored since Release 2.** Before Release 2 it named the single shared account; it now only triggers the startup warnings below (and the settings page's banner) telling the operator to remove it. |
 
 Multiple shared accounts are a natural extension for larger organisations; the chosen runtime form is the DB-backed set described in [Shared-Account Set and Per-Repository Binding](#shared-account-set-and-per-repository-binding-db-backed) below, not a comma-separated env var or a config file. The single `AGENT_CONSOLE_SHARED_USERNAME` variable above was the Release 1 runtime source; it is **ignored since Release 2** (see that section's rollout table), and removal of the variable from the unit file is a separate, owner-gated deploy change — this resolves the "Multiple shared accounts" item that previously appeared under Open Questions.
 
