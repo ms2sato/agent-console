@@ -112,7 +112,9 @@ RUN chmod 0440 /etc/sudoers.d/agentconsole \
 # layout (Issue #830) is exercised in this verification environment.
 #
 # shared1 is the Shared Account (Issue #1619): a pure execution identity that
-# AGENT_CONSOLE_SHARED_USERNAME names in docker/docker-compose.verification.yml.
+# the verification checks register and bind through the DB-backed shared
+# account API. (docker/docker-compose.verification.yml still sets the retired
+# AGENT_CONSOLE_SHARED_USERNAME, but only to exercise its startup warning.)
 # Shared sessions spawn their PTY as this account while the authenticated
 # human remains the initiator -- see docs/design/shared-orchestrator-session.md.
 # It needs a real login shell (/bin/bash) because the elevation rules file
