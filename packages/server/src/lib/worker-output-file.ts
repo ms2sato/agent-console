@@ -1441,8 +1441,15 @@ export class WorkerOutputFileManager {
    * manifest is found, its CONTENT is checked for evidence that the stream
    * itself was ever written to -- `liveBaseOffset > 0` (at least one segment
    * was ever cut), a non-empty `segments` list, or a non-empty live `.log`
-   * file. An unparsable manifest degrades to the same conservative `true` as
-   * a non-ENOENT stat failure.
+   * file, or legacy compressed `.log.gz` file. An unparsable manifest
+   * degrades to the same conservative `true` as a non-ENOENT stat failure.
+   *
+   * The live-file check goes through `getActualFilePath` (not
+   * `getOutputFilePath` directly) so it also sees a worker whose stream was
+   * archived only to the legacy compressed form -- e.g. a worker that was
+   * previously a PTY worker and had its type flipped to embedded, leaving a
+   * manifest with `liveBaseOffset` 0 and no segments while the actual
+   * content lives at `<workerId>.log.gz` rather than `<workerId>.log`.
    *
    * Read-only existence check: does not join the per-worker serialization
    * domain (no interaction with pending-flush/segment-cache state).
@@ -1460,9 +1467,10 @@ export class WorkerOutputFileManager {
     if (manifest === null) return true; // Unparsable -- conservative.
     if (manifest.liveBaseOffset > 0 || manifest.segments.length > 0) return true;
 
-    const filePath = this.getOutputFilePath(sessionId, workerId, resolver);
+    const actualFile = await this.getActualFilePath(sessionId, workerId, resolver);
+    if (!actualFile) return false;
     try {
-      const stats = await fs.stat(filePath);
+      const stats = await fs.stat(actualFile.path);
       return stats.size > 0;
     } catch (error) {
       if (isErrnoException(error) && error.code === 'ENOENT') return false;

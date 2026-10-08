@@ -415,6 +415,27 @@ describe('WorkerOutputFileManager', () => {
       expect(result).toBe(true);
     });
 
+    it('returns true when only a legacy compressed .log.gz live file exists (cross-type restart onto a hibernation-era PTY stream)', async () => {
+      // A worker that was previously a PTY worker, whose output was archived
+      // to the legacy compressed form, then had its type flipped to embedded
+      // (worker-lifecycle-manager's cross-type restart) can leave a manifest
+      // with liveBaseOffset 0 and no segments, while the stream content
+      // actually lives at `<workerId>.log.gz` rather than `<workerId>.log`.
+      // getActualFilePath (.log first, falling back to .log.gz) is what
+      // getOutputFilePath alone cannot see.
+      const sessionId = 'session-legacy-compressed-only';
+      const workerId = 'worker-1';
+      const dir = `${TEST_CONFIG_DIR}/_quick/outputs/${sessionId}`;
+      vol.mkdirSync(dir, { recursive: true });
+
+      const manifest = createInitialManifest(1000);
+      await writeManifestDurable(manifestPathFor(`${TEST_CONFIG_DIR}/_quick/outputs`, sessionId, workerId), manifest);
+      vol.writeFileSync(path.join(dir, `${workerId}.log.gz`), Buffer.from('not empty'));
+
+      const result = await manager.hasEverBeenActivated(sessionId, workerId, quickResolver);
+      expect(result).toBe(true);
+    });
+
     it('returns true when the live file holds only a persisted marker line (restore-failure declaration)', async () => {
       // resetWorkerOutput's persistentMarkerLine option writes a single
       // marker line as the sole content of the fresh live file -- a
