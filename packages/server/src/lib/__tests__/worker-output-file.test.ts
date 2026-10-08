@@ -2,7 +2,9 @@ import { describe, it, expect, beforeEach, afterEach, spyOn, mock } from 'bun:te
 import * as path from 'path';
 import { setupMemfs, cleanupMemfs } from '../../__tests__/utils/mock-fs-helper.js';
 import { vol, fs as memfs } from 'memfs';
+import * as fsPromisesNamespace from 'fs/promises';
 import { WorkerOutputFileManager } from '../worker-output-file.js';
+import { createInitialManifest, writeManifestDurable, manifestPathFor } from '../worker-output-manifest.js';
 import { SessionDataPathResolver } from '../session-data-path-resolver.js';
 import { TrustedDirVerificationError } from '../trusted-dir.js';
 import { buildInternalEmbeddedAgentWorker } from '../../__tests__/utils/build-test-data.js';
@@ -341,11 +343,176 @@ describe('WorkerOutputFileManager', () => {
       expect(result).toBe(false);
     });
 
-    it('returns true when a manifest exists', async () => {
-      // initializeWorkerOutput writes the manifest sidecar (worker-1.segments.json).
+    it('returns false when a manifest exists but the stream was never written to', async () => {
+      // initializeWorkerOutput writes the manifest sidecar (worker-1.segments.json)
+      // but never writes a byte to the stream itself. The old assertion here
+      // ("returns true when a manifest exists") encoded the defect this
+      // predicate was rewritten to fix: manifest PRESENCE alone does not mean
+      // the worker was ever activated, because the manifest can be minted by
+      // a read-only path too (see the REPRO case below).
       await manager.initializeWorkerOutput('session-existing', 'worker-1', quickResolver);
 
       const result = await manager.hasEverBeenActivated('session-existing', 'worker-1', quickResolver);
+      expect(result).toBe(false);
+    });
+
+    it('REPRO: returns false after a read-only history fetch mints the manifest on a never-activated worker', async () => {
+      // readHistoryForDisplay (via loadManifestWithRecovery) lazily mints a
+      // manifest on first access when none exists yet -- a side effect of
+      // reading, not of activating. Before the predicate was keyed on stream
+      // content, this same call made hasEverBeenActivated wrongly report
+      // `true` for a worker that was never activated.
+      await manager.readHistoryForDisplay('session-read-before-activation', 'worker-1', quickResolver, 10);
+
+      const result = await manager.hasEverBeenActivated('session-read-before-activation', 'worker-1', quickResolver);
+      expect(result).toBe(false);
+    });
+
+    it('returns true once the stream has actually been written to', async () => {
+      await manager.resetWorkerOutput('session-written', 'worker-1', quickResolver);
+      manager.bufferOutput('session-written', 'worker-1', '{"type":"test"}\n', quickResolver);
+      await manager.forceFlush('session-written', 'worker-1');
+
+      const result = await manager.hasEverBeenActivated('session-written', 'worker-1', quickResolver);
+      expect(result).toBe(true);
+    });
+
+    it('returns true when the manifest records an archived segment, even with an empty live file', async () => {
+      const sessionId = 'session-segments-only';
+      const workerId = 'worker-1';
+      const dir = `${TEST_CONFIG_DIR}/_quick/outputs/${sessionId}`;
+      vol.mkdirSync(dir, { recursive: true });
+
+      const manifest = createInitialManifest(1000);
+      manifest.liveBaseOffset = 50;
+      manifest.nextSeq = 1;
+      manifest.segments.push({
+        seq: 0,
+        startOffset: 0,
+        endOffset: 50,
+        bytes: 50,
+        gzBytes: 20,
+        file: `${workerId}.seg-0.log.gz`,
+      });
+      await writeManifestDurable(manifestPathFor(`${TEST_CONFIG_DIR}/_quick/outputs`, sessionId, workerId), manifest);
+      vol.writeFileSync(manager.getOutputFilePath(sessionId, workerId, quickResolver), '');
+
+      const result = await manager.hasEverBeenActivated(sessionId, workerId, quickResolver);
+      expect(result).toBe(true);
+    });
+
+    it('returns true when the manifest records a non-zero liveBaseOffset, even with an empty live file', async () => {
+      const sessionId = 'session-base-offset-only';
+      const workerId = 'worker-1';
+      const dir = `${TEST_CONFIG_DIR}/_quick/outputs/${sessionId}`;
+      vol.mkdirSync(dir, { recursive: true });
+
+      const manifest = createInitialManifest(1000);
+      manifest.liveBaseOffset = 50;
+      await writeManifestDurable(manifestPathFor(`${TEST_CONFIG_DIR}/_quick/outputs`, sessionId, workerId), manifest);
+      vol.writeFileSync(manager.getOutputFilePath(sessionId, workerId, quickResolver), '');
+
+      const result = await manager.hasEverBeenActivated(sessionId, workerId, quickResolver);
+      expect(result).toBe(true);
+    });
+
+    it('returns true when only a legacy compressed .log.gz live file exists (cross-type restart onto a hibernation-era PTY stream)', async () => {
+      // A worker that was previously a PTY worker, whose output was archived
+      // to the legacy compressed form, then had its type flipped to embedded
+      // (worker-lifecycle-manager's cross-type restart) can leave a manifest
+      // with liveBaseOffset 0 and no segments, while the stream content
+      // actually lives at `<workerId>.log.gz` rather than `<workerId>.log`.
+      // hasEverBeenActivated stats BOTH paths directly (not through
+      // getOutputFilePath alone), so this is seen.
+      const sessionId = 'session-legacy-compressed-only';
+      const workerId = 'worker-1';
+      const dir = `${TEST_CONFIG_DIR}/_quick/outputs/${sessionId}`;
+      vol.mkdirSync(dir, { recursive: true });
+
+      const manifest = createInitialManifest(1000);
+      await writeManifestDurable(manifestPathFor(`${TEST_CONFIG_DIR}/_quick/outputs`, sessionId, workerId), manifest);
+      vol.writeFileSync(path.join(dir, `${workerId}.log.gz`), Buffer.from('not empty'));
+
+      const result = await manager.hasEverBeenActivated(sessionId, workerId, quickResolver);
+      expect(result).toBe(true);
+    });
+
+    it('returns true when an empty .log coexists with a non-empty legacy .log.gz', async () => {
+      // The uncompressed `.log` path is checked first and is empty (size 0,
+      // not an error), so the loop must continue on to the legacy `.log.gz`
+      // path rather than stopping at the first, merely-present file.
+      const sessionId = 'session-empty-log-plus-gz';
+      const workerId = 'worker-1';
+      const dir = `${TEST_CONFIG_DIR}/_quick/outputs/${sessionId}`;
+      vol.mkdirSync(dir, { recursive: true });
+
+      const manifest = createInitialManifest(1000);
+      await writeManifestDurable(manifestPathFor(`${TEST_CONFIG_DIR}/_quick/outputs`, sessionId, workerId), manifest);
+      vol.writeFileSync(manager.getOutputFilePath(sessionId, workerId, quickResolver), '');
+      vol.writeFileSync(path.join(dir, `${workerId}.log.gz`), Buffer.from('not empty'));
+
+      const result = await manager.hasEverBeenActivated(sessionId, workerId, quickResolver);
+      expect(result).toBe(true);
+    });
+
+    it('conservatively returns true when a stat on the live .log file fails with a non-ENOENT error', async () => {
+      // The manifest itself exists, parses, and carries liveBaseOffset 0 /
+      // no segments, so the predicate must reach the live-file stat loop.
+      // There the `.log` path's own stat is forced to throw a non-ENOENT
+      // error (EACCES), which must be treated conservatively as `true`
+      // rather than silently swallowed into "no live content" the way
+      // `getActualFilePath`'s `fileExists` helper does (that swallowing is
+      // exactly the bug this predicate must not reintroduce).
+      //
+      // `spyOn(memfs.promises, 'stat')` (used by the sibling
+      // `conservatively returns true when the manifest stat fails` test
+      // above for the MANIFEST path, via directory-shape corruption) cannot
+      // be reused here: this method's own `fs.stat(manifestPath)` must
+      // SUCCEED first, and manifest path / `.log` path share the same
+      // parent directory, so any directory-shape corruption that breaks
+      // `.log`'s stat would break the manifest's stat identically. Instead
+      // this spies directly on the MOCKED `fs/promises` module object
+      // (imported here as `fsPromisesNamespace`) that worker-output-file.ts's
+      // own `import * as fs from 'fs/promises'` binds to -- unlike
+      // `memfs.promises` itself (a different object; see the sibling
+      // comment on `renameSpy` below for why spying on THAT object is
+      // invisible to this module), this IS the object the production import
+      // resolves against, so a targeted mock here is actually observed.
+      const sessionId = 'session-log-stat-eacces';
+      const workerId = 'worker-1';
+      const dir = `${TEST_CONFIG_DIR}/_quick/outputs/${sessionId}`;
+      vol.mkdirSync(dir, { recursive: true });
+
+      const manifest = createInitialManifest(1000);
+      await writeManifestDurable(manifestPathFor(`${TEST_CONFIG_DIR}/_quick/outputs`, sessionId, workerId), manifest);
+
+      const logPath = manager.getOutputFilePath(sessionId, workerId, quickResolver);
+      const originalStat = fsPromisesNamespace.stat;
+      const statSpy = spyOn(fsPromisesNamespace, 'stat').mockImplementation(((targetPath: unknown, ...rest: unknown[]) => {
+        if (targetPath === logPath) {
+          const err = Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' });
+          return Promise.reject(err);
+        }
+        return (originalStat as (...args: unknown[]) => unknown)(targetPath, ...rest);
+      }) as typeof fsPromisesNamespace.stat);
+
+      try {
+        const result = await manager.hasEverBeenActivated(sessionId, workerId, quickResolver);
+        expect(result).toBe(true);
+      } finally {
+        statSpy.mockRestore();
+      }
+    });
+
+    it('returns true when the live file holds only a persisted marker line (restore-failure declaration)', async () => {
+      // resetWorkerOutput's persistentMarkerLine option writes a single
+      // marker line as the sole content of the fresh live file -- a
+      // post-reset state that still counts as "the stream was written to".
+      await manager.resetWorkerOutput('session-marker-only', 'worker-1', quickResolver, {
+        persistentMarkerLine: '{"type":"restore-failure-boundary"}',
+      });
+
+      const result = await manager.hasEverBeenActivated('session-marker-only', 'worker-1', quickResolver);
       expect(result).toBe(true);
     });
 
