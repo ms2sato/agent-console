@@ -7,7 +7,7 @@ These rules apply to all code changes in this project. Contents span verificatio
 Before completing any code changes, always verify:
 
 1. **Run the full test suite:** Execute `bun run test` and ensure ALL tests pass — not just the tests you added or modified. The full suite must be green before every push.
-   - **Test result is paste, not summary.** When reporting "tests pass" to the Orchestrator (or in any verification report), do not summarize counts (e.g., "2338 pass"). Always paste the last 100 lines of test output plus the actual test exit code. Run the tests under a bash-compatible shell using one of:
+   - **Test result is paste, not summary.** When reporting "tests pass" to the Orchestrator (or in any verification report), do not summarize counts (e.g., "2338 pass"). Always paste the last 100 lines of test output plus the actual test exit code; to shorten, cut on the command side (`tail -N`, or a background run read back from its file) and paste that, never a re-typed summary. Run the tests under a bash-compatible shell using one of:
      ```bash
      # Option A: capture output and exit code separately
      output=$(bun run test 2>&1); exitcode=$?; echo "$output" | tail -100; echo "TEST_EXIT: $exitcode"

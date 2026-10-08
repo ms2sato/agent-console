@@ -1479,6 +1479,38 @@ variables on the server's systemd unit — they do not reach elevated PTYs,
 and `CLAUDE_CODE_*` on the server env triggers the direct-path unset-prefix
 hazard (`packages/server/src/services/env-filter.ts`).
 
+The same applies to Claude itself: a shared account authenticates with an
+API key (Bedrock as above, or an Anthropic API key exported from
+`~/.profile` the same way), never with a personal
+Claude subscription login — a subscription is tied to one person and is not
+for shared use.
+
+### 3a. Give the account its own, narrowly scoped GitHub access
+
+Everyone who can operate a shared session acts with the account's GitHub
+credentials, so those credentials must not be a person's own. Never copy a
+personal SSH key or a classic personal access token into the shared
+account's home: that would let every operator of the session do anything
+that person can do on GitHub.
+
+- **git (clone / push)**: a per-repository **deploy key** — generate an SSH
+  key in the shared account's home and add its public half under the
+  repository's *Settings → Deploy keys* with write access. A deploy key
+  reaches exactly one repository.
+- **gh (Issues / PRs)**: a **fine-grained personal access token** limited
+  to the bound repository (or repositories) with only the permissions the
+  agent needs (typically Contents, Issues, Pull requests). Owned by a
+  dedicated machine user when one exists; export it as `GH_TOKEN` from the
+  shared account's `~/.profile` (the GitHub CLI's documented path for
+  fine-grained tokens).
+- **Verify the boundary**, as the shared account: `git ls-remote` on the
+  bound repository succeeds, and a write against a repository outside the
+  scope is refused — use a disposable repository you control (for example
+  `gh api -X POST repos/<you>/<disposable-repo>/issues -f title=probe`, and
+  close the issue if the probe unexpectedly succeeds). Expect 403, or 404
+  when that repository is private and invisible to the token. Read access
+  to public repositories is not a scope leak — test a write.
+
 ### 4. Bind repositories to a shared account
 
 Which repository's shared sessions run as which registered account is a

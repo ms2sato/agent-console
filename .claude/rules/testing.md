@@ -92,7 +92,7 @@ Worked example: a component renders a notice when `engine === 'claude-sdk' && re
 
 This is not caught by a green suite, by CI, or usually by review — the assertion is true, the test name is accurate, and nothing looks wrong. Three instances landed in one day (Sprint 2026-08-18), in three different PRs by three different delegates, at three different layers: a grep-shaped containment test whose pattern a two-file split would bypass ([#1356](https://github.com/ms2sato/agent-console/pull/1356)); a wire-boundary test whose job fake always returned `[]`, so the one optional field it existed to protect never traversed the parse path ([#1357](https://github.com/ms2sato/agent-console/pull/1357)); and the engine case above ([#1360](https://github.com/ms2sato/agent-console/pull/1360)). Two were found by CodeRabbit, one by reading a screenshot. None by the suite.
 
-**When reporting polarity, state the category per test.** "7 of 9 flipped" invites a partial-polarity finding; "7 bug/contract tests flipped, 2 invariant-preservation tests hold in both worlds and fail against a guard-less implementation" is the same fact, correctly classified.
+**When reporting polarity, state the category per test.** "7 of 9 flipped" invites a partial-polarity finding; "7 bug/contract tests flipped, 2 invariant-preservation tests hold in both worlds and fail against a guard-less implementation" is the same fact, correctly classified. **Polarity measures only the first assertion that fails:** when every new test dies on its first `expect`, the assertions after it have no measured reach at all, so mutate for each of those separately (#1852: a "payload carries no key" assertion that never ran without the fix).
 
 ### Demonstrating polarity without breaking the build
 
