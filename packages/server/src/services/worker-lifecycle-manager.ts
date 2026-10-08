@@ -871,15 +871,17 @@ export class WorkerLifecycleManager {
    *      worker's raw terminal bytes share the same on-disk path, so any
    *      leftover content or manifest before the embedded worker's first
    *      activation is wrong for it. A plain reset is not enough: it re-mints
-   *      the manifest in place, and `EmbeddedAgentWorkerService.activate`'s
-   *      `hasEverBeenActivated` check is keyed on manifest EXISTENCE, not
-   *      content -- a re-minted-but-present manifest from the PTY worker's
-   *      own original creation (every PTY worker's `initializeWorkerOutput`
-   *      writes one at creation time, long before any conversion) makes the
-   *      embedded engine take its "attempt restore" branch on an empty
-   *      stream, which throws a spurious read-failure and reports
-   *      `getEmbeddedAgentRestoreInfo` as `failed: true` on what is actually
-   *      a first-ever activation. Deleting the manifest outright (the same
+   *      the manifest in place, and the PTY worker's own original creation
+   *      (every PTY worker's `initializeWorkerOutput` writes a manifest at
+   *      creation time, long before any conversion) can leave that re-minted
+   *      manifest carrying evidence that SOMETHING was once written to the
+   *      stream -- which would make `EmbeddedAgentWorkerService.activate`'s
+   *      `hasEverBeenActivated` check (which judges by whether the stream
+   *      has ever had a byte written to it, not by manifest presence alone)
+   *      read `true` and make the embedded engine take its "attempt restore"
+   *      branch on what is actually a first-ever activation for it, throwing
+   *      a spurious read-failure and reporting `getEmbeddedAgentRestoreInfo`
+   *      as `failed: true`. Deleting the manifest outright (the same
    *      operation `deleteWorkerOutput` already performs for worker
    *      deletion) makes `hasEverBeenActivated` correctly read false, so
    *      `activate()` takes its OWN "first-ever activation, nothing to

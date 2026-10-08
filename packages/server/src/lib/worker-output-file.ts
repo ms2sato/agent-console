@@ -1420,15 +1420,43 @@ export class WorkerOutputFileManager {
   }
 
   /**
-   * Whether a worker has ever been activated, i.e. whether a manifest has
-   * ever been written for it. Distinguishes "manifest missing" (`ENOENT` --
-   * genuinely first-ever activation, nothing to restore) from any OTHER stat
-   * failure (permission error, filesystem corruption, etc.), which is treated
-   * CONSERVATIVELY as "yes, assume activated" so the caller routes through
-   * the restore-attempt path instead of taking a destructive
+   * Whether a worker has ever been activated, i.e. whether its output stream
+   * has ever had a byte written to it. Distinguishes "manifest missing"
+   * (`ENOENT` -- genuinely first-ever activation, nothing to restore) from
+   * any OTHER stat failure (permission error, filesystem corruption, etc.),
+   * which is treated CONSERVATIVELY as "yes, assume activated" so the caller
+   * routes through the restore-attempt path instead of taking a destructive
    * first-activation shortcut. Used by EmbeddedAgentWorkerService.runActivation
-   * (Transcript Restore, #1123) to decide between the two branches -- see
+   * to decide between the two branches -- see
    * docs/design/embedded-agent-worker.md "Transcript Restore".
+   *
+   * Manifest EXISTENCE alone is not a sound signal here: every read-only
+   * history path (`readHistoryForDisplay` / `readHistoryWithOffset` /
+   * `getEpoch` / `getCurrentOffset` / `readLastNLines`, via
+   * `loadManifestWithRecovery`) lazily MINTS a manifest on first access when
+   * none exists yet -- a side effect of reading, not of activating. An
+   * embedded-agent worker's history can therefore be read (e.g. a WS client
+   * fetching history) before the worker's first-ever activation, which would
+   * otherwise make this predicate wrongly report `true`. So once the
+   * manifest is found, its CONTENT is checked for evidence that the stream
+   * itself was ever written to -- `liveBaseOffset > 0` (at least one segment
+   * was ever cut), a non-empty `segments` list, or a non-empty live `.log`
+   * file, or legacy compressed `.log.gz` file. An unparsable manifest
+   * degrades to the same conservative `true` as a non-ENOENT stat failure.
+   *
+   * The live-file check stats BOTH the uncompressed `.log` path and the
+   * legacy compressed `.log.gz` path directly, rather than going through
+   * `getActualFilePath` -- that helper's own `fileExists` swallows EVERY stat
+   * error (not just `ENOENT`) into "file does not exist", which would make a
+   * non-ENOENT error on the `.log` path (a permission error, filesystem
+   * corruption) silently read as "no live content" instead of the
+   * conservative `true` this method promises for such errors elsewhere. A
+   * worker whose stream was archived only to the legacy compressed form --
+   * e.g. one that was previously a PTY worker and had its type flipped to
+   * embedded, leaving a manifest with `liveBaseOffset` 0 and no segments
+   * while the actual content lives at `<workerId>.log.gz` rather than
+   * `<workerId>.log` -- is still covered: both paths are checked, and either
+   * one being non-empty is sufficient.
    *
    * Read-only existence check: does not join the per-worker serialization
    * domain (no interaction with pending-flush/segment-cache state).
@@ -1437,11 +1465,29 @@ export class WorkerOutputFileManager {
     const manifestPath = this.getManifestPath(sessionId, workerId, resolver);
     try {
       await fs.stat(manifestPath);
-      return true;
     } catch (error) {
       if (isErrnoException(error) && error.code === 'ENOENT') return false;
       return true;
     }
+
+    const manifest = await readManifest(manifestPath);
+    if (manifest === null) return true; // Unparsable -- conservative.
+    if (manifest.liveBaseOffset > 0 || manifest.segments.length > 0) return true;
+
+    const filePaths = [
+      this.getOutputFilePath(sessionId, workerId, resolver),
+      path.join(resolver.getOutputsDir(), sessionId, `${workerId}.log.gz`),
+    ];
+    for (const filePath of filePaths) {
+      try {
+        const stats = await fs.stat(filePath);
+        if (stats.size > 0) return true;
+      } catch (error) {
+        if (isErrnoException(error) && error.code === 'ENOENT') continue;
+        return true; // Conservative: a non-ENOENT stat error is treated as "yes, assume activated".
+      }
+    }
+    return false;
   }
 
   /**

@@ -65,6 +65,7 @@ When drafting Acceptance Criteria for an Issue that will be delegated:
 - **Name failure modes to avoid.** If the AC's implementation has known pitfalls (silent no-op, ambient state leak, sibling-site divergence), name them explicitly with "do not …" instructions.
 - **Include implementation guidance where non-obvious.** Boundary between "what to build" and "how to build it" is not a wall for AC — it is a gradient. Push over the gradient when the "how" is the risky part.
 - **Boundary-value spec.** Every predicate / validator / classifier: state behavior at empty input, single element, all-success, all-failure. Vacuous truth is a recurring blind-spot.
+- **Anchors are grepped, timelines are written out.** Every line number, precedent, "the way X does it", or default you cite is copied from a grep at the candidate SHA, not recalled (`pre-pr-completeness.md` Q12 step 4) — in Sprint 2026-10-08 six recalled anchors were wrong, all caught by the delegate. For a stop / cancel / shutdown contract, write what exists at the instant the interrupt lands, and ask which path the fix makes newly reachable (#1853: an empty in-flight set during a claim, a retry timer first reachable after drain). A safety claim that crosses a boundary (UI hides it / API refuses it) is pinned on both sides.
 - **Cite architectural-invariants (I-1..I-N).** If the AC touches an invariant, name it explicitly so the reader can walk the catalog.
 - **Keep one clause in the requester's vocabulary.** Everything above pushes the AC toward structural language — files, signatures, invariants, assertions — and that is correct, because structural language is what an implementer can execute. But **the translation into it is one-way: it cannot be validated from inside the language it produced.** Every gate built there can pass while the requirement fails, and nothing in the diff will look wrong.
 
@@ -79,7 +80,7 @@ When drafting Acceptance Criteria for an Issue that will be delegated:
         described capture is not evidence.
   ```
 
-  Name the upload command in the clause itself, as above. Every other mandated artifact in an AC arrives with its command (`bun run check:lang`, `preflight-check.js`, `bun run test`); "screenshot" was the one noun that did not, and on 2026-09-03 three delegates independently read "capture and state PASS" as "describe the capture" — PRs #1563 / #1564 / #1565, all with zero images attached. The gap was in the clause, not in the delegates.
+  Name the upload command in the clause itself, as above: "screenshot" was the one mandated artifact without a command, and three delegates read it as "describe the capture" (PRs #1563 / #1564 / #1565, zero images).
 
   (Lesson: Sprint 2026-08-30 Issue [#1511](https://github.com/ms2sato/agent-console/issues/1511) — the requirement was one side rail instead of three. The AC said "chrome", which was read as state ownership; the implementation hoisted the state correctly, every clause passed, CI and CodeRabbit were green, and the screen still showed three rails because each panel returned its own `border-l`. Four parties — implementer, Architect, Orchestrator, and the review bot — were each faithful to the clauses. It was found by the owner, from one screenshot. This clause is the round-trip check on the translation, and it is why the amended AC closed where the original could not.)
 
