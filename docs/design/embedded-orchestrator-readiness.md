@@ -12,6 +12,23 @@ Phase 6 is not dispatchable until every step the skill prescribes has been mappe
 
 **Run 1 (Phase 6, #1740).** Run date: 2026-09-20 (UTC). Embedded Orchestrator session id: `ae7daa5b-db98-46fb-a695-9f78cf39772c`. Delegate session id: `9240c7d3-c0ae-49b0-8c4d-62e4a6ed779d`. PR: [#1764](https://github.com/ms2sato/agent-console/pull/1764).
 
+**Run 2 (Phase 6, #1740).** Run date: 2026-09-20 (UTC). Embedded Orchestrator session id: `c58219e7-b0b9-4f5a-a4cd-b8929691a26b` (worker `29d0c372-d7c8-4f00-890d-7ee6f7d63fbe`, worktree `wt-004-v6py`, branch `phase6/embedded-orchestrator-run-2`). Test Issue: [#1775](https://github.com/ms2sato/agent-console/issues/1775) (a scripts-only CODE change, unlike run 1's docs-only scope) -> PR [#1778](https://github.com/ms2sato/agent-console/pull/1778), merged `4b05eabb` by the TUI Orchestrator on the owner's standing directive. Outcome: S1-S12 completed with zero human intervention other than the merge; the host test-slot exchange ran in the prescribed order (request -> granted -> full suite TEST_EXIT 0 -> released) relayed through the embedded session; CodeRabbit's four surfaces were read in S9 and the Architect push (S9b) returned CLEAN to the embedded session directly. Evidence at `$HOME/.agent-console-smoke-captures/phase6-run-2/` (final NDJSON, memo, run record), run-1 naming. Prompt differences versus run 1: the R3 "end the turn to wait" statement (F6), the full-suite-slot override, the S7 slot relay via the TUI, S9 CodeRabbit surfaces, S9b. The optional M2/M3 legs (eviction / restart) were not exercised. Full result: https://github.com/ms2sato/agent-console/issues/1740 (the "Run 2 result" comment).
+
+**What the prompt-level R3 statement did and did not do (same measurement method on both runs):**
+
+| | run 1 | run 2 |
+|---|---|---|
+| tool calls | 608 | 261 |
+| polling calls (`get_session_status` / `list_processes` used to wait) | 490 | 6 |
+| Cause-A turns (>= 10 polls in one turn) | 7 (max 184 polls) | 0 (max 1) |
+| turns | 68 | 147 |
+| `write_memo` / `TodoWrite` calls | 2 / 8 | 99 / 46 |
+| context-usage snapshots: first / max / mean | 152,708 / 607,176 / 430,043 | 158,625 / 379,735 / 257,877 |
+| sum of per-turn `promptTokens` snapshots (input-token proxy, pre-caching) | 28.8M | 37.9M |
+| compaction events | 0 | 0 |
+
+Reading: the busy-wait loop is gone and the per-turn context is smaller, but every wait is now a turn, so the turn count more than doubled and the summed input-token proxy rose by a third. The cost lever moved from "tool calls" to "turns x context size"; the largest call sink is now memo/todo bookkeeping (145 of 261 calls, from the prompt's "append a memo line after every step" plus TodoWrite mirroring). The proxy does not see prompt caching; billed cost must be measured provider-side before the turn cost is optimised. Fast-follow filed from this run: the R3 statement made permanent in the preamble (`buildPreamble`, both engines) -- Issue [#1856](https://github.com/ms2sato/agent-console/issues/1856); F6 below is to gain one line pointing at it when that PR lands.
+
 ## Facts the table is built on (re-verified at `a59fc303`)
 
 ### F1. Tool surface of the builtin: no Bash, no EnterWorktree, no Task, no browser
