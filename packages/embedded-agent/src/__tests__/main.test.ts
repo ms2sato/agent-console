@@ -19,6 +19,7 @@ import {
   type ToolDefinition,
 } from '../providers/types.js';
 import type { ToolCallOutcome } from '../mcp.js';
+import { WAIT_BY_ENDING_TURN_PREAMBLE } from '../system-prompt.js';
 import type { ClaudeSdkEngine } from '../engine-types.js';
 import { COMPACT_TOOL_UNSUPPORTED_RESULT } from '../compact-tool.js';
 import type { SdkEngineDeps } from '../sdk-engine.js';
@@ -1027,6 +1028,7 @@ describe('runLoop — reasoningEffort/effort threading (agent-surface.md Ruling 
     expect(await runLoop(io, factories)).toBe(0);
     expect(capturedDeps?.systemPromptAppend).toContain('Session ID: sess-main-1694');
     expect(capturedDeps?.systemPromptAppend).toContain('Worker ID: work-main-1694');
+    expect(capturedDeps?.systemPromptAppend).toContain(WAIT_BY_ENDING_TURN_PREAMBLE);
   });
 
   it('omits the effort key entirely from the SDK engine deps when init.provider.effort is absent (claude-sdk engine)', async () => {
