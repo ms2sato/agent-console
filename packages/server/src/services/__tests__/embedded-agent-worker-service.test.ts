@@ -4342,6 +4342,10 @@ describe('EmbeddedAgentWorkerService — interrupted-turn parent notification', 
     // (`if (wasMidTurn && interruptedTurnIdOnExit !== null && ...)`) made
     // this assertion fail (deliverWorkerNotification never called); restored
     // after confirming the failure. Confirmed 2026-10-08.
+    //
+    // Re-measured after detaching Site 1 (`await` -> `void`): commenting out
+    // the (now-detached) call still makes this test fail identically
+    // (deliverWorkerNotification never called). Re-confirmed 2026-10-08.
   });
 
   it('does not notify when the exit is not mid-turn (the worker was idle)', async () => {
@@ -4440,15 +4444,51 @@ describe('EmbeddedAgentWorkerService — interrupted-turn parent notification', 
       expect(h.worker.stdin).toBeNull();
       expect(h.recorder.onExit).toHaveBeenCalledWith(1, null, 'unexpected');
 
-      expect(
+      // Site 1's notification call is detached (`void`, not `await`ed) from
+      // `handleExit`, so `worker.subprocess === null` becoming true (set
+      // earlier in `handleExit`, synchronously) does not guarantee the
+      // notification's own internal `await deliverWorkerNotification(...)`
+      // has resolved yet. Poll the warn log directly instead of assuming it
+      // already fired by the time the subprocess-null condition settled.
+      await waitFor(() =>
         warnSpy.mock.calls.some(
           (call) =>
             typeof call[1] === 'string' && call[1].includes('Failed to deliver interrupted-turn notification'),
         ),
-      ).toBe(true);
+      );
     } finally {
       warnSpy.mockRestore();
     }
+  });
+
+  it('deactivate on a mid-turn child resolves even if the notification delivery never resolves (Site 1 is detached)', async () => {
+    // polarity: temporarily changing Site 1's `void this.notifyParentOfInterruptedTurn(...)`
+    // back to `await this.notifyParentOfInterruptedTurn(...)` made this test
+    // fail -- `dp` never settled within the 2s race, because `handleExit`
+    // (and therefore `runtime.exitSettled`, which `deactivate()` awaits) was
+    // blocked on the never-resolving delivery promise. Restored after
+    // confirming the failure. Confirmed 2026-10-08.
+    const h = setup({ parentSessionId: 'parent-s', parentWorkerId: 'parent-w' });
+    h.deliverWorkerNotification.mockImplementation(() => new Promise(() => {})); // never resolves
+    await h.service.activate(h.sessionId, h.workerId);
+
+    const sent = await h.service.sendUserMessage(h.sessionId, h.workerId, 'hello');
+    if (!sent.ok) throw new Error('expected sendUserMessage to succeed');
+
+    const dp = h.service.deactivate(h.sessionId, h.workerId);
+    h.fake.simulateExit(0);
+
+    await Promise.race([
+      dp,
+      new Promise((_, reject) =>
+        setTimeout(
+          () => reject(new Error('deactivate did not resolve within 2s -- notification delivery is blocking exitSettled')),
+          2000,
+        ),
+      ),
+    ]);
+
+    expect(h.deliverWorkerNotification).toHaveBeenCalledTimes(1);
   });
 
   it('Site 2: activation restore with no exited row observed (exitObserved: false) notifies with cause=unobserved', async () => {
@@ -4478,6 +4518,12 @@ describe('EmbeddedAgentWorkerService — interrupted-turn parent notification', 
         }),
       }),
     );
+
+    // polarity: commenting out the Site 2 notification call in the
+    // activation restore branch (`if (interrupted !== null &&
+    // !interrupted.exitObserved) { void this.notifyParentOfInterruptedTurn(...) }`)
+    // made this assertion fail (deliverWorkerNotification never called);
+    // restored after confirming the failure. Confirmed 2026-10-08.
   });
 
   it('Site 2: activation restore where the server already observed the exit (exitObserved: true) does NOT re-notify', async () => {

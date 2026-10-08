@@ -1498,22 +1498,6 @@ export class EmbeddedAgentWorkerService {
         this.appendEvent(ctx, { v: 1, type: 'turn-interrupted', turnId: interruptedTurnId });
       }
 
-      // Interrupted-turn parent notification, Site 2: the previous
-      // incarnation died WITHOUT the server ever observing its exit (e.g. a
-      // server restart) -- so Site 1 in handleExit never ran for it, and
-      // this is the first and only chance to tell a delegating parent the
-      // turn will not complete. Gated on `!interrupted.exitObserved`
-      // specifically so a death the server DID observe (which already got
-      // its notification from Site 1) is not reported a second time here.
-      if (interrupted !== null && !interrupted.exitObserved) {
-        await this.notifyParentOfInterruptedTurn(sessionId, workerId, session, {
-          turnId: interrupted.turnId,
-          cause: 'unobserved',
-          exitReason: 'server-restart',
-          exitCode: 'unknown',
-        });
-      }
-
       runtime.streamsDone = Promise.all([
         this.readStdout(runtime, subprocess).catch((err) => {
           logger.warn({ sessionId, workerId, err }, 'Embedded-agent stdout reader error');
@@ -1541,6 +1525,29 @@ export class EmbeddedAgentWorkerService {
         .catch((err) => {
           logger.error({ sessionId, workerId, err }, 'Embedded-agent exit handler error');
         });
+
+      // Interrupted-turn parent notification, Site 2: the previous
+      // incarnation died WITHOUT the server ever observing its exit (e.g. a
+      // server restart) -- so Site 1 in handleExit never ran for it, and
+      // this is the first and only chance to tell a delegating parent the
+      // turn will not complete. Gated on `!interrupted.exitObserved`
+      // specifically so a death the server DID observe (which already got
+      // its notification from Site 1) is not reported a second time here.
+      //
+      // Placed AFTER `runtime.exitSettled`/`streamsDone` are wired to their
+      // real chains (not before): while this call is in flight, a concurrent
+      // `deactivate()` or child exit must observe the real exit-observer
+      // chain, not the placeholder `Promise.resolve()` these fields start
+      // as. Detached (`void`) rather than awaited -- see
+      // `notifyParentOfInterruptedTurn`'s own doc comment for why.
+      if (interrupted !== null && !interrupted.exitObserved) {
+        void this.notifyParentOfInterruptedTurn(sessionId, workerId, session, {
+          turnId: interrupted.turnId,
+          cause: 'unobserved',
+          exitReason: 'server-restart',
+          exitCode: 'unknown',
+        });
+      }
 
       worker.activityState = 'idle';
       this.broadcastActivity(ctx, 'idle');
@@ -3158,8 +3165,13 @@ export class EmbeddedAgentWorkerService {
     // telemetry to a DIFFERENT worker's stream, not part of this worker's
     // own exit contract. Wrapped entirely inside the helper's own try/catch
     // so a failure here can never alter this method's own cleanup or return.
+    // Detached (`void`) rather than awaited -- `handleExit`'s own completion
+    // is `runtime.exitSettled`, which `deactivate()` / idle eviction /
+    // restart-all / shutdown all await, and none of them should be blocked on
+    // notification delivery, which can itself activate another worker. See
+    // `notifyParentOfInterruptedTurn`'s own doc comment for why.
     if (wasMidTurn && interruptedTurnIdOnExit !== null && reason !== 'evicted' && session) {
-      await this.notifyParentOfInterruptedTurn(sessionId, workerId, session, {
+      void this.notifyParentOfInterruptedTurn(sessionId, workerId, session, {
         turnId: interruptedTurnIdOnExit,
         cause: 'exit',
         exitReason: reason,
@@ -3201,6 +3213,16 @@ export class EmbeddedAgentWorkerService {
    * own cleanup or control flow -- both call sites are deep inside paths
    * (activation, exit handling) that must complete regardless of whether
    * this best-effort notification succeeds.
+   *
+   * ALWAYS called detached (`void`, never `await`ed) at both call sites.
+   * Delivering to a parent can activate that parent's worker -- a whole new
+   * subprocess chain -- so delivery can be slow. Awaiting here would delay
+   * `handleExit`'s own completion (Site 1) or leave `runtime.exitSettled` /
+   * `streamsDone` unwired while the child's real exit-observer chain is not
+   * yet in place (Site 2), both of which other callers (`deactivate()`,
+   * idle eviction, restart-all, shutdown) depend on settling promptly. Do
+   * not add an `await` here at a call site; that would reintroduce the
+   * blocking this method's call sites were fixed to avoid.
    */
   private async notifyParentOfInterruptedTurn(
     sessionId: string,
