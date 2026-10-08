@@ -3,6 +3,7 @@ import * as path from 'path';
 import { setupMemfs, cleanupMemfs } from '../../__tests__/utils/mock-fs-helper.js';
 import { vol, fs as memfs } from 'memfs';
 import { WorkerOutputFileManager } from '../worker-output-file.js';
+import { createInitialManifest, writeManifestDurable, manifestPathFor } from '../worker-output-manifest.js';
 import { SessionDataPathResolver } from '../session-data-path-resolver.js';
 import { TrustedDirVerificationError } from '../trusted-dir.js';
 import { buildInternalEmbeddedAgentWorker } from '../../__tests__/utils/build-test-data.js';
@@ -341,11 +342,88 @@ describe('WorkerOutputFileManager', () => {
       expect(result).toBe(false);
     });
 
-    it('returns true when a manifest exists', async () => {
-      // initializeWorkerOutput writes the manifest sidecar (worker-1.segments.json).
+    it('returns false when a manifest exists but the stream was never written to', async () => {
+      // initializeWorkerOutput writes the manifest sidecar (worker-1.segments.json)
+      // but never writes a byte to the stream itself. The old assertion here
+      // ("returns true when a manifest exists") encoded the defect this
+      // predicate was rewritten to fix: manifest PRESENCE alone does not mean
+      // the worker was ever activated, because the manifest can be minted by
+      // a read-only path too (see the REPRO case below).
       await manager.initializeWorkerOutput('session-existing', 'worker-1', quickResolver);
 
       const result = await manager.hasEverBeenActivated('session-existing', 'worker-1', quickResolver);
+      expect(result).toBe(false);
+    });
+
+    it('REPRO: returns false after a read-only history fetch mints the manifest on a never-activated worker', async () => {
+      // readHistoryForDisplay (via loadManifestWithRecovery) lazily mints a
+      // manifest on first access when none exists yet -- a side effect of
+      // reading, not of activating. Before the predicate was keyed on stream
+      // content, this same call made hasEverBeenActivated wrongly report
+      // `true` for a worker that was never activated.
+      await manager.readHistoryForDisplay('session-read-before-activation', 'worker-1', quickResolver, 10);
+
+      const result = await manager.hasEverBeenActivated('session-read-before-activation', 'worker-1', quickResolver);
+      expect(result).toBe(false);
+    });
+
+    it('returns true once the stream has actually been written to', async () => {
+      await manager.resetWorkerOutput('session-written', 'worker-1', quickResolver);
+      manager.bufferOutput('session-written', 'worker-1', '{"type":"test"}\n', quickResolver);
+      await manager.forceFlush('session-written', 'worker-1');
+
+      const result = await manager.hasEverBeenActivated('session-written', 'worker-1', quickResolver);
+      expect(result).toBe(true);
+    });
+
+    it('returns true when the manifest records an archived segment, even with an empty live file', async () => {
+      const sessionId = 'session-segments-only';
+      const workerId = 'worker-1';
+      const dir = `${TEST_CONFIG_DIR}/_quick/outputs/${sessionId}`;
+      vol.mkdirSync(dir, { recursive: true });
+
+      const manifest = createInitialManifest(1000);
+      manifest.liveBaseOffset = 50;
+      manifest.nextSeq = 1;
+      manifest.segments.push({
+        seq: 0,
+        startOffset: 0,
+        endOffset: 50,
+        bytes: 50,
+        gzBytes: 20,
+        file: `${workerId}.seg-0.log.gz`,
+      });
+      await writeManifestDurable(manifestPathFor(`${TEST_CONFIG_DIR}/_quick/outputs`, sessionId, workerId), manifest);
+      vol.writeFileSync(manager.getOutputFilePath(sessionId, workerId, quickResolver), '');
+
+      const result = await manager.hasEverBeenActivated(sessionId, workerId, quickResolver);
+      expect(result).toBe(true);
+    });
+
+    it('returns true when the manifest records a non-zero liveBaseOffset, even with an empty live file', async () => {
+      const sessionId = 'session-base-offset-only';
+      const workerId = 'worker-1';
+      const dir = `${TEST_CONFIG_DIR}/_quick/outputs/${sessionId}`;
+      vol.mkdirSync(dir, { recursive: true });
+
+      const manifest = createInitialManifest(1000);
+      manifest.liveBaseOffset = 50;
+      await writeManifestDurable(manifestPathFor(`${TEST_CONFIG_DIR}/_quick/outputs`, sessionId, workerId), manifest);
+      vol.writeFileSync(manager.getOutputFilePath(sessionId, workerId, quickResolver), '');
+
+      const result = await manager.hasEverBeenActivated(sessionId, workerId, quickResolver);
+      expect(result).toBe(true);
+    });
+
+    it('returns true when the live file holds only a persisted marker line (restore-failure declaration)', async () => {
+      // resetWorkerOutput's persistentMarkerLine option writes a single
+      // marker line as the sole content of the fresh live file -- a
+      // post-reset state that still counts as "the stream was written to".
+      await manager.resetWorkerOutput('session-marker-only', 'worker-1', quickResolver, {
+        persistentMarkerLine: '{"type":"restore-failure-boundary"}',
+      });
+
+      const result = await manager.hasEverBeenActivated('session-marker-only', 'worker-1', quickResolver);
       expect(result).toBe(true);
     });
 

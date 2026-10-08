@@ -1420,15 +1420,29 @@ export class WorkerOutputFileManager {
   }
 
   /**
-   * Whether a worker has ever been activated, i.e. whether a manifest has
-   * ever been written for it. Distinguishes "manifest missing" (`ENOENT` --
-   * genuinely first-ever activation, nothing to restore) from any OTHER stat
-   * failure (permission error, filesystem corruption, etc.), which is treated
-   * CONSERVATIVELY as "yes, assume activated" so the caller routes through
-   * the restore-attempt path instead of taking a destructive
+   * Whether a worker has ever been activated, i.e. whether its output stream
+   * has ever had a byte written to it. Distinguishes "manifest missing"
+   * (`ENOENT` -- genuinely first-ever activation, nothing to restore) from
+   * any OTHER stat failure (permission error, filesystem corruption, etc.),
+   * which is treated CONSERVATIVELY as "yes, assume activated" so the caller
+   * routes through the restore-attempt path instead of taking a destructive
    * first-activation shortcut. Used by EmbeddedAgentWorkerService.runActivation
-   * (Transcript Restore, #1123) to decide between the two branches -- see
+   * to decide between the two branches -- see
    * docs/design/embedded-agent-worker.md "Transcript Restore".
+   *
+   * Manifest EXISTENCE alone is not a sound signal here: every read-only
+   * history path (`readHistoryForDisplay` / `readHistoryWithOffset` /
+   * `getEpoch` / `getCurrentOffset` / `readLastNLines`, via
+   * `loadManifestWithRecovery`) lazily MINTS a manifest on first access when
+   * none exists yet -- a side effect of reading, not of activating. An
+   * embedded-agent worker's history can therefore be read (e.g. a WS client
+   * fetching history) before the worker's first-ever activation, which would
+   * otherwise make this predicate wrongly report `true`. So once the
+   * manifest is found, its CONTENT is checked for evidence that the stream
+   * itself was ever written to -- `liveBaseOffset > 0` (at least one segment
+   * was ever cut), a non-empty `segments` list, or a non-empty live `.log`
+   * file. An unparsable manifest degrades to the same conservative `true` as
+   * a non-ENOENT stat failure.
    *
    * Read-only existence check: does not join the per-worker serialization
    * domain (no interaction with pending-flush/segment-cache state).
@@ -1437,7 +1451,19 @@ export class WorkerOutputFileManager {
     const manifestPath = this.getManifestPath(sessionId, workerId, resolver);
     try {
       await fs.stat(manifestPath);
+    } catch (error) {
+      if (isErrnoException(error) && error.code === 'ENOENT') return false;
       return true;
+    }
+
+    const manifest = await readManifest(manifestPath);
+    if (manifest === null) return true; // Unparsable -- conservative.
+    if (manifest.liveBaseOffset > 0 || manifest.segments.length > 0) return true;
+
+    const filePath = this.getOutputFilePath(sessionId, workerId, resolver);
+    try {
+      const stats = await fs.stat(filePath);
+      return stats.size > 0;
     } catch (error) {
       if (isErrnoException(error) && error.code === 'ENOENT') return false;
       return true;
