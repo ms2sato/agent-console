@@ -80,6 +80,7 @@ export const PTY_NOTIFICATION_KINDS = [
   'internal-process',
   'internal-conditional-wakeup',
   'internal-agent-spawn-failed',
+  'internal-worker-interrupted',
 ] as const;
 export type PtyNotificationKind = (typeof PTY_NOTIFICATION_KINDS)[number];
 

@@ -237,6 +237,7 @@ describe('Client-Server Boundary: exited.stderrTail survives to the client (#145
         entryPath: '/install/embedded-agent/src/main.ts',
         getGlobalActivityCallback: () => undefined,
         getGlobalWorkerExitCallback: () => undefined,
+        deliverWorkerNotification: async () => ({ ok: true }),
         shutdownGraceMs: 200,
         sigtermTimeoutMs: 200,
       });

@@ -426,11 +426,28 @@ export interface EmbeddedAgentWorkerServiceDeps {
    * connectors concept for that engine).
    */
   resolveDisableClaudeAiConnectors: (userId: string) => Promise<boolean>;
+  /**
+   * Interrupted-turn parent notification (notifying a delegating parent session that a child worker's turn was interrupted):
+   * delivers a structured PTY-notification-shaped params object to ANY
+   * worker kind via SessionManager's single delivery seam
+   * (SessionManager.deliverWorkerNotification). Used to tell a delegating
+   * parent session that a child embedded-agent worker's turn was
+   * interrupted and will not complete. REQUIRED, not optional -- an
+   * optional callback here is exactly the silent no-op that would let an
+   * interrupted turn go unreported to its parent (same rationale as
+   * `onSessionUpdated` above).
+   */
+  deliverWorkerNotification: (
+    sessionId: string,
+    workerId: string,
+    params: PtyNotificationParams,
+  ) => Promise<{ ok: true } | { ok: false; error: string }>;
 }
 
 /**
  * Transcript Restore, R1 (the local half of #1273): the id of the turn the
- * previous incarnation left unanswered, or null when nothing was interrupted.
+ * previous incarnation left unanswered, plus whether the server ever
+ * observed an `exited` row for it, or null when nothing was interrupted.
  *
  * The rule, whose single writer is
  * docs/design/embedded-agent-sdk-engine.md Appendix A.3: a `user-message`
@@ -453,6 +470,16 @@ export interface EmbeddedAgentWorkerServiceDeps {
  *   booked during it. A death inside that window is a completed-then-erroring
  *   turn, not an interrupted one.
  *
+ * `exitObserved` is a SEPARATE tracking pass over the same walk: whether an
+ * `exited` row appears AFTER the currently-pending user-message (and before
+ * any terminal event resets it). It does not affect `pendingTurnId` at all
+ * (per the bullet above, `exited` stays non-terminal) -- it exists only so
+ * the caller (the activation restore branch) can tell "the server watched
+ * this incarnation die" from "the server itself never came back to observe
+ * anything" when deciding whether a parent-notification for the interrupted
+ * turn is still owed (Site 1, `handleExit`, already sent one in the former
+ * case).
+ *
  * Vacuous cases report null, deliberately: an empty stream and a stream whose
  * last `user-message` is already closed both mean "nothing was interrupted",
  * and the first of those is only reachable at all because "no terminal event
@@ -464,8 +491,9 @@ export interface EmbeddedAgentWorkerServiceDeps {
  * malformed trailing line is skipped rather than thrown on. A detector that
  * threw here would take activation down over a cosmetic marker.
  */
-export function findInterruptedTurnId(streamText: string): string | null {
+export function findInterruptedTurn(streamText: string): { turnId: string; exitObserved: boolean } | null {
   let pendingTurnId: string | null = null;
+  let exitObservedForPending = false;
   for (const line of streamText.split('\n')) {
     if (line.trim() === '') continue;
     let parsed: unknown;
@@ -478,6 +506,7 @@ export function findInterruptedTurnId(streamText: string): string | null {
     if (type === 'user-message') {
       const id = (parsed as { id?: unknown }).id;
       pendingTurnId = typeof id === 'string' && id !== '' ? id : null;
+      exitObservedForPending = false;
       continue;
     }
     if (type === 'turn-error') {
@@ -486,9 +515,18 @@ export function findInterruptedTurnId(streamText: string): string | null {
     }
     if (type === 'state' && (parsed as { state?: unknown }).state === 'idle') {
       pendingTurnId = null;
+      continue;
+    }
+    if (type === 'exited' && pendingTurnId !== null) {
+      exitObservedForPending = true;
     }
   }
-  return pendingTurnId;
+  return pendingTurnId !== null ? { turnId: pendingTurnId, exitObserved: exitObservedForPending } : null;
+}
+
+/** Thin wrapper over {@link findInterruptedTurn}: the turn id alone, unchanged behavior/signature from before {@link findInterruptedTurn} existed. */
+export function findInterruptedTurnId(streamText: string): string | null {
+  return findInterruptedTurn(streamText)?.turnId ?? null;
 }
 
 /**
@@ -585,6 +623,17 @@ interface Runtime {
   ctx: StreamContext;
   /** True from user-message admission until the loop reports `state: idle` (or exit). */
   turnActive: boolean;
+  /**
+   * The id of the turn currently admitted (the same `id` the pending
+   * `user-message` carries), or null when no turn is in flight. Set
+   * alongside `turnActive = true` in `deliverUserTurn`'s synchronous
+   * admission section, cleared alongside every `turnActive = false` site
+   * (the `state: 'idle'` arm of `handleLoopLine`, the write-failure catch in
+   * `deliverUserTurn`, and `handleExit`). Used by the interrupted-turn
+   * parent notification (Site 1 in `handleExit`) to know WHICH turn was cut
+   * off by a mid-turn exit.
+   */
+  activeTurnId: string | null;
   /** Set by deactivate() so the exit observer can classify a managed shutdown. */
   shutdownRequested: boolean;
   consecutiveParseFailures: number;
@@ -1007,9 +1056,15 @@ export class EmbeddedAgentWorkerService {
       let activatedRuleNames: string[] | undefined;
       let restoreInfo: RestoreInfo | null = null;
       // Transcript Restore, R1: the turn (if any) that the previous
-      // incarnation left unanswered. Detected during the same replay that
-      // reconstructs the conversation, appended after the spawn so the
-      // marker lands in stream order after everything it describes.
+      // incarnation left unanswered, plus whether an `exited` row was ever
+      // observed for it. Detected during the same replay that reconstructs
+      // the conversation, appended after the spawn so the marker lands in
+      // stream order after everything it describes. `interruptedTurnId` is
+      // derived from `interrupted` below rather than kept as the sole
+      // variable, so the turn-interrupted marker append (unchanged) and the
+      // parent-notification decision (new, gated on `exitObserved`) can both
+      // read the same detection pass.
+      let interrupted: { turnId: string; exitObserved: boolean } | null = null;
       let interruptedTurnId: string | null = null;
       const restoreContext = {
         sessionId,
@@ -1106,8 +1161,11 @@ export class EmbeddedAgentWorkerService {
           };
           // R1 (the local half of #1273): the same replay that produced the
           // conversation also tells us whether the previous incarnation was
-          // cut off mid-turn.
-          interruptedTurnId = findInterruptedTurnId(streamText);
+          // cut off mid-turn, and whether the server already observed its
+          // exit (and therefore already sent the parent-notification from
+          // Site 1 in handleExit).
+          interrupted = findInterruptedTurn(streamText);
+          interruptedTurnId = interrupted?.turnId ?? null;
           // 4e: success -- skip resetWorkerOutput entirely. No new epoch, no
           // truncate. But the in-memory worker object may be stale relative to
           // the on-disk manifest (e.g. freshly reconstructed by WorkerManager
@@ -1410,6 +1468,7 @@ export class EmbeddedAgentWorkerService {
       const runtime: Runtime = {
         ctx,
         turnActive: false,
+        activeTurnId: null,
         shutdownRequested: false,
         consecutiveParseFailures: 0,
         streamsDone: Promise.resolve(),
@@ -1437,6 +1496,22 @@ export class EmbeddedAgentWorkerService {
       // `turn-error` -- see the event's doc comment.
       if (interruptedTurnId !== null) {
         this.appendEvent(ctx, { v: 1, type: 'turn-interrupted', turnId: interruptedTurnId });
+      }
+
+      // Interrupted-turn parent notification, Site 2: the previous
+      // incarnation died WITHOUT the server ever observing its exit (e.g. a
+      // server restart) -- so Site 1 in handleExit never ran for it, and
+      // this is the first and only chance to tell a delegating parent the
+      // turn will not complete. Gated on `!interrupted.exitObserved`
+      // specifically so a death the server DID observe (which already got
+      // its notification from Site 1) is not reported a second time here.
+      if (interrupted !== null && !interrupted.exitObserved) {
+        await this.notifyParentOfInterruptedTurn(sessionId, workerId, session, {
+          turnId: interrupted.turnId,
+          cause: 'unobserved',
+          exitReason: 'server-restart',
+          exitCode: 'unknown',
+        });
       }
 
       runtime.streamsDone = Promise.all([
@@ -1781,6 +1856,11 @@ export class EmbeddedAgentWorkerService {
     this.touchIdle(workerId);
 
     const id = crypto.randomUUID();
+    // Interrupted-turn parent notification: record which turn is now in
+    // flight, so a later mid-turn exit (Site 1 in handleExit) knows which
+    // turn it cut off. No await since the admission section above and this
+    // point, so this cannot race a concurrent admission.
+    runtime.activeTurnId = id;
     // Two separate objects: `command` (stdin, loop protocol -- unchanged
     // shape) and `event` (persisted stream, may carry `clientMessageId` /
     // `notification`). The loop protocol is correlation-agnostic; only the
@@ -1829,6 +1909,7 @@ export class EmbeddedAgentWorkerService {
       this.writeCommand(stdin, command);
     } catch (err) {
       runtime.turnActive = false;
+      runtime.activeTurnId = null;
       logger.warn({ sessionId, workerId, err }, 'Failed to forward user message to embedded-agent stdin');
       return { ok: false, code: 'WRITE_FAILED', error: 'failed to write to subprocess stdin' };
     }
@@ -2407,6 +2488,7 @@ export class EmbeddedAgentWorkerService {
       this.broadcastActivity(ctx, event.state);
       if (event.state === 'idle') {
         runtime.turnActive = false;
+        runtime.activeTurnId = null;
         // Ending a fatal chain: a turn that reached its own end is the engine
         // demonstrating it still round-trips. An errored
         // turn counts -- `turn-error` is followed by `idle` and still proves
@@ -3002,6 +3084,17 @@ export class EmbeddedAgentWorkerService {
         ? 'managed'
         : 'unexpected';
 
+    // Interrupted-turn parent notification, Site 1: captured BEFORE
+    // `runtime.turnActive` is cleared below, so a mid-turn exit can be told
+    // apart from an idle one. `reason === 'evicted'`
+    // is excluded explicitly even though eviction never actually reaches this
+    // branch with `wasMidTurn` true today (the eviction commit-point re-check
+    // only drops an incarnation that is idle) -- stated here so a future
+    // change to eviction's semantics cannot silently start firing this
+    // notification for a deliberate eviction.
+    const wasMidTurn = runtime.turnActive;
+    const interruptedTurnIdOnExit = runtime.activeTurnId;
+
     // Append the server-authored exited row so the on-disk log is complete.
     this.appendEvent(ctx, {
       v: 1,
@@ -3046,6 +3139,7 @@ export class EmbeddedAgentWorkerService {
     worker.stdin = null;
     this.deps.mcpTokenRegistry.revokeByWorker(workerId);
     runtime.turnActive = false;
+    runtime.activeTurnId = null;
     worker.activityState = 'idle';
     this.broadcastActivity(ctx, 'idle');
 
@@ -3055,6 +3149,22 @@ export class EmbeddedAgentWorkerService {
     if (session) {
       await this.deps.persistSession(session);
       this.deps.onSessionUpdated(session);
+    }
+
+    // Interrupted-turn parent notification, Site 1 (continued): the turn was
+    // mid-flight and the subprocess just exited, so it will never complete.
+    // Deliberately placed after the session persist above and before the
+    // connection-callback/global-exit fanout below -- this is additive
+    // telemetry to a DIFFERENT worker's stream, not part of this worker's
+    // own exit contract. Wrapped entirely inside the helper's own try/catch
+    // so a failure here can never alter this method's own cleanup or return.
+    if (wasMidTurn && interruptedTurnIdOnExit !== null && reason !== 'evicted' && session) {
+      await this.notifyParentOfInterruptedTurn(sessionId, workerId, session, {
+        turnId: interruptedTurnIdOnExit,
+        cause: 'exit',
+        exitReason: reason,
+        exitCode: String(code ?? 'null'),
+      });
     }
 
     const snapshot = Array.from(worker.connectionCallbacks.values());
@@ -3068,6 +3178,75 @@ export class EmbeddedAgentWorkerService {
       this.runtimes.delete(workerId);
     }
     logger.info({ sessionId, workerId, code, reason }, 'Embedded-agent worker exited');
+  }
+
+  /**
+   * Interrupted-turn parent notification (notifying a delegating parent session that a child worker's turn was interrupted): tells a
+   * delegating parent session that THIS worker's turn was interrupted by
+   * death and will not complete, so the parent is not left waiting on a
+   * reply that can never come. Called from two sites: `handleExit` (Site 1,
+   * `cause: 'exit'`, the server observed the death directly) and the
+   * activation restore branch (Site 2, `cause: 'unobserved'`, the previous
+   * incarnation died without the server ever seeing its exit -- e.g. a
+   * server restart).
+   *
+   * A no-op when the session has no `parentSessionId` (not a delegated
+   * session at all). Logs and returns when it has a `parentSessionId` but no
+   * `parentWorkerId` -- a shape that should not occur in practice (a
+   * delegated session always records both together), but is not treated as
+   * an error since there is genuinely nowhere to deliver to.
+   *
+   * Entirely wrapped in its own try/catch so a delivery failure (or an
+   * unexpected throw from the delivery seam) can NEVER alter the caller's
+   * own cleanup or control flow -- both call sites are deep inside paths
+   * (activation, exit handling) that must complete regardless of whether
+   * this best-effort notification succeeds.
+   */
+  private async notifyParentOfInterruptedTurn(
+    sessionId: string,
+    workerId: string,
+    session: InternalSession,
+    info: { turnId: string; cause: 'exit' | 'unobserved'; exitReason: string; exitCode: string },
+  ): Promise<void> {
+    const { parentSessionId, parentWorkerId } = session;
+    if (parentSessionId === undefined) return;
+    if (parentWorkerId === undefined) {
+      logger.info(
+        { sessionId, workerId, parentSessionId },
+        'Embedded-agent turn interrupted, but the delegating session has no parentWorkerId to notify',
+      );
+      return;
+    }
+    const summary = `Embedded worker ${workerId} (session ${sessionId}): turn ${info.turnId} was interrupted (${info.cause}, ${info.exitReason}) and will not complete`;
+    const params: PtyNotificationParams = {
+      kind: 'internal-worker-interrupted',
+      tag: 'internal:worker-interrupted',
+      fields: {
+        sessionId,
+        workerId,
+        turnId: info.turnId,
+        cause: info.cause,
+        exitReason: info.exitReason,
+        exitCode: info.exitCode,
+        summary,
+        hint: 'Re-send your instruction with send_session_message, or restart the worker; do not wait for a reply to the interrupted turn',
+      },
+      intent: 'triage',
+    };
+    try {
+      const result = await this.deps.deliverWorkerNotification(parentSessionId, parentWorkerId, params);
+      if (!result.ok) {
+        logger.warn(
+          { sessionId, workerId, parentSessionId, parentWorkerId, error: result.error },
+          'Failed to deliver interrupted-turn notification to delegating parent',
+        );
+      }
+    } catch (err) {
+      logger.warn(
+        { sessionId, workerId, parentSessionId, parentWorkerId, err },
+        'Interrupted-turn notification to delegating parent threw',
+      );
+    }
   }
 
   private safeKill(subprocess: PipedSubprocess, signal: number): void {

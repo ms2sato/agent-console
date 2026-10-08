@@ -327,6 +327,7 @@ interface Harness {
   globalActivity: ReturnType<typeof mock>;
   globalExit: ReturnType<typeof mock>;
   listByScope: ReturnType<typeof mock>;
+  deliverWorkerNotification: ReturnType<typeof mock>;
   recorder: Recorder;
 }
 
@@ -414,6 +415,8 @@ function setup(opts?: {
   disableClaudeAiConnectors?: boolean;
   /** Overrides the whole `resolveDisableClaudeAiConnectors` fn, e.g. to assert call args or simulate a throwing repository. */
   resolveDisableClaudeAiConnectorsFn?: ReturnType<typeof mock>;
+  /** Interrupted-turn parent notification: the result `deliverWorkerNotification` resolves to. Defaults to `{ ok: true }`. */
+  deliverWorkerNotificationResult?: { ok: true } | { ok: false; error: string };
 }): Harness {
   const definition = 'definition' in (opts ?? {}) ? opts!.definition : buildDefinition();
   const createdBy = opts && 'createdBy' in opts ? opts.createdBy : 'user-1';
@@ -500,6 +503,10 @@ function setup(opts?: {
   const globalActivity = mock(() => {});
   const globalExit = mock(() => {});
   const listByScope = mock(async () => opts?.mcpServerPermissionRows ?? []);
+  const deliverWorkerNotification = mock(
+    async (_sessionId: string, _workerId: string, _params: PtyNotificationParams) =>
+      opts?.deliverWorkerNotificationResult ?? ({ ok: true } as const),
+  );
 
   const recorder: Recorder = {
     onData: mock(() => {}),
@@ -542,6 +549,7 @@ function setup(opts?: {
     embeddedAgentBunPath: opts?.embeddedAgentBunPathOverride,
     getGlobalActivityCallback: () => globalActivity as never,
     getGlobalWorkerExitCallback: () => globalExit as never,
+    deliverWorkerNotification: deliverWorkerNotification as never,
     shutdownGraceMs: opts?.shutdownGraceMs,
     sigtermTimeoutMs: opts?.sigtermTimeoutMs,
   };
@@ -569,6 +577,7 @@ function setup(opts?: {
     globalActivity,
     globalExit,
     listByScope,
+    deliverWorkerNotification,
     recorder,
   };
 }
@@ -3324,6 +3333,22 @@ const COMPLETED_TURN_STREAM = [
   JSON.stringify({ v: 1, type: 'state', state: 'idle' }),
 ].join('\n');
 
+/**
+ * A persisted stream describing one completed turn followed by a second,
+ * unanswered turn (`m2`) that the previous incarnation died mid-flight on,
+ * with NO `exited` row ever observed for it -- module-scoped (not local to
+ * the "turn-interrupted marker" describe block below) so the interrupted-
+ * turn parent notification tests (Site 2) can reuse it unmodified,
+ * and so its `exited`-appended sibling variant can be derived from it.
+ */
+const INTERRUPTED_STREAM = [
+  JSON.stringify({ v: 1, type: 'user-message', id: 'm1', text: 'hi there' }),
+  JSON.stringify({ v: 1, type: 'assistant-message', turnId: 'm1', text: 'hello back' }),
+  JSON.stringify({ v: 1, type: 'state', state: 'idle' }),
+  JSON.stringify({ v: 1, type: 'user-message', id: 'm2', text: 'and this one died' }),
+  JSON.stringify({ v: 1, type: 'state', state: 'active' }),
+].join('\n');
+
 describe('EmbeddedAgentWorkerService — sending `resume` in the init command (R1)', () => {
   it('sends the persisted sdkSessionId on a re-activation of a claude-sdk worker', async () => {
     const h = setup({
@@ -4209,14 +4234,6 @@ describe('EmbeddedAgentWorkerService — sdk-resume-failed handling (R1)', () =>
 });
 
 describe('EmbeddedAgentWorkerService — turn-interrupted marker (R1, local half of #1273)', () => {
-  const INTERRUPTED_STREAM = [
-    JSON.stringify({ v: 1, type: 'user-message', id: 'm1', text: 'hi there' }),
-    JSON.stringify({ v: 1, type: 'assistant-message', turnId: 'm1', text: 'hello back' }),
-    JSON.stringify({ v: 1, type: 'state', state: 'idle' }),
-    JSON.stringify({ v: 1, type: 'user-message', id: 'm2', text: 'and this one died' }),
-    JSON.stringify({ v: 1, type: 'state', state: 'active' }),
-  ].join('\n');
-
   it('appends a turn-interrupted row for the turn the previous incarnation never answered', async () => {
     const h = setup({
       everActivated: true,
@@ -4264,6 +4281,243 @@ describe('EmbeddedAgentWorkerService — turn-interrupted marker (R1, local half
 
     const appended = h.bufferOutput.mock.calls.map((c) => String(c[2]));
     expect(appended.some((line) => line.includes('"turn-interrupted"'))).toBe(true);
+  });
+});
+
+/**
+ * A persisted stream identical to `INTERRUPTED_STREAM` above, but with the
+ * server-authored `exited` row actually appended after the unanswered turn
+ * -- the shape the server itself produces via Site 1 (`handleExit`) when it
+ * observed the previous incarnation's death directly. Used by the Site 2
+ * (activation restore) tests below to exercise the `exitObserved: true`
+ * branch, which must NOT re-notify (Site 1 already did).
+ */
+const INTERRUPTED_STREAM_WITH_EXITED = [
+  INTERRUPTED_STREAM,
+  JSON.stringify({ v: 1, type: 'exited', code: 137, reason: 'unexpected' }),
+].join('\n');
+
+describe('EmbeddedAgentWorkerService — interrupted-turn parent notification', () => {
+  it('Site 1: a mid-turn unexpected exit notifies the delegating parent with cause=exit, after the exited row is appended', async () => {
+    // Reach: removing the Site 1 notification call in handleExit (or
+    // dropping the `wasMidTurn` / `interruptedTurnIdOnExit !== null` guard)
+    // makes `deliverWorkerNotification` never called here.
+    const h = setup({ parentSessionId: 'parent-s', parentWorkerId: 'parent-w' });
+    await h.service.activate(h.sessionId, h.workerId);
+
+    const sent = await h.service.sendUserMessage(h.sessionId, h.workerId, 'hello');
+    if (!sent.ok || !('id' in sent)) throw new Error('expected sendUserMessage to succeed with an id');
+    const turnId = sent.id;
+
+    let exitedAlreadyAppendedAtNotifyTime = false;
+    h.deliverWorkerNotification.mockImplementationOnce(async () => {
+      exitedAlreadyAppendedAtNotifyTime = appendedLines(h.bufferOutput).some((l) => l.includes('"type":"exited"'));
+      return { ok: true };
+    });
+
+    h.fake.simulateExit(1);
+    await waitFor(() => h.deliverWorkerNotification.mock.calls.length > 0);
+
+    expect(h.deliverWorkerNotification).toHaveBeenCalledTimes(1);
+    expect(h.deliverWorkerNotification).toHaveBeenCalledWith(
+      'parent-s',
+      'parent-w',
+      expect.objectContaining({
+        kind: 'internal-worker-interrupted',
+        tag: 'internal:worker-interrupted',
+        fields: expect.objectContaining({
+          sessionId: h.sessionId,
+          workerId: h.workerId,
+          turnId,
+          cause: 'exit',
+          exitReason: 'unexpected',
+          exitCode: '1',
+        }),
+        intent: 'triage',
+      }),
+    );
+    expect(exitedAlreadyAppendedAtNotifyTime).toBe(true);
+
+    // polarity: commenting out the Site 1 notification call in handleExit
+    // (`if (wasMidTurn && interruptedTurnIdOnExit !== null && ...)`) made
+    // this assertion fail (deliverWorkerNotification never called); restored
+    // after confirming the failure. Confirmed 2026-10-08.
+  });
+
+  it('does not notify when the exit is not mid-turn (the worker was idle)', async () => {
+    const h = setup({ parentSessionId: 'parent-s', parentWorkerId: 'parent-w' });
+    await h.service.activate(h.sessionId, h.workerId);
+
+    h.fake.simulateExit(0);
+    await waitFor(() => h.worker.subprocess === null);
+
+    expect(h.deliverWorkerNotification).not.toHaveBeenCalled();
+  });
+
+  it('Site 1: a mid-turn managed exit (deactivate) also notifies, with exitReason=managed', async () => {
+    const h = setup({ parentSessionId: 'parent-s', parentWorkerId: 'parent-w' });
+    await h.service.activate(h.sessionId, h.workerId);
+
+    const sent = await h.service.sendUserMessage(h.sessionId, h.workerId, 'hello');
+    if (!sent.ok || !('id' in sent)) throw new Error('expected sendUserMessage to succeed with an id');
+
+    const dp = h.service.deactivate(h.sessionId, h.workerId);
+    h.fake.simulateExit(0);
+    await dp;
+
+    expect(h.deliverWorkerNotification).toHaveBeenCalledTimes(1);
+    expect(h.deliverWorkerNotification).toHaveBeenCalledWith(
+      'parent-s',
+      'parent-w',
+      expect.objectContaining({
+        fields: expect.objectContaining({ turnId: sent.id, cause: 'exit', exitReason: 'managed', exitCode: '0' }),
+      }),
+    );
+  });
+
+  it('does not notify when the session has no parentSessionId at all', async () => {
+    const h = setup(); // no parentSessionId / parentWorkerId
+    await h.service.activate(h.sessionId, h.workerId);
+
+    const sent = await h.service.sendUserMessage(h.sessionId, h.workerId, 'hello');
+    if (!sent.ok) throw new Error('expected sendUserMessage to succeed');
+
+    h.fake.simulateExit(1);
+    await waitFor(() => h.worker.subprocess === null);
+
+    expect(h.deliverWorkerNotification).not.toHaveBeenCalled();
+  });
+
+  it('logs and does not notify when the session has a parentSessionId but no parentWorkerId', async () => {
+    const h = setup({ parentSessionId: 'parent-s' }); // no parentWorkerId
+    await h.service.activate(h.sessionId, h.workerId);
+
+    const sent = await h.service.sendUserMessage(h.sessionId, h.workerId, 'hello');
+    if (!sent.ok) throw new Error('expected sendUserMessage to succeed');
+
+    const infoSpy = spyOn(rootLogger, 'info');
+    try {
+      h.fake.simulateExit(1);
+      await waitFor(() => h.worker.subprocess === null);
+
+      expect(h.deliverWorkerNotification).not.toHaveBeenCalled();
+      expect(
+        infoSpy.mock.calls.some(
+          (call) =>
+            typeof call[1] === 'string' &&
+            call[1].includes('no parentWorkerId') &&
+            (call[0] as Record<string, unknown>).sessionId === h.sessionId,
+        ),
+      ).toBe(true);
+    } finally {
+      infoSpy.mockRestore();
+    }
+  });
+
+  it('a failed delivery (ok: false) does not alter exit cleanup, and logs a warning', async () => {
+    const h = setup({
+      parentSessionId: 'parent-s',
+      parentWorkerId: 'parent-w',
+      deliverWorkerNotificationResult: { ok: false, error: 'boom' },
+    });
+    await h.service.activate(h.sessionId, h.workerId);
+    h.recorder.onExit.mockClear();
+
+    const sent = await h.service.sendUserMessage(h.sessionId, h.workerId, 'hello');
+    if (!sent.ok) throw new Error('expected sendUserMessage to succeed');
+
+    const warnSpy = spyOn(rootLogger, 'warn');
+    try {
+      h.fake.simulateExit(1);
+      await waitFor(() => h.worker.subprocess === null);
+
+      // Exit cleanup completed identically to the plain unexpected-exit test
+      // in the "EmbeddedAgentWorkerService exit handling" describe block
+      // above.
+      expect(appendedLines(h.bufferOutput)).toContain('{"v":1,"type":"exited","code":1,"reason":"unexpected"}');
+      expect(h.revokeByWorker).toHaveBeenCalledWith(h.workerId);
+      expect(h.worker.subprocess).toBeNull();
+      expect(h.worker.stdin).toBeNull();
+      expect(h.recorder.onExit).toHaveBeenCalledWith(1, null, 'unexpected');
+
+      expect(
+        warnSpy.mock.calls.some(
+          (call) =>
+            typeof call[1] === 'string' && call[1].includes('Failed to deliver interrupted-turn notification'),
+        ),
+      ).toBe(true);
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it('Site 2: activation restore with no exited row observed (exitObserved: false) notifies with cause=unobserved', async () => {
+    const h = setup({
+      parentSessionId: 'parent-s',
+      parentWorkerId: 'parent-w',
+      everActivated: true,
+      readHistoryWithOffsetResult: { data: INTERRUPTED_STREAM },
+    });
+
+    await h.service.activate(h.sessionId, h.workerId);
+
+    // The turn-interrupted marker still fires unconditionally (unchanged).
+    const appended = h.bufferOutput.mock.calls.map((c) => String(c[2]));
+    expect(appended.some((line) => line.includes('"turn-interrupted"'))).toBe(true);
+
+    expect(h.deliverWorkerNotification).toHaveBeenCalledTimes(1);
+    expect(h.deliverWorkerNotification).toHaveBeenCalledWith(
+      'parent-s',
+      'parent-w',
+      expect.objectContaining({
+        fields: expect.objectContaining({
+          turnId: 'm2',
+          cause: 'unobserved',
+          exitReason: 'server-restart',
+          exitCode: 'unknown',
+        }),
+      }),
+    );
+  });
+
+  it('Site 2: activation restore where the server already observed the exit (exitObserved: true) does NOT re-notify', async () => {
+    const h = setup({
+      parentSessionId: 'parent-s',
+      parentWorkerId: 'parent-w',
+      everActivated: true,
+      readHistoryWithOffsetResult: { data: INTERRUPTED_STREAM_WITH_EXITED },
+    });
+
+    await h.service.activate(h.sessionId, h.workerId);
+
+    // The turn-interrupted marker still fires unconditionally (unchanged).
+    const appended = h.bufferOutput.mock.calls.map((c) => String(c[2]));
+    expect(appended.some((line) => line.includes('"turn-interrupted"'))).toBe(true);
+
+    // polarity: temporarily changing Site 2's guard from
+    // `!interrupted.exitObserved` to always-true made this assertion fail
+    // (deliverWorkerNotification called once); restored after confirming
+    // the failure. Confirmed 2026-10-08.
+    expect(h.deliverWorkerNotification).not.toHaveBeenCalled();
+  });
+
+  it('does not notify on a first-ever activation (nothing to restore)', async () => {
+    const h = setup({ parentSessionId: 'parent-s', parentWorkerId: 'parent-w', everActivated: false });
+    await h.service.activate(h.sessionId, h.workerId);
+
+    expect(h.deliverWorkerNotification).not.toHaveBeenCalled();
+  });
+
+  it('does not notify on a restore whose last turn already completed', async () => {
+    const h = setup({
+      parentSessionId: 'parent-s',
+      parentWorkerId: 'parent-w',
+      everActivated: true,
+      readHistoryWithOffsetResult: { data: COMPLETED_TURN_STREAM },
+    });
+    await h.service.activate(h.sessionId, h.workerId);
+
+    expect(h.deliverWorkerNotification).not.toHaveBeenCalled();
   });
 });
 
