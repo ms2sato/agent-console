@@ -272,7 +272,7 @@ export interface AssembleSystemPromptParams {
 }
 
 /**
- * The wait-by-ending-the-turn rule (Issue #1856). A notification (process
+ * The wait-by-ending-the-turn rule. A notification (process
  * output, wakeup, timer, reply from another session) that arrives while a turn
  * is active is parked server-side and delivered one per `state: idle`, so it
  * can never appear inside the turn that is waiting for it; polling tools in
