@@ -1444,12 +1444,19 @@ export class WorkerOutputFileManager {
    * file, or legacy compressed `.log.gz` file. An unparsable manifest
    * degrades to the same conservative `true` as a non-ENOENT stat failure.
    *
-   * The live-file check goes through `getActualFilePath` (not
-   * `getOutputFilePath` directly) so it also sees a worker whose stream was
-   * archived only to the legacy compressed form -- e.g. a worker that was
-   * previously a PTY worker and had its type flipped to embedded, leaving a
-   * manifest with `liveBaseOffset` 0 and no segments while the actual
-   * content lives at `<workerId>.log.gz` rather than `<workerId>.log`.
+   * The live-file check stats BOTH the uncompressed `.log` path and the
+   * legacy compressed `.log.gz` path directly, rather than going through
+   * `getActualFilePath` -- that helper's own `fileExists` swallows EVERY stat
+   * error (not just `ENOENT`) into "file does not exist", which would make a
+   * non-ENOENT error on the `.log` path (a permission error, filesystem
+   * corruption) silently read as "no live content" instead of the
+   * conservative `true` this method promises for such errors elsewhere. A
+   * worker whose stream was archived only to the legacy compressed form --
+   * e.g. one that was previously a PTY worker and had its type flipped to
+   * embedded, leaving a manifest with `liveBaseOffset` 0 and no segments
+   * while the actual content lives at `<workerId>.log.gz` rather than
+   * `<workerId>.log` -- is still covered: both paths are checked, and either
+   * one being non-empty is sufficient.
    *
    * Read-only existence check: does not join the per-worker serialization
    * domain (no interaction with pending-flush/segment-cache state).
@@ -1467,15 +1474,20 @@ export class WorkerOutputFileManager {
     if (manifest === null) return true; // Unparsable -- conservative.
     if (manifest.liveBaseOffset > 0 || manifest.segments.length > 0) return true;
 
-    const actualFile = await this.getActualFilePath(sessionId, workerId, resolver);
-    if (!actualFile) return false;
-    try {
-      const stats = await fs.stat(actualFile.path);
-      return stats.size > 0;
-    } catch (error) {
-      if (isErrnoException(error) && error.code === 'ENOENT') return false;
-      return true;
+    const filePaths = [
+      this.getOutputFilePath(sessionId, workerId, resolver),
+      path.join(resolver.getOutputsDir(), sessionId, `${workerId}.log.gz`),
+    ];
+    for (const filePath of filePaths) {
+      try {
+        const stats = await fs.stat(filePath);
+        if (stats.size > 0) return true;
+      } catch (error) {
+        if (isErrnoException(error) && error.code === 'ENOENT') continue;
+        return true; // Conservative: a non-ENOENT stat error is treated as "yes, assume activated".
+      }
     }
+    return false;
   }
 
   /**

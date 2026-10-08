@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, spyOn, mock } from 'bun:te
 import * as path from 'path';
 import { setupMemfs, cleanupMemfs } from '../../__tests__/utils/mock-fs-helper.js';
 import { vol, fs as memfs } from 'memfs';
+import * as fsPromisesNamespace from 'fs/promises';
 import { WorkerOutputFileManager } from '../worker-output-file.js';
 import { createInitialManifest, writeManifestDurable, manifestPathFor } from '../worker-output-manifest.js';
 import { SessionDataPathResolver } from '../session-data-path-resolver.js';
@@ -421,8 +422,8 @@ describe('WorkerOutputFileManager', () => {
       // (worker-lifecycle-manager's cross-type restart) can leave a manifest
       // with liveBaseOffset 0 and no segments, while the stream content
       // actually lives at `<workerId>.log.gz` rather than `<workerId>.log`.
-      // getActualFilePath (.log first, falling back to .log.gz) is what
-      // getOutputFilePath alone cannot see.
+      // hasEverBeenActivated stats BOTH paths directly (not through
+      // getOutputFilePath alone), so this is seen.
       const sessionId = 'session-legacy-compressed-only';
       const workerId = 'worker-1';
       const dir = `${TEST_CONFIG_DIR}/_quick/outputs/${sessionId}`;
@@ -434,6 +435,73 @@ describe('WorkerOutputFileManager', () => {
 
       const result = await manager.hasEverBeenActivated(sessionId, workerId, quickResolver);
       expect(result).toBe(true);
+    });
+
+    it('returns true when an empty .log coexists with a non-empty legacy .log.gz', async () => {
+      // The uncompressed `.log` path is checked first and is empty (size 0,
+      // not an error), so the loop must continue on to the legacy `.log.gz`
+      // path rather than stopping at the first, merely-present file.
+      const sessionId = 'session-empty-log-plus-gz';
+      const workerId = 'worker-1';
+      const dir = `${TEST_CONFIG_DIR}/_quick/outputs/${sessionId}`;
+      vol.mkdirSync(dir, { recursive: true });
+
+      const manifest = createInitialManifest(1000);
+      await writeManifestDurable(manifestPathFor(`${TEST_CONFIG_DIR}/_quick/outputs`, sessionId, workerId), manifest);
+      vol.writeFileSync(manager.getOutputFilePath(sessionId, workerId, quickResolver), '');
+      vol.writeFileSync(path.join(dir, `${workerId}.log.gz`), Buffer.from('not empty'));
+
+      const result = await manager.hasEverBeenActivated(sessionId, workerId, quickResolver);
+      expect(result).toBe(true);
+    });
+
+    it('conservatively returns true when a stat on the live .log file fails with a non-ENOENT error', async () => {
+      // The manifest itself exists, parses, and carries liveBaseOffset 0 /
+      // no segments, so the predicate must reach the live-file stat loop.
+      // There the `.log` path's own stat is forced to throw a non-ENOENT
+      // error (EACCES), which must be treated conservatively as `true`
+      // rather than silently swallowed into "no live content" the way
+      // `getActualFilePath`'s `fileExists` helper does (that swallowing is
+      // exactly the bug this predicate must not reintroduce).
+      //
+      // `spyOn(memfs.promises, 'stat')` (used by the sibling
+      // `conservatively returns true when the manifest stat fails` test
+      // above for the MANIFEST path, via directory-shape corruption) cannot
+      // be reused here: this method's own `fs.stat(manifestPath)` must
+      // SUCCEED first, and manifest path / `.log` path share the same
+      // parent directory, so any directory-shape corruption that breaks
+      // `.log`'s stat would break the manifest's stat identically. Instead
+      // this spies directly on the MOCKED `fs/promises` module object
+      // (imported here as `fsPromisesNamespace`) that worker-output-file.ts's
+      // own `import * as fs from 'fs/promises'` binds to -- unlike
+      // `memfs.promises` itself (a different object; see the sibling
+      // comment on `renameSpy` below for why spying on THAT object is
+      // invisible to this module), this IS the object the production import
+      // resolves against, so a targeted mock here is actually observed.
+      const sessionId = 'session-log-stat-eacces';
+      const workerId = 'worker-1';
+      const dir = `${TEST_CONFIG_DIR}/_quick/outputs/${sessionId}`;
+      vol.mkdirSync(dir, { recursive: true });
+
+      const manifest = createInitialManifest(1000);
+      await writeManifestDurable(manifestPathFor(`${TEST_CONFIG_DIR}/_quick/outputs`, sessionId, workerId), manifest);
+
+      const logPath = manager.getOutputFilePath(sessionId, workerId, quickResolver);
+      const originalStat = fsPromisesNamespace.stat;
+      const statSpy = spyOn(fsPromisesNamespace, 'stat').mockImplementation(((targetPath: unknown, ...rest: unknown[]) => {
+        if (targetPath === logPath) {
+          const err = Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' });
+          return Promise.reject(err);
+        }
+        return (originalStat as (...args: unknown[]) => unknown)(targetPath, ...rest);
+      }) as typeof fsPromisesNamespace.stat);
+
+      try {
+        const result = await manager.hasEverBeenActivated(sessionId, workerId, quickResolver);
+        expect(result).toBe(true);
+      } finally {
+        statSpy.mockRestore();
+      }
     });
 
     it('returns true when the live file holds only a persisted marker line (restore-failure declaration)', async () => {
