@@ -13,9 +13,11 @@ import type {
   AgentDefinition,
   AppServerMessage,
   EmbeddedAgentDefinition,
+  HookCommandResult,
   JobType,
   Repository,
   Session,
+  Worktree,
   WorktreeDeletePayload,
 } from '@agent-console/shared';
 import { asAppContext, TEST_AUTH_USER } from '../../__tests__/test-utils.js';
@@ -1743,20 +1745,47 @@ describe('Worktrees API', () => {
       expect(body.error).toContain('required');
     });
 
-    it('forwards authUser.username to findOpenPullRequest via deleteWorktree (Issue #885)', async () => {
-      // The DELETE handler must thread authUser.username into deleteWorktree's
-      // params (`requestUsername`), which deleteWorktree then forwards to the
-      // injected `findOpenPullRequest` as the 3rd positional arg so the gh
-      // CLI elevation in github-pr-service receives the requesting user.
-      // The default SingleUserMode used by asAppContext is constructed with
-      // TEST_AUTH_USER (username='testuser'), so we assert 'testuser' lands.
+    it('(a) resolves the worktree owner and threads it to findOpenPullRequest, removeWorktree, and the cleanup command (Issue #1868)', async () => {
+      // Before the #1868 fix, requestUsername was always authUser.username
+      // regardless of who owns the worktree. resolveWorktreeOwnerUsername
+      // resolving to 'shared1' here is what the fix must now forward to
+      // every elevation point deleteWorktree touches -- this supersedes
+      // the old Issue #885 pin, which only ever observed the requester
+      // fallback because no test gave resolveWorktreeOwnerUsername a
+      // non-null answer.
       const mockFindOpenPullRequest = mock<
         (branch: string, cwd: string, requestUsername: string | null) =>
           Promise<{ number: number; title: string } | null>
       >(async () => null);
+      const mockRemoveWorktree = mock<
+        (
+          repoPath: string,
+          path: string,
+          force: boolean,
+          requestUsername?: string | null,
+        ) => Promise<{ success: boolean; error?: string }>
+      >(async () => ({ success: true }));
+      const mockExecuteHookCommand = mock<
+        (
+          command: string,
+          worktreePath: string,
+          vars: { worktreeNum: number; branch: string; repo: string },
+          requestUsername?: string | null,
+        ) => Promise<HookCommandResult>
+      >(async () => ({ success: true }));
+
+      const repoWithCleanup: Repository = { ...TEST_REPO, cleanupCommand: 'echo cleanup' };
+      const cleanupWorktree: Worktree = {
+        path: WORKTREE_PATH,
+        branch: 'feature-branch',
+        isMain: false,
+        repositoryId: TEST_REPO.id,
+        index: 1,
+      };
 
       const mockSessionManager = asSessionManager({
         getAllSessions: () => [],
+        resolveWorktreeOwnerUsername: mock(() => Promise.resolve('shared1')),
         killSessionWorkers: mock(() => Promise.resolve()),
         deleteSession: mock(() => Promise.resolve(true)),
       });
@@ -1764,8 +1793,16 @@ describe('Worktrees API', () => {
       app = new Hono<AppBindings>();
       app.use('*', async (c, next) => {
         c.set('appContext', asAppContext({
-          repositoryManager: mockRepositoryManager,
-          worktreeService: mockWorktreeService,
+          repositoryManager: asRepositoryManager({
+            getRepository: () => repoWithCleanup,
+          }),
+          worktreeService: asWorktreeService({
+            listWorktrees: mock(() => Promise.resolve([cleanupWorktree])),
+            isWorktreeOf: mock(() => Promise.resolve(true)),
+            removeWorktree: mockRemoveWorktree,
+            executeHookCommand: mockExecuteHookCommand,
+            removeOrphanedWorktree: mock(() => Promise.resolve()),
+          }),
           sessionManager: mockSessionManager,
           findOpenPullRequest: mockFindOpenPullRequest,
           broadcastToApp: () => {},
@@ -1775,16 +1812,98 @@ describe('Worktrees API', () => {
       app.onError(onApiError);
       app.route('/api', api);
 
-      // Sync deletion path (no taskId) so we can await the result and assert.
       const res = await app.request(
         `/api/repositories/${TEST_REPO.id}/worktrees/${encodedPath(WORKTREE_PATH)}`,
         { method: 'DELETE' },
       );
 
       expect(res.status).toBe(200);
+
       expect(mockFindOpenPullRequest).toHaveBeenCalledTimes(1);
-      const [, , requestUsername] = mockFindOpenPullRequest.mock.calls[0];
-      expect(requestUsername).toBe('testuser');
+      expect(mockFindOpenPullRequest.mock.calls[0]?.[2]).toBe('shared1');
+
+      expect(mockRemoveWorktree).toHaveBeenCalledTimes(1);
+      expect(mockRemoveWorktree.mock.calls[0]?.[3]).toBe('shared1');
+
+      expect(mockExecuteHookCommand).toHaveBeenCalledTimes(1);
+      expect(mockExecuteHookCommand.mock.calls[0]?.[3]).toBe('shared1');
+    });
+
+    it('(b) falls back to the requester when no session owns the path (Issue #1868)', async () => {
+      const mockFindOpenPullRequest = mock<
+        (branch: string, cwd: string, requestUsername: string | null) =>
+          Promise<{ number: number; title: string } | null>
+      >(async () => null);
+      const mockRemoveWorktree = mock<
+        (
+          repoPath: string,
+          path: string,
+          force: boolean,
+          requestUsername?: string | null,
+        ) => Promise<{ success: boolean; error?: string }>
+      >(async () => ({ success: true }));
+      const mockExecuteHookCommand = mock<
+        (
+          command: string,
+          worktreePath: string,
+          vars: { worktreeNum: number; branch: string; repo: string },
+          requestUsername?: string | null,
+        ) => Promise<HookCommandResult>
+      >(async () => ({ success: true }));
+
+      const repoWithCleanup: Repository = { ...TEST_REPO, cleanupCommand: 'echo cleanup' };
+      const cleanupWorktree: Worktree = {
+        path: WORKTREE_PATH,
+        branch: 'feature-branch',
+        isMain: false,
+        repositoryId: TEST_REPO.id,
+        index: 1,
+      };
+
+      const mockSessionManager = asSessionManager({
+        getAllSessions: () => [],
+        resolveWorktreeOwnerUsername: mock(() => Promise.resolve(null)),
+        killSessionWorkers: mock(() => Promise.resolve()),
+        deleteSession: mock(() => Promise.resolve(true)),
+      });
+
+      app = new Hono<AppBindings>();
+      app.use('*', async (c, next) => {
+        c.set('appContext', asAppContext({
+          repositoryManager: asRepositoryManager({
+            getRepository: () => repoWithCleanup,
+          }),
+          worktreeService: asWorktreeService({
+            listWorktrees: mock(() => Promise.resolve([cleanupWorktree])),
+            isWorktreeOf: mock(() => Promise.resolve(true)),
+            removeWorktree: mockRemoveWorktree,
+            executeHookCommand: mockExecuteHookCommand,
+            removeOrphanedWorktree: mock(() => Promise.resolve()),
+          }),
+          sessionManager: mockSessionManager,
+          findOpenPullRequest: mockFindOpenPullRequest,
+          broadcastToApp: () => {},
+        }));
+        await next();
+      });
+      app.onError(onApiError);
+      app.route('/api', api);
+
+      const res = await app.request(
+        `/api/repositories/${TEST_REPO.id}/worktrees/${encodedPath(WORKTREE_PATH)}`,
+        { method: 'DELETE' },
+      );
+
+      expect(res.status).toBe(200);
+
+      expect(mockFindOpenPullRequest).toHaveBeenCalledTimes(1);
+      expect(mockFindOpenPullRequest.mock.calls[0]?.[2]).toBe(TEST_AUTH_USER.username);
+
+      expect(mockRemoveWorktree).toHaveBeenCalledTimes(1);
+      expect(mockRemoveWorktree.mock.calls[0]?.[3]).toBe(TEST_AUTH_USER.username);
+
+      expect(mockExecuteHookCommand).toHaveBeenCalledTimes(1);
+      expect(mockExecuteHookCommand.mock.calls[0]?.[3]).toBe(TEST_AUTH_USER.username);
     });
 
     // =======================================================================
@@ -1919,6 +2038,10 @@ describe('Worktrees API', () => {
 
         const mockSessionManager = asSessionManager({
           getAllSessions: () => [],
+          // No owning session for this orphaned path -> falls back to
+          // authUser.username ('testuser'), matching this test's existing
+          // removeOrphanedWorktree assertion below (Issue #1868).
+          resolveWorktreeOwnerUsername: mock(() => Promise.resolve(null)),
           killSessionWorkers: mock(() => Promise.resolve()),
           deleteSession: mock(() => Promise.resolve(true)),
         });
@@ -1983,6 +2106,44 @@ describe('Worktrees API', () => {
         // the threading gap end-to-end.
         expect(mockWorktreeService.removeOrphanedWorktree).toHaveBeenCalledWith(WORKTREE_PATH, 'testuser');
         expect(mockWorktreeService.removeWorktree).not.toHaveBeenCalled();
+      });
+
+      it('(c) enqueues the resolved owner identity, not the requester, in the job payload (Issue #1868)', async () => {
+        // The route resolves requestUsername ONCE, before the async/sync
+        // split, so the owner identity must already be the value captured
+        // in the enqueued payload -- the job handler itself needs no
+        // change for this.
+        const mockSessionManager = asSessionManager({
+          getAllSessions: () => [],
+          resolveWorktreeOwnerUsername: mock(() => Promise.resolve('shared1')),
+        });
+
+        app = new Hono<AppBindings>();
+        app.use('*', async (c, next) => {
+          c.set('appContext', asAppContext({
+            repositoryManager: mockRepositoryManager,
+            worktreeService: mockWorktreeService,
+            sessionManager: mockSessionManager,
+            jobQueue: testJobQueue!,
+          }));
+          await next();
+        });
+        app.onError(onApiError);
+        app.route('/api', api);
+
+        const res = await app.request(
+          `/api/repositories/${TEST_REPO.id}/worktrees/${encodedPath(WORKTREE_PATH)}?async=true`,
+          { method: 'DELETE' },
+        );
+
+        expect(res.status).toBe(202);
+        const body = (await res.json()) as { accepted: boolean; jobId: string };
+
+        const jobs = await testJobQueue!.getJobs({ type: 'worktree:delete' });
+        expect(jobs.length).toBe(1);
+        const payload = JSON.parse(jobs[0]!.payload) as WorktreeDeletePayload;
+        expect(payload.jobId).toBe(body.jobId);
+        expect(payload.requestUsername).toBe('shared1');
       });
     });
   });

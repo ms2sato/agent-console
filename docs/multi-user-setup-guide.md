@@ -1506,7 +1506,9 @@ that person can do on GitHub.
   agent needs (typically Contents, Issues, Pull requests). Owned by a
   dedicated machine user when one exists; export it as `GH_TOKEN` from the
   shared account's `~/.profile` (the GitHub CLI's documented path for
-  fine-grained tokens).
+  fine-grained tokens). Deleting one of the account's worktrees without
+  `force` runs the open-PR check as that account, so this token must exist
+  or the deletion is refused with a message naming the account.
 - **Verify the boundary**, as the shared account: `git ls-remote` on the
   bound repository succeeds, and a write against a repository outside the
   scope is refused — use a disposable repository you control (for example
