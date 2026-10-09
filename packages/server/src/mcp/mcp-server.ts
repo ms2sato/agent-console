@@ -254,6 +254,45 @@ function truncateTitle(title: string): string {
 }
 
 /**
+ * Strip control characters that terminals may interpret, mirroring
+ * `formatFieldValue`'s sanitization in lib/pty-notification.ts. Not reused
+ * from there directly because that function also quotes/collapses
+ * whitespace for key=value PTY field encoding, which a plain label
+ * embedded in prose does not want -- and because the embedded-agent
+ * delivery surface never routes its `notification.summary` through
+ * `formatFieldValue` at all (only the PTY branch's `buildPtyNotificationText`
+ * does), so a label built from an unsanitized title would reach one
+ * surface clean and the other raw.
+ */
+function stripControlChars(value: string): string {
+  return value.replace(/[\x00-\x08\x0e-\x1f\x7f\x80-\x9f]/g, '');
+}
+
+/**
+ * Build a human-readable label for a session to use in a notification
+ * summary. This feeds the sole `summary` template in `send_session_message`'s
+ * delivery step below, which is itself the single template shared by both
+ * delivery surfaces (the PTY `[internal:message]` notification text and the
+ * embedded-agent `notification.summary`).
+ *
+ * Label precedence: `title` if set (sanitized/truncated like other titles
+ * in this file) -> else, for a `type: 'worktree'` session, its
+ * `worktreeId` (the branch name) -> else (a quick session) the literal
+ * "quick session". An empty or whitespace-only title counts as unset. A
+ * short id prefix is always appended for disambiguation, since two
+ * sessions can share a branch-derived label after a re-dispatch.
+ */
+function describeSessionForNotification(session: Session): string {
+  const title = session.title?.trim();
+  const label = title
+    ? truncateTitle(stripControlChars(title))
+    : session.type === 'worktree'
+      ? session.worktreeId
+      : 'quick session';
+  return `${label} (${session.id.slice(0, 8)})`;
+}
+
+/**
  * Resolve an artifact's display title per the chain in
  * docs/design/html-artifacts.md §5.3: explicit `title` param -> the
  * document's `<title>` -> its first heading (`<h1>`..`<h6>`) -> the literal
@@ -873,14 +912,14 @@ export function createMcpApp(deps: McpDependencies): Hono {
         //    EmbeddedAgentWorkerService.sendSystemNotification -- the latter
         //    also activates a dormant worker on delivery, so no separate
         //    activateEmbeddedAgentWorker call is needed here).
-        const senderTitle = senderSession.title ?? fromSessionId;
+        const senderLabel = describeSessionForNotification(senderSession);
         const notificationParams = {
           kind: 'internal-message' as const,
           tag: 'internal:message' as const,
           fields: {
             source: 'session',
             from: fromSessionId,
-            summary: `Message from session ${senderTitle}`,
+            summary: `Message from session ${senderLabel}`,
             path: result.path,
           },
           intent: 'triage' as const,

@@ -1695,6 +1695,131 @@ describe('MCP Server Tools', () => {
       expect(allWritten).toContain('intent=triage');
     });
 
+    // Issue #1358: a titleless sender's notification summary must never show
+    // a raw session UUID -- describeSessionForNotification's label
+    // precedence (title -> worktreeId -> 'quick session'), always suffixed
+    // with a short id, verified at the one shared `summary` template via
+    // the PTY-delivered notification text.
+    describe('notification summary sender label (Issue #1358)', () => {
+      it('uses the title, not the branch, when a worktree sender has a title', async () => {
+        await registerTestRepo();
+        const session = await sessionManager.createSession({
+          type: 'quick',
+          locationPath: '/test/path',
+          agentId: 'claude-code',
+        });
+        const senderSession = await sessionManager.createSession({
+          type: 'worktree',
+          locationPath: '/test/sender-worktree',
+          repositoryId: 'repo-1',
+          worktreeId: 'feature-branch',
+          agentId: 'claude-code',
+          title: 'Fix the login bug',
+        });
+
+        const mockPty = ptyFactory.instances[0];
+        expect(mockPty).toBeDefined();
+
+        await callTool(app, mcpSessionId, 'send_session_message', {
+          toSessionId: session.id,
+          content: 'done',
+          fromSessionId: senderSession.id,
+        }, nextId++);
+
+        const allWritten = mockPty.writtenData.join('');
+        expect(allWritten).toContain(
+          `Message from session Fix the login bug (${senderSession.id.slice(0, 8)})`,
+        );
+        expect(allWritten).not.toContain('feature-branch');
+      });
+
+      it('falls back to the branch name for a titleless worktree sender', async () => {
+        await registerTestRepo();
+        const session = await sessionManager.createSession({
+          type: 'quick',
+          locationPath: '/test/path',
+          agentId: 'claude-code',
+        });
+        const senderSession = await sessionManager.createSession({
+          type: 'worktree',
+          locationPath: '/test/sender-worktree',
+          repositoryId: 'repo-1',
+          worktreeId: 'feature-branch',
+          agentId: 'claude-code',
+        });
+
+        const mockPty = ptyFactory.instances[0];
+        expect(mockPty).toBeDefined();
+
+        await callTool(app, mcpSessionId, 'send_session_message', {
+          toSessionId: session.id,
+          content: 'done',
+          fromSessionId: senderSession.id,
+        }, nextId++);
+
+        const allWritten = mockPty.writtenData.join('');
+        expect(allWritten).toContain(
+          `Message from session feature-branch (${senderSession.id.slice(0, 8)})`,
+        );
+      });
+
+      it('falls back to the literal "quick session" for a titleless quick sender', async () => {
+        const session = await sessionManager.createSession({
+          type: 'quick',
+          locationPath: '/test/path',
+          agentId: 'claude-code',
+        });
+        const senderSession = await sessionManager.createSession({
+          type: 'quick',
+          locationPath: '/test/sender-path',
+          agentId: 'claude-code',
+        });
+
+        const mockPty = ptyFactory.instances[0];
+        expect(mockPty).toBeDefined();
+
+        await callTool(app, mcpSessionId, 'send_session_message', {
+          toSessionId: session.id,
+          content: 'done',
+          fromSessionId: senderSession.id,
+        }, nextId++);
+
+        const allWritten = mockPty.writtenData.join('');
+        expect(allWritten).toContain(
+          `Message from session quick session (${senderSession.id.slice(0, 8)})`,
+        );
+        expect(allWritten).not.toContain(`Message from session ${senderSession.id}`);
+      });
+
+      it('treats an empty-string title as unset, falling back like a titleless sender', async () => {
+        const session = await sessionManager.createSession({
+          type: 'quick',
+          locationPath: '/test/path',
+          agentId: 'claude-code',
+        });
+        const senderSession = await sessionManager.createSession({
+          type: 'quick',
+          locationPath: '/test/sender-path',
+          agentId: 'claude-code',
+          title: '',
+        });
+
+        const mockPty = ptyFactory.instances[0];
+        expect(mockPty).toBeDefined();
+
+        await callTool(app, mcpSessionId, 'send_session_message', {
+          toSessionId: session.id,
+          content: 'done',
+          fromSessionId: senderSession.id,
+        }, nextId++);
+
+        const allWritten = mockPty.writtenData.join('');
+        expect(allWritten).toContain(
+          `Message from session quick session (${senderSession.id.slice(0, 8)})`,
+        );
+      });
+    });
+
     it('should split notification text and Enter keystroke into separate writes with delay', async () => {
       jest.useFakeTimers();
       try {
@@ -2026,7 +2151,7 @@ describe('MCP Server Tools', () => {
         .find((event) => event.type === 'user-message');
       expect(persistedUserMessage?.notification).toEqual({
         kind: 'internal-message',
-        summary: `Message from session ${senderSession.title ?? senderSession.id}`,
+        summary: `Message from session quick session (${senderSession.id.slice(0, 8)})`,
       });
 
       const deactivatePromise = sessionManager.deactivateEmbeddedAgentWorker(session.id, embeddedWorker!.id);
