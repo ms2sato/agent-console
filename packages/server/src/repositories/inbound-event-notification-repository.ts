@@ -12,8 +12,13 @@ const logger = createLogger('inbound-event-notification-repository');
 export const NOTIFICATION_STATUS = {
   /** Handler is currently executing */
   PENDING: 'pending',
-  /** Handler executed successfully */
+  /** Handler executed successfully (includes "nothing to do here") */
   DELIVERED: 'delivered',
+  /**
+   * Handler determined delivery should happen and it did not -- a
+   * terminal status, never retried.
+   */
+  FAILED: 'failed',
 } as const;
 
 export type NotificationStatus = (typeof NOTIFICATION_STATUS)[keyof typeof NOTIFICATION_STATUS];
@@ -97,6 +102,36 @@ export class InboundEventNotificationRepository {
     logger.debug(
       { jobId, sessionId, workerId, handlerId },
       'Inbound event notification marked as delivered'
+    );
+  }
+
+  /**
+   * Mark a notification as failed AFTER the handler determined delivery
+   * should happen and it did not. Sets status to 'failed' and leaves
+   * `notified_at` null -- delivery never happened, so there is no
+   * delivery timestamp to record. Mirrors `markNotificationDelivered`'s
+   * shape otherwise.
+   */
+  async markNotificationFailed(
+    jobId: string,
+    sessionId: string,
+    workerId: string,
+    handlerId: string
+  ): Promise<void> {
+    await this.db
+      .updateTable('inbound_event_notifications')
+      .set({
+        status: NOTIFICATION_STATUS.FAILED,
+      })
+      .where('job_id', '=', jobId)
+      .where('session_id', '=', sessionId)
+      .where('worker_id', '=', workerId)
+      .where('handler_id', '=', handlerId)
+      .execute();
+
+    logger.debug(
+      { jobId, sessionId, workerId, handlerId },
+      'Inbound event notification marked as failed'
     );
   }
 

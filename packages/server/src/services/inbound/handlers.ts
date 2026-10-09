@@ -58,6 +58,19 @@ export function canDeliverToAgentWorker(session: Session): boolean {
   return session.workers.some(canReceiveSessionMessages);
 }
 
+/**
+ * The result of a handler's attempt to act on an inbound event for one
+ * target, distinguishing "nothing to do here" from "should have delivered
+ * and could not" -- job-handler.ts maps these to the notification
+ * ledger's terminal status: `'handled'` / `'not-applicable'` both mean
+ * the processing attempt completed without a delivery failure (->
+ * `delivered`), while `'delivery-failed'` means the handler determined it
+ * SHOULD deliver but the delivery itself failed (-> `failed`). This is a
+ * fact about THIS handler's own attempt, not about whether some other
+ * handler for the same target succeeded.
+ */
+export type HandlerOutcome = 'handled' | 'not-applicable' | 'delivery-failed';
+
 export interface InboundEventHandler {
   /** Handler identifier */
   readonly handlerId: string;
@@ -67,9 +80,11 @@ export interface InboundEventHandler {
    * Handle the event for a specific target.
    * @param event - The inbound event (already validated by job-handler)
    * @param target - The target session/worker to notify
-   * @returns true if the handler performed an action, false if skipped
+   * @returns `'handled'` if the handler performed an action, `'not-applicable'`
+   * if it had nothing to do (e.g. no deliverable worker), `'delivery-failed'`
+   * if it determined delivery should happen but the delivery itself failed.
    */
-  handle(event: InboundSystemEvent, target: EventTarget): Promise<boolean>;
+  handle(event: InboundSystemEvent, target: EventTarget): Promise<HandlerOutcome>;
 }
 
 /**
@@ -102,16 +117,16 @@ class AgentWorkerHandler implements InboundEventHandler {
 
   constructor(private sessionManager: InboundSessionManager) {}
 
-  async handle(event: InboundSystemEvent, target: EventTarget): Promise<boolean> {
+  async handle(event: InboundSystemEvent, target: EventTarget): Promise<HandlerOutcome> {
     const session = this.sessionManager.getSession(target.sessionId);
-    if (!session) return false;
+    if (!session) return 'not-applicable';
 
-    if (!target.workerId && !canDeliverToAgentWorker(session)) return false;
+    if (!target.workerId && !canDeliverToAgentWorker(session)) return 'not-applicable';
 
     // First match in `session.workers` order, deterministic, same as
     // today's `find`.
     const workerId = target.workerId ?? session.workers.find(canReceiveSessionMessages)?.id;
-    if (!workerId) return false;
+    if (!workerId) return 'not-applicable';
 
     const sessionId = target.sessionId;
     // Validate event type at runtime before using it in the exhaustive switch
@@ -120,7 +135,7 @@ class AgentWorkerHandler implements InboundEventHandler {
         { eventType: event.type, sessionId, workerId },
         'Unexpected event type received by AgentWorkerHandler',
       );
-      return false;
+      return 'not-applicable';
     }
 
     // The seam's PTY branch never throws (writePtyNotification's own
@@ -150,17 +165,17 @@ class AgentWorkerHandler implements InboundEventHandler {
         { err, sessionId, workerId, eventType: event.type },
         'notification delivery failed for inbound event',
       );
-      return false;
+      return 'delivery-failed';
     }
     if (!result.ok) {
       handlerLogger.warn(
         { error: result.error, sessionId, workerId, eventType: event.type },
         'notification delivery failed for inbound event',
       );
-      return false;
+      return 'delivery-failed';
     }
 
-    return true;
+    return 'handled';
   }
 
   private resolveIntent(type: AgentWorkerEventType): PtyNotificationIntent {
@@ -188,17 +203,17 @@ class DiffWorkerHandler implements InboundEventHandler {
 
   constructor(private sessionManager: InboundSessionManager) {}
 
-  async handle(_event: InboundSystemEvent, target: EventTarget): Promise<boolean> {
-    if (target.fallback) return false;
+  async handle(_event: InboundSystemEvent, target: EventTarget): Promise<HandlerOutcome> {
+    if (target.fallback) return 'not-applicable';
 
     const session = this.sessionManager.getSession(target.sessionId);
-    if (!session) return false;
+    if (!session) return 'not-applicable';
 
     const hasDiffWorker = session.workers.some((worker) => worker.type === 'git-diff');
-    if (!hasDiffWorker) return false;
+    if (!hasDiffWorker) return 'not-applicable';
 
     triggerRefresh(session.locationPath);
-    return true;
+    return 'handled';
   }
 }
 
@@ -211,7 +226,7 @@ class UINotificationHandler implements InboundEventHandler {
 
   constructor(private broadcastToApp: InboundHandlerDependencies['broadcastToApp']) {}
 
-  async handle(event: InboundSystemEvent, target: EventTarget): Promise<boolean> {
+  async handle(event: InboundSystemEvent, target: EventTarget): Promise<HandlerOutcome> {
     this.broadcastToApp({
       type: 'inbound-event',
       sessionId: target.sessionId,
@@ -222,6 +237,6 @@ class UINotificationHandler implements InboundEventHandler {
         metadata: event.metadata,
       },
     });
-    return true;
+    return 'handled';
   }
 }
