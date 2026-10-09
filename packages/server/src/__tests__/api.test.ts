@@ -2558,7 +2558,7 @@ describe('API Routes Integration', () => {
         expect(res.status).toBe(503);
         const body = (await res.json()) as { error: string };
         expect(body.error).toMatch(/did not run/);
-        expect(body.error).not.toContain('open PR');
+        expect(body.error).not.toContain('has open PR #');
       });
 
       it('should broadcast worktree-deletion-completed with empty sessionIds when repository is unregistered (orphan async path, refs #815)', async () => {

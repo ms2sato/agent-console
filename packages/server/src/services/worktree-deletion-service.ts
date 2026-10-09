@@ -276,23 +276,12 @@ export interface DeleteWorktreeParams {
    *   failure when the server user (`agentconsole`) tries to delete files
    *   owned by a delegated user.
    * - `findOpenPullRequest`'s `gh pr list` invocation runs under the
-   *   requesting user's gh auth token instead of the server user's — unless
-   *   `precheckUsername` below overrides it for that one call.
+   *   requesting user's gh auth token instead of the server user's.
    *
    * Optional / null / undefined / single-user mode — both elevation points
    * bypass `sudo` and the existing direct-spawn behaviour is preserved.
    */
   requestUsername?: string | null;
-  /**
-   * Identity whose gh auth runs `gh pr list`; falls back to
-   * `requestUsername`; never used for the removal itself. Lets the
-   * open-PR precheck resolve via the caller's identity when the target
-   * session's owner is unresolvable (`requestUsername` is null) — the
-   * caller is who is asking, and their gh auth exists.
-   * `getCurrentBranch` and the actual worktree removal always use
-   * `requestUsername`, never this field.
-   */
-  precheckUsername?: string | null;
 }
 
 /**
@@ -310,7 +299,7 @@ export async function deleteWorktree(
   params: DeleteWorktreeParams,
   deps: DeleteWorktreeDeps,
 ): Promise<DeleteWorktreeResult> {
-  const { repoId, worktreePath, force, requestUsername, precheckUsername } = params;
+  const { repoId, worktreePath, force, requestUsername } = params;
   const { worktreeService, sessionManager, repositoryManager, findOpenPullRequest, getCurrentBranch } = deps;
 
   // 1. Look up repository.
@@ -359,7 +348,7 @@ export async function deleteWorktree(
     try {
       branch = await getCurrentBranch(worktreePath, requestUsername);
       if (branch && branch !== '(detached)' && branch !== '(unknown)') {
-        const openPr = await findOpenPullRequest(branch, repo.path, precheckUsername ?? requestUsername ?? null);
+        const openPr = await findOpenPullRequest(branch, repo.path, requestUsername ?? null);
         if (openPr) {
           return {
             success: false,
@@ -374,12 +363,18 @@ export async function deleteWorktree(
     } catch (error) {
       // Distinguish "the check could not run" (infra/auth failure) from
       // "the check ran and found an open PR" (above): the former is not a
-      // reason to treat `force` as the only path forward.
-      const identity = precheckUsername ?? requestUsername ?? 'the server user';
+      // reason to treat `force` as the only path forward. When
+      // `requestUsername` is null there is no identity to fix gh auth
+      // for -- the actionable remedy is different (the web UI resolves
+      // the requester's own identity via REST's `?? authUser.username`
+      // fallback), so the two cases get different endings.
       const message = error instanceof Error ? error.message : String(error);
+      const ending = requestUsername
+        ? `fix gh auth for ${requestUsername}, or pass force to skip the check.`
+        : 'this session has no resolvable owner; delete the worktree from the web UI, where the check runs as you, or pass force.';
       return {
         success: false,
-        error: `Could not verify open PRs for branch '${branch ?? '(unresolved)'}' as ${identity} -- the check did not run (${message}). This is an infrastructure failure, not an open PR; fix gh auth for ${identity}, or pass force to skip the check.`,
+        error: `Could not verify open PRs for branch '${branch ?? '(unresolved)'}' as ${requestUsername ?? 'the server user'} -- the check did not run (${message}). This is an infrastructure failure, not an open PR; ${ending}`,
         errorType: 'precheck-failed',
       };
     }

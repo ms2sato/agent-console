@@ -218,7 +218,7 @@ describe('Client-Server Boundary: DELETE worktree route resolves the owner, not 
     const body = (await res.json()) as { error: string };
     expect(body.error).toContain('as shared1');
     expect(body.error).toMatch(/did not run/);
-    expect(body.error).not.toContain('open PR');
+    expect(body.error).not.toContain('has open PR #');
     expect(capturedIdentities).toEqual(['shared1']);
     expect(mockRemoveWorktree).not.toHaveBeenCalled();
   });

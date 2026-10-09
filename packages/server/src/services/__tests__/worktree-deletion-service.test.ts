@@ -473,7 +473,7 @@ describe('deleteWorktree', () => {
     expect(result.errorType).toBe('precheck-failed');
     expect(result.error).toMatch(/did not run/);
     expect(result.error).toContain('as the server user');
-    expect(result.error).not.toContain('open PR');
+    expect(result.error).not.toContain('has open PR #');
   });
 
   it('names the identity in the precheck-failed message when requestUsername is set (Issue #1868, #1295)', async () => {
@@ -506,6 +506,47 @@ describe('deleteWorktree', () => {
     expect(result.success).toBe(false);
     expect(result.errorType).toBe('precheck-failed');
     expect(result.error).toContain("as the server user -- the check did not run");
+  });
+
+  it('ends with the web-UI remedy, not a gh-auth instruction, when requestUsername is null (Architect ruling, Issue #1295)', async () => {
+    // No caller-identity fallback exists for the precheck (checkCallerOwnsSession
+    // rejects any mismatched caller before reaching this code), so a null
+    // requestUsername has no identity to "fix gh auth for" -- the message
+    // must point at the actual remedy (the web UI, via REST's requester
+    // fallback) instead.
+    const deps = createMockDeps({
+      sessions: [DEFAULT_WORKTREE_SESSION],
+      findOpenPullRequest: async () => { throw new Error('gh not found'); },
+    });
+
+    const result = await deleteWorktree(
+      { repoId: 'repo-1', worktreePath: WORKTREE_PATH, force: false, requestUsername: null },
+      deps,
+    );
+
+    expect(result.success).toBe(false);
+    expect(result.errorType).toBe('precheck-failed');
+    expect(result.error).toContain(
+      'this session has no resolvable owner; delete the worktree from the web UI, where the check runs as you, or pass force',
+    );
+    expect(result.error).not.toContain('fix gh auth for the server user');
+  });
+
+  it('ends with a gh-auth instruction naming the identity when requestUsername is set (Issue #1295)', async () => {
+    const deps = createMockDeps({
+      sessions: [DEFAULT_WORKTREE_SESSION],
+      findOpenPullRequest: async () => { throw new Error('gh not found'); },
+    });
+
+    const result = await deleteWorktree(
+      { repoId: 'repo-1', worktreePath: WORKTREE_PATH, force: false, requestUsername: 'shared1' },
+      deps,
+    );
+
+    expect(result.success).toBe(false);
+    expect(result.errorType).toBe('precheck-failed');
+    expect(result.error).toContain('fix gh auth for shared1, or pass force to skip the check');
+    expect(result.error).not.toContain('no resolvable owner');
   });
 
   it('getCurrentBranch failing is also precheck-failed (same catch, Issue #1295)', async () => {
@@ -579,75 +620,6 @@ describe('deleteWorktree', () => {
 
       expect(result.success).toBe(true);
       expect(result.openPrCheck).toBe('passed');
-    });
-  });
-
-  // --- precheckUsername: caller-identity fallback for the precheck only (Issue #1295) ---
-
-  describe('precheckUsername (Issue #1295)', () => {
-    it('(c) findOpenPullRequest receives precheckUsername while getCurrentBranch receives requestUsername', async () => {
-      const mockFindPr = mock<DeleteWorktreeDeps['findOpenPullRequest']>(async () => null);
-      const mockGetCurrentBranch = mock<DeleteWorktreeDeps['getCurrentBranch']>(async () => 'feature-1');
-      const deps = createMockDeps({
-        sessions: [DEFAULT_WORKTREE_SESSION],
-        findOpenPullRequest: mockFindPr,
-        getCurrentBranch: mockGetCurrentBranch,
-      });
-
-      const result = await deleteWorktree(
-        {
-          repoId: 'repo-1',
-          worktreePath: WORKTREE_PATH,
-          force: false,
-          requestUsername: 'bob',
-          precheckUsername: 'alice',
-        },
-        deps,
-      );
-
-      expect(result.success).toBe(true);
-      expect(mockFindPr.mock.calls[0]).toEqual(['feature-1', REPO_PATH, 'alice']);
-      expect(mockGetCurrentBranch.mock.calls[0]).toEqual([WORKTREE_PATH, 'bob']);
-    });
-
-    it('(d) precheckUsername undefined: findOpenPullRequest receives requestUsername', async () => {
-      const mockFindPr = mock<DeleteWorktreeDeps['findOpenPullRequest']>(async () => null);
-      const deps = createMockDeps({
-        sessions: [DEFAULT_WORKTREE_SESSION],
-        findOpenPullRequest: mockFindPr,
-        getCurrentBranch: async () => 'feature-1',
-      });
-
-      const result = await deleteWorktree(
-        { repoId: 'repo-1', worktreePath: WORKTREE_PATH, force: false, requestUsername: 'bob' },
-        deps,
-      );
-
-      expect(result.success).toBe(true);
-      expect(mockFindPr.mock.calls[0]).toEqual(['feature-1', REPO_PATH, 'bob']);
-    });
-
-    it('boundary: precheckUsername: null behaves as undefined (falls back to requestUsername)', async () => {
-      const mockFindPr = mock<DeleteWorktreeDeps['findOpenPullRequest']>(async () => null);
-      const deps = createMockDeps({
-        sessions: [DEFAULT_WORKTREE_SESSION],
-        findOpenPullRequest: mockFindPr,
-        getCurrentBranch: async () => 'feature-1',
-      });
-
-      const result = await deleteWorktree(
-        {
-          repoId: 'repo-1',
-          worktreePath: WORKTREE_PATH,
-          force: false,
-          requestUsername: 'bob',
-          precheckUsername: null,
-        },
-        deps,
-      );
-
-      expect(result.success).toBe(true);
-      expect(mockFindPr.mock.calls[0]).toEqual(['feature-1', REPO_PATH, 'bob']);
     });
   });
 

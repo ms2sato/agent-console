@@ -1578,20 +1578,13 @@ export function createMcpApp(deps: McpDependencies): Hono {
           { toolName: 'remove_worktree', sessionId },
         );
 
-        // 2a. When the target session's owner is unresolvable,
-        //     `requestUsername` is null and the open-PR precheck would run
-        //     as the server user, which has no gh auth. Fall back to the
-        //     CALLER's identity for the precheck only (never for the
-        //     removal itself) — the caller is who is asking, and their gh
-        //     auth exists. When the owner resolved, pass nothing: owner
-        //     wins, today's behaviour is unchanged.
-        const precheckUsername = requestUsername === null
-          ? await resolveRequestUsername(
-            getMcpCallerIdentity()?.userId,
-            userRepository,
-            { toolName: 'remove_worktree', sessionId, precheckFallback: true },
-          )
-          : undefined;
+        // No caller-identity fallback for the precheck: `checkCallerOwnsSession`
+        // above already rejects any presented token whose `userId` does not
+        // literally equal `session.createdBy`, in every mcpAuthMode. So an
+        // ownerless session (requestUsername null) is reachable here only by
+        // a tokenless caller -- there is no caller identity to fall back to.
+        // The documented remedy is the web UI, where REST's `?? authUser.username`
+        // fallback makes the check run as the requester.
 
         // 3. Delegate all domain logic to service
         const result = await deleteWorktree(
@@ -1600,7 +1593,6 @@ export function createMcpApp(deps: McpDependencies): Hono {
             worktreePath: session.locationPath,
             force: force ?? false,
             requestUsername,
-            precheckUsername,
           },
           { worktreeService, sessionManager, repositoryManager, findOpenPullRequest, getCurrentBranch },
         );
