@@ -7,9 +7,11 @@
 import type { Kysely } from 'kysely';
 import type { Database } from '../../database/schema.js';
 import { createLogger } from '../../lib/logger.js';
+import { conflictUpdateSet } from '../../repositories/conflict-update-set.js';
 import type { RepositorySlackIntegration } from '@agent-console/shared';
 import type {
   RepositorySlackIntegrationRow,
+  RepositorySlackIntegrationRowFull,
   NewRepositorySlackIntegration,
   RepositorySlackIntegrationUpdate,
 } from '../../database/schema.js';
@@ -146,25 +148,24 @@ export class RepositorySlackIntegrationService {
     webhookUrl: string,
     enabled: boolean = true
   ): Promise<RepositorySlackIntegration> {
-    const id = crypto.randomUUID();
     const now = new Date().toISOString();
+
+    const row: RepositorySlackIntegrationRowFull = {
+      id: crypto.randomUUID(),
+      repository_id: repositoryId,
+      webhook_url: webhookUrl,
+      enabled: enabled ? 1 : 0,
+      created_at: now,
+      updated_at: now,
+    };
 
     const result = await this.db
       .insertInto('repository_slack_integrations')
-      .values({
-        id,
-        repository_id: repositoryId,
-        webhook_url: webhookUrl,
-        enabled: enabled ? 1 : 0,
-        created_at: now,
-        updated_at: now,
-      })
+      .values(row)
       .onConflict((oc) =>
-        oc.column('repository_id').doUpdateSet({
-          webhook_url: webhookUrl,
-          enabled: enabled ? 1 : 0,
-          updated_at: now,
-        })
+        oc
+          .column('repository_id')
+          .doUpdateSet(conflictUpdateSet(row, ['id', 'repository_id', 'created_at'] as const))
       )
       .returningAll()
       .executeTakeFirstOrThrow();

@@ -1,8 +1,9 @@
 import type { Kysely } from 'kysely';
 import type { AuthUser, UserPreferences } from '@agent-console/shared';
 import type { UserRepository } from './user-repository.js';
-import type { Database } from '../database/schema.js';
+import type { Database, UserRowFull } from '../database/schema.js';
 import { createLogger } from '../lib/logger.js';
+import { conflictUpdateSet } from './conflict-update-set.js';
 
 const logger = createLogger('sqlite-user-repository');
 
@@ -13,42 +14,40 @@ export class SqliteUserRepository implements UserRepository {
     const id = crypto.randomUUID();
     const now = new Date().toISOString();
 
+    const row: UserRowFull = {
+      id,
+      os_uid: osUid,
+      username,
+      home_dir: homeDir,
+      created_at: now,
+      updated_at: now,
+    };
+
     // Atomic upsert: INSERT ... ON CONFLICT (os_uid) WHERE os_uid IS NOT NULL DO UPDATE
     // The WHERE clause is required to match the partial unique index on os_uid.
     // Eliminates TOCTOU race condition from the previous check-then-insert pattern.
-    const row = await this.db
+    const result = await this.db
       .insertInto('users')
-      .values({
-        id,
-        os_uid: osUid,
-        username,
-        home_dir: homeDir,
-        created_at: now,
-        updated_at: now,
-      })
+      .values(row)
       .onConflict((oc) =>
         oc.column('os_uid')
           .where('os_uid', 'is not', null)
-          .doUpdateSet({
-            username,
-            home_dir: homeDir,
-            updated_at: now,
-          })
+          .doUpdateSet(conflictUpdateSet(row, ['id', 'os_uid', 'created_at'] as const))
       )
       .returningAll()
       .executeTakeFirstOrThrow();
 
     // If the returned id matches what we generated, it was an insert
-    if (row.id === id) {
-      logger.info({ userId: row.id, osUid, username }, 'Created new user record');
+    if (result.id === id) {
+      logger.info({ userId: result.id, osUid, username }, 'Created new user record');
     } else {
-      logger.info({ userId: row.id, osUid, username }, 'Updated user record via upsert');
+      logger.info({ userId: result.id, osUid, username }, 'Updated user record via upsert');
     }
 
     return {
-      id: row.id,
-      username: row.username,
-      homeDir: row.home_dir,
+      id: result.id,
+      username: result.username,
+      homeDir: result.home_dir,
     };
   }
 

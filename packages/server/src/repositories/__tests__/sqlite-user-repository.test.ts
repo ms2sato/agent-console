@@ -168,6 +168,16 @@ describe('SqliteUserRepository', () => {
       expect(alice.username).toBe('alice');
       expect(bob.username).toBe('bob');
     });
+
+    it('does not reset disableClaudeAiConnectors on a later upsert (os-identity sync must not touch preferences)', async () => {
+      const user = await repository.upsertByOsUid(1001, 'alice', '/home/alice');
+      await repository.setPreferences(user.id, { disableClaudeAiConnectors: true });
+
+      await repository.upsertByOsUid(1001, 'alice', '/home/alice');
+
+      const preferences = await repository.getPreferences(user.id);
+      expect(preferences).toEqual({ disableClaudeAiConnectors: true });
+    });
   });
 
   describe('getOsUidById', () => {

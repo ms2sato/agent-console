@@ -379,6 +379,9 @@ export type NewRepositorySlackIntegration = Insertable<RepositorySlackIntegratio
 /** Repository Slack integration data for UPDATE queries */
 export type RepositorySlackIntegrationUpdate = Updateable<RepositorySlackIntegrationsTable>;
 
+/** Same rationale as `SessionRowFull`, for `repository_slack_integrations`. */
+export type RepositorySlackIntegrationRowFull = Required<NewRepositorySlackIntegration>;
+
 /**
  * Worktrees table schema.
  * Stores worktree index data, replacing the JSON-based worktree-indexes.json.
@@ -485,6 +488,18 @@ export type UserRow = Selectable<UsersTable>;
 export type NewUser = Insertable<UsersTable>;
 /** User data for UPDATE queries */
 export type UserUpdate = Updateable<UsersTable>;
+
+/**
+ * Same rationale as `SessionRowFull`, for `users` -- except
+ * `disable_claude_ai_connectors`, deliberately omitted: its sole writer is
+ * `setPreferences` (`sqlite-user-repository.ts`), and `upsertByOsUid`'s
+ * identity-sync upsert must never write it. Because `conflictUpdateSet`
+ * derives its update set from the row's own keys, omitting the key here
+ * (rather than adding it to the immutable list) is what keeps it out of
+ * BOTH the insert and the ON CONFLICT SET clause -- the insert relies on
+ * the column's own `DEFAULT 0`, exactly as today.
+ */
+export type UserRowFull = Required<Omit<NewUser, 'disable_claude_ai_connectors'>>;
 
 /**
  * Timers table schema.
