@@ -746,7 +746,7 @@ target), reference it from the systemd unit with `EnvironmentFile=-`, then
 | `NODE_ENV` | _(unset)_ | Set to `production` for browser-based deployments: it enables the web UI **and**, by default, marks the auth cookie `Secure`. The `Secure` cookie then needs a secure context — HTTPS, or `http://localhost` — see [TLS, `NODE_ENV`, and secure contexts](#tls-node_env-and-secure-contexts). |
 | `AUTH_COOKIE_SECURE` | _(unset)_ | Tri-state override for the auth cookie's `Secure` attribute, decoupling it from `NODE_ENV`. Unset → follows `NODE_ENV` (default); `false` → never `Secure` (for trusted-network plain-HTTP deployments); `true` → always `Secure`. Invalid values fail fast at startup. See [Plain HTTP on a trusted network](#plain-http-on-a-trusted-network-auth_cookie_secure). |
 | `PTY_PROVIDER` | _(unset; server default `bun-terminal`)_ | Override for the PTY backend. Valid values: `bun-terminal` (default; the `Bun.spawn({ terminal: ... })` provider, Bun ≥ 1.3.5) or `bun-pty` (the bun-pty native shared library). Stage 2 (Issue [#827](https://github.com/ms2sato/agent-console/issues/827)) flipped the compiled default to `bun-terminal`; `bun-pty` remains selectable for one release as a rollback escape hatch, with Stage 3 (Issue [#828](https://github.com/ms2sato/agent-console/issues/828)) removing it. The backend migration was evaluated under Issue [#824](https://github.com/ms2sato/agent-console/issues/824). The bootstrap script exposes this as `--pty-provider <name>` (or env `AGENT_CONSOLE_PTY_PROVIDER`); when unset, the rendered systemd unit omits the entry entirely so the server falls back to its compiled default. Invalid values are rejected at bootstrap time before any system state is touched. |
-| `AGENT_CONSOLE_MCP_AUTH` | _(unset)_ | Mode for missing-MCP-token handling on EVERY `/mcp` request (transport-level gate, Issue #1269): `off`, `warn`, or `enforce`. Unset resolves to `warn` for every `AUTH_MODE`, including multi-user (Sprint 2026-07-16; see Issue #1107 for the enforce-by-default restoration path). Setting `enforce` explicitly while `AUTH_MODE` is not `multi-user` fails server startup with a configuration error: `resolveMcpAuthMode` rejects the combination because MCP bearer tokens for terminal-agent workers are only minted when `AUTH_MODE=multi-user` (`worker-manager.ts`'s mint gate — see [Ruling 2](design/embedded-agent-worker.md#transport-level-authn-gate-issue-1269)), so enforcing without it would reject every terminal-agent MCP call outright; this is a deliberate fail-fast, not a bug. See [MCP authentication mode](#mcp-authentication-mode-agent_console_mcp_auth) below — most deployments should leave this unset. |
+| `AGENT_CONSOLE_MCP_AUTH` | _(unset)_ | Mode for missing-MCP-token handling on EVERY `/mcp` request (transport-level gate, Issue #1269): `off`, `warn`, or `enforce`. Unset resolves to `warn` for every `AUTH_MODE`, including multi-user (Sprint 2026-07-16, PR #1109; restoring `enforce`-by-default is not planned — see the closed Issue #1107 for the prerequisites). Setting `enforce` explicitly while `AUTH_MODE` is not `multi-user` fails server startup with a configuration error: `resolveMcpAuthMode` rejects the combination because MCP bearer tokens for terminal-agent workers are only minted when `AUTH_MODE=multi-user` (`worker-manager.ts`'s mint gate — see [Ruling 2](design/embedded-agent-worker.md#transport-level-authn-gate-issue-1269)), so enforcing without it would reject every terminal-agent MCP call outright; this is a deliberate fail-fast, not a bug. See [MCP authentication mode](#mcp-authentication-mode-agent_console_mcp_auth) below — most deployments should leave this unset. |
 | `EMBEDDED_AGENT_BUN_PATH` | `process.execPath` (the running server's own bun binary) | Absolute path (or bare command name) used to invoke `bun` when spawning the embedded-agent worker's loop subprocess. Defaulting to `process.execPath` (Issue #1291) is exact by construction in single-user/dev: it is literally the same binary file the server itself is running, with no PATH lookup involved. Multi-user mode MUST set this to an absolute path (e.g. `/usr/local/bin/bun`) because the subprocess runs inside an elevated, non-interactive login shell that does not source `.bashrc` and cannot resolve a user-local `~/.bun/bin/bun` by bare name (Issue #1221; see [`.claude/rules/os-environment-coupling.md`](../.claude/rules/os-environment-coupling.md)). `scripts/setup-multiuser-for-ubuntu.sh` sets this to the SAME value as `ExecStart` (Issue #1222) — the server process and the embedded-agent subprocess always execute the identical file, so drift between them is structurally impossible; re-run the setup script after a `bun upgrade` to refresh which version that shared file is. |
 
 | `AGENT_CONSOLE_SHARED_USERNAME` | _(unset)_ | **Ignored since Release 2.** Shared accounts are registered and bound to repositories through the Settings UI / `/api/shared-accounts` (DB-backed), not this variable — `sharedAccountsAvailable` now reflects whether the DB-backed set is non-empty, and which account a repository's shared sessions run as is decided by that repository's binding, never by this variable. If this variable is still set on the unit, the server logs a startup warning asking the operator to remove it (and a second warning if the DB-backed set is empty, since then shared sessions are disabled even though the variable is set). Provision the OS account with `scripts/setup-shared-account.sh`, then register and bind it per [Shared Account Setup](#shared-account-setup-shared-sessions). Removing this variable from the unit file is a separate, owner-gated deploy step — it is not required for the feature to work, only for the warning to stop. |
@@ -1337,8 +1337,10 @@ enforcement can set `AGENT_CONSOLE_MCP_AUTH=enforce` explicitly once every
 agent path (embedded-agent via stdin `init`, terminal-agent via the token
 file below, including `headersHelper` wiring per target user) carries a
 token — see [Terminal-agent MCP token file](#terminal-agent-mcp-token-file-multi-user-mode)
-below. Restoring `enforce` as the multi-user default is tracked in Issue
-[#1107](https://github.com/ms2sato/agent-console/issues/1107).
+below. Restoring `enforce` as the multi-user default is not planned; the
+prerequisites are recorded in the closed Issue
+[#1107](https://github.com/ms2sato/agent-console/issues/1107) and
+reconsideration requires a fresh Issue.
 
 **Startup error: `enforce` requires `AUTH_MODE=multi-user`.** Setting
 `AGENT_CONSOLE_MCP_AUTH=enforce` explicitly while `AUTH_MODE` is not
@@ -1696,9 +1698,11 @@ Run before claiming multi-user support for
 [EmbeddedAgentWorker](glossary.md#embeddedagentworker). It spawns the real
 embedded-agent loop as a real second OS user via the production `spawnAsUser`,
 with `AUTH_MODE=multi-user` forced on and `AGENT_CONSOLE_MCP_AUTH=enforce` set
-explicitly by the script itself (the multi-user default is `warn` until Issue
-#1107 restores the `enforce` default, so the script does not rely on an unset
-value resolving to `enforce`; nothing needs to be set in the environment you
+explicitly by the script itself (`warn` is the default for every auth mode
+since Sprint 2026-07-16, PR #1109; restoring `enforce`-by-default is not
+planned, the prerequisites are recorded in the closed Issue #1107, so the
+script does not rely on an unset value resolving to `enforce`; nothing needs
+to be set in the environment you
 run the command from), against a real `/mcp` endpoint running in `enforce`
 mode -- and it proves enforcement itself, not only that enforcement leaves
 token delivery working (Issue #1738; see the E1/E2 bullet below). Its
@@ -1720,7 +1724,7 @@ What it verifies:
 - The loop completes its `init` handshake and reaches the `ready` state
   against the real, `enforce`-mode `/mcp` endpoint — proving `enforce` mode
   (see [MCP authentication mode](#mcp-authentication-mode-agent_console_mcp_auth)
-  above; opt-in only since Sprint 2026-07-16, tracked by Issue #1107) does
+  above; opt-in only since Sprint 2026-07-16, PR #1109) does
   not break the already-working embedded-agent token delivery.
 - (Issue #1738) Enforcement itself, read back from the running instance:
   after `ready`, the same JSON-RPC `tools/call` of `list_sessions` is sent

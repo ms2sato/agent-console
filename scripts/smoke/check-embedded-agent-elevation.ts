@@ -7,8 +7,8 @@
  * `spawnAsUser` -- against a REAL second OS user, with `AUTH_MODE=multi-user`
  * forced on and `AGENT_CONSOLE_MCP_AUTH` set explicitly by the `--auth-mode`
  * flag (default `enforce`; the resolver's own default is `warn` for every
- * AUTH_MODE since Issue #1107 -- see the "Note on AGENT_CONSOLE_MCP_AUTH"
- * below). This is the smoke bullet referenced by
+ * AUTH_MODE since Sprint 2026-07-16, PR #1109 -- see the "Note on
+ * AGENT_CONSOLE_MCP_AUTH" below). This is the smoke bullet referenced by
  * docs/design/embedded-agent-worker.md Part II Testing plan.
  *
  * What this smoke exercises:
@@ -51,9 +51,9 @@
  *     end-to-end against a REAL `/mcp` Streamable-HTTP endpoint whose gate
  *     mode is set explicitly by `--auth-mode` (default `enforce`, because
  *     `resolveMcpAuthMode` defaults to `warn` for every AUTH_MODE since
- *     Issue #1107 -- an unset value would silently run this whole smoke in
- *     warn mode). Then, after `ready` and before teardown, against the real
- *     Hono app on its real port, the same JSON-RPC `tools/call` of
+ *     Sprint 2026-07-16, PR #1109 -- an unset value would silently run this
+ *     whole smoke in warn mode). Then, after `ready` and before teardown,
+ *     against the real Hono app on its real port, the same JSON-RPC `tools/call` of
  *     `list_sessions` is sent twice:
  *       E1  tokenless. Under `enforce`: refused with HTTP 401 and the
  *           gate's exact message ("MCP authentication required: no bearer
@@ -178,7 +178,8 @@
  * `--auth-mode` flag (default `enforce`), next to `AUTH_MODE=multi-user`. An
  * earlier revision left it unset on the premise that "unset + multi-user
  * resolves to enforce"; that default flip landed and was then reverted
- * (Issue #1107 is the open item to restore it), and `resolveMcpAuthMode`
+ * (Sprint 2026-07-16, PR #1109; restoring `enforce`-by-default is not
+ * planned, see the closed Issue #1107), and `resolveMcpAuthMode`
  * returns `warn` for an unset value regardless of `AUTH_MODE`
  * (`packages/server/src/mcp/__tests__/mcp-auth.test.ts` pins exactly that)
  * -- so every run under the old premise exercised the `/mcp` boundary in
@@ -463,9 +464,9 @@ async function main(): Promise<void> {
   // `AGENT_CONSOLE_MCP_AUTH` is set EXPLICITLY from the `--auth-mode` flag
   // (default `enforce` -- see the "Note on AGENT_CONSOLE_MCP_AUTH" header
   // comment above: the resolver's default is `warn` for every AUTH_MODE
-  // since Issue #1107, so an unset value would run the `/mcp` boundary in
-  // warn mode while this file's assertions talk about enforce). The `warn`
-  // arm is the polarity arm: same apparatus, inverted assertions on the
+  // since Sprint 2026-07-16, PR #1109, so an unset value would run the
+  // `/mcp` boundary in warn mode while this file's assertions talk about
+  // enforce). The `warn` arm is the polarity arm: same apparatus, inverted assertions on the
   // same tokenless call. Unlike `AUTH_MODE`, this variable carries no
   // module-load-time ordering hazard: `resolveMcpAuthMode`'s `rawValue`
   // parameter defaults to `process.env.AGENT_CONSOLE_MCP_AUTH` evaluated at
@@ -963,7 +964,7 @@ async function main(): Promise<void> {
     mcpBaseUrl = `http://localhost:${appServer.port}/mcp`;
     console.log(
       `==> real app server on :${appServer.port}, /mcp under AGENT_CONSOLE_MCP_AUTH=${authMode} ` +
-        `(set explicitly by --auth-mode; the resolver's default is warn for every AUTH_MODE since #1107)`,
+        `(set explicitly by --auth-mode; the resolver's default is warn for every AUTH_MODE since Sprint 2026-07-16, PR #1109)`,
     );
 
     // Subprocess cwd must exist on the REAL filesystem.

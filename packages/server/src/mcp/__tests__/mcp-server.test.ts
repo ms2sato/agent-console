@@ -37,6 +37,7 @@ import { SingleUserMode } from '../../services/user-mode.js';
 import { createMcpApp } from '../mcp-server.js';
 import { McpTokenRegistry, type McpAuthMode } from '../mcp-auth.js';
 import { serverConfig } from '../../lib/server-config.js';
+import { rootLogger } from '../../lib/logger.js';
 import { createWorktreeWithSession } from '../../services/worktree-creation-service.js';
 import { deleteWorktree, _getDeletionsInProgress } from '../../services/worktree-deletion-service.js';
 import type { SuggestSessionMetadataFn } from '../../services/session-metadata-suggester.js';
@@ -6483,6 +6484,35 @@ describe('MCP Server Tools', () => {
 
       const agentsResponse = await callTool(app, mcpSessionId, 'list_agents', {}, nextId++);
       expect(agentsResponse.result?.isError).toBeUndefined();
+    });
+  });
+
+  // ===========================================================================
+  // MCP caller identity boot log wording (Issue #1399): the boot log's
+  // #1107 reference used to claim "Restoring enforce-by-default is tracked
+  // in Issue #1107", which sent an operator reading this log to a closed
+  // Issue. Pin the corrected wording so a future edit cannot silently
+  // reintroduce the stale "tracked" claim.
+  // ===========================================================================
+
+  describe('MCP caller identity boot log wording (Issue #1399)', () => {
+    it('AUTH_MODE=multi-user + warn default logs the PR #1109 wording, not a stale "tracked" claim', async () => {
+      const originalAuthMode = serverConfig.AUTH_MODE;
+      (serverConfig as { AUTH_MODE: string }).AUTH_MODE = 'multi-user';
+      const infoSpy = jest.spyOn(rootLogger, 'info');
+      try {
+        await remountMcpApp(); // no mcpAuthMode override: resolves to `warn` via resolveMcpAuthMode(undefined, 'multi-user')
+
+        const bootLogCall = infoSpy.mock.calls.find(
+          (call) => typeof call[0] === 'string' && call[0].includes('MCP caller identity running in warn mode'),
+        );
+        expect(bootLogCall).toBeDefined();
+        const message = bootLogCall![0] as string;
+        expect(message).toContain('PR #1109');
+        expect(message).not.toContain('tracked');
+      } finally {
+        (serverConfig as { AUTH_MODE: string }).AUTH_MODE = originalAuthMode;
+      }
     });
   });
 

@@ -107,7 +107,7 @@ describe('resolveMcpAuthMode', () => {
     expect(resolveMcpAuthMode(undefined, 'none')).toBe('warn');
   });
 
-  it('defaults to warn when unset and AUTH_MODE=multi-user (Sprint 2026-07-16: enforce-by-default deferred, see #1107)', () => {
+  it('defaults to warn when unset and AUTH_MODE=multi-user (Sprint 2026-07-16, PR #1109; enforce-by-default restoration is not planned, see the closed Issue #1107)', () => {
     expect(resolveMcpAuthMode(undefined, 'multi-user')).toBe('warn');
   });
 
@@ -140,8 +140,9 @@ describe('resolveMcpAuthMode', () => {
   // Ruling 3 (Issue #1269, binding clarification): the contradiction check
   // is scoped to an EXPLICITLY-set AGENT_CONSOLE_MCP_AUTH=enforce only. It
   // must NOT fire for a value arrived at by default resolution (empty/unset),
-  // otherwise a future default flip to `enforce` (#1107) would brick every
-  // single-user deployment at startup.
+  // otherwise an unplanned default flip to `enforce` would brick every
+  // single-user deployment at startup (the prerequisites for ever
+  // reconsidering that are recorded in the closed Issue #1107).
   describe('Ruling 3: enforce + non-multi-user is a configuration error', () => {
     it('case (a): explicit enforce + non-multi-user AUTH_MODE -> throws naming both variables', () => {
       expect(() => resolveMcpAuthMode('enforce', 'none')).toThrow(

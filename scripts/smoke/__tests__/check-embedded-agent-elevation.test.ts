@@ -45,8 +45,8 @@ describe('check-embedded-agent-elevation smoke: bun-path probe-cannot-run guard'
  * `--auth-mode` (Issue #1738) selects both the value written to
  * `AGENT_CONSOLE_MCP_AUTH` and the assertion set applied to the tokenless
  * `/mcp` call (E1). The default MUST be `enforce`: the resolver's own default
- * is `warn` for every AUTH_MODE since Issue #1107, so a smoke that fell
- * through to it would run its "enforce" assertions against a warn-mode gate
+ * is `warn` for every AUTH_MODE since Sprint 2026-07-16, PR #1109, so a
+ * smoke that fell through to it would run its "enforce" assertions against a warn-mode gate
  * -- exactly the stale premise #1738 exists to close. `parseArgs` is pure
  * on the success paths (no process.exit), so it is imported directly; the
  * usage-error paths call `process.exit(2)` and are exercised as a real
