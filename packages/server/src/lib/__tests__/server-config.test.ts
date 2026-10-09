@@ -512,4 +512,126 @@ describe('WORKER_OUTPUT_DISPLAY_FILL_MAX_BYTES', () => {
     );
   });
 });
+
+describe('worker output env vars (positive-int contract)', () => {
+  // Six sizes/counts/intervals/thresholds, each parsed with
+  // `parsePositiveIntWithDefault` so that `0` and negative values fall back
+  // to the default rather than silently disabling the bound they ceiling.
+  //
+  // `WORKER_OUTPUT_MAX_SEGMENTS` is deliberately EXCLUDED from this group and
+  // covered by its own describe block below: production code
+  // (`selectPrunableSegments` in worker-output-file.ts, `cap <= 0`) treats
+  // `0` -- and any negative value -- as a documented "unlimited retention"
+  // sentinel, the same shape as `EMBEDDED_AGENT_IDLE_EVICTION_MS`'s disabled
+  // state. It was converted to `parseIntWithDefault` instead (NaN-guard
+  // only), not `parsePositiveIntWithDefault`, so it does not belong in a
+  // group whose shared test asserts non-positive values fall back to the
+  // default.
+  //
+  // `EMBEDDED_AGENT_IDLE_EVICTION_MS` is excluded for the same reason -- see
+  // its own test above, 'should keep EMBEDDED_AGENT_IDLE_EVICTION_MS=0 as the
+  // disabled value'.
+  const vars = [
+    { name: 'WORKER_OUTPUT_BUFFER_SIZE', default: 100000 },
+    { name: 'WORKER_OUTPUT_FILE_MAX_SIZE', default: 10 * 1024 * 1024 },
+    { name: 'WORKER_OUTPUT_RANGE_MAX_BYTES', default: 256 * 1024 },
+    { name: 'WORKER_OUTPUT_FLUSH_INTERVAL', default: 100 },
+    { name: 'WORKER_OUTPUT_FLUSH_THRESHOLD', default: 64 * 1024 },
+    { name: 'WORKER_OUTPUT_INITIAL_HISTORY_LINES', default: 5000 },
+  ] as const;
+
+  it('falls back to the default for each when unset', async () => {
+    for (const { name } of vars) {
+      delete process.env[name];
+    }
+
+    const { serverConfig } = await importServerConfig();
+
+    for (const { name, default: def } of vars) {
+      expect(serverConfig[name]).toBe(def);
+    }
+  });
+
+  it('uses an explicit valid value for each', async () => {
+    for (const { name } of vars) {
+      process.env[name] = '12345';
+    }
+
+    const { serverConfig } = await importServerConfig();
+
+    for (const { name } of vars) {
+      expect(serverConfig[name]).toBe(12345);
+    }
+  });
+
+  it('falls back to the default for each on an unparseable value, never NaN', async () => {
+    for (const { name } of vars) {
+      process.env[name] = 'abc';
+    }
+
+    const { serverConfig } = await importServerConfig();
+
+    for (const { name, default: def } of vars) {
+      expect(Number.isNaN(serverConfig[name])).toBe(false);
+      expect(serverConfig[name]).toBe(def);
+    }
+  });
+
+  it('falls back to the default for each on a non-positive value (0 and negative)', async () => {
+    for (const raw of ['0', '-5']) {
+      for (const { name } of vars) {
+        process.env[name] = raw;
+      }
+
+      const { serverConfig } = await importServerConfig();
+
+      for (const { name, default: def } of vars) {
+        expect(serverConfig[name]).toBe(def);
+      }
+    }
+  });
+});
+
+describe('WORKER_OUTPUT_MAX_SEGMENTS (NaN-guard contract, not positive-only)', () => {
+  it('falls back to the default when unset', async () => {
+    delete process.env.WORKER_OUTPUT_MAX_SEGMENTS;
+
+    const { serverConfig } = await importServerConfig();
+
+    expect(serverConfig.WORKER_OUTPUT_MAX_SEGMENTS).toBe(100);
+  });
+
+  it('uses an explicit valid value', async () => {
+    process.env.WORKER_OUTPUT_MAX_SEGMENTS = '12345';
+
+    const { serverConfig } = await importServerConfig();
+
+    expect(serverConfig.WORKER_OUTPUT_MAX_SEGMENTS).toBe(12345);
+  });
+
+  it('falls back to the default on an unparseable value, never NaN', async () => {
+    process.env.WORKER_OUTPUT_MAX_SEGMENTS = 'abc';
+
+    const { serverConfig } = await importServerConfig();
+
+    expect(Number.isNaN(serverConfig.WORKER_OUTPUT_MAX_SEGMENTS)).toBe(false);
+    expect(serverConfig.WORKER_OUTPUT_MAX_SEGMENTS).toBe(100);
+  });
+
+  it('preserves 0 as the documented "unlimited retention" sentinel, rather than falling back', async () => {
+    process.env.WORKER_OUTPUT_MAX_SEGMENTS = '0';
+
+    const { serverConfig } = await importServerConfig();
+
+    expect(serverConfig.WORKER_OUTPUT_MAX_SEGMENTS).toBe(0);
+  });
+
+  it('preserves a negative value as-is (selectPrunableSegments treats cap <= 0 as unlimited too)', async () => {
+    process.env.WORKER_OUTPUT_MAX_SEGMENTS = '-5';
+
+    const { serverConfig } = await importServerConfig();
+
+    expect(serverConfig.WORKER_OUTPUT_MAX_SEGMENTS).toBe(-5);
+  });
+});
 });

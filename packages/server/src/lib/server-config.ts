@@ -31,21 +31,31 @@ export const serverConfig = {
    * This buffer stores terminal output for reconnection history.
    * Default: 100KB (100000 bytes)
    */
-  WORKER_OUTPUT_BUFFER_SIZE: parseInt(process.env.WORKER_OUTPUT_BUFFER_SIZE || '100000', 10),
+  WORKER_OUTPUT_BUFFER_SIZE: parsePositiveIntWithDefault(process.env.WORKER_OUTPUT_BUFFER_SIZE, 100000),
   /**
    * Maximum size of worker output file (in bytes).
    * When the live output file exceeds this, the oldest ~20% is archived into a
    * gzip segment (not destroyed) and the live file is rewritten to the remainder.
    * Default: 10MB (10 * 1024 * 1024 bytes)
    */
-  WORKER_OUTPUT_FILE_MAX_SIZE: parseInt(process.env.WORKER_OUTPUT_FILE_MAX_SIZE || String(10 * 1024 * 1024), 10),
+  WORKER_OUTPUT_FILE_MAX_SIZE: parsePositiveIntWithDefault(
+    process.env.WORKER_OUTPUT_FILE_MAX_SIZE,
+    10 * 1024 * 1024,
+  ),
   /**
    * Maximum number of archived gzip segments retained per worker.
    * When exceeded after a cut, the oldest segments are deleted (their history
    * becomes unreachable). `0` opts into unlimited retention.
    * Default: 100 segments (~200MB raw / ~20MB gz at the default segment size).
+   *
+   * Deliberately parseIntWithDefault, not parsePositiveIntWithDefault: the
+   * consumer, `worker-output-file.ts`'s `WorkerOutputFileManager.selectPrunableSegments`
+   * (`maxSegments: number` field at ~L129, the method's own `cap <= 0` check
+   * at ~L934-938), treats `0` AND any negative value as the "unlimited
+   * retention" sentinel, not a parse failure -- same reasoning as
+   * `EMBEDDED_AGENT_IDLE_EVICTION_MS` below.
    */
-  WORKER_OUTPUT_MAX_SEGMENTS: parseInt(process.env.WORKER_OUTPUT_MAX_SEGMENTS || '100', 10),
+  WORKER_OUTPUT_MAX_SEGMENTS: parseIntWithDefault(process.env.WORKER_OUTPUT_MAX_SEGMENTS, 100),
   /**
    * Server-side cap on the bytes served in a single `history-range` response
    * (backwards paging). The client's `maxBytes` hint is min'd against this; the
@@ -53,7 +63,10 @@ export const serverConfig = {
    * so a response never stitches across a boundary (terminal-history-paging.md §5.2).
    * Default: 256KB (256 * 1024 bytes)
    */
-  WORKER_OUTPUT_RANGE_MAX_BYTES: parseInt(process.env.WORKER_OUTPUT_RANGE_MAX_BYTES || String(256 * 1024), 10),
+  WORKER_OUTPUT_RANGE_MAX_BYTES: parsePositiveIntWithDefault(
+    process.env.WORKER_OUTPUT_RANGE_MAX_BYTES,
+    256 * 1024,
+  ),
 
   /**
    * Ceiling on how far restore walks BACK through archived segments looking
@@ -89,19 +102,25 @@ export const serverConfig = {
    * Interval for flushing buffered output to file (in milliseconds).
    * Default: 100ms
    */
-  WORKER_OUTPUT_FLUSH_INTERVAL: parseInt(process.env.WORKER_OUTPUT_FLUSH_INTERVAL || '100', 10),
+  WORKER_OUTPUT_FLUSH_INTERVAL: parsePositiveIntWithDefault(process.env.WORKER_OUTPUT_FLUSH_INTERVAL, 100),
   /**
    * Threshold for flushing buffered output to file (in bytes).
    * When buffer exceeds this size, it's flushed immediately.
    * Default: 64KB (64 * 1024 bytes)
    */
-  WORKER_OUTPUT_FLUSH_THRESHOLD: parseInt(process.env.WORKER_OUTPUT_FLUSH_THRESHOLD || String(64 * 1024), 10),
+  WORKER_OUTPUT_FLUSH_THRESHOLD: parsePositiveIntWithDefault(
+    process.env.WORKER_OUTPUT_FLUSH_THRESHOLD,
+    64 * 1024,
+  ),
   /**
    * Maximum number of lines to load on initial connection.
    * Full history is still saved, but only the most recent N lines are sent on connection.
    * Default: 5000 lines (approximately 500KB-1MB)
    */
-  WORKER_OUTPUT_INITIAL_HISTORY_LINES: parseInt(process.env.WORKER_OUTPUT_INITIAL_HISTORY_LINES || '5000', 10),
+  WORKER_OUTPUT_INITIAL_HISTORY_LINES: parsePositiveIntWithDefault(
+    process.env.WORKER_OUTPUT_INITIAL_HISTORY_LINES,
+    5000,
+  ),
   /**
    * Base URL for the application.
    * Used to generate URLs in outbound notifications (e.g., Slack "Open Session" button).
@@ -287,6 +306,9 @@ export const serverConfig = {
    * unparseable value falls back to the default rather than disabling: a typo
    * in an env var silently switching off memory management is a footgun, and
    * this is a system boundary where the one guard is worth it.
+   *
+   * Deliberately parseIntWithDefault, not parsePositiveIntWithDefault: `0` is
+   * this field's valid disabled state, not a parse failure.
    *
    * Default: 30 minutes. Tests set it to a handful of milliseconds.
    */
