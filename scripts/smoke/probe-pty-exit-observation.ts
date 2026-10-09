@@ -29,17 +29,21 @@
  * `bunPtyProvider.spawn()` is a bare `require('bun-pty').spawn(...)` with no
  * JS-level wrapping in `pty-provider.ts` at all, so a LOST-EXIT measured
  * against it says nothing about `BunTerminalPtyAdapter`'s exit bridge. This
- * probe defaults to `--provider bun-pty` (mirrors `selfCheck()` exactly, the
- * AC's original mandate) but accepts `--provider bun-terminal` to measure
- * the actually-production-relevant path instead (Architect ruling, Issue
- * #1879). The SAME code (positive control, classifier, observables) runs
- * against whichever provider is selected.
+ * probe defaults to `--provider bun-terminal` (production's actual
+ * configured default) since #1886 removed the "mirrors selfCheck() exactly"
+ * rationale for the old `bun-pty` default -- the probe should measure
+ * production unless told otherwise. `--provider bun-pty` remains available
+ * as an explicit legacy opt-in, e.g. to reproduce #1879's own recorded
+ * bun-pty LOST-EXIT finding (Issue #1888). The SAME code (positive control,
+ * classifier, observables) runs against whichever provider is selected.
  *
  * ## What this probe exercises
  *
  *   - The REAL `PtyProvider.spawn(...)` path for the selected `--provider`,
  *     spawning `sh -c 'echo ok'` exactly as `check-exit-127-diagnostic.ts`'s
- *     `selfCheck()` does (with `--provider bun-pty`, the default).
+ *     `selfCheck()` does (with `--provider bun-pty`; the default,
+ *     `bun-terminal`, measures production's actually-configured provider
+ *     instead).
  *   - On every timeout, four observables read in this exact order (the
  *     Architect's AC rationale: a zombie answers `kill -0` with 0 and would
  *     be misread as "alive" if read before the `/proc/<pid>/stat` state):
@@ -51,6 +55,11 @@
  *          `pty-provider.ts` -- the Architect's AC is explicit about this),
  *          so this observable is `pty.pid` + `/proc` only, same as (1)/(2).
  *       4. `Bun.version`, `os.loadavg()`, and whether `--contend` was active.
+ *   - After those four observables, a post-timeout grace window (`--grace-ms`,
+ *     default 2000ms) waits for the exit listener to fire late before the
+ *     child is killed, recording `exitFiredWithinGrace` and the late-fire
+ *     latency -- this is what separates a merely DELAYED exit from one that
+ *     is genuinely LOST (Issue #1888).
  *   - A same-run positive control (workflow.md sub-pattern 9): before any
  *     measurement cycle, spawns `sh -c 'sleep 100'`, confirms the SAME
  *     observable code path reports it alive (state `S`, `kill -0` = 0), then
@@ -73,7 +82,7 @@
  *     see "Provider identity matters" above).
  *
  * Usage:
- *   bun scripts/smoke/probe-pty-exit-observation.ts [--timeout-ms N] [--cycles N] [--contend] [--contend-n N] [--provider bun-pty|bun-terminal]
+ *   bun scripts/smoke/probe-pty-exit-observation.ts [--timeout-ms N] [--cycles N] [--contend] [--contend-n N] [--provider bun-pty|bun-terminal] [--grace-ms N]
  *
  *   --timeout-ms N   race timeout per cycle, ms (default 30000, matching
  *                    check-exit-127-diagnostic.ts's EXIT_WAIT_TIMEOUT_MS).
@@ -88,15 +97,23 @@
  *                    upstream of and outside the chain under test.
  *   --contend-n N    number of busy children when --contend is set
  *                    (default 4).
- *   --provider P     'bun-pty' (default -- mirrors selfCheck() exactly, the
- *                    legacy native library) or 'bun-terminal' (production's
- *                    actual configured default, BunTerminalPtyAdapter). See
- *                    "Provider identity matters" above before interpreting
- *                    a bun-pty result as saying anything about production.
+ *   --provider P     'bun-terminal' (default -- production's actual
+ *                    configured default, BunTerminalPtyAdapter) or
+ *                    'bun-pty' (legacy opt-in, the native library
+ *                    selfCheck() hardcodes). See "Provider identity
+ *                    matters" above before interpreting a bun-pty result
+ *                    as saying anything about production.
+ *   --grace-ms N     post-timeout observation window before `pty.kill` /
+ *                    `dispose`, ms (default 2000; `0` disables, reproducing
+ *                    the pre-#1888 behaviour where a late-firing listener
+ *                    was indistinguishable from one that never fires).
+ *                    Separates DELAYED-EXIT (listener fires within the
+ *                    window) from LOST-EXIT (it never does) -- Issue #1888.
  *
  * Exit codes:
  *   0  measured -- every cycle either exited naturally or produced a
- *      definite verdict (LOST-EXIT or STUCK-CHILD), regardless of which.
+ *      definite verdict (LOST-EXIT, DELAYED-EXIT, or STUCK-CHILD),
+ *      regardless of which.
  *   1  at least one cycle was INCONCLUSIVE (see classifyTimeout).
  *   2  harness failure -- the positive control failed, bad arguments, or an
  *      unexpected exception anywhere in `main()` (caught at the top level
@@ -120,7 +137,8 @@ import { getPtyProvider, type PtyProvider, type PtyProviderName } from '../../pa
 const DEFAULT_TIMEOUT_MS = 30000;
 const DEFAULT_CYCLES = 20;
 const DEFAULT_CONTEND_N = 4;
-const DEFAULT_PROVIDER: PtyProviderName = 'bun-pty';
+const DEFAULT_PROVIDER: PtyProviderName = 'bun-terminal';
+const DEFAULT_GRACE_MS = 2000;
 const POSITIVE_CONTROL_SETTLE_MS = 200;
 const POSITIVE_CONTROL_KILL_WAIT_MS = 1000;
 
@@ -141,7 +159,7 @@ async function waitForAsync(pred: () => Promise<boolean>, timeoutMs: number, pol
 // Pure classification (pinned by probe-pty-exit-observation.test.ts)
 // ---------------------------------------------------------------------------
 
-export type Verdict = 'LOST-EXIT' | 'STUCK-CHILD' | 'INCONCLUSIVE';
+export type Verdict = 'LOST-EXIT' | 'DELAYED-EXIT' | 'STUCK-CHILD' | 'INCONCLUSIVE';
 
 export type KillZeroErrno = 'ESRCH' | 'EPERM' | 0;
 
@@ -150,8 +168,10 @@ export interface ClassifyTimeoutInput {
   procState: string | undefined;
   /** `kill(pid, 0)`'s result: 0 = answered (alive or zombie), else the errno. */
   killZeroErrno: KillZeroErrno;
-  /** Whether the adapter's own `onExit` listener fired (even after the race lost). */
+  /** Whether the adapter's own `onExit` listener fired AT the moment the timeout race was lost. */
   exitFired: boolean;
+  /** Whether the listener fired LATER, within the post-timeout grace window (Issue #1888). */
+  exitFiredWithinGrace: boolean;
 }
 
 export interface ClassifyTimeoutResult {
@@ -160,26 +180,36 @@ export interface ClassifyTimeoutResult {
 }
 
 /**
- * Classifies a single cycle's timeout per the Architect's AC:
+ * Classifies a single cycle's timeout per the Architect's AC (Issue #1888):
  *
- *   LOST-EXIT    = /proc/<pid> absent or state Z AND onExit never fired
+ *   DELAYED-EXIT = onExit fired within the post-timeout grace window
+ *                  (regardless of procState -- the exit event arrived; the
+ *                  pid being gone by the time it is observed is consistent)
+ *   LOST-EXIT    = /proc/<pid> absent or state Z AND onExit never fired,
+ *                  neither at timeout nor within the grace window
  *   STUCK-CHILD  = state in R/S/D at timeout
  *   INCONCLUSIVE = anything else (named)
  *
- * `exitFired` wins over everything else: if the listener fired, the race was
- * lost to a timing artefact of THIS probe (the timeout branch and the
- * `onExit` branch both resolved, and `Promise.race` already committed to the
- * timeout side), not to the PTY layer -- so it is never classified as a real
- * absence-of-exit, regardless of what `/proc` says at that instant.
+ * `exitFired` (fired AT the moment the timeout race was lost) wins over
+ * everything else, including `exitFiredWithinGrace`: if the listener fired
+ * that early, the race was lost to a timing artefact of THIS probe (the
+ * timeout branch and the `onExit` branch both resolved, and `Promise.race`
+ * already committed to the timeout side), not to the PTY layer -- so it is
+ * never classified as a real absence-of-exit, regardless of what `/proc`
+ * says at that instant or what the grace window later observes.
  */
 export function classifyTimeout(input: ClassifyTimeoutInput): ClassifyTimeoutResult {
-  const { procState, killZeroErrno, exitFired } = input;
+  const { procState, killZeroErrno, exitFired, exitFiredWithinGrace } = input;
 
   if (exitFired) {
     return {
       verdict: 'INCONCLUSIVE',
       reason: 'the exit listener fired despite the race reporting a timeout -- a probe timing artefact, not a PTY-layer absence',
     };
+  }
+
+  if (exitFiredWithinGrace) {
+    return { verdict: 'DELAYED-EXIT' };
   }
 
   const gone = procState === undefined;
@@ -210,7 +240,8 @@ export type CycleSummary = { outcome: 'exited' } | { outcome: 'timeout'; verdict
 
 /**
  * 0 = every cycle is "measured" (exited naturally, or produced ANY definite
- * verdict including LOST-EXIT/STUCK-CHILD); 1 = at least one INCONCLUSIVE.
+ * verdict including LOST-EXIT/DELAYED-EXIT/STUCK-CHILD); 1 = at least one
+ * INCONCLUSIVE.
  * The harness-failure exit code (2) is decided before any cycle runs (the
  * positive control, or bad arguments) and is not this function's concern.
  */
@@ -362,6 +393,10 @@ interface TimeoutObservables {
   bunVersion: string;
   loadavg: number[];
   contending: boolean;
+  /** Whether the post-timeout grace window (Issue #1888) observed a late `onExit` fire. */
+  exitFiredWithinGrace: boolean;
+  /** Milliseconds from the timeout to the late `onExit` fire, or `undefined` if it never fired. */
+  lateFireMs: number | undefined;
 }
 
 interface StuckChildDetail {
@@ -387,10 +422,18 @@ type CycleOutcome =
  * Spawns `sh -c 'echo ok'` via the real, selected `PtyProvider.spawn(...)`,
  * races its `onExit` against `timeoutMs` exactly as
  * `check-exit-127-diagnostic.ts`'s `selfCheck()` does (when `provider` is
- * `bunPtyProvider`, the default), and on a lost race reads the four
- * observables synchronously, in the Architect-specified order.
+ * `bunPtyProvider`), and on a lost race reads the four observables
+ * synchronously, in the Architect-specified order, then opens a post-timeout
+ * grace window (`graceMs`, Issue #1888) before cleanup to distinguish a
+ * merely DELAYED exit from one that is genuinely LOST.
  */
-async function runCycle(cycleNumber: number, timeoutMs: number, contending: boolean, provider: PtyProvider): Promise<CycleOutcome> {
+async function runCycle(
+  cycleNumber: number,
+  timeoutMs: number,
+  graceMs: number,
+  contending: boolean,
+  provider: PtyProvider,
+): Promise<CycleOutcome> {
   const pty = provider.spawn('sh', ['-c', 'echo ok'], {
     name: 'xterm-256color',
     cols: 80,
@@ -400,16 +443,19 @@ async function runCycle(cycleNumber: number, timeoutMs: number, contending: bool
   const start = Date.now();
 
   let exitFired = false;
+  let exitFiredAt: number | undefined;
   const exited = new Promise<void>((resolve) => {
     pty.onExit(() => {
       exitFired = true;
+      exitFiredAt = Date.now();
       resolve();
     });
   });
   pty.onData(() => {});
 
   const ok = await Promise.race([exited.then(() => true), sleep(timeoutMs).then(() => false)]);
-  const wallClockMs = Date.now() - start;
+  const timeoutAt = Date.now();
+  const wallClockMs = timeoutAt - start;
 
   if (ok) {
     pty.dispose?.();
@@ -435,7 +481,27 @@ async function runCycle(cycleNumber: number, timeoutMs: number, contending: bool
   const bunVersion = Bun.version; // (4)
   const loadavg = os.loadavg(); // (4)
 
-  const { verdict, reason } = classifyTimeout({ procState, killZeroErrno, exitFired: exitFiredAtTimeout });
+  // Post-timeout grace window (Issue #1888): wait for a LATE `onExit` fire
+  // BEFORE killing the child, so a delayed listener is not misread as lost.
+  // `graceMs === 0` skips the wait entirely (reproduces the pre-#1888
+  // behaviour: a late fire is never observed, so the verdict table below is
+  // reached exactly as it was before this window existed). This read is
+  // taken immediately after the race settles -- unlike the live re-read the
+  // comment above warns against, nothing between here and this read can run
+  // this cycle's own cleanup, so there is no risk of observing a fire caused
+  // by `pty.kill`/`dispose` rather than the child's own exit.
+  if (graceMs > 0) {
+    await Promise.race([exited, sleep(graceMs)]);
+  }
+  const exitFiredWithinGrace = exitFired;
+  const lateFireMs = exitFiredWithinGrace && exitFiredAt !== undefined ? exitFiredAt - timeoutAt : undefined;
+
+  const { verdict, reason } = classifyTimeout({
+    procState,
+    killZeroErrno,
+    exitFired: exitFiredAtTimeout,
+    exitFiredWithinGrace,
+  });
 
   let stuckDetail: StuckChildDetail | undefined;
   if (verdict === 'STUCK-CHILD') {
@@ -468,6 +534,8 @@ async function runCycle(cycleNumber: number, timeoutMs: number, contending: bool
       bunVersion,
       loadavg,
       contending,
+      exitFiredWithinGrace,
+      lateFireMs,
     },
     verdict,
     reason,
@@ -518,6 +586,7 @@ interface CliArgs {
   contend: boolean;
   contendN: number;
   provider: PtyProviderName;
+  graceMs: number;
 }
 
 function parseArgs(argv: string[]): CliArgs {
@@ -526,6 +595,7 @@ function parseArgs(argv: string[]): CliArgs {
   let contend = false;
   let contendN = DEFAULT_CONTEND_N;
   let provider: PtyProviderName = DEFAULT_PROVIDER;
+  let graceMs = DEFAULT_GRACE_MS;
 
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
@@ -562,12 +632,19 @@ function parseArgs(argv: string[]): CliArgs {
         provider = raw;
         break;
       }
+      case '--grace-ms': {
+        const raw = argv[++i];
+        const n = Number(raw);
+        if (!Number.isFinite(n) || n < 0) throw new Error(`--grace-ms requires a non-negative number, got: ${String(raw)}`);
+        graceMs = n;
+        break;
+      }
       default:
         throw new Error(`Unknown argument: ${arg}`);
     }
   }
 
-  return { timeoutMs, cycles, contend, contendN, provider };
+  return { timeoutMs, cycles, contend, contendN, provider, graceMs };
 }
 
 async function main(): Promise<void> {
@@ -582,7 +659,10 @@ async function main(): Promise<void> {
 
   const provider = getPtyProvider(args.provider);
 
-  console.log(`==> provider: ${args.provider}${args.provider === 'bun-pty' ? ' (default -- legacy, mirrors selfCheck() exactly)' : ' (production-default BunTerminalPtyAdapter)'}`);
+  console.log(
+    `==> provider: ${args.provider}${args.provider === 'bun-terminal' ? ' (default -- production-configured BunTerminalPtyAdapter)' : ' (legacy opt-in, mirrors selfCheck() exactly)'}`,
+  );
+  console.log(`==> grace-ms: ${args.graceMs}${args.graceMs === 0 ? ' (grace window disabled -- pre-#1888 behaviour)' : ''}`);
   console.log('==> positive control: confirming the observable code path can see a live, then a dead, process');
   const control = await runPositiveControl(provider);
   if (!control.ok) {
@@ -596,7 +676,7 @@ async function main(): Promise<void> {
   const bunVersion = Bun.version;
   const loadavgStart = os.loadavg();
   console.log(
-    `==> starting measurement loop: provider=${args.provider} cycles=${args.cycles} timeoutMs=${args.timeoutMs} contend=${args.contend} contendN=${args.contendN} bunVersion=${bunVersion} loadavgStart=${loadavgStart.map((n) => n.toFixed(2)).join(',')}`,
+    `==> starting measurement loop: provider=${args.provider} cycles=${args.cycles} timeoutMs=${args.timeoutMs} graceMs=${args.graceMs} contend=${args.contend} contendN=${args.contendN} bunVersion=${bunVersion} loadavgStart=${loadavgStart.map((n) => n.toFixed(2)).join(',')}`,
   );
 
   let contendProcs: Bun.Subprocess[] = [];
@@ -609,7 +689,7 @@ async function main(): Promise<void> {
     }
 
     for (let i = 1; i <= args.cycles; i++) {
-      const outcome = await runCycle(i, args.timeoutMs, args.contend, provider);
+      const outcome = await runCycle(i, args.timeoutMs, args.graceMs, args.contend, provider);
       outcomes.push(outcome);
 
       if (outcome.outcome === 'exited') {
@@ -631,7 +711,8 @@ async function main(): Promise<void> {
           `  VERDICT cycle=${outcome.cycle} pid=${outcome.pid} verdict=${outcome.verdict}` +
             (outcome.reason ? ` reason="${outcome.reason}"` : '') +
             ` procState=${String(outcome.observables.procState)} killZeroErrno=${String(outcome.observables.killZeroErrno)}` +
-            ` exitListenerFired=${outcome.observables.exitListenerFired} bunVersion=${outcome.observables.bunVersion}` +
+            ` exitListenerFired=${outcome.observables.exitListenerFired} exitFiredWithinGrace=${outcome.observables.exitFiredWithinGrace}` +
+            ` lateFireMs=${String(outcome.observables.lateFireMs)} bunVersion=${outcome.observables.bunVersion}` +
             ` loadavg=${outcome.observables.loadavg.map((n) => n.toFixed(2)).join(',')} contending=${outcome.observables.contending}`,
         );
       }
@@ -645,7 +726,7 @@ async function main(): Promise<void> {
 
   const loadavgEnd = os.loadavg();
   const failures = outcomes.filter((o): o is Extract<CycleOutcome, { outcome: 'timeout' }> => o.outcome === 'timeout');
-  const verdictCounts: Record<Verdict, number> = { 'LOST-EXIT': 0, 'STUCK-CHILD': 0, INCONCLUSIVE: 0 };
+  const verdictCounts: Record<Verdict, number> = { 'LOST-EXIT': 0, 'DELAYED-EXIT': 0, 'STUCK-CHILD': 0, INCONCLUSIVE: 0 };
   for (const failure of failures) verdictCounts[failure.verdict]++;
 
   console.log();
@@ -655,6 +736,7 @@ async function main(): Promise<void> {
       summary: true,
       provider: args.provider,
       cycles: args.cycles,
+      graceMs: args.graceMs,
       contending: args.contend,
       failures: failures.length,
       verdictCounts,
