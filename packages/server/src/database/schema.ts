@@ -403,11 +403,19 @@ export interface InboundEventNotificationsTable {
   /** Human-readable event summary */
   event_summary: string;
   /**
-   * Notification status: `'pending'` (processing attempt in flight),
-   * `'delivered'` (the handler completed without a delivery failure --
-   * includes "nothing to do here"), or `'failed'` (the handler determined
-   * delivery should happen and it did not; a terminal status, never
-   * retried).
+   * Notification status: `'pending'` means a processing attempt is
+   * currently in flight, OR a prior attempt ran the handler and its
+   * terminal bookkeeping write (`markNotificationDelivered` /
+   * `markNotificationFailed`) failed -- the outcome is unconfirmed; see
+   * the accompanying error/warn log line naming this row. Never re-run
+   * the handler for a `'pending'` row. `'delivered'` means the handler
+   * completed without a delivery failure (includes "nothing to do
+   * here"). `'failed'` means the handler determined delivery should
+   * happen and it did not -- both are terminal statuses, never retried.
+   * A `'pending'` row is NEVER administratively closed out as either
+   * terminal status on a later job retry -- doing so would risk
+   * recording a known delivery failure as a successful delivery (or
+   * vice versa).
    */
   status: 'pending' | 'delivered' | 'failed';
   /** Creation timestamp as ISO 8601 string */
