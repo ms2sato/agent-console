@@ -1,5 +1,6 @@
 import { describe, it, expect, mock, beforeEach, afterEach, afterAll, spyOn } from 'bun:test';
 import { screen, cleanup, waitFor, act } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { renderWithRouter } from '../../../test/renderWithRouter';
 import { SessionPage } from '../SessionPage';
 import { SessionStopTasksContext, SessionDataContext, WorktreeDeletionTasksContext } from '../../../contexts/root-contexts';
@@ -8,7 +9,8 @@ import type { UseSessionStopTasksReturn } from '../../../hooks/useSessionStopTas
 import type { UseWorktreeDeletionTasksReturn } from '../../../hooks/useWorktreeDeletionTasks';
 import { _reset as resetWebSocket } from '../../../lib/app-websocket';
 import { installMockWebSocket } from '../../../test/mock-websocket';
-import type { Session } from '@agent-console/shared';
+import { _resetTerminals } from '../../terminal/terminal-store';
+import type { Session, Worker } from '@agent-console/shared';
 
 /**
  * Component-render tests for `SessionPage` (the sibling `SessionPage.test.ts`
@@ -65,11 +67,18 @@ function createMockSession(overrides: Partial<Session> = {}): Session {
   } as Session;
 }
 
-function routeFetch(): void {
+function routeFetch(workers: Worker[] = []): void {
   mockFetch.mockImplementation((input: RequestInfo | URL) => {
     const url = urlToString(input);
-    if (url.includes('/api/sessions/session-1') && !url.includes('/memo') && !url.includes('/artifacts') && !url.includes('/bookmarks')) {
-      return Promise.resolve(jsonResponse({ session: createMockSession() }));
+    if (
+      url.includes('/api/sessions/session-1') &&
+      !url.includes('/memo') &&
+      !url.includes('/artifacts') &&
+      !url.includes('/bookmarks') &&
+      !url.includes('/pr-link') &&
+      !url.includes('/workers')
+    ) {
+      return Promise.resolve(jsonResponse({ session: createMockSession({ workers }) }));
     }
     if (url.includes('/memo')) {
       return Promise.resolve(jsonResponse({ content: MEMO_CONTENT }));
@@ -79,6 +88,12 @@ function routeFetch(): void {
     }
     if (url.includes('/bookmarks')) {
       return Promise.resolve(jsonResponse({ bookmarks: [] }));
+    }
+    if (url.includes('/pr-link')) {
+      return Promise.resolve(jsonResponse({ prUrl: null, branchName: '', orgRepo: null }));
+    }
+    if (url.includes('/workers')) {
+      return Promise.resolve(jsonResponse({}));
     }
     if (url.includes('/api/agents')) {
       return Promise.resolve(jsonResponse({ agents: [] }));
@@ -280,5 +295,197 @@ describe('SessionPage mobile side-panels drawer gate', () => {
     const triggerAgain = await waitFor(() => screen.getByLabelText('Open session panels'));
     expect(triggerAgain.getAttribute('aria-expanded')).toBe('false');
     expect(document.querySelector('[role="dialog"][aria-modal="true"]')).toBeNull();
+  });
+});
+
+/**
+ * Regression coverage for Issue #1608: the tab bar's "Close tab" button was
+ * nested inside the tab's own activator `<button>` (invalid DOM nesting,
+ * React's validateDOMNesting warning, and a nested-interactive-controls
+ * accessibility defect). These tests render the REAL SessionPage with one
+ * agent worker (primary, non-closeable) and one terminal worker (closeable),
+ * so both the activator and the close control are present in the tab bar.
+ */
+function createMockWorker(overrides: Partial<Worker> & { type: Worker['type'] }): Worker {
+  return {
+    id: overrides.id ?? 'worker-1',
+    name: overrides.name ?? 'Worker',
+    createdAt: new Date().toISOString(),
+    ...overrides,
+  } as Worker;
+}
+
+const AGENT_WORKER = createMockWorker({
+  id: 'agent-1',
+  type: 'agent',
+  name: 'Agent',
+  agentId: 'claude-code',
+  activated: true,
+});
+
+const TERMINAL_WORKER = createMockWorker({
+  id: 'terminal-1',
+  type: 'terminal',
+  name: 'Shell 1',
+  activated: true,
+});
+
+describe('SessionPage tab bar DOM structure (Issue #1608)', () => {
+  let restoreWebSocket: () => void;
+  let originalLocation: Location;
+  let originalMatchMedia: typeof window.matchMedia;
+  let consoleLogSpy: ReturnType<typeof spyOn>;
+  let consoleErrorSpy: ReturnType<typeof spyOn>;
+
+  beforeEach(() => {
+    localStorage.clear();
+    mockFetch.mockReset();
+    routeFetch([AGENT_WORKER, TERMINAL_WORKER]);
+
+    originalLocation = window.location;
+    originalMatchMedia = window.matchMedia;
+    restoreWebSocket = installMockWebSocket();
+    Object.defineProperty(window, 'location', {
+      value: { protocol: 'http:', host: 'localhost:3000' },
+      writable: true,
+    });
+    const { matchMedia } = createMockMatchMedia(false);
+    window.matchMedia = matchMedia;
+    consoleLogSpy = spyOn(console, 'log').mockImplementation(() => {});
+    consoleErrorSpy = spyOn(console, 'error').mockImplementation(() => {});
+    resetWebSocket();
+  });
+
+  afterEach(() => {
+    cleanup();
+    // The active tab mounts the production terminal store (no `createInstance`
+    // override is passed to TerminalAdapter), and its instance registry
+    // deliberately survives unmount. Reset it so reconnect/idle-timer state
+    // from one test can't bleed into the next (Issue #1608 flakiness).
+    _resetTerminals();
+    restoreWebSocket();
+    Object.defineProperty(window, 'location', {
+      value: originalLocation,
+      writable: true,
+    });
+    window.matchMedia = originalMatchMedia;
+    consoleLogSpy.mockRestore();
+    consoleErrorSpy.mockRestore();
+  });
+
+  it('renders the close control as a sibling, never nested inside the tab activator button (regression pin)', async () => {
+    await renderSessionPage();
+
+    await waitFor(() => expect(screen.getAllByRole('tab').length).toBe(2));
+
+    // Positive control: the instrument actually sees the tab bar, so a 0
+    // below can't be read as "nothing rendered".
+    expect(document.querySelectorAll('[role="tab"]').length).toBe(2);
+
+    expect(document.querySelectorAll('button button').length).toBe(0);
+
+    const nestingWarningLogged = consoleErrorSpy.mock.calls.some(call =>
+      call.some(arg => typeof arg === 'string' && arg.includes('validateDOMNesting'))
+    );
+    expect(nestingWarningLogged).toBe(false);
+  });
+
+  it('clicking the close control (now a sibling) reaches the close handler and never activates the tab', async () => {
+    await renderSessionPage();
+    await waitFor(() => expect(screen.getAllByRole('tab').length).toBe(2));
+
+    // The agent tab is the default active tab; the terminal tab (closeable)
+    // is the one with a close control.
+    expect(screen.getByRole('tab', { name: 'Agent' }).getAttribute('aria-selected')).toBe('true');
+
+    const closeButton = screen.getByRole('button', { name: 'Close tab' });
+    act(() => {
+      closeButton.click();
+    });
+
+    // Asserted synchronously, not via waitFor: awaiting the close request's
+    // continuation (mounted-agent-tab + this specific sibling-click shape)
+    // can hang the real terminal store for many seconds -- tracked as #1899,
+    // a pre-existing defect unrelated to this PR's DOM-nesting fix. The
+    // keyboard test below covers tab removal on the active-tab close path
+    // (fast, measured) instead.
+    const deleteCall = mockFetch.mock.calls.find(([input, init]) => {
+      return urlToString(input).includes(`/api/sessions/session-1/workers/${TERMINAL_WORKER.id}`)
+        && init?.method === 'DELETE';
+    });
+    expect(deleteCall).toBeDefined();
+
+    // The sibling click never bubbles into the activator's onClick (the
+    // activator and the close control are DOM siblings, not nested) -- the
+    // active tab must still be Agent.
+    expect(screen.getByRole('tab', { name: 'Agent' }).getAttribute('aria-selected')).toBe('true');
+  });
+
+  it('clicking the tab activator switches the active tab', async () => {
+    await renderSessionPage();
+    await waitFor(() => expect(screen.getAllByRole('tab').length).toBe(2));
+
+    const terminalTab = screen.getByRole('tab', { name: 'Shell 1' });
+    expect(terminalTab.getAttribute('aria-selected')).toBe('false');
+
+    act(() => {
+      terminalTab.click();
+    });
+
+    await waitFor(() => expect(screen.getByRole('tab', { name: 'Shell 1' }).getAttribute('aria-selected')).toBe('true'));
+    expect(screen.getByRole('tab', { name: 'Agent' }).getAttribute('aria-selected')).toBe('false');
+  });
+
+  it('roving tabindex: Tab order visits the active tab\'s activator then its close control, and Enter on the close control closes it', async () => {
+    await renderSessionPage();
+    await waitFor(() => expect(screen.getAllByRole('tab').length).toBe(2));
+
+    // Activate the terminal tab (the closeable one) so both the activator
+    // and the close control carry tabIndex=0.
+    act(() => {
+      screen.getByRole('tab', { name: 'Shell 1' }).click();
+    });
+    await waitFor(() => expect(screen.getByRole('tab', { name: 'Shell 1' }).getAttribute('aria-selected')).toBe('true'));
+
+    const terminalTab = screen.getByRole('tab', { name: 'Shell 1' });
+    const agentTab = screen.getByRole('tab', { name: 'Agent' });
+    const closeButton = screen.getByRole('button', { name: 'Close tab' });
+
+    expect(terminalTab.getAttribute('tabindex')).toBe('0');
+    expect(closeButton.getAttribute('tabindex')).toBe('0');
+    expect(agentTab.getAttribute('tabindex')).toBe('-1');
+
+    const user = userEvent.setup();
+    (document.activeElement as HTMLElement | null)?.blur();
+
+    await user.tab();
+    expect(document.activeElement).toBe(terminalTab);
+
+    await user.tab();
+    expect(document.activeElement).toBe(closeButton);
+
+    await user.keyboard('{Enter}');
+
+    await waitFor(() => expect(screen.queryByRole('tab', { name: 'Shell 1' })).toBeNull());
+  });
+
+  it('ArrowLeft/ArrowRight still moves aria-selected between the two tab activators (production handleTabKeyDown path)', async () => {
+    await renderSessionPage();
+    await waitFor(() => expect(screen.getAllByRole('tab').length).toBe(2));
+
+    const agentTab = screen.getByRole('tab', { name: 'Agent' });
+    expect(agentTab.getAttribute('aria-selected')).toBe('true');
+
+    const user = userEvent.setup();
+    agentTab.focus();
+    await user.keyboard('{ArrowRight}');
+
+    await waitFor(() => expect(screen.getByRole('tab', { name: 'Shell 1' }).getAttribute('aria-selected')).toBe('true'));
+    expect(screen.getByRole('tab', { name: 'Agent' }).getAttribute('aria-selected')).toBe('false');
+
+    await user.keyboard('{ArrowLeft}');
+
+    await waitFor(() => expect(screen.getByRole('tab', { name: 'Agent' }).getAttribute('aria-selected')).toBe('true'));
+    expect(screen.getByRole('tab', { name: 'Shell 1' }).getAttribute('aria-selected')).toBe('false');
   });
 });
