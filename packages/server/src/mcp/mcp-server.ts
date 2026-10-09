@@ -35,7 +35,7 @@ import { getCurrentBranch } from '../lib/git.js';
 import { CLAUDE_CODE_AGENT_ID } from '../services/agent-manager.js';
 import type { SuggestSessionMetadataFn } from '../services/session-metadata-suggester.js';
 import type { InterSessionMessageService } from '../services/inter-session-message-service.js';
-import { buildReplyInstructions } from '../lib/pty-notification.js';
+import { buildReplyInstructions, stripControlChars } from '../lib/pty-notification.js';
 import { getRemoteUrl, GitError } from '../lib/git.js';
 import { createLogger } from '../lib/logger.js';
 import {
@@ -254,28 +254,22 @@ function truncateTitle(title: string): string {
 }
 
 /**
- * Strip control characters that terminals may interpret, mirroring
- * `formatFieldValue`'s sanitization in lib/pty-notification.ts. Not reused
- * from there directly because that function also quotes/collapses
- * whitespace for key=value PTY field encoding, which a plain label
- * embedded in prose does not want -- and because the embedded-agent
- * delivery surface never routes its `notification.summary` through
- * `formatFieldValue` at all (only the PTY branch's `buildPtyNotificationText`
- * does), so a label built from an unsanitized title would reach one
- * surface clean and the other raw.
- */
-function stripControlChars(value: string): string {
-  return value.replace(/[\x00-\x08\x0e-\x1f\x7f\x80-\x9f]/g, '');
-}
-
-/**
- * Sanitize a notification-label candidate: strip control characters, then
- * trim. Each candidate in `describeSessionForNotification`'s fallback chain
- * is run through this BEFORE the emptiness test that decides whether to use
- * it -- a title or `worktreeId` made only of control characters (e.g.
- * `'\x01'`) survives a plain `.trim()` as non-empty, then strips down to
- * `''` if the order is reversed, producing a blank label instead of falling
- * through to the next candidate.
+ * Sanitize a notification-label candidate: strip control characters (via the
+ * shared `stripControlChars` in lib/pty-notification.ts), then trim. Not
+ * routed through `formatFieldValue` there directly because that function
+ * also quotes/collapses whitespace for key=value PTY field encoding, which a
+ * plain label embedded in prose does not want -- and because the
+ * embedded-agent delivery surface never routes its `notification.summary`
+ * through `formatFieldValue` at all (only the PTY branch's
+ * `buildPtyNotificationText` does), so a label built from an unsanitized
+ * title would reach one surface clean and the other raw.
+ *
+ * Each candidate in `describeSessionForNotification`'s fallback chain is run
+ * through this BEFORE the emptiness test that decides whether to use it -- a
+ * title or `worktreeId` made only of control characters (e.g. `'\x01'`)
+ * survives a plain `.trim()` as non-empty, then strips down to `''` if the
+ * order is reversed, producing a blank label instead of falling through to
+ * the next candidate.
  */
 function sanitizeLabelCandidate(value: string): string {
   return stripControlChars(value).trim();
