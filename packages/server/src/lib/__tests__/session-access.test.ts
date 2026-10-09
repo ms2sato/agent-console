@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import { assertCanOperateSession } from '../session-access.js';
+import { assertCanOperateSession, canOperateSession } from '../session-access.js';
 import { ForbiddenError } from '../errors.js';
 import * as path from 'path';
 
@@ -7,6 +7,35 @@ const AUTH_USER = { id: 'user-1' };
 const SHARED_REGISTRY_NONE = { isSharedUserId: () => false };
 const SHARED_REGISTRY_MATCHES = { isSharedUserId: (id: string) => id === 'shared-user' };
 
+describe('canOperateSession', () => {
+  it('returns true for the session owner in multi-user mode', () => {
+    expect(canOperateSession({ createdBy: 'user-1' }, 'user-1', SHARED_REGISTRY_NONE, 'multi-user')).toBe(true);
+  });
+
+  it('returns true for a shared-session creator, even though the caller is not the owner', () => {
+    expect(canOperateSession({ createdBy: 'shared-user' }, 'user-1', SHARED_REGISTRY_MATCHES, 'multi-user')).toBe(
+      true,
+    );
+  });
+
+  it('returns false for a non-owner, non-shared session in multi-user mode', () => {
+    expect(canOperateSession({ createdBy: 'someone-else' }, 'user-1', SHARED_REGISTRY_NONE, 'multi-user')).toBe(
+      false,
+    );
+  });
+
+  it('returns true outside multi-user mode, regardless of ownership', () => {
+    expect(canOperateSession({ createdBy: 'someone-else' }, 'user-1', SHARED_REGISTRY_NONE, 'none')).toBe(true);
+  });
+
+  it('returns false for a legacy session with createdBy undefined, in multi-user mode', () => {
+    expect(canOperateSession({ createdBy: undefined }, 'user-1', SHARED_REGISTRY_NONE, 'multi-user')).toBe(false);
+  });
+});
+
+// `assertCanOperateSession` is now a thin wrapper around `canOperateSession`
+// (throws instead of returning `false`); these tests pin the same semantics
+// through the throw wrapper and are kept unmodified.
 describe('assertCanOperateSession', () => {
   it('does not throw for the session owner in multi-user mode', () => {
     expect(() =>

@@ -14,7 +14,7 @@ import { z } from 'zod';
 import * as v from 'valibot';
 import { randomUUID } from 'node:crypto';
 
-import type { SessionManager } from '../services/session-manager.js';
+import type { SessionManager, RestartScope } from '../services/session-manager.js';
 import type { RepositoryManager } from '../services/repository-manager.js';
 import type { AgentManager } from '../services/agent-manager.js';
 import type { AgentDirectory } from '../services/agent-directory.js';
@@ -2232,7 +2232,7 @@ export function createMcpApp(deps: McpDependencies): Hono {
 
   mcpServer.tool(
     'restart_all_agents',
-    'Restart all workers with a live process across all sessions: PTY-based agent ' +
+    'Restart all workers with a live process across the sessions you may operate: PTY-based agent ' +
       'workers and active embedded-agent workers. ' +
       'Useful when agents have been updated and need to be restarted in bulk. ' +
       'Terminal workers are always left untouched. A dormant (idle-evicted) ' +
@@ -2241,7 +2241,18 @@ export function createMcpApp(deps: McpDependencies): Hono {
     {},
     async () => {
       try {
-        const result = await sessionManager.restartAllAgentWorkers();
+        const caller = getMcpCallerIdentity();
+        let scope: RestartScope;
+        if (caller) {
+          scope = { kind: 'operableBy', userId: caller.userId };
+        } else if (serverConfig.AUTH_MODE === 'multi-user') {
+          return errorResult(
+            'restart_all_agents requires a verified caller identity in multi-user mode (present the worker bearer token)',
+          );
+        } else {
+          scope = { kind: 'all' };
+        }
+        const result = await sessionManager.restartAllAgentWorkers(scope);
         return textResult(result);
       } catch (err) {
         const message = err instanceof Error ? err.message : 'Unknown error';

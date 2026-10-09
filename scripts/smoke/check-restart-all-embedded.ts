@@ -347,7 +347,7 @@ async function main(): Promise<void> {
 
     // --- The mechanism under test: restart-all.
     console.log('==> calling SessionManager.restartAllAgentWorkers()');
-    const result = await ctx.sessionManager.restartAllAgentWorkers();
+    const result = await ctx.sessionManager.restartAllAgentWorkers({ kind: 'all' });
     console.log(`  result: ${JSON.stringify(result)}`);
 
     expect(

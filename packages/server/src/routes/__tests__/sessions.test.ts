@@ -333,6 +333,18 @@ describe('Sessions API - Pause/Resume', () => {
       expect(body.skipped).toBe(0);
       expect(body.results).toHaveLength(0);
     });
+
+    it('scopes the call to the authenticated caller via { kind: "operableBy", userId }', async () => {
+      const restartAllAgentWorkersSpy = spyOn(sessionManager, 'restartAllAgentWorkers');
+
+      const res = await app.request('/api/sessions/restart-all-agents', {
+        method: 'POST',
+      });
+
+      expect(res.status).toBe(200);
+      expect(restartAllAgentWorkersSpy).toHaveBeenCalledTimes(1);
+      expect(restartAllAgentWorkersSpy).toHaveBeenCalledWith({ kind: 'operableBy', userId: TEST_AUTH_USER.id });
+    });
   });
 });
 

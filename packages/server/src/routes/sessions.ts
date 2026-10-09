@@ -16,10 +16,13 @@ import { assertCanOperateSession } from '../lib/session-access.js';
 import type { AppBindings } from '../app-context.js';
 
 const sessions = new Hono<AppBindings>()
-  // Restart all active agent workers across all sessions
+  // Restart all active agent workers across the sessions the caller may operate.
   .post('/restart-all-agents', async (c) => {
     const { sessionManager } = c.get('appContext');
-    const result = await sessionManager.restartAllAgentWorkers();
+    const authUser = c.get('authUser');
+    // In AUTH_MODE='none', canOperateSession() returns true unconditionally,
+    // so this is behaviorally identical to the old unscoped call there.
+    const result = await sessionManager.restartAllAgentWorkers({ kind: 'operableBy', userId: authUser.id });
     return c.json(result);
   })
   // Validate all sessions

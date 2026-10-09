@@ -36,6 +36,7 @@ import { InterSessionMessageService } from '../../services/inter-session-message
 import { SingleUserMode } from '../../services/user-mode.js';
 import { createMcpApp } from '../mcp-server.js';
 import { McpTokenRegistry, type McpAuthMode } from '../mcp-auth.js';
+import { serverConfig } from '../../lib/server-config.js';
 import { createWorktreeWithSession } from '../../services/worktree-creation-service.js';
 import { deleteWorktree, _getDeletionsInProgress } from '../../services/worktree-deletion-service.js';
 import type { SuggestSessionMetadataFn } from '../../services/session-metadata-suggester.js';
@@ -5667,6 +5668,55 @@ describe('MCP Server Tools', () => {
       expect(data.failed).toBe(0);
       expect(data.skipped).toBe(0);
       expect(data.results).toHaveLength(0);
+    });
+
+    it('refuses a tokenless call in multi-user mode with no verified caller identity', async () => {
+      const originalAuthMode = serverConfig.AUTH_MODE;
+      (serverConfig as { AUTH_MODE: string }).AUTH_MODE = 'multi-user';
+      try {
+        const response = await callTool(app, mcpSessionId, 'restart_all_agents', {}, nextId++);
+        const data = parseToolResult(response) as { error: string };
+
+        expect(response.result?.isError).toBe(true);
+        expect(data.error).toContain('requires a verified caller identity');
+      } finally {
+        (serverConfig as { AUTH_MODE: string }).AUTH_MODE = originalAuthMode;
+      }
+    });
+
+    it('scopes the restart to the presented caller token even outside multi-user mode', async () => {
+      const owner = await userRepository.upsertByOsUid(9401, 'dave', '/home/dave');
+
+      const session = await sessionManager.createSession(
+        {
+          type: 'quick',
+          locationPath: TEST_REPO_PATH,
+          agentId: 'claude-code',
+        },
+        { createdBy: owner.id },
+      );
+
+      const registry = new McpTokenRegistry();
+      const token = registry.mint({
+        sessionId: 'caller-session',
+        workerId: 'caller-worker',
+        userId: owner.id,
+      });
+      await remountMcpApp({ mcpTokenRegistry: registry });
+
+      const response = await callTool(app, mcpSessionId, 'restart_all_agents', {}, nextId++, {
+        Authorization: `Bearer ${token}`,
+      });
+      const data = parseToolResult(response) as {
+        restarted: number;
+        failed: number;
+        skipped: number;
+        results: Array<{ sessionId: string }>;
+      };
+
+      expect(response.result?.isError).toBeUndefined();
+      expect(data.restarted).toBe(1);
+      expect(data.results.some((r) => r.sessionId === session.id)).toBe(true);
     });
   });
 
