@@ -2,6 +2,12 @@
  * Client-Server Boundary Test: DELETE worktree route resolves the
  * worktree's OWNER, not the requester (Issue #1868).
  *
+ * Also covers Issue #1295's errorType -> HTTP status split through this
+ * same real chain: (A) the check could not run -> 503 (precheck-failed),
+ * distinct from (D) the check ran and found a PR -> 409 (open-pr). Closes
+ * the preflight "integration test gap" warning this PR's change to the
+ * route's error mapping would otherwise re-trigger.
+ *
  * Closes the preflight "integration test gap" warning for
  * `packages/server/src/routes/worktrees.ts`. Exercises the REAL chain:
  *
@@ -187,7 +193,7 @@ describe('Client-Server Boundary: DELETE worktree route resolves the owner, not 
     return { fn, capturedIdentities };
   }
 
-  it('(A) persisted (paused) owner: open-PR check fails closed, naming the owner -- 409, removal never attempted', async () => {
+  it('(A) persisted (paused) owner: open-PR check fails closed, naming the owner -- 503 (precheck-failed), removal never attempted', async () => {
     const sharedUser = await ctx.userRepository.upsertByOsUid(987601, 'shared1', '/home/shared1');
     const { worktreePath, sessionId } = await createFixtureWorktree({
       branch: 'issue-1868-a',
@@ -206,9 +212,42 @@ describe('Client-Server Boundary: DELETE worktree route resolves the owner, not 
     const encodedPath = encodeURIComponent(worktreePath);
     const res = await app.request(`/api/repositories/${repoId}/worktrees/${encodedPath}`, { method: 'DELETE' });
 
-    expect(res.status).toBe(409);
+    // The check could not run (gh auth / infra failure as the owner) is
+    // not "a PR was found" -- 503, distinct from the 409 in (D) below.
+    expect(res.status).toBe(503);
     const body = (await res.json()) as { error: string };
     expect(body.error).toContain('as shared1');
+    expect(body.error).toMatch(/did not run/);
+    expect(body.error).not.toContain('open PR');
+    expect(capturedIdentities).toEqual(['shared1']);
+    expect(mockRemoveWorktree).not.toHaveBeenCalled();
+  });
+
+  it('(D) persisted (paused) owner: open PR found -- 409, distinct from the precheck-failed 503 in (A)', async () => {
+    const sharedUser = await ctx.userRepository.upsertByOsUid(987603, 'shared1', '/home/shared1');
+    const { worktreePath, sessionId } = await createFixtureWorktree({
+      branch: 'issue-1295-d',
+      createdBy: sharedUser.id,
+    });
+    expect(sessionId).toBeDefined();
+
+    const paused = await ctx.sessionManager.pauseSession(sessionId!);
+    expect(paused).toBe(true);
+
+    const capturedIdentities: (string | null)[] = [];
+    const fn = async (_branch: string, _cwd: string, requestUsername: string | null) => {
+      capturedIdentities.push(requestUsername);
+      return { number: 77, title: 'Some PR' };
+    };
+    const app = buildApp({ findOpenPullRequest: fn });
+
+    const encodedPath = encodeURIComponent(worktreePath);
+    const res = await app.request(`/api/repositories/${repoId}/worktrees/${encodedPath}`, { method: 'DELETE' });
+
+    expect(res.status).toBe(409);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toContain('open PR #77');
+    expect(body.error).not.toMatch(/did not run/);
     expect(capturedIdentities).toEqual(['shared1']);
     expect(mockRemoveWorktree).not.toHaveBeenCalled();
   });
