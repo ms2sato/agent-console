@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { readFileSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { execSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
@@ -1768,5 +1768,126 @@ describe('requiresTestCoverage for packages/client/src/components/**/*.ts and pa
     expect(componentsEntry.pattern.test('packages/client/src/components/terminal/TerminalView.tsx')).toBe(
       true,
     );
+  });
+});
+
+describe('findTestFiles topic-split attribution (Issue #1553)', () => {
+  // Fixture-dir based: attribution now reads the production directory's
+  // real contents (readdirSync), so these tests build real temp
+  // directories rather than passing hypothetical paths.
+  let root;
+
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), 'topic-split-attribution-'));
+  });
+
+  afterEach(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  function writeFixtures(dir, names) {
+    mkdirSync(dir, { recursive: true });
+    for (const name of names) writeFileSync(join(dir, name), '// fixture\n');
+  }
+
+  it('(a) a topic-split sibling with no exact-name match counts as coverage', () => {
+    writeFixtures(root, ['agent-loop.ts']);
+    writeFixtures(join(root, '__tests__'), ['agent-loop-compaction.test.ts']);
+    const { testCoverage } = findTestFiles([
+      join(root, 'agent-loop.ts'),
+      join(root, '__tests__', 'agent-loop-compaction.test.ts'),
+    ]);
+    expect(testCoverage).toHaveLength(1);
+    expect(testCoverage[0].hasTest).toBe(true);
+  });
+
+  it('(b) a topic test attributes to the production file whose basename is its longest matching prefix', () => {
+    writeFixtures(root, ['agent.ts', 'agent-loop.ts']);
+    writeFixtures(join(root, '__tests__'), ['agent-loop-compaction.test.ts']);
+    const { testCoverage } = findTestFiles([
+      join(root, 'agent.ts'),
+      join(root, 'agent-loop.ts'),
+      join(root, '__tests__', 'agent-loop-compaction.test.ts'),
+    ]);
+    const agentLoop = testCoverage.find((c) => c.file === join(root, 'agent-loop.ts'));
+    expect(agentLoop.hasTest).toBe(true);
+  });
+
+  it('(b) THE TRAP: agent.ts is NOT credited by a topic test that also matches the longer agent-loop.ts prefix', () => {
+    // Naive prefix matching (checking "does tfBaseName start with
+    // fileName + '-'" with no longest-prefix tie-break) would attribute
+    // agent-loop-compaction.test.ts to BOTH agent.ts and agent-loop.ts
+    // ("agent-" is a valid prefix of "agent-loop-compaction" too).
+    // Reading the real directory and picking the LONGEST matching
+    // production basename is what keeps agent.ts uncovered.
+    writeFixtures(root, ['agent.ts', 'agent-loop.ts']);
+    writeFixtures(join(root, '__tests__'), ['agent-loop-compaction.test.ts']);
+    const { testCoverage } = findTestFiles([
+      join(root, 'agent.ts'),
+      join(root, 'agent-loop.ts'),
+      join(root, '__tests__', 'agent-loop-compaction.test.ts'),
+    ]);
+    const agent = testCoverage.find((c) => c.file === join(root, 'agent.ts'));
+    expect(agent.hasTest).toBe(false);
+  });
+
+  it('(c) a three-way prefix chain attributes only to the longest production basename', () => {
+    writeFixtures(root, ['foo.ts', 'foo-bar.ts']);
+    writeFixtures(join(root, '__tests__'), ['foo-bar-baz.test.ts']);
+    const { testCoverage } = findTestFiles([
+      join(root, 'foo.ts'),
+      join(root, 'foo-bar.ts'),
+      join(root, '__tests__', 'foo-bar-baz.test.ts'),
+    ]);
+    const foo = testCoverage.find((c) => c.file === join(root, 'foo.ts'));
+    const fooBar = testCoverage.find((c) => c.file === join(root, 'foo-bar.ts'));
+    expect(fooBar.hasTest).toBe(true);
+    expect(foo.hasTest).toBe(false);
+  });
+
+  it('(d) the dot-separated topic form (e.g. SessionPage.keyboard.test.tsx) also attributes', () => {
+    writeFixtures(root, ['SessionPage.tsx']);
+    writeFixtures(join(root, '__tests__'), ['SessionPage.keyboard.test.tsx']);
+    const { testCoverage } = findTestFiles([
+      join(root, 'SessionPage.tsx'),
+      join(root, '__tests__', 'SessionPage.keyboard.test.tsx'),
+    ]);
+    expect(testCoverage[0].hasTest).toBe(true);
+  });
+
+  it('(e) exact match still covers, and a same-prefix-without-separator name is not a topic form (no false positive)', () => {
+    writeFixtures(root, ['foo.ts']);
+    writeFixtures(join(root, '__tests__'), ['foo.test.ts', 'fooz.test.ts']);
+    const { testCoverage: exact } = findTestFiles([
+      join(root, 'foo.ts'),
+      join(root, '__tests__', 'foo.test.ts'),
+    ]);
+    expect(exact[0].hasTest).toBe(true);
+
+    const { testCoverage: noSeparator } = findTestFiles([
+      join(root, 'foo.ts'),
+      join(root, '__tests__', 'fooz.test.ts'),
+    ]);
+    expect(noSeparator[0].hasTest).toBe(false);
+  });
+
+  it('(f) sibling-directory placement and __tests__ placement are both accepted for a topic-split test', () => {
+    writeFixtures(root, ['agent-loop.ts', 'agent-loop-compaction.test.ts']);
+    const { testCoverage } = findTestFiles([
+      join(root, 'agent-loop.ts'),
+      join(root, 'agent-loop-compaction.test.ts'),
+    ]);
+    expect(testCoverage[0].hasTest).toBe(true);
+  });
+
+  it('boundary: a test with no matching production prefix at all attributes to nothing (orphan, unchanged behavior)', () => {
+    writeFixtures(root, ['agent-loop.ts']);
+    writeFixtures(join(root, '__tests__'), ['totally-unrelated.test.ts']);
+    const { testCoverage } = findTestFiles([
+      join(root, 'agent-loop.ts'),
+      join(root, '__tests__', 'totally-unrelated.test.ts'),
+    ]);
+    expect(testCoverage).toHaveLength(1);
+    expect(testCoverage[0].hasTest).toBe(false);
   });
 });

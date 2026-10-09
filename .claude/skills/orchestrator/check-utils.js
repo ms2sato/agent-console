@@ -744,6 +744,55 @@ export function findTestFiles(changedFiles, diffRef = {}) {
     }
   }
 
+  // Directory-listing cache for the longest-prefix attribution below,
+  // memoised per `findTestFiles()` call (not module-level — a fixture
+  // directory's contents must never leak between separate calls, e.g. in
+  // tests). `readdirSync` is already imported above; this avoids a repeat
+  // listing of the same directory across every (prodFile, testFile) pair
+  // that shares it.
+  const productionBasenamesByDir = new Map();
+  function productionBasenamesInDir(dir) {
+    if (productionBasenamesByDir.has(dir)) return productionBasenamesByDir.get(dir);
+    let basenames;
+    try {
+      basenames = readdirSync(dir)
+        .filter(entry => !isTestFile(entry) && SOURCE_EXT_RE.test(entry))
+        .map(entry => entry.replace(SOURCE_EXT_RE, ''));
+    } catch {
+      basenames = [];
+    }
+    productionBasenamesByDir.set(dir, basenames);
+    return basenames;
+  }
+
+  /**
+   * Whether a test file's basename (`tfBaseName`, already stripped of
+   * TEST_NAME_RE) counts as coverage for production basename `fileName` in
+   * production directory `dir`. Exact equality always attributes. A
+   * topic-split test — `<name>-<topic>.test.<ext>` or
+   * `<name>.<topic>.test.<ext>` — attributes to the LONGEST production
+   * basename actually present in `dir` that is a `-`/`.`-separated prefix of
+   * the test's basename.
+   *
+   * The longest-prefix rule exists to avoid a trap: naive prefix
+   * matching would attribute `agent-loop-compaction.test.ts` to BOTH
+   * `agent.ts` and `agent-loop.ts` (both are valid prefixes of
+   * `agent-loop-compaction`), falsely marking `agent.ts` as covered. Reading
+   * the real directory contents and picking the longest matching production
+   * basename keeps `agent-loop-compaction.test.ts` attributed to
+   * `agent-loop.ts` only.
+   */
+  function attributesTo(tfBaseName, fileName, dir) {
+    if (tfBaseName === fileName) return true;
+    if (!tfBaseName.startsWith(fileName + '-') && !tfBaseName.startsWith(fileName + '.')) return false;
+    let longest = null;
+    for (const candidate of productionBasenamesInDir(dir)) {
+      if (!tfBaseName.startsWith(candidate + '-') && !tfBaseName.startsWith(candidate + '.')) continue;
+      if (longest === null || candidate.length > longest.length) longest = candidate;
+    }
+    return longest === fileName;
+  }
+
   const testCoverage = [];
   for (const prodFile of productionFiles) {
     const ext = prodFile.match(SOURCE_EXT_RE)[0];
@@ -756,8 +805,8 @@ export function findTestFiles(changedFiles, diffRef = {}) {
       const tfDir = tf.substring(0, tf.lastIndexOf('/'));
       const tfFileName = tf.substring(tf.lastIndexOf('/') + 1);
       const tfBaseName = tfFileName.replace(TEST_NAME_RE, '');
-      if (tfBaseName !== fileName) return false;
-      return tfDir === dir || tfDir === dir + '/__tests__';
+      if (tfDir !== dir && tfDir !== dir + '/__tests__') return false;
+      return attributesTo(tfBaseName, fileName, dir);
     });
 
     // A file that otherwise needs coverage is exempted when its actual diff
@@ -779,11 +828,17 @@ export function findTestFiles(changedFiles, diffRef = {}) {
     const expectedTestPath = dir + '/__tests__/' + fileName + '.test' + expectedTestExt(ext);
     const altExt = alternateTestExt(ext);
     const alternateTestPath = altExt ? dir + '/__tests__/' + fileName + '.test' + altExt : null;
+    // Documents the topic-split forms `attributesTo` also accepts, so
+    // preflight-check.js's "expected:" line can mention them instead of
+    // implying the exact basename is the only accepted shape.
+    const testExtNoDot = expectedTestExt(ext).slice(1);
+    const acceptedTopicForm = `${fileName}-<topic>.test.${testExtNoDot} or ${fileName}.<topic>.test.${testExtNoDot}`;
     testCoverage.push({
       file: prodFile,
       hasTest,
       expectedTestPath,
       alternateTestPath,
+      acceptedTopicForm,
       needsCoverage,
       isCommentOnly,
       isExcluded,
