@@ -18,6 +18,9 @@ import * as path from 'node:path';
 import * as os from 'node:os';
 import { SqliteEmbeddedAgentRepository } from '../repositories/sqlite-embedded-agent-repository.js';
 import type { EmbeddedAgentDefinition } from '@agent-console/shared';
+import { bunTerminalProvider } from '../lib/pty-provider.js';
+import type { TerminalPtySpawnRequest } from '../services/user-mode.js';
+import { MockPty, createMockPtyFactory } from './utils/mock-pty.js';
 
 function createDeferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
   let resolve!: (value: T) => void;
@@ -135,6 +138,53 @@ describe('AppContext', () => {
 
       // Context should still be created successfully
       expect(appContext.jobQueue).toBeDefined();
+    });
+
+    describe('default ptyProvider resolution (Issue #1886)', () => {
+      function buildTerminalSpawnRequest(): TerminalPtySpawnRequest {
+        return {
+          type: 'terminal',
+          username: os.userInfo().username,
+          cwd: '/',
+          additionalEnvVars: {},
+          cols: 80,
+          rows: 24,
+        };
+      }
+
+      it('defaults the user mode\'s PTY provider to getPtyProvider(serverConfig.PTY_PROVIDER), not the legacy bunPtyProvider', async () => {
+        // The test env has no PTY_PROVIDER set, so serverConfig.PTY_PROVIDER
+        // resolves to its default 'bun-terminal' (server-config.ts), and
+        // getPtyProvider('bun-terminal') returns this exact exported
+        // singleton. SingleUserMode keeps its ptyProvider private, so
+        // identity is observed indirectly: spy on the singleton's spawn()
+        // method and confirm the context's default userMode construction
+        // actually dispatches a spawnPty call through it.
+        const spawnSpy = spyOn(bunTerminalProvider, 'spawn').mockReturnValue(new MockPty(99999));
+
+        try {
+          appContext = await createTestContext();
+          appContext.userMode.spawnPty(buildTerminalSpawnRequest());
+
+          // Mutation measured: on unmodified main, createTestContext's
+          // default branch hardcodes `SingleUserMode.create(bunPtyProvider,
+          // userRepository)` -- the legacy native-library provider, a
+          // different object entirely -- so this spy is never called and
+          // the assertion below fails.
+          expect(spawnSpy).toHaveBeenCalledTimes(1);
+        } finally {
+          spawnSpy.mockRestore();
+        }
+      });
+
+      it('lets overrides.ptyProvider win over the default resolution', async () => {
+        const ptyFactory = createMockPtyFactory();
+
+        appContext = await createTestContext({ ptyProvider: ptyFactory.provider });
+        appContext.userMode.spawnPty(buildTerminalSpawnRequest());
+
+        expect(ptyFactory.spawn).toHaveBeenCalledTimes(1);
+      });
     });
   });
 
