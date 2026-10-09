@@ -85,11 +85,15 @@ describe('getCodeRabbitHeadState', () => {
     expect(result.statusDescription).toBe('Review skipped: draft pull request');
   });
 
-  // (d) login "coderabbitai[bot]" matched via startswith -- an
-  // equality-based stub (`login === 'coderabbitai'`) must NOT match this
-  // review, so an equality-based implementation would report "unreviewed"
-  // here. Pinning "reviewed" pins the startsWith requirement.
-  it('reviewed: the bot login "coderabbitai[bot]" is matched via startsWith, not equality', () => {
+  // (d) the bot's login is matched by the EXACT string "coderabbitai[bot]"
+  // -- not by bare equality against "coderabbitai" (the documented
+  // false-empty: that login never appears verbatim, since the real bot
+  // account always carries the "[bot]" suffix), and not by a prefix match
+  // either (CodeRabbit review on PR #1917: `startsWith('coderabbitai')`
+  // also admits a lookalike human account such as `coderabbitai-helper`,
+  // letting anyone who can comment on a public PR suppress Q13). Exact
+  // match against the full string satisfies both constraints at once.
+  it('reviewed: the bot login "coderabbitai[bot]" is matched by exact string, not bare "coderabbitai"', () => {
     const execImpl = makeExecImpl({
       pr: JSON.stringify({ headRefOid: HEAD, body: '' }),
       reviews: JSON.stringify([
@@ -98,11 +102,46 @@ describe('getCodeRabbitHeadState', () => {
       status: JSON.stringify({ statuses: [] }),
     });
     const result = getCodeRabbitHeadState('1', { execImpl });
-    // An equality compare (`login === 'coderabbitai'`) would filter this
-    // review out entirely, leaving no matching review and no "Review
-    // completed" status -- i.e. 'unreviewed'. startsWith must find it.
+    // An equality compare against bare "coderabbitai" would filter this
+    // review out entirely (no "[bot]" suffix), leaving no matching review
+    // and no "Review completed" status -- i.e. 'unreviewed'. The exact
+    // "coderabbitai[bot]" string must be matched.
     expect(result.state).toBe('reviewed');
     expect(result.matchingReviewAt).toBe('2026-10-05T00:00:00Z');
+  });
+
+  // Negative case for the same finding: a lookalike login that merely
+  // SHARES A PREFIX with the real bot login must NOT be treated as a
+  // CodeRabbit review. A prefix-based match (`startsWith('coderabbitai')`)
+  // would wrongly admit this and let a regular GitHub user's own PR
+  // comment suppress Q13 on a genuinely unreviewed head.
+  it('unreviewed: a lookalike login "coderabbitai-helper" (shares a prefix, not the exact bot login) is not treated as a CodeRabbit review', () => {
+    const execImpl = makeExecImpl({
+      pr: JSON.stringify({ headRefOid: HEAD, body: '' }),
+      reviews: JSON.stringify([
+        { user: { login: 'coderabbitai-helper' }, commit_id: HEAD, submitted_at: '2026-10-05T00:00:00Z' },
+      ]),
+      status: JSON.stringify({ statuses: [] }),
+    });
+    const result = getCodeRabbitHeadState('1', { execImpl });
+    expect(result.state).toBe('unreviewed');
+    expect(result.matchingReviewAt).toBeNull();
+  });
+
+  // Negative case: bare "coderabbitai" (no "[bot]" suffix) must also not
+  // match -- the real bot account never has this exact login, so admitting
+  // it would be just as wrong as admitting a lookalike.
+  it('unreviewed: the bare login "coderabbitai" (no "[bot]" suffix) is not treated as a CodeRabbit review', () => {
+    const execImpl = makeExecImpl({
+      pr: JSON.stringify({ headRefOid: HEAD, body: '' }),
+      reviews: JSON.stringify([
+        { user: { login: 'coderabbitai' }, commit_id: HEAD, submitted_at: '2026-10-05T00:00:00Z' },
+      ]),
+      status: JSON.stringify({ statuses: [] }),
+    });
+    const result = getCodeRabbitHeadState('1', { execImpl });
+    expect(result.state).toBe('unreviewed');
+    expect(result.matchingReviewAt).toBeNull();
   });
 
   // (e) empty reviews array + empty status -> unreviewed, dispositionRecorded false.
@@ -178,6 +217,22 @@ describe('getCodeRabbitHeadState', () => {
   it('dispositionRecorded is false when the PR body has no disposition marker', () => {
     const execImpl = makeExecImpl({
       pr: JSON.stringify({ headRefOid: HEAD, body: 'Nothing relevant here.' }),
+    });
+    const result = getCodeRabbitHeadState('1', { execImpl });
+    expect(result.dispositionRecorded).toBe(false);
+  });
+
+  // CodeRabbit finding (PR #1917): a prose-only mention of the same words,
+  // with no actual heading, must NOT count as a recorded disposition --
+  // otherwise a sentence like "No CodeRabbit disposition has been
+  // recorded" would itself satisfy the check it is describing the absence
+  // of.
+  it('dispositionRecorded is false for a prose-only mention with no heading', () => {
+    const execImpl = makeExecImpl({
+      pr: JSON.stringify({
+        headRefOid: HEAD,
+        body: 'No CodeRabbit disposition has been recorded for this PR yet.',
+      }),
     });
     const result = getCodeRabbitHeadState('1', { execImpl });
     expect(result.dispositionRecorded).toBe(false);

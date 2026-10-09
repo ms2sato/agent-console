@@ -51,15 +51,25 @@ export function getCodeRabbitHeadState(prNumber, { execImpl = exec } = {}) {
   // below — even a `retrieval-failed` run should report whether a record
   // already exists, since that is orthogonal to whether the three `gh`
   // calls themselves succeeded.
-  const dispositionRecorded = /coderabbit disposition/i.test(body);
+  //
+  // The marker must be an actual Markdown HEADING, not merely the words
+  // appearing somewhere in the body: a prose sentence like "No CodeRabbit
+  // disposition has been recorded" would otherwise satisfy the check it is
+  // describing the absence of.
+  const dispositionRecorded = /^#{1,6}\s+CodeRabbit disposition\b/im.test(body);
   if (!headSha) {
     return makeResult({ state: 'retrieval-failed', dispositionRecorded });
   }
 
   // Surface 5/6's underlying data: the PR's reviews, filtered to the bot.
-  // The bot's login is `coderabbitai[bot]` — an equality compare against
-  // `coderabbitai` is the documented false-empty (SKILL.md "Two ways the
-  // query itself lies to you"); `startsWith` is required.
+  // The bot's login must be matched by the EXACT string "coderabbitai[bot]":
+  // a bare equality compare against "coderabbitai" is the documented
+  // false-empty (SKILL.md "Two ways the query itself lies to you") because
+  // the real bot account always carries the "[bot]" suffix -- but a PREFIX
+  // match (`startsWith('coderabbitai')`) over-corrects and also admits a
+  // lookalike human account such as `coderabbitai-helper`, which any
+  // public-repository commenter could register. Matching the full exact
+  // string avoids both failure modes.
   //
   // `--paginate` is required: GitHub's default page size is 30 reviews, so
   // on a PR with many review rounds the review matching the current head
@@ -103,9 +113,7 @@ export function getCodeRabbitHeadState(prNumber, { execImpl = exec } = {}) {
   const crEntry = statuses.find((s) => s?.context === 'CodeRabbit');
   const statusDescription = typeof crEntry?.description === 'string' ? crEntry.description : null;
 
-  const botReviews = reviews.filter(
-    (r) => typeof r?.user?.login === 'string' && r.user.login.startsWith('coderabbitai'),
-  );
+  const botReviews = reviews.filter((r) => r?.user?.login === 'coderabbitai[bot]');
   const matchingReview = botReviews.find((r) => r.commit_id === headSha);
   const matchingReviewAt = typeof matchingReview?.submitted_at === 'string' ? matchingReview.submitted_at : null;
 
