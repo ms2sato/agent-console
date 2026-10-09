@@ -232,6 +232,26 @@ export const MATCHING_RULES = {
     relevance:
       'event/data callbacks with a pre-attach window — payloads arriving before the first handler attach must be buffered (bounded, flush-on-first-attach) or fail loudly, never silently dropped; audit sibling events on the same object for late-attach symmetry',
   },
+  'I-10': {
+    keywords: [
+      'registry',
+      'in-memory map',
+      'reserved slot',
+      'reserve a slot',
+      'insertion order',
+      'partially constructed',
+      'pending state',
+      'concurrent reader',
+      'restoreWorker',
+      'getAvailableWorker',
+      'reachable',
+      'reachability',
+      'readiness',
+    ],
+    pathFragments: ['session-manager', 'worker-lifecycle-manager', 'websocket/routes'],
+    relevance:
+      'a value is inserted into a shared map / registry / collection before its construction completes — every reader of that collection must be able to recognize the pending state and skip or await it, or the insert must be deferred until the value is complete',
+  },
 };
 
 function usage() {
