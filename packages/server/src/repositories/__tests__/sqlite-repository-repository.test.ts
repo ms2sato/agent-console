@@ -1143,4 +1143,16 @@ describe('SqliteRepositoryRepository', () => {
     });
   });
 
+  describe('mutable column round-trips on a second persist (Issue #1339)', () => {
+    it('writes description on the UPDATE branch starting from null, not just the INSERT branch', async () => {
+      const repo = createRepository({ id: 'repo-1339' });
+      await repository.save(repo);
+
+      await repository.save({ ...repo, description: 'Updated description' });
+
+      const found = await repository.findById('repo-1339');
+      expect(found?.description).toBe('Updated description');
+    });
+  });
+
 });

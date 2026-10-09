@@ -163,12 +163,23 @@ export type NewSession = Insertable<SessionsTable>;
 /** Session data for UPDATE queries */
 export type SessionUpdate = Updateable<SessionsTable>;
 
+/**
+ * `NewSession` with every column required and explicit (no optional keys
+ * from `Insertable`'s `Generated`-column handling) -- the `Row` type for
+ * `conflictUpdateSet` (see `../repositories/conflict-update-set.ts`), whose
+ * totality contract needs a row with no omitted keys.
+ */
+export type SessionRowFull = Required<NewSession>;
+
 /** Worker row as returned from SELECT queries */
 export type Worker = Selectable<WorkersTable>;
 /** Worker data for INSERT queries */
 export type NewWorker = Insertable<WorkersTable>;
 /** Worker data for UPDATE queries */
 export type WorkerUpdate = Updateable<WorkersTable>;
+
+/** Same rationale as `SessionRowFull`, for `workers`. */
+export type WorkerRowFull = Required<NewWorker>;
 
 /**
  * Repositories table schema.
@@ -208,6 +219,9 @@ export type NewRepository = Insertable<RepositoriesTable>;
 /** Repository data for UPDATE queries */
 export type RepositoryUpdate = Updateable<RepositoriesTable>;
 
+/** Same rationale as `SessionRowFull`, for `repositories`. */
+export type RepositoryRowFull = Required<NewRepository>;
+
 /**
  * Agents table schema.
  * Stores agent definitions (both built-in and custom).
@@ -243,6 +257,9 @@ export type AgentRow = Selectable<AgentsTable>;
 export type NewAgent = Insertable<AgentsTable>;
 /** Agent data for UPDATE queries */
 export type AgentUpdate = Updateable<AgentsTable>;
+
+/** Same rationale as `SessionRowFull`, for `agents`. */
+export type AgentRowFull = Required<NewAgent>;
 
 /**
  * Embedded agents table schema.
@@ -294,6 +311,9 @@ export type EmbeddedAgentRow = Selectable<EmbeddedAgentsTable>;
 export type NewEmbeddedAgent = Insertable<EmbeddedAgentsTable>;
 /** Embedded agent data for UPDATE queries */
 export type EmbeddedAgentUpdate = Updateable<EmbeddedAgentsTable>;
+
+/** Same rationale as `SessionRowFull`, for `embedded_agents`. */
+export type EmbeddedAgentRowFull = Required<NewEmbeddedAgent>;
 
 /**
  * Jobs table schema.

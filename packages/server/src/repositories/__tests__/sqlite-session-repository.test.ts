@@ -1741,4 +1741,41 @@ describe('SqliteSessionRepository', () => {
       expect(found?.initialPrompt).toBeUndefined();
     });
   });
+
+  describe('mutable column round-trips on a second persist (Issue #1339)', () => {
+    it('writes workers.pid on the UPDATE branch starting from null, not just the INSERT branch', async () => {
+      const session = buildPersistedQuickSession({
+        id: 'session-1339',
+        workers: [buildPersistedAgentWorker({ id: 'worker-1339', pid: null })],
+      });
+      await repository.save(session);
+
+      const updated = buildPersistedQuickSession({
+        id: 'session-1339',
+        workers: [buildPersistedAgentWorker({ id: 'worker-1339', pid: 4242 })],
+      });
+      await repository.save(updated);
+
+      const row = await db
+        .selectFrom('workers')
+        .where('id', '=', 'worker-1339')
+        .select('pid')
+        .executeTakeFirstOrThrow();
+      expect(row.pid).toBe(4242);
+    });
+
+    it('writes sessions.title on the UPDATE branch starting from undefined, not just the INSERT branch', async () => {
+      const session = buildPersistedQuickSession({ id: 'session-1339-title' });
+      await repository.save(session);
+
+      await repository.save({ ...session, title: 'Renamed' });
+
+      const row = await db
+        .selectFrom('sessions')
+        .where('id', '=', 'session-1339-title')
+        .select('title')
+        .executeTakeFirstOrThrow();
+      expect(row.title).toBe('Renamed');
+    });
+  });
 });

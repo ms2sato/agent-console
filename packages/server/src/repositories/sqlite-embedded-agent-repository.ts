@@ -4,6 +4,7 @@ import type { EmbeddedAgentRepository } from './embedded-agent-repository.js';
 import type { Database } from '../database/schema.js';
 import { createLogger } from '../lib/logger.js';
 import { toEmbeddedAgentRow, toEmbeddedAgentDefinition, DataIntegrityError } from '../database/mappers.js';
+import { conflictUpdateSet } from './conflict-update-set.js';
 
 const logger = createLogger('sqlite-embedded-agent-repository');
 
@@ -50,29 +51,9 @@ export class SqliteEmbeddedAgentRepository implements EmbeddedAgentRepository {
       .insertInto('embedded_agents')
       .values(row)
       .onConflict((oc) =>
-        oc.column('id').doUpdateSet({
-          name: row.name,
-          description: row.description,
-          // `engine` is included for consistency with the "upsert built-in
-          // on every startup" pattern (EmbeddedAgentManager.initialize) --
-          // in practice no caller ever flips a definition's engine post-
-          // creation, so this is a no-op update in every real invocation.
-          engine: row.engine,
-          provider_base_url: row.provider_base_url,
-          provider_model: row.provider_model,
-          provider_api_key_ref: row.provider_api_key_ref,
-          provider_supports_images: row.provider_supports_images,
-          system_prompt: row.system_prompt,
-          max_tool_iterations: row.max_tool_iterations,
-          enabled_tools: row.enabled_tools,
-          instructions: row.instructions,
-          context_window_tokens: row.context_window_tokens,
-          compaction_threshold: row.compaction_threshold,
-          is_built_in: row.is_built_in,
-          // Note: created_at and created_by are intentionally NOT updated
-          // (they must never change after the initial insert).
-          updated_at: row.updated_at,
-        })
+        oc.column('id').doUpdateSet(
+          conflictUpdateSet(row, ['id', 'created_at', 'created_by'] as const)
+        )
       )
       .execute();
 

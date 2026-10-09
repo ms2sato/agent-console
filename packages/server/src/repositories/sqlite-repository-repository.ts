@@ -3,7 +3,8 @@ import type { Repository } from '@agent-console/shared';
 import type { RepositoryRepository, RepositoryUpdates } from './repository-repository.js';
 import type { Database } from '../database/schema.js';
 import { createLogger } from '../lib/logger.js';
-import { toRepository } from '../database/mappers.js';
+import { toRepository, toRepositoryInsertRow } from '../database/mappers.js';
+import { conflictUpdateSet } from './conflict-update-set.js';
 
 const logger = createLogger('sqlite-repository-repository');
 
@@ -105,46 +106,18 @@ export class SqliteRepositoryRepository implements RepositoryRepository {
   }
 
   async save(repository: Repository): Promise<void> {
-    const now = new Date().toISOString();
     // Deliberately does NOT touch `repository_orchestrator_sessions`:
     // designations are managed only through `addOrchestratorSession` /
     // `removeOrchestratorSession`, never as a side effect of a general save.
+    const row = toRepositoryInsertRow(repository);
+
     await this.db
       .insertInto('repositories')
-      .values({
-        id: repository.id,
-        name: repository.name,
-        path: repository.path,
-        created_at: repository.createdAt,
-        updated_at: now,
-        setup_command: repository.setupCommand ?? null,
-        cleanup_command: repository.cleanupCommand ?? null,
-        env_vars: repository.envVars ?? null,
-        description: repository.description ?? null,
-        default_agent_id: repository.defaultAgentId ?? null,
-        issue_trigger_labels: repository.issueTriggerLabels ?? null,
-        // `shared_account_user_id` is intentionally NOT derived from
-        // `repository.sharedAccountUsername` here -- that field is a
-        // resolved username (read-only, join-derived), not the raw id this
-        // column stores. A fresh insert always starts unbound; bindings are
-        // written only through `update()`'s `sharedAccountUserId` field. Not
-        // included in `onConflict().doUpdateSet()` below for the same
-        // reason `orchestratorSessionIds` is never touched by `save()`.
-        shared_account_user_id: null,
-      })
+      .values(row)
       .onConflict((oc) =>
-        oc.column('id').doUpdateSet({
-          name: repository.name,
-          path: repository.path,
-          setup_command: repository.setupCommand ?? null,
-          cleanup_command: repository.cleanupCommand ?? null,
-          env_vars: repository.envVars ?? null,
-          description: repository.description ?? null,
-          default_agent_id: repository.defaultAgentId ?? null,
-          issue_trigger_labels: repository.issueTriggerLabels ?? null,
-          // Note: created_at is intentionally NOT updated (should never change after insert)
-          updated_at: now,
-        })
+        oc.column('id').doUpdateSet(
+          conflictUpdateSet(row, ['id', 'created_at', 'shared_account_user_id'] as const)
+        )
       )
       .execute();
 

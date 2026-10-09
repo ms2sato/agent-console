@@ -109,6 +109,7 @@ The answer at the time was "no" — and that single question surfaces the same c
 
 - **Extract a helper.** Name it what it computes (`computeSessionDataBaseDir`).
 - **Make the helper the only writer.** Document it. Add a test. Add a grep-based invariant check to CI if the pattern is safety-critical.
+- **Upsert column sets**: use `conflictUpdateSet` (`packages/server/src/repositories/conflict-update-set.ts`) as the single writer for a Kysely `doUpdateSet` object — a hand-written `doUpdateSet({...})` is a second derivation of the row's column set and silently freezes any column it omits (Issue #1339).
 
 ### Suggested acceptance criterion template
 

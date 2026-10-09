@@ -10,6 +10,7 @@ import {
   toPersistedSession,
   DataIntegrityError,
 } from '../database/mappers.js';
+import { conflictUpdateSet } from './conflict-update-set.js';
 
 const logger = createLogger('sqlite-session-repository');
 
@@ -111,78 +112,30 @@ export class SqliteSessionRepository implements SessionRepository {
       .insertInto('sessions')
       .values(sessionRow)
       .onConflict((oc) =>
-        oc.column('id').doUpdateSet({
-          type: sessionRow.type,
-          location_path: sessionRow.location_path,
-          server_pid: sessionRow.server_pid,
-          // Note: created_at is intentionally NOT updated (should never change after insert)
-          updated_at: sessionRow.updated_at,
-          initial_prompt: sessionRow.initial_prompt,
-          initial_prompt_delivered: sessionRow.initial_prompt_delivered,
-          title: sessionRow.title,
-          repository_id: sessionRow.repository_id,
-          worktree_id: sessionRow.worktree_id,
-          paused_at: sessionRow.paused_at,
-          parent_session_id: sessionRow.parent_session_id,
-          parent_worker_id: sessionRow.parent_worker_id,
-          initiated_by: sessionRow.initiated_by,
-          data_scope: sessionRow.data_scope,
-          data_scope_slug: sessionRow.data_scope_slug,
-          recovery_state: sessionRow.recovery_state,
-          orphaned_at: sessionRow.orphaned_at,
-          orphaned_reason: sessionRow.orphaned_reason,
-        })
+        oc.column('id').doUpdateSet(
+          conflictUpdateSet(sessionRow, ['id', 'created_at', 'created_by'] as const)
+        )
       )
       .execute();
 
-    // Upsert workers (preserves created_at, updates other fields)
+    // Upsert workers. `id` and `created_at` are immutable; every other
+    // column -- including the type-discriminant ones (embedded_agent_id,
+    // sdk_session_id, etc.) that toWorkerRow now sets explicitly on every
+    // branch -- is written back on conflict, because conflictUpdateSet
+    // derives the update set from the row itself. See
+    // conflict-update-set.ts for why this matters: a worker restart that
+    // flips `type` (e.g. 'agent' -> 'embedded-agent' on the same worker id)
+    // needs every type-discriminant column reset, not just the ones a
+    // hand-written list happened to include.
     for (const worker of session.workers) {
       const workerRow = toWorkerRow(worker, session.id);
       await trx
         .insertInto('workers')
         .values(workerRow)
         .onConflict((oc) =>
-          oc.column('id').doUpdateSet({
-            session_id: workerRow.session_id,
-            type: workerRow.type,
-            name: workerRow.name,
-            // Note: created_at is intentionally NOT updated (should never change after insert)
-            updated_at: workerRow.updated_at,
-            pid: workerRow.pid,
-            agent_id: workerRow.agent_id,
-            base_commit: workerRow.base_commit,
-            // embedded_agent_id and the fields below are type-discriminant
-            // (only meaningful for 'embedded-agent' rows, toWorkerRow always
-            // writes null for other types). They must be included in the
-            // conflict-update set: a worker restart that changes a worker's
-            // `type` (e.g. 'agent' -> 'embedded-agent', same worker id)
-            // upserts an existing row whose `type` FLIPS, and an omitted
-            // column here would silently leave the PREVIOUS type's stale
-            // value (or null) in place instead of the new type's row shape
-            // -- this doUpdateSet originally listed only fields that could
-            // vary for a same-type restart, an assumption a type-changing
-            // restart breaks.
-            embedded_agent_id: workerRow.embedded_agent_id,
-            deliver_initial_prompt_on_activation: workerRow.deliver_initial_prompt_on_activation,
-            // toWorkerRow's per-type branches omit these five keys entirely
-            // for types that don't declare them (e.g. 'agent' never sets
-            // sdk_session_id/auto_compaction/context_window_tokens; 'terminal'
-            // and 'git-diff' set none of the five), so workerRow.<key> is
-            // `undefined` rather than `null` on those branches. Kysely's
-            // doUpdateSet treats `undefined` as "omit this column from the
-            // SQL SET clause", which is different from `null` (which DOES
-            // reset the column) -- without the `?? null`/`?? 1` fallback
-            // below, a same-id restart into a type that doesn't declare one
-            // of these columns would silently leave the PREVIOUS type's
-            // stale value in place instead of resetting it.
-            sdk_session_id: workerRow.sdk_session_id ?? null,
-            // auto_compaction is NOT NULL DEFAULT 1 in the schema, so its
-            // reset value is 1 (ON), not null.
-            auto_compaction: workerRow.auto_compaction ?? 1,
-            model: workerRow.model ?? null,
-            reasoning_effort: workerRow.reasoning_effort ?? null,
-            context_window_tokens: workerRow.context_window_tokens ?? null,
-          })
+          oc.column('id').doUpdateSet(
+            conflictUpdateSet(workerRow, ['id', 'created_at'] as const)
+          )
         )
         .execute();
     }
