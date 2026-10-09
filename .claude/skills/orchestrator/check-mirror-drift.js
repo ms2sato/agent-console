@@ -46,9 +46,9 @@ const TEST_TRIGGER_MD = resolve(REPO_ROOT, '.claude/rules/test-trigger.md');
  * Also recognises a second canonical shape — one optional trailing
  * character on the extension, e.g. `^DIR\/.+\.tsx?$` (matches both `.ts`
  * and `.tsx`) — converting it to a brace glob: `DIR/**\/*.{ts,tsx}`. This
- * is the shape `packages/client/src/components/**` uses as of Issue #1902,
- * to cover both component files (.tsx) and plain logic files (.ts) with a
- * single COVERAGE_PATTERNS entry.
+ * is the shape `packages/client/src/components/**` uses to cover both
+ * component files (.tsx) and plain logic files (.ts) with a single
+ * COVERAGE_PATTERNS entry.
  *
  * Returns null if the regex does not fit either shape, signalling that the
  * caller cannot mechanically compare it against the markdown mirror.
