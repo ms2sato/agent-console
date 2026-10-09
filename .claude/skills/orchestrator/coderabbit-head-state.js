@@ -15,13 +15,45 @@
  * The three `gh` calls below and their verdict shapes mirror
  * `.claude/skills/coderabbit-ops/SKILL.md`'s documented surfaces:
  *   - surface 6 (review freshness): a review whose `commit_id` equals the
- *     PR's current head SHA
+ *     PR's current head SHA AND whose body is a real review PASS -- not
+ *     merely a review object attached to the head. CodeRabbit also creates
+ *     empty-body review objects when it acknowledges a thread resolution
+ *     ("Thanks for the fix ... Review thread resolved"), and those carry
+ *     `commit_id` = the current head too. A bare `commit_id` match reads
+ *     an unreviewed head as reviewed whenever CodeRabbit happened to post
+ *     such an ack on it, even while the commit status for that head reads
+ *     something other than "Review completed".
  *   - surface 4 (commit-status description): `Review completed` is the
  *     clean state; everything else (including the documented
  *     `Review skipped: ...` / `Review rate limited` shapes) is not
  */
 
 import { exec } from './check-utils.js';
+
+/**
+ * A head review counts as a review PASS only when its body carries the
+ * positive "Actionable comments posted" marker (case-insensitive,
+ * anywhere in the body -- not anchored to the start, since the marker can
+ * follow an autofix HTML comment block in some real bodies). An empty or
+ * unmarked body on the head is CodeRabbit's thread-resolution ACK, not a
+ * review of the head.
+ *
+ * The predicate is deliberately a POSITIVE marker check, not "body is
+ * non-empty": a real review can have a non-empty body with no actionable
+ * findings and no count-style marker at all (an observed nitpick-only
+ * review shape), and that must still NOT be mistaken for a pass -- a
+ * nitpick-only review is still a genuine ack for THIS check's purposes
+ * (it gives Q13 no exemption), and the absent marker correctly falls to
+ * 'unreviewed' (the safe direction) rather than risking a false
+ * 'reviewed' on some other non-empty body shape. When the marker is
+ * absent, `reviewed` falls to `unreviewed` and Q13 is asked, loud.
+ *
+ * @param {{ body?: unknown }} review
+ * @returns {boolean}
+ */
+function isReviewPass(review) {
+  return typeof review?.body === 'string' && /\bActionable comments posted\b/i.test(review.body);
+}
 
 /**
  * @param {string|number} prNumber
@@ -32,6 +64,8 @@ import { exec } from './check-utils.js';
  *   matchingReviewAt: string | null,
  *   statusDescription: string | null,
  *   dispositionRecorded: boolean,
+ *   headReviewCount: number,
+ *   headAckCount: number,
  * }}
  */
 export function getCodeRabbitHeadState(prNumber, { execImpl = exec } = {}) {
@@ -114,10 +148,17 @@ export function getCodeRabbitHeadState(prNumber, { execImpl = exec } = {}) {
   const statusDescription = typeof crEntry?.description === 'string' ? crEntry.description : null;
 
   const botReviews = reviews.filter((r) => r?.user?.login === 'coderabbitai[bot]');
-  const matchingReview = botReviews.find((r) => r.commit_id === headSha);
-  const matchingReviewAt = typeof matchingReview?.submitted_at === 'string' ? matchingReview.submitted_at : null;
+  // All bot review objects attached to the current head -- real passes AND
+  // empty-body thread-resolution acks alike. `reviewPass` narrows this to
+  // the one (if any) that is an actual review of the head; everything else
+  // in `headReviews` is an ack, counted separately below.
+  const headReviews = botReviews.filter((r) => r.commit_id === headSha);
+  const reviewPass = headReviews.find(isReviewPass);
+  const matchingReviewAt = typeof reviewPass?.submitted_at === 'string' ? reviewPass.submitted_at : null;
+  const headReviewCount = headReviews.length;
+  const headAckCount = headReviews.filter((r) => !isReviewPass(r)).length;
 
-  const reviewed = Boolean(matchingReview) || statusDescription === 'Review completed';
+  const reviewed = Boolean(reviewPass) || statusDescription === 'Review completed';
 
   return makeResult({
     state: reviewed ? 'reviewed' : 'unreviewed',
@@ -125,9 +166,19 @@ export function getCodeRabbitHeadState(prNumber, { execImpl = exec } = {}) {
     matchingReviewAt,
     statusDescription,
     dispositionRecorded,
+    headReviewCount,
+    headAckCount,
   });
 }
 
-function makeResult({ state, headSha = null, matchingReviewAt = null, statusDescription = null, dispositionRecorded = false }) {
-  return { state, headSha, matchingReviewAt, statusDescription, dispositionRecorded };
+function makeResult({
+  state,
+  headSha = null,
+  matchingReviewAt = null,
+  statusDescription = null,
+  dispositionRecorded = false,
+  headReviewCount = 0,
+  headAckCount = 0,
+}) {
+  return { state, headSha, matchingReviewAt, statusDescription, dispositionRecorded, headReviewCount, headAckCount };
 }
