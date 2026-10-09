@@ -1099,10 +1099,14 @@ describe('WorkerManager', () => {
 
       const mockPty = ptyFactory.instances[0];
       expect(mockPty.killed).toBe(false);
+      const killSpy = spyOn(mockPty, 'kill');
 
       await workerManager.killWorker(worker, 'test-session');
 
       expect(mockPty.killed).toBe(true);
+      // #1877: the PTY root is an interactive login shell, which ignores
+      // SIGTERM -- killWorker must send SIGHUP, not the default signal.
+      expect(killSpy).toHaveBeenCalledWith('SIGHUP');
     });
 
     it('should kill the PTY process for a terminal worker', async () => {
@@ -1110,9 +1114,13 @@ describe('WorkerManager', () => {
       await workerManager.activateTerminalWorkerPty(worker, defaultTerminalActivationParams);
 
       const mockPty = ptyFactory.instances[0];
+      const killSpy = spyOn(mockPty, 'kill');
       await workerManager.killWorker(worker, 'test-session');
 
       expect(mockPty.killed).toBe(true);
+      // #1877: same SIGTERM-ignored fact applies to terminal workers --
+      // their PTY root is the same login shell shape.
+      expect(killSpy).toHaveBeenCalledWith('SIGHUP');
     });
 
     it('should await PTY exit before detaching', async () => {
@@ -1175,6 +1183,53 @@ describe('WorkerManager', () => {
         jest.useRealTimers();
       }
     });
+
+    it(
+      'resolves without the "did not exit" warning when the PTY root only exits on SIGHUP (#1877)',
+      async () => {
+        // `MockPty.kill()` normally fires its exit callback for ANY signal
+        // (it does not model an interactive shell's SIGTERM-ignoring
+        // behavior), so this override is required to exercise the actual
+        // defect: a login-shell-shaped PTY that exits on SIGHUP but not on
+        // SIGTERM. Real timers deliberately (not `jest.useFakeTimers()`):
+        // on the fix, the exit callback fires via a microtask and this
+        // resolves near-instantly; polarity was verified by temporarily
+        // reverting the production fix (worker-manager.ts back to the bare
+        // `pty.kill()`) locally -- the fake then never fires its exit
+        // callback, `killWorker` loses the race, falls through to the real
+        // `PTY_EXIT_TIMEOUT_MS` (5000ms), and the warn assertion below
+        // correctly fails. Fake timers would make that same revert hang
+        // forever instead of failing in a bounded ~5s, because
+        // `jest.useFakeTimers()` also replaces the timers the test
+        // framework itself uses to enforce a test's own timeout.
+        const warnSpy = spyOn(rootLogger, 'warn');
+        try {
+          const worker = createTestAgentWorker();
+          await workerManager.activateAgentWorkerPty(worker, defaultAgentActivationParams);
+
+          const mockPty = ptyFactory.instances[0];
+          mockPty.kill = function (this: typeof mockPty, signal?: string) {
+            this.killed = true;
+            if (signal === 'SIGHUP') {
+              void this.simulateExit(0, signal);
+            }
+            // Any other signal (including the pre-fix bare `undefined`):
+            // no-op, simulating an interactive login shell ignoring SIGTERM.
+          };
+
+          await workerManager.killWorker(worker, 'test-session');
+
+          expect(worker.pty).toBeNull();
+          const timeoutWarnCalls = warnSpy.mock.calls.filter(
+            (call) => typeof call[1] === 'string' && call[1].includes('did not exit'),
+          );
+          expect(timeoutWarnCalls.length).toBe(0);
+        } finally {
+          warnSpy.mockRestore();
+        }
+      },
+      7000,
+    );
 
     it('should be safe to call on a git-diff worker (no PTY)', async () => {
       const worker = buildInternalGitDiffWorker({ id: 'git-diff-1', name: 'Diff' });

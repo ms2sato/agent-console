@@ -409,6 +409,16 @@ class BunTerminalPtyAdapter implements IPty {
     this.terminal.resize(columns, rows);
   }
 
+  /**
+   * The PTY root is, in this codebase, always the interactive login shell
+   * built by `sentinel-spawn-command.ts` (`exec $SHELL -l -c 'echo
+   * <sentinel>; exec $SHELL'`) -- an interactive POSIX shell ignores
+   * SIGTERM by design, so a caller that needs this process to actually
+   * terminate must pass `'SIGHUP'` explicitly (see
+   * `WorkerManager.killWorker`). This method does not choose that signal
+   * itself: the default stays SIGTERM for bun-pty `IPty.kill` parity, and
+   * the call site is where that choice belongs.
+   */
   kill(signal?: string): void {
     // Bun.Subprocess.kill accepts a signal name. bun-pty's IPty.kill signal
     // defaults to SIGTERM; preserve that.
