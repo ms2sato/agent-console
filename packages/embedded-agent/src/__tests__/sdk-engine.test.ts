@@ -1900,6 +1900,265 @@ describe('SdkEngine — event mapping (Appendix A.2)', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Dangling iteration text at turn end (#1629) -- the SDK can end a turn
+// (via `result`, or via the stream/process dying outright) without ever
+// sending `message_stop` for content the delta stream already produced.
+// Sibling of the "event mapping" describe above and the "clean stream end"
+// describe below -- see sdk-engine.ts's `flushDanglingIterationText` doc
+// comment for the full mechanism.
+//
+// `flushDanglingIterationText` itself only flushes the partial
+// assistant-message and returns the dangling character count (0 = nothing
+// to flush) -- it does not emit `turn-error`. The CALLER
+// (`handleResult` / `handleFatal`) composes the turn's single `turn-error`,
+// folding the count's note into whatever ending it already reports, per
+// the Architect ruling on the CodeRabbit findings this shape replaced: a
+// dangling flush emitting its OWN generic `turn-error` (the first cut of
+// this fix) silently discarded the canceled-turn `turn canceled` copy and
+// `buildExecutionErrorMessage`'s stderr diagnostic preservation whenever
+// dangling text coincided with a non-success result -- see (c)/(c2) below.
+//
+// Polarity (measured by commenting out all three composition call sites in
+// sdk-engine.ts -- the `turn-error` emits inside `handleResult`'s
+// non-success branch, its success-branch `else if`, and `handleFatal`'s
+// `if (dangling > 0)` block -- while leaving `flushDanglingIterationText`
+// itself, and its `number` return type, intact): (a), (c), (c2), (d), (f)
+// below FAIL (no turn-error at all, or (f) still passes since it already
+// asserts none); (b), (e) PASS identically either way, as the
+// no-op/control cases.
+// ---------------------------------------------------------------------------
+
+describe('SdkEngine — dangling iteration text at turn end (#1629)', () => {
+  it('(a) REPRO: a success result with no message_stop still surfaces the partial text and an explicit turn-error, instead of a silent clean finish', async () => {
+    const events: EmbeddedAgentEvent[] = [];
+    const { queryFn } = makeFakeQuery([
+      systemInit(),
+      textDeltaEvent('one'),
+      textDeltaEvent(' two'),
+      textDeltaEvent(' three'),
+      // No messageStopEvent() -- the SDK's own stream ended the text block
+      // without ever closing it, then still reported a `success` result.
+      resultSuccess(),
+    ]);
+    const engine = new SdkEngine(baseDeps({ emit: (e) => events.push(e), queryFn }));
+    await engine.runTurn('u1', 'hi'); // must resolve -- settlePendingTurn ran
+
+    // Pinned by INDEX, not just presence: the dangling flush runs BEFORE
+    // the usage poll (so its warn diagnostics carry this result's own
+    // subtype, see handleResult's comment), but the turn-error it feeds
+    // into is composed and emitted AFTER the poll --
+    // assistant-message(partial) < context-usage < turn-error < idle.
+    const relevantTypes = events
+      .filter(
+        (e) =>
+          e.type === 'assistant-message' ||
+          e.type === 'context-usage' ||
+          e.type === 'turn-error' ||
+          e.type === 'state',
+      )
+      .map((e) => e.type);
+    expect(relevantTypes).toEqual(['state', 'assistant-message', 'context-usage', 'turn-error', 'state']);
+
+    expect(eventsOfType(events, 'assistant-message')).toEqual([
+      { v: 1, type: 'assistant-message', turnId: 'u1', text: 'one two three' },
+    ]);
+    const turnErrors = eventsOfType(events, 'turn-error');
+    expect(turnErrors).toHaveLength(1);
+    expect(turnErrors[0].message).toBe(
+      'turn ended without a completed assistant message (success, 13 chars of streamed text were not closed by message_stop)',
+    );
+    expect(eventsOfType(events, 'state').map((e) => e.state)).toEqual(['active', 'idle']);
+  });
+
+  it('(b) CONTROL: a success result preceded by message_stop is unaffected -- one assistant-message, no turn-error', async () => {
+    const events: EmbeddedAgentEvent[] = [];
+    const { queryFn } = makeFakeQuery([
+      systemInit(),
+      textDeltaEvent('Hel'),
+      textDeltaEvent('lo!'),
+      messageStopEvent(),
+      resultSuccess(),
+    ]);
+    const engine = new SdkEngine(baseDeps({ emit: (e) => events.push(e), queryFn }));
+    await engine.runTurn('u1', 'hi');
+
+    expect(eventsOfType(events, 'assistant-message')).toEqual([
+      { v: 1, type: 'assistant-message', turnId: 'u1', text: 'Hello!' },
+    ]);
+    expect(eventsOfType(events, 'turn-error')).toHaveLength(0);
+  });
+
+  // (c)/(c2) measure the merge rule in BOTH directions, per the Architect
+  // ruling on the CodeRabbit findings this composition replaced:
+  // - "note dropped" (the non-success branch emits the bare `base` message,
+  //   never appending the dangling-text note): (c) and (c2) FAIL --
+  //   `toBe` sees the message with no trailing parenthetical.
+  // - "base dropped" (dangling > 0 replaces `base` entirely with a generic
+  //   dangling-only message, the shape this fix's first cut had): (c) and
+  //   (c2) FAIL again -- `toBe` sees the generic message, not "turn
+  //   canceled" / the generic-error copy.
+  // Both measured by temporarily editing handleResult's non-success-branch
+  // emit in sdk-engine.ts and restoring immediately after (comment-out
+  // method, testing.md); 5 pass / 2 fail each time, with exactly (c) and
+  // (c2) failing.
+  it('(c) a canceled (aborted_streaming) result with no message_stop keeps the "turn canceled" wording, with the dangling note appended -- not a generic message that discards it', async () => {
+    const events: EmbeddedAgentEvent[] = [];
+    const { queryFn } = makeFakeQuery([
+      systemInit(),
+      textDeltaEvent('partial reply'),
+      // No messageStopEvent() -- same abnormal shape as (a), but the result
+      // itself is also a cancel (error_during_execution + aborted_streaming).
+      resultError('error_during_execution', ['boom'], 'aborted_streaming'),
+    ]);
+    const engine = new SdkEngine(baseDeps({ emit: (e) => events.push(e), queryFn }));
+    await engine.runTurn('u1', 'hi');
+
+    expect(eventsOfType(events, 'assistant-message')).toEqual([
+      { v: 1, type: 'assistant-message', turnId: 'u1', text: 'partial reply' },
+    ]);
+    const turnErrors = eventsOfType(events, 'turn-error');
+    // Exactly one -- composed, not duplicated.
+    expect(turnErrors).toHaveLength(1);
+    expect(turnErrors[0].message).toBe(
+      'turn canceled (13 chars of streamed text were not closed by message_stop)',
+    );
+  });
+
+  it('(c2) a genuine execution-error result (no terminal_reason) with no message_stop preserves BOTH the generic-error copy and its stderr diagnostic, with the dangling note appended', async () => {
+    const warn = spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const events: EmbeddedAgentEvent[] = [];
+      const { queryFn } = makeFakeQuery([
+        systemInit(),
+        textDeltaEvent('partial reply'),
+        // No messageStopEvent(); no terminal_reason -- a genuine execution
+        // error, not a cancel.
+        resultError('error_during_execution', ['boom', 'also this']),
+      ]);
+      // enabledTools excludes TodoWrite -- see the "turn-error subtype
+      // mapping" describe above for why (Issue #1573 observability warn
+      // would otherwise pollute this spy's call count).
+      const engine = new SdkEngine(
+        baseDeps({ emit: (e) => events.push(e), queryFn, enabledTools: ['Read', 'Glob', 'Grep'] }),
+      );
+      await engine.runTurn('u1', 'hi');
+
+      expect(eventsOfType(events, 'assistant-message')).toEqual([
+        { v: 1, type: 'assistant-message', turnId: 'u1', text: 'partial reply' },
+      ]);
+      const turnErrors = eventsOfType(events, 'turn-error');
+      expect(turnErrors).toHaveLength(1);
+      expect(turnErrors[0].message).toBe(
+        'The turn ended in an error. See the server log for details. (13 chars of streamed text were not closed by message_stop)',
+      );
+      // The genuine-error path's own diagnostic-preservation warn still
+      // fires -- the dangling note did not replace or suppress it.
+      const diagnosticWarn = warn.mock.calls.find((call) => String(call[0]).includes('boom; also this'));
+      expect(diagnosticWarn).toBeDefined();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('(d) the stream ending with no result at all (EOF/fatal path) still flushes the dangling text, with its own dedicated turn-error, before fatal', async () => {
+    function cleanEndWithDanglingTextGenerator(): AsyncGenerator<SDKMessage, void> {
+      async function* gen(): AsyncGenerator<SDKMessage, void> {
+        yield systemInit();
+        yield textDeltaEvent('partial');
+        // Returns without throwing and without ever yielding a `result` --
+        // same unexpected-clean-end shape as the "clean stream end" describe
+        // below, but WITH dangling text this time.
+      }
+      return gen();
+    }
+    const events: EmbeddedAgentEvent[] = [];
+    const { queryFn, isClosed } = makeFakeQuery(cleanEndWithDanglingTextGenerator);
+    const engine = new SdkEngine(baseDeps({ emit: (e) => events.push(e), queryFn }));
+    const turnPromise = engine.runTurn('u1', 'hi');
+    await turnPromise; // must resolve -- handleFatal's settlePendingTurn ran
+
+    const relevantTypes = events
+      .filter((e) => e.type === 'assistant-message' || e.type === 'turn-error' || e.type === 'fatal')
+      .map((e) => e.type);
+    // assistant-message and turn-error (the flush + composition) precede fatal.
+    expect(relevantTypes).toEqual(['assistant-message', 'turn-error', 'fatal']);
+
+    expect(eventsOfType(events, 'assistant-message')).toEqual([
+      { v: 1, type: 'assistant-message', turnId: 'u1', text: 'partial' },
+    ]);
+    const turnErrors = eventsOfType(events, 'turn-error');
+    expect(turnErrors).toHaveLength(1);
+    expect(turnErrors[0].message).toBe(
+      'turn ended without a completed assistant message (stream ended with no result, 7 chars of streamed text were not closed by message_stop)',
+    );
+    const fatalEvents = eventsOfType(events, 'fatal');
+    expect(fatalEvents).toHaveLength(1);
+    expect(fatalEvents[0].message).toBe('SDK message stream ended unexpectedly');
+    expect(isClosed()).toBe(true);
+  });
+
+  it('(e) CONTROL: a tool-only turn (no text deltas at all) stays unaffected -- the existing empty-text assistant-message, no turn-error', async () => {
+    const events: EmbeddedAgentEvent[] = [];
+    const { queryFn } = makeFakeQuery([
+      systemInit(),
+      assistantToolUseMessage('call-1', 'Read', { file_path: '/tmp/x' }),
+      messageStopEvent(),
+      userToolResultMessage('call-1', 'file contents'),
+      resultSuccess(),
+    ]);
+    const engine = new SdkEngine(baseDeps({ emit: (e) => events.push(e), queryFn }));
+    await engine.runTurn('u1', 'hi');
+
+    expect(eventsOfType(events, 'assistant-message')).toEqual([
+      { v: 1, type: 'assistant-message', turnId: 'u1', text: '' },
+    ]);
+    expect(eventsOfType(events, 'turn-error')).toHaveLength(0);
+  });
+
+  it('(f) dangling text plus getContextUsage exhausting its H2 retry budget: the partial text is still flushed, but the turn ends via fatal with NO turn-error', async () => {
+    // Reuses the S1/H2 always-throw harness shape from the "context-usage
+    // polling (S1)" describe's own H2-exhaustion test.
+    const events: EmbeddedAgentEvent[] = [];
+    const sleeps: number[] = [];
+    const { queryFn, isClosed } = makeFakeQuery(
+      [
+        systemInit(),
+        textDeltaEvent('partial'),
+        // No messageStopEvent() -- dangling text, same as (a)/(d).
+        resultSuccess(),
+      ],
+      {
+        getContextUsage: async () => {
+          throw new Error('ProcessTransport is not ready for writing');
+        },
+      },
+    );
+    const engine = new SdkEngine(baseDeps({ emit: (e) => events.push(e), queryFn, sleep: instantSleep(sleeps) }));
+    await engine.runTurn('u1', 'hi');
+
+    // The dangling flush runs BEFORE the usage poll (handleResult's own
+    // ordering), so by the time the poll exhausts its retry budget and
+    // calls handleFatal, iterationText is already empty -- handleFatal's
+    // own flush is a no-op, and handleResult's `if (this.dead) return`
+    // (reached once the poll's await resolves into the dead state) skips
+    // composing any turn-error for this ending at all.
+    const relevantTypes = events
+      .filter((e) => e.type === 'assistant-message' || e.type === 'turn-error' || e.type === 'fatal')
+      .map((e) => e.type);
+    expect(relevantTypes).toEqual(['assistant-message', 'fatal']);
+
+    expect(eventsOfType(events, 'assistant-message')).toEqual([
+      { v: 1, type: 'assistant-message', turnId: 'u1', text: 'partial' },
+    ]);
+    expect(eventsOfType(events, 'turn-error')).toHaveLength(0);
+    const fatalEvents = eventsOfType(events, 'fatal');
+    expect(fatalEvents).toHaveLength(1);
+    expect(fatalEvents[0].message).toContain('getContextUsage');
+    expect(isClosed()).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Finding #1 (#1572) -- synthetic local-command replies (no stream_event at
 // all) must still reach the transcript via handleAssistantMessage's
 // sawTextDelta-guarded fallback.
