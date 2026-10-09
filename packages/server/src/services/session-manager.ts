@@ -1309,31 +1309,39 @@ export class SessionManager {
           contextWindowTokens: request.contextWindowTokens,
         };
 
-    // Use allSettled (not all) so BOTH worker-creation calls are guaranteed
-    // to have settled before we decide whether to roll back. With
-    // Promise.all, a rejection propagates immediately while the other call
-    // may still be in flight, racing a rollback against a persistSession
-    // call that would resurrect the deleted session's DB row.
-    const [initialResult, diffResult] = await Promise.allSettled([
-      this.createWorker(
+    // Create the two initial workers SEQUENTIALLY, not in parallel: the
+    // initial worker's createWorker call (construction + activation +
+    // persist) is awaited to full completion before the git-diff worker's
+    // createWorker call is even started. This is what keeps the race safe --
+    // each worker's own createWorker epilogue does its own persistSession +
+    // onSessionUpdated broadcast (toPublicSession(session)), which reaches
+    // every connected /ws/app client, including clients other than the one
+    // that made this request. With two createWorker calls in flight at once,
+    // a sibling's broadcast could expose a worker whose own activation
+    // (PTY spawn, embedded-agent subprocess spawn) is still in progress,
+    // and a client could then attach to it via /ws/session/:id/worker/:id,
+    // racing WorkerLifecycleManager.restoreWorker into activating the SAME
+    // worker a second time concurrently (double PTY spawn, double MCP token
+    // mint). Running the two calls sequentially means there is never a
+    // second createWorker call in flight while the first is still
+    // activating, so no sibling broadcast can ever observe a half-activated
+    // worker. Ordering session.workers by creation-request order is a side
+    // effect of this, not the reason for it.
+    try {
+      await this.createWorker(
         id,
         initialWorkerParams,
         request.continueConversation ? 'continue' : 'fresh',
         request.initialPrompt,
         request.templateVars ?? context?.templateVars,
-      ),
-      this.createWorker(id, {
+      );
+      await this.createWorker(id, {
         type: 'git-diff',
         name: 'Diff',
-      }),
-    ]);
-
-    const failure = [initialResult, diffResult].find(
-      (r): r is PromiseRejectedResult => r.status === 'rejected',
-    );
-    if (failure) {
+      });
+    } catch (err) {
       logger.warn(
-        { sessionId: id, err: failure.reason },
+        { sessionId: id, err },
         'Initial worker creation failed; rolling back session',
       );
       await this.deleteSession(id).catch((cleanupErr) => {
@@ -1342,7 +1350,7 @@ export class SessionManager {
           'Failed to roll back session after initial worker creation failure',
         );
       });
-      throw failure.reason;
+      throw err;
     }
 
     logger.info({ sessionId: id, type: internalSession.type }, 'Session created');

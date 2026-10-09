@@ -785,6 +785,256 @@ describe('SessionManager', () => {
       const buffer = manager.getWorkerOutputBuffer(session.id, workerId);
       expect(buffer).toBe('Line 1\nLine 2\n');
     });
+
+    // ===========================================================================
+    // Redesign of #1895/#1904 (CodeRabbit MAJOR finding): createSession used to
+    // create the initial worker and the git-diff worker IN PARALLEL via
+    // Promise.allSettled. Each worker's own createWorker call does its own
+    // persistSession + onSessionUpdated broadcast in its epilogue, reaching
+    // every /ws/app client -- including clients other than the one that made
+    // the request. With two createWorker calls in flight at once, a sibling's
+    // broadcast could expose a worker whose own PTY/subprocess activation was
+    // still in progress, letting another client race
+    // WorkerLifecycleManager.restoreWorker into activating the SAME worker a
+    // second time concurrently. The fix makes createSession await the initial
+    // worker's createWorker call to fully settle BEFORE even starting the
+    // git-diff worker's createWorker call -- these tests pin that ordering and
+    // its rollback behavior directly against SessionManager.createSession
+    // (the ordering guarantee lives here now, not in WorkerLifecycleManager).
+    // ===========================================================================
+
+    it('[Issue #1895/#1904 redesign] does not even start the git-diff worker until the initial agent worker fully settles', async () => {
+      const manager = await getSessionManager();
+
+      let releaseActivation!: () => void;
+      const activationGate = new Promise<void>((resolve) => {
+        releaseActivation = resolve;
+      });
+      let notifyEntered!: () => void;
+      const entered = new Promise<void>((resolve) => {
+        notifyEntered = resolve;
+      });
+
+      // Prototype-level spies: SessionManager constructs its own internal
+      // WorkerManager instance with no public accessor, so these hooks are
+      // reached through WorkerManager.prototype rather than a captured
+      // instance reference (contrast worker-lifecycle-manager.test.ts, which
+      // has direct access to its own injected `workerManager` instance).
+      const originalActivate = WorkerManager.prototype.activateAgentWorkerPty;
+      const activateSpy = spyOn(WorkerManager.prototype, 'activateAgentWorkerPty').mockImplementation(
+        function (this: WorkerManager, ...args: Parameters<typeof originalActivate>) {
+          notifyEntered();
+          return (async () => {
+            await activationGate;
+            return originalActivate.apply(this, args);
+          })();
+        },
+      );
+      const gitDiffSpy = spyOn(WorkerManager.prototype, 'initializeGitDiffWorker');
+
+      try {
+        const request: CreateSessionRequest = {
+          type: 'quick',
+          locationPath: '/test/path',
+          agentId: 'claude-code',
+        };
+
+        const sessionPromise = manager.createSession(request);
+
+        // Wait until the agent worker's own createWorker call has reached
+        // its PTY-activation await. Under the OLD parallel design, the
+        // git-diff worker's own createWorker call would already be racing
+        // alongside it at this point.
+        await entered;
+        expect(gitDiffSpy).not.toHaveBeenCalled();
+
+        releaseActivation();
+        const session = await sessionPromise;
+
+        expect(gitDiffSpy).toHaveBeenCalledTimes(1);
+        expect(session.workers.map((w: Worker) => w.type)).toEqual(['agent', 'git-diff']);
+      } finally {
+        activateSpy.mockRestore();
+        gitDiffSpy.mockRestore();
+      }
+    });
+
+    it('[Issue #1895/#1904 redesign] does not even start the git-diff worker until the initial embedded-agent worker fully settles', async () => {
+      // The embedded-agent branch has no PTY-activation await (Phase 1), so
+      // this test cannot gate the same seam as the agent-worker test above.
+      // It still has ONE async step before createWorker returns, though:
+      // the shared epilogue's `await this.deps.persistSession(session)`
+      // (worker-lifecycle-manager.ts), which calls
+      // `this.sessionRepository.save(...)` (session-manager.ts's private
+      // persistSession). Gating there distinguishes the two designs:
+      //
+      // - OLD parallel `Promise.allSettled([callEmbedded(), callGitDiff()])`:
+      //   array-literal evaluation calls callEmbedded() first, which runs
+      //   entirely synchronously (construct worker, sync epilogue parts,
+      //   call persistSession -> save -> this gate's mock body runs
+      //   synchronously up to its own `await saveGate`) -- only once that
+      //   nested chain actually suspends does callEmbedded() return a
+      //   pending promise to the array-literal evaluator, which THEN
+      //   synchronously evaluates callGitDiff() -- so git-diff's
+      //   createWorker/initializeGitDiffWorker call happens synchronously,
+      //   in the SAME tick, before this test's `await entered` has a chance
+      //   to run. By the time `await entered` resolves, the git-diff spy
+      //   would already show 1 call under the old code.
+      // - NEW sequential `await this.createWorker(embeddedParams); await
+      //   this.createWorker(gitDiffParams);`: createSession awaits the
+      //   first call directly (not as an array element), so it stays
+      //   suspended on that single awaited promise until this gate releases
+      //   it, and does not proceed to the second line until the first one's
+      //   promise actually resolves. git-diff's call has NOT happened yet
+      //   when `await entered` resolves.
+      //
+      // Verified empirically (not just reasoned through): temporarily
+      // restoring the old Promise.allSettled shape in createSession and
+      // running only this test makes it fail (git-diff spy shows 1 call
+      // where the assertion expects 0) -- see the PR report for the pasted
+      // failure.
+      const STUB_EMBEDDED_DEF = {
+        id: 'stub-embedded-agent-order',
+        name: 'Stub Model',
+        engine: 'openai-api' as const,
+        isBuiltIn: false,
+        provider: { baseUrl: 'http://localhost:11434/v1', model: 'qwen3:32b' },
+        createdBy: 'test-user-id',
+        createdAt: '2024-01-01T00:00:00.000Z',
+        updatedAt: '2024-01-01T00:00:00.000Z',
+      };
+      const module = await import(`../session-manager.js?v=${++importCounter}`);
+      const manager = await module.SessionManager.create({
+        userMode: new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' }),
+        pathExists: mockPathExists,
+        jobQueue: testJobQueue,
+        agentManager,
+        mcpTokenRegistry: new McpTokenRegistry(),
+        embeddedAgentManager: {
+          getEmbeddedAgent: (id: string) => (id === STUB_EMBEDDED_DEF.id ? STUB_EMBEDDED_DEF : undefined),
+        },
+        repositoryLookup: defaultRepositoryLookup,
+        repositoryEnvLookup: defaultRepositoryEnvLookup,
+      });
+
+      let releaseSave!: () => void;
+      const saveGate = new Promise<void>((resolve) => {
+        releaseSave = resolve;
+      });
+      let notifyEntered!: () => void;
+      const entered = new Promise<void>((resolve) => {
+        notifyEntered = resolve;
+      });
+
+      const repo = manager.getSessionRepository();
+      const originalSave = repo.save.bind(repo);
+      let saveCallCount = 0;
+      const saveSpy = spyOn(repo, 'save').mockImplementation(
+        async (...args: Parameters<typeof originalSave>) => {
+          saveCallCount++;
+          if (saveCallCount === 1) {
+            notifyEntered();
+            await saveGate;
+          }
+          return originalSave(...args);
+        },
+      );
+      const gitDiffSpy = spyOn(WorkerManager.prototype, 'initializeGitDiffWorker');
+
+      try {
+        const sessionPromise = manager.createSession({
+          type: 'quick',
+          locationPath: '/test/path',
+          embeddedAgentId: STUB_EMBEDDED_DEF.id,
+        });
+
+        // Wait until the embedded-agent worker's own createWorker call has
+        // reached its persistSession/save await. Under the OLD parallel
+        // design, the git-diff worker's own createWorker call would already
+        // have happened (synchronously, same tick) by this point.
+        await entered;
+        expect(gitDiffSpy).not.toHaveBeenCalled();
+
+        releaseSave();
+        const session = await sessionPromise;
+
+        expect(gitDiffSpy).toHaveBeenCalledTimes(1);
+        expect(session.workers.map((w: Worker) => w.type)).toEqual(['embedded-agent', 'git-diff']);
+      } finally {
+        saveSpy.mockRestore();
+        gitDiffSpy.mockRestore();
+      }
+    });
+
+    it('[Issue #1895/#1904 redesign] rolls back the session and never attempts the git-diff worker when the initial worker activation fails', async () => {
+      const manager = await getSessionManager();
+
+      const activateSpy = spyOn(WorkerManager.prototype, 'activateAgentWorkerPty').mockImplementation(async () => {
+        throw new Error('boom');
+      });
+      const gitDiffSpy = spyOn(WorkerManager.prototype, 'initializeGitDiffWorker');
+      const originalDeleteSession = manager.deleteSession.bind(manager);
+      const deleteSpy = spyOn(manager, 'deleteSession').mockImplementation(
+        async (...args: Parameters<typeof originalDeleteSession>) => originalDeleteSession(...args),
+      );
+
+      try {
+        const request: CreateSessionRequest = {
+          type: 'quick',
+          locationPath: '/test/path',
+          agentId: 'claude-code',
+        };
+
+        await expect(manager.createSession(request)).rejects.toThrow('boom');
+
+        // The git-diff worker's own createWorker call must never even
+        // start: the initial worker's createWorker call rejects before
+        // createSession reaches the point where it would start the second
+        // (sequential, per the redesign) call.
+        expect(gitDiffSpy).not.toHaveBeenCalled();
+        expect(deleteSpy).toHaveBeenCalledTimes(1);
+
+        const sessions = await manager.getSessionRepository().findAll();
+        expect(sessions.length).toBe(0);
+      } finally {
+        activateSpy.mockRestore();
+        gitDiffSpy.mockRestore();
+        deleteSpy.mockRestore();
+      }
+    });
+
+    it('[Issue #1895/#1904 redesign] rolls back the session when the git-diff worker creation fails after the initial worker succeeded (regression)', async () => {
+      // Mirror of the test above: this direction of the rollback contract
+      // predates the redesign (and predates #1904) -- it is a regression
+      // check confirming the sequential rewrite did not alter it.
+      const manager = await getSessionManager();
+
+      const gitDiffSpy = spyOn(WorkerManager.prototype, 'initializeGitDiffWorker').mockImplementation(async () => {
+        throw new Error('git-diff boom');
+      });
+      const originalDeleteSession = manager.deleteSession.bind(manager);
+      const deleteSpy = spyOn(manager, 'deleteSession').mockImplementation(
+        async (...args: Parameters<typeof originalDeleteSession>) => originalDeleteSession(...args),
+      );
+
+      try {
+        const request: CreateSessionRequest = {
+          type: 'quick',
+          locationPath: '/test/path',
+          agentId: 'claude-code',
+        };
+
+        await expect(manager.createSession(request)).rejects.toThrow('git-diff boom');
+
+        expect(deleteSpy).toHaveBeenCalledTimes(1);
+
+        const sessions = await manager.getSessionRepository().findAll();
+        expect(sessions.length).toBe(0);
+      } finally {
+        gitDiffSpy.mockRestore();
+        deleteSpy.mockRestore();
+      }
+    });
   });
 
   describe('createSession initial worker selection (Issue #1038)', () => {

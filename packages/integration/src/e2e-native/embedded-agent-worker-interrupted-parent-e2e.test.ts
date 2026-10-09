@@ -259,7 +259,7 @@ describe('E2E: interrupted-turn parent notification', () => {
         { type: 'quick', locationPath: realCwd, embeddedAgentId: parentDef.id },
         { createdBy: owner.id },
       );
-      const pWorkerId = pSession.workers[0]!.id;
+      const pWorkerId = pSession.workers.find((w) => w.type === 'embedded-agent')!.id;
       await ctx.sessionManager.activateEmbeddedAgentWorker(pSession.id, pWorkerId);
 
       // --- Session C: a child delegated by P, whose turn will hang mid-flight ---
@@ -273,7 +273,7 @@ describe('E2E: interrupted-turn parent notification', () => {
         },
         { createdBy: owner.id },
       );
-      const cWorkerId = cSession.workers[0]!.id;
+      const cWorkerId = cSession.workers.find((w) => w.type === 'embedded-agent')!.id;
       await ctx.sessionManager.activateEmbeddedAgentWorker(cSession.id, cWorkerId);
 
       const sent = await ctx.sessionManager.sendEmbeddedAgentUserMessage(
@@ -365,7 +365,7 @@ describe('E2E: interrupted-turn parent notification', () => {
         },
         { createdBy: owner.id },
       );
-      const dWorkerId = dSession.workers[0]!.id;
+      const dWorkerId = dSession.workers.find((w) => w.type === 'embedded-agent')!.id;
       await ctx.sessionManager.activateEmbeddedAgentWorker(dSession.id, dWorkerId);
 
       const dInternal = ctx.sessionManager.getWorker(dSession.id, dWorkerId);

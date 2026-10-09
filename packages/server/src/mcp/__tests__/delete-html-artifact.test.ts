@@ -212,7 +212,7 @@ describe('delete_html_artifact', () => {
       { type: 'quick', locationPath: TEST_REPO_PATH },
       { createdBy: owner.id },
     );
-    return { sessionId: session.id, userId: owner.id, workerId: session.workers[0].id };
+    return { sessionId: session.id, userId: owner.id, workerId: session.workers.find((w) => w.type === 'agent')!.id };
   }
 
   async function createArtifactViaTool(sessionId: string, content = '<html><body>to be deleted</body></html>'): Promise<string> {
