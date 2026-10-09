@@ -627,7 +627,7 @@ export function EmbeddedAgentWorkerView({
         </div>
       )}
 
-      <div ref={listRef} className="flex-1 min-h-0 overflow-y-auto px-4 py-3 space-y-3">
+      <div ref={listRef} data-testid="transcript" className="flex-1 min-h-0 overflow-y-auto px-4 py-3 space-y-3">
         {entries.length === 0 && (
           <div className="text-gray-500 text-sm">No messages yet. Say hello to get started.</div>
         )}
@@ -723,12 +723,13 @@ export function EmbeddedAgentWorkerView({
 
       {/* Model/effort override control (agent-surface.md Phase 3). A
           `<button aria-expanded>` disclosure rather than a `<details>`
-          element: this file's transcript tests pin the accordion count via
-          `document.querySelectorAll('details')` / `document.querySelector
-          ('details')`, and a chrome-level `<details>` here would silently
-          change what those counts mean. `aria-expanded` on a real button is
-          also the more accessible shape for a toggle that isn't disclosing
-          document content.
+          element: the transcript's own accordion-count pins are scoped to
+          `data-testid="transcript"`, so a chrome-level `<details>` here
+          would not move those counts -- the reason to keep this a button
+          is to keep chrome and transcript disclosures distinguishable,
+          not that the tests would break. `aria-expanded` on a real button
+          is also the more accessible shape for a toggle that isn't
+          disclosing document content.
 
           The wording never names an engine or a mechanism, same as the
           compaction toggle above: an Architect ruling (after a measured SDK
@@ -787,9 +788,11 @@ export function EmbeddedAgentWorkerView({
 
       {/* MCP servers disclosure (epic #1636 Phase 5 PR-3b). Same
           `<button aria-expanded>` disclosure discipline as "Model and
-          effort" above, for the same `<details>`-count-pinned-by-tests
-          reason -- never a `<details>` element here either. `claude-sdk`
-          ONLY: `openai-api` has no MCP discovery/permission concept. */}
+          effort" above -- kept to keep chrome and transcript disclosures
+          distinguishable, not because a `<details>` here would move any
+          test's count (those pins are scoped to the transcript's own test
+          id). `claude-sdk` ONLY: `openai-api` has no MCP discovery/
+          permission concept. */}
       {isSdkEngine && (
         <div className="border-t border-slate-800 shrink-0 text-xs text-gray-400">
           <button
