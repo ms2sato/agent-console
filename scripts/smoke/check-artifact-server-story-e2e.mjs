@@ -230,6 +230,23 @@ const PROBE_ARTIFACT_HTML =
   '<body><h1>hello from #1312 V2/V3 E2E</h1></body></html>';
 
 async function main() {
+  // NODE_ENV-sensitive (Issue #1289): this smoke boots the real
+  // `packages/server/src/index.ts` in-process, which gates static-file
+  // serving on `NODE_ENV === 'production'` (index.ts's `isProduction`) --
+  // that branch caches `packages/server/src/public/index.html` at
+  // startup, a path that does not exist on an unbuilt dev tree. Silently
+  // defaulting `NODE_ENV` the way `./_env.ts` does for neutral smokes
+  // would crash server boot with an ENOENT on a tree with no client
+  // build, rather than exercising the behaviour this smoke verifies.
+  // Listed in `NODE_ENV_SENSITIVE_SMOKES`
+  // (scripts/smoke/__tests__/node-env-discipline.test.ts).
+  if (!process.env.NODE_ENV) {
+    console.error(
+      'check-artifact-server-story-e2e.mjs: NODE_ENV must be set explicitly (production|development|test) -- this smoke verifies behaviour that depends on it; refusing to guess.',
+    );
+    process.exit(2);
+  }
+
   process.chdir(REPO_ROOT);
 
   // -------------------------------------------------------------------

@@ -110,6 +110,7 @@
  *   2  bad usage / cannot run (e.g. not on Linux -- /proc is unavailable)
  */
 
+import './_env.js';
 import { InteractiveProcessManager } from '../../packages/server/src/services/interactive-process-manager.js';
 import { spawnAsUser, type SpawnAsUserResult } from '../../packages/server/src/services/privilege-elevation.js';
 

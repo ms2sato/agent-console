@@ -212,6 +212,7 @@
  * Usage: bun scripts/smoke/probe-sdk-mcp-settings-sources.ts [--armA] [--armC] [--armB] [--armF] [--armE] [--armD] [--armG] [--max-usd <n>]
  */
 
+import './_env.js';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';

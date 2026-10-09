@@ -75,6 +75,7 @@
  * helpers production code uses. No replication.
  */
 
+import './_env.js';
 import { existsSync } from 'node:fs';
 import * as os from 'node:os';
 import { spawnAsUser, killAsUser } from '../../packages/server/src/services/privilege-elevation.js';

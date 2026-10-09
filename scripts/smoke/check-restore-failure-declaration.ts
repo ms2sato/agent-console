@@ -114,6 +114,7 @@
  *   1  an assertion failed (the smoke ran and the system is wrong)
  *   2  bad usage / the smoke could not run
  */
+import './_env.js';
 import { mkdirSync, rmSync, chmodSync, readFileSync, appendFileSync } from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';

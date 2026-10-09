@@ -578,6 +578,19 @@ function buildProbeArtifactHtml() {
 }
 
 async function main() {
+  // NODE_ENV-sensitive (Issue #1289): this smoke asserts the `secure`
+  // cookie attribute via the real `resolveAuthCookieSecure(serverConfig)`,
+  // which reads `NODE_ENV` -- defaulting it here the way `./_env.ts` does
+  // for neutral smokes would silently change what this smoke verifies.
+  // Listed in `NODE_ENV_SENSITIVE_SMOKES`
+  // (scripts/smoke/__tests__/node-env-discipline.test.ts).
+  if (!process.env.NODE_ENV) {
+    console.error(
+      'check-artifact-sandbox-boundary.mjs: NODE_ENV must be set explicitly (production|development|test) -- this smoke verifies behaviour that depends on it; refusing to guess.',
+    );
+    process.exit(2);
+  }
+
   process.chdir(REPO_ROOT);
 
   const executablePath = resolveChromiumExecutablePath();

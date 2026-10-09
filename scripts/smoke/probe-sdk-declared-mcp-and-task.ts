@@ -145,6 +145,7 @@
  * Usage: bun scripts/smoke/probe-sdk-declared-mcp-and-task.ts [--p0] [--p1] [--p2] [--p3] [--continue-after-leak]
  */
 
+import './_env.js';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';

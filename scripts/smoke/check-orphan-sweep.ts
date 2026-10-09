@@ -78,6 +78,7 @@
  * are imported directly from their production modules -- no replication.
  */
 
+import './_env.js';
 import { existsSync } from 'node:fs';
 import * as os from 'node:os';
 import { randomUUID } from 'node:crypto';

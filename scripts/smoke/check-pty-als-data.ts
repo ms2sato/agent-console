@@ -61,6 +61,7 @@
  * production source.
  */
 
+import './_env.js';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { bunTerminalProvider, type PtyInstance } from '../../packages/server/src/lib/pty-provider.js';
 

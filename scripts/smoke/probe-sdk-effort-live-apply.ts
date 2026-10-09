@@ -104,6 +104,7 @@
  * Usage: bun scripts/smoke/probe-sdk-effort-live-apply.ts [--set] [--clear] [--absent]
  */
 
+import './_env.js';
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';

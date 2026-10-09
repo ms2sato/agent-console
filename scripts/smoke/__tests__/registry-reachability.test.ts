@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'bun:test';
-import { Glob } from 'bun';
 import { readFileSync, readdirSync } from 'node:fs';
 import * as path from 'node:path';
+import { discoverSmokeFiles, hasEntryPointGuard } from './smoke-entry-points.js';
 
 /**
  * Reachability pin for Issue #1637: `scripts/smoke/*` has exactly one way
@@ -40,36 +40,18 @@ const TEST_TRIGGER_MD_PATH = path.join(REPO_ROOT, '.claude/rules/test-trigger.md
 const PACKAGE_JSON_PATH = path.join(REPO_ROOT, 'package.json');
 
 /**
- * A `scripts/smoke/*` file with no top-level `import.meta.main` guard is a
- * shared library, not a runnable entry point (per test-trigger.md's
- * "Exceptions to the reachability rule") -- it is never invoked directly,
- * so it needs no Additional Verification section of its own. Deriving the
- * exemption from CONTENT rather than a hand-maintained name list means a
- * future library file is exempted automatically and a future genuinely-
- * unregistered SCRIPT (which necessarily has the guard) cannot slip into
- * this bucket by being added to a list (Architect ruling, Issue #1637).
- */
-const ENTRY_POINT_GUARD = /import\.meta\.main/;
-
-/**
  * Floor derived from the count measured on `main` at the time this pin was
  * written (34 total smoke files, 33 with the guard). If a future change
  * makes the content-based exemption swallow more files than this, that is
  * itself a finding -- see the "is not silently empty of real exceptions"
  * test below.
+ *
+ * `discoverSmokeFiles` / `hasEntryPointGuard` / the `import.meta.main`
+ * guard regex are shared with `import-safety.test.ts` and
+ * `node-env-discipline.test.ts` via `./smoke-entry-points.js` -- single
+ * writer for the glob pattern and the entry-point detection.
  */
 const MIN_REGISTERED_COUNT = 33;
-
-function discoverSmokeFiles(): string[] {
-  const smokeDir = path.join(REPO_ROOT, 'scripts/smoke');
-  const glob = new Glob('*.{ts,mjs}');
-  return [...glob.scanSync({ cwd: smokeDir, onlyFiles: true })].sort();
-}
-
-function hasEntryPointGuard(file: string): boolean {
-  const content = readFileSync(path.join(REPO_ROOT, 'scripts/smoke', file), 'utf-8');
-  return ENTRY_POINT_GUARD.test(content);
-}
 
 /**
  * `excludeTestFiles: true` skips `__tests__` directories and `*.test.<ext>`

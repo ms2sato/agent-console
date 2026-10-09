@@ -178,6 +178,7 @@ function parseIdleMs(): number {
   return parsed;
 }
 
+import './_env.js';
 import { readFileSync, unlinkSync } from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';

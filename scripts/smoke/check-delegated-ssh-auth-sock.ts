@@ -36,6 +36,7 @@
  *   2  bad usage / cannot run
  */
 
+import './_env.js';
 import { spawn } from 'bun';
 import { existsSync, readFileSync } from 'fs';
 import { buildElevationArgs, shellEscape } from '../../packages/server/src/services/elevation-args.js';

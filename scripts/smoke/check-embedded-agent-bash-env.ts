@@ -75,6 +75,7 @@
  * cleaning or process-spawn logic is duplicated here.
  */
 
+import './_env.js';
 import * as os from 'node:os';
 import * as path from 'node:path';
 // No transitive server-config.ts import (pure node:fs/promises + node:os +

@@ -419,6 +419,7 @@
  * Usage: bun scripts/smoke/probe-sdk-auto-memory.ts [--a] [--b] [--c] [--d] [--e] [--f] [--g] [--force-f] [--f-config omitted|preset] [--extended-timeout <ms>] [--expect-no-recall] [--expect-no-write] [--auto-memory-off]
  */
 
+import './_env.js';
 import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync, existsSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { basename, join, sep } from 'node:path';

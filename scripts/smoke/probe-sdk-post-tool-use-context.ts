@@ -68,6 +68,7 @@
  * Usage: bun scripts/smoke/probe-sdk-post-tool-use-context.ts [--a] [--b] [--c]
  */
 
+import './_env.js';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';

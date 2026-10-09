@@ -97,6 +97,7 @@
  *      never silently burns API usage.
  */
 
+import './_env.js';
 import { rmSync } from 'node:fs';
 import type { Options, Settings } from '../../packages/embedded-agent/node_modules/@anthropic-ai/claude-agent-sdk';
 import {

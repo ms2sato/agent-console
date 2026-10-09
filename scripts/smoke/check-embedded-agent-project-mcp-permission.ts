@@ -190,6 +190,7 @@
 // check-embedded-agent-idle-eviction.ts's header comment for the full
 // account).
 
+import './_env.js';
 import { Glob } from 'bun';
 import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
 import * as os from 'node:os';
