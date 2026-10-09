@@ -87,7 +87,7 @@ describe('formatFieldValue', () => {
 describe('writePtyNotification', () => {
   it('builds and writes a notification string with the correct format', () => {
     const written: string[] = [];
-    const writeInput = mock((data: string) => { written.push(data); });
+    const writeInput = mock((data: string) => { written.push(data); return true; });
 
     const result = writePtyNotification({
       kind: 'inbound-event',
@@ -98,15 +98,15 @@ describe('writePtyNotification', () => {
     });
 
     // Timestamp is dynamic, so verify structure rather than exact match
-    expect(result).toMatch(/^\n\[inbound:ci:failed\] timestamp=\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z /);
-    expect(result).toContain('type=ci:failed');
-    expect(result).toContain('source=github');
-    expect(result).toContain('repo=owner/repo');
-    expect(result).toContain('branch=main');
-    expect(result).toContain('url=https://example.com');
-    expect(result).toContain('summary="Build failed"');
-    expect(result).toContain('intent=triage');
-    expect(written[0]).toBe(result);
+    expect(result.notification).toMatch(/^\n\[inbound:ci:failed\] timestamp=\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z /);
+    expect(result.notification).toContain('type=ci:failed');
+    expect(result.notification).toContain('source=github');
+    expect(result.notification).toContain('repo=owner/repo');
+    expect(result.notification).toContain('branch=main');
+    expect(result.notification).toContain('url=https://example.com');
+    expect(result.notification).toContain('summary="Build failed"');
+    expect(result.notification).toContain('intent=triage');
+    expect(written[0]).toBe(result.notification);
   });
 
   it('returns the notification string without trailing carriage return', () => {
@@ -115,18 +115,18 @@ describe('writePtyNotification', () => {
       tag: 'inbound:ci:completed',
       fields: { type: 'ci:completed', source: 'github', repo: 'owner/repo', branch: 'main', url: 'https://example.com', summary: 'CI passed' },
       intent: 'inform',
-      writeInput: () => {},
+      writeInput: () => true,
     });
 
-    expect(result.endsWith('\r')).toBe(false);
-    expect(result.endsWith('\n')).toBe(false);
+    expect(result.notification.endsWith('\r')).toBe(false);
+    expect(result.notification.endsWith('\n')).toBe(false);
   });
 
   it('sends Enter keystroke separately after a 150ms delay', () => {
     jest.useFakeTimers();
     try {
       const written: string[] = [];
-      const writeInput = mock((data: string) => { written.push(data); });
+      const writeInput = mock((data: string) => { written.push(data); return true; });
 
       writePtyNotification({
         kind: 'internal-message',
@@ -159,7 +159,7 @@ describe('writePtyNotification', () => {
       tag: 'internal:message',
       fields: { source: 'session', from: 'sender-1', summary: 'hello world', path: '/tmp/simple' },
       intent: 'inform',
-      writeInput: (data) => { written.push(data); },
+      writeInput: (data) => { written.push(data); return true; },
     });
 
     // 'hello world' has a space, so it should be quoted
@@ -176,7 +176,7 @@ describe('writePtyNotification', () => {
       tag: 'inbound:ci:completed',
       fields: { type: 'ci:completed', source: 'github', repo: 'owner/repo', branch: 'main', url: 'https://example.com', summary: 'CI passed' },
       intent: 'inform',
-      writeInput: (data) => { written.push(data); },
+      writeInput: (data) => { written.push(data); return true; },
     });
 
     expect(written[0]).toContain('intent=inform');
@@ -190,7 +190,7 @@ describe('writePtyNotification', () => {
       tag: 'inbound:ci:failed',
       fields: { type: 'ci:failed', source: 'github', repo: 'owner/repo', branch: 'main', url: 'https://example.com', summary: 'Build failed' },
       intent: 'triage',
-      writeInput: (data) => { written.push(data); },
+      writeInput: (data) => { written.push(data); return true; },
     });
 
     expect(written[0]).toMatch(/timestamp=\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z/);
@@ -204,7 +204,7 @@ describe('writePtyNotification', () => {
       tag: 'internal:message',
       fields: { source: 'session', from: 'sender-1', summary: 'Test message', path: '/tmp/msg' },
       intent: 'inform',
-      writeInput: (data) => { written.push(data); },
+      writeInput: (data) => { written.push(data); return true; },
     });
 
     expect(written[0]).toMatch(/timestamp=\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z/);
@@ -218,7 +218,7 @@ describe('writePtyNotification', () => {
       tag: 'internal:timer',
       fields: { timerId: 'timer-1', action: 'check', fireCount: '1' },
       intent: 'inform',
-      writeInput: (data) => { written.push(data); },
+      writeInput: (data) => { written.push(data); return true; },
     });
 
     expect(written[0]).toMatch(/timestamp=\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z/);
@@ -232,11 +232,76 @@ describe('writePtyNotification', () => {
       tag: 'internal:timer',
       fields: { timerId: 'timer-1', action: 'check', fireCount: '1' },
       intent: 'inform',
-      writeInput: (data) => { written.push(data); },
+      writeInput: (data) => { written.push(data); return true; },
     });
 
     // After the tag, timestamp should be the first key=value pair
     expect(written[0]).toMatch(/^\n\[internal:timer\] timestamp=/);
+  });
+
+  // Q12 polarity (Issue #1654): on unmodified main, writeInput's boolean
+  // result is discarded by the `(data: string) => void` callback type, so
+  // writePtyNotification always schedules the delayed `\r` regardless of
+  // whether the first write actually reached a live PTY. These two tests
+  // must fail against unmodified main (no `written` field exists on the
+  // return value, and the `\r` fires even when writeInput reports false).
+  it('reports written: false and does not send the delayed Enter when writeInput rejects the write', () => {
+    jest.useFakeTimers();
+    try {
+      const written: string[] = [];
+      const writeInput = mock((data: string) => {
+        written.push(data);
+        return false;
+      });
+
+      const result = writePtyNotification({
+        kind: 'internal-timer',
+        tag: 'internal:timer',
+        fields: { timerId: 'timer-1', action: 'check', fireCount: '1' },
+        intent: 'inform',
+        writeInput,
+      });
+
+      expect(result.written).toBe(false);
+      expect(result.notification).toContain('[internal:timer]');
+      expect(written).toHaveLength(1);
+
+      jest.advanceTimersByTime(150);
+
+      // No `\r` write should follow a rejected first write.
+      expect(written).toHaveLength(1);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('reports written: true and sends the delayed Enter when writeInput accepts the write', () => {
+    jest.useFakeTimers();
+    try {
+      const written: string[] = [];
+      const writeInput = mock((data: string) => {
+        written.push(data);
+        return true;
+      });
+
+      const result = writePtyNotification({
+        kind: 'internal-timer',
+        tag: 'internal:timer',
+        fields: { timerId: 'timer-1', action: 'check', fireCount: '1' },
+        intent: 'inform',
+        writeInput,
+      });
+
+      expect(result.written).toBe(true);
+      expect(written).toHaveLength(1);
+
+      jest.advanceTimersByTime(150);
+
+      expect(written).toHaveLength(2);
+      expect(written[1]).toBe('\r');
+    } finally {
+      jest.useRealTimers();
+    }
   });
 });
 
@@ -262,16 +327,16 @@ describe('buildPtyNotificationText', () => {
     // between the two call paths still fails the assertion below.
     setSystemTime(new Date('2026-01-01T00:00:00.000Z'));
     let built: string;
-    let returnedFromWrite: string;
+    let returnedFromWrite: { notification: string; written: boolean };
     try {
       built = buildPtyNotificationText(params);
-      returnedFromWrite = writePtyNotification({ ...params, writeInput: (data) => { written.push(data); } });
+      returnedFromWrite = writePtyNotification({ ...params, writeInput: (data) => { written.push(data); return true; } });
     } finally {
       setSystemTime();
     }
 
     expect(written[0]).toBe(built);
-    expect(returnedFromWrite).toBe(built);
+    expect(returnedFromWrite.notification).toBe(built);
   });
 
   it('does not schedule any timer (pure function)', () => {

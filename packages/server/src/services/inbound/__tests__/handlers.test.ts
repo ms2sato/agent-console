@@ -81,6 +81,7 @@ function createPtyBranchSessionManager(session: Session, writes: string[]): Inbo
         ...params,
         writeInput: (data: string) => {
           writes.push(data);
+          return true;
         },
       } as WritePtyNotificationParams);
       return { ok: true as const };
