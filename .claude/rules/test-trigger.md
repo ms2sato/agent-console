@@ -6,7 +6,8 @@ globs:
   - "packages/server/src/lib/**/*.ts"
   - "packages/server/src/repositories/**/*.ts"
   - "packages/client/src/hooks/**/*.ts"
-  - "packages/client/src/components/**/*.tsx"
+  - "packages/client/src/components/**/*.{ts,tsx}"
+  - "packages/client/src/lib/**/*.ts"
   - "packages/shared/src/**/*.ts"
   - "packages/embedded-agent/src/**/*.ts"
   - ".claude/hooks/**/*.sh"
@@ -31,7 +32,8 @@ When modifying production files matching these patterns, corresponding test file
 | `packages/server/src/lib/**/*.ts` | `.../__tests__/*.test.ts` or sibling `*.test.ts` |
 | `packages/server/src/repositories/**/*.ts` | `.../__tests__/*.test.ts` or sibling `*.test.ts` |
 | `packages/client/src/hooks/**/*.ts` | `.../__tests__/*.test.ts(x)` or sibling `*.test.ts(x)` |
-| `packages/client/src/components/**/*.tsx` | `.../__tests__/*.test.tsx` or sibling `*.test.tsx` (a JSX-free pure-logic test may instead use `*.test.ts`, e.g. `SessionPage.test.ts` alongside `SessionPage.tsx`) |
+| `packages/client/src/components/**/*.{ts,tsx}` | `.../__tests__/*.test.ts(x)` or sibling `*.test.ts(x)` (a JSX-free pure-logic test may instead use `*.test.ts`, e.g. `SessionPage.test.ts` alongside `SessionPage.tsx`; this row now also covers nested `.ts` hooks under `components/**/hooks/` and plain pure-logic `.ts` files under `components/**`, previously outside this table entirely — Issue #1902) |
+| `packages/client/src/lib/**/*.ts` | `.../__tests__/*.test.ts` or sibling `*.test.ts` (Issue #1902 — previously had no coverage pattern at all) |
 | `packages/shared/src/**/*.ts` | `.../__tests__/*.test.ts` or sibling `*.test.ts` |
 | `packages/embedded-agent/src/**/*.ts` | `.../__tests__/*.test.ts` or sibling `*.test.ts` |
 | `.claude/hooks/**/*.sh` | `.claude/hooks/__tests__/*.test.mjs` or sibling `*.test.mjs` |

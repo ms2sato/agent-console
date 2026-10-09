@@ -21,6 +21,7 @@ import {
   findExclusionRule,
   categorizeFiles,
   detectIntegrationTestNeeds,
+  INTEGRATION_TRIGGER_PATTERNS,
 } from '../check-utils.js';
 
 describe('isReExportOnlyContent', () => {
@@ -1681,5 +1682,91 @@ describe('getCiStatus', () => {
     expect(result.failed).toHaveLength(0);
     expect(result.pending).toHaveLength(0);
     expect(result.allGreen).toBe(false);
+  });
+});
+
+describe('requiresTestCoverage for packages/client/src/components/**/*.ts and packages/client/src/lib/** (Issue #1902)', () => {
+  it('adds the lib coverage pattern in the canonical ^DIR/.+\\.EXT$ shape', () => {
+    // check-mirror-drift.js's regexSourceToGlob() normalizes this exact
+    // shape when comparing COVERAGE_PATTERNS against test-trigger.md's
+    // YAML globs — keep the pattern's .source literal in sync with it.
+    expect(COVERAGE_PATTERNS.some((p) => p.source === '^packages\\/client\\/src\\/lib\\/.+\\.ts$')).toBe(
+      true,
+    );
+  });
+
+  it('widens the components entry to the optional-trailing-char "tsx?" shape', () => {
+    // check-mirror-drift.js's regexSourceToGlob() has a dedicated branch for
+    // this exact shape (one optional trailing char before the extension's
+    // end), converting it to the brace glob **/*.{ts,tsx} — keep the
+    // pattern's .source literal in sync with that branch.
+    expect(
+      COVERAGE_PATTERNS.some((p) => p.source === '^packages\\/client\\/src\\/components\\/.+\\.tsx?$'),
+    ).toBe(true);
+    // The old .tsx-only entry is gone, not merely supplemented — there is
+    // exactly one components regex, and it now covers both extensions.
+    expect(
+      COVERAGE_PATTERNS.filter((p) => p.source.includes('client\\/src\\/components')),
+    ).toHaveLength(1);
+  });
+
+  // Previously unmatched: before this Issue, COVERAGE_PATTERNS only
+  // matched packages/client/src/components/**/*.tsx and
+  // packages/client/src/hooks/**/*.ts (not nested hooks under
+  // components/**, not plain .ts logic files under components/**, and not
+  // any file under packages/client/src/lib/). A PR touching any of these
+  // passed preflight with no test-change requirement.
+  it('now requires coverage for a .ts hook nested under components/** (previously unmatched)', () => {
+    expect(
+      requiresTestCoverage('packages/client/src/components/sessions/hooks/useTabManagement.ts'),
+    ).toBe(true);
+  });
+
+  it('now requires coverage for a plain .ts logic file under components/** (previously unmatched; this is terminal-store.ts, Issue #1902\'s own motivating example)', () => {
+    expect(requiresTestCoverage('packages/client/src/components/terminal/terminal-store.ts')).toBe(true);
+  });
+
+  it('now requires coverage for packages/client/src/lib/** (previously entirely out of scope)', () => {
+    expect(requiresTestCoverage('packages/client/src/lib/api.ts')).toBe(true);
+  });
+
+  it('still exempts a re-export-only index.ts under components/** via the existing re-export rule, not a path regex', () => {
+    // Real fixture on disk: packages/client/src/components/sessions/index.ts
+    // does not exist, so this uses the real re-export-only barrel at
+    // components/notifications/index.ts instead (same property: a single
+    // `export { X } from './X';` statement, no runtime logic of its own).
+    expect(requiresTestCoverage('packages/client/src/components/notifications/index.ts')).toBe(false);
+  });
+
+  it('still exempts a components/** -types.tsx file via the existing -types convention (hypothetical path; exclusion is pure-regex, no filesystem read needed)', () => {
+    expect(requiresTestCoverage('packages/client/src/components/x/types.ts')).toBe(false);
+  });
+
+  it('still exempts a lib/** -types.ts file via the existing -types convention (hypothetical path; exclusion is pure-regex, no filesystem read needed)', () => {
+    expect(requiresTestCoverage('packages/client/src/lib/foo-types.ts')).toBe(false);
+  });
+
+  it('leaves packages/client/src/routes/** unmatched — routes are an explicit non-goal, not an oversight (hypothetical path)', () => {
+    expect(requiresTestCoverage('packages/client/src/routes/x.tsx')).toBe(false);
+  });
+
+  it('does not widen the integration-gap heuristic (INTEGRATION_TRIGGER_PATTERNS) alongside COVERAGE_PATTERNS', () => {
+    // INTEGRATION_TRIGGER_PATTERNS' components entry keys off
+    // components/**/*.tsx specifically as a UI-rendering signal ("may
+    // involve state transitions or forms"); a .ts logic file carries no
+    // such signal and must not trip it just because COVERAGE_PATTERNS
+    // widened to also match .ts. Asserted directly against the pattern
+    // (no git/diffRef plumbing needed) rather than through
+    // detectIntegrationTestNeeds, which requires a real baseRef/headRef.
+    const componentsEntry = INTEGRATION_TRIGGER_PATTERNS.find((t) =>
+      t.pattern.source.includes('client\\/src\\/components'),
+    );
+    expect(componentsEntry.pattern.source).toBe('^packages\\/client\\/src\\/components\\/.+\\.tsx$');
+    expect(componentsEntry.pattern.test('packages/client/src/components/terminal/terminal-store.ts')).toBe(
+      false,
+    );
+    expect(componentsEntry.pattern.test('packages/client/src/components/terminal/TerminalView.tsx')).toBe(
+      true,
+    );
   });
 });

@@ -110,7 +110,13 @@ export const COVERAGE_PATTERNS = [
   /^packages\/server\/src\/mcp\/.+\.ts$/,
   /^packages\/server\/src\/lib\/.+\.ts$/,
   /^packages\/client\/src\/hooks\/.+\.ts$/,
-  /^packages\/client\/src\/components\/.+\.tsx$/,
+  // Covers both .tsx (components) and .ts (hooks nested under components/**,
+  // plain pure-logic .ts files) — see Issue #1902. The components/.+\.tsx$
+  // entry this replaces previously left every .ts file under components/**
+  // (e.g. terminal-store.ts) outside COVERAGE_PATTERNS entirely.
+  /^packages\/client\/src\/components\/.+\.tsx?$/,
+  // Issue #1902: packages/client/src/lib/** had no coverage pattern at all.
+  /^packages\/client\/src\/lib\/.+\.ts$/,
   /^packages\/shared\/src\/.+\.ts$/,
   /^packages\/embedded-agent\/src\/.+\.ts$/,
   /^\.claude\/hooks\/.+\.sh$/,
