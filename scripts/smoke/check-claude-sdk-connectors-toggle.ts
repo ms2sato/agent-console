@@ -150,6 +150,7 @@ export function parseArgs(argv: string[]): ParsedArgs {
   return { expectConnectorsPresent };
 }
 
+import './_env.js';
 import * as os from 'node:os';
 import * as path from 'node:path';
 // `lib/config.ts` (NOT `lib/server-config.ts`) only imports `node:path`/

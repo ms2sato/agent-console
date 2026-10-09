@@ -129,6 +129,7 @@
  * imports them directly and never spawns a PTY.
  */
 
+import './_env.js';
 import * as os from 'os';
 import * as fs from 'fs/promises';
 

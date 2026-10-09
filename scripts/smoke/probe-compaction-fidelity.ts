@@ -128,6 +128,7 @@
  *   2  bad usage, or the harness could not run at all (setup failure before
  *      any run could start, or every requested run failed to measure)
  */
+import './_env.js';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import type { McpDependencies } from '../../packages/server/src/mcp/mcp-server.ts';
 import { DEFAULT_COMPACTION_THRESHOLD } from '../../packages/shared/src/types/embedded-agent.ts';

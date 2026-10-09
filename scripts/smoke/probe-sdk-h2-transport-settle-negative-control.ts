@@ -56,6 +56,7 @@
 // See the sibling probe script for why this resolves via a relative path
 // into packages/embedded-agent's own node_modules rather than the bare
 // `@anthropic-ai/claude-agent-sdk` specifier.
+import './_env.js';
 import { rmSync } from 'node:fs';
 import {
   query,

@@ -138,6 +138,7 @@
  * Usage: bun scripts/smoke/probe-sdk-phase5-pr2-premises.ts [--p-a] [--p-b]
  */
 
+import './_env.js';
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';

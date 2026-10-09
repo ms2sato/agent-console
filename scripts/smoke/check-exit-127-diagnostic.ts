@@ -83,6 +83,7 @@
  * diagnostic path changes this smoke's outcome automatically.
  */
 
+import './_env.js';
 import * as crypto from 'crypto';
 import * as os from 'os';
 import * as path from 'path';

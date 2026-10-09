@@ -365,6 +365,23 @@ async function createSession(baseUrl: string, body: Record<string, unknown>): Pr
 }
 
 async function main(): Promise<void> {
+  // NODE_ENV-sensitive (Issue #1289): this smoke boots the real
+  // `packages/server/src/index.ts` as a child process, inheriting the
+  // parent's `NODE_ENV` via `...process.env`. `index.ts` (L186) gates
+  // static-file serving on `NODE_ENV === 'production'`, which caches
+  // `packages/server/src/public/index.html` at startup -- a path that
+  // does not exist on an unbuilt dev tree. Silently defaulting `NODE_ENV`
+  // the way `./_env.ts` does for neutral smokes would crash the child's
+  // boot with an ENOENT, rather than exercising the behaviour this smoke
+  // verifies. Listed in `NODE_ENV_SENSITIVE_SMOKES`
+  // (scripts/smoke/__tests__/node-env-discipline.test.ts).
+  if (!process.env.NODE_ENV) {
+    console.error(
+      'check-webhook-issue-label-routing.ts: NODE_ENV must be set explicitly (production|development|test) -- this smoke verifies behaviour that depends on it; refusing to guess.',
+    );
+    process.exit(2);
+  }
+
   process.chdir(REPO_ROOT);
 
   const runId = `${process.pid}-${Date.now()}`;

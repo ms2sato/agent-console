@@ -38,6 +38,7 @@
  *   0  every assertion passed
  *   1  an assertion failed
  */
+import './_env.js';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';

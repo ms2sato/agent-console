@@ -239,6 +239,7 @@
  * `EmbeddedAgentWorkerService` uses for its own default. No replication.
  */
 
+import './_env.js';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { realpathSync } from 'node:fs';

@@ -75,6 +75,7 @@
  *   1  an assertion failed (the smoke ran and the system is wrong)
  *   2  bad usage / the smoke could not run (boot failure, no worker tree, ...)
  */
+import './_env.js';
 import { cpSync, mkdirSync, rmSync, unlinkSync } from 'node:fs';
 // Type-only, so it is erased at runtime and does not load the server modules
 // before the env vars below are set (the value imports stay dynamic, further

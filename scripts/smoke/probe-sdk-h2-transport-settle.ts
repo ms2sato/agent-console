@@ -68,6 +68,7 @@
 // bare specifier from a script under scripts/smoke/ cannot walk up into a
 // sibling workspace's node_modules. This is the same package instance
 // sdk-engine.ts itself resolves, so the version under test cannot drift.
+import './_env.js';
 import { rmSync } from 'node:fs';
 import {
   query,

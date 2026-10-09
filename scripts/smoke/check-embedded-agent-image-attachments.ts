@@ -93,6 +93,7 @@
 // transitively imports server-config.ts is evaluated. Every such import is
 // therefore a DYNAMIC import made from inside main().
 
+import './_env.js';
 import { cpSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';

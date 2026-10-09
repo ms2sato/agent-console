@@ -60,6 +60,7 @@
  *   2  bad usage / cannot run (e.g. not on Linux -- /proc is unavailable)
  */
 
+import './_env.js';
 import { readFileSync } from 'node:fs';
 import { bunTerminalProvider, type PtyInstance } from '../../packages/server/src/lib/pty-provider.js';
 

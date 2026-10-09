@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'bun:test';
-import { Glob } from 'bun';
 import * as path from 'node:path';
+import { discoverSmokeFiles } from './smoke-entry-points.js';
 
 /**
  * Regression pin for Issue #1479: importing a `scripts/smoke/*` file must
@@ -109,11 +109,9 @@ function filterKnownBenignEnvAdditions<T extends EnvDiffReport>(report: T): T {
   return { ...report, envAdded: report.envAdded.filter((k) => !KNOWN_BENIGN_ENV_KEYS.has(k)) };
 }
 
-function discoverSmokeFiles(): string[] {
-  const smokeDir = path.join(import.meta.dir, '..');
-  const glob = new Glob('*.{ts,mjs}');
-  return [...glob.scanSync({ cwd: smokeDir, onlyFiles: true })].sort();
-}
+// `discoverSmokeFiles` is shared with `registry-reachability.test.ts` and
+// `node-env-discipline.test.ts` via `./smoke-entry-points.js` -- single
+// writer for the glob pattern.
 
 interface ImportResult {
   exitCode: number | null;

@@ -85,6 +85,7 @@
  *      argument validation happens before anything billable runs.
  */
 
+import './_env.js';
 import { getSessionInfo, type Options } from '../../packages/embedded-agent/node_modules/@anthropic-ai/claude-agent-sdk';
 import { randomUUID } from 'node:crypto';
 import { rmSync } from 'node:fs';

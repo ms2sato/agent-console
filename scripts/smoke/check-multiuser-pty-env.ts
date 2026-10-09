@@ -42,6 +42,7 @@
  * both paths call `buildElevationArgs`. Issue #866 motivated this design.
  */
 
+import './_env.js';
 import { spawn } from 'bun';
 import { existsSync, readFileSync } from 'fs';
 import { buildElevationArgs } from '../../packages/server/src/services/elevation-args.js';

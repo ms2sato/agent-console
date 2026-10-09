@@ -75,6 +75,7 @@
 // (see check-embedded-agent-idle-eviction.ts's header comment for the full
 // account).
 
+import './_env.js';
 import { unlinkSync } from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';

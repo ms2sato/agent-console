@@ -1555,7 +1555,7 @@ the unit's env var is a separate, owner-gated deploy step (see the
 sudo -u agent-console-shared -i claude -p "hello"
 
 # Full elevation chain delivers the login-init env (see Post-deploy Verification)
-sudo -u agentconsole sh -c 'cd /home/agentconsole/agent-console && NODE_ENV=production /usr/local/bin/bun scripts/smoke/check-multiuser-pty-env.ts agent-console-shared'
+sudo -u agentconsole sh -c 'cd /home/agentconsole/agent-console && /usr/local/bin/bun scripts/smoke/check-multiuser-pty-env.ts agent-console-shared'
 ```
 
 Finally, log in to the web UI as a regular user, open a repository bound
@@ -1566,6 +1566,13 @@ terminal reports the shared account and the agent responds via the
 configured vendor.
 
 ## Post-deploy Verification (smoke tests)
+
+Smokes default `NODE_ENV=production` for logging only (Issue #1289); the
+three that verify NODE_ENV-dependent behaviour
+(`check-artifact-sandbox-boundary.mjs`, `check-artifact-server-story-e2e.mjs`,
+`check-webhook-issue-label-routing.ts`) refuse to run without it set
+explicitly -- no `NODE_ENV=production` prefix is needed on any of the
+commands below.
 
 **The first thing to read after a deploy is the deploy script's own
 seven-line screen** (`  PASS  V0 data-root-ownership` ... `RESULT: 7 PASS`),

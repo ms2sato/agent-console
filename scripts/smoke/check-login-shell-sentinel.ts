@@ -57,6 +57,7 @@
  * this smoke automatically because both paths call the same builders.
  */
 
+import './_env.js';
 import * as os from 'os';
 import * as crypto from 'crypto';
 import { existsSync, readFileSync, unlinkSync } from 'fs';

@@ -43,6 +43,7 @@
  * Usage: bun scripts/smoke/probe-sdk-instruction-loading.ts [--off] [--project]
  */
 
+import './_env.js';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';

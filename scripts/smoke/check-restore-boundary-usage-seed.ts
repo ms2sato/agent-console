@@ -78,6 +78,7 @@
  *   1  an assertion failed (the smoke ran and the system is wrong)
  *   2  bad usage / the smoke could not run (boot failure, provider down, ...)
  */
+import './_env.js';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import type { McpDependencies } from '../../packages/server/src/mcp/mcp-server.ts';
 import * as os from 'node:os';

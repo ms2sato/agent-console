@@ -190,6 +190,7 @@
  * no replication of any production logic.
  */
 
+import './_env.js';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { readFileSync } from 'node:fs';

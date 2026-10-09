@@ -51,6 +51,7 @@
  * removal) changes this smoke's outcome automatically.
  */
 
+import './_env.js';
 import { bunTerminalProvider, type PtyInstance } from '../../packages/server/src/lib/pty-provider.js';
 
 const CYCLE_COUNT = 20;
