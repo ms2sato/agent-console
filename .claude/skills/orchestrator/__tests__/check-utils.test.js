@@ -1574,21 +1574,21 @@ describe('getAcceptanceCriteria', () => {
     expect(getAcceptanceCriteria('1', { execImpl })).toEqual({ state: 'absent', items: [] });
   });
 
-  // --- Issue #1525: scope checkbox collection to the AC section ---
+  // --- Scope checkbox collection to the AC section ---
   //
-  // Before #1525, `getAcceptanceCriteria` collected `- [ ] ` lines from the
-  // WHOLE body before ever locating the heading, so a prose AC with a
-  // stray checkbox elsewhere in the body (a reproduction task list, a
+  // `getAcceptanceCriteria` used to collect `- [ ] ` lines from the WHOLE
+  // body before ever locating the heading, so a prose AC with a stray
+  // checkbox elsewhere in the body (a reproduction task list, a
   // follow-up note) misclassified as 'checklist'. These tests pin the
   // fix: collection scoped to the section range when a heading exists,
-  // falling back to whole-body collection when it does not (the
-  // regression the Issue names explicitly).
+  // falling back to whole-body collection when it does not (the named
+  // regression this scoping would otherwise introduce).
 
   // Mutation reach (measured): reverting to whole-body collection — i.e.
   // scanning every line in the body for `- [ ] ` before locating the
   // heading — makes this test fail. The stray checkbox under "##
   // Follow-ups" would be collected, and the state would be 'checklist'
-  // instead of 'prose'. This is the Issue's primary defect (AC item 1).
+  // instead of 'prose'. This is the primary defect the scoping fixes.
   it('returns state "prose" when an unrelated checkbox appears outside the AC section', () => {
     const body = [
       'Some narrative text describing the defect.',

@@ -981,7 +981,7 @@ export function getIssueInfo(issueNumber) {
  * Locate the Acceptance Criteria heading and compute the line range of its
  * section — the single writer both the checklist-item collector and the
  * prose/empty-heading content scan in `getAcceptanceCriteria` read, so the
- * two can never drift onto different boundaries (Issue #1525).
+ * two can never drift onto different boundaries.
  *
  * The range is `[headingIdx + 1, end)`: it starts the line AFTER the
  * heading (a checkbox ON the heading line itself is never in range) and
@@ -1019,8 +1019,8 @@ function findAcceptanceCriteriaSectionRange(lines) {
 /**
  * Four-valued AC detection (D3, amended by Architect ruling after
  * delegate report: a heading with literally no content under it is its
- * own state, not "prose"; further amended by #1525 to scope checkbox
- * collection to the AC section when a heading exists).
+ * own state, not "prose"; further amended to scope checkbox collection
+ * to the AC section when a heading exists).
  *
  * The checklist regex (`^- \[ \] `) is unchanged and remains the only form
  * that mechanises Q3's criterion-to-test mapping — see
@@ -1038,14 +1038,14 @@ function findAcceptanceCriteriaSectionRange(lines) {
  * map either. The same outcome-unified / label-distinct shape as D2's
  * `classifyCiEvidence`.
  *
- * Scoping (#1525): when an AC heading exists, both the checkbox
+ * Section scoping: when an AC heading exists, both the checkbox
  * collection and the content scan run only inside
  * `findAcceptanceCriteriaSectionRange`'s range — a `- [ ]` box elsewhere in
  * the body (a reproduction task list, a follow-up note) no longer
  * misclassifies a prose AC as `'checklist'`. When NO heading exists, the
  * function falls back to the original whole-body checkbox scan unchanged
- * — this is the regression pin: a checklist-only body with no AC heading
- * must keep returning `'checklist'`, not start returning `'absent'`.
+ * — a checklist-only body with no AC heading must keep returning
+ * `'checklist'`, not start returning `'absent'`.
  *
  * @param {string|number} issueNumber
  * @param {{ execImpl?: typeof exec }} [opts]
@@ -1060,9 +1060,9 @@ export function getAcceptanceCriteria(issueNumber, { execImpl = exec } = {}) {
 
   if (range === null) {
     // No AC heading anywhere in the body: keep the original whole-body
-    // checkbox scan exactly as it behaved before #1525. This is the
-    // regression this Issue names explicitly — a checklist body with no
-    // heading must stay 'checklist', not become 'absent'.
+    // checkbox scan unchanged — a checklist body with no heading must
+    // stay 'checklist', not become 'absent'. This is the regression that
+    // scoping collection to the AC section would otherwise introduce.
     const items = [];
     for (const line of lines) {
       const match = line.match(/^- \[ \]\s+(.+)/);
