@@ -653,6 +653,12 @@ describe('assertSpawnCwdExists', () => {
     return err;
   }
 
+  function makeEnotdir(): NodeJS.ErrnoException {
+    const err = new Error('ENOTDIR: not a directory') as NodeJS.ErrnoException;
+    err.code = 'ENOTDIR';
+    return err;
+  }
+
   function makeStatsFor(isDirectory: boolean): Stats {
     return { isDirectory: () => isDirectory } as Stats;
   }
@@ -685,6 +691,23 @@ describe('assertSpawnCwdExists', () => {
         expect(typedErr.username).toBe('alice');
         expect(typedErr.message).toContain('/does/not/exist');
       }
+    });
+
+    it('rejects with SpawnCwdMissingError when an ancestor of cwd is a file, not a directory (ENOTDIR)', async () => {
+      const fakeStat: typeof fs.stat = (async () => {
+        throw makeEnotdir();
+      }) as typeof fs.stat;
+      const fakeRunAsUser: typeof runAsUser = async () => {
+        throw new Error('runAsUser should not be called on the non-elevated branch');
+      };
+
+      await expect(
+        assertSpawnCwdExists('/some/file/as/ancestor', 'alice', {
+          stat: fakeStat,
+          runAsUser: fakeRunAsUser,
+          shouldElevateForUser: shouldElevateForUserFalse,
+        }),
+      ).rejects.toBeInstanceOf(SpawnCwdMissingError);
     });
 
     it('resolves when the directory is present', async () => {

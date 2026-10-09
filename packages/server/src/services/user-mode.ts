@@ -93,7 +93,8 @@ export async function assertSpawnCwdExists(
   } catch (err) {
     // Any OTHER stat error (EACCES, timeout, etc.) is rethrown as-is, not
     // converted -- the typed error means exactly "absent", nothing else.
-    if (err instanceof Error && 'code' in err && (err as NodeJS.ErrnoException).code === 'ENOENT') {
+    const code = err instanceof Error ? (err as NodeJS.ErrnoException).code : undefined;
+    if (code === 'ENOENT' || code === 'ENOTDIR') {
       throw new SpawnCwdMissingError(cwd, username);
     }
     throw err;
