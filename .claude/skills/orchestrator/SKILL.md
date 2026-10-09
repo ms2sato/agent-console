@@ -156,11 +156,25 @@ Full rationale and the ambient-observation guarantee: [`docs/design/architect-ro
 **Track outstanding pushes, and judge on output rather than state.** After pushing to the Architect, note the time. On each self-check, ask whether anything has come back — and if not, whether the Architect has produced output *for anyone*:
 
 ```bash
-find /var/lib/agent-console/repositories/agent-console/messages \
-  -name '*<architect-session-id>*' -newermt '<time of your push>'
+REPOS=/var/lib/agent-console/repositories
+
+# Positive control FIRST: the id (or mount) actually produces hits at all.
+# -type f: files only -- the session's own inbox directory also carries its
+# id (messages/<id>/) and must not count.
+# If this is 0, stop -- do not read the next line's emptiness as "no answer".
+find "$REPOS" -path '*/messages/*' -type f -name '*<architect-session-id>*' | wc -l
+
+# The actual question: the latest message filename's epoch-ms prefix,
+# compared against the epoch-ms you recorded at push time (`date +%s%3N`).
+find "$REPOS" -path '*/messages/*' -type f -name '*<architect-session-id>*' -printf '%f\n' \
+  | cut -d- -f1 | sort -n | tail -1
 ```
 
-Empty means the Architect has not written to any inbox since your push — not merely that it has not answered you. That distinction matters: answering a delegate while ignoring you is a routing or priority problem; answering nobody is a stuck session.
+`find` on this host is `bfs`, not GNU findutils: a timezone-suffixed `-newermt` fails with exit 0 and zero rows, and a bare one is parsed as local (JST) time while sessions narrate in UTC — either way the result looks like a normal empty/clean read. Reading the epoch-ms filename prefix directly sidesteps `-newermt` entirely, and the root is `$REPOS` (not a single repository's `messages/`) because each session's message root follows its `data_scope_slug`, fixed at creation — older sessions live under `repositories/agent-console/`, newer ones under `repositories/ms2sato/agent-console/` — so a hardcoded single root sees only half the sessions.
+
+A result older than your push time means the Architect has not written to any inbox since your push — not merely that it has not answered you. That distinction matters: answering a delegate while ignoring you is a routing or priority problem; answering nobody is a stuck session.
+
+A session id or file path quoted back by a model is secondary evidence; the PTY output stream (`outputs/<session>/<worker>.log`) or the file's own existence on disk is primary.
 
 **Escalate rather than re-send.** One re-send is reasonable (messages can cross). By the second, change something: send a deliberately short message asking only for acknowledgement, and state that no answer will be read as "cannot proceed". If that also goes unanswered, the designated Architect is inactive and First Action step 1 applies — provision a fresh session, bootstrap it from the handoff memory, and leave the old one in place rather than destroying it.
 
