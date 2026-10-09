@@ -11,7 +11,11 @@ import type {
   ExitReason,
   EmbeddedAgentAttachment,
 } from '@agent-console/shared';
-import { isPtyBackedWorker, EMBEDDED_AGENT_ENGINE_PARAMETER_CAPABILITIES } from '@agent-console/shared';
+import {
+  isPtyBackedWorker,
+  EMBEDDED_AGENT_ENGINE_PARAMETER_CAPABILITIES,
+  EMBEDDED_AGENT_IMAGE_MIME_TYPES,
+} from '@agent-console/shared';
 import type {
   PersistedSession,
 } from './persistence-service.js';
@@ -309,8 +313,29 @@ interface SessionManagerOptions {
  * the model can tell an attachment from a path the user typed inline.
  * Exported (pure, no state) so it is directly unit-testable and so its
  * output shape has a single writer.
+ *
+ * When `supportsImages` is false, an image-mime attachment's
+ * path is OMITTED from the block entirely rather than merely annotated as
+ * unreadable -- a visible path, plus Bash/run_process access, invited the
+ * model to go investigate the file itself (`file`, `strings`, a hand-rolled
+ * PNG decoder) instead of accepting attachment-content.ts's
+ * CANNOT_VIEW_IMAGES_NOTE at face value. `supportsImages` is threaded in
+ * (resolved by the caller from the destination worker's definition) rather
+ * than re-derived here from mime type alone, since mime type alone cannot
+ * say whether THIS destination can see the image. Non-image attachments are
+ * always listed, regardless of `supportsImages` -- they remain legitimately
+ * readable through Read/Bash.
  */
-export function composeEmbeddedAgentDeliveryText(content: string, filePaths: string[]): string {
+const IMAGE_MIME_TYPES: readonly string[] = EMBEDDED_AGENT_IMAGE_MIME_TYPES;
+
+export function composeEmbeddedAgentDeliveryText(
+  content: string,
+  attachments: EmbeddedAgentAttachment[],
+  supportsImages: boolean,
+): string {
+  const filePaths = attachments
+    .filter((a) => supportsImages || !IMAGE_MIME_TYPES.includes(a.mimeType))
+    .map((a) => a.path);
   if (filePaths.length === 0) return content;
   const block = ['Attached files:', ...filePaths.map((p) => `- ${p}`)].join('\n');
   return content.length > 0 ? `${content}\n\n${block}` : block;
@@ -758,12 +783,26 @@ export class SessionManager {
       // delegate_to_worktree's own classification.
       await this.activateEmbeddedAgentWorker(sessionId, toWorkerId);
 
-      // Embedded delivery has no file-attachment concept; fold filePaths
-      // into the text as a labelled block (best-effort parity with the PTY
-      // branch's typed-lines behavior) so a same-session composer send with
-      // files still delivers something meaningful, and so the model can
-      // tell an attachment from a path the user typed inline.
-      const deliveryText = composeEmbeddedAgentDeliveryText(content, filePaths);
+      // Embedded delivery has no file-attachment concept; fold the
+      // attachments into the text as a labelled block (best-effort parity
+      // with the PTY branch's typed-lines behavior) so a same-session
+      // composer send with files still delivers something meaningful, and
+      // so the model can tell an attachment from a path the user typed
+      // inline. `supportsImages` is resolved here from the TARGET worker's
+      // definition -- claude-sdk has no such capability gate (always
+      // image-capable; see attachment-content.ts's buildClaudeSdkUserContent)
+      // and an unresolved definition defaults to "supports images" too, so
+      // the path-omission below only ever triggers for a KNOWN openai-api
+      // definition that has explicitly declared it cannot see images --
+      // never as a side effect of a lookup miss.
+      const targetDefinition = this.embeddedAgentDefinitions.getEmbeddedAgent(targetWorker.embeddedAgentId);
+      const supportsImages =
+        targetDefinition?.engine === 'openai-api' ? targetDefinition.provider.supportsImages === true : true;
+      const deliveryText = composeEmbeddedAgentDeliveryText(content, attachments ?? [], supportsImages);
+      // The persisted/broadcast `attachments` field stays the FULL,
+      // unfiltered array -- restore re-resolves images from it independently
+      // (see embedded-agent-worker-service.ts), so only the delivered TEXT
+      // drops the image line, never the attachment record itself.
       const result = await this.sendEmbeddedAgentUserMessage(sessionId, toWorkerId, deliveryText, undefined, attachments);
       if (!result.ok) {
         throw new EmbeddedMessageDeliveryError(result.error, result.code);

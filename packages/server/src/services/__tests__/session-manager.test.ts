@@ -23,7 +23,7 @@ import { PtyMessageInjectionService } from '../pty-message-injection-service.js'
 import type { SessionManager } from '../session-manager.js';
 import { UsernameLookupService } from '../username-lookup.js';
 import type { UserRepository } from '../../repositories/user-repository.js';
-import type { AuthUser } from '@agent-console/shared';
+import type { AuthUser, EmbeddedAgentDefinition } from '@agent-console/shared';
 import type { SpawnAsUserFn, SpawnAsUserOpts, runAsUser, RunAsUserOpts } from '../privilege-elevation.js';
 import { toSpawnAsUserResult, type FakeFileSink, type FakeSubprocess } from '../../__tests__/utils/fake-spawn-as-user.js';
 import * as os from 'os';
@@ -3882,6 +3882,29 @@ describe('SessionManager', () => {
       updatedAt: '2024-01-01T00:00:00.000Z',
     };
 
+    // Issue #1630: an openai-api definition that explicitly declares it CAN
+    // see images -- the sibling of STUB_DEF above, which leaves
+    // `supportsImages` unset (default false/"cannot view images").
+    const VISION_STUB_DEF = {
+      ...STUB_DEF,
+      id: 'stub-def-1630-vision',
+      provider: { ...STUB_DEF.provider, supportsImages: true },
+    };
+
+    // Issue #1630: claude-sdk has no `supportsImages` capability gate at
+    // all -- always image-capable, see attachment-content.ts's
+    // buildClaudeSdkUserContent.
+    const CLAUDE_SDK_STUB_DEF = {
+      id: 'stub-def-1630-claude-sdk',
+      name: 'Stub Claude SDK',
+      engine: 'claude-sdk' as const,
+      isBuiltIn: false,
+      provider: { model: 'claude-sonnet' },
+      createdBy: 'test-user-id',
+      createdAt: '2024-01-01T00:00:00.000Z',
+      updatedAt: '2024-01-01T00:00:00.000Z',
+    };
+
     function makeFakeEmbeddedSpawn(): {
       fn: SpawnAsUserFn;
       captured: unknown[];
@@ -3932,7 +3955,7 @@ describe('SessionManager', () => {
       return { fn, captured, stdinWrites, pushLine, simulateExit };
     }
 
-    async function setupManager(fake: ReturnType<typeof makeFakeEmbeddedSpawn>, defs: Map<string, typeof STUB_DEF>) {
+    async function setupManager(fake: ReturnType<typeof makeFakeEmbeddedSpawn>, defs: Map<string, EmbeddedAgentDefinition>) {
       const module = await import(`../session-manager.js?v=${++importCounter}`);
       return module.SessionManager.create({
         userMode: new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' }),
@@ -3949,9 +3972,10 @@ describe('SessionManager', () => {
 
     async function createEmbeddedWorker(
       manager: Awaited<ReturnType<typeof setupManager>>,
+      embeddedAgentId: string = STUB_DEF.id,
     ): Promise<{ sessionId: string; workerId: string }> {
       const session = await manager.createSession(
-        { type: 'quick', locationPath: '/test/path', embeddedAgentId: STUB_DEF.id },
+        { type: 'quick', locationPath: '/test/path', embeddedAgentId },
         { createdBy: 'test-user-id' },
       );
       const worker = session.workers.find((w: Worker) => w.type === 'embedded-agent')!;
@@ -4034,6 +4058,88 @@ describe('SessionManager', () => {
       const deactivatePromise = manager.deactivateEmbeddedAgentWorker(sessionId, workerId);
       fake.simulateExit(0);
       await deactivatePromise;
+    });
+
+    // Issue #1630: the DELIVERED TEXT's "Attached files:" block omits an
+    // image-mime attachment's path when the target can't see images, so the
+    // model is never shown a path it has no legitimate use for. The
+    // persisted/broadcast `attachments` field (asserted above, Issue #1571)
+    // is a separate record and stays COMPLETE regardless -- restore
+    // re-resolves images from it independently (see
+    // embedded-agent-worker-service.ts). A non-image attachment's path is
+    // always listed, in every case below, since it remains legitimately
+    // readable through Read/Bash.
+    describe('image-mime path omission in the delivered text (Issue #1630)', () => {
+      const mixedAttachments = [
+        { path: '/tmp/uploads/photo.png', mimeType: 'image/png' },
+        { path: '/tmp/uploads/notes.txt', mimeType: 'text/plain' },
+      ];
+
+      it('omits the image path but keeps the non-image path for an openai-api target with supportsImages:false (unset default)', async () => {
+        const fake = makeFakeEmbeddedSpawn();
+        const manager = await setupManager(fake, new Map([[STUB_DEF.id, STUB_DEF]]));
+        const { sessionId, workerId } = await createEmbeddedWorker(manager);
+
+        const message = await manager.sendMessage(sessionId, null, workerId, 'see these', mixedAttachments);
+        expect(message).not.toBeNull();
+
+        const userMessageCommand = fake.stdinWrites
+          .map((w) => JSON.parse(w) as { type: string; text?: string; attachments?: unknown })
+          .find((c) => c.type === 'user-message');
+        expect(userMessageCommand!.text).toBe('see these\n\nAttached files:\n- /tmp/uploads/notes.txt');
+        // The attachments record itself stays complete (both entries).
+        expect(userMessageCommand!.attachments).toEqual(mixedAttachments);
+
+        const history = await manager.getWorkerOutputHistory(sessionId, workerId, 0);
+        const persistedEvent = (history!.data as string)
+          .split('\n')
+          .filter((line: string) => line.length > 0)
+          .map((line: string) => JSON.parse(line) as { type: string; attachments?: unknown })
+          .find((event) => event.type === 'user-message');
+        expect(persistedEvent?.attachments).toEqual(mixedAttachments);
+
+        const deactivatePromise = manager.deactivateEmbeddedAgentWorker(sessionId, workerId);
+        fake.simulateExit(0);
+        await deactivatePromise;
+      });
+
+      it('keeps both paths for an openai-api target with supportsImages:true', async () => {
+        const fake = makeFakeEmbeddedSpawn();
+        const manager = await setupManager(fake, new Map([[VISION_STUB_DEF.id, VISION_STUB_DEF]]));
+        const { sessionId, workerId } = await createEmbeddedWorker(manager, VISION_STUB_DEF.id);
+
+        await manager.sendMessage(sessionId, null, workerId, 'see these', mixedAttachments);
+
+        const userMessageCommand = fake.stdinWrites
+          .map((w) => JSON.parse(w) as { type: string; text?: string })
+          .find((c) => c.type === 'user-message');
+        expect(userMessageCommand!.text).toBe(
+          'see these\n\nAttached files:\n- /tmp/uploads/photo.png\n- /tmp/uploads/notes.txt',
+        );
+
+        const deactivatePromise = manager.deactivateEmbeddedAgentWorker(sessionId, workerId);
+        fake.simulateExit(0);
+        await deactivatePromise;
+      });
+
+      it('keeps both paths for a claude-sdk target, which has no supportsImages capability gate at all', async () => {
+        const fake = makeFakeEmbeddedSpawn();
+        const manager = await setupManager(fake, new Map([[CLAUDE_SDK_STUB_DEF.id, CLAUDE_SDK_STUB_DEF]]));
+        const { sessionId, workerId } = await createEmbeddedWorker(manager, CLAUDE_SDK_STUB_DEF.id);
+
+        await manager.sendMessage(sessionId, null, workerId, 'see these', mixedAttachments);
+
+        const userMessageCommand = fake.stdinWrites
+          .map((w) => JSON.parse(w) as { type: string; text?: string })
+          .find((c) => c.type === 'user-message');
+        expect(userMessageCommand!.text).toBe(
+          'see these\n\nAttached files:\n- /tmp/uploads/photo.png\n- /tmp/uploads/notes.txt',
+        );
+
+        const deactivatePromise = manager.deactivateEmbeddedAgentWorker(sessionId, workerId);
+        fake.simulateExit(0);
+        await deactivatePromise;
+      });
     });
 
     it('omits attachments entirely from both the stdin command and the persisted event when none are sent (byte-identical to pre-#1571, polarity pin)', async () => {
@@ -8486,28 +8592,82 @@ describe('SessionManager.getEmbeddedAgentRestoreInfo return type (R1, #1410)', (
 
 describe('composeEmbeddedAgentDeliveryText (#1570)', () => {
   it('returns content unchanged when there are no attached files', () => {
-    expect(composeEmbeddedAgentDeliveryText('hello', [])).toBe('hello');
+    expect(composeEmbeddedAgentDeliveryText('hello', [], true)).toBe('hello');
   });
 
   it('returns empty content unchanged when there are no attached files', () => {
-    expect(composeEmbeddedAgentDeliveryText('', [])).toBe('');
+    expect(composeEmbeddedAgentDeliveryText('', [], true)).toBe('');
   });
 
-  it('appends a labelled block for a single attached file', () => {
-    expect(composeEmbeddedAgentDeliveryText('hello', ['/tmp/foo.txt'])).toBe(
-      'hello\n\nAttached files:\n- /tmp/foo.txt',
-    );
-  });
-
-  it('appends a labelled block with one line per attached file, for 3 files', () => {
+  it('appends a labelled block for a single non-image attached file', () => {
     expect(
-      composeEmbeddedAgentDeliveryText('hello', ['/tmp/a.txt', '/tmp/b.png', '/tmp/c.pdf']),
-    ).toBe('hello\n\nAttached files:\n- /tmp/a.txt\n- /tmp/b.png\n- /tmp/c.pdf');
+      composeEmbeddedAgentDeliveryText('hello', [{ path: '/tmp/foo.txt', mimeType: 'text/plain' }], false),
+    ).toBe('hello\n\nAttached files:\n- /tmp/foo.txt');
+  });
+
+  it('appends a labelled block with one line per attached file, for 3 non-image files', () => {
+    expect(
+      composeEmbeddedAgentDeliveryText(
+        'hello',
+        [
+          { path: '/tmp/a.txt', mimeType: 'text/plain' },
+          { path: '/tmp/b.csv', mimeType: 'text/csv' },
+          { path: '/tmp/c.pdf', mimeType: 'application/pdf' },
+        ],
+        false,
+      ),
+    ).toBe('hello\n\nAttached files:\n- /tmp/a.txt\n- /tmp/b.csv\n- /tmp/c.pdf');
   });
 
   it('emits only the labelled block, with no leading blank content, when content is empty but files are present', () => {
-    expect(composeEmbeddedAgentDeliveryText('', ['/tmp/foo.txt'])).toBe(
-      'Attached files:\n- /tmp/foo.txt',
-    );
+    expect(
+      composeEmbeddedAgentDeliveryText('', [{ path: '/tmp/foo.txt', mimeType: 'text/plain' }], true),
+    ).toBe('Attached files:\n- /tmp/foo.txt');
+  });
+
+  // Issue #1630: an image-mime attachment's path must never reach the
+  // delivered text when the destination cannot see images -- a visible path
+  // plus Bash/run_process access invited the model to go investigate the
+  // file itself instead of accepting attachment-content.ts's
+  // CANNOT_VIEW_IMAGES_NOTE.
+  describe('image-mime path omission (Issue #1630)', () => {
+    it('omits an image-mime path but keeps a non-image path when supportsImages is false', () => {
+      expect(
+        composeEmbeddedAgentDeliveryText(
+          'hello',
+          [
+            { path: '/tmp/photo.png', mimeType: 'image/png' },
+            { path: '/tmp/notes.txt', mimeType: 'text/plain' },
+          ],
+          false,
+        ),
+      ).toBe('hello\n\nAttached files:\n- /tmp/notes.txt');
+    });
+
+    it('keeps an image-mime path when supportsImages is true', () => {
+      expect(
+        composeEmbeddedAgentDeliveryText(
+          'hello',
+          [
+            { path: '/tmp/photo.png', mimeType: 'image/png' },
+            { path: '/tmp/notes.txt', mimeType: 'text/plain' },
+          ],
+          true,
+        ),
+      ).toBe('hello\n\nAttached files:\n- /tmp/photo.png\n- /tmp/notes.txt');
+    });
+
+    it('returns content unchanged (boundary: all attachments are image-mime) when supportsImages is false', () => {
+      expect(
+        composeEmbeddedAgentDeliveryText(
+          'hello',
+          [
+            { path: '/tmp/a.png', mimeType: 'image/png' },
+            { path: '/tmp/b.jpg', mimeType: 'image/jpeg' },
+          ],
+          false,
+        ),
+      ).toBe('hello');
+    });
   });
 });

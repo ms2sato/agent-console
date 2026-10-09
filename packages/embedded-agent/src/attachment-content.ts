@@ -40,8 +40,23 @@ function missingImageNote(basename: string): string {
   return `[image no longer available: ${basename}]`;
 }
 
+/**
+ * The attachment's path/filename must never be named here, and the model
+ * must be told not to go looking for it. An earlier wording ("the file path
+ * above is provided for reference only") assumed a path was visible nearby
+ * and merely annotated it -- but the path a model could act on actually
+ * arrives upstream, in the delivered message text composed by
+ * `SessionManager.sendMessage` (see `composeEmbeddedAgentDeliveryText`,
+ * which omits an image-mime attachment's path from that text precisely when
+ * `supportsImages` is false). A model told "the path above" with Bash/
+ * run_process access treated that as an invitation to `file`/`strings`/
+ * hand-roll a PNG decoder on the attachment instead of giving a short
+ * "I can't view images" answer -- a multi-minute, multi-process
+ * investigation for a single turn. This note instead forbids the
+ * investigation outright and tells the model to answer from the text alone.
+ */
 const CANNOT_VIEW_IMAGES_NOTE =
-  '[Note: this model cannot view images -- the file path above is provided for reference only.]';
+  '[Note: an image was attached to this message, but this model cannot view images and the file is not readable through your tools. Do not try to locate, open, or decode it; answer from the text alone and say that the image could not be viewed.]';
 
 /**
  * Resolve every IMAGE-mime attachment (per EMBEDDED_AGENT_IMAGE_MIME_TYPES)

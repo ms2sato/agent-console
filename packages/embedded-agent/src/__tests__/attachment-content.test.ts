@@ -99,7 +99,7 @@ describe('buildOpenAiUserContent', () => {
   it('omits image_url and appends a cannot-view notice when supportsImages is false', () => {
     const resolved = [
       {
-        attachment: { path: '/tmp/x.png', mimeType: 'image/png' } as EmbeddedAgentAttachment,
+        attachment: { path: '/tmp/uploads-1003/x.png', mimeType: 'image/png' } as EmbeddedAgentAttachment,
         basename: 'x.png',
         base64: 'abc123',
       },
@@ -109,6 +109,11 @@ describe('buildOpenAiUserContent', () => {
     expect(content).toContain('what is this?');
     expect(content).toContain('cannot view images');
     expect(content).not.toContain('image_url');
+    // Issue #1630: the note must never name the attachment's path or
+    // basename -- a visible path invited the model to go investigate the
+    // file with Bash/run_process instead of accepting it cannot be viewed.
+    expect(content).not.toContain('/tmp/uploads-1003/x.png');
+    expect(content).not.toContain('x.png');
   });
 
   it('appends a missing-image note and builds no image_url for an unavailable image', () => {
