@@ -859,15 +859,40 @@ describe('SessionManager', () => {
       }
     });
 
-    it('[Issue #1895/#1904 redesign] orders session.workers by creation-request order for an embedded-agent initial worker (invariant)', async () => {
-      // The embedded-agent branch has no activation await in Phase 1 --
-      // nothing can throw after construction -- so there is no hang point
-      // to gate here. Confirming the order holds is a structural
-      // regression guard (testing.md's invariant-preservation category),
-      // not a race repro: a FUTURE change that reintroduces racing
-      // createWorker calls in createSession would need to also reorder two
-      // purely-synchronous construction calls to break this, which is an
-      // orthogonal (and separately-guarded) mistake.
+    it('[Issue #1895/#1904 redesign] does not even start the git-diff worker until the initial embedded-agent worker fully settles', async () => {
+      // The embedded-agent branch has no PTY-activation await (Phase 1), so
+      // this test cannot gate the same seam as the agent-worker test above.
+      // It still has ONE async step before createWorker returns, though:
+      // the shared epilogue's `await this.deps.persistSession(session)`
+      // (worker-lifecycle-manager.ts), which calls
+      // `this.sessionRepository.save(...)` (session-manager.ts's private
+      // persistSession). Gating there distinguishes the two designs:
+      //
+      // - OLD parallel `Promise.allSettled([callEmbedded(), callGitDiff()])`:
+      //   array-literal evaluation calls callEmbedded() first, which runs
+      //   entirely synchronously (construct worker, sync epilogue parts,
+      //   call persistSession -> save -> this gate's mock body runs
+      //   synchronously up to its own `await saveGate`) -- only once that
+      //   nested chain actually suspends does callEmbedded() return a
+      //   pending promise to the array-literal evaluator, which THEN
+      //   synchronously evaluates callGitDiff() -- so git-diff's
+      //   createWorker/initializeGitDiffWorker call happens synchronously,
+      //   in the SAME tick, before this test's `await entered` has a chance
+      //   to run. By the time `await entered` resolves, the git-diff spy
+      //   would already show 1 call under the old code.
+      // - NEW sequential `await this.createWorker(embeddedParams); await
+      //   this.createWorker(gitDiffParams);`: createSession awaits the
+      //   first call directly (not as an array element), so it stays
+      //   suspended on that single awaited promise until this gate releases
+      //   it, and does not proceed to the second line until the first one's
+      //   promise actually resolves. git-diff's call has NOT happened yet
+      //   when `await entered` resolves.
+      //
+      // Verified empirically (not just reasoned through): temporarily
+      // restoring the old Promise.allSettled shape in createSession and
+      // running only this test makes it fail (git-diff spy shows 1 call
+      // where the assertion expects 0) -- see the PR report for the pasted
+      // failure.
       const STUB_EMBEDDED_DEF = {
         id: 'stub-embedded-agent-order',
         name: 'Stub Model',
@@ -892,34 +917,52 @@ describe('SessionManager', () => {
         repositoryEnvLookup: defaultRepositoryEnvLookup,
       });
 
-      const order: string[] = [];
-      const originalInitEmbedded = WorkerManager.prototype.initializeEmbeddedAgentWorker;
-      const initEmbeddedSpy = spyOn(WorkerManager.prototype, 'initializeEmbeddedAgentWorker').mockImplementation(
-        function (this: WorkerManager, ...args: Parameters<typeof originalInitEmbedded>) {
-          order.push('embedded-agent');
-          return originalInitEmbedded.apply(this, args);
+      let releaseSave!: () => void;
+      const saveGate = new Promise<void>((resolve) => {
+        releaseSave = resolve;
+      });
+      let notifyEntered!: () => void;
+      const entered = new Promise<void>((resolve) => {
+        notifyEntered = resolve;
+      });
+
+      const repo = manager.getSessionRepository();
+      const originalSave = repo.save.bind(repo);
+      let saveCallCount = 0;
+      const saveSpy = spyOn(repo, 'save').mockImplementation(
+        async (...args: Parameters<typeof originalSave>) => {
+          saveCallCount++;
+          if (saveCallCount === 1) {
+            notifyEntered();
+            await saveGate;
+          }
+          return originalSave(...args);
         },
       );
-      const originalInitGitDiff = WorkerManager.prototype.initializeGitDiffWorker;
-      const initGitDiffSpy = spyOn(WorkerManager.prototype, 'initializeGitDiffWorker').mockImplementation(
-        function (this: WorkerManager, ...args: Parameters<typeof originalInitGitDiff>) {
-          order.push('git-diff');
-          return originalInitGitDiff.apply(this, args);
-        },
-      );
+      const gitDiffSpy = spyOn(WorkerManager.prototype, 'initializeGitDiffWorker');
 
       try {
-        const session = await manager.createSession({
+        const sessionPromise = manager.createSession({
           type: 'quick',
           locationPath: '/test/path',
           embeddedAgentId: STUB_EMBEDDED_DEF.id,
         });
 
-        expect(order).toEqual(['embedded-agent', 'git-diff']);
+        // Wait until the embedded-agent worker's own createWorker call has
+        // reached its persistSession/save await. Under the OLD parallel
+        // design, the git-diff worker's own createWorker call would already
+        // have happened (synchronously, same tick) by this point.
+        await entered;
+        expect(gitDiffSpy).not.toHaveBeenCalled();
+
+        releaseSave();
+        const session = await sessionPromise;
+
+        expect(gitDiffSpy).toHaveBeenCalledTimes(1);
         expect(session.workers.map((w: Worker) => w.type)).toEqual(['embedded-agent', 'git-diff']);
       } finally {
-        initEmbeddedSpy.mockRestore();
-        initGitDiffSpy.mockRestore();
+        saveSpy.mockRestore();
+        gitDiffSpy.mockRestore();
       }
     });
 
