@@ -31,6 +31,7 @@ import {
   checkProposedBehaviorCoverage,
   runLanguageCheck,
 } from './check-utils.js';
+import { getCodeRabbitHeadState } from './coderabbit-head-state.js';
 
 // --- Utility ---
 
@@ -100,6 +101,10 @@ function runAutoDetection(prNumber) {
 
   const integrationTestNeeds = detectIntegrationTestNeeds(changedFiles, categories, diffRef);
   const languageCheck = runLanguageCheck();
+  // `exec` is already imported above from check-utils.js; pass it through
+  // explicitly rather than relying on the module's own default, so the
+  // real shell-exec primitive stays single-sourced from check-utils.js.
+  const codeRabbitHeadState = getCodeRabbitHeadState(prNumber, { execImpl: exec });
 
   return {
     changedFiles,
@@ -114,6 +119,7 @@ function runAutoDetection(prNumber) {
     ciStatus,
     integrationTestNeeds,
     languageCheck,
+    codeRabbitHeadState,
   };
 }
 
@@ -311,8 +317,25 @@ function printAcceptanceCriteriaSection(linkedIssue, acceptanceCriteriaState) {
   }
 }
 
+/**
+ * One-line auto-detection report for the CodeRabbit head-review-state
+ * precondition. Prints nothing when `codeRabbitHeadState` is
+ * absent — the field is omitted by older/test-injected `autoDetection`
+ * objects that predate this check, and absence must not be read as "the
+ * head is unreviewed".
+ */
+function printCodeRabbitHeadState(codeRabbitHeadState) {
+  if (!codeRabbitHeadState) return;
+  const { state, headSha, statusDescription, dispositionRecorded } = codeRabbitHeadState;
+  const shortSha = headSha ? headSha.slice(0, 8) : 'unknown';
+  const description = statusDescription ?? '(unknown)';
+  const disposition = dispositionRecorded ? 'found' : 'absent';
+  console.log(`CodeRabbit head review: ${state} (head ${shortSha}, status "${description}", disposition record in PR body: ${disposition})`);
+  console.log();
+}
+
 function printAutoDetection(autoDetection) {
-  const { categories, testFiles, testCoverage, boundaries, linkedIssue, acceptanceCriteriaState, proposedBehaviorCoverage, ciStatus, integrationTestNeeds, languageCheck } = autoDetection;
+  const { categories, testFiles, testCoverage, boundaries, linkedIssue, acceptanceCriteriaState, proposedBehaviorCoverage, ciStatus, integrationTestNeeds, languageCheck, codeRabbitHeadState } = autoDetection;
 
   // CI status (must be green before acceptance)
   console.log('[CI Status]');
@@ -340,6 +363,9 @@ function printAutoDetection(autoDetection) {
     }
   }
   console.log();
+
+  // CodeRabbit head-review-state precondition
+  printCodeRabbitHeadState(codeRabbitHeadState);
 
   // File categorization
   console.log('[File Categorization]');
@@ -444,11 +470,11 @@ function printIntegrationTestAdequacy(linkedIssue) {
   console.log();
 }
 
-function getQuestions(hasAcceptanceCriteria, { integrationTestMissing = false, languageCheckFailed = false } = {}) {
+function getQuestions(hasAcceptanceCriteria, { integrationTestMissing = false, languageCheckFailed = false, codeRabbitDispositionRequired = false } = {}) {
   const q2Extra = integrationTestMissing
     ? '\n  ⚠ Integration test が未追加です。この変更で integration test が不要な理由を説明してください。不要な場合はその根拠を、必要な場合はエージェントに追加指示してください。'
     : '';
-  return [
+  const questions = [
     {
       key: 'q1',
       text: 'Q1: Domain Design — Is the service layer properly separated? Is there business logic leaking into route handlers or MCP tools?',
@@ -590,6 +616,28 @@ function getQuestions(hasAcceptanceCriteria, { integrationTestMissing = false, l
       sufficient: '"AC item 2 names the send_session_message shipping path. Executed verification: integration test embedded-delivery.test.ts \'delivers via send_session_message to embedded worker\' — enters through the real MCP tool handler, production-real. Polarity: confirmed failing on pre-fix main in the delegate\'s TDD report. AC item 3 (UI toast) was verified by Browser QA screenshot in the PR body. No proxy substitutions. This PR surfaced no new environmental fact requiring retroactive application."',
     },
   ];
+
+  // Q13 is appended ONLY when the auto-detected CodeRabbit head state is
+  // 'unreviewed' or 'retrieval-failed'. A reviewed head costs
+  // nothing — the question is not added at all, not added-and-skippable.
+  if (codeRabbitDispositionRequired) {
+    questions.push({
+      key: 'q13',
+      text: 'Q13: CodeRabbit Disposition Record — The auto-detected [CodeRabbit head review] line above shows this PR\'s current head as unreviewed, or its review state could not be retrieved. Name WHERE the disposition is durably recorded (a URL, or the PR-body "CodeRabbit disposition" marker line quoted verbatim) AND the named compensating control that covers the unreviewed delta\'s ENTIRE risk class.',
+      focus: [
+        'See `.claude/skills/coderabbit-ops/SKILL.md` "The staleness surface" and "Case-by-case dispositions" for the criterion of when a disposition is permitted — this question does not decide that; it only requires the decision to be RECORDED as a precondition of merge, not appended afterward.',
+        'Mechanical procedure:',
+        '  1. Confirm the record exists NOW, before this verdict — a durable marker in the PR body (the `## CodeRabbit disposition` heading) or a linked comment, not a plan to add one after merging.',
+        '  2. Confirm the compensating control named in the record actually covers the unreviewed delta\'s entire risk class, not just part of it.',
+        '  3. Boundary: if the auto-detection line is \'unreviewed\' because the PR title matched the docs-only carve-out (`ignore_title_keywords`), that is surface 4\'s documented skip, not a missing review — answer by citing surface 4 and confirming the diff really is docs-only, rather than treating this as a merge block for the carve-out.',
+        '  4. If the state is \'retrieval-failed\', the `gh` calls themselves did not succeed — re-run them manually before answering; a disposition decision cannot be made without knowing the real review state first.',
+      ].join('\n  '),
+      insufficient: '"The control covers it" (without pointing at a durable record) — OR — "Waiting for the window" (without a decision) — OR — citing the docs-only carve-out for a PR that is not actually docs-only',
+      sufficient: '"PR body\'s `## CodeRabbit disposition` heading reads: \'Head 9f3a1b2c unreviewed (quota went to a higher-priority PR); risk class is a one-line comment typo fix, compensating control is the Architect\'s own read of the diff recorded in this same section.\' Record is in the body now, not appended after merge. Compensating control covers the entire (trivial) risk class of this delta."',
+    });
+  }
+
+  return questions;
 }
 
 function printQuestion(question) {
@@ -686,7 +734,12 @@ async function runWizard(prNumber, { stdin = process.stdin, autoDetection: injec
   // reason: nothing was actually checked.
   const lc = autoDetection.languageCheck;
   const languageCheckFailed = !!lc && !lc.spawnFailed && lc.exitCode !== 0 && lc.stdout.trim().length > 0;
-  const questions = getQuestions(hasAcceptanceCriteria, { integrationTestMissing, languageCheckFailed });
+  // `codeRabbitHeadState` is absent on older/test-injected autoDetection
+  // objects — absence must not be read as "disposition required"; only an
+  // explicit 'unreviewed'/'retrieval-failed' state does.
+  const headState = autoDetection.codeRabbitHeadState;
+  const codeRabbitDispositionRequired = !!headState && (headState.state === 'unreviewed' || headState.state === 'retrieval-failed');
+  const questions = getQuestions(hasAcceptanceCriteria, { integrationTestMissing, languageCheckFailed, codeRabbitDispositionRequired });
   const answers = {};
   const readResponse = createStdinReader(stdin);
 
@@ -713,6 +766,11 @@ async function runWizard(prNumber, { stdin = process.stdin, autoDetection: injec
   const ciEvidence = classifyCiEvidence(autoDetection.ciStatus);
   const ciRetrievalFailed = ciEvidence === 'retrieval-failed';
   const ciNoChecksYet = ciEvidence === 'no-checks-yet';
+  // 'retrieval-failed' gates the exit code on its own (unlike 'unreviewed',
+  // which only requires Q13 to be answered — see the EXIT-CODE CONTRACT
+  // comment below). We could not even determine whether the head was
+  // reviewed, so this joins ciRetrievalFailed as an unconditional reason.
+  const coderabbitRetrievalFailed = !!headState && headState.state === 'retrieval-failed';
 
   // EXIT-CODE CONTRACT (canonical; Architect-ruled after a CodeRabbit
   // finding argued red-but-retrieved CI should also gate this exit code —
@@ -730,7 +788,18 @@ async function runWizard(prNumber, { stdin = process.stdin, autoDetection: injec
   // on it; preflight-check.js's own caller uses `|| true`). The moment any
   // automated consumer of this exit code appears, red CI MUST become a
   // non-zero exit — automation cannot see the ⛔.
-  if (unanswered.length > 0 || ciRetrievalFailed || ciNoChecksYet) {
+  //
+  // CodeRabbit head-state extension, added to this same
+  // contract rather than a parallel one: 'unreviewed' gets NO special
+  // treatment here — Q13 was appended to `questions` above, so an
+  // unanswered Q13 is already caught by `unanswered.length > 0` like any
+  // other question, and an ANSWERED Q13 exits 0 exactly like red-but-
+  // retrieved CI (loud on screen via the [CodeRabbit head review] line,
+  // not silent). 'retrieval-failed' is different and DOES gate
+  // unconditionally via `coderabbitRetrievalFailed` below, because unlike
+  // 'unreviewed' there is no recorded decision to answer for — the three
+  // `gh` calls did not even succeed, so nothing is known to disposition.
+  if (unanswered.length > 0 || ciRetrievalFailed || ciNoChecksYet || coderabbitRetrievalFailed) {
     const reasons = [];
     if (unanswered.length > 0) {
       reasons.push(`${unanswered.length} question(s) unanswered (${unanswered.map((k) => k.toUpperCase()).join(', ')})`);
@@ -740,14 +809,17 @@ async function runWizard(prNumber, { stdin = process.stdin, autoDetection: injec
     } else if (ciNoChecksYet) {
       reasons.push('no CI checks have reported on this PR yet');
     }
+    if (coderabbitRetrievalFailed) {
+      reasons.push('CodeRabbit head state could not be retrieved');
+    }
     console.log(`❌ Acceptance check FAILED: ${reasons.join('; ')}`);
     console.log();
-    return { exitCode: 1, unanswered, ciRetrievalFailed, ciNoChecksYet };
+    return { exitCode: 1, unanswered, ciRetrievalFailed, ciNoChecksYet, coderabbitRetrievalFailed };
   }
 
   console.log('✅ Acceptance check complete — all questions answered, CI status retrieved.');
   console.log();
-  return { exitCode: 0, unanswered, ciRetrievalFailed, ciNoChecksYet };
+  return { exitCode: 0, unanswered, ciRetrievalFailed, ciNoChecksYet, coderabbitRetrievalFailed };
 }
 
 // --- Exports for testing ---
@@ -762,6 +834,7 @@ export {
   printLanguageCheck,
   printAutoDetection,
   printAcceptanceCriteriaSection,
+  printCodeRabbitHeadState,
   isAnsweredValue,
   classifyCiEvidence,
 };

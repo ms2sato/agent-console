@@ -171,6 +171,8 @@ gh pr view <N> --json headRefOid -q .headRefOid
 
 **Clean requires some review's `commit_id` to equal the current HEAD.** Not "a review exists" — reviews are per-commit and they accumulate.
 
+`acceptance-check.js`'s Q13 fires when the head is unreviewed or its state could not be retrieved. The disposition record must carry the heading `CodeRabbit disposition` in the PR body for `dispositionRecorded` to read `found`.
+
 **Why the other surfaces do not catch it.** Surface 4's documented trap is `SUCCESS` with `Review rate limited` in the `description`; here the description is **empty**, so a description check passes. Surface 5 finds a real review body with real findings, all of them dispositioned. Surface 2's `reviewDecision` is empty — which is the only hint, and it is the hint a reader most reasonably discounts, because empty is also the normal state for "has not reviewed yet" on a PR that visibly *has* a review.
 
 This is `workflow.md`'s Sub-pattern 7 — a signal that was strong when observed and has since expired — reaching you through a surface the checklist otherwise treats as current. The expiry event is your own push.

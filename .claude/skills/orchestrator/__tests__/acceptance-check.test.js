@@ -22,6 +22,7 @@ import {
   printLanguageCheck,
   printAutoDetection,
   printAcceptanceCriteriaSection,
+  printCodeRabbitHeadState,
   isAnsweredValue,
   classifyCiEvidence,
 } from '../acceptance-check.js';
@@ -413,6 +414,41 @@ describe('getQuestions', () => {
     expect(q12.text).toContain('polarity');
     expect(q12.text).toContain('retroactively');
     expect(q12.focus).toContain('pre-pr-completeness.md');
+  });
+
+  // Q13 (Issue #1547): present ONLY when the CodeRabbit head review state
+  // is 'unreviewed' or 'retrieval-failed'; absent for a reviewed head,
+  // where the question costs nothing.
+  it('does not add Q13 when codeRabbitDispositionRequired is omitted (default)', () => {
+    const questions = getQuestions(false);
+    expect(questions).toHaveLength(12);
+    expect(questions.find((q) => q.key === 'q13')).toBeUndefined();
+  });
+
+  it('does not add Q13 when codeRabbitDispositionRequired is false (reviewed head)', () => {
+    const questions = getQuestions(false, { codeRabbitDispositionRequired: false });
+    expect(questions).toHaveLength(12);
+    expect(questions.find((q) => q.key === 'q13')).toBeUndefined();
+  });
+
+  it('adds Q13 when codeRabbitDispositionRequired is true', () => {
+    const questions = getQuestions(false, { codeRabbitDispositionRequired: true });
+    expect(questions).toHaveLength(13);
+    const q13 = questions.find((q) => q.key === 'q13');
+    expect(q13).toBeTruthy();
+    expect(q13.text).toContain('CodeRabbit Disposition Record');
+    expect(q13.text).toContain('WHERE the disposition is durably recorded');
+    expect(q13.focus).toContain('coderabbit-ops/SKILL.md');
+    // The docs-only carve-out boundary must be named in the focus so the
+    // question is never misread as a merge block for a legitimate skip.
+    expect(q13.focus).toContain('surface 4');
+    expect(q13.insufficient).toBeTruthy();
+    expect(q13.sufficient).toContain('disposition');
+  });
+
+  it('Q13 is the last question when present', () => {
+    const questions = getQuestions(false, { codeRabbitDispositionRequired: true });
+    expect(questions[questions.length - 1].key).toBe('q13');
   });
 });
 
@@ -1112,6 +1148,65 @@ describe('printAcceptanceCriteriaSection', () => {
   });
 });
 
+describe('printCodeRabbitHeadState', () => {
+  let logSpy;
+  let logs;
+
+  beforeEach(() => {
+    logs = [];
+    logSpy = spyOn(console, 'log').mockImplementation((...args) => {
+      logs.push(args.join(' '));
+    });
+  });
+
+  afterEach(() => {
+    logSpy.mockRestore();
+  });
+
+  it('prints nothing when codeRabbitHeadState is absent (older/test-injected autoDetection)', () => {
+    printCodeRabbitHeadState(undefined);
+    expect(logs).toHaveLength(0);
+  });
+
+  it('prints the one-line report for a reviewed head', () => {
+    printCodeRabbitHeadState({
+      state: 'reviewed',
+      headSha: 'abc123def456',
+      matchingReviewAt: '2026-10-01T00:00:00Z',
+      statusDescription: 'Review completed',
+      dispositionRecorded: false,
+    });
+    const output = logs.join('\n');
+    expect(output).toContain('CodeRabbit head review: reviewed (head abc123de, status "Review completed", disposition record in PR body: absent)');
+  });
+
+  it('prints "found" for dispositionRecorded true and truncates the head SHA to 8 characters', () => {
+    printCodeRabbitHeadState({
+      state: 'unreviewed',
+      headSha: '0123456789abcdef',
+      matchingReviewAt: null,
+      statusDescription: 'Review rate limited',
+      dispositionRecorded: true,
+    });
+    const output = logs.join('\n');
+    expect(output).toContain('head 01234567');
+    expect(output).not.toContain('head 0123456789abcdef');
+    expect(output).toContain('disposition record in PR body: found');
+  });
+
+  it('renders a null headSha as "unknown" and a null statusDescription as "(unknown)"', () => {
+    printCodeRabbitHeadState({
+      state: 'retrieval-failed',
+      headSha: null,
+      matchingReviewAt: null,
+      statusDescription: null,
+      dispositionRecorded: false,
+    });
+    const output = logs.join('\n');
+    expect(output).toContain('CodeRabbit head review: retrieval-failed (head unknown, status "(unknown)", disposition record in PR body: absent)');
+  });
+});
+
 // --- runWizard: D1 (self-answer) + D2 (CI status) exit-code polarity ---
 //
 // `autoDetection` is injected directly (the DI seam added alongside
@@ -1283,5 +1378,121 @@ describe('runWizard — D1 self-answer + D2 CI status', () => {
     const output = logs.join('\n');
     expect(output).toContain('Q3: Domain Invariants');
     expect(output).not.toContain('Q3: Acceptance Criteria');
+  });
+});
+
+// --- runWizard: CodeRabbit head-state precondition (Issue #1547) ---
+//
+// `autoDetection.codeRabbitHeadState` is injected the same way `ciStatus`
+// is above. Omitting the field entirely (as `baseAutoDetectionForWizard()`
+// does by default) must behave exactly like the pre-#1547 code: 12
+// questions, no extra exit-code gating — covered by the existing tests
+// above that already pass 12 answers. These tests cover the three states
+// the new field can hold.
+describe('runWizard — CodeRabbit head-state precondition', () => {
+  let logSpy;
+
+  beforeEach(() => {
+    logSpy = spyOn(console, 'log').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    logSpy.mockRestore();
+  });
+
+  it('reviewed head: no Q13 is added, 12 answers suffice, exitCode 0', async () => {
+    const answers = Array.from({ length: 12 }, (_, i) => `real answer ${i + 1}`);
+    const stdin = createMockStdin(answers);
+    const autoDetection = baseAutoDetectionForWizard({
+      codeRabbitHeadState: {
+        state: 'reviewed',
+        headSha: 'abc123def456',
+        matchingReviewAt: '2026-10-01T00:00:00Z',
+        statusDescription: 'Review completed',
+        dispositionRecorded: false,
+      },
+    });
+    const result = await runWizard('999', { stdin, autoDetection });
+    expect(result.exitCode).toBe(0);
+    expect(result.unanswered).toHaveLength(0);
+    expect(result.coderabbitRetrievalFailed).toBe(false);
+  });
+
+  it('unreviewed head, Q13 answered: exitCode 0 — loud-but-passing, like red-but-retrieved CI', async () => {
+    const answers = Array.from({ length: 13 }, (_, i) => `real answer ${i + 1}`);
+    const stdin = createMockStdin(answers);
+    const autoDetection = baseAutoDetectionForWizard({
+      codeRabbitHeadState: {
+        state: 'unreviewed',
+        headSha: 'abc123def456',
+        matchingReviewAt: null,
+        statusDescription: 'Review rate limited',
+        dispositionRecorded: true,
+      },
+    });
+    const result = await runWizard('999', { stdin, autoDetection });
+    expect(result.exitCode).toBe(0);
+    expect(result.unanswered).toHaveLength(0);
+    expect(result.coderabbitRetrievalFailed).toBe(false);
+  });
+
+  it('unreviewed head, Q13 left unanswered: exitCode 1, Q13 listed as unanswered', async () => {
+    // Only 12 answers for 13 questions (Q1-Q12 + Q13) — Q13 is left empty.
+    const answers = Array.from({ length: 12 }, (_, i) => `real answer ${i + 1}`);
+    const stdin = createMockStdin(answers);
+    const autoDetection = baseAutoDetectionForWizard({
+      codeRabbitHeadState: {
+        state: 'unreviewed',
+        headSha: 'abc123def456',
+        matchingReviewAt: null,
+        statusDescription: 'Review rate limited',
+        dispositionRecorded: false,
+      },
+    });
+    const result = await runWizard('999', { stdin, autoDetection });
+    expect(result.exitCode).toBe(1);
+    expect(result.unanswered).toEqual(['q13']);
+    expect(result.coderabbitRetrievalFailed).toBe(false);
+  });
+
+  // Polarity: 'retrieval-failed' gates the exit code UNCONDITIONALLY, even
+  // when Q13 (also added for this state) is fully answered — unlike
+  // 'unreviewed', there is no recorded decision to answer for when the
+  // `gh` calls themselves never succeeded.
+  it('retrieval-failed: exitCode 1 even with Q13 answered, coderabbitRetrievalFailed true', async () => {
+    const answers = Array.from({ length: 13 }, (_, i) => `real answer ${i + 1}`);
+    const stdin = createMockStdin(answers);
+    const autoDetection = baseAutoDetectionForWizard({
+      codeRabbitHeadState: {
+        state: 'retrieval-failed',
+        headSha: null,
+        matchingReviewAt: null,
+        statusDescription: null,
+        dispositionRecorded: false,
+      },
+    });
+    const result = await runWizard('999', { stdin, autoDetection });
+    expect(result.exitCode).toBe(1);
+    expect(result.unanswered).toHaveLength(0);
+    expect(result.coderabbitRetrievalFailed).toBe(true);
+  });
+
+  it('retrieval-failed: the FAILED reason line names the CodeRabbit state explicitly', async () => {
+    const logs = [];
+    logSpy.mockImplementation((...args) => logs.push(args.join(' ')));
+    const answers = Array.from({ length: 13 }, (_, i) => `real answer ${i + 1}`);
+    const stdin = createMockStdin(answers);
+    const autoDetection = baseAutoDetectionForWizard({
+      codeRabbitHeadState: {
+        state: 'retrieval-failed',
+        headSha: null,
+        matchingReviewAt: null,
+        statusDescription: null,
+        dispositionRecorded: false,
+      },
+    });
+    await runWizard('999', { stdin, autoDetection });
+    const output = logs.join('\n');
+    expect(output).toContain('CodeRabbit head state could not be retrieved');
   });
 });
