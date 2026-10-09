@@ -2738,6 +2738,45 @@ describe('EmbeddedAgentWorkerView', () => {
         },
       );
 
+      // Regression pin for #1876: EmbeddedAgentWorkerView's guard now routes
+      // through `ContextWindowTokensSchema` (`v.safeParse`) instead of its
+      // own `isPositiveInteger` check. The schema places no upper bound on
+      // the value -- a very large whole number must still clear the guard
+      // and reach the PATCH, exactly as it did before the swap.
+      it('sends a very large contextWindowTokens value -- the shared schema imposes no upper bound', async () => {
+        const fetchMock = mock(paramsFetchWithPatch());
+        globalThis.fetch = Object.assign(fetchMock, { preconnect: () => {} });
+        const user = userEvent.setup();
+        renderView({
+          sessionId: 's-params-5d',
+          workerId: 'w-params-5d',
+          embeddedAgentId: 'ea-params',
+          model: 'sonnet',
+          reasoningEffort: 'low',
+          contextWindowTokens: 64_000,
+          hasParameterOverride: false,
+        });
+
+        await user.click(screen.getByRole('button', { name: /Model and effort/ }));
+        const windowInput = await screen.findByPlaceholderText('e.g. 128000');
+        fireEvent.change(windowInput, { target: { value: '9999999999' } });
+
+        expect(screen.queryByText('Must be a positive integer')).toBeNull();
+        await user.click(screen.getByRole('button', { name: 'Apply' }));
+
+        await waitFor(() => {
+          const patchCall = fetchMock.mock.calls.find(
+            ([, init]) => (init as RequestInit | undefined)?.method === 'PATCH',
+          );
+          expect(patchCall).toBeDefined();
+          expect(JSON.parse(String((patchCall![1] as RequestInit).body))).toEqual({
+            model: 'sonnet',
+            contextWindowTokens: 9_999_999_999,
+            reasoningEffort: 'low',
+          });
+        });
+      });
+
       it('"Use agent default" sends exactly { model: null, reasoningEffort: null } -- no contextWindowTokens key', async () => {
         const fetchMock = mock(paramsFetchWithPatch());
         globalThis.fetch = Object.assign(fetchMock, { preconnect: () => {} });
