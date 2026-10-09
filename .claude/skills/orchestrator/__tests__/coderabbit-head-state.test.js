@@ -9,7 +9,7 @@ import { getCodeRabbitHeadState } from '../coderabbit-head-state.js';
  *
  * @param {{ pr?: string | null, reviews?: string | null, status?: string | null }} responses
  */
-function makeExecImpl({ pr = '{}', reviews = '[]', status = '{"statuses":[]}' } = {}) {
+function makeExecImpl({ pr = '{}', reviews = '[[]]', status = '{"statuses":[]}' } = {}) {
   return (cmd) => {
     if (cmd.includes('gh pr view')) return pr;
     if (cmd.includes('/reviews')) return reviews;
@@ -26,7 +26,7 @@ describe('getCodeRabbitHeadState', () => {
     const execImpl = makeExecImpl({
       pr: JSON.stringify({ headRefOid: HEAD, body: '' }),
       reviews: JSON.stringify([
-        { user: { login: 'coderabbitai[bot]' }, commit_id: HEAD, submitted_at: '2026-10-01T00:00:00Z' },
+        [{ user: { login: 'coderabbitai[bot]' }, commit_id: HEAD, submitted_at: '2026-10-01T00:00:00Z' }],
       ]),
       status: JSON.stringify({ statuses: [] }),
     });
@@ -36,6 +36,25 @@ describe('getCodeRabbitHeadState', () => {
     expect(result.matchingReviewAt).toBe('2026-10-01T00:00:00Z');
     expect(result.statusDescription).toBeNull();
     expect(result.dispositionRecorded).toBe(false);
+  });
+
+  // CodeRabbit finding (PR #1917): the reviews call must paginate. GitHub's
+  // default page size is 30 reviews, so on a PR with many review rounds the
+  // review matching the head can be on a later page. The stub here returns
+  // two pages (matching `gh api --paginate --slurp`'s array-of-arrays
+  // shape) with the matching review on page 2.
+  it('reviewed: the matching review is on the second page of a paginated reviews response', () => {
+    const execImpl = makeExecImpl({
+      pr: JSON.stringify({ headRefOid: HEAD, body: '' }),
+      reviews: JSON.stringify([
+        [{ user: { login: 'coderabbitai[bot]' }, commit_id: 'old-stale-sha', submitted_at: '2026-09-01T00:00:00Z' }],
+        [{ user: { login: 'coderabbitai[bot]' }, commit_id: HEAD, submitted_at: '2026-10-09T00:00:00Z' }],
+      ]),
+      status: JSON.stringify({ statuses: [] }),
+    });
+    const result = getCodeRabbitHeadState('1', { execImpl });
+    expect(result.state).toBe('reviewed');
+    expect(result.matchingReviewAt).toBe('2026-10-09T00:00:00Z');
   });
 
   // (b) no matching review but description "Review completed" -> reviewed.

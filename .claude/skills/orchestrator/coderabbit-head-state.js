@@ -60,19 +60,28 @@ export function getCodeRabbitHeadState(prNumber, { execImpl = exec } = {}) {
   // The bot's login is `coderabbitai[bot]` — an equality compare against
   // `coderabbitai` is the documented false-empty (SKILL.md "Two ways the
   // query itself lies to you"); `startsWith` is required.
-  const reviewsJson = execImpl(`gh api repos/{owner}/{repo}/pulls/${prNumber}/reviews`);
+  //
+  // `--paginate` is required: GitHub's default page size is 30 reviews, so
+  // on a PR with many review rounds the review matching the current head
+  // can be on a later page, silently dropped by an unpaginated call. Plain
+  // `--paginate` concatenates each page's JSON array one after another in
+  // the output, which `JSON.parse` cannot read; `--slurp` wraps the pages
+  // into one JSON array of arrays instead, so the result below is always
+  // an array of page-arrays (even a single page comes back as `[[...]]`).
+  const reviewsJson = execImpl(`gh api --paginate --slurp repos/{owner}/{repo}/pulls/${prNumber}/reviews`);
   if (!reviewsJson) {
     return makeResult({ state: 'retrieval-failed', headSha, dispositionRecorded });
   }
-  let reviews;
+  let reviewPages;
   try {
-    reviews = JSON.parse(reviewsJson);
+    reviewPages = JSON.parse(reviewsJson);
   } catch {
     return makeResult({ state: 'retrieval-failed', headSha, dispositionRecorded });
   }
-  if (!Array.isArray(reviews)) {
+  if (!Array.isArray(reviewPages)) {
     return makeResult({ state: 'retrieval-failed', headSha, dispositionRecorded });
   }
+  const reviews = reviewPages.flat();
 
   // Surface 4's underlying data: the `CodeRabbit` commit-status entry for
   // this exact head SHA, read for its `description`.
