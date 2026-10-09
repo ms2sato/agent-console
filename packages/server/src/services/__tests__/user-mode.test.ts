@@ -15,11 +15,15 @@
  */
 import { describe, it, expect, beforeEach, afterEach, spyOn } from 'bun:test';
 import * as os from 'os';
+import * as fs from 'fs/promises';
+import type { Stats } from 'fs';
+import { runAsUser } from '../privilege-elevation.js';
 import type { Kysely } from 'kysely';
 import { createDatabaseForTest } from '../../database/connection.js';
 import { SqliteUserRepository } from '../../repositories/sqlite-user-repository.js';
-import { SingleUserMode, MultiUserMode } from '../user-mode.js';
+import { SingleUserMode, MultiUserMode, assertSpawnCwdExists, SpawnCwdMissingError } from '../user-mode.js';
 import type { TerminalPtySpawnRequest, AgentPtySpawnRequest } from '../user-mode.js';
+import type { RunAsUserResult } from '../privilege-elevation.js';
 import { getUnsetEnvPrefix } from '../env-filter.js';
 import { buildAgentConsoleEnv } from '../agent-console-env.js';
 import type { PtyProvider, PtySpawnOptions, PtyInstance } from '../../lib/pty-provider.js';
@@ -628,6 +632,181 @@ describe('MultiUserMode', () => {
       } finally {
         spawnSpy.mockRestore();
       }
+    });
+  });
+});
+
+describe('assertSpawnCwdExists', () => {
+  // This is a plain exported async function, not a class -- no need for
+  // SingleUserMode/MultiUserMode construction. Each test supplies its own
+  // fake `stat` / `runAsUser` / `shouldElevateForUser` via the `deps` param.
+
+  function makeEnoent(): NodeJS.ErrnoException {
+    const err = new Error('ENOENT: no such file or directory') as NodeJS.ErrnoException;
+    err.code = 'ENOENT';
+    return err;
+  }
+
+  function makeEacces(): NodeJS.ErrnoException {
+    const err = new Error('EACCES: permission denied') as NodeJS.ErrnoException;
+    err.code = 'EACCES';
+    return err;
+  }
+
+  function makeStatsFor(isDirectory: boolean): Stats {
+    return { isDirectory: () => isDirectory } as Stats;
+  }
+
+  describe('non-elevated (shouldElevateForUser returns false)', () => {
+    const shouldElevateForUserFalse = () => false;
+
+    it('rejects with SpawnCwdMissingError when the directory is absent (ENOENT)', async () => {
+      const fakeStat: typeof fs.stat = (async () => {
+        throw makeEnoent();
+      }) as typeof fs.stat;
+      const fakeRunAsUser: typeof runAsUser = async () => {
+        throw new Error('runAsUser should not be called on the non-elevated branch');
+      };
+
+      const promise = assertSpawnCwdExists('/does/not/exist', 'alice', {
+        stat: fakeStat,
+        runAsUser: fakeRunAsUser,
+        shouldElevateForUser: shouldElevateForUserFalse,
+      });
+
+      await expect(promise).rejects.toBeInstanceOf(SpawnCwdMissingError);
+      try {
+        await promise;
+        throw new Error('expected rejection');
+      } catch (err) {
+        expect(err).toBeInstanceOf(SpawnCwdMissingError);
+        const typedErr = err as SpawnCwdMissingError;
+        expect(typedErr.cwd).toBe('/does/not/exist');
+        expect(typedErr.username).toBe('alice');
+        expect(typedErr.message).toContain('/does/not/exist');
+      }
+    });
+
+    it('resolves when the directory is present', async () => {
+      const fakeStat: typeof fs.stat = (async () => makeStatsFor(true)) as unknown as typeof fs.stat;
+      const fakeRunAsUser: typeof runAsUser = async () => {
+        throw new Error('runAsUser should not be called on the non-elevated branch');
+      };
+
+      await expect(
+        assertSpawnCwdExists('/some/real/dir', 'alice', {
+          stat: fakeStat,
+          runAsUser: fakeRunAsUser,
+          shouldElevateForUser: shouldElevateForUserFalse,
+        }),
+      ).resolves.toBeUndefined();
+    });
+
+    it('rejects with SpawnCwdMissingError when the path exists but is a file, not a directory', async () => {
+      const fakeStat: typeof fs.stat = (async () => makeStatsFor(false)) as unknown as typeof fs.stat;
+      const fakeRunAsUser: typeof runAsUser = async () => {
+        throw new Error('runAsUser should not be called on the non-elevated branch');
+      };
+
+      await expect(
+        assertSpawnCwdExists('/some/file.txt', 'alice', {
+          stat: fakeStat,
+          runAsUser: fakeRunAsUser,
+          shouldElevateForUser: shouldElevateForUserFalse,
+        }),
+      ).rejects.toBeInstanceOf(SpawnCwdMissingError);
+    });
+
+    it('rethrows the ORIGINAL error unchanged on a non-ENOENT stat failure (e.g. EACCES)', async () => {
+      const originalError = makeEacces();
+      const fakeStat: typeof fs.stat = (async () => {
+        throw originalError;
+      }) as typeof fs.stat;
+      const fakeRunAsUser: typeof runAsUser = async () => {
+        throw new Error('runAsUser should not be called on the non-elevated branch');
+      };
+
+      const promise = assertSpawnCwdExists('/no/permission', 'alice', {
+        stat: fakeStat,
+        runAsUser: fakeRunAsUser,
+        shouldElevateForUser: shouldElevateForUserFalse,
+      });
+
+      await expect(promise).rejects.toBe(originalError);
+    });
+  });
+
+  describe('elevated (shouldElevateForUser returns true)', () => {
+    const shouldElevateForUserTrue = () => true;
+
+    it('resolves when the elevated `test -d` check exits 0', async () => {
+      const fakeStat: typeof fs.stat = (async () => {
+        throw new Error('stat should not be called on the elevated branch');
+      }) as typeof fs.stat;
+      const fakeRunAsUser: typeof runAsUser = async (): Promise<RunAsUserResult> => ({
+        stdout: '',
+        stderr: '',
+        exitCode: 0,
+        timedOut: false,
+      });
+
+      await expect(
+        assertSpawnCwdExists('/home/alice/project', 'alice', {
+          stat: fakeStat,
+          runAsUser: fakeRunAsUser,
+          shouldElevateForUser: shouldElevateForUserTrue,
+        }),
+      ).resolves.toBeUndefined();
+    });
+
+    it('rejects with SpawnCwdMissingError when the elevated `test -d` check exits non-zero', async () => {
+      const fakeStat: typeof fs.stat = (async () => {
+        throw new Error('stat should not be called on the elevated branch');
+      }) as typeof fs.stat;
+      // A timed-out runAsUser normalizes to exit code 137 (128 + SIGKILL);
+      // either shape (a clean non-zero exit, or a timeout) must be treated
+      // identically by the caller -- both mean "directory check failed".
+      const fakeRunAsUser: typeof runAsUser = async (): Promise<RunAsUserResult> => ({
+        stdout: '',
+        stderr: '',
+        exitCode: 137,
+        timedOut: true,
+      });
+
+      const promise = assertSpawnCwdExists('/home/alice/missing', 'alice', {
+        stat: fakeStat,
+        runAsUser: fakeRunAsUser,
+        shouldElevateForUser: shouldElevateForUserTrue,
+      });
+
+      await expect(promise).rejects.toBeInstanceOf(SpawnCwdMissingError);
+      try {
+        await promise;
+        throw new Error('expected rejection');
+      } catch (err) {
+        expect(err).toBeInstanceOf(SpawnCwdMissingError);
+        const typedErr = err as SpawnCwdMissingError;
+        expect(typedErr.cwd).toBe('/home/alice/missing');
+        expect(typedErr.username).toBe('alice');
+      }
+    });
+
+    it('propagates the ORIGINAL rejection unchanged when runAsUser itself throws', async () => {
+      const originalError = new Error('sudo invocation failed unexpectedly');
+      const fakeStat: typeof fs.stat = (async () => {
+        throw new Error('stat should not be called on the elevated branch');
+      }) as typeof fs.stat;
+      const fakeRunAsUser: typeof runAsUser = async () => {
+        throw originalError;
+      };
+
+      const promise = assertSpawnCwdExists('/home/alice/project', 'alice', {
+        stat: fakeStat,
+        runAsUser: fakeRunAsUser,
+        shouldElevateForUser: shouldElevateForUserTrue,
+      });
+
+      await expect(promise).rejects.toBe(originalError);
     });
   });
 });

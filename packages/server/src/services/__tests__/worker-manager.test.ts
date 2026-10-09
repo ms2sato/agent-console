@@ -23,7 +23,8 @@ import { initializeDatabase, closeDatabase, getDatabase } from '../../database/c
 import { AgentManager } from '../agent-manager.js';
 import { SqliteAgentRepository } from '../../repositories/sqlite-agent-repository.js';
 import { WorkerManager } from '../worker-manager.js';
-import { SingleUserMode } from '../user-mode.js';
+import { SingleUserMode, SpawnCwdMissingError } from '../user-mode.js';
+import type { assertSpawnCwdExists } from '../user-mode.js';
 import type {
   InternalAgentWorker,
   InternalTerminalWorker,
@@ -50,7 +51,14 @@ describe('WorkerManager', () => {
     await closeDatabase();
 
     resetGitMocks();
-    setupMemfs({ [`${TEST_CONFIG_DIR}/.keep`]: '' });
+    // '/test/project' must exist on the memfs volume (Issue #1892): the real
+    // assertSpawnCwdExists -- the default for WorkerManager's assertSpawnCwdFn
+    // seam -- now runs before every PTY spawn and stats this exact path, since
+    // it is defaultAgentActivationParams' / defaultTerminalActivationParams'
+    // locationPath. Without this directory entry, every activation test in
+    // this file (not just the new Issue #1892 tests) would reject with
+    // SpawnCwdMissingError.
+    setupMemfs({ [`${TEST_CONFIG_DIR}/.keep`]: '', '/test/project': null });
     process.env.AGENT_CONSOLE_HOME = TEST_CONFIG_DIR;
 
     await initializeDatabase(':memory:');
@@ -990,6 +998,144 @@ describe('WorkerManager', () => {
       expect(worker.pty).toBeNull();
       expect(onExitFired).toBe(true);
     });
+  });
+
+  describe('cwd existence check (Issue #1892)', () => {
+    // Bun's `Bun.spawn` mis-attributes a missing cwd to the exec target
+    // itself (`ENOENT ... posix_spawn 'sh'`). `assertSpawnCwdFn` is the test
+    // seam for the pre-spawn check that replaces that misleading error with
+    // a correctly-diagnosed `SpawnCwdMissingError`. These tests inject a
+    // FAKE `assertSpawnCwdFn` that always rejects -- the real
+    // `assertSpawnCwdExists` implementation itself is covered by
+    // `user-mode.test.ts`'s own `describe('assertSpawnCwdExists', ...)`.
+
+    function buildManagerWithCwdCheck(
+      assertSpawnCwdFn: typeof assertSpawnCwdExists,
+      runAsUserImpl?: typeof runAsUser,
+    ): { wm: WorkerManager; outputFileManager: WorkerOutputFileManager } {
+      const userMode = new SingleUserMode(ptyFactory.provider, {
+        id: 'test-user-id',
+        username: 'testuser',
+        homeDir: '/home/testuser',
+      });
+      const outputFileManager = new WorkerOutputFileManager();
+      const wm = new WorkerManager(
+        userMode,
+        agentManager,
+        outputFileManager,
+        undefined,
+        undefined,
+        runAsUserImpl,
+        undefined,
+        undefined,
+        undefined,
+        assertSpawnCwdFn,
+      );
+      return { wm, outputFileManager };
+    }
+
+    const rejectingAssertSpawnCwdFn: typeof assertSpawnCwdExists = async (cwd, username) => {
+      throw new SpawnCwdMissingError(cwd, username);
+    };
+
+    /** Always-succeeds fake for the prompt-file write's `runAsUser` DI. */
+    const fakeSuccessRunAsUser: typeof runAsUser = async () => ({
+      stdout: '',
+      stderr: '',
+      exitCode: 0,
+      timedOut: false,
+    });
+
+    it('agent activation: rejects with SpawnCwdMissingError, writes the diagnostic to the worker output stream AND file, and still runs prompt-file cleanup via the existing catch block', async () => {
+      delete process.env.AUTH_MODE;
+      const { wm, outputFileManager } = buildManagerWithCwdCheck(rejectingAssertSpawnCwdFn, fakeSuccessRunAsUser);
+
+      const worker = wm.initializeAgentWorker({
+        id: 'cwd-missing-agent-1',
+        name: 'Agent',
+        createdAt: new Date().toISOString(),
+        agentId: CLAUDE_CODE_AGENT_ID,
+      });
+
+      const spawnCallsBefore = ptyFactory.spawn.mock.calls.length;
+      const sessionId = 'cwd-missing-agent-session';
+
+      await expect(
+        wm.activateAgentWorkerPty(worker, {
+          ...defaultAgentActivationParams,
+          sessionId,
+          username: 'testuser',
+          // Non-empty initialPrompt against the builtin agent's
+          // {{prompt}}-bearing template: triggers the prompt-file write
+          // BEFORE the cwd check runs, so cleanup (deletePromptFile) has
+          // something real to null out -- proving teardown ran, not just
+          // that the field happened to start at null.
+          initialPrompt: 'hello world',
+        }),
+      ).rejects.toBeInstanceOf(SpawnCwdMissingError);
+
+      // worker.pty was never assigned -- the throw happens before spawnPty.
+      expect(worker.pty).toBeNull();
+      // Existing catch-block cleanup (deletePromptFile) still ran.
+      expect(worker.promptFile).toBeNull();
+      // No PTY was ever spawned for this activation attempt.
+      expect(ptyFactory.spawn.mock.calls.length).toBe(spawnCallsBefore);
+
+      expect(worker.outputBuffer).toContain('[internal:agent-spawn-failed]');
+      expect(worker.outputBuffer).toContain('exitCode=not-spawned');
+      expect(worker.outputBuffer).toContain('/test/project');
+
+      // The diagnostic was forced to disk (forceFlush), not just buffered
+      // in memory -- mirrors the exit-127 T2 test's disk-read style.
+      const filePath = defaultResolver.getOutputFilePath(sessionId, worker.id);
+      const onDisk = await fs.readFile(filePath, 'utf-8');
+      expect(onDisk).toContain('[internal:agent-spawn-failed]');
+      expect(onDisk).toContain('exitCode=not-spawned');
+
+      const history = await outputFileManager.readHistoryWithOffset(sessionId, worker.id, defaultResolver);
+      expect(history.data).toContain('[internal:agent-spawn-failed]');
+    });
+
+    it('terminal activation: rejects with a typed error naming the missing directory, with no diagnostic writer (no try/catch on this path)', async () => {
+      delete process.env.AUTH_MODE;
+      const { wm } = buildManagerWithCwdCheck(rejectingAssertSpawnCwdFn);
+
+      const worker = wm.initializeTerminalWorker({
+        id: 'cwd-missing-terminal-1',
+        name: 'Terminal',
+        createdAt: new Date().toISOString(),
+      });
+
+      const spawnCallsBefore = ptyFactory.spawn.mock.calls.length;
+
+      await expect(
+        wm.activateTerminalWorkerPty(worker, {
+          ...defaultTerminalActivationParams,
+          sessionId: 'cwd-missing-terminal-session',
+          username: 'testuser',
+        }),
+      ).rejects.toThrow(/working directory '.*' does not exist/);
+
+      expect(worker.pty).toBeNull();
+      expect(ptyFactory.spawn.mock.calls.length).toBe(spawnCallsBefore);
+      // activateTerminalWorkerPty has no try/catch and no diagnostic writer
+      // on this path (see its own JSDoc) -- nothing was ever appended to
+      // the worker's output buffer.
+      expect(worker.outputBuffer).toBe('');
+    });
+
+    // Polarity / existing-suite-compatibility note: the suite's ordinary
+    // activateAgentWorkerPty / activateTerminalWorkerPty tests above (using
+    // the outer `workerManager`, which defaults `assertSpawnCwdFn` to the
+    // REAL `assertSpawnCwdExists`) continue to pass unmodified because the
+    // outer beforeEach's `setupMemfs` call now seeds '/test/project' --
+    // `defaultAgentActivationParams` / `defaultTerminalActivationParams`'
+    // locationPath -- as an existing directory on the memfs volume, and
+    // `shouldElevateForUser('testuser')` is false (AUTH_MODE is not
+    // 'multi-user' there), so the real function's non-elevated `fs.stat`
+    // branch resolves without throwing. Verified by running this whole file
+    // locally both before and after adding the '/test/project' memfs entry
+    // (see the PR's own report for the before/after counts).
   });
 
   describe('resize', () => {
@@ -2470,6 +2616,7 @@ describe('WorkerManager', () => {
       mcpTokenRegistry?: FakeMcpTokenRegistry;
       lookupOsUserFn?: LookupOsUserFn;
       runAsUserImpl?: typeof runAsUser;
+      assertSpawnCwdFn?: typeof assertSpawnCwdExists;
     }): WorkerManager {
       const userMode = new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' });
       return new WorkerManager(
@@ -2479,6 +2626,17 @@ describe('WorkerManager', () => {
         seams.mcpTokenRegistry,
         seams.lookupOsUserFn,
         seams.runAsUserImpl,
+        undefined,
+        undefined,
+        undefined,
+        // Issue #1892: these tests set AUTH_MODE=multi-user with a
+        // username ('alice') that is not the real server-process user, so
+        // the real assertSpawnCwdExists would take the ELEVATED branch and
+        // shell out to a real `sudo -u alice test -d ...` -- not just
+        // unsafe in a unit test, but orthogonal to what this describe block
+        // actually tests (MCP token lifecycle). Default to a no-op stub
+        // unless a test explicitly injects its own.
+        seams.assertSpawnCwdFn ?? (async () => {}),
       );
     }
 
@@ -2900,6 +3058,7 @@ describe('WorkerManager', () => {
       lookupOsUserFn?: LookupOsUserFn;
       runAsUserImpl?: typeof runAsUser;
       mcpTokenRegistry?: { mint: (identity: { sessionId: string; workerId: string; userId: string }) => string; revokeByWorker: (workerId: string) => void };
+      assertSpawnCwdFn?: typeof assertSpawnCwdExists;
     }): WorkerManager {
       const userMode = new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' });
       return new WorkerManager(
@@ -2909,6 +3068,15 @@ describe('WorkerManager', () => {
         seams.mcpTokenRegistry,
         seams.lookupOsUserFn,
         seams.runAsUserImpl,
+        undefined,
+        undefined,
+        undefined,
+        // Issue #1892: same rationale as the MCP token lifecycle describe
+        // block's helper of the same shape -- "multi-user elevated" tests
+        // here use username 'alice' under AUTH_MODE=multi-user, which would
+        // otherwise drive the real assertSpawnCwdExists into a real `sudo`
+        // shell-out. Default to a no-op stub unless a test injects its own.
+        seams.assertSpawnCwdFn ?? (async () => {}),
       );
     }
 

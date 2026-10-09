@@ -20,7 +20,8 @@ import type { AuthUser } from '@agent-console/shared';
 import type { PtyProvider, PtyInstance } from '../lib/pty-provider.js';
 import type { UserRepository } from '../repositories/user-repository.js';
 import { getCleanChildProcessEnv, getUnsetEnvPrefix } from './env-filter.js';
-import { buildElevationArgs } from './elevation-args.js';
+import { buildElevationArgs, shellEscape } from './elevation-args.js';
+import { runAsUser, shouldElevateForUser } from './privilege-elevation.js';
 import { buildAgentConsoleEnv, type AgentConsoleContext } from './agent-console-env.js';
 import { buildDirectSentinelShellCommand, buildElevatedSentinelCommand } from './sentinel-spawn-command.js';
 import { lookupOsUser } from './os-user-lookup.js';
@@ -42,6 +43,65 @@ const logger = createLogger('user-mode');
  * the target user and therefore succeeds even for a 0700 home.
  */
 const SUDO_NEUTRAL_CWD = '/';
+
+/**
+ * Thrown by `assertSpawnCwdExists` when a PTY spawn's target working
+ * directory does not exist. Bun's `Bun.spawn` (the underlying primitive
+ * both `bunPtyProvider` and `BunTerminalPtyAdapter` use) mis-attributes a
+ * missing cwd to the exec target itself -- the resulting error reads
+ * `ENOENT: no such file or directory, posix_spawn 'sh'`, which names the
+ * wrong thing and gives the operator no indication the real problem is a
+ * missing directory. Callers must check for this BEFORE calling `spawnPty`
+ * so the operator sees an accurate diagnosis instead.
+ */
+export class SpawnCwdMissingError extends Error {
+  constructor(readonly cwd: string, readonly username: string) {
+    super(`working directory '${cwd}' does not exist (it may have been removed after the session was created)`);
+    this.name = 'SpawnCwdMissingError';
+  }
+}
+
+/**
+ * Verify that `cwd` exists (and is a directory) for `username`, throwing
+ * `SpawnCwdMissingError` if not. Must be called before `spawnPty` so a
+ * removed session directory fails with an accurate diagnosis instead of
+ * Bun's mis-attributed `posix_spawn 'sh'` ENOENT.
+ *
+ * The elevated branch shells out (`test -d`) as the target user, since the
+ * server process may lack traverse permission into a 0700 home directory
+ * the non-elevated `fs.stat` branch would otherwise EACCES on.
+ */
+export async function assertSpawnCwdExists(
+  cwd: string,
+  username: string,
+  deps: {
+    stat: typeof fs.stat;
+    runAsUser: typeof runAsUser;
+    shouldElevateForUser: typeof shouldElevateForUser;
+  } = { stat: fs.stat, runAsUser, shouldElevateForUser },
+): Promise<void> {
+  if (deps.shouldElevateForUser(username)) {
+    const result = await deps.runAsUser({ username, command: `test -d ${shellEscape(cwd)}`, timeoutMs: 5000 });
+    if (result.exitCode !== 0) {
+      throw new SpawnCwdMissingError(cwd, username);
+    }
+    return;
+  }
+  let stats;
+  try {
+    stats = await deps.stat(cwd);
+  } catch (err) {
+    // Any OTHER stat error (EACCES, timeout, etc.) is rethrown as-is, not
+    // converted -- the typed error means exactly "absent", nothing else.
+    if (err instanceof Error && 'code' in err && (err as NodeJS.ErrnoException).code === 'ENOENT') {
+      throw new SpawnCwdMissingError(cwd, username);
+    }
+    throw err;
+  }
+  if (!stats.isDirectory()) {
+    throw new SpawnCwdMissingError(cwd, username);
+  }
+}
 
 // ========== PtySpawnRequest (Discriminated Union) ==========
 
