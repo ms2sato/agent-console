@@ -15,6 +15,11 @@
  * (same directory), which genuinely needs a live `claude` grandchild and is
  * billable -- this script needs neither.
  *
+ * Since #1871 this is no longer a manual-only gate: both modes also run in
+ * CI, via `scripts/smoke/__tests__/check-restore-failure-declaration.run.test.ts`
+ * under `test:scripts` -- the two-second cost that made this script FREE AND
+ * DETERMINISTIC in the first place is exactly what makes a CI wrapper cheap.
+ *
  * WHAT IS REAL HERE:
  *   - a real `AppContext` (real SQLite under a disposable AGENT_CONSOLE_HOME);
  *   - real DB rows for the session, the two `EmbeddedAgentDefinition`s, and
@@ -339,7 +344,11 @@ async function main(): Promise<void> {
       resolveSpawnUsername: async () => os.userInfo().username,
       mcpTokenRegistry: ctx.mcpTokenRegistry,
       workerOutputFileManager: wofm,
-      getMcpBaseUrl: () => '',
+      // The service parses this at activation (`embedded-agent-worker-service.ts`
+      // ~L1298, `new URL(this.deps.getMcpBaseUrl()).origin`, since #1694) to
+      // build the worker's AGENT_CONSOLE_BASE_URL; the fake subprocess never
+      // dials it, so any parseable URL is correct here.
+      getMcpBaseUrl: () => 'http://127.0.0.1:1/mcp',
       spawnAsUserFn: spawnAsUserFn as never,
       entryPath: 'unused-entry-path-fake-spawn-never-execs-it',
       getGlobalActivityCallback: () => undefined,
