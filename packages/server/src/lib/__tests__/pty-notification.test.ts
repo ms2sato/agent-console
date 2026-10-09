@@ -1,11 +1,43 @@
 import { describe, expect, it, jest, mock, setSystemTime, spyOn } from 'bun:test';
 import {
   formatFieldValue,
+  stripControlChars,
   writePtyNotification,
   buildPtyNotificationText,
   buildReplyInstructions,
   extractNotificationSummary,
 } from '../pty-notification.js';
+
+describe('stripControlChars', () => {
+  it('strips a C0-range byte (\\x01)', () => {
+    expect(stripControlChars('hello\x01world')).toBe('helloworld');
+  });
+
+  it('strips a C0-range byte from the \\x0e-\\x1f sub-range (\\x0e)', () => {
+    expect(stripControlChars('hello\x0eworld')).toBe('helloworld');
+  });
+
+  it('strips DEL (\\x7f)', () => {
+    expect(stripControlChars('hello\x7fworld')).toBe('helloworld');
+  });
+
+  it('strips a C1-range byte (\\x9b)', () => {
+    expect(stripControlChars('hello\x9bworld')).toBe('helloworld');
+  });
+
+  it('preserves tab, newline, and carriage return', () => {
+    expect(stripControlChars('a\tb\nc\rd')).toBe('a\tb\nc\rd');
+  });
+
+  it('preserves ordinary text unchanged', () => {
+    expect(stripControlChars('hello world 123')).toBe('hello world 123');
+  });
+
+  it('agrees with formatFieldValue\'s strip step: stripping first then formatting equals formatting directly', () => {
+    const fixture = 'a\x01b\x0ec\x7fd\x9be';
+    expect(formatFieldValue(fixture)).toBe(formatFieldValue(stripControlChars(fixture)));
+  });
+});
 
 describe('formatFieldValue', () => {
   it('returns simple value as-is', () => {

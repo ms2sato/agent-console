@@ -1940,6 +1940,42 @@ describe('MCP Server Tools', () => {
           `Message from session quick session (${senderSession.id.slice(0, 8)})`,
         );
       });
+
+      // Issue #1885: sanitizeLabelCandidate now routes through the shared
+      // stripControlChars export from lib/pty-notification.ts rather than a
+      // local copy. This byte is from the Unicode C1 range (\x9b, the 8-bit
+      // CSI), a range the pre-#1885 local copy also stripped -- added to
+      // exercise the shared helper end-to-end through this surface without
+      // editing any of the #1358 tests above.
+      it('strips a C1-range control character out of a titleless worktree sender\'s branch name', async () => {
+        await registerTestRepo();
+        const session = await sessionManager.createSession({
+          type: 'quick',
+          locationPath: '/test/path',
+          agentId: 'claude-code',
+        });
+        const senderSession = await sessionManager.createSession({
+          type: 'worktree',
+          locationPath: '/test/sender-worktree',
+          repositoryId: 'repo-1',
+          worktreeId: 'feature\x9b-branch',
+          agentId: 'claude-code',
+        });
+
+        const mockPty = ptyFactory.instances[0];
+        expect(mockPty).toBeDefined();
+
+        await callTool(app, mcpSessionId, 'send_session_message', {
+          toSessionId: session.id,
+          content: 'done',
+          fromSessionId: senderSession.id,
+        }, nextId++);
+
+        const allWritten = mockPty.writtenData.join('');
+        expect(allWritten).toContain(
+          `Message from session feature-branch (${senderSession.id.slice(0, 8)})`,
+        );
+      });
     });
 
     it('should split notification text and Enter keystroke into separate writes with delay', async () => {
