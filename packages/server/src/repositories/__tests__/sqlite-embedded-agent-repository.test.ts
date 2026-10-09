@@ -431,4 +431,23 @@ describe('SqliteEmbeddedAgentRepository', () => {
       expect(await repository.findById('keep')).not.toBeNull();
     });
   });
+
+  describe('mutable column round-trips on a second persist (Issue #1339)', () => {
+    it('writes provider_model on the UPDATE branch, not just the INSERT branch', async () => {
+      const def = buildDefinition({ id: 'def-1339', provider: { baseUrl: 'http://x', model: 'model-a' } });
+      if (def.engine !== 'openai-api') {
+        throw new Error('expected openai-api engine');
+      }
+      await repository.save(def);
+
+      await repository.save({ ...def, provider: { ...def.provider, model: 'model-b' } });
+
+      const found = await repository.findById('def-1339');
+      if (found?.engine === 'openai-api') {
+        expect(found.provider.model).toBe('model-b');
+      } else {
+        throw new Error('expected openai-api engine');
+      }
+    });
+  });
 });

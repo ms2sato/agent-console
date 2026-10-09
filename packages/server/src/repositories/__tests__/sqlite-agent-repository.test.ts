@@ -408,4 +408,16 @@ describe('SqliteAgentRepository', () => {
       expect(found?.activityPatterns?.askingPatterns?.length).toBe(5);
     });
   });
+
+  describe('mutable column round-trips on a second persist (Issue #1339)', () => {
+    it('writes description on the UPDATE branch starting from undefined, not just the INSERT branch', async () => {
+      const agent = buildAgentDefinition({ id: 'agent-1339' });
+      await repository.save(agent);
+
+      await repository.save({ ...agent, description: 'Updated description' });
+
+      const found = await repository.findById('agent-1339');
+      expect(found?.description).toBe('Updated description');
+    });
+  });
 });

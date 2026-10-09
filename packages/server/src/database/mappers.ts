@@ -2,7 +2,7 @@ import type { AgentDefinition, Repository, AgentActivityPatterns, MessageTemplat
 import type { ArtifactRecord } from '../repositories/artifact-repository.js';
 import type { BookmarkRecord } from '../repositories/bookmark-repository.js';
 import { computeCapabilities } from '@agent-console/shared';
-import type { NewSession, NewWorker, Session, Worker, NewRepository, RepositoryRow, NewAgent, AgentRow, MessageTemplateRow, NewEmbeddedAgent, EmbeddedAgentRow, ArtifactRow, BookmarkRow } from './schema.js';
+import type { Session, Worker, NewRepository, RepositoryRow, AgentRow, MessageTemplateRow, EmbeddedAgentRow, ArtifactRow, BookmarkRow, SessionRowFull, WorkerRowFull, AgentRowFull, EmbeddedAgentRowFull, RepositoryRowFull } from './schema.js';
 import type {
   PersistedSession,
   PersistedWorker,
@@ -55,7 +55,7 @@ export class DataIntegrityError extends Error {
  * @param session - The session to convert
  * @returns Database row ready for insertion
  */
-export function toSessionRow(session: PersistedSession): NewSession {
+export function toSessionRow(session: PersistedSession): SessionRowFull {
   // Validate (scope, slug) combination at the boundary. Legacy rows
   // (dataScope undefined) are accepted as-is; orphan detection runs
   // separately at startup.
@@ -130,7 +130,7 @@ export function toSessionRow(session: PersistedSession): NewSession {
  * @param sessionId - The session ID this worker belongs to
  * @returns Database row ready for insertion
  */
-export function toWorkerRow(worker: PersistedWorker, sessionId: string): NewWorker {
+export function toWorkerRow(worker: PersistedWorker, sessionId: string): WorkerRowFull {
   const now = new Date().toISOString();
   const base = {
     id: worker.id,
@@ -149,8 +149,19 @@ export function toWorkerRow(worker: PersistedWorker, sessionId: string): NewWork
       base_commit: null,
       embedded_agent_id: null,
       deliver_initial_prompt_on_activation: worker.deliverInitialPromptOnActivation ? 1 : 0,
+      // The five columns below are meaningful only for 'embedded-agent'
+      // rows. Every branch must still write an explicit reset value so the
+      // row never omits a column -- conflictUpdateSet's totality contract
+      // (see conflict-update-set.ts) derives the UPDATE set from exactly
+      // the keys present on this row, so an omitted key here would mean a
+      // silently-skipped column on every future upsert, not just a type gap.
+      // auto_compaction's reset value is 1 (ON), matching the schema's
+      // NOT NULL DEFAULT 1; the rest reset to null.
+      sdk_session_id: null,
+      auto_compaction: 1,
       model: worker.model,
       reasoning_effort: worker.reasoningEffort,
+      context_window_tokens: null,
     };
   } else if (worker.type === 'terminal') {
     return {
@@ -160,6 +171,11 @@ export function toWorkerRow(worker: PersistedWorker, sessionId: string): NewWork
       base_commit: null,
       embedded_agent_id: null,
       deliver_initial_prompt_on_activation: null,
+      sdk_session_id: null,
+      auto_compaction: 1,
+      model: null,
+      reasoning_effort: null,
+      context_window_tokens: null,
     };
   } else if (worker.type === 'git-diff') {
     return {
@@ -169,6 +185,11 @@ export function toWorkerRow(worker: PersistedWorker, sessionId: string): NewWork
       base_commit: worker.baseCommit,
       embedded_agent_id: null,
       deliver_initial_prompt_on_activation: null,
+      sdk_session_id: null,
+      auto_compaction: 1,
+      model: null,
+      reasoning_effort: null,
+      context_window_tokens: null,
     };
   } else if (worker.type === 'embedded-agent') {
     return {
@@ -463,6 +484,42 @@ export function toRepositoryRow(repository: PersistedRepository): NewRepository 
 }
 
 /**
+ * Convert a `Repository` domain object to a database row for insertion, for
+ * `SqliteRepositoryRepository.save()`. Distinct from `toRepositoryRow` above,
+ * which migrates the legacy `PersistedRepository` JSON shape -- `Repository`
+ * additionally carries `orchestratorSessionIds` / `sharedAccountUsername` /
+ * `clonedSourceRepoPath`, none of which are columns on this table (the first
+ * two are join-derived at read time, the third is never persisted).
+ *
+ * @param repository - The repository to convert
+ * @returns Database row ready for insertion
+ */
+export function toRepositoryInsertRow(repository: Repository): RepositoryRowFull {
+  return {
+    id: repository.id,
+    name: repository.name,
+    path: repository.path,
+    created_at: repository.createdAt,
+    updated_at: new Date().toISOString(),
+    setup_command: repository.setupCommand ?? null,
+    cleanup_command: repository.cleanupCommand ?? null,
+    env_vars: repository.envVars ?? null,
+    description: repository.description ?? null,
+    default_agent_id: repository.defaultAgentId ?? null,
+    issue_trigger_labels: repository.issueTriggerLabels ?? null,
+    // `shared_account_user_id` is intentionally NOT derived from
+    // `repository.sharedAccountUsername` here -- that field is a resolved
+    // username (read-only, join-derived), not the raw id this column
+    // stores. A fresh insert always starts unbound; bindings are written
+    // only through `RepositoryRepository.update`. It is also in the
+    // immutable-columns list passed to `conflictUpdateSet` at the
+    // `save()` call site, so this value is never written back on conflict
+    // either.
+    shared_account_user_id: null,
+  };
+}
+
+/**
  * Convert a database repository row to a Repository domain object.
  *
  * @param row - The database repository row
@@ -511,7 +568,7 @@ export function toRepository(
  * @param agent - The agent to convert
  * @returns Database row ready for insertion
  */
-export function toAgentRow(agent: AgentDefinition): NewAgent {
+export function toAgentRow(agent: AgentDefinition): AgentRowFull {
   const now = new Date().toISOString();
   return {
     id: agent.id,
@@ -585,7 +642,7 @@ export function toAgentDefinition(row: LegacyAgentRow): AgentDefinition {
  * @param def - The embedded agent definition to convert
  * @returns Database row ready for insertion
  */
-export function toEmbeddedAgentRow(def: EmbeddedAgentDefinition): NewEmbeddedAgent {
+export function toEmbeddedAgentRow(def: EmbeddedAgentDefinition): EmbeddedAgentRowFull {
   return {
     id: def.id,
     name: def.name,

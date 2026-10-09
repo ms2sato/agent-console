@@ -4,6 +4,7 @@ import type { AgentRepository } from './agent-repository.js';
 import type { Database } from '../database/schema.js';
 import { createLogger } from '../lib/logger.js';
 import { toAgentRow, toAgentDefinition } from '../database/mappers.js';
+import { conflictUpdateSet } from './conflict-update-set.js';
 
 const logger = createLogger('sqlite-agent-repository');
 
@@ -32,18 +33,7 @@ export class SqliteAgentRepository implements AgentRepository {
       .insertInto('agents')
       .values(row)
       .onConflict((oc) =>
-        oc.column('id').doUpdateSet({
-          name: row.name,
-          command_template: row.command_template,
-          continue_template: row.continue_template,
-          headless_template: row.headless_template,
-          description: row.description,
-          is_built_in: row.is_built_in,
-          // Note: created_at is intentionally NOT updated (should never change after insert)
-          updated_at: row.updated_at,
-          activity_patterns: row.activity_patterns,
-          base_agent_id: row.base_agent_id,
-        })
+        oc.column('id').doUpdateSet(conflictUpdateSet(row, ['id', 'created_at'] as const))
       )
       .execute();
 
