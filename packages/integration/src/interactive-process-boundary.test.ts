@@ -207,7 +207,7 @@ describe('Interactive Process MCP boundary: shared type contract', () => {
       agentId: 'claude-code',
     });
     const sessionId = session.id;
-    const workerId = session.workers[0].id;
+    const workerId = session.workers.find((w) => w.type === 'agent')!.id;
 
     const response = await callTool(app, mcpSessionId, 'run_process', {
       command: 'sleep 30',
@@ -241,7 +241,7 @@ describe('Interactive Process MCP boundary: shared type contract', () => {
     const response = await callTool(app, mcpSessionId, 'run_process', {
       command: 'sleep 30',
       sessionId: session.id,
-      workerId: session.workers[0].id,
+      workerId: session.workers.find((w) => w.type === 'agent')!.id,
       outputMode: 'message',
     }, nextId++);
 
@@ -261,7 +261,7 @@ describe('Interactive Process MCP boundary: shared type contract', () => {
     const response = await callTool(app, mcpSessionId, 'run_process', {
       command: 'sleep 30',
       sessionId: session.id,
-      workerId: session.workers[0].id,
+      workerId: session.workers.find((w) => w.type === 'agent')!.id,
       outputMode: 'invalid-mode',
     }, nextId++);
 
@@ -279,7 +279,7 @@ describe('Interactive Process MCP boundary: shared type contract', () => {
     await callTool(app, mcpSessionId, 'run_process', {
       command: 'sleep 30',
       sessionId: session.id,
-      workerId: session.workers[0].id,
+      workerId: session.workers.find((w) => w.type === 'agent')!.id,
     }, nextId++);
 
     const listResponse = await callTool(app, mcpSessionId, 'list_processes', {}, nextId++);
@@ -312,7 +312,7 @@ describe('Interactive Process MCP boundary: shared type contract', () => {
     const runResponse = await callTool(app, mcpSessionId, 'run_process', {
       command: 'sleep 30',
       sessionId: session.id,
-      workerId: session.workers[0].id,
+      workerId: session.workers.find((w) => w.type === 'agent')!.id,
     }, nextId++);
     const { processId } = parseToolResult(runResponse) as { processId: string };
 

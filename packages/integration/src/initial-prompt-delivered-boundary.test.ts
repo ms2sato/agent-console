@@ -71,6 +71,9 @@ describe('Client-Server Boundary: Session.initialPromptDelivered', () => {
     ctx = await createTestContext({
       runAsUserImpl: fakeRunAsUserAlwaysSuccess,
       ptyProvider: createMockPtyProvider(),
+      // This file's locationPath literal isn't seeded on real/mocked fs and this
+      // test doesn't exercise the cwd-existence check itself (Issue #1892).
+      assertSpawnCwdFn: async () => {},
     });
   });
 

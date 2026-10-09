@@ -59,7 +59,7 @@ import {
   resolveSessionScopePayload,
 } from '../lib/session-data-path.js';
 import { RepositoryNotFoundError, ValidationError } from '../lib/errors.js';
-import type { UserMode } from './user-mode.js';
+import type { UserMode, assertSpawnCwdExists } from './user-mode.js';
 import {
   getCurrentBranch as gitGetCurrentBranch,
 } from '../lib/git.js';
@@ -233,6 +233,15 @@ interface SessionManagerOptions {
    * real filesystem.
    */
   runAsUserImpl?: typeof runAsUser;
+  /**
+   * Test seam for WorkerManager's pre-spawn cwd existence check
+   * (`assertSpawnCwdExists`, user-mode.ts). Threaded straight through to
+   * the `WorkerManager` constructor (which already accepts this as an
+   * optional param). Defaults to `WorkerManager`'s own default (the real
+   * `assertSpawnCwdExists`) when omitted -- production and every existing
+   * caller are unaffected.
+   */
+  assertSpawnCwdFn?: typeof assertSpawnCwdExists;
   /**
    * Test seam for the SESSION_ID marker orphan-process sweep. Defaults to
    * the real `sweepOrphanProcesses`. Threaded through
@@ -408,6 +417,7 @@ export class SessionManager {
       undefined,
       undefined,
       (id) => embeddedAgentManager.getEmbeddedAgent(id),
+      options.assertSpawnCwdFn,
     );
     this.workerManager.setOnInitialPromptInjected((sessionId, workerId) => {
       // Fire-and-forget: this callback is invoked synchronously from a PTY

@@ -57,6 +57,9 @@ describe('Client-Server Boundary: PUT/GET /api/sessions/:id/memo (Issue #1569)',
       // ENOENT on a missing cwd where the legacy bunPtyProvider silently
       // tolerated it (production handling tracked separately, #1892).
       ptyProvider: createMockPtyProvider(),
+      // This file's locationPath literal isn't seeded on real/mocked fs and this
+      // test doesn't exercise the cwd-existence check itself (Issue #1892).
+      assertSpawnCwdFn: async () => {},
       broadcastToApp: (msg) => {
         capturedBroadcasts.push(msg);
       },

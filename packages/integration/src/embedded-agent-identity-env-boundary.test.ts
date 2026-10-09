@@ -96,7 +96,13 @@ describe('Server-Subprocess Boundary: embedded worker AGENT_CONSOLE_* identity a
     // exist on disk, and the configured default (bun-terminal) throws
     // ENOENT on a missing cwd where the legacy bunPtyProvider silently
     // tolerated it (production handling tracked separately, #1892).
-    ctx = await createTestContext({ spawnAsUserFn: fake.fn, ptyProvider: createMockPtyProvider() });
+    // This file's locationPath literal isn't seeded on real/mocked fs and this
+    // test doesn't exercise the cwd-existence check itself (Issue #1892).
+    ctx = await createTestContext({
+      spawnAsUserFn: fake.fn,
+      ptyProvider: createMockPtyProvider(),
+      assertSpawnCwdFn: async () => {},
+    });
     // C1 polarity seed: the SERVER's own environment carries a parent id
     // (as it does when the server is started from a delegated session).
     previousStaleParent = process.env.AGENT_CONSOLE_PARENT_SESSION_ID;

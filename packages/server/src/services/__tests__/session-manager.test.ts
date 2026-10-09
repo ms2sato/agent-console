@@ -2753,6 +2753,12 @@ describe('SessionManager', () => {
           userRepository: stubUserRepo,
           runAsUserImpl,
           lookupOsUserFn,
+          // This test exercises the lookupOsUserFn passthrough for the
+          // prompt-file write, not cwd existence -- the elevated branch
+          // would otherwise shell out to a real `test -d` against a path
+          // that only exists in this test's fixture, not on real disk
+          // (Issue #1892).
+          assertSpawnCwdFn: async () => {},
         });
 
         await manager.createSession(
@@ -3201,6 +3207,7 @@ describe('SessionManager', () => {
       const session = await manager.createSession({
         type: 'quick',
         title: 'inject-test',
+        locationPath: '/test/path',
         agentId: 'claude-code',
       });
       const agentWorker = session.workers.find((w: Worker) => w.type === 'agent')!;
@@ -3220,6 +3227,7 @@ describe('SessionManager', () => {
       const session = await manager.createSession({
         type: 'quick',
         title: 'pty-data-test',
+        locationPath: '/test/path',
         agentId: 'claude-code',
       });
       const agentWorker = session.workers.find((w: Worker) => w.type === 'agent')!;
