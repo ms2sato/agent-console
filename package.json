@@ -20,6 +20,7 @@
     "test:scripts": "bun test scripts/ ./.claude/hooks/__tests__/ ./.claude/skills/*/__tests__/",
     "test:coverage": "bun run --filter '*' --elide-lines=0 test:coverage",
     "check:lang": "bun scripts/check-public-artifacts-language.mjs",
+    "check:doc-fragments": "node scripts/check-doc-fragments.mjs",
     "check:mock-module": "bun scripts/check-mock-module-poisoners.mjs",
     "check:embedded-agent-stdout": "bun scripts/check-embedded-agent-stdout-writers.mjs",
     "check:preview-sandbox-browser": "bun scripts/run-preview-sandbox-browser-check.mjs",

@@ -468,6 +468,8 @@ The check runs at five points:
 
 Output format is consistent across all entry points: `file:LINE:COL CHAR U+CODEPOINT`, one line per violation. The commit-msg hook reports violations under the virtual filename `<stdin>`.
 
+A sibling, separate check lives next to this one: `bun run check:doc-fragments` (`scripts/check-doc-fragments.mjs`) validates Markdown link fragments (`](#frag)` and `](path.md#frag)`) across the same `docs/`, `.claude/`, and `CLAUDE.md` scope, wired into the same `language-lint.yml` CI workflow — it is not part of the language check itself.
+
 ## Claude Code on the Web (Remote Environment)
 
 When running in Claude Code on the Web, `gh` CLI is automatically installed via a SessionStart hook. Due to the sandbox proxy, `gh` commands require the `-R owner/repo` flag explicitly (`-R ms2sato/agent-console`).

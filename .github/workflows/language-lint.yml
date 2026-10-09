@@ -45,5 +45,8 @@ jobs:
       - name: Run language check
         run: bun run check:lang
 
+      - name: Run doc fragment check
+        run: bun run check:doc-fragments
+
       - name: Run language-check unit tests
         run: bun run test:scripts
