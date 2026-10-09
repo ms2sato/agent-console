@@ -121,7 +121,7 @@ export interface DeleteWorktreeResult {
   success: boolean;
   error?: string;
   /** Helps handlers map to appropriate HTTP status codes */
-  errorType?: 'not-found' | 'validation' | 'conflict' | 'open-pr';
+  errorType?: 'not-found' | 'validation' | 'conflict' | 'open-pr' | 'precheck-failed';
   gitStatus?: string;
   cleanupCommandResult?: HookCommandResult;
   sessionDeleteError?: string;
@@ -129,6 +129,37 @@ export interface DeleteWorktreeResult {
   killErrors?: Array<{ sessionId: string; error: string }>;
   /** Session IDs that were cleaned up (for WebSocket broadcast) */
   sessionIds?: string[];
+  /**
+   * How the open-PR precheck resolved, set on every successful path.
+   * Never silently skipped: `'skipped-force'` / `'skipped-detached-head'`
+   * / `'skipped-orphan-cleanup'` make an intentional skip explicit
+   * instead of indistinguishable from "the check ran and found nothing".
+   */
+  openPrCheck?: 'passed' | 'skipped-force' | 'skipped-detached-head' | 'skipped-orphan-cleanup';
+}
+
+/**
+ * Build the error message/result for a precheck that could not run --
+ * single writer so the two call sites (a thrown gh error, and
+ * `getCurrentBranch` resolving to a sentinel instead of throwing) stay in
+ * sync. `requestUsername` null has no identity to "fix gh auth for"; the
+ * actionable remedy there is different (REST's `?? authUser.username`
+ * fallback makes the web UI run the check as the requester).
+ */
+function buildPrecheckFailedResult(
+  requestUsername: string | null | undefined,
+  branchLabel: string,
+  detail: string,
+): DeleteWorktreeResult {
+  const identity = requestUsername ?? 'the server user';
+  const ending = requestUsername
+    ? `fix gh auth for ${requestUsername}, or pass force to skip the check.`
+    : 'this session has no resolvable owner; delete the worktree from the web UI, where the check runs as you, or pass force.';
+  return {
+    success: false,
+    error: `Could not verify open PRs for branch '${branchLabel}' as ${identity} -- the check did not run (${detail}). This is an infrastructure failure, not an open PR; ${ending}`,
+    errorType: 'precheck-failed',
+  };
 }
 
 // ---------- Orphan recovery ----------
@@ -247,6 +278,7 @@ async function cleanupOrphanedWorktree(
       ...(killErrors.length > 0 ? { killErrors } : {}),
       sessionDeleteError,
       sessionIds,
+      openPrCheck: 'skipped-orphan-cleanup',
     };
   } finally {
     clearDeletionInProgress(worktreePath);
@@ -330,11 +362,26 @@ export async function deleteWorktree(
     }
   }
 
-  // 4. Check for open PRs (unless force)
+  // 4. Check for open PRs (unless force). `openPrCheck` records how the
+  // precheck resolved so a later `force: true` / detached-head skip is
+  // reported explicitly rather than looking identical to "passed".
+  let openPrCheck: DeleteWorktreeResult['openPrCheck'] = 'skipped-force';
+  let branch: string | undefined;
   if (!force) {
     try {
-      const branch = await getCurrentBranch(worktreePath, requestUsername);
-      if (branch && branch !== '(detached)' && branch !== '(unknown)') {
+      branch = await getCurrentBranch(worktreePath, requestUsername);
+      // `getCurrentBranch` converts a git failure to the `'(unknown)'`
+      // sentinel instead of throwing (same for an empty branch, which
+      // should not occur but is treated the same way defensively) -- that
+      // is itself "the check could not run", not a real detached HEAD, so
+      // it must fail closed via the same precheck-failed path the catch
+      // block below uses, not silently skip to deletion.
+      if (!branch || branch === '(unknown)') {
+        return buildPrecheckFailedResult(requestUsername, branch || '(unknown)', 'could not determine the current branch');
+      }
+      if (branch === '(detached)') {
+        openPrCheck = 'skipped-detached-head';
+      } else {
         const openPr = await findOpenPullRequest(branch, repo.path, requestUsername ?? null);
         if (openPr) {
           return {
@@ -343,13 +390,14 @@ export async function deleteWorktree(
             errorType: 'open-pr',
           };
         }
+        openPrCheck = 'passed';
       }
     } catch (error) {
-      return {
-        success: false,
-        error: `Failed to check for open PRs as ${requestUsername ?? 'the server user'}: ${error instanceof Error ? error.message : String(error)}. Cannot proceed with deletion (configure gh for that account, or retry with force).`,
-        errorType: 'open-pr',
-      };
+      // Distinguish "the check could not run" (infra/auth failure) from
+      // "the check ran and found an open PR" (above): the former is not a
+      // reason to treat `force` as the only path forward.
+      const message = error instanceof Error ? error.message : String(error);
+      return buildPrecheckFailedResult(requestUsername, branch || '(unresolved)', message);
     }
   }
 
@@ -400,7 +448,7 @@ export async function deleteWorktree(
 
       logger.error({ repoId, worktreePath, error: result.error }, 'Worktree removal failed');
       // Do NOT delete sessions — preserve for retry
-      return { success: false, error: result.error || 'Failed to remove worktree', gitStatus, sessionIds };
+      return { success: false, error: result.error || 'Failed to remove worktree', gitStatus, sessionIds, openPrCheck };
     }
 
     // 6d. Delete sessions after successful worktree removal
@@ -428,6 +476,7 @@ export async function deleteWorktree(
       ...(killErrors.length > 0 ? { killErrors } : {}),
       sessionDeleteError,
       sessionIds,
+      openPrCheck,
     };
   } finally {
     clearDeletionInProgress(worktreePath);

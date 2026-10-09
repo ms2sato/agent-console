@@ -174,6 +174,10 @@ describe('deleteWorktree', () => {
     expect(mockExecuteHookCommand).not.toHaveBeenCalled();
     expect(deps.sessionManager.killSessionWorkers).not.toHaveBeenCalled();
     expect(deps.sessionManager.deleteSession).not.toHaveBeenCalled();
+    // The orphan path has no repo, so no open-PR precheck ever runs --
+    // report that skip explicitly rather than omitting the field
+    // (CodeRabbit, Issue #1295).
+    expect(result.openPrCheck).toBe('skipped-orphan-cleanup');
   });
 
   it('orphan path: kills PTYs and deletes sessions when matching sessions exist', async () => {
@@ -371,6 +375,7 @@ describe('deleteWorktree', () => {
     expect(result.success).toBe(false);
     expect(result.errorType).toBe('open-pr');
     expect(result.error).toContain('open PR #42');
+    expect(result.error).not.toMatch(/did not run/);
   });
 
   it('skips PR check when force=true', async () => {
@@ -453,7 +458,11 @@ describe('deleteWorktree', () => {
     expect(mockGetCurrentBranch.mock.calls[0]).toEqual([WORKTREE_PATH, null]);
   });
 
-  it('returns open-pr error when PR check fails (fail-closed)', async () => {
+  it('returns precheck-failed (not open-pr) when the check throws (Issue #1295)', async () => {
+    // Polarity (Issue #1295): a thrown check means "the check could not
+    // run", which is a different failure mode than "the check ran and
+    // found an open PR" -- `force` must not be the only way past an
+    // infrastructure failure.
     const deps = createMockDeps({
       sessions: [DEFAULT_WORKTREE_SESSION],
       findOpenPullRequest: async () => { throw new Error('gh not found'); },
@@ -465,11 +474,13 @@ describe('deleteWorktree', () => {
     );
 
     expect(result.success).toBe(false);
-    expect(result.errorType).toBe('open-pr');
-    expect(result.error).toContain('Failed to check for open PRs');
+    expect(result.errorType).toBe('precheck-failed');
+    expect(result.error).toMatch(/did not run/);
+    expect(result.error).toContain('as the server user');
+    expect(result.error).not.toContain('has open PR #');
   });
 
-  it('names the identity in the open-PR catch message when requestUsername is set (Issue #1868)', async () => {
+  it('names the identity in the precheck-failed message when requestUsername is set (Issue #1868, #1295)', async () => {
     const deps = createMockDeps({
       sessions: [DEFAULT_WORKTREE_SESSION],
       findOpenPullRequest: async () => { throw new Error('gh not found'); },
@@ -481,11 +492,11 @@ describe('deleteWorktree', () => {
     );
 
     expect(result.success).toBe(false);
-    expect(result.errorType).toBe('open-pr');
-    expect(result.error).toContain('Failed to check for open PRs as shared1');
+    expect(result.errorType).toBe('precheck-failed');
+    expect(result.error).toContain("as shared1 -- the check did not run");
   });
 
-  it('names "the server user" in the open-PR catch message when requestUsername is null (Issue #1868)', async () => {
+  it('names "the server user" in the precheck-failed message when requestUsername is null (Issue #1868, #1295)', async () => {
     const deps = createMockDeps({
       sessions: [DEFAULT_WORKTREE_SESSION],
       findOpenPullRequest: async () => { throw new Error('gh not found'); },
@@ -497,8 +508,147 @@ describe('deleteWorktree', () => {
     );
 
     expect(result.success).toBe(false);
-    expect(result.errorType).toBe('open-pr');
-    expect(result.error).toContain('Failed to check for open PRs as the server user');
+    expect(result.errorType).toBe('precheck-failed');
+    expect(result.error).toContain("as the server user -- the check did not run");
+  });
+
+  it('ends with the web-UI remedy, not a gh-auth instruction, when requestUsername is null (Architect ruling, Issue #1295)', async () => {
+    // No caller-identity fallback exists for the precheck (checkCallerOwnsSession
+    // rejects any mismatched caller before reaching this code), so a null
+    // requestUsername has no identity to "fix gh auth for" -- the message
+    // must point at the actual remedy (the web UI, via REST's requester
+    // fallback) instead.
+    const deps = createMockDeps({
+      sessions: [DEFAULT_WORKTREE_SESSION],
+      findOpenPullRequest: async () => { throw new Error('gh not found'); },
+    });
+
+    const result = await deleteWorktree(
+      { repoId: 'repo-1', worktreePath: WORKTREE_PATH, force: false, requestUsername: null },
+      deps,
+    );
+
+    expect(result.success).toBe(false);
+    expect(result.errorType).toBe('precheck-failed');
+    expect(result.error).toContain(
+      'this session has no resolvable owner; delete the worktree from the web UI, where the check runs as you, or pass force',
+    );
+    expect(result.error).not.toContain('fix gh auth for the server user');
+  });
+
+  it('ends with a gh-auth instruction naming the identity when requestUsername is set (Issue #1295)', async () => {
+    const deps = createMockDeps({
+      sessions: [DEFAULT_WORKTREE_SESSION],
+      findOpenPullRequest: async () => { throw new Error('gh not found'); },
+    });
+
+    const result = await deleteWorktree(
+      { repoId: 'repo-1', worktreePath: WORKTREE_PATH, force: false, requestUsername: 'shared1' },
+      deps,
+    );
+
+    expect(result.success).toBe(false);
+    expect(result.errorType).toBe('precheck-failed');
+    expect(result.error).toContain('fix gh auth for shared1, or pass force to skip the check');
+    expect(result.error).not.toContain('no resolvable owner');
+  });
+
+  it('getCurrentBranch failing is also precheck-failed (same catch, Issue #1295)', async () => {
+    const mockFindPr = mock(async () => null);
+    const deps = createMockDeps({
+      sessions: [DEFAULT_WORKTREE_SESSION],
+      getCurrentBranch: async () => { throw new Error('git rev-parse failed'); },
+      findOpenPullRequest: mockFindPr,
+    });
+
+    const result = await deleteWorktree(
+      { repoId: 'repo-1', worktreePath: WORKTREE_PATH, force: false, requestUsername: null },
+      deps,
+    );
+
+    expect(result.success).toBe(false);
+    expect(result.errorType).toBe('precheck-failed');
+    expect(result.error).toMatch(/did not run/);
+    expect(mockFindPr).not.toHaveBeenCalled();
+  });
+
+  it('getCurrentBranch resolving to "(unknown)" is precheck-failed, not skipped-detached-head (CodeRabbit, Issue #1295)', async () => {
+    // getCurrentBranch converts a git failure to the '(unknown)' sentinel
+    // instead of throwing. Before this fix, that fell into the same branch
+    // as a real detached HEAD and proceeded to delete WITHOUT completing
+    // the open-PR precheck -- fail closed instead.
+    const mockFindPr = mock(async () => null);
+    const deps = createMockDeps({
+      sessions: [DEFAULT_WORKTREE_SESSION],
+      getCurrentBranch: async () => '(unknown)',
+      findOpenPullRequest: mockFindPr,
+    });
+
+    const result = await deleteWorktree(
+      { repoId: 'repo-1', worktreePath: WORKTREE_PATH, force: false, requestUsername: null },
+      deps,
+    );
+
+    expect(result.success).toBe(false);
+    expect(result.errorType).toBe('precheck-failed');
+    expect(result.error).toMatch(/did not run/);
+    expect(mockFindPr).not.toHaveBeenCalled();
+    expect(mockRemoveWorktree).not.toHaveBeenCalled();
+  });
+
+  // --- openPrCheck: reported, never silent (Issue #1295) ---
+
+  describe('openPrCheck result field (Issue #1295)', () => {
+    it('(e) force skips the check: openPrCheck is skipped-force and findOpenPullRequest is not called', async () => {
+      const mockFindPr = mock(async () => null);
+      const deps = createMockDeps({
+        sessions: [DEFAULT_WORKTREE_SESSION],
+        findOpenPullRequest: mockFindPr,
+      });
+
+      const result = await deleteWorktree(
+        { repoId: 'repo-1', worktreePath: WORKTREE_PATH, force: true, requestUsername: null },
+        deps,
+      );
+
+      expect(result.success).toBe(true);
+      expect(result.openPrCheck).toBe('skipped-force');
+      expect(mockFindPr).not.toHaveBeenCalled();
+    });
+
+    it('(f) detached head skips the check: openPrCheck is skipped-detached-head', async () => {
+      const mockFindPr = mock(async () => null);
+      const deps = createMockDeps({
+        sessions: [DEFAULT_WORKTREE_SESSION],
+        getCurrentBranch: async () => '(detached)',
+        findOpenPullRequest: mockFindPr,
+      });
+
+      const result = await deleteWorktree(
+        { repoId: 'repo-1', worktreePath: WORKTREE_PATH, force: false, requestUsername: null },
+        deps,
+      );
+
+      expect(result.success).toBe(true);
+      expect(result.openPrCheck).toBe('skipped-detached-head');
+      expect(mockFindPr).not.toHaveBeenCalled();
+    });
+
+    it('(g) the check ran and found nothing: openPrCheck is passed', async () => {
+      const deps = createMockDeps({
+        sessions: [DEFAULT_WORKTREE_SESSION],
+        findOpenPullRequest: async () => null,
+        getCurrentBranch: async () => 'feature-1',
+      });
+
+      const result = await deleteWorktree(
+        { repoId: 'repo-1', worktreePath: WORKTREE_PATH, force: false, requestUsername: null },
+        deps,
+      );
+
+      expect(result.success).toBe(true);
+      expect(result.openPrCheck).toBe('passed');
+    });
   });
 
   it('skips PR check when branch is detached', async () => {
