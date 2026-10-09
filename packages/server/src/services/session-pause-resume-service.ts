@@ -82,6 +82,17 @@ export interface SessionPauseResumeDeps {
   startBranchWatching: (sessionId: string, locationPath: string, currentBranch: string) => Promise<void>;
   stopBranchWatching: (sessionId: string) => void;
   getServerPid: () => number;
+  /**
+   * Append the restore-boundary marker to a revived PTY worker's output
+   * stream. No-op expectation for non-PTY workers --
+   * only called for 'agent'/'terminal' workers below.
+   */
+  appendRestoreBoundaryMarker: (
+    worker: InternalPtyWorker,
+    sessionId: string,
+    resolver: SessionDataPathResolver,
+    restoredAt: Date,
+  ) => Promise<void>;
 }
 
 export class SessionPauseResumeService {
@@ -267,6 +278,7 @@ export class SessionPauseResumeService {
     const repositoryEnvVars = await this.deps.getRepositoryEnvVars(id);
     const repositoryId = internalSession.type === 'worktree' ? internalSession.repositoryId : undefined;
     const resolver = this.deps.getPathResolverForSession(internalSession);
+    const restoredAt = new Date();
     try {
       const username = await this.deps.resolveSpawnUsername(internalSession.createdBy, this.deps.userRepository);
       for (const worker of workers.values()) {
@@ -295,6 +307,7 @@ export class SessionPauseResumeService {
             revived: true,
           });
           activatedWorkers.push(worker);
+          await this.deps.appendRestoreBoundaryMarker(worker, id, resolver, restoredAt);
         } else if (worker.type === 'terminal') {
           await this.deps.workerManager.activateTerminalWorkerPty(worker, {
             sessionId: id,
@@ -305,6 +318,7 @@ export class SessionPauseResumeService {
             revived: true,
           });
           activatedWorkers.push(worker);
+          await this.deps.appendRestoreBoundaryMarker(worker, id, resolver, restoredAt);
         } else if (worker.type === 'embedded-agent') {
           if (hasUndeliveredInitialPrompt(worker, internalSession)) {
             try {
@@ -354,9 +368,13 @@ export class SessionPauseResumeService {
       return null;
     }
 
-    // Update DB: set serverPid = process.pid and clear pausedAt (marks session as active)
+    // Update DB: set serverPid = process.pid and clear pausedAt (marks session as active).
+    // Reuses the same save() pattern pauseSession() uses above -- a full
+    // session persist (not sessionRepository.update) so every revived PTY
+    // worker's newly-activated pid is written to the `workers` table too.
     try {
-      await this.deps.sessionRepository.update(id, { serverPid: this.deps.getServerPid(), pausedAt: null });
+      const persistedSession = this.deps.toPersistedSessionWithServerPid(internalSession, this.deps.getServerPid());
+      await this.deps.sessionRepository.save(persistedSession);
     } catch (err) {
       logger.error({ sessionId: id, err }, 'Failed to persist resumed state, rolling back in-memory resume');
 

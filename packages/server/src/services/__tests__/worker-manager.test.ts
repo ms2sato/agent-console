@@ -1138,6 +1138,43 @@ describe('WorkerManager', () => {
     // (see the PR's own report for the before/after counts).
   });
 
+  describe('appendRestoreBoundaryMarker (Issue #1344)', () => {
+    it('appends a plain-text marker to the worker output buffer, forces it to disk, and never uses the [internal:...] tag', async () => {
+      const worker = createTestAgentWorker('restore-marker-agent');
+      const sessionId = 'restore-marker-session';
+      const restoredAt = new Date('2026-10-09T06:00:00.000Z');
+
+      await workerManager.appendRestoreBoundaryMarker(worker, sessionId, defaultResolver, restoredAt);
+
+      expect(worker.outputBuffer).toContain('restored after server restart');
+      expect(worker.outputBuffer).toContain('new process, conversation continued');
+      // ISO-8601 with a local UTC offset, not toISOString()'s always-UTC
+      // 'Z' suffix -- timezone-independent so this assertion is stable
+      // regardless of the CI runner's TZ.
+      expect(worker.outputBuffer).toMatch(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[+-]\d{2}:\d{2}/);
+      // Plain text, not a structured [internal:...] notification (unlike
+      // appendSpawnFailureNotification / appendCwdMissingNotification) --
+      // see the production method's own JSDoc for why.
+      expect(worker.outputBuffer).not.toContain('[internal:');
+
+      // Forced to disk (forceFlush), not just buffered in memory.
+      const filePath = defaultResolver.getOutputFilePath(sessionId, worker.id);
+      const onDisk = await fs.readFile(filePath, 'utf-8');
+      expect(onDisk).toContain('restored after server restart');
+    });
+
+    it('advances outputOffset by the marker text\'s byte length', async () => {
+      const worker = createTestTerminalWorker('restore-marker-terminal');
+      const sessionId = 'restore-marker-session-2';
+      const offsetBefore = worker.outputOffset;
+
+      await workerManager.appendRestoreBoundaryMarker(worker, sessionId, defaultResolver, new Date());
+
+      expect(worker.outputOffset).toBeGreaterThan(offsetBefore);
+      expect(worker.outputOffset).toBe(Buffer.byteLength(worker.outputBuffer, 'utf-8'));
+    });
+  });
+
   describe('resize', () => {
     it('should resize the PTY', async () => {
       const worker = createTestTerminalWorker();

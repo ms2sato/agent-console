@@ -6693,6 +6693,37 @@ describe('SessionManager', () => {
       expect(resumed?.workers.some((w: Worker) => w.id === agentWorkerId)).toBe(true);
     });
 
+    it('appends the real restore-boundary marker to a revived agent worker\'s output buffer (DI-seam proof for appendRestoreBoundaryMarker wiring)', async () => {
+      // Proves SessionManager's real wiring (the appendRestoreBoundaryMarker
+      // dep passed to SessionPauseResumeService, session-manager.ts)
+      // actually reaches the real WorkerManager.appendRestoreBoundaryMarker
+      // end-to-end via SessionPauseResumeService's revival path -- the
+      // exhaustive eligibility/ordering coverage lives in
+      // session-pause-resume-service.test.ts against a mocked dep; this
+      // test is the DI-seam proof that the real wiring is not mis-plumbed,
+      // mirroring the "auto-activates a revived embedded-agent worker" test
+      // in the embedded-agent worker facade describe block above.
+      const manager = await getSessionManager();
+
+      const session = await manager.createSession({
+        type: 'worktree',
+        locationPath: '/test/path',
+        repositoryId: 'repo-1',
+        worktreeId: 'feature-branch',
+        agentId: 'claude-code',
+      });
+      const agentWorkerId = session.workers.find((w: Worker) => w.type === 'agent')!.id;
+
+      await manager.pauseSession(session.id);
+      expect(manager.getSession(session.id)).toBeUndefined();
+
+      await manager.resumeSession(session.id);
+
+      expect(manager.getWorkerOutputBuffer(session.id, agentWorkerId)).toContain(
+        'restored after server restart',
+      );
+    });
+
     it('should update serverPid to process.pid in persistence', async () => {
       const manager = await getSessionManager();
 

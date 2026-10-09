@@ -627,6 +627,8 @@ export class SessionManager {
         this.branchWatcherCallbacks?.startWatching(sessionId, locationPath, currentBranch) ?? Promise.resolve(),
       stopBranchWatching: (sessionId) => this.branchWatcherCallbacks?.stopWatching(sessionId),
       getServerPid,
+      appendRestoreBoundaryMarker: (worker, sessionId, resolver, restoredAt) =>
+        this.workerManager.appendRestoreBoundaryMarker(worker, sessionId, resolver, restoredAt),
     });
   }
 

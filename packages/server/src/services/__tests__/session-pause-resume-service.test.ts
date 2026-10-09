@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, mock } from 'bun:test';
 import { SessionPauseResumeService, type SessionPauseResumeDeps } from '../session-pause-resume-service.js';
 import type { InternalSession } from '../internal-types.js';
-import type { InternalWorker } from '../worker-types.js';
+import type { InternalWorker, InternalAgentWorker, InternalTerminalWorker } from '../worker-types.js';
 import type { PersistedSession } from '../persistence-service.js';
 import type { Session, AgentWorker, EmbeddedAgentWorker } from '@agent-console/shared';
 import type { NotificationManager } from '../notifications/notification-manager.js';
@@ -147,6 +147,7 @@ function createMockDeps(overrides?: Partial<SessionPauseResumeDeps>): SessionPau
     startBranchWatching: async () => {},
     stopBranchWatching: () => {},
     getServerPid: () => 99999,
+    appendRestoreBoundaryMarker: mock(async () => {}),
     ...overrides,
   };
 }
@@ -368,8 +369,11 @@ describe('SessionPauseResumeService', () => {
       expect(deps.workerManager.activateAgentWorkerPty).toHaveBeenCalledTimes(1);
       // Session added to memory
       expect(deps.setSession).toHaveBeenCalled();
-      // DB updated with serverPid and cleared pausedAt
-      expect(deps.sessionRepository.update).toHaveBeenCalledWith('session-1', { serverPid: 99999, pausedAt: null });
+      // Full session persisted (writes serverPid, cleared pausedAt, and
+      // every worker's revived pid) via toPersistedSessionWithServerPid +
+      // sessionRepository.save, instead of the narrower sessionRepository.update.
+      expect(deps.toPersistedSessionWithServerPid).toHaveBeenCalledWith(expect.anything(), 99999);
+      expect(deps.sessionRepository.save).toHaveBeenCalledTimes(1);
       // Lifecycle callback fired
       expect(onSessionResumed).toHaveBeenCalledTimes(1);
     });
@@ -541,19 +545,15 @@ describe('SessionPauseResumeService', () => {
         pausedAt: '2026-01-01T00:00:00.000Z',
       });
 
-      let updateCallCount = 0;
-
       const deps = createMockDeps({
         sessionRepository: {
           ...createMockDeps().sessionRepository,
           findById: mock(async () => persisted),
-          update: mock(async () => {
-            updateCallCount++;
-            if (updateCallCount === 1) {
-              throw new Error('DB write failed');
-            }
-            return true;
-          }),
+          update: mock(async () => true),
+          // The success-path DB write is now sessionRepository.save (full
+          // session persist), not sessionRepository.update -- throw there
+          // to reach the rollback branch.
+          save: mock(async () => { throw new Error('DB write failed'); }),
         },
         workerManager: {
           killWorker: mock(async () => {}),
@@ -571,6 +571,11 @@ describe('SessionPauseResumeService', () => {
       expect(deps.workerManager.killWorker).toHaveBeenCalledTimes(1);
       // Session removed from memory
       expect(deps.deleteSession).toHaveBeenCalledWith('session-1');
+      // Paused state restored via the rollback's own sessionRepository.update call
+      expect(deps.sessionRepository.update).toHaveBeenCalledWith('session-1', {
+        serverPid: null,
+        pausedAt: '2026-01-01T00:00:00.000Z',
+      });
     });
 
     // Issue #769: paused-session resume is a "revived" PTY activation path,
@@ -669,7 +674,6 @@ describe('SessionPauseResumeService', () => {
         initialPromptDelivered: false,
       });
 
-      let updateCallCount = 0;
       const activateEmbeddedAgentWorker = mock(async () => {});
       const deactivateEmbeddedAgentWorker = mock(async () => {});
 
@@ -677,13 +681,11 @@ describe('SessionPauseResumeService', () => {
         sessionRepository: {
           ...createMockDeps().sessionRepository,
           findById: mock(async () => persisted),
-          update: mock(async () => {
-            updateCallCount++;
-            if (updateCallCount === 1) {
-              throw new Error('DB write failed');
-            }
-            return true;
-          }),
+          update: mock(async () => true),
+          // The success-path DB write is now sessionRepository.save (full
+          // session persist), not sessionRepository.update -- throw there
+          // to reach the rollback branch.
+          save: mock(async () => { throw new Error('DB write failed'); }),
         },
         workerManager: {
           killWorker: mock(async () => {}),
@@ -842,6 +844,163 @@ describe('SessionPauseResumeService', () => {
       await service.resumeSession('session-1');
 
       expect(deps.workerManager.activateTerminalWorkerPty).toHaveBeenCalledTimes(1);
+    });
+
+    describe('Issue #1344: revived PTY pids are persisted, restore-boundary marker is appended', () => {
+      // Mutation: reverting the fix (sessionRepository.update instead of
+      // toPersistedSessionWithServerPid + sessionRepository.save) makes this
+      // fail -- the toPersistedSessionWithServerPid spy is never called, so
+      // `.mock.calls[0]` is empty and this assertion throws before it can
+      // read `.pty.pid`.
+      it('persists the InternalSession with the revived worker pid, not the stale persisted pid', async () => {
+        const agentWorker = buildInternalAgentWorker({ id: 'w1' });
+        const terminalWorker = buildInternalTerminalWorker({ id: 'w2' });
+        const restoredWorkers = new Map<string, InternalWorker>([
+          ['w1', agentWorker],
+          ['w2', terminalWorker],
+        ]);
+        const persisted = buildPersistedWorktreeSession({
+          id: 'session-1',
+          serverPid: null,
+          pausedAt: '2026-01-01T00:00:00.000Z',
+          workers: [
+            // Stale pid from before the server restart -- the dead process
+            // this Issue is about. The fix must overwrite this, not keep it.
+            buildPersistedAgentWorker({ id: 'w1', agentId: 'test-agent', pid: 11111 }),
+            buildPersistedTerminalWorker({ id: 'w2', pid: 22222 }),
+          ],
+        });
+
+        const NEW_AGENT_PID = 33333;
+        const NEW_TERMINAL_PID = 44444;
+        // Spy that delegates to the default mock's own mapping logic, so
+        // this test observes exactly what the service passed in as its
+        // first argument (the live InternalSession, post-activation)
+        // without re-implementing the InternalSession -> PersistedSession
+        // mapping here.
+        const defaultToPersistedSessionWithServerPid = createMockDeps().toPersistedSessionWithServerPid;
+        const toPersistedSessionWithServerPid = mock(
+          (session: InternalSession, serverPid: number | null) =>
+            defaultToPersistedSessionWithServerPid(session, serverPid),
+        );
+        const save = mock(async () => {});
+        const deps = createMockDeps({
+          sessionRepository: {
+            ...createMockDeps().sessionRepository,
+            findById: mock(async () => persisted),
+            update: mock(async () => true),
+            save,
+          },
+          toPersistedSessionWithServerPid,
+          workerManager: {
+            killWorker: mock(async () => {}),
+            restoreWorkersFromPersistence: mock(() => restoredWorkers),
+            // Simulate real PTY activation: assigns a freshly-spawned PTY
+            // (with a new pid) onto the worker object in place, exactly as
+            // `activateAgentWorkerPty` / `activateTerminalWorkerPty` do.
+            activateAgentWorkerPty: mock(async (worker: InternalAgentWorker) => {
+              worker.pty = { pid: NEW_AGENT_PID } as InternalAgentWorker['pty'];
+            }),
+            activateTerminalWorkerPty: mock(async (worker: InternalTerminalWorker) => {
+              worker.pty = { pid: NEW_TERMINAL_PID } as InternalTerminalWorker['pty'];
+            }),
+          } satisfies SessionPauseResumeDeps['workerManager'],
+        });
+        const service = new SessionPauseResumeService(deps);
+
+        const result = await service.resumeSession('session-1');
+
+        expect(result).not.toBeNull();
+        expect(toPersistedSessionWithServerPid).toHaveBeenCalledTimes(1);
+        const [persistedInternalSession] = toPersistedSessionWithServerPid.mock.calls[0];
+        const persistedAgent = persistedInternalSession.workers.get('w1') as InternalAgentWorker;
+        const persistedTerminal = persistedInternalSession.workers.get('w2') as InternalTerminalWorker;
+        expect(persistedAgent.pty?.pid).toBe(NEW_AGENT_PID);
+        expect(persistedTerminal.pty?.pid).toBe(NEW_TERMINAL_PID);
+        expect(save).toHaveBeenCalledTimes(1);
+      });
+
+      // Mutation: calling the marker inside the embedded-agent or git-diff
+      // branches (or omitting it from either PTY branch) changes this call
+      // count and/or which workers it names.
+      it('appends the restore-boundary marker exactly once per PTY worker, never for embedded-agent or git-diff workers', async () => {
+        const agentWorker = buildInternalAgentWorker({ id: 'w1' });
+        const terminalWorker = buildInternalTerminalWorker({ id: 'w2' });
+        const embeddedWorker = buildInternalEmbeddedAgentWorker({ id: 'w3' });
+        const gitDiffWorker = buildInternalGitDiffWorker({ id: 'w4' });
+        const restoredWorkers = new Map<string, InternalWorker>([
+          ['w1', agentWorker],
+          ['w2', terminalWorker],
+          ['w3', embeddedWorker],
+          ['w4', gitDiffWorker],
+        ]);
+        const persisted = buildPersistedWorktreeSession({
+          id: 'session-1',
+          serverPid: null,
+          pausedAt: '2026-01-01T00:00:00.000Z',
+        });
+
+        const appendRestoreBoundaryMarker = mock(async (_worker: InternalWorker) => {});
+        const deps = createMockDeps({
+          sessionRepository: {
+            ...createMockDeps().sessionRepository,
+            findById: mock(async () => persisted),
+            update: mock(async () => true),
+          },
+          appendRestoreBoundaryMarker,
+          workerManager: {
+            killWorker: mock(async () => {}),
+            restoreWorkersFromPersistence: mock(() => restoredWorkers),
+            activateAgentWorkerPty: mock(async () => {}),
+            activateTerminalWorkerPty: mock(async () => {}),
+          } satisfies SessionPauseResumeDeps['workerManager'],
+        });
+        const service = new SessionPauseResumeService(deps);
+
+        await service.resumeSession('session-1');
+
+        expect(appendRestoreBoundaryMarker).toHaveBeenCalledTimes(2);
+        const notifiedWorkerIds = appendRestoreBoundaryMarker.mock.calls.map((call) => call[0].id);
+        expect(notifiedWorkerIds.sort()).toEqual(['w1', 'w2']);
+      });
+
+      it('calls appendRestoreBoundaryMarker before sessionRepository.save', async () => {
+        const agentWorker = buildInternalAgentWorker({ id: 'w1' });
+        const restoredWorkers = new Map<string, InternalWorker>([['w1', agentWorker]]);
+        const persisted = buildPersistedWorktreeSession({
+          id: 'session-1',
+          serverPid: null,
+          pausedAt: '2026-01-01T00:00:00.000Z',
+        });
+
+        const callOrder: string[] = [];
+        const appendRestoreBoundaryMarker = mock(async () => {
+          callOrder.push('appendRestoreBoundaryMarker');
+        });
+        const save = mock(async () => {
+          callOrder.push('sessionRepository.save');
+        });
+        const deps = createMockDeps({
+          sessionRepository: {
+            ...createMockDeps().sessionRepository,
+            findById: mock(async () => persisted),
+            update: mock(async () => true),
+            save,
+          },
+          appendRestoreBoundaryMarker,
+          workerManager: {
+            killWorker: mock(async () => {}),
+            restoreWorkersFromPersistence: mock(() => restoredWorkers),
+            activateAgentWorkerPty: mock(async () => {}),
+            activateTerminalWorkerPty: mock(async () => {}),
+          } satisfies SessionPauseResumeDeps['workerManager'],
+        });
+        const service = new SessionPauseResumeService(deps);
+
+        await service.resumeSession('session-1');
+
+        expect(callOrder).toEqual(['appendRestoreBoundaryMarker', 'sessionRepository.save']);
+      });
     });
 
     describe('embedded-agent worker revival (Issue #1264)', () => {

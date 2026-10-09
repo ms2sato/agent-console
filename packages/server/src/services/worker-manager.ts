@@ -87,6 +87,26 @@ const PTY_EXIT_TIMEOUT_MS = 5000;
 const SENTINEL_WATCHDOG_TIMEOUT_MS = 15000;
 
 /**
+ * Format a Date as ISO-8601 with the LOCAL UTC offset (e.g.
+ * `2026-10-09T15:00:00+09:00`), not `Date.prototype.toISOString()`'s
+ * always-UTC `Z` suffix. Used only by the restore-boundary marker's
+ * human-readable timestamp.
+ */
+function formatIsoWithLocalOffset(date: Date): string {
+  const pad = (n: number) => String(n).padStart(2, '0');
+  const offsetMinutes = -date.getTimezoneOffset();
+  const sign = offsetMinutes >= 0 ? '+' : '-';
+  const absMinutes = Math.abs(offsetMinutes);
+  const offsetH = pad(Math.floor(absMinutes / 60));
+  const offsetM = pad(absMinutes % 60);
+  return (
+    `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}` +
+    `T${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}` +
+    `${sign}${offsetH}:${offsetM}`
+  );
+}
+
+/**
  * Context passed from SessionManager for worker operations.
  * WorkerManager doesn't know about sessions directly.
  */
@@ -1188,6 +1208,30 @@ export class WorkerManager {
       intent: 'triage',
     });
 
+    this.appendSyntheticOutput(worker, sessionId, resolver, text);
+    await this.workerOutputFileManager.forceFlush(sessionId, worker.id);
+  }
+
+  /**
+   * Append the restore-boundary marker: a single plain-text line marking
+   * where a PTY worker's underlying process was replaced across a server
+   * restart. Plain text, NOT a new
+   * `PtyNotificationKind` -- the two notifications above
+   * (`appendSpawnFailureNotification` / `appendCwdMissingNotification`)
+   * use `buildPtyNotificationText`'s `[internal:...]` tag because they are
+   * structured events a client might parse; this marker is purely a
+   * human-readable visual separator in the scrollback with no fields to
+   * parse, so a wire-level kind would be a schema change with nothing to
+   * show for it; `SCHEMA_VERSION` stays unchanged by this change (no
+   * schema file touched).
+   */
+  async appendRestoreBoundaryMarker(
+    worker: InternalPtyWorker,
+    sessionId: string,
+    resolver: SessionDataPathResolver,
+    restoredAt: Date,
+  ): Promise<void> {
+    const text = `\r\n── restored after server restart (${formatIsoWithLocalOffset(restoredAt)}) — new process, conversation continued ──\r\n`;
     this.appendSyntheticOutput(worker, sessionId, resolver, text);
     await this.workerOutputFileManager.forceFlush(sessionId, worker.id);
   }
