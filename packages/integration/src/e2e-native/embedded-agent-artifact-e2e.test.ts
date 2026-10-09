@@ -265,7 +265,15 @@ describe('E2E: create_html_artifact through the embedded-agent shipping path (P3
 
       // --- Test AppContext, with the loop's MCP base URL late-bound to the app port ---
       let mcpBaseUrl = '';
-      ctx = await createTestContext({ getMcpBaseUrl: () => mcpBaseUrl });
+      ctx = await createTestContext({
+        getMcpBaseUrl: () => mcpBaseUrl,
+        // Real mkdtemp-style directory (Bun.spawnSync(['mkdir', '-p', ...])),
+        // not seeded in any fixture -- and a sibling e2e-native file's
+        // transitive mock-fs-helper import routes fs/promises through memfs
+        // for this whole process regardless. This test doesn't exercise the
+        // cwd-existence check itself (Issue #1892).
+        assertSpawnCwdFn: async () => {},
+      });
 
       // Seed a user; the session's createdBy (and therefore the artifact's
       // attribution -- docs/design/html-artifacts.md §5.2) references this record.

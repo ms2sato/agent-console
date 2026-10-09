@@ -79,6 +79,30 @@ export const FIXTURE_SESSION_DIRS: readonly string[] = [
   '/path/with spaces/project',
   '/test/live-path',
   '/test/paused-path',
+  // Found via a full monorepo `bun run test` run (Issue #1892 fixup,
+  // round 3): literals used by worker-lifecycle-manager.test.ts,
+  // mcp-server.test.ts, session-ownership.test.ts, and
+  // worker-manager-env.test.ts. All confirmed (grepped) to never appear in
+  // any `existsSync(...).toBe(false)` absence assertion elsewhere in the
+  // suite -- in particular `/test/repo` is also used by
+  // repository-manager.test.ts's `toBe(false)` assertions, but those target
+  // DIFFERENT derived paths (`${TEST_CONFIG_DIR}/repositories/test-org/repo`,
+  // `${TEST_CONFIG_DIR}/repositories/repo/outputs`), never `/test/repo`
+  // itself -- no collision.
+  '/test/project',
+  '/test/dir',
+  '/test/repo',
+  '/test/repo/worktrees/wt-auth',
+  '/test/target-path',
+  '/test/parent',
+  '/test/worktree/path',
+  // Found by running session-ownership.test.ts after the round-3 literals
+  // above still left it failing: session-ownership.test.ts and
+  // session-manager.test.ts both use this as a child session's
+  // `locationPath` in parent/child createdBy-inheritance fixtures. Grepped
+  // for `'/test/child'` against `toBe(false)` absence assertions
+  // elsewhere -- no hits.
+  '/test/child',
 ];
 
 /**
