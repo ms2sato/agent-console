@@ -17,6 +17,14 @@ import { branchNamePattern, branchNameErrorMessage } from '@agent-console/shared
  *
  * @see https://valibot.dev/api/forward/
  */
+/**
+ * Shared "context window tokens" validation pipe: a whole number of at
+ * least 1. Reused by `AddAgentWorkerMenu.tsx` for its own
+ * `contextWindowTokens` field, which is not part of this form -- exported
+ * here rather than duplicated so both sites apply the identical rule.
+ */
+export const ContextWindowTokensSchema = v.pipe(v.number(), v.integer(), v.minValue(1));
+
 export const CreateWorktreeFormSchema = v.pipe(
   v.object({
     branchNameMode: v.picklist(['prompt', 'custom', 'existing']),
@@ -52,7 +60,7 @@ export const CreateWorktreeFormSchema = v.pipe(
     // same constraint at the schema level so a value that somehow survives
     // the render-gating (e.g. a stale draft restore) is still rejected here
     // rather than reaching CreateWorktreeBaseSchema's server-side check.
-    contextWindowTokens: v.optional(v.pipe(v.number(), v.integer(), v.minValue(1))),
+    contextWindowTokens: v.optional(ContextWindowTokensSchema),
   }),
   // Validate initialPrompt is required when mode is 'prompt'
   v.forward(

@@ -638,6 +638,94 @@ describe('AddAgentWorkerMenu', () => {
       expect(screen.queryByPlaceholderText('e.g. opus')).toBeNull();
     });
 
+    describe('Context window validation (Issue #1627)', () => {
+      async function openAndType(contextWindowValue: string) {
+        embeddedAgentsResponse = { embeddedAgents: [embeddedClaudeSdkAgent] };
+        const onSelect = mock((_params: AddAgentWorkerParams) => Promise.resolve());
+
+        await renderWithRouter(
+          <AddAgentWorkerMenu onSelect={onSelect} onSelectShell={async () => {}} />,
+        );
+        const user = userEvent.setup();
+        await user.click(screen.getByRole('button', { name: 'Add agent worker' }));
+
+        const toggle = await screen.findByRole('button', { name: 'Options for Local Claude SDK' });
+        await user.click(toggle);
+
+        const modelInput = await waitFor(() => screen.getByPlaceholderText('e.g. opus'));
+        fireEvent.change(modelInput, { target: { value: 'opus' } });
+
+        const windowInput = await waitFor(() => screen.getByPlaceholderText('e.g. 128000'));
+        fireEvent.change(windowInput, { target: { value: contextWindowValue } });
+
+        return { user, onSelect, windowInput: windowInput as HTMLInputElement };
+      }
+
+      it('rejects 0 locally: onSelect is not called, the menu stays open, and the field shows an error', async () => {
+        const { user, onSelect, windowInput } = await openAndType('0');
+
+        await user.click(screen.getByRole('button', { name: 'Add' }));
+
+        expect(onSelect).not.toHaveBeenCalled();
+        expect(screen.queryByRole('menu')).not.toBeNull();
+        expect(screen.getByText('Context window must be a whole number of at least 1')).toBeTruthy();
+        expect(windowInput.getAttribute('aria-invalid')).toBe('true');
+      });
+
+      it('rejects a negative value locally: onSelect is not called, the menu stays open, and the field shows an error', async () => {
+        const { user, onSelect, windowInput } = await openAndType('-5');
+
+        await user.click(screen.getByRole('button', { name: 'Add' }));
+
+        expect(onSelect).not.toHaveBeenCalled();
+        expect(screen.queryByRole('menu')).not.toBeNull();
+        expect(screen.getByText('Context window must be a whole number of at least 1')).toBeTruthy();
+        expect(windowInput.getAttribute('aria-invalid')).toBe('true');
+      });
+
+      it('rejects a fractional value locally: onSelect is not called, the menu stays open, and the field shows an error', async () => {
+        const { user, onSelect, windowInput } = await openAndType('1.5');
+
+        await user.click(screen.getByRole('button', { name: 'Add' }));
+
+        expect(onSelect).not.toHaveBeenCalled();
+        expect(screen.queryByRole('menu')).not.toBeNull();
+        expect(screen.getByText('Context window must be a whole number of at least 1')).toBeTruthy();
+        expect(windowInput.getAttribute('aria-invalid')).toBe('true');
+      });
+
+      it('accepts a valid whole number: onSelect is called once with contextWindowTokens in the params', async () => {
+        const { user, onSelect } = await openAndType('4096');
+
+        await user.click(screen.getByRole('button', { name: 'Add' }));
+
+        expect(onSelect).toHaveBeenCalledTimes(1);
+        const callArg = onSelect.mock.calls[0][0];
+        expect(callArg).toEqual({
+          type: 'embedded-agent',
+          embeddedAgentId: 'embedded-claude-sdk-1',
+          model: 'opus',
+          contextWindowTokens: 4096,
+        });
+      });
+
+      it('clearing the field after an error, then re-adding, succeeds with contextWindowTokens omitted and no error shown', async () => {
+        const { user, onSelect, windowInput } = await openAndType('0');
+
+        await user.click(screen.getByRole('button', { name: 'Add' }));
+        expect(onSelect).not.toHaveBeenCalled();
+        expect(screen.getByText('Context window must be a whole number of at least 1')).toBeTruthy();
+
+        fireEvent.change(windowInput, { target: { value: '' } });
+        await user.click(screen.getByRole('button', { name: 'Add' }));
+
+        expect(onSelect).toHaveBeenCalledTimes(1);
+        const callArg = onSelect.mock.calls[0][0];
+        expect(callArg).not.toHaveProperty('contextWindowTokens');
+        expect(screen.queryByText('Context window must be a whole number of at least 1')).toBeNull();
+      });
+    });
+
     describe('getCapabilitiesImpl seam (single seam, both kinds -- proves the toggle gate and the fields cannot disagree)', () => {
       it('all-false hides the Options toggle for every agent item of both kinds', async () => {
         agentsResponse = { agents: [modelCapableAgent] };

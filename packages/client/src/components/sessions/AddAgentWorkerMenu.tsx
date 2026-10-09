@@ -1,4 +1,6 @@
 import { useState, useRef, useEffect, useMemo, useCallback } from 'react';
+import * as v from 'valibot';
+import type { FieldError } from 'react-hook-form';
 import { Link } from '@tanstack/react-router';
 import { useAgentDirectory } from '../../hooks/useAgentDirectory';
 import { AGENT_KIND_PRESENTATION } from '../agents';
@@ -6,6 +8,7 @@ import { AgentParameterFields } from '../agents/AgentParameterFields';
 import type { AgentSelection } from '../AgentSelector';
 import type { AgentDirectoryEntry, AgentParameterCapabilitiesByKind } from '@agent-console/shared';
 import { getAgentParameterCapabilitiesFor } from '@agent-console/shared';
+import { ContextWindowTokensSchema } from '../../schemas/worktree-form';
 import type { AddAgentWorkerParams } from './hooks/useTabManagement';
 
 interface AddAgentWorkerMenuProps {
@@ -82,6 +85,14 @@ export function AddAgentWorkerMenu({
   const [optionsContextWindowTokens, setOptionsContextWindowTokens] = useState<
     number | undefined
   >(undefined);
+  // Local validation error for optionsContextWindowTokens: this menu is
+  // not a react-hook-form instance, so there is no resolver to reject an
+  // invalid value at submit time -- handleAddWithOptions below runs the
+  // same ContextWindowTokensSchema pipe CreateWorktreeForm uses and sets
+  // this directly when the typed value fails it.
+  const [contextWindowTokensError, setContextWindowTokensError] = useState<
+    FieldError | undefined
+  >(undefined);
 
   // Stable ref callback (mount-only via empty deps) so that re-renders
   // triggered by typing in the panel's inputs do not re-run
@@ -98,6 +109,7 @@ export function AddAgentWorkerMenu({
     setOptionsModel(undefined);
     setOptionsReasoningEffort(undefined);
     setOptionsContextWindowTokens(undefined);
+    setContextWindowTokensError(undefined);
   }
 
   function handleToggleOptions(itemKey: string) {
@@ -111,6 +123,7 @@ export function AddAgentWorkerMenu({
     setOptionsModel(undefined);
     setOptionsReasoningEffort(undefined);
     setOptionsContextWindowTokens(undefined);
+    setContextWindowTokensError(undefined);
     setExpandedKey((prev) => (prev === itemKey ? null : itemKey));
   }
 
@@ -154,6 +167,16 @@ export function AddAgentWorkerMenu({
     const trimmed = value.trim() || undefined;
     setOptionsModel(trimmed);
     if (!trimmed) setOptionsContextWindowTokens(undefined);
+    // A stale error from a previous Add attempt must not survive editing
+    // the model -- clearing the model can also hide the Context window
+    // field entirely, so an error pinned to it would otherwise be
+    // unreachable without ever being cleared.
+    setContextWindowTokensError(undefined);
+  };
+
+  const handleOptionsContextWindowTokensChange = (value: number | undefined) => {
+    setOptionsContextWindowTokens(value);
+    setContextWindowTokensError(undefined);
   };
 
   const handleOptionsReasoningEffortChange = (value: string) => {
@@ -161,6 +184,25 @@ export function AddAgentWorkerMenu({
   };
 
   const handleAddWithOptions = async (selection: AgentSelection) => {
+    // Validate locally before doing anything else: the server rejects an
+    // invalid contextWindowTokens, but this menu is not a react-hook-form
+    // instance and has no resolver to stop a bad value from being sent in
+    // the first place. `undefined` (field left empty) stays valid -- the
+    // key is simply omitted from the request below, as today. Reuses the
+    // same ContextWindowTokensSchema pipe CreateWorktreeForm.tsx applies
+    // to its own homonymous field, so both forms enforce the identical
+    // rule.
+    if (optionsContextWindowTokens !== undefined) {
+      const result = v.safeParse(ContextWindowTokensSchema, optionsContextWindowTokens);
+      if (!result.success) {
+        setContextWindowTokensError({
+          type: 'validate',
+          message: 'Context window must be a whole number of at least 1',
+        });
+        return;
+      }
+    }
+    setContextWindowTokensError(undefined);
     setOpen(false);
     const params: AddAgentWorkerParams =
       selection.kind === 'terminal'
@@ -281,7 +323,8 @@ export function AddAgentWorkerMenu({
                       contextWindowTokens={optionsContextWindowTokens}
                       onModelChange={handleOptionsModelChange}
                       onReasoningEffortChange={handleOptionsReasoningEffortChange}
-                      onContextWindowTokensChange={setOptionsContextWindowTokens}
+                      onContextWindowTokensChange={handleOptionsContextWindowTokensChange}
+                      contextWindowTokensError={contextWindowTokensError}
                       getCapabilitiesImpl={getCapabilitiesImpl}
                     />
                     <button
@@ -342,7 +385,8 @@ export function AddAgentWorkerMenu({
                       contextWindowTokens={optionsContextWindowTokens}
                       onModelChange={handleOptionsModelChange}
                       onReasoningEffortChange={handleOptionsReasoningEffortChange}
-                      onContextWindowTokensChange={setOptionsContextWindowTokens}
+                      onContextWindowTokensChange={handleOptionsContextWindowTokensChange}
+                      contextWindowTokensError={contextWindowTokensError}
                       getCapabilitiesImpl={getCapabilitiesImpl}
                     />
                     <button

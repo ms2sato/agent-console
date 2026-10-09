@@ -1,7 +1,30 @@
 import { describe, it, expect } from 'bun:test';
 import * as v from 'valibot';
 import { valibotResolver } from '@hookform/resolvers/valibot';
-import { CreateWorktreeFormSchema } from '../worktree-form';
+import { CreateWorktreeFormSchema, ContextWindowTokensSchema } from '../worktree-form';
+
+describe('ContextWindowTokensSchema (Issue #1627)', () => {
+  it('accepts a positive integer', () => {
+    expect(v.safeParse(ContextWindowTokensSchema, 1).success).toBe(true);
+    expect(v.safeParse(ContextWindowTokensSchema, 4096).success).toBe(true);
+  });
+
+  it('rejects 0', () => {
+    expect(v.safeParse(ContextWindowTokensSchema, 0).success).toBe(false);
+  });
+
+  it('rejects a negative number', () => {
+    expect(v.safeParse(ContextWindowTokensSchema, -1).success).toBe(false);
+  });
+
+  it('rejects a fractional number', () => {
+    expect(v.safeParse(ContextWindowTokensSchema, 1.5).success).toBe(false);
+  });
+
+  it('rejects NaN', () => {
+    expect(v.safeParse(ContextWindowTokensSchema, NaN).success).toBe(false);
+  });
+});
 
 describe('CreateWorktreeFormSchema', () => {
   describe('prompt mode', () => {
