@@ -625,40 +625,42 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
   const primaryAgentTabId = tabs.find(t => t.workerType === 'agent')?.id;
 
   const tabButtons = tabs.map(tab => (
-    <button
+    <div
       key={tab.id}
-      role="tab"
-      id={`worker-tab-${tab.id}`}
-      aria-selected={tab.id === activeTabId}
-      aria-controls={`worker-tabpanel-${tab.id}`}
-      tabIndex={tab.id === activeTabId ? 0 : -1}
-      onClick={() => handleTabClick(tab.id)}
-      className={`px-4 py-2 text-sm flex items-center gap-2 border-r border-slate-600 hover:bg-slate-700 ${
+      className={`flex items-center border-r border-slate-600 hover:bg-slate-700 ${
         tab.id === activeTabId
           ? 'bg-slate-700 text-white'
           : 'text-gray-400'
       }`}
     >
-      {tab.workerType === 'git-diff' ? (
-        <DiffIcon className="w-3.5 h-3.5 text-violet-400" />
-      ) : (
-        <span className={`inline-block w-2 h-2 rounded-full ${getTabDotColor(tab.workerType)}`} aria-hidden="true" />
-      )}
-      {tab.name}
+      <button
+        role="tab"
+        id={`worker-tab-${tab.id}`}
+        aria-selected={tab.id === activeTabId}
+        aria-controls={`worker-tabpanel-${tab.id}`}
+        tabIndex={tab.id === activeTabId ? 0 : -1}
+        onClick={() => handleTabClick(tab.id)}
+        className="px-4 py-2 text-sm flex items-center gap-2"
+      >
+        {tab.workerType === 'git-diff' ? (
+          <DiffIcon className="w-3.5 h-3.5 text-violet-400" />
+        ) : (
+          <span className={`inline-block w-2 h-2 rounded-full ${getTabDotColor(tab.workerType)}`} aria-hidden="true" />
+        )}
+        {tab.name}
+      </button>
       {isCloseableTabType(tab.workerType, tab.id === primaryAgentTabId) && (
         <button
           type="button"
           aria-label="Close tab"
-          onClick={(e) => {
-            e.stopPropagation();
-            closeTab(tab.id);
-          }}
+          tabIndex={tab.id === activeTabId ? 0 : -1}
+          onClick={() => closeTab(tab.id)}
           className="ml-1 text-gray-500 hover:text-white cursor-pointer bg-transparent border-none p-0 text-sm leading-none"
         >
           x
         </button>
       )}
-    </button>
+    </div>
   ));
 
   // Render only the active tab (conditional rendering)
