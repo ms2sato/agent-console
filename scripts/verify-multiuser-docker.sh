@@ -990,14 +990,12 @@ if [ -n "$repo_id" ]; then
       echo "  POST /worktrees/pull on shared1-owned worktree, as alice -> HTTP ${s10_pull_code}"
       echo "  response body: $(cat "$S10_PULL_RESP")"
 
-      s10_detached_head_bug=1
+      s10_pull_ok=0
       if [ "$s10_pull_code" = "400" ] && grep -q 'Cannot pull in detached HEAD state' "$S10_PULL_RESP"; then
-        s10_detached_head_bug=0
-      fi
-      if [ "$s10_detached_head_bug" -eq 0 ]; then
+        s10_pull_ok=1
         echo "  BUG REPRODUCTION (expected on unmodified main, must be ABSENT after the #1623 fix): 400 Cannot pull in detached HEAD state"
       fi
-      check "pull does NOT answer 400 'Cannot pull in detached HEAD state' for a shared1-owned worktree (#1623)" "$s10_detached_head_bug"
+      check "pull does NOT answer 400 'Cannot pull in detached HEAD state' for a shared1-owned worktree (#1623)" "$s10_pull_ok"
 
       # Diagnostic signal (not machine-asserted): after the fix, the
       # server's own warn line for a swallowed getCurrentBranch failure on
