@@ -18,6 +18,8 @@
  *   node .claude/skills/orchestrator/preflight-check.js              (local mode: uses git diff with same semantic)
  */
 
+import { dirname, resolve as resolvePath } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
   getChangedFiles,
   getLocalChangedFiles,
@@ -32,6 +34,49 @@ import {
   runEmbeddedAgentStdoutWritersCheck,
 } from './check-utils.js';
 import { run as runDuplicationCheck } from './rule-skill-duplication-check.js';
+import { checkWorkspaceLinks } from './check-workspace-links.js';
+
+// This file lives at .claude/skills/orchestrator/preflight-check.js, so
+// three levels up is the repo root -- same derivation check-utils.js uses
+// for its own repoRoot-defaulting checks.
+const DEFAULT_REPO_ROOT = resolvePath(dirname(fileURLToPath(import.meta.url)), '../../..');
+
+// --- Workspace link check display ---
+
+/**
+ * Renders the stale-install block for every package with at least one
+ * missing `@agent-console/*` workspace symlink. Pure formatting over an
+ * already-computed `missing` array -- the filesystem read happens once in
+ * `run()` via `checkWorkspaceLinks`.
+ *
+ * A stale install makes every OTHER verdict in this script unreliable: a
+ * missing workspace symlink reads, from inside, as "a module cannot be
+ * found" -- indistinguishable from a genuine code defect -- so there is no
+ * point evaluating coverage / language / duplication against a tree whose
+ * own dependency graph is incomplete. Hence the early, total exit rather
+ * than folding this into the overall exit-code OR below.
+ *
+ * In CI this is a no-op: the workflow always runs `bun install` before
+ * invoking this script, so `missing` is empty on every CI run by
+ * construction. It only fires in a local / delegate worktree whose
+ * `node_modules` predates a workspace dependency being newly declared.
+ */
+function printWorkspaceLinkCheck(missing) {
+  if (missing.length === 0) return 0;
+
+  console.log('## Workspace Link Check\n');
+
+  const depsByPkg = new Map();
+  for (const { pkg, dep } of missing) {
+    if (!depsByPkg.has(pkg)) depsByPkg.set(pkg, []);
+    depsByPkg.get(pkg).push(dep);
+  }
+  for (const [pkg, deps] of depsByPkg) {
+    console.log(`Stale install: ${pkg} is missing workspace link(s) ${deps.join(', ')} -- run 'bun install' in this worktree.`);
+  }
+  console.log('Every result below may be a symptom of this, not of your diff.');
+  return 1;
+}
 
 // --- Language check display ---
 
@@ -257,7 +302,15 @@ export function printCoverageCheck(testCoverage, integrationTestNeeds) {
 
 // --- Main ---
 
-function run(changedFiles, diffRef = {}) {
+function run(changedFiles, diffRef = {}, repoRoot = DEFAULT_REPO_ROOT) {
+  // Workspace link check runs FIRST and, on any finding, exits immediately
+  // without running coverage / language / duplication / etc. — see
+  // `printWorkspaceLinkCheck`'s doc comment for why.
+  const { missing } = checkWorkspaceLinks(repoRoot);
+  if (printWorkspaceLinkCheck(missing) !== 0) {
+    process.exit(1);
+  }
+
   const { testCoverage } = findTestFiles(changedFiles, diffRef);
   const categories = categorizeFiles(changedFiles);
   const integrationTestNeeds = detectIntegrationTestNeeds(changedFiles, categories, diffRef);
@@ -294,7 +347,7 @@ function run(changedFiles, diffRef = {}) {
 }
 
 // --- Exports for testing ---
-export { run, printEmbeddedAgentStdoutWritersCheck };
+export { run, printEmbeddedAgentStdoutWritersCheck, printWorkspaceLinkCheck };
 
 // --- Entry point ---
 const isMainModule = import.meta.url === `file://${process.argv[1]}` || process.argv[1]?.endsWith('preflight-check.js');

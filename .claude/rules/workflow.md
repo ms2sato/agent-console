@@ -112,6 +112,7 @@ The reverse failure mode is also real: CI output that locally would mean "broken
 - The output is empty or template-only, with no meaningful content where data should be.
 - Failure is on the first CI run for a freshly-added cross-runtime invocation (e.g., a `node` workflow now spawning `bun`, or vice versa).
 - The same script invoked from a different workflow on the same branch passes — only the new caller fails.
+- `Cannot find module '@agent-console/<x>'` or `TS2307` on a workspace import in a worktree whose `node_modules` predates that dependency being declared -- the positive control is the CI log's own line for that package (`@agent-console/<pkg> typecheck: Exited with code 0`); `bun install` fixes it; `preflight-check.js` now names this on sight.
 
 **Diagnostic procedure for environment-difference suspects:**
 

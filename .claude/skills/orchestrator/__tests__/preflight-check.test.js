@@ -1,5 +1,10 @@
 import { describe, it, expect, mock } from 'bun:test';
-import { formatCoverageVerdict, printEmbeddedAgentStdoutWritersCheck, printCoverageCheck } from '../preflight-check.js';
+import {
+  formatCoverageVerdict,
+  printEmbeddedAgentStdoutWritersCheck,
+  printCoverageCheck,
+  printWorkspaceLinkCheck,
+} from '../preflight-check.js';
 import { findTestFiles } from '../check-utils.js';
 
 /**
@@ -166,5 +171,51 @@ describe('printEmbeddedAgentStdoutWritersCheck', () => {
     expect(output).toContain('Found 1 line(s) of output, including non-allowlisted stdout-writer violation(s)');
     expect(output).toContain('packages/embedded-agent/src/foo.ts:12:3 console.log(...)');
     expect(output).not.toContain('crashed before producing output');
+  });
+});
+
+describe('printWorkspaceLinkCheck (Issue #1504)', () => {
+  it('prints nothing and returns 0 when nothing is missing', () => {
+    const output = captureConsoleLog(() => {
+      expect(printWorkspaceLinkCheck([])).toBe(0);
+    });
+    expect(output).toBe('');
+  });
+
+  it('renders the exact stale-install sentence for a single missing dep', () => {
+    const output = captureConsoleLog(() => {
+      expect(
+        printWorkspaceLinkCheck([
+          { pkg: 'integration', dep: 'embedded-agent', expectedLink: '/repo/packages/integration/node_modules/@agent-console/embedded-agent' },
+        ]),
+      ).toBe(1);
+    });
+    expect(output).toContain(
+      "Stale install: integration is missing workspace link(s) embedded-agent -- run 'bun install' in this worktree.",
+    );
+    expect(output).toContain('Every result below may be a symptom of this, not of your diff.');
+  });
+
+  it('groups multiple missing deps for the same package onto one line', () => {
+    const output = captureConsoleLog(() => {
+      printWorkspaceLinkCheck([
+        { pkg: 'client', dep: 'server', expectedLink: '/repo/packages/client/node_modules/@agent-console/server' },
+        { pkg: 'client', dep: 'shared', expectedLink: '/repo/packages/client/node_modules/@agent-console/shared' },
+      ]);
+    });
+    expect(output).toContain(
+      "Stale install: client is missing workspace link(s) server, shared -- run 'bun install' in this worktree.",
+    );
+  });
+
+  it('prints one line per affected package when more than one package is missing links', () => {
+    const output = captureConsoleLog(() => {
+      printWorkspaceLinkCheck([
+        { pkg: 'client', dep: 'server', expectedLink: '/repo/packages/client/node_modules/@agent-console/server' },
+        { pkg: 'integration', dep: 'embedded-agent', expectedLink: '/repo/packages/integration/node_modules/@agent-console/embedded-agent' },
+      ]);
+    });
+    expect(output).toContain('Stale install: client is missing workspace link(s) server');
+    expect(output).toContain('Stale install: integration is missing workspace link(s) embedded-agent');
   });
 });
