@@ -447,6 +447,7 @@ async function main(): Promise<number> {
       {
         name: `compaction-fidelity-smoke-${process.pid}`,
         description: 'Disposable definition for the Issue #1350 compaction-fidelity probe.',
+        engine: 'openai-api',
         provider: { baseUrl: PROVIDER_BASE_URL, model: PROVIDER_MODEL, apiKeyRef: PROVIDER_KEY_REF },
         contextWindowTokens: WINDOW_TOKENS,
       },

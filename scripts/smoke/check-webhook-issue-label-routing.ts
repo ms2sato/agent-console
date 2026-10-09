@@ -229,8 +229,9 @@ function bail(message: string): never {
 /** Find a free TCP port by letting the OS assign one, then releasing it. */
 function getFreePort(): number {
   const s = Bun.serve({ port: 0, fetch: () => new Response('') });
-  const port = s.port;
+  const { port } = s;
   s.stop(true);
+  if (port === undefined) bail('Bun.serve() with port: 0 unexpectedly returned no port');
   return port;
 }
 

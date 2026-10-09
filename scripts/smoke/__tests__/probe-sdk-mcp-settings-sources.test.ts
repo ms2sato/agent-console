@@ -18,7 +18,6 @@
  * exit-code mapping must never claim MEASURED once a run halted on budget.
  */
 import { describe, it, expect } from 'bun:test';
-import { join } from 'node:path';
 import {
   ALL_SERVER_NAMES,
   LOCAL_SERVER,
@@ -45,8 +44,6 @@ import {
   type ArmALabel,
   type InitLite,
 } from '../probe-sdk-mcp-settings-sources.js';
-
-const emptyInit: InitLite = { tools: [], mcpServers: [], agents: [], skills: [] };
 
 function initWith(names: readonly string[], statuses: Record<string, string> = {}, agents: string[] = [], skills: string[] = []): InitLite {
   return {

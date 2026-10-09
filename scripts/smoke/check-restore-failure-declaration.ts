@@ -113,8 +113,12 @@ import { mkdirSync, rmSync, chmodSync, readFileSync, appendFileSync } from 'node
 import * as os from 'node:os';
 import * as path from 'node:path';
 import type { FileSink, Subprocess } from 'bun';
-import type { EmbeddedAgentDefinition, EmbeddedAgentStreamEvent } from '@agent-console/shared';
+import type {
+  EmbeddedAgentDefinition,
+  EmbeddedAgentStreamEvent,
+} from '../../packages/shared/src/types/embedded-agent.ts';
 import type { WorkerOutputFileManager } from '../../packages/server/src/lib/worker-output-file.ts';
+import type { SessionDataPathResolver } from '../../packages/server/src/lib/session-data-path-resolver.ts';
 
 const EXPECT_NO_DECLARATION = process.argv.includes('--expect-no-declaration');
 
@@ -243,7 +247,11 @@ async function main(): Promise<void> {
     // `claudeSdkAgent` (the builtin) is real too -- registered by
     // `EmbeddedAgentManager.initialize()`, never hand-inserted.
     const openaiDef: EmbeddedAgentDefinition = await ctx.embeddedAgentManager.createEmbeddedAgent(
-      { name: 'R6 smoke openai-api', provider: { baseUrl: 'http://127.0.0.1:1/v1', model: 'unused' } },
+      {
+        name: 'R6 smoke openai-api',
+        engine: 'openai-api',
+        provider: { baseUrl: 'http://127.0.0.1:1/v1', model: 'unused' },
+      },
       authUser.id,
     );
 
@@ -338,9 +346,13 @@ async function main(): Promise<void> {
       getGlobalWorkerExitCallback: () => undefined,
       shutdownGraceMs: 20,
       sigtermTimeoutMs: 20,
+      onSessionUpdated: () => {},
+      mcpServerPermissionRepository: { listByScope: async () => [] },
+      resolveDisableClaudeAiConnectors: async () => false,
+      deliverWorkerNotification: async () => ({ ok: true as const }),
     });
 
-    async function readEvents(sessionId: string, workerId: string, resolver: never): Promise<EmbeddedAgentStreamEvent[]> {
+    async function readEvents(sessionId: string, workerId: string, resolver: SessionDataPathResolver): Promise<EmbeddedAgentStreamEvent[]> {
       const hist = await wofm.readHistoryWithOffset(sessionId, workerId, resolver);
       const events: EmbeddedAgentStreamEvent[] = [];
       for (const line of hist.data.split('\n')) {
@@ -364,7 +376,7 @@ async function main(): Promise<void> {
      * applied through the service's own stdout line handler, not a
      * hand-written field mutation.
      */
-    async function establishIncarnation(sessionId: string, workerId: string, resolver: never, engine: 'claude-sdk' | 'openai-api'): Promise<void> {
+    async function establishIncarnation(sessionId: string, workerId: string, resolver: SessionDataPathResolver, engine: 'claude-sdk' | 'openai-api'): Promise<void> {
       await service.activate(sessionId, workerId);
       const handle = spawns.get('current');
       if (!handle) bail('no fake subprocess handle recorded after activate()');
@@ -374,6 +386,7 @@ async function main(): Promise<void> {
 
       const send = await service.sendUserMessage(sessionId, workerId, 'hello (R6 smoke fixture)');
       if (!send.ok) bail(`sendUserMessage was refused: ${JSON.stringify(send)}`);
+      if (!('id' in send)) bail(`sendUserMessage unexpectedly queued: ${JSON.stringify(send)}`);
       handle.push(JSON.stringify({ v: 1, type: 'assistant-message', turnId: send.id, text: 'hi (R6 smoke fixture)' }));
       handle.push(JSON.stringify({ v: 1, type: 'state', state: 'idle' }));
       if (engine === 'claude-sdk') {
@@ -397,8 +410,8 @@ async function main(): Promise<void> {
      * that need to observe `getRestoreInfo` must do so BEFORE calling
      * `deactivateAfterFallback` below.
      */
-    async function forceFallback(sessionId: string, workerId: string, resolver: never): Promise<string> {
-      const liveOutputPath = resolver!.getOutputFilePath(sessionId, workerId);
+    async function forceFallback(sessionId: string, workerId: string, resolver: SessionDataPathResolver): Promise<string> {
+      const liveOutputPath = resolver.getOutputFilePath(sessionId, workerId);
       const before = readFileSync(liveOutputPath, 'utf-8');
       if (!before.endsWith('\n')) appendFileSync(liveOutputPath, '\n');
       appendFileSync(liveOutputPath, '{not valid json');
@@ -424,10 +437,10 @@ async function main(): Promise<void> {
     // ====================================================================
     console.log('\n==> CASE 1: claude-sdk worker with a surviving sdkSessionId');
 
-    await establishIncarnation(sessionCase1.id, workerCase1.id, resolver1 as never, 'claude-sdk');
+    await establishIncarnation(sessionCase1.id, workerCase1.id, resolver1, 'claude-sdk');
     check(internalWorker1.sdkSessionId !== null, 'sdkSessionId was set on the worker via the REAL sdk-session-id event handler', `sdkSessionId=${internalWorker1.sdkSessionId}`);
 
-    const liveOutputPath1 = await forceFallback(sessionCase1.id, workerCase1.id, resolver1 as never);
+    const liveOutputPath1 = await forceFallback(sessionCase1.id, workerCase1.id, resolver1);
 
     const infoAfterFallback = service.getRestoreInfo(workerCase1.id);
     check(infoAfterFallback !== null && infoAfterFallback.failed === true, 'the forced-fallback activation reports a restore FAILURE', JSON.stringify(infoAfterFallback));
@@ -470,7 +483,7 @@ async function main(): Promise<void> {
       const handle3 = spawns.get('current');
       if (!handle3) bail('no fake subprocess handle recorded for the third activation');
       handle3.push(JSON.stringify({ v: 1, type: 'ready' }));
-      await waitFor(async () => (await readEvents(sessionCase1.id, workerCase1.id, resolver1 as never)).some((e) => e.type === 'ready'), 2000, 'ready on the third activation');
+      await waitFor(async () => (await readEvents(sessionCase1.id, workerCase1.id, resolver1)).some((e) => e.type === 'ready'), 2000, 'ready on the third activation');
 
       const infoThirdActivation = service.getRestoreInfo(workerCase1.id);
       check(
@@ -480,7 +493,7 @@ async function main(): Promise<void> {
       );
 
       await service.deactivate(sessionCase1.id, workerCase1.id);
-      const eventsAfterThird = await readEvents(sessionCase1.id, workerCase1.id, resolver1 as never);
+      const eventsAfterThird = await readEvents(sessionCase1.id, workerCase1.id, resolver1);
       check(
         eventsAfterThird.some((e) => e.type === 'restore-failure-declaration'),
         'the declaration is STILL PRESENT after the second restore completes -- it outlives the incarnation that wrote it',
@@ -492,8 +505,8 @@ async function main(): Promise<void> {
     // ====================================================================
     if (!EXPECT_NO_DECLARATION) {
       console.log('\n==> CASE 2: NEGATIVE CONTROL -- openai-api engine writes no declaration');
-      await establishIncarnation(sessionCase2.id, workerCase2.id, resolver2 as never, 'openai-api');
-      const liveOutputPath2 = await forceFallback(sessionCase2.id, workerCase2.id, resolver2 as never);
+      await establishIncarnation(sessionCase2.id, workerCase2.id, resolver2, 'openai-api');
+      const liveOutputPath2 = await forceFallback(sessionCase2.id, workerCase2.id, resolver2);
       await deactivateAfterFallback(sessionCase2.id, workerCase2.id);
       chmodSync(liveOutputPath2, 0o644);
       const freshContent2 = readFileSync(liveOutputPath2, 'utf-8').trim();
@@ -513,11 +526,11 @@ async function main(): Promise<void> {
       const handleCase3 = spawns.get('current');
       if (!handleCase3) bail('no fake subprocess handle recorded for case 3\'s first activation');
       handleCase3.push(JSON.stringify({ v: 1, type: 'ready' }));
-      await waitFor(async () => (await readEvents(sessionCase3.id, workerCase3.id, resolver3 as never)).some((e) => e.type === 'ready'), 2000, 'ready for case 3');
+      await waitFor(async () => (await readEvents(sessionCase3.id, workerCase3.id, resolver3)).some((e) => e.type === 'ready'), 2000, 'ready for case 3');
       await service.deactivate(sessionCase3.id, workerCase3.id);
       check(internalWorker3.sdkSessionId === null, 'PREMISE: sdkSessionId genuinely never got set for this worker', `sdkSessionId=${internalWorker3.sdkSessionId}`);
 
-      const liveOutputPath3 = await forceFallback(sessionCase3.id, workerCase3.id, resolver3 as never);
+      const liveOutputPath3 = await forceFallback(sessionCase3.id, workerCase3.id, resolver3);
       await deactivateAfterFallback(sessionCase3.id, workerCase3.id);
       chmodSync(liveOutputPath3, 0o644);
       const freshContent3 = readFileSync(liveOutputPath3, 'utf-8').trim();

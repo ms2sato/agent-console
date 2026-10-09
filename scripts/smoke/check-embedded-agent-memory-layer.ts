@@ -984,6 +984,7 @@ async function main(engine: EngineSelection, expectNoMemory: boolean): Promise<v
           {
             name: `memory-layer-smoke-openai-d1-${process.pid}`,
             description: 'Disposable definition D1 for the memory-layer E2E (epic #1636 Phase 2 PR-3b).',
+            engine: 'openai-api',
             provider: { baseUrl: PROVIDER_BASE_URL, model: PROVIDER_MODEL, apiKeyRef: PROVIDER_KEY_REF },
             enabledTools: [...SMOKE_ENABLED_TOOLS],
           },
@@ -993,6 +994,7 @@ async function main(engine: EngineSelection, expectNoMemory: boolean): Promise<v
           {
             name: `memory-layer-smoke-openai-d2-${process.pid}`,
             description: 'Disposable definition D2 (negative control) for the memory-layer E2E.',
+            engine: 'openai-api',
             provider: { baseUrl: PROVIDER_BASE_URL, model: PROVIDER_MODEL, apiKeyRef: PROVIDER_KEY_REF },
             enabledTools: [...SMOKE_ENABLED_TOOLS],
           },

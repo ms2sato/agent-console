@@ -182,7 +182,7 @@ async function spawnTrackedMarked(
           );
         }),
       ]);
-      let readResult: ReadableStreamReadResult<Uint8Array>;
+      let readResult: Awaited<ReturnType<typeof reader.read>>;
       try {
         readResult = await readOrTimeout;
       } finally {

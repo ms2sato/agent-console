@@ -166,7 +166,6 @@ import {
 import {
   isAccountConnector,
   mcpServerOf,
-  slugifyMcpServerName,
 } from '../../packages/embedded-agent/src/mcp-names.js';
 import { SDK_TODO_WRITE_TOOL_NAME } from '../../packages/shared/src/types/embedded-agent.ts';
 import { claudeSdkAgent } from '../../packages/server/src/services/embedded-agents/claude-sdk-builtin.ts';

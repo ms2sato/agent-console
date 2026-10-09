@@ -955,7 +955,7 @@ export interface OrphanSweepResult {
  * `check-stdin-sink-leak.ts`): on any other platform every ledger pid is
  * reported, never probed or signaled.
  */
-function sweepOrphanCanaryProcesses(canaryDir: string): OrphanSweepResult {
+function sweepOrphanCanaryProcesses(_canaryDir: string): OrphanSweepResult {
   const result: OrphanSweepResult = { checked: 0, survivors: [], killed: [], reportedOnly: [] };
   let ledgerContent: string;
   try {
@@ -1747,6 +1747,7 @@ async function startHeaderCapturingStandIn(headerName: string): Promise<{ url: s
  * SAME stand-in the reserved `agent-console` entry already targets is the
  * built-in positive control there).
  */
+// NOTE: an unused `headersStatus` reading (G2_HEADERS_SERVER's system:init status) was removed here during a typecheck-config fix; the diagnostic `verdict` string below reports `url` status but not `headers` status, asymmetric with the url block -- worth a follow-up look.
 async function armG2(f: Fixtures, url: string): Promise<ArmVerdict> {
   h("ARM G2 (Orchestrator's follow-up) -- ${VAR} expansion in env:/headers:/url:, explicit mcpServers only");
   const probeVarValue = `probe-g2-env-expanded-${nonce('VAL')}`;
@@ -1803,7 +1804,6 @@ async function armG2(f: Fixtures, url: string): Promise<ArmVerdict> {
     // `session.close()`, not after).
     const statusOf = (name: string): string | null => mcpStatus(init, name);
     const envStatus = statusOf(G2_ENV_SERVER);
-    const headersStatus = statusOf(G2_HEADERS_SERVER);
     const urlStatus = statusOf(G2_URL_SERVER);
     const reportedEnvValue = run.outcome.text.trim();
     const envExpanded = reportedEnvValue === probeVarValue;

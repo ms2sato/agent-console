@@ -302,6 +302,7 @@ async function main(): Promise<void> {
       {
         name: `image-attachments-smoke-subject-${process.pid}`,
         description: 'Disposable supportsImages:true definition for the image-attachments smoke (Issue #1571).',
+        engine: 'openai-api',
         provider: { baseUrl: PROVIDER_BASE_URL, model: SUBJECT_MODEL, apiKeyRef: PROVIDER_KEY_REF, supportsImages: true },
       },
       owner.id,
@@ -310,6 +311,7 @@ async function main(): Promise<void> {
       {
         name: `image-attachments-smoke-control-${process.pid}`,
         description: 'Disposable supportsImages:false definition for the image-attachments smoke (Issue #1571).',
+        engine: 'openai-api',
         provider: { baseUrl: PROVIDER_BASE_URL, model: CONTROL_MODEL, apiKeyRef: PROVIDER_KEY_REF, supportsImages: false },
       },
       owner.id,

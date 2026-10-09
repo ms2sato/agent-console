@@ -171,7 +171,7 @@ async function spawnTrackedSleep(username: string, seconds: number): Promise<num
           );
         }),
       ]);
-      let readResult: ReadableStreamReadResult<Uint8Array>;
+      let readResult: Awaited<ReturnType<typeof reader.read>>;
       try {
         readResult = await readOrTimeout;
       } finally {

@@ -607,7 +607,7 @@ async function main(): Promise<void> {
     // is unchanged). ---
     console.log('==> configured bun-path resolvability check');
     const configuredBunCmd = process.env.EMBEDDED_AGENT_BUN_PATH || 'bun';
-    let configuredVersionResult: ReturnType<typeof Bun.spawnSync>;
+    let configuredVersionResult: Bun.SyncSubprocess<'pipe', 'pipe'>;
     try {
       configuredVersionResult = Bun.spawnSync([configuredBunCmd, '--version']);
     } catch (err) {
@@ -637,7 +637,7 @@ async function main(): Promise<void> {
 
     console.log('==> live systemd server process executes the configured EMBEDDED_AGENT_BUN_PATH');
     if (configuredBunCmd.startsWith('/')) {
-      let pidResult: ReturnType<typeof Bun.spawnSync>;
+      let pidResult: Bun.SyncSubprocess<'pipe', 'pipe'>;
       try {
         pidResult = Bun.spawnSync(['systemctl', 'show', '-p', 'MainPID', '--value', SYSTEMD_UNIT_NAME]);
       } catch (err) {
@@ -935,6 +935,9 @@ async function main(): Promise<void> {
       sessionManager: ctx.sessionManager,
       repositoryManager: ctx.repositoryManager,
       agentManager: ctx.agentManager,
+      agentDirectory: ctx.agentDirectory,
+      artifactRepository: ctx.artifactRepository,
+      bookmarkRepository: ctx.bookmarkRepository,
       timerManager: ctx.timerManager,
       conditionalWakeupManager: ctx.conditionalWakeupManager,
       interactiveProcessManager: ctx.interactiveProcessManager,

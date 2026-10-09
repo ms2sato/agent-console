@@ -399,6 +399,7 @@ async function main(): Promise<void> {
     // single-user mode: the server process user, upserted into `users` at
     // context creation. Activation needs it to mint an MCP caller identity.
     const authUser = ctx.userMode.authenticate(() => undefined);
+    if (!authUser) bail('ctx.userMode.authenticate() returned null; single-user mode should always resolve a user');
     const session = await sm.createSession(
       { type: 'quick', locationPath: workCwd },
       { createdBy: authUser.id },
