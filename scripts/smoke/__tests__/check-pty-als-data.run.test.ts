@@ -36,14 +36,20 @@ import * as path from 'node:path';
  * was reverted immediately after measuring; this wrapper leaves the
  * smoke's fault injection untouched.
  *
- * Contention finding (Issue #1872): a sibling wrapper in this same PR
- * (`check-exit-127-diagnostic.run.test.ts`) flaked 1-in-5 on a loaded
- * shared host because its smoke's own wait bound lost a race under PTY
- * fork/exec scheduling delay. This smoke's `MARKER_WAIT_TIMEOUT_MS` /
- * `EXIT_WAIT_TIMEOUT_MS` were widened for the same reason (see the smoke's
- * own comment); this wrapper additionally surfaces the smoke's captured
- * stdout+stderr on any future failure so the actual cause is visible
- * without a local re-run.
+ * Contention finding (Issue #1872): this smoke's own kill-then-wait race
+ * (`runCycle`'s `pty.kill()` followed by a race against `exited`) was
+ * losing almost every cycle because an interactive `sh -c '...; exec sh'`
+ * PTY ignores the default `SIGTERM` (measured: still alive at 1509ms;
+ * `SIGHUP` exits it in ~20ms) -- the fix below is `pty.kill('SIGHUP')`,
+ * with `EXIT_WAIT_TIMEOUT_MS` restored to its original value (that bound
+ * is now a guard that should never fire, not a per-cycle tax).
+ * `MARKER_WAIT_TIMEOUT_MS` stays widened for genuine load headroom at zero
+ * happy-path cost, since it's a polling loop that exits early on success.
+ * A sibling smoke, `check-exit-127-diagnostic.ts`, hit a DIFFERENT,
+ * unrelated flake (its own `selfCheck()` has no `kill()` at all) and was
+ * excluded from this PR's CI-wrapper set -- see Issue #1879. This wrapper
+ * surfaces the smoke's captured stdout+stderr on any future failure so the
+ * actual cause is visible without a local re-run.
  */
 const REPO_ROOT = path.resolve(import.meta.dir, '../../..');
 const SMOKE_PATH = 'scripts/smoke/check-pty-als-data.ts';

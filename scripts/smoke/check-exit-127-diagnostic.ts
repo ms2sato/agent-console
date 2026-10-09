@@ -55,10 +55,16 @@
  *   - The agent-console HTTP/WebSocket server. No server process runs here;
  *     `WorkerManager` is exercised directly, same as `worker-manager.test.ts`.
  *
- * Since #1872 this is no longer a manual-only gate: it also runs in CI, via
- * `scripts/smoke/__tests__/check-exit-127-diagnostic.run.test.ts` under
- * `test:scripts` -- the sub-second cost that made this script free and
- * deterministic in the first place is exactly what makes a CI wrapper cheap.
+ * * #1872 tried promoting this to a CI-run `test:scripts` case (like its
+ * siblings `check-pty-als-data.ts` / `check-pty-early-output.ts`) and
+ * measured a ~10% `selfCheck()` flake rate under ordinary host/suite
+ * contention (not just deliberate load) -- `EXIT_WAIT_TIMEOUT_MS` below was
+ * widened (5000->30000) as a mitigation, but the flake persisted even at
+ * that bound, so the CI wrapper was reverted and this stays a manual gate.
+ * Issue [#1879](https://github.com/ms2sato/agent-console/issues/1879)
+ * tracks diagnosing and fixing the underlying cause (lost Bun/adapter exit
+ * event vs. a genuinely stuck child under load -- still undetermined)
+ * before a wrapper is re-added.
  *
  * Usage:
  *   bun scripts/smoke/check-exit-127-diagnostic.ts

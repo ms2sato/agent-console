@@ -40,15 +40,17 @@ import * as path from 'node:path';
  * immediately after measuring; this wrapper leaves both the smoke and
  * production code untouched.
  *
- * Contention finding (Issue #1872): a sibling wrapper in this same PR
- * (`check-exit-127-diagnostic.run.test.ts`) flaked 1-in-5 on a loaded
- * shared host because its smoke's own wait bound lost a race under PTY
- * fork/exec scheduling delay. This smoke has no comparable fixed-bound
- * race in its own fd-count assertion (it polls via `waitUntil` against a
- * computed threshold, not a short fixed sleep), so its constants were left
- * unchanged; this wrapper still surfaces the smoke's captured
- * stdout+stderr on any future failure, for the same reason as its three
- * siblings.
+ * Contention finding (Issue #1872): two sibling PTY smokes in this same PR
+ * (`check-pty-als-data.ts`, `check-pty-early-output.ts`) had a kill-then-
+ * wait race losing almost every cycle because an interactive PTY shell
+ * ignores `SIGTERM`; both were fixed with `SIGHUP`. This smoke has no
+ * comparable fixed-bound race in its own fd-count assertion (it polls via
+ * `waitUntil` against a computed threshold, not a short fixed sleep), so
+ * its constants were left unchanged. A third sibling, `check-exit-127-
+ * diagnostic.ts`, hit a DIFFERENT, unrelated flake (no `kill()` involved)
+ * and was excluded from this PR's CI-wrapper set -- see Issue #1879. This
+ * wrapper still surfaces the smoke's captured stdout+stderr on any future
+ * failure, for the same reason as its two landed siblings.
  */
 const REPO_ROOT = path.resolve(import.meta.dir, '../../..');
 const SMOKE_PATH = 'scripts/smoke/check-stdin-sink-leak.ts';
