@@ -379,6 +379,9 @@ export type NewRepositorySlackIntegration = Insertable<RepositorySlackIntegratio
 /** Repository Slack integration data for UPDATE queries */
 export type RepositorySlackIntegrationUpdate = Updateable<RepositorySlackIntegrationsTable>;
 
+/** Same rationale as `SessionRowFull`, for `repository_slack_integrations`. */
+export type RepositorySlackIntegrationRowFull = Required<NewRepositorySlackIntegration>;
+
 /**
  * Worktrees table schema.
  * Stores worktree index data, replacing the JSON-based worktree-indexes.json.
