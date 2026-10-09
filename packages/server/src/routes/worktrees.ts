@@ -386,13 +386,16 @@ const worktrees = new Hono<AppBindings>()
   .delete('/:id/worktrees/*', async (c) => {
     const repoId = c.req.param('id');
     const { repositoryManager, sessionManager, worktreeService, jobQueue, findOpenPullRequest } = c.get('appContext');
-    // Thread the authenticated OS username down to the deletion service so
-    // multi-user installs (a) delete the worktree as the worktree-owning
-    // user — fixing the `Permission denied` failure when `agentconsole`
-    // tries to remove a delegated user's files, and (b) run the
-    // `gh pr list` open-PR check under the requesting user's gh auth token.
+    // Resolve the identity that runs the deletion: the worktree's OWNING
+    // session's spawn user (checked live, then paused), falling back to
+    // the requester only when no session owns this path (e.g. orphan
+    // cleanup with no session at all). That identity threads into the
+    // open-PR check (`gh pr list` runs under the owner's own gh auth),
+    // executeCleanupCommandIfConfigured (an operator-authored command that
+    // must run as the account the repository owner configured, not
+    // whichever human clicked delete), and worktreeService.removeWorktree.
     // In single-user mode, `runAsUser` reads this value but `AUTH_MODE`
-    // gates the elevation to a no-op for both paths.
+    // gates the elevation to a no-op for all three paths.
     const authUser = c.get('authUser');
 
     // Get worktree path from URL (everything after /worktrees/)
@@ -425,7 +428,8 @@ const worktrees = new Hono<AppBindings>()
     }
 
     const deletionDeps = { worktreeService, sessionManager, repositoryManager, findOpenPullRequest, getCurrentBranch };
-    const requestUsername = authUser.username;
+    const requestUsername =
+      (await sessionManager.resolveWorktreeOwnerUsername(worktreePath)) ?? authUser.username;
 
     // Async mode: enqueue a durable job instead of running fire-and-forget.
     // GET /api/jobs/:id becomes the recovery path for a client that

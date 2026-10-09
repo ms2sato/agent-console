@@ -347,7 +347,7 @@ export async function deleteWorktree(
     } catch (error) {
       return {
         success: false,
-        error: `Failed to check for open PRs: ${error instanceof Error ? error.message : String(error)}. Cannot proceed with deletion.`,
+        error: `Failed to check for open PRs as ${requestUsername ?? 'the server user'}: ${error instanceof Error ? error.message : String(error)}. Cannot proceed with deletion (configure gh for that account, or retry with force).`,
         errorType: 'open-pr',
       };
     }

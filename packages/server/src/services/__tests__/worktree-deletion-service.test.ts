@@ -469,6 +469,38 @@ describe('deleteWorktree', () => {
     expect(result.error).toContain('Failed to check for open PRs');
   });
 
+  it('names the identity in the open-PR catch message when requestUsername is set (Issue #1868)', async () => {
+    const deps = createMockDeps({
+      sessions: [DEFAULT_WORKTREE_SESSION],
+      findOpenPullRequest: async () => { throw new Error('gh not found'); },
+    });
+
+    const result = await deleteWorktree(
+      { repoId: 'repo-1', worktreePath: WORKTREE_PATH, force: false, requestUsername: 'shared1' },
+      deps,
+    );
+
+    expect(result.success).toBe(false);
+    expect(result.errorType).toBe('open-pr');
+    expect(result.error).toContain('Failed to check for open PRs as shared1');
+  });
+
+  it('names "the server user" in the open-PR catch message when requestUsername is null (Issue #1868)', async () => {
+    const deps = createMockDeps({
+      sessions: [DEFAULT_WORKTREE_SESSION],
+      findOpenPullRequest: async () => { throw new Error('gh not found'); },
+    });
+
+    const result = await deleteWorktree(
+      { repoId: 'repo-1', worktreePath: WORKTREE_PATH, force: false, requestUsername: null },
+      deps,
+    );
+
+    expect(result.success).toBe(false);
+    expect(result.errorType).toBe('open-pr');
+    expect(result.error).toContain('Failed to check for open PRs as the server user');
+  });
+
   it('skips PR check when branch is detached', async () => {
     const mockFindPr = mock(async () => null);
     const deps = createMockDeps({

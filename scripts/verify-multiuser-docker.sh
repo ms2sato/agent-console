@@ -109,7 +109,7 @@ check() { # check <name> <condition-exit-code>
 }
 
 run_smoke() { # run_smoke <label> <script> [args...]
-  # Used only by --smokes (section 9). Runs one scripts/smoke/<script>.ts
+  # Used only by --smokes (section 12). Runs one scripts/smoke/<script>.ts
   # inside the container as the service user, against the workspace copy
   # baked at /workspace, and folds its result into the same PASS/FAIL
   # counters check() uses.
@@ -1047,9 +1047,325 @@ fi
 rm -f "$S10_COOKIE_JAR" "$S10_ALICE_LOGIN_RESP" "$S10_WT_RESP" "$S10_WT_LIST_RESP" \
   "$S10_BASELINE" "$S10_AFTER" "$S10_DB_OUT" "$S10_PULL_RESP"
 
+echo
+echo "=== 11. DELETE worktree route resolves the worktree's OWNER, not the requester (#1868) ==="
+# Verifies the #1868 fix: the DELETE route resolves requestUsername via
+# sessionManager.resolveWorktreeOwnerUsername(worktreePath) (the same
+# owner-lookup #1869 established for getCurrentBranch/pull), falling back to
+# the requester only when no session (live or paused) owns the path --
+# rather than always threading authUser.username into
+# worktreeService.removeWorktree / executeCleanupCommandIfConfigured / the
+# open-PR check.
+#
+# PREMISE CORRECTION (2026-10-09, Architect ruling after a first Q12 run on
+# this check's original design): this check originally measured the
+# REMOVAL identity (directory-gone), expecting a permission failure
+# pre-fix. Measured on unmodified main: 46/46 passed, including the
+# removal. Root cause, confirmed by stat'ing the actual tree inside this
+# container: every worktree / worktrees-parent / `.git/worktrees` directory
+# is `<owner>:agent-console-users` mode 2775, and every multi-user operator
+# -- including a shared account -- is REQUIRED to be a member of
+# agent-console-users per docs/multi-user-setup-guide.md ~L1114-1118. Unix
+# delete permission is governed by the CONTAINING directory's group-write
+# bit, not by the deleted file's owner, so removal succeeds under EITHER
+# identity in a correctly configured install -- there is no EACCES to
+# reproduce here. The discriminator below is redesigned around the one
+# thing in this write path that IS identity-sensitive and visible without
+# `gh`: the repository's `cleanupCommand`, run via `executeHookCommand` as
+# `requestUsername` with `cwd: worktreePath` -- an operator-authored
+# command that must run as the worktree's OWNING account, not whichever
+# human happened to click delete. The `gh`-auth half of the fix (open-PR
+# check identity) remains pinned by the unit tests only -- this container
+# has no `gh` binary to exercise it.
+#
+# The container has no `gh`, so both deletions below use ?force=true -- the
+# open-PR check (gated by `!force`) is skipped by design, but
+# `executeCleanupCommandIfConfigured` (worktree-deletion-service.ts step 6a)
+# is NOT gated by `force` at all and always runs when a cleanupCommand is
+# configured, confirmed by reading worktree-deletion-service.ts before
+# writing this check rather than assumed.
+#
+#   (i) CONTROL: alice deletes her OWN (non-shared) worktree, force=true.
+#       The cleanup-identity file must read "alice" whether the fix is
+#       present or not -- resolving the owner lands on alice either way.
+#   (ii) DISCRIMINATOR: alice deletes the shared1-owned worktree created on
+#        the same repository (check 7/8's repo_id), force=true.
+#        On main (pre-#1868): the cleanup command runs as the REQUESTER --
+#        the identity file reads "alice". THIS IS THE BUG (the file's
+#        actual content is pasted below, not predicted). After the fix: the
+#        file reads "shared1".
+#
+# directory-gone / sessions-row-gone are kept as a positive control that
+# the removal path itself completed -- NOT an identity discriminator (see
+# the premise correction above).
+#
+# Like checks 8/9/10, prerequisite failures are recorded as explicit FAILs
+# (never silently skipped).
+S11_COOKIE_JAR="$(mktemp)"
+S11_ALICE_LOGIN_RESP="$(mktemp)"
+S11_OWN_WT_RESP="$(mktemp)"
+S11_SHARED_WT_RESP="$(mktemp)"
+S11_WT_LIST_RESP="$(mktemp)"
+S11_BASELINE="$(mktemp)"
+S11_AFTER_OWN="$(mktemp)"
+S11_AFTER_SHARED="$(mktemp)"
+S11_DB_OUT="$(mktemp)"
+S11_OWN_DELETE_RESP="$(mktemp)"
+S11_SHARED_DELETE_RESP="$(mktemp)"
+S11_PATCH_RESP="$(mktemp)"
+S11_IDENTITY_OUT="$(mktemp)"
+
+# Written by the cleanup command below, as whichever identity actually ran
+# it. AGENT_CONSOLE_HOME in this container is /var/lib/agent-console
+# (mode 2775, docker/Dockerfile) -- used as a literal path rather than
+# $AGENT_CONSOLE_HOME because `sudo -i` resets the elevated shell's env
+# except the small `--preserve-env` allowlist (FORCE_COLOR only;
+# elevation-args.ts), so the var would be empty inside the hook.
+S11_IDENTITY_FILE="/var/lib/agent-console/cleanup-identity-1868.txt"
+
+curl -s -o "$S11_ALICE_LOGIN_RESP" -c "$S11_COOKIE_JAR" -X POST "${BASE_URL}/api/auth/login" \
+  -H 'Content-Type: application/json' \
+  -d '{"username":"alice","password":"alice-password"}' >/dev/null
+
+if [ -n "$repo_id" ]; then
+  # Configure the discriminator: a cleanup command that records who ran it
+  # into a location OUTSIDE the worktree being removed (the hook's cwd is
+  # worktreePath, which is about to be deleted).
+  s11_patch_code="$(curl -s -o "$S11_PATCH_RESP" -w '%{http_code}' -b "$S11_COOKIE_JAR" -c "$S11_COOKIE_JAR" \
+    -X PATCH "${BASE_URL}/api/repositories/${repo_id}" \
+    -H 'Content-Type: application/json' \
+    -d "{\"cleanupCommand\":\"id -un > ${S11_IDENTITY_FILE}\"}")"
+  echo "  PATCH /api/repositories/<id> {cleanupCommand} -> HTTP ${s11_patch_code}"
+  s11_patch_ok=1
+  [ "$s11_patch_code" = "200" ] && s11_patch_ok=0
+  check "cleanupCommand configured for the identity discriminator (#1868)" "$s11_patch_ok"
+
+  # Clear stale state from a prior invocation against this same --keep'd
+  # container (each deletion below overwrites this file, but a leftover
+  # from an earlier run must not produce a false PASS before the first
+  # deletion of THIS run has actually written it).
+  compose exec -T agent-console rm -f "$S11_IDENTITY_FILE" >/dev/null 2>&1 || true
+
+  curl -s -b "$S11_COOKIE_JAR" "${BASE_URL}/api/repositories/${repo_id}/worktrees" \
+    | grep -o '"path":"[^"]*"' | cut -d'"' -f4 | sort > "$S11_BASELINE"
+
+  # --- (i) create alice's own (non-shared) worktree ---
+  s11_own_task_id="$(uuidgen 2>/dev/null || cat /proc/sys/kernel/random/uuid)"
+  s11_own_wt_code="$(curl -s -o "$S11_OWN_WT_RESP" -w '%{http_code}' -b "$S11_COOKIE_JAR" -c "$S11_COOKIE_JAR" \
+    -X POST "${BASE_URL}/api/repositories/${repo_id}/worktrees" \
+    -H 'Content-Type: application/json' \
+    -d "{\"taskId\":\"${s11_own_task_id}\",\"mode\":\"custom\",\"branch\":\"issue-1868-own\",\"baseBranch\":\"main\",\"useRemote\":false,\"autoStartSession\":true}")"
+  echo "  POST /api/repositories/<id>/worktrees (alice's own) -> HTTP ${s11_own_wt_code}"
+
+  S11_OWN_PATH=""
+  for _ in $(seq 1 30); do
+    sleep 1
+    curl -s -o "$S11_WT_LIST_RESP" -b "$S11_COOKIE_JAR" \
+      "${BASE_URL}/api/repositories/${repo_id}/worktrees" >/dev/null
+    grep -o '"path":"[^"]*"' "$S11_WT_LIST_RESP" | cut -d'"' -f4 | sort > "$S11_AFTER_OWN"
+    S11_OWN_PATH="$(comm -13 "$S11_BASELINE" "$S11_AFTER_OWN" | head -n1)"
+    if [ -n "$S11_OWN_PATH" ]; then break; fi
+  done
+  s11_own_listed_ok=1
+  [ -n "$S11_OWN_PATH" ] && s11_own_listed_ok=0
+  check "worktree #1868(i) (alice's own) appears in repo's worktree list" "$s11_own_listed_ok"
+
+  # Re-baseline so (ii)'s own comm -13 below does not also pick up (i)'s path.
+  cp "$S11_AFTER_OWN" "$S11_BASELINE"
+
+  # --- (ii) create the shared1-owned worktree ---
+  s11_shared_task_id="$(uuidgen 2>/dev/null || cat /proc/sys/kernel/random/uuid)"
+  s11_shared_wt_code="$(curl -s -o "$S11_SHARED_WT_RESP" -w '%{http_code}' -b "$S11_COOKIE_JAR" -c "$S11_COOKIE_JAR" \
+    -X POST "${BASE_URL}/api/repositories/${repo_id}/worktrees" \
+    -H 'Content-Type: application/json' \
+    -d "{\"taskId\":\"${s11_shared_task_id}\",\"mode\":\"custom\",\"branch\":\"issue-1868-shared\",\"baseBranch\":\"main\",\"useRemote\":false,\"autoStartSession\":true,\"shared\":true}")"
+  echo "  POST /api/repositories/<id>/worktrees (shared1-owned) -> HTTP ${s11_shared_wt_code}"
+
+  S11_SHARED_PATH=""
+  for _ in $(seq 1 30); do
+    sleep 1
+    curl -s -o "$S11_WT_LIST_RESP" -b "$S11_COOKIE_JAR" \
+      "${BASE_URL}/api/repositories/${repo_id}/worktrees" >/dev/null
+    grep -o '"path":"[^"]*"' "$S11_WT_LIST_RESP" | cut -d'"' -f4 | sort > "$S11_AFTER_SHARED"
+    S11_SHARED_PATH="$(comm -13 "$S11_BASELINE" "$S11_AFTER_SHARED" | head -n1)"
+    if [ -n "$S11_SHARED_PATH" ]; then break; fi
+  done
+  s11_shared_listed_ok=1
+  [ -n "$S11_SHARED_PATH" ] && s11_shared_listed_ok=0
+  check "worktree #1868(ii) (shared1-owned) appears in repo's worktree list" "$s11_shared_listed_ok"
+
+  if [ -n "$S11_OWN_PATH" ] && [ -n "$S11_SHARED_PATH" ]; then
+    # Bounded poll for both session rows' created_by, same idiom as checks
+    # 9/10 (worktree-list appearance races session-row persistence).
+    s11_own_created_by=""
+    s11_shared_created_by=""
+    s11_alice_id=""
+    s11_shared1_id=""
+    for _ in $(seq 1 30); do
+      sleep 1
+      docker compose -f "$COMPOSE_FILE" exec -T --user agentconsole \
+        -e S11_OWN_PATH="$S11_OWN_PATH" -e S11_SHARED_PATH="$S11_SHARED_PATH" agent-console \
+        bun -e '
+          import { Database } from "bun:sqlite";
+          const db = new Database(process.env.AGENT_CONSOLE_HOME + "/data.db", { readonly: true });
+          const own = db.query("SELECT created_by FROM sessions WHERE location_path = ?").get(process.env.S11_OWN_PATH);
+          console.log("OWN_CREATED_BY=" + (own && own.created_by != null ? own.created_by : ""));
+          const shared = db.query("SELECT created_by FROM sessions WHERE location_path = ?").get(process.env.S11_SHARED_PATH);
+          console.log("SHARED_CREATED_BY=" + (shared && shared.created_by != null ? shared.created_by : ""));
+          const alice = db.query("SELECT id FROM users WHERE username = ?").get("alice");
+          console.log("ALICE_ID=" + (alice ? alice.id : ""));
+          const shared1 = db.query("SELECT id FROM users WHERE username = ?").get("shared1");
+          console.log("SHARED1_ID=" + (shared1 ? shared1.id : ""));
+        ' > "$S11_DB_OUT" 2>&1
+      s11_own_created_by="$(grep '^OWN_CREATED_BY=' "$S11_DB_OUT" | head -n1 | cut -d= -f2)"
+      s11_shared_created_by="$(grep '^SHARED_CREATED_BY=' "$S11_DB_OUT" | head -n1 | cut -d= -f2)"
+      s11_alice_id="$(grep '^ALICE_ID=' "$S11_DB_OUT" | head -n1 | cut -d= -f2)"
+      s11_shared1_id="$(grep '^SHARED1_ID=' "$S11_DB_OUT" | head -n1 | cut -d= -f2)"
+      if [ -n "$s11_own_created_by" ] && [ "$s11_own_created_by" = "$s11_alice_id" ] \
+        && [ -n "$s11_shared_created_by" ] && [ "$s11_shared_created_by" = "$s11_shared1_id" ]; then
+        break
+      fi
+    done
+
+    s11_fixture_ok=1
+    if [ -n "$s11_own_created_by" ] && [ "$s11_own_created_by" = "$s11_alice_id" ] \
+      && [ -n "$s11_shared_created_by" ] && [ "$s11_shared_created_by" = "$s11_shared1_id" ]; then
+      s11_fixture_ok=0
+    fi
+    check "worktree #1868 fixture sanity: own session's created_by=alice, shared session's created_by=shared1" "$s11_fixture_ok"
+
+    if [ "$s11_fixture_ok" -eq 0 ]; then
+      # Paths generated by worktree-creation-service.ts contain only
+      # [A-Za-z0-9._/-]; the DELETE route's own split point is `/worktrees/`,
+      # so only embedded slashes need percent-encoding to survive as part of
+      # the trailing wildcard segment (matches client/api.ts's
+      # encodeURIComponent(worktreePath) for this path shape).
+      S11_OWN_PATH_ENC="$(printf '%s' "$S11_OWN_PATH" | sed 's/\//%2F/g')"
+      S11_SHARED_PATH_ENC="$(printf '%s' "$S11_SHARED_PATH" | sed 's/\//%2F/g')"
+
+      # --- (i) CONTROL: alice deletes her own worktree, force=true ---
+      s11_own_delete_code="$(curl -s -o "$S11_OWN_DELETE_RESP" -w '%{http_code}' -b "$S11_COOKIE_JAR" -c "$S11_COOKIE_JAR" \
+        -X DELETE "${BASE_URL}/api/repositories/${repo_id}/worktrees/${S11_OWN_PATH_ENC}?force=true")"
+      echo "  DELETE own worktree as alice, force=true -> HTTP ${s11_own_delete_code}"
+      echo "  response body: $(cat "$S11_OWN_DELETE_RESP")"
+
+      s11_own_delete_ok=1
+      [ "$s11_own_delete_code" = "200" ] && s11_own_delete_ok=0
+      check "(i) CONTROL: delete own worktree as alice -> HTTP 200 (#1868)" "$s11_own_delete_ok"
+
+      # Identity discriminator: read the cleanup-identity file written by
+      # THIS deletion before the next deletion (ii) overwrites it.
+      docker compose -f "$COMPOSE_FILE" exec -T agent-console cat "$S11_IDENTITY_FILE" > "$S11_IDENTITY_OUT" 2>&1
+      s11_own_identity="$(tr -d '\r\n' < "$S11_IDENTITY_OUT")"
+      echo "  cleanup-identity file after deleting alice's own worktree: '${s11_own_identity}' (expected: alice, both before and after the fix)"
+      s11_own_identity_ok=1
+      [ "$s11_own_identity" = "alice" ] && s11_own_identity_ok=0
+      check "(i) CONTROL: cleanup command ran as alice (owner == requester) (#1868)" "$s11_own_identity_ok"
+
+      # Positive control that the removal path itself completed (NOT an
+      # identity discriminator -- see the premise correction above: Unix
+      # delete permission comes from the containing directory's
+      # group-write bit, so this passes under either identity).
+      compose exec -T agent-console test -d "$S11_OWN_PATH" >/dev/null 2>&1
+      s11_own_test_rc=$?
+      s11_own_dir_gone_ok=1
+      [ "$s11_own_test_rc" -ne 0 ] && s11_own_dir_gone_ok=0
+      check "(i) CONTROL: own worktree directory is gone from disk (removal-path positive control) (#1868)" "$s11_own_dir_gone_ok"
+
+      # --- (ii) DISCRIMINATOR: alice deletes the shared1-owned worktree, force=true ---
+      s11_shared_delete_code="$(curl -s -o "$S11_SHARED_DELETE_RESP" -w '%{http_code}' -b "$S11_COOKIE_JAR" -c "$S11_COOKIE_JAR" \
+        -X DELETE "${BASE_URL}/api/repositories/${repo_id}/worktrees/${S11_SHARED_PATH_ENC}?force=true")"
+      echo "  DELETE shared1-owned worktree as alice, force=true -> HTTP ${s11_shared_delete_code}"
+      echo "  response body: $(cat "$S11_SHARED_DELETE_RESP")"
+
+      s11_shared_delete_ok=1
+      [ "$s11_shared_delete_code" = "200" ] && s11_shared_delete_ok=0
+      check "(ii) DISCRIMINATOR: delete shared1-owned worktree as alice -> HTTP 200 (#1868)" "$s11_shared_delete_ok"
+
+      docker compose -f "$COMPOSE_FILE" exec -T agent-console cat "$S11_IDENTITY_FILE" > "$S11_IDENTITY_OUT" 2>&1
+      s11_shared_identity="$(tr -d '\r\n' < "$S11_IDENTITY_OUT")"
+      echo "  cleanup-identity file after deleting the shared1-owned worktree: '${s11_shared_identity}' (pre-fix baseline: pasted as measured, not predicted; post-fix expected: shared1)"
+      if [ "$s11_shared_identity" != "shared1" ]; then
+        echo "  BUG REPRODUCTION (expected on unmodified main, must be ABSENT after the #1868 fix): cleanup command ran as '${s11_shared_identity}' (the requester), not the worktree's owning account 'shared1'."
+      fi
+
+      s11_shared_identity_ok=1
+      [ "$s11_shared_identity" = "shared1" ] && s11_shared_identity_ok=0
+      check "(ii) DISCRIMINATOR: cleanup command ran as shared1 (the owner), not alice (the requester) (#1868)" "$s11_shared_identity_ok"
+
+      # Positive control, same rationale as (i)'s above.
+      compose exec -T agent-console test -d "$S11_SHARED_PATH" >/dev/null 2>&1
+      s11_shared_test_rc=$?
+      s11_shared_dir_gone_ok=1
+      [ "$s11_shared_test_rc" -ne 0 ] && s11_shared_dir_gone_ok=0
+      check "(ii) DISCRIMINATOR: shared1-owned worktree directory is gone from disk (removal-path positive control) (#1868)" "$s11_shared_dir_gone_ok"
+
+      # Session row for the shared path must be gone too (deleteSession ran).
+      docker compose -f "$COMPOSE_FILE" exec -T --user agentconsole \
+        -e S11_SHARED_PATH="$S11_SHARED_PATH" agent-console \
+        bun -e '
+          import { Database } from "bun:sqlite";
+          const db = new Database(process.env.AGENT_CONSOLE_HOME + "/data.db", { readonly: true });
+          const count = db.query("SELECT COUNT(*) as n FROM sessions WHERE location_path = ?").get(process.env.S11_SHARED_PATH);
+          console.log("ROW_COUNT=" + (count ? count.n : -1));
+        ' > "$S11_DB_OUT" 2>&1
+      s11_row_count="$(grep '^ROW_COUNT=' "$S11_DB_OUT" | head -n1 | cut -d= -f2)"
+      echo "  sessions row count for shared1-owned worktree path after deletion: ${s11_row_count}"
+      s11_row_gone_ok=1
+      [ "$s11_row_count" = "0" ] && s11_row_gone_ok=0
+      check "(ii) DISCRIMINATOR: sessions row for shared1-owned worktree path is gone (removal-path positive control) (#1868)" "$s11_row_gone_ok"
+    else
+      echo "  DIAGNOSTIC: fixture sanity (created_by alignment) did not settle within 30s (OWN_CREATED_BY='${s11_own_created_by}' SHARED_CREATED_BY='${s11_shared_created_by}' ALICE_ID='${s11_alice_id}' SHARED1_ID='${s11_shared1_id}'); recording explicit FAILs instead of skipping."
+      check "(i) CONTROL: delete own worktree as alice -> HTTP 200 (#1868)" 1
+      check "(i) CONTROL: cleanup command ran as alice (owner == requester) (#1868)" 1
+      check "(i) CONTROL: own worktree directory is gone from disk (removal-path positive control) (#1868)" 1
+      check "(ii) DISCRIMINATOR: delete shared1-owned worktree as alice -> HTTP 200 (#1868)" 1
+      check "(ii) DISCRIMINATOR: cleanup command ran as shared1 (the owner), not alice (the requester) (#1868)" 1
+      check "(ii) DISCRIMINATOR: shared1-owned worktree directory is gone from disk (removal-path positive control) (#1868)" 1
+      check "(ii) DISCRIMINATOR: sessions row for shared1-owned worktree path is gone (removal-path positive control) (#1868)" 1
+    fi
+  else
+    echo "  ---- DIAGNOSTIC: server logs (last 60 lines) ----"
+    compose logs --tail 60 agent-console 2>&1 | sed 's/^/    /' || true
+    echo "  -------------------------------------------------"
+    echo "  DIAGNOSTIC: worktree #1868(i) or #1868(ii) never appeared; recording explicit FAILs for dependent sub-checks instead of skipping."
+    check "worktree #1868 fixture sanity: own session's created_by=alice, shared session's created_by=shared1" 1
+    check "(i) CONTROL: delete own worktree as alice -> HTTP 200 (#1868)" 1
+    check "(i) CONTROL: cleanup command ran as alice (owner == requester) (#1868)" 1
+    check "(i) CONTROL: own worktree directory is gone from disk (removal-path positive control) (#1868)" 1
+    check "(ii) DISCRIMINATOR: delete shared1-owned worktree as alice -> HTTP 200 (#1868)" 1
+    check "(ii) DISCRIMINATOR: cleanup command ran as shared1 (the owner), not alice (the requester) (#1868)" 1
+    check "(ii) DISCRIMINATOR: shared1-owned worktree directory is gone from disk (removal-path positive control) (#1868)" 1
+    check "(ii) DISCRIMINATOR: sessions row for shared1-owned worktree path is gone (removal-path positive control) (#1868)" 1
+  fi
+
+  # Unset the cleanupCommand so it does not leak into later checks/smokes
+  # against this repository.
+  curl -s -o /dev/null -b "$S11_COOKIE_JAR" -X PATCH "${BASE_URL}/api/repositories/${repo_id}" \
+    -H 'Content-Type: application/json' -d '{"cleanupCommand":null}'
+  compose exec -T agent-console rm -f "$S11_IDENTITY_FILE" >/dev/null 2>&1 || true
+else
+  echo "  DIAGNOSTIC: repo_id from check 7 is empty; recording explicit FAILs for check 11 instead of skipping."
+  check "cleanupCommand configured for the identity discriminator (#1868)" 1
+  check "worktree #1868(i) (alice's own) appears in repo's worktree list" 1
+  check "worktree #1868(ii) (shared1-owned) appears in repo's worktree list" 1
+  check "worktree #1868 fixture sanity: own session's created_by=alice, shared session's created_by=shared1" 1
+  check "(i) CONTROL: delete own worktree as alice -> HTTP 200 (#1868)" 1
+  check "(i) CONTROL: cleanup command ran as alice (owner == requester) (#1868)" 1
+  check "(i) CONTROL: own worktree directory is gone from disk (removal-path positive control) (#1868)" 1
+  check "(ii) DISCRIMINATOR: delete shared1-owned worktree as alice -> HTTP 200 (#1868)" 1
+  check "(ii) DISCRIMINATOR: cleanup command ran as shared1 (the owner), not alice (the requester) (#1868)" 1
+  check "(ii) DISCRIMINATOR: shared1-owned worktree directory is gone from disk (removal-path positive control) (#1868)" 1
+  check "(ii) DISCRIMINATOR: sessions row for shared1-owned worktree path is gone (removal-path positive control) (#1868)" 1
+fi
+
+rm -f "$S11_COOKIE_JAR" "$S11_ALICE_LOGIN_RESP" "$S11_OWN_WT_RESP" "$S11_SHARED_WT_RESP" \
+  "$S11_WT_LIST_RESP" "$S11_BASELINE" "$S11_AFTER_OWN" "$S11_AFTER_SHARED" "$S11_DB_OUT" \
+  "$S11_OWN_DELETE_RESP" "$S11_SHARED_DELETE_RESP" "$S11_PATCH_RESP" "$S11_IDENTITY_OUT"
+
 if [ "$SMOKES" -eq 1 ]; then
   echo
-  echo "=== 11. real-host smokes inside the container (--smokes, #1619) ==="
+  echo "=== 12. real-host smokes inside the container (--smokes, #1619) ==="
   SMOKE_SUMMARY=""
 
   run_smoke "check-multiuser-pty-env" "check-multiuser-pty-env.ts" alice
