@@ -163,6 +163,13 @@ class TerminalController implements TerminalInstance {
   private snapshot: TerminalSnapshot;
   private frameScheduled = false;
   private disposed = false;
+  // Set by the first real resize() call. Until then, `this.terminal`'s cols/
+  // rows are still DEFAULT_COLS/DEFAULT_ROWS -- a value nobody measured, not
+  // a size any layout actually settled on. onopen must not announce that
+  // never-fitted default to the server: the server applies every resize
+  // message to the real PTY immediately, so announcing it would repaint the
+  // PTY at an arbitrary size before the real one arrives moments later.
+  private hasFitted = false;
 
   private reconnectAttempts = 0;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -315,6 +322,7 @@ class TerminalController implements TerminalInstance {
   resize = (cols: number, rows: number): void => {
     if (!Number.isFinite(cols) || !Number.isFinite(rows)) return;
     if (cols <= 0 || rows <= 0) return;
+    this.hasFitted = true;
     if (cols === this.terminal.cols && rows === this.terminal.rows) return;
     const colsChanged = cols !== this.terminal.cols;
     this.terminal.resize(cols, rows);
@@ -633,7 +641,15 @@ class TerminalController implements TerminalInstance {
         this.historyRequested = true;
         this.requestHistory();
       }
-      this.send({ type: 'resize', cols: this.terminal.cols, rows: this.terminal.rows });
+      // Announce the current size on (re)connect -- but only once a real
+      // measurement has fitted it at least once. Before that, this.terminal
+      // still holds the construction-time DEFAULT_COLS/DEFAULT_ROWS, which no
+      // layout ever asked for; sending it would make the server apply that
+      // arbitrary size to the real PTY moments before the first genuine
+      // resize overwrites it.
+      if (this.hasFitted) {
+        this.send({ type: 'resize', cols: this.terminal.cols, rows: this.terminal.rows });
+      }
     };
 
     ws.onmessage = (event) => {

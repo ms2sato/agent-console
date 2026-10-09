@@ -85,14 +85,37 @@ describe('terminal-store', () => {
     expect(history).toEqual({ type: 'request-history', fromOffset: 0 });
   });
 
-  it('sends initial resize on open', () => {
+  // The construction-time DEFAULT_COLS/DEFAULT_ROWS are a value nobody
+  // measured -- announcing them would make the server apply an arbitrary
+  // size to the real PTY moments before the first genuine resize overwrites
+  // it (the same "wide, then settled" shape that corrupted scrollback on
+  // page open). Polarity: removing the `hasFitted` gate makes this fail (a
+  // `{cols:80,rows:24}` resize is found).
+  it('does not announce the never-fitted default size on open', () => {
     getOrCreateTerminal('s2', 'w2');
     const ws = MockWebSocket.getLastInstance();
     ws!.simulateOpen();
 
     const sent = lastSentMessages(ws!);
     const resize = sent.find((m) => (m as { type: string }).type === 'resize');
-    expect(resize).toMatchObject({ type: 'resize' });
+    expect(resize).toBeUndefined();
+  });
+
+  // Once a real measurement has fitted the terminal (even before the socket
+  // is open -- resize()'s own send() is a no-op on a CONNECTING socket), the
+  // onopen handler announces that fitted size instead of staying silent.
+  // Polarity: removing the `hasFitted` gate still passes this one (it never
+  // asserted "exactly one"), which is why the sibling test above is what
+  // actually pins the gate.
+  it('announces the fitted size on open once a real resize has occurred first', () => {
+    const instance = getOrCreateTerminal('s2fit', 'w2fit');
+    const ws = MockWebSocket.getLastInstance();
+    instance.resize(120, 40);
+
+    ws!.simulateOpen();
+
+    const resizes = lastSentMessages(ws!).filter((m) => (m as { type: string }).type === 'resize');
+    expect(resizes).toEqual([{ type: 'resize', cols: 120, rows: 40 }]);
   });
 
   it('renders output into snapshot rows and bumps version', async () => {
