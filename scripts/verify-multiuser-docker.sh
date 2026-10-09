@@ -919,9 +919,14 @@ echo "=== 10. pull route reads the branch as the worktree's owning session's spa
 #   shared1-owned worktree directory, is swallowed into '(unknown)', and the
 #   route answers 400 "Cannot pull in detached HEAD state" -- THIS 400 IS THE
 #   BUG REPRODUCTION.
-#   After the fix: the same call resolves shared1 and passes the
-#   detached-HEAD guard (the pull itself may then fail for lack of a
-#   configured remote; not asserted on here).
+#   After the fix: the same call resolves shared1, passes the detached-HEAD
+#   guard, and the route answers its ordinary fire-and-forget success
+#   response, HTTP 202 with {"accepted":true} -- that positive shape is the
+#   actual pass condition below, not merely the absence of the 400 (an
+#   absence assertion would also PASS on an unrelated 500/404/409, which
+#   would be a different failure, not evidence the fix worked). The pull
+#   itself may still fail in the background for lack of a configured remote;
+#   that background outcome is not asserted on here.
 #
 # Like checks 8/9, prerequisite failures are recorded as explicit FAILs
 # (never silently skipped).
@@ -990,12 +995,13 @@ if [ -n "$repo_id" ]; then
       echo "  POST /worktrees/pull on shared1-owned worktree, as alice -> HTTP ${s10_pull_code}"
       echo "  response body: $(cat "$S10_PULL_RESP")"
 
-      s10_pull_ok=0
-      if [ "$s10_pull_code" = "400" ] && grep -q 'Cannot pull in detached HEAD state' "$S10_PULL_RESP"; then
-        s10_pull_ok=1
+      s10_pull_ok=1
+      if [ "$s10_pull_code" = "202" ] && grep -q '"accepted":true' "$S10_PULL_RESP"; then
+        s10_pull_ok=0
+      elif [ "$s10_pull_code" = "400" ] && grep -q 'Cannot pull in detached HEAD state' "$S10_PULL_RESP"; then
         echo "  BUG REPRODUCTION (expected on unmodified main, must be ABSENT after the #1623 fix): 400 Cannot pull in detached HEAD state"
       fi
-      check "pull does NOT answer 400 'Cannot pull in detached HEAD state' for a shared1-owned worktree (#1623)" "$s10_pull_ok"
+      check "pull accepted (202 + accepted:true), not the pre-fix 400 'Cannot pull in detached HEAD state' (#1623)" "$s10_pull_ok"
 
       # Diagnostic signal (not machine-asserted): after the fix, the
       # server's own warn line for a swallowed getCurrentBranch failure on
