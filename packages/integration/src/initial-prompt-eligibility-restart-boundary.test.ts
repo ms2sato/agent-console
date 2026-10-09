@@ -34,6 +34,7 @@ import {
 } from '@agent-console/server/src/__tests__/test-utils';
 import { createTestContext, shutdownAppContext } from '@agent-console/server/src/app-context';
 import type { AppContext } from '@agent-console/server/src/app-context';
+import { createMockPtyFactory, createMockPtyProvider } from '@agent-console/server/src/__tests__/utils/mock-pty';
 import { WorkerManager } from '@agent-console/server/src/services/worker-manager';
 import { WorkerOutputFileManager } from '@agent-console/server/src/lib/worker-output-file';
 import { toPersistedWorker } from '@agent-console/server/src/database/mappers';
@@ -51,7 +52,11 @@ describe('Persistence boundary: embedded-agent initial-prompt eligibility surviv
 
   beforeEach(async () => {
     await setupTestEnvironment();
-    ctx = await createTestContext();
+    // Issue #1886: hermetic PtyProvider -- this suite's fixture cwd does not
+    // exist on disk, and the configured default (bun-terminal) throws
+    // ENOENT on a missing cwd where the legacy bunPtyProvider silently
+    // tolerated it (production handling tracked separately, #1892).
+    ctx = await createTestContext({ ptyProvider: createMockPtyProvider() });
   });
 
   afterEach(async () => {
@@ -232,7 +237,18 @@ describe('Cross-type restart: initial-prompt delivery on the converted embedded-
     const stubRunAsUser = async (_opts: RunAsUserOpts): Promise<RunAsUserResult> => ({
       stdout: '', stderr: '', exitCode: 0, timedOut: false,
     });
-    ctx = await createTestContext({ spawnAsUserFn: spawn.fn, runAsUserImpl: stubRunAsUser });
+    // Issue #1886: unlike the other affected fixtures, this test's scenario
+    // (the PTY side must NOT yet have delivered the initial prompt at
+    // conversion time) depends on the PTY's login-shell-ready sentinel
+    // NOT having fired before the conversion -- `createMockPtyProvider()`'s
+    // default auto-emits the sentinel on first onData() attach, which would
+    // make the ORIGINAL PTY worker's activation deliver the prompt (and set
+    // session.initialPromptDelivered) before `restartAgentWorkerAsEmbedded`
+    // ever runs, collapsing this test into its "already delivered" sibling
+    // below. Use the full factory with auto-emit disabled instead.
+    const ptyFactory = createMockPtyFactory();
+    ptyFactory.setAutoEmitSentinel(false);
+    ctx = await createTestContext({ spawnAsUserFn: spawn.fn, runAsUserImpl: stubRunAsUser, ptyProvider: ptyFactory.provider });
 
     const owner = await ctx.userRepository.upsertByOsUid(55001, 'owner', '/home/owner');
     const def = await ctx.embeddedAgentManager.createEmbeddedAgent(
@@ -274,7 +290,7 @@ describe('Cross-type restart: initial-prompt delivery on the converted embedded-
     const stubRunAsUser = async (_opts: RunAsUserOpts): Promise<RunAsUserResult> => ({
       stdout: '', stderr: '', exitCode: 0, timedOut: false,
     });
-    ctx = await createTestContext({ spawnAsUserFn: spawn.fn, runAsUserImpl: stubRunAsUser });
+    ctx = await createTestContext({ spawnAsUserFn: spawn.fn, runAsUserImpl: stubRunAsUser, ptyProvider: createMockPtyProvider() });
 
     const owner = await ctx.userRepository.upsertByOsUid(55002, 'owner2', '/home/owner2');
     const def = await ctx.embeddedAgentManager.createEmbeddedAgent(
@@ -294,9 +310,13 @@ describe('Cross-type restart: initial-prompt delivery on the converted embedded-
     // Simulate the prompt already having been delivered by a prior PTY
     // activation. Production only flips this flag via a real PTY
     // login-shell-ready sentinel (session-manager.ts's callback wired in its
-    // constructor), which this harness's real PTY provider does not
-    // reliably emit inside a test process -- and SessionManager.getSession()
-    // / getAllSessions() both return a fresh toPublicSession() projection
+    // constructor); this harness's PTY (`createMockPtyProvider()`, Issue
+    // #1886) auto-emits that sentinel on activation, which already delivers
+    // the prompt via the PTY path before this line runs -- so the explicit
+    // set below is redundant with, not a workaround for, that delivery. Kept
+    // for determinism rather than relying on auto-emit timing, and because
+    // SessionManager.getSession() / getAllSessions() both return a fresh
+    // toPublicSession() projection
     // (session-converter-service.ts builds a new plain object every call),
     // decoupled from the live internal session, so mutating either return
     // value has no effect on what restartAgentWorkerAsEmbedded reads. This

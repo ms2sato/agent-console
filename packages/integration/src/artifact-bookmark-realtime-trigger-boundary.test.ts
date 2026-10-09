@@ -39,6 +39,7 @@ import {
 } from '@agent-console/server/src/__tests__/test-utils';
 import { createTestContext, shutdownAppContext } from '@agent-console/server/src/app-context';
 import type { AppContext } from '@agent-console/server/src/app-context';
+import { createMockPtyProvider } from '@agent-console/server/src/__tests__/utils/mock-pty';
 import { createMcpApp } from '@agent-console/server/src/mcp/mcp-server';
 import { createWorktreeWithSession } from '@agent-console/server/src/services/worktree-creation-service';
 import { deleteWorktree } from '@agent-console/server/src/services/worktree-deletion-service';
@@ -75,6 +76,12 @@ describe('Client-Server Boundary: artifact/bookmark realtime refresh triggers', 
 
     capturedBroadcasts = [];
     ctx = await createTestContext({
+      // Issue #1886: this fixture's locationPath (TEST_LOCATION_PATH) does
+      // not exist on the real filesystem. The legacy bunPtyProvider
+      // tolerated a missing cwd silently; the configured default
+      // (bun-terminal) throws ENOENT on it (production issue tracked
+      // separately as #1892). The mock provider keeps this test hermetic.
+      ptyProvider: createMockPtyProvider(),
       broadcastToApp: (msg) => {
         capturedBroadcasts.push(msg);
       },

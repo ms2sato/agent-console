@@ -70,7 +70,8 @@ import { readDeployedSha } from './lib/deployed-sha.js';
 import { SingleUserMode, MultiUserMode } from './services/user-mode.js';
 import { SharedAccountRegistry } from './services/shared-account-registry.js';
 import { UsernameLookupService } from './services/username-lookup.js';
-import { bunPtyProvider, getPtyProvider } from './lib/pty-provider.js';
+import type { PtyProvider } from './lib/pty-provider.js';
+import { getPtyProvider } from './lib/pty-provider.js';
 import { serverConfig } from './lib/server-config.js';
 import { createLogger } from './lib/logger.js';
 import { TimerManager as TimerManagerClass } from './services/timer-manager.js';
@@ -754,6 +755,12 @@ export interface CreateTestContextOptions {
   deployedSha?: string | null;
   /** Custom user mode for mocking */
   userMode?: UserMode;
+  /**
+   * PTY provider for the default `userMode` construction (ignored when
+   * `overrides.userMode` is supplied). Defaults to the configured provider,
+   * same resolution as `createAppContext` L401.
+   */
+  ptyProvider?: PtyProvider;
   /** Custom shared account registry for mocking */
   sharedAccountRegistry?: SharedAccountRegistry;
   /** Skip job queue start (useful for isolated unit tests) */
@@ -883,7 +890,10 @@ export async function createTestContext(
   if (overrides?.userMode) {
     userMode = overrides.userMode;
   } else {
-    userMode = await SingleUserMode.create(bunPtyProvider, userRepository);
+    userMode = await SingleUserMode.create(
+      overrides?.ptyProvider ?? getPtyProvider(serverConfig.PTY_PROVIDER),
+      userRepository
+    );
   }
 
   // Test contexts default to a disabled shared account registry. Tests that

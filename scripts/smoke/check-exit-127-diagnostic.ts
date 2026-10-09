@@ -28,7 +28,8 @@
  *
  * ## What this smoke exercises
  *
- *   - The REAL production chain end-to-end: `bunPtyProvider` (real PTY) ->
+ *   - The REAL production chain end-to-end: the configured provider
+ *     (`PTY_PROVIDER`, default `bun-terminal`; real PTY) ->
  *     `SingleUserMode.spawnPty` (real spawn-command construction) ->
  *     `WorkerManager.activateAgentWorkerPty` / `setupWorkerEventHandlers`'s
  *     `onExit` handler -> `appendSpawnFailureNotification` ->
@@ -76,10 +77,10 @@
  *      exception during setup). Distinct from 1 so operators can tell apart
  *      "the smoke ran and found a real problem" vs "the smoke could not run".
  *
- * Sync contract: NONE -- `bunPtyProvider`, `SingleUserMode`, `WorkerManager`,
- * and `WorkerOutputFileManager` are imported directly from production
- * source. A regression in the exit-127 diagnostic path changes this smoke's
- * outcome automatically.
+ * Sync contract: NONE -- the configured provider (via `getPtyProvider`),
+ * `SingleUserMode`, `WorkerManager`, and `WorkerOutputFileManager` are
+ * imported directly from production source. A regression in the exit-127
+ * diagnostic path changes this smoke's outcome automatically.
  */
 
 import * as crypto from 'crypto';
@@ -89,7 +90,8 @@ import * as fs from 'fs/promises';
 import { rm, mkdtemp } from 'fs/promises';
 import { tmpdir } from 'os';
 
-import { bunPtyProvider } from '../../packages/server/src/lib/pty-provider.js';
+import { getPtyProvider } from '../../packages/server/src/lib/pty-provider.js';
+import { serverConfig } from '../../packages/server/src/lib/server-config.js';
 import { SingleUserMode } from '../../packages/server/src/services/user-mode.js';
 import { WorkerManager, type GlobalWorkerExitCallback } from '../../packages/server/src/services/worker-manager.js';
 import { WorkerOutputFileManager } from '../../packages/server/src/lib/worker-output-file.js';
@@ -97,6 +99,11 @@ import { SessionDataPathResolver } from '../../packages/server/src/lib/session-d
 import { AgentManager, CLAUDE_CODE_AGENT_ID } from '../../packages/server/src/services/agent-manager.js';
 import { SqliteAgentRepository } from '../../packages/server/src/repositories/sqlite-agent-repository.js';
 import { initializeDatabase, closeDatabase, getDatabase } from '../../packages/server/src/database/connection.js';
+
+// The configured provider, same resolution `createAppContext` uses in
+// production (`getPtyProvider(serverConfig.PTY_PROVIDER)`). Default
+// `PTY_PROVIDER` is `bun-terminal` -- see server-config.ts.
+const provider = getPtyProvider(serverConfig.PTY_PROVIDER);
 
 // An upper bound on waiting for an "eventually" property, sized for a
 // loaded CI runner; not a measurement (Issue #1872's contention finding).
@@ -118,13 +125,14 @@ async function waitFor(pred: () => boolean, timeoutMs: number): Promise<boolean>
 
 /**
  * Prove this environment can spawn and observe the exit of a basic PTY via
- * `bunPtyProvider` before trusting the real scenario below. If spawning
- * itself is broken, the scenario would fail for an unrelated reason and
- * misreport a real regression.
+ * the configured provider (`PTY_PROVIDER`, default `bun-terminal`) before
+ * trusting the real scenario below. If spawning itself is broken, the
+ * scenario would fail for an unrelated reason and misreport a real
+ * regression.
  */
 async function selfCheck(): Promise<void> {
   try {
-    const pty = bunPtyProvider.spawn('sh', ['-c', 'echo ok'], {
+    const pty = provider.spawn('sh', ['-c', 'echo ok'], {
       name: 'xterm-256color',
       cols: 80,
       rows: 24,
@@ -138,7 +146,7 @@ async function selfCheck(): Promise<void> {
       throw new Error('basic PTY did not exit within timeout');
     }
   } catch (err) {
-    console.error('Self-check failed: could not spawn/observe a basic PTY via bunPtyProvider -- cannot run this smoke.');
+    console.error('Self-check failed: could not spawn/observe a basic PTY via the configured provider -- cannot run this smoke.');
     console.error(err);
     process.exit(2);
   }
@@ -170,7 +178,7 @@ async function main(): Promise<void> {
     const db = getDatabase();
     const agentManager = await AgentManager.create(new SqliteAgentRepository(db));
 
-    const userMode = new SingleUserMode(bunPtyProvider, {
+    const userMode = new SingleUserMode(provider, {
       id: 'smoke-user-id',
       username: smokeUsername,
       homeDir: smokeHomeDir,

@@ -18,6 +18,10 @@ import * as path from 'node:path';
 import * as os from 'node:os';
 import { SqliteEmbeddedAgentRepository } from '../repositories/sqlite-embedded-agent-repository.js';
 import type { EmbeddedAgentDefinition } from '@agent-console/shared';
+import { getPtyProvider } from '../lib/pty-provider.js';
+import { serverConfig } from '../lib/server-config.js';
+import type { TerminalPtySpawnRequest } from '../services/user-mode.js';
+import { MockPty, createMockPtyFactory, createMockPtyProvider } from './utils/mock-pty.js';
 
 function createDeferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
   let resolve!: (value: T) => void;
@@ -135,6 +139,56 @@ describe('AppContext', () => {
 
       // Context should still be created successfully
       expect(appContext.jobQueue).toBeDefined();
+    });
+
+    describe('default ptyProvider resolution (Issue #1886)', () => {
+      function buildTerminalSpawnRequest(): TerminalPtySpawnRequest {
+        return {
+          type: 'terminal',
+          username: os.userInfo().username,
+          cwd: '/',
+          additionalEnvVars: {},
+          cols: 80,
+          rows: 24,
+        };
+      }
+
+      it('defaults the user mode\'s PTY provider to getPtyProvider(serverConfig.PTY_PROVIDER), not the legacy bunPtyProvider', async () => {
+        // Resolve the SAME configured provider createTestContext() itself
+        // resolves (getPtyProvider(serverConfig.PTY_PROVIDER)) rather than
+        // hardcoding bunTerminalProvider -- PTY_PROVIDER=bun-pty is a
+        // supported override, and hardcoding the terminal singleton would
+        // make this test fail under that configuration even though the
+        // production code is behaving correctly. SingleUserMode keeps its
+        // ptyProvider private, so identity is observed indirectly: spy on
+        // the resolved singleton's spawn() method and confirm the context's
+        // default userMode construction actually dispatches through it.
+        const configuredProvider = getPtyProvider(serverConfig.PTY_PROVIDER);
+        const spawnSpy = spyOn(configuredProvider, 'spawn').mockReturnValue(new MockPty(99999));
+
+        try {
+          appContext = await createTestContext();
+          appContext.userMode.spawnPty(buildTerminalSpawnRequest());
+
+          // Mutation measured: on unmodified main, createTestContext's
+          // default branch hardcodes `SingleUserMode.create(bunPtyProvider,
+          // userRepository)` -- the legacy native-library provider, a
+          // different object entirely -- so this spy is never called and
+          // the assertion below fails.
+          expect(spawnSpy).toHaveBeenCalledTimes(1);
+        } finally {
+          spawnSpy.mockRestore();
+        }
+      });
+
+      it('lets overrides.ptyProvider win over the default resolution', async () => {
+        const ptyFactory = createMockPtyFactory();
+
+        appContext = await createTestContext({ ptyProvider: ptyFactory.provider });
+        appContext.userMode.spawnPty(buildTerminalSpawnRequest());
+
+        expect(ptyFactory.spawn).toHaveBeenCalledTimes(1);
+      });
     });
   });
 
@@ -646,7 +700,23 @@ describe('AppContext', () => {
       overrides?: { ensureMemoryDirFn?: EnsureMemoryDirFn },
     ): Promise<{ type: string; context: Record<string, unknown> }> {
       const fake = makeFakeSpawn();
-      appContext = await createTestContext({ spawnAsUserFn: fake.fn, ...overrides });
+      // Issue #1886: `createSession` below omits `embeddedAgentId`, so it
+      // unconditionally auto-creates a REAL `type:'agent'` PTY worker
+      // (session-manager.ts's `initialWorkerParams` default) in addition to
+      // the embedded-agent worker this helper adds afterward -- a pre-
+      // existing test-hygiene gap (the PTY worker is never deactivated by
+      // this helper). Under the legacy bunPtyProvider this real spawn was a
+      // silent, harmless side effect; under the configured default
+      // (bun-terminal) it is a real subprocess whose cwd (`scratch`, inside
+      // `memoryHomeDir`) this describe's `afterEach` deletes, and the
+      // orphaned worker's later async handling then throws ENOENT
+      // unawaited, surfacing as an unhandled rejection against whichever
+      // test runs next. The mock provider keeps this helper hermetic.
+      appContext = await createTestContext({
+        spawnAsUserFn: fake.fn,
+        ptyProvider: createMockPtyProvider(),
+        ...overrides,
+      });
 
       const owner = await appContext.userRepository.upsertByOsUid(
         24681,

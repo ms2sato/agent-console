@@ -61,6 +61,7 @@ import {
 import { setupMemfs } from '@agent-console/server/src/__tests__/utils/mock-fs-helper';
 import { createTestContext, shutdownAppContext } from '@agent-console/server/src/app-context';
 import type { AppContext } from '@agent-console/server/src/app-context';
+import { createMockPtyProvider } from '@agent-console/server/src/__tests__/utils/mock-pty';
 import { CLAUDE_SDK_AGENT_ID } from '@agent-console/server/src/services/embedded-agent-manager';
 import { resolveMcpPermissionScope } from '@agent-console/server/src/lib/mcp-server-permissions';
 import type { SpawnAsUserFn, SpawnAsUserOpts, SpawnAsUserResult } from '@agent-console/server/src/services/privilege-elevation';
@@ -202,6 +203,11 @@ describe('Client-Server Boundary: MCP server permission wire (epic #1636 Phase 5
     fake = makeFakeSpawn();
     capturedBroadcasts = [];
     ctx = await createTestContext({
+      // Issue #1886: hermetic PtyProvider -- this suite's fixture cwd does
+      // not exist on disk, and the configured default (bun-terminal) throws
+      // ENOENT on a missing cwd where the legacy bunPtyProvider silently
+      // tolerated it (production handling tracked separately, #1892).
+      ptyProvider: createMockPtyProvider(),
       spawnAsUserFn: fake.fn,
       broadcastToApp: (msg) => {
         capturedBroadcasts.push(msg);

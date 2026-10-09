@@ -41,6 +41,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { setupTestEnvironment, cleanupTestEnvironment } from '@agent-console/server/src/__tests__/test-utils';
 import { createTestContext, shutdownAppContext } from '@agent-console/server/src/app-context';
 import type { AppContext } from '@agent-console/server/src/app-context';
+import { createMockPtyProvider } from '@agent-console/server/src/__tests__/utils/mock-pty';
 import type {
   SpawnAsUserFn,
   SpawnAsUserOpts,
@@ -91,7 +92,11 @@ describe('Server-Subprocess Boundary: embedded worker AGENT_CONSOLE_* identity a
   beforeEach(async () => {
     await setupTestEnvironment();
     fake = makeFakeSpawn();
-    ctx = await createTestContext({ spawnAsUserFn: fake.fn });
+    // Issue #1886: hermetic PtyProvider -- this suite's fixture cwd does not
+    // exist on disk, and the configured default (bun-terminal) throws
+    // ENOENT on a missing cwd where the legacy bunPtyProvider silently
+    // tolerated it (production handling tracked separately, #1892).
+    ctx = await createTestContext({ spawnAsUserFn: fake.fn, ptyProvider: createMockPtyProvider() });
     // C1 polarity seed: the SERVER's own environment carries a parent id
     // (as it does when the server is started from a delegated session).
     previousStaleParent = process.env.AGENT_CONSOLE_PARENT_SESSION_ID;
