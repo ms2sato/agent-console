@@ -36,7 +36,9 @@ export function AccordionSectionBody({ isExpanded, className, children }: Accord
       inert={isExpanded ? undefined : ''}
       className={`grid transition-[grid-template-rows] duration-200 ease-in-out ${isExpanded ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'}`}
     >
-      <div className={`overflow-hidden min-w-0 ${className ?? ''}`}>{children}</div>
+      <div className="overflow-hidden min-w-0">
+        <div className={className}>{children}</div>
+      </div>
     </div>
   );
 }
