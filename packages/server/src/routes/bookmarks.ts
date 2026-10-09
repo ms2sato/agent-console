@@ -18,6 +18,7 @@ import { NotFoundError, ForbiddenError } from '../lib/errors.js';
 import { vValidator } from '../middleware/validation.js';
 import { CreateBookmarkRequestSchema } from '@agent-console/shared';
 import { emitBookmarkCreated, emitBookmarkDeleted } from '../lib/artifact-bookmark-triggers.js';
+import { toWireBookmark } from '../lib/bookmark-wire.js';
 
 const bookmarks = new Hono<AppBindings>()
   // List the authenticated user's own bookmarks, newest first.
@@ -60,10 +61,9 @@ const bookmarks = new Hono<AppBindings>()
 
     emitBookmarkCreated(broadcastToApp, { sessionId: body.sessionId, bookmarkId: created.id });
 
-    // `create` returns the server-internal BookmarkRecord (wire summary +
-    // userId + sourceSessionId); strip both before crossing the wire (see
-    // packages/shared/src/types/bookmark.ts's wire-shape JSDoc).
-    const { userId: _userId, sourceSessionId: _sourceSessionId, ...bookmark } = created;
+    // `create` returns the server-internal BookmarkRecord; `toWireBookmark`
+    // picks just the wire fields (see lib/bookmark-wire.ts).
+    const bookmark = toWireBookmark(created);
     return c.json({ bookmark }, 201);
   })
   // Delete a bookmark -- owner only. A non-owner gets 403 and the bookmark

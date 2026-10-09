@@ -238,6 +238,7 @@ describe('Bookmark routes', () => {
       // it must never cross the wire, same as userId.
       expect(body.bookmark.sourceSessionId).toBeUndefined();
       expect(body.bookmark.origin).toBe('user');
+      expect(Object.keys(body.bookmark).sort()).toEqual(['createdAt', 'id', 'origin', 'title', 'url']);
 
       v.parse(BookmarkSchema, body.bookmark);
 

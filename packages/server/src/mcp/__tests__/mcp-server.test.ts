@@ -5834,10 +5834,11 @@ describe('MCP Server Tools', () => {
         nextId++,
       );
       expect(response.result?.isError).toBeUndefined();
-      const data = parseToolResult(response) as { id: string };
+      const data = parseToolResult(response) as Record<string, unknown>;
 
       expect(mockBroadcastToApp).toHaveBeenCalledTimes(1);
-      expect(mockBroadcastToApp).toHaveBeenCalledWith({ type: 'bookmark-created', sessionId: session.id, bookmarkId: data.id });
+      expect(mockBroadcastToApp).toHaveBeenCalledWith({ type: 'bookmark-created', sessionId: session.id, bookmarkId: data.id as string });
+      expect(Object.keys(data).sort()).toEqual(['createdAt', 'id', 'origin', 'title', 'url']);
     });
 
     it('delete_bookmark emits exactly one bookmark-deleted trigger after a successful delete', async () => {
