@@ -20,6 +20,7 @@ import { useEffect } from 'react';
 import { DashboardPage, SessionCard, WorktreeRow } from '../index';
 import { SessionDataContext, WorktreeDeletionTasksContext, WorktreeCreationTasksContext, SessionStopTasksContext } from '../../contexts/root-contexts';
 import { renderWithRouter } from '../../test/renderWithRouter';
+import { waitForAbsent } from '../../test/waitForAbsent';
 import type { Repository, Session } from '@agent-console/shared';
 import type { UseWorktreeDeletionTasksReturn } from '../../hooks/useWorktreeDeletionTasks';
 import type { UseWorktreeCreationTasksReturn } from '../../hooks/useWorktreeCreationTasks';
@@ -375,9 +376,7 @@ describe('DashboardPage / Add Repository trigger', () => {
       fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
 
       // Form heading is gone, header trigger remains.
-      await waitFor(() => {
-        expect(screen.queryByRole('heading', { name: 'Add Repository', level: 2 })).toBeNull();
-      });
+      await waitForAbsent(() => screen.queryByRole('heading', { name: 'Add Repository', level: 2 }));
       expect(screen.getByRole('button', { name: 'Add Repository' })).toBeTruthy();
     });
   });
@@ -438,17 +437,13 @@ describe('DashboardPage / Unregister Repository', () => {
     });
 
     // Confirm dialog is dismissed after success.
-    await waitFor(() => {
-      expect(screen.queryByRole('heading', { name: 'Unregister Repository' })).toBeNull();
-    });
+    await waitForAbsent(() => screen.queryByRole('heading', { name: 'Unregister Repository' }));
 
     // Trigger a refetch (production code calls invalidateQueries; force the refetch deterministically here).
     await queryClient.refetchQueries({ queryKey: ['repositories'] });
 
     // Repository card is gone — the DELETE handler removed it from the response set, so the refetch reflects the deletion.
-    await waitFor(() => {
-      expect(screen.queryByRole('heading', { name: 'my-repo', level: 2 })).toBeNull();
-    });
+    await waitForAbsent(() => screen.queryByRole('heading', { name: 'my-repo', level: 2 }));
 
     // The error dialog is NOT shown on the success path.
     expect(screen.queryByRole('heading', { name: 'Unregister Failed' })).toBeNull();
@@ -483,9 +478,7 @@ describe('DashboardPage / Unregister Repository', () => {
     });
 
     // Confirm dialog is dismissed even though the request failed (operator dismisses error dialog separately).
-    await waitFor(() => {
-      expect(screen.queryByRole('heading', { name: 'Unregister Repository' })).toBeNull();
-    });
+    await waitForAbsent(() => screen.queryByRole('heading', { name: 'Unregister Repository' }));
 
     // ErrorDialog appears with the title and server-provided message.
     await waitFor(() => {
@@ -661,9 +654,7 @@ describe('DashboardPage / Unregister Repository — source-repo cleanup checkbox
 
     // Cancel the dialog (Radix AlertDialogCancel is rendered as the "Cancel" button).
     fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
-    await waitFor(() => {
-      expect(screen.queryByRole('heading', { name: 'Unregister Repository' })).toBeNull();
-    });
+    await waitForAbsent(() => screen.queryByRole('heading', { name: 'Unregister Repository' }));
 
     // Re-open: checkbox state should be reset to unchecked.
     fireEvent.click(screen.getByRole('button', { name: 'Remove' }));
@@ -805,9 +796,7 @@ describe('SessionCard / Issue #1247 scoped pending state', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Dismiss' }));
 
-    await waitFor(() => {
-      expect(screen.queryByText('Network error')).toBeNull();
-    });
+    await waitForAbsent(() => screen.queryByText('Network error'));
   });
 });
 
@@ -915,9 +904,7 @@ describe('WorktreeRow / Issue #1247 stop/pause task indicator', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Dismiss' }));
 
-    await waitFor(() => {
-      expect(screen.queryByText('Network error')).toBeNull();
-    });
+    await waitForAbsent(() => screen.queryByText('Network error'));
   });
 
   it('does not render an indicator when no task targets the session', async () => {

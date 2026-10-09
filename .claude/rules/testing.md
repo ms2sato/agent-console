@@ -62,6 +62,10 @@ The helper writes its own throwaway global config and points `GIT_CONFIG_GLOBAL`
 
 `scripts/smoke/__tests__/scratch-git-hermeticity.test.ts` mechanically nets any `scripts/smoke/*.ts` or nested `__tests__` file that spawns a git commit without importing the helper, with a stated-reason allowlist for the few sites that cannot use it.
 
+## Never Hand a happy-dom Element to `expect(...)` Inside a `waitFor` Poll
+
+Inside a `waitFor` callback (`packages/client/src/**`, bun:test + happy-dom), never pass a DOM element directly to `expect(...)` -- e.g. `expect(el).toBeNull()`. Measured on bun 1.3.14 + happy-dom 20.0.11 (Issue #1899): on a FAILING poll, bun:test's failure-message construction serializes the happy-dom element, and on a fixture with several sibling DOM nodes (a 4-tab bar) this cost ~5.9s elapsed and +580MB heap per check, against ~60ms and ~0MB for the identical query compared as a boolean (`query() !== null`) or via a plain throw. The query itself (`queryByRole` / `queryByText` / `querySelector`) is not the expensive part -- only handing its result to `expect(...)` on a failing poll is. Use `waitForAbsent(() => query())` from `packages/client/src/test/waitForAbsent.ts` in place of `waitFor(() => expect(query()).toBeNull())`; it throws a plain `Error` instead of serializing an element, so a failing poll costs nothing extra. `packages/client/src/test/__tests__/no-element-expect-in-waitfor.test.ts` mechanically nets any new occurrence of the old shape.
+
 ## Test Categories and What "Polarity" Means for Each
 
 `workflow.md` requires a failing-first test for bug fixes. Applied mechanically to every test in a PR, that requirement produces a wrong verdict, because tests come in kinds with different correct behaviors against unmodified code.

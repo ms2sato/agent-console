@@ -9,6 +9,7 @@ import { render, screen, fireEvent, waitFor, cleanup, act } from '@testing-libra
 import { useState } from 'react';
 import { setAuthMode, setCurrentUser, getCurrentUser, _reset as resetAuth, useAuth } from '../../lib/auth';
 import { clearStoredFilterMode, STORAGE_KEY } from '../../hooks/useSessionFilter';
+import { waitForAbsent } from '../../test/waitForAbsent';
 
 /**
  * Test harness that mirrors LogoutButton logic with an injectable logout function.
@@ -105,9 +106,7 @@ describe('LogoutButton', () => {
 
     // Resolve the logout to complete and wait for state transition
     resolveLogout!();
-    await waitFor(() => {
-      expect(screen.queryByText('Logging out...')).toBeNull();
-    });
+    await waitForAbsent(() => screen.queryByText('Logging out...'));
   });
 
   it('should clear user and navigate on successful logout', async () => {

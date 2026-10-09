@@ -3,6 +3,7 @@ import { screen, cleanup, waitFor, within, fireEvent } from '@testing-library/re
 import userEvent from '@testing-library/user-event';
 import type { AgentParameterCapabilitiesByKind } from '@agent-console/shared';
 import { renderWithRouter } from '../../../test/renderWithRouter';
+import { waitForAbsent } from '../../../test/waitForAbsent';
 import { AddAgentWorkerMenu } from '../AddAgentWorkerMenu';
 import type { AddAgentWorkerParams } from '../hooks/useTabManagement';
 import { AGENT_KIND_PRESENTATION } from '../../agents';
@@ -510,9 +511,7 @@ describe('AddAgentWorkerMenu', () => {
       // dropped, only that it's hidden. Retype a model and confirm the
       // window field comes back empty, proving the stored value -- not just
       // its rendering -- was cleared.
-      await waitFor(() => {
-        expect(screen.queryByPlaceholderText('e.g. 128000')).toBeNull();
-      });
+      await waitForAbsent(() => screen.queryByPlaceholderText('e.g. 128000'));
       fireEvent.change(modelInput, { target: { value: 'sonnet' } });
       const reappearedWindowInput = (await waitFor(() =>
         screen.getByPlaceholderText('e.g. 128000'),
