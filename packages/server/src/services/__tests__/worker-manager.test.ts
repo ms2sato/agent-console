@@ -2794,6 +2794,7 @@ describe('WorkerManager', () => {
         agentId: CLAUDE_CODE_AGENT_ID,
       });
 
+      const warnSpy = spyOn(rootLogger, 'warn');
       await wm.activateAgentWorkerPty(worker, {
         ...defaultAgentActivationParams,
         username: 'alice',
@@ -2805,6 +2806,18 @@ describe('WorkerManager', () => {
       expect(worker.pty).not.toBeNull();
       const env = getLastSpawnEnv();
       expect(env!.AGENT_CONSOLE_MCP_TOKEN_FILE).toBeUndefined();
+
+      // Issue #1399: the mint-skip warn log used to point at Issue #1107
+      // ("see Issue #1107") as though it still tracked restoring `enforce`.
+      // Pin the corrected wording so a future edit cannot silently
+      // reintroduce a pointer to that closed Issue.
+      const mintSkipWarnCall = warnSpy.mock.calls.find(
+        (call) => typeof call[1] === 'string' && call[1].includes('activated without session.createdBy'),
+      );
+      expect(mintSkipWarnCall).toBeDefined();
+      const warnMessage = mintSkipWarnCall![1] as string;
+      expect(warnMessage).toContain('enforce is opt-in');
+      expect(warnMessage).not.toContain('Issue #1107');
     });
 
     it('multi-user + missing createdByUserId + AGENT_CONSOLE_MCP_AUTH=enforce: still skips minting but activation succeeds (mint-skip is independent of the auth mode)', async () => {

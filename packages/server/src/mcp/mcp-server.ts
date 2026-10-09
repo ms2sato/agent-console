@@ -469,7 +469,7 @@ export function createMcpApp(deps: McpDependencies): Hono {
   const mcpTokenRegistry = deps.mcpTokenRegistry ?? new McpTokenRegistry();
   const mcpAuthMode = deps.mcpAuthMode ?? resolveMcpAuthMode(undefined, serverConfig.AUTH_MODE);
   if (serverConfig.AUTH_MODE === 'multi-user' && mcpAuthMode === 'warn') {
-    logger.info('MCP caller identity running in warn mode for AUTH_MODE=multi-user; this is currently the default (opt into stricter checking via AGENT_CONSOLE_MCP_AUTH=enforce). Restoring enforce-by-default is tracked in Issue #1107 (docs/design/embedded-agent-worker.md § "MCP caller identity")');
+    logger.info('MCP caller identity running in warn mode for AUTH_MODE=multi-user (the default for every auth mode since PR #1109; opt into stricter checking via AGENT_CONSOLE_MCP_AUTH=enforce; enforce-by-default is not planned -- see closed Issue #1107 for the prerequisites) (docs/design/embedded-agent-worker.md § "MCP caller identity")');
   }
 
   /**

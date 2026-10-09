@@ -695,7 +695,7 @@ export class WorkerManager {
           // (fail-closed). The worker itself still starts either way.
           logger.warn(
             { workerId: worker.id, sessionId, username: params.username },
-            `Agent worker activated without session.createdBy; worker will spawn as server-process user '${params.username}' -- command resolution and file access use that identity, so per-user CLI installs will not resolve (skipping MCP token mint; MCP calls from this worker will be rejected if AGENT_CONSOLE_MCP_AUTH=enforce is set; see Issue #1107)`,
+            `Agent worker activated without session.createdBy; worker will spawn as server-process user '${params.username}' -- command resolution and file access use that identity, so per-user CLI installs will not resolve (skipping MCP token mint; MCP calls from this worker will be rejected if AGENT_CONSOLE_MCP_AUTH=enforce is set; enforce is opt-in; see AGENT_CONSOLE_MCP_AUTH in the multi-user setup guide)`,
           );
         } else if (this.mcpTokenRegistry) {
           // lookupOsUserFn is an injectable seam (LookupOsUserFn); the built-in
