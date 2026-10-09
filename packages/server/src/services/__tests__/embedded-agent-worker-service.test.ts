@@ -7,6 +7,7 @@ import { join } from 'node:path';
 import * as shared from '@agent-console/shared';
 import { EMBEDDED_AGENT_SLASH_COMMANDS, type EmbeddedAgentDefinition, type SdkResumeFailureReason } from '@agent-console/shared';
 import type { SpawnAsUserFn, SpawnAsUserOpts, SpawnAsUserResult } from '../privilege-elevation.js';
+import { toSpawnAsUserResult, type FakeFileSink, type FakeSubprocess } from '../../__tests__/utils/fake-spawn-as-user.js';
 import { SessionDataPathResolver } from '../../lib/session-data-path-resolver.js';
 import { resolveUploadDir } from '../../lib/message-upload-dir.js';
 import { computeQuickCwdSlug } from '../../lib/session-data-path.js';
@@ -87,44 +88,6 @@ function buildDefinition(
     updatedAt: '2026-01-01T00:00:00.000Z',
     ...overrides,
   };
-}
-
-/** Subset of Bun's FileSink consumed by the service (write + flush). */
-interface FakeFileSink {
-  write: (chunk: string | Uint8Array) => number;
-  end: () => void;
-  flush: () => number;
-}
-
-interface FakeSubprocess {
-  pid: number;
-  exited: Promise<number>;
-  stdin: FakeFileSink;
-  stdout: ReadableStream<Uint8Array>;
-  stderr: ReadableStream<Uint8Array>;
-  kill: (signal?: number) => void;
-}
-
-/**
- * Typed fixture builder for a fake `spawnAsUserFn` result. `SpawnAsUserResult.subprocess`
- * is Bun's real `Subprocess<'pipe','pipe','pipe'>` and `.stdin` its real
- * `FileSink` -- far larger types than the `FakeSubprocess`/`FakeFileSink`
- * doubles above actually implement. This is the file's single, named
- * boundary between the fake shape and `SpawnAsUserResult` (mirrors the
- * inline pattern `makeFakeSpawn` used below, now shared with
- * `makeFakeMultiActivationSpawn`).
- */
-function toSpawnAsUserResult(fields: {
-  subprocess: FakeSubprocess;
-  stdin: FakeFileSink;
-  elevated?: boolean;
-}): SpawnAsUserResult {
-  const result: Pick<SpawnAsUserResult, 'elevated'> & { subprocess: FakeSubprocess; stdin: FakeFileSink } = {
-    subprocess: fields.subprocess,
-    stdin: fields.stdin,
-    elevated: fields.elevated ?? false,
-  };
-  return result as SpawnAsUserResult;
 }
 
 /**
@@ -237,7 +200,9 @@ function makeFakeSpawn(opts?: { endThrows?: boolean }): FakeSpawn {
 
   const stdin: FakeFileSink = {
     write: (chunk) => {
-      const s = typeof chunk === 'string' ? chunk : new TextDecoder().decode(chunk);
+      // Real FileSink.write also accepts SharedArrayBuffer; this fixture is only
+      // ever driven with string/Uint8Array chunks in practice, so narrow the cast.
+      const s = typeof chunk === 'string' ? chunk : new TextDecoder().decode(chunk as Uint8Array);
       stdinWrites.push(s);
       onStdinWrite?.(s);
       return 0;
@@ -247,6 +212,7 @@ function makeFakeSpawn(opts?: { endThrows?: boolean }): FakeSpawn {
       if (opts?.endThrows) {
         throw new Error('EPIPE: stdin already closed');
       }
+      return 0;
     },
     flush: () => {
       flushes += 1;
@@ -261,8 +227,12 @@ function makeFakeSpawn(opts?: { endThrows?: boolean }): FakeSpawn {
     stdout: stdout.stream,
     stderr: stderr.stream,
     kill: (signal) => {
-      killSignals.push(signal ?? 15);
-      onKill?.(signal ?? 15);
+      // Real Subprocess['kill'] signal param also accepts `Signals` (name strings);
+      // every caller in this codebase passes a numeric signal, so coerce defensively
+      // and keep the existing `?? 15` default for an omitted signal.
+      const sig = typeof signal === 'number' ? signal : 15;
+      killSignals.push(sig);
+      onKill?.(sig);
     },
   };
 
@@ -4613,10 +4583,14 @@ function makeMultiChildFakeSpawn(): MultiChildFakeSpawn {
     });
     const stdin: FakeFileSink = {
       write: (chunk) => {
-        stdinWrites.push(typeof chunk === 'string' ? chunk : new TextDecoder().decode(chunk));
+        // Real FileSink.write also accepts SharedArrayBuffer; this fixture is only
+        // ever driven with string/Uint8Array chunks in practice, so narrow the cast.
+        stdinWrites.push(
+          typeof chunk === 'string' ? chunk : new TextDecoder().decode(chunk as Uint8Array)
+        );
         return 0;
       },
-      end: () => {},
+      end: () => 0,
       flush: () => 0,
     };
     const subprocess: FakeSubprocess = {
@@ -4626,8 +4600,12 @@ function makeMultiChildFakeSpawn(): MultiChildFakeSpawn {
       stdout: stdout.stream,
       stderr: stderr.stream,
       kill: (signal) => {
-        killSignals.push(signal ?? 15);
-        onKill?.(signal ?? 15);
+        // Real Subprocess['kill'] signal param also accepts `Signals` (name strings);
+        // every caller in this codebase passes a numeric signal, so coerce defensively
+        // and keep the existing `?? 15` default for an omitted signal.
+        const sig = typeof signal === 'number' ? signal : 15;
+        killSignals.push(sig);
+        onKill?.(sig);
       },
     };
     children.push({
@@ -5658,10 +5636,14 @@ function makeFakeMultiActivationSpawn(): { fn: SpawnAsUserFn; incarnations: Fake
     });
     const stdin: FakeFileSink = {
       write: (chunk) => {
-        stdinWrites.push(typeof chunk === 'string' ? chunk : new TextDecoder().decode(chunk));
+        // Real FileSink.write also accepts SharedArrayBuffer; this fixture is only
+        // ever driven with string/Uint8Array chunks in practice, so narrow the cast.
+        stdinWrites.push(
+          typeof chunk === 'string' ? chunk : new TextDecoder().decode(chunk as Uint8Array)
+        );
         return 0;
       },
-      end: () => {},
+      end: () => 0,
       flush: () => 0,
     };
     const subprocess: FakeSubprocess = {

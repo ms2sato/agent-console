@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import * as os from 'node:os';
 import type { FileSink } from 'bun';
+import type { FakeFileSink } from '../../__tests__/utils/fake-spawn-as-user.js';
 import {
   runAsUser,
   rmRecursiveAsUser,
@@ -664,15 +665,6 @@ describe('privilege-elevation', () => {
   });
 
   describe('spawnAsUser (integration with spawn)', () => {
-    /**
-     * Subset of Bun's `FileSink` shape that `spawnAsUser`'s callers consume
-     * via `subprocess.stdin` (write / end / flush). Pick from Bun's actual
-     * `FileSink` type so the stub literal stays type-compatible with the
-     * field's declared shape on `Subprocess.stdin`. Mirrors the typed-fake
-     * pattern used by `FakeProc` above for the runAsUser fakes.
-     */
-    type FakeFileSink = Pick<FileSink, 'write' | 'end' | 'flush'>;
-
     /**
      * Subset of Bun's `Subprocess<'pipe','pipe','pipe'>` shape exposed by
      * `spawnAsUser`'s result. Differs from `FakeProc` in that it carries a
