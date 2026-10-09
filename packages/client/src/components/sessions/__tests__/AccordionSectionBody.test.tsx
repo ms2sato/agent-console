@@ -91,4 +91,68 @@ describe('AccordionSectionBody', () => {
     const wrapper = container.firstElementChild as HTMLElement;
     expect(wrapper.getAttribute('inert')).toBe('');
   });
+
+  // happy-dom cannot measure actual pixel height; the pins below are
+  // DOM-structure-only. The 0px visual claim is verified separately via
+  // Browser QA, not by this test.
+
+  it('keeps the caller className off the clipping layer when collapsed, nesting it on a child instead', () => {
+    const { container } = render(
+      <AccordionSectionBody isExpanded={false} className="max-h-96 overflow-y-auto px-4 py-3">
+        <span>Section content</span>
+      </AccordionSectionBody>
+    );
+
+    const clippingLayer = container.firstElementChild!.firstElementChild as HTMLElement;
+    expect(clippingLayer.className).toContain('overflow-hidden');
+    expect(clippingLayer.className).not.toContain('overflow-y-auto');
+    expect(clippingLayer.className.split(' ').some((cls) => /^p[xy]?-/.test(cls))).toBe(false);
+    expect(clippingLayer.className.split(' ').some((cls) => /^py-/.test(cls))).toBe(false);
+
+    const nestedChild = clippingLayer.firstElementChild as HTMLElement;
+    expect(nestedChild.className).toContain('max-h-96');
+    expect(nestedChild.className).toContain('overflow-y-auto');
+    expect(nestedChild.className).toContain('px-4');
+    expect(nestedChild.className).toContain('py-3');
+
+    expect(nestedChild.contains(screen.getByText('Section content'))).toBe(true);
+  });
+
+  it('keeps the caller className off the clipping layer when expanded, nesting it on a child instead -- the structural split is state-independent', () => {
+    const { container } = render(
+      <AccordionSectionBody isExpanded={true} className="max-h-96 overflow-y-auto px-4 py-3">
+        <span>Section content</span>
+      </AccordionSectionBody>
+    );
+
+    const clippingLayer = container.firstElementChild!.firstElementChild as HTMLElement;
+    expect(clippingLayer.className).toContain('overflow-hidden');
+    expect(clippingLayer.className).not.toContain('overflow-y-auto');
+    expect(clippingLayer.className.split(' ').some((cls) => /^p[xy]?-/.test(cls))).toBe(false);
+    expect(clippingLayer.className.split(' ').some((cls) => /^py-/.test(cls))).toBe(false);
+
+    const nestedChild = clippingLayer.firstElementChild as HTMLElement;
+    expect(nestedChild.className).toContain('max-h-96');
+    expect(nestedChild.className).toContain('overflow-y-auto');
+    expect(nestedChild.className).toContain('px-4');
+    expect(nestedChild.className).toContain('py-3');
+
+    expect(nestedChild.contains(screen.getByText('Section content'))).toBe(true);
+  });
+
+  it('always nests a child div even when className is undefined, and renders children inside it', () => {
+    const { container } = render(
+      <AccordionSectionBody isExpanded={false}>
+        <span>Section content</span>
+      </AccordionSectionBody>
+    );
+
+    const clippingLayer = container.firstElementChild!.firstElementChild as HTMLElement;
+    expect(clippingLayer.className).toContain('overflow-hidden');
+    expect(clippingLayer.className).toContain('min-w-0');
+
+    const nestedChild = clippingLayer.firstElementChild as HTMLElement;
+    expect(nestedChild).toBeTruthy();
+    expect(nestedChild.contains(screen.getByText('Section content'))).toBe(true);
+  });
 });
