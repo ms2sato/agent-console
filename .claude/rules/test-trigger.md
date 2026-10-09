@@ -607,7 +607,7 @@ PRs touching `pty-provider.ts`'s `BunTerminalPtyAdapter` exit wiring (the `subpr
 
 **`--contend`** spawns (default 4, `--contend-n N` overrides) `bun -e` busy children (CPU spin + fork storm) owned and SIGKILLed by the probe itself in a `finally` block -- deliberately not `bun run test`, which would collide with the full-suite slot rule. `--cycles N` (default 20) and `--timeout-ms N` (default 30000, matching `check-exit-127-diagnostic.ts`'s `EXIT_WAIT_TIMEOUT_MS`) override the loop shape; `--timeout-ms 1 --cycles 1` is the Q12 sanity check that the instrument emits a complete observable set on a healthy child before trusting a real 20-cycle run. `--provider bun-pty|bun-terminal` selects which `PtyProvider` is under measurement, per the paragraph above.
 
-Free and deterministic; no elevation, no billed CLI, no login dependency. It is a manual gate, never a CI job -- a measurement instrument, not a regression gate.
+Free and unprivileged; no billed CLI or login dependency -- but NOT deterministic: the probe measures runtime-sensitive PTY exit behavior under real host load, so its verdict legitimately varies between runs (one LOST-EXIT in 20 full-suite-concurrent `--provider bun-pty` cycles, zero in the identical `--provider bun-terminal` run; see Issue #1879's findings comments). It is a manual gate, never a CI job -- a measurement instrument, not a regression gate.
 
 **Verification tier (Discipline 4 of `os-environment-coupling.md`):** Unprivileged (no tier-2/3/4 residue; any machine with bun).
 

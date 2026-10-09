@@ -98,9 +98,13 @@
  *   0  measured -- every cycle either exited naturally or produced a
  *      definite verdict (LOST-EXIT or STUCK-CHILD), regardless of which.
  *   1  at least one cycle was INCONCLUSIVE (see classifyTimeout).
- *   2  harness failure -- the positive control failed, or bad arguments.
- *      No verdict is printed when this fires: the instrument's own ability
- *      to observe a live-then-dead process was not established.
+ *   2  harness failure -- the positive control failed, bad arguments, or an
+ *      unexpected exception anywhere in `main()` (caught at the top level
+ *      so an uncaught rejection never falls through to Bun's own default
+ *      exit code 1, which this script's own exit-code contract already
+ *      means something specific: "at least one INCONCLUSIVE cycle"). No
+ *      verdict is printed when this fires: the instrument's own ability to
+ *      observe a live-then-dead process was not established.
  *
  * Sync contract: NONE for the classifier -- `classifyTimeout` and
  * `determineExitCode` are pure functions pinned by
@@ -667,5 +671,9 @@ async function main(): Promise<void> {
 }
 
 if (import.meta.main) {
-  main();
+  main().catch((err: unknown) => {
+    console.error(`HARNESS FAILURE: ${err instanceof Error ? (err.stack ?? err.message) : String(err)}`);
+    console.error('No verdict printed.');
+    process.exit(2);
+  });
 }
