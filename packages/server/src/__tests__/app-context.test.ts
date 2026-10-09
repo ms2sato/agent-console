@@ -18,7 +18,8 @@ import * as path from 'node:path';
 import * as os from 'node:os';
 import { SqliteEmbeddedAgentRepository } from '../repositories/sqlite-embedded-agent-repository.js';
 import type { EmbeddedAgentDefinition } from '@agent-console/shared';
-import { bunTerminalProvider } from '../lib/pty-provider.js';
+import { getPtyProvider } from '../lib/pty-provider.js';
+import { serverConfig } from '../lib/server-config.js';
 import type { TerminalPtySpawnRequest } from '../services/user-mode.js';
 import { MockPty, createMockPtyFactory, createMockPtyProvider } from './utils/mock-pty.js';
 
@@ -153,14 +154,17 @@ describe('AppContext', () => {
       }
 
       it('defaults the user mode\'s PTY provider to getPtyProvider(serverConfig.PTY_PROVIDER), not the legacy bunPtyProvider', async () => {
-        // The test env has no PTY_PROVIDER set, so serverConfig.PTY_PROVIDER
-        // resolves to its default 'bun-terminal' (server-config.ts), and
-        // getPtyProvider('bun-terminal') returns this exact exported
-        // singleton. SingleUserMode keeps its ptyProvider private, so
-        // identity is observed indirectly: spy on the singleton's spawn()
-        // method and confirm the context's default userMode construction
-        // actually dispatches a spawnPty call through it.
-        const spawnSpy = spyOn(bunTerminalProvider, 'spawn').mockReturnValue(new MockPty(99999));
+        // Resolve the SAME configured provider createTestContext() itself
+        // resolves (getPtyProvider(serverConfig.PTY_PROVIDER)) rather than
+        // hardcoding bunTerminalProvider -- PTY_PROVIDER=bun-pty is a
+        // supported override, and hardcoding the terminal singleton would
+        // make this test fail under that configuration even though the
+        // production code is behaving correctly. SingleUserMode keeps its
+        // ptyProvider private, so identity is observed indirectly: spy on
+        // the resolved singleton's spawn() method and confirm the context's
+        // default userMode construction actually dispatches through it.
+        const configuredProvider = getPtyProvider(serverConfig.PTY_PROVIDER);
+        const spawnSpy = spyOn(configuredProvider, 'spawn').mockReturnValue(new MockPty(99999));
 
         try {
           appContext = await createTestContext();
