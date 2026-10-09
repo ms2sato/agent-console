@@ -28,7 +28,12 @@ import {
   INSTRUCTION_PER_FILE_CAP_BYTES,
   INSTRUCTION_AGGREGATE_CAP_BYTES,
   RULES_LAYER_CAP_BYTES,
+  SKILLS_LAYER_CAP_BYTES,
   rulesLayerBytesUsed,
+  formatRuleSegments,
+  formatOmittedNames,
+  OMISSION_NAMES_MAX,
+  utf8ByteLength,
   type SystemPromptContext,
   type LoadInstructionsResult,
 } from '../system-prompt.js';
@@ -62,6 +67,60 @@ async function isolatedXdgConfigHome(): Promise<string> {
 }
 
 const emptyInstructions: LoadInstructionsResult = { segments: [] };
+
+/**
+ * Issue #1646's own "control": the OLD per-layer drop rule, measured
+ * against the sum of each item's own bytes only -- no index-line prefix, no
+ * join separator, no omission-line overhead. `dropLargestUntilFits` (the
+ * production function this replaced) is gone, so this is the test-local
+ * baseline the (a) cases below compare the NEW render-measuring rule
+ * against: the same items, the same cap, the SAME largest-first order, just
+ * without ever looking at the layer's real rendered output.
+ */
+function computeOldDropCount<T>(items: T[], capBytes: number, byteLength: (item: T) => number): number {
+  const copy = [...items];
+  let total = copy.reduce((sum, item) => sum + byteLength(item), 0);
+  let dropped = 0;
+  while (total > capBytes && copy.length > 0) {
+    let largestIdx = 0;
+    for (let i = 1; i < copy.length; i++) {
+      if (byteLength(copy[i]) > byteLength(copy[largestIdx])) largestIdx = i;
+    }
+    total -= byteLength(copy[largestIdx]);
+    copy.splice(largestIdx, 1);
+    dropped++;
+  }
+  return dropped;
+}
+
+/**
+ * Re-imports `system-prompt.ts` as a FRESH module instance with `envOverrides`
+ * applied for the duration of the import only -- the same cache-busting
+ * query-string technique `packages/server/src/lib/__tests__/server-config.test.ts`
+ * uses for its own module-level-constant tests. `RULES_LAYER_CAP_BYTES` /
+ * `SKILLS_LAYER_CAP_BYTES` / `MEMORY_LAYER_CAP_BYTES` are each computed ONCE,
+ * at module evaluation, from `process.env` -- there is no runtime seam to
+ * shrink them for a test, so getting an artificially tiny cap means getting
+ * a whole new module evaluation with the env var already set.
+ */
+let systemPromptImportCounter = 0;
+async function importSystemPromptWithEnv(
+  envOverrides: Record<string, string>,
+): Promise<typeof import('../system-prompt.js')> {
+  const previous: Record<string, string | undefined> = {};
+  for (const [key, value] of Object.entries(envOverrides)) {
+    previous[key] = process.env[key];
+    process.env[key] = value;
+  }
+  try {
+    return await import(`../system-prompt.js?v=${++systemPromptImportCounter}`);
+  } finally {
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+}
 
 describe('assembleSystemPrompt', () => {
   // Issue #1856: the wait-by-ending-the-turn rule is an unconditional preamble
@@ -1057,6 +1116,105 @@ describe('loadInstructions — rules layer', () => {
     expect(indexLineIdx).toBeGreaterThan(ruleIdx);
     expect(prompt).not.toContain('SCOPED_CONTENT');
   });
+
+  it('(Issue #1646 a) rendered output, not just content bytes, decides the rules-layer drop -- one more file dropped than the old content-sum rule would have', async () => {
+    const root = await makeGitRepo();
+    const rulesDir = join(root, '.claude', 'rules');
+    await mkdir(rulesDir, { recursive: true });
+
+    const smallContent = 's'.repeat(100);
+    const bigContent = 'b'.repeat(RULES_LAYER_CAP_BYTES - 10 - smallContent.length);
+    await writeFile(join(rulesDir, 'big.md'), bigContent);
+    await writeFile(join(rulesDir, 'small.md'), smallContent);
+
+    // Control: the OLD rule (sum of each file's own content bytes only)
+    // sums to just under the cap and would have kept both files.
+    const oldDropCount = computeOldDropCount(
+      [bigContent, smallContent],
+      RULES_LAYER_CAP_BYTES,
+      (c) => utf8ByteLength(c),
+    );
+    expect(oldDropCount).toBe(0);
+
+    const result = await loadInstructions({ cwd: root, xdgConfigHome: await isolatedXdgConfigHome() });
+
+    // The NEW rule drops exactly one more file than OLD would have: the
+    // "--- Rule: <origin> ---" header per survivor plus the join separator
+    // push the rendered total over the cap unless big.md also goes.
+    expect(result.ruleSegments).toHaveLength(1);
+    expect(result.ruleSegments![0].content).toBe(smallContent);
+    expect(result.ruleOmissionLine).toBe('rules omitted for size: big.md');
+
+    const rendered = [
+      ...formatRuleSegments(result.ruleSegments!),
+      ...(result.ruleOmissionLine !== undefined ? [result.ruleOmissionLine] : []),
+      ...(result.ruleIndexLine !== undefined ? [result.ruleIndexLine] : []),
+    ].join('\n\n');
+    expect(utf8ByteLength(rendered)).toBeLessThanOrEqual(RULES_LAYER_CAP_BYTES);
+  });
+
+  it('(Issue #1646 b) 50 tiny rule files under a tiny-but-sufficient cap: the omission line names OMISSION_NAMES_MAX and counts the rest, and the rendered output still fits', async () => {
+    const root = await makeGitRepo();
+    const rulesDir = join(root, '.claude', 'rules');
+    await mkdir(rulesDir, { recursive: true });
+
+    const names: string[] = [];
+    for (let i = 0; i < 50; i++) {
+      const name = `file-${String(i).padStart(2, '0')}.md`;
+      names.push(name);
+      await writeFile(join(rulesDir, name), 'x');
+    }
+
+    // The cap is chosen to be exactly the byte size of the fully-omitted
+    // rendering (0 survivors) -- big enough that the final state fits, too
+    // small for even one survivor (whose own "--- Rule: ... ---" header
+    // alone exceeds this), so all 50 must go.
+    const expectedOmission = formatOmittedNames('rules omitted for size', names);
+    const cap = utf8ByteLength(expectedOmission);
+
+    const fresh = await importSystemPromptWithEnv({ RULES_LAYER_CAP_BYTES: String(cap) });
+    const result = await fresh.loadInstructions({ cwd: root, xdgConfigHome: await isolatedXdgConfigHome() });
+
+    expect(result.ruleSegments).toEqual([]);
+    expect(result.ruleOmissionLine).toBe(expectedOmission);
+    expect(result.ruleOmissionLine).toContain(`and ${50 - OMISSION_NAMES_MAX} more`);
+    expect((result.ruleOmissionLine!.match(/\.md/g) ?? []).length).toBe(OMISSION_NAMES_MAX);
+    expect(fresh.utf8ByteLength(result.ruleOmissionLine!)).toBeLessThanOrEqual(cap);
+  });
+
+  it('(Issue #1646 c) empty-items boundary: a rules directory with only scoped rules calls the drop with zero unscoped items', async () => {
+    const root = await makeGitRepo();
+    const rulesDir = join(root, '.claude', 'rules');
+    await mkdir(rulesDir, { recursive: true });
+    await writeFile(join(rulesDir, 'scoped.md'), '---\npaths:\n  - "src/**"\n---\n\nSCOPED_CONTENT');
+
+    const result = await loadInstructions({ cwd: root, xdgConfigHome: await isolatedXdgConfigHome() });
+    expect(result.ruleSegments).toEqual([]);
+    expect(result.ruleOmissionLine).toBeUndefined();
+    expect(result.ruleIndexLine).toBeDefined();
+    expect(result.ruleIndexLine).toContain('scoped.md');
+  });
+
+  it('(Issue #1646 d) a cap smaller than the fixed rendering overhead warn-logs and renders the omission line alone, never throwing or looping forever', async () => {
+    const root = await makeGitRepo();
+    const rulesDir = join(root, '.claude', 'rules');
+    await mkdir(rulesDir, { recursive: true });
+    await writeFile(join(rulesDir, 'only.md'), 'x');
+
+    const fresh = await importSystemPromptWithEnv({ RULES_LAYER_CAP_BYTES: '1' });
+    const warnSpy = spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const result = await fresh.loadInstructions({ cwd: root, xdgConfigHome: await isolatedXdgConfigHome() });
+      expect(result.ruleSegments).toEqual([]);
+      expect(result.ruleOmissionLine).toBe('rules omitted for size: only.md');
+      expect(fresh.utf8ByteLength(result.ruleOmissionLine!)).toBeGreaterThan(1);
+      expect(
+        warnSpy.mock.calls.some((call) => String(call[0]).toLowerCase().includes('fixed rendering overhead')),
+      ).toBe(true);
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
 });
 
 describe('parseSkillFrontmatter', () => {
@@ -1284,6 +1442,111 @@ describe('loadInstructions — skills layer', () => {
 
     expect(result).toContain('sdk-demo-skill');
     expect(result).toContain('SDK-visible too.');
+  });
+
+  it('(Issue #1646 a) rendered output, not just entry bytes, decides the skills-layer drop -- one more entry dropped than the old content-sum rule would have', async () => {
+    const root = await makeGitRepo();
+
+    // Six IDENTICALLY-sized entries (so "largest first" deterministically
+    // picks the first one, filler-0, on a tie) whose combined formatted
+    // bytes land just under the cap -- individually small enough to stay
+    // well under the 4 KiB bounded frontmatter read, so every description
+    // parses in full.
+    const fillerCount = 6;
+    const perEntryPrefixBytes = utf8ByteLength('filler-0 -- '); // same for every filler-N below (N is one digit)
+    const marginUnderCap = 50;
+    const descriptionLength = Math.floor(
+      (SKILLS_LAYER_CAP_BYTES - marginUnderCap - fillerCount * perEntryPrefixBytes) / fillerCount,
+    );
+    const description = 'y'.repeat(descriptionLength);
+    const entryBytes = perEntryPrefixBytes + descriptionLength;
+
+    for (let i = 0; i < fillerCount; i++) {
+      await writeSkill(root, `filler-${i}`, `---\nname: filler-${i}\ndescription: ${description}\n---\n`);
+    }
+
+    // Control: the OLD rule (sum of each entry's own formatted bytes only)
+    // sums to just under the cap and would have kept all six entries.
+    const oldDropCount = computeOldDropCount(
+      Array.from({ length: fillerCount }, () => entryBytes),
+      SKILLS_LAYER_CAP_BYTES,
+      (n: number) => n,
+    );
+    expect(oldDropCount).toBe(0);
+
+    const result = await loadInstructions({ cwd: root, xdgConfigHome: await isolatedXdgConfigHome() });
+
+    // The NEW rule drops exactly one more entry than OLD would have: the
+    // fixed index-line prefix plus the "; " join separators push the
+    // rendered total over the cap unless one entry also goes.
+    expect(result.skillIndexLine).not.toContain('filler-0');
+    for (let i = 1; i < fillerCount; i++) {
+      expect(result.skillIndexLine).toContain(`filler-${i}`);
+    }
+    expect(result.skillOmissionLine).toBe('skills omitted for size: filler-0');
+
+    const rendered = [
+      ...(result.skillOmissionLine !== undefined ? [result.skillOmissionLine] : []),
+      ...(result.skillIndexLine !== undefined ? [result.skillIndexLine] : []),
+    ].join('\n\n');
+    expect(utf8ByteLength(rendered)).toBeLessThanOrEqual(SKILLS_LAYER_CAP_BYTES);
+  });
+
+  it('(Issue #1646 b) 50 tiny skills under a tiny-but-sufficient cap: the omission line names OMISSION_NAMES_MAX and counts the rest, and the rendered output still fits', async () => {
+    const root = await makeGitRepo();
+
+    const names: string[] = [];
+    for (let i = 0; i < 50; i++) {
+      const name = `skill-${String(i).padStart(2, '0')}`;
+      names.push(name);
+      await writeSkill(root, name, `---\nname: ${name}\n---\n`);
+    }
+
+    const expectedOmission = formatOmittedNames('skills omitted for size', names);
+    const cap = utf8ByteLength(expectedOmission);
+
+    const fresh = await importSystemPromptWithEnv({ SKILLS_LAYER_CAP_BYTES: String(cap) });
+    const result = await fresh.loadInstructions({ cwd: root, xdgConfigHome: await isolatedXdgConfigHome() });
+
+    expect(result.skillIndexLine).toBeUndefined();
+    expect(result.skillOmissionLine).toBe(expectedOmission);
+    expect(result.skillOmissionLine).toContain(`and ${50 - OMISSION_NAMES_MAX} more`);
+    expect(fresh.utf8ByteLength(result.skillOmissionLine!)).toBeLessThanOrEqual(cap);
+  });
+
+  it('(Issue #1646 c) empty-items boundary: every discovered SKILL.md unreadable leaves zero items for the drop loop', async () => {
+    if (typeof process.geteuid === 'function' && process.geteuid() === 0) return;
+    const root = await makeGitRepo();
+    await writeSkill(root, 'locked', '---\nname: locked\ndescription: hidden\n---\n');
+    const lockedPath = join(root, '.claude', 'skills', 'locked', 'SKILL.md');
+    await chmod(lockedPath, 0o000);
+    const warnSpy = spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const result = await loadInstructions({ cwd: root, xdgConfigHome: await isolatedXdgConfigHome() });
+      expect(result.skillIndexLine).toBeUndefined();
+      expect(result.skillOmissionLine).toBeUndefined();
+    } finally {
+      warnSpy.mockRestore();
+      await chmod(lockedPath, 0o600);
+    }
+  });
+
+  it('(Issue #1646 d) a cap smaller than the fixed rendering overhead warn-logs and renders the omission line alone for skills too', async () => {
+    const root = await makeGitRepo();
+    await writeSkill(root, 'only', '---\nname: only\ndescription: d\n---\n');
+
+    const fresh = await importSystemPromptWithEnv({ SKILLS_LAYER_CAP_BYTES: '1' });
+    const warnSpy = spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const result = await fresh.loadInstructions({ cwd: root, xdgConfigHome: await isolatedXdgConfigHome() });
+      expect(result.skillIndexLine).toBeUndefined();
+      expect(result.skillOmissionLine).toBe('skills omitted for size: only');
+      expect(
+        warnSpy.mock.calls.some((call) => String(call[0]).toLowerCase().includes('fixed rendering overhead')),
+      ).toBe(true);
+    } finally {
+      warnSpy.mockRestore();
+    }
   });
 });
 
@@ -1928,6 +2191,108 @@ describe('loadInstructions — memory layer (epic #1636 Phase 2)', () => {
     const result = await loadInstructions({ cwd: root, xdgConfigHome: await isolatedXdgConfigHome(), memoryDir });
     expect(result.memorySegment).toContain(INDEX_LINE);
     expect(result.memoryOmissionLine).toBeUndefined();
+  });
+
+  it('(Issue #1646 a) rendered output, not just line bytes, decides the memory-layer drop -- the header counts against the cap too', async () => {
+    const memoryDir = await makeMemoryDir();
+    const smallLine = '- [Keep](keep.md) — tiny';
+    const bigLinePrefix = '- [Big](big.md) — ';
+    const bigLineBytes = MEMORY_LAYER_CAP_BYTES - 10 - utf8ByteLength(smallLine);
+    const bigLine = `${bigLinePrefix}${'h'.repeat(bigLineBytes - utf8ByteLength(bigLinePrefix))}`;
+    await writeFile(join(memoryDir, 'MEMORY.md'), `${bigLine}\n${smallLine}\n`);
+
+    // Control: the OLD rule (sum of each line's own bytes only) sums to
+    // just under the cap and would have kept both lines -- the HEADER
+    // (always rendered, never counted by the old rule) is what pushes the
+    // real output over.
+    const oldDropCount = computeOldDropCount([bigLine, smallLine], MEMORY_LAYER_CAP_BYTES, (l) =>
+      utf8ByteLength(l),
+    );
+    expect(oldDropCount).toBe(0);
+
+    const result = await loadWithMemory(memoryDir);
+    expect(result.memorySegment).toContain(smallLine);
+    expect(result.memorySegment).not.toContain('big.md');
+    expect(result.memoryOmissionLine).toBe('memory index lines omitted for size: big.md');
+
+    const rendered = [
+      ...(result.memoryOmissionLine !== undefined ? [result.memoryOmissionLine] : []),
+      ...(result.memorySegment !== undefined ? [result.memorySegment] : []),
+    ].join('\n\n');
+    expect(utf8ByteLength(rendered)).toBeLessThanOrEqual(MEMORY_LAYER_CAP_BYTES);
+  });
+
+  it('(Issue #1646 b) 50 tiny memory index lines under a tiny-but-sufficient cap: the declaration names MEMORY_DECLARATION_MAX_NAMES and counts the rest, and the rendered output still fits', async () => {
+    const memoryDir = await makeMemoryDir();
+    const names: string[] = [];
+    const lines: string[] = [];
+    for (let i = 0; i < 50; i++) {
+      const name = `e${String(i).padStart(2, '0')}.md`;
+      names.push(name);
+      lines.push(`- [E${i}](${name}) — x`);
+    }
+    await writeFile(join(memoryDir, 'MEMORY.md'), `${lines.join('\n')}\n`);
+
+    const header = formatMemoryHeader(memoryDir);
+    const sortedNames = [...names].sort();
+    const shown = sortedNames.slice(0, MEMORY_DECLARATION_MAX_NAMES).join(', ');
+    const expectedOmission =
+      `memory index lines omitted for size: ${shown}, and ${sortedNames.length - MEMORY_DECLARATION_MAX_NAMES} more (${sortedNames.length} total)`;
+    // The cap is chosen to be exactly the byte size of the fully-omitted
+    // rendering (0 surviving lines, empty body after the header) -- big
+    // enough that this final state fits, too small for even one surviving
+    // line to also fit alongside it, so all 50 must go.
+    const fullRenderAllDropped = `${expectedOmission}\n\n${header}\n`;
+    const cap = utf8ByteLength(fullRenderAllDropped);
+
+    const fresh = await importSystemPromptWithEnv({ MEMORY_LAYER_CAP_BYTES: String(cap) });
+    const result = await fresh.loadInstructions({
+      cwd: await makeTempDir(),
+      xdgConfigHome: await isolatedXdgConfigHome(),
+      memoryDir,
+    });
+
+    expect(result.memorySegment).toBe(`${header}\n`);
+    expect(result.memoryOmissionLine).toBe(expectedOmission);
+    expect(result.memoryOmissionLine).toContain(
+      `and ${sortedNames.length - MEMORY_DECLARATION_MAX_NAMES} more (${sortedNames.length} total)`,
+    );
+    const renderedTotal = `${result.memoryOmissionLine}\n\n${result.memorySegment}`;
+    expect(fresh.utf8ByteLength(renderedTotal)).toBeLessThanOrEqual(cap);
+  });
+
+  it('(Issue #1646 c) empty-items boundary: no MEMORY.md still renders cleanly with zero index lines, and the header alone does not spuriously warn under the default cap', async () => {
+    const memoryDir = await makeMemoryDir();
+    const warnSpy = spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const result = await loadWithMemory(memoryDir);
+      expect(result.memorySegment).toBe(`${formatMemoryHeader(memoryDir)}\n${MEMORY_ABSENT_INDEX_LINE}`);
+      expect(result.memoryOmissionLine).toBeUndefined();
+      expect(
+        warnSpy.mock.calls.some((call) => String(call[0]).toLowerCase().includes('fixed rendering overhead')),
+      ).toBe(false);
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it('(Issue #1646 d) a cap smaller than the header alone warn-logs and still renders the header, never throwing', async () => {
+    const memoryDir = await makeMemoryDir();
+    const fresh = await importSystemPromptWithEnv({ MEMORY_LAYER_CAP_BYTES: '1' });
+    const warnSpy = spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const result = await fresh.loadInstructions({
+        cwd: await makeTempDir(),
+        xdgConfigHome: await isolatedXdgConfigHome(),
+        memoryDir,
+      });
+      expect(result.memorySegment).toBe(`${fresh.formatMemoryHeader(memoryDir)}\n${fresh.MEMORY_ABSENT_INDEX_LINE}`);
+      expect(
+        warnSpy.mock.calls.some((call) => String(call[0]).toLowerCase().includes('fixed rendering overhead')),
+      ).toBe(true);
+    } finally {
+      warnSpy.mockRestore();
+    }
   });
 });
 
