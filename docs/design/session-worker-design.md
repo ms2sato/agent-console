@@ -49,6 +49,8 @@ QuickSession (not tied to repository/worktree)
 
 *Note: `WebWorker` name conflicts with browser API. Consider `EmbeddedWebWorker` or `BrowserWorker`.
 
+AgentWorker's command is typed into a live shell, not passed as argv -- see [Command delivery into a live shell](#command-delivery-into-a-live-shell).
+
 ## Type Definitions
 
 ### Common Types (packages/shared)
@@ -474,6 +476,34 @@ class SessionManager {
   restartAgentWorker(sessionId: string, workerId: string, continueConversation: boolean): boolean;
 }
 ```
+
+### Command delivery into a live shell
+
+An agent worker's PTY child is the user's own interactive login shell, not
+the agent binary. Both spawn routes end in a bare `exec $SHELL`: the direct
+path (`buildDirectSentinelShellCommand`, `sentinel-spawn-command.ts` L15)
+and the elevated path (`buildElevatedSentinelCommand`,
+`sentinel-spawn-command.ts` L24).
+
+The agent's command is **never** passed as that shell's argv. Once the
+[Login-Shell Sentinel](../glossary.md#login-shell-sentinel) has been seen,
+`WorkerManager` types it into the already-alive shell:
+`worker.pty.write(worker.pendingCommand + '\r')` (`worker-manager.ts` L984).
+
+**Consequence:** an interactive shell survives its own "command not found"
+rather than exiting, so no `commandTemplate` content can cause an
+immediate PTY exit 127. An immediate, pre-sentinel exit 127 is the wrapper
+/ login-shell chain itself failing to start -- a different binary, and a
+different remedy, than a bad agent command. By shape: a **pre-sentinel**
+127 points at `$SHELL`, the login-shell init, or the elevation path; a
+**post-sentinel** "command not found" points at the `commandTemplate`
+itself or `PATH` inside the user's own shell.
+
+See also: [Login-Shell Sentinel](../glossary.md#login-shell-sentinel),
+`scripts/smoke/check-exit-127-diagnostic.ts`, and Issue #1294 -- which
+established this by three experiments and a source read, disproving that
+same Issue's own original AC premise ("a bad `commandTemplate` causes an
+immediate PTY exit 127").
 
 ## Server Startup Behavior
 
