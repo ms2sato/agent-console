@@ -86,11 +86,11 @@ export async function resolveTargets(
         continue;
       }
 
-      targets.push({ sessionId: session.id });
+      targets.push({ sessionId: session.id, provenance: 'match' });
 
       // Also notify the parent session (e.g., orchestrator)
       if (session.parentSessionId) {
-        targets.push({ sessionId: session.parentSessionId });
+        targets.push({ sessionId: session.parentSessionId, provenance: 'parent' });
 
         // The fallback (below) must not fire merely because the parent
         // isn't the flag-holder -- it fires only when there is no LIVE
@@ -145,10 +145,11 @@ export async function resolveTargets(
     for (const sessionId of fallbackSessionIds) {
       // Skip if the designated session is already a genuine match (the
       // matched session itself, or its live parent) -- it must appear
-      // exactly once, without `fallback: true`, since it legitimately owns
-      // the event's working tree in that case.
+      // exactly once, with its original `provenance` ('match' or
+      // 'parent'), since it legitimately owns the event's working tree
+      // in that case.
       if (!existingSessionIds.has(sessionId)) {
-        targets.push({ sessionId, fallback: true });
+        targets.push({ sessionId, provenance: 'fallback' });
       }
     }
   }
@@ -343,5 +344,11 @@ async function resolveIssueLabeledTargets(
     }
   }
 
-  return [...orchestratorSessionIds].map((sessionId) => ({ sessionId }));
+  // 'match' -- this is the ONLY routing path for `issue:labeled`, and the
+  // designated-Orchestrator session it resolves to is the sole intended
+  // recipient (not a "nothing else matched" fallback). DiffWorkerHandler
+  // never sees this provenance value in practice: `issue:labeled` is not
+  // in its `supportedEvents`, so job-handler.ts's event-type filter drops
+  // it before dispatch.
+  return [...orchestratorSessionIds].map((sessionId) => ({ sessionId, provenance: 'match' as const }));
 }

@@ -88,7 +88,7 @@ describe('resolveTargets', () => {
 
     const targets = await resolveTargets(createEvent({ repositoryName: 'owner/repo' }), deps);
 
-    expect(targets).toEqual([{ sessionId: 'session-1' }]);
+    expect(targets).toEqual([{ sessionId: 'session-1', provenance: 'match' }]);
   });
 
   it('filters by branch when event specifies a branch', async () => {
@@ -103,7 +103,7 @@ describe('resolveTargets', () => {
 
     const targets = await resolveTargets(createEvent({ branch: 'feature-branch' }), deps);
 
-    expect(targets).toEqual([{ sessionId: 'session-feature' }]);
+    expect(targets).toEqual([{ sessionId: 'session-feature', provenance: 'match' }]);
   });
 
   it('skips non-worktree sessions', async () => {
@@ -143,7 +143,7 @@ describe('resolveTargets', () => {
 
     const targets = await resolveTargets(createEvent(), deps);
 
-    expect(targets).toEqual([{ sessionId: 'session-2' }]);
+    expect(targets).toEqual([{ sessionId: 'session-2', provenance: 'match' }]);
   });
 
   it('includes parent session when child matches', async () => {
@@ -158,8 +158,8 @@ describe('resolveTargets', () => {
     const targets = await resolveTargets(createEvent({ branch: 'feature' }), deps);
 
     expect(targets).toEqual([
-      { sessionId: 'child-1' },
-      { sessionId: 'parent-1' },
+      { sessionId: 'child-1', provenance: 'match' },
+      { sessionId: 'parent-1', provenance: 'parent' },
     ]);
   });
 
@@ -174,7 +174,7 @@ describe('resolveTargets', () => {
 
     const targets = await resolveTargets(createEvent({ branch: 'feature' }), deps);
 
-    expect(targets).toEqual([{ sessionId: 'child-1' }]);
+    expect(targets).toEqual([{ sessionId: 'child-1', provenance: 'match' }]);
   });
 
   it('deduplicates parent when multiple children share the same parent', async () => {
@@ -277,7 +277,7 @@ describe('resolveTargets: designated-session fallback (#1661)', () => {
 
     const targets = await resolveTargets(createEvent({ branch: 'main' }), deps);
 
-    expect(targets).toEqual([{ sessionId: 'designated-1', fallback: true }]);
+    expect(targets).toEqual([{ sessionId: 'designated-1', provenance: 'fallback' }]);
   });
 
   it('positive (Issue #1739 twin): branch matches zero sessions, designated session running with an EMBEDDED-ONLY worker -> sole fallback target', async () => {
@@ -300,7 +300,7 @@ describe('resolveTargets: designated-session fallback (#1661)', () => {
 
     const targets = await resolveTargets(createEvent({ branch: 'main' }), deps);
 
-    expect(targets).toEqual([{ sessionId: 'designated-1', fallback: true }]);
+    expect(targets).toEqual([{ sessionId: 'designated-1', provenance: 'fallback' }]);
   });
 
   it('boundary: matched session has no parent -> designated session added alongside it', async () => {
@@ -321,8 +321,8 @@ describe('resolveTargets: designated-session fallback (#1661)', () => {
     const targets = await resolveTargets(createEvent({ branch: 'feature' }), deps);
 
     expect(targets).toEqual([
-      { sessionId: 'session-1' },
-      { sessionId: 'designated-1', fallback: true },
+      { sessionId: 'session-1', provenance: 'match' },
+      { sessionId: 'designated-1', provenance: 'fallback' },
     ]);
   });
 
@@ -349,9 +349,9 @@ describe('resolveTargets: designated-session fallback (#1661)', () => {
     const targets = await resolveTargets(createEvent({ branch: 'feature' }), deps);
 
     expect(targets).toEqual([
-      { sessionId: 'session-1' },
-      { sessionId: 'dead-parent' },
-      { sessionId: 'designated-1', fallback: true },
+      { sessionId: 'session-1', provenance: 'match' },
+      { sessionId: 'dead-parent', provenance: 'parent' },
+      { sessionId: 'designated-1', provenance: 'fallback' },
     ]);
   });
 
@@ -384,9 +384,9 @@ describe('resolveTargets: designated-session fallback (#1661)', () => {
     const targets = await resolveTargets(createEvent({ branch: 'feature' }), deps);
 
     expect(targets).toEqual([
-      { sessionId: 'session-1' },
-      { sessionId: 'hibernated-parent' },
-      { sessionId: 'designated-1', fallback: true },
+      { sessionId: 'session-1', provenance: 'match' },
+      { sessionId: 'hibernated-parent', provenance: 'parent' },
+      { sessionId: 'designated-1', provenance: 'fallback' },
     ]);
   });
 
@@ -428,9 +428,9 @@ describe('resolveTargets: designated-session fallback (#1661)', () => {
     const targets = await resolveTargets(createEvent({ branch: 'feature' }), deps);
 
     expect(targets).toEqual([
-      { sessionId: 'session-1' },
-      { sessionId: 'vacuously-running-parent' },
-      { sessionId: 'designated-1', fallback: true },
+      { sessionId: 'session-1', provenance: 'match' },
+      { sessionId: 'vacuously-running-parent', provenance: 'parent' },
+      { sessionId: 'designated-1', provenance: 'fallback' },
     ]);
   });
 
@@ -468,8 +468,8 @@ describe('resolveTargets: designated-session fallback (#1661)', () => {
     const targets = await resolveTargets(createEvent({ branch: 'feature' }), deps);
 
     expect(targets).toEqual([
-      { sessionId: 'session-1' },
-      { sessionId: 'embedded-parent' },
+      { sessionId: 'session-1', provenance: 'match' },
+      { sessionId: 'embedded-parent', provenance: 'parent' },
     ]);
   });
 
@@ -508,8 +508,8 @@ describe('resolveTargets: designated-session fallback (#1661)', () => {
     const targets = await resolveTargets(createEvent({ branch: 'feature' }), deps);
 
     expect(targets).toEqual([
-      { sessionId: 'session-1' },
-      { sessionId: 'live-non-orchestrator-parent' },
+      { sessionId: 'session-1', provenance: 'match' },
+      { sessionId: 'live-non-orchestrator-parent', provenance: 'parent' },
     ]);
   });
 
@@ -536,8 +536,8 @@ describe('resolveTargets: designated-session fallback (#1661)', () => {
     const targets = await resolveTargets(createEvent({ branch: 'feature' }), deps);
 
     expect(targets).toEqual([
-      { sessionId: 'session-1' },
-      { sessionId: 'designated-1' },
+      { sessionId: 'session-1', provenance: 'match' },
+      { sessionId: 'designated-1', provenance: 'parent' },
     ]);
   });
 
@@ -621,7 +621,7 @@ describe('resolveTargets: designated-session fallback (#1661)', () => {
 
     const targets = await resolveTargets(createEvent({ branch: 'main' }), deps);
 
-    expect(targets).toEqual([{ sessionId: 'designated-live', fallback: true }]);
+    expect(targets).toEqual([{ sessionId: 'designated-live', provenance: 'fallback' }]);
   });
 
   it('set-model boundary: three designated, all live -> three fallback targets', async () => {
@@ -644,7 +644,7 @@ describe('resolveTargets: designated-session fallback (#1661)', () => {
     const targets = await resolveTargets(createEvent({ branch: 'main' }), deps);
 
     expect(new Set(targets.map((t) => t.sessionId))).toEqual(new Set(['designated-1', 'designated-2', 'designated-3']));
-    expect(targets.every((t) => t.fallback)).toBe(true);
+    expect(targets.every((t) => t.provenance === 'fallback')).toBe(true);
     expect(targets).toHaveLength(3);
   });
 
@@ -670,7 +670,7 @@ describe('resolveTargets: designated-session fallback (#1661)', () => {
 
     const targets = await resolveTargets(createEvent({ branch: 'main' }), deps);
 
-    expect(targets).toEqual([{ sessionId: 'designated-shared', fallback: true }]);
+    expect(targets).toEqual([{ sessionId: 'designated-shared', provenance: 'fallback' }]);
   });
 });
 
@@ -722,7 +722,7 @@ describe('resolveTargets: issue:labeled routing', () => {
 
     const targets = await resolveTargets(createIssueLabeledEvent(), deps);
 
-    expect(targets).toEqual([{ sessionId: 'orchestrator-session-1' }]);
+    expect(targets).toEqual([{ sessionId: 'orchestrator-session-1', provenance: 'match' }]);
   });
 
   it('routes to the designated Orchestrator session (Issue #1739 twin: EMBEDDED-ONLY worker) when the repository matches and the label matches', async () => {
@@ -748,7 +748,7 @@ describe('resolveTargets: issue:labeled routing', () => {
     try {
       const targets = await resolveTargets(createIssueLabeledEvent(), deps);
 
-      expect(targets).toEqual([{ sessionId: 'orchestrator-session-1' }]);
+      expect(targets).toEqual([{ sessionId: 'orchestrator-session-1', provenance: 'match' }]);
 
       const noAgentWorkerCall = infoSpy.mock.calls.find(
         (call) =>
@@ -778,7 +778,7 @@ describe('resolveTargets: issue:labeled routing', () => {
 
     const targets = await resolveTargets(createIssueLabeledEvent(), deps);
 
-    expect(targets).toEqual([{ sessionId: 'orchestrator-session-1' }]);
+    expect(targets).toEqual([{ sessionId: 'orchestrator-session-1', provenance: 'match' }]);
   });
 
   it('returns empty when the repository matches but the label does not match the added-label-only metadata', async () => {
@@ -924,7 +924,7 @@ describe('resolveTargets: issue:labeled routing', () => {
 
       const targets = await resolveTargets(createIssueLabeledEvent(), deps);
 
-      expect(targets).toEqual([{ sessionId: 'orchestrator-session-eligible' }]);
+      expect(targets).toEqual([{ sessionId: 'orchestrator-session-eligible', provenance: 'match' }]);
     }
   });
 
@@ -987,7 +987,7 @@ describe('resolveTargets: issue:labeled routing', () => {
     };
 
     const dedupTargets = await resolveTargets(createIssueLabeledEvent(), dedupDeps);
-    expect(dedupTargets).toEqual([{ sessionId: 'orchestrator-session-shared' }]);
+    expect(dedupTargets).toEqual([{ sessionId: 'orchestrator-session-shared', provenance: 'match' }]);
   });
 
   // -------------------------------------------------------------------
@@ -1174,7 +1174,7 @@ describe('resolveTargets: issue:labeled routing', () => {
 
     const targets = await resolveTargets(createIssueLabeledEvent({ labels: ['Orchestrator-Trigger'] }), deps);
 
-    expect(targets).toEqual([{ sessionId: 'orchestrator-session-1' }]);
+    expect(targets).toEqual([{ sessionId: 'orchestrator-session-1', provenance: 'match' }]);
   });
 
   // -------------------------------------------------------------------
@@ -1204,7 +1204,7 @@ describe('resolveTargets: issue:labeled routing', () => {
 
     const targets = await resolveTargets(createIssueLabeledEvent(), deps);
 
-    expect(targets).toEqual([{ sessionId: 'orchestrator-live' }]);
+    expect(targets).toEqual([{ sessionId: 'orchestrator-live', provenance: 'match' }]);
   });
 
   it('set-model boundary: three designated, all live -> three targets, one per designated session', async () => {

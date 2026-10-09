@@ -26,13 +26,22 @@ export interface EventTarget {
   sessionId: string;
   workerId?: string;
   /**
-   * Set when this target was added as the repository's designated
-   * Orchestrator-session fallback (Shape C, #1661) rather than a direct
-   * branch/worktree match or its live parent. The fallback session's own
-   * working tree has nothing to do with the originating event's tree, so
-   * DiffWorkerHandler must never act on it.
+   * How this target was resolved:
+   * - `'match'`: a direct branch/worktree match -- the event's tree IS
+   *   this session's tree.
+   * - `'parent'`: the live parent of a matching session. The parent's own
+   *   working tree has nothing to do with the originating event's tree
+   *   (a delegate's child branch, typically), even though the parent is
+   *   still a valid delivery target for a notification.
+   * - `'fallback'`: the repository's designated Orchestrator-session
+   *   fallback, used when nothing else matched. Same as `'parent'`, its
+   *   own working tree has nothing to do with the originating event's
+   *   tree.
+   * `DiffWorkerHandler` must act ONLY on `'match'` -- refreshing a
+   * `'parent'` or `'fallback'` target's git-diff worker would refresh the
+   * wrong tree.
    */
-  fallback?: true;
+  provenance: 'match' | 'parent' | 'fallback';
 }
 
 /**
@@ -204,7 +213,7 @@ class DiffWorkerHandler implements InboundEventHandler {
   constructor(private sessionManager: InboundSessionManager) {}
 
   async handle(_event: InboundSystemEvent, target: EventTarget): Promise<HandlerOutcome> {
-    if (target.fallback) return 'not-applicable';
+    if (target.provenance !== 'match') return 'not-applicable';
 
     const session = this.sessionManager.getSession(target.sessionId);
     if (!session) return 'not-applicable';

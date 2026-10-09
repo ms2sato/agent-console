@@ -81,7 +81,7 @@ describe('createInboundEventJobHandler', () => {
 
     const jobHandler = createInboundEventJobHandler({
       getServiceParser: () => parser,
-      resolveTargets: async () => [{ sessionId: 'session-1' }],
+      resolveTargets: async () => [{ sessionId: 'session-1', provenance: 'match' }],
       handlers: [handler],
       notificationRepository,
     });
@@ -137,7 +137,7 @@ describe('createInboundEventJobHandler', () => {
 
     const jobHandler = createInboundEventJobHandler({
       getServiceParser: () => parser,
-      resolveTargets: async () => [{ sessionId: 'session-1' }],
+      resolveTargets: async () => [{ sessionId: 'session-1', provenance: 'match' }],
       handlers: [handler],
       notificationRepository,
     });
@@ -199,7 +199,7 @@ describe('createInboundEventJobHandler', () => {
 
     const jobHandler = createInboundEventJobHandler({
       getServiceParser: () => parser,
-      resolveTargets: async () => [{ sessionId: 'session-1' }],
+      resolveTargets: async () => [{ sessionId: 'session-1', provenance: 'match' }],
       handlers: [handler],
       notificationRepository,
     });
@@ -259,7 +259,7 @@ describe('createInboundEventJobHandler', () => {
 
     const jobHandler = createInboundEventJobHandler({
       getServiceParser: () => parser,
-      resolveTargets: async () => [{ sessionId: 'session-1' }],
+      resolveTargets: async () => [{ sessionId: 'session-1', provenance: 'match' }],
       handlers: [handler],
       notificationRepository,
     });
@@ -309,7 +309,7 @@ describe('createInboundEventJobHandler', () => {
 
     const jobHandler = createInboundEventJobHandler({
       getServiceParser: () => parser,
-      resolveTargets: async () => [{ sessionId: 'session-1' }],
+      resolveTargets: async () => [{ sessionId: 'session-1', provenance: 'match' }],
       handlers: [handler],
       notificationRepository,
     });
@@ -376,7 +376,7 @@ describe('createInboundEventJobHandler', () => {
 
     const jobHandler = createInboundEventJobHandler({
       getServiceParser: () => parser,
-      resolveTargets: async () => [{ sessionId: 'session-1' }],
+      resolveTargets: async () => [{ sessionId: 'session-1', provenance: 'match' }],
       handlers: [handler],
       notificationRepository,
       ciCompletionChecker: mockChecker,
@@ -427,7 +427,7 @@ describe('createInboundEventJobHandler', () => {
 
     const jobHandler = createInboundEventJobHandler({
       getServiceParser: () => parser,
-      resolveTargets: async () => [{ sessionId: 'session-1' }],
+      resolveTargets: async () => [{ sessionId: 'session-1', provenance: 'match' }],
       handlers: [handler],
       notificationRepository,
       ciCompletionChecker: mockChecker,
@@ -472,7 +472,7 @@ describe('createInboundEventJobHandler', () => {
 
     const jobHandler = createInboundEventJobHandler({
       getServiceParser: () => parser,
-      resolveTargets: async () => [{ sessionId: 'session-1' }],
+      resolveTargets: async () => [{ sessionId: 'session-1', provenance: 'match' }],
       handlers: [handler],
       notificationRepository,
       ciCompletionChecker: mockChecker,
@@ -516,7 +516,7 @@ describe('createInboundEventJobHandler', () => {
     // No ciCompletionChecker provided (backward compatibility)
     const jobHandler = createInboundEventJobHandler({
       getServiceParser: () => parser,
-      resolveTargets: async () => [{ sessionId: 'session-1' }],
+      resolveTargets: async () => [{ sessionId: 'session-1', provenance: 'match' }],
       handlers: [handler],
       notificationRepository,
     });
@@ -563,7 +563,7 @@ describe('createInboundEventJobHandler', () => {
 
     const jobHandler = createInboundEventJobHandler({
       getServiceParser: () => parser,
-      resolveTargets: async () => [{ sessionId: 'session-1' }],
+      resolveTargets: async () => [{ sessionId: 'session-1', provenance: 'match' }],
       handlers: [handler],
       notificationRepository,
       ciCompletionChecker: mockChecker,
@@ -623,7 +623,7 @@ describe('createInboundEventJobHandler', () => {
 
     const jobHandler = createInboundEventJobHandler({
       getServiceParser: () => parser,
-      resolveTargets: async () => [{ sessionId: 'session-1' }],
+      resolveTargets: async () => [{ sessionId: 'session-1', provenance: 'match' }],
       handlers: [handler],
       notificationRepository,
       ciCompletionChecker: mockChecker,
@@ -671,7 +671,7 @@ describe('createInboundEventJobHandler', () => {
 
     const jobHandler = createInboundEventJobHandler({
       getServiceParser: () => parser,
-      resolveTargets: async () => [{ sessionId: 'session-1' }],
+      resolveTargets: async () => [{ sessionId: 'session-1', provenance: 'match' }],
       handlers: [handler],
       notificationRepository,
       ciCompletionChecker: mockChecker,
@@ -724,8 +724,8 @@ describe('createInboundEventJobHandler', () => {
         const jobHandler = createInboundEventJobHandler({
           getServiceParser: () => parser,
           resolveTargets: async () => [
-            { sessionId: 'dangling-session' },
-            { sessionId: 'healthy-session' },
+            { sessionId: 'dangling-session', provenance: 'match' },
+            { sessionId: 'healthy-session', provenance: 'match' },
           ],
           handlers: [handler],
           notificationRepository: repo,
@@ -774,7 +774,7 @@ describe('createInboundEventJobHandler', () => {
             summary: 'CI success',
           }),
         }),
-        resolveTargets: async () => [{ sessionId: 'irrelevant-session' }],
+        resolveTargets: async () => [{ sessionId: 'irrelevant-session', provenance: 'match' }],
         handlers: [
           {
             handlerId: 'test-handler',
@@ -882,8 +882,8 @@ describe('createInboundEventJobHandler', () => {
         const jobHandler = createInboundEventJobHandler({
           getServiceParser: () => parser,
           resolveTargets: async () => [
-            { sessionId: siblingSessionId },
-            { sessionId: deliverFailSessionId },
+            { sessionId: siblingSessionId, provenance: 'match' },
+            { sessionId: deliverFailSessionId, provenance: 'match' },
           ],
           handlers: [handler],
           notificationRepository: wrappedRepo,
@@ -965,8 +965,8 @@ describe('createInboundEventJobHandler', () => {
         const jobHandler = createInboundEventJobHandler({
           getServiceParser: () => parser,
           resolveTargets: async () => [
-            { sessionId: 'failing-session' },
-            { sessionId: 'healthy-session-2' },
+            { sessionId: 'failing-session', provenance: 'match' },
+            { sessionId: 'healthy-session-2', provenance: 'match' },
           ],
           handlers: [handler],
           notificationRepository: repo,
@@ -1037,7 +1037,7 @@ describe('createInboundEventJobHandler', () => {
 
         const jobHandler = createInboundEventJobHandler({
           getServiceParser: () => parser,
-          resolveTargets: async () => [{ sessionId }],
+          resolveTargets: async () => [{ sessionId, provenance: 'match' }],
           handlers: [handler],
           notificationRepository: repo,
         });
@@ -1105,7 +1105,7 @@ describe('createInboundEventJobHandler', () => {
             summary: 'CI success',
           }),
         }),
-        resolveTargets: async () => [{ sessionId: 'irrelevant-session' }],
+        resolveTargets: async () => [{ sessionId: 'irrelevant-session', provenance: 'match' }],
         handlers: [
           {
             handlerId: 'test-handler',
@@ -1185,7 +1185,7 @@ describe('createInboundEventJobHandler', () => {
             summary: 'CI success',
           }),
         }),
-        resolveTargets: async () => [{ sessionId: 'irrelevant-session' }],
+        resolveTargets: async () => [{ sessionId: 'irrelevant-session', provenance: 'match' }],
         handlers: [
           {
             handlerId: 'test-handler',
@@ -1299,7 +1299,7 @@ describe('createInboundEventJobHandler', () => {
 
         const jobHandler = createInboundEventJobHandler({
           getServiceParser: () => parser,
-          resolveTargets: async () => [{ sessionId: sessionA }, { sessionId: sessionB }],
+          resolveTargets: async () => [{ sessionId: sessionA, provenance: 'match' }, { sessionId: sessionB, provenance: 'match' }],
           handlers: [handler],
           notificationRepository: wrappedRepo,
         });
@@ -1422,8 +1422,8 @@ describe('createInboundEventJobHandler', () => {
         const jobHandler = createInboundEventJobHandler({
           getServiceParser: () => parser,
           resolveTargets: async () => [
-            { sessionId: pendingSessionId },
-            { sessionId: transientFailSessionId },
+            { sessionId: pendingSessionId, provenance: 'match' },
+            { sessionId: transientFailSessionId, provenance: 'match' },
           ],
           handlers: [handler],
           notificationRepository: wrappedRepo,
@@ -1450,7 +1450,7 @@ describe('createInboundEventJobHandler', () => {
         // and proceeds normally.
         await expect(jobHandler(jobPayload)).resolves.toBeUndefined();
         expect(handlerMock).toHaveBeenCalledTimes(1);
-        expect(handlerMock.mock.calls[0][1]).toEqual({ sessionId: transientFailSessionId });
+        expect(handlerMock.mock.calls[0][1]).toEqual({ sessionId: transientFailSessionId, provenance: 'match' });
 
         const rows = await db.selectFrom('inbound_event_notifications').selectAll().execute();
         expect(rows.find((r) => r.session_id === pendingSessionId)?.status).toBe('pending');
@@ -1538,7 +1538,7 @@ describe('createInboundEventJobHandler', () => {
 
         const jobHandler = createInboundEventJobHandler({
           getServiceParser: () => parser,
-          resolveTargets: async () => [{ sessionId: 'only-dangling' }],
+          resolveTargets: async () => [{ sessionId: 'only-dangling', provenance: 'match' }],
           handlers: [handler],
           notificationRepository: repo,
         });
@@ -1589,7 +1589,7 @@ describe('createInboundEventJobHandler', () => {
 
         const jobHandler = createInboundEventJobHandler({
           getServiceParser: () => parser,
-          resolveTargets: async () => [{ sessionId: 'dangling-a' }, { sessionId: 'dangling-b' }],
+          resolveTargets: async () => [{ sessionId: 'dangling-a', provenance: 'match' }, { sessionId: 'dangling-b', provenance: 'match' }],
           handlers: [handler],
           notificationRepository: repo,
         });
