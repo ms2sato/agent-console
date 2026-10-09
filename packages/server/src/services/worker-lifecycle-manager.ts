@@ -1672,10 +1672,10 @@ export class WorkerLifecycleManager {
     }
 
     // Activate PTY for the worker
+    const resolver = this.deps.getPathResolver(session);
     try {
       const repositoryEnvVars = await this.deps.getRepositoryEnvVars(sessionId);
       const repositoryId = session.type === 'worktree' ? session.repositoryId : undefined;
-      const resolver = this.deps.getPathResolver(session);
       const username = await this.deps.resolveSpawnUsername(session.createdBy);
 
       if (existingWorker.type === 'agent') {
@@ -1725,6 +1725,7 @@ export class WorkerLifecycleManager {
       };
     }
 
+    await this.deps.workerManager.appendRestoreBoundaryMarker(existingWorker, sessionId, resolver, new Date());
     await this.deps.persistSession(session);
 
     logger.info({ workerId, sessionId, workerType: existingWorker.type }, 'Worker PTY activated');

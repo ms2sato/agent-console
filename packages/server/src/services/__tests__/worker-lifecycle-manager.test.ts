@@ -3735,6 +3735,108 @@ describe('WorkerLifecycleManager', () => {
 
       expect(mockOnWorkerActivated).toHaveBeenCalledWith(session.id, agentWorker.id);
     });
+
+    // Issue #1344 item 2: a real restore (pty=null -> activate) must append
+    // the restore-boundary marker exactly once, before persisting the
+    // revived session.
+    // Mutation: removing the appendRestoreBoundaryMarker call in
+    // restoreWorker makes this fail -- the spy is never called.
+    it('calls appendRestoreBoundaryMarker exactly once, before persistSession, on a real restore', async () => {
+      const session = createTestSession();
+      sessions.set(session.id, session);
+
+      const agentWorker: InternalAgentWorker = {
+        id: 'restored-marker-order',
+        type: 'agent',
+        name: 'Agent',
+        createdAt: new Date().toISOString(),
+        agentId: CLAUDE_CODE_AGENT_ID,
+        pty: null,
+        outputBuffer: '',
+        outputOffset: 0,
+        epoch: 1_700_000_000_000,
+        activityState: 'unknown',
+        activityDetector: null,
+        connectionCallbacks: new Map(),
+        mcpToken: null,
+        promptFile: null,
+        deliverInitialPromptOnActivation: false,
+        model: null,
+        reasoningEffort: null,
+      };
+      session.workers.set(agentWorker.id, agentWorker);
+
+      const callOrder: string[] = [];
+      const markerSpy = spyOn(workerManager, 'appendRestoreBoundaryMarker').mockImplementation(
+        async () => { callOrder.push('appendRestoreBoundaryMarker'); },
+      );
+      mockPersistSession.mockImplementation(async () => { callOrder.push('persistSession'); });
+
+      try {
+        const result = await lifecycleManager.restoreWorker(session.id, agentWorker.id);
+
+        expect(result.success).toBe(true);
+        expect(markerSpy).toHaveBeenCalledTimes(1);
+        expect(markerSpy.mock.calls[0][0]).toBe(agentWorker);
+        expect(mockPersistSession).toHaveBeenCalledTimes(1);
+        expect(callOrder).toEqual(['appendRestoreBoundaryMarker', 'persistSession']);
+      } finally {
+        markerSpy.mockRestore();
+      }
+    });
+
+    // Mutation: removing the early-return `if (existingWorker.pty)` guard
+    // would double-call both appendRestoreBoundaryMarker and persistSession
+    // on a second restoreWorker invocation.
+    it('does NOT call appendRestoreBoundaryMarker or persistSession again when the worker is already active (wasRestored=false)', async () => {
+      const session = createTestSession();
+      sessions.set(session.id, session);
+
+      const agentWorker: InternalAgentWorker = {
+        id: 'restored-twice',
+        type: 'agent',
+        name: 'Agent',
+        createdAt: new Date().toISOString(),
+        agentId: CLAUDE_CODE_AGENT_ID,
+        pty: null,
+        outputBuffer: '',
+        outputOffset: 0,
+        epoch: 1_700_000_000_000,
+        activityState: 'unknown',
+        activityDetector: null,
+        connectionCallbacks: new Map(),
+        mcpToken: null,
+        promptFile: null,
+        deliverInitialPromptOnActivation: false,
+        model: null,
+        reasoningEffort: null,
+      };
+      session.workers.set(agentWorker.id, agentWorker);
+
+      const markerSpy = spyOn(workerManager, 'appendRestoreBoundaryMarker');
+      try {
+        const firstResult = await lifecycleManager.restoreWorker(session.id, agentWorker.id);
+        expect(firstResult.success).toBe(true);
+        if (firstResult.success) {
+          expect(firstResult.wasRestored).toBe(true);
+        }
+        expect(markerSpy).toHaveBeenCalledTimes(1);
+        expect(mockPersistSession).toHaveBeenCalledTimes(1);
+
+        const secondResult = await lifecycleManager.restoreWorker(session.id, agentWorker.id);
+
+        expect(secondResult.success).toBe(true);
+        if (secondResult.success) {
+          expect(secondResult.wasRestored).toBe(false);
+        }
+        // Counts unchanged from the first call -- the early return never
+        // reaches either call.
+        expect(markerSpy).toHaveBeenCalledTimes(1);
+        expect(mockPersistSession).toHaveBeenCalledTimes(1);
+      } finally {
+        markerSpy.mockRestore();
+      }
+    });
   });
 
   // ========== Available Worker ==========
@@ -4741,7 +4843,10 @@ describe('WorkerLifecycleManager', () => {
       const result = await lifecycleManager.restoreWorker(session.id, agentWorker.id);
 
       expect(result.success).toBe(true);
-      expect(agentWorker.outputOffset).toBe(PRE_EXISTING_LENGTH);
+      // Seeded from the pre-existing file size, then the restore-boundary
+      // marker (Issue #1344) appends more bytes on top -- no longer an
+      // exact match, but it must never be LESS than the seed.
+      expect(agentWorker.outputOffset).toBeGreaterThan(PRE_EXISTING_LENGTH);
     });
 
     it('restoreWorker (terminal) seeds outputOffset from existing output file size', async () => {
@@ -4766,7 +4871,10 @@ describe('WorkerLifecycleManager', () => {
       const result = await lifecycleManager.restoreWorker(session.id, terminalWorker.id);
 
       expect(result.success).toBe(true);
-      expect(terminalWorker.outputOffset).toBe(PRE_EXISTING_LENGTH);
+      // Seeded from the pre-existing file size, then the restore-boundary
+      // marker (Issue #1344) appends more bytes on top -- no longer an
+      // exact match, but it must never be LESS than the seed.
+      expect(terminalWorker.outputOffset).toBeGreaterThan(PRE_EXISTING_LENGTH);
     });
 
     it('getAvailableWorker seeds outputOffset from existing output file size on first activation', async () => {
