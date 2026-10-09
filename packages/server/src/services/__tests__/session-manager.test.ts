@@ -5984,6 +5984,11 @@ describe('SessionManager', () => {
     // continueTemplate change reverted to the plain 'claude -c' literal,
     // this assertion fails -- confirmed FAILS. Received `"claude -c\r"`
     // (no --model at all).
+    //
+    // Behavior this Issue changes: createSession mints a console-owned
+    // conversation id on the worker's fresh creation activation, so this
+    // 'continue' restart now resumes that exact id via --resume rather than
+    // falling back to the directory-scoped bare -c.
     it("preserves the worker's model override on an explicit 'continue' restart", async () => {
       const manager = await getSessionManager();
       const session = await manager.createSession({
@@ -6000,7 +6005,8 @@ describe('SessionManager', () => {
       expect(newestPty).toBeDefined();
       const written = newestPty!.writtenData.join('');
       expect(written).toContain("--model 'claude-opus-4-6'");
-      expect(written).toContain('-c');
+      expect(written).toContain('--resume');
+      expect(written).not.toContain("'-c'");
     });
   });
 
@@ -7677,7 +7683,12 @@ describe('SessionManager', () => {
     // confirmed FAILS. Received `"claude ''\r"` (the fresh command template
     // 'claude {{model:+--model}}{{prompt}}' with an empty prompt, not the
     // continue template).
-    it("restarts with the continue template ('claude -c') when no initial prompt is owed [POLARITY]", async () => {
+    //
+    // Behavior this Issue changes: the worker mints a console-owned
+    // conversation id on its fresh creation activation, so the restart's
+    // continue path now resumes that id via --resume rather than the
+    // directory-scoped bare -c.
+    it("restarts with the continue template (--resume <id>) when no initial prompt is owed [POLARITY]", async () => {
       const manager = await getSessionManager();
       await manager.createSession({
         type: 'quick',
@@ -7691,10 +7702,11 @@ describe('SessionManager', () => {
       expect(newestPty).toBeDefined();
       // 'system' resolves to 'continue' when no initial prompt is owed
       // (Issue #1299 R2) -- the builtin agent's continueTemplate expands to
-      // exactly 'claude -c' when no model override is set (Issue #1299 PR-2
-      // also gave it a {{model:+--model}} substitution point -- see
-      // claude-code.ts).
-      expect(newestPty!.writtenData.join('')).toContain('claude -c');
+      // 'claude --resume <id>' for a worker with a minted conversation id
+      // (Issue #1299 PR-2 also gave it a {{model:+--model}} substitution
+      // point -- see claude-code.ts).
+      expect(newestPty!.writtenData.join('')).toContain('--resume');
+      expect(newestPty!.writtenData.join('')).not.toContain("'-c'");
     });
 
     /**
@@ -7812,7 +7824,11 @@ describe('SessionManager', () => {
       const newestPty = ptyFactory.instances.at(-1);
       expect(newestPty).toBeDefined();
       const written = newestPty!.writtenData.join('');
-      expect(written).toContain('claude -c');
+      // Behavior this Issue changes: the worker mints a conversation id on
+      // creation's fresh activation, so this continue resumes it via
+      // --resume rather than falling back to the directory-scoped bare -c.
+      expect(written).toContain('--resume');
+      expect(written).not.toContain("'-c'");
       expect(written).not.toContain('UNIQUE_T3_PROMPT_MARKER');
       expect(writeCalls.length).toBe(baselineWriteCalls);
 
@@ -7840,7 +7856,11 @@ describe('SessionManager', () => {
 
       const newestPty = ptyFactory.instances.at(-1);
       expect(newestPty).toBeDefined();
-      expect(newestPty!.writtenData.join('')).toContain('claude -c');
+      // Behavior this Issue changes: the worker mints a conversation id on
+      // creation's fresh activation, so this continue resumes it via
+      // --resume rather than the directory-scoped bare -c.
+      expect(newestPty!.writtenData.join('')).toContain('--resume');
+      expect(newestPty!.writtenData.join('')).not.toContain("'-c'");
     });
 
     // Issue #1299 PR-2 AC deviation, paragraph 2 (Architect-ruled product
@@ -7872,16 +7892,21 @@ describe('SessionManager', () => {
 
       // No initial prompt owed -> 'system' resolves to 'continue' (T1's
       // pin) -- continueTemplate now carries {{model:+--model}}, so an
-      // override-bearing worker produces 'claude --model \'x\' -c'.
+      // override-bearing worker produces 'claude --model \'x\' --resume \'<id>\''.
       // Polarity: with claude-code.ts's continueTemplate change reverted to
       // the plain 'claude -c' literal, assertion (b) below fails --
       // confirmed FAILS. Received `"claude -c\r"` (no --model at all; see
       // the full-suite polarity re-run in the PR report).
+      //
+      // Behavior this Issue changes: the worker mints a conversation id on
+      // creation's fresh activation, so this restart resumes it via
+      // --resume rather than the directory-scoped bare -c.
       const newestPty = ptyFactory.instances.at(-1);
       expect(newestPty).toBeDefined();
       const written = newestPty!.writtenData.join('');
       expect(written).toContain("--model 'claude-opus-4-6'");
-      expect(written).toContain('-c');
+      expect(written).toContain('--resume');
+      expect(written).not.toContain("'-c'");
 
       const restarted = manager.getWorker(session.id, initialWorker.id);
       // getWorker returns the InternalWorker union (not the shared Worker
@@ -7900,22 +7925,43 @@ describe('SessionManager', () => {
     // the byte-identical 'claude -c' (no --model, no double space) rather
     // than, say, an empty '--model \'\' -c' artifact from a naive
     // implementation of the optional-argument form.
-    it('restarts with exactly "claude -c" (no --model, no double space) when no model override is set', async () => {
+    //
+    // Behavior this Issue changes: a brand-new worker now mints a
+    // conversation id immediately at creation, so this test's ORIGINAL
+    // no-override scenario no longer exercises the bare `-c` fallback at
+    // all (it would resume via --resume like its siblings above). This
+    // test is repurposed into the dedicated legacy-fallback pin: it
+    // simulates a worker persisted before conversation-id minting existed
+    // (sdkSessionId forced back to null right before the restart) to prove
+    // that specific case still falls back to the exact, quoted literal
+    // "claude '-c'" (not a substring check) rather than an unescaped
+    // `claude -c`.
+    it("restarts with exactly \"claude '-c'\" when the worker has no conversation id (legacy, pre-existing worker)", async () => {
       const manager = await getSessionManager();
-      await manager.createSession({
+      const session = await manager.createSession({
         type: 'quick',
         locationPath: '/test/path',
         agentId: CLAUDE_CODE_AGENT_ID,
       });
+      const initialWorker = session.workers.find((w: Worker) => w.type === 'agent')!;
+
+      // Simulate a worker persisted before conversation-id minting existed:
+      // it has already been activated once (creation mints an id by
+      // default), but we force the id back to null right before the
+      // restart to reproduce the one case where the literal `-c` fallback
+      // still applies.
+      const restoredWorker = manager.getWorker(session.id, initialWorker.id);
+      if (restoredWorker && isInternalPtyWorker(restoredWorker) && restoredWorker.type === 'agent') {
+        restoredWorker.sdkSessionId = null;
+      }
 
       await manager.restartAllAgentWorkers({ kind: 'all' });
 
       const newestPty = ptyFactory.instances.at(-1);
       expect(newestPty).toBeDefined();
-      const written = newestPty!.writtenData.join('');
-      expect(written).toContain('claude -c');
-      expect(written).not.toContain('--model');
-      expect(written).not.toContain('claude  -c');
+      const commandWrite = newestPty!.writtenData.find((d: string) => d.endsWith('\r'));
+      expect(commandWrite).toBeDefined();
+      expect(commandWrite).toBe("claude '-c'\r");
     });
 
     it('should restart the agent worker and report the terminal worker as skipped', async () => {

@@ -557,6 +557,45 @@ describe('optional-argument form {{var:+prefix}}', () => {
   });
 });
 
+// The continue-path conversationId/continueFallback pair, as
+// claudeCodeAgent.continueTemplate actually composes them
+// ('claude {{conversationId:+--resume}}{{continueFallback}}').
+// conversationId uses the optional-argument {{var:+prefix}} form;
+// continueFallback uses the plain {{var}} form, which ALWAYS shell-escapes
+// its value -- this is what makes a legacy worker's fallback render as the
+// quoted `claude '-c'` rather than an unescaped `claude -c`.
+describe('conversationId / continueFallback (continue-path pair)', () => {
+  it('should expand to --resume <id>, with no -c, when conversationId is provided', () => {
+    const result = expandTemplate({
+      template: 'claude {{conversationId:+--resume}}{{continueFallback}}',
+      cwd: '/repo',
+      templateVars: { conversationId: 'some-uuid' },
+    });
+
+    expect(result.command).toContain("--resume 'some-uuid'");
+    expect(result.command).not.toContain('-c');
+  });
+
+  it('should expand to exactly "claude \'-c\'" when only continueFallback is provided', () => {
+    const result = expandTemplate({
+      template: 'claude {{conversationId:+--resume}}{{continueFallback}}',
+      cwd: '/repo',
+      templateVars: { continueFallback: '-c' },
+    });
+
+    expect(result.command).toBe("claude '-c'");
+  });
+
+  it('should collapse both placeholders to the empty string when neither var is provided', () => {
+    const result = expandTemplate({
+      template: 'claude {{conversationId:+--resume}}{{continueFallback}}',
+      cwd: '/repo',
+    });
+
+    expect(result.command).toBe('claude ');
+  });
+});
+
 describe('promptFilePath option', () => {
   it('should expand {{prompt}} to a quoted command substitution reading the prompt file', () => {
     const result = expandTemplate({

@@ -500,6 +500,84 @@ describe('WorkerManager', () => {
       expect(env!.AGENT_CONSOLE_PARENT_WORKER_ID).toBe('parent-w');
       expect(new URL(env!.AGENT_CONSOLE_BASE_URL).pathname).toBe('/');
     });
+
+    // Two agent workers sharing a cwd must never resolve
+    // claude's directory-scoped `-c` to each other's conversation. The fix
+    // mints a console-owned conversation id on each worker's first fresh
+    // activation and passes it to `claude` via --session-id / --resume.
+    describe('conversation id minting (Issue #1387)', () => {
+      it('mints a v4-UUID-shaped id on a fresh activation and passes it via --session-id', async () => {
+        const worker = createTestAgentWorker('agent-mint-fresh');
+        expect(worker.sdkSessionId).toBeNull();
+
+        await workerManager.activateAgentWorkerPty(worker, defaultAgentActivationParams);
+
+        expect(worker.sdkSessionId).not.toBeNull();
+        expect(worker.sdkSessionId).toMatch(
+          /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
+        );
+
+        const mockPty = ptyFactory.instances[0];
+        const commandWrite = mockPty.writtenData.find((d) => d.endsWith('\r'));
+        expect(commandWrite).toBeDefined();
+        expect(commandWrite).toContain(`--session-id '${worker.sdkSessionId}'`);
+      });
+
+      it('mints DIFFERENT ids for two separate agent workers activated with the same locationPath (regression pin for the original defect)', async () => {
+        const workerA = createTestAgentWorker('agent-mint-a');
+        const workerB = createTestAgentWorker('agent-mint-b');
+
+        await workerManager.activateAgentWorkerPty(workerA, defaultAgentActivationParams);
+        await workerManager.activateAgentWorkerPty(workerB, defaultAgentActivationParams);
+
+        expect(workerA.sdkSessionId).not.toBeNull();
+        expect(workerB.sdkSessionId).not.toBeNull();
+        expect(workerA.sdkSessionId).not.toBe(workerB.sdkSessionId);
+
+        const commandA = ptyFactory.instances[0].writtenData.find((d) => d.endsWith('\r'));
+        const commandB = ptyFactory.instances[1].writtenData.find((d) => d.endsWith('\r'));
+        expect(commandA).toContain(`--session-id '${workerA.sdkSessionId}'`);
+        expect(commandB).toContain(`--session-id '${workerB.sdkSessionId}'`);
+      });
+
+      it('continues with --resume <id> and never -c when the worker already has an sdkSessionId', async () => {
+        const worker = createTestAgentWorker('agent-continue-with-id');
+        worker.sdkSessionId = 'already-minted-id';
+
+        await workerManager.activateAgentWorkerPty(worker, {
+          ...defaultAgentActivationParams,
+          startupIntent: 'continue',
+        });
+
+        // Minting must not overwrite an already-set id.
+        expect(worker.sdkSessionId).toBe('already-minted-id');
+
+        const mockPty = ptyFactory.instances[0];
+        const commandWrite = mockPty.writtenData.find((d) => d.endsWith('\r'));
+        expect(commandWrite).toBeDefined();
+        expect(commandWrite).toContain("--resume 'already-minted-id'");
+        expect(commandWrite).not.toContain("'-c'");
+      });
+
+      it('continues with the legacy exact "claude \'-c\'" fallback when the worker has no sdkSessionId (pre-#1387 legacy worker)', async () => {
+        const worker = createTestAgentWorker('agent-continue-legacy');
+        expect(worker.sdkSessionId).toBeNull();
+
+        await workerManager.activateAgentWorkerPty(worker, {
+          ...defaultAgentActivationParams,
+          startupIntent: 'continue',
+        });
+
+        // A 'continue' startupIntent must never mint a fresh id -- a legacy
+        // worker continuing stays idless, falling back to bare -c.
+        expect(worker.sdkSessionId).toBeNull();
+
+        const mockPty = ptyFactory.instances[0];
+        const commandWrite = mockPty.writtenData.find((d) => d.endsWith('\r'));
+        expect(commandWrite).toBeDefined();
+        expect(commandWrite).toBe("claude '-c'\r");
+      });
+    });
   });
 
   describe('activateTerminalWorkerPty', () => {
@@ -1986,6 +2064,29 @@ describe('WorkerManager', () => {
       }
     });
 
+    it("round-trips an agent worker's console-minted conversation id (Issue #1387)", () => {
+      const worker = createTestAgentWorker('persist-sdk-session');
+      worker.sdkSessionId = 'minted-conversation-id';
+
+      const persisted = workerManager.toPersistedWorker(worker);
+
+      expect(persisted.type).toBe('agent');
+      if (persisted.type === 'agent') {
+        expect(persisted.sdkSessionId).toBe('minted-conversation-id');
+      }
+    });
+
+    it('persists null for an agent worker with no conversation id yet (Issue #1387)', () => {
+      const worker = createTestAgentWorker('persist-no-sdk-session');
+
+      const persisted = workerManager.toPersistedWorker(worker);
+
+      expect(persisted.type).toBe('agent');
+      if (persisted.type === 'agent') {
+        expect(persisted.sdkSessionId).toBeNull();
+      }
+    });
+
     it('round-trips an embedded-agent worker\'s autoCompaction, so a deliberate OFF survives a restart', () => {
       // Without this the toggle would silently re-enable itself every time
       // the server restarted -- the one direction a user would notice and
@@ -2336,6 +2437,38 @@ describe('WorkerManager', () => {
       if (worker.type === 'agent') {
         expect(worker.model).toBeNull();
         expect(worker.reasoningEffort).toBeNull();
+      }
+    });
+
+    it("should restore an agent worker's console-minted conversation id across a server restart (Issue #1387)", () => {
+      const persistedWorkers: PersistedAgentWorker[] = [
+        buildPersistedAgentWorker({
+          id: 'restored-agent-sdk-session',
+          agentId: 'claude-code',
+          sdkSessionId: 'persisted-conversation-id',
+        }),
+      ];
+
+      const workers = workerManager.restoreWorkersFromPersistence(persistedWorkers);
+
+      const worker = workers.get('restored-agent-sdk-session')!;
+      expect(worker.type).toBe('agent');
+      if (worker.type === 'agent') {
+        expect(worker.sdkSessionId).toBe('persisted-conversation-id');
+      }
+    });
+
+    it('should restore an agent worker with sdkSessionId null when no conversation id was persisted (legacy worker, Issue #1387)', () => {
+      const persistedWorkers: PersistedAgentWorker[] = [
+        buildPersistedAgentWorker({ id: 'restored-agent-no-sdk-session', agentId: 'claude-code' }),
+      ];
+
+      const workers = workerManager.restoreWorkersFromPersistence(persistedWorkers);
+
+      const worker = workers.get('restored-agent-no-sdk-session')!;
+      expect(worker.type).toBe('agent');
+      if (worker.type === 'agent') {
+        expect(worker.sdkSessionId).toBeNull();
       }
     });
 

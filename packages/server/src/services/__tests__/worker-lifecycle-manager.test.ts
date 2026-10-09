@@ -831,6 +831,57 @@ describe('WorkerLifecycleManager', () => {
       expect(lastPtyInstanceWrittenCommand()).not.toContain('claude-opus-4-6');
     });
 
+    it("restart pin: a same-agent restart preserves the worker's console-minted conversation id verbatim (Issue #1387)", async () => {
+      const session = createTestSession();
+      sessions.set(session.id, session);
+
+      const worker = await lifecycleManager.createWorker(session.id, {
+        type: 'agent',
+        agentId: capableAgentId,
+      });
+
+      const beforeRestart = lifecycleManager.getWorker(session.id, worker!.id);
+      expect(beforeRestart?.type).toBe('agent');
+      const originalSdkSessionId =
+        beforeRestart?.type === 'agent' ? beforeRestart.sdkSessionId : null;
+      expect(originalSdkSessionId).not.toBeNull();
+
+      await lifecycleManager.restartAgentWorker(session.id, worker!.id, 'fresh');
+
+      const afterRestart = lifecycleManager.getWorker(session.id, worker!.id);
+      expect(afterRestart?.type).toBe('agent');
+      if (afterRestart?.type === 'agent') {
+        expect(afterRestart.sdkSessionId).toBe(originalSdkSessionId);
+      }
+    });
+
+    it('an agent CHANGE on restart resets the console-minted conversation id (a different CLI may not understand it, Issue #1387)', async () => {
+      const session = createTestSession();
+      sessions.set(session.id, session);
+
+      const worker = await lifecycleManager.createWorker(session.id, {
+        type: 'agent',
+        agentId: capableAgentId,
+      });
+
+      const beforeRestart = lifecycleManager.getWorker(session.id, worker!.id);
+      const originalSdkSessionId =
+        beforeRestart?.type === 'agent' ? beforeRestart.sdkSessionId : null;
+      expect(originalSdkSessionId).not.toBeNull();
+
+      await lifecycleManager.restartAgentWorker(session.id, worker!.id, 'fresh', capableAgent2Id);
+
+      const afterRestart = lifecycleManager.getWorker(session.id, worker!.id);
+      expect(afterRestart?.type).toBe('agent');
+      if (afterRestart?.type === 'agent') {
+        // A fresh id is minted at the agent-changed restart's own
+        // activation (startupIntent is 'fresh', not 'continue'), so the new
+        // worker ends up with a DIFFERENT id, not merely a cleared one.
+        expect(afterRestart.sdkSessionId).not.toBeNull();
+        expect(afterRestart.sdkSessionId).not.toBe(originalSdkSessionId);
+      }
+    });
+
     it(
       'single-writer pin: validation follows the (possibly DI-overridden) capability accessor, not an ' +
         'independent re-scan of agent.commandTemplate -- reach measured: this test fails (does not reject) ' +
@@ -3477,6 +3528,7 @@ describe('WorkerLifecycleManager', () => {
         deliverInitialPromptOnActivation: false,
         model: null,
         reasoningEffort: null,
+        sdkSessionId: null,
       };
       session.workers.set(agentWorker.id, agentWorker);
 
@@ -3589,6 +3641,7 @@ describe('WorkerLifecycleManager', () => {
         deliverInitialPromptOnActivation: false,
         model: null,
         reasoningEffort: null,
+        sdkSessionId: null,
       };
       session.workers.set(agentWorker.id, agentWorker);
 
@@ -3631,6 +3684,7 @@ describe('WorkerLifecycleManager', () => {
         deliverInitialPromptOnActivation: false,
         model: null,
         reasoningEffort: null,
+        sdkSessionId: null,
       };
       session.workers.set(agentWorker.id, agentWorker);
 
@@ -3664,6 +3718,7 @@ describe('WorkerLifecycleManager', () => {
         deliverInitialPromptOnActivation: false,
         model: null,
         reasoningEffort: null,
+        sdkSessionId: null,
       };
       session.workers.set(agentWorker.id, agentWorker);
 
@@ -3695,6 +3750,7 @@ describe('WorkerLifecycleManager', () => {
         deliverInitialPromptOnActivation: false,
         model: null,
         reasoningEffort: null,
+        sdkSessionId: null,
       };
       session.workers.set(agentWorker.id, agentWorker);
 
@@ -3728,6 +3784,7 @@ describe('WorkerLifecycleManager', () => {
         deliverInitialPromptOnActivation: false,
         model: null,
         reasoningEffort: null,
+        sdkSessionId: null,
       };
       session.workers.set(agentWorker.id, agentWorker);
 
@@ -3763,6 +3820,7 @@ describe('WorkerLifecycleManager', () => {
         deliverInitialPromptOnActivation: false,
         model: null,
         reasoningEffort: null,
+        sdkSessionId: null,
       };
       session.workers.set(agentWorker.id, agentWorker);
 
@@ -3810,6 +3868,7 @@ describe('WorkerLifecycleManager', () => {
         deliverInitialPromptOnActivation: false,
         model: null,
         reasoningEffort: null,
+        sdkSessionId: null,
       };
       session.workers.set(agentWorker.id, agentWorker);
 
@@ -4712,6 +4771,7 @@ describe('WorkerLifecycleManager', () => {
         deliverInitialPromptOnActivation: false,
         model: null,
         reasoningEffort: null,
+        sdkSessionId: null,
       };
       session.workers.set(agentWorker.id, agentWorker);
 
@@ -4750,6 +4810,7 @@ describe('WorkerLifecycleManager', () => {
         deliverInitialPromptOnActivation: false,
         model: null,
         reasoningEffort: null,
+        sdkSessionId: null,
       };
       session.workers.set(agentWorker.id, agentWorker);
 
@@ -4835,6 +4896,7 @@ describe('WorkerLifecycleManager', () => {
         deliverInitialPromptOnActivation: false,
         model: null,
         reasoningEffort: null,
+        sdkSessionId: null,
       };
       session.workers.set(agentWorker.id, agentWorker);
 
@@ -4976,6 +5038,7 @@ describe('WorkerLifecycleManager', () => {
         deliverInitialPromptOnActivation: false,
         model: null,
         reasoningEffort: null,
+        sdkSessionId: null,
       };
       session.workers.set(agentWorker.id, agentWorker);
 

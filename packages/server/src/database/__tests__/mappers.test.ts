@@ -299,6 +299,28 @@ describe('mappers', () => {
       expect(row.reasoning_effort).toBeNull();
     });
 
+    it('writes sdk_session_id verbatim when the persisted agent worker has a console-minted conversation id (Issue #1387)', () => {
+      const worker = buildPersistedAgentWorker({
+        id: 'worker-1',
+        sdkSessionId: 'minted-conversation-id',
+      });
+
+      const row = toWorkerRow(worker, 'session-1');
+
+      expect(row.sdk_session_id).toBe('minted-conversation-id');
+    });
+
+    it('writes sdk_session_id: null when the persisted agent worker has no conversation id yet (Issue #1387)', () => {
+      const worker = buildPersistedAgentWorker({
+        id: 'worker-1',
+        sdkSessionId: null,
+      });
+
+      const row = toWorkerRow(worker, 'session-1');
+
+      expect(row.sdk_session_id).toBeNull();
+    });
+
     it('writes model, reasoning_effort, and context_window_tokens verbatim when the persisted embedded-agent worker has an override (#1554)', () => {
       const worker = buildPersistedEmbeddedAgentWorker({
         id: 'worker-1',
@@ -644,6 +666,73 @@ describe('mappers', () => {
 
       expect(worker.model).toBeNull();
       expect(worker.reasoningEffort).toBeNull();
+    });
+
+    it('round-trips a non-null sdk_session_id for agent workers (Issue #1387)', () => {
+      const dbWorker: Worker = {
+        id: 'worker-1',
+        session_id: 'session-1',
+        type: 'agent',
+        name: 'Agent',
+        created_at: '2024-01-01T00:00:00.000Z',
+        updated_at: '2024-01-01T00:00:00.000Z',
+        pid: 1234,
+        agent_id: 'claude-code-builtin',
+        base_commit: null,
+        embedded_agent_id: null,
+        deliver_initial_prompt_on_activation: null,
+        sdk_session_id: 'minted-conversation-id',
+        auto_compaction: 1,
+        model: null,
+        reasoning_effort: null,
+        context_window_tokens: null,
+      };
+
+      const worker = toPersistedWorker(dbWorker) as PersistedAgentWorker;
+
+      expect(worker.sdkSessionId).toBe('minted-conversation-id');
+    });
+
+    it('round-trips a NULL sdk_session_id as null for agent workers (Issue #1387)', () => {
+      const dbWorker: Worker = {
+        id: 'worker-1',
+        session_id: 'session-1',
+        type: 'agent',
+        name: 'Agent',
+        created_at: '2024-01-01T00:00:00.000Z',
+        updated_at: '2024-01-01T00:00:00.000Z',
+        pid: 1234,
+        agent_id: 'claude-code-builtin',
+        base_commit: null,
+        embedded_agent_id: null,
+        deliver_initial_prompt_on_activation: null,
+        sdk_session_id: null,
+        auto_compaction: 1,
+        model: null,
+        reasoning_effort: null,
+        context_window_tokens: null,
+      };
+
+      const worker = toPersistedWorker(dbWorker) as PersistedAgentWorker;
+
+      expect(worker.sdkSessionId).toBeNull();
+    });
+
+    // Mapper-layer analogue of the WorkerManager-layer restore/persist
+    // round-trip pin in worker-manager.test.ts -- both mapper directions
+    // (toWorkerRow then toPersistedWorker), not just one in isolation.
+    it("round-trips an agent worker's sdkSessionId through toWorkerRow -> toPersistedWorker unchanged (Issue #1387)", () => {
+      const original = buildPersistedAgentWorker({
+        id: 'worker-roundtrip-agent',
+        sdkSessionId: 'minted-conversation-id',
+      });
+
+      const row = toWorkerRow(original, 'session-1');
+      const selectRow = row as Worker;
+
+      const roundTripped = toPersistedWorker(selectRow) as PersistedAgentWorker;
+
+      expect(roundTripped.sdkSessionId).toBe(original.sdkSessionId);
     });
 
     it('maps deliver_initial_prompt_on_activation: 1 to deliverInitialPromptOnActivation: true for agent workers (Issue #1236)', () => {

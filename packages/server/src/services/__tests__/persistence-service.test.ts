@@ -172,6 +172,7 @@ describe('PersistenceService', () => {
               deliverInitialPromptOnActivation: false,
               model: null,
               reasoningEffort: null,
+              sdkSessionId: null,
             },
           ],
           serverPid: 99999,

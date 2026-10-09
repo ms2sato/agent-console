@@ -1108,7 +1108,11 @@ describe('Workers API', () => {
       expect(ptyFactory.instances.length).toBe(1);
     });
 
-    it('should forward continueConversation to the agent-type PTY spawn (claude -c)', async () => {
+    // This worker's VERY FIRST activation is a 'continue'
+    // intent (continueConversation: true on creation), so the mint guard
+    // (startupIntent !== 'continue') never mints a conversation id for it --
+    // it stays on the exact, quoted `claude '-c'` fallback, never --resume.
+    it("should forward continueConversation to the agent-type PTY spawn (claude '-c', never minted)", async () => {
       const session = await sessionManager.createSession({
         type: 'quick',
         locationPath: '/test/path',
@@ -1131,7 +1135,8 @@ describe('Workers API', () => {
       // via spawn argv -- so assert against the newest PTY instance's
       // writtenData rather than the spawn call args.
       const newestPty = ptyFactory.instances.at(-1);
-      expect(newestPty?.writtenData.join('')).toContain('claude -c');
+      expect(newestPty?.writtenData.join('')).toContain("claude '-c'");
+      expect(newestPty?.writtenData.join('')).not.toContain('--resume');
     });
 
     // Issue #1299 PR-1: continueConversation omitted (or false) must still
