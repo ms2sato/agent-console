@@ -250,7 +250,7 @@ export class NotificationManager {
    * Removes previous state and cancels pending debounce timer.
    */
   cleanupWorker(sessionId: string, workerId: string): void {
-    const key = `${sessionId}:${workerId}`;
+    const key = this.debounceKey(sessionId, workerId);
     this.previousState.delete(key);
     const timer = this.debounceTimers.get(key);
     if (timer) {
@@ -281,6 +281,17 @@ export class NotificationManager {
     }
 
     logger.debug({ sessionId }, 'Cleaned up notification state for session');
+  }
+
+  /**
+   * Test-only inspection: whether a debounce timer is currently pending for
+   * this session:worker identity. Mirrors the `refCountForTest` idiom used
+   * by client stores (e.g. TerminalController) -- narrow, read-only, no
+   * production caller. Lets tests assert a timer was cleared deterministically
+   * instead of inferring it from "did not fire within N ms of wall-clock time".
+   */
+  hasPendingDebounceForTest(sessionId: string, workerId: string): boolean {
+    return this.debounceTimers.has(this.debounceKey(sessionId, workerId));
   }
 
   /** Activity event types that map from agent activity states */
@@ -334,6 +345,16 @@ export class NotificationManager {
   }
 
   /**
+   * Derive the debounce timer key for a session:worker identity.
+   * Single source of truth so scheduleNotification, cleanupWorker, and
+   * hasPendingDebounceForTest all agree on what "this identity's debounce
+   * timer" means.
+   */
+  private debounceKey(sessionId: string, workerId: string): string {
+    return `${sessionId}:${workerId}`;
+  }
+
+  /**
    * Schedule notification with debouncing.
    * Waits for state to stabilize before sending.
    */
@@ -342,7 +363,7 @@ export class NotificationManager {
     worker: WorkerInfo,
     event: NotificationEvent
   ): void {
-    const key = `${session.id}:${worker.id}`;
+    const key = this.debounceKey(session.id, worker.id);
     const debounceSeconds = this.getDebounceSeconds();
 
     // Clear existing debounce timer

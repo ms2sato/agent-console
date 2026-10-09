@@ -525,24 +525,108 @@ describe('NotificationManager', () => {
   describe('dispose', () => {
     it('should clear all debounce timers on dispose', async () => {
       await setupRepoIntegration();
-      // Use short debounce for testing with real timers
       const { manager, slackHandler } = createNotificationManager(createMockSlackHandler(), {
-        debounceSeconds: 0.1, // 100ms
+        debounceSeconds: 5, // long enough that a surviving timer could never fire in this test
         triggers: allTriggersEnabled,
       });
 
-      // Schedule a debounced notification
+      // Schedule a debounced notification.
       manager.onActivityChange(testSession, testWorker, 'idle' as AgentActivityState);
+
+      // Positive control: prove a timer was actually armed before asserting
+      // it is gone.
+      expect(manager.hasPendingDebounceForTest(testSession.id, testWorker.id)).toBe(true);
       expect(slackHandler.send).not.toHaveBeenCalled();
 
-      // Dispose before debounce completes
+      // Dispose before debounce completes.
       manager.dispose();
 
-      // Wait for what would have been after the debounce period
-      await new Promise(resolve => setTimeout(resolve, 150));
-
-      // Notification should NOT be sent after dispose
+      // Deterministic: the timer is cleared, not merely "didn't fire within
+      // some wall-clock window".
+      expect(manager.hasPendingDebounceForTest(testSession.id, testWorker.id)).toBe(false);
       expect(slackHandler.send).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('hasPendingDebounceForTest', () => {
+    it('returns false for an identity that has never been seen', () => {
+      const { manager } = createNotificationManager();
+      expect(manager.hasPendingDebounceForTest('never-seen-session', 'never-seen-worker')).toBe(false);
+      manager.dispose();
+    });
+
+    it('returns true after onActivityChange arms a debounce timer', () => {
+      const { manager } = createNotificationManager(createMockSlackHandler(), {
+        debounceSeconds: 5, // long enough that it never fires during this test
+        triggers: allTriggersEnabled,
+      });
+
+      manager.onActivityChange(testSession, testWorker, 'idle' as AgentActivityState);
+
+      expect(manager.hasPendingDebounceForTest(testSession.id, testWorker.id)).toBe(true);
+
+      manager.dispose();
+    });
+
+    it('returns false immediately after cleanupWorker', () => {
+      const { manager } = createNotificationManager(createMockSlackHandler(), {
+        debounceSeconds: 5,
+        triggers: allTriggersEnabled,
+      });
+
+      manager.onActivityChange(testSession, testWorker, 'idle' as AgentActivityState);
+      expect(manager.hasPendingDebounceForTest(testSession.id, testWorker.id)).toBe(true);
+
+      manager.cleanupWorker(testSession.id, testWorker.id);
+
+      expect(manager.hasPendingDebounceForTest(testSession.id, testWorker.id)).toBe(false);
+
+      manager.dispose();
+    });
+
+    it('returns false after the timer has actually fired (firing is the subject under test here)', async () => {
+      await setupRepoIntegration();
+      const { manager } = createNotificationManager(createMockSlackHandler(), {
+        debounceSeconds: 0.05, // short real timer -- firing itself is what this test proves
+        triggers: allTriggersEnabled,
+      });
+
+      manager.onActivityChange(testSession, testWorker, 'idle' as AgentActivityState);
+      expect(manager.hasPendingDebounceForTest(testSession.id, testWorker.id)).toBe(true);
+
+      // Poll with a generous ceiling rather than a fixed wait -- firing is
+      // the thing under test here, so we wait FOR it to happen rather than
+      // inferring its absence from a fixed window.
+      const deadline = Date.now() + 2000;
+      while (Date.now() < deadline && manager.hasPendingDebounceForTest(testSession.id, testWorker.id)) {
+        await new Promise(resolve => setTimeout(resolve, 10));
+      }
+
+      expect(manager.hasPendingDebounceForTest(testSession.id, testWorker.id)).toBe(false);
+
+      manager.dispose();
+    });
+
+    it('cleanupSession clears debounce timers for that session but not another session', () => {
+      const { manager } = createNotificationManager(createMockSlackHandler(), {
+        debounceSeconds: 5,
+        triggers: allTriggersEnabled,
+      });
+
+      const otherSession = { id: 'session-other', title: 'Other Session', worktreeId: 'other-branch', repositoryId: 'test-repo-1' };
+
+      manager.onActivityChange(testSession, testWorker, 'idle' as AgentActivityState);
+      manager.onActivityChange(otherSession, testWorker, 'idle' as AgentActivityState);
+
+      expect(manager.hasPendingDebounceForTest(testSession.id, testWorker.id)).toBe(true);
+      expect(manager.hasPendingDebounceForTest(otherSession.id, testWorker.id)).toBe(true);
+
+      manager.cleanupSession(testSession.id);
+
+      expect(manager.hasPendingDebounceForTest(testSession.id, testWorker.id)).toBe(false);
+      expect(manager.hasPendingDebounceForTest(otherSession.id, testWorker.id)).toBe(true);
+
+      manager.dispose();
     });
   });
 
