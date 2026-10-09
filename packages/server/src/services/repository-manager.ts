@@ -136,6 +136,77 @@ export class RepositoryManager {
   private readonly _runAsUser: RunAsUserFn;
 
   /**
+   * Per-repository-id FIFO queue backing {@link withRepositoryLock}. Keyed by
+   * `repositoryId`; an absent key means "no in-flight locked call for this
+   * id". Different ids never block each other.
+   */
+  private readonly locks = new Map<string, Promise<unknown>>();
+
+  /**
+   * Serialize the multi-step "write -> read-back -> in-memory cache update
+   * -> lifecycle callback(s)" sequence used by `updateRepository`,
+   * `addOrchestratorSession`, `removeOrchestratorSession`, and
+   * `unregisterRepository`, per repository id.
+   *
+   * Why an in-process lock and not a DB transaction: the race
+   * this closes spans multiple steps across TWO AWAITED JS callback
+   * invocations -- DB write -> DB read-back -> `this.repositories.set`/
+   * `delete` (the in-memory cache) -> `onRepositoryUpdated` ->
+   * `onOrchestratorDesignationChanged` / `onRepositoryDeleted`. A single DB
+   * transaction wrapping only the write+read-back pair would still let a
+   * second call's write interleave between THIS call's read-back and its
+   * cache update / callback dispatch, because the cache and the callbacks
+   * are JS-side state a DB transaction cannot see or hold. Each caller's
+   * lifecycle callback must observe the state produced by ITS OWN write,
+   * not a later write from a call that raced past it -- that invariant
+   * lives entirely in the JS call stack, so the lock has to live there too.
+   *
+   * FIFO per id: a call's work only starts after every earlier call queued
+   * for the same id has settled (success or failure); a rejecting `fn`
+   * never poisons the queue for later callers (the `.catch(() => {})`
+   * below). Different ids never share a queue entry, so they never wait on
+   * each other. The map entry for an id is removed once its tail settles,
+   * guarded by an identity check so a later caller's freshly-queued entry is
+   * never removed by an earlier caller's stale `finally`.
+   *
+   * Call-site audit (every `this.repositories.set`/`delete` and every
+   * `this.repository.<write>` call in this class). Re-verify with:
+   *   grep -rn "repositories.set\|repositories.delete" repository-manager.ts
+   *
+   * - `initialize()`              `this.repositories.set`                    no contention: runs
+   *                                                                             once at startup,
+   *                                                                             before `create()`
+   *                                                                             returns the manager
+   *                                                                             to any caller.
+   * - `registerRepository()`      `this.repositories.set`,                   no contention: mints
+   *                                `this.repository.save`                      a brand new
+   *                                                                             `crypto.randomUUID()`,
+   *                                                                             so no other in-flight
+   *                                                                             call can already
+   *                                                                             hold this id.
+   * - `unregisterRepository()`    `this.repositories.delete`,                locked
+   *                                `this.repository.delete`
+   * - `updateRepository()`        `this.repositories.set`,                   locked
+   *                                `this.repository.update`
+   * - `addOrchestratorSession()`  `this.repositories.set`,                   locked
+   *                                `this.repository.addOrchestratorSession`
+   * - `removeOrchestratorSession()` `this.repositories.set`,                 locked
+   *                                `this.repository.removeOrchestratorSession`
+   */
+  private async withRepositoryLock<T>(repositoryId: string, fn: () => Promise<T>): Promise<T> {
+    const prev = this.locks.get(repositoryId) ?? Promise.resolve();
+    const run = prev.catch(() => {}).then(fn);
+    this.locks.set(repositoryId, run);
+    try {
+      return await run;
+    } finally {
+      if (this.locks.get(repositoryId) === run) {
+        this.locks.delete(repositoryId);
+      }
+    }
+  }
+
+  /**
    * Create a RepositoryManager instance with async initialization.
    * This is the preferred way to create a RepositoryManager.
    */
@@ -211,6 +282,10 @@ export class RepositoryManager {
   }
 
   async registerRepository(repoPath: string, options?: { description?: string }): Promise<Repository> {
+    // No `withRepositoryLock` here: this method mints a brand new
+    // `crypto.randomUUID()` for the repository id below, so no concurrent
+    // call can already be racing against this same id -- the contention
+    // `withRepositoryLock` exists to close is structurally absent here.
     // Resolve to absolute path
     const absolutePath = path.resolve(repoPath);
 
@@ -338,26 +413,34 @@ export class RepositoryManager {
     requestUsername: string | null = null,
     opts: { removeSourceRepo?: boolean } = {},
   ): Promise<boolean> {
-    const repo = this.repositories.get(id);
-    if (!repo) return false;
+    // Locked from the cache check onward: the check itself
+    // runs inside the lock, rather than before it, so a concurrent
+    // designation change cannot resurrect this id's cache row in the window
+    // between an unlocked check and acquiring the lock. See
+    // `withRepositoryLock`'s own doc comment for why this is cheap enough to
+    // apply unconditionally -- including to ids that turn out not to exist.
+    return this.withRepositoryLock(id, async () => {
+      const repo = this.repositories.get(id);
+      if (!repo) return false;
 
-    // Check if any active or inactive (paused) sessions are using this
-    // repository. Uses callbacks to avoid circular dependency with
-    // SessionManager. Throws RepositoryInUseError when in use.
-    await this.assertRepositoryNotInUse(id);
+      // Check if any active or inactive (paused) sessions are using this
+      // repository. Uses callbacks to avoid circular dependency with
+      // SessionManager. Throws RepositoryInUseError when in use.
+      await this.assertRepositoryNotInUse(id);
 
-    // Clean up related directories
-    await this.cleanupRepositoryData(repo, requestUsername, opts);
+      // Clean up related directories
+      await this.cleanupRepositoryData(repo, requestUsername, opts);
 
-    this.repositories.delete(id);
-    await this.repository.delete(id);
-    logger.info({ repositoryId: id, name: repo.name }, 'Repository unregistered');
+      this.repositories.delete(id);
+      await this.repository.delete(id);
+      logger.info({ repositoryId: id, name: repo.name }, 'Repository unregistered');
 
-    // Callback fires after successful delete - clients will receive state update
-    // only after database write is confirmed
-    this.lifecycleCallbacks?.onRepositoryDeleted(id);
+      // Callback fires after successful delete - clients will receive state update
+      // only after database write is confirmed
+      this.lifecycleCallbacks?.onRepositoryDeleted(id);
 
-    return true;
+      return true;
+    });
   }
 
   /**
@@ -367,20 +450,33 @@ export class RepositoryManager {
    * @returns Updated repository if found, null otherwise
    */
   async updateRepository(id: string, updates: RepositoryUpdates): Promise<Repository | null> {
-    const repo = this.repositories.get(id);
-    if (!repo) return null;
+    // Locked, including when `id` is not in `this.repositories`
+    // -- the cache check runs INSIDE the lock rather than before it, closing
+    // the window where an unlocked check could pass and then race a
+    // concurrent delete/designation-change before the lock was acquired.
+    // Always locking is cheap (an uncontended `Promise.resolve()` chain), so
+    // there's no reason to special-case the "id doesn't exist" path.
+    //
+    // `updates` being `{}` is unaffected by this change -- whatever
+    // `this.repository.update(id, {})` returned before (today's behavior)
+    // is still exactly what it returns now; the lock only serializes access,
+    // it does not alter what gets passed through.
+    return this.withRepositoryLock(id, async () => {
+      const repo = this.repositories.get(id);
+      if (!repo) return null;
 
-    const updated = await this.repository.update(id, updates);
-    if (!updated) return null;
+      const updated = await this.repository.update(id, updates);
+      if (!updated) return null;
 
-    this.repositories.set(id, updated);
-    logger.info({ repositoryId: id }, 'Repository updated');
+      this.repositories.set(id, updated);
+      logger.info({ repositoryId: id }, 'Repository updated');
 
-    // Callback fires after successful update - clients will receive state update
-    // only after database write is confirmed
-    await this.lifecycleCallbacks?.onRepositoryUpdated(updated);
+      // Callback fires after successful update - clients will receive state update
+      // only after database write is confirmed
+      await this.lifecycleCallbacks?.onRepositoryUpdated(updated);
 
-    return updated;
+      return updated;
+    });
   }
 
   /**
@@ -391,33 +487,39 @@ export class RepositoryManager {
    * @returns the re-read repository, or null if the repository doesn't exist
    */
   async addOrchestratorSession(repositoryId: string, sessionId: string): Promise<Repository | null> {
-    const repo = this.repositories.get(repositoryId);
-    if (!repo) return null;
+    // Locked: see `withRepositoryLock`'s doc comment. The
+    // INSERT and its follow-up `findById` are two separate statements; the
+    // lock is what actually prevents "interleave between them" from
+    // happening in the first place, rather than merely reading around it.
+    return this.withRepositoryLock(repositoryId, async () => {
+      const repo = this.repositories.get(repositoryId);
+      if (!repo) return null;
 
-    const result = await this.repository.addOrchestratorSession(repositoryId, sessionId);
-    if (!result.repository) return null;
+      const result = await this.repository.addOrchestratorSession(repositoryId, sessionId);
+      if (!result.repository) return null;
 
-    this.repositories.set(repositoryId, result.repository);
+      this.repositories.set(repositoryId, result.repository);
 
-    if (result.added) {
-      logger.info({ repositoryId, sessionId }, 'Orchestrator session designation added');
+      if (result.added) {
+        logger.info({ repositoryId, sessionId }, 'Orchestrator session designation added');
 
-      await this.lifecycleCallbacks?.onRepositoryUpdated(result.repository);
-      // Broadcast the just-re-read persisted set, not a value derived from
-      // the request argument -- `addOrchestratorSession`'s INSERT and its
-      // follow-up `findById` are two separate statements, so a concurrent
-      // designation change on the same repository could interleave between
-      // them. Reading `result.repository` keeps the broadcast honest about
-      // what is actually persisted even if that happens.
-      await this.lifecycleCallbacks?.onOrchestratorDesignationChanged(
-        repositoryId,
-        result.repository.orchestratorSessionIds,
-        sessionId,
-        'added'
-      );
-    }
+        await this.lifecycleCallbacks?.onRepositoryUpdated(result.repository);
+        // Broadcast the just-re-read persisted set, not a value derived from
+        // the request argument -- `addOrchestratorSession`'s INSERT and its
+        // follow-up `findById` are two separate statements, so a concurrent
+        // designation change on the same repository could interleave between
+        // them. Reading `result.repository` keeps the broadcast honest about
+        // what is actually persisted even if that happens.
+        await this.lifecycleCallbacks?.onOrchestratorDesignationChanged(
+          repositoryId,
+          result.repository.orchestratorSessionIds,
+          sessionId,
+          'added'
+        );
+      }
 
-    return result.repository;
+      return result.repository;
+    });
   }
 
   /**
@@ -432,29 +534,32 @@ export class RepositoryManager {
     repositoryId: string,
     sessionId: string
   ): Promise<{ removed: boolean; repository: Repository | null }> {
-    const repo = this.repositories.get(repositoryId);
-    if (!repo) return { removed: false, repository: null };
+    // Locked: same rationale as `addOrchestratorSession`.
+    return this.withRepositoryLock(repositoryId, async () => {
+      const repo = this.repositories.get(repositoryId);
+      if (!repo) return { removed: false, repository: null };
 
-    const result = await this.repository.removeOrchestratorSession(repositoryId, sessionId);
-    if (result.repository) {
-      this.repositories.set(repositoryId, result.repository);
-    }
+      const result = await this.repository.removeOrchestratorSession(repositoryId, sessionId);
+      if (result.repository) {
+        this.repositories.set(repositoryId, result.repository);
+      }
 
-    if (result.removed && result.repository) {
-      logger.info({ repositoryId, sessionId }, 'Orchestrator session designation removed');
-      await this.lifecycleCallbacks?.onRepositoryUpdated(result.repository);
-      // Same principle as addOrchestratorSession: broadcast the re-read
-      // persisted set (`result.repository`, already null-checked above)
-      // rather than a value assumed from the call site.
-      await this.lifecycleCallbacks?.onOrchestratorDesignationChanged(
-        repositoryId,
-        result.repository.orchestratorSessionIds,
-        sessionId,
-        'removed'
-      );
-    }
+      if (result.removed && result.repository) {
+        logger.info({ repositoryId, sessionId }, 'Orchestrator session designation removed');
+        await this.lifecycleCallbacks?.onRepositoryUpdated(result.repository);
+        // Same principle as addOrchestratorSession: broadcast the re-read
+        // persisted set (`result.repository`, already null-checked above)
+        // rather than a value assumed from the call site.
+        await this.lifecycleCallbacks?.onOrchestratorDesignationChanged(
+          repositoryId,
+          result.repository.orchestratorSessionIds,
+          sessionId,
+          'removed'
+        );
+      }
 
-    return result;
+      return result;
+    });
   }
 
   /**

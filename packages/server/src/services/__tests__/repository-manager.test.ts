@@ -1387,4 +1387,331 @@ describe('RepositoryManager', () => {
       ]);
     });
   });
+
+  describe('updateRepository (Issue #1651)', () => {
+    /**
+     * `repository_orchestrator_sessions.session_id` carries a real FK to
+     * `sessions.id` (migration v41), so a designation-target id must
+     * reference an actual row in the production, migration-backed database
+     * this file uses. Shared with the `addOrchestratorSession` /
+     * `removeOrchestratorSession` describe block above, duplicated here
+     * because this describe block is a sibling, not a nested, scope.
+     */
+    async function insertMinimalSessionRow(id: string): Promise<void> {
+      await getDatabase()
+        .insertInto('sessions')
+        .values({ id, type: 'quick', location_path: '/tmp/test-session' })
+        .execute();
+    }
+
+    /**
+     * Pins today's `updateRepository(id, {})` behavior as UNCHANGED by the
+     * `withRepositoryLock` addition. The lock only serializes
+     * access -- it does not alter what `this.repository.update` is called
+     * with or what it returns, so this test is a regression guard against
+     * the lock wrapper accidentally altering the empty-updates path (e.g. by
+     * mis-threading the return value), not an assertion about what
+     * `SqliteRepositoryRepository.update` "should" do with an empty object.
+     *
+     * `SqliteRepositoryRepository.update` sets only `updated_at` for `{}`
+     * (see sqlite-repository-repository.ts) and `updated_at` is not part of
+     * the wire-shaped `Repository` type (see `toRepository` in
+     * database/mappers.ts), so the returned object is expected to be
+     * field-for-field identical to the repository before the call.
+     */
+    it('passing an empty updates object returns the repository unchanged (no fields altered)', async () => {
+      const manager = await getRepositoryManager();
+      const repo = await manager.registerRepository(TEST_REPO_DIR);
+      await insertMinimalSessionRow('session-a');
+      await manager.addOrchestratorSession(repo.id, 'session-a');
+      const before = manager.getRepository(repo.id);
+
+      const updated = await manager.updateRepository(repo.id, {});
+
+      expect(updated).not.toBeNull();
+      expect(updated).toEqual(before);
+      expect(updated?.orchestratorSessionIds).toEqual(['session-a']);
+    });
+
+    /**
+     * Pins the existing "unknown id -> null" path. `updateRepository` now
+     * does its `this.repositories.get(id)` check INSIDE `withRepositoryLock`
+     * rather than before it; this confirms that relocation did
+     * not change the observable result for a repository id that was never
+     * registered.
+     */
+    it('returns null when the repository does not exist', async () => {
+      const manager = await getRepositoryManager();
+
+      const updated = await manager.updateRepository('does-not-exist', { description: 'new description' });
+
+      expect(updated).toBeNull();
+    });
+  });
+
+  describe('withRepositoryLock (Issue #1651)', () => {
+    function noopCallbacks() {
+      return {
+        onRepositoryCreated: () => {},
+        onRepositoryUpdated: () => {},
+        onRepositoryDeleted: () => {},
+        onOrchestratorDesignationChanged: () => {},
+      };
+    }
+
+    async function insertMinimalSessionRow(id: string): Promise<void> {
+      await getDatabase()
+        .insertInto('sessions')
+        .values({ id, type: 'quick', location_path: '/tmp/test-session' })
+        .execute();
+    }
+
+    /**
+     * A resolvable gate: `promise` suspends until `resolve()` is called by
+     * the test. Used to park the recording proxy's delegated call at an
+     * exact point the test controls, so two concurrent manager calls can be
+     * resumed in a chosen order.
+     */
+    function createGate(): { promise: Promise<void>; resolve: () => void } {
+      let resolve!: () => void;
+      const promise = new Promise<void>((res) => {
+        resolve = res;
+      });
+      return { promise, resolve };
+    }
+
+    type LockTestEvent =
+      | { kind: 'write'; op: 'update' | 'addOrchestratorSession'; key: string }
+      | { kind: 'readback'; op: 'update' | 'addOrchestratorSession'; key: string; orchestratorSessionIds?: string[] }
+      | { kind: 'callback'; name: 'onRepositoryUpdated'; orchestratorSessionIds: string[] }
+      | {
+          kind: 'callback';
+          name: 'onOrchestratorDesignationChanged';
+          sessionId: string;
+          orchestratorSessionIds: string[];
+          action: 'added' | 'removed';
+        };
+
+    /**
+     * Wraps the real, migration-backed `repositoryRepository` so that
+     * `update` and `addOrchestratorSession` each await a per-key gate
+     * (`gates.get(key)`) BEFORE delegating to the real implementation.
+     * `key` is `updates` for `update` calls (there's only ever one `update`
+     * call in play per test here) and `sessionId` for
+     * `addOrchestratorSession` calls. A call with no matching gate proceeds
+     * immediately (used by setup calls that aren't part of the race under
+     * test, e.g. `registerRepository`'s own writes never reach `update`/
+     * `addOrchestratorSession`).
+     */
+    function createGatedRepositoryRepository(
+      events: LockTestEvent[],
+      gates: Map<string, { promise: Promise<void>; resolve: () => void }>,
+    ): RepositoryRepository {
+      return {
+        findAll: () => repositoryRepository.findAll(),
+        findById: (id) => repositoryRepository.findById(id),
+        findByPath: (p) => repositoryRepository.findByPath(p),
+        save: (r) => repositoryRepository.save(r),
+        update: async (id, updates) => {
+          const key = 'update';
+          const gate = gates.get(key);
+          if (gate) await gate.promise;
+          events.push({ kind: 'write', op: 'update', key });
+          const result = await repositoryRepository.update(id, updates);
+          events.push({ kind: 'readback', op: 'update', key });
+          return result;
+        },
+        delete: (id) => repositoryRepository.delete(id),
+        addOrchestratorSession: async (id, sessionId) => {
+          const gate = gates.get(sessionId);
+          if (gate) await gate.promise;
+          events.push({ kind: 'write', op: 'addOrchestratorSession', key: sessionId });
+          const result = await repositoryRepository.addOrchestratorSession(id, sessionId);
+          events.push({
+            kind: 'readback',
+            op: 'addOrchestratorSession',
+            key: sessionId,
+            orchestratorSessionIds: result.repository?.orchestratorSessionIds,
+          });
+          return result;
+        },
+        removeOrchestratorSession: (id, sessionId) => repositoryRepository.removeOrchestratorSession(id, sessionId),
+        listOrchestratorSessionIds: (id) => repositoryRepository.listOrchestratorSessionIds(id),
+        getSharedAccountUserId: (id) => repositoryRepository.getSharedAccountUserId(id),
+      };
+    }
+
+    /**
+     * Index of the LAST event matching `predicate`, or -1 if none match.
+     * Used below to find "A's final callback" without hardcoding an exact
+     * event count.
+     */
+    function lastIndexWhere(events: LockTestEvent[], predicate: (e: LockTestEvent) => boolean): number {
+      for (let i = events.length - 1; i >= 0; i--) {
+        if (predicate(events[i])) return i;
+      }
+      return -1;
+    }
+
+    it(
+      'serializes two concurrent addOrchestratorSession calls on the same repository id (Q12 First: ' +
+        'fails against an unlocked withRepositoryLock, passes against the locked implementation)',
+      async () => {
+        const events: LockTestEvent[] = [];
+        const gates = new Map<string, { promise: Promise<void>; resolve: () => void }>([
+          ['session-a', createGate()],
+          ['session-b', createGate()],
+        ]);
+
+        const module = await import(`../repository-manager.js?v=${++importCounter}`);
+        const manager = await module.RepositoryManager.create({
+          repository: createGatedRepositoryRepository(events, gates),
+          jobQueue: testJobQueue,
+          runAsUserImpl: runAsUserMock.runAsUserImpl,
+        });
+        const repo = await manager.registerRepository(TEST_REPO_DIR);
+        await insertMinimalSessionRow('session-a');
+        await insertMinimalSessionRow('session-b');
+
+        manager.setLifecycleCallbacks({
+          ...noopCallbacks(),
+          onRepositoryUpdated: (r: Repository) =>
+            events.push({ kind: 'callback', name: 'onRepositoryUpdated', orchestratorSessionIds: r.orchestratorSessionIds }),
+          onOrchestratorDesignationChanged: (
+            _repositoryId: string,
+            orchestratorSessionIds: string[],
+            changedSessionId: string,
+            action: 'added' | 'removed',
+          ) =>
+            events.push({
+              kind: 'callback',
+              name: 'onOrchestratorDesignationChanged',
+              sessionId: changedSessionId,
+              orchestratorSessionIds,
+              action,
+            }),
+        });
+
+        // Start both calls without awaiting either -- this is the
+        // concurrency under test.
+        const pA = manager.addOrchestratorSession(repo.id, 'session-a');
+        const pB = manager.addOrchestratorSession(repo.id, 'session-b');
+
+        // Resolve B's gate first, then A's -- the FIFO lock (keyed on
+        // `repo.id`, shared by both calls) must still make A's entire
+        // write -> readback -> callback sequence finish before B's body
+        // ever starts, regardless of gate-resolution order.
+        gates.get('session-b')!.resolve();
+        gates.get('session-a')!.resolve();
+
+        await Promise.all([pA, pB]);
+
+        // (1) B's write must not be recorded before A's final callback
+        // completes.
+        const bWriteIndex = events.findIndex(
+          (e) => e.kind === 'write' && e.op === 'addOrchestratorSession' && e.key === 'session-b',
+        );
+        const aFinalCallbackIndex = lastIndexWhere(
+          events,
+          (e) => e.kind === 'callback' && e.name === 'onOrchestratorDesignationChanged' && e.sessionId === 'session-a',
+        );
+        expect(bWriteIndex).toBeGreaterThan(-1);
+        expect(aFinalCallbackIndex).toBeGreaterThan(-1);
+        expect(bWriteIndex).toBeGreaterThan(aFinalCallbackIndex);
+
+        // (2) The final in-memory cache matches a fresh read of the real
+        // repository.
+        const freshlyRead = await repositoryRepository.findById(repo.id);
+        expect(manager.getRepository(repo.id)).toEqual(freshlyRead ?? undefined);
+
+        // (3) Each onOrchestratorDesignationChanged payload reflects the
+        // DB state at the time of ITS OWN write -- A's callback carries
+        // only its own addition; B's carries both (because B's write only
+        // ever runs after A's has fully committed).
+        const designationEvents = events.filter(
+          (e): e is LockTestEvent & { kind: 'callback'; name: 'onOrchestratorDesignationChanged' } =>
+            e.kind === 'callback' && e.name === 'onOrchestratorDesignationChanged',
+        );
+        const aCallback = designationEvents.find((e) => e.sessionId === 'session-a');
+        const bCallback = designationEvents.find((e) => e.sessionId === 'session-b');
+        expect(aCallback?.orchestratorSessionIds).toEqual(['session-a']);
+        expect(bCallback?.orchestratorSessionIds).toEqual(['session-a', 'session-b']);
+      },
+    );
+
+    it('does not block a concurrent call for a DIFFERENT repository id', async () => {
+      const events: LockTestEvent[] = [];
+      const gateA = createGate();
+      const gates = new Map<string, { promise: Promise<void>; resolve: () => void }>([['session-a', gateA]]);
+
+      const module = await import(`../repository-manager.js?v=${++importCounter}`);
+      const manager = await module.RepositoryManager.create({
+        repository: createGatedRepositoryRepository(events, gates),
+        jobQueue: testJobQueue,
+        runAsUserImpl: runAsUserMock.runAsUserImpl,
+      });
+
+      const repo1 = await manager.registerRepository(TEST_REPO_DIR);
+      const otherRepoDir = `${TEST_REPO_DIR}-other`;
+      fs.mkdirSync(otherRepoDir, { recursive: true });
+      fs.mkdirSync(path.join(otherRepoDir, '.git'), { recursive: true });
+      const repo2 = await manager.registerRepository(otherRepoDir);
+
+      await insertMinimalSessionRow('session-a');
+      await insertMinimalSessionRow('session-b');
+
+      manager.setLifecycleCallbacks(noopCallbacks());
+
+      // A targets repo1 and parks on its gate (never resolved in this test);
+      // B targets a DIFFERENT repository id and must complete without
+      // waiting on A's gate at all.
+      const pA = manager.addOrchestratorSession(repo1.id, 'session-a');
+      const pB = await manager.addOrchestratorSession(repo2.id, 'session-b');
+
+      expect(pB?.orchestratorSessionIds).toEqual(['session-b']);
+
+      // Now release A so the test doesn't leave a dangling unresolved
+      // promise / open gate behind.
+      gateA.resolve();
+      await pA;
+    });
+
+    it('releases the lock after a rejecting call, so an ALREADY-QUEUED next call for the same id still completes', async () => {
+      const manager = await getRepositoryManager();
+      const repo = await manager.registerRepository(TEST_REPO_DIR);
+      await insertMinimalSessionRow('session-a');
+
+      // `repository_orchestrator_sessions.session_id` carries a real FK to
+      // `sessions.id` (migration v41); `addOrchestratorSession`'s own
+      // existence check only covers the repository id, not the session id
+      // (see sqlite-repository-repository.ts), so targeting a session id
+      // that was never inserted makes the real INSERT reject with a raw FK
+      // constraint violation. This is the production rejection path
+      // `withRepositoryLock`'s `fn` can take -- there is no direct public
+      // seam onto the lock primitive itself.
+      //
+      // Both calls are fired WITHOUT awaiting the first -- this is what
+      // actually exercises the `.catch(() => {})` poison-guard inside
+      // `withRepositoryLock`. If the two calls were awaited sequentially
+      // instead, the first call's own `finally` block would already have
+      // removed its (rejected) queue entry before the second call ever
+      // reads `this.locks.get(repositoryId)`, so the second call would
+      // start from a fresh, empty queue regardless of whether the guard
+      // exists -- that version of this test passes identically with or
+      // without the guard and would not be pinning anything (measured
+      // directly: see the PR body for the mutation log). Firing both calls
+      // back-to-back means the SECOND call's lock chain is built directly
+      // on top of the FIRST call's (still-pending, about-to-reject) promise
+      // -- exactly the shape `.catch(() => {})` exists to neutralize.
+      const pRejecting = manager.addOrchestratorSession(repo.id, 'no-such-session');
+      const pNext = manager.addOrchestratorSession(repo.id, 'session-a');
+
+      await expect(pRejecting).rejects.toThrow();
+
+      // The lock for `repo.id` must be released, not left poisoned -- the
+      // ALREADY-QUEUED next call against the SAME id must still succeed.
+      const updated = await pNext;
+      expect(updated?.orchestratorSessionIds).toEqual(['session-a']);
+    });
+  });
 });
