@@ -130,14 +130,36 @@ export interface DeleteWorktreeResult {
   /** Session IDs that were cleaned up (for WebSocket broadcast) */
   sessionIds?: string[];
   /**
-   * How the open-PR precheck resolved, set on every path that reaches
-   * step 5 (the concurrency guard) — i.e. every path past the precheck
-   * itself. Never silently skipped: `'skipped-force'` /
-   * `'skipped-detached-head'` make an intentional skip explicit instead
-   * of indistinguishable from "the check ran and found nothing" (Issue
-   * #1295).
+   * How the open-PR precheck resolved, set on every successful path.
+   * Never silently skipped: `'skipped-force'` / `'skipped-detached-head'`
+   * / `'skipped-orphan-cleanup'` make an intentional skip explicit
+   * instead of indistinguishable from "the check ran and found nothing".
    */
-  openPrCheck?: 'passed' | 'skipped-force' | 'skipped-detached-head';
+  openPrCheck?: 'passed' | 'skipped-force' | 'skipped-detached-head' | 'skipped-orphan-cleanup';
+}
+
+/**
+ * Build the error message/result for a precheck that could not run --
+ * single writer so the two call sites (a thrown gh error, and
+ * `getCurrentBranch` resolving to a sentinel instead of throwing) stay in
+ * sync. `requestUsername` null has no identity to "fix gh auth for"; the
+ * actionable remedy there is different (REST's `?? authUser.username`
+ * fallback makes the web UI run the check as the requester).
+ */
+function buildPrecheckFailedResult(
+  requestUsername: string | null | undefined,
+  branchLabel: string,
+  detail: string,
+): DeleteWorktreeResult {
+  const identity = requestUsername ?? 'the server user';
+  const ending = requestUsername
+    ? `fix gh auth for ${requestUsername}, or pass force to skip the check.`
+    : 'this session has no resolvable owner; delete the worktree from the web UI, where the check runs as you, or pass force.';
+  return {
+    success: false,
+    error: `Could not verify open PRs for branch '${branchLabel}' as ${identity} -- the check did not run (${detail}). This is an infrastructure failure, not an open PR; ${ending}`,
+    errorType: 'precheck-failed',
+  };
 }
 
 // ---------- Orphan recovery ----------
@@ -256,6 +278,7 @@ async function cleanupOrphanedWorktree(
       ...(killErrors.length > 0 ? { killErrors } : {}),
       sessionDeleteError,
       sessionIds,
+      openPrCheck: 'skipped-orphan-cleanup',
     };
   } finally {
     clearDeletionInProgress(worktreePath);
@@ -347,7 +370,18 @@ export async function deleteWorktree(
   if (!force) {
     try {
       branch = await getCurrentBranch(worktreePath, requestUsername);
-      if (branch && branch !== '(detached)' && branch !== '(unknown)') {
+      // `getCurrentBranch` converts a git failure to the `'(unknown)'`
+      // sentinel instead of throwing (same for an empty branch, which
+      // should not occur but is treated the same way defensively) -- that
+      // is itself "the check could not run", not a real detached HEAD, so
+      // it must fail closed via the same precheck-failed path the catch
+      // block below uses, not silently skip to deletion.
+      if (!branch || branch === '(unknown)') {
+        return buildPrecheckFailedResult(requestUsername, branch || '(unknown)', 'could not determine the current branch');
+      }
+      if (branch === '(detached)') {
+        openPrCheck = 'skipped-detached-head';
+      } else {
         const openPr = await findOpenPullRequest(branch, repo.path, requestUsername ?? null);
         if (openPr) {
           return {
@@ -357,26 +391,13 @@ export async function deleteWorktree(
           };
         }
         openPrCheck = 'passed';
-      } else {
-        openPrCheck = 'skipped-detached-head';
       }
     } catch (error) {
       // Distinguish "the check could not run" (infra/auth failure) from
       // "the check ran and found an open PR" (above): the former is not a
-      // reason to treat `force` as the only path forward. When
-      // `requestUsername` is null there is no identity to fix gh auth
-      // for -- the actionable remedy is different (the web UI resolves
-      // the requester's own identity via REST's `?? authUser.username`
-      // fallback), so the two cases get different endings.
+      // reason to treat `force` as the only path forward.
       const message = error instanceof Error ? error.message : String(error);
-      const ending = requestUsername
-        ? `fix gh auth for ${requestUsername}, or pass force to skip the check.`
-        : 'this session has no resolvable owner; delete the worktree from the web UI, where the check runs as you, or pass force.';
-      return {
-        success: false,
-        error: `Could not verify open PRs for branch '${branch ?? '(unresolved)'}' as ${requestUsername ?? 'the server user'} -- the check did not run (${message}). This is an infrastructure failure, not an open PR; ${ending}`,
-        errorType: 'precheck-failed',
-      };
+      return buildPrecheckFailedResult(requestUsername, branch || '(unresolved)', message);
     }
   }
 

@@ -174,6 +174,10 @@ describe('deleteWorktree', () => {
     expect(mockExecuteHookCommand).not.toHaveBeenCalled();
     expect(deps.sessionManager.killSessionWorkers).not.toHaveBeenCalled();
     expect(deps.sessionManager.deleteSession).not.toHaveBeenCalled();
+    // The orphan path has no repo, so no open-PR precheck ever runs --
+    // report that skip explicitly rather than omitting the field
+    // (CodeRabbit, Issue #1295).
+    expect(result.openPrCheck).toBe('skipped-orphan-cleanup');
   });
 
   it('orphan path: kills PTYs and deletes sessions when matching sessions exist', async () => {
@@ -566,6 +570,30 @@ describe('deleteWorktree', () => {
     expect(result.errorType).toBe('precheck-failed');
     expect(result.error).toMatch(/did not run/);
     expect(mockFindPr).not.toHaveBeenCalled();
+  });
+
+  it('getCurrentBranch resolving to "(unknown)" is precheck-failed, not skipped-detached-head (CodeRabbit, Issue #1295)', async () => {
+    // getCurrentBranch converts a git failure to the '(unknown)' sentinel
+    // instead of throwing. Before this fix, that fell into the same branch
+    // as a real detached HEAD and proceeded to delete WITHOUT completing
+    // the open-PR precheck -- fail closed instead.
+    const mockFindPr = mock(async () => null);
+    const deps = createMockDeps({
+      sessions: [DEFAULT_WORKTREE_SESSION],
+      getCurrentBranch: async () => '(unknown)',
+      findOpenPullRequest: mockFindPr,
+    });
+
+    const result = await deleteWorktree(
+      { repoId: 'repo-1', worktreePath: WORKTREE_PATH, force: false, requestUsername: null },
+      deps,
+    );
+
+    expect(result.success).toBe(false);
+    expect(result.errorType).toBe('precheck-failed');
+    expect(result.error).toMatch(/did not run/);
+    expect(mockFindPr).not.toHaveBeenCalled();
+    expect(mockRemoveWorktree).not.toHaveBeenCalled();
   });
 
   // --- openPrCheck: reported, never silent (Issue #1295) ---
