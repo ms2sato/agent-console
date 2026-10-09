@@ -3,9 +3,10 @@
  * Measurement instrument for Issue #1879: settle whether
  * `check-exit-127-diagnostic.ts`'s `selfCheck()` flake under host
  * contention ("basic PTY did not exit within timeout") is (i) a lost exit
- * event in Bun / `bunPtyProvider` (LOST-EXIT -- a real adapter/upstream
- * defect) or (ii) a genuinely stuck child under load (STUCK-CHILD -- an
- * environment fact, not a code defect).
+ * event in the underlying `PtyProvider` (LOST-EXIT -- a real adapter/
+ * upstream defect) or (ii) a genuinely stuck child under load (STUCK-CHILD
+ * -- an environment fact, not a code defect). See "Provider identity
+ * matters" below: which `PtyProvider` the question is about matters.
  *
  * ## Why this is a separate script, not a change to `selfCheck()` itself
  *
@@ -18,10 +19,27 @@
  * instant the race against `EXIT_WAIT_TIMEOUT_MS` loses, instead of racing a
  * 1-second-granularity external poll against the same clock.
  *
+ * ## Provider identity matters -- read before trusting a result
+ *
+ * `check-exit-127-diagnostic.ts`'s `selfCheck()` hardcodes `bunPtyProvider`
+ * (the LEGACY native 'bun-pty' library, slated for removal per Issue #828),
+ * not the configured default. Production runs `PTY_PROVIDER=bun-terminal`
+ * (`serverConfig.ts`'s default; no systemd override) -- i.e. `bunTerminalProvider`
+ * / `BunTerminalPtyAdapter`, a COMPLETELY SEPARATE implementation.
+ * `bunPtyProvider.spawn()` is a bare `require('bun-pty').spawn(...)` with no
+ * JS-level wrapping in `pty-provider.ts` at all, so a LOST-EXIT measured
+ * against it says nothing about `BunTerminalPtyAdapter`'s exit bridge. This
+ * probe defaults to `--provider bun-pty` (mirrors `selfCheck()` exactly, the
+ * AC's original mandate) but accepts `--provider bun-terminal` to measure
+ * the actually-production-relevant path instead (Architect ruling, Issue
+ * #1879). The SAME code (positive control, classifier, observables) runs
+ * against whichever provider is selected.
+ *
  * ## What this probe exercises
  *
- *   - The REAL `bunPtyProvider.spawn(...)` path, spawning `sh -c 'echo ok'`
- *     exactly as `check-exit-127-diagnostic.ts`'s `selfCheck()` does.
+ *   - The REAL `PtyProvider.spawn(...)` path for the selected `--provider`,
+ *     spawning `sh -c 'echo ok'` exactly as `check-exit-127-diagnostic.ts`'s
+ *     `selfCheck()` does (with `--provider bun-pty`, the default).
  *   - On every timeout, four observables read in this exact order (the
  *     Architect's AC rationale: a zombie answers `kill -0` with 0 and would
  *     be misread as "alive" if read before the `/proc/<pid>/stat` state):
@@ -48,12 +66,14 @@
  *     nothing) or `bun run test` as a contention source (would collide with
  *     the full-suite slot rule).
  *   - Kill any pid it did not itself spawn in this run.
- *   - Fix anything. If the data supports LOST-EXIT, the fix belongs in a
- *     separate Issue against `pty-provider.ts`'s `BunTerminalPtyAdapter`,
- *     marked "waits for #1877" (same file #1877 is already changing).
+ *   - Fix anything itself. A LOST-EXIT finding is filed as a separate Issue
+ *     (naming `BunTerminalPtyAdapter`'s exit bridge as the first hypothesis
+ *     ONLY when the finding is actually against `--provider bun-terminal`
+ *     -- a `bun-pty` LOST-EXIT is a different, legacy code path entirely,
+ *     see "Provider identity matters" above).
  *
  * Usage:
- *   bun scripts/smoke/probe-pty-exit-observation.ts [--timeout-ms N] [--cycles N] [--contend] [--contend-n N]
+ *   bun scripts/smoke/probe-pty-exit-observation.ts [--timeout-ms N] [--cycles N] [--contend] [--contend-n N] [--provider bun-pty|bun-terminal]
  *
  *   --timeout-ms N   race timeout per cycle, ms (default 30000, matching
  *                    check-exit-127-diagnostic.ts's EXIT_WAIT_TIMEOUT_MS).
@@ -68,6 +88,11 @@
  *                    upstream of and outside the chain under test.
  *   --contend-n N    number of busy children when --contend is set
  *                    (default 4).
+ *   --provider P     'bun-pty' (default -- mirrors selfCheck() exactly, the
+ *                    legacy native library) or 'bun-terminal' (production's
+ *                    actual configured default, BunTerminalPtyAdapter). See
+ *                    "Provider identity matters" above before interpreting
+ *                    a bun-pty result as saying anything about production.
  *
  * Exit codes:
  *   0  measured -- every cycle either exited naturally or produced a
@@ -86,11 +111,12 @@
 import * as os from 'os';
 import * as fs from 'fs/promises';
 
-import { bunPtyProvider } from '../../packages/server/src/lib/pty-provider.js';
+import { getPtyProvider, type PtyProvider, type PtyProviderName } from '../../packages/server/src/lib/pty-provider.js';
 
 const DEFAULT_TIMEOUT_MS = 30000;
 const DEFAULT_CYCLES = 20;
 const DEFAULT_CONTEND_N = 4;
+const DEFAULT_PROVIDER: PtyProviderName = 'bun-pty';
 const POSITIVE_CONTROL_SETTLE_MS = 200;
 const POSITIVE_CONTROL_KILL_WAIT_MS = 1000;
 
@@ -266,8 +292,8 @@ interface ControlResult {
  * whose control fails exits 2 and prints no verdict: the instrument cannot
  * see, so it cannot report an absence.
  */
-async function runPositiveControl(): Promise<ControlResult> {
-  const pty = bunPtyProvider.spawn('sh', ['-c', 'sleep 100'], {
+async function runPositiveControl(provider: PtyProvider): Promise<ControlResult> {
+  const pty = provider.spawn('sh', ['-c', 'sleep 100'], {
     name: 'xterm-256color',
     cols: 80,
     rows: 24,
@@ -354,13 +380,14 @@ type CycleOutcome =
     };
 
 /**
- * Spawns `sh -c 'echo ok'` via the real `bunPtyProvider.spawn(...)`, races
- * its `onExit` against `timeoutMs` exactly as `check-exit-127-diagnostic.ts`'s
- * `selfCheck()` does, and on a lost race reads the four observables
- * synchronously, in the Architect-specified order.
+ * Spawns `sh -c 'echo ok'` via the real, selected `PtyProvider.spawn(...)`,
+ * races its `onExit` against `timeoutMs` exactly as
+ * `check-exit-127-diagnostic.ts`'s `selfCheck()` does (when `provider` is
+ * `bunPtyProvider`, the default), and on a lost race reads the four
+ * observables synchronously, in the Architect-specified order.
  */
-async function runCycle(cycleNumber: number, timeoutMs: number, contending: boolean): Promise<CycleOutcome> {
-  const pty = bunPtyProvider.spawn('sh', ['-c', 'echo ok'], {
+async function runCycle(cycleNumber: number, timeoutMs: number, contending: boolean, provider: PtyProvider): Promise<CycleOutcome> {
+  const pty = provider.spawn('sh', ['-c', 'echo ok'], {
     name: 'xterm-256color',
     cols: 80,
     rows: 24,
@@ -486,6 +513,7 @@ interface CliArgs {
   cycles: number;
   contend: boolean;
   contendN: number;
+  provider: PtyProviderName;
 }
 
 function parseArgs(argv: string[]): CliArgs {
@@ -493,6 +521,7 @@ function parseArgs(argv: string[]): CliArgs {
   let cycles = DEFAULT_CYCLES;
   let contend = false;
   let contendN = DEFAULT_CONTEND_N;
+  let provider: PtyProviderName = DEFAULT_PROVIDER;
 
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
@@ -521,12 +550,20 @@ function parseArgs(argv: string[]): CliArgs {
         contendN = n;
         break;
       }
+      case '--provider': {
+        const raw = argv[++i];
+        if (raw !== 'bun-pty' && raw !== 'bun-terminal') {
+          throw new Error(`--provider requires 'bun-pty' or 'bun-terminal', got: ${String(raw)}`);
+        }
+        provider = raw;
+        break;
+      }
       default:
         throw new Error(`Unknown argument: ${arg}`);
     }
   }
 
-  return { timeoutMs, cycles, contend, contendN };
+  return { timeoutMs, cycles, contend, contendN, provider };
 }
 
 async function main(): Promise<void> {
@@ -539,8 +576,11 @@ async function main(): Promise<void> {
     return;
   }
 
+  const provider = getPtyProvider(args.provider);
+
+  console.log(`==> provider: ${args.provider}${args.provider === 'bun-pty' ? ' (default -- legacy, mirrors selfCheck() exactly)' : ' (production-default BunTerminalPtyAdapter)'}`);
   console.log('==> positive control: confirming the observable code path can see a live, then a dead, process');
-  const control = await runPositiveControl();
+  const control = await runPositiveControl(provider);
   if (!control.ok) {
     console.error(`CONTROL FAILED: ${control.detail}`);
     console.error('The instrument cannot see, so it cannot report an absence. No verdict printed.');
@@ -552,7 +592,7 @@ async function main(): Promise<void> {
   const bunVersion = Bun.version;
   const loadavgStart = os.loadavg();
   console.log(
-    `==> starting measurement loop: cycles=${args.cycles} timeoutMs=${args.timeoutMs} contend=${args.contend} contendN=${args.contendN} bunVersion=${bunVersion} loadavgStart=${loadavgStart.map((n) => n.toFixed(2)).join(',')}`,
+    `==> starting measurement loop: provider=${args.provider} cycles=${args.cycles} timeoutMs=${args.timeoutMs} contend=${args.contend} contendN=${args.contendN} bunVersion=${bunVersion} loadavgStart=${loadavgStart.map((n) => n.toFixed(2)).join(',')}`,
   );
 
   let contendProcs: Bun.Subprocess[] = [];
@@ -565,7 +605,7 @@ async function main(): Promise<void> {
     }
 
     for (let i = 1; i <= args.cycles; i++) {
-      const outcome = await runCycle(i, args.timeoutMs, args.contend);
+      const outcome = await runCycle(i, args.timeoutMs, args.contend, provider);
       outcomes.push(outcome);
 
       if (outcome.outcome === 'exited') {
@@ -609,6 +649,7 @@ async function main(): Promise<void> {
   console.log(
     JSON.stringify({
       summary: true,
+      provider: args.provider,
       cycles: args.cycles,
       contending: args.contend,
       failures: failures.length,
