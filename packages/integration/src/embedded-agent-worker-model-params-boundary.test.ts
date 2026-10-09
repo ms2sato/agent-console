@@ -56,7 +56,9 @@ describe('Client-Server Boundary: embedded-agent model/reasoningEffort/contextWi
     // exist on disk, and the configured default (bun-terminal) throws
     // ENOENT on a missing cwd where the legacy bunPtyProvider silently
     // tolerated it (production handling tracked separately, #1892).
-    ctx = await createTestContext({ ptyProvider: createMockPtyProvider() });
+    // This file's locationPath literal isn't seeded on real/mocked fs and this
+    // test doesn't exercise the cwd-existence check itself (Issue #1892).
+    ctx = await createTestContext({ ptyProvider: createMockPtyProvider(), assertSpawnCwdFn: async () => {} });
   });
 
   afterEach(async () => {

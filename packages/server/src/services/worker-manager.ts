@@ -48,6 +48,7 @@ import type { SessionCreationContext } from './internal-types.js';
 import type { StartupIntent } from './startup-intent.js';
 import type { SessionDataPathResolver } from '../lib/session-data-path-resolver.js';
 import type { UserMode } from './user-mode.js';
+import { assertSpawnCwdExists, SpawnCwdMissingError } from './user-mode.js';
 import type { AgentConsoleContext } from './agent-console-env.js';
 import { ActivityDetector } from './activity-detector.js';
 import { CLAUDE_CODE_AGENT_ID } from './agent-manager.js';
@@ -303,6 +304,8 @@ export class WorkerManager {
     private signalPidsImpl: typeof signalPids = signalPids,
     /** Definition lookup for embedded-agent wire conversions (#1556). Defaults to "no definition found" so existing test call sites need no change. */
     private getEmbeddedAgentFn: (id: string) => EmbeddedAgentDefinition | undefined = () => undefined,
+    /** Test seam for the pre-spawn cwd existence check. Defaults to the real implementation. */
+    private assertSpawnCwdFn: typeof assertSpawnCwdExists = assertSpawnCwdExists,
   ) {
     this.userMode = userMode;
     this.agentManager = agentManager;
@@ -536,6 +539,14 @@ export class WorkerManager {
     // point for both artifacts; on any failure in this span, clean up
     // whatever was already written before rethrowing the original error
     // unchanged (activation must still fail loudly).
+    //
+    // `capturedCommand` is set from inside the `try` as soon as `command` is
+    // known (after `expandTemplate`), specifically so the catch block below
+    // has it available for the cwd-missing diagnostic: that diagnostic
+    // fires BEFORE `worker.pendingCommand` is ever assigned (see the
+    // assignment a few lines below the `spawnPty` call), so reading
+    // `worker.pendingCommand` there would always be undefined.
+    let capturedCommand: string | undefined;
     try {
       // Persist initialPrompt to a file and inject a short `"$(cat '<path>')"`
       // substitution instead of embedding the raw prompt on the sentinel-
@@ -624,6 +635,7 @@ export class WorkerManager {
         templateVars: effectiveTemplateVars,
         ...(promptFilePath !== undefined ? { promptFilePath } : { prompt: initialPrompt }),
       });
+      capturedCommand = command;
 
       // Build AgentConsole context so the agent knows its own identity.
       // These enable self-delegation (e.g., MCP tools) and agent self-awareness.
@@ -745,6 +757,8 @@ export class WorkerManager {
 
       const sentinel = `__AGENT_CONSOLE_READY_${crypto.randomUUID().replace(/-/g, '').slice(0, 12)}`;
 
+      await this.assertSpawnCwdFn(locationPath, params.username);
+
       const ptyProcess = this.userMode.spawnPty({
         type: 'agent',
         username: params.username,
@@ -787,6 +801,16 @@ export class WorkerManager {
 
       this.setupWorkerEventHandlers(worker, sessionId, params.resolver, { command, username: params.username, sentinel });
     } catch (err) {
+      if (err instanceof SpawnCwdMissingError) {
+        try {
+          await this.appendCwdMissingNotification(worker, sessionId, params.resolver, capturedCommand, err);
+        } catch (notifyErr) {
+          logger.error(
+            { workerId: worker.id, sessionId, err: notifyErr },
+            'Failed to synthesize spawn-cwd-missing diagnostic message; continuing teardown',
+          );
+        }
+      }
       // Both cleanup calls are null-safe (no-op when nothing was ever set)
       // and never throw (internal failures are logged as warnings) -- see
       // deletePromptFile / revokeAndDeleteMcpToken. Always rethrow the
@@ -836,6 +860,8 @@ export class WorkerManager {
     // additionalEnvVars: repository env vars only
     // Base env (getCleanChildProcessEnv), shell detection, and unset prefix
     // are handled internally by UserMode.spawnPty()
+    await this.assertSpawnCwdFn(locationPath, params.username);
+
     const ptyProcess = this.userMode.spawnPty({
       type: 'terminal',
       username: params.username,
@@ -1121,6 +1147,43 @@ export class WorkerManager {
         exitCode: String(exitCode),
         diagnosis: `usually means a required program is missing for user '${username}': the spawn shell itself, or the agent command '${commandToken}', is not installed or not on PATH`,
         remedy: `install and authenticate the agent CLI for user '${username}', or adjust this agent's command template -- check the server log's wrapperCommand field for this event to see which one was actually attempted`,
+      },
+      intent: 'triage',
+    });
+
+    this.appendSyntheticOutput(worker, sessionId, resolver, text);
+    await this.workerOutputFileManager.forceFlush(sessionId, worker.id);
+  }
+
+  /**
+   * Synthesize and deliver a diagnostic message: the session's working
+   * directory was removed after creation, so the PTY
+   * spawn was refused before it ever started (no exit code -- the process
+   * never existed). Agent path only; the terminal path has no diagnostic
+   * writer to deliver into (see activateTerminalWorkerPty) and the typed
+   * error's own message reaches the caller directly.
+   *
+   * `command` comes from `capturedCommand`, captured by the caller at
+   * `expandTemplate` time -- `worker.pendingCommand` is not yet assigned at
+   * the point this fires (that assignment happens after the `spawnPty` call
+   * this error pre-empts), so reading it here would always be undefined.
+   */
+  private async appendCwdMissingNotification(
+    worker: InternalAgentWorker,
+    sessionId: string,
+    resolver: SessionDataPathResolver,
+    command: string | undefined,
+    err: SpawnCwdMissingError,
+  ): Promise<void> {
+    const text = buildPtyNotificationText({
+      kind: 'internal-agent-spawn-failed',
+      tag: 'internal:agent-spawn-failed',
+      fields: {
+        command: extractCommandToken(command ?? ''),
+        username: err.username,
+        exitCode: 'not-spawned',
+        diagnosis: `working directory '${err.cwd}' does not exist -- the session's directory was removed after creation`,
+        remedy: 'restore the directory, or delete this session and create a new one at a valid path',
       },
       intent: 'triage',
     });

@@ -82,6 +82,9 @@ describe('Client-Server Boundary: artifact/bookmark realtime refresh triggers', 
       // (bun-terminal) throws ENOENT on it (production issue tracked
       // separately as #1892). The mock provider keeps this test hermetic.
       ptyProvider: createMockPtyProvider(),
+      // This file's locationPath literal isn't seeded on real/mocked fs and this
+      // test doesn't exercise the cwd-existence check itself (Issue #1892).
+      assertSpawnCwdFn: async () => {},
       broadcastToApp: (msg) => {
         capturedBroadcasts.push(msg);
       },

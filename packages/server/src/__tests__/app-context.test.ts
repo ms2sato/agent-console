@@ -498,6 +498,14 @@ describe('AppContext', () => {
       appContext = await createAppContext({ dbPath: ':memory:' });
       const ctx = appContext;
 
+      // Ensure process.cwd() exists on whichever fs/promises binding is
+      // active at this point (real, or a sibling test file's memfs mock
+      // left over in this shared process) -- this test deliberately uses
+      // the production createAppContext(), which has no test seam to
+      // bypass the cwd-existence check (Issue #1892), and mkdir on an
+      // already-existing real directory is a safe no-op.
+      await mkdir(process.cwd(), { recursive: true });
+
       const deliverSpy = jest
         .spyOn(ctx.sessionManager, 'deliverWorkerNotification')
         .mockImplementation(async (_sessionId, _workerId, params: PtyNotificationParams) => {

@@ -4941,7 +4941,7 @@ describe('MCP Server Tools', () => {
         locationPath: '/test/path',
         agentId: 'claude-code',
       });
-      const workerId = session.workers[0].id;
+      const workerId = session.workers.find((w) => w.type === 'agent')!.id;
       return { sessionId: session.id, workerId };
     }
 
@@ -5209,7 +5209,7 @@ describe('MCP Server Tools', () => {
         locationPath: '/test/path',
         agentId: 'claude-code',
       });
-      const workerId = session.workers[0].id;
+      const workerId = session.workers.find((w) => w.type === 'agent')!.id;
       return { sessionId: session.id, workerId };
     }
 
@@ -5381,7 +5381,10 @@ describe('MCP Server Tools', () => {
             },
             createdBy === undefined ? undefined : { createdBy },
           );
-          return { sessionId: session.id, workerId: session.workers[0].id };
+          return {
+            sessionId: session.id,
+            workerId: session.workers.find((w) => w.type === 'agent')!.id,
+          };
         }
 
         it('plumbs resolved OS username when session createdBy resolves to a registered user', async () => {
@@ -5993,7 +5996,10 @@ describe('MCP Server Tools', () => {
         { type: 'quick', locationPath: '/test/dir', agentId: 'claude-code' },
         { createdBy },
       );
-      return { sessionId: session.id, workerId: session.workers[0].id };
+      return {
+        sessionId: session.id,
+        workerId: session.workers.find((w) => w.type === 'agent')!.id,
+      };
     }
 
     const bearer = (token: string) => ({ Authorization: `Bearer ${token}` });

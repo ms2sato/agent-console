@@ -194,7 +194,15 @@ describe('E2E: interrupted-turn parent notification', () => {
 
       // --- Test AppContext, with the loop's MCP base URL late-bound to the app port ---
       let mcpBaseUrl = '';
-      ctx = await createTestContext({ getMcpBaseUrl: () => mcpBaseUrl });
+      ctx = await createTestContext({
+        getMcpBaseUrl: () => mcpBaseUrl,
+        // Real mkdtemp-style directory (Bun.spawnSync(['mkdir', '-p', ...])),
+        // not seeded in any fixture -- and a sibling e2e-native file's
+        // transitive mock-fs-helper import routes fs/promises through memfs
+        // for this whole process regardless. This test doesn't exercise the
+        // cwd-existence check itself (Issue #1892).
+        assertSpawnCwdFn: async () => {},
+      });
       const owner = await ctx.userRepository.upsertByOsUid(65432, 'owner', '/home/owner');
 
       // --- Fixture 2: real app server (real /api router + real /mcp app) ---

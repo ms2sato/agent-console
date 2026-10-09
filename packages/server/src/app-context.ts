@@ -30,7 +30,7 @@ import type { SystemCapabilitiesService } from './services/system-capabilities-s
 import type { WorktreeService } from './services/worktree-service.js';
 import type { RepositorySlackIntegrationService } from './services/notifications/repository-slack-integration-service.js';
 import type { AuthUser, AppServerMessage, GitHubIssueSummary } from '@agent-console/shared';
-import type { UserMode } from './services/user-mode.js';
+import type { UserMode, assertSpawnCwdExists } from './services/user-mode.js';
 import type { AnnotationService } from './services/annotation-service.js';
 import type { InterSessionMessageService } from './services/inter-session-message-service.js';
 import type { MessageTemplateRepository } from './repositories/message-template-repository.js';
@@ -786,6 +786,16 @@ export interface CreateTestContextOptions {
    */
   runAsUserImpl?: typeof runAsUser;
   /**
+   * Test seam for WorkerManager's pre-spawn cwd existence check. Threaded
+   * straight through to `SessionManager.create()`'s own `assertSpawnCwdFn`
+   * seam. Defaults to `undefined`, which leaves `WorkerManager` on its own
+   * default (the real `assertSpawnCwdExists`) -- production and every
+   * existing test context are unaffected. Tests whose `locationPath` is a
+   * fictional string not seeded on the (possibly memfs-mocked) filesystem
+   * should inject an always-success fake here.
+   */
+  assertSpawnCwdFn?: typeof assertSpawnCwdExists;
+  /**
    * Test seam for `EmbeddedAgentWorkerService`'s subprocess spawn. Threaded
    * straight through to `SessionManager.create()`'s own `spawnAsUserFn`
    * seam. Defaults to `undefined`, which leaves `SessionManager` on its own
@@ -925,6 +935,7 @@ export async function createTestContext(
     // unchanged for tests that do not override it.
     ...(overrides?.getMcpBaseUrl ? { getMcpBaseUrl: overrides.getMcpBaseUrl } : {}),
     runAsUserImpl: overrides?.runAsUserImpl,
+    assertSpawnCwdFn: overrides?.assertSpawnCwdFn,
     spawnAsUserFn: overrides?.spawnAsUserFn,
     ensureMemoryDirFn: overrides?.ensureMemoryDirFn,
     notificationManager,

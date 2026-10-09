@@ -39,6 +39,73 @@ mock.module('fs/promises', () => ({ ...fs.promises, default: fs.promises }));
 mock.module('node:fs/promises', () => ({ ...fs.promises, default: fs.promises }));
 
 /**
+ * Session/worktree directory literals used as `locationPath` in test
+ * fixtures across the suite. cwd must exist since #1892; these are the
+ * literals the suites use (re-derived via grep against the current tree,
+ * not guessed). Seeded before the caller's own `files` in `setupMemfs` so
+ * a caller that deliberately gives one of these a different shape (e.g.
+ * makes it a file instead of a directory) still wins.
+ */
+export const FIXTURE_SESSION_DIRS: readonly string[] = [
+  '/test/path',
+  '/some/path',
+  '/tmp/quick',
+  '/test/sender-path',
+  '/path/to/worktree',
+  '/test/worktree',
+  '/test/quick',
+  '/path/1',
+  '/path/to/project',
+  '/test/sender-worktree',
+  '/test/path2',
+  '/path/to/quick',
+  '/test/quick-cwd',
+  '/test/path-a',
+  '/test/path-b',
+  '/test/embedded-path',
+  // Found via scoped `bun test` runs (Issue #1892 fixup), not in the
+  // original enumeration: session-manager.test.ts and sibling files use
+  // these as `locationPath` fixtures too.
+  '/test/shared-path',
+  '/path/2',
+  '/test/path1',
+  // Found via a full run of session-manager.test.ts (Issue #1892 fixup,
+  // round 2): these literals are used as `locationPath` fixtures by tests
+  // that don't go through the elevated branch (confirmed by reading each
+  // failing stack trace -- all hit user-mode.ts's non-elevated fs.stat/ENOENT
+  // path, line 97, not the elevated runAsUser branch at line 86).
+  '/test/active',
+  '/test/terminal',
+  '/path/with spaces/project',
+  '/test/live-path',
+  '/test/paused-path',
+  // Found via a full monorepo `bun run test` run (Issue #1892 fixup,
+  // round 3): literals used by worker-lifecycle-manager.test.ts,
+  // mcp-server.test.ts, session-ownership.test.ts, and
+  // worker-manager-env.test.ts. All confirmed (grepped) to never appear in
+  // any `existsSync(...).toBe(false)` absence assertion elsewhere in the
+  // suite -- in particular `/test/repo` is also used by
+  // repository-manager.test.ts's `toBe(false)` assertions, but those target
+  // DIFFERENT derived paths (`${TEST_CONFIG_DIR}/repositories/test-org/repo`,
+  // `${TEST_CONFIG_DIR}/repositories/repo/outputs`), never `/test/repo`
+  // itself -- no collision.
+  '/test/project',
+  '/test/dir',
+  '/test/repo',
+  '/test/repo/worktrees/wt-auth',
+  '/test/target-path',
+  '/test/parent',
+  '/test/worktree/path',
+  // Found by running session-ownership.test.ts after the round-3 literals
+  // above still left it failing: session-ownership.test.ts and
+  // session-manager.test.ts both use this as a child session's
+  // `locationPath` in parent/child createdBy-inheritance fixtures. Grepped
+  // for `'/test/child'` against `toBe(false)` absence assertions
+  // elsewhere -- no hits.
+  '/test/child',
+];
+
+/**
  * Sets up memfs with the given file structure.
  * Call this in beforeEach before any fs operations.
  *
@@ -50,8 +117,15 @@ export function setupMemfs(files: Record<string, string | null> = {}): void {
   // Reset volume
   vol.reset();
 
+  // cwd must exist since #1892: seed the known fixture-literal directories
+  // first, so any test that uses one of these strings as a `locationPath`
+  // (without itself creating the directory) still passes the real
+  // assertSpawnCwdExists check. Spread order matters: a caller's own
+  // `files` entry for the same key wins.
+  const dirDefaults = Object.fromEntries(FIXTURE_SESSION_DIRS.map((p) => [p, null]));
+
   // Create directory structure from files
-  vol.fromJSON(files, '/');
+  vol.fromJSON({ ...dirDefaults, ...files }, '/');
 }
 
 /**

@@ -56,7 +56,9 @@ describe('Persistence boundary: embedded-agent initial-prompt eligibility surviv
     // exist on disk, and the configured default (bun-terminal) throws
     // ENOENT on a missing cwd where the legacy bunPtyProvider silently
     // tolerated it (production handling tracked separately, #1892).
-    ctx = await createTestContext({ ptyProvider: createMockPtyProvider() });
+    // This file's locationPath literal isn't seeded on real/mocked fs and this
+    // test doesn't exercise the cwd-existence check itself (Issue #1892).
+    ctx = await createTestContext({ ptyProvider: createMockPtyProvider(), assertSpawnCwdFn: async () => {} });
   });
 
   afterEach(async () => {
@@ -248,7 +250,14 @@ describe('Cross-type restart: initial-prompt delivery on the converted embedded-
     // below. Use the full factory with auto-emit disabled instead.
     const ptyFactory = createMockPtyFactory();
     ptyFactory.setAutoEmitSentinel(false);
-    ctx = await createTestContext({ spawnAsUserFn: spawn.fn, runAsUserImpl: stubRunAsUser, ptyProvider: ptyFactory.provider });
+    // This file's locationPath literal isn't seeded on real/mocked fs and this
+    // test doesn't exercise the cwd-existence check itself (Issue #1892).
+    ctx = await createTestContext({
+      spawnAsUserFn: spawn.fn,
+      runAsUserImpl: stubRunAsUser,
+      ptyProvider: ptyFactory.provider,
+      assertSpawnCwdFn: async () => {},
+    });
 
     const owner = await ctx.userRepository.upsertByOsUid(55001, 'owner', '/home/owner');
     const def = await ctx.embeddedAgentManager.createEmbeddedAgent(
@@ -290,7 +299,14 @@ describe('Cross-type restart: initial-prompt delivery on the converted embedded-
     const stubRunAsUser = async (_opts: RunAsUserOpts): Promise<RunAsUserResult> => ({
       stdout: '', stderr: '', exitCode: 0, timedOut: false,
     });
-    ctx = await createTestContext({ spawnAsUserFn: spawn.fn, runAsUserImpl: stubRunAsUser, ptyProvider: createMockPtyProvider() });
+    // This file's locationPath literal isn't seeded on real/mocked fs and this
+    // test doesn't exercise the cwd-existence check itself (Issue #1892).
+    ctx = await createTestContext({
+      spawnAsUserFn: spawn.fn,
+      runAsUserImpl: stubRunAsUser,
+      ptyProvider: createMockPtyProvider(),
+      assertSpawnCwdFn: async () => {},
+    });
 
     const owner = await ctx.userRepository.upsertByOsUid(55002, 'owner2', '/home/owner2');
     const def = await ctx.embeddedAgentManager.createEmbeddedAgent(
