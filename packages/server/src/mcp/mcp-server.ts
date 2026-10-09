@@ -1583,8 +1583,8 @@ export function createMcpApp(deps: McpDependencies): Hono {
         //     as the server user, which has no gh auth. Fall back to the
         //     CALLER's identity for the precheck only (never for the
         //     removal itself) — the caller is who is asking, and their gh
-        //     auth exists (Issue #1295). When the owner resolved, pass
-        //     nothing: owner wins, today's behaviour is unchanged.
+        //     auth exists. When the owner resolved, pass nothing: owner
+        //     wins, today's behaviour is unchanged.
         const precheckUsername = requestUsername === null
           ? await resolveRequestUsername(
             getMcpCallerIdentity()?.userId,

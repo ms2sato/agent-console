@@ -288,7 +288,7 @@ export interface DeleteWorktreeParams {
    * `requestUsername`; never used for the removal itself. Lets the
    * open-PR precheck resolve via the caller's identity when the target
    * session's owner is unresolvable (`requestUsername` is null) — the
-   * caller is who is asking, and their gh auth exists (Issue #1295).
+   * caller is who is asking, and their gh auth exists.
    * `getCurrentBranch` and the actual worktree removal always use
    * `requestUsername`, never this field.
    */
@@ -374,7 +374,7 @@ export async function deleteWorktree(
     } catch (error) {
       // Distinguish "the check could not run" (infra/auth failure) from
       // "the check ran and found an open PR" (above): the former is not a
-      // reason to treat `force` as the only path forward (Issue #1295).
+      // reason to treat `force` as the only path forward.
       const identity = precheckUsername ?? requestUsername ?? 'the server user';
       const message = error instanceof Error ? error.message : String(error);
       return {
