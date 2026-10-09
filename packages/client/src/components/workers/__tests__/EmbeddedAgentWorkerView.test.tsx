@@ -1918,13 +1918,10 @@ describe('EmbeddedAgentWorkerView', () => {
   });
 
   describe('Compaction', () => {
-    it('renders an indeterminate progressbar with no aria-value* attributes when the worker has no contextWindowTokens configured', () => {
+    it('renders nothing when the worker has no contextWindowTokens configured', () => {
       renderView({ sessionId: 's-ctx-1', workerId: 'w-ctx-1' });
 
-      const bar = screen.getByRole('progressbar');
-      expect(bar.getAttribute('aria-valuenow')).toBeNull();
-      expect(bar.getAttribute('aria-valuemin')).toBeNull();
-      expect(bar.getAttribute('aria-valuemax')).toBeNull();
+      expect(screen.queryByRole('progressbar')).toBeNull();
     });
 
     // Measured reach (#1556): the mutation this pin was verified against is
@@ -1947,7 +1944,7 @@ describe('EmbeddedAgentWorkerView', () => {
     // positive-control assertion itself fail, confirming the positive
     // control has genuine detection power independent of the fallback
     // mutation above.
-    it('renders indeterminate when contextWindowTokens prop is omitted, even though the registry definition declares one (#1556)', async () => {
+    it('renders nothing when contextWindowTokens prop is omitted, even though the registry definition declares one (#1556)', async () => {
       globalThis.fetch = Object.assign(mock(makeEmbeddedViewFetch([embeddedAgentFixture()])), { preconnect: () => {} });
       renderView({ sessionId: 's-ctx-1b', workerId: 'w-ctx-1b', embeddedAgentId: 'ea-1' });
 
@@ -1968,15 +1965,12 @@ describe('EmbeddedAgentWorkerView', () => {
       // -- `isOpenaiApiEngine` in EmbeddedAgentWorkerView.tsx is `false`
       // until `useEmbeddedAgents` resolves the fetched registry, so this
       // banner can only be present once the same registry data the
-      // indeterminate-gauge assertion below depends on has actually loaded.
+      // nothing-rendered assertion below depends on has actually loaded.
       expect(
         screen.getByText(/Conversation is restored automatically after a worker or server restart/i),
       ).toBeTruthy();
 
-      const bar = screen.getByRole('progressbar');
-      expect(bar.getAttribute('aria-valuenow')).toBeNull();
-      expect(bar.getAttribute('aria-valuemin')).toBeNull();
-      expect(bar.getAttribute('aria-valuemax')).toBeNull();
+      expect(screen.queryByRole('progressbar')).toBeNull();
     });
 
     it('renders a determinate progressbar with aria-valuenow and colour bands driven by context-usage events', async () => {
