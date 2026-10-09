@@ -613,8 +613,9 @@ export function createMcpApp(deps: McpDependencies): Hono {
   // Eleventh session-claiming tool (checkCallerOwnsSession), alongside
   // send_session_message, delegate_to_worktree, remove_worktree,
   // create_conditional_wakeup, run_process, create_html_artifact,
-  // delete_html_artifact, create_bookmark, delete_bookmark, and
-  // clear_orchestrator_session. No mechanical registry enumerates these
+  // delete_html_artifact, create_bookmark, delete_bookmark,
+  // clear_orchestrator_session, write_review_annotations, and
+  // clear_review_annotations. No mechanical registry enumerates these
   // tools; this comment is the convention-only marker.
   mcpServer.tool(
     'set_orchestrator_session',
@@ -677,8 +678,9 @@ export function createMcpApp(deps: McpDependencies): Hono {
   // Twelfth session-claiming tool (checkCallerOwnsSession), alongside
   // send_session_message, delegate_to_worktree, remove_worktree,
   // create_conditional_wakeup, run_process, create_html_artifact,
-  // delete_html_artifact, create_bookmark, delete_bookmark, and
-  // set_orchestrator_session. No mechanical registry enumerates these
+  // delete_html_artifact, create_bookmark, delete_bookmark,
+  // set_orchestrator_session, write_review_annotations, and
+  // clear_review_annotations. No mechanical registry enumerates these
   // tools; this comment is the convention-only marker.
   mcpServer.tool(
     'clear_orchestrator_session',
@@ -2086,6 +2088,14 @@ export function createMcpApp(deps: McpDependencies): Hono {
 
   // ---------- Tool: write_review_annotations ----------
 
+  // Thirteenth session-claiming tool (checkCallerOwnsSession), alongside
+  // send_session_message, delegate_to_worktree, remove_worktree,
+  // create_conditional_wakeup, run_process, create_html_artifact,
+  // delete_html_artifact, create_bookmark, delete_bookmark,
+  // set_orchestrator_session, clear_orchestrator_session,
+  // set_agent_parameters, set_mcp_server_permission, and
+  // clear_review_annotations. No mechanical registry enumerates these
+  // tools; this comment is the convention-only marker.
   mcpServer.tool(
     'write_review_annotations',
     'Write review annotations for a git-diff worker. ' +
@@ -2115,6 +2125,23 @@ export function createMcpApp(deps: McpDependencies): Hono {
         if (!session) {
           return errorResult(`Session not found: ${sessionId}`);
         }
+
+        // Ownership is claimed on the TARGET sessionId (the session the
+        // git-diff worker belongs to), never on sourceSessionId (the
+        // orchestrator/requester session, if any) -- the two are easy to
+        // conflate since sourceSessionId is also a session identifier.
+        if (!session.createdBy) {
+          return errorResult(
+            `Session ${sessionId} has no createdBy; writing review annotations for an ownerless (legacy) session is not possible`,
+          );
+        }
+        const authError = checkCallerOwnsSession(
+          getMcpCallerIdentity(),
+          { sessionId, createdBy: session.createdBy },
+          mcpAuthMode,
+          { toolName: 'write_review_annotations' },
+        );
+        if (authError) return errorResult(authError.error);
 
         // Validate worker exists and is a git-diff worker
         const worker = session.workers.find((w) => w.id === workerId);
@@ -2169,6 +2196,14 @@ export function createMcpApp(deps: McpDependencies): Hono {
 
   // ---------- Tool: clear_review_annotations ----------
 
+  // Fourteenth session-claiming tool (checkCallerOwnsSession), alongside
+  // send_session_message, delegate_to_worktree, remove_worktree,
+  // create_conditional_wakeup, run_process, create_html_artifact,
+  // delete_html_artifact, create_bookmark, delete_bookmark,
+  // set_orchestrator_session, clear_orchestrator_session,
+  // set_agent_parameters, set_mcp_server_permission, and
+  // write_review_annotations. No mechanical registry enumerates these
+  // tools; this comment is the convention-only marker.
   mcpServer.tool(
     'clear_review_annotations',
     'Clear all review annotations for a git-diff worker. ' +
@@ -2184,6 +2219,23 @@ export function createMcpApp(deps: McpDependencies): Hono {
         if (!session) {
           return errorResult(`Session not found: ${sessionId}`);
         }
+
+        // Ownership is claimed on the TARGET sessionId (the session the
+        // git-diff worker belongs to) -- this tool takes no sourceSessionId
+        // parameter, but the same naming care from write_review_annotations
+        // applies: sessionId here is always the target, never a requester.
+        if (!session.createdBy) {
+          return errorResult(
+            `Session ${sessionId} has no createdBy; clearing review annotations for an ownerless (legacy) session is not possible`,
+          );
+        }
+        const authError = checkCallerOwnsSession(
+          getMcpCallerIdentity(),
+          { sessionId, createdBy: session.createdBy },
+          mcpAuthMode,
+          { toolName: 'clear_review_annotations' },
+        );
+        if (authError) return errorResult(authError.error);
 
         // Validate worker exists and is a git-diff worker
         const worker = session.workers.find((w) => w.id === workerId);
@@ -2267,8 +2319,9 @@ export function createMcpApp(deps: McpDependencies): Hono {
   // Sixth session-claiming tool (checkCallerOwnsSession), alongside
   // send_session_message, delegate_to_worktree, remove_worktree,
   // create_conditional_wakeup, run_process, delete_html_artifact,
-  // create_bookmark, delete_bookmark, set_orchestrator_session, and
-  // clear_orchestrator_session. No mechanical registry enumerates these
+  // create_bookmark, delete_bookmark, set_orchestrator_session,
+  // clear_orchestrator_session, write_review_annotations, and
+  // clear_review_annotations. No mechanical registry enumerates these
   // tools; this comment is the convention-only marker.
   mcpServer.tool(
     'create_html_artifact',
@@ -2365,8 +2418,9 @@ export function createMcpApp(deps: McpDependencies): Hono {
   // Seventh session-claiming tool (checkCallerOwnsSession), alongside
   // send_session_message, delegate_to_worktree, remove_worktree,
   // create_conditional_wakeup, run_process, create_html_artifact,
-  // create_bookmark, delete_bookmark, set_orchestrator_session, and
-  // clear_orchestrator_session. No mechanical registry enumerates these
+  // create_bookmark, delete_bookmark, set_orchestrator_session,
+  // clear_orchestrator_session, write_review_annotations, and
+  // clear_review_annotations. No mechanical registry enumerates these
   // tools; this comment is the convention-only marker.
   mcpServer.tool(
     'delete_html_artifact',
@@ -2446,8 +2500,9 @@ export function createMcpApp(deps: McpDependencies): Hono {
   // Eighth session-claiming tool (checkCallerOwnsSession), alongside
   // send_session_message, delegate_to_worktree, remove_worktree,
   // create_conditional_wakeup, run_process, create_html_artifact,
-  // delete_html_artifact, delete_bookmark, set_orchestrator_session, and
-  // clear_orchestrator_session. No mechanical registry enumerates these
+  // delete_html_artifact, delete_bookmark, set_orchestrator_session,
+  // clear_orchestrator_session, write_review_annotations, and
+  // clear_review_annotations. No mechanical registry enumerates these
   // tools; this comment is the convention-only marker.
   mcpServer.tool(
     'create_bookmark',
@@ -2538,8 +2593,9 @@ export function createMcpApp(deps: McpDependencies): Hono {
   // Ninth session-claiming tool (checkCallerOwnsSession), alongside
   // send_session_message, delegate_to_worktree, remove_worktree,
   // create_conditional_wakeup, run_process, create_html_artifact,
-  // delete_html_artifact, create_bookmark, set_orchestrator_session, and
-  // clear_orchestrator_session. No mechanical registry enumerates these
+  // delete_html_artifact, create_bookmark, set_orchestrator_session,
+  // clear_orchestrator_session, write_review_annotations, and
+  // clear_review_annotations. No mechanical registry enumerates these
   // tools; this comment is the convention-only marker.
   mcpServer.tool(
     'delete_bookmark',
@@ -2618,7 +2674,8 @@ export function createMcpApp(deps: McpDependencies): Hono {
   // send_session_message, delegate_to_worktree, remove_worktree,
   // create_conditional_wakeup, run_process, create_html_artifact,
   // delete_html_artifact, create_bookmark, delete_bookmark,
-  // set_orchestrator_session, and clear_orchestrator_session. No mechanical
+  // set_orchestrator_session, clear_orchestrator_session,
+  // write_review_annotations, and clear_review_annotations. No mechanical
   // registry enumerates these tools; this comment is the convention-only
   // marker.
   //
@@ -2786,9 +2843,10 @@ export function createMcpApp(deps: McpDependencies): Hono {
   // send_session_message, delegate_to_worktree, remove_worktree,
   // create_conditional_wakeup, run_process, create_html_artifact,
   // delete_html_artifact, create_bookmark, delete_bookmark,
-  // set_orchestrator_session, clear_orchestrator_session, and
-  // set_agent_parameters. No mechanical registry enumerates these tools;
-  // this comment is the convention-only marker.
+  // set_orchestrator_session, clear_orchestrator_session,
+  // set_agent_parameters, write_review_annotations, and
+  // clear_review_annotations. No mechanical registry enumerates these
+  // tools; this comment is the convention-only marker.
   //
   // Unlike every other tool here, ownership is checked on the TARGET
   // session, not the caller's own -- this tool's whole point is deciding
