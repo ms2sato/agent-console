@@ -1,4 +1,4 @@
-import { describe, it, expect, mock, beforeEach, afterEach } from 'bun:test';
+import { describe, it, expect, mock, beforeEach, afterEach, spyOn } from 'bun:test';
 import type { AgentActivityState, NotificationContext, RepositorySlackIntegration, OutboundTriggerEventType } from '@agent-console/shared';
 import type { Kysely } from 'kysely';
 import type { Database } from '../../../database/schema.js';
@@ -580,6 +580,45 @@ describe('NotificationManager', () => {
       manager.cleanupWorker(testSession.id, testWorker.id);
 
       expect(manager.hasPendingDebounceForTest(testSession.id, testWorker.id)).toBe(false);
+
+      manager.dispose();
+    });
+
+    it('calls clearTimeout with the exact timer handle it armed when cleanupWorker runs, not merely removing the Map entry', () => {
+      // hasPendingDebounceForTest (the seam itself) only proves the Map
+      // entry is gone -- it cannot distinguish "the timer was cancelled"
+      // from "the Map entry was deleted but the underlying timer handle
+      // was left running". An implementation that dropped the
+      // clearTimeout(timer) call inside cleanupWorker would still pass
+      // every hasPendingDebounceForTest assertion in this file while the
+      // orphaned timer fires its callback later (CodeRabbit finding on PR
+      // #1910, confirmed by mutation: with clearTimeout(timer) removed,
+      // every pre-existing test in this file -- and the lifecycle test in
+      // worker-lifecycle-manager.test.ts -- still passed). Asserting only
+      // `toHaveBeenCalledTimes(1)` on a clearTimeout spy would itself be
+      // satisfiable by clearing ANY timer, not necessarily the one armed
+      // here -- so capture the exact handle setTimeout returned when the
+      // debounce was armed, and assert clearTimeout was called WITH it.
+      const { manager } = createNotificationManager(createMockSlackHandler(), {
+        debounceSeconds: 5, // long enough it never fires during this test
+        triggers: allTriggersEnabled,
+      });
+
+      const setTimeoutSpy = spyOn(globalThis, 'setTimeout');
+      manager.onActivityChange(testSession, testWorker, 'idle' as AgentActivityState);
+      expect(manager.hasPendingDebounceForTest(testSession.id, testWorker.id)).toBe(true);
+      expect(setTimeoutSpy).toHaveBeenCalledTimes(1);
+      const armedHandle = setTimeoutSpy.mock.results[0]?.value;
+      setTimeoutSpy.mockRestore();
+
+      const clearTimeoutSpy = spyOn(globalThis, 'clearTimeout');
+      try {
+        manager.cleanupWorker(testSession.id, testWorker.id);
+        expect(clearTimeoutSpy).toHaveBeenCalledTimes(1);
+        expect(clearTimeoutSpy).toHaveBeenCalledWith(armedHandle);
+      } finally {
+        clearTimeoutSpy.mockRestore();
+      }
 
       manager.dispose();
     });
