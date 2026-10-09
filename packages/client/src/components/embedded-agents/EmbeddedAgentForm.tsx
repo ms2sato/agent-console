@@ -10,6 +10,7 @@ import {
 import { FormField, Input, Textarea } from '../ui/FormField';
 import { FormOverlay } from '../ui/Spinner';
 import { isPositiveInteger, POSITIVE_INTEGER_MESSAGE } from '../../lib/positive-integer';
+import { ContextWindowTokensSchema } from '../../schemas/worktree-form';
 
 /**
  * UI grouping of `EMBEDDED_AGENT_TOOL_NAMES` into "read-only", "command
@@ -132,12 +133,22 @@ const EmbeddedAgentFormRawSchema = v.object({
   // NOT configured here: it is a per-WORKER toggle in the worker view, not
   // a property of the definition -- see docs/design/embedded-agent-worker.md
   // "Compaction" § The worker-level auto toggle.
+  //
+  // The numeric rule is `ContextWindowTokensSchema` (#1876), the single
+  // named writer also applied by `CreateWorktreeForm`, `AddAgentWorkerMenu`,
+  // and `EmbeddedAgentWorkerView` -- unlike `maxToolIterationsInput` above,
+  // which validates a DIFFERENT field and stays on `isPositiveInteger`. The
+  // `/^\d+$/` check is a fact about this TEXT input (digits only, so
+  // `Number(val)` is never negative or fractional here) and stays local to
+  // this form, per `lib/positive-integer.ts`'s own doc comment.
   contextWindowTokensInput: v.optional(
     v.pipe(
       v.string(),
       v.trim(),
       v.check(
-        (val) => !val || (/^\d+$/.test(val) && isPositiveInteger(Number(val))),
+        (val) =>
+          !val ||
+          (/^\d+$/.test(val) && v.safeParse(ContextWindowTokensSchema, Number(val)).success),
         POSITIVE_INTEGER_MESSAGE
       )
     )

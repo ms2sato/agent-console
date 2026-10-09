@@ -633,9 +633,9 @@ describe('EmbeddedAgentForm', () => {
     });
 
     it('should show a validation error for a contextWindowTokensInput of 0', async () => {
-      // `/^\d+$/` alone accepts "0" -- only the hoisted isPositiveInteger()
-      // call's `>= 1` boundary rejects it, so this pins the call site is
-      // actually wired to that function and not just the shape regex.
+      // `/^\d+$/` alone accepts "0" -- only `ContextWindowTokensSchema`'s
+      // (#1876) `v.minValue(1)` boundary rejects it, so this pins the call
+      // site is actually wired to that schema and not just the shape regex.
       const user = userEvent.setup();
       const { props } = renderEmbeddedAgentForm();
 
@@ -643,6 +643,27 @@ describe('EmbeddedAgentForm', () => {
       await user.type(screen.getByPlaceholderText('http://localhost:11434/v1'), 'http://localhost:11434/v1');
       await user.type(screen.getByPlaceholderText('e.g., qwen3:32b'), 'qwen3:32b');
       await user.type(screen.getByPlaceholderText('e.g., 128000'), '0');
+      await user.tab();
+
+      await user.click(screen.getByText('Add Embedded Agent'));
+
+      await waitFor(() => {
+        expect(screen.getByText('Must be a positive integer')).toBeTruthy();
+      });
+      expect(props.onSubmit).not.toHaveBeenCalled();
+    });
+
+    it('should show a validation error for a negative contextWindowTokensInput', async () => {
+      // "-1" fails the `/^\d+$/` shape check before ever reaching
+      // `ContextWindowTokensSchema` -- included per #1876's boundary list
+      // (0 / -1 / 1.5) even though the regex is what actually rejects it.
+      const user = userEvent.setup();
+      const { props } = renderEmbeddedAgentForm();
+
+      await user.type(screen.getByPlaceholderText('e.g., Ollama qwen3:32b'), 'My Embedded Agent');
+      await user.type(screen.getByPlaceholderText('http://localhost:11434/v1'), 'http://localhost:11434/v1');
+      await user.type(screen.getByPlaceholderText('e.g., qwen3:32b'), 'qwen3:32b');
+      await user.type(screen.getByPlaceholderText('e.g., 128000'), '-1');
       await user.tab();
 
       await user.click(screen.getByText('Add Embedded Agent'));
