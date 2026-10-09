@@ -35,11 +35,26 @@ import * as path from 'node:path';
  * `FAILED: 8 assertion(s) failed`, exit code 1. Edit was reverted
  * immediately after measuring; this wrapper leaves the smoke's fault
  * injection untouched.
+ *
+ * Contention finding (Issue #1872): a 1-in-5 flaky run on a loaded shared
+ * host returned exitCode 2 from the smoke's own `selfCheck()` -- its
+ * `EXIT_WAIT_TIMEOUT_MS` race (5000ms at the time) lost under PTY
+ * fork/exec scheduling delay, not a logic bug. Fixed by widening that
+ * bound in the smoke itself (see its own header/comment); this wrapper
+ * additionally surfaces the smoke's captured stdout+stderr on any future
+ * failure so the actual cause (e.g. "did not exit within timeout" vs a
+ * real regression) is visible without a local re-run.
  */
 const REPO_ROOT = path.resolve(import.meta.dir, '../../..');
 const SMOKE_PATH = 'scripts/smoke/check-exit-127-diagnostic.ts';
 const SPAWN_TIMEOUT_MS = 150_000;
 const IT_TIMEOUT_MS = 180_000;
+const DIAGNOSTIC_TAIL_LINES = 40;
+
+function tail(text: string, n: number): string {
+  const lines = text.split('\n');
+  return lines.slice(Math.max(0, lines.length - n)).join('\n');
+}
 
 describe('check-exit-127-diagnostic.ts CI wrapper (Issue #1872)', () => {
   it(
@@ -49,9 +64,14 @@ describe('check-exit-127-diagnostic.ts CI wrapper (Issue #1872)', () => {
         cwd: REPO_ROOT,
         timeout: SPAWN_TIMEOUT_MS,
       });
+      const stdout = result.stdout.toString();
+      const stderr = result.stderr.toString();
+      const diagnostic =
+        `smoke stdout (last ${DIAGNOSTIC_TAIL_LINES} lines):\n${tail(stdout, DIAGNOSTIC_TAIL_LINES)}\n\n` +
+        `smoke stderr (last ${DIAGNOSTIC_TAIL_LINES} lines):\n${tail(stderr, DIAGNOSTIC_TAIL_LINES)}`;
 
-      expect(result.exitCode).toBe(0);
-      expect(result.stdout.toString()).toMatch(/PASSED/);
+      expect(result.exitCode, diagnostic).toBe(0);
+      expect(stdout, diagnostic).toMatch(/PASSED/);
     },
     IT_TIMEOUT_MS,
   );

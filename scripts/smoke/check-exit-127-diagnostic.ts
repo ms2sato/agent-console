@@ -92,7 +92,9 @@ import { AgentManager, CLAUDE_CODE_AGENT_ID } from '../../packages/server/src/se
 import { SqliteAgentRepository } from '../../packages/server/src/repositories/sqlite-agent-repository.js';
 import { initializeDatabase, closeDatabase, getDatabase } from '../../packages/server/src/database/connection.js';
 
-const EXIT_WAIT_TIMEOUT_MS = 5000;
+// An upper bound on waiting for an "eventually" property, sized for a
+// loaded CI runner; not a measurement (Issue #1872's contention finding).
+const EXIT_WAIT_TIMEOUT_MS = 30000;
 const POLL_MS = 50;
 
 function sleep(ms: number): Promise<void> {

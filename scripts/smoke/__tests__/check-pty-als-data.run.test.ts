@@ -35,11 +35,26 @@ import * as path from 'node:path';
  * `FAILED: 10/10 cycle(s) never observed the marker`, exit code 1. Edit
  * was reverted immediately after measuring; this wrapper leaves the
  * smoke's fault injection untouched.
+ *
+ * Contention finding (Issue #1872): a sibling wrapper in this same PR
+ * (`check-exit-127-diagnostic.run.test.ts`) flaked 1-in-5 on a loaded
+ * shared host because its smoke's own wait bound lost a race under PTY
+ * fork/exec scheduling delay. This smoke's `MARKER_WAIT_TIMEOUT_MS` /
+ * `EXIT_WAIT_TIMEOUT_MS` were widened for the same reason (see the smoke's
+ * own comment); this wrapper additionally surfaces the smoke's captured
+ * stdout+stderr on any future failure so the actual cause is visible
+ * without a local re-run.
  */
 const REPO_ROOT = path.resolve(import.meta.dir, '../../..');
 const SMOKE_PATH = 'scripts/smoke/check-pty-als-data.ts';
 const SPAWN_TIMEOUT_MS = 150_000;
 const IT_TIMEOUT_MS = 180_000;
+const DIAGNOSTIC_TAIL_LINES = 40;
+
+function tail(text: string, n: number): string {
+  const lines = text.split('\n');
+  return lines.slice(Math.max(0, lines.length - n)).join('\n');
+}
 
 describe('check-pty-als-data.ts CI wrapper (Issue #1872)', () => {
   it(
@@ -49,9 +64,14 @@ describe('check-pty-als-data.ts CI wrapper (Issue #1872)', () => {
         cwd: REPO_ROOT,
         timeout: SPAWN_TIMEOUT_MS,
       });
+      const stdout = result.stdout.toString();
+      const stderr = result.stderr.toString();
+      const diagnostic =
+        `smoke stdout (last ${DIAGNOSTIC_TAIL_LINES} lines):\n${tail(stdout, DIAGNOSTIC_TAIL_LINES)}\n\n` +
+        `smoke stderr (last ${DIAGNOSTIC_TAIL_LINES} lines):\n${tail(stderr, DIAGNOSTIC_TAIL_LINES)}`;
 
-      expect(result.exitCode).toBe(0);
-      expect(result.stdout.toString()).toMatch(/PASSED/);
+      expect(result.exitCode, diagnostic).toBe(0);
+      expect(stdout, diagnostic).toMatch(/PASSED/);
     },
     IT_TIMEOUT_MS,
   );
