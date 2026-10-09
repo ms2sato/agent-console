@@ -92,6 +92,24 @@ function importsEnvFirst(file: string): boolean {
   return firstImportSpecifier(readSmokeFile(file)) === './_env.js';
 }
 
+/**
+ * Whether `./_env.js` is imported ANYWHERE in the file, at any import
+ * position. A sensitive smoke must reject this unconditionally, not just
+ * check its first import: a static import of `./_env.js` at any position
+ * still evaluates (and defaults `NODE_ENV`) before any of the file's
+ * runtime code runs, including the explicit check inside `main()` -- ESM
+ * hoists and evaluates every static import ahead of module-level code,
+ * regardless of where in the file the import statement is textually
+ * written (CodeRabbit finding on PR #1911).
+ */
+function importsEnvAnywhere(file: string): boolean {
+  const content = readSmokeFile(file);
+  for (const match of content.matchAll(/^import\s[\s\S]*?['"]([^'"]+)['"]/gm)) {
+    if (match[1] === './_env.js') return true;
+  }
+  return false;
+}
+
 function hasExplicitNodeEnvCheck(file: string): boolean {
   return readSmokeFile(file).includes(EXPLICIT_CHECK_MARKER);
 }
@@ -122,33 +140,43 @@ describe('scripts/smoke/* NODE_ENV discipline (Issue #1289)', () => {
 
   for (const file of entryPoints) {
     const envFirst = importsEnvFirst(file);
+    const envAnywhere = importsEnvAnywhere(file);
     const isSensitive = SENSITIVE_BASENAMES.has(file);
     const hasCheck = hasExplicitNodeEnvCheck(file);
-    const sensitiveHandled = isSensitive && hasCheck;
+
+    // A sensitive file is correctly handled only when `./_env.js` is absent
+    // from the ENTIRE file, not merely absent from the first-import slot --
+    // see importsEnvAnywhere's own comment. `envFirst` therefore already
+    // implies `envAnywhere`, which makes the "both" case below collapse
+    // into this one: a file can never be both neutralCorrect and
+    // sensitiveCorrect at the same time.
+    const neutralCorrect = envFirst && !isSensitive;
+    const sensitiveCorrect = isSensitive && hasCheck && !envAnywhere;
 
     it(`${file}: handles NODE_ENV in exactly one way (neutral ./_env.js import XOR sensitive explicit check)`, () => {
-      if (envFirst && sensitiveHandled) {
+      if (isSensitive && envAnywhere) {
         throw new Error(
-          `${file}: imports ./_env.js AND is a listed NODE_ENV-sensitive smoke with an explicit check -- pick one. ` +
-            `Fix: remove the ./_env.js import if this smoke's behavior genuinely depends on NODE_ENV, or drop it ` +
-            `from NODE_ENV_SENSITIVE_SMOKES (and its explicit check) if it does not.`,
+          `${file}: listed in NODE_ENV_SENSITIVE_SMOKES but imports ./_env.js somewhere in the file -- that ` +
+            `import still defaults NODE_ENV before any of the file's runtime code (including an explicit check) ` +
+            `ever executes, since ESM evaluates every static import ahead of module-level code regardless of ` +
+            `position. Fix: remove the ./_env.js import entirely.`,
         );
       }
-      if (!envFirst && !sensitiveHandled) {
-        if (isSensitive && !hasCheck) {
-          throw new Error(
-            `${file}: listed in NODE_ENV_SENSITIVE_SMOKES but has no explicit NODE_ENV check (no "${EXPLICIT_CHECK_MARKER}" marker). ` +
-              `Fix: add the fail-fast check before any server import.`,
-          );
-        }
+      if (isSensitive && !hasCheck) {
         throw new Error(
-          `${file}: neither imports ./_env.js as its first import nor is a listed NODE_ENV-sensitive smoke with an ` +
-            `explicit check -- it would silently inherit the invoking shell's NODE_ENV. Fix: add ` +
-            `\`import './_env.js';\` as the first import if NODE_ENV has no behavioral effect on this smoke's ` +
-            `verified path, or add it to NODE_ENV_SENSITIVE_SMOKES with the explicit fail-fast check if it does.`,
+          `${file}: listed in NODE_ENV_SENSITIVE_SMOKES but has no explicit NODE_ENV check (no "${EXPLICIT_CHECK_MARKER}" marker). ` +
+            `Fix: add the fail-fast check before any server import.`,
         );
       }
-      expect(envFirst !== sensitiveHandled).toBe(true);
+      if (!isSensitive && !envFirst) {
+        throw new Error(
+          `${file}: neither imports ./_env.js as its first import nor is a listed NODE_ENV-sensitive smoke -- ` +
+            `it would silently inherit the invoking shell's NODE_ENV. Fix: add \`import './_env.js';\` as the ` +
+            `first import if NODE_ENV has no behavioral effect on this smoke's verified path, or add it to ` +
+            `NODE_ENV_SENSITIVE_SMOKES with the explicit fail-fast check if it does.`,
+        );
+      }
+      expect(neutralCorrect !== sensitiveCorrect).toBe(true);
     });
   }
 });
