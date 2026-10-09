@@ -545,11 +545,11 @@ describe('idle eviction — the countdown and its commit point', () => {
       // window to race into by construction -- see the method's own doc
       // comment).
       //
-      // Polarity: reverting R2 (restoring the old caller-side
-      // `isEvicting()` read followed by a separate, unconditional
-      // deactivate()+activate() pair) makes this scenario revive the worker
-      // -- see the PR body's baseline reproduction for the measured before/
-      // after.
+      // POLARITY MEASURED: dropping the `(runtime?.evicting ?? false)` arm
+      // from restartIfActive's classification (restoring the unconditional
+      // deactivate()+activate() restart-all used to do) makes this test
+      // FAIL -- confirmed: `expect(...).toBe('skipped')` receives
+      // `'restarted'` instead.
       const h = setup({ idleEvictionMs: 100_000 }); // no auto-eviction interference
       await activateAndReady(h);
       const originalPid = h.worker.subprocess?.pid;
@@ -574,6 +574,12 @@ describe('idle eviction — the countdown and its commit point', () => {
       // the original caller's subsequent activate() to revive the worker.
       // R1 closes this by also bailing on `shutdownRequested`, without
       // re-arming the countdown.
+      //
+      // POLARITY MEASURED: removing the `if (runtime.shutdownRequested)
+      // return;` bail from onIdleExpired makes this test FAIL -- confirmed:
+      // `expect(shutdowns()).toBe(1)` receives `2` (onIdleExpired committed a
+      // second, redundant teardown during the externally-requested
+      // deactivate's window).
       const h = setup({
         idleEvictionMs: 25,
         exitOnShutdown: false,
@@ -626,6 +632,12 @@ describe('idle eviction — the countdown and its commit point', () => {
       // listeners resolves them in registration order, with nothing able to
       // interleave a new entry in between for a single listener), so it is
       // modeled directly via the private `evictions` map seam.
+      //
+      // POLARITY MEASURED: reverting `activate()` to call `runActivation`
+      // unconditionally (dropping the eviction wait/recheck entirely) makes
+      // this test FAIL -- confirmed: `expect(h.spawn.incarnations.length)
+      // .toBe(1)` (checked immediately after issuing `activate()`, before the
+      // in-flight eviction resolves) receives `2` instead.
       const h = setup({ idleEvictionMs: 100_000 });
       await activateAndReady(h);
 
