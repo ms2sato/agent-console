@@ -18,16 +18,17 @@ interface ContextUsageBarProps {
 const AMBER_BAND_MARGIN = 0.15;
 
 /**
- * Always-visible 2px context-window usage bar (Compaction) -- see
+ * Context-window usage bar (Compaction) -- see
  * docs/design/embedded-agent-worker.md "Compaction" § UI
- * "Always-visible usage bar". In-flow (NOT absolutely positioned, unlike
- * `TerminalLoadingBar`), rendered as a `shrink-0` sibling so it never eats
- * into the transcript's `flex-1` scroll region.
+ * "Usage bar — shown only when a denominator exists". In-flow (NOT
+ * absolutely positioned, unlike `TerminalLoadingBar`), rendered as a
+ * `shrink-0` sibling so it never eats into the transcript's `flex-1` scroll
+ * region.
  *
- * `contextWindowTokens` undefined -> indeterminate: no fill, a static
- * dashed/striped track (no animation -- an animated stripe here is visual
- * noise per owner UX review), `role="progressbar"` with NO
- * aria-valuenow/min/max (nothing to measure against).
+ * `contextWindowTokens` undefined -> renders nothing (no element at all,
+ * regardless of whether `contextUsage` is null or populated): there is
+ * nothing to show a ratio of, and a placeholder track was dogfood-reported
+ * as unexplained visual noise with no hover affordance to compensate.
  *
  * `contextWindowTokens` defined -> determinate: solid fill sized to
  * `promptTokens / contextWindowTokens`, banded gray -> amber -> red against
@@ -39,23 +40,7 @@ export function ContextUsageBar({
   threshold,
 }: ContextUsageBarProps) {
   if (contextWindowTokens === undefined) {
-    const title =
-      contextUsage !== null
-        ? `${contextUsage.estimated ? '~' : ''}${contextUsage.promptTokens} tokens used${
-            contextUsage.estimated ? ' (estimated)' : ''
-          }; set contextWindowTokens for a gauge`
-        : undefined;
-    return (
-      <div
-        className="h-0.5 shrink-0"
-        role="progressbar"
-        title={title}
-        style={{
-          backgroundImage:
-            'repeating-linear-gradient(45deg, #475569 0, #475569 4px, transparent 4px, transparent 8px)',
-        }}
-      />
-    );
+    return null;
   }
 
   const ratio = contextUsage !== null ? contextUsage.promptTokens / contextWindowTokens : 0;

@@ -161,11 +161,38 @@ describe('ContextUsageBar', () => {
       expect(bar.getAttribute('title')).toBeNull();
       expect(bar.querySelector('div')?.style.width).toBe('0%');
     });
+
+    it('clamps aria-valuenow and the fill width to 100 when the ratio exceeds 1', () => {
+      render(
+        <ContextUsageBar
+          contextWindowTokens={1000}
+          contextUsage={{ promptTokens: 1500, estimated: false }}
+          threshold={0.8}
+        />,
+      );
+
+      const bar = screen.getByRole('progressbar');
+      expect(bar.getAttribute('aria-valuenow')).toBe('100');
+      expect(bar.querySelector('div')?.style.width).toBe('100%');
+    });
   });
 
-  describe('contextWindowTokens undefined (indeterminate)', () => {
-    it('renders role="progressbar" with no aria-valuenow/min/max attributes', () => {
-      render(
+  describe('contextWindowTokens undefined (renders nothing)', () => {
+    it('renders nothing when contextUsage is null', () => {
+      const { container } = render(
+        <ContextUsageBar
+          contextWindowTokens={undefined}
+          contextUsage={null}
+          threshold={0.8}
+        />,
+      );
+
+      expect(container.firstChild).toBeNull();
+      expect(screen.queryByRole('progressbar')).toBeNull();
+    });
+
+    it('renders nothing when contextUsage is populated with an estimated reading (estimated: true)', () => {
+      const { container } = render(
         <ContextUsageBar
           contextWindowTokens={undefined}
           contextUsage={{ promptTokens: 300, estimated: true }}
@@ -173,44 +200,12 @@ describe('ContextUsageBar', () => {
         />,
       );
 
-      const bar = screen.getByRole('progressbar');
-      expect(bar.getAttribute('aria-valuenow')).toBeNull();
-      expect(bar.getAttribute('aria-valuemin')).toBeNull();
-      expect(bar.getAttribute('aria-valuemax')).toBeNull();
+      expect(container.firstChild).toBeNull();
+      expect(screen.queryByRole('progressbar')).toBeNull();
     });
 
-    it('renders the dashed/indeterminate track instead of a solid fill', () => {
-      render(
-        <ContextUsageBar
-          contextWindowTokens={undefined}
-          contextUsage={{ promptTokens: 300, estimated: true }}
-          threshold={0.8}
-        />,
-      );
-
-      const bar = screen.getByRole('progressbar');
-      // No nested solid-fill child div (unlike the determinate case).
-      expect(bar.querySelector('div')).toBeNull();
-      expect(bar.style.backgroundImage).toContain('repeating-linear-gradient');
-    });
-
-    it('shows a leading ~ and a trailing "(estimated)" clause when the reading is the chars/4 fallback (estimated: true)', () => {
-      render(
-        <ContextUsageBar
-          contextWindowTokens={undefined}
-          contextUsage={{ promptTokens: 300, estimated: true }}
-          threshold={0.8}
-        />,
-      );
-
-      const bar = screen.getByRole('progressbar');
-      expect(bar.getAttribute('title')).toBe(
-        '~300 tokens used (estimated); set contextWindowTokens for a gauge',
-      );
-    });
-
-    it('omits the estimate indicator when the reading is provider-reported (estimated: false)', () => {
-      render(
+    it('renders nothing when contextUsage is populated with a provider-reported reading (estimated: false)', () => {
+      const { container } = render(
         <ContextUsageBar
           contextWindowTokens={undefined}
           contextUsage={{ promptTokens: 300, estimated: false }}
@@ -218,27 +213,27 @@ describe('ContextUsageBar', () => {
         />,
       );
 
-      const bar = screen.getByRole('progressbar');
-      expect(bar.getAttribute('title')).toBe('300 tokens used; set contextWindowTokens for a gauge');
+      expect(container.firstChild).toBeNull();
+      expect(screen.queryByRole('progressbar')).toBeNull();
     });
 
-    it('omits the title attribute when contextUsage is null', () => {
-      render(
+    it('renders nothing when contextUsage appears clamped (the hatch must not leak through with no window)', () => {
+      const { container } = render(
         <ContextUsageBar
           contextWindowTokens={undefined}
-          contextUsage={null}
+          contextUsage={{ promptTokens: 300, estimated: false, appearsClamped: true }}
           threshold={0.8}
         />,
       );
 
-      const bar = screen.getByRole('progressbar');
-      expect(bar.getAttribute('title')).toBeNull();
+      expect(container.firstChild).toBeNull();
+      expect(screen.queryByRole('progressbar')).toBeNull();
     });
   });
 
   describe('contextUsage null (no usage event received yet)', () => {
-    it('renders without crashing when contextWindowTokens is also undefined', () => {
-      render(
+    it('renders nothing when contextWindowTokens is also undefined', () => {
+      const { container } = render(
         <ContextUsageBar
           contextWindowTokens={undefined}
           contextUsage={null}
@@ -246,7 +241,8 @@ describe('ContextUsageBar', () => {
         />,
       );
 
-      expect(screen.getByRole('progressbar')).toBeTruthy();
+      expect(container.firstChild).toBeNull();
+      expect(screen.queryByRole('progressbar')).toBeNull();
     });
 
     it('renders without crashing when contextWindowTokens is defined', () => {
