@@ -1573,6 +1573,303 @@ describe('getAcceptanceCriteria', () => {
     const execImpl = () => null;
     expect(getAcceptanceCriteria('1', { execImpl })).toEqual({ state: 'absent', items: [] });
   });
+
+  // --- Scope checkbox collection to the AC section ---
+  //
+  // `getAcceptanceCriteria` used to collect `- [ ] ` lines from the WHOLE
+  // body before ever locating the heading, so a prose AC with a stray
+  // checkbox elsewhere in the body (a reproduction task list, a
+  // follow-up note) misclassified as 'checklist'. These tests pin the
+  // fix: collection scoped to the section range when a heading exists,
+  // falling back to whole-body collection when it does not (the named
+  // regression this scoping would otherwise introduce).
+
+  // Mutation reach (measured): reverting to whole-body collection — i.e.
+  // scanning every line in the body for `- [ ] ` before locating the
+  // heading — makes this test fail. The stray checkbox under "##
+  // Follow-ups" would be collected, and the state would be 'checklist'
+  // instead of 'prose'. This is the primary defect the scoping fixes.
+  it('returns state "prose" when an unrelated checkbox appears outside the AC section', () => {
+    const body = [
+      'Some narrative text describing the defect.',
+      '',
+      '## Acceptance Criteria',
+      '',
+      'Do exactly what this Issue describes, in prose form.',
+      '',
+      '## Follow-ups',
+      '',
+      '- [ ] File a tracking issue for the migration plan',
+      '',
+    ].join('\n');
+    const execImpl = () => body;
+    expect(getAcceptanceCriteria('1', { execImpl })).toEqual({ state: 'prose', items: [] });
+  });
+
+  // This is the regression pin the Issue requires (AC item 2): a
+  // checklist body with NO AC heading at all must keep returning
+  // 'checklist', not silently downgrade to 'absent' once scoping exists.
+  //
+  // Mutation reach (measured): making the `range === null` branch always
+  // return 'absent' (i.e. deleting the whole-body fallback) makes this
+  // test fail — it would report 'absent' instead of 'checklist'.
+  it('returns state "checklist" for a checklist body with no AC heading at all (regression pin)', () => {
+    const body = ['Reproduction steps:', '', '- [ ] Open the app', '- [ ] Click the button', ''].join(
+      '\n'
+    );
+    const execImpl = () => body;
+    expect(getAcceptanceCriteria('1', { execImpl })).toEqual({
+      state: 'checklist',
+      items: ['Open the app', 'Click the button'],
+    });
+  });
+
+  // AC item 3: items inside the section plus a stray box outside collect
+  // ONLY the in-section items, in order.
+  //
+  // Mutation reach (measured): reverting to whole-body collection makes
+  // this test fail — the returned items would also include "Outside
+  // item", breaking both the length and the order of the expected array.
+  it('collects only the items inside the AC section when a stray checkbox exists outside it', () => {
+    const body = [
+      '## Acceptance Criteria',
+      '',
+      '- [ ] Inside item one',
+      '- [ ] Inside item two',
+      '',
+      '## Follow-ups',
+      '',
+      '- [ ] Outside item',
+      '',
+    ].join('\n');
+    const execImpl = () => body;
+    expect(getAcceptanceCriteria('1', { execImpl })).toEqual({
+      state: 'checklist',
+      items: ['Inside item one', 'Inside item two'],
+    });
+  });
+
+  // AC item 4: a checkbox under a DEEPER subheading inside the AC
+  // section is still in range — only a same-or-higher-level heading ends
+  // the section.
+  //
+  // Mutation reach (measured): changing the section-boundary comparison
+  // from `<=` to `<` (so ANY heading, deeper or not, ends the section)
+  // makes this test fail — the deeper `#### Must` heading would end the
+  // range before the checkbox under it is ever reached, reporting
+  // 'empty-heading' instead of 'checklist'.
+  it('includes a checkbox nested under a deeper subheading inside the AC section', () => {
+    const body = ['## Acceptance Criteria', '', '#### Must', '', '- [ ] Deep item', ''].join('\n');
+    const execImpl = () => body;
+    expect(getAcceptanceCriteria('1', { execImpl })).toEqual({
+      state: 'checklist',
+      items: ['Deep item'],
+    });
+  });
+
+  // AC item 6: a `- [x]` (checked) box under the heading, with nothing
+  // else, is content (non-blank line) but not an item — so the state is
+  // 'prose', not 'empty-heading'. Pinning the current content-scan
+  // behavior explicitly, as the AC requires: the scan counts any
+  // non-blank line, checked-box included, as content.
+  it('treats a checked box with no other content as "prose", not "empty-heading"', () => {
+    const body = ['## Acceptance Criteria', '', '- [x] Already done', ''].join('\n');
+    const execImpl = () => body;
+    expect(getAcceptanceCriteria('1', { execImpl })).toEqual({ state: 'prose', items: [] });
+  });
+
+  // --- Architect ruling A+F: a UNION of AC sections, merge-aware heading
+  // match ---
+  //
+  // This repository's own Architect-authoring convention routinely splits
+  // the acceptance criteria across more than one heading: a ruling
+  // heading ("## Acceptance Criteria (Architect, ...)") immediately
+  // followed by a differently-worded sibling holding the real checklist
+  // ("## AC #N", "## Checklist"). Measured against real Issues in this
+  // repository (including this function's own motivating Issue), the
+  // single-range design misclassified these as 'prose'/'empty-heading'.
+  // These four tests pin the ruling's fix.
+
+  // Test (h). Mutation reach (measured): removing the "is it an AC
+  // heading? then merge, don't end the section" check inside the
+  // section-end scan (so ANY same-or-higher-level heading ends the
+  // section, AC or not) makes this test fail — `## AC #7` would end `##
+  // Acceptance Criteria`'s section immediately, the search for the next
+  // independent section resumes strictly PAST `## AC #7` (never landing
+  // back on it), so the item under `## AC #7` is never collected and the
+  // state becomes 'empty-heading' instead of 'checklist'.
+  it('merges a differently-worded AC-pattern heading ("## AC #N") into the same section as "## Acceptance Criteria"', () => {
+    const body = ['Some narrative.', '', '## Acceptance Criteria', '', '## AC #7', '', '- [ ] Real item', ''].join(
+      '\n'
+    );
+    const execImpl = () => body;
+    expect(getAcceptanceCriteria('1', { execImpl })).toEqual({
+      state: 'checklist',
+      items: ['Real item'],
+    });
+  });
+
+  // Test (i). Combines the merge from (h) with exclusion of a stray box
+  // under a genuine non-AC terminator ("## Follow-ups"), to confirm
+  // merging two AC headings into one section does not also accidentally
+  // extend that merged section past a real terminator.
+  it('excludes a stray box under "## Follow-ups" even when the AC section spans a merged "## AC #N" heading', () => {
+    const body = [
+      '## Acceptance Criteria',
+      '',
+      '## AC #42',
+      '',
+      '- [ ] Inside item',
+      '',
+      '## Follow-ups',
+      '',
+      '- [ ] Outside item',
+      '',
+    ].join('\n');
+    const execImpl = () => body;
+    expect(getAcceptanceCriteria('1', { execImpl })).toEqual({
+      state: 'checklist',
+      items: ['Inside item'],
+    });
+  });
+
+  // Test (j). Mutation reach (measured): narrowing
+  // ACCEPTANCE_CRITERIA_HEADING_RE back to `/^#{1,6}\s.*acceptance
+  // criteria/i` (dropping the `AC\b`/`checklist\b` alternatives) makes
+  // this test fail — "## Checklist" would no longer match ANYTHING, so no
+  // AC heading would be found anywhere in this body, and the function
+  // would fall back to the whole-body checkbox scan, which collects BOTH
+  // the unrelated "Stray repro step" (written before the heading, outside
+  // any section) AND "Real criterion" — two items instead of one.
+  it('recognises "## Checklist" alone as an AC heading and still excludes a stray box outside it', () => {
+    const body = [
+      'Reproduction:',
+      '',
+      '- [ ] Stray repro step',
+      '',
+      '## Checklist',
+      '',
+      '- [ ] Real criterion',
+      '',
+    ].join('\n');
+    const execImpl = () => body;
+    expect(getAcceptanceCriteria('1', { execImpl })).toEqual({
+      state: 'checklist',
+      items: ['Real criterion'],
+    });
+  });
+
+  // Test (k). A genuine non-AC heading ("## Facts") between two
+  // independent AC headings ends the first section; the search for the
+  // next section resumes after it and finds the second "## Acceptance
+  // Criteria" heading, collecting its items too. Pins that the UNION
+  // spans disjoint, non-adjacent sections — not just a single merged run.
+  it('treats two AC headings separated by a non-AC heading as two independent sections, both collected', () => {
+    const body = [
+      '## Acceptance Criteria',
+      '',
+      '- [ ] First section item',
+      '',
+      '## Facts',
+      '',
+      'Some facts here.',
+      '',
+      '## Acceptance Criteria (second ruling)',
+      '',
+      '- [ ] Second section item',
+      '',
+    ].join('\n');
+    const execImpl = () => body;
+    expect(getAcceptanceCriteria('1', { execImpl })).toEqual({
+      state: 'checklist',
+      items: ['First section item', 'Second section item'],
+    });
+  });
+
+  // --- CodeRabbit finding on PR #1920: fenced code blocks must not be
+  // read as Markdown structure ---
+  //
+  // `headingLevelOf` checked every line for a leading `#` sequence with
+  // no awareness of fenced code blocks, so a shell-script comment (`#
+  // run the tests`) inside a ```bash block read as a level-1 heading —
+  // same-or-higher level than `## Acceptance Criteria`, and not an AC
+  // heading, so it incorrectly ended the section and excluded every
+  // checklist item written after the fence.
+
+  // Test (l). Mutation reach (measured): removing the `if (fencedFlags[i])
+  // continue;` guard from the section-end scan in
+  // `findAcceptanceCriteriaSectionRanges` makes this test fail — the
+  // fenced `# run the tests` line is read as a level-1 heading, which is
+  // same-or-higher than the AC heading's level 2 and not itself an AC
+  // heading, so it ends the section right there and "Item after fence"
+  // is never collected.
+  it('does not treat a comment line inside a fenced code block as a section-ending heading', () => {
+    const body = [
+      '## Acceptance Criteria',
+      '',
+      '- [ ] Item before fence',
+      '',
+      '```bash',
+      '# run the tests',
+      'bun run test',
+      '```',
+      '',
+      '- [ ] Item after fence',
+      '',
+    ].join('\n');
+    const execImpl = () => body;
+    expect(getAcceptanceCriteria('1', { execImpl })).toEqual({
+      state: 'checklist',
+      items: ['Item before fence', 'Item after fence'],
+    });
+  });
+
+  // Test (m). Chosen behavior: a `- [ ] ` line that is sample/illustrative
+  // text inside a fence is not a real actionable item (CommonMark itself
+  // does not parse list syntax inside a fence), so it is excluded from
+  // the collected items — the section still correctly classifies as
+  // 'checklist' from the one real item outside the fence.
+  //
+  // Mutation reach (measured): removing the `if (fencedFlags[i]) continue;`
+  // guard from the item-collection loop in `getAcceptanceCriteria` makes
+  // this test fail — the fenced "- [ ] fake item" line would also be
+  // collected, making `items` length 2 instead of 1.
+  it('excludes a `- [ ] ` line inside a fenced code block from the collected items', () => {
+    const body = [
+      '## Acceptance Criteria',
+      '',
+      '- [ ] Real item',
+      '',
+      '```',
+      'Example output:',
+      '- [ ] fake item',
+      '```',
+      '',
+    ].join('\n');
+    const execImpl = () => body;
+    expect(getAcceptanceCriteria('1', { execImpl })).toEqual({
+      state: 'checklist',
+      items: ['Real item'],
+    });
+  });
+
+  // Architect add-on (same PR review): the fence skip must also apply on
+  // the whole-body FALLBACK path (no AC heading at all) — a quoted
+  // ```-fenced checklist template is the same false positive whether or
+  // not an AC heading is present.
+  //
+  // Mutation reach (measured): removing the `if (fencedFlags[i]) continue;`
+  // guard from the fallback item-collection loop makes this test fail —
+  // the fenced "- [ ] x" line would also be collected, making `items`
+  // `['x', 'y']` instead of `['y']`.
+  it('excludes a fenced `- [ ] ` line from the whole-body fallback when no AC heading exists', () => {
+    const body = ['No heading here at all.', '', '```', '- [ ] x', '```', '', '- [ ] y', ''].join('\n');
+    const execImpl = () => body;
+    expect(getAcceptanceCriteria('1', { execImpl })).toEqual({
+      state: 'checklist',
+      items: ['y'],
+    });
+  });
 });
 
 // getCiStatus — replaces the dead `gh pr checks --json` flag with the
