@@ -1,6 +1,6 @@
 # Elevation-Verification Tiers
 
-Study note for Issue [#1701](https://github.com/ms2sato/agent-console/issues/1701). Design only: this document specifies the tiers, the one-command post-deploy check, and the rule text; it changes no production code, no rule, and no workflow. The measurements it rests on (Task 0) were taken on a GitHub-hosted `ubuntu-latest` runner with a throwaway workflow that no longer exists; the run URLs, the image Ids and the exact flag set are recorded in [Task 0](#task-0--measured-stop-gate) so the evidence can be re-read.
+Study note for Issue [#1701](https://github.com/ms2sato/agent-console/issues/1701). Design only: this document specifies the tiers, the one-command post-deploy check, and the rule text; it changes no production code, no rule, and no workflow. The measurements it rests on (Task 0) were taken on a GitHub-hosted `ubuntu-latest` runner with a throwaway workflow that no longer exists; the run URLs, the image Ids and the exact flag set are recorded in [Task 0](#task-0----measured-stop-gate) so the evidence can be re-read.
 
 Why `docs/design/` and not a section of the setup guide: the tier table, the draft rule text and the cost table are cross-cutting specification (they bind `test-trigger.md`, `os-environment-coupling.md`, `docker/README.md` and two deploy scripts at once), while `docs/multi-user-setup-guide.md` is operator how-to. The guide got its one-paragraph pointer when Issue (c) landed (Issue #1722); this document stays the single writer of the tier definitions.
 
@@ -140,7 +140,7 @@ Genuinely production-host state (a property of THE unit on THE host, not of the 
 1. the deploy of the unit itself (rsync into the service home, `systemctl restart`);
 2. post-deploy health of that unit;
 3. the `MainPID` identity of that unit's process and the readability of that host's `/usr/local/lib/agent-console/` by an unprivileged user;
-4. the billable smokes (no `claude` login anywhere but the dogfood host) -- **permanent residue**, see [Q13](#q13-self-pass--what-task-0-proved-and-what-this-note-only-argues).
+4. the billable smokes (no `claude` login anywhere but the dogfood host) -- **permanent residue**, see [Q13](#q13-self-pass----what-task-0-proved-and-what-this-note-only-argues).
 
 Everything else the owner ran by hand is code behaviour and moves to tier 3. Items 1-3 collapse into one invocation: `scripts/update-and-deploy-for-multiuser-ubuntu.sh` (already the operator's one command) grows a post-deploy verification block in place of today's step 10, run in the same invocation, as the same operator user, printed as one PASS / FAIL screen. The setup script is run only when that block's drift detection says the unit must be re-rendered.
 
