@@ -868,7 +868,18 @@ export class EmbeddedAgentWorkerService {
     if (inFlight) {
       return inFlight;
     }
-    const p = this.runActivation(sessionId, workerId).finally(() => {
+    // R3 (#1558): on the normal path (no eviction in flight for this
+    // worker -- true almost always), call `runActivation` directly so this
+    // method's timing is byte-identical to before this ruling existed. Only
+    // when an eviction genuinely IS in flight does activation route through
+    // the wait-then-recheck below; that path's timing is already dominated
+    // by awaiting the real eviction, so the extra microtask of indirection
+    // is immaterial there.
+    const eviction = this.evictions.get(workerId);
+    const started = eviction
+      ? this.activateAfterEviction(sessionId, workerId, eviction)
+      : this.runActivation(sessionId, workerId);
+    const p = started.finally(() => {
       // Only clear the slot if it still holds THIS activation (a later
       // activation may have replaced it).
       if (this.activations.get(workerId) === p) {
@@ -877,6 +888,28 @@ export class EmbeddedAgentWorkerService {
     });
     this.activations.set(workerId, p);
     return p;
+  }
+
+  /**
+   * R3 (#1558): belt for {@link restartIfActive}'s braces. Waits out the
+   * in-flight eviction the caller observed -- the same wait {@link
+   * ensureDeliverable} already performs before delivering a message into a
+   * dying incarnation -- then re-checks that no eviction is in flight before
+   * proceeding. The re-check matters because the awaited eviction's
+   * resolution can hand control to more than one waiting caller: another
+   * caller's continuation may run first and start a FRESH eviction before
+   * this one resumes, in which case the newer eviction is the current
+   * decision and this call defers to it rather than reviving the worker.
+   *
+   * Makes the "don't revive a worker whose latest decision is stop" property
+   * hold for ANY caller of `activate`, not only bulk restart.
+   */
+  private async activateAfterEviction(sessionId: string, workerId: string, eviction: Promise<void>): Promise<void> {
+    await eviction;
+    if (this.evictions.has(workerId)) {
+      return;
+    }
+    return this.runActivation(sessionId, workerId);
   }
 
   /**
@@ -891,45 +924,6 @@ export class EmbeddedAgentWorkerService {
     const runtime = this.runtimes.get(workerId);
     if (!runtime || runtime.restoreInfo === null) return null;
     return { epoch: runtime.ctx.worker.epoch, ...runtime.restoreInfo };
-  }
-
-  /**
-   * Read-only query: is `workerId`'s idle eviction currently in flight?
-   * `runtime.evicting` is set synchronously at {@link onIdleExpired}'s commit
-   * point and only cleared once `deactivate`'s shutdown sequence completes
-   * (`handleExit` runs and the runtime is dropped) -- so `subprocess !==
-   * null` alone is not sufficient to mean "safe to act on this worker as
-   * active": there is a window where an eviction has committed but the
-   * subprocess handle has not yet gone `null`. Callers that need to treat a
-   * mid-eviction worker as unavailable (e.g. bulk restart) should check both.
-   *
-   * This is a query, not a new transition: it reads state the eviction path
-   * already maintains for its own commit-point re-check, and does not add
-   * any new synchronization of its own.
-   *
-   * Known residual gap: there is a TOCTOU window between a caller reading
-   * this accessor and then acting on the answer (e.g. calling `deactivate`)
-   * -- checking `!isEvicting()` and then calling `deactivate()` is not one
-   * atomic operation, the same shape `onIdleExpired`'s own doc comment
-   * describes for its check-then-act. This is intentionally left as a query
-   * rather than folded into a synchronous "classify and initiate" commit
-   * point inside this service, because the residual harm is measured and
-   * bounded: `runActivation`'s exit observer is wired exactly once per
-   * activation, so no matter how many `deactivate()` calls race in during
-   * this window, `handleExit` still runs exactly once (no double-free, no
-   * crash) and a redundant `deactivate()` call is simply idempotent. The
-   * only observable effect of losing the race is that `handleExit`'s
-   * `reason: runtime.evicting ? 'evicted' : ...` may label the resulting
-   * `exited` event as `'evicted'` even when a caller other than eviction
-   * also initiated the deactivation -- a mislabeling, not a data-loss bug,
-   * and not even straightforwardly "wrong" since eviction's check did win
-   * the race first. If this residual window is ever found to cause real
-   * harm, move the check-and-initiate into one synchronous section inside
-   * this service (mirroring `onIdleExpired`'s own atomic check+set pattern)
-   * instead of leaving it as a separate query a caller can race against.
-   */
-  isEvicting(workerId: string): boolean {
-    return this.runtimes.get(workerId)?.evicting ?? false;
   }
 
   /**
@@ -2003,12 +1997,21 @@ export class EmbeddedAgentWorkerService {
    *
    * The countdown was armed at a moment when the worker looked idle, and
    * everything can have changed by the time it fires. So this re-reads the
-   * two conditions that make an eviction wrong right now:
+   * three conditions that make an eviction wrong right now:
    *
    * - `turnActive` -- a worker is NEVER evicted mid-turn. The countdown
    *   simply restarts.
    * - `evicting` -- an eviction is already in flight; a second one would tear
    *   down the incarnation the first one's wake goes on to create.
+   * - `shutdownRequested` (R1, #1558) -- a shutdown is ALREADY in flight for
+   *   some OTHER reason (restart-all's own deactivate, a manual deactivate,
+   *   anything that is not this method). Committing an eviction on top of it
+   *   would label the shared exit `'evicted'` and let that caller's
+   *   subsequent `activate()` revive the worker this (newer) eviction
+   *   believes it just dropped. Unlike the two conditions above, this bails
+   *   WITHOUT re-arming the countdown: a worker already being shut down has
+   *   no idle time left to count, and whatever incarnation replaces it (if
+   *   any) arms its own countdown from its own `ready`.
    *
    * The re-check and the `evicting` write are one synchronous section with no
    * `await` between them, which is what makes "checked idle, then evicted"
@@ -2031,6 +2034,7 @@ export class EmbeddedAgentWorkerService {
       this.idleEviction.touch(workerId);
       return;
     }
+    if (runtime.shutdownRequested) return;
     runtime.evicting = true;
     const { sessionId } = runtime.ctx;
 
@@ -2278,6 +2282,48 @@ export class EmbeddedAgentWorkerService {
       // completed before returning so downstream output cleanup runs after.
       await runtime.exitSettled;
     }
+  }
+
+  /**
+   * Bulk-restart entry point for {@link SessionManager.restartAllAgentWorkers}
+   * (#1558): restart this worker if, and only if, it is genuinely active --
+   * as ONE atomic classify-and-initiate operation inside this service,
+   * rather than a caller-side check followed by a separately-timed act.
+   *
+   * Two interleavings used to let restart-all revive a worker idle eviction
+   * had already committed to stopping:
+   *
+   * 1. A caller reads "not evicting" and then calls `deactivate()` then
+   *    `activate()` as separate steps; an eviction can commit in the gap
+   *    between the read and the act. Closed HERE: the reads of
+   *    `worker.subprocess` and `runtime.evicting`, and the call to
+   *    `deactivate()` below, sit in one synchronous section with no `await`
+   *    between them -- mirroring {@link onIdleExpired}'s own atomic
+   *    check-and-set -- so nothing can interleave an eviction's commit point
+   *    between the classification and the initiation.
+   * 2. This worker's OWN deactivate (this caller's, or any other caller's)
+   *    is already in flight when the idle countdown independently elapses.
+   *    `onIdleExpired` used to see `turnActive` and `evicting` both false and
+   *    commit its OWN eviction on top of the shutdown already underway,
+   *    labelling the shared exit `'evicted'` -- and this caller's subsequent
+   *    `activate()` would then revive the worker that (newer) eviction
+   *    believed it had just dropped. Closed by R1 in `onIdleExpired`, which
+   *    also bails on `runtime.shutdownRequested`.
+   *
+   * {@link activateAfterEviction}'s own eviction wait (R3) is belt for this
+   * method's braces: it makes "don't revive a worker whose latest decision
+   * is stop" hold for ANY caller of `activate`, not only this one.
+   */
+  async restartIfActive(sessionId: string, workerId: string): Promise<'restarted' | 'skipped'> {
+    const session = this.deps.getSession(sessionId);
+    const worker = session?.workers.get(workerId);
+    const runtime = this.runtimes.get(workerId);
+    if (!worker || worker.type !== 'embedded-agent' || worker.subprocess === null || (runtime?.evicting ?? false)) {
+      return 'skipped';
+    }
+    await this.deactivate(sessionId, workerId);
+    await this.activate(sessionId, workerId);
+    return 'restarted';
   }
 
   // ========== Internals ==========

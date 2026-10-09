@@ -7580,9 +7580,15 @@ describe('SessionManager', () => {
         // Issue #1299 PR-2 T6 negative control: spy (not mock) so the real
         // implementation still runs -- proves no StartupIntentPreference
         // value is threaded into the embedded-agent path, which has no
-        // parameter to leak one into (activateEmbeddedAgentWorker's real
-        // signature is exactly (sessionId, workerId), no third param exists).
-        const activateSpy = spyOn(manager, 'activateEmbeddedAgentWorker');
+        // parameter to leak one into. Spies on the SERVICE's own `activate`
+        // (not `manager.activateEmbeddedAgentWorker`) since Issue #1558's R2
+        // moved bulk-restart's classify-and-initiate into
+        // `EmbeddedAgentWorkerService.restartIfActive`, which calls the
+        // service's `activate` directly rather than going back out through
+        // the manager's thin wrapper -- that method's signature is exactly
+        // (sessionId, workerId) too, so the same negative control still
+        // holds, just observed at the layer where activation now happens.
+        const activateSpy = spyOn(manager['embeddedAgentWorkerService'], 'activate');
 
         // restartAllAgentWorkers awaits deactivate (writes `shutdown` and races
         // the current incarnation's `exited`) then activate, sequentially.

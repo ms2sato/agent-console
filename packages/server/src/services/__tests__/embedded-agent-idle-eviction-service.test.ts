@@ -209,6 +209,17 @@ function getRuntimesForTest(service: EmbeddedAgentWorkerService) {
   return service['runtimes'];
 }
 
+/**
+ * Test seam: `EmbeddedAgentWorkerService.evictions` is private, in-memory
+ * only. Issue #1558's R5(c) regression test needs to model "a NEWER eviction
+ * became the current decision while `activate()` was still waiting out an
+ * older one" -- a genuine multi-listener race with no single-threaded
+ * reproduction -- by directly controlling the map's entries.
+ */
+function getEvictionsForTest(service: EmbeddedAgentWorkerService) {
+  return service['evictions'];
+}
+
 function setup(opts?: {
   definition?: EmbeddedAgentDefinition;
   idleEvictionMs?: number;
@@ -479,14 +490,15 @@ describe('idle eviction — the countdown and its commit point', () => {
     expect(h.deliverWorkerNotification).not.toHaveBeenCalled();
   });
 
-  it('isEvicting reports true only while an eviction has committed but the subprocess has not yet exited (Issue #1519)', async () => {
+  it('restartIfActive skips a worker whose eviction has committed but not yet exited (Issue #1519, #1558)', async () => {
     // Restart-all (SessionManager.restartAllAgentWorkers) treats
     // `subprocess !== null` as "has a live process", but that alone is not
     // enough to mean "safe to act on as active" -- there is a window where
     // eviction has committed (onIdleExpired set `evicting = true` and wrote
-    // `shutdown`) but the subprocess has not gone `null` yet. `isEvicting` is
-    // the read-only query that lets a caller like restart-all distinguish
-    // that window from a genuinely active, restartable worker.
+    // `shutdown`) but the subprocess has not gone `null` yet.
+    // `restartIfActive` is the atomic classify-and-initiate operation (#1558
+    // R2) that treats that window the same as dormant, superseding the
+    // former `isEvicting` read-only query this test used to exercise.
     const h = setup({
       idleEvictionMs: 25,
       exitOnShutdown: false,
@@ -495,9 +507,8 @@ describe('idle eviction — the countdown and its commit point', () => {
     });
     await activateAndReady(h);
 
-    // Genuinely active and not evicting.
+    // Genuinely active and not evicting: restartable.
     expect(h.worker.subprocess).not.toBeNull();
-    expect(h.service.isEvicting(h.workerId)).toBe(false);
 
     const first = h.spawn.incarnations[0];
     const shutdowns = (): number =>
@@ -505,16 +516,158 @@ describe('idle eviction — the countdown and its commit point', () => {
     await waitFor(() => shutdowns() === 1, 2000);
 
     // Eviction has committed (shutdown written), but the incarnation has not
-    // exited yet -- the exact window `isEvicting` exists to surface.
+    // exited yet -- the exact window the former `isEvicting` query existed
+    // to surface. restartIfActive must skip, not restart.
     expect(h.worker.subprocess).not.toBeNull();
-    expect(h.service.isEvicting(h.workerId)).toBe(true);
+    expect(await h.service.restartIfActive(h.sessionId, h.workerId)).toBe('skipped');
+    expect(h.spawn.incarnations.length).toBe(1); // no second spawn from the skip
 
     // Let the eviction finish so nothing outlives the test.
     first.simulateExit(0);
     await waitFor(() => h.worker.subprocess === null, 2000);
 
-    // Once dormant, there is nothing left to be "evicting".
-    expect(h.service.isEvicting(h.workerId)).toBe(false);
+    // Once dormant, restartIfActive also skips (same as any dormant worker).
+    expect(await h.service.restartIfActive(h.sessionId, h.workerId)).toBe('skipped');
+  });
+
+  describe('Issue #1558 — restart-all vs idle eviction (TOCTOU)', () => {
+    it('R5(a): restartIfActive does not revive a worker whose eviction already committed when classification ran', async () => {
+      // Interleaving 1 from the Issue: a caller classifies a worker as
+      // eligible, an eviction commits in the gap, and the caller's
+      // deactivate()+activate() unconditionally proceeds anyway, reviving a
+      // worker the eviction just decided to stop. R2 closes this by folding
+      // the classification read and the deactivate() call into one
+      // synchronous section inside restartIfActive -- so the only way for
+      // this method to observe "evicting" is for the commit to have already
+      // happened BEFORE classification runs, which is exactly what is forced
+      // here via the private runtime seam (standing in for the race's
+      // outcome, since the real code path leaves no externally observable
+      // window to race into by construction -- see the method's own doc
+      // comment).
+      //
+      // POLARITY MEASURED: dropping the `(runtime?.evicting ?? false)` arm
+      // from restartIfActive's classification (restoring the unconditional
+      // deactivate()+activate() restart-all used to do) makes this test
+      // FAIL -- confirmed: `expect(...).toBe('skipped')` receives
+      // `'restarted'` instead.
+      const h = setup({ idleEvictionMs: 100_000 }); // no auto-eviction interference
+      await activateAndReady(h);
+      const originalPid = h.worker.subprocess?.pid;
+
+      const runtime = getRuntimesForTest(h.service).get(h.workerId);
+      if (!runtime) throw new Error('expected a runtime to exist for the active worker');
+      runtime.evicting = true; // the race: eviction committed before classification
+
+      expect(await h.service.restartIfActive(h.sessionId, h.workerId)).toBe('skipped');
+
+      expect(h.spawn.incarnations.length).toBe(1); // no second runActivation
+      expect(h.worker.subprocess?.pid).toBe(originalPid); // unchanged
+    });
+
+    it("R5(b): onIdleExpired does not commit (and does not re-arm) while an unrelated deactivate is already in flight", async () => {
+      // Interleaving 2 from the Issue: a caller OTHER than idle eviction
+      // (restart-all, or any other `deactivate()` caller) starts tearing a
+      // worker down; the idle countdown independently elapses DURING that
+      // window, before R1 saw only `turnActive || evicting` (both false) and
+      // committed its OWN eviction on top of the shutdown already underway --
+      // mislabeling the shared exit 'evicted' and leaving the door open for
+      // the original caller's subsequent activate() to revive the worker.
+      // R1 closes this by also bailing on `shutdownRequested`, without
+      // re-arming the countdown.
+      //
+      // POLARITY MEASURED: removing the `if (runtime.shutdownRequested)
+      // return;` bail from onIdleExpired makes this test FAIL -- confirmed:
+      // `expect(shutdowns()).toBe(1)` receives `2` (onIdleExpired committed a
+      // second, redundant teardown during the externally-requested
+      // deactivate's window).
+      const h = setup({
+        idleEvictionMs: 25,
+        exitOnShutdown: false,
+        shutdownGraceMs: 600,
+        sigtermTimeoutMs: 600,
+      });
+      await activateAndReady(h);
+
+      const first = h.spawn.incarnations[0];
+      const shutdowns = (): number =>
+        first.stdinWrites.filter((w) => w.includes('"type":"shutdown"')).length;
+
+      // A caller OTHER than idle eviction begins tearing the worker down.
+      // `exitOnShutdown: false` holds it open so the idle countdown (armed at
+      // 25ms) can genuinely fire during the window.
+      const deactivatePromise = h.service.deactivate(h.sessionId, h.workerId);
+      await waitFor(() => shutdowns() === 1, 2000);
+
+      // Several thresholds' worth of time pass while that deactivate is still
+      // in flight. Without R1, each countdown fire would commit a SECOND,
+      // redundant teardown of the same incarnation.
+      await sleep(150);
+      expect(shutdowns()).toBe(1);
+
+      // Finish the one deactivate in flight.
+      first.simulateExit(0);
+      await deactivatePromise;
+
+      // The exit is classified 'managed' (externally requested), never
+      // 'evicted' -- onIdleExpired never got to commit.
+      expect(exitedRows(h.bufferOutput)).toEqual([
+        expect.objectContaining({ type: 'exited', reason: 'managed' }),
+      ]);
+
+      // And a subsequent activate() (the original caller's own reactivation,
+      // or anyone else's) is an ordinary, legitimate reactivation of a
+      // dormant worker -- not a revival of something eviction just dropped.
+      await h.service.activate(h.sessionId, h.workerId);
+      expect(h.worker.subprocess).not.toBeNull();
+      expect(h.spawn.incarnations.length).toBe(2);
+    });
+
+    it('R5(c): activate() waits out an in-flight eviction and does not revive if a newer eviction is the current decision', async () => {
+      // Belt for R2's braces: makes the "don't revive a worker whose latest
+      // decision is stop" property hold for ANY caller of `activate`, not
+      // only restartIfActive. The scenario being modeled -- a second,
+      // concurrent caller's continuation starting a FRESH eviction while
+      // THIS caller is still waiting out the first one -- has no natural
+      // single-threaded reproduction (awaiting a promise with multiple
+      // listeners resolves them in registration order, with nothing able to
+      // interleave a new entry in between for a single listener), so it is
+      // modeled directly via the private `evictions` map seam.
+      //
+      // POLARITY MEASURED: reverting `activate()` to call `runActivation`
+      // unconditionally (dropping the eviction wait/recheck entirely) makes
+      // this test FAIL -- confirmed: `expect(h.spawn.incarnations.length)
+      // .toBe(1)` (checked immediately after issuing `activate()`, before the
+      // in-flight eviction resolves) receives `2` instead.
+      const h = setup({ idleEvictionMs: 100_000 });
+      await activateAndReady(h);
+
+      let resolveFirst!: () => void;
+      const firstEviction = new Promise<void>((resolve) => {
+        resolveFirst = resolve;
+      });
+      getEvictionsForTest(h.service).set(h.workerId, firstEviction);
+
+      // Make the worker dormant so activate() would otherwise genuinely
+      // attempt to spawn once it stops waiting.
+      h.worker.subprocess = null;
+
+      const activatePromise = h.service.activate(h.sessionId, h.workerId);
+
+      // While the first eviction is unresolved, activate() must be waiting,
+      // not spawning.
+      await sleep(20);
+      expect(h.spawn.incarnations.length).toBe(1);
+
+      // A NEWER eviction becomes the current decision before our wait
+      // resolves (a different caller's continuation raced ahead of ours).
+      getEvictionsForTest(h.service).set(h.workerId, Promise.resolve());
+      resolveFirst();
+      await activatePromise;
+
+      // activate() deferred entirely rather than reviving a worker whose
+      // latest decision is "stop".
+      expect(h.spawn.incarnations.length).toBe(1);
+    });
   });
 
   it('is the commit-point re-check, not the arm, that prevents a mid-turn kill', async () => {

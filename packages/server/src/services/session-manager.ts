@@ -1918,11 +1918,12 @@ export class SessionManager {
    * Terminal workers are always `skipped` -- they have no restart concept.
    * A dormant (idle-evicted, `subprocess === null`) embedded-agent worker is
    * also `skipped`: reactivating it would defeat the point of idle eviction.
-   * A worker whose eviction is currently in flight
-   * (`embeddedAgentWorkerService.isEvicting`) is treated the same as
-   * dormant, for the same reason -- see that accessor's doc comment for the
-   * TOCTOU window this check-then-act still leaves open, and why it is an
-   * accepted, bounded gap rather than a new synchronization mechanism.
+   * A worker whose eviction is currently in flight is treated the same as
+   * dormant, for the same reason -- classification and initiation are one
+   * atomic operation inside `EmbeddedAgentWorkerService.restartIfActive`
+   * (#1558), which closes the check-then-act TOCTOU a caller-side check used
+   * to leave open; see that method's doc comment for the two interleavings
+   * it closes.
    *
    * An active embedded-agent worker is restarted through the existing
    * ordinary deactivate/activate path (same as a manual restart), which
@@ -1976,15 +1977,9 @@ export class SessionManager {
         }
 
         // worker.type === 'embedded-agent'
-        if (worker.subprocess === null || this.embeddedAgentWorkerService.isEvicting(worker.id)) {
-          results.push({ sessionId: session.id, workerId: worker.id, workerType: 'embedded-agent', outcome: 'skipped' });
-          continue;
-        }
-
         try {
-          await this.deactivateEmbeddedAgentWorker(session.id, worker.id);
-          await this.activateEmbeddedAgentWorker(session.id, worker.id);
-          results.push({ sessionId: session.id, workerId: worker.id, workerType: 'embedded-agent', outcome: 'restarted' });
+          const outcome = await this.embeddedAgentWorkerService.restartIfActive(session.id, worker.id);
+          results.push({ sessionId: session.id, workerId: worker.id, workerType: 'embedded-agent', outcome });
         } catch (err) {
           const message = err instanceof Error ? err.message : 'Unknown error';
           logger.error({ sessionId: session.id, workerId: worker.id, err }, 'Failed to restart embedded-agent worker in bulk operation');

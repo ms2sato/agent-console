@@ -1449,23 +1449,32 @@ describe('EmbeddedAgentWorkerService — Transcript Restore (#1123)', () => {
   });
 });
 
-describe('EmbeddedAgentWorkerService.isEvicting', () => {
+describe('EmbeddedAgentWorkerService.restartIfActive', () => {
   // The commit-point re-check's fuller reach (the actual mid-eviction window
   // where `evicting === true` while `subprocess !== null`) is pinned in
   // embedded-agent-idle-eviction-service.test.ts, which already has the
-  // exit-suppressed spawn fake needed to hold that window open. These are
-  // the two boundary cases reachable from this file's plain single-subprocess
+  // exit-suppressed spawn fake needed to hold that window open, along with
+  // the R5(a)/(b)/(c) regression tests for Issue #1558. These are the two
+  // boundary cases reachable from this file's plain single-subprocess
   // fixture.
-  it('returns false for a worker id with no runtime at all (never activated)', () => {
+  it('skips a worker id with no runtime at all (never activated)', async () => {
     const h = setup();
-    expect(h.service.isEvicting('no-such-worker')).toBe(false);
+    expect(await h.service.restartIfActive(h.sessionId, 'no-such-worker')).toBe('skipped');
   });
 
-  it('returns false for a genuinely active, non-evicting worker', async () => {
-    const h = setup();
+  it('restarts a genuinely active, non-evicting worker', async () => {
+    // A genuine restart deactivates the current incarnation and spawns a
+    // fresh one, so this needs the multi-activation fake (a fixed
+    // single-subprocess fake's `exited` would already be resolved from the
+    // first activation, giving the second activation a stale exit signal).
+    const multi = makeFakeMultiActivationSpawn();
+    const h = setup({ spawnAsUserFnOverride: multi.fn });
     await h.service.activate(h.sessionId, h.workerId);
 
-    expect(h.service.isEvicting(h.workerId)).toBe(false);
+    const restartPromise = h.service.restartIfActive(h.sessionId, h.workerId);
+    multi.incarnations[0].simulateExit(0);
+
+    expect(await restartPromise).toBe('restarted');
   });
 });
 
