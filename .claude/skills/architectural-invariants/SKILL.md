@@ -349,6 +349,44 @@ Issue [#1242](https://github.com/ms2sato/agent-console/issues/1242), fixed in PR
 
 ---
 
+## I-10. Registry Presence Implies Readiness
+
+**Rule.** A value inserted into a shared map / registry / collection must be complete — safe for any reader of that collection to act on — at the moment it becomes visible there. If a partially-constructed value must be inserted before completion (e.g. to reserve an id or preserve insertion order under concurrent construction), every reader of that collection must be able to recognize the pending state and skip or await it; an insert that is merely "there" with no pending marker is read by every caller as "ready".
+
+**Why it matters.** The failure mode is **silent and timing-dependent**, the same shape as I-9 but on the insertion side rather than the event-delivery side: readers were written against the collection's historical contract — "if it's in the map, it's done" — and nothing announces that the contract just changed. The code works whenever the inserting construction finishes before any concurrent reader looks, and fails only when a reader (a broadcast to other clients, a WebSocket reattach, a second activation request) reaches the collection inside the new window. No exception is thrown; the reader simply acts on an object that is not yet what it claims to be.
+
+This is the mechanical gate for this invariant: `pre-pr-completeness.md` Q15, "Reachability before readiness", walks the two-step check (grep every reader for a presence-implies-completeness assumption; prefer not inserting until complete) and states the boundary values (baseline window is zero; the new window is the sum of the awaits between insert and completion). This entry states the fact; Q15 holds the procedure — do not duplicate Q15's steps here.
+
+### Domains where this applies
+
+| Domain | Collection | First instance |
+|---|---|---|
+| Session workers | `session.workers` (a `Map`) | `SessionManager.createSession` — see below |
+| Any future in-memory registry | id → object map read by more than one code path | apply Q15 before inserting early |
+
+### Detection heuristics
+
+1. **An insert statement precedes an `await` that still has to run before the inserted value is usable.** If a reader could run during that `await`, the window is non-zero.
+2. **Compare against the pre-change baseline.** Before this invariant is at risk, was the value ever reachable through the collection before it was complete? If the baseline was zero (the ordinary case — a value simply wasn't inserted until finished), any new early insert is the thing to scrutinize.
+3. **Enumerate readers, not just the writer.** The insert site is one line; the risk is in every `collection.get(id)` elsewhere that assumes a hit means "done".
+
+### Resolution patterns
+
+- **Don't insert until complete** (preferred — this is what closes the window back to zero without touching any reader).
+- **If the early insert is load-bearing**, mark the pending state explicitly on the inserted value and update every reader found by the Q15 grep to check for it before acting.
+
+### Example: caught by this invariant
+
+PR [#1904](https://github.com/ms2sato/agent-console/pull/1904), fixing Issue #1895. `SessionManager.createSession` creates a session's initial worker and its git-diff worker; an earlier revision reserved each worker's `session.workers` Map slot synchronously, before its own activation `await`, to keep insertion order stable under concurrent construction. The baseline window — before any reservation design — was zero: a worker was never in `session.workers` until its own `createWorker` call had fully completed. The reservation widened that zero window to the full activation duration, and a concurrent broadcast could expose the reserved-but-still-activating worker to a client, which could then attach a WebSocket for it; the attach handler's `restoreWorker` (`packages/server/src/websocket/routes.ts`) read `existingWorker.pty` as still `null` and started a second activation on the same worker object, because the existing entry guard only protects a fully-finished activation, not an in-flight one. CodeRabbit flagged it as a MAJOR finding. The shipped fix made the two worker creations sequential instead, keeping the window at zero rather than teaching `restoreWorker` / `getAvailableWorker` / `toPublicSession` / `persistSession` to each recognize a pending slot.
+
+**Review question that would have caught it mechanically:** *"Does this insert make the value reachable through the collection before its construction is complete? If so, what was the window before this change, and what is it now?"*
+
+### Suggested acceptance criterion template
+
+- [ ] Any value inserted into a shared map / registry / collection is either complete at insertion, or marked pending with every reader of that collection updated to skip/await the pending state; the window between insertion and completion is stated (baseline vs. new) per `pre-pr-completeness.md` Q15
+
+---
+
 ## How to Add New Invariants
 
 A new entry to this catalog should satisfy all of:
