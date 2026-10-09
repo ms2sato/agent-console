@@ -778,12 +778,12 @@ export function parseRuleFrontmatter(content: string, origin: string): string[] 
 /**
  * How many dropped names an omission-declaration line lists before it falls
  * back to "and N more" -- every omission line the rules/skills layers render
- * is bounded by it (Issue #1646), so a directory with many small entries
- * cannot turn a one-line declaration into an unboundedly growing section of
- * the rendered prompt. Independent of {@link MEMORY_DECLARATION_MAX_NAMES}
- * (same value, different declaration shape -- the memory layer's own
- * declarations additionally carry a "(N total)" suffix that predates this
- * Issue and is left unchanged).
+ * is bounded by it, so a directory with many small entries cannot turn a
+ * one-line declaration into an unboundedly growing section of the rendered
+ * prompt. Independent of {@link MEMORY_DECLARATION_MAX_NAMES} (same value,
+ * different declaration shape -- the memory layer's own declarations
+ * additionally carry a "(N total)" suffix that predates this bound and is
+ * left unchanged).
  */
 export const OMISSION_NAMES_MAX = 20;
 
@@ -791,8 +791,8 @@ export const OMISSION_NAMES_MAX = 20;
  * `<label>: a, b, c` for up to {@link OMISSION_NAMES_MAX} names, sorted;
  * past that, the first 20 sorted names plus a count of the rest, so the
  * line stays one bounded size however many items were dropped -- the names
- * list cannot keep growing once truncation starts (Issue #1646 item 3).
- * Single writer for the rules-layer and skills-layer omission lines, used
+ * list cannot keep growing once truncation starts. Single writer for the
+ * rules-layer and skills-layer omission lines, used
  * identically inside {@link dropLargestUntilRenderedFits}'s `render`
  * callback (to decide whether more must be dropped) and in the loader's
  * final result (so the two can never render differently).
@@ -813,10 +813,9 @@ export function formatOmittedNames(label: string, names: string[]): string {
  * (the loop's own termination condition is `survivors.length > 0`, so a
  * still-too-big rendering at that point means the cap is smaller than the
  * layer's fixed overhead: a header, an index line, or the omission
- * declaration itself). Per Issue #1646 ruling 4, this is never fatal -- the
- * layer renders whatever `rendered` already is (the omission line alone, or
- * less) and the loop simply stops; this is the warn-log half of that
- * contract.
+ * declaration itself). This is never fatal -- the layer renders whatever
+ * `rendered` already is (the omission line alone, or less) and the loop
+ * simply stops; this is the warn-log half of that contract.
  */
 function warnIfCapBelowOverhead(layerLabel: string, capBytes: number, rendered: string): void {
   if (utf8ByteLength(rendered) > capBytes) {
@@ -831,10 +830,10 @@ function warnIfCapBelowOverhead(layerLabel: string, capBytes: number, rendered: 
 /**
  * Whole-item drop, largest-first, until the layer's REAL RENDERED output
  * (`render(survivors, dropped)`, measured via {@link utf8ByteLength}) fits
- * under `capBytes` -- or `survivors` runs out, whichever comes first (Issue
- * #1646: the per-item `byteLength` sum alone ignores a fixed index-line
- * prefix, inter-entry separators, and the omission-declaration line's own
- * bytes, all of which are part of what actually lands in the system prompt).
+ * under `capBytes` -- or `survivors` runs out, whichever comes first (the
+ * per-item `byteLength` sum alone ignores a fixed index-line prefix,
+ * inter-entry separators, and the omission-declaration line's own bytes,
+ * all of which are part of what actually lands in the system prompt).
  * Never shrinks a survivor, only removes whole ones; splice-based removal
  * preserves the relative order of survivors. `byteLength` still decides
  * which single item is "largest" at each step (a cheap per-item heuristic);
@@ -934,8 +933,7 @@ async function loadRulesLayer(cwd: string): Promise<RulesLayerResult> {
 
   // The scoped-rules index line does not depend on which unscoped files
   // survive the budget below -- computed first so the render callback can
-  // close over it as a fixed, non-droppable piece of this layer's output
-  // (Issue #1646 item 2: "the index line, scoped, not droppable").
+  // close over it as a fixed, non-droppable piece of this layer's output.
   let ruleIndexLine: string | undefined;
   if (scoped.length > 0) {
     const items = scoped.map((r) => `${r.name} (paths: ${r.globs.join(', ')})`).join('; ');
@@ -946,7 +944,7 @@ async function loadRulesLayer(cwd: string): Promise<RulesLayerResult> {
   // REAL rendered output -- the "--- Rule: ... ---" header per survivor, the
   // join separator between them, the omission line (once something is
   // dropped), and the scoped-rules index line, not just each survivor's own
-  // content bytes (Issue #1646).
+  // content bytes.
   const { survivors, dropped, rendered } = dropLargestUntilRenderedFits(unscoped, RULES_LAYER_CAP_BYTES, {
     byteLength: (r) => utf8ByteLength(r.content),
     render: (surv, drop) => {
@@ -1051,8 +1049,7 @@ function formatSkillEntry(skill: { name: string; description: string }): string 
 
 /**
  * The fixed prefix every rendered skills index line carries, regardless of
- * how many skills survive -- part of the layer's fixed rendering overhead
- * (Issue #1646).
+ * how many skills survive -- part of the layer's fixed rendering overhead.
  */
 const SKILLS_INDEX_PREFIX =
   'Skills available (open the named SKILL.md to read full instructions): ';
@@ -1155,7 +1152,7 @@ async function loadSkillsLayer(cwd: string): Promise<SkillsLayerResult> {
   // Budget: whole-entry drop, largest-first, measured against the layer's
   // REAL rendered output -- the fixed index-line prefix, the "; " join
   // between entries, and the omission line, not just each entry's own
-  // formatted bytes (Issue #1646).
+  // formatted bytes.
   const { survivors, dropped, rendered } = dropLargestUntilRenderedFits(skills, SKILLS_LAYER_CAP_BYTES, {
     byteLength: (s) => utf8ByteLength(formatSkillEntry(s)),
     render: (surv, drop) => {
@@ -1361,7 +1358,7 @@ async function loadMemoryLayer(memoryDir: string): Promise<MemoryLayerResult> {
   // Fixed ahead of the budget loop below -- the read phase already knows
   // whether truncation happened and by how much, so this text does not
   // change as index lines get dropped; it is part of the layer's fixed
-  // rendering overhead the budget loop must account for (Issue #1646).
+  // rendering overhead the budget loop must account for.
   const truncationNote = indexTruncated
     ? `memory index truncated for size: ${unreadBytes} bytes past the first ${MEMORY_INDEX_READ_CAP_BYTES} not read`
     : undefined;
@@ -1369,9 +1366,9 @@ async function loadMemoryLayer(memoryDir: string): Promise<MemoryLayerResult> {
   // Budget: whole-line drop, largest-first, measured against the layer's
   // REAL rendered output -- the header, the surviving lines joined, the
   // drop declaration, and the (fixed) truncation note, not just each line's
-  // own bytes (Issue #1646). Deliberately NOT short-circuited on
-  // `indexLines.length === 0`: the empty-items boundary is handled by
-  // dropLargestUntilRenderedFits itself.
+  // own bytes. Deliberately NOT short-circuited on `indexLines.length === 0`:
+  // the empty-items boundary is handled by dropLargestUntilRenderedFits
+  // itself.
   const { survivors, dropped, rendered } = dropLargestUntilRenderedFits(indexLines, MEMORY_LAYER_CAP_BYTES, {
     byteLength: (line) => utf8ByteLength(line),
     render: (surv, drop) => {
