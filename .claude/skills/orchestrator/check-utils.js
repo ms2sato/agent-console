@@ -978,42 +978,97 @@ export function getIssueInfo(issueNumber) {
 }
 
 /**
- * Locate the Acceptance Criteria heading and compute the line range of its
- * section — the single writer both the checklist-item collector and the
- * prose/empty-heading content scan in `getAcceptanceCriteria` read, so the
- * two can never drift onto different boundaries.
+ * An "AC heading" is one that names the Acceptance Criteria section under
+ * any of this repository's authoring conventions: the literal phrase
+ * ("## Acceptance Criteria"), or a heading whose text STARTS with "AC"
+ * ("## AC #1525 -- ...", "# AC -- Issue #N: ...") or "Checklist" ("##
+ * Checklist"). The two short forms only match at the very start of the
+ * heading text (no `.*` prefix) so an unrelated heading that merely
+ * mentions "AC" or "checklist" mid-sentence does not qualify.
+ */
+const ACCEPTANCE_CRITERIA_HEADING_RE = /^#{1,6}\s+(.*\bacceptance criteria\b|AC\b|checklist\b)/i;
+
+function isAcceptanceCriteriaHeadingLine(line) {
+  return ACCEPTANCE_CRITERIA_HEADING_RE.test(line);
+}
+
+function headingLevelOf(line) {
+  const match = line.match(/^(#{1,6})\s/);
+  return match ? match[1].length : null;
+}
+
+/**
+ * Compute the UNION of every AC section in the body — the single writer
+ * both the checklist-item collector and the prose/empty-heading content
+ * scan in `getAcceptanceCriteria` read, so the two can never drift onto
+ * different boundaries.
  *
- * The range is `[headingIdx + 1, end)`: it starts the line AFTER the
- * heading (a checkbox ON the heading line itself is never in range) and
- * ends at the next heading whose level is the same as or higher than
- * (fewer or equal `#` characters than) the AC heading's own level, or at
- * end of body if none follows. A DEEPER subheading (e.g. `#### Must`
- * nested under `### Acceptance Criteria`) does not end the section, so
- * content and checkboxes under it stay in range. When the body contains
- * more than one heading that matches the AC pattern, `findIndex` returns
- * the first one and this function does not special-case a second
- * occurrence — the first heading wins, by design, undocumented beyond
- * this comment.
+ * This repository's Architect-authoring convention routinely splits the
+ * acceptance criteria across more than one heading: a ruling/metadata
+ * heading ("## Acceptance Criteria (Architect, ...)") immediately
+ * followed by a differently-worded sibling that holds the actual
+ * checklist ("## AC #1525", "# AC -- Issue #N: ...", "## Checklist").
+ * Treating only the first heading's own section as "the" AC section (the
+ * naive single-range design) silently excludes the real checklist in
+ * exactly this shape — measured against real Issues in this repository,
+ * including this function's own motivating Issue.
+ *
+ * Algorithm: starting from `searchFrom = 0`, repeatedly find the next AC
+ * heading at or after `searchFrom`. Scan forward from it for the next
+ * heading whose level is the same as or higher than (fewer or equal `#`
+ * characters than) its own level — a DEEPER subheading never ends a
+ * section, matching or not. If that same-or-higher-level heading is
+ * ITSELF an AC heading, it does not end the section either; the scan
+ * continues past it, merging the two into one contiguous range (`## AC
+ * #N` right after `## Acceptance Criteria` merges). The section only
+ * really ends at the first same-or-higher-level heading that is NOT an
+ * AC heading ("## Follow-ups", "## Non-goals", "## Facts" — no denylist,
+ * this falls out of what it is not), or at end of body.
+ *
+ * Once a section ends, the search for the NEXT independent section
+ * resumes strictly AFTER the terminator line, never AT it — the
+ * terminator is, by construction, never an AC heading (that is why the
+ * scan stopped there), so re-examining it as a possible fresh start would
+ * be vacuous under normal operation; the deliberate choice to move past
+ * it rather than land on it is what keeps two sections separated by an
+ * unrelated heading (a `## Facts` sibling between two independent AC
+ * sections) from being merged into one.
  *
  * @param {string[]} lines
- * @returns {{ start: number, end: number } | null} the `[start, end)`
- *   line-index range, or `null` when no AC heading exists in the body.
+ * @returns {Array<{ start: number, end: number }>} the `[start, end)`
+ *   line-index ranges, in body order, non-overlapping. Empty when no AC
+ *   heading exists anywhere in the body.
  */
-function findAcceptanceCriteriaSectionRange(lines) {
-  const headingIdx = lines.findIndex((line) => /^#{1,6}\s.*acceptance criteria/i.test(line));
-  if (headingIdx === -1) return null;
+function findAcceptanceCriteriaSectionRanges(lines) {
+  const ranges = [];
+  let searchFrom = 0;
 
-  const headingLevel = lines[headingIdx].match(/^(#{1,6})\s/)[1].length;
-  let end = lines.length;
-  for (let i = headingIdx + 1; i < lines.length; i++) {
-    const nextHeadingMatch = lines[i].match(/^(#{1,6})\s/);
-    if (nextHeadingMatch && nextHeadingMatch[1].length <= headingLevel) {
-      end = i;
-      break;
+  while (searchFrom < lines.length) {
+    let headingIdx = -1;
+    for (let i = searchFrom; i < lines.length; i++) {
+      if (isAcceptanceCriteriaHeadingLine(lines[i])) {
+        headingIdx = i;
+        break;
+      }
     }
+    if (headingIdx === -1) break;
+
+    const headingLevel = headingLevelOf(lines[headingIdx]);
+    let end = lines.length;
+    for (let i = headingIdx + 1; i < lines.length; i++) {
+      const level = headingLevelOf(lines[i]);
+      if (level !== null && level <= headingLevel) {
+        if (isAcceptanceCriteriaHeadingLine(lines[i])) continue; // merge, keep scanning
+        end = i;
+        break;
+      }
+    }
+
+    ranges.push({ start: headingIdx + 1, end });
+    searchFrom = end + 1;
   }
 
-  return { start: headingIdx + 1, end };
+  return ranges;
 }
 
 /**
@@ -1038,11 +1093,12 @@ function findAcceptanceCriteriaSectionRange(lines) {
  * map either. The same outcome-unified / label-distinct shape as D2's
  * `classifyCiEvidence`.
  *
- * Section scoping: when an AC heading exists, both the checkbox
- * collection and the content scan run only inside
- * `findAcceptanceCriteriaSectionRange`'s range — a `- [ ]` box elsewhere in
- * the body (a reproduction task list, a follow-up note) no longer
- * misclassifies a prose AC as `'checklist'`. When NO heading exists, the
+ * Section scoping: when at least one AC heading exists, both the
+ * checkbox collection and the content scan run only inside the UNION of
+ * ranges `findAcceptanceCriteriaSectionRanges` returns — a `- [ ]` box
+ * elsewhere in the body (a reproduction task list, a follow-up note, a
+ * `## Facts` sibling between two AC sections) no longer misclassifies a
+ * prose AC as `'checklist'`. When NO AC heading exists anywhere, the
  * function falls back to the original whole-body checkbox scan unchanged
  * — a checklist-only body with no AC heading must keep returning
  * `'checklist'`, not start returning `'absent'`.
@@ -1056,13 +1112,13 @@ export function getAcceptanceCriteria(issueNumber, { execImpl = exec } = {}) {
   if (!result) return { state: 'absent', items: [] };
 
   const lines = result.split('\n');
-  const range = findAcceptanceCriteriaSectionRange(lines);
+  const ranges = findAcceptanceCriteriaSectionRanges(lines);
 
-  if (range === null) {
+  if (ranges.length === 0) {
     // No AC heading anywhere in the body: keep the original whole-body
     // checkbox scan unchanged — a checklist body with no heading must
     // stay 'checklist', not become 'absent'. This is the regression that
-    // scoping collection to the AC section would otherwise introduce.
+    // scoping collection to the AC section(s) would otherwise introduce.
     const items = [];
     for (const line of lines) {
       const match = line.match(/^- \[ \]\s+(.+)/);
@@ -1074,10 +1130,12 @@ export function getAcceptanceCriteria(issueNumber, { execImpl = exec } = {}) {
   }
 
   const items = [];
-  for (let i = range.start; i < range.end; i++) {
-    const match = lines[i].match(/^- \[ \]\s+(.+)/);
-    if (match) {
-      items.push(match[1].trim());
+  for (const range of ranges) {
+    for (let i = range.start; i < range.end; i++) {
+      const match = lines[i].match(/^- \[ \]\s+(.+)/);
+      if (match) {
+        items.push(match[1].trim());
+      }
     }
   }
 
@@ -1085,14 +1143,17 @@ export function getAcceptanceCriteria(issueNumber, { execImpl = exec } = {}) {
     return { state: 'checklist', items };
   }
 
-  // Scan the SAME range for any non-blank line — checkbox, prose, or a
+  // Scan the SAME union for any non-blank line — checkbox, prose, or a
   // subheading title all count as content.
   let hasContent = false;
-  for (let i = range.start; i < range.end; i++) {
-    if (lines[i].trim().length > 0) {
-      hasContent = true;
-      break;
+  for (const range of ranges) {
+    for (let i = range.start; i < range.end; i++) {
+      if (lines[i].trim().length > 0) {
+        hasContent = true;
+        break;
+      }
     }
+    if (hasContent) break;
   }
 
   return hasContent ? { state: 'prose', items: [] } : { state: 'empty-heading', items: [] };

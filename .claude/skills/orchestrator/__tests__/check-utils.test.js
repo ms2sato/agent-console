@@ -1677,6 +1677,114 @@ describe('getAcceptanceCriteria', () => {
     const execImpl = () => body;
     expect(getAcceptanceCriteria('1', { execImpl })).toEqual({ state: 'prose', items: [] });
   });
+
+  // --- Architect ruling A+F: a UNION of AC sections, merge-aware heading
+  // match ---
+  //
+  // This repository's own Architect-authoring convention routinely splits
+  // the acceptance criteria across more than one heading: a ruling
+  // heading ("## Acceptance Criteria (Architect, ...)") immediately
+  // followed by a differently-worded sibling holding the real checklist
+  // ("## AC #N", "## Checklist"). Measured against real Issues in this
+  // repository (including this function's own motivating Issue), the
+  // single-range design misclassified these as 'prose'/'empty-heading'.
+  // These four tests pin the ruling's fix.
+
+  // Test (h). Mutation reach (measured): removing the "is it an AC
+  // heading? then merge, don't end the section" check inside the
+  // section-end scan (so ANY same-or-higher-level heading ends the
+  // section, AC or not) makes this test fail — `## AC #7` would end `##
+  // Acceptance Criteria`'s section immediately, the search for the next
+  // independent section resumes strictly PAST `## AC #7` (never landing
+  // back on it), so the item under `## AC #7` is never collected and the
+  // state becomes 'empty-heading' instead of 'checklist'.
+  it('merges a differently-worded AC-pattern heading ("## AC #N") into the same section as "## Acceptance Criteria"', () => {
+    const body = ['Some narrative.', '', '## Acceptance Criteria', '', '## AC #7', '', '- [ ] Real item', ''].join(
+      '\n'
+    );
+    const execImpl = () => body;
+    expect(getAcceptanceCriteria('1', { execImpl })).toEqual({
+      state: 'checklist',
+      items: ['Real item'],
+    });
+  });
+
+  // Test (i). Combines the merge from (h) with exclusion of a stray box
+  // under a genuine non-AC terminator ("## Follow-ups"), to confirm
+  // merging two AC headings into one section does not also accidentally
+  // extend that merged section past a real terminator.
+  it('excludes a stray box under "## Follow-ups" even when the AC section spans a merged "## AC #N" heading', () => {
+    const body = [
+      '## Acceptance Criteria',
+      '',
+      '## AC #42',
+      '',
+      '- [ ] Inside item',
+      '',
+      '## Follow-ups',
+      '',
+      '- [ ] Outside item',
+      '',
+    ].join('\n');
+    const execImpl = () => body;
+    expect(getAcceptanceCriteria('1', { execImpl })).toEqual({
+      state: 'checklist',
+      items: ['Inside item'],
+    });
+  });
+
+  // Test (j). Mutation reach (measured): narrowing
+  // ACCEPTANCE_CRITERIA_HEADING_RE back to `/^#{1,6}\s.*acceptance
+  // criteria/i` (dropping the `AC\b`/`checklist\b` alternatives) makes
+  // this test fail — "## Checklist" would no longer match ANYTHING, so no
+  // AC heading would be found anywhere in this body, and the function
+  // would fall back to the whole-body checkbox scan, which collects BOTH
+  // the unrelated "Stray repro step" (written before the heading, outside
+  // any section) AND "Real criterion" — two items instead of one.
+  it('recognises "## Checklist" alone as an AC heading and still excludes a stray box outside it', () => {
+    const body = [
+      'Reproduction:',
+      '',
+      '- [ ] Stray repro step',
+      '',
+      '## Checklist',
+      '',
+      '- [ ] Real criterion',
+      '',
+    ].join('\n');
+    const execImpl = () => body;
+    expect(getAcceptanceCriteria('1', { execImpl })).toEqual({
+      state: 'checklist',
+      items: ['Real criterion'],
+    });
+  });
+
+  // Test (k). A genuine non-AC heading ("## Facts") between two
+  // independent AC headings ends the first section; the search for the
+  // next section resumes after it and finds the second "## Acceptance
+  // Criteria" heading, collecting its items too. Pins that the UNION
+  // spans disjoint, non-adjacent sections — not just a single merged run.
+  it('treats two AC headings separated by a non-AC heading as two independent sections, both collected', () => {
+    const body = [
+      '## Acceptance Criteria',
+      '',
+      '- [ ] First section item',
+      '',
+      '## Facts',
+      '',
+      'Some facts here.',
+      '',
+      '## Acceptance Criteria (second ruling)',
+      '',
+      '- [ ] Second section item',
+      '',
+    ].join('\n');
+    const execImpl = () => body;
+    expect(getAcceptanceCriteria('1', { execImpl })).toEqual({
+      state: 'checklist',
+      items: ['First section item', 'Second section item'],
+    });
+  });
 });
 
 // getCiStatus — replaces the dead `gh pr checks --json` flag with the
