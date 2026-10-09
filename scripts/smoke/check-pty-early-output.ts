@@ -28,6 +28,13 @@
  * tests); it isolates the PTY provider layer only, same scoping as
  * `check-pty-fd-leak.ts`.
  *
+ * Since #1872 this is no longer a manual-only gate: it also runs in CI, via
+ * `scripts/smoke/__tests__/check-pty-early-output.run.test.ts` under
+ * `test:scripts` -- the ~21-second cost that made this script free and
+ * deterministic in the first place is exactly what makes a CI wrapper cheap
+ * (an explicit per-`it` timeout is set well above it; this is the most
+ * expensive of the four siblings CI-wrapped in #1872).
+ *
  * Usage:
  *   bun scripts/smoke/check-pty-early-output.ts
  *
@@ -53,7 +60,11 @@ const CYCLE_COUNT = 20;
 // already run and handed its bytes to the native layer before any JS
 // listener exists.
 const LATE_ATTACH_DELAY_MS = 50;
-const MARKER_WAIT_TIMEOUT_MS = 3000;
+// An upper bound on waiting for an "eventually" property, sized for a
+// loaded CI runner; not a measurement (Issue #1872's contention finding).
+const MARKER_WAIT_TIMEOUT_MS = 30000;
+// A guard that should now never fire: tearing down with SIGHUP (see
+// runCycle) exits the PTY in ~20ms, so this is not a per-cycle tax.
 const EXIT_WAIT_TIMEOUT_MS = 1000;
 
 function sleep(ms: number): Promise<void> {
@@ -126,7 +137,13 @@ async function runCycle(index: number): Promise<{ ok: boolean; detail: string }>
       `diagnostics=${JSON.stringify(diagnostics)}; captured output: ${JSON.stringify(output.slice(0, 300))}`;
 
   try {
-    pty.kill();
+    // SIGHUP, not SIGTERM: measured against the real bunTerminalProvider,
+    // an interactive `sh -c '...; exec sh'` PTY ignores SIGTERM (still
+    // alive at 1509ms) but exits on SIGHUP in ~20ms (Issue #1872's
+    // contention finding -- the kill-settle race below was losing every
+    // cycle under the default signal, which is why widening its own
+    // timeout only inflated runtime instead of fixing anything).
+    pty.kill('SIGHUP');
   } catch {
     // best-effort; the child may already be gone
   }

@@ -55,6 +55,17 @@
  *   - The agent-console HTTP/WebSocket server. No server process runs here;
  *     `WorkerManager` is exercised directly, same as `worker-manager.test.ts`.
  *
+ * * #1872 tried promoting this to a CI-run `test:scripts` case (like its
+ * siblings `check-pty-als-data.ts` / `check-pty-early-output.ts`) and
+ * measured a ~10% `selfCheck()` flake rate under ordinary host/suite
+ * contention (not just deliberate load) -- `EXIT_WAIT_TIMEOUT_MS` below was
+ * widened (5000->30000) as a mitigation, but the flake persisted even at
+ * that bound, so the CI wrapper was reverted and this stays a manual gate.
+ * Issue [#1879](https://github.com/ms2sato/agent-console/issues/1879)
+ * tracks diagnosing and fixing the underlying cause (lost Bun/adapter exit
+ * event vs. a genuinely stuck child under load -- still undetermined)
+ * before a wrapper is re-added.
+ *
  * Usage:
  *   bun scripts/smoke/check-exit-127-diagnostic.ts
  *
@@ -87,7 +98,9 @@ import { AgentManager, CLAUDE_CODE_AGENT_ID } from '../../packages/server/src/se
 import { SqliteAgentRepository } from '../../packages/server/src/repositories/sqlite-agent-repository.js';
 import { initializeDatabase, closeDatabase, getDatabase } from '../../packages/server/src/database/connection.js';
 
-const EXIT_WAIT_TIMEOUT_MS = 5000;
+// An upper bound on waiting for an "eventually" property, sized for a
+// loaded CI runner; not a measurement (Issue #1872's contention finding).
+const EXIT_WAIT_TIMEOUT_MS = 30000;
 const POLL_MS = 50;
 
 function sleep(ms: number): Promise<void> {
