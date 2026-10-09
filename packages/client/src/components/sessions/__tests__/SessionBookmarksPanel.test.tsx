@@ -2,6 +2,7 @@ import { describe, it, expect, mock, beforeEach, afterEach, afterAll } from 'bun
 import { useState } from 'react';
 import { screen, cleanup, waitFor, fireEvent } from '@testing-library/react';
 import { renderWithRouter } from '../../../test/renderWithRouter';
+import { waitForAbsent } from '../../../test/waitForAbsent';
 import { SessionBookmarksPanel } from '../SessionBookmarksPanel';
 
 // The panel is now controlled: isExpanded is a required prop, not internal
@@ -334,7 +335,7 @@ describe('SessionBookmarksPanel', () => {
     });
 
     // The invalidated query's refetch removes the deleted bookmark from the list.
-    await waitFor(() => expect(screen.queryByText('Example Site')).toBeNull());
+    await waitForAbsent(() => screen.queryByText('Example Site'));
   });
 
   it('starts collapsed: the list is not on screen until the panel is expanded', async () => {
@@ -382,7 +383,7 @@ describe('SessionBookmarksPanel', () => {
     expect(screen.getByLabelText('Bookmark URL')).toBeTruthy();
 
     fireEvent.click(screen.getByLabelText('Hide add bookmark form'));
-    await waitFor(() => expect(screen.queryByLabelText('Bookmark URL')).toBeNull());
+    await waitForAbsent(() => screen.queryByLabelText('Bookmark URL'));
     // The way back in is still there.
     expect(screen.getByLabelText('Show add bookmark form')).toBeTruthy();
   });

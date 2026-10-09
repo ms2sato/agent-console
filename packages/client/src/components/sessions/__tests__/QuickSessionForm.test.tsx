@@ -4,6 +4,7 @@ import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { QuickSessionForm } from '../QuickSessionForm';
 import { _reset as resetAuth } from '../../../lib/auth';
+import { waitForAbsent } from '../../../test/waitForAbsent';
 
 // Save original fetch and set up mock
 const originalFetch = globalThis.fetch;
@@ -437,9 +438,7 @@ describe('QuickSessionForm', () => {
       const agentSelect = screen.getByRole('combobox');
       await user.selectOptions(agentSelect, 'terminal:plain-agent');
 
-      await waitFor(() => {
-        expect(screen.queryByPlaceholderText('e.g. opus')).toBeNull();
-      });
+      await waitForAbsent(() => screen.queryByPlaceholderText('e.g. opus'));
     });
 
     it('includes the typed model value in the submitted request', async () => {
@@ -580,9 +579,7 @@ describe('QuickSessionForm', () => {
       const agentSelect = screen.getByRole('combobox');
       await user.selectOptions(agentSelect, 'terminal:plain-agent');
 
-      await waitFor(() => {
-        expect(screen.queryByPlaceholderText('e.g. opus')).toBeNull();
-      });
+      await waitForAbsent(() => screen.queryByPlaceholderText('e.g. opus'));
 
       await user.click(screen.getByText('Start'));
 
@@ -689,9 +686,7 @@ describe('QuickSessionForm', () => {
       // Clearing model also hides the window input (AgentParameterFields
       // render-gating) -- confirm that AND that the value left form state.
       await user.clear(modelInput);
-      await waitFor(() => {
-        expect(screen.queryByPlaceholderText('e.g. 128000')).toBeNull();
-      });
+      await waitForAbsent(() => screen.queryByPlaceholderText('e.g. 128000'));
 
       await user.click(screen.getByText('Start'));
 

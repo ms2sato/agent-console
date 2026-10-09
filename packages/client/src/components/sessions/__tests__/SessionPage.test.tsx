@@ -2,6 +2,7 @@ import { describe, it, expect, mock, beforeEach, afterEach, afterAll, spyOn } fr
 import { screen, cleanup, waitFor, act } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { renderWithRouter } from '../../../test/renderWithRouter';
+import { waitForAbsent } from '../../../test/waitForAbsent';
 import { SessionPage } from '../SessionPage';
 import { SessionStopTasksContext, SessionDataContext, WorktreeDeletionTasksContext } from '../../../contexts/root-contexts';
 import type { SessionDataContextValue } from '../../../contexts/root-contexts';
@@ -283,7 +284,7 @@ describe('SessionPage mobile side-panels drawer gate', () => {
       triggerChange(false);
     });
 
-    await waitFor(() => expect(document.querySelector('[role="dialog"]')).toBeNull());
+    await waitForAbsent(() => document.querySelector('[role="dialog"]'));
     expect(screen.getByLabelText('Expand side panel')).toBeTruthy();
     expect(document.body.style.overflow).not.toBe('hidden');
 
@@ -403,17 +404,15 @@ describe('SessionPage tab bar DOM structure (Issue #1608)', () => {
       closeButton.click();
     });
 
-    // Asserted synchronously, not via waitFor: awaiting the close request's
-    // continuation (mounted-agent-tab + this specific sibling-click shape)
-    // can hang the real terminal store for many seconds -- tracked as #1899,
-    // a pre-existing defect unrelated to this PR's DOM-nesting fix. The
-    // keyboard test below covers tab removal on the active-tab close path
-    // (fast, measured) instead.
     const deleteCall = mockFetch.mock.calls.find(([input, init]) => {
       return urlToString(input).includes(`/api/sessions/session-1/workers/${TERMINAL_WORKER.id}`)
         && init?.method === 'DELETE';
     });
     expect(deleteCall).toBeDefined();
+
+    // The tab is actually removed once the close request's continuation
+    // settles.
+    await waitForAbsent(() => screen.queryByRole('tab', { name: 'Shell 1' }));
 
     // The sibling click never bubbles into the activator's onClick (the
     // activator and the close control are DOM siblings, not nested) -- the
@@ -466,7 +465,7 @@ describe('SessionPage tab bar DOM structure (Issue #1608)', () => {
 
     await user.keyboard('{Enter}');
 
-    await waitFor(() => expect(screen.queryByRole('tab', { name: 'Shell 1' })).toBeNull());
+    await waitForAbsent(() => screen.queryByRole('tab', { name: 'Shell 1' }));
   });
 
   it('ArrowLeft/ArrowRight still moves aria-selected between the two tab activators (production handleTabKeyDown path)', async () => {

@@ -2,6 +2,7 @@ import { describe, it, expect, mock, beforeEach, afterEach } from 'bun:test';
 import { screen, fireEvent, cleanup, waitFor, act, within } from '@testing-library/react';
 import { userEvent } from '@testing-library/user-event';
 import { renderWithRouter } from '../../../test/renderWithRouter';
+import { waitForAbsent } from '../../../test/waitForAbsent';
 import { ActiveSessionsSidebar, formatRestartMessage } from '../ActiveSessionsSidebar';
 import { QUICK_SESSIONS_GROUP_KEY } from '../group-sessions-by-repository';
 import {
@@ -1184,8 +1185,8 @@ describe('ActiveSessionsSidebar', () => {
         expect(
           screen.getByText(/plain terminal \(shell\) workers are left running/i)
         ).toBeTruthy();
-        expect(screen.queryByText(/Terminal workers will not be affected/)).toBeNull();
       });
+      await waitForAbsent(() => screen.queryByText(/Terminal workers will not be affected/));
     });
 
     it('should call API and show result message on confirm', async () => {
@@ -1229,8 +1230,8 @@ describe('ActiveSessionsSidebar', () => {
       await waitFor(() => {
         expect(screen.getByText(allSkippedMessage)).toBeTruthy();
         expect(allSkippedMessage).not.toBe(noTargetsMessage);
-        expect(screen.queryByText(noTargetsMessage)).toBeNull();
       });
+      await waitForAbsent(() => screen.queryByText(noTargetsMessage));
     });
 
     it('should show a distinct message when there are no agent workers at all', async () => {
@@ -1886,9 +1887,7 @@ describe('Orchestrator flag control (Issue #1643 PR-2)', () => {
     const dialog = await waitFor(() => screen.getByRole('alertdialog'));
     fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
 
-    await waitFor(() => {
-      expect(screen.queryByRole('alertdialog')).toBeNull();
-    });
+    await waitForAbsent(() => screen.queryByRole('alertdialog'));
     expect(orchestratorDesignationCalls).toEqual([]);
     // The flag remains lit (unchanged) and clickable again.
     expect(flagButton.getAttribute('data-orchestrator-flag-lit')).toBe('true');

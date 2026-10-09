@@ -14,6 +14,7 @@ import { screen, cleanup, waitFor, act, fireEvent } from '@testing-library/react
 import { userEvent } from '@testing-library/user-event';
 import type { WorktreeDeletionCompletedPayload } from '@agent-console/shared';
 import { renderWithRouter } from '../../../test/renderWithRouter';
+import { waitForAbsent } from '../../../test/waitForAbsent';
 import * as useAppWsModule from '../../../hooks/useAppWs';
 import type { AppWebSocketState } from '../../../lib/app-websocket';
 import { NotificationBell } from '../NotificationBell';
@@ -218,7 +219,7 @@ describe('NotificationBell', () => {
       serverUnreadCount = 1;
       await user.click(screen.getByRole('button', { name: /retry/i }));
 
-      await waitFor(() => expect(screen.queryByText(/failed to load notifications/i)).toBeNull());
+      await waitForAbsent(() => screen.queryByText(/failed to load notifications/i));
     });
 
     it('does not mark stale/cached items as seen when the open-triggered refetch fails', async () => {
@@ -286,7 +287,7 @@ describe('NotificationBell', () => {
 
       // This would fail if Escape never closed the panel: the dialog would
       // still be in the DOM.
-      await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+      await waitForAbsent(() => screen.queryByRole('dialog'));
     });
 
     it('closes the panel when clicking the outside overlay', async () => {
@@ -307,7 +308,7 @@ describe('NotificationBell', () => {
 
       // This would fail if the overlay click handler never ran (or never
       // called setOpen(false)): the dialog would still be present.
-      await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+      await waitForAbsent(() => screen.queryByRole('dialog'));
     });
 
     it('removes the keydown listener via document.removeEventListener when the component unmounts', async () => {
@@ -366,7 +367,7 @@ describe('NotificationBell', () => {
         resolveSeenPut?.();
       });
 
-      await waitFor(() => expect(screen.queryByText('2')).toBeNull());
+      await waitForAbsent(() => screen.queryByText('2'));
     });
 
     it('leaves the badge non-zero when the seen PUT fails', async () => {

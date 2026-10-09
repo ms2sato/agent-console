@@ -5,6 +5,7 @@ import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { CreateWorktreeForm } from '../CreateWorktreeForm';
 import { setSharedAccountsAvailable, _reset as resetAuth } from '../../../lib/auth';
+import { waitForAbsent } from '../../../test/waitForAbsent';
 
 // Save original fetch and set up mock
 const originalFetch = globalThis.fetch;
@@ -687,8 +688,8 @@ describe('CreateWorktreeForm', () => {
       // In prompt mode, label should NOT say "(optional)"
       await waitFor(() => {
         expect(screen.getByText('Initial prompt')).toBeTruthy();
-        expect(screen.queryByText('Initial prompt (optional)')).toBeNull();
       });
+      await waitForAbsent(() => screen.queryByText('Initial prompt (optional)'));
     });
   });
 
@@ -1040,9 +1041,7 @@ describe('CreateWorktreeForm', () => {
       });
 
       // Wait for loading to disappear
-      await waitFor(() => {
-        expect(screen.queryByText('Checking remote status...')).toBeNull();
-      });
+      await waitForAbsent(() => screen.queryByText('Checking remote status...'));
 
       // No warning message should be visible
       expect(screen.queryByText(/commits? behind/)).toBeNull();
@@ -1082,9 +1081,7 @@ describe('CreateWorktreeForm', () => {
       });
 
       // Wait for loading to disappear
-      await waitFor(() => {
-        expect(screen.queryByText('Checking remote status...')).toBeNull();
-      });
+      await waitForAbsent(() => screen.queryByText('Checking remote status...'));
 
       // "Fetch & Create" button should not be visible
       expect(screen.queryByText('Fetch & Create')).toBeNull();
@@ -1216,9 +1213,7 @@ describe('CreateWorktreeForm', () => {
       });
 
       // Wait for initial check to complete
-      await waitFor(() => {
-        expect(screen.queryByText('Checking remote status...')).toBeNull();
-      });
+      await waitForAbsent(() => screen.queryByText('Checking remote status...'));
 
       const callCountBeforeSwitch = remoteStatusCalls.length;
 
@@ -1381,9 +1376,7 @@ describe('CreateWorktreeForm', () => {
       const agentSelect = screen.getByRole('combobox');
       await user.selectOptions(agentSelect, 'terminal:plain-agent');
 
-      await waitFor(() => {
-        expect(screen.queryByPlaceholderText('e.g. opus')).toBeNull();
-      });
+      await waitForAbsent(() => screen.queryByPlaceholderText('e.g. opus'));
     });
 
     it('includes the typed model value in the submitted request', async () => {
@@ -1463,9 +1456,7 @@ describe('CreateWorktreeForm', () => {
       const agentSelect = screen.getByRole('combobox');
       await user.selectOptions(agentSelect, 'terminal:plain-agent');
 
-      await waitFor(() => {
-        expect(screen.queryByPlaceholderText('e.g. opus')).toBeNull();
-      });
+      await waitForAbsent(() => screen.queryByPlaceholderText('e.g. opus'));
 
       const customRadio = screen.getByLabelText(/Custom name \(new branch\)/);
       await user.click(customRadio);
@@ -1589,9 +1580,7 @@ describe('CreateWorktreeForm', () => {
       // Clearing model also hides the window input (AgentParameterFields
       // render-gating) -- confirm that AND that the value left form state.
       await user.clear(modelInput);
-      await waitFor(() => {
-        expect(screen.queryByPlaceholderText('e.g. 128000')).toBeNull();
-      });
+      await waitForAbsent(() => screen.queryByPlaceholderText('e.g. 128000'));
 
       const branchInput = screen.getByPlaceholderText('New branch name');
       await user.type(branchInput, 'feature/window-cleared-with-model');

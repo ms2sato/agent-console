@@ -2,6 +2,7 @@ import { describe, it, expect, mock, beforeEach, afterEach, afterAll, spyOn } fr
 import { useState } from 'react';
 import { screen, cleanup, waitFor, act, fireEvent } from '@testing-library/react';
 import { renderWithRouter } from '../../../test/renderWithRouter';
+import { waitForAbsent } from '../../../test/waitForAbsent';
 import { MemoPanel } from '../MemoPanel';
 import { _reset as resetWebSocket } from '../../../lib/app-websocket';
 import { MockWebSocket, installMockWebSocket } from '../../../test/mock-websocket';
@@ -372,7 +373,7 @@ describe('MemoPanel', () => {
 
       fireEvent.keyDown(textarea, { key: 'Escape' });
 
-      await waitFor(() => expect(screen.queryByLabelText('Memo content')).toBeNull());
+      await waitForAbsent(() => screen.queryByLabelText('Memo content'));
       expect(screen.getByText('Existing memo').tagName).toBe('H1');
     });
   });
@@ -513,7 +514,7 @@ describe('MemoPanel', () => {
       resolvePut(jsonResponse({ content: 'Change during save' }));
     });
 
-    await waitFor(() => expect(screen.queryByLabelText('Memo content')).toBeNull());
+    await waitForAbsent(() => screen.queryByLabelText('Memo content'));
   });
 
   // M6: R4 client half -- a broadcast deletion (content: '') renders the
