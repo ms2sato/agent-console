@@ -28,7 +28,9 @@ const FONT_SIZE_PX = 14;
 // occupy one cell (an empty span collapses to 0), keeping the DOM row grid a
 // 1:1 pixel map of the buffer — required for correct pointer->cell math.
 const LINE_HEIGHT_PX = 18;
-const RESIZE_DEBOUNCE_MS = 150;
+// Exported so tests can reference the real debounce window instead of
+// duplicating the literal.
+export const RESIZE_DEBOUNCE_MS = 150;
 const BOTTOM_THRESHOLD_PX = 4;
 // A touch pointer that moves more than this between down and up is a scroll
 // gesture (forwarded as wheel), not a tap — do not report it as a TUI click.
@@ -426,12 +428,21 @@ export function TerminalView({
       instance.resize(cols, rows);
     };
 
-    const observer = new ResizeObserver(() => {
+    // Schedule through the same debounce path the observer uses, rather than
+    // calling applyResize() synchronously at mount: a layout change that
+    // lands inside the window (a sidebar whose own content is still loading,
+    // a scrollbar appearing, a font swap) supersedes the mount measurement
+    // instead of racing it as a second, independently-timed resize. The
+    // worker still ends up sized -- the schedule always fires once, just at
+    // the end of the window instead of immediately.
+    const scheduleResize = () => {
       if (timer) clearTimeout(timer);
       timer = setTimeout(applyResize, RESIZE_DEBOUNCE_MS);
-    });
+    };
+
+    const observer = new ResizeObserver(scheduleResize);
     observer.observe(el);
-    applyResize();
+    scheduleResize();
 
     return () => {
       observer.disconnect();

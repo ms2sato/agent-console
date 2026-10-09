@@ -102,10 +102,19 @@ export function MemoPanel({ sessionId, isExpanded, onToggleExpanded, onEnsureExp
     onError: (err) => setSaveError(err instanceof Error ? err.message : 'Failed to save memo'),
   });
 
-  // Render nothing while genuinely pending with no cached data yet (R1) --
-  // once resolved (even to null), the panel stays mounted.
+  // Render a same-width placeholder while genuinely pending with no cached
+  // data yet (R1), instead of null: a bare null here leaves TerminalView's
+  // mount-time width measurement wider than the space this section reserves
+  // once content settles, which the terminal receives as a premature resize
+  // before a second, narrower one supersedes it. The compact rail has no
+  // fixed width of its own (it is sized by its content, a narrow label), so
+  // reserving w-80 there would introduce the same kind of swing in reverse --
+  // it keeps returning null, unchanged from before.
   if (isPending) {
-    return null;
+    if (compact) {
+      return null;
+    }
+    return <div className="w-80 border-b border-slate-700" aria-busy="true" />;
   }
 
   const isEmpty = content == null || content === '';

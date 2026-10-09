@@ -1,7 +1,7 @@
 import { useRef } from 'react';
-import { describe, it, expect, afterEach, beforeEach, mock } from 'bun:test';
+import { describe, it, expect, afterEach, beforeEach, mock, jest } from 'bun:test';
 import { render, screen, cleanup, fireEvent, act } from '@testing-library/react';
-import { TerminalView } from '../TerminalView';
+import { TerminalView, RESIZE_DEBOUNCE_MS } from '../TerminalView';
 import { createLocalhostRewriteTransform } from '../transforms/localhost-rewrite';
 import type { TerminalInstance, TerminalSnapshot } from '../terminal-store';
 import { getOrCreateTerminal, _resetTerminals, _inspect } from '../terminal-store';
@@ -117,16 +117,127 @@ describe('TerminalView row rendering', () => {
   // stubbed here deliberately, so the mount effect runs against that real
   // happy-dom quirk; a plain mock resize() lets this test observe what
   // TerminalView itself calls it with.
-  it('mounts without throwing and resizes with finite numbers under happy-dom\'s unresolved CSS padding', () => {
+  it('mounts without throwing and resizes with finite numbers under happy-dom\'s unresolved CSS padding', async () => {
     const resize = mock((_cols: number, _rows: number) => {});
     const instance = { ...makeInstance(makeSnapshot(ROWS)), resize };
 
     expect(() => render(<TerminalView instance={instance} />)).not.toThrow();
 
+    // The first measurement is scheduled through the debounce window rather
+    // than applied synchronously at mount (see "mount-time resize
+    // scheduling" below); wait past it before asserting.
+    await act(async () => {
+      await flush(RESIZE_DEBOUNCE_MS + 50);
+    });
+
     expect(resize).toHaveBeenCalled();
     const [cols, rows] = resize.mock.calls[0] as [number, number];
     expect(Number.isFinite(cols)).toBe(true);
     expect(Number.isFinite(rows)).toBe(true);
+  });
+});
+
+// --- mount-time resize scheduling ---
+//
+// TerminalView's mount effect schedules its FIRST applyResize() through the
+// same debounce timer the ResizeObserver uses, rather than calling it
+// synchronously. A layout change that lands inside the window (a sidebar
+// still loading its own content, a scrollbar appearing, a font swap)
+// supersedes the mount measurement instead of racing it as a second,
+// independently-timed resize -- the mechanism behind the scrollback
+// corruption from two resizes landing a few hundred milliseconds apart on
+// page open. A stub ResizeObserver captures its callback so a "container
+// layout changed" notification can be triggered deterministically, since
+// happy-dom's own ResizeObserver does not fire on geometry changes that
+// happy-dom itself never lays out.
+describe('TerminalView mount-time resize scheduling', () => {
+  let originalResizeObserver: typeof ResizeObserver;
+  let observerCallback: ResizeObserverCallback | null;
+
+  beforeEach(() => {
+    originalResizeObserver = globalThis.ResizeObserver;
+    observerCallback = null;
+    globalThis.ResizeObserver = class {
+      constructor(cb: ResizeObserverCallback) {
+        observerCallback = cb;
+      }
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    } as unknown as typeof ResizeObserver;
+    jest.useFakeTimers();
+  });
+
+  afterEach(() => {
+    jest.useRealTimers();
+    globalThis.ResizeObserver = originalResizeObserver;
+    cleanup();
+  });
+
+  // (a) mount -> no resize sent before RESIZE_DEBOUNCE_MS.
+  it('sends no resize before the debounce window elapses', () => {
+    const resize = mock((_cols: number, _rows: number) => {});
+    const instance = { ...makeInstance(makeSnapshot(ROWS)), resize };
+
+    render(<TerminalView instance={instance} />);
+
+    act(() => {
+      jest.advanceTimersByTime(RESIZE_DEBOUNCE_MS - 1);
+    });
+    expect(resize).not.toHaveBeenCalled();
+
+    act(() => {
+      jest.advanceTimersByTime(1);
+    });
+    expect(resize).toHaveBeenCalledTimes(1);
+  });
+
+  // (b) mount, then a container size change at +50ms -> after the window
+  // exactly ONE resize, carrying the second geometry.
+  it('supersedes the mount schedule with a layout change inside the window, sending exactly one resize with the later geometry', () => {
+    const resize = mock((_cols: number, _rows: number) => {});
+    const instance = { ...makeInstance(makeSnapshot(ROWS)), resize };
+    const { container } = render(<TerminalView instance={instance} />);
+    const scroller = container.querySelector('.overflow-y-auto') as HTMLElement;
+    Object.defineProperty(scroller, 'clientWidth', { value: 400, configurable: true });
+
+    act(() => {
+      jest.advanceTimersByTime(50);
+    });
+    // Simulate the ResizeObserver reporting a container layout change (e.g.
+    // the memo sidebar settling into its own width).
+    Object.defineProperty(scroller, 'clientWidth', { value: 200, configurable: true });
+    act(() => {
+      observerCallback?.([], {} as ResizeObserver);
+    });
+
+    // Still within the debounce window re-started by the layout change.
+    act(() => {
+      jest.advanceTimersByTime(RESIZE_DEBOUNCE_MS - 1);
+    });
+    expect(resize).not.toHaveBeenCalled();
+
+    act(() => {
+      jest.advanceTimersByTime(1);
+    });
+    expect(resize).toHaveBeenCalledTimes(1);
+    const [cols] = resize.mock.calls[0] as [number, number];
+    // Reflects the SECOND (200px) measurement, not the mount-time (400px) one.
+    expect(cols).toBe(Math.floor(200 / 8));
+  });
+
+  // (c) mount with no further change -> exactly one resize after the window
+  // (the worker must not be left unsized).
+  it('still sends exactly one resize after the window when nothing else changes', () => {
+    const resize = mock((_cols: number, _rows: number) => {});
+    const instance = { ...makeInstance(makeSnapshot(ROWS)), resize };
+
+    render(<TerminalView instance={instance} />);
+
+    act(() => {
+      jest.advanceTimersByTime(RESIZE_DEBOUNCE_MS);
+    });
+    expect(resize).toHaveBeenCalledTimes(1);
   });
 });
 
