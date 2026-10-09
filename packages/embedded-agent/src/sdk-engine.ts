@@ -1819,6 +1819,57 @@ export class SdkEngine implements ClaudeSdkEngine {
   }
 
   /**
+   * The ABNORMAL counterpart to {@link emitAssistantMessage}: the turn ended
+   * (a `result`, or the stream/process dying outright) while
+   * `iterationText` still held un-flushed text, i.e. `message_stop` never
+   * arrived for the content block(s) a real `content_block_delta` stream
+   * had already produced. Without this, that text is silently
+   * discarded and the turn is reported as having ended normally -- exactly
+   * the bug this Issue was filed for.
+   *
+   * No-op when `iterationText` is empty (the overwhelmingly common case: a
+   * turn that completed its `message_stop` normally, or one that never
+   * streamed any text at all), so calling this unconditionally from both
+   * `handleResult` and `handleFatal` is safe and costs nothing on the
+   * normal path. Returns whether it actually flushed anything, so a caller
+   * that would otherwise ALSO emit a `turn-error` for the same result can
+   * skip its own emission instead of double-reporting (see `handleResult`'s
+   * non-success branch).
+   *
+   * Emits, in order: the partial `assistant-message` (so the transcript
+   * shows what was actually generated, rather than nothing), then exactly
+   * one `turn-error` naming the dangling character count, then logs one
+   * `warn` carrying the originating `result` message's own diagnostic
+   * fields (`subtype` / `num_turns` / `is_error`) when one is available --
+   * the evidence a future recurrence needs, per the Issue's own suggested
+   * follow-up. `message` is omitted on the EOF path (`handleFatal`, no
+   * SDK `result` was ever observed for this turn), in which case the
+   * `turn-error` text names the reason instead of a subtype.
+   */
+  private flushDanglingIterationText(reason: 'result' | 'fatal', message?: ResultMessage): boolean {
+    if (this.iterationText.length === 0) return false;
+    const turnId = this.requireTurnId();
+    const danglingChars = this.iterationText.length;
+    const subtypeLabel = message ? message.subtype : 'stream ended with no result';
+    this.deps.emit({ v: 1, type: 'assistant-message', turnId, text: this.iterationText });
+    this.deps.emit({
+      v: 1,
+      type: 'turn-error',
+      turnId,
+      message: `turn ended without a completed assistant message (${reason}: ${subtypeLabel}, ${danglingChars} chars of streamed text were not closed by message_stop)`,
+    });
+    console.warn(
+      `[sdk-engine] turn ended with ${danglingChars} chars of streamed text never closed by message_stop (${reason})`,
+      message
+        ? { subtype: message.subtype, num_turns: message.num_turns, is_error: message.is_error }
+        : { reason },
+    );
+    this.iterationText = '';
+    this.sawTextDelta = false;
+    return true;
+  }
+
+  /**
    * `assistant` SDKMessages arrive one per COMPLETED content block (not one
    * per whole API response) -- text content blocks are ignored here since
    * the delta stream already emitted them.
@@ -1951,20 +2002,32 @@ export class SdkEngine implements ClaudeSdkEngine {
     if (this.dead) {
       // pollContextUsage's H2-exhaustion path already emitted `fatal`,
       // disposed the query, and settled the pending turn -- do not also
-      // emit a spurious turn-error/state:idle on top of it.
+      // emit a spurious turn-error/state:idle on top of it. (It also, via
+      // `handleFatal`, already ran `flushDanglingIterationText` for any
+      // text this turn had accumulated -- nothing further to flush here.)
       return;
     }
+    // A `result` arrived (this method was reached at all) but `message_stop`
+    // never did for some trailing content block -- the SDK ended the turn
+    // without ever closing out text the delta stream had already produced.
+    // Flush it BEFORE the subtype branch below: when it fires (returns
+    // true), its own `turn-error` already names this result's subtype, so
+    // the subtype branch must not ALSO emit one -- that would double-report
+    // the same ended-abnormally turn.
+    const flushedDangling = this.flushDanglingIterationText('result', message);
     if (message.subtype !== 'success') {
       // R1: a refused resume surfaces here first, as a non-success result,
       // and is distinguished from every other non-success result
       // structurally -- see `reportRefusedResume`.
       const refusedResume = this.reportRefusedResume();
-      this.deps.emit({
-        v: 1,
-        type: 'turn-error',
-        turnId,
-        message: refusedResume ?? this.buildTurnErrorMessage(message),
-      });
+      if (!flushedDangling) {
+        this.deps.emit({
+          v: 1,
+          type: 'turn-error',
+          turnId,
+          message: refusedResume ?? this.buildTurnErrorMessage(message),
+        });
+      }
     }
     // Compaction: a `Compact` booked during this turn runs as PART of it --
     // the turn is not over until the injected `/compact` reaches its own
@@ -2269,6 +2332,12 @@ export class SdkEngine implements ClaudeSdkEngine {
   private handleFatal(message: string): void {
     if (this.dead) return;
     this.dead = true;
+    // The EOF/transport-failure path never produced a `result` for this
+    // turn to be flushed through `handleResult`, so any text the delta
+    // stream had already produced before the stream died must be flushed
+    // here instead -- otherwise it is lost outright on top of being
+    // unreported.
+    this.flushDanglingIterationText('fatal');
     this.deps.emit({ v: 1, type: 'fatal', message });
     this.dispose();
     this.settlePendingTurn();

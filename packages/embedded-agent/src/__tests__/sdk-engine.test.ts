@@ -1900,6 +1900,151 @@ describe('SdkEngine — event mapping (Appendix A.2)', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Dangling iteration text at turn end (#1629) -- the SDK can end a turn
+// (via `result`, or via the stream/process dying outright) without ever
+// sending `message_stop` for content the delta stream already produced.
+// Sibling of the "event mapping" describe above and the "clean stream end"
+// describe below -- see sdk-engine.ts's `flushDanglingIterationText` doc
+// comment for the full mechanism.
+//
+// Polarity (measured by commenting out both call sites in sdk-engine.ts --
+// `handleResult`'s `this.flushDanglingIterationText('result', message)` and
+// `handleFatal`'s `this.flushDanglingIterationText('fatal')` -- while
+// leaving the helper itself and its `boolean` return type intact): (a),
+// (c), (d) below FAIL against that reverted code (no assistant-message, no
+// turn-error naming the dangling text); (b), (e) PASS identically either
+// way, as the no-op/control cases.
+// ---------------------------------------------------------------------------
+
+describe('SdkEngine — dangling iteration text at turn end (#1629)', () => {
+  it('(a) REPRO: a success result with no message_stop still surfaces the partial text and an explicit turn-error, instead of a silent clean finish', async () => {
+    const events: EmbeddedAgentEvent[] = [];
+    const { queryFn } = makeFakeQuery([
+      systemInit(),
+      textDeltaEvent('one'),
+      textDeltaEvent(' two'),
+      textDeltaEvent(' three'),
+      // No messageStopEvent() -- the SDK's own stream ended the text block
+      // without ever closing it, then still reported a `success` result.
+      resultSuccess(),
+    ]);
+    const engine = new SdkEngine(baseDeps({ emit: (e) => events.push(e), queryFn }));
+    await engine.runTurn('u1', 'hi'); // must resolve -- settlePendingTurn ran
+
+    const relevantTypes = events
+      .filter((e) => e.type === 'assistant-message' || e.type === 'turn-error' || e.type === 'state')
+      .map((e) => e.type);
+    // 'state' appears twice: 'active' at the top of runTurn, 'idle' at the
+    // end -- the dangling-text flush's assistant-message/turn-error land in
+    // between.
+    expect(relevantTypes).toEqual(['state', 'assistant-message', 'turn-error', 'state']);
+
+    expect(eventsOfType(events, 'assistant-message')).toEqual([
+      { v: 1, type: 'assistant-message', turnId: 'u1', text: 'one two three' },
+    ]);
+    const turnErrors = eventsOfType(events, 'turn-error');
+    expect(turnErrors).toHaveLength(1);
+    expect(turnErrors[0].message).toContain('without a completed assistant message');
+    expect(turnErrors[0].message).toContain('13 chars');
+    expect(eventsOfType(events, 'state').map((e) => e.state)).toEqual(['active', 'idle']);
+  });
+
+  it('(b) CONTROL: a success result preceded by message_stop is unaffected -- one assistant-message, no turn-error', async () => {
+    const events: EmbeddedAgentEvent[] = [];
+    const { queryFn } = makeFakeQuery([
+      systemInit(),
+      textDeltaEvent('Hel'),
+      textDeltaEvent('lo!'),
+      messageStopEvent(),
+      resultSuccess(),
+    ]);
+    const engine = new SdkEngine(baseDeps({ emit: (e) => events.push(e), queryFn }));
+    await engine.runTurn('u1', 'hi');
+
+    expect(eventsOfType(events, 'assistant-message')).toEqual([
+      { v: 1, type: 'assistant-message', turnId: 'u1', text: 'Hello!' },
+    ]);
+    expect(eventsOfType(events, 'turn-error')).toHaveLength(0);
+  });
+
+  it('(c) a non-success result with no message_stop merges into exactly ONE turn-error, which names both the dangling text and the subtype', async () => {
+    const events: EmbeddedAgentEvent[] = [];
+    const { queryFn } = makeFakeQuery([
+      systemInit(),
+      textDeltaEvent('partial reply'),
+      // No messageStopEvent() -- same abnormal shape as (a), but the result
+      // itself is also an error (e.g. a cancel: aborted_streaming).
+      resultError('error_during_execution', ['boom'], 'aborted_streaming'),
+    ]);
+    const engine = new SdkEngine(baseDeps({ emit: (e) => events.push(e), queryFn }));
+    await engine.runTurn('u1', 'hi');
+
+    expect(eventsOfType(events, 'assistant-message')).toEqual([
+      { v: 1, type: 'assistant-message', turnId: 'u1', text: 'partial reply' },
+    ]);
+    const turnErrors = eventsOfType(events, 'turn-error');
+    // Exactly one -- the subtype branch's own "turn canceled" / generic-error
+    // turn-error must NOT also fire on top of the dangling-text one.
+    expect(turnErrors).toHaveLength(1);
+    expect(turnErrors[0].message).toContain('without a completed assistant message');
+    expect(turnErrors[0].message).toContain('error_during_execution');
+  });
+
+  it('(d) the stream ending with no result at all (EOF/fatal path) still flushes the dangling text before fatal', async () => {
+    function cleanEndWithDanglingTextGenerator(): AsyncGenerator<SDKMessage, void> {
+      async function* gen(): AsyncGenerator<SDKMessage, void> {
+        yield systemInit();
+        yield textDeltaEvent('partial');
+        // Returns without throwing and without ever yielding a `result` --
+        // same unexpected-clean-end shape as the "clean stream end" describe
+        // below, but WITH dangling text this time.
+      }
+      return gen();
+    }
+    const events: EmbeddedAgentEvent[] = [];
+    const { queryFn, isClosed } = makeFakeQuery(cleanEndWithDanglingTextGenerator);
+    const engine = new SdkEngine(baseDeps({ emit: (e) => events.push(e), queryFn }));
+    const turnPromise = engine.runTurn('u1', 'hi');
+    await turnPromise; // must resolve -- handleFatal's settlePendingTurn ran
+
+    const relevantTypes = events
+      .filter((e) => e.type === 'assistant-message' || e.type === 'turn-error' || e.type === 'fatal')
+      .map((e) => e.type);
+    // assistant-message and turn-error (the flush) precede fatal.
+    expect(relevantTypes).toEqual(['assistant-message', 'turn-error', 'fatal']);
+
+    expect(eventsOfType(events, 'assistant-message')).toEqual([
+      { v: 1, type: 'assistant-message', turnId: 'u1', text: 'partial' },
+    ]);
+    const turnErrors = eventsOfType(events, 'turn-error');
+    expect(turnErrors).toHaveLength(1);
+    expect(turnErrors[0].message).toContain('without a completed assistant message');
+    const fatalEvents = eventsOfType(events, 'fatal');
+    expect(fatalEvents).toHaveLength(1);
+    expect(fatalEvents[0].message).toBe('SDK message stream ended unexpectedly');
+    expect(isClosed()).toBe(true);
+  });
+
+  it('(e) CONTROL: a tool-only turn (no text deltas at all) stays unaffected -- the existing empty-text assistant-message, no turn-error', async () => {
+    const events: EmbeddedAgentEvent[] = [];
+    const { queryFn } = makeFakeQuery([
+      systemInit(),
+      assistantToolUseMessage('call-1', 'Read', { file_path: '/tmp/x' }),
+      messageStopEvent(),
+      userToolResultMessage('call-1', 'file contents'),
+      resultSuccess(),
+    ]);
+    const engine = new SdkEngine(baseDeps({ emit: (e) => events.push(e), queryFn }));
+    await engine.runTurn('u1', 'hi');
+
+    expect(eventsOfType(events, 'assistant-message')).toEqual([
+      { v: 1, type: 'assistant-message', turnId: 'u1', text: '' },
+    ]);
+    expect(eventsOfType(events, 'turn-error')).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Finding #1 (#1572) -- synthetic local-command replies (no stream_event at
 // all) must still reach the transcript via handleAssistantMessage's
 // sawTextDelta-guarded fallback.
