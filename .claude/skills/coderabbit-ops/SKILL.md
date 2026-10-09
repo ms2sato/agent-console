@@ -47,7 +47,7 @@ One thing that looks like a surface and is not: a **future-tense reply from the 
 | 3 | **Inline comments** | `gh api repos/<owner>/<repo>/pulls/<N>/comments` | Resolved or addressed if actionable |
 | 4 | **Commit-status `description`** | see "The commit-status surface" below | `Review completed` — `state` is `success` even when no review ran |
 | 5 | **Formal review bodies** | see "The review-body surface" below | No unaddressed findings in any review's `body` |
-| 6 | **Review freshness** | see "The staleness surface" below | Some review's `commit_id` equals the PR's current HEAD |
+| 6 | **Review freshness** | see "The staleness surface" below | A review PASS on the head (body carries `Actionable comments posted`); the bot's empty thread-resolution acks also carry `commit_id` = head and do not count |
 
 An empty `reviewDecision` means the bot has not yet reviewed and the PR is **not** yet clean — wait for the bot to submit, do not merge. (Exception 1: under the rate-limit fallback in `troubleshooting.md`, an empty state may persist; in that exception path, follow the fallback's verification steps before merge. Exception 2: a completed walkthrough with 0 actionable inline comments can also leave `reviewDecision` empty — CodeRabbit does not always submit a formal review event when it finds nothing to flag. See "the walkthrough-exists rubric" in `troubleshooting.md` before assuming "not yet reviewed" from an empty field alone.)
 
@@ -169,7 +169,7 @@ gh api repos/<owner>/<repo>/pulls/<N>/reviews \
 gh pr view <N> --json headRefOid -q .headRefOid
 ```
 
-**Clean requires some review's `commit_id` to equal the current HEAD.** Not "a review exists" — reviews are per-commit and they accumulate.
+**Clean requires some review PASS's `commit_id` to equal the current HEAD.** Not "a review exists" — reviews are per-commit and they accumulate, and not "some review object's `commit_id` matches" either: CodeRabbit also posts empty-body thread-resolution acks whose `commit_id` is the current head, and those are not a review of it (Issue #1918; see the surface 6 table row above).
 
 `acceptance-check.js`'s Q13 fires when the head is unreviewed or its state could not be retrieved. The disposition record must carry the heading `CodeRabbit disposition` in the PR body for `dispositionRecorded` to read `found`.
 

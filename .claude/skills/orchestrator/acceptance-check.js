@@ -326,11 +326,18 @@ function printAcceptanceCriteriaSection(linkedIssue, acceptanceCriteriaState) {
  */
 function printCodeRabbitHeadState(codeRabbitHeadState) {
   if (!codeRabbitHeadState) return;
-  const { state, headSha, statusDescription, dispositionRecorded } = codeRabbitHeadState;
+  const { state, headSha, statusDescription, dispositionRecorded, headReviewCount, headAckCount } = codeRabbitHeadState;
   const shortSha = headSha ? headSha.slice(0, 8) : 'unknown';
   const description = statusDescription ?? '(unknown)';
   const disposition = dispositionRecorded ? 'found' : 'absent';
-  console.log(`CodeRabbit head review: ${state} (head ${shortSha}, status "${description}", disposition record in PR body: ${disposition})`);
+  // Older or test-injected `codeRabbitHeadState` objects may lack
+  // `headReviewCount` / `headAckCount` entirely, so default to 0 rather
+  // than printing "undefined".
+  const reviewCount = headReviewCount ?? 0;
+  const ackCount = headAckCount ?? 0;
+  console.log(
+    `CodeRabbit head review: ${state} (head ${shortSha}, status "${description}", reviews on head: ${reviewCount}, of which acks: ${ackCount}, disposition record in PR body: ${disposition})`,
+  );
   console.log();
 }
 

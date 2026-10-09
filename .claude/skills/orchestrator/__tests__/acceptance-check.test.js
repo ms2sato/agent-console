@@ -1175,9 +1175,13 @@ describe('printCodeRabbitHeadState', () => {
       matchingReviewAt: '2026-10-01T00:00:00Z',
       statusDescription: 'Review completed',
       dispositionRecorded: false,
+      headReviewCount: 1,
+      headAckCount: 0,
     });
     const output = logs.join('\n');
-    expect(output).toContain('CodeRabbit head review: reviewed (head abc123de, status "Review completed", disposition record in PR body: absent)');
+    expect(output).toContain(
+      'CodeRabbit head review: reviewed (head abc123de, status "Review completed", reviews on head: 1, of which acks: 0, disposition record in PR body: absent)',
+    );
   });
 
   it('prints "found" for dispositionRecorded true and truncates the head SHA to 8 characters', () => {
@@ -1187,10 +1191,13 @@ describe('printCodeRabbitHeadState', () => {
       matchingReviewAt: null,
       statusDescription: 'Review rate limited',
       dispositionRecorded: true,
+      headReviewCount: 2,
+      headAckCount: 2,
     });
     const output = logs.join('\n');
     expect(output).toContain('head 01234567');
     expect(output).not.toContain('head 0123456789abcdef');
+    expect(output).toContain('reviews on head: 2, of which acks: 2');
     expect(output).toContain('disposition record in PR body: found');
   });
 
@@ -1201,9 +1208,30 @@ describe('printCodeRabbitHeadState', () => {
       matchingReviewAt: null,
       statusDescription: null,
       dispositionRecorded: false,
+      headReviewCount: 0,
+      headAckCount: 0,
     });
     const output = logs.join('\n');
-    expect(output).toContain('CodeRabbit head review: retrieval-failed (head unknown, status "(unknown)", disposition record in PR body: absent)');
+    expect(output).toContain(
+      'CodeRabbit head review: retrieval-failed (head unknown, status "(unknown)", reviews on head: 0, of which acks: 0, disposition record in PR body: absent)',
+    );
+  });
+
+  // `headReviewCount` / `headAckCount` are new (Issue #1918) -- an object
+  // injected the way the pre-#1918 tests above do (no such fields at all)
+  // must still print, defaulting both counts to 0, rather than printing
+  // "undefined".
+  it('defaults headReviewCount/headAckCount to 0 when the injected object predates Issue #1918 and omits them', () => {
+    printCodeRabbitHeadState({
+      state: 'reviewed',
+      headSha: 'abc123def456',
+      matchingReviewAt: '2026-10-01T00:00:00Z',
+      statusDescription: 'Review completed',
+      dispositionRecorded: false,
+    });
+    const output = logs.join('\n');
+    expect(output).toContain('reviews on head: 0, of which acks: 0');
+    expect(output).not.toContain('undefined');
   });
 });
 
