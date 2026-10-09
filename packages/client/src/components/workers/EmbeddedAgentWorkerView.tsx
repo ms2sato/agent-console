@@ -1,5 +1,6 @@
 import { useRef, useEffect, useMemo, useState } from 'react';
 import type { FieldError } from 'react-hook-form';
+import * as v from 'valibot';
 import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeSanitize from 'rehype-sanitize';
@@ -25,7 +26,8 @@ import { useEmbeddedAgents } from '../../hooks/useEmbeddedAgents';
 import { logger } from '../../lib/logger';
 import { updateEmbeddedAgentWorker, setMcpServerPermissions, sendWorkerMessage } from '../../lib/api';
 import { copyToClipboard } from '../../lib/clipboard';
-import { isPositiveInteger, POSITIVE_INTEGER_MESSAGE } from '../../lib/positive-integer';
+import { POSITIVE_INTEGER_MESSAGE } from '../../lib/positive-integer';
+import { ContextWindowTokensSchema } from '../../schemas/worktree-form';
 import { AgentParameterFields } from '../agents/AgentParameterFields';
 
 /** Entries folded into the collapsed-by-default "Working" accordion. */
@@ -330,15 +332,16 @@ export function EmbeddedAgentWorkerView({
 
   // `draftContextWindowTokens` is `undefined` for a blank field, which is
   // valid (Apply then sends `contextWindowTokens: null`) -- only a DEFINED
-  // value has to clear `isPositiveInteger`. This reuses the same rule the
-  // creation form's `contextWindowTokensInput` field enforces
-  // (`lib/positive-integer.ts`), rather than re-deriving it a third time,
-  // because it is the identical fact the server's own
+  // value has to clear `ContextWindowTokensSchema`. This reuses the single
+  // named writer of the rule (`schemas/worktree-form.ts`, also applied by
+  // `CreateWorktreeForm` and `AddAgentWorkerMenu`) rather than re-deriving
+  // it a fourth time, because it is the identical fact the server's own
   // `UpdateEmbeddedAgentWorkerRequestSchema` enforces for this field: a
   // rejected value would otherwise reach the PATCH, 400, and surface
   // nothing to the user beyond a console `logger.error`.
   const contextWindowTokensInvalid =
-    draftContextWindowTokens !== undefined && !isPositiveInteger(draftContextWindowTokens);
+    draftContextWindowTokens !== undefined &&
+    !v.safeParse(ContextWindowTokensSchema, draftContextWindowTokens).success;
   const contextWindowTokensError: FieldError | undefined = contextWindowTokensInvalid
     ? { type: 'validate', message: POSITIVE_INTEGER_MESSAGE }
     : undefined;
