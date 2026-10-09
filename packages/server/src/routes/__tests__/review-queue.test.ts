@@ -1,7 +1,8 @@
-import { describe, it, expect, beforeEach, mock } from 'bun:test';
+import { describe, it, expect, beforeEach, mock, spyOn } from 'bun:test';
 import { Hono } from 'hono';
 import type { AppBindings } from '../../app-context.js';
 import { onApiError } from '../../lib/error-handler.js';
+import { rootLogger } from '../../lib/logger.js';
 import { asAppContext } from '../../__tests__/test-utils.js';
 import { AnnotationService } from '../../services/annotation-service.js';
 import { reviewQueue } from '../review-queue.js';
@@ -253,6 +254,30 @@ describe('Review Queue API', () => {
       expect(mockBroadcastToApp).toHaveBeenCalledWith({ type: 'review-queue-updated' });
     });
 
+    it('warns and still returns 201 when the PTY nudge is rejected (writeWorkerInput returns false, Issue #1654)', async () => {
+      annotationService.setAnnotations('worker-1', validInput(), {
+        sessionId: 'sess-1',
+        sourceSessionId: 'orchestrator',
+      });
+      (mockSessionManager.writeWorkerInput as ReturnType<typeof mock>).mockImplementation(() => false);
+
+      const warnSpy = spyOn(rootLogger, 'warn');
+      try {
+        const res = await app.request('/api/review-queue/worker-1/comments', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ file: 'src/index.ts', line: 15, body: 'Needs refactoring' }),
+        });
+
+        // The comment annotation is still recorded; only the PTY nudge failed.
+        expect(res.status).toBe(201);
+        expect(warnSpy).toHaveBeenCalledTimes(1);
+        expect(warnSpy.mock.calls[0][1]).toContain('PTY nudge');
+      } finally {
+        warnSpy.mockRestore();
+      }
+    });
+
     it('should return 404 for unknown worker', async () => {
       const res = await app.request('/api/review-queue/nonexistent/comments', {
         method: 'POST',
@@ -349,6 +374,30 @@ describe('Review Queue API', () => {
 
       // Verify broadcastToApp was called
       expect(mockBroadcastToApp).toHaveBeenCalledWith({ type: 'review-queue-updated' });
+    });
+
+    it('warns and still returns 200 when the PTY nudge is rejected (writeWorkerInput returns false, Issue #1654)', async () => {
+      annotationService.setAnnotations('worker-1', validInput(), {
+        sessionId: 'sess-1',
+        sourceSessionId: 'orchestrator',
+      });
+      (mockSessionManager.writeWorkerInput as ReturnType<typeof mock>).mockImplementation(() => false);
+
+      const warnSpy = spyOn(rootLogger, 'warn');
+      try {
+        const res = await app.request('/api/review-queue/worker-1/status', {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ status: 'completed' }),
+        });
+
+        // The status update is still applied; only the PTY nudge failed.
+        expect(res.status).toBe(200);
+        expect(warnSpy).toHaveBeenCalledTimes(1);
+        expect(warnSpy.mock.calls[0][1]).toContain('PTY nudge');
+      } finally {
+        warnSpy.mockRestore();
+      }
     });
 
     it('should return 404 for unknown worker', async () => {

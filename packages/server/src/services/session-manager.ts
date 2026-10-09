@@ -892,10 +892,13 @@ export class SessionManager {
         // from PtyNotificationParams + writeInput -- the cast is safe
         // because `params` is already a valid member of the union and
         // `writeInput` is the only field Omit removed.
-        writePtyNotification({
+        const { written } = writePtyNotification({
           ...params,
           writeInput: (data) => this.writeWorkerInput(sessionId, workerId, data),
         } as WritePtyNotificationParams);
+        if (!written) {
+          return { ok: false, error: 'PTY write rejected: worker PTY is not active' };
+        }
         return { ok: true };
       } catch (err) {
         const error = err instanceof Error ? err.message : 'PTY notification failed';

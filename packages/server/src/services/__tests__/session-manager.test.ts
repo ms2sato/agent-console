@@ -2464,6 +2464,45 @@ describe('SessionManager', () => {
       const result = await manager.deliverWorkerNotification(session.id, 'non-existent-worker', TIMER_PARAMS);
       expect(result.ok).toBe(false);
     });
+
+    // Q12 polarity (Issue #1654): on unmodified main, writePtyNotification's
+    // `writeInput` callback is typed `(data: string) => void`, discarding
+    // the boolean WorkerManager.writeInput returns, so the PTY branch
+    // reports `{ ok: true }` unconditionally even when the write never
+    // reached a live PTY. This test must fail against unmodified main.
+    it('PTY-backed target whose pty is null (bypassing routing predicate): resolves { ok: false, error: /PTY write rejected/ }', async () => {
+      const manager = await getSessionManager();
+      const session = await manager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+      const agentWorker = session.workers.find((w: Worker) => w.type === 'agent')!;
+
+      const internalWorker = manager.getWorker(session.id, agentWorker.id);
+      if (!internalWorker || !isInternalPtyWorker(internalWorker)) {
+        throw new Error('expected a PTY-backed internal worker');
+      }
+      internalWorker.pty = null;
+
+      const result = await manager.deliverWorkerNotification(session.id, agentWorker.id, TIMER_PARAMS);
+
+      expect(result).toEqual({ ok: false, error: expect.stringMatching(/PTY write rejected/) });
+    });
+
+    it('PTY-backed target with a live pty: resolves { ok: true }', async () => {
+      const manager = await getSessionManager();
+      const session = await manager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+      const agentWorker = session.workers.find((w: Worker) => w.type === 'agent')!;
+
+      const result = await manager.deliverWorkerNotification(session.id, agentWorker.id, TIMER_PARAMS);
+
+      expect(result).toEqual({ ok: true });
+    });
   });
 
   describe('MCP token registry sharing (Phase 4)', () => {

@@ -32,8 +32,12 @@ export function formatFieldValue(value: string): string {
 }
 
 interface BasePtyNotificationParams {
-  /** Function to write data to the PTY */
-  writeInput: (data: string) => void;
+  /**
+   * Function to write data to the PTY. Returns whether the write actually
+   * reached a live PTY (e.g. `false` when the worker's PTY is not active) --
+   * callers must inspect this rather than assume success.
+   */
+  writeInput: (data: string) => boolean;
 }
 
 export interface InboundEventPtyNotification extends BasePtyNotificationParams {
@@ -192,25 +196,33 @@ export function buildPtyNotificationText(params: PtyNotificationParams): string 
  *
  * Writes `\n[tag] key1=val1 key2=val2 intent=...` immediately, then sends
  * a carriage return (`\r`) after a 150ms delay so TUI agents can
- * process the text input before receiving the Enter keystroke.
+ * process the text input before receiving the Enter keystroke -- but only
+ * when the first write actually reached a live PTY (`written: true`).
+ * Sending Enter after a rejected write would inject a stray keystroke into
+ * a PTY that never received the notification text.
  *
- * @returns The notification string that was written (without the trailing `\r`)
+ * @returns The notification string that was written (without the trailing
+ * `\r`), plus whether that first write reached a live PTY. The delayed
+ * `\r`'s own write result is not observed here (its failure stays
+ * swallowed, same as before).
  */
-export function writePtyNotification(params: WritePtyNotificationParams): string {
+export function writePtyNotification(params: WritePtyNotificationParams): { notification: string; written: boolean } {
   const { writeInput } = params;
   const notification = buildPtyNotificationText(params);
-  writeInput(notification);
-  // Send Enter keystroke separately after a delay so TUI agents can process the text input first.
-  // The PTY may have been disposed by the time the callback fires, so guard against errors.
-  setTimeout(() => {
-    try {
-      writeInput('\r');
-    } catch {
-      // PTY may have been disposed; ignore
-    }
-  }, 150);
+  const written = writeInput(notification);
+  if (written) {
+    // Send Enter keystroke separately after a delay so TUI agents can process the text input first.
+    // The PTY may have been disposed by the time the callback fires, so guard against errors.
+    setTimeout(() => {
+      try {
+        writeInput('\r');
+      } catch {
+        // PTY may have been disposed; ignore
+      }
+    }, 150);
+  }
 
-  return notification;
+  return { notification, written };
 }
 
 /**
