@@ -164,6 +164,26 @@ describe('RepositorySlackIntegrationService', () => {
       expect(updated.enabled).toBe(false);
     });
 
+    it('should update enabled independently when webhook_url does not change', async () => {
+      const created = await service.upsert(testRepositoryId, testWebhookUrl, true);
+
+      const updated = await service.upsert(testRepositoryId, testWebhookUrl, false);
+
+      expect(updated.id).toBe(created.id);
+      expect(updated.webhookUrl).toBe(testWebhookUrl);
+      expect(updated.enabled).toBe(false);
+    });
+
+    it('should update webhook_url independently when enabled does not change', async () => {
+      const created = await service.upsert(testRepositoryId, testWebhookUrl, true);
+
+      const updated = await service.upsert(testRepositoryId, anotherWebhookUrl, true);
+
+      expect(updated.id).toBe(created.id);
+      expect(updated.webhookUrl).toBe(anotherWebhookUrl);
+      expect(updated.enabled).toBe(true);
+    });
+
     it('should default enabled to true when not specified', async () => {
       const result = await service.upsert(testRepositoryId, testWebhookUrl);
 
