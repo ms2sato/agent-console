@@ -14,7 +14,7 @@ import type { Session, Worker } from '@agent-console/shared';
 
 /**
  * Component-render tests for `SessionPage` (the sibling `SessionPage.test.ts`
- * covers its exported pure helpers without JSX; `SessionPage.keyboard.test.tsx`
+ * covers its exported pure helpers without JSX; `tabKeyboardNavigation.test.tsx`
  * drives a harness). This file renders the REAL `SessionPage`, not a harness,
  * so it exercises the actual JS-gated rail-vs-drawer swap wired up in
  * SessionPage.tsx itself.
