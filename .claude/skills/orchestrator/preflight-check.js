@@ -304,13 +304,14 @@ if (isMainModule) {
     console.error(`Invalid PR number: ${prNumber}`);
     process.exit(1);
   }
-  const changedFiles = prNumber
-    ? getChangedFiles(prNumber)
-    : getLocalChangedFiles();
-  // Only resolve/fetch PR SHAs when a PR number was given. The no-PR-number
-  // (local / CI-checkout) mode keeps relying on the checked-out `HEAD`, as
-  // it always has — that mode's checkout IS the branch being checked, so
-  // there is nothing to resolve.
+  // Only resolve/fetch the PR's real merge-base when a PR number was given.
+  // The no-PR-number (local / CI-checkout) mode keeps relying on the
+  // checked-out `HEAD`, as it always has — that mode's checkout IS the
+  // branch being checked, so there is nothing to resolve. When a PR number
+  // IS given, resolve the merge-base FIRST and list changed files from it —
+  // the file list must come from the same range the comment-only-diff check
+  // uses, not GitHub's creation-time `base.sha`.
+  let changedFiles;
   let diffRef = {};
   if (prNumber) {
     try {
@@ -320,6 +321,9 @@ if (isMainModule) {
       console.error(`Error: ${err.message}`);
       process.exit(1);
     }
+    changedFiles = getChangedFiles(prNumber, diffRef);
+  } else {
+    changedFiles = getLocalChangedFiles();
   }
   run(changedFiles, diffRef);
 }

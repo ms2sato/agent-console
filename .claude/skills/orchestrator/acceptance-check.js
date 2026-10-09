@@ -75,12 +75,13 @@ function createStdinReader(stdin = process.stdin) {
 // --- Auto-detection ---
 
 function runAutoDetection(prNumber) {
-  const changedFiles = getChangedFiles(prNumber);
-  const categories = categorizeFiles(changedFiles);
-  // Resolve the PR's actual base/head SHAs rather than relying on the
-  // Orchestrator's own worktree being checked out to this PR's branch — see
-  // resolvePrDiffRef's doc comment.
+  // Resolve the PR's real merge-base/head FIRST — the Orchestrator's own
+  // worktree is essentially never checked out to this PR's branch, and the
+  // file list below must be computed from the same range this resolves, not
+  // GitHub's creation-time `base.sha` — see resolvePrDiffRef's doc comment.
   const diffRef = resolvePrDiffRef(prNumber);
+  const changedFiles = getChangedFiles(prNumber, diffRef);
+  const categories = categorizeFiles(changedFiles);
   const { testFiles, productionFiles, testCoverage } = findTestFiles(changedFiles, diffRef);
   const boundaries = analyzePackageBoundaries(categories);
   const ciStatus = getCiStatus(prNumber);

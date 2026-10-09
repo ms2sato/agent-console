@@ -95,7 +95,7 @@ Descriptions observed, all with `state=success`:
 |---|---|---|
 | `Review completed` | A real review ran | Proceed to surfaces 2, 3 and 5 |
 | `Review rate limited` | **The bot never reviewed this commit** — and this may not be the whole reason; see below | Re-read against the comment body before deciding to wait |
-| `Review skipped: N files exceed the limit of 100` | **Structural.** The PR is over the plan's file cap and waiting will never clear it | Reduce the diff (see `troubleshooting.md`); no disposition can substitute for a review that cannot start |
+| `Review skipped: N files exceed the limit of 100` | **Structural.** The PR is over the plan's file cap and waiting will never clear it | Reduce the diff (see `troubleshooting.md`); no disposition can substitute for a review that cannot start. **Exception:** if `N` is far above the branch's real `git diff --stat origin/main...HEAD` file count, that gap is a stale-base symptom (GitHub's cached, creation-time `base.sha` pulling in the base branch's own intervening commits — see PR #1544), not a genuinely oversize PR; the remedy is closing and reopening the PR from the same head, not splitting the diff |
 | `Review skipped: ignored keyword in the PR title` | Deliberately skipped by `.coderabbit.yaml` config (the docs carve-out above) | Surface 2 is N/A — verify the diff really is docs-only |
 | `Review skipped: draft pull request` | **The PR is a draft.** No review runs, and none is queued — marking it ready is what starts one | Expected while drafting; a draft PR is never "reviewed clean" |
 
