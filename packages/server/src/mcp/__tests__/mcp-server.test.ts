@@ -1818,6 +1818,128 @@ describe('MCP Server Tools', () => {
           `Message from session quick session (${senderSession.id.slice(0, 8)})`,
         );
       });
+
+      // CodeRabbit (PR #1884, discussion_r4227654231): a title made only of
+      // control characters survives `.trim()` as non-empty, then strips
+      // down to '' if sanitize runs AFTER the emptiness test -- producing a
+      // blank label instead of falling through to the branch/quick-session
+      // fallback. Sanitize-then-test is what this guards.
+      it('treats a control-character-only title as unset, falling back like a titleless sender', async () => {
+        const session = await sessionManager.createSession({
+          type: 'quick',
+          locationPath: '/test/path',
+          agentId: 'claude-code',
+        });
+        const senderSession = await sessionManager.createSession({
+          type: 'quick',
+          locationPath: '/test/sender-path',
+          agentId: 'claude-code',
+          title: '\x01',
+        });
+
+        const mockPty = ptyFactory.instances[0];
+        expect(mockPty).toBeDefined();
+
+        await callTool(app, mcpSessionId, 'send_session_message', {
+          toSessionId: session.id,
+          content: 'done',
+          fromSessionId: senderSession.id,
+        }, nextId++);
+
+        const allWritten = mockPty.writtenData.join('');
+        expect(allWritten).toContain(
+          `Message from session quick session (${senderSession.id.slice(0, 8)})`,
+        );
+      });
+
+      // CodeRabbit (PR #1884, discussion_r4227654237): the worktree-branch
+      // fallback must be sanitized too -- POST /api/sessions accepts any
+      // nonempty worktreeId, and a non-git location skips branch
+      // reconciliation, so control characters can reach a worktree
+      // session's worktreeId and from there the notification summary.
+      //
+      // Verified against the EMBEDDED delivery surface, not PTY: the PTY
+      // branch's written text is composed via buildPtyNotificationText,
+      // which runs every field (including summary) through
+      // formatFieldValue's own control-char strip regardless of this
+      // function's sanitization -- a PTY-observed assertion here would
+      // pass even with no fix, because the PTY layer masks the defect. The
+      // embedded surface's persisted `notification.summary` comes from
+      // extractNotificationSummary reading `params.fields.summary`
+      // directly, with no such stripping -- this function's own
+      // sanitization is the only thing protecting it.
+      it('strips a control character out of the branch name for a titleless worktree sender (embedded surface)', async () => {
+        await registerTestRepo();
+        const session = await sessionManager.createSession(
+          { type: 'quick', locationPath: '/test/path', agentId: 'claude-code' },
+          { createdBy: 'test-user-id' },
+        );
+        const embeddedWorker = await sessionManager.createWorker(session.id, {
+          type: 'embedded-agent',
+          embeddedAgentId: TEST_EMBEDDED_AGENT_DEF.id,
+        });
+        expect(embeddedWorker).toBeDefined();
+
+        const senderSession = await sessionManager.createSession({
+          type: 'worktree',
+          locationPath: '/test/sender-worktree',
+          repositoryId: 'repo-1',
+          worktreeId: 'feature\x01-branch',
+          agentId: 'claude-code',
+        });
+
+        await callTool(app, mcpSessionId, 'send_session_message', {
+          toSessionId: session.id,
+          toWorkerId: embeddedWorker!.id,
+          content: 'done',
+          fromSessionId: senderSession.id,
+        }, nextId++);
+
+        const history = await sessionManager.getWorkerOutputHistory(session.id, embeddedWorker!.id, 0);
+        expect(history).not.toBeNull();
+        const persistedUserMessage = (history!.data as string)
+          .split('\n')
+          .filter((line: string) => line.length > 0)
+          .map((line: string) => JSON.parse(line) as { type: string; notification?: { kind: string; summary?: string } })
+          .find((event) => event.type === 'user-message');
+        expect(persistedUserMessage?.notification?.summary).toBe(
+          `Message from session feature-branch (${senderSession.id.slice(0, 8)})`,
+        );
+
+        const deactivatePromise = sessionManager.deactivateEmbeddedAgentWorker(session.id, embeddedWorker!.id);
+        fakeEmbeddedSpawn.simulateExit(0);
+        await deactivatePromise;
+      });
+
+      it('falls back to "quick session" when a titleless worktree sender\'s branch is only control characters', async () => {
+        await registerTestRepo();
+        const session = await sessionManager.createSession({
+          type: 'quick',
+          locationPath: '/test/path',
+          agentId: 'claude-code',
+        });
+        const senderSession = await sessionManager.createSession({
+          type: 'worktree',
+          locationPath: '/test/sender-worktree',
+          repositoryId: 'repo-1',
+          worktreeId: '\x01\x02',
+          agentId: 'claude-code',
+        });
+
+        const mockPty = ptyFactory.instances[0];
+        expect(mockPty).toBeDefined();
+
+        await callTool(app, mcpSessionId, 'send_session_message', {
+          toSessionId: session.id,
+          content: 'done',
+          fromSessionId: senderSession.id,
+        }, nextId++);
+
+        const allWritten = mockPty.writtenData.join('');
+        expect(allWritten).toContain(
+          `Message from session quick session (${senderSession.id.slice(0, 8)})`,
+        );
+      });
     });
 
     it('should split notification text and Enter keystroke into separate writes with delay', async () => {
