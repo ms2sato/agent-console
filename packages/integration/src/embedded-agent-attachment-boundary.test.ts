@@ -37,6 +37,7 @@ import {
 } from '@agent-console/server/src/__tests__/test-utils';
 import { createTestContext, shutdownAppContext } from '@agent-console/server/src/app-context';
 import type { AppContext } from '@agent-console/server/src/app-context';
+import { createMockPtyProvider } from '@agent-console/server/src/__tests__/utils/mock-pty';
 import { resolveUploadDir } from '@agent-console/server/src/lib/message-upload-dir';
 import type { SpawnAsUserFn, SpawnAsUserOpts } from '@agent-console/server/src/services/privilege-elevation';
 import { toSpawnAsUserResult, type FakeFileSink, type FakeSubprocess } from '@agent-console/server/src/__tests__/utils/fake-spawn-as-user';
@@ -108,7 +109,11 @@ describe('Client-Server Boundary: embedded-agent message attachments (Issue #157
   beforeEach(async () => {
     await setupTestEnvironment();
     fake = makeFakeSpawn();
-    ctx = await createTestContext({ spawnAsUserFn: fake.fn });
+    // Issue #1886: hermetic PtyProvider -- this suite's fixture cwd does not
+    // exist on disk, and the configured default (bun-terminal) throws
+    // ENOENT on a missing cwd where the legacy bunPtyProvider silently
+    // tolerated it (production handling tracked separately, #1892).
+    ctx = await createTestContext({ spawnAsUserFn: fake.fn, ptyProvider: createMockPtyProvider() });
   });
 
   afterEach(async () => {

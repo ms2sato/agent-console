@@ -20,7 +20,7 @@ import { SqliteEmbeddedAgentRepository } from '../repositories/sqlite-embedded-a
 import type { EmbeddedAgentDefinition } from '@agent-console/shared';
 import { bunTerminalProvider } from '../lib/pty-provider.js';
 import type { TerminalPtySpawnRequest } from '../services/user-mode.js';
-import { MockPty, createMockPtyFactory } from './utils/mock-pty.js';
+import { MockPty, createMockPtyFactory, createMockPtyProvider } from './utils/mock-pty.js';
 
 function createDeferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
   let resolve!: (value: T) => void;
@@ -696,7 +696,23 @@ describe('AppContext', () => {
       overrides?: { ensureMemoryDirFn?: EnsureMemoryDirFn },
     ): Promise<{ type: string; context: Record<string, unknown> }> {
       const fake = makeFakeSpawn();
-      appContext = await createTestContext({ spawnAsUserFn: fake.fn, ...overrides });
+      // Issue #1886: `createSession` below omits `embeddedAgentId`, so it
+      // unconditionally auto-creates a REAL `type:'agent'` PTY worker
+      // (session-manager.ts's `initialWorkerParams` default) in addition to
+      // the embedded-agent worker this helper adds afterward -- a pre-
+      // existing test-hygiene gap (the PTY worker is never deactivated by
+      // this helper). Under the legacy bunPtyProvider this real spawn was a
+      // silent, harmless side effect; under the configured default
+      // (bun-terminal) it is a real subprocess whose cwd (`scratch`, inside
+      // `memoryHomeDir`) this describe's `afterEach` deletes, and the
+      // orphaned worker's later async handling then throws ENOENT
+      // unawaited, surfacing as an unhandled rejection against whichever
+      // test runs next. The mock provider keeps this helper hermetic.
+      appContext = await createTestContext({
+        spawnAsUserFn: fake.fn,
+        ptyProvider: createMockPtyProvider(),
+        ...overrides,
+      });
 
       const owner = await appContext.userRepository.upsertByOsUid(
         24681,

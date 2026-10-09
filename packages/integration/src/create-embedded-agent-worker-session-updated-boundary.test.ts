@@ -46,6 +46,7 @@ import {
 } from '@agent-console/server/src/__tests__/test-utils';
 import { createTestContext, shutdownAppContext } from '@agent-console/server/src/app-context';
 import type { AppContext } from '@agent-console/server/src/app-context';
+import { createMockPtyProvider } from '@agent-console/server/src/__tests__/utils/mock-pty';
 import { CLAUDE_CODE_AGENT_ID } from '@agent-console/server/src/services/agent-manager';
 
 import { AppServerMessageSchema } from '@agent-console/shared';
@@ -55,7 +56,11 @@ describe('Client-Server Boundary: session-updated broadcast for embedded-agent w
 
   beforeEach(async () => {
     await setupTestEnvironment();
-    ctx = await createTestContext();
+    // Issue #1886: hermetic PtyProvider -- this suite's fixture cwd does not
+    // exist on disk, and the configured default (bun-terminal) throws
+    // ENOENT on a missing cwd where the legacy bunPtyProvider silently
+    // tolerated it (production handling tracked separately, #1892).
+    ctx = await createTestContext({ ptyProvider: createMockPtyProvider() });
   });
 
   afterEach(async () => {
