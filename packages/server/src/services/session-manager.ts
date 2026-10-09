@@ -1454,12 +1454,14 @@ export class SessionManager {
    * resolution order.
    */
   async resolveWorktreeOwnerUsername(locationPath: string): Promise<string | null> {
-    const liveSession = this.getAllSessions().find((s) => s.locationPath === locationPath);
+    const liveSession = this.getAllSessions().find(
+      (s) => s.type === 'worktree' && s.locationPath === locationPath,
+    );
     if (liveSession) {
       return resolveSpawnUsername(liveSession.createdBy, this.userRepository);
     }
     const pausedSession = (await this.getAllPausedSessions()).find(
-      (s) => s.locationPath === locationPath,
+      (s) => s.type === 'worktree' && s.locationPath === locationPath,
     );
     if (pausedSession) {
       return resolveSpawnUsername(pausedSession.createdBy, this.userRepository);

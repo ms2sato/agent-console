@@ -6712,9 +6712,10 @@ describe('SessionManager', () => {
 
   describe('resolveWorktreeOwnerUsername (Issue #1623 paused-worktree gap)', () => {
     // Same stubUserRepo construction as the "resolveSpawnUsername wiring"
-    // describe block above: resolves a single known createdBy UUID to a
-    // deterministic username, falling back to the server process user for
+    // describe block above: resolves two known createdBy UUIDs to
+    // deterministic usernames, falling back to the server process user for
     // anything else (never asserted on directly in these tests).
+    // user-other-uuid exists only for the type-filter test below.
     function buildStubUserRepo(): UserRepository {
       return {
         async upsertByOsUid(): Promise<AuthUser> {
@@ -6723,6 +6724,9 @@ describe('SessionManager', () => {
         async findById(id: string): Promise<AuthUser | null> {
           if (id === 'user-shared-uuid') {
             return { id, username: 'shared1', homeDir: '/home/shared1' };
+          }
+          if (id === 'user-other-uuid') {
+            return { id, username: 'otheruser', homeDir: '/home/otheruser' };
           }
           return null;
         },
@@ -6788,6 +6792,33 @@ describe('SessionManager', () => {
 
       const result = await manager.resolveWorktreeOwnerUsername('/test/nobody-owns-this-path');
       expect(result).toBeNull();
+    });
+
+    it('prefers the WORKTREE session over a QUICK session sharing the same locationPath', async () => {
+      // Quick sessions are not guaranteed a unique path namespace from
+      // worktree sessions. The quick session is created FIRST so it has
+      // the earlier Map insertion order -- `getAllSessions()` iterates
+      // `this.sessions.values()` in insertion order, so an unfiltered
+      // `.find()` would match the quick session first.
+      //
+      // Polarity measured directly (not just reasoned about): removing
+      // `s.type === 'worktree' &&` from the live-session predicate in
+      // resolveWorktreeOwnerUsername makes this test observe 'otheruser'
+      // (the quick session's owner) instead of 'shared1' -- confirming the
+      // break direction is "quick session wins", matching the insertion
+      // order above, not an unrelated failure shape.
+      const manager = await getSessionManagerWithUserRepo(buildStubUserRepo());
+      await manager.createSession(
+        { type: 'quick', locationPath: '/test/shared-path', agentId: 'claude-code' },
+        { createdBy: 'user-other-uuid' },
+      );
+      await manager.createSession(
+        { type: 'worktree', locationPath: '/test/shared-path', repositoryId: 'repo-1', worktreeId: 'feature-z', agentId: 'claude-code' },
+        { createdBy: 'user-shared-uuid' },
+      );
+
+      const result = await manager.resolveWorktreeOwnerUsername('/test/shared-path');
+      expect(result).toBe('shared1');
     });
   });
 
