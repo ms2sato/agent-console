@@ -130,6 +130,36 @@ describe('inbound-event-notification-repository', () => {
     });
   });
 
+  describe('markNotificationFailed', () => {
+    it('updates status to failed and leaves notified_at null (Issue #1679)', async () => {
+      await withDb(async (db, repo) => {
+        // Session required for FK constraint
+        await createTestSession(db);
+
+        await repo.createPendingNotification({
+          id: 'notification-1',
+          ...BASE_NOTIFICATION,
+        });
+
+        await repo.markNotificationFailed(
+          BASE_NOTIFICATION.job_id,
+          BASE_NOTIFICATION.session_id,
+          BASE_NOTIFICATION.worker_id,
+          BASE_NOTIFICATION.handler_id
+        );
+
+        const rows = await db
+          .selectFrom('inbound_event_notifications')
+          .selectAll()
+          .execute();
+
+        expect(rows).toHaveLength(1);
+        expect(rows[0].status).toBe(NOTIFICATION_STATUS.FAILED);
+        expect(rows[0].notified_at).toBeNull();
+      });
+    });
+  });
+
   describe('findInboundEventNotification', () => {
     it('returns null when notification does not exist', async () => {
       await withDb(async (_db, repo) => {

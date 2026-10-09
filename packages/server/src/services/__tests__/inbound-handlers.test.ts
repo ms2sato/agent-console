@@ -107,7 +107,7 @@ describe('AgentWorkerHandler', () => {
 
     const result = await agentHandler.handle(createReviewCommentEvent(), { sessionId: 'session-1' });
 
-    expect(result).toBe(true);
+    expect(result).toBe('handled');
     expect(getCapturedMessage()).toContain('intent=triage');
     expect(getCapturedMessage()).toContain('[inbound:pr:review_comment]');
     expect(getCapturedMessage()).toContain('type=pr:review_comment');
@@ -120,7 +120,7 @@ describe('AgentWorkerHandler', () => {
 
     const result = await agentHandler.handle(createChangesRequestedEvent(), { sessionId: 'session-1' });
 
-    expect(result).toBe(true);
+    expect(result).toBe('handled');
     expect(getCapturedMessage()).toContain('intent=triage');
     expect(getCapturedMessage()).toContain('[inbound:pr:changes_requested]');
     expect(getCapturedMessage()).toContain('type=pr:changes_requested');
@@ -131,7 +131,7 @@ describe('AgentWorkerHandler', () => {
 
     const result = await agentHandler.handle(createPrCommentEvent(), { sessionId: 'session-1' });
 
-    expect(result).toBe(true);
+    expect(result).toBe('handled');
     expect(getCapturedMessage()).toContain('intent=triage');
     expect(getCapturedMessage()).toContain('[inbound:pr:comment]');
     expect(getCapturedMessage()).toContain('type=pr:comment');
@@ -164,7 +164,7 @@ describe('AgentWorkerHandler', () => {
 
     const result = await agentHandler.handle(invalidEvent, { sessionId: 'session-1' });
 
-    expect(result).toBe(false);
+    expect(result).toBe('not-applicable');
     expect(deliverWorkerNotification).not.toHaveBeenCalled();
   });
 
@@ -226,7 +226,7 @@ describe('UINotificationHandler', () => {
 
     const result = await uiHandler.handle(createReviewCommentEvent(), { sessionId: 'session-1' });
 
-    expect(result).toBe(true);
+    expect(result).toBe('handled');
     expect(broadcastToApp).toHaveBeenCalledTimes(1);
     const broadcast = getCapturedBroadcast();
     expect(broadcast.type).toBe('inbound-event');
@@ -242,7 +242,7 @@ describe('UINotificationHandler', () => {
 
     const result = await uiHandler.handle(createChangesRequestedEvent(), { sessionId: 'session-1' });
 
-    expect(result).toBe(true);
+    expect(result).toBe('handled');
     expect(broadcastToApp).toHaveBeenCalledTimes(1);
     const broadcast = getCapturedBroadcast();
     expect(broadcast.type).toBe('inbound-event');
@@ -257,7 +257,7 @@ describe('UINotificationHandler', () => {
 
     const result = await uiHandler.handle(createPrCommentEvent(), { sessionId: 'session-1' });
 
-    expect(result).toBe(true);
+    expect(result).toBe('handled');
     expect(broadcastToApp).toHaveBeenCalledTimes(1);
     const broadcast = getCapturedBroadcast();
     expect(broadcast.type).toBe('inbound-event');

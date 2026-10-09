@@ -1,9 +1,10 @@
-import { describe, expect, it, mock, beforeEach } from 'bun:test';
+import { describe, expect, it, mock, beforeEach, spyOn } from 'bun:test';
 import type { Kysely } from 'kysely';
 import type { ServiceParser } from '../service-parser.js';
 import type { InboundEventHandler } from '../handlers.js';
 import type { InboundEventNotification, NewInboundEventNotification } from '../../../database/schema.js';
 import { createInboundEventJobHandler } from '../job-handler.js';
+import { rootLogger } from '../../../lib/logger.js';
 // Aliased: job-handler.ts's own dependency-interface `InboundEventNotificationRepository`
 // (3 methods) shares its name with the CLASS of the same name imported below
 // from the repository module (which additionally exposes `db` and
@@ -40,10 +41,12 @@ const mockCreatePendingNotification = mock(
   async (_notification: Omit<NewInboundEventNotification, 'status' | 'notified_at'>): Promise<void> => {}
 );
 const mockMarkNotificationDelivered = mock(async () => {});
+const mockMarkNotificationFailed = mock(async () => {});
 const notificationRepository = {
   findInboundEventNotification: mockFindInboundEventNotification,
   createPendingNotification: mockCreatePendingNotification,
   markNotificationDelivered: mockMarkNotificationDelivered,
+  markNotificationFailed: mockMarkNotificationFailed,
 };
 
 describe('createInboundEventJobHandler', () => {
@@ -51,6 +54,7 @@ describe('createInboundEventJobHandler', () => {
     mockFindInboundEventNotification.mockClear();
     mockCreatePendingNotification.mockClear();
     mockMarkNotificationDelivered.mockClear();
+    mockMarkNotificationFailed.mockClear();
     // Default: no existing notification
     mockFindInboundEventNotification.mockImplementation(async () => null);
   });
@@ -72,7 +76,7 @@ describe('createInboundEventJobHandler', () => {
     const handler: InboundEventHandler = {
       handlerId: 'test-handler',
       supportedEvents: ['ci:completed'],
-      handle: async () => true,
+      handle: async () => 'handled' as const,
     };
 
     const jobHandler = createInboundEventJobHandler({
@@ -111,7 +115,7 @@ describe('createInboundEventJobHandler', () => {
       notified_at: '2024-01-01T00:00:00Z',
     }));
 
-    const handlerMock = mock(async () => true);
+    const handlerMock = mock(async () => 'handled' as const);
     const handler: InboundEventHandler = {
       handlerId: 'test-handler',
       supportedEvents: ['ci:completed'],
@@ -167,7 +171,7 @@ describe('createInboundEventJobHandler', () => {
       notified_at: null,
     }));
 
-    const handlerMock = mock(async () => true);
+    const handlerMock = mock(async () => 'handled' as const);
     const handler: InboundEventHandler = {
       handlerId: 'test-handler',
       supportedEvents: ['ci:completed'],
@@ -208,9 +212,9 @@ describe('createInboundEventJobHandler', () => {
     expect(mockMarkNotificationDelivered).toHaveBeenCalledTimes(1);
   });
 
-  it('marks notification as delivered even when handler returns false', async () => {
-    // Handler returns false (e.g., session not found, no action taken)
-    const handlerMock = mock(async () => false);
+  it("marks notification as delivered when handler returns 'not-applicable' (Issue #1653, (iv))", async () => {
+    // Handler returns 'not-applicable' (e.g., session not found, no action taken)
+    const handlerMock = mock(async () => 'not-applicable' as const);
     const handler: InboundEventHandler = {
       handlerId: 'test-handler',
       supportedEvents: ['ci:completed'],
@@ -245,11 +249,78 @@ describe('createInboundEventJobHandler', () => {
       receivedAt: '2024-01-01T00:00:00Z',
     });
 
-    // Handler was called, returned false
+    // Handler was called, returned 'not-applicable'
     expect(handlerMock).toHaveBeenCalledTimes(1);
     // Notification should still be marked as delivered to prevent forever-pending state
     expect(mockCreatePendingNotification).toHaveBeenCalledTimes(1);
     expect(mockMarkNotificationDelivered).toHaveBeenCalledTimes(1);
+    expect(mockMarkNotificationFailed).not.toHaveBeenCalled();
+  });
+
+  it("marks notification as failed (not delivered) and warns once when handler returns 'delivery-failed', and the job still completes without a job-level retry (Issue #1653/#1679, (i))", async () => {
+    // Q12 polarity: on unmodified main (handle() returns a plain boolean,
+    // no 'delivery-failed' outcome exists), this exact scenario is
+    // unreachable -- a handler returning `false` is marked `delivered`,
+    // not `failed`. Verified directly (see PR body) by reverting job-handler.ts
+    // / handlers.ts / the repository to their pre-fix state and observing
+    // this test fail to compile / fail its assertions.
+    const handlerMock = mock(async () => 'delivery-failed' as const);
+    const handler: InboundEventHandler = {
+      handlerId: 'test-handler',
+      supportedEvents: ['ci:completed'],
+      handle: handlerMock,
+    };
+
+    const parser: ServiceParser = {
+      serviceId: 'github',
+      authenticate: async () => true,
+      parse: async () => ({
+        type: 'ci:completed',
+        source: 'github',
+        timestamp: '2024-01-01T00:00:00Z',
+        metadata: { repositoryName: 'owner/repo' },
+        payload: { ok: true },
+        summary: 'CI success',
+      }),
+    };
+
+    const jobHandler = createInboundEventJobHandler({
+      getServiceParser: () => parser,
+      resolveTargets: async () => [{ sessionId: 'session-1' }],
+      handlers: [handler],
+      notificationRepository,
+    });
+
+    const warnSpy = spyOn(rootLogger, 'warn');
+    try {
+      // "job completes" -- resolves without throwing, i.e. no job-level
+      // retry is triggered by a delivery-failed outcome.
+      await expect(
+        jobHandler({
+          jobId: 'job-1',
+          service: 'github',
+          rawPayload: '{}',
+          headers: {},
+          receivedAt: '2024-01-01T00:00:00Z',
+        })
+      ).resolves.toBeUndefined();
+
+      expect(handlerMock).toHaveBeenCalledTimes(1);
+      expect(mockCreatePendingNotification).toHaveBeenCalledTimes(1);
+      expect(mockMarkNotificationFailed).toHaveBeenCalledTimes(1);
+      expect(mockMarkNotificationDelivered).not.toHaveBeenCalled();
+      expect(warnSpy).toHaveBeenCalledTimes(1);
+      const [context, message] = warnSpy.mock.calls[0];
+      expect(message).toBe('Inbound notification delivery failed');
+      expect(context).toMatchObject({
+        jobId: 'job-1',
+        handlerId: 'test-handler',
+        sessionId: 'session-1',
+        eventType: 'ci:completed',
+      });
+    } finally {
+      warnSpy.mockRestore();
+    }
   });
 
   it('ci:completed suppressed when not all workflows are done', async () => {
@@ -260,7 +331,7 @@ describe('createInboundEventJobHandler', () => {
       workflowNames: ['lint'],
     }));
 
-    const handlerMock = mock(async () => true);
+    const handlerMock = mock(async () => 'handled' as const);
     const handler: InboundEventHandler = {
       handlerId: 'test-handler',
       supportedEvents: ['ci:completed'],
@@ -311,7 +382,7 @@ describe('createInboundEventJobHandler', () => {
       workflowNames: ['lint', 'test', 'build'],
     }));
 
-    const handlerMock = mock<InboundEventHandler['handle']>(async () => true);
+    const handlerMock = mock<InboundEventHandler['handle']>(async () => 'handled');
     const handler: InboundEventHandler = {
       handlerId: 'test-handler',
       supportedEvents: ['ci:completed'],
@@ -356,7 +427,7 @@ describe('createInboundEventJobHandler', () => {
   it('ci:completed passes through when checker returns null (fail-open)', async () => {
     const mockChecker = mock<CICompletionChecker>(async () => null);
 
-    const handlerMock = mock<InboundEventHandler['handle']>(async () => true);
+    const handlerMock = mock<InboundEventHandler['handle']>(async () => 'handled');
     const handler: InboundEventHandler = {
       handlerId: 'test-handler',
       supportedEvents: ['ci:completed'],
@@ -399,7 +470,7 @@ describe('createInboundEventJobHandler', () => {
   });
 
   it('ci:completed passes through when no ciCompletionChecker provided', async () => {
-    const handlerMock = mock(async () => true);
+    const handlerMock = mock(async () => 'handled' as const);
     const handler: InboundEventHandler = {
       handlerId: 'test-handler',
       supportedEvents: ['ci:completed'],
@@ -447,7 +518,7 @@ describe('createInboundEventJobHandler', () => {
       workflowNames: ['lint'],
     }));
 
-    const handlerMock = mock(async () => true);
+    const handlerMock = mock(async () => 'handled' as const);
     const handler: InboundEventHandler = {
       handlerId: 'test-handler',
       supportedEvents: ['ci:failed'],
@@ -503,7 +574,7 @@ describe('createInboundEventJobHandler', () => {
       };
     };
 
-    const handlerMock = mock<InboundEventHandler['handle']>(async () => true);
+    const handlerMock = mock<InboundEventHandler['handle']>(async () => 'handled');
     const handler: InboundEventHandler = {
       handlerId: 'test-handler',
       supportedEvents: ['ci:completed'],
@@ -555,7 +626,7 @@ describe('createInboundEventJobHandler', () => {
       workflowNames: ['lint'],
     }));
 
-    const handlerMock = mock<InboundEventHandler['handle']>(async () => true);
+    const handlerMock = mock<InboundEventHandler['handle']>(async () => 'handled');
     const handler: InboundEventHandler = {
       handlerId: 'test-handler',
       supportedEvents: ['ci:completed'],
@@ -620,7 +691,7 @@ describe('createInboundEventJobHandler', () => {
           }),
         };
 
-        const handlerMock = mock(async () => true);
+        const handlerMock = mock(async () => 'handled' as const);
         const handler: InboundEventHandler = {
           handlerId: 'test-handler',
           supportedEvents: ['ci:completed'],
@@ -666,7 +737,7 @@ describe('createInboundEventJobHandler', () => {
       // it pass again. Measured 2026-09-14 against the code in this PR.
       const createPendingNotificationMock = mock(async () => {});
       const markNotificationDeliveredMock = mock(async () => {});
-      const handlerMock = mock(async () => true);
+      const handlerMock = mock(async () => 'handled' as const);
       const jobHandler = createInboundEventJobHandler({
         getServiceParser: () => ({
           serviceId: 'github',
@@ -699,6 +770,7 @@ describe('createInboundEventJobHandler', () => {
           },
           createPendingNotification: createPendingNotificationMock,
           markNotificationDelivered: markNotificationDeliveredMock,
+          markNotificationFailed: mock(async () => {}),
         },
       });
 
@@ -761,6 +833,8 @@ describe('createInboundEventJobHandler', () => {
             }
             return repo.markNotificationDelivered(jobId, sessionId, workerId, handlerId);
           },
+          markNotificationFailed: (jobId, sessionId, workerId, handlerId) =>
+            repo.markNotificationFailed(jobId, sessionId, workerId, handlerId),
         };
 
         const parser: ServiceParser = {
@@ -776,7 +850,7 @@ describe('createInboundEventJobHandler', () => {
           }),
         };
 
-        const handlerMock = mock(async (_event: unknown, _target: { sessionId: string }) => true);
+        const handlerMock = mock(async (_event: unknown, _target: { sessionId: string }) => 'handled' as const);
         const handler: InboundEventHandler = {
           handlerId: 'test-handler',
           supportedEvents: ['ci:completed'],
@@ -870,7 +944,7 @@ describe('createInboundEventJobHandler', () => {
           if (target.sessionId === 'failing-session') {
             throw new Error('boom');
           }
-          return true;
+          return 'handled' as const;
         });
         const handler: InboundEventHandler = {
           handlerId: 'test-handler',
@@ -903,14 +977,14 @@ describe('createInboundEventJobHandler', () => {
         const rows = await db.selectFrom('inbound_event_notifications').selectAll().execute();
         expect(rows).toHaveLength(2);
 
-        // (b) The failing target's notification row WAS created and stays
-        // 'pending' -- it is never flipped to 'delivered', since the fix no
-        // longer relies on job-level retry to close it out. This is the
-        // current, intended behavior for a handler that throws after its
-        // pending row was persisted.
+        // (b) The failing target's notification row WAS created and is
+        // marked 'failed' -- a terminal status, never left 'pending'
+        // forever (Issue #1679's polarity: on unmodified main, this row
+        // stays 'pending' since nothing ever closes it out without
+        // job-level retry).
         const failingRow = rows.find((row) => row.session_id === 'failing-session');
         expect(failingRow).toBeDefined();
-        expect(failingRow?.status).toBe('pending');
+        expect(failingRow?.status).toBe('failed');
 
         // (c) The second, healthy target/handler pair in the same event is
         // still processed normally -- proving the 'handle' failure class is
@@ -921,6 +995,149 @@ describe('createInboundEventJobHandler', () => {
         expect(handlerMock).toHaveBeenCalledTimes(2);
       } finally {
         await db.destroy();
+      }
+    });
+
+    it("skips an existing 'failed' row on a retried job without re-invoking the handler (Issue #1653/#1679, (iii))", async () => {
+      const db = await createDatabaseForTest();
+      try {
+        const repo = new InboundEventNotificationRepository(db);
+        const sessionId = 'already-failed-session';
+        await createTestSession(db, sessionId);
+
+        const parser: ServiceParser = {
+          serviceId: 'github',
+          authenticate: async () => true,
+          parse: async () => ({
+            type: 'ci:completed',
+            source: 'github',
+            timestamp: '2024-01-01T00:00:00Z',
+            metadata: { repositoryName: 'owner/repo' },
+            payload: { ok: true },
+            summary: 'CI success',
+          }),
+        };
+
+        const handlerMock = mock(async () => 'handled' as const);
+        const handler: InboundEventHandler = {
+          handlerId: 'test-handler',
+          supportedEvents: ['ci:completed'],
+          handle: handlerMock,
+        };
+
+        const jobHandler = createInboundEventJobHandler({
+          getServiceParser: () => parser,
+          resolveTargets: async () => [{ sessionId }],
+          handlers: [handler],
+          notificationRepository: repo,
+        });
+
+        const jobPayload = {
+          jobId: 'job-already-failed',
+          service: 'github',
+          rawPayload: '{}',
+          headers: {},
+          receivedAt: '2024-01-01T00:00:00Z',
+        };
+
+        // First run: create the pending row directly, then mark it
+        // 'failed' through the real repository, simulating an earlier
+        // attempt's outcome -- WITHOUT the handler ever running for this
+        // jobId, so the second run's zero-calls assertion below is
+        // attributable to the idempotency skip, not to a first run that
+        // already happened to call it zero times.
+        await repo.createPendingNotification({
+          id: crypto.randomUUID(),
+          job_id: jobPayload.jobId,
+          session_id: sessionId,
+          worker_id: 'all',
+          handler_id: 'test-handler',
+          event_type: 'ci:completed',
+          event_summary: 'CI success',
+          created_at: new Date().toISOString(),
+        });
+        await repo.markNotificationFailed(jobPayload.jobId, sessionId, 'all', 'test-handler');
+
+        // Retry (same jobId): the idempotency check must see the existing
+        // 'failed' row and skip it entirely, exactly like 'delivered'.
+        await expect(jobHandler(jobPayload)).resolves.toBeUndefined();
+
+        expect(handlerMock).not.toHaveBeenCalled();
+
+        const rows = await db.selectFrom('inbound_event_notifications').selectAll().execute();
+        expect(rows).toHaveLength(1);
+        expect(rows[0].status).toBe('failed');
+      } finally {
+        await db.destroy();
+      }
+    });
+
+    it('logs and skips (without rethrowing, no retry) when markNotificationFailed itself throws after handler.handle() threw (Issue #1653/#1679, (v))', async () => {
+      const createPendingNotificationMock = mock(async () => {});
+      const markNotificationFailedMock = mock(async () => {
+        throw new Error('simulated transient markNotificationFailed error');
+      });
+      const markNotificationDeliveredMock = mock(async () => {});
+      const handlerMock = mock(async () => {
+        throw new Error('handler boom');
+      });
+
+      const jobHandler = createInboundEventJobHandler({
+        getServiceParser: () => ({
+          serviceId: 'github',
+          authenticate: async () => true,
+          parse: async () => ({
+            type: 'ci:completed',
+            source: 'github',
+            timestamp: '2024-01-01T00:00:00Z',
+            metadata: { repositoryName: 'owner/repo' },
+            payload: { ok: true },
+            summary: 'CI success',
+          }),
+        }),
+        resolveTargets: async () => [{ sessionId: 'irrelevant-session' }],
+        handlers: [
+          {
+            handlerId: 'test-handler',
+            supportedEvents: ['ci:completed'],
+            handle: handlerMock as InboundEventHandler['handle'],
+          },
+        ],
+        notificationRepository: {
+          findInboundEventNotification: async () => null,
+          createPendingNotification: createPendingNotificationMock,
+          markNotificationDelivered: markNotificationDeliveredMock,
+          markNotificationFailed: markNotificationFailedMock,
+        },
+      });
+
+      const errorSpy = spyOn(rootLogger, 'error');
+      try {
+        // The job still completes -- neither the handler's throw nor the
+        // markNotificationFailed write's own throw propagates out, and
+        // there is no job-level retry either way.
+        await expect(
+          jobHandler({
+            jobId: 'job-mark-failed-throws',
+            service: 'github',
+            rawPayload: '{}',
+            headers: {},
+            receivedAt: '2024-01-01T00:00:00Z',
+          })
+        ).resolves.toBeUndefined();
+
+        expect(handlerMock).toHaveBeenCalledTimes(1);
+        expect(markNotificationFailedMock).toHaveBeenCalledTimes(1);
+        expect(markNotificationDeliveredMock).not.toHaveBeenCalled();
+
+        // Both the markNotificationFailed-failure log and the general
+        // per-target failure log fire.
+        expect(errorSpy).toHaveBeenCalledTimes(2);
+        const messages = errorSpy.mock.calls.map((call) => call[1]);
+        expect(messages).toContain('Failed to mark notification as failed after handler threw; skipping');
+        expect(messages).toContain('Failed to process inbound event notification for target; skipping');
+      } finally {
+        errorSpy.mockRestore();
       }
     });
 
@@ -942,7 +1159,7 @@ describe('createInboundEventJobHandler', () => {
           }),
         };
 
-        const handlerMock = mock(async () => true);
+        const handlerMock = mock(async () => 'handled' as const);
         const handler: InboundEventHandler = {
           handlerId: 'test-handler',
           supportedEvents: ['ci:completed'],
@@ -993,7 +1210,7 @@ describe('createInboundEventJobHandler', () => {
           }),
         };
 
-        const handlerMock = mock(async () => true);
+        const handlerMock = mock(async () => 'handled' as const);
         const handler: InboundEventHandler = {
           handlerId: 'test-handler',
           supportedEvents: ['ci:completed'],
@@ -1044,7 +1261,7 @@ describe('createInboundEventJobHandler', () => {
           }),
         };
 
-        const handlerMock = mock(async () => true);
+        const handlerMock = mock(async () => 'handled' as const);
         const handler: InboundEventHandler = {
           handlerId: 'test-handler',
           supportedEvents: ['ci:completed'],

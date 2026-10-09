@@ -367,11 +367,17 @@ export interface InboundEventNotificationsTable {
   event_type: string;
   /** Human-readable event summary */
   event_summary: string;
-  /** Notification status: 'pending' while handler executes, 'delivered' after success */
+  /**
+   * Notification status: 'pending' while the handler executes, 'delivered'
+   * after a processing attempt completes without a delivery failure
+   * (includes "nothing to do here"), or 'failed' when the handler
+   * determined delivery should happen and it did not -- a terminal
+   * status, never retried (Issue #1653 / #1679).
+   */
   status: string;
   /** Timestamp when notification was created (pending status) */
   created_at: string;
-  /** Timestamp when notification was delivered (null until delivered) */
+  /** Timestamp when notification was delivered (null unless delivered) */
   notified_at: string | null;
 }
 

@@ -402,8 +402,14 @@ export interface InboundEventNotificationsTable {
   event_type: string;
   /** Human-readable event summary */
   event_summary: string;
-  /** Notification status ('pending' or 'delivered') */
-  status: 'pending' | 'delivered';
+  /**
+   * Notification status: `'pending'` (processing attempt in flight),
+   * `'delivered'` (the handler completed without a delivery failure --
+   * includes "nothing to do here"), or `'failed'` (the handler determined
+   * delivery should happen and it did not; a terminal status, never
+   * retried).
+   */
+  status: 'pending' | 'delivered' | 'failed';
   /** Creation timestamp as ISO 8601 string */
   created_at: string;
   /** Timestamp when notification was delivered (null if pending) */

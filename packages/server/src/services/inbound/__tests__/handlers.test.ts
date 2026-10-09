@@ -103,10 +103,82 @@ describe('AgentWorkerHandler: issue:labeled', () => {
 
     const result = await agentHandler.handle(createIssueLabeledEvent(), { sessionId: 'session-1' });
 
-    expect(result).toBe(true);
+    expect(result).toBe('handled');
     expect(writes[0]).toContain('intent=triage');
     expect(writes[0]).toContain('[inbound:issue:labeled]');
     expect(writes[0]).toContain('type=issue:labeled');
+  });
+});
+
+describe('AgentWorkerHandler: not-applicable branches (Issue #1653)', () => {
+  it("returns 'not-applicable' when the session does not exist", async () => {
+    const mockSessionManager: InboundHandlerDependencies['sessionManager'] = {
+      getSession: mock(() => undefined),
+      deliverWorkerNotification: mock(async () => ({ ok: true as const })),
+    };
+    const handlers = createInboundHandlers({ sessionManager: mockSessionManager, broadcastToApp: () => {} });
+    const agentHandler = handlers.find((h) => h.handlerId === 'agent-worker')!;
+
+    const result = await agentHandler.handle(createIssueLabeledEvent(), { sessionId: 'session-1' });
+
+    expect(result).toBe('not-applicable');
+  });
+
+  it("returns 'not-applicable' when no workerId is given and the session has no deliverable worker", async () => {
+    const session = buildWorktreeSession({ ...mockSessionOverrides, workers: [] });
+    const mockSessionManager: InboundHandlerDependencies['sessionManager'] = {
+      getSession: mock(() => session),
+      deliverWorkerNotification: mock(async () => ({ ok: true as const })),
+    };
+    const handlers = createInboundHandlers({ sessionManager: mockSessionManager, broadcastToApp: () => {} });
+    const agentHandler = handlers.find((h) => h.handlerId === 'agent-worker')!;
+
+    const result = await agentHandler.handle(createIssueLabeledEvent(), { sessionId: 'session-1' });
+
+    expect(result).toBe('not-applicable');
+  });
+
+  it("returns 'not-applicable' when target.workerId is an empty string and the session has no deliverable worker to fall back to", async () => {
+    const session = buildWorktreeSession({ ...mockSessionOverrides, workers: [] });
+    const mockSessionManager: InboundHandlerDependencies['sessionManager'] = {
+      getSession: mock(() => session),
+      deliverWorkerNotification: mock(async () => ({ ok: true as const })),
+    };
+    const handlers = createInboundHandlers({ sessionManager: mockSessionManager, broadcastToApp: () => {} });
+    const agentHandler = handlers.find((h) => h.handlerId === 'agent-worker')!;
+
+    // target.workerId is an explicit empty string -- `??` does not
+    // substitute for it (only for null/undefined), so the first
+    // not-applicable check (no workerId given) is bypassed, exercising
+    // the SECOND, independent `!workerId` branch (handlers.ts).
+    const result = await agentHandler.handle(createIssueLabeledEvent(), { sessionId: 'session-1', workerId: '' });
+
+    expect(result).toBe('not-applicable');
+  });
+
+  it("returns 'not-applicable' for an unexpected event type reaching AgentWorkerHandler", async () => {
+    const session = buildWorktreeSession(mockSessionOverrides);
+    const deliverWorkerNotification = mock(async () => ({ ok: true as const }));
+    const mockSessionManager: InboundHandlerDependencies['sessionManager'] = {
+      getSession: mock(() => session),
+      deliverWorkerNotification,
+    };
+    const handlers = createInboundHandlers({ sessionManager: mockSessionManager, broadcastToApp: () => {} });
+    const agentHandler = handlers.find((h) => h.handlerId === 'agent-worker')!;
+
+    const invalidEvent = {
+      type: 'issue:closed' as InboundSystemEvent['type'],
+      source: 'github' as const,
+      timestamp: '2024-01-01T00:00:00Z',
+      metadata: { repositoryName: 'owner/repo' },
+      payload: {},
+      summary: 'Issue closed',
+    };
+
+    const result = await agentHandler.handle(invalidEvent, { sessionId: 'session-1' });
+
+    expect(result).toBe('not-applicable');
+    expect(deliverWorkerNotification).not.toHaveBeenCalled();
   });
 });
 
@@ -124,7 +196,7 @@ describe('AgentWorkerHandler: fallback target (#1661)', () => {
 
     const result = await agentHandler.handle(createIssueLabeledEvent(), { sessionId: 'session-1', fallback: true });
 
-    expect(result).toBe(true);
+    expect(result).toBe('handled');
     expect(writes[0]).toContain('[inbound:issue:labeled]');
   });
 });
@@ -144,7 +216,7 @@ describe('UINotificationHandler: issue:labeled', () => {
 
     const result = await uiHandler.handle(createIssueLabeledEvent(), { sessionId: 'session-1' });
 
-    expect(result).toBe(true);
+    expect(result).toBe('handled');
     expect(broadcastToApp).toHaveBeenCalledTimes(1);
     expect(capturedBroadcast!.type).toBe('inbound-event');
     expect(capturedBroadcast!.sessionId).toBe('session-1');
@@ -219,7 +291,7 @@ describe('AgentWorkerHandler: embedded-agent worker delivery (Issue #1739)', () 
 
     const result = await agentHandler.handle(createIssueLabeledEvent(), { sessionId: 'session-1' });
 
-    expect(result).toBe(true);
+    expect(result).toBe('handled');
     expect(deliverWorkerNotification).toHaveBeenCalledTimes(1);
     // Reach (measured 2026-09-17): dropping the `branch` field from
     // handlers.ts's literal -> FAILS. Renaming `repo` -> `repoName` ->
@@ -346,7 +418,7 @@ describe('AgentWorkerHandler: notification delivery failure (Issue #1739)', () =
     try {
       const result = await agentHandler.handle(createIssueLabeledEvent(), { sessionId: 'session-1' });
 
-      expect(result).toBe(false);
+      expect(result).toBe('delivery-failed');
       expect(warnSpy).toHaveBeenCalledTimes(1);
       const [context, message] = warnSpy.mock.calls[0];
       expect(message).toBe('notification delivery failed for inbound event');
@@ -385,7 +457,7 @@ describe('AgentWorkerHandler: notification delivery failure (Issue #1739)', () =
       // "false, never a rejection", so `await` must resolve, not throw.
       const result = await agentHandler.handle(createIssueLabeledEvent(), { sessionId: 'session-1' });
 
-      expect(result).toBe(false);
+      expect(result).toBe('delivery-failed');
       expect(warnSpy).toHaveBeenCalledTimes(1);
       const [context, message] = warnSpy.mock.calls[0];
       expect(message).toBe('notification delivery failed for inbound event');

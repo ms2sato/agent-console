@@ -80,7 +80,7 @@ describe('DiffWorkerHandler', () => {
   it('returns false when session does not exist', async () => {
     const handler = getDiffWorkerHandler(createDeps([]));
     const result = await handler.handle(createEvent(), { sessionId: 'nonexistent' });
-    expect(result).toBe(false);
+    expect(result).toBe('not-applicable');
   });
 
   it('returns false when session has no git-diff worker', async () => {
@@ -88,7 +88,7 @@ describe('DiffWorkerHandler', () => {
     const handler = getDiffWorkerHandler(createDeps([session]));
 
     const result = await handler.handle(createEvent(), { sessionId: 'session-1' });
-    expect(result).toBe(false);
+    expect(result).toBe('not-applicable');
   });
 
   it('triggers refresh when session has a git-diff worker', async () => {
@@ -102,7 +102,7 @@ describe('DiffWorkerHandler', () => {
 
     const result = await handler.handle(createEvent(), { sessionId: 'session-1' });
 
-    expect(result).toBe(true);
+    expect(result).toBe('handled');
     expect(mockTriggerRefresh).toHaveBeenCalledWith('/path/to/worktree');
   });
 
@@ -117,7 +117,7 @@ describe('DiffWorkerHandler', () => {
 
     const result = await handler.handle(createEvent('pr:merged'), { sessionId: 'session-1' });
 
-    expect(result).toBe(true);
+    expect(result).toBe('handled');
     expect(mockTriggerRefresh).toHaveBeenCalledWith('/path/to/worktree');
   });
 
@@ -135,7 +135,7 @@ describe('DiffWorkerHandler', () => {
 
     const result = await handler.handle(createEvent(), { sessionId: 'session-1' });
 
-    expect(result).toBe(true);
+    expect(result).toBe('handled');
     expect(mockTriggerRefresh).toHaveBeenCalledTimes(1);
   });
 
@@ -151,7 +151,7 @@ describe('DiffWorkerHandler', () => {
     const target: EventTarget = { sessionId: 'session-1', workerId: 'some-other-worker' };
     const result = await handler.handle(createEvent(), target);
 
-    expect(result).toBe(true);
+    expect(result).toBe('handled');
     expect(mockTriggerRefresh).toHaveBeenCalledWith('/path/to/worktree');
   });
 
@@ -166,7 +166,7 @@ describe('DiffWorkerHandler', () => {
 
     const result = await handler.handle(createEvent(), { sessionId: 'session-1', fallback: true });
 
-    expect(result).toBe(false);
+    expect(result).toBe('not-applicable');
     expect(mockTriggerRefresh).not.toHaveBeenCalled();
   });
 
@@ -181,7 +181,7 @@ describe('DiffWorkerHandler', () => {
 
     const result = await handler.handle(createEvent(), { sessionId: 'session-1' });
 
-    expect(result).toBe(true);
+    expect(result).toBe('handled');
     expect(mockTriggerRefresh).toHaveBeenCalledWith('/path/to/worktree');
   });
 });

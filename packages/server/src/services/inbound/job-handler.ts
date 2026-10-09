@@ -68,6 +68,12 @@ export interface InboundEventNotificationRepository {
     workerId: string,
     handlerId: string
   ) => Promise<void>;
+  markNotificationFailed: (
+    jobId: string,
+    sessionId: string,
+    workerId: string,
+    handlerId: string
+  ) => Promise<void>;
 }
 
 export function createInboundEventJobHandler(deps: InboundEventJobDependencies) {
@@ -153,17 +159,15 @@ export function createInboundEventJobHandler(deps: InboundEventJobDependencies) 
         // with no DB row at all trips a permanent FK-constraint violation
         // here, everything else is transient and safe to retry from
         // scratch. 'handle' means the pending row exists and
-        // `handler.handle()` itself threw -- the row stays pending, and
-        // there is no bookkeeping-only retry that could safely close it out
-        // without knowing whether delivery actually happened (a distinct,
-        // still-open design question about that terminal state).
+        // `handler.handle()` itself threw -- the row is marked 'failed'
+        // (a terminal status, never retried), not left 'pending' forever.
         // 'deliver' means delivery already succeeded
         // (or, for a retried job, was already marked pending by an earlier
-        // attempt) and only the `markNotificationDelivered` bookkeeping
-        // write itself failed -- a plain UPDATE with no foreign-key class to
-        // carve out, so it always rethrows: the idempotency check above
-        // safely closes it out on the next retry without re-invoking the
-        // handler.
+        // attempt) and only the `markNotificationDelivered`/
+        // `markNotificationFailed` bookkeeping write itself failed -- a
+        // plain UPDATE with no foreign-key class to carve out, so it
+        // always rethrows: the idempotency check above safely closes it
+        // out on the next retry without re-invoking the handler.
         let step: 'persist' | 'handle' | 'deliver' = 'persist';
         try {
           // IDEMPOTENCY CHECK: Skip if notification already exists (delivered or pending)
@@ -176,11 +180,13 @@ export function createInboundEventJobHandler(deps: InboundEventJobDependencies) 
           );
 
           if (existingNotification) {
-            if (existingNotification.status === 'delivered') {
-              // Already delivered - skip this handler/target combination
+            if (existingNotification.status === 'delivered' || existingNotification.status === 'failed') {
+              // Already a terminal status (delivered or failed) - skip
+              // this handler/target combination. A 'failed' row is never
+              // retried, same as 'delivered'.
               logger.debug(
-                { jobId: job.jobId, sessionId: target.sessionId, handlerId: handler.handlerId },
-                'Notification already delivered, skipping handler'
+                { jobId: job.jobId, sessionId: target.sessionId, handlerId: handler.handlerId, status: existingNotification.status },
+                'Notification already at a terminal status, skipping handler'
               );
               continue;
             }
@@ -216,29 +222,45 @@ export function createInboundEventJobHandler(deps: InboundEventJobDependencies) 
           });
 
           step = 'handle';
-          const handled = await handler.handle(event, target);
+          const outcome = await handler.handle(event, target);
 
-          // Always mark notification as delivered after handler completes
-          // Handler returning false means "no action taken" (e.g., session not found),
-          // not "failed" - we still want to prevent retry
+          // 'handled' and 'not-applicable' both mean the processing
+          // attempt completed without a delivery failure (the old
+          // boolean's "no action taken" case is 'not-applicable') -- mark
+          // delivered to prevent retry. 'delivery-failed' means the
+          // handler determined it should deliver and could not -- a
+          // terminal 'failed' status, also never retried.
           step = 'deliver';
-          await deps.notificationRepository.markNotificationDelivered(
-            job.jobId,
-            target.sessionId,
-            workerId,
-            handler.handlerId
-          );
-
-          if (handled) {
-            logger.info(
-              { jobId: job.jobId, handlerId: handler.handlerId, sessionId: target.sessionId, workerId },
-              'Handler processed inbound event'
+          if (outcome === 'delivery-failed') {
+            await deps.notificationRepository.markNotificationFailed(
+              job.jobId,
+              target.sessionId,
+              workerId,
+              handler.handlerId
+            );
+            logger.warn(
+              { jobId: job.jobId, handlerId: handler.handlerId, sessionId: target.sessionId, workerId, eventType: event.type },
+              'Inbound notification delivery failed'
             );
           } else {
-            logger.debug(
-              { jobId: job.jobId, handlerId: handler.handlerId, sessionId: target.sessionId, workerId },
-              'Handler skipped inbound event (returned false)'
+            await deps.notificationRepository.markNotificationDelivered(
+              job.jobId,
+              target.sessionId,
+              workerId,
+              handler.handlerId
             );
+
+            if (outcome === 'handled') {
+              logger.info(
+                { jobId: job.jobId, handlerId: handler.handlerId, sessionId: target.sessionId, workerId },
+                'Handler processed inbound event'
+              );
+            } else {
+              logger.debug(
+                { jobId: job.jobId, handlerId: handler.handlerId, sessionId: target.sessionId, workerId },
+                'Handler skipped inbound event (not applicable)'
+              );
+            }
           }
         } catch (error) {
           // Two rethrow classes, both because a retry from here is safe or
@@ -258,12 +280,39 @@ export function createInboundEventJobHandler(deps: InboundEventJobDependencies) 
           //   updated already exists), so it always rethrows. The
           //   idempotency check above safely closes it out on the next
           //   retry without re-invoking the handler.
-          // A 'handle'-step failure (handler.handle() itself threw) is
-          // logged and skipped, unchanged -- whether that terminal
-          // 'pending' state needs its own resolution path is a separate,
-          // still-open design question.
+          // A 'handle'-step failure (handler.handle() itself threw) marks
+          // the pending row 'failed' (own try/catch below; if THAT write
+          // itself fails, it is logged and skipped too -- no retry either
+          // way, since a bookkeeping-only retry here could not safely
+          // learn whether delivery actually happened).
           if ((step === 'persist' && !isForeignKeyConstraintError(error)) || step === 'deliver') {
             throw error;
+          }
+
+          if (step === 'handle') {
+            try {
+              await deps.notificationRepository.markNotificationFailed(
+                job.jobId,
+                target.sessionId,
+                workerId,
+                handler.handlerId
+              );
+              logger.warn(
+                { jobId: job.jobId, handlerId: handler.handlerId, sessionId: target.sessionId, workerId, eventType: event.type },
+                'Inbound notification delivery failed'
+              );
+            } catch (markFailedError) {
+              logger.error(
+                {
+                  err: markFailedError,
+                  jobId: job.jobId,
+                  handlerId: handler.handlerId,
+                  sessionId: target.sessionId,
+                  workerId,
+                },
+                'Failed to mark notification as failed after handler threw; skipping'
+              );
+            }
           }
 
           logger.error(
