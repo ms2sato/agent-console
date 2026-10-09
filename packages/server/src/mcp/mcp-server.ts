@@ -44,6 +44,7 @@ import {
   emitBookmarkCreated,
   emitBookmarkDeleted,
 } from '../lib/artifact-bookmark-triggers.js';
+import { toWireBookmark } from '../lib/bookmark-wire.js';
 import { serverConfig } from '../lib/server-config.js';
 import { resolveRequestUsername } from '../services/resolve-spawn-username.js';
 import {
@@ -2575,10 +2576,10 @@ export function createMcpApp(deps: McpDependencies): Hono {
 
         emitBookmarkCreated(broadcastToApp, { sessionId, bookmarkId: created.id });
 
-        // `create` returns the server-internal BookmarkRecord (wire summary
-        // + userId + sourceSessionId); strip both before crossing the wire
-        // (see packages/shared/src/types/bookmark.ts's wire-shape JSDoc).
-        const { userId: _userId, sourceSessionId: _sourceSessionId, ...bookmark } = created;
+        // `create` returns the server-internal BookmarkRecord;
+        // `toWireBookmark` picks just the wire fields (see
+        // lib/bookmark-wire.ts).
+        const bookmark = toWireBookmark(created);
         return textResult(bookmark);
       } catch (err) {
         const message = err instanceof Error ? err.message : 'Unknown error';
