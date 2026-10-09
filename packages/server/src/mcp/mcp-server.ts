@@ -1578,6 +1578,14 @@ export function createMcpApp(deps: McpDependencies): Hono {
           { toolName: 'remove_worktree', sessionId },
         );
 
+        // No caller-identity fallback for the precheck: `checkCallerOwnsSession`
+        // above already rejects any presented token whose `userId` does not
+        // literally equal `session.createdBy`, in every mcpAuthMode. So an
+        // ownerless session (requestUsername null) is reachable here only by
+        // a tokenless caller -- there is no caller identity to fall back to.
+        // The documented remedy is the web UI, where REST's `?? authUser.username`
+        // fallback makes the check run as the requester.
+
         // 3. Delegate all domain logic to service
         const result = await deleteWorktree(
           {
@@ -1607,6 +1615,7 @@ export function createMcpApp(deps: McpDependencies): Hono {
           worktreePath: session.locationPath,
           removed: true,
           cleanupCommandResult: result.cleanupCommandResult,
+          openPrCheck: result.openPrCheck,
         });
       } catch (err) {
         const message = err instanceof Error ? err.message : 'Unknown error';

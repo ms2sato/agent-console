@@ -2533,14 +2533,16 @@ describe('API Routes Integration', () => {
         expect(mockFindOpenPullRequest).not.toHaveBeenCalled();
       });
 
-      it('should block deletion when PR check fails (fail-closed)', async () => {
+      it('should block deletion with 503 when the PR check could not run, distinct from an open PR (Issue #1295)', async () => {
         const app = await createApp();
         const { repo, repoPath } = await registerTestRepo(app);
         const { worktreePath } = await setupWorktreeForDeletion(repo, repoPath);
 
         mockGit.getCurrentBranch.mockImplementation(async () => 'feature-1');
 
-        // findOpenPullRequest throws an error (e.g., network failure)
+        // findOpenPullRequest throws an error (e.g., network failure) --
+        // this is "the check could not run", not "the check found a PR",
+        // so it must not map to the same 409 as an actual open PR.
         mockFindOpenPullRequest.mockImplementation(async () => {
           throw new Error('gh: command not found');
         });
@@ -2551,10 +2553,12 @@ describe('API Routes Integration', () => {
           { method: 'DELETE' }
         );
 
-        // Deletion should be blocked (fail-closed)
-        expect(res.status).toBe(409);
+        // Deletion is still blocked (fail-closed), but as an
+        // infrastructure failure (503), not a request conflict (409).
+        expect(res.status).toBe(503);
         const body = (await res.json()) as { error: string };
-        expect(body.error).toContain('Failed to check for open PRs');
+        expect(body.error).toMatch(/did not run/);
+        expect(body.error).not.toContain('has open PR #');
       });
 
       it('should broadcast worktree-deletion-completed with empty sessionIds when repository is unregistered (orphan async path, refs #815)', async () => {

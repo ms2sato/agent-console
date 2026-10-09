@@ -452,6 +452,11 @@ const worktrees = new Hono<AppBindings>()
       if (result.errorType === 'conflict' || result.errorType === 'open-pr') {
         return c.json({ error: result.error }, 409);
       }
+      // 'precheck-failed' is an infrastructure failure (the check could not
+      // run), not a conflict with request state — 503, not 409.
+      if (result.errorType === 'precheck-failed') {
+        return c.json({ error: result.error }, 503);
+      }
       if (result.errorType === 'not-found') {
         throw new NotFoundError(result.error || 'Repository');
       }

@@ -151,7 +151,10 @@ export function registerWorktreeDeleteJobHandler(
         cleanupCommandResult: result.cleanupCommandResult,
         killErrors: result.killErrors,
       });
-      logger.info({ taskId, repoId, worktreePath, sessionIds }, 'Worktree and session deletion completed');
+      logger.info(
+        { taskId, repoId, worktreePath, sessionIds, openPrCheck: result.openPrCheck },
+        'Worktree and session deletion completed',
+      );
     },
   );
 }
