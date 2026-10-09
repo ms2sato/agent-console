@@ -1130,7 +1130,7 @@ describe('EmbeddedAgentWorkerView', () => {
       // Only the Working accordion itself is a <details> -- Thinking no
       // longer nests its own accordion, so there is exactly one collapsed
       // <details> for the whole group.
-      const allDetails = Array.from(document.querySelectorAll('details'));
+      const allDetails = Array.from(screen.getByTestId('transcript').querySelectorAll('details'));
       expect(allDetails).toHaveLength(1);
       expect(allDetails[0]?.hasAttribute('open')).toBe(false);
     });
@@ -1159,7 +1159,7 @@ describe('EmbeddedAgentWorkerView', () => {
       const outerSummary = document.querySelector('summary')!;
       await user.click(outerSummary);
 
-      const allDetails = Array.from(document.querySelectorAll('details'));
+      const allDetails = Array.from(screen.getByTestId('transcript').querySelectorAll('details'));
       expect(allDetails).toHaveLength(1);
       expect(allDetails[0]?.hasAttribute('open')).toBe(true);
       expect(screen.getByText('pondering deeply')).toBeTruthy();
@@ -1202,7 +1202,7 @@ describe('EmbeddedAgentWorkerView', () => {
       expect(screen.getByText('plain answer, no thinking')).toBeTruthy();
       expect(screen.queryByText('Thinking')).toBeNull();
       expect(screen.queryByText('Working')).toBeNull();
-      expect(document.querySelectorAll('details').length).toBe(0);
+      expect(screen.getByTestId('transcript').querySelectorAll('details').length).toBe(0);
     });
 
     it('preserves the existing per-tool accordion when a run mixes thinking and a tool call -- only Thinking is flattened, Tool keeps its own nested accordion (#1119)', async () => {
@@ -1225,7 +1225,7 @@ describe('EmbeddedAgentWorkerView', () => {
       // Exactly two <details>: the outer Working accordion and the Tool
       // card's own nested accordion. Thinking contributes zero -- its
       // content sits directly in the Working body as a plain block.
-      const allDetails = Array.from(document.querySelectorAll('details'));
+      const allDetails = Array.from(screen.getByTestId('transcript').querySelectorAll('details'));
       expect(allDetails).toHaveLength(2);
       expect(allDetails.every((d) => !d.hasAttribute('open'))).toBe(true);
 
@@ -1239,9 +1239,66 @@ describe('EmbeddedAgentWorkerView', () => {
       // summary is clicked, preserving existing per-tool toggle behavior.
       expect(screen.getByText('pondering the tool choice')).toBeTruthy();
       expect(screen.getByText('run_process')).toBeTruthy();
-      const [outerDetailsAfter, toolDetailsAfter] = Array.from(document.querySelectorAll('details'));
+      const [outerDetailsAfter, toolDetailsAfter] = Array.from(screen.getByTestId('transcript').querySelectorAll('details'));
       expect(outerDetailsAfter?.hasAttribute('open')).toBe(true);
       expect(toolDetailsAfter?.hasAttribute('open')).toBe(false);
+    });
+  });
+
+  describe('transcript accordion-pin scope (#1607 reach)', () => {
+    it("a <details> rendered outside the transcript does not change a scoped pin's count", async () => {
+      const queryClient = new QueryClient({
+        defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+      });
+      render(
+        <QueryClientProvider client={queryClient}>
+          <details>
+            <summary>chrome</summary>
+          </details>
+          <EmbeddedAgentWorkerView sessionId="s-scope1" workerId="w-scope1" />
+        </QueryClientProvider>,
+      );
+      const ws = MockWebSocket.getLastInstance();
+      act(() => {
+        ws?.simulateOpen();
+      });
+
+      const chunk = ndjson({ v: 1, type: 'assistant-thinking-delta', turnId: 't1', text: 'pondering deeply' });
+      act(() => {
+        ws?.simulateMessage(JSON.stringify({ type: 'output', data: chunk, offset: chunk.length, epoch: 1 }));
+      });
+      await flush();
+
+      // The stray <details> lives outside the transcript (a sibling of the
+      // whole EmbeddedAgentWorkerView, not inside it at all) -- scoping to
+      // the transcript test id keeps the count at the chrome-free value (1
+      // -- the Working accordion), the same count this suite pins without
+      // any stray sibling present.
+      const allDetails = Array.from(screen.getByTestId('transcript').querySelectorAll('details'));
+      expect(allDetails).toHaveLength(1);
+    });
+
+    it('a <details> appended inside the transcript root moves the scoped count', async () => {
+      renderView({ sessionId: 's-scope2', workerId: 'w-scope2' });
+      const ws = MockWebSocket.getLastInstance();
+      act(() => {
+        ws?.simulateOpen();
+      });
+
+      const chunk = ndjson({ v: 1, type: 'assistant-thinking-delta', turnId: 't1', text: 'pondering deeply' });
+      act(() => {
+        ws?.simulateMessage(JSON.stringify({ type: 'output', data: chunk, offset: chunk.length, epoch: 1 }));
+      });
+      await flush();
+
+      const transcript = screen.getByTestId('transcript');
+      expect(Array.from(transcript.querySelectorAll('details'))).toHaveLength(1);
+
+      const injected = document.createElement('details');
+      injected.innerHTML = '<summary>injected</summary>';
+      transcript.appendChild(injected);
+
+      expect(Array.from(transcript.querySelectorAll('details'))).toHaveLength(2);
     });
   });
 
@@ -1306,7 +1363,7 @@ describe('EmbeddedAgentWorkerView', () => {
       });
       await flush();
 
-      const details = document.querySelector('details');
+      const details = screen.getByTestId('transcript').querySelector('details');
       expect(details?.hasAttribute('open')).toBe(false);
     });
 
@@ -1327,7 +1384,7 @@ describe('EmbeddedAgentWorkerView', () => {
       const outerSummary = document.querySelector('summary')!;
       await user.click(outerSummary);
 
-      let details = document.querySelector('details');
+      let details = screen.getByTestId('transcript').querySelector('details');
       expect(details?.hasAttribute('open')).toBe(true);
 
       // This tool-call belongs to the SAME turnId and follows immediately
@@ -1344,7 +1401,7 @@ describe('EmbeddedAgentWorkerView', () => {
       });
       await flush();
 
-      details = document.querySelector('details');
+      details = screen.getByTestId('transcript').querySelector('details');
       expect(details?.hasAttribute('open')).toBe(true);
       expect(screen.getByText('Working (1 tool call)')).toBeTruthy();
     });
@@ -1368,7 +1425,7 @@ describe('EmbeddedAgentWorkerView', () => {
 
       const errorNode = screen.getByText(/boom error/);
       const finalNode = screen.getByText('a final message');
-      const allDetails = Array.from(document.querySelectorAll('details'));
+      const allDetails = Array.from(screen.getByTestId('transcript').querySelectorAll('details'));
       expect(allDetails.every((d) => !d.contains(errorNode))).toBe(true);
       expect(allDetails.every((d) => !d.contains(finalNode))).toBe(true);
     });
@@ -1395,7 +1452,7 @@ describe('EmbeddedAgentWorkerView', () => {
       // The intermediate message stays outside every accordion regardless of
       // how many Working blocks the turn ends up producing.
       const intermediateNode = screen.getByText('mid-turn placeholder text');
-      const allDetails = Array.from(document.querySelectorAll('details'));
+      const allDetails = Array.from(screen.getByTestId('transcript').querySelectorAll('details'));
       expect(allDetails.every((d) => !d.contains(intermediateNode))).toBe(true);
       // The non-empty intermediate message splits the two tool rounds into
       // two separate Working blocks, one tool call each.
@@ -2298,7 +2355,7 @@ describe('EmbeddedAgentWorkerView', () => {
       expect(screen.getByText('— Context compacted —')).toBeTruthy();
       // No disclosure to open: an empty <details> would invite a click onto
       // nothing.
-      expect(document.querySelector('details')).toBeNull();
+      expect(screen.getByTestId('transcript').querySelector('details')).toBeNull();
     });
 
     it('R2 (#1447 stage 4): renders a plain boundary line on a restore-failure-boundary event, same visual family as context-compacted', async () => {
@@ -2319,7 +2376,7 @@ describe('EmbeddedAgentWorkerView', () => {
         screen.getByText('— Earlier conversation could not be restored; this turn continues from here —'),
       ).toBeTruthy();
       // No summary to disclose -- this marker never carries one (R2 addendum).
-      expect(document.querySelector('details')).toBeNull();
+      expect(screen.getByTestId('transcript').querySelector('details')).toBeNull();
     });
 
     it('R6 (#1447 stage 4): renders a quiet notification row on a restore-failure-declaration event', async () => {
