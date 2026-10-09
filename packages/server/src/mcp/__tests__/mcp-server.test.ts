@@ -6484,4 +6484,116 @@ describe('MCP Server Tools', () => {
       expect(agentsResponse.result?.isError).toBeUndefined();
     });
   });
+
+  // ===========================================================================
+  // write_review_annotations / clear_review_annotations ownership (Issue #1486)
+  // ===========================================================================
+  //
+  // Exhaustive ownership-gate coverage (caller owns / different caller /
+  // ownerless / tokenless-under-enforce, for both tools) lives in the
+  // dedicated review-annotations-ownership.test.ts. This block exists so
+  // this file -- mcp-server.ts's exact-match sibling test -- also carries a
+  // real, behavior-asserting case for the gate this Issue added.
+
+  describe('write_review_annotations / clear_review_annotations ownership (Issue #1486)', () => {
+    async function createGitDiffOwnedSession(createdBy: string): Promise<{ sessionId: string; workerId: string }> {
+      const session = await sessionManager.createSession(
+        { type: 'quick', locationPath: '/test/path', agentId: 'claude-code' },
+        { createdBy },
+      );
+      return { sessionId: session.id, workerId: session.workers.find((w) => w.type === 'git-diff')!.id };
+    }
+
+    it(
+      'write_review_annotations: enforce mode rejects a verified caller whose identity belongs to a ' +
+        'DIFFERENT session ("identity mismatch"), and nothing is written',
+      async () => {
+        const registry = new McpTokenRegistry();
+        await remountMcpApp({ mcpAuthMode: 'enforce', mcpTokenRegistry: registry });
+
+        const { sessionId: sessionAId, workerId: workerAId } = await createGitDiffOwnedSession('owner-a-1486');
+        const { sessionId: sessionBId, workerId: workerBId } = await createGitDiffOwnedSession('owner-b-1486');
+        const token = registry.mint({ sessionId: sessionAId, workerId: workerAId, userId: 'owner-a-1486' });
+
+        const response = await callTool(
+          app,
+          mcpSessionId,
+          'write_review_annotations',
+          {
+            workerId: workerBId,
+            sessionId: sessionBId,
+            annotations: [{ file: 'src/foo.ts', startLine: 1, endLine: 2, reason: 'needs review' }],
+            summary: { totalFiles: 1, reviewFiles: 1, mechanicalFiles: 0, confidence: 'medium' },
+          },
+          nextId++,
+          { Authorization: `Bearer ${token}` },
+        );
+
+        expect(response.result?.isError).toBe(true);
+        const data = parseToolResult(response) as { error: string };
+        expect(data.error).toContain('identity mismatch');
+        expect(annotationService.getAnnotations(workerBId)).toBeNull();
+      },
+    );
+
+    it('write_review_annotations: enforce mode succeeds for a caller claiming their OWN session', async () => {
+      const registry = new McpTokenRegistry();
+      await remountMcpApp({ mcpAuthMode: 'enforce', mcpTokenRegistry: registry });
+
+      const { sessionId, workerId } = await createGitDiffOwnedSession('owner-c-1486');
+      const token = registry.mint({ sessionId, workerId, userId: 'owner-c-1486' });
+
+      const response = await callTool(
+        app,
+        mcpSessionId,
+        'write_review_annotations',
+        {
+          workerId,
+          sessionId,
+          annotations: [{ file: 'src/foo.ts', startLine: 1, endLine: 2, reason: 'needs review' }],
+          summary: { totalFiles: 1, reviewFiles: 1, mechanicalFiles: 0, confidence: 'medium' },
+        },
+        nextId++,
+        { Authorization: `Bearer ${token}` },
+      );
+
+      expect(response.result?.isError).toBeUndefined();
+      expect(annotationService.getAnnotations(workerId)).not.toBeNull();
+    });
+
+    it(
+      'clear_review_annotations: enforce mode rejects a verified caller whose identity belongs to a ' +
+        'DIFFERENT session ("identity mismatch"), and the annotations survive untouched',
+      async () => {
+        const registry = new McpTokenRegistry();
+        await remountMcpApp({ mcpAuthMode: 'enforce', mcpTokenRegistry: registry });
+
+        const { sessionId: sessionAId, workerId: workerAId } = await createGitDiffOwnedSession('owner-d-1486');
+        const { sessionId: sessionBId, workerId: workerBId } = await createGitDiffOwnedSession('owner-e-1486');
+        annotationService.setAnnotations(
+          workerBId,
+          {
+            annotations: [{ file: 'src/foo.ts', startLine: 1, endLine: 2, reason: 'needs review' }],
+            summary: { totalFiles: 1, reviewFiles: 1, mechanicalFiles: 0, confidence: 'medium' },
+          },
+          { sessionId: sessionBId },
+        );
+        const token = registry.mint({ sessionId: sessionAId, workerId: workerAId, userId: 'owner-d-1486' });
+
+        const response = await callTool(
+          app,
+          mcpSessionId,
+          'clear_review_annotations',
+          { workerId: workerBId, sessionId: sessionBId },
+          nextId++,
+          { Authorization: `Bearer ${token}` },
+        );
+
+        expect(response.result?.isError).toBe(true);
+        const data = parseToolResult(response) as { error: string };
+        expect(data.error).toContain('identity mismatch');
+        expect(annotationService.getAnnotations(workerBId)).not.toBeNull();
+      },
+    );
+  });
 });
