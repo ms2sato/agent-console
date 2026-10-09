@@ -1871,6 +1871,27 @@ describe('findTestFiles topic-split attribution (Issue #1553)', () => {
     expect(noSeparator[0].hasTest).toBe(false);
   });
 
+  it('(g) an EXACT match for a longer sibling preempts topic-prefix attribution to a shorter one (CodeRabbit #1916)', () => {
+    // foo-bar.test.ts is an EXACT-name test for foo-bar.ts. Because
+    // "foo-" is also a valid prefix of "foo-bar", a longest-prefix search
+    // that does not special-case an exact match elsewhere in the
+    // directory would ALSO credit foo.ts (no production file named
+    // "foo-bar-<topic>" with a longer prefix exists to out-rank "foo").
+    // An exact match must always preempt topic attribution to a shorter,
+    // unrelated sibling.
+    writeFixtures(root, ['foo.ts', 'foo-bar.ts']);
+    writeFixtures(join(root, '__tests__'), ['foo-bar.test.ts']);
+    const { testCoverage } = findTestFiles([
+      join(root, 'foo.ts'),
+      join(root, 'foo-bar.ts'),
+      join(root, '__tests__', 'foo-bar.test.ts'),
+    ]);
+    const foo = testCoverage.find((c) => c.file === join(root, 'foo.ts'));
+    const fooBar = testCoverage.find((c) => c.file === join(root, 'foo-bar.ts'));
+    expect(fooBar.hasTest).toBe(true);
+    expect(foo.hasTest).toBe(false);
+  });
+
   it('(f) sibling-directory placement and __tests__ placement are both accepted for a topic-split test', () => {
     writeFixtures(root, ['agent-loop.ts', 'agent-loop-compaction.test.ts']);
     const { testCoverage } = findTestFiles([

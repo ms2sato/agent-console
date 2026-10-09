@@ -785,12 +785,24 @@ export function findTestFiles(changedFiles, diffRef = {}) {
   function attributesTo(tfBaseName, fileName, dir) {
     if (tfBaseName === fileName) return true;
     if (!tfBaseName.startsWith(fileName + '-') && !tfBaseName.startsWith(fileName + '.')) return false;
-    let longest = null;
+    // An exact match elsewhere in the directory always preempts topic-prefix
+    // attribution to a shorter, unrelated sibling: if foo.ts and foo-bar.ts
+    // both exist, foo-bar.test.ts is an EXACT match for foo-bar.ts, and must
+    // not ALSO be credited to foo.ts just because "foo-" is a prefix of
+    // "foo-bar". Checked in the same loop as the longest-prefix search
+    // (not a separate `.includes()` pass) so only one directory listing is
+    // consulted.
+    let winner = null;
+    let longestPrefix = null;
     for (const candidate of productionBasenamesInDir(dir)) {
+      if (candidate === tfBaseName) {
+        winner = candidate;
+        break;
+      }
       if (!tfBaseName.startsWith(candidate + '-') && !tfBaseName.startsWith(candidate + '.')) continue;
-      if (longest === null || candidate.length > longest.length) longest = candidate;
+      if (longestPrefix === null || candidate.length > longestPrefix.length) longestPrefix = candidate;
     }
-    return longest === fileName;
+    return (winner ?? longestPrefix) === fileName;
   }
 
   const testCoverage = [];
