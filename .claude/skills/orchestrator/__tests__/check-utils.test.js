@@ -1573,6 +1573,110 @@ describe('getAcceptanceCriteria', () => {
     const execImpl = () => null;
     expect(getAcceptanceCriteria('1', { execImpl })).toEqual({ state: 'absent', items: [] });
   });
+
+  // --- Issue #1525: scope checkbox collection to the AC section ---
+  //
+  // Before #1525, `getAcceptanceCriteria` collected `- [ ] ` lines from the
+  // WHOLE body before ever locating the heading, so a prose AC with a
+  // stray checkbox elsewhere in the body (a reproduction task list, a
+  // follow-up note) misclassified as 'checklist'. These tests pin the
+  // fix: collection scoped to the section range when a heading exists,
+  // falling back to whole-body collection when it does not (the
+  // regression the Issue names explicitly).
+
+  // Mutation reach (measured): reverting to whole-body collection — i.e.
+  // scanning every line in the body for `- [ ] ` before locating the
+  // heading — makes this test fail. The stray checkbox under "##
+  // Follow-ups" would be collected, and the state would be 'checklist'
+  // instead of 'prose'. This is the Issue's primary defect (AC item 1).
+  it('returns state "prose" when an unrelated checkbox appears outside the AC section', () => {
+    const body = [
+      'Some narrative text describing the defect.',
+      '',
+      '## Acceptance Criteria',
+      '',
+      'Do exactly what this Issue describes, in prose form.',
+      '',
+      '## Follow-ups',
+      '',
+      '- [ ] File a tracking issue for the migration plan',
+      '',
+    ].join('\n');
+    const execImpl = () => body;
+    expect(getAcceptanceCriteria('1', { execImpl })).toEqual({ state: 'prose', items: [] });
+  });
+
+  // This is the regression pin the Issue requires (AC item 2): a
+  // checklist body with NO AC heading at all must keep returning
+  // 'checklist', not silently downgrade to 'absent' once scoping exists.
+  //
+  // Mutation reach (measured): making the `range === null` branch always
+  // return 'absent' (i.e. deleting the whole-body fallback) makes this
+  // test fail — it would report 'absent' instead of 'checklist'.
+  it('returns state "checklist" for a checklist body with no AC heading at all (regression pin)', () => {
+    const body = ['Reproduction steps:', '', '- [ ] Open the app', '- [ ] Click the button', ''].join(
+      '\n'
+    );
+    const execImpl = () => body;
+    expect(getAcceptanceCriteria('1', { execImpl })).toEqual({
+      state: 'checklist',
+      items: ['Open the app', 'Click the button'],
+    });
+  });
+
+  // AC item 3: items inside the section plus a stray box outside collect
+  // ONLY the in-section items, in order.
+  //
+  // Mutation reach (measured): reverting to whole-body collection makes
+  // this test fail — the returned items would also include "Outside
+  // item", breaking both the length and the order of the expected array.
+  it('collects only the items inside the AC section when a stray checkbox exists outside it', () => {
+    const body = [
+      '## Acceptance Criteria',
+      '',
+      '- [ ] Inside item one',
+      '- [ ] Inside item two',
+      '',
+      '## Follow-ups',
+      '',
+      '- [ ] Outside item',
+      '',
+    ].join('\n');
+    const execImpl = () => body;
+    expect(getAcceptanceCriteria('1', { execImpl })).toEqual({
+      state: 'checklist',
+      items: ['Inside item one', 'Inside item two'],
+    });
+  });
+
+  // AC item 4: a checkbox under a DEEPER subheading inside the AC
+  // section is still in range — only a same-or-higher-level heading ends
+  // the section.
+  //
+  // Mutation reach (measured): changing the section-boundary comparison
+  // from `<=` to `<` (so ANY heading, deeper or not, ends the section)
+  // makes this test fail — the deeper `#### Must` heading would end the
+  // range before the checkbox under it is ever reached, reporting
+  // 'empty-heading' instead of 'checklist'.
+  it('includes a checkbox nested under a deeper subheading inside the AC section', () => {
+    const body = ['## Acceptance Criteria', '', '#### Must', '', '- [ ] Deep item', ''].join('\n');
+    const execImpl = () => body;
+    expect(getAcceptanceCriteria('1', { execImpl })).toEqual({
+      state: 'checklist',
+      items: ['Deep item'],
+    });
+  });
+
+  // AC item 6: a `- [x]` (checked) box under the heading, with nothing
+  // else, is content (non-blank line) but not an item — so the state is
+  // 'prose', not 'empty-heading'. Pinning the current content-scan
+  // behavior explicitly, as the AC requires: the scan counts any
+  // non-blank line, checked-box included, as content.
+  it('treats a checked box with no other content as "prose", not "empty-heading"', () => {
+    const body = ['## Acceptance Criteria', '', '- [x] Already done', ''].join('\n');
+    const execImpl = () => body;
+    expect(getAcceptanceCriteria('1', { execImpl })).toEqual({ state: 'prose', items: [] });
+  });
 });
 
 // getCiStatus — replaces the dead `gh pr checks --json` flag with the
