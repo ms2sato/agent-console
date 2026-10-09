@@ -121,7 +121,7 @@ export interface DeleteWorktreeResult {
   success: boolean;
   error?: string;
   /** Helps handlers map to appropriate HTTP status codes */
-  errorType?: 'not-found' | 'validation' | 'conflict' | 'open-pr';
+  errorType?: 'not-found' | 'validation' | 'conflict' | 'open-pr' | 'precheck-failed';
   gitStatus?: string;
   cleanupCommandResult?: HookCommandResult;
   sessionDeleteError?: string;
@@ -129,6 +129,15 @@ export interface DeleteWorktreeResult {
   killErrors?: Array<{ sessionId: string; error: string }>;
   /** Session IDs that were cleaned up (for WebSocket broadcast) */
   sessionIds?: string[];
+  /**
+   * How the open-PR precheck resolved, set on every path that reaches
+   * step 5 (the concurrency guard) — i.e. every path past the precheck
+   * itself. Never silently skipped: `'skipped-force'` /
+   * `'skipped-detached-head'` make an intentional skip explicit instead
+   * of indistinguishable from "the check ran and found nothing" (Issue
+   * #1295).
+   */
+  openPrCheck?: 'passed' | 'skipped-force' | 'skipped-detached-head';
 }
 
 // ---------- Orphan recovery ----------
@@ -267,12 +276,23 @@ export interface DeleteWorktreeParams {
    *   failure when the server user (`agentconsole`) tries to delete files
    *   owned by a delegated user.
    * - `findOpenPullRequest`'s `gh pr list` invocation runs under the
-   *   requesting user's gh auth token instead of the server user's.
+   *   requesting user's gh auth token instead of the server user's — unless
+   *   `precheckUsername` below overrides it for that one call.
    *
    * Optional / null / undefined / single-user mode — both elevation points
    * bypass `sudo` and the existing direct-spawn behaviour is preserved.
    */
   requestUsername?: string | null;
+  /**
+   * Identity whose gh auth runs `gh pr list`; falls back to
+   * `requestUsername`; never used for the removal itself. Lets the
+   * open-PR precheck resolve via the caller's identity when the target
+   * session's owner is unresolvable (`requestUsername` is null) — the
+   * caller is who is asking, and their gh auth exists (Issue #1295).
+   * `getCurrentBranch` and the actual worktree removal always use
+   * `requestUsername`, never this field.
+   */
+  precheckUsername?: string | null;
 }
 
 /**
@@ -290,7 +310,7 @@ export async function deleteWorktree(
   params: DeleteWorktreeParams,
   deps: DeleteWorktreeDeps,
 ): Promise<DeleteWorktreeResult> {
-  const { repoId, worktreePath, force, requestUsername } = params;
+  const { repoId, worktreePath, force, requestUsername, precheckUsername } = params;
   const { worktreeService, sessionManager, repositoryManager, findOpenPullRequest, getCurrentBranch } = deps;
 
   // 1. Look up repository.
@@ -330,12 +350,16 @@ export async function deleteWorktree(
     }
   }
 
-  // 4. Check for open PRs (unless force)
+  // 4. Check for open PRs (unless force). `openPrCheck` records how the
+  // precheck resolved so a later `force: true` / detached-head skip is
+  // reported explicitly rather than looking identical to "passed".
+  let openPrCheck: DeleteWorktreeResult['openPrCheck'] = 'skipped-force';
+  let branch: string | undefined;
   if (!force) {
     try {
-      const branch = await getCurrentBranch(worktreePath, requestUsername);
+      branch = await getCurrentBranch(worktreePath, requestUsername);
       if (branch && branch !== '(detached)' && branch !== '(unknown)') {
-        const openPr = await findOpenPullRequest(branch, repo.path, requestUsername ?? null);
+        const openPr = await findOpenPullRequest(branch, repo.path, precheckUsername ?? requestUsername ?? null);
         if (openPr) {
           return {
             success: false,
@@ -343,12 +367,20 @@ export async function deleteWorktree(
             errorType: 'open-pr',
           };
         }
+        openPrCheck = 'passed';
+      } else {
+        openPrCheck = 'skipped-detached-head';
       }
     } catch (error) {
+      // Distinguish "the check could not run" (infra/auth failure) from
+      // "the check ran and found an open PR" (above): the former is not a
+      // reason to treat `force` as the only path forward (Issue #1295).
+      const identity = precheckUsername ?? requestUsername ?? 'the server user';
+      const message = error instanceof Error ? error.message : String(error);
       return {
         success: false,
-        error: `Failed to check for open PRs as ${requestUsername ?? 'the server user'}: ${error instanceof Error ? error.message : String(error)}. Cannot proceed with deletion (configure gh for that account, or retry with force).`,
-        errorType: 'open-pr',
+        error: `Could not verify open PRs for branch '${branch ?? '(unresolved)'}' as ${identity} -- the check did not run (${message}). This is an infrastructure failure, not an open PR; fix gh auth for ${identity}, or pass force to skip the check.`,
+        errorType: 'precheck-failed',
       };
     }
   }
@@ -400,7 +432,7 @@ export async function deleteWorktree(
 
       logger.error({ repoId, worktreePath, error: result.error }, 'Worktree removal failed');
       // Do NOT delete sessions — preserve for retry
-      return { success: false, error: result.error || 'Failed to remove worktree', gitStatus, sessionIds };
+      return { success: false, error: result.error || 'Failed to remove worktree', gitStatus, sessionIds, openPrCheck };
     }
 
     // 6d. Delete sessions after successful worktree removal
@@ -428,6 +460,7 @@ export async function deleteWorktree(
       ...(killErrors.length > 0 ? { killErrors } : {}),
       sessionDeleteError,
       sessionIds,
+      openPrCheck,
     };
   } finally {
     clearDeletionInProgress(worktreePath);

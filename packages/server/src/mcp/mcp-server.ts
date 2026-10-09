@@ -1578,6 +1578,21 @@ export function createMcpApp(deps: McpDependencies): Hono {
           { toolName: 'remove_worktree', sessionId },
         );
 
+        // 2a. When the target session's owner is unresolvable,
+        //     `requestUsername` is null and the open-PR precheck would run
+        //     as the server user, which has no gh auth. Fall back to the
+        //     CALLER's identity for the precheck only (never for the
+        //     removal itself) — the caller is who is asking, and their gh
+        //     auth exists (Issue #1295). When the owner resolved, pass
+        //     nothing: owner wins, today's behaviour is unchanged.
+        const precheckUsername = requestUsername === null
+          ? await resolveRequestUsername(
+            getMcpCallerIdentity()?.userId,
+            userRepository,
+            { toolName: 'remove_worktree', sessionId, precheckFallback: true },
+          )
+          : undefined;
+
         // 3. Delegate all domain logic to service
         const result = await deleteWorktree(
           {
@@ -1585,6 +1600,7 @@ export function createMcpApp(deps: McpDependencies): Hono {
             worktreePath: session.locationPath,
             force: force ?? false,
             requestUsername,
+            precheckUsername,
           },
           { worktreeService, sessionManager, repositoryManager, findOpenPullRequest, getCurrentBranch },
         );
@@ -1607,6 +1623,7 @@ export function createMcpApp(deps: McpDependencies): Hono {
           worktreePath: session.locationPath,
           removed: true,
           cleanupCommandResult: result.cleanupCommandResult,
+          openPrCheck: result.openPrCheck,
         });
       } catch (err) {
         const message = err instanceof Error ? err.message : 'Unknown error';

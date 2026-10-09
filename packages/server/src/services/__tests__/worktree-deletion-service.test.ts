@@ -371,6 +371,7 @@ describe('deleteWorktree', () => {
     expect(result.success).toBe(false);
     expect(result.errorType).toBe('open-pr');
     expect(result.error).toContain('open PR #42');
+    expect(result.error).not.toMatch(/did not run/);
   });
 
   it('skips PR check when force=true', async () => {
@@ -453,7 +454,11 @@ describe('deleteWorktree', () => {
     expect(mockGetCurrentBranch.mock.calls[0]).toEqual([WORKTREE_PATH, null]);
   });
 
-  it('returns open-pr error when PR check fails (fail-closed)', async () => {
+  it('returns precheck-failed (not open-pr) when the check throws (Issue #1295)', async () => {
+    // Polarity (Issue #1295): a thrown check means "the check could not
+    // run", which is a different failure mode than "the check ran and
+    // found an open PR" -- `force` must not be the only way past an
+    // infrastructure failure.
     const deps = createMockDeps({
       sessions: [DEFAULT_WORKTREE_SESSION],
       findOpenPullRequest: async () => { throw new Error('gh not found'); },
@@ -465,11 +470,13 @@ describe('deleteWorktree', () => {
     );
 
     expect(result.success).toBe(false);
-    expect(result.errorType).toBe('open-pr');
-    expect(result.error).toContain('Failed to check for open PRs');
+    expect(result.errorType).toBe('precheck-failed');
+    expect(result.error).toMatch(/did not run/);
+    expect(result.error).toContain('as the server user');
+    expect(result.error).not.toContain('open PR');
   });
 
-  it('names the identity in the open-PR catch message when requestUsername is set (Issue #1868)', async () => {
+  it('names the identity in the precheck-failed message when requestUsername is set (Issue #1868, #1295)', async () => {
     const deps = createMockDeps({
       sessions: [DEFAULT_WORKTREE_SESSION],
       findOpenPullRequest: async () => { throw new Error('gh not found'); },
@@ -481,11 +488,11 @@ describe('deleteWorktree', () => {
     );
 
     expect(result.success).toBe(false);
-    expect(result.errorType).toBe('open-pr');
-    expect(result.error).toContain('Failed to check for open PRs as shared1');
+    expect(result.errorType).toBe('precheck-failed');
+    expect(result.error).toContain("as shared1 -- the check did not run");
   });
 
-  it('names "the server user" in the open-PR catch message when requestUsername is null (Issue #1868)', async () => {
+  it('names "the server user" in the precheck-failed message when requestUsername is null (Issue #1868, #1295)', async () => {
     const deps = createMockDeps({
       sessions: [DEFAULT_WORKTREE_SESSION],
       findOpenPullRequest: async () => { throw new Error('gh not found'); },
@@ -497,8 +504,151 @@ describe('deleteWorktree', () => {
     );
 
     expect(result.success).toBe(false);
-    expect(result.errorType).toBe('open-pr');
-    expect(result.error).toContain('Failed to check for open PRs as the server user');
+    expect(result.errorType).toBe('precheck-failed');
+    expect(result.error).toContain("as the server user -- the check did not run");
+  });
+
+  it('getCurrentBranch failing is also precheck-failed (same catch, Issue #1295)', async () => {
+    const mockFindPr = mock(async () => null);
+    const deps = createMockDeps({
+      sessions: [DEFAULT_WORKTREE_SESSION],
+      getCurrentBranch: async () => { throw new Error('git rev-parse failed'); },
+      findOpenPullRequest: mockFindPr,
+    });
+
+    const result = await deleteWorktree(
+      { repoId: 'repo-1', worktreePath: WORKTREE_PATH, force: false, requestUsername: null },
+      deps,
+    );
+
+    expect(result.success).toBe(false);
+    expect(result.errorType).toBe('precheck-failed');
+    expect(result.error).toMatch(/did not run/);
+    expect(mockFindPr).not.toHaveBeenCalled();
+  });
+
+  // --- openPrCheck: reported, never silent (Issue #1295) ---
+
+  describe('openPrCheck result field (Issue #1295)', () => {
+    it('(e) force skips the check: openPrCheck is skipped-force and findOpenPullRequest is not called', async () => {
+      const mockFindPr = mock(async () => null);
+      const deps = createMockDeps({
+        sessions: [DEFAULT_WORKTREE_SESSION],
+        findOpenPullRequest: mockFindPr,
+      });
+
+      const result = await deleteWorktree(
+        { repoId: 'repo-1', worktreePath: WORKTREE_PATH, force: true, requestUsername: null },
+        deps,
+      );
+
+      expect(result.success).toBe(true);
+      expect(result.openPrCheck).toBe('skipped-force');
+      expect(mockFindPr).not.toHaveBeenCalled();
+    });
+
+    it('(f) detached head skips the check: openPrCheck is skipped-detached-head', async () => {
+      const mockFindPr = mock(async () => null);
+      const deps = createMockDeps({
+        sessions: [DEFAULT_WORKTREE_SESSION],
+        getCurrentBranch: async () => '(detached)',
+        findOpenPullRequest: mockFindPr,
+      });
+
+      const result = await deleteWorktree(
+        { repoId: 'repo-1', worktreePath: WORKTREE_PATH, force: false, requestUsername: null },
+        deps,
+      );
+
+      expect(result.success).toBe(true);
+      expect(result.openPrCheck).toBe('skipped-detached-head');
+      expect(mockFindPr).not.toHaveBeenCalled();
+    });
+
+    it('(g) the check ran and found nothing: openPrCheck is passed', async () => {
+      const deps = createMockDeps({
+        sessions: [DEFAULT_WORKTREE_SESSION],
+        findOpenPullRequest: async () => null,
+        getCurrentBranch: async () => 'feature-1',
+      });
+
+      const result = await deleteWorktree(
+        { repoId: 'repo-1', worktreePath: WORKTREE_PATH, force: false, requestUsername: null },
+        deps,
+      );
+
+      expect(result.success).toBe(true);
+      expect(result.openPrCheck).toBe('passed');
+    });
+  });
+
+  // --- precheckUsername: caller-identity fallback for the precheck only (Issue #1295) ---
+
+  describe('precheckUsername (Issue #1295)', () => {
+    it('(c) findOpenPullRequest receives precheckUsername while getCurrentBranch receives requestUsername', async () => {
+      const mockFindPr = mock<DeleteWorktreeDeps['findOpenPullRequest']>(async () => null);
+      const mockGetCurrentBranch = mock<DeleteWorktreeDeps['getCurrentBranch']>(async () => 'feature-1');
+      const deps = createMockDeps({
+        sessions: [DEFAULT_WORKTREE_SESSION],
+        findOpenPullRequest: mockFindPr,
+        getCurrentBranch: mockGetCurrentBranch,
+      });
+
+      const result = await deleteWorktree(
+        {
+          repoId: 'repo-1',
+          worktreePath: WORKTREE_PATH,
+          force: false,
+          requestUsername: 'bob',
+          precheckUsername: 'alice',
+        },
+        deps,
+      );
+
+      expect(result.success).toBe(true);
+      expect(mockFindPr.mock.calls[0]).toEqual(['feature-1', REPO_PATH, 'alice']);
+      expect(mockGetCurrentBranch.mock.calls[0]).toEqual([WORKTREE_PATH, 'bob']);
+    });
+
+    it('(d) precheckUsername undefined: findOpenPullRequest receives requestUsername', async () => {
+      const mockFindPr = mock<DeleteWorktreeDeps['findOpenPullRequest']>(async () => null);
+      const deps = createMockDeps({
+        sessions: [DEFAULT_WORKTREE_SESSION],
+        findOpenPullRequest: mockFindPr,
+        getCurrentBranch: async () => 'feature-1',
+      });
+
+      const result = await deleteWorktree(
+        { repoId: 'repo-1', worktreePath: WORKTREE_PATH, force: false, requestUsername: 'bob' },
+        deps,
+      );
+
+      expect(result.success).toBe(true);
+      expect(mockFindPr.mock.calls[0]).toEqual(['feature-1', REPO_PATH, 'bob']);
+    });
+
+    it('boundary: precheckUsername: null behaves as undefined (falls back to requestUsername)', async () => {
+      const mockFindPr = mock<DeleteWorktreeDeps['findOpenPullRequest']>(async () => null);
+      const deps = createMockDeps({
+        sessions: [DEFAULT_WORKTREE_SESSION],
+        findOpenPullRequest: mockFindPr,
+        getCurrentBranch: async () => 'feature-1',
+      });
+
+      const result = await deleteWorktree(
+        {
+          repoId: 'repo-1',
+          worktreePath: WORKTREE_PATH,
+          force: false,
+          requestUsername: 'bob',
+          precheckUsername: null,
+        },
+        deps,
+      );
+
+      expect(result.success).toBe(true);
+      expect(mockFindPr.mock.calls[0]).toEqual(['feature-1', REPO_PATH, 'bob']);
+    });
   });
 
   it('skips PR check when branch is detached', async () => {

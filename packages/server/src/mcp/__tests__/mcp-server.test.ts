@@ -4646,12 +4646,17 @@ describe('MCP Server Tools', () => {
         sessionId: string;
         worktreePath: string;
         removed: boolean;
+        openPrCheck?: string;
       };
 
       expect(response.result?.isError).toBeUndefined();
       expect(data.sessionId).toBe(session.id);
       expect(data.worktreePath).toBe(WT_WORKTREE_PATH);
       expect(data.removed).toBe(true);
+      // The check ran (no force, branch resolved, no PR found) -- reported
+      // explicitly rather than indistinguishable from a skipped check
+      // (Issue #1295).
+      expect(data.openPrCheck).toBe('passed');
 
       // Session should be deleted by deleteWorktree
       expect(sessionManager.getSession(session.id)).toBeUndefined();
@@ -4737,14 +4742,17 @@ describe('MCP Server Tools', () => {
       const data = parseToolResult(response) as {
         sessionId: string;
         removed: boolean;
+        openPrCheck?: string;
       };
 
       expect(response.result?.isError).toBeUndefined();
       expect(data.removed).toBe(true);
       expect(mockFindOpenPullRequest).not.toHaveBeenCalled();
+      // The skip is reported explicitly, never silent (Issue #1295).
+      expect(data.openPrCheck).toBe('skipped-force');
     });
 
-    it('should block deletion when PR check fails (fail-closed)', async () => {
+    it('should block deletion when PR check fails, naming it an infrastructure failure not an open PR (Issue #1295)', async () => {
       await setupForDeletion();
 
       const session = await sessionManager.createSession({
@@ -4765,7 +4773,13 @@ describe('MCP Server Tools', () => {
       const data = parseToolResult(response) as { error: string };
 
       expect(response.result?.isError).toBe(true);
-      expect(data.error).toContain('Failed to check for open PRs');
+      // Polarity (Issue #1295): the old wording ("Failed to check for open
+      // PRs ... Cannot proceed with deletion") read as a protective refusal
+      // when it is in fact an infrastructure failure; errorResult carries
+      // only the message, not errorType, so this is where the distinction
+      // must be visible.
+      expect(data.error).toMatch(/did not run/);
+      expect(data.error).not.toContain('open PR');
 
       // Session should be preserved
       expect(sessionManager.getSession(session.id)).toBeDefined();
@@ -4858,6 +4872,108 @@ describe('MCP Server Tools', () => {
         expect(mockFindOpenPullRequest).toHaveBeenCalledTimes(1);
         const [, , requestUsername] = mockFindOpenPullRequest.mock.calls[0];
         expect(requestUsername).toBeNull();
+      });
+    });
+
+    // -----------------------------------------------------------------------
+    // Issue #1295: caller-identity fallback for the precheck only
+    // -----------------------------------------------------------------------
+    //
+    // When the target session's owner is unresolvable, the open-PR
+    // precheck may fall back to the MCP caller's own identity -- the
+    // caller is who is asking, and their gh auth exists. This is a
+    // fallback for the PRECHECK identity only: the removal itself
+    // (worktreeService.removeWorktree) must keep using requestUsername,
+    // never the caller's identity.
+    describe('caller-identity fallback for the precheck (Issue #1295)', () => {
+      it('falls back to the caller identity for findOpenPullRequest, but removeWorktree still receives requestUsername (null)', async () => {
+        await setupForDeletion();
+        const carol = await userRepository.upsertByOsUid(9301, 'carol', '/home/carol');
+
+        // Target session has no resolvable owner -- requestUsername
+        // resolves to null, which is exactly the shape the Issue reports.
+        const session = await sessionManager.createSession({
+          type: 'worktree',
+          locationPath: WT_WORKTREE_PATH,
+          repositoryId: 'test-repo',
+          worktreeId: 'feature-branch',
+          agentId: 'claude-code',
+        });
+
+        const registry = new McpTokenRegistry();
+        const token = registry.mint({
+          sessionId: 'caller-session',
+          workerId: 'caller-worker',
+          userId: carol.id,
+        });
+        await remountMcpApp({ mcpTokenRegistry: registry });
+
+        const removeWorktreeSpy = jest.spyOn(worktreeService, 'removeWorktree');
+        mockGit.removeWorktree.mockImplementation(async () => {});
+
+        const response = await callTool(
+          app,
+          mcpSessionId,
+          'remove_worktree',
+          { sessionId: session.id },
+          nextId++,
+          { Authorization: `Bearer ${token}` },
+        );
+
+        expect(response.result?.isError).toBeUndefined();
+
+        expect(mockFindOpenPullRequest).toHaveBeenCalledTimes(1);
+        const [, , precheckIdentity] = mockFindOpenPullRequest.mock.calls[0];
+        expect(precheckIdentity).toBe('carol');
+
+        // Removal identity is unchanged by the fallback -- not a change
+        // to the ownership model (Issue #1295's explicit scope boundary).
+        expect(removeWorktreeSpy).toHaveBeenCalledTimes(1);
+        const requestUsernameForRemoval = removeWorktreeSpy.mock.calls[0]?.[3];
+        expect(requestUsernameForRemoval).toBeNull();
+      });
+
+      it('does not fall back to the caller when the target session owner resolves (owner wins)', async () => {
+        await setupForDeletion();
+        const alice = await userRepository.upsertByOsUid(9302, 'alice2', '/home/alice2');
+        const carol = await userRepository.upsertByOsUid(9303, 'carol2', '/home/carol2');
+
+        // Target session owner resolves -- owner wins, caller is ignored
+        // for the precheck too.
+        const session = await sessionManager.createSession(
+          {
+            type: 'worktree',
+            locationPath: WT_WORKTREE_PATH,
+            repositoryId: 'test-repo',
+            worktreeId: 'feature-branch',
+            agentId: 'claude-code',
+          },
+          { createdBy: alice.id },
+        );
+
+        const registry = new McpTokenRegistry();
+        const token = registry.mint({
+          sessionId: 'caller-session',
+          workerId: 'caller-worker',
+          userId: carol.id,
+        });
+        await remountMcpApp({ mcpTokenRegistry: registry });
+
+        mockGit.removeWorktree.mockImplementation(async () => {});
+
+        const response = await callTool(
+          app,
+          mcpSessionId,
+          'remove_worktree',
+          { sessionId: session.id },
+          nextId++,
+          { Authorization: `Bearer ${token}` },
+        );
+
+        expect(response.result?.isError).toBeUndefined();
+        expect(mockFindOpenPullRequest).toHaveBeenCalledTimes(1);
+        const [, , precheckIdentity] = mockFindOpenPullRequest.mock.calls[0];
+        expect(precheckIdentity).toBe('alice2');
       });
     });
   });

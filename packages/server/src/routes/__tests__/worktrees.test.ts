@@ -1907,6 +1907,81 @@ describe('Worktrees API', () => {
     });
 
     // =======================================================================
+    // errorType -> HTTP status mapping (Issue #1295)
+    // =======================================================================
+    //
+    // 'precheck-failed' (the check could not run) must map to 503, distinct
+    // from 'open-pr' (the check ran and found something), which stays 409.
+    // A 409 reads as "your request conflicts with state"; an infrastructure
+    // failure is not that.
+    describe('errorType -> HTTP status mapping (Issue #1295)', () => {
+      it('maps "precheck-failed" to 503', async () => {
+        const mockFindOpenPullRequest = mock<
+          (branch: string, cwd: string, requestUsername: string | null) =>
+            Promise<{ number: number; title: string } | null>
+        >(async () => { throw new Error('gh: command not found'); });
+
+        app = new Hono<AppBindings>();
+        app.use('*', async (c, next) => {
+          c.set('appContext', asAppContext({
+            repositoryManager: mockRepositoryManager,
+            worktreeService: mockWorktreeService,
+            sessionManager: asSessionManager({
+              getAllSessions: () => [],
+              resolveWorktreeOwnerUsername: mock(() => Promise.resolve(null)),
+            }),
+            findOpenPullRequest: mockFindOpenPullRequest,
+          }));
+          await next();
+        });
+        app.onError(onApiError);
+        app.route('/api', api);
+
+        const res = await app.request(
+          `/api/repositories/${TEST_REPO.id}/worktrees/${encodedPath(WORKTREE_PATH)}`,
+          { method: 'DELETE' },
+        );
+
+        expect(res.status).toBe(503);
+        const body = (await res.json()) as { error: string };
+        expect(body.error).toMatch(/did not run/);
+        expect(body.error).not.toContain('open PR');
+      });
+
+      it('maps "open-pr" to 409, distinct from "precheck-failed"', async () => {
+        const mockFindOpenPullRequest = mock<
+          (branch: string, cwd: string, requestUsername: string | null) =>
+            Promise<{ number: number; title: string } | null>
+        >(async () => ({ number: 99, title: 'Some PR' }));
+
+        app = new Hono<AppBindings>();
+        app.use('*', async (c, next) => {
+          c.set('appContext', asAppContext({
+            repositoryManager: mockRepositoryManager,
+            worktreeService: mockWorktreeService,
+            sessionManager: asSessionManager({
+              getAllSessions: () => [],
+              resolveWorktreeOwnerUsername: mock(() => Promise.resolve(null)),
+            }),
+            findOpenPullRequest: mockFindOpenPullRequest,
+          }));
+          await next();
+        });
+        app.onError(onApiError);
+        app.route('/api', api);
+
+        const res = await app.request(
+          `/api/repositories/${TEST_REPO.id}/worktrees/${encodedPath(WORKTREE_PATH)}`,
+          { method: 'DELETE' },
+        );
+
+        expect(res.status).toBe(409);
+        const body = (await res.json()) as { error: string };
+        expect(body.error).toContain('open PR #99');
+      });
+    });
+
+    // =======================================================================
     // Async mode (?async=true), driven through a real JobQueue (Issue #1327)
     // =======================================================================
     //
