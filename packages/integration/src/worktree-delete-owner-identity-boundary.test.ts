@@ -46,6 +46,7 @@ import { setupMemfs } from '@agent-console/server/src/__tests__/utils/mock-fs-he
 import * as fsSync from 'node:fs';
 import { createTestContext, shutdownAppContext } from '@agent-console/server/src/app-context';
 import type { AppContext, AppBindings } from '@agent-console/server/src/app-context';
+import { createMockPtyProvider } from '@agent-console/server/src/__tests__/utils/mock-pty';
 import { onApiError } from '@agent-console/server/src/lib/error-handler';
 import { api } from '@agent-console/server/src/routes/api';
 import type { WorktreeService } from '@agent-console/server/src/services/worktree-service';
@@ -117,7 +118,11 @@ describe('Client-Server Boundary: DELETE worktree route resolves the owner, not 
     mockRemoveWorktree.mockClear();
     mockExecuteHookCommand.mockClear();
 
-    ctx = await createTestContext();
+    // Issue #1886: hermetic PtyProvider -- this suite's fixture cwd does not
+    // exist on disk, and the configured default (bun-terminal) throws
+    // ENOENT on a missing cwd where the legacy bunPtyProvider silently
+    // tolerated it (production handling tracked separately, #1892).
+    ctx = await createTestContext({ ptyProvider: createMockPtyProvider() });
     requesterUsername = os.userInfo().username;
 
     const repo = await ctx.repositoryManager.registerRepository(TEST_REPO_PATH);

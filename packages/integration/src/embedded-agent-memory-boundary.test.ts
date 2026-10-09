@@ -41,6 +41,7 @@ import {
 } from '@agent-console/server/src/__tests__/test-utils';
 import { createTestContext, shutdownAppContext } from '@agent-console/server/src/app-context';
 import type { AppContext } from '@agent-console/server/src/app-context';
+import { createMockPtyProvider } from '@agent-console/server/src/__tests__/utils/mock-pty';
 import type { SpawnAsUserFn, SpawnAsUserOpts } from '@agent-console/server/src/services/privilege-elevation';
 import { toSpawnAsUserResult, type FakeFileSink, type FakeSubprocess } from '@agent-console/server/src/__tests__/utils/fake-spawn-as-user';
 import { computeQuickCwdSlug } from '@agent-console/server/src/lib/session-data-path';
@@ -93,7 +94,13 @@ describe('Client-Server Boundary: embedded-agent memory layer init.context.memor
   beforeEach(async () => {
     await setupTestEnvironment();
     fake = makeFakeSpawn();
-    ctx = await createTestContext({ spawnAsUserFn: fake.fn });
+    // Issue #1886: hermetic PtyProvider -- this suite's quick session has no
+    // agentId but still auto-activates a default agent-type PTY worker, and
+    // locationPath is only memfs-virtual (not on the real disk the
+    // configured default, bun-terminal, checks). The legacy bunPtyProvider
+    // tolerated a missing real cwd silently (production handling tracked
+    // separately, #1892); this mock keeps the test hermetic.
+    ctx = await createTestContext({ spawnAsUserFn: fake.fn, ptyProvider: createMockPtyProvider() });
     // A real (memfs-virtual, under this test env's fs mock), existing
     // directory: `resolveMemoryDirPath`'s quick-session branch calls
     // `realpath` on the session's `locationPath`, and this test asserts

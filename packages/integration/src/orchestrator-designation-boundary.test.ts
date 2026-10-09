@@ -52,6 +52,7 @@ import {
 import { setupMemfs } from '@agent-console/server/src/__tests__/utils/mock-fs-helper';
 import { createTestContext, shutdownAppContext } from '@agent-console/server/src/app-context';
 import type { AppContext } from '@agent-console/server/src/app-context';
+import { createMockPtyProvider } from '@agent-console/server/src/__tests__/utils/mock-pty';
 
 import { AppServerMessageSchema } from '@agent-console/shared';
 import type { AppServerMessage, Repository } from '@agent-console/shared';
@@ -64,7 +65,11 @@ describe('Client-Server Boundary: Repository orchestrator designation (Issue #17
 
   beforeEach(async () => {
     await setupTestEnvironment();
-    ctx = await createTestContext();
+    // Issue #1886: hermetic PtyProvider -- this suite's fixture cwd does not
+    // exist on disk, and the configured default (bun-terminal) throws
+    // ENOENT on a missing cwd where the legacy bunPtyProvider silently
+    // tolerated it (production handling tracked separately, #1892).
+    ctx = await createTestContext({ ptyProvider: createMockPtyProvider() });
 
     // `setupTestEnvironment()` already seeded memfs with the config dir's
     // `.keep` placeholder, but `setupMemfs()` resets the whole in-memory
@@ -311,7 +316,7 @@ describe('REST /api/sessions/:id/orchestrator-designation (Issue #1716)', () => 
 
   beforeEach(async () => {
     await setupTestEnvironment();
-    ctx = await createTestContext();
+    ctx = await createTestContext({ ptyProvider: createMockPtyProvider() });
 
     setupMemfs({
       [`${getTestConfigDir()}/.keep`]: '',

@@ -254,3 +254,15 @@ export function createMockPtyFactory(startPid = 10000) {
 
   return { instances, spawn, reset, provider, setAutoEmitSentinel };
 }
+
+/**
+ * Convenience `PtyProvider` for callers that only need `createTestContext`'s
+ * `overrides.ptyProvider` seam (Issue #1886) to resolve to something that
+ * never attempts a real OS spawn -- not `createMockPtyFactory`'s full
+ * instance-tracking surface (`.instances` / `.reset` / `.setAutoEmitSentinel`).
+ * Delegates to a fresh `createMockPtyFactory()` internally, so this file
+ * keeps exactly one `PtyProvider`-shaped mock implementation.
+ */
+export function createMockPtyProvider(): PtyProvider {
+  return createMockPtyFactory().provider;
+}
