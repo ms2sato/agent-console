@@ -899,9 +899,157 @@ fi
 rm -f "$S9_COOKIE_JAR" "$S9_ALICE_LOGIN_RESP" "$S9_WT_RESP" "$S9_WT_LIST_RESP" \
   "$S9_BASELINE" "$S9_AFTER" "$S9_DB_OUT" "$S9_RESTART_RESP" "$S9_GIT_BRANCH_OUT"
 
+echo
+echo "=== 10. pull route reads the branch as the worktree's owning session's spawn user, not the requester (#1623) ==="
+# Verifies the #1623 fix: the pull route's detached-HEAD guard and success
+# message read resolve the owning session's spawn user (resolveSpawnUsername)
+# and thread it into getCurrentBranch (and pullFastForward), rather than
+# always reading/pulling as the requesting auth user. Same two-session
+# construction as check 9: a shared worktree session (spawn user shared1)
+# on the repository created at check 7 (repo_id), reachable over HTTP by
+# alice. The discriminator here does not need a PTY `agent` worker (the
+# pull route never looks at workers), so autoStartSession:true is kept only
+# because worktree-creation-service.ts gates SESSION ROW creation on it
+# (confirmed by reading `autoStartSession` in that file before writing this
+# check) -- a session row is required for the route's
+# `sessionManager.getAllSessions().find(...)` lookup to find an owner at all.
+#
+#   On main (pre-#1623): the pull route's getCurrentBranch call runs as the
+#   server process user (agentconsole), hits "dubious ownership" against a
+#   shared1-owned worktree directory, is swallowed into '(unknown)', and the
+#   route answers 400 "Cannot pull in detached HEAD state" -- THIS 400 IS THE
+#   BUG REPRODUCTION.
+#   After the fix: the same call resolves shared1, passes the detached-HEAD
+#   guard, and the route answers its ordinary fire-and-forget success
+#   response, HTTP 202 with {"accepted":true} -- that positive shape is the
+#   actual pass condition below, not merely the absence of the 400 (an
+#   absence assertion would also PASS on an unrelated 500/404/409, which
+#   would be a different failure, not evidence the fix worked). The pull
+#   itself may still fail in the background for lack of a configured remote;
+#   that background outcome is not asserted on here.
+#
+# Like checks 8/9, prerequisite failures are recorded as explicit FAILs
+# (never silently skipped).
+S10_COOKIE_JAR="$(mktemp)"
+S10_ALICE_LOGIN_RESP="$(mktemp)"
+S10_WT_RESP="$(mktemp)"
+S10_WT_LIST_RESP="$(mktemp)"
+S10_BASELINE="$(mktemp)"
+S10_AFTER="$(mktemp)"
+S10_DB_OUT="$(mktemp)"
+S10_PULL_RESP="$(mktemp)"
+
+curl -s -o "$S10_ALICE_LOGIN_RESP" -c "$S10_COOKIE_JAR" -X POST "${BASE_URL}/api/auth/login" \
+  -H 'Content-Type: application/json' \
+  -d '{"username":"alice","password":"alice-password"}' >/dev/null
+
+if [ -n "$repo_id" ]; then
+  curl -s -b "$S10_COOKIE_JAR" "${BASE_URL}/api/repositories/${repo_id}/worktrees" \
+    | grep -o '"path":"[^"]*"' | cut -d'"' -f4 | sort > "$S10_BASELINE"
+
+  s10_task_id="$(uuidgen 2>/dev/null || cat /proc/sys/kernel/random/uuid)"
+  s10_wt_code="$(curl -s -o "$S10_WT_RESP" -w '%{http_code}' -b "$S10_COOKIE_JAR" -c "$S10_COOKIE_JAR" \
+    -X POST "${BASE_URL}/api/repositories/${repo_id}/worktrees" \
+    -H 'Content-Type: application/json' \
+    -d "{\"taskId\":\"${s10_task_id}\",\"mode\":\"custom\",\"branch\":\"issue-1623-pull\",\"baseBranch\":\"main\",\"useRemote\":false,\"autoStartSession\":true,\"shared\":true}")"
+  echo "  POST /api/repositories/<id>/worktrees (shared+autoStartSession) -> HTTP ${s10_wt_code}"
+
+  S10_PATH=""
+  for _ in $(seq 1 30); do
+    sleep 1
+    curl -s -o "$S10_WT_LIST_RESP" -b "$S10_COOKIE_JAR" \
+      "${BASE_URL}/api/repositories/${repo_id}/worktrees" >/dev/null
+    grep -o '"path":"[^"]*"' "$S10_WT_LIST_RESP" | cut -d'"' -f4 | sort > "$S10_AFTER"
+    S10_PATH="$(comm -13 "$S10_BASELINE" "$S10_AFTER" | head -n1)"
+    if [ -n "$S10_PATH" ]; then break; fi
+  done
+  s10_listed_ok=1
+  [ -n "$S10_PATH" ] && s10_listed_ok=0
+  check "worktree #1623 appears in repo's worktree list" "$s10_listed_ok"
+
+  if [ -n "$S10_PATH" ]; then
+    # Bounded poll, same idiom as the worktree-list polling loop above:
+    # the worktree can appear in git's list before the session row (with
+    # created_by) is actually persisted server-side, since the two are
+    # separate async steps. A single read right after the worktree-list
+    # loop can race that gap and record a false FAIL ("session id
+    # missing") without ever exercising the owner-resolution path this
+    # check exists to test.
+    s10_session_id=""
+    s10_created_by=""
+    s10_shared1_id=""
+    for _ in $(seq 1 30); do
+      sleep 1
+      docker compose -f "$COMPOSE_FILE" exec -T --user agentconsole -e S10_PATH="$S10_PATH" agent-console \
+        bun -e '
+          import { Database } from "bun:sqlite";
+          const db = new Database(process.env.AGENT_CONSOLE_HOME + "/data.db", { readonly: true });
+          const session = db.query("SELECT id, created_by FROM sessions WHERE location_path = ?").get(process.env.S10_PATH);
+          console.log("SESSION_ID=" + (session ? session.id : ""));
+          console.log("CREATED_BY=" + (session && session.created_by != null ? session.created_by : ""));
+          const shared1 = db.query("SELECT id FROM users WHERE username = ?").get("shared1");
+          console.log("SHARED1_ID=" + (shared1 ? shared1.id : ""));
+        ' > "$S10_DB_OUT" 2>&1
+      s10_session_id="$(grep '^SESSION_ID=' "$S10_DB_OUT" | head -n1 | cut -d= -f2)"
+      s10_created_by="$(grep '^CREATED_BY=' "$S10_DB_OUT" | head -n1 | cut -d= -f2)"
+      s10_shared1_id="$(grep '^SHARED1_ID=' "$S10_DB_OUT" | head -n1 | cut -d= -f2)"
+      if [ -n "$s10_session_id" ] && [ -n "$s10_created_by" ] && [ "$s10_created_by" = "$s10_shared1_id" ]; then
+        break
+      fi
+    done
+
+    s10_fixture_ok=1
+    [ -n "$s10_created_by" ] && [ "$s10_created_by" = "$s10_shared1_id" ] && s10_fixture_ok=0
+    check "worktree #1623 session's created_by is shared1's users.id (fixture sanity)" "$s10_fixture_ok"
+
+    if [ "$s10_fixture_ok" -eq 0 ]; then
+      s10_pull_task_id="$(uuidgen 2>/dev/null || cat /proc/sys/kernel/random/uuid)"
+      s10_pull_code="$(curl -s -o "$S10_PULL_RESP" -w '%{http_code}' -b "$S10_COOKIE_JAR" -c "$S10_COOKIE_JAR" \
+        -X POST "${BASE_URL}/api/repositories/${repo_id}/worktrees/pull" \
+        -H 'Content-Type: application/json' \
+        -d "{\"worktreePath\":\"${S10_PATH}\",\"taskId\":\"${s10_pull_task_id}\"}")"
+      echo "  POST /worktrees/pull on shared1-owned worktree, as alice -> HTTP ${s10_pull_code}"
+      echo "  response body: $(cat "$S10_PULL_RESP")"
+
+      s10_pull_ok=1
+      if [ "$s10_pull_code" = "202" ] && grep -q '"accepted":true' "$S10_PULL_RESP"; then
+        s10_pull_ok=0
+      elif [ "$s10_pull_code" = "400" ] && grep -q 'Cannot pull in detached HEAD state' "$S10_PULL_RESP"; then
+        echo "  BUG REPRODUCTION (expected on unmodified main, must be ABSENT after the #1623 fix): 400 Cannot pull in detached HEAD state"
+      fi
+      check "pull accepted (202 + accepted:true), not the pre-fix 400 'Cannot pull in detached HEAD state' (#1623)" "$s10_pull_ok"
+
+      # Diagnostic signal (not machine-asserted): after the fix, the
+      # server's own warn line for a swallowed getCurrentBranch failure on
+      # THIS worktree's path should be absent. Grepping the log is a
+      # secondary signal; the HTTP assertion above is the real one.
+      S10_UNKNOWN_WARN_COUNT="$(compose logs --tail 200 agent-console 2>&1 | grep -F "$S10_PATH" | grep -c '(unknown)' || true)"
+      echo "  DIAGNOSTIC: server log lines mentioning this worktree's path AND '(unknown)': ${S10_UNKNOWN_WARN_COUNT}"
+    else
+      echo "  DIAGNOSTIC: session row with created_by=shared1 did not appear within 30s for worktree #1623 (SESSION_ID='${s10_session_id}' CREATED_BY='${s10_created_by}' SHARED1_ID='${s10_shared1_id}'); recording explicit FAIL instead of skipping."
+      check "pull accepted (202 + accepted:true), not the pre-fix 400 'Cannot pull in detached HEAD state' (#1623)" 1
+    fi
+  else
+    echo "  ---- DIAGNOSTIC: server logs (last 60 lines) ----"
+    compose logs --tail 60 agent-console 2>&1 | sed 's/^/    /' || true
+    echo "  -------------------------------------------------"
+    echo "  DIAGNOSTIC: worktree #1623 never appeared; recording explicit FAILs for its dependent sub-checks instead of skipping."
+    check "worktree #1623 session's created_by is shared1's users.id (fixture sanity)" 1
+    check "pull accepted (202 + accepted:true), not the pre-fix 400 'Cannot pull in detached HEAD state' (#1623)" 1
+  fi
+else
+  echo "  DIAGNOSTIC: repo_id from check 7 is empty; recording explicit FAILs for check 10 instead of skipping."
+  check "worktree #1623 appears in repo's worktree list" 1
+  check "worktree #1623 session's created_by is shared1's users.id (fixture sanity)" 1
+  check "pull accepted (202 + accepted:true), not the pre-fix 400 'Cannot pull in detached HEAD state' (#1623)" 1
+fi
+
+rm -f "$S10_COOKIE_JAR" "$S10_ALICE_LOGIN_RESP" "$S10_WT_RESP" "$S10_WT_LIST_RESP" \
+  "$S10_BASELINE" "$S10_AFTER" "$S10_DB_OUT" "$S10_PULL_RESP"
+
 if [ "$SMOKES" -eq 1 ]; then
   echo
-  echo "=== 10. real-host smokes inside the container (--smokes, #1619) ==="
+  echo "=== 11. real-host smokes inside the container (--smokes, #1619) ==="
   SMOKE_SUMMARY=""
 
   run_smoke "check-multiuser-pty-env" "check-multiuser-pty-env.ts" alice

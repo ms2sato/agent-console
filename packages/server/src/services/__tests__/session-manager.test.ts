@@ -6710,6 +6710,118 @@ describe('SessionManager', () => {
     });
   });
 
+  describe('resolveWorktreeOwnerUsername (Issue #1623 paused-worktree gap)', () => {
+    // Same stubUserRepo construction as the "resolveSpawnUsername wiring"
+    // describe block above: resolves two known createdBy UUIDs to
+    // deterministic usernames, falling back to the server process user for
+    // anything else (never asserted on directly in these tests).
+    // user-other-uuid exists only for the type-filter test below.
+    function buildStubUserRepo(): UserRepository {
+      return {
+        async upsertByOsUid(): Promise<AuthUser> {
+          throw new Error('upsertByOsUid not used by this test');
+        },
+        async findById(id: string): Promise<AuthUser | null> {
+          if (id === 'user-shared-uuid') {
+            return { id, username: 'shared1', homeDir: '/home/shared1' };
+          }
+          if (id === 'user-other-uuid') {
+            return { id, username: 'otheruser', homeDir: '/home/otheruser' };
+          }
+          return null;
+        },
+        async getOsUidById(): Promise<number | null | undefined> {
+          throw new Error('getOsUidById not used by this test');
+        },
+        async refreshOsIdentity(): Promise<AuthUser> {
+          throw new Error('refreshOsIdentity not used by this test');
+        },
+        async getPreferences(): Promise<null> {
+          return null;
+        },
+        async setPreferences(): Promise<boolean> {
+          return true;
+        },
+      };
+    }
+
+    async function getSessionManagerWithUserRepo(userRepository: UserRepository) {
+      const module = await import(`../session-manager.js?v=${++importCounter}`);
+      return module.SessionManager.create({
+        userMode: new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' }),
+        pathExists: mockPathExists,
+        jobQueue: testJobQueue,
+        agentManager,
+        mcpTokenRegistry: new McpTokenRegistry(),
+        repositoryLookup: defaultRepositoryLookup,
+        repositoryEnvLookup: defaultRepositoryEnvLookup,
+        userRepository,
+      });
+    }
+
+    it('resolves the spawn user of a LIVE (in-memory) session owning the path', async () => {
+      const manager = await getSessionManagerWithUserRepo(buildStubUserRepo());
+      await manager.createSession(
+        { type: 'worktree', locationPath: '/test/live-path', repositoryId: 'repo-1', worktreeId: 'feature-x', agentId: 'claude-code' },
+        { createdBy: 'user-shared-uuid' },
+      );
+
+      const result = await manager.resolveWorktreeOwnerUsername('/test/live-path');
+      expect(result).toBe('shared1');
+    });
+
+    it('resolves the spawn user of a PAUSED (persisted-but-not-in-memory) session owning the path', async () => {
+      const manager = await getSessionManagerWithUserRepo(buildStubUserRepo());
+      const session = await manager.createSession(
+        { type: 'worktree', locationPath: '/test/paused-path', repositoryId: 'repo-1', worktreeId: 'feature-y', agentId: 'claude-code' },
+        { createdBy: 'user-shared-uuid' },
+      );
+
+      await manager.pauseSession(session.id);
+
+      // Not in the in-memory map any more -- getAllSessions() must miss it.
+      const liveSessions: Session[] = manager.getAllSessions();
+      expect(liveSessions.find((s) => s.locationPath === '/test/paused-path')).toBeUndefined();
+
+      const result = await manager.resolveWorktreeOwnerUsername('/test/paused-path');
+      expect(result).toBe('shared1');
+    });
+
+    it('returns null when no session (live or paused) owns the path', async () => {
+      const manager = await getSessionManagerWithUserRepo(buildStubUserRepo());
+
+      const result = await manager.resolveWorktreeOwnerUsername('/test/nobody-owns-this-path');
+      expect(result).toBeNull();
+    });
+
+    it('prefers the WORKTREE session over a QUICK session sharing the same locationPath', async () => {
+      // Quick sessions are not guaranteed a unique path namespace from
+      // worktree sessions. The quick session is created FIRST so it has
+      // the earlier Map insertion order -- `getAllSessions()` iterates
+      // `this.sessions.values()` in insertion order, so an unfiltered
+      // `.find()` would match the quick session first.
+      //
+      // Polarity measured directly (not just reasoned about): removing
+      // `s.type === 'worktree' &&` from the live-session predicate in
+      // resolveWorktreeOwnerUsername makes this test observe 'otheruser'
+      // (the quick session's owner) instead of 'shared1' -- confirming the
+      // break direction is "quick session wins", matching the insertion
+      // order above, not an unrelated failure shape.
+      const manager = await getSessionManagerWithUserRepo(buildStubUserRepo());
+      await manager.createSession(
+        { type: 'quick', locationPath: '/test/shared-path', agentId: 'claude-code' },
+        { createdBy: 'user-other-uuid' },
+      );
+      await manager.createSession(
+        { type: 'worktree', locationPath: '/test/shared-path', repositoryId: 'repo-1', worktreeId: 'feature-z', agentId: 'claude-code' },
+        { createdBy: 'user-shared-uuid' },
+      );
+
+      const result = await manager.resolveWorktreeOwnerUsername('/test/shared-path');
+      expect(result).toBe('shared1');
+    });
+  });
+
   describe('repository env var template expansion', () => {
     it('should expand template placeholders in repository env vars when creating a worker', async () => {
       // Create a manager with a repo env lookup that resolves 'repo-1' to
@@ -6759,6 +6871,116 @@ describe('SessionManager', () => {
       expect(spawnEnv.PORT).toBe('300');
       // {{BRANCH}} should expand to the mocked branch name
       expect(spawnEnv.BRANCH_NAME).toBe('feature-xyz');
+    });
+
+    it('resolves the session spawn user and threads it into gitGetCurrentBranch (Issue #1623)', async () => {
+      // Same template-expansion shape as the test above, but with a
+      // createdBy + userRepository so the `{{branch}}` resolution's git
+      // read runs as the SESSION'S SPAWN USER, not the server process user
+      // (multi-user mode must not read the branch of a user-owned worktree
+      // as the server's own OS user -- #1622's rule).
+      //
+      // Polarity measured: reverting `getRepositoryEnvVars` to call
+      // `gitGetCurrentBranch(session.locationPath)` (no 2nd arg) makes the
+      // assertion below fail (`toHaveBeenCalledWith` receives only 1 arg).
+      const envLookup = makeRepositoryEnvLookup({
+        mapping: {
+          'repo-1': {
+            name: 'my-repo',
+            path: '/test/repo',
+            envVars: 'BRANCH_NAME={{BRANCH}}',
+          },
+        },
+        getWorktreeIndexNumber: async () => 3,
+      });
+
+      const stubUserRepo: UserRepository = {
+        async upsertByOsUid(): Promise<AuthUser> {
+          throw new Error('upsertByOsUid not used by this test');
+        },
+        async findById(id: string): Promise<AuthUser | null> {
+          if (id === 'user-shared-uuid') {
+            return { id, username: 'shared1', homeDir: '/home/shared1' };
+          }
+          return null;
+        },
+        async getOsUidById(): Promise<number | null | undefined> {
+          throw new Error('getOsUidById not used by this test');
+        },
+        async refreshOsIdentity(): Promise<AuthUser> {
+          throw new Error('refreshOsIdentity not used by this test');
+        },
+        async getPreferences(): Promise<null> {
+          return null;
+        },
+        async setPreferences(): Promise<boolean> {
+          return true;
+        },
+      };
+
+      const module = await import(`../session-manager.js?v=${++importCounter}`);
+      const manager = await module.SessionManager.create({
+        userMode: new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' }),
+        pathExists: mockPathExists,
+        jobQueue: testJobQueue,
+        agentManager,
+        mcpTokenRegistry: new McpTokenRegistry(),
+        repositoryLookup: { getRepositorySlug: async (id: string) => (id === 'repo-1' ? 'my-repo' : undefined) },
+        repositoryEnvLookup: envLookup,
+        userRepository: stubUserRepo,
+      });
+
+      mockGit.getCurrentBranch.mockImplementation(() => Promise.resolve('feature-xyz'));
+
+      await manager.createSession(
+        {
+          type: 'worktree',
+          locationPath: '/test/path',
+          repositoryId: 'repo-1',
+          worktreeId: 'feature-xyz',
+          agentId: 'claude-code',
+        },
+        { createdBy: 'user-shared-uuid' },
+      );
+
+      expect(mockGit.getCurrentBranch.mock.calls.length).toBeGreaterThanOrEqual(1);
+      expect(mockGit.getCurrentBranch.mock.calls[0]).toEqual(['/test/path', 'shared1']);
+    });
+
+    it('skips the git call entirely on the no-template fast path', async () => {
+      // Existing behaviour pin, unaffected by the #1623 identity threading
+      // above: when no env var value contains a template placeholder,
+      // getRepositoryEnvVars returns early and never calls gitGetCurrentBranch.
+      const envLookup = makeRepositoryEnvLookup({
+        mapping: {
+          'repo-1': {
+            name: 'my-repo',
+            path: '/test/repo',
+            envVars: 'PLAIN_VAR=no-templates-here',
+          },
+        },
+        getWorktreeIndexNumber: async () => 3,
+      });
+      const module = await import(`../session-manager.js?v=${++importCounter}`);
+      const manager = await module.SessionManager.create({
+        userMode: new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' }),
+        pathExists: mockPathExists,
+        jobQueue: testJobQueue,
+        agentManager,
+        mcpTokenRegistry: new McpTokenRegistry(),
+        repositoryLookup: { getRepositorySlug: async (id: string) => (id === 'repo-1' ? 'my-repo' : undefined) },
+        repositoryEnvLookup: envLookup,
+      });
+
+      await manager.createSession({
+        type: 'worktree',
+        locationPath: '/test/path',
+        repositoryId: 'repo-1',
+        worktreeId: 'feature-xyz',
+        agentId: 'claude-code',
+      });
+
+      expect(mockGit.getCurrentBranch.mock.calls.length).toBe(0);
     });
   });
 

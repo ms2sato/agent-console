@@ -412,6 +412,47 @@ describe('deleteWorktree', () => {
     expect(mockFindPr.mock.calls[0]).toEqual(['feature-1', REPO_PATH, 'alice']);
   });
 
+  it('forwards requestUsername to getCurrentBranch (Issue #1623)', async () => {
+    const mockGetCurrentBranch = mock<DeleteWorktreeDeps['getCurrentBranch']>(
+      async () => 'feature-1',
+    );
+    const deps = createMockDeps({
+      sessions: [DEFAULT_WORKTREE_SESSION],
+      getCurrentBranch: mockGetCurrentBranch,
+    });
+
+    // Polarity measured: reverting worktree-deletion-service.ts's open-PR
+    // check to call `getCurrentBranch(worktreePath)` (no 2nd arg) makes the
+    // assertion below fail (`toEqual` receives only 1 arg).
+    const result = await deleteWorktree(
+      { repoId: 'repo-1', worktreePath: WORKTREE_PATH, force: false, requestUsername: 'alice' },
+      deps,
+    );
+
+    expect(result.success).toBe(true);
+    expect(mockGetCurrentBranch).toHaveBeenCalledTimes(1);
+    expect(mockGetCurrentBranch.mock.calls[0]).toEqual([WORKTREE_PATH, 'alice']);
+  });
+
+  it('forwards a null requestUsername to getCurrentBranch', async () => {
+    const mockGetCurrentBranch = mock<DeleteWorktreeDeps['getCurrentBranch']>(
+      async () => 'feature-1',
+    );
+    const deps = createMockDeps({
+      sessions: [DEFAULT_WORKTREE_SESSION],
+      getCurrentBranch: mockGetCurrentBranch,
+    });
+
+    const result = await deleteWorktree(
+      { repoId: 'repo-1', worktreePath: WORKTREE_PATH, force: false, requestUsername: null },
+      deps,
+    );
+
+    expect(result.success).toBe(true);
+    expect(mockGetCurrentBranch).toHaveBeenCalledTimes(1);
+    expect(mockGetCurrentBranch.mock.calls[0]).toEqual([WORKTREE_PATH, null]);
+  });
+
   it('returns open-pr error when PR check fails (fail-closed)', async () => {
     const deps = createMockDeps({
       sessions: [DEFAULT_WORKTREE_SESSION],

@@ -112,7 +112,7 @@ export interface DeleteWorktreeDeps {
     cwd: string,
     requestUsername: string | null,
   ) => Promise<{ number: number; title: string } | null>;
-  getCurrentBranch: (cwd: string) => Promise<string>;
+  getCurrentBranch: (cwd: string, requestUser?: string | null) => Promise<string>;
 }
 
 // ---------- Result ----------
@@ -333,7 +333,7 @@ export async function deleteWorktree(
   // 4. Check for open PRs (unless force)
   if (!force) {
     try {
-      const branch = await getCurrentBranch(worktreePath);
+      const branch = await getCurrentBranch(worktreePath, requestUsername);
       if (branch && branch !== '(detached)' && branch !== '(unknown)') {
         const openPr = await findOpenPullRequest(branch, repo.path, requestUsername ?? null);
         if (openPr) {

@@ -250,7 +250,8 @@ const worktrees = new Hono<AppBindings>()
   // Pull a worktree (git pull --ff-only, async)
   .post('/:id/worktrees/pull', vValidator(PullWorktreeRequestSchema), async (c) => {
     const repoId = c.req.param('id');
-    const { repositoryManager, worktreeService, broadcastToApp } = c.get('appContext');
+    const { repositoryManager, worktreeService, broadcastToApp, sessionManager } =
+      c.get('appContext');
     const authUser = c.get('authUser');
     const repo = repositoryManager.getRepository(repoId);
 
@@ -292,8 +293,21 @@ const worktrees = new Hono<AppBindings>()
       return c.json({ error: 'Worktree is being deleted' }, 409);
     }
 
+    // Multi-user mode must run the branch/pull git invocations as the
+    // worktree's owning session's spawn user (the OS user that owns the
+    // worktree), not as the requesting viewer -- using the viewer's
+    // identity on a shared worktree reintroduces dubious-ownership
+    // failures (#1622's rule). Resolve once, reused by both branch reads
+    // and the pull itself below. resolveWorktreeOwnerUsername checks live
+    // sessions, then paused (persisted-but-not-in-memory) sessions, so a
+    // PAUSED shared worktree is resolved the same way as an active one.
+    // Falls back to the requester when no session (live or paused) owns
+    // this path (e.g. the repository's primary worktree).
+    const pullIdentity =
+      (await sessionManager.resolveWorktreeOwnerUsername(worktreePath)) ?? authUser.username;
+
     // Reject pull on detached HEAD (no upstream to pull from)
-    const currentBranch = await getCurrentBranch(worktreePath);
+    const currentBranch = await getCurrentBranch(worktreePath, pullIdentity);
     if (currentBranch === '(detached)' || currentBranch === '(unknown)') {
       throw new ValidationError('Cannot pull in detached HEAD state');
     }
@@ -323,15 +337,18 @@ const worktrees = new Hono<AppBindings>()
         }
 
         // Get current branch for the success message
-        const branch = await getCurrentBranch(worktreePath);
+        const branch = await getCurrentBranch(worktreePath, pullIdentity);
 
-        // Execute git pull --ff-only. Thread the authenticated OS username so
-        // multi-user mode runs the network fetch as the requesting user (picks
-        // up their SSH_AUTH_SOCK / gitconfig via the elevation helper);
-        // otherwise SSH-URL remotes fail with Permission denied. In single-user
-        // mode, `runAsUser` reads this value but `AUTH_MODE` gates the
-        // elevation to a no-op.
-        const commitsPulled = await pullFastForward(worktreePath, authUser.username);
+        // Execute git pull --ff-only. Thread the resolved identity (the
+        // worktree's owning session's spawn user, falling back to the
+        // requester when no session owns this path) so multi-user mode
+        // runs the network fetch as that user (picks up their
+        // SSH_AUTH_SOCK / gitconfig via the elevation helper); otherwise
+        // SSH-URL remotes fail with Permission denied, or a shared
+        // worktree's pull runs as the wrong account. In single-user mode,
+        // `runAsUser` reads this value but `AUTH_MODE` gates the elevation
+        // to a no-op.
+        const commitsPulled = await pullFastForward(worktreePath, pullIdentity);
 
         broadcastToApp({
           type: 'worktree-pull-completed',

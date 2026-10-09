@@ -301,7 +301,8 @@ export async function getCurrentBranch(cwd: string, requestUser?: string | null)
   try {
     const branch = await git(['branch', '--show-current'], cwd, DEFAULT_GIT_TIMEOUT_MS, requestUser);
     return branch || '(detached)';
-  } catch {
+  } catch (err) {
+    logger.warn({ cwd, requestUser, err }, 'Failed to read current branch; returning "(unknown)"');
     return '(unknown)';
   }
 }

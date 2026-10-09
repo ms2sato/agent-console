@@ -1,4 +1,5 @@
-import { describe, it, expect, beforeEach, afterAll } from 'bun:test';
+import { describe, it, expect, beforeEach, afterAll, spyOn } from 'bun:test';
+import { rootLogger } from '../logger.js';
 
 /**
  * Tests for remote git operations.
@@ -1204,6 +1205,48 @@ index abc1234..def5678 100644
           expect(result).toBe('(unknown)');
         } finally {
           mod.__setRunAsUserForTesting(null);
+        }
+      });
+
+      // Polarity measured: removing the `logger.warn(...)` call from the
+      // catch block (keeping the `'(unknown)'` return) makes both warn
+      // assertions below fail while the return-value assertion still
+      // passes -- confirming the warn pins the previously-silent swallow,
+      // not the pre-existing sentinel contract.
+      it('logs a warn naming cwd when the branch read fails', async () => {
+        const fakeRunAsUser = async () => ({
+          stdout: '',
+          stderr: 'fatal: detected dubious ownership\n',
+          exitCode: 128,
+          timedOut: false,
+        });
+
+        const warnSpy = spyOn(rootLogger, 'warn');
+        const mod = await getGitModule();
+        mod.__setRunAsUserForTesting(fakeRunAsUser);
+        try {
+          const result = await mod.getCurrentBranch('/repo', 'alice');
+
+          expect(result).toBe('(unknown)');
+          expect(warnSpy.mock.calls.length).toBe(1);
+          expect(warnSpy.mock.calls[0]![0]).toMatchObject({ cwd: '/repo' });
+        } finally {
+          mod.__setRunAsUserForTesting(null);
+          warnSpy.mockRestore();
+        }
+      });
+
+      it('does not warn when the branch read succeeds', async () => {
+        setMockSpawnResult('main\n');
+        const warnSpy = spyOn(rootLogger, 'warn');
+        const { getCurrentBranch } = await getGitModule();
+        try {
+          const result = await getCurrentBranch('/repo');
+
+          expect(result).toBe('main');
+          expect(warnSpy.mock.calls.length).toBe(0);
+        } finally {
+          warnSpy.mockRestore();
         }
       });
     });

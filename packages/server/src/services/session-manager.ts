@@ -1437,6 +1437,39 @@ export class SessionManager {
   }
 
   /**
+   * Resolve the OS username that should run git operations against a
+   * worktree at `locationPath`: the owning session's spawn user, or `null`
+   * when no session (live or paused) owns this path.
+   *
+   * Checks live (in-memory) sessions first, then falls back to paused
+   * sessions, which are persisted in the database but removed from the
+   * in-memory `this.sessions` map (see {@link getAllPausedSessions}'s own
+   * comment for why) -- without this fallback, a route resolving the
+   * worktree owner's identity would silently fall back to the requester
+   * for any PAUSED shared worktree, reintroducing the same
+   * dubious-ownership class of bug fixed for live sessions.
+   *
+   * Single source of this lookup so callers (the pull route today;
+   * potentially the delete route too) never duplicate the live-then-paused
+   * resolution order.
+   */
+  async resolveWorktreeOwnerUsername(locationPath: string): Promise<string | null> {
+    const liveSession = this.getAllSessions().find(
+      (s) => s.type === 'worktree' && s.locationPath === locationPath,
+    );
+    if (liveSession) {
+      return resolveSpawnUsername(liveSession.createdBy, this.userRepository);
+    }
+    const pausedSession = (await this.getAllPausedSessions()).find(
+      (s) => s.type === 'worktree' && s.locationPath === locationPath,
+    );
+    if (pausedSession) {
+      return resolveSpawnUsername(pausedSession.createdBy, this.userRepository);
+    }
+    return null;
+  }
+
+  /**
    * Pause a session: kill all PTY workers, remove from memory, preserve persistence.
    * Delegates to SessionPauseResumeService.
    */
@@ -1661,13 +1694,6 @@ export class SessionManager {
   }
 
   /**
-   * Get current branch name for a given path
-   */
-  async getBranchForPath(locationPath: string): Promise<string> {
-    return gitGetCurrentBranch(locationPath);
-  }
-
-  /**
    * Write a memo for a session. Validates the session exists, writes to disk,
    * and fires the onMemoUpdated lifecycle callback for WebSocket broadcast.
    *
@@ -1781,7 +1807,10 @@ export class SessionManager {
 
     // Resolve template variables and apply substitution
     const worktreeNum = await this.repositoryEnvLookup.getWorktreeIndexNumber(session.locationPath);
-    const branch = await gitGetCurrentBranch(session.locationPath);
+    const branch = await gitGetCurrentBranch(
+      session.locationPath,
+      await resolveSpawnUsername(session.createdBy, this.userRepository),
+    );
     const vars = {
       worktreeNum,
       branch,
