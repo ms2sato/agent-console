@@ -92,6 +92,26 @@ describe('computeFenceMask', () => {
   it('returns an empty array for empty input', () => {
     expect(computeFenceMask([])).toEqual([]);
   });
+
+  it('does not let a nested fence-looking line with an info string close the block (CommonMark)', () => {
+    const lines = ['```', '```js', 'inside', '```'];
+    expect(computeFenceMask(lines)).toEqual([true, true, true, true]);
+  });
+
+  it('closes only on a marker line followed by nothing but whitespace', () => {
+    const lines = ['```', 'inside', '``` ', 'after'];
+    expect(computeFenceMask(lines)).toEqual([true, true, true, false]);
+  });
+
+  it('does not open a backtick fence whose info string contains a backtick', () => {
+    const lines = ['``` `x`', 'after'];
+    expect(computeFenceMask(lines)).toEqual([false, false]);
+  });
+
+  it('still opens a backtick fence with a backtick-free info string', () => {
+    const lines = ['```js', 'inside', '```'];
+    expect(computeFenceMask(lines)).toEqual([true, true, true]);
+  });
 });
 
 describe('maskInlineCode', () => {
@@ -223,6 +243,21 @@ describe('extractFragmentLinks', () => {
       { line: 1, frag: 'frag', pathPart: 'other.md' },
     ]);
   });
+
+  it('decodes a percent-encoded fragment to its literal Unicode text', () => {
+    expect(extractFragmentLinks('[jump](#%E6%97%A5%E6%9C%AC%E8%AA%9E)\n')).toEqual([
+      { line: 1, frag: '日本語', pathPart: '' }, // lang-check:allow -- deliberate non-Latin decode target
+    ]);
+  });
+
+  it('falls back to the raw fragment on a malformed percent-escape', () => {
+    expect(extractFragmentLinks('[x](#frag%)\n')).toEqual([{ line: 1, frag: 'frag%', pathPart: '' }]);
+  });
+
+  it('does not extract a link hidden inside a nested fence-looking "```js" line', () => {
+    const content = '```\n```js\n[fake](#nothing)\n```\n[real](#real)\n';
+    expect(extractFragmentLinks(content)).toEqual([{ line: 5, frag: 'real', pathPart: '' }]);
+  });
 });
 
 describe('checkDocFragments — acceptance scenarios', () => {
@@ -310,6 +345,26 @@ describe('checkDocFragments — acceptance scenarios', () => {
     const result = checkDocFragments(tempDir, { cwd: tempDir });
     expect(result.misses).toEqual([]);
     expect(result.filesScanned).toBe(1);
+  });
+
+  it('does not mistake a nested fence-looking "```js" line for the real close', () => {
+    writeFixture(
+      'nested-fence.md',
+      '# Real\n\n```\n```js\n[fake](#nothing)\n```\n\n[real](#real)\n',
+    );
+
+    const result = checkDocFragments(tempDir, { cwd: tempDir });
+    expect(result.misses).toEqual([]);
+  });
+
+  it('resolves a percent-encoded link to a non-ASCII heading', () => {
+    writeFixture(
+      'unicode-heading.md',
+      '# 日本語\n\n[jump](#%E6%97%A5%E6%9C%AC%E8%AA%9E)\n', // lang-check:allow -- deliberate non-Latin fixture heading
+    );
+
+    const result = checkDocFragments(tempDir, { cwd: tempDir });
+    expect(result.misses).toEqual([]);
   });
 
   it('does not flag an inline-code link-syntax example describing this very checker', () => {

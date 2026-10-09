@@ -107,12 +107,20 @@ export function computeFenceMask(lines) {
     const m = /^ {0,3}(`{3,}|~{3,})/.exec(lines[i]);
     if (fence) {
       mask[i] = true;
-      if (m && m[1][0] === fence.char && m[1].length >= fence.len) {
+      // CommonMark: a closing fence must use the same character, be at
+      // least as long as the opener, and have nothing but whitespace
+      // after the marker -- a line like "```js" re-opening a nested
+      // example does NOT close the block (unlike `m` above, which only
+      // checks the prefix and would wrongly treat it as a close).
+      const close = /^ {0,3}(`{3,}|~{3,})\s*$/.exec(lines[i]);
+      if (close && close[1][0] === fence.char && close[1].length >= fence.len) {
         fence = null;
       }
       continue;
     }
-    if (m) {
+    // A backtick-fenced opener's info string must not itself contain a
+    // backtick (CommonMark) -- otherwise it is not a fence at all.
+    if (m && !(m[1][0] === '`' && lines[i].slice(m.index + m[0].length).includes('`'))) {
       fence = { char: m[1][0], len: m[1].length };
       mask[i] = true;
       continue;
@@ -232,7 +240,18 @@ export function extractFragmentLinks(content) {
       const hashIdx = dest.indexOf('#');
       if (hashIdx === -1) continue; // no fragment: out of scope
       const pathPart = dest.slice(0, hashIdx);
-      const frag = dest.slice(hashIdx + 1);
+      const rawFrag = dest.slice(hashIdx + 1);
+      // Heading anchors are literal Unicode text; a link's fragment may
+      // be percent-encoded (e.g. `#%E6%97%A5%E6%9C%AC%E8%AA%9E`). Decode
+      // before comparison, same as a browser resolving the URL fragment.
+      // A malformed escape falls back to the raw text rather than
+      // throwing -- this is link-text parsing, not a trust boundary.
+      let frag;
+      try {
+        frag = decodeURIComponent(rawFrag);
+      } catch {
+        frag = rawFrag;
+      }
       links.push({ line: i + 1, frag, pathPart });
     }
   }
