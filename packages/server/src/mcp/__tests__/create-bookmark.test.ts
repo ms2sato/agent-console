@@ -193,7 +193,7 @@ describe('create_bookmark', () => {
       { type: 'quick', locationPath: TEST_REPO_PATH },
       { createdBy: owner.id },
     );
-    return { sessionId: session.id, userId: owner.id, workerId: session.workers[0].id };
+    return { sessionId: session.id, userId: owner.id, workerId: session.workers.find((w) => w.type === 'agent')!.id };
   }
 
   // ---------- Attribution: session.createdBy, never getMcpCallerIdentity() ----------

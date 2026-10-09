@@ -229,7 +229,7 @@ describe('create_html_artifact', () => {
       { type: 'quick', locationPath: TEST_REPO_PATH },
       { createdBy: owner.id },
     );
-    return { sessionId: session.id, userId: owner.id, workerId: session.workers[0].id };
+    return { sessionId: session.id, userId: owner.id, workerId: session.workers.find((w) => w.type === 'agent')!.id };
   }
 
   // ---------- Boundary: 5 MiB cap (measured on raw byte length) ----------

@@ -265,8 +265,6 @@ export class WorkerLifecycleManager {
         );
       }
 
-      const repositoryEnvVars = await this.deps.getRepositoryEnvVars(sessionId);
-      const username = await this.deps.resolveSpawnUsername(session.createdBy);
       // Only the session's initial agent worker (created with a non-empty
       // initialPrompt) is eligible for restart re-delivery.
       const deliverInitialPromptOnActivation = !!initialPrompt?.trim();
@@ -286,44 +284,72 @@ export class WorkerLifecycleManager {
         initialPrompt,
         initialPromptDelivered: session.initialPromptDelivered,
       });
-      await this.deps.workerManager.activateAgentWorkerPty(agentWorker, {
-        sessionId,
-        locationPath: session.locationPath,
-        repositoryEnvVars,
-        username,
-        resolver,
-        agentId: agentWorker.agentId,
-        startupIntent,
-        initialPrompt,
-        repositoryId,
-        context: {
-          parentSessionId: session.parentSessionId,
-          parentWorkerId: session.parentWorkerId,
-          templateVars,
-          // Forward the delegated session's 1Password socket fallback into
-          // PTY activation. Undefined for non-delegated paths.
-          sshAuthSockFallback: session.sshAuthSockFallback,
-        },
-        revived: false,
-        createdByUserId: session.createdBy,
-      });
+
+      // Reserve the Map slot now, synchronously, before the awaits below --
+      // createSession races this branch against the git-diff branch via
+      // Promise.allSettled, and JS run-to-completion guarantees this call's
+      // entire synchronous prefix finishes before the git-diff call is even
+      // invoked. The initial worker therefore always reserves its insertion
+      // order first, regardless of which branch's activation settles later.
+      // Removed in the catch below if activation fails -- a worker whose
+      // activation throws must not remain in the Map.
+      session.workers.set(workerId, agentWorker);
+
+      try {
+        const repositoryEnvVars = await this.deps.getRepositoryEnvVars(sessionId);
+        const username = await this.deps.resolveSpawnUsername(session.createdBy);
+        await this.deps.workerManager.activateAgentWorkerPty(agentWorker, {
+          sessionId,
+          locationPath: session.locationPath,
+          repositoryEnvVars,
+          username,
+          resolver,
+          agentId: agentWorker.agentId,
+          startupIntent,
+          initialPrompt,
+          repositoryId,
+          context: {
+            parentSessionId: session.parentSessionId,
+            parentWorkerId: session.parentWorkerId,
+            templateVars,
+            // Forward the delegated session's 1Password socket fallback into
+            // PTY activation. Undefined for non-delegated paths.
+            sshAuthSockFallback: session.sshAuthSockFallback,
+          },
+          revived: false,
+          createdByUserId: session.createdBy,
+        });
+      } catch (err) {
+        session.workers.delete(workerId);
+        throw err;
+      }
       worker = agentWorker;
     } else if (request.type === 'terminal') {
-      const repositoryEnvVars = await this.deps.getRepositoryEnvVars(sessionId);
-      const username = await this.deps.resolveSpawnUsername(session.createdBy);
       const terminalWorker = this.deps.workerManager.initializeTerminalWorker({
         id: workerId,
         name: workerName,
         createdAt,
       });
-      await this.deps.workerManager.activateTerminalWorkerPty(terminalWorker, {
-        sessionId,
-        locationPath: session.locationPath,
-        repositoryEnvVars,
-        username,
-        resolver,
-        revived: false,
-      });
+
+      // Reserve the Map slot now, synchronously, before the awaits below --
+      // same ordering guarantee as the agent branch above.
+      session.workers.set(workerId, terminalWorker);
+
+      try {
+        const repositoryEnvVars = await this.deps.getRepositoryEnvVars(sessionId);
+        const username = await this.deps.resolveSpawnUsername(session.createdBy);
+        await this.deps.workerManager.activateTerminalWorkerPty(terminalWorker, {
+          sessionId,
+          locationPath: session.locationPath,
+          repositoryEnvVars,
+          username,
+          resolver,
+          revived: false,
+        });
+      } catch (err) {
+        session.workers.delete(workerId);
+        throw err;
+      }
       worker = terminalWorker;
     } else if (request.type === 'embedded-agent') {
       // Validate model/reasoningEffort/contextWindowTokens against the
@@ -395,6 +421,12 @@ export class WorkerLifecycleManager {
         reasoningEffort: overrides.reasoningEffort,
         contextWindowTokens: overrides.contextWindowTokens,
       });
+
+      // Reserve the Map slot immediately -- this branch has no activation
+      // await in Phase 1 (nothing can throw after construction here), but
+      // reserving it synchronously keeps the ordering guarantee identical to
+      // the agent/terminal branches above.
+      session.workers.set(workerId, worker);
     } else {
       // git-diff worker (async initialization for base commit calculation).
       // Resolve the worktree-owning OS username so the initial

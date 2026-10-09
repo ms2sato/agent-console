@@ -319,7 +319,7 @@ describe('set_mcp_server_permission', () => {
       { type: 'quick', locationPath: TEST_REPO_PATH, agentId: CLAUDE_CODE_AGENT_ID },
       { createdBy: owner.id },
     );
-    const workerId = session.workers[0].id;
+    const workerId = session.workers.find((w) => w.type === 'agent')!.id;
     const token = registry.mint({ sessionId: session.id, workerId, userId: owner.id });
     return { sessionId: session.id, workerId, userId: owner.id, token };
   }
@@ -696,7 +696,7 @@ describe('set_mcp_server_permission', () => {
       { type: 'worktree', locationPath: TEST_REPO_PATH, repositoryId: TEST_REPO_ID, worktreeId: 'wt-h4', agentId: CLAUDE_CODE_AGENT_ID },
       { createdBy: owner.id },
     );
-    const ptyWorkerId = session.workers[0].id;
+    const ptyWorkerId = session.workers.find((w) => w.type === 'agent')!.id;
 
     const response = await callTool(
       app,

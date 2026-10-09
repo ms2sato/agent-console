@@ -74,7 +74,7 @@ interface SessionBase {
   locationPath: string;      // Working directory (always required)
   status: SessionStatus;
   createdAt: string;
-  workers: Worker[];
+  workers: Worker[];         // ordered by creation request; initial worker first
 }
 
 interface WorktreeSession extends SessionBase {
@@ -170,7 +170,7 @@ interface InternalSessionBase {
   locationPath: string;
   status: SessionStatus;
   createdAt: string;
-  workers: Map<string, InternalWorker>;
+  workers: Map<string, InternalWorker>;  // ordered by creation request; initial worker first
 }
 
 interface InternalWorktreeSession extends InternalSessionBase {

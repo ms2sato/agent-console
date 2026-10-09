@@ -767,7 +767,7 @@ describe('API Routes Integration', () => {
           }),
         });
         const { session } = (await createRes.json()) as { session: Session };
-        const workerId = session.workers[0].id;
+        const workerId = session.workers.find((w) => w.type === 'agent')!.id;
 
         // Delete the worker
         const res = await app.request(`/api/sessions/${session.id}/workers/${workerId}`, {
