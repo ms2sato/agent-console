@@ -372,6 +372,7 @@ async function main(): Promise<void> {
       {
         name: `instruction-loader-smoke-${process.pid}`,
         description: 'Disposable definition for the instruction-loader-parity E2E (Issue #1343 Phase A).',
+        engine: 'openai-api',
         provider: { baseUrl: PROVIDER_BASE_URL, model: PROVIDER_MODEL, apiKeyRef: PROVIDER_KEY_REF },
       },
       owner.id,

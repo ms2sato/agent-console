@@ -390,6 +390,7 @@ async function main(): Promise<void> {
       {
         name: `openai-api-eviction-smoke-${process.pid}`,
         description: 'Disposable definition for the openai-api idle-eviction smoke (Issue #1502).',
+        engine: 'openai-api',
         provider: { baseUrl: PROVIDER_BASE_URL, model: PROVIDER_MODEL, apiKeyRef: PROVIDER_KEY_REF },
       },
       owner.id,

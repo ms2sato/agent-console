@@ -289,11 +289,13 @@ async function main(): Promise<void> {
   let workerId = '';
   try {
     const authUser = ctx.userMode.authenticate(() => undefined);
+    if (!authUser) bail('ctx.userMode.authenticate() returned null; single-user mode should always resolve a user');
 
     const definition = await ctx.embeddedAgentManager.createEmbeddedAgent(
       {
         name: `restore-boundary-seed-smoke-${process.pid}`,
         description: 'Disposable definition for the restore-boundary usage-seed smoke.',
+        engine: 'openai-api',
         provider: { baseUrl: PROVIDER_BASE_URL, model: PROVIDER_MODEL, apiKeyRef: PROVIDER_KEY_REF },
         // A conservative declared window against a much larger real one. This
         // is what makes the tool-schema gap dominant.

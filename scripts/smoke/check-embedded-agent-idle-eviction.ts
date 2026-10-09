@@ -1,5 +1,7 @@
 #!/usr/bin/env bun
 /**
+ * NOTE: an unused `aClaudeStillAlive` snapshot (same-instant A-claude-liveness check) was removed here during a typecheck-config fix; whether a same-instant assertion on it was intentionally dropped earlier is unconfirmed and worth a follow-up look.
+ *
  * Shipping-path E2E for idle eviction of `claude-sdk` embedded-agent workers.
  *
  * This is the verification the eviction phase's acceptance criteria require,
@@ -537,7 +539,6 @@ async function main(): Promise<void> {
 
     // --- BOTH POLARITIES, AT THE SAME INSTANT. -------------------------------
     const aHarnessAlive = pidAlive(aHarness);
-    const aClaudeStillAlive = aClaudeBefore.filter((pid) => pidAlive(pid));
     const bHarnessAlive = pidAlive(bHarness);
     const bClaudeNow = claudeDescendantPids(bHarness);
 

@@ -496,14 +496,14 @@ async function runNonElevated(): Promise<number> {
 
     // --- Seed both as `allow` rows through the REAL repository.
     await ctx.mcpServerPermissionRepository.upsert({
-      repositoryId: repository.id,
+      scope: { kind: 'repository', repositoryId: repository.id },
       serverName: SET_SERVER_NAME,
       configHash: setEntry.hash,
       decision: 'allow',
       decidedBy: owner.id,
     });
     await ctx.mcpServerPermissionRepository.upsert({
-      repositoryId: repository.id,
+      scope: { kind: 'repository', repositoryId: repository.id },
       serverName: UNSET_SERVER_NAME,
       configHash: unsetEntry.hash,
       decision: 'allow',
@@ -1080,14 +1080,14 @@ async function runElevatedArm(targetUsername: string): Promise<number> {
     console.log(`==> discovered hashes: ${SET_SERVER_NAME}=${setEntry.hash} ${UNSET_SERVER_NAME}=${unsetEntry.hash}`);
 
     await ctx.mcpServerPermissionRepository.upsert({
-      repositoryId: repository.id,
+      scope: { kind: 'repository', repositoryId: repository.id },
       serverName: SET_SERVER_NAME,
       configHash: setEntry.hash,
       decision: 'allow',
       decidedBy: owner.id,
     });
     await ctx.mcpServerPermissionRepository.upsert({
-      repositoryId: repository.id,
+      scope: { kind: 'repository', repositoryId: repository.id },
       serverName: UNSET_SERVER_NAME,
       configHash: unsetEntry.hash,
       decision: 'allow',
