@@ -159,12 +159,14 @@ Full rationale and the ambient-observation guarantee: [`docs/design/architect-ro
 REPOS=/var/lib/agent-console/repositories
 
 # Positive control FIRST: the id (or mount) actually produces hits at all.
+# -type f: files only -- the session's own inbox directory also carries its
+# id (messages/<id>/) and must not count.
 # If this is 0, stop -- do not read the next line's emptiness as "no answer".
-find "$REPOS" -path '*/messages/*' -name '*<architect-session-id>*' | wc -l
+find "$REPOS" -path '*/messages/*' -type f -name '*<architect-session-id>*' | wc -l
 
 # The actual question: the latest message filename's epoch-ms prefix,
 # compared against the epoch-ms you recorded at push time (`date +%s%3N`).
-find "$REPOS" -path '*/messages/*' -name '*<architect-session-id>*' -printf '%f\n' \
+find "$REPOS" -path '*/messages/*' -type f -name '*<architect-session-id>*' -printf '%f\n' \
   | cut -d- -f1 | sort -n | tail -1
 ```
 
