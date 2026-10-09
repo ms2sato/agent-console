@@ -597,6 +597,18 @@ Free and deterministic -- no elevation, no billed CLI. It is a manual gate, neve
 
 **Verification tier (Discipline 4 of `os-environment-coupling.md`):** Unprivileged (no tier-2/3/4 residue; any machine with bun).
 
+## Additional Verification: PTY Exit-Observation Probe
+
+PRs touching `pty-provider.ts`'s `BunTerminalPtyAdapter` exit wiring (the `subprocess.exited` bridge in the constructor, L281-300) or its `onExit` replay-on-attach handling (L353-372), or any Bun version bump / `MIN_BUN_VERSION` change, should run `bun scripts/smoke/probe-pty-exit-observation.ts` (and its `--contend` arm) before relying on any claim about whether a PTY exit event is reliably observed under host load. This is the Issue [#1879](https://github.com/ms2sato/agent-console/issues/1879) measurement instrument built to settle whether `check-exit-127-diagnostic.ts`'s `selfCheck()` flake under contention is a lost Bun/adapter exit event (LOST-EXIT) or a genuinely stuck child (STUCK-CHILD): it spawns the identical `sh -c 'echo ok'` PTY via the real `bunPtyProvider.spawn(...)` in a sequential cycle loop, and on every timeout reads, in order, the real `/proc/<pid>` state, `kill(pid, 0)`'s errno, whether the adapter's own exit listener fired, and `Bun.version`/`os.loadavg()` -- never via `pgrep -P` polling (the Issue records that method as the one that saw nothing).
+
+**MEASUREMENT, not a gate.** Exit codes: `0` = every cycle produced a definite reading (a timeout classified LOST-EXIT or STUCK-CHILD is a measurement, not a failure); `1` = at least one cycle was INCONCLUSIVE; `2` = harness (the in-run positive control failed, or bad arguments) -- a `2` prints no verdict, because the instrument's own ability to see a live-then-dead process was not established. The classifier (`classifyTimeout`) and the exit-code mapper (`determineExitCode`) are pinned by `scripts/smoke/__tests__/probe-pty-exit-observation.test.ts`, which imports them directly and never spawns a PTY.
+
+**`--contend`** spawns (default 4, `--contend-n N` overrides) `bun -e` busy children (CPU spin + fork storm) owned and SIGKILLed by the probe itself in a `finally` block -- deliberately not `bun run test`, which would collide with the full-suite slot rule. `--cycles N` (default 20) and `--timeout-ms N` (default 30000, matching `check-exit-127-diagnostic.ts`'s `EXIT_WAIT_TIMEOUT_MS`) override the loop shape; `--timeout-ms 1 --cycles 1` is the Q12 sanity check that the instrument emits a complete observable set on a healthy child before trusting a real 20-cycle run.
+
+Free and deterministic; no elevation, no billed CLI, no login dependency. It is a manual gate, never a CI job -- a measurement instrument, not a regression gate.
+
+**Verification tier (Discipline 4 of `os-environment-coupling.md`):** Unprivileged (no tier-2/3/4 residue; any machine with bun).
+
 ## Additional Verification: PTY + AsyncLocalStorage Data-Delivery Regression Smoke
 
 Before any Bun runtime upgrade or floor change to `MIN_BUN_VERSION` in `scripts/check-bun-version.mjs`, or when touching `bunTerminalProvider` / `BunTerminalPtyAdapter` in `packages/server/src/lib/pty-provider.ts`, run `bun scripts/smoke/check-pty-als-data.ts` locally. On Bun 1.3.5-1.3.13, `Bun.spawn({ terminal })`'s `terminal.data` callback never fires when the spawn happens inside an active `AsyncLocalStorage` context (e.g. the MCP request scope agent-worker PTYs are created under) -- zero bytes ever reach JS. This smoke spawns real PTYs inside an active ALS scope via the real `bunTerminalProvider` and asserts the completion marker is observed on every cycle; it is the designated canary this repo's own `MIN_BUN_VERSION` floor comment points at.
