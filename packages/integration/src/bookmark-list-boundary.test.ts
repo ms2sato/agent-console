@@ -68,6 +68,10 @@ describe('Client-Server Boundary: /api/bookmarks', () => {
     expect(result[0].title).toBe('My bookmark');
     expect(typeof result[0].id).toBe('string');
     expect(typeof result[0].createdAt).toBe('string');
+    // Pin the projection's own contract at the wire boundary (toWireBookmark
+    // picks exactly these five fields) -- not just "the schema parse
+    // succeeds", which a widened schema could also satisfy.
+    expect(Object.keys(result[0]).sort()).toEqual(['createdAt', 'id', 'origin', 'title', 'url']);
   });
 
   it(
