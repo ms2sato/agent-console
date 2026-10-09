@@ -15,6 +15,7 @@ Before completing any code changes, always verify:
      # Option B: bash PIPESTATUS to read the test process's exit code
      bun run test 2>&1 | tail -100; echo "TEST_EXIT: ${PIPESTATUS[0]}"
      ```
+     If the paste contains `[N lines elided]` or a `fail` count with no `✗` line naming the test, the paste is incomplete — re-run the single package with `cd packages/<pkg> && bun run test` and paste that; `test:only` passes `--elide-lines=0` so this should not happen from the root script, and if it does, say so in the report.
      Do NOT use `bun run test 2>&1 | tail -100; echo "TEST_EXIT: $?"` — `$?` returns `tail`'s exit code (always 0), masking real test failures. Summary-only or wrong-exit-code reports have caused false-positive "verified" claims that CI later contradicted. (Lesson: Sprint 2026-04-25 — agent reported "server: 2338 pass" but CI showed 61 failures due to local fixture state.)
 2. **Run type check:** Execute `bun run typecheck` and ensure no type errors. The script auto-generates `routeTree.gen.ts` (TanStack Router) via `vite build` if the file is missing, so it runs correctly on a fresh worktree.
    - **Stale `routeTree.gen.ts` caveat:** The presence-only check accepts a stale `routeTree.gen.ts` when route files have been added / renamed / removed but the generated file was not regenerated. After modifying anything under `packages/client/src/routes/`, delete `packages/client/src/routeTree.gen.ts` (or run `bun run build`) before relying on `bun run typecheck`.
