@@ -254,6 +254,69 @@ function truncateTitle(title: string): string {
 }
 
 /**
+ * Strip control characters that terminals may interpret, mirroring
+ * `formatFieldValue`'s sanitization in lib/pty-notification.ts. Not reused
+ * from there directly because that function also quotes/collapses
+ * whitespace for key=value PTY field encoding, which a plain label
+ * embedded in prose does not want -- and because the embedded-agent
+ * delivery surface never routes its `notification.summary` through
+ * `formatFieldValue` at all (only the PTY branch's `buildPtyNotificationText`
+ * does), so a label built from an unsanitized title would reach one
+ * surface clean and the other raw.
+ */
+function stripControlChars(value: string): string {
+  return value.replace(/[\x00-\x08\x0e-\x1f\x7f\x80-\x9f]/g, '');
+}
+
+/**
+ * Sanitize a notification-label candidate: strip control characters, then
+ * trim. Each candidate in `describeSessionForNotification`'s fallback chain
+ * is run through this BEFORE the emptiness test that decides whether to use
+ * it -- a title or `worktreeId` made only of control characters (e.g.
+ * `'\x01'`) survives a plain `.trim()` as non-empty, then strips down to
+ * `''` if the order is reversed, producing a blank label instead of falling
+ * through to the next candidate.
+ */
+function sanitizeLabelCandidate(value: string): string {
+  return stripControlChars(value).trim();
+}
+
+/**
+ * Build a human-readable label for a session to use in a notification
+ * summary. This feeds the sole `summary` template in `send_session_message`'s
+ * delivery step below, which is itself the single template shared by both
+ * delivery surfaces (the PTY `[internal:message]` notification text and the
+ * embedded-agent `notification.summary` -- the latter never passes through
+ * the PTY-only control-char stripping in `pty-notification.ts`, so this
+ * function's own sanitization is the only one either surface gets).
+ *
+ * Label precedence, each candidate sanitized (see `sanitizeLabelCandidate`)
+ * and fallen through on emptiness: `title` -> else, for a `type: 'worktree'`
+ * session, its `worktreeId` (the branch name) -> else the literal "quick
+ * session" (also reached by a worktree session whose `worktreeId` is itself
+ * empty after sanitizing). A short id prefix is always appended for
+ * disambiguation, since two sessions can share a branch-derived label after
+ * a re-dispatch.
+ */
+function describeSessionForNotification(session: Session): string {
+  const idSuffix = ` (${session.id.slice(0, 8)})`;
+
+  const sanitizedTitle = sanitizeLabelCandidate(session.title ?? '');
+  if (sanitizedTitle) {
+    return `${truncateTitle(sanitizedTitle)}${idSuffix}`;
+  }
+
+  if (session.type === 'worktree') {
+    const sanitizedBranch = sanitizeLabelCandidate(session.worktreeId);
+    if (sanitizedBranch) {
+      return `${sanitizedBranch}${idSuffix}`;
+    }
+  }
+
+  return `quick session${idSuffix}`;
+}
+
+/**
  * Resolve an artifact's display title per the chain in
  * docs/design/html-artifacts.md §5.3: explicit `title` param -> the
  * document's `<title>` -> its first heading (`<h1>`..`<h6>`) -> the literal
@@ -873,14 +936,14 @@ export function createMcpApp(deps: McpDependencies): Hono {
         //    EmbeddedAgentWorkerService.sendSystemNotification -- the latter
         //    also activates a dormant worker on delivery, so no separate
         //    activateEmbeddedAgentWorker call is needed here).
-        const senderTitle = senderSession.title ?? fromSessionId;
+        const senderLabel = describeSessionForNotification(senderSession);
         const notificationParams = {
           kind: 'internal-message' as const,
           tag: 'internal:message' as const,
           fields: {
             source: 'session',
             from: fromSessionId,
-            summary: `Message from session ${senderTitle}`,
+            summary: `Message from session ${senderLabel}`,
             path: result.path,
           },
           intent: 'triage' as const,
