@@ -2569,7 +2569,7 @@ describe('WorkerLifecycleManager', () => {
         sendTest: mock((_message: string, _repositoryId: string) => Promise.resolve()),
         sendToWebhook: mock((_context: NotificationContext, _webhookUrl: string) => Promise.resolve()),
       }), {
-        debounceSeconds: 0.05, // 50ms -- short enough for a fast test
+        debounceSeconds: 5, // long enough that a surviving timer could never fire inside this test
         triggers: {
           'agent:waiting': true,
           'agent:idle': true,
@@ -2589,15 +2589,18 @@ describe('WorkerLifecycleManager', () => {
         { id: worker!.id },
         'idle',
       );
+
+      // Positive control: prove a timer was actually armed before asserting
+      // it is gone below. A debounce that never armed would also pass that
+      // assertion, for the wrong reason.
+      expect(notificationManager.hasPendingDebounceForTest(session.id, worker!.id)).toBe(true);
       expect(slackHandlerSend).not.toHaveBeenCalled();
 
       await manager.restartAgentWorkerAsEmbedded(session.id, worker!.id, EMBEDDED_AGENT_DEF.id);
 
-      // Wait past what would have been the debounce period. If the pending
-      // timer survived the conversion, it fires here and calls
-      // slackHandlerSend -- proving the cleanup did NOT happen.
-      await new Promise((resolve) => setTimeout(resolve, 150));
-
+      // Deterministic: the pending PTY-side timer must be cleared by the
+      // conversion, not merely "didn't fire within some wall-clock window".
+      expect(notificationManager.hasPendingDebounceForTest(session.id, worker!.id)).toBe(false);
       expect(slackHandlerSend).not.toHaveBeenCalled();
     });
   });
