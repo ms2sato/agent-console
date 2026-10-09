@@ -265,9 +265,15 @@ module.exports = {
     // statements are erased from the graph before dependency-cruiser ever
     // sees them -- so any `forbidden` rule targeting a type-only edge (e.g.
     // `shared-no-types-import-schemas` below) silently matches nothing.
-    // Required for depcruise to see the same edges `madge --circular`
-    // already sees (madge does not distinguish `import type` from a value
-    // import either -- see the `shared-no-types-import-schemas` comment).
+    // Reach, measured: flipping this to `false` and running `lint:deps:all`
+    // drops `shared-no-types-import-schemas` from 4 violations to 0 -- this
+    // setting is the sole reason that rule can see its edges at all, and is
+    // load-bearing on its own.
+    // (Historically this setting also gave parity with `madge --circular`,
+    // which did not distinguish `import type` from a value import either;
+    // `madge` and `.madgerc` were retired entirely via Issue #1487 / PR
+    // #1533, and the parity requirement with that retired tool no longer
+    // applies -- the reach measurement above is now the sole justification.)
     tsPreCompilationDeps: true,
 
     doNotFollow: {
