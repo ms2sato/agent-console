@@ -234,9 +234,9 @@ export function printCoverageCheck(testCoverage, integrationTestNeeds) {
 
   if (gaps.length > 0) {
     console.log(`### Missing Tests (${gaps.length})\n`);
-    for (const { file, expectedTestPath, alternateTestPath } of gaps) {
+    for (const { file, expectedTestPath, alternateTestPath, acceptedTopicForm } of gaps) {
       const alt = alternateTestPath ? ` (or \`${alternateTestPath}\` if JSX-free)` : '';
-      console.log(`- ❌ \`${file}\` — expected: \`${expectedTestPath}\`${alt}`);
+      console.log(`- ❌ \`${file}\` — expected: \`${expectedTestPath}\`${alt} (a topic-split sibling, e.g. \`${acceptedTopicForm}\`, also counts)`);
     }
     console.log();
   }

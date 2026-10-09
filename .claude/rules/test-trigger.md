@@ -39,6 +39,8 @@ When modifying production files matching these patterns, corresponding test file
 | `.claude/hooks/**/*.sh` | `.claude/hooks/__tests__/*.test.mjs` or sibling `*.test.mjs` |
 | `scripts/lib/**/*.ts` | `.../__tests__/*.test.ts` or sibling `*.test.ts` (the bun entries the shell lib shells out to, e.g. `embedded-agent-bun-identity.ts`; the `.sh` lib itself is covered by `scripts/__tests__/setup-multiuser-checks.test.mjs` via its subcommand dispatcher) |
 
+A topic-split test — `<name>-<topic>.test.<ext>` or `<name>.<topic>.test.<ext>` in the same `__tests__/` directory (or sibling placement) — also counts as coverage for `<name>`, attributed to the longest matching production basename actually present in that directory (Issue #1553).
+
 ## Exceptions
 
 - **`packages/integration/src/`** uses a flat sibling layout (no `__tests__/` directory) for its boundary tests. This is deliberate: the package contains no production code — its entire `src/` is test infrastructure (`setup.ts`, `test-utils.ts`) and boundary tests (`*-boundary.test.ts(x)`). Do not move these files into a `__tests__/` subdirectory. The one exception is `src/e2e-native/`, which holds the two shipping-path e2e test files that require a separate `bun test` invocation without the happy-dom preload (see `src/e2e-native/setup-native.ts` for why, and `package.json`'s `test` / `test:coverage` / `test:watch` scripts for the two-invocation chain). This subdirectory is process-partitioning infrastructure, not a `__tests__/`-shaped test-to-production mapping, so it does not contradict the flat-layout rationale above.
