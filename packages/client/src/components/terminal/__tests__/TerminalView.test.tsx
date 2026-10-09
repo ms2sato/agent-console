@@ -106,6 +106,28 @@ describe('TerminalView row rendering', () => {
     expect(link.getAttribute('target')).toBe('_blank');
     expect(link.getAttribute('rel')).toBe('noopener noreferrer');
   });
+
+  // Integration-level check for #1899, from this file's own mount-and-assert
+  // style (distinct from TerminalView.geometry-measurement.test.ts's isolated
+  // unit test of parseFinitePadding, and from TerminalView.resize-nan-guard.test.tsx's
+  // cross-level ErrorBoundary check). happy-dom's getComputedStyle() returns
+  // '' (not a resolved "0px") for the scroll container's unset Tailwind
+  // padding -- the exact condition that used to parse to NaN and reach
+  // instance.resize(NaN, NaN), throwing inside @xterm/headless. No padding is
+  // stubbed here deliberately, so the mount effect runs against that real
+  // happy-dom quirk; a plain mock resize() lets this test observe what
+  // TerminalView itself calls it with.
+  it('mounts without throwing and resizes with finite numbers under happy-dom\'s unresolved CSS padding', () => {
+    const resize = mock((_cols: number, _rows: number) => {});
+    const instance = { ...makeInstance(makeSnapshot(ROWS)), resize };
+
+    expect(() => render(<TerminalView instance={instance} />)).not.toThrow();
+
+    expect(resize).toHaveBeenCalled();
+    const [cols, rows] = resize.mock.calls[0] as [number, number];
+    expect(Number.isFinite(cols)).toBe(true);
+    expect(Number.isFinite(rows)).toBe(true);
+  });
 });
 
 // A URL link (row.links) rendered as an anchor. When a link transform rewrites

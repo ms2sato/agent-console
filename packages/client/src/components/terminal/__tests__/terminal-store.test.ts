@@ -1071,4 +1071,25 @@ describe('terminal-store', () => {
     expect(_inspect(a).disposed).toBe(false);
     expect(_inspect(b).disposed).toBe(true);
   });
+
+  // --- Level (b) of the #1899 three-level pin ---
+  //
+  // Scoped to resize()'s own non-finite/non-positive guard in isolation. Says
+  // nothing about TerminalView's padding measurement (level (a), see
+  // TerminalView.geometry-measurement.test.ts) or about mount behavior under
+  // happy-dom (level (c), see TerminalView.resize-nan-guard.test.tsx).
+  describe('resize() non-finite/non-positive guard (#1899 level b)', () => {
+    it('ignores NaN, 0, and Infinity without throwing or changing cols/terminalRows', () => {
+      const instance = getOrCreateTerminal('resize-guard', 'w');
+      const before = instance.getSnapshot();
+
+      expect(() => instance.resize(NaN, NaN)).not.toThrow();
+      expect(() => instance.resize(0, 0)).not.toThrow();
+      expect(() => instance.resize(Infinity, 3)).not.toThrow();
+
+      const after = instance.getSnapshot();
+      expect(after.cols).toBe(before.cols);
+      expect(after.terminalRows).toBe(before.terminalRows);
+    });
+  });
 });
