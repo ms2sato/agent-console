@@ -55,6 +55,11 @@
  *   - The agent-console HTTP/WebSocket server. No server process runs here;
  *     `WorkerManager` is exercised directly, same as `worker-manager.test.ts`.
  *
+ * Since #1872 this is no longer a manual-only gate: it also runs in CI, via
+ * `scripts/smoke/__tests__/check-exit-127-diagnostic.run.test.ts` under
+ * `test:scripts` -- the sub-second cost that made this script free and
+ * deterministic in the first place is exactly what makes a CI wrapper cheap.
+ *
  * Usage:
  *   bun scripts/smoke/check-exit-127-diagnostic.ts
  *

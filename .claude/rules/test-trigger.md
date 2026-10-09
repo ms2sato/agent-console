@@ -380,6 +380,8 @@ PRs touching `packages/server/src/routes/webhooks.ts`, `packages/server/src/serv
 
 This is a real-process regression gate for the shipping webhook->job-queue->handler chain, not a sibling-test requirement, so it is not part of the `preflight-check.js` coverage patterns above. It is a manual gate, never a CI job (same as this file's other real-child-process smokes).
 
+**Deliberately NOT given a `#1872`-style `*.run.test.ts` CI wrapper, even though it is free.** This smoke seeds an isolated `CLAUDE_CONFIG_DIR` from a COPY of the operator's real `~/.claude.json` (see this section's own "trust dialog" paragraph above) and spawns real `claude-code-builtin` PTYs. A GitHub-hosted CI runner has neither that file nor the `claude` CLI installed, so the smoke is free but not PORTABLE -- "free and deterministic" (#1872's wrapping criterion) is necessary but not sufficient; the runner also has to be able to run it at all. It stays a manual gate for that reason, distinct from the four smokes #1872 wrapped (`check-exit-127-diagnostic.ts`, `check-pty-als-data.ts`, `check-pty-early-output.ts`, `check-stdin-sink-leak.ts`), none of which depend on the operator's own Claude Code config or binary.
+
 **Verification tier (Discipline 4 of `os-environment-coupling.md`):** Unprivileged (no tier-2/3/4 residue; any machine with bun) — free and deterministic, no `claude` CLI, no provider key.
 
 ## Additional Verification: Memory Layer Cross-Session Recall E2E, both engines
@@ -589,7 +591,7 @@ Direct mode requires only a login shell resolvable via `$SHELL` for the current 
 
 PRs touching `appendSpawnFailureNotification`, `WorkerManager.activateAgentWorkerPty` / `setupWorkerEventHandlers`'s `onExit` handler, or `SingleUserMode.spawnPty`'s command construction, must run `bun scripts/smoke/check-exit-127-diagnostic.ts` locally before pushing (Issue #1294). It drives the REAL production chain end-to-end -- `bunPtyProvider` -> `SingleUserMode.spawnPty` -> `WorkerManager`'s `onExit` handler -> `appendSpawnFailureNotification` -> `WorkerOutputFileManager` (real fs, no memfs) -- against a real process whose `$SHELL` points at a nonexistent binary, reproducing the exact exit-127/zero-PTY-bytes/pre-sentinel signature the Issue was diagnosed from, and asserts the diagnostic message reaches disk even with zero WebSocket clients attached, and that `worker.pty` only transitions to `null` after that diagnostic append+flush completes.
 
-Free and deterministic -- no elevation, no billed CLI. It is a manual gate, never a CI job.
+Free and deterministic -- no elevation, no billed CLI. It is registered here, and since #1872 it is also CI-run via `scripts/smoke/__tests__/check-exit-127-diagnostic.run.test.ts` under `test:scripts` -- its only cost is roughly half a second, so the "manual gate, never a CI job" wording no longer applies to it.
 
 **Verification tier (Discipline 4 of `os-environment-coupling.md`):** Unprivileged (no tier-2/3/4 residue; any machine with bun).
 
@@ -597,7 +599,7 @@ Free and deterministic -- no elevation, no billed CLI. It is a manual gate, neve
 
 Before any Bun runtime upgrade or floor change to `MIN_BUN_VERSION` in `scripts/check-bun-version.mjs`, or when touching `bunTerminalProvider` / `BunTerminalPtyAdapter` in `packages/server/src/lib/pty-provider.ts`, run `bun scripts/smoke/check-pty-als-data.ts` locally. On Bun 1.3.5-1.3.13, `Bun.spawn({ terminal })`'s `terminal.data` callback never fires when the spawn happens inside an active `AsyncLocalStorage` context (e.g. the MCP request scope agent-worker PTYs are created under) -- zero bytes ever reach JS. This smoke spawns real PTYs inside an active ALS scope via the real `bunTerminalProvider` and asserts the completion marker is observed on every cycle; it is the designated canary this repo's own `MIN_BUN_VERSION` floor comment points at.
 
-Free and deterministic (no elevation, no billed CLI, ~15 seconds). It is a manual gate, never a CI job.
+Free and deterministic (no elevation, no billed CLI, ~15 seconds). It is registered here, and since #1872 it is also CI-run via `scripts/smoke/__tests__/check-pty-als-data.run.test.ts` under `test:scripts` -- its own wall-clock cost is why the wrapper's `it` carries an explicit timeout, so the "manual gate, never a CI job" wording no longer applies to it.
 
 **Verification tier (Discipline 4 of `os-environment-coupling.md`):** Unprivileged (no tier-2/3/4 residue; any machine with bun).
 
@@ -605,7 +607,7 @@ Free and deterministic (no elevation, no billed CLI, ~15 seconds). It is a manua
 
 PRs touching `bunTerminalProvider` / `BunTerminalPtyAdapter`'s pre-attach data buffering in `packages/server/src/lib/pty-provider.ts` must run `bun scripts/smoke/check-pty-early-output.ts` locally before pushing (Issue #1242). Two silent byte-loss windows existed before the pre-attach buffer fix -- between `Bun.spawn()` returning and adapter construction, and between adapter construction and the first `onData()` attach -- and this smoke drives real spawn cycles through the real provider to assert no early bytes are lost in either window; the sibling unit test (`pty-provider.test.ts`) proves the buffer/flush logic against a mocked `Bun.spawn`, which is necessary but not sufficient on its own.
 
-Free and deterministic (no elevation, no billed CLI). It is a manual gate, never a CI job.
+Free and deterministic (no elevation, no billed CLI). It is registered here, and since #1872 it is also CI-run via `scripts/smoke/__tests__/check-pty-early-output.run.test.ts` under `test:scripts` -- its own ~21-second wall-clock cost, the most expensive of the four smokes CI-wrapped in #1872, is why the wrapper's `it` carries an explicit timeout, so the "manual gate, never a CI job" wording no longer applies to it.
 
 **Verification tier (Discipline 4 of `os-environment-coupling.md`):** Unprivileged (no tier-2/3/4 residue; any machine with bun).
 
@@ -613,7 +615,7 @@ Free and deterministic (no elevation, no billed CLI). It is a manual gate, never
 
 PRs touching `InteractiveProcessManager`'s or `EmbeddedAgentWorkerService`'s stdin-feeding teardown (the `endStdinSafely` helper each maintains per `.claude/rules/elevation-helpers.md`'s "feeding-consumer teardown obligation"), or `spawnAsUser` in `packages/server/src/services/privilege-elevation.ts`, must run `bun scripts/smoke/check-stdin-sink-leak.ts` locally before pushing (Issue #1230). It imports the production `InteractiveProcessManager` and `spawnAsUser` directly and drives real long-lived `spawnAsUser` consumers through their stdin lifecycle, asserting the underlying `FileSink`'s write-end fd is released deterministically at teardown rather than left for incidental GC -- the same unsound-pattern concern `check-pty-fd-leak.ts` verifies for the PTY master-fd handle.
 
-Linux-only (reads `/proc` directly); free and deterministic otherwise. It is a manual gate, never a CI job.
+Linux-only (reads `/proc` directly); free and deterministic otherwise. It is registered here, and since #1872 it is also CI-run via `scripts/smoke/__tests__/check-stdin-sink-leak.run.test.ts` under `test:scripts`, with its `it` skipped on non-Linux hosts via `it.skipIf` -- its only cost is under a second on Linux, so the "manual gate, never a CI job" wording no longer applies to it there.
 
 **Verification tier (Discipline 4 of `os-environment-coupling.md`):** Unprivileged (no tier-2/3/4 residue; any machine with bun) — the Linux-only note above is a `/proc` dependency, not an elevation tier.
 

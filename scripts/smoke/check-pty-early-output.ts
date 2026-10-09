@@ -28,6 +28,13 @@
  * tests); it isolates the PTY provider layer only, same scoping as
  * `check-pty-fd-leak.ts`.
  *
+ * Since #1872 this is no longer a manual-only gate: it also runs in CI, via
+ * `scripts/smoke/__tests__/check-pty-early-output.run.test.ts` under
+ * `test:scripts` -- the ~21-second cost that made this script free and
+ * deterministic in the first place is exactly what makes a CI wrapper cheap
+ * (an explicit per-`it` timeout is set well above it; this is the most
+ * expensive of the four siblings CI-wrapped in #1872).
+ *
  * Usage:
  *   bun scripts/smoke/check-pty-early-output.ts
  *

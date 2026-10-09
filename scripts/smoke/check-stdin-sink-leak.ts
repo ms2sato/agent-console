@@ -94,6 +94,13 @@
  * reliable (if conservative) lower bound even though incidental GC is
  * outside this script's control.
  *
+ * Since #1872 this is no longer a manual-only gate on Linux: it also runs
+ * in CI, via `scripts/smoke/__tests__/check-stdin-sink-leak.run.test.ts`
+ * under `test:scripts` -- the sub-second cost that made this script free
+ * and deterministic in the first place is exactly what makes a CI wrapper
+ * cheap. The wrapper's `it` is skipped on non-Linux hosts, mirroring this
+ * script's own exit-2 self-check above.
+ *
  * Usage:
  *   bun scripts/smoke/check-stdin-sink-leak.ts
  *
