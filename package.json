@@ -38,6 +38,8 @@
     "release": "bumpp"
   },
   "devDependencies": {
+    "@anthropic-ai/claude-agent-sdk": "0.3.238",
+    "@modelcontextprotocol/sdk": "^1.29.0",
     "bumpp": "^10.1.0",
     "concurrently": "^9.2.1",
     "dependency-cruiser": "^17.3.10",
