@@ -110,6 +110,7 @@ The answer at the time was "no" — and that single question surfaces the same c
 - **Extract a helper.** Name it what it computes (`computeSessionDataBaseDir`).
 - **Make the helper the only writer.** Document it. Add a test. Add a grep-based invariant check to CI if the pattern is safety-critical.
 - **Upsert column sets**: use `conflictUpdateSet` (`packages/server/src/repositories/conflict-update-set.ts`) as the single writer for a Kysely `doUpdateSet` object — a hand-written `doUpdateSet({...})` is a second derivation of the row's column set and silently freezes any column it omits (Issue #1339).
+- **Wire projections**: project a persisted record onto its wire shape by PICKING the allowed fields through one named function — `toWireBookmark` (`packages/server/src/lib/bookmark-wire.ts`) and `routes/artifacts.ts`'s field-by-field `Artifact` reads are the two instances — never by spreading the record and destructuring away a denylist, which re-arms every time a new internal field is added (Issue #1524).
 
 ### Suggested acceptance criterion template
 
