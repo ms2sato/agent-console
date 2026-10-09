@@ -57,6 +57,27 @@ interface TerminalViewProps {
   transformContext?: TransformContext;
 }
 
+/**
+ * Parse a CSS padding value (e.g. `getComputedStyle(el).paddingLeft`) into a
+ * finite pixel number, defaulting to 0 for anything that does not parse.
+ *
+ * @internal Exported for testing (TerminalView.geometry-measurement.test.ts).
+ *
+ * happy-dom's `getComputedStyle()` returns `''` (not a resolved `"0px"`) for
+ * an unset padding, because it applies no real CSS engine -- Tailwind's
+ * `px-2 py-1` classes on the scroll container are never resolved. Feeding
+ * that `''` straight into `parseFloat` produces `NaN`, which used to cascade
+ * to NaN cols/rows -> `instance.resize(NaN, NaN)` -> `@xterm/headless`'s
+ * `Terminal.resize()` throwing "This API only accepts integers" (#1899). Real
+ * browsers never produce this: `getComputedStyle` always resolves to a
+ * concrete pixel value once an element is in the DOM, so the NaN input is a
+ * happy-dom-only harness artifact, not a production input.
+ */
+export function parseFinitePadding(value: string | null | undefined): number {
+  const parsed = parseFloat(value ?? '');
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
 function segmentStyle(style: TerminalStyle | null): CSSProperties | undefined {
   if (!style) return undefined;
   const css: CSSProperties = {};
@@ -396,8 +417,10 @@ export function TerminalView({
       // clientWidth/Height include the container's padding; subtract it so the
       // grid is not overestimated.
       const computed = getComputedStyle(el);
-      const paddingX = parseFloat(computed.paddingLeft) + parseFloat(computed.paddingRight);
-      const paddingY = parseFloat(computed.paddingTop) + parseFloat(computed.paddingBottom);
+      const paddingX =
+        parseFinitePadding(computed.paddingLeft) + parseFinitePadding(computed.paddingRight);
+      const paddingY =
+        parseFinitePadding(computed.paddingTop) + parseFinitePadding(computed.paddingBottom);
       const cols = Math.max(2, Math.floor((el.clientWidth - paddingX) / charW));
       const rows = Math.max(1, Math.floor((el.clientHeight - paddingY) / charH));
       instance.resize(cols, rows);
@@ -430,8 +453,8 @@ export function TerminalView({
 
     // Container padding is static (Tailwind px-2 py-1); read once.
     const computedPadding = getComputedStyle(el);
-    const paddingLeft = parseFloat(computedPadding.paddingLeft) || 0;
-    const paddingTop = parseFloat(computedPadding.paddingTop) || 0;
+    const paddingLeft = parseFinitePadding(computedPadding.paddingLeft);
+    const paddingTop = parseFinitePadding(computedPadding.paddingTop);
 
     const cellMetrics = () => {
       const r = measure.getBoundingClientRect();

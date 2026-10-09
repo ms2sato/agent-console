@@ -313,6 +313,7 @@ class TerminalController implements TerminalInstance {
   };
 
   resize = (cols: number, rows: number): void => {
+    if (!Number.isFinite(cols) || !Number.isFinite(rows)) return;
     if (cols <= 0 || rows <= 0) return;
     if (cols === this.terminal.cols && rows === this.terminal.rows) return;
     const colsChanged = cols !== this.terminal.cols;
