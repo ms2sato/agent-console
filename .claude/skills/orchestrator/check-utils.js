@@ -997,6 +997,37 @@ function headingLevelOf(line) {
   return match ? match[1].length : null;
 }
 
+const FENCE_DELIMITER_RE = /^\s{0,3}(```|~~~)/;
+
+/**
+ * For each line in the body, whether it sits INSIDE a fenced code block
+ * (opened by a ``` or ~~~ delimiter, matching CommonMark's "up to three
+ * leading spaces" allowance). The single writer for fence state, reused
+ * everywhere a line is inspected for Markdown heading-ness or
+ * checklist-item-ness: AC sections routinely carry shell/diff snippets,
+ * and a snippet comment like `# run the tests` or sample output like
+ * `- [ ] example` must never be mistaken for real document structure.
+ * A delimiter line itself is marked `true` (inert either way — never a
+ * heading, never a checklist item) rather than reflecting the state
+ * before the toggle.
+ *
+ * @param {string[]} lines
+ * @returns {boolean[]}
+ */
+function computeFencedLineFlags(lines) {
+  const inFence = new Array(lines.length).fill(false);
+  let fencing = false;
+  for (let i = 0; i < lines.length; i++) {
+    if (FENCE_DELIMITER_RE.test(lines[i])) {
+      fencing = !fencing;
+      inFence[i] = true;
+      continue;
+    }
+    inFence[i] = fencing;
+  }
+  return inFence;
+}
+
 /**
  * Compute the UNION of every AC section in the body — the single writer
  * both the checklist-item collector and the prose/empty-heading content
@@ -1014,7 +1045,9 @@ function headingLevelOf(line) {
  * including this function's own motivating Issue.
  *
  * Algorithm: starting from `searchFrom = 0`, repeatedly find the next AC
- * heading at or after `searchFrom`. Scan forward from it for the next
+ * heading at or after `searchFrom`, SKIPPING any line inside a fenced
+ * code block per `fencedFlags` (a `# comment` inside a shell snippet is
+ * never a heading). Scan forward from it for the next, non-fenced
  * heading whose level is the same as or higher than (fewer or equal `#`
  * characters than) its own level — a DEEPER subheading never ends a
  * section, matching or not. If that same-or-higher-level heading is
@@ -1035,18 +1068,19 @@ function headingLevelOf(line) {
  * sections) from being merged into one.
  *
  * @param {string[]} lines
+ * @param {boolean[]} fencedFlags from `computeFencedLineFlags(lines)`
  * @returns {Array<{ start: number, end: number }>} the `[start, end)`
  *   line-index ranges, in body order, non-overlapping. Empty when no AC
  *   heading exists anywhere in the body.
  */
-function findAcceptanceCriteriaSectionRanges(lines) {
+function findAcceptanceCriteriaSectionRanges(lines, fencedFlags) {
   const ranges = [];
   let searchFrom = 0;
 
   while (searchFrom < lines.length) {
     let headingIdx = -1;
     for (let i = searchFrom; i < lines.length; i++) {
-      if (isAcceptanceCriteriaHeadingLine(lines[i])) {
+      if (!fencedFlags[i] && isAcceptanceCriteriaHeadingLine(lines[i])) {
         headingIdx = i;
         break;
       }
@@ -1056,6 +1090,7 @@ function findAcceptanceCriteriaSectionRanges(lines) {
     const headingLevel = headingLevelOf(lines[headingIdx]);
     let end = lines.length;
     for (let i = headingIdx + 1; i < lines.length; i++) {
+      if (fencedFlags[i]) continue; // inside a fence: never a heading
       const level = headingLevelOf(lines[i]);
       if (level !== null && level <= headingLevel) {
         if (isAcceptanceCriteriaHeadingLine(lines[i])) continue; // merge, keep scanning
@@ -1103,6 +1138,14 @@ function findAcceptanceCriteriaSectionRanges(lines) {
  * — a checklist-only body with no AC heading must keep returning
  * `'checklist'`, not start returning `'absent'`.
  *
+ * Checkbox collection within a section also skips lines inside a fenced
+ * code block (`computeFencedLineFlags`): a `- [ ] ` line that is sample
+ * output or an illustrative snippet inside a ```/~~~ fence is not a real
+ * actionable item, the same way CommonMark itself does not parse list
+ * syntax inside a fence. The content scan (prose vs empty-heading) does
+ * NOT apply this exclusion — a fenced code example is still content, it
+ * is just not a checklist item.
+ *
  * @param {string|number} issueNumber
  * @param {{ execImpl?: typeof exec }} [opts]
  * @returns {{ state: 'checklist' | 'prose' | 'empty-heading' | 'absent', items: string[] }}
@@ -1112,7 +1155,8 @@ export function getAcceptanceCriteria(issueNumber, { execImpl = exec } = {}) {
   if (!result) return { state: 'absent', items: [] };
 
   const lines = result.split('\n');
-  const ranges = findAcceptanceCriteriaSectionRanges(lines);
+  const fencedFlags = computeFencedLineFlags(lines);
+  const ranges = findAcceptanceCriteriaSectionRanges(lines, fencedFlags);
 
   if (ranges.length === 0) {
     // No AC heading anywhere in the body: keep the original whole-body
@@ -1132,6 +1176,7 @@ export function getAcceptanceCriteria(issueNumber, { execImpl = exec } = {}) {
   const items = [];
   for (const range of ranges) {
     for (let i = range.start; i < range.end; i++) {
+      if (fencedFlags[i]) continue; // sample output inside a fence is not a real item
       const match = lines[i].match(/^- \[ \]\s+(.+)/);
       if (match) {
         items.push(match[1].trim());
@@ -1144,7 +1189,9 @@ export function getAcceptanceCriteria(issueNumber, { execImpl = exec } = {}) {
   }
 
   // Scan the SAME union for any non-blank line — checkbox, prose, or a
-  // subheading title all count as content.
+  // subheading title all count as content (fenced content included: a
+  // code example is still content, even though it is not a checklist
+  // item).
   let hasContent = false;
   for (const range of ranges) {
     for (let i = range.start; i < range.end; i++) {

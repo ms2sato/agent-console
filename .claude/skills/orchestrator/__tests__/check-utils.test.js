@@ -1785,6 +1785,73 @@ describe('getAcceptanceCriteria', () => {
       items: ['First section item', 'Second section item'],
     });
   });
+
+  // --- CodeRabbit finding on PR #1920: fenced code blocks must not be
+  // read as Markdown structure ---
+  //
+  // `headingLevelOf` checked every line for a leading `#` sequence with
+  // no awareness of fenced code blocks, so a shell-script comment (`#
+  // run the tests`) inside a ```bash block read as a level-1 heading —
+  // same-or-higher level than `## Acceptance Criteria`, and not an AC
+  // heading, so it incorrectly ended the section and excluded every
+  // checklist item written after the fence.
+
+  // Test (l). Mutation reach (measured): removing the `if (fencedFlags[i])
+  // continue;` guard from the section-end scan in
+  // `findAcceptanceCriteriaSectionRanges` makes this test fail — the
+  // fenced `# run the tests` line is read as a level-1 heading, which is
+  // same-or-higher than the AC heading's level 2 and not itself an AC
+  // heading, so it ends the section right there and "Item after fence"
+  // is never collected.
+  it('does not treat a comment line inside a fenced code block as a section-ending heading', () => {
+    const body = [
+      '## Acceptance Criteria',
+      '',
+      '- [ ] Item before fence',
+      '',
+      '```bash',
+      '# run the tests',
+      'bun run test',
+      '```',
+      '',
+      '- [ ] Item after fence',
+      '',
+    ].join('\n');
+    const execImpl = () => body;
+    expect(getAcceptanceCriteria('1', { execImpl })).toEqual({
+      state: 'checklist',
+      items: ['Item before fence', 'Item after fence'],
+    });
+  });
+
+  // Test (m). Chosen behavior: a `- [ ] ` line that is sample/illustrative
+  // text inside a fence is not a real actionable item (CommonMark itself
+  // does not parse list syntax inside a fence), so it is excluded from
+  // the collected items — the section still correctly classifies as
+  // 'checklist' from the one real item outside the fence.
+  //
+  // Mutation reach (measured): removing the `if (fencedFlags[i]) continue;`
+  // guard from the item-collection loop in `getAcceptanceCriteria` makes
+  // this test fail — the fenced "- [ ] fake item" line would also be
+  // collected, making `items` length 2 instead of 1.
+  it('excludes a `- [ ] ` line inside a fenced code block from the collected items', () => {
+    const body = [
+      '## Acceptance Criteria',
+      '',
+      '- [ ] Real item',
+      '',
+      '```',
+      'Example output:',
+      '- [ ] fake item',
+      '```',
+      '',
+    ].join('\n');
+    const execImpl = () => body;
+    expect(getAcceptanceCriteria('1', { execImpl })).toEqual({
+      state: 'checklist',
+      items: ['Real item'],
+    });
+  });
 });
 
 // getCiStatus — replaces the dead `gh pr checks --json` flag with the
