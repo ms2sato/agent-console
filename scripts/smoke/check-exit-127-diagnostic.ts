@@ -4,27 +4,10 @@
  *
  * ## Why this smoke exists instead of a UI-reachable repro
  *
- * Issue #1294's acceptance criteria originally called for reproducing the
- * bug via the UI: pick an agent whose `commandTemplate` names a missing
- * binary, create a worker, watch it fail. That recipe turned out to be
- * IMPOSSIBLE against the production spawn path. Both
- * `buildDirectSentinelShellCommand` and `buildElevatedSentinelCommand`
- * (`../../packages/server/src/services/sentinel-spawn-command.js`) end in a
- * bare `exec $SHELL` -- the agent's own command is not typed until AFTER
- * that interactive login shell is already alive and has echoed the
- * sentinel. A bad `commandTemplate` therefore produces a normal
- * "command not found" line printed BY the interactive shell (which does
- * not die from it) followed by that shell sitting there ready for more
- * input -- never an exit 127 on the PTY's child process itself. There is no
- * UI-reachable way to make the wrapper's OWN `exec $SHELL` fail.
- *
- * The architect-confirmed, production-representative trigger is instead:
- * point the SPAWNED PROCESS's `$SHELL` at a nonexistent binary. That makes
- * the wrapper's outer `exec $SHELL -l -c '...'` itself fail to exec, before
- * the sentinel is ever echoed -- reproducing the exact signature this Issue
- * was diagnosed from: exit 127, milliseconds after spawn, zero PTY bytes,
- * pre-sentinel. This is exactly the shape a misconfigured multi-user login
- * shell (the real-world trigger) produces, just forced deterministically.
+ * See "Command delivery into a live shell" in
+ * `docs/design/session-worker-design.md` for why a bad `commandTemplate`
+ * cannot produce this exit shape, and what the production-representative
+ * trigger (a nonexistent `$SHELL`) is instead.
  *
  * ## What this smoke exercises
  *
