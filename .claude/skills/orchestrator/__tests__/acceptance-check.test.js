@@ -114,8 +114,11 @@ describe('findTestFiles', () => {
   });
 
   it('does not require coverage for non-matching files', () => {
+    // packages/client/src/lib/** gained a coverage pattern in Issue #1902,
+    // so a fixture under lib/ no longer demonstrates "non-matching" — use
+    // routes/, which stays an explicit non-goal (see test-trigger.md).
     const files = [
-      'packages/client/src/lib/utils.ts',
+      'packages/client/src/routes/foo.tsx',
     ];
     const result = findTestFiles(files);
     expect(result.testCoverage[0].needsCoverage).toBe(false);

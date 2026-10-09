@@ -23,6 +23,18 @@ describe('regexSourceToGlob', () => {
     expect(regexSourceToGlob('^packages\\/(client|server)\\/.+\\.ts$')).toBeNull();
     expect(regexSourceToGlob('not-a-regex-source')).toBeNull();
   });
+
+  it('converts the optional-trailing-char "tsx?" shape to a brace glob (Issue #1902)', () => {
+    expect(regexSourceToGlob('^packages\\/client\\/src\\/components\\/.+\\.tsx?$')).toBe(
+      'packages/client/src/components/**/*.{ts,tsx}',
+    );
+  });
+
+  it('still returns null for an alternation shape even with an optional-char tail present elsewhere in the dir', () => {
+    // The dir-matching prefix shared by both branches rejects regex
+    // constructs like `(a|b)` before the extension tail is ever examined.
+    expect(regexSourceToGlob('^packages\\/(client|server)\\/.+\\.tsx?$')).toBeNull();
+  });
 });
 
 describe('parseFrontmatterGlobs', () => {

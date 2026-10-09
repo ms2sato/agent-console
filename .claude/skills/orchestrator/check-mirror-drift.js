@@ -43,7 +43,14 @@ const TEST_TRIGGER_MD = resolve(REPO_ROOT, '.claude/rules/test-trigger.md');
  * to its equivalent glob:
  *   DIR/**\/*.EXT
  *
- * Returns null if the regex does not fit this shape, signalling that the
+ * Also recognises a second canonical shape — one optional trailing
+ * character on the extension, e.g. `^DIR\/.+\.tsx?$` (matches both `.ts`
+ * and `.tsx`) — converting it to a brace glob: `DIR/**\/*.{ts,tsx}`. This
+ * is the shape `packages/client/src/components/**` uses to cover both
+ * component files (.tsx) and plain logic files (.ts) with a single
+ * COVERAGE_PATTERNS entry.
+ *
+ * Returns null if the regex does not fit either shape, signalling that the
  * caller cannot mechanically compare it against the markdown mirror.
  */
 export function regexSourceToGlob(source) {
@@ -51,9 +58,24 @@ export function regexSourceToGlob(source) {
   // or escaped dots. This rejects regex constructs like `(a|b)` so an
   // alternation regex falls through to the "unconvertible" bucket.
   const m = source.match(/^\^((?:[\w-]|\\\/|\\\.)+)\\\/\.\+\\(\.\w+)\$$/);
-  if (!m) return null;
-  const dir = m[1].replace(/\\\//g, '/').replace(/\\\./g, '.');
-  return `${dir}/**/*${m[2]}`;
+  if (m) {
+    const dir = m[1].replace(/\\\//g, '/').replace(/\\\./g, '.');
+    return `${dir}/**/*${m[2]}`;
+  }
+  // Second canonical shape: one optional trailing character on the
+  // extension, e.g. `tsx?` (base "ts" + optional "x"). The dir-matching
+  // prefix is identical to the shape above; only the extension tail
+  // differs, so this is a second, deliberately duplicated regex rather
+  // than a shared sub-pattern built with string interpolation — easier to
+  // read and verify than a dynamically-assembled RegExp.
+  const mOpt = source.match(/^\^((?:[\w-]|\\\/|\\\.)+)\\\/\.\+\\\.(\w+)(\w)\?\$$/);
+  if (mOpt) {
+    const dir = mOpt[1].replace(/\\\//g, '/').replace(/\\\./g, '.');
+    const base = mOpt[2];
+    const optChar = mOpt[3];
+    return `${dir}/**/*.{${base},${base}${optChar}}`;
+  }
+  return null;
 }
 
 // --- Markdown parsing ---
