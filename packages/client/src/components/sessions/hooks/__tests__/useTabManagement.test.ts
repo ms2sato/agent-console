@@ -27,6 +27,14 @@ const defaultCreateWorkerResponse = () => ({
 let createWorkerResponse: () => unknown = defaultCreateWorkerResponse;
 
 /**
+ * When set, the createWorker POST handler awaits this promise before
+ * returning its response. Lets a test pause the create-worker HTTP
+ * round trip at a known point, so a simulated WebSocket session-updated
+ * event can be delivered while the create request is still in flight.
+ */
+let pendingCreateWorkerGate: Promise<void> | null = null;
+
+/**
  * Mock fetch that intercepts worker API calls.
  * POST to /workers -> createWorker
  * DELETE to /workers/:id -> deleteWorker
@@ -55,6 +63,9 @@ const mockFetch = mock(async (input: RequestInfo | URL, init?: RequestInit) => {
 
   // POST /api/sessions/:sessionId/workers -> createWorker
   if (method === 'POST' && /\/sessions\/[^/]+\/workers$/.test(url)) {
+    if (pendingCreateWorkerGate) {
+      await pendingCreateWorkerGate;
+    }
     return new Response(JSON.stringify(createWorkerResponse()), {
       status: 200,
       headers: { 'Content-Type': 'application/json' },
@@ -122,6 +133,7 @@ describe('useTabManagement', () => {
     mockFetch.mockClear();
     fetchCalls = [];
     createWorkerResponse = defaultCreateWorkerResponse;
+    pendingCreateWorkerGate = null;
   });
 
   describe('tab initialization', () => {
@@ -753,6 +765,203 @@ describe('useTabManagement', () => {
 
       expect(result.current.tabs).toHaveLength(2);
       expect(result.current.tabs[1]).toEqual({ id: 'terminal-1', workerType: 'terminal', name: 'Shell 1' });
+    });
+  });
+
+  describe('idempotent append on create', () => {
+    /**
+     * Opens a controllable gate on the createWorker POST handler and
+     * returns a release function. While the gate is held, the mocked
+     * fetch for POST /workers never resolves, letting a test deliver a
+     * simulated WebSocket session-updated event before the create
+     * response arrives.
+     */
+    function openCreateWorkerGate(): () => void {
+      let release: () => void = () => {};
+      pendingCreateWorkerGate = new Promise<void>(resolve => {
+        release = resolve;
+      });
+      return release;
+    }
+
+    it('addTerminalTab: a session-updated event delivering the new worker before the create response resolves does not duplicate the tab', async () => {
+      const workers = [createAgentWorker('agent-1')];
+      // urlWorkerId is left undefined so the hook's URL-sync effect (which
+      // redirects to the default tab rather than tracking activeTabId when
+      // there is no URL workerId) does not interfere with the activeTabId
+      // assertion below; that effect's behavior is unrelated to this bug.
+      const options = createDefaultOptions({
+        activeSession: { workers },
+        urlWorkerId: undefined,
+      });
+      const release = openCreateWorkerGate();
+
+      const { result } = renderHook(() => useTabManagement(options));
+
+      let addPromise: Promise<void> = Promise.resolve();
+      act(() => {
+        addPromise = result.current.addTerminalTab();
+      });
+
+      // Simulate the WebSocket session-updated event arriving first, already
+      // carrying the worker the in-flight POST is about to create.
+      act(() => {
+        result.current.updateTabsFromSession([
+          ...workers,
+          createTerminalWorker('new-terminal-1', 'Shell 1'),
+        ]);
+      });
+
+      expect(result.current.tabs.filter(t => t.id === 'new-terminal-1')).toHaveLength(1);
+
+      // Now let the create response resolve and addTerminalTab's own append run.
+      release();
+      await act(async () => {
+        await addPromise;
+      });
+
+      expect(result.current.tabs.filter(t => t.id === 'new-terminal-1')).toHaveLength(1);
+      expect(result.current.activeTabId).toBe('new-terminal-1');
+    });
+
+    it('addTerminalTab (control): the create response resolving before a session-updated event for the same worker does not duplicate the tab', async () => {
+      const workers = [createAgentWorker('agent-1')];
+      const options = createDefaultOptions({
+        activeSession: { workers },
+        urlWorkerId: 'agent-1',
+      });
+
+      const { result } = renderHook(() => useTabManagement(options));
+
+      await act(async () => {
+        await result.current.addTerminalTab();
+      });
+
+      expect(result.current.tabs.filter(t => t.id === 'new-terminal-1')).toHaveLength(1);
+
+      // The session-updated event now arrives, already reflecting the
+      // worker the create response already added.
+      act(() => {
+        result.current.updateTabsFromSession([
+          ...workers,
+          createTerminalWorker('new-terminal-1', 'Shell 1'),
+        ]);
+      });
+
+      expect(result.current.tabs.filter(t => t.id === 'new-terminal-1')).toHaveLength(1);
+    });
+
+    it('addAgentTab: a session-updated event delivering the new worker before the create response resolves does not duplicate the tab', async () => {
+      const workers = [createAgentWorker('agent-1')];
+      // urlWorkerId is left undefined for the same reason as the addTerminalTab
+      // case above -- see that test's comment.
+      const options = createDefaultOptions({
+        activeSession: { workers },
+        urlWorkerId: undefined,
+      });
+      createWorkerResponse = () => ({
+        worker: {
+          id: 'new-embedded-1',
+          type: 'embedded-agent',
+          name: 'Local GPT',
+          embeddedAgentId: 'embedded-def-1',
+          createdAt: new Date().toISOString(),
+          activated: false,
+          autoCompaction: true,
+        },
+      });
+      const release = openCreateWorkerGate();
+
+      const { result } = renderHook(() => useTabManagement(options));
+
+      let addPromise: Promise<void> = Promise.resolve();
+      act(() => {
+        addPromise = result.current.addAgentTab({ type: 'embedded-agent', embeddedAgentId: 'embedded-def-1' });
+      });
+
+      act(() => {
+        result.current.updateTabsFromSession([...workers, createEmbeddedAgentWorker('new-embedded-1', 'Local GPT')]);
+      });
+
+      expect(result.current.tabs.filter(t => t.id === 'new-embedded-1')).toHaveLength(1);
+
+      release();
+      await act(async () => {
+        await addPromise;
+      });
+
+      expect(result.current.tabs.filter(t => t.id === 'new-embedded-1')).toHaveLength(1);
+      expect(result.current.activeTabId).toBe('new-embedded-1');
+    });
+
+    it('addAgentTab (control): the create response resolving before a session-updated event for the same worker does not duplicate the tab', async () => {
+      const workers = [createAgentWorker('agent-1')];
+      const options = createDefaultOptions({
+        activeSession: { workers },
+        urlWorkerId: 'agent-1',
+      });
+      createWorkerResponse = () => ({
+        worker: {
+          id: 'new-embedded-1',
+          type: 'embedded-agent',
+          name: 'Local GPT',
+          embeddedAgentId: 'embedded-def-1',
+          createdAt: new Date().toISOString(),
+          activated: false,
+          autoCompaction: true,
+        },
+      });
+
+      const { result } = renderHook(() => useTabManagement(options));
+
+      await act(async () => {
+        await result.current.addAgentTab({ type: 'embedded-agent', embeddedAgentId: 'embedded-def-1' });
+      });
+
+      expect(result.current.tabs.filter(t => t.id === 'new-embedded-1')).toHaveLength(1);
+
+      act(() => {
+        result.current.updateTabsFromSession([...workers, createEmbeddedAgentWorker('new-embedded-1', 'Local GPT')]);
+      });
+
+      expect(result.current.tabs.filter(t => t.id === 'new-embedded-1')).toHaveLength(1);
+    });
+
+    it('boundary: a different worker delivered via a session-updated event while addTerminalTab is in flight is preserved alongside the create response worker, each exactly once', async () => {
+      const workers = [createAgentWorker('agent-1')];
+      const options = createDefaultOptions({
+        activeSession: { workers },
+        urlWorkerId: 'agent-1',
+      });
+      const release = openCreateWorkerGate();
+
+      const { result } = renderHook(() => useTabManagement(options));
+
+      let addPromise: Promise<void> = Promise.resolve();
+      act(() => {
+        addPromise = result.current.addTerminalTab();
+      });
+
+      // A different worker (not the one createWorker will return) arrives via WS
+      // while the create request is still in flight.
+      act(() => {
+        result.current.updateTabsFromSession([
+          ...workers,
+          createTerminalWorker('ws-terminal-2', 'Shell 2'),
+        ]);
+      });
+
+      expect(result.current.tabs.map(t => t.id)).toEqual(['agent-1', 'ws-terminal-2']);
+
+      release();
+      await act(async () => {
+        await addPromise;
+      });
+
+      const ids = result.current.tabs.map(t => t.id);
+      expect(ids.filter(id => id === 'new-terminal-1')).toHaveLength(1);
+      expect(ids.filter(id => id === 'ws-terminal-2')).toHaveLength(1);
+      expect(result.current.tabs).toHaveLength(3);
     });
   });
 });

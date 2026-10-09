@@ -27,6 +27,17 @@ function findFirstAgentWorker(workers: Worker[]): Worker | undefined {
   return workers.find(w => w.type === 'agent');
 }
 
+// Append a tab idempotently by id. A WebSocket session-updated event can
+// deliver a newly-created worker (via updateTabsFromSession) before the
+// POST /workers response that created it resolves; without this guard the
+// subsequent raw append would duplicate the same worker id.
+function appendTabIfAbsent(prev: Tab[], tab: Tab): Tab[] {
+  if (prev.some(t => t.id === tab.id)) {
+    return prev;
+  }
+  return [...prev, tab];
+}
+
 interface UseTabManagementOptions {
   sessionId: string;
   /** Whether the session is in 'active' state and has workers ready */
@@ -161,7 +172,7 @@ export function useTabManagement({
         name: worker.name,
       };
       pendingWorkerIdRef.current = worker.id;
-      setTabs(prev => [...prev, newTab]);
+      setTabs(prev => appendTabIfAbsent(prev, newTab));
       setActiveTabId(worker.id);
       navigateToWorker(worker.id);
     } catch (error) {
@@ -184,7 +195,7 @@ export function useTabManagement({
         name: worker.name,
       };
       pendingWorkerIdRef.current = worker.id;
-      setTabs(prev => [...prev, newTab]);
+      setTabs(prev => appendTabIfAbsent(prev, newTab));
       setActiveTabId(worker.id);
       navigateToWorker(worker.id);
     } catch (error) {
