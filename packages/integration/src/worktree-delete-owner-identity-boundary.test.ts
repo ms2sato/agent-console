@@ -76,7 +76,7 @@ describe('Client-Server Boundary: DELETE worktree route resolves the owner, not 
   >(async () => ({ success: true }));
 
   function fakeWorktreeService(): WorktreeService {
-    const stub = {
+    const stub: Partial<WorktreeService> = {
       verifyRepoAccessible: async () => undefined,
       ensureRepoHasCommits: async () => undefined,
       isWorktreeOf: async (_repoPath: string, worktreePath: string) =>
@@ -104,7 +104,7 @@ describe('Client-Server Boundary: DELETE worktree route resolves the owner, not 
       removeOrphanedWorktree: async () => undefined,
       executeHookCommand: mockExecuteHookCommand,
     };
-    return stub as unknown as WorktreeService;
+    return stub as WorktreeService;
   }
 
   beforeEach(async () => {
