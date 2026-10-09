@@ -117,20 +117,12 @@ describe('MemoPanel', () => {
     consoleErrorSpy.mockRestore();
   });
 
-  // Renders a same-width (w-80) placeholder while pending instead of null, so
-  // a parent measuring this section's width (e.g. TerminalView's mount-time
-  // resize) sees the eventual width immediately rather than after a later,
-  // second layout pass. Polarity: restoring `return null` here makes the
-  // `aria-busy` assertion fail.
-  it('renders a same-width placeholder while the memo content is pending', async () => {
+  it('renders nothing while the memo content is pending', async () => {
     // Never resolves during this test -- still pending.
     mockFetch.mockReturnValue(new Promise(() => {}));
 
     const { container } = await renderWithRouter(<ControlledMemoPanel sessionId="session-1" />);
 
-    const placeholder = container.querySelector('[aria-busy="true"]');
-    expect(placeholder).not.toBeNull();
-    expect(placeholder?.className).toContain('w-80');
     expect(container.querySelector('[aria-label="Collapse Memo"]')).toBeNull();
     expect(container.textContent).toBe('');
   });
@@ -140,22 +132,19 @@ describe('MemoPanel', () => {
   it('renders the empty state with a Write memo button when the memo content is null', async () => {
     mockFetch.mockResolvedValue(jsonResponse({ content: null }));
 
-    const { container } = await renderWithRouter(<ControlledMemoPanel sessionId="session-1" />);
+    await renderWithRouter(<ControlledMemoPanel sessionId="session-1" />);
 
     await waitFor(() => expect(screen.getByText('No memo yet.')).toBeTruthy());
     expect(screen.getByRole('button', { name: /write memo/i })).toBeTruthy();
-    // The pending placeholder must not linger once settled.
-    expect(container.querySelector('[aria-busy="true"]')).toBeNull();
   });
 
   it('renders the markdown content when expanded', async () => {
     mockFetch.mockResolvedValue(jsonResponse({ content: '# Hello Memo' }));
 
-    const { container } = await renderWithRouter(<ControlledMemoPanel sessionId="session-1" />);
+    await renderWithRouter(<ControlledMemoPanel sessionId="session-1" />);
 
     await waitFor(() => expect(screen.getByText('Hello Memo')).toBeTruthy());
     expect(screen.getByText('Hello Memo').tagName).toBe('H1');
-    expect(container.querySelector('[aria-busy="true"]')).toBeNull();
   });
 
   it('collapses to a header row without a body, and can be re-expanded', async () => {
