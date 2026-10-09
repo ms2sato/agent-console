@@ -1134,17 +1134,21 @@ function findAcceptanceCriteriaSectionRanges(lines, fencedFlags) {
  * elsewhere in the body (a reproduction task list, a follow-up note, a
  * `## Facts` sibling between two AC sections) no longer misclassifies a
  * prose AC as `'checklist'`. When NO AC heading exists anywhere, the
- * function falls back to the original whole-body checkbox scan unchanged
- * — a checklist-only body with no AC heading must keep returning
+ * function falls back to the original whole-body checkbox scan — a
+ * checklist-only body with no AC heading must keep returning
  * `'checklist'`, not start returning `'absent'`.
  *
- * Checkbox collection within a section also skips lines inside a fenced
- * code block (`computeFencedLineFlags`): a `- [ ] ` line that is sample
- * output or an illustrative snippet inside a ```/~~~ fence is not a real
- * actionable item, the same way CommonMark itself does not parse list
- * syntax inside a fence. The content scan (prose vs empty-heading) does
- * NOT apply this exclusion — a fenced code example is still content, it
- * is just not a checklist item.
+ * Checkbox collection skips lines inside a fenced code block
+ * (`computeFencedLineFlags`), in BOTH the scoped and the whole-body
+ * fallback path: a `- [ ] ` line that is sample output or an
+ * illustrative snippet inside a ```/~~~ fence is not a real actionable
+ * item, the same way CommonMark itself does not parse list syntax inside
+ * a fence — true of a heading-less body's quoted checklist template just
+ * as much as of a fenced example inside an AC section. This is the one
+ * respect in which the fallback is not byte-identical to the pre-scoping
+ * behavior; everything else about it is. The content scan (prose vs
+ * empty-heading) does NOT apply this exclusion — a fenced code example is
+ * still content, it is just not a checklist item.
  *
  * @param {string|number} issueNumber
  * @param {{ execImpl?: typeof exec }} [opts]
@@ -1160,12 +1164,16 @@ export function getAcceptanceCriteria(issueNumber, { execImpl = exec } = {}) {
 
   if (ranges.length === 0) {
     // No AC heading anywhere in the body: keep the original whole-body
-    // checkbox scan unchanged — a checklist body with no heading must
-    // stay 'checklist', not become 'absent'. This is the regression that
+    // checkbox scan — a checklist body with no heading must stay
+    // 'checklist', not become 'absent'. This is the regression that
     // scoping collection to the AC section(s) would otherwise introduce.
+    // The fence skip still applies here: a ```-fenced checklist template
+    // (sample output, not a real item) is the same false positive with
+    // or without an AC heading present.
     const items = [];
-    for (const line of lines) {
-      const match = line.match(/^- \[ \]\s+(.+)/);
+    for (let i = 0; i < lines.length; i++) {
+      if (fencedFlags[i]) continue;
+      const match = lines[i].match(/^- \[ \]\s+(.+)/);
       if (match) {
         items.push(match[1].trim());
       }

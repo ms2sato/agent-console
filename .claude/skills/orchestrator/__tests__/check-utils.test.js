@@ -1852,6 +1852,24 @@ describe('getAcceptanceCriteria', () => {
       items: ['Real item'],
     });
   });
+
+  // Architect add-on (same PR review): the fence skip must also apply on
+  // the whole-body FALLBACK path (no AC heading at all) — a quoted
+  // ```-fenced checklist template is the same false positive whether or
+  // not an AC heading is present.
+  //
+  // Mutation reach (measured): removing the `if (fencedFlags[i]) continue;`
+  // guard from the fallback item-collection loop makes this test fail —
+  // the fenced "- [ ] x" line would also be collected, making `items`
+  // `['x', 'y']` instead of `['y']`.
+  it('excludes a fenced `- [ ] ` line from the whole-body fallback when no AC heading exists', () => {
+    const body = ['No heading here at all.', '', '```', '- [ ] x', '```', '', '- [ ] y', ''].join('\n');
+    const execImpl = () => body;
+    expect(getAcceptanceCriteria('1', { execImpl })).toEqual({
+      state: 'checklist',
+      items: ['y'],
+    });
+  });
 });
 
 // getCiStatus — replaces the dead `gh pr checks --json` flag with the
