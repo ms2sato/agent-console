@@ -77,7 +77,7 @@ export const reviewQueue = new Hono<AppBindings>()
           const writeInput = (data: string) =>
             sessionManager.writeWorkerInput(annotationSet.sourceSessionId!, agentWorker.id, data);
 
-          writePtyNotification({
+          const { written } = writePtyNotification({
             kind: 'internal-review-comment',
             tag: 'internal:review-comment',
             fields: {
@@ -89,6 +89,12 @@ export const reviewQueue = new Hono<AppBindings>()
             intent: 'triage',
             writeInput,
           });
+          if (!written) {
+            logger.warn(
+              { workerId, sourceSessionId: annotationSet.sourceSessionId, agentWorkerId: agentWorker.id },
+              'Comment annotation recorded, but the PTY nudge to the source session failed: worker PTY is not active',
+            );
+          }
         }
       }
     } catch (err) {
@@ -126,7 +132,7 @@ export const reviewQueue = new Hono<AppBindings>()
           const writeInput = (data: string) =>
             sessionManager.writeWorkerInput(annotationSet.sourceSessionId!, agentWorker.id, data);
 
-          writePtyNotification({
+          const { written } = writePtyNotification({
             kind: 'internal-reviewed',
             tag: 'internal:reviewed',
             fields: {
@@ -138,6 +144,12 @@ export const reviewQueue = new Hono<AppBindings>()
             intent: 'triage',
             writeInput,
           });
+          if (!written) {
+            logger.warn(
+              { workerId, sourceSessionId: annotationSet.sourceSessionId, agentWorkerId: agentWorker.id },
+              'Review status recorded, but the PTY nudge to the source session failed: worker PTY is not active',
+            );
+          }
         }
       }
     } catch (err) {

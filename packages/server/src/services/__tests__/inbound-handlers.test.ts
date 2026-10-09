@@ -76,6 +76,7 @@ function createPtyBranchSessionManager(writes: string[]): InboundHandlerDependen
         ...params,
         writeInput: (data: string) => {
           writes.push(data);
+          return true;
         },
       } as WritePtyNotificationParams);
       return Promise.resolve({ ok: true as const });
