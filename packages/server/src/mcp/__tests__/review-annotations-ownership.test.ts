@@ -311,6 +311,50 @@ describe('review annotations ownership (write_review_annotations / clear_review_
       },
     );
 
+    it(
+      "(b') rejects a verified caller who owns the sourceSessionId session but NOT the target session, " +
+        'with "identity mismatch", and nothing is written',
+      async () => {
+        const registry = new McpTokenRegistry();
+        await mountMcpApp({ mcpAuthMode: 'enforce', mcpTokenRegistry: registry });
+
+        // Target session: the one holding the git-diff worker being
+        // annotated. The caller does NOT own this one.
+        const { sessionId: targetSessionId, workerId: targetWorkerId } = await createOwnedSession(7009, 'review-owner-bprime-target');
+        // Source session: the requester (e.g. an orchestrator) that asked
+        // for the review. The caller DOES own this one.
+        const { sessionId: sourceSessionIdValue, userId: sourceOwnerId, workerId: sourceWorkerId } = await createOwnedSession(
+          7010,
+          'review-owner-bprime-source',
+        );
+
+        // Token identity is minted against the SOURCE session -- the caller
+        // is verified, but only owns sourceSessionId, not the target.
+        const token = registry.mint({ sessionId: sourceSessionIdValue, workerId: sourceWorkerId, userId: sourceOwnerId });
+
+        const response = await callTool(
+          app,
+          mcpSessionId,
+          'write_review_annotations',
+          {
+            workerId: targetWorkerId,
+            sessionId: targetSessionId,
+            sourceSessionId: sourceSessionIdValue,
+            annotations: VALID_ANNOTATIONS,
+            summary: VALID_SUMMARY,
+          },
+          nextId++,
+          { Authorization: `Bearer ${token}` },
+        );
+
+        expect(response.result?.isError).toBe(true);
+        const data = parseToolResult(response) as { error: string };
+        expect(data.error).toContain('identity mismatch');
+
+        expect(annotationService.getAnnotations(targetWorkerId)).toBeNull();
+      },
+    );
+
     it('(c) rejects with a loud error when the target session has no createdBy (ownerless/legacy)', async () => {
       const { sessionId, workerId } = await createOwnerlessSession();
 
