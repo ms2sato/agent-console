@@ -79,7 +79,7 @@ describe('DiffWorkerHandler', () => {
 
   it('returns false when session does not exist', async () => {
     const handler = getDiffWorkerHandler(createDeps([]));
-    const result = await handler.handle(createEvent(), { sessionId: 'nonexistent' });
+    const result = await handler.handle(createEvent(), { sessionId: 'nonexistent', provenance: 'match' });
     expect(result).toBe('not-applicable');
   });
 
@@ -87,7 +87,7 @@ describe('DiffWorkerHandler', () => {
     const session = buildWorktreeSession({ id: 'session-1', workers: [] });
     const handler = getDiffWorkerHandler(createDeps([session]));
 
-    const result = await handler.handle(createEvent(), { sessionId: 'session-1' });
+    const result = await handler.handle(createEvent(), { sessionId: 'session-1', provenance: 'match' });
     expect(result).toBe('not-applicable');
   });
 
@@ -100,7 +100,7 @@ describe('DiffWorkerHandler', () => {
     });
     const handler = getDiffWorkerHandler(createDeps([session]));
 
-    const result = await handler.handle(createEvent(), { sessionId: 'session-1' });
+    const result = await handler.handle(createEvent(), { sessionId: 'session-1', provenance: 'match' });
 
     expect(result).toBe('handled');
     expect(mockTriggerRefresh).toHaveBeenCalledWith('/path/to/worktree');
@@ -115,7 +115,7 @@ describe('DiffWorkerHandler', () => {
     });
     const handler = getDiffWorkerHandler(createDeps([session]));
 
-    const result = await handler.handle(createEvent('pr:merged'), { sessionId: 'session-1' });
+    const result = await handler.handle(createEvent('pr:merged'), { sessionId: 'session-1', provenance: 'match' });
 
     expect(result).toBe('handled');
     expect(mockTriggerRefresh).toHaveBeenCalledWith('/path/to/worktree');
@@ -133,7 +133,7 @@ describe('DiffWorkerHandler', () => {
     });
     const handler = getDiffWorkerHandler(createDeps([session]));
 
-    const result = await handler.handle(createEvent(), { sessionId: 'session-1' });
+    const result = await handler.handle(createEvent(), { sessionId: 'session-1', provenance: 'match' });
 
     expect(result).toBe('handled');
     expect(mockTriggerRefresh).toHaveBeenCalledTimes(1);
@@ -148,7 +148,7 @@ describe('DiffWorkerHandler', () => {
     });
     const handler = getDiffWorkerHandler(createDeps([session]));
 
-    const target: EventTarget = { sessionId: 'session-1', workerId: 'some-other-worker' };
+    const target: EventTarget = { sessionId: 'session-1', workerId: 'some-other-worker', provenance: 'match' };
     const result = await handler.handle(createEvent(), target);
 
     expect(result).toBe('handled');
@@ -164,7 +164,7 @@ describe('DiffWorkerHandler', () => {
     });
     const handler = getDiffWorkerHandler(createDeps([session]));
 
-    const result = await handler.handle(createEvent(), { sessionId: 'session-1', fallback: true });
+    const result = await handler.handle(createEvent(), { sessionId: 'session-1', provenance: 'fallback' });
 
     expect(result).toBe('not-applicable');
     expect(mockTriggerRefresh).not.toHaveBeenCalled();
@@ -179,9 +179,37 @@ describe('DiffWorkerHandler', () => {
     });
     const handler = getDiffWorkerHandler(createDeps([session]));
 
-    const result = await handler.handle(createEvent(), { sessionId: 'session-1' });
+    const result = await handler.handle(createEvent(), { sessionId: 'session-1', provenance: 'match' });
 
     expect(result).toBe('handled');
     expect(mockTriggerRefresh).toHaveBeenCalledWith('/path/to/worktree');
+  });
+
+  it("Issue #1670's polarity pair, in one test: a 'parent' target with a git-diff worker is NOT refreshed on a child's ci:completed; the matching ('match') session in the SAME event IS refreshed (fails on main: both are refreshed, because handlers.ts's pre-fix EventTarget carries no marker for a parent target at all)", async () => {
+    mockTriggerRefresh.mockClear();
+    const matchingSession = buildWorktreeSession({
+      id: 'child-session',
+      locationPath: '/path/to/child-worktree',
+      workers: [createGitDiffWorker()],
+    });
+    const parentSession = buildWorktreeSession({
+      id: 'parent-session',
+      locationPath: '/path/to/parent-worktree',
+      workers: [createGitDiffWorker()],
+    });
+    const handler = getDiffWorkerHandler(createDeps([matchingSession, parentSession]));
+
+    // Positive control: the matching session's own tree IS refreshed.
+    const matchResult = await handler.handle(createEvent(), { sessionId: 'child-session', provenance: 'match' });
+    expect(matchResult).toBe('handled');
+    expect(mockTriggerRefresh).toHaveBeenCalledWith('/path/to/child-worktree');
+
+    mockTriggerRefresh.mockClear();
+
+    // The parent's own tree has nothing to do with the child's event --
+    // it must NOT be refreshed.
+    const parentResult = await handler.handle(createEvent(), { sessionId: 'parent-session', provenance: 'parent' });
+    expect(parentResult).toBe('not-applicable');
+    expect(mockTriggerRefresh).not.toHaveBeenCalled();
   });
 });

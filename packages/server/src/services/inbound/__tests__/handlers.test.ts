@@ -101,7 +101,7 @@ describe('AgentWorkerHandler: issue:labeled', () => {
     });
     const agentHandler = handlers.find((h) => h.handlerId === 'agent-worker')!;
 
-    const result = await agentHandler.handle(createIssueLabeledEvent(), { sessionId: 'session-1' });
+    const result = await agentHandler.handle(createIssueLabeledEvent(), { sessionId: 'session-1', provenance: 'match' });
 
     expect(result).toBe('handled');
     expect(writes[0]).toContain('intent=triage');
@@ -119,7 +119,7 @@ describe('AgentWorkerHandler: not-applicable branches (Issue #1653)', () => {
     const handlers = createInboundHandlers({ sessionManager: mockSessionManager, broadcastToApp: () => {} });
     const agentHandler = handlers.find((h) => h.handlerId === 'agent-worker')!;
 
-    const result = await agentHandler.handle(createIssueLabeledEvent(), { sessionId: 'session-1' });
+    const result = await agentHandler.handle(createIssueLabeledEvent(), { sessionId: 'session-1', provenance: 'match' });
 
     expect(result).toBe('not-applicable');
   });
@@ -133,7 +133,7 @@ describe('AgentWorkerHandler: not-applicable branches (Issue #1653)', () => {
     const handlers = createInboundHandlers({ sessionManager: mockSessionManager, broadcastToApp: () => {} });
     const agentHandler = handlers.find((h) => h.handlerId === 'agent-worker')!;
 
-    const result = await agentHandler.handle(createIssueLabeledEvent(), { sessionId: 'session-1' });
+    const result = await agentHandler.handle(createIssueLabeledEvent(), { sessionId: 'session-1', provenance: 'match' });
 
     expect(result).toBe('not-applicable');
   });
@@ -151,7 +151,7 @@ describe('AgentWorkerHandler: not-applicable branches (Issue #1653)', () => {
     // substitute for it (only for null/undefined), so the first
     // not-applicable check (no workerId given) is bypassed, exercising
     // the SECOND, independent `!workerId` branch (handlers.ts).
-    const result = await agentHandler.handle(createIssueLabeledEvent(), { sessionId: 'session-1', workerId: '' });
+    const result = await agentHandler.handle(createIssueLabeledEvent(), { sessionId: 'session-1', workerId: '', provenance: 'match' });
 
     expect(result).toBe('not-applicable');
   });
@@ -175,7 +175,7 @@ describe('AgentWorkerHandler: not-applicable branches (Issue #1653)', () => {
       summary: 'Issue closed',
     };
 
-    const result = await agentHandler.handle(invalidEvent, { sessionId: 'session-1' });
+    const result = await agentHandler.handle(invalidEvent, { sessionId: 'session-1', provenance: 'match' });
 
     expect(result).toBe('not-applicable');
     expect(deliverWorkerNotification).not.toHaveBeenCalled();
@@ -194,7 +194,7 @@ describe('AgentWorkerHandler: fallback target (#1661)', () => {
     });
     const agentHandler = handlers.find((h) => h.handlerId === 'agent-worker')!;
 
-    const result = await agentHandler.handle(createIssueLabeledEvent(), { sessionId: 'session-1', fallback: true });
+    const result = await agentHandler.handle(createIssueLabeledEvent(), { sessionId: 'session-1', provenance: 'fallback' });
 
     expect(result).toBe('handled');
     expect(writes[0]).toContain('[inbound:issue:labeled]');
@@ -214,7 +214,7 @@ describe('UINotificationHandler: issue:labeled', () => {
     });
     const uiHandler = handlers.find((h) => h.handlerId === 'ui-notification')!;
 
-    const result = await uiHandler.handle(createIssueLabeledEvent(), { sessionId: 'session-1' });
+    const result = await uiHandler.handle(createIssueLabeledEvent(), { sessionId: 'session-1', provenance: 'match' });
 
     expect(result).toBe('handled');
     expect(broadcastToApp).toHaveBeenCalledTimes(1);
@@ -289,7 +289,7 @@ describe('AgentWorkerHandler: embedded-agent worker delivery (Issue #1739)', () 
     });
     const agentHandler = handlers.find((h) => h.handlerId === 'agent-worker')!;
 
-    const result = await agentHandler.handle(createIssueLabeledEvent(), { sessionId: 'session-1' });
+    const result = await agentHandler.handle(createIssueLabeledEvent(), { sessionId: 'session-1', provenance: 'match' });
 
     expect(result).toBe('handled');
     expect(deliverWorkerNotification).toHaveBeenCalledTimes(1);
@@ -343,7 +343,7 @@ describe('AgentWorkerHandler: worker resolution order (Issue #1739)', () => {
     });
     const agentHandler = handlers.find((h) => h.handlerId === 'agent-worker')!;
 
-    await agentHandler.handle(createIssueLabeledEvent(), { sessionId: 'session-1' });
+    await agentHandler.handle(createIssueLabeledEvent(), { sessionId: 'session-1', provenance: 'match' });
 
     expect(deliverWorkerNotification.mock.calls[0][1]).toBe('worker-1');
   });
@@ -378,12 +378,12 @@ describe('AgentWorkerHandler: PTY byte parity through the delivery seam (Issue #
       });
       const agentHandler = handlers.find((h) => h.handlerId === 'agent-worker')!;
 
-      await agentHandler.handle(createIssueLabeledEvent(), { sessionId: 'session-1' });
+      await agentHandler.handle(createIssueLabeledEvent(), { sessionId: 'session-1', provenance: 'match' });
       // Real timers: writePtyNotification's Enter keystroke fires via a
       // real 150ms setTimeout.
       await new Promise((resolve) => setTimeout(resolve, 200));
 
-      await agentHandler.handle(createCiCompletedEvent(), { sessionId: 'session-1' });
+      await agentHandler.handle(createCiCompletedEvent(), { sessionId: 'session-1', provenance: 'match' });
       await new Promise((resolve) => setTimeout(resolve, 200));
 
       // Reach (measured 2026-09-17): swapping the order of `repo` and
@@ -416,7 +416,7 @@ describe('AgentWorkerHandler: notification delivery failure (Issue #1739)', () =
 
     const warnSpy = spyOn(rootLogger, 'warn');
     try {
-      const result = await agentHandler.handle(createIssueLabeledEvent(), { sessionId: 'session-1' });
+      const result = await agentHandler.handle(createIssueLabeledEvent(), { sessionId: 'session-1', provenance: 'match' });
 
       expect(result).toBe('delivery-failed');
       expect(warnSpy).toHaveBeenCalledTimes(1);
@@ -455,7 +455,7 @@ describe('AgentWorkerHandler: notification delivery failure (Issue #1739)', () =
       // The seam's PTY branch never throws -- only the embedded-agent
       // branch can reject. `handle()`'s contract to job-handler.ts is
       // "false, never a rejection", so `await` must resolve, not throw.
-      const result = await agentHandler.handle(createIssueLabeledEvent(), { sessionId: 'session-1' });
+      const result = await agentHandler.handle(createIssueLabeledEvent(), { sessionId: 'session-1', provenance: 'match' });
 
       expect(result).toBe('delivery-failed');
       expect(warnSpy).toHaveBeenCalledTimes(1);

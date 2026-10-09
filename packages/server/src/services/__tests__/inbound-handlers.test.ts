@@ -105,7 +105,7 @@ describe('AgentWorkerHandler', () => {
   it('handles pr:review_comment with intent=triage', async () => {
     const { agentHandler, getCapturedMessage } = createAgentHandlerWithCapture();
 
-    const result = await agentHandler.handle(createReviewCommentEvent(), { sessionId: 'session-1' });
+    const result = await agentHandler.handle(createReviewCommentEvent(), { sessionId: 'session-1', provenance: 'match' });
 
     expect(result).toBe('handled');
     expect(getCapturedMessage()).toContain('intent=triage');
@@ -118,7 +118,7 @@ describe('AgentWorkerHandler', () => {
   it('handles pr:changes_requested with intent=triage', async () => {
     const { agentHandler, getCapturedMessage } = createAgentHandlerWithCapture();
 
-    const result = await agentHandler.handle(createChangesRequestedEvent(), { sessionId: 'session-1' });
+    const result = await agentHandler.handle(createChangesRequestedEvent(), { sessionId: 'session-1', provenance: 'match' });
 
     expect(result).toBe('handled');
     expect(getCapturedMessage()).toContain('intent=triage');
@@ -129,7 +129,7 @@ describe('AgentWorkerHandler', () => {
   it('handles pr:comment with intent=triage', async () => {
     const { agentHandler, getCapturedMessage } = createAgentHandlerWithCapture();
 
-    const result = await agentHandler.handle(createPrCommentEvent(), { sessionId: 'session-1' });
+    const result = await agentHandler.handle(createPrCommentEvent(), { sessionId: 'session-1', provenance: 'match' });
 
     expect(result).toBe('handled');
     expect(getCapturedMessage()).toContain('intent=triage');
@@ -162,7 +162,7 @@ describe('AgentWorkerHandler', () => {
       summary: 'Issue closed',
     };
 
-    const result = await agentHandler.handle(invalidEvent, { sessionId: 'session-1' });
+    const result = await agentHandler.handle(invalidEvent, { sessionId: 'session-1', provenance: 'match' });
 
     expect(result).toBe('not-applicable');
     expect(deliverWorkerNotification).not.toHaveBeenCalled();
@@ -180,7 +180,7 @@ describe('AgentWorkerHandler', () => {
       });
       const agentHandler = handlers.find((h) => h.handlerId === 'agent-worker')!;
 
-      await agentHandler.handle(createReviewCommentEvent(), { sessionId: 'session-1' });
+      await agentHandler.handle(createReviewCommentEvent(), { sessionId: 'session-1', provenance: 'match' });
 
       // Before the timer fires, only the notification text should be written
       expect(writtenData).toHaveLength(1);
@@ -224,7 +224,7 @@ describe('UINotificationHandler', () => {
   it('broadcasts pr:review_comment event', async () => {
     const { uiHandler, broadcastToApp, getCapturedBroadcast } = createUIHandlerWithCapture();
 
-    const result = await uiHandler.handle(createReviewCommentEvent(), { sessionId: 'session-1' });
+    const result = await uiHandler.handle(createReviewCommentEvent(), { sessionId: 'session-1', provenance: 'match' });
 
     expect(result).toBe('handled');
     expect(broadcastToApp).toHaveBeenCalledTimes(1);
@@ -240,7 +240,7 @@ describe('UINotificationHandler', () => {
   it('broadcasts pr:changes_requested event', async () => {
     const { uiHandler, broadcastToApp, getCapturedBroadcast } = createUIHandlerWithCapture();
 
-    const result = await uiHandler.handle(createChangesRequestedEvent(), { sessionId: 'session-1' });
+    const result = await uiHandler.handle(createChangesRequestedEvent(), { sessionId: 'session-1', provenance: 'match' });
 
     expect(result).toBe('handled');
     expect(broadcastToApp).toHaveBeenCalledTimes(1);
@@ -255,7 +255,7 @@ describe('UINotificationHandler', () => {
   it('broadcasts pr:comment event', async () => {
     const { uiHandler, broadcastToApp, getCapturedBroadcast } = createUIHandlerWithCapture();
 
-    const result = await uiHandler.handle(createPrCommentEvent(), { sessionId: 'session-1' });
+    const result = await uiHandler.handle(createPrCommentEvent(), { sessionId: 'session-1', provenance: 'match' });
 
     expect(result).toBe('handled');
     expect(broadcastToApp).toHaveBeenCalledTimes(1);
