@@ -28,19 +28,21 @@
  */
 import { describe, it, expect, afterEach } from 'bun:test';
 import { assertRealFs } from '../../__tests__/utils/memfs-detection.js';
+import { initializeDatabase, closeDatabase, getDatabase } from '../../database/connection.js';
 import { bunTerminalProvider } from '../../lib/pty-provider.js';
 import { WorkerOutputFileManager } from '../../lib/worker-output-file.js';
+import { SqliteAgentRepository } from '../../repositories/sqlite-agent-repository.js';
+import { AgentManager } from '../agent-manager.js';
 import { SingleUserMode } from '../user-mode.js';
 import { WorkerManager } from '../worker-manager.js';
 import type { InternalTerminalWorker } from '../worker-types.js';
-import type { AgentManager } from '../agent-manager.js';
 
 const KILL_DEADLINE_MS = 1000;
 
 describe('WorkerManager.killWorker real PTY root signal (#1877)', () => {
   const spawnedWorkers: InternalTerminalWorker[] = [];
 
-  afterEach(() => {
+  afterEach(async () => {
     // Best-effort safety net: SIGKILL anything that is still alive (e.g. an
     // assertion threw before `killWorker` finished). `killWorker` itself
     // already disposes/nulls `worker.pty` on its own success/timeout paths,
@@ -49,6 +51,7 @@ describe('WorkerManager.killWorker real PTY root signal (#1877)', () => {
       worker.pty?.kill('SIGKILL');
       worker.pty?.dispose?.();
     }
+    await closeDatabase();
   });
 
   it(
@@ -61,17 +64,19 @@ describe('WorkerManager.killWorker real PTY root signal (#1877)', () => {
         username: 'testuser',
         homeDir: process.env.HOME ?? '/root',
       });
-      // `agentManager` is only read by `initializeAgentWorker` -- never by
-      // `killWorker` -- and the worker built below is constructed directly
-      // (not via that method), so a cast stub is safe here and avoids
-      // pulling in a real SQLite-backed `AgentManager` for a test that
-      // never exercises it (pre-pr-completeness.md Q13: upstream of, and
-      // outside, the chain under test).
-      const workerManager = new WorkerManager(
-        userMode,
-        null as unknown as AgentManager,
-        new WorkerOutputFileManager(),
-      );
+      // `agentManager` is never read by `killWorker` on a terminal worker
+      // (only `initializeAgentWorker` touches it, which the directly
+      // constructed worker below never calls) -- but it is constructed as
+      // a REAL `AgentManager`, same as `worker-manager.test.ts`'s own
+      // `beforeEach`, rather than an `as unknown as AgentManager` cast: the
+      // class has a private constructor and private fields, so no plain
+      // object literal can satisfy its type without that cast, and this
+      // file would otherwise be the only place in packages/server/src that
+      // introduces the pattern (CodeRabbit nitpick on an earlier revision).
+      await closeDatabase();
+      await initializeDatabase(':memory:');
+      const agentManager = await AgentManager.create(new SqliteAgentRepository(getDatabase()));
+      const workerManager = new WorkerManager(userMode, agentManager, new WorkerOutputFileManager());
 
       const pty = bunTerminalProvider.spawn('sh', ['-c', 'exec sh'], {
         cols: 80,
