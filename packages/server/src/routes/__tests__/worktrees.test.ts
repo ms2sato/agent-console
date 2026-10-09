@@ -6,6 +6,7 @@ import type { AppBindings } from '../../app-context.js';
 import type { WorktreeService } from '../../services/worktree-service.js';
 import type { RepositoryManager } from '../../services/repository-manager.js';
 import type { SessionManager } from '../../services/session-manager.js';
+import type { UserRepository } from '../../repositories/user-repository.js';
 import type { AgentManager } from '../../services/agent-manager.js';
 import type { EmbeddedAgentManager } from '../../services/embedded-agent-manager.js';
 import type { SuggestSessionMetadataFn } from '../../services/session-metadata-suggester.js';
@@ -117,7 +118,12 @@ function buildEmbeddedAgentDefinitionFixture(
  * using this fixture, so the returned session only ever reaches a discarded
  * broadcast payload).
  */
-function buildSessionFixture(overrides: Pick<Session, 'id'>): Session {
+function buildSessionFixture(overrides: Partial<Session> & Pick<Session, 'id'>): Session {
+  // `Partial<Session>` flattens the discriminated union's `type` field into
+  // `'worktree' | 'quick'`, so the spread below can no longer be checked
+  // against the narrower `Session` union without a cast -- same single-
+  // assertion bridging pattern as the `asXxx` helpers at the top of this
+  // file.
   return {
     type: 'quick',
     locationPath: '/test/quick-session',
@@ -128,7 +134,7 @@ function buildSessionFixture(overrides: Pick<Session, 'id'>): Session {
     isShared: false,
     recoveryState: 'healthy',
     ...overrides,
-  };
+  } as Session;
 }
 
 // ---------------------------------------------------------------------------
@@ -214,6 +220,10 @@ describe('Worktrees API', () => {
       c.set('appContext', asAppContext({
         repositoryManager: mockRepositoryManager,
         worktreeService: mockWorktreeService,
+        // No owning session found by default -> the pull route's identity
+        // resolution falls back to authUser.username, matching every
+        // existing pull-route test's expectation below.
+        sessionManager: asSessionManager({ getAllSessions: () => [] }),
       }));
       await next();
     });
@@ -1489,6 +1499,126 @@ describe('Worktrees API', () => {
       const args = await captured;
       expect(args[0]).toBe(WORKTREE_PATH);
       expect(args[1]).toBe('testuser');
+    });
+
+    it('forwards authUser.username to getCurrentBranch when no session owns the path (Issue #1623)', async () => {
+      // No session's locationPath matches WORKTREE_PATH (default beforeEach
+      // sessionManager returns []), so the route's identity resolution falls
+      // back to authUser.username for BOTH getCurrentBranch reads (the
+      // detached-HEAD guard and the success-message branch read).
+      //
+      // Polarity measured: reverting the route to the pre-fix
+      // `getCurrentBranch(worktreePath)` (no 2nd arg) makes both assertions
+      // below fail (`toHaveBeenCalledWith` receives only 1 arg).
+      let resolveSecondCall!: (args: unknown[]) => void;
+      const secondCallCaptured = new Promise<unknown[]>((resolve) => {
+        resolveSecondCall = resolve;
+      });
+      mockGit.getCurrentBranch.mockImplementation((...args: unknown[]) => {
+        if (mockGit.getCurrentBranch.mock.calls.length >= 2) {
+          resolveSecondCall(args);
+        }
+        return Promise.resolve('feature-branch');
+      });
+
+      const res = await app.request(
+        `/api/repositories/${TEST_REPO.id}/worktrees/pull`,
+        pullRequest(WORKTREE_PATH),
+      );
+
+      expect(res.status).toBe(202);
+      await secondCallCaptured;
+
+      expect(mockGit.getCurrentBranch.mock.calls.length).toBe(2);
+      expect(mockGit.getCurrentBranch.mock.calls[0]).toEqual([WORKTREE_PATH, 'testuser']);
+      expect(mockGit.getCurrentBranch.mock.calls[1]).toEqual([WORKTREE_PATH, 'testuser']);
+    });
+
+    it('resolves the owning (shared) session spawn user for both branch reads and pullFastForward (Issue #1623)', async () => {
+      // A session owns WORKTREE_PATH and was createdBy a shared account
+      // whose username resolves to 'shared1' via userRepository.findById.
+      // Both getCurrentBranch reads AND pullFastForward must use 'shared1',
+      // never authUser.username ('testuser') -- this is the regression pin
+      // for the bundled pullFastForward sibling fix.
+      //
+      // Polarity measured: reverting routes/worktrees.ts to resolve
+      // `pullIdentity` as always `authUser.username` (dropping the owning-
+      // session lookup) makes every assertion below observe 'testuser'
+      // instead of 'shared1', failing all three `toEqual`/`toBe` checks.
+      let resolveSecondBranchCall!: (args: unknown[]) => void;
+      const secondBranchCallCaptured = new Promise<unknown[]>((resolve) => {
+        resolveSecondBranchCall = resolve;
+      });
+      mockGit.getCurrentBranch.mockImplementation((...args: unknown[]) => {
+        if (mockGit.getCurrentBranch.mock.calls.length >= 2) {
+          resolveSecondBranchCall(args);
+        }
+        return Promise.resolve('feature-branch');
+      });
+
+      let resolvePullCall!: (args: unknown[]) => void;
+      const pullCallCaptured = new Promise<unknown[]>((resolve) => {
+        resolvePullCall = resolve;
+      });
+      mockGit.pullFastForward.mockImplementation((...args: unknown[]) => {
+        resolvePullCall(args);
+        return Promise.resolve(0);
+      });
+
+      const sharedUserRepository: UserRepository = {
+        async upsertByOsUid(): Promise<AuthUser> {
+          throw new Error('upsertByOsUid not used by this test');
+        },
+        async findById(id: string): Promise<AuthUser | null> {
+          if (id === 'shared-user-id') {
+            return { id: 'shared-user-id', username: 'shared1', homeDir: '/home/shared1' };
+          }
+          return null;
+        },
+        async getOsUidById(): Promise<number | null | undefined> {
+          throw new Error('getOsUidById not used by this test');
+        },
+        async refreshOsIdentity(): Promise<AuthUser> {
+          throw new Error('refreshOsIdentity not used by this test');
+        },
+        async getPreferences(): Promise<null> {
+          return null;
+        },
+        async setPreferences(): Promise<boolean> {
+          return true;
+        },
+      };
+
+      app = new Hono<AppBindings>();
+      app.use('*', async (c, next) => {
+        c.set('appContext', asAppContext({
+          repositoryManager: mockRepositoryManager,
+          worktreeService: mockWorktreeService,
+          sessionManager: asSessionManager({
+            getAllSessions: () => [
+              buildSessionFixture({ id: 'sess-1', locationPath: WORKTREE_PATH, createdBy: 'shared-user-id' }),
+            ],
+          }),
+          userRepository: sharedUserRepository,
+        }));
+        await next();
+      });
+      app.onError(onApiError);
+      app.route('/api', api);
+
+      const res = await app.request(
+        `/api/repositories/${TEST_REPO.id}/worktrees/pull`,
+        pullRequest(WORKTREE_PATH),
+      );
+
+      expect(res.status).toBe(202);
+      await secondBranchCallCaptured;
+      const pullArgs = await pullCallCaptured;
+
+      expect(mockGit.getCurrentBranch.mock.calls.length).toBe(2);
+      expect(mockGit.getCurrentBranch.mock.calls[0]).toEqual([WORKTREE_PATH, 'shared1']);
+      expect(mockGit.getCurrentBranch.mock.calls[1]).toEqual([WORKTREE_PATH, 'shared1']);
+      expect(pullArgs).toEqual([WORKTREE_PATH, 'shared1']);
     });
 
     it('should return 202 even when background pull encounters an error', async () => {

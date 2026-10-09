@@ -918,6 +918,10 @@ id         # Should show the user's UID and groups
 ls -la ~   # Should be accessible
 ```
 
+### A worktree's branch shows as `(unknown)`
+
+In multi-user mode, a branch read that cannot run as the worktree's owning user (e.g. a `git` "dubious ownership" error) is swallowed into `(unknown)` rather than failing loudly. If you see this, check the server log for a `warn`-level line from the `git` logger naming the `cwd` — that confirms an identity-resolution gap rather than an actual detached-HEAD state. See [Issue #1623](https://github.com/ms2sato/agent-console/issues/1623).
+
 ## Source Repo Group-Writability (Linux multi-user)
 
 When `git worktree add` runs as the requesting user (Issue #838 / PR #843),

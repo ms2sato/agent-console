@@ -6760,6 +6760,116 @@ describe('SessionManager', () => {
       // {{BRANCH}} should expand to the mocked branch name
       expect(spawnEnv.BRANCH_NAME).toBe('feature-xyz');
     });
+
+    it('resolves the session spawn user and threads it into gitGetCurrentBranch (Issue #1623)', async () => {
+      // Same template-expansion shape as the test above, but with a
+      // createdBy + userRepository so the `{{branch}}` resolution's git
+      // read runs as the SESSION'S SPAWN USER, not the server process user
+      // (multi-user mode must not read the branch of a user-owned worktree
+      // as the server's own OS user -- #1622's rule).
+      //
+      // Polarity measured: reverting `getRepositoryEnvVars` to call
+      // `gitGetCurrentBranch(session.locationPath)` (no 2nd arg) makes the
+      // assertion below fail (`toHaveBeenCalledWith` receives only 1 arg).
+      const envLookup = makeRepositoryEnvLookup({
+        mapping: {
+          'repo-1': {
+            name: 'my-repo',
+            path: '/test/repo',
+            envVars: 'BRANCH_NAME={{BRANCH}}',
+          },
+        },
+        getWorktreeIndexNumber: async () => 3,
+      });
+
+      const stubUserRepo: UserRepository = {
+        async upsertByOsUid(): Promise<AuthUser> {
+          throw new Error('upsertByOsUid not used by this test');
+        },
+        async findById(id: string): Promise<AuthUser | null> {
+          if (id === 'user-shared-uuid') {
+            return { id, username: 'shared1', homeDir: '/home/shared1' };
+          }
+          return null;
+        },
+        async getOsUidById(): Promise<number | null | undefined> {
+          throw new Error('getOsUidById not used by this test');
+        },
+        async refreshOsIdentity(): Promise<AuthUser> {
+          throw new Error('refreshOsIdentity not used by this test');
+        },
+        async getPreferences(): Promise<null> {
+          return null;
+        },
+        async setPreferences(): Promise<boolean> {
+          return true;
+        },
+      };
+
+      const module = await import(`../session-manager.js?v=${++importCounter}`);
+      const manager = await module.SessionManager.create({
+        userMode: new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' }),
+        pathExists: mockPathExists,
+        jobQueue: testJobQueue,
+        agentManager,
+        mcpTokenRegistry: new McpTokenRegistry(),
+        repositoryLookup: { getRepositorySlug: async (id: string) => (id === 'repo-1' ? 'my-repo' : undefined) },
+        repositoryEnvLookup: envLookup,
+        userRepository: stubUserRepo,
+      });
+
+      mockGit.getCurrentBranch.mockImplementation(() => Promise.resolve('feature-xyz'));
+
+      await manager.createSession(
+        {
+          type: 'worktree',
+          locationPath: '/test/path',
+          repositoryId: 'repo-1',
+          worktreeId: 'feature-xyz',
+          agentId: 'claude-code',
+        },
+        { createdBy: 'user-shared-uuid' },
+      );
+
+      expect(mockGit.getCurrentBranch.mock.calls.length).toBeGreaterThanOrEqual(1);
+      expect(mockGit.getCurrentBranch.mock.calls[0]).toEqual(['/test/path', 'shared1']);
+    });
+
+    it('skips the git call entirely on the no-template fast path', async () => {
+      // Existing behaviour pin, unaffected by the #1623 identity threading
+      // above: when no env var value contains a template placeholder,
+      // getRepositoryEnvVars returns early and never calls gitGetCurrentBranch.
+      const envLookup = makeRepositoryEnvLookup({
+        mapping: {
+          'repo-1': {
+            name: 'my-repo',
+            path: '/test/repo',
+            envVars: 'PLAIN_VAR=no-templates-here',
+          },
+        },
+        getWorktreeIndexNumber: async () => 3,
+      });
+      const module = await import(`../session-manager.js?v=${++importCounter}`);
+      const manager = await module.SessionManager.create({
+        userMode: new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' }),
+        pathExists: mockPathExists,
+        jobQueue: testJobQueue,
+        agentManager,
+        mcpTokenRegistry: new McpTokenRegistry(),
+        repositoryLookup: { getRepositorySlug: async (id: string) => (id === 'repo-1' ? 'my-repo' : undefined) },
+        repositoryEnvLookup: envLookup,
+      });
+
+      await manager.createSession({
+        type: 'worktree',
+        locationPath: '/test/path',
+        repositoryId: 'repo-1',
+        worktreeId: 'feature-xyz',
+        agentId: 'claude-code',
+      });
+
+      expect(mockGit.getCurrentBranch.mock.calls.length).toBe(0);
+    });
   });
 
   describe('error recovery', () => {

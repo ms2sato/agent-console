@@ -1661,13 +1661,6 @@ export class SessionManager {
   }
 
   /**
-   * Get current branch name for a given path
-   */
-  async getBranchForPath(locationPath: string): Promise<string> {
-    return gitGetCurrentBranch(locationPath);
-  }
-
-  /**
    * Write a memo for a session. Validates the session exists, writes to disk,
    * and fires the onMemoUpdated lifecycle callback for WebSocket broadcast.
    *
@@ -1781,7 +1774,10 @@ export class SessionManager {
 
     // Resolve template variables and apply substitution
     const worktreeNum = await this.repositoryEnvLookup.getWorktreeIndexNumber(session.locationPath);
-    const branch = await gitGetCurrentBranch(session.locationPath);
+    const branch = await gitGetCurrentBranch(
+      session.locationPath,
+      await resolveSpawnUsername(session.createdBy, this.userRepository),
+    );
     const vars = {
       worktreeNum,
       branch,
