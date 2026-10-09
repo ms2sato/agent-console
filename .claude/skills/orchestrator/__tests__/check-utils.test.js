@@ -1410,16 +1410,25 @@ describe('resolvePrDiffRef failure path', () => {
 // snapshot `resolvePrDiffRef` exists to avoid) -- it diffs the two SHAs
 // `resolvePrDiffRef` already resolved.
 describe('getChangedFiles', () => {
-  it('diffs the resolved merge-base against head, not gh pr diff --name-only', () => {
+  it('diffs the resolved merge-base against head via NUL-terminated names, not gh pr diff --name-only', () => {
     const commandsSeen = [];
     const execImpl = cmd => {
       commandsSeen.push(cmd);
-      return 'a.ts\nb.ts';
+      return 'a.ts\0b.ts\0';
     };
     const files = getChangedFiles('123', { baseRef: 'MMMM', headRef: 'HHHH' }, { execImpl });
     expect(files).toEqual(['a.ts', 'b.ts']);
-    expect(commandsSeen).toEqual(['git diff --name-only MMMM HHHH']);
+    expect(commandsSeen).toEqual(['git diff --name-only -z MMMM HHHH']);
     expect(commandsSeen.some(cmd => cmd.includes('gh pr diff'))).toBe(false);
+  });
+
+  // A non-`-z` `git diff --name-only` C-quotes paths containing non-ASCII
+  // or control characters (e.g. `"docs/\303\251.md"`), which no consumer
+  // here un-quotes -- `-z` (NUL-terminated, unquoted) avoids that entirely.
+  it('returns exact unquoted names for a non-ASCII filename (requires -z)', () => {
+    const execImpl = () => 'docs/é.md\0b.ts\0';
+    const files = getChangedFiles('123', { baseRef: 'MMMM', headRef: 'HHHH' }, { execImpl });
+    expect(files).toEqual(['docs/é.md', 'b.ts']);
   });
 
   // Boundary value: merge-base equal to head (PR fully merged into its

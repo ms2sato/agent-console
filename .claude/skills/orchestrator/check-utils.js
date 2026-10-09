@@ -33,18 +33,28 @@ export function exec(cmd) {
  *
  * `execImpl` is the same pay-as-you-go DI seam as `resolvePrDiffRef`'s.
  *
+ * `-z` (NUL-terminated, unquoted names) rather than plain `--name-only`:
+ * without it, `git diff` C-quotes paths containing non-ASCII or control
+ * characters (e.g. `"docs/\303\251.md"`), which no consumer here
+ * (`findTestFiles` / `isCommentOnlyFileDiff` / `detectIntegrationTestNeeds`)
+ * un-quotes, so such a file would silently fail every path match.
+ *
  * @param {string|number} prNumber
  * @param {{ baseRef: string, headRef: string }} diffRef
  * @param {{ execImpl?: typeof exec }} [opts]
  */
 export function getChangedFiles(prNumber, diffRef, { execImpl = exec } = {}) {
   const { baseRef, headRef } = diffRef;
-  const result = execImpl(`git diff --name-only ${baseRef} ${headRef}`);
+  const result = execImpl(`git diff --name-only -z ${baseRef} ${headRef}`);
   if (result === null) {
     console.error(`Error: Could not retrieve diff for PR #${prNumber} (${baseRef}..${headRef}). Please verify the git command and PR number.`);
     process.exit(1);
   }
-  return result.split('\n').filter(Boolean);
+  // `-z` terminates every entry with NUL, so splitting leaves one trailing
+  // empty string after the last entry (or the sole, dropped element when
+  // the diff is empty) -- filter(Boolean) removes it the same way the
+  // `\n`-split callers elsewhere in this file drop their trailing blank.
+  return result.split('\0').filter(Boolean);
 }
 
 export function getLocalChangedFiles() {
