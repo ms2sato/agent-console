@@ -1141,6 +1141,94 @@ describe('createInboundEventJobHandler', () => {
       }
     });
 
+    it("logs and skips (without rethrowing, no retry) when markNotificationFailed itself throws after handler.handle() resolved 'delivery-failed' -- NEVER falls through to the 'deliver' rethrow class and NEVER marks the row delivered (Issue #1653/#1679, (vi))", async () => {
+      // Architect finding on PR #1865 (measured against commit 9d333b4d):
+      // before this test's fix, the 'delivery-failed' branch called
+      // markNotificationFailed under `step = 'deliver'` with no own
+      // try/catch -- a throw there fell into the catch block's 'deliver'
+      // rethrow class (same as a markNotificationDelivered failure),
+      // triggering a job-queue retry whose idempotency check would find
+      // the still-'pending' row and administratively close it out as
+      // 'delivered' -- silently turning a KNOWN delivery failure into a
+      // false 'delivered'. This test's `markNotificationDelivered` /
+      // `errorSpy` assertions below FAIL against 9d333b4d (the job
+      // rejects instead of resolving, because the throw propagates
+      // uncaught out of the per-target catch's rethrow). Restoring the
+      // own try/catch (this PR's fix) makes it pass again.
+      const createPendingNotificationMock = mock(async () => {});
+      const markNotificationFailedMock = mock(async () => {
+        throw new Error('simulated transient markNotificationFailed error');
+      });
+      const markNotificationDeliveredMock = mock(async () => {});
+      const handlerMock = mock(async () => 'delivery-failed' as const);
+
+      const jobHandler = createInboundEventJobHandler({
+        getServiceParser: () => ({
+          serviceId: 'github',
+          authenticate: async () => true,
+          parse: async () => ({
+            type: 'ci:completed',
+            source: 'github',
+            timestamp: '2024-01-01T00:00:00Z',
+            metadata: { repositoryName: 'owner/repo' },
+            payload: { ok: true },
+            summary: 'CI success',
+          }),
+        }),
+        resolveTargets: async () => [{ sessionId: 'irrelevant-session' }],
+        handlers: [
+          {
+            handlerId: 'test-handler',
+            supportedEvents: ['ci:completed'],
+            handle: handlerMock,
+          },
+        ],
+        notificationRepository: {
+          findInboundEventNotification: async () => null,
+          createPendingNotification: createPendingNotificationMock,
+          markNotificationDelivered: markNotificationDeliveredMock,
+          markNotificationFailed: markNotificationFailedMock,
+        },
+      });
+
+      const errorSpy = spyOn(rootLogger, 'error');
+      const warnSpy = spyOn(rootLogger, 'warn');
+      try {
+        // The job still completes -- the markNotificationFailed write's
+        // own throw never propagates out, and there is no job-level
+        // retry either way.
+        await expect(
+          jobHandler({
+            jobId: 'job-delivery-failed-mark-failed-throws',
+            service: 'github',
+            rawPayload: '{}',
+            headers: {},
+            receivedAt: '2024-01-01T00:00:00Z',
+          })
+        ).resolves.toBeUndefined();
+
+        expect(handlerMock).toHaveBeenCalledTimes(1);
+        expect(markNotificationFailedMock).toHaveBeenCalledTimes(1);
+        // The row must NEVER be closed out as delivered -- this is the
+        // exact bug the Architect caught: a retry's idempotency
+        // close-out would otherwise mark a known delivery failure as
+        // 'delivered'.
+        expect(markNotificationDeliveredMock).not.toHaveBeenCalled();
+        // The 'Inbound notification delivery failed' warn (which fires
+        // only on a successful markNotificationFailed write) must NOT
+        // have fired, since the write itself failed.
+        expect(warnSpy).not.toHaveBeenCalled();
+
+        expect(errorSpy).toHaveBeenCalledTimes(1);
+        expect(errorSpy.mock.calls[0][1]).toBe(
+          'Failed to mark notification as failed after handler reported delivery-failed; skipping'
+        );
+      } finally {
+        errorSpy.mockRestore();
+        warnSpy.mockRestore();
+      }
+    });
+
     it('resolves without error and does nothing when there are zero targets', async () => {
       const db = await createDatabaseForTest();
       try {

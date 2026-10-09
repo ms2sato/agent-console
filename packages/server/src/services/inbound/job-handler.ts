@@ -232,16 +232,40 @@ export function createInboundEventJobHandler(deps: InboundEventJobDependencies) 
           // terminal 'failed' status, also never retried.
           step = 'deliver';
           if (outcome === 'delivery-failed') {
-            await deps.notificationRepository.markNotificationFailed(
-              job.jobId,
-              target.sessionId,
-              workerId,
-              handler.handlerId
-            );
-            logger.warn(
-              { jobId: job.jobId, handlerId: handler.handlerId, sessionId: target.sessionId, workerId, eventType: event.type },
-              'Inbound notification delivery failed'
-            );
+            // Own try/catch, never rethrown: the 'deliver'-step rethrow
+            // class below exists so a `markNotificationDelivered` write
+            // failure is retried (nothing confirmed delivery yet, so a
+            // retry's idempotency close-out is safe). A
+            // `markNotificationFailed` write failure must NOT take that
+            // same path -- a job-queue retry would re-enter the
+            // idempotency check, find the still-'pending' row, and
+            // administratively close it out as 'delivered' (the branch
+            // above), silently turning a KNOWN delivery failure into a
+            // false 'delivered'. Logging and moving on leaves the row
+            // 'pending', which is honest about what is actually known.
+            try {
+              await deps.notificationRepository.markNotificationFailed(
+                job.jobId,
+                target.sessionId,
+                workerId,
+                handler.handlerId
+              );
+              logger.warn(
+                { jobId: job.jobId, handlerId: handler.handlerId, sessionId: target.sessionId, workerId, eventType: event.type },
+                'Inbound notification delivery failed'
+              );
+            } catch (markFailedError) {
+              logger.error(
+                {
+                  err: markFailedError,
+                  jobId: job.jobId,
+                  handlerId: handler.handlerId,
+                  sessionId: target.sessionId,
+                  workerId,
+                },
+                'Failed to mark notification as failed after handler reported delivery-failed; skipping'
+              );
+            }
           } else {
             await deps.notificationRepository.markNotificationDelivered(
               job.jobId,
@@ -273,13 +297,20 @@ export function createInboundEventJobHandler(deps: InboundEventJobDependencies) 
           //   rather than silently dropping the target. A genuinely
           //   dangling sessionId (an FK-constraint violation) at 'persist'
           //   is logged and skipped, unchanged.
-          // - A 'deliver'-step failure means delivery already happened (or,
-          //   on a retry, was already marked pending by an earlier
-          //   attempt) and only the bookkeeping UPDATE failed -- there is
-          //   no foreign-key class to carve out here (the row being
-          //   updated already exists), so it always rethrows. The
-          //   idempotency check above safely closes it out on the next
-          //   retry without re-invoking the handler.
+          // - A 'deliver'-step failure reaching THIS catch is always a
+          //   `markNotificationDelivered` write failure -- delivery
+          //   already happened (or, on a retry, was already marked
+          //   pending by an earlier attempt) and only the bookkeeping
+          //   UPDATE failed, with no foreign-key class to carve out (the
+          //   row being updated already exists), so it always rethrows.
+          //   The idempotency check above safely closes it out on the
+          //   next retry without re-invoking the handler. Both
+          //   `markNotificationFailed` writes (the 'delivery-failed'
+          //   outcome above, and the 'handle'-throw case below) are
+          //   deliberately NOT in this rethrow class -- they have their
+          //   own try/catch and never reach here, because a retry's
+          //   idempotency close-out would turn a KNOWN delivery failure
+          //   into a false 'delivered'.
           // A 'handle'-step failure (handler.handle() itself threw) marks
           // the pending row 'failed' (own try/catch below; if THAT write
           // itself fails, it is logged and skipped too -- no retry either
