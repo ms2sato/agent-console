@@ -36,6 +36,7 @@ import { composeEmbeddedAgentDeliveryText } from '../session-manager.js';
 import { buildPtyNotificationText, type PtyNotificationParams } from '../../lib/pty-notification.js';
 import type { McpServerPermissionRow } from '../../repositories/mcp-server-permission-repository.js';
 import type { McpPermissionScope } from '../../lib/mcp-server-permissions.js';
+import { serverConfig } from '../../lib/server-config.js';
 
 // Test config directory
 const TEST_CONFIG_DIR = '/test/config';
@@ -2226,7 +2227,7 @@ describe('SessionManager', () => {
         contextWindowTokens: 32_000,
       });
 
-      const result = await manager.restartAllAgentWorkers();
+      const result = await manager.restartAllAgentWorkers({ kind: 'all' });
 
       expect(result.results.find((r) => r.workerId === workerId)?.outcome).toBe('restarted');
       const row = await readPersistedWorker(manager, sessionId, workerId);
@@ -7623,7 +7624,7 @@ describe('SessionManager', () => {
 
       const ptyCountBefore = ptyFactory.instances.length;
 
-      const result = await manager.restartAllAgentWorkers();
+      const result = await manager.restartAllAgentWorkers({ kind: 'all' });
 
       expect(result.restarted).toBe(2);
       expect(result.failed).toBe(0);
@@ -7653,7 +7654,7 @@ describe('SessionManager', () => {
         agentId: 'claude-code',
       });
 
-      await manager.restartAllAgentWorkers();
+      await manager.restartAllAgentWorkers({ kind: 'all' });
 
       const newestPty = ptyFactory.instances.at(-1);
       expect(newestPty).toBeDefined();
@@ -7725,7 +7726,7 @@ describe('SessionManager', () => {
       // Re-enable for the restart's fresh PTY so delivery can complete.
       ptyFactory.setAutoEmitSentinel(true);
 
-      await manager.restartAllAgentWorkers();
+      await manager.restartAllAgentWorkers({ kind: 'all' });
 
       const newestPty = ptyFactory.instances.at(-1);
       expect(newestPty).toBeDefined();
@@ -7775,7 +7776,7 @@ describe('SessionManager', () => {
       // a bare "writeCalls is empty" assertion would be wrong here.
       const baselineWriteCalls = writeCalls.length;
 
-      await manager.restartAllAgentWorkers();
+      await manager.restartAllAgentWorkers({ kind: 'all' });
 
       const newestPty = ptyFactory.instances.at(-1);
       expect(newestPty).toBeDefined();
@@ -7804,7 +7805,7 @@ describe('SessionManager', () => {
       // creation for this exact reason (worker-lifecycle-manager.ts computes
       // it as `!!initialPrompt?.trim()`), so there's nothing to redeliver.
 
-      await manager.restartAllAgentWorkers();
+      await manager.restartAllAgentWorkers({ kind: 'all' });
 
       const newestPty = ptyFactory.instances.at(-1);
       expect(newestPty).toBeDefined();
@@ -7836,7 +7837,7 @@ describe('SessionManager', () => {
       });
       const initialWorker = session.workers.find((w: Worker) => w.type === 'agent')!;
 
-      await manager.restartAllAgentWorkers();
+      await manager.restartAllAgentWorkers({ kind: 'all' });
 
       // No initial prompt owed -> 'system' resolves to 'continue' (T1's
       // pin) -- continueTemplate now carries {{model:+--model}}, so an
@@ -7876,7 +7877,7 @@ describe('SessionManager', () => {
         agentId: CLAUDE_CODE_AGENT_ID,
       });
 
-      await manager.restartAllAgentWorkers();
+      await manager.restartAllAgentWorkers({ kind: 'all' });
 
       const newestPty = ptyFactory.instances.at(-1);
       expect(newestPty).toBeDefined();
@@ -7898,7 +7899,7 @@ describe('SessionManager', () => {
       // Add a terminal worker
       const terminalWorker = await manager.createWorker(session.id, { type: 'terminal', name: 'Shell' });
 
-      const result = await manager.restartAllAgentWorkers();
+      const result = await manager.restartAllAgentWorkers({ kind: 'all' });
 
       // The agent worker is restarted; the terminal worker is now visible in
       // the results as `skipped` rather than silently absent.
@@ -7920,7 +7921,7 @@ describe('SessionManager', () => {
     it('should return empty results when no sessions exist', async () => {
       const manager = await getSessionManager();
 
-      const result = await manager.restartAllAgentWorkers();
+      const result = await manager.restartAllAgentWorkers({ kind: 'all' });
 
       expect(result.restarted).toBe(0);
       expect(result.failed).toBe(0);
@@ -7955,7 +7956,7 @@ describe('SessionManager', () => {
         },
       );
 
-      const result = await manager.restartAllAgentWorkers();
+      const result = await manager.restartAllAgentWorkers({ kind: 'all' });
 
       // One failure should not block other restarts
       expect(result.restarted).toBe(1);
@@ -8075,7 +8076,7 @@ describe('SessionManager', () => {
         // Simulating exit synchronously right after issuing the call -- before
         // awaiting it -- resolves that race via the real exit path, matching
         // the "threads the spawnAsUserFn option through" test's pattern above.
-        const restartPromise = manager.restartAllAgentWorkers();
+        const restartPromise = manager.restartAllAgentWorkers({ kind: 'all' });
         current().simulateExit(0);
 
         const result = await restartPromise;
@@ -8121,7 +8122,7 @@ describe('SessionManager', () => {
         expect(worker).not.toBeUndefined();
 
         // Never activated: subprocess stays null.
-        const result = await manager.restartAllAgentWorkers();
+        const result = await manager.restartAllAgentWorkers({ kind: 'all' });
 
         expect(fakeSpawnAsUserFn).not.toHaveBeenCalled();
         expect(result.restarted).toBe(0);
@@ -8160,7 +8161,7 @@ describe('SessionManager', () => {
         current().simulateExit(0);
         await deactivatePromise;
 
-        const result = await manager.restartAllAgentWorkers();
+        const result = await manager.restartAllAgentWorkers({ kind: 'all' });
 
         // No second spawn: the dormant worker was skipped, not reactivated.
         expect(fakeSpawnAsUserFn).toHaveBeenCalledTimes(1);
@@ -8176,6 +8177,126 @@ describe('SessionManager', () => {
             }),
           ]),
         );
+      });
+    });
+
+    describe('scope (operableBy / all) — Issue #1555', () => {
+      /**
+       * Local helper (not `getSessionManager()`, which has no
+       * `sharedAccountLookup` param) mirroring the `module.SessionManager.create(...)`
+       * pattern used by the 'isShared wiring (sharedAccountLookup option)'
+       * describe block above.
+       */
+      async function getSessionManagerWithSharedAccountLookup(sharedAccountLookup: {
+        isSharedUserId: (userId: string) => boolean;
+      }): Promise<SessionManager> {
+        const module = await import(`../session-manager.js?v=${++importCounter}`);
+        return module.SessionManager.create({
+          userMode: new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' }),
+          pathExists: mockPathExists,
+          jobQueue: testJobQueue,
+          agentManager,
+          mcpTokenRegistry: new McpTokenRegistry(),
+          repositoryLookup: defaultRepositoryLookup,
+          repositoryEnvLookup: defaultRepositoryEnvLookup,
+          sharedAccountLookup,
+        });
+      }
+
+      async function createThreeSessions(
+        manager: SessionManager,
+      ): Promise<{ sessionA: Session; sessionB: Session; sessionShared: Session }> {
+        const sessionA = await manager.createSession(
+          { type: 'quick', locationPath: '/test/path-a', agentId: 'claude-code' },
+          { createdBy: 'user-a' },
+        );
+        const sessionB = await manager.createSession(
+          { type: 'quick', locationPath: '/test/path-b', agentId: 'claude-code' },
+          { createdBy: 'user-b' },
+        );
+        const sessionShared = await manager.createSession(
+          { type: 'quick', locationPath: '/test/shared-path', agentId: 'claude-code' },
+          { createdBy: 'shared-account-uuid' },
+        );
+        return { sessionA, sessionB, sessionShared };
+      }
+
+      it("scopes to the caller's own session plus a shared-account session, omitting another user's session, in multi-user mode", async () => {
+        const originalAuthMode = serverConfig.AUTH_MODE;
+        (serverConfig as { AUTH_MODE: string }).AUTH_MODE = 'multi-user';
+        try {
+          const manager = await getSessionManagerWithSharedAccountLookup({
+            isSharedUserId: (userId: string) => userId === 'shared-account-uuid',
+          });
+          const { sessionA, sessionB, sessionShared } = await createThreeSessions(manager);
+
+          const result = await manager.restartAllAgentWorkers({ kind: 'operableBy', userId: 'user-a' });
+
+          const sessionIds = result.results.map((r: { sessionId: string }) => r.sessionId);
+          expect(sessionIds).toContain(sessionA.id);
+          expect(sessionIds).toContain(sessionShared.id);
+          // Absence, not a `skipped` outcome: user-b's session/worker must
+          // not appear in the result at all.
+          expect(result.results.some((r: { sessionId: string }) => r.sessionId === sessionB.id)).toBe(false);
+        } finally {
+          (serverConfig as { AUTH_MODE: string }).AUTH_MODE = originalAuthMode;
+        }
+      });
+
+      it("is symmetric for a different caller (user-b): omits user-a's session instead", async () => {
+        const originalAuthMode = serverConfig.AUTH_MODE;
+        (serverConfig as { AUTH_MODE: string }).AUTH_MODE = 'multi-user';
+        try {
+          const manager = await getSessionManagerWithSharedAccountLookup({
+            isSharedUserId: (userId: string) => userId === 'shared-account-uuid',
+          });
+          const { sessionA, sessionB, sessionShared } = await createThreeSessions(manager);
+
+          const result = await manager.restartAllAgentWorkers({ kind: 'operableBy', userId: 'user-b' });
+
+          const sessionIds = result.results.map((r: { sessionId: string }) => r.sessionId);
+          expect(sessionIds).toContain(sessionB.id);
+          expect(sessionIds).toContain(sessionShared.id);
+          expect(result.results.some((r: { sessionId: string }) => r.sessionId === sessionA.id)).toBe(false);
+        } finally {
+          (serverConfig as { AUTH_MODE: string }).AUTH_MODE = originalAuthMode;
+        }
+      });
+
+      it("{ kind: 'all' } restarts every session regardless of ownership (sanity check, unaffected by AUTH_MODE)", async () => {
+        const originalAuthMode = serverConfig.AUTH_MODE;
+        (serverConfig as { AUTH_MODE: string }).AUTH_MODE = 'multi-user';
+        try {
+          const manager = await getSessionManagerWithSharedAccountLookup({ isSharedUserId: () => false });
+          const { sessionA, sessionB, sessionShared } = await createThreeSessions(manager);
+
+          const result = await manager.restartAllAgentWorkers({ kind: 'all' });
+
+          const sessionIds = result.results.map((r: { sessionId: string }) => r.sessionId);
+          expect(sessionIds).toContain(sessionA.id);
+          expect(sessionIds).toContain(sessionB.id);
+          expect(sessionIds).toContain(sessionShared.id);
+        } finally {
+          (serverConfig as { AUTH_MODE: string }).AUTH_MODE = originalAuthMode;
+        }
+      });
+
+      it("AUTH_MODE='none' makes { kind: 'operableBy' } a no-op scope check -- restarts everything regardless of userId", async () => {
+        const originalAuthMode = serverConfig.AUTH_MODE;
+        (serverConfig as { AUTH_MODE: string }).AUTH_MODE = 'none';
+        try {
+          const manager = await getSessionManagerWithSharedAccountLookup({ isSharedUserId: () => false });
+          const { sessionA, sessionB, sessionShared } = await createThreeSessions(manager);
+
+          const result = await manager.restartAllAgentWorkers({ kind: 'operableBy', userId: 'user-a' });
+
+          const sessionIds = result.results.map((r: { sessionId: string }) => r.sessionId);
+          expect(sessionIds).toContain(sessionA.id);
+          expect(sessionIds).toContain(sessionB.id);
+          expect(sessionIds).toContain(sessionShared.id);
+        } finally {
+          (serverConfig as { AUTH_MODE: string }).AUTH_MODE = originalAuthMode;
+        }
       });
     });
   });

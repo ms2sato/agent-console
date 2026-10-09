@@ -40,6 +40,7 @@ import { McpTokenRegistry } from '../mcp/mcp-auth.js';
 import type { McpServerPermissionRepository } from '../repositories/mcp-server-permission-repository.js';
 import { listAllowedProjectMcpServerPairs, resolveMcpPermissionScope } from '../lib/mcp-server-permissions.js';
 import { serverConfig } from '../lib/server-config.js';
+import { canOperateSession } from '../lib/session-access.js';
 import type { NotificationManager } from './notifications/notification-manager.js';
 import { filterRepositoryEnvVars } from './env-filter.js';
 import { parseEnvVars } from '../lib/env-parser.js';
@@ -134,6 +135,17 @@ export interface RestartAllAgentWorkersResult {
   skipped: number;
   results: RestartAllAgentWorkersResultEntry[];
 }
+
+/**
+ * Scope for {@link SessionManager.restartAllAgentWorkers}. `'all'` restarts
+ * every session's agent workers unconditionally (used by callers that have
+ * no caller identity to scope by, e.g. single-user mode or disposable
+ * smoke/test instances). `'operableBy'` restricts the operation to the
+ * sessions the given `userId` may operate on, per
+ * {@link canOperateSession} -- any session outside that scope is silently
+ * omitted from the loop and the result, not reported as `skipped`.
+ */
+export type RestartScope = { kind: 'all' } | { kind: 'operableBy'; userId: string };
 
 /**
  * Default path existence checker using fs.access
@@ -347,6 +359,7 @@ export class SessionManager {
   private sessionPauseResumeService: SessionPauseResumeService;
   private sessionConverterService: SessionConverterService;
   private usernameLookup: UsernameLookup;
+  private sharedAccountLookup: SharedAccountLookup;
   private timerCleanupCallback?: (sessionId: string) => void;
   private conditionalWakeupCleanupCallback?: (sessionId: string) => void;
   private processCleanupCallback?: (sessionId: string) => void;
@@ -471,6 +484,14 @@ export class SessionManager {
     // pass a UsernameLookupService backed by the real UserRepository.
     this.usernameLookup = options.usernameLookup ?? NULL_USERNAME_LOOKUP;
 
+    // Default to a never-shared lookup when the caller hasn't wired the
+    // registry. Production callers (createAppContext) always pass the real
+    // SharedAccountRegistry; the fallback exists so unit tests that
+    // construct SessionManager directly do not need to thread through the
+    // registry just to satisfy the converter dep.
+    const sharedAccountLookup = options.sharedAccountLookup ?? { isSharedUserId: () => false };
+    this.sharedAccountLookup = sharedAccountLookup;
+
     this.sessionConverterService = new SessionConverterService({
       repositoryDisplayLookup: {
         getRepositoryDisplayInfo: (repositoryId) => {
@@ -478,12 +499,7 @@ export class SessionManager {
           return info ? { name: info.name, path: info.path } : undefined;
         },
       },
-      // Default to a never-shared lookup when the caller hasn't wired the
-      // registry. Production callers (createAppContext) always pass the real
-      // SharedAccountRegistry; the fallback exists so unit tests that
-      // construct SessionManager directly do not need to thread through the
-      // registry just to satisfy the converter dep.
-      sharedAccountLookup: options.sharedAccountLookup ?? { isSharedUserId: () => false },
+      sharedAccountLookup,
       usernameLookup: this.usernameLookup,
       toPublicWorker: (w) => this.workerManager.toPublicWorker(w),
       toPersistedWorker: (w) => this.workerManager.toPersistedWorker(w),
@@ -1976,11 +1992,26 @@ export class SessionManager {
    * ordinary deactivate/activate path (same as a manual restart), which
    * already carries Transcript Restore -- no new restart mechanism is
    * introduced for this worker kind.
+   *
+   * `scope` determines which sessions are eligible. `{ kind: 'operableBy',
+   * userId }` restricts the loop to sessions the given user may operate on
+   * (their own, or a shared-account session), per `canOperateSession` --
+   * sessions outside that scope are silently omitted from the loop and the
+   * result entirely, never reported as `skipped` (listing another user's
+   * session/worker ids to a caller who may not operate them is itself a
+   * leak). `{ kind: 'all' }` restarts every session unconditionally,
+   * unaffected by ownership or `AUTH_MODE`.
    */
-  async restartAllAgentWorkers(): Promise<RestartAllAgentWorkersResult> {
+  async restartAllAgentWorkers(scope: RestartScope): Promise<RestartAllAgentWorkersResult> {
     const results: RestartAllAgentWorkersResultEntry[] = [];
+    let omittedCount = 0;
 
     for (const session of this.sessions.values()) {
+      if (scope.kind === 'operableBy' && !canOperateSession(session, scope.userId, this.sharedAccountLookup, serverConfig.AUTH_MODE)) {
+        omittedCount++;
+        continue;
+      }
+
       for (const worker of session.workers.values()) {
         if (worker.type === 'terminal') {
           results.push({ sessionId: session.id, workerId: worker.id, workerType: 'terminal', outcome: 'skipped' });
@@ -2040,6 +2071,7 @@ export class SessionManager {
     const skipped = results.filter((r) => r.outcome === 'skipped').length;
 
     logger.info({ restarted, failed, skipped }, 'Bulk restart all agent workers completed');
+    logger.debug({ omitted: omittedCount }, 'Bulk restart: sessions omitted from scope');
 
     return { restarted, failed, skipped, results };
   }

@@ -1320,6 +1320,13 @@ same protection automatically, with no per-tool wiring. Deployments that
 enabled `enforce` before this fix should treat that period as
 effectively `warn`-equivalent for the tools outside the original five.
 
+Since Issue #1555, `restart_all_agents` (both the `restart_all_agents` MCP
+tool and the `POST /api/sessions/restart-all-agents` REST route) is scoped
+to the sessions the calling user may operate — their own sessions, or a
+shared-account session — in `AUTH_MODE=multi-user`; a tokenless MCP call is
+refused outright (not silently downgraded to `warn`'s unscoped behavior)
+when `AUTH_MODE=multi-user`.
+
 Multi-user deployments do not need to set this variable — `warn` is the
 default regardless of `AUTH_MODE`, and it still logs tokenless callers for
 observability. The deployment model this project currently targets is a
