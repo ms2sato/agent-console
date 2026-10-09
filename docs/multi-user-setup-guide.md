@@ -920,7 +920,7 @@ ls -la ~   # Should be accessible
 
 ### A worktree's branch shows as `(unknown)`
 
-In multi-user mode, a branch read that cannot run as the worktree's owning user (e.g. a `git` "dubious ownership" error) is swallowed into `(unknown)` rather than failing loudly. If you see this, check the server log for a `warn`-level line from the `git` logger naming the `cwd` — that confirms an identity-resolution gap rather than an actual detached-HEAD state. See [Issue #1623](https://github.com/ms2sato/agent-console/issues/1623).
+In multi-user mode, a failed branch read is swallowed into `(unknown)` rather than failing loudly. If you see this, check the server log for a `warn`-level line from the `git` logger naming the `cwd` and inspect the logged error's actual content: the warn names the error; a dubious-ownership message is the identity gap, anything else is a different fault (the path not being a git repo, a timeout, etc.). See [Issue #1623](https://github.com/ms2sato/agent-console/issues/1623).
 
 ## Source Repo Group-Writability (Linux multi-user)
 

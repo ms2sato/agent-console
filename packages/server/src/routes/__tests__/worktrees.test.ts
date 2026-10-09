@@ -6,7 +6,6 @@ import type { AppBindings } from '../../app-context.js';
 import type { WorktreeService } from '../../services/worktree-service.js';
 import type { RepositoryManager } from '../../services/repository-manager.js';
 import type { SessionManager } from '../../services/session-manager.js';
-import type { UserRepository } from '../../repositories/user-repository.js';
 import type { AgentManager } from '../../services/agent-manager.js';
 import type { EmbeddedAgentManager } from '../../services/embedded-agent-manager.js';
 import type { SuggestSessionMetadataFn } from '../../services/session-metadata-suggester.js';
@@ -220,10 +219,13 @@ describe('Worktrees API', () => {
       c.set('appContext', asAppContext({
         repositoryManager: mockRepositoryManager,
         worktreeService: mockWorktreeService,
-        // No owning session found by default -> the pull route's identity
-        // resolution falls back to authUser.username, matching every
-        // existing pull-route test's expectation below.
-        sessionManager: asSessionManager({ getAllSessions: () => [] }),
+        // No owning session (live or paused) found by default -> the pull
+        // route's identity resolution falls back to authUser.username,
+        // matching every existing pull-route test's expectation below.
+        sessionManager: asSessionManager({
+          getAllSessions: () => [],
+          resolveWorktreeOwnerUsername: () => Promise.resolve(null),
+        }),
       }));
       await next();
     });
@@ -1534,17 +1536,27 @@ describe('Worktrees API', () => {
       expect(mockGit.getCurrentBranch.mock.calls[1]).toEqual([WORKTREE_PATH, 'testuser']);
     });
 
-    it('resolves the owning (shared) session spawn user for both branch reads and pullFastForward (Issue #1623)', async () => {
-      // A session owns WORKTREE_PATH and was createdBy a shared account
-      // whose username resolves to 'shared1' via userRepository.findById.
-      // Both getCurrentBranch reads AND pullFastForward must use 'shared1',
-      // never authUser.username ('testuser') -- this is the regression pin
-      // for the bundled pullFastForward sibling fix.
+    it('resolves the owning (shared, live-or-paused) session spawn user for both branch reads and pullFastForward (Issue #1623)', async () => {
+      // sessionManager.resolveWorktreeOwnerUsername(worktreePath) resolves
+      // to a shared account's username ('shared1') -- the route must thread
+      // that INTO both getCurrentBranch reads AND pullFastForward, never
+      // authUser.username ('testuser'). The live-vs-paused resolution logic
+      // behind resolveWorktreeOwnerUsername itself is unit-tested directly
+      // (three cases: live, paused, neither) in session-manager.test.ts's
+      // own describe block; this test's job is the route's plumbing of
+      // whatever that method returns, which is identical whether the
+      // session backing it is live or paused -- the whole point of the
+      // extraction (Issue #1868's design) is that the route no longer
+      // needs to know which. `getAllSessions` returns [] here specifically
+      // so this test ALSO discriminates against the pre-extraction route,
+      // which called `sessionManager.getAllSessions().find(...)` inline
+      // and would have missed a paused session entirely.
       //
       // Polarity measured: reverting routes/worktrees.ts to resolve
-      // `pullIdentity` as always `authUser.username` (dropping the owning-
-      // session lookup) makes every assertion below observe 'testuser'
-      // instead of 'shared1', failing all three `toEqual`/`toBe` checks.
+      // `pullIdentity` as always `authUser.username` (dropping the
+      // `sessionManager.resolveWorktreeOwnerUsername(...)` call) makes
+      // every assertion below observe 'testuser' instead of 'shared1',
+      // failing all three `toEqual`/`toBe` checks.
       let resolveSecondBranchCall!: (args: unknown[]) => void;
       const secondBranchCallCaptured = new Promise<unknown[]>((resolve) => {
         resolveSecondBranchCall = resolve;
@@ -1565,41 +1577,15 @@ describe('Worktrees API', () => {
         return Promise.resolve(0);
       });
 
-      const sharedUserRepository: UserRepository = {
-        async upsertByOsUid(): Promise<AuthUser> {
-          throw new Error('upsertByOsUid not used by this test');
-        },
-        async findById(id: string): Promise<AuthUser | null> {
-          if (id === 'shared-user-id') {
-            return { id: 'shared-user-id', username: 'shared1', homeDir: '/home/shared1' };
-          }
-          return null;
-        },
-        async getOsUidById(): Promise<number | null | undefined> {
-          throw new Error('getOsUidById not used by this test');
-        },
-        async refreshOsIdentity(): Promise<AuthUser> {
-          throw new Error('refreshOsIdentity not used by this test');
-        },
-        async getPreferences(): Promise<null> {
-          return null;
-        },
-        async setPreferences(): Promise<boolean> {
-          return true;
-        },
-      };
-
       app = new Hono<AppBindings>();
       app.use('*', async (c, next) => {
         c.set('appContext', asAppContext({
           repositoryManager: mockRepositoryManager,
           worktreeService: mockWorktreeService,
           sessionManager: asSessionManager({
-            getAllSessions: () => [
-              buildSessionFixture({ id: 'sess-1', locationPath: WORKTREE_PATH, createdBy: 'shared-user-id' }),
-            ],
+            getAllSessions: () => [],
+            resolveWorktreeOwnerUsername: () => Promise.resolve('shared1'),
           }),
-          userRepository: sharedUserRepository,
         }));
         await next();
       });

@@ -6710,6 +6710,87 @@ describe('SessionManager', () => {
     });
   });
 
+  describe('resolveWorktreeOwnerUsername (Issue #1623 paused-worktree gap)', () => {
+    // Same stubUserRepo construction as the "resolveSpawnUsername wiring"
+    // describe block above: resolves a single known createdBy UUID to a
+    // deterministic username, falling back to the server process user for
+    // anything else (never asserted on directly in these tests).
+    function buildStubUserRepo(): UserRepository {
+      return {
+        async upsertByOsUid(): Promise<AuthUser> {
+          throw new Error('upsertByOsUid not used by this test');
+        },
+        async findById(id: string): Promise<AuthUser | null> {
+          if (id === 'user-shared-uuid') {
+            return { id, username: 'shared1', homeDir: '/home/shared1' };
+          }
+          return null;
+        },
+        async getOsUidById(): Promise<number | null | undefined> {
+          throw new Error('getOsUidById not used by this test');
+        },
+        async refreshOsIdentity(): Promise<AuthUser> {
+          throw new Error('refreshOsIdentity not used by this test');
+        },
+        async getPreferences(): Promise<null> {
+          return null;
+        },
+        async setPreferences(): Promise<boolean> {
+          return true;
+        },
+      };
+    }
+
+    async function getSessionManagerWithUserRepo(userRepository: UserRepository) {
+      const module = await import(`../session-manager.js?v=${++importCounter}`);
+      return module.SessionManager.create({
+        userMode: new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' }),
+        pathExists: mockPathExists,
+        jobQueue: testJobQueue,
+        agentManager,
+        mcpTokenRegistry: new McpTokenRegistry(),
+        repositoryLookup: defaultRepositoryLookup,
+        repositoryEnvLookup: defaultRepositoryEnvLookup,
+        userRepository,
+      });
+    }
+
+    it('resolves the spawn user of a LIVE (in-memory) session owning the path', async () => {
+      const manager = await getSessionManagerWithUserRepo(buildStubUserRepo());
+      await manager.createSession(
+        { type: 'worktree', locationPath: '/test/live-path', repositoryId: 'repo-1', worktreeId: 'feature-x', agentId: 'claude-code' },
+        { createdBy: 'user-shared-uuid' },
+      );
+
+      const result = await manager.resolveWorktreeOwnerUsername('/test/live-path');
+      expect(result).toBe('shared1');
+    });
+
+    it('resolves the spawn user of a PAUSED (persisted-but-not-in-memory) session owning the path', async () => {
+      const manager = await getSessionManagerWithUserRepo(buildStubUserRepo());
+      const session = await manager.createSession(
+        { type: 'worktree', locationPath: '/test/paused-path', repositoryId: 'repo-1', worktreeId: 'feature-y', agentId: 'claude-code' },
+        { createdBy: 'user-shared-uuid' },
+      );
+
+      await manager.pauseSession(session.id);
+
+      // Not in the in-memory map any more -- getAllSessions() must miss it.
+      const liveSessions: Session[] = manager.getAllSessions();
+      expect(liveSessions.find((s) => s.locationPath === '/test/paused-path')).toBeUndefined();
+
+      const result = await manager.resolveWorktreeOwnerUsername('/test/paused-path');
+      expect(result).toBe('shared1');
+    });
+
+    it('returns null when no session (live or paused) owns the path', async () => {
+      const manager = await getSessionManagerWithUserRepo(buildStubUserRepo());
+
+      const result = await manager.resolveWorktreeOwnerUsername('/test/nobody-owns-this-path');
+      expect(result).toBeNull();
+    });
+  });
+
   describe('repository env var template expansion', () => {
     it('should expand template placeholders in repository env vars when creating a worker', async () => {
       // Create a manager with a repo env lookup that resolves 'repo-1' to

@@ -12,7 +12,6 @@ import { CLAUDE_CODE_AGENT_ID } from '../services/agent-manager.js';
 import { NotFoundError, ValidationError } from '../lib/errors.js';
 import { vValidator } from '../middleware/validation.js';
 import { getCurrentBranch, isWorkingDirectoryClean, pullFastForward } from '../lib/git.js';
-import { resolveSpawnUsername } from '../services/resolve-spawn-username.js';
 import { createLogger } from '../lib/logger.js';
 import { JOB_TYPES } from '../jobs/index.js';
 import {
@@ -251,7 +250,7 @@ const worktrees = new Hono<AppBindings>()
   // Pull a worktree (git pull --ff-only, async)
   .post('/:id/worktrees/pull', vValidator(PullWorktreeRequestSchema), async (c) => {
     const repoId = c.req.param('id');
-    const { repositoryManager, worktreeService, broadcastToApp, sessionManager, userRepository } =
+    const { repositoryManager, worktreeService, broadcastToApp, sessionManager } =
       c.get('appContext');
     const authUser = c.get('authUser');
     const repo = repositoryManager.getRepository(repoId);
@@ -299,14 +298,13 @@ const worktrees = new Hono<AppBindings>()
     // worktree), not as the requesting viewer -- using the viewer's
     // identity on a shared worktree reintroduces dubious-ownership
     // failures (#1622's rule). Resolve once, reused by both branch reads
-    // and the pull itself below. Falls back to the requester when no
-    // session owns this path (e.g. the repository's primary worktree).
-    const owningSession = sessionManager
-      .getAllSessions()
-      .find((s) => s.locationPath === worktreePath);
-    const pullIdentity = owningSession
-      ? await resolveSpawnUsername(owningSession.createdBy, userRepository)
-      : authUser.username;
+    // and the pull itself below. resolveWorktreeOwnerUsername checks live
+    // sessions, then paused (persisted-but-not-in-memory) sessions, so a
+    // PAUSED shared worktree is resolved the same way as an active one.
+    // Falls back to the requester when no session (live or paused) owns
+    // this path (e.g. the repository's primary worktree).
+    const pullIdentity =
+      (await sessionManager.resolveWorktreeOwnerUsername(worktreePath)) ?? authUser.username;
 
     // Reject pull on detached HEAD (no upstream to pull from)
     const currentBranch = await getCurrentBranch(worktreePath, pullIdentity);

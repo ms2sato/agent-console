@@ -968,25 +968,41 @@ if [ -n "$repo_id" ]; then
   check "worktree #1623 appears in repo's worktree list" "$s10_listed_ok"
 
   if [ -n "$S10_PATH" ]; then
-    docker compose -f "$COMPOSE_FILE" exec -T --user agentconsole -e S10_PATH="$S10_PATH" agent-console \
-      bun -e '
-        import { Database } from "bun:sqlite";
-        const db = new Database(process.env.AGENT_CONSOLE_HOME + "/data.db", { readonly: true });
-        const session = db.query("SELECT id, created_by FROM sessions WHERE location_path = ?").get(process.env.S10_PATH);
-        console.log("SESSION_ID=" + (session ? session.id : ""));
-        console.log("CREATED_BY=" + (session && session.created_by != null ? session.created_by : ""));
-        const shared1 = db.query("SELECT id FROM users WHERE username = ?").get("shared1");
-        console.log("SHARED1_ID=" + (shared1 ? shared1.id : ""));
-      ' > "$S10_DB_OUT" 2>&1
-    s10_session_id="$(grep '^SESSION_ID=' "$S10_DB_OUT" | head -n1 | cut -d= -f2)"
-    s10_created_by="$(grep '^CREATED_BY=' "$S10_DB_OUT" | head -n1 | cut -d= -f2)"
-    s10_shared1_id="$(grep '^SHARED1_ID=' "$S10_DB_OUT" | head -n1 | cut -d= -f2)"
+    # Bounded poll, same idiom as the worktree-list polling loop above:
+    # the worktree can appear in git's list before the session row (with
+    # created_by) is actually persisted server-side, since the two are
+    # separate async steps. A single read right after the worktree-list
+    # loop can race that gap and record a false FAIL ("session id
+    # missing") without ever exercising the owner-resolution path this
+    # check exists to test.
+    s10_session_id=""
+    s10_created_by=""
+    s10_shared1_id=""
+    for _ in $(seq 1 30); do
+      sleep 1
+      docker compose -f "$COMPOSE_FILE" exec -T --user agentconsole -e S10_PATH="$S10_PATH" agent-console \
+        bun -e '
+          import { Database } from "bun:sqlite";
+          const db = new Database(process.env.AGENT_CONSOLE_HOME + "/data.db", { readonly: true });
+          const session = db.query("SELECT id, created_by FROM sessions WHERE location_path = ?").get(process.env.S10_PATH);
+          console.log("SESSION_ID=" + (session ? session.id : ""));
+          console.log("CREATED_BY=" + (session && session.created_by != null ? session.created_by : ""));
+          const shared1 = db.query("SELECT id FROM users WHERE username = ?").get("shared1");
+          console.log("SHARED1_ID=" + (shared1 ? shared1.id : ""));
+        ' > "$S10_DB_OUT" 2>&1
+      s10_session_id="$(grep '^SESSION_ID=' "$S10_DB_OUT" | head -n1 | cut -d= -f2)"
+      s10_created_by="$(grep '^CREATED_BY=' "$S10_DB_OUT" | head -n1 | cut -d= -f2)"
+      s10_shared1_id="$(grep '^SHARED1_ID=' "$S10_DB_OUT" | head -n1 | cut -d= -f2)"
+      if [ -n "$s10_session_id" ] && [ -n "$s10_created_by" ] && [ "$s10_created_by" = "$s10_shared1_id" ]; then
+        break
+      fi
+    done
 
     s10_fixture_ok=1
     [ -n "$s10_created_by" ] && [ "$s10_created_by" = "$s10_shared1_id" ] && s10_fixture_ok=0
     check "worktree #1623 session's created_by is shared1's users.id (fixture sanity)" "$s10_fixture_ok"
 
-    if [ -n "$s10_session_id" ]; then
+    if [ "$s10_fixture_ok" -eq 0 ]; then
       s10_pull_task_id="$(uuidgen 2>/dev/null || cat /proc/sys/kernel/random/uuid)"
       s10_pull_code="$(curl -s -o "$S10_PULL_RESP" -w '%{http_code}' -b "$S10_COOKIE_JAR" -c "$S10_COOKIE_JAR" \
         -X POST "${BASE_URL}/api/repositories/${repo_id}/worktrees/pull" \
@@ -1010,8 +1026,8 @@ if [ -n "$repo_id" ]; then
       S10_UNKNOWN_WARN_COUNT="$(compose logs --tail 200 agent-console 2>&1 | grep -F "$S10_PATH" | grep -c '(unknown)' || true)"
       echo "  DIAGNOSTIC: server log lines mentioning this worktree's path AND '(unknown)': ${S10_UNKNOWN_WARN_COUNT}"
     else
-      echo "  DIAGNOSTIC: session id missing for worktree #1623 (SESSION_ID='${s10_session_id}'); recording explicit FAILs instead of skipping."
-      check "pull does NOT answer 400 'Cannot pull in detached HEAD state' for a shared1-owned worktree (#1623)" 1
+      echo "  DIAGNOSTIC: session row with created_by=shared1 did not appear within 30s for worktree #1623 (SESSION_ID='${s10_session_id}' CREATED_BY='${s10_created_by}' SHARED1_ID='${s10_shared1_id}'); recording explicit FAIL instead of skipping."
+      check "pull accepted (202 + accepted:true), not the pre-fix 400 'Cannot pull in detached HEAD state' (#1623)" 1
     fi
   else
     echo "  ---- DIAGNOSTIC: server logs (last 60 lines) ----"
@@ -1019,13 +1035,13 @@ if [ -n "$repo_id" ]; then
     echo "  -------------------------------------------------"
     echo "  DIAGNOSTIC: worktree #1623 never appeared; recording explicit FAILs for its dependent sub-checks instead of skipping."
     check "worktree #1623 session's created_by is shared1's users.id (fixture sanity)" 1
-    check "pull does NOT answer 400 'Cannot pull in detached HEAD state' for a shared1-owned worktree (#1623)" 1
+    check "pull accepted (202 + accepted:true), not the pre-fix 400 'Cannot pull in detached HEAD state' (#1623)" 1
   fi
 else
   echo "  DIAGNOSTIC: repo_id from check 7 is empty; recording explicit FAILs for check 10 instead of skipping."
   check "worktree #1623 appears in repo's worktree list" 1
   check "worktree #1623 session's created_by is shared1's users.id (fixture sanity)" 1
-  check "pull does NOT answer 400 'Cannot pull in detached HEAD state' for a shared1-owned worktree (#1623)" 1
+  check "pull accepted (202 + accepted:true), not the pre-fix 400 'Cannot pull in detached HEAD state' (#1623)" 1
 fi
 
 rm -f "$S10_COOKIE_JAR" "$S10_ALICE_LOGIN_RESP" "$S10_WT_RESP" "$S10_WT_LIST_RESP" \

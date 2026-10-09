@@ -1437,6 +1437,37 @@ export class SessionManager {
   }
 
   /**
+   * Resolve the OS username that should run git operations against a
+   * worktree at `locationPath`: the owning session's spawn user, or `null`
+   * when no session (live or paused) owns this path.
+   *
+   * Checks live (in-memory) sessions first, then falls back to paused
+   * sessions, which are persisted in the database but removed from the
+   * in-memory `this.sessions` map (see {@link getAllPausedSessions}'s own
+   * comment for why) -- without this fallback, a route resolving the
+   * worktree owner's identity would silently fall back to the requester
+   * for any PAUSED shared worktree, reintroducing the same
+   * dubious-ownership class of bug fixed for live sessions.
+   *
+   * Single source of this lookup so callers (the pull route today;
+   * potentially the delete route too) never duplicate the live-then-paused
+   * resolution order.
+   */
+  async resolveWorktreeOwnerUsername(locationPath: string): Promise<string | null> {
+    const liveSession = this.getAllSessions().find((s) => s.locationPath === locationPath);
+    if (liveSession) {
+      return resolveSpawnUsername(liveSession.createdBy, this.userRepository);
+    }
+    const pausedSession = (await this.getAllPausedSessions()).find(
+      (s) => s.locationPath === locationPath,
+    );
+    if (pausedSession) {
+      return resolveSpawnUsername(pausedSession.createdBy, this.userRepository);
+    }
+    return null;
+  }
+
+  /**
    * Pause a session: kill all PTY workers, remove from memory, preserve persistence.
    * Delegates to SessionPauseResumeService.
    */
