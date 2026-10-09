@@ -1550,8 +1550,17 @@ export class WorkerManager {
           descendantPids = [];
         }
 
-        // Kill PTY process
-        pty.kill();
+        // Kill PTY process. SIGHUP, not the default SIGTERM: the PTY root
+        // is, for both worker types, the interactive login shell built by
+        // `sentinel-spawn-command.ts` (`exec $SHELL -l -c 'echo <sentinel>;
+        // exec $SHELL'`), and an interactive POSIX shell ignores SIGTERM by
+        // design -- it loses the `exitOrTimeout` race below every time,
+        // falling through to the warn and the full `PTY_EXIT_TIMEOUT_MS`
+        // wait on every healthy kill. SIGHUP is the signal a real
+        // controlling terminal's hangup would send, and it terminates the
+        // shell immediately. Descendants (the agent process, not a shell)
+        // keep the SIGTERM-then-SIGKILL escalation below unchanged.
+        pty.kill('SIGHUP');
         if (descendantPids.length > 0) {
           this.signalPidsImpl(descendantPids, 'SIGTERM');
         }
