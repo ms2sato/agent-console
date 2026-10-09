@@ -13,6 +13,7 @@ import {
   isCommentOnlyDiff,
   isCommentOnlyFileDiff,
   resolvePrDiffRef,
+  getChangedFiles,
   PrDiffRefResolutionError,
   getAcceptanceCriteria,
   getCiStatus,
@@ -342,15 +343,23 @@ describe('preflight-check parity fix verification', () => {
   it('should verify getLocalChangedFiles implementation was simplified', () => {
     // Read the source code to verify the implementation
     const sourceCode = readFileSync('.claude/skills/orchestrator/check-utils.js', 'utf-8');
+    // Scope to getLocalChangedFiles's own body -- `resolvePrDiffRef`
+    // (Issue #1648) legitimately uses `git merge-base` elsewhere in this
+    // file, for a different purpose (the PR's real merge-base, not this
+    // function's local-mode diff), so a whole-file assertion would no
+    // longer be meaningful.
+    const startIdx = sourceCode.indexOf('export function getLocalChangedFiles');
+    const endIdx = sourceCode.indexOf('\nexport function categorizeFile');
+    const getLocalChangedFilesSource = sourceCode.slice(startIdx, endIdx);
 
     // Verify the old merge-base approach is removed
-    expect(sourceCode).not.toContain('git merge-base');
+    expect(getLocalChangedFilesSource).not.toContain('git merge-base');
 
     // Verify the simplified approach is used
-    expect(sourceCode).toContain('git diff --name-only ${baseBranch}...HEAD');
+    expect(getLocalChangedFilesSource).toContain('git diff --name-only ${baseBranch}...HEAD');
 
     // Verify the comment documents the parity goal
-    expect(sourceCode).toContain('Use gh pr diff equivalent for local mode to ensure parity with CI mode');
+    expect(getLocalChangedFilesSource).toContain('Use gh pr diff equivalent for local mode to ensure parity with CI mode');
   });
 
   it('should verify preflight-check.js documents local/CI parity', () => {
@@ -1331,7 +1340,7 @@ describe('resolvePrDiffRef failure path', () => {
   it('throws when gh api fails to resolve the PR (execImpl returns null)', () => {
     const execImpl = () => null;
     expect(() => resolvePrDiffRef('123', { execImpl })).toThrow(PrDiffRefResolutionError);
-    expect(() => resolvePrDiffRef('123', { execImpl })).toThrow(/Could not resolve base\/head SHAs for PR #123/);
+    expect(() => resolvePrDiffRef('123', { execImpl })).toThrow(/Could not resolve base branch\/head SHA for PR #123/);
   });
 
   it('throws when gh api returns unparseable JSON', () => {
@@ -1340,26 +1349,95 @@ describe('resolvePrDiffRef failure path', () => {
     expect(() => resolvePrDiffRef('123', { execImpl })).toThrow(/not valid JSON/);
   });
 
-  it('throws when the resolved SHAs are missing a base or head', () => {
-    const execImpl = () => JSON.stringify({ base: 'abc123', head: null });
+  it('throws when the resolved response is missing a base branch name or head SHA', () => {
+    const execImpl = () => JSON.stringify({ baseRef: 'main', head: null });
     expect(() => resolvePrDiffRef('123', { execImpl })).toThrow(PrDiffRefResolutionError);
-    expect(() => resolvePrDiffRef('123', { execImpl })).toThrow(/missing a base\/head SHA/);
+    expect(() => resolvePrDiffRef('123', { execImpl })).toThrow(/missing a base branch name or head SHA/);
   });
 
-  it('throws when the SHA fetch fails after a successful resolution', () => {
+  it('throws when the fetch fails after a successful gh api resolution', () => {
     let call = 0;
     const execImpl = (cmd) => {
       call += 1;
-      if (cmd.startsWith('gh api')) return JSON.stringify({ base: 'aaa', head: 'bbb' });
+      if (cmd.startsWith('gh api')) return JSON.stringify({ baseRef: 'main', head: 'bbb' });
       return null; // the subsequent `git fetch` call
     };
     expect(() => resolvePrDiffRef('123', { execImpl })).toThrow(PrDiffRefResolutionError);
     expect(call).toBeGreaterThan(0);
   });
 
-  it('returns the resolved refs when both gh api and git fetch succeed', () => {
-    const execImpl = (cmd) => (cmd.startsWith('gh api') ? JSON.stringify({ base: 'aaa', head: 'bbb' }) : '');
-    expect(resolvePrDiffRef('123', { execImpl })).toEqual({ baseRef: 'aaa', headRef: 'bbb' });
+  // (b) NEW: gh api + git fetch both succeed, but `git merge-base` finds no
+  // common ancestor (returns null, e.g. an unrelated-history edge case) --
+  // the merge-base step must throw on its own, not just propagate silently.
+  it('throws when gh api and fetch succeed but the merge-base cannot be computed', () => {
+    const execImpl = (cmd) => {
+      if (cmd.startsWith('gh api')) return JSON.stringify({ baseRef: 'main', head: 'bbb' });
+      if (cmd.startsWith('git fetch')) return '';
+      if (cmd.startsWith('git merge-base')) return null;
+      return null;
+    };
+    expect(() => resolvePrDiffRef('123', { execImpl })).toThrow(PrDiffRefResolutionError);
+    expect(() => resolvePrDiffRef('123', { execImpl })).toThrow(/Could not compute the merge-base/);
+    expect(() => resolvePrDiffRef('123', { execImpl })).toThrow(/main/);
+    expect(() => resolvePrDiffRef('123', { execImpl })).toThrow(/bbb/);
+  });
+
+  // (c) NEW, the polarity case: a base branch that has advanced since the
+  // PR was opened. `gh api`'s `.base.ref` is a branch NAME (stable), not
+  // GitHub's creation-time `.base.sha` snapshot -- the real merge-base is
+  // computed locally via `git merge-base`. Against unmodified pre-fix code
+  // (which reads `.base.sha` directly and never calls `git merge-base`),
+  // this fixture's `{baseRef: 'main', head: 'HHHH'}` shape has no `base`
+  // key, so the old code throws "missing a base/head SHA" instead of
+  // returning `MMMM` -- this test fails against that code, as required.
+  it('resolves the real merge-base rather than a stale creation-time base SHA', () => {
+    const commandsSeen = [];
+    const execImpl = cmd => {
+      commandsSeen.push(cmd);
+      if (cmd.startsWith('gh api')) return JSON.stringify({ baseRef: 'main', head: 'HHHH' });
+      if (cmd.startsWith('git fetch')) return '';
+      if (cmd.startsWith('git merge-base')) return 'MMMM';
+      return null;
+    };
+    const result = resolvePrDiffRef('123', { execImpl });
+    expect(result).toEqual({ baseRef: 'MMMM', headRef: 'HHHH', baseBranch: 'main' });
+    expect(commandsSeen.some(cmd => cmd.includes('.base.sha'))).toBe(false);
+  });
+});
+
+// (d) getChangedFiles no longer reads `gh pr diff --name-only` (which
+// internally resolves GitHub's creation-time `base.sha`, the same stale
+// snapshot `resolvePrDiffRef` exists to avoid) -- it diffs the two SHAs
+// `resolvePrDiffRef` already resolved.
+describe('getChangedFiles', () => {
+  it('diffs the resolved merge-base against head via NUL-terminated names, not gh pr diff --name-only', () => {
+    const commandsSeen = [];
+    const execImpl = cmd => {
+      commandsSeen.push(cmd);
+      return 'a.ts\0b.ts\0';
+    };
+    const files = getChangedFiles('123', { baseRef: 'MMMM', headRef: 'HHHH' }, { execImpl });
+    expect(files).toEqual(['a.ts', 'b.ts']);
+    expect(commandsSeen).toEqual(['git diff --name-only -z MMMM HHHH']);
+    expect(commandsSeen.some(cmd => cmd.includes('gh pr diff'))).toBe(false);
+  });
+
+  // A non-`-z` `git diff --name-only` C-quotes paths containing non-ASCII
+  // or control characters (e.g. `"docs/\303\251.md"`), which no consumer
+  // here un-quotes -- `-z` (NUL-terminated, unquoted) avoids that entirely.
+  it('returns exact unquoted names for a non-ASCII filename (requires -z)', () => {
+    const execImpl = () => 'docs/é.md\0b.ts\0';
+    const files = getChangedFiles('123', { baseRef: 'MMMM', headRef: 'HHHH' }, { execImpl });
+    expect(files).toEqual(['docs/é.md', 'b.ts']);
+  });
+
+  // Boundary value: merge-base equal to head (PR fully merged into its
+  // base, or a PR whose head IS the base branch) -- an empty diff, not an
+  // error.
+  it('returns an empty array, without exiting, when the merge-base equals head', () => {
+    const execImpl = () => '';
+    const files = getChangedFiles('123', { baseRef: 'HHHH', headRef: 'HHHH' }, { execImpl });
+    expect(files).toEqual([]);
   });
 });
 

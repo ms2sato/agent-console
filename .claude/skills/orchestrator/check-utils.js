@@ -20,13 +20,41 @@ export function exec(cmd) {
   }
 }
 
-export function getChangedFiles(prNumber) {
-  const result = exec(`gh pr diff ${prNumber} --name-only`);
+/**
+ * Lists a PR's changed files from its real merge-base rather than `gh pr
+ * diff --name-only` (which read GitHub's own creation-time `base.sha`
+ * internally, the same stale snapshot `resolvePrDiffRef` exists to avoid).
+ * `diffRef` is `resolvePrDiffRef(prNumber)`'s result; the caller must
+ * resolve it FIRST so the file list and the comment-only-diff check
+ * (`findTestFiles` / `detectIntegrationTestNeeds`, both driven off this same
+ * `diffRef`) agree on the same range. Two-dot diff (not `...`) -- `baseRef`
+ * already IS the merge-base, so `...` would just re-derive what
+ * `resolvePrDiffRef` already computed.
+ *
+ * `execImpl` is the same pay-as-you-go DI seam as `resolvePrDiffRef`'s.
+ *
+ * `-z` (NUL-terminated, unquoted names) rather than plain `--name-only`:
+ * without it, `git diff` C-quotes paths containing non-ASCII or control
+ * characters (e.g. `"docs/\303\251.md"`), which no consumer here
+ * (`findTestFiles` / `isCommentOnlyFileDiff` / `detectIntegrationTestNeeds`)
+ * un-quotes, so such a file would silently fail every path match.
+ *
+ * @param {string|number} prNumber
+ * @param {{ baseRef: string, headRef: string }} diffRef
+ * @param {{ execImpl?: typeof exec }} [opts]
+ */
+export function getChangedFiles(prNumber, diffRef, { execImpl = exec } = {}) {
+  const { baseRef, headRef } = diffRef;
+  const result = execImpl(`git diff --name-only -z ${baseRef} ${headRef}`);
   if (result === null) {
-    console.error(`Error: Could not retrieve diff for PR #${prNumber}. Please verify the gh command and PR number.`);
+    console.error(`Error: Could not retrieve diff for PR #${prNumber} (${baseRef}..${headRef}). Please verify the git command and PR number.`);
     process.exit(1);
   }
-  return result.split('\n').filter(Boolean);
+  // `-z` terminates every entry with NUL, so splitting leaves one trailing
+  // empty string after the last entry (or the sole, dropped element when
+  // the diff is empty) -- filter(Boolean) removes it the same way the
+  // `\n`-split callers elsewhere in this file drop their trailing blank.
+  return result.split('\0').filter(Boolean);
 }
 
 export function getLocalChangedFiles() {
@@ -610,28 +638,37 @@ export class PrDiffRefResolutionError extends Error {
 }
 
 /**
- * Resolve a PR's exact base/head commit SHAs via the GitHub API and ensure
- * both are fetched into the local git object store, returning them as a
- * `{ baseRef, headRef }` pair suitable for `findTestFiles`'s `diffRef`
- * option / `isCommentOnlyFileDiff`'s `baseBranch`/`headRef` parameters.
+ * Resolve a PR's real merge-base and head commit SHA, returning them as a
+ * `{ baseRef, headRef, baseBranch }` triple suitable for `findTestFiles`'s
+ * `diffRef` option / `isCommentOnlyFileDiff`'s `baseBranch`/`headRef`
+ * parameters. `baseRef` and `headRef` are both SHAs (the existing two field
+ * names keep their original meaning); `baseBranch` is additive.
  *
- * This exists because `getChangedFiles(prNumber)` already resolves a PR's
- * file list remotely via `gh pr diff --name-only` (works from ANY local
- * checkout), but `isCommentOnlyFileDiff` — by design, see its own doc
- * comment — diffs against whatever `HEAD` the calling process's cwd happens
- * to have checked out. `acceptance-check.js` is invoked against an
+ * This exists because `getChangedFiles`'s file list and `isCommentOnlyFileDiff`
+ * — by design, see its own doc comment — must diff against the SAME range,
+ * and `acceptance-check.js` / `preflight-check.js` are invoked against an
  * arbitrary PR number from the Orchestrator's own worktree, which is
- * essentially never checked out to that PR's branch, so without this
- * resolution the comment-only exemption silently degrades to "not
- * comment-only" for that script's actual usage pattern.
+ * essentially never checked out to that PR's branch.
+ *
+ * The base is resolved as the REAL merge-base (`git merge-base
+ * origin/<baseBranch> <headSha>`), not GitHub's `pulls/N.base.sha`. That
+ * field is a snapshot of the base branch's tip taken at PR-creation time and
+ * is never advanced as the base branch moves — measured directly on a PR
+ * that had fallen behind its base branch after 41 intervening commits:
+ * `base.sha` reported one commit while the real merge-base, computed the
+ * same moment, was a different, later one. For a PR that has fallen behind,
+ * diffing against the stale snapshot pulls the base branch's own
+ * post-creation commits into the comparison, which the diff then
+ * misattributes to the PR.
  *
  * Deliberately fails LOUD — throws `PrDiffRefResolutionError` rather than
- * falling back to `'HEAD'` on any error — a silent fallback would just make
- * the underlying bug intermittent (correct only when the caller happens to
- * already be on the right branch) instead of fixing it. It throws rather
- * than calling `process.exit` itself so the failure path is a value an
- * entry point's `main` can catch and a test can trigger directly, instead
- * of a side effect that kills the process (and any test runner) outright.
+ * falling back to `'HEAD'`, `.base.sha`, or `origin/main` on any error — a
+ * silent fallback would just make the underlying bug intermittent (correct
+ * only when the caller happens to already be on the right branch) instead
+ * of fixing it. It throws rather than calling `process.exit` itself so the
+ * failure path is a value an entry point's `main` can catch and a test can
+ * trigger directly, instead of a side effect that kills the process (and
+ * any test runner) outright.
  *
  * `execImpl` is a pay-as-you-go dependency-injection seam (defaults to the
  * module's own `exec`): callers with no test seam of their own ignore it;
@@ -639,35 +676,43 @@ export class PrDiffRefResolutionError extends Error {
  *
  * @param {string|number} prNumber
  * @param {{ execImpl?: typeof exec }} [opts]
- * @returns {{ baseRef: string, headRef: string }}
+ * @returns {{ baseRef: string, headRef: string, baseBranch: string }}
  */
 export function resolvePrDiffRef(prNumber, { execImpl = exec } = {}) {
-  const shasJson = execImpl(`gh api repos/{owner}/{repo}/pulls/${prNumber} --jq "{base: .base.sha, head: .head.sha}"`);
-  if (shasJson === null) {
+  const apiJson = execImpl(`gh api repos/{owner}/{repo}/pulls/${prNumber} --jq "{baseRef: .base.ref, head: .head.sha}"`);
+  if (apiJson === null) {
     throw new PrDiffRefResolutionError(
-      `Could not resolve base/head SHAs for PR #${prNumber} via gh api. Cannot determine whether changed files are comment-only.`,
+      `Could not resolve base branch/head SHA for PR #${prNumber} via gh api. Cannot determine the real merge-base.`,
     );
   }
-  let shas;
+  let parsed;
   try {
-    shas = JSON.parse(shasJson);
+    parsed = JSON.parse(apiJson);
   } catch {
-    throw new PrDiffRefResolutionError(`Unexpected response resolving PR #${prNumber} SHAs (not valid JSON): ${shasJson}`);
+    throw new PrDiffRefResolutionError(`Unexpected response resolving PR #${prNumber}'s base/head (not valid JSON): ${apiJson}`);
   }
-  const { base: baseRef, head: headRef } = shas;
-  if (!baseRef || !headRef) {
-    throw new PrDiffRefResolutionError(`PR #${prNumber}'s gh api response is missing a base/head SHA (base=${baseRef}, head=${headRef}).`);
+  const { baseRef: baseBranch, head: headRef } = parsed;
+  if (!baseBranch || !headRef) {
+    throw new PrDiffRefResolutionError(
+      `PR #${prNumber}'s gh api response is missing a base branch name or head SHA (baseRef=${baseBranch}, head=${headRef}).`,
+    );
   }
-  // Fetch by bare SHA (no refspec) — GitHub allows fetching any reachable
-  // commit this way, which works even after the PR's branch has been
-  // deleted post-merge.
-  const fetchResult = execImpl(`git fetch origin ${baseRef} ${headRef}`);
+  // Fetch both the base branch and the head by name/SHA -- the head fetch
+  // works even after the PR's branch has been deleted post-merge (GitHub
+  // allows fetching any reachable commit by bare SHA, no refspec needed).
+  const fetchResult = execImpl(`git fetch origin ${baseBranch} ${headRef}`);
   if (fetchResult === null) {
     throw new PrDiffRefResolutionError(
-      `Could not fetch PR #${prNumber}'s base/head commits (${baseRef}, ${headRef}) from origin. Cannot determine whether changed files are comment-only.`,
+      `Could not fetch PR #${prNumber}'s base branch (${baseBranch}) or head commit (${headRef}) from origin. Cannot determine the real merge-base.`,
     );
   }
-  return { baseRef, headRef };
+  const mergeBase = execImpl(`git merge-base origin/${baseBranch} ${headRef}`);
+  if (!mergeBase) {
+    throw new PrDiffRefResolutionError(
+      `Could not compute the merge-base between origin/${baseBranch} and PR #${prNumber}'s head (${headRef}). Cannot determine whether changed files are comment-only.`,
+    );
+  }
+  return { baseRef: mergeBase, headRef, baseBranch };
 }
 
 /**
