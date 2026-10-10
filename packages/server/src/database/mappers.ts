@@ -149,15 +149,17 @@ export function toWorkerRow(worker: PersistedWorker, sessionId: string): WorkerR
       base_commit: null,
       embedded_agent_id: null,
       deliver_initial_prompt_on_activation: worker.deliverInitialPromptOnActivation ? 1 : 0,
-      // The five columns below are meaningful only for 'embedded-agent'
-      // rows. Every branch must still write an explicit reset value so the
-      // row never omits a column -- conflictUpdateSet's totality contract
-      // (see conflict-update-set.ts) derives the UPDATE set from exactly
-      // the keys present on this row, so an omitted key here would mean a
-      // silently-skipped column on every future upsert, not just a type gap.
-      // auto_compaction's reset value is 1 (ON), matching the schema's
-      // NOT NULL DEFAULT 1; the rest reset to null.
-      sdk_session_id: null,
+      // sdk_session_id now carries this worker's console-minted conversation
+      // id -- unlike the other four columns below, which stay
+      // meaningful only for 'embedded-agent' rows. auto_compaction's reset
+      // value is 1 (ON), matching the schema's NOT NULL DEFAULT 1; the rest
+      // reset to null. Every branch must still write an explicit reset value
+      // so the row never omits a column -- conflictUpdateSet's totality
+      // contract (see conflict-update-set.ts) derives the UPDATE set from
+      // exactly the keys present on this row, so an omitted key here would
+      // mean a silently-skipped column on every future upsert, not just a
+      // type gap.
+      sdk_session_id: worker.sdkSessionId,
       auto_compaction: 1,
       model: worker.model,
       reasoning_effort: worker.reasoningEffort,
@@ -244,6 +246,7 @@ export function toPersistedWorker(worker: Worker): PersistedWorker {
       deliverInitialPromptOnActivation: worker.deliver_initial_prompt_on_activation === 1,
       model: worker.model ?? null,
       reasoningEffort: worker.reasoning_effort ?? null,
+      sdkSessionId: worker.sdk_session_id ?? null,
     } as PersistedAgentWorker;
   } else if (worker.type === 'terminal') {
     return {

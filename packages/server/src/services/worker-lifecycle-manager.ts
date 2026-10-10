@@ -776,6 +776,13 @@ export class WorkerLifecycleManager {
       // params if wanted; out of scope here.
       model: isAgentChanged ? null : existingWorker.model,
       reasoningEffort: isAgentChanged ? null : existingWorker.reasoningEffort,
+      // sdkSessionId: a same-agent restart carries the existing
+      // conversation id forward verbatim, same precedent as model/reasoningEffort
+      // above. An agent CHANGE resets it to null (a different CLI/agent may not
+      // understand the id or even support --resume) -- the next activation mints
+      // a fresh one since startupIntent will not be 'continue' for a fresh agent
+      // change.
+      sdkSessionId: isAgentChanged ? null : existingWorker.sdkSessionId,
     });
     // Adopt the epoch minted by resetWorkerOutput so the manifest and the
     // in-memory worker agree from the first live chunk (activation is

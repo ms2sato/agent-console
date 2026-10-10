@@ -35,7 +35,7 @@ const PROTECTED_ENV_VARS: readonly string[] = [
  * for child PTY workers — a worker's own `claude` must establish its own
  * session identity. Leaking them makes a worker adopt the parent's
  * `CLAUDE_CODE_SESSION_ID`, append its conversation to the parent agent's
- * transcript file, and break `claude -c` restart-with-continue
+ * transcript file, and break `claude -c` / `--resume` restart-with-continue
  * ("No conversation found to continue").
  */
 export function isInheritedClaudeSessionVar(key: string): boolean {

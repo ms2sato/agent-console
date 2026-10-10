@@ -140,6 +140,8 @@ export interface AgentWorkerInitParams {
   model?: string | null;
   /** See `InternalAgentWorker.reasoningEffort`. `null`/omitted = no override. */
   reasoningEffort?: string | null;
+  /** See `InternalAgentWorker.sdkSessionId`. `null`/omitted = mint a fresh one on next activation. */
+  sdkSessionId?: string | null;
 }
 
 /**
@@ -393,6 +395,7 @@ export class WorkerManager {
       deliverInitialPromptOnActivation,
       model: params.model ?? null,
       reasoningEffort: params.reasoningEffort ?? null,
+      sdkSessionId: params.sdkSessionId ?? null,
     };
 
     return worker;
@@ -620,6 +623,27 @@ export class WorkerManager {
         promptFilePath = filePath;
       }
 
+      // Mint a FRESH console-owned conversation id for every non-'continue'
+      // activation (fresh creation, a "fresh start" restart, an agent-changed
+      // restart, or delivering an owed initial prompt). From `claude`'s point
+      // of view each of these IS a brand-new conversation, so it must get an
+      // id that has never been used before -- even when `worker.sdkSessionId`
+      // is already non-null, because `restartAgentWorker` carries the prior
+      // id forward into the new worker object as a default BEFORE this check
+      // runs (same-agent restarts), and that stale id must never be reused:
+      // `claude --session-id <id>` is for assigning an id to a brand-new
+      // conversation, and an already-used id is rejected by the CLI. Only a
+      // 'continue'-resolving activation (an explicit continue restart, or a
+      // 'system'-preference restart/boot-resume with no prompt owed) keeps
+      // whatever id the worker already has -- or stays null for a legacy
+      // worker that has never had a fresh activation since this field
+      // existed. The caller's persistSession() call after this method returns
+      // is what durably writes the mint -- there is no separate persist call
+      // inside this method.
+      if (startupIntent !== 'continue') {
+        worker.sdkSessionId = crypto.randomUUID();
+      }
+
       // Merge the worker's own persisted model/reasoning-effort override
       // (agent-surface.md Ruling 3) on top of the generic templateVars mechanism.
       // This ONE merge point is what makes worker-level persistence apply
@@ -647,6 +671,20 @@ export class WorkerManager {
           model: templateSupportsModel(template) ? worker.model : null,
           reasoningEffort: templateSupportsReasoningEffort(template) ? worker.reasoningEffort : null,
         }),
+        // `conversationId` carries this worker's console-minted
+        // id (see the mint step above) into `claude --session-id <id>` /
+        // `claude --resume <id>` via the {{conversationId:+--session-id}} /
+        // {{conversationId:+--resume}} optional-argument form. A worker that
+        // has never had a fresh activation (legacy, pre-existing field) still has no
+        // id -- `continueFallback` supplies the old bare `-c` continuation
+        // for that case only, via the plain (always-shell-escaped)
+        // {{continueFallback}} form, so it renders as `claude '-c'`
+        // (quoted) rather than an unescaped `claude -c`. The two are
+        // mutually exclusive by construction: continueFallback only ever
+        // has a value when sdkSessionId is null, which is also exactly when
+        // conversationId is omitted.
+        ...(worker.sdkSessionId !== null ? { conversationId: worker.sdkSessionId } : {}),
+        ...(startupIntent === 'continue' && worker.sdkSessionId === null ? { continueFallback: '-c' } : {}),
       };
 
       const { command, env: templateEnv } = expandTemplate({
@@ -1359,6 +1397,10 @@ export class WorkerManager {
             // restart (agent-surface.md Ruling 3).
             model: pw.model,
             reasoningEffort: pw.reasoningEffort,
+            // Round-trips from PersistedAgentWorker.sdkSessionId so a
+            // worker's console-minted conversation id survives
+            // a server restart.
+            sdkSessionId: pw.sdkSessionId,
           };
           break;
         case 'terminal':
@@ -1474,6 +1516,7 @@ export class WorkerManager {
           deliverInitialPromptOnActivation: worker.deliverInitialPromptOnActivation,
           model: worker.model,
           reasoningEffort: worker.reasoningEffort,
+          sdkSessionId: worker.sdkSessionId,
         };
         return persistedAgent;
       }

@@ -43,14 +43,29 @@ const ASKING_PATTERNS: string[] = [
 const claudeCodeAgentBase = {
   id: CLAUDE_CODE_AGENT_ID,
   name: 'Claude Code',
-  commandTemplate: 'claude {{model:+--model}}{{prompt}}',
+  commandTemplate: 'claude {{model:+--model}}{{conversationId:+--session-id}}{{prompt}}',
   // {{model:+--model}} expands to '--model <value> ' (trailing space) when a
-  // worker-level model override is set, and to the empty string when unset --
-  // so a no-override worker still produces the byte-identical 'claude -c'
+  // worker-level model override is set, and to the empty string when unset
   // (see agent-surface.md Ruling 3 and worker-manager.ts's per-activation
   // gate at the effectiveTemplateVars merge, which is what makes the
   // continue path honour the override).
-  continueTemplate: 'claude {{model:+--model}}-c',
+  //
+  // {{conversationId:+--session-id}} expands to '--session-id <id> '
+  // (trailing space) once the worker has a console-minted conversation id
+  // (worker-manager.ts mints one on the worker's first fresh activation),
+  // giving `claude` an explicit, worker-scoped conversation id instead of
+  // letting it infer one from the cwd.
+  //
+  // {{conversationId:+--resume}} / {{continueFallback}} below are the
+  // continue-path twins: once a worker has an id, continuing resumes that
+  // exact conversation via `--resume <id>` rather than `claude`'s
+  // directory-scoped `-c`, which can attach to a DIFFERENT worker's
+  // conversation when two workers share a cwd. A worker that has never had
+  // a fresh activation (no id yet) falls back to the old bare `-c` via
+  // {{continueFallback}} -- the plain (always-shell-escaped) substitution
+  // form, so this renders as `claude '-c'` (quoted), not an unescaped
+  // `claude -c`.
+  continueTemplate: 'claude {{model:+--model}}{{conversationId:+--resume}}{{continueFallback}}',
   headlessTemplate: 'claude -p --output-format text {{prompt}}',
   description: 'Anthropic Claude Code - Interactive AI coding assistant',
   isBuiltIn: true,
