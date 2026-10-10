@@ -623,16 +623,24 @@ export class WorkerManager {
         promptFilePath = filePath;
       }
 
-      // Mint a console-owned conversation id the first time this
-      // worker activates FRESH (never for a 'continue' activation -- a worker
-      // being revived/continued must keep whatever id it already has, or stay
-      // null if it's a legacy worker that has never had a fresh start
-      // since this field existed). `worker.sdkSessionId` is already set for: (a) a worker that
-      // minted one on an earlier fresh activation, (b) a same-agent restart,
-      // which carries the existing id forward (see restartAgentWorker). The
-      // caller's persistSession() call after this method returns is what durably
-      // writes the mint -- there is no separate persist call inside this method.
-      if (worker.sdkSessionId === null && startupIntent !== 'continue') {
+      // Mint a FRESH console-owned conversation id for every non-'continue'
+      // activation (fresh creation, a "fresh start" restart, an agent-changed
+      // restart, or delivering an owed initial prompt). From `claude`'s point
+      // of view each of these IS a brand-new conversation, so it must get an
+      // id that has never been used before -- even when `worker.sdkSessionId`
+      // is already non-null, because `restartAgentWorker` carries the prior
+      // id forward into the new worker object as a default BEFORE this check
+      // runs (same-agent restarts), and that stale id must never be reused:
+      // `claude --session-id <id>` is for assigning an id to a brand-new
+      // conversation, and an already-used id is rejected by the CLI. Only a
+      // 'continue'-resolving activation (an explicit continue restart, or a
+      // 'system'-preference restart/boot-resume with no prompt owed) keeps
+      // whatever id the worker already has -- or stays null for a legacy
+      // worker that has never had a fresh activation since this field
+      // existed. The caller's persistSession() call after this method returns
+      // is what durably writes the mint -- there is no separate persist call
+      // inside this method.
+      if (startupIntent !== 'continue') {
         worker.sdkSessionId = crypto.randomUUID();
       }
 

@@ -831,7 +831,7 @@ describe('WorkerLifecycleManager', () => {
       expect(lastPtyInstanceWrittenCommand()).not.toContain('claude-opus-4-6');
     });
 
-    it("restart pin: a same-agent restart preserves the worker's console-minted conversation id verbatim (Issue #1387)", async () => {
+    it("restart pin: a same-agent 'fresh' restart mints a NEW conversation id, never reuses the old one (Issue #1387, CodeRabbit finding on PR #1941)", async () => {
       const session = createTestSession();
       sessions.set(session.id, session);
 
@@ -851,6 +851,39 @@ describe('WorkerLifecycleManager', () => {
       const afterRestart = lifecycleManager.getWorker(session.id, worker!.id);
       expect(afterRestart?.type).toBe('agent');
       if (afterRestart?.type === 'agent') {
+        // A 'fresh' restart resolves to a non-'continue' startupIntent, so
+        // the carried-over id from restartAgentWorker's own default (see
+        // the sdkSessionId comment above) must be discarded and replaced
+        // with a brand-new one at activation -- reusing the old id would
+        // hand `claude --session-id <OLD-id>` an id that is already in use.
+        expect(afterRestart.sdkSessionId).not.toBeNull();
+        expect(afterRestart.sdkSessionId).not.toBe(originalSdkSessionId);
+      }
+    });
+
+    it("restart pin: a 'continue' restart preserves the worker's console-minted conversation id verbatim (Issue #1387)", async () => {
+      const session = createTestSession();
+      sessions.set(session.id, session);
+
+      const worker = await lifecycleManager.createWorker(session.id, {
+        type: 'agent',
+        agentId: capableAgentId,
+      });
+
+      const beforeRestart = lifecycleManager.getWorker(session.id, worker!.id);
+      expect(beforeRestart?.type).toBe('agent');
+      const originalSdkSessionId =
+        beforeRestart?.type === 'agent' ? beforeRestart.sdkSessionId : null;
+      expect(originalSdkSessionId).not.toBeNull();
+
+      await lifecycleManager.restartAgentWorker(session.id, worker!.id, 'continue');
+
+      const afterRestart = lifecycleManager.getWorker(session.id, worker!.id);
+      expect(afterRestart?.type).toBe('agent');
+      if (afterRestart?.type === 'agent') {
+        // 'continue' always resolves to the 'continue' StartupIntent, which
+        // is the one case the mint guard excludes -- the carried-over id
+        // from restartAgentWorker's own default must survive unchanged.
         expect(afterRestart.sdkSessionId).toBe(originalSdkSessionId);
       }
     });

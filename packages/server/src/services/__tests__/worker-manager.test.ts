@@ -559,6 +559,32 @@ describe('WorkerManager', () => {
         expect(commandWrite).not.toContain("'-c'");
       });
 
+      it('mints a NEW id (discarding a stale carried-forward one) on a non-continue activation (CodeRabbit finding on PR #1941)', async () => {
+        const worker = createTestAgentWorker('agent-mint-stale-discard');
+        // Simulate a worker object that already carries a stale
+        // sdkSessionId forward (e.g. restartAgentWorker's carry-over
+        // default for a same-agent restart) BEFORE a non-'continue'
+        // activation runs.
+        worker.sdkSessionId = 'already-minted-id';
+
+        await workerManager.activateAgentWorkerPty(worker, {
+          ...defaultAgentActivationParams,
+          startupIntent: 'fresh',
+        });
+
+        expect(worker.sdkSessionId).not.toBeNull();
+        expect(worker.sdkSessionId).not.toBe('already-minted-id');
+        expect(worker.sdkSessionId).toMatch(
+          /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
+        );
+
+        const mockPty = ptyFactory.instances[0];
+        const commandWrite = mockPty.writtenData.find((d) => d.endsWith('\r'));
+        expect(commandWrite).toBeDefined();
+        expect(commandWrite).toContain(`--session-id '${worker.sdkSessionId}'`);
+        expect(commandWrite).not.toContain("--session-id 'already-minted-id'");
+      });
+
       it('continues with the legacy exact "claude \'-c\'" fallback when the worker has no sdkSessionId (pre-#1387 legacy worker)', async () => {
         const worker = createTestAgentWorker('agent-continue-legacy');
         expect(worker.sdkSessionId).toBeNull();
