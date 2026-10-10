@@ -391,7 +391,7 @@ async function main(): Promise<void> {
       label: string,
       embeddedAgentId: string,
       expectRecall: boolean,
-    ): Promise<{ sessionId: string; workerId: string; reply: string }> => {
+    ): Promise<{ sessionId: string; workerId: string; reply: string; events: StreamEvent[] }> => {
       console.log(`\n==> case: ${label}`);
       const { sessionId, workerId } = await makeWorker(label, embeddedAgentId);
       const marker = (await readEvents(sessionId, workerId)).length;
@@ -399,6 +399,9 @@ async function main(): Promise<void> {
       const reply = await waitForTurnReply(sessionId, workerId, marker);
       console.log(`  ${label} reply: ${reply.trim().slice(0, 200)}`);
 
+      // Snapshotted AFTER waitForTurnReply's `idle` observation -- per
+      // test-trigger.md's "Restore E2E and smoke" absence-assertion rule,
+      // an absence check read before the turn settles passes vacuously.
       const events = (await readEvents(sessionId, workerId)).slice(marker);
       const userMessageEvent = events.find((e) => e.type === 'user-message');
       const attachments = (userMessageEvent?.attachments ?? []) as Array<{ path: string; mimeType: string }>;
@@ -414,7 +417,7 @@ async function main(): Promise<void> {
         expect(!reply.toLowerCase().includes(nonce.toLowerCase()), `${label}: reply does NOT recall the nonce`, `got: ${reply.trim().slice(0, 300)}`);
       }
 
-      return { sessionId, workerId, reply };
+      return { sessionId, workerId, reply, events };
     };
 
     // --- Case 1: SUBJECT (openai-api, supportsImages: true) ---
@@ -430,6 +433,21 @@ async function main(): Promise<void> {
       mentionsInability,
       'CONTROL: reply reflects that the model cannot view images (loose substance check)',
       `got: ${control.reply.trim().slice(0, 300)}`,
+    );
+    // Issue #1630: the CONTROL turn must settle with ZERO tool-call events
+    // -- a path/filename visible to the model (or a shell with access to
+    // one) was previously treated as an invitation to go investigate the
+    // unreadable file (`file`, `strings`, a hand-rolled PNG decoder) instead
+    // of giving the short "I can't view images" answer the loose substance
+    // check above already requires. The count is reported either way, so a
+    // model that was already at 0 before this fix is recorded honestly
+    // rather than silently taken as evidence the fix did something.
+    const controlToolCalls = control.events.filter((e) => e.type === 'tool-call');
+    console.log(`  CONTROL tool-call count: ${controlToolCalls.length}`);
+    expect(
+      controlToolCalls.length === 0,
+      'CONTROL: the turn emits zero tool-call events (Issue #1630 -- no tool-investigation loop)',
+      `got ${controlToolCalls.length} tool-call(s): ${JSON.stringify(controlToolCalls.map((tc) => tc.name))}`,
     );
 
     // --- Case 3: claude-sdk (unconditional, no supportsImages gate) ---

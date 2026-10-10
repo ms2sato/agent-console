@@ -99,7 +99,7 @@ describe('buildOpenAiUserContent', () => {
   it('omits image_url and appends a cannot-view notice when supportsImages is false', () => {
     const resolved = [
       {
-        attachment: { path: '/tmp/x.png', mimeType: 'image/png' } as EmbeddedAgentAttachment,
+        attachment: { path: '/tmp/uploads-1003/x.png', mimeType: 'image/png' } as EmbeddedAgentAttachment,
         basename: 'x.png',
         base64: 'abc123',
       },
@@ -109,6 +109,17 @@ describe('buildOpenAiUserContent', () => {
     expect(content).toContain('what is this?');
     expect(content).toContain('cannot view images');
     expect(content).not.toContain('image_url');
+    // The note must forbid investigating the file, not merely mention it
+    // cannot be viewed -- the OLD wording ("the file path above is provided
+    // for reference only") also satisfies a loose `cannot view images`
+    // check, so that substring alone cannot distinguish old from new.
+    expect(content).toContain('Do not try to locate, open, or decode it');
+    expect(content).not.toContain('path above');
+    // The note must never name the attachment's path or basename -- a
+    // visible path invited the model to go investigate the file with
+    // Bash/run_process instead of accepting it cannot be viewed.
+    expect(content).not.toContain('/tmp/uploads-1003/x.png');
+    expect(content).not.toContain('x.png');
   });
 
   it('appends a missing-image note and builds no image_url for an unavailable image', () => {
