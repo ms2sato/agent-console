@@ -559,6 +559,18 @@ async function main(): Promise<void> {
         'POLARITY: A: zero `exited` rows within a 5s bounded poll (the pre-restart incarnation was never torn down)',
         `got ${aExitedCountPolarity}`,
       );
+      // KNOWN GAP, under its own tracked Issue (see test-trigger.md's
+      // "Restart-All Embedded-Worker Real-Provider E2E" section for the
+      // current status): on the real tree, B's `exited` row is reliably
+      // invisible to this poll even though B actually is restarted -- unlike
+      // A, B never receives a turn after reactivation in polarity mode, and
+      // something in the restore/reactivation path appears to leave its
+      // `exited` row unobservable without one. This assertion is therefore
+      // CURRENTLY VACUOUS for B on the real tree (it reads OK whether or not
+      // the bug is present). Keep it as written: once that production defect
+      // is fixed, this exact assertion becomes B's regression net, and run 3
+      // (against the unmodified real tree) must flip from 3 pass / 4 fail to
+      // 2 pass / 5 fail.
       const bExitedCountPolarity = await pollExitedCount(b.sessionId, b.workerId);
       expect(
         bExitedCountPolarity === 0,
