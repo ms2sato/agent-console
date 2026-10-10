@@ -389,6 +389,31 @@ async function main(): Promise<void> {
       return sub?.pid ?? null;
     };
 
+    /**
+     * Polarity-only helper: an immediate read right after
+     * `restartAllAgentWorkers()` resolves only proves "none had appeared
+     * YET at this instant", not "none appears". Poll for `deadlineMs`
+     * (default 5s) and return the highest `exited`-row count observed,
+     * so a genuinely-delayed exit (the real-tree case, where the restart
+     * is in flight when the call returns) is caught rather than read as
+     * zero. Used for both A and B's zero-exited-rows assertion.
+     */
+    const pollExitedCount = async (
+      sessionId: string,
+      workerId: string,
+      deadlineMs = 5_000,
+    ): Promise<number> => {
+      const deadline = Date.now() + deadlineMs;
+      let count = 0;
+      while (Date.now() < deadline) {
+        const events = await readEvents(sessionId, workerId);
+        count = events.filter((e) => e.type === 'exited').length;
+        if (count > 0) return count;
+        await delay(250);
+      }
+      return count;
+    };
+
     // --- Subject A: activate, plant the nonce via a tool call.
     console.log('==> subject A: activate + plant nonce');
     const a = await makeWorker('A');
@@ -528,19 +553,17 @@ async function main(): Promise<void> {
         `before=${bHarnessBefore} after=${bHarnessAfter}`,
       );
 
-      const aEventsPolarity = await readEvents(a.sessionId, a.workerId);
-      const aExitedRowsPolarity = aEventsPolarity.filter((e) => e.type === 'exited');
+      const aExitedCountPolarity = await pollExitedCount(a.sessionId, a.workerId);
       expect(
-        aExitedRowsPolarity.length === 0,
-        'POLARITY: A: zero `exited` rows (the pre-restart incarnation was never torn down)',
-        `got ${aExitedRowsPolarity.length}`,
+        aExitedCountPolarity === 0,
+        'POLARITY: A: zero `exited` rows within a 5s bounded poll (the pre-restart incarnation was never torn down)',
+        `got ${aExitedCountPolarity}`,
       );
-      const bEventsPolarity = await readEvents(b.sessionId, b.workerId);
-      const bExitedRowsPolarity = bEventsPolarity.filter((e) => e.type === 'exited');
+      const bExitedCountPolarity = await pollExitedCount(b.sessionId, b.workerId);
       expect(
-        bExitedRowsPolarity.length === 0,
-        'POLARITY: B: zero `exited` rows (the pre-restart incarnation was never torn down)',
-        `got ${bExitedRowsPolarity.length}`,
+        bExitedCountPolarity === 0,
+        'POLARITY: B: zero `exited` rows within a 5s bounded poll (the pre-restart incarnation was never torn down)',
+        `got ${bExitedCountPolarity}`,
       );
 
       // --- The recall turn runs on the SAME, never-restarted incarnation.
