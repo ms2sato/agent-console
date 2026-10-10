@@ -19,7 +19,7 @@
  * `SessionManager.restartAllAgentWorkers()` call -- the same entry point the
  * MCP tool and the REST route both reach.
  *
- * WHAT IT ASSERTS
+ * WHAT IT ASSERTS (default mode)
  *
  *   Fresh incarnation (positive):
  *     - A's harness process after restart-all has a DIFFERENT pid than
@@ -42,13 +42,31 @@
  *       asked the SAME question after also being restarted by the same
  *       restart-all call, and must NOT produce it.
  *
+ * POLARITY MODE (--expect-not-restarted, Issue #1552)
+ *
+ *   Asserts the pre-#1519 BUG instead of the fix: both workers' harness pids
+ *   stay UNCHANGED across the `restartAllAgentWorkers()` call, neither
+ *   worker gains an `exited` row, and a recall turn against A succeeds
+ *   trivially -- it is the SAME, never-restarted incarnation, not a resume.
+ *   Run it against a one-hunk SCRATCH revert of the embedded-agent branch in
+ *   `SessionManager.restartAllAgentWorkers` (never committed) to confirm the
+ *   apparatus actually reaches the defect, per `workflow.md`'s "A check's
+ *   existence is not its detection power". A worker that IS actually
+ *   restarted under this flag is a POLARITY FAILURE (exit 1), never
+ *   tolerated -- the recall assertion above would then be measuring
+ *   nothing, since the worker was never torn down in the first place.
+ *
  * There is no idle-threshold substitution here (unlike the idle-eviction
  * smoke) -- restart-all is not time-driven, so there is nothing analogous to
  * substitute.
  *
- * COST: three real Claude turns (one to plant+use-a-tool, one to recall for
- * A, one recall-control for B). Small, but real money and real usage -- this
- * is a manual tool, never a CI gate.
+ * COST: three real Claude turns per mode (one to plant+use-a-tool, one to
+ * recall for A, one recall-control for B in default mode; polarity mode
+ * skips the recall-control turn, since B's negative control there is a pid
+ * comparison, not a second billed turn). Small, but real money and real
+ * usage -- this is a manual tool, never a CI gate. `--help` is free: it
+ * parses argv and exits before any `AppContext`, disposable home, or
+ * `claude` spawn.
  *
  * REQUIREMENTS
  *   - A real, authenticated `claude` CLI for the invoking OS user (the
@@ -59,10 +77,15 @@
  *
  * USAGE
  *   bun scripts/smoke/check-restart-all-embedded.ts
+ *   bun scripts/smoke/check-restart-all-embedded.ts --expect-not-restarted
+ *   bun scripts/smoke/check-restart-all-embedded.ts --help
  *
  * EXIT CODES
- *   0  every assertion passed
- *   1  an assertion failed (the system is wrong)
+ *   0  every assertion in the selected mode passed (polarity mode: the
+ *      pre-#1519 bug reproduced, as expected against a reverted build)
+ *   1  an assertion failed (default mode: the system is wrong), OR
+ *      (polarity mode) a worker was actually restarted -- POLARITY FAILURE,
+ *      never tolerated
  *   2  the probe could not run (bad usage, missing prerequisite, launch
  *      failure) -- deliberately distinct from 1, so an operator can tell
  *      "restart-all is broken" from "this script never got to look"
@@ -74,6 +97,50 @@
 // at the top of this file. Same hazard, same remedy as the sibling smokes
 // (see check-embedded-agent-idle-eviction.ts's header comment for the full
 // account).
+
+export interface ParsedArgs {
+  help: boolean;
+  expectNotRestarted: boolean;
+}
+
+const USAGE = [
+  'Usage: bun scripts/smoke/check-restart-all-embedded.ts [--] [--help] [--expect-not-restarted]',
+  '',
+  '  (no flags)              default mode: calls the real restartAllAgentWorkers()',
+  '                          and asserts both embedded-agent workers were restarted.',
+  '  --expect-not-restarted  polarity mode: asserts the pre-#1519 BUG -- neither',
+  '                          worker is actually restarted. A worker that IS',
+  '                          actually restarted under this flag is a POLARITY',
+  '                          FAILURE (exit 1), never tolerated.',
+  '  --help, -h              print this usage and exit 0 without spawning anything.',
+].join('\n');
+
+/**
+ * @internal Exported for testing. Pure: never exits, never logs, never
+ * touches the filesystem. Tolerates a leading `--` separator, same
+ * convention as the sibling smokes (`check-claude-sdk-connectors-toggle.ts`,
+ * `check-embedded-agent-project-mcp-permission.ts`) -- `bun run <alias> --
+ * --flag` and a direct `bun scripts/...ts --flag` invocation both parse
+ * identically. Throws `Error` with the usage text for any unrecognised
+ * flag; the caller (`main()`'s top-level `.catch()`) maps that throw to
+ * exit 2, consistent with this script's documented "the probe could not
+ * run (bad usage, ...)" meaning for that exit code.
+ */
+export function parseArgs(argv: string[]): ParsedArgs {
+  const args = argv[0] === '--' ? argv.slice(1) : argv;
+  let help = false;
+  let expectNotRestarted = false;
+  for (const arg of args) {
+    if (arg === '--help' || arg === '-h') {
+      help = true;
+    } else if (arg === '--expect-not-restarted') {
+      expectNotRestarted = true;
+    } else {
+      throw new Error(`unknown flag: ${arg}\n\n${USAGE}`);
+    }
+  }
+  return { help, expectNotRestarted };
+}
 
 import './_env.js';
 import { unlinkSync } from 'node:fs';
@@ -117,6 +184,12 @@ function expect(cond: boolean, label: string, detail?: string): void {
 const delay = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
 async function main(): Promise<void> {
+  const { help, expectNotRestarted } = parseArgs(process.argv.slice(2));
+  if (help) {
+    console.log(USAGE);
+    process.exit(0);
+  }
+
   // Ad-hoc invocation inherits the caller's cwd, which the spawn machinery
   // evaluates; an unreadable inherited cwd produces EACCES on posix_spawn.
   // Neutralized at script start, same as the sibling smokes.
@@ -152,6 +225,9 @@ async function main(): Promise<void> {
   let realCwd: string | undefined;
 
   try {
+    console.log(
+      `==> mode: ${expectNotRestarted ? 'POLARITY (--expect-not-restarted: the pre-#1519 bug must reproduce)' : 'default'}`,
+    );
     console.log(`==> nonce: ${NONCE}`);
 
     // AGENT_CONSOLE_HOME pointed at a real temp dir BEFORE createTestContext
@@ -313,6 +389,31 @@ async function main(): Promise<void> {
       return sub?.pid ?? null;
     };
 
+    /**
+     * Polarity-only helper: an immediate read right after
+     * `restartAllAgentWorkers()` resolves only proves "none had appeared
+     * YET at this instant", not "none appears". Poll for `deadlineMs`
+     * (default 5s) and return the highest `exited`-row count observed,
+     * so a genuinely-delayed exit (the real-tree case, where the restart
+     * is in flight when the call returns) is caught rather than read as
+     * zero. Used for both A and B's zero-exited-rows assertion.
+     */
+    const pollExitedCount = async (
+      sessionId: string,
+      workerId: string,
+      deadlineMs = 5_000,
+    ): Promise<number> => {
+      const deadline = Date.now() + deadlineMs;
+      let count = 0;
+      while (Date.now() < deadline) {
+        const events = await readEvents(sessionId, workerId);
+        count = events.filter((e) => e.type === 'exited').length;
+        if (count > 0) return count;
+        await delay(250);
+      }
+      return count;
+    };
+
     // --- Subject A: activate, plant the nonce via a tool call.
     console.log('==> subject A: activate + plant nonce');
     const a = await makeWorker('A');
@@ -350,82 +451,149 @@ async function main(): Promise<void> {
     const result = await ctx.sessionManager.restartAllAgentWorkers({ kind: 'all' });
     console.log(`  result: ${JSON.stringify(result)}`);
 
-    expect(
-      result.results.some(
-        (r) => r.workerId === a.workerId && r.workerType === 'embedded-agent' && r.outcome === 'restarted',
-      ),
-      "A: restartAllAgentWorkers() reports { workerType: 'embedded-agent', outcome: 'restarted' }",
-      `got ${JSON.stringify(result.results.filter((r) => r.workerId === a.workerId))}`,
-    );
-    expect(
-      result.results.some(
-        (r) => r.workerId === b.workerId && r.workerType === 'embedded-agent' && r.outcome === 'restarted',
-      ),
-      "B: restartAllAgentWorkers() reports { workerType: 'embedded-agent', outcome: 'restarted' }",
-      `got ${JSON.stringify(result.results.filter((r) => r.workerId === b.workerId))}`,
-    );
-
-    // --- Fresh incarnation, positive: a genuinely different pid.
+    // Hoisted above the mode branch below -- the polarity branch asserts
+    // this stayed EQUAL to aHarnessBefore; the default branch asserts it
+    // CHANGED. Reading it here, immediately after the call returns, keeps
+    // the read's timing identical to the pre-existing default-mode code.
     const aHarnessAfter = harnessPid(a.sessionId, a.workerId);
-    console.log(`  A harness pid (after restart): ${aHarnessAfter}`);
-    expect(
-      aHarnessAfter !== null && aHarnessAfter !== aHarnessBefore,
-      'A: restart produced a genuinely fresh incarnation (different harness pid)',
-      `before=${aHarnessBefore} after=${aHarnessAfter}`,
-    );
 
-    // --- The pre-restart incarnation's exit was observed and classified as
-    // an ORDINARY deactivate, not an eviction -- restart-all is not idle
-    // eviction, and this is what tells the two apart in the persisted stream.
-    const aEvents = await readEvents(a.sessionId, a.workerId);
-    const aExitedRows = aEvents.filter((e) => e.type === 'exited');
-    expect(
-      aExitedRows.length >= 1,
-      'A: at least one `exited` row was appended for the pre-restart incarnation',
-      `got ${aExitedRows.length}`,
-    );
-    expect(
-      aExitedRows[0]?.reason === 'managed',
-      "A: the pre-restart incarnation's `exited` row is stamped reason: 'managed' (not 'evicted')",
-      `got ${JSON.stringify(aExitedRows[0])}`,
-    );
+    if (!expectNotRestarted) {
+      expect(
+        result.results.some(
+          (r) => r.workerId === a.workerId && r.workerType === 'embedded-agent' && r.outcome === 'restarted',
+        ),
+        "A: restartAllAgentWorkers() reports { workerType: 'embedded-agent', outcome: 'restarted' }",
+        `got ${JSON.stringify(result.results.filter((r) => r.workerId === a.workerId))}`,
+      );
+      expect(
+        result.results.some(
+          (r) => r.workerId === b.workerId && r.workerType === 'embedded-agent' && r.outcome === 'restarted',
+        ),
+        "B: restartAllAgentWorkers() reports { workerType: 'embedded-agent', outcome: 'restarted' }",
+        `got ${JSON.stringify(result.results.filter((r) => r.workerId === b.workerId))}`,
+      );
 
-    // --- Transparent recall: the fresh incarnation resumes the conversation.
-    console.log('==> asking A (fresh incarnation) to recall the nonce');
-    const recallMarker = (await readEvents(a.sessionId, a.workerId)).length;
-    const recallReply = await runTurn(a.sessionId, a.workerId, RECALL_TEXT);
-    console.log(`  A recall reply: ${recallReply.trim().slice(0, 200)}`);
-    expect(
-      recallReply.includes(NONCE),
-      'A: the freshly-restarted incarnation recalled the nonce planted before the restart',
-      `expected ${NONCE} in: ${recallReply.trim().slice(0, 300)}`,
-    );
-    // Deleting the file closed the route; this measures that it stayed closed.
-    const recallEvents = (await readEvents(a.sessionId, a.workerId)).slice(recallMarker);
-    expect(
-      !recallEvents.some((e) => e.type === 'tool-call'),
-      'A: the recall came from the resumed conversation, not from a tool reading the file back',
-      `events: ${recallEvents.map((e) => e.type).join(',')}`,
-    );
+      // --- Fresh incarnation, positive: a genuinely different pid.
+      console.log(`  A harness pid (after restart): ${aHarnessAfter}`);
+      expect(
+        aHarnessAfter !== null && aHarnessAfter !== aHarnessBefore,
+        'A: restart produced a genuinely fresh incarnation (different harness pid)',
+        `before=${aHarnessBefore} after=${aHarnessAfter}`,
+      );
 
-    // --- Recall control: B never heard the nonce and must not produce it,
-    // even though it was ALSO restarted by the same call. This is what makes
-    // A's recall attributable to resume rather than to guessability.
-    console.log('==> recall control: asking B (also restarted) the same question');
-    const controlMarker = (await readEvents(b.sessionId, b.workerId)).length;
-    const controlReply = await runTurn(b.sessionId, b.workerId, CONTROL_TEXT);
-    console.log(`  B control reply: ${controlReply.trim().slice(0, 200)}`);
-    expect(
-      !controlReply.includes(NONCE),
-      'B (recall control): did NOT produce the nonce',
-      `got: ${controlReply.trim().slice(0, 300)}`,
-    );
-    const controlEvents = (await readEvents(b.sessionId, b.workerId)).slice(controlMarker);
-    expect(
-      !controlEvents.some((e) => e.type === 'tool-call'),
-      'B (recall control): answered from ignorance, not from a tool',
-      `events: ${controlEvents.map((e) => e.type).join(',')}`,
-    );
+      // --- The pre-restart incarnation's exit was observed and classified as
+      // an ORDINARY deactivate, not an eviction -- restart-all is not idle
+      // eviction, and this is what tells the two apart in the persisted stream.
+      const aEvents = await readEvents(a.sessionId, a.workerId);
+      const aExitedRows = aEvents.filter((e) => e.type === 'exited');
+      expect(
+        aExitedRows.length >= 1,
+        'A: at least one `exited` row was appended for the pre-restart incarnation',
+        `got ${aExitedRows.length}`,
+      );
+      expect(
+        aExitedRows[0]?.reason === 'managed',
+        "A: the pre-restart incarnation's `exited` row is stamped reason: 'managed' (not 'evicted')",
+        `got ${JSON.stringify(aExitedRows[0])}`,
+      );
+
+      // --- Transparent recall: the fresh incarnation resumes the conversation.
+      console.log('==> asking A (fresh incarnation) to recall the nonce');
+      const recallMarker = (await readEvents(a.sessionId, a.workerId)).length;
+      const recallReply = await runTurn(a.sessionId, a.workerId, RECALL_TEXT);
+      console.log(`  A recall reply: ${recallReply.trim().slice(0, 200)}`);
+      expect(
+        recallReply.includes(NONCE),
+        'A: the freshly-restarted incarnation recalled the nonce planted before the restart',
+        `expected ${NONCE} in: ${recallReply.trim().slice(0, 300)}`,
+      );
+      // Deleting the file closed the route; this measures that it stayed closed.
+      const recallEvents = (await readEvents(a.sessionId, a.workerId)).slice(recallMarker);
+      expect(
+        !recallEvents.some((e) => e.type === 'tool-call'),
+        'A: the recall came from the resumed conversation, not from a tool reading the file back',
+        `events: ${recallEvents.map((e) => e.type).join(',')}`,
+      );
+
+      // --- Recall control: B never heard the nonce and must not produce it,
+      // even though it was ALSO restarted by the same call. This is what makes
+      // A's recall attributable to resume rather than to guessability.
+      console.log('==> recall control: asking B (also restarted) the same question');
+      const controlMarker = (await readEvents(b.sessionId, b.workerId)).length;
+      const controlReply = await runTurn(b.sessionId, b.workerId, CONTROL_TEXT);
+      console.log(`  B control reply: ${controlReply.trim().slice(0, 200)}`);
+      expect(
+        !controlReply.includes(NONCE),
+        'B (recall control): did NOT produce the nonce',
+        `got: ${controlReply.trim().slice(0, 300)}`,
+      );
+      const controlEvents = (await readEvents(b.sessionId, b.workerId)).slice(controlMarker);
+      expect(
+        !controlEvents.some((e) => e.type === 'tool-call'),
+        'B (recall control): answered from ignorance, not from a tool',
+        `events: ${controlEvents.map((e) => e.type).join(',')}`,
+      );
+    } else {
+      // --- POLARITY: assert the pre-#1519 BUG -- restart-all silently
+      // skipped embedded-agent workers. A worker that IS actually restarted
+      // under this flag is a POLARITY FAILURE: the recall assertion below
+      // would then be measuring nothing, since the worker was never torn
+      // down in the first place.
+      const bHarnessAfter = harnessPid(b.sessionId, b.workerId);
+      console.log(`  A harness pid (after restart-all): ${aHarnessAfter}`);
+      console.log(`  B harness pid (after restart-all): ${bHarnessAfter}`);
+      expect(
+        aHarnessAfter !== null && aHarnessAfter === aHarnessBefore,
+        'POLARITY: A: harness pid is UNCHANGED (restart-all skipped it)',
+        `before=${aHarnessBefore} after=${aHarnessAfter}`,
+      );
+      expect(
+        bHarnessAfter !== null && bHarnessAfter === bHarnessBefore,
+        'POLARITY: B: harness pid is UNCHANGED (restart-all skipped it)',
+        `before=${bHarnessBefore} after=${bHarnessAfter}`,
+      );
+
+      const aExitedCountPolarity = await pollExitedCount(a.sessionId, a.workerId);
+      expect(
+        aExitedCountPolarity === 0,
+        'POLARITY: A: zero `exited` rows within a 5s bounded poll (the pre-restart incarnation was never torn down)',
+        `got ${aExitedCountPolarity}`,
+      );
+      // KNOWN GAP, under its own tracked Issue (see test-trigger.md's
+      // "Restart-All Embedded-Worker Real-Provider E2E" section for the
+      // current status): on the real tree, B's `exited` row is reliably
+      // invisible to this poll even though B actually is restarted -- unlike
+      // A, B never receives a turn after reactivation in polarity mode, and
+      // something in the restore/reactivation path appears to leave its
+      // `exited` row unobservable without one. This assertion is therefore
+      // CURRENTLY VACUOUS for B on the real tree (it reads OK whether or not
+      // the bug is present). Keep it as written: once that production defect
+      // is fixed, this exact assertion becomes B's regression net, and run 3
+      // (against the unmodified real tree) must flip from 3 pass / 4 fail to
+      // 2 pass / 5 fail.
+      const bExitedCountPolarity = await pollExitedCount(b.sessionId, b.workerId);
+      expect(
+        bExitedCountPolarity === 0,
+        'POLARITY: B: zero `exited` rows within a 5s bounded poll (the pre-restart incarnation was never torn down)',
+        `got ${bExitedCountPolarity}`,
+      );
+
+      // --- The recall turn runs on the SAME, never-restarted incarnation.
+      console.log('==> asking A (same, never-restarted incarnation) to recall the nonce');
+      const recallReply = await runTurn(a.sessionId, a.workerId, RECALL_TEXT);
+      console.log(`  A recall reply: ${recallReply.trim().slice(0, 200)}`);
+      const aHarnessDuringRecall = harnessPid(a.sessionId, a.workerId);
+      expect(
+        aHarnessDuringRecall !== null && aHarnessDuringRecall === aHarnessBefore,
+        'POLARITY: A: the recall turn ran on the SAME incarnation (harness pid unchanged throughout)',
+        `before=${aHarnessBefore} duringRecall=${aHarnessDuringRecall}`,
+      );
+      expect(
+        recallReply.includes(NONCE),
+        'POLARITY: A: recalled the nonce -- trivially true, since it is the same live conversation that was never restarted',
+        `expected ${NONCE} in: ${recallReply.trim().slice(0, 300)}`,
+      );
+    }
   } finally {
     if (ctx) {
       for (const s of ctx.sessionManager.getAllSessions()) {
