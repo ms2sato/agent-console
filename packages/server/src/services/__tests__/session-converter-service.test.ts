@@ -101,6 +101,7 @@ describe('SessionConverterService', () => {
             deliverInitialPromptOnActivation: w.deliverInitialPromptOnActivation,
             model: w.model,
             reasoningEffort: w.reasoningEffort,
+            sdkSessionId: w.sdkSessionId,
           };
         } else if (w.type === 'terminal') {
           return { id: w.id, type: 'terminal', name: w.name, createdAt: w.createdAt, pid: w.pty?.pid ?? null };

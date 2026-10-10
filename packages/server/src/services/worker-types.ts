@@ -210,6 +210,20 @@ export interface InternalAgentWorker extends InternalPtyWorkerBase {
    * `{{ reasoningEffort...}}` -- see `buildAgentParameterTemplateVars`.
    */
   reasoningEffort: string | null;
+  /**
+   * This worker's console-minted `claude` conversation id, or
+   * `null` for a worker that has never had a fresh (non-continue) activation
+   * since this field existed. Unlike InternalEmbeddedAgentWorker.sdkSessionId
+   * (SDK-assigned, read from an event), THIS id is minted by our own code in
+   * `activateAgentWorkerPty` and handed to `claude` via `--session-id` /
+   * `--resume` -- it exists so two agent workers sharing a cwd never resolve
+   * `claude`'s directory-scoped `-c` to each other's conversation. Persisted
+   * via `PersistedAgentWorker.sdkSessionId` and survives server restart,
+   * restart-with-same-agent, and revival. Reset to `null` only when the
+   * worker's agent is CHANGED on restart (a different CLI may not understand
+   * the id) -- see `WorkerLifecycleManager.restartAgentWorker`.
+   */
+  sdkSessionId: string | null;
 }
 
 /**
@@ -273,6 +287,12 @@ export interface InternalEmbeddedAgentWorker extends InternalWorkerBase {
    * `subprocess`/`stdin`'s null-when-not-applicable convention. Persisted via
    * `PersistedEmbeddedAgentWorker.sdkSessionId` and survives server restart.
    * See docs/design/embedded-agent-sdk-engine.md §4 "Process lifetime" row.
+   *
+   * This field's MEANING is wider than its name suggests: it is
+   * the provider-side conversation id, which is SDK-assigned (read-only, as
+   * described above) for this (embedded `claude-sdk`) worker kind, but
+   * console-minted (we assign it) for terminal `agent` workers -- see
+   * `InternalAgentWorker.sdkSessionId`, the sibling field for that kind.
    */
   sdkSessionId: string | null;
   /**

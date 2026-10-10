@@ -74,6 +74,8 @@ export interface PersistedAgentWorker extends PersistedWorkerBase {
   model: string | null;
   /** See `InternalAgentWorker.reasoningEffort`. */
   reasoningEffort: string | null;
+  /** See `InternalAgentWorker.sdkSessionId`. */
+  sdkSessionId: string | null;
 }
 
 export interface PersistedTerminalWorker extends PersistedWorkerBase {
@@ -92,7 +94,13 @@ export interface PersistedEmbeddedAgentWorker extends PersistedWorkerBase {
   pid: number | null;  // agent subprocess PID (null when not activated)
   /** See `InternalEmbeddedAgentWorker.deliverInitialPromptOnActivation`. */
   deliverInitialPromptOnActivation: boolean;
-  /** See `InternalEmbeddedAgentWorker.sdkSessionId`. */
+  /**
+   * See `InternalEmbeddedAgentWorker.sdkSessionId`. This field's MEANING is
+   * wider than its name suggests: provider-side conversation
+   * id, SDK-assigned (read-only) for this (embedded-agent) worker kind, but
+   * console-minted (we assign it) for terminal `agent` workers -- see
+   * `PersistedAgentWorker.sdkSessionId`, the sibling field for that kind.
+   */
   sdkSessionId: string | null;
   /** See `InternalEmbeddedAgentWorker.autoCompaction`. */
   autoCompaction: boolean;
@@ -199,6 +207,9 @@ function migrateSession(old: OldPersistedSession): PersistedSession {
     // concept entirely (agent-surface.md); no override to carry over.
     model: null,
     reasoningEffort: null,
+    // Legacy pre-migration rows predate conversation-id minting entirely;
+    // no id to carry over.
+    sdkSessionId: null,
   }];
 
   if (isQuick) {
