@@ -556,6 +556,28 @@ describe('SessionBookmarksPanel', () => {
     expect(screen.queryByText('github.com')).toBeNull();
   });
 
+  it('shows a confusable Unicode host in its Punycode form through the shared linkHost derivation', async () => {
+    mockFetch.mockResolvedValue(
+      jsonResponse({
+        bookmarks: [
+          {
+            id: 'bookmark-1',
+            url: 'https://аpple.example/login', // lang-check:allow
+            title: 'Sign in',
+            createdAt: '2026-08-20T00:00:00.000Z',
+            origin: 'user',
+          },
+        ],
+      })
+    );
+
+    await renderWithRouter(<ControlledBookmarksPanel sessionId="session-1" />);
+    await expandPanel();
+
+    await waitFor(() => expect(screen.getByText('Sign in')).toBeTruthy());
+    expect(screen.getByText('xn--pple-43d.example')).toBeTruthy();
+  });
+
   it('shows the origin badge only for agent-registered bookmarks', async () => {
     mockFetch.mockResolvedValue(
       jsonResponse({
