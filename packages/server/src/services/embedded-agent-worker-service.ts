@@ -2282,6 +2282,10 @@ export class EmbeddedAgentWorkerService {
       // completed before returning so downstream output cleanup runs after.
       await runtime.exitSettled;
     }
+
+    // Put the exit observer's rows on disk before returning, so a following
+    // activate (or any reset) cannot discard them while they are only buffered.
+    await this.deps.workerOutputFileManager.forceFlush(sessionId, workerId);
   }
 
   /**
