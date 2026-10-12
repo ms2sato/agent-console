@@ -1938,7 +1938,7 @@ export function createMcpApp(deps: McpDependencies): Hono {
         .string()
         .optional()
         .describe(
-          'Working directory for the command. Defaults to server CWD if omitted.',
+          "Working directory for the command. Defaults to the calling session's directory (its worktree or quick-session path); pass an absolute path to override.",
         ),
       outputMode: z
         .enum(['pty', 'message'])
@@ -2013,7 +2013,7 @@ export function createMcpApp(deps: McpDependencies): Hono {
           sessionId,
           workerId,
           command,
-          cwd,
+          cwd: cwd ?? session.locationPath,
           outputMode,
           requestUser: requestUsername,
           timeoutSeconds,

@@ -342,13 +342,13 @@ describe('MCP self-identity resolution across eleven tool arguments (Issue #1696
     const session =
       kind === 'quick'
         ? await sessionManager.createSession(
-            { type: 'quick', locationPath: TEST_REPO_PATH, agentId: 'claude-code' },
+            { type: 'quick', locationPath: os.tmpdir(), agentId: 'claude-code' },
             { createdBy: owner.id },
           )
         : await sessionManager.createSession(
             {
               type: 'worktree',
-              locationPath: TEST_REPO_PATH,
+              locationPath: os.tmpdir(),
               repositoryId: TEST_REPO_ID,
               worktreeId: worktreeId!,
               agentId: 'claude-code',
@@ -364,13 +364,13 @@ describe('MCP self-identity resolution across eleven tool arguments (Issue #1696
     const session =
       kind === 'quick'
         ? await sessionManager.createSession(
-            { type: 'quick', locationPath: TEST_REPO_PATH, agentId: 'claude-code' },
+            { type: 'quick', locationPath: os.tmpdir(), agentId: 'claude-code' },
             { createdBy: userId },
           )
         : await sessionManager.createSession(
             {
               type: 'worktree',
-              locationPath: TEST_REPO_PATH,
+              locationPath: os.tmpdir(),
               repositoryId: TEST_REPO_ID,
               worktreeId: worktreeId!,
               agentId: 'claude-code',

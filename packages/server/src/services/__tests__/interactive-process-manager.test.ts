@@ -361,6 +361,33 @@ describe('InteractiveProcessManager', () => {
       elevatedManager.disposeAll();
     });
 
+    it('hands a multi-line quoted command and its cwd to spawnAsUserFn byte-identical', async () => {
+      const captured: CapturedSpawn[] = [];
+      const fake = makeFakeSpawnAsUser(captured);
+      const multiLineManager = new InteractiveProcessManager(
+        onOutput,
+        onExit,
+        { injectPtyMessage: mockInjectPtyMessage, writePtyData: mockWritePtyData },
+        onResponse,
+        fake.fn,
+      );
+      const command = "MAIN_DIR=$(git worktree list | head -1 | awk '{print $1}')\necho \"$MAIN_DIR\"";
+
+      await multiLineManager.runProcess({
+        sessionId: 'session-1',
+        workerId: 'worker-1',
+        command,
+        cwd: '/some/session/dir',
+      });
+
+      expect(captured).toHaveLength(1);
+      expect(captured[0].opts.command).toBe(command);
+      expect(captured[0].opts.cwd).toBe('/some/session/dir');
+
+      fake.simulateExit(0);
+      multiLineManager.disposeAll();
+    });
+
     it('passes requestUser=null as null username to spawnAsUserFn (no elevation)', async () => {
       const captured: CapturedSpawn[] = [];
       const fake = makeFakeSpawnAsUser(captured);

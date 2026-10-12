@@ -7,6 +7,7 @@
  * unit tests on either side cannot catch alone.
  */
 import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
+import * as os from 'os';
 import { Hono } from 'hono';
 import { setupMemfs, cleanupMemfs } from '@agent-console/server/src/__tests__/utils/mock-fs-helper';
 import { createMockPtyFactory } from '@agent-console/server/src/__tests__/utils/mock-pty';
@@ -203,7 +204,7 @@ describe('Interactive Process MCP boundary: shared type contract', () => {
   it('run_process response conforms to InteractiveProcessInfo contract', async () => {
     const session = await sessionManager.createSession({
       type: 'quick',
-      locationPath: '/test/path',
+      locationPath: os.tmpdir(),
       agentId: 'claude-code',
     });
     const sessionId = session.id;
@@ -234,7 +235,7 @@ describe('Interactive Process MCP boundary: shared type contract', () => {
   it('run_process accepts outputMode "message" and surfaces it in the response', async () => {
     const session = await sessionManager.createSession({
       type: 'quick',
-      locationPath: '/test/path',
+      locationPath: os.tmpdir(),
       agentId: 'claude-code',
     });
 
@@ -254,7 +255,7 @@ describe('Interactive Process MCP boundary: shared type contract', () => {
   it('run_process rejects an invalid outputMode value', async () => {
     const session = await sessionManager.createSession({
       type: 'quick',
-      locationPath: '/test/path',
+      locationPath: os.tmpdir(),
       agentId: 'claude-code',
     });
 
@@ -272,7 +273,7 @@ describe('Interactive Process MCP boundary: shared type contract', () => {
   it('list_processes returns items matching InteractiveProcessInfo shape', async () => {
     const session = await sessionManager.createSession({
       type: 'quick',
-      locationPath: '/test/path',
+      locationPath: os.tmpdir(),
       agentId: 'claude-code',
     });
 
@@ -305,7 +306,7 @@ describe('Interactive Process MCP boundary: shared type contract', () => {
   it('list_processes after kill shows process removed', async () => {
     const session = await sessionManager.createSession({
       type: 'quick',
-      locationPath: '/test/path',
+      locationPath: os.tmpdir(),
       agentId: 'claude-code',
     });
 
@@ -544,7 +545,7 @@ describe('Interactive Process MCP boundary: embedded-agent target', () => {
       owner.id,
     );
     const session = await sessionManager.createSession(
-      { type: 'quick', locationPath: '/test/path' },
+      { type: 'quick', locationPath: os.tmpdir() },
       { createdBy: owner.id },
     );
     const worker = await sessionManager.createWorker(session.id, {
