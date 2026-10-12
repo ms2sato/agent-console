@@ -5229,7 +5229,7 @@ describe('MCP Server Tools', () => {
     async function createSessionWithWorker(): Promise<{ sessionId: string; workerId: string }> {
       const session = await sessionManager.createSession({
         type: 'quick',
-        locationPath: '/test/path',
+        locationPath: os.tmpdir(),
         agentId: 'claude-code',
       });
       const workerId = session.workers.find((w) => w.type === 'agent')!.id;
@@ -5309,6 +5309,56 @@ describe('MCP Server Tools', () => {
         expect(response.result?.isError).toBeUndefined();
         expect(data.processId).toBeDefined();
         expect(data.command).toBe('pwd');
+      });
+
+      it("defaults cwd to the calling session's locationPath when omitted", async () => {
+        const { sessionId, workerId } = await createSessionWithWorker();
+        const session = sessionManager.getSession(sessionId)!;
+        const runProcessSpy = jest.spyOn(interactiveProcessManager, 'runProcess');
+
+        const response = await callTool(app, mcpSessionId, 'run_process', {
+          command: 'git worktree list',
+          sessionId,
+          workerId,
+        }, nextId++);
+
+        expect(response.result?.isError).toBeUndefined();
+        expect(runProcessSpy).toHaveBeenCalledTimes(1);
+        expect(runProcessSpy.mock.calls[0][0].cwd).toBe(session.locationPath);
+        runProcessSpy.mockRestore();
+      });
+
+      it('lets an explicit cwd win over the session locationPath', async () => {
+        const { sessionId, workerId } = await createSessionWithWorker();
+        const override = os.homedir();
+        const runProcessSpy = jest.spyOn(interactiveProcessManager, 'runProcess');
+
+        const response = await callTool(app, mcpSessionId, 'run_process', {
+          command: 'pwd',
+          sessionId,
+          workerId,
+          cwd: override,
+        }, nextId++);
+
+        expect(response.result?.isError).toBeUndefined();
+        expect(runProcessSpy.mock.calls[0][0].cwd).toBe(override);
+        runProcessSpy.mockRestore();
+      });
+
+      it('passes a multi-line quoted command to runProcess byte-identical', async () => {
+        const { sessionId, workerId } = await createSessionWithWorker();
+        const command = "MAIN_DIR=$(git worktree list | head -1 | awk '{print $1}')\necho \"$MAIN_DIR\"";
+        const runProcessSpy = jest.spyOn(interactiveProcessManager, 'runProcess');
+
+        const response = await callTool(app, mcpSessionId, 'run_process', {
+          command,
+          sessionId,
+          workerId,
+        }, nextId++);
+
+        expect(response.result?.isError).toBeUndefined();
+        expect(runProcessSpy.mock.calls[0][0].command).toBe(command);
+        runProcessSpy.mockRestore();
       });
 
       it('should return error for non-existent session', async () => {
@@ -5423,7 +5473,7 @@ describe('MCP Server Tools', () => {
           const session = await sessionManager.createSession(
             {
               type: 'quick',
-              locationPath: '/test/path',
+              locationPath: os.tmpdir(),
               agentId: 'claude-code',
             },
             createdBy === undefined ? undefined : { createdBy },
@@ -5511,7 +5561,7 @@ describe('MCP Server Tools', () => {
       it('should return error when workerId targets a git-diff worker', async () => {
         const session = await sessionManager.createSession({
           type: 'quick',
-          locationPath: '/test/path',
+          locationPath: os.tmpdir(),
           agentId: 'claude-code',
         });
 
@@ -5534,7 +5584,7 @@ describe('MCP Server Tools', () => {
 
       it('should start a process when workerId targets an embedded-agent worker (Issue #1574: notification-target parity)', async () => {
         const session = await sessionManager.createSession(
-          { type: 'quick', locationPath: '/test/path', agentId: 'claude-code' },
+          { type: 'quick', locationPath: os.tmpdir(), agentId: 'claude-code' },
           { createdBy: 'test-user-id' },
         );
         const embeddedWorker = await sessionManager.createWorker(session.id, {

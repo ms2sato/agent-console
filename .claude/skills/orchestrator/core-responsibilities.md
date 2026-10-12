@@ -326,6 +326,8 @@ MAIN_DIR=$(git worktree list | head -1 | awk '{print $1}')
 git -C "$MAIN_DIR" pull origin main
 ```
 
+`run_process` runs in the session's directory by default; pass `cwd` only to run elsewhere.
+
 **Why:** Keeping the main repository directory synchronized after each merge prevents worktrees from being based on stale code.
 
 ### 7c. Orchestrator Branch Sync
