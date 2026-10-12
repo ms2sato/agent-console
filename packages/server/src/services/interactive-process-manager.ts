@@ -34,11 +34,19 @@ function endStdinSafely(stdin: FileSink | null): void {
 /**
  * Signal the child. When it leads its own process group, signal the group so
  * descendants (`sh -c 'sleep 30 & wait'`) die with the shell; otherwise fall
- * back to the subprocess alone.
+ * back to the subprocess alone. The group is only signalled while the entry
+ * is still running: once the shell has exited its pid (and so the group id)
+ * may be reused by an unrelated process, and a negative-pid signal would hit
+ * that group.
  */
 function signalStored(stored: StoredProcess, signal: 9 | 15): void {
   const pid = stored.subprocess.pid;
-  if (stored.ownsProcessGroup && typeof pid === 'number' && pid > 0) {
+  if (
+    stored.ownsProcessGroup &&
+    stored.info.status === 'running' &&
+    typeof pid === 'number' &&
+    pid > 0
+  ) {
     try {
       process.kill(-pid, signal);
       return;

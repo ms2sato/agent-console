@@ -1,4 +1,4 @@
-import { describe, it, expect, mock, beforeEach, afterEach, type Mock } from 'bun:test';
+import { describe, it, expect, mock, spyOn, beforeEach, afterEach, type Mock } from 'bun:test';
 import {
   InteractiveProcessManager,
   MAX_PROCESSES_PER_SESSION,
@@ -724,12 +724,21 @@ describe('InteractiveProcessManager', () => {
       } catch {
         return false;
       }
+      // Without /proc a zombie cannot be told from a live process: fail loudly
+      // rather than reporting the grandchild as gone.
+      const fs = require('node:fs') as typeof import('node:fs');
+      if (!fs.existsSync('/proc/self/stat')) {
+        throw new Error('/proc is unavailable; cannot decide whether the grandchild is alive');
+      }
       // A killed grandchild may linger as a zombie until reaped; treat as gone.
       try {
-        const stat = require('node:fs').readFileSync(`/proc/${pid}/stat`, 'utf8') as string;
+        const stat = fs.readFileSync(`/proc/${pid}/stat`, 'utf8');
         return !stat.includes(') Z ');
-      } catch {
-        return false;
+      } catch (err) {
+        // Vanished between the liveness probe and the read: gone. Anything
+        // else (e.g. EACCES) is inconclusive and must not pass the test.
+        if ((err as NodeJS.ErrnoException).code === 'ENOENT') return false;
+        throw err;
       }
     }
 
@@ -760,6 +769,30 @@ describe('InteractiveProcessManager', () => {
         expect(await waitGone(grandchild, 1000)).toBe(true);
       } finally {
         if (isAlive(grandchild)) process.kill(grandchild, 'SIGKILL');
+      }
+    });
+
+    it('never signals the group of an entry whose shell has already exited', async () => {
+      const m = new InteractiveProcessManager(() => {}, () => {});
+      const started = await m.runProcess({
+        sessionId: 'session-gone',
+        workerId: 'worker-1',
+        command: 'exit 0',
+      });
+      const deadline = Date.now() + 5000;
+      while (Date.now() < deadline && m.getProcess(started.id)?.status !== 'exited') {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      expect(m.getProcess(started.id)?.status).toBe('exited');
+
+      const killSpy = spyOn(process, 'kill');
+      try {
+        m.deleteProcessesBySession('session-gone');
+        const negative = killSpy.mock.calls.filter(([pid]) => typeof pid === 'number' && pid < 0);
+        expect(negative).toEqual([]);
+      } finally {
+        killSpy.mockRestore();
+        m.disposeAll();
       }
     });
 
