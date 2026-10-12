@@ -796,6 +796,40 @@ describe('privilege-elevation', () => {
       expect(result.elevated).toBe(false);
     });
 
+    it('newProcessGroup on the direct branch sets detached and reports ownsProcessGroup', () => {
+      process.env.AUTH_MODE = 'none';
+      const captured: CapturedSpawn[] = [];
+      const result = spawnAsUser(
+        { username: null, command: 'echo hi', newProcessGroup: true },
+        makeFakeSpawnForSpawnAsUser(captured),
+      );
+      expect(captured[0].options?.detached).toBe(true);
+      expect(result.ownsProcessGroup).toBe(true);
+    });
+
+    it('omitting newProcessGroup leaves the spawn options and result unchanged', () => {
+      process.env.AUTH_MODE = 'none';
+      const captured: CapturedSpawn[] = [];
+      const result = spawnAsUser(
+        { username: null, command: 'echo hi' },
+        makeFakeSpawnForSpawnAsUser(captured),
+      );
+      expect(captured[0].options?.detached).toBeUndefined();
+      expect(result.ownsProcessGroup).toBe(false);
+    });
+
+    it('newProcessGroup is ignored on the elevated branch', () => {
+      process.env.AUTH_MODE = 'multi-user';
+      const captured: CapturedSpawn[] = [];
+      const result = spawnAsUser(
+        { username: `${serverUsername}-someone-else`, command: 'whoami', newProcessGroup: true },
+        makeFakeSpawnForSpawnAsUser(captured),
+      );
+      expect(result.elevated).toBe(true);
+      expect(captured[0].options?.detached).toBeUndefined();
+      expect(result.ownsProcessGroup).toBe(false);
+    });
+
     it('always sets stdin/stdout/stderr to "pipe" regardless of elevation', () => {
       const captured: CapturedSpawn[] = [];
       const fakeSpawn = makeFakeSpawnForSpawnAsUser(captured);

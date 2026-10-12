@@ -2,6 +2,8 @@ import type { InteractiveProcessInfo, InteractiveProcessOutputMode } from '@agen
 import type { Subprocess, FileSink } from 'bun';
 import { createLogger } from '../lib/logger.js';
 import { spawnAsUser, type SpawnAsUserFn } from './privilege-elevation.js';
+import { buildAgentConsoleEnv } from './agent-console-env.js';
+import { serverConfig } from '../lib/server-config.js';
 
 const logger = createLogger('interactive-process-manager');
 
@@ -29,10 +31,32 @@ function endStdinSafely(stdin: FileSink | null): void {
   }
 }
 
+/**
+ * Signal the child. When it leads its own process group, signal the group so
+ * descendants (`sh -c 'sleep 30 & wait'`) die with the shell; otherwise fall
+ * back to the subprocess alone.
+ */
+function signalStored(stored: StoredProcess, signal: 9 | 15): void {
+  const pid = stored.subprocess.pid;
+  if (stored.ownsProcessGroup && typeof pid === 'number' && pid > 0) {
+    try {
+      process.kill(-pid, signal);
+      return;
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'ESRCH') {
+        logger.warn({ err, pid }, 'Process group signal failed, signalling the shell only');
+      }
+    }
+  }
+  stored.subprocess.kill(signal);
+}
+
 interface StoredProcess {
   info: InteractiveProcessInfo;
   subprocess: Subprocess<'pipe', 'pipe', 'pipe'>;
   stdin: FileSink;
+  /** True when the child leads its own process group (direct branch only). */
+  ownsProcessGroup: boolean;
   /** Resolves when both stdout and stderr have been fully read and flushed. */
   streamsDone: Promise<void>;
   /** The single per-process timeout timer; cleared on every teardown path. */
@@ -97,6 +121,8 @@ export class InteractiveProcessManager {
    * testability; defaults to the production import.
    */
   private spawnAsUserFn: SpawnAsUserFn;
+  /** Origin the child dials back to, for its `AGENT_CONSOLE_BASE_URL` record. */
+  private getBaseUrl: () => string;
 
   constructor(
     onOutput: ProcessOutputCallback,
@@ -104,12 +130,14 @@ export class InteractiveProcessManager {
     ptyMessageInjector?: PtyMessageInjector,
     onResponse?: ProcessResponseCallback,
     spawnAsUserFn: SpawnAsUserFn = spawnAsUser,
+    getBaseUrl: () => string = () => `http://localhost:${serverConfig.PORT}`,
   ) {
     this.onOutput = onOutput;
     this.onExit = onExit;
     this.ptyMessageInjector = ptyMessageInjector;
     this.onResponse = onResponse;
     this.spawnAsUserFn = spawnAsUserFn;
+    this.getBaseUrl = getBaseUrl;
   }
 
   async runProcess(params: {
@@ -164,10 +192,16 @@ export class InteractiveProcessManager {
     // `AUTH_MODE !== 'multi-user'`, the helper bypasses elevation and spawns
     // `sh -c command` directly -- byte-identical to the prior raw
     // `Bun.spawn(['sh', '-c', command], { ... })` invocation.
-    const { subprocess, stdin } = this.spawnAsUserFn({
+    const { subprocess, stdin, ownsProcessGroup } = this.spawnAsUserFn({
       username: requestUser ?? null,
       command,
       cwd,
+      // Identity records only (BASE_URL / SESSION_ID / WORKER_ID): every
+      // descendant of the child inherits AGENT_CONSOLE_SESSION_ID, which is
+      // what the orphan-process sweep matches on. Nothing else about the
+      // child's environment changes.
+      env: buildAgentConsoleEnv({ baseUrl: this.getBaseUrl(), sessionId, workerId }),
+      newProcessGroup: true,
     });
 
     // Track stream completion so the exit handler can wait for all output to flush.
@@ -184,6 +218,7 @@ export class InteractiveProcessManager {
       info,
       subprocess,
       stdin,
+      ownsProcessGroup: ownsProcessGroup === true,
       streamsDone,
     };
     this.processes.set(id, stored);
@@ -199,7 +234,7 @@ export class InteractiveProcessManager {
       logger.warn({ processId: id, sessionId, timeoutSeconds }, 'Process timed out, killing');
       current.info.timedOut = true;
       try {
-        current.subprocess.kill(9);
+        signalStored(current, 9);
       } catch {
         // Process may have already exited
       }
@@ -330,7 +365,7 @@ export class InteractiveProcessManager {
     clearTimeout(stored.timeoutTimer);
 
     try {
-      stored.subprocess.kill(15); // SIGTERM
+      signalStored(stored, 15); // SIGTERM
     } catch {
       // Process may have already exited
     }
@@ -364,7 +399,7 @@ export class InteractiveProcessManager {
         this.clearOutputBuffer(id);
         clearTimeout(stored.timeoutTimer);
         try {
-          stored.subprocess.kill(15);
+          signalStored(stored, 15);
         } catch {
           // Process may have already exited
         }
@@ -388,7 +423,7 @@ export class InteractiveProcessManager {
     for (const stored of this.processes.values()) {
       clearTimeout(stored.timeoutTimer);
       try {
-        stored.subprocess.kill(15);
+        signalStored(stored, 15);
       } catch {
         // Process may have already exited
       }
