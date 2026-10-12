@@ -62,27 +62,6 @@ export class EmptyRepositoryError extends Error {
 }
 
 /**
- * Case-insensitive stderr substrings that mean `git rev-parse --verify
- * HEAD^{commit}` failed specifically because the repository has no commits
- * yet (unborn HEAD). Only a GitError whose stderr matches one of these is
- * translated to {@link EmptyRepositoryError}; every other GitError (e.g.
- * `detected dubious ownership`) is re-thrown unchanged so the caller sees
- * the real cause instead of a misleading empty-repository message.
- *
- * `unknown revision` is the stable substring of git's longer
- * `unknown revision or path not in the working tree` message.
- */
-const UNBORN_HEAD_STDERR_SIGNATURES = [
-  'needed a single revision',
-  'unknown revision',
-] as const;
-
-function isUnbornHeadStderr(stderr: string): boolean {
-  const lower = stderr.toLowerCase();
-  return UNBORN_HEAD_STDERR_SIGNATURES.some((signature) => lower.includes(signature));
-}
-
-/**
  * Timeout for `git worktree add` invocations that route through `runAsUser`.
  * Mirrors `HEAVY_GIT_TIMEOUT_MS` from `lib/git.ts` so the multi-user path has
  * the same wall-clock budget as the direct-spawn single-user path.
@@ -294,13 +273,13 @@ export class WorktreeService {
    * when the repo has no commits yet (unborn HEAD).
    *
    * Uses the same elevation pipeline as {@link createWorktree}: when
-   * `requestUsername` is provided in multi-user mode, `git rev-parse` runs as
+   * `requestUsername` is provided in multi-user mode, `git rev-list` runs as
    * that user via `runAsUser` (through `lib/git.ts:git()`), so the pre-check
    * sees the same repo state that the subsequent `git worktree add` will.
    * Because the source repo is owned by the server user, that first per-user
    * git invocation would fail with `fatal: detected dubious ownership` unless
    * the user's gitconfig already has a `safe.directory` entry. So the
-   * `safe.directory` bootstrap runs BEFORE the rev-parse when elevating; the
+   * `safe.directory` bootstrap runs BEFORE the rev-list when elevating; the
    * same (idempotent) bootstrap runs again inside {@link createWorktree}.
    *
    * Called before `git worktree add` from
@@ -308,14 +287,16 @@ export class WorktreeService {
    * actionable domain error instead of the raw `fatal: invalid reference:
    * main` git surfaces on an unborn HEAD.
    *
-   * @throws EmptyRepositoryError only when `git rev-parse --verify
-   *   HEAD^{commit}` fails with a GitError whose stderr matches a known
-   *   unborn-HEAD signature (see {@link UNBORN_HEAD_STDERR_SIGNATURES}); the
-   *   stderr is logged for diagnostics but the caller receives the fixed,
-   *   user-facing message.
-   * @throws GitError (re-thrown unchanged) for any other git failure, e.g.
+   * Detection is by reachable commits on ANY ref (`git rev-list --all
+   * --count`), not by local HEAD: a repo whose HEAD is unborn but that has
+   * fetched remote refs or tags can still create a worktree from those refs.
+   *
+   * @throws EmptyRepositoryError only when the count is `0`; the caller
+   *   receives the fixed, user-facing message.
+   * @throws GitError (re-thrown unchanged) for any git failure, e.g.
    *   `detected dubious ownership`, so the caller surfaces the real cause
-   *   rather than a misleading empty-repository message.
+   *   rather than a misleading empty-repository message. Unparsable output
+   *   is a plain Error, never an EmptyRepositoryError.
    */
   async ensureRepoHasCommits(
     repoPath: string,
@@ -323,23 +304,23 @@ export class WorktreeService {
   ): Promise<void> {
     // The source repo is server-owned, so the first per-user git invocation
     // would fail with dubious ownership unless safe.directory is bootstrapped
-    // first. Do it before the rev-parse pre-check so a fresh multi-user user
+    // first. Do it before the rev-list pre-check so a fresh multi-user user
     // does not get a false empty-repository error on their first worktree.
     if (shouldElevateForUser(requestUsername)) {
       await this.bootstrapSafeDirectoryForUser(requestUsername!, repoPath);
     }
 
-    try {
-      await git(['rev-parse', '--verify', 'HEAD^{commit}'], repoPath, undefined, requestUsername);
-    } catch (error) {
-      if (error instanceof GitError && isUnbornHeadStderr(error.stderr)) {
-        logger.warn(
-          { repoPath, stderr: error.stderr, exitCode: error.exitCode },
-          'Source repository has no commits (unborn HEAD); pre-check will surface actionable error',
-        );
-        throw new EmptyRepositoryError();
-      }
-      throw error;
+    const stdout = await git(['rev-list', '--all', '--count'], repoPath, undefined, requestUsername);
+    const trimmed = stdout.trim();
+    if (!/^\d+$/.test(trimmed)) {
+      throw new Error(`Unexpected output from git rev-list --all --count: ${JSON.stringify(stdout)}`);
+    }
+    if (Number(trimmed) === 0) {
+      logger.warn(
+        { repoPath },
+        'Source repository has no commits on any ref; pre-check will surface actionable error',
+      );
+      throw new EmptyRepositoryError();
     }
   }
 
