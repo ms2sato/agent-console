@@ -19,6 +19,7 @@ import type { EmbeddedAgentChatEntry } from './embedded-agent-store';
 import { RefreshIcon, AlertCircleIcon, CopyIcon, CheckIcon } from '../Icons';
 import { MessagePanel } from '../sessions/MessagePanel';
 import type { ConnectionStatus } from '../terminal/terminal-contract';
+import { UntrustedLink, untrustedUrlTransform } from '../ui/UntrustedMarkdownLink';
 import { PreviewPanel } from './PreviewPanel';
 import { ContextUsageBar } from './ContextUsageBar';
 import { TodoPanel } from './TodoPanel';
@@ -1248,12 +1249,17 @@ function ChatEntryRow({ entry, contextWindowTokens }: ChatEntryRowProps) {
             <Markdown
               remarkPlugins={[remarkGfm]}
               rehypePlugins={[rehypeSanitize]}
+              // Assistant text is agent-authored, so its links get the same
+              // discipline as the memo panel. `rehypeSanitize` runs on the
+              // hast before React renders, so the `a` override's `target` /
+              // `rel` are not stripped by it (pinned by the link tests).
+              urlTransform={untrustedUrlTransform}
               // Preview toggle activation is gated on finalized content only:
               // a still-streaming message may contain an unclosed fence, and
               // previewing partial/unsanitized-looking markup mid-stream is
-              // out of scope. `components: undefined` is identical to the
-              // pre-preview-toggle render for streaming entries.
-              components={!entry.streaming ? { pre: PreviewablePre } : undefined}
+              // out of scope. The link override applies to streaming entries
+              // too, since a link can be complete mid-stream.
+              components={{ a: UntrustedLink, ...(entry.streaming ? {} : { pre: PreviewablePre }) }}
             >
               {entry.text}
             </Markdown>
