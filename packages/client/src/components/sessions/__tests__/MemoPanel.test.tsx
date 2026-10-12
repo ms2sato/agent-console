@@ -147,6 +147,55 @@ describe('MemoPanel', () => {
     expect(screen.getByText('Hello Memo').tagName).toBe('H1');
   });
 
+  describe('memo links (agent-authored, untrusted)', () => {
+    async function renderMemo(content: string) {
+      mockFetch.mockResolvedValue(jsonResponse({ content }));
+      await renderWithRouter(<ControlledMemoPanel sessionId="session-1" />);
+      await waitFor(() => expect(document.querySelector('.memo-content')).toBeTruthy());
+    }
+
+    it('opens a prose link in a new tab with noopener noreferrer and shows the real host after the text', async () => {
+      await renderMemo('[something trustworthy](https://hostile.example/x)');
+
+      const anchor = await screen.findByRole('link', { name: 'something trustworthy' });
+      expect(anchor.getAttribute('href')).toBe('https://hostile.example/x');
+      expect(anchor.getAttribute('target')).toBe('_blank');
+      expect(anchor.getAttribute('rel')).toBe('noopener noreferrer');
+      expect(screen.getByText('(hostile.example)', { exact: false })).toBeTruthy();
+    });
+
+    it('adds no host suffix when the visible text already is the URL (autolink)', async () => {
+      await renderMemo('https://example.com/a');
+
+      const anchor = await screen.findByRole('link');
+      expect(anchor.getAttribute('target')).toBe('_blank');
+      expect(document.querySelector('.memo-content')?.textContent).not.toContain('(example.com)');
+    });
+
+    it('adds no host suffix when the visible text is the host itself', async () => {
+      await renderMemo('[example.com](https://example.com/a)');
+
+      await screen.findByRole('link', { name: 'example.com' });
+      expect(document.querySelector('.memo-content')?.textContent).not.toContain('(example.com)');
+    });
+
+    it('renders javascript:, relative, mailto: and fragment links as text with no href', async () => {
+      await renderMemo('[click](javascript:alert(1)) [rel](../x) [mail](mailto:a@b.example) [frag](#sec)');
+
+      await waitFor(() => expect(document.querySelector('.memo-content')?.textContent).toContain('click'));
+      expect(document.querySelector('.memo-content a')).toBeNull();
+      expect(document.querySelector('.memo-content')?.textContent).toContain('rel');
+      expect(document.querySelector('.memo-content')?.textContent).toContain('frag');
+    });
+
+    it('shows a confusable Unicode host in its Punycode form (homograph pin)', async () => {
+      await renderMemo('[pay here](https://аpple.example/login)'); // lang-check:allow
+
+      await screen.findByRole('link', { name: 'pay here' });
+      expect(document.querySelector('.memo-content')?.textContent).toContain('(xn--pple-43d.example)');
+    });
+  });
+
   it('collapses to a header row without a body, and can be re-expanded', async () => {
     mockFetch.mockResolvedValue(jsonResponse({ content: '# Hello Memo' }));
 

@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState } from 'react';
+import { isValidElement, useCallback, useRef, useState, type ReactNode } from 'react';
 import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
@@ -6,6 +6,47 @@ import { fetchSessionMemo, updateSessionMemo } from '../../lib/api';
 import { useAppWsEvent } from '../../hooks/useAppWs';
 import { sessionKeys } from '../../lib/query-keys';
 import { AccordionSectionBody } from './AccordionSectionBody';
+import { linkHost } from '../../lib/link-host';
+
+// A memo is agent-authored, so its links are untrusted: only absolute
+// http(s) URLs keep an href. react-markdown 10.x's `defaultUrlTransform`
+// already strips `javascript:`-class schemes; this allowlist makes the wall
+// ours and narrower (`mailto:` and relative paths are dropped too -- a memo
+// has no legitimate relative target in this panel), and is re-verified on
+// react-markdown bumps by the MemoPanel link tests. Returning '' makes
+// react-markdown render the link text without an href.
+function memoUrlTransform(url: string): string {
+  try {
+    const { protocol } = new URL(url);
+    return protocol === 'http:' || protocol === 'https:' ? url : '';
+  } catch {
+    return '';
+  }
+}
+
+function childrenText(children: ReactNode): string {
+  if (typeof children === 'string' || typeof children === 'number') return String(children);
+  if (Array.isArray(children)) return children.map(childrenText).join('');
+  if (isValidElement<{ children?: ReactNode }>(children)) return childrenText(children.props.children);
+  return '';
+}
+
+// The author's link text stays; the real destination host is appended unless
+// the visible text already is the URL or its host (an autolink or bare URL).
+function MemoLink({ href, tabIndex, children }: { href?: string; tabIndex?: number; children?: ReactNode }) {
+  // `memoUrlTransform` drops every non-http(s) href, fragment-only ones
+  // included, so an absent href is rendered as plain text.
+  if (!href) return <>{children}</>;
+  const host = linkHost(href);
+  const text = childrenText(children).trim();
+  const showHost = text !== href && text !== host && text !== href.replace(/\/$/, '');
+  return (
+    <>
+      <a href={href} target="_blank" rel="noopener noreferrer" tabIndex={tabIndex}>{children}</a>
+      {showHost && <span className="text-gray-500"> ({host})</span>}
+    </>
+  );
+}
 
 interface MemoPanelProps {
   sessionId: string;
@@ -275,7 +316,14 @@ export function MemoPanel({ sessionId, isExpanded, onToggleExpanded, onEnsureExp
         ) : (
           <Markdown
             remarkPlugins={[remarkGfm]}
-            components={{ a: (props) => <a {...props} tabIndex={isExpanded ? undefined : -1} /> }}
+            urlTransform={memoUrlTransform}
+            components={{
+              a: ({ href, children }) => (
+                <MemoLink href={href} tabIndex={isExpanded ? undefined : -1}>
+                  {children}
+                </MemoLink>
+              ),
+            }}
           >
             {content}
           </Markdown>
