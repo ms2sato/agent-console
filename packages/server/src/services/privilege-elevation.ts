@@ -206,13 +206,13 @@ export function buildSpawnArgs(
   command: string,
   preserveEnv: readonly string[],
   serverUsername: string,
-  authMode: string | undefined,
+  multiUser: boolean,
   cwd: string | undefined,
   env: Record<string, string> | undefined,
   newProcessGroup = false,
 ): { args: string[]; elevated: boolean } {
   const shouldElevate =
-    authMode === 'multi-user' &&
+    multiUser &&
     typeof username === 'string' &&
     username.length > 0 &&
     username !== serverUsername;
@@ -257,14 +257,13 @@ export async function runAsUser(
 ): Promise<RunAsUserResult> {
   const preserveEnv = opts.preserveEnv ?? [...DEFAULT_PRESERVE_ENV];
   const serverUsername = os.userInfo().username;
-  const authMode = isMultiUserAuthMode() ? 'multi-user' : undefined;
 
   const { args, elevated } = buildSpawnArgs(
     opts.username,
     opts.command,
     preserveEnv,
     serverUsername,
-    authMode,
+    isMultiUserAuthMode(),
     opts.cwd,
     opts.env,
   );
@@ -674,14 +673,13 @@ export function spawnAsUser(
 ): SpawnAsUserResult {
   const preserveEnv = opts.preserveEnv ?? [...DEFAULT_PRESERVE_ENV];
   const serverUsername = os.userInfo().username;
-  const authMode = isMultiUserAuthMode() ? 'multi-user' : undefined;
 
   const { args, elevated } = buildSpawnArgs(
     opts.username,
     opts.command,
     preserveEnv,
     serverUsername,
-    authMode,
+    isMultiUserAuthMode(),
     opts.cwd,
     opts.env,
     opts.newProcessGroup === true,
