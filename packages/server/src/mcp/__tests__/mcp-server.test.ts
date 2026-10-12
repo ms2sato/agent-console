@@ -46,6 +46,7 @@ import type { AgentDirectoryEntry, EmbeddedAgentDefinition, AppServerMessage } f
 import type { PersistedWorker } from '../../services/persistence-service.js';
 import type { runAsUser, SpawnAsUserFn, SpawnAsUserOpts } from '../../services/privilege-elevation.js';
 import { toSpawnAsUserResult, type FakeFileSink, type FakeSubprocess } from '../../__tests__/utils/fake-spawn-as-user.js';
+import { repositoryLookupFromSlug } from '../../__tests__/utils/repository-lookup-mock.js';
 
 // Mock session-metadata-suggester to avoid spawning real agent processes.
 // Declaring the parameter type makes `mock.calls` typed correctly so the
@@ -568,7 +569,7 @@ describe('MCP Server Tools', () => {
       mcpTokenRegistry: new McpTokenRegistry(),
       runAsUserImpl: fakeRunAsUserAlwaysSuccess,
       spawnAsUserFn: fakeEmbeddedSpawn.fn,
-      repositoryLookup: { getRepositorySlug: async (id: string) => repositoryManager?.getRepositorySlug(id) },
+      repositoryLookup: repositoryLookupFromSlug(async (id: string) => repositoryManager?.getRepositorySlug(id)),
       repositoryEnvLookup: {
         getRepositoryInfo: (id: string) => {
           const r = repositoryManager?.getRepository(id);

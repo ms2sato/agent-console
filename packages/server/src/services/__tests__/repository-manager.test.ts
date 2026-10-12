@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, spyOn } from 'bun:test';
 import * as fs from 'fs';
 import * as path from 'path';
 import type { Repository } from '@agent-console/shared';
@@ -998,6 +998,60 @@ describe('RepositoryManager', () => {
 
       const result = manager.getRepository('unknown-id');
       expect(result).toBeUndefined();
+    });
+  });
+
+  describe('withRegisteredRepository', () => {
+    it('rejects with RepositoryNotFoundError for an unknown id without running fn', async () => {
+      const manager = await getRepositoryManager();
+      let ran = false;
+
+      await expect(
+        manager.withRegisteredRepository('unknown-id', async () => {
+          ran = true;
+        }),
+      ).rejects.toThrow('Repository not found: unknown-id');
+      expect(ran).toBe(false);
+    });
+
+    it('runs fn with the registered repository and returns its result', async () => {
+      const manager = await getRepositoryManager();
+      const repo = await manager.registerRepository(TEST_REPO_DIR);
+
+      const result = await manager.withRegisteredRepository(repo.id, async (registered: Repository) => registered.id);
+
+      expect(result).toBe(repo.id);
+    });
+
+    it('queues fn behind an in-flight unregister and then rejects, because the row is gone by the time fn would run', async () => {
+      const manager = await getRepositoryManager();
+      const repo = await manager.registerRepository(TEST_REPO_DIR);
+
+      let releaseEnqueue!: () => void;
+      const enqueueGate = new Promise<void>((resolve) => { releaseEnqueue = resolve; });
+      let markEnqueueSeen!: () => void;
+      const enqueueSeen = new Promise<void>((resolve) => { markEnqueueSeen = resolve; });
+      const realEnqueue = testJobQueue!.enqueue.bind(testJobQueue!);
+      spyOn(testJobQueue!, 'enqueue').mockImplementation(async (type, payload, options) => {
+        markEnqueueSeen();
+        await enqueueGate;
+        return realEnqueue(type, payload, options);
+      });
+
+      const unregisterPromise = manager.unregisterRepository(repo.id);
+      await enqueueSeen;
+      let ran = false;
+      const guarded = manager.withRegisteredRepository(repo.id, async () => {
+        ran = true;
+      });
+      const guardedSettled = guarded.then(() => 'settled', () => 'settled');
+      await Promise.race([guardedSettled, new Promise((resolve) => setTimeout(resolve, 50))]);
+      expect(ran).toBe(false);
+
+      releaseEnqueue();
+      expect(await unregisterPromise).toBe(true);
+      await expect(guarded).rejects.toThrow(`Repository not found: ${repo.id}`);
+      expect(ran).toBe(false);
     });
   });
 

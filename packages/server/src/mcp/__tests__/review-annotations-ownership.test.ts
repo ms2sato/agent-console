@@ -48,6 +48,7 @@ import { AgentDirectory } from '../../services/agent-directory.js';
 import { createWorktreeWithSession } from '../../services/worktree-creation-service.js';
 import { deleteWorktree } from '../../services/worktree-deletion-service.js';
 import { initializeMcp, callTool, parseToolResult } from './mcp-protocol-test-helpers.js';
+import { repositoryLookupFromSlug } from '../../__tests__/utils/repository-lookup-mock.js';
 
 const TEST_CONFIG_DIR = '/test/config-1486-review-annotations';
 const TEST_REPO_PATH = '/test/repo-1486-review-annotations';
@@ -199,7 +200,7 @@ describe('review annotations ownership (write_review_annotations / clear_review_
       mcpTokenRegistry: new McpTokenRegistry(),
       annotationService,
       userRepository,
-      repositoryLookup: { getRepositorySlug: async (id: string) => repositoryManager?.getRepositorySlug(id) },
+      repositoryLookup: repositoryLookupFromSlug(async (id: string) => repositoryManager?.getRepositorySlug(id)),
       repositoryEnvLookup: {
         getRepositoryInfo: (id: string) => {
           const r = repositoryManager?.getRepository(id);

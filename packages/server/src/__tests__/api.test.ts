@@ -101,6 +101,7 @@ import { asAppContext, TEST_AUTH_USER, ensureTestAuthUser, mockOpen } from './te
 import { SingleUserMode } from '../services/user-mode.js';
 import { McpTokenRegistry } from '../mcp/mcp-auth.js';
 import { serverConfig } from '../lib/server-config.js';
+import { repositoryLookupFromSlug } from './utils/repository-lookup-mock.js';
 
 // =============================================================================
 // Test Setup
@@ -284,7 +285,7 @@ describe('API Routes Integration', () => {
         jobQueue: testJobQueue,
         agentManager: testAgentManager,
         mcpTokenRegistry: new McpTokenRegistry(),
-        repositoryLookup: { getRepositorySlug: async () => 'test-repo' },
+        repositoryLookup: repositoryLookupFromSlug(async () => 'test-repo'),
         repositoryEnvLookup: {
           getRepositoryInfo: () => ({ name: 'test-repo', path: '/test/repo' }),
           getWorktreeIndexNumber: async () => 0,

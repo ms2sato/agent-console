@@ -28,6 +28,7 @@ import { toSpawnAsUserResult, type FakeFileSink, type FakeSubprocess } from '../
 import { GENERIC_EMBEDDED_ACTIVATION_FAILURE_MESSAGE } from '../../services/embedded-agent-worker-service.js';
 import { serverConfig } from '../../lib/server-config.js';
 import type { McpPermissionScope } from '../../lib/mcp-server-permissions.js';
+import { repositoryLookupFromSlug } from '../../__tests__/utils/repository-lookup-mock.js';
 
 // Config dir is memfs-only; uploads target a per-uid /tmp dir by spec (see #821).
 // memfs hooks fs/promises so the route's mkdir lands in memfs, which we then
@@ -219,7 +220,7 @@ describe('Workers API', () => {
           return undefined;
         },
       },
-      repositoryLookup: { getRepositorySlug: async () => 'test-repo' },
+      repositoryLookup: repositoryLookupFromSlug(async () => 'test-repo'),
       repositoryEnvLookup: {
         getRepositoryInfo: () => ({ name: 'test-repo', path: '/test/repo' }),
         getWorktreeIndexNumber: async () => 0,

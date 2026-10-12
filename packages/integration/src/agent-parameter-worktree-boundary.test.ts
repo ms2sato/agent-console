@@ -163,6 +163,7 @@ describe('Cross-Package Boundary: model/reasoningEffort worker override through 
       interSessionMessageService: ctx.interSessionMessageService,
       repositoryLookup: {
         getRepositorySlug: (id) => ctx.repositoryManager.getRepositorySlug(id),
+        withRegisteredRepository: (id, fn) => ctx.repositoryManager.withRegisteredRepository(id, () => fn()),
       },
       repositoryEnvLookup: {
         getRepositoryInfo: (id) => {

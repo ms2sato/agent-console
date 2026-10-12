@@ -1287,62 +1287,74 @@ export class SessionManager {
 
     // Resolve scope+slug BEFORE inserting any DB row. Worktree sessions that
     // reference an unknown repository must fail fast (see design §6).
-    let dataScope: 'quick' | 'repository';
-    let dataScopeSlug: string | null;
-    if (request.type === 'worktree') {
-      const slug = await this.repositoryLookup.getRepositorySlug(request.repositoryId);
-      if (!slug) {
-        throw new RepositoryNotFoundError(request.repositoryId);
-      }
-      // Validate slug early with the dedicated pure validator — no filesystem
-      // coupling and no throw-for-side-effect anti-pattern.
-      if (!isValidSlug(slug)) {
-        throw new InvalidSessionDataScopeError(
-          `session slug ${JSON.stringify(slug)} does not match allowed pattern`
-        );
-      }
-      dataScope = 'repository';
-      dataScopeSlug = slug;
-    } else {
-      dataScope = 'quick';
-      dataScopeSlug = null;
-    }
+    const registerSession = (
+      dataScope: 'quick' | 'repository',
+      dataScopeSlug: string | null,
+    ): InternalSession => {
+      const baseSession = {
+        id,
+        locationPath: request.locationPath,
+        status: 'active' as const,
+        createdAt,
+        workers: new Map<string, InternalWorker>(),
+        initialPrompt: request.initialPrompt,
+        title: request.title,
+        parentSessionId: request.parentSessionId,
+        parentWorkerId: request.parentWorkerId,
+        createdBy: context?.createdBy,
+        initiatedBy: context?.initiatedBy,
+        templateVars: request.templateVars ?? context?.templateVars,
+        dataScope,
+        dataScopeSlug,
+        recoveryState: 'healthy' as const,
+        // In-memory carry of the SSH_AUTH_SOCK fallback for delegated
+        // worktree sessions. Read at PTY activation/revive time by
+        // WorkerLifecycleManager.
+        sshAuthSockFallback: context?.sshAuthSockFallback,
+      };
 
-    const baseSession = {
-      id,
-      locationPath: request.locationPath,
-      status: 'active' as const,
-      createdAt,
-      workers: new Map<string, InternalWorker>(),
-      initialPrompt: request.initialPrompt,
-      title: request.title,
-      parentSessionId: request.parentSessionId,
-      parentWorkerId: request.parentWorkerId,
-      createdBy: context?.createdBy,
-      initiatedBy: context?.initiatedBy,
-      templateVars: request.templateVars ?? context?.templateVars,
-      dataScope,
-      dataScopeSlug,
-      recoveryState: 'healthy' as const,
-      // In-memory carry of the SSH_AUTH_SOCK fallback for delegated
-      // worktree sessions. Read at PTY activation/revive time by
-      // WorkerLifecycleManager.
-      sshAuthSockFallback: context?.sshAuthSockFallback,
+      const internalSession: InternalSession = request.type === 'worktree'
+        ? {
+            ...baseSession,
+            type: 'worktree',
+            repositoryId: request.repositoryId,
+            worktreeId: request.worktreeId,
+          }
+        : {
+            ...baseSession,
+            type: 'quick',
+          };
+
+      this.sessions.set(id, internalSession);
+      return internalSession;
     };
 
-    const internalSession: InternalSession = request.type === 'worktree'
-      ? {
-          ...baseSession,
-          type: 'worktree',
-          repositoryId: request.repositoryId,
-          worktreeId: request.worktreeId,
+    let internalSession: InternalSession;
+    if (request.type === 'worktree') {
+      // Slug lookup and making the session visible to the unregister in-use
+      // check happen under the repository's lock, so a concurrent
+      // `unregisterRepository` either ran first (the row is gone and this
+      // throws `RepositoryNotFoundError`) or sees this session. Everything
+      // after it (worker creation, `git worktree add` upstream) stays
+      // outside the lock. Resume cannot race: a paused worktree session is a
+      // persisted row, which the in-use check already reads.
+      internalSession = await this.repositoryLookup.withRegisteredRepository(request.repositoryId, async () => {
+        const slug = await this.repositoryLookup.getRepositorySlug(request.repositoryId);
+        if (!slug) {
+          throw new RepositoryNotFoundError(request.repositoryId);
         }
-      : {
-          ...baseSession,
-          type: 'quick',
-        };
-
-    this.sessions.set(id, internalSession);
+        // Validate slug early with the dedicated pure validator -- no filesystem
+        // coupling and no throw-for-side-effect anti-pattern.
+        if (!isValidSlug(slug)) {
+          throw new InvalidSessionDataScopeError(
+            `session slug ${JSON.stringify(slug)} does not match allowed pattern`
+          );
+        }
+        return registerSession('repository', slug);
+      });
+    } else {
+      internalSession = registerSession('quick', null);
+    }
 
     // Create initial workers in parallel
     // Note: Each createWorker calls persistSession internally

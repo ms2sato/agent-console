@@ -121,6 +121,7 @@ describe('createWorktreeWithSession: shared-session Session.isShared derivation 
       sharedAccountLookup: sharedAccountRegistry,
       repositoryLookup: {
         getRepositorySlug: async (id) => (id === TEST_REPO_ID ? 'test-repo' : undefined),
+        withRegisteredRepository: (_id, fn) => fn(),
       },
       repositoryEnvLookup: {
         getRepositoryInfo: () => undefined,

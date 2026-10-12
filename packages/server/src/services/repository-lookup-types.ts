@@ -18,6 +18,16 @@ export interface RepositoryLookup {
    * remote (see `deriveRepositorySlug` in `lib/git.ts`).
    */
   getRepositorySlug(repositoryId: string): Promise<string | undefined>;
+
+  /**
+   * Run `fn` while holding the repository's lock, after re-reading that the
+   * repository is still registered; rejects with `RepositoryNotFoundError`
+   * otherwise. Session creation uses this so it serializes with
+   * `RepositoryManager.unregisterRepository` (see the lock table in
+   * `repository-manager.ts`). `fn` takes no argument: the registered
+   * repository itself is not needed by the caller.
+   */
+  withRegisteredRepository<T>(repositoryId: string, fn: () => Promise<T>): Promise<T>;
 }
 
 /**

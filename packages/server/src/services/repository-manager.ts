@@ -6,6 +6,7 @@ import { getConfigDir, getRepositoryDir, getSourceReposDir } from '../lib/config
 import { isUnderSourceReposDir } from '../lib/repository-remote.js';
 import { deriveRepositorySlug } from '../lib/git.js';
 import { createLogger } from '../lib/logger.js';
+import { RepositoryNotFoundError } from '../lib/errors.js';
 import { initializeDatabase } from '../database/connection.js';
 import type { RepositoryRepository, RepositoryUpdates } from '../repositories/repository-repository.js';
 import { SqliteRepositoryRepository } from '../repositories/sqlite-repository-repository.js';
@@ -192,6 +193,18 @@ export class RepositoryManager {
    *                                `this.repository.addOrchestratorSession`
    * - `removeOrchestratorSession()` `this.repositories.set`,                 locked
    *                                `this.repository.removeOrchestratorSession`
+   * - `withRegisteredRepository()` no write: reads `this.repositories`        locked,
+   *                                under the lock, then runs the caller's      read-then-create
+   *                                creation step (session creation)
+   *
+   * Session creation and unregister serialize on this lock. Unregister
+   * runs its in-use check, its cleanup enqueue and its row deletion inside
+   * it, so a creation that starts in that interval waits, then finds the
+   * row gone and fails with `RepositoryNotFoundError`; a creation that gets
+   * the lock first has its in-memory session visible to the in-use check.
+   * The repository row's absence after unregister is the durable
+   * "unregister in progress" marker: it outlives a restart, as does the
+   * queued cleanup job.
    */
   private async withRepositoryLock<T>(repositoryId: string, fn: () => Promise<T>): Promise<T> {
     const prev = this.locks.get(repositoryId) ?? Promise.resolve();
@@ -204,6 +217,26 @@ export class RepositoryManager {
         this.locks.delete(repositoryId);
       }
     }
+  }
+
+  /**
+   * Run `fn` with the repository's row read UNDER the per-repository lock,
+   * so a concurrent `unregisterRepository` cannot be between its in-use
+   * check and its row deletion while `fn` starts. Throws
+   * `RepositoryNotFoundError` when the row is absent (never registered, or
+   * already unregistered). The lock is deliberately not exposed on its own:
+   * callers get the re-read for free.
+   *
+   * Hold `fn` to the minimal check-then-register step (resolve the slug,
+   * make the session visible to the in-use check); it blocks unregister and
+   * the other locked mutations of this repository for its whole duration.
+   */
+  async withRegisteredRepository<T>(id: string, fn: (repo: Repository) => Promise<T>): Promise<T> {
+    return this.withRepositoryLock(id, async () => {
+      const repo = this.repositories.get(id);
+      if (!repo) throw new RepositoryNotFoundError(id);
+      return fn(repo);
+    });
   }
 
   /**

@@ -462,6 +462,7 @@ export async function createAppContext(
     memoService,
     repositoryLookup: {
       getRepositorySlug: (id) => repositoryManager.getRepositorySlug(id),
+      withRegisteredRepository: (id, fn) => repositoryManager.withRegisteredRepository(id, () => fn()),
     },
     repositoryEnvLookup: {
       getRepositoryInfo: (id) => {
@@ -945,6 +946,7 @@ export async function createTestContext(
     memoService,
     repositoryLookup: {
       getRepositorySlug: (id) => repositoryManager.getRepositorySlug(id),
+      withRegisteredRepository: (id, fn) => repositoryManager.withRegisteredRepository(id, () => fn()),
     },
     repositoryEnvLookup: {
       getRepositoryInfo: (id) => {

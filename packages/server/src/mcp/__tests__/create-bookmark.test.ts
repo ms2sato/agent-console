@@ -47,6 +47,7 @@ import { deleteWorktree } from '../../services/worktree-deletion-service.js';
 import { initializeMcp, callTool, parseToolResult } from './mcp-protocol-test-helpers.js';
 import type { BookmarkRepository } from '../../repositories/bookmark-repository.js';
 import type { AppServerMessage } from '@agent-console/shared';
+import { repositoryLookupFromSlug } from '../../__tests__/utils/repository-lookup-mock.js';
 
 const TEST_CONFIG_DIR = '/test/config-1390-create';
 const TEST_REPO_PATH = '/test/repo-1390';
@@ -149,7 +150,7 @@ describe('create_bookmark', () => {
       mcpTokenRegistry: new McpTokenRegistry(),
       annotationService: new AnnotationService(),
       userRepository,
-      repositoryLookup: { getRepositorySlug: async (id: string) => repositoryManager?.getRepositorySlug(id) },
+      repositoryLookup: repositoryLookupFromSlug(async (id: string) => repositoryManager?.getRepositorySlug(id)),
       repositoryEnvLookup: {
         getRepositoryInfo: (id: string) => {
           const r = repositoryManager?.getRepository(id);

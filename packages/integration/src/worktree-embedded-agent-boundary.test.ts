@@ -89,6 +89,7 @@ describe('createWorktreeWithSession: embedded-agent worker creation boundary', (
       annotationService: new AnnotationService(),
       repositoryLookup: {
         getRepositorySlug: async (id) => (id === TEST_REPO_ID ? 'test-repo' : undefined),
+        withRegisteredRepository: (_id, fn) => fn(),
       },
       repositoryEnvLookup: {
         getRepositoryInfo: () => undefined,
