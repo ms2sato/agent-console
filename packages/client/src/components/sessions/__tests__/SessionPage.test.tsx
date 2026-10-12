@@ -487,4 +487,28 @@ describe('SessionPage tab bar DOM structure (Issue #1608)', () => {
     await waitFor(() => expect(screen.getByRole('tab', { name: 'Agent' }).getAttribute('aria-selected')).toBe('true'));
     expect(screen.getByRole('tab', { name: 'Shell 1' }).getAttribute('aria-selected')).toBe('false');
   });
+
+  it('gives a closeable tab activator tight padding next to its close control, and a non-closeable activator its full padding with no close control (Issue #1945)', async () => {
+    await renderSessionPage();
+    await waitFor(() => expect(screen.getAllByRole('tab').length).toBe(2));
+
+    // Closeable tab (Terminal "Shell 1"): activator sits flush against its
+    // close control (pr-1), and the close control keeps its own padding
+    // (pr-3) rather than the old zero-padding (p-0).
+    const terminalTab = screen.getByRole('tab', { name: 'Shell 1' });
+    expect(terminalTab.className.includes('pr-1')).toBe(true);
+    expect(terminalTab.className.includes('pr-4')).toBe(false);
+
+    const closeButton = screen.getByRole('button', { name: 'Close tab' });
+    expect(closeButton.className.includes('pr-3')).toBe(true);
+    expect(closeButton.className.includes('p-0')).toBe(false);
+
+    // Non-closeable tab (primary agent "Agent"): activator keeps its full
+    // right padding, and there is no close control at all for it.
+    const agentTab = screen.getByRole('tab', { name: 'Agent' });
+    expect(agentTab.className.includes('pr-4')).toBe(true);
+
+    const closeButtons = screen.queryAllByRole('button', { name: 'Close tab' });
+    expect(closeButtons.length).toBe(1);
+  });
 });
