@@ -540,16 +540,14 @@ export class WorkerManager {
       ? agent.continueTemplate
       : agent.commandTemplate;
 
-    // NOTE: template selection above and the initialPrompt-injection gate
-    // below are two INDEPENDENT conditions, not one gated decision. A
-    // 'continue' startupIntent selects the continue template but does not
-    // itself suppress prompt injection -- if that template contains
-    // '{{prompt}}', a non-empty initialPrompt still gets written and
-    // injected. Unreachable for the builtin agent (its continueTemplate has
-    // no '{{prompt}}'), but reachable for a custom agent whose continue
-    // template does. This is a known, deliberately deferred design gap, not
-    // an oversight -- do not "fix" it inline without deciding what
-    // 'continue' should mean for such an agent first.
+    // NOTE: template selection above and the prompt-injection gate below are
+    // independent conditions, but the second is unreachable under
+    // `startupIntent === 'continue'`: a `continueTemplate` cannot contain
+    // `{{prompt}}` -- `packages/shared/src/schemas/agent.ts`
+    // (`continueTemplateValidation`) rejects it on create and update, and the
+    // builtin's continue template has none. The only unvalidated route is a
+    // hand-edited `agents.continue_template` row, which is operator
+    // tampering, not a product path.
 
     // Everything below can leave a partially-activated worker behind: the
     // prompt-file write and the MCP-token mint/write both attach state to
