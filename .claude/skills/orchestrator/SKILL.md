@@ -79,6 +79,8 @@ Execute these three steps in order before any other work:
 
 ### PR Merge Authority
 
+A run or dispatch prompt's explicit constraint (e.g. 'do not merge') overrides this skill's standing authority for that run.
+
 **Orchestrator can merge (no owner approval needed):**
 - Test-only changes (*.test.ts — new files or modifications to existing test files, no production code changes)
 - Documentation-only changes (*.md, skill definitions, agent definitions)

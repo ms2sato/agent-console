@@ -10,8 +10,10 @@
  *
  * Usage:
  *   node .claude/skills/orchestrator/acceptance-check.js <PR number>
+ *   node .claude/skills/orchestrator/acceptance-check.js <PR number> --answers <file.json>
  */
 
+import { readFileSync } from 'node:fs';
 import {
   exec,
   getChangedFiles,
@@ -38,8 +40,11 @@ import { getCodeRabbitHeadState } from './coderabbit-head-state.js';
 function usage() {
   console.error('Usage:');
   console.error('  node .claude/skills/orchestrator/acceptance-check.js <PR number>');
+  console.error('  node .claude/skills/orchestrator/acceptance-check.js <PR number> --answers <file.json>');
   console.error('');
-  console.error('This script runs a full interactive acceptance check (Q1-Q12).');
+  console.error('This script runs a full interactive acceptance check (Q1-Q13).');
+  console.error('--answers: non-interactive mode. <file.json> is an object keyed q1..q13 whose values');
+  console.error('are the answers; stdin is not read. A missing key counts as unanswered; an unknown key is an error.');
   console.error('For mechanical pre-merge checks, use preflight-check.js instead.');
   process.exit(1);
 }
@@ -674,6 +679,44 @@ function isAnsweredValue(answer) {
   return typeof answer === 'string' && answer.trim().length > 0;
 }
 
+const ANSWER_KEYS = Array.from({ length: 13 }, (_, i) => `q${i + 1}`);
+
+/**
+ * Rejects an answers map carrying a key that is not q1..q13. A typo such as
+ * `q9a` must fail loudly: silently ignoring it would turn the intended
+ * answer into "unanswered" with no hint of why.
+ *
+ * @param {Record<string, unknown>} answers
+ */
+function assertKnownAnswerKeys(answers) {
+  const unknown = Object.keys(answers).filter((k) => !ANSWER_KEYS.includes(k));
+  if (unknown.length > 0) {
+    throw new AnswersFileError(`Unknown key(s) in answers file: ${unknown.join(', ')} (expected keys: q1..q13)`);
+  }
+}
+
+class AnswersFileError extends Error {}
+
+/**
+ * Reads and validates an `--answers` file: a JSON object keyed q1..q13.
+ *
+ * @param {string} filePath
+ * @returns {Record<string, unknown>}
+ */
+function loadAnswersFile(filePath) {
+  let parsed;
+  try {
+    parsed = JSON.parse(readFileSync(filePath, 'utf8'));
+  } catch (err) {
+    throw new AnswersFileError(`Cannot read answers file ${filePath}: ${err.message}`);
+  }
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new AnswersFileError(`Answers file ${filePath} must contain a JSON object keyed q1..q13`);
+  }
+  assertKnownAnswerKeys(parsed);
+  return parsed;
+}
+
 function printSummary(answers, questions, { ciStatus } = {}) {
   console.log('=== Answer Summary ===');
   for (const q of questions) {
@@ -724,7 +767,8 @@ function printPostAcceptanceWorkflow() {
  *   pinned without live network access. Production callers never pass it.
  * @returns {Promise<{ exitCode: number, unanswered: string[], ciRetrievalFailed: boolean, ciNoChecksYet: boolean }>}
  */
-async function runWizard(prNumber, { stdin = process.stdin, autoDetection: injectedAutoDetection } = {}) {
+async function runWizard(prNumber, { stdin = process.stdin, autoDetection: injectedAutoDetection, answers: providedAnswers } = {}) {
+  if (providedAnswers !== undefined) assertKnownAnswerKeys(providedAnswers);
   console.log(`=== PR #${prNumber} Acceptance Check ===\n`);
 
   const autoDetection = injectedAutoDetection ?? runAutoDetection(prNumber);
@@ -748,11 +792,14 @@ async function runWizard(prNumber, { stdin = process.stdin, autoDetection: injec
   const codeRabbitDispositionRequired = !!headState && (headState.state === 'unreviewed' || headState.state === 'retrieval-failed');
   const questions = getQuestions(hasAcceptanceCriteria, { integrationTestMissing, languageCheckFailed, codeRabbitDispositionRequired });
   const answers = {};
-  const readResponse = createStdinReader(stdin);
+  // Non-interactive mode reads from the map and never touches stdin, so an
+  // answer cannot be consumed by the wrong question.
+  const readStdin = providedAnswers === undefined ? createStdinReader(stdin) : null;
+  const readResponse = async (key) => (readStdin ? readStdin() : providedAnswers[key]);
 
   for (const question of questions) {
     printQuestion(question);
-    const answer = await readResponse();
+    const answer = await readResponse(question.key);
     answers[question.key] = answer;
     if (isAnsweredValue(answer)) {
       console.log(`OK ${question.key.toUpperCase()} answered`);
@@ -833,6 +880,8 @@ async function runWizard(prNumber, { stdin = process.stdin, autoDetection: injec
 export {
   createStdinReader,
   runWizard,
+  loadAnswersFile,
+  AnswersFileError,
   getQuestions,
   printQuestion,
   printSummary,
@@ -850,17 +899,26 @@ export {
 
 const isMainModule = import.meta.url === `file://${process.argv[1]}` || process.argv[1]?.endsWith('acceptance-check.js');
 if (isMainModule) {
-  const prNumber = process.argv[2];
+  const args = process.argv.slice(2);
+  const answersFlagIdx = args.indexOf('--answers');
+  let answersPath;
+  if (answersFlagIdx !== -1) {
+    answersPath = args[answersFlagIdx + 1];
+    if (!answersPath) usage();
+    args.splice(answersFlagIdx, 2);
+  }
+  const prNumber = args[0];
 
-  if (!prNumber || !/^\d+$/.test(prNumber)) {
+  if (!prNumber || args.length !== 1 || !/^\d+$/.test(prNumber)) {
     usage();
   }
 
   let result;
   try {
-    result = await runWizard(prNumber);
+    const answers = answersPath === undefined ? undefined : loadAnswersFile(answersPath);
+    result = await runWizard(prNumber, { answers });
   } catch (err) {
-    if (!(err instanceof PrDiffRefResolutionError)) throw err;
+    if (!(err instanceof PrDiffRefResolutionError) && !(err instanceof AnswersFileError)) throw err;
     console.error(`Error: ${err.message}`);
     process.exit(1);
   }

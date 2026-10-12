@@ -1,5 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach, spyOn } from 'bun:test';
 import { Readable } from 'node:stream';
+import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
   categorizeFile,
   categorizeFiles,
@@ -14,6 +17,8 @@ import {
 import {
   createStdinReader,
   runWizard,
+  loadAnswersFile,
+  AnswersFileError,
   getQuestions,
   printQuestion,
   printSummary,
@@ -1522,5 +1527,142 @@ describe('runWizard — CodeRabbit head-state precondition', () => {
     await runWizard('999', { stdin, autoDetection });
     const output = logs.join('\n');
     expect(output).toContain('CodeRabbit head state could not be retrieved');
+  });
+});
+
+
+// --- runWizard / loadAnswersFile: non-interactive --answers mode ---
+//
+// Mutation reach (measured): removing the map read in runWizard (always
+// reading stdin) makes the full-map test fail, because the throwing stdin
+// is consulted. Removing assertKnownAnswerKeys makes the unknown-key tests
+// fail.
+
+describe('runWizard — --answers map (non-interactive)', () => {
+  let logSpy;
+
+  beforeEach(() => {
+    logSpy = spyOn(console, 'log').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    logSpy.mockRestore();
+  });
+
+  // A stdin that fails the test if anyone reads it: --answers must never
+  // touch stdin, which is what removes the ordering dependency.
+  function forbiddenStdin() {
+    return new Readable({
+      read() {
+        throw new Error('stdin must not be read in --answers mode');
+      },
+    });
+  }
+
+  function fullAnswers(n = 12) {
+    return Object.fromEntries(Array.from({ length: n }, (_, i) => [`q${i + 1}`, `real answer ${i + 1}`]));
+  }
+
+  it('full map: every question OK, exitCode 0, stdin untouched', async () => {
+    const result = await runWizard('999', {
+      stdin: forbiddenStdin(),
+      answers: fullAnswers(),
+      autoDetection: baseAutoDetectionForWizard(),
+    });
+    expect(result.exitCode).toBe(0);
+    expect(result.unanswered).toHaveLength(0);
+    const printed = logSpy.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(printed).toContain('OK Q1 answered');
+    expect(printed).toContain('OK Q12 answered');
+  });
+
+  it('each answer lands on its own question (no cross-feeding)', async () => {
+    const answers = fullAnswers();
+    delete answers.q5;
+    const result = await runWizard('999', {
+      stdin: forbiddenStdin(),
+      answers,
+      autoDetection: baseAutoDetectionForWizard(),
+    });
+    expect(result.unanswered).toEqual(['q5']);
+  });
+
+  it('a missing key is unanswered through the existing exit path', async () => {
+    const answers = fullAnswers();
+    delete answers.q3;
+    const result = await runWizard('999', {
+      stdin: forbiddenStdin(),
+      answers,
+      autoDetection: baseAutoDetectionForWizard(),
+    });
+    expect(result.exitCode).toBe(1);
+    expect(result.unanswered).toEqual(['q3']);
+    const printed = logSpy.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(printed).toContain('Q3 NOT answered');
+  });
+
+  it('empty map (boundary): every question unanswered, exitCode 1', async () => {
+    const result = await runWizard('999', {
+      stdin: forbiddenStdin(),
+      answers: {},
+      autoDetection: baseAutoDetectionForWizard(),
+    });
+    expect(result.exitCode).toBe(1);
+    expect(result.unanswered).toHaveLength(12);
+  });
+
+  it('whitespace-only and non-string values count as unanswered', async () => {
+    const answers = { ...fullAnswers(), q1: '   ', q2: 7 };
+    const result = await runWizard('999', {
+      stdin: forbiddenStdin(),
+      answers,
+      autoDetection: baseAutoDetectionForWizard(),
+    });
+    expect(result.unanswered).toEqual(['q1', 'q2']);
+  });
+
+  it('an unknown key is an error naming it, before any question is printed', async () => {
+    await expect(
+      runWizard('999', {
+        stdin: forbiddenStdin(),
+        answers: { ...fullAnswers(), q9a: 'typo', q14: 'x' },
+        autoDetection: baseAutoDetectionForWizard(),
+      }),
+    ).rejects.toThrow(/q9a, q14/);
+    expect(logSpy).not.toHaveBeenCalled();
+  });
+});
+
+describe('loadAnswersFile', () => {
+  let dir;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'answers-'));
+  });
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  function write(content) {
+    const path = join(dir, 'answers.json');
+    writeFileSync(path, content);
+    return path;
+  }
+
+  it('returns the parsed object', () => {
+    expect(loadAnswersFile(write('{"q1":"a","q13":"b"}'))).toEqual({ q1: 'a', q13: 'b' });
+  });
+
+  it('rejects an unknown key, naming it', () => {
+    expect(() => loadAnswersFile(write('{"q1":"a","qq":"b"}'))).toThrow(AnswersFileError);
+    expect(() => loadAnswersFile(write('{"q1":"a","qq":"b"}'))).toThrow(/qq/);
+  });
+
+  it('rejects a missing file, invalid JSON, and non-object JSON', () => {
+    expect(() => loadAnswersFile(join(dir, 'nope.json'))).toThrow(AnswersFileError);
+    expect(() => loadAnswersFile(write('{not json'))).toThrow(AnswersFileError);
+    expect(() => loadAnswersFile(write('["a"]'))).toThrow(/JSON object/);
+    expect(() => loadAnswersFile(write('null'))).toThrow(/JSON object/);
   });
 });

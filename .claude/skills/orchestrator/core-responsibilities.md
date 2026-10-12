@@ -196,6 +196,7 @@ When the orchestrator requests owner approval for a destructive or owner-judgmen
   run_process({ command: "node .claude/skills/orchestrator/acceptance-check.js <PR number>", cwd: "<repository root path>", sessionId: ..., workerId: ... })
   ```
   The script outputs auto-detection results and Q1 to STDOUT (delivered as `[internal:process]` notifications), then blocks on STDIN. Answer each question via `write_process_response` with concrete evidence (file names, line numbers, grep results). The script automatically advances to the next question after each answer. Do NOT start a check without running the script first.
+  - **Embedded Orchestrator: use the answers file.** The stdin wizard above is for a human terminal. An embedded Orchestrator answering through `write_process_response` can have a notification arrive out of order and feed one question's answer to another, so it writes a JSON file keyed `q1`..`q13` (values are the answers) and runs `node .claude/skills/orchestrator/acceptance-check.js <PR number> --answers <file.json>`. The script then reads no stdin; a missing key counts as unanswered (the run exits non-zero), and an unknown key is an error naming it.
 - **Purpose**: Verify that the delegated work meets the original Issue requirements and delegation instructions
 - **Key principles**:
   - List domain invariants yourself — "What must be true for this change to be correct?"
