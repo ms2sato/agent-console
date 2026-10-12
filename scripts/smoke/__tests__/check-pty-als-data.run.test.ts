@@ -5,7 +5,7 @@ import * as path from 'node:path';
  * CI wrapper for `check-pty-als-data.ts` (Issue #1872, widening the #1871
  * pattern). This smoke is FREE AND DETERMINISTIC (no billed CLI, no
  * elevation, no OS subprocess side effects left behind -- see the smoke's
- * own header and its `test-trigger.md` "Additional Verification: PTY +
+ * own header and its `smoke-verification-server.md` "Additional Verification: PTY +
  * AsyncLocalStorage Data-Delivery Regression Smoke" section), which is
  * exactly what makes it safe to run from `bun:test` under `test:scripts`
  * rather than leaving it a manual-only gate. See

@@ -5,14 +5,15 @@ import { discoverSmokeFiles, hasEntryPointGuard } from './smoke-entry-points.js'
 
 /**
  * Reachability pin for Issue #1637: `scripts/smoke/*` has exactly one way
- * to be registered (an Additional Verification section in
- * `.claude/rules/test-trigger.md`) and exactly one way to be invoked
+ * to be registered (an Additional Verification section in one of the
+ * `.claude/rules/smoke-verification-*.md` domain rules) and exactly one way to be invoked
  * (`bun scripts/smoke/<file>`, no `package.json` `check:` alias). This file
  * mechanically enforces every part of that contract:
  *
  *   1. Every `scripts/smoke/*.{ts,mjs}` basename (except a documented
  *      non-entry-point exception) must have its EXACT `bun scripts/smoke/
- *      <file>` invocation string present in `test-trigger.md`, not merely
+ *      <file>` invocation string present in the registry rules (`test-trigger.md`
+ *      and the three `smoke-verification-*.md` files), not merely
  *      the filename -- a script nobody can find is a script nobody re-runs
  *      (Issue #671), and a filename that appears without its runnable
  *      command is exactly as unreachable in practice.
@@ -37,6 +38,14 @@ import { discoverSmokeFiles, hasEntryPointGuard } from './smoke-entry-points.js'
 
 const REPO_ROOT = path.resolve(import.meta.dir, '../../..');
 const TEST_TRIGGER_MD_PATH = path.join(REPO_ROOT, '.claude/rules/test-trigger.md');
+// The core rule plus the three domain rules the per-smoke sections were split
+// into; an invocation string may live in any of them.
+const REGISTRY_PATHS = [
+  TEST_TRIGGER_MD_PATH,
+  path.join(REPO_ROOT, '.claude/rules/smoke-verification-embedded.md'),
+  path.join(REPO_ROOT, '.claude/rules/smoke-verification-sdk-probes.md'),
+  path.join(REPO_ROOT, '.claude/rules/smoke-verification-server.md'),
+];
 const PACKAGE_JSON_PATH = path.join(REPO_ROOT, 'package.json');
 
 /**
@@ -76,8 +85,9 @@ function walkFiles(dir: string, exts: string[], opts: { excludeTestFiles?: boole
   return results;
 }
 
-describe('scripts/smoke/* registered in test-trigger.md (Issue #1637)', () => {
+describe('scripts/smoke/* registered in the smoke registry rules (Issue #1637)', () => {
   const testTriggerContent = readFileSync(TEST_TRIGGER_MD_PATH, 'utf-8');
+  const registryContent = REGISTRY_PATHS.map((p) => readFileSync(p, 'utf-8')).join('\n');
   const smokeFiles = discoverSmokeFiles();
 
   it('discovers a non-trivial number of smoke scripts (the discovery glob itself is not silently empty)', () => {
@@ -110,8 +120,8 @@ describe('scripts/smoke/* registered in test-trigger.md (Issue #1637)', () => {
     // #1 on PR #1693; measured by deleting one section's invocation
     // sentence and confirming the corresponding test failed before
     // restoring it).
-    it(`${file} has its exact \`bun scripts/smoke/${file}\` invocation in test-trigger.md`, () => {
-      expect(testTriggerContent).toContain(`bun scripts/smoke/${file}`);
+    it(`${file} has its exact \`bun scripts/smoke/${file}\` invocation in the registry rules`, () => {
+      expect(registryContent).toContain(`bun scripts/smoke/${file}`);
     });
   }
 

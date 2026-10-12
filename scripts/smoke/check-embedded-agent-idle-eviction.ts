@@ -63,7 +63,7 @@
  * usage -- this is a manual tool, never a CI gate.
  *
  * It is nonetheless registered: this file's own Additional Verification
- * section in `.claude/rules/test-trigger.md` names the files that oblige a
+ * section in `.claude/rules/smoke-verification-embedded.md` names the files that oblige a
  * run, and `bun scripts/smoke/check-embedded-agent-idle-eviction.ts` is the
  * one way to invoke it.
  * Being manual is a reason not to wire it into CI; it is not a reason to

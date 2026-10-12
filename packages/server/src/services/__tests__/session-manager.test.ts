@@ -7887,7 +7887,7 @@ describe('SessionManager', () => {
       expect(session.initialPromptDelivered).toBe(true);
       // Baseline taken AFTER creation, which legitimately wrote the prompt
       // file once. This test protects against a SECOND write on restart, not
-      // "zero writes ever" -- test-trigger.md's unscoped-presence discipline:
+      // "zero writes ever" -- smoke-verification-embedded.md's unscoped-presence discipline:
       // a bare "writeCalls is empty" assertion would be wrong here.
       const baselineWriteCalls = writeCalls.length;
 

@@ -121,7 +121,7 @@
  * OS user; `bun install` already run; `git` on PATH (P-b's scratch repo).
  * BILLABLE -- roughly 4 small turns (P-a: baseline + tool-call; P-b: subject
  * + control). A manual gate, never a CI job; registered in
- * `.claude/rules/test-trigger.md`.
+ * `.claude/rules/smoke-verification-sdk-probes.md`.
  *
  * 2026-09-21 run note. The first real run of this probe (2026-09-21, exit 0,
  * P-a: LIVE ADD WORKS, P-b: OPTIONS.AGENTS WORKS, no STOP) had its stdout log

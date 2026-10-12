@@ -118,7 +118,7 @@ const SCRIPT_NAME = 'check-fatal-incarnation-replacement';
  * inside its own or the invoking user's own home, never a shared/system
  * path).
  *
- * Not auto-pruned: see this script's `test-trigger.md` section for the
+ * Not auto-pruned: see this script's `smoke-verification-embedded.md` section for the
  * stated lifetime and why.
  *
  * Exported so `check-fatal-incarnation-replacement-artifact-capture.ts` can

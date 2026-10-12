@@ -17,7 +17,7 @@
  * conversation from the persisted NDJSON log and feeds it to the provider as
  * a fresh `messages` array (`docs/design/embedded-agent-worker.md` "Transcript
  * Restore"). That reconstruction path has a real bug history --
- * `.claude/rules/test-trigger.md`'s "the conversation must use a tool"
+ * `.claude/rules/smoke-verification-embedded.md`'s "the conversation must use a tool"
  * section documents a `claude-sdk` restore defect that a text-only planting
  * turn could not have caught -- so this script exists specifically to drive
  * a tool-using turn through the `openai-api` reconstruction path across a
@@ -62,18 +62,18 @@
  *     - A message to the evicted A returns `ok`, A gets a live subprocess
  *       again, and the reply RECALLS A NONCE planted before the eviction
  *       THROUGH A TOOL-USING TURN -- the shape the restore defect needed to
- *       reproduce, per `test-trigger.md`.
+ *       reproduce, per `smoke-verification-embedded.md`.
  *     - The recall turn emits NO `tool-call` -- the nonce file is deleted
  *       right after the planting turn uses it, so a recall that came from
  *       re-reading the file rather than from the reconstructed conversation
  *       is closed off, and this assertion is what measures that it stayed
- *       closed (`test-trigger.md`'s "second route" requirement).
+ *       closed (`smoke-verification-embedded.md`'s "second route" requirement).
  *
  *   Recall control (this is what makes the recall attributable to resume
  *   rather than to the question being guessable): B, which never heard the
  *   nonce, is asked the SAME question and must answer UNKNOWN, with no
  *   tool-call of its own. Chosen over "a never-true fact asked of the same
- *   worker" per `test-trigger.md`'s standing table -- the threat here is
+ *   worker" per `smoke-verification-embedded.md`'s standing table -- the threat here is
  *   guessability (a second worker sharing the filesystem could always read
  *   the file back before it's deleted), not confabulation by a resumed
  *   worker, since `openai-api` has no resumed-session concept to confabulate
@@ -98,7 +98,7 @@
  *      conversation (the planting turn's tool-result is already IN that
  *      conversation, per `restoredMessageCount`) without bothering to
  *      re-invoke a tool it did not need. So on this one sample the mutation
- *      was not caught, and per `test-trigger.md`'s own closing lesson on
+ *      was not caught, and per `smoke-verification-embedded.md`'s own closing lesson on
  *      recall assertions ("a green run there was a fact about one sampling
  *      of a non-deterministic answer, not a fact about the assertion"), this
  *      is recorded as an inconclusive single sample, not as "the pin has no
@@ -120,7 +120,7 @@
  *   4. `waitForReady`'s baseline scoping (CodeRabbit finding on this PR,
  *      addressed after the initial version shipped `events.some(e => e.type
  *      === 'ready')` unscoped -- exactly the unsafe spelling
- *      `test-trigger.md` names). Mutation-measured, twice, against a real
+ *      `smoke-verification-embedded.md` names). Mutation-measured, twice, against a real
  *      run: reverting to the unscoped form does NOT fail either of A's or
  *      B's current calls, because both baselines are 0 on a fresh session
  *      and there is no earlier `ready` for the unscoped form to be
@@ -135,7 +135,7 @@
  * but real money -- this is a manual tool, never a CI gate.
  *
  * It is nonetheless registered: this file's own Additional Verification
- * section in `.claude/rules/test-trigger.md` names the files that oblige a
+ * section in `.claude/rules/smoke-verification-embedded.md` names the files that oblige a
  * run, and `bun scripts/smoke/check-embedded-agent-idle-eviction-openai-api.ts`
  * is the one way to invoke it.
  *
@@ -190,7 +190,7 @@ import type { AppContext } from '../../packages/server/src/app-context.js';
 const NONCE = `NARWHAL-${Math.floor(Math.random() * 9000 + 1000)}`;
 /**
  * The file the planting turn reads. Routed through a tool rather than carried
- * in the turn's own text, per `test-trigger.md`'s "the conversation must use
+ * in the turn's own text, per `smoke-verification-embedded.md`'s "the conversation must use
  * a tool" -- a text-only exchange cannot exercise the event order the
  * `openai-api` reconstruction path has previously mishandled.
  */
@@ -452,7 +452,7 @@ async function main(): Promise<void> {
     };
 
     // `from` is REQUIRED, not defaulted to 0 -- a default would silently
-    // reintroduce the unsafe unscoped spelling `test-trigger.md` names
+    // reintroduce the unsafe unscoped spelling `smoke-verification-embedded.md` names
     // (`events.some(e => e.type === 'ready')`) at any future call site that
     // forgets to pass it, especially one added after a revival, where an
     // earlier incarnation's `ready` would satisfy the check having observed

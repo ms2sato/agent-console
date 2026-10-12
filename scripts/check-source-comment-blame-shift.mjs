@@ -19,12 +19,12 @@
  * whose entire reason for existing IS a specific, named defect (a smoke
  * script's docstring citing the Issue it reproduces, a measurement date,
  * the PR that fixed or is fixing it). There the pointer is not standing in
- * for an explanation; it IS the record, and `test-trigger.md`'s
+ * for an explanation; it IS the record, and `smoke-verification-*.md`'s
  * "Additional Verification" sections require exactly this kind of
  * citation. Directory is used as a proxy for this genre (every file under
  * `scripts/smoke/**` is excluded below, citing this same requirement), but
  * the genre is the actual ground: a file living outside `scripts/smoke/`
- * whose own subject is a specific defect (and which `test-trigger.md`
+ * whose own subject is a specific defect (and which `smoke-verification-*.md`
  * registers as a smoke-class check) is excluded by name instead of
  * rewritten — see EXCLUDED_FILES below.
  *
@@ -112,13 +112,13 @@ const DEFAULT_GLOBS = [
 
 /**
  * Files excluded by name rather than by the scripts/smoke directory proxy
- * below, because their verification-provenance genre (test-trigger.md's
+ * below, because their verification-provenance genre (smoke-verification-*.md's
  * "Additional Verification" registration — a script whose subject IS a
  * specific defect) applies even though they live outside scripts/smoke/.
- * Each entry states its test-trigger.md registration as the reason.
+ * Each entry states its smoke-verification-*.md registration as the reason.
  */
 export const EXCLUDED_FILES = new Set([
-  // Registered in test-trigger.md as "Additional Verification: Preview
+  // Registered in smoke-verification-server.md as "Additional Verification: Preview
   // Sandbox Real-Browser Check" — the script's entire subject is Issue
   // 1162's known mXSS gap (a real-Chromium regression runner that
   // deliberately does NOT fix the gap, only documents/regression-guards

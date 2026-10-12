@@ -155,7 +155,7 @@ const NONCE = `NARWHAL-${Math.floor(Math.random() * 9000 + 1000)}`;
 /**
  * The file the planting turn reads. Routed through a tool rather than
  * carried in the message text itself, per
- * `.claude/rules/test-trigger.md`'s "the conversation must use a tool" rule
+ * `.claude/rules/smoke-verification-embedded.md`'s "the conversation must use a tool" rule
  * -- a text-only exchange cannot exercise the event order a tool-using turn
  * writes.
  */
@@ -559,7 +559,7 @@ async function main(): Promise<void> {
         'POLARITY: A: zero `exited` rows within a 5s bounded poll (the pre-restart incarnation was never torn down)',
         `got ${aExitedCountPolarity}`,
       );
-      // KNOWN GAP, under its own tracked Issue (see test-trigger.md's
+      // KNOWN GAP, under its own tracked Issue (see smoke-verification-embedded.md's
       // "Restart-All Embedded-Worker Real-Provider E2E" section for the
       // current status): on the real tree, B's `exited` row is reliably
       // invisible to this poll even though B actually is restarted -- unlike

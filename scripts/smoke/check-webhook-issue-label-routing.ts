@@ -794,7 +794,7 @@ async function main(): Promise<void> {
     );
     // Exact wording confirmed by reading resolve-targets.ts's
     // resolveIssueLabeledTargets log call directly (see this smoke's
-    // registration entry in test-trigger.md for the citation).
+    // registration entry in smoke-verification-server.md for the citation).
     expect(
       stdoutBuf.includes("issue:labeled event did not match repository's configured trigger labels"),
       "SCENARIO 2: server stdout contains resolve-targets.ts's non-match log message",

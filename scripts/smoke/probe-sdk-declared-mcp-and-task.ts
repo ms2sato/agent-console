@@ -140,7 +140,7 @@
  * OS user; a User-scope `chrome-devtools` MCP server in `~/.claude.json`
  * (P0's seed and P2's declared server); `bun install` already run. BILLABLE
  * -- about 8 small turns across the four arms. A manual gate, never a CI
- * job; registered in `.claude/rules/test-trigger.md`.
+ * job; registered in `.claude/rules/smoke-verification-sdk-probes.md`.
  *
  * Usage: bun scripts/smoke/probe-sdk-declared-mcp-and-task.ts [--p0] [--p1] [--p2] [--p3] [--continue-after-leak]
  */

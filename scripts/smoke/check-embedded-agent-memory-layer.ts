@@ -27,7 +27,7 @@
  *      "org/repo" slug (repo1, real `origin` remote) and a one-segment
  *      basename slug (repo2, no remote).
  *   2. A real turn that plants a fact via a TOOL call (never chat text, per
- *      `.claude/rules/test-trigger.md`'s "the conversation must use a tool"
+ *      `.claude/rules/smoke-verification-embedded.md`'s "the conversation must use a tool"
  *      rule) actually creates a topic file under that memory directory
  *      containing the fact, adds a one-line MEMORY.md index pointer to it
  *      (never the fact itself), and never writes the fact into MEMORY.md.
@@ -200,7 +200,7 @@ const NONCE_FILE = 'qa-note.txt';
  * `env | sort`, `ls ~/.claude/projects/<slug>/memory`, ...) and hit `runTurn`'s
  * 120 s deadline -- exit 2, a harness abort, not the polarity verdict the
  * arm exists to produce. The prompt had presupposed an instruction the flag
- * removes, the same class as test-trigger.md's "the secret word I told you"
+ * removes, the same class as smoke-verification-embedded.md's "the secret word I told you"
  * lesson. Keeping a single prompt (rather than a per-mode one) preserves
  * the spec's "same sequence" polarity; the conditional lets the flag's arm
  * read the file and stop.

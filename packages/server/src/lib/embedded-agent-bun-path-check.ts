@@ -214,7 +214,7 @@ const SETUP_SCRIPT_FIX = 're-run scripts/setup-multiuser-for-ubuntu.sh';
  * for anything that looks wrong. Never throws; a warning is the strongest
  * signal this function ever produces.
  *
- * Warning-count table (see `.claude/rules/test-trigger.md`'s "Idle Eviction"
+ * Warning-count table (see `.claude/rules/smoke-verification-embedded.md`'s "Idle Eviction"
  * siblings for the shape this pattern follows -- exhaustive branch coverage
  * pinned in the sibling test file):
  *   - same identity      + other-executable true                 -> 0 warnings (happy path)

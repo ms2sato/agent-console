@@ -4,7 +4,7 @@
  * compaction boundary retain conversation-local identifiers that were stated
  * as ORDINARY FACTS, with NO preservation coaching, before the boundary
  * fired? Measurement only -- this script never changes production behavior
- * and is not wired into CI (manual gate; see the `test-trigger.md` section
+ * and is not wired into CI (manual gate; see the `smoke-verification-sdk-probes.md` section
  * this script's own header asks a reader to register alongside it).
  *
  * WHY `openai-api`, NOT `claude-sdk`. `DEFAULT_COMPACTION_PROMPT` /

@@ -37,7 +37,7 @@
  * marker is appended in place, and the pre-corruption rows remain readable
  * through the ordinary history read. A third test drives a SECOND restart
  * after that failure, with a tool-using turn in the post-marker
- * conversation (test-trigger.md's "the conversation must use a tool" rule),
+ * conversation (smoke-verification-embedded.md's "the conversation must use a tool" rule),
  * and asserts reconstruction SUCCEEDS this time -- R2's guarantee that a
  * restore failure is a one-time loss, not a permanent loop.
  *
@@ -669,7 +669,7 @@ describe('Client-Server Boundary: restore-info WorkerServerMessage (Transcript R
       // Reuses the exact corruption technique from the GENUINE-failure test
       // above to reach the primary-path marker, then drives a THIRD
       // activation whose conversation includes a real builtin `Read` tool
-      // call (test-trigger.md's "the conversation must use a tool" rule),
+      // call (smoke-verification-embedded.md's "the conversation must use a tool" rule),
       // then a FOURTH activation to confirm THAT restores successfully --
       // this is R2's guarantee under test: the marker turns a corrupt
       // region into a one-time loss, not a permanent restore-failure loop.
@@ -844,7 +844,7 @@ describe('Client-Server Boundary: restore-info WorkerServerMessage (Transcript R
 
       // Scoped to events AT OR AFTER `sinceIndex` -- an unscoped scan across
       // the whole cumulative history would be satisfied by an EARLIER
-      // activation's already-completed turn (test-trigger.md's absence/
+      // activation's already-completed turn (smoke-verification-embedded.md's absence/
       // presence-scoping rule), which is exactly the trap here: activation 1
       // already has an assistant-message followed by state:idle, so an
       // unscoped check would return immediately without ever observing
