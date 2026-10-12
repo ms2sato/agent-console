@@ -642,7 +642,8 @@ data_root_ownership() {
 #
 # Markers (stdout line 1): DRIFT_NONE | DRIFT_MISSING:<key,...> (return 1) |
 # DRIFT_EXECSTART (return 0 with a `WARN:` line on stderr -- promoted to a
-# hard FAIL by V3, which compares the running binary itself). Lines 2+ are
+# hard FAIL by V3 for the wrapper process's binary; the child that spawns
+# workers is V6's). Lines 2+ are
 # the live `KEY=VALUE` pairs for every template key that IS present, so the
 # caller can pass e.g. EMBEDDED_AGENT_BUN_PATH's live value down to V3 from
 # this single read.
@@ -806,6 +807,16 @@ entry_path_readable() {
 # V1). The comparison itself is the production `compareBinaryIdentity`
 # (packages/server/src/lib/embedded-agent-bun-path-check.ts), reached through
 # the sibling entry embedded-agent-bun-identity.ts, which prints ONE marker.
+#
+# BOUNDARY: `MainPID` is the `bun run start` wrapper, and because
+# `ExecStart={{BUN_PATH}} run start` execs that path directly,
+# `/proc/<MainPID>/exe` always resolves to the configured bun -- this check
+# cannot fail on that axis. The server logic (`bun dist/index.js`) that
+# actually spawns embedded-agent workers is a SEPARATE child process this
+# check never inspects; its binary identity is verified by V6's journal
+# digest, which reads the server's own boot-time WARN from
+# `packages/server/src/lib/embedded-agent-bun-path-check.ts` (the mechanism
+# that caught #1776). V3 therefore guarantees the WRAPPER's identity only.
 #
 # `/proc/<pid>/exe` is PTRACE_MODE_READ-gated: without CAP_SYS_PTRACE the
 # reader must share BOTH the uid and the gid of the target (measured on the
