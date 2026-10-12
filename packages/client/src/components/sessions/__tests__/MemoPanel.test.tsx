@@ -179,6 +179,13 @@ describe('MemoPanel', () => {
       expect(document.querySelector('.memo-content')?.textContent).not.toContain('(example.com)');
     });
 
+    it('adds no host suffix when the host is the link text wrapped in emphasis (shared UntrustedLink reads nested children)', async () => {
+      await renderMemo('[**example.com**](https://example.com/a)');
+
+      await screen.findByRole('link', { name: 'example.com' });
+      expect(document.querySelector('.memo-content')?.textContent).not.toContain('(example.com)');
+    });
+
     it('renders javascript:, relative, mailto: and fragment links as text with no href', async () => {
       await renderMemo('[click](javascript:alert(1)) [rel](../x) [mail](mailto:a@b.example) [frag](#sec)');
 

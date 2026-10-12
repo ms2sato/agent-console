@@ -826,6 +826,57 @@ describe('EmbeddedAgentWorkerView', () => {
       expect(link.getAttribute('href')).toBe('https://example.com');
     });
 
+    describe('links in assistant markdown are untrusted (same discipline as memo links)', () => {
+      async function renderAssistantText(sessionId: string, kind: 'assistant-message' | 'assistant-delta', text: string) {
+        const view = renderView({ sessionId, workerId: `${sessionId}-w` });
+        const ws = MockWebSocket.getLastInstance();
+        act(() => {
+          ws?.simulateOpen();
+        });
+        const data = ndjson({ v: 1, type: kind, turnId: 't1', text });
+        act(() => {
+          ws?.simulateMessage(JSON.stringify({ type: 'history', data, offset: data.length, startOffset: 0, epoch: 1 }));
+        });
+        await flush();
+        return view;
+      }
+
+      it('finalized message: target=_blank, rel=noopener noreferrer and the real host after the text', async () => {
+        const { container } = await renderAssistantText('s10l1', 'assistant-message', '[trusted-looking](https://hostile.example/p)');
+
+        const link = screen.getByRole('link', { name: 'trusted-looking' }) as HTMLAnchorElement;
+        expect(link.getAttribute('href')).toBe('https://hostile.example/p');
+        expect(link.getAttribute('target')).toBe('_blank');
+        expect(link.getAttribute('rel')).toBe('noopener noreferrer');
+        expect(container.textContent).toContain('(hostile.example)');
+      });
+
+      it('streaming message: the same discipline applies, and no preview toggle is shown', async () => {
+        const { container } = await renderAssistantText('s10l2', 'assistant-delta', '[trusted-looking](https://hostile.example/p)');
+
+        const link = screen.getByRole('link', { name: 'trusted-looking' }) as HTMLAnchorElement;
+        expect(link.getAttribute('target')).toBe('_blank');
+        expect(link.getAttribute('rel')).toBe('noopener noreferrer');
+        expect(container.textContent).toContain('(hostile.example)');
+        expect(container.querySelector('[aria-label*="review"]')).toBeNull();
+      });
+
+      it('javascript: and relative links render as text with no anchor', async () => {
+        const { container } = await renderAssistantText('s10l3', 'assistant-message', '[x](javascript:alert(1)) and [r](../x)');
+
+        expect(container.querySelector('a')).toBeNull();
+        expect(container.textContent).toContain('x and r');
+      });
+
+      it('an autolink gets no host suffix', async () => {
+        const { container } = await renderAssistantText('s10l4', 'assistant-message', 'see https://example.com/a');
+
+        const link = screen.getByRole('link') as HTMLAnchorElement;
+        expect(link.getAttribute('target')).toBe('_blank');
+        expect(container.textContent).not.toContain('(example.com)');
+      });
+    });
+
     it('renders a fenced code block as a <pre><code> element', async () => {
       const { container } = renderView({ sessionId: 's10b', workerId: 'w10b' });
       const ws = MockWebSocket.getLastInstance();
