@@ -192,6 +192,16 @@ PRs touching the R1 catch-block routing or the R6 write in `packages/server/src/
 
 **Verification tier (Discipline 4 of `os-environment-coupling.md`):** Unprivileged (no tier-2/3/4 residue; any machine with bun) — free and deterministic, no elevation, no billing.
 
+## Additional Verification: Bulk-Restart Exited-Row Smoke
+
+PRs touching `WorkerOutputFileManager.hasEverBeenActivated` / `forceFlush` in `packages/server/src/lib/worker-output-file.ts`, or `EmbeddedAgentWorkerService.deactivate`'s tail (the `forceFlush` after `exitSettled`) in `packages/server/src/services/embedded-agent-worker-service.ts`, must run `bun scripts/smoke/check-bulk-restart-exited-row.ts` locally before pushing. It drives the real `SessionManager.restartAllAgentWorkers({ kind: 'all' })` over two embedded workers in a real `AppContext` with the real disk-backed `WorkerOutputFileManager` and a stub spawn, and asserts each worker's output history contains the `exited` row its previous incarnation's exit observer appended. The defect it guards: a worker whose whole first life fits inside one flush interval has nothing on disk, `hasEverBeenActivated` (disk-only) read that as "never activated", and the first-activation reset discarded the buffered rows -- including `exited`.
+
+**FREE AND DETERMINISTIC.** No `claude` CLI, no OS subprocess, no billing. The default mode sets `WORKER_OUTPUT_FLUSH_INTERVAL` to 60 s so the first life's output is guaranteed pending at the restart; `--realistic` keeps the default interval and times B's first incarnation (it reports `ready` only at its shutdown) so its whole life falls inside one interval, as the billed run did. `--engine` and `--ready-delay-ms` / `--exit-delay-ms` vary the shape; `--help` is free.
+
+**It has a polarity mode.** `--expect-lost` (also with `--realistic`) asserts the defect reproduces and reports a polarity failure when the row is present. Either fix alone keeps the rows (the predicate keeps them in the reader's view, the flush puts them on disk), so run it against a scratch revert of BOTH.
+
+**Verification tier (Discipline 4 of `os-environment-coupling.md`):** Unprivileged (no tier-2/3/4 residue; any machine with bun) -- free and deterministic, no elevation, no billing.
+
 ## Restore E2E and smoke: the conversation must use a tool
 
 **A conversation used to verify restore in an E2E or smoke must include at least one tool-using turn.** A text-only exchange cannot produce the event order a tool-using turn writes, and that order is where restore has actually broken.

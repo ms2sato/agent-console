@@ -1459,9 +1459,16 @@ export class WorkerOutputFileManager {
    * one being non-empty is sufficient.
    *
    * Read-only existence check: does not join the per-worker serialization
-   * domain (no interaction with pending-flush/segment-cache state).
+   * domain; it only peeks at whether the pending-flush buffer is non-empty.
    */
   async hasEverBeenActivated(sessionId: string, workerId: string, resolver: SessionDataPathResolver): Promise<boolean> {
+    // Output still waiting in the flush buffer is output: a worker whose whole
+    // first life fit inside one flush interval has nothing on disk yet, and
+    // reading that as "never activated" lets the caller's first-activation
+    // reset discard the buffered rows.
+    const pending = this.pendingFlushes.get(this.getKey(sessionId, workerId));
+    if (pending && pending.buffer.length > 0) return true;
+
     const manifestPath = this.getManifestPath(sessionId, workerId, resolver);
     try {
       await fs.stat(manifestPath);

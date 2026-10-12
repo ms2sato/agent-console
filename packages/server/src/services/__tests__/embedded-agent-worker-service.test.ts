@@ -1,6 +1,6 @@
 import { describe, it, expect, mock, setSystemTime, spyOn, afterAll, type Mock } from 'bun:test';
 import { randomUUID } from 'node:crypto';
-import { mkdir, rm, writeFile, symlink, unlink } from 'node:fs/promises';
+import { mkdir, rm, writeFile, symlink, unlink, readFile } from 'node:fs/promises';
 import { lstatSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -58,6 +58,7 @@ import {
 } from '../provider-key-store.js';
 import { serverConfig } from '../../lib/server-config.js';
 import { rootLogger } from '../../lib/logger.js';
+import { WorkerOutputFileManager } from '../../lib/worker-output-file.js';
 
 const MCP_BASE_URL = 'http://localhost:3457/mcp';
 const ENTRY_PATH = '/install/embedded-agent/src/main.ts';
@@ -291,6 +292,7 @@ interface Harness {
   readHistoryWithOffset: ReturnType<typeof mock>;
   readHistoryForRestore: ReturnType<typeof mock>;
   appendRestoreFailureMarker: ReturnType<typeof mock>;
+  forceFlush: ReturnType<typeof mock>;
   loadProviderKeyFn: ReturnType<typeof mock>;
   persistSession: ReturnType<typeof mock>;
   onSessionUpdated: ReturnType<typeof mock>;
@@ -302,6 +304,8 @@ interface Harness {
 }
 
 function setup(opts?: {
+  /** Replace the mocked output manager with a real one (disk-backed), to observe what actually reaches the file. */
+  realWorkerOutputFileManager?: EmbeddedAgentWorkerServiceDeps['workerOutputFileManager'];
   definition?: EmbeddedAgentDefinition | undefined;
   createdBy?: string | undefined;
   loadProviderKeyFn?: ReturnType<typeof mock>;
@@ -468,6 +472,7 @@ function setup(opts?: {
   });
   const loadProviderKeyFn =
     opts?.loadProviderKeyFn ?? mock(async () => API_KEY);
+  const forceFlush = mock(async () => {});
   const persistSession = mock(async () => {});
   const onSessionUpdated = mock((_session: InternalSession) => {});
   const globalActivity = mock(() => {});
@@ -503,7 +508,8 @@ function setup(opts?: {
       (async () => opts?.disableClaudeAiConnectors ?? false),
     mcpTokenRegistry: { mint: mint as never, revokeByWorker: revokeByWorker as never },
     mcpServerPermissionRepository: { listByScope: listByScope as never },
-    workerOutputFileManager: {
+    workerOutputFileManager: opts?.realWorkerOutputFileManager ?? {
+      forceFlush: forceFlush as never,
       resetWorkerOutput: resetWorkerOutput as never,
       bufferOutput: bufferOutput as never,
       hasEverBeenActivated: hasEverBeenActivated as never,
@@ -541,6 +547,7 @@ function setup(opts?: {
     hasEverBeenActivated,
     readHistoryWithOffset,
     appendRestoreFailureMarker,
+    forceFlush,
     loadProviderKeyFn,
     persistSession,
     onSessionUpdated,
@@ -6394,5 +6401,68 @@ describe('activation-failure rollback persists and broadcasts the reverted worke
     // -- the caught error becomes 'rollback persist boom' instead of the
     // original 'persist boom'. Confirmed by running the mutation and
     // reverting it afterward.
+  });
+});
+
+describe('EmbeddedAgentWorkerService.deactivate output durability', () => {
+  it('flushes the output buffer after the exit observer has appended its exited row (mocked manager: ordering)', async () => {
+    const h = setup({ shutdownGraceMs: 50, sigtermTimeoutMs: 50 });
+    await h.service.activate(h.sessionId, h.workerId);
+    h.forceFlush.mockClear();
+
+    const dp = h.service.deactivate(h.sessionId, h.workerId);
+    h.fake.simulateExit(0);
+    await dp;
+
+    expect(h.forceFlush).toHaveBeenCalledTimes(1);
+    expect(h.forceFlush).toHaveBeenCalledWith(h.sessionId, h.workerId);
+    const exitedAt = h.bufferOutput.mock.calls.findIndex((c) => (c[2] as string).includes('"type":"exited"'));
+    expect(exitedAt).toBeGreaterThanOrEqual(0);
+    // bun:test records invocation order per mock; the flush must come after the exited append.
+    expect(h.forceFlush.mock.invocationCallOrder[0]).toBeGreaterThan(h.bufferOutput.mock.invocationCallOrder[exitedAt]);
+  });
+
+  // Real WorkerOutputFileManager on disk with a flush interval that never fires
+  // inside the test, so everything the first life wrote is still pending at the
+  // restart. Reach measured by mutation: reverting the `forceFlush` in
+  // `deactivate` fails the ordering case and the on-disk case (2 failures);
+  // reverting the pending check in `hasEverBeenActivated` fails only its own
+  // pin in worker-output-file.test.ts (the flush keeps the rows on disk, so
+  // the epoch case here still holds); reverting both also fails the epoch case.
+  const realManager = () => new WorkerOutputFileManager({ flushInterval: 600_000 });
+  const liveFile = (h: ReturnType<typeof setup>) =>
+    h.deps.getPathResolver(h.session).getOutputFilePath(h.sessionId, h.workerId);
+
+  it('REAL MANAGER: the exited row is on disk (not merely buffered) when deactivate returns', async () => {
+    const wofm = realManager();
+    const h = setup({ realWorkerOutputFileManager: wofm, shutdownGraceMs: 50, sigtermTimeoutMs: 50 });
+    await h.service.activate(h.sessionId, h.workerId);
+    h.fake.pushStdout('{"v":1,"type":"ready"}\n');
+    await waitFor(() => (wofm as unknown as { pendingFlushes: Map<string, { buffer: string }> }).pendingFlushes.size > 0);
+
+    const dp = h.service.deactivate(h.sessionId, h.workerId);
+    h.fake.simulateExit(0);
+    await dp;
+
+    const onDisk = await readFile(liveFile(h), 'utf-8');
+    expect(onDisk).toContain('"type":"exited"');
+  });
+
+  it('REAL MANAGER: an activate right after a short first life keeps the epoch and the exited row readable', async () => {
+    const wofm = realManager();
+    const h = setup({ realWorkerOutputFileManager: wofm, shutdownGraceMs: 50, sigtermTimeoutMs: 50 });
+    await h.service.activate(h.sessionId, h.workerId);
+    h.fake.pushStdout('{"v":1,"type":"ready"}\n');
+    await waitFor(() => (wofm as unknown as { pendingFlushes: Map<string, { buffer: string }> }).pendingFlushes.size > 0);
+    const epochBefore = h.worker.epoch;
+
+    const dp = h.service.deactivate(h.sessionId, h.workerId);
+    h.fake.simulateExit(0);
+    await dp;
+    await h.service.activate(h.sessionId, h.workerId);
+
+    expect(h.worker.epoch).toBe(epochBefore);
+    const hist = await wofm.readHistoryWithOffset(h.sessionId, h.workerId, h.deps.getPathResolver(h.session));
+    expect(hist.data).toContain('"type":"exited"');
   });
 });
