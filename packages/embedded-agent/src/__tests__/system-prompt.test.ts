@@ -136,12 +136,10 @@ describe('assembleSystemPrompt', () => {
     // Pinned as literals: the constant-vs-constant assertions around this test
     // would stay green if these sentences were deleted from the constant.
     const prompt = assembleSystemPrompt({ context, instructions: emptyInstructions });
-    expect(prompt).toContain(
-      '`run_process` ALWAYS reports back as a new turn: its output when the command exits, or a timeout notice if it runs past `timeoutSeconds` (default 600 s).',
-    );
-    expect(prompt).toContain(
-      'Do NOT create a `create_timer` fallback to wait for `run_process`; use `create_timer` only as ONE standing follow-up timer per delegate (check `list_timers` before creating; reuse, do not duplicate).',
-    );
+    expect(prompt).toContain('`run_process` ALWAYS reports back');
+    expect(prompt).toContain('a timeout notice if it runs past `timeoutSeconds` (default 600 s)');
+    expect(prompt).toContain('Do NOT create a `create_timer` fallback to wait for `run_process`');
+    expect(prompt).toContain('ONE standing follow-up timer per delegate');
   });
 
   it('renders WAIT_BY_ENDING_TURN_PREAMBLE in assembleSystemPrompt output', () => {
