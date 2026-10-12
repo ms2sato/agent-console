@@ -25,6 +25,22 @@ export const errorHandler: MiddlewareHandler = async (c, next) => {
 };
 
 /**
+ * Duck-typed check for an HTTPException-shaped error.
+ *
+ * Deliberately not `instanceof HTTPException`: `@hono/mcp` imports
+ * `HTTPException` from `@jsr/hono__hono`, a second copy of hono, so
+ * `instanceof hono/http-exception` is false for the exceptions it throws.
+ * The shape (`status` number + `getResponse` function) is what both copies share.
+ */
+export function isHttpExceptionLike(err: unknown): err is Error & { status: number; getResponse: () => Response } {
+  return (
+    err instanceof Error &&
+    typeof (err as { status?: unknown }).status === 'number' &&
+    typeof (err as { getResponse?: unknown }).getResponse === 'function'
+  );
+}
+
+/**
  * Format error response based on error type
  */
 function handleError(c: Context, error: unknown): Response {
@@ -35,6 +51,15 @@ function handleError(c: Context, error: unknown): Response {
       'API error'
     );
     return c.json({ error: 'Invalid JSON body' } as ErrorResponse, 400);
+  }
+
+  if (isHttpExceptionLike(error)) {
+    const level = error.status >= 500 ? 'error' : 'warn';
+    logger[level](
+      { method: c.req.method, path: c.req.path, status: error.status, message: error.message },
+      'HTTP exception'
+    );
+    return error.getResponse();
   }
 
   if (error instanceof ApiError) {
