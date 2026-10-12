@@ -20,6 +20,7 @@ import { vValidator } from '../middleware/validation.js';
 import { createLogger } from '../lib/logger.js';
 import { resolveUploadDir } from '../lib/message-upload-dir.js';
 import { resolveSpawnUsername } from '../services/resolve-spawn-username.js';
+import { isMultiUserAuthMode } from '../services/privilege-elevation.js';
 import { assertCanOperateSession } from '../lib/session-access.js';
 import { serverConfig } from '../lib/server-config.js';
 import { resolvePermissionDecisions } from '../lib/mcp-server-permissions.js';
@@ -86,7 +87,7 @@ interface UploadDirContract {
 }
 
 function resolveUploadDirContract(): UploadDirContract {
-  if (process.env.AUTH_MODE === 'multi-user' && typeof process.getgid === 'function') {
+  if (isMultiUserAuthMode() && typeof process.getgid === 'function') {
     return { mode: MULTI_USER_UPLOAD_DIR_MODE, expectedGid: process.getgid() };
   }
   return { mode: SINGLE_USER_UPLOAD_DIR_MODE, expectedGid: null };

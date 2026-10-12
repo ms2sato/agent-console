@@ -137,6 +137,10 @@ export const serverConfig = {
    * Authentication mode.
    * - 'none': Single-user mode (default). No login required.
    * - 'multi-user': Multi-user mode with OS authentication.
+   *
+   * Validated once at module load, for boot-time wiring. Call-time checks
+   * (the spawn / elevation path, whose tests flip the mode per call) use
+   * `isMultiUserAuthMode()` in `services/privilege-elevation.ts` instead.
    */
   AUTH_MODE: (() => {
     const mode = process.env.AUTH_MODE ?? 'none';
