@@ -9,11 +9,12 @@
  * "no missing, no extra" trivially true.
  */
 import { describe, it, expect } from 'bun:test';
-import fs from 'node:fs';
 import path from 'node:path';
 import { SESSION_CLAIMING_TOOLS } from '../session-claiming-tools.js';
 
-const SOURCE = fs.readFileSync(path.join(import.meta.dir, '..', 'mcp-server.ts'), 'utf8');
+// `Bun.file` reads the real disk; `node:fs` is the in-memory layer once any other
+// test file in the same process has loaded the memfs helper.
+const SOURCE = await Bun.file(path.join(import.meta.dir, '..', 'mcp-server.ts')).text();
 
 interface ToolBlock {
   name: string;
