@@ -94,7 +94,7 @@ describe('discoverProjectMcpServers', () => {
   });
 
   /**
-   * Branch-swap property (test-trigger.md's polarity instruction for this
+   * Branch-swap property (smoke-verification-embedded.md's polarity instruction for this
    * script): the SAME name with DIFFERENT content must never read "allowed"
    * just because an older hash for that name was once approved.
    *

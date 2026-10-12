@@ -5,7 +5,7 @@ import * as path from 'node:path';
  * CI wrapper for `check-stdin-sink-leak.ts` (Issue #1872, widening the
  * #1871 pattern). This smoke is FREE AND DETERMINISTIC (no billed CLI, no
  * elevation, no OS subprocess side effects left behind -- see the smoke's
- * own header and its `test-trigger.md` "Additional Verification:
+ * own header and its `smoke-verification-server.md` "Additional Verification:
  * Stdin-Sink FD Leak Smoke" section), which is exactly what makes it safe
  * to run from `bun:test` under `test:scripts` rather than leaving it a
  * manual-only gate. See `.claude/rules/test-trigger.md`'s "Registering a

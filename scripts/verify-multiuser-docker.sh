@@ -597,7 +597,7 @@ if [ -n "$repo_id" ]; then
     # session.createdBy -> resolveSpawnUsername -> spawnPty chain, differing
     # only in the downstream command string -- so this substitution never
     # touches the binding/elevation logic under test (pre-pr-completeness.md
-    # Q13 recorded proxy; see test-trigger.md's "Shared-Account Binding
+    # Q13 recorded proxy; see smoke-verification-embedded.md's "Shared-Account Binding
     # Smoke" section for the full writeup).
     if [ -n "$shared_session_id" ]; then
       s8_term_code="$(curl -s -o "$S8_TERM_RESP" -w '%{http_code}' -b "$S8_COOKIE_JAR" -c "$S8_COOKIE_JAR" \

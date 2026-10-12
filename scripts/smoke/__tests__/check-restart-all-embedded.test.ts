@@ -8,7 +8,7 @@ import { parseArgs } from '../check-restart-all-embedded.js';
  * Pure-function tests for `check-restart-all-embedded.ts`. Never runs
  * `main()`'s billable path -- no `AppContext`, no real `claude` CLI, no
  * billed turn. This is the Q13 "proxy verification" discipline
- * `test-trigger.md` documents for every billable smoke in that file: it
+ * `smoke-verification-embedded.md` documents for every billable smoke in that file: it
  * verifies the WIRING (argument parsing, and that `--help` is free) is
  * correct, without the billable chain it sits upstream of.
  */

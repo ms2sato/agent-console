@@ -113,7 +113,7 @@
  *   2  the probe could not run (bad usage, missing prerequisite, launch
  *      failure)
  *
- * Registered in `.claude/rules/test-trigger.md` -- Tier 4 (billable;
+ * Registered in `.claude/rules/smoke-verification-embedded.md` -- Tier 4 (billable;
  * dogfood host only -- permanent residue).
  */
 

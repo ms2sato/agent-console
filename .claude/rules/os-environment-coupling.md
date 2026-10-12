@@ -129,9 +129,9 @@ Code that runs, renders, installs, or reads the multi-user systemd unit, the ele
 
 **The elevation literal is handled by the exec shape, not by an allowlist and not by obfuscation — and by which TOOL writes it, measured 2026-09-17.** A tier-3 driver reaches root, the service user, and the operator through `docker compose exec --user <root|deployer|agentconsole|agentconsole:agent-console-users>`: the exec shape itself carries no elevation literal, and everything that elevates runs INSIDE the container from the repository's own scripts. Separately, the delegate-sandbox guard that blocks the literal in a tool call scans Bash tool input only — command lines and heredoc / file content written through Bash — and does not scan the Write or Edit tools, which accept the literal in file content normally. So: files that must carry the literal (`docker/deployer-elevation-rules`, the Dockerfile `COPY` line that installs it, the workflow's `AC_TIER3_ELEVATE` value) are written with the Write or Edit tools, never composed through Bash; a delegate who needs a new such file and finds Write/Edit sufficient writes it directly, and stops and reports only if the file cannot be produced that way. (The earlier premise — that any file carrying the literal was categorically "the owner's line to write" — is retracted: `docker/deployer-elevation-rules`, its Dockerfile `COPY` line, and the workflow's `AC_TIER3_ELEVATE` value were all delegate-written, in PR #1711.) Keep the rule's SHAPE (no allowlist, no obfuscation); what changed is who can write the file and how, not whether the literal is confined to the files that already need it.
 
-**A third label covers what does not fit tiers 2-4.** Unprivileged smokes (real process, no elevation, no billing) need none of tiers 2-4; they run wherever bun runs and are listed in `test-trigger.md` with that label.
+**A third label covers what does not fit tiers 2-4.** Unprivileged smokes (real process, no elevation, no billing) need none of tiers 2-4; they run wherever bun runs and are listed in the `smoke-verification-*.md` rules with that label.
 
-Cross-references: `docs/design/elevation-verification-tiers.md` is the single writer of the tier DEFINITIONS and the study that measured the tier-3 premise (Task 0); this rule carries the table and the operational discipline. `test-trigger.md`'s per-smoke sections each name their tier. `docker/README.md`'s residue paragraph names the tiers instead of listing residue.
+Cross-references: `docs/design/elevation-verification-tiers.md` is the single writer of the tier DEFINITIONS and the study that measured the tier-3 premise (Task 0); this rule carries the table and the operational discipline. the `smoke-verification-*.md` rules' per-smoke sections each name their tier. `docker/README.md`'s residue paragraph names the tiers instead of listing residue.
 
 ## How to use this rule
 
@@ -148,7 +148,7 @@ When writing code that hits the triggers above:
 
 4. **Post-deploy phase** — re-run the smoke after every deploy that touches the relevant code path. Document the invocation in `docs/multi-user-setup-guide.md` so operators have an authoritative checklist.
 
-5. **Registering a smoke (Discipline 4)** — when registering a smoke in `test-trigger.md`, give its section the tier clause (vocabulary above): `Tier 4 (billable; dogfood host only -- permanent residue)`, `Tier 2 (the verification container's --smokes run)` (plus `and Tier 3 (systemd stack, against the real MainPID)` when the smoke also runs there), or `Unprivileged (no tier-2/3/4 residue; any machine with bun)`.
+5. **Registering a smoke (Discipline 4)** — when registering a smoke in its domain's `smoke-verification-*.md` rule (embedded / sdk-probes / server), give its section the tier clause (vocabulary above): `Tier 4 (billable; dogfood host only -- permanent residue)`, `Tier 2 (the verification container's --smokes run)` (plus `and Tier 3 (systemd stack, against the real MainPID)` when the smoke also runs there), or `Unprivileged (no tier-2/3/4 residue; any machine with bun)`.
 
 ## Cross-references
 

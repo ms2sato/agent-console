@@ -207,7 +207,7 @@
  * the SAME reserved-pair regression control via the SAME
  * `readUserScopeMcpServers`/`startAgentConsoleStandIn` exports); `bun
  * install` already run. BILLABLE. A manual gate, never a CI job; registered
- * in `.claude/rules/test-trigger.md`.
+ * in `.claude/rules/smoke-verification-sdk-probes.md`.
  *
  * Usage: bun scripts/smoke/probe-sdk-mcp-settings-sources.ts [--armA] [--armC] [--armB] [--armF] [--armE] [--armD] [--armG] [--max-usd <n>]
  */

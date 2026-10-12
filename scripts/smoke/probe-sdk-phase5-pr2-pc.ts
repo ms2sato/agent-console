@@ -142,10 +142,10 @@
  * this arm. FREE and TURN-FREE -- no `claude` CLI login is needed for
  * <target-user>, no model turn is ever sent; this is exactly what item 4's
  * "free gate" measures (does the CLI start its declared MCP servers without
- * one?). See `.claude/rules/test-trigger.md`'s section for this probe for
+ * one?). See `.claude/rules/smoke-verification-sdk-probes.md`'s section for this probe for
  * the gate's two outcomes.
  *
- * A manual gate, never a CI job; registered in `.claude/rules/test-trigger.md`.
+ * A manual gate, never a CI job; registered in `.claude/rules/smoke-verification-sdk-probes.md`.
  *
  * Usage:
  *   bun scripts/smoke/probe-sdk-phase5-pr2-pc.ts                      # non-elevated (billable)
@@ -835,7 +835,7 @@ async function runNonElevated(): Promise<number> {
  * mcp-server.ts job 4), read from disk once the worker has reported `ready`
  * OR its subprocess has emitted a terminal failure signal, whichever comes
  * first -- the boundary past which neither event would add anything
- * (test-trigger.md's absence-assertion discipline: snapshot after the
+ * (smoke-verification-embedded.md's absence-assertion discipline: snapshot after the
  * boundary, never at the first sign of anything).
  *
  * THE FREE GATE (item 4): if BOTH spawn reports appear by that boundary,
@@ -1221,7 +1221,7 @@ async function runElevatedArm(targetUsername: string): Promise<number> {
     );
 
     // --- Final snapshot, exactly once, at the boundary above -- never
-    // polled for appearance on their own (test-trigger.md's absence-
+    // polled for appearance on their own (smoke-verification-embedded.md's absence-
     // assertion discipline: snapshot after the boundary past which the
     // event would no longer be written, not at the first sign of anything)
     // -- the grace window above IS that boundary, made wide enough to

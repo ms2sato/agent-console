@@ -8,7 +8,7 @@ import * as path from 'node:path';
  * safe to run from `bun:test` under `test:scripts` rather than leaving it a
  * manual-only gate like its billable siblings. See
  * `.claude/rules/test-trigger.md`'s "Registering a smoke script" section and
- * this smoke's own "Additional Verification: Restore-Failure Declaration
+ * `smoke-verification-embedded.md`'s "Additional Verification: Restore-Failure Declaration
  * (R6) Smoke" section for the rule-text basis.
  *
  * SPAWNS, never imports -- per `import-safety.test.ts`'s own discipline,

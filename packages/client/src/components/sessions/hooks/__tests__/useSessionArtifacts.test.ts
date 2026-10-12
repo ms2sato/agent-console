@@ -132,7 +132,7 @@ describe('useSessionArtifacts', () => {
   // failed to parse), the negative assertion would pass anyway, for the
   // wrong reason. Proving delivery works in THIS render/connection first
   // closes that gap structurally (Architect ruling on PR #1523; same shape
-  // as test-trigger.md's "the recall assertion needs a negative control",
+  // as smoke-verification-embedded.md's "the recall assertion needs a negative control",
   // mirrored here as "the absence assertion needs a positive control").
   describe('realtime refresh (artifact-created / artifact-deleted)', () => {
     it('refetches for a SAME-session artifact-created message, then does NOT refetch for a DIFFERENT session', async () => {

@@ -45,7 +45,7 @@
  * property lives entirely below the spawn boundary -- in the output file and
  * the restore reader -- so nothing about the spawn step is under test here.
  *
- * test-trigger.md's "the conversation must use a tool" rule -- NOT
+ * smoke-verification-embedded.md's "the conversation must use a tool" rule -- NOT
  * APPLICABLE, stated so nobody goes looking. That rule protects
  * reconstruction of a conversation that SURVIVES a restart, guarding the
  * openai-api/claude-sdk tool-call-ordering defect. Case 1's established

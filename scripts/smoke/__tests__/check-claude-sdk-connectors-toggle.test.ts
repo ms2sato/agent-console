@@ -11,7 +11,7 @@ import {
  * Pure-function tests for `check-claude-sdk-connectors-toggle.ts`.
  * Never runs `main()` -- no `AppContext`, no `/api`, no real `PATCH`
  * request, no billed turn. This is the Q13 "proxy verification" discipline
- * `test-trigger.md` documents for every billable smoke in that file: it
+ * `smoke-verification-embedded.md` documents for every billable smoke in that file: it
  * verifies the WIRING (argument parsing, the classifier the script's
  * assertions key on) is correct, without the billable chain it sits
  * upstream of.

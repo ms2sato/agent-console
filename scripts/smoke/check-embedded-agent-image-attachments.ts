@@ -203,7 +203,7 @@ async function main(): Promise<void> {
   console.log(`==> nonce: ${nonce}`);
   console.log('==> generating nonce image via headless Chromium');
   const { pngPath } = await generateNonceImage(nonce, chromiumStagingDir, captureDir);
-  console.log(`==> nonce image captured at: ${pngPath} (not auto-pruned -- see test-trigger.md)`);
+  console.log(`==> nonce image captured at: ${pngPath} (not auto-pruned -- see smoke-verification-embedded.md)`);
 
   const disposableHome = path.join(os.tmpdir(), `ac-1571-image-attachments-smoke-cfg-${crypto.randomUUID()}`);
   // 0o700: this directory holds provider-keys.json (a real API key) --
@@ -400,7 +400,7 @@ async function main(): Promise<void> {
       console.log(`  ${label} reply: ${reply.trim().slice(0, 200)}`);
 
       // Snapshotted AFTER waitForTurnReply's `idle` observation -- per
-      // test-trigger.md's "Restore E2E and smoke" absence-assertion rule,
+      // smoke-verification-embedded.md's "Restore E2E and smoke" absence-assertion rule,
       // an absence check read before the turn settles passes vacuously.
       const events = (await readEvents(sessionId, workerId)).slice(marker);
       const userMessageEvent = events.find((e) => e.type === 'user-message');
@@ -473,7 +473,7 @@ async function main(): Promise<void> {
     }
     // NOTE: `captureDir` (the nonce image + HTML) is intentionally NOT
     // removed here -- see this repo's smoke-capture convention
-    // (test-trigger.md, "Fatal Incarnation Replacement" section): not
+    // (smoke-verification-embedded.md, "Fatal Incarnation Replacement" section): not
     // auto-pruned, the operator's responsibility to clean up.
   }
 }

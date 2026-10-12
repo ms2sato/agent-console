@@ -39,7 +39,7 @@
  * resolved). Substituted: WHICH worker type's PTY this smoke reads identity
  * through. The reason is upstream of and outside the binding/elevation
  * chain under test: this Docker verification container has no `claude` CLI
- * login (by design -- see test-trigger.md's Tier-2 scope), so the session's
+ * login (by design -- see smoke-verification-embedded.md's Tier-2 scope), so the session's
  * own agent-type worker predictably exits 127 ("command not found") moments
  * after its PTY activates, and `WorkerManager.detachPty` (the ordinary,
  * correct exit-handler path -- see Issue #1294's exit-127 diagnostic) resets
@@ -156,7 +156,7 @@
  * assumption that the target accounts share this process's primary group
  * (the same assumption `createDisposableMultiUserHome`'s gid check already
  * makes for every sibling elevation smoke in this file). This is NOT opened
- * to "other" (world-writable) -- see test-trigger.md's "a smoke's own
+ * to "other" (world-writable) -- see smoke-verification-sdk-probes.md's "a smoke's own
  * fixture directory must not be world-writable" expectation; it is this
  * smoke's own disposable fixture, never the operator's or another
  * application's files (`os-environment-coupling.md` Discipline 2).

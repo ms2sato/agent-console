@@ -553,7 +553,7 @@ Targets are collected into a `Set` keyed by session id, so a session designated 
 
 **Boundary values** (pinned in `services/inbound/__tests__/resolve-targets*.test.ts` for both paths): a row with `[]` yields no target from that row; two designated with one hibernated yields exactly the live one; two same-remote rows designating the same session yield one target; three designated, all live, yield three targets.
 
-The shipping-path E2E for both paths is `bun scripts/smoke/check-webhook-issue-label-routing.ts` (scenarios 3–7; scenario 4c and scenario 5's session E cover the embedded-designated recipient; registered in `.claude/rules/test-trigger.md`).
+The shipping-path E2E for both paths is `bun scripts/smoke/check-webhook-issue-label-routing.ts` (scenarios 3–7; scenario 4c and scenario 5's session E cover the embedded-designated recipient; registered in `.claude/rules/smoke-verification-server.md`).
 
 ### Service Parser Interface
 

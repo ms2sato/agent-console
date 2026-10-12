@@ -688,7 +688,7 @@ async function main(expectNoPermission: boolean): Promise<void> {
      * (this function's own prior implementation) is satisfied the INSTANT
      * `activateEmbeddedAgentWorker()` returns -- before the new
      * incarnation's subprocess has even spawned, let alone reported its own
-     * discovery. That is a read-too-early bug (test-trigger.md's "Absence
+     * discovery. That is a read-too-early bug (smoke-verification-embedded.md's "Absence
      * assertions are the ones read-too-early makes pass falsely" applies
      * here to a PRESENCE check the same way: an unscoped `!== undefined`
      * check is satisfiable by a value that predates the event entirely),
@@ -1300,7 +1300,7 @@ async function main(expectNoPermission: boolean): Promise<void> {
     // pattern (copy before `rm -rf`, never after) so a future failed run's
     // persisted worker NDJSON survives the disposable home's teardown for
     // inspection. Deliberately NOT extracted into a registered, documented
-    // mechanism (`test-trigger.md` registration) -- this is a debugging aid
+    // mechanism (`smoke-verification-embedded.md` registration) -- this is a debugging aid
     // for one investigation, not a standing feature of this smoke.
     if (home) {
       const captureRoot = path.join(os.homedir(), '.agent-console-smoke-captures', 'check-embedded-agent-project-mcp-permission');
