@@ -1850,7 +1850,31 @@ export class WorkerOutputFileManager {
   ): Promise<number> {
     const key = this.getKey(sessionId, workerId);
     return this.runExclusive(key, async () => {
-      // Drop any pending flush without writing it, and the cached segment (the
+      // When the old live file is being preserved to the sidecar, write the
+      // buffered tail into it first so the sidecar holds the full stream.
+      // Best-effort, like the rename below. Without a sidecar the bytes have
+      // no reader, so they are dropped.
+      if (opts?.preserveToSidecar) {
+        const buffered = this.pendingFlushes.get(key);
+        if (buffered && buffered.buffer.length > 0) {
+          try {
+            const outcome = await this.flushLocked(sessionId, workerId, 'retain');
+            if (!outcome.ok) {
+              logger.warn(
+                { sessionId, workerId },
+                'Failed to flush pending output before restore-failed sidecar rename (best-effort, proceeding with reset)',
+              );
+            }
+          } catch (err) {
+            logger.warn(
+              { sessionId, workerId, err },
+              'Failed to flush pending output before restore-failed sidecar rename (best-effort, proceeding with reset)',
+            );
+          }
+        }
+      }
+
+      // Drop any remaining pending flush, and the cached segment (the
       // reset rewinds the stream to 0; any prior-incarnation segment is gone).
       const pending = this.pendingFlushes.get(key);
       if (pending) {
