@@ -810,7 +810,6 @@ describe('SessionConverterService', () => {
         parentSessionId: 'ps',
         parentWorkerId: 'pw',
         createdBy: 'user-1',
-        templateVars: { key: 'value' },
       });
 
       const result = service.toPersistedSession(session);
@@ -824,7 +823,7 @@ describe('SessionConverterService', () => {
       expect(result.parentSessionId).toBe('ps');
       expect(result.parentWorkerId).toBe('pw');
       expect(result.createdBy).toBe('user-1');
-      expect(result.templateVars).toEqual({ key: 'value' });
+      expect('templateVars' in result).toBe(false);
       expect(result.workers).toHaveLength(1);
       if (result.type === 'worktree') {
         expect(result.repositoryId).toBe('repo-1');

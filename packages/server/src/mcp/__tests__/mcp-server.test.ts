@@ -4161,7 +4161,7 @@ describe('MCP Server Tools', () => {
         repositoryId: 'test-repo',
         prompt: 'Test with template variables',
         branch: 'feat/template-vars',
-        templateVars: { model: 'gpt-4' },
+        templateVars: { branch_hint: 'x' },
         ...(await createValidDelegateParent()),
       }, nextId++);
 
@@ -4194,7 +4194,28 @@ describe('MCP Server Tools', () => {
       expect(delegatedSession).toBeDefined();
     });
 
-    it("should describe the templateVars parameter's optional-argument form ({{model:+--model}}) in the tool schema (Issue #1281)", async () => {
+    it.each([
+      ['model', 'templateVars.model is not persisted; use the named model parameter (agent-surface.md Ruling 3)'],
+      [
+        'reasoningEffort',
+        'templateVars.reasoningEffort is not persisted; use the named reasoningEffort parameter (agent-surface.md Ruling 3)',
+      ],
+    ])('should reject the %s key in templateVars with a pointer to the named parameter', async (key, message) => {
+      await setupDelegateEnvironment(`feat/template-vars-${key}`);
+
+      const response = await callTool(app, mcpSessionId, 'delegate_to_worktree', {
+        repositoryId: 'test-repo',
+        prompt: 'Test with rejected template variable',
+        branch: `feat/template-vars-${key}`,
+        templateVars: { [key]: 'x' },
+        ...(await createValidDelegateParent()),
+      }, nextId++);
+
+      expect(JSON.stringify(response)).toContain(message);
+      expect(response.result?.isError === true || response.error !== undefined).toBe(true);
+    });
+
+    it('should state in the templateVars description that values are not persisted', async () => {
       const listRes = await app.request('/mcp', {
         method: 'POST',
         headers: {
@@ -4217,8 +4238,8 @@ describe('MCP Server Tools', () => {
       const delegateTool = listBody.result?.tools?.find((t) => t.name === 'delegate_to_worktree');
       const templateVarsDescription = delegateTool?.inputSchema?.properties?.templateVars?.description;
 
-      expect(templateVarsDescription).toContain('{{model:+--model}}');
-      expect(templateVarsDescription).toContain('--model');
+      expect(templateVarsDescription).toContain('NOT persisted');
+      expect(templateVarsDescription).toContain('reasoningEffort');
     });
   });
 

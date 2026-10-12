@@ -1131,12 +1131,19 @@ export function createMcpApp(deps: McpDependencies): Hono {
           (vars) => !vars || Object.keys(vars).every((key) => key !== 'prompt' && key !== 'cwd'),
           'Cannot override reserved template variables: prompt, cwd'
         )
+        .refine(
+          (vars) => !vars || !Object.hasOwn(vars, 'model'),
+          'templateVars.model is not persisted; use the named model parameter (agent-surface.md Ruling 3)'
+        )
+        .refine(
+          (vars) => !vars || !Object.hasOwn(vars, 'reasoningEffort'),
+          'templateVars.reasoningEffort is not persisted; use the named reasoningEffort parameter (agent-surface.md Ruling 3)'
+        )
         .describe(
-          'Custom template variable overrides. Keys are variable names (e.g., "model"), values are the replacement strings. ' +
-            'These override default values defined in the agent command template (e.g., {{model:claude-opus-4-6}}), ' +
-            'or supply an optional CLI argument declared as {{model:+--model}} (present only when a value is given). ' +
-            'For the built-in Claude Code agent, {"model": "<model-name-or-id>"} adds --model <value> to the spawned ' +
-            'command; the value is passed through as-is (not validated), so its accepted form is Claude Code\'s own contract.',
+          "Custom template variable overrides for a custom agent's {{var}} placeholders. " +
+            "Applied to the initial worker's spawn command and re-applied on in-process restarts; " +
+            'NOT persisted -- they do not survive a server restart or pause/resume. ' +
+            'For model / reasoning effort use the named `model` / `reasoningEffort` parameters.',
         ),
     },
     async ({
