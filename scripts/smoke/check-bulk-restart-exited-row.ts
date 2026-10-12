@@ -250,7 +250,8 @@ async function main(): Promise<void> {
     console.log(`  A=${A.workerId.slice(0, 8)} B=${B.workerId.slice(0, 8)}`);
     const embeddedRestarted = result.results.filter((r) => r.workerType === 'embedded-agent' && r.outcome === 'restarted' && (r.workerId === A.workerId || r.workerId === B.workerId)).length;
     check(embeddedRestarted === 2, 'the bulk restart restarted both embedded workers', `embeddedRestarted=${embeddedRestarted} failed=${result.failed}`);
-    if (spawns.length !== 4) bail(`expected 4 spawns after the bulk restart, saw ${spawns.length}`);
+    const spawnCount = (): number => spawns.length;
+    if (spawnCount() !== 4) bail(`expected 4 spawns after the bulk restart, saw ${spawnCount()}`);
 
     // --realistic keeps the default flush interval, so whether A's first life is
     // still pending is a race; only B (whose first life is pinned inside one
