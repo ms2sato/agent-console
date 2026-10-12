@@ -38,9 +38,25 @@ describe('resolveHttpResLevel', () => {
 // index.ts has no sibling test and wires this function into pinoLogger in one
 // line, so the wiring's polarity is measured here: with onResLevel the 404 is
 // logged at warn; with hono-pino's default (main's wiring) it is logged at error.
+interface AccessLogRecord {
+  level: number;
+  res: { status: number };
+}
+
+function isAccessLogRecord(record: unknown): record is AccessLogRecord {
+  if (typeof record !== 'object' || record === null) return false;
+  const r = record as { level?: unknown; res?: unknown };
+  return (
+    typeof r.level === 'number' &&
+    typeof r.res === 'object' &&
+    r.res !== null &&
+    typeof (r.res as { status?: unknown }).status === 'number'
+  );
+}
+
 describe('access log level through hono-pino', () => {
   async function run(withResLevel: boolean) {
-    const records: Array<Record<string, any>> = [];
+    const records: unknown[] = [];
     const captureStream = { write(line: string) { records.push(JSON.parse(line)); } };
     const app = new Hono();
     app.onError(onApiError);
@@ -55,7 +71,7 @@ describe('access log level through hono-pino', () => {
       throw new ForeignHttpException(404, { jsonrpc: '2.0', error: { message: 'Session not found' }, id: null });
     });
     await app.request('/mcp');
-    return records.find((r) => r.res);
+    return records.find(isAccessLogRecord);
   }
 
   it('logs a 404 at warn when onResLevel is wired', async () => {
