@@ -351,7 +351,9 @@ async function deliverProcessExit(
       fields: {
         processId: process.id,
         command: process.command,
-        message: `Process exited with code ${process.exitCode ?? 'unknown'}`,
+        message:
+          (process.timedOut ? `timed out after ${process.timeoutSeconds}s and was killed; ` : '') +
+          `Process exited with code ${process.exitCode ?? 'unknown'}`,
       },
       intent: 'inform',
     });

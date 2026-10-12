@@ -32,5 +32,9 @@ export interface InteractiveProcessInfo {
   status: InteractiveProcessStatus;
   startedAt: string;
   exitCode?: number;
+  /** Set when the server killed the process because it ran past its `timeoutSeconds`. */
+  timedOut?: boolean;
+  /** The timeout (seconds) this process was started with. */
+  timeoutSeconds?: number;
   outputMode: InteractiveProcessOutputMode;
 }

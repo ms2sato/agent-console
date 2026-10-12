@@ -549,4 +549,30 @@ describe('routeProcessExit ordering (Issue #1591)', () => {
     expect(aOrder).toEqual(['stdout', 'exit']);
     expect(bOrder).toEqual(['stdout', 'exit']);
   });
+  describe('exit notification text for a timed-out process', () => {
+    async function exitMessageFor(process: InteractiveProcessInfo): Promise<string> {
+      const deliverNotification = mock(async (_s: string, _w: string, params: PtyNotificationParams) => {
+        void params;
+        return { ok: true } as const;
+      });
+      const { deps } = makeDeps({ deliverNotification: (s, w, p) => deliverNotification(s, w, p) });
+      await routeProcessExit(deps, process);
+      expect(deliverNotification).toHaveBeenCalledTimes(1);
+      const params = deliverNotification.mock.calls[0][2];
+      expect(params.tag).toBe('internal:process');
+      return (params.fields as { message: string }).message;
+    }
+
+    it('prefixes the usual exit summary with the timeout notice', async () => {
+      const message = await exitMessageFor(
+        makeProcess({ status: 'exited', exitCode: 137, timedOut: true, timeoutSeconds: 600 }),
+      );
+      expect(message).toBe('timed out after 600s and was killed; Process exited with code 137');
+    });
+
+    it('leaves the exit summary unchanged when the process did not time out', async () => {
+      const message = await exitMessageFor(makeProcess({ status: 'exited', exitCode: 0, timeoutSeconds: 600 }));
+      expect(message).toBe('Process exited with code 0');
+    });
+  });
 });

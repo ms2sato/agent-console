@@ -7,6 +7,9 @@ const logger = createLogger('interactive-process-manager');
 
 export const MAX_PROCESSES_PER_SESSION = 10;
 
+/** Default `run_process` timeout. A process that runs longer is killed and reported as timed out. */
+export const DEFAULT_PROCESS_TIMEOUT_SECONDS = 600;
+
 /**
  * Close a subprocess's stdin sink at teardown so the OS pipe fd is released
  * deterministically rather than left for incidental GC. Mirrors the
@@ -32,6 +35,8 @@ interface StoredProcess {
   stdin: FileSink;
   /** Resolves when both stdout and stderr have been fully read and flushed. */
   streamsDone: Promise<void>;
+  /** The single per-process timeout timer; cleared on every teardown path. */
+  timeoutTimer?: ReturnType<typeof setTimeout>;
 }
 
 export interface ProcessOutputCallback {
@@ -70,6 +75,14 @@ interface OutputBuffer {
 export class InteractiveProcessManager {
   /** Debounce delay for buffering process output before calling onOutput. */
   static readonly DEBOUNCE_OUTPUT_MS = 150;
+
+  /**
+   * After a timeout kill, how long the exit handler waits for the output
+   * streams to drain. The kill hits the shell; a grandchild (`sh -c 'sleep 30'`
+   * without exec) can keep the pipes open, and the timeout notice must not
+   * wait on it.
+   */
+  static readonly TIMEOUT_STREAM_DRAIN_GRACE_MS = 1000;
 
   private processes = new Map<string, StoredProcess>();
   private outputBuffers = new Map<string, OutputBuffer>();
@@ -114,8 +127,15 @@ export class InteractiveProcessManager {
      * session's `createdBy`.
      */
     requestUser?: string | null;
+    /**
+     * Seconds after which a still-running process is killed and reported
+     * through the normal exit notification with `timedOut: true`. Defaults to
+     * `DEFAULT_PROCESS_TIMEOUT_SECONDS`.
+     */
+    timeoutSeconds?: number;
   }): Promise<InteractiveProcessInfo> {
     const { sessionId, workerId, command, cwd, requestUser } = params;
+    const timeoutSeconds = params.timeoutSeconds ?? DEFAULT_PROCESS_TIMEOUT_SECONDS;
     const outputMode: InteractiveProcessOutputMode = params.outputMode ?? 'pty';
 
     const sessionProcessCount = this.listProcesses(sessionId).filter(
@@ -136,6 +156,7 @@ export class InteractiveProcessManager {
       status: 'running',
       startedAt: new Date().toISOString(),
       outputMode,
+      timeoutSeconds,
     };
 
     // Route the spawn through `spawnAsUser` so multi-user mode elevates the
@@ -167,6 +188,24 @@ export class InteractiveProcessManager {
     };
     this.processes.set(id, stored);
 
+    // On expiry, signal the child but leave the entry in place: the
+    // `subprocess.exited` handler below is the single route that fires
+    // `onExit`, so the timeout notice travels the same path as a natural exit.
+    // SIGKILL (not SIGTERM): a child that ignores SIGTERM would defeat the
+    // "always reports back" guarantee this timeout exists to give.
+    stored.timeoutTimer = setTimeout(() => {
+      const current = this.processes.get(id);
+      if (!current || current.info.status !== 'running') return;
+      logger.warn({ processId: id, sessionId, timeoutSeconds }, 'Process timed out, killing');
+      current.info.timedOut = true;
+      try {
+        current.subprocess.kill(9);
+      } catch {
+        // Process may have already exited
+      }
+      endStdinSafely(current.stdin);
+    }, timeoutSeconds * 1000);
+
     // Monitor process exit — wait for streams to be fully read before calling onExit.
     // This prevents the race where subprocess.exited resolves before readStream
     // finishes flushing output, which would cause the delayed \r from
@@ -174,11 +213,24 @@ export class InteractiveProcessManager {
     subprocess.exited.then(async (exitCode) => {
       const current = this.processes.get(id);
       if (current) {
-        await current.streamsDone;
+        clearTimeout(current.timeoutTimer);
+        if (current.info.timedOut) {
+          await Promise.race([
+            current.streamsDone,
+            new Promise<void>((resolve) => setTimeout(resolve, InteractiveProcessManager.TIMEOUT_STREAM_DRAIN_GRACE_MS)),
+          ]);
+        } else {
+          await current.streamsDone;
+        }
         current.info.status = 'exited';
         current.info.exitCode = exitCode;
         logger.info({ processId: id, exitCode }, 'Process exited');
         this.onExit({ ...current.info });
+        // A timed-out process is gone once reported; a naturally exited one
+        // stays listed with status 'exited' as before.
+        if (current.info.timedOut) {
+          this.processes.delete(id);
+        }
       }
     }).catch((err) => {
       logger.error({ processId: id, err }, 'Process exit handler error');
@@ -275,6 +327,7 @@ export class InteractiveProcessManager {
     }
 
     this.clearOutputBuffer(processId);
+    clearTimeout(stored.timeoutTimer);
 
     try {
       stored.subprocess.kill(15); // SIGTERM
@@ -309,6 +362,7 @@ export class InteractiveProcessManager {
     for (const [id, stored] of this.processes) {
       if (stored.info.sessionId === sessionId) {
         this.clearOutputBuffer(id);
+        clearTimeout(stored.timeoutTimer);
         try {
           stored.subprocess.kill(15);
         } catch {
@@ -332,6 +386,7 @@ export class InteractiveProcessManager {
     this.outputBuffers.clear();
 
     for (const stored of this.processes.values()) {
+      clearTimeout(stored.timeoutTimer);
       try {
         stored.subprocess.kill(15);
       } catch {
