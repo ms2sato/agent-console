@@ -42,6 +42,7 @@ import { useWorktreeDeletionTasksContext, useSessionStopTasksContext, useSession
 import { repositoryKeys, agentKeys, sessionKeys, worktreeKeys, branchKeys } from '../lib/query-keys';
 import type { Session, Repository, Worktree, AgentActivityState, CreateWorktreeSessionRequest, BranchNameFallback, AgentDefinition, HookCommandResult, WorktreePullCompletedPayload, WorktreePullFailedPayload } from '@agent-console/shared';
 import { logger } from '../lib/logger';
+import type { SessionStopTask } from '../hooks/useSessionStopTasks';
 
 // Timeout (ms) to auto-remove stale pull entries if WebSocket never responds
 const PULL_TIMEOUT_MS = 60_000;
@@ -137,6 +138,92 @@ function getSessionActivityState(session: Session, workerActivityStates: Record<
   if (!agentWorker) return undefined;
 
   return sessionWorkerStates[agentWorker.id];
+}
+
+/**
+ * Resume a paused session and open it. Shared by every dashboard surface that
+ * offers a Resume affordance (worktree row, stop/pause result banner) so they invalidate and report errors identically.
+ */
+function useResumeSessionMutation(
+  showError: (title: string, message: string) => void,
+  onResumed?: () => void
+) {
+  const queryClient = useQueryClient();
+  const navigate = useNavigate();
+  return useMutation({
+    mutationFn: (sessionId: string) => resumeSession(sessionId),
+    onSuccess: (session) => {
+      queryClient.invalidateQueries({ queryKey: sessionKeys.root() });
+      onResumed?.();
+      navigate({ to: '/sessions/$sessionId', params: { sessionId: session.id } });
+    },
+    onError: (error: Error) => {
+      showError('Resume Failed', error.message);
+    },
+  });
+}
+
+// How long a stop/pause success line stays on the dashboard before dismissing itself.
+const RESULT_AUTO_DISMISS_MS = 8_000;
+
+function SessionStopResultItem({ task }: { task: SessionStopTask }) {
+  const { removeTask } = useSessionStopTasksContext();
+  const { errorDialogProps, showError } = useErrorDialog();
+  const resumeMutation = useResumeSessionMutation(showError, () => removeTask(task.sessionId));
+  const name = task.sessionTitle || 'this session';
+
+  // One auto-dismiss timer per result line (a timer subscription, cleared on unmount).
+  useEffect(() => {
+    const timeoutId = setTimeout(() => removeTask(task.sessionId), RESULT_AUTO_DISMISS_MS);
+    return () => clearTimeout(timeoutId);
+  }, [task, removeTask]);
+
+  return (
+    <div
+      role="status"
+      className="card mb-3 flex items-center justify-between gap-2 bg-green-950/30 border border-green-800 text-sm text-green-200"
+    >
+      <span className="truncate" title={name}>
+        {task.action === 'pause' ? 'Paused' : 'Stopped'}: {name}
+      </span>
+      <div className="flex gap-2 shrink-0">
+        {task.action === 'pause' && (
+          <button
+            onClick={() => resumeMutation.mutate(task.sessionId)}
+            disabled={resumeMutation.isPending}
+            className="btn btn-primary text-xs"
+          >
+            {resumeMutation.isPending ? 'Resuming...' : 'Resume'}
+          </button>
+        )}
+        <button
+          onClick={() => removeTask(task.sessionId)}
+          className="btn text-xs bg-slate-700 hover:bg-slate-600"
+        >
+          Dismiss
+        </button>
+      </div>
+      <ErrorDialog {...errorDialogProps} />
+    </div>
+  );
+}
+
+/**
+ * Confirmation lines for stop/pause requests the server has completed. Rendered
+ * once at the top of the dashboard (not per card): the session card is gone by
+ * then, and the user has just been navigated here from the session page.
+ */
+export function SessionStopResultBanner() {
+  const { tasks } = useSessionStopTasksContext();
+  const succeeded = tasks.filter((t) => t.status === 'succeeded');
+  if (succeeded.length === 0) return null;
+  return (
+    <div className="mb-2">
+      {succeeded.map((task) => (
+        <SessionStopResultItem key={task.sessionId} task={task} />
+      ))}
+    </div>
+  );
 }
 
 export function DashboardPage() {
@@ -494,6 +581,8 @@ export function DashboardPage() {
           )}
         </div>
 
+      <SessionStopResultBanner />
+
       {showAddRepo && (
         <AddRepositoryForm
           isPending={registerMutation.isPending}
@@ -809,16 +898,7 @@ export function WorktreeRow({ worktree, session, pausedSession, repositoryId, is
     },
   });
 
-  const resumeSessionMutation = useMutation({
-    mutationFn: (sessionId: string) => resumeSession(sessionId),
-    onSuccess: (session) => {
-      queryClient.invalidateQueries({ queryKey: sessionKeys.root() });
-      navigate({ to: '/sessions/$sessionId', params: { sessionId: session.id } });
-    },
-    onError: (error: Error) => {
-      showError('Resume Failed', error.message);
-    },
-  });
+  const resumeSessionMutation = useResumeSessionMutation(showError);
 
   const handleRestoreSession = () => {
     restoreSessionMutation.mutate({

@@ -15,6 +15,8 @@ function createMockSessionStopTasks(): UseSessionStopTasksReturn {
     removeTask: mock(() => {}),
     getTask: mock(() => undefined),
     markAsFailed: mock(() => {}),
+    markAsSucceeded: mock(() => {}),
+    markAsPending: mock(() => {}),
   };
 }
 

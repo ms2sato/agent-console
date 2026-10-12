@@ -6,7 +6,7 @@ import { waitForAbsent } from '../../../test/waitForAbsent';
 import { SessionPage } from '../SessionPage';
 import { SessionStopTasksContext, SessionDataContext, WorktreeDeletionTasksContext } from '../../../contexts/root-contexts';
 import type { SessionDataContextValue } from '../../../contexts/root-contexts';
-import type { UseSessionStopTasksReturn } from '../../../hooks/useSessionStopTasks';
+import type { UseSessionStopTasksReturn, SessionStopTask } from '../../../hooks/useSessionStopTasks';
 import type { UseWorktreeDeletionTasksReturn } from '../../../hooks/useWorktreeDeletionTasks';
 import { _reset as resetWebSocket } from '../../../lib/app-websocket';
 import { installMockWebSocket } from '../../../test/mock-websocket';
@@ -118,6 +118,8 @@ const sessionStopTasksValue: UseSessionStopTasksReturn = {
   removeTask: () => {},
   getTask: () => undefined,
   markAsFailed: () => {},
+  markAsSucceeded: () => {},
+  markAsPending: () => {},
 };
 
 // SessionSettings unconditionally mounts DeleteWorktreeDialog (open or not),
@@ -132,10 +134,10 @@ const worktreeDeletionTasksValue: UseWorktreeDeletionTasksReturn = {
   handleWorktreeDeletionFailed: () => {},
 };
 
-function renderSessionPage() {
+function renderSessionPage(stopTasks: UseSessionStopTasksReturn = sessionStopTasksValue) {
   return renderWithRouter(
     <SessionDataContext.Provider value={sessionDataContextValue}>
-      <SessionStopTasksContext.Provider value={sessionStopTasksValue}>
+      <SessionStopTasksContext.Provider value={stopTasks}>
         <WorktreeDeletionTasksContext.Provider value={worktreeDeletionTasksValue}>
           <SessionPage sessionId="session-1" />
         </WorktreeDeletionTasksContext.Provider>
@@ -510,5 +512,121 @@ describe('SessionPage tab bar DOM structure (Issue #1608)', () => {
 
     const closeButtons = screen.queryAllByRole('button', { name: 'Close tab' });
     expect(closeButtons.length).toBe(1);
+  });
+});
+
+describe('SessionPage stop/pause task banner', () => {
+  let restoreWebSocket: () => void;
+  let originalLocation: Location;
+  let consoleLogSpy: ReturnType<typeof spyOn>;
+  let consoleErrorSpy: ReturnType<typeof spyOn>;
+
+  beforeEach(() => {
+    localStorage.clear();
+    mockFetch.mockReset();
+    routeFetch();
+    originalLocation = window.location;
+    restoreWebSocket = installMockWebSocket();
+    Object.defineProperty(window, 'location', {
+      value: { protocol: 'http:', host: 'localhost:3000' },
+      writable: true,
+    });
+    consoleLogSpy = spyOn(console, 'log').mockImplementation(() => {});
+    consoleErrorSpy = spyOn(console, 'error').mockImplementation(() => {});
+    resetWebSocket();
+  });
+
+  afterEach(() => {
+    cleanup();
+    restoreWebSocket();
+    Object.defineProperty(window, 'location', {
+      value: originalLocation,
+      writable: true,
+    });
+    consoleLogSpy.mockRestore();
+    consoleErrorSpy.mockRestore();
+  });
+
+  function stopTasksWith(task: SessionStopTask | undefined, overrides: Partial<UseSessionStopTasksReturn> = {}): UseSessionStopTasksReturn {
+    return {
+      ...sessionStopTasksValue,
+      tasks: task ? [task] : [],
+      getTask: (id: string) => (task && task.sessionId === id ? task : undefined),
+      ...overrides,
+    };
+  }
+
+  function pauseCallCount(): number {
+    return mockFetch.mock.calls.filter(([input]) => urlToString(input).includes('/api/sessions/session-1/pause')).length;
+  }
+
+  it('shows no banner when there is no task', async () => {
+    await renderSessionPage(stopTasksWith(undefined));
+    await waitFor(() => expect(screen.getByRole('tablist')).toBeTruthy());
+    expect(screen.queryByText('Pausing this session...')).toBeNull();
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
+
+  it('shows only the in-flight text (no Retry/Dismiss) for a pending task', async () => {
+    const task: SessionStopTask = { sessionId: 'session-1', action: 'pause', status: 'pending', error: null };
+    await renderSessionPage(stopTasksWith(task));
+    await waitFor(() => expect(screen.getByText('Pausing this session...')).toBeTruthy());
+    expect(screen.queryByRole('button', { name: 'Retry' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Dismiss' })).toBeNull();
+  });
+
+  it('shows no banner for a succeeded task', async () => {
+    const task: SessionStopTask = { sessionId: 'session-1', action: 'pause', status: 'succeeded', error: null };
+    await renderSessionPage(stopTasksWith(task));
+    await waitFor(() => expect(screen.getByRole('tablist')).toBeTruthy());
+    expect(screen.queryByText('Pausing this session...')).toBeNull();
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
+
+  it('failed task renders the error with Retry and Dismiss; Dismiss removes the task', async () => {
+    const task: SessionStopTask = { sessionId: 'session-1', action: 'pause', status: 'failed', error: 'Pause blew up' };
+    const removeTask = mock(() => {});
+    await renderSessionPage(stopTasksWith(task, { removeTask }));
+
+    await waitFor(() => expect(screen.getByText('Pause blew up')).toBeTruthy());
+    expect(screen.getByRole('button', { name: 'Retry' })).toBeTruthy();
+
+    await userEvent.click(screen.getByRole('button', { name: 'Dismiss' }));
+    expect(removeTask).toHaveBeenCalledWith('session-1');
+  });
+
+  it('Retry resets the task to pending and re-invokes the pause API exactly once', async () => {
+    const task: SessionStopTask = { sessionId: 'session-1', action: 'pause', status: 'failed', error: 'Pause blew up' };
+    const markAsPending = mock(() => {});
+    const markAsFailed = mock(() => {});
+    await renderSessionPage(stopTasksWith(task, { markAsPending, markAsFailed }));
+
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Retry' })).toBeTruthy());
+    expect(pauseCallCount()).toBe(0);
+
+    await userEvent.click(screen.getByRole('button', { name: 'Retry' }));
+
+    await waitFor(() => expect(pauseCallCount()).toBe(1));
+    expect(markAsPending).toHaveBeenCalledWith('session-1');
+    expect(markAsFailed).not.toHaveBeenCalled();
+  });
+
+  it('Retry on a failed stop task calls the delete API instead of pause', async () => {
+    const task: SessionStopTask = { sessionId: 'session-1', action: 'stop', status: 'failed', error: 'Stop blew up' };
+    await renderSessionPage(stopTasksWith(task));
+
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Retry' })).toBeTruthy());
+    await userEvent.click(screen.getByRole('button', { name: 'Retry' }));
+
+    await waitFor(() => {
+      const deletes = mockFetch.mock.calls.filter(
+        ([input, init]) =>
+          urlToString(input).includes('/api/sessions/session-1') &&
+          !urlToString(input).includes('/pause') &&
+          (init as RequestInit | undefined)?.method === 'DELETE'
+      );
+      expect(deletes.length).toBe(1);
+    });
+    expect(pauseCallCount()).toBe(0);
   });
 });

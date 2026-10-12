@@ -59,6 +59,8 @@ function createMockSessionStopTasks(overrides: Partial<UseSessionStopTasksReturn
     removeTask: mock(() => {}),
     getTask: mock(() => undefined),
     markAsFailed: mock(() => {}),
+    markAsSucceeded: mock(() => {}),
+    markAsPending: mock(() => {}),
     ...overrides,
   };
 }
@@ -232,5 +234,43 @@ describe('EndSessionDialog / Issue #1247 scoped pending state', () => {
     await waitFor(() => {
       expect(sessionStopTasks.markAsFailed).toHaveBeenCalledWith('session-1', 'Network error');
     });
+  });
+});
+
+describe('EndSessionDialog navigation timing', () => {
+  async function renderAt(sessionStopTasks: UseSessionStopTasksReturn = createMockSessionStopTasks()) {
+    return renderWithRouter(
+      <SessionStopTasksContext.Provider value={sessionStopTasks}>
+        <EndSessionDialog open={true} onOpenChange={mock(() => {})} sessionId="session-1" />
+      </SessionStopTasksContext.Provider>,
+      '/sessions/session-1'
+    );
+  }
+
+  it('does not navigate before the request resolves, navigates to / once after', async () => {
+    const { router } = await renderAt();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Stop Session' }));
+
+    // Request is in flight: still on the session page.
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+    expect(router.state.location.pathname).toBe('/sessions/session-1');
+
+    resolveDeleteSession?.();
+
+    await waitFor(() => expect(router.state.location.pathname).toBe('/'));
+  });
+
+  it('does not navigate and marks the task failed when deleteSession rejects', async () => {
+    const sessionStopTasks = createMockSessionStopTasks();
+    const { router } = await renderAt(sessionStopTasks);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Stop Session' }));
+    rejectDeleteSession?.(new Error('Server error'));
+
+    await waitFor(() => {
+      expect(sessionStopTasks.markAsFailed).toHaveBeenCalledWith('session-1', 'Server error');
+    });
+    expect(router.state.location.pathname).toBe('/sessions/session-1');
   });
 });

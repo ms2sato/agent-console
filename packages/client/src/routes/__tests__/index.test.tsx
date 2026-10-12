@@ -14,14 +14,15 @@
  * context-injected (root layout providers).
  */
 import { describe, it, expect, mock, beforeEach, afterEach, afterAll, spyOn } from 'bun:test';
-import { screen, fireEvent, cleanup, waitFor } from '@testing-library/react';
+import { screen, fireEvent, cleanup, waitFor, act } from '@testing-library/react';
 import { useEffect } from 'react';
 
-import { DashboardPage, SessionCard, WorktreeRow } from '../index';
+import { DashboardPage, SessionCard, WorktreeRow, SessionStopResultBanner } from '../index';
 import { SessionDataContext, WorktreeDeletionTasksContext, WorktreeCreationTasksContext, SessionStopTasksContext } from '../../contexts/root-contexts';
 import { renderWithRouter } from '../../test/renderWithRouter';
 import { waitForAbsent } from '../../test/waitForAbsent';
 import type { Repository, Session } from '@agent-console/shared';
+import type { SessionStopTask } from '../../hooks/useSessionStopTasks';
 import type { UseWorktreeDeletionTasksReturn } from '../../hooks/useWorktreeDeletionTasks';
 import type { UseWorktreeCreationTasksReturn } from '../../hooks/useWorktreeCreationTasks';
 import { useSessionStopTasks, type UseSessionStopTasksReturn } from '../../hooks/useSessionStopTasks';
@@ -85,6 +86,8 @@ let fetchResponses: FetchResponses = {
   repositories: [],
   worktreesByRepoId: {},
 };
+
+const resumeSessionCalls: string[] = [];
 
 const mockFetch = mock(async (input: RequestInfo | URL, init?: RequestInit) => {
   const url = input instanceof Request ? input.url : String(input);
@@ -150,6 +153,16 @@ const mockFetch = mock(async (input: RequestInfo | URL, init?: RequestInit) => {
     return new Response(null, { status: 204 });
   }
 
+  // POST /api/sessions/:id/resume  (Resume affordances)
+  if (method === 'POST' && /\/api\/sessions\/[^/]+\/resume$/.test(url)) {
+    const sessionId = url.match(/\/api\/sessions\/([^/]+)\/resume$/)?.[1] ?? '';
+    resumeSessionCalls.push(sessionId);
+    return new Response(JSON.stringify({ session: { id: sessionId } }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+
   // Default: empty success response (covers branches lookups, etc.)
   return new Response(JSON.stringify({}), {
     status: 200,
@@ -205,6 +218,8 @@ function createMockSessionStopTasks(overrides: Partial<UseSessionStopTasksReturn
     removeTask: mock(() => {}),
     getTask: mock(() => undefined),
     markAsFailed: mock(() => {}),
+    markAsSucceeded: mock(() => {}),
+    markAsPending: mock(() => {}),
     ...overrides,
   };
 }
@@ -844,8 +859,8 @@ describe('WorktreeRow / Issue #1247 stop/pause task indicator', () => {
   it('shows a "Pausing..." indicator and keeps Open enabled while a pause task targets the session', async () => {
     const session = createMockWorktreeSession();
     const sessionStopTasks = createMockSessionStopTasks({
-      tasks: [{ sessionId: session.id, action: 'pause', error: null }],
-      getTask: mock((sessionId: string) => (sessionId === session.id ? { sessionId, action: 'pause' as const, error: null } : undefined)),
+      tasks: [{ sessionId: session.id, action: 'pause', status: 'pending', error: null }],
+      getTask: mock((sessionId: string) => (sessionId === session.id ? { sessionId, action: 'pause' as const, status: 'pending' as const, error: null } : undefined)),
     });
 
     await renderWithRouter(
@@ -927,5 +942,132 @@ describe('WorktreeRow / Issue #1247 stop/pause task indicator', () => {
 
     expect(screen.queryByText('Stopping...')).toBeNull();
     expect(screen.queryByText('Pausing...')).toBeNull();
+  });
+});
+
+/**
+ * Stop/pause success feedback on the dashboard: one result banner at the top
+ * (not per card).
+ */
+describe('Dashboard / stop-pause result feedback', () => {
+  beforeEach(() => {
+    mockFetch.mockClear();
+    resumeSessionCalls.length = 0;
+    useAppWsEventSpy = spyOn(useAppWsModule, 'useAppWsEvent').mockImplementation(() => undefined);
+    useAppWsStateSpy = spyOn(useAppWsModule, 'useAppWsState').mockImplementation(<T,>() => false as T);
+    hasVSCodeSpy = spyOn(capabilitiesModule, 'hasVSCode').mockImplementation(() => false);
+  });
+
+  afterEach(() => {
+    cleanup();
+    useAppWsEventSpy.mockRestore();
+    useAppWsStateSpy.mockRestore();
+    hasVSCodeSpy.mockRestore();
+  });
+
+  function task(overrides: Partial<SessionStopTask> = {}): SessionStopTask {
+    return { sessionId: 'session-1', action: 'pause', sessionTitle: 'My Session', status: 'succeeded', error: null, ...overrides };
+  }
+
+  function renderBanner(tasks: SessionStopTask[], removeTask = mock(() => {})) {
+    const value = createMockSessionStopTasks({ tasks, removeTask });
+    return {
+      removeTask,
+      rendered: renderWithRouter(
+        <SessionStopTasksContext.Provider value={value}>
+          <SessionStopResultBanner />
+        </SessionStopTasksContext.Provider>
+      ),
+    };
+  }
+
+  it('renders nothing when there are zero tasks', async () => {
+    const { rendered } = renderBanner([]);
+    const { container } = await rendered;
+    expect(container.querySelector('[role="status"]')).toBeNull();
+  });
+
+  it('renders nothing when the only tasks are pending or failed', async () => {
+    const { rendered } = renderBanner([
+      task({ sessionId: 'a', status: 'pending' }),
+      task({ sessionId: 'b', status: 'failed', error: 'boom' }),
+    ]);
+    const { container } = await rendered;
+    expect(container.querySelector('[role="status"]')).toBeNull();
+  });
+
+  it('lists only the succeeded tasks out of a mixed set', async () => {
+    const { rendered } = renderBanner([
+      task({ sessionId: 'a', status: 'pending', sessionTitle: 'Pending One' }),
+      task({ sessionId: 'b', sessionTitle: 'Done Pause' }),
+      task({ sessionId: 'c', action: 'stop', sessionTitle: 'Done Stop' }),
+      task({ sessionId: 'd', status: 'failed', error: 'boom', sessionTitle: 'Failed One' }),
+    ]);
+    await rendered;
+    expect(screen.getByText('Paused: Done Pause')).toBeTruthy();
+    expect(screen.getByText('Stopped: Done Stop')).toBeTruthy();
+    expect(screen.queryByText(/Pending One/)).toBeNull();
+    expect(screen.queryByText(/Failed One/)).toBeNull();
+  });
+
+  it('succeeded pause shows title and Resume; Resume calls the resume API and removes the task', async () => {
+    const { rendered, removeTask } = renderBanner([task()]);
+    await rendered;
+
+    expect(screen.getByText('Paused: My Session')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Resume' }));
+
+    await waitFor(() => expect(removeTask).toHaveBeenCalledWith('session-1'));
+    expect(resumeSessionCalls).toEqual(['session-1']);
+  });
+
+  it('succeeded stop shows "Stopped" with Dismiss and no Resume', async () => {
+    const { rendered, removeTask } = renderBanner([task({ action: 'stop' })]);
+    await rendered;
+
+    expect(screen.getByText('Stopped: My Session')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Resume' })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Dismiss' }));
+    expect(removeTask).toHaveBeenCalledWith('session-1');
+    expect(resumeSessionCalls).toEqual([]);
+  });
+
+  it('falls back to "this session" when the task has no title', async () => {
+    const { rendered } = renderBanner([task({ sessionTitle: undefined })]);
+    await rendered;
+    expect(screen.getByText('Paused: this session')).toBeTruthy();
+  });
+
+  it('auto-dismisses after 8 seconds (not before), and the timer is cleared on unmount', async () => {
+    const setTimeoutSpy = spyOn(globalThis, 'setTimeout');
+    const clearTimeoutSpy = spyOn(globalThis, 'clearTimeout');
+    try {
+      const { rendered, removeTask } = renderBanner([task()]);
+      const { unmount } = await rendered;
+
+      const call = setTimeoutSpy.mock.calls.find(([, delay]) => delay === 8000);
+      expect(call).toBeTruthy();
+      expect(removeTask).not.toHaveBeenCalled();
+
+      // Fire the registered 8 s callback: it must dismiss this task.
+      act(() => {
+        (call![0] as () => void)();
+      });
+      expect(removeTask).toHaveBeenCalledWith('session-1');
+
+      const clearsBefore = clearTimeoutSpy.mock.calls.length;
+      unmount();
+      expect(clearTimeoutSpy.mock.calls.length).toBeGreaterThan(clearsBefore);
+    } finally {
+      setTimeoutSpy.mockRestore();
+      clearTimeoutSpy.mockRestore();
+    }
+  });
+
+  it('renders the result banner at the top of the real DashboardPage', async () => {
+    await renderDashboard([], {
+      sessionStopTasks: createMockSessionStopTasks({ tasks: [task({ sessionTitle: 'Dash Session' })] }),
+    });
+    await waitFor(() => expect(screen.getByText('Paused: Dash Session')).toBeTruthy());
   });
 });
