@@ -142,8 +142,7 @@ function getSessionActivityState(session: Session, workerActivityStates: Record<
 
 /**
  * Resume a paused session and open it. Shared by every dashboard surface that
- * offers a Resume affordance (worktree row, paused Quick Session row, stop/pause
- * result banner) so they invalidate and report errors identically.
+ * offers a Resume affordance (worktree row, stop/pause result banner) so they invalidate and report errors identically.
  */
 function useResumeSessionMutation(
   showError: (title: string, message: string) => void,
@@ -253,12 +252,6 @@ export function DashboardPage() {
     }
     return result;
   }, [allSessions]);
-
-  // Paused quick sessions have no worktree card, so they are listed under Quick Sessions
-  const pausedQuickSessions = useMemo(
-    () => allSessions.filter((s) => s.pausedAt && s.type === 'quick'),
-    [allSessions]
-  );
 
   // Track previous activity states for detecting completion (active -> idle) for notifications
   const prevStatesRef = useRef<Record<string, Record<string, AgentActivityState>>>({});
@@ -643,10 +636,7 @@ export function DashboardPage() {
       )}
 
       {/* Quick Sessions (sessions without a registered repository) */}
-      <QuickSessionsSection
-        sessions={sessions.filter((s) => s.type === 'quick')}
-        pausedSessions={pausedQuickSessions}
-      />
+      <QuickSessionsSection sessions={sessions.filter((s) => s.type === 'quick')} />
 
       {/* Unregister Repository Confirmation */}
       <ConfirmDialog
@@ -1117,63 +1107,27 @@ export function WorktreeRow({ worktree, session, pausedSession, repositoryId, is
 
 interface QuickSessionsSectionProps {
   sessions: SessionWithActivity[];
-  pausedSessions: Session[];
 }
 
-function QuickSessionsSection({ sessions, pausedSessions }: QuickSessionsSectionProps) {
+function QuickSessionsSection({ sessions }: QuickSessionsSectionProps) {
   return (
     <div className="mt-8">
       <h2 className="text-lg font-medium text-gray-400 mb-4">Quick Sessions</h2>
 
-      {sessions.length === 0 && pausedSessions.length === 0 && (
+      {sessions.length === 0 && (
         <p className="text-sm text-gray-500">
           Start a Claude session in any directory without setting up a worktree.
         </p>
       )}
 
-      {(sessions.length > 0 || pausedSessions.length > 0) && (
+      {sessions.length > 0 && (
         <div className="flex flex-col gap-3">
           {sessions.map((session) => (
             <SessionCard key={session.id} session={session} />
           ))}
-          {pausedSessions.map((session) => (
-            <PausedQuickSessionCard key={session.id} session={session} />
-          ))}
         </div>
       )}
     </div>
-  );
-}
-
-export function PausedQuickSessionCard({ session }: { session: Session }) {
-  const { errorDialogProps, showError } = useErrorDialog();
-  const resumeMutation = useResumeSessionMutation(showError);
-
-  return (
-    <>
-      <div className="card flex flex-col gap-3 md:flex-row md:items-center md:gap-4">
-        <span className="inline-block w-2.5 h-2.5 rounded-full bg-yellow-500 shrink-0" />
-        <div className="flex-1 min-w-0">
-          {session.title && (
-            <div className="text-sm font-medium text-gray-200 truncate" title={session.title}>
-              {session.title}
-            </div>
-          )}
-          <div className="text-sm text-gray-400 overflow-hidden text-ellipsis whitespace-nowrap">
-            <PathLink path={session.locationPath} className="truncate" />
-          </div>
-          <div className="text-xs text-gray-500 mt-1">Paused</div>
-        </div>
-        <button
-          onClick={() => resumeMutation.mutate(session.id)}
-          disabled={resumeMutation.isPending}
-          className="btn btn-primary text-sm"
-        >
-          {resumeMutation.isPending ? 'Resuming...' : 'Resume'}
-        </button>
-      </div>
-      <ErrorDialog {...errorDialogProps} />
-    </>
   );
 }
 

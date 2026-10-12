@@ -947,8 +947,7 @@ describe('WorktreeRow / Issue #1247 stop/pause task indicator', () => {
 
 /**
  * Stop/pause success feedback on the dashboard: one result banner at the top
- * (not per card) plus a Resume entry for paused Quick Sessions, which have no
- * worktree card to carry one.
+ * (not per card).
  */
 describe('Dashboard / stop-pause result feedback', () => {
   beforeEach(() => {
@@ -1070,38 +1069,5 @@ describe('Dashboard / stop-pause result feedback', () => {
       sessionStopTasks: createMockSessionStopTasks({ tasks: [task({ sessionTitle: 'Dash Session' })] }),
     });
     await waitFor(() => expect(screen.getByText('Paused: Dash Session')).toBeTruthy());
-  });
-
-  it('lists a paused quick session under Quick Sessions with a Resume button that resumes it', async () => {
-    const paused = {
-      id: 'quick-paused',
-      type: 'quick',
-      title: 'Paused Quick',
-      locationPath: '/tmp/quick-paused',
-      status: 'inactive',
-      activationState: 'hibernated',
-      createdAt: new Date().toISOString(),
-      pausedAt: new Date().toISOString(),
-      workers: [],
-      isShared: false,
-      recoveryState: 'healthy',
-    } as Session;
-
-    await renderDashboard([], { sessions: [paused] });
-
-    await waitFor(() => expect(screen.getByText('Paused Quick')).toBeTruthy());
-    fireEvent.click(screen.getByRole('button', { name: 'Resume' }));
-    await waitFor(() => expect(resumeSessionCalls).toEqual(['quick-paused']));
-  });
-
-  it('does not show the Quick Sessions empty-state hint when only a paused quick session exists', async () => {
-    const paused = {
-      id: 'quick-paused', type: 'quick', title: 'Paused Quick', locationPath: '/tmp/q', status: 'inactive',
-      activationState: 'hibernated', createdAt: new Date().toISOString(), pausedAt: new Date().toISOString(),
-      workers: [], isShared: false, recoveryState: 'healthy',
-    } as Session;
-    await renderDashboard([], { sessions: [paused] });
-    await waitFor(() => expect(screen.getByText('Paused Quick')).toBeTruthy());
-    expect(screen.queryByText(/Start a Claude session in any directory/)).toBeNull();
   });
 });
