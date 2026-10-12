@@ -327,6 +327,39 @@ describe('SessionPauseResumeService', () => {
       expect(result).toBeNull();
     });
 
+    it('should activate the agent worker on resume without carrying any templateVars', async () => {
+      const agentWorker = buildInternalAgentWorker({ id: 'w1' });
+      const persisted = buildPersistedWorktreeSession({
+        id: 'session-1',
+        serverPid: null,
+        pausedAt: '2026-01-01T00:00:00.000Z',
+        workers: [buildPersistedAgentWorker({ id: 'w1', agentId: 'test-agent' })],
+      });
+      const activate = mock(async (..._args: unknown[]) => {});
+      const deps = createMockDeps({
+        sessionRepository: {
+          ...createMockDeps().sessionRepository,
+          findById: mock(async () => persisted),
+          update: mock(async () => true),
+        },
+        workerManager: {
+          killWorker: mock(async () => {}),
+          restoreWorkersFromPersistence: mock(() => new Map([['w1', agentWorker]])),
+          activateAgentWorkerPty: activate,
+          activateTerminalWorkerPty: mock(async () => {}),
+        } satisfies SessionPauseResumeDeps['workerManager'],
+        toPublicSession: mock(() => buildWorktreeSession({ id: 'session-1' })),
+      });
+      const service = new SessionPauseResumeService(deps);
+
+      await service.resumeSession('session-1');
+
+      expect(activate).toHaveBeenCalledTimes(1);
+      const options = activate.mock.calls[0][1] as { context: Record<string, unknown> };
+      expect(options.context.templateVars).toBeUndefined();
+      expect('templateVars' in options.context).toBe(false);
+    });
+
     it('should resume a paused session successfully', async () => {
       const agentWorker = buildInternalAgentWorker({ id: 'w1' });
       const restoredWorkers = new Map([['w1', agentWorker]]);

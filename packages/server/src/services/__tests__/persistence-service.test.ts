@@ -186,6 +186,24 @@ describe('PersistenceService', () => {
       expect(loaded).toEqual(testSessions);
     });
 
+    it('round-trips a quick session record exactly, with no templateVars key added', async () => {
+      const service = await getPersistenceService();
+      const record: PersistedSession = {
+        id: 'session-quick',
+        type: 'quick',
+        locationPath: '/path/to/dir',
+        workers: [],
+        serverPid: 1,
+        createdAt: '2024-01-01T00:00:00.000Z',
+      };
+
+      await service.saveSessions([record]);
+      const loaded = await service.loadSessions();
+
+      expect(loaded).toEqual([record]);
+      expect('templateVars' in loaded[0]).toBe(false);
+    });
+
     it('round-trips a session containing an embedded-agent worker', async () => {
       const service = await getPersistenceService();
 
