@@ -9,6 +9,7 @@ import { createWorktreeWithSession } from './services/worktree-creation-service.
 import { deleteWorktree } from './services/worktree-deletion-service.js';
 import { setupWebSocketRoutes, broadcastToApp } from './websocket/routes.js';
 import { onApiError } from './lib/error-handler.js';
+import { resolveHttpResLevel } from './lib/http-log-level.js';
 import {
   serverConfig,
   shouldWarnInsecureAuthCookie,
@@ -110,6 +111,7 @@ app.onError(onApiError);
 // See: https://github.com/honojs/hono/issues/2535
 const httpLogger = pinoLogger({
   pino: rootLogger.child({ service: 'http' }),
+  http: { onResLevel: (c) => resolveHttpResLevel(c.res.status) },
 });
 app.use('*', async (c, next) => {
   if (c.req.path.startsWith('/ws/')) {
