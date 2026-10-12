@@ -10,7 +10,7 @@ import { initializeDatabase } from '../database/connection.js';
 import type { RepositoryRepository, RepositoryUpdates } from '../repositories/repository-repository.js';
 import { SqliteRepositoryRepository } from '../repositories/sqlite-repository-repository.js';
 import { JOB_TYPES, type JobQueue } from '../jobs/index.js';
-import { runAsUser, shellEscape } from './privilege-elevation.js';
+import { isMultiUserAuthMode, runAsUser, shellEscape } from './privilege-elevation.js';
 import { buildSessionDataCleanupTargets } from './session-data-cleanup-candidates.js';
 
 const logger = createLogger('service:repository-manager');
@@ -584,7 +584,7 @@ export class RepositoryManager {
    * warning was actionable. In `AUTH_MODE=none` (or unset), no-op.
    */
   private async applyMultiUserSharedRepoConfig(absolutePath: string): Promise<void> {
-    if (process.env.AUTH_MODE !== 'multi-user') {
+    if (!isMultiUserAuthMode()) {
       return;
     }
 
@@ -716,7 +716,7 @@ export class RepositoryManager {
    * `AUTH_MODE=none` (or unset), no-op.
    */
   private async bootstrapSafeDirectoryForServer(repoPath: string): Promise<void> {
-    if (process.env.AUTH_MODE !== 'multi-user') {
+    if (!isMultiUserAuthMode()) {
       return;
     }
 

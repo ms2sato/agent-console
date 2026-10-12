@@ -11,7 +11,7 @@ import { getConfigDir } from '../lib/config.js';
 import { isProcessAlive, processKill } from '../lib/process-utils.js';
 import { createLogger } from '../lib/logger.js';
 import { isErrnoException } from '../lib/type-guards.js';
-import { killAsUser, shouldElevateForUser } from './privilege-elevation.js';
+import { isMultiUserAuthMode, killAsUser, shouldElevateForUser } from './privilege-elevation.js';
 import { sweepOrphanProcesses } from './orphan-process-sweeper.js';
 
 const logger = createLogger('session-initialization');
@@ -450,7 +450,7 @@ export class SessionInitializationService {
     // createdBy was set but resolution fell back to the server process user
     // (legacy/unresolvable createdBy) -- only worth a warn in multi-user
     // mode, where a non-elevated kill on a cross-user PID would fail.
-    if (session.createdBy !== undefined && !elevated && process.env.AUTH_MODE === 'multi-user') {
+    if (session.createdBy !== undefined && !elevated && isMultiUserAuthMode()) {
       logger.warn(
         { sessionId: session.id, createdBy: session.createdBy },
         'killOrphanWorkers: session.createdBy did not resolve to an elevated user; killing worker processes as the server process user',

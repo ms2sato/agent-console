@@ -34,6 +34,7 @@ import { computeQuickCwdSlug } from './session-data-path.js';
 import type { SessionDataPathResolver } from './session-data-path-resolver.js';
 import type { InternalSession } from '../services/internal-types.js';
 import type { EmbeddedAgentDefinition } from '@agent-console/shared';
+import { isMultiUserAuthMode } from '../services/privilege-elevation.js';
 import { ensureTrustedDirChain, resolveAncestorContract, TrustedDirVerificationError } from './trusted-dir.js';
 
 const SINGLE_USER_MEMORY_DIR_MODE = 0o700;
@@ -51,7 +52,7 @@ export interface MemoryDirContract {
  * `serverConfig` at module-load time).
  */
 export function resolveMemoryDirContract(): MemoryDirContract {
-  if (process.env.AUTH_MODE === 'multi-user' && typeof process.getgid === 'function') {
+  if (isMultiUserAuthMode() && typeof process.getgid === 'function') {
     return { mode: MULTI_USER_MEMORY_DIR_MODE, expectedGid: process.getgid() };
   }
   return { mode: SINGLE_USER_MEMORY_DIR_MODE, expectedGid: null };

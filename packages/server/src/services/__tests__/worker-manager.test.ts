@@ -35,7 +35,7 @@ import { CLAUDE_CODE_AGENT_ID } from '../agent-manager.js';
 import { SessionDataPathResolver } from '../../lib/session-data-path-resolver.js';
 import { WorkerOutputFileManager } from '../../lib/worker-output-file.js';
 import type { LookupOsUserFn } from '../os-user-lookup.js';
-import type { runAsUser, RunAsUserOpts } from '../privilege-elevation.js';
+import { isMultiUserAuthMode, type runAsUser, type RunAsUserOpts } from '../privilege-elevation.js';
 import type { listDescendantPids, signalPids } from '../../lib/process-tree.js';
 import * as os from 'node:os';
 import * as fs from 'fs/promises';
@@ -2909,6 +2909,7 @@ describe('WorkerManager', () => {
 
     it('single-user mode: does not mint a token or inject the env var (polarity: fails if the AUTH_MODE gate is removed)', async () => {
       delete process.env.AUTH_MODE;
+      expect(isMultiUserAuthMode()).toBe(false);
       const registry = createFakeMcpTokenRegistry();
       const { fake: runAsUserImpl } = createCommandDiscriminatingRunAsUser();
       const wm = buildManagerWithSeams({

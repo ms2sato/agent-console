@@ -23,7 +23,7 @@ import { JsonSessionRepository } from '../../repositories/index.js';
 import { MAX_MESSAGE_FILES, MAX_TOTAL_FILE_SIZE, MAX_IMAGE_ATTACHMENT_BYTES } from '@agent-console/shared';
 import { McpTokenRegistry } from '../../mcp/mcp-auth.js';
 import { AgentDirectory } from '../../services/agent-directory.js';
-import type { SpawnAsUserFn, SpawnAsUserOpts } from '../../services/privilege-elevation.js';
+import { isMultiUserAuthMode, type SpawnAsUserFn, type SpawnAsUserOpts } from '../../services/privilege-elevation.js';
 import { toSpawnAsUserResult, type FakeFileSink, type FakeSubprocess } from '../../__tests__/utils/fake-spawn-as-user.js';
 import { GENERIC_EMBEDDED_ACTIVATION_FAILURE_MESSAGE } from '../../services/embedded-agent-worker-service.js';
 import { serverConfig } from '../../lib/server-config.js';
@@ -2027,6 +2027,7 @@ describe('Workers API', () => {
     });
 
     it('200 in single-user mode regardless of createdBy', async () => {
+      expect(isMultiUserAuthMode()).toBe(false);
       const { sessionId, workerId } = await createWorktreeSdkWorker('someone-else-id');
 
       const res = await app.request(`/api/sessions/${sessionId}/workers/${workerId}/mcp-permissions`, {

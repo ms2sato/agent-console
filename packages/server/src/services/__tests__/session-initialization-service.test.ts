@@ -13,7 +13,7 @@ import { SessionDataPathResolver } from '../../lib/session-data-path-resolver.js
 import { InvalidSessionDataScopeError } from '../../lib/session-data-path.js';
 import { mockProcess, resetProcessMock } from '../../__tests__/utils/mock-process-helper.js';
 import { SessionInitializationService } from '../session-initialization-service.js';
-import type { killAsUser, RunAsUserResult } from '../privilege-elevation.js';
+import { isMultiUserAuthMode, type killAsUser, type RunAsUserResult } from '../privilege-elevation.js';
 import type { sweepOrphanProcesses } from '../orphan-process-sweeper.js';
 import {
   buildPersistedQuickSession,
@@ -419,6 +419,7 @@ describe('SessionInitializationService', () => {
       }
 
       it('returns 0 for a session with no workers, and never calls killAsUser', async () => {
+        expect(isMultiUserAuthMode()).toBe(true);
         const session = buildPersistedQuickSession({
           id: 'session-1',
           locationPath: '/some/path',

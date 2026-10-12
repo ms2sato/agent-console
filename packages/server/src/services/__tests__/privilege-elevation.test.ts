@@ -14,6 +14,7 @@ import {
   buildInnerCommand,
   shellEscape,
   shouldElevateForUser,
+  isMultiUserAuthMode,
   type RunAsUserOpts,
   type RunAsUserResult,
   type SpawnFn,
@@ -147,6 +148,30 @@ describe('privilege-elevation', () => {
     it('escapes embedded single quotes', () => {
       // foo'bar -> 'foo'\''bar'
       expect(shellEscape("foo'bar")).toBe("'foo'\\''bar'");
+    });
+  });
+
+  describe('isMultiUserAuthMode', () => {
+    it('reads process.env at call time: true for multi-user, false for none and unset', () => {
+      // AUTH_MODE deleted by beforeEach
+      expect(isMultiUserAuthMode()).toBe(false);
+      process.env.AUTH_MODE = 'multi-user';
+      expect(isMultiUserAuthMode()).toBe(true);
+      process.env.AUTH_MODE = 'none';
+      expect(isMultiUserAuthMode()).toBe(false);
+    });
+
+    it('respects an injected env object over process.env', () => {
+      process.env.AUTH_MODE = 'multi-user';
+      expect(isMultiUserAuthMode({ AUTH_MODE: 'none' })).toBe(false);
+      expect(isMultiUserAuthMode({})).toBe(false);
+      delete process.env.AUTH_MODE;
+      expect(isMultiUserAuthMode({ AUTH_MODE: 'multi-user' })).toBe(true);
+    });
+
+    it('rejects values other than the exact multi-user literal', () => {
+      expect(isMultiUserAuthMode({ AUTH_MODE: 'Multi-User' })).toBe(false);
+      expect(isMultiUserAuthMode({ AUTH_MODE: '' })).toBe(false);
     });
   });
 

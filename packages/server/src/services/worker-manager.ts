@@ -62,7 +62,7 @@ import { extractCommandToken } from '../lib/command-token.js';
 import { buildDirectSentinelShellCommand, buildElevatedSentinelCommand } from './sentinel-spawn-command.js';
 import { getUnsetEnvPrefix } from './env-filter.js';
 import type { McpTokenRegistry } from '../mcp/mcp-auth.js';
-import { writeUserOwnedSecretFile, rmRecursiveAsUser, shouldElevateForUser, type runAsUser } from './privilege-elevation.js';
+import { isMultiUserAuthMode, writeUserOwnedSecretFile, rmRecursiveAsUser, shouldElevateForUser, type runAsUser } from './privilege-elevation.js';
 import { lookupOsUser, type LookupOsUserFn } from './os-user-lookup.js';
 import { listDescendantPids, signalPids } from '../lib/process-tree.js';
 import { resolveEffectiveContextWindow } from './embedded-agent-context-window.js';
@@ -722,7 +722,7 @@ export class WorkerManager {
       // privilege-elevation.ts:buildInnerCommand) -- a file path is not a
       // secret and is safe to pass this way.
       // (docs/design/embedded-agent-worker.md § "MCP caller identity")
-      if (process.env.AUTH_MODE === 'multi-user') {
+      if (isMultiUserAuthMode()) {
         if (!params.createdByUserId) {
           // Non-fatal skip (unlike EmbeddedAgentWorkerService's hard-fail):
           // terminal-agent PTY activation is a long-established

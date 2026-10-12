@@ -164,21 +164,32 @@ export function buildInnerCommand(
 }
 
 /**
+ * Call-time read of AUTH_MODE for the spawn / elevation path. Deliberately NOT
+ * `serverConfig.AUTH_MODE` (validated once at module load, used by boot-time
+ * wiring): the elevation helpers and their tests flip the mode per call. Every
+ * call-time `AUTH_MODE` check in the server goes through this function;
+ * boot-time wiring reads `serverConfig.AUTH_MODE` in `lib/server-config.ts`.
+ */
+export function isMultiUserAuthMode(env: NodeJS.ProcessEnv = process.env): boolean {
+  return env.AUTH_MODE === 'multi-user';
+}
+
+/**
  * Decide whether `runAsUser` would actually elevate for the given username
  * under the current `AUTH_MODE`. Callers use this to gate companion logic
  * that only makes sense when running as a different OS user (e.g., the
  * source-repo `safe.directory` bootstrap in `worktree-service.ts`).
  *
- * Reads `process.env.AUTH_MODE` and `os.userInfo().username` at call time so
- * the result reflects the same runtime conditions `runAsUser` itself sees.
+ * Reads `AUTH_MODE` (via `isMultiUserAuthMode`) and `os.userInfo().username`
+ * at call time so the result reflects the same runtime conditions `runAsUser`
+ * itself sees.
  */
 export function shouldElevateForUser(
   username: string | null | undefined,
 ): boolean {
-  const authMode = process.env.AUTH_MODE;
   const serverUsername = os.userInfo().username;
   return (
-    authMode === 'multi-user' &&
+    isMultiUserAuthMode() &&
     typeof username === 'string' &&
     username.length > 0 &&
     username !== serverUsername
@@ -246,7 +257,7 @@ export async function runAsUser(
 ): Promise<RunAsUserResult> {
   const preserveEnv = opts.preserveEnv ?? [...DEFAULT_PRESERVE_ENV];
   const serverUsername = os.userInfo().username;
-  const authMode = process.env.AUTH_MODE;
+  const authMode = isMultiUserAuthMode() ? 'multi-user' : undefined;
 
   const { args, elevated } = buildSpawnArgs(
     opts.username,
@@ -663,7 +674,7 @@ export function spawnAsUser(
 ): SpawnAsUserResult {
   const preserveEnv = opts.preserveEnv ?? [...DEFAULT_PRESERVE_ENV];
   const serverUsername = os.userInfo().username;
-  const authMode = process.env.AUTH_MODE;
+  const authMode = isMultiUserAuthMode() ? 'multi-user' : undefined;
 
   const { args, elevated } = buildSpawnArgs(
     opts.username,

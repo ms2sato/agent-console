@@ -13,7 +13,7 @@ import { WorkerOutputFileManager } from '../../lib/worker-output-file.js';
 import { initializeDatabase, closeDatabase, getDatabase } from '../../database/connection.js';
 import { SqliteRepositoryRepository } from '../../repositories/index.js';
 import type { RepositoryRepository } from '../../repositories/repository-repository.js';
-import type { RunAsUserOpts, RunAsUserResult } from '../privilege-elevation.js';
+import { isMultiUserAuthMode, type RunAsUserOpts, type RunAsUserResult } from '../privilege-elevation.js';
 import { buildManualFallbackCommands } from '../repository-manager.js';
 
 /**
@@ -261,6 +261,7 @@ describe('RepositoryManager', () => {
         // or set core.sharedRepository on the source repo. The whole
         // multi-user branch is gated on AUTH_MODE so even a single spawn
         // would already be a regression.
+        expect(isMultiUserAuthMode()).toBe(false);
         expect(runAsUserMock.calls.length).toBe(0);
       });
 
@@ -281,6 +282,7 @@ describe('RepositoryManager', () => {
         const applyCalls = runAsUserMock.calls.filter((c) =>
           c.command.includes('chgrp -R '),
         );
+        expect(isMultiUserAuthMode()).toBe(true);
         expect(applyCalls.length).toBe(1);
         const apply = applyCalls[0];
         // Run as the server process (username: null => no elevation).
@@ -557,6 +559,7 @@ describe('RepositoryManager', () => {
         // Single-user mode: neither the #845 apply chain nor the #853
         // bootstrap should fire. The entire multi-user branch is gated on
         // AUTH_MODE.
+        expect(isMultiUserAuthMode()).toBe(false);
         expect(runAsUserMock.calls.length).toBe(0);
       });
 
