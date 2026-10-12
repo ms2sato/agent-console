@@ -53,6 +53,7 @@ import { deleteWorktree } from '../../services/worktree-deletion-service.js';
 import { initializeMcp, callTool, parseToolResult } from './mcp-protocol-test-helpers.js';
 import type { ArtifactRepository } from '../../repositories/artifact-repository.js';
 import type { AppServerMessage } from '@agent-console/shared';
+import { repositoryLookupFromSlug } from '../../__tests__/utils/repository-lookup-mock.js';
 
 const TEST_CONFIG_DIR_PREFIX = 'agent-console-create-html-artifact-test-';
 const TEST_REPO_PATH = '/test/repo-1312';
@@ -177,7 +178,7 @@ describe('create_html_artifact', () => {
       mcpTokenRegistry: new McpTokenRegistry(),
       annotationService: new AnnotationService(),
       userRepository,
-      repositoryLookup: { getRepositorySlug: async (id: string) => repositoryManager?.getRepositorySlug(id) },
+      repositoryLookup: repositoryLookupFromSlug(async (id: string) => repositoryManager?.getRepositorySlug(id)),
       repositoryEnvLookup: {
         getRepositoryInfo: (id: string) => {
           const r = repositoryManager?.getRepository(id);

@@ -27,6 +27,7 @@ import { WebSocketConnectionRegistry } from '../connection-registry.js';
 import { McpTokenRegistry } from '../../mcp/mcp-auth.js';
 import { asWSContext, asUpgradeWebSocket } from './ws-test-helpers.js';
 import { asAppContext } from '../../__tests__/test-utils.js';
+import { repositoryLookupFromSlug } from '../../__tests__/utils/repository-lookup-mock.js';
 
 const TEST_CONFIG_DIR = '/test/config';
 
@@ -90,7 +91,7 @@ describe('Worker WebSocket history and notifications', () => {
       agentManager,
       mcpTokenRegistry: new McpTokenRegistry(),
       userMode: new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' }),
-      repositoryLookup: { getRepositorySlug: async () => 'test-repo' },
+      repositoryLookup: repositoryLookupFromSlug(async () => 'test-repo'),
       repositoryEnvLookup: {
         getRepositoryInfo: () => ({ name: 'test-repo', path: '/test/repo' }),
         getWorktreeIndexNumber: async () => 0,

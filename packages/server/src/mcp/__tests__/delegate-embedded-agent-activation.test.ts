@@ -62,6 +62,7 @@ import type { SpawnAsUserFn, SpawnAsUserOpts } from '../../services/privilege-el
 import type { runAsUser } from '../../services/privilege-elevation.js';
 import { toSpawnAsUserResult, type FakeFileSink, type FakeSubprocess } from '../../__tests__/utils/fake-spawn-as-user.js';
 import { initializeMcp, callTool, parseToolResult } from './mcp-protocol-test-helpers.js';
+import { repositoryLookupFromSlug } from '../../__tests__/utils/repository-lookup-mock.js';
 
 const TEST_CONFIG_DIR = '/test/config-1260';
 const TEST_REPO_PATH = '/test/repo-1260';
@@ -228,7 +229,7 @@ describe('delegate_to_worktree: embedded-agent auto-activation (Issue #1260 PR-1
       runAsUserImpl: fakeRunAsUserAlwaysSuccess,
       spawnAsUserFn: fake.fn,
       userRepository,
-      repositoryLookup: { getRepositorySlug: async (id: string) => repositoryManager?.getRepositorySlug(id) },
+      repositoryLookup: repositoryLookupFromSlug(async (id: string) => repositoryManager?.getRepositorySlug(id)),
       repositoryEnvLookup: {
         getRepositoryInfo: (id: string) => {
           const r = repositoryManager?.getRepository(id);

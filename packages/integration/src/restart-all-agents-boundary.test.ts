@@ -214,6 +214,7 @@ describe('Client-Server Boundary: POST /api/sessions/restart-all-agents', () => 
         interSessionMessageService: ctx.interSessionMessageService,
         repositoryLookup: {
           getRepositorySlug: (id) => ctx.repositoryManager.getRepositorySlug(id),
+          withRegisteredRepository: (id, fn) => ctx.repositoryManager.withRegisteredRepository(id, () => fn()),
         },
         repositoryEnvLookup: {
           getRepositoryInfo: (id) => {

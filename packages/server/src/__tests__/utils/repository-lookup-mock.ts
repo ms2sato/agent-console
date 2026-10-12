@@ -19,8 +19,21 @@ export function makeRepositoryLookup(
   const fn = typeof mapping === 'function'
     ? mapping
     : (id: string) => mapping[id];
+  return repositoryLookupFromSlug(async (id: string) => fn(id));
+}
+
+/**
+ * A repository lookup built from a slug resolver alone. Its
+ * `withRegisteredRepository` just runs `fn`: the lock-free double of the real
+ * one, whose "not registered" outcome comes from `fn`'s own slug check
+ * (an undefined slug rejects with `RepositoryNotFoundError`).
+ */
+export function repositoryLookupFromSlug(
+  getRepositorySlug: (id: string) => Promise<string | undefined>,
+): RepositoryLookup {
   return {
-    getRepositorySlug: async (id: string) => fn(id),
+    getRepositorySlug,
+    withRegisteredRepository: (_id, fn) => fn(),
   };
 }
 

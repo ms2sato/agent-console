@@ -6,11 +6,11 @@ import { createMockPtyFactory } from '../../__tests__/utils/mock-pty.js';
 import { setupMemfs, cleanupMemfs, createMockGitRepoFiles } from '../../__tests__/utils/mock-fs-helper.js';
 import { mockProcess, resetProcessMock } from '../../__tests__/utils/mock-process-helper.js';
 import { mockGit, resetGitMocks } from '../../__tests__/utils/mock-git-helper.js';
-import { defaultRepositoryLookup, defaultRepositoryEnvLookup, makeRepositoryEnvLookup } from '../../__tests__/utils/repository-lookup-mock.js';
+import { defaultRepositoryLookup, defaultRepositoryEnvLookup, makeRepositoryEnvLookup, repositoryLookupFromSlug } from '../../__tests__/utils/repository-lookup-mock.js';
 import { initializeDatabase, closeDatabase, getDatabase } from '../../database/connection.js';
 import { AgentManager, CLAUDE_CODE_AGENT_ID } from '../agent-manager.js';
 import { SqliteAgentRepository } from '../../repositories/sqlite-agent-repository.js';
-import { ValidationError } from '../../lib/errors.js';
+import { RepositoryNotFoundError, ValidationError } from '../../lib/errors.js';
 import type { PersistedWorker } from '../persistence-service.js';
 import { JobQueue } from '../../jobs/index.js';
 import type { PtyProvider, PtySpawnOptions } from '../../lib/pty-provider.js';
@@ -21,6 +21,7 @@ import { PtyMessageInjectionService } from '../pty-message-injection-service.js'
 // Type-only: the suite loads SessionManager dynamically (fresh module per test),
 // but the R1 return-type pin below needs the static type.
 import type { SessionManager } from '../session-manager.js';
+import type { RepositoryLookup } from '../repository-lookup-types.js';
 import { UsernameLookupService } from '../username-lookup.js';
 import type { UserRepository } from '../../repositories/user-repository.js';
 import type { AuthUser, EmbeddedAgentDefinition } from '@agent-console/shared';
@@ -173,7 +174,7 @@ describe('SessionManager', () => {
         agentManager,
         mcpTokenRegistry: new McpTokenRegistry(),
         // Lookup returns undefined for every id — creation must fail fast.
-        repositoryLookup: { getRepositorySlug: async () => undefined },
+        repositoryLookup: repositoryLookupFromSlug(async () => undefined),
         repositoryEnvLookup: defaultRepositoryEnvLookup,
       });
 
@@ -219,7 +220,7 @@ describe('SessionManager', () => {
         jobQueue: testJobQueue,
         agentManager,
         mcpTokenRegistry: new McpTokenRegistry(),
-        repositoryLookup: { getRepositorySlug: (id: string) => repositoryManager.getRepositorySlug(id) },
+        repositoryLookup: repositoryLookupFromSlug((id: string) => repositoryManager.getRepositorySlug(id)),
         repositoryEnvLookup: defaultRepositoryEnvLookup,
       });
     }
@@ -399,6 +400,115 @@ describe('SessionManager', () => {
       expect(resolver).not.toBeNull();
       expect(resolver!.getTrustedRoot()).toBe(TEST_CONFIG_DIR);
       expect(resolver!.getBaseDir()).toBe(`${TEST_CONFIG_DIR}/repositories/org-a/remote-repo`);
+    });
+  });
+
+  // ===========================================================================
+  // Repository unregister vs. concurrent worktree-session creation: the two
+  // serialize on the per-repository lock, and the repository row's absence
+  // is the durable "unregister in progress" marker. Wired through the REAL
+  // RepositoryManager and the REAL SessionManager; the only seam is the job
+  // queue's `enqueue`, parked on a deferred so the unregister is held
+  // deterministically between its in-use check and its row deletion.
+  // ===========================================================================
+
+  describe('repository unregister vs. concurrent worktree creation', () => {
+    const RACE_REPO_DIR = '/test/race-repo';
+
+    async function getRaceFixtures() {
+      setupMemfs({
+        [`${TEST_CONFIG_DIR}/.keep`]: '',
+        ...createMockGitRepoFiles(RACE_REPO_DIR),
+      });
+      mockGit.deriveRepositorySlug.mockReset();
+      mockGit.deriveRepositorySlug.mockImplementation(() => Promise.resolve('acme/race-repo'));
+
+      const repoModule = await import(`../repository-manager.js?v=${++importCounter}`);
+      const repositoryManager = await repoModule.RepositoryManager.create({ jobQueue: testJobQueue });
+      const repo = await repositoryManager.registerRepository(RACE_REPO_DIR);
+
+      // The real RepositoryManager's lock, not the lock-free double.
+      const repositoryLookup: RepositoryLookup = {
+        getRepositorySlug: (id) => repositoryManager.getRepositorySlug(id),
+        withRegisteredRepository: (id, fn) => repositoryManager.withRegisteredRepository(id, () => fn()),
+      };
+      const sessionModule = await import(`../session-manager.js?v=${++importCounter}`);
+      const manager: SessionManager = await sessionModule.SessionManager.create({
+        userMode: new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' }),
+        pathExists: mockPathExists,
+        jobQueue: testJobQueue,
+        agentManager,
+        mcpTokenRegistry: new McpTokenRegistry(),
+        repositoryLookup,
+        repositoryEnvLookup: defaultRepositoryEnvLookup,
+      });
+      return { repositoryManager, repo, manager };
+    }
+
+    function worktreeRequest(repositoryId: string): CreateSessionRequest {
+      return {
+        type: 'worktree',
+        locationPath: '/test/path',
+        repositoryId,
+        worktreeId: 'main',
+        agentId: 'claude-code',
+      };
+    }
+
+    it('rejects a creation that starts while unregister is parked past its in-use check, leaving no orphan session row', async () => {
+      const { repositoryManager, repo, manager } = await getRaceFixtures();
+
+      let releaseEnqueue!: () => void;
+      const enqueueGate = new Promise<void>((resolve) => { releaseEnqueue = resolve; });
+      let markEnqueueSeen!: () => void;
+      const enqueueSeen = new Promise<void>((resolve) => { markEnqueueSeen = resolve; });
+      const realEnqueue = testJobQueue!.enqueue.bind(testJobQueue!);
+      spyOn(testJobQueue!, 'enqueue').mockImplementation(async (type, payload, options) => {
+        markEnqueueSeen();
+        await enqueueGate;
+        return realEnqueue(type, payload, options);
+      });
+
+      const unregisterPromise = repositoryManager.unregisterRepository(repo.id);
+      // Unregister is now parked inside the per-repository lock, past the
+      // in-use check, with the row not yet deleted.
+      await enqueueSeen;
+
+      const createPromise = manager.createSession(worktreeRequest(repo.id));
+      const createSettled = createPromise.then(() => 'settled', () => 'settled');
+      // Unfixed, creation completes while unregister is parked; fixed, it
+      // is queued behind the lock and does not settle until release.
+      await Promise.race([createSettled, new Promise((resolve) => setTimeout(resolve, 100))]);
+      releaseEnqueue();
+
+      const [unregisterResult, createResult] = await Promise.allSettled([unregisterPromise, createPromise]);
+
+      const rows = await manager.getSessionRepository().findAll();
+      const orphanRows = rows.filter((row) => row.type === 'worktree' && row.repositoryId === repo.id);
+      expect({
+        unregister: unregisterResult.status === 'fulfilled' ? unregisterResult.value : unregisterResult.status,
+        create: createResult.status,
+        repositoryStillRegistered: repositoryManager.getRepository(repo.id) !== undefined,
+        orphanSessionRows: orphanRows.length,
+      }).toEqual({
+        unregister: true,
+        create: 'rejected',
+        repositoryStillRegistered: false,
+        orphanSessionRows: 0,
+      });
+      expect((createResult as PromiseRejectedResult).reason).toBeInstanceOf(RepositoryNotFoundError);
+      expect((createResult as PromiseRejectedResult).reason.message).toContain('Repository not found');
+    });
+
+    it('control: the same creation with no concurrent unregister succeeds, so the lock is not simply blocking creation', async () => {
+      const { repositoryManager, repo, manager } = await getRaceFixtures();
+
+      const session = await manager.createSession(worktreeRequest(repo.id));
+
+      expect(session.type).toBe('worktree');
+      expect(repositoryManager.getRepository(repo.id)).toBeDefined();
+      const persisted = await manager.getSessionRepository().findById(session.id);
+      expect(persisted).not.toBeNull();
     });
   });
 
@@ -7268,7 +7378,7 @@ describe('SessionManager', () => {
         jobQueue: testJobQueue,
         agentManager,
         mcpTokenRegistry: new McpTokenRegistry(),
-        repositoryLookup: { getRepositorySlug: async (id: string) => (id === 'repo-1' ? 'my-repo' : undefined) },
+        repositoryLookup: repositoryLookupFromSlug(async (id: string) => (id === 'repo-1' ? 'my-repo' : undefined)),
         repositoryEnvLookup: envLookup,
       });
 
@@ -7350,7 +7460,7 @@ describe('SessionManager', () => {
         jobQueue: testJobQueue,
         agentManager,
         mcpTokenRegistry: new McpTokenRegistry(),
-        repositoryLookup: { getRepositorySlug: async (id: string) => (id === 'repo-1' ? 'my-repo' : undefined) },
+        repositoryLookup: repositoryLookupFromSlug(async (id: string) => (id === 'repo-1' ? 'my-repo' : undefined)),
         repositoryEnvLookup: envLookup,
         userRepository: stubUserRepo,
       });
@@ -7393,7 +7503,7 @@ describe('SessionManager', () => {
         jobQueue: testJobQueue,
         agentManager,
         mcpTokenRegistry: new McpTokenRegistry(),
-        repositoryLookup: { getRepositorySlug: async (id: string) => (id === 'repo-1' ? 'my-repo' : undefined) },
+        repositoryLookup: repositoryLookupFromSlug(async (id: string) => (id === 'repo-1' ? 'my-repo' : undefined)),
         repositoryEnvLookup: envLookup,
       });
 

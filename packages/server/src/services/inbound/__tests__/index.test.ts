@@ -35,6 +35,7 @@ import { SingleUserMode } from '../../user-mode.js';
 import { McpTokenRegistry } from '../../../mcp/mcp-auth.js';
 import { AnnotationService } from '../../annotation-service.js';
 import { initializeInboundIntegration } from '../index.js';
+import { repositoryLookupFromSlug } from '../../../__tests__/utils/repository-lookup-mock.js';
 
 /**
  * `JobQueue` has private fields, so a stub object literal cannot satisfy it
@@ -95,7 +96,7 @@ describe('initializeInboundIntegration', () => {
       mcpTokenRegistry: new McpTokenRegistry(),
       annotationService: new AnnotationService(),
       userRepository,
-      repositoryLookup: { getRepositorySlug: async (id: string) => repositoryManager.getRepositorySlug(id) },
+      repositoryLookup: repositoryLookupFromSlug(async (id: string) => repositoryManager.getRepositorySlug(id)),
       repositoryEnvLookup: {
         getRepositoryInfo: (id: string) => {
           const r = repositoryManager.getRepository(id);
