@@ -336,9 +336,7 @@ detached
       // The case the HEAD-only check wrongly rejected: `git init` +
       // `git fetch origin` leaves HEAD unborn, yet `git worktree add -b x
       // <path> origin/main` works. `--all` sees the fetched refs.
-      mockGit.git.mockImplementation((args: string[]) =>
-        Promise.resolve(args.join(' ') === 'rev-list --all --count' ? '3\n' : ''),
-      );
+      mockGit.git.mockImplementation(() => Promise.resolve('3\n'));
 
       const { WorktreeService } = await import(`../worktree-service.js?v=${++importCounter}`);
       const service = new WorktreeService({ worktreeRepository: mockRepo });
