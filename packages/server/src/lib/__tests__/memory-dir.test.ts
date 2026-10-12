@@ -23,6 +23,7 @@ import { SessionDataPathResolver } from '../session-data-path-resolver.js';
 import { computeQuickCwdSlug } from '../session-data-path.js';
 import { buildInternalWorktreeSession } from '../../__tests__/utils/build-test-data.js';
 import type { EmbeddedAgentDefinition } from '@agent-console/shared';
+import { isMultiUserAuthMode } from '../../services/privilege-elevation.js';
 
 const IS_ROOT = typeof process.geteuid === 'function' && process.geteuid() === 0;
 
@@ -72,6 +73,7 @@ describe('resolveMemoryDirContract', () => {
     delete process.env.AUTH_MODE;
     try {
       const contract = resolveMemoryDirContract();
+      expect(isMultiUserAuthMode()).toBe(false);
       expect(contract.mode).toBe(0o700);
       expect(contract.expectedGid).toBeNull();
     } finally {
@@ -84,6 +86,7 @@ describe('resolveMemoryDirContract', () => {
     process.env.AUTH_MODE = 'multi-user';
     try {
       const contract = resolveMemoryDirContract();
+      expect(isMultiUserAuthMode()).toBe(true);
       expect(contract.mode).toBe(0o2775);
       expect(contract.expectedGid).toBe(process.getgid!());
     } finally {
