@@ -251,13 +251,13 @@ describe('privilege-elevation', () => {
   });
 
   describe('buildSpawnArgs (pure)', () => {
-    it('bypasses elevation when authMode is none even with a non-server username', () => {
+    it('bypasses elevation when multiUser is false even with a non-server username', () => {
       const result = buildSpawnArgs(
         'alice',
         'echo hi',
         ['FORCE_COLOR'],
         'agentconsole',
-        'none',
+        false,
         undefined,
         undefined,
       );
@@ -271,7 +271,7 @@ describe('privilege-elevation', () => {
         'echo hi',
         ['FORCE_COLOR'],
         'agentconsole',
-        'multi-user',
+        true,
         undefined,
         undefined,
       );
@@ -285,7 +285,7 @@ describe('privilege-elevation', () => {
         'echo hi',
         ['FORCE_COLOR'],
         'agentconsole',
-        'multi-user',
+        true,
         undefined,
         undefined,
       );
@@ -299,7 +299,7 @@ describe('privilege-elevation', () => {
         'echo hi',
         ['FORCE_COLOR'],
         'agentconsole',
-        'multi-user',
+        true,
         '/some/dir',
         { FOO: 'bar' },
       );
@@ -315,7 +315,7 @@ describe('privilege-elevation', () => {
         'echo hi',
         ['FORCE_COLOR'],
         'agentconsole',
-        'multi-user',
+        true,
         undefined,
         undefined,
       );
@@ -338,7 +338,7 @@ describe('privilege-elevation', () => {
         'echo hi',
         ['FORCE_COLOR'],
         'agentconsole',
-        'multi-user',
+        true,
         '/path/to/work',
         undefined,
       );
@@ -361,7 +361,7 @@ describe('privilege-elevation', () => {
         'echo hi',
         ['FORCE_COLOR'],
         'agentconsole',
-        'multi-user',
+        true,
         undefined,
         { GIT_AUTHOR_NAME: 'Alice' },
       );
@@ -379,7 +379,7 @@ describe('privilege-elevation', () => {
         'git clone https://x',
         ['FORCE_COLOR'],
         'agentconsole',
-        'multi-user',
+        true,
         '/var/agentconsole/work',
         { GIT_TERMINAL_PROMPT: '0' },
       );
@@ -394,7 +394,7 @@ describe('privilege-elevation', () => {
         'echo hi',
         ['FORCE_COLOR', 'NO_COLOR'],
         'agentconsole',
-        'multi-user',
+        true,
         undefined,
         undefined,
       );
@@ -416,7 +416,7 @@ describe('privilege-elevation', () => {
         'echo hi',
         [],
         'agentconsole',
-        'multi-user',
+        true,
         undefined,
         undefined,
       );
