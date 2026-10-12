@@ -586,6 +586,7 @@ describe('Client-Server Boundary: restore-info WorkerServerMessage (Transcript R
       // legitimately start absorbing).
       await fs.writeFile(
         liveOutputPath,
+        // terminated on purpose: an unterminated trailing fragment is read as an in-flight write and skipped, not as corruption
         `${beforeCorruption}${JSON.stringify({ v: 1, type: 'user-message', id: 'corrupt' })}\n{not valid json\n`,
         'utf-8',
       );
@@ -877,6 +878,7 @@ describe('Client-Server Boundary: restore-info WorkerServerMessage (Transcript R
       const beforeCorruption = await fs.readFile(liveOutputPath, 'utf-8');
       await fs.writeFile(
         liveOutputPath,
+        // terminated on purpose: an unterminated trailing fragment is read as an in-flight write and skipped, not as corruption
         `${beforeCorruption}${JSON.stringify({ v: 1, type: 'user-message', id: 'corrupt' })}\n{not valid json\n`,
         'utf-8',
       );
