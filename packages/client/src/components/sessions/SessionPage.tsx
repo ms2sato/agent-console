@@ -28,6 +28,8 @@ import { SessionSidePanelsDrawer } from './SessionSidePanelsDrawer';
 import { useAgents } from '../../hooks/useAgents';
 import { useIsMobile } from '../../hooks/useIsMobile';
 import { useSessionStopTasksContext } from '../../routes/__root';
+import { runPauseSession } from './PauseSessionDialog';
+import { runStopSession } from './EndSessionDialog';
 import type { SessionStopTask } from '../../hooks/useSessionStopTasks';
 import { Spinner } from '../ui/Spinner';
 import { logger } from '../../lib/logger';
@@ -212,10 +214,26 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
   const [exitInfo, setExitInfo] = useState<{ code: number; signal: string | null } | undefined>();
   const { errorDialogProps, showError } = useErrorDialog();
   const { agents } = useAgents();
-  const { getTask: getStopTask, removeTask: removeStopTask } = useSessionStopTasksContext();
+  const {
+    getTask: getStopTask,
+    removeTask: removeStopTask,
+    markAsFailed: markStopTaskFailed,
+    markAsPending: markStopTaskPending,
+  } = useSessionStopTasksContext();
   const stopTask = getStopTask(sessionId);
   const messagePanelRef = useRef<MessagePanelHandle>(null);
   const navigate = useNavigate();
+
+  // Re-runs the failed request through the same function the confirm dialog
+  // uses, then leaves the page just as the dialog does on success.
+  const handleRetryStopTask = async (task: SessionStopTask) => {
+    markStopTaskPending(task.sessionId);
+    const run = task.action === 'pause' ? runPauseSession : runStopSession;
+    const ok = await run(task.sessionId, markStopTaskFailed);
+    if (ok) {
+      await navigate({ to: '/' });
+    }
+  };
   // State for resuming paused session
   const [isResuming, setIsResuming] = useState(false);
   const [resumeError, setResumeError] = useState<string | null>(null);
@@ -725,23 +743,30 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
   return (
     <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
       {/* Non-modal Stop/Pause task banner (scoped to this session) */}
-      {stopTask && (
-        stopTask.error ? (
-          <div role="alert" className="bg-red-950/50 border-b border-red-900 px-3 py-1.5 flex items-center justify-between gap-2 shrink-0 text-xs text-red-400">
-            <span>{stopTask.error}</span>
+      {stopTask && stopTask.status === 'failed' && (
+        <div role="alert" className="bg-red-950/50 border-b border-red-900 px-3 py-1.5 flex items-center justify-between gap-2 shrink-0 text-xs text-red-400">
+          <span>{stopTask.error}</span>
+          <div className="flex gap-2 shrink-0">
+            <button
+              onClick={() => handleRetryStopTask(stopTask)}
+              className="btn text-xs bg-slate-700 hover:bg-slate-600"
+            >
+              Retry
+            </button>
             <button
               onClick={() => removeStopTask(stopTask.sessionId)}
-              className="btn text-xs bg-slate-700 hover:bg-slate-600 shrink-0"
+              className="btn text-xs bg-slate-700 hover:bg-slate-600"
             >
               Dismiss
             </button>
           </div>
-        ) : (
-          <div className="bg-yellow-950/50 border-b border-yellow-900 px-3 py-1.5 flex items-center gap-2 shrink-0 text-xs text-yellow-400">
-            <Spinner size="sm" />
-            {getSessionStopTaskBannerText(stopTask)}
-          </div>
-        )
+        </div>
+      )}
+      {stopTask && stopTask.status === 'pending' && (
+        <div className="bg-yellow-950/50 border-b border-yellow-900 px-3 py-1.5 flex items-center gap-2 shrink-0 text-xs text-yellow-400">
+          <Spinner size="sm" />
+          {getSessionStopTaskBannerText(stopTask)}
+        </div>
       )}
       {/* Tab bar with worker tabs */}
       <div className="bg-slate-800 border-b border-slate-600 flex items-center shrink-0">

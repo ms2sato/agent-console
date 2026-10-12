@@ -861,12 +861,12 @@ describe('primary agent tab close-button wiring (Issue #1134)', () => {
 
 describe('getSessionStopTaskBannerText (Issue #1247)', () => {
   it('returns the pausing copy for a pause task', () => {
-    const task: SessionStopTask = { sessionId: 'session-1', action: 'pause', error: null };
+    const task: SessionStopTask = { sessionId: 'session-1', action: 'pause', status: 'pending', error: null };
     expect(getSessionStopTaskBannerText(task)).toBe('Pausing this session...');
   });
 
   it('returns the stopping copy for a stop task', () => {
-    const task: SessionStopTask = { sessionId: 'session-1', action: 'stop', error: null };
+    const task: SessionStopTask = { sessionId: 'session-1', action: 'stop', status: 'pending', error: null };
     expect(getSessionStopTaskBannerText(task)).toBe('Stopping this session...');
   });
 });

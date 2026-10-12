@@ -2,10 +2,13 @@ import { useState, useRef, useCallback } from 'react';
 
 export type SessionStopTaskAction = 'stop' | 'pause';
 
+export type SessionStopTaskStatus = 'pending' | 'succeeded' | 'failed';
+
 export interface SessionStopTask {
   sessionId: string;
   action: SessionStopTaskAction;
   sessionTitle?: string;
+  status: SessionStopTaskStatus;
   error: string | null;
 }
 
@@ -24,6 +27,10 @@ export interface UseSessionStopTasksReturn {
   getTask: (sessionId: string) => SessionStopTask | undefined;
   /** Mark a task as failed (for immediate API errors) */
   markAsFailed: (sessionId: string, error: string) => void;
+  /** Mark a task as succeeded (server confirmed the stop/pause); clears any error */
+  markAsSucceeded: (sessionId: string) => void;
+  /** Reset a task to pending (used when retrying a failed request); clears the error */
+  markAsPending: (sessionId: string) => void;
 }
 
 /**
@@ -34,10 +41,12 @@ export interface UseSessionStopTasksReturn {
  * behind a modal for the server round-trip. Mirrors `useWorktreeDeletionTasks`'s
  * shape/lifecycle.
  *
- * Task removal is event-driven off server truth (see `useSessionSideEffects`):
- * a `stop` task is removed when its session disappears from the sessions sync
- * (or an explicit `session-deleted` event arrives); a `pause` task is removed
- * when its session's status becomes `'inactive'`.
+ * Completion is event-driven off server truth (see `useSessionSideEffects`):
+ * a `stop` task becomes `succeeded` when its session disappears from the
+ * sessions sync (or an explicit `session-deleted` event arrives); a `pause`
+ * task becomes `succeeded` when its session's status becomes `'inactive'`.
+ * A succeeded task stays in the list until the dashboard result banner
+ * dismisses it (manually or by auto-dismiss).
  *
  * Note: Tasks are lost on page refresh (client-side only).
  */
@@ -52,16 +61,19 @@ export function useSessionStopTasks(): UseSessionStopTasksReturn {
 
   const addTask = useCallback(
     (params: { sessionId: string; action: SessionStopTaskAction; sessionTitle?: string }): boolean => {
-      if (tasksRef.current.some((t) => t.sessionId === params.sessionId)) {
+      // A succeeded task is a finished result awaiting dismissal, not an
+      // in-flight operation, so a new request for the same session replaces it.
+      if (tasksRef.current.some((t) => t.sessionId === params.sessionId && t.status !== 'succeeded')) {
         return false;
       }
       const newTask: SessionStopTask = {
         sessionId: params.sessionId,
         action: params.action,
         sessionTitle: params.sessionTitle,
+        status: 'pending',
         error: null,
       };
-      tasksRef.current = [...tasksRef.current, newTask];
+      tasksRef.current = [...tasksRef.current.filter((t) => t.sessionId !== params.sessionId), newTask];
       setTasks(tasksRef.current);
       return true;
     },
@@ -80,12 +92,24 @@ export function useSessionStopTasks(): UseSessionStopTasksReturn {
     [tasks]
   );
 
-  const markAsFailed = useCallback((sessionId: string, error: string) => {
+  const updateTask = useCallback((sessionId: string, patch: Pick<SessionStopTask, 'status' | 'error'>) => {
     tasksRef.current = tasksRef.current.map((t) =>
-      t.sessionId === sessionId ? { ...t, error } : t
+      t.sessionId === sessionId ? { ...t, ...patch } : t
     );
     setTasks(tasksRef.current);
   }, []);
+
+  const markAsFailed = useCallback((sessionId: string, error: string) => {
+    updateTask(sessionId, { status: 'failed', error });
+  }, [updateTask]);
+
+  const markAsSucceeded = useCallback((sessionId: string) => {
+    updateTask(sessionId, { status: 'succeeded', error: null });
+  }, [updateTask]);
+
+  const markAsPending = useCallback((sessionId: string) => {
+    updateTask(sessionId, { status: 'pending', error: null });
+  }, [updateTask]);
 
   return {
     tasks,
@@ -93,5 +117,7 @@ export function useSessionStopTasks(): UseSessionStopTasksReturn {
     removeTask,
     getTask,
     markAsFailed,
+    markAsSucceeded,
+    markAsPending,
   };
 }

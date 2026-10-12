@@ -123,6 +123,8 @@ function createMockSessionStopTasks(
     removeTask: mock(() => {}),
     getTask: mock(() => undefined),
     markAsFailed: mock(() => {}),
+    markAsSucceeded: mock(() => {}),
+    markAsPending: mock(() => {}),
     ...overrides,
   };
 }

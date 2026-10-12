@@ -85,9 +85,16 @@ export function useSessionSideEffects({
     clearDraftsForSession(sessionId);
     handleSessionDeleted(sessionId);
     invalidateValidation();
-    // A stop/pause task's target session is gone -- remove it unconditionally
-    // (harmless no-op if no task exists for this session).
-    sessionStopTasks.removeTask(sessionId);
+    // session-deleted is how a stop normally completes, so a `stop` task
+    // succeeds here. For any other task (a pause whose session was deleted by
+    // someone else) the target is gone and the task is simply dropped. No-op
+    // when no task exists for this session.
+    const task = sessionStopTasks.tasks.find((t) => t.sessionId === sessionId);
+    if (task?.action === 'stop') {
+      sessionStopTasks.markAsSucceeded(sessionId);
+    } else {
+      sessionStopTasks.removeTask(sessionId);
+    }
   }, [handleSessionDeleted, invalidateValidation, sessionStopTasks]);
 
   const handleSessionUpdatedWithValidation = useCallback((...args: Parameters<typeof handleSessionUpdated>) => {
@@ -95,21 +102,29 @@ export function useSessionSideEffects({
     invalidateValidation();
   }, [handleSessionUpdated, invalidateValidation]);
 
-  // Removes stop/pause tasks whose session-side truth (from the sessions-sync
+  // Resolves stop/pause tasks whose session-side truth (from the sessions-sync
   // snapshot) indicates the task is complete: a `stop` task's session left the
-  // list entirely, or a `pause` task's session is present but now `inactive`.
-  // This makes WS-reconnect self-healing -- the task-removal side effect does
+  // list entirely (succeeded), a `pause` task's session left the list (dropped:
+  // it was deleted, not paused), or a `pause` task's session is present but now
+  // `inactive` (succeeded).
+  // This makes WS-reconnect self-healing -- the task-resolution side effect does
   // not depend on the `session-deleted`/`session-paused` events having been
   // observed by this client.
   const handleSessionsSyncWithValidation = useCallback((sessions: Session[], activityStates: WorkerActivityInfo[]) => {
     handleSessionsSync(sessions, activityStates);
     invalidateValidation();
     for (const task of sessionStopTasks.tasks) {
+      // Already resolved; the result banner owns its dismissal.
+      if (task.status === 'succeeded') continue;
       const session = sessions.find((s) => s.id === task.sessionId);
       if (!session) {
-        sessionStopTasks.removeTask(task.sessionId);
+        if (task.action === 'stop') {
+          sessionStopTasks.markAsSucceeded(task.sessionId);
+        } else {
+          sessionStopTasks.removeTask(task.sessionId);
+        }
       } else if (task.action === 'pause' && session.status === 'inactive') {
-        sessionStopTasks.removeTask(task.sessionId);
+        sessionStopTasks.markAsSucceeded(task.sessionId);
       }
     }
   }, [handleSessionsSync, invalidateValidation, sessionStopTasks]);
@@ -121,7 +136,7 @@ export function useSessionSideEffects({
     // no longer exists in server memory.
     disconnectSession(session.id);
     handleSessionPaused(session);
-    sessionStopTasks.removeTask(session.id);
+    sessionStopTasks.markAsSucceeded(session.id);
   }, [handleSessionPaused, sessionStopTasks]);
 
   // Wrap worktree deletion completed handler to also invalidate worktree queries

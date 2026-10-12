@@ -60,6 +60,8 @@ function createMockSessionStopTasks(overrides: Partial<UseSessionStopTasksReturn
     removeTask: mock(() => {}),
     getTask: mock(() => undefined),
     markAsFailed: mock(() => {}),
+    markAsSucceeded: mock(() => {}),
+    markAsPending: mock(() => {}),
     ...overrides,
   };
 }
@@ -218,12 +220,13 @@ describe('useSessionSideEffects - session stop task removal (Issue #1247)', () =
     return {
       sessionId: 'session-1',
       action: 'stop',
+      status: 'pending',
       error: null,
       ...overrides,
     };
   }
 
-  it('removes a stop task whose session left the sessions-sync list', () => {
+  it('marks a stop task as succeeded when its session left the sessions-sync list', () => {
     const sessionStopTasks = createMockSessionStopTasks({
       tasks: [stopTask({ sessionId: 'session-gone', action: 'stop' })],
     });
@@ -236,10 +239,28 @@ describe('useSessionSideEffects - session stop task removal (Issue #1247)', () =
       ws?.simulateMessage(JSON.stringify({ type: 'sessions-sync', sessions: [], activityStates: [] }));
     });
 
-    expect(sessionStopTasks.removeTask).toHaveBeenCalledWith('session-gone');
+    expect(sessionStopTasks.markAsSucceeded).toHaveBeenCalledWith('session-gone');
+    expect(sessionStopTasks.removeTask).not.toHaveBeenCalled();
   });
 
-  it('removes a pause task whose session is present but status is inactive', () => {
+  it('removes a pause task whose session left the sessions-sync list (deleted, not paused)', () => {
+    const sessionStopTasks = createMockSessionStopTasks({
+      tasks: [stopTask({ sessionId: 'session-gone', action: 'pause' })],
+    });
+    const options = createDefaultOptions({ sessionStopTasks });
+    renderWithQueryClient(options);
+
+    const ws = MockWebSocket.getLastInstance();
+    act(() => {
+      ws?.simulateOpen();
+      ws?.simulateMessage(JSON.stringify({ type: 'sessions-sync', sessions: [], activityStates: [] }));
+    });
+
+    expect(sessionStopTasks.removeTask).toHaveBeenCalledWith('session-gone');
+    expect(sessionStopTasks.markAsSucceeded).not.toHaveBeenCalled();
+  });
+
+  it('marks a pause task as succeeded when its session is present but status is inactive', () => {
     const sessionStopTasks = createMockSessionStopTasks({
       tasks: [stopTask({ sessionId: 'session-1', action: 'pause' })],
     });
@@ -253,7 +274,25 @@ describe('useSessionSideEffects - session stop task removal (Issue #1247)', () =
       ws?.simulateMessage(JSON.stringify({ type: 'sessions-sync', sessions: [session], activityStates: [] }));
     });
 
-    expect(sessionStopTasks.removeTask).toHaveBeenCalledWith('session-1');
+    expect(sessionStopTasks.markAsSucceeded).toHaveBeenCalledWith('session-1');
+    expect(sessionStopTasks.removeTask).not.toHaveBeenCalled();
+  });
+
+  it('leaves an already-succeeded task alone on a later sessions-sync', () => {
+    const sessionStopTasks = createMockSessionStopTasks({
+      tasks: [stopTask({ sessionId: 'session-gone', action: 'stop', status: 'succeeded' })],
+    });
+    const options = createDefaultOptions({ sessionStopTasks });
+    renderWithQueryClient(options);
+
+    const ws = MockWebSocket.getLastInstance();
+    act(() => {
+      ws?.simulateOpen();
+      ws?.simulateMessage(JSON.stringify({ type: 'sessions-sync', sessions: [], activityStates: [] }));
+    });
+
+    expect(sessionStopTasks.markAsSucceeded).not.toHaveBeenCalled();
+    expect(sessionStopTasks.removeTask).not.toHaveBeenCalled();
   });
 
   it('does NOT remove a stop task whose session is still present and active (no resurrection on a mid-flight sync)', () => {
@@ -271,10 +310,30 @@ describe('useSessionSideEffects - session stop task removal (Issue #1247)', () =
     });
 
     expect(sessionStopTasks.removeTask).not.toHaveBeenCalled();
+    expect(sessionStopTasks.markAsSucceeded).not.toHaveBeenCalled();
   });
 
-  it('removes the task unconditionally on a session-deleted event', () => {
-    const sessionStopTasks = createMockSessionStopTasks();
+  it('marks a stop task as succeeded on a session-deleted event (does not pre-empt the success state)', () => {
+    const sessionStopTasks = createMockSessionStopTasks({
+      tasks: [stopTask({ sessionId: 'session-1', action: 'stop' })],
+    });
+    const options = createDefaultOptions({ sessionStopTasks });
+    renderWithQueryClient(options);
+
+    const ws = MockWebSocket.getLastInstance();
+    act(() => {
+      ws?.simulateOpen();
+      ws?.simulateMessage(JSON.stringify({ type: 'session-deleted', sessionId: 'session-1' }));
+    });
+
+    expect(sessionStopTasks.markAsSucceeded).toHaveBeenCalledWith('session-1');
+    expect(sessionStopTasks.removeTask).not.toHaveBeenCalled();
+  });
+
+  it('removes a pause task on a session-deleted event (session deleted by someone else)', () => {
+    const sessionStopTasks = createMockSessionStopTasks({
+      tasks: [stopTask({ sessionId: 'session-1', action: 'pause' })],
+    });
     const options = createDefaultOptions({ sessionStopTasks });
     renderWithQueryClient(options);
 
@@ -285,9 +344,24 @@ describe('useSessionSideEffects - session stop task removal (Issue #1247)', () =
     });
 
     expect(sessionStopTasks.removeTask).toHaveBeenCalledWith('session-1');
+    expect(sessionStopTasks.markAsSucceeded).not.toHaveBeenCalled();
   });
 
-  it('removes the task unconditionally on a session-paused event', () => {
+  it('session-deleted with no task never marks success', () => {
+    const sessionStopTasks = createMockSessionStopTasks();
+    const options = createDefaultOptions({ sessionStopTasks });
+    renderWithQueryClient(options);
+
+    const ws = MockWebSocket.getLastInstance();
+    act(() => {
+      ws?.simulateOpen();
+      ws?.simulateMessage(JSON.stringify({ type: 'session-deleted', sessionId: 'session-1' }));
+    });
+
+    expect(sessionStopTasks.markAsSucceeded).not.toHaveBeenCalled();
+  });
+
+  it('marks the task as succeeded on a session-paused event', () => {
     const sessionStopTasks = createMockSessionStopTasks();
     const options = createDefaultOptions({ sessionStopTasks });
     renderWithQueryClient(options);
@@ -299,7 +373,7 @@ describe('useSessionSideEffects - session stop task removal (Issue #1247)', () =
       ws?.simulateMessage(JSON.stringify({ type: 'session-paused', session }));
     });
 
-    expect(sessionStopTasks.removeTask).toHaveBeenCalledWith('session-1');
+    expect(sessionStopTasks.markAsSucceeded).toHaveBeenCalledWith('session-1');
   });
 });
 

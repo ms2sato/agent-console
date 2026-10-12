@@ -23,6 +23,25 @@ export interface EndSessionDialogProps {
 }
 
 /**
+ * Runs the stop request for a session and records a failure on the task.
+ * Shared by the confirm dialog and the SessionPage Retry button so both go
+ * through one code path. Resolves `true` when the request was accepted by the
+ * server and `false` when it failed (the task is then marked failed).
+ */
+export async function runStopSession(
+  sessionId: string,
+  markAsFailed: (sessionId: string, error: string) => void
+): Promise<boolean> {
+  try {
+    await deleteSession(sessionId);
+    return true;
+  } catch (err) {
+    markAsFailed(sessionId, err instanceof Error ? err.message : 'Failed to stop session');
+    return false;
+  }
+}
+
+/**
  * Dialog for ending (stopping/deleting) a quick session.
  *
  * The pending/error state lives in `SessionStopTasksContext` (scoped to the
@@ -52,19 +71,16 @@ export function EndSessionDialog({
     const added = addTask({ sessionId, action: 'stop', sessionTitle });
     if (!added) return;
 
-    // Close dialog and navigate immediately
+    // Close the dialog but stay on the session page: the in-flight and
+    // failure banners live there. Navigate only once the server accepted the
+    // request.
     onOpenChange(false);
-    navigate({ to: '/' });
 
-    // Session will be removed from UI when WebSocket broadcast arrives from server
-    // (no optimistic update to avoid race condition/flicker)
-
-    try {
-      await deleteSession(sessionId);
-      // Success will be handled via WebSocket (session-deleted / sessions-sync).
-    } catch (err) {
-      // If API call fails immediately (network error), mark task as failed
-      markAsFailed(sessionId, err instanceof Error ? err.message : 'Failed to stop session');
+    // Completion (success state) is resolved via WebSocket (session-paused / sessions-sync
+    // / session-deleted) in useSessionSideEffects.
+    const ok = await runStopSession(sessionId, markAsFailed);
+    if (ok) {
+      await navigate({ to: '/' });
     }
   };
 
