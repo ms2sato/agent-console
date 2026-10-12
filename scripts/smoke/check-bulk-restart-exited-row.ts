@@ -48,23 +48,27 @@ export interface BulkRestartArgs {
   readyDelayMs: number;
   engine: 'openai-api' | 'claude-sdk';
   exitDelayMs: number;
+  lateBReady: boolean;
+  realistic: boolean;
   help: boolean;
 }
 
-export const USAGE = `Usage: bun scripts/smoke/check-bulk-restart-exited-row.ts [--expect-lost] [--ready-delay-ms N] [--exit-delay-ms N] [--engine openai-api|claude-sdk] [--help]
+export const USAGE = `Usage: bun scripts/smoke/check-bulk-restart-exited-row.ts [--expect-lost] [--ready-delay-ms N] [--realistic] [--exit-delay-ms N] [--engine openai-api|claude-sdk] [--help]
 
   --expect-lost        polarity mode: assert the exited row is LOST for worker B (the pre-fix defect)
   --ready-delay-ms N   delay before each stub incarnation reports ready (default 0)
+  --realistic          default flush interval; B's first incarnation reports ready only at its shutdown, so its whole first life falls inside one flush interval (timing control)
   --exit-delay-ms N    delay between kill and the stub's exit settling (default 0)
   --engine E           engine of the two workers (default openai-api)
   --help               print this text and exit 0`;
 
 export function parseArgs(argv: string[]): BulkRestartArgs {
-  const out: BulkRestartArgs = { expectLost: false, readyDelayMs: 0, engine: 'openai-api', exitDelayMs: 0, help: false };
+  const out: BulkRestartArgs = { expectLost: false, readyDelayMs: 0, engine: 'openai-api', exitDelayMs: 0, lateBReady: false, realistic: false, help: false };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--') continue;
     if (a === '--help' || a === '-h') out.help = true;
+    else if (a === '--realistic') { out.realistic = true; out.lateBReady = true; if (out.exitDelayMs === 0) out.exitDelayMs = 20; }
     else if (a === '--expect-lost') out.expectLost = true;
     else if (a === '--exit-delay-ms') {
       const v = Number(argv[++i]);
@@ -115,7 +119,7 @@ interface FakeHandle {
   push: (line: string) => void;
 }
 
-function makeFakeSubprocess(exitDelayMs: number) {
+function makeFakeSubprocess(exitDelayMs: number, onShutdown?: (push: (line: string) => void) => void) {
   let controller!: ReadableStreamDefaultController<Uint8Array>;
   let stderrController!: ReadableStreamDefaultController<Uint8Array>;
   const enc = new TextEncoder();
@@ -124,7 +128,18 @@ function makeFakeSubprocess(exitDelayMs: number) {
   let resolveExited!: (code: number) => void;
   const exited = new Promise<number>((resolve) => { resolveExited = resolve; });
   let closed = false;
-  const stdin = { write: () => 0, end: () => {}, flush: () => 0 } as unknown as FileSink;
+  const stdin = {
+    write: (chunk: unknown) => {
+      // A graceful harness exits on the `shutdown` command, as the real one does.
+      if (typeof chunk === 'string' && chunk.includes('"shutdown"')) {
+        onShutdown?.((line) => controller.enqueue(enc.encode(`${line}\n`)));
+        setTimeout(() => settle(0), exitDelayMs);
+      }
+      return 0;
+    },
+    end: () => {},
+    flush: () => 0,
+  } as unknown as FileSink;
   const settle = (code: number): void => {
     if (closed) return;
     closed = true;
@@ -157,15 +172,23 @@ async function main(): Promise<void> {
   mkdirSync(cwd, { recursive: true });
   process.env.AGENT_CONSOLE_HOME = disposableHome;
   process.env.AUTH_MODE = 'none';
+  // Deterministic by default: the first life's output is guaranteed still pending at the restart.
+  if (!args.realistic) process.env.WORKER_OUTPUT_FLUSH_INTERVAL = '60000';
   process.env.LOG_LEVEL = process.env.LOG_LEVEL ?? 'warn';
 
   const { createTestContext, shutdownAppContext } = await import('../../packages/server/src/app-context.ts');
 
   const spawns: FakeHandle[] = [];
   const spawnAsUserFn = () => {
-    const { subprocess, stdin, handle } = makeFakeSubprocess(args.exitDelayMs);
+    const { subprocess, stdin, handle } = makeFakeSubprocess(args.exitDelayMs, spawns.length === 1 && args.lateBReady ? (push) => push(JSON.stringify({ v: 1, type: 'ready' })) : undefined);
     spawns.push(handle);
-    setTimeout(() => handle.push(JSON.stringify({ v: 1, type: 'ready' })), args.readyDelayMs);
+    const ready = JSON.stringify({ v: 1, type: 'ready' });
+    // B's FIRST incarnation (spawn index 1) reports ready only when the bulk
+    // restart sends it `shutdown`, so every row it ever wrote -- its `exited`
+    // row included -- is buffered within one flush interval and unflushed
+    // when B's second incarnation activates.
+    if (spawns.length === 2 && args.lateBReady) return { subprocess, stdin, elevated: false };
+    setTimeout(() => handle.push(ready), args.readyDelayMs);
     return { subprocess, stdin, elevated: false };
   };
 
@@ -206,7 +229,7 @@ async function main(): Promise<void> {
     await ctx.sessionManager.activateEmbeddedAgentWorker(A.sessionId, A.workerId);
     await ctx.sessionManager.activateEmbeddedAgentWorker(B.sessionId, B.workerId);
     if (spawns.length !== 2) bail(`expected 2 spawns after activating A and B, saw ${spawns.length}`);
-    for (const w of [A, B]) {
+    for (const w of args.lateBReady ? [A] : [A, B]) {
       if (!(await waitFor(async () => (await readEvents(w)).some((e) => e.type === 'ready'), 3000))) bail('initial ready never persisted');
     }
 
@@ -229,13 +252,14 @@ async function main(): Promise<void> {
     check(embeddedRestarted === 2, 'the bulk restart restarted both embedded workers', `embeddedRestarted=${embeddedRestarted} failed=${result.failed}`);
     if (spawns.length !== 4) bail(`expected 4 spawns after the bulk restart, saw ${spawns.length}`);
 
-    for (const [label, w] of [['A', A], ['B', B]] as const) {
+    // --realistic keeps the default flush interval, so whether A's first life is
+    // still pending is a race; only B (whose first life is pinned inside one
+    // flush interval) is asserted there.
+    for (const [label, w] of (args.realistic ? [['B', B]] : [['A', A], ['B', B]]) as Array<['A' | 'B', typeof A]>) {
       const found = await waitFor(async () => (await countExited(w)) > 0, 5000);
       const n = await countExited(w);
-      if (args.expectLost && label === 'B') {
-        check(!found, 'POLARITY: B has no exited row in its history -- the defect reproduces', `exited rows=${n}`);
-      } else if (args.expectLost) {
-        check(found, 'A (control: has a conversation) keeps its exited row', `exited rows=${n}`);
+      if (args.expectLost) {
+        check(!found, `POLARITY: ${label} has no exited row in its history -- the defect reproduces`, `exited rows=${n}`);
       } else {
         check(found, `${label} has its exited row after the bulk restart`, `exited rows=${n}`);
       }
