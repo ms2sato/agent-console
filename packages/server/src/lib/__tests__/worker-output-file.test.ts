@@ -699,27 +699,74 @@ describe('WorkerOutputFileManager', () => {
       expect(vol.readFileSync(sidecar, 'utf-8')).toBe('second generation bytes');
     });
 
-    it('does not include a dropped pending flush in the sidecar, and leaves the live file empty post-reset', async () => {
+    it('writes the pending buffer into the sidecar and leaves only the marker in the fresh live file', async () => {
       const filePath = manager.getOutputFilePath('session-sidecar-pending', 'worker-1', quickResolver);
       vol.mkdirSync(`${TEST_CONFIG_DIR}/_quick/outputs/session-sidecar-pending`, { recursive: true });
-      vol.writeFileSync(filePath, 'flushed bytes');
+      vol.writeFileSync(filePath, 'flushed\n');
 
-      // Queue a pending flush that has NOT been written to the live file yet.
-      manager.bufferOutput('session-sidecar-pending', 'worker-1', 'not-yet-flushed', quickResolver);
+      // Two lines queued but NOT yet written to the live file.
+      manager.bufferOutput('session-sidecar-pending', 'worker-1', 'pending-1\n', quickResolver);
+      manager.bufferOutput('session-sidecar-pending', 'worker-1', 'pending-2\n', quickResolver);
 
       await manager.resetWorkerOutput('session-sidecar-pending', 'worker-1', quickResolver, {
         preserveToSidecar: true,
+        persistentMarkerLine: '{"marker":true}',
       });
 
+      // Mutation measured: restoring the unconditional drop (removing the
+      // pre-rename flush) makes the sidecar lack both pending lines.
       const sidecar = sidecarPath('session-sidecar-pending', 'worker-1');
-      // Only the already-flushed bytes made it into the sidecar; the pending
-      // buffer was dropped inside the same lock, per the documented
-      // "not yet flushed... accepted limitation" caveat.
-      expect(vol.readFileSync(sidecar, 'utf-8')).toBe('flushed bytes');
-      expect(vol.readFileSync(sidecar, 'utf-8')).not.toContain('not-yet-flushed');
+      expect(vol.readFileSync(sidecar, 'utf-8')).toBe('flushed\npending-1\npending-2\n');
+      // The flush goes to the OLD file, never the fresh one.
+      expect(vol.readFileSync(filePath, 'utf-8')).toBe('{"marker":true}\n');
+    });
 
-      // The dropped pending buffer must not resurface after the reset.
-      expect(vol.readFileSync(filePath, 'utf-8')).toBe('');
+    it('still drops the pending buffer when preserveToSidecar is false (no sidecar, no reader)', async () => {
+      const filePath = manager.getOutputFilePath('session-nosidecar-pending', 'worker-1', quickResolver);
+      vol.mkdirSync(`${TEST_CONFIG_DIR}/_quick/outputs/session-nosidecar-pending`, { recursive: true });
+      vol.writeFileSync(filePath, 'flushed\n');
+      manager.bufferOutput('session-nosidecar-pending', 'worker-1', 'pending-1\n', quickResolver);
+
+      await manager.resetWorkerOutput('session-nosidecar-pending', 'worker-1', quickResolver, {
+        preserveToSidecar: false,
+        persistentMarkerLine: '{"marker":true}',
+      });
+
+      expect(vol.existsSync(sidecarPath('session-nosidecar-pending', 'worker-1'))).toBe(false);
+      expect(vol.readFileSync(filePath, 'utf-8')).toBe('{"marker":true}\n');
+    });
+
+    it('completes the reset and still reports the rename outcome when the pre-rename flush fails', async () => {
+      const filePath = manager.getOutputFilePath('session-sidecar-flushfail', 'worker-1', quickResolver);
+      vol.mkdirSync(`${TEST_CONFIG_DIR}/_quick/outputs/session-sidecar-flushfail`, { recursive: true });
+      vol.writeFileSync(filePath, 'flushed\n');
+      manager.bufferOutput('session-sidecar-flushfail', 'worker-1', 'pending-1\n', quickResolver);
+
+      // Fault injected as a rejected append (memfs does not enforce mode bits).
+      const appendSpy = spyOn(fsPromisesNamespace, 'appendFile').mockRejectedValueOnce(new Error('append boom'));
+      const warnSpy = spyOn(rootLogger, 'warn');
+      const results: boolean[] = [];
+      try {
+        await expect(
+          manager.resetWorkerOutput('session-sidecar-flushfail', 'worker-1', quickResolver, {
+            preserveToSidecar: true,
+            persistentMarkerLine: '{"marker":true}',
+            onSidecarResult: (ok) => results.push(ok),
+          }),
+        ).resolves.toEqual(expect.any(Number));
+
+        const flushWarns = warnSpy.mock.calls.filter(
+          (c) => typeof c[1] === 'string' && c[1].includes('pending output before restore-failed sidecar'),
+        );
+        expect(flushWarns.length).toBe(1);
+      } finally {
+        appendSpy.mockRestore();
+        warnSpy.mockRestore();
+      }
+
+      expect(results).toEqual([true]);
+      expect(vol.readFileSync(sidecarPath('session-sidecar-flushfail', 'worker-1'), 'utf-8')).toBe('flushed\n');
+      expect(vol.readFileSync(filePath, 'utf-8')).toBe('{"marker":true}\n');
     });
 
     it('does not throw and still completes the reset when the sidecar rename fails', async () => {
@@ -867,7 +914,7 @@ describe('WorkerOutputFileManager', () => {
     });
 
     it('PROPAGATES an fs.appendFile failure to the caller (unlike flushLocked, which swallows)', async () => {
-      // `spyOn(memfs.promises, 'appendFile')` does NOT intercept the call
+      // `spyOn(fsPromisesNamespace, 'appendFile')` does NOT intercept the call
       // this production module makes through its own `import * as fs from
       // 'fs/promises'` binding (measured the same way as the sidecar-rename
       // test above), so the failure is produced by genuine memfs state
