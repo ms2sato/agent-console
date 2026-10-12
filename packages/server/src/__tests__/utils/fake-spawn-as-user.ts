@@ -49,11 +49,13 @@ export function toSpawnAsUserResult(fields: {
   subprocess: FakeSubprocess;
   stdin: FakeFileSink;
   elevated?: boolean;
+  elevatedGroup?: boolean;
 }): SpawnAsUserResult {
-  const result: Pick<SpawnAsUserResult, 'elevated'> & { subprocess: FakeSubprocess; stdin: FakeFileSink } = {
+  const result: Pick<SpawnAsUserResult, 'elevated' | 'elevatedGroup'> & { subprocess: FakeSubprocess; stdin: FakeFileSink } = {
     subprocess: fields.subprocess,
     stdin: fields.stdin,
     elevated: fields.elevated ?? false,
+    elevatedGroup: fields.elevatedGroup ?? false,
   };
   return result as SpawnAsUserResult;
 }

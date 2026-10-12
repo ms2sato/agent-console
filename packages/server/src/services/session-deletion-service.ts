@@ -11,6 +11,8 @@ import type { SessionLifecycleCallbacks } from './session-lifecycle-types.js';
 import type { JobQueue } from '../jobs/index.js';
 import { JOB_TYPES } from '../jobs/index.js';
 import { createLogger } from '../lib/logger.js';
+import { SessionInitializationService } from './session-initialization-service.js';
+import type { sweepOrphanProcesses } from './orphan-process-sweeper.js';
 
 const logger = createLogger('session-deletion');
 
@@ -44,6 +46,10 @@ export interface SessionDeletionDeps {
   getProcessCleanupCallback: () => ((sessionId: string) => void) | undefined;
   stopWatching: (locationPath: string) => void;
   stopBranchWatching: (sessionId: string) => void;
+  /** Resolve the OS user a session's processes run as (same resolver the startup sweep uses). */
+  resolveSpawnUsername: (createdBy?: string) => Promise<string>;
+  /** Test seam for the orphan-process sweep; defaults to the real one. */
+  sweepOrphanProcessesImpl?: typeof sweepOrphanProcesses;
 }
 
 export class SessionDeletionService {
@@ -106,6 +112,20 @@ export class SessionDeletionService {
       }
     }
     await Promise.all(killPromises);
+
+    // Broader net after the tracked kills: reap any process still carrying this
+    // session's AGENT_CONSOLE_SESSION_ID marker (run_process descendants and
+    // other untracked children). Best-effort: a sweep failure never fails the
+    // delete.
+    try {
+      await SessionInitializationService.sweepSessionProcesses(
+        session,
+        this.deps.resolveSpawnUsername,
+        { sweepImpl: this.deps.sweepOrphanProcessesImpl },
+      );
+    } catch (err) {
+      logger.warn({ sessionId: id, err }, 'Session-deletion process sweep failed (best-effort, continuing)');
+    }
 
     // Verify jobQueue is available before proceeding
     if (!this.deps.jobQueue) {

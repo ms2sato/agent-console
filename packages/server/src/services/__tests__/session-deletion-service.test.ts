@@ -8,6 +8,7 @@ import type { NotificationManager } from '../notifications/notification-manager.
 import type { MessageService } from '../message-service.js';
 import type { InterSessionMessageService } from '../inter-session-message-service.js';
 import type { MemoService } from '../memo-service.js';
+import type { sweepOrphanProcesses } from '../orphan-process-sweeper.js';
 import {
   buildInternalAgentWorker,
   buildInternalTerminalWorker,
@@ -18,6 +19,16 @@ import {
 } from '../../__tests__/utils/build-test-data.js';
 
 const mockStopWatching = mock(() => {});
+
+type SweepFn = typeof sweepOrphanProcesses;
+
+// Default sweep stub: keeps every test off the real `/proc` scan.
+function createSweepStub(killedCount = 0): ReturnType<typeof mock<SweepFn>> {
+  return mock<SweepFn>(async () => ({
+    killedCount,
+    raw: { stdout: `SWEPT=${killedCount}\n`, stderr: '', exitCode: 0, timedOut: false },
+  }));
+}
 
 // WorkerManager / JobQueue / NotificationManager / MessageService /
 // InterSessionMessageService / MemoService are concrete classes with
@@ -101,6 +112,8 @@ function createMockDeps(overrides?: Partial<SessionDeletionDeps>): SessionDeleti
     stopWatching: mockStopWatching,
     stopBranchWatching: () => {},
     deactivateEmbeddedAgentWorker: mock(async () => {}),
+    resolveSpawnUsername: async () => 'target-user',
+    sweepOrphanProcessesImpl: createSweepStub(),
     ...overrides,
   };
 }
@@ -161,6 +174,73 @@ describe('SessionDeletionService', () => {
   });
 
   describe('deleteSession', () => {
+    describe('orphan-process sweep', () => {
+      it('sweeps once with the session id and resolved username, after the worker kills', async () => {
+        const order: string[] = [];
+        const session = buildInternalWorktreeSession([buildInternalAgentWorker({ id: 'w1' })]);
+        const sweep = mock<SweepFn>(async (sessionId, username) => {
+          order.push(`sweep:${sessionId}:${username}`);
+          return { killedCount: 0, raw: { stdout: 'SWEPT=0\n', stderr: '', exitCode: 0, timedOut: false } };
+        });
+        const deps = createMockDeps({
+          getSession: (id) => (id === 'session-1' ? session : undefined),
+          workerManager: asWorkerManager({
+            killWorker: mock(async () => {
+              order.push('kill');
+            }),
+          }),
+          resolveSpawnUsername: async (createdBy) => `resolved-for-${createdBy}`,
+          sweepOrphanProcessesImpl: sweep,
+        });
+
+        const result = await new SessionDeletionService(deps).deleteSession('session-1');
+
+        expect(result).toBe(true);
+        expect(sweep).toHaveBeenCalledTimes(1);
+        expect(order).toEqual(['kill', `sweep:session-1:resolved-for-${session.createdBy}`]);
+      });
+
+      it('does not fail the delete when the sweep rejects', async () => {
+        const session = buildInternalWorktreeSession([buildInternalAgentWorker({ id: 'w1' })]);
+        const deps = createMockDeps({
+          getSession: (id) => (id === 'session-1' ? session : undefined),
+          sweepOrphanProcessesImpl: mock<SweepFn>(async () => {
+            throw new Error('sweep exploded');
+          }),
+        });
+
+        expect(await new SessionDeletionService(deps).deleteSession('session-1')).toBe(true);
+      });
+
+      it('does not fail the delete when the sweep reports a non-success result', async () => {
+        const session = buildInternalWorktreeSession([buildInternalAgentWorker({ id: 'w1' })]);
+        const deps = createMockDeps({
+          getSession: (id) => (id === 'session-1' ? session : undefined),
+          sweepOrphanProcessesImpl: mock<SweepFn>(async () => ({
+            killedCount: 0,
+            raw: { stdout: '', stderr: 'boom', exitCode: 1, timedOut: true },
+          })),
+        });
+
+        expect(await new SessionDeletionService(deps).deleteSession('session-1')).toBe(true);
+      });
+
+      it('does not fail the delete when resolving the spawn username throws', async () => {
+        const session = buildInternalWorktreeSession([buildInternalAgentWorker({ id: 'w1' })]);
+        const sweep = createSweepStub();
+        const deps = createMockDeps({
+          getSession: (id) => (id === 'session-1' ? session : undefined),
+          resolveSpawnUsername: async () => {
+            throw new Error('no such user');
+          },
+          sweepOrphanProcessesImpl: sweep,
+        });
+
+        expect(await new SessionDeletionService(deps).deleteSession('session-1')).toBe(true);
+        expect(sweep).not.toHaveBeenCalled();
+      });
+    });
+
     it('should return false if session is not found', async () => {
       const deps = createMockDeps();
       const service = new SessionDeletionService(deps);

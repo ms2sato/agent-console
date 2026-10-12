@@ -7,6 +7,8 @@ import {
   rmRecursiveAsUser,
   writeUserOwnedSecretFile,
   killAsUser,
+  killProcessGroupAsUser,
+  discoverElevatedPgid,
   spawnAsUser,
   buildSpawnArgs,
   buildInnerCommand,
@@ -818,16 +820,44 @@ describe('privilege-elevation', () => {
       expect(result.ownsProcessGroup).toBe(false);
     });
 
-    it('newProcessGroup is ignored on the elevated branch', () => {
+    it('newProcessGroup on the elevated branch wraps the command in setsid and reports elevatedGroup, not detached', () => {
       process.env.AUTH_MODE = 'multi-user';
+      const targetUser = `${serverUsername}-someone-else`;
       const captured: CapturedSpawn[] = [];
       const result = spawnAsUser(
-        { username: `${serverUsername}-someone-else`, command: 'whoami', newProcessGroup: true },
+        { username: targetUser, command: "echo 'hi' && sleep 1", cwd: '/work', newProcessGroup: true },
         makeFakeSpawnForSpawnAsUser(captured),
       );
       expect(result.elevated).toBe(true);
-      expect(captured[0].options?.detached).toBeUndefined();
+      expect(result.elevatedGroup).toBe(true);
       expect(result.ownsProcessGroup).toBe(false);
+      expect(captured[0].options?.detached).toBeUndefined();
+      // cd runs first in the login shell, then the exec replaces it with setsid.
+      expect(captured[0].args.at(-1)).toBe(
+        `cd '/work'; exec setsid sh -c 'echo '\\''hi'\\'' && sleep 1'`,
+      );
+    });
+
+    it('elevated spawn without newProcessGroup keeps the command unwrapped and elevatedGroup false', () => {
+      process.env.AUTH_MODE = 'multi-user';
+      const captured: CapturedSpawn[] = [];
+      const result = spawnAsUser(
+        { username: `${serverUsername}-someone-else`, command: 'whoami' },
+        makeFakeSpawnForSpawnAsUser(captured),
+      );
+      expect(captured[0].args.at(-1)).toBe('whoami');
+      expect(result.elevatedGroup).toBe(false);
+    });
+
+    it('newProcessGroup on the direct branch never wraps the command and reports elevatedGroup false', () => {
+      process.env.AUTH_MODE = 'none';
+      const captured: CapturedSpawn[] = [];
+      const result = spawnAsUser(
+        { username: null, command: 'echo hi', newProcessGroup: true },
+        makeFakeSpawnForSpawnAsUser(captured),
+      );
+      expect(captured[0].args).toEqual(['sh', '-c', 'echo hi']);
+      expect(result.elevatedGroup).toBe(false);
     });
 
     it('always sets stdin/stdout/stderr to "pipe" regardless of elevation', () => {
@@ -1127,6 +1157,105 @@ describe('privilege-elevation', () => {
   // ============================================================
   // killAsUser (strict thin wrapper, Issue #1197 Part A)
   // ============================================================
+  describe('killProcessGroupAsUser', () => {
+    const ok = async () => ({ stdout: '', stderr: '', exitCode: 0, timedOut: false });
+
+    it('elevated path: SIGTERM targets the negative group id after "--", cwd "/"', async () => {
+      const captured: RunAsUserOpts[] = [];
+      const impl: typeof runAsUser = async (opts) => {
+        captured.push(opts);
+        return ok();
+      };
+      await killProcessGroupAsUser(4321, 'SIGTERM', 'alice', { runAsUserImpl: impl, timeoutMs: 777 });
+      expect(captured).toHaveLength(1);
+      expect(captured[0].username).toBe('alice');
+      expect(captured[0].cwd).toBe('/');
+      expect(captured[0].timeoutMs).toBe(777);
+      expect(captured[0].command).toBe('kill -s TERM -- -4321');
+    });
+
+    it('SIGKILL strips the SIG prefix', async () => {
+      const captured: RunAsUserOpts[] = [];
+      const impl: typeof runAsUser = async (opts) => {
+        captured.push(opts);
+        return ok();
+      };
+      await killProcessGroupAsUser(9, 'SIGKILL', null, { runAsUserImpl: impl });
+      expect(captured[0].command).toBe('kill -s KILL -- -9');
+      expect(captured[0].username).toBeNull();
+    });
+
+    it.each([0, -1, 1.5, Number.NaN])('rejects a non-positive-integer pgid (%p) before spawning anything', async (bad) => {
+      let called = false;
+      const impl: typeof runAsUser = async () => {
+        called = true;
+        return ok();
+      };
+      await expect(killProcessGroupAsUser(bad, 'SIGTERM', 'alice', { runAsUserImpl: impl })).rejects.toThrow(
+        /positive integer/,
+      );
+      expect(called).toBe(false);
+    });
+
+    it('returns the underlying result unchanged (no semantic layering)', async () => {
+      const impl: typeof runAsUser = async () => ({ stdout: '', stderr: 'no such process', exitCode: 1, timedOut: false });
+      const result = await killProcessGroupAsUser(5, 'SIGTERM', 'alice', { runAsUserImpl: impl });
+      expect(result.exitCode).toBe(1);
+      expect(result.stderr).toBe('no such process');
+    });
+  });
+
+  describe('discoverElevatedPgid', () => {
+    function withOutput(stdout: string, exitCode = 0, timedOut = false): typeof runAsUser {
+      return async () => ({ stdout, stderr: '', exitCode, timedOut });
+    }
+
+    it('returns the pgid the probe prints', async () => {
+      expect(await discoverElevatedPgid(100, 'alice', { runAsUserImpl: withOutput('PGID=1396\n') })).toBe(1396);
+    });
+
+    it('runs as the target user, cwd "/", and only embeds the numeric wrapper pid', async () => {
+      const captured: RunAsUserOpts[] = [];
+      const impl: typeof runAsUser = async (opts) => {
+        captured.push(opts);
+        return { stdout: 'PGID=7\n', stderr: '', exitCode: 0, timedOut: false };
+      };
+      await discoverElevatedPgid(1394, 'alice', { runAsUserImpl: impl, timeoutMs: 321 });
+      expect(captured[0].username).toBe('alice');
+      expect(captured[0].cwd).toBe('/');
+      expect(captured[0].timeoutMs).toBe(321);
+      // The multi-statement probe travels over stdin, never on the elevated command line.
+      expect(captured[0].command).toBe('sh -s');
+      expect(captured[0].stdin).toContain('pgrep -P 1394');
+    });
+
+    it('requires pgid === pid in the probe itself (a candidate that does not lead its group is never accepted)', async () => {
+      let script = '';
+      const impl: typeof runAsUser = async (opts) => {
+        script = String(opts.stdin);
+        return { stdout: '', stderr: '', exitCode: 1, timedOut: false };
+      };
+      await discoverElevatedPgid(55, 'alice', { runAsUserImpl: impl });
+      expect(script).toContain('[ "$g" = "$c" ]');
+    });
+
+    it.each([
+      ['no output', withOutput('', 0)],
+      ['non-zero exit', withOutput('PGID=5\n', 1)],
+      ['timeout', withOutput('PGID=5\n', 0, true)],
+      ['malformed line', withOutput('PGID=abc\n')],
+      ['zero pgid', withOutput('PGID=0\n')],
+    ])('resolves null on %s', async (_label, impl) => {
+      expect(await discoverElevatedPgid(100, 'alice', { runAsUserImpl: impl })).toBeNull();
+    });
+
+    it.each([0, -3, 2.5])('rejects a non-positive-integer wrapper pid (%p)', async (bad) => {
+      await expect(discoverElevatedPgid(bad, 'alice', { runAsUserImpl: withOutput('PGID=1\n') })).rejects.toThrow(
+        /positive integer/,
+      );
+    });
+  });
+
   describe('killAsUser', () => {
     it('null username bypasses elevation (forwards null straight to runAsUser)', async () => {
       const captured: RunAsUserOpts[] = [];

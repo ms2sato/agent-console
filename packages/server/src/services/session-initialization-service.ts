@@ -527,7 +527,7 @@ export class SessionInitializationService {
    * @returns The number of processes actually swept (0 on any failure).
    */
   static async sweepSessionProcesses(
-    session: PersistedSession,
+    session: Pick<PersistedSession, 'id' | 'createdBy'>,
     resolveSpawnUsername: (createdBy?: string) => Promise<string>,
     opts: { sweepImpl?: typeof sweepOrphanProcesses } = {},
   ): Promise<number> {

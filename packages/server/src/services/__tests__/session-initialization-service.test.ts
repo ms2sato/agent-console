@@ -724,6 +724,23 @@ describe('SessionInitializationService', () => {
       expect(calls).toEqual([['session-1', 'user-1']]);
     });
 
+    it('accepts a bare { id, createdBy } (the live-session shape the deletion path passes)', async () => {
+      const calls: Array<[string, string | null | undefined]> = [];
+      const fakeSweep: typeof sweepOrphanProcesses = async (sessionId, username) => {
+        calls.push([sessionId, username]);
+        return { killedCount: 2, raw: okResult() };
+      };
+
+      const count = await SessionInitializationService.sweepSessionProcesses(
+        { id: 'live-1', createdBy: 'user-9' },
+        async (createdBy) => `os-${createdBy}`,
+        { sweepImpl: fakeSweep },
+      );
+
+      expect(count).toBe(2);
+      expect(calls).toEqual([['live-1', 'os-user-9']]);
+    });
+
     it('returns killedCount from a successful sweep', async () => {
       const session = buildPersistedQuickSession({ id: 'session-1', locationPath: '/some/path' });
       const fakeSweep: typeof sweepOrphanProcesses = async () => ({

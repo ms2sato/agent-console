@@ -198,6 +198,7 @@ export function buildSpawnArgs(
   authMode: string | undefined,
   cwd: string | undefined,
   env: Record<string, string> | undefined,
+  newProcessGroup = false,
 ): { args: string[]; elevated: boolean } {
   const shouldElevate =
     authMode === 'multi-user' &&
@@ -215,7 +216,17 @@ export function buildSpawnArgs(
   // and env MUST be interpolated into the inner command. Mirror of the
   // export shape user-mode.ts's elevated PTY path builds via
   // `buildElevationArgs`.
-  const innerCommand = buildInnerCommand(command, cwd, env);
+  //
+  // When the caller wants its own process group, the group leader is created
+  // INSIDE the elevated login shell (as the target user) by replacing that
+  // shell with `setsid sh -c <command>`: the held wrapper PID stays a
+  // different process in the server's own group, so the group cannot be
+  // created from outside. `cd` / `export` from buildInnerCommand still run
+  // first, in the login shell, before the exec.
+  const groupedCommand = newProcessGroup
+    ? `exec setsid sh -c ${shellEscape(command)}`
+    : command;
+  const innerCommand = buildInnerCommand(groupedCommand, cwd, env);
   const args: string[] = ['sudo', '-u', username];
   if (preserveEnv.length > 0) {
     args.push(`--preserve-env=${preserveEnv.join(',')}`);
@@ -418,6 +429,72 @@ export async function killAsUser(
 }
 
 /**
+ * Group form of {@link killAsUser}: signal every member of process group
+ * `pgid` as `username` (`kill -s <SIG> -- -<pgid>`). The `--` makes the
+ * negative id safe as an operand. Same strict-thin-wrapper contract as
+ * `killAsUser`: no semantic layering, the `RunAsUserResult` is returned
+ * unchanged.
+ */
+export async function killProcessGroupAsUser(
+  pgid: number,
+  signal: 'SIGTERM' | 'SIGKILL',
+  username: string | null | undefined,
+  opts: { timeoutMs?: number; runAsUserImpl?: typeof runAsUser } = {},
+): Promise<RunAsUserResult> {
+  if (!Number.isInteger(pgid) || pgid <= 0) {
+    throw new Error(`killProcessGroupAsUser: pgid must be a positive integer, got ${pgid}`);
+  }
+  const impl = opts.runAsUserImpl ?? runAsUser;
+  return impl({
+    username,
+    command: `kill -s ${signal.replace(/^SIG/, '')} -- -${pgid}`,
+    cwd: '/',
+    timeoutMs: opts.timeoutMs,
+  });
+}
+
+/**
+ * Discover the process-group id of the leader an elevated
+ * `spawnAsUser({ newProcessGroup: true })` created, given the PID the server
+ * holds (the elevation wrapper). Runs as the target user through
+ * `runAsUser`: the wrapper's children are listed with `pgrep -P`, then (one
+ * level deeper, for a `setsid` that forked) their children, and a candidate
+ * is accepted only when `pgid === pid` -- i.e. it really leads a group. The
+ * server cannot signal the wrapper's own group (it is the server's), so a
+ * candidate that does not lead its group is never used.
+ *
+ * Resolves to the pgid, or `null` when nothing qualified (the wrapper has no
+ * qualifying descendant yet, has already gone, or the probe failed/timed
+ * out). Single writer of this discovery chain.
+ */
+export async function discoverElevatedPgid(
+  wrapperPid: number,
+  username: string | null | undefined,
+  opts: { timeoutMs?: number; runAsUserImpl?: typeof runAsUser } = {},
+): Promise<number | null> {
+  if (!Number.isInteger(wrapperPid) || wrapperPid <= 0) {
+    throw new Error(`discoverElevatedPgid: wrapperPid must be a positive integer, got ${wrapperPid}`);
+  }
+  const impl = opts.runAsUserImpl ?? runAsUser;
+  const w = wrapperPid;
+  // Delivered over stdin (`sh -s`), not as the elevated command line: the
+  // target login shell re-joins and re-parses argv, which expands the loop's
+  // `$c` / `$g` / `$(...)` before the inner shell ever sees them.
+  const script =
+    `for c in $(pgrep -P ${w}) $(for x in $(pgrep -P ${w}); do pgrep -P $x; done); do\n` +
+    '  g=$(ps -o pgid= -p $c | tr -d " ")\n' +
+    '  if [ "$g" = "$c" ]; then echo "PGID=$g"; exit 0; fi\n' +
+    'done\n' +
+    'exit 1\n';
+  const result = await impl({ username, command: 'sh -s', stdin: script, cwd: '/', timeoutMs: opts.timeoutMs });
+  if (result.timedOut || result.exitCode !== 0) return null;
+  const match = /^PGID=(\d+)\s*$/m.exec(result.stdout);
+  if (!match) return null;
+  const pgid = Number(match[1]);
+  return Number.isInteger(pgid) && pgid > 0 ? pgid : null;
+}
+
+/**
  * Write `content` to `filePath` as `username`, creating the containing
  * directory if necessary, with the file forced to mode 0600 regardless of the
  * ambient umask.
@@ -498,12 +575,19 @@ export interface SpawnAsUserOpts {
    */
   preserveEnv?: string[];
   /**
-   * Non-elevated branch only: start the child in its own process group
-   * (pgid === pid) so the caller can signal the whole tree with
-   * `process.kill(-pid, sig)`. Ignored on the elevated branch -- the held
-   * PID there is the elevation wrapper and the group would belong to the
-   * target user, so the server cannot signal it. Check
-   * `SpawnAsUserResult.ownsProcessGroup` for what actually happened.
+   * Start the child in its own process group (pgid === leader pid) so the
+   * whole tree can be signalled as one. Check
+   * `SpawnAsUserResult.ownsProcessGroup` / `elevatedGroup` for what
+   * actually happened.
+   *
+   * Non-elevated branch: the server spawns the child detached and signals the
+   * tree with `process.kill(-pid, sig)`.
+   *
+   * Elevated branch: the command is replaced by `exec setsid sh -c
+   * <command>` inside the elevated login shell, so the leader is created as
+   * the target user. The server cannot signal that group itself; the caller
+   * discovers its id with `discoverElevatedPgid` and signals it with
+   * `killProcessGroupAsUser`. `SpawnAsUserResult.elevatedGroup` reports it.
    */
   newProcessGroup?: boolean;
 }
@@ -532,6 +616,14 @@ export interface SpawnAsUserResult {
    * `newProcessGroup` was requested and honoured. Absent/false otherwise.
    */
   ownsProcessGroup?: boolean;
+  /**
+   * True when the elevated branch wrapped the command so its leader is a
+   * process-group leader owned by the target user (`newProcessGroup` on an
+   * elevated spawn). The held PID is still the elevation wrapper; the group
+   * id must be discovered with `discoverElevatedPgid`. Absent/false
+   * otherwise.
+   */
+  elevatedGroup?: boolean;
 }
 
 /**
@@ -581,6 +673,7 @@ export function spawnAsUser(
     authMode,
     opts.cwd,
     opts.env,
+    opts.newProcessGroup === true,
   );
 
   // Spawn options mirror `runAsUser`'s elevated / non-elevated branches:
@@ -600,12 +693,6 @@ export function spawnAsUser(
   const ownsProcessGroup = !elevated && opts.newProcessGroup === true;
   if (elevated) {
     spawnOptions.cwd = SUDO_NEUTRAL_CWD;
-    if (opts.newProcessGroup) {
-      logger.debug(
-        { username: opts.username },
-        'spawnAsUser: newProcessGroup ignored on the elevated branch',
-      );
-    }
   } else {
     if (ownsProcessGroup) {
       spawnOptions.detached = true;
@@ -639,5 +726,6 @@ export function spawnAsUser(
     stdin: subprocess.stdin,
     elevated,
     ownsProcessGroup,
+    elevatedGroup: elevated && opts.newProcessGroup === true,
   };
 }

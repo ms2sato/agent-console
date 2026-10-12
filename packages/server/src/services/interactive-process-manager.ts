@@ -1,7 +1,13 @@
 import type { InteractiveProcessInfo, InteractiveProcessOutputMode } from '@agent-console/shared';
 import type { Subprocess, FileSink } from 'bun';
 import { createLogger } from '../lib/logger.js';
-import { spawnAsUser, type SpawnAsUserFn } from './privilege-elevation.js';
+import {
+  spawnAsUser,
+  runAsUser,
+  discoverElevatedPgid,
+  killProcessGroupAsUser,
+  type SpawnAsUserFn,
+} from './privilege-elevation.js';
 import { buildAgentConsoleEnv } from './agent-console-env.js';
 import { serverConfig } from '../lib/server-config.js';
 
@@ -31,40 +37,29 @@ function endStdinSafely(stdin: FileSink | null): void {
   }
 }
 
-/**
- * Signal the child. When it leads its own process group, signal the group so
- * descendants (`sh -c 'sleep 30 & wait'`) die with the shell; otherwise fall
- * back to the subprocess alone. The group is only signalled while the entry
- * is still running: once the shell has exited its pid (and so the group id)
- * may be reused by an unrelated process, and a negative-pid signal would hit
- * that group.
- */
-function signalStored(stored: StoredProcess, signal: 9 | 15): void {
-  const pid = stored.subprocess.pid;
-  if (
-    stored.ownsProcessGroup &&
-    stored.info.status === 'running' &&
-    typeof pid === 'number' &&
-    pid > 0
-  ) {
-    try {
-      process.kill(-pid, signal);
-      return;
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code !== 'ESRCH') {
-        logger.warn({ err, pid }, 'Process group signal failed, signalling the shell only');
-      }
-    }
-  }
-  stored.subprocess.kill(signal);
-}
-
 interface StoredProcess {
   info: InteractiveProcessInfo;
   subprocess: Subprocess<'pipe', 'pipe', 'pipe'>;
   stdin: FileSink;
-  /** True when the child leads its own process group (direct branch only). */
+  /** True when the child leads its own process group (direct branch). */
   ownsProcessGroup: boolean;
+  /**
+   * True when the elevated child's leader owns a process group the server
+   * cannot signal itself (elevated branch); see `elevatedPgid`.
+   */
+  elevatedGroup: boolean;
+  /** OS user the child runs as (null = the server user), for elevated group signals. */
+  username: string | null;
+  /**
+   * Group id of the elevated leader, discovered eagerly at spawn (the wrapper
+   * must still be alive for the discovery to work) and cached. Resolves to
+   * null when discovery did not find a qualifying leader.
+   */
+  elevatedPgid?: Promise<number | null>;
+  /** True once `elevatedPgid` has resolved (to a pgid or to null). */
+  elevatedPgidSettled: boolean;
+  /** True once the held wrapper process has exited; ends the discovery retries. */
+  wrapperExited: boolean;
   /** Resolves when both stdout and stderr have been fully read and flushed. */
   streamsDone: Promise<void>;
   /** The single per-process timeout timer; cleared on every teardown path. */
@@ -116,6 +111,10 @@ export class InteractiveProcessManager {
    */
   static readonly TIMEOUT_STREAM_DRAIN_GRACE_MS = 1000;
 
+  /** Discovery attempts / spacing for the elevated leader's group id. */
+  static readonly ELEVATED_PGID_ATTEMPTS = 20;
+  static readonly ELEVATED_PGID_RETRY_MS = 100;
+
   private processes = new Map<string, StoredProcess>();
   private outputBuffers = new Map<string, OutputBuffer>();
   private onOutput: ProcessOutputCallback;
@@ -131,6 +130,8 @@ export class InteractiveProcessManager {
   private spawnAsUserFn: SpawnAsUserFn;
   /** Origin the child dials back to, for its `AGENT_CONSOLE_BASE_URL` record. */
   private getBaseUrl: () => string;
+  /** Elevated-exec seam for the process-group discovery / signal helpers. */
+  private runAsUserImpl: typeof runAsUser;
 
   constructor(
     onOutput: ProcessOutputCallback,
@@ -139,6 +140,7 @@ export class InteractiveProcessManager {
     onResponse?: ProcessResponseCallback,
     spawnAsUserFn: SpawnAsUserFn = spawnAsUser,
     getBaseUrl: () => string = () => `http://localhost:${serverConfig.PORT}`,
+    runAsUserImpl: typeof runAsUser = runAsUser,
   ) {
     this.onOutput = onOutput;
     this.onExit = onExit;
@@ -146,6 +148,7 @@ export class InteractiveProcessManager {
     this.onResponse = onResponse;
     this.spawnAsUserFn = spawnAsUserFn;
     this.getBaseUrl = getBaseUrl;
+    this.runAsUserImpl = runAsUserImpl;
   }
 
   async runProcess(params: {
@@ -200,7 +203,7 @@ export class InteractiveProcessManager {
     // `AUTH_MODE !== 'multi-user'`, the helper bypasses elevation and spawns
     // `sh -c command` directly -- byte-identical to the prior raw
     // `Bun.spawn(['sh', '-c', command], { ... })` invocation.
-    const { subprocess, stdin, ownsProcessGroup } = this.spawnAsUserFn({
+    const { subprocess, stdin, ownsProcessGroup, elevatedGroup } = this.spawnAsUserFn({
       username: requestUser ?? null,
       command,
       cwd,
@@ -227,9 +230,26 @@ export class InteractiveProcessManager {
       subprocess,
       stdin,
       ownsProcessGroup: ownsProcessGroup === true,
+      elevatedGroup: elevatedGroup === true,
+      username: requestUser ?? null,
+      elevatedPgidSettled: false,
+      wrapperExited: false,
       streamsDone,
     };
     this.processes.set(id, stored);
+    if (stored.elevatedGroup) {
+      subprocess.exited.then(
+        () => {
+          stored.wrapperExited = true;
+        },
+        () => {
+          stored.wrapperExited = true;
+        },
+      );
+      stored.elevatedPgid = this.discoverElevatedGroup(stored).finally(() => {
+        stored.elevatedPgidSettled = true;
+      });
+    }
 
     // On expiry, signal the child but leave the entry in place: the
     // `subprocess.exited` handler below is the single route that fires
@@ -242,7 +262,7 @@ export class InteractiveProcessManager {
       logger.warn({ processId: id, sessionId, timeoutSeconds }, 'Process timed out, killing');
       current.info.timedOut = true;
       try {
-        signalStored(current, 9);
+        this.signalStored(current, 9);
       } catch {
         // Process may have already exited
       }
@@ -373,7 +393,7 @@ export class InteractiveProcessManager {
     clearTimeout(stored.timeoutTimer);
 
     try {
-      signalStored(stored, 15); // SIGTERM
+      this.signalStored(stored, 15); // SIGTERM
     } catch {
       // Process may have already exited
     }
@@ -383,6 +403,103 @@ export class InteractiveProcessManager {
     this.processes.delete(processId);
     logger.info({ processId }, 'Process killed');
     return true;
+  }
+
+  /**
+   * Signal the child. When it leads its own process group, signal the group
+   * so descendants (`sh -c 'sleep 30 & wait'`) die with the shell; otherwise
+   * fall back to the shell alone. The group is only signalled while the entry
+   * is still running: once the shell has exited its pid (and so the group id)
+   * may be reused by an unrelated process, and a group signal would hit it.
+   *
+   * Direct branch: a negative-pid `process.kill`. Elevated branch: the group
+   * belongs to the target user, so after the wrapper-pid signal (as before)
+   * the group is signalled with an elevated `kill` in the background -- this
+   * stays synchronous for the caller.
+   */
+  private signalStored(stored: StoredProcess, signal: 9 | 15): void {
+    const pid = stored.subprocess.pid;
+    if (stored.info.status === 'running') {
+      if (stored.ownsProcessGroup && typeof pid === 'number' && pid > 0) {
+        try {
+          process.kill(-pid, signal);
+          return;
+        } catch (err) {
+          if ((err as NodeJS.ErrnoException).code !== 'ESRCH') {
+            logger.warn({ err, pid }, 'Process group signal failed, signalling the shell only');
+          }
+        }
+      } else if (stored.elevatedGroup) {
+        if (stored.elevatedPgidSettled) {
+          // Group id already known (or known-unavailable): wrapper first, as
+          // for every other spawn, then the group in the background.
+          stored.subprocess.kill(signal);
+          void this.signalElevatedGroup(stored, signal);
+        } else {
+          // Discovery still in flight: killing the wrapper now would make the
+          // group id undiscoverable, so signal the group first and the
+          // wrapper after it. The caller stays synchronous either way.
+          void this.signalElevatedGroup(stored, signal).finally(() => {
+            try {
+              stored.subprocess.kill(signal);
+            } catch {
+              // Process may have already exited
+            }
+          });
+        }
+        return;
+      }
+    }
+    stored.subprocess.kill(signal);
+  }
+
+  /**
+   * Find the elevated leader's group id, retrying briefly: the leader only
+   * exists once the elevated login shell has run the wrapped `setsid`.
+   */
+  private async discoverElevatedGroup(stored: StoredProcess): Promise<number | null> {
+    const pid = stored.subprocess.pid;
+    if (typeof pid !== 'number' || pid <= 0) return null;
+    for (let attempt = 0; attempt < InteractiveProcessManager.ELEVATED_PGID_ATTEMPTS; attempt++) {
+      if (stored.wrapperExited) return null;
+      try {
+        const pgid = await discoverElevatedPgid(pid, stored.username, {
+          runAsUserImpl: this.runAsUserImpl,
+        });
+        if (pgid !== null) return pgid;
+      } catch (err) {
+        logger.warn({ processId: stored.info.id, err }, 'Elevated process group discovery failed');
+        return null;
+      }
+      await new Promise<void>((resolve) =>
+        setTimeout(resolve, InteractiveProcessManager.ELEVATED_PGID_RETRY_MS),
+      );
+    }
+    return null;
+  }
+
+  private async signalElevatedGroup(stored: StoredProcess, signal: 9 | 15): Promise<void> {
+    try {
+      const pgid = await stored.elevatedPgid;
+      if (pgid === null || pgid === undefined) {
+        logger.warn(
+          { processId: stored.info.id },
+          'No elevated process group id known; only the wrapper was signalled, descendants may survive until the next orphan sweep',
+        );
+        return;
+      }
+      const result = await killProcessGroupAsUser(pgid, signal === 9 ? 'SIGKILL' : 'SIGTERM', stored.username, {
+        runAsUserImpl: this.runAsUserImpl,
+      });
+      if (result.timedOut || result.exitCode !== 0) {
+        logger.debug(
+          { processId: stored.info.id, pgid, exitCode: result.exitCode, timedOut: result.timedOut },
+          'Elevated process group signal reported non-success (the group may already be gone)',
+        );
+      }
+    } catch (err) {
+      logger.warn({ processId: stored.info.id, err }, 'Elevated process group signal failed');
+    }
   }
 
   getProcess(processId: string): InteractiveProcessInfo | undefined {
@@ -407,7 +524,7 @@ export class InteractiveProcessManager {
         this.clearOutputBuffer(id);
         clearTimeout(stored.timeoutTimer);
         try {
-          signalStored(stored, 15);
+          this.signalStored(stored, 15);
         } catch {
           // Process may have already exited
         }
@@ -431,7 +548,7 @@ export class InteractiveProcessManager {
     for (const stored of this.processes.values()) {
       clearTimeout(stored.timeoutTimer);
       try {
-        signalStored(stored, 15);
+        this.signalStored(stored, 15);
       } catch {
         // Process may have already exited
       }

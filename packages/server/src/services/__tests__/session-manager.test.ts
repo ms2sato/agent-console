@@ -101,7 +101,7 @@ describe('SessionManager', () => {
   const mockPathExists = async (_path: string): Promise<boolean> => true;
 
   // Helper to get fresh module instance with DI using the factory pattern
-  async function getSessionManager() {
+  async function getSessionManager(extraOptions: Record<string, unknown> = {}) {
     const module = await import(`../session-manager.js?v=${++importCounter}`);
     // Use the factory pattern for async initialization with jobQueue
     return module.SessionManager.create({
@@ -112,6 +112,7 @@ describe('SessionManager', () => {
       mcpTokenRegistry: new McpTokenRegistry(),
       repositoryLookup: defaultRepositoryLookup,
       repositoryEnvLookup: defaultRepositoryEnvLookup,
+      ...extraOptions,
     });
   }
 
@@ -4367,6 +4368,28 @@ describe('SessionManager', () => {
 
       const result = await manager.deleteSession('non-existent');
       expect(result).toBe(false);
+    });
+
+    it('sweeps the deleted session once, by its id, after the workers are killed', async () => {
+      const sweepCalls: Array<{ sessionId: string; killedBeforeSweep: boolean }> = [];
+      let sessionPty: (typeof ptyFactory.instances)[number] | undefined;
+      const manager = await getSessionManager({
+        sweepOrphanProcessesImpl: async (sessionId: string) => {
+          sweepCalls.push({ sessionId, killedBeforeSweep: sessionPty?.killed === true });
+          return { killedCount: 0, raw: { stdout: 'SWEPT=0\n', stderr: '', exitCode: 0, timedOut: false } };
+        },
+      });
+
+      const session = await manager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+      sessionPty = ptyFactory.instances[0];
+
+      expect(await manager.deleteSession(session.id)).toBe(true);
+
+      expect(sweepCalls).toEqual([{ sessionId: session.id, killedBeforeSweep: true }]);
     });
   });
 

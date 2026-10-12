@@ -133,6 +133,16 @@ Requires elevation privilege for `<target-user>`; passing the current process us
 
 **Verification tier (Discipline 4 of `os-environment-coupling.md`):** Tier 2 (the verification container's `--smokes` run).
 
+## Additional Verification: `run_process` Elevated Process-Group Kill Smoke
+
+PRs touching `buildSpawnArgs` / `spawnAsUser`'s `newProcessGroup` handling, `killProcessGroupAsUser` / `discoverElevatedPgid` in `packages/server/src/services/privilege-elevation.ts`, `InteractiveProcessManager`'s `signalStored` elevated arm in `packages/server/src/services/interactive-process-manager.ts`, or `SessionDeletionService.deleteSession`'s orphan-process sweep, must run `bun scripts/smoke/check-run-process-elevated-group-kill.ts <target-user>` locally before pushing (Issue #1953). It drives the real `InteractiveProcessManager.runProcess` / `killProcess` against a real second OS user with a shell that backgrounds a grandchild (`echo $$; sleep 300 & echo $!; wait`), asserts the shell leads a process group created inside the elevated login shell (grandchild `pgid === shell pid`), that the grandchild is gone within 2 s of `killProcess`, and that an unrelated `sleep` of the same user outside the group survives (a group signal, not a user-wide or name-based kill). Liveness is read from `/proc/<pid>/stat` with a zombie counted as gone: a container without an init reaper leaves an exited grandchild `<defunct>` forever, which a bare `/proc/<pid>` existence check would call alive.
+
+**It has a polarity mode.** `bun scripts/smoke/check-run-process-elevated-group-kill.ts <target-user> --expect-leak` builds the manager with a spawn seam that strips `newProcessGroup` (the pre-fix shape) and asserts the grandchild SURVIVES `killProcess` -- a run that does not leak is a polarity failure. Both arms run in the tier-2 driver, so the default arm's pass is attributable to the fix and not to the environment, per `workflow.md`'s "A check's existence is not its detection power".
+
+Passing the current process user as `<target-user>` runs the degenerate direct branch (a detached group signalled with a negative pid): everything except the cross-user boundary. Free, no `claude` CLI, no provider key. It is a manual gate, never a CI job.
+
+**Verification tier (Discipline 4 of `os-environment-coupling.md`):** Tier 2 (the verification container's `--smokes` run, which invokes BOTH arms).
+
 ## Additional Verification: Orphan-Process Sweep Real-Elevation Smoke
 
 PRs touching `spawnAsUser` in `packages/server/src/services/privilege-elevation.ts` or `sweepOrphanProcesses` in `packages/server/src/services/orphan-process-sweeper.ts` must run `bun scripts/smoke/check-orphan-sweep.ts <target-user>` locally before pushing (Issue #1197 Part B). It drives the real production helpers against real long-lived processes spawned as `<target-user>` with an `AGENT_CONSOLE_SESSION_ID` marker, and asserts the real elevated sweep command actually reaps them by that marker.
