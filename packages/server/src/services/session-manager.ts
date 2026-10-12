@@ -622,6 +622,8 @@ export class SessionManager {
       getProcessCleanupCallback: () => this.processCleanupCallback,
       stopWatching,
       stopBranchWatching: (sessionId) => this.branchWatcherCallbacks?.stopWatching(sessionId),
+      resolveSpawnUsername: (createdBy) => resolveSpawnUsername(createdBy, this.userRepository),
+      sweepOrphanProcessesImpl: options.sweepOrphanProcessesImpl,
     });
 
     this.sessionPauseResumeService = new SessionPauseResumeService({

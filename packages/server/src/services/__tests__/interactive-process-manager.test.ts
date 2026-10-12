@@ -7,6 +7,7 @@ import {
   type ProcessExitCallback,
   type ProcessResponseCallback,
 } from '../interactive-process-manager.js';
+import type { RunAsUserOpts, RunAsUserResult, runAsUser } from '../privilege-elevation.js';
 import type {
   SpawnAsUserFn,
   SpawnAsUserOpts,
@@ -838,6 +839,209 @@ describe('InteractiveProcessManager', () => {
         AGENT_CONSOLE_WORKER_ID: 'work-id',
       });
       expect(calls[0].baseEnv).toBeUndefined();
+    });
+  });
+
+  // Elevated branch: the leader owns a process group the server cannot signal
+  // itself, so the group is signalled through an elevated `kill` in the
+  // background. All elevation is faked at the spawn and runAsUser seams.
+  describe('elevated process group', () => {
+    const WRAPPER_PID = 4242;
+
+    function setup(opts: { discoverStdout?: string; discoverExit?: number; discoverFailuresFirst?: number } = {}) {
+      const runCalls: RunAsUserOpts[] = [];
+      const killSignals: number[] = [];
+      // Interleaved record of wrapper kills and elevated runs, for ordering assertions.
+      const events: string[] = [];
+      let discoveryCalls = 0;
+      let resolveExited: ((code: number) => void) | null = null;
+      const exited = new Promise<number>((resolve) => {
+        resolveExited = resolve;
+      });
+      const stdin: FakeFileSink = { write: () => 0, end: () => 0, flush: () => Promise.resolve(0) };
+      const subprocess: FakeSubprocess = {
+        pid: WRAPPER_PID,
+        exited,
+        stdin,
+        stdout: new ReadableStream<Uint8Array>({ start: (c) => c.close() }),
+        stderr: new ReadableStream<Uint8Array>({ start: (c) => c.close() }),
+        kill: (signal?: number) => {
+          killSignals.push(signal ?? 15);
+          events.push('wrapper-kill');
+        },
+      };
+      const spawnFn: SpawnAsUserFn = () =>
+        toSpawnAsUserResult({ subprocess, stdin, elevated: true, elevatedGroup: true });
+      const runFn: typeof runAsUser = async (o): Promise<RunAsUserResult> => {
+        runCalls.push(o);
+        if (String(o.stdin ?? '').includes('pgrep -P')) {
+          discoveryCalls++;
+          events.push('discover');
+          const notYet = discoveryCalls <= (opts.discoverFailuresFirst ?? 0);
+          return {
+            stdout: notYet ? '' : (opts.discoverStdout ?? 'PGID=555\n'),
+            stderr: '',
+            exitCode: notYet ? 1 : (opts.discoverExit ?? 0),
+            timedOut: false,
+          };
+        }
+        events.push(`run:${o.command}`);
+        return { stdout: '', stderr: '', exitCode: 0, timedOut: false };
+      };
+      const m = new InteractiveProcessManager(
+        () => {},
+        () => {},
+        undefined,
+        undefined,
+        spawnFn,
+        () => 'http://localhost:1',
+        runFn,
+      );
+      return {
+        m,
+        runCalls,
+        killSignals,
+        events,
+        simulateExit: (code: number) => resolveExited?.(code),
+        groupKills: () => runCalls.filter((c) => c.command.startsWith('kill -s')),
+      };
+    }
+
+    async function until(cond: () => boolean, ms = 3000): Promise<void> {
+      const deadline = Date.now() + ms;
+      while (Date.now() < deadline && !cond()) {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+    }
+
+    it('killProcess signals the wrapper pid, returns synchronously, and kills the discovered group as the user', async () => {
+      const t = setup();
+      const started = await t.m.runProcess({
+        sessionId: 's',
+        workerId: 'w',
+        command: 'sleep 30 & wait',
+        requestUser: 'alice',
+      });
+
+      const result = t.m.killProcess(started.id);
+
+      expect(result).toBe(true);
+      await until(() => t.groupKills().length > 0 && t.killSignals.length > 0);
+      expect(t.killSignals).toEqual([15]);
+      expect(t.groupKills().map((c) => [c.command, c.username])).toEqual([['kill -s TERM -- -555', 'alice']]);
+      // Discovery ran against the held wrapper pid, as the target user.
+      const discovery = t.runCalls.find((c) => String(c.stdin ?? '').includes('pgrep -P'));
+      expect(String(discovery?.stdin)).toContain(`pgrep -P ${WRAPPER_PID}`);
+      expect(discovery?.username).toBe('alice');
+      t.m.disposeAll();
+    });
+
+    it('the timeout path kills the discovered group with SIGKILL', async () => {
+      const t = setup();
+      await t.m.runProcess({
+        sessionId: 's',
+        workerId: 'w',
+        command: 'sleep 30 & wait',
+        requestUser: 'alice',
+        timeoutSeconds: 0.3,
+      });
+
+      await until(() => t.groupKills().length > 0 && t.killSignals.length > 0);
+      expect(t.killSignals).toEqual([9]);
+      expect(t.groupKills().map((c) => c.command)).toEqual(['kill -s KILL -- -555']);
+      t.m.disposeAll();
+    });
+
+    it('falls back to the wrapper-pid signal alone when no qualifying group id is found', async () => {
+      const t = setup({ discoverStdout: '', discoverExit: 1 });
+      const started = await t.m.runProcess({
+        sessionId: 's',
+        workerId: 'w',
+        command: 'sleep 30 & wait',
+        requestUser: 'alice',
+      });
+
+      t.m.killProcess(started.id);
+      // The wrapper is signalled once the bounded discovery retries run out.
+      await until(() => t.killSignals.length > 0, 5000);
+
+      expect(t.killSignals).toEqual([15]);
+      expect(t.groupKills()).toEqual([]);
+      t.m.disposeAll();
+    });
+
+    it('a kill that arrives before discovery settles signals the group first and the wrapper after it', async () => {
+      // Two empty discoveries (the leader does not exist yet), then success.
+      const t = setup({ discoverFailuresFirst: 2 });
+      const started = await t.m.runProcess({
+        sessionId: 's',
+        workerId: 'w',
+        command: 'sleep 30 & wait',
+        requestUser: 'alice',
+      });
+
+      // killProcess flips the entry to exited immediately; discovery must
+      // survive that and still find the group.
+      t.m.killProcess(started.id);
+      expect(t.killSignals).toEqual([]);
+      await until(() => t.killSignals.length > 0, 5000);
+
+      expect(t.killSignals).toEqual([15]);
+      expect(t.groupKills().map((c) => c.command)).toEqual(['kill -s TERM -- -555']);
+      expect(t.events.indexOf('run:kill -s TERM -- -555')).toBeGreaterThan(-1);
+      expect(t.events.indexOf('run:kill -s TERM -- -555')).toBeLessThan(t.events.indexOf('wrapper-kill'));
+      t.m.disposeAll();
+    });
+
+    it('stops retrying discovery once the wrapper has exited', async () => {
+      const t = setup({ discoverStdout: '', discoverExit: 1 });
+      await t.m.runProcess({
+        sessionId: 's',
+        workerId: 'w',
+        command: 'exit 0',
+        requestUser: 'alice',
+      });
+      await until(() => t.runCalls.length > 0);
+      t.simulateExit(0);
+      await new Promise((resolve) => setTimeout(resolve, 350));
+      const callsAtStop = t.runCalls.length;
+      await new Promise((resolve) => setTimeout(resolve, 350));
+      expect(t.runCalls.length).toBe(callsAtStop);
+      expect(callsAtStop).toBeLessThan(InteractiveProcessManager.ELEVATED_PGID_ATTEMPTS);
+      t.m.disposeAll();
+    });
+
+    it('never sends a group signal for an entry whose shell has already exited', async () => {
+      const t = setup();
+      const started = await t.m.runProcess({
+        sessionId: 's',
+        workerId: 'w',
+        command: 'exit 0',
+        requestUser: 'alice',
+      });
+      await until(() => t.runCalls.length > 0);
+      t.simulateExit(0);
+      await until(() => t.m.getProcess(started.id)?.status === 'exited');
+      expect(t.m.getProcess(started.id)?.status).toBe('exited');
+
+      t.m.deleteProcessesBySession('s');
+      await new Promise((resolve) => setTimeout(resolve, 100));
+
+      expect(t.groupKills()).toEqual([]);
+      expect(t.killSignals).toEqual([15]);
+    });
+
+    it('a non-elevated spawn never touches runAsUser', async () => {
+      const runCalls: RunAsUserOpts[] = [];
+      const m = new InteractiveProcessManager(() => {}, () => {}, undefined, undefined, undefined, () => 'http://localhost:1', async (o) => {
+        runCalls.push(o);
+        return { stdout: '', stderr: '', exitCode: 0, timedOut: false };
+      });
+      const started = await m.runProcess({ sessionId: 's', workerId: 'w', command: 'sleep 30' });
+      m.killProcess(started.id);
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      expect(runCalls).toEqual([]);
+      m.disposeAll();
     });
   });
 

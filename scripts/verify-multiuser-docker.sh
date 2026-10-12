@@ -50,6 +50,7 @@
 #   - check-embedded-agent-elevation.ts (default arm, AGENT_CONSOLE_MCP_AUTH=enforce)
 #   - check-embedded-agent-elevation.ts --auth-mode warn (polarity arm, Issue #1738)
 #   - check-embedded-agent-bash-env.ts
+#   - check-run-process-elevated-group-kill.ts (default arm + --expect-leak polarity arm, Issue #1953)
 #
 # Not run here, real-host only: a `claude` login inside the container and
 # therefore every billable smoke; vendor credentials (e.g. Bedrock) in a
@@ -1380,6 +1381,12 @@ if [ "$SMOKES" -eq 1 ]; then
   # 401 is the gate's doing and not the environment's.
   run_smoke "check-embedded-agent-elevation:warn" "check-embedded-agent-elevation.ts" alice --auth-mode warn
   run_smoke "check-embedded-agent-bash-env" "check-embedded-agent-bash-env.ts" alice
+  # run_process elevated group kill (Issue #1953): killProcess takes a
+  # backgrounded grandchild down with the shell. The polarity arm builds the
+  # pre-fix spawn shape and asserts the grandchild SURVIVES, so the default
+  # arm's pass is the fix's doing and not the environment's.
+  run_smoke "check-run-process-elevated-group-kill" "check-run-process-elevated-group-kill.ts" alice
+  run_smoke "check-run-process-elevated-group-kill:expect-leak" "check-run-process-elevated-group-kill.ts" alice --expect-leak
   # Shared-accounts Release 2 (Issue #1842): DB-backed set + per-repository
   # binding actually drive shared-session PTY spawn identity. alice/bob
   # double as the two target accounts here (already baked, already members
