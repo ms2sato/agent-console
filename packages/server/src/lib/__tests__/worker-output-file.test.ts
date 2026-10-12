@@ -368,6 +368,21 @@ describe('WorkerOutputFileManager', () => {
       expect(result).toBe(false);
     });
 
+    it('returns true while output is only pending in the flush buffer (nothing on disk yet)', async () => {
+      // A worker whose whole first life fit inside one flush interval has
+      // neither a manifest nor a live file; reading that as "never activated"
+      // lets the caller's first-activation reset discard the buffered rows.
+      manager.bufferOutput('session-pending', 'worker-1', '{"type":"exited"}\n', quickResolver);
+
+      expect(await manager.hasEverBeenActivated('session-pending', 'worker-1', quickResolver)).toBe(true);
+    });
+
+    it('returns false when the pending entry exists but is empty and nothing is on disk', async () => {
+      manager.bufferOutput('session-empty-pending', 'worker-1', '', quickResolver);
+
+      expect(await manager.hasEverBeenActivated('session-empty-pending', 'worker-1', quickResolver)).toBe(false);
+    });
+
     it('returns true once the stream has actually been written to', async () => {
       await manager.resetWorkerOutput('session-written', 'worker-1', quickResolver);
       manager.bufferOutput('session-written', 'worker-1', '{"type":"test"}\n', quickResolver);
