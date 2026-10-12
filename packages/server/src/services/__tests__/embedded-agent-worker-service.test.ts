@@ -6425,9 +6425,10 @@ describe('EmbeddedAgentWorkerService.deactivate output durability', () => {
   // Real WorkerOutputFileManager on disk with a flush interval that never fires
   // inside the test, so everything the first life wrote is still pending at the
   // restart. Reach measured by mutation: reverting the `forceFlush` in
-  // `deactivate` fails the first case; reverting the pending check in
-  // `hasEverBeenActivated` fails neither alone (the flush keeps the rows on
-  // disk) -- the second case needs both reverted to fail.
+  // `deactivate` fails the ordering case and the on-disk case (2 failures);
+  // reverting the pending check in `hasEverBeenActivated` fails only its own
+  // pin in worker-output-file.test.ts (the flush keeps the rows on disk, so
+  // the epoch case here still holds); reverting both also fails the epoch case.
   const realManager = () => new WorkerOutputFileManager({ flushInterval: 600_000 });
   const liveFile = (h: ReturnType<typeof setup>) =>
     h.deps.getPathResolver(h.session).getOutputFilePath(h.sessionId, h.workerId);

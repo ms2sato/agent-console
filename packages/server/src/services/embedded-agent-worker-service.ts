@@ -385,6 +385,7 @@ export interface EmbeddedAgentWorkerServiceDeps {
     | 'readHistoryForRestore'
     | 'hasEverBeenActivated'
     | 'appendRestoreFailureMarker'
+    | 'forceFlush'
   >;
   /** MCP Streamable-HTTP base URL delivered to the loop in the init message. */
   getMcpBaseUrl: () => string;

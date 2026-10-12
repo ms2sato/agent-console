@@ -290,6 +290,7 @@ function setup(opts?: {
     mcpTokenRegistry: { mint: (() => 'mcp-token') as never, revokeByWorker: (() => {}) as never },
     mcpServerPermissionRepository: { listByScope: (async () => []) as never },
     workerOutputFileManager: {
+      forceFlush: (async () => {}) as never,
       resetWorkerOutput: (async () => {
         persisted.length = 0; // a reset truncates the live file
         return 4242;
