@@ -16,6 +16,7 @@ import { randomBytes } from 'node:crypto';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { createMiddleware } from 'hono/factory';
 import { createLogger } from '../lib/logger.js';
+import type { SessionClaimingTool } from './session-claiming-tools.js';
 
 const logger = createLogger('mcp-auth');
 
@@ -235,7 +236,7 @@ export function checkCallerOwnsSession(
   caller: McpCallerIdentity | null,
   claimed: ClaimedSession | null,
   mode: McpAuthMode,
-  context: { toolName: string },
+  context: { toolName: SessionClaimingTool },
   opts: { logger?: McpAuthLogger } = {},
 ): { error: string } | null {
   if (caller) {

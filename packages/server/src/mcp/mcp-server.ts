@@ -611,13 +611,7 @@ export function createMcpApp(deps: McpDependencies): Hono {
 
   // ---------- Tool: set_orchestrator_session ----------
 
-  // Eleventh session-claiming tool (checkCallerOwnsSession), alongside
-  // send_session_message, delegate_to_worktree, remove_worktree,
-  // create_conditional_wakeup, run_process, create_html_artifact,
-  // delete_html_artifact, create_bookmark, delete_bookmark,
-  // clear_orchestrator_session, write_review_annotations, and
-  // clear_review_annotations. No mechanical registry enumerates these
-  // tools; this comment is the convention-only marker.
+  // Session-claiming tool: membership is recorded in `session-claiming-tools.ts` and enforced by its test.
   mcpServer.tool(
     'set_orchestrator_session',
     'Add this session to its repository\'s designated-Orchestrator set. Webhook-triggered inbound events (e.g. a ' +
@@ -676,13 +670,7 @@ export function createMcpApp(deps: McpDependencies): Hono {
 
   // ---------- Tool: clear_orchestrator_session ----------
 
-  // Twelfth session-claiming tool (checkCallerOwnsSession), alongside
-  // send_session_message, delegate_to_worktree, remove_worktree,
-  // create_conditional_wakeup, run_process, create_html_artifact,
-  // delete_html_artifact, create_bookmark, delete_bookmark,
-  // set_orchestrator_session, write_review_annotations, and
-  // clear_review_annotations. No mechanical registry enumerates these
-  // tools; this comment is the convention-only marker.
+  // Session-claiming tool: membership is recorded in `session-claiming-tools.ts` and enforced by its test.
   mcpServer.tool(
     'clear_orchestrator_session',
     'Remove this session from its repository\'s designated-Orchestrator set. Idempotent (`removed: false` when ' +
@@ -818,6 +806,7 @@ export function createMcpApp(deps: McpDependencies): Hono {
 
   // ---------- Tool: send_session_message ----------
 
+  // Session-claiming tool: membership is recorded in `session-claiming-tools.ts` and enforced by its test.
   mcpServer.tool(
     'send_session_message',
     'Send a message to a worker in another session via file. ' +
@@ -1012,6 +1001,7 @@ export function createMcpApp(deps: McpDependencies): Hono {
 
   // ---------- Tool: delegate_to_worktree ----------
 
+  // Session-claiming tool: membership is recorded in `session-claiming-tools.ts` and enforced by its test.
   mcpServer.tool(
     'delegate_to_worktree',
     'Create a new worktree, start a session with an agent, and send a prompt. ' +
@@ -1532,6 +1522,7 @@ export function createMcpApp(deps: McpDependencies): Hono {
 
   // ---------- Tool: remove_worktree ----------
 
+  // Session-claiming tool: membership is recorded in `session-claiming-tools.ts` and enforced by its test.
   mcpServer.tool(
     'remove_worktree',
     'Remove a git worktree and its associated session. ' +
@@ -1743,6 +1734,7 @@ export function createMcpApp(deps: McpDependencies): Hono {
 
   // ---------- Tool: create_conditional_wakeup ----------
 
+  // Session-claiming tool: membership is recorded in `session-claiming-tools.ts` and enforced by its test.
   mcpServer.tool(
     'create_conditional_wakeup',
     'Create a conditional wakeup that checks a shell command at intervals and sends notification only when the condition becomes true (exit 0) or timeout is reached. ' +
@@ -1909,6 +1901,7 @@ export function createMcpApp(deps: McpDependencies): Hono {
 
   // ---------- Tool: run_process ----------
 
+  // Session-claiming tool: membership is recorded in `session-claiming-tools.ts` and enforced by its test.
   mcpServer.tool(
     'run_process',
     'Start an interactive script connected to a session. ' +
@@ -2109,14 +2102,7 @@ export function createMcpApp(deps: McpDependencies): Hono {
 
   // ---------- Tool: write_review_annotations ----------
 
-  // Thirteenth session-claiming tool (checkCallerOwnsSession), alongside
-  // send_session_message, delegate_to_worktree, remove_worktree,
-  // create_conditional_wakeup, run_process, create_html_artifact,
-  // delete_html_artifact, create_bookmark, delete_bookmark,
-  // set_orchestrator_session, clear_orchestrator_session,
-  // set_agent_parameters, set_mcp_server_permission, and
-  // clear_review_annotations. No mechanical registry enumerates these
-  // tools; this comment is the convention-only marker.
+  // Session-claiming tool: membership is recorded in `session-claiming-tools.ts` and enforced by its test.
   mcpServer.tool(
     'write_review_annotations',
     'Write review annotations for a git-diff worker. ' +
@@ -2217,14 +2203,7 @@ export function createMcpApp(deps: McpDependencies): Hono {
 
   // ---------- Tool: clear_review_annotations ----------
 
-  // Fourteenth session-claiming tool (checkCallerOwnsSession), alongside
-  // send_session_message, delegate_to_worktree, remove_worktree,
-  // create_conditional_wakeup, run_process, create_html_artifact,
-  // delete_html_artifact, create_bookmark, delete_bookmark,
-  // set_orchestrator_session, clear_orchestrator_session,
-  // set_agent_parameters, set_mcp_server_permission, and
-  // write_review_annotations. No mechanical registry enumerates these
-  // tools; this comment is the convention-only marker.
+  // Session-claiming tool: membership is recorded in `session-claiming-tools.ts` and enforced by its test.
   mcpServer.tool(
     'clear_review_annotations',
     'Clear all review annotations for a git-diff worker. ' +
@@ -2337,13 +2316,7 @@ export function createMcpApp(deps: McpDependencies): Hono {
 
   // ---------- Tool: create_html_artifact ----------
 
-  // Sixth session-claiming tool (checkCallerOwnsSession), alongside
-  // send_session_message, delegate_to_worktree, remove_worktree,
-  // create_conditional_wakeup, run_process, delete_html_artifact,
-  // create_bookmark, delete_bookmark, set_orchestrator_session,
-  // clear_orchestrator_session, write_review_annotations, and
-  // clear_review_annotations. No mechanical registry enumerates these
-  // tools; this comment is the convention-only marker.
+  // Session-claiming tool: membership is recorded in `session-claiming-tools.ts` and enforced by its test.
   mcpServer.tool(
     'create_html_artifact',
     'Upload an HTML document (optionally with inline JavaScript/CSS) and receive a URL to view it in a browser. ' +
@@ -2436,13 +2409,7 @@ export function createMcpApp(deps: McpDependencies): Hono {
 
   // ---------- Tool: delete_html_artifact ----------
 
-  // Seventh session-claiming tool (checkCallerOwnsSession), alongside
-  // send_session_message, delegate_to_worktree, remove_worktree,
-  // create_conditional_wakeup, run_process, create_html_artifact,
-  // create_bookmark, delete_bookmark, set_orchestrator_session,
-  // clear_orchestrator_session, write_review_annotations, and
-  // clear_review_annotations. No mechanical registry enumerates these
-  // tools; this comment is the convention-only marker.
+  // Session-claiming tool: membership is recorded in `session-claiming-tools.ts` and enforced by its test.
   mcpServer.tool(
     'delete_html_artifact',
     'Permanently delete a previously created HTML artifact. This is irreversible: any URL already shared for ' +
@@ -2518,13 +2485,7 @@ export function createMcpApp(deps: McpDependencies): Hono {
 
   // ---------- Tool: create_bookmark ----------
 
-  // Eighth session-claiming tool (checkCallerOwnsSession), alongside
-  // send_session_message, delegate_to_worktree, remove_worktree,
-  // create_conditional_wakeup, run_process, create_html_artifact,
-  // delete_html_artifact, delete_bookmark, set_orchestrator_session,
-  // clear_orchestrator_session, write_review_annotations, and
-  // clear_review_annotations. No mechanical registry enumerates these
-  // tools; this comment is the convention-only marker.
+  // Session-claiming tool: membership is recorded in `session-claiming-tools.ts` and enforced by its test.
   mcpServer.tool(
     'create_bookmark',
     'Register a URL (plus an optional title) as a bookmark, visible in the session sidebar. ' +
@@ -2611,13 +2572,7 @@ export function createMcpApp(deps: McpDependencies): Hono {
 
   // ---------- Tool: delete_bookmark ----------
 
-  // Ninth session-claiming tool (checkCallerOwnsSession), alongside
-  // send_session_message, delegate_to_worktree, remove_worktree,
-  // create_conditional_wakeup, run_process, create_html_artifact,
-  // delete_html_artifact, create_bookmark, set_orchestrator_session,
-  // clear_orchestrator_session, write_review_annotations, and
-  // clear_review_annotations. No mechanical registry enumerates these
-  // tools; this comment is the convention-only marker.
+  // Session-claiming tool: membership is recorded in `session-claiming-tools.ts` and enforced by its test.
   mcpServer.tool(
     'delete_bookmark',
     'Permanently delete a previously registered bookmark.',
@@ -2691,14 +2646,7 @@ export function createMcpApp(deps: McpDependencies): Hono {
 
   // ---------- Tool: set_agent_parameters ----------
 
-  // Tenth session-claiming tool (checkCallerOwnsSession), alongside
-  // send_session_message, delegate_to_worktree, remove_worktree,
-  // create_conditional_wakeup, run_process, create_html_artifact,
-  // delete_html_artifact, create_bookmark, delete_bookmark,
-  // set_orchestrator_session, clear_orchestrator_session,
-  // write_review_annotations, and clear_review_annotations. No mechanical
-  // registry enumerates these tools; this comment is the convention-only
-  // marker.
+  // Session-claiming tool: membership is recorded in `session-claiming-tools.ts` and enforced by its test.
   //
   // The ONLY tool in this file whose guard is STRICTER than
   // checkCallerOwnsSession alone -- see the own-worker and tokenless blocks
@@ -2860,14 +2808,7 @@ export function createMcpApp(deps: McpDependencies): Hono {
 
   // ---------- Tool: set_mcp_server_permission ----------
 
-  // Eleventh session-claiming tool (checkCallerOwnsSession), alongside
-  // send_session_message, delegate_to_worktree, remove_worktree,
-  // create_conditional_wakeup, run_process, create_html_artifact,
-  // delete_html_artifact, create_bookmark, delete_bookmark,
-  // set_orchestrator_session, clear_orchestrator_session,
-  // set_agent_parameters, write_review_annotations, and
-  // clear_review_annotations. No mechanical registry enumerates these
-  // tools; this comment is the convention-only marker.
+  // Session-claiming tool: membership is recorded in `session-claiming-tools.ts` and enforced by its test.
   //
   // Unlike every other tool here, ownership is checked on the TARGET
   // session, not the caller's own -- this tool's whole point is deciding
