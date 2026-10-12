@@ -1,4 +1,4 @@
-import { describe, it, expect, mock, beforeEach, afterEach, type Mock } from 'bun:test';
+import { describe, it, expect, mock, spyOn, beforeEach, afterEach, type Mock } from 'bun:test';
 import {
   InteractiveProcessManager,
   MAX_PROCESSES_PER_SESSION,
@@ -700,6 +700,144 @@ describe('InteractiveProcessManager', () => {
     it('should return false for a non-existent process', () => {
       const result = manager.killProcess('non-existent-id');
       expect(result).toBe(false);
+    });
+  });
+
+  // A shell that backgrounds a grandchild and waits: signalling only the shell
+  // leaves the grandchild running. These use the real spawn (direct branch).
+  describe('descendant cleanup via process group (direct branch)', () => {
+    const GRANDCHILD_CMD = (pidFile: string) => `sleep 30 & echo $! > ${pidFile}; wait`;
+
+    async function readGrandchildPid(pidFile: string): Promise<number> {
+      const deadline = Date.now() + 5000;
+      while (Date.now() < deadline) {
+        const text = (await Bun.file(pidFile).exists()) ? (await Bun.file(pidFile).text()).trim() : '';
+        if (text) return Number(text);
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      throw new Error('grandchild pid file never appeared');
+    }
+
+    function isAlive(pid: number): boolean {
+      try {
+        process.kill(pid, 0);
+      } catch {
+        return false;
+      }
+      // Without /proc a zombie cannot be told from a live process: fail loudly
+      // rather than reporting the grandchild as gone.
+      const fs = require('node:fs') as typeof import('node:fs');
+      if (!fs.existsSync('/proc/self/stat')) {
+        throw new Error('/proc is unavailable; cannot decide whether the grandchild is alive');
+      }
+      // A killed grandchild may linger as a zombie until reaped; treat as gone.
+      try {
+        const stat = fs.readFileSync(`/proc/${pid}/stat`, 'utf8');
+        return !stat.includes(') Z ');
+      } catch (err) {
+        // Vanished between the liveness probe and the read: gone. Anything
+        // else (e.g. EACCES) is inconclusive and must not pass the test.
+        if ((err as NodeJS.ErrnoException).code === 'ENOENT') return false;
+        throw err;
+      }
+    }
+
+    async function waitGone(pid: number, ms: number): Promise<boolean> {
+      const deadline = Date.now() + ms;
+      while (Date.now() < deadline) {
+        if (!isAlive(pid)) return true;
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      return !isAlive(pid);
+    }
+
+    function pidFilePath(): string {
+      return `${require('node:os').tmpdir()}/ipm-grandchild-${crypto.randomUUID()}.pid`;
+    }
+
+    it('killProcess takes the grandchild down with the shell', async () => {
+      const pidFile = pidFilePath();
+      const started = await manager.runProcess({
+        sessionId: 'session-1',
+        workerId: 'worker-1',
+        command: GRANDCHILD_CMD(pidFile),
+      });
+      const grandchild = await readGrandchildPid(pidFile);
+      expect(isAlive(grandchild)).toBe(true);
+      try {
+        manager.killProcess(started.id);
+        expect(await waitGone(grandchild, 1000)).toBe(true);
+      } finally {
+        if (isAlive(grandchild)) process.kill(grandchild, 'SIGKILL');
+      }
+    });
+
+    it('never signals the group of an entry whose shell has already exited', async () => {
+      const m = new InteractiveProcessManager(() => {}, () => {});
+      const started = await m.runProcess({
+        sessionId: 'session-gone',
+        workerId: 'worker-1',
+        command: 'exit 0',
+      });
+      const deadline = Date.now() + 5000;
+      while (Date.now() < deadline && m.getProcess(started.id)?.status !== 'exited') {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      expect(m.getProcess(started.id)?.status).toBe('exited');
+
+      const killSpy = spyOn(process, 'kill');
+      try {
+        m.deleteProcessesBySession('session-gone');
+        const negative = killSpy.mock.calls.filter(([pid]) => typeof pid === 'number' && pid < 0);
+        expect(negative).toEqual([]);
+      } finally {
+        killSpy.mockRestore();
+        m.disposeAll();
+      }
+    });
+
+    it('the timeout path takes the grandchild down with the shell', async () => {
+      const pidFile = pidFilePath();
+      await manager.runProcess({
+        sessionId: 'session-1',
+        workerId: 'worker-1',
+        command: GRANDCHILD_CMD(pidFile),
+        timeoutSeconds: 0.5,
+      });
+      const grandchild = await readGrandchildPid(pidFile);
+      try {
+        expect(await waitGone(grandchild, 2500)).toBe(true);
+      } finally {
+        if (isAlive(grandchild)) process.kill(grandchild, 'SIGKILL');
+      }
+    });
+  });
+
+  describe('identity records on the spawn call', () => {
+    it('passes exactly the three AGENT_CONSOLE_* identity records and leaves baseEnv unset', async () => {
+      const calls: SpawnAsUserOpts[] = [];
+      const real = (await import('../privilege-elevation.js')).spawnAsUser;
+      const spy: SpawnAsUserFn = (opts) => {
+        calls.push(opts);
+        return real({ ...opts, username: null, command: 'exit 0' });
+      };
+      const m = new InteractiveProcessManager(() => {}, () => {}, undefined, undefined, spy, () => 'http://localhost:4321');
+      await m.runProcess({
+        sessionId: 'sess-id',
+        workerId: 'work-id',
+        command: 'echo hi',
+        requestUser: 'alice',
+      });
+      m.disposeAll();
+
+      expect(calls).toHaveLength(1);
+      expect(calls[0].username).toBe('alice');
+      expect(calls[0].env).toEqual({
+        AGENT_CONSOLE_BASE_URL: 'http://localhost:4321',
+        AGENT_CONSOLE_SESSION_ID: 'sess-id',
+        AGENT_CONSOLE_WORKER_ID: 'work-id',
+      });
+      expect(calls[0].baseEnv).toBeUndefined();
     });
   });
 

@@ -497,6 +497,15 @@ export interface SpawnAsUserOpts {
    * array suppresses the flag entirely. Ignored when elevation is bypassed.
    */
   preserveEnv?: string[];
+  /**
+   * Non-elevated branch only: start the child in its own process group
+   * (pgid === pid) so the caller can signal the whole tree with
+   * `process.kill(-pid, sig)`. Ignored on the elevated branch -- the held
+   * PID there is the elevation wrapper and the group would belong to the
+   * target user, so the server cannot signal it. Check
+   * `SpawnAsUserResult.ownsProcessGroup` for what actually happened.
+   */
+  newProcessGroup?: boolean;
 }
 
 /**
@@ -518,6 +527,11 @@ export interface SpawnAsUserResult {
   stdin: FileSink;
   /** Whether the spawn was elevated via `sudo`. Useful for logging. */
   elevated: boolean;
+  /**
+   * True when the child leads its own process group (pgid === pid), i.e.
+   * `newProcessGroup` was requested and honoured. Absent/false otherwise.
+   */
+  ownsProcessGroup?: boolean;
 }
 
 /**
@@ -583,9 +597,19 @@ export function spawnAsUser(
     stdout: 'pipe',
     stderr: 'pipe',
   };
+  const ownsProcessGroup = !elevated && opts.newProcessGroup === true;
   if (elevated) {
     spawnOptions.cwd = SUDO_NEUTRAL_CWD;
+    if (opts.newProcessGroup) {
+      logger.debug(
+        { username: opts.username },
+        'spawnAsUser: newProcessGroup ignored on the elevated branch',
+      );
+    }
   } else {
+    if (ownsProcessGroup) {
+      spawnOptions.detached = true;
+    }
     if (opts.cwd !== undefined) {
       spawnOptions.cwd = opts.cwd;
     }
@@ -614,5 +638,6 @@ export function spawnAsUser(
     subprocess,
     stdin: subprocess.stdin,
     elevated,
+    ownsProcessGroup,
   };
 }
