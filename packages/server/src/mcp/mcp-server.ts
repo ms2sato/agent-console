@@ -1637,6 +1637,7 @@ export function createMcpApp(deps: McpDependencies): Hono {
       'The worker can be an agent, terminal, or embedded-agent worker. ' +
       'The timer fires an [internal:timer] notification on each tick -- delivered as a PTY write for ' +
       'agent/terminal workers, or as a queued turn for embedded-agent workers. ' +
+      'Not for waiting on `run_process` output -- that always arrives on its own. One standing timer per delegate; call `list_timers` first. ' +
       'Timers are volatile and will not survive server restarts.',
     {
       sessionId: z.string().optional().describe(
@@ -1907,6 +1908,7 @@ export function createMcpApp(deps: McpDependencies): Hono {
       'The script drives workflow via STDOUT and blocks on STDIN waiting for responses via write_process_response. ' +
       'The worker can be an agent, terminal, or embedded-agent worker. ' +
       'Set outputMode="message" to keep long-paragraph script I/O out of the calling agent\'s conversation. ' +
+      'The process ALWAYS reports back as a new turn: its output as it runs, then an exit notice -- or a timeout notice if it runs past timeoutSeconds (default 600), in which case it is killed. ' +
       'Processes are volatile and will not survive server restarts.',
     {
       command: z
@@ -1943,8 +1945,18 @@ export function createMcpApp(deps: McpDependencies): Hono {
             'the message file path and byte count. ' +
             'Use "message" for long-paragraph interactive scripts (e.g., acceptance-check.js, sprint-retro.js) to keep the conversation clean.',
         ),
+      timeoutSeconds: z
+        .number()
+        .int()
+        .min(5, 'Minimum timeout is 5 seconds')
+        .max(3600, 'Maximum timeout is 3600 seconds (1 hour)')
+        .optional()
+        .describe(
+          'Seconds after which a still-running process is killed and reported as timed out through the ' +
+            'same exit notification (min 5, max 3600, default 600).',
+        ),
     },
-    async ({ command, sessionId: requestedSessionId, workerId: requestedWorkerId, cwd, outputMode }) => {
+    async ({ command, sessionId: requestedSessionId, workerId: requestedWorkerId, cwd, outputMode, timeoutSeconds }) => {
       const self = resolveSelfIdentity(
         getMcpCallerIdentity(),
         { sessionId: requestedSessionId, workerId: requestedWorkerId },
@@ -1997,6 +2009,7 @@ export function createMcpApp(deps: McpDependencies): Hono {
           cwd,
           outputMode,
           requestUser: requestUsername,
+          timeoutSeconds,
         });
 
         return textResult({

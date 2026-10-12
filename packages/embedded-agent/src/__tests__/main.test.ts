@@ -814,13 +814,13 @@ describe('runLoop — image attachment threading (#1571)', () => {
  *           dropping the field is exactly what that case already asserts.
  */
 describe('runLoop — restoredUsage threading (#1419)', () => {
-  // 2400 chars of restored user text ~= 600 estimated tokens; the assembled
-  // system prompt adds well under 250 more. Either way the estimate stays
+  // 1600 chars of restored user text ~= 400 estimated tokens; the assembled
+  // system prompt adds well under 400 more. Either way the estimate stays
   // below T x W = 850, so the seed is the ONLY thing that can fire a
   // compaction here.
   const restoredConversation = [
     { role: 'system', content: 'RESTORED_SYSTEM_PROMPT' },
-    { role: 'user', content: 'U'.repeat(2400) },
+    { role: 'user', content: 'U'.repeat(1600) },
   ];
   const compaction = { auto: true, contextWindowTokens: 1000 };
 

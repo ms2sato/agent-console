@@ -5221,6 +5221,30 @@ describe('MCP Server Tools', () => {
     });
 
     describe('run_process', () => {
+      it('should accept timeoutSeconds at its boundaries and reject values outside 5..3600', async () => {
+        const { sessionId, workerId } = await createSessionWithWorker();
+
+        for (const timeoutSeconds of [5, 3600]) {
+          const ok = await callTool(app, mcpSessionId, 'run_process', {
+            command: 'echo hello',
+            sessionId,
+            workerId,
+            timeoutSeconds,
+          }, nextId++);
+          expect(ok.result?.isError).toBeUndefined();
+        }
+
+        for (const timeoutSeconds of [4, 3601, 5.5]) {
+          const bad = await callTool(app, mcpSessionId, 'run_process', {
+            command: 'echo hello',
+            sessionId,
+            workerId,
+            timeoutSeconds,
+          }, nextId++);
+          expect(bad.result?.isError).toBe(true);
+        }
+      });
+
       it('should start a process and return process details', async () => {
         const { sessionId, workerId } = await createSessionWithWorker();
 

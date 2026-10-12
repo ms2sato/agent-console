@@ -292,7 +292,7 @@ export interface AssembleSystemPromptParams {
  * both engines carry it.
  */
 export const WAIT_BY_ENDING_TURN_PREAMBLE =
-  'Output from `run_process`, `create_conditional_wakeup`, `create_timer`, and replies from other sessions arrive as NEW turns, never inside the current one. To wait for any of them, end the turn with a one-line status. NEVER call `get_session_status` or `list_processes` to wait; polling inside a turn can never see them.';
+  'Output from `run_process`, `create_conditional_wakeup`, `create_timer`, and replies from other sessions arrive as NEW turns, never inside the current one. To wait for any of them, end the turn with a one-line status. NEVER call `get_session_status` or `list_processes` to wait; polling inside a turn can never see them. `run_process` ALWAYS reports back as new turns: its output as it runs, then an exit notice when it ends -- or a timeout notice if it runs past `timeoutSeconds` (default 600 s), in which case it is killed. Do NOT create a `create_timer` fallback to wait for `run_process`; use `create_timer` only as ONE standing follow-up timer per delegate (check `list_timers` before creating; reuse, do not duplicate).';
 
 /**
  * The identity preamble: the ONE place the model is told its own Session ID /

@@ -2,6 +2,7 @@ import { describe, it, expect, mock, beforeEach, afterEach, type Mock } from 'bu
 import {
   InteractiveProcessManager,
   MAX_PROCESSES_PER_SESSION,
+  DEFAULT_PROCESS_TIMEOUT_SECONDS,
   type ProcessOutputCallback,
   type ProcessExitCallback,
   type ProcessResponseCallback,
@@ -609,6 +610,77 @@ describe('InteractiveProcessManager', () => {
 
         fake.simulateExit(143);
       });
+    });
+  });
+
+  describe('timeoutSeconds', () => {
+    async function waitFor(cond: () => boolean, ms = 5000): Promise<void> {
+      const deadline = Date.now() + ms;
+      while (Date.now() < deadline && !cond()) {
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+    }
+
+    it('kills a process running past its timeout and reports it once through onExit with timedOut', async () => {
+      const started = await manager.runProcess({
+        sessionId: 'session-1',
+        workerId: 'worker-1',
+        command: 'sleep 30',
+        timeoutSeconds: 0.3,
+      });
+
+      await waitFor(() => onExit.mock.calls.length > 0);
+      // Leave room for a (wrong) second delivery to show up.
+      await new Promise((resolve) => setTimeout(resolve, 200));
+
+      expect(onExit).toHaveBeenCalledTimes(1);
+      const info = onExit.mock.calls[0][0] as { id: string; timedOut?: boolean; timeoutSeconds?: number; status: string };
+      expect(info.id).toBe(started.id);
+      expect(info.timedOut).toBe(true);
+      expect(info.timeoutSeconds).toBe(0.3);
+      expect(info.status).toBe('exited');
+      expect(manager.listProcesses('session-1')).toEqual([]);
+    });
+
+    it('does not mark a process that exits before its timeout, and never fires onExit twice', async () => {
+      await manager.runProcess({
+        sessionId: 'session-1',
+        workerId: 'worker-1',
+        command: 'exit 0',
+        timeoutSeconds: 0.5,
+      });
+
+      await waitFor(() => onExit.mock.calls.length > 0);
+      // Wait past the original timeout so a leaked timer would have fired.
+      await new Promise((resolve) => setTimeout(resolve, 700));
+
+      expect(onExit).toHaveBeenCalledTimes(1);
+      const info = onExit.mock.calls[0][0] as { timedOut?: boolean; exitCode?: number };
+      expect(info.timedOut).toBeUndefined();
+      expect(info.exitCode).toBe(0);
+    });
+
+    it('applies the 600 s default when timeoutSeconds is omitted', async () => {
+      const started = await manager.runProcess({
+        sessionId: 'session-1',
+        workerId: 'worker-1',
+        command: 'sleep 30',
+      });
+      expect(started.timeoutSeconds).toBe(DEFAULT_PROCESS_TIMEOUT_SECONDS);
+      expect(DEFAULT_PROCESS_TIMEOUT_SECONDS).toBe(600);
+      expect(manager.getProcess(started.id)?.timeoutSeconds).toBe(600);
+    });
+
+    it('does not report a timeout for a process killed explicitly before it expires', async () => {
+      const started = await manager.runProcess({
+        sessionId: 'session-1',
+        workerId: 'worker-1',
+        command: 'sleep 30',
+        timeoutSeconds: 0.3,
+      });
+      manager.killProcess(started.id);
+      await new Promise((resolve) => setTimeout(resolve, 600));
+      expect(onExit).not.toHaveBeenCalled();
     });
   });
 
