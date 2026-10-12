@@ -278,7 +278,18 @@ describe('resolveCallerFromAuthHeader', () => {
 
 describe('checkCallerOwnsSession', () => {
   const claimed = { sessionId: 'session-a', createdBy: 'user-a' };
-  const ctx = { toolName: 'run_process' };
+  const ctx = { toolName: 'run_process' as const };
+
+  // Type pin: `context.toolName` is `SessionClaimingTool`, so a name outside
+  // `SESSION_CLAIMING_TOOLS` must not type-check. Polarity: with the directive
+  // removed `tsc` reports TS2322 on the call; with the directive and the
+  // widened `string` type back, `tsc` reports TS2578 (unused directive).
+  it('rejects a toolName that is not a registered session-claiming tool at the type level', () => {
+    const { logger } = makeRecordingLogger();
+    // @ts-expect-error -- 'not_a_tool' is not in SESSION_CLAIMING_TOOLS
+    const result = checkCallerOwnsSession(null, claimed, 'off', { toolName: 'not_a_tool' }, { logger });
+    expect(result).toBeNull();
+  });
 
   it('caller=null + off → null, no warn', () => {
     const { logger, calls } = makeRecordingLogger();
