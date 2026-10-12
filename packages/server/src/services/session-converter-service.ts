@@ -154,7 +154,6 @@ export class SessionConverterService {
       parentWorkerId: session.parentWorkerId,
       createdBy: session.createdBy,
       initiatedBy: session.initiatedBy,
-      templateVars: session.templateVars,
       dataScope: session.dataScope,
       dataScopeSlug: session.dataScopeSlug,
       recoveryState: session.recoveryState,

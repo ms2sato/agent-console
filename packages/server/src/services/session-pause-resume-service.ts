@@ -244,7 +244,6 @@ export class SessionPauseResumeService {
       parentSessionId: persisted.parentSessionId,
       parentWorkerId: persisted.parentWorkerId,
       createdBy: persisted.createdBy,
-      templateVars: persisted.templateVars,
       dataScope: persisted.dataScope,
       dataScopeSlug: persisted.dataScopeSlug,
       recoveryState: persisted.recoveryState,
@@ -302,7 +301,6 @@ export class SessionPauseResumeService {
             context: {
               parentSessionId: internalSession.parentSessionId,
               parentWorkerId: internalSession.parentWorkerId,
-              templateVars: internalSession.templateVars,
             },
             revived: true,
           });

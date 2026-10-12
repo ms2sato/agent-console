@@ -195,7 +195,7 @@ Rationale:
 - Architect performs design review / spec drafting / long-horizon audit, where `fable`'s deeper reasoning suits the fewer-but-heavier judgments the role requires
 
 Overrides:
-- Individual delegate templates may pin a higher-tier model when the specific task warrants (e.g., `--model {{model:claude-opus-4-7}}` for exceptionally complex refactors), per existing `templateVars` mechanism
+- Individual delegate templates may pin a higher-tier model when the specific task warrants (e.g., `--model {{model:claude-opus-4-7}}` for exceptionally complex refactors), per the `{{var:default}}` template-default mechanism, or the named `model` parameter of `delegate_to_worktree`
 - Owner may pin a different Architect model for a specific consultation if the default does not fit
 
 ## References

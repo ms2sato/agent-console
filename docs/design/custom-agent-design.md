@@ -493,10 +493,12 @@ Beyond the reserved `{{prompt}}` / `{{cwd}}` placeholders, any template may use 
 claude {{model:+--model}}{{prompt}}
 ```
 
-- No `model` in `templateVars` → `claude '<prompt>'` (byte-identical to a template without the optional argument at all)
-- `templateVars: {"model": "claude-sonnet-5"}` → `claude --model 'claude-sonnet-5' '<prompt>'`
+- No `model` value supplied → `claude '<prompt>'` (byte-identical to a template without the optional argument at all)
+- A `model` value of `claude-sonnet-5` (supplied through the named `model` parameter) → `claude --model 'claude-sonnet-5' '<prompt>'`
 
 This is how the built-in Claude Code agent's `commandTemplate` exposes model selection to `delegate_to_worktree` callers (Issue #1281).
+
+**Lifetime.** `templateVars` apply at creation time and on in-process restarts only. They are NOT persisted: they do not survive a server restart or pause/resume, and a respawn from the stored session uses the template defaults. For that reason `delegate_to_worktree` rejects the `model` and `reasoningEffort` keys in `templateVars`. Model and reasoning effort go through the named `model` / `reasoningEffort` parameters, which are persisted on the worker row (`agent-surface.md` Ruling 3). The `{{model:+--model}}` example above is the placeholder those named parameters feed into.
 
 In every form, the value itself is only shell-escaped — never validated or normalized. Whether a given value is accepted (e.g. a short alias like `sonnet` vs. a full model ID) is the target CLI's own contract, not this template engine's.
 

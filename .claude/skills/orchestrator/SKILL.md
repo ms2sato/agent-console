@@ -26,7 +26,7 @@ The owner interacts only with you. Neither the Architect nor delegate workers se
 
 ### Model defaults
 
-- **Delegate workers**: `sonnet`. Overrides via `templateVars` when a specific task warrants a higher tier.
+- **Delegate workers**: `sonnet`. Overrides via the `model` parameter of `delegate_to_worktree` when a specific task warrants a higher tier.
 - **Architect**: `fable`. Overrides only when the owner pins a different model for a specific consultation.
 
 Reflect these defaults when creating worktrees / spawning workers; do not silently drift to a different model without owner directive.

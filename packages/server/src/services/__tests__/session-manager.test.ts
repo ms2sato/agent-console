@@ -7455,48 +7455,26 @@ describe('SessionManager', () => {
 
   // ========== templateVars persistence ==========
 
-  describe('templateVars persistence', () => {
-    it('should persist templateVars when creating a session with templateVars in request', async () => {
+  describe('templateVars lifetime', () => {
+    it('should keep templateVars on the in-memory session but not in the persisted row', async () => {
       const manager = await getSessionManager();
 
-      const request: CreateSessionRequest = {
+      const session = await manager.createSession({
         type: 'worktree',
         locationPath: '/test/path',
         repositoryId: 'repo-1',
         worktreeId: 'main',
         agentId: 'claude-code',
-        templateVars: { model: 'gpt-4', temperature: '0.7' },
-      };
-
-      const session = await manager.createSession(request);
-
-      // Verify templateVars is persisted via the repository
-      const repo = manager.getSessionRepository();
-      const persisted = await repo.findById(session.id);
-      expect(persisted).not.toBeNull();
-      expect(persisted!.templateVars).toEqual({ model: 'gpt-4', temperature: '0.7' });
-    });
-
-    it('should persist templateVars from SessionCreationContext', async () => {
-      const manager = await getSessionManager();
-
-      const request: CreateSessionRequest = {
-        type: 'quick',
-        locationPath: '/test/path',
-        agentId: 'claude-code',
-      };
-
-      const session = await manager.createSession(request, {
-        templateVars: { branch: 'feature-x' },
+        templateVars: { env: 'staging' },
       });
 
-      const repo = manager.getSessionRepository();
-      const persisted = await repo.findById(session.id);
+      expect(manager.getSession(session.id)).toBeDefined();
+      const persisted = await manager.getSessionRepository().findById(session.id);
       expect(persisted).not.toBeNull();
-      expect(persisted!.templateVars).toEqual({ branch: 'feature-x' });
+      expect('templateVars' in persisted!).toBe(false);
     });
 
-    it('should restore templateVars when resuming a paused session', async () => {
+    it('should resume a paused session without templateVars', async () => {
       const manager = await getSessionManager();
 
       const session = await manager.createSession({
@@ -7508,28 +7486,16 @@ describe('SessionManager', () => {
         templateVars: { env: 'staging' },
       });
 
-      // Pause the session
       await manager.pauseSession(session.id);
-
-      // Verify session is removed from memory
       expect(manager.getSession(session.id)).toBeUndefined();
-
-      // PTY count before resume
       const ptyCountBefore = ptyFactory.instances.length;
 
-      // Resume the session
       const resumed = await manager.resumeSession(session.id);
 
-      expect(resumed).not.toBeNull();
       expect(resumed?.id).toBe(session.id);
-
-      // New PTY should be created for the agent worker (proving resume activated PTY)
       expect(ptyFactory.instances.length).toBe(ptyCountBefore + 1);
-
-      // Verify templateVars is still persisted after resume
-      const repo = manager.getSessionRepository();
-      const persisted = await repo.findById(session.id);
-      expect(persisted!.templateVars).toEqual({ env: 'staging' });
+      const persisted = await manager.getSessionRepository().findById(session.id);
+      expect('templateVars' in persisted!).toBe(false);
     });
   });
 

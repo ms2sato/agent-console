@@ -149,8 +149,6 @@ interface PersistedSessionBase {
    * undefined (it would equal createdBy).
    */
   initiatedBy?: string;
-  /** Custom template variable overrides for agent command templates */
-  templateVars?: Record<string, string>;
   /** Scope-based persistence for session data path. Undefined on legacy rows before backfill. */
   dataScope?: 'quick' | 'repository';
   /** Slug for 'repository' scope; null for 'quick'. Undefined before backfill. */

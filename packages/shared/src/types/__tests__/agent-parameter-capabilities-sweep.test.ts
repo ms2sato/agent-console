@@ -19,7 +19,6 @@
  *  - `agent-parameter-capabilities.ts` itself (the positive control)
  *  - `services/agents/claude-code.ts` (the built-in agent's real template)
  *  - `lib/template.ts` (template-engine doc comments, predates this Issue)
- *  - `mcp/mcp-server.ts` (a pinned tool-description string, Issue #1281)
  */
 import { describe, it, expect } from 'bun:test';
 import { Glob } from 'bun';
@@ -55,11 +54,6 @@ const JUSTIFIED_EXCLUSIONS: Record<string, string> = {
     '{{var:+prefix}} syntax using "model" as an example variable name; ' +
     'predates this Issue and documents the template engine itself, not ' +
     'agent-parameter capability detection.',
-  'packages/server/src/mcp/mcp-server.ts':
-    "the templateVars tool-parameter's human-readable description quotes " +
-    'the {{model:+--model}} placeholder syntax as pinned documentation ' +
-    "(Issue #1281, mcp-server.test.ts asserts the literal substring) -- " +
-    'prose documentation, not re-implemented scanning logic.',
 };
 
 function findRepoRoot(startDir: string): string {
