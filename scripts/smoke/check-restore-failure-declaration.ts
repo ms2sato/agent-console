@@ -263,13 +263,20 @@ async function main(): Promise<void> {
 
     // Three REAL sessions + REAL workers (real SQLite rows via the real
     // service), one per case.
-    const sessionCase1 = await ctx.sessionManager.createSession({ type: 'quick', locationPath: cwd }, { createdBy: authUser.id });
-    const workerCase1 = await ctx.sessionManager.createWorker(sessionCase1.id, { type: 'embedded-agent', embeddedAgentId: CLAUDE_SDK_AGENT_ID });
-    const sessionCase2 = await ctx.sessionManager.createSession({ type: 'quick', locationPath: cwd }, { createdBy: authUser.id });
-    const workerCase2 = await ctx.sessionManager.createWorker(sessionCase2.id, { type: 'embedded-agent', embeddedAgentId: openaiDef.id });
-    const sessionCase3 = await ctx.sessionManager.createSession({ type: 'quick', locationPath: cwd }, { createdBy: authUser.id });
-    const workerCase3 = await ctx.sessionManager.createWorker(sessionCase3.id, { type: 'embedded-agent', embeddedAgentId: CLAUDE_SDK_AGENT_ID });
-    if (!workerCase1 || !workerCase2 || !workerCase3) bail('worker creation returned null for at least one case');
+    // The embedded worker IS each session's initial worker. Without `embeddedAgentId`
+    // `createSession` also creates a default claude-code PTY agent worker that nothing
+    // here uses or tears down.
+    const makeCase = async (embeddedAgentId: string) => {
+      const session = await ctx.sessionManager.createSession(
+        { type: 'quick', locationPath: cwd, embeddedAgentId },
+        { createdBy: authUser.id },
+      );
+      return { session, worker: session.workers.find((w) => w.type === 'embedded-agent') };
+    };
+    const { session: sessionCase1, worker: workerCase1 } = await makeCase(CLAUDE_SDK_AGENT_ID);
+    const { session: sessionCase2, worker: workerCase2 } = await makeCase(openaiDef.id);
+    const { session: sessionCase3, worker: workerCase3 } = await makeCase(CLAUDE_SDK_AGENT_ID);
+    if (!workerCase1 || !workerCase2 || !workerCase3) bail('a created session has no embedded-agent worker for at least one case');
 
     // Real, disk-backed resolvers for each real session -- the SAME public
     // method `routes.ts` uses, resolving into the SAME AGENT_CONSOLE_HOME.
