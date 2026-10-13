@@ -428,12 +428,18 @@ async function main(): Promise<void> {
     );
     console.log(`==> definition ${definition.id} (${PROVIDER_MODEL}, W=${WINDOW_TOKENS})`);
 
-    const session = await sm.createSession({ type: 'quick', locationPath: workCwd }, { createdBy: authUser.id });
+    // The embedded worker IS the session's initial worker. Without `embeddedAgentId`
+    // `createSession` also creates a default claude-code PTY agent worker, whose
+    // login shell nothing here tears down and which outlives `shutdownAppContext`.
+    const session = await sm.createSession(
+      { type: 'quick', locationPath: workCwd, embeddedAgentId: definition.id },
+      { createdBy: authUser.id },
+    );
     sessionId = session.id;
     if (!session.createdBy) bail('the created session has no createdBy; activation cannot mint an MCP identity');
 
-    const worker = await sm.createWorker(sessionId, { type: 'embedded-agent', embeddedAgentId: definition.id });
-    if (!worker) bail('worker creation returned null');
+    const worker = session.workers.find((w) => w.type === 'embedded-agent');
+    if (!worker) bail('the created session has no embedded-agent worker');
     workerId = worker.id;
 
     // Grow with auto compaction OFF -- the documented wedge population, and
