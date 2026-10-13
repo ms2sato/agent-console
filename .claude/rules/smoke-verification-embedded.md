@@ -186,7 +186,7 @@ This is the reach measurement for a non-deterministic oracle, and it stands in t
 | What the check reads | How its reach is measured |
 |---|---|
 | A deterministic system | **Mutate the code** — ordinary mutation measurement |
-| A fixture's premise | **Assert the shape is present** — the tool-turn rule above |
+| A fixture's premise | **Assert the shape is present** — the tool-turn rule above (general rule: `workflow.md`, "A verification's input must contain the real shape") |
 | **A non-deterministic oracle** (a model's answer) | **Control the world** — neither code nor model can be mutated, so a negative control is the only lever left |
 
 **Choose the control to match the threat; the two shapes are not interchangeable.**
