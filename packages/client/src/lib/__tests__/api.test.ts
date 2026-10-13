@@ -23,6 +23,7 @@ import {
   deleteArtifact,
   fetchNotifications,
   markNotificationsSeen,
+  refreshDefaultBranch,
   raiseOrchestratorDesignation,
   clearOrchestratorDesignation,
   ServerUnavailableError,
@@ -1510,6 +1511,37 @@ describe('API Client', () => {
       await expect(markNotificationsSeen('2026-08-16T00:00:00.000Z')).rejects.toThrow(
         'lastSeenAt must not be in the future'
       );
+    });
+  });
+
+  describe('refreshDefaultBranch', () => {
+    it('posts to the repository route and parses the response through the wire schema', async () => {
+      mockFetch.mockResolvedValue(createMockResponse({ defaultBranch: 'develop' }));
+
+      const result = await refreshDefaultBranch('repo-1');
+
+      expect(getLastFetchUrl()).toContain('/api/repositories/repo-1/refresh-default-branch');
+      expect(getLastFetchMethod()).toBe('POST');
+      expect(result).toEqual({ defaultBranch: 'develop' });
+    });
+
+    it.each([
+      ['an unknown extra field (the schema is strict)', { defaultBranch: 'main', extra: 1 }],
+      ['a missing defaultBranch', {}],
+      ['an empty defaultBranch', { defaultBranch: '' }],
+      ['a non-string defaultBranch', { defaultBranch: 42 }],
+    ])('throws when the response has %s', async (_label, body) => {
+      mockFetch.mockResolvedValue(createMockResponse(body));
+
+      await expect(refreshDefaultBranch('repo-1')).rejects.toThrow();
+    });
+
+    it('throws error on failure', async () => {
+      mockFetch.mockResolvedValue(
+        createMockResponse({ error: 'Failed to refresh default branch: no remote' }, { status: 400, ok: false })
+      );
+
+      await expect(refreshDefaultBranch('repo-1')).rejects.toThrow('no remote');
     });
   });
 });
