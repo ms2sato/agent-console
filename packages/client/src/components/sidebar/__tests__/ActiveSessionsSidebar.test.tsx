@@ -1152,6 +1152,29 @@ describe('ActiveSessionsSidebar', () => {
       expect(onResumeSession).not.toHaveBeenCalled();
     });
 
+    it('clicking End does not bubble to an enclosing click handler', async () => {
+      const ancestorClick = mock(() => {});
+      await renderWithRouter(
+        <div onClick={ancestorClick}>
+          <SessionStopTasksContext.Provider value={createStopTasks()}>
+            <ActiveSessionsSidebar
+              {...defaultProps()}
+              pausedSessions={[createPausedSession({ id: 'paused-session-1', repositoryName: 'repo-to-end' })]}
+              onResumeSession={mock(() => {})}
+            />
+          </SessionStopTasksContext.Provider>
+        </div>
+      );
+
+      fireEvent.click(screen.getByText('Paused').closest('button')!);
+      ancestorClick.mockClear();
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: 'End session repo-to-end' }));
+      });
+
+      expect(ancestorClick).not.toHaveBeenCalled();
+    });
+
     it('clicking the item itself still resumes it (control for the stopPropagation pin)', async () => {
       const onResumeSession = mock(() => {});
       await renderPausedSidebar(onResumeSession, createStopTasks());
