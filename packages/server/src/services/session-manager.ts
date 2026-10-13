@@ -692,7 +692,7 @@ export class SessionManager {
     // runs in toPublicSession; priming here ensures a warm cache for
     // subsequent getSession / getAllSessions calls. Cache misses gracefully
     // degrade to null on the wire.
-    await this.primeUsernameCacheFromInMemorySessions();
+    await this.primeActiveSessionUsernames();
   }
 
   /**
@@ -700,7 +700,7 @@ export class SessionManager {
    * sessions. Called after initialize/auto-resume and any other path that
    * may load multiple sessions at once.
    */
-  private async primeUsernameCacheFromInMemorySessions(): Promise<void> {
+  async primeActiveSessionUsernames(): Promise<void> {
     if (this.usernameLookup === NULL_USERNAME_LOOKUP) return;
     if (!(this.usernameLookup instanceof UsernameLookupService)) return;
     const createdByIds: string[] = [];

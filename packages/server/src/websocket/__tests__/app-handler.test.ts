@@ -44,9 +44,59 @@ describe('App Handler', () => {
   });
 
   describe('buildSessionsSyncMessage', () => {
+    it('primes usernames before reading the active sessions, so the snapshot carries createdByUsername', async () => {
+      // Models the sync username cache: empty until primed, like the real lookup.
+      let primed = false;
+      const deps = {
+        primeActiveSessionUsernames: async () => { await Promise.resolve(); primed = true; },
+        getAllSessions: () => [buildQuickSession({ id: 's1', createdBy: 'user-1', createdByUsername: primed ? 'alice' : null })],
+        getAllPausedSessions: async () => [],
+        getWorkerActivityState: () => undefined,
+        logger: { debug: mock(), warn: mock(), error: mock() },
+      };
+
+      const msg = await buildSessionsSyncMessage(deps);
+
+      expect(msg.sessions[0]?.createdByUsername).toBe('alice');
+    });
+
+    it('still sends the snapshot, and warns, when priming rejects', async () => {
+      const warn = mock();
+      const deps = {
+        primeActiveSessionUsernames: async () => { throw new Error('db down'); },
+        getAllSessions: () => [buildQuickSession({ id: 's1', createdByUsername: null })],
+        getAllPausedSessions: async () => [],
+        getWorkerActivityState: () => undefined,
+        logger: { debug: mock(), warn, error: mock() },
+      };
+
+      const msg = await buildSessionsSyncMessage(deps);
+
+      expect(msg.sessions.map((s) => s.id)).toEqual(['s1']);
+      expect(warn).toHaveBeenCalledTimes(1);
+    });
+
+    it('primes exactly once and sends an empty snapshot when there are no active sessions', async () => {
+      const prime = mock(async () => {});
+      const deps = {
+        primeActiveSessionUsernames: prime,
+        getAllSessions: () => [],
+        getAllPausedSessions: async () => [],
+        getWorkerActivityState: () => undefined,
+        logger: { debug: mock(), warn: mock(), error: mock() },
+      };
+
+      const msg = await buildSessionsSyncMessage(deps);
+
+      expect(prime).toHaveBeenCalledTimes(1);
+      expect(msg.sessions).toEqual([]);
+    });
+
     it('should build message with empty sessions', async () => {
       const deps = {
         getAllSessions: () => [],
+        primeActiveSessionUsernames: async () => {},
+        logger: { debug: mock(), warn: mock(), error: mock() },
         getAllPausedSessions: async () => [],
         getWorkerActivityState: () => undefined,
       };
@@ -81,6 +131,8 @@ describe('App Handler', () => {
 
       const deps = {
         getAllSessions: () => sessions,
+        primeActiveSessionUsernames: async () => {},
+        logger: { debug: mock(), warn: mock(), error: mock() },
         getAllPausedSessions: async () => [],
         getWorkerActivityState: (sessionId: string, workerId: string): AgentActivityState | undefined => {
           if (sessionId === 'session-1' && workerId === 'worker-1') return 'active';
@@ -120,6 +172,8 @@ describe('App Handler', () => {
 
       const deps = {
         getAllSessions: () => sessions,
+        primeActiveSessionUsernames: async () => {},
+        logger: { debug: mock(), warn: mock(), error: mock() },
         getAllPausedSessions: async () => [],
         getWorkerActivityState: (sessionId: string, workerId: string): AgentActivityState | undefined => {
           if (sessionId === 'session-1' && workerId === 'worker-1') return 'active';
@@ -147,6 +201,8 @@ describe('App Handler', () => {
 
       const deps = {
         getAllSessions: () => sessions,
+        primeActiveSessionUsernames: async () => {},
+        logger: { debug: mock(), warn: mock(), error: mock() },
         getAllPausedSessions: async () => [],
         getWorkerActivityState: (): AgentActivityState | undefined => 'active',
       };
@@ -169,6 +225,8 @@ describe('App Handler', () => {
 
       const deps = {
         getAllSessions: () => sessions,
+        primeActiveSessionUsernames: async () => {},
+        logger: { debug: mock(), warn: mock(), error: mock() },
         getAllPausedSessions: async () => [],
         getWorkerActivityState: (): AgentActivityState | undefined => undefined,
       };
@@ -206,6 +264,8 @@ describe('App Handler', () => {
 
       const deps = {
         getAllSessions: () => activeSessions,
+        primeActiveSessionUsernames: async () => {},
+        logger: { debug: mock(), warn: mock(), error: mock() },
         getAllPausedSessions: async () => pausedSessions,
         getWorkerActivityState: (sessionId: string, workerId: string): AgentActivityState | undefined => {
           if (sessionId === 'active-session' && workerId === 'worker-1') return 'idle';
@@ -233,6 +293,7 @@ describe('App Handler', () => {
 
       const deps = {
         getAllSessions: () => [],
+        primeActiveSessionUsernames: async () => {},
         getAllPausedSessions: async () => [],
         getWorkerActivityState: () => undefined,
         logger: { debug: mock(), warn: mock(), error: mock() },
@@ -256,6 +317,7 @@ describe('App Handler', () => {
           buildQuickSession({ id: '1', locationPath: '/', createdAt: '' }),
           buildQuickSession({ id: '2', locationPath: '/', createdAt: '' }),
         ],
+        primeActiveSessionUsernames: async () => {},
         getAllPausedSessions: async () => [],
         getWorkerActivityState: () => undefined,
         logger: { debug: mockDebug, warn: mock(), error: mock() },
@@ -274,6 +336,7 @@ describe('App Handler', () => {
         getAllSessions: () => [
           buildQuickSession({ id: '1', locationPath: '/', createdAt: '' }),
         ],
+        primeActiveSessionUsernames: async () => {},
         getAllPausedSessions: async () => [
           buildQuickSession({ id: '2', locationPath: '/', activationState: 'hibernated', createdAt: '' }),
         ],
@@ -298,6 +361,7 @@ describe('App Handler', () => {
 
       mockDeps = {
         getAllSessions: () => [],
+        primeActiveSessionUsernames: async () => {},
         getAllPausedSessions: async () => [],
         getWorkerActivityState: () => undefined,
         getAllAgents: async () => [],

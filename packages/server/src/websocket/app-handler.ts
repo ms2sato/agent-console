@@ -27,6 +27,8 @@ export function isValidClientMessage(msg: unknown): msg is AppClientMessage {
  * @internal Exported for testing
  */
 export interface AppHandlerDependencies {
+  /** Primes the sync username cache for active sessions so `getAllSessions` can derive `createdByUsername`. */
+  primeActiveSessionUsernames: () => Promise<void>;
   getAllSessions: () => Session[];
   getAllPausedSessions: () => Promise<Session[]>;
   getWorkerActivityState: (sessionId: string, workerId: string) => AgentActivityState | undefined;
@@ -45,8 +47,20 @@ export interface AppHandlerDependencies {
  * @internal Exported for testing
  */
 export async function buildSessionsSyncMessage(
-  deps: Pick<AppHandlerDependencies, 'getAllSessions' | 'getAllPausedSessions' | 'getWorkerActivityState'>
+  deps: Pick<
+    AppHandlerDependencies,
+    'primeActiveSessionUsernames' | 'getAllSessions' | 'getAllPausedSessions' | 'getWorkerActivityState' | 'logger'
+  >
 ): Promise<{ type: 'sessions-sync'; sessions: Session[]; activityStates: WorkerActivityInfo[] }> {
+  // `getAllSessions` is synchronous and derives `createdByUsername` from a cache
+  // that only async priming fills, so prime first. Best-effort: a failed prime
+  // leaves usernames absent but must not fail the whole sync.
+  try {
+    await deps.primeActiveSessionUsernames();
+  } catch (error) {
+    deps.logger.warn({ err: error }, 'Failed to prime session usernames before sessions-sync');
+  }
+
   // Get active sessions from memory
   const activeSessions = deps.getAllSessions();
 
@@ -85,7 +99,10 @@ export async function buildSessionsSyncMessage(
  */
 export async function sendSessionsSync(
   ws: WSContext,
-  deps: Pick<AppHandlerDependencies, 'getAllSessions' | 'getAllPausedSessions' | 'getWorkerActivityState' | 'logger'>
+  deps: Pick<
+    AppHandlerDependencies,
+    'primeActiveSessionUsernames' | 'getAllSessions' | 'getAllPausedSessions' | 'getWorkerActivityState' | 'logger'
+  >
 ): Promise<void> {
   const syncMsg = await buildSessionsSyncMessage(deps);
   ws.send(JSON.stringify(syncMsg));

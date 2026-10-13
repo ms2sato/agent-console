@@ -92,6 +92,8 @@ describe('Client-Server Boundary: sessions-sync embedded-agent activity state', 
     internalWorker.activityState = 'active';
 
     const syncMsg = await buildSessionsSyncMessage({
+      primeActiveSessionUsernames: () => ctx.sessionManager.primeActiveSessionUsernames(),
+      logger: { debug: () => {}, warn: () => {}, error: () => {} },
       getAllSessions: () => ctx.sessionManager.getAllSessions(),
       getAllPausedSessions: () => ctx.sessionManager.getAllPausedSessions(),
       getWorkerActivityState: (sessionId, workerId) =>

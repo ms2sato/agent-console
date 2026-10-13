@@ -510,6 +510,7 @@ export async function setupWebSocketRoutes(
 
   // Create dependency object for app handlers
   const appDeps = {
+    primeActiveSessionUsernames: () => sessionManager.primeActiveSessionUsernames(),
     getAllSessions: () => sessionManager.getAllSessions(),
     getAllPausedSessions: () => sessionManager.getAllPausedSessions(),
     getWorkerActivityState: (sessionId: string, workerId: string) => sessionManager.getWorkerActivityState(sessionId, workerId),
