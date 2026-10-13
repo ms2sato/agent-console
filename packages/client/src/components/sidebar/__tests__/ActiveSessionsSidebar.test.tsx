@@ -920,6 +920,28 @@ describe('ActiveSessionsSidebar', () => {
       expect(label.textContent).toBe('alice');
     });
 
+    it('renders the badge with the exact corner-pinned classes and the title, and reserves room for it (the extracted CreatorBadge keeps the sidebar markup byte-identical)', async () => {
+      setAuthMode('multi-user');
+      setCurrentUser({ id: 'self-uuid', username: 'me', homeDir: '/home/me' });
+      const sessions = [
+        createSessionWithActivity(
+          createMockWorktreeSession({ createdBy: 'self-uuid', createdByUsername: 'me' } as Partial<WorktreeSession>),
+          'idle'
+        ),
+      ];
+
+      await renderWithRouter(
+        <ActiveSessionsSidebar {...defaultProps()} sessions={sessions} />
+      );
+
+      const label = screen.getByTestId('session-creator-username');
+      expect(label.className).toBe(
+        'absolute top-2 right-2 max-w-[6rem] truncate text-[10px] font-mono px-1.5 py-0.5 rounded bg-indigo-500/20 text-indigo-200',
+      );
+      expect(label.getAttribute('title')).toBe('me');
+      expect(label.parentElement?.querySelector('.pr-20')).not.toBeNull();
+    });
+
     it('should NOT render creator username span when createdByUsername is null (legacy session)', async () => {
       setAuthMode('multi-user');
       const sessions = [

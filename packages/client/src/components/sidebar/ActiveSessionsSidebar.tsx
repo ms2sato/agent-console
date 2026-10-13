@@ -13,6 +13,7 @@ import {
 } from '../../lib/api';
 import { repositoryKeys } from '../../lib/query-keys';
 import { useAuth } from '../../lib/auth';
+import { CreatorBadge, useCreatorBadgeVisible } from '../sessions/CreatorBadge';
 import { logger } from '../../lib/logger';
 import { ChevronLeftIcon, ChevronRightIcon, ChevronDownIcon, AlertCircleIcon, RefreshIcon, FlagIcon } from '../Icons';
 import { ConfirmDialog } from '../ui/confirm-dialog';
@@ -151,26 +152,14 @@ interface SessionItemProps {
 
 function SessionItem({ sessionWithActivity, collapsed, isActive, onClick, orchestratorSessionIds }: SessionItemProps) {
   const { session, activityState } = sessionWithActivity;
-  const { isMultiUser, currentUser } = useAuth();
   const { primary, secondary, tooltip } = getSessionDisplayInfo(session);
+  const showCreatorUsername = useCreatorBadgeVisible(session.createdByUsername);
   const label = getActivityLabel(activityState);
   const isOrphaned = session.recoveryState === 'orphaned';
   const sharedSuffix = session.isShared ? ' [Shared]' : '';
   const orphanedTooltip = isOrphaned
     ? `${tooltip} (Unrecoverable)${sharedSuffix}`
     : `${tooltip}${sharedSuffix}`;
-  const showCreatorUsername = isMultiUser && Boolean(session.createdByUsername);
-  // Color the creator badge differently for "my sessions" vs "others'
-  // sessions" so users can scan the sidebar and immediately spot which
-  // sessions they themselves created vs ones owned by other authenticated
-  // users. Match is by stable user UUID, not username string.
-  const isSelfSession =
-    currentUser !== null &&
-    session.createdBy !== undefined &&
-    currentUser.id === session.createdBy;
-  const creatorBadgeColorClass = isSelfSession
-    ? 'bg-indigo-500/20 text-indigo-200'
-    : 'bg-amber-500/20 text-amber-200';
 
   const isWorktreeSession = session.type === 'worktree';
   const isOrchestratorFlagLit = isWorktreeSession && (orchestratorSessionIds?.includes(session.id) ?? false);
@@ -306,15 +295,11 @@ function SessionItem({ sessionWithActivity, collapsed, isActive, onClick, orches
         }`}
         title={orphanedTooltip}
       >
-        {showCreatorUsername && (
-          <span
-            data-testid="session-creator-username"
-            className={`absolute top-2 right-2 max-w-[6rem] truncate text-[10px] font-mono px-1.5 py-0.5 rounded ${creatorBadgeColorClass}`}
-            title={session.createdByUsername ?? undefined}
-          >
-            {session.createdByUsername}
-          </span>
-        )}
+        <CreatorBadge
+          createdBy={session.createdBy}
+          createdByUsername={session.createdByUsername}
+          positionClassName="absolute top-2 right-2"
+        />
         <div className="flex items-start gap-2">
           <div className="w-4 shrink-0 flex flex-col items-center mt-1.5 gap-1">
             <div className="w-4 h-4 flex items-center justify-center">

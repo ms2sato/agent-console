@@ -26,6 +26,7 @@ import { ConfirmDialog } from '../components/ui/confirm-dialog';
 import { ErrorDialog, useErrorDialog } from '../components/ui/error-dialog';
 import { GitHubIcon, VSCodeIcon } from '../components/Icons';
 import { Spinner, ButtonSpinner } from '../components/ui/Spinner';
+import { CreatorBadge } from '../components/sessions/CreatorBadge';
 import { hasVSCode } from '../lib/capabilities';
 import {
   AlertDialog,
@@ -1004,6 +1005,11 @@ export function WorktreeRow({ worktree, session, pausedSession, repositoryId, is
                 </>
               )}
               <span className={(session?.title || pausedSession?.title) ? 'text-gray-400' : ''}>{worktree.branch}</span>
+              {/* Owner badge (multi-user): the active session's owner, else the paused session's. */}
+              <CreatorBadge
+                createdBy={(session ?? pausedSession)?.createdBy}
+                createdByUsername={(session ?? pausedSession)?.createdByUsername}
+              />
               {worktree.isMain && (
                 <span className="text-xs text-gray-500">(primary)</span>
               )}
@@ -1186,6 +1192,7 @@ export function SessionCard({ session }: SessionCardProps) {
           <div className="text-sm text-gray-200 overflow-hidden text-ellipsis whitespace-nowrap flex items-center gap-2">
             <PathLink path={session.locationPath} className="truncate" />
             <ActivityBadge state={session.activityState} />
+            <CreatorBadge createdBy={session.createdBy} createdByUsername={session.createdByUsername} />
           </div>
           <div className="text-xs text-gray-500 mt-1">
             Workers: {session.workers.length} | Started: {new Date(session.createdAt).toLocaleString()}
