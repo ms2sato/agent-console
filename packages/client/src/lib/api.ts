@@ -47,6 +47,7 @@ import type {
 import {
   ArtifactsListResponseSchema,
   ConfigResponseSchema,
+  RefreshDefaultBranchResponseSchema,
   NotificationsResponseSchema,
   NotificationsSeenResponseSchema,
   BookmarksListResponseSchema,
@@ -964,7 +965,9 @@ export async function refreshDefaultBranch(repositoryId: string): Promise<Refres
   if (!res.ok) {
     await handleApiError(res, 'Failed to refresh default branch');
   }
-  return res.json() as Promise<RefreshDefaultBranchResponse>;
+  // Parsed through the (strict) wire schema rather than cast: a server body
+  // that gains a field, or drops/empties `defaultBranch`, fails here loudly.
+  return v.parse(RefreshDefaultBranchResponseSchema, await res.json());
 }
 
 // ===========================================================================
