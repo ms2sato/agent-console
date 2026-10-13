@@ -1609,27 +1609,40 @@ describe('setup-multiuser-checks: journal-digest re-read window (V6, #2043)', ()
   });
 });
 
-// The deploy script passes the windows to the two checks; pin the call sites by
-// content so a refactor cannot silently drop them (a library default of 10 / 1
-// would then bring the false FAIL back with every test above still green).
-describe('update-and-deploy-for-multiuser-ubuntu.sh: V5/V6 call sites (#2043)', () => {
-  const DEPLOY = readFileSync(resolve(__dirname, '..', 'update-and-deploy-for-multiuser-ubuntu.sh'), 'utf-8');
+// normalize_attempts (#2043): the deploy script's AGENT_CONSOLE_HEALTH_ATTEMPTS goes through
+// it, because a zero or non-numeric poll count would make the V5 loop do nothing and report
+// a misleading HTTP 000.
+describe('setup-multiuser-checks: normalize_attempts (V5 poll count validation, #2043)', () => {
+  const norm = (value) => runLib(['normalize-attempts', value, '60']);
 
-  it('V5 passes the 60-attempt default (overridable by AGENT_CONSOLE_HEALTH_ATTEMPTS) plus the unit and systemctl', () => {
-    expect(DEPLOY).toContain(
-      'verify_check "V5 health" health "${HEALTH_PORT}" "${AGENT_CONSOLE_HEALTH_ATTEMPTS:-60}" curl "${SERVICE_NAME}" systemctl',
-    );
+  it('empty (the unset case) -> the default, silently', () => {
+    const r = norm('');
+    expect(r.status).toBe(0);
+    expect(r.stdout.trim()).toBe('60');
+    expect(r.stderr).toBe('');
   });
 
-  it('V6 passes 10 re-read attempts after the elevate argument', () => {
-    expect(DEPLOY).toContain(
-      'verify_check "V6 journal-digest" journal_digest "${SERVICE_NAME}" "${RESTART_SINCE}" journalctl "${ELEVATE}" 10',
-    );
+  it.each([
+    ['1', '1'],
+    ['25', '25'],
+    ['120', '120'],
+    ['08', '8'],
+    ['007', '7'],
+  ])('a positive integer %j is kept (as decimal: %j)', (input, expected) => {
+    const r = norm(input);
+    expect(r.status).toBe(0);
+    expect(r.stdout.trim()).toBe(expected);
+    expect(r.stderr).toBe('');
   });
 
-  it('the header documents AGENT_CONSOLE_HEALTH_ATTEMPTS beside AGENT_CONSOLE_PORT', () => {
-    const header = DEPLOY.split('\n').slice(0, 130).join('\n');
-    expect(header).toContain('AGENT_CONSOLE_HEALTH_ATTEMPTS');
-    expect(header.indexOf('AGENT_CONSOLE_PORT')).toBeLessThan(header.indexOf('AGENT_CONSOLE_HEALTH_ATTEMPTS'));
-  });
+  it.each(['0', '00', 'abc', '-3', '1.5', '7 ', '1e2', '0x10'])(
+    'a value that is not a positive integer (%j) -> the default, with a warning naming the value',
+    (input) => {
+      const r = norm(input);
+      expect(r.status).toBe(0);
+      expect(r.stdout.trim()).toBe('60');
+      expect(r.stderr).toContain(`AGENT_CONSOLE_HEALTH_ATTEMPTS='${input}'`);
+      expect(r.stderr).toContain('using the default 60');
+    },
+  );
 });

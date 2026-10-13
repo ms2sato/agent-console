@@ -954,6 +954,31 @@ unit_active() {
   return 1
 }
 
+# normalize_attempts <value> <default>
+#
+# Prints a usable poll count: <value> when it is a positive decimal integer
+# (leading zeros allowed and read as decimal, so `08` is 8 and not an octal
+# error), else <default>. An EMPTY value is the unset case and falls back
+# silently; anything else that is not a positive integer (`0`, `abc`, `-3`,
+# `1.5`) falls back with a one-line warning on stderr, because a poll count of
+# 0 or text would make the V5 loop do nothing and report a misleading
+# `HEALTH_HTTP:000`. Always exits 0.
+normalize_attempts() {
+  local value="${1:-}"
+  local default="$2"
+  if [ -z "$value" ]; then
+    echo "$default"
+    return 0
+  fi
+  if [[ "$value" =~ ^[0-9]+$ ]] && [ "$((10#$value))" -ge 1 ]; then
+    echo "$((10#$value))"
+    return 0
+  fi
+  echo "warning: AGENT_CONSOLE_HEALTH_ATTEMPTS='${value}' is not a positive integer; using the default ${default}" >&2
+  echo "$default"
+  return 0
+}
+
 # health <port> [attempts] [curl-cmd] [unit] [systemctl-cmd]   (V5)
 #
 # `GET http://localhost:<port>/api/config` (no auth): HTTP 200 AND the body
@@ -1171,6 +1196,10 @@ if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
     unit-active)
       shift
       unit_active "$@"
+      ;;
+    normalize-attempts)
+      shift
+      normalize_attempts "$@"
       ;;
     health)
       shift

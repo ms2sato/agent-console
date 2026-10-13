@@ -265,7 +265,11 @@ echo "    APP_SOURCE   : ${SRC}"
 echo "    DEPLOY_TARGET: ${DST}"
 echo "    SERVICE_NAME : ${SERVICE_NAME}"
 echo "    AGENT_CONSOLE_PORT (fallback; the live unit's PORT is read at V1): ${PORT_OVERRIDE:-(unset)}"
-echo "    AGENT_CONSOLE_HEALTH_ATTEMPTS (V5 polls, 1 s apart): ${AGENT_CONSOLE_HEALTH_ATTEMPTS:-60}"
+# A zero, negative or non-numeric AGENT_CONSOLE_HEALTH_ATTEMPTS would make the
+# V5 loop do nothing and report a misleading HTTP 000; normalize_attempts
+# falls back to 60 with a warning instead.
+HEALTH_ATTEMPTS="$(normalize_attempts "${AGENT_CONSOLE_HEALTH_ATTEMPTS:-}" 60)"
+echo "    AGENT_CONSOLE_HEALTH_ATTEMPTS (V5 polls, 1 s apart): ${HEALTH_ATTEMPTS}"
 echo ""
 
 echo "==> Pre-check: source-repo HEAD"
@@ -496,7 +500,7 @@ verify_check "V4 unit-active" unit_active "${SERVICE_NAME}" systemctl journalctl
 # active/activating stops the wait at once instead of burning the window.
 # V6 re-reads the journal up to 10 times while a required boot line is still
 # missing (journald flush latency).
-verify_check "V5 health" health "${HEALTH_PORT}" "${AGENT_CONSOLE_HEALTH_ATTEMPTS:-60}" curl "${SERVICE_NAME}" systemctl || true
+verify_check "V5 health" health "${HEALTH_PORT}" "${HEALTH_ATTEMPTS}" curl "${SERVICE_NAME}" systemctl || true
 verify_check "V6 journal-digest" journal_digest "${SERVICE_NAME}" "${RESTART_SINCE}" journalctl "${ELEVATE}" 10 || true
 
 verify_print_screen
