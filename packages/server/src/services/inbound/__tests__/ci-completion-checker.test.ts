@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterAll } from 'bun:test';
+import { timerClearedAfter } from '../../../__tests__/utils/timer-capture.js';
 
 const originalBunSpawn = Bun.spawn;
 let spawnCalls: Array<{ args: string[]; options: Record<string, unknown> }> = [];
@@ -164,23 +165,56 @@ describe('ci-completion-checker', () => {
     expect(result).toBeNull();
   });
 
-  it('returns null when gh command times out', async () => {
+  it('returns null when gh command times out, and kills the process', async () => {
+    let killCalls = 0;
     mockSpawnResult = {
       exited: new Promise(() => {}), // Never resolves
       stdout: createEmptyStream(),
       stderr: createEmptyStream(),
-      kill: () => {},
+      kill: () => {
+        killCalls += 1;
+      },
     };
 
     const { createCICompletionChecker } = await getModule();
-    const checker = createCICompletionChecker();
+    const checker = createCICompletionChecker({ timeoutMs: 20 });
     const result = await checker('owner/repo', 'abc123');
 
-    // The default 10s timeout is too long for tests, so we race with our own timeout.
-    // In a real scenario the internal timeout fires and returns null.
-    // Here we verify the behavior by racing.
     expect(result).toBeNull();
-  }, 15000);
+    expect(killCalls).toBe(1);
+  });
+
+  it('does not kill the process when gh exits non-zero', async () => {
+    let killCalls = 0;
+    mockSpawnResult = { ...makeSpawnResult('', 1, 'gh: boom'), kill: () => { killCalls += 1; } };
+
+    const { createCICompletionChecker } = await getModule();
+    const checker = createCICompletionChecker({ timeoutMs: 20 });
+
+    expect(await checker('owner/repo', 'abc123')).toBeNull();
+    expect(killCalls).toBe(0);
+  });
+
+  it('defaults the gh timeout to 10000ms when no option is given, and clears the timer', async () => {
+    let exit: (code: number) => void = () => {};
+    mockSpawnResult = {
+      exited: new Promise<number>((resolve) => { exit = resolve; }),
+      stdout: createEmptyStream(),
+      stderr: createEmptyStream(),
+      kill: () => {},
+    };
+    const { createCICompletionChecker } = await getModule();
+    const checker = createCICompletionChecker();
+
+    const { created, cleared, delays } = await timerClearedAfter(() => {
+      const pending = checker('owner/repo', 'abc123');
+      exit(0); // settle the gh process so the 10s timer is cleared, not waited out
+      return pending;
+    });
+
+    expect(delays).toEqual([10000]);
+    expect(cleared).toContain(created[0]);
+  });
 
   it('returns null when response is invalid JSON', async () => {
     setSpawnResponse('this is not valid json');

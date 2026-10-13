@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterAll, spyOn } from 'bun:test';
 import { rootLogger } from '../logger.js';
+import { timerClearedAfter } from '../../__tests__/utils/timer-capture.js';
 
 /**
  * Tests for remote git operations.
@@ -19,6 +20,7 @@ let mockSpawnResult: {
   exited: Promise<number>;
   stdout: ReadableStream<Uint8Array>;
   stderr: ReadableStream<Uint8Array>;
+  kill?: () => void;
 };
 
 /**
@@ -53,6 +55,90 @@ async function getGitModule() {
   const module = await import(`../git.js?v=${++importCounter}`);
   return module;
 }
+
+// The direct-spawn branch of gitExec races `proc.exited` against a timeout
+// built by raceWithTimeout with a GitError factory. These pins cover the
+// branch's contract: the typed timeout error (so the kill check and every
+// `instanceof GitError` consumer keep working), the kill, the timer cleanup,
+// and that an ordinary failure neither times out nor kills.
+//
+// Measured reach: replacing the factory with a plain message fails (1);
+// removing the `finally` from raceWithTimeout fails (3).
+describe('gitExec direct-spawn timeout', () => {
+  let killCalls = 0;
+
+  beforeEach(() => {
+    spawnCalls = [];
+    killCalls = 0;
+    setMockSpawnResult('');
+    (Bun as { spawn: typeof Bun.spawn }).spawn = ((args: string[], options?: Record<string, unknown>) => {
+      spawnCalls.push({ args, options: options || {} });
+      return mockSpawnResult;
+    }) as typeof Bun.spawn;
+  });
+
+  afterAll(() => {
+    (Bun as { spawn: typeof Bun.spawn }).spawn = originalBunSpawn;
+  });
+
+  function hangingProcess(): void {
+    mockSpawnResult = {
+      exited: new Promise<number>(() => {}), // never exits
+      stdout: new ReadableStream({ start: (c) => c.close() }),
+      stderr: new ReadableStream({ start: (c) => c.close() }),
+      kill: () => {
+        killCalls += 1;
+      },
+    };
+  }
+
+  it('(1) rejects with a GitError carrying exitCode -1, stderr "Timeout" and the timeout message', async () => {
+    hangingProcess();
+    const { git, GitError } = await getGitModule();
+
+    const err = await git(['rev-parse', 'HEAD'], '/repo', 20).catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(GitError);
+    expect(err.exitCode).toBe(-1);
+    expect(err.stderr).toBe('Timeout');
+    expect(err.message).toBe('git rev-parse timed out after 20ms');
+  });
+
+  it('(2) kills the process exactly once on timeout', async () => {
+    hangingProcess();
+    const { git } = await getGitModule();
+
+    await git(['rev-parse', 'HEAD'], '/repo', 20).catch(() => {});
+
+    expect(killCalls).toBe(1);
+  });
+
+  it('(3) clears its timer when the process exits normally', async () => {
+    setMockSpawnResult('abc123\n');
+    const { git } = await getGitModule();
+
+    const { created, cleared } = await timerClearedAfter(() => git(['rev-parse', 'HEAD'], '/repo', 60_000));
+
+    expect(created).toHaveLength(1);
+    expect(cleared).toContain(created[0]);
+  });
+
+  it('(4) a non-zero exit throws the ordinary GitError with the real stderr and does not kill', async () => {
+    setMockSpawnResult('', 128, 'fatal: not a git repository');
+    mockSpawnResult.kill = () => {
+      killCalls += 1;
+    };
+    const { git, GitError } = await getGitModule();
+
+    const err = await git(['rev-parse', 'HEAD'], '/repo', 60_000).catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(GitError);
+    expect(err.exitCode).toBe(128);
+    expect(err.stderr).toBe('fatal: not a git repository');
+    expect(err.message).toBe('git rev-parse failed: fatal: not a git repository');
+    expect(killCalls).toBe(0);
+  });
+});
 
 describe('git remote operations', () => {
   beforeEach(() => {

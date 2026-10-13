@@ -23,6 +23,7 @@ import {
 import { isErrnoException } from './type-guards.js';
 import { isValidSlug } from './session-data-path.js';
 import { createLogger } from './logger.js';
+import { raceWithTimeout } from './race-with-timeout.js';
 
 const logger = createLogger('git');
 
@@ -63,28 +64,6 @@ let _runAsUser: RunAsUserFn = defaultRunAsUser;
  */
 export function __setRunAsUserForTesting(fn: RunAsUserFn | null): void {
   _runAsUser = fn ?? defaultRunAsUser;
-}
-
-/**
- * Create a timeout promise that rejects after the specified time.
- * Also returns a cleanup function to prevent timer leaks.
- */
-function createTimeoutPromise(timeoutMs: number, command: string): { promise: Promise<never>; cleanup: () => void } {
-  let timeoutId: ReturnType<typeof setTimeout> | undefined;
-
-  const promise = new Promise<never>((_, reject) => {
-    timeoutId = setTimeout(() => {
-      reject(new GitError(`git ${command} timed out after ${timeoutMs}ms`, -1, 'Timeout'));
-    }, timeoutMs);
-  });
-
-  const cleanup = () => {
-    if (timeoutId) {
-      clearTimeout(timeoutId);
-    }
-  };
-
-  return { promise, cleanup };
 }
 
 /**
@@ -171,11 +150,13 @@ async function gitExec(
     stderr: 'pipe',
   });
 
-  const { promise: timeoutPromise, cleanup: cleanupTimeout } = createTimeoutPromise(timeoutMs, args[0] || 'unknown');
-
   try {
     // Race between process exit and timeout
-    const exitCode = await Promise.race([proc.exited, timeoutPromise]);
+    const exitCode = await raceWithTimeout(
+      proc.exited,
+      timeoutMs,
+      () => new GitError(`git ${args[0] || 'unknown'} timed out after ${timeoutMs}ms`, -1, 'Timeout'),
+    );
 
     if (exitCode !== 0) {
       const stderr = await new Response(proc.stderr).text();
@@ -198,8 +179,6 @@ async function gitExec(
       }
     }
     throw error;
-  } finally {
-    cleanupTimeout();
   }
 }
 
