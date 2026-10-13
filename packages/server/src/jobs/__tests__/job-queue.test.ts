@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, spyOn } from 'bun:test';
+import { EventEmitter } from 'events';
 import { sql } from 'kysely';
 import type { JobType } from '@agent-console/shared';
 import { JobQueue } from '../job-queue.js';
@@ -1108,7 +1109,13 @@ describe('JobQueue', () => {
     });
   });
   describe('enqueue with an executor (a caller-held transaction)', () => {
-    const emitterOf = (queue: JobQueue) => (queue as unknown as { emitter: import('events').EventEmitter }).emitter;
+    const emitterOf = (queue: JobQueue): EventEmitter => {
+      const emitter: unknown = Reflect.get(queue, 'emitter');
+      if (!(emitter instanceof EventEmitter)) {
+        throw new Error('JobQueue no longer exposes its emitter as a private field named "emitter"');
+      }
+      return emitter;
+    };
 
     it('leaves no jobs row and emits no job:added when the surrounding transaction throws', async () => {
       let emitted = 0;
