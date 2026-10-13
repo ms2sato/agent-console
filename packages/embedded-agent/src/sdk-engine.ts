@@ -2279,7 +2279,16 @@ export class SdkEngine implements ClaudeSdkEngine {
       return;
     }
     this.checkForMaterialDrop(totalTokens, compacted);
-    this.deps.emit({ v: 1, type: 'context-usage', promptTokens: totalTokens, estimated: false });
+    // Forwarded only when the SDK reported a non-empty string: the wire schema
+    // rejects an empty `model`, and an `undefined` key would not survive NDJSON.
+    const model = typeof response.model === 'string' && response.model.length > 0 ? response.model : undefined;
+    this.deps.emit({
+      v: 1,
+      type: 'context-usage',
+      promptTokens: totalTokens,
+      estimated: false,
+      ...(model !== undefined ? { model } : {}),
+    });
     this.previousTotalTokens = totalTokens;
   }
 

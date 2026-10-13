@@ -61,7 +61,7 @@ export function ContextUsageBar({
     contextUsage !== null
       ? `${contextUsage.estimated ? '~' : ''}${Math.round(pct)}% (${contextUsage.promptTokens} / ${contextWindowTokens} tokens${
           contextUsage.estimated ? '; estimated' : ''
-        })`
+        })${contextUsage.model !== undefined ? ` — model: ${contextUsage.model}` : ''}`
       : undefined;
   // The clause deliberately repeats neither number: the base title above
   // already shows both operands, and restating them here produced a tooltip

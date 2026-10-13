@@ -133,6 +133,26 @@ describe('ContextUsageBar', () => {
       expect(bar.getAttribute('title')).toBe('30% (300 / 1000 tokens)');
     });
 
+    it('names the SDK-reported model in the tooltip when present, and adds nothing when absent', () => {
+      const { rerender } = render(
+        <ContextUsageBar
+          contextWindowTokens={1000}
+          contextUsage={{ promptTokens: 300, estimated: false, model: 'claude-x' }}
+          threshold={0.8}
+        />,
+      );
+      expect(screen.getByRole('progressbar').getAttribute('title')).toBe('30% (300 / 1000 tokens) — model: claude-x');
+
+      rerender(
+        <ContextUsageBar
+          contextWindowTokens={1000}
+          contextUsage={{ promptTokens: 300, estimated: false }}
+          threshold={0.8}
+        />,
+      );
+      expect(screen.getByRole('progressbar').getAttribute('title')).toBe('30% (300 / 1000 tokens)');
+    });
+
     it('shows a leading ~ and a trailing "; estimated" clause in the tooltip when the reading is the chars/4 fallback (estimated: true)', () => {
       render(
         <ContextUsageBar
