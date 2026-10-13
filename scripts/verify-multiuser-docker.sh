@@ -159,6 +159,12 @@ run_smoke() { # run_smoke <label> <script> [args...]
   # Exit code 2 (could not run) is still non-zero here, so check() reports
   # it as FAIL, never PASS and never a silent skip.
   check "$label" "$smoke_rc"
+  # A billed smoke's assertion lines are its evidence: print them on PASS too
+  # (opt-in per call via RUN_SMOKE_SHOW_STDOUT=1; the free smokes stay quiet).
+  if [ "${RUN_SMOKE_SHOW_STDOUT:-0}" = "1" ] && [ -s "$smoke_out" ]; then
+    echo "  ---- ${label} stdout (its own OK/FAIL/PASSED/FAILED lines, and the --turn reply) ----"
+    grep -E '^  (OK|FAIL) |^(PASSED|FAILED):|^  --turn reply:|^==> --turn|^  degenerate:' "$smoke_out" | sed 's/^/    /'
+  fi
   if [ "$smoke_rc" -ne 0 ]; then
     # Always keep stdout's tail (the smoke's own OK/FAIL assertion lines and
     # PASSED/FAILED summary) on failure -- a crash during the smoke's own
@@ -1414,7 +1420,7 @@ if [ "$SMOKES" -eq 1 ]; then
     compose exec -T --user agentconsole agent-console \
       sh -c "umask 077; cat > '${TURN_KEY_IN_CONTAINER}'" < "$ELEVATION_TURN_KEY_FILE"
     RUN_SMOKE_EXEC_ENV=(-e "PROVIDER_KEY_FILE=${TURN_KEY_IN_CONTAINER}")
-    run_smoke "check-embedded-agent-elevation:turn" "check-embedded-agent-elevation.ts" alice --turn
+    RUN_SMOKE_SHOW_STDOUT=1 run_smoke "check-embedded-agent-elevation:turn" "check-embedded-agent-elevation.ts" alice --turn
     RUN_SMOKE_EXEC_ENV=()
     compose exec -T --user agentconsole agent-console rm -f "${TURN_KEY_IN_CONTAINER}" >/dev/null 2>&1 || true
   fi
