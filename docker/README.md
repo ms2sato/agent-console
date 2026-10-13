@@ -232,6 +232,15 @@ service user (`agentconsole`), against target user `alice`:
   the gate's, not the environment's)
 - `check-embedded-agent-bash-env.ts`
 
+`--elevation-turn` (requires `--smokes`) additionally runs
+`check-embedded-agent-elevation.ts --turn`: **billable, one real provider turn as
+`alice`** (the worker reads a planted nonce file with its `Read` tool and replies
+with it). The default stays free; the flag is opt-in. The provider key store is
+read from `ELEVATION_TURN_KEY_FILE` on the host (default
+`~/.agent-console-dev/provider-keys.json`), piped into a `0600` file inside the
+container for that one smoke and removed afterwards -- it is never baked into the
+image or mounted.
+
 Each of these smokes states its own requirement as "run as a user with
 elevation privilege for `<target-user>`, where `<target-user>` is a real OS
 user with a login shell" — a requirement this image has had all along
