@@ -1448,3 +1448,188 @@ describe('setup-multiuser-checks: pipefail-safety of V0 (whole-file consumption;
     }
   });
 });
+
+// The post-deploy window (#2043): a boot can legitimately take well over 10 s
+// (a one-time startup sweep or migration -- ~16 s measured on the production
+// host, 6.5 s of it one sweep), so V5/V6 must treat "not yet" as not-yet while
+// still failing fast on a unit that is really dead. The fixtures take their
+// per-call answers from a counter directory the test owns.
+describe('setup-multiuser-checks: health window (V5, #2043)', () => {
+  const OK_BODY = '{"serverPort":8080,"authMode":"multi-user"}';
+  function withCounters(fn) {
+    const dir = mkdtempSync(join(tmpdir(), 'v5-window-'));
+    try {
+      return fn(dir, join(dir, 'curl-argv.log'));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+  const curlCalls = (log) => (existsSync(log) ? readFileSync(log, 'utf-8').trim().split('\n').length : 0);
+  const v5 = (env, attempts) => runLib(['health', '8080', String(attempts), FAKE_CURL, UNIT, FAKE_SYSTEMCTL], env);
+
+  it('a slow boot: the endpoint answers 000 for two polls and 200 on the 3rd, the unit activating then active -> HEALTH_OK after 3 curl attempts', () => {
+    withCounters((dir, log) => {
+      const r = v5(
+        {
+          FAKE_COUNTER_DIR: dir,
+          FAKE_ARGV_LOG: log,
+          FAKE_CURL_STATUS_SEQ: '000,000,200',
+          FAKE_CURL_BODY: OK_BODY,
+          FAKE_ACTIVE_STATE_SEQ: 'activating,activating,active',
+        },
+        10,
+      );
+      expect(r.status).toBe(0);
+      expect(markerOf(r)).toBe('HEALTH_OK');
+      expect(curlCalls(log)).toBe(3);
+    });
+  });
+
+  it('a dead unit fails fast: `failed` -> exit 1, HEALTH_UNIT_INACTIVE:failed, with no curl attempt and no wait for the 60-attempt window', () => {
+    withCounters((dir, log) => {
+      const started = Date.now();
+      const r = v5({ FAKE_COUNTER_DIR: dir, FAKE_ARGV_LOG: log, FAKE_ACTIVE_STATE: 'failed', FAKE_CURL_STATUS: '000' }, 60);
+      expect(r.status).toBe(1);
+      expect(markerOf(r)).toBe('HEALTH_UNIT_INACTIVE:failed');
+      expect(r.stderr).toContain("'agent-console.service' is 'failed'");
+      expect(r.stderr).toContain('attempt 1 of 60');
+      expect(curlCalls(log)).toBe(0);
+      expect(Date.now() - started).toBeLessThan(10_000);
+    });
+  });
+
+  it('a unit that dies mid-wait stops the poll at that iteration, not at the end of the window', () => {
+    withCounters((dir, log) => {
+      const r = v5(
+        { FAKE_COUNTER_DIR: dir, FAKE_ARGV_LOG: log, FAKE_CURL_STATUS: '000', FAKE_ACTIVE_STATE_SEQ: 'active,active,failed' },
+        60,
+      );
+      expect(r.status).toBe(1);
+      expect(markerOf(r)).toBe('HEALTH_UNIT_INACTIVE:failed');
+      expect(r.stderr).toContain('attempt 3 of 60');
+      expect(curlCalls(log)).toBe(2);
+    });
+  });
+
+  it('control: a unit that stays active and never answers still runs the requested attempts and ends in HEALTH_HTTP:000', () => {
+    withCounters((dir, log) => {
+      const r = v5({ FAKE_COUNTER_DIR: dir, FAKE_ARGV_LOG: log, FAKE_CURL_STATUS: '000' }, 2);
+      expect(r.status).toBe(1);
+      expect(markerOf(r)).toBe('HEALTH_HTTP:000');
+      expect(curlCalls(log)).toBe(2);
+    });
+  });
+
+  it('no unit given: the state is never read, so a `failed` unit does not stop the plain poll (backward compatibility)', () => {
+    withCounters((dir, log) => {
+      const r = runLib(['health', '8080', '2', FAKE_CURL], {
+        FAKE_COUNTER_DIR: dir,
+        FAKE_ARGV_LOG: log,
+        FAKE_ACTIVE_STATE: 'failed',
+        FAKE_CURL_STATUS: '000',
+      });
+      expect(markerOf(r)).toBe('HEALTH_HTTP:000');
+      expect(curlCalls(log)).toBe(2);
+    });
+  });
+});
+
+describe('setup-multiuser-checks: journal-digest re-read window (V6, #2043)', () => {
+  const SINCE = '2026-10-13 22:45:59';
+  const STARTING = '{"level":30,"service":"server","env":"production","msg":"Server starting"}';
+  const USER_MODE = '{"level":30,"service":"server","authMode":"multi-user","msg":"User mode initialized"}';
+  const LISTENING = '{"level":30,"service":"server","msg":"Server listening"}';
+  const BOOT = [STARTING, USER_MODE, LISTENING].join('\n');
+  function withCounters(fn) {
+    const dir = mkdtempSync(join(tmpdir(), 'v6-window-'));
+    try {
+      return fn(dir, join(dir, 'journal-argv.log'));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+  const reads = (log) => (existsSync(log) ? readFileSync(log, 'utf-8').trim().split('\n').length : 0);
+  const v6 = (env, attempts) =>
+    runLib(['journal-digest', UNIT, SINCE, FAKE_JOURNALCTL, '', String(attempts)], { FAKE_JOURNAL_LINES: BOOT, ...env });
+
+  it('the boot lines appear only on the 2nd read: attempts=3 -> JOURNAL_OK after exactly 2 reads', () => {
+    withCounters((dir, log) => {
+      const r = v6({ FAKE_COUNTER_DIR: dir, FAKE_ARGV_LOG: log, FAKE_JOURNAL_EMPTY_UNTIL_CALL: '2' }, 3);
+      expect(r.status).toBe(0);
+      expect(markerOf(r)).toBe('JOURNAL_OK');
+      expect(reads(log)).toBe(2);
+    });
+  });
+
+  it('polarity of the new parameter: the same journal with attempts=1 is JOURNAL_MISSING after one read', () => {
+    withCounters((dir, log) => {
+      const r = v6({ FAKE_COUNTER_DIR: dir, FAKE_ARGV_LOG: log, FAKE_JOURNAL_EMPTY_UNTIL_CALL: '2' }, 1);
+      expect(r.status).toBe(1);
+      expect(markerOf(r)).toBe(
+        'JOURNAL_MISSING:Server starting (env: production);User mode initialized (authMode: multi-user);Server listening',
+      );
+      expect(reads(log)).toBe(1);
+    });
+  });
+
+  it('control: lines that never appear still end in JOURNAL_MISSING after all the requested attempts', () => {
+    withCounters((dir, log) => {
+      const r = v6({ FAKE_COUNTER_DIR: dir, FAKE_ARGV_LOG: log, FAKE_JOURNAL_EMPTY_UNTIL_CALL: '99' }, 2);
+      expect(r.status).toBe(1);
+      expect(markerOf(r)).toContain('JOURNAL_MISSING:');
+      expect(reads(log)).toBe(2);
+    });
+  });
+
+  it('a complete first read does not wait or re-read, whatever the attempts', () => {
+    withCounters((dir, log) => {
+      const started = Date.now();
+      const r = v6({ FAKE_COUNTER_DIR: dir, FAKE_ARGV_LOG: log }, 10);
+      expect(markerOf(r)).toBe('JOURNAL_OK');
+      expect(reads(log)).toBe(1);
+      expect(Date.now() - started).toBeLessThan(5_000);
+    });
+  });
+
+  it('the bun-path WARNING branch is not a wait: a complete journal with a warning returns after one read', () => {
+    withCounters((dir, log) => {
+      const warn = '{"level":40,"service":"server","msg":"EMBEDDED_AGENT_BUN_PATH is configured to \'/x\', which is a different binary"}';
+      const r = v6({ FAKE_COUNTER_DIR: dir, FAKE_ARGV_LOG: log, FAKE_JOURNAL_LINES: [STARTING, warn, USER_MODE, LISTENING].join('\n') }, 10);
+      expect(markerOf(r)).toBe('JOURNAL_BUN_PATH_WARNING');
+      expect(reads(log)).toBe(1);
+    });
+  });
+
+  it('attempts=0 (or a non-number) still reads once, never passing an unread journal as OK', () => {
+    withCounters((dir, log) => {
+      const r = v6({ FAKE_COUNTER_DIR: dir, FAKE_ARGV_LOG: log, FAKE_JOURNAL_LINES: '' }, 0);
+      expect(r.status).toBe(1);
+      expect(reads(log)).toBe(1);
+    });
+  });
+});
+
+// The deploy script passes the windows to the two checks; pin the call sites by
+// content so a refactor cannot silently drop them (a library default of 10 / 1
+// would then bring the false FAIL back with every test above still green).
+describe('update-and-deploy-for-multiuser-ubuntu.sh: V5/V6 call sites (#2043)', () => {
+  const DEPLOY = readFileSync(resolve(__dirname, '..', 'update-and-deploy-for-multiuser-ubuntu.sh'), 'utf-8');
+
+  it('V5 passes the 60-attempt default (overridable by AGENT_CONSOLE_HEALTH_ATTEMPTS) plus the unit and systemctl', () => {
+    expect(DEPLOY).toContain(
+      'verify_check "V5 health" health "${HEALTH_PORT}" "${AGENT_CONSOLE_HEALTH_ATTEMPTS:-60}" curl "${SERVICE_NAME}" systemctl',
+    );
+  });
+
+  it('V6 passes 10 re-read attempts after the elevate argument', () => {
+    expect(DEPLOY).toContain(
+      'verify_check "V6 journal-digest" journal_digest "${SERVICE_NAME}" "${RESTART_SINCE}" journalctl "${ELEVATE}" 10',
+    );
+  });
+
+  it('the header documents AGENT_CONSOLE_HEALTH_ATTEMPTS beside AGENT_CONSOLE_PORT', () => {
+    const header = DEPLOY.split('\n').slice(0, 130).join('\n');
+    expect(header).toContain('AGENT_CONSOLE_HEALTH_ATTEMPTS');
+    expect(header.indexOf('AGENT_CONSOLE_PORT')).toBeLessThan(header.indexOf('AGENT_CONSOLE_HEALTH_ATTEMPTS'));
+  });
+});

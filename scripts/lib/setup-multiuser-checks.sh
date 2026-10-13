@@ -954,7 +954,7 @@ unit_active() {
   return 1
 }
 
-# health <port> [attempts] [curl-cmd]   (V5)
+# health <port> [attempts] [curl-cmd] [unit] [systemctl-cmd]   (V5)
 #
 # `GET http://localhost:<port>/api/config` (no auth): HTTP 200 AND the body
 # carries `"authMode":"multi-user"` -> PASS. Polls up to [attempts] times
@@ -965,11 +965,22 @@ unit_active() {
 # absent -> cannot run. Replaces the old `/api/auth/me` probe, whose 401/200
 # depended on auth semantics a health check should not.
 #
-# Markers: HEALTH_OK | HEALTH_HTTP:<code> | HEALTH_WRONG_MODE:<mode|absent>.
+# [unit] and [systemctl-cmd] are optional and only take effect TOGETHER: when
+# both are given, each loop iteration first reads `<systemctl-cmd> is-active
+# <unit>`; `active` and `activating` keep the poll going (a slow boot, e.g. a
+# one-time startup sweep or migration, is "not yet", not a failure), and any
+# other state (`failed`, `inactive`, `deactivating`, nothing printed) stops at
+# once with HEALTH_UNIT_INACTIVE:<state> and exit 1 -- a dead unit never waits
+# out the whole window. Callers that omit them keep the plain poll.
+#
+# Markers: HEALTH_OK | HEALTH_HTTP:<code> | HEALTH_WRONG_MODE:<mode|absent>
+# | HEALTH_UNIT_INACTIVE:<state>.
 health() {
   local port="$1"
   local attempts="${2:-10}"
   local curl_cmd="${3:-curl}"
+  local unit="${4:-}"
+  local systemctl_cmd="${5:-}"
   if ! command -v "$curl_cmd" >/dev/null; then
     echo "cannot run: '$curl_cmd' not found -- the health endpoint cannot be probed" >&2
     return 2
@@ -978,6 +989,19 @@ health() {
   local body code="000" i
   body="$(mktemp)"
   for ((i = 1; i <= attempts; i++)); do
+    if [ -n "$unit" ] && [ -n "$systemctl_cmd" ]; then
+      local state
+      state="$("$systemctl_cmd" is-active "$unit" 2>/dev/null || true)"
+      case "$state" in
+        active | activating) ;;
+        *)
+          rm -f "$body"
+          echo "HEALTH_UNIT_INACTIVE:${state:-unknown}"
+          echo "'${unit}' is '${state:-unknown}', not 'active'/'activating', so the health probe stopped at attempt ${i} of ${attempts} instead of waiting out the window -- the unit is not coming up; see the unit-active and journal-digest checks" >&2
+          return 1
+          ;;
+      esac
+    fi
     code="$("$curl_cmd" -s -m 5 -o "$body" -w '%{http_code}' "$url" 2>/dev/null || true)"
     [ "$code" = "200" ] && break
     [ "$i" -lt "$attempts" ] && sleep 1
@@ -1001,7 +1025,7 @@ health() {
   return 1
 }
 
-# journal_digest <unit-name> <since-timestamp> <journalctl-cmd> [elevate]   (V6)
+# journal_digest <unit-name> <since-timestamp> <journalctl-cmd> [elevate] [attempts]   (V6)
 #
 # `journalctl -u <unit> --since <ts> -o cat` (the raw message text, i.e. the
 # server's JSON log lines): the three boot lines the code emits on purpose
@@ -1021,40 +1045,54 @@ health() {
 # restart. The journal is root / adm / systemd-journal readable only, hence
 # [elevate].
 #
+# [attempts] (default 1) re-reads the journal up to that many times, one
+# second apart, ONLY while a required boot line is still missing: the lines
+# can trail the first 200 by journald flush latency, and "not yet" must not
+# read as a failed boot. A complete read stops at once; the bun-path WARNING
+# branch below is not a wait (a warning is present or it is not).
+#
 # Markers: JOURNAL_OK | JOURNAL_MISSING:<line;...> | JOURNAL_BUN_PATH_WARNING.
 journal_digest() {
   local unit="$1"
   local since="$2"
   local journalctl_cmd="$3"
   local elevate="${4:-}"
+  local attempts="${5:-1}"
+  # At least one read: with 0 the loop below would never run and `missing`
+  # would stay empty, i.e. an unread journal would pass as JOURNAL_OK.
+  [ "$attempts" -ge 1 ] 2>/dev/null || attempts=1
   if ! command -v "$journalctl_cmd" >/dev/null; then
     echo "cannot run: '$journalctl_cmd' not found -- the unit's journal cannot be read" >&2
     return 2
   fi
-  local stderr_tmp lines
-  stderr_tmp="$(mktemp)"
-  # shellcheck disable=SC2086 # $elevate: see readability_probe_marker.
-  if ! lines="$(${elevate} "$journalctl_cmd" -u "$unit" --since "$since" -o cat --no-pager 2>"$stderr_tmp")"; then
-    echo "cannot run: '$journalctl_cmd -u $unit --since \"$since\"' failed ($(tr '\n' ' ' <"$stderr_tmp"))" >&2
+  local stderr_tmp lines missing i
+  for ((i = 1; i <= attempts; i++)); do
+    stderr_tmp="$(mktemp)"
+    # shellcheck disable=SC2086 # $elevate: see readability_probe_marker.
+    if ! lines="$(${elevate} "$journalctl_cmd" -u "$unit" --since "$since" -o cat --no-pager 2>"$stderr_tmp")"; then
+      echo "cannot run: '$journalctl_cmd -u $unit --since \"$since\"' failed ($(tr '\n' ' ' <"$stderr_tmp"))" >&2
+      rm -f "$stderr_tmp"
+      return 2
+    fi
     rm -f "$stderr_tmp"
-    return 2
-  fi
-  rm -f "$stderr_tmp"
 
-  # Every match below is `grep ... >/dev/null`, never `grep -q`: this check
-  # runs under the caller's `set -o pipefail` on an unbounded journal, and a
-  # `-q` that exits on the first match can SIGPIPE the upstream stage
-  # (status 141) once the buffer exceeds the pipe size -- measured: 3000
-  # matching lines (~168 KiB) turned a present `Server starting` into a
-  # false JOURNAL_MISSING, i.e. a false deploy FAIL. A grep that reads its
-  # whole input has no early exit to trigger that.
-  local missing=""
-  printf '%s\n' "$lines" | grep -F 'Server starting' | grep '"env":"production"' >/dev/null \
-    || missing="${missing:+${missing};}Server starting (env: production)"
-  printf '%s\n' "$lines" | grep -F 'User mode initialized' | grep '"authMode":"multi-user"' >/dev/null \
-    || missing="${missing:+${missing};}User mode initialized (authMode: multi-user)"
-  printf '%s\n' "$lines" | grep -F 'Server listening' >/dev/null \
-    || missing="${missing:+${missing};}Server listening"
+    # Every match below is `grep ... >/dev/null`, never `grep -q`: this check
+    # runs under the caller's `set -o pipefail` on an unbounded journal, and a
+    # `-q` that exits on the first match can SIGPIPE the upstream stage
+    # (status 141) once the buffer exceeds the pipe size -- measured: 3000
+    # matching lines (~168 KiB) turned a present `Server starting` into a
+    # false JOURNAL_MISSING, i.e. a false deploy FAIL. A grep that reads its
+    # whole input has no early exit to trigger that.
+    missing=""
+    printf '%s\n' "$lines" | grep -F 'Server starting' | grep '"env":"production"' >/dev/null \
+      || missing="${missing:+${missing};}Server starting (env: production)"
+    printf '%s\n' "$lines" | grep -F 'User mode initialized' | grep '"authMode":"multi-user"' >/dev/null \
+      || missing="${missing:+${missing};}User mode initialized (authMode: multi-user)"
+    printf '%s\n' "$lines" | grep -F 'Server listening' >/dev/null \
+      || missing="${missing:+${missing};}Server listening"
+    [ -z "$missing" ] && break
+    [ "$i" -lt "$attempts" ] && sleep 1
+  done
   local bun_warning cookie_warning
   bun_warning="$(printf '%s\n' "$lines" | grep -F '"level":40' | grep -E 'EMBEDDED_AGENT_BUN_PATH|bun-path identity check could not run' | head -n 1 | cut -c1-300 || true)"
   cookie_warning="$(printf '%s\n' "$lines" | grep -F '"level":40' | grep -F 'AUTH_COOKIE_SECURE=false' | head -n 1 || true)"

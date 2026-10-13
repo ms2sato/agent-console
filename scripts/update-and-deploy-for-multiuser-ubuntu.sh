@@ -90,6 +90,11 @@
 #                                    read (Issue #1761) -- the live unit's
 #                                    PORT= (read at V1) always wins when
 #                                    present. Default: 8080
+#   AGENT_CONSOLE_HEALTH_ATTEMPTS    Maximum number of one-second polls the V5
+#                                    health check makes after the restart
+#                                    before reporting a FAIL. A unit that
+#                                    leaves active/activating stops the wait
+#                                    at once. Default: 60
 #
 # Example with overrides:
 #   AGENT_CONSOLE_PORT=9000 AGENT_CONSOLE_SERVICE_USER=ac-svc \
@@ -260,6 +265,7 @@ echo "    APP_SOURCE   : ${SRC}"
 echo "    DEPLOY_TARGET: ${DST}"
 echo "    SERVICE_NAME : ${SERVICE_NAME}"
 echo "    AGENT_CONSOLE_PORT (fallback; the live unit's PORT is read at V1): ${PORT_OVERRIDE:-(unset)}"
+echo "    AGENT_CONSOLE_HEALTH_ATTEMPTS (V5 polls, 1 s apart): ${AGENT_CONSOLE_HEALTH_ATTEMPTS:-60}"
 echo ""
 
 echo "==> Pre-check: source-repo HEAD"
@@ -481,10 +487,17 @@ echo "==> Post-deploy verification V2-V6 (after restart)"
 verify_check "V2 entry-path-readable" entry_path_readable "${UNIFIED_ENTRY_PATH}" "${UNIFIED_ENTRY_MAP_PATH}" "${ELEVATE}" || true
 verify_check "V3 mainpid-identity" mainpid_identity "${SERVICE_NAME}" "${CONFIGURED_BUN}" "${ELEVATE}" systemctl || true
 verify_check "V4 unit-active" unit_active "${SERVICE_NAME}" systemctl journalctl "${ELEVATE}" || true
-# V5 is the wait point after the restart: it polls /api/config up to 10 x 1 s
-# before deciding, so V6 after it reads a settled boot rather than racing it.
-verify_check "V5 health" health "${HEALTH_PORT}" 10 curl || true
-verify_check "V6 journal-digest" journal_digest "${SERVICE_NAME}" "${RESTART_SINCE}" journalctl "${ELEVATE}" || true
+# V5 is the wait point after the restart: it polls /api/config once a second,
+# up to AGENT_CONSOLE_HEALTH_ATTEMPTS times (default 60), so V6 after it reads
+# a settled boot rather than racing it. A boot can legitimately take well over
+# 10 s (a one-time startup sweep or migration: ~16 s measured on 2026-10-13,
+# 6.5 s of it one sweep), so "not answering yet" must not read as a failed
+# deploy. The unit and systemctl are passed so a unit that is NOT
+# active/activating stops the wait at once instead of burning the window.
+# V6 re-reads the journal up to 10 times while a required boot line is still
+# missing (journald flush latency).
+verify_check "V5 health" health "${HEALTH_PORT}" "${AGENT_CONSOLE_HEALTH_ATTEMPTS:-60}" curl "${SERVICE_NAME}" systemctl || true
+verify_check "V6 journal-digest" journal_digest "${SERVICE_NAME}" "${RESTART_SINCE}" journalctl "${ELEVATE}" 10 || true
 
 verify_print_screen
 VERIFY_EXIT="$(verify_exit_code)"
