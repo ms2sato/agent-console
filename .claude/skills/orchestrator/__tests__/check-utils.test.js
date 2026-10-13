@@ -14,6 +14,7 @@ import {
   isCommentOnlyFileDiff,
   resolvePrDiffRef,
   getChangedFiles,
+  getLocalChangedFiles,
   PrDiffRefResolutionError,
   getAcceptanceCriteria,
   getCiStatus,
@@ -357,7 +358,7 @@ describe('preflight-check parity fix verification', () => {
     expect(getLocalChangedFilesSource).not.toContain('git merge-base');
 
     // Verify the simplified approach is used
-    expect(getLocalChangedFilesSource).toContain('git diff --name-only ${baseBranch}...HEAD');
+    expect(getLocalChangedFilesSource).toContain('git diff --name-only --diff-filter=d ${baseBranch}...HEAD');
 
     // Verify the comment documents the parity goal
     expect(getLocalChangedFilesSource).toContain('Use gh pr diff equivalent for local mode to ensure parity with CI mode');
@@ -1248,6 +1249,99 @@ describe('findTestFiles with an explicit diffRef', () => {
   });
 });
 
+// Both changed-file list builders exclude deleted paths (--diff-filter=d):
+// every consumer reads the file at head. Real git, same fixture shape as
+// "findTestFiles with an explicit diffRef" above.
+//
+// Measured reach: dropping --diff-filter=d from getChangedFiles fails the
+// getChangedFiles pin and the false-credit pin; dropping it from
+// getLocalChangedFiles fails the getLocalChangedFiles pin.
+describe('changed-file lists exclude deleted paths', () => {
+  const GONE = 'packages/server/src/routes/gone.ts';
+  const KEPT = 'packages/server/src/routes/kept.ts';
+  const KEPT_TEST = 'packages/server/src/routes/__tests__/kept.test.ts';
+
+  function setup() {
+    const root = mkdtempSync(join(tmpdir(), 'changed-files-deleted-repo-'));
+    const git = (cmd) => execSync(cmd, { cwd: root });
+    git('git init -q -b main');
+    git('git config user.email test@example.com');
+    git('git config user.name Test');
+    mkdirSync(join(root, 'packages/server/src/routes/__tests__'), { recursive: true });
+    writeFileSync(join(root, GONE), 'export const gone = 1;\n');
+    writeFileSync(join(root, KEPT), 'export const kept = 1;\n');
+    writeFileSync(join(root, KEPT_TEST), 'export {};\n');
+    git('git add -A');
+    git('git commit -q -m initial');
+    git('git checkout -q -b feature');
+    return { root, git };
+  }
+
+  function execIn(root) {
+    return (cmd) => {
+      try {
+        return execSync(cmd, { cwd: root, encoding: 'utf8' });
+      } catch {
+        return null;
+      }
+    };
+  }
+
+  it('getChangedFiles lists a modified file and omits a deleted one', () => {
+    const { root, git } = setup();
+    try {
+      rmSync(join(root, GONE));
+      writeFileSync(join(root, KEPT), 'export const kept = 2;\n');
+      git('git add -A');
+      git('git commit -q -m change');
+
+      const files = getChangedFiles(1, { baseRef: 'main', headRef: 'feature' }, { execImpl: execIn(root) });
+      expect(files).toContain(KEPT);
+      expect(files).not.toContain(GONE);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('getLocalChangedFiles lists a modified file and omits a deleted one', () => {
+    const { root, git } = setup();
+    const saved = process.env.BASE_BRANCH;
+    try {
+      rmSync(join(root, GONE));
+      writeFileSync(join(root, KEPT), 'export const kept = 2;\n');
+      git('git add -A');
+      git('git commit -q -m change');
+
+      process.env.BASE_BRANCH = 'main';
+      const files = getLocalChangedFiles({ execImpl: execIn(root) });
+      expect(files).toContain(KEPT);
+      expect(files).not.toContain(GONE);
+    } finally {
+      if (saved === undefined) delete process.env.BASE_BRANCH;
+      else process.env.BASE_BRANCH = saved;
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('a deleted test no longer gives a false coverage credit to a surviving production file', () => {
+    const { root, git } = setup();
+    try {
+      rmSync(join(root, KEPT_TEST));
+      writeFileSync(join(root, KEPT), 'export const kept = 2;\n');
+      git('git add -A');
+      git('git commit -q -m change');
+
+      const files = getChangedFiles(1, { baseRef: 'main', headRef: 'feature' }, { execImpl: execIn(root) });
+      const { testCoverage } = findTestFiles(files, { baseRef: 'main', headRef: 'feature', cwd: root });
+      const kept = testCoverage.find((c) => c.file === KEPT);
+      expect(kept.needsCoverage).toBe(true);
+      expect(kept.hasTest).toBe(false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
 // detectIntegrationTestNeeds's comment-only exemption reuses
 // isCommentOnlyFileDiff the same way findTestFiles's own exemption does —
 // no second copy of the comment-only-diff logic. Same shape as
@@ -1419,7 +1513,7 @@ describe('getChangedFiles', () => {
     };
     const files = getChangedFiles('123', { baseRef: 'MMMM', headRef: 'HHHH' }, { execImpl });
     expect(files).toEqual(['a.ts', 'b.ts']);
-    expect(commandsSeen).toEqual(['git diff --name-only -z MMMM HHHH']);
+    expect(commandsSeen).toEqual(['git diff --name-only -z --diff-filter=d MMMM HHHH']);
     expect(commandsSeen.some(cmd => cmd.includes('gh pr diff'))).toBe(false);
   });
 

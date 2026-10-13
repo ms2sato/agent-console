@@ -39,13 +39,18 @@ export function exec(cmd) {
  * (`findTestFiles` / `isCommentOnlyFileDiff` / `detectIntegrationTestNeeds`)
  * un-quotes, so such a file would silently fail every path match.
  *
+ * `--diff-filter=d` excludes deleted paths: every consumer reads the file at
+ * head, so a path that no longer exists is noise in one direction (a deleted
+ * production file reported as missing its test) and a false coverage credit
+ * in the other (a deleted test counted as a changed test).
+ *
  * @param {string|number} prNumber
  * @param {{ baseRef: string, headRef: string }} diffRef
  * @param {{ execImpl?: typeof exec }} [opts]
  */
 export function getChangedFiles(prNumber, diffRef, { execImpl = exec } = {}) {
   const { baseRef, headRef } = diffRef;
-  const result = execImpl(`git diff --name-only -z ${baseRef} ${headRef}`);
+  const result = execImpl(`git diff --name-only -z --diff-filter=d ${baseRef} ${headRef}`);
   if (result === null) {
     console.error(`Error: Could not retrieve diff for PR #${prNumber} (${baseRef}..${headRef}). Please verify the git command and PR number.`);
     process.exit(1);
@@ -57,13 +62,14 @@ export function getChangedFiles(prNumber, diffRef, { execImpl = exec } = {}) {
   return result.split('\0').filter(Boolean);
 }
 
-export function getLocalChangedFiles() {
+export function getLocalChangedFiles({ execImpl = exec } = {}) {
   // Use gh pr diff equivalent for local mode to ensure parity with CI mode.
   // gh pr diff compares against the target branch, which is typically 'main'.
   // The equivalent git command is: git diff --name-only origin/main...HEAD
-  // This ensures both local and CI modes produce the same file list.
+  // This ensures both local and CI modes produce the same file list, deleted
+  // paths excluded in both (see getChangedFiles).
   const baseBranch = process.env.BASE_BRANCH || 'origin/main';
-  const result = exec(`git diff --name-only ${baseBranch}...HEAD`);
+  const result = execImpl(`git diff --name-only --diff-filter=d ${baseBranch}...HEAD`);
   if (result === null) {
     console.error(`Error: Could not retrieve local git diff against ${baseBranch}.`);
     process.exit(1);
