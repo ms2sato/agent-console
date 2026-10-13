@@ -1286,6 +1286,16 @@ describe('type-only import rewiring is exempt like a comment-only diff (git inte
     expect(coverageFor('.sh', '#!/bin/sh\necho hi\n', '#!/bin/sh\necho bye\n', { direct: true })).toBe(false);
   });
 
+  it('(8) checks each side against its own line numbers when the declaration moves between base and head', () => {
+    // Base line 1 is the import; head line 2 is the import (a comment was
+    // inserted above). A check that reads the wrong side's ranges misses it.
+    const c = coverageFor('.ts',
+      "import type { A } from './x.js';\nexport const v = 1;\n",
+      "// note\nimport type { A } from './y.js';\nexport const v = 1;\n");
+    expect(c.isCommentOnly).toBe(true);
+    expect(c.needsCoverage).toBe(false);
+  });
+
   it('NEGATIVE: changing `import type` to a value import is not exempt (the head side is no longer type-only)', () => {
     const c = coverageFor('.ts',
       "import type { A } from './x.js';\nexport const v = 1;\n",
