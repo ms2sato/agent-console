@@ -1,4 +1,6 @@
 import { access } from 'fs/promises';
+import type { Kysely } from 'kysely';
+import type { Database } from '../database/schema.js';
 import type {
   Session,
   Worker,
@@ -183,6 +185,13 @@ interface SessionManagerOptions {
   pathExists?: (path: string) => Promise<boolean>;
   sessionRepository: SessionRepository;
   jobQueue?: JobQueue | null;
+  /**
+   * Database handle the deletion paths open a transaction on, so a cleanup-job
+   * enqueue and the row write commit or roll back together. Optional: without it
+   * those paths fall back to two separate writes (and warn), which keeps callers
+   * that never inject a database on their previous behaviour.
+   */
+  db?: Kysely<Database>;
   agentManager: AgentManager;
   /**
    * Embedded-agent definition registry (used by createWorker to validate an
@@ -388,6 +397,7 @@ export class SessionManager {
   private sessionRepository: SessionRepository;
   private userRepository: UserRepository | null = null;
   private jobQueue: JobQueue | null = null;
+  private db: Kysely<Database> | null = null;
   private notificationManager: NotificationManager | null = null;
   private workerOutputFileManager: WorkerOutputFileManager;
   private interSessionMessageService: InterSessionMessageService;
@@ -490,6 +500,7 @@ export class SessionManager {
     this.pathExists = options?.pathExists ?? defaultPathExists;
     this.sessionRepository = options.sessionRepository;
     this.jobQueue = options?.jobQueue ?? null;
+    this.db = options?.db ?? null;
 
     // Embedded-agent subprocess lifecycle. Constructed before the
     // WorkerLifecycleManager / deletion / pause services so their
@@ -557,10 +568,11 @@ export class SessionManager {
       notificationManager: this.notificationManager,
       pathExists: this.pathExists,
       getSession: (id) => this.sessions.get(id),
-      persistSession: (session) => this.persistSession(session),
+      persistSession: (session, executor) => this.persistSession(session, executor),
       getRepositoryEnvVars: (id) => this.getRepositoryEnvVars(id),
       toPublicSession: (session) => this.toPublicSession(session),
       getJobQueue: () => this.jobQueue,
+      db: this.db,
       getSessionLifecycleCallbacks: () => this.sessionLifecycleCallbacks,
       resolveSpawnUsername: (createdBy) => resolveSpawnUsername(createdBy, this.userRepository),
       getPathResolver: (session) => this.getPathResolverForSession(session),
@@ -605,6 +617,7 @@ export class SessionManager {
       isSessionInMemory: (id) => this.sessions.has(id),
       workerOutputFileManager: this.workerOutputFileManager,
       jobQueue: this.jobQueue,
+      db: this.db,
       getPathResolverForPersistedSession: (persisted) => this.getPathResolverForPersistedSession(persisted),
       baseDirForPersistedSession: (persisted) => this.baseDirForPersistedSession(persisted, getConfigDir()),
       getServerPid,
@@ -619,6 +632,7 @@ export class SessionManager {
       sessionRepository: this.sessionRepository,
       workerManager: this.workerManager,
       jobQueue: this.jobQueue,
+      db: this.db,
       notificationManager: this.notificationManager,
       messageService: this.messageService,
       interSessionMessageService: this.interSessionMessageService,
@@ -1932,9 +1946,9 @@ export class SessionManager {
     return result;
   }
 
-  private async persistSession(session: InternalSession): Promise<void> {
+  private async persistSession(session: InternalSession, executor?: Kysely<Database>): Promise<void> {
     const persisted = this.sessionConverterService.toPersistedSession(session);
-    await this.sessionRepository.save(persisted);
+    await this.sessionRepository.save(persisted, executor);
   }
 
   private toPersistedSessionWithServerPid(session: InternalSession, serverPid: number | null): PersistedSession {

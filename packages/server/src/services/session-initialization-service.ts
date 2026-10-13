@@ -1,5 +1,7 @@
 import * as fsPromises from 'fs/promises';
 import * as path from 'path';
+import type { Kysely } from 'kysely';
+import type { Database } from '../database/schema.js';
 import type { PersistedSession } from '../repositories/persisted-types.js';
 import type { SessionRepository } from '../repositories/index.js';
 import type { WorkerOutputFileManager } from '../lib/worker-output-file.js';
@@ -52,6 +54,11 @@ interface SessionInitializationDeps {
   isSessionInMemory: SessionInMemoryChecker;
   workerOutputFileManager: WorkerOutputFileManager;
   jobQueue: JobQueue | null;
+  /**
+   * Handle the orphan-session cleanup enqueue and the row delete share a
+   * transaction on. Absent: the two writes run separately, as before.
+   */
+  db?: Kysely<Database> | null;
   getPathResolverForPersistedSession: PersistedSessionPathResolverFactory;
   /** Pure base-dir computation. Used by the orphan detector — throws on invalid metadata. */
   baseDirForPersistedSession: PersistedSessionBaseDirFactory;
@@ -346,6 +353,42 @@ export class SessionInitializationService {
   }
 
   /**
+   * Delete an orphan session's row and schedule its output cleanup in ONE
+   * transaction (the same order everywhere a row delete and a cleanup enqueue
+   * are paired: a failed delete cannot leave a live row whose files are already
+   * scheduled for deletion). The transaction body is exactly the two statements;
+   * the queue is woken after commit because an enqueue on a transaction does not
+   * emit by itself. Without an injected `db` the two writes run separately
+   * (enqueue first) and a warning says so.
+   */
+  private async deleteOrphanRow(
+    jobQueue: JobQueue,
+    sessionId: string,
+    scope: { scope: 'quick' | 'repository'; slug: string | null } | null,
+  ): Promise<void> {
+    const { db, sessionRepository } = this.deps;
+    if (!scope) {
+      await sessionRepository.delete(sessionId);
+      return;
+    }
+    const payload = { sessionId, scope: scope.scope, slug: scope.slug };
+    if (!db) {
+      logger.warn(
+        { sessionId },
+        'No database handle injected; orphan session cleanup enqueue and row delete are not atomic',
+      );
+      await jobQueue.enqueue(JOB_TYPES.CLEANUP_SESSION_OUTPUTS, payload);
+      await sessionRepository.delete(sessionId);
+      return;
+    }
+    await db.transaction().execute(async (trx) => {
+      await jobQueue.enqueue(JOB_TYPES.CLEANUP_SESSION_OUTPUTS, payload, { executor: trx });
+      await sessionRepository.delete(sessionId, trx);
+    });
+    jobQueue.wake();
+  }
+
+  /**
    * Kill orphan processes from previous server run and remove orphan sessions.
    * Sessions that have been loaded into memory are preserved.
    * Only sessions from OTHER dead servers are considered orphans.
@@ -399,18 +442,13 @@ export class SessionInitializationService {
         throw new Error('JobQueue not available for orphan session cleanup. Ensure jobQueue is passed to SessionManager.create().');
       }
       for (const orphan of orphanSessions) {
-        await this.deps.sessionRepository.delete(orphan.id);
-        // Delete output files for orphan session via job queue; skip if scope missing.
+        // Delete the row and schedule output cleanup in one transaction; skip
+        // the job if scope is missing.
         const scope = resolveSessionScopePayload(orphan);
-        if (scope) {
-          await this.deps.jobQueue.enqueue(JOB_TYPES.CLEANUP_SESSION_OUTPUTS, {
-            sessionId: orphan.id,
-            scope: scope.scope,
-            slug: scope.slug,
-          });
-        } else {
+        if (!scope) {
           logger.warn({ sessionId: orphan.id }, 'No valid scope for orphan session; skipping output cleanup');
         }
+        await this.deleteOrphanRow(this.deps.jobQueue, orphan.id, scope);
         logger.info({ sessionId: orphan.id }, 'Removed orphan session from persistence');
       }
     }
