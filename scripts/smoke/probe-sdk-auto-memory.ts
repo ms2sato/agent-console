@@ -115,12 +115,30 @@
  *        `autoMemoryDirectory`, or something else entirely -- is an OPEN
  *        question, not settled by this probe. **A `NO LEAK` result from this
  *        arm must never be read as covering User-scope** -- #1348 remains
- *        un-re-derived for that channel. A synthetic User-scope seed (if such
- *        a location exists inside the isolated dir, writing throwaway
- *        content there before the run) would close this gap; tracked
- *        separately as Issue #1663 rather than folded into this arm, since
- *        seeding a copy of the real memory tree was rejected as unbounded
- *        input through a billed turn.
+ *        un-re-derived for that channel.
+ *
+ *        UPDATE (Issue #1663, 2026-10-13): the open question above is
+ *        answered by reading the vendored 0.3.238 bundle (a reading, not a
+ *        measurement): `scope: 'personal'` is NOT a separate user-global
+ *        location -- the emitter tags a path `team` if it lies under a
+ *        memory-store mount, `personal` if it lies under the auto-memory
+ *        directory, and `personal` as the fallback for anything unclassified;
+ *        the auto-memory directory is
+ *        `override ?? autoMemoryDirectory (policy/flag/local/project/user
+ *        settings) ?? <CLAUDE_CONFIG_DIR>/projects/<sanitized repo/cwd>/memory`,
+ *        i.e. INSIDE an isolated dir. The synthetic-seed sub-runs are
+ *        `--b1` (mechanism: CLAUDE_CODE_PROJECT_DIR_NAME, NOT a production
+ *        route -- env-filter.ts strips CLAUDE_CODE_* before the SDK) and `--b2`
+ *        (production route: an isolated user-level settings.json with an
+ *        autoMemoryDirectory vs our explicit settings.autoMemoryEnabled:
+ *        false). Their ORACLE is the answer (an unguessable nonce, substring
+ *        test, never logged), with `Options.tools: []`; the nonce sits in the
+ *        INDEX line because session-start injection loads MEMORY.md, not
+ *        topic files. The injection route emits NO SDKMemoryRecallMessage
+ *        (measured), so THIS arm's `NO LEAK` means "no recall message",
+ *        nothing stronger; and this arm has no safe oracle for that route on a
+ *        real directory (no known token to test for, answer body unloggable)
+ *        -- a standing limitation, not fixable here.
  *   --c  WRITE: tell the model something worth remembering, poll for a file
  *        to appear under the default directory within a bounded timeout.
  *   --d  REDIRECT: set `autoMemoryDirectory` explicitly and confirm both a
@@ -469,7 +487,7 @@ export interface Verdict {
 }
 
 export interface ArmVerdict extends Verdict {
-  arm: 'A' | 'B' | 'C' | 'D' | 'E' | 'F' | 'G' | 'auto-memory-off';
+  arm: 'A' | 'B' | 'B1' | 'B2' | 'C' | 'D' | 'E' | 'F' | 'G' | 'auto-memory-off';
 }
 
 function inconclusive(note: string): Verdict {
@@ -658,6 +676,127 @@ export function classifyArmD(input: ArmDInput): Verdict {
     conclusive: true,
     premise: 'refuted',
     note: `REDIRECT DOES NOT FULLY WORK -- ${parts.join('; ')}.`,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Arm B personal-scope sub-runs (Issue #1663): B1 (mechanism) and B2 (production route)
+// ---------------------------------------------------------------------------
+
+/**
+ * What ONE measured turn on a SYNTHETIC arm showed. The ORACLE is the answer:
+ * `nonceInAnswer` is a substring test for an unguessable token the model can
+ * only have received from the seeded entry (route-agnostic -- #1663 observed
+ * the nonce in an answer with ZERO `SDKMemoryRecallMessage`s). The recall
+ * channel is recorded separately as the MECHANISM, never as the detector.
+ * `toolUseCount` attributes the answer: a nonzero count means the model may
+ * have read the file itself, a second route and a different finding. The
+ * answer body is never logged -- only this boolean and its length.
+ */
+export interface ArmBObservation {
+  settled: boolean;
+  nonceInAnswer: boolean;
+  answerLength: number;
+  toolUseCount: number;
+  /** Any `SDKMemoryRecallMessage` entry surfaced (mechanism channel). */
+  recallMessage: boolean;
+}
+
+/** A positive reading is attributable: the nonce reached the answer with no tool call. */
+export function armBPositive(o: ArmBObservation): boolean {
+  return o.settled && o.nonceInAnswer && o.toolUseCount === 0;
+}
+
+export interface ArmB1Input {
+  /** `--expect-no-personal`: seeding skipped, only the measured turn ran, silence is asserted. */
+  expectNoPersonal: boolean;
+  /** Unrelated cwd, `CLAUDE_CODE_PROJECT_DIR_NAME` set, seeded. */
+  measured: ArmBObservation | null;
+  /** Unrelated cwd, variable NOT set, same seeded directory ("the variable matters"); `null` when skipped. */
+  negative: ArmBObservation | null;
+}
+
+/**
+ * B1 -- the CLI's MECHANISM, not a production route: the environment variable
+ * this arm sets is stripped before the SDK in production (`env-filter.ts`
+ * strips every `CLAUDE_CODE_*` key, `sdk-engine.ts` passes the cleaned env),
+ * so a positive proves only that a seeded entry reaches the model at an
+ * unrelated cwd when the variable reaches the CLI.
+ *
+ * @internal Exported for the sibling unit test.
+ */
+export function classifyArmB1(input: ArmB1Input): Verdict {
+  const m = input.measured;
+  if (!m || !m.settled) return inconclusive('the measured turn did not settle.');
+  if (input.expectNoPersonal) {
+    if (m.nonceInAnswer || m.recallMessage) {
+      return inconclusive('--expect-no-personal: the oracle fired although seeding was skipped -- the detector reports a hit with nothing seeded.');
+    }
+    return { conclusive: true, premise: null, note: 'CONFIRMED ABSENCE (polarity) -- no nonce in the answer and no recall message when seeding was deliberately skipped.' };
+  }
+  if (!m.nonceInAnswer) {
+    return inconclusive(
+      `the measured turn did not carry the nonce (recallMessage=${m.recallMessage}); there is no positive control for this arm, so silence is not a negative.`,
+    );
+  }
+  if (m.toolUseCount > 0) {
+    return inconclusive(`the nonce reached the answer but the model made ${m.toolUseCount} tool call(s) -- it may have read the file itself (a second route); not attributable to context injection.`);
+  }
+  if (!input.negative || !input.negative.settled) return inconclusive('the variable-less negative turn did not settle or was not run.');
+  if (input.negative.nonceInAnswer) {
+    return inconclusive('the nonce reached the answer WITHOUT the variable too -- the variable is not shown to matter.');
+  }
+  return {
+    conclusive: true,
+    premise: null,
+    note:
+      `MECHANISM REACHABLE (not a production route -- the variable is stripped before the SDK): with CLAUDE_CODE_PROJECT_DIR_NAME set, a synthetic entry in the shared project directory reached the model's answer at an unrelated cwd ` +
+      `with zero tool calls (recall-message channel: ${m.recallMessage ? 'fired' : 'did NOT fire -- context injection emits no recall message'}); without the variable it did not.`,
+  };
+}
+
+export interface ArmB2Input {
+  /** User `settings.json` alone (no explicit `autoMemoryEnabled` in our settings), production's settingSources, unrelated cwd: the positive control. */
+  control: ArmBObservation | null;
+  /** Production's exact battery: `settingSources: ['user','local']`, `settings.autoMemoryEnabled: false`, unrelated cwd. `null` when the control failed and it was skipped. */
+  withFalse: ArmBObservation | null;
+}
+
+/**
+ * B2 -- the PRODUCTION route: an isolated user-level `settings.json` with
+ * `autoMemoryEnabled: true` and an `autoMemoryDirectory`, read through
+ * production's own `settingSources`. Does our explicit
+ * `settings.autoMemoryEnabled: false` WIN over that file?
+ *
+ * @internal Exported for the sibling unit test.
+ */
+export function classifyArmB2(input: ArmB2Input): Verdict {
+  const c = input.control;
+  if (!c || !c.settled) return inconclusive('the positive control turn (user settings.json alone) did not settle.');
+  if (!armBPositive(c)) {
+    return inconclusive(
+      `the positive control (user settings.json alone, tools off) did not show an attributable nonce (nonceInAnswer=${c.nonceInAnswer}, toolUseCount=${c.toolUseCount}); the measured turn was skipped and containment is not shown.`,
+    );
+  }
+  const f = input.withFalse;
+  if (!f || !f.settled) return inconclusive("the measured turn (production's explicit false) did not settle.");
+  if (f.nonceInAnswer || f.recallMessage) {
+    return {
+      conclusive: true,
+      premise: 'refuted',
+      note:
+        `STOP -- the user-level file WINS: with production's explicit settings.autoMemoryEnabled: false the seeded entry was STILL observable at an unrelated cwd ` +
+        `(nonceInAnswer=${f.nonceInAnswer} recallMessage=${f.recallMessage} toolUseCount=${f.toolUseCount}). #1348 is re-derived under controlled conditions; this is an Issue against buildOptions, not a probe note.`,
+    };
+  }
+  if (f.toolUseCount > 0) {
+    return inconclusive(`the measured turn was silent but the model made ${f.toolUseCount} tool call(s); containment requires zero tool calls, so no reading.`);
+  }
+  return {
+    conclusive: true,
+    premise: 'holds',
+    note:
+      "CONTAINMENT HOLDS: with the positive control carrying the nonce (user file alone, zero tool calls), production's explicit settings.autoMemoryEnabled: false left the answer without the nonce, with no recall message and zero tool calls -- our explicit false wins.",
   };
 }
 
@@ -1190,7 +1329,9 @@ const ARM_FLAGS = ['--a', '--b', '--c', '--d'] as const;
 const DEFAULT_ARM_FLAGS = ARM_FLAGS;
 /** Task 0b's arms -- billable additions, deliberately NEVER part of the bare no-flags default (see this file's header). */
 const TASK_0B_ARM_FLAGS = ['--e', '--f', '--g'] as const;
-const ALL_ARM_FLAGS = [...ARM_FLAGS, ...TASK_0B_ARM_FLAGS] as const;
+/** Arm B's personal-scope sub-run (#1663) -- billable, never part of the bare no-flags default. */
+const ARM_B_PERSONAL_FLAGS = ['--b1', '--b2'] as const;
+const ALL_ARM_FLAGS = [...ARM_FLAGS, ...TASK_0B_ARM_FLAGS, ...ARM_B_PERSONAL_FLAGS] as const;
 type ArmFlag = (typeof ALL_ARM_FLAGS)[number];
 /** Owner directive, 2026-09-13, binding: `--extended-timeout` never exceeds 5 minutes. */
 export const EXTENDED_TIMEOUT_CAP_MS = 300_000;
@@ -1201,8 +1342,9 @@ export const EXTENDED_TIMEOUT_CAP_MS = 300_000;
  */
 const AUTO_MEMORY_OFF_FLAG = '--auto-memory-off';
 const USAGE_TEXT =
-  'Usage: bun scripts/smoke/probe-sdk-auto-memory.ts [--a] [--b] [--c] [--d] [--e] [--f] [--g] [--force-f] [--f-config omitted|preset] [--extended-timeout <ms>] [--expect-no-recall] [--expect-no-write] [--auto-memory-off]\n' +
+  'Usage: bun scripts/smoke/probe-sdk-auto-memory.ts [--a] [--b] [--c] [--d] [--e] [--f] [--g] [--force-f] [--f-config omitted|preset] [--extended-timeout <ms>] [--b1] [--b2] [--expect-no-recall] [--expect-no-write] [--expect-no-personal] [--auto-memory-off]\n' +
   '  Default (no --a/--b/--c/--d/--e/--f/--g) = arms A/B/C/D only, in order. Arms E/F/G are NEVER part of the bare default -- select them explicitly.\n' +
+  '  --b1 / --b2 run Arm B\'s personal-scope sub-runs (#1663; <=2 / <=3 billed turns; synthetic seeds only); --expect-no-personal modifies --b1 (skip the seed). Never part of the bare default.\n' +
   '  --expect-no-recall modifies arm A (skip seeding); --expect-no-write modifies arm C, F, and G (skip the remember-this prompt).\n' +
   '  Arm F/G halt by default when Arm E shows no configuration carries awareness (an unclean (iii) control does NOT halt) --\n' +
   '  --force-f overrides that halt for a deliberate operator run anyway (owner ruling, 2026-09-13).\n' +
@@ -1217,6 +1359,7 @@ interface ParsedArgs {
   arms: Set<ArmFlag>;
   expectNoRecall: boolean;
   expectNoWrite: boolean;
+  expectNoPersonal: boolean;
   fConfigOverride?: 'omitted' | 'preset';
   extendedTimeoutMs?: number;
   forceF: boolean;
@@ -1228,6 +1371,7 @@ export function parseArgs(argv: string[]): ParsedArgs {
   const arms = new Set<ArmFlag>();
   let expectNoRecall = false;
   let expectNoWrite = false;
+  let expectNoPersonal = false;
   let fConfigOverride: 'omitted' | 'preset' | undefined;
   let extendedTimeoutMs: number | undefined;
   let forceF = false;
@@ -1248,6 +1392,10 @@ export function parseArgs(argv: string[]): ParsedArgs {
     }
     if (a === '--expect-no-write') {
       expectNoWrite = true;
+      continue;
+    }
+    if (a === '--expect-no-personal') {
+      expectNoPersonal = true;
       continue;
     }
     if (a === '--force-f') {
@@ -1283,7 +1431,7 @@ export function parseArgs(argv: string[]): ParsedArgs {
     arms.add('--e');
     arms.add('--f');
   }
-  return { arms, expectNoRecall, expectNoWrite, fConfigOverride, extendedTimeoutMs, forceF, autoMemoryOff };
+  return { arms, expectNoRecall, expectNoWrite, expectNoPersonal, fConfigOverride, extendedTimeoutMs, forceF, autoMemoryOff };
 }
 
 // ---------------------------------------------------------------------------
@@ -1347,7 +1495,13 @@ function h(title: string): void {
  * between "the key is absent" and "the key is present with an empty value",
  * so this function must not collapse that distinction itself.
  */
-function buildOptions(cwd: string, settings: Partial<Settings>, systemPrompt?: Options['systemPrompt']): Options {
+function buildOptions(
+  cwd: string,
+  settings: Partial<Settings>,
+  systemPrompt?: Options['systemPrompt'],
+  settingSources: NonNullable<Options['settingSources']> = [],
+  tools?: Options['tools'],
+): Options {
   const base: Options = {
     executable: 'bun',
     cwd,
@@ -1355,10 +1509,11 @@ function buildOptions(cwd: string, settings: Partial<Settings>, systemPrompt?: O
     permissionMode: 'bypassPermissions',
     allowDangerouslySkipPermissions: true,
     includePartialMessages: true,
-    settingSources: [],
+    settingSources,
     settings: { autoCompactEnabled: false, ...settings },
   };
-  return systemPrompt === undefined ? base : { ...base, systemPrompt };
+  const withTools = tools === undefined ? base : { ...base, tools };
+  return systemPrompt === undefined ? withTools : { ...withTools, systemPrompt };
 }
 
 /** `Options.systemPrompt` for one of arm E's three configurations, or `undefined` for (i) omitted entirely. */
@@ -1544,13 +1699,14 @@ async function runMemorySession(
   settings: Partial<Settings>,
   prompt: string,
   label: string,
-  opts: { redactRecallLogging?: boolean; systemPrompt?: Options['systemPrompt']; pollUsage?: boolean } = {},
-): Promise<{ outcome: TurnOutcome; recallsForTurn: MemoryRecallMessage[] }> {
-  const options = buildOptions(cwd, settings, opts.systemPrompt);
+  opts: { redactRecallLogging?: boolean; systemPrompt?: Options['systemPrompt']; pollUsage?: boolean; settingSources?: NonNullable<Options['settingSources']>; tools?: Options['tools'] } = {},
+): Promise<{ outcome: TurnOutcome; recallsForTurn: MemoryRecallMessage[]; toolUseCount: number }> {
+  const options = buildOptions(cwd, settings, opts.systemPrompt, opts.settingSources, opts.tools);
   const s = new ProbeSession({ label, options, pollUsage: opts.pollUsage ?? false });
   try {
     console.log(`${label} ready: ${await s.waitForReady()}`);
     const before = s.memoryRecalls.length;
+    const toolsBefore = s.toolUses.length;
     const outcome = await s.runTurn(prompt);
     account(label, outcome);
     console.log(turnLine(label, outcome));
@@ -1563,7 +1719,11 @@ async function runMemorySession(
         : recallsForTurn.map((r) => ({ mode: r.mode, memories: r.memories.map((m) => ({ scope: m.scope, path: m.path })) }));
       console.log(`${label}: ${recallsForTurn.length} SDKMemoryRecallMessage(s) observed: ${JSON.stringify(shown)}`);
     }
-    return { outcome, recallsForTurn };
+    const turnTools = s.toolUses.slice(toolsBefore);
+    // Names only (never inputs): which tool a model reached for is the
+    // attribution evidence for an answer that carries a synthetic nonce.
+    if (turnTools.length > 0) console.log(`${label}: tool calls this turn (names only): ${JSON.stringify(turnTools.map((t) => t.name))}`);
+    return { outcome, recallsForTurn, toolUseCount: turnTools.length };
   } finally {
     s.close();
     await s.waitForStreamEnd();
@@ -1846,6 +2006,155 @@ async function runArmB(): Promise<ArmVerdict> {
 }
 
 // ---------------------------------------------------------------------------
+// Arm B personal sub-runs (Issue #1663) -- SYNTHETIC seeds only
+// ---------------------------------------------------------------------------
+
+/**
+ * The fixed `CLAUDE_CODE_PROJECT_DIR_NAME` B1 sets beside the isolated
+ * `CLAUDE_CONFIG_DIR`: per the public memory doc it replaces the repo-derived
+ * `<project>` directory, so every cwd under this config dir shares one
+ * auto-memory directory.
+ */
+export const ARM_B_SHARED_PROJECT_NAME = 'probe-shared-personal';
+
+/** Restores `CLAUDE_CODE_PROJECT_DIR_NAME` (set to `value`, or unset when `undefined`) around `body`. */
+async function withProjectDirName<T>(value: string | undefined, body: () => Promise<T>): Promise<T> {
+  const previous = process.env.CLAUDE_CODE_PROJECT_DIR_NAME;
+  if (value === undefined) delete process.env.CLAUDE_CODE_PROJECT_DIR_NAME;
+  else process.env.CLAUDE_CODE_PROJECT_DIR_NAME = value;
+  try {
+    return await body();
+  } finally {
+    if (previous === undefined) delete process.env.CLAUDE_CODE_PROJECT_DIR_NAME;
+    else process.env.CLAUDE_CODE_PROJECT_DIR_NAME = previous;
+  }
+}
+
+/** The oracle prompt: the answer is inspected ONLY for the unguessable nonce (a substring test), never logged. */
+function armBOraclePrompt(): string {
+  return askAboutPrompt('the secret personal codename');
+}
+
+const ARM_B_TOPIC_FILENAME = 'automem-probe-personal-fact.md';
+
+function seedArmBEntry(memoryDir: string, nonce: string): void {
+  rmSync(memoryDir, { recursive: true, force: true });
+  seedMemoryTopic({
+    memoryDir,
+    topicFilename: ARM_B_TOPIC_FILENAME,
+    frontmatterName: 'automem-probe-personal-fact',
+    description: 'Auto-memory probe synthetic personal-scope entry (Issue #1663)',
+    codenameSubject: 'The secret personal codename',
+    codenameValue: nonce,
+    indexTitle: 'Automem probe personal fact',
+    // The nonce is ALSO in the index line: MEMORY.md is what is loaded into context every session, while a topic
+    // file is read on demand (needs a tool, which these arms disable). An oracle token only in the topic file could
+    // never reach a tools-off answer, so a silent turn would measure the oracle's placement, not the route.
+    indexHook: `the secret personal codename is ${nonce}.`,
+  });
+}
+
+/**
+ * One oracle turn. Logs `textHasNonce` / length / tool-use count and the
+ * recall channel through `redactRecallEntry` (via `runMemorySession`'s
+ * redacted logging) -- never the answer body.
+ */
+async function runArmBTurn(
+  label: string,
+  configDir: string,
+  cwd: string,
+  settings: Partial<Settings>,
+  settingSources: NonNullable<Options['settingSources']>,
+  nonce: string,
+): Promise<ArmBObservation> {
+  const { outcome, recallsForTurn, toolUseCount } = await runMemorySession(configDir, cwd, settings, armBOraclePrompt(), label, {
+    redactRecallLogging: true,
+    settingSources,
+    // All built-in tools off (Architect ruling, #1663): with tools on, "nonce + tool calls" is ambiguous between
+    // an injected index that the model then read and a model that browsed CLAUDE_CONFIG_DIR itself. Off makes
+    // zero tool calls true by construction; toolUseCount stays as an assert.
+    tools: [],
+  });
+  const obs: ArmBObservation = {
+    settled: turnSettled(outcome),
+    nonceInAnswer: outcome.text.includes(nonce),
+    answerLength: outcome.text.length,
+    toolUseCount,
+    recallMessage: recallsForTurn.some((r) => r.memories.length > 0),
+  };
+  console.log(
+    `${label}: textHasNonce=${obs.nonceInAnswer} answerLength=${obs.answerLength} toolUseCount=${obs.toolUseCount} recallMessage=${obs.recallMessage}`,
+  );
+  return obs;
+}
+
+/**
+ * B1 -- MECHANISM, not a production route. Measured turn (variable set) at
+ * an unrelated cwd, then the variable-less negative on the same seeded
+ * directory. `expectNoPersonal` skips the seed and runs only the measured
+ * turn. At most 2 billed turns.
+ */
+async function runArmB1(expectNoPersonal: boolean): Promise<ArmVerdict> {
+  h(`Arm B1 -- MECHANISM, not a production route (CLAUDE_CODE_PROJECT_DIR_NAME is stripped before the SDK: env-filter.ts, sdk-engine.ts)${expectNoPersonal ? '  [--expect-no-personal]' : ''}`);
+  return withArmConfigDir('automem-b1', async (configDir) => {
+    const memoryDir = join(configDir, 'projects', ARM_B_SHARED_PROJECT_NAME, 'memory');
+    const nonce = trackedNonce('AUTOMEM-B1');
+    const cwdOther = buildScratchCwd('b1-other');
+    try {
+      if (!expectNoPersonal) {
+        seedArmBEntry(memoryDir, nonce);
+        console.log(`B1: seeded a SYNTHETIC entry in this run's isolated config dir (${memoryDir}); nothing real is read or copied.`);
+      }
+      const measured = await withProjectDirName(ARM_B_SHARED_PROJECT_NAME, () =>
+        runArmBTurn('B1-measured', configDir, cwdOther, { autoMemoryEnabled: true }, [], nonce),
+      );
+      let negative: ArmBObservation | null = null;
+      if (!expectNoPersonal && armBPositive(measured)) {
+        seedArmBEntry(memoryDir, nonce);
+        negative = await withProjectDirName(undefined, () =>
+          runArmBTurn('B1-negative-no-variable', configDir, cwdOther, { autoMemoryEnabled: true }, [], nonce),
+        );
+      }
+      return { arm: 'B1', ...classifyArmB1({ expectNoPersonal, measured, negative }) };
+    } finally {
+      rmSync(cwdOther, { recursive: true, force: true });
+    }
+  });
+}
+
+/**
+ * B2 -- the PRODUCTION route: an isolated USER-level settings.json
+ * (`autoMemoryEnabled: true`, `autoMemoryDirectory`), production's
+ * `settingSources: ['user','local']`. Positive control first (our settings
+ * carry NO explicit autoMemoryEnabled), then the measured turn with
+ * production's explicit false. A silent control stops the arm (INCONCLUSIVE).
+ * 2 billed turns.
+ */
+async function runArmB2(): Promise<ArmVerdict> {
+  h("Arm B2 -- PRODUCTION route: user-level autoMemoryDirectory vs our explicit autoMemoryEnabled: false");
+  return withArmConfigDir('automem-b2', async (configDir) => {
+    const userMemoryDir = join(configDir, 'user-memory');
+    writeFileSync(join(configDir, 'settings.json'), JSON.stringify({ autoMemoryEnabled: true, autoMemoryDirectory: userMemoryDir }));
+    const nonce = trackedNonce('AUTOMEM-B2');
+    const cwdOther = buildScratchCwd('b2-other');
+    const production: NonNullable<Options['settingSources']> = ['user', 'local'];
+    try {
+      console.log(`B2: wrote a SYNTHETIC user-level settings.json inside this run's isolated config dir; autoMemoryDirectory=${userMemoryDir}; nothing real is read or copied.`);
+      seedArmBEntry(userMemoryDir, nonce);
+      const control = await runArmBTurn('B2-control-user-file-alone', configDir, cwdOther, {}, production, nonce);
+      let withFalse: ArmBObservation | null = null;
+      if (armBPositive(control)) {
+        seedArmBEntry(userMemoryDir, nonce);
+        withFalse = await runArmBTurn('B2-measured-explicit-false', configDir, cwdOther, { autoMemoryEnabled: false }, production, nonce);
+      }
+      return { arm: 'B2', ...classifyArmB2({ control, withFalse }) };
+    } finally {
+      rmSync(cwdOther, { recursive: true, force: true });
+    }
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Write check core -- shared by Arm C, Arm F, and Arm G (Issue #1667's own
 // instruction: "re-run Task 0's Arm C write check unchanged", via the SAME
 // core, never a second copy of it).
@@ -2002,6 +2311,8 @@ export function textContainsPath(text: string, p: string): boolean {
 
 interface ArmEConfigRunResult extends ArmEConfigInput {
   recallFired: boolean;
+  /** An `SDKMemoryRecallMessage` entry with `scope: 'personal'` surfaced -- the recall-message channel, recorded separately from the text observables. */
+  personalRecall: boolean;
   memoryFilesMatched: boolean;
   memoryFilesCount: number;
 }
@@ -2023,11 +2334,14 @@ async function runArmEConfig(
   seededTitle: string,
   autoMemoryEnabled = true,
   labelPrefix = 'E',
+  extra: { settings?: Partial<Settings>; settingSources?: NonNullable<Options['settingSources']>; redactRecallLogging?: boolean } = {},
 ): Promise<ArmEConfigRunResult> {
   const systemPrompt = systemPromptForArmEConfig(key);
-  const { outcome, recallsForTurn } = await runMemorySession(configDir, cwd, { autoMemoryEnabled }, armEAskPrompt(), `${labelPrefix}-${key}`, {
+  const { outcome, recallsForTurn } = await runMemorySession(configDir, cwd, extra.settings ?? { autoMemoryEnabled }, armEAskPrompt(), `${labelPrefix}-${key}`, {
     systemPrompt,
     pollUsage: true,
+    settingSources: extra.settingSources,
+    redactRecallLogging: extra.redactRecallLogging,
   });
   const settled = turnSettled(outcome);
   const unsettled = unsettledReason(outcome, `${labelPrefix}-${key}`);
@@ -2053,7 +2367,8 @@ async function runArmEConfig(
   for (const [i, f] of memoryFiles.entries()) {
     console.log(`${labelPrefix}-${key}: memoryFiles[${i}]: path=${f.path} type=${f.type} tokens=${f.tokens}`);
   }
-  return { settled, locationHit, accessHit, recallFired, memoryFilesMatched, memoryFilesCount: memoryFiles.length, memoryFilesEntries: memoryFiles };
+  const personalRecall = recallsForTurn.some((r) => r.memories.some((m) => m.scope === 'personal'));
+  return { settled, locationHit, accessHit, recallFired, personalRecall, memoryFilesMatched, memoryFilesCount: memoryFiles.length, memoryFilesEntries: memoryFiles };
 }
 
 async function runArmE(): Promise<{ verdict: ArmVerdict; summary: ArmESummary | null }> {
@@ -2452,7 +2767,7 @@ async function main(): Promise<number> {
 
   console.log(`probe-sdk-auto-memory  started ${stamp()}`);
   console.log(
-    `arms: ${[...selected.arms].join(' ')}${selected.expectNoRecall ? ' --expect-no-recall' : ''}${selected.expectNoWrite ? ' --expect-no-write' : ''}${selected.forceF ? ' --force-f' : ''}` +
+    `arms: ${[...selected.arms].join(' ')}${selected.expectNoRecall ? ' --expect-no-recall' : ''}${selected.expectNoWrite ? ' --expect-no-write' : ''}${selected.expectNoPersonal ? ' --expect-no-personal' : ''}${selected.forceF ? ' --force-f' : ''}` +
       `${selected.fConfigOverride ? ` --f-config ${selected.fConfigOverride}` : ''}${selected.extendedTimeoutMs !== undefined ? ` --extended-timeout ${selected.extendedTimeoutMs}` : ''}` +
       `${selected.autoMemoryOff ? ' --auto-memory-off' : ''}`,
   );
@@ -2511,6 +2826,8 @@ async function main(): Promise<number> {
   try {
     if (selected.arms.has('--a')) results.push(await runArmA(selected.expectNoRecall));
     if (selected.arms.has('--b')) results.push(await runArmB());
+    if (selected.arms.has('--b1')) results.push(await runArmB1(selected.expectNoPersonal));
+    if (selected.arms.has('--b2')) results.push(await runArmB2());
     if (selected.arms.has('--c')) results.push(await runArmC(selected.expectNoWrite));
     if (selected.arms.has('--d')) results.push(await runArmD());
 
@@ -2598,6 +2915,8 @@ async function main(): Promise<number> {
   const holds = (arm: ArmVerdict['arm']) => byArm.get(arm)?.premise === 'holds';
   console.log(`recall works (A):        ${byArm.has('A') ? holds('A') : '(not run)'}`);
   console.log(`leak scope identified (B): ${byArm.has('B') ? (byArm.get('B')!.note.startsWith('LEAK') ? 'yes -- see scopes above' : 'no leak observed') : '(not run)'}`);
+  console.log(`personal-scope mechanism (B1):  ${byArm.has('B1') ? byArm.get('B1')!.note.split(' --')[0].split(':')[0] : '(not run)'}`);
+  console.log(`user-file containment (B2):  ${byArm.has('B2') ? byArm.get('B2')!.note.split(':')[0] : '(not run)'}`);
   console.log(`write works (C):         ${byArm.has('C') ? holds('C') : '(not run)'}`);
   console.log(`redirect works (D):      ${byArm.has('D') ? holds('D') : '(not run)'}`);
   console.log(`awareness (E):           ${byArm.has('E') ? 'see Arm E note above' : '(not run)'}`);
