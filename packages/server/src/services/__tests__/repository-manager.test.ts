@@ -1010,24 +1010,6 @@ describe('RepositoryManager', () => {
         expect(mockGit.deriveRepositorySlug).toHaveBeenCalledWith(repo.path, path.basename(repo.path));
       });
     });
-  });
-
-  describe('getRepository', () => {
-    it('should return repository by id', async () => {
-      const manager = await getRepositoryManager();
-
-      const registered = await manager.registerRepository(TEST_REPO_DIR);
-      const retrieved = manager.getRepository(registered.id);
-
-      expect(retrieved).toEqual(registered);
-    });
-
-    it('should return undefined for unknown id', async () => {
-      const manager = await getRepositoryManager();
-
-      const result = manager.getRepository('unknown-id');
-      expect(result).toBeUndefined();
-    });
 
     describe('atomic cleanup-job enqueue and row delete', () => {
       const settle = <T>(p: Promise<T>): Promise<T | 'hung'> =>
@@ -1101,6 +1083,24 @@ describe('RepositoryManager', () => {
           warnSpy.mockRestore();
         }
       });
+    });
+  });
+
+  describe('getRepository', () => {
+    it('should return repository by id', async () => {
+      const manager = await getRepositoryManager();
+
+      const registered = await manager.registerRepository(TEST_REPO_DIR);
+      const retrieved = manager.getRepository(registered.id);
+
+      expect(retrieved).toEqual(registered);
+    });
+
+    it('should return undefined for unknown id', async () => {
+      const manager = await getRepositoryManager();
+
+      const result = manager.getRepository('unknown-id');
+      expect(result).toBeUndefined();
     });
   });
 
