@@ -5,7 +5,7 @@ import {
   templateSupportsModel,
   templateSupportsReasoningEffort,
 } from '../agent-parameter-capabilities.js';
-import type { AgentDefinition } from '../agent.js';
+import type { AgentDefinition } from '../../schemas/agent.js';
 
 function buildAgent(commandTemplate: string): AgentDefinition {
   return {

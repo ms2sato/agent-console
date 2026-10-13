@@ -177,7 +177,7 @@ interface EmbeddedAgentDefinitionBase {
   instructions?: string[];
   contextWindowTokens?: number;  // Compaction; operator-declared model context window, denominator for the usage ratio
   compaction?: { threshold?: number }; // Compaction; the openai-api engine's auto-fire ratio, default DEFAULT_COMPACTION_THRESHOLD
-  isBuiltIn: boolean;          // mirrors AgentDefinition.isBuiltIn (types/agent.ts); true only for the claude-sdk builtin (Phase 1) -- see services/embedded-agents/claude-sdk-builtin.ts
+  isBuiltIn: boolean;          // mirrors AgentDefinition.isBuiltIn (schemas/agent.ts); true only for the claude-sdk builtin (Phase 1) -- see services/embedded-agents/claude-sdk-builtin.ts
   createdBy: string;          // users.id of the creator (same UUID space as session.createdBy)
   createdAt: string;
   updatedAt: string;

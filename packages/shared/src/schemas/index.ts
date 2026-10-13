@@ -79,6 +79,7 @@ export {
   type UpdateAgentRequest,
   type AgentActivityPatterns,
   type AgentCapabilities,
+  type AgentDefinition,
 } from './agent.js';
 
 // Worker schemas

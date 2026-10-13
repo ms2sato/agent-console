@@ -25,7 +25,7 @@ import { Glob } from 'bun';
 import path from 'node:path';
 import fs from 'node:fs';
 
-const ACCESSOR_RELATIVE_PATH = 'packages/shared/src/types/agent-parameter-capabilities.ts';
+const ACCESSOR_RELATIVE_PATH = 'packages/shared/src/agent-surface/agent-parameter-capabilities.ts';
 
 const SCAN_GLOBS = [
   'packages/shared/src/**/*.ts',

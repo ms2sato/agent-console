@@ -10,11 +10,11 @@
  *
  * See docs/design/agent-surface.md for the normative spec.
  */
-import type { AgentDefinition } from './agent.js';
-import type { EmbeddedAgentDefinition } from './embedded-agent.js';
+import type { AgentDefinition } from '../schemas/agent.js';
+import type { EmbeddedAgentDefinition } from '../types/embedded-agent.js';
 import { getAgentParameterCapabilities } from './agent-parameter-capabilities.js';
-import { EMBEDDED_AGENT_ENGINE_PARAMETER_CAPABILITIES } from './embedded-agent-parameter-capabilities.js';
-import type { EmbeddedAgentEngineParameterCapabilities } from './embedded-agent-parameter-capabilities.js';
+import { EMBEDDED_AGENT_ENGINE_PARAMETER_CAPABILITIES } from '../types/embedded-agent-parameter-capabilities.js';
+import type { EmbeddedAgentEngineParameterCapabilities } from '../types/embedded-agent-parameter-capabilities.js';
 
 /**
  * SINGLE WRITER of agent-kind literals. Every consumer derives from this

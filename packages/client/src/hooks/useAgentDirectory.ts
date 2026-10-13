@@ -14,7 +14,7 @@ export interface UseAgentDirectoryResult {
  * Merges the terminal `AgentDefinition` registry (`useAgents`) and the
  * embedded `EmbeddedAgentDefinition` registry (`useEmbeddedAgents`) into a
  * single kind-tagged `AgentDirectoryEntry[]` (see
- * `@agent-console/shared` `packages/shared/src/types/agent-surface.ts`).
+ * `@agent-console/shared` `packages/shared/src/agent-surface/agent-surface.ts`).
  *
  * Order: terminal entries first, then embedded entries. This mirrors the
  * server's `AgentDirectory.listAll()` order
