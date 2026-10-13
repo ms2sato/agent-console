@@ -1288,7 +1288,7 @@ describe('MCP Server Tools', () => {
   // ===========================================================================
 
   describe('get_session_status', () => {
-    it('states that it describes workers, not processes, and that process output arrives as new turns', async () => {
+    it('states that it describes workers, not processes, and points at list_processes for a missing exit notice', async () => {
       const listRes = await app.request('/mcp', {
         method: 'POST',
         headers: {
@@ -1304,7 +1304,7 @@ describe('MCP Server Tools', () => {
       const tool = listBody.result?.tools?.find((t) => t.name === 'get_session_status');
 
       expect(tool?.description).toContain(
-        'It describes workers, not processes: a running run_process is not visible here, and its output/exit always arrive as new turns.',
+        "It describes workers, not processes: a running run_process is not visible here. Process output and the exit notice arrive as new turns; if the exit notice has not arrived by the process's timeout, call list_processes once instead of polling this tool.",
       );
     });
 

@@ -60,7 +60,8 @@ export interface ProcessOutputRouterDeps {
  */
 export const PROCESS_STILL_RUNNING_NOTICE =
   'This process is still running; its remaining output and its exit notice arrive as further turns. ' +
-  'Do not poll get_session_status -- end your turn.';
+  'Do not poll get_session_status -- it cannot see processes; end your turn. ' +
+  'If no exit notice has arrived by the timeout, check list_processes once.';
 
 function withStillRunningNotice(
   text: string,
