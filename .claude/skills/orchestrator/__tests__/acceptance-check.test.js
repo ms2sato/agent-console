@@ -706,7 +706,7 @@ describe('checkProposedBehaviorCoverage', () => {
 // simply doesn't match any coverage pattern, printed as "skipped (not in
 // coverage patterns)". That wording is misleading for a file that DID match
 // a pattern and was exempted for a specific, auditable reason — this test
-// pins the distinct "exempted (comment-only diff)" wording.
+// pins the distinct "exempted (no-runtime-effect diff (comment-only or type-only import rewiring))" wording.
 
 function minimalAutoDetection(testCoverage, overrides = {}) {
   return {
@@ -746,7 +746,7 @@ describe('printAutoDetection — Production File Test Coverage wording', () => {
       { file: 'packages/server/src/lib/bar.ts', hasTest: false, expectedTestPath: '', needsCoverage: false, isCommentOnly: false },
     ]));
     const output = logs.join('\n');
-    expect(output).toContain('➖ packages/server/src/services/foo.ts -> exempted (comment-only diff)');
+    expect(output).toContain('➖ packages/server/src/services/foo.ts -> exempted (no-runtime-effect diff (comment-only or type-only import rewiring))');
     expect(output).toContain('⬜ packages/server/src/lib/bar.ts -> skipped (not in coverage patterns)');
   });
 
@@ -795,7 +795,7 @@ describe('printAutoDetection — Production File Test Coverage wording', () => {
     ]));
     expect(logs).toContain('  ✅ packages/server/src/lib/a.ts -> covered');
     expect(logs).toContain('  ❌ packages/server/src/lib/b.ts -> NO TEST (expected: packages/server/src/lib/__tests__/b.test.ts)');
-    expect(logs).toContain('  ➖ packages/server/src/lib/c.ts -> exempted (comment-only diff)');
+    expect(logs).toContain('  ➖ packages/server/src/lib/c.ts -> exempted (no-runtime-effect diff (comment-only or type-only import rewiring))');
   });
 });
 
