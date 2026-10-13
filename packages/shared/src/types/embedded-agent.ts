@@ -632,7 +632,7 @@ export type EmbeddedAgentEvent =
    * for the standing ruling (reload heals the ordinary path; the degraded path
    * drops under the schema-version banner's declaration).
    */
-  | { v: 1; type: 'context-usage'; promptTokens: number; estimated: boolean; appearsClamped?: true }
+  | { v: 1; type: 'context-usage'; promptTokens: number; estimated: boolean; appearsClamped?: true; model?: string }
   /**
    * Compaction's persisted boundary marker -- "one line marking the
    * compaction boundary appears in the transcript". Emitted immediately

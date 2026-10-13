@@ -268,6 +268,24 @@ describe('embedded-agent-store', () => {
     expect(instance.getSnapshot().entries).toHaveLength(0);
   });
 
+  it('keeps the SDK-reported model on snapshot.contextUsage, and leaves the key absent when none was reported', async () => {
+    const instance = getOrCreateEmbeddedAgentWorker('s3m', 'w3m');
+    const ws = MockWebSocket.getLastInstance();
+    ws!.simulateOpen();
+
+    const withModel = ndjson({ v: 1, type: 'context-usage', promptTokens: 10, estimated: false, model: 'claude-x' });
+    ws!.simulateMessage(historyMessage(withModel, withModel.length));
+    await flush();
+    expect(instance.getSnapshot().contextUsage).toEqual({ promptTokens: 10, estimated: false, model: 'claude-x' });
+
+    const without = ndjson({ v: 1, type: 'context-usage', promptTokens: 20, estimated: false });
+    ws!.simulateMessage(outputMessage(without, withModel.length + without.length));
+    await flush();
+    const usage = instance.getSnapshot().contextUsage!;
+    expect(usage.promptTokens).toBe(20);
+    expect('model' in usage).toBe(false);
+  });
+
   it('re-renders the clamp row after a fresh history load wipes the transcript', async () => {
     // The edge's memory is DISPLAY state and has to be wiped with the
     // display. Derived from `snapshot.contextUsage` it was not: that field is

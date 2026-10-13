@@ -248,6 +248,10 @@ class TerminalController implements TerminalInstance {
   // reference so React.memo skips re-render. Cleared on shrink / history rewrite.
   private rowCache = new Map<number, TerminalRow>();
   private lastBufferLength = 0;
+  // The cols the cached rows were built at. A cols change makes xterm REFLOW the
+  // scrollback (wrapped lines re-split, buffer length changes), so index-keyed
+  // cached rows no longer describe the same lines; consumed in rebuildSnapshot.
+  private rowCacheCols = 0;
 
   constructor(
     private sessionId: string,
@@ -488,6 +492,10 @@ class TerminalController implements TerminalInstance {
     return this.refCount;
   }
 
+  get rowCacheSizeForTest(): number {
+    return this.rowCache.size;
+  }
+
   get lastReleasedAtForTest(): number {
     return this.lastReleasedAt;
   }
@@ -585,8 +593,7 @@ class TerminalController implements TerminalInstance {
     if (msg.type === 'worker-restarted') {
       if (msg.sessionId !== this.sessionId || msg.workerId !== this.workerId) return;
       this.terminal.reset();
-      this.rowCache.clear();
-      this.lastBufferLength = 0;
+      this.invalidateRowCache();
       this.lastOffset = 0;
       // Restart resets the absolute stream to 0 under a new epoch (§4.5). Drop
       // the paged window and forget the epoch so the reconnect's initial history
@@ -819,8 +826,7 @@ class TerminalController implements TerminalInstance {
 
   private beginEpochResync(newEpoch: number): void {
     this.terminal.reset();
-    this.rowCache.clear();
-    this.lastBufferLength = 0;
+    this.invalidateRowCache();
     this.lastOffset = 0;
     this.clearPagedState();
     this.epoch = newEpoch;
@@ -868,8 +874,7 @@ class TerminalController implements TerminalInstance {
    */
   private hardResetResync(reason: 'overflow' | 'timeout'): void {
     this.terminal.reset();
-    this.rowCache.clear();
-    this.lastBufferLength = 0;
+    this.invalidateRowCache();
     this.lastOffset = 0;
     this.queuedOutput = [];
     this.queuedBytes = 0;
@@ -921,8 +926,7 @@ class TerminalController implements TerminalInstance {
         : offset < this.requestedFromOffset);
     if (isFresh) {
       this.terminal.reset();
-      this.rowCache.clear();
-      this.lastBufferLength = 0;
+      this.invalidateRowCache();
       this.clearPagedState();
       // Seed the paging cursor at the window's absolute start (§6.1). Without a
       // server-supplied startOffset, paging past the live window is unavailable
@@ -1506,6 +1510,13 @@ class TerminalController implements TerminalInstance {
     });
   }
 
+  /** Forget every cached row and the bookkeeping that validates the cache (reset / fresh load). */
+  private invalidateRowCache(): void {
+    this.rowCache.clear();
+    this.lastBufferLength = 0;
+    this.rowCacheCols = 0;
+  }
+
   private rebuildSnapshot(): void {
     const buffer = this.terminal.buffer.active;
     const cols = this.terminal.cols;
@@ -1518,6 +1529,16 @@ class TerminalController implements TerminalInstance {
       this.rowCache.clear();
     }
     this.lastBufferLength = length;
+
+    // A cols change reflows the scrollback: wrapped lines re-split, so the buffer
+    // usually GROWS when narrowing (the shrink guard above never fires) and every
+    // index-keyed cached row is stale. Invalidated here, where the cache is
+    // consumed, so no resize path can forget it; a rows-only change does not
+    // reflow, so it keeps the cache.
+    if (this.terminal.cols !== this.rowCacheCols) {
+      this.rowCache.clear();
+      this.rowCacheCols = this.terminal.cols;
+    }
 
     // At the scrollback cap the buffer length is constant while lines shift up,
     // so absolute index y no longer identifies the same line -> disable caching.
@@ -1695,6 +1716,7 @@ export function _setAppSubscribe(impl: typeof subscribeApp): void {
 /** @internal Test helper: read internal state for assertions. */
 export function _inspect(instance: TerminalInstance): {
   refCount: number;
+  rowCacheSize: number;
   lastReleasedAt: number;
   reconnectPending: boolean;
   reconnectAttempts: number;
@@ -1706,6 +1728,7 @@ export function _inspect(instance: TerminalInstance): {
   const t = instance as TerminalController;
   return {
     refCount: t.refCountForTest,
+    rowCacheSize: t.rowCacheSizeForTest,
     lastReleasedAt: t.lastReleasedAtForTest,
     reconnectPending: t.reconnectPendingForTest,
     reconnectAttempts: t.reconnectAttemptsForTest,
