@@ -53,15 +53,15 @@ async function validateWorktreePath(
   worktreePath: string,
   repoId: string,
 ): Promise<string | null> {
-  const resolvedPath = resolvePath(worktreePath);
+  const canonicalPath = resolvePath(worktreePath);
 
   // SECURITY: Explicit boundary check — resolve both sides to absolute paths
   const repositoriesDir = resolvePath(getRepositoriesDir());
-  if (!resolvedPath.startsWith(repositoriesDir + pathSep)) {
+  if (!canonicalPath.startsWith(repositoriesDir + pathSep)) {
     return 'Worktree path is outside managed directory';
   }
 
-  if (!await worktreeService.isWorktreeOf(repoPath, resolvedPath, repoId)) {
+  if (!await worktreeService.isWorktreeOf(repoPath, canonicalPath, repoId)) {
     return 'Invalid worktree path for this repository';
   }
 
@@ -191,9 +191,9 @@ async function cleanupOrphanedWorktree(
 
   // 1. Security boundary check — same as validateWorktreePath, but without
   //    the repo-bound `isWorktreeOf` step (no registered repo to bind to).
-  const resolvedPath = resolvePath(worktreePath);
+  const canonicalPath = resolvePath(worktreePath);
   const repositoriesDir = resolvePath(getRepositoriesDir());
-  if (!resolvedPath.startsWith(repositoriesDir + pathSep)) {
+  if (!canonicalPath.startsWith(repositoriesDir + pathSep)) {
     return { success: false, error: 'Worktree path is outside managed directory', errorType: 'validation' };
   }
 
@@ -241,7 +241,7 @@ async function cleanupOrphanedWorktree(
     //    the requestUsername threads through so the elevated `rm -rf` runs
     //    as the worktree-owning user.
     try {
-      await worktreeService.removeOrphanedWorktree(resolvedPath, requestUsername);
+      await worktreeService.removeOrphanedWorktree(canonicalPath, requestUsername);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       logger.error(
