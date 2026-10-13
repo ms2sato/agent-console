@@ -84,7 +84,7 @@ describe('Worker History File Initialization', () => {
 
   // Helper to get fresh module instance with DI using the factory pattern
   async function getSessionManager() {
-    const module = await import(`../session-manager.js?v=${++importCounter}`);
+    const module = await import(`../session-manager.js?v=${++importCounter}`) as typeof import('../session-manager.js');
     // Use the factory pattern for async initialization with jobQueue
     return module.SessionManager.create({ sessionRepository: await createTestSessionRepository(),
       userMode: new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' }),

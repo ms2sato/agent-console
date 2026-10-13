@@ -67,7 +67,7 @@ describe('SessionManager cleanup on initialization', () => {
 
   // Helper to get fresh SessionManager class and create an instance using the factory pattern
   async function getSessionManager() {
-    const module = await import(`../session-manager.js?v=${++importCounter}`);
+    const module = await import(`../session-manager.js?v=${++importCounter}`) as typeof import('../session-manager.js');
     return module.SessionManager;
   }
 
