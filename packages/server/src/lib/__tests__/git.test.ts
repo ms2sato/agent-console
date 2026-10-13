@@ -472,6 +472,51 @@ index abc1234..def5678 100644
     });
   });
 
+  describe('getMergeBaseSafe', () => {
+    it('returns the trimmed stdout of git merge-base on exit 0', async () => {
+      setMockSpawnResult('abc1234def\n');
+      const { getMergeBaseSafe } = await getGitModule();
+
+      const result = await getMergeBaseSafe('main', 'HEAD', '/repo');
+
+      expect(result).toBe('abc1234def');
+      expect(spawnCalls[0].args).toEqual(['git', 'merge-base', 'main', 'HEAD']);
+      expect(spawnCalls[0].options.cwd).toBe('/repo');
+    });
+
+    it('returns null instead of throwing when git exits non-zero', async () => {
+      setMockSpawnResult('', 1, 'fatal: Not a valid object name nope');
+      const { getMergeBaseSafe } = await getGitModule();
+
+      const result = await getMergeBaseSafe('main', 'nope', '/repo');
+
+      expect(result).toBeNull();
+    });
+
+    it('forwards requestUser through the elevated spawn seam', async () => {
+      const runAsUserCalls: Array<Record<string, unknown>> = [];
+      const fakeRunAsUser = async (opts: Record<string, unknown>) => {
+        runAsUserCalls.push(opts);
+        return { stdout: 'abc1234\n', stderr: '', exitCode: 0, timedOut: false };
+      };
+
+      const mod = await getGitModule();
+      mod.__setRunAsUserForTesting(fakeRunAsUser);
+      try {
+        const result = await mod.getMergeBaseSafe('main', 'HEAD', '/repo', 'alice');
+
+        expect(result).toBe('abc1234');
+        expect(spawnCalls.length).toBe(0);
+        expect(runAsUserCalls.length).toBe(1);
+        expect(runAsUserCalls[0].username).toBe('alice');
+        expect(runAsUserCalls[0].cwd).toBe('/repo');
+        expect(runAsUserCalls[0].command).toBe("'git' 'merge-base' 'main' 'HEAD'");
+      } finally {
+        mod.__setRunAsUserForTesting(null);
+      }
+    });
+  });
+
   describe('getDiffNumstat', () => {
     it('should use gitRaw and preserve trailing newlines', async () => {
       const numstatOutput = '10\t5\tfile.txt\n3\t0\tREADME.md\n';
