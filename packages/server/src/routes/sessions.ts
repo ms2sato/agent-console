@@ -168,11 +168,12 @@ const sessions = new Hono<AppBindings>()
   })
   // Delete a session (synchronous)
   // For worktree sessions with async deletion, use the worktree deletion endpoint instead.
+  // Paused sessions are persisted-only; End must reach them, so this goes through forceDeleteSession.
   .delete('/:id', async (c) => {
     const sessionId = c.req.param('id');
     const { sessionManager } = c.get('appContext');
 
-    const success = await sessionManager.deleteSession(sessionId);
+    const success = await sessionManager.forceDeleteSession(sessionId);
 
     if (!success) {
       throw new NotFoundError('Session');
