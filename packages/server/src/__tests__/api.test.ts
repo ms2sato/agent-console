@@ -85,7 +85,7 @@ function restoreBunSpawn() {
 
 import { RepositoryManager } from '../services/repository-manager.js';
 import { SessionManager } from '../services/session-manager.js';
-import { createSessionRepository } from '../repositories/index.js';
+import { SqliteSessionRepository } from '../repositories/index.js';
 import { AgentManager } from '../services/agent-manager.js';
 import { SqliteAgentRepository } from '../repositories/sqlite-agent-repository.js';
 import { initializeDatabase, closeDatabase, getDatabase } from '../database/connection.js';
@@ -282,7 +282,7 @@ describe('API Routes Integration', () => {
     // Create managers with test JobQueue
     // This ensures cleanup operations have a valid jobQueue
     if (testJobQueue) {
-      const sessionRepository = await createSessionRepository();
+      const sessionRepository = new SqliteSessionRepository(getDatabase());
       testAgentManager = await AgentManager.create(new SqliteAgentRepository(getDatabase()));
       testSessionManager = await SessionManager.create({
         userMode: new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' }),

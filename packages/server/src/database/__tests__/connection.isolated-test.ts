@@ -23,8 +23,11 @@ import {
   initializeDatabase,
   closeDatabase,
   getDatabase,
-  databaseExists,
 } from '../connection.js';
+import { getDbPath } from '../../lib/config.js';
+
+/** Real-disk existence of the database file (Bun's native API bypasses fs mocks). */
+const databaseFileExists = (): Promise<boolean> => Bun.file(getDbPath()).exists();
 
 /**
  * Create a unique temporary directory using Bun native APIs.
@@ -70,11 +73,11 @@ describe('database/connection', () => {
 
   describe('initializeDatabase', () => {
     test('creates database file and runs migrations', async () => {
-      expect(await databaseExists()).toBe(false);
+      expect(await databaseFileExists()).toBe(false);
 
       const db = await initializeDatabase();
       expect(db).toBeDefined();
-      expect(await databaseExists()).toBe(true);
+      expect(await databaseFileExists()).toBe(true);
 
       // Verify schema version is set (v2 includes repositories and agents tables)
       const result = await sql<{ user_version: number }>`PRAGMA user_version`.execute(db);
@@ -180,17 +183,6 @@ describe('database/connection', () => {
     test('is idempotent (can be called when not initialized)', async () => {
       // Should not throw
       await closeDatabase();
-    });
-  });
-
-  describe('databaseExists', () => {
-    test('returns false when database does not exist', async () => {
-      expect(await databaseExists()).toBe(false);
-    });
-
-    test('returns true after database is initialized', async () => {
-      await initializeDatabase();
-      expect(await databaseExists()).toBe(true);
     });
   });
 

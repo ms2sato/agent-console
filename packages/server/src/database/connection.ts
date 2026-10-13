@@ -3056,18 +3056,6 @@ export async function migrateToV47(database: Kysely<Database>): Promise<void> {
 }
 
 /**
- * Check if SQLite database exists.
- * Used for auto-detection during migration from JSON to SQLite.
- * Uses Bun's native file API to avoid issues with fs mocks in tests.
- * @returns Promise that resolves to true if database file exists
- */
-export async function databaseExists(): Promise<boolean> {
-  // Use Bun.file().exists() for reliable file existence check
-  // This bypasses any fs module mocks that might be active in tests
-  return Bun.file(getDbPath()).exists();
-}
-
-/**
  * Migrate all data from JSON files to SQLite database.
  * Calls individual migration functions for each data type.
  *

@@ -19,7 +19,6 @@ export {
   getDatabase,
   initializeDatabase,
   closeDatabase,
-  databaseExists,
 } from './connection.js';
 export {
   toSessionRow,
