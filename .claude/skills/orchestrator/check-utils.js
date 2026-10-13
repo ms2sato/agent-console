@@ -63,6 +63,28 @@ export function getChangedFiles(prNumber, diffRef, { execImpl = exec } = {}) {
   return result.split('\0').filter(Boolean);
 }
 
+/**
+ * Paths ADDED by the change (not modified, not deleted), NUL-terminated for the
+ * same reason as `getChangedFiles`. With a resolved `diffRef` it diffs the two
+ * SHAs (PR mode); without one it diffs `origin/main...HEAD` (local mode), the
+ * same pairing `getChangedFiles` / `getLocalChangedFiles` use. A rename shows
+ * as an add and is included.
+ *
+ * @param {string|number} prNumber
+ * @param {{ baseRef?: string, headRef?: string }} diffRef
+ * @param {{ execImpl?: typeof exec }} [opts]
+ */
+export function getAddedFiles(prNumber, diffRef, { execImpl = exec } = {}) {
+  const { baseRef, headRef } = diffRef ?? {};
+  const range = baseRef && headRef ? `${baseRef} ${headRef}` : `${process.env.BASE_BRANCH || 'origin/main'}...HEAD`;
+  const result = execImpl(`git diff --name-only -z --diff-filter=A ${range}`);
+  if (result === null) {
+    console.error(`Error: Could not retrieve added files for ${prNumber ? `PR #${prNumber}` : 'the local diff'} (${range}).`);
+    process.exit(1);
+  }
+  return result.split('\0').filter(Boolean);
+}
+
 export function getLocalChangedFiles({ execImpl = exec } = {}) {
   // Use gh pr diff equivalent for local mode to ensure parity with CI mode.
   // gh pr diff compares against the target branch, which is typically 'main'.

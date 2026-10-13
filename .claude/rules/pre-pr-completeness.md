@@ -17,6 +17,7 @@ Before opening a PR that introduces a **new skill, script, rule, file type, or c
    - If it is a script or a skill that needs to run at a specific point, find where that point is described (e.g., `core-responsibilities.md §N`, `sprint-lifecycle.md`, or equivalent)
    - Add the invocation instruction there in the same PR
    - A future Orchestrator or agent that follows the canonical procedure must be able to execute this new thing without reading the PR description
+   - The mechanical half of this question is `check-unreferenced-additions.js`, run by `preflight-check.js`: an added `.claude/skills/**/*.js` or `SKILL.md` that no canonical source names fails the run and lists suggested locations. The judgment half -- whether the reference sits in the RIGHT procedure at the RIGHT moment -- stays manual.
 3. **If this has tests, are failure paths tested?**
    - Unit tests: happy path + at least one failure / edge case (empty input, invalid input, boundary value)
    - Integration tests where applicable per `test-trigger.md`

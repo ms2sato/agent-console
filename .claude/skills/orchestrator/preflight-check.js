@@ -7,6 +7,7 @@
  * - Test file coverage for production code changes
  * - Integration test gap detection
  * - Protocol-dispatch fixture gap detection (dispatch-union Tier 2, BLOCKING)
+ * - Unreferenced additions (a new skill script / SKILL.md no procedure names, BLOCKING)
  *
  * This is the CI-facing script. For full acceptance checks requiring
  * human judgment (Q1-Q9), use acceptance-check.js via run_process.
@@ -24,6 +25,7 @@ import { fileURLToPath } from 'node:url';
 import {
   getChangedFiles,
   getLocalChangedFiles,
+  getAddedFiles,
   categorizeFiles,
   findTestFiles,
   resolvePrDiffRef,
@@ -38,6 +40,7 @@ import {
 } from './check-utils.js';
 import { run as runDuplicationCheck } from './rule-skill-duplication-check.js';
 import { checkWorkspaceLinks } from './check-workspace-links.js';
+import { checkUnreferencedAdditions } from './check-unreferenced-additions.js';
 
 // This file lives at .claude/skills/orchestrator/preflight-check.js, so
 // three levels up is the repo root -- same derivation check-utils.js uses
@@ -253,6 +256,35 @@ export function printProtocolDispatchCheck(protocolDispatchGap) {
 }
 
 /**
+ * Render the "## Unreferenced additions" section. BLOCKING: a skill script or
+ * SKILL.md added without any reference source naming it fails the run. The
+ * mechanical half of pre-pr-completeness.md Q2; whether the reference sits in
+ * the RIGHT procedure stays a human judgment.
+ *
+ * @param {{ unreferenced: Array<{ file: string, key: string, suggestions: string[] }> }} result
+ * @returns {boolean} hasUnreferenced
+ */
+export function printUnreferencedAdditionsCheck(result) {
+  console.log('## Unreferenced additions\n');
+
+  if (result.unreferenced.length === 0) {
+    console.log('✅ No added skill script or SKILL.md is left unreferenced.\n');
+    return false;
+  }
+
+  console.log(`❌ ${result.unreferenced.length} added file(s) are named by no canonical procedure:\n`);
+  for (const { file, key, suggestions } of result.unreferenced) {
+    console.log(`- \`${file}\` (key: \`${key}\`)`);
+    console.log('  Add a reference in one of:');
+    for (const suggestion of suggestions) {
+      console.log(`    - \`${suggestion}\``);
+    }
+  }
+  console.log();
+  return true;
+}
+
+/**
  * Select the coverage-check verdict line. Pure function so the
  * comment-only-exemption wording can be unit tested without driving
  * `run()`'s `process.exit()` side effect.
@@ -355,7 +387,7 @@ export function printCoverageCheck(testCoverage, integrationTestNeeds) {
 
 // --- Main ---
 
-function run(changedFiles, diffRef = {}, repoRoot = DEFAULT_REPO_ROOT) {
+function run(changedFiles, diffRef = {}, repoRoot = DEFAULT_REPO_ROOT, addedFiles = []) {
   // Workspace link check runs FIRST and, on any finding, exits immediately
   // without running coverage / language / duplication / etc. — see
   // `printWorkspaceLinkCheck`'s doc comment for why.
@@ -373,6 +405,9 @@ function run(changedFiles, diffRef = {}, repoRoot = DEFAULT_REPO_ROOT) {
 
   console.log('\n---\n');
   const hasProtocolDispatchGap = printProtocolDispatchCheck(protocolDispatchGap);
+
+  console.log('\n---\n');
+  const hasUnreferencedAddition = printUnreferencedAdditionsCheck(checkUnreferencedAdditions(addedFiles, repoRoot));
 
   // Rule/Skill duplication invariant — runs on every preflight because drift
   // can be introduced by edits anywhere, not just the current PR's diff.
@@ -394,6 +429,7 @@ function run(changedFiles, diffRef = {}, repoRoot = DEFAULT_REPO_ROOT) {
   if (
     hasUnitGaps ||
     hasProtocolDispatchGap ||
+    hasUnreferencedAddition ||
     duplicationExit !== 0 ||
     languageExit !== 0 ||
     blameShiftExit !== 0 ||
@@ -436,5 +472,5 @@ if (isMainModule) {
   } else {
     changedFiles = getLocalChangedFiles();
   }
-  run(changedFiles, diffRef);
+  run(changedFiles, diffRef, DEFAULT_REPO_ROOT, getAddedFiles(prNumber, diffRef));
 }
