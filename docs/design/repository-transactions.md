@@ -188,4 +188,4 @@ This study introduces no named concept in any signature, so it adds no `docs/glo
 
 - Umbrella: [#2068](https://github.com/ms2sato/agent-console/issues/2068) -- optional `executor` parameter on repository and job-queue write methods
 - Atomic repository unregister (F1): [#2066](https://github.com/ms2sato/agent-console/issues/2066)
-- Atomic session and worker deletion (F2, F3): [#2075](https://github.com/ms2sato/agent-console/pull/2075)
+- Atomic session and worker deletion (F2, F3): [#2067](https://github.com/ms2sato/agent-console/issues/2067) (landed in PR [#2075](https://github.com/ms2sato/agent-console/pull/2075))
