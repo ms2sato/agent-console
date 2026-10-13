@@ -945,14 +945,4 @@ export class RepositoryManager {
   getAllRepositories(): Repository[] {
     return Array.from(this.repositories.values());
   }
-
-  findRepositoryByPath(repoPath: string): Repository | undefined {
-    const absolutePath = path.resolve(repoPath);
-    for (const repo of this.repositories.values()) {
-      if (repo.path === absolutePath) {
-        return repo;
-      }
-    }
-    return undefined;
-  }
 }
