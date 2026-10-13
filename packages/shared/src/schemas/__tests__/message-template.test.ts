@@ -1,6 +1,9 @@
 import { describe, it, expect } from 'bun:test';
 import * as v from 'valibot';
+import type { MessageTemplate } from '../../types/message-template';
 import {
+  MessageTemplateSchema,
+  MessageTemplatesResponseSchema,
   CreateMessageTemplateRequestSchema,
   UpdateMessageTemplateRequestSchema,
   ReorderMessageTemplatesRequestSchema,
@@ -118,5 +121,33 @@ describe('strict-parse contract (unknown-key rejection)', () => {
       unexpectedField: 'leaked',
     });
     expect(result.success).toBe(false);
+  });
+});
+
+type Assert<T extends true> = T;
+type Equals<A, B> = (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2 ? true : false;
+
+// The hand-written `MessageTemplate` domain type and the wire schema must stay one shape.
+export type _MessageTemplateMatchesSchema = Assert<Equals<MessageTemplate, v.InferOutput<typeof MessageTemplateSchema>>>;
+
+describe('MessageTemplatesResponseSchema', () => {
+  const template = {
+    id: 't1',
+    title: 'T',
+    content: 'c',
+    sortOrder: 0,
+    createdAt: '2026-01-01T00:00:00.000Z',
+    updatedAt: '2026-01-01T00:00:00.000Z',
+  };
+
+  it('accepts an empty list and a stored template', () => {
+    expect(v.safeParse(MessageTemplatesResponseSchema, { templates: [] }).success).toBe(true);
+    expect(v.safeParse(MessageTemplatesResponseSchema, { templates: [template] }).success).toBe(true);
+  });
+
+  it('rejects a non-numeric sortOrder, an extra template field and an extra top-level key', () => {
+    expect(v.safeParse(MessageTemplatesResponseSchema, { templates: [{ ...template, sortOrder: '0' }] }).success).toBe(false);
+    expect(v.safeParse(MessageTemplatesResponseSchema, { templates: [{ ...template, extra: 1 }] }).success).toBe(false);
+    expect(v.safeParse(MessageTemplatesResponseSchema, { templates: [], extra: 1 }).success).toBe(false);
   });
 });

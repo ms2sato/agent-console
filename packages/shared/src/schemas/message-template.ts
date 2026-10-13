@@ -26,3 +26,20 @@ export const ReorderMessageTemplatesRequestSchema = v.strictObject({
 export type CreateMessageTemplateRequest = v.InferOutput<typeof CreateMessageTemplateRequestSchema>;
 export type UpdateMessageTemplateRequest = v.InferOutput<typeof UpdateMessageTemplateRequestSchema>;
 export type ReorderMessageTemplatesRequest = v.InferOutput<typeof ReorderMessageTemplatesRequestSchema>;
+
+/** A saved message template as it crosses the wire. */
+export const MessageTemplateSchema = v.strictObject({
+  id: v.string(),
+  title: v.string(),
+  content: v.string(),
+  sortOrder: v.number(),
+  createdAt: v.string(),
+  updatedAt: v.string(),
+});
+
+/** Schema for `GET /api/message-templates`'s response. */
+export const MessageTemplatesResponseSchema = v.strictObject({
+  templates: v.array(MessageTemplateSchema),
+});
+
+export type MessageTemplatesResponse = v.InferOutput<typeof MessageTemplatesResponseSchema>;

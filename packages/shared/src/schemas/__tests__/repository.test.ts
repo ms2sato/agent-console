@@ -1,6 +1,10 @@
 import { describe, it, expect } from 'bun:test';
 import * as v from 'valibot';
+import type { Worktree } from '../../types/repository';
 import {
+  RepositoryResponseSchema,
+  WorktreesResponseSchema,
+  BranchesResponseSchema,
   CreateRepositoryRequestSchema,
   CloneRepositoryRequestSchema,
   CreateWorktreeRequestSchema,
@@ -1233,5 +1237,47 @@ describe('FetchGitHubIssueRequestSchema', () => {
       reference: '',
     });
     expect(result.success).toBe(false);
+  });
+});
+
+type AssertR<T extends true> = T;
+type EqualsR<A, B> = (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2 ? true : false;
+
+// The hand-written `Worktree` domain type and the schema's element type must stay one shape.
+export type _WorktreeMatchesSchema = AssertR<
+  EqualsR<Worktree, v.InferOutput<typeof WorktreesResponseSchema>['worktrees'][number]>
+>;
+
+describe('response schemas (pass 1)', () => {
+  const repository = {
+    id: 'r1',
+    name: 'repo',
+    path: '/repo',
+    createdAt: '2026-01-01T00:00:00.000Z',
+    orchestratorSessionIds: [],
+    clonedSourceRepoPath: null,
+  };
+
+  it('RepositoryResponseSchema composes the shared repository entity and is strict', () => {
+    expect(v.safeParse(RepositoryResponseSchema, { repository }).success).toBe(true);
+    expect(v.safeParse(RepositoryResponseSchema, { repository, extra: 1 }).success).toBe(false);
+    expect(v.safeParse(RepositoryResponseSchema, { repository: { ...repository, extra: 1 } }).success).toBe(false);
+  });
+
+  it.each(['ok', 'missing', 'inaccessible'])('WorktreesResponseSchema accepts pathStatus %s', (pathStatus) => {
+    expect(v.safeParse(WorktreesResponseSchema, { worktrees: [], pathStatus }).success).toBe(true);
+  });
+
+  it('WorktreesResponseSchema rejects an unknown pathStatus, a malformed worktree and an extra key', () => {
+    expect(v.safeParse(WorktreesResponseSchema, { worktrees: [], pathStatus: 'gone' }).success).toBe(false);
+    expect(v.safeParse(WorktreesResponseSchema, { worktrees: [{ path: '/p' }], pathStatus: 'ok' }).success).toBe(false);
+    expect(v.safeParse(WorktreesResponseSchema, { worktrees: [], pathStatus: 'ok', extra: 1 }).success).toBe(false);
+  });
+
+  it('BranchesResponseSchema accepts empty lists and a null default, and is strict', () => {
+    expect(v.safeParse(BranchesResponseSchema, { local: [], remote: [], defaultBranch: null }).success).toBe(true);
+    expect(v.safeParse(BranchesResponseSchema, { local: ['a'], remote: ['origin/a'], defaultBranch: 'a' }).success).toBe(true);
+    expect(v.safeParse(BranchesResponseSchema, { local: [], remote: [] }).success).toBe(false);
+    expect(v.safeParse(BranchesResponseSchema, { local: [], remote: [], defaultBranch: null, extra: 1 }).success).toBe(false);
   });
 });

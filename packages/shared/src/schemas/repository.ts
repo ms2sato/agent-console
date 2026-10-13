@@ -1,5 +1,6 @@
 import * as v from 'valibot';
 import { branchNamePattern, branchNameErrorMessage } from './session';
+import { RepositorySchema, WorktreeSchema } from './app-server-message.js';
 
 /**
  * Schema for creating a repository
@@ -413,3 +414,43 @@ export type RemoteBranchStatus = v.InferOutput<typeof RemoteBranchStatusSchema>;
 export interface GenerateRepositoryDescriptionResponse {
   description: string;
 }
+
+/**
+ * Schema for `GET /api/repositories/:id`'s response. Composes the shared
+ * `RepositorySchema` entity (the same one the `/ws/app` repository broadcasts
+ * use) rather than restating it.
+ */
+export const RepositoryResponseSchema = v.strictObject({
+  repository: RepositorySchema,
+});
+
+/**
+ * What the server process observed about a repository's directory when it
+ * listed the repository's worktrees.
+ * - `ok`: readable (or the listing failed for a reason other than the path)
+ * - `missing`: the directory does not exist (moved, renamed or deleted)
+ * - `inaccessible`: the directory exists or could not be told apart, but the
+ *   server process cannot read it (permissions or another OS-level error)
+ */
+export const RepositoryPathStatusSchema = v.picklist(['ok', 'missing', 'inaccessible']);
+
+/** Schema for `GET /api/repositories/:id/worktrees`'s response. */
+export const WorktreesResponseSchema = v.strictObject({
+  worktrees: v.array(WorktreeSchema),
+  pathStatus: RepositoryPathStatusSchema,
+});
+
+/**
+ * Schema for the response of listing a repository's (or a session's) branches:
+ * `GET /api/repositories/:id/branches` and `GET /api/sessions/:id/branches`.
+ */
+export const BranchesResponseSchema = v.strictObject({
+  local: v.array(v.string()),
+  remote: v.array(v.string()),
+  defaultBranch: v.nullable(v.string()),
+});
+
+export type RepositoryResponse = v.InferOutput<typeof RepositoryResponseSchema>;
+export type RepositoryPathStatus = v.InferOutput<typeof RepositoryPathStatusSchema>;
+export type WorktreesResponse = v.InferOutput<typeof WorktreesResponseSchema>;
+export type BranchesResponse = v.InferOutput<typeof BranchesResponseSchema>;

@@ -103,6 +103,7 @@ function createTestRepository(overrides?: Partial<Repository>): Repository {
     name: 'my-repo',
     path: '/test/repos/my-repo',
     createdAt: new Date().toISOString(),
+    orchestratorSessionIds: [],
     clonedSourceRepoPath: null,
     ...overrides,
   } as Repository;

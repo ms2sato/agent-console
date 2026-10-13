@@ -1,0 +1,191 @@
+/**
+ * Client-Server Boundary Test: the eight GET fetchers that parse their response
+ * through a strict wire schema (#1367 pass 1).
+ *
+ * Each fetcher (`fetchRepository`, `fetchWorkers`, `fetchWorktrees`,
+ * `fetchBranches`, `fetchAgent`, `fetchMessageTemplates`, `fetchSkills`,
+ * `fetchCurrentUser`) used to cast the JSON and trust it. They now `v.parse`
+ * a `v.strictObject` schema, so a server body that gains or renames a field
+ * turns a working call into a runtime throw in the browser -- and nothing on
+ * either side alone would notice: the route tests assert the fields they know,
+ * the client unit tests inject hand-written bodies.
+ *
+ * This file runs the REAL client function against the REAL route (the fetch
+ * bridge hands the client's request to the real Hono app, real services over
+ * the in-memory fs and SQLite; only git and the PTY are the recorded proxies)
+ * and, per function, pins two things:
+ *   1. the client function resolves with exactly what the route sent (the real
+ *      body passes the strict schema), and
+ *   2. a control: the same raw route body with ONE extra field is rejected by
+ *      the schema, so (1) is attributable to the schema's strictness and not
+ *      to a schema that accepts anything.
+ *
+ * Reach, measured (see the PR body): reverting one fetcher to the old cast
+ * keeps (1) green for that function but the unit tests for its malformed-body
+ * case fail; adding a field to the route's body fails (1) AND (2)'s plain-body
+ * half for that function.
+ */
+import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
+import { Hono } from 'hono';
+import * as v from 'valibot';
+import {
+  setupTestEnvironment,
+  cleanupTestEnvironment,
+} from '@agent-console/server/src/__tests__/test-utils';
+import { setupMemfs } from '@agent-console/server/src/__tests__/utils/mock-fs-helper';
+import { mockGit } from '@agent-console/server/src/__tests__/utils/mock-git-helper';
+import { createTestContext, shutdownAppContext } from '@agent-console/server/src/app-context';
+import type { AppContext, AppBindings } from '@agent-console/server/src/app-context';
+import { createMockPtyProvider } from '@agent-console/server/src/__tests__/utils/mock-pty';
+import { onApiError } from '@agent-console/server/src/lib/error-handler';
+import { api } from '@agent-console/server/src/routes/api';
+import {
+  fetchRepository,
+  fetchWorkers,
+  fetchWorktrees,
+  fetchBranches,
+  fetchAgent,
+  fetchMessageTemplates,
+  fetchSkills,
+  fetchCurrentUser,
+} from '@agent-console/client/src/lib/api';
+import {
+  RepositoryResponseSchema,
+  WorkersResponseSchema,
+  WorktreesResponseSchema,
+  BranchesResponseSchema,
+  AgentResponseSchema,
+  MessageTemplatesResponseSchema,
+  SkillsResponseSchema,
+  CurrentUserResponseSchema,
+} from '@agent-console/shared';
+import { createFetchBridge } from './test-utils';
+
+const TEST_REPO_PATH = '/test/repo-response-schemas';
+
+describe('Client-Server Boundary: strict response schemas on the eight pass-1 GET fetchers', () => {
+  let ctx: AppContext;
+  let app: Hono<AppBindings>;
+  let bridge: ReturnType<typeof createFetchBridge>;
+  let repoId: string;
+  let sessionId: string;
+  let authUserId: string;
+
+  beforeEach(async () => {
+    await setupTestEnvironment();
+    setupMemfs({ [`${TEST_REPO_PATH}/.git/HEAD`]: 'ref: refs/heads/main' });
+    ctx = await createTestContext({ ptyProvider: createMockPtyProvider() });
+    repoId = (await ctx.repositoryManager.registerRepository(TEST_REPO_PATH)).id;
+    // The context's own single-user identity (and its `users` row).
+    const authUser = ctx.userMode.authenticate(() => undefined);
+    if (!authUser) throw new Error('single-user mode must resolve a user');
+    authUserId = authUser.id;
+    const session = await ctx.sessionManager.createSession(
+      { type: 'quick', locationPath: TEST_REPO_PATH, agentId: 'claude-code-builtin' },
+      { createdBy: authUserId },
+    );
+    sessionId = session.id;
+
+    app = new Hono<AppBindings>();
+    app.use('*', async (c, next) => {
+      c.set('appContext', ctx);
+      await next();
+    });
+    app.onError(onApiError);
+    app.route('/api', api);
+    bridge = createFetchBridge(app);
+  });
+
+  afterEach(async () => {
+    bridge?.restore();
+    await shutdownAppContext(ctx);
+    await cleanupTestEnvironment();
+  });
+
+  async function rawBody(path: string): Promise<unknown> {
+    const res = await app.request(path, { method: 'GET' });
+    expect(res.status).toBe(200);
+    return res.json();
+  }
+
+  /** The strict schema accepts the route's real body and rejects it plus one extra field. */
+  function expectStrictControl(schema: v.GenericSchema, body: unknown): void {
+    expect(v.safeParse(schema, body).success).toBe(true);
+    expect(v.safeParse(schema, { ...(body as object), extra: true }).success).toBe(false);
+  }
+
+  it('fetchRepository: the real body parses, and an extra field is rejected', async () => {
+    const result = await fetchRepository(repoId);
+    const body = await rawBody(`/api/repositories/${repoId}`);
+
+    expect(result).toEqual(body as typeof result);
+    expect(result.repository.id).toBe(repoId);
+    expectStrictControl(RepositoryResponseSchema, body);
+  });
+
+  it('fetchWorkers: the real body parses, and an extra field is rejected', async () => {
+    const result = await fetchWorkers(sessionId);
+    const body = await rawBody(`/api/sessions/${sessionId}/workers`);
+
+    expect(result).toEqual(body as typeof result);
+    expect(result.workers.length).toBeGreaterThan(0);
+    expectStrictControl(WorkersResponseSchema, body);
+  });
+
+  it('fetchWorktrees: the real body parses, and an extra field is rejected', async () => {
+    mockGit.listWorktrees.mockImplementation(() =>
+      Promise.resolve(`worktree ${TEST_REPO_PATH}\nHEAD abc\nbranch refs/heads/main\n`));
+
+    const result = await fetchWorktrees(repoId);
+    const body = await rawBody(`/api/repositories/${repoId}/worktrees`);
+
+    expect(result).toEqual(body as typeof result);
+    expect(result.pathStatus).toBe('ok');
+    expectStrictControl(WorktreesResponseSchema, body);
+  });
+
+  it('fetchBranches: the real body parses, and an extra field is rejected', async () => {
+    const result = await fetchBranches(repoId);
+    const body = await rawBody(`/api/repositories/${repoId}/branches`);
+
+    expect(result).toEqual(body as typeof result);
+    expectStrictControl(BranchesResponseSchema, body);
+  });
+
+  it('fetchAgent: the real body parses, and an extra field is rejected', async () => {
+    const result = await fetchAgent('claude-code-builtin');
+    const body = await rawBody('/api/agents/claude-code-builtin');
+
+    expect(result).toEqual(body as typeof result);
+    expect(result.agent.id).toBe('claude-code-builtin');
+    expectStrictControl(AgentResponseSchema, body);
+  });
+
+  it('fetchMessageTemplates: the real body parses (with a stored template), and an extra field is rejected', async () => {
+    await ctx.messageTemplateRepository.create('template-1', 'Greeting', 'hello', 0);
+
+    const result = await fetchMessageTemplates();
+    const body = await rawBody('/api/message-templates');
+
+    expect(result).toEqual(body as typeof result);
+    expect(result.templates.map((t) => t.title)).toEqual(['Greeting']);
+    expectStrictControl(MessageTemplatesResponseSchema, body);
+  });
+
+  it('fetchSkills: the real body parses, and an extra field is rejected', async () => {
+    const result = await fetchSkills();
+    const body = await rawBody('/api/skills');
+
+    expect(result).toEqual(body as typeof result);
+    expectStrictControl(SkillsResponseSchema, body);
+  });
+
+  it('fetchCurrentUser: the real body parses (user + preferences), and an extra field is rejected', async () => {
+    const result = await fetchCurrentUser();
+    const body = await rawBody('/api/auth/me');
+
+    expect(result).toEqual(body as typeof result);
+    expect(result.user?.id).toBe(authUserId);
+    expectStrictControl(CurrentUserResponseSchema, body);
+  });
+});

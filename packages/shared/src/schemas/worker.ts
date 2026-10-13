@@ -1,5 +1,6 @@
 import * as v from 'valibot';
 import { branchNamePattern, branchNameErrorMessage } from './session.js';
+import { WorkerSchema } from './app-server-message.js';
 
 /**
  * Base options for worker creation
@@ -295,3 +296,10 @@ export type RestartWorkerRequest = v.InferOutput<typeof RestartWorkerRequestSche
 
 export type UpdateEmbeddedAgentWorkerRequest = v.InferOutput<typeof UpdateEmbeddedAgentWorkerRequestSchema>;
 export type SetMcpServerPermissionsRequest = v.InferOutput<typeof SetMcpServerPermissionsRequestSchema>;
+
+/** Schema for `GET /api/sessions/:sessionId/workers`'s response. */
+export const WorkersResponseSchema = v.strictObject({
+  workers: v.array(WorkerSchema),
+});
+
+export type WorkersResponse = v.InferOutput<typeof WorkersResponseSchema>;

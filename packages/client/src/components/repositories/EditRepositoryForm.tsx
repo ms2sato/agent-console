@@ -12,8 +12,8 @@ import {
   testRepositorySlackIntegration,
   fetchNotificationStatus,
   fetchSharedAccounts,
-  type RepositoryResponse,
 } from '../../lib/api';
+import type { RepositoryResponse } from '@agent-console/shared';
 import { repositoryKeys, notificationKeys, sharedAccountKeys } from '../../lib/query-keys';
 import { FormField, Input, Textarea } from '../ui/FormField';
 import { FormOverlay, Spinner } from '../ui/Spinner';

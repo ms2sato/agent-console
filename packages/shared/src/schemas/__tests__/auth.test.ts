@@ -1,6 +1,13 @@
 import { describe, it, expect } from 'bun:test';
 import * as v from 'valibot';
-import { LoginRequestSchema, ConfigResponseSchema, MePreferencesSchema } from '../auth';
+import type { AuthUser } from '../../types/auth';
+import {
+  LoginRequestSchema,
+  ConfigResponseSchema,
+  MePreferencesSchema,
+  AuthUserSchema,
+  CurrentUserResponseSchema,
+} from '../auth';
 
 describe('LoginRequestSchema', () => {
   it('should accept a valid login request', () => {
@@ -143,5 +150,31 @@ describe('MePreferencesSchema', () => {
     if (!result.success) {
       expect(result.issues.some((i) => i.path?.[0]?.key === 'userId')).toBe(true);
     }
+  });
+});
+
+type Assert<T extends true> = T;
+type Equals<A, B> = (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2 ? true : false;
+
+// The hand-written `AuthUser` domain type and the wire schema must stay one shape.
+export type _AuthUserMatchesSchema = Assert<Equals<AuthUser, v.InferOutput<typeof AuthUserSchema>>>;
+
+describe('CurrentUserResponseSchema', () => {
+  const user = { id: 'u1', username: 'alice', homeDir: '/home/alice' };
+
+  it('accepts the unauthenticated body (user null, no preferences)', () => {
+    expect(v.safeParse(CurrentUserResponseSchema, { user: null }).success).toBe(true);
+  });
+
+  it('accepts a user with preferences', () => {
+    expect(
+      v.safeParse(CurrentUserResponseSchema, { user, preferences: { disableClaudeAiConnectors: true } }).success,
+    ).toBe(true);
+  });
+
+  it('rejects a missing user key, an unknown user field and an extra top-level key', () => {
+    expect(v.safeParse(CurrentUserResponseSchema, {}).success).toBe(false);
+    expect(v.safeParse(CurrentUserResponseSchema, { user: { ...user, extra: 1 } }).success).toBe(false);
+    expect(v.safeParse(CurrentUserResponseSchema, { user: null, extra: 1 }).success).toBe(false);
   });
 });
