@@ -12,6 +12,9 @@
 #                           inputs larger than one environment variable can
 #                           carry, e.g. the 64 KiB-plus journals the SIGPIPE
 #                           case needs)
+#   FAKE_JOURNAL_EMPTY_UNTIL_CALL=N
+#                           calls before the Nth print nothing, from the Nth
+#                           on the normal output (needs FAKE_COUNTER_DIR)
 #   FAKE_ARGV_LOG           when set, this fixture's own argv is appended to
 #                           that file, so a test can pin that `--since <ts>`
 #                           and `-u <unit>` actually reached journalctl
@@ -22,6 +25,16 @@ fi
 if [ "${FAKE_JOURNALCTL_FAIL:-0}" = "1" ]; then
   echo "fake-journalctl: No journal files were opened due to insufficient permissions (simulated)" >&2
   exit 1
+fi
+if [ -n "${FAKE_JOURNAL_EMPTY_UNTIL_CALL:-}" ]; then
+  # The boot lines trail the first reads (journald flush latency): calls
+  # before the Nth print nothing. The call count lives in
+  # $FAKE_COUNTER_DIR/journal.
+  n=$(( $(cat "$FAKE_COUNTER_DIR/journal" 2>/dev/null || echo 0) + 1 ))
+  echo "$n" >"$FAKE_COUNTER_DIR/journal"
+  if [ "$n" -lt "$FAKE_JOURNAL_EMPTY_UNTIL_CALL" ]; then
+    exit 0
+  fi
 fi
 if [ -n "${FAKE_JOURNAL_FILE:-}" ]; then
   cat "$FAKE_JOURNAL_FILE"

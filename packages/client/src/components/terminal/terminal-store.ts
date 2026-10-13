@@ -791,6 +791,18 @@ class TerminalController implements TerminalInstance {
         this.patchMeta({ activityState: message.state });
         break;
       // server-restarted: no cache to invalidate; ignore.
+      case 'server-restarted':
+        break;
+      // restore-info is an embedded-agent-only message (Transcript Restore); a PTY
+      // terminal never renders it.
+      case 'restore-info':
+        break;
+      default: {
+        // Exhaustive check: adding a WorkerServerMessage member without a case
+        // above is a type error here instead of a silently dropped frame.
+        const _exhaustive: never = message;
+        logger.warn('[terminal] Unknown worker message type:', _exhaustive);
+      }
     }
   }
 
