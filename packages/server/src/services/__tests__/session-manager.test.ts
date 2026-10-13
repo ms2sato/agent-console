@@ -1655,6 +1655,8 @@ describe('SessionManager', () => {
       // (#1205) -- a compile-time guard so a future narrowing of this
       // annotation (dropping the field) fails typecheck here rather than only
       // surfacing downstream where a caller actually reads `.completed`.
+      // The guard was inert from its introduction until the dynamic import was
+      // typed (the module was `any`), so its reach is measured only since then.
       const _typeGuard:
         | { epoch: number; restoredMessageCount: number; repairedToolCallIds: string[]; completed: boolean }
         | { epoch: number; failed: true }

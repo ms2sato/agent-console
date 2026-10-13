@@ -194,7 +194,7 @@ Sessions, workers, repositories and agents are persisted in a SQLite database, `
 
 The persisted record shapes (`PersistedSession`, `PersistedWorker` and its variants, `PersistedRepository`) are defined once in [`packages/server/src/repositories/persisted-types.ts`](../../packages/server/src/repositories/persisted-types.ts). That file is the source of truth; this document links to it instead of re-declaring the shapes, because an inline copy is what drifts.
 
-Installations that predate SQLite kept `sessions.json`, `repositories.json` and `agents.json` in the config directory. `migrateFromJson` (`packages/server/src/database/connection.ts`) imports them once at startup and renames each file to `*.migrated`; production code does not read or write those files afterwards.
+Installations that predate SQLite kept the sessions, repositories and agents in JSON files in the config directory. `migrateFromJson` (`packages/server/src/database/connection.ts`) imports them once at startup and renames each file to `*.migrated`; production code does not read or write those files afterwards.
 
 ## WebSocket Endpoints
 
@@ -426,7 +426,7 @@ immediate PTY exit 127").
 When the server starts, it performs the following steps in order:
 
 1. **Initialize Sessions** (`initializeSessions`)
-   - Load all sessions from `sessions.json`
+   - Load all sessions from the `sessions` table (`SqliteSessionRepository.findAll`)
    - For each session:
      - If `serverPid` is alive (another server instance is running): Skip (don't inherit)
      - If `serverPid` is dead or missing: Inherit the session
@@ -449,7 +449,7 @@ When the server starts, it performs the following steps in order:
 
 ### serverPid Field
 
-The `serverPid` field in `sessions.json` tracks which server instance owns each session:
+The `server_pid` column on the `sessions` rows (`serverPid` on the persisted record) tracks which server instance owns each session:
 
 - When a session is created: `serverPid` = current server's PID
 - When a session is inherited on restart: `serverPid` is updated to the new server's PID
@@ -464,43 +464,7 @@ This design supports:
 
 ### Data Migration
 
-Old `sessions.json` format:
-```json
-[{ "id": "...", "worktreePath": "...", "pid": 123, ... }]
-```
-
-Detection logic:
-```typescript
-function isOldFormat(session: unknown): boolean {
-  return typeof session === 'object' && session !== null &&
-    (!('type' in session) || !('workers' in session));
-}
-```
-
-Migration logic (runs automatically on server startup):
-```typescript
-function migrateSession(old: OldPersistedSession): PersistedSession {
-  return {
-    id: old.id,
-    type: old.repositoryId === 'default' ? 'quick' : 'worktree',
-    locationPath: old.worktreePath,
-    repositoryId: old.repositoryId !== 'default' ? old.repositoryId : undefined,
-    worktreeId: old.repositoryId !== 'default' ? old.worktreePath : undefined,
-    serverPid: old.serverPid,
-    createdAt: old.createdAt,
-    workers: [{
-      id: `${old.id}-agent`,
-      type: 'agent',
-      name: 'Claude',
-      agentId: 'claude-code-builtin',
-      pid: old.pid,
-      createdAt: old.createdAt,
-    }],
-  };
-}
-```
-
-Note: Migration happens in-memory when loading sessions. The new format is written back on next save.
+The pre-worker JSON session format and its in-code migration (`OldPersistedSession` / `migrateSession`) were removed in Issue #1389 step 2. `connection.ts`'s one-time JSON-to-SQLite import reads only the current shape (`migrateSessionsFromJson` parses `PersistedSession[]` directly), so the old format was already unmigratable.
 
 ## Future Extensibility
 
