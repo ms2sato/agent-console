@@ -1,4 +1,6 @@
+import type { Kysely } from 'kysely';
 import type { PersistedSession } from './persisted-types.js';
+import type { Database } from '../database/schema.js';
 
 /**
  * Supported fields for partial session updates.
@@ -65,8 +67,12 @@ export interface SessionRepository {
    * Save a single session.
    * Creates a new session or updates an existing one with the same ID.
    * @param session - The session to save
+   * @param executor - Optional handle the statement runs on. Omitted: the shared
+   *   connection. A `Transaction<Database>` is a `Kysely<Database>`
+   *   (`kysely.d.ts:409`, `class Transaction<DB> extends Kysely<DB>`), so a caller
+   *   holding one passes it here to make this write part of its transaction.
    */
-  save(session: PersistedSession): Promise<void>;
+  save(session: PersistedSession, executor?: Kysely<Database>): Promise<void>;
 
   /**
    * Persists exactly this set: sessions in the set are upserted (their
@@ -74,14 +80,22 @@ export interface SessionRepository {
    * preserved); sessions not in the set are deleted with their dependents.
    * Never implemented as delete-all + re-insert.
    * @param sessions - The sessions to save
+   * @param executor - Optional handle the statement runs on. Omitted: the shared
+   *   connection. A `Transaction<Database>` is a `Kysely<Database>`
+   *   (`kysely.d.ts:409`, `class Transaction<DB> extends Kysely<DB>`), so a caller
+   *   holding one passes it here to make this write part of its transaction.
    */
-  saveAll(sessions: PersistedSession[]): Promise<void>;
+  saveAll(sessions: PersistedSession[], executor?: Kysely<Database>): Promise<void>;
 
   /**
    * Delete a session by its ID.
    * @param id - The session ID to delete
+   * @param executor - Optional handle the statement runs on. Omitted: the shared
+   *   connection. A `Transaction<Database>` is a `Kysely<Database>`
+   *   (`kysely.d.ts:409`, `class Transaction<DB> extends Kysely<DB>`), so a caller
+   *   holding one passes it here to make this write part of its transaction.
    */
-  delete(id: string): Promise<void>;
+  delete(id: string, executor?: Kysely<Database>): Promise<void>;
 
   /**
    * Update specific fields of a session without replacing the entire session.

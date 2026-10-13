@@ -165,7 +165,7 @@ Rules the implementation Issues must carry:
 
 ### Migration path
 
-1. Add `executor` to `JobQueue.enqueue`, `RepositoryRepository.delete`, `SessionRepository.delete` and `.save` (interface and sqlite implementation), and the post-commit wake. No caller changes yet; the suite proves omission is a no-op.
+1. **Done ([#2070](https://github.com/ms2sato/agent-console/pull/2070)).** Add `executor` to `JobQueue.enqueue`, `RepositoryRepository.delete`, `SessionRepository.delete` and `.save` / `.saveAll` (interface, sqlite implementation, and the JSON test double, which ignores it), and the post-commit `wake()`. No caller changes; the existing suites prove omission is a no-op.
 2. Convert `unregisterRepository` (F1): enqueue + delete in one transaction, then wake; the polarity test throws at the delete and asserts the `jobs` table is unchanged.
 3. Convert `deleteSession`, `forceDeleteSession`, `deleteWorker` (F2, F3), and make `cleanupOrphanProcesses` use the same pair so the codebase has ONE order.
 4. Optional, only if a path needs it: `deleteEmbeddedAgent` (#11, a disk leak), `registerSharedAccountCore` (#8, benign). Converting them is cheap once step 1 exists, but nothing demands it.

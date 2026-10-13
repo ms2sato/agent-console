@@ -1778,4 +1778,72 @@ describe('SqliteSessionRepository', () => {
       expect(row.title).toBe('Renamed');
     });
   });
+  describe('executor argument (a caller-held transaction)', () => {
+    // A statement issued on the shared connection from inside an open
+    // transaction body never completes on this driver (single connection behind
+    // a mutex), so a nested `transaction()` or a forgotten executor shows up as
+    // 'hung' here instead of as a failure message.
+    const settle = (p: Promise<unknown>): Promise<'done' | 'hung'> =>
+      Promise.race([
+        p.then(() => 'done' as const),
+        new Promise<'hung'>((resolve) => setTimeout(() => resolve('hung'), 3000)),
+      ]);
+
+    it('delete(id, trx) is rolled back when the surrounding transaction throws', async () => {
+      await repository.save(buildPersistedQuickSession({ id: 'session-keep' }));
+
+      await expect(
+        db.transaction().execute(async (trx) => {
+          await repository.delete('session-keep', trx);
+          throw new Error('injected failure after the delete');
+        }),
+      ).rejects.toThrow('injected failure after the delete');
+
+      expect(await repository.findById('session-keep')).not.toBeNull();
+    });
+
+    it('save(session, trx) joins the open transaction instead of opening a nested one', async () => {
+      const outcome = await settle(
+        db.transaction().execute(async (trx) => {
+          await repository.save(buildPersistedQuickSession({ id: 'session-joined' }), trx);
+        }),
+      );
+
+      expect(outcome).toBe('done');
+      expect(await repository.findById('session-joined')).not.toBeNull();
+    });
+
+    it('save(session, trx) is rolled back when the surrounding transaction throws', async () => {
+      await expect(
+        db.transaction().execute(async (trx) => {
+          await repository.save(buildPersistedQuickSession({ id: 'session-rolled-back' }), trx);
+          throw new Error('injected failure after the save');
+        }),
+      ).rejects.toThrow('injected failure after the save');
+
+      expect(await repository.findById('session-rolled-back')).toBeNull();
+    });
+
+    it('saveAll(sessions, trx) joins the open transaction and is rolled back with it', async () => {
+      await repository.save(buildPersistedQuickSession({ id: 'session-existing' }));
+
+      const joined = await settle(
+        db.transaction().execute(async (trx) => {
+          await repository.saveAll([buildPersistedQuickSession({ id: 'session-existing' }), buildPersistedQuickSession({ id: 'session-added' })], trx);
+        }),
+      );
+      expect(joined).toBe('done');
+      expect(await repository.findById('session-added')).not.toBeNull();
+
+      await expect(
+        db.transaction().execute(async (trx) => {
+          await repository.saveAll([buildPersistedQuickSession({ id: 'session-existing' })], trx);
+          throw new Error('injected failure after the saveAll');
+        }),
+      ).rejects.toThrow('injected failure after the saveAll');
+      // saveAll deletes sessions absent from its input; the rollback restores it.
+      expect(await repository.findById('session-added')).not.toBeNull();
+    });
+  });
+
 });

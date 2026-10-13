@@ -59,16 +59,16 @@ export class SqliteSessionRepository implements SessionRepository {
     return Promise.all(sessions.map((s) => this.hydrate(s)));
   }
 
-  async save(session: PersistedSession): Promise<void> {
-    await this.db.transaction().execute(async (trx) => {
+  async save(session: PersistedSession, executor?: Kysely<Database>): Promise<void> {
+    await this.runInTransaction(executor, async (trx) => {
       await this.upsertSessionInTrx(trx, session);
     });
 
     logger.debug({ sessionId: session.id }, 'Session saved');
   }
 
-  async saveAll(sessions: PersistedSession[]): Promise<void> {
-    await this.db.transaction().execute(async (trx) => {
+  async saveAll(sessions: PersistedSession[], executor?: Kysely<Database>): Promise<void> {
+    await this.runInTransaction(executor, async (trx) => {
       for (const session of sessions) {
         await this.upsertSessionInTrx(trx, session);
       }
@@ -99,6 +99,25 @@ export class SqliteSessionRepository implements SessionRepository {
     });
 
     logger.debug({ count: sessions.length }, 'All sessions saved');
+  }
+
+  /**
+   * Runs `run` inside a transaction. When the caller already holds one (its
+   * `executor` is a `Transaction`), `run` joins it: Kysely rejects a nested
+   * `transaction()` on a `Transaction` ("calling the transaction method for a
+   * Transaction is not supported"), so the discriminant is the runtime
+   * `isTransaction` flag and the cast below is the one place the subclass is
+   * named.
+   */
+  private async runInTransaction(
+    executor: Kysely<Database> | undefined,
+    run: (trx: Transaction<Database>) => Promise<void>
+  ): Promise<void> {
+    if (executor?.isTransaction) {
+      await run(executor as Transaction<Database>);
+      return;
+    }
+    await (executor ?? this.db).transaction().execute(run);
   }
 
   private async upsertSessionInTrx(
@@ -154,9 +173,10 @@ export class SqliteSessionRepository implements SessionRepository {
     }
   }
 
-  async delete(id: string): Promise<void> {
+  async delete(id: string, executor?: Kysely<Database>): Promise<void> {
     // Workers are deleted automatically via CASCADE
-    await this.db.deleteFrom('sessions').where('id', '=', id).execute();
+    const db = executor ?? this.db;
+    await db.deleteFrom('sessions').where('id', '=', id).execute();
     logger.debug({ sessionId: id }, 'Session deleted');
   }
 

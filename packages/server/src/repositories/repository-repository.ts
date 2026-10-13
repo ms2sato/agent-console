@@ -1,4 +1,6 @@
+import type { Kysely } from 'kysely';
 import type { Repository } from '@agent-console/shared';
+import type { Database } from '../database/schema.js';
 
 /**
  * Updates that can be applied to a repository.
@@ -56,8 +58,12 @@ export interface RepositoryRepository {
   /**
    * Delete a repository by its ID.
    * @param id - The repository ID to delete
+   * @param executor - Optional handle the statement runs on. Omitted: the shared
+   *   connection. A `Transaction<Database>` is a `Kysely<Database>`
+   *   (`kysely.d.ts:409`, `class Transaction<DB> extends Kysely<DB>`), so a caller
+   *   holding one passes it here to make this write part of its transaction.
    */
-  delete(id: string): Promise<void>;
+  delete(id: string, executor?: Kysely<Database>): Promise<void>;
 
   /**
    * Add `sessionId` to the repository's designated-Orchestrator SET

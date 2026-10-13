@@ -81,6 +81,14 @@ export interface EnqueueOptions {
   maxAttempts?: number;
   /** Custom job ID. If not provided, a UUID is generated. */
   jobId?: string;
+  /**
+   * Handle the insert runs on; a `Transaction<Database>` (a `Kysely<Database>`)
+   * makes the enqueue part of the caller's transaction. When given, `job:added`
+   * is NOT emitted: the row is not committed yet. The caller must call `wake()`
+   * after that transaction commits. Omitted: insert on the shared connection and
+   * emit, as before.
+   */
+  executor?: Kysely<Database>;
 }
 
 /**
@@ -200,7 +208,8 @@ export class JobQueue {
     const id = options?.jobId ?? randomUUID();
     const now = Date.now();
 
-    await this.db
+    const db = options?.executor ?? this.db;
+    await db
       .insertInto('jobs')
       .values({
         id,
@@ -219,8 +228,19 @@ export class JobQueue {
       .execute();
 
     logger.info({ jobId: id, type, priority: options?.priority ?? 0 }, 'Job enqueued');
-    this.emitter.emit('job:added');
+    if (!options?.executor) {
+      this.emitter.emit('job:added');
+    }
     return id;
+  }
+
+  /**
+   * Wake the processor to pick up pending jobs. Call after the transaction that
+   * enqueued with `EnqueueOptions.executor` has committed; `enqueue` without an
+   * executor wakes by itself.
+   */
+  wake(): void {
+    this.emitter.emit('job:added');
   }
 
   /**

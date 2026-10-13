@@ -163,8 +163,9 @@ export class SqliteRepositoryRepository implements RepositoryRepository {
     return this.findById(id);
   }
 
-  async delete(id: string): Promise<void> {
-    await this.db.deleteFrom('repositories').where('id', '=', id).execute();
+  async delete(id: string, executor?: Kysely<Database>): Promise<void> {
+    const db = executor ?? this.db;
+    await db.deleteFrom('repositories').where('id', '=', id).execute();
     logger.debug({ repositoryId: id }, 'Repository deleted');
   }
 
