@@ -20,11 +20,13 @@ import {
 // are thin pass-throughs: lib/git.ts accepts requestUser directly so
 // multi-user mode runs git as the worktree-owning user (picking up that
 // user's PATH, gitconfig, and SSH_AUTH_SOCK via sudo -i).
+import { augmentWorktreeAddPermissionError } from '../lib/git-error-hints.js';
 import { createLogger } from '../lib/logger.js';
 import { substituteVariables } from '../lib/template-variables.js';
 import { isErrnoException } from '../lib/type-guards.js';
 import { getCleanChildProcessEnv } from './env-filter.js';
 import {
+  isMultiUserAuthMode,
   runAsUser,
   rmRecursiveAsUser,
   shellEscape,
@@ -550,7 +552,10 @@ export class WorktreeService {
 
       return { worktreePath, index: newIndex, copiedFiles };
     } catch (error) {
-      const message = extractErrorMessage(error);
+      const message = augmentWorktreeAddPermissionError(extractErrorMessage(error), {
+        multiUser: isMultiUserAuthMode(),
+        repoPath,
+      });
       logger.error({ err: error, message }, 'Failed to create worktree');
       return { worktreePath: '', error: message };
     }
