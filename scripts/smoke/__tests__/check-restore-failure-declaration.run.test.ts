@@ -32,14 +32,18 @@ import * as path from 'node:path';
 const REPO_ROOT = path.resolve(import.meta.dir, '../../..');
 const SMOKE_PATH = 'scripts/smoke/check-restore-failure-declaration.ts';
 const SPAWN_TIMEOUT_MS = 120_000;
+// Per-test timeout: the spawn budget plus margin, so the spawn budget is the binding limit.
+const IT_TIMEOUT_MS = SPAWN_TIMEOUT_MS + 5_000;
 
 interface SmokeRunResult {
   exitCode: number | null;
   stdout: string;
   stderr: string;
+  elapsedMs: number;
 }
 
 function runSmoke(extraArgs: string[] = []): SmokeRunResult {
+  const startedAt = performance.now();
   const result = Bun.spawnSync(['bun', SMOKE_PATH, ...extraArgs], {
     cwd: REPO_ROOT,
     timeout: SPAWN_TIMEOUT_MS,
@@ -48,21 +52,54 @@ function runSmoke(extraArgs: string[] = []): SmokeRunResult {
     exitCode: result.exitCode,
     stdout: result.stdout.toString(),
     stderr: result.stderr.toString(),
+    elapsedMs: Math.round(performance.now() - startedAt),
   };
 }
 
+/** The last `n` lines of a stream, so a failure message names the `==>` phase the smoke reached. */
+function tail(text: string, n = 40): string {
+  return text.split('\n').slice(-n).join('\n');
+}
+
+/**
+ * Fails with the smoke's own captured output tail and the elapsed time when the run did not exit 0
+ * (a non-zero exit, or a null exit from a timeout), so a recurrence of an unidentified stall shows
+ * where it stalled instead of only `Expected: 0 / Received: null`. A no-op on the green path.
+ */
+function assertSmokeExitedZero(result: SmokeRunResult): void {
+  if (result.exitCode === 0) return;
+  throw new Error(
+    `smoke exited ${String(result.exitCode)} after ${result.elapsedMs} ms\n` +
+      `--- stdout (last 40 lines) ---\n${tail(result.stdout)}\n` +
+      `--- stderr (last 40 lines) ---\n${tail(result.stderr)}`,
+  );
+}
+
 describe('check-restore-failure-declaration.ts CI wrapper (Issue #1871)', () => {
-  it('default mode: exits 0 and reports checks passed', () => {
-    const result = runSmoke();
+  // The spawn budget is 120 s; without an explicit per-test timeout the 5 s bun:test default
+  // bound the run and false-failed on a loaded runner (main 9913dec9, 2026-10-13); measured idle
+  // run 0.6-1.9 s.
+  it(
+    'default mode: exits 0 and reports checks passed',
+    () => {
+      const result = runSmoke();
 
-    expect(result.exitCode).toBe(0);
-    expect(result.stdout).toMatch(/checks passed/);
-  });
+      assertSmokeExitedZero(result);
+      expect(result.exitCode).toBe(0);
+      expect(result.stdout).toMatch(/checks passed/);
+    },
+    IT_TIMEOUT_MS,
+  );
 
-  it('-- --expect-no-declaration mode: exits 0 and reports checks passed', () => {
-    const result = runSmoke(['--expect-no-declaration']);
+  it(
+    '-- --expect-no-declaration mode: exits 0 and reports checks passed',
+    () => {
+      const result = runSmoke(['--expect-no-declaration']);
 
-    expect(result.exitCode).toBe(0);
-    expect(result.stdout).toMatch(/checks passed/);
-  });
+      assertSmokeExitedZero(result);
+      expect(result.exitCode).toBe(0);
+      expect(result.stdout).toMatch(/checks passed/);
+    },
+    IT_TIMEOUT_MS,
+  );
 });
