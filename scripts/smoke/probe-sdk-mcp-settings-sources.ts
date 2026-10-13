@@ -1748,7 +1748,6 @@ async function startHeaderCapturingStandIn(headerName: string): Promise<{ url: s
  * SAME stand-in the reserved `agent-console` entry already targets is the
  * built-in positive control there).
  */
-// NOTE: an unused `headersStatus` reading (G2_HEADERS_SERVER's system:init status) was removed here during a typecheck-config fix; the diagnostic `verdict` string below reports `url` status but not `headers` status, asymmetric with the url block -- worth a follow-up look.
 async function armG2(f: Fixtures, url: string): Promise<ArmVerdict> {
   h("ARM G2 (Orchestrator's follow-up) -- ${VAR} expansion in env:/headers:/url:, explicit mcpServers only");
   const probeVarValue = `probe-g2-env-expanded-${nonce('VAL')}`;
@@ -1805,6 +1804,7 @@ async function armG2(f: Fixtures, url: string): Promise<ArmVerdict> {
     // `session.close()`, not after).
     const statusOf = (name: string): string | null => mcpStatus(init, name);
     const envStatus = statusOf(G2_ENV_SERVER);
+    const headersStatus = statusOf(G2_HEADERS_SERVER);
     const urlStatus = statusOf(G2_URL_SERVER);
     const reportedEnvValue = run.outcome.text.trim();
     const envExpanded = reportedEnvValue === probeVarValue;
@@ -1830,7 +1830,7 @@ async function armG2(f: Fixtures, url: string): Promise<ArmVerdict> {
       verdict:
         `controlOk=${controlOk}; ` +
         `env: reportedValue=${JSON.stringify(reportedEnvValue)} expanded=${envExpanded} literal=${envLiteral}; ` +
-        `headers: capturedValue=${JSON.stringify(capturedHeader)} expanded=${headerExpanded} literal=${headerLiteral}; ` +
+        `headers: status=${headersStatus ?? '(absent)'} capturedValue=${JSON.stringify(capturedHeader)} expanded=${headerExpanded} literal=${headerLiteral}; ` +
         `url: status=${urlStatus ?? '(absent)'} expanded(connected)=${urlExpanded}; ` +
         `mcp_servers=${JSON.stringify(init.mcpServers)}`,
       stops,
