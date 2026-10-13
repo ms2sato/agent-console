@@ -6,6 +6,7 @@ import type { Worktree } from '@agent-console/shared';
 import type { WorktreeRepository, WorktreeRecord } from '../../repositories/worktree-repository.js';
 import type { RunAsUserOpts, RunAsUserResult } from '../privilege-elevation.js';
 import { WORKTREE_ADD_PERMISSION_HINT_HEADER } from '../../lib/git-error-hints.js';
+import { rootLogger } from '../../lib/logger.js';
 
 /**
  * Capture-and-respond fake for `runAsUser`. The worktree-service routes
@@ -238,6 +239,202 @@ detached
       expect(orphaned).toBeDefined();
       expect(orphaned!.branch).toBe('(orphaned)');
       expect(orphaned!.index).toBe(2);
+    });
+  });
+
+  // Path identity: git prints realpaths while the repository path stored by
+  // the app is only `path.resolve`d, so the two can differ by a symlinked
+  // segment or a rename. The main worktree is the first porcelain entry, and
+  // DB records are matched by canonical path.
+  describe('listWorktrees path identity', () => {
+    const porcelain = (...entries: Array<[string, string]>) =>
+      entries.map(([p, b]) => `worktree ${p}\nHEAD abc123\nbranch refs/heads/${b}\n`).join('\n');
+
+    function makeRealTree() {
+      fs.mkdirSync('/real/repo/main', { recursive: true });
+      fs.mkdirSync('/real/worktrees/feature-1', { recursive: true });
+      fs.symlinkSync('/real', '/link');
+    }
+
+    async function listWith(repoPath: string) {
+      const WorktreeService = await getWorktreeService();
+      const service = new WorktreeService({ worktreeRepository: mockRepo });
+      return service.listWorktrees(repoPath, 'repo-1');
+    }
+
+    // (1) Measured reach: restoring `isMain = worktreePath === mainRepoPath`
+    // drops the main worktree here (no DB record, not "main") and fails this.
+    it('(1) surfaces the main worktree when the stored path is a symlink to what git printed', async () => {
+      makeRealTree();
+      mockGit.listWorktrees.mockImplementation(() => Promise.resolve(porcelain(['/real/repo/main', 'main'])));
+
+      const worktrees = await listWith('/link/repo/main');
+
+      expect(worktrees).toHaveLength(1);
+      expect(worktrees[0]).toMatchObject({ path: '/real/repo/main', isMain: true, branch: 'main' });
+    });
+
+    // (2) Measured reach: keying the record map by the raw record path (no
+    // canonicaliser) drops the registered worktree AND lists it again as an
+    // orphan.
+    it('(2) matches a DB record stored under a symlinked path: one entry with its index, not dropped and not also orphaned', async () => {
+      makeRealTree();
+      mockRepo.records.push({
+        id: 'wt-1',
+        repositoryId: 'repo-1',
+        path: '/link/worktrees/feature-1',
+        indexNumber: 1,
+        createdAt: new Date().toISOString(),
+      });
+      mockGit.listWorktrees.mockImplementation(() =>
+        Promise.resolve(porcelain(['/real/repo/main', 'main'], ['/real/worktrees/feature-1', 'feature-1'])),
+      );
+
+      const worktrees = await listWith('/link/repo/main');
+
+      expect(worktrees).toHaveLength(2);
+      const linked = worktrees.filter((wt: Worktree) => !wt.isMain);
+      expect(linked).toEqual([
+        { path: '/real/worktrees/feature-1', branch: 'feature-1', isMain: false, repositoryId: 'repo-1', index: 1 },
+      ]);
+      expect(worktrees.some((wt: Worktree) => wt.branch === '(orphaned)')).toBe(false);
+    });
+
+    it('still lists a record whose directory git no longer knows as an orphan, under its stored path', async () => {
+      makeRealTree();
+      mockRepo.records.push({
+        id: 'wt-gone',
+        repositoryId: 'repo-1',
+        path: '/link/worktrees/gone',
+        indexNumber: 3,
+        createdAt: new Date().toISOString(),
+      });
+      mockGit.listWorktrees.mockImplementation(() => Promise.resolve(porcelain(['/real/repo/main', 'main'])));
+
+      const worktrees = await listWith('/link/repo/main');
+
+      expect(worktrees.find((wt: Worktree) => wt.branch === '(orphaned)')).toMatchObject({ path: '/link/worktrees/gone', index: 3 });
+    });
+
+    it('(4) treats the first entry as main when the stored path differs only by a trailing slash', async () => {
+      mockGit.listWorktrees.mockImplementation(() => Promise.resolve(porcelain(['/repo/main', 'main'])));
+
+      const worktrees = await listWith('/repo/main/');
+
+      expect(worktrees).toHaveLength(1);
+      expect(worktrees[0]).toMatchObject({ path: '/repo/main', isMain: true });
+    });
+
+    it('treats the first entry as main even when the repository directory was renamed (stored path shares nothing with git\'s)', async () => {
+      mockGit.listWorktrees.mockImplementation(() => Promise.resolve(porcelain(['/new/name', 'main'])));
+
+      const worktrees = await listWith('/old/name');
+
+      expect(worktrees).toHaveLength(1);
+      expect(worktrees[0]).toMatchObject({ path: '/new/name', isMain: true });
+    });
+
+    it('marks only the first entry as main', async () => {
+      mockRepo.records.push({
+        id: 'wt-1',
+        repositoryId: 'repo-1',
+        path: '/worktrees/feature-1',
+        indexNumber: 1,
+        createdAt: new Date().toISOString(),
+      });
+
+      const worktrees = await listWith('/some/other/path');
+
+      expect(worktrees.map((wt: Worktree) => wt.isMain)).toEqual([true, false]);
+    });
+  });
+
+  describe('listWorktrees missing repository path', () => {
+    // The service logger is a child created at import time, so the spy on
+    // `rootLogger.child` is installed before the fresh module import and
+    // returns a recording stand-in for the service's own logger only.
+    async function listWithRecordingLogger(repoPath: string, gitError: Error) {
+      const warns: unknown[][] = [];
+      const errors: unknown[][] = [];
+      const original = rootLogger.child.bind(rootLogger);
+      const childSpy = spyOn(rootLogger, 'child').mockImplementation(((bindings: { service?: string }) => {
+        if (bindings?.service !== 'worktree-service') return original(bindings);
+        return new Proxy({} as Record<string, unknown>, {
+          get: (_t, prop) => {
+            if (prop === 'warn') return (...args: unknown[]) => warns.push(args);
+            if (prop === 'error') return (...args: unknown[]) => errors.push(args);
+            return () => {};
+          },
+        });
+      }) as unknown as typeof rootLogger.child);
+      try {
+        mockGit.listWorktrees.mockImplementation(() => Promise.reject(gitError));
+        const WorktreeService = await getWorktreeService();
+        const service = new WorktreeService({ worktreeRepository: mockRepo });
+        const result = await service.listWorktrees(repoPath, 'repo-1');
+        return { result, warns, errors };
+      } finally {
+        childSpy.mockRestore();
+      }
+    }
+
+    it('returns [] and warns "repository path missing" when the directory does not exist', async () => {
+      const { result, warns, errors } = await listWithRecordingLogger('/gone/repo', new Error('not a git repository'));
+
+      expect(result).toEqual([]);
+      expect(errors).toHaveLength(0);
+      expect(warns).toHaveLength(1);
+      expect(warns[0]![0]).toMatchObject({ repoPath: '/gone/repo', reason: 'repository path missing' });
+      expect(String(warns[0]![1])).toContain('repository path missing');
+    });
+
+    it('still logs an error (not the missing-path warning) when the directory exists and git fails', async () => {
+      fs.mkdirSync('/exists/repo', { recursive: true });
+
+      const { result, warns, errors } = await listWithRecordingLogger('/exists/repo', new Error('git exploded'));
+
+      expect(result).toEqual([]);
+      expect(warns).toHaveLength(0);
+      expect(errors).toHaveLength(1);
+      expect(errors[0]![0]).toMatchObject({ repoPath: '/exists/repo' });
+    });
+  });
+
+  describe('isWorktreeOf path identity', () => {
+    async function makeService() {
+      const WorktreeService = await getWorktreeService();
+      return new WorktreeService({ worktreeRepository: mockRepo });
+    }
+
+    // Measured reach: restoring `worktreePath === repoPath` fails the first.
+    it('treats the main worktree as valid across a symlinked stored path', async () => {
+      fs.mkdirSync('/real/repo/main', { recursive: true });
+      fs.symlinkSync('/real', '/link');
+      const service = await makeService();
+
+      expect(await service.isWorktreeOf('/link/repo/main', '/real/repo/main', 'repo-1')).toBe(true);
+      expect(await service.isWorktreeOf('/real/repo/main', '/link/repo/main', 'repo-1')).toBe(true);
+    });
+
+    it('still rejects an unknown path', async () => {
+      fs.mkdirSync('/real/repo/main', { recursive: true });
+      const service = await makeService();
+
+      expect(await service.isWorktreeOf('/real/repo/main', '/real/repo/elsewhere', 'repo-1')).toBe(false);
+    });
+
+    it('still accepts a DB-registered worktree of the same repository by exact stored path, and rejects another repository\'s', async () => {
+      mockRepo.records.push({
+        id: 'wt-1',
+        repositoryId: 'repo-1',
+        path: '/worktrees/feature-1',
+        indexNumber: 1,
+        createdAt: new Date().toISOString(),
+      });
+      const service = await makeService();
+
+      expect(await service.isWorktreeOf('/repo/main', '/worktrees/feature-1', 'repo-1')).toBe(true);
+      expect(await service.isWorktreeOf('/repo/main', '/worktrees/feature-1', 'repo-2')).toBe(false);
     });
   });
 

@@ -186,6 +186,30 @@ describe('RepositoryManager', () => {
       ).rejects.toThrow('Repository already registered');
     });
 
+    // Registration keeps `path.resolve` for the STORED path, but the duplicate
+    // check compares canonically, so a symlink alias of a registered repository
+    // is refused. Measured reach: reverting the check to a string compare lets
+    // the second registration succeed.
+    it('refuses a symlink alias of an already-registered repository as a duplicate', async () => {
+      const manager = await getRepositoryManager();
+      fs.symlinkSync('/test', '/link');
+
+      await manager.registerRepository(TEST_REPO_DIR);
+
+      await expect(manager.registerRepository('/link/repo')).rejects.toThrow('Repository already registered: /link/repo');
+    });
+
+    it('refuses the same repository registered the other way round (alias first, real path second)', async () => {
+      const manager = await getRepositoryManager();
+      fs.symlinkSync('/test', '/link');
+
+      const repo = await manager.registerRepository('/link/repo');
+      // The stored path is the resolved path as typed, not the realpath.
+      expect(repo.path).toBe('/link/repo');
+
+      await expect(manager.registerRepository(TEST_REPO_DIR)).rejects.toThrow('Repository already registered');
+    });
+
     it('should persist repository via repository', async () => {
       const manager = await getRepositoryManager();
 
