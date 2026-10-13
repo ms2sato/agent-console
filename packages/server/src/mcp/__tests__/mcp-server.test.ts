@@ -6721,6 +6721,7 @@ describe('MCP Server Tools', () => {
         expect(message).toContain('PR #1109');
         expect(message).not.toContain('tracked');
       } finally {
+        infoSpy.mockRestore();
         (serverConfig as { AUTH_MODE: string }).AUTH_MODE = originalAuthMode;
       }
     });
