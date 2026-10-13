@@ -649,6 +649,8 @@ describe('delivery retry (bounded, transient failures only)', () => {
       },
     });
     const warnSpy = spyOn(rootLogger, 'warn');
+    // Another test file may have left calls on a shared, unrestored spy.
+    warnSpy.mockClear();
     try {
       if (kind === 'exit') {
         await routeProcessExit(deps, makeProcess({ id: `retry-${Math.random()}`, status: 'exited', exitCode: 0 }));
@@ -659,7 +661,10 @@ describe('delivery retry (bounded, transient failures only)', () => {
           direction: 'stdout',
         });
       }
-      return { calls: deliverNotification.mock.calls.length, sleeps, warns: warnSpy.mock.calls.map((c) => c[0] as Record<string, unknown>) };
+      const warns = warnSpy.mock.calls
+        .filter((c) => String(c[1]).startsWith('Failed to deliver'))
+        .map((c) => c[0] as Record<string, unknown>);
+      return { calls: deliverNotification.mock.calls.length, sleeps, warns };
     } finally {
       warnSpy.mockRestore();
     }
