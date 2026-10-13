@@ -24,10 +24,32 @@ Phase 6 is not dispatchable until every step the skill prescribes has been mappe
 | turns | 68 | 147 |
 | `write_memo` / `TodoWrite` calls | 2 / 8 | 99 / 46 |
 | context-usage snapshots: first / max / mean | 152,708 / 607,176 / 430,043 | 158,625 / 379,735 / 257,877 |
-| sum of per-turn `promptTokens` snapshots (input-token proxy, pre-caching) | 28.8M | 37.9M |
+| sum of per-turn `promptTokens` snapshots (input-token proxy, pre-caching) (pre-caching proxy; see Cost method below) | 28.8M | 37.9M |
 | compaction events | 0 | 0 |
 
 Reading: the busy-wait loop is gone and the per-turn context is smaller, but every wait is now a turn, so the turn count more than doubled and the summed input-token proxy rose by a third. The cost lever moved from "tool calls" to "turns x context size"; the largest call sink is now memo/todo bookkeeping (145 of 261 calls, from the prompt's "append a memo line after every step" plus TodoWrite mirroring). The proxy does not see prompt caching; billed cost must be measured provider-side before the turn cost is optimised. Fast-follow filed from this run: the R3 statement made permanent in the preamble (`buildPreamble`, both engines) -- Issue [#1856](https://github.com/ms2sato/agent-console/issues/1856); F6 below is to gain one line pointing at it when that PR lands.
+
+### Cost method (corrected 2026-10-13)
+
+The provider-side figures that runs 2 and 3 first published, and that run 4's first draft repeated, came from the CLI transcript (`~/.claude/projects/.../<session>.jsonl`) and carried a defect: the transcript writes **one `assistant` record per content block, with the message's `usage` repeated on each record**. Counting records as API calls and summing their `usage` therefore over-counts by the blocks-per-message ratio (1.84 for run 2, 1.64 for run 3, 1.74 for run 4). Those figures are **superseded**; the only numbers to quote are the de-duplicated ones below.
+
+Corrected recipe: de-duplicate by `message.id` and take the last record's `usage` for each id. One line, no script needed:
+
+```sh
+jq -s '[.[] | select(.type=="assistant")] | group_by(.message.id) | map(last.message.usage)
+  | {calls: length, input: (map(.input_tokens) | add), cache_w: (map(.cache_creation_input_tokens) | add),
+     cache_r: (map(.cache_read_input_tokens) | add), out: (map(.output_tokens) | add)}' <cli-transcript>.jsonl
+```
+
+List prices (per million tokens): input 3, cache write 3.75, cache read 0.30, output 15.
+
+| | calls | input | cache_creation | cache_read | output | list-price equivalent (USD) |
+|---|---|---|---|---|---|---|
+| run 2 | 389 | 778 | 1,113,303 | 104,772,742 | 116,477 | ~37.4 |
+| run 3 | 412 | 824 | 511,915 | 123,978,463 | 102,434 | ~40.7 |
+| run 4 | 384 | 768 | 498,207 | 123,660,104 | 92,283 | ~40.4 |
+
+Corrected direction: run 2 -> run 3 is **+9%** (unique calls 389 -> 412, cache read +18%; only cache creation and output fell), not the -9% the superseded recipe showed. Runs 3 and 4 are within 1% of each other (-0.7%), not +10%. The reading that follows: the cost lever is **unique API calls x cache-read per call**; fewer memo and todo calls (run 3) or fewer timer calls (run 4) did not lower the bill because the number of turns, driven by inbound events, and the per-turn cache read set the floor. The `promptTokens` proxy in the run-1/2 table above is a different, pre-caching measure and must not be summed with these figures.
 
 **Run 3 (Phase 6, #1851).** Run date: 2026-10-12 (UTC). Embedded Orchestrator session id: `cc4b0fa1-460a-4088-90a8-ea1c8bc29988` (worker `7c3266b8-832e-4ebc-936c-b53bf1cf5635`, worktree `wt-002-0j3m`, branch `phase6/run-3-orchestrator`). Test Issue: [#1851](https://github.com/ms2sato/agent-console/issues/1851) (a production server-code logging/error-handling fix, the first CODE change in this series touching `packages/server` runtime behavior) -> PR [#1946](https://github.com/ms2sato/agent-console/pull/1946), merged `41e9acfa` by the TUI Orchestrator on the owner's standing directive after both the embedded Orchestrator and the Architect returned a merge-ready verdict. Outcome: AC-to-merged-and-post-merge completed with zero human intervention other than the merge itself; the Architect handshake, delegation, acceptance-check.js Q1-Q13 walk, a CodeRabbit dual-clean disposition (routed to the Architect per `coderabbit-ops/troubleshooting.md`'s "headless auth-fail AND bot rate-limited" case), and Post-Merge Flow 7a/7b/7e/7f all ran from the embedded session via `run_process`.
 
@@ -38,6 +60,22 @@ Three new findings from this run, none previously recorded by Run 1 or Run 2:
 - **`sed`'s multi-line GNU-style append script does not survive `run_process`'s `sh -c` quoting/escaping path for a `gh pr edit --body-file` composition pipeline.** A `sed '/pattern/a\...'` command with embedded single-quote escaping (`'"'"'`) for a PR-body edit failed with `sed: unrecognized option '--body-file'` — the shell had mis-tokenized the multi-line argument, feeding part of it as a second command's arguments. Recovered by using the `Edit` tool directly on a locally-fetched copy of the PR body (`/tmp/pr<N>-body.md`), then `gh pr edit --body-file` with no embedded shell scripting. For embedded Orchestrators, prefer `Read`/`Edit`/`Write` on a local scratch file over constructing multi-line shell edits inline in a `run_process` command string — this is the same lesson as B4's "native `Write`/`Edit` at absolute paths" workaround, generalized to PR-body edits as well as worktree file edits.
 
 Prompt text used: identical to Run 2's, with no new standing-constraint additions beyond the run's own scope line (single Issue, no merge authority, no Browser QA / Task subagents / probes, act on no inbound event outside the target Issue/PR). The CodeRabbit dual-clean disposition flow (Architect push -> CLEAN -> PR-body `## CodeRabbit disposition` update -> report to parent) worked end-to-end with no gaps found in the mechanism itself, which is the first time this specific disposition path (Section 6 / coderabbit-ops's rarer case) has been exercised by an embedded Orchestrator in this series.
+
+**Run 4 (Phase 6, #2044).** Run date: 2026-10-13 (UTC). Embedded Orchestrator session id: `d0f12b2b-6488-4b06-ada6-59090c6e67a8` (worker `29e08932-c934-415f-a8a8-80a89bf8369d`, worktree `wt-005-3rl0`, branch `phase6-run-4/orchestrator`). Test Issue: [#2044](https://github.com/ms2sato/agent-console/issues/2044) -> PR [#2051](https://github.com/ms2sato/agent-console/pull/2051), merged `6ef3041c`; brewing PR [#2052](https://github.com/ms2sato/agent-console/pull/2052), `7d1226a1`. Prompt: run 3's plus three stated changes (a precedence sentence; the per-row memo-line requirement dropped; the new test Issue); the run-3 retro was present in the memory store at turn 0, a recorded condition rather than a control. Outcome: the unscripted run reached AC -> delegate -> acceptance -> Architect review request -> mergeable report -> Post-Merge Flow -> retire with no human action other than the parent's two merges. Evidence at `$HOME/.agent-console-smoke-captures/phase6-run-4/`. Full result: the "Run 4 result" comment on [#1740](https://github.com/ms2sato/agent-console/issues/1740).
+
+| | run 3 | run 4 |
+|---|---|---|
+| `create_timer` / `delete_timer` calls | 86 / 88 (174) | 5 / 5 (10) |
+| turns with a `run_process` wrapped in a `create_timer` | 21 | 0 |
+| tool calls | 292 | 243 |
+| turns | 121 | 146 |
+| self-`get_session_status` polls (Cause B) | 2 | 154 |
+| context-usage max | 417,737 | 497,392 |
+| context-usage `model` field (#1609) | absent | `claude-sonnet-5` on 146 of 146 |
+
+Two findings. Timer discipline was achieved (timer calls 174 -> 10, wrapped waits 21 -> 0) from the deployed tooling contract and the skill text, with no prompt hint. The new churn is self-`get_session_status` polling after a process-output notice (2 -> 154), which cannot tell the model whether the process is done and is followed by ending the turn anyway; [#2053](https://github.com/ms2sato/agent-console/issues/2053) is the lever and run 5 measures it. Cost is read with the [Cost method](#cost-method-corrected-2026-10-13) above: run 4 is flat against run 3.
+
+Readiness-table rows D1, K9, L3 and L4 were not evidenced this run (the per-row memo requirement was dropped by design). Row B4 was not exercised this run: it opened no docs PR, and this section is the Context line it did not write.
 
 ## Facts the table is built on (re-verified at `a59fc303`)
 
