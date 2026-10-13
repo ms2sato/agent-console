@@ -306,6 +306,7 @@ describe('migration', () => {
           commandTemplate: 'legacy {{prompt}}',
           isBuiltIn: false,
           registeredAt: '2023-06-15T10:30:00.000Z', // old field name
+          retiredField: 'written by an older build', // unknown key the lenient loader must strip, not reject
           capabilities: { supportsContinue: false, supportsHeadlessMode: false, supportsActivityDetection: false },
         },
       ];

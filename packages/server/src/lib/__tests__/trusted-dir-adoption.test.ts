@@ -19,8 +19,8 @@ import * as path from 'node:path';
  * (`deleteContentFiles`' session-dir wipe, the message service's
  * `deleteSessionMessages` / `deleteWorkerMessages`), and a removal cannot
  * redirect a write. Sibling trees (`worktree-service.ts`,
- * `repository-clone-service.ts`, `persistence-service.ts`'s config-dir
- * creation) are deliberately not listed -- they create different trees and
+ * `repository-clone-service.ts`, the config-dir creation in
+ * `app-context.ts`) are deliberately not listed -- they create different trees and
  * are out of this gate's scope.
  *
  * Uses `Bun.file()` rather than `node:fs` deliberately: in the full server

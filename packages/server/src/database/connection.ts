@@ -6,10 +6,9 @@ import * as fs from 'fs';
 import * as fsPromises from 'fs/promises';
 import * as v from 'valibot';
 import type { AgentDefinition } from '@agent-console/shared';
-import { DEFAULT_FORK_POINT_SPEC } from '@agent-console/shared';
+import { AgentDefinitionSchema, DEFAULT_FORK_POINT_SPEC } from '@agent-console/shared';
 import type { Database } from './schema.js';
 import type { PersistedSession, PersistedRepository } from '../repositories/persisted-types.js';
-import { PersistedAgentDefinitionSchema } from '../services/persistence-service.js';
 import { getConfigDir, getDbPath, getRepositoryDir } from '../lib/config.js';
 import { getRemoteUrl, parseOrgRepo } from '../lib/git.js';
 import { createLogger } from '../lib/logger.js';
@@ -3253,6 +3252,17 @@ function transformLegacyFields(item: unknown): unknown {
 
   return item;
 }
+
+/**
+ * Lenient loader schema for the legacy `agents.json`; it is not a persisted
+ * shape and is never used for wire validation.
+ *
+ * The wire schema is strict, but agents.json is internal storage that may carry
+ * legacy fields written by older builds; those must be tolerated on load rather
+ * than rejecting the whole record. A non-strict `object` schema strips the
+ * unknown keys (matching the historical persisted-load behavior).
+ */
+const PersistedAgentDefinitionSchema = v.object(AgentDefinitionSchema.entries);
 
 /**
  * Migrate existing agents from JSON file to SQLite database.

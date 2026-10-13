@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, mock, spyOn, setSystemTime } from 'bun:test';
 import * as fs from 'fs';
 import { JOB_TYPES } from '@agent-console/shared';
-import type { CreateSessionRequest, CreateWorkerParams, Session, Worker } from '@agent-console/shared';
+import type { AgentWorker, CreateSessionRequest, CreateWorkerParams, Session, Worker } from '@agent-console/shared';
 import { createMockPtyFactory } from '../../__tests__/utils/mock-pty.js';
 import { setupMemfs, cleanupMemfs, createMockGitRepoFiles } from '../../__tests__/utils/mock-fs-helper.js';
 import { mockProcess, resetProcessMock } from '../../__tests__/utils/mock-process-helper.js';
@@ -38,6 +38,7 @@ import { buildPtyNotificationText, type PtyNotificationParams } from '../../lib/
 import type { McpServerPermissionRow } from '../../repositories/mcp-server-permission-repository.js';
 import type { McpPermissionScope } from '../../lib/mcp-server-permissions.js';
 import { serverConfig } from '../../lib/server-config.js';
+import { createTestSessionRepository } from '../../__tests__/utils/test-session-repository.js';
 
 // Test config directory
 const TEST_CONFIG_DIR = '/test/config';
@@ -103,9 +104,9 @@ describe('SessionManager', () => {
 
   // Helper to get fresh module instance with DI using the factory pattern
   async function getSessionManager(extraOptions: Record<string, unknown> = {}) {
-    const module = await import(`../session-manager.js?v=${++importCounter}`);
+    const module = await import(`../session-manager.js?v=${++importCounter}`) as typeof import('../session-manager.js');
     // Use the factory pattern for async initialization with jobQueue
-    return module.SessionManager.create({
+    return module.SessionManager.create({ sessionRepository: await createTestSessionRepository(),
       userMode: new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' }),
       pathExists: mockPathExists,
       jobQueue: testJobQueue,
@@ -166,8 +167,8 @@ describe('SessionManager', () => {
     });
 
     it('throws RepositoryNotFoundError and persists no row when repository is unknown', async () => {
-      const module = await import(`../session-manager.js?v=${++importCounter}`);
-      const manager = await module.SessionManager.create({
+      const module = await import(`../session-manager.js?v=${++importCounter}`) as typeof import('../session-manager.js');
+      const manager = await module.SessionManager.create({ sessionRepository: await createTestSessionRepository(),
         userMode: new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' }),
         pathExists: mockPathExists,
         jobQueue: testJobQueue,
@@ -213,8 +214,8 @@ describe('SessionManager', () => {
     async function getSessionManagerWithRealRepositoryLookup(repositoryManager: {
       getRepositorySlug: (id: string) => Promise<string | undefined>;
     }) {
-      const module = await import(`../session-manager.js?v=${++importCounter}`);
-      return module.SessionManager.create({
+      const module = await import(`../session-manager.js?v=${++importCounter}`) as typeof import('../session-manager.js');
+      return module.SessionManager.create({ sessionRepository: await createTestSessionRepository(),
         userMode: new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' }),
         pathExists: mockPathExists,
         jobQueue: testJobQueue,
@@ -432,8 +433,8 @@ describe('SessionManager', () => {
         getRepositorySlug: (id) => repositoryManager.getRepositorySlug(id),
         withRegisteredRepository: (id, fn) => repositoryManager.withRegisteredRepository(id, () => fn()),
       };
-      const sessionModule = await import(`../session-manager.js?v=${++importCounter}`);
-      const manager: SessionManager = await sessionModule.SessionManager.create({
+      const sessionModule = await import(`../session-manager.js?v=${++importCounter}`) as typeof import('../session-manager.js');
+      const manager: SessionManager = await sessionModule.SessionManager.create({ sessionRepository: await createTestSessionRepository(),
         userMode: new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' }),
         pathExists: mockPathExists,
         jobQueue: testJobQueue,
@@ -761,8 +762,8 @@ describe('SessionManager', () => {
       };
 
       // Reuse the same factory but with the wrapping UserMode injected.
-      const module = await import(`../session-manager.js?v=${++importCounter}`);
-      const manager = await module.SessionManager.create({
+      const module = await import(`../session-manager.js?v=${++importCounter}`) as typeof import('../session-manager.js');
+      const manager = await module.SessionManager.create({ sessionRepository: await createTestSessionRepository(),
         userMode: wrappingUserMode,
         pathExists: mockPathExists,
         jobQueue: testJobQueue,
@@ -1015,8 +1016,8 @@ describe('SessionManager', () => {
         createdAt: '2024-01-01T00:00:00.000Z',
         updatedAt: '2024-01-01T00:00:00.000Z',
       };
-      const module = await import(`../session-manager.js?v=${++importCounter}`);
-      const manager = await module.SessionManager.create({
+      const module = await import(`../session-manager.js?v=${++importCounter}`) as typeof import('../session-manager.js');
+      const manager = await module.SessionManager.create({ sessionRepository: await createTestSessionRepository(),
         userMode: new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' }),
         pathExists: mockPathExists,
         jobQueue: testJobQueue,
@@ -1162,8 +1163,8 @@ describe('SessionManager', () => {
     };
 
     async function getSessionManagerWithEmbedded() {
-      const module = await import(`../session-manager.js?v=${++importCounter}`);
-      return module.SessionManager.create({
+      const module = await import(`../session-manager.js?v=${++importCounter}`) as typeof import('../session-manager.js');
+      return module.SessionManager.create({ sessionRepository: await createTestSessionRepository(),
         userMode: new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' }),
         pathExists: mockPathExists,
         jobQueue: testJobQueue,
@@ -1293,8 +1294,8 @@ describe('SessionManager', () => {
     };
 
     async function getSessionManagerWithEmbedded() {
-      const module = await import(`../session-manager.js?v=${++importCounter}`);
-      return module.SessionManager.create({
+      const module = await import(`../session-manager.js?v=${++importCounter}`) as typeof import('../session-manager.js');
+      return module.SessionManager.create({ sessionRepository: await createTestSessionRepository(),
         userMode: new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' }),
         pathExists: mockPathExists,
         jobQueue: testJobQueue,
@@ -1473,8 +1474,8 @@ describe('SessionManager', () => {
       // A SessionManager wired WITH an embeddedAgentManager stub that resolves
       // the id to a named definition. createWorker must succeed and name the
       // worker from the definition.
-      const module = await import(`../session-manager.js?v=${++importCounter}`);
-      const manager = await module.SessionManager.create({
+      const module = await import(`../session-manager.js?v=${++importCounter}`) as typeof import('../session-manager.js');
+      const manager = await module.SessionManager.create({ sessionRepository: await createTestSessionRepository(),
         userMode: new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' }),
         pathExists: mockPathExists,
         jobQueue: testJobQueue,
@@ -1520,8 +1521,8 @@ describe('SessionManager', () => {
       // into WorkerManager (constructor) reaches toPublicWorker's
       // embedded-agent case end-to-end -- not merely that the resolver
       // function itself works in isolation.
-      const module = await import(`../session-manager.js?v=${++importCounter}`);
-      const manager = await module.SessionManager.create({
+      const module = await import(`../session-manager.js?v=${++importCounter}`) as typeof import('../session-manager.js');
+      const manager = await module.SessionManager.create({ sessionRepository: await createTestSessionRepository(),
         userMode: new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' }),
         pathExists: mockPathExists,
         jobQueue: testJobQueue,
@@ -1582,8 +1583,8 @@ describe('SessionManager', () => {
     };
 
     async function createManagerWithEmbedded(defs: Map<string, typeof STUB_DEF>) {
-      const module = await import(`../session-manager.js?v=${++importCounter}`);
-      return module.SessionManager.create({
+      const module = await import(`../session-manager.js?v=${++importCounter}`) as typeof import('../session-manager.js');
+      return module.SessionManager.create({ sessionRepository: await createTestSessionRepository(),
         userMode: new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' }),
         pathExists: mockPathExists,
         jobQueue: testJobQueue,
@@ -1654,8 +1655,12 @@ describe('SessionManager', () => {
       // (#1205) -- a compile-time guard so a future narrowing of this
       // annotation (dropping the field) fails typecheck here rather than only
       // surfacing downstream where a caller actually reads `.completed`.
-      const _typeGuard: { epoch: number; restoredMessageCount: number; repairedToolCallIds: string[]; completed: boolean } | null =
-        info;
+      // The guard was inert from its introduction until the dynamic import was
+      // typed (the module was `any`), so its reach is measured only since then.
+      const _typeGuard:
+        | { epoch: number; restoredMessageCount: number; repairedToolCallIds: string[]; completed: boolean }
+        | { epoch: number; failed: true }
+        | null = info;
       void _typeGuard;
     });
 
@@ -1705,8 +1710,8 @@ describe('SessionManager', () => {
       };
       const fakeSpawnAsUserFn = mock(() => toSpawnAsUserResult({ subprocess, stdin }));
 
-      const module = await import(`../session-manager.js?v=${++importCounter}`);
-      const manager = await module.SessionManager.create({
+      const module = await import(`../session-manager.js?v=${++importCounter}`) as typeof import('../session-manager.js');
+      const manager = await module.SessionManager.create({ sessionRepository: await createTestSessionRepository(),
         userMode: new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' }),
         pathExists: mockPathExists,
         jobQueue: testJobQueue,
@@ -1766,8 +1771,8 @@ describe('SessionManager', () => {
       const subprocess: FakeSubprocess = { pid: 4244, exited, stdin, stdout, stderr, kill: () => {} };
       const fakeSpawnAsUserFn = mock(() => toSpawnAsUserResult({ subprocess, stdin }));
 
-      const module = await import(`../session-manager.js?v=${++importCounter}`);
-      const manager = await module.SessionManager.create({
+      const module = await import(`../session-manager.js?v=${++importCounter}`) as typeof import('../session-manager.js');
+      const manager = await module.SessionManager.create({ sessionRepository: await createTestSessionRepository(),
         userMode: new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' }),
         pathExists: mockPathExists,
         jobQueue: testJobQueue,
@@ -1825,8 +1830,8 @@ describe('SessionManager', () => {
       const subprocess: FakeSubprocess = { pid: 5555, exited, stdin, stdout, stderr, kill: () => {} };
       const fakeSpawnAsUserFn = mock(() => toSpawnAsUserResult({ subprocess, stdin }));
 
-      const module = await import(`../session-manager.js?v=${++importCounter}`);
-      const manager = await module.SessionManager.create({
+      const module = await import(`../session-manager.js?v=${++importCounter}`) as typeof import('../session-manager.js');
+      const manager = await module.SessionManager.create({ sessionRepository: await createTestSessionRepository(),
         userMode: new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' }),
         pathExists: mockPathExists,
         jobQueue: testJobQueue,
@@ -1896,8 +1901,8 @@ describe('SessionManager', () => {
       const subprocess: FakeSubprocess = { pid: 4444, exited, stdin, stdout, stderr, kill: () => {} };
       const fakeSpawnAsUserFn = mock(() => toSpawnAsUserResult({ subprocess, stdin }));
 
-      const module = await import(`../session-manager.js?v=${++importCounter}`);
-      const manager = await module.SessionManager.create({
+      const module = await import(`../session-manager.js?v=${++importCounter}`) as typeof import('../session-manager.js');
+      const manager = await module.SessionManager.create({ sessionRepository: await createTestSessionRepository(),
         userMode: new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' }),
         pathExists: mockPathExists,
         jobQueue: testJobQueue,
@@ -1965,8 +1970,8 @@ describe('SessionManager', () => {
       const subprocess: FakeSubprocess = { pid: 4445, exited, stdin, stdout, stderr, kill: () => {} };
       const fakeSpawnAsUserFn = mock(() => toSpawnAsUserResult({ subprocess, stdin }));
 
-      const module = await import(`../session-manager.js?v=${++importCounter}`);
-      const manager = await module.SessionManager.create({
+      const module = await import(`../session-manager.js?v=${++importCounter}`) as typeof import('../session-manager.js');
+      const manager = await module.SessionManager.create({ sessionRepository: await createTestSessionRepository(),
         userMode: new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' }),
         pathExists: mockPathExists,
         jobQueue: testJobQueue,
@@ -2083,8 +2088,8 @@ describe('SessionManager', () => {
     async function setupActivated(defs?: Map<string, typeof PARAM_DEF>) {
       const definitions = defs ?? new Map([[PARAM_DEF.id, { ...PARAM_DEF }]]);
       const spawn = makeMultiSpawn();
-      const module = await import(`../session-manager.js?v=${++importCounter}`);
-      const manager: SessionManager = await module.SessionManager.create({
+      const module = await import(`../session-manager.js?v=${++importCounter}`) as typeof import('../session-manager.js');
+      const manager: SessionManager = await module.SessionManager.create({ sessionRepository: await createTestSessionRepository(),
         userMode: new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' }),
         pathExists: mockPathExists,
         jobQueue: testJobQueue,
@@ -2458,8 +2463,8 @@ describe('SessionManager', () => {
         decidedAt: '2026-01-01T00:00:00.000Z',
       }));
       const listByScope = mock(async (): Promise<McpServerPermissionRow[]> => []);
-      const module = await import(`../session-manager.js?v=${++importCounter}`);
-      const manager: SessionManager = await module.SessionManager.create({
+      const module = await import(`../session-manager.js?v=${++importCounter}`) as typeof import('../session-manager.js');
+      const manager: SessionManager = await module.SessionManager.create({ sessionRepository: await createTestSessionRepository(),
         userMode: new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' }),
         pathExists: mockPathExists,
         jobQueue: testJobQueue,
@@ -2753,8 +2758,8 @@ describe('SessionManager', () => {
       const subprocess: FakeSubprocess = { pid: 9001, exited, stdin, stdout, stderr, kill: () => {} };
       const fakeSpawnAsUserFn = mock(() => toSpawnAsUserResult({ subprocess, stdin }));
 
-      const module = await import(`../session-manager.js?v=${++importCounter}`);
-      const manager = await module.SessionManager.create({
+      const module = await import(`../session-manager.js?v=${++importCounter}`) as typeof import('../session-manager.js');
+      const manager = await module.SessionManager.create({ sessionRepository: await createTestSessionRepository(),
         userMode: new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' }),
         pathExists: mockPathExists,
         jobQueue: testJobQueue,
@@ -2940,8 +2945,8 @@ describe('SessionManager', () => {
       const subprocess: FakeSubprocess = { pid: 4343, exited, stdin, stdout, stderr, kill: () => {} };
       const fakeSpawnAsUserFn = mock(() => toSpawnAsUserResult({ subprocess, stdin }));
 
-      const module = await import(`../session-manager.js?v=${++importCounter}`);
-      const manager = await module.SessionManager.create({
+      const module = await import(`../session-manager.js?v=${++importCounter}`) as typeof import('../session-manager.js');
+      const manager = await module.SessionManager.create({ sessionRepository: await createTestSessionRepository(),
         userMode: new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' }),
         pathExists: mockPathExists,
         jobQueue: testJobQueue,
@@ -3036,8 +3041,8 @@ describe('SessionManager', () => {
 
     it('threads runAsUserImpl through to WorkerManager: activating an agent worker with a non-empty initialPrompt calls the injected fake', async () => {
       const { fake: runAsUserImpl, writeCalls } = createCapturingRunAsUser();
-      const module = await import(`../session-manager.js?v=${++importCounter}`);
-      const manager = await module.SessionManager.create({
+      const module = await import(`../session-manager.js?v=${++importCounter}`) as typeof import('../session-manager.js');
+      const manager = await module.SessionManager.create({ sessionRepository: await createTestSessionRepository(),
         userMode: new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' }),
         pathExists: mockPathExists,
         jobQueue: testJobQueue,
@@ -3103,8 +3108,8 @@ describe('SessionManager', () => {
           },
         };
 
-        const module = await import(`../session-manager.js?v=${++importCounter}`);
-        const manager = await module.SessionManager.create({
+        const module = await import(`../session-manager.js?v=${++importCounter}`) as typeof import('../session-manager.js');
+        const manager = await module.SessionManager.create({ sessionRepository: await createTestSessionRepository(),
           userMode: new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' }),
           pathExists: mockPathExists,
           jobQueue: testJobQueue,
@@ -3170,8 +3175,8 @@ describe('SessionManager', () => {
     }
 
     it('sets session.initialPromptDelivered = true after the terminal-agent worker injects the prompt', async () => {
-      const module = await import(`../session-manager.js?v=${++importCounter}`);
-      const manager = await module.SessionManager.create({
+      const module = await import(`../session-manager.js?v=${++importCounter}`) as typeof import('../session-manager.js');
+      const manager = await module.SessionManager.create({ sessionRepository: await createTestSessionRepository(),
         userMode: new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' }),
         pathExists: mockPathExists,
         jobQueue: testJobQueue,
@@ -3198,8 +3203,8 @@ describe('SessionManager', () => {
     });
 
     it('does not re-persist or throw when the callback fires again for an already-delivered session', async () => {
-      const module = await import(`../session-manager.js?v=${++importCounter}`);
-      const manager = await module.SessionManager.create({
+      const module = await import(`../session-manager.js?v=${++importCounter}`) as typeof import('../session-manager.js');
+      const manager = await module.SessionManager.create({ sessionRepository: await createTestSessionRepository(),
         userMode: new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' }),
         pathExists: mockPathExists,
         jobQueue: testJobQueue,
@@ -3241,8 +3246,8 @@ describe('SessionManager', () => {
       // created -- the callback's `getSession` lookup must miss cleanly.
       const registerSpy = spyOn(WorkerManager.prototype, 'setOnInitialPromptInjected');
       try {
-        const module = await import(`../session-manager.js?v=${++importCounter}`);
-        await module.SessionManager.create({
+        const module = await import(`../session-manager.js?v=${++importCounter}`) as typeof import('../session-manager.js');
+        await module.SessionManager.create({ sessionRepository: await createTestSessionRepository(),
           userMode: new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' }),
           pathExists: mockPathExists,
           jobQueue: testJobQueue,
@@ -3378,8 +3383,8 @@ describe('SessionManager', () => {
     // wiring contract from SessionManager's perspective.
 
     it('forwards sharedAccountLookup to the converter so isShared is true when createdBy is a shared-account user-id', async () => {
-      const module = await import(`../session-manager.js?v=${++importCounter}`);
-      const manager = await module.SessionManager.create({
+      const module = await import(`../session-manager.js?v=${++importCounter}`) as typeof import('../session-manager.js');
+      const manager = await module.SessionManager.create({ sessionRepository: await createTestSessionRepository(),
         userMode: new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' }),
         pathExists: mockPathExists,
         jobQueue: testJobQueue,
@@ -3406,8 +3411,8 @@ describe('SessionManager', () => {
     });
 
     it('forwards sharedAccountLookup so isShared is false when createdBy is a regular user-id', async () => {
-      const module = await import(`../session-manager.js?v=${++importCounter}`);
-      const manager = await module.SessionManager.create({
+      const module = await import(`../session-manager.js?v=${++importCounter}`) as typeof import('../session-manager.js');
+      const manager = await module.SessionManager.create({ sessionRepository: await createTestSessionRepository(),
         userMode: new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' }),
         pathExists: mockPathExists,
         jobQueue: testJobQueue,
@@ -3489,8 +3494,8 @@ describe('SessionManager', () => {
       };
       const usernameLookup = new UsernameLookupService(stubUserRepo);
 
-      const module = await import(`../session-manager.js?v=${++importCounter}`);
-      const manager = await module.SessionManager.create({
+      const module = await import(`../session-manager.js?v=${++importCounter}`) as typeof import('../session-manager.js');
+      const manager = await module.SessionManager.create({ sessionRepository: await createTestSessionRepository(),
         userMode: new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' }),
         pathExists: mockPathExists,
         jobQueue: testJobQueue,
@@ -3799,8 +3804,8 @@ describe('SessionManager', () => {
         return originalInject(sessionId, workerId, content, filePaths, isAsking);
       };
 
-      const module = await import(`../session-manager.js?v=${++importCounter}`);
-      const manager = await module.SessionManager.create({
+      const module = await import(`../session-manager.js?v=${++importCounter}`) as typeof import('../session-manager.js');
+      const manager = await module.SessionManager.create({ sessionRepository: await createTestSessionRepository(),
         userMode: new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' }),
         pathExists: mockPathExists,
         jobQueue: testJobQueue,
@@ -3838,8 +3843,8 @@ describe('SessionManager', () => {
         return originalInject(sessionId, workerId, content, filePaths, isAsking);
       };
 
-      const module = await import(`../session-manager.js?v=${++importCounter}`);
-      const manager = await module.SessionManager.create({
+      const module = await import(`../session-manager.js?v=${++importCounter}`) as typeof import('../session-manager.js');
+      const manager = await module.SessionManager.create({ sessionRepository: await createTestSessionRepository(),
         userMode: new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' }),
         pathExists: mockPathExists,
         jobQueue: testJobQueue,
@@ -3878,8 +3883,8 @@ describe('SessionManager', () => {
         return originalInject(sessionId, workerId, content, filePaths, isAsking);
       };
 
-      const module = await import(`../session-manager.js?v=${++importCounter}`);
-      const manager = await module.SessionManager.create({
+      const module = await import(`../session-manager.js?v=${++importCounter}`) as typeof import('../session-manager.js');
+      const manager = await module.SessionManager.create({ sessionRepository: await createTestSessionRepository(),
         userMode: new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' }),
         pathExists: mockPathExists,
         jobQueue: testJobQueue,
@@ -3919,8 +3924,8 @@ describe('SessionManager', () => {
         return originalInject(sessionId, workerId, content, filePaths, isAsking);
       };
 
-      const module = await import(`../session-manager.js?v=${++importCounter}`);
-      const manager = await module.SessionManager.create({
+      const module = await import(`../session-manager.js?v=${++importCounter}`) as typeof import('../session-manager.js');
+      const manager = await module.SessionManager.create({ sessionRepository: await createTestSessionRepository(),
         userMode: new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' }),
         pathExists: mockPathExists,
         jobQueue: testJobQueue,
@@ -3955,8 +3960,8 @@ describe('SessionManager', () => {
       // Override injectMessage to always fail
       mockInjectionService.injectMessage = () => false;
 
-      const module = await import(`../session-manager.js?v=${++importCounter}`);
-      const manager = await module.SessionManager.create({
+      const module = await import(`../session-manager.js?v=${++importCounter}`) as typeof import('../session-manager.js');
+      const manager = await module.SessionManager.create({ sessionRepository: await createTestSessionRepository(),
         userMode: new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' }),
         pathExists: mockPathExists,
         jobQueue: testJobQueue,
@@ -4067,8 +4072,8 @@ describe('SessionManager', () => {
     }
 
     async function setupManager(fake: ReturnType<typeof makeFakeEmbeddedSpawn>, defs: Map<string, EmbeddedAgentDefinition>) {
-      const module = await import(`../session-manager.js?v=${++importCounter}`);
-      return module.SessionManager.create({
+      const module = await import(`../session-manager.js?v=${++importCounter}`) as typeof import('../session-manager.js');
+      return module.SessionManager.create({ sessionRepository: await createTestSessionRepository(),
         userMode: new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' }),
         pathExists: mockPathExists,
         jobQueue: testJobQueue,
@@ -4354,8 +4359,8 @@ describe('SessionManager', () => {
         throw new Error('ENOENT: spawn bun');
       };
 
-      const module = await import(`../session-manager.js?v=${++importCounter}`);
-      const manager = await module.SessionManager.create({
+      const module = await import(`../session-manager.js?v=${++importCounter}`) as typeof import('../session-manager.js');
+      const manager = await module.SessionManager.create({ sessionRepository: await createTestSessionRepository(),
         userMode: new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' }),
         pathExists: mockPathExists,
         jobQueue: testJobQueue,
@@ -4872,8 +4877,8 @@ describe('SessionManager', () => {
       const subprocess: FakeSubprocess = { pid: 4242, exited, stdin, stdout, stderr, kill: () => {} };
       const fakeSpawnAsUserFn = mock(() => toSpawnAsUserResult({ subprocess, stdin }));
 
-      const module = await import(`../session-manager.js?v=${++importCounter}`);
-      const manager = await module.SessionManager.create({
+      const module = await import(`../session-manager.js?v=${++importCounter}`) as typeof import('../session-manager.js');
+      const manager = await module.SessionManager.create({ sessionRepository: await createTestSessionRepository(),
         userMode: new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' }),
         pathExists: mockPathExists,
         jobQueue: testJobQueue,
@@ -4976,8 +4981,8 @@ describe('SessionManager', () => {
         return toSpawnAsUserResult({ subprocess: next.subprocess, stdin: next.stdin });
       });
 
-      const module = await import(`../session-manager.js?v=${++importCounter}`);
-      const manager = await module.SessionManager.create({
+      const module = await import(`../session-manager.js?v=${++importCounter}`) as typeof import('../session-manager.js');
+      const manager = await module.SessionManager.create({ sessionRepository: await createTestSessionRepository(),
         userMode: new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' }),
         pathExists: mockPathExists,
         jobQueue: testJobQueue,
@@ -5230,7 +5235,7 @@ describe('SessionManager', () => {
       expect(res).not.toBeNull();
       expect(res!.endOffset).toBe(endOffset);
       expect(res!.data).toBe('R'.repeat(40));
-      expect(res!.epoch).toBe(manager.getWorkerEpoch(session.id, agentWorker.id));
+      expect(res!.epoch).toBe(manager.getWorkerEpoch(session.id, agentWorker.id)!);
     });
   });
 
@@ -5670,8 +5675,8 @@ describe('SessionManager', () => {
   describe('resumeSession - path validation', () => {
     // Helper to get SessionManager with custom pathExists mock using factory pattern
     async function getSessionManagerWithPathExists(pathExistsFn: (path: string) => Promise<boolean>) {
-      const module = await import(`../session-manager.js?v=${++importCounter}`);
-      return module.SessionManager.create({ userMode: new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' }), pathExists: pathExistsFn, agentManager, mcpTokenRegistry: new McpTokenRegistry(), repositoryLookup: defaultRepositoryLookup, repositoryEnvLookup: defaultRepositoryEnvLookup });
+      const module = await import(`../session-manager.js?v=${++importCounter}`) as typeof import('../session-manager.js');
+      return module.SessionManager.create({ sessionRepository: await createTestSessionRepository(), userMode: new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' }), pathExists: pathExistsFn, agentManager, mcpTokenRegistry: new McpTokenRegistry(), repositoryLookup: defaultRepositoryLookup, repositoryEnvLookup: defaultRepositoryEnvLookup });
     }
 
     it('should return null from resumeSession when session path no longer exists', async () => {
@@ -5908,7 +5913,7 @@ describe('SessionManager', () => {
 
       expect(restarted).not.toBeNull();
       expect(restarted?.id).toBe(agentWorker.id);
-      expect(restarted?.agentId).toBe(customAgent.id);
+      expect((restarted as AgentWorker | null)?.agentId).toBe(customAgent.id);
     });
 
     it('should update worker name when agent changes', async () => {
@@ -5948,7 +5953,7 @@ describe('SessionManager', () => {
       const restarted = await manager.restartAgentWorker(session.id, agentWorker.id, 'fresh');
 
       expect(restarted).not.toBeNull();
-      expect(restarted?.agentId).toBe(originalAgentId);
+      expect((restarted as AgentWorker | null)?.agentId).toBe(originalAgentId);
       expect(restarted?.name).toBe(originalName);
     });
 
@@ -6297,8 +6302,8 @@ describe('SessionManager', () => {
     }
 
     async function getSessionManagerWithEmbeddedAndSpawn(spawnFn: SpawnAsUserFn) {
-      const module = await import(`../session-manager.js?v=${++importCounter}`);
-      return module.SessionManager.create({
+      const module = await import(`../session-manager.js?v=${++importCounter}`) as typeof import('../session-manager.js');
+      return module.SessionManager.create({ sessionRepository: await createTestSessionRepository(),
         userMode: new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' }),
         pathExists: mockPathExists,
         jobQueue: testJobQueue,
@@ -6843,8 +6848,8 @@ describe('SessionManager', () => {
       await managerWithQueue.pauseSession(session.id);
 
       // Create a new manager WITHOUT jobQueue, sharing the same database
-      const module = await import(`../session-manager.js?v=${++importCounter}`);
-      const managerWithoutQueue = await module.SessionManager.create({
+      const module = await import(`../session-manager.js?v=${++importCounter}`) as typeof import('../session-manager.js');
+      const managerWithoutQueue = await module.SessionManager.create({ sessionRepository: await createTestSessionRepository(),
         userMode: new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' }),
         pathExists: mockPathExists,
         jobQueue: null,
@@ -7068,8 +7073,8 @@ describe('SessionManager', () => {
         return false; // Return false for subsequent calls (resumeSession)
       };
 
-      const module = await import(`../session-manager.js?v=${++importCounter}`);
-      const managerWithMissingPath = await module.SessionManager.create({
+      const module = await import(`../session-manager.js?v=${++importCounter}`) as typeof import('../session-manager.js');
+      const managerWithMissingPath = await module.SessionManager.create({ sessionRepository: await createTestSessionRepository(),
         userMode: new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' }),
         pathExists: pathExistsOnlyDuringInit,
         jobQueue: testJobQueue,
@@ -7114,8 +7119,8 @@ describe('SessionManager', () => {
         },
       };
 
-      const module = await import(`../session-manager.js?v=${++importCounter}`);
-      const managerWithFailingPty = await module.SessionManager.create({
+      const module = await import(`../session-manager.js?v=${++importCounter}`) as typeof import('../session-manager.js');
+      const managerWithFailingPty = await module.SessionManager.create({ sessionRepository: await createTestSessionRepository(),
         userMode: new SingleUserMode(failingPtyProvider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' }),
         pathExists: mockPathExists,
         jobQueue: testJobQueue,
@@ -7281,8 +7286,8 @@ describe('SessionManager', () => {
     }
 
     async function getSessionManagerWithUserRepo(userRepository: UserRepository) {
-      const module = await import(`../session-manager.js?v=${++importCounter}`);
-      return module.SessionManager.create({
+      const module = await import(`../session-manager.js?v=${++importCounter}`) as typeof import('../session-manager.js');
+      return module.SessionManager.create({ sessionRepository: await createTestSessionRepository(),
         userMode: new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' }),
         pathExists: mockPathExists,
         jobQueue: testJobQueue,
@@ -7371,8 +7376,8 @@ describe('SessionManager', () => {
         },
         getWorktreeIndexNumber: async () => 3,
       });
-      const module = await import(`../session-manager.js?v=${++importCounter}`);
-      const manager = await module.SessionManager.create({
+      const module = await import(`../session-manager.js?v=${++importCounter}`) as typeof import('../session-manager.js');
+      const manager = await module.SessionManager.create({ sessionRepository: await createTestSessionRepository(),
         userMode: new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' }),
         pathExists: mockPathExists,
         jobQueue: testJobQueue,
@@ -7453,8 +7458,8 @@ describe('SessionManager', () => {
         },
       };
 
-      const module = await import(`../session-manager.js?v=${++importCounter}`);
-      const manager = await module.SessionManager.create({
+      const module = await import(`../session-manager.js?v=${++importCounter}`) as typeof import('../session-manager.js');
+      const manager = await module.SessionManager.create({ sessionRepository: await createTestSessionRepository(),
         userMode: new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' }),
         pathExists: mockPathExists,
         jobQueue: testJobQueue,
@@ -7496,8 +7501,8 @@ describe('SessionManager', () => {
         },
         getWorktreeIndexNumber: async () => 3,
       });
-      const module = await import(`../session-manager.js?v=${++importCounter}`);
-      const manager = await module.SessionManager.create({
+      const module = await import(`../session-manager.js?v=${++importCounter}`) as typeof import('../session-manager.js');
+      const manager = await module.SessionManager.create({ sessionRepository: await createTestSessionRepository(),
         userMode: new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' }),
         pathExists: mockPathExists,
         jobQueue: testJobQueue,
@@ -7770,8 +7775,8 @@ describe('SessionManager', () => {
         raw: { stdout: '', stderr: '', exitCode: 0, timedOut: false },
       });
 
-      const module1 = await import(`../session-manager.js?v=${++importCounter}`);
-      const manager = await module1.SessionManager.create({
+      const module1 = await import(`../session-manager.js?v=${++importCounter}`) as typeof import('../session-manager.js');
+      const manager = await module1.SessionManager.create({ sessionRepository: await createTestSessionRepository(),
         userMode: new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' }),
         pathExists: mockPathExists,
         jobQueue: testJobQueue,
@@ -7793,8 +7798,9 @@ describe('SessionManager', () => {
       // only (see the isolation note above), not through
       // SessionPauseResumeService's independent resolver call.
       //
-      // NOTE: this test's SessionManager uses the default JsonSessionRepository
-      // (no `sessionRepository` option is passed anywhere in this file), whose
+      // NOTE: this test's SessionManager is given a JsonSessionRepository
+      // explicitly (`createTestSessionRepository`; this file never injects a
+      // SqliteSessionRepository), whose
       // `update()` does NOT support the recoveryState/orphanedAt/orphanedReason
       // fields (see json-session-repository.ts -- only SqliteSessionRepository's
       // update() handles them). `update()` here would return `true` while
@@ -7822,8 +7828,8 @@ describe('SessionManager', () => {
       // sweepSessionProcesses (Issue #1197 Part B) -- both of which must
       // route through this repository.
       mockProcess.markDead(process.pid);
-      const module2 = await import(`../session-manager.js?v=${++importCounter}`);
-      await module2.SessionManager.create({
+      const module2 = await import(`../session-manager.js?v=${++importCounter}`) as typeof import('../session-manager.js');
+      await module2.SessionManager.create({ sessionRepository: await createTestSessionRepository(),
         userMode: new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' }),
         pathExists: mockPathExists,
         jobQueue: testJobQueue,
@@ -7946,8 +7952,8 @@ describe('SessionManager', () => {
       // that populated that file, captured below the same way
       // createCapturingRunAsUser() does at :1717.
       const { fake: fakeRunAsUser, writeCalls } = createCapturingRunAsUser();
-      const module = await import(`../session-manager.js?v=${++importCounter}`);
-      const manager = await module.SessionManager.create({
+      const module = await import(`../session-manager.js?v=${++importCounter}`) as typeof import('../session-manager.js');
+      const manager = await module.SessionManager.create({ sessionRepository: await createTestSessionRepository(),
         userMode: new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' }),
         pathExists: mockPathExists,
         jobQueue: testJobQueue,
@@ -7997,8 +8003,8 @@ describe('SessionManager', () => {
 
     it('continues (does not redeliver) when the initial prompt was already delivered', async () => {
       const { fake: fakeRunAsUser, writeCalls } = createCapturingRunAsUser();
-      const module = await import(`../session-manager.js?v=${++importCounter}`);
-      const manager = await module.SessionManager.create({
+      const module = await import(`../session-manager.js?v=${++importCounter}`) as typeof import('../session-manager.js');
+      const manager = await module.SessionManager.create({ sessionRepository: await createTestSessionRepository(),
         userMode: new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' }),
         pathExists: mockPathExists,
         jobQueue: testJobQueue,
@@ -8192,7 +8198,7 @@ describe('SessionManager', () => {
         expect.arrayContaining([
           expect.objectContaining({ workerType: 'agent', outcome: 'restarted' }),
           expect.objectContaining({
-            workerId: terminalWorker.id,
+            workerId: terminalWorker!.id,
             workerType: 'terminal',
             outcome: 'skipped',
           }),
@@ -8306,8 +8312,8 @@ describe('SessionManager', () => {
           return toSpawnAsUserResult({ subprocess: current.subprocess, stdin: current.stdin });
         });
 
-        const module = await import(`../session-manager.js?v=${++importCounter}`);
-        const manager = await module.SessionManager.create({
+        const module = await import(`../session-manager.js?v=${++importCounter}`) as typeof import('../session-manager.js');
+        const manager = await module.SessionManager.create({ sessionRepository: await createTestSessionRepository(),
           userMode: new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' }),
           pathExists: mockPathExists,
           jobQueue: testJobQueue,
@@ -8472,8 +8478,8 @@ describe('SessionManager', () => {
       async function getSessionManagerWithSharedAccountLookup(sharedAccountLookup: {
         isSharedUserId: (userId: string) => boolean;
       }): Promise<SessionManager> {
-        const module = await import(`../session-manager.js?v=${++importCounter}`);
-        return module.SessionManager.create({
+        const module = await import(`../session-manager.js?v=${++importCounter}`) as typeof import('../session-manager.js');
+        return module.SessionManager.create({ sessionRepository: await createTestSessionRepository(),
           userMode: new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' }),
           pathExists: mockPathExists,
           jobQueue: testJobQueue,

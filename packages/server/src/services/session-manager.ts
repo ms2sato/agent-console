@@ -1,4 +1,3 @@
-import * as path from 'path';
 import { access } from 'fs/promises';
 import type {
   Session,
@@ -77,7 +76,7 @@ import { PtyMessageInjectionService } from './pty-message-injection-service.js';
 import { SessionMetadataService } from './session-metadata-service.js';
 import { createLogger } from '../lib/logger.js';
 import { WorkerOutputFileManager, type HistoryReadResult, type HistoryRangeResult } from '../lib/worker-output-file.js';
-import { JsonSessionRepository, type SessionRepository } from '../repositories/index.js';
+import type { SessionRepository } from '../repositories/index.js';
 import type { UserRepository } from '../repositories/user-repository.js';
 import { resolveSpawnUsername } from './resolve-spawn-username.js';
 import { resolveDisableClaudeAiConnectors } from './resolve-disable-claude-ai-connectors.js';
@@ -166,7 +165,7 @@ async function defaultPathExists(path: string): Promise<boolean> {
 interface SessionManagerOptions {
   userMode: UserMode;
   pathExists?: (path: string) => Promise<boolean>;
-  sessionRepository?: SessionRepository;
+  sessionRepository: SessionRepository;
   jobQueue?: JobQueue | null;
   agentManager: AgentManager;
   /**
@@ -473,8 +472,7 @@ export class SessionManager {
       });
     });
     this.pathExists = options?.pathExists ?? defaultPathExists;
-    this.sessionRepository = options?.sessionRepository ??
-      new JsonSessionRepository(path.join(getConfigDir(), 'sessions.json'));
+    this.sessionRepository = options.sessionRepository;
     this.jobQueue = options?.jobQueue ?? null;
 
     // Embedded-agent subprocess lifecycle. Constructed before the
