@@ -1453,7 +1453,7 @@ describe('WorkerLifecycleManager', () => {
       });
       const { manager, session, workerId } = await managerWithTransaction(persist);
 
-      await expect(manager.deleteWorker(session.id, workerId)).rejects.toThrow('injected persist failure');
+      expect(await settle(manager.deleteWorker(session.id, workerId).catch((err: unknown) => err))).toEqual(new Error('injected persist failure'));
 
       expect(await jobTypes()).toEqual([]);
       expect(session.workers.has(workerId)).toBe(true);

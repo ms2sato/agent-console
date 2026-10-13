@@ -1411,7 +1411,7 @@ describe('SessionInitializationService orphan cleanup transaction (real DB, real
     await seedOrphan('orphan-delete-fails');
     spyOn(sessionRepository, 'delete').mockRejectedValue(new Error('injected delete failure'));
 
-    await expect(createService({ withDb: true }).initialize()).rejects.toThrow('injected delete failure');
+    expect(await settle(createService({ withDb: true }).initialize().catch((err: unknown) => err))).toEqual(new Error('injected delete failure'));
 
     expect(await sessionRepository.findById('orphan-delete-fails')).not.toBeNull();
     expect(await cleanupJobTypes()).toEqual([]);
@@ -1421,7 +1421,7 @@ describe('SessionInitializationService orphan cleanup transaction (real DB, real
     await seedOrphan('orphan-enqueue-fails');
     spyOn(jobQueue, 'enqueue').mockRejectedValue(new Error('injected enqueue failure'));
 
-    await expect(createService({ withDb: true }).initialize()).rejects.toThrow('injected enqueue failure');
+    expect(await settle(createService({ withDb: true }).initialize().catch((err: unknown) => err))).toEqual(new Error('injected enqueue failure'));
 
     expect(await sessionRepository.findById('orphan-enqueue-fails')).not.toBeNull();
     expect(await cleanupJobTypes()).toEqual([]);

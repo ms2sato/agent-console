@@ -627,7 +627,7 @@ describe('SessionDeletionService delete transaction (real DB, real JobQueue)', (
       await seedSession('s-fail', { inMemory: true });
       spyOn(sessionRepository, 'delete').mockRejectedValue(new Error('injected delete failure'));
 
-      await expect(createService({ withDb: true }).deleteSession('s-fail')).rejects.toThrow('injected delete failure');
+      expect(await settle(createService({ withDb: true }).deleteSession('s-fail').catch((err: unknown) => err))).toEqual(new Error('injected delete failure'));
 
       expect(await sessionRepository.findById('s-fail')).not.toBeNull();
       expect(memory.has('s-fail')).toBe(true);
@@ -666,7 +666,7 @@ describe('SessionDeletionService delete transaction (real DB, real JobQueue)', (
       await seedSession('o-fail', { inMemory: false });
       spyOn(sessionRepository, 'delete').mockRejectedValue(new Error('injected delete failure'));
 
-      await expect(createService({ withDb: true }).forceDeleteSession('o-fail')).rejects.toThrow('injected delete failure');
+      expect(await settle(createService({ withDb: true }).forceDeleteSession('o-fail').catch((err: unknown) => err))).toEqual(new Error('injected delete failure'));
 
       expect(await sessionRepository.findById('o-fail')).not.toBeNull();
       expect(await jobTypes()).toEqual([]);
