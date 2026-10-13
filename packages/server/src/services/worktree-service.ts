@@ -22,6 +22,7 @@ import {
 // user's PATH, gitconfig, and SSH_AUTH_SOCK via sudo -i).
 import { augmentWorktreeAddPermissionError } from '../lib/git-error-hints.js';
 import { canonicalPath } from '../lib/canonical-path.js';
+import { classifyRepositoryPath } from '../lib/repository-path-status.js';
 import { createLogger } from '../lib/logger.js';
 import { substituteVariables } from '../lib/template-variables.js';
 import { isErrnoException } from '../lib/type-guards.js';
@@ -368,23 +369,20 @@ export class WorktreeService {
 
       return gitWorktrees;
     } catch (error) {
-      if (await this.pathIsMissing(repoPath)) {
-        // The directory was renamed, moved or deleted. The listing is empty
-        // by design, but say why instead of logging a generic git failure.
-        logger.warn({ err: error, repoPath, reason: 'repository path missing' }, 'Failed to list worktrees: repository path missing');
-      } else {
-        logger.error({ err: error, repoPath }, 'Failed to list worktrees');
+      switch (await classifyRepositoryPath(repoPath)) {
+        case 'missing':
+          // The directory was renamed, moved or deleted. The listing is empty
+          // by design, but say why instead of logging a generic git failure.
+          logger.warn({ err: error, repoPath, reason: 'repository path missing' }, 'Failed to list worktrees: repository path missing');
+          break;
+        case 'inaccessible':
+          logger.warn({ err: error, repoPath, reason: 'repository path inaccessible' }, 'Failed to list worktrees: repository path inaccessible');
+          break;
+        case 'ok':
+          logger.error({ err: error, repoPath }, 'Failed to list worktrees');
+          break;
       }
       return [];
-    }
-  }
-
-  private async pathIsMissing(target: string): Promise<boolean> {
-    try {
-      await fsPromises.access(target);
-      return false;
-    } catch {
-      return true;
     }
   }
 
