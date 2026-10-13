@@ -4,6 +4,7 @@ import { EditSessionDialog } from './sessions/EditSessionDialog';
 import { RestartSessionDialog } from './sessions/RestartSessionDialog';
 import { DeleteWorktreeDialog } from './sessions/DeleteWorktreeDialog';
 import { PauseSessionDialog } from './sessions/PauseSessionDialog';
+import { EndSessionDialog } from './sessions/EndSessionDialog';
 import { InitialPromptDialog } from './sessions/InitialPromptDialog';
 import type { AgentSelection } from './AgentSelector';
 import type { Session, AgentActivityState } from '@agent-console/shared';
@@ -110,6 +111,15 @@ export function SessionSettings({
 
       <PauseSessionDialog
         open={activeDialog === 'pause'}
+        onOpenChange={(open) => !open && closeDialog()}
+        sessionId={sessionId}
+        sessionTitle={currentTitle}
+        session={session}
+        workerActivityStates={workerActivityStates}
+      />
+
+      <EndSessionDialog
+        open={activeDialog === 'end-session'}
         onOpenChange={(open) => !open && closeDialog()}
         sessionId={sessionId}
         sessionTitle={currentTitle}

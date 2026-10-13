@@ -7,6 +7,7 @@ import {
   FolderIcon,
   CopyIcon,
   TrashIcon,
+  StopIcon,
   PauseIcon,
   DocumentIcon,
   ExternalLinkIcon,
@@ -19,7 +20,7 @@ import { hasVSCode } from '../../lib/capabilities';
 import { logger } from '../../lib/logger';
 import { copyToClipboard } from '../../lib/clipboard';
 
-export type MenuAction = 'edit' | 'restart' | 'delete-worktree' | 'pause' | 'view-initial-prompt';
+export type MenuAction = 'edit' | 'restart' | 'delete-worktree' | 'pause' | 'end-session' | 'view-initial-prompt';
 
 export interface SessionSettingsMenuProps {
   sessionId: string;
@@ -199,6 +200,13 @@ export function SessionSettingsMenu({
             >
               <PauseIcon />
               Pause
+            </button>
+            <button
+              onClick={() => handleMenuAction('end-session')}
+              className="w-full px-4 py-2 text-left text-sm text-red-400 hover:bg-slate-700 hover:text-red-300 flex items-center gap-2"
+            >
+              <StopIcon />
+              End Session
             </button>
             {!isMainWorktree && (
               <button
