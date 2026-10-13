@@ -448,28 +448,6 @@ export async function listWorktrees(cwd: string): Promise<string> {
 }
 
 /**
- * Create a new worktree.
- */
-export async function createWorktree(
-  worktreePath: string,
-  branch: string,
-  cwd: string,
-  options?: { baseBranch?: string }
-): Promise<void> {
-  const args = ['worktree', 'add'];
-
-  if (options?.baseBranch) {
-    // Create new branch from baseBranch
-    args.push('-b', branch, worktreePath, options.baseBranch);
-  } else {
-    // Use existing branch
-    args.push(worktreePath, branch);
-  }
-
-  await git(args, cwd, HEAVY_GIT_TIMEOUT_MS);
-}
-
-/**
  * Runner abstraction for {@link removeWorktreeWithFallback}: `runGit`
  * dispatches a `git` argv (direct spawn or elevated) and reports exit via
  * the returned tuple; `rmRecursive` removes a directory tree force-style.
@@ -571,24 +549,6 @@ export async function removeWorktree(
 // ============================================================
 
 /**
- * Get the merge-base commit of two refs (their common ancestor).
- * Useful for finding where a branch diverged from the base branch.
- *
- * @param requestUser - See {@link git}.
- *
- * @example
- * const mergeBase = await getMergeBase('main', 'HEAD', repoPath);
- */
-export async function getMergeBase(
-  ref1: string,
-  ref2: string,
-  cwd: string,
-  requestUser?: string | null,
-): Promise<string> {
-  return git(['merge-base', ref1, ref2], cwd, DEFAULT_GIT_TIMEOUT_MS, requestUser);
-}
-
-/**
  * Get the merge-base commit of two refs, returning null on failure.
  *
  * @param requestUser - See {@link git}.
@@ -652,24 +612,6 @@ export async function getDiffNumstat(
   } else {
     return gitRaw(['diff', '--numstat', baseRef], cwd, DEFAULT_GIT_TIMEOUT_MS, requestUser);
   }
-}
-
-/**
- * Get list of staged files with their status.
- * Returns lines of: status<TAB>filename (e.g., "M\tsrc/index.ts")
- *
- * Status codes: A=added, M=modified, D=deleted, R=renamed, C=copied
- */
-export async function getStagedFiles(cwd: string): Promise<string> {
-  return git(['diff', '--cached', '--name-status'], cwd);
-}
-
-/**
- * Get list of unstaged files (modified tracked files).
- * Returns lines of: status<TAB>filename
- */
-export async function getUnstagedFiles(cwd: string): Promise<string> {
-  return git(['diff', '--name-status'], cwd);
 }
 
 /**

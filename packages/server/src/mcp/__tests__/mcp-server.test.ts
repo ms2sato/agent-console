@@ -2820,9 +2820,6 @@ describe('MCP Server Tools', () => {
       mockGit.getRemoteUrl.mockImplementation(async () => 'git@github.com:owner/repo.git');
       mockGit.getDefaultBranch.mockImplementation(async () => 'main');
 
-      mockGit.createWorktree.mockImplementation(async () => {
-        // Success - worktree is "created" on disk
-      });
       mockGit.listWorktrees.mockImplementation(async () => {
         // Only return the main worktree; the created worktree is NOT in git output
         return `worktree ${TEST_REPO_PATH}\nHEAD abc123\nbranch refs/heads/main\n`;
@@ -4252,9 +4249,7 @@ describe('MCP Server Tools', () => {
     /**
      * Reuse the delegate environment setup from the delegate_to_worktree block.
      */
-    async function setupParentMetadataEnvironment(
-      worktreeBranch: string = 'feat/parent-meta-test',
-    ): Promise<void> {
+    async function setupParentMetadataEnvironment(): Promise<void> {
       setupMemfs({
         [`${TEST_CONFIG_DIR}/.keep`]: '',
         [`${TEST_REPO_PATH}/.git/HEAD`]: 'ref: refs/heads/main',
@@ -4264,15 +4259,7 @@ describe('MCP Server Tools', () => {
       mockGit.getRemoteUrl.mockImplementation(async () => 'git@github.com:owner/repo.git');
       mockGit.getDefaultBranch.mockImplementation(async () => 'main');
 
-      let capturedWorktreePath = '';
-      mockGit.createWorktree.mockImplementation(async (...args: unknown[]) => {
-        capturedWorktreePath = args[0] as string;
-      });
-
       mockGit.listWorktrees.mockImplementation(async () => {
-        if (capturedWorktreePath) {
-          return `worktree ${TEST_REPO_PATH}\nHEAD abc123\nbranch refs/heads/main\n\nworktree ${capturedWorktreePath}\nHEAD def456\nbranch refs/heads/${worktreeBranch}\n`;
-        }
         return `worktree ${TEST_REPO_PATH}\nHEAD abc123\nbranch refs/heads/main\n`;
       });
 
@@ -4294,7 +4281,7 @@ describe('MCP Server Tools', () => {
     }
 
     it('should persist parentSessionId and parentWorkerId when delegate_to_worktree is called with them', async () => {
-      await setupParentMetadataEnvironment('feat/persist-parent');
+      await setupParentMetadataEnvironment();
 
       const parent = await createValidDelegateParent();
 
@@ -4324,7 +4311,7 @@ describe('MCP Server Tools', () => {
     });
 
     it('should return parentSessionId and parentWorkerId in list_sessions response', async () => {
-      await setupParentMetadataEnvironment('feat/list-parent');
+      await setupParentMetadataEnvironment();
 
       const parent = await createValidDelegateParent();
 
@@ -4381,15 +4368,7 @@ describe('MCP Server Tools', () => {
       mockGit.getRemoteUrl.mockImplementation(async () => 'git@github.com:owner/repo.git');
       mockGit.getDefaultBranch.mockImplementation(async () => 'main');
 
-      let capturedWorktreePath = '';
-      mockGit.createWorktree.mockImplementation(async (...args: unknown[]) => {
-        capturedWorktreePath = args[0] as string;
-      });
-
       mockGit.listWorktrees.mockImplementation(async () => {
-        if (capturedWorktreePath) {
-          return `worktree ${TEST_REPO_PATH}\nHEAD abc123\nbranch refs/heads/main\n\nworktree ${capturedWorktreePath}\nHEAD def456\nbranch refs/heads/feat/env-test\n`;
-        }
         return `worktree ${TEST_REPO_PATH}\nHEAD abc123\nbranch refs/heads/main\n`;
       });
 

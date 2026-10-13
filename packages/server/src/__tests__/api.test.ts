@@ -125,7 +125,6 @@ function setupDefaultGitMocks() {
 HEAD abc123
 branch refs/heads/main
 `));
-  mockGit.createWorktree.mockImplementation(() => Promise.resolve());
   mockGit.removeWorktree.mockImplementation(() => Promise.resolve());
   mockGit.listLocalBranches.mockImplementation(() => Promise.resolve(['main', 'develop', 'feature-1']));
   mockGit.listRemoteBranches.mockImplementation(() => Promise.resolve(['origin/main', 'origin/develop']));
@@ -199,7 +198,6 @@ describe('API Routes Integration', () => {
 
     // Reset git mocks
     mockGit.listWorktrees.mockReset();
-    mockGit.createWorktree.mockReset();
     mockGit.removeWorktree.mockReset();
     mockGit.listLocalBranches.mockReset();
     mockGit.listRemoteBranches.mockReset();
