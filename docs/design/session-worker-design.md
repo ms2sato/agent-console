@@ -31,6 +31,8 @@ QuickSession (not tied to repository/worktree)
 | **Session** | Work session tied to a location (directory) |
 | **Worker** | Work unit within a session (Agent, Terminal, etc.) |
 
+How a cloned Repository is stored on disk (bare source repository plus linked worktrees) is proposed in [source-repo-storage-model.md](source-repo-storage-model.md).
+
 ### Session Types
 
 - **WorktreeSession**: Tied to a Repository and Worktree. Has branch management features.
