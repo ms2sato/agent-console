@@ -59,9 +59,6 @@
         "@types/mock-fs",
         "mock-fs",
         "@agent-console/embedded-agent"
-      ],
-      "ignore": [
-        "src/services/notifications/index.ts"
       ]
     },
     "packages/client": {
@@ -82,9 +79,7 @@
         "happy-dom"
       ],
       "ignore": [
-        "src/routeTree.gen.ts",
-        "src/components/workers/index.ts",
-        "src/hooks/index.ts"
+        "src/routeTree.gen.ts"
       ]
     },
     "packages/integration": {
