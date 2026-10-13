@@ -29,7 +29,7 @@ import type {
   InternalAgentWorker,
   InternalTerminalWorker,
 } from '../worker-types.js';
-import type { PersistedAgentWorker, PersistedTerminalWorker, PersistedGitDiffWorker } from '../persistence-service.js';
+import type { PersistedAgentWorker, PersistedTerminalWorker, PersistedGitDiffWorker } from '../../repositories/persisted-types.js';
 import type { EmbeddedAgentDefinition } from '@agent-console/shared';
 import { CLAUDE_CODE_AGENT_ID } from '../agent-manager.js';
 import { SessionDataPathResolver } from '../../lib/session-data-path-resolver.js';

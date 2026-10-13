@@ -11,7 +11,7 @@ import { initializeDatabase, closeDatabase, getDatabase } from '../../database/c
 import { AgentManager, CLAUDE_CODE_AGENT_ID } from '../agent-manager.js';
 import { SqliteAgentRepository } from '../../repositories/sqlite-agent-repository.js';
 import { RepositoryNotFoundError, ValidationError } from '../../lib/errors.js';
-import type { PersistedWorker } from '../persistence-service.js';
+import type { PersistedWorker } from '../../repositories/persisted-types.js';
 import { JobQueue } from '../../jobs/index.js';
 import type { PtyProvider, PtySpawnOptions } from '../../lib/pty-provider.js';
 import { SingleUserMode } from '../user-mode.js';

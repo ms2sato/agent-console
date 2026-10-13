@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import * as fs from 'fs';
 import * as path from 'path';
 import type { AgentDefinition } from '@agent-console/shared';
-import type { PersistedSession } from '../persistence-service.js';
+import type { PersistedSession } from '../../repositories/persisted-types.js';
 import { setupTestConfigDir, cleanupTestConfigDir, getTestConfigDir } from '../../__tests__/utils/mock-fs-helper.js';
 
 describe('PersistenceService', () => {

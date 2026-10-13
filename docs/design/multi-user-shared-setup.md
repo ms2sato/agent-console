@@ -343,7 +343,7 @@ Constructor receives `PtyProvider` (injected at startup). Requires async initial
 
 **Modify:**
 - `packages/server/src/services/internal-types.ts` — Add `createdBy?: string` to `InternalSessionBase` (references `users.id`)
-- `packages/server/src/services/persistence-service.ts` — Add `createdBy?: string` to `PersistedSessionBase`
+- `packages/server/src/repositories/persisted-types.ts` — Add `createdBy?: string` to `PersistedSessionBase`
 - `packages/server/src/database/mappers.ts` — Map `created_by` ↔ `createdBy`
 - `packages/server/src/repositories/sqlite-session-repository.ts` — Include `created_by` in save (not in update — immutable after creation)
 - `packages/server/src/services/session-manager.ts:511` — `createSession()` accepts `createdBy` param (users.id), stores it

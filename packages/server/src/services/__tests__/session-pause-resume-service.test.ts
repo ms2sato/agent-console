@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, mock } from 'bun:test';
 import { SessionPauseResumeService, type SessionPauseResumeDeps } from '../session-pause-resume-service.js';
 import type { InternalSession } from '../internal-types.js';
 import type { InternalWorker, InternalAgentWorker, InternalTerminalWorker } from '../worker-types.js';
-import type { PersistedSession } from '../persistence-service.js';
+import type { PersistedSession } from '../../repositories/persisted-types.js';
 import type { Session, AgentWorker, EmbeddedAgentWorker } from '@agent-console/shared';
 import type { NotificationManager } from '../notifications/notification-manager.js';
 import type { MessageService } from '../message-service.js';

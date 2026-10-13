@@ -8,7 +8,7 @@ import * as v from 'valibot';
 import type { AgentDefinition } from '@agent-console/shared';
 import { DEFAULT_FORK_POINT_SPEC } from '@agent-console/shared';
 import type { Database } from './schema.js';
-import type { PersistedSession, PersistedRepository } from '../services/persistence-service.js';
+import type { PersistedSession, PersistedRepository } from '../repositories/persisted-types.js';
 import { PersistedAgentDefinitionSchema } from '../services/persistence-service.js';
 import { getConfigDir, getDbPath, getRepositoryDir } from '../lib/config.js';
 import { getRemoteUrl, parseOrgRepo } from '../lib/git.js';

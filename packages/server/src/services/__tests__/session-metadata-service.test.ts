@@ -8,7 +8,7 @@ import {
 } from '../../__tests__/utils/build-test-data.js';
 import { SessionMetadataService, type SessionMetadataDeps } from '../session-metadata-service.js';
 import type { InternalSession } from '../internal-types.js';
-import type { PersistedSession, PersistedWorktreeSession } from '../persistence-service.js';
+import type { PersistedSession, PersistedWorktreeSession } from '../../repositories/persisted-types.js';
 import type { Session } from '@agent-console/shared';
 import type { SessionRepository } from '../../repositories/session-repository.js';
 

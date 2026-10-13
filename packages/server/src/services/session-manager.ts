@@ -18,7 +18,7 @@ import {
 } from '@agent-console/shared';
 import type {
   PersistedSession,
-} from './persistence-service.js';
+} from '../repositories/persisted-types.js';
 import type {
   InternalWorker,
   InternalPtyWorker,

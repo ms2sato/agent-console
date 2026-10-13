@@ -1,4 +1,4 @@
-import type { PersistedSession } from '../services/persistence-service.js';
+import type { PersistedSession } from './persisted-types.js';
 
 /**
  * Supported fields for partial session updates.

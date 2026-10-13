@@ -576,7 +576,7 @@ packages/server/src/
 - [ ] Create `packages/server/src/repositories/session-repository.ts`:
 
 ```typescript
-import type { PersistedSession } from '../services/persistence-service.js';
+import type { PersistedSession } from '../repositories/persisted-types.js';
 
 export interface SessionRepository {
   findAll(): Promise<PersistedSession[]>
@@ -594,7 +594,7 @@ export interface SessionRepository {
 
 ```typescript
 import type { SessionRepository } from './session-repository.js';
-import type { PersistedSession } from '../services/persistence-service.js';
+import type { PersistedSession } from '../repositories/persisted-types.js';
 // Reuse atomicWrite, safeRead from persistence-service or extract to shared util
 
 export class JsonSessionRepository implements SessionRepository {

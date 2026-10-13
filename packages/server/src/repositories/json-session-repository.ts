@@ -1,6 +1,6 @@
 import { promises as fsPromises } from 'fs';
 import * as crypto from 'crypto';
-import type { PersistedSession } from '../services/persistence-service.js';
+import type { PersistedSession } from './persisted-types.js';
 import type { SessionRepository, SessionUpdateFields } from './session-repository.js';
 import { createLogger } from '../lib/logger.js';
 import { isErrnoException } from '../lib/type-guards.js';

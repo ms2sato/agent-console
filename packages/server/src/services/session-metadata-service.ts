@@ -17,7 +17,7 @@
 
 import type { Session } from '@agent-console/shared';
 import type { InternalSession } from './internal-types.js';
-import type { PersistedSession } from './persistence-service.js';
+import type { PersistedSession } from '../repositories/persisted-types.js';
 import type { SessionRepository } from '../repositories/index.js';
 import type { SessionLifecycleCallbacks } from './session-lifecycle-types.js';
 import { createLogger } from '../lib/logger.js';

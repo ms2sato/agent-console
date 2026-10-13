@@ -2,7 +2,7 @@ import * as path from 'path';
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { setupTestConfigDir, cleanupTestConfigDir, setupMemfs } from '../../__tests__/utils/mock-fs-helper.js';
 import { mockGit, resetGitMocks } from '../../__tests__/utils/mock-git-helper.js';
-import type { PersistedSession } from '../persistence-service.js';
+import type { PersistedSession } from '../../repositories/persisted-types.js';
 import type { SessionValidationResult } from '@agent-console/shared';
 
 describe('SessionValidationService', () => {

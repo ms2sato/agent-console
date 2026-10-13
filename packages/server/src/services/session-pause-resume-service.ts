@@ -14,7 +14,7 @@ import type {
   AgentActivityState,
   WorkerActivityInfo,
 } from '@agent-console/shared';
-import type { PersistedSession } from './persistence-service.js';
+import type { PersistedSession } from '../repositories/persisted-types.js';
 import type { InternalSession } from './internal-types.js';
 import type { InternalPtyWorker } from './worker-types.js';
 import type { SessionRepository } from '../repositories/index.js';

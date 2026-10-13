@@ -43,7 +43,7 @@ import { deleteWorktree, _getDeletionsInProgress } from '../../services/worktree
 import type { SuggestSessionMetadataFn } from '../../services/session-metadata-suggester.js';
 import { AgentDirectory } from '../../services/agent-directory.js';
 import type { AgentDirectoryEntry, EmbeddedAgentDefinition, AppServerMessage } from '@agent-console/shared';
-import type { PersistedWorker } from '../../services/persistence-service.js';
+import type { PersistedWorker } from '../../repositories/persisted-types.js';
 import type { runAsUser, SpawnAsUserFn, SpawnAsUserOpts } from '../../services/privilege-elevation.js';
 import { toSpawnAsUserResult, type FakeFileSink, type FakeSubprocess } from '../../__tests__/utils/fake-spawn-as-user.js';
 import { repositoryLookupFromSlug } from '../../__tests__/utils/repository-lookup-mock.js';

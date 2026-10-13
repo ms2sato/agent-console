@@ -325,7 +325,7 @@ Same migration as above adds the column. Update `VALID_WORKER_TYPES` (`mappers.t
 |---|---|---|
 | `toWorkerRow` | `packages/server/src/database/mappers.ts:129-164` | embedded-agent branch: `pid` from worker, `embedded_agent_id`, `agent_id: null`, `base_commit: null` |
 | `toPersistedWorker` (DB->persisted) | `mappers.ts:179-222` | embedded-agent branch; throw `DataIntegrityError` if `embedded_agent_id` is null |
-| `PersistedWorker` union | `packages/server/src/services/persistence-service.ts:49-71` | add `PersistedEmbeddedAgentWorker { type: 'embedded-agent'; embeddedAgentId: string; pid: number \| null }` |
+| `PersistedWorker` union | `packages/server/src/repositories/persisted-types.ts` | add `PersistedEmbeddedAgentWorker { type: 'embedded-agent'; embeddedAgentId: string; pid: number \| null }` |
 | `toPublicWorker` | `packages/server/src/services/worker-manager.ts:707-724` | embedded-agent branch: `activated: worker.subprocess !== null` |
 | `toPersistedWorker` (memory->persisted) | `worker-manager.ts:729-746` | embedded-agent branch: `pid: worker.subprocess?.pid ?? null` |
 | `restoreWorkers` | `worker-manager.ts:667-697` | embedded-agent branch: rebuild internal worker with `subprocess: null`, fresh `connectionCallbacks` |

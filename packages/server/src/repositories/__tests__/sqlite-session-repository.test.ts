@@ -6,7 +6,7 @@ import { SqliteSessionRepository } from '../sqlite-session-repository.js';
 import { createDatabaseForTest } from '../../database/connection.js';
 import type { Database } from '../../database/schema.js';
 import type { SessionUpdateFields } from '../session-repository.js';
-import type { PersistedWorktreeSession } from '../../services/persistence-service.js';
+import type { PersistedWorktreeSession } from '../persisted-types.js';
 import {
   buildPersistedQuickSession,
   buildPersistedWorktreeSession,

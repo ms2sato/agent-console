@@ -18,7 +18,7 @@ import type {
   PersistedGitDiffWorker,
   PersistedEmbeddedAgentWorker,
   PersistedRepository,
-} from '../../services/persistence-service.js';
+} from '../../repositories/persisted-types.js';
 import type {
   InternalWorktreeSession,
   InternalQuickSession,
