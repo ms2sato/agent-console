@@ -246,6 +246,13 @@ describe('API Routes Integration', () => {
     testRepositoryManager = null;
     testAgentManager = null;
     testSystemCapabilities = null;
+    // The worktree deletion / pull guards are module-level Sets: a test that
+    // is aborted mid-request (e.g. a load timeout) never reaches its own
+    // release, and the stranded path would answer 409 to every later test on
+    // the same path. Reset them here, like resetGitMocks() resets the git mocks.
+    const { _getDeletionsInProgress, _getPullsInProgress } = await import('../routes/worktrees.js');
+    _getDeletionsInProgress().clear();
+    _getPullsInProgress().clear();
     await closeDatabase();
     cleanupMemfs();
   });
@@ -1774,6 +1781,34 @@ describe('API Routes Integration', () => {
     });
 
     describe('DELETE /api/repositories/:id/worktrees/*', () => {
+      // DELIBERATELY ORDER-DEPENDENT PAIR (bun runs a file's tests in order):
+      // the first test strands a path in the deletion guard exactly as an
+      // aborted request would; the second proves the afterEach reset cleared
+      // it. Measured: removing the guard clears from the top-level afterEach
+      // makes the second test fail on the size assertion and on the 409.
+      it('leaves the deletion and pull guards populated on purpose (setup for the next test)', async () => {
+        const { _getDeletionsInProgress, _getPullsInProgress } = await import('../routes/worktrees.js');
+        _getDeletionsInProgress().add(`${TEST_CONFIG_DIR}/repositories/owner/test-repo/worktrees/wt-001-abcd`);
+        _getPullsInProgress().add(`${TEST_CONFIG_DIR}/repositories/owner/test-repo/worktrees/wt-001-abcd`);
+        expect(_getDeletionsInProgress().size).toBe(1);
+        expect(_getPullsInProgress().size).toBe(1);
+      });
+
+      it('the harness resets module-level guards between tests, so an aborted deletion cannot cascade', async () => {
+        const { _getDeletionsInProgress, _getPullsInProgress } = await import('../routes/worktrees.js');
+        expect(_getDeletionsInProgress().size).toBe(0);
+        expect(_getPullsInProgress().size).toBe(0);
+
+        const app = await createApp();
+        const { repo, repoPath } = await registerTestRepo(app);
+        const { worktreePath } = await setupWorktreeForDeletion(repo, repoPath);
+        const res = await app.request(
+          `/api/repositories/${repo.id}/worktrees/${encodeURIComponent(worktreePath)}?force=true`,
+          { method: 'DELETE' },
+        );
+        expect(res.status).not.toBe(409);
+      });
+
       it('should return 400 when repository is unregistered AND worktreePath is outside managed dir (orphan path, refs #815)', async () => {
         // Refs #815. The previous "404 not-found" contract for an unknown
         // repoId was the giving-up-partway pattern: the deletion service
