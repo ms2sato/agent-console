@@ -243,6 +243,10 @@ type WorkerServerMessage =
 | DELETE | `/api/sessions/:id` | Delete session and all workers |
 | POST | `/api/sessions/:id/restart` | Restart session (recreate agent worker with -c) |
 
+**Ending a session (End Session).** `DELETE /api/sessions/:id` reaches paused sessions as well as live ones: the route tries the live session first and then falls back to the persisted row, so a paused session (which exists only in persistence) is deleted together with its output-cleanup job, memo file, Orchestrator designation and inbound notification rows, and the route answers 404 only when neither exists. Ending is available for every worktree session, the primary worktree included, from the session page menu, the dashboard worktree row (live and paused) and the expanded paused items of the sidebar. It deletes the session and cannot be undone, but it never touches the worktree directory, so a new session can be opened at the same place; once every session of a repository has ended, the repository can be unregistered. A timer whose worker belongs to a paused session is not delivered (notification delivery looks up live sessions only) and its row is kept.
+
+Ending another user's session is allowed (team operation). Owner decision 2026-10-13: per-session authorization on End is premature; revisit when a non-team account class exists or an audit trail of cross-user ends is required.
+
 ### Workers
 
 | Method | Endpoint | Description |
