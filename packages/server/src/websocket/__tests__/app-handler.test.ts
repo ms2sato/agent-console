@@ -48,7 +48,7 @@ describe('App Handler', () => {
       // Models the sync username cache: empty until primed, like the real lookup.
       let primed = false;
       const deps = {
-        primeActiveSessionUsernames: async () => { primed = true; },
+        primeActiveSessionUsernames: async () => { await Promise.resolve(); primed = true; },
         getAllSessions: () => [buildQuickSession({ id: 's1', createdBy: 'user-1', createdByUsername: primed ? 'alice' : null })],
         getAllPausedSessions: async () => [],
         getWorkerActivityState: () => undefined,
