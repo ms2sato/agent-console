@@ -18,7 +18,7 @@ import { sql, Kysely } from 'kysely';
 import { BunSqliteDialect } from 'kysely-bun-sqlite';
 import { Database as BunDatabase } from 'bun:sqlite';
 import type { Database } from '../schema.js';
-import { initializeDatabase, closeDatabase, migrateToV46, migrateToV47 } from '../connection.js';
+import { initializeDatabase, closeDatabase, migrateToV46, migrateToV47, LATEST_SCHEMA_VERSION } from '../connection.js';
 import { setupMemfs, cleanupMemfs } from '../../__tests__/utils/mock-fs-helper.js';
 import { expectRebuiltTableDdl, type PragmaTableInfoRow } from './helpers/ddl-pin.js';
 
@@ -241,10 +241,10 @@ describe('migration v47 (shared_accounts table + repositories.shared_account_use
   // every `< N` check against the same version-0 starting value, so skipping
   // v46's block only skips v46's OWN migration, not the version bump).
   // Restored immediately after confirming the failure.
-  it('lands the fresh in-memory dispatcher on schema version 47, with both v46 and v47 artifacts present', async () => {
+  it('lands the fresh in-memory dispatcher on the latest schema version, with both v46 and v47 artifacts present', async () => {
     const db = await initializeDatabase(':memory:');
     const versionRes = await sql<{ user_version: number }>`PRAGMA user_version`.execute(db);
-    expect(versionRes.rows[0]?.user_version).toBe(47);
+    expect(versionRes.rows[0]?.user_version).toBe(LATEST_SCHEMA_VERSION);
 
     const userColumns = await sql.raw<PragmaTableInfoRow>('PRAGMA table_info(users)').execute(db);
     const disableConnectorsColumn = userColumns.rows.find((c) => c.name === 'disable_claude_ai_connectors');

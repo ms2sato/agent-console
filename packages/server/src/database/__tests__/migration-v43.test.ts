@@ -17,7 +17,7 @@ import { BunSqliteDialect } from 'kysely-bun-sqlite';
 import { Database as BunDatabase } from 'bun:sqlite';
 import * as fsPromises from 'fs/promises';
 import type { Database } from '../schema.js';
-import { initializeDatabase, closeDatabase, migrateToV43 } from '../connection.js';
+import { initializeDatabase, closeDatabase, migrateToV43, LATEST_SCHEMA_VERSION } from '../connection.js';
 import { setupMemfs, cleanupMemfs } from '../../__tests__/utils/mock-fs-helper.js';
 import { expectRebuiltTableDdl, type PragmaTableInfoRow } from './helpers/ddl-pin.js';
 
@@ -597,7 +597,7 @@ describe('migration v43 (sessions ISO8601 CHECK restoration)', () => {
   it('lands the fresh in-memory dispatcher on the latest schema version (v47, past this migration)', async () => {
     const db = await initializeDatabase(':memory:');
     const versionRes = await sql<{ user_version: number }>`PRAGMA user_version`.execute(db);
-    expect(versionRes.rows[0]?.user_version).toBe(47);
+    expect(versionRes.rows[0]?.user_version).toBe(LATEST_SCHEMA_VERSION);
   });
 
   // Polarity (Task 4 #5): removing the `backupDatabaseFile(...)` call in

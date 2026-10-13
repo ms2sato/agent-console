@@ -239,6 +239,16 @@ export async function createDatabaseForTest(dbPath: string = IN_MEMORY_DB_PATH):
 }
 
 /**
+ * The schema version a fully migrated database reports in `PRAGMA user_version`.
+ * Single writer for tests and tooling that assert "the whole chain ran": a new
+ * migration changes this constant and adds one dispatch branch in
+ * `runMigrations`, not every test that checks the chain's end state. Each
+ * migration function's own `PRAGMA user_version = N` and the dispatch guards
+ * stay literal: they ARE the migrations.
+ */
+export const LATEST_SCHEMA_VERSION = 47;
+
+/**
  * Run database migrations based on PRAGMA user_version.
  * Each migration increments the version number.
  *

@@ -21,7 +21,7 @@ import { BunSqliteDialect } from 'kysely-bun-sqlite';
 import { Database as BunDatabase } from 'bun:sqlite';
 import * as fsPromises from 'fs/promises';
 import type { Database } from '../schema.js';
-import { closeDatabase, initializeDatabase, migrateToV42, backupDatabaseFile } from '../connection.js';
+import { closeDatabase, initializeDatabase, migrateToV42, backupDatabaseFile, LATEST_SCHEMA_VERSION } from '../connection.js';
 import { setupMemfs, cleanupMemfs } from '../../__tests__/utils/mock-fs-helper.js';
 import { expectRebuiltTableDdl } from './helpers/ddl-pin.js';
 
@@ -225,7 +225,7 @@ describe('migration v42 (drop dead repositories.orchestrator_session_id)', () =>
     // `migrateToV42(db)` call).
     const db = await initializeDatabase(':memory:');
     const versionRes = await sql<{ user_version: number }>`PRAGMA user_version`.execute(db);
-    expect(versionRes.rows[0]?.user_version).toBe(47);
+    expect(versionRes.rows[0]?.user_version).toBe(LATEST_SCHEMA_VERSION);
   });
 
   it('drops orchestrator_session_id and reproduces the live DDL exactly: both ISO8601 CHECK constraints survive', async () => {

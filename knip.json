@@ -42,7 +42,6 @@
         "src/shim.ts!",
         "src/app-context.ts",
         "src/**/__tests__/**/*.test.ts",
-        "src/**/__tests__/**/*.isolated-test.ts",
         "src/**/__tests__/utils/**/*.ts"
       ],
       "project": ["src/**/*.ts"],
