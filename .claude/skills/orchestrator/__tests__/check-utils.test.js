@@ -15,6 +15,7 @@ import {
   scanTypeOnlyDeclarationLineRanges,
   resolvePrDiffRef,
   getChangedFiles,
+  getAddedFiles,
   getLocalChangedFiles,
   PrDiffRefResolutionError,
   getAcceptanceCriteria,
@@ -2598,5 +2599,41 @@ describe('findTestFiles topic-split attribution (Issue #1553)', () => {
     ]);
     expect(testCoverage).toHaveLength(1);
     expect(testCoverage[0].hasTest).toBe(false);
+  });
+});
+// getAddedFiles: the added-only sibling of getChangedFiles. The git command
+// string is pinned exactly because `--diff-filter=A` (and `-z`) is the whole
+// contract: dropping the filter would turn the unreferenced-additions gate
+// into a gate on every modified file.
+describe('getAddedFiles', () => {
+  it('PR mode diffs the resolved SHAs with -z --diff-filter=A', () => {
+    const commandsSeen = [];
+    const execImpl = cmd => {
+      commandsSeen.push(cmd);
+      return 'a.js\0b.md\0';
+    };
+    expect(getAddedFiles('123', { baseRef: 'MMMM', headRef: 'HHHH' }, { execImpl })).toEqual(['a.js', 'b.md']);
+    expect(commandsSeen).toEqual(['git diff --name-only -z --diff-filter=A MMMM HHHH']);
+  });
+
+  it('local mode (no resolved diffRef) diffs origin/main...HEAD with the same filter', () => {
+    const commandsSeen = [];
+    const execImpl = cmd => {
+      commandsSeen.push(cmd);
+      return '';
+    };
+    const saved = process.env.BASE_BRANCH;
+    delete process.env.BASE_BRANCH;
+    try {
+      expect(getAddedFiles(undefined, {}, { execImpl })).toEqual([]);
+    } finally {
+      if (saved !== undefined) process.env.BASE_BRANCH = saved;
+    }
+    expect(commandsSeen).toEqual(['git diff --name-only -z --diff-filter=A origin/main...HEAD']);
+  });
+
+  it('returns exact unquoted names for a non-ASCII filename', () => {
+    const execImpl = () => 'docs/é.md\0';
+    expect(getAddedFiles('1', { baseRef: 'M', headRef: 'H' }, { execImpl })).toEqual(['docs/é.md']);
   });
 });

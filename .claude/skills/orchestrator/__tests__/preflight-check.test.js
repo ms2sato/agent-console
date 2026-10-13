@@ -6,6 +6,7 @@ import {
   printCoverageCheck,
   printWorkspaceLinkCheck,
   printProtocolDispatchCheck,
+  printUnreferencedAdditionsCheck,
 } from '../preflight-check.js';
 import { findTestFiles, PROTOCOL_DISPATCH_TRIGGERS } from '../check-utils.js';
 
@@ -313,5 +314,45 @@ describe('printProtocolDispatchCheck (Issue #975 Tier 2)', () => {
     const ifEndIdx = runSource.indexOf('process.exit(1);', ifStartIdx);
     const exitDecision = runSource.slice(ifStartIdx, ifEndIdx);
     expect(exitDecision).toContain('hasProtocolDispatchGap');
+  });
+});
+
+describe('printUnreferencedAdditionsCheck', () => {
+  it('returns false and prints one clean line when nothing is unreferenced', () => {
+    const output = captureConsoleLog(() => {
+      expect(printUnreferencedAdditionsCheck({ unreferenced: [] })).toBe(false);
+    });
+    expect(output).toContain('## Unreferenced additions');
+    expect(output).toContain('No added skill script or SKILL.md is left unreferenced.');
+    expect(output).not.toContain('❌');
+  });
+
+  it('returns true and lists each file, its key and the suggested locations', () => {
+    const finding = {
+      file: '.claude/skills/orchestrator/zzz-probe.js',
+      key: 'zzz-probe.js',
+      suggestions: ['.claude/skills/orchestrator/core-responsibilities.md', '.claude/rules/'],
+    };
+    const output = captureConsoleLog(() => {
+      expect(printUnreferencedAdditionsCheck({ unreferenced: [finding] })).toBe(true);
+    });
+    expect(output).toContain('❌ 1 added file(s) are named by no canonical procedure');
+    expect(output).toContain(finding.file);
+    expect(output).toContain('key: `zzz-probe.js`');
+    for (const suggestion of finding.suggestions) {
+      expect(output).toContain(suggestion);
+    }
+  });
+
+  it('is actually wired into run()\'s exit-code OR-chain, not just computed and discarded', () => {
+    const sourceCode = readFileSync('.claude/skills/orchestrator/preflight-check.js', 'utf-8');
+    const startIdx = sourceCode.indexOf('function run(changedFiles');
+    const endIdx = sourceCode.indexOf('\n// --- Exports for testing ---');
+    const runSource = sourceCode.slice(startIdx, endIdx);
+
+    expect(runSource).toContain('checkUnreferencedAdditions(addedFiles, repoRoot)');
+    const ifStartIdx = runSource.indexOf('if (\n    hasUnitGaps');
+    const ifEndIdx = runSource.indexOf('process.exit(1);', ifStartIdx);
+    expect(runSource.slice(ifStartIdx, ifEndIdx)).toContain('hasUnreferencedAddition');
   });
 });

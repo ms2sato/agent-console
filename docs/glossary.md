@@ -707,4 +707,4 @@ If a term in the codebase or documentation does not appear here, either it is a 
 
 **Responsibility**: PR author owns the glossary update for their PR. Orchestrator confirms during acceptance check via `acceptance-check.js` Q9 (Glossary Integrity).
 
-**Operational rule**: see [`.claude/rules/glossary-maintenance.md`](../.claude/rules/glossary-maintenance.md) for the full trigger list, role assignments, and drift-handling decision tree. Automated linter detection is tracked separately (Issue [#671](https://github.com/ms2sato/agent-console/issues/671)).
+**Operational rule**: see [`.claude/rules/glossary-maintenance.md`](../.claude/rules/glossary-maintenance.md) for the full trigger list, role assignments, and drift-handling decision tree. Automated linter detection is tracked separately (Issue [#2063](https://github.com/ms2sato/agent-console/issues/2063)).
