@@ -279,7 +279,7 @@ describe('Client-Server Boundary: embedded-agent internal-notification `notifica
           source: 'session',
           from: senderSessionId,
           summary: 'Message from session sender-title',
-          path: '/test/messages/abc.json',
+          path: '/test/messages/abc.md',
         },
         intent: 'triage',
       },

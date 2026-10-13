@@ -540,7 +540,7 @@ describe('AppContext', () => {
         // waited on anything. After the fix, nothing has been recorded yet.
         expect(order).toEqual([]);
 
-        deferred.resolve({ messageId: 'msg-order', path: '/tmp/messages/order.json' });
+        deferred.resolve({ messageId: 'msg-order', path: '/tmp/messages/order.md' });
 
         await waitForCondition(() => order.length >= 2);
 

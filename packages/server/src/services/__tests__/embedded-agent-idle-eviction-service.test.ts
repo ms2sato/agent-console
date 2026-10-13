@@ -755,7 +755,7 @@ describe('idle eviction — the delivery invariant', () => {
         source: 'session',
         from: 'sender-session-id',
         summary: 'a system notification body',
-        path: '/data/messages/m1.json',
+        path: '/data/messages/m1.md',
       },
       intent: 'triage',
     });

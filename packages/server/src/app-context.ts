@@ -83,6 +83,7 @@ import { WorktreeService as WorktreeServiceClass } from './services/worktree-ser
 import { RepositorySlackIntegrationService as RepositorySlackIntegrationServiceClass } from './services/notifications/repository-slack-integration-service.js';
 import { AnnotationService as AnnotationServiceClass } from './services/annotation-service.js';
 import { InterSessionMessageService as InterSessionMessageServiceClass } from './services/inter-session-message-service.js';
+import { renameLegacyMessageFiles } from './lib/message-file-migration.js';
 import { WorkerOutputFileManager } from './lib/worker-output-file.js';
 import { MemoService } from './services/memo-service.js';
 import { BranchWatcherService } from './services/branch-watcher-service.js';
@@ -374,6 +375,10 @@ export async function createAppContext(
   const worktreeService = new WorktreeServiceClass({ db });
   const annotationService = new AnnotationServiceClass();
   const interSessionMessageService = new InterSessionMessageServiceClass();
+  // Runs before the server accepts any request, so no reader can race the rename.
+  await renameLegacyMessageFiles(getConfigDir()).catch((err) =>
+    logger.warn({ err }, 'Legacy message-file rename failed; continuing'),
+  );
   const memoService = new MemoService();
 
   // 4. Create agent manager (needed by SessionManager)
