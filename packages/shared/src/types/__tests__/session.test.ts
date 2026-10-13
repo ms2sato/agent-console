@@ -1,8 +1,8 @@
 import { describe, it, expect } from 'bun:test';
 import { WORKER_SERVER_MESSAGE_TYPES, type WorkerServerMessage, type WorkerServerMessageType } from '../session.js';
-import type { UpdateSessionMemoRequest } from '../../schemas/session.js';
+import type { UpdateSessionMemoRequest } from '../../index.js';
 
-describe('UpdateSessionMemoRequest (exported by schemas/session.js)', () => {
+describe('UpdateSessionMemoRequest (exported by the shared entry point)', () => {
   it('is a type with a required string content field', () => {
     const request: UpdateSessionMemoRequest = { content: 'hello' };
     expect(request.content).toBe('hello');
