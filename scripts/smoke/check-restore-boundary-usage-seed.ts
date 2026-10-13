@@ -79,7 +79,7 @@
  *   2  bad usage / the smoke could not run (boot failure, provider down, ...)
  */
 import './_env.js';
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import type { McpDependencies } from '../../packages/server/src/mcp/mcp-server.ts';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -189,6 +189,35 @@ function filler(nWords: number): string {
   const words: string[] = [];
   for (let i = 0; i < nWords; i++) words.push(vocabulary[i % vocabulary.length]);
   return words.join(' ');
+}
+
+/**
+ * A MEASUREMENT, not an assertion: the live children of this process, read
+ * from `/proc/<pid>/stat` (ppid === this pid) with each child's cmdline. Printed
+ * just before the explicit exit so a run that leaves a child alive shows WHAT
+ * dangled instead of hanging silently. Linux-only; any read failure is reported
+ * as an empty listing rather than failing the run.
+ */
+function listLiveChildren(): Array<{ pid: number; cmdline: string }> {
+  const children: Array<{ pid: number; cmdline: string }> = [];
+  try {
+    for (const entry of readdirSync('/proc')) {
+      if (!/^\d+$/.test(entry)) continue;
+      try {
+        const stat = readFileSync(`/proc/${entry}/stat`, 'utf8');
+        // Fields after the parenthesised comm: state, ppid, ...
+        const afterComm = stat.slice(stat.lastIndexOf(')') + 2).split(' ');
+        if (Number(afterComm[1]) !== process.pid) continue;
+        const cmdline = readFileSync(`/proc/${entry}/cmdline`, 'utf8').split('\0').join(' ').trim();
+        children.push({ pid: Number(entry), cmdline });
+      } catch {
+        // The process exited between readdir and read.
+      }
+    }
+  } catch {
+    // No /proc: report nothing.
+  }
+  return children;
 }
 
 async function main(): Promise<void> {
@@ -512,7 +541,7 @@ async function main(): Promise<void> {
     console.log(`\n==> disposable home left at ${disposableHome} (remove with: find ${disposableHome} -depth -delete)`);
   }
 
-  console.log(`\n==> ${checks - failures}/${checks} checks passed`);
+  console.log(`\n==> ${checks - failures}/${checks} checks passed (${new Date().toISOString()})`);
   if (failures > 0) {
     console.error(
       EXPECT_UNDERFIRE
@@ -528,12 +557,20 @@ async function main(): Promise<void> {
 // as a side effect. `import.meta.main` is false for an importer, true only
 // when this file is the entry point.
 if (import.meta.main) {
-  main().catch((err) => {
-    if (err instanceof BailError) {
-      console.error(`==> could not run: ${err.message}`);
+  main()
+    .then(() => {
+      const children = listLiveChildren();
+      console.log(
+        `==> live children at exit: ${children.length === 0 ? 'none' : JSON.stringify(children)} (exiting explicitly at ${new Date().toISOString()})`,
+      );
+      process.exit(0);
+    })
+    .catch((err) => {
+      if (err instanceof BailError) {
+        console.error(`==> could not run: ${err.message}`);
+        process.exit(2);
+      }
+      console.error(err);
       process.exit(2);
-    }
-    console.error(err);
-    process.exit(2);
-  });
+    });
 }
