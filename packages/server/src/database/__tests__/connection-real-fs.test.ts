@@ -1,21 +1,23 @@
 /**
- * Database Connection Integration Tests
+ * Database connection tests against REAL database files.
  *
- * This test file is named `.isolated-test.ts` instead of `.test.ts` intentionally.
- * It must be run SEPARATELY from other tests because:
+ * `initializeDatabase()` with no path creates `<AGENT_CONSOLE_HOME>/data.db` on
+ * disk and runs the whole migration chain on it; every other database test
+ * uses `:memory:` or memfs. This file pins what only a real file can show:
+ * the file is created under the config directory, `databaseExists()` sees it,
+ * and a freshly created file ends at `LATEST_SCHEMA_VERSION`.
  *
- * 1. Other tests (e.g., api.test.ts) use `mock.module` to mock the database connection
- * 2. Bun's mock.module is process-wide and cannot be undone
- * 3. When run together, these tests would use the mock instead of the real implementation
- *
- * To run these tests:
- *   bun test src/database/__tests__/connection.isolated-test.ts
- *
- * These tests verify the actual database initialization, migrations, and CRUD operations
- * using real SQLite database files in temporary directories.
+ * It lives in `packages/server`'s second `bun test` invocation (`package.json`
+ * `test` script) because it needs the real filesystem: memfs is process-global
+ * for the life of whichever `bun:test` process first loads `mock-fs-helper.ts`
+ * (see `__tests__/utils/memfs-detection.ts`), and `bun:sqlite` opens real
+ * files regardless of memfs. It must never import `mock-fs-helper.ts`; every
+ * case runs `assertRealFs` first so a wiring mistake fails loudly instead of
+ * silently exercising the simulation.
  */
 
 import { describe, test, expect, beforeEach, afterEach } from 'bun:test';
+import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { sql } from 'kysely';
@@ -24,25 +26,18 @@ import {
   closeDatabase,
   getDatabase,
   databaseExists,
+  LATEST_SCHEMA_VERSION,
 } from '../connection.js';
+import { assertRealFs } from '../../__tests__/utils/memfs-detection.js';
 
-/**
- * Create a unique temporary directory using Bun native APIs.
- * This avoids interference with memfs mocks used in other tests.
- */
+/** Create a unique temporary directory on the real filesystem. */
 function createTempDir(): string {
-  const tmpBase = os.tmpdir();
-  const uniqueDir = path.join(tmpBase, `agent-console-db-test-${crypto.randomUUID()}`);
-  // Use Bun's native shell to create directory
-  Bun.spawnSync(['mkdir', '-p', uniqueDir]);
-  return uniqueDir;
+  return fs.mkdtempSync(path.join(os.tmpdir(), 'agent-console-db-test-'));
 }
 
-/**
- * Remove a directory recursively using Bun native APIs.
- */
+/** Remove a temporary directory created by `createTempDir`. */
 function removeTempDir(dirPath: string): void {
-  Bun.spawnSync(['rm', '-rf', dirPath]);
+  fs.rmSync(dirPath, { recursive: true, force: true });
 }
 
 describe('database/connection', () => {
@@ -50,12 +45,11 @@ describe('database/connection', () => {
   let originalEnv: string | undefined;
 
   beforeEach(async () => {
+    await assertRealFs('connection-real-fs.test.ts');
+
     // Close any existing database connection from previous tests
-    // This is critical for test isolation when tests run in parallel
     await closeDatabase();
 
-    // Create a unique test directory for each test using Bun native APIs
-    // to avoid interference with memfs mocks in other tests
     testDir = createTempDir();
     originalEnv = process.env.AGENT_CONSOLE_HOME;
     process.env.AGENT_CONSOLE_HOME = testDir;
@@ -64,7 +58,6 @@ describe('database/connection', () => {
   afterEach(async () => {
     await closeDatabase();
     process.env.AGENT_CONSOLE_HOME = originalEnv;
-    // Clean up test directory using Bun native APIs
     removeTempDir(testDir);
   });
 
@@ -76,9 +69,9 @@ describe('database/connection', () => {
       expect(db).toBeDefined();
       expect(await databaseExists()).toBe(true);
 
-      // Verify schema version is set (v2 includes repositories and agents tables)
+      // A freshly created file ends at the latest schema version.
       const result = await sql<{ user_version: number }>`PRAGMA user_version`.execute(db);
-      expect(result.rows[0]?.user_version).toBe(2);
+      expect(result.rows[0]?.user_version).toBe(LATEST_SCHEMA_VERSION);
     });
 
     test('creates sessions and workers tables', async () => {

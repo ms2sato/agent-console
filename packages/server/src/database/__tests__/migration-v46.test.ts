@@ -11,7 +11,7 @@
 
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { sql } from 'kysely';
-import { initializeDatabase, closeDatabase, migrateToV46 } from '../connection.js';
+import { initializeDatabase, closeDatabase, migrateToV46, LATEST_SCHEMA_VERSION } from '../connection.js';
 import { setupMemfs, cleanupMemfs } from '../../__tests__/utils/mock-fs-helper.js';
 
 const TEST_CONFIG_DIR = '/test/config';
@@ -110,6 +110,6 @@ describe('migration v46 (users.disable_claude_ai_connectors column)', () => {
   it('lands the fresh in-memory dispatcher on the latest schema version (v47, past this migration)', async () => {
     const db = await initializeDatabase(':memory:');
     const versionRes = await sql<{ user_version: number }>`PRAGMA user_version`.execute(db);
-    expect(versionRes.rows[0]?.user_version).toBe(47);
+    expect(versionRes.rows[0]?.user_version).toBe(LATEST_SCHEMA_VERSION);
   });
 });

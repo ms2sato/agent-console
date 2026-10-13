@@ -15,7 +15,7 @@ import { sql, Kysely } from 'kysely';
 import { BunSqliteDialect } from 'kysely-bun-sqlite';
 import { Database as BunDatabase } from 'bun:sqlite';
 import type { Database } from '../schema.js';
-import { initializeDatabase, closeDatabase, migrateFromJson, migrateToV40, migrateToV41 } from '../connection.js';
+import { initializeDatabase, closeDatabase, migrateFromJson, migrateToV40, migrateToV41, LATEST_SCHEMA_VERSION } from '../connection.js';
 import { setupMemfs, cleanupMemfs } from '../../__tests__/utils/mock-fs-helper.js';
 import { mockGit } from '../../__tests__/utils/mock-git-helper.js';
 
@@ -640,6 +640,19 @@ describe('migration', () => {
     });
   });
 
+  // Single-writer pin: `LATEST_SCHEMA_VERSION` (connection.ts) must equal what the
+  // full migration chain actually produces. Bumping the constant without adding a
+  // migration, or adding a dispatch branch without bumping the constant, makes
+  // the chain end somewhere else and fails this test.
+  describe('latest schema version', () => {
+    it('running the full chain on a fresh in-memory database yields LATEST_SCHEMA_VERSION', async () => {
+      const db = await initializeDatabase(':memory:');
+
+      const result = await sql<{ user_version: number }>`PRAGMA user_version`.execute(db);
+      expect(result.rows[0]?.user_version).toBe(LATEST_SCHEMA_VERSION);
+    });
+  });
+
   describe('schema migration v7: description column', () => {
     it('should add description column to repositories table when migrating from v6', async () => {
       // Initialize database (runs all migrations up to current version)
@@ -648,7 +661,7 @@ describe('migration', () => {
       // Verify the schema version is the latest
       const { sql } = await import('kysely');
       const result = await sql<{ user_version: number }>`PRAGMA user_version`.execute(db);
-      expect(result.rows[0]?.user_version).toBe(47);
+      expect(result.rows[0]?.user_version).toBe(LATEST_SCHEMA_VERSION);
 
       // Verify description column exists by inserting and reading a repository with description
       await db
@@ -743,7 +756,7 @@ describe('migration', () => {
       // Verify the schema version is the latest
       const { sql } = await import('kysely');
       const result = await sql<{ user_version: number }>`PRAGMA user_version`.execute(db);
-      expect(result.rows[0]?.user_version).toBe(47);
+      expect(result.rows[0]?.user_version).toBe(LATEST_SCHEMA_VERSION);
 
       // First create a repository (foreign key dependency)
       await db
@@ -1740,7 +1753,7 @@ describe('migration', () => {
 
       const { sql } = await import('kysely');
       const result = await sql<{ user_version: number }>`PRAGMA user_version`.execute(db);
-      expect(result.rows[0]?.user_version).toBe(47);
+      expect(result.rows[0]?.user_version).toBe(LATEST_SCHEMA_VERSION);
     });
   });
 
@@ -1778,7 +1791,7 @@ describe('migration', () => {
 
       const { sql } = await import('kysely');
       const result = await sql<{ user_version: number }>`PRAGMA user_version`.execute(db);
-      expect(result.rows[0]?.user_version).toBe(47);
+      expect(result.rows[0]?.user_version).toBe(LATEST_SCHEMA_VERSION);
     });
   });
 
