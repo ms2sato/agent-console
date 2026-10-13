@@ -92,6 +92,12 @@ The on-disk Git repository a [Repository](#repository) is registered from, livin
 - **Aliases:** source-repo, source repo
 - **See:** [source-repo-storage-model.md](design/source-repo-storage-model.md)
 
+### Decision Request
+**Proposed (design only, Issue [#739](https://github.com/ms2sato/agent-console/issues/739); implementation [#2080](https://github.com/ms2sato/agent-console/issues/2080), owner-gated).** One question a session puts to its owner, recorded as a row with a stable `id` instead of as a paragraph of the session memo: `sessionId`, the asking `workerId`, `askedAt`, `context`, `recommendation`, `status` (`open` / `answered` / `superseded` / `expired`), and `answeredAt` / `answerText` once answered. There is deliberately no `implicit-endorsed` status: an answer is explicit, or the request is open. The owner answers in a panel beside the memo; the answer reaches the asking worker as a notification through `SessionManager.deliverWorkerNotification`. Rows outlive their session (orphan, not cascade; open requests are set to `expired` when the session is deleted).
+- **Aliases:** owner decision, owner-decision queue entry
+- **Contrast:** the [Memo](#memo) keeps status; the queue takes questions.
+- **See:** [owner-decision-queue.md](design/owner-decision-queue.md)
+
 ### RepositoryInUseError
 The single-writer rule for whether a [Repository](#repository) is currently in use by any session. Enforced by `RepositoryManager.assertRepositoryNotInUse`, which combines the in-memory active-session check with a check over persisted session rows that are not currently active in memory — a repository with a paused [WorktreeSession](#worktreesession) counts as in-use, not only one with active sessions. The `DELETE /api/repositories/:id` route maps a thrown `RepositoryInUseError` to `409 Conflict`. Session creation and repository unregister serialize on the per-repository lock (`RepositoryManager.withRegisteredRepository`): unregister holds it from the in-use check through the row deletion, so a creation that starts in that interval waits, then fails with `RepositoryNotFoundError` — the repository row's absence is the durable "unregister in progress" marker, surviving a restart together with the queued cleanup job. A paused worktree session is a persisted row the in-use check already reads, so resume does not race.
 - **See:** `packages/server/src/services/repository-manager.ts`
