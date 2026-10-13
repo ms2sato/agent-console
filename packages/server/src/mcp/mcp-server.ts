@@ -1499,6 +1499,7 @@ export function createMcpApp(deps: McpDependencies): Hono {
 
   // ---------- Tool: write_memo ----------
 
+  // Session-claiming tool: membership is recorded in `session-claiming-tools.ts` and enforced by its test.
   mcpServer.tool(
     'write_memo',
     'Write a Markdown memo for the current session. The memo is displayed in the UI and persists across conversations. ' +
@@ -1512,6 +1513,24 @@ export function createMcpApp(deps: McpDependencies): Hono {
     },
     async ({ sessionId, content }) => {
       try {
+        // Overwriting another session's memo is not a team operation: the
+        // caller must own the target session. `writeMemo` itself requires a
+        // live in-memory session, so the gate resolves the session the same
+        // way. A legacy session without `createdBy` is passed through as
+        // `undefined`: a verified caller then fails closed inside the gate,
+        // and a tokenless caller keeps the mode's behaviour (`off` proceeds).
+        const session = sessionManager.getSession(sessionId);
+        if (!session) {
+          return errorResult(`Session not found: ${sessionId}`);
+        }
+        const authError = checkCallerOwnsSession(
+          getMcpCallerIdentity(),
+          { sessionId, createdBy: session.createdBy },
+          mcpAuthMode,
+          { toolName: 'write_memo' },
+        );
+        if (authError) return errorResult(authError.error);
+
         const filePath = await sessionManager.writeMemo(sessionId, content);
         logger.info({ sessionId }, 'Memo written via MCP');
         return textResult({ success: true, sessionId, filePath });

@@ -7,10 +7,14 @@
  *
  * Positive controls come first: an empty or broken parse would otherwise make
  * "no missing, no extra" trivially true.
+ *
+ * The CONVERSE is a second `describe` below: the registry test cannot see a tool
+ * that takes a `sessionId` and gates nothing, because it starts from the blocks
+ * that gate. The converse starts from the blocks that take the param.
  */
 import { describe, it, expect } from 'bun:test';
 import path from 'node:path';
-import { SESSION_CLAIMING_TOOLS } from '../session-claiming-tools.js';
+import { SESSION_CLAIMING_TOOLS, SESSION_ID_TAKING_UNGATED_TOOLS } from '../session-claiming-tools.js';
 
 // `Bun.file` reads the real disk; `node:fs` is the in-memory layer once any other
 // test file in the same process has loaded the memfs helper.
@@ -90,5 +94,62 @@ describe('SESSION_CLAIMING_TOOLS registry', () => {
       })
       .map((b) => b.name);
     expect(unmarked).toEqual([]);
+  });
+});
+
+/** True when the block declares a caller-supplied `sessionId: z.string()` param (`sourceSessionId` etc. do not match: the `\b` needs a word start). */
+function takesSessionId(b: ToolBlock): boolean {
+  return /\bsessionId:\s*z\.string\(/.test(b.body);
+}
+
+/**
+ * Gated = the claimed session is checked against the caller (`checkCallerOwnsSession(`)
+ * or is not claimed at all but resolved from the caller's own bearer-token-proven
+ * identity (`resolveSelfIdentity(`, which refuses a different `sessionId`).
+ */
+function gatesSessionId(b: ToolBlock): boolean {
+  return b.body.includes('checkCallerOwnsSession(') || b.body.includes('resolveSelfIdentity(');
+}
+
+describe('sessionId-taking tools: the converse of the registry', () => {
+  const taking = blocks.filter(takesSessionId);
+  const exempt = new Map(SESSION_ID_TAKING_UNGATED_TOOLS.map((e) => [e.tool, e.reason]));
+
+  // Mutations measured when this test was written (each restored):
+  // - removing `write_memo` from SESSION_CLAIMING_TOOLS fails the registry
+  //   test above (listedButNotGated / missingFromRegistry);
+  // - removing the `close_session` exemption fails the "neither gates nor is
+  //   exempted" half below;
+  // - adding a fourth exemption for a tool that gates (e.g. `write_memo`)
+  //   fails the stale-exemption half below.
+  it('positive control: the parser classifies known tools correctly', () => {
+    const byName = new Map(blocks.map((b) => [b.name, b]));
+    expect(takesSessionId(byName.get('write_memo')!)).toBe(true);
+    expect(gatesSessionId(byName.get('write_memo')!)).toBe(true);
+    expect(takesSessionId(byName.get('close_session')!)).toBe(true);
+    expect(gatesSessionId(byName.get('close_session')!)).toBe(false);
+    expect(takesSessionId(byName.get('list_sessions')!)).toBe(false);
+  });
+
+  it('every tool that takes a sessionId gates it or is exempted with a reason, and no exemption is stale', () => {
+    const ungatedAndUnexempted = taking
+      .filter((b) => !gatesSessionId(b) && !exempt.has(b.name))
+      .map((b) => b.name)
+      .sort();
+    const staleExemptions = [...exempt.keys()]
+      .filter((name) => {
+        const block = blocks.find((b) => b.name === name);
+        return block === undefined || !takesSessionId(block) || gatesSessionId(block);
+      })
+      .sort();
+    expect({ ungatedAndUnexempted, staleExemptions }).toEqual({
+      ungatedAndUnexempted: [],
+      staleExemptions: [],
+    });
+  });
+
+  it('every exemption states a reason', () => {
+    const blank = SESSION_ID_TAKING_UNGATED_TOOLS.filter((e) => e.reason.trim().length === 0).map((e) => e.tool);
+    expect(blank).toEqual([]);
   });
 });

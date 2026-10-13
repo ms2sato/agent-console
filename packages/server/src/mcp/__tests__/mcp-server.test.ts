@@ -6838,4 +6838,107 @@ describe('MCP Server Tools', () => {
       },
     );
   });
+
+  // ===========================================================================
+  // write_memo ownership
+  // ===========================================================================
+  //
+  // `write_memo` overwrites a session's memo from a caller-supplied
+  // `sessionId`; before the gate any caller could overwrite another session's
+  // memo. The registry test (`session-claiming-tools.test.ts`) pins that the
+  // gate is present and registered; these cases pin what it DOES.
+  describe('write_memo ownership', () => {
+    async function createOwnedSession(createdBy: string): Promise<{ sessionId: string; workerId: string }> {
+      const session = await sessionManager.createSession(
+        { type: 'quick', locationPath: '/test/path', agentId: 'claude-code' },
+        { createdBy },
+      );
+      return { sessionId: session.id, workerId: session.workers[0].id };
+    }
+
+    it('enforce mode rejects a verified caller whose identity belongs to a DIFFERENT session, and nothing is written', async () => {
+      const registry = new McpTokenRegistry();
+      await remountMcpApp({ mcpAuthMode: 'enforce', mcpTokenRegistry: registry });
+      const { sessionId: sessionAId, workerId: workerAId } = await createOwnedSession('memo-owner-a');
+      const { sessionId: sessionBId } = await createOwnedSession('memo-owner-b');
+      const token = registry.mint({ sessionId: sessionAId, workerId: workerAId, userId: 'memo-owner-a' });
+      const writeMemoSpy = jest.spyOn(sessionManager, 'writeMemo');
+      try {
+        const response = await callTool(
+          app,
+          mcpSessionId,
+          'write_memo',
+          { sessionId: sessionBId, content: 'overwritten by a stranger' },
+          nextId++,
+          { Authorization: `Bearer ${token}` },
+        );
+
+        expect(response.result?.isError).toBe(true);
+        const data = parseToolResult(response) as { error: string };
+        expect(data.error).toContain('identity mismatch');
+        expect(writeMemoSpy).not.toHaveBeenCalled();
+      } finally {
+        writeMemoSpy.mockRestore();
+      }
+    });
+
+    it('enforce mode lets the owning caller write its own memo', async () => {
+      const registry = new McpTokenRegistry();
+      await remountMcpApp({ mcpAuthMode: 'enforce', mcpTokenRegistry: registry });
+      const { sessionId, workerId } = await createOwnedSession('memo-owner-c');
+      const token = registry.mint({ sessionId, workerId, userId: 'memo-owner-c' });
+      const writeMemoSpy = jest.spyOn(sessionManager, 'writeMemo');
+      try {
+        const response = await callTool(
+          app,
+          mcpSessionId,
+          'write_memo',
+          { sessionId, content: 'my own memo' },
+          nextId++,
+          { Authorization: `Bearer ${token}` },
+        );
+
+        expect(response.result?.isError).toBeUndefined();
+        expect(writeMemoSpy).toHaveBeenCalledTimes(1);
+        expect(writeMemoSpy).toHaveBeenCalledWith(sessionId, 'my own memo');
+      } finally {
+        writeMemoSpy.mockRestore();
+      }
+    });
+
+    it('off mode with no token proceeds as before (the gate adds nothing to a tokenless call)', async () => {
+      await remountMcpApp({ mcpAuthMode: 'off' });
+      const { sessionId } = await createOwnedSession('memo-owner-d');
+      const writeMemoSpy = jest.spyOn(sessionManager, 'writeMemo');
+      try {
+        const response = await callTool(
+          app,
+          mcpSessionId,
+          'write_memo',
+          { sessionId, content: 'tokenless write' },
+          nextId++,
+        );
+
+        expect(response.result?.isError).toBeUndefined();
+        expect(writeMemoSpy).toHaveBeenCalledTimes(1);
+      } finally {
+        writeMemoSpy.mockRestore();
+      }
+    });
+
+    it('a session that does not exist is reported as not found, with the gate not consulted for it', async () => {
+      await remountMcpApp({ mcpAuthMode: 'off' });
+      const response = await callTool(
+        app,
+        mcpSessionId,
+        'write_memo',
+        { sessionId: 'no-such-session', content: 'x' },
+        nextId++,
+      );
+
+      expect(response.result?.isError).toBe(true);
+      const data = parseToolResult(response) as { error: string };
+      expect(data.error).toContain('Session not found');
+    });
+  });
 });
