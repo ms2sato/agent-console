@@ -390,15 +390,14 @@ async function main(): Promise<void> {
     // existed, B could have answered from the file rather than from ignorance,
     // and A could have answered from the file rather than from the resume.
     const makeWorker = async (label: string): Promise<{ sessionId: string; workerId: string }> => {
+      // The embedded worker IS the session's initial worker; an `agentId` here would
+      // also spawn a real Claude Code PTY that nothing uses.
       const session = await ctx!.sessionManager.createSession(
-        { type: 'quick', locationPath: realCwd!, agentId: 'claude-code-builtin' },
+        { type: 'quick', locationPath: realCwd!, embeddedAgentId: CLAUDE_SDK_AGENT_ID },
         { createdBy: owner.id },
       );
-      const worker = await ctx!.sessionManager.createWorker(session.id, {
-        type: 'embedded-agent',
-        embeddedAgentId: CLAUDE_SDK_AGENT_ID,
-      });
-      if (!worker) throw new Error(`createWorker returned null for ${label}`);
+      const worker = session.workers.find((w) => w.type === 'embedded-agent');
+      if (!worker) throw new Error(`the created session has no embedded-agent worker for ${label}`);
       return { sessionId: session.id, workerId: worker.id };
     };
 
