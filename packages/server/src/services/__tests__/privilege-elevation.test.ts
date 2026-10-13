@@ -19,6 +19,7 @@ import {
   type RunAsUserResult,
   type SpawnFn,
 } from '../privilege-elevation.js';
+import { shellEscape as elevationArgsShellEscape } from '../elevation-args.js';
 
 interface CapturedSpawn {
   args: string[];
@@ -148,6 +149,10 @@ describe('privilege-elevation', () => {
     it('escapes embedded single quotes', () => {
       // foo'bar -> 'foo'\''bar'
       expect(shellEscape("foo'bar")).toBe("'foo'\\''bar'");
+    });
+
+    it('is the same function as elevation-args.ts exports (single writer, not a copy)', () => {
+      expect(shellEscape).toBe(elevationArgsShellEscape);
     });
   });
 
