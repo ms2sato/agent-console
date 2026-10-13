@@ -100,6 +100,35 @@ describe('SessionSettingsMenu', () => {
     expect(button).toBeTruthy();
   });
 
+  describe('End Session', () => {
+    async function openMenu() {
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: 'Session settings' }));
+      });
+    }
+
+    it.each([false, true])('shows End Session and reports it when isMainWorktree is %s', async (isMainWorktree) => {
+      const onMenuAction = mock(() => {});
+      renderMenu({ isMainWorktree, onMenuAction });
+      await openMenu();
+
+      fireEvent.click(screen.getByRole('button', { name: /End Session/ }));
+
+      expect(onMenuAction).toHaveBeenCalledWith('end-session');
+    });
+
+    it('hides Delete Worktree for the primary worktree but keeps it for others', async () => {
+      renderMenu({ isMainWorktree: true });
+      await openMenu();
+      expect(screen.queryByRole('button', { name: /Delete Worktree/ })).toBeNull();
+      cleanup();
+
+      renderMenu({ isMainWorktree: false });
+      await openMenu();
+      expect(screen.getByRole('button', { name: /Delete Worktree/ })).toBeTruthy();
+    });
+  });
+
   describe('pauseDisabled (Issue #1247)', () => {
     it('disables the Pause menu entry and does not fire onMenuAction when clicked', async () => {
       const onMenuAction = mock(() => {});

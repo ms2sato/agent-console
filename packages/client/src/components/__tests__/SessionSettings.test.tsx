@@ -273,6 +273,56 @@ describe('SessionSettings', () => {
     });
   });
 
+  describe('End Session action', () => {
+    it('opens the End Session dialog for this session and confirming registers a stop task for its id', async () => {
+      const sessionStopTasks = createMockSessionStopTasks();
+      await renderWithRouterAndContext(
+        <SessionSettings {...defaultProps} currentTitle="my-feature" />,
+        mockDeletionTasks,
+        '/',
+        sessionStopTasks
+      );
+
+      await act(async () => {
+        fireEvent.click(screen.getByTitle('Session settings'));
+      });
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: /End Session/ }));
+      });
+
+      await waitFor(() => {
+        expect(screen.getByText('my-feature')).toBeTruthy();
+      });
+      const confirm = screen
+        .getAllByRole('button')
+        .find((btn) => btn.textContent === 'Stop Session' && btn.className.includes('btn-danger'));
+      expect(confirm).toBeTruthy();
+      await act(async () => {
+        fireEvent.click(confirm!);
+      });
+
+      expect(sessionStopTasks.addTask).toHaveBeenCalledWith({
+        sessionId: 'test-session-id',
+        action: 'stop',
+        sessionTitle: 'my-feature',
+      });
+    });
+
+    it('is offered for the primary worktree too (isMainWorktree) while Delete Worktree stays hidden', async () => {
+      await renderWithRouterAndContext(
+        <SessionSettings {...defaultProps} isMainWorktree />,
+        mockDeletionTasks
+      );
+
+      await act(async () => {
+        fireEvent.click(screen.getByTitle('Session settings'));
+      });
+
+      expect(screen.getByRole('button', { name: /End Session/ })).toBeTruthy();
+      expect(screen.queryByText('Delete Worktree')).toBeNull();
+    });
+  });
+
   describe('currentSelection derivation threading to RestartSessionDialog (#1592)', () => {
     function createEmbeddedPrimarySession(): Session {
       return {

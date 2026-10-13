@@ -13,6 +13,8 @@ import type { SessionWithActivity } from '../../../hooks/useActiveSessionsWithAc
 import { useRepositoryRegistrySync } from '../../../hooks/useRepositoryRegistrySync';
 import { setAuthMode, setCurrentUser, setSharedAccountsAvailable, _reset as resetAuth } from '../../../lib/auth';
 import { repositoryKeys } from '../../../lib/query-keys';
+import { SessionStopTasksContext } from '../../../contexts/root-contexts';
+import type { UseSessionStopTasksReturn } from '../../../hooks/useSessionStopTasks';
 import { _reset as resetWebSocket } from '../../../lib/app-websocket';
 import { MockWebSocket, installMockWebSocket } from '../../../test/mock-websocket';
 import type { AgentActivityState, WorktreeSession, QuickSession, Session, Repository } from '@agent-console/shared';
@@ -1096,6 +1098,74 @@ describe('ActiveSessionsSidebar', () => {
       expect(creatorLabel.textContent).toBe('shared-acct');
       // Sanity: they are different DOM nodes (not the same element).
       expect(sharedBadge).not.toBe(creatorLabel);
+    });
+  });
+
+  describe('End control on paused items', () => {
+    function createPausedSession(overrides: Partial<Session> = {}): Session {
+      return createMockWorktreeSession({ pausedAt: new Date().toISOString(), ...overrides });
+    }
+
+    function createStopTasks(): UseSessionStopTasksReturn {
+      return {
+        tasks: [],
+        addTask: mock(() => true),
+        removeTask: mock(() => {}),
+        getTask: mock(() => undefined),
+        markAsFailed: mock(() => {}),
+        markAsSucceeded: mock(() => {}),
+        markAsPending: mock(() => {}),
+      };
+    }
+
+    async function renderPausedSidebar(onResumeSession: () => void, stopTasks: UseSessionStopTasksReturn, collapsed = false) {
+      await renderWithRouter(
+        <SessionStopTasksContext.Provider value={stopTasks}>
+          <ActiveSessionsSidebar
+            {...defaultProps()}
+            collapsed={collapsed}
+            pausedSessions={[createPausedSession({ id: 'paused-session-1', repositoryName: 'repo-to-end' })]}
+            onResumeSession={onResumeSession}
+          />
+        </SessionStopTasksContext.Provider>
+      );
+    }
+
+    it('clicking End opens the dialog without resuming, and confirming ends that session', async () => {
+      const onResumeSession = mock(() => {});
+      const stopTasks = createStopTasks();
+      await renderPausedSidebar(onResumeSession, stopTasks);
+
+      fireEvent.click(screen.getByText('Paused').closest('button')!);
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: 'End session repo-to-end' }));
+      });
+
+      expect(onResumeSession).not.toHaveBeenCalled();
+      const confirm = await screen.findByRole('button', { name: 'Stop Session' });
+      await act(async () => {
+        fireEvent.click(confirm);
+      });
+      expect(stopTasks.addTask).toHaveBeenCalledWith(
+        expect.objectContaining({ sessionId: 'paused-session-1', action: 'stop' })
+      );
+      expect(onResumeSession).not.toHaveBeenCalled();
+    });
+
+    it('clicking the item itself still resumes it (control for the stopPropagation pin)', async () => {
+      const onResumeSession = mock(() => {});
+      await renderPausedSidebar(onResumeSession, createStopTasks());
+
+      fireEvent.click(screen.getByText('Paused').closest('button')!);
+      fireEvent.click(screen.getByText('repo-to-end').closest('button')!);
+
+      expect(onResumeSession).toHaveBeenCalledWith('paused-session-1');
+    });
+
+    it('collapsed sidebar has no End control (the dashboard covers it)', async () => {
+      await renderPausedSidebar(mock(() => {}), createStopTasks(), true);
+
+      expect(screen.queryByRole('button', { name: /End session/ })).toBeNull();
     });
   });
 

@@ -1271,3 +1271,92 @@ describe('Dashboard / owner badge (multi-user)', () => {
     expect(screen.queryByTestId('session-creator-username')).toBeNull();
   });
 });
+
+describe('WorktreeRow / End Session button', () => {
+  function worktreeSession(overrides: Partial<Session> = {}): Session {
+    return {
+      id: 'session-1',
+      type: 'worktree',
+      title: 'Live Session',
+      locationPath: '/tmp/worktree-1',
+      status: 'active',
+      activationState: 'running',
+      createdAt: new Date().toISOString(),
+      workers: [],
+      isShared: false,
+      recoveryState: 'healthy',
+      repositoryId: 'repo-1',
+      repositoryName: 'repo',
+      worktreeId: 'feature/foo',
+      isMainWorktree: false,
+      ...overrides,
+    } as Session;
+  }
+
+  function renderRow(props: { session?: Session; pausedSession?: Session; isMain?: boolean }, stopTasks = createMockSessionStopTasks()) {
+    return renderWithRouter(
+      <WorktreeDeletionTasksContext.Provider value={createMockDeletionContext()}>
+        <SessionStopTasksContext.Provider value={stopTasks}>
+          <WorktreeRow
+            worktree={{ path: '/tmp/worktree-1', branch: 'feature/foo', isMain: props.isMain ?? false, repositoryId: 'repo-1' } as never}
+            session={props.session as never}
+            pausedSession={props.pausedSession}
+            repositoryId="repo-1"
+            isPulling={false}
+            onPull={() => {}}
+          />
+        </SessionStopTasksContext.Provider>
+      </WorktreeDeletionTasksContext.Provider>
+    );
+  }
+
+  afterEach(() => {
+    cleanup();
+  });
+
+  it('active row: shows End next to Open and confirming ends that session', async () => {
+    const stopTasks = createMockSessionStopTasks();
+    await renderRow({ session: worktreeSession() }, stopTasks);
+
+    expect(screen.getByRole('link', { name: 'Open' })).toBeTruthy();
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'End' }));
+    });
+    const confirm = await screen.findByRole('button', { name: 'Stop Session' });
+    await act(async () => {
+      fireEvent.click(confirm);
+    });
+
+    expect(stopTasks.addTask).toHaveBeenCalledWith({ sessionId: 'session-1', action: 'stop', sessionTitle: 'Live Session' });
+  });
+
+  it('paused row: shows End next to Resume and confirming ends the paused session', async () => {
+    const stopTasks = createMockSessionStopTasks();
+    await renderRow({ pausedSession: worktreeSession({ id: 'paused-1', title: 'Paused Session' }) }, stopTasks);
+
+    expect(screen.getByRole('button', { name: 'Resume' })).toBeTruthy();
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'End' }));
+    });
+    const confirm = await screen.findByRole('button', { name: 'Stop Session' });
+    await act(async () => {
+      fireEvent.click(confirm);
+    });
+
+    expect(stopTasks.addTask).toHaveBeenCalledWith({ sessionId: 'paused-1', action: 'stop', sessionTitle: 'Paused Session' });
+  });
+
+  it('primary-worktree row (isMain) with a session: End is shown while Delete stays hidden', async () => {
+    await renderRow({ session: worktreeSession({ isMainWorktree: true }), isMain: true });
+
+    expect(screen.getByRole('button', { name: 'End' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Delete' })).toBeNull();
+  });
+
+  it('restore row (no live or paused session): no End button', async () => {
+    await renderRow({});
+
+    expect(screen.getByRole('button', { name: 'Restore' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'End' })).toBeNull();
+  });
+});
