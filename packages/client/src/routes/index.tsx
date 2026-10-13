@@ -741,6 +741,7 @@ function RepositoryCard({ repository, sessions, pausedSessions, activePulls, onP
   });
 
   const worktrees = worktreesData?.worktrees ?? [];
+  const pathStatus = worktreesData?.pathStatus ?? 'ok';
 
   const { data: branchesData } = useQuery({
     queryKey: branchKeys.byRepository(repository.id),
@@ -830,7 +831,17 @@ function RepositoryCard({ repository, sessions, pausedSessions, activePulls, onP
       )}
 
       {worktrees.length === 0 ? (
-        <p className="text-sm text-gray-500">No worktrees</p>
+        pathStatus === 'missing' ? (
+          <p className="text-sm text-red-400" role="alert">
+            Repository path not found: {repository.path}. The directory was moved or deleted; remove this entry and register it again at the new location.
+          </p>
+        ) : pathStatus === 'inaccessible' ? (
+          <p className="text-sm text-red-400" role="alert">
+            Repository path cannot be read by the server: {repository.path}. Check the directory's permissions for the server's OS user; worktrees cannot be listed until then.
+          </p>
+        ) : (
+          <p className="text-sm text-gray-500">No worktrees</p>
+        )
       ) : (
         <div className="flex flex-col gap-2">
           {[...worktrees].sort((a, b) => (a.index ?? 0) - (b.index ?? 0)).map((worktree) => (

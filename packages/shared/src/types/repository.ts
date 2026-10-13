@@ -52,6 +52,22 @@ export interface Worktree {
 }
 
 /**
+ * What the server process observed about a repository's directory when it
+ * listed the repository's worktrees.
+ * - `ok`: readable (or the listing failed for a reason other than the path)
+ * - `missing`: the directory does not exist (moved, renamed or deleted)
+ * - `inaccessible`: the directory exists or could not be told apart, but the
+ *   server process cannot read it (permissions or another OS-level error)
+ */
+export type RepositoryPathStatus = 'ok' | 'missing' | 'inaccessible';
+
+/** Response of `GET /api/repositories/:id/worktrees`. */
+export interface WorktreesResponse {
+  worktrees: Worktree[];
+  pathStatus: RepositoryPathStatus;
+}
+
+/**
  * Information about branch name generation fallback
  * Returned when AI-based branch name generation fails and a fallback name is used
  */

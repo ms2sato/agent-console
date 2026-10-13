@@ -162,7 +162,7 @@ const WORKTREE_PATH = `${REPO_PATH}/worktrees/wt-1`;
 
 function createMockWorktreeService(): WorktreeService {
   return asWorktreeService({
-    listWorktrees: mock(() => Promise.resolve([])),
+    listWorktrees: mock(() => Promise.resolve({ worktrees: [], pathStatus: 'ok' as const })),
     // Pre-create accessibility probe (Issue #854). Default to success so
     // tests that don't care about the probe see the legacy behaviour;
     // probe-failure tests override per-call.
@@ -262,7 +262,7 @@ describe('Worktrees API', () => {
         { path: WORKTREE_PATH, branch: 'feature-1', isMainWorktree: false },
       ];
       (mockWorktreeService.listWorktrees as ReturnType<typeof mock>)
-        .mockImplementation(() => Promise.resolve(mockWorktrees));
+        .mockImplementation(() => Promise.resolve({ worktrees: mockWorktrees, pathStatus: 'inaccessible' }));
 
       const res = await app.request(`/api/repositories/${TEST_REPO.id}/worktrees`, {
         method: 'GET',
@@ -270,9 +270,10 @@ describe('Worktrees API', () => {
 
       expect(res.status).toBe(200);
 
-      const body = (await res.json()) as { worktrees: unknown[] };
+      const body = (await res.json()) as { worktrees: unknown[]; pathStatus: string };
       expect(body.worktrees).toBeArray();
       expect(body.worktrees).toHaveLength(1);
+      expect(body.pathStatus).toBe('inaccessible');
     });
   });
 
@@ -1797,7 +1798,7 @@ describe('Worktrees API', () => {
             getRepository: () => repoWithCleanup,
           }),
           worktreeService: asWorktreeService({
-            listWorktrees: mock(() => Promise.resolve([cleanupWorktree])),
+            listWorktrees: mock(() => Promise.resolve({ worktrees: [cleanupWorktree], pathStatus: 'ok' as const })),
             isWorktreeOf: mock(() => Promise.resolve(true)),
             removeWorktree: mockRemoveWorktree,
             executeHookCommand: mockExecuteHookCommand,
@@ -1874,7 +1875,7 @@ describe('Worktrees API', () => {
             getRepository: () => repoWithCleanup,
           }),
           worktreeService: asWorktreeService({
-            listWorktrees: mock(() => Promise.resolve([cleanupWorktree])),
+            listWorktrees: mock(() => Promise.resolve({ worktrees: [cleanupWorktree], pathStatus: 'ok' as const })),
             isWorktreeOf: mock(() => Promise.resolve(true)),
             removeWorktree: mockRemoveWorktree,
             executeHookCommand: mockExecuteHookCommand,

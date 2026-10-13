@@ -14,9 +14,9 @@ const OTHER_WORKTREE_PATH = `${REPOS_DIR}/my-repo/worktrees/wt-other`;
 
 // --- Mock worktreeService (now passed as parameter via DeleteWorktreeDeps) ---
 
-const mockListWorktrees = mock<(repoPath: string, repoId: string) => Promise<Worktree[]>>(() =>
-  Promise.resolve([]),
-);
+const mockListWorktrees = mock<
+  (repoPath: string, repoId: string) => Promise<{ worktrees: Worktree[]; pathStatus: 'ok' | 'missing' | 'inaccessible' }>
+>(() => Promise.resolve({ worktrees: [], pathStatus: 'ok' }));
 const mockRemoveWorktree = mock<
   (
     repoPath: string,
@@ -140,15 +140,18 @@ describe('deleteWorktree', () => {
     mockIsWorktreeOf.mockImplementation(() => Promise.resolve(true));
     mockRemoveOrphanedWorktree.mockImplementation(() => Promise.resolve());
     mockListWorktrees.mockImplementation(() =>
-      Promise.resolve([
-        {
-          path: WORKTREE_PATH,
-          branch: 'feature-1',
-          isMain: false,
-          repositoryId: 'repo-1',
-          index: 1,
-        },
-      ]),
+      Promise.resolve({
+        worktrees: [
+          {
+            path: WORKTREE_PATH,
+            branch: 'feature-1',
+            isMain: false,
+            repositoryId: 'repo-1',
+            index: 1,
+          },
+        ],
+        pathStatus: 'ok',
+      }),
     );
   });
 

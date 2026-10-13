@@ -221,7 +221,7 @@ describe('createWorktreeWithSession: embedded-agent worker creation boundary', (
     // proxy for "does a worktree DB record still exist" across the
     // create -> rollback round trip below, without needing to know the
     // randomly-suffixed worktree directory name up front.
-    const worktreesBefore = await worktreeService.listWorktrees(TEST_REPO_PATH, TEST_REPO_ID);
+    const { worktrees: worktreesBefore } = await worktreeService.listWorktrees(TEST_REPO_PATH, TEST_REPO_ID);
     expect(worktreesBefore).toHaveLength(0);
 
     const result = await createWorktreeWithSession(
@@ -249,7 +249,7 @@ describe('createWorktreeWithSession: embedded-agent worker creation boundary', (
     // catch block calls `worktreeService.removeWorktree(..., force=true)`,
     // which deletes the worktree's DB row. No row surviving means no
     // orphaned worktree directory is left registered.
-    const worktreesAfter = await worktreeService.listWorktrees(TEST_REPO_PATH, TEST_REPO_ID);
+    const { worktrees: worktreesAfter } = await worktreeService.listWorktrees(TEST_REPO_PATH, TEST_REPO_ID);
     expect(worktreesAfter).toHaveLength(0);
 
     // Rollback assertion 2: no ghost session survives (Issue #1060 --

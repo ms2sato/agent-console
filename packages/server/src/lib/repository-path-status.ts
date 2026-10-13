@@ -1,7 +1,8 @@
 import { constants, promises as fsPromises } from 'fs';
+import type { RepositoryPathStatus } from '@agent-console/shared';
 import { isErrnoException } from './type-guards.js';
 
-export type RepositoryPathStatus = 'ok' | 'missing' | 'inaccessible';
+export type { RepositoryPathStatus };
 
 /**
  * Classify what the server process can observe about a repository path.

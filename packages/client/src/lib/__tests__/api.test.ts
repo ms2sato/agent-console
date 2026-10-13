@@ -614,7 +614,7 @@ describe('API Client', () => {
 
   describe('fetchWorktrees', () => {
     it('should fetch worktrees successfully', async () => {
-      const mockWorktrees = { worktrees: [{ path: '/path', branch: 'main' }] };
+      const mockWorktrees = { worktrees: [{ path: '/path', branch: 'main' }], pathStatus: 'ok' };
       mockFetch.mockResolvedValue(createMockResponse(mockWorktrees));
 
       const result = await fetchWorktrees('repo-id');
@@ -622,6 +622,15 @@ describe('API Client', () => {
       expect(getLastFetchUrl()).toContain('/api/repositories/repo-id/worktrees');
       expect(getLastFetchMethod()).toBe('GET');
       expect(result).toEqual(mockWorktrees);
+    });
+
+    it('should pass the listing pathStatus through to the caller', async () => {
+      mockFetch.mockResolvedValue(createMockResponse({ worktrees: [], pathStatus: 'missing' }));
+
+      const result = await fetchWorktrees('repo-id');
+
+      expect(result.pathStatus).toBe('missing');
+      expect(result.worktrees).toEqual([]);
     });
   });
 

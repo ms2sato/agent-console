@@ -10,7 +10,7 @@ import { mkdtemp, chmod, rm } from 'fs/promises';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { assertRealFs } from '../../__tests__/utils/memfs-detection.js';
-import { classifyRepositoryPath } from '../repository-path-status.js';
+import { classifyRepositoryPath, type RepositoryPathStatus } from '../repository-path-status.js';
 
 const IS_ROOT = typeof process.geteuid === 'function' && process.geteuid() === 0;
 
@@ -51,6 +51,17 @@ describe('classifyRepositoryPath (injected accessFn)', () => {
     const calls: Array<[string, number | undefined]> = [];
     await classifyRepositoryPath('/some/repo', async (p, mode) => { calls.push([p, mode]); });
     expect(calls).toEqual([['/some/repo', constants.R_OK | constants.X_OK]]);
+  });
+});
+
+describe('classifyRepositoryPath (vocabulary)', () => {
+  it('only ever yields the three statuses the wire type names', async () => {
+    const outcomes: RepositoryPathStatus[] = [
+      await classifyRepositoryPath('/p', async () => {}),
+      await classifyRepositoryPath('/p', async () => { throw errnoError('ENOENT'); }),
+      await classifyRepositoryPath('/p', async () => { throw errnoError('EIO'); }),
+    ];
+    expect(outcomes).toEqual(['ok', 'missing', 'inaccessible']);
   });
 });
 

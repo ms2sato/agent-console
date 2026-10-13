@@ -160,8 +160,9 @@ branch refs/heads/feature-1
       const WorktreeService = await getWorktreeService();
       const service = new WorktreeService({ worktreeRepository: mockRepo });
 
-      const worktrees = await service.listWorktrees('/repo/main', 'repo-1');
+      const { worktrees, pathStatus } = await service.listWorktrees('/repo/main', 'repo-1');
 
+      expect(pathStatus).toBe('ok');
       expect(worktrees.length).toBe(2);
       expect(worktrees[0].path).toBe('/repo/main');
       expect(worktrees[0].branch).toBe('main');
@@ -179,7 +180,7 @@ branch refs/heads/feature-1
       const WorktreeService = await getWorktreeService();
       const service = new WorktreeService({ worktreeRepository: mockRepo });
 
-      const worktrees = await service.listWorktrees('/repo/main', 'repo-1');
+      const { worktrees } = await service.listWorktrees('/repo/main', 'repo-1');
 
       // Only main worktree should be returned
       expect(worktrees.length).toBe(1);
@@ -196,7 +197,7 @@ detached
       const WorktreeService = await getWorktreeService();
       const service = new WorktreeService({ worktreeRepository: mockRepo });
 
-      const worktrees = await service.listWorktrees('/repo/main', 'repo-1');
+      const { worktrees } = await service.listWorktrees('/repo/main', 'repo-1');
 
       expect(worktrees[0].branch).toBe('(detached at abc1234)');
     });
@@ -207,7 +208,7 @@ detached
       const WorktreeService = await getWorktreeService();
       const service = new WorktreeService({ worktreeRepository: mockRepo });
 
-      const worktrees = await service.listWorktrees('/repo', 'repo-1');
+      const { worktrees } = await service.listWorktrees('/repo', 'repo-1');
       expect(worktrees).toEqual([]);
     });
 
@@ -231,7 +232,7 @@ detached
 
       const WorktreeService = await getWorktreeService();
       const service = new WorktreeService({ worktreeRepository: mockRepo });
-      const worktrees = await service.listWorktrees('/repo/main', 'repo-1');
+      const { worktrees } = await service.listWorktrees('/repo/main', 'repo-1');
 
       // Should include: main + feature-1 (from git) + orphaned-1 (from DB only)
       expect(worktrees.length).toBe(3);
@@ -259,7 +260,7 @@ detached
     async function listWith(repoPath: string) {
       const WorktreeService = await getWorktreeService();
       const service = new WorktreeService({ worktreeRepository: mockRepo });
-      return service.listWorktrees(repoPath, 'repo-1');
+      return (await service.listWorktrees(repoPath, 'repo-1')).worktrees;
     }
 
     // (1) Measured reach: restoring `isMain = worktreePath === mainRepoPath`
@@ -381,7 +382,7 @@ detached
     it('returns [] and warns "repository path missing" when the directory does not exist', async () => {
       const { result, warns, errors } = await listWithRecordingLogger('/gone/repo', new Error('not a git repository'));
 
-      expect(result).toEqual([]);
+      expect(result).toEqual({ worktrees: [], pathStatus: 'missing' });
       expect(errors).toHaveLength(0);
       expect(warns).toHaveLength(1);
       expect(warns[0]![0]).toMatchObject({ repoPath: '/gone/repo', reason: 'repository path missing' });
@@ -395,7 +396,7 @@ detached
       try {
         const { result, warns, errors } = await listWithRecordingLogger('/locked/repo', new Error('not a git repository'));
 
-        expect(result).toEqual([]);
+        expect(result).toEqual({ worktrees: [], pathStatus: 'inaccessible' });
         expect(errors).toHaveLength(0);
         expect(warns).toHaveLength(1);
         expect(warns[0]![0]).toMatchObject({ repoPath: '/locked/repo', reason: 'repository path inaccessible' });
@@ -411,7 +412,9 @@ detached
 
       const { result, warns, errors } = await listWithRecordingLogger('/exists/repo', new Error('git exploded'));
 
-      expect(result).toEqual([]);
+      // Listing failed on a readable directory: the notice must not claim the
+      // path is the problem, so the status stays 'ok' with an empty list.
+      expect(result).toEqual({ worktrees: [], pathStatus: 'ok' });
       expect(warns).toHaveLength(0);
       expect(errors).toHaveLength(1);
       expect(errors[0]![0]).toMatchObject({ repoPath: '/exists/repo' });

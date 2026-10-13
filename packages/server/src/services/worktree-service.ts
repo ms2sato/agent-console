@@ -22,7 +22,7 @@ import {
 // user's PATH, gitconfig, and SSH_AUTH_SOCK via sudo -i).
 import { augmentWorktreeAddPermissionError } from '../lib/git-error-hints.js';
 import { canonicalPath } from '../lib/canonical-path.js';
-import { classifyRepositoryPath } from '../lib/repository-path-status.js';
+import { classifyRepositoryPath, type RepositoryPathStatus } from '../lib/repository-path-status.js';
 import { createLogger } from '../lib/logger.js';
 import { substituteVariables } from '../lib/template-variables.js';
 import { isErrnoException } from '../lib/type-guards.js';
@@ -340,7 +340,7 @@ export class WorktreeService {
    * Includes git-tracked worktrees registered in DB and orphaned DB records
    * (worktrees that exist in DB but are no longer tracked by git).
    */
-  async listWorktrees(repoPath: string, repositoryId: string): Promise<Worktree[]> {
+  async listWorktrees(repoPath: string, repositoryId: string): Promise<{ worktrees: Worktree[]; pathStatus: RepositoryPathStatus }> {
     try {
       const output = await gitListWorktrees(repoPath);
 
@@ -367,9 +367,10 @@ export class WorktreeService {
         }
       }
 
-      return gitWorktrees;
+      return { worktrees: gitWorktrees, pathStatus: 'ok' };
     } catch (error) {
-      switch (await classifyRepositoryPath(repoPath)) {
+      const pathStatus = await classifyRepositoryPath(repoPath);
+      switch (pathStatus) {
         case 'missing':
           // The directory was renamed, moved or deleted. The listing is empty
           // by design, but say why instead of logging a generic git failure.
@@ -382,7 +383,7 @@ export class WorktreeService {
           logger.error({ err: error, repoPath }, 'Failed to list worktrees');
           break;
       }
-      return [];
+      return { worktrees: [], pathStatus };
     }
   }
 
