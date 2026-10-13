@@ -1,3 +1,5 @@
+import { shellEscape } from '../services/elevation-args.js';
+
 export const WORKTREE_ADD_PERMISSION_HINT_HEADER = 'Possible causes (multi-user mode):';
 
 // The real stderr spans two lines (the ref name, then the lock path), so the
@@ -17,7 +19,8 @@ export function augmentWorktreeAddPermissionError(
   if (!opts.multiUser || !WORKTREE_ADD_PERMISSION_PATTERN.test(message)) {
     return message;
   }
-  const { repoPath } = opts;
+  const gitDir = shellEscape(`${opts.repoPath}/.git`);
+  const repo = shellEscape(opts.repoPath);
   const hint = [
     WORKTREE_ADD_PERMISSION_HINT_HEADER,
     '',
@@ -26,12 +29,12 @@ export function augmentWorktreeAddPermissionError(
     '     Then log in again: group membership is resolved at login, so retrying from the same open session still fails.',
     '',
     `2. The repository's .git directory lacks group-write and setgid bits.`,
-    `     Verify: ls -ld ${repoPath}/.git   (expect: drwxrws---, group 'agent-console-users')`,
-    `     Fix (as root): chmod -R g+rwX,g+s ${repoPath}/.git`,
+    `     Verify: ls -ld ${gitDir}   (expect: drwxrws---, group 'agent-console-users')`,
+    `     Fix (as root): chmod -R g+rwX,g+s ${gitDir}`,
     '',
     '3. core.sharedRepository=group is not set on the repository.',
-    `     Verify: git -C ${repoPath} config --get core.sharedRepository`,
-    `     Fix:    git -C ${repoPath} config core.sharedRepository group`,
+    `     Verify: git -C ${repo} config --get core.sharedRepository`,
+    `     Fix:    git -C ${repo} config core.sharedRepository group`,
   ].join('\n');
   return `${message}\n\n${hint}`;
 }

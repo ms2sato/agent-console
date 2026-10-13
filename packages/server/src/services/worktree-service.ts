@@ -209,6 +209,13 @@ async function copyTemplateFiles(
 }
 
 /**
+ * A `GitError` raised by the `git worktree add` step itself. Lets the catch in
+ * `createWorktree` tell it apart from later failures (record save, template
+ * copy) so the permission hint is attached only where it can be true.
+ */
+class WorktreeAddGitError extends GitError {}
+
+/**
  * Extract user-facing error message from a git or generic error.
  * Prefers stderr from GitError (which contains the actual git error details).
  */
@@ -552,10 +559,11 @@ export class WorktreeService {
 
       return { worktreePath, index: newIndex, copiedFiles };
     } catch (error) {
-      const message = augmentWorktreeAddPermissionError(extractErrorMessage(error), {
-        multiUser: isMultiUserAuthMode(),
-        repoPath,
-      });
+      const raw = extractErrorMessage(error);
+      const message =
+        error instanceof WorktreeAddGitError
+          ? augmentWorktreeAddPermissionError(raw, { multiUser: isMultiUserAuthMode(), repoPath })
+          : raw;
       logger.error({ err: error, message }, 'Failed to create worktree');
       return { worktreePath: '', error: message };
     }
@@ -603,7 +611,7 @@ export class WorktreeService {
     if (result.timedOut || result.exitCode !== 0) {
       const stderr = result.stderr.trim();
       const detail = stderr || `exit code ${result.exitCode}`;
-      throw new GitError(`git worktree failed: ${detail}`, result.exitCode, stderr);
+      throw new WorktreeAddGitError(`git worktree failed: ${detail}`, result.exitCode, stderr);
     }
   }
 

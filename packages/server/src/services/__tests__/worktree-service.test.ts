@@ -754,7 +754,22 @@ detached
         const result = await createWithPermissionFailure();
         expect(result.error!.startsWith(PERMISSION_STDERR)).toBe(true);
         expect(result.error).toContain(WORKTREE_ADD_PERMISSION_HINT_HEADER);
-        expect(result.error).toContain('ls -ld /repo/.git');
+        expect(result.error).toContain("ls -ld '/repo/.git'");
+      });
+
+      it('does not attach the hint to a failure after a successful git worktree add', async () => {
+        process.env.AUTH_MODE = 'multi-user';
+        // A GitError on purpose: only the add step's own error type may be augmented.
+        mockRepo.save = async () => {
+          throw new GitError('post-add failure', 128, PERMISSION_STDERR);
+        };
+        const WorktreeService = await getWorktreeService();
+        const service = new WorktreeService({
+          worktreeRepository: mockRepo,
+          runAsUserImpl: runAsUserMock.runAsUserImpl,
+        });
+        const result = await service.createWorktree('/repo', 'feature-x', 'repo-1');
+        expect(result.error).toBe(PERMISSION_STDERR);
       });
 
       it('surfaces the stderr exactly when AUTH_MODE is not multi-user', async () => {
