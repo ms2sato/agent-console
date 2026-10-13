@@ -422,6 +422,8 @@ PersistedSession.workers[i].pid  // number | null (just the PID)
 
 Repository only handles PersistedSession. SessionManager maintains consistency.
 
+A different consistency gap -- writes to more than one repository (or a repository and the job queue) that cannot share a database transaction -- is inventoried, with the paths that need atomicity and the recommended fix, in [`repository-transactions.md`](./repository-transactions.md).
+
 ## Implementation Plan
 
 ### Phase 1: Repository Layer (Estimated: Small-Medium PR)
