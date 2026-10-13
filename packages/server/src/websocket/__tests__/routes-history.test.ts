@@ -320,10 +320,11 @@ describe('Worker WebSocket history and notifications', () => {
   // Measured reach (each mutation applied to the committed tree, then
   // restored; control = 48 pass across this file, history-range-handler,
   // history-in-flight-limiter and race-with-timeout):
-  //   - request-history gate removed -> (a), (c), (e) and the per-connection
-  //     pin fail ((e) and the last need that gate to fill the cap);
+  //   - request-history gate removed -> (a), (c), (e), (g) and the
+  //     per-connection pin fail ((e), (g) and the last need that gate to fill
+  //     the cap);
   //   - range gate removed -> (b), (c) and two history-range-handler pins;
-  //   - request-history slot release dropped -> only (d);
+  //   - request-history slot release dropped -> (d) and (g);
   //   - a separate limiter per message type -> (b) and (c);
   //   - the range gate moved before requestId validation -> (e) and the
   //     handler's invalid-requestId pin.
