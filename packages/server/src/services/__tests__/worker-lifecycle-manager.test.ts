@@ -1483,6 +1483,9 @@ describe('WorkerLifecycleManager', () => {
       const worker = await manager.createWorker(session.id, { type: 'terminal' });
       persist.mockClear();
       const warnSpy = spyOn(rootLogger, 'warn');
+      // An earlier file's unrestored spy on the same method is returned as-is with
+      // its accumulated calls; count only the calls made from here.
+      warnSpy.mockClear();
       try {
         expect(await manager.deleteWorker(session.id, worker!.id)).toBe(true);
 

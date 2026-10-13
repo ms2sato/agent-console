@@ -1430,6 +1430,9 @@ describe('SessionInitializationService orphan cleanup transaction (real DB, real
   it('without an injected database falls back to the two separate writes and warns', async () => {
     await seedOrphan('orphan-no-db');
     const warnSpy = spyOn(rootLogger, 'warn');
+    // An earlier file's unrestored spy on the same method is returned as-is with
+    // its accumulated calls; count only the calls made from here.
+    warnSpy.mockClear();
     try {
       await createService({ withDb: false }).initialize();
 

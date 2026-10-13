@@ -637,6 +637,9 @@ describe('SessionDeletionService delete transaction (real DB, real JobQueue)', (
     it('without an injected database falls back to the two separate writes and warns once', async () => {
       await seedSession('s-no-db', { inMemory: true });
       const warnSpy = spyOn(rootLogger, 'warn');
+      // An earlier file's unrestored spy on the same method is returned as-is with
+      // its accumulated calls; count only the calls made from here.
+      warnSpy.mockClear();
       try {
         await createService({ withDb: false }).deleteSession('s-no-db');
 
@@ -675,6 +678,9 @@ describe('SessionDeletionService delete transaction (real DB, real JobQueue)', (
     it('without an injected database falls back to the two separate writes and warns once', async () => {
       await seedSession('o-no-db', { inMemory: false });
       const warnSpy = spyOn(rootLogger, 'warn');
+      // An earlier file's unrestored spy on the same method is returned as-is with
+      // its accumulated calls; count only the calls made from here.
+      warnSpy.mockClear();
       try {
         await createService({ withDb: false }).forceDeleteSession('o-no-db');
 
