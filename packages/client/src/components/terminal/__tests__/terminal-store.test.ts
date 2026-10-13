@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, spyOn } from 'bun:test';
+import { Terminal as HeadlessTerminal } from '@xterm/headless';
 import type { AppServerMessage, Session, Worker } from '@agent-console/shared';
 import { WS_CLOSE_CODE } from '@agent-console/shared';
 import { MockWebSocket, installMockWebSocket } from '../../../test/mock-websocket';
@@ -1113,6 +1114,81 @@ describe('terminal-store', () => {
       const after = instance.getSnapshot();
       expect(after.cols).toBe(before.cols);
       expect(after.terminalRows).toBe(before.terminalRows);
+    });
+  });
+
+  // The row cache is keyed by buffer index. A cols change makes xterm reflow the
+  // scrollback (wrapped lines re-split), so cached rows built at the old width
+  // describe different lines than the same indices hold afterwards.
+  describe('row cache across a cols change (reflow)', () => {
+    /** 300 lines of 100 chars: hard-newline lines that re-wrap when the width drops below 100. */
+    const REFLOW_DATA = Array.from({ length: 300 }, (_, i) => `L${String(i).padStart(3, '0')} ${'x'.repeat(94)}`).join('\r\n') + '\r\n';
+
+    function displayed(instance: ReturnType<typeof getOrCreateTerminal>): string[] {
+      return instance
+        .getSnapshot()
+        .rows.map((r) => r.segments.map((s) => s.text).join('').replace(/\s+$/, ''));
+    }
+
+    /** Oracle: an independent headless terminal fed the same bytes, then the same resize. */
+    async function reflowedTruth(initialCols: number, finalCols: number, rows: number): Promise<string[]> {
+      const ref = new HeadlessTerminal({ cols: initialCols, rows, scrollback: 5000, allowProposedApi: true });
+      await new Promise<void>((resolve) => ref.write(REFLOW_DATA, resolve));
+      if (finalCols !== initialCols) ref.resize(finalCols, rows);
+      const buf = ref.buffer.active;
+      const out: string[] = [];
+      for (let i = 0; i < buf.length; i++) out.push((buf.getLine(i)?.translateToString(true) ?? '').replace(/\s+$/, ''));
+      return out;
+    }
+
+    function differing(shown: string[], truth: string[]): number {
+      let n = 0;
+      for (let i = 0; i < Math.max(shown.length, truth.length); i++) if (shown[i] !== truth[i]) n++;
+      return n;
+    }
+
+    function loadHistory(sessionId: string, workerId: string, cols: number, rows: number) {
+      const instance = getOrCreateTerminal(sessionId, workerId);
+      instance.resize(cols, rows);
+      const ws = MockWebSocket.getLastInstance()!;
+      ws.simulateOpen();
+      ws.simulateMessage(JSON.stringify({ type: 'history', data: REFLOW_DATA, offset: REFLOW_DATA.length, startOffset: 0, epoch: 1 }));
+      return instance;
+    }
+
+    // Measured polarity: without the cols guard in rebuildSnapshot, 281 of the 601
+    // displayed rows differ from the reflowed buffer after resize(120 -> 60).
+    it('shows exactly the reflowed buffer after narrowing, not stale pre-resize rows', async () => {
+      const instance = loadHistory('reflow1', 'w', 120, 20);
+      await flush();
+      expect(displayed(instance).length).toBe(301);
+
+      instance.resize(60, 20);
+      await flush();
+
+      const truth = await reflowedTruth(120, 60, 20);
+      expect(truth.length).toBe(601);
+      expect(differing(displayed(instance), truth)).toBe(0);
+    });
+
+    it('control: a fresh store loaded directly at the narrow width shows the reflowed buffer', async () => {
+      const instance = loadHistory('reflow2', 'w', 60, 20);
+      await flush();
+
+      expect(differing(displayed(instance), await reflowedTruth(60, 60, 20))).toBe(0);
+    });
+
+    it('a rows-only resize does not reflow, so it keeps the cache', async () => {
+      const instance = loadHistory('reflow3', 'w', 120, 20);
+      await flush();
+      const cached = _inspect(instance).rowCacheSize;
+      expect(cached).toBeGreaterThan(0);
+
+      instance.resize(120, 30);
+      await flush();
+
+      expect(_inspect(instance).rowCacheSize).toBeGreaterThanOrEqual(cached);
+      expect(differing(displayed(instance), await reflowedTruth(120, 120, 30))).toBe(0);
     });
   });
 });
