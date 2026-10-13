@@ -163,15 +163,48 @@
  *     it -- see docs/multi-user-setup-guide.md's Post-deploy Verification
  *     section for why a prefix silently does not reach `bun`.)
  *
- * What this smoke does NOT exercise:
+ * THE OPT-IN `--turn` ARM (BILLABLE, one real provider turn; off by default).
+ *   `--turn` adds, after every assertion above, ONE real model turn as the
+ *   target user: a nonce file is planted in the session cwd AS the target user
+ *   (via `runAsUser`), the worker is asked to read it with its Read tool and
+ *   reply with the word, and the worker's persisted NDJSON (scoped by a
+ *   baseline index taken just before the send) must show exactly one
+ *   `tool-call` on the nonce file, an `ok` `tool-result` carrying the nonce, a
+ *   reply containing the nonce read only AFTER `state: idle`, and that `idle`
+ *   after the last assistant message. The file is removed after the turn.
+ *   What it adds over `check-embedded-agent-bash-env.ts` (which already drives
+ *   a scripted message -> real Bash tool call -> result round trip as the
+ *   target user, free, through a stub provider) is specifically a REAL model
+ *   turn as the elevated user: the provider key path, the real tool loop
+ *   against a real completion, and the turn settling to `idle`.
+ *   The provider credential is resolved SERVER-side from
+ *   `<AGENT_CONSOLE_HOME>/provider-keys.json` by `apiKeyRef`, so the target OS
+ *   user never needs a credential of its own. `--turn` COPIES the entry
+ *   `PROVIDER_KEY_REF` (default `opencode-go`) out of `PROVIDER_KEY_FILE`
+ *   (default `~/.agent-console-dev/provider-keys.json`) into the disposable
+ *   home -- a Q13 proxy, upstream of and outside the chain under test (it
+ *   changes where the key is read from, never what the elevated worker does
+ *   with it); the base URL and model are `PROVIDER_BASE_URL` /
+ *   `PROVIDER_MODEL` (defaults match the sibling openai-api smokes). Without
+ *   `--turn` the stub provider, the fake key and the whole run are unchanged,
+ *   stdout byte-for-byte.
+ *   The recall oracle needs no separate negative control here: the nonce is a
+ *   random token that exists only in the planted file, and the assertion that
+ *   the Read tool-result carries it is deterministic, so a reply containing
+ *   the nonce can only have come through that tool call.
+ *   In degenerate mode (target user == process user) the arm still runs and
+ *   prints "degenerate: same user, elevation boundary not crossed".
+ *
+ * What this smoke does NOT exercise (without `--turn`):
  *   - The full user-message / tool-call / final-answer turn. `ready` fires at
  *     the end of the init handshake (loop's own MCP `listTools()` call),
- *     BEFORE any user message -- this smoke stops there. The full turn is
+ *     BEFORE any user message -- the default run stops there. The full turn is
  *     already covered by the shipping-path E2E test at
- *     `packages/integration/src/embedded-agent-e2e.test.ts` (single-user mode).
+ *     `packages/integration/src/embedded-agent-e2e.test.ts` (single-user mode)
+ *     and, for a real turn as a second OS user, by `--turn` above.
  *   - Provider round-trip behavior. The stub provider server is inert (404s
- *     everything); the smoke never sends a user-message, so the provider is
- *     never dialed. The `provider.baseUrl` field is only present because the
+ *     everything); the default run never sends a user-message, so the provider
+ *     is never dialed. The `provider.baseUrl` field is only present because the
  *     embedded-agent definition schema requires it.
  *
  * Note on AGENT_CONSOLE_MCP_AUTH: this smoke sets it EXPLICITLY from the
@@ -194,6 +227,8 @@
  *   bun scripts/smoke/check-embedded-agent-elevation.ts <target-user>
  *   # polarity arm (warn): E1 accepted 200 + exact warn line logged, E2 admitted 200
  *   bun scripts/smoke/check-embedded-agent-elevation.ts <target-user> --auth-mode warn
+ *   # opt-in BILLABLE arm: one real provider turn as <target-user> (needs a provider key store)
+ *   bun scripts/smoke/check-embedded-agent-elevation.ts <target-user> --turn
  *
  * Requirements:
  *   - Run as a user with elevation privilege for <target-user> (a working,
@@ -205,6 +240,11 @@
  *     server package's workspace resolution (true for any checkout that ran
  *     the repo's normal install step) -- otherwise the package-resolution
  *     assertion below fails by design.
+ *   - `--turn` only: a provider key store resolvable for `PROVIDER_KEY_REF`
+ *     (default `opencode-go`, read from `PROVIDER_KEY_FILE`, default
+ *     `~/.agent-console-dev/provider-keys.json`) and network access to
+ *     `PROVIDER_BASE_URL` (default `https://opencode.ai/zen/go/v1`). Billable:
+ *     one small real turn. Not needed, and nothing is billed, without `--turn`.
  *   - Degenerate mode: passing the CURRENT process user as <target-user>
  *     exercises the entire pipeline (entry resolution, real subprocess, real
  *     MCP handshake + E1/E2 gate read-back, /proc negative checks) EXCEPT the actual
@@ -243,7 +283,7 @@
 import './_env.js';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { realpathSync } from 'node:fs';
+import { readFileSync, realpathSync } from 'node:fs';
 import { stat } from 'node:fs/promises';
 // `compareBinaryIdentity` / `isOtherExecutable` are pure (no filesystem
 // access at import time, no top-level side effects) and do not transitively
@@ -297,6 +337,15 @@ function parseStreamEventLine(line: string): { type: string } | undefined {
 // live-process assertion below to resolve the actual running server's PID.
 const SYSTEMD_UNIT_NAME = 'agent-console';
 
+// `--turn` provider settings, resolved like the sibling openai-api smokes.
+// Read only when `--turn` is passed; the default run never touches them.
+const TURN_PROVIDER_BASE_URL = process.env.PROVIDER_BASE_URL ?? 'https://opencode.ai/zen/go/v1';
+const TURN_PROVIDER_MODEL = process.env.PROVIDER_MODEL ?? 'qwen3.8-flash';
+const TURN_PROVIDER_KEY_REF = process.env.PROVIDER_KEY_REF ?? 'opencode-go';
+const TURN_PROVIDER_KEY_FILE =
+  process.env.PROVIDER_KEY_FILE ?? path.join(os.homedir(), '.agent-console-dev', 'provider-keys.json');
+const TURN_NONCE_FILE = 'qa-note.txt';
+
 /**
  * Marks a setup/launch failure (e.g. the disposable home's 2775 contract
  * verification) distinct from an unexpected exception during the actual
@@ -333,7 +382,9 @@ const WARN_LOG_LINE = 'MCP request without verified caller identity; proceeding 
 
 function printUsageAndExit(reason: string): never {
   console.error(`error: ${reason}`);
-  console.error('usage: bun scripts/smoke/check-embedded-agent-elevation.ts <target-user> [--auth-mode enforce|warn]');
+  console.error(
+    'usage: bun scripts/smoke/check-embedded-agent-elevation.ts <target-user> [--auth-mode enforce|warn] [--turn]',
+  );
   process.exit(2);
 }
 
@@ -349,14 +400,18 @@ function printUsageAndExit(reason: string): never {
  * `__tests__/check-embedded-agent-elevation.test.ts` (import-safe: the only
  * top-level invocation in this file is behind `import.meta.main`).
  */
-export function parseArgs(argv: string[]): { targetUsername: string; authMode: SmokeAuthMode } {
+export function parseArgs(argv: string[]): { targetUsername: string; authMode: SmokeAuthMode; turn: boolean } {
   const args = argv[0] === '--' ? argv.slice(1) : argv;
   let targetUsername: string | undefined;
   let authMode: SmokeAuthMode = 'enforce';
+  let turn = false;
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
     let modeValue: string | undefined;
-    if (arg === '--auth-mode') {
+    if (arg === '--turn') {
+      turn = true;
+      continue;
+    } else if (arg === '--auth-mode') {
       modeValue = args[++i];
     } else if (arg.startsWith('--auth-mode=')) {
       modeValue = arg.slice('--auth-mode='.length);
@@ -376,7 +431,7 @@ export function parseArgs(argv: string[]): { targetUsername: string; authMode: S
   if (!targetUsername) {
     printUsageAndExit('missing <target-user>');
   }
-  return { targetUsername, authMode };
+  return { targetUsername, authMode, turn };
 }
 
 const failures: string[] = [];
@@ -438,7 +493,26 @@ async function main(): Promise<void> {
   // documented in check-multiuser-pty-env.ts). Neutralize at script start.
   process.chdir('/');
 
-  const { targetUsername, authMode } = parseArgs(process.argv.slice(2));
+  const { targetUsername, authMode, turn } = parseArgs(process.argv.slice(2));
+
+  // `--turn` (BILLABLE): resolve the real provider key BEFORE anything is
+  // started, so a missing key store is a clean exit-2 "cannot run", not a
+  // half-built run. The key is COPIED into the disposable home below (a Q13
+  // proxy, upstream of the chain under test -- see the header).
+  let turnProviderApiKey: string | undefined;
+  if (turn) {
+    try {
+      const store = JSON.parse(readFileSync(TURN_PROVIDER_KEY_FILE, 'utf-8')) as Record<string, string>;
+      if (typeof store[TURN_PROVIDER_KEY_REF] !== 'string') {
+        console.error(`--turn: provider key store ${TURN_PROVIDER_KEY_FILE} has no entry '${TURN_PROVIDER_KEY_REF}'`);
+        process.exit(2);
+      }
+      turnProviderApiKey = store[TURN_PROVIDER_KEY_REF];
+    } catch (err) {
+      console.error(`--turn: could not read the provider key store at ${TURN_PROVIDER_KEY_FILE}: ${String(err)}`);
+      process.exit(2);
+    }
+  }
 
   // --- CRITICAL ordering: env vars must be set before ANY module that reads
   // `serverConfig.AUTH_MODE` is evaluated. `packages/server/src/lib/
@@ -871,8 +945,11 @@ async function main(): Promise<void> {
     realConfigDir = homeResult.path;
     prevUmask = homeResult.prevUmask;
     process.env.AGENT_CONSOLE_HOME = realConfigDir;
-    const apiKeyRef = 'smoke-provider-key';
-    const fakeApiKey = `smoke-test-fake-key-${crypto.randomUUID()}`;
+    // Default run: an inert fake key. `--turn`: the REAL key copied from the
+    // operator's store under its own ref (so the cmdline/environ negative
+    // assertion below checks the real secret).
+    const apiKeyRef = turn ? TURN_PROVIDER_KEY_REF : 'smoke-provider-key';
+    const fakeApiKey = turnProviderApiKey ?? `smoke-test-fake-key-${crypto.randomUUID()}`;
     const providerKeysPath = path.join(realConfigDir, 'provider-keys.json');
     await Bun.write(providerKeysPath, JSON.stringify({ [apiKeyRef]: fakeApiKey }));
     Bun.spawnSync(['chmod', '600', providerKeysPath]);
@@ -970,6 +1047,9 @@ async function main(): Promise<void> {
     // Subprocess cwd must exist on the REAL filesystem.
     realCwd = path.join(os.tmpdir(), `ac-embedded-smoke-cwd-${crypto.randomUUID()}`);
     Bun.spawnSync(['mkdir', '-p', realCwd]);
+    // `--turn` plants its nonce file AS the target user, which needs write
+    // access to this directory (created above by the server user).
+    if (turn) Bun.spawnSync(['chmod', '1777', realCwd]);
 
     // --- Create the embedded-agent definition through the REAL REST route,
     // referencing the fake provider key via apiKeyRef. ---
@@ -978,9 +1058,11 @@ async function main(): Promise<void> {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
-          name: 'Smoke inert LLM',
+          name: turn ? 'Smoke real-turn LLM' : 'Smoke inert LLM',
           engine: 'openai-api',
-          provider: { baseUrl: `${stubBaseUrl}/v1`, model: 'smoke-model', apiKeyRef },
+          provider: turn
+            ? { baseUrl: TURN_PROVIDER_BASE_URL, model: TURN_PROVIDER_MODEL, apiKeyRef }
+            : { baseUrl: `${stubBaseUrl}/v1`, model: 'smoke-model', apiKeyRef },
         }),
       }),
     );
@@ -1391,6 +1473,114 @@ async function main(): Promise<void> {
         `a live process in the elevated tree carries the exact record AGENT_CONSOLE_SESSION_ID=${sessionId} (sweeper match semantics)`,
         `matches=${identityMatches}`,
       );
+    }
+
+    // --- `--turn` (BILLABLE, opt-in): ONE real tool-using provider turn as
+    // the target user. Runs last so every assertion above is untouched, and
+    // inside the `try` so the cleanup below still runs on any failure. The
+    // default run prints nothing from here. See the header's `--turn` section
+    // for what it adds and why its recall oracle needs no extra control. ---
+    if (turn && sawReady) {
+      console.log('==> --turn arm (BILLABLE): one real tool-using turn as the target user');
+      if (degenerate) {
+        console.log('  degenerate: same user, elevation boundary not crossed');
+      }
+      const turnNonce = `ELEVNONCE-${crypto.randomUUID().replace(/-/g, '').slice(0, 16)}`;
+      const nonceFilePath = path.join(realCwd!, TURN_NONCE_FILE);
+
+      // Plant the file AS the target user (single-line `sh -s` command, the
+      // script over stdin -- elevation-helpers.md's multi-line rule applies
+      // to the elevated branch).
+      const plantResult = await runAsUser({
+        username: targetUsername,
+        command: 'sh -s',
+        stdin: `printf '%s\n' ${shellEscape(`The secret word is ${turnNonce}.`)} > ${shellEscape(nonceFilePath)}\n`,
+        cwd: '/',
+        timeoutMs: 30_000,
+      });
+      expect(
+        plantResult.exitCode === 0 && !plantResult.timedOut,
+        'the nonce file was planted as the target user',
+        `exit=${plantResult.exitCode} stderr=${plantResult.stderr.slice(0, 300)}`,
+      );
+
+      const baseline = (await readEvents()).length;
+      const sendResult = await ctx.sessionManager.sendEmbeddedAgentUserMessage(
+        sessionId,
+        workerId,
+        `Use the Read tool to read ${TURN_NONCE_FILE} in the current directory, then reply with just the secret word it contains.`,
+      );
+      expect(sendResult.ok === true, '--turn: sendEmbeddedAgentUserMessage accepted the message', JSON.stringify(sendResult));
+
+      // Bounded wait for the turn to settle (`state: idle`) or fail loudly.
+      const TURN_TIMEOUT_MS = 120_000;
+      const turnDeadline = Date.now() + TURN_TIMEOUT_MS;
+      let turnEvents: Array<{ type: string } & Record<string, unknown>> = [];
+      let turnSettled = false;
+      let turnFailure: string | undefined;
+      while (Date.now() < turnDeadline) {
+        turnEvents = (await readEvents()).slice(baseline);
+        const fatalEvent = turnEvents.find((e) => e.type === 'fatal');
+        const turnErrorEvent = turnEvents.find((e) => e.type === 'turn-error');
+        if (fatalEvent || turnErrorEvent) {
+          turnFailure = JSON.stringify(fatalEvent ?? turnErrorEvent);
+          break;
+        }
+        if (turnEvents.some((e) => e.type === 'state' && e.state === 'idle')) {
+          turnSettled = true;
+          break;
+        }
+        await new Promise((r) => setTimeout(r, 500));
+      }
+      expect(
+        turnSettled,
+        '--turn: the turn settled to `state: idle` within the deadline (no fatal / turn-error)',
+        turnFailure ?? `no idle within ${TURN_TIMEOUT_MS}ms; event types: ${turnEvents.map((e) => e.type).join(',')}`,
+      );
+
+      if (turnSettled) {
+        // The recall assertion reads the reply only AFTER `idle` (absence and
+        // recall checks are only as strong as the latest moment they could
+        // observe -- smoke-verification-embedded.md).
+        const idleIndex = turnEvents.findIndex((e) => e.type === 'state' && e.state === 'idle');
+        const toolCalls = turnEvents.filter((e) => e.type === 'tool-call');
+        const nonceFileCalls = toolCalls.filter((e) => {
+          const args = e.args as { path?: unknown } | null | undefined;
+          return typeof args?.path === 'string' && args.path.endsWith(TURN_NONCE_FILE);
+        });
+        expect(
+          nonceFileCalls.length === 1,
+          '--turn: exactly one tool-call targets the nonce file',
+          `tool-calls: ${JSON.stringify(toolCalls.map((e) => ({ name: e.name, args: e.args })))}`,
+        );
+        const nonceToolResult = turnEvents.find(
+          (e) => e.type === 'tool-result' && nonceFileCalls.length > 0 && e.callId === nonceFileCalls[0].callId,
+        );
+        expect(
+          nonceToolResult !== undefined && nonceToolResult.ok === true && String(nonceToolResult.result).includes(turnNonce),
+          "--turn: that tool-call's result is ok and carries the nonce (the tool ran as the target user and read the file)",
+          JSON.stringify(nonceToolResult ?? null).slice(0, 400),
+        );
+        const assistantIndexes = turnEvents.flatMap((e, i) => (e.type === 'assistant-message' ? [i] : []));
+        expect(
+          assistantIndexes.length > 0 && assistantIndexes[assistantIndexes.length - 1] < idleIndex,
+          '--turn: `idle` comes after the last assistant message',
+          `assistant indexes=${JSON.stringify(assistantIndexes)} idleIndex=${idleIndex}`,
+        );
+        const reply = assistantIndexes.map((i) => String(turnEvents[i].text ?? '')).join('\n');
+        console.log(`  --turn reply: ${reply.trim().slice(0, 200)}`);
+        expect(reply.includes(turnNonce), '--turn: the reply contains the nonce', `got: ${reply.trim().slice(0, 300)}`);
+      }
+
+      // Remove the nonce file after the turn (as the target user, which owns it).
+      const unlinkResult = await runAsUser({
+        username: targetUsername,
+        command: 'sh -s',
+        stdin: `unlink ${shellEscape(nonceFilePath)}\n`,
+        cwd: '/',
+        timeoutMs: 30_000,
+      });
+      expect(unlinkResult.exitCode === 0, '--turn: the nonce file was removed after the turn', unlinkResult.stderr.slice(0, 300));
     }
   } catch (err) {
     if (err instanceof SmokeSetupError) {

@@ -54,18 +54,29 @@ describe('check-embedded-agent-elevation smoke: bun-path probe-cannot-run guard'
  */
 describe('check-embedded-agent-elevation smoke: --auth-mode flag parsing', () => {
   it('defaults to enforce with only <target-user> given', () => {
-    expect(parseArgs(['alice'])).toEqual({ targetUsername: 'alice', authMode: 'enforce' });
+    expect(parseArgs(['alice'])).toEqual({ targetUsername: 'alice', authMode: 'enforce', turn: false });
   });
 
   it('accepts --auth-mode warn (space form) and --auth-mode=warn (equals form), in either position', () => {
-    expect(parseArgs(['alice', '--auth-mode', 'warn'])).toEqual({ targetUsername: 'alice', authMode: 'warn' });
-    expect(parseArgs(['alice', '--auth-mode=warn'])).toEqual({ targetUsername: 'alice', authMode: 'warn' });
-    expect(parseArgs(['--auth-mode', 'warn', 'alice'])).toEqual({ targetUsername: 'alice', authMode: 'warn' });
-    expect(parseArgs(['alice', '--auth-mode', 'enforce'])).toEqual({ targetUsername: 'alice', authMode: 'enforce' });
+    expect(parseArgs(['alice', '--auth-mode', 'warn'])).toEqual({ targetUsername: 'alice', authMode: 'warn', turn: false });
+    expect(parseArgs(['alice', '--auth-mode=warn'])).toEqual({ targetUsername: 'alice', authMode: 'warn', turn: false });
+    expect(parseArgs(['--auth-mode', 'warn', 'alice'])).toEqual({ targetUsername: 'alice', authMode: 'warn', turn: false });
+    expect(parseArgs(['alice', '--auth-mode', 'enforce'])).toEqual({ targetUsername: 'alice', authMode: 'enforce', turn: false });
+  });
+
+  it('--turn is opt-in (default off) and accepted in any position, combined with --auth-mode', () => {
+    expect(parseArgs(['alice']).turn).toBe(false);
+    expect(parseArgs(['alice', '--turn'])).toEqual({ targetUsername: 'alice', authMode: 'enforce', turn: true });
+    expect(parseArgs(['--turn', 'alice'])).toEqual({ targetUsername: 'alice', authMode: 'enforce', turn: true });
+    expect(parseArgs(['alice', '--turn', '--auth-mode', 'warn'])).toEqual({
+      targetUsername: 'alice',
+      authMode: 'warn',
+      turn: true,
+    });
   });
 
   it('tolerates a leading -- separator (the `bun script -- --flag` form the sibling smokes accept)', () => {
-    expect(parseArgs(['--', 'alice', '--auth-mode', 'warn'])).toEqual({ targetUsername: 'alice', authMode: 'warn' });
+    expect(parseArgs(['--', 'alice', '--auth-mode', 'warn'])).toEqual({ targetUsername: 'alice', authMode: 'warn', turn: false });
   });
 
   it.each([
@@ -74,6 +85,7 @@ describe('check-embedded-agent-elevation smoke: --auth-mode flag parsing', () =>
     [['alice', '--auth-mode'], 'invalid --auth-mode value: undefined'],
     [['alice', '--bogus'], 'unknown flag: --bogus'],
     [['alice', 'bob'], 'unexpected extra argument: bob'],
+    [['alice', '--turn=1'], 'unknown flag: --turn=1'],
   ])('exits 2 with a usage error for argv %j (before any spawn or env mutation)', (argv, expectedError) => {
     const scriptPath = path.join(import.meta.dir, '../check-embedded-agent-elevation.ts');
     const proc = Bun.spawnSync([process.execPath, scriptPath, ...argv], {
@@ -84,7 +96,46 @@ describe('check-embedded-agent-elevation smoke: --auth-mode flag parsing', () =>
     expect(proc.exitCode).toBe(2);
     const stderrText = proc.stderr.toString();
     expect(stderrText).toContain(`error: ${expectedError}`);
-    expect(stderrText).toContain('usage: bun scripts/smoke/check-embedded-agent-elevation.ts <target-user> [--auth-mode enforce|warn]');
+    expect(stderrText).toContain(
+      'usage: bun scripts/smoke/check-embedded-agent-elevation.ts <target-user> [--auth-mode enforce|warn] [--turn]',
+    );
     expect(stderrText).not.toContain('PROBE ERROR');
+  });
+});
+
+/**
+ * `--turn` is BILLABLE, so a missing provider key store must be a clean
+ * exit-2 "cannot run" raised before anything is started (and before anything
+ * is billed), and the free default must not read the key store at all.
+ */
+describe('check-embedded-agent-elevation smoke: --turn provider key precondition', () => {
+  it('exits 2 naming the missing key store when --turn is given and PROVIDER_KEY_FILE does not exist', () => {
+    const scriptPath = path.join(import.meta.dir, '../check-embedded-agent-elevation.ts');
+    const proc = Bun.spawnSync([process.execPath, scriptPath, 'some-target-user', '--turn'], {
+      env: {
+        PATH: process.env.PATH ?? '/usr/bin:/bin',
+        HOME: process.env.HOME ?? '/tmp',
+        PROVIDER_KEY_FILE: '/nonexistent/provider-keys.json',
+      },
+      stdout: 'pipe',
+      stderr: 'pipe',
+    });
+    expect(proc.exitCode).toBe(2);
+    expect(proc.stderr.toString()).toContain('--turn: could not read the provider key store at /nonexistent/provider-keys.json');
+    expect(proc.stderr.toString()).not.toContain('PROBE ERROR');
+  });
+
+  it('does not read the key store without --turn (the free default is unchanged)', () => {
+    const scriptPath = path.join(import.meta.dir, '../check-embedded-agent-elevation.ts');
+    const proc = Bun.spawnSync([process.execPath, scriptPath, 'some-target-user'], {
+      env: {
+        PATH: '/usr/bin:/bin',
+        HOME: process.env.HOME ?? '/tmp',
+        PROVIDER_KEY_FILE: '/nonexistent/provider-keys.json',
+      },
+      stdout: 'pipe',
+      stderr: 'pipe',
+    });
+    expect(proc.stderr.toString()).not.toContain('provider key store');
   });
 });

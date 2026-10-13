@@ -49,6 +49,7 @@
 #   - check-delegated-ssh-auth-sock.ts
 #   - check-embedded-agent-elevation.ts (default arm, AGENT_CONSOLE_MCP_AUTH=enforce)
 #   - check-embedded-agent-elevation.ts --auth-mode warn (polarity arm, Issue #1738)
+#   - check-embedded-agent-elevation.ts --turn (ONLY with --elevation-turn; BILLABLE, Issue #1675)
 #   - check-embedded-agent-bash-env.ts
 #   - check-run-process-elevated-group-kill.ts (default arm + --expect-leak polarity arm, Issue #1953)
 #
@@ -66,6 +67,11 @@
 #   scripts/verify-multiuser-docker.sh --keep     # leave the container running
 #   scripts/verify-multiuser-docker.sh --no-build # reuse the existing image
 #   scripts/verify-multiuser-docker.sh --smokes   # also run the real-host smokes inside the container
+#   scripts/verify-multiuser-docker.sh --smokes --elevation-turn
+#                                                 # ...plus ONE billed real provider turn as alice
+#                                                 # (key store: $ELEVATION_TURN_KEY_FILE, default
+#                                                 # ~/.agent-console-dev/provider-keys.json, piped in,
+#                                                 # never baked into the image)
 #
 # Requires: docker, bun (both on the host).
 set -uo pipefail
@@ -77,15 +83,34 @@ BASE_URL="http://localhost:${PORT}"
 KEEP=0
 BUILD_FLAG="--build"
 SMOKES=0
+# --elevation-turn (BILLABLE, requires --smokes): additionally runs
+# check-embedded-agent-elevation.ts --turn, one real provider turn as alice.
+# The key store is read from ELEVATION_TURN_KEY_FILE on the HOST and piped
+# into a 0600 file inside the container for the duration of that one smoke;
+# it is never baked into the image and is removed afterwards.
+ELEVATION_TURN=0
+ELEVATION_TURN_KEY_FILE="${ELEVATION_TURN_KEY_FILE:-$HOME/.agent-console-dev/provider-keys.json}"
+# Extra `compose exec` arguments for run_smoke (e.g. -e NAME=value); empty by default.
+RUN_SMOKE_EXEC_ENV=()
 
 for arg in "$@"; do
   case "$arg" in
     --keep) KEEP=1 ;;
     --no-build) BUILD_FLAG="" ;;
     --smokes) SMOKES=1 ;;
+    --elevation-turn) ELEVATION_TURN=1 ;;
     *) echo "unknown argument: $arg" >&2; exit 2 ;;
   esac
 done
+
+if [ "$ELEVATION_TURN" -eq 1 ] && [ "$SMOKES" -ne 1 ]; then
+  echo "--elevation-turn requires --smokes" >&2
+  exit 2
+fi
+if [ "$ELEVATION_TURN" -eq 1 ] && [ ! -f "$ELEVATION_TURN_KEY_FILE" ]; then
+  echo "--elevation-turn: provider key store not found at ELEVATION_TURN_KEY_FILE=${ELEVATION_TURN_KEY_FILE}" >&2
+  exit 2
+fi
 
 compose() { docker compose -f "$COMPOSE_FILE" "$@"; }
 
@@ -121,7 +146,7 @@ run_smoke() { # run_smoke <label> <script> [args...]
   smoke_err="$(mktemp)"
   echo "  --- ${label} ---"
   echo "  \$ compose exec -T --user agentconsole -w /workspace agent-console bun scripts/smoke/${script} $*"
-  compose exec -T --user agentconsole -w /workspace agent-console \
+  compose exec -T --user agentconsole -w /workspace ${RUN_SMOKE_EXEC_ENV[@]+"${RUN_SMOKE_EXEC_ENV[@]}"} agent-console \
     bun "scripts/smoke/${script}" "$@" >"$smoke_out" 2>"$smoke_err"
   # Captured directly, no pipe precedes this: docker compose exec propagates
   # the inner process's real exit code.
@@ -1380,6 +1405,19 @@ if [ "$SMOKES" -eq 1 ]; then
   # logged). Both arms in one run is what measures that the default arm's
   # 401 is the gate's doing and not the environment's.
   run_smoke "check-embedded-agent-elevation:warn" "check-embedded-agent-elevation.ts" alice --auth-mode warn
+  # Opt-in BILLABLE arm (Issue #1675): one real tool-using provider turn as
+  # alice. Off unless --elevation-turn is passed; the default run stays free.
+  if [ "$ELEVATION_TURN" -eq 1 ]; then
+    TURN_KEY_IN_CONTAINER="/tmp/elevation-turn-provider-keys.json"
+    # Piped over stdin so the file is created by the container user itself
+    # (0600); nothing is mounted and nothing is baked into the image.
+    compose exec -T --user agentconsole agent-console \
+      sh -c "umask 077; cat > '${TURN_KEY_IN_CONTAINER}'" < "$ELEVATION_TURN_KEY_FILE"
+    RUN_SMOKE_EXEC_ENV=(-e "PROVIDER_KEY_FILE=${TURN_KEY_IN_CONTAINER}")
+    run_smoke "check-embedded-agent-elevation:turn" "check-embedded-agent-elevation.ts" alice --turn
+    RUN_SMOKE_EXEC_ENV=()
+    compose exec -T --user agentconsole agent-console rm -f "${TURN_KEY_IN_CONTAINER}" >/dev/null 2>&1 || true
+  fi
   run_smoke "check-embedded-agent-bash-env" "check-embedded-agent-bash-env.ts" alice
   # run_process elevated group kill (Issue #1953): killProcess takes a
   # backgrounded grandchild down with the shell. The polarity arm builds the
