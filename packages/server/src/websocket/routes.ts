@@ -1019,13 +1019,22 @@ export async function setupWebSocketRoutes(
             // of an incremental read (§3.1).
             const maxLines = serverConfig.WORKER_OUTPUT_INITIAL_HISTORY_LINES;
 
+            // The slot is tied to the read itself, not to the race: the race
+            // decides what the client is told (a timeout answers it at once),
+            // the slot decides what may still be issued, so a never-settling
+            // read keeps occupying its slot and at most N reads per
+            // connection can ever sit in the per-worker lock queue.
+            const historyRead = sessionManager.getWorkerOutputHistory(
+              sessionId,
+              workerId,
+              fromOffset,
+              maxLines
+            );
+            const releaseHistorySlot = (): void => historyLimiter.release();
+            historyRead.then(releaseHistorySlot, releaseHistorySlot);
+
             raceWithTimeout(
-              sessionManager.getWorkerOutputHistory(
-                sessionId,
-                workerId,
-                fromOffset,
-                maxLines
-              ),
+              historyRead,
               HISTORY_REQUEST_TIMEOUT_MS,
               'History request timeout',
             )
@@ -1116,9 +1125,6 @@ export async function setupWebSocketRoutes(
                     // Connection may be closed
                   }
                 }
-              })
-              .finally(() => {
-                historyLimiter.release();
               });
             return;
           }

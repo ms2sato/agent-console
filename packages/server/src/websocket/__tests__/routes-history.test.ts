@@ -323,7 +323,7 @@ describe('Worker WebSocket history and notifications', () => {
   //   - request-history gate removed -> (a), (c), (e) and the per-connection
   //     pin fail ((e) and the last need that gate to fill the cap);
   //   - range gate removed -> (b), (c) and two history-range-handler pins;
-  //   - request-history `.finally(release)` dropped -> only (d);
+  //   - request-history slot release dropped -> only (d);
   //   - a separate limiter per message type -> (b) and (c);
   //   - the range gate moved before requestId validation -> (e) and the
   //     handler's invalid-requestId pin.
@@ -456,6 +456,44 @@ describe('Worker WebSocket history and notifications', () => {
       handlers.onMessage({ data: history() }, mockWs);
       expect(sentByType(mockWs, 'error')).toHaveLength(1);
     });
+
+    // The slot belongs to the READ, not to the 5s race: the timeout answers the
+    // client (timedOut history), but a read that is still running keeps its
+    // slot, so at most CAP reads per connection can sit in the lock queue.
+    // Measured reach: releasing in the race's own `finally` instead of on the
+    // read's settlement fails this test (the post-timeout request is served
+    // while every read is still pending).
+    it('(g) a timed-out read still occupies its slot: the client is answered, the next request is cap-rejected until the read settles', async () => {
+      const { handlers, mockWs } = await createSessionAndConnect();
+      const settle: Array<(v: null) => void> = [];
+      spyOn(sessionManager, 'getWorkerOutputHistory').mockImplementation(
+        () => new Promise((resolve) => { settle.push(resolve as (v: null) => void); }),
+      );
+      mockWs.sentMessages.length = 0;
+      for (let i = 0; i < CAP; i++) handlers.onMessage({ data: history() }, mockWs);
+
+      await new Promise((resolve) => setTimeout(resolve, 5500));
+      const timedOut = sentByType(mockWs, 'history');
+      expect(timedOut).toHaveLength(CAP);
+      expect(timedOut.every((h) => h.timedOut === true)).toBe(true);
+
+      // Every client has its timeout answer, yet every read is still pending.
+      mockWs.sentMessages.length = 0;
+      handlers.onMessage({ data: history() }, mockWs);
+      const refused = sentByType(mockWs, 'error');
+      expect(refused).toHaveLength(1);
+      expect(String(refused[0].message)).toStartWith('Too many concurrent');
+
+      // One read settles -> exactly one slot frees up.
+      settle[0](null);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      mockWs.sentMessages.length = 0;
+      handlers.onMessage({ data: history() }, mockWs);
+      expect(sentByType(mockWs, 'error')).toHaveLength(0);
+      settle[settle.length - 1](null);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(sentByType(mockWs, 'history')).toHaveLength(1);
+    }, 15000);
 
     it('keeps the cap per connection: a second connection is not affected by a full first one', async () => {
       const first = await createSessionAndConnect();

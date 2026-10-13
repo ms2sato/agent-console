@@ -46,7 +46,9 @@ function isNonNegativeSafeInteger(value: unknown): value is number {
  *   same `requestId` — never the unavailable shape, which would tell a paging
  *   client that history ends there. The slot is claimed after `requestId`
  *   validation (an uncorrelatable message is dropped without consuming one)
- *   and released on every exit path.
+ *   and held until the underlying read settles (or, if no read is issued,
+ *   until the handler returns) — a timeout answers the client but does not
+ *   free the slot of a read that is still running.
  */
 export async function handleHistoryRangeRequest(
   ws: WSContext,
@@ -80,6 +82,11 @@ export async function handleHistoryRangeRequest(
     return;
   }
 
+  // Once the read is issued, the slot belongs to the read: it is released when
+  // the read settles, not when the race below gives up on it, so a read that
+  // outlives its timeout keeps occupying the slot (the client was already
+  // told). Every exit before the read is issued releases in the `finally`.
+  let readIssued = false;
   try {
     const beforeOffset = parsed.beforeOffset;
     const maxBytes = parsed.maxBytes;
@@ -98,11 +105,11 @@ export async function handleHistoryRangeRequest(
     }
 
     try {
-      const result = await raceWithTimeout(
-        sessionManager.getWorkerHistoryRange(sessionId, workerId, beforeOffset, maxBytes),
-        timeoutMs,
-        'History range request timeout',
-      );
+      const read = sessionManager.getWorkerHistoryRange(sessionId, workerId, beforeOffset, maxBytes);
+      const releaseSlot = (): void => limiter?.release();
+      read.then(releaseSlot, releaseSlot);
+      readIssued = true;
+      const result = await raceWithTimeout(read, timeoutMs, 'History range request timeout');
 
       if (result === null) {
         // Worker missing, wrong type (e.g. git-diff), or no output scope
@@ -135,6 +142,6 @@ export async function handleHistoryRangeRequest(
       });
     }
   } finally {
-    limiter?.release();
+    if (!readIssued) limiter?.release();
   }
 }

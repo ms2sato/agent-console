@@ -21,17 +21,19 @@ describe('raceWithTimeout', () => {
     await expect(raceWithTimeout(never, 0, 'zero')).rejects.toThrow('zero');
   });
 
-  // The helper's own timer is identified by the handle its setTimeout call
-  // returned, so unrelated timers cleared elsewhere in the process during the
-  // await cannot affect the assertion.
+  // The helper's own timer is the one its setTimeout call creates during the
+  // SYNCHRONOUS part of the call, so timers created elsewhere in the process
+  // while the test awaits (other test files share this process) cannot be
+  // mistaken for it; the assertion is that exactly that handle is cleared.
   async function timerClearedAfter(run: () => Promise<unknown>): Promise<{ created: unknown[]; cleared: unknown[] }> {
     const created: unknown[] = [];
     const cleared: unknown[] = [];
+    let recording = true;
     const realSet = globalThis.setTimeout;
     const realClear = globalThis.clearTimeout;
     const setSpy = spyOn(globalThis, 'setTimeout').mockImplementation(((...args: Parameters<typeof setTimeout>) => {
       const handle = realSet(...args);
-      created.push(handle);
+      if (recording) created.push(handle);
       return handle;
     }) as typeof setTimeout);
     const clearSpy = spyOn(globalThis, 'clearTimeout').mockImplementation(((handle?: Parameters<typeof clearTimeout>[0]) => {
@@ -39,7 +41,9 @@ describe('raceWithTimeout', () => {
       return realClear(handle);
     }) as typeof clearTimeout);
     try {
-      await run();
+      const pending = run();
+      recording = false;
+      await pending;
     } finally {
       setSpy.mockRestore();
       clearSpy.mockRestore();
