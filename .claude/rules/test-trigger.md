@@ -41,6 +41,12 @@ When modifying production files matching these patterns, corresponding test file
 
 A topic-split test — `<name>-<topic>.test.<ext>` or `<name>.<topic>.test.<ext>` in the same `__tests__/` directory (or sibling placement) — also counts as coverage for `<name>`, attributed to the longest matching production basename actually present in that directory (Issue #1553).
 
+## Protocol-dispatch fixture trigger (Issue #975 Tier 2)
+
+This is a different obligation from the table above, and it is **blocking**, not advisory. A change to any one of the three protocol dispatch-union input files — `packages/shared/src/types/session.ts`, `packages/shared/src/types/git-diff.ts`, `packages/shared/src/schemas/app-server-message.ts` — must land in the same PR as a change to at least one of the three wire-consumption fixture tests Tier 1 (#975) introduced: `packages/client/src/components/terminal/__tests__/terminal-store-wire-consumption.test.ts`, `packages/client/src/components/workers/__tests__/embedded-agent-store-wire-consumption.test.ts`, `packages/client/src/hooks/__tests__/useAppWs-wire-consumption.test.ts`. A sibling unit test next to the trigger file does not satisfy this — the fixture tests are what prove a dispatch-union member is actually consumed by the dispatcher, not merely accepted by a type.
+
+This is enforced by `preflight-check.js`'s "Protocol-dispatch fixtures" section (backed by `detectProtocolDispatchGaps` / `PROTOCOL_DISPATCH_TRIGGERS` in `check-utils.js`), and it fails the run on a gap, unlike the integration-test-gap warning above. A comment-only diff of a trigger file is exempt, same as the coverage table's comment-only exemption. This list is deliberately NOT part of `COVERAGE_PATTERNS` and is therefore outside `check-mirror-drift.js`'s comparison — see the Mirror Maintenance section below, which covers only `COVERAGE_PATTERNS`.
+
 ## Exceptions
 
 - **`packages/integration/src/`** uses a flat sibling layout (no `__tests__/` directory) for its boundary tests. This is deliberate: the package contains no production code — its entire `src/` is test infrastructure (`setup.ts`, `test-utils.ts`) and boundary tests (`*-boundary.test.ts(x)`). Do not move these files into a `__tests__/` subdirectory. The one exception is `src/e2e-native/`, which holds the two shipping-path e2e test files that require a separate `bun test` invocation without the happy-dom preload (see `src/e2e-native/setup-native.ts` for why, and `package.json`'s `test` / `test:coverage` / `test:watch` scripts for the two-invocation chain).

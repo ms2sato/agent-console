@@ -1062,6 +1062,71 @@ export function detectIntegrationTestNeeds(changedFiles, categories, diffRef = {
   };
 }
 
+// --- Protocol dispatch fixture-trigger detection (Tier 2) ---
+
+/**
+ * The protocol dispatch-union inputs, and the wire-consumption fixture
+ * tests (#975 Tier 1) that must change alongside them. A change to one of
+ * the `triggers` files changes what a dispatch union accepts or how a
+ * wire-boundary schema parses it; the only thing that proves a union
+ * member is actually CONSUMED (not merely accepted) is one of the
+ * `fixtures` tests, not a sibling unit test next to the trigger file.
+ *
+ * Deliberately NOT a `COVERAGE_PATTERNS` entry, and therefore outside
+ * `check-mirror-drift.js`'s comparison (which imports only
+ * `COVERAGE_PATTERNS` -- see that file's own header). `COVERAGE_PATTERNS`
+ * encodes "this production file needs *a* sibling test"; this list
+ * encodes a different obligation -- "this dispatch-union change must land
+ * with *that specific* fixture change" -- so folding it into
+ * `COVERAGE_PATTERNS` would make the mirror-drift check compare it against
+ * `test-trigger.md`'s per-file sibling-test table, which is the wrong
+ * shape for a fixture-pairing rule. See `.claude/rules/test-trigger.md`,
+ * "Protocol-dispatch fixture trigger" for the markdown mirror of this list.
+ */
+export const PROTOCOL_DISPATCH_TRIGGERS = {
+  triggers: [
+    'packages/shared/src/types/session.ts',
+    'packages/shared/src/types/git-diff.ts',
+    'packages/shared/src/schemas/app-server-message.ts',
+  ],
+  fixtures: [
+    'packages/client/src/components/terminal/__tests__/terminal-store-wire-consumption.test.ts',
+    'packages/client/src/components/workers/__tests__/embedded-agent-store-wire-consumption.test.ts',
+    'packages/client/src/hooks/__tests__/useAppWs-wire-consumption.test.ts',
+  ],
+};
+
+/**
+ * @param {string[]} changedFiles
+ * @param {{ baseRef?: string, headRef?: string, cwd?: string }} [diffRef]
+ *   Same contract as `detectIntegrationTestNeeds`'s own `diffRef` parameter
+ *   -- omit to keep `origin/main`/checked-out `HEAD`, or pass
+ *   `resolvePrDiffRef(prNumber)`'s result when checking an arbitrary PR
+ *   from a worktree that may not be checked out to that PR's branch.
+ * @returns {{ triggered: string[], fixturesChanged: string[], gap: boolean }}
+ */
+export function detectProtocolDispatchGaps(changedFiles, diffRef = {}) {
+  const { baseRef, headRef, cwd } = diffRef;
+
+  const triggered = PROTOCOL_DISPATCH_TRIGGERS.triggers.filter((file) => {
+    if (!changedFiles.includes(file)) return false;
+    // A pure comment-only diff cannot change what the dispatch union
+    // accepts or how the wire schema parses it -- exempt it the same way
+    // `detectIntegrationTestNeeds` exempts a comment-only diff, via the
+    // same `isCommentOnlyFileDiff` wrapper. No second copy of the
+    // comment-only-diff logic.
+    return !isCommentOnlyFileDiff(file, baseRef, cwd, headRef);
+  });
+
+  const fixturesChanged = PROTOCOL_DISPATCH_TRIGGERS.fixtures.filter((file) => changedFiles.includes(file));
+
+  return {
+    triggered,
+    fixturesChanged,
+    gap: triggered.length > 0 && fixturesChanged.length === 0,
+  };
+}
+
 // --- Package boundary analysis ---
 
 export function analyzePackageBoundaries(categories) {

@@ -24,6 +24,8 @@ import {
   categorizeFiles,
   detectIntegrationTestNeeds,
   INTEGRATION_TRIGGER_PATTERNS,
+  detectProtocolDispatchGaps,
+  PROTOCOL_DISPATCH_TRIGGERS,
 } from '../check-utils.js';
 
 describe('isReExportOnlyContent', () => {
@@ -1602,6 +1604,118 @@ describe('detectIntegrationTestNeeds with an explicit diffRef', () => {
       expect(result).not.toBeNull();
       expect(result.triggers).toHaveLength(1);
       expect(result.triggers[0].file).toBe(relPath);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+// detectProtocolDispatchGaps (Issue #975 Tier 2 / #2044). Boundary values
+// pinned by the Architect's AC: no changed files -> no gap; a trigger file
+// alone -> gap; trigger + one fixture -> no gap; fixture alone -> no gap;
+// a comment-only diff of a trigger file -> no gap.
+//
+// Measured reach (revert-the-fix polarity check, same discipline as
+// detectIntegrationTestNeeds's comment above): removing the
+// `!isCommentOnlyFileDiff(...)` guard (i.e. pushing every matched trigger
+// file unconditionally) flips the comment-only test below from pass to
+// fail. Removing the `gap: triggered.length > 0 && fixturesChanged.length
+// === 0` condition (e.g. hardcoding `gap: triggered.length > 0`) flips the
+// "trigger + one fixture -> no gap" test from pass to fail.
+describe('detectProtocolDispatchGaps', () => {
+  const TRIGGER_FILE = PROTOCOL_DISPATCH_TRIGGERS.triggers[0];
+  const FIXTURE_FILE = PROTOCOL_DISPATCH_TRIGGERS.fixtures[0];
+
+  function makeTempGitRepo() {
+    const root = mkdtempSync(join(tmpdir(), 'protocol-dispatch-gaps-repo-'));
+    execSync('git init -q -b main', { cwd: root });
+    execSync('git config user.email test@example.com', { cwd: root });
+    execSync('git config user.name Test', { cwd: root });
+    return root;
+  }
+
+  function commit(root, message) {
+    execSync('git add -A', { cwd: root });
+    execSync(`git commit -q -m "${message}"`, { cwd: root });
+  }
+
+  it('reports no gap when no changed files touch a trigger or a fixture', () => {
+    const result = detectProtocolDispatchGaps([]);
+    expect(result).toEqual({ triggered: [], fixturesChanged: [], gap: false });
+  });
+
+  it('reports a gap when a trigger file changes with a real shape change and no fixture change', () => {
+    const root = makeTempGitRepo();
+    try {
+      mkdirSync(join(root, dirname(TRIGGER_FILE)), { recursive: true });
+      writeFileSync(join(root, TRIGGER_FILE), 'export type Foo = { v: 1 };\n');
+      commit(root, 'initial');
+
+      execSync('git checkout -q -b feature', { cwd: root });
+      writeFileSync(join(root, TRIGGER_FILE), 'export type Foo = { v: 1; w: 2 };\n');
+      commit(root, 'shape change on feature');
+
+      execSync('git checkout -q main', { cwd: root });
+
+      const result = detectProtocolDispatchGaps([TRIGGER_FILE], { baseRef: 'main', headRef: 'feature', cwd: root });
+      expect(result.triggered).toEqual([TRIGGER_FILE]);
+      expect(result.fixturesChanged).toEqual([]);
+      expect(result.gap).toBe(true);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('reports no gap when the same trigger change lands with a fixture change', () => {
+    const root = makeTempGitRepo();
+    try {
+      mkdirSync(join(root, dirname(TRIGGER_FILE)), { recursive: true });
+      writeFileSync(join(root, TRIGGER_FILE), 'export type Foo = { v: 1 };\n');
+      commit(root, 'initial');
+
+      execSync('git checkout -q -b feature', { cwd: root });
+      writeFileSync(join(root, TRIGGER_FILE), 'export type Foo = { v: 1; w: 2 };\n');
+      commit(root, 'shape change on feature');
+
+      execSync('git checkout -q main', { cwd: root });
+
+      const result = detectProtocolDispatchGaps([TRIGGER_FILE, FIXTURE_FILE], {
+        baseRef: 'main',
+        headRef: 'feature',
+        cwd: root,
+      });
+      expect(result.triggered).toEqual([TRIGGER_FILE]);
+      expect(result.fixturesChanged).toEqual([FIXTURE_FILE]);
+      expect(result.gap).toBe(false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('reports no gap when only a fixture file changes (no trigger touched)', () => {
+    const result = detectProtocolDispatchGaps([FIXTURE_FILE]);
+    expect(result.triggered).toEqual([]);
+    expect(result.fixturesChanged).toEqual([FIXTURE_FILE]);
+    expect(result.gap).toBe(false);
+  });
+
+  it('reports no gap when the trigger file diff is comment-only', () => {
+    const root = makeTempGitRepo();
+    try {
+      mkdirSync(join(root, dirname(TRIGGER_FILE)), { recursive: true });
+      writeFileSync(join(root, TRIGGER_FILE), 'export type Foo = { v: 1 };\n// old note\n');
+      commit(root, 'initial');
+
+      execSync('git checkout -q -b feature', { cwd: root });
+      writeFileSync(join(root, TRIGGER_FILE), 'export type Foo = { v: 1 };\n// new note\n');
+      commit(root, 'comment tweak on feature');
+
+      execSync('git checkout -q main', { cwd: root });
+
+      const result = detectProtocolDispatchGaps([TRIGGER_FILE], { baseRef: 'main', headRef: 'feature', cwd: root });
+      expect(result.triggered).toEqual([]);
+      expect(result.fixturesChanged).toEqual([]);
+      expect(result.gap).toBe(false);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
