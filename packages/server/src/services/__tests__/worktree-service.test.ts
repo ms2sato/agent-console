@@ -388,6 +388,24 @@ detached
       expect(String(warns[0]![1])).toContain('repository path missing');
     });
 
+    it('warns "repository path inaccessible" (not "missing") when the directory exists but cannot be read', async () => {
+      fs.mkdirSync('/locked/repo', { recursive: true });
+      const accessSpy = spyOn(fs.promises, 'access').mockImplementation(() =>
+        Promise.reject(Object.assign(new Error('permission denied'), { code: 'EACCES' })));
+      try {
+        const { result, warns, errors } = await listWithRecordingLogger('/locked/repo', new Error('not a git repository'));
+
+        expect(result).toEqual([]);
+        expect(errors).toHaveLength(0);
+        expect(warns).toHaveLength(1);
+        expect(warns[0]![0]).toMatchObject({ repoPath: '/locked/repo', reason: 'repository path inaccessible' });
+        expect(String(warns[0]![1])).toContain('repository path inaccessible');
+        expect(String(warns[0]![1])).not.toContain('repository path missing');
+      } finally {
+        accessSpy.mockRestore();
+      }
+    });
+
     it('still logs an error (not the missing-path warning) when the directory exists and git fails', async () => {
       fs.mkdirSync('/exists/repo', { recursive: true });
 
