@@ -665,10 +665,14 @@ describe('delivery retry (bounded, transient failures only)', () => {
     }
   }
 
-  // Reach (measured): dropping the `reason` gate (retry everything) fails the
-  // not-found / pty-inactive / mixed cases; capping attempts at 1 fails the
-  // fail-fail-ok case; removing the sleep changes none of these (the wait is a
-  // politeness, not a correctness property).
+  // Reach (measured by mutating the router): dropping the `reason` gate
+  // (retry everything) fails 4 cases (the three no-retry reasons and the
+  // transient-then-not-found case); capping attempts at 1 fails 8 cases
+  // (every multi-attempt one); not retrying a thrown call fails the two throw
+  // cases; removing the sleep fails the recorded-waits assertions and the
+  // ordering test's mid-wait check -- but the ordering test's FINAL order
+  // assertion alone would still hold, so the wait is a politeness, not what
+  // keeps exit behind stdout (that is the delivery tail).
   it('success on the first attempt: one call, no warn', async () => {
     const r = await run([{ ok: true }]);
     expect(r).toEqual({ calls: 1, sleeps: [], warns: [] });
