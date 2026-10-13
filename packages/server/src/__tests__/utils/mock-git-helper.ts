@@ -33,22 +33,20 @@ type AsyncStringNullFn = (cwd: string, requestUser?: string | null) => Promise<s
 type AsyncStringArrayFn = (cwd: string, requestUser?: string | null) => Promise<string[]>;
 type AsyncVoidFn = (...args: unknown[]) => Promise<void>;
 
+type GitFn = (args: string[], cwd: string, timeoutMs?: number, requestUser?: string | null) => Promise<string>;
+
 // Default stdout for the low-level `git(args, ...)` mock. Empty for every verb
 // except `rev-list --all --count`, whose caller (`ensureRepoHasCommits`)
 // parses an integer: the default reports one reachable commit so a test that
 // does not care about the empty-repo pre-check sees a non-empty repo.
-// (`git`'s real first argument is the args array; the shared `AsyncStringFn`
-// type predates that and is kept for the other helpers.)
-const defaultGitStdout = ((args: unknown) =>
-  Promise.resolve(
-    Array.isArray(args) && args.join(' ') === 'rev-list --all --count' ? '1\n' : '',
-  )) as unknown as AsyncStringFn;
+const defaultGitStdout: GitFn = (args) =>
+  Promise.resolve(args.join(' ') === 'rev-list --all --count' ? '1\n' : '');
 
 // Exported mock functions - configure these in beforeEach
 export const mockGit = {
   // Low-level
-  git: mock(defaultGitStdout) as Mock<AsyncStringFn>,
-  gitRaw: mock(() => Promise.resolve('')) as Mock<(args: string[], cwd: string, timeoutMs?: number, requestUser?: string | null) => Promise<string>>,
+  git: mock(defaultGitStdout) as Mock<GitFn>,
+  gitRaw: mock(() => Promise.resolve('')) as Mock<GitFn>,
   gitSafe: mock(() => Promise.resolve(null)) as Mock<(args: string[], cwd: string, requestUser?: string | null) => Promise<string | null>>,
   gitRefExists: mock(() => Promise.resolve(false)) as Mock<(ref: string, cwd: string, requestUser?: string | null) => Promise<boolean>>,
 
