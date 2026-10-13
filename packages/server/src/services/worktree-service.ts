@@ -20,11 +20,13 @@ import {
 // are thin pass-throughs: lib/git.ts accepts requestUser directly so
 // multi-user mode runs git as the worktree-owning user (picking up that
 // user's PATH, gitconfig, and SSH_AUTH_SOCK via sudo -i).
+import { augmentWorktreeAddPermissionError } from '../lib/git-error-hints.js';
 import { createLogger } from '../lib/logger.js';
 import { substituteVariables } from '../lib/template-variables.js';
 import { isErrnoException } from '../lib/type-guards.js';
 import { getCleanChildProcessEnv } from './env-filter.js';
 import {
+  isMultiUserAuthMode,
   runAsUser,
   rmRecursiveAsUser,
   shellEscape,
@@ -205,6 +207,13 @@ async function copyTemplateFiles(
   await copyRecursive(templatesDir, worktreePath);
   return copiedFiles;
 }
+
+/**
+ * A `GitError` raised by the `git worktree add` step itself. Lets the catch in
+ * `createWorktree` tell it apart from later failures (record save, template
+ * copy) so the permission hint is attached only where it can be true.
+ */
+class WorktreeAddGitError extends GitError {}
 
 /**
  * Extract user-facing error message from a git or generic error.
@@ -550,7 +559,11 @@ export class WorktreeService {
 
       return { worktreePath, index: newIndex, copiedFiles };
     } catch (error) {
-      const message = extractErrorMessage(error);
+      const raw = extractErrorMessage(error);
+      const message =
+        error instanceof WorktreeAddGitError
+          ? augmentWorktreeAddPermissionError(raw, { multiUser: isMultiUserAuthMode(), repoPath })
+          : raw;
       logger.error({ err: error, message }, 'Failed to create worktree');
       return { worktreePath: '', error: message };
     }
@@ -598,7 +611,7 @@ export class WorktreeService {
     if (result.timedOut || result.exitCode !== 0) {
       const stderr = result.stderr.trim();
       const detail = stderr || `exit code ${result.exitCode}`;
-      throw new GitError(`git worktree failed: ${detail}`, result.exitCode, stderr);
+      throw new WorktreeAddGitError(`git worktree failed: ${detail}`, result.exitCode, stderr);
     }
   }
 

@@ -5,6 +5,7 @@ import { mockGit, GitError } from '../../__tests__/utils/mock-git-helper.js';
 import type { Worktree } from '@agent-console/shared';
 import type { WorktreeRepository, WorktreeRecord } from '../../repositories/worktree-repository.js';
 import type { RunAsUserOpts, RunAsUserResult } from '../privilege-elevation.js';
+import { WORKTREE_ADD_PERMISSION_HINT_HEADER } from '../../lib/git-error-hints.js';
 
 /**
  * Capture-and-respond fake for `runAsUser`. The worktree-service routes
@@ -726,6 +727,56 @@ detached
       expect(result.worktreePath).toBe('');
       // Verify no DB record was saved on failure
       expect(mockRepo.records.length).toBe(0);
+    });
+
+    describe('cannot-lock-ref permission hint', () => {
+      const PERMISSION_STDERR =
+        "fatal: cannot lock ref 'refs/heads/x': Unable to create\n" +
+        "'/var/lib/agent-console/source-repos/r/.git/refs/heads/x.lock': Permission denied";
+
+      async function createWithPermissionFailure(): Promise<{ error?: string }> {
+        runAsUserMock.responder.fn = async () => ({
+          stdout: '',
+          stderr: PERMISSION_STDERR,
+          exitCode: 128,
+          timedOut: false,
+        });
+        const WorktreeService = await getWorktreeService();
+        const service = new WorktreeService({
+          worktreeRepository: mockRepo,
+          runAsUserImpl: runAsUserMock.runAsUserImpl,
+        });
+        return service.createWorktree('/repo', 'feature-x', 'repo-1');
+      }
+
+      it('appends the multi-user hint after the verbatim stderr when AUTH_MODE is multi-user', async () => {
+        process.env.AUTH_MODE = 'multi-user';
+        const result = await createWithPermissionFailure();
+        expect(result.error!.startsWith(PERMISSION_STDERR)).toBe(true);
+        expect(result.error).toContain(WORKTREE_ADD_PERMISSION_HINT_HEADER);
+        expect(result.error).toContain("ls -ld '/repo/.git'");
+      });
+
+      it('does not attach the hint to a failure after a successful git worktree add', async () => {
+        process.env.AUTH_MODE = 'multi-user';
+        // A GitError on purpose: only the add step's own error type may be augmented.
+        mockRepo.save = async () => {
+          throw new GitError('post-add failure', 128, PERMISSION_STDERR);
+        };
+        const WorktreeService = await getWorktreeService();
+        const service = new WorktreeService({
+          worktreeRepository: mockRepo,
+          runAsUserImpl: runAsUserMock.runAsUserImpl,
+        });
+        const result = await service.createWorktree('/repo', 'feature-x', 'repo-1');
+        expect(result.error).toBe(PERMISSION_STDERR);
+      });
+
+      it('surfaces the stderr exactly when AUTH_MODE is not multi-user', async () => {
+        delete process.env.AUTH_MODE;
+        const result = await createWithPermissionFailure();
+        expect(result.error).toBe(PERMISSION_STDERR);
+      });
     });
 
     describe('multi-user mode (Issue #838)', () => {
