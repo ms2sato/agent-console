@@ -64,7 +64,6 @@ export const mockGit = {
 
   // Worktree operations
   listWorktrees: mock(() => Promise.resolve('')) as Mock<AsyncStringFn>,
-  createWorktree: mock(() => Promise.resolve()) as Mock<AsyncVoidFn>,
   removeWorktree: mock(() => Promise.resolve()) as Mock<AsyncVoidFn>,
 
   // Org/Repo extraction (sync functions)
@@ -97,12 +96,9 @@ export const mockGit = {
   >,
 
   // Diff operations
-  getMergeBase: mock(() => Promise.resolve('abc1234')) as Mock<(ref1: string, ref2: string, cwd: string, requestUser?: string | null) => Promise<string>>,
   getMergeBaseSafe: mock(() => Promise.resolve('abc1234')) as Mock<(ref1: string, ref2: string, cwd: string, requestUser?: string | null) => Promise<string | null>>,
   getDiff: mock(() => Promise.resolve('')) as Mock<(baseRef: string, targetRef: string | undefined, cwd: string, requestUser?: string | null) => Promise<string>>,
   getDiffNumstat: mock(() => Promise.resolve('')) as Mock<(baseRef: string, targetRef: string | undefined, cwd: string, requestUser?: string | null) => Promise<string>>,
-  getStagedFiles: mock(() => Promise.resolve('')) as Mock<AsyncStringFn>,
-  getUnstagedFiles: mock(() => Promise.resolve('')) as Mock<AsyncStringFn>,
   getUntrackedFiles: mock(() => Promise.resolve([])) as Mock<AsyncStringArrayFn>,
   getStatusPorcelain: mock(() => Promise.resolve('')) as Mock<AsyncStringFn>,
 };
@@ -131,7 +127,6 @@ export function resetGitMocks(): void {
   mockGit.renameBranch.mockReset();
   mockGit.getRemoteUrl.mockReset();
   mockGit.listWorktrees.mockReset();
-  mockGit.createWorktree.mockReset();
   mockGit.removeWorktree.mockReset();
   mockGit.parseOrgRepo.mockReset();
   mockGit.getOrgRepoFromPath.mockReset();
@@ -142,12 +137,9 @@ export function resetGitMocks(): void {
   mockGit.getCommitsAhead.mockReset();
   mockGit.isWorkingDirectoryClean.mockReset();
   mockGit.pullFastForward.mockReset();
-  mockGit.getMergeBase.mockReset();
   mockGit.getMergeBaseSafe.mockReset();
   mockGit.getDiff.mockReset();
   mockGit.getDiffNumstat.mockReset();
-  mockGit.getStagedFiles.mockReset();
-  mockGit.getUnstagedFiles.mockReset();
   mockGit.getUntrackedFiles.mockReset();
   mockGit.getStatusPorcelain.mockReset();
 
@@ -165,7 +157,6 @@ export function resetGitMocks(): void {
   mockGit.renameBranch.mockImplementation(() => Promise.resolve());
   mockGit.getRemoteUrl.mockImplementation(() => Promise.resolve('git@github.com:owner/repo.git'));
   mockGit.listWorktrees.mockImplementation(() => Promise.resolve(''));
-  mockGit.createWorktree.mockImplementation(() => Promise.resolve());
   mockGit.removeWorktree.mockImplementation(() => Promise.resolve());
   mockGit.parseOrgRepo.mockImplementation((remoteUrl: string) => {
     const sshMatch = remoteUrl.match(/git@[^:]+:([^/]+\/[^/]+?)(?:\.git)?$/);
@@ -182,12 +173,9 @@ export function resetGitMocks(): void {
   mockGit.getCommitsAhead.mockImplementation(() => Promise.resolve(0));
   mockGit.isWorkingDirectoryClean.mockImplementation(() => Promise.resolve(true));
   mockGit.pullFastForward.mockImplementation(() => Promise.resolve(0));
-  mockGit.getMergeBase.mockImplementation(() => Promise.resolve('abc1234'));
   mockGit.getMergeBaseSafe.mockImplementation(() => Promise.resolve('abc1234'));
   mockGit.getDiff.mockImplementation(() => Promise.resolve(''));
   mockGit.getDiffNumstat.mockImplementation(() => Promise.resolve(''));
-  mockGit.getStagedFiles.mockImplementation(() => Promise.resolve(''));
-  mockGit.getUnstagedFiles.mockImplementation(() => Promise.resolve(''));
   mockGit.getUntrackedFiles.mockImplementation(() => Promise.resolve([]));
   mockGit.getStatusPorcelain.mockImplementation(() => Promise.resolve(''));
 }
