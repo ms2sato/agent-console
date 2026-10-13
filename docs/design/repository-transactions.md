@@ -36,6 +36,15 @@ services/session-metadata-service.ts  services/session-pause-resume-service.ts  
 services/worktree-service.ts
 ```
 
+**A second control bounds the row-plus-job class, which the seed grep cannot see** (it matches `Repository` receivers, not `jobQueue`):
+
+```
+$ cd packages/server/src && grep -rn "jobQueue.enqueue(\|jobQueue?.enqueue(" --include=*.ts . | grep -v __tests__ | wc -l
+8
+```
+
+Exactly eight non-test enqueue sites exist at `7082ec5d`. Six are inventory rows: `repository-manager.ts:900` (#1), `session-deletion-service.ts:152` (#2) and `:244` (#3), `worker-lifecycle-manager.ts:1989` (#4), `session-initialization-service.ts:406` (#5), `embedded-agent-manager.ts:414` (#11). Two are single-write: `routes/webhooks.ts:52` (the event enqueue is that handler's only database write) and `routes/worktrees.ts:443` (the `WORKTREE_DELETE` enqueue, with no row write around it). Every enqueue site is therefore classified.
+
 **The grep is a seed, not the population.** It only matches receivers whose name ends in `Repository`, so it cannot see a write made through `jobQueue.enqueue`, through a manager that wraps a repository, or through a helper. Every function in the fifteen files that has at least one write was read in full; the multi-write paths those functions reach through called services were then followed by reading. Rows reached that way are marked **found by reading**. Writes were counted in the vocabulary of the grep plus `enqueue` and any `db.` statement. A read followed by a write on one repository (`findById` then `save`) is not counted as a multi-write.
 
 ## Inventory
