@@ -1,4 +1,4 @@
-import type { AgentDefinition } from './agent.js';
+import type { AgentDefinition } from '../schemas/agent.js';
 
 /**
  * Whether a terminal agent's commandTemplate consumes the {{model...}} /

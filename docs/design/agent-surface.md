@@ -20,13 +20,13 @@ Given the rejection of a data-model merge, the chosen design (Option B) instead 
 
 ## Mechanism 1: `AgentKind` single-writer + compile-time exhaustiveness
 
-`AGENT_KINDS = ['terminal', 'embedded'] as const` in `packages/shared/src/types/agent-surface.ts` is the single writer of the kind literals; every consumer derives `AgentKind` from this constant rather than hardcoding a `'terminal' | 'embedded'` union.
+`AGENT_KINDS = ['terminal', 'embedded'] as const` in `packages/shared/src/agent-surface/agent-surface.ts` is the single writer of the kind literals; every consumer derives `AgentKind` from this constant rather than hardcoding a `'terminal' | 'embedded'` union.
 
 The exhaustiveness gate is enforced structurally, not by convention: `AgentDirectory`'s constructor takes `{ [K in AgentKind]: AgentSurface<K> }`, a mapped type keyed by every member of `AgentKind`. If a third kind is ever added to `AGENT_KINDS`, every `AgentDirectory` construction call site becomes a compile error until a matching `AgentSurface` is supplied for the new kind — the type system, not a runtime assertion or a code-review checklist, is what catches an incomplete migration. See "Compile-level exhaustiveness gate evidence" in PR-A's PR body for a captured example of this failure mode.
 
 ## Mechanism 2: `AgentSurface` / `AgentDirectory` (Option B, implemented in this PR)
 
-Two new types in `packages/shared/src/types/agent-surface.ts`:
+Two new types in `packages/shared/src/agent-surface/agent-surface.ts`:
 
 - **`AgentDirectoryEntry`** — a kind-tagged union `{ kind: 'terminal'; agent: AgentDefinition } | { kind: 'embedded'; agent: EmbeddedAgentDefinition }`. Full-fidelity, not a lossy summary projection: consumers narrow on `kind` to recover the concrete definition type they need.
 - **`AgentSurface<K>`** — a per-registry read-only query interface: `list()`, `get(id)`, `findByName(name)`, generic over `AgentKind` so a terminal surface's methods are typed to return only terminal entries.

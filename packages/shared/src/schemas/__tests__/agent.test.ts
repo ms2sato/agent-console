@@ -6,6 +6,7 @@ import {
   AgentActivityPatternsSchema,
   AgentCapabilitiesSchema,
   AgentDefinitionSchema,
+  type AgentDefinition,
   isSafeRegex,
   isValidRegex,
   hasMalformedPlaceholder,
@@ -925,5 +926,46 @@ describe('strict-parse contract (unknown-key rejection)', () => {
     if (!result.success) {
       expect(result.issues.some((i) => i.path?.[0]?.key === 'unexpectedField')).toBe(true);
     }
+  });
+});
+
+// The type used to be a hand-written interface; it is now v.InferOutput of the schema.
+// This pin fixes the exact field set so a field added to or dropped from the schema is a
+// deliberate, reviewed change. `Assert<Equals<...>>` fails `tsc` (TS2344) under drift; a
+// `declare const x: never` form would type-check under it.
+type Assert<T extends true> = T;
+type Equals<A, B> = (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2 ? true : false;
+type ExpectedKeys =
+  | 'id'
+  | 'name'
+  | 'description'
+  | 'isBuiltIn'
+  | 'createdAt'
+  | 'baseAgentId'
+  | 'commandTemplate'
+  | 'continueTemplate'
+  | 'headlessTemplate'
+  | 'activityPatterns'
+  | 'stripScrollbackClear'
+  | 'capabilities';
+export type _FieldSetIsExact = Assert<Equals<keyof AgentDefinition, ExpectedKeys>>;
+
+describe('AgentDefinition (derived from AgentDefinitionSchema)', () => {
+  it('round-trips a fully populated definition through the schema unchanged', () => {
+    const full: AgentDefinition = {
+      id: 'agent-1',
+      name: 'Preset',
+      description: 'd',
+      isBuiltIn: false,
+      createdAt: '2024-01-01T00:00:00Z',
+      baseAgentId: 'claude-code',
+      commandTemplate: 'cli {{prompt}}',
+      continueTemplate: 'cli -c',
+      headlessTemplate: 'cli -p {{prompt}}',
+      activityPatterns: { askingPatterns: ['Do you want.*\\?'] },
+      stripScrollbackClear: true,
+      capabilities: { supportsContinue: true, supportsHeadlessMode: true, supportsActivityDetection: true },
+    };
+    expect(v.parse(AgentDefinitionSchema, full)).toEqual(full);
   });
 });

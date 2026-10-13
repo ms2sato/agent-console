@@ -102,7 +102,7 @@ describe('shared index exports', () => {
     const mod = await import('../index.js');
 
     // AGENT_KINDS is the single writer of the 'terminal' | 'embedded' union
-    // (packages/shared/src/types/agent-surface.ts) — verify the runtime
+    // (packages/shared/src/agent-surface/agent-surface.ts) — verify the runtime
     // constant is actually re-exported through the barrel, not just the
     // type-only AgentKind/AgentSurface/AgentDirectoryEntry/AgentResolution.
     expect(mod.AGENT_KINDS).toEqual(['terminal', 'embedded']);
@@ -223,7 +223,7 @@ describe('shared index exports', () => {
   it('should re-export getAgentParameterCapabilities and buildAgentParameterTemplateVars (Issue #1541)', async () => {
     const mod = await import('../index.js');
 
-    // Runtime function exports from types/agent-parameter-capabilities.js
+    // Runtime function exports from agent-surface/agent-parameter-capabilities.js
     // (barrel export added in the same PR) -- verify they are actually
     // reachable through the public package entry point, not just present in
     // the source file.

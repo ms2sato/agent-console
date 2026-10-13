@@ -16,26 +16,26 @@ const WorkerBaseSchema = v.strictObject({
   createdAt: v.string(),
 });
 
-const AgentWorkerSchema = v.strictObject({
+export const AgentWorkerSchema = v.strictObject({
   ...WorkerBaseSchema.entries,
   type: v.literal('agent'),
   agentId: v.string(),
   activated: v.boolean(),
 });
 
-const TerminalWorkerSchema = v.strictObject({
+export const TerminalWorkerSchema = v.strictObject({
   ...WorkerBaseSchema.entries,
   type: v.literal('terminal'),
   activated: v.boolean(),
 });
 
-const GitDiffWorkerSchema = v.strictObject({
+export const GitDiffWorkerSchema = v.strictObject({
   ...WorkerBaseSchema.entries,
   type: v.literal('git-diff'),
   baseCommit: v.string(),
 });
 
-const EmbeddedAgentWorkerSchema = v.strictObject({
+export const EmbeddedAgentWorkerSchema = v.strictObject({
   ...WorkerBaseSchema.entries,
   type: v.literal('embedded-agent'),
   embeddedAgentId: v.string(),
@@ -75,7 +75,7 @@ const EmbeddedAgentWorkerSchema = v.strictObject({
   ),
 });
 
-const WorkerSchema = v.union([
+export const WorkerSchema = v.union([
   AgentWorkerSchema,
   TerminalWorkerSchema,
   GitDiffWorkerSchema,
@@ -118,17 +118,17 @@ const QuickSessionSchema = v.strictObject({
   type: v.literal('quick'),
 });
 
-const SessionSchema = v.union([WorktreeSessionSchema, QuickSessionSchema]);
+export const SessionSchema = v.union([WorktreeSessionSchema, QuickSessionSchema]);
 
 // === Supporting schemas ===
 
-const WorkerActivityInfoSchema = v.strictObject({
+export const WorkerActivityInfoSchema = v.strictObject({
   sessionId: v.string(),
   workerId: v.string(),
   activityState: AgentActivityStateSchema,
 });
 
-const RepositorySchema = v.strictObject({
+export const RepositorySchema = v.strictObject({
   id: v.string(),
   name: v.string(),
   path: v.string(),

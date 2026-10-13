@@ -1,11 +1,1 @@
-[
-  {
-    "type": "dependency",
-    "from": "packages/shared/src/types/agent.ts",
-    "to": "packages/shared/src/schemas/agent.ts",
-    "rule": {
-      "severity": "error",
-      "name": "shared-no-types-import-schemas"
-    }
-  }
-]
+[]

@@ -239,3 +239,18 @@ export type CreateAgentRequest = v.InferOutput<typeof CreateAgentRequestSchema>;
 export type UpdateAgentRequest = v.InferOutput<typeof UpdateAgentRequestSchema>;
 export type AgentActivityPatterns = v.InferOutput<typeof AgentActivityPatternsSchema>;
 export type AgentCapabilities = v.InferOutput<typeof AgentCapabilitiesSchema>;
+/**
+ * Agent definition - stored and managed by AgentManager.
+ *
+ * - `commandTemplate` (required) starts a new session; `{{prompt}}` is the initial prompt
+ *   (passed via environment variable) and `{{cwd}}` the working directory.
+ * - `continueTemplate` / `headlessTemplate` are optional; without them "Continue" is disabled
+ *   and automatic metadata generation is skipped.
+ * - `activityPatterns` is optional; without it agent state is limited to idle/working.
+ * - `stripScrollbackClear` keeps the browser terminal's scrollback (CSI 3J removed, CSI 2J
+ *   replaced with cursor-home + erase-below).
+ * - `baseAgentId` marks a preset: unset fields are inherited from the base agent, set fields override it.
+ * - `capabilities` is computed by the server from the templates (`computeCapabilities`);
+ *   clients use it to enable/disable UI features.
+ */
+export type AgentDefinition = v.InferOutput<typeof AgentDefinitionSchema>;

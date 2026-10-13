@@ -269,7 +269,7 @@ Creation params: `packages/shared/src/schemas/worker.ts` — add `CreateEmbedded
 
 ## Embedded agent registry (EmbeddedAgentDefinition)
 
-**Decision: separate type, separate table, separate manager — NOT a discriminated-union extension of `AgentDefinition`.** Rationale: `AgentDefinition.commandTemplate` is required and threaded through spawn, capability computation (`packages/shared/src/types/agent.ts:103-115`), templates, and the agents UI; a union would make it optional and force guards at every existing call site. A separate registry disturbs nothing and keeps the id namespaces distinct (`EmbeddedAgentWorker.embeddedAgentId` cannot be confused with `AgentWorker.agentId`). Revisit unification only if the two registries grow convergent features.
+**Decision: separate type, separate table, separate manager — NOT a discriminated-union extension of `AgentDefinition`.** Rationale: `AgentDefinition.commandTemplate` is required and threaded through spawn, capability computation (`packages/shared/src/utils/agent-capabilities.ts`), templates, and the agents UI; a union would make it optional and force guards at every existing call site. A separate registry disturbs nothing and keeps the id namespaces distinct (`EmbeddedAgentWorker.embeddedAgentId` cannot be confused with `AgentWorker.agentId`). Revisit unification only if the two registries grow convergent features.
 
 `packages/shared/src/types/embedded-agent.ts` (new):
 

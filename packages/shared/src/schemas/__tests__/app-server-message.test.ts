@@ -1,6 +1,17 @@
 import { describe, it, expect } from 'bun:test';
 import * as v from 'valibot';
-import { AppServerMessageSchema, type AppServerMessage } from '../app-server-message';
+import {
+  AppServerMessageSchema,
+  AgentWorkerSchema,
+  TerminalWorkerSchema,
+  GitDiffWorkerSchema,
+  EmbeddedAgentWorkerSchema,
+  WorkerSchema,
+  SessionSchema,
+  WorkerActivityInfoSchema,
+  RepositorySchema,
+  type AppServerMessage,
+} from '../app-server-message';
 
 // Helper to assert valid parse
 function expectValid(data: unknown) {
@@ -1105,3 +1116,51 @@ export type {
   _IsNotAny,
   _IsNotUnknown,
 };
+
+describe('exported entity schemas (shared with the REST response schemas)', () => {
+  it('SessionSchema accepts both session shapes and rejects an unknown type', () => {
+    expect(v.safeParse(SessionSchema, worktreeSession).success).toBe(true);
+    expect(v.safeParse(SessionSchema, quickSession).success).toBe(true);
+    expect(v.safeParse(SessionSchema, { ...quickSession, type: 'other' }).success).toBe(false);
+  });
+
+  it('SessionSchema is strict: an unknown field is rejected, not stripped', () => {
+    expect(v.safeParse(SessionSchema, { ...quickSession, extra: 1 }).success).toBe(false);
+  });
+
+  it('RepositorySchema parses the repository fixture and rejects an unknown field', () => {
+    expect(v.safeParse(RepositorySchema, repository).success).toBe(true);
+    expect(v.safeParse(RepositorySchema, { ...repository, extra: 1 }).success).toBe(false);
+  });
+
+  it('WorkerActivityInfoSchema requires all three fields and a known activity state', () => {
+    const info = { sessionId: 's1', workerId: 'w1', activityState: 'idle' };
+    expect(v.safeParse(WorkerActivityInfoSchema, info).success).toBe(true);
+    expect(v.safeParse(WorkerActivityInfoSchema, { ...info, activityState: 'bogus' }).success).toBe(false);
+    expect(v.safeParse(WorkerActivityInfoSchema, { sessionId: 's1', workerId: 'w1' }).success).toBe(false);
+  });
+
+  it.each([
+    ['agent', AgentWorkerSchema, { agentId: 'claude-code', activated: true }],
+    ['terminal', TerminalWorkerSchema, { activated: false }],
+    ['git-diff', GitDiffWorkerSchema, { baseCommit: 'abc' }],
+  ])('the %s worker-variant schema accepts its own shape and WorkerSchema (the union) accepts it too', (type, schema, extra) => {
+    const worker = { id: 'w1', name: 'W', createdAt: '2026-01-01T00:00:00Z', type, ...extra };
+    expect(v.safeParse(schema, worker).success).toBe(true);
+    expect(v.safeParse(WorkerSchema, worker).success).toBe(true);
+  });
+
+  it('a variant schema rejects another variant\'s worker (no accidental widening)', () => {
+    const terminal = { id: 'w1', name: 'W', createdAt: '2026-01-01T00:00:00Z', type: 'terminal', activated: true };
+    expect(v.safeParse(AgentWorkerSchema, terminal).success).toBe(false);
+    expect(v.safeParse(GitDiffWorkerSchema, terminal).success).toBe(false);
+  });
+
+  it('EmbeddedAgentWorkerSchema is exported and rejects a worker of another type', () => {
+    expect(v.safeParse(EmbeddedAgentWorkerSchema, { id: 'w1', name: 'W', createdAt: '2026-01-01T00:00:00Z', type: 'terminal', activated: true }).success).toBe(false);
+  });
+
+  it('the exported SessionSchema is the one AppServerMessageSchema embeds (session-created accepts the same fixture)', () => {
+    expect(v.safeParse(AppServerMessageSchema, { type: 'session-created', session: quickSession }).success).toBe(true);
+  });
+});

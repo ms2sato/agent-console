@@ -1,9 +1,9 @@
 import { describe, it, expect } from 'bun:test';
-import type { AgentDefinition } from '../agent.js';
-import type { EmbeddedAgentDefinition } from '../embedded-agent.js';
+import type { AgentDefinition } from '../../schemas/agent.js';
+import type { EmbeddedAgentDefinition } from '../../types/embedded-agent.js';
 import type { AgentDirectoryEntry } from '../agent-surface.js';
 import { AGENT_KINDS, getAgentParameterCapabilitiesFor, deriveEmbeddedParameterCapabilities } from '../agent-surface.js';
-import { EMBEDDED_AGENT_ENGINE_PARAMETER_CAPABILITIES } from '../embedded-agent-parameter-capabilities.js';
+import { EMBEDDED_AGENT_ENGINE_PARAMETER_CAPABILITIES } from '../../types/embedded-agent-parameter-capabilities.js';
 
 // Fully-typed fixtures, no `as unknown as` casts (Issue #1554 CodeRabbit
 // Finding 3 / see .claude/rules "ask if the cast is even needed before
