@@ -28,6 +28,7 @@ import type { UseWorktreeCreationTasksReturn } from '../../hooks/useWorktreeCrea
 import { useSessionStopTasks, type UseSessionStopTasksReturn } from '../../hooks/useSessionStopTasks';
 import * as useAppWsModule from '../../hooks/useAppWs';
 import * as capabilitiesModule from '../../lib/capabilities';
+import { setAuthMode, setCurrentUser, _reset as resetAuth } from '../../lib/auth';
 
 // --- Module-level spies (test-instance scoped via mockRestore in afterEach) ---
 //
@@ -1125,5 +1126,148 @@ describe('Dashboard / stop-pause result feedback', () => {
       sessionStopTasks: createMockSessionStopTasks({ tasks: [task({ sessionTitle: 'Dash Session' })] }),
     });
     await waitFor(() => expect(screen.getByText('Paused: Dash Session')).toBeTruthy());
+  });
+});
+
+/**
+ * Owner badge on the dashboard (multi-user). The same badge the sidebar shows
+ * (components/sessions/CreatorBadge.tsx, the single writer of the rule) appears
+ * beside the title of a worktree row -- for the ACTIVE session, or for the PAUSED
+ * session when there is none (paused rows matter most: the sidebar lists only
+ * running sessions) -- and on the quick-session card. Single-user renders nothing.
+ *
+ * Reach, measured (control: all cases green): not rendering the badge in
+ * WorktreeRow fails the active and paused cases; reading only `session` (not
+ * `pausedSession`) fails the paused case; not rendering it in SessionCard fails the
+ * quick case; the single-user case fails if the badge ignored the multi-user gate.
+ */
+describe('Dashboard / owner badge (multi-user)', () => {
+  const SELF = { id: 'self-uuid', username: 'me', homeDir: '/home/me' };
+
+  function worktree() {
+    return { path: '/tmp/worktree-1', branch: 'feature/foo', isMain: false, repositoryId: 'repo-1' };
+  }
+
+  function worktreeSession(overrides: Partial<Session> = {}): Session {
+    return {
+      id: 'session-1',
+      type: 'worktree',
+      title: 'Owned worktree session',
+      locationPath: '/tmp/worktree-1',
+      status: 'active',
+      activationState: 'running',
+      createdAt: new Date().toISOString(),
+      workers: [],
+      isShared: false,
+      recoveryState: 'healthy',
+      repositoryId: 'repo-1',
+      repositoryName: 'repo',
+      worktreeId: 'feature/foo',
+      isMainWorktree: false,
+      ...overrides,
+    } as Session;
+  }
+
+  function renderRow(props: { session?: Session; pausedSession?: Session }) {
+    return renderWithRouter(
+      <WorktreeDeletionTasksContext.Provider value={createMockDeletionContext()}>
+        <SessionStopTasksContext.Provider value={createMockSessionStopTasks()}>
+          <WorktreeRow
+            worktree={worktree()}
+            session={props.session as never}
+            pausedSession={props.pausedSession}
+            repositoryId="repo-1"
+            isPulling={false}
+            onPull={() => {}}
+          />
+        </SessionStopTasksContext.Provider>
+      </WorktreeDeletionTasksContext.Provider>
+    );
+  }
+
+  afterEach(() => {
+    cleanup();
+    resetAuth();
+  });
+
+  it('active worktree row: shows the owner badge in the "mine" colour for the current user\'s session', async () => {
+    setAuthMode('multi-user');
+    setCurrentUser(SELF);
+    await renderRow({ session: worktreeSession({ createdBy: 'self-uuid', createdByUsername: 'me', activityState: 'idle' } as Partial<Session>) });
+
+    const badge = screen.getByTestId('session-creator-username');
+    expect(badge.textContent).toBe('me');
+    expect(badge.className).toContain('bg-indigo-500/20');
+  });
+
+  it('active worktree row: shows the owner badge in the "others" colour for another user\'s session', async () => {
+    setAuthMode('multi-user');
+    setCurrentUser(SELF);
+    await renderRow({ session: worktreeSession({ createdBy: 'bob-uuid', createdByUsername: 'bob', activityState: 'idle' } as Partial<Session>) });
+
+    const badge = screen.getByTestId('session-creator-username');
+    expect(badge.textContent).toBe('bob');
+    expect(badge.className).toContain('bg-amber-500/20');
+  });
+
+  it('PAUSED worktree row (no active session): shows the paused session\'s owner', async () => {
+    setAuthMode('multi-user');
+    setCurrentUser(SELF);
+    await renderRow({
+      pausedSession: worktreeSession({ id: 'paused-1', status: 'inactive', activationState: 'hibernated', createdBy: 'bob-uuid', createdByUsername: 'bob' }),
+    });
+
+    const badge = screen.getByTestId('session-creator-username');
+    expect(badge.textContent).toBe('bob');
+    expect(badge.className).toContain('bg-amber-500/20');
+  });
+
+  it('a worktree row with no session at all renders no badge', async () => {
+    setAuthMode('multi-user');
+    setCurrentUser(SELF);
+    await renderRow({});
+    expect(screen.queryByTestId('session-creator-username')).toBeNull();
+  });
+
+  it('single-user: the worktree row renders no badge even when the session has an owner username', async () => {
+    await renderRow({ session: worktreeSession({ createdBy: 'self-uuid', createdByUsername: 'me', activityState: 'idle' } as Partial<Session>) });
+    expect(screen.queryByTestId('session-creator-username')).toBeNull();
+  });
+
+  it('quick SessionCard: shows the owner badge in multi-user mode, and none in single-user mode', async () => {
+    const quick = {
+      id: 'quick-1',
+      type: 'quick',
+      title: 'Quick',
+      locationPath: '/tmp/quick-1',
+      status: 'active',
+      activationState: 'running',
+      createdAt: new Date().toISOString(),
+      workers: [],
+      isShared: false,
+      recoveryState: 'healthy',
+      createdBy: 'bob-uuid',
+      createdByUsername: 'bob',
+    } as Session;
+
+    setAuthMode('multi-user');
+    setCurrentUser(SELF);
+    await renderWithRouter(
+      <SessionStopTasksContext.Provider value={createMockSessionStopTasks()}>
+        <SessionCard session={quick} />
+      </SessionStopTasksContext.Provider>
+    );
+    const badge = screen.getByTestId('session-creator-username');
+    expect(badge.textContent).toBe('bob');
+    expect(badge.className).toContain('bg-amber-500/20');
+
+    cleanup();
+    resetAuth();
+    await renderWithRouter(
+      <SessionStopTasksContext.Provider value={createMockSessionStopTasks()}>
+        <SessionCard session={quick} />
+      </SessionStopTasksContext.Provider>
+    );
+    expect(screen.queryByTestId('session-creator-username')).toBeNull();
   });
 });
