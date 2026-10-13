@@ -126,6 +126,9 @@ export interface RepositoryLifecycleCallbacks {
   ) => void | Promise<void>;
 }
 
+const JOB_QUEUE_UNAVAILABLE_FOR_CLEANUP =
+  'JobQueue not available for repository cleanup. Ensure RepositoryManager.create() was called with jobQueue.';
+
 export class RepositoryManager {
   private repositories: Map<string, Repository> = new Map();
   private repository: RepositoryRepository;
@@ -483,7 +486,10 @@ export class RepositoryManager {
       // Compute the cleanup job's payload (reads the filesystem, so it stays
       // outside the transaction below).
       const cleanupPayload = await this.buildCleanupRepositoryPayload(repo, requestUsername, opts);
-      const jobQueue = this.jobQueue!;
+      const jobQueue = this.jobQueue;
+      if (!jobQueue) {
+        throw new Error(JOB_QUEUE_UNAVAILABLE_FOR_CLEANUP);
+      }
 
       if (this.db) {
         // The job deletes the repository's directory tree; the row delete is
@@ -892,7 +898,7 @@ export class RepositoryManager {
     opts: { removeSourceRepo?: boolean } = {},
   ): Promise<CleanupRepositoryPayload> {
     if (!this.jobQueue) {
-      throw new Error('JobQueue not available for repository cleanup. Ensure RepositoryManager.create() was called with jobQueue.');
+      throw new Error(JOB_QUEUE_UNAVAILABLE_FOR_CLEANUP);
     }
 
     const orgRepo = await deriveRepositorySlug(repo.path, path.basename(repo.path));
