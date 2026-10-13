@@ -1268,6 +1268,47 @@ The owner remarked on 2026-08-28 that our own distillation-based compaction migh
 
 **Denominator.** `EmbeddedAgentDefinition.contextWindowTokens?: number` (migration v27) is the server-side source the ratio's denominator is resolved from. As of #1556, the value the CLIENT renders travels not through the `embedded-agent-created` / `embedded-agent-updated` registry broadcasts but on the worker's own wire field (`EmbeddedAgentWorker.contextWindowTokens`, server-composed by `resolveEffectiveContextWindow`) — see [UI](#ui)'s "Denominator source" for the client-side wiring and the rationale. When unset, the client shows raw token counts with no ratio and no color escalation, and — per the threshold semantics above — auto compaction cannot fire.
 
+### Window-declaration drift on the definition (Issue [#1508](https://github.com/ms2sato/agent-console/issues/1508))
+
+**The gap.** The operator declares a model's context window once, as `EmbeddedAgentDefinition.contextWindowTokens`. The running system can learn that the declaration is wrong, but it says so only inside the one worker that observed it, and only for as long as that worker's transcript stays on screen. The number the operator would change lives on the definition, in a different place from the evidence; a second worker on the same definition repeats the discovery; and in multi-user mode the worker's user and the definition's `createdBy` can differ, and only the latter may `PATCH` it.
+
+**The three event-level carriers that exist today** (all per worker, all momentary). They are recorded here because they are documented nowhere else; they are the register's inputs:
+
+| Carrier | Event and field | Whose number |
+|---|---|---|
+| A rejection that the mid-turn escape absorbed, naming the provider's limit | `context-compacted.providerStatedWindowTokens?: number` (`schemas/embedded-agent.ts:508`, `types/embedded-agent.ts:696`) | THEIRS: extracted from a measured error signature |
+| A reading that looks clamped by a lenient provider | `context-usage.appearsClamped?: true` (`schemas/embedded-agent.ts:493`, `types/embedded-agent.ts:635`) | OURS: an inference from a signature, so it carries no number |
+| A rejection the escape did not absorb | `turn-error.message` prose only (`types/embedded-agent.ts:610`; the contradiction is appended at `agent-loop.ts:1418-1451`) | THEIRS, but as prose, not data |
+
+The client folds the first two per worker (`embedded-agent-store.ts:103-128`, `:1345-1383`) and renders them in `ContextUsageBar.tsx:59-70` and `EmbeddedAgentWorkerView.tsx:1349`. The first two are two shapes by an existing ruling: two independent facts must not share one name. The third is not data, so the register cannot be fed from it (see "What the register cannot see").
+
+**Rulings.**
+
+1. **Where an observation lives: a server-side, in-memory observation register keyed by definition id, not persisted.** No table and no migration: the evidence is about the running system and the remedy is one `PATCH` away. It is fed from `EmbeddedAgentWorkerService.handleLoopLine` (`embedded-agent-worker-service.ts:2503`), the single point where every loop event is parsed (`const event = result.output`, `:2538`) and fanned out (`this.appendLine(ctx, line)`, `:2541`), with one feed per carrier event type. The register holds at most ONE latest observation per kind:
+
+   ```ts
+   { providerStated?: { tokens: number; observedAt: string },
+     apparentClamp?: { observedAt: string } }
+   ```
+
+   A reading is recorded only when the worker's effective window IS the definition's declaration. `resolveEffectiveContextWindow` (`embedded-agent-context-window.ts:31`) returns the worker's own override whenever `worker.model !== null` ("do not inherit", agent-surface.md Ruling 4), so an observation from such a worker is evidence about its override, not about the definition, and is not recorded. The register is deduplicated: `context-usage` fires every turn, so the register changes (and broadcasts) only when a kind newly appears or the provider-stated number changes; a repeated clamp reading changes nothing visible.
+
+2. **The two kinds stay two optional sub-objects, never a merged "real window".** This AGREES with the event-level precedent. A provider-stated limit is their number; an apparent clamp is our inference; folding them into one field would be exactly the overclaim the event-level ruling rejected. Aggregation is "latest wins per kind": an older provider number can only be staler, and a count of observations adds nothing an operator acts on. (Aggregation is a different problem from expressing one event, so the precedent does not settle it; this is the reason given for the choice.)
+
+3. **Lifetime: process lifetime, and cleared for the definition when its `contextWindowTokens` is `PATCH`ed.** The operator acted; a record that outlives the fix is the stale-drift harm the Issue names. A provider that raises its limit overwrites the number through the next observation. The clear belongs in the common tail of `updateEmbeddedAgent` (`embedded-agent-manager.ts`) after `repository.save`, because that method has two engine branches (`claude-sdk` and `openai-api`) that each build the updated definition; it is keyed on the request carrying the field (`request.contextWindowTokens !== undefined`), so a `PATCH` of any other field does not clear, and an equal-value `PATCH` does (the operator looked at the evidence and kept the number; if it is still true, the next observation restores it).
+
+4. **Who sees it and who may act: everyone the definition is already visible to; action stays `createdBy`-gated.** Definitions are server-wide, and `PATCH` is gated on `existing.createdBy` (`routes/embedded-agents.ts:45`). The register is exposed on the definition wire shape as `windowObservations?`. A viewer who cannot act sees a fact plus who created the definition, not a button. Surfaces: a hint under the `contextWindowTokens` field of the edit form ("A worker on this definition observed the provider's limit as N on <date>" / "readings appear clamped since <date>"), and a small badge in the definitions list. Changes ride the existing `embedded-agent-updated` broadcast (`websocket/routes.ts:465-466`).
+
+   **The wire shape omits `workerId` and `sessionId`.** The register is keyed by definition id and need not remember which worker saw it; serving another user's session or worker id on a server-wide definition would disclose a session the viewer may not otherwise see. This is a deliberate narrowing of the register's internal shape.
+
+**What the register cannot see.** A rejection the escape did not absorb leaves the provider's number only in `turn-error.message` prose, so it never reaches the register as data; only the absorbed case does. Reading the number out of prose would be a parse of a message the server did not author, and a wrong parse tells an operator their configuration is wrong. Adding a structured field to `turn-error` is a separate wire change and is left as a decision item of the implementation Issue.
+
+**The wire change is owner-gated.** `windowObservations?` is added to the definition wire type and its valibot schema (`schemas/embedded-agent.ts`, `v.strictObject`), is client-reaching, and therefore moves `SCHEMA_VERSION`. The implementation is owner-gated: Y before dispatch.
+
+**Non-goals.** No model's real limit is pinned in this repository: provider-side values change, and the parent Issue rules this out. The declaration is never corrected automatically: it is the operator's statement of intent, and overriding it from observations would be the system deciding it knows better. Detect and surface; never silently correct.
+
+**Implementation:** [#2078](https://github.com/ms2sato/agent-console/issues/2078) (feature + wire change; owner-gated). Tests it must carry: the register keeps the latest observation per kind; a `PATCH` of `contextWindowTokens` clears and a `PATCH` of another field does not; a second worker on the same definition sees the first one's observation; a worker with a model override does not write to the register; a repeated clamp reading does not re-broadcast; the wire field parses under the strict schema.
+
 ### Compaction prompt loader
 
 Module `packages/embedded-agent/src/compaction-prompt.ts` (renamed from `handoff-prompt.ts`), deliberately a narrower cousin of the [Instruction loader](#instruction-loader), not a call into it — the semantics differ (override, not concatenation):
