@@ -807,11 +807,23 @@ class EmbeddedAgentController implements EmbeddedAgentInstance {
       // 'history-range': no UI trigger requests older ranges for embedded-agent
       // in v1 (no scroll-up paging over chat history); silently ignored if a
       // stray response ever arrives.
+      case 'history-range':
+        break;
       // 'exit': PTY-only in practice -- the server represents subprocess exit
       // via a server-authored `exited` NDJSON row instead (the socket itself
       // stays open). Ignored defensively if it ever arrives.
+      case 'exit':
+        break;
       // 'server-restarted': embedded-agent workers rely on the epoch-mismatch
       // mechanism instead (see acceptEpoch); no explicit push is sent.
+      case 'server-restarted':
+        break;
+      default: {
+        // Exhaustive check: a new WorkerServerMessage member without a case
+        // above is a type error here instead of a silently dropped frame.
+        const _exhaustive: never = message;
+        logger.warn('[embedded-agent] Unknown worker message type:', _exhaustive);
+      }
     }
   }
 
