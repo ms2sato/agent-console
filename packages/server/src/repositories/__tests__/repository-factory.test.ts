@@ -53,9 +53,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { closeDatabase, databaseExists } from '../../database/index.js';
 import { SqliteSessionRepository } from '../sqlite-session-repository.js';
-import { JsonSessionRepository } from '../json-session-repository.js';
-import { createSessionRepository, createJsonSessionRepository } from '../repository-factory.js';
-import { buildPersistedQuickSession } from '../../__tests__/utils/build-test-data.js';
+import { createSessionRepository } from '../repository-factory.js';
 import { isMemfsActive } from '../../__tests__/utils/memfs-detection.js';
 
 describe('repository-factory', () => {
@@ -151,32 +149,6 @@ describe('repository-factory', () => {
       const repository = await createSessionRepository();
 
       expect(repository).toBeInstanceOf(SqliteSessionRepository);
-    });
-  });
-
-  describe('createJsonSessionRepository', () => {
-    it('binds to the given path: data written via save() is visible to a fresh repository at the same path', async () => {
-      const filePath = path.join(configDir, 'custom-sessions.json');
-      const repository = createJsonSessionRepository(filePath);
-      expect(repository).toBeInstanceOf(JsonSessionRepository);
-
-      const session = buildPersistedQuickSession({ id: 'session-1' });
-      await repository.save(session);
-
-      const reopened = createJsonSessionRepository(filePath);
-      const all = await reopened.findAll();
-      expect(all.map((s) => s.id)).toEqual(['session-1']);
-    });
-
-    it('defaults to <configDir>/sessions.json when no path is given', async () => {
-      const repository = createJsonSessionRepository();
-
-      const session = buildPersistedQuickSession({ id: 'session-default' });
-      await repository.save(session);
-
-      const reopened = createJsonSessionRepository();
-      const all = await reopened.findAll();
-      expect(all.map((s) => s.id)).toEqual(['session-default']);
     });
   });
 });

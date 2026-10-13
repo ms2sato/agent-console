@@ -1,3 +1,9 @@
+/**
+ * Test-double SessionRepository over a single JSON file. Production uses
+ * `SqliteSessionRepository` (injected in `app-context.ts`); this class is kept
+ * under `src/repositories` because integration tests import it via the package
+ * path. It is not a production fallback.
+ */
 import { promises as fsPromises } from 'fs';
 import * as crypto from 'crypto';
 import type { PersistedSession } from './persisted-types.js';

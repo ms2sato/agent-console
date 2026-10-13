@@ -21,7 +21,6 @@ describe('SessionValidationService', () => {
 
   async function getServices() {
     const module = await import(`../session-validation-service.js?v=${++importCounter}`);
-    const persistenceModule = await import(`../persistence-service.js?v=${importCounter}`);
     const repoModule = await import(`../../repositories/json-session-repository.js?v=${importCounter}`);
 
     const sessionRepository = new repoModule.JsonSessionRepository(
@@ -30,7 +29,6 @@ describe('SessionValidationService', () => {
 
     return {
       validationService: new module.SessionValidationService(sessionRepository),
-      persistenceService: new persistenceModule.PersistenceService(),
     };
   }
 

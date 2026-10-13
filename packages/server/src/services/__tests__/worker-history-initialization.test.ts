@@ -25,6 +25,7 @@ import { JobQueue } from '../../jobs/index.js';
 import { SingleUserMode } from '../user-mode.js';
 import { McpTokenRegistry } from '../../mcp/mcp-auth.js';
 import { repositoryLookupFromSlug } from '../../__tests__/utils/repository-lookup-mock.js';
+import { createTestSessionRepository } from '../../__tests__/utils/test-session-repository.js';
 
 // Test config directory
 const TEST_CONFIG_DIR = '/test/config';
@@ -85,7 +86,7 @@ describe('Worker History File Initialization', () => {
   async function getSessionManager() {
     const module = await import(`../session-manager.js?v=${++importCounter}`);
     // Use the factory pattern for async initialization with jobQueue
-    return module.SessionManager.create({
+    return module.SessionManager.create({ sessionRepository: await createTestSessionRepository(),
       userMode: new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' }),
       pathExists: mockPathExists,
       jobQueue: testJobQueue,

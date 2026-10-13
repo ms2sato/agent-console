@@ -1,6 +1,5 @@
 import * as path from 'path';
 import type { SessionRepository } from './session-repository.js';
-import { JsonSessionRepository } from './json-session-repository.js';
 import { SqliteSessionRepository } from './sqlite-session-repository.js';
 import { databaseExists, initializeDatabase } from '../database/index.js';
 import { getConfigDir } from '../lib/config.js';
@@ -40,13 +39,4 @@ export async function createSessionRepository(): Promise<SessionRepository> {
   logger.info('Using SQLite session repository (fresh install)');
   const db = await initializeDatabase();
   return new SqliteSessionRepository(db);
-}
-
-/**
- * For testing: create a JSON-based repository
- */
-export function createJsonSessionRepository(filePath?: string): SessionRepository {
-  const configDir = getConfigDir();
-  const path_ = filePath ?? path.join(configDir, 'sessions.json');
-  return new JsonSessionRepository(path_);
 }

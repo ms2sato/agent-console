@@ -842,7 +842,7 @@ export async function createTestContext(
   // file-backed database; the in-memory test database skips that step, and the
   // trusted-root walker (`ensureTrustedDirChain`) verifies its root and never
   // creates it (docs/design/session-data-path.md section 2). Creating the ROOT
-  // recursively here is the same shape as `PersistenceService`'s
+  // recursively here is the same shape as the old JSON writer's
   // `ensureConfigDir` -- it is the one directory the walker does not own.
   await fsPromises.mkdir(getConfigDir(), { recursive: true });
 

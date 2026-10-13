@@ -15,6 +15,7 @@ import { AgentManager } from '../agent-manager.js';
 import { SqliteAgentRepository } from '../../repositories/sqlite-agent-repository.js';
 import { SingleUserMode } from '../user-mode.js';
 import { McpTokenRegistry } from '../../mcp/mcp-auth.js';
+import { createTestSessionRepository } from '../../__tests__/utils/test-session-repository.js';
 
 // Test config directory
 const TEST_CONFIG_DIR = '/test/config';
@@ -75,7 +76,7 @@ describe('SessionManager cleanup on initialization', () => {
     const SessionManager = await getSessionManager();
     const db = getDatabase();
     const agentMgr = await AgentManager.create(new SqliteAgentRepository(db));
-    return SessionManager.create({
+    return SessionManager.create({ sessionRepository: await createTestSessionRepository(),
       userMode: new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' }),
       agentManager: agentMgr,
       mcpTokenRegistry: new McpTokenRegistry(),
