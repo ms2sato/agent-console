@@ -608,14 +608,16 @@ describe('LoginRateLimiter', () => {
   });
 
   it('should reset after window expires', async () => {
-    // Use a very short window for testing
-    const limiter = new LoginRateLimiter(1, 1); // 1ms window
+    // 50 ms window: a stall of up to ~50 ms between the two calls still leaves the
+    // first assertion inside the window; the 100 ms sleep is 2x the window, so the
+    // reset assertion is not racing the expiry either.
+    const limiter = new LoginRateLimiter(1, 50);
 
     limiter.recordAttempt('user1');
     expect(limiter.isBlocked('user1')).toBe(true);
 
     // Wait for window to expire
-    await Bun.sleep(10);
+    await Bun.sleep(100);
 
     expect(limiter.isBlocked('user1')).toBe(false);
   });
