@@ -11,6 +11,9 @@
 #   FAKE_CURL_STATUS  the HTTP code to print (default 200); `000` also exits
 #                     7 the way real curl does on a refused connection
 #   FAKE_CURL_BODY    the response body written to the `-o` file
+#   FAKE_CURL_STATUS_SEQ  comma-separated codes, one per invocation (the last
+#                     repeats), e.g. `503,503,200`; needs FAKE_COUNTER_DIR (a
+#                     directory the test owns) and overrides FAKE_CURL_STATUS
 #   FAKE_ARGV_LOG     when set, this fixture's own argv is appended to that
 #                     file (one line per invocation), so a test can count
 #                     attempts and pin the URL
@@ -29,6 +32,16 @@ if [ -n "$out" ]; then
   printf '%s' "${FAKE_CURL_BODY:-}" >"$out"
 fi
 status="${FAKE_CURL_STATUS:-200}"
+if [ -n "${FAKE_CURL_STATUS_SEQ:-}" ]; then
+  # Per-call answers: the Nth invocation prints the Nth comma-separated code
+  # (the last one repeats). The call count lives in $FAKE_COUNTER_DIR/curl.
+  n=$(( $(cat "$FAKE_COUNTER_DIR/curl" 2>/dev/null || echo 0) + 1 ))
+  echo "$n" >"$FAKE_COUNTER_DIR/curl"
+  IFS=, read -r -a seq <<<"$FAKE_CURL_STATUS_SEQ"
+  idx=$((n - 1))
+  [ "$idx" -ge "${#seq[@]}" ] && idx=$((${#seq[@]} - 1))
+  status="${seq[$idx]}"
+fi
 printf '%s' "$status"
 if [ "$status" = "000" ]; then
   exit 7

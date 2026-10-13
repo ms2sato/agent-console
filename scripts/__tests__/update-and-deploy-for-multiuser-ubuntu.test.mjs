@@ -149,17 +149,23 @@ describe('update-and-deploy-for-multiuser-ubuntu.sh: post-deploy verification V0
   });
 
   it('V2-V6 are called AFTER the restart, in order, each with `|| true` so every check runs', () => {
+    // Each entry is the call's stable PREFIX (the check and its leading
+    // arguments); V5 and V6 later gained trailing arguments (the poll window, the
+    // unit and systemctl), so the pin is order + the trailing `|| true`, not the
+    // exact tail. Their tails are pinned in the dedicated block below.
     const calls = [
-      'verify_check "V2 entry-path-readable" entry_path_readable "${UNIFIED_ENTRY_PATH}" "${UNIFIED_ENTRY_MAP_PATH}" "${ELEVATE}" || true',
-      'verify_check "V3 mainpid-identity" mainpid_identity "${SERVICE_NAME}" "${CONFIGURED_BUN}" "${ELEVATE}" systemctl || true',
-      'verify_check "V4 unit-active" unit_active "${SERVICE_NAME}" systemctl journalctl "${ELEVATE}" || true',
-      'verify_check "V5 health" health "${HEALTH_PORT}" 10 curl || true',
-      'verify_check "V6 journal-digest" journal_digest "${SERVICE_NAME}" "${RESTART_SINCE}" journalctl "${ELEVATE}" || true',
+      'verify_check "V2 entry-path-readable" entry_path_readable "${UNIFIED_ENTRY_PATH}" "${UNIFIED_ENTRY_MAP_PATH}" "${ELEVATE}"',
+      'verify_check "V3 mainpid-identity" mainpid_identity "${SERVICE_NAME}" "${CONFIGURED_BUN}" "${ELEVATE}" systemctl',
+      'verify_check "V4 unit-active" unit_active "${SERVICE_NAME}" systemctl journalctl "${ELEVATE}"',
+      'verify_check "V5 health" health "${HEALTH_PORT}"',
+      'verify_check "V6 journal-digest" journal_digest "${SERVICE_NAME}" "${RESTART_SINCE}" journalctl "${ELEVATE}"',
     ];
     let prev = restartIdx;
     for (const call of calls) {
       const i = idxOf(call);
       expect(i).toBeGreaterThan(prev);
+      const lineEnd = scriptText.indexOf('\n', i);
+      expect(scriptText.slice(i, lineEnd).endsWith(' || true')).toBe(true);
       prev = i;
     }
   });
@@ -241,7 +247,10 @@ describe('update-and-deploy-for-multiuser-ubuntu.sh: V5 port resolution wiring (
   });
 
   it('V5\'s argument is ${HEALTH_PORT}, and the old `health "${PORT}"` shape is gone', () => {
-    expect(scriptText).toContain('verify_check "V5 health" health "${HEALTH_PORT}" 10 curl || true');
+    // Prefix only: the trailing arguments (poll window, unit, systemctl) are
+    // pinned in the V5/V6 window block below; what THIS pin protects is that the
+    // port argument is the resolved ${HEALTH_PORT}.
+    expect(scriptText).toMatch(/^verify_check "V5 health" health "\$\{HEALTH_PORT\}" .* \|\| true$/m);
     expect(scriptText).not.toContain('health "${PORT}"');
   });
 
@@ -258,5 +267,41 @@ describe('update-and-deploy-for-multiuser-ubuntu.sh: V5 port resolution wiring (
     // unit_env_drift, inside the lib) -- this script's own text contains no
     // second, independent `systemctl show ... PORT` read.
     expect(scriptText).not.toMatch(/systemctl show[^\n]*PORT/);
+  });
+});
+
+// The post-deploy window (#2043): the deploy script hands V5 and V6 their
+// waiting windows. The library's own defaults (10 polls, 1 journal read) would
+// bring the false FAIL on a slow boot straight back, with every library test
+// still green, so the call sites are pinned HERE -- the one test file for this
+// script's shape (the library behaviour is tested in setup-multiuser-checks.test.mjs).
+describe('update-and-deploy-for-multiuser-ubuntu.sh: V5/V6 windows (#2043)', () => {
+  const scriptText = readFileSync(SCRIPT, 'utf-8');
+
+  it('V5 passes the validated poll count, then curl, the unit and systemctl (so a dead unit fails fast)', () => {
+    expect(scriptText).toContain(
+      'verify_check "V5 health" health "${HEALTH_PORT}" "${HEALTH_ATTEMPTS}" curl "${SERVICE_NAME}" systemctl || true',
+    );
+  });
+
+  it('the poll count comes from AGENT_CONSOLE_HEALTH_ATTEMPTS through normalize_attempts with the 60 default, never raw', () => {
+    expect(scriptText).toContain('HEALTH_ATTEMPTS="$(normalize_attempts "${AGENT_CONSOLE_HEALTH_ATTEMPTS:-}" 60)"');
+    expect(scriptText).not.toContain('"${AGENT_CONSOLE_HEALTH_ATTEMPTS:-60}"');
+    // ...and it is computed before the restart, so a bad value warns up front.
+    expect(scriptText.indexOf('HEALTH_ATTEMPTS="$(normalize_attempts')).toBeLessThan(
+      scriptText.indexOf('sudo systemctl restart "${SERVICE_NAME}"'),
+    );
+  });
+
+  it('V6 passes 10 re-read attempts after the elevate argument', () => {
+    expect(scriptText).toContain(
+      'verify_check "V6 journal-digest" journal_digest "${SERVICE_NAME}" "${RESTART_SINCE}" journalctl "${ELEVATE}" 10 || true',
+    );
+  });
+
+  it('the header documents AGENT_CONSOLE_HEALTH_ATTEMPTS beside AGENT_CONSOLE_PORT', () => {
+    const header = scriptText.split('\n').slice(0, 130).join('\n');
+    expect(header).toContain('AGENT_CONSOLE_HEALTH_ATTEMPTS');
+    expect(header.indexOf('AGENT_CONSOLE_PORT')).toBeLessThan(header.indexOf('AGENT_CONSOLE_HEALTH_ATTEMPTS'));
   });
 });

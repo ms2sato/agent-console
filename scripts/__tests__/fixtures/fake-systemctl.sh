@@ -22,6 +22,10 @@
 #                             552 / agentconsole / agent-console-users)
 #   FAKE_ACTIVE_STATE         `is-active` output (default: active); exits 0
 #                             for active, 3 otherwise, like the real one
+#   FAKE_ACTIVE_STATE_SEQ     comma-separated states, one per `is-active` call
+#                             (the last repeats), e.g. `activating,active`;
+#                             needs FAKE_COUNTER_DIR (a directory the test
+#                             owns) and overrides FAKE_ACTIVE_STATE
 #
 # `show` prints every property it knows regardless of the `-p` selection: the
 # lib reads each property by its `NAME=` prefix, so the extra lines are
@@ -46,6 +50,14 @@ case "${1:-}" in
       exit 1
     fi
     state="${FAKE_ACTIVE_STATE:-active}"
+    if [ -n "${FAKE_ACTIVE_STATE_SEQ:-}" ]; then
+      n=$(( $(cat "$FAKE_COUNTER_DIR/is-active" 2>/dev/null || echo 0) + 1 ))
+      echo "$n" >"$FAKE_COUNTER_DIR/is-active"
+      IFS=, read -r -a seq <<<"$FAKE_ACTIVE_STATE_SEQ"
+      idx=$((n - 1))
+      [ "$idx" -ge "${#seq[@]}" ] && idx=$((${#seq[@]} - 1))
+      state="${seq[$idx]}"
+    fi
     echo "$state"
     [ "$state" = "active" ] && exit 0
     exit 3
