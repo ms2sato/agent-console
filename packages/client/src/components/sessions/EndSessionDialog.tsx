@@ -9,7 +9,7 @@ import {
   AlertDialogCancel,
 } from '../ui/alert-dialog';
 import { deleteSession } from '../../lib/api';
-import { useSessionStopTasksContext } from '../../routes/__root';
+import { useSessionStopTasksContext } from '../../contexts/root-contexts';
 import type { Session, AgentActivityState } from '@agent-console/shared';
 
 export interface EndSessionDialogProps {
