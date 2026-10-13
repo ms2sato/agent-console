@@ -1,5 +1,6 @@
 import * as v from 'valibot';
 import { createLogger } from '../../lib/logger.js';
+import { raceWithTimeout } from '../../lib/race-with-timeout.js';
 
 const logger = createLogger('ci-completion-checker');
 
@@ -108,38 +109,20 @@ function rollupEntryName(entry: RollupEntry): string {
   return entry.__typename === 'CheckRun' ? entry.name : entry.context;
 }
 
-function createTimeoutPromise(timeoutMs: number): { promise: Promise<never>; cleanup: () => void } {
-  let timeoutId: ReturnType<typeof setTimeout> | undefined;
-
-  const promise = new Promise<never>((_, reject) => {
-    timeoutId = setTimeout(() => {
-      reject(new Error(`gh api timed out after ${timeoutMs}ms`));
-    }, timeoutMs);
-  });
-
-  const cleanup = () => {
-    if (timeoutId) {
-      clearTimeout(timeoutId);
-    }
-  };
-
-  return { promise, cleanup };
-}
-
 /**
  * Run a `gh` command and return stdout, or null on any failure (timeout,
  * non-zero exit, spawn error). Logs warnings for diagnostic purposes.
  */
 async function runGhCommand(
   args: string[],
-  context: Record<string, unknown>
+  context: Record<string, unknown>,
+  timeoutMs: number,
 ): Promise<string | null> {
   try {
     const proc = Bun.spawn(args, { stdout: 'pipe', stderr: 'pipe' });
-    const { promise: timeoutPromise, cleanup } = createTimeoutPromise(CI_CHECK_TIMEOUT_MS);
 
     try {
-      const result = await Promise.race([
+      const result = await raceWithTimeout(
         (async () => {
           const exitCode = await proc.exited;
           if (exitCode !== 0) {
@@ -149,8 +132,9 @@ async function runGhCommand(
           const stdout = await new Response(proc.stdout).text();
           return { ok: true as const, stdout };
         })(),
-        timeoutPromise,
-      ]);
+        timeoutMs,
+        `gh api timed out after ${timeoutMs}ms`,
+      );
 
       if (!result.ok) {
         logger.warn(
@@ -169,8 +153,6 @@ async function runGhCommand(
         }
       }
       throw error;
-    } finally {
-      cleanup();
     }
   } catch (error) {
     logger.warn({ ...context, err: error }, 'gh command failed');
@@ -215,12 +197,14 @@ function checkCompletion(latestRuns: WorkflowRun[]): CICompletionCheckResult {
  */
 async function checkByCommitWorkflowRuns(
   repositoryName: string,
-  headSha: string
+  headSha: string,
+  timeoutMs: number
 ): Promise<CICompletionCheckResult | null> {
   const endpoint = `repos/${repositoryName}/actions/runs?head_sha=${headSha}`;
   const responseText = await runGhCommand(
     ['gh', 'api', '--paginate', '--slurp', endpoint],
-    { repositoryName, headSha }
+    { repositoryName, headSha },
+    timeoutMs
   );
   if (responseText === null) {
     return null;
@@ -261,7 +245,8 @@ async function checkByCommitWorkflowRuns(
 async function checkByPullRequestRollup(
   repositoryName: string,
   webhookCommitSha: string,
-  branch: string
+  branch: string,
+  timeoutMs: number
 ): Promise<{ matched: true; result: CICompletionCheckResult | null } | { matched: false }> {
   const args = [
     'gh', 'pr', 'list',
@@ -271,7 +256,7 @@ async function checkByPullRequestRollup(
     '--limit', '1',
     '--json', 'number,headRefOid,statusCheckRollup',
   ];
-  const responseText = await runGhCommand(args, { repositoryName, branch, webhookCommitSha });
+  const responseText = await runGhCommand(args, { repositoryName, branch, webhookCommitSha }, timeoutMs);
   if (responseText === null) {
     // gh failed — fail-open
     return { matched: true, result: null };
@@ -355,7 +340,8 @@ async function checkByPullRequestRollup(
   };
 }
 
-export function createCICompletionChecker(): CICompletionChecker {
+export function createCICompletionChecker(options: { timeoutMs?: number } = {}): CICompletionChecker {
+  const timeoutMs = options.timeoutMs ?? CI_CHECK_TIMEOUT_MS;
   return async (
     repositoryName: string,
     headSha: string,
@@ -363,13 +349,13 @@ export function createCICompletionChecker(): CICompletionChecker {
   ): Promise<CICompletionCheckResult | null> => {
     try {
       if (branch) {
-        const prCheck = await checkByPullRequestRollup(repositoryName, headSha, branch);
+        const prCheck = await checkByPullRequestRollup(repositoryName, headSha, branch, timeoutMs);
         if (prCheck.matched) {
           return prCheck.result;
         }
         // No PR found for branch — fall through to per-commit workflow-runs path
       }
-      return await checkByCommitWorkflowRuns(repositoryName, headSha);
+      return await checkByCommitWorkflowRuns(repositoryName, headSha, timeoutMs);
     } catch (error) {
       logger.warn({ err: error, repositoryName, headSha, branch }, 'CI completion check failed');
       return null;
