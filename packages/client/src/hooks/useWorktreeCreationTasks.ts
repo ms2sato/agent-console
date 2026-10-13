@@ -1,6 +1,6 @@
 import { useState, useCallback } from 'react';
+import type { WorktreeCreationTask } from '../lib/worktree-creation-task';
 import type {
-  WorktreeCreationTask,
   WorktreeCreationCompletedPayload,
   WorktreeCreationFailedPayload,
   CreateWorktreeRequest,

@@ -1,3 +1,6 @@
+// This types -> schemas edge stays baselined (.dependency-cruiser-known-violations.json)
+// until AgentDefinition becomes v.InferOutput<typeof AgentDefinitionSchema> and
+// computeCapabilities moves out of this file; that conversion is tracked separately.
 // Import types for local use
 import type { AgentActivityPatterns, AgentCapabilities } from '../schemas/agent.js';
 
