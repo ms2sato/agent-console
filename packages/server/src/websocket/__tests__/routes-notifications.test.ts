@@ -9,7 +9,7 @@ import { initializeDatabase, closeDatabase, getDatabase } from '../../database/c
 import { JobQueue } from '../../jobs/job-queue.js';
 import { registerJobHandlers } from '../../jobs/handlers.js';
 import { WorkerOutputFileManager } from '../../lib/worker-output-file.js';
-import { createSessionRepository } from '../../repositories/index.js';
+import { SqliteSessionRepository } from '../../repositories/index.js';
 import { SqliteRepositoryRepository } from '../../repositories/sqlite-repository-repository.js';
 import { SessionManager } from '../../services/session-manager.js';
 import { RepositoryManager } from '../../services/repository-manager.js';
@@ -59,7 +59,7 @@ describe('WebSocket routes notifications', () => {
 
     testJobQueue = new JobQueue(getDatabase());
     registerJobHandlers(testJobQueue, new WorkerOutputFileManager());
-    const sessionRepository = await createSessionRepository();
+    const sessionRepository = new SqliteSessionRepository(getDatabase());
     const agentManager = await AgentManager.create(new SqliteAgentRepository(getDatabase()));
     const embeddedAgentManager = await EmbeddedAgentManager.create(new SqliteEmbeddedAgentRepository(getDatabase()));
     notificationManager = new NotificationManager(new SlackHandler(new RepositorySlackIntegrationService(getDatabase())));
