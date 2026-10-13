@@ -190,97 +190,11 @@ type InternalSession = InternalWorktreeSession | InternalQuickSession;
 
 ## Persistence Structure
 
-### File: `~/.agent-console/sessions.json`
+Sessions, workers, repositories and agents are persisted in a SQLite database, `data.db` under the config directory (`getDbPath()` in `packages/server/src/lib/config.ts`). The schema is `packages/server/src/database/schema.ts`; sessions and their workers are read and written through the `SessionRepository` interface, implemented for production by `SqliteSessionRepository` (`packages/server/src/repositories/sqlite-session-repository.ts`) and injected into `SessionManager` by `createAppContext`.
 
-```json
-[
-  {
-    "id": "session-abc-123",
-    "type": "worktree",
-    "locationPath": "/path/to/worktree",
-    "repositoryId": "repo-1",
-    "worktreeId": "wt-feature-branch",
-    "serverPid": 12345,
-    "createdAt": "2025-01-01T00:00:00.000Z",
-    "workers": [
-      {
-        "id": "worker-1",
-        "type": "agent",
-        "name": "Claude",
-        "agentId": "claude-code-builtin",
-        "pid": 23456,
-        "createdAt": "2025-01-01T00:00:00.000Z"
-      },
-      {
-        "id": "worker-2",
-        "type": "terminal",
-        "name": "Terminal 1",
-        "pid": 23457,
-        "createdAt": "2025-01-01T00:00:05.000Z"
-      }
-    ]
-  },
-  {
-    "id": "session-def-456",
-    "type": "quick",
-    "locationPath": "/some/random/directory",
-    "serverPid": 12345,
-    "createdAt": "2025-01-01T01:00:00.000Z",
-    "workers": [
-      {
-        "id": "worker-3",
-        "type": "agent",
-        "name": "Claude",
-        "agentId": "claude-code-builtin",
-        "pid": 34567,
-        "createdAt": "2025-01-01T01:00:00.000Z"
-      }
-    ]
-  }
-]
-```
+The persisted record shapes (`PersistedSession`, `PersistedWorker` and its variants, `PersistedRepository`) are defined once in [`packages/server/src/repositories/persisted-types.ts`](../../packages/server/src/repositories/persisted-types.ts). That file is the source of truth; this document links to it instead of re-declaring the shapes, because an inline copy is what drifts.
 
-### Persistence Types
-
-```typescript
-interface PersistedWorkerBase {
-  id: string;
-  name: string;
-  pid: number;
-  createdAt: string;
-}
-
-interface PersistedAgentWorker extends PersistedWorkerBase {
-  type: 'agent';
-  agentId: string;
-}
-
-interface PersistedTerminalWorker extends PersistedWorkerBase {
-  type: 'terminal';
-}
-
-type PersistedWorker = PersistedAgentWorker | PersistedTerminalWorker;
-
-interface PersistedSessionBase {
-  id: string;
-  locationPath: string;
-  serverPid: number;
-  createdAt: string;
-  workers: PersistedWorker[];
-}
-
-interface PersistedWorktreeSession extends PersistedSessionBase {
-  type: 'worktree';
-  repositoryId: string;
-  worktreeId: string;
-}
-
-interface PersistedQuickSession extends PersistedSessionBase {
-  type: 'quick';
-}
-
-type PersistedSession = PersistedWorktreeSession | PersistedQuickSession;
-```
+Installations that predate SQLite kept `sessions.json`, `repositories.json` and `agents.json` in the config directory. `migrateFromJson` (`packages/server/src/database/connection.ts`) imports them once at startup and renames each file to `*.migrated`; production code does not read or write those files afterwards.
 
 ## WebSocket Endpoints
 

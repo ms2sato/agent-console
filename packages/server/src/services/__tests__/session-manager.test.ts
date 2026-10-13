@@ -7796,8 +7796,9 @@ describe('SessionManager', () => {
       // only (see the isolation note above), not through
       // SessionPauseResumeService's independent resolver call.
       //
-      // NOTE: this test's SessionManager uses the default JsonSessionRepository
-      // (no `sessionRepository` option is passed anywhere in this file), whose
+      // NOTE: this test's SessionManager is given a JsonSessionRepository
+      // explicitly (`createTestSessionRepository`; this file never injects a
+      // SqliteSessionRepository), whose
       // `update()` does NOT support the recoveryState/orphanedAt/orphanedReason
       // fields (see json-session-repository.ts -- only SqliteSessionRepository's
       // update() handles them). `update()` here would return `true` while
