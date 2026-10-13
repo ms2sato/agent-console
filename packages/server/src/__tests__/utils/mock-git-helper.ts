@@ -31,7 +31,6 @@ export { GitError };
 type AsyncStringFn = (cwd: string, requestUser?: string | null) => Promise<string>;
 type AsyncStringNullFn = (cwd: string, requestUser?: string | null) => Promise<string | null>;
 type AsyncStringArrayFn = (cwd: string, requestUser?: string | null) => Promise<string[]>;
-type AsyncVoidFn = (...args: unknown[]) => Promise<void>;
 
 type GitFn = (args: string[], cwd: string, timeoutMs?: number, requestUser?: string | null) => Promise<string>;
 
@@ -57,14 +56,14 @@ export const mockGit = {
   listAllBranches: mock(() => Promise.resolve(['main'])) as Mock<AsyncStringArrayFn>,
   getDefaultBranch: mock(() => Promise.resolve('main')) as Mock<AsyncStringNullFn>,
   refreshDefaultBranch: mock(() => Promise.resolve('main')) as Mock<AsyncStringFn>,
-  renameBranch: mock(() => Promise.resolve()) as Mock<AsyncVoidFn>,
+  renameBranch: mock(() => Promise.resolve()) as Mock<(oldName: string, newName: string, cwd: string, requestUser?: string | null) => Promise<void>>,
 
   // Remote operations
   getRemoteUrl: mock(() => Promise.resolve('git@github.com:owner/repo.git')) as Mock<AsyncStringNullFn>,
 
   // Worktree operations
   listWorktrees: mock(() => Promise.resolve('')) as Mock<AsyncStringFn>,
-  removeWorktree: mock(() => Promise.resolve()) as Mock<AsyncVoidFn>,
+  removeWorktree: mock(() => Promise.resolve()) as Mock<(worktreePath: string, cwd: string, options?: { force?: boolean }) => Promise<void>>,
 
   // Org/Repo extraction (sync functions)
   parseOrgRepo: mock((remoteUrl: string) => {

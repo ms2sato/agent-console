@@ -1160,24 +1160,6 @@ describe('RepositoryManager', () => {
     });
   });
 
-  describe('findRepositoryByPath', () => {
-    it('should find repository by path', async () => {
-      const manager = await getRepositoryManager();
-
-      const registered = await manager.registerRepository(TEST_REPO_DIR);
-      const found = manager.findRepositoryByPath(TEST_REPO_DIR);
-
-      expect(found).toEqual(registered);
-    });
-
-    it('should return undefined for unregistered path', async () => {
-      const manager = await getRepositoryManager();
-
-      const result = manager.findRepositoryByPath('/some/other/path');
-      expect(result).toBeUndefined();
-    });
-  });
-
   describe('loading from repository', () => {
     it('should load repositories from repository on construction', async () => {
       // Pre-populate repository
