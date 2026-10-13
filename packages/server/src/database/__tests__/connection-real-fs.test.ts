@@ -4,7 +4,7 @@
  * `initializeDatabase()` with no path creates `<AGENT_CONSOLE_HOME>/data.db` on
  * disk and runs the whole migration chain on it; every other database test
  * uses `:memory:` or memfs. This file pins what only a real file can show:
- * the file is created under the config directory, `databaseExists()` sees it,
+ * the file is created under the config directory, the file exists on disk,
  * and a freshly created file ends at `LATEST_SCHEMA_VERSION`.
  *
  * It lives in `packages/server`'s second `bun test` invocation (`package.json`
@@ -25,10 +25,13 @@ import {
   initializeDatabase,
   closeDatabase,
   getDatabase,
-  databaseExists,
   LATEST_SCHEMA_VERSION,
 } from '../connection.js';
+import { getDbPath } from '../../lib/config.js';
 import { assertRealFs } from '../../__tests__/utils/memfs-detection.js';
+
+/** Real-disk existence of the database file (Bun's native API bypasses fs mocks). */
+const databaseFileExists = (): Promise<boolean> => Bun.file(getDbPath()).exists();
 
 /** Create a unique temporary directory on the real filesystem. */
 function createTempDir(): string {
@@ -63,11 +66,11 @@ describe('database/connection', () => {
 
   describe('initializeDatabase', () => {
     test('creates database file and runs migrations', async () => {
-      expect(await databaseExists()).toBe(false);
+      expect(await databaseFileExists()).toBe(false);
 
       const db = await initializeDatabase();
       expect(db).toBeDefined();
-      expect(await databaseExists()).toBe(true);
+      expect(await databaseFileExists()).toBe(true);
 
       // A freshly created file ends at the latest schema version.
       const result = await sql<{ user_version: number }>`PRAGMA user_version`.execute(db);
@@ -173,17 +176,6 @@ describe('database/connection', () => {
     test('is idempotent (can be called when not initialized)', async () => {
       // Should not throw
       await closeDatabase();
-    });
-  });
-
-  describe('databaseExists', () => {
-    test('returns false when database does not exist', async () => {
-      expect(await databaseExists()).toBe(false);
-    });
-
-    test('returns true after database is initialized', async () => {
-      await initializeDatabase();
-      expect(await databaseExists()).toBe(true);
     });
   });
 
