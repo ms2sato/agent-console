@@ -132,6 +132,30 @@ describe('printCoverageCheck -- excluded-by-rule naming (Issue #1767 follow-up)'
   });
 });
 
+describe('printCoverageCheck -- no-runtime-effect exemption wording', () => {
+  it('names both exempt classes in the heading and in each exempted file line', () => {
+    const output = captureConsoleLog(() => {
+      printCoverageCheck(
+        [
+          {
+            file: 'packages/server/src/services/foo.ts',
+            hasTest: true,
+            needsCoverage: false,
+            isCommentOnly: true,
+            isExcluded: false,
+          },
+        ],
+        null,
+      );
+    });
+    expect(output).toContain('### Exempted — no-runtime-effect diff (comment-only or type-only import rewiring) (1)');
+    expect(output).toContain(
+      '`packages/server/src/services/foo.ts` — all changed lines are comments, blank, or whole-declaration type-only import/export rewiring',
+    );
+    expect(output).not.toContain('all changed lines are comments/blank');
+  });
+});
+
 describe('printEmbeddedAgentStdoutWritersCheck', () => {
   it('renders the success message when exitCode is 0, regardless of stdout content', () => {
     const output = captureConsoleLog(() => {

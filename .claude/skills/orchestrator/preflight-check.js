@@ -272,7 +272,7 @@ export function printCoverageCheck(testCoverage, integrationTestNeeds) {
   if (commentOnlyExempted.length > 0) {
     console.log(`### Exempted — no-runtime-effect diff (comment-only or type-only import rewiring) (${commentOnlyExempted.length})\n`);
     for (const { file } of commentOnlyExempted) {
-      console.log(`- ➖ \`${file}\` — all changed lines are comments/blank`);
+      console.log(`- ➖ \`${file}\` — all changed lines are comments, blank, or whole-declaration type-only import/export rewiring`);
     }
     console.log();
   }
