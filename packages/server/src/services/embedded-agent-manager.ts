@@ -402,7 +402,7 @@ export class EmbeddedAgentManager implements AgentSurface<'embedded'> {
     // are both gone -- the row's absence is what makes the directory
     // unreachable through the ordinary create/activate path, so removal
     // must follow it, the same ordering discipline
-    // `RepositoryManager.cleanupRepositoryData` uses for repository data.
+    // `RepositoryManager.unregisterRepository` uses for repository data.
     // Enqueued here, from the manager, never from the WS lifecycle callback
     // below (that callback is a broadcast site, not a place to trigger
     // side effects). Built-in definitions never reach this point (guarded

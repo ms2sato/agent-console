@@ -1,7 +1,8 @@
 import * as fs from 'fs';
 import { access, lstat } from 'fs/promises';
 import * as path from 'path';
-import type { Repository } from '@agent-console/shared';
+import type { Kysely } from 'kysely';
+import type { CleanupRepositoryPayload, Repository } from '@agent-console/shared';
 import { getConfigDir, getRepositoryDir, getSourceReposDir } from '../lib/config.js';
 import { isUnderSourceReposDir } from '../lib/repository-remote.js';
 import { deriveRepositorySlug } from '../lib/git.js';
@@ -9,6 +10,7 @@ import { canonicalPath } from '../lib/canonical-path.js';
 import { createLogger } from '../lib/logger.js';
 import { RepositoryNotFoundError } from '../lib/errors.js';
 import { initializeDatabase } from '../database/connection.js';
+import type { Database } from '../database/schema.js';
 import type { RepositoryRepository, RepositoryUpdates } from '../repositories/repository-repository.js';
 import { SqliteRepositoryRepository } from '../repositories/sqlite-repository-repository.js';
 import { JOB_TYPES, type JobQueue } from '../jobs/index.js';
@@ -131,6 +133,13 @@ export class RepositoryManager {
   private dependencyCallbacks: RepositoryDependencyCallbacks | null = null;
   private jobQueue: JobQueue | null = null;
   /**
+   * The connection `repository` and `jobQueue` were built on, injected like
+   * `jobQueue`. `unregisterRepository` opens its transaction on it so the
+   * cleanup-job enqueue and the row delete commit together. Null when a caller
+   * did not inject it (the pre-transaction sequence runs, with a warning).
+   */
+  private db: Kysely<Database> | null = null;
+  /**
    * Indirection so tests can capture / fake the privilege-elevation helper
    * used by the multi-user shared-repo apply step. Production defaults to
    * the real `runAsUser`.
@@ -247,6 +256,8 @@ export class RepositoryManager {
   static async create(options?: {
     repository?: RepositoryRepository;
     jobQueue?: JobQueue | null;
+    /** The connection `repository` and `jobQueue` share; see the field of the same name. */
+    db?: Kysely<Database>;
     /**
      * Test-only injection point for `runAsUser`. Production omits this and
      * the real helper is used.
@@ -258,6 +269,7 @@ export class RepositoryManager {
       repo,
       options?.jobQueue ?? null,
       options?.runAsUserImpl ?? runAsUser,
+      options?.db ?? null,
     );
     await manager.initialize();
     return manager;
@@ -270,9 +282,11 @@ export class RepositoryManager {
     repository: RepositoryRepository,
     jobQueue: JobQueue | null = null,
     runAsUserImpl: RunAsUserFn = runAsUser,
+    db: Kysely<Database> | null = null,
   ) {
     this.repository = repository;
     this.jobQueue = jobQueue;
+    this.db = db;
     this._runAsUser = runAsUserImpl;
   }
 
@@ -444,7 +458,7 @@ export class RepositoryManager {
    * @param opts Optional flags. `removeSourceRepo` requests that the cleanup
    *   job also remove the source-repo clone when `repo.path` lives under
    *   `getSourceReposDir()`. The path-guard is applied in
-   *   `cleanupRepositoryData`; out-of-prefix paths are silently skipped.
+   *   `buildCleanupRepositoryPayload`; out-of-prefix paths are silently skipped.
    */
   async unregisterRepository(
     id: string,
@@ -466,11 +480,35 @@ export class RepositoryManager {
       // SessionManager. Throws RepositoryInUseError when in use.
       await this.assertRepositoryNotInUse(id);
 
-      // Clean up related directories
-      await this.cleanupRepositoryData(repo, requestUsername, opts);
+      // Compute the cleanup job's payload (reads the filesystem, so it stays
+      // outside the transaction below).
+      const cleanupPayload = await this.buildCleanupRepositoryPayload(repo, requestUsername, opts);
+      const jobQueue = this.jobQueue!;
 
-      this.repositories.delete(id);
-      await this.repository.delete(id);
+      if (this.db) {
+        // The job deletes the repository's directory tree; the row delete is
+        // what makes that deletion legitimate. Commit them together so a
+        // failed delete can never leave a registered repository whose data is
+        // being removed. The body is exactly these two statements: no fs, git
+        // or other await inside a transaction (it holds the only connection).
+        await this.db.transaction().execute(async (trx) => {
+          await jobQueue.enqueue(JOB_TYPES.CLEANUP_REPOSITORY, cleanupPayload, { executor: trx });
+          await this.repository.delete(id, trx);
+        });
+        // Cache entry goes only after the commit, so a rolled-back delete
+        // leaves cache and table agreeing. The enqueue did not wake the
+        // queue (its row was uncommitted); wake it now.
+        this.repositories.delete(id);
+        jobQueue.wake();
+      } else {
+        logger.warn(
+          { repositoryId: id },
+          'RepositoryManager has no injected db; unregister enqueues the cleanup job and deletes the row as separate writes',
+        );
+        await jobQueue.enqueue(JOB_TYPES.CLEANUP_REPOSITORY, cleanupPayload);
+        this.repositories.delete(id);
+        await this.repository.delete(id);
+      }
       logger.info({ repositoryId: id, name: repo.name }, 'Repository unregistered');
 
       // Callback fires after successful delete - clients will receive state update
@@ -848,11 +886,11 @@ export class RepositoryManager {
    *   with a debug log.
    * @throws Error if jobQueue is not available
    */
-  private async cleanupRepositoryData(
+  private async buildCleanupRepositoryPayload(
     repo: Repository,
     requestUsername: string | null,
     opts: { removeSourceRepo?: boolean } = {},
-  ): Promise<void> {
+  ): Promise<CleanupRepositoryPayload> {
     if (!this.jobQueue) {
       throw new Error('JobQueue not available for repository cleanup. Ensure RepositoryManager.create() was called with jobQueue.');
     }
@@ -896,13 +934,8 @@ export class RepositoryManager {
       deriveSlug: () => Promise.resolve(orgRepo),
     });
 
-    // Clean up entire repository directory via job queue
-    await this.jobQueue.enqueue(JOB_TYPES.CLEANUP_REPOSITORY, {
-      repoDir,
-      requestUsername,
-      extraDir,
-      sessionDataDirs,
-    });
+    // The caller enqueues this as the CLEANUP_REPOSITORY job payload.
+    return { repoDir, requestUsername, extraDir, sessionDataDirs };
   }
 
   getRepository(id: string): Repository | undefined {

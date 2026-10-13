@@ -7,6 +7,7 @@ import { setupMemfs, cleanupMemfs, createMockGitRepoFiles } from '../../__tests_
 import { mockGit } from '../../__tests__/utils/mock-git-helper.js';
 import { mockProcess, resetProcessMock } from '../../__tests__/utils/mock-process-helper.js';
 import { JobQueue } from '../../jobs/index.js';
+import { rootLogger } from '../../lib/logger.js';
 import type { JobHandler } from '../../jobs/job-queue.js';
 import { registerJobHandlers } from '../../jobs/handlers.js';
 import { WorkerOutputFileManager } from '../../lib/worker-output-file.js';
@@ -107,7 +108,10 @@ describe('RepositoryManager', () => {
   });
 
   // Helper to get fresh RepositoryManager instance with the production repository
-  async function getRepositoryManager(preloadedRepos: Repository[] = []) {
+  async function getRepositoryManager(
+    preloadedRepos: Repository[] = [],
+    { withoutDb = false }: { withoutDb?: boolean } = {},
+  ) {
     // Pre-populate the repository before creating the manager
     // Use actual SQLite repository (backed by in-memory database)
     await Promise.all(preloadedRepos.map(repo => repositoryRepository.save(repo)));
@@ -115,6 +119,7 @@ describe('RepositoryManager', () => {
     return module.RepositoryManager.create({
       repository: repositoryRepository,
       jobQueue: testJobQueue,
+      ...(withoutDb ? {} : { db: getDatabase() }),
       runAsUserImpl: runAsUserMock.runAsUserImpl,
     });
   }
@@ -1056,7 +1061,9 @@ describe('RepositoryManager', () => {
       let markEnqueueSeen!: () => void;
       const enqueueSeen = new Promise<void>((resolve) => { markEnqueueSeen = resolve; });
       const realEnqueue = testJobQueue!.enqueue.bind(testJobQueue!);
+      let enqueueExecutor: unknown;
       spyOn(testJobQueue!, 'enqueue').mockImplementation(async (type, payload, options) => {
+        enqueueExecutor = options?.executor;
         markEnqueueSeen();
         await enqueueGate;
         return realEnqueue(type, payload, options);
@@ -1076,6 +1083,76 @@ describe('RepositoryManager', () => {
       expect(await unregisterPromise).toBe(true);
       await expect(guarded).rejects.toThrow(`Repository not found: ${repo.id}`);
       expect(ran).toBe(false);
+      // The enqueue now runs on the unregister transaction's handle.
+      expect(enqueueExecutor).toBeDefined();
+    });
+
+    describe('atomic cleanup-job enqueue and row delete', () => {
+      const settle = <T>(p: Promise<T>): Promise<T | 'hung'> =>
+        Promise.race([p, new Promise<'hung'>((resolve) => setTimeout(() => resolve('hung'), 3000))]);
+
+      // Reach (measured, each mutation reverted): dropping `{ executor: trx }`
+      // from the enqueue makes the enqueue wait on the connection the
+      // transaction holds, so this test HANGS rather than failing an
+      // assertion -- the 3 s guard in `settle` turns that into a failure
+      // (design rule 3). Dropping `trx` from the row delete rolls the job row
+      // back but not the repository row, which the last assertion catches.
+      it('leaves no cleanup job, keeps the cache entry and the row when the row delete fails', async () => {
+        const manager = await getRepositoryManager();
+        const repo = await manager.registerRepository(TEST_REPO_DIR);
+        spyOn(repositoryRepository, 'delete').mockRejectedValue(new Error('injected row delete failure'));
+
+        const outcome = await settle(
+          manager.unregisterRepository(repo.id).then(
+            () => 'resolved' as const,
+            (err: unknown) => (err instanceof Error ? err.message : 'non-error'),
+          ),
+        );
+
+        expect(outcome).toBe('injected row delete failure');
+        expect(await testJobQueue!.getJobs({ type: 'cleanup:repository' })).toHaveLength(0);
+        expect(manager.getRepository(repo.id)).toBeDefined();
+        expect(await repositoryRepository.findById(repo.id)).not.toBeNull();
+      });
+
+      it('commits one cleanup job with the row delete, and wakes the queue only after the delete resolved', async () => {
+        const manager = await getRepositoryManager();
+        const repo = await manager.registerRepository(TEST_REPO_DIR);
+        const order: string[] = [];
+        const realDelete = repositoryRepository.delete.bind(repositoryRepository);
+        spyOn(repositoryRepository, 'delete').mockImplementation(async (id: string, executor?: Parameters<typeof realDelete>[1]) => {
+          await realDelete(id, executor);
+          order.push('delete');
+        });
+        spyOn(testJobQueue!, 'wake').mockImplementation(() => {
+          order.push('wake');
+        });
+
+        expect(await manager.unregisterRepository(repo.id)).toBe(true);
+
+        expect(await testJobQueue!.getJobs({ type: 'cleanup:repository' })).toHaveLength(1);
+        expect(manager.getRepository(repo.id)).toBeUndefined();
+        expect(await repositoryRepository.findById(repo.id)).toBeNull();
+        expect(order).toEqual(['delete', 'wake']);
+      });
+
+      it('falls back to the separate writes, with a warning, when no db was injected', async () => {
+        const manager = await getRepositoryManager([], { withoutDb: true });
+        const repo = await manager.registerRepository(TEST_REPO_DIR);
+        const warnSpy = spyOn(rootLogger, 'warn');
+        try {
+          expect(await manager.unregisterRepository(repo.id)).toBe(true);
+
+          expect(await testJobQueue!.getJobs({ type: 'cleanup:repository' })).toHaveLength(1);
+          expect(await repositoryRepository.findById(repo.id)).toBeNull();
+          const fallbackWarnings = warnSpy.mock.calls.filter((call) =>
+            JSON.stringify(call).includes('no injected db'),
+          );
+          expect(fallbackWarnings).toHaveLength(1);
+        } finally {
+          warnSpy.mockRestore();
+        }
+      });
     });
   });
 
