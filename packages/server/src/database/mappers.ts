@@ -13,7 +13,7 @@ import type {
   PersistedWorktreeSession,
   PersistedQuickSession,
   PersistedRepository,
-} from '../services/persistence-service.js';
+} from '../repositories/persisted-types.js';
 import { createLogger } from '../lib/logger.js';
 
 const logger = createLogger('database-mappers');

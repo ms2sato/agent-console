@@ -47,7 +47,7 @@ function createDefaultRepository(): Repository {
  * `buildPersistedRepository` builds `PersistedRepository` (the legacy JSON
  * migration-only shape), which deliberately does NOT declare
  * `orchestratorSessionIds` / `issueTriggerLabels` (see
- * `persistence-service.ts`'s `PersistedRepository` and `mappers.ts`'s
+ * `persisted-types.ts`'s `PersistedRepository` and `mappers.ts`'s
  * `toRepositoryRow` comment: a migrated repository always starts with both
  * unset). Tests exercising `issue:labeled` routing need a full `Repository`
  * with those fields set, so this helper widens the persisted builder's

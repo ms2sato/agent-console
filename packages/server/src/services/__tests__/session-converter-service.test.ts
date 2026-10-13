@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from 'bun:test';
 import type { Worker, EmbeddedAgentDefinition } from '@agent-console/shared';
-import type { PersistedWorker } from '../persistence-service.js';
+import type { PersistedWorker } from '../../repositories/persisted-types.js';
 import type { InternalWorker, InternalAgentWorker } from '../worker-types.js';
 import { SessionConverterService, type SessionConverterDeps, type RepositoryDisplayLookup, type SharedAccountLookup } from '../session-converter-service.js';
 import type { UsernameLookup } from '../username-lookup.js';

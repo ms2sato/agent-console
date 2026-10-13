@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import * as fs from 'fs';
-import type { PersistedSession } from '../persistence-service.js';
+import type { PersistedSession } from '../../repositories/persisted-types.js';
 import { setupMemfs, cleanupMemfs } from '../../__tests__/utils/mock-fs-helper.js';
 import { mockProcess, resetProcessMock } from '../../__tests__/utils/mock-process-helper.js';
 import { createMockPtyFactory } from '../../__tests__/utils/mock-pty.js';

@@ -1,6 +1,6 @@
 import * as fsPromises from 'fs/promises';
 import * as path from 'path';
-import type { PersistedSession } from './persistence-service.js';
+import type { PersistedSession } from '../repositories/persisted-types.js';
 import type { SessionRepository } from '../repositories/index.js';
 import type { WorkerOutputFileManager } from '../lib/worker-output-file.js';
 import type { SessionDataPathResolver } from '../lib/session-data-path-resolver.js';

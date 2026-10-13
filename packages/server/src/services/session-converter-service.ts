@@ -19,7 +19,7 @@ import {
 import type {
   PersistedSession,
   PersistedWorker,
-} from './persistence-service.js';
+} from '../repositories/persisted-types.js';
 import type {
   InternalWorker,
   InternalAgentWorker,

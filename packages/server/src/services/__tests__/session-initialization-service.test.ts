@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, mock, spyOn } from 'bun:te
 import * as fsPromises from 'fs/promises';
 import * as os from 'node:os';
 import type { Kysely } from 'kysely';
-import type { PersistedSession } from '../persistence-service.js';
+import type { PersistedSession } from '../../repositories/persisted-types.js';
 import type { SessionRepository, SessionUpdateFields } from '../../repositories/index.js';
 import type { WorkerOutputFileManager } from '../../lib/worker-output-file.js';
 import type { JobQueue } from '../../jobs/index.js';

@@ -1,5 +1,5 @@
 import type { InternalSession } from './internal-types.js';
-import type { PersistedSession } from './persistence-service.js';
+import type { PersistedSession } from '../repositories/persisted-types.js';
 import type { SessionRepository } from '../repositories/index.js';
 import type { WorkerManager } from './worker-manager.js';
 import type { NotificationManager } from './notifications/notification-manager.js';

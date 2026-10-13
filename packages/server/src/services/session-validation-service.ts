@@ -5,7 +5,7 @@ import type {
   SessionValidationIssue,
   SessionsValidationResponse,
 } from '@agent-console/shared';
-import type { PersistedSession } from './persistence-service.js';
+import type { PersistedSession } from '../repositories/persisted-types.js';
 import type { SessionRepository } from '../repositories/session-repository.js';
 import { gitRefExists } from '../lib/git.js';
 import { createLogger } from '../lib/logger.js';

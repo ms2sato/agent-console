@@ -1,6 +1,6 @@
 import type { Kysely, Transaction } from 'kysely';
 import type { SessionRepository, SessionUpdateFields } from './session-repository.js';
-import type { PersistedSession } from '../services/persistence-service.js';
+import type { PersistedSession } from './persisted-types.js';
 import type { Database, Session } from '../database/schema.js';
 import { createLogger } from '../lib/logger.js';
 import {

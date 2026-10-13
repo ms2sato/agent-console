@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import * as fs from 'fs';
 import * as path from 'path';
-import type { PersistedSession, PersistedWorktreeSession } from '../../services/persistence-service.js';
+import type { PersistedSession, PersistedWorktreeSession } from '../persisted-types.js';
 import type { SessionUpdateFields } from '../session-repository.js';
 import { JsonSessionRepository } from '../json-session-repository.js';
 import {

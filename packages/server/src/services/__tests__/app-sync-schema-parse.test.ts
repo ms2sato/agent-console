@@ -2,7 +2,7 @@ import { describe, it, expect } from 'bun:test';
 import * as v from 'valibot';
 import { AppServerMessageSchema } from '@agent-console/shared';
 import type { Worker } from '@agent-console/shared';
-import type { PersistedWorker } from '../persistence-service.js';
+import type { PersistedWorker } from '../../repositories/persisted-types.js';
 import type { InternalWorker } from '../worker-types.js';
 import {
   SessionConverterService,

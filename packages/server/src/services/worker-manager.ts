@@ -33,7 +33,7 @@ import type {
   PersistedTerminalWorker,
   PersistedGitDiffWorker,
   PersistedEmbeddedAgentWorker,
-} from './persistence-service.js';
+} from '../repositories/persisted-types.js';
 import type {
   InternalWorker,
   InternalPtyWorker,

@@ -38,7 +38,7 @@ import { createMockPtyFactory, createMockPtyProvider } from '@agent-console/serv
 import { WorkerManager } from '@agent-console/server/src/services/worker-manager';
 import { WorkerOutputFileManager } from '@agent-console/server/src/lib/worker-output-file';
 import { toPersistedWorker } from '@agent-console/server/src/database/mappers';
-import type { PersistedWorker } from '@agent-console/server/src/services/persistence-service';
+import type { PersistedWorker } from '@agent-console/server/src/repositories/persisted-types';
 import type {
   SpawnAsUserFn,
   SpawnAsUserOpts,
