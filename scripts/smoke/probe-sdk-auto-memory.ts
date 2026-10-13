@@ -2029,7 +2029,10 @@ function seedArmBEntry(memoryDir: string, nonce: string): void {
     codenameSubject: 'The secret personal codename',
     codenameValue: nonce,
     indexTitle: 'Automem probe personal fact',
-    indexHook: 'the secret personal codename is recorded here.',
+    // The nonce is ALSO in the index line: MEMORY.md is what is loaded into context every session, while a topic
+    // file is read on demand (needs a tool, which these arms disable). An oracle token only in the topic file could
+    // never reach a tools-off answer, so a silent turn would measure the oracle's placement, not the route.
+    indexHook: `the secret personal codename is ${nonce}.`,
   });
 }
 
