@@ -7,7 +7,7 @@ import { shellEscape } from '../../services/elevation-args.js';
 
 describe('expandTemplate', () => {
   describe('shell quoting is the elevation-args single writer', () => {
-    it.each(['', "it's", "''", 'a b', '$(x)', 'line1\nline2', 'caf\u00e9'])(
+    it.each(['', "it's", "''", 'a b', '$(x)', 'a`b$(c)`', 'line1\nline2', 'caf\u00e9'])(
       'quotes the {{cwd}} value %j exactly as elevation-args shellEscape does',
       (cwd) => {
         const result = expandTemplate({ template: '{{cwd}}', prompt: 'x', cwd });
