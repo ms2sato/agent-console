@@ -79,7 +79,7 @@
  *   2  bad usage / the smoke could not run (boot failure, provider down, ...)
  */
 import './_env.js';
-import { mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readdirSync, readFileSync, readlinkSync, writeFileSync } from 'node:fs';
 import type { McpDependencies } from '../../packages/server/src/mcp/mcp-server.ts';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -220,6 +220,98 @@ function listLiveChildren(): Array<{ pid: number; cmdline: string }> {
   return children;
 }
 
+/** `/proc/<pid>/stat` field 22 (starttime, in clock ticks since boot), or null. */
+function startTimeTicks(pid: number | 'self'): number | null {
+  try {
+    const stat = readFileSync(`/proc/${pid}/stat`, 'utf8');
+    // After ")": state is field 3, so field 22 is index 19.
+    return Number(stat.slice(stat.lastIndexOf(')') + 2).split(' ')[19]);
+  } catch {
+    return null;
+  }
+}
+
+/** Maps each `pipe:[inode]` this process holds to the fd numbers holding it. */
+function ownPipeFds(): Map<string, string[]> {
+  const byTarget = new Map<string, string[]>();
+  try {
+    for (const fd of readdirSync('/proc/self/fd')) {
+      try {
+        const target = readlinkSync(`/proc/self/fd/${fd}`);
+        if (!target.startsWith('pipe:')) continue;
+        byTarget.set(target, [...(byTarget.get(target) ?? []), fd]);
+      } catch {
+        // The fd closed between readdir and readlink (the readdir fd itself).
+      }
+    }
+  } catch {
+    // No /proc: nothing to match.
+  }
+  return byTarget;
+}
+
+/**
+ * MEASUREMENT: everything /proc says about one child, in the same
+ * read-race-tolerant style as `listLiveChildren`. Environment is reported as
+ * KEY NAMES ONLY (the provider key lives in values); each `pipe:[inode]` the
+ * child holds is matched against this process's own fds to name the handle the
+ * smoke still holds on it.
+ */
+function dumpChild(pid: number): Record<string, unknown> {
+  const dump: Record<string, unknown> = { pid };
+  const read = (name: string, fn: () => unknown): void => {
+    try {
+      dump[name] = fn();
+    } catch (err) {
+      dump[name] = `(unreadable: ${(err as NodeJS.ErrnoException).code ?? 'error'})`;
+    }
+  };
+  read('status', () =>
+    readFileSync(`/proc/${pid}/status`, 'utf8')
+      .split('\n')
+      .filter((l) => /^(PPid|State|Threads):/.test(l))
+      .map((l) => l.replace(/\s+/g, ' ')),
+  );
+  read('cwd', () => readlinkSync(`/proc/${pid}/cwd`));
+  const own = ownPipeFds();
+  read('fds', () =>
+    readdirSync(`/proc/${pid}/fd`).flatMap((fd) => {
+      try {
+        const target = readlinkSync(`/proc/${pid}/fd/${fd}`);
+        const heldBySmoke = own.get(target);
+        return [`${fd} -> ${target}${heldBySmoke ? ` (smoke holds it as fd ${heldBySmoke.join(',')})` : ''}`];
+      } catch {
+        return [];
+      }
+    }),
+  );
+  read('environKeys', () =>
+    readFileSync(`/proc/${pid}/environ`, 'utf8')
+      .split('\0')
+      .filter((kv) => kv.length > 0)
+      .map((kv) => kv.split('=')[0])
+      .sort(),
+  );
+  dump.startTimeTicks = startTimeTicks(pid);
+  dump.smokeStartTimeTicks = startTimeTicks('self');
+  return dump;
+}
+
+/**
+ * Prints the labelled live-children listing and, for every `/bin/bash` child
+ * (or every child when `dumpAll`), its /proc dump. Bisects WHEN a dangling
+ * child appeared. Measurement only: never fails the run.
+ */
+function checkpoint(label: string, dumpAll = false): void {
+  const children = listLiveChildren();
+  console.log(`==> children @ ${label}: ${children.length === 0 ? 'none' : JSON.stringify(children)}`);
+  for (const child of children) {
+    if (dumpAll || child.cmdline === '/bin/bash') {
+      console.log(`==> dump @ ${label}: ${JSON.stringify(dumpChild(child.pid))}`);
+    }
+  }
+}
+
 async function main(): Promise<void> {
   console.log(
     `==> mode: ${EXPECT_UNDERFIRE ? 'POLARITY (--expect-underfire: the defect must reproduce)' : 'SEEDED (the fix must hold)'}`,
@@ -269,6 +361,7 @@ async function main(): Promise<void> {
   const { deleteWorktree } = await import('../../packages/server/src/services/worktree-deletion-service.ts');
 
   const ctx = await createAppContext({ broadcastToApp: () => {} });
+  checkpoint('after createAppContext');
 
   const mcpDeps: McpDependencies = {
     sessionManager: ctx.sessionManager,
@@ -335,12 +428,18 @@ async function main(): Promise<void> {
     );
     console.log(`==> definition ${definition.id} (${PROVIDER_MODEL}, W=${WINDOW_TOKENS})`);
 
-    const session = await sm.createSession({ type: 'quick', locationPath: workCwd }, { createdBy: authUser.id });
+    // The embedded worker IS the session's initial worker. Without `embeddedAgentId`
+    // `createSession` also creates a default claude-code PTY agent worker, whose
+    // login shell nothing here tears down and which outlives `shutdownAppContext`.
+    const session = await sm.createSession(
+      { type: 'quick', locationPath: workCwd, embeddedAgentId: definition.id },
+      { createdBy: authUser.id },
+    );
     sessionId = session.id;
     if (!session.createdBy) bail('the created session has no createdBy; activation cannot mint an MCP identity');
 
-    const worker = await sm.createWorker(sessionId, { type: 'embedded-agent', embeddedAgentId: definition.id });
-    if (!worker) bail('worker creation returned null');
+    const worker = session.workers.find((w) => w.type === 'embedded-agent');
+    if (!worker) bail('the created session has no embedded-agent worker');
     workerId = worker.id;
 
     // Grow with auto compaction OFF -- the documented wedge population, and
@@ -348,6 +447,7 @@ async function main(): Promise<void> {
     await sm.setEmbeddedAgentAutoCompaction(sessionId, workerId, false);
 
     await sm.activateEmbeddedAgentWorker(sessionId, workerId);
+    checkpoint('after activate #1');
     if (
       !(await waitFor(
         async () => (await readEvents(sessionId, workerId)).some((e) => e.type === 'ready'),
@@ -409,6 +509,7 @@ async function main(): Promise<void> {
     // ====================================================================
     console.log('\n==> restarting the worker (deactivate -> activate)');
     await sm.deactivateEmbeddedAgentWorker(sessionId, workerId);
+    checkpoint('after deactivate #1');
     // Checked, not merely awaited: on timeout the script would activate over a
     // still-running incarnation and every assertion after this point would
     // describe that one instead of a restore boundary -- a green run reporting
@@ -426,6 +527,7 @@ async function main(): Promise<void> {
 
     const restartMarker = (await readEvents(sessionId, workerId)).length;
     await sm.activateEmbeddedAgentWorker(sessionId, workerId);
+    checkpoint('after activate #2');
     if (
       !(await waitFor(
         async () => (await readEvents(sessionId, workerId)).slice(restartMarker).some((e) => e.type === 'ready'),
@@ -538,6 +640,7 @@ async function main(): Promise<void> {
     }
     server.stop(true);
     await shutdownAppContext(ctx);
+    checkpoint('finally after shutdownAppContext', true);
     console.log(`\n==> disposable home left at ${disposableHome} (remove with: find ${disposableHome} -depth -delete)`);
   }
 
@@ -559,10 +662,8 @@ async function main(): Promise<void> {
 if (import.meta.main) {
   main()
     .then(() => {
-      const children = listLiveChildren();
-      console.log(
-        `==> live children at exit: ${children.length === 0 ? 'none' : JSON.stringify(children)} (exiting explicitly at ${new Date().toISOString()})`,
-      );
+      checkpoint('exit', true);
+      console.log(`==> exiting explicitly at ${new Date().toISOString()}`);
       process.exit(0);
     })
     .catch((err) => {
