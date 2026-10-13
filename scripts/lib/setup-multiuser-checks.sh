@@ -970,7 +970,9 @@ normalize_attempts() {
     echo "$default"
     return 0
   fi
-  if [[ "$value" =~ ^[0-9]+$ ]] && [ "$((10#$value))" -ge 1 ]; then
+  # At most 9 digits: bash arithmetic is 64-bit and a longer run of digits
+  # would overflow `$((10#...))` instead of being rejected.
+  if [[ "$value" =~ ^[0-9]{1,9}$ ]] && [ "$((10#$value))" -ge 1 ]; then
     echo "$((10#$value))"
     return 0
   fi

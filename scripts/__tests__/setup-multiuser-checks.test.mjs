@@ -1635,6 +1635,15 @@ describe('setup-multiuser-checks: normalize_attempts (V5 poll count validation, 
     expect(r.stderr).toBe('');
   });
 
+  it('the largest accepted value has 9 digits; one more digit (and an overflowing 20-digit run) falls back with a warning', () => {
+    expect(norm('999999999').stdout.trim()).toBe('999999999');
+    for (const tooLong of ['1000000000', '99999999999999999999']) {
+      const r = norm(tooLong);
+      expect(r.stdout.trim()).toBe('60');
+      expect(r.stderr).toContain(`AGENT_CONSOLE_HEALTH_ATTEMPTS='${tooLong}'`);
+    }
+  });
+
   it.each(['0', '00', 'abc', '-3', '1.5', '7 ', '1e2', '0x10'])(
     'a value that is not a positive integer (%j) -> the default, with a warning naming the value',
     (input) => {
