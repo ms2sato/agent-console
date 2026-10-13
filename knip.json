@@ -15,25 +15,18 @@
     "enumMembers": "off",
     "duplicates": "warn"
   },
-  "ignore": [
-    ".claude/**",
-    "packages/server/vitest.config.ts"
-  ],
   "workspaces": {
     ".": {
       "entry": [
-        "scripts/check-public-artifacts-language.mjs",
         "scripts/__tests__/**/*.test.mjs",
         "scripts/smoke/**/*.{ts,mjs}"
       ],
       "project": ["scripts/**/*.mjs"],
       "ignoreDependencies": [
-        "bumpp",
         "concurrently"
       ]
     },
     "packages/shared": {
-      "entry": ["src/index.ts"],
       "project": ["src/**/*.ts"]
     },
     "packages/embedded-agent": {
@@ -47,7 +40,6 @@
       "entry": [
         "src/index.ts!",
         "src/shim.ts!",
-        "build.ts",
         "src/app-context.ts",
         "src/**/__tests__/**/*.test.ts",
         "src/**/__tests__/**/*.isolated-test.ts",
@@ -57,16 +49,13 @@
       "ignoreDependencies": [
         "pino-pretty",
         "@types/mock-fs",
-        "mock-fs",
-        "@agent-console/embedded-agent"
+        "mock-fs"
       ]
     },
     "packages/client": {
       "entry": [
-        "src/main.tsx!",
         "src/routes/**/*.{ts,tsx}",
-        "src/**/__tests__/**/*.test.{ts,tsx}",
-        "src/test/setup.ts"
+        "src/**/__tests__/**/*.test.{ts,tsx}"
       ],
       "project": ["src/**/*.{ts,tsx}"],
       "ignoreDependencies": [
@@ -77,14 +66,10 @@
         "@types/diff",
         "class-variance-authority",
         "happy-dom"
-      ],
-      "ignore": [
-        "src/routeTree.gen.ts"
       ]
     },
     "packages/integration": {
       "entry": [
-        "src/setup.ts",
         "src/**/*.test.{ts,tsx}"
       ],
       "project": ["src/**/*.{ts,tsx}"]
