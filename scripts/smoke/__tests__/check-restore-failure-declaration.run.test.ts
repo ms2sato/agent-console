@@ -39,9 +39,11 @@ interface SmokeRunResult {
   exitCode: number | null;
   stdout: string;
   stderr: string;
+  elapsedMs: number;
 }
 
 function runSmoke(extraArgs: string[] = []): SmokeRunResult {
+  const startedAt = performance.now();
   const result = Bun.spawnSync(['bun', SMOKE_PATH, ...extraArgs], {
     cwd: REPO_ROOT,
     timeout: SPAWN_TIMEOUT_MS,
@@ -50,7 +52,27 @@ function runSmoke(extraArgs: string[] = []): SmokeRunResult {
     exitCode: result.exitCode,
     stdout: result.stdout.toString(),
     stderr: result.stderr.toString(),
+    elapsedMs: Math.round(performance.now() - startedAt),
   };
+}
+
+/** The last `n` lines of a stream, so a failure message names the `==>` phase the smoke reached. */
+function tail(text: string, n = 40): string {
+  return text.split('\n').slice(-n).join('\n');
+}
+
+/**
+ * Fails with the smoke's own captured output tail and the elapsed time when the run did not exit 0
+ * (a non-zero exit, or a null exit from a timeout), so a recurrence of an unidentified stall shows
+ * where it stalled instead of only `Expected: 0 / Received: null`. A no-op on the green path.
+ */
+function assertSmokeExitedZero(result: SmokeRunResult): void {
+  if (result.exitCode === 0) return;
+  throw new Error(
+    `smoke exited ${String(result.exitCode)} after ${result.elapsedMs} ms\n` +
+      `--- stdout (last 40 lines) ---\n${tail(result.stdout)}\n` +
+      `--- stderr (last 40 lines) ---\n${tail(result.stderr)}`,
+  );
 }
 
 describe('check-restore-failure-declaration.ts CI wrapper (Issue #1871)', () => {
@@ -62,6 +84,7 @@ describe('check-restore-failure-declaration.ts CI wrapper (Issue #1871)', () => 
     () => {
       const result = runSmoke();
 
+      assertSmokeExitedZero(result);
       expect(result.exitCode).toBe(0);
       expect(result.stdout).toMatch(/checks passed/);
     },
@@ -73,6 +96,7 @@ describe('check-restore-failure-declaration.ts CI wrapper (Issue #1871)', () => 
     () => {
       const result = runSmoke(['--expect-no-declaration']);
 
+      assertSmokeExitedZero(result);
       expect(result.exitCode).toBe(0);
       expect(result.stdout).toMatch(/checks passed/);
     },
