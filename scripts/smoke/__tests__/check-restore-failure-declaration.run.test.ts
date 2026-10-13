@@ -32,6 +32,8 @@ import * as path from 'node:path';
 const REPO_ROOT = path.resolve(import.meta.dir, '../../..');
 const SMOKE_PATH = 'scripts/smoke/check-restore-failure-declaration.ts';
 const SPAWN_TIMEOUT_MS = 120_000;
+// Per-test timeout: the spawn budget plus margin, so the spawn budget is the binding limit.
+const IT_TIMEOUT_MS = SPAWN_TIMEOUT_MS + 5_000;
 
 interface SmokeRunResult {
   exitCode: number | null;
@@ -52,17 +54,28 @@ function runSmoke(extraArgs: string[] = []): SmokeRunResult {
 }
 
 describe('check-restore-failure-declaration.ts CI wrapper (Issue #1871)', () => {
-  it('default mode: exits 0 and reports checks passed', () => {
-    const result = runSmoke();
+  // The spawn budget is 120 s; without an explicit per-test timeout the 5 s bun:test default
+  // bound the run and false-failed on a loaded runner (main 9913dec9, 2026-10-13); measured idle
+  // run 0.6-1.9 s.
+  it(
+    'default mode: exits 0 and reports checks passed',
+    () => {
+      const result = runSmoke();
 
-    expect(result.exitCode).toBe(0);
-    expect(result.stdout).toMatch(/checks passed/);
-  });
+      expect(result.exitCode).toBe(0);
+      expect(result.stdout).toMatch(/checks passed/);
+    },
+    IT_TIMEOUT_MS,
+  );
 
-  it('-- --expect-no-declaration mode: exits 0 and reports checks passed', () => {
-    const result = runSmoke(['--expect-no-declaration']);
+  it(
+    '-- --expect-no-declaration mode: exits 0 and reports checks passed',
+    () => {
+      const result = runSmoke(['--expect-no-declaration']);
 
-    expect(result.exitCode).toBe(0);
-    expect(result.stdout).toMatch(/checks passed/);
-  });
+      expect(result.exitCode).toBe(0);
+      expect(result.stdout).toMatch(/checks passed/);
+    },
+    IT_TIMEOUT_MS,
+  );
 });
