@@ -90,6 +90,10 @@ describe('app-sync payloads parse against the strict AppServerMessageSchema', ()
     };
     const result = parseOverWire(message);
     expect(result.success).toBe(true);
+    // The strict parse keeps the derived field: createdBy 'user-1' resolves to 'alice'.
+    const parsed = result.success ? result.output : undefined;
+    const sessions = parsed?.type === 'sessions-sync' ? parsed.sessions : [];
+    expect(sessions[0]?.createdByUsername).toBe('alice');
   });
 
   it('repositories-sync built from the real toRepository mapper', () => {
