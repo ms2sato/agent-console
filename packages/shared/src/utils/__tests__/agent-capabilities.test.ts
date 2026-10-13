@@ -2,6 +2,9 @@ import { describe, it, expect } from 'bun:test';
 import { computeCapabilities } from '../agent-capabilities.js';
 import type { AgentDefinition } from '../../schemas/agent.js';
 
+// Reach, measured (control 14 pass / 0 fail): dropping `.trim()` on the continue template
+// fails 1 test; dropping `.trim()` on the asking patterns fails 1; changing `some` to
+// `every` on the asking patterns fails 2 (the mixed-list cases).
 type AgentBase = Omit<AgentDefinition, 'capabilities'>;
 
 function agent(overrides: Partial<AgentBase> = {}): AgentBase {
