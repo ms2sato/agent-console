@@ -115,12 +115,30 @@
  *        `autoMemoryDirectory`, or something else entirely -- is an OPEN
  *        question, not settled by this probe. **A `NO LEAK` result from this
  *        arm must never be read as covering User-scope** -- #1348 remains
- *        un-re-derived for that channel. A synthetic User-scope seed (if such
- *        a location exists inside the isolated dir, writing throwaway
- *        content there before the run) would close this gap; tracked
- *        separately as Issue #1663 rather than folded into this arm, since
- *        seeding a copy of the real memory tree was rejected as unbounded
- *        input through a billed turn.
+ *        un-re-derived for that channel.
+ *
+ *        UPDATE (Issue #1663, 2026-10-13): the open question above is
+ *        answered by reading the vendored 0.3.238 bundle (a reading, not a
+ *        measurement): `scope: 'personal'` is NOT a separate user-global
+ *        location -- the emitter tags a path `team` if it lies under a
+ *        memory-store mount, `personal` if it lies under the auto-memory
+ *        directory, and `personal` as the fallback for anything unclassified;
+ *        the auto-memory directory is
+ *        `override ?? autoMemoryDirectory (policy/flag/local/project/user
+ *        settings) ?? <CLAUDE_CONFIG_DIR>/projects/<sanitized repo/cwd>/memory`,
+ *        i.e. INSIDE an isolated dir. The synthetic-seed sub-runs are
+ *        `--b1` (mechanism: CLAUDE_CODE_PROJECT_DIR_NAME, NOT a production
+ *        route -- env-filter.ts strips CLAUDE_CODE_* before the SDK) and `--b2`
+ *        (production route: an isolated user-level settings.json with an
+ *        autoMemoryDirectory vs our explicit settings.autoMemoryEnabled:
+ *        false). Their ORACLE is the answer (an unguessable nonce, substring
+ *        test, never logged), with `Options.tools: []`; the nonce sits in the
+ *        INDEX line because session-start injection loads MEMORY.md, not
+ *        topic files. The injection route emits NO SDKMemoryRecallMessage
+ *        (measured), so THIS arm's `NO LEAK` means "no recall message",
+ *        nothing stronger; and this arm has no safe oracle for that route on a
+ *        real directory (no known token to test for, answer body unloggable)
+ *        -- a standing limitation, not fixable here.
  *   --c  WRITE: tell the model something worth remembering, poll for a file
  *        to appear under the default directory within a bounded timeout.
  *   --d  REDIRECT: set `autoMemoryDirectory` explicitly and confirm both a
