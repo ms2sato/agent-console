@@ -11,7 +11,7 @@ The purpose of tests is to verify the correctness of production code. The follow
 ```typescript
 // ❌ Wrong: Duplicating logic in test file
 function cleanupOrphanProcesses(
-  persistenceService: MockPersistenceService,
+  sessionRepository: MockSessionRepository,
   isProcessAlive: (pid: number) => boolean,
   killProcess: (pid: number) => void
 ) {
@@ -158,7 +158,7 @@ describe('Integration: SessionManager', () => {
   });
 
   it('should persist sessions', () => {
-    // Uses actual PersistenceService
+    // Uses actual SessionRepository
   });
 });
 ```
@@ -397,8 +397,8 @@ it('should NOT call onSubmit when validation fails', async () => {
 
 ```typescript
 // ❌ Re-implementing production logic in test file
-class TestPersistenceService {
-  // Writing the same logic as PersistenceService
+class TestSessionRepository {
+  // Writing the same logic as SessionRepository
 }
 
 class TestRepositoryManager {

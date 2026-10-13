@@ -29,6 +29,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import type { Subprocess, FileSink } from 'bun';
 import { createLogger } from '../lib/logger.js';
+import { shellEscape } from './elevation-args.js';
 
 const logger = createLogger('service:privilege-elevation');
 
@@ -110,14 +111,9 @@ export type SpawnFn = (
   options: Parameters<typeof Bun.spawn>[1],
 ) => ReturnType<typeof Bun.spawn>;
 
-/**
- * Escape a string for safe use inside a single-quoted shell context.
- * Identical implementation to user-mode.ts:shellEscape.
- * @internal Exported for testing.
- */
-export function shellEscape(value: string): string {
-  return `'${value.replace(/'/g, "'\\''")}'`;
-}
+// Re-exported so the elevation consumers keep importing it from here;
+// `elevation-args.ts` is its single writer.
+export { shellEscape };
 
 /**
  * Build the `cd <cwd> && export K=v ...; <command>` inner shell string used
