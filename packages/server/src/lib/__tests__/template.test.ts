@@ -3,8 +3,20 @@ import {
   expandTemplate,
   TemplateExpansionError,
 } from '../template.js';
+import { shellEscape } from '../../services/elevation-args.js';
 
 describe('expandTemplate', () => {
+  describe('shell quoting is the elevation-args single writer', () => {
+    it.each(['', "it's", "''", 'a b', '$(x)', 'line1\nline2', 'caf\u00e9'])(
+      'quotes the {{cwd}} value %j exactly as elevation-args shellEscape does',
+      (cwd) => {
+        const result = expandTemplate({ template: '{{cwd}}', prompt: 'x', cwd });
+
+        expect(result.command).toBe(shellEscape(cwd));
+      },
+    );
+  });
+
   describe('basic expansion', () => {
     it('should expand {{prompt}} placeholder with shell-escaped inline prompt', () => {
       const result = expandTemplate({
